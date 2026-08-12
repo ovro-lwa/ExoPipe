@@ -25,6 +25,10 @@ from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy.time import Time, TimeDelta
 from astropy import units as u
 from scipy.ndimage import maximum_filter
+from astropy.nddata import Cutout2D
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -50,7 +54,7 @@ class _Tee:
         self.file.close()
 
 CONFIG = {
-    'MIN_ELEVATION': 30.0, 'I_MIN_ELEVATION': 29.5,
+    'MIN_ELEVATION': 20.0, 'I_MIN_ELEVATION': 19.5,
     'CANDIDATE_SIGMA': 5.0, 'BDSF_THRESH_PIX_V': 4.5,
     'A_TEAM': {
         'Cas A': {'coord': SkyCoord('23h23m24s', '+58d48m54s'), 'radius': 5.0*u.deg},
@@ -111,18 +115,32 @@ def load_image(path):
     with fits.open(path) as hdul:
         return hdul[0].data.squeeze(), hdul[0].header
 
-def get_midpoint_time(header, fits_path=None):
-    duration = float(header.get('DURATION', 0.0))
-    if duration <= 0 and fits_path:
+def get_obs_time(header, fits_path=None):
+    """Representative observation mid-time for the alt-az / horizon / beam
+    geometry.
+
+    Use the PER-BLOCK integration (one LST-hour chunk) for the midpoint, not
+    the total DURATION. They are equal for a single 10-min or deep block, but
+    for a multi-day co-add DURATION is the summed integration over many
+    nights, so DATE-OBS + DURATION/2 lands ~half a day off and at an
+    unrelated LST (averaging absolute time over irregularly spaced dates
+    destroys the shared LST). A co-add is just N copies of the same LST-hour
+    block, so its geometry is that block's midpoint, DATE-OBS + INTTIME/2 on
+    the first night -- identical to a single block. INTTIME holds the
+    per-block integration; DURATION/filename are fallbacks only."""
+    block = float(header.get('INTTIME', 0.0) or 0.0)
+    if block <= 0:
+        block = float(header.get('DURATION', 0.0) or 0.0)
+    if block <= 0 and fits_path:
         bn = os.path.basename(fits_path).lower()
         path_lower = (fits_path or '').lower()
         if '10min' in bn or '10min' in path_lower:
-            duration = 600.0
+            block = 600.0
         elif 'deep' in bn or '/deep/' in path_lower:
-            duration = 3600.0
-    if duration <= 0:
-        duration = 3600.0  # safe default  never use 0
-    return Time(header.get('DATE-OBS'), format='isot', scale='utc') + TimeDelta(duration*0.5, format='sec')
+            block = 3600.0
+    if block <= 0:
+        block = 3600.0  # safe default; never use 0
+    return Time(header.get('DATE-OBS'), format='isot', scale='utc') + TimeDelta(block * 0.5, format='sec')
 
 def make_masks(header, shape, fits_path=None):
     wcs = WCS(header).celestial
@@ -130,15 +148,26 @@ def make_masks(header, shape, fits_path=None):
     y, x = np.indices((h, w))
     ra, dec = wcs.all_pix2world(x, y, 0)
     coords = SkyCoord(ra, dec, unit='deg')
-    t_mid = get_midpoint_time(header, fits_path)
-    altaz = coords.transform_to(AltAz(obstime=t_mid, location=OVRO_LOC))
-    el_deg = altaz.alt.deg
+    # DEEP CO-ADD PATH: every constituent is the same LST-hour block phased to
+    # the zenith, so the phase center IS the zenith -- the same RA/Dec in every
+    # image and in the co-add. Elevation is therefore exact geometry off the
+    # center pixel, with no observation time involved.
+    # NOTE: this assumes phase center == zenith. True for the deep co-adds, NOT
+    # for 10-min blocks (zenith offset from the fixed phase center) -- those
+    # need a separate, time-based path before this is run on them.
+    zenith = SkyCoord(header['CRVAL1'], header['CRVAL2'], unit='deg')
+    el_deg = 90.0 - coords.separation(zenith).deg
     horizon_mask = el_deg < CONFIG['MIN_ELEVATION']
     invalid_wcs_mask = np.isnan(ra) | np.isnan(dec) | np.isnan(el_deg)
+    obs_time = get_obs_time(header, fits_path)   # retained for the beam model
     ateam_mask = np.zeros(shape, dtype=bool)
-    for info in CONFIG['A_TEAM'].values():
-        ateam_mask |= (coords.separation(info['coord']) < info['radius'])
-    return horizon_mask, ateam_mask, invalid_wcs_mask, t_mid, coords, el_deg
+    # P3_ATEAM_MASK_OFF: A-team ruled a VETO stage, not a pre-detection blank
+    # (Gregg 2026-07-14, handoff §5.15g). Pilot runs set this env var to
+    # measure mstruct-vs-A-team catch; production default unchanged (mask ON).
+    if not os.environ.get('P3_ATEAM_MASK_OFF'):
+        for info in CONFIG['A_TEAM'].values():
+            ateam_mask |= (coords.separation(info['coord']) < info['radius'])
+    return horizon_mask, ateam_mask, invalid_wcs_mask, obs_time, coords, el_deg
 
 def get_uniform_rms(data, horizon_mask):
     h, w = data.shape; half = min(512, h//4, w//4); cy, cx = h//2, w//2
@@ -183,7 +212,10 @@ def extract_v_peaks(v_data, v_header, horizon_mask, ateam_mask, invalid_wcs_mask
     try:
         for sign_label, sign_data, sign_mult in [('positive', v_data, 1), ('negated', -v_data, -1)]:
             path = os.path.join(tmp_dir, f'V_{sign_label}.fits')
-            fits.writeto(path, sign_data, v_header, overwrite=True)
+            # Blank below-horizon/A-team BEFORE BDSF (else it hangs deblending
+            # the low-elevation ring on noisy subband diffs). Filter-after kept.
+            bdsf_data = np.where(post_mask, 0.0, sign_data).astype(np.float32)
+            fits.writeto(path, bdsf_data, v_header, overwrite=True)
             print(f"    Running BDSF on V ({sign_label}, rms={v_rms*1000:.2f}mJy)...")
             try:
                 srcs = _run_bdsf(path, thresh_pix=bdsf_thresh, thresh_isl=3.0, rms_value=v_rms, mean_map='zero')
@@ -199,6 +231,7 @@ def extract_v_peaks(v_data, v_header, horizon_mask, ateam_mask, invalid_wcs_mask
                     el = altaz.alt.deg
                 except: continue
                 candidates.append({'coord': s['coord'], 'flux': sign_mult*s['flux'], 'snr': snr,
+                                   'int_flux': sign_mult*s.get('total_flux', s['flux']),
                                    'el': el, 'pix_x': s['pix_x'], 'pix_y': s['pix_y'],
                                    'n_pix': 0, 'status': 'PASS', 'reject_reason': ''})
     finally:
@@ -250,7 +283,15 @@ def extract_i_sources(i_data, i_header, i_rms, wcs, horizon_mask, invalid_wcs_ma
     post_mask = horizon_mask | invalid_wcs_mask
     tmp_dir = tempfile.mkdtemp(prefix='bdsf_i_')
     try:
-        path = os.path.join(tmp_dir, 'I.fits'); fits.writeto(path, i_data, i_header, overwrite=True)
+        path = os.path.join(tmp_dir, 'I.fits')
+        # Blank below-horizon BEFORE BDSF (not just filter after) — avoids the
+        # horizon-ring deblend hang on noisy subband diffs. Blank to NaN, NOT 0.0:
+        # a large all-zero region (e.g. 32% of a deep co-add master) gives BDSF a
+        # zero-variance rms box -> "A region with an unphysical rms value" abort.
+        # NaN is treated as blanked by BDSF (no deblend, no rms box) — fixes it
+        # (verified 2026-06-24: master blank->0 FAILs, blank->NaN OK 1894 src).
+        bdsf_data = np.where(post_mask, np.nan, i_data).astype(np.float32)
+        fits.writeto(path, bdsf_data, i_header, overwrite=True)
         print("    Running BDSF on I...")
         try:
             srcs = _run_bdsf(path, thresh_pix=min_sigma, thresh_isl=CONFIG['BDSF_THRESH_ISL'])
@@ -630,6 +671,190 @@ def write_stack_fits(stack, cdelt_deg, out_path, label, cutout_half_pix):
     hdr['CTYPE1']='DX---CAR';hdr['CTYPE2']='DY---CAR';hdr['CUNIT1']='arcmin';hdr['CUNIT2']='arcmin'
     fits.writeto(out_path, stack.astype(np.float32), hdr, overwrite=True)
 
+
+# ================================================================
+# CUTOUT GENERATION
+# ================================================================
+CUTOUT_SIZE_DEG = 2.0   # 2×2 degree cutouts
+CUTOUT_SIGMA_V = 6.0    # Generate cutouts for |SNR| >= this
+MAX_CUTOUTS_V = 20      # Safety cap per search image
+
+
+def _truncated_jname(coord):
+    """Truncated J-name for directory grouping: J0553+31 format."""
+    ra_str = coord.ra.to_string(unit=u.hour, sep='', precision=0, pad=True)
+    dec_str = coord.dec.to_string(unit=u.deg, sep='', precision=0,
+                                  alwayssign=True, pad=True)
+    return f"J{ra_str[:4]}{dec_str[:3]}"
+
+
+def _full_jname(coord):
+    """Full J-name for unique filenames."""
+    ra_str = coord.ra.to_string(unit=u.hour, sep='', precision=0, pad=True)
+    dec_str = coord.dec.to_string(unit=u.deg, sep='', precision=0,
+                                  alwayssign=True, pad=True)
+    return f"J{ra_str}{dec_str}".replace(' ', '')
+
+
+def _make_cutout_header(orig_header, cutout_wcs, candidate, pol_tag,
+                        basename_tag):
+    """Build a cutout FITS header with detection metadata."""
+    h = orig_header.copy()
+    for key in list(h.keys()):
+        if any(key.endswith(str(n)) for n in [3, 4]) and key[:5] in (
+                'NAXIS', 'CTYPE', 'CRPIX', 'CRVAL', 'CDELT', 'CUNIT',
+                'CROTA'):
+            del h[key]
+    h['NAXIS'] = 2
+    h.update(cutout_wcs.to_header())
+    coord = candidate['coord']
+    h['DET_RA'] = (coord.ra.deg, '[deg] Detection RA (ICRS)')
+    h['DET_DEC'] = (coord.dec.deg, '[deg] Detection Dec (ICRS)')
+    h['DET_FLUX'] = (candidate['flux'], '[Jy] Detection peak flux')
+    h['DET_SNR'] = (candidate['snr'], 'Detection SNR')
+    h['DET_EL'] = (candidate.get('el', 0), '[deg] Elevation')
+    h['DET_POL'] = (pol_tag, 'Stokes parameter / layer')
+    h['DET_SRC'] = (basename_tag, 'Source image identifier')
+    h['CUTSIZE'] = (CUTOUT_SIZE_DEG, '[deg] Cutout angular size')
+    return h
+
+
+def _center_flux(cutout):
+    """Get flux at center pixel of a Cutout2D object."""
+    try:
+        ny, nx = cutout.data.shape
+        return float(cutout.data[ny // 2, nx // 2])
+    except Exception:
+        return np.nan
+
+
+def generate_v_cutouts(candidates, v_data, v_cleaned, i_data,
+                       wcs, v_hdr, i_hdr, out_dir, basename_tag,
+                       cutout_sigma=None, max_cutouts=None):
+    """Generate 2-panel cutouts (I context + V) for V candidates.
+
+    Directory structure: {out_dir}/transients/V/{truncated_jname}/
+
+    Returns number of cutouts created.
+    """
+    cutout_sigma = cutout_sigma or CUTOUT_SIGMA_V
+    max_cutouts = max_cutouts or MAX_CUTOUTS_V
+    cutout_size = CUTOUT_SIZE_DEG * u.deg
+
+    cutout_cands = [c for c in candidates
+                    if c['status'] == 'PASS' and abs(c['snr']) >= cutout_sigma]
+    cutout_cands.sort(key=lambda c: abs(c['snr']), reverse=True)
+
+    if not cutout_cands:
+        return 0
+
+    if len(cutout_cands) > max_cutouts:
+        print(f"  WARNING: {len(cutout_cands)} candidates above "
+              f"{cutout_sigma}s exceeds cutout limit of {max_cutouts}")
+        cutout_cands = cutout_cands[:max_cutouts]
+
+    print(f"\n  Generating cutouts for {len(cutout_cands)} candidates "
+          f"(|SNR| = {cutout_sigma})...")
+
+    n_ok = 0
+    for det in cutout_cands:
+        try:
+            path = _make_v_cutout(det, v_data, v_cleaned, i_data,
+                                  wcs, v_hdr, i_hdr, out_dir,
+                                  basename_tag, cutout_size)
+            if path:
+                det['cutout_path'] = path
+                n_ok += 1
+        except Exception as e:
+            print(f"  Cutout failed at "
+                  f"({det['coord'].ra.deg:.3f}, "
+                  f"{det['coord'].dec.deg:.3f}): {e}")
+
+    if n_ok > 0:
+        print(f"  Created {n_ok} cutouts in "
+              f"{os.path.join(out_dir, 'transients', 'V')}")
+    return n_ok
+
+
+def _make_v_cutout(candidate, v_data, v_cleaned, i_data,
+                   wcs, v_hdr, i_hdr, out_dir, basename_tag,
+                   cutout_size):
+    """Single V candidate: 2-panel PNG (I + V cleaned) + FITS cutouts."""
+    coord = candidate['coord']
+
+    try:
+        cut_v = Cutout2D(v_cleaned, coord, (cutout_size, cutout_size),
+                         wcs=wcs, mode='trim')
+        cut_i = Cutout2D(i_data, coord, (cutout_size, cutout_size),
+                         wcs=wcs, mode='trim')
+        cut_v_orig = Cutout2D(v_data, coord, (cutout_size, cutout_size),
+                              wcs=wcs, mode='trim')
+    except Exception:
+        return None
+
+    full_jn = _full_jname(coord)
+    short_jn = _truncated_jname(coord)
+    jname_dir = os.path.join(out_dir, "transients", "V", short_jn)
+    os.makedirs(jname_dir, exist_ok=True)
+
+    # --- FITS cutouts ---
+    head_v = _make_cutout_header(v_hdr, cut_v.wcs, candidate,
+                                 'V_cleaned', basename_tag)
+    head_v_orig = _make_cutout_header(v_hdr, cut_v_orig.wcs, candidate,
+                                      'V_original', basename_tag)
+    head_i = _make_cutout_header(
+        i_hdr if i_hdr is not None else v_hdr,
+        cut_i.wcs, candidate, 'I_ref', basename_tag)
+
+    fits.writeto(os.path.join(jname_dir,
+                 f"det_V_{basename_tag}_{full_jn}_V.fits"),
+                 cut_v.data, head_v, overwrite=True)
+    fits.writeto(os.path.join(jname_dir,
+                 f"det_V_{basename_tag}_{full_jn}_V_orig.fits"),
+                 cut_v_orig.data, head_v_orig, overwrite=True)
+    fits.writeto(os.path.join(jname_dir,
+                 f"det_V_{basename_tag}_{full_jn}_I.fits"),
+                 cut_i.data, head_i, overwrite=True)
+
+    # --- Diagnostic PNG: 2 panels ---
+    fig = plt.figure(figsize=(12, 6))
+
+    # Panel 1: Stokes I (context)
+    ax1 = fig.add_subplot(1, 2, 1, projection=cut_i.wcs)
+    vmin_i, vmax_i = np.nanpercentile(cut_i.data, [1, 99.5])
+    ax1.imshow(cut_i.data, origin='lower', cmap='inferno',
+               vmin=vmin_i, vmax=vmax_i)
+    ax1.plot_coord(coord, '+', color='cyan', ms=20, markeredgewidth=2)
+    ax1.set_title("Stokes I (reference)")
+    i_flux = _center_flux(cut_i)
+    i_str = f"{i_flux*1000:.1f} mJy" if np.isfinite(i_flux) else "N/A"
+    ax1.text(0.05, 0.95, f"Flux: {i_str}",
+             transform=ax1.transAxes, color='white', fontsize=10,
+             verticalalignment='top',
+             bbox=dict(facecolor='black', alpha=0.5))
+
+    # Panel 2: Stokes V (cleaned residual)
+    ax2 = fig.add_subplot(1, 2, 2, projection=cut_v.wcs)
+    vmin_v, vmax_v = np.nanpercentile(cut_v.data, [1, 99.5])
+    ax2.imshow(cut_v.data, origin='lower', cmap='inferno',
+               vmin=vmin_v, vmax=vmax_v)
+    ax2.plot_coord(coord, '+', color='cyan', ms=20, markeredgewidth=2)
+    ax2.set_title("Stokes V (cleaned)")
+    v_flux_str = f"{candidate['flux']*1000:.1f} mJy"
+    snr_str = f"{candidate['snr']:+.1f}"
+    ax2.text(0.05, 0.95, f"Flux: {v_flux_str}\nSNR: {snr_str}",
+             transform=ax2.transAxes, color='white', fontsize=10,
+             verticalalignment='top',
+             bbox=dict(facecolor='black', alpha=0.5))
+
+    png_name = f"det_V_{basename_tag}_{full_jn}.png"
+    png_path = os.path.join(jname_dir, png_name)
+    plt.tight_layout()
+    plt.savefig(png_path, dpi=100)
+    plt.close()
+    return png_path
+
+
 # ================================================================
 # MAIN PIPELINE
 # ================================================================
@@ -651,6 +876,15 @@ def main():
     parser.add_argument("--freq_mhz", type=float, default=None)
     parser.add_argument("--beam", type=float, default=None)
     parser.add_argument("--save_intermediates", action='store_true')
+    parser.add_argument("--clean_only", action='store_true',
+                        help="Produce only the sky+striation-subtracted residual "
+                             "(the stacking master); skip candidate extraction.")
+    parser.add_argument("--no_cutouts", action='store_true',
+                        help="Skip cutout generation")
+    parser.add_argument("--cutout_sigma", type=float, default=CUTOUT_SIGMA_V,
+                        help=f"Cutout |SNR| threshold (default: {CUTOUT_SIGMA_V})")
+    parser.add_argument("--max_cutouts", type=int, default=MAX_CUTOUTS_V,
+                        help=f"Max cutouts per search (default: {MAX_CUTOUTS_V})")
     args = parser.parse_args()
     t0 = time.time()
 
@@ -787,6 +1021,22 @@ def main():
     if args.save_intermediates:
         fits.writeto(os.path.join(out_dir,f"{v_base}_striation_model.fits"),sm.astype(np.float32),v_hdr_out,overwrite=True)
     print(f"  Phase 4: {time.time()-t4:.0f}s")
+
+    if args.clean_only:
+        # Stacking-master mode: the sky+striation-subtracted residual IS the
+        # product; skip candidate extraction entirely. Stamp a marker header.
+        try:
+            with fits.open(resid_final_path, mode='update') as _hd:
+                _hd[0].header['SKYSUB'] = (True, 'sidelobe+bilobe+striation subtracted')
+                _hd[0].header['SKYSUBV'] = ('search_v_v2', 'clean-master provenance')
+                _hd[0].header['RMSORIG'] = (round(vrms*1e3,3), 'mJy rms before subtraction')
+                _hd[0].header['RMSCLEAN'] = (round(rms3*1e3,3), 'mJy rms after subtraction')
+                _hd.flush()
+        except Exception as _e:
+            print(f"  [warn] header stamp failed: {_e}")
+        print(f"  CLEAN-ONLY: done in {time.time()-t0:.0f}s "
+              f"(rms {vrms*1e3:.2f}->{rms3*1e3:.2f} mJy)")
+        return
 
     # PHASE 5: EXTRACTION
     print(f"\n{'-'*65}\n  PHASE 5: CANDIDATE EXTRACTION\n{'-'*65}")
@@ -941,6 +1191,14 @@ def main():
             print(f"  {c['snr']:>+7.1f} {c['flux']*1000:>7.1f}m | {rs:>12} {ds:>12} | {c['el']:>5.1f} | {ns:>7} | {cat:>20}")
 
     print(); write_output(cands,out_dir,v_base)
+
+    # Generate cutouts
+    if not args.no_cutouts:
+        generate_v_cutouts(cands, v_data, vr3, i_data,
+                           wcs, v_hdr, i_hdr, out_dir, v_base,
+                           cutout_sigma=args.cutout_sigma,
+                           max_cutouts=args.max_cutouts)
+
     print(f"\n{'='*65}")
     print(f"  DONE  {time.time()-t0:.0f}s")
     print(f"  Log: {log_path}")
