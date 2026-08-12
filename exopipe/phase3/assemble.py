@@ -6,12 +6,11 @@ load_rows, epoch_mid, FP_CLASS, ATEAM and the ROOT/COADD/REPEAT_DEG constants,
 plus internal deps LEDGERS and the _HDR cache that they reference).
 The remaining assembly-capability content arrives at move time.
 """
-import sys; sys.path.insert(0, '/lustre/gh/main/clv15')
 import os, csv, glob
 from astropy.io import fits
 from astropy.time import Time
 import astropy.units as u
-import search_i_transients as sit
+from exopipe.phase3 import search_i_transients as sit
 
 # TO-MOVE-TO-COMMON-CONFIG: hardcoded path constants (ROOT, LEDGERS, COADD)
 # must migrate to the shared exopipe config module at move time.
@@ -62,3 +61,55 @@ def epoch_mid(lst, band, date):
             _HDR[key] = (None, '')
     return _HDR[key]
 
+
+
+# constituents (step-3 moves)
+# Guarded star-imports: phase3_i_deep_final / _package_deep / _v5_build import
+# this seed back (`import phase3_i_deep_live as live` -> this module). When a
+# constituent-first import arrives here mid-cycle, the re-export is skipped
+# (the seed names above are already defined and satisfy the cycle); a direct
+# import of this module re-exports everything.
+# NOTE: phase3_tenmin_assemble is NOT star-imported — its load_rows(tier,
+# stokes, lst_filter) would shadow the extracted seed helper load_rows();
+# import it directly as exopipe.phase3.phase3_tenmin_assemble.
+try:
+    from exopipe.phase3.phase3_catalog import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise
+try:
+    from exopipe.phase3.phase3_final_csv import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise
+try:
+    from exopipe.phase3.phase3_i_deep_final import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise
+try:
+    from exopipe.phase3.phase3_i_deep_package_deep import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise
+# EXCLUDED (import-time side effect): phase3_i_v5_build executes its full
+# v5 catalog build at import (no __main__ guard) — writes into Run_I_DEEP.
+# Import exopipe.phase3.phase3_i_v5_build explicitly to run it.
+# from exopipe.phase3.phase3_i_v5_build import *  # noqa
+try:
+    from exopipe.phase3.phase3_sb_assemble import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise
+try:
+    from exopipe.phase3.phase3_source_ids import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise
+# EXCLUDED (import-time side effect): phase3_v_persource executes the one-shot
+# per-source migration at import (no __main__ guard) — rewrites Run_V_DEEP
+# catalogs and candidates/*/detections.csv. Import it explicitly to run it.
+# from exopipe.phase3.phase3_v_persource import *  # noqa
+# EXCLUDED (import-time side effect): phase3_xmatch executes its cross-match
+# at import (no __main__ guard) — writes Run_PROD/xmatch/*.csv.
+# from exopipe.phase3.phase3_xmatch import *  # noqa
