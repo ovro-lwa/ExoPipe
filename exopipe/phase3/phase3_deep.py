@@ -162,7 +162,12 @@ def _jupiter_skycoord(date):
     jb = get_body('jupiter', Time(date + ' 00:00:00', scale='utc'), OVRO_LOC)
     return SkyCoord(jb.ra, jb.dec)
 
-ALIGN = '/lustre/gh/main/clv15/align_images.py'
+# GC-PRE-3 (Gregg 2026-08-12): flow-align script is the repo's own copy
+# (exopipe/phase2/align_images.py, byte-identical to the frozen clv15
+# original) — never execute frozen-tree code from the production path.
+# Shelled into py310_orca (JAX), never imported.
+ALIGN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     'phase2', 'align_images.py')
 WORKROOT = os.environ.get('P3_FLOW_ROOT', '/data07/gh/phase3/deep')   # moved off /fast (NVMe too small; was filling it)
 COADD_ROOT = os.environ.get('P3_COADD_ROOT', '/fast/gh/main/phase3/coadd')
 MIN_EPOCHS = 5

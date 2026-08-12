@@ -318,8 +318,12 @@ def run_alignment(tgt_path, ref_scaled_path, out_dir, conda_env):
             print(f"  Using pre-aligned image: {os.path.basename(pa)}")
             return pa
 
-    align_script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                'align_images.py')
+    # GC-PRE-3 sibling (Gregg 2026-08-12): align_images.py lives in
+    # exopipe/phase2/ in the refactored tree (was beside this script in the
+    # frozen flat clv15 layout).
+    align_script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'phase2', 'align_images.py')
     if not os.path.exists(align_script):
         print("  align_images.py not found  skipping alignment")
         return None
