@@ -55,7 +55,10 @@ PHASE2_ROOT = '/lustre/pipeline/exopipe/phase2'
 WORKDIR_BASE = '/fast/gh/main/phase3/coadd'
 DECISIONS_CSV = '/lustre/gh/main/clv15/data_decisions.csv'  # canonical (Gregg move 2026-08-10; -> exopipe_ops/ at refactor)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-BATCH_FLOW_SCRIPT = os.path.join(SCRIPT_DIR, 'batch_flow_align.py')
+# GC-PRE-2 (Gregg 2026-08-12): flow batch script lives in exopipe/common/
+# (cross-phase core infrastructure); shelled into py310_orca, never imported.
+BATCH_FLOW_SCRIPT = os.path.join(os.path.dirname(SCRIPT_DIR), 'common',
+                                 'batch_flow_align.py')
 
 OVRO_LOC = EarthLocation(lat=37.2397*u.deg, lon=-118.2816*u.deg, height=1222*u.m)
 CUTOVER_DATE = '2024-12-27'

@@ -142,7 +142,10 @@ def leakage_screen_constrained(master_i, v_therm):
         w[max(0, iy - 6):iy + 6, max(0, ix - 6):ix + 6] = -np.inf
     return n >= LEAKSCREEN_MIN_SRC, n
 FLOW_CONDA_ENV = 'py310_orca'
-BATCH_FLOW_SCRIPT = os.path.join(SCRIPT_DIR, 'batch_flow_align.py')
+# GC-PRE-2 (Gregg 2026-08-12): flow batch script lives in exopipe/common/
+# (cross-phase core infrastructure); shelled into py310_orca, never imported.
+BATCH_FLOW_SCRIPT = os.path.join(os.path.dirname(SCRIPT_DIR), 'common',
+                                 'batch_flow_align.py')
 
 # Deep variants to align + archive per epoch. The (taper, robust,
 # pbcorr) tuples below cover the wideband deep matrix Phase 2 produces.
