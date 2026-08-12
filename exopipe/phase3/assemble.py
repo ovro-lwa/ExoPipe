@@ -92,10 +92,13 @@ try:
 except (ImportError, AttributeError) as _e:  # circular-import guard only
     if 'partially initialized' not in str(_e):
         raise
-# EXCLUDED (import-time side effect): phase3_i_v5_build executes its full
-# v5 catalog build at import (no __main__ guard) — writes into Run_I_DEEP.
-# Import exopipe.phase3.phase3_i_v5_build explicitly to run it.
-# from exopipe.phase3.phase3_i_v5_build import *  # noqa
+# phase3_i_v5_build __main__-guarded 2026-08-12 (post-incident guard sweep);
+# import is now side-effect-free. Run it as a script for the v5 build.
+try:
+    from exopipe.phase3.phase3_i_v5_build import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise
 try:
     from exopipe.phase3.phase3_sb_assemble import *  # noqa
 except (ImportError, AttributeError) as _e:  # circular-import guard only
@@ -106,10 +109,16 @@ try:
 except (ImportError, AttributeError) as _e:  # circular-import guard only
     if 'partially initialized' not in str(_e):
         raise
-# EXCLUDED (import-time side effect): phase3_v_persource executes the one-shot
-# per-source migration at import (no __main__ guard) — rewrites Run_V_DEEP
-# catalogs and candidates/*/detections.csv. Import it explicitly to run it.
-# from exopipe.phase3.phase3_v_persource import *  # noqa
-# EXCLUDED (import-time side effect): phase3_xmatch executes its cross-match
-# at import (no __main__ guard) — writes Run_PROD/xmatch/*.csv.
-# from exopipe.phase3.phase3_xmatch import *  # noqa
+# phase3_v_persource + phase3_xmatch __main__-guarded 2026-08-12
+# (post-incident guard sweep); imports are now side-effect-free. Run them as
+# scripts for the one-shot migration / cross-match passes.
+try:
+    from exopipe.phase3.phase3_v_persource import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise
+try:
+    from exopipe.phase3.phase3_xmatch import *  # noqa
+except (ImportError, AttributeError) as _e:  # circular-import guard only
+    if 'partially initialized' not in str(_e):
+        raise

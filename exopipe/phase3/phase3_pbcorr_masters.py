@@ -23,8 +23,8 @@ import os, re, glob
 import numpy as np
 from astropy.io import fits
 from exopipe.phase3 import pb_apply as PB
+sys.argv = _ARGV              # restore after import-protection clobber
 
-MODE = _ARGV[1] if len(_ARGV) > 1 else 'all'
 WB_ROOT = '/fast/gh/main/phase3/coadd'
 SB_ROOT = '/data07/gh/phase3/coadd_sb'
 VARIANTS = ['I_deep_Taper_R0', 'I_deep_Taper_R075', 'I_deep_NoTaper_R0',
@@ -72,22 +72,28 @@ def do_cell(root, cell):
             errs.append(f'{cell} {var}: {e}')
     return n_ok, n_skip, errs
 
-tot_ok = tot_skip = 0
-all_errs = []
-cells = []
-if MODE in ('wideband', 'all'):
-    cells += [(WB_ROOT, c) for c in sorted(os.listdir(WB_ROOT))
-              if re.match(r'^\d\dh_(Red|Green|Blue|Full)$', c)]
-if MODE in ('subband', 'all'):
-    cells += [(SB_ROOT, c) for c in sorted(os.listdir(SB_ROOT))
-              if re.match(r'^\d\dh_\d+MHz$', c)]
-print(f'{len(cells)} cells ({MODE})', flush=True)
-for root, cell in cells:
-    ok, sk, errs = do_cell(root, cell)
-    tot_ok += ok; tot_skip += sk; all_errs += errs
-    print(f'  {cell}: {ok} pbcorr' + (f' ({sk} corrupt-skipped)' if sk else ''),
-          flush=True)
-for e in all_errs:
-    print('  !!', e, flush=True)
-print(f'PBCORR-MASTERS-DONE ok={tot_ok} corrupt_skipped={tot_skip} '
-      f'errors={len(all_errs) - tot_skip}', flush=True)
+def main():
+    MODE = _ARGV[1] if len(_ARGV) > 1 else 'all'
+    tot_ok = tot_skip = 0
+    all_errs = []
+    cells = []
+    if MODE in ('wideband', 'all'):
+        cells += [(WB_ROOT, c) for c in sorted(os.listdir(WB_ROOT))
+                  if re.match(r'^\d\dh_(Red|Green|Blue|Full)$', c)]
+    if MODE in ('subband', 'all'):
+        cells += [(SB_ROOT, c) for c in sorted(os.listdir(SB_ROOT))
+                  if re.match(r'^\d\dh_\d+MHz$', c)]
+    print(f'{len(cells)} cells ({MODE})', flush=True)
+    for root, cell in cells:
+        ok, sk, errs = do_cell(root, cell)
+        tot_ok += ok; tot_skip += sk; all_errs += errs
+        print(f'  {cell}: {ok} pbcorr' + (f' ({sk} corrupt-skipped)' if sk else ''),
+              flush=True)
+    for e in all_errs:
+        print('  !!', e, flush=True)
+    print(f'PBCORR-MASTERS-DONE ok={tot_ok} corrupt_skipped={tot_skip} '
+          f'errors={len(all_errs) - tot_skip}', flush=True)
+
+
+if __name__ == '__main__':
+    main()

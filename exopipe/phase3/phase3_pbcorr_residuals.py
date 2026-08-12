@@ -25,6 +25,7 @@ _argv = list(sys.argv); sys.argv = ['pbres']
 import numpy as np
 from astropy.io import fits
 from exopipe.phase3 import pb_apply as PB
+sys.argv = _argv              # restore after import-protection clobber
 
 D7 = '/data07/gh/phase3'
 LU = '/lustre/pipeline/exopipe/phase3'

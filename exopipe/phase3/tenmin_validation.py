@@ -19,11 +19,12 @@ Stage 1 (this run): rms A-vs-B + striation. Stage 2 (--scurve): C50 + FP.
 """
 import os, sys, glob
 import numpy as np
-sys.argv = ['tenmin_val']
+_ARGV = list(sys.argv); sys.argv = ['tenmin_val']
 from astropy.io import fits
 from astropy.wcs import WCS
 from exopipe.phase3 import coadd_full_pipeline as C
 from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
+sys.argv = _ARGV              # restore after import-protection clobber
 
 LST = '10h'
 DATES = {'good': '2024-12-29', 'bad': '2024-12-19'}
