@@ -230,8 +230,14 @@ def run_antenna_flagging(ms_path, context, script_dir, logger):
             obs_mjd = astropy.time.Time(time_range[0], format='mjd', scale='utc').mjd
     except Exception: return False
 
-    helper_script = os.path.join(script_dir, "get_bad_antennas_mnc.py")
-    if not os.path.exists(helper_script): return False
+    # Repo tools/ location (R-GC9, Gregg 2026-08-13): missing callee = hard
+    # refusal, never a silent skip.
+    _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    helper_script = os.path.join(_repo_root, "tools", "get_bad_antennas_mnc.py")
+    if not os.path.exists(helper_script):
+        raise RuntimeError(
+            f"get_bad_antennas_mnc.py not found at {helper_script} — "
+            "MNC bad-antenna query REFUSED (R-GC9)")
 
     cmd = ['conda', 'run', '-n', 'development', 'python', helper_script, str(obs_mjd)]
     try:

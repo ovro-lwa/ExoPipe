@@ -743,11 +743,15 @@ def run_all_transient_searches(work_dir, subband_list, catalog_path, logger,
     logger.info("TRANSIENT SEARCH (all subbands + wideband)")
     logger.info("=" * 60)
 
-    # Verify search scripts are available
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    v_script = os.path.join(script_dir, 'search_v_transients_v2.py')
+    # Verify search scripts are available. sv2 lives in phase3/ after the
+    # absorb (R-GC9, Gregg 2026-08-13): missing callee = hard refusal, never
+    # a silent no-op of the Phase-2 per-epoch V search.
+    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    v_script = os.path.join(pkg_dir, 'phase3', 'search_v_transients_v2.py')
     if not os.path.exists(v_script):
-        logger.warning(f"search_v_transients_v2.py not found in {script_dir}")
+        raise RuntimeError(
+            f"search_v_transients_v2.py not found at {v_script} — "
+            "Phase-2 V transient search REFUSED (R-GC9)")
     try:
         from exopipe.phase3.search_i_transients import run_search as _test_import
         del _test_import
@@ -1039,11 +1043,14 @@ def _transient_worker(task):
 def _run_v_search(v_image, i_image, catalog_path=None, out_dir=None,
                   sigma=5.0):
     """Run Stokes V transient search via subprocess."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    script = os.path.join(script_dir, 'search_v_transients_v2.py')
+    # sv2 lives in phase3/ after the absorb (R-GC9, Gregg 2026-08-13):
+    # missing callee = hard refusal, never a silent 0-detection return.
+    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = os.path.join(pkg_dir, 'phase3', 'search_v_transients_v2.py')
     if not os.path.exists(script):
-        print(f"  WARNING: {script} not found")
-        return 0
+        raise RuntimeError(
+            f"search_v_transients_v2.py not found at {script} — "
+            "Phase-2 V transient search REFUSED (R-GC9)")
 
     if out_dir is None:
         out_dir = os.path.join(
