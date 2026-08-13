@@ -208,6 +208,190 @@ def epoch_time_header(tmpl_hdr, src_path):
     return out
 
 
+# ═══════════════════════════════════════════════════════════════════
+# R1 AMENDMENT #1 — per-epoch beam+RESTFRQ stamping + validate-on-write
+# refusal for stage-B per-epoch residuals.
+# Ruling: fix_ledger R1-ratified scope (a) + R1-amendment1-GO (Gregg
+# 2026-08-13); R-A123 (A3's fix = this write-time refusal); CLAUDE.md rule 7
+# (epoch products carry their OWN headers — a residual matching its master's
+# beam is a write failure) + rule 3 (gates refuse, they do not warn).
+# Defect being closed: build_template_header propagates the co-add TEMPLATE
+# epoch's BMAJ/BMIN/BPA/RESTFRQ onto every stage-B per-epoch residual;
+# epoch_time_header fixes the time block only (demonstrated in
+# FAIL_11h_Green_investigation.md §2–§3, FAIL_13h_Green_investigation.md §F).
+# Correct values: the epoch's OWN Phase-2 source image header, per Stokes —
+# I residuals from the epoch's I deep Taper_R075 alignment image (the same
+# per-image source the time block comes from); V residuals from the epoch's
+# V deep Taper_R0 image via find_stokes_v_deep_image (restamp finding F2 /
+# R-RAT1: V products carry V-epoch beams, never I-derived ones).
+# ═══════════════════════════════════════════════════════════════════
+
+_EPOCH_BEAM_KEYS = ('BMAJ', 'BMIN', 'BPA', 'RESTFRQ')
+_R1_RULING = ('fix_ledger R1-ratified / R1-amendment1-GO, Gregg 2026-08-13; '
+              'CLAUDE.md rule 7')
+
+
+class EpochHeaderRefusal(RuntimeError):
+    """Validate-on-write refusal for a stage-B per-epoch residual header.
+
+    Raised BEFORE any bytes go to disk; no product is written and no
+    pre-existing file is deleted by a refusal (gates refuse, they do not
+    warn — CLAUDE.md rule 3)."""
+
+
+def _r1_same(a, b, rtol=1e-9):
+    """Float-key equality for the R1 gate (tolerates only header write/read
+    round-trip jitter, e.g. RESTFRQ through WCS.to_header; real template-vs-
+    epoch beam differences are orders of magnitude larger)."""
+    try:
+        a = float(a)
+        b = float(b)
+    except (TypeError, ValueError):
+        return False
+    if not (np.isfinite(a) and np.isfinite(b)):
+        return False
+    return abs(a - b) <= rtol * max(abs(a), abs(b), 1e-300)
+
+
+def _epoch_beam_source_values(src_path):
+    """Read BMAJ/BMIN/BPA/RESTFRQ from the epoch's OWN Phase-2 source header.
+
+    Returns (values, problems). Any missing/corrupt source or key is a
+    PROBLEM for the caller to refuse on — never defaulted, never fallen back
+    to template values."""
+    if not src_path:
+        return {}, ['no Phase-2 source path resolved']
+    if not os.path.exists(src_path):
+        return {}, [f'source does not exist: {src_path}']
+    try:
+        src = fits.getheader(src_path)
+    except Exception as e:
+        return {}, [f'unreadable source header ({e.__class__.__name__}: {e})']
+    vals, problems = {}, []
+    for k in _EPOCH_BEAM_KEYS:
+        if k not in src:
+            problems.append(f'{k} missing from source header')
+            continue
+        try:
+            v = float(src[k])
+        except (TypeError, ValueError):
+            problems.append(f'{k} non-numeric in source header ({src[k]!r})')
+            continue
+        if not np.isfinite(v):
+            problems.append(f'{k} non-finite in source header ({v!r})')
+            continue
+        vals[k] = v
+    return vals, problems
+
+
+def _r1_fmt_keys(getter):
+    """One-line BMAJ/BMIN/BPA/RESTFRQ rendering (full float repr)."""
+    parts = []
+    for k in _EPOCH_BEAM_KEYS:
+        v = getter.get(k)
+        try:
+            parts.append(f'{k}={float(v)!r}')
+        except (TypeError, ValueError):
+            parts.append(f'{k}={v!r}')
+    return ' '.join(parts)
+
+
+def epoch_beam_header(hdr, src_path, stokes):
+    """Copy of `hdr` with BMAJ/BMIN/BPA/RESTFRQ stamped from the epoch's OWN
+    Phase-2 source image header (`src_path`), with provenance (BEAMSRC +
+    HISTORY). REFUSES (EpochHeaderRefusal) when the source or any of the four
+    keys cannot be resolved — fallback to template/master values is forbidden
+    (R1 amendment #1)."""
+    vals, problems = _epoch_beam_source_values(src_path)
+    if problems:
+        raise EpochHeaderRefusal(
+            f"REFUSED [R1-amendment1] stage-B epoch residual header ({stokes}):\n"
+            f"  cannot resolve the epoch's OWN BMAJ/BMIN/BPA/RESTFRQ from its "
+            f"Phase-2 source\n"
+            f"  source: {src_path or 'NONE (no source resolved)'}\n"
+            f"  problems: {'; '.join(problems)}\n"
+            f"  Fallback to template/master values is forbidden ({_R1_RULING}; "
+            f"gates refuse, they do not warn). No product written.")
+    out = hdr.copy()
+    for k in _EPOCH_BEAM_KEYS:
+        out[k] = vals[k]
+    out['BEAMSRC'] = ('epoch',
+                      'beam+RESTFRQ from epoch OWN P2 source (R1 amendment #1)')
+    out.add_history(f'Beam+RESTFRQ ({stokes}) from per-epoch source '
+                    f'{os.path.basename(str(src_path))} [R1-amendment1]')
+    return out
+
+
+def validate_epoch_residual_header(out_path, out_hdr, src_path, tmpl_hdr):
+    """Write gate for stage-B per-epoch residual headers. REFUSES (raises
+    EpochHeaderRefusal, nothing written) when:
+      (a) the outgoing beam matches the co-add TEMPLATE/master beam while the
+          epoch's own Phase-2 header says otherwise (the R1 signature), or the
+          outgoing keys otherwise deviate from the epoch's own header;
+      (b) the four keys cannot be resolved from the epoch's own source
+          (missing/corrupt source = refusal, not fallback).
+    Passing when own == template (single-night template == epoch) is correct
+    by construction."""
+    vals, problems = _epoch_beam_source_values(src_path)
+    if problems:
+        raise EpochHeaderRefusal(
+            f"REFUSED [R1-amendment1] stage-B epoch residual write: {out_path}\n"
+            f"  cannot resolve the epoch's OWN BMAJ/BMIN/BPA/RESTFRQ from its "
+            f"Phase-2 source\n"
+            f"  source: {src_path or 'NONE (no source resolved)'}\n"
+            f"  problems: {'; '.join(problems)}\n"
+            f"  Fallback to template/master values is forbidden ({_R1_RULING}; "
+            f"gates refuse, they do not warn). No product written.")
+    mismatched = [k for k in _EPOCH_BEAM_KEYS
+                  if not _r1_same(out_hdr.get(k), vals[k])]
+    if not mismatched:
+        return
+    src_base = os.path.basename(str(src_path))
+    beam3 = ('BMAJ', 'BMIN', 'BPA')
+    out_is_template = all(_r1_same(out_hdr.get(k), tmpl_hdr.get(k))
+                          for k in beam3)
+    own_differs_template = any(not _r1_same(vals[k], tmpl_hdr.get(k))
+                               for k in beam3)
+    if out_is_template and own_differs_template:
+        raise EpochHeaderRefusal(
+            f"REFUSED [R1-amendment1] stage-B epoch residual write: {out_path}\n"
+            f"  outgoing header carries the co-add TEMPLATE/master beam while "
+            f"the epoch's own Phase-2 header says otherwise — the R1 "
+            f"write-failure signature ({_R1_RULING}).\n"
+            f"  template : {_r1_fmt_keys(tmpl_hdr)}\n"
+            f"  epoch own ({src_base}): {_r1_fmt_keys(vals)}\n"
+            f"  outgoing : {_r1_fmt_keys(out_hdr)}\n"
+            f"  No product written.")
+    raise EpochHeaderRefusal(
+        f"REFUSED [R1-amendment1] stage-B epoch residual write: {out_path}\n"
+        f"  outgoing {'/'.join(mismatched)} do not match the epoch's OWN "
+        f"Phase-2 header ({_R1_RULING}: epoch products carry their OWN "
+        f"headers).\n"
+        f"  epoch own ({src_base}): {_r1_fmt_keys(vals)}\n"
+        f"  outgoing : {_r1_fmt_keys(out_hdr)}\n"
+        f"  No product written.")
+
+
+def save_epoch_residual(path, data, epoch_hdr, src_path, tmpl_hdr, stokes):
+    """THE gated write path for stage-B per-epoch residuals (R1 amendment #1):
+    stamp the epoch's OWN beam+RESTFRQ (per Stokes), validate-on-write, then
+    write. On refusal nothing is written and any pre-existing file at `path`
+    is untouched; if the physical write itself dies, the partial product is
+    removed so it cannot masquerade as complete."""
+    out_hdr = epoch_beam_header(epoch_hdr, src_path, stokes)
+    validate_epoch_residual_header(path, out_hdr, src_path, tmpl_hdr)
+    try:
+        save_image(path, data, out_hdr)
+    except BaseException:
+        try:
+            if os.path.exists(path):
+                os.remove(path)          # partial product must not survive
+        except OSError:
+            pass
+        raise
+    return path
+
+
 def _phase2_time_source(lst, date, scope):
     """Deep Phase-2 image whose time block = this epoch (shared across scopes)."""
     base = f'/lustre/pipeline/exopipe/phase2/{lst}/{date}'
@@ -2552,6 +2736,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
         # Per-epoch time block (from this date's Phase-2 source) stamped onto every
         # residual below — keeps tmpl_hdr's WCS/grid, fixes the inherited-DATE-OBS bug.
+        # Beam+RESTFRQ are stamped per Stokes at each write via
+        # save_epoch_residual (R1 amendment #1) — never left as tmpl_hdr's.
         epoch_hdr = epoch_time_header(tmpl_hdr, align_img_path)
 
         coeffs2, n2 = scale2_meas[date]
@@ -2574,7 +2760,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         i_sub = i_corrected - final_i_data
 
         sub_i_path = f'{sub_dir}/{date}_I_sub_{fl}.fits'
-        save_image(sub_i_path, i_sub, epoch_hdr)
+        save_epoch_residual(sub_i_path, i_sub, epoch_hdr,
+                            align_img_path, tmpl_hdr, 'I')
 
         # Striation removal on I
         i_mask = coadd_mask | (~np.isfinite(i_sub)) | (i_sub == 0)
@@ -2582,7 +2769,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             i_sub, final_wcs, i_mask, ra_window_beams=20, beam_pix=beam_pix)
         i_clean = i_sub - i_stri_model
         clean_i_path = f'{sub_dir}/{date}_I_clean_{fl}.fits'
-        save_image(clean_i_path, i_clean, epoch_hdr)
+        save_epoch_residual(clean_i_path, i_clean, epoch_hdr,
+                            align_img_path, tmpl_hdr, 'I')
 
         i_rms_before = get_uniform_rms(i_sub, i_mask)
         i_rms_after = get_uniform_rms(i_clean, i_mask)
@@ -2590,12 +2778,16 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         # V subtraction + striation removal
         v_path = f'{prep_dir}/{date}_V.fits'
         if os.path.exists(v_path) and final_v_data is not None:
+            # R1 amendment #1 / restamp finding F2: V residuals carry the V
+            # epoch image's OWN beam (Taper_R0 convention), never I-derived.
+            v_src = find_stokes_v_deep_image(sci_dir, freq_str)
             v_data, _ = load_image(v_path)
             v_corrected = v_data / safe_scale
             v_sub = v_corrected - final_v_data
 
             sub_v_path = f'{sub_dir}/{date}_V_sub_{fl}.fits'
-            save_image(sub_v_path, v_sub, epoch_hdr)
+            save_epoch_residual(sub_v_path, v_sub, epoch_hdr,
+                                v_src, tmpl_hdr, 'V')
 
             v_mask = coadd_mask | (~np.isfinite(v_sub)) | (v_sub == 0)
             v_stri_model, _ = build_striation_model(
@@ -2603,7 +2795,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             v_clean = v_sub - v_stri_model
 
             clean_v_path = f'{sub_dir}/{date}_V_clean_{fl}.fits'
-            save_image(clean_v_path, v_clean, epoch_hdr)
+            save_epoch_residual(clean_v_path, v_clean, epoch_hdr,
+                                v_src, tmpl_hdr, 'V')
 
             v_rms_before = get_uniform_rms(v_sub, v_mask)
             v_rms_after = get_uniform_rms(v_clean, v_mask)
