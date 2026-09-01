@@ -52,12 +52,24 @@ from exopipe.phase3.coadd_full_pipeline import OVRO_LOC, load_exclusions, is_exc
 # NOT A GATE: corrupt-epoch count is RECORDED per row (n_v_epoch), never dropped (Gregg
 #   2026-06-30 reverted the old drop). sstack is QUOTED (info-only), not gated.
 SIGMA_MSTRUCT = 5.0
-STRIATION_WINDOW_BEAMS = 20.0
+STRIATION_WINDOW_BEAMS = 8.0   # R-STRIATION-WINDOW-APPROVED-8BEAMS (2026-08-25)
 JUPITER_VETO_DEG = {'Red': 5.0, 'Green': 0.5, 'Blue': 0.5, 'Full': 5.0}
-# A-team veto stage (Gregg ADOPTED 2026-07-15, pilot-measured: handoff §5.15g):
-# 2.0 deg all six sources, applied POST-mstruct; replaces the pre-detection
-# blank (which stays default-ON until a tier boundary — see P3_ATEAM_MASK_OFF).
+# A-team veto stage: historical 2.0 deg / 5 sources kept for reference;
+# the RATIFIED table (PHASE3_ARCHITECTURE.md §10.1 Card 6, 2026-08-11) is ONE
+# six-source list (adds Her A — absent by omission, not ruling), V radius
+# 3.0 deg / I radius 5.0 deg, strictly DOWNSTREAM of mstruct (G-03: no
+# pre-detection blank). The V redo path (G-09, Gregg 2026-08-21) uses the
+# ratified table below.
 ATEAM_VETO_DEG = 2.0
+ATEAM_VETO_DEG_V = 3.0
+_ATEAM6_COORDS = _SC(
+    ['23h23m24s', '19h59m28s', '05h34m31s', '12h30m49s', '09h18m05.7s',
+     '16h51m08.15s'],
+    ['+58d48m54s', '+40d44m02s', '+22d00m52s', '+12d23m28s', '-12d05m44s',
+     '+04d59m33.3s'])   # Cas A, Cyg A, Tau A, Vir A, Hya A, Her A
+# Moon ephemeris removal veto, 15 arcmin, per-epoch evaluation MANDATORY
+# (Card 7c RATIFIED 2026-08-11; the Moon moves ~0.5 deg/hr). All bands, deep.
+MOON_VETO_DEG = 0.25
 MAX_V_PER_EPOCH = 10        # threshold for the n_v_epoch HIGH-COUNT flag (NOT a drop)
 
 # ── V-PARITY GATE LEDGER (Gregg 2026-07-11: "record everything for posterity") ──
@@ -70,7 +82,7 @@ MAX_V_PER_EPOCH = 10        # threshold for the n_v_epoch HIGH-COUNT flag (NOT a
 GLED_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y',
              'snr', 'peak_jy', 'morph_pass', 'veto_reason',
              'mstruct', 'mstruct_raw', 'pass_mstruct', 'sstack',
-             'jupiter_deg', 'jupiter_veto', 'final', 'n_v_epoch']
+             'jupiter_deg', 'jupiter_veto', 'final', 'n_v_epoch', 'moon_deg']
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph',
              'n_after_mstruct', 'n_after_jupiter', 'n_final']
 # P3_GATE_LEDGER_ONLY=1: write ONLY the gate-ledger CSVs, skip master_catalog
@@ -114,37 +126,78 @@ def _gled_row(lst, scope, stokes, d, c, morph_pass, reason='', pass_ms='',
             int(morph_pass), reason,
             c.get('mstruct', ''), c.get('mstruct_raw', ''), pass_ms,
             c.get('sstack', ''), c.get('jupiter_deg', ''), jup_veto,
-            int(final), c.get('n_v_epoch', '')]
+            int(final), c.get('n_v_epoch', ''), c.get('moon_deg', '')]
 
 
-def _master_structure_map(vm, bpix, win_beams=4.0):
+def _master_structure_map(vm, bpix, win_beams=4.0, valid=None, report=None):
     """Local rms of the V master normalized to clean-sky (>=1). Inlined from
-    combined_transient_list (which imports phase3_deep, so can't import back)."""
+    combined_transient_list (which imports phase3_deep, so can't import back).
+
+    valid : imaged-pixel mask. MUST BE SUPPLIED whenever `vm` is a DIFFERENCED array
+        (problem-ledger P12, Gregg-approved 2026-08-18). The running-median striation
+        model reproduces its input EXACTLY on ~0.8% of pixels, so inferring validity
+        from `vm != 0` on a difference reads those pixels as unimaged and hands them
+        the floor value 1.0 — which sets the gate to its weakest possible setting at
+        precisely the positions the gate exists to protect. The default reproduces the
+        historical behaviour and is correct only when `vm` is a master.
+    report : optional dict; receives 'n_invalid' so callers can verify that the map
+        agrees with the master about which pixels are imaged.
+    """
     if not np.isfinite(bpix) or bpix <= 0:   # empirical-beam fit can return NaN (13h/14h Blue/Full)
         bpix = 7.0
-    valid = np.isfinite(vm) & (vm != 0); w = max(int(win_beams * bpix), 5)
+    if valid is None:
+        valid = np.isfinite(vm) & (vm != 0)
+    if report is not None:
+        report['n_invalid'] = int((~valid).sum())
+    w = max(int(win_beams * bpix), 5)
     vf = np.where(valid, vm, 0.0); m1 = uniform_filter(vf, w); m2 = uniform_filter(vf * vf, w)
     locrms = np.sqrt(np.maximum(m2 - m1 * m1, 0)); n = locrms.shape[0]; q = n // 4
     cen = locrms[q:3 * q, q:3 * q]; sky = np.median(cen[cen > 0]) if np.any(cen > 0) else 1.0
     m = locrms / max(sky, 1e-9); m[~valid] = 1.0; return np.maximum(m, 1.0)
 
 
+def _mstruct_validity_guard(report, vmask, mp, tag):
+    """REFUSE (CLAUDE.md §3) if a structure map disagrees with its master about which
+    pixels are imaged. Trips the moment the `valid=` argument is dropped again, which
+    is how problem-ledger P12 went unnoticed: 0.6-1.0% of imaged pixels were silently
+    reclassified as blank sky and handed the gate floor."""
+    n_master = int((~vmask).sum())
+    n_map = int(report.get('n_invalid', -1))
+    if n_map != n_master:
+        raise RuntimeError(
+            f'[mstruct-{tag}] VALIDITY GUARD REFUSED for {mp}: the structure map treats '
+            f'{n_map:,} pixels as unimaged but the master has {n_master:,}. Validity must '
+            f'come from the master, never be inferred from a differenced array (P12).')
+
+
 def _mstruct_maps(master_V, mVp, beam):
     """(destriped, raw) mstruct from the deep V master — Gregg's validated gate.
     Falls back to raw if destriping fails (raw alone already separates sidelobes from
-    real transients in validation)."""
+    real transients in validation).
+
+    Validity comes from the MASTER for both maps (problem-ledger P12)."""
     if not np.isfinite(beam) or beam <= 0:
         beam = 7.0
-    raw = _master_structure_map(master_V, beam)
+    vmask = np.isfinite(master_V) & (master_V != 0)
+    raw = _master_structure_map(master_V, beam, valid=vmask)
     try:
         vh = fits.getheader(mVp); mwcs = WCS(vh).celestial
         _hm, _am, iwm, _ot, _ac, _el = sv2.make_masks(vh, master_V.shape, fits_path=mVp)
         sm, _ = build_striation_model(master_V, mwcs, iwm,
                                       ra_window_beams=STRIATION_WINDOW_BEAMS, beam_pix=beam)
-        return _master_structure_map(master_V - sm, beam), raw
     except Exception as e:
         print(f'    [mstruct] destripe failed ({e}); using raw mstruct')
         return raw, raw
+    dif = master_V - sm
+    n_leak = int((vmask & (dif == 0)).sum())
+    if n_leak:
+        print(f'    [mstruct] P12: {n_leak:,} imaged pixels '
+              f'({100.0 * n_leak / max(int(vmask.sum()), 1):.2f}%) are reproduced exactly '
+              f'by the striation model; validity taken from the master')
+    rep = {}
+    destriped = _master_structure_map(dif, beam, valid=vmask, report=rep)
+    _mstruct_validity_guard(rep, vmask, mVp, 'V')
+    return destriped, raw
 
 
 def _qa_outlier_dates(lst, scope):
@@ -161,6 +214,22 @@ def _jupiter_skycoord(date):
     barycentric-parallax inflation)."""
     jb = get_body('jupiter', Time(date + ' 00:00:00', scale='utc'), OVRO_LOC)
     return SkyCoord(jb.ra, jb.dec)
+
+
+def _body_skycoord(body, obs_time_str, date):
+    """Apparent ra/dec of a solar-system body at the EPOCH's own observation
+    time (Card 7a RATIFIED 2026-08-11: per-epoch obs_time for ALL ephemeris
+    evaluations; the fixed-00:00 convention is retired on this path). Falls
+    back to 00:00 UTC of the date only when the epoch header carries no
+    DATE-OBS. Distance stripped -> avoids the separation(get_body)
+    barycentric-parallax inflation."""
+    try:
+        t = Time(obs_time_str, scale='utc') if obs_time_str else \
+            Time(date + ' 00:00:00', scale='utc')
+    except Exception:
+        t = Time(date + ' 00:00:00', scale='utc')
+    b = get_body(body, t, OVRO_LOC)
+    return SkyCoord(b.ra, b.dec)
 
 # GC-PRE-3 (Gregg 2026-08-12): flow-align script is the repo's own copy
 # (exopipe/phase2/align_images.py, byte-identical to the frozen clv15
@@ -227,11 +296,27 @@ def _batch_flows(cell_work, mup, items):
                # 0.5 (not 0.9) so 2 cells can share a GPU under batch parallelism;
                # the ×2 Brox flow fits in ~half a 16 GB A4000.
                'XLA_PYTHON_CLIENT_MEM_FRACTION': os.environ.get('DEEP_XLA_MEMFRAC', '0.5')}
-        r = subprocess.run(['conda', 'run', '-n', 'py310_orca', 'python', ALIGN,
+        # ABSOLUTE env python, never ambient `conda run` (2026-08-31: in
+        # non-interactive shells `conda` resolved to /opt/miniconda3, whose
+        # STALE py310_orca lacks image_plane_correction — every t2b fleet
+        # cell died at this call while interactive tests passed; two condas,
+        # two same-named envs). Override via P3_FLOW_PYTHON if the install
+        # moves.
+        flow_py = os.environ.get(
+            'P3_FLOW_PYTHON', '/opt/devel/pipeline/envs/py310_orca/bin/python')
+        r = subprocess.run([flow_py, ALIGN,
                             '--pairs', pp, '--no_qa', '--save_flow'],
                            capture_output=True, text=True, env=env)
         if r.returncode not in (0, 2):
-            print(f'    flow batch rc={r.returncode}: {r.stderr[-400:]}', flush=True)
+            # REFUSAL (2026-08-22, after 17 wideband + 9 subband cell-bands
+            # were marked done with ZERO searched epochs): a crashed flow
+            # batch (GPU OOM etc.) must FAIL the cell, never degrade to
+            # 'only 0 flows — skip' with exit 0. Gates refuse, they do not
+            # silently no-op (CLAUDE.md §3).
+            print(f'    flow batch rc={r.returncode}: {r.stderr[-400:]}\n'
+                  f'    flow batch stdout tail: {r.stdout[-600:]}', flush=True)
+            raise RuntimeError(f'flow batch failed rc={r.returncode} '
+                               f'(see log above); cell must be rerun')
     flows = {}
     for date, ep_up in items:
         fb = os.path.splitext(os.path.basename(ep_up))[0]
@@ -246,8 +331,11 @@ def _residual(epoch, master, flow, hdr, cd):
     up = fft_decimate2(apply_flow_field(fft_upsample2(epoch), flow))
     invalid = (up == 0) | (master == 0) | ~np.isfinite(up)
     w = WCS(hdr).celestial
+    # window = 8 x beam (R-STRIATION-WINDOW-APPROVED-8BEAMS 2026-08-25;
+    # supersedes STRIATION_WINDOW_DEG=4.375). BMAJ from the master header.
+    _win_deg = 8.0 * float(hdr.get('BMAJ', STRIATION_WINDOW_DEG / 8.0))
     smodel, _ = build_striation_model(np.nan_to_num(up - master), w, invalid,
-                                      ra_window_beams=STRIATION_WINDOW_DEG / cd,
+                                      ra_window_beams=_win_deg / cd,
                                       beam_pix=1.0)
     return np.where(invalid, np.nan, (up - master) - smodel)
 
@@ -294,14 +382,48 @@ def _sigma_stack(resids, cell_work, hdr0, tag):
     return ss
 
 
-def run_deep_cell(lst, scope, label='PROD', included_dates=None):
+def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     t0 = time.time()
+    if stokes == 'V':
+        # G-03 (ratified 2026-07-14/15, deployed here per G-09 redo 2026-08-21):
+        # A-team is a DOWNSTREAM veto stage, never a pre-detection blank. The
+        # V redo path searches the full sky and vetoes at the ratified radii
+        # below. (Left ON for 'IV' runs: the I side has no downstream A-team
+        # veto stage yet, so removing its pre-blank would leave I unprotected.)
+        os.environ['P3_ATEAM_MASK_OFF'] = '1'
     base = f'{COADD_ROOT}/{lst}_{scope}'
-    _irob = 'R0' if scope in ('Red', 'Green', 'Blue', 'Full') else 'R075'  # subbands co-add I at Robust+0.75
+    # BUG FIX (Gregg order 2026-08-29): wideband used the Taper R0 I master
+    # here while subtracted/*_I_sub_* is built on the Taper R-0.75 chain
+    # (coadd_full_pipeline.py:2681) — the epoch reconstruction I_sub+master
+    # was therefore a variant hybrid, planting master-gradient artifacts at
+    # source positions and mis-calibrating beam-based tests (it also fed the
+    # V search's co-located-I context). R-VARIANT-DOC: I = Taper_Robust-0.75.
+    _irob = 'R075'
     mI = f'{base}/coadd_final/I_deep_Taper_{_irob}_{scope}.fits'
     if not os.path.exists(mI):
         print(f'  {lst} {scope}: no deep I master ({_irob}) — skip'); return 0
     master_I = _load(mI); hdr0 = fits.getheader(mI); cd = abs(hdr0['CDELT1'])
+    # ── MASTER-GENERATION GATE (2026-09-01) ────────────────────────────
+    # REFUSES, does not warn. The master-creation policy of 2026-08-25
+    # (plain inverse-variance mean, no per-pixel clipping along the epoch
+    # axis; LOO masters for N_epochs<=20) was ratified and then NOT applied
+    # to the subband masters. Because consumers hardcoded a superseded
+    # co-add root, a 255-cell subband V fleet ran for hours against
+    # sigma-clipped masters, and 70% of the delivered wideband Stokes I
+    # list was built on a superseded or pre-policy basis. The clipped
+    # masters carry high spatial structure (Gregg, at the 24 Boo position),
+    # so searching them is not a degraded result, it is a wrong one.
+    # COADDOP exists precisely so the generations can never be confused.
+    # Set P3_ALLOW_OLD_MASTERS=1 only for a deliberate archaeological
+    # comparison, never for production.
+    _op = hdr0.get('COADDOP')
+    if _op != 'ivw-mean-v2' and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
+        raise RuntimeError(
+            f'{lst} {scope}: REFUSING to search a superseded master. '
+            f'{mI} has COADDOP={_op!r}, expected \'ivw-mean-v2\' '
+            f'(plain-mean + LOO policy, ratified 2026-08-25). Rebuild the '
+            f'cell, or point P3_COADD_ROOT at the current-generation root '
+            f'(exopipe_ops/resolve_master_root.sh resolves it).')
     em, en, _, _ = fit_empirical_beam(master_I)
     if not np.isfinite(em) or em <= 0:   # beam fit can fail (e.g. 14h Blue) -> NaN propagates into headers
         print(f'  {lst} {scope}: empirical-beam fit returned NaN; using fallback beam=7px')
@@ -309,6 +431,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None):
     beam = em
     ar_max = max(2.0, 1.5 * em / max(en, 1e-3))
     mVp = f'{base}/coadd_final/V_deep_Taper_R0_{scope}.fits'
+    if os.path.exists(mVp):
+        _opv = fits.getheader(mVp).get('COADDOP')
+        if _opv != 'ivw-mean-v2' and \
+                os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
+            raise RuntimeError(
+                f'{lst} {scope}: REFUSING to search a superseded V master. '
+                f'{mVp} has COADDOP={_opv!r}, expected \'ivw-mean-v2\'.')
     master_V = _load(mVp) if os.path.exists(mVp) else None
     ms_destr, ms_raw = (_mstruct_maps(master_V, mVp, beam)
                         if master_V is not None else (None, None))
@@ -344,22 +473,63 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None):
     if _ddrop:
         dates = [d for d in dates if d not in _ddrop]
         print(f'  {lst} {scope}: dropped {len(_ddrop)} data_decisions-excluded epoch(s): {_ddrop}')
-    # (1) drop two-stage-QA outlier epochs — the search must honor the same QA that
-    # gates the co-add (a 79sigma-rms peeling-blowup epoch otherwise floods the list)
+    # (1) TWO-TIER QUALITY POLICY (Gregg ruling 2026-08-26, supersedes the
+    # earlier QA-outlier search drop / G-02): stage-2 QA rejection omits an
+    # epoch from the CO-ADD ONLY; every non-data_decisions epoch is still
+    # searched. Egregious nights (vortex, large peel errors) are handled by
+    # data_decisions via the QA-3 withhold-for-review flow — the old inline
+    # drop (motivated by a 79sigma peeling-blowup flooding the list) is now
+    # that flow's job, not the search's.
     qa_out = _qa_outlier_dates(lst, scope)
-    _dropped = [d for d in dates if d in qa_out]
-    if _dropped:
-        dates = [d for d in dates if d not in qa_out]
-        print(f'  {lst} {scope}: dropped {len(_dropped)} QA-outlier epoch(s) from search: {_dropped}')
+    _qa_note = [d for d in dates if d in qa_out]
+    if _qa_note:
+        print(f'  {lst} {scope}: {len(_qa_note)} coadd-omitted (QA-outlier) epoch(s) '
+              f'REMAIN in search per two-tier policy: {_qa_note}')
+    # (1b) SEARCH-FRAME SANITY GATE (Gregg NAMED approval 2026-08-29, the
+    # narrow resolution of the open whole-image-discard ruling): an epoch
+    # whose flux-alignment QA rms exceeds 10x the cell's median epoch rms
+    # is numerically broken (over-cleaning class: 19 products measured at
+    # 10^5-10^16 Jy/beam, tranche-2a) and is NOT transient-searched. A
+    # refusal, logged per image; the only images the search may drop on
+    # its own are ones the QA has MEASURED as broken.
+    try:
+        import csv as _csv
+        _wrows = list(_csv.DictReader(
+            open(f'{base}/coadd_final/weights.csv')))
+        _wr = {r['date']: float(r['qa3_rms_mjy']) for r in _wrows
+               if r.get('qa3_rms_mjy') not in (None, '', 'nan')}
+        _fin = sorted(v for v in _wr.values() if np.isfinite(v) and v > 0)
+        if len(_fin) >= 5:
+            _med = _fin[len(_fin) // 2]
+            _bad = [d for d in dates
+                    if _wr.get(d, 0) > 10.0 * _med]
+            if _bad:
+                dates = [d for d in dates if d not in _bad]
+                with open(f'{base}/sanity_excluded.csv', 'a') as _sf:
+                    for d in _bad:
+                        _sf.write(f'{lst},{scope},{d},{_wr[d]:.1f},'
+                                  f'{_med:.1f}\n')
+                print(f'  {lst} {scope}: SANITY GATE — {len(_bad)} epoch(s) '
+                      f'REFUSED from search (alignment rms >10x cell median '
+                      f'{_med:.0f} mJy): {_bad}')
+    except FileNotFoundError:
+        pass
     if len(dates) < MIN_EPOCHS:
         print(f'  {lst} {scope}: only {len(dates)} flows — skip'); return 0
 
     hdr_ref = _det_header(hdr0, scope, em, cd, None)
-    resid_I = _build_residuals_mp(epoch_I, master_I, flows, hdr_ref, cd, dates, NPROC_RESID)
-    dates = [d for d in dates if d in resid_I]
-    sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
+    if 'I' in stokes:
+        resid_I = _build_residuals_mp(epoch_I, master_I, flows, hdr_ref, cd, dates, NPROC_RESID)
+        dates = [d for d in dates if d in resid_I]
+        sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
+    else:
+        resid_I, sstack_I = {}, None   # V-only redo (Gregg 2026-08-21): Stokes I is out
     resid_V = {}
-    if master_V is not None:
+    # 2026-09-01 fix: honor stokes='I' — the V side previously ran whenever
+    # a V master existed, so an I-only extraction silently re-searched V
+    # (duplicating the survey-complete V ledger into the new run's dir).
+    # 'V' and 'IV' behavior unchanged.
+    if master_V is not None and 'V' in stokes:
         epoch_V = {}
         for d in dates:
             vp = f'{base}/subtracted/{d}_V_sub_{scope}.fits'
@@ -377,35 +547,80 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None):
     gled_rows, gimg_rows = [], []
     for d in dates:
         ot = _epoch_time(base, d, scope)
-        hdr = _det_header(hdr0, scope, em, cd, ot); wcs = WCS(hdr).celestial
-        rI = np.nan_to_num(resid_I[d], nan=0.0)
-        passed = run_identification_i(rI, master_I, hdr, beam, sstack_I)
-        kept, vetoed_i = pv.apply_veto(passed, rI, master_I, hdr, em, cd, wcs, ot, ar_max=ar_max)
-        for c in kept:
-            gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1, final=1))
-        for c in vetoed_i:
-            gled_rows.append(_gled_row(lst, scope, 'I', d, c, 0,
-                                       reason=c.get('veto_reason', '')))
-        gimg_rows.append([lst, scope, 'I', d, len(passed), len(kept),
-                          '', '', len(kept)])
-        if kept and not GATE_LEDGER_ONLY:
-            pc.write_candidates(root, label, kept, rI, master_I, hdr, lst, d,
-                                scope, 'I', 'deep', em, cd, ot)
-            nwr += len(kept)
+        hdr = _det_header(hdr0, scope, em, cd, ot)
+        # 2026-09-01 fix: hdr0 is the MASTER header, whose DURATION is the
+        # month-scale coverage span. search_i_transients.get_midpoint_time
+        # computes DATE-OBS + DURATION/2, which then lands hours off in
+        # time-of-day, and the time-based I elevation mask blanks the
+        # field (00h Red: fully masked -> rms NaN -> BDSF refused ->
+        # fallback 0 peaks, silently, every epoch). Stamp the epoch's own
+        # duration. (V is immune: its deep-path mask is zenith geometry.)
+        try:
+            hdr['DURATION'] = float(fits.getheader(
+                f'{base}/subtracted/{d}_I_sub_{scope}.fits'
+            ).get('DURATION') or 3600.0)
+        except Exception:
+            hdr['DURATION'] = 3600.0
+        wcs = WCS(hdr).celestial
+        if 'I' in stokes and d in resid_I:
+            rI = np.nan_to_num(resid_I[d], nan=0.0)
+            passed = run_identification_i(rI, master_I, hdr, beam, sstack_I)
+            kept, vetoed_i = pv.apply_veto(passed, rI, master_I, hdr, em, cd, wcs, ot, ar_max=ar_max)
+            for c in kept:
+                gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1, final=1))
+            for c in vetoed_i:
+                gled_rows.append(_gled_row(lst, scope, 'I', d, c, 0,
+                                           reason=c.get('veto_reason', '')))
+            gimg_rows.append([lst, scope, 'I', d, len(passed), len(kept),
+                              '', '', len(kept)])
+            if kept and not GATE_LEDGER_ONLY:
+                pc.write_candidates(root, label, kept, rI, master_I, hdr, lst, d,
+                                    scope, 'I', 'deep', em, cd, ot)
+                nwr += len(kept)
         if d in resid_V:
             rV = np.nan_to_num(resid_V[d], nan=0.0)
+            # P13 fix (approved 2026-08-21): ARCHIVE the search's own V residual
+            # frame — the exact frame detection runs on — with THERMNOI stamped
+            # (inner-box MAD, same formula as phase2 get_inner_rms). The FP-gate
+            # verdict stage measures on this file.
+            vr_dir = (f"{os.environ.get('P3_VRESID_ROOT', run_root + '/vresid')}"
+                      f'/{lst}_{scope}')
+            os.makedirs(vr_dir, exist_ok=True)
+            vr_path = f'{vr_dir}/{d}_V_redo_resid_{scope}.fits'
+            if not os.path.exists(vr_path):
+                _h, _w = rV.shape
+                _half = min(512, _h // 4, _w // 4)
+                _inner = rV[_h//2-_half:_h//2+_half, _w//2-_half:_w//2+_half]
+                from astropy.stats import mad_std as _mads
+                _hdr_out = hdr.copy()
+                _hdr_out['THERMNOI'] = (float(round(float(_mads(_inner, ignore_nan=True)), 9)),
+                                        'inner rms of this V residual (Jy/beam)')
+                # atomic write: a crash mid-write must never leave a partial
+                # file that the exists-check above would trust on rerun
+                _tmp = vr_path + '.part'
+                fits.writeto(_tmp, rV.astype(np.float32), _hdr_out, overwrite=True)
+                os.replace(_tmp, vr_path)
             # sstack is INFO-ONLY (quoted on survivors, lines below), NOT a gate
             # (2026-06-23 ruling: mstruct is the sole V gate). Passing None here keeps
             # run_identification_v from filtering on sigma_stack.
             # WRITE FLOOR = 5sigma (Gregg 2026-06-30): retain >=5sigma in the CSV for
             # repeaters/cross-match; the mstruct gate (below) still vetoes structure.
             pV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0)
-            keptv, vetoed_v = pv.apply_veto(pV, rV, master_I, hdr, em, cd, wcs, ot, ar_max=ar_max)
+            # 'outlier QA' tag (Gregg 2026-08-26): candidates from coadd-omitted
+            # epochs carry the flag through catalogs to transient review
+            if d in qa_out:
+                for _c in pV:
+                    _c['epoch_qa'] = 'outlier QA'
+            # G-09 (Gregg 2026-08-21): deep V morphology arms = gaussfit ONLY.
+            # bright_mask (subsumed by the P12-corrected mstruct) and bilobe are
+            # removed; the v110 FP gate is the verdict stage that replaces them.
+            keptv, vetoed_v = pv.apply_veto(pV, rV, master_I, hdr, em, cd, wcs, ot,
+                                            ar_max=ar_max, arms=('gaussfit',))
             for c in vetoed_v:
                 gled_rows.append(_gled_row(lst, scope, 'V', d, c, 0,
                                            reason=c.get('veto_reason', '')))
             n_after_morph = len(keptv)
-            vetoed_ms, vetoed_jup = [], []
+            vetoed_ms, vetoed_jup, vetoed_moon = [], [], []
             # (2) mstruct gate + (3) Jupiter veto, quoting mstruct/sstack on survivors
             if keptv and ms_destr is not None:
                 # subband scopes map to their band's Jupiter radius
@@ -415,7 +630,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None):
                       '78':'Blue','82':'Blue'}.get(
                           scope.replace('MHz',''), scope)
                 jrad = JUPITER_VETO_DEG.get(_b)
-                jup = _jupiter_skycoord(d) if jrad else None
+                # Card 7a (ratified 2026-08-11): ephemeris positions at the
+                # EPOCH's own observation time, not a fixed convention.
+                jup = _body_skycoord('jupiter', ot, d) if jrad else None
+                moon = _body_skycoord('moon', ot, d)
                 gated = []
                 for c in keptv:
                     xx, yy = int(c['pix_x']), int(c['pix_y'])
@@ -436,11 +654,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None):
                         if jdeg < jrad:                           # Jupiter Red+Full veto
                             vetoed_jup.append(c)
                             continue
+                    # Moon 15-arcmin removal, all bands, per-epoch (Card 7c)
+                    mdeg = float(wcs.pixel_to_world(xx, yy).separation(moon).deg)
+                    c['moon_deg'] = round(mdeg, 2)
+                    if mdeg < MOON_VETO_DEG:
+                        vetoed_moon.append(c)
+                        continue
+                    # A-team Card 6 ratified table: six sources, V 3.0 deg
                     adeg = float(min(wcs.pixel_to_world(xx, yy)
-                                     .separation(_ATEAM_COORDS).deg))
+                                     .separation(_ATEAM6_COORDS).deg))
                     c['nearest_ateam'] = round(adeg, 2)
-                    if adeg < ATEAM_VETO_DEG:                     # A-team 2 deg (adopted 2026-07-15)
+                    if adeg < ATEAM_VETO_DEG_V:
                         c['veto_reason'] = 'ateam'
+                        # ledger row here: the vetoed_v write-out already ran
+                        # (pre-existing gap — ateam rows were silently absent)
+                        gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
+                                                   reason='ateam', pass_ms=1))
                         vetoed_v.append(c)
                         continue
                     gated.append(c)
@@ -462,6 +691,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None):
                 gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
                                            reason='jupiter', pass_ms=1,
                                            jup_veto=1))
+            for c in vetoed_moon:
+                gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
+                                           reason='moon', pass_ms=1,
+                                           jup_veto=0))
             for c in keptv:
                 gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
                                            pass_ms=1 if gate_ran else '',
@@ -487,4 +720,5 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None):
 if __name__ == '__main__':
     lst, scope = _ARGV[1], _ARGV[2]
     label = _ARGV[3] if len(_ARGV) > 3 else 'PROD'
-    run_deep_cell(lst, scope, label)
+    stokes = _ARGV[4] if len(_ARGV) > 4 else 'IV'
+    run_deep_cell(lst, scope, label, stokes=stokes)
