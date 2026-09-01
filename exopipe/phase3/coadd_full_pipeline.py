@@ -74,7 +74,12 @@ REFERENCE_DATES = {
     # third archive date 2024-12-18 has no dewarped R075 and is not used).
     '00h': '2025-08-09',
     '01h': '2024-12-21', '02h': '2024-12-21', '03h': '2024-12-21',
-    '04h': '2024-12-21', '05h': '2024-12-21', '06h': '2024-12-21',
+    # 05h: 2024-12-21 -> 2024-12-29 (Gregg 2026-08-28): 12-21 has NO 50MHz
+    # deep products (empty archive dir, found by the A-02 reference gate);
+    # 12-29 is P1/P2-complete 15/15 incl. 50MHz deep, not excluded. Absolute
+    # flux (Scaife & Heald) and astrometry (VLSSr) are corrected on the
+    # co-adds downstream, so the reference only anchors internal alignment.
+    '04h': '2024-12-21', '05h': '2024-12-29', '06h': '2024-12-21',
     '07h': '2024-12-21', '08h': '2024-12-21', '09h': '2024-12-21',
     '10h': '2024-12-21',
     # 12h: peel-reprocessed; 2024-12-29 (peel-fixed + P2-complete;
@@ -99,8 +104,12 @@ REFERENCE_DATES = {
     '21h': '2025-08-05', '22h': '2025-08-05',
     # 23h REINSTATED 2026-07-07 (Gregg): Phase-1 re-peel (Run_20260706_*) +
     # Phase-2 reprocess of 2025-08-18/22/23/26/27; old-peel 08-09/16/17 stay
-    # excluded in data_decisions. Reference = 2025-08-18 (re-peeled).
-    '23h': '2025-08-18',
+    # excluded in data_decisions. Was 2025-08-18 (re-peeled), but its
+    # exclusion rows (2026-07-05) were never lifted, so the A-02 reference
+    # gate refused every 23h build -> Gregg designated 2025-09-06 as the new
+    # reference (2026-08-29; not excluded, P1/P2-complete). The 08-18
+    # peeling-vs-overclean question is under investigation separately.
+    '23h': '2025-09-06',
 }
 
 BAND_FOR_SUBBAND = {
@@ -473,6 +482,9 @@ def freq_label(freq_str):
 # Exclusion loading
 # ═══════════════════════════════════════════════════════════════════
 
+_PERBAND_EXCL = set()   # (lst, sub, date) rows marked [PERBAND] — see load_exclusions
+
+
 def load_exclusions():
     """Load prior exclusions from data_decisions.csv. Returns set of (lst, freq_str, date)."""
     excl = set()
@@ -484,44 +496,63 @@ def load_exclusions():
             f"REFUSING to run: exclusion list not found at {DECISIONS_CSV} "
             f"(C-09 ruling 2026-08-11: never proceed with an empty exclusion set)")
     df = pd.read_csv(DECISIONS_CSV)
+    _PERBAND_EXCL.clear()
     for _, row in df.iterrows():
         if row.get('verdict') == 'exclude':
             lst = row['lst']
             sub = str(row['subband']).replace('MHz', '')
             date = row['date']
             excl.add((lst, sub, date))
+            # [PERBAND] rows (QA-3 era, Gregg 2026-08-26: per-image
+            # exclusion, spatially-localized vortex) do NOT count toward
+            # the whole-night inference — they exclude only their own band.
+            if '[PERBAND]' in str(row.get('reason', '')):
+                _PERBAND_EXCL.add((lst, sub, date))
     return excl
 
 
-# Subbands whose individual exclusion does NOT mean the whole night is bad.
-# Today this is only 18 MHz (Gregg 2026-06-29): every single-subband carve-out in
-# data_decisions is an "18 MHz is bad" case; everything else is a whole-night
-# exclusion (peeling / bad imaging / bad calibration / vortex).
+# Subbands whose individual exclusion does NOT propagate to their wideband.
+# Today this is only 18 MHz (Gregg 2026-06-29): an 18-only exclusion drops the
+# 18 MHz subband image but its Red wideband is KEPT (accepted contamination).
 SUBBAND_ONLY_EXCL = {'18'}
+
+# Wideband constituent map (mirrors phase2_config.SUBBAND_BANDS; Full = all).
+_WB_SUBS = {'Red':   {'18', '23', '27', '32', '36'},
+            'Green': {'41', '46', '50', '55', '59'},
+            'Blue':  {'64', '69', '73', '78', '82'}}
+_WB_SUBS['Full'] = _WB_SUBS['Red'] | _WB_SUBS['Green'] | _WB_SUBS['Blue']
 
 
 def is_whole_night_excluded(lst, date, exclusions):
-    """True iff (lst, date) is a WHOLE-NIGHT exclusion — excluded for something
-    beyond the 18 MHz carve-out. A night whose ONLY excluded subband is 18 MHz is
-    NOT whole-night: its wideband images are KEPT (accepted contamination, Gregg
-    2026-06-29) and only its 18 MHz subband image is dropped."""
-    subs = {s for (l, s, d) in exclusions if l == lst and d == date}
-    return bool(subs - SUBBAND_ONLY_EXCL)
+    """True iff every wideband scope of (lst, date) is excluded under the
+    per-band rule below — retained for callers that ask night-level questions.
+    (No longer the wideband exclusion primitive; see is_excluded.)"""
+    return all(is_excluded(lst, b, date, exclusions)
+               for b in ('Red', 'Green', 'Blue'))
 
 
 def is_excluded(lst, freq_str, date, exclusions):
     """Exclusion test shared by the co-add and the validation gate.
 
-    WIDEBAND (Red/Green/Blue/Full): excluded iff (lst, date) is a whole-night
-    exclusion. This NO LONGER depends on whether every constituent subband is
-    listed — the old 'all subbands excluded' rule silently leaked bad nights
-    whenever a subband had no image to list (fixed Gregg 2026-06-29).
+    WIDEBAND (Red/Green/Blue/Full): excluded iff any of ITS OWN constituent
+    subbands is excluded (18 MHz carve-out and [PERBAND] rows excepted), or an
+    explicit per-scope row exists. PER-BAND RULE (Gregg 2026-08-31): a night
+    bad only above 50 MHz keeps its Red wideband — excluded subbands drop out,
+    widebands form only from fully clean constituent sets, QA still gates.
+    Supersedes the 2026-06-29 whole-night inference (any non-18MHz exclusion
+    killed every wideband of the night); whole-night verdicts still exclude
+    everything because their rows cover all subbands.
 
     SUBBAND (e.g. '18'): excluded iff that exact (lst, subband, date) is listed.
     """
     fs = str(freq_str).replace('MHz', '')
-    if fs in ('Red', 'Green', 'Blue', 'Full'):
-        return is_whole_night_excluded(lst, date, exclusions)
+    if fs in _WB_SUBS:
+        bad = {s for (l, s, d) in exclusions
+               if l == lst and d == date and (l, s, d) not in _PERBAND_EXCL}
+        # per-scope wideband rows honored since 2026-08-26 (Gregg ruling:
+        # per-band/per-image exclusion; QA-3 flags individual scopes)
+        return (bool(_WB_SUBS[fs] & (bad - SUBBAND_ONLY_EXCL))
+                or (lst, fs, date) in exclusions)
     return (lst, fs, date) in exclusions
 
 
@@ -1032,6 +1063,39 @@ def detect_outliers_mad(dates, rms_values, sigma_thresh=None):
 # Co-addition
 # ═══════════════════════════════════════════════════════════════════
 
+def write_loo_masters(aligned, master_path, out_dir, tag):
+    """Leave-one-out per-epoch masters (R-LOO-MASTERS, Gregg 2026-08-25;
+    threshold corrected same day: REQUIRED for cells with N_epochs <= 20).
+    Exact identity with the plain-mean master: LOO_i = (S - w_i e_i) /
+    (W - w_i), computed with per-pixel validity exactly as the no-clip
+    co-add (zeros = unimaged). Each product carries LOOEXCL + NCOADD."""
+    if len(aligned) > 20 or len(aligned) < 2:
+        return 0
+    imgs = {}
+    S = None
+    Wmap = None
+    for d, p, w in aligned:
+        a, _ = load_image(p)
+        v = (a != 0).astype(np.float32)
+        imgs[d] = (a, w, v)
+        S = a * w if S is None else S + a * w
+        Wmap = v * w if Wmap is None else Wmap + v * w
+    os.makedirs(out_dir, exist_ok=True)
+    mhdr = fits.getheader(master_path)
+    n = 0
+    for d, p, w in aligned:
+        a, _w, v = imgs[d]
+        den = Wmap - v * _w
+        loo = np.where(den > 0, (S - a * _w) / np.where(den > 0, den, 1.0), 0.0)
+        hdr = mhdr.copy()
+        hdr['LOOEXCL'] = (d, 'epoch excluded from this LOO master')
+        hdr['NCOADD'] = (len(aligned) - 1, 'constituents (LOO)')
+        hdr['HISTORY'] = f'LOO master excluding {d} (R-LOO-MASTERS 2026-08-25)'
+        save_image(f'{out_dir}/{d}_{tag}', loo.astype(np.float32), hdr)
+        n += 1
+    return n
+
+
 def coadd_inverse_variance(image_paths, weights, output_path, ref_header,
                            dates=None, sigclip=True, nsig=4.0):
     """Per-pixel SIGMA-CLIPPED inverse-variance co-add (Gregg 2026-06-21).
@@ -1103,6 +1167,10 @@ def coadd_inverse_variance(image_paths, weights, output_path, ref_header,
     out_hdr['COADDW'] = ('inv_var', 'Co-addition weighting method')
     out_hdr['COMBINE'] = ('sigclip_ivw' if (sigclip and len(image_paths) >= 4)
                           else 'ivw_mean', '%g-sigma per-pixel clip'%nsig)
+    # Operator version (R-LOO-MASTERS 2026-08-25): clipped-era and plain-mean
+    # masters must never be confusable on disk.
+    out_hdr['COADDOP'] = ('ivw-clip-v1' if (sigclip and len(image_paths) >= 4)
+                          else 'ivw-mean-v2', 'co-add operator version')
     if dates:
         for d in dates:
             out_hdr['HISTORY'] = f"COADD constituent {d}"
@@ -1903,7 +1971,8 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
         _mean = float(coeffs[0]); _tilt = float(np.hypot(coeffs[1], coeffs[2]))
-        if n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3:
+        if (os.environ.get('P3_FLUXSCALE_FLAT_DC') == '1'   # tilt A/B switch (Gregg 2026-08-28); default unchanged
+                or n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3):
             _dc = _mean if (0.3 < _mean < 3.0) else 1.0
             scale_map_full = np.full((h, w), _dc, dtype=float)
             print(f"    {date}: flux-degenerate (mean={_mean:.2f} tilt={_tilt:.2f} "
@@ -2141,7 +2210,8 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
         _mean = float(coeffs[0]); _tilt = float(np.hypot(coeffs[1], coeffs[2]))
-        if n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3:
+        if (os.environ.get('P3_FLUXSCALE_FLAT_DC') == '1'   # tilt A/B switch (Gregg 2026-08-28); default unchanged
+                or n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3):
             _dc = _mean if (0.3 < _mean < 3.0) else 1.0
             scale_map_full = np.full((h, w), _dc, dtype=float)
             print(f"    {date}: flux-degenerate (mean={_mean:.2f} tilt={_tilt:.2f} "
@@ -2441,8 +2511,32 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
     done_marker = f'{final_dir}/.done'
     if os.path.exists(done_marker):
-        print(f"  {lst} {fl}: already complete, skipping")
-        return {'lst': lst, 'freq': fl, 'status': 'skipped'}
+        # GENERATION-AWARE SKIP (2026-09-01). The bare .done guard is the
+        # banned stale-skip-guard class (CLAUDE.md section 3: "a rebuild
+        # that silently no-ops is a bug"). It made the master-policy
+        # rebuild impossible to run: a 3-cell pilot reported success while
+        # leaving all three cells on the superseded sigma-clipped masters,
+        # because .done predated the 2026-08-25 policy. The marker now only
+        # authorises a skip when the product it guards is ALREADY the
+        # current generation; otherwise the cell is rebuilt.
+        _cur = None
+        for _v in (f'{final_dir}/I_deep_Taper_R075_{fl}.fits',
+                   f'{final_dir}/V_deep_Taper_R0_{fl}.fits'):
+            if os.path.exists(_v):
+                try:
+                    _cur = fits.getheader(_v).get('COADDOP')
+                except Exception:
+                    _cur = None
+                break
+        if _cur == 'ivw-mean-v2':
+            print(f"  {lst} {fl}: already complete (COADDOP={_cur}), skipping")
+            return {'lst': lst, 'freq': fl, 'status': 'skipped'}
+        print(f"  {lst} {fl}: .done present but master COADDOP={_cur!r} is "
+              f"NOT the current generation — REBUILDING")
+        try:
+            os.remove(done_marker)
+        except OSError:
+            pass
     prep_dir = f'{workdir}/prep_final'
 
     deep_outliers = get_outlier_dates(workdir, 'deep')
@@ -2527,6 +2621,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     date_params[ref_date] = {
         'scale_map': identity_scale, 'flow': None, 'weight': ref_weight,
         'regrid': rg_ref, 'sci_dir': ref_date_entry[1],
+        'qa3_scale': 1.0, 'qa3_tilt': 0.0, 'qa3_nsrc': -1,
+        'qa3_guard': 'reference-identity', 'qa3_rms': ref_rms,
     }
 
     target_dates = [(d, sd, img) for d, sd, img in dates if d != ref_date]
@@ -2572,7 +2668,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
         _mean = float(coeffs[0]); _tilt = float(np.hypot(coeffs[1], coeffs[2]))
-        if n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3:
+        if (os.environ.get('P3_FLUXSCALE_FLAT_DC') == '1'   # tilt A/B switch (Gregg 2026-08-28); default unchanged
+                or n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3):
             _dc = _mean if (0.3 < _mean < 3.0) else 1.0
             scale_map_full = np.full((h, w), _dc, dtype=float)
             print(f"    {date}: flux-degenerate (mean={_mean:.2f} tilt={_tilt:.2f} "
@@ -2584,37 +2681,49 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         date_params[date] = {
             'scale_map': scale_map_full, 'flow': flow_offsets, 'weight': weight,
             'regrid': regrid_coords, 'sci_dir': sci_dir,
+            # third-stage QA record (R-THIRD-STAGE-QA-FLUXALIGN 2026-08-25):
+            # recorded per epoch; drops nothing until thresholds are approved
+            'qa3_scale': _mean, 'qa3_tilt': _tilt, 'qa3_nsrc': n_src,
+            'qa3_guard': ('degenerate-flatDC' if (n_src < 8 or not
+                          (0.7 <= _mean <= 1.4) or _tilt > 0.3) else 'pass'),
+            'qa3_rms': tgt_rms,
         }
 
+        # Two-tier policy (Gregg 2026-08-26): per-epoch products are built
+        # for EVERY non-data_decisions epoch; only co-add membership is
+        # gated by the QA verdict.
+        i_out = f'{prep_dir}/{date}_I.fits'
+        process_variant_image(align_img_path, flow_offsets, scale_map_full,
+                              tmpl_hdr, target_shape, i_out, regrid_coords)
         if date in good_dates_deep:
-            i_out = f'{prep_dir}/{date}_I.fits'
-            process_variant_image(align_img_path, flow_offsets, scale_map_full,
-                                  tmpl_hdr, target_shape, i_out, regrid_coords)
             i_aligned.append((date, i_out, weight))
             flow_str = 'flow' if flow_offsets is not None else 'no-flow'
             print(f"    {date}: scale={mean_scale:.3f} ({n_src} src) "
                   f"w={weight:.3f} {flow_str} ✓")
         else:
-            print(f"    {date}: excluded")
+            print(f"    {date}: coadd-omitted (QA); products still built")
 
     if len(i_aligned) < MIN_DATES_FOR_COADD:
         print(f"  Only {len(i_aligned)} aligned, need {MIN_DATES_FOR_COADD}")
         shutil.rmtree(prep_dir, ignore_errors=True)
         return None
 
-    # Final I co-add
+    # Final I co-add — PLAIN weighted mean, NO per-pixel clip
+    # (R-LOO-MASTERS-AND-REDO-SEQUENCE, Gregg 2026-08-25: the 4-sigma-MAD
+    # per-pixel clip introduces beam-scale structure into the masters).
     final_i_path = f'{final_dir}/I_deep_Taper_R075_{fl}.fits'
     coadd_inverse_variance(
         [p for _, p, _ in i_aligned],
         [w for _, _, w in i_aligned],
-        final_i_path, tmpl_hdr, dates=[d for d, _, _ in i_aligned])
+        final_i_path, tmpl_hdr, dates=[d for d, _, _ in i_aligned],
+        sigclip=False)
     stamp_master_span(final_i_path, lst, fl, [d for d, _, _ in i_aligned])
     print(f"  Final I co-add: {len(i_aligned)} dates → {final_i_path}")
 
     # Also create V co-add
     v_aligned = []
     for date, sci_dir, _ in dates:
-        if date not in good_dates_deep or date not in date_params:
+        if date not in date_params:
             continue
         params = date_params[date]
         v_img = find_stokes_v_deep_image(sci_dir, freq_str)
@@ -2623,7 +2732,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         v_out = f'{prep_dir}/{date}_V.fits'
         ok = process_variant_image(v_img, params['flow'], params['scale_map'],
                                     tmpl_hdr, target_shape, v_out, params['regrid'])
-        if ok and os.path.exists(v_out):
+        # two-tier policy: V prep for every epoch; co-add membership QA-gated
+        if ok and os.path.exists(v_out) and date in good_dates_deep:
             v_aligned.append((date, v_out, params['weight']))
 
     final_v_path = None
@@ -2632,9 +2742,32 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         coadd_inverse_variance(
             [p for _, p, _ in v_aligned],
             [w for _, _, w in v_aligned],
-            final_v_path, tmpl_hdr, dates=[d for d, _, _ in v_aligned])
+            final_v_path, tmpl_hdr, dates=[d for d, _, _ in v_aligned],
+            sigclip=False)
         stamp_master_span(final_v_path, lst, fl, [d for d, _, _ in v_aligned])
         print(f"  Final V co-add: {len(v_aligned)} dates → {final_v_path}")
+
+    # ── weights + third-stage QA record (R-THIRD-STAGE-QA-FLUXALIGN) and
+    # LOO masters for thin cells (R-LOO-MASTERS, N_epochs <= 20) ──
+    import csv as _csv
+    with open(f'{final_dir}/weights.csv', 'w', newline='') as _f:
+        _w = _csv.writer(_f)
+        _w.writerow(['date', 'weight', 'qa3_scale', 'qa3_tilt', 'qa3_nsrc',
+                     'qa3_guard', 'qa3_rms_mjy', 'sci_dir', 'in_master'])
+        for _d in sorted(date_params):
+            _p = date_params[_d]
+            _w.writerow([_d, f"{_p['weight']:.6f}", f"{_p.get('qa3_scale', 1):.5f}",
+                         f"{_p.get('qa3_tilt', 0):.5f}", _p.get('qa3_nsrc', ''),
+                         _p.get('qa3_guard', ''),
+                         f"{1e3 * _p.get('qa3_rms', float('nan')):.2f}",
+                         _p.get('sci_dir', ''), int(_d in good_dates_deep)])
+    _n_loo = write_loo_masters(i_aligned, final_i_path,
+                               f'{final_dir}/loo', f'I_loo_Taper_R075_{fl}.fits')
+    if final_v_path:
+        _n_loo += write_loo_masters(v_aligned, final_v_path,
+                                    f'{final_dir}/loo', f'V_loo_Taper_R0_{fl}.fits')
+    if _n_loo:
+        print(f"  LOO masters written: {_n_loo} (N_epochs<=20 rule)")
 
     # Also create I Taper R0 co-add for subtraction
     i_r0_aligned = []
@@ -2659,7 +2792,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         coadd_inverse_variance(
             [p for _, p, _ in i_r0_aligned],
             [w for _, _, w in i_r0_aligned],
-            final_i_r0_path, tmpl_hdr, dates=[d for d, _, _ in i_r0_aligned])
+            final_i_r0_path, tmpl_hdr, dates=[d for d, _, _ in i_r0_aligned],
+            sigclip=False)
         stamp_master_span(final_i_r0_path, lst, fl, [d for d, _, _ in i_r0_aligned])
         print(f"  Final I R0 co-add: {len(i_r0_aligned)} dates")
 
@@ -2688,7 +2822,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             coadd_inverse_variance(
                 [p for _, p, _ in _aligned],
                 [w for _, _, w in _aligned],
-                _path, tmpl_hdr, dates=[d for d, _, _ in _aligned])
+                _path, tmpl_hdr, dates=[d for d, _, _ in _aligned],
+                sigclip=False)
             stamp_master_span(_path, lst, fl, [d for d, _, _ in _aligned])
             print(f"  Final {_vk} co-add: {len(_aligned)} dates")
 
@@ -2765,8 +2900,10 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
         # Striation removal on I
         i_mask = coadd_mask | (~np.isfinite(i_sub)) | (i_sub == 0)
+        # window = 8 x beam (R-STRIATION-WINDOW-APPROVED-8BEAMS 2026-08-25;
+        # supersedes both the 20-beam default and the fixed 4.375 deg)
         i_stri_model, _ = build_striation_model(
-            i_sub, final_wcs, i_mask, ra_window_beams=20, beam_pix=beam_pix)
+            i_sub, final_wcs, i_mask, ra_window_beams=8.0, beam_pix=beam_pix)
         i_clean = i_sub - i_stri_model
         clean_i_path = f'{sub_dir}/{date}_I_clean_{fl}.fits'
         save_epoch_residual(clean_i_path, i_clean, epoch_hdr,
@@ -2791,7 +2928,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
             v_mask = coadd_mask | (~np.isfinite(v_sub)) | (v_sub == 0)
             v_stri_model, _ = build_striation_model(
-                v_sub, final_wcs, v_mask, ra_window_beams=20, beam_pix=beam_pix)
+                v_sub, final_wcs, v_mask, ra_window_beams=8.0, beam_pix=beam_pix)
             v_clean = v_sub - v_stri_model
 
             clean_v_path = f'{sub_dir}/{date}_V_clean_{fl}.fits'
@@ -2809,8 +2946,12 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
     print(f"  Subtracted images → {sub_dir}/")
 
-    # Cleanup prep aligned images (keep co-adds and subtracted)
-    shutil.rmtree(prep_dir, ignore_errors=True)
+    # Cleanup prep aligned images (keep co-adds and subtracted) — UNLESS
+    # P3_KEEP_PREP=1: the ratified structure (§15, 2026-08-25) archives the
+    # per-epoch ALIGNED image as a first-class product, so the rebuild
+    # fleet retains prep_final for the placement pass.
+    if os.environ.get('P3_KEEP_PREP') != '1':
+        shutil.rmtree(prep_dir, ignore_errors=True)
     with open(done_marker, 'w') as f:
         f.write(f'{len(dates_good)}/{len(dates)} dates\n')
     return {'lst': lst, 'freq': fl, 'n_good': len(dates_good), 'n_total': len(dates)}

@@ -71,6 +71,33 @@ def _diag_prefix_from_workdir(work_dir):
 # emission that can never yield anchors — blanking it BEFORE extraction
 # fixes both the runtime and the "0 anchors" failures (2026-06-11).
 ANCHOR_EL_CUT = None
+# East-side elevation floor (Gregg 2026-08-28): see
+# cfg.ANCHOR_EAST_MIN_ELEVATION_DEG — blanks east-of-meridian pixels below
+# the listed elevation at plane-rising LSTs. Set alongside ANCHOR_EL_CUT.
+ANCHOR_EAST_EL_CUT = None
+# Island size cap in BEAM AREAS for anchor extraction (Gregg approved
+# 2026-08-28): BDSF maxpix_isl computed per image from the header beam.
+# Discards the enormous diffuse plane islands BEFORE fitting (the measured
+# ~24-min-per-interval sink at 13h); anchors are unresolved by contract,
+# so no anchor and no sky is lost. Set per-LST via
+# cfg.ANCHOR_MAX_ISLAND_BEAM_AREAS in run_cascade_dewarping.
+ANCHOR_MAXPIX_BEAM_AREAS = None
+
+
+def _anchor_maxpix(image_path):
+    """maxpix_isl for this image: ANCHOR_MAXPIX_BEAM_AREAS x the header
+    beam area in pixels, or None when the cap is not configured."""
+    if ANCHOR_MAXPIX_BEAM_AREAS is None:
+        return None
+    try:
+        hdr = fits.getheader(image_path)
+        cd = abs(hdr.get('CDELT1', 0.037))
+        bmaj = float(hdr.get('BMAJ', 5 * cd))
+        bmin = float(hdr.get('BMIN', bmaj))
+        beam_px = np.pi * bmaj * bmin / (4.0 * np.log(2.0)) / cd ** 2
+        return int(max(ANCHOR_MAXPIX_BEAM_AREAS * beam_px, 50))
+    except Exception:
+        return None
 
 # Anchor fallback order: when the primary 73 MHz anchor is missing (or yields
 # too few VLSSr anchors), fall back to the next band nearest the VLSSr reference
@@ -89,11 +116,17 @@ ANCHOR_FALLBACK = sorted(
     key=lambda sb: abs(int(str(sb).replace('MHz', '')) - _VLSSR_REF_MHZ))
 
 
-def _elevation_masked_copy(image_path, min_el_deg, logger):
-    """Write a copy with pixels below min_el_deg blanked.
+def _elevation_masked_copy(image_path, min_el_deg, logger,
+                           east_min_el_deg=None):
+    """Write a copy with pixels below min_el_deg blanked; optionally also
+    blank EAST-of-meridian pixels below east_min_el_deg (Gregg 2026-08-28:
+    plane-rising LSTs — the Galactic emission climbs the eastern sky above
+    the ring floor and wedges BDSF).
 
     Images are zenith-centered SIN projections, so elevation is purely
-    radial: sin(zenith_angle) = r_pix * cdelt (in radians).
+    radial: sin(zenith_angle) = r_pix * cdelt (in radians). East = the
+    rising side: hour angle < 0, i.e. RA east of the zenith meridian
+    (CRVAL1 = zenith RA = LST for these images).
     """
     with fits.open(image_path) as h:
         data = h[0].data.copy()
@@ -105,11 +138,27 @@ def _elevation_masked_copy(image_path, min_el_deg, logger):
     r_deg = np.sqrt((xx - nx / 2) ** 2 + (yy - ny / 2) ** 2) * cdelt
     r_max = np.degrees(np.sin(np.radians(90.0 - min_el_deg)))
     mask = r_deg > r_max
+    tag = f'.elcut{int(min_el_deg)}'
+    if east_min_el_deg is not None:
+        try:
+            from astropy.wcs import WCS as _W
+            w = _W(hdr).celestial
+            ra_grid, _dec = w.wcs_pix2world(xx, yy, 0)
+            lst_ra = float(hdr.get('CRVAL1', 0.0))
+            east = np.sin(np.radians(ra_grid - lst_ra)) > 0
+            r_max_e = np.degrees(np.sin(np.radians(90.0 - east_min_el_deg)))
+            mask |= east & (r_deg > r_max_e)
+            tag += f'e{int(east_min_el_deg)}'
+        except Exception as e:
+            logger.warning(f"  [BDSF] east elevation cut failed ({e}) — "
+                           f"ring cut only")
     data[..., mask] = np.nan
-    out = image_path.replace('.fits', f'.elcut{int(min_el_deg)}.fits')
+    out = image_path.replace('.fits', f'{tag}.fits')
     fits.writeto(out, data, hdr, overwrite=True)
-    logger.info(f"  [BDSF] elevation cut {min_el_deg:.0f} deg: blanked "
-                f"{mask.mean():.0%} of field before extraction")
+    logger.info(f"  [BDSF] elevation cut {min_el_deg:.0f} deg"
+                + (f" + east<{east_min_el_deg:.0f} deg"
+                   if east_min_el_deg is not None else "")
+                + f": blanked {mask.mean():.0%} of field before extraction")
     return out
 
 
@@ -123,18 +172,23 @@ def extract_sources(image_path, logger):
     if ANCHOR_EL_CUT is not None:
         try:
             tmp_cut = _elevation_masked_copy(image_path, ANCHOR_EL_CUT,
-                                             logger)
+                                             logger, ANCHOR_EAST_EL_CUT)
             bdsf_input = tmp_cut
         except Exception as e:
             logger.warning(f"  [BDSF] elevation mask failed ({e}) — "
                            f"using full image")
     try:
+        _mp = _anchor_maxpix(bdsf_input)
+        _mp_kw = {'maxpix_isl': _mp} if _mp else {}
+        if _mp:
+            logger.info(f"  [BDSF] island cap: maxpix_isl={_mp} "
+                        f"({ANCHOR_MAXPIX_BEAM_AREAS:.0f} beam areas)")
         img = bdsf.process_image(
             bdsf_input,
             thresh_pix=cfg.BDSF_THRESH_PIX,
             thresh_isl=cfg.BDSF_THRESH_ISL,
             adaptive_rms_box=True,
-            quiet=True
+            quiet=True, **_mp_kw
         )
         sources = []
         for s in img.sources:
@@ -1338,7 +1392,7 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
                           rbf_smoothing=None, rbf_epsilon=None,
                           snr_weighting=False, anchor_only=False,
                           warp_categories=None):
-    global ANCHOR_EL_CUT
+    global ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS
     # Per-LST elevation floor (e.g. 13h galactic plane); LST inferred
     # from the work_dir path .../{lst}/{date}/Science_*
     try:
@@ -1347,11 +1401,24 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
                    and p[:-1].isdigit())
         ANCHOR_EL_CUT = getattr(cfg, 'ANCHOR_MIN_ELEVATION_DEG',
                                 {}).get(lst)
+        # east-side floor for plane-rising LSTs (Gregg 2026-08-28)
+        ANCHOR_EAST_EL_CUT = getattr(cfg, 'ANCHOR_EAST_MIN_ELEVATION_DEG',
+                                     {}).get(lst)
+        # island cap: per-LST value, '*' = all LSTs (Gregg 2026-08-28)
+        _cap_cfg = getattr(cfg, 'ANCHOR_MAX_ISLAND_BEAM_AREAS', {})
+        ANCHOR_MAXPIX_BEAM_AREAS = _cap_cfg.get(lst, _cap_cfg.get('*'))
+        if ANCHOR_MAXPIX_BEAM_AREAS:
+            logger.info(f"Anchor extraction island cap for {lst}: "
+                        f"{ANCHOR_MAXPIX_BEAM_AREAS:.0f} beam areas")
         if ANCHOR_EL_CUT:
             logger.info(f"Anchor extraction elevation floor for {lst}: "
-                        f"{ANCHOR_EL_CUT:.0f} deg")
+                        f"{ANCHOR_EL_CUT:.0f} deg"
+                        + (f" + east<{ANCHOR_EAST_EL_CUT:.0f} deg"
+                           if ANCHOR_EAST_EL_CUT else ""))
     except StopIteration:
         ANCHOR_EL_CUT = None
+        ANCHOR_EAST_EL_CUT = None
+        ANCHOR_MAXPIX_BEAM_AREAS = None
     """Run the full cascade dewarping pipeline.
 
     Parameters
@@ -2281,14 +2348,17 @@ def _dewarp_one_interval(task):
             if ANCHOR_EL_CUT is not None:
                 try:
                     _tmp_cut = _elevation_masked_copy(i_img, ANCHOR_EL_CUT,
-                                                      _logger)
+                                                      _logger,
+                                                      ANCHOR_EAST_EL_CUT)
                     _bdsf_in = _tmp_cut
                 except Exception:
                     pass
+            _mp = _anchor_maxpix(_bdsf_in)
+            _mp_kw = {'maxpix_isl': _mp} if _mp else {}
             img = bdsf.process_image(
                 _bdsf_in, thresh_pix=cfg.BDSF_THRESH_PIX,
                 thresh_isl=cfg.BDSF_THRESH_ISL,
-                adaptive_rms_box=True, quiet=True
+                adaptive_rms_box=True, quiet=True, **_mp_kw
             )
             if _tmp_cut and os.path.exists(_tmp_cut):
                 try:

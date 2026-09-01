@@ -42,7 +42,7 @@ CATS = {'10pc': '/lustre/gh/main/clv15/10pc.csv',
         'Hot_Warm_Jupiters': '/lustre/gh/main/clv15/Hot_Warm_Jupiters.csv',
         'LPTs': '/lustre/gh/main/clv15/LPTs.csv',
         'flare_ucd': '/lustre/gh/main/clv15/flare_ucd.csv',
-        'stars': '/lustre/gh/main/clv15/stars.csv',
+        'sydney_stars': '/lustre/gh/main/clv15/sydney_stars.csv',  # known radio-detected stars (Sydney sample) — renamed 2026-08-25, strong prior
         # ATNF pulsar catalogue (VizieR B/psr, 2530 rows; added Gregg 2026-07-03
         # after PSR J2215+5135 was found at rank17 with a blank xmatch)
         'ATNF_psr': '/lustre/gh/main/clv15/pulsars_atnf.csv'}
@@ -96,7 +96,7 @@ def load_xcat():
     for tag, path in CATS.items():
         if not os.path.exists(path):
             print(f'  WARNING: missing catalog {path}'); continue
-        for r in csv.DictReader(open(path)):
+        for r in csv.DictReader(open(path, encoding="utf-8-sig")):
             try:
                 if 'ra_current' in r and r.get('ra_current'):
                     ra, dec, nm = r['ra_current'], r['dec_current'], r['common_name']

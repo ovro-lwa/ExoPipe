@@ -23,15 +23,38 @@ import astropy.units as u
 
 VIZ = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync"
 SIM = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync"
-ASU = "https://vizier.cds.unistra.fr/viz-bin/asu-tsv"
+# ASU mirrors, tried in order (the Strasbourg database has outages)
+ASU_MIRRORS = ["https://vizier.cds.unistra.fr/viz-bin/asu-tsv",
+               "https://vizier.cfa.harvard.edu/viz-bin/asu-tsv"]
 XM  = "http://cdsxmatch.u-strasbg.fr/xmatch/api/v1/sync"
 OUT = "/lustre/gh/main/clv15/flare_ucd.csv"
+# UltracoolSheet v2.1.0 (Best et al.), pinned Zenodo record 15802304,
+# staged locally next to the other clv15 input catalogs
+UCS_LOCAL = "/lustre/gh/main/clv15/ultracoolsheet_main_v2.1.0.csv"
+UCS_URL = ("https://zenodo.org/api/records/15802304/files/"
+           "UltracoolSheet%20-%20Main.csv/content")
 UCD_MAX_PC = 50.0
 GAIA_RADIUS_ARCSEC = 5.0
 
 
 def _get(url):
     return urllib.request.urlopen(url, timeout=120).read().decode('utf-8', 'replace')
+
+
+def asu(query_suffix):
+    err = None
+    for base in ASU_MIRRORS:
+        try:
+            txt = _get(base + query_suffix)
+            head = txt[:3000]
+            if ('QUERY_STATUS=ERROR' in head or 'Error=' in head
+                    or 'not currently reachable' in head):
+                err = f'{base}: server-side error page'
+                continue
+            return txt
+        except Exception as e:
+            err = e
+    raise RuntimeError(f'all ASU mirrors failed: {err}')
 
 
 def tap(base, adql):
@@ -90,7 +113,7 @@ print(f"  GCVS: {len(rows)}", flush=True)
 # --- Reyle UCDs, distance-limited ---
 print("Reyle UCDs (<%g pc)..." % UCD_MAX_PC, flush=True)
 n0 = len(rows)
-txt = _get(ASU + "?-source=J/A%2BA/619/L8&-out.max=999999&-out=Source,RAICRS,DEICRS,Plx,sptphot")
+txt = asu("?-source=J/A%2BA/619/L8&-out.max=999999&-out=Source,RAICRS,DEICRS,Plx,sptphot")
 for ln in txt.splitlines():
     if not ln or ln.startswith('#') or ln.startswith('-') or 'RAICRS' in ln or ln.startswith(' \t'):
         continue
@@ -110,6 +133,84 @@ for ln in txt.splitlines():
     except Exception:
         pass
 print(f"  Reyle <{UCD_MAX_PC:g}pc: {len(rows)-n0}", flush=True)
+if len(rows) - n0 < 1000:
+    raise SystemExit(f'REFUSING: Reyle returned {len(rows)-n0} rows '
+                     f'(<50pc reference count is ~1376; 2026-08-23 '
+                     f'regression caught a truncated mirror response)')
+
+# --- Kirkpatrick 2021 full-sky 20-pc L/T/Y census (added 2026-08-23:
+# --- Gaia-selected Reyle contains no T dwarfs; Gregg-directed after the
+# --- 2MASS J06254230+5646268 T6 near-miss) ---
+def _spt_decode(v):
+    # Kirkpatrick numeric code: <0 late-M (e.g. -2 = M8), 0-9.5 L, 10-19.5 T,
+    # >=20 Y
+    if v < 0:
+        return f'M{10 + v:g}'
+    if v < 10:
+        return f'L{v:g}'
+    if v < 20:
+        return f'T{v - 10:g}'
+    return f'Y{v - 20:g}'
+
+
+print("Kirkpatrick 2021 20-pc census...", flush=True)
+n0 = len(rows)
+txt = asu("?-source=J/ApJS/253/7/tablea1&-out.max=999999"
+          "&-out=FName,RACdeg,DECdeg,_RA,_DE,SpAd,plx")
+for ln in txt.splitlines():
+    if (not ln or ln.startswith('#') or ln.startswith('-')
+            or 'FName' in ln or ln.startswith(' ') or ln.startswith('deg')):
+        continue
+    p = ln.split('\t')
+    if len(p) < 7:
+        continue
+    try:
+        name = p[0].strip()
+        plx = float(p[6]) if p[6].strip() else 0.0
+        if plx <= 0:
+            continue
+        dist = 1000.0 / plx
+        if dist >= UCD_MAX_PC:
+            continue
+        ra = float(p[1]) if p[1].strip() else float(p[3])
+        dec = float(p[2]) if p[2].strip() else float(p[4])
+        spt = _spt_decode(float(p[5])) if p[5].strip() else ''
+        rows.append([f"{name} [UCD:{spt}]", ra, dec, f'{dist:.1f}'])
+    except Exception:
+        pass
+print(f"  Kirkpatrick <{UCD_MAX_PC:g}pc: {len(rows)-n0}", flush=True)
+
+# --- UltracoolSheet v2.1.0 (pinned Zenodo), distance-limited ---
+print("UltracoolSheet...", flush=True)
+n0 = len(rows)
+import os
+if os.path.exists(UCS_LOCAL):
+    ucs_txt = open(UCS_LOCAL, encoding='utf-8', errors='replace').read()
+else:
+    ucs_txt = _get(UCS_URL)
+    open(UCS_LOCAL, 'w').write(ucs_txt)
+for r in csv.DictReader(io.StringIO(ucs_txt)):
+    try:
+        plx = 0.0
+        for col in ('plx_formula', 'plx_lit', 'plx_Gaia'):
+            v = (r.get(col) or '').strip()
+            if v and v.lower() != 'nan':
+                plx = float(v)
+                break
+        if plx <= 0:
+            continue
+        dist = 1000.0 / plx
+        if dist >= UCD_MAX_PC:
+            continue
+        spt = next((r[c].strip() for c in ('spt_ir', 'spt_opt')
+                    if (r.get(c) or '').strip().lower() not in ('', 'null',
+                                                                'nan')), '')
+        rows.append([f"{r['name'].strip()} [UCS:{spt}]",
+                     float(r['ra_j2000_formula']),
+                     float(r['dec_j2000_formula']), f'{dist:.1f}'])
+    except Exception:
+        pass
+print(f"  UltracoolSheet <{UCD_MAX_PC:g}pc: {len(rows)-n0}", flush=True)
 
 # --- SIMBAD active (no brown dwarfs) ---
 print("SIMBAD active (<100pc)...", flush=True)
@@ -127,6 +228,29 @@ for r in parse_csv(tap(SIM, adql)):
     except Exception:
         pass
 print(f"  SIMBAD: {len(rows)-n0}", flush=True)
+
+# --- Pinned supplement: previously-cataloged active stars that a later SIMBAD
+# --- query no longer returned (otype/main-row drift upstream). The 2026-08-30
+# --- rebuild silently dropped these 13; restored 2026-08-31 (Gregg-approved).
+# --- Pinned here so no upstream change can drop them again; dedup below merges
+# --- them if SIMBAD returns them once more.
+PINNED = [
+    ("L  120-120 [SIMBAD:Er*]",      351.353743, -67.668656, "22.6"),
+    ("CD-47   277 [SIMBAD:Er*]",      13.985524, -47.149560, "38.9"),
+    ("RX J0314.8-6241 [SIMBAD:Er*]",  48.713798, -62.694947, "27.8"),
+    ("CD-36  1252 [SIMBAD:Er*]",      49.742586, -36.393025, "21.8"),
+    ("BD+01  2684 [SIMBAD:Er*]",     185.106387,   0.583568, "17.5"),
+    ("StKM 1-1021 [SIMBAD:Er*]",     188.109685,  20.390993, "22.8"),
+    ("Wolf 1351 [SIMBAD:Er*]",       309.336727,  21.947850, "33.1"),
+    ("V* AS Dra [SIMBAD:RS*]",       185.548896,  73.248483, "42.8"),
+    ("G 227-22 [SIMBAD:Er*]",        270.569183,  64.262289, "7.8"),
+    ("G 271-149 [SIMBAD:Er*]",        26.653508,  -8.649336, "25.6"),
+    ("BD-21  1074A [SIMBAD:Er*]",     76.707984, -21.585869, "19.8"),
+    ("HD 358623 [SIMBAD:BY*]",       314.011411, -17.181612, "45.8"),
+    ("HD 239960B [SIMBAD:Er*]",      336.999148,  57.697152, "4.0"),
+]
+rows.extend([list(p) for p in PINNED])
+print(f"  pinned supplement: {len(PINNED)}", flush=True)
 
 # --- Gaia DR3 distance backfill for rows still lacking a distance ---
 missing = [(str(i), rows[i][1], rows[i][2]) for i in range(len(rows)) if rows[i][3] == '']

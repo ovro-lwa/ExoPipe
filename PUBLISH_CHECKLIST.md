@@ -13,9 +13,9 @@ this release and is not touched by it.
 | **MIT** | Maximally permissive and shortest; equivalent in practice to BSD-3 minus the no-endorsement clause. |
 | **GPLv3** | Copyleft: derivatives must remain open under GPL. Strongest guarantee the code stays open; can deter institutional reuse and complicates linking with permissively-licensed forks. |
 
-Note: Caltech institutional policy may have a say — worth a one-line check
-with OTL before tagging. No license file ships until ruled; README states
-"all rights reserved" in the interim.
+RULED: **GPLv3** — R-PUB2 (Gregg 2026-08-15), superseding the earlier
+pending note (OTL check / "all rights reserved" interim wording). The
+GPLv3 full text ships as `LICENSE`.
 
 ## DECISION 2 — Repo name and organization (Gregg's call)
 

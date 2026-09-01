@@ -148,10 +148,15 @@ def bilobe_ghost_reason(diff, x, y, beam, rms, cd, dipmap=None, wcs=None):
     return 'keep'
 
 
-def veto_reason(c, diff, msx, msf, beam, cd, ar_max, rms=0.0, dipmap=None, wcs=None):
-    """Return 'keep' or the veto reason for one candidate dict."""
+def veto_reason(c, diff, msx, msf, beam, cd, ar_max, rms=0.0, dipmap=None, wcs=None,
+                arms=('bright_mask', 'bilobe', 'gaussfit')):
+    """Return 'keep' or the veto reason for one candidate dict.
+
+    `arms` selects which tests run (G-09, Gregg 2026-08-21: the deep Stokes V
+    chain drops bright_mask and bilobe — the v110 FP gate replaces them; the
+    default preserves the historical behavior for every other caller)."""
     x, y = int(c['pix_x']), int(c['pix_y'])
-    if len(msx):
+    if 'bright_mask' in arms and len(msx):
         d = np.hypot(msx[:, 0] - x, msx[:, 1] - y)
         for j in np.where(msf > MASK_JY)[0]:
             rdeg = MASK_COEF_DEG * (msf[j] / MASK_JY) ** 0.5
@@ -159,18 +164,26 @@ def veto_reason(c, diff, msx, msf, beam, cd, ar_max, rms=0.0, dipmap=None, wcs=N
                 rdeg = max(rdeg, ATEAM_RADIUS_DEG)
             if d[j] < max(2 * beam, rdeg / cd):
                 return 'bright_mask'
-    if rms > 0 and bilobe_ghost_reason(diff, x, y, beam, rms, cd, dipmap=dipmap, wcs=wcs) != 'keep':
+    if 'bilobe' in arms and rms > 0 and \
+            bilobe_ghost_reason(diff, x, y, beam, rms, cd, dipmap=dipmap, wcs=wcs) != 'keep':
         return 'bilobe_ghost'
-    if abs(c.get('local_snr', c.get('snr', 0))) > SNR_GATE:
-        gf = _gfit(diff, x, y, beam)
-        # NO SIZE restriction (Gregg 2026-06-24): the target V signal (ECM) is NARROWBAND,
-        # so in a WIDEBAND image it appears with the PSF of its EMISSION frequency, not the
-        # wideband synthesized beam — a low-band-edge narrowband source is genuinely larger
-        # than the nominal beam. A FWHM cut (FWHM_HI/FWHM_LO) would veto exactly those real
-        # narrowband sources. Keep only fit-quality (resid = ring/multi-peak) and
-        # elongation (ar); a narrowband source is still round + fits a (larger) Gaussian.
-        if gf and (gf['ar'] > ar_max or gf['resid'] > RESID_MAX):
-            return 'gaussfit'
+    if 'gaussfit' in arms and abs(c.get('local_snr', c.get('snr', 0))) > SNR_GATE:
+        # BDSF-SHAPE TEST (Gregg ruling 2026-08-22, replacing the hand-rolled
+        # curve_fit refit after it unreproducibly vetoed the ratified EQ Peg
+        # 69 MHz burst): apply the ratified axis-ratio threshold to the shape
+        # BDSF itself fitted at extraction (imfit/BDSF-only standing rule).
+        # The old fit-residual criterion has no exact BDSF twin and is
+        # FLAG-ONLY pending a mapping card. A candidate with no recorded
+        # shape is KEPT (a missing measurement never vetoes).
+        # NO SIZE restriction stands (Gregg 2026-06-24): ECM is NARROWBAND —
+        # a low-band-edge source is genuinely larger than the wideband beam;
+        # elongation only, never size.
+        mj, mn = c.get('bmaj_fit_deg'), c.get('bmin_fit_deg')
+        if mj and mn and np.isfinite(mj) and np.isfinite(mn) and mn > 0:
+            ar = mj / mn
+            c['gfit_ar'] = round(ar, 3)
+            if ar > ar_max:
+                return 'gaussfit'
     # on_source veto REMOVED (Gregg 2026-06-21): the blanket "within 1 beam of a
     # >=2 Jy I source" cut is too aggressive at low nu (large beam, dense >2 Jy
     # sky) and kills real co-located flares (UX Ari / FI Cnc emit in I too).
@@ -179,24 +192,28 @@ def veto_reason(c, diff, msx, msf, beam, cd, ar_max, rms=0.0, dipmap=None, wcs=N
     return 'keep'
 
 
-def apply_veto(cands, diff, master, hdr, beam, cd, wcs, obs_time, ar_max=None):
+def apply_veto(cands, diff, master, hdr, beam, cd, wcs, obs_time, ar_max=None,
+               arms=('bright_mask', 'bilobe', 'gaussfit')):
     """Filter candidates through the validated veto. Returns (kept, vetoed)
     where each vetoed candidate carries c['veto_reason']. `wcs`/`obs_time` are
     kept in the signature for a stable shared interface (deep + 10-min) but the
     veto no longer drops on ephemeris — solar-system bodies are labelled in the
-    catalog instead."""
+    catalog instead. `arms` selects which tests run (G-09, Gregg 2026-08-21:
+    the deep V chain passes ('gaussfit',) — bright_mask and bilobe replaced by
+    the v110 FP gate); the default preserves every other caller's behavior."""
     from exopipe.phase3.identify import fit_empirical_beam
     if ar_max is None:
         em, en, _ep, _nm = fit_empirical_beam(master)
         ar_max = max(2.0, 1.5 * em / max(en, 1e-3))
-    msx, msf = bright_source_list(master)
+    msx, msf = (bright_source_list(master) if 'bright_mask' in arms
+                else (np.empty((0, 2)), np.empty(0)))
     # central-field MAD thermal noise (peak/rms basis; noise is beam-correlated)
     h, w = diff.shape; cd_box = diff[h // 3:2 * h // 3, w // 3:2 * w // 3]
     cd_box = cd_box[np.isfinite(cd_box)]
     rms = float(1.4826 * np.median(np.abs(cd_box - np.median(cd_box)))) if cd_box.size > 100 else 0.0
     # dipole field for the PA-strengthening arm (sky-frame PA needs wcs). Computed ONCE.
     dipmap = None
-    if rms > 0:
+    if rms > 0 and 'bilobe' in arms:
         try:
             from exopipe.phase3.dipole_lib import find_true_dipoles
             dipmap = find_true_dipoles(diff, beam, sig=NEG_SIG, wcs=wcs)
@@ -204,7 +221,8 @@ def apply_veto(cands, diff, master, hdr, beam, cd, wcs, obs_time, ar_max=None):
             dipmap = None
     kept, vetoed = [], []
     for c in cands:
-        r = veto_reason(c, diff, msx, msf, beam, cd, ar_max, rms=rms, dipmap=dipmap, wcs=wcs)
+        r = veto_reason(c, diff, msx, msf, beam, cd, ar_max, rms=rms, dipmap=dipmap,
+                        wcs=wcs, arms=arms)
         if r == 'keep':
             kept.append(c)
         else:

@@ -193,10 +193,17 @@ def _run_bdsf(fits_path, thresh_pix, thresh_isl, quiet=True, rms_value=None, mea
         if np.isnan(ra_d) or np.isnan(dec_d): continue
         try: px, py = wcs_img.all_world2pix([[ra_d, dec_d]], 0)[0]; px, py = int(round(px)), int(round(py))
         except: continue
+        # BDSF's own fitted shape (image plane, FWHM deg) — RETAINED per the
+        # 2026-08-22 ruling (imfit/BDSF only; the hand-rolled refit is retired)
+        try:
+            _mj, _mn, _pa = (float(x) for x in s.size_sky)
+        except Exception:
+            _mj = _mn = _pa = float('nan')
         sources.append({'coord': SkyCoord(ra_d, dec_d, unit='deg'), 'flux': float(s.peak_flux_max),
                         'total_flux': float(getattr(s, 'total_flux', s.peak_flux_max)),
                         'snr': float(s.peak_flux_max / getattr(s, 'rms', 1e-3)),
-                        'pix_x': px, 'pix_y': py})
+                        'pix_x': px, 'pix_y': py,
+                        'bmaj_fit_deg': _mj, 'bmin_fit_deg': _mn, 'pa_fit_deg': _pa})
     return sources
 
 def _filter_by_mask(sources, mask, shape):
@@ -233,6 +240,9 @@ def extract_v_peaks(v_data, v_header, horizon_mask, ateam_mask, invalid_wcs_mask
                 candidates.append({'coord': s['coord'], 'flux': sign_mult*s['flux'], 'snr': snr,
                                    'int_flux': sign_mult*s.get('total_flux', s['flux']),
                                    'el': el, 'pix_x': s['pix_x'], 'pix_y': s['pix_y'],
+                                   'bmaj_fit_deg': s.get('bmaj_fit_deg'),
+                                   'bmin_fit_deg': s.get('bmin_fit_deg'),
+                                   'pa_fit_deg': s.get('pa_fit_deg'),
                                    'n_pix': 0, 'status': 'PASS', 'reject_reason': ''})
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -245,32 +255,33 @@ def extract_v_peaks(v_data, v_header, horizon_mask, ateam_mask, invalid_wcs_mask
 # LOCAL SNR
 # ================================================================
 def assign_local_snr(candidates, v_data, exclusion_mask, beam_pix, sigma_thresh,
-                     inner_beams=2.0, outer_beams=10.0, n_sectors=4, min_sector_pix=400):
+                     inner_beams=2.0, outer_beams=10.0, min_annulus_pix=400):
+    # Local noise = 3-sigma-clipped MAD over the WHOLE 2-10 beam annulus (P11 fix,
+    # Gregg-approved 2026-08-21). The previous minimum-of-4-sector-MADs is biased
+    # ~11% low (PHASE3_PROBLEM_LEDGER.md P11); the clip discards contaminated
+    # PIXELS (bright source / sidelobe arm) instead of 3/4 of the annulus.
+    # Formula matches the calibration measurement (fp_gate_v103.py:109):
+    # sigma_clip(sigma=3, maxiters=5) then mad_std of the survivors.
+    from astropy.stats import sigma_clip
     h, w = v_data.shape
     box = int(np.ceil(outer_beams * beam_pix))
     dy, dx = np.indices((2*box+1, 2*box+1), dtype=float); dy -= box; dx -= box
     d_sq = dx**2 + dy**2
     ann = (d_sq >= (inner_beams*beam_pix)**2) & (d_sq <= (outer_beams*beam_pix)**2)
-    angles = np.arctan2(dx, dy) % (2*np.pi)
-    sec_w = 2*np.pi/n_sectors
-    sec_ids = (angles/sec_w).astype(int) % n_sectors
-    ann_dy, ann_dx, ann_sec = dy[ann].astype(int), dx[ann].astype(int), sec_ids[ann]
+    ann_dy, ann_dx = dy[ann].astype(int), dx[ann].astype(int)
     n_rej = 0
     for c in candidates:
         if c['status'] != 'PASS': continue
         c['global_snr'] = c['snr']
         cy, cx = c['pix_y'], c['pix_x']
-        ay, ax, asec = cy+ann_dy, cx+ann_dx, ann_sec.copy()
-        v = (ay>=0)&(ay<h)&(ax>=0)&(ax<w); ay,ax,asec = ay[v],ax[v],asec[v]
-        nm = ~exclusion_mask[ay,ax]; ay,ax,asec = ay[nm],ax[nm],asec[nm]
-        if len(ay)==0: c['local_rms']=np.nan; continue
+        ay, ax = cy+ann_dy, cx+ann_dx
+        v = (ay>=0)&(ay<h)&(ax>=0)&(ax<w); ay,ax = ay[v],ax[v]
+        nm = ~exclusion_mask[ay,ax]; ay,ax = ay[nm],ax[nm]
+        if len(ay) < min_annulus_pix: c['local_rms']=np.nan; continue
         vals = v_data[ay,ax]
-        mads = [float(mad_std(vals[asec==s])) for s in range(n_sectors) if np.sum(asec==s)>=min_sector_pix]
-        if not mads:
-            if len(vals)>=min_sector_pix: lr = float(mad_std(vals))
-            else: c['local_rms']=np.nan; continue
-        else: lr = min(mads)
-        if lr <= 0: c['local_rms']=np.nan; continue
+        cl = sigma_clip(vals, sigma=3.0, maxiters=5, masked=True)
+        lr = float(mad_std(vals[~cl.mask]))
+        if lr <= 0 or not np.isfinite(lr): c['local_rms']=np.nan; continue
         c['local_rms'] = lr; lsnr = c['flux']/lr; c['snr'] = float(lsnr)
         if abs(lsnr) < sigma_thresh:
             c['status']='REJECT_LOCAL_RMS'; c['reject_reason']=f"Local SNR={lsnr:+.1f}"; n_rej+=1
@@ -871,7 +882,7 @@ def main():
     parser.add_argument("--bilobe_radius_arcmin", type=float, default=15.0)
     parser.add_argument("--bilobe_grid", type=int, default=5)
     parser.add_argument("--bilobe_min_sources", type=int, default=10)
-    parser.add_argument("--striation_window_beams", type=float, default=20.0)
+    parser.add_argument("--striation_window_beams", type=float, default=8.0)  # R-STRIATION-WINDOW-APPROVED-8BEAMS 2026-08-25
     parser.add_argument("--pa_tolerance", type=float, default=45.0)
     parser.add_argument("--freq_mhz", type=float, default=None)
     parser.add_argument("--beam", type=float, default=None)

@@ -170,7 +170,9 @@ def write_candidates(root, label, cands, resid, master, hdr, lst, date,
     fields = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'interval',
               'ra', 'dec', 'peak_jy', 'int_jy', 'snr', 'axis_ratio',
               'fwhm_maj_arcmin', 'c50_mjy', 'mstruct', 'mstruct_raw', 'sstack',
-              'jupiter_deg', 'n_v_epoch', 'body', 'repeat_group']
+              'jupiter_deg', 'n_v_epoch', 'body', 'repeat_group',
+              'epoch_qa']   # 'outlier QA' tag: candidate from a coadd-omitted
+                            # epoch, carried to transient review (Gregg 2026-08-26)
     written = []
     for i, c in enumerate(cands):
         x, y = int(c['pix_x']), int(c['pix_y'])
@@ -206,7 +208,8 @@ def write_candidates(root, label, cands, resid, master, hdr, lst, date,
                    mstruct=c.get('mstruct', ''), mstruct_raw=c.get('mstruct_raw', ''),
                    sstack=c.get('sstack', ''), jupiter_deg=c.get('jupiter_deg', ''),
                    n_v_epoch=c.get('n_v_epoch', ''),
-                   body=body, repeat_group=rg)
+                   body=body, repeat_group=rg,
+                   epoch_qa=c.get('epoch_qa', ''))
         written.append(row)
     # append to the single de-siloed master_catalog
     new_file = not os.path.exists(catalog_csv)

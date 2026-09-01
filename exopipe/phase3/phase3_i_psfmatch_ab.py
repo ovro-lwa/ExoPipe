@@ -79,14 +79,22 @@ def matched_resid(ep_aligned, master, up2, hdr_ref, cd, be, bm, mfs_args=None):
         _, co, ns = measure_flux_scale(Ec, Mc, w, bp_eff, mask, mfs_args)
         h_, w_ = master.shape
         yg, xg = np.indices((h_, w_), dtype=float)
-        sm = co[0] + co[1] * (2 * xg / w_ - 1) + co[2] * (2 * yg / h_ - 1)
+        # P3_SCALE2_DC_ONLY=1: tilt A/B test switch (Gregg 2026-08-28) —
+        # drop the tilt terms from the 2nd-pass matched-pair plane (this pass
+        # has no tilt guard, unlike the co-add's first pass). Default unchanged.
+        import os as _os
+        if _os.environ.get('P3_SCALE2_DC_ONLY') == '1':
+            sm = np.full((h_, w_), co[0])
+        else:
+            sm = co[0] + co[1] * (2 * xg / w_ - 1) + co[2] * (2 * yg / h_ - 1)
         dc2 = float(co[0])
         if ns >= 8 and 0.5 <= dc2 <= 2.0:
             Ec = np.where(np.abs(sm) > 0.1, Ec / sm, Ec)
     f = dilution(be, bm)
     d = (Ec - Mc) / max(f, 1e-3)          # honest Jy/beam_eff for point transients
+    # window = 8 x effective beam (R-STRIATION-WINDOW-APPROVED-8BEAMS 2026-08-26)
     smod, _ = build_striation_model(np.nan_to_num(np.where(invalid, 0, d)), w, invalid,
-                                    ra_window_beams=STRIATION_WINDOW_DEG / cd,
+                                    ra_window_beams=8.0 * bp_eff,
                                     beam_pix=1.0)
     return np.where(invalid, np.nan, d - smod), bp_eff, f, dc2
 

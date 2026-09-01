@@ -71,7 +71,10 @@ CADENCES = ['deep', '10min', 'snap']
 TAPERS = ['Taper', 'NoTaper']
 # Canonical processing order. Build emits tokens in this order; parse
 # accepts them in any order but preserves what it saw.
-PROC_ORDER = ['vclean', 'mstruct', 'pbcorr', 'dewarped', 'aligned',
+# 'loo' (leave-one-out master, tag = excluded date) and tagged 'ssub'
+# (tag = striation window) added per ratified structure spec S15
+# (R-P3-STRUCTURE-RATIFIED, 2026-08-26).
+PROC_ORDER = ['vclean', 'mstruct', 'loo', 'pbcorr', 'dewarped', 'aligned',
               'psfmatch', 'coadd', 'msub', 'nmsub', 'ssub', 'sigstack',
               'mosaic', 'jysr', 'feather', 'tcorr', 'lsfill',
               'psfmap', 'rgbcomp', 'molrender', 'carrender', 'pbmap']
@@ -193,7 +196,7 @@ def build_name(scope, stokes, cadence, taper, robust, proc=(),
         base = tok.split('-')[0]
         if base not in PROC_ORDER:
             raise ValueError(f"Unknown proc token '{tok}'")
-        if base not in ('msub', 'nmsub') and tok != base:
+        if base not in ('msub', 'nmsub', 'ssub', 'loo') and tok != base:
             raise ValueError(f"Only msub/nmsub may carry a tag, got '{tok}'")
         return PROC_ORDER.index(base)
     proc_sorted = sorted(proc, key=_proc_key)
@@ -337,7 +340,9 @@ def parse_name(filename):
     while i < len(rest) and not _RE_LST.match(rest[i]) \
             and rest[i] != 'allsky':
         tok = rest[i]
-        if _RE_MSUB.match(tok) or tok in PROC_ORDER:
+        _base = tok.split('-')[0]
+        if _RE_MSUB.match(tok) or tok in PROC_ORDER or \
+                (_base in ('ssub', 'loo') and _base in PROC_ORDER):
             proc.append(tok)
         else:
             raise ValueError(f"Unknown proc token '{tok}' in '{base}'")

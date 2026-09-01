@@ -187,6 +187,41 @@ def _worker(d):
         return d, None, None, str(e)
 
 
+def _archive_matched_resid(lst, scope, d, resid_d, ot, span, eh, mp, wcs,
+                           bp_eff, fdil, dc2, cd,
+                           runlabel=('Run_I_DEEP', 'production I deep search')):
+    """Archive one matched residual (search frame), standard name + headers.
+    Shared by the full search path and the residuals-only build mode
+    (2026-08-21: psfmatch variant ruled the canonical I residual)."""
+    try:
+        ad = f'{RESID_ROOT}/{lst}_{scope}'
+        os.makedirs(ad, exist_ok=True)
+        rn = prod.build_name(scope, 'I', 'deep', 'Taper', -0.75,
+                             proc=['dewarped', 'aligned', 'psfmatch',
+                                   'msub', 'ssub'],
+                             lst=lst, epoch=ot)
+        rp = f'{ad}/{rn}'
+        if not os.path.exists(rp):
+            fits.writeto(rp, resid_d, wcs.to_header(), overwrite=True)
+            prod.write_standard_header(
+                rp, scope=scope, stokes='I',
+                start=ot, end=eh.get('DATE-END') if eh else None,
+                inttime_s=span, time_basis='phase2',
+                beam=(bp_eff * cd, bp_eff * cd, 0.0),
+                aligned=True, alignref=os.path.basename(mp),
+                msub=True, msubfile=mp, ssub=True, dewarped=True,
+                validate=True,
+                extra={'RUNLABEL': runlabel,
+                       'EPOCH_ID': (f'{lst}_{d}', 'LST_date epoch'),
+                       'PSFMATCH': (True, 'symmetric cross-conv subtraction'),
+                       'RENORM': (round(1.0 / fdil, 4),
+                                  'per-pair point-src dilution corr'),
+                       'SCALE2B': (round(dc2, 4),
+                                   '2nd-pass matched-pair flux DC')})
+    except Exception as e:
+        print(f'  [resid archive] {lst} {scope} {d}: {e}', flush=True)
+
+
 def _disk(R):
     Ri = max(int(np.ceil(R)), 1)
     yy, xx = np.mgrid[-Ri:Ri + 1, -Ri:Ri + 1]
@@ -201,7 +236,7 @@ def _assoc(master, x, y, Ri, disk):
     return float(np.nanmax(box))
 
 
-def run_cell(lst, scope):
+def run_cell(lst, scope, residuals_only=False, included_dates=None):
     t0 = time.time()
     base = f'{COADD_ROOT}/{lst}_{scope}'
     cw = f'{FLOW_ROOT}/{lst}_{scope}'
@@ -220,6 +255,8 @@ def run_cell(lst, scope):
 
     dates = [re.search(r'(\d{4}-\d\d-\d\d)_I_sub_', os.path.basename(c)).group(1)
              for c in sorted(glob.glob(f'{base}/subtracted/*_I_sub_{scope}.fits'))]
+    if included_dates:
+        dates = [d for d in dates if d in included_dates]
     flows = {d: f'{cw}/ep_{d}_up2_flow.npy' for d in dates
              if os.path.exists(f'{cw}/ep_{d}_up2_flow.npy')}
     noflow = [d for d in dates if d not in flows]
@@ -231,8 +268,10 @@ def run_cell(lst, scope):
     dates = [d for d in dates if not is_excluded(lst, scope, d, excl)]
     qa = _qa_outlier_dates(lst, scope)
     dates = [d for d in dates if d not in qa]
-    if len(dates) < MIN_EPOCHS:
+    if len(dates) < MIN_EPOCHS and not residuals_only:
         print(f'  {lst} {scope}: only {len(dates)} usable epochs — skip'); return 0
+    if not dates:
+        print(f'  {lst} {scope}: no usable epochs — skip'); return 0
 
     hdr_ref = _det_header(hdr0, scope, bm[0], cd, None)
     global _CTX
@@ -250,35 +289,40 @@ def run_cell(lst, scope):
                   flush=True)
     _CTX = None
     dates = [d for d in dates if d in resid]
-    if len(dates) < MIN_EPOCHS:
+    if len(dates) < MIN_EPOCHS and not residuals_only:
         print(f'  {lst} {scope}: only {len(dates)} residuals — skip'); return 0
+    if not dates:
+        print(f'  {lst} {scope}: no residuals — skip'); return 0
 
     # mstruct-I on the MATCHED master (median epoch kernel), detection beam =
     # matched effective beam — identical construction to the ratified ledger
     med_be = (float(np.median([meta[d][0][0] for d in dates])),
               float(np.median([meta[d][0][1] for d in dates])),
               float(np.median([meta[d][0][2] for d in dates])))
-    ms = _mstruct_i(convolve_fft(master, gk(*med_be), allow_huge=True,
-                                 normalize_kernel=True), mp, bmaj)
     beam = float(np.hypot(bm[0], med_be[0]))
+    ms = None if residuals_only else \
+        _mstruct_i(convolve_fft(master, gk(*med_be), allow_huge=True,
+                                normalize_kernel=True), mp, bmaj)
 
     # sstack: INFO-ONLY column (§5.13 RECORD-NEVER-GATE)
     wtmp = f'{OUT}/tmp_{lst}_{scope}'
     os.makedirs(wtmp, exist_ok=True)
     sstack = _sigma_stack(resid, wtmp, hdr0, 'Iprod') \
-        if len(resid) >= MIN_EPOCHS else None
+        if (len(resid) >= MIN_EPOCHS and not residuals_only) else None
 
     # master local maxima >= 3 Jy for f_img (recorded scintillation level)
     validm = np.isfinite(master) & (master != 0)
-    mf = maximum_filter(np.where(validm, master, 0), size=int(2 * beam) + 1)
-    spy, spx = np.where((master == mf) & (master >= 3.0) & validm)
+    if not residuals_only:
+        mf = maximum_filter(np.where(validm, master, 0), size=int(2 * beam) + 1)
+        spy, spx = np.where((master == mf) & (master >= 3.0) & validm)
 
     h, w = master.shape
-    disks = {rb: _disk(rb * beam) for rb in RADII}
-    # per-radius max-filtered master: masked-area computation for the 2-D
-    # (Fc, radius) min-area choice (one pass per cell, reused by every epoch)
-    mfmaps = {rb: maximum_filter(np.where(validm, master, 0),
-                                 footprint=disks[rb][1]) for rb in RADII}
+    if not residuals_only:
+        disks = {rb: _disk(rb * beam) for rb in RADII}
+        # per-radius max-filtered master: masked-area computation for the 2-D
+        # (Fc, radius) min-area choice (one pass per cell, reused by every epoch)
+        mfmaps = {rb: maximum_filter(np.where(validm, master, 0),
+                                     footprint=disks[rb][1]) for rb in RADII}
     nvalid = max(int(validm.sum()), 1)
     B7 = B70 = None
     led_rows, img_rows, nfinal = [], [], 0
@@ -294,6 +338,15 @@ def run_cell(lst, scope):
         hdr = _det_header(hdr0, scope, beam, cd, ot)
         hdr['INTTIME'] = span; hdr['DURATION'] = span
         wcs = WCS(hdr).celestial
+        if residuals_only:
+            # build + archive the canonical psfmatch residual, no search
+            # (ruling 2026-08-21: psfmatch variant = the canonical I residual)
+            _archive_matched_resid(lst, scope, d, resid[d], ot, span, eh, mp,
+                                   wcs, bp_eff, fdil, dc2, cd,
+                                   runlabel=('PSFM_BF_20260821',
+                                             'psfmatch residual backfill'))
+            nfinal += 1
+            continue
         try:
             horizon, ateam, badwcs, obs_time, _el = sit.make_masks(
                 hdr, rI.shape, wcs)
@@ -327,33 +380,8 @@ def run_cell(lst, scope):
                             float) if b7 else np.empty((0, 2)))
 
         # archive the matched residual (search frame), standard name + headers
-        try:
-            ad = f'{RESID_ROOT}/{lst}_{scope}'
-            os.makedirs(ad, exist_ok=True)
-            rn = prod.build_name(scope, 'I', 'deep', 'Taper', -0.75,
-                                 proc=['dewarped', 'aligned', 'psfmatch',
-                                       'msub', 'ssub'],
-                                 lst=lst, epoch=ot)
-            rp = f'{ad}/{rn}'
-            if not os.path.exists(rp):
-                fits.writeto(rp, resid[d], wcs.to_header(), overwrite=True)
-                prod.write_standard_header(
-                    rp, scope=scope, stokes='I',
-                    start=ot, end=eh.get('DATE-END') if eh else None,
-                    inttime_s=span, time_basis='phase2',
-                    beam=(bp_eff * cd, bp_eff * cd, 0.0),
-                    aligned=True, alignref=os.path.basename(mp),
-                    msub=True, msubfile=mp, ssub=True, dewarped=True,
-                    validate=True,
-                    extra={'RUNLABEL': ('Run_I_DEEP', 'production I deep search'),
-                           'EPOCH_ID': (f'{lst}_{d}', 'LST_date epoch'),
-                           'PSFMATCH': (True, 'symmetric cross-conv subtraction'),
-                           'RENORM': (round(1.0 / fdil, 4),
-                                      'per-pair point-src dilution corr'),
-                           'SCALE2B': (round(dc2, 4),
-                                       '2nd-pass matched-pair flux DC')})
-        except Exception as e:
-            print(f'  [resid archive] {lst} {scope} {d}: {e}', flush=True)
+        _archive_matched_resid(lst, scope, d, resid[d], ot, span, eh, mp,
+                               wcs, bp_eff, fdil, dc2, cd)
 
         # Jupiter ephemeris position (per-epoch; SkyCoord(jb.ra,jb.dec) — the
         # separation(get_body) barycentric-parallax gotcha)

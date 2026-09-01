@@ -142,8 +142,14 @@ def astrometry(ipath, freq_mhz, nominal_beam_deg):
     if mask.sum() >= 3:
         mv = vcoord[idx[mask]]
         cosd = np.cos(np.radians(dec_a[mask]))
-        dra = (ra_a[mask] - mv.ra.deg) * cosd * 60.0
-        ddec = (dec_a[mask] - mv.dec.deg) * 60.0
+        # R-D3-FIX (2026-08-16): ra_a comes from BDSF posn_sky_max, i.e. the
+        # image's own CRVAL1 branch (negative for LST 12h-23h masters), while
+        # mv.ra.deg is 0-360. Use the SkyCoord built above (which normalises)
+        # AND wrap the difference before the cos(dec) scaling, so the RA 0/360
+        # seam is covered too.
+        sc_m = sc_all[mask]
+        dra = (((sc_m.ra.deg - mv.ra.deg) + 180.0) % 360.0 - 180.0) * cosd * 60.0
+        ddec = (sc_m.dec.deg - mv.dec.deg) * 60.0
         out['astrom_dra_arcmin'] = float(np.median(dra))
         out['astrom_ddec_arcmin'] = float(np.median(ddec))
         sys_off = float(np.hypot(np.median(dra), np.median(ddec)))

@@ -529,18 +529,18 @@ def _fallback_peak_find(data, rms, beam_pix, mask, wcs):
 # ================================================================
 def assign_local_snr(candidates, diff_data, exclusion_mask, beam_pix,
                      sigma_thresh):
-    """Assign local SNR using sector-minimum annulus MAD.
+    """Assign local SNR from the whole-annulus 3-sigma-clipped MAD.
 
-    Same algorithm as the Stokes V pipeline. For each candidate,
-    computes MAD in N angular sectors of an annulus, takes the minimum.
-    This measures the local noise floor (sidelobe sea level) at each
-    position, robust to bright source contamination in any one sector.
+    Same algorithm as the Stokes V pipeline (P11 fix, Gregg-approved
+    2026-08-21): local noise is the MAD of the 2-10 beam annulus after a
+    3-sigma clip, which discards contaminated pixels (bright source or
+    sidelobe arm) instead of three quarters of the annulus.
     """
+    from astropy.stats import sigma_clip
     cfg = CONFIG
     h, w = diff_data.shape
     inner = cfg['LOCAL_SNR_INNER_BEAMS']
     outer = cfg['LOCAL_SNR_OUTER_BEAMS']
-    n_sec = cfg['LOCAL_SNR_N_SECTORS']
     min_pix = cfg['LOCAL_SNR_MIN_PIX']
 
     box = int(np.ceil(outer * beam_pix))
@@ -548,12 +548,8 @@ def assign_local_snr(candidates, diff_data, exclusion_mask, beam_pix,
     dy -= box; dx -= box
     d_sq = dx**2 + dy**2
     ann = (d_sq >= (inner*beam_pix)**2) & (d_sq <= (outer*beam_pix)**2)
-    angles = np.arctan2(dx, dy) % (2*np.pi)
-    sec_w = 2*np.pi / n_sec
-    sec_ids = (angles / sec_w).astype(int) % n_sec
     ann_dy = dy[ann].astype(int)
     ann_dx = dx[ann].astype(int)
-    ann_sec = sec_ids[ann]
 
     n_rej = 0
     for c in candidates:
@@ -565,15 +561,14 @@ def assign_local_snr(candidates, diff_data, exclusion_mask, beam_pix,
         # Annulus pixel coordinates
         ay = cy + ann_dy
         ax = cx + ann_dx
-        asec = ann_sec.copy()
 
         # Clip to image bounds
         valid = (ay >= 0) & (ay < h) & (ax >= 0) & (ax < w)
-        ay, ax, asec = ay[valid], ax[valid], asec[valid]
+        ay, ax = ay[valid], ax[valid]
 
         # Exclude masked pixels
         not_masked = ~exclusion_mask[ay, ax]
-        ay, ax, asec = ay[not_masked], ax[not_masked], asec[not_masked]
+        ay, ax = ay[not_masked], ax[not_masked]
 
         if len(ay) == 0:
             c['local_rms'] = np.nan
@@ -581,23 +576,17 @@ def assign_local_snr(candidates, diff_data, exclusion_mask, beam_pix,
 
         vals = diff_data[ay, ax]
 
-        # Sector-minimum MAD
-        mads = []
-        for s in range(n_sec):
-            sec_vals = vals[asec == s]
-            if len(sec_vals) >= min_pix:
-                mads.append(float(mad_std(sec_vals)))
+        # 3-sigma-clipped MAD over the WHOLE annulus (P11 fix, Gregg-approved
+        # 2026-08-21; replaces the sector-minimum, biased ~11% low — see
+        # PHASE3_PROBLEM_LEDGER.md P11). Same formula as the calibration
+        # measurement (fp_gate_v103.py:109).
+        if len(vals) < min_pix:
+            c['local_rms'] = np.nan
+            continue
+        cl = sigma_clip(vals, sigma=3.0, maxiters=5, masked=True)
+        lr = float(mad_std(vals[~cl.mask]))
 
-        if not mads:
-            if len(vals) >= min_pix:
-                lr = float(mad_std(vals))
-            else:
-                c['local_rms'] = np.nan
-                continue
-        else:
-            lr = min(mads)
-
-        if lr <= 0:
+        if lr <= 0 or not np.isfinite(lr):
             c['local_rms'] = np.nan
             continue
 

@@ -24,6 +24,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from exopipe.phase3.phase3_deep import (_load, _master_structure_map, _build_residuals_mp,
+                         _mstruct_validity_guard,
                          _qa_outlier_dates, NPROC_RESID, MIN_EPOCHS,
                          load_exclusions, is_excluded)
 from exopipe.phase3.phase3_tenmin import _det_header
@@ -96,17 +97,32 @@ def bilobe_measurables(img, x, y, beam, grms, maxsep=4.0):
 
 
 def _mstruct_i(master, mp, beam):
-    """Destriped-I-master local-rms map (falls back to raw on destripe failure)."""
-    raw = _master_structure_map(master, beam)
+    """Destriped-I-master local-rms map (falls back to raw on destripe failure).
+
+    Validity comes from the MASTER for both maps (problem-ledger P12, Gregg-approved
+    2026-08-18): the running-median striation model reproduces its input exactly on
+    ~0.8% of pixels, and inferring validity from `!= 0` on the difference read those
+    as unimaged and handed them the gate floor."""
+    vmask = np.isfinite(master) & (master != 0)
+    raw = _master_structure_map(master, beam, valid=vmask)
     try:
         hh = fits.getheader(mp); mwcs = WCS(hh).celestial
         _hm, _am, iwm, _ot, _c, _e = sv2.make_masks(hh, master.shape, fits_path=mp)
         sm, _ = build_striation_model(master, mwcs, iwm,
                                       ra_window_beams=20.0, beam_pix=beam)
-        return _master_structure_map(master - sm, beam)
     except Exception as e:
         print(f'    [mstruct-I] destripe failed ({e}); raw map used')
         return raw
+    dif = master - sm
+    n_leak = int((vmask & (dif == 0)).sum())
+    if n_leak:
+        print(f'    [mstruct-I] P12: {n_leak:,} imaged pixels '
+              f'({100.0 * n_leak / max(int(vmask.sum()), 1):.2f}%) are reproduced exactly '
+              f'by the striation model; validity taken from the master')
+    rep = {}
+    destriped = _master_structure_map(dif, beam, valid=vmask, report=rep)
+    _mstruct_validity_guard(rep, vmask, mp, 'I')
+    return destriped
 
 
 _PSFM_CTX = None

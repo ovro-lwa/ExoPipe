@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+casa-*.log
+# dated pre-change backups; the change they precede is named in the filename
+*.bak_*

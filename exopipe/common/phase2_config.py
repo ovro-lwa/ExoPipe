@@ -220,3 +220,28 @@ SLACK_WEBHOOK_URL = None  # e.g., "https://hooks.slack.com/services/T.../B.../..
 # anchor extraction; the warp screen is already masked outside anchor
 # coverage downstream. LSTs not listed get no cut.
 ANCHOR_MIN_ELEVATION_DEG = {'13h': 20.0}
+
+# EAST-side elevation floor (Gregg 2026-08-28): at plane-rising LSTs the
+# Galactic emission climbs the EASTERN sky well above the ring floor
+# (13h: inner plane at ~20-35 deg east elevation) and BDSF grinds ~24 min
+# per 10-min interval fitting kJy of diffuse emission that can never be an
+# anchor. Pixels are blanked when BOTH east of the meridian AND below this
+# elevation; the western and high sky is untouched. LSTs not listed: no cut.
+# ARMED for 13h (2026-08-30) under Gregg's standing conditional ruling of
+# 2026-08-30 ("if the island-cap retries fail again -> switch to the
+# east-side elevation cut"): the stage-3 island-cap retry pass timed out
+# at the 10 h cap on all six April nights (04-05/07/08/09/10/11, log
+# /fast/gh/main/phase3/retry13h_chain.log on lwacalim02). 45 deg is the
+# value from Gregg's 2026-08-28 diagnosis (blanks the rising Galactic
+# plane, measured 47% of field at 13h). 2026-08-30 Gregg: trial 35 deg
+# instead of 45 deg for the stage-4 pass.
+ANCHOR_EAST_MIN_ELEVATION_DEG = {'13h': 35.0}
+
+# Island size cap for anchor extraction (Gregg approved 2026-08-28):
+# BDSF maxpix_isl = this many BEAM AREAS (computed per image from the
+# header beam). The plane-fitting time sink is BDSF fitting enormous
+# diffuse islands (measured: single island, ~20 Gaussians, 3 kJy, ~24 min);
+# islands above the cap are discarded BEFORE fitting. Anchors must be
+# unresolved (astrometry contract), so nothing is lost anywhere on the sky.
+# Validated on 13h first; on success extend to all LSTs ('*' key).
+ANCHOR_MAX_ISLAND_BEAM_AREAS = {'13h': 20.0}

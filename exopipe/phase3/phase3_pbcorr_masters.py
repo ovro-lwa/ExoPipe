@@ -25,8 +25,11 @@ from astropy.io import fits
 from exopipe.phase3 import pb_apply as PB
 sys.argv = _ARGV              # restore after import-protection clobber
 
-WB_ROOT = '/fast/gh/main/phase3/coadd'
-SB_ROOT = '/data07/gh/phase3/coadd_sb'
+# v2-rebuild campaign (Gregg close-out 2026-08-29): PB siblings must be
+# regenerated for the rebuilt cell roots; override via the same env var the
+# search fleet uses, default = the legacy trees
+WB_ROOT = os.environ.get('P3_COADD_ROOT', '/fast/gh/main/phase3/coadd')
+SB_ROOT = os.environ.get('P3_COADD_SB_ROOT', '/data07/gh/phase3/coadd_sb')
 VARIANTS = ['I_deep_Taper_R0', 'I_deep_Taper_R075', 'I_deep_NoTaper_R0',
             'I_deep_NoTaper_R075', 'V_deep_Taper_R0']
 BEAMMOD = 'OVRO-LWA_MROsoil_updatedheight.h5'

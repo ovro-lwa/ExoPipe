@@ -108,5 +108,6 @@ organization for related software.
 
 ## License
 
-License selection is pending; see `PUBLISH_CHECKLIST.md`. All rights
-reserved until a license file is added.
+ExoPipe is licensed under the GNU General Public License v3 (GPLv3) —
+ruled R-PUB2 (Gregg 2026-08-15), superseding the earlier pending-selection
+note. The GPLv3 full text ships as `LICENSE` in the published package.

@@ -16,7 +16,7 @@ x max(1,(36/nu)^1.5) below 36 MHz; a pair links when sep <= max(r1,r2).
 Source IDs from the shared registry (phase3_source_ids.assign).
 
 Cross-match per source (nearest + n_xmatch + xmatch_all, same nu-scaled
-radius): sample CSVs 10pc/25pc/50pc/Hot_Warm_Jupiters/LPTs/flare_ucd/stars
+radius): sample CSVs 10pc/25pc/50pc/Hot_Warm_Jupiters/LPTs/flare_ucd/sydney_stars
 + pulsars_atnf.csv (v2.8.1).
 
 Outputs (run roots Run_V_SB / Run_I_SB):
@@ -39,7 +39,7 @@ CLV = '/lustre/gh/main/clv15'
 DATE = '20260719'
 PB_FLOOR = 0.1
 SAMPLES = ['10pc.csv', '25pc.csv', '50pc.csv', 'Hot_Warm_Jupiters.csv',
-           'LPTs.csv', 'flare_ucd.csv', 'stars.csv', 'pulsars_atnf.csv']
+           'LPTs.csv', 'flare_ucd.csv', 'sydney_stars.csv', 'pulsars_atnf.csv']
 
 SB_BASE_AMIN = {  # band-base measured radii, nu-scaled below 36 MHz
     '18MHz': 5.0, '23MHz': 5.0, '27MHz': 5.0, '32MHz': 5.0, '36MHz': 5.0,

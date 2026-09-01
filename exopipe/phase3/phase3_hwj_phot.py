@@ -95,30 +95,33 @@ SUBBAND_ONLY_EXCL = {'18MHz'}
 
 def load_exclusions():
     """data_decisions.csv exclusions with the RATIFIED production semantics
-    (coadd_full_pipeline.is_excluded / is_whole_night_excluded, Gregg
-    2026-06-29): returns {'triples': {(lst, date, subband)},
-    'whole_night': {(lst, date)}} where whole_night = any excluded subband
-    beyond the 18MHz carve-out."""
-    triples, whole = set(), set()
+    (mirrors coadd_full_pipeline.is_excluded, per-band rule Gregg
+    2026-08-31): returns {'triples': {(lst, date, subband)}}. Only
+    verdict=='exclude' rows count — readmitted rows carry verdict 'keep'
+    (2026-08-30 readmission) and must not be read as exclusions."""
+    triples = set()
     if os.path.exists(DECISIONS):
         for r in csv.DictReader(open(DECISIONS)):
+            if (r.get('verdict') or '').strip() != 'exclude':
+                continue
             lst = (r.get('lst') or r.get('LST') or '').strip()
             date = (r.get('date') or r.get('DATE') or '').strip()
             sb = (r.get('subband') or '').strip()
             if lst and date and sb:
                 triples.add((lst, date, sb))
-                if sb not in SUBBAND_ONLY_EXCL:
-                    whole.add((lst, date))
-    return {'triples': triples, 'whole_night': whole}
+    return {'triples': triples}
 
 
 def is_excluded(lst, date, band, exc):
-    """Ratified semantics (Gregg 2026-06-29, coadd_full_pipeline):
-    wideband image excluded iff the night is whole-night excluded (18MHz-
-    only nights keep wideband — accepted contamination); subband image
-    excluded iff its exact (lst, date, subband) is listed."""
+    """Mirrors coadd_full_pipeline.is_excluded (per-band rule, Gregg
+    2026-08-31): a wideband image is excluded iff any of ITS OWN
+    constituent subbands is excluded (18MHz carve-out excepted — its Red
+    is kept, accepted contamination, Gregg 2026-06-29); a subband image
+    iff its exact (lst, date, subband) is listed."""
     if band in WB_SUBBANDS:
-        return int((lst, date) in exc['whole_night'])
+        bad = {sb for (l, d, sb) in exc['triples']
+               if l == lst and d == date and sb not in SUBBAND_ONLY_EXCL}
+        return int(bool(set(WB_SUBBANDS[band]) & bad))
     return int((lst, date, band) in exc['triples'])
 
 
