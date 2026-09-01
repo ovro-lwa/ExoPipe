@@ -1473,6 +1473,26 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
     # anchors. The cascade arms are then re-rooted at the chosen anchor.
     candidates = [sb for sb in ANCHOR_FALLBACK
                   if os.path.isdir(os.path.join(work_dir, sb))]
+    # EXPLICIT ANCHOR OVERRIDE (Gregg 2026-09-01, "64 MHz anchor is fine").
+    # The fallback walk only triggers when a candidate is MISSING or yields
+    # too few VLSSr anchors — not when it yields plenty of anchors and a
+    # badly wrong solution. At 14h 2025-05-03 the primary 73MHz anchor and
+    # the 78MHz and 69MHz fallbacks all produce warp solutions that measure
+    # 24.7, 32.1 and 18.8 arcmin median VLSSr separation against a 3.0
+    # threshold, while 64MHz measures 0.44 — so the anchor must be named
+    # explicitly. Default behaviour is unchanged when the variable is unset.
+    _forced = os.environ.get('P2_FORCE_ANCHOR_SUBBAND')
+    if _forced:
+        if os.path.isdir(os.path.join(work_dir, _forced)):
+            logger.info(f"ANCHOR FORCED to {_forced} via "
+                        f"P2_FORCE_ANCHOR_SUBBAND (overriding "
+                        f"{ANCHOR_FALLBACK})")
+            candidates = [_forced]
+        else:
+            logger.error(f"P2_FORCE_ANCHOR_SUBBAND={_forced} but "
+                         f"{work_dir}/{_forced} does not exist — REFUSING "
+                         f"to silently fall back to the default anchor")
+            return results
     if not candidates:
         logger.error(f"No anchor candidate subbands {ANCHOR_FALLBACK} found in "
                      f"{work_dir}  aborting dewarping")

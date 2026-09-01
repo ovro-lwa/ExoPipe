@@ -1311,7 +1311,10 @@ def _reference_astrom_ok(ref_img_path, label='', freq_label=None):
             vv = np.loadtxt(VLSSR_REF, skiprows=1)
             _VLSSR_CACHE = SkyCoord(vv[:, 0] * u.deg, vv[:, 1] * u.deg)
         a, hdr = load_image(ref_img_path)
+        # load_image() already zero-fills NaN, so a finite-fraction here
+        # would always read 100%. Record what the test actually looks at.
         a = np.nan_to_num(np.asarray(a, dtype=float))
+        _npos = int((a > 0).sum())
         w = WCS(hdr).celestial
         n = a.shape[0]
         q = n // 8
@@ -1319,7 +1322,21 @@ def _reference_astrom_ok(ref_img_path, label='', freq_label=None):
         mfl = maximum_filter(cen, size=25)
         py, px = np.where((cen == mfl) & (cen > 0))
         if not len(py):
-            return True
+            # A-02 SILENT PASS FIXED (2026-09-01). This returned True — a
+            # silent pass — contradicting this function's own docstring
+            # ("fails CLOSED on measurement error ... no silent passes").
+            # It fires when the reference image has no positive local
+            # maximum at all, i.e. it is BLANK. Measured on the archive:
+            # 01h/2024-12-21/69MHz and 16h/2025-05-03/69MHz are 0.0%
+            # finite (raw AND dewarped — dead upstream), and
+            # 15h/2025-05-03/78MHz has a 100%-finite raw whose DEWARPED
+            # product is 0.0% finite — the dewarp destroyed it. All three
+            # were being passed as acceptable alignment references.
+            print(f"  [ref-astrom] ERROR: {label or os.path.basename(ref_img_path)} "
+                  f"has NO positive local maximum — the reference image is "
+                  f"BLANK ({_npos} positive pixels, max {float(a.max()):.4g}). "
+                  f"REJECTING (A-02: fail closed, ESCALATE-TO-GREGG)")
+            return False
         fx = cen[py, px]
         seps = []
         for i in np.argsort(fx)[::-1][:50]:
