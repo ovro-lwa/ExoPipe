@@ -514,6 +514,50 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                       f'{_med:.0f} mJy): {_bad}')
     except FileNotFoundError:
         pass
+    # (1c) BEAM GATE (Gregg approved 2026-09-02, after the 2024-12-24
+    # long-baseline dropout diagnosis): an epoch whose fitted-beam AREA
+    # (BMAJ*BMIN of its Phase-2 survey-variant product) exceeds
+    # P3_BEAM_GATE_RATIO (default 1.5) x the median of the searched epoch
+    # set was imaged from degraded uv coverage (long baselines absent) —
+    # searching it against a sharp master floods the list with beam-
+    # mismatch FPs (10h Blue 2024-12-24: 147 survivors, all vetoes blind
+    # to it). Survey-wide audit 2026-09-02: the healthy population ends
+    # ~1.4x and the dropout class starts >= 1.8x, so 1.5 sits in the gap
+    # (950/20,376 epochs = 4.7% affected; exopipe_ops/beam_audit.py).
+    # A REFUSAL, logged per epoch. P3_BEAM_GATE_OFF=1 for archaeology.
+    if os.environ.get('P3_BEAM_GATE_OFF') != '1':
+        _p2 = '/lustre/pipeline/exopipe/phase2'
+        _irob_f = 'Robust-0.75'
+        _areas = {}
+        for d in dates:
+            _g = [x for x in
+                  glob.glob(f'{_p2}/{lst}/{d}/*/{scope}/I/deep/'
+                            f'*Taper_{_irob_f}_dewarped*.fits')
+                  + glob.glob(f'{_p2}/{lst}/{d}/*/{scope}/I/deep/'
+                              f'*Taper-*-{_irob_f}-*dewarped*.fits')
+                  if 'pbcorr' not in os.path.basename(x)]
+            if _g:
+                try:
+                    _h = fits.getheader(_g[0])
+                    _areas[d] = float(_h['BMAJ']) * float(_h['BMIN'])
+                except Exception:
+                    pass
+        _fin = sorted(_areas.values())
+        if len(_fin) >= 5:
+            _bmed = _fin[len(_fin) // 2]
+            _thr = float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5'))
+            _bbad = [d for d in dates
+                     if _areas.get(d, 0) > _thr * _bmed]
+            if _bbad:
+                dates = [d for d in dates if d not in _bbad]
+                with open(f'{base}/beam_excluded.csv', 'a') as _bf:
+                    for d in _bbad:
+                        _bf.write(f'{lst},{scope},{d},'
+                                  f'{_areas[d]/_bmed:.2f},{_thr}\n')
+                print(f'  {lst} {scope}: BEAM GATE — {len(_bbad)} epoch(s)'
+                      f' REFUSED from search (fitted-beam area >{_thr}x '
+                      f'cell median): '
+                      f'{[(d, round(_areas[d]/_bmed, 2)) for d in _bbad]}')
     if len(dates) < MIN_EPOCHS:
         print(f'  {lst} {scope}: only {len(dates)} flows — skip'); return 0
 
