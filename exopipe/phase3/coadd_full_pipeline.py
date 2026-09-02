@@ -1081,6 +1081,26 @@ def write_loo_masters(aligned, master_path, out_dir, tag):
         S = a * w if S is None else S + a * w
         Wmap = v * w if Wmap is None else Wmap + v * w
     os.makedirs(out_dir, exist_ok=True)
+    # PURGE STALE LOO MASTERS (2026-09-02). write_loo_masters only ever
+    # ADDED files, so a cell rebuilt with a different epoch set kept the
+    # previous set's leave-one-out masters alongside the new ones. Found on
+    # 23h_32MHz: loo/ held 23 files for an 11-epoch master because
+    # 2025-08-18_I_loo_* survived from an earlier build although 2025-08-18
+    # is no longer a constituent - and it had no V counterpart, so the
+    # directory was internally inconsistent too. A consumer indexing LOO
+    # masters by date would have been handed a master built against an
+    # epoch set that no longer exists. Remove anything whose date is not in
+    # the current aligned set before writing.
+    _keep = {d for d, _p, _w in aligned}
+    for _f in os.listdir(out_dir):
+        _m = re.match(r'(\d{4}-\d{2}-\d{2})_', _f)
+        if _m and _m.group(1) not in _keep:
+            try:
+                os.remove(os.path.join(out_dir, _f))
+                print(f'    purged stale LOO master (epoch no longer a '
+                      f'constituent): {_f}', flush=True)
+            except OSError:
+                pass
     mhdr = fits.getheader(master_path)
     n = 0
     for d, p, w in aligned:
