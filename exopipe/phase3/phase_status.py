@@ -9,7 +9,14 @@ from collections import Counter
 LEDGER = '/fast/gh/main/phase3/qa_assembly_2/processing_ledger.csv'
 DECISIONS = '/lustre/gh/main/clv15/data_decisions.csv'
 DECISIONS_FP = '/fast/gh/main/phase3/qa_assembly_2/.data_decisions.fingerprint'
-COADD = '/fast/gh/main/phase3/coadd'
+# Current-generation co-add roots, in the same precedence the consumers use
+# (exopipe_ops/resolve_master_root.sh). /fast/gh/main/phase3/coadd is the
+# SUPERSEDED tree and is deliberately absent from this list.
+COADD_ROOTS = ['/fast/gh/main/phase3/rebuild_w2',
+               '/fast/gh/main/phase3/rebuild_v2',
+               '/fast/gh/main/phase3/rebuild_13h',
+               '/data07/gh/phase3/coadd_sb']
+RETIRED_COADD = '/fast/gh/main/phase3/coadd'
 
 def age(path):
     try:
@@ -53,24 +60,66 @@ def main():
         except OSError:
             pass
         flag = "  *** CHANGED since last session — reconcile with Gregg ***" if changed else ""
-        print(f"[data_decisions] {len(drows)} exclude-rows | {len(dcells)} (lst,date) cells | "
+        # FIXED 2026-09-02 (found by the follow-up session): this printed
+        # len(drows) as "exclude-rows", counting every row in the file.
+        # 425 of them are verdict=keep (the READMITTED-2026-08-30 set), so
+        # the exclusion count was overstated by ~24% in every session-start
+        # report. Count verdicts explicitly, and count a cell as excluded
+        # only if it carries at least one exclude row.
+        n_excl = sum(1 for r in drows if r.get('verdict') == 'exclude')
+        n_keep = sum(1 for r in drows if r.get('verdict') == 'keep')
+        n_other = len(drows) - n_excl - n_keep
+        excl_cells = {(r['lst'], r['date']) for r in drows
+                      if r.get('verdict') == 'exclude'}
+        ndates = len({d for _, d in excl_cells})
+        print(f"[data_decisions] {n_excl} exclude-rows"
+              + (f" (+{n_keep} keep" + (f", {n_other} other" if n_other else "")
+                 + f"; {len(drows)} rows total)" if n_keep or n_other else "")
+              + f" | {len(excl_cells)} excluded (lst,date) cells | "
               f"{ndates} dates | edited {da:.0f}h ago{flag}")
         print("  ACTION: confirm with Gregg whether any exclusions changed before co-add/search work")
     else:
         print("[data_decisions] MISSING — /lustre/gh/main/clv15/data_decisions.csv not found")
 
     # ---- Phase 3 product inventory ----
-    if os.path.isdir(COADD):
-        cells = [d for d in os.listdir(COADD) if len(d) > 3 and d[2] == 'h' and '_' in d]
-        wb = [c for c in cells if c.split('_', 1)[1] in ('Red', 'Green', 'Blue', 'Full')]
-        sb = [c for c in cells if c.split('_', 1)[1].endswith('MHz')]
-        masters = len(glob.glob(f'{COADD}/*/coadd_final/.done'))
-        print(f"[P3 coadd] {len(cells)} cells (wideband {len(wb)}, subband {len(sb)}); "
-              f"deep masters built (coadd_final/.done): {masters}")
-        # newest activity
-        recent = sorted(glob.glob(f'{COADD}/*/coadd_final/.done'), key=os.path.getmtime)
+    # FIXED 2026-09-02 (found by the follow-up session): this counted only
+    # /fast/gh/main/phase3/coadd — the SUPERSEDED sigma-clipped tree — so
+    # every session-start report described a retired generation as the
+    # Phase-3 inventory. Same stale-root class as the ledger row
+    # FIX-CONSUMER-MASTER-ROOT-STALE-COADD-TREE. Count across the
+    # current-generation roots instead, and say so if the retired tree is
+    # still on disk.
+    seen = set()
+    tot_cells = tot_masters = 0
+    per_root = []
+    for root in COADD_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        cells = [d for d in os.listdir(root)
+                 if len(d) > 3 and d[2] == 'h' and '_' in d]
+        new = [c for c in cells if c not in seen]
+        seen.update(cells)
+        m = len(glob.glob(f'{root}/*/coadd_final/.done'))
+        tot_cells += len(new)
+        tot_masters += m
+        per_root.append(f"{os.path.basename(root)} {len(new)}")
+    if per_root:
+        wb = [c for c in seen if c.split('_', 1)[1] in ('Red', 'Green', 'Blue', 'Full')]
+        sb = [c for c in seen if c.split('_', 1)[1].endswith('MHz')]
+        print(f"[P3 coadd] {len(seen)} distinct cells "
+              f"(wideband {len(wb)}, subband {len(sb)}) across "
+              + ", ".join(per_root)
+              + f"; coadd_final/.done markers: {tot_masters}")
+        print("  NOTE: .done is NOT proof of the current master generation — "
+              "run exopipe_ops/verify_master_generation.py for COADDOP + loo/")
+        recent = sorted((p for r in COADD_ROOTS
+                         for p in glob.glob(f'{r}/*/coadd_final/.done')),
+                        key=os.path.getmtime)
         if recent:
             print(f"  newest deep master: {age(recent[-1]):.0f}h ago")
+    if os.path.isdir(RETIRED_COADD):
+        print(f"  *** RETIRED TREE STILL ON DISK: {RETIRED_COADD} — "
+              f"superseded sigma-clipped generation; no consumer may select it ***")
 
     # ---- running jobs on THIS node ----
     try:
