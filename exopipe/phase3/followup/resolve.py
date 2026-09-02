@@ -21,6 +21,17 @@ from . import config as C
 
 
 # --- bundle (discovery products) -------------------------------------------
+def _variant_token(path):
+    """'Robust-0.75' or 'Robust-0' as written in a Phase-2 filename.
+
+    Substring tests are unsafe here: 'Robust-0' is a prefix of
+    'Robust-0.75', so `'Robust-0' in name` matches BOTH variants.
+    """
+    b = os.path.basename(path)
+    return 'Robust-0.75' if 'Robust-0.75' in b else (
+        'Robust-0' if 'Robust-0' in b else None)
+
+
 def bundle_path(rank, lst, band, date, cadence, iv=None, kind='Vresidual'):
     binpart = f'_bin{int(iv)}' if (cadence == '10min' and iv not in (None, '')) else ''
     name = f'rank{int(rank):02d}_{lst}_{band}_{date}_{cadence}{binpart}_{kind}.fits'
@@ -121,6 +132,22 @@ def phase2_subband_image(lst, date, scope, stokes, cadence, iv=None):
                                                scope, stokes, cadence))):
             imgs = [h for h in sorted(glob.glob(os.path.join(d, '*image_dewarped.fits')))
                     if 'pbcorr' not in os.path.basename(h)]
+            # VARIANT SELECTION (fixed 2026-09-02). This returned imgs[0],
+            # and lexical sort puts NoTaper-Robust-0 FIRST for Stokes I
+            # ('NoTaper' < 'Taper') — never the survey variant, and the
+            # variant most likely to hold a diverged CLEAN (values to 1e19
+            # Jy/beam; see R-READMIT-CLEAN-DIVERGENCE and
+            # R-SEARCH-SANITY-GATE-10X). Reading the wrong variant produced
+            # three false alarms in one session before it was caught.
+            # The transient survey uses I = Taper Robust-0.75 and
+            # V = Taper Robust-0 (R-VARIANT-DOC; Gregg 2026-09-02) — select
+            # that explicitly and fall back only if it is genuinely absent.
+            _want = ('Robust-0.75' if stokes == 'I' else 'Robust-0')
+            _survey = [h for h in imgs
+                       if 'NoTaper' not in os.path.basename(h)
+                       and _variant_token(h) == _want]
+            if _survey:
+                imgs = _survey
             if not imgs:
                 continue
             if cadence == '10min' and iv is not None:
