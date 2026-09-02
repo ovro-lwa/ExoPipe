@@ -1984,6 +1984,23 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         yg, xg = np.indices((h, w), dtype=float)
         scale_map_full = (coeffs[0] + coeffs[1] * (2.0 * xg / w - 1.0)
                           + coeffs[2] * (2.0 * yg / h - 1.0))
+        # BLANK-FIELD REFUSAL (Gregg 2026-09-02: "QA should refuse blank
+        # fields and report them"). Previously a blank epoch satisfied the
+        # n_src<8 arm below and was handed a flat DC of 1.0, i.e. ACCEPTED.
+        # It then left the co-add only by accident: get_uniform_rms returns
+        # 0.0 for an all-zero frame, so the weight line zeroes it - and
+        # nothing recorded that the epoch had dropped out. That accident
+        # does NOT cover a frame that is finite with no positive pixel: it
+        # has a nonzero rms, hence a nonzero weight, and would enter the
+        # co-add. Refuse explicitly and say so.
+        _npos = int(np.count_nonzero(np.nan_to_num(tgt_data) > 0))
+        _finite = float(np.isfinite(tgt_data).mean())
+        if _npos == 0 or _finite == 0.0:
+            print(f"    {date}: BLANK FIELD REFUSED — {_npos} positive "
+                  f"pixels, {100*_finite:.1f}% finite. Not scaled, not "
+                  f"weighted, NOT added to the co-add (Gregg 2026-09-02).",
+                  flush=True)
+            continue
         # Flux-degeneracy guard (Gregg 2026-06-21): a degenerate affine fit
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
@@ -2223,6 +2240,23 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
         yg, xg = np.indices((h, w), dtype=float)
         scale_map_full = (coeffs[0] + coeffs[1] * (2.0 * xg / w - 1.0)
                           + coeffs[2] * (2.0 * yg / h - 1.0))
+        # BLANK-FIELD REFUSAL (Gregg 2026-09-02: "QA should refuse blank
+        # fields and report them"). Previously a blank epoch satisfied the
+        # n_src<8 arm below and was handed a flat DC of 1.0, i.e. ACCEPTED.
+        # It then left the co-add only by accident: get_uniform_rms returns
+        # 0.0 for an all-zero frame, so the weight line zeroes it - and
+        # nothing recorded that the epoch had dropped out. That accident
+        # does NOT cover a frame that is finite with no positive pixel: it
+        # has a nonzero rms, hence a nonzero weight, and would enter the
+        # co-add. Refuse explicitly and say so.
+        _npos = int(np.count_nonzero(np.nan_to_num(tgt_data) > 0))
+        _finite = float(np.isfinite(tgt_data).mean())
+        if _npos == 0 or _finite == 0.0:
+            print(f"    {date}: BLANK FIELD REFUSED — {_npos} positive "
+                  f"pixels, {100*_finite:.1f}% finite. Not scaled, not "
+                  f"weighted, NOT added to the co-add (Gregg 2026-09-02).",
+                  flush=True)
+            continue
         # Flux-degeneracy guard (Gregg 2026-06-21): a degenerate affine fit
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
@@ -2681,6 +2715,23 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         yg, xg = np.indices((h, w), dtype=float)
         scale_map_full = (coeffs[0] + coeffs[1] * (2.0 * xg / w - 1.0)
                           + coeffs[2] * (2.0 * yg / h - 1.0))
+        # BLANK-FIELD REFUSAL (Gregg 2026-09-02: "QA should refuse blank
+        # fields and report them"). Previously a blank epoch satisfied the
+        # n_src<8 arm below and was handed a flat DC of 1.0, i.e. ACCEPTED.
+        # It then left the co-add only by accident: get_uniform_rms returns
+        # 0.0 for an all-zero frame, so the weight line zeroes it - and
+        # nothing recorded that the epoch had dropped out. That accident
+        # does NOT cover a frame that is finite with no positive pixel: it
+        # has a nonzero rms, hence a nonzero weight, and would enter the
+        # co-add. Refuse explicitly and say so.
+        _npos = int(np.count_nonzero(np.nan_to_num(tgt_data) > 0))
+        _finite = float(np.isfinite(tgt_data).mean())
+        if _npos == 0 or _finite == 0.0:
+            print(f"    {date}: BLANK FIELD REFUSED — {_npos} positive "
+                  f"pixels, {100*_finite:.1f}% finite. Not scaled, not "
+                  f"weighted, NOT added to the co-add (Gregg 2026-09-02).",
+                  flush=True)
+            continue
         # Flux-degeneracy guard (Gregg 2026-06-21): a degenerate affine fit
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
