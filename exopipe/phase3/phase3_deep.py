@@ -382,6 +382,81 @@ def _sigma_stack(resids, cell_work, hdr0, tag):
     return ss
 
 
+def _read_gaul_parents(gaulp):
+    """PyBDSF gaul CSV -> [(ra, dec, peak_jy)]. Header is a '# ...' comment
+    line (2026-08-30 parsing fix carried from the battery tooling)."""
+    ghdr, out = None, []
+    for l in (l for l in open(gaulp) if l.strip()):
+        if l.startswith('#'):
+            f_ = [x.strip() for x in l.lstrip('#').split(',')]
+            if ghdr is None and 'RA' in f_:
+                ghdr = f_
+            continue
+        if ghdr:
+            rec = dict(zip(ghdr, [x.strip() for x in l.split(',')]))
+            try:
+                out.append((float(rec['RA']), float(rec['DEC']),
+                            float(rec['Peak_flux'])))
+            except Exception:
+                pass
+    return out
+
+
+_V110_PY = '/opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3'
+_V110_WRAP = ('/lustre/gh/main/exopipe_ops/design/FP_PREDICTION/'
+              'fp_gate_redo_wrapper.py')
+
+
+def _v110_cell_verdicts(lst, scope, base, cell_work, master_I, hdr0, em, cd,
+                        v_pending):
+    """One frozen-v110 invocation over a cell's post-mstruct V survivors.
+    Returns {f'{date}_{ra5}_{dec5}': fp_prediction}. REFUSES (raises) on
+    gate failure or unverdicted survivors — no candidate reaches the
+    catalog unverdicted (R-ROUND2-RATIFIED)."""
+    import csv as _csv
+    cat = f'{cell_work}/v110_catalog.csv'
+    samp = f'{cell_work}/v110_sample.csv'
+    keys = {}
+    with open(cat, 'w', newline='') as fc, open(samp, 'w', newline='') as fs:
+        wc = _csv.writer(fc); ws = _csv.writer(fs)
+        wc.writerow(['cand_id', 'lst', 'band', 'ra', 'dec', 'date'])
+        ws.writerow(['cand_id', 'resid_path'])
+        i = 0
+        for d, keptv, vr_path, hdr, ot, _pm in v_pending:
+            for c in keptv:
+                cid = f'VD_P3_{lst}_{scope}_{d}_{i:04d}'; i += 1
+                ra5 = round(c['coord'].ra.deg, 5)
+                de5 = round(c['coord'].dec.deg, 5)
+                keys[cid] = f'{d}_{ra5}_{de5}'
+                wc.writerow([cid, lst, scope, ra5, de5, d])
+                ws.writerow([cid, vr_path])
+    outdir = f'{cell_work}/v110_out'
+    os.makedirs(outdir, exist_ok=True)
+    env = dict(os.environ, FPG_CATDIR=f'{cell_work}/catdir',
+               FPG_COADD=os.path.dirname(base),
+               FPG_RECON=f'{cell_work}/v110_recon')
+    r = subprocess.run([_V110_PY, _V110_WRAP, cat, samp, outdir, 'p3']
+                       + list(keys), cwd=os.path.dirname(_V110_WRAP),
+                       env=env, capture_output=True, text=True,
+                       timeout=14400)
+    outp = f'{outdir}/V_top100_fp_gate_p3.csv'
+    if r.returncode != 0 or not os.path.exists(outp):
+        raise RuntimeError(
+            f'{lst} {scope}: v110 in-chain stage FAILED rc={r.returncode} '
+            f'— REFUSING to catalog unverdicted V survivors. '
+            f'stderr tail: {r.stderr[-300:]}')
+    verdicts = {}
+    for row in _csv.DictReader(open(outp)):
+        k = keys.get(row['cand_id'])
+        if k:
+            verdicts[k] = row.get('fp_prediction', '')
+    missing = len(keys) - len(verdicts)
+    if missing:
+        raise RuntimeError(f'{lst} {scope}: {missing} V survivors left '
+                           f'unverdicted by v110 — REFUSING')
+    return verdicts
+
+
 def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     t0 = time.time()
     if stokes == 'V':
@@ -586,9 +661,32 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                                           hdr_ref, cd, vd, NPROC_RESID)
     sstack_V = _sigma_stack(resid_V, cell_work, hdr0, 'V') if resid_V else None
 
-    root = pc.P.STAGING_ROOT; nwr = 0
+    root = os.environ.get('P3_STAGING_ROOT', pc.P.STAGING_ROOT); nwr = 0
     run_root = pc.P.transients_run(root, label, make=True)
     gled_rows, gimg_rows = [], []
+    v_pending, i_pending = [], []
+    # ── R-ROUND2-RATIFIED shared per-cell inputs ────────────────────────
+    # (1) BDSF parent catalog on the CURRENT I master: parents for the
+    # ratified I 2-D curve AND the v110 stage's CATDIR (gate contract
+    # name master_R075_{lst}_{scope}.gaul.csv).
+    _catdir = f'{cell_work}/catdir'
+    os.makedirs(_catdir, exist_ok=True)
+    _gaulp = f'{_catdir}/master_R075_{lst}_{scope}.gaul.csv'
+    if not os.path.exists(_gaulp):
+        import bdsf
+        _tmpm = f'{cell_work}/_master_tmp.fits'
+        fits.PrimaryHDU(data=master_I.astype(np.float32),
+                        header=_det_header(hdr0, scope, em, cd, None)
+                        ).writeto(_tmpm, overwrite=True)
+        _img = bdsf.process_image(_tmpm, thresh_isl=4.0, thresh_pix=5.0,
+                                  quiet=True)
+        _img.write_catalog(outfile=_gaulp, format='csv',
+                           catalog_type='gaul', clobber=True)
+        os.remove(_tmpm)
+    _parents = _read_gaul_parents(_gaulp)
+    # (2) I-master structure map: mstruct_I is a RATIFIED I front gate
+    # (R-IVETO-POLICY-RATIFIED 2026-08-31: mstruct AND sigma_stack k=5).
+    ms_destr_I, _ = _mstruct_maps(master_I, mI, beam)
     for d in dates:
         ot = _epoch_time(base, d, scope)
         hdr = _det_header(hdr0, scope, em, cd, ot)
@@ -608,19 +706,45 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         wcs = WCS(hdr).celestial
         if 'I' in stokes and d in resid_I:
             rI = np.nan_to_num(resid_I[d], nan=0.0)
+            # R-IVETO-POLICY-RATIFIED (2026-08-31) as shipped under
+            # R-ROUND2-RATIFIED (2026-09-03): front gates = sigma_stack
+            # (applied inside run_identification_i, k=SIGMA_THRESHOLD)
+            # AND mstruct on the I master; morphology veto RETIRED to
+            # annotation; the 2-D dynamic curve applies POST-LOOP (flood
+            # keying needs every night's post-front count first).
             passed = run_identification_i(rI, master_I, hdr, beam, sstack_I)
-            kept, vetoed_i = pv.apply_veto(passed, rI, master_I, hdr, em, cd, wcs, ot, ar_max=ar_max)
-            for c in kept:
-                gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1, final=1))
-            for c in vetoed_i:
-                gled_rows.append(_gled_row(lst, scope, 'I', d, c, 0,
-                                           reason=c.get('veto_reason', '')))
-            gimg_rows.append([lst, scope, 'I', d, len(passed), len(kept),
-                              '', '', len(kept)])
-            if kept and not GATE_LEDGER_ONLY:
-                pc.write_candidates(root, label, kept, rI, master_I, hdr, lst, d,
-                                    scope, 'I', 'deep', em, cd, ot)
-                nwr += len(kept)
+            front = []
+            for c in passed:
+                _s = abs(float(c.get('local_snr', c.get('snr', 0))))
+                _mi = float(ms_destr_I[int(c['pix_y']), int(c['pix_x'])])
+                c['mstruct_i'] = round(_mi, 3)
+                if _s < SIGMA_MSTRUCT * max(_mi, 1.0):
+                    gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,
+                                               reason='mstruct_I',
+                                               pass_ms=0))
+                    continue
+                front.append(c)
+            _ik, _iv = pv.apply_veto([dict(c) for c in front], rI,
+                                     master_I, hdr, em, cd, wcs, ot,
+                                     ar_max=ar_max)
+            _itag = {}
+            for _c in _ik:
+                _itag[(round(_c['coord'].ra.deg, 5),
+                       round(_c['coord'].dec.deg, 5))] = ('1', '')
+            for _c in _iv:
+                _itag[(round(_c['coord'].ra.deg, 5),
+                       round(_c['coord'].dec.deg, 5))] = \
+                    ('0', _c.get('veto_reason', 'veto'))
+            for c in front:
+                _t = _itag.get((round(c['coord'].ra.deg, 5),
+                                round(c['coord'].dec.deg, 5)),
+                               ('', 'not-evaluated'))
+                c['morph_pass'], c['morph_reason'] = _t
+            _drI = sit.get_uniform_rms(rI, sit.make_masks(
+                hdr, rI.shape, wcs)[0])
+            i_pending.append((d, front, hdr, ot, float(_drI)))
+            gimg_rows.append([lst, scope, 'I', d, len(passed), len(front),
+                              '', '', ''])
         if d in resid_V:
             rV = np.nan_to_num(resid_V[d], nan=0.0)
             # P13 fix (approved 2026-08-21): ARCHIVE the search's own V residual
@@ -655,14 +779,30 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             if d in qa_out:
                 for _c in pV:
                     _c['epoch_qa'] = 'outlier QA'
-            # G-09 (Gregg 2026-08-21): deep V morphology arms = gaussfit ONLY.
-            # bright_mask (subsumed by the P12-corrected mstruct) and bilobe are
-            # removed; the v110 FP gate is the verdict stage that replaces them.
-            keptv, vetoed_v = pv.apply_veto(pV, rV, master_I, hdr, em, cd, wcs, ot,
-                                            ar_max=ar_max, arms=('gaussfit',))
-            for c in vetoed_v:
-                gled_rows.append(_gled_row(lst, scope, 'V', d, c, 0,
-                                           reason=c.get('veto_reason', '')))
+            # R-ROUND2-RATIFIED (Gregg 2026-09-03): gaussfit is RETIRED as a
+            # removal — against deep injections it cost 15-20% of faint
+            # recoveries for <=10% FP removal. It runs in RECORD mode only:
+            # the verdict is annotated for the pages (morph_pass /
+            # morph_reason) and every candidate proceeds to mstruct, the
+            # sole structure gate. (Supersedes G-09's arms=('gaussfit',)
+            # removal; bright_mask and bilobe stay retired as before.)
+            _mk, _mv = pv.apply_veto([dict(c) for c in pV], rV, master_I,
+                                     hdr, em, cd, wcs, ot,
+                                     ar_max=ar_max, arms=('gaussfit',))
+            _mtag = {}
+            for _c in _mk:
+                _mtag[(round(_c['coord'].ra.deg, 5),
+                       round(_c['coord'].dec.deg, 5))] = ('1', '')
+            for _c in _mv:
+                _mtag[(round(_c['coord'].ra.deg, 5),
+                       round(_c['coord'].dec.deg, 5))] = \
+                    ('0', _c.get('veto_reason', 'veto'))
+            for c in pV:
+                _t = _mtag.get((round(c['coord'].ra.deg, 5),
+                                round(c['coord'].dec.deg, 5)),
+                               ('', 'not-evaluated'))
+                c['morph_pass'], c['morph_reason'] = _t
+            keptv, vetoed_v = list(pV), []
             n_after_morph = len(keptv)
             vetoed_ms, vetoed_jup, vetoed_moon = [], [], []
             # (2) mstruct gate + (3) Jupiter veto, quoting mstruct/sstack on survivors
@@ -739,20 +879,95 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
                                            reason='moon', pass_ms=1,
                                            jup_veto=0))
-            for c in keptv:
-                gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
-                                           pass_ms=1 if gate_ran else '',
-                                           jup_veto=0 if gate_ran else '',
-                                           final=1))
             n_after_ms = n_after_morph - len(vetoed_ms)
             gimg_rows.append([lst, scope, 'V', d, len(pV), n_after_morph,
                               n_after_ms if gate_ran else '',
                               (n_after_ms - len(vetoed_jup)) if gate_ran else '',
                               len(keptv)])
-            if keptv and not GATE_LEDGER_ONLY:
-                pc.write_candidates(root, label, keptv, rV, master_I, hdr, lst, d,
-                                    scope, 'V', 'deep', em, cd, ot)
-                nwr += len(keptv)
+            # R-ROUND2-RATIFIED: survivors are NOT final until the frozen
+            # v110 gate rules on them — stash for the per-cell verdict
+            # stage below (one gate invocation per cell; the archived
+            # vr_path frame is what the gate measures on).
+            if keptv:
+                v_pending.append((d, keptv, vr_path, hdr, ot,
+                                  1 if gate_ran else '', ))
+    # ── I 2-D DYNAMIC CURVE STAGE (ratified R-IVETO-FLOOD-CURVE: R25 1.0
+    # nominal / 1.4 flood, gamma 0.35, active S>=25 where S = parent peak
+    # flux over the night's uniform residual rms; flood = a night whose
+    # post-front count exceeds 3x the cell median of post-front counts).
+    if i_pending:
+        _icnt = {d_: len(fr) for d_, fr, _h, _o, _r in i_pending}
+        _isv = sorted(_icnt.values())
+        _icmed = max(_isv[len(_isv) // 2], 1)
+        from scipy.spatial import cKDTree as _KD
+        _pa = np.array(_parents) if _parents else np.zeros((0, 3))
+
+        def _uv(ra_, de_):
+            r_, d_ = np.radians(ra_), np.radians(de_)
+            return np.stack([np.cos(d_) * np.cos(r_),
+                             np.cos(d_) * np.sin(r_), np.sin(d_)], -1)
+        _ptree = _KD(_uv(_pa[:, 0], _pa[:, 1])) if len(_pa) else None
+        for d_, front, hdr_, ot_, drI_ in i_pending:
+            _flood = _icnt[d_] > 3 * _icmed
+            _r25 = 1.4 if _flood else 1.0
+            finals = []
+            for c in front:
+                cut = False
+                if _ptree is not None:
+                    _dd, _ii = _ptree.query(_uv(
+                        np.array([c['coord'].ra.deg]),
+                        np.array([c['coord'].dec.deg])), k=1)
+                    _sep_bw = (2 * np.arcsin(_dd[0] / 2) * 180 / np.pi) \
+                        / (em * cd)
+                    _S = _pa[_ii[0], 2] / max(drI_, 1e-12)
+                    c['parent_jy'] = round(float(_pa[_ii[0], 2]), 3)
+                    c['parent_off_beams'] = round(float(_sep_bw), 3)
+                    if _S >= 25.0 and _sep_bw < _r25 * (_S / 25.0) ** 0.35:
+                        cut = True
+                if cut:
+                    gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
+                                               reason='curve'
+                                               + ('-flood' if _flood
+                                                  else ''), pass_ms=1))
+                    continue
+                gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
+                                           pass_ms=1, final=1))
+                finals.append(c)
+            if finals and not GATE_LEDGER_ONLY:
+                pc.write_candidates(root, label, finals, resid_I[d_],
+                                    master_I, hdr_, lst, d_, scope, 'I',
+                                    'deep', em, cd, ot_)
+                nwr += len(finals)
+    # ── IN-CHAIN v110 VERDICT STAGE (R-ROUND2-RATIFIED, Gregg 2026-09-03:
+    # V chain = 5sig -> mstruct -> v110 in-chain [MARGINAL reading] ->
+    # ephemerides). One frozen-gate invocation over the cell's survivors;
+    # fp_prediction in {FP, marginal} REMOVES (reading override
+    # P3_V110_READING=strict; escape P3_V110_OFF=1 -> annotate only).
+    verdicts = {}
+    if v_pending and os.environ.get('P3_V110_OFF') != '1':
+        verdicts = _v110_cell_verdicts(lst, scope, base, cell_work,
+                                       master_I, hdr0, em, cd, v_pending)
+    _v110_removes = ({'FP'} if os.environ.get('P3_V110_READING') == 'strict'
+                     else {'FP', 'marginal'})
+    for d, keptv, _vr, hdr, ot, _pm in v_pending:
+        finals = []
+        for c in keptv:
+            _vk = f'{d}_{round(c["coord"].ra.deg,5)}_{round(c["coord"].dec.deg,5)}'
+            _pred = verdicts.get(_vk, ('' if verdicts else 'gate-off'))
+            c['fp_prediction'] = _pred
+            if _pred in _v110_removes:
+                gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
+                                           reason=f'v110:{_pred}',
+                                           pass_ms=_pm, jup_veto=0))
+                continue
+            gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
+                                       pass_ms=_pm, jup_veto=0 if _pm else '',
+                                       final=1))
+            finals.append(c)
+        if finals and not GATE_LEDGER_ONLY:
+            pc.write_candidates(root, label, finals, resid_V[d], master_I,
+                                hdr, lst, d, scope, 'V', 'deep', em, cd, ot)
+            nwr += len(finals)
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)
     print(f'  {lst} {scope}: {len(dates)} epochs -> {nwr} candidates  '
