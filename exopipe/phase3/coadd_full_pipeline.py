@@ -2640,9 +2640,12 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 except Exception:
                     _cur = None
                 break
-        if _cur == 'ivw-mean-v2':
+        if _cur == 'ivw-mean-v2' and os.environ.get('P3_FORCE_REBUILD') != '1':
             print(f"  {lst} {fl}: already complete (COADDOP={_cur}), skipping")
             return {'lst': lst, 'freq': fl, 'status': 'skipped'}
+        if os.environ.get('P3_FORCE_REBUILD') == '1':
+            print(f"  {lst} {fl}: P3_FORCE_REBUILD=1 — rebuilding despite "
+                  f"current COADDOP (beam-gate rebuild wave 2026-09-03)")
         print(f"  {lst} {fl}: .done present but master COADDOP={_cur!r} is "
               f"NOT the current generation — REBUILDING")
         try:
