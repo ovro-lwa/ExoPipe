@@ -740,8 +740,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                                 round(c['coord'].dec.deg, 5)),
                                ('', 'not-evaluated'))
                 c['morph_pass'], c['morph_reason'] = _t
-            _drI = sit.get_uniform_rms(rI, sit.make_masks(
-                hdr, rI.shape, wcs)[0])
+            _drI = sv2.get_uniform_rms(rI, sv2.make_masks(
+                hdr, rI.shape)[0])
             i_pending.append((d, front, hdr, ot, float(_drI)))
             gimg_rows.append([lst, scope, 'I', d, len(passed), len(front),
                               '', '', ''])
