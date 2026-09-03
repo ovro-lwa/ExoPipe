@@ -1770,7 +1770,42 @@ def post_flow_processing(prep_data, exclusions, args):
 
     i_outliers, i_thresh = detect_outliers_mad(dates_list, i_rms_list)
     v_outliers, v_thresh = detect_outliers_mad(dates_list, v_rms_list)
-    all_outliers = sorted(set(i_outliers) | set(v_outliers))
+    # ── CO-ADD BEAM GATE (Gregg approved 2026-09-02; master-side shipped
+    # 2026-09-03 under R-ROUND2-RATIFIED): an epoch whose Phase-2 survey
+    # Stokes I (Taper R-0.75) fitted-beam AREA exceeds 1.5x the median of
+    # the candidate epoch set was imaged from degraded uv coverage (long-
+    # baseline dropout) and would smear the master's PSF. One-directional:
+    # sharp epochs are fine in a stack. Keyed on I ("I is king"); refusal
+    # is logged with the other outlier rows. Fails OPEN per epoch when no
+    # survey product/beam header is found (a missing header is a Phase-2
+    # gap, not evidence of a bad beam).
+    _bareas = {}
+    for _d in dates_list:
+        _g = [x for x in glob.glob(
+            f'/lustre/pipeline/exopipe/phase2/{lst}/{_d}/*/{fl}/I/deep/'
+            f'*Taper_Robust-0.75_dewarped*.fits')
+            + glob.glob(
+            f'/lustre/pipeline/exopipe/phase2/{lst}/{_d}/*/{fl}/I/deep/'
+            f'*Taper-*-Robust-0.75-*dewarped*.fits')
+            if 'pbcorr' not in os.path.basename(x)]
+        if _g:
+            try:
+                _h = fits.getheader(_g[0])
+                _bareas[_d] = float(_h['BMAJ']) * float(_h['BMIN'])
+            except Exception:
+                pass
+    _bfin = sorted(_bareas.values())
+    beam_outliers = []
+    if len(_bfin) >= 5:
+        _bmed = _bfin[len(_bfin) // 2]
+        beam_outliers = [d for d in dates_list
+                         if _bareas.get(d, 0) > 1.5 * _bmed]
+        if beam_outliers:
+            print(f"  BEAM GATE: {len(beam_outliers)} epoch(s) refused "
+                  f"from the master (fitted-beam area >1.5x set median): "
+                  f"{[(d, round(_bareas[d]/_bmed, 2)) for d in beam_outliers]}")
+    all_outliers = sorted(set(i_outliers) | set(v_outliers)
+                          | set(beam_outliers))
 
     outlier_rows = []
     for d in all_outliers:
@@ -1779,6 +1814,8 @@ def post_flow_processing(prep_data, exclusions, args):
             reasons.append('I_rms')
         if d in v_outliers:
             reasons.append('V_rms')
+        if d in beam_outliers:
+            reasons.append('beam')
         outlier_rows.append({'date': d, 'reason': '+'.join(reasons)})
 
     outlier_df = pd.DataFrame(outlier_rows)
