@@ -346,7 +346,8 @@ _RESID_CTX = {}
 def _resid_task(d):
     c = _RESID_CTX
     try:
-        return d, _residual(c['epoch'][d], c['master'], c['flows'][d], c['hdr'], c['cd'])
+        m = c['master'][d] if isinstance(c['master'], dict) else c['master']
+        return d, _residual(c['epoch'][d], m, c['flows'][d], c['hdr'], c['cd'])
     except Exception:
         return d, None
 
@@ -637,8 +638,28 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         print(f'  {lst} {scope}: only {len(dates)} flows — skip'); return 0
 
     hdr_ref = _det_header(hdr0, scope, em, cd, None)
+    # R-LOO-MASTERS as SEARCH FRAMES (conformance fix 2026-09-03): an epoch
+    # is differenced against ITS OWN leave-one-out master where one exists
+    # (file existence encodes the ratified per-Stokes [2,20] rule); the
+    # central master is the fallback and remains the flow/mstruct/parent
+    # reference for all epochs (declared: alignment and structure
+    # references stay common across epochs).
+    def _loo_masters(central, stokes_tag, variant_tag):
+        out = {}
+        for _d in dates:
+            _lp = (f'{base}/coadd_final/loo/'
+                   f'{_d}_{stokes_tag}_loo_{variant_tag}_{scope}.fits')
+            out[_d] = _load(_lp) if os.path.exists(_lp) else central
+        _n = sum(1 for _d in dates if out[_d] is not central)
+        if _n:
+            print(f'  {lst} {scope}: {_n}/{len(dates)} epochs searched '
+                  f'against their leave-one-out {stokes_tag} masters')
+        return out
     if 'I' in stokes:
-        resid_I = _build_residuals_mp(epoch_I, master_I, flows, hdr_ref, cd, dates, NPROC_RESID)
+        resid_I = _build_residuals_mp(epoch_I,
+                                      _loo_masters(master_I, 'I',
+                                                   'Taper_R075'),
+                                      flows, hdr_ref, cd, dates, NPROC_RESID)
         dates = [d for d in dates if d in resid_I]
         sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
     else:
@@ -656,7 +677,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 epoch_V[d] = _load(vp) + master_V
         if epoch_V:
             vd = list(epoch_V)
-            resid_V = _build_residuals_mp(epoch_V, master_V,
+            _mV = _loo_masters(master_V, 'V', 'Taper_R0')
+            resid_V = _build_residuals_mp(epoch_V,
+                                          {d: _mV[d] for d in vd},
                                           {d: flows[d] for d in vd},
                                           hdr_ref, cd, vd, NPROC_RESID)
     sstack_V = _sigma_stack(resid_V, cell_work, hdr0, 'V') if resid_V else None
