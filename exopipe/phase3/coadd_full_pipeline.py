@@ -1070,6 +1070,8 @@ def write_loo_masters(aligned, master_path, out_dir, tag):
     (W - w_i), computed with per-pixel validity exactly as the no-clip
     co-add (zeros = unimaged). Each product carries LOOEXCL + NCOADD."""
     if len(aligned) > 20 or len(aligned) < 2:
+        print(f"    LOO skipped for {tag}: N_epochs={len(aligned)} "
+              f"outside [2,20] (R-LOO-MASTERS)", flush=True)
         return 0
     imgs = {}
     S = None
@@ -1094,7 +1096,9 @@ def write_loo_masters(aligned, master_path, out_dir, tag):
     _keep = {d for d, _p, _w in aligned}
     for _f in os.listdir(out_dir):
         _m = re.match(r'(\d{4}-\d{2}-\d{2})_', _f)
-        if _m and _m.group(1) not in _keep:
+        # purge ONLY this Stokes' files: a date-only match let the V pass
+        # delete the I side's LOO masters (found 2026-09-03, 06h_55MHz)
+        if _m and tag in _f and _m.group(1) not in _keep:
             try:
                 os.remove(os.path.join(out_dir, _f))
                 print(f'    purged stale LOO master (epoch no longer a '
