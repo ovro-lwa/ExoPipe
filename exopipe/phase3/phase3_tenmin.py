@@ -193,6 +193,13 @@ def _det_header(hdr0, scope, em, cd, obs_time):
     else:
         lo = hi = 5e7
     h = hdr0.copy()
+    # 2-D products must not carry stray 3rd/4th-axis WCS keys (WCSAXES=2
+    # + CTYPE3 makes wcslib/DS9 reject the whole WCS; found 2026-09-03 on
+    # the battery vresid frames, ruled clean at source)
+    for _ax in (3, 4):
+        for _k in ('CTYPE', 'CRVAL', 'CRPIX', 'CDELT', 'CUNIT'):
+            if f'{_k}{_ax}' in h:
+                del h[f'{_k}{_ax}']
     if obs_time:
         h['DATE-OBS'] = obs_time
     h['RESTFRQ'] = h['CRVAL3'] = (lo + hi) / 2.0
