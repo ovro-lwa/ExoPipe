@@ -478,7 +478,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     _irob = 'R075'
     mI = f'{base}/coadd_final/I_deep_Taper_{_irob}_{scope}.fits'
     if not os.path.exists(mI):
-        print(f'  {lst} {scope}: no deep I master ({_irob}) — skip'); return 0
+        # 2026-09-04 (silent-skip variant 4: offloaded flows without inputs):
+        # a missing master is an input failure, never a skip - REFUSE.
+        raise RuntimeError(f'{lst} {scope}: no deep I master at {mI} — '
+                           f'inputs missing or unshipped; REFUSING the silent no-op')
     master_I = _load(mI); hdr0 = fits.getheader(mI); cd = abs(hdr0['CDELT1'])
     # ── MASTER-GENERATION GATE (2026-09-01) ────────────────────────────
     # REFUSES, does not warn. The master-creation policy of 2026-08-25
