@@ -459,6 +459,82 @@ def _v110_cell_verdicts(lst, scope, base, cell_work, master_I, hdr0, em, cd,
     return verdicts
 
 
+def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms,
+                          master_file, loo_file, align_file, label, cell_tag):
+    """Conformant-from-birth header for an ARCHIVED search frame
+    (R-CONFORMANT-FROM-BIRTH-INCL-HEADERS, Gregg 2026-09-04; products audit
+    rows B-01..B-05). Time block and beam come from the epoch's OWN Stage-1
+    subtracted product (never the master's); the 7-item standard is stamped
+    by phase3_products.write_standard_header, which declares the degenerate
+    FREQ/STOKES axes with WCSAXES=4 (the convention DS9 accepts - the banned
+    class is WCSAXES=2 alongside CTYPE3); parent-master provenance is
+    RELABELLED (MSTR*), never inherited as this frame's own."""
+    from exopipe.common import phase3_products as prod
+    from astropy.time import TimeDelta as _TD
+    sp = f'{base}/subtracted/{d}_{stokes}_sub_{scope}.fits'
+    hs = fits.getheader(sp)
+    start, end = hs.get('DATE-OBS'), hs.get('DATE-END')
+    if end is None and start is not None and hs.get('DURATION'):
+        end = (Time(start) + _TD(float(hs['DURATION']), format='sec')).isot
+    if start is None or end is None:
+        raise RuntimeError(f'{cell_tag} {d}: no epoch time block in {sp} - '
+                           f'REFUSING to write an archive frame without its own time')
+    if hs.get('BMAJ') is None:
+        raise RuntimeError(f'{cell_tag} {d}: no beam in {sp} - REFUSING')
+    h = WCS(hdr0).celestial.to_header()
+    h['BUNIT'] = ('Jy/beam', 'Brightness unit')
+    h['TELESCOP'] = ('OVRO-LWA', 'Telescope')
+    mh = fits.getheader(master_file)
+    loo_used = bool(loo_file and os.path.exists(loo_file))
+    extra = {
+        'LOOMSTR': (loo_used, 'Differenced against leave-one-out master'),
+        'MSTRFILE': (os.path.basename(loo_file if loo_used else master_file)[:68],
+                     'Master actually subtracted'),
+        'MSTRNSTK': (int(mh.get('NSTACK', 0)), 'Parent master: epochs in stack'),
+        'MSTRCOOP': (str(mh.get('COADDOP', ''))[:20], 'Parent master: co-add operator'),
+        'MSTRMJD': (float(mh.get('MJD-MID', 0.0)), 'Parent master: midpoint MJD'),
+        'STRIWIN': (float(8.0 * em * cd), '[deg] Striation window (8 x beam)'),
+        'RUNLABEL': (str(label)[:20], 'Search run label'),
+        'ORIGIN': ('exopipe phase3_deep search frame', 'Producer'),
+    }
+    if loo_used:
+        extra['LOOEXCL'] = (d, 'Epoch excluded from the LOO master')
+    basis = str(hs.get('TIMEFIX', 'v2-phase2')).replace('v2-', '', 1)
+    prod.write_standard_header(
+        h, scope=scope, stokes=stokes, start=start, end=end,
+        inttime_s=hs.get('INTTIME'), time_basis=basis,
+        beam=(float(hs['BMAJ']), float(hs['BMIN']), float(hs.get('BPA', 0.0))),
+        ebeam=(float(em * cd), float(em * cd), 0.0),
+        thermnoi=thermnoi, imgrms=imgrms, pbcorr=False, dewarped=True,
+        aligned=True, alignref=os.path.basename(align_file),
+        msub=True, msubfile=os.path.basename(loo_file if loo_used else master_file),
+        ssub=True, p2run=hs.get('P2RUN'), calbp=hs.get('CALBP'),
+        p1run=hs.get('P1RUN'), extra=extra, validate=False)
+    try:
+        h['PRODNAME'] = (prod.build_name(
+            scope, stokes, 'deep', 'Taper', -0.75 if stokes == 'I' else 0.0,
+            proc=['dewarped', 'aligned', 'msub', 'ssub'],
+            lst=cell_tag.split()[0], epoch=start), 'Conformant product name')
+    except Exception as _e:   # naming grammar gap -> held for review, never silent
+        h['PRODNAME'] = ('unknown', f'build_name refused: {str(_e)[:40]}')
+    h.add_history(f'{label} {stokes} search frame: {os.path.basename(sp)} '
+                  f'(epoch) minus {extra["MSTRFILE"][0]} minus striation model')
+    return h
+
+
+def _write_archive_frame(path, data, hdr, cell_tag, d):
+    """Atomic write + write-time validation gate (refuses, never warns)."""
+    from exopipe.common.validate_fits_headers import validate_header
+    _tmp = path + '.part'
+    fits.writeto(_tmp, data.astype(np.float32), hdr, overwrite=True)
+    rep = validate_header(_tmp, level='standard')
+    if not rep.ok:
+        os.remove(_tmp)
+        raise RuntimeError(f'{cell_tag} {d}: archive frame header validation FAILED '
+                           f'({"; ".join(rep.errors)[:300]}) - REFUSING to archive')
+    os.replace(_tmp, path)
+
+
 def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     t0 = time.time()
     if stokes == 'V':
@@ -739,6 +815,25 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         wcs = WCS(hdr).celestial
         if 'I' in stokes and d in resid_I:
             rI = np.nan_to_num(resid_I[d], nan=0.0)
+            # 2026-09-04: ARCHIVE the I search frame (S15.2 lowest-level file
+            # (3), non-PSF-matched; residuals-required ruling 2026-07-13;
+            # products audit B-10: never written before). Same writer as V.
+            ir_dir = (f"{os.environ.get('P3_IRESID_ROOT', run_root + '/iresid')}"
+                      f'/{lst}_{scope}')
+            os.makedirs(ir_dir, exist_ok=True)
+            ir_path = f'{ir_dir}/{d}_I_redo_resid_{scope}.fits'
+            if not os.path.exists(ir_path):
+                _hI, _wI = rI.shape
+                _halfI = min(512, _hI // 4, _wI // 4)
+                from astropy.stats import mad_std as _madsI
+                _rmsI = float(round(float(_madsI(
+                    rI[_hI//2-_halfI:_hI//2+_halfI, _wI//2-_halfI:_wI//2+_halfI],
+                    ignore_nan=True)), 9))
+                _loo_i = f'{base}/coadd_final/loo/{d}_I_loo_Taper_R075_{scope}.fits'
+                _hdr_I = _archive_frame_header(
+                    hdr0, base, d, scope, 'I', em, cd, None, _rmsI, mI, _loo_i, mI,
+                    label, f'{lst} {scope}')
+                _write_archive_frame(ir_path, rI, _hdr_I, f'{lst} {scope}', d)
             # R-IVETO-POLICY-RATIFIED (2026-08-31) as shipped under
             # R-ROUND2-RATIFIED (2026-09-03): front gates = sigma_stack
             # (applied inside run_identification_i, k=SIGMA_THRESHOLD)
@@ -793,14 +888,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 _half = min(512, _h // 4, _w // 4)
                 _inner = rV[_h//2-_half:_h//2+_half, _w//2-_half:_w//2+_half]
                 from astropy.stats import mad_std as _mads
-                _hdr_out = hdr.copy()
-                _hdr_out['THERMNOI'] = (float(round(float(_mads(_inner, ignore_nan=True)), 9)),
-                                        'inner rms of this V residual (Jy/beam)')
-                # atomic write: a crash mid-write must never leave a partial
-                # file that the exists-check above would trust on rerun
-                _tmp = vr_path + '.part'
-                fits.writeto(_tmp, rV.astype(np.float32), _hdr_out, overwrite=True)
-                os.replace(_tmp, vr_path)
+                _tn = float(round(float(_mads(_inner, ignore_nan=True)), 9))
+                # 2026-09-04 conformant-from-birth writer (replaces the master-
+                # header copy that gave every frame its master's time block)
+                _loo_v = f'{base}/coadd_final/loo/{d}_V_loo_Taper_R0_{scope}.fits'
+                _hdr_out = _archive_frame_header(
+                    hdr0, base, d, scope, 'V', em, cd, _tn, _tn, mVp, _loo_v, mI,
+                    label, f'{lst} {scope}')
+                _write_archive_frame(vr_path, rV, _hdr_out, f'{lst} {scope}', d)
             # sstack is INFO-ONLY (quoted on survivors, lines below), NOT a gate
             # (2026-06-23 ruling: mstruct is the sole V gate). Passing None here keeps
             # run_identification_v from filtering on sigma_stack.
