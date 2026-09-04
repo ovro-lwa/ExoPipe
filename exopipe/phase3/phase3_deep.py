@@ -590,6 +590,56 @@ def _epoch_bmaj(base, d, scope, stokes):
         return None
 
 
+_PB_CACHE = {}
+
+
+def _write_pbcorr_sibling(frame_path, data, hdr, base, scope, cell_tag, d):
+    """S15.2 lowest-level file (4): the primary-beam-corrected sibling of the
+    search frame, from the cell's time-integrated PB map (coadd_final/PB_deep).
+    Conformant from birth: the frame's header + PBCORR=True + its own PRODNAME.
+    Missing PB map = REFUSAL (a ruled product cannot be silently absent)."""
+    pbp = f'{base}/coadd_final/PB_deep_{scope}.fits'
+    if pbp not in _PB_CACHE:
+        if not os.path.exists(pbp):
+            raise RuntimeError(f'{cell_tag} {d}: PB map {pbp} missing - cannot write the '
+                               f'ruled pbcorr sibling; REFUSING')
+        _pb = np.squeeze(fits.getdata(pbp)).astype(np.float32)
+        _PB_CACHE[pbp] = np.where(_pb > 0.05, _pb, np.nan)
+    pb = _PB_CACHE[pbp]
+    if pb.shape != data.shape:
+        raise RuntimeError(f'{cell_tag} {d}: PB map shape {pb.shape} != frame {data.shape}; REFUSING')
+    h = hdr.copy()
+    h['PBCORR'] = (True, 'Primary-beam corrected')
+    h['PBFILE'] = (os.path.basename(pbp)[:68], 'PB map applied')
+    pn = str(hdr.get('PRODNAME', ''))
+    h['PRODNAME'] = (pn.replace('_dewarped_', '_pbcorr_dewarped_', 1) if '_dewarped_' in pn else 'unknown',
+                     'Conformant product name')
+    out = frame_path.replace('_redo_resid_', '_redo_resid_pbcorr_')
+    _write_archive_frame(out, data / pb, h, cell_tag, d)
+    return out
+
+
+def _write_sigstack(sstack, hdr0, run_root, lst, scope, stokes):
+    """Persist the per-pixel across-epoch noise map (grammar token 'sigstack';
+    products audit B-11: built in memory only before 2026-09-04). Archive class
+    to be ruled; written under the run root so the gate's input is on disk."""
+    if sstack is None:
+        return None
+    d = f'{run_root}/sigstack'; os.makedirs(d, exist_ok=True)
+    p = f'{d}/{lst}_{scope}_{stokes}_sigstack.fits'
+    h = WCS(hdr0).celestial.to_header()
+    for k in ('DATE-OBS', 'DATE-END', 'MJD-OBS', 'MJD-MID', 'DURATION', 'INTTIME', 'TIMEFIX',
+              'BMAJ', 'BMIN', 'BPA', 'RESTFRQ', 'NSTACK', 'NCOADD', 'COADDOP'):
+        if k in hdr0:
+            h[k] = hdr0[k]
+    h['BUNIT'] = ('ratio', 'across-epoch MAD noise / thermal, floored at 1')
+    h['PRODUCT'] = ('sigstack', 'Ensemble per-pixel noise-structure map')
+    h['STOKES'] = (stokes, 'Stokes parameter')
+    fits.writeto(p + '.part', np.asarray(sstack, dtype=np.float32), h, overwrite=True)
+    os.replace(p + '.part', p)
+    return p
+
+
 def _write_archive_frame(path, data, hdr, cell_tag, d):
     """Atomic write + write-time validation gate (refuses, never warns)."""
     from exopipe.common.validate_fits_headers import validate_header
@@ -845,6 +895,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                                       flows, hdr_ref, cd, dates, NPROC_RESID)
         dates = [d for d in dates if d in resid_I]
         sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
+        _write_sigstack(sstack_I, hdr0, run_root, lst, scope, 'I')
     else:
         resid_I, sstack_I = {}, None   # V-only redo (Gregg 2026-08-21): Stokes I is out
     resid_V = {}
@@ -866,6 +917,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                                           {d: flows[d] for d in vd},
                                           hdr_ref, cd, vd, NPROC_RESID)
     sstack_V = _sigma_stack(resid_V, cell_work, hdr0, 'V') if resid_V else None
+    _write_sigstack(sstack_V, hdr0, run_root, lst, scope, 'V')
 
     gled_rows, gimg_rows = [], []
     v_pending, i_pending = [], []
@@ -888,6 +940,17 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         _img.write_catalog(outfile=_gaulp, format='csv',
                            catalog_type='gaul', clobber=True)
         os.remove(_tmpm)
+        # CAT1 generation stamp (R-CAT1-7 2026-08-15; landed 2026-09-04): md5 of
+        # the master DATA payload + extraction record, as a sidecar shipped
+        # with the catalog. CAT4 (FITS table) remains a DOC row.
+        import hashlib, json
+        _md5 = hashlib.md5(np.ascontiguousarray(master_I.astype(np.float32)).tobytes()).hexdigest()
+        json.dump({'master': os.path.basename(mI), 'master_md5_data': _md5,
+                   'COADDOP': hdr0.get('COADDOP'), 'NCOADD': int(hdr0.get('NCOADD', 0) or 0),
+                   'thresh_pix': 5.0, 'thresh_isl': 4.0,
+                   'note': 'stored floor 5.0 (curve consumers cut S>=25 from stored SNR); CAT3 7.0 floor is a DOC row',
+                   'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+                  open(_gaulp + '.gen.json', 'w'), indent=1)
     _parents = _read_gaul_parents(_gaulp)
     # (2) I-master structure map: mstruct_I is a RATIFIED I front gate
     # (R-IVETO-POLICY-RATIFIED 2026-08-31: mstruct AND sigma_stack k=5).
@@ -931,6 +994,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             _fhI[d] = _hdr_I
             if not os.path.exists(ir_path):
                 _write_archive_frame(ir_path, rI, _hdr_I, f'{lst} {scope}', d)
+            if not os.path.exists(ir_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
+                _write_pbcorr_sibling(ir_path, rI, _hdr_I, base, scope, f'{lst} {scope}', d)
             # R-IVETO-POLICY-RATIFIED (2026-08-31) as shipped under
             # R-ROUND2-RATIFIED (2026-09-03): front gates = sigma_stack
             # (applied inside run_identification_i, k=SIGMA_THRESHOLD)
@@ -1017,6 +1082,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             _fhV[d] = _hdr_out
             if not os.path.exists(vr_path):
                 _write_archive_frame(vr_path, rV, _hdr_out, f'{lst} {scope}', d)
+            if not os.path.exists(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
+                _write_pbcorr_sibling(vr_path, rV, _hdr_out, base, scope, f'{lst} {scope}', d)
             # sstack is INFO-ONLY (quoted on survivors, lines below), NOT a gate
             # (2026-06-23 ruling: mstruct is the sole V gate). Passing None here keeps
             # run_identification_v from filtering on sigma_stack.
