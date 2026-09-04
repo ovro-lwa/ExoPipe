@@ -526,6 +526,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             dates.append(m.group(1))
     if included_dates:
         dates = [d for d in dates if d in included_dates]
+    if len(dates) == 0:
+        raise RuntimeError(f'{lst} {scope}: ZERO epochs found — inputs '
+                           f'missing/unshipped; REFUSING (a 0-epoch cell '
+                           f'is never legitimate)')
     if len(dates) < MIN_EPOCHS:
         print(f'  {lst} {scope}: only {len(dates)} epochs — skip'); return 0
 
@@ -634,6 +638,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                       f' REFUSED from search (fitted-beam area >{_thr}x '
                       f'cell median): '
                       f'{[(d, round(_areas[d]/_bmed, 2)) for d in _bbad]}')
+    if len(dates) == 0:
+        raise RuntimeError(f'{lst} {scope}: ZERO flows — REFUSING')
     if len(dates) < MIN_EPOCHS:
         print(f'  {lst} {scope}: only {len(dates)} flows — skip'); return 0
 
