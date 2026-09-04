@@ -939,8 +939,31 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         for d_, front, hdr_, ot_, drI_ in i_pending:
             _flood = _icnt[d_] > 3 * _icmed
             _r25 = 1.4 if _flood else 1.0
+            # Ephemeris always-on for I (ratified; omission caught by Gregg
+            # 2026-09-04 - Jupiter at 80 sigma on the Blue I pages):
+            # Jupiter per band radius + Moon 15 arcmin, per-epoch positions.
+            _wI = WCS(hdr_).celestial
+            _b = {'18':'Red','23':'Red','27':'Red','32':'Red','36':'Red',
+                  '41':'Green','46':'Green','50':'Green','55':'Green',
+                  '59':'Green','64':'Blue','69':'Blue','73':'Blue',
+                  '78':'Blue','82':'Blue'}.get(scope.replace('MHz',''), scope)
+            _jrad = JUPITER_VETO_DEG.get(_b, 0.5)
+            _jup = _body_skycoord('jupiter', ot_, d_)
+            _moon = _body_skycoord('moon', ot_, d_)
             finals = []
             for c in front:
+                _sky = _wI.pixel_to_world(int(c['pix_x']), int(c['pix_y']))
+                c['jupiter_deg'] = round(float(_sky.separation(_jup).deg), 3)
+                c['moon_deg'] = round(float(_sky.separation(_moon).deg), 3)
+                if c['jupiter_deg'] < _jrad:
+                    gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
+                                               reason='jupiter', pass_ms=1,
+                                               jup_veto=1))
+                    continue
+                if c['moon_deg'] < MOON_VETO_DEG:
+                    gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
+                                               reason='moon', pass_ms=1))
+                    continue
                 cut = False
                 if _ptree is not None:
                     _dd, _ii = _ptree.query(_uv(
