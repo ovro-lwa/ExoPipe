@@ -813,12 +813,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         _irob_f = 'Robust-0.75'
         _areas = {}
         for d in dates:
-            _g = [x for x in
-                  glob.glob(f'{_p2}/{lst}/{d}/*/{scope}/I/deep/'
-                            f'*Taper_{_irob_f}_dewarped*.fits')
-                  + glob.glob(f'{_p2}/{lst}/{d}/*/{scope}/I/deep/'
-                              f'*Taper-*-{_irob_f}-*dewarped*.fits')
-                  if 'pbcorr' not in os.path.basename(x)]
+            # 2026-09-04: the Phase-2 deep product carries the 'dewarped' token
+            # only in some Science runs (e.g. absent on 2024-12 epochs); the
+            # old dewarped-only glob silently found NO header for those epochs
+            # and the gate never keyed on them. Match the survey variant with
+            # or without the token, prefer the dewarped file when both exist.
+            _g = sorted([x for x in
+                         glob.glob(f'{_p2}/{lst}/{d}/*/{scope}/I/deep/'
+                                   f'*_I_deep_Taper_{_irob_f}*.fits')
+                         + glob.glob(f'{_p2}/{lst}/{d}/*/{scope}/I/deep/'
+                                     f'*Taper-*-{_irob_f}-*.fits')
+                         if 'pbcorr' not in os.path.basename(x)],
+                        key=lambda x: (0 if 'dewarped' in os.path.basename(x) else 1, x))
             if _g:
                 try:
                     _h = fits.getheader(_g[0])
