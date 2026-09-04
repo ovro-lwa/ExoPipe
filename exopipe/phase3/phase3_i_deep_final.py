@@ -18,6 +18,7 @@ phase3_i_deep_final.py — DEFINITIVE Run_I_DEEP deliverables (Gregg spec
      - rankNNNN.reg          1-degree circle at the merged position
 Usage: python phase3_i_deep_final.py [TOP_N]   (default 20)
 """
+from exopipe.common.roots import coadd_root
 import sys
 _ARGV = list(sys.argv)
 import os, csv, glob, shutil
@@ -262,9 +263,9 @@ def main():
         # bands, ~25' stale-flow warp, rebuild pending) and 11h Green (~16')
         # positions UNRELIABLE: pos_flag set, xmatch suppressed.
         _13h_ok = os.path.exists(
-            '/fast/gh/main/phase3/coadd/.13h_astrom_ok_20260708')
+            f'{coadd_root()}/.13h_astrom_ok_20260708')
         _11h_ok = os.path.exists(
-            '/fast/gh/main/phase3/coadd/.11h_astrom_ok_20260708')
+            f'{coadd_root()}/.11h_astrom_ok_20260708')
         s['pos_flag'] = ('13h-warp~25amin' if (s['lst'] == '13h' and
                                                not _13h_ok) else
                          '11hGreen~16amin' if ((s['lst'], s['band']) ==

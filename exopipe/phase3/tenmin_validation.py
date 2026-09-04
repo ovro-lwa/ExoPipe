@@ -17,6 +17,7 @@ striation rms benefit on the 10-min residual (trivial vs difficult), and
 
 Stage 1 (this run): rms A-vs-B + striation. Stage 2 (--scurve): C50 + FP.
 """
+from exopipe.common.roots import coadd_root
 import os, sys, glob
 import numpy as np
 _ARGV = list(sys.argv); sys.argv = ['tenmin_val']
@@ -29,7 +30,7 @@ sys.argv = _ARGV              # restore after import-protection clobber
 LST = '10h'
 DATES = {'good': '2024-12-29', 'bad': '2024-12-19'}
 BANDS = ['Red', 'Green', 'Blue']
-WB = os.environ.get('P3_COADD_ROOT', C.WORKDIR_BASE)
+WB = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04)
 # ^ env override (2026-07-16): the subband 10-min tier runs against
 #   /data07/gh/phase3/coadd_sb; wideband default unchanged.
 
@@ -62,7 +63,7 @@ def setup_date_params(lst, freq_str):
     common context + a function to align a given date's interval images."""
     ref_date = C.REFERENCE_DATES.get(lst)
     fl = C.freq_label(freq_str)
-    workdir = f'{WB}/{lst}_{fl}'
+    workdir = f'{coadd_root()}/{lst}_{fl}'
     all_dates = C.discover_dates(lst, freq_str)
     dates = [(d, sd, img) for d, sd, img in all_dates]
     ref_entries = [x for x in dates if x[0] == ref_date]

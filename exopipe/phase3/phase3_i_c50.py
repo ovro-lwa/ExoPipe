@@ -16,6 +16,7 @@ Per (LST, band, date, robust):
 Outputs per-injection CSV to Run_I_GATES/c50/ + prints detect-C50 and mstruct-C50.
 Usage: python phase3_i_c50.py <LST> <BAND> <DATE> <R0|R075>
 """
+from exopipe.common.roots import coadd_root
 import sys
 _ARGV = list(sys.argv)
 import os, csv, math, tempfile, shutil
@@ -46,7 +47,7 @@ def central_rms(a):
 
 
 def build_epoch(lst, band, date, robust, master, mh):
-    base = f'/fast/gh/main/phase3/coadd/{lst}_{band}'
+    base = f'{coadd_root()}/{lst}_{band}'
     if robust == 'R075':
         return _load(f'{base}/subtracted/{date}_I_sub_{band}.fits') + master
     sd = dict((d, s) for d, s, _ in discover_dates(lst, band)).get(date)
@@ -75,7 +76,7 @@ def build_epoch(lst, band, date, robust, master, mh):
 def main():
     lst, band, date, robust = _ARGV[1], _ARGV[2], _ARGV[3], _ARGV[4]
     os.makedirs(OUT, exist_ok=True)
-    base = f'/fast/gh/main/phase3/coadd/{lst}_{band}'
+    base = f'{coadd_root()}/{lst}_{band}'
     cw = f'/data07/gh/phase3/deep/{lst}_{band}'
     mp = f'{base}/coadd_final/I_deep_Taper_{robust}_{band}.fits'
     master = _load(mp); mh = fits.getheader(mp); cd = abs(mh['CDELT1'])

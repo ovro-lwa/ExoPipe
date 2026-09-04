@@ -38,6 +38,7 @@ reason (caller decides exit semantics). No import-time side effects.
 Usage (batch, mirrors the frozen driver):
     python vclean_masters.py [wideband|subband|all] [NPAR]
 """
+from exopipe.common.roots import coadd_root
 import os
 import re
 import sys
@@ -49,7 +50,7 @@ import subprocess
 import numpy as np
 from astropy.io import fits
 
-WB_ROOT = '/fast/gh/main/phase3/coadd'
+WB_ROOT = None   # NO default (Gregg 2026-09-04): coadd_root() at point of use
 SB_ROOT = '/data07/gh/phase3/coadd_sb'
 TMP_ROOT = '/fast/gh/main/tmp'
 SV2_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -140,7 +141,7 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
 
 def enumerate_cells(mode='all', wb_root=None, sb_root=None):
     """(root, cell) pairs for the batch sweep, frozen-driver semantics."""
-    wb_root = wb_root or WB_ROOT
+    wb_root = wb_root or coadd_root()
     sb_root = sb_root or SB_ROOT
     cells = []
     if mode in ('wideband', 'all') and os.path.isdir(wb_root):

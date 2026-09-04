@@ -6,6 +6,7 @@ load_rows, epoch_mid, FP_CLASS, ATEAM and the ROOT/COADD/REPEAT_DEG constants,
 plus internal deps LEDGERS and the _HDR cache that they reference).
 The remaining assembly-capability content arrives at move time.
 """
+from exopipe.common.roots import coadd_root
 import os, csv, glob
 from astropy.io import fits
 from astropy.time import Time
@@ -18,7 +19,7 @@ ROOT = '/data07/gh/phase3/transients/Run_I_DEEP'
 
 LEDGERS = ([f'{ROOT}/i_deep_ledger.csv']
            + sorted(glob.glob(f'{ROOT}/nodes/*/i_deep_ledger.csv')))
-COADD = '/fast/gh/main/phase3/coadd'          # 07 holds ALL cells (stage source)
+COADD = None   # NO default (Gregg 2026-09-04): coadd_root() at point of use
 FP_CLASS = {'Blue': (2, 4), 'Green': (15, 30), 'Red': (47, 96),
             'Full': (65, 291)}                # pack §3 matched-funnel terciles
 REPEAT_DEG = 0.5
@@ -53,7 +54,7 @@ def epoch_mid(lst, band, date):
     if key not in _HDR:
         try:
             eh = fits.getheader(
-                f'{COADD}/{lst}_{band}/subtracted/{date}_I_sub_{band}.fits')
+                f'{coadd_root()}/{lst}_{band}/subtracted/{date}_I_sub_{band}.fits')
             _HDR[key] = (Time(eh['DATE-OBS'])
                          + float(eh.get('INTTIME') or 3591.0) / 2 * u.s,
                          str(eh.get('DATE-OBS')))

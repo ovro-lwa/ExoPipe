@@ -4,7 +4,7 @@
 PB library is the single canonical method per PB_CORRECTION_HANDOFF.md §3;
 the snapshot pb_correct products are superseded and RE-DERIVED here).
 
-For every wideband cell (/fast/gh/main/phase3/coadd/{lst}_{band}) and every
+For every wideband cell ($P3_COADD_ROOT/{lst}_{band}) and every
 subband cell (/data07/gh/phase3/coadd_sb/{lst}_{sb}), for every sane deep
 master variant (I Taper/NoTaper x R0/R075 + V Taper_R0):
   - derive the 60-min time-integrated PB (pb_apply.wideband_pb: QA-weighted
@@ -17,6 +17,7 @@ Provenance: PBCORR/PBFLOOR/PBLIBV (pb_apply) + PBMETHOD/PBWINDOW/BEAMMOD.
 Skips corrupt masters (maxabs > 1e6) and logs them.
 Usage: python phase3_pbcorr_masters.py [wideband|subband|all]
 """
+from exopipe.common.roots import coadd_root
 import sys
 _ARGV = list(sys.argv); sys.argv = ['pbmasters']
 import os, re, glob
@@ -27,8 +28,8 @@ sys.argv = _ARGV              # restore after import-protection clobber
 
 # v2-rebuild campaign (Gregg close-out 2026-08-29): PB siblings must be
 # regenerated for the rebuilt cell roots; override via the same env var the
-# search fleet uses, default = the legacy trees
-WB_ROOT = os.environ.get('P3_COADD_ROOT', '/fast/gh/main/phase3/coadd')
+# search fleet uses; NO wideband default since 2026-09-04
+WB_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); coadd_root() at use
 SB_ROOT = os.environ.get('P3_COADD_SB_ROOT', '/data07/gh/phase3/coadd_sb')
 VARIANTS = ['I_deep_Taper_R0', 'I_deep_Taper_R075', 'I_deep_NoTaper_R0',
             'I_deep_NoTaper_R075', 'V_deep_Taper_R0']
@@ -81,7 +82,7 @@ def main():
     all_errs = []
     cells = []
     if MODE in ('wideband', 'all'):
-        cells += [(WB_ROOT, c) for c in sorted(os.listdir(WB_ROOT))
+        cells += [(coadd_root(), c) for c in sorted(os.listdir(coadd_root()))
                   if re.match(r'^\d\dh_(Red|Green|Blue|Full)$', c)]
     if MODE in ('subband', 'all'):
         cells += [(SB_ROOT, c) for c in sorted(os.listdir(SB_ROOT))

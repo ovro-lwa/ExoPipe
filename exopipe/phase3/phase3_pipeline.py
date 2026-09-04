@@ -51,6 +51,7 @@ USAGE
   python phase3_pipeline.py --selftest_beam
   python phase3_pipeline.py --selftest_leakage
 """
+from exopipe.common.roots import coadd_root
 import argparse
 import glob
 import json
@@ -2059,8 +2060,7 @@ def main():
                'detect', 'search']:
         ap.add_argument(f'--skip_{st}', action='store_true')
     ap.add_argument('--selftest_beam', nargs='?',
-                    const='/fast/gh/main/phase3/coadd/10h_Green/'
-                          'coadd_final/I_deep_Taper_R0_Green.fits',
+                    const='@P3_COADD_ROOT/10h_Green/coadd_final/I_deep_Taper_R0_Green.fits',
                     help='Run the zonal beam-fit self-test and exit')
     ap.add_argument('--selftest_leakage', nargs='?',
                     const='/fast/gh/main/phase3/subtract_lab/'
@@ -2069,7 +2069,8 @@ def main():
     args = ap.parse_args()
 
     if args.selftest_beam:
-        sys.exit(0 if selftest_beam(args.selftest_beam) else 1)
+        _p = args.selftest_beam.replace('@P3_COADD_ROOT', coadd_root())
+        sys.exit(0 if selftest_beam(_p) else 1)
     if args.selftest_leakage:
         sys.exit(0 if selftest_leakage(args.selftest_leakage) else 1)
     if not args.lst or not args.band:

@@ -36,12 +36,13 @@ retunes offline without reruns):
 RECORDED, NEVER GATED: n_epoch_raw, sstack, dist_b7_beams, ateam_deg, sign.
 
 Outputs (env-overridable for fleet path parity — no node needs /data07):
-  P3_COADD_ROOT  masters+subtracted   (default /fast/gh/main/phase3/coadd)
+  P3_COADD_ROOT  masters+subtracted   (REQUIRED - no default since 2026-09-04)
   P3_FLOW_ROOT   cached x2 flows      (default /data07/gh/phase3/deep)
   P3_OUT         ledger + images CSV  (default /data07/gh/phase3/transients/Run_I_DEEP)
   P3_RESID_ROOT  residual archive     (default /data07/gh/phase3/i_resid)
 Usage: python phase3_i_deep.py <LST> <SCOPE>
 """
+from exopipe.common.roots import coadd_root
 import sys
 _ARGV = list(sys.argv)          # BEFORE phase3_deep import (argv clobber gotcha)
 import os, re, glob, csv, fcntl, time
@@ -65,7 +66,7 @@ from exopipe.phase3 import search_i_transients as sit
 from exopipe.phase3 import phase3_veto as pv
 from exopipe.common import phase3_products as prod
 
-COADD_ROOT = os.environ.get('P3_COADD_ROOT', '/fast/gh/main/phase3/coadd')
+COADD_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); use coadd_root() at point of use
 FLOW_ROOT = os.environ.get('P3_FLOW_ROOT', '/data07/gh/phase3/deep')
 OUT = os.environ.get('P3_OUT', '/data07/gh/phase3/transients/Run_I_DEEP')
 RESID_ROOT = os.environ.get('P3_RESID_ROOT', '/data07/gh/phase3/i_resid')
@@ -157,7 +158,7 @@ def _append(path, cols, rows):
 
 
 def _qa_outlier_dates(lst, scope):
-    p = f'{COADD_ROOT}/{lst}_{scope}/residuals_provisional.csv'
+    p = f'{coadd_root()}/{lst}_{scope}/residuals_provisional.csv'
     if not os.path.exists(p):
         return set()
     return {r['date'] for r in csv.DictReader(open(p))
@@ -238,7 +239,7 @@ def _assoc(master, x, y, Ri, disk):
 
 def run_cell(lst, scope, residuals_only=False, included_dates=None):
     t0 = time.time()
-    base = f'{COADD_ROOT}/{lst}_{scope}'
+    base = f'{coadd_root()}/{lst}_{scope}'
     cw = f'{FLOW_ROOT}/{lst}_{scope}'
     mp = f'{base}/coadd_final/I_deep_Taper_R075_{scope}.fits'
     if not os.path.exists(mp):

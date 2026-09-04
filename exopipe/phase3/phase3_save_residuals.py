@@ -10,6 +10,7 @@ provenance are sourced from the original Phase 2 deep image (B's _sub headers
 carry the co-add date, not the epoch). Residual = ×2-upflow(epoch) − master −
 striation, exactly as the search ran. Deterministically regenerable.
 """
+from exopipe.common.roots import coadd_root
 import os, sys, glob, re
 _ARGV = list(sys.argv)
 import numpy as np
@@ -74,8 +75,8 @@ def _write(data, wcs_hdr, outdir, name, *, scope, stokes, src, ebeam,
 
 def save_cell(lst, scope):
     # P3_COADD_ROOT override (same convention as phase3_deep): subband cells
-    # live at /data07/gh/phase3/coadd_sb, wideband at /fast/gh/main/phase3/coadd.
-    _croot = os.environ.get('P3_COADD_ROOT', '/fast/gh/main/phase3/coadd')
+    # live at /data07/gh/phase3/coadd_sb, wideband at the rebuild_w2/rebuild_v2 roots.
+    _croot = coadd_root()   # REQUIRED, no default (Gregg 2026-09-04)
     base = f'{_croot}/{lst}_{scope}'
     _irob = 'R0' if scope in ('Red', 'Green', 'Blue', 'Full') else 'R075'  # subbands co-add I at Robust+0.75
     mIp = f'{base}/coadd_final/I_deep_Taper_{_irob}_{scope}.fits'

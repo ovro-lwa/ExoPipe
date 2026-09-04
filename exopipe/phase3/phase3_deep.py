@@ -12,6 +12,7 @@ flux-scaling, no native subtraction is redone — only the ×2 refine + detect.
 
 I = direct + sigma_stack + veto;  V = signed ±V + 20×I rule, SAME ×2 flow as I.
 """
+from exopipe.common.roots import coadd_root
 import os, sys, glob, re, subprocess, time, csv, fcntl
 _ARGV = list(sys.argv)        # captured before lab imports that reset sys.argv
 import numpy as np
@@ -202,7 +203,7 @@ def _mstruct_maps(master_V, mVp, beam):
 
 def _qa_outlier_dates(lst, scope):
     """Dates the two-stage QA flagged outlier==True — must NOT be searched (problem 9)."""
-    p = f'{COADD_ROOT}/{lst}_{scope}/residuals_provisional.csv'
+    p = f'{coadd_root()}/{lst}_{scope}/residuals_provisional.csv'
     if not os.path.exists(p):
         return set()
     return {r['date'] for r in csv.DictReader(open(p))
@@ -238,7 +239,7 @@ def _body_skycoord(body, obs_time_str, date):
 ALIGN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      'phase2', 'align_images.py')
 WORKROOT = os.environ.get('P3_FLOW_ROOT', '/data07/gh/phase3/deep')   # moved off /fast (NVMe too small; was filling it)
-COADD_ROOT = os.environ.get('P3_COADD_ROOT', '/fast/gh/main/phase3/coadd')
+COADD_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); use coadd_root() at point of use
 MIN_EPOCHS = 5
 NPROC_RESID = int(os.environ.get('DEEP_NPROC_RESID', '6'))   # epoch-parallel residual build
 
@@ -467,7 +468,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         # below. (Left ON for 'IV' runs: the I side has no downstream A-team
         # veto stage yet, so removing its pre-blank would leave I unprotected.)
         os.environ['P3_ATEAM_MASK_OFF'] = '1'
-    base = f'{COADD_ROOT}/{lst}_{scope}'
+    base = f'{coadd_root()}/{lst}_{scope}'
     # BUG FIX (Gregg order 2026-08-29): wideband used the Taper R0 I master
     # here while subtracted/*_I_sub_* is built on the Taper R-0.75 chain
     # (coadd_full_pipeline.py:2681) — the epoch reconstruction I_sub+master

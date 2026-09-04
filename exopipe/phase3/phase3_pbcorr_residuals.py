@@ -17,6 +17,7 @@ skipped. One worker per cell (PB map read once). Progress + error log to
 /data07/gh/phase3/logs/pbcorr_residuals_20260727.log; summary ledger row.
 Usage: phase3_pbcorr_residuals.py [nproc]
 """
+from exopipe.common.roots import coadd_root
 import os, re, sys, glob, csv, datetime
 from collections import defaultdict
 from multiprocessing import Pool
@@ -29,7 +30,7 @@ sys.argv = _argv              # restore after import-protection clobber
 
 D7 = '/data07/gh/phase3'
 LU = '/lustre/pipeline/exopipe/phase3'
-WB_PB = '/fast/gh/main/phase3/coadd/{cell}/coadd_final/PB_deep_{scope}.fits'
+WB_PB = '{root}/{cell}/coadd_final/PB_deep_{scope}.fits'   # root = coadd_root(), NO default (Gregg 2026-09-04)
 SB_PB = D7 + '/coadd_sb/{cell}/coadd_final/PB_deep_{scope}.fits'
 LOG = D7 + '/logs/pbcorr_residuals_20260727.log'
 WIDE = {'Red', 'Green', 'Blue', 'Full'}
@@ -39,7 +40,8 @@ FILTER = _argv[2] if len(_argv) > 2 else None  # substring on dst path
 
 def pb_path(cell):
     lst, scope = cell.split('_', 1)
-    return (WB_PB if scope in WIDE else SB_PB).format(cell=cell, scope=scope)
+    return (WB_PB.format(root=coadd_root(), cell=cell, scope=scope) if scope in WIDE
+            else SB_PB.format(cell=cell, scope=scope))
 
 
 def pbcorr_name(name):

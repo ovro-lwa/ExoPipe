@@ -16,6 +16,7 @@ maps (wideband: /fast coadd coadd_final; subband: coadd_sb).
 
 Usage: phase3_tenmin_assemble.py {wb|sb} {V|I} [--lst 01h]
 """
+from exopipe.common.roots import coadd_root
 import os, sys, csv, glob, argparse
 import numpy as np
 from collections import defaultdict
@@ -41,7 +42,7 @@ SBA.radius_amin = radius_amin   # grouping + xmatch use tier-aware radii
 def pb_at(tier, lst, scope, ra, dec):
     from astropy.io import fits
     from astropy.wcs import WCS
-    root = ('/fast/gh/main/phase3/coadd' if tier == 'wb'
+    root = (coadd_root() if tier == 'wb'
             else '/data07/gh/phase3/coadd_sb')
     key = (lst, scope)
     if key not in SBA._pb_cache:

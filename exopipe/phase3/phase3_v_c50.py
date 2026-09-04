@@ -15,6 +15,7 @@ Method (faithful to phase3_deep.run_deep_cell's V path, mstruct sole gate):
   Recovery binned by LOCAL-rms SNR; raw 50% crossing (NO logistic fit). The final
   (mstruct) crossing is recorded as the band's measured C50.
 """
+from exopipe.common.roots import coadd_root
 import sys
 _ARGV = list(sys.argv)   # capture BEFORE heavy imports — phase3_deep clobbers sys.argv at import
 import os, csv, copy, glob, re
@@ -44,7 +45,7 @@ def pick_cell(band):
     best = None
     for cw in sorted(glob.glob(f'{WORKROOT}/*_{band}')):
         lst = os.path.basename(cw).split('_')[0]
-        base = f'/fast/gh/main/phase3/coadd/{lst}_{band}'
+        base = f'{coadd_root()}/{lst}_{band}'
         for fl in glob.glob(f'{cw}/ep_*_up2_flow.npy'):
             d = re.search(r'ep_(\d{4}-\d\d-\d\d)_', os.path.basename(fl)).group(1)
             vsub = f'{base}/subtracted/{d}_V_sub_{band}.fits'
@@ -88,7 +89,7 @@ def main():
         lst, date, _ = pc
     print(f"[cell] {lst} {date} {band}", flush=True)
     os.makedirs(OUT, exist_ok=True)
-    base = f'/fast/gh/main/phase3/coadd/{lst}_{band}'
+    base = f'{coadd_root()}/{lst}_{band}'
     cw = f'{WORKROOT}/{lst}_{band}'
     mIp = f'{base}/coadd_final/I_deep_Taper_R0_{band}.fits'
     mVp = f'{base}/coadd_final/V_deep_Taper_R0_{band}.fits'

@@ -7,6 +7,7 @@ median separation per band. Acceptance (healthy tiles): <= ACCEPT_AMIN.
 Usage: python phase3_astrom_check.py <LST> [accept_arcmin=2.5]
 Exit 0 = all bands pass; 1 = any band fails/missing.
 """
+from exopipe.common.roots import coadd_root
 import sys
 import os
 import numpy as np
@@ -29,7 +30,7 @@ def main():
 
     ok = True
     for band in ('Blue', 'Green', 'Red', 'Full'):
-        mp = (f'/fast/gh/main/phase3/coadd/{lst}_{band}/coadd_final/'
+        mp = (f'{coadd_root()}/{lst}_{band}/coadd_final/'
               f'I_deep_Taper_R075_{band}.fits')
         if not os.path.exists(mp):
             print(f'{lst} {band}: NO MASTER'); ok = False; continue

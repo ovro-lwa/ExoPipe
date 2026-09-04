@@ -52,7 +52,14 @@ from PIL import Image, ImageDraw, ImageFont
 # ═══════════════════════════════════════════════════════════════════
 
 PHASE2_ROOT = '/lustre/pipeline/exopipe/phase2'
-WORKDIR_BASE = '/fast/gh/main/phase3/coadd'
+WORKDIR_BASE = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04): --workdir or P3_COADD_ROOT required
+
+
+def _workdir_base():
+    if not WORKDIR_BASE:
+        from exopipe.common.roots import required_root
+        return required_root('P3_COADD_ROOT', 'co-add work/output root; or pass --workdir')
+    return WORKDIR_BASE
 DECISIONS_CSV = '/lustre/gh/main/clv15/data_decisions.csv'  # canonical (Gregg move 2026-08-10; -> exopipe_ops/ at refactor)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # GC-PRE-2 (Gregg 2026-08-12): flow batch script lives in exopipe/common/
@@ -1470,7 +1477,7 @@ def process_lst_freq(lst, freq_str, exclusions, args):
         return [], None
 
     fl = freq_label(freq_str)
-    workdir = f'{WORKDIR_BASE}/{lst}_{fl}'
+    workdir = f'{_workdir_base()}/{lst}_{fl}'
     _ensure_reference_fingerprint(workdir, lst)
     for sub in ['prep', 'flow', 'aligned', 'coadd', 'movies']:
         os.makedirs(f'{workdir}/{sub}', exist_ok=True)
@@ -1920,7 +1927,7 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         return None
 
     fl = freq_label(freq_str)
-    workdir = f'{WORKDIR_BASE}/{lst}_{fl}'
+    workdir = f'{_workdir_base()}/{lst}_{fl}'
     _ensure_reference_fingerprint(workdir, lst)
     prep_dir = f'{workdir}/prep'
     prov_dir = f'{workdir}/coadd_provisional'
@@ -2188,7 +2195,7 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
         return None
 
     fl = freq_label(freq_str)
-    workdir = f'{WORKDIR_BASE}/{lst}_{fl}'
+    workdir = f'{_workdir_base()}/{lst}_{fl}'
     _ensure_reference_fingerprint(workdir, lst)
     prep_dir = f'{workdir}/prep_10min'
     prov_dir = f'{workdir}/coadd_provisional'
@@ -2616,7 +2623,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         return None
 
     fl = freq_label(freq_str)
-    workdir = f'{WORKDIR_BASE}/{lst}_{fl}'
+    workdir = f'{_workdir_base()}/{lst}_{fl}'
     _ensure_reference_fingerprint(workdir, lst)
     final_dir = f'{workdir}/coadd_final'
     sub_dir = f'{workdir}/subtracted'
@@ -3158,7 +3165,7 @@ def run_provisional(lsts, freqs, exclusions, args, depth='deep'):
 
     if all_metrics:
         summary_df = pd.DataFrame(all_metrics)
-        summary_path = f'{WORKDIR_BASE}/provisional{suffix}_summary.csv'
+        summary_path = f'{_workdir_base()}/provisional{suffix}_summary.csv'
         summary_df.to_csv(summary_path, index=False)
 
         n_total = len(summary_df)
@@ -3198,7 +3205,7 @@ def process_frequency(freq_str, lsts, exclusions, args):
         print(f"\n  No flow pairs to process for {fl}")
     else:
         # Phase 2: Batch flow alignment
-        manifest_path = f'{WORKDIR_BASE}/_manifest_{fl}.json'
+        manifest_path = f'{_workdir_base()}/_manifest_{fl}.json'
         with open(manifest_path, 'w') as f:
             json.dump(all_manifest, f)
 
@@ -3210,7 +3217,7 @@ def process_frequency(freq_str, lsts, exclusions, args):
                "python", BATCH_FLOW_SCRIPT,
                "--manifest", manifest_path]
         t0 = time.time()
-        gpu_lock_path = os.path.join(WORKDIR_BASE, '.gpu_lock')
+        gpu_lock_path = os.path.join(_workdir_base(), '.gpu_lock')
         with open(gpu_lock_path, 'w') as lockf:
             print(f"  Waiting for GPU lock...")
             fcntl.flock(lockf, fcntl.LOCK_EX)
@@ -3238,7 +3245,7 @@ def main():
                         help='Single LST to process (e.g. 10h)')
     parser.add_argument('--all', action='store_true',
                         help='Process all frequencies and LSTs')
-    parser.add_argument('--workdir', default=WORKDIR_BASE,
+    parser.add_argument('--workdir', default=None,
                         help='Output base directory')
     parser.add_argument('--outlier_sigma', type=float, default=OUTLIER_SIGMA,
                         help='MAD outlier threshold in sigma')
@@ -3249,8 +3256,9 @@ def main():
                         help='Number of LSTs to process in parallel (final stage)')
     args = parser.parse_args()
 
-    if args.workdir != WORKDIR_BASE:
+    if args.workdir:
         _update_workdir(args.workdir)
+    _workdir_base()   # refuse to run without an explicit root
     if args.outlier_sigma != OUTLIER_SIGMA:
         _update_sigma(args.outlier_sigma)
 
@@ -3302,7 +3310,7 @@ def main():
     elapsed = time.time() - t_start
     print(f"\n{'═'*70}")
     print(f"  Complete. Total time: {elapsed/60:.1f} min")
-    print(f"  Output: {WORKDIR_BASE}/")
+    print(f"  Output: {_workdir_base()}/")
     print(f"{'═'*70}")
 
 

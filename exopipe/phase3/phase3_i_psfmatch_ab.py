@@ -17,6 +17,7 @@ Writes matched residual FITS to i_resid archive with _psfmatch tag + a CSV of
 injections to Run_I_GATES/c50/.
 Usage: python phase3_i_psfmatch_ab.py <LST> <SCOPE> <DATE> [--no-c50]
 """
+from exopipe.common.roots import coadd_root
 import sys
 _ARGV = list(sys.argv)
 import os, csv
@@ -132,7 +133,7 @@ def main():
     lst, scope, date = _ARGV[1], _ARGV[2], _ARGV[3]
     robust = 'R0' if 'R0' in _ARGV[4:] else 'R075'
     do_c50 = '--no-c50' not in _ARGV
-    base = f'/fast/gh/main/phase3/coadd/{lst}_{scope}'
+    base = f'{coadd_root()}/{lst}_{scope}'
     cw = f'/data07/gh/phase3/deep/{lst}_{scope}'
     mp = f'{base}/coadd_final/I_deep_Taper_{robust}_{scope}.fits'
     master = _load(mp); mh = fits.getheader(mp); cd = abs(mh['CDELT1'])

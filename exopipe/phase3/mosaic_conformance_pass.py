@@ -13,6 +13,7 @@ constituent master, canonical coadd_final path, verified data-identical
 
 Constituent membership is RECOMPUTED with the same guards as the build
 (missing / census-skip / <100 valid px / CORRUPT-FLAT sigma<1e-4), not parsed
+from exopipe.common.roots import coadd_root
 from logs. Read-only on sources; writes only under archive_staging/.
 """
 import os, sys, csv, shutil
@@ -32,7 +33,7 @@ def main():
         SUB = "wideband"
         SCOPES = ["Blue", "Green", "Red", "Full"]
         LSTS = [f"{h:02d}h" for h in range(23)]
-        CANON = "/fast/gh/main/phase3/coadd/{lst}_{band}/coadd_final/{name}"
+        CANON = coadd_root() + "/{lst}_{band}/coadd_final/{name}"
         mcj.load_beam_csv("/lustre/gh/main/clv15/master_beam_repair_20260711_wb_apply.csv")
         PROVBAS = ("02-staged snapshot 20260711T1807 + beam ledger "
                    "master_beam_repair_20260711_wb_apply.csv; data blocks verified "

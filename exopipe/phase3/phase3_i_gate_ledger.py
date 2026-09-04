@@ -17,6 +17,7 @@ EVERY gate quantity recorded, NONE applied:
   sign-relative), bilobe (production params), gaussfit (|snr|>8), n_epoch_raw
 Usage: python phase3_i_gate_ledger.py <LST> <SCOPE>
 """
+from exopipe.common.roots import coadd_root
 import sys
 _ARGV = list(sys.argv)
 import os, re, glob, csv, fcntl
@@ -146,7 +147,7 @@ def _psfm_worker(d):
 
 
 def run(lst, scope):
-    base = f'/fast/gh/main/phase3/coadd/{lst}_{scope}'
+    base = f'{coadd_root()}/{lst}_{scope}'
     cw = f'{WORKROOT}/{lst}_{scope}'
     mp = f'{base}/coadd_final/I_deep_Taper_R075_{scope}.fits'
     if not os.path.exists(mp):
