@@ -199,11 +199,16 @@ def _run_bdsf(fits_path, thresh_pix, thresh_isl, quiet=True, rms_value=None, mea
             _mj, _mn, _pa = (float(x) for x in s.size_sky)
         except Exception:
             _mj = _mn = _pa = float('nan')
+        try:      # 2026-09-04: BDSF's own 1-sigma error on the major axis (Card 9 allowance)
+            _emj = float(s.size_sky_err[0])
+        except Exception:
+            _emj = float('nan')
         sources.append({'coord': SkyCoord(ra_d, dec_d, unit='deg'), 'flux': float(s.peak_flux_max),
                         'total_flux': float(getattr(s, 'total_flux', s.peak_flux_max)),
                         'snr': float(s.peak_flux_max / getattr(s, 'rms', 1e-3)),
                         'pix_x': px, 'pix_y': py,
-                        'bmaj_fit_deg': _mj, 'bmin_fit_deg': _mn, 'pa_fit_deg': _pa})
+                        'bmaj_fit_deg': _mj, 'bmin_fit_deg': _mn, 'pa_fit_deg': _pa,
+                        'bmaj_fit_err_deg': _emj})
     return sources
 
 def _filter_by_mask(sources, mask, shape):

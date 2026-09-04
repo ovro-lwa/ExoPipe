@@ -1475,11 +1475,13 @@ def run_identification_i(diff, master, hdr, bpix, sigma_stack=None):
     sit.assign_local_snr(cands, diff, excl, bpix,
                          sit.CONFIG['SIGMA_THRESHOLD'])
     _apply_sigma_stack(cands, sigma_stack, sit.CONFIG['SIGMA_THRESHOLD'])
-    bright = sit.find_bright_sources(
-        master, horizon, wcs, bpix, sit.CONFIG['BRIGHT_MASK_FLUX_JY'])
-    sit.reject_bright_proximity(cands, bright, bpix, wcs)
+    # 2026-09-04 (audit R-03; Gregg: no unratified source-removing filter):
+    # the bright-proximity rejection is REMOVED from the ratified I stack
+    # (mstruct AND sigma_stack -> curve). merge_nearby is de-duplication,
+    # not a veto. ALL candidates are returned with their status so the
+    # caller can ledger every rejection (audit R-09).
     sit.merge_nearby(cands, bpix, wcs)
-    return [c for c in cands if c['status'] == 'PASS']
+    return cands
 
 
 def run_identification_v(vresid, master_i, hdr, bpix, sigma_stack=None,

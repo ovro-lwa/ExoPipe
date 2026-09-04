@@ -22,6 +22,7 @@ ones. Solar-system targets still get forced-photometry light curves via the
 separate samples/solar_system/ tree (solar_system_cutout.py), independent of
 this blind catalog.
 """
+import re
 import os, csv, math, fcntl
 import numpy as np
 from astropy.io import fits
@@ -75,18 +76,26 @@ def gaussian_photometry(resid, x, y, bpix, cd):
     yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
     sgn = np.sign(np.nanmean(st[r - 1:r + 2, r - 1:r + 2])) or 1.0
     try:
-        p, _ = curve_fit(_gauss2d, (xx, yy), st.ravel(),
-                         p0=[sgn * np.nanmax(np.abs(st)), 0, 0, bpix / 2.355,
-                             bpix / 2.355, 0, 0], maxfev=10000)
+        p, _pcov = curve_fit(_gauss2d, (xx, yy), st.ravel(),
+                             p0=[sgn * np.nanmax(np.abs(st)), 0, 0, bpix / 2.355,
+                                 bpix / 2.355, 0, 0], maxfev=10000)
     except Exception:
         return None
     peak = float(p[0]); sx, sy = abs(p[3]), abs(p[4])
     beam_area = (np.pi * bpix * bpix) / (4 * np.log(2))      # px^2
     integ = peak * 2 * np.pi * sx * sy / max(beam_area, 1e-9)
     mj, mn = max(sx, sy) * 2.355, min(sx, sy) * 2.355
+    # 2026-09-04 (Card 9: keep the fit covariance): 1-sigma uncertainty of the
+    # major-axis FWHM, for the size test's measurement allowance
+    try:
+        _imaj = 3 if sx >= sy else 4
+        _emaj = float(np.sqrt(abs(_pcov[_imaj, _imaj]))) * 2.355 if np.all(np.isfinite(_pcov)) else float('nan')
+    except Exception:
+        _emaj = float('nan')
     return dict(peak_jy=round(peak, 4), int_jy=round(float(integ), 4),
                 dx=float(p[1]), dy=float(p[2]),
                 fwhm_maj_arcmin=round(mj * cd * 60, 2),
+                fwhm_maj_err_arcmin=(round(_emaj * cd * 60, 3) if np.isfinite(_emaj) else None),
                 axis_ratio=round(mj / max(mn, 0.1), 2))
 
 
@@ -106,7 +115,12 @@ def ephemeris_label(ra, dec, obs_time):
     return ''
 
 
-def _cutout(resid, master, x, y, hdr):
+_WCS_CEL_KEYS = re.compile(r'^(NAXIS\d*|WCSAXES|CTYPE[12]|CRVAL[12]|CRPIX[12]|CDELT[12]|'
+                           r'CUNIT[12]|CD\d_\d|PC\d_\d|LONPOLE|LATPOLE|RADESYS|EQUINOX|'
+                           r'MJDREF|DATEREF|CRDER[12]|CSYER[12]|SIMPLE|BITPIX|EXTEND|COMMENT|HISTORY)$')
+
+
+def _cutout(resid, master, x, y, hdr, frame_hdr=None):
     h = CUTOUT_HALF_PIX
     n = resid.shape[0]
     x0, x1 = max(0, x - h), min(n, x + h + 1)
@@ -114,9 +128,25 @@ def _cutout(resid, master, x, y, hdr):
     w = WCS(hdr).celestial
     sub = w[y0:y1, x0:x1]
     rh = sub.to_header()
-    for k in ['BMAJ', 'BMIN', 'BPA', 'BUNIT', 'DATE-OBS', 'RESTFRQ']:
-        if k in hdr:
-            rh[k] = hdr[k]
+    if frame_hdr is not None:
+        # 2026-09-04 conformant-from-birth cutouts: every non-celestial card
+        # of the parent frame's standard header (time block, beam, frequency
+        # block incl. degenerate axes 3/4 + WCSAXES=4, Stokes, noise,
+        # provenance) is inherited; the cutout WCS stays the sub-image's.
+        for card in frame_hdr.cards:
+            k = card.keyword
+            if not k or _WCS_CEL_KEYS.match(k):
+                continue
+            rh[k] = (card.value, card.comment)
+        rh['WCSAXES'] = frame_hdr.get('WCSAXES', 2)
+        for hc in frame_hdr.get('HISTORY', []) if 'HISTORY' in frame_hdr else []:
+            rh.add_history(hc)
+        rh['CUTOUT'] = (True, 'Candidate cutout of the parent frame')
+        rh['CUTPARNT'] = (str(frame_hdr.get('PRODNAME', ''))[:68], 'Parent frame product name')
+    else:
+        for k in ['BMAJ', 'BMIN', 'BPA', 'BUNIT', 'DATE-OBS', 'RESTFRQ']:
+            if k in hdr:
+                rh[k] = hdr[k]
     return (resid[y0:y1, x0:x1].astype(np.float32),
             (master[y0:y1, x0:x1].astype(np.float32) if master is not None else None),
             rh)
@@ -150,7 +180,7 @@ def _read_existing(catalog_csv):
 
 def write_candidates(root, label, cands, resid, master, hdr, lst, date,
                      scope, stokes, cadence, bpix, cd, obs_time,
-                     interval=None):
+                     interval=None, frame_hdr=None):
     """Write each candidate's cutout + photometry + astrometry, label any
     solar-system body in place, cross-match repeats against the running
     master_catalog, and append rows. Returns the list of catalog rows written."""
@@ -171,8 +201,10 @@ def write_candidates(root, label, cands, resid, master, hdr, lst, date,
               'ra', 'dec', 'peak_jy', 'int_jy', 'snr', 'axis_ratio',
               'fwhm_maj_arcmin', 'c50_mjy', 'mstruct', 'mstruct_raw', 'sstack',
               'jupiter_deg', 'n_v_epoch', 'body', 'repeat_group',
-              'epoch_qa']   # 'outlier QA' tag: candidate from a coadd-omitted
+              'epoch_qa',   # 'outlier QA' tag: candidate from a coadd-omitted
                             # epoch, carried to transient review (Gregg 2026-08-26)
+              'fp_prediction', 'global_snr', 'size_beams', 'size_flag',
+              'nearest_ateam', 'moon_deg']   # 2026-09-04 additions
     written = []
     for i, c in enumerate(cands):
         x, y = int(c['pix_x']), int(c['pix_y'])
@@ -191,8 +223,18 @@ def write_candidates(root, label, cands, resid, master, hdr, lst, date,
                      existing[int(np.argmin(d))]['cand_id']
         cid = f'{stokes}{cadence[0].upper()}_{lst}_{date}_{scope}_{n0 + i:04d}'
         cdir = P.candidate_dir(root, label, cid, make=True)
-        rc, mc, rh = _cutout(resid, master, x, y, hdr)
-        fits.writeto(os.path.join(cdir, f'{cid}_resid.fits'), rc, rh, overwrite=True)
+        rc, mc, rh = _cutout(resid, master, x, y, hdr, frame_hdr)
+        rh['CANDRA'] = (round(ra, 6), '[deg] Candidate RA'); rh['CANDDEC'] = (round(dec, 6), '[deg] Candidate Dec')
+        rh['CANDID'] = (cid, 'Candidate id')
+        _rp = os.path.join(cdir, f'{cid}_resid.fits')
+        fits.writeto(_rp, rc, rh, overwrite=True)
+        if frame_hdr is not None:
+            from exopipe.common.validate_fits_headers import validate_header as _vh
+            _rep = _vh(_rp, level='standard')
+            if not _rep.ok:
+                os.remove(_rp)
+                raise RuntimeError(f'{cid}: cutout header validation FAILED '
+                                   f'({"; ".join(_rep.errors)[:200]}) - REFUSING')
         if mc is not None:
             fits.writeto(os.path.join(cdir, f'{cid}_master.fits'), mc, rh, overwrite=True)
         _png(rc, mc, os.path.join(cdir, f'{cid}.png'),
@@ -209,7 +251,12 @@ def write_candidates(root, label, cands, resid, master, hdr, lst, date,
                    sstack=c.get('sstack', ''), jupiter_deg=c.get('jupiter_deg', ''),
                    n_v_epoch=c.get('n_v_epoch', ''),
                    body=body, repeat_group=rg,
-                   epoch_qa=c.get('epoch_qa', ''))
+                   epoch_qa=c.get('epoch_qa', ''),
+                   fp_prediction=c.get('fp_prediction', ''),
+                   global_snr=(round(float(c['global_snr']), 2)
+                               if c.get('global_snr') not in (None, '') else ''),
+                   size_beams=c.get('size_beams', ''), size_flag=c.get('size_flag', ''),
+                   nearest_ateam=c.get('nearest_ateam', ''), moon_deg=c.get('moon_deg', ''))
         written.append(row)
     # append to the single de-siloed master_catalog
     new_file = not os.path.exists(catalog_csv)

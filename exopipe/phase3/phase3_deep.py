@@ -63,6 +63,27 @@ JUPITER_VETO_DEG = {'Red': 5.0, 'Green': 0.5, 'Blue': 0.5, 'Full': 5.0}
 # ratified table below.
 ATEAM_VETO_DEG = 2.0
 ATEAM_VETO_DEG_V = 3.0
+ATEAM_VETO_DEG_I = 5.0        # Card 6 ratified table; I downstream veto landed 2026-09-04
+# Gaussian-fit SIZE removal above 8 sigma (Gregg 2026-09-04: 2.5 beams; Card 9
+# allowance: fitted FWHM minus its 1-sigma uncertainty, against the EPOCH's own
+# beam major axis from its Stage-1 product header). 2.0-2.5 beams flagged only.
+SIZE_FLOOR_BEAMS = float(os.environ.get('P3_SIZE_FLOOR_BEAMS', '2.5'))
+SIZE_FLAG_BEAMS = 2.0
+SIZE_SNR_GATE = 8.0
+# Flood keying for the I 2-D curve (R-IVETO-FLOOD-CURVE-RATIFIED 2026-08-31):
+# a night is a flood night when its post-mstruct I candidate count exceeds the
+# 90th percentile of its band x tier population. Reference population frozen
+# 2026-09-04 from the P3S2 run's v_deep_images.csv (n_after_morph, I rows,
+# duplicates removed; wb=wideband deep, sb=subband deep): re-derive from P3S3
+# after its Stage 2 and record the change. Blue p90 = 1 is degenerate (any
+# night with >= 2 post-mstruct candidates keys the flood curve) - reported.
+FLOOD_P90_POSTMSTRUCT = {('Red', 'wb'): 8, ('Green', 'wb'): 9, ('Blue', 'wb'): 1,
+                         ('Full', 'wb'): 8, ('Red', 'sb'): 3, ('Green', 'sb'): 2,
+                         ('Blue', 'sb'): 1}
+_BAND_CLASS = {'18': 'Red', '23': 'Red', '27': 'Red', '32': 'Red', '36': 'Red',
+               '41': 'Green', '46': 'Green', '50': 'Green', '55': 'Green',
+               '59': 'Green', '64': 'Blue', '69': 'Blue', '73': 'Blue',
+               '78': 'Blue', '82': 'Blue'}
 _ATEAM6_COORDS = _SC(
     ['23h23m24s', '19h59m28s', '05h34m31s', '12h30m49s', '09h18m05.7s',
      '16h51m08.15s'],
@@ -83,9 +104,13 @@ MAX_V_PER_EPOCH = 10        # threshold for the n_v_epoch HIGH-COUNT flag (NOT a
 GLED_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y',
              'snr', 'peak_jy', 'morph_pass', 'veto_reason',
              'mstruct', 'mstruct_raw', 'pass_mstruct', 'sstack',
-             'jupiter_deg', 'jupiter_veto', 'final', 'n_v_epoch', 'moon_deg']
+             'jupiter_deg', 'jupiter_veto', 'final', 'n_v_epoch', 'moon_deg',
+             # 2026-09-04 additions (audit R-14, R-09, size ruling, I A-team):
+             'global_snr', 'size_beams', 'size_flag', 'nearest_ateam',
+             'fp_prediction']
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph',
-             'n_after_mstruct', 'n_after_jupiter', 'n_final']
+             'n_after_mstruct', 'n_after_jupiter', 'n_final',
+             'n_raw_floor', 'elev_min_deg']   # 2026-09-04: raw >=floor count; elevation gate
 # P3_GATE_LEDGER_ONLY=1: write ONLY the gate-ledger CSVs, skip master_catalog
 # + candidate cutouts. Used by the posterity BACKFILL over already-searched
 # cells (Gregg 2026-07-11) so re-runs never duplicate catalog rows.
@@ -127,7 +152,10 @@ def _gled_row(lst, scope, stokes, d, c, morph_pass, reason='', pass_ms='',
             int(morph_pass), reason,
             c.get('mstruct', ''), c.get('mstruct_raw', ''), pass_ms,
             c.get('sstack', ''), c.get('jupiter_deg', ''), jup_veto,
-            int(final), c.get('n_v_epoch', ''), c.get('moon_deg', '')]
+            int(final), c.get('n_v_epoch', ''), c.get('moon_deg', ''),
+            (round(float(c['global_snr']), 2) if c.get('global_snr') not in (None, '') else ''),
+            c.get('size_beams', ''), c.get('size_flag', ''),
+            c.get('nearest_ateam', ''), c.get('fp_prediction', '')]
 
 
 def _master_structure_map(vm, bpix, win_beams=4.0, valid=None, report=None):
@@ -522,6 +550,46 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
     return h
 
 
+def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix):
+    """Gaussian-fit SIZE test (Gregg 2026-09-04): for |local SNR| > 8, remove
+    when (fitted FWHM major - its 1-sigma uncertainty) exceeds SIZE_FLOOR_BEAMS x
+    the epoch's own beam major axis; flag between SIZE_FLAG_BEAMS and the floor.
+    V uses the BDSF-fitted shape recorded at extraction (bmaj_fit_deg, err);
+    I uses the catalog photometry fit (Gaussian on the residual stamp) because
+    the I extractor records no shape. Failed/missing fit => keep (never veto on
+    the fitter's own failure). Returns (size_beams or '', 'remove'|'flag'|'')."""
+    if not epoch_bmaj_deg or not np.isfinite(epoch_bmaj_deg) or epoch_bmaj_deg <= 0:
+        return '', ''
+    mj = err = None
+    if stokes == 'V':
+        mj, err = c.get('bmaj_fit_deg'), c.get('bmaj_fit_err_deg') or 0.0
+    else:
+        _ph = pc.gaussian_photometry(resid, int(c['pix_x']), int(c['pix_y']), bpix, cd)
+        if _ph:
+            mj = _ph['fwhm_maj_arcmin'] / 60.0
+            err = (_ph.get('fwhm_maj_err_arcmin') or 0.0) / 60.0
+    if mj is None or not np.isfinite(mj) or mj <= 0:
+        return '', ''
+    ratio = float(mj) / float(epoch_bmaj_deg)
+    c['size_beams'] = round(ratio, 2)
+    if abs(snr) <= SIZE_SNR_GATE:
+        return c['size_beams'], ''
+    eff = (float(mj) - float(err if np.isfinite(err) else 0.0)) / float(epoch_bmaj_deg)
+    if eff > SIZE_FLOOR_BEAMS:
+        return c['size_beams'], 'remove'
+    if ratio > SIZE_FLAG_BEAMS:
+        c['size_flag'] = f'size {SIZE_FLAG_BEAMS}-{SIZE_FLOOR_BEAMS} beams'
+        return c['size_beams'], 'flag'
+    return c['size_beams'], ''
+
+
+def _epoch_bmaj(base, d, scope, stokes):
+    try:
+        return float(fits.getheader(f'{base}/subtracted/{d}_{stokes}_sub_{scope}.fits')['BMAJ'])
+    except Exception:
+        return None
+
+
 def _write_archive_frame(path, data, hdr, cell_tag, d):
     """Atomic write + write-time validation gate (refuses, never warns)."""
     from exopipe.common.validate_fits_headers import validate_header
@@ -537,13 +605,11 @@ def _write_archive_frame(path, data, hdr, cell_tag, d):
 
 def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     t0 = time.time()
-    if stokes == 'V':
-        # G-03 (ratified 2026-07-14/15, deployed here per G-09 redo 2026-08-21):
-        # A-team is a DOWNSTREAM veto stage, never a pre-detection blank. The
-        # V redo path searches the full sky and vetoes at the ratified radii
-        # below. (Left ON for 'IV' runs: the I side has no downstream A-team
-        # veto stage yet, so removing its pre-blank would leave I unprotected.)
-        os.environ['P3_ATEAM_MASK_OFF'] = '1'
+    # G-03 (ratified 2026-07-14/15; Gregg 2026-09-04: 'There is no pre-blank
+    # authorized' - removed for the 5th time, now for BOTH Stokes): A-team is a
+    # DOWNSTREAM veto stage (Card 6: six sources, V 3.0 deg / I 5.0 deg), never
+    # a pre-detection blank. Both chains search the full sky above 20 deg.
+    os.environ['P3_ATEAM_MASK_OFF'] = '1'
     base = f'{coadd_root()}/{lst}_{scope}'
     # BUG FIX (Gregg order 2026-08-29): wideband used the Taper R0 I master
     # here while subtracted/*_I_sub_* is built on the Taper R-0.75 chain
@@ -598,6 +664,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     ms_destr, ms_raw = (_mstruct_maps(master_V, mVp, beam)
                         if master_V is not None else (None, None))
     cell_work = f'{WORKROOT}/{lst}_{scope}'; os.makedirs(cell_work, exist_ok=True)
+    root = os.environ.get('P3_STAGING_ROOT', pc.P.STAGING_ROOT); nwr = 0
+    run_root = pc.P.transients_run(root, label, make=True)
+    # refusal ledgers (beam gate, sanity gate) live under the RUN root so the
+    # fleet ships them (audit R-15: under the input root they were lost on
+    # remote nodes and multiplied on lwacalim07); one tag per attempt
+    _refdir = f'{run_root}/refusals'; os.makedirs(_refdir, exist_ok=True)
+    _attempt = time.strftime('%Y%m%dT%H%M%S', time.gmtime())
 
     dates = []
     for c in sorted(glob.glob(f'{base}/subtracted/*_I_sub_{scope}.fits')):
@@ -611,7 +684,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                            f'missing/unshipped; REFUSING (a 0-epoch cell '
                            f'is never legitimate)')
     if len(dates) < MIN_EPOCHS:
-        print(f'  {lst} {scope}: only {len(dates)} epochs — skip'); return 0
+        print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} epochs (MIN_EPOCHS={MIN_EPOCHS})'); return 0
 
     mup = f'{cell_work}/master_up2.fits'
     if not os.path.exists(mup):
@@ -665,10 +738,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                     if _wr.get(d, 0) > 10.0 * _med]
             if _bad:
                 dates = [d for d in dates if d not in _bad]
-                with open(f'{base}/sanity_excluded.csv', 'a') as _sf:
+                with open(f'{_refdir}/{lst}_{scope}_sanity_excluded.csv', 'a') as _sf:
                     for d in _bad:
                         _sf.write(f'{lst},{scope},{d},{_wr[d]:.1f},'
-                                  f'{_med:.1f}\n')
+                                  f'{_med:.1f},{_attempt}\n')
                 print(f'  {lst} {scope}: SANITY GATE — {len(_bad)} epoch(s) '
                       f'REFUSED from search (alignment rms >10x cell median '
                       f'{_med:.0f} mJy): {_bad}')
@@ -703,6 +776,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 except Exception:
                     pass
         _fin = sorted(_areas.values())
+        # 2026-09-04 (audit R-15): the gate REFUSES instead of failing open -
+        # an epoch without a readable beam header cannot be admitted, and a
+        # set too small to key the median cannot be searched unguarded.
+        _nobeam = [d for d in dates if d not in _areas]
+        if _nobeam:
+            raise RuntimeError(f'{lst} {scope}: no readable Phase-2 beam header for '
+                               f'{_nobeam} - beam gate cannot run; REFUSING')
+        if len(_fin) < 5:
+            raise RuntimeError(f'{lst} {scope}: only {len(_fin)} beam areas for the '
+                               f'gate median (need 5); REFUSING')
         if len(_fin) >= 5:
             _bmed = _fin[len(_fin) // 2]
             _thr = float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5'))
@@ -710,10 +793,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                      if _areas.get(d, 0) > _thr * _bmed]
             if _bbad:
                 dates = [d for d in dates if d not in _bbad]
-                with open(f'{base}/beam_excluded.csv', 'a') as _bf:
+                with open(f'{_refdir}/{lst}_{scope}_beam_excluded.csv', 'a') as _bf:
                     for d in _bbad:
                         _bf.write(f'{lst},{scope},{d},'
-                                  f'{_areas[d]/_bmed:.2f},{_thr}\n')
+                                  f'{_areas[d]/_bmed:.2f},{_thr},{_attempt}\n')
                 print(f'  {lst} {scope}: BEAM GATE — {len(_bbad)} epoch(s)'
                       f' REFUSED from search (fitted-beam area >{_thr}x '
                       f'cell median): '
@@ -721,7 +804,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     if len(dates) == 0:
         raise RuntimeError(f'{lst} {scope}: ZERO flows — REFUSING')
     if len(dates) < MIN_EPOCHS:
-        print(f'  {lst} {scope}: only {len(dates)} flows — skip'); return 0
+        print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} flows (MIN_EPOCHS={MIN_EPOCHS})'); return 0
 
     hdr_ref = _det_header(hdr0, scope, em, cd, None)
     # R-LOO-MASTERS as SEARCH FRAMES (conformance fix 2026-09-03): an epoch
@@ -730,11 +813,25 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     # central master is the fallback and remains the flow/mstruct/parent
     # reference for all epochs (declared: alignment and structure
     # references stay common across epochs).
-    def _loo_masters(central, stokes_tag, variant_tag):
+    try:
+        import csv as _csv2
+        _inm = {r['date']: str(r.get('in_master', '')).strip().lower() in ('1', 'true')
+                for r in _csv2.DictReader(open(f'{base}/coadd_final/weights.csv'))}
+    except FileNotFoundError:
+        _inm = {}
+    def _loo_masters(central, stokes_tag, variant_tag, master_path):
         out = {}
+        _nco = int(fits.getheader(master_path).get('NCOADD', 0) or 0)
         for _d in dates:
             _lp = (f'{base}/coadd_final/loo/'
                    f'{_d}_{stokes_tag}_loo_{variant_tag}_{scope}.fits')
+            if not os.path.exists(_lp) and 2 <= _nco <= 20 and _inm.get(_d, False):
+                # 2026-09-04 (audit R-19): an in-master epoch of an N<=20 stack
+                # without its leave-one-out master is a REFUSAL, never a silent
+                # fallback to the central master (the epoch would subtract itself)
+                raise RuntimeError(f'{lst} {scope} {_d}: leave-one-out {stokes_tag} master '
+                                   f'missing ({_lp}) for an in-master epoch of an '
+                                   f'N={_nco} stack; REFUSING')
             out[_d] = _load(_lp) if os.path.exists(_lp) else central
         _n = sum(1 for _d in dates if out[_d] is not central)
         if _n:
@@ -744,7 +841,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     if 'I' in stokes:
         resid_I = _build_residuals_mp(epoch_I,
                                       _loo_masters(master_I, 'I',
-                                                   'Taper_R075'),
+                                                   'Taper_R075', mI),
                                       flows, hdr_ref, cd, dates, NPROC_RESID)
         dates = [d for d in dates if d in resid_I]
         sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
@@ -763,17 +860,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 epoch_V[d] = _load(vp) + master_V
         if epoch_V:
             vd = list(epoch_V)
-            _mV = _loo_masters(master_V, 'V', 'Taper_R0')
+            _mV = _loo_masters(master_V, 'V', 'Taper_R0', mVp)
             resid_V = _build_residuals_mp(epoch_V,
                                           {d: _mV[d] for d in vd},
                                           {d: flows[d] for d in vd},
                                           hdr_ref, cd, vd, NPROC_RESID)
     sstack_V = _sigma_stack(resid_V, cell_work, hdr0, 'V') if resid_V else None
 
-    root = os.environ.get('P3_STAGING_ROOT', pc.P.STAGING_ROOT); nwr = 0
-    run_root = pc.P.transients_run(root, label, make=True)
     gled_rows, gimg_rows = [], []
     v_pending, i_pending = [], []
+    _fhV, _fhI = {}, {}   # conformant frame headers per date (cutouts inherit them)
     # ── R-ROUND2-RATIFIED shared per-cell inputs ────────────────────────
     # (1) BDSF parent catalog on the CURRENT I master: parents for the
     # ratified I 2-D curve AND the v110 stage's CATDIR (gate contract
@@ -822,17 +918,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                       f'/{lst}_{scope}')
             os.makedirs(ir_dir, exist_ok=True)
             ir_path = f'{ir_dir}/{d}_I_redo_resid_{scope}.fits'
+            _hI, _wI = rI.shape
+            _halfI = min(512, _hI // 4, _wI // 4)
+            from astropy.stats import mad_std as _madsI
+            _rmsI = float(round(float(_madsI(
+                rI[_hI//2-_halfI:_hI//2+_halfI, _wI//2-_halfI:_wI//2+_halfI],
+                ignore_nan=True)), 9))
+            _loo_i = f'{base}/coadd_final/loo/{d}_I_loo_Taper_R075_{scope}.fits'
+            _hdr_I = _archive_frame_header(
+                hdr0, base, d, scope, 'I', em, cd, None, _rmsI, mI, _loo_i, mI,
+                label, f'{lst} {scope}')
+            _fhI[d] = _hdr_I
             if not os.path.exists(ir_path):
-                _hI, _wI = rI.shape
-                _halfI = min(512, _hI // 4, _wI // 4)
-                from astropy.stats import mad_std as _madsI
-                _rmsI = float(round(float(_madsI(
-                    rI[_hI//2-_halfI:_hI//2+_halfI, _wI//2-_halfI:_wI//2+_halfI],
-                    ignore_nan=True)), 9))
-                _loo_i = f'{base}/coadd_final/loo/{d}_I_loo_Taper_R075_{scope}.fits'
-                _hdr_I = _archive_frame_header(
-                    hdr0, base, d, scope, 'I', em, cd, None, _rmsI, mI, _loo_i, mI,
-                    label, f'{lst} {scope}')
                 _write_archive_frame(ir_path, rI, _hdr_I, f'{lst} {scope}', d)
             # R-IVETO-POLICY-RATIFIED (2026-08-31) as shipped under
             # R-ROUND2-RATIFIED (2026-09-03): front gates = sigma_stack
@@ -840,7 +937,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             # AND mstruct on the I master; morphology veto RETIRED to
             # annotation; the 2-D dynamic curve applies POST-LOOP (flood
             # keying needs every night's post-front count first).
-            passed = run_identification_i(rI, master_I, hdr, beam, sstack_I)
+            _allI = run_identification_i(rI, master_I, hdr, beam, sstack_I)
+            passed = [c for c in _allI if c['status'] == 'PASS']
+            # 2026-09-04 (audit R-09): every identification-stage rejection is
+            # a gate-ledger row (local-SNR floor, sigma_stack, merge)
+            for c in _allI:
+                if c['status'] != 'PASS':
+                    gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,
+                                               reason=str(c['status']).lower(),
+                                               pass_ms=''))
+            if d in qa_out:                       # two-tier tag, I as well as V (audit R-12)
+                for c in passed:
+                    c['epoch_qa'] = 'outlier QA'
+            _ebI = _epoch_bmaj(base, d, scope, 'I')
             front = []
             for c in passed:
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
@@ -868,11 +977,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                                 round(c['coord'].dec.deg, 5)),
                                ('', 'not-evaluated'))
                 c['morph_pass'], c['morph_reason'] = _t
+            # Gaussian-fit SIZE removal above 8 sigma (Gregg 2026-09-04)
+            _fr2 = []
+            for c in front:
+                _s = abs(float(c.get('local_snr', c.get('snr', 0))))
+                _sb, _sv = _size_test(c, _s, _ebI, cd, 'I', rI, beam)
+                if _sv == 'remove':
+                    gled_rows.append(_gled_row(lst, scope, 'I', d, c, 0,
+                                               reason='gaussfit-size', pass_ms=1))
+                    continue
+                _fr2.append(c)
+            front = _fr2
             _drI = sv2.get_uniform_rms(rI, sv2.make_masks(
                 hdr, rI.shape)[0])
             i_pending.append((d, front, hdr, ot, float(_drI)))
             gimg_rows.append([lst, scope, 'I', d, len(passed), len(front),
-                              '', '', ''])
+                              '', '', '', len(_allI), 20.0])
         if d in resid_V:
             rV = np.nan_to_num(resid_V[d], nan=0.0)
             # P13 fix (approved 2026-08-21): ARCHIVE the search's own V residual
@@ -883,18 +1003,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                       f'/{lst}_{scope}')
             os.makedirs(vr_dir, exist_ok=True)
             vr_path = f'{vr_dir}/{d}_V_redo_resid_{scope}.fits'
+            _h, _w = rV.shape
+            _half = min(512, _h // 4, _w // 4)
+            _inner = rV[_h//2-_half:_h//2+_half, _w//2-_half:_w//2+_half]
+            from astropy.stats import mad_std as _mads
+            _tn = float(round(float(_mads(_inner, ignore_nan=True)), 9))
+            # 2026-09-04 conformant-from-birth writer (replaces the master-
+            # header copy that gave every frame its master's time block)
+            _loo_v = f'{base}/coadd_final/loo/{d}_V_loo_Taper_R0_{scope}.fits'
+            _hdr_out = _archive_frame_header(
+                hdr0, base, d, scope, 'V', em, cd, _tn, _tn, mVp, _loo_v, mI,
+                label, f'{lst} {scope}')
+            _fhV[d] = _hdr_out
             if not os.path.exists(vr_path):
-                _h, _w = rV.shape
-                _half = min(512, _h // 4, _w // 4)
-                _inner = rV[_h//2-_half:_h//2+_half, _w//2-_half:_w//2+_half]
-                from astropy.stats import mad_std as _mads
-                _tn = float(round(float(_mads(_inner, ignore_nan=True)), 9))
-                # 2026-09-04 conformant-from-birth writer (replaces the master-
-                # header copy that gave every frame its master's time block)
-                _loo_v = f'{base}/coadd_final/loo/{d}_V_loo_Taper_R0_{scope}.fits'
-                _hdr_out = _archive_frame_header(
-                    hdr0, base, d, scope, 'V', em, cd, _tn, _tn, mVp, _loo_v, mI,
-                    label, f'{lst} {scope}')
                 _write_archive_frame(vr_path, rV, _hdr_out, f'{lst} {scope}', d)
             # sstack is INFO-ONLY (quoted on survivors, lines below), NOT a gate
             # (2026-06-23 ruling: mstruct is the sole V gate). Passing None here keeps
@@ -930,7 +1051,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                                 round(c['coord'].dec.deg, 5)),
                                ('', 'not-evaluated'))
                 c['morph_pass'], c['morph_reason'] = _t
-            keptv, vetoed_v = list(pV), []
+            # Gaussian-fit SIZE removal above 8 sigma (Gregg 2026-09-04),
+            # against the epoch's own beam (Stage-1 V product header)
+            _ebV = _epoch_bmaj(base, d, scope, 'V')
+            keptv, vetoed_v = [], []
+            for c in pV:
+                _s = abs(float(c.get('local_snr', c.get('snr', 0))))
+                _sb, _sv = _size_test(c, _s, _ebV, cd, 'V', rV, beam)
+                if _sv == 'remove':
+                    gled_rows.append(_gled_row(lst, scope, 'V', d, c, 0,
+                                               reason='gaussfit-size', pass_ms=''))
+                    continue
+                keptv.append(c)
             n_after_morph = len(keptv)
             vetoed_ms, vetoed_jup, vetoed_moon = [], [], []
             # (2) mstruct gate + (3) Jupiter veto, quoting mstruct/sstack on survivors
@@ -1011,7 +1143,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             gimg_rows.append([lst, scope, 'V', d, len(pV), n_after_morph,
                               n_after_ms if gate_ran else '',
                               (n_after_ms - len(vetoed_jup)) if gate_ran else '',
-                              len(keptv)])
+                              len(keptv), len(pV), 20.0])
             # R-ROUND2-RATIFIED: survivors are NOT final until the frozen
             # v110 gate rules on them — stash for the per-cell verdict
             # stage below (one gate invocation per cell; the archived
@@ -1035,8 +1167,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             return np.stack([np.cos(d_) * np.cos(r_),
                              np.cos(d_) * np.sin(r_), np.sin(d_)], -1)
         _ptree = _KD(_uv(_pa[:, 0], _pa[:, 1])) if len(_pa) else None
+        _bc = _BAND_CLASS.get(scope.replace('MHz', ''), scope)
+        _tier = 'sb' if 'MHz' in scope else 'wb'
+        _p90 = FLOOD_P90_POSTMSTRUCT.get((_bc, _tier), 3 * _icmed)
         for d_, front, hdr_, ot_, drI_ in i_pending:
-            _flood = _icnt[d_] > 3 * _icmed
+            # flood night = post-mstruct count above the band x tier 90th
+            # percentile (R-IVETO-FLOOD-CURVE-RATIFIED; landed 2026-09-04)
+            _flood = _icnt[d_] > _p90
             _r25 = 1.4 if _flood else 1.0
             # Ephemeris always-on for I (ratified; omission caught by Gregg
             # 2026-09-04 - Jupiter at 80 sigma on the Blue I pages):
@@ -1063,6 +1200,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
                                                reason='moon', pass_ms=1))
                     continue
+                # A-team DOWNSTREAM veto, I 5.0 deg, six sources (Card 6;
+                # landed 2026-09-04 - the I chain had none)
+                _adeg = float(min(_sky.separation(_ATEAM6_COORDS).deg))
+                c['nearest_ateam'] = round(_adeg, 2)
+                if _adeg < ATEAM_VETO_DEG_I:
+                    gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
+                                               reason='ateam', pass_ms=1))
+                    continue
                 cut = False
                 if _ptree is not None:
                     _dd, _ii = _ptree.query(_uv(
@@ -1087,7 +1232,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             if finals and not GATE_LEDGER_ONLY:
                 pc.write_candidates(root, label, finals, resid_I[d_],
                                     master_I, hdr_, lst, d_, scope, 'I',
-                                    'deep', em, cd, ot_)
+                                    'deep', em, cd, ot_, frame_hdr=_fhI.get(d_))
                 nwr += len(finals)
     # ── IN-CHAIN v110 VERDICT STAGE (R-ROUND2-RATIFIED, Gregg 2026-09-03:
     # V chain = 5sig -> mstruct -> v110 in-chain [MARGINAL reading] ->
@@ -1098,8 +1243,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     if v_pending and os.environ.get('P3_V110_OFF') != '1':
         verdicts = _v110_cell_verdicts(lst, scope, base, cell_work,
                                        master_I, hdr0, em, cd, v_pending)
-    _v110_removes = ({'FP'} if os.environ.get('P3_V110_READING') == 'strict'
-                     else {'FP', 'marginal'})
+    # Gregg 2026-09-04: FP removed; marginal AND inconclusive RETAINED and
+    # LABELLED (fp_prediction on the catalog row). P3_V110_READING=marginal
+    # restores the round-2 reading (marginal removed) for comparison only.
+    _v110_removes = ({'FP', 'marginal'} if os.environ.get('P3_V110_READING') == 'marginal'
+                     else {'FP'})
     for d, keptv, _vr, hdr, ot, _pm in v_pending:
         finals = []
         for c in keptv:
@@ -1117,7 +1265,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             finals.append(c)
         if finals and not GATE_LEDGER_ONLY:
             pc.write_candidates(root, label, finals, resid_V[d], master_I,
-                                hdr, lst, d, scope, 'V', 'deep', em, cd, ot)
+                                hdr, lst, d, scope, 'V', 'deep', em, cd, ot,
+                                frame_hdr=_fhV.get(d))
             nwr += len(finals)
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)
