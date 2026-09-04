@@ -64,7 +64,9 @@ except ImportError:
 # CONFIGURATION
 # ================================================================
 CONFIG = {
-    'MIN_ELEVATION': 25.0,   # Gregg 2026-07-04: 25 deg for Stokes I (20-25 deg
+    'MIN_ELEVATION': 20.0,   # Gregg 2026-08-22 ELEVATION-RULING-KEEP-20-SUPERSEDES-B02 +
+                             # 2026-09-04 R-ELEVATION-GATE-START-OF-VETO-BOTH-STOKES: 20 deg
+                             # both Stokes (was 25.0 from 2026-07-04; landed 2026-09-04)
                               # rim = faint-source leakage; 10h Blue 12-27 funnel)
     'SIGMA_THRESHOLD': 7.0,      # Detection threshold in local SNR
     'BDSF_THRESH_PIX': 5.0,      # BDSF pixel threshold (lower than final)
