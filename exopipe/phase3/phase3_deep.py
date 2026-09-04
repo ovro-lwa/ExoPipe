@@ -601,8 +601,16 @@ def _write_pbcorr_sibling(frame_path, data, hdr, base, scope, cell_tag, d):
     pbp = f'{base}/coadd_final/PB_deep_{scope}.fits'
     if pbp not in _PB_CACHE:
         if not os.path.exists(pbp):
-            raise RuntimeError(f'{cell_tag} {d}: PB map {pbp} missing - cannot write the '
-                               f'ruled pbcorr sibling; REFUSING')
+            # 2026-09-04 23:10 UT: 42 of 96 wideband cells have NO PB map at their
+            # canonical root (a MASTER-class gap, not a search defect). The search
+            # frame is still written; the sibling is RECORDED as owed and generated
+            # once the PB maps exist (phase3_pbcorr_masters).
+            _rf = f"{os.environ.get('P3_STAGING_ROOT', '.')}/pbcorr_missing_{cell_tag.replace(' ', '_')}.csv"
+            with open(_rf, 'a') as _fh:
+                _fh.write(f'{cell_tag},{d},{os.path.basename(frame_path)},{pbp}\n')
+            print(f'  {cell_tag} {d}: PB map {pbp} MISSING - pbcorr sibling NOT written '
+                  f'(recorded in {os.path.basename(_rf)}; master-class gap)', flush=True)
+            return None
         _pb = np.squeeze(fits.getdata(pbp)).astype(np.float32)
         _PB_CACHE[pbp] = np.where(_pb > 0.05, _pb, np.nan)
     pb = _PB_CACHE[pbp]
@@ -813,6 +821,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         _irob_f = 'Robust-0.75'
         _areas = {}
         for d in dates:
+            # 2026-09-04 23:10 UT: the Stage-1 subtracted product carries the
+            # epoch's own fitted beam (same image family, always shipped with
+            # the cell) - read it FIRST; the Phase-2 deep image is the fallback.
+            try:
+                _hs = fits.getheader(f'{base}/subtracted/{d}_I_sub_{scope}.fits')
+                if _hs.get('BMAJ') and _hs.get('BMIN'):
+                    _areas[d] = float(_hs['BMAJ']) * float(_hs['BMIN'])
+                    continue
+            except Exception:
+                pass
             # 2026-09-04: the Phase-2 deep product carries the 'dewarped' token
             # only in some Science runs (e.g. absent on 2024-12 epochs); the
             # old dewarped-only glob silently found NO header for those epochs
