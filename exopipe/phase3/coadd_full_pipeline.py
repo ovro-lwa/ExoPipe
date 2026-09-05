@@ -126,6 +126,8 @@ BAND_FOR_SUBBAND = {
 }
 
 OUTLIER_SIGMA = 3.0
+LOW_OUTLIER_SIGMA = float(os.environ.get('P3_LOW_OUTLIER_SIGMA', '5.0'))   # R-GC5 low side; Gregg fixes 4 vs 5
+
 
 
 def _update_workdir(val):
@@ -1040,6 +1042,41 @@ def compute_residual_rms(data, ref_data, horizon_mask, margin_frac=0.15):
     return float(np.std(clip)) if len(clip) > 50 else float(sigma)
 
 
+
+def coadd_beam_gate(lst, fl, dates_list):
+    """CO-ADD BEAM GATE (Gregg approved 2026-09-02; shipped in the wideband path
+    2026-09-03; extended to the subband and 10-min paths 2026-09-05 after a census
+    found 20 of 360 subband masters holding a constituent above 1.5x): refuse epochs
+    whose Phase-2 survey Stokes I (Taper R-0.75) fitted-beam AREA exceeds 1.5x the
+    median of the candidate set (long-baseline dropout). Keyed on I. Fails OPEN per
+    epoch when no survey product/beam header is found. Returns (refused_dates, areas)."""
+    _bareas = {}
+    for _d in dates_list:
+        _g = [x for x in glob.glob(
+            f'/lustre/pipeline/exopipe/phase2/{lst}/{_d}/*/{fl}/I/deep/'
+            f'*Taper_Robust-0.75_dewarped*.fits')
+            + glob.glob(
+            f'/lustre/pipeline/exopipe/phase2/{lst}/{_d}/*/{fl}/I/deep/'
+            f'*Taper-*-Robust-0.75-*dewarped*.fits')
+            if 'pbcorr' not in os.path.basename(x)]
+        if _g:
+            try:
+                _h = fits.getheader(_g[0])
+                _bareas[_d] = float(_h['BMAJ']) * float(_h['BMIN'])
+            except Exception:
+                pass
+    _bfin = sorted(_bareas.values())
+    beam_outliers = []
+    if len(_bfin) >= 5:
+        _bmed = _bfin[len(_bfin) // 2]
+        beam_outliers = [d for d in dates_list
+                         if _bareas.get(d, 0) > 1.5 * _bmed]
+        if beam_outliers:
+            print(f"  BEAM GATE: {len(beam_outliers)} epoch(s) refused "
+                  f"from the master (fitted-beam area >1.5x set median): "
+                  f"{[(d, round(_bareas[d]/_bmed, 2)) for d in beam_outliers]}")
+    return beam_outliers, _bareas
+
 # ═══════════════════════════════════════════════════════════════════
 # Outlier detection (MAD-based)
 # ═══════════════════════════════════════════════════════════════════
@@ -1061,8 +1098,16 @@ def detect_outliers_mad(dates, rms_values, sigma_thresh=None):
     mad = np.median(np.abs(vals - med))
     sigma = mad * 1.4826
     thresh = med + sigma_thresh * sigma
-
-    outliers = [d for d, r in valid if r > thresh]
+    # ASYMMETRIC gate (R-GC5 ruled 2026-08-13, Gregg 2026-09-05 "I wanted that
+    # asymmetric gate"): the LOW side rejects too at LOW_OUTLIER_SIGMA (4 or 5;
+    # survey statistics 2026-09-05: 0 epochs below -4 sigma, 3 below -3 sigma of
+    # 6,997) - a night far below the cell population is a fingerprint of a
+    # broken image (empty field, wrong scale), not of good weather.
+    thresh_lo = med - LOW_OUTLIER_SIGMA * sigma
+    outliers = [d for d, r in valid if r > thresh or r < thresh_lo]
+    low = [d for d, r in valid if r < thresh_lo]
+    if low:
+        print(f"  LOW-SIDE outlier(s) rejected (< median - {LOW_OUTLIER_SIGMA} sigma = {thresh_lo:.1f}): {low}")
     return outliers, float(thresh)
 
 
@@ -1205,6 +1250,13 @@ def coadd_inverse_variance(image_paths, weights, output_path, ref_header,
     if dates:
         for d in dates:
             out_hdr['HISTORY'] = f"COADD constituent {d}"
+        # Constituent-generation digest (ruled 2026-08-12, approved 2026-09-05):
+        # md5 of the sorted constituent date list; every master-derived product
+        # inherits the card so a product built from a superseded master is
+        # detectable from its header alone.
+        import hashlib as _hl
+        out_hdr['CONSTDIG'] = (_hl.md5(','.join(sorted(set(dates))).encode()).hexdigest(),
+                               'md5 of sorted constituent dates')
     save_image(output_path, result, out_hdr)
     return output_path
 
@@ -1786,31 +1838,7 @@ def post_flow_processing(prep_data, exclusions, args):
     # is logged with the other outlier rows. Fails OPEN per epoch when no
     # survey product/beam header is found (a missing header is a Phase-2
     # gap, not evidence of a bad beam).
-    _bareas = {}
-    for _d in dates_list:
-        _g = [x for x in glob.glob(
-            f'/lustre/pipeline/exopipe/phase2/{lst}/{_d}/*/{fl}/I/deep/'
-            f'*Taper_Robust-0.75_dewarped*.fits')
-            + glob.glob(
-            f'/lustre/pipeline/exopipe/phase2/{lst}/{_d}/*/{fl}/I/deep/'
-            f'*Taper-*-Robust-0.75-*dewarped*.fits')
-            if 'pbcorr' not in os.path.basename(x)]
-        if _g:
-            try:
-                _h = fits.getheader(_g[0])
-                _bareas[_d] = float(_h['BMAJ']) * float(_h['BMIN'])
-            except Exception:
-                pass
-    _bfin = sorted(_bareas.values())
-    beam_outliers = []
-    if len(_bfin) >= 5:
-        _bmed = _bfin[len(_bfin) // 2]
-        beam_outliers = [d for d in dates_list
-                         if _bareas.get(d, 0) > 1.5 * _bmed]
-        if beam_outliers:
-            print(f"  BEAM GATE: {len(beam_outliers)} epoch(s) refused "
-                  f"from the master (fitted-beam area >1.5x set median): "
-                  f"{[(d, round(_bareas[d]/_bmed, 2)) for d in beam_outliers]}")
+    beam_outliers, _bareas = coadd_beam_gate(lst, fl, dates_list)
     all_outliers = sorted(set(i_outliers) | set(v_outliers)
                           | set(beam_outliers))
 
@@ -2158,11 +2186,13 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
 
     i_outliers, i_thresh = detect_outliers_mad(dates_list, i_rms_list)
     v_outliers, v_thresh = detect_outliers_mad(dates_list, v_rms_list)
-    all_outliers = set(i_outliers) | set(v_outliers)
+    beam_outliers, _ = coadd_beam_gate(lst, fl, dates_list)   # 2026-09-05: subband path
+    all_outliers = set(i_outliers) | set(v_outliers) | set(beam_outliers)
 
     for m in metrics:
         m['i_outlier'] = m['date'] in set(i_outliers)
         m['v_outlier'] = m['date'] in set(v_outliers)
+        m['beam_outlier'] = m['date'] in set(beam_outliers)
         m['outlier'] = m['date'] in all_outliers
         m['i_thresh_mjy'] = i_thresh
         m['v_thresh_mjy'] = v_thresh
@@ -2468,7 +2498,8 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
 
         i_outliers, i_thresh = detect_outliers_mad(dates_list, i_rms_list)
         v_outliers, v_thresh = detect_outliers_mad(dates_list, v_rms_list)
-        combined = set(i_outliers) | set(v_outliers)
+        beam_outliers, _ = coadd_beam_gate(lst, fl, dates_list)   # 2026-09-05: 10-min path
+        combined = set(i_outliers) | set(v_outliers) | set(beam_outliers)
 
         for m in int_metrics:
             m['i_outlier'] = m['date'] in set(i_outliers)

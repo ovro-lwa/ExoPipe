@@ -521,6 +521,7 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
         'MSTRNSTK': (int(mh.get('NSTACK', 0)), 'Parent master: epochs in stack'),
         'MSTRCOOP': (str(mh.get('COADDOP', ''))[:20], 'Parent master: co-add operator'),
         'MSTRMJD': (float(mh.get('MJD-MID', 0.0)), 'Parent master: midpoint MJD'),
+        'MSTRDIG': (str(mh.get('CONSTDIG', 'legacy-no-digest'))[:32], 'Parent master constituent digest (CONSTDIG)'),
         'STRIWIN': (float(8.0 * em * cd), '[deg] Striation window (8 x beam)'),
         'RUNLABEL': (str(label)[:20], 'Search run label'),
         'ORIGIN': ('exopipe phase3_deep search frame', 'Producer'),
@@ -745,6 +746,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} epochs (MIN_EPOCHS={MIN_EPOCHS})'); return 0
 
     mup = f'{cell_work}/master_up2.fits'
+    # FLOW-CACHE GENERATION GATE (constituent-generation ruling 2026-08-12, approved
+    # 2026-09-05): a flow cache computed against a different master generation is
+    # REFUSED (never silently consumed); a legacy cache without a sidecar is recorded
+    # as generation-unverified and the sidecar is written after this search.
+    import hashlib as _hl, json as _js
+    _gen = _hl.md5(np.ascontiguousarray(master_I.astype(np.float32)).tobytes()).hexdigest()
+    _gsc = f'{cell_work}/flow_generation.json'
+    if os.path.exists(_gsc):
+        _g = _js.load(open(_gsc))
+        if _g.get('master_md5_data') != _gen:
+            raise RuntimeError(f'{lst} {scope}: REFUSING flow cache of another master generation '
+                               f'({_g.get("master_md5_data", "?")[:8]} != current {_gen[:8]}; '
+                               f'recompute flows against the current master)')
+        print(f'  {lst} {scope}: flow cache generation verified ({_gen[:8]})')
+    else:
+        print(f'  {lst} {scope}: flow cache generation UNVERIFIED (legacy cache, no sidecar) - sidecar written after this search')
     if not os.path.exists(mup):
         write_up_fits(fft_upsample2(master_I), hdr0, mup)
     items, epoch_I = [], {}
@@ -755,6 +772,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             write_up_fits(fft_upsample2(ei), hdr0, ep_up)
         items.append((d, ep_up))
     flows = _batch_flows(cell_work, mup, items)
+    if not os.path.exists(_gsc):
+        _js.dump({'master': os.path.basename(mI), 'master_md5_data': _gen,
+                  'CONSTDIG': hdr0.get('CONSTDIG', ''), 'written_by': 'phase3_deep', 'n_flows': len(flows)},
+                 open(_gsc + '.part', 'w')); os.replace(_gsc + '.part', _gsc)
     dates = [d for d in dates if d in flows]
     # (0) drop data_decisions-excluded epochs — the master already excludes them, but the
     # per-epoch residual still exists on disk, so the search would otherwise pull them back
