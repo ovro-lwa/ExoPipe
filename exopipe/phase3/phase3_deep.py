@@ -835,11 +835,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     # silently dropped, and never fail the cell.
     try:
         _cons = {str(x).split()[-1] for x in hdr0.get('HISTORY', []) if str(x).startswith('COADD constituent')}
+        # current-generation record = the FINAL co-add's weights.csv (lists every epoch the
+        # final stage handled, omitted ones included); residuals_provisional.csv can be
+        # stale (02h 36MHz: it listed 2025-01-02 and lacked the autumn epochs)
+        _wcsv = f'{base}/coadd_final/weights.csv'
+        _cur = {r['date'] for r in csv.DictReader(open(_wcsv))} if os.path.exists(_wcsv) else None
         _stale = []
         for d in dates:
             _why = ''
-            if d not in _cons and d not in qa_out:
-                _why = 'not a constituent and no current-generation QA record'
+            if _cur is not None and d not in _cons and d not in _cur:
+                _why = 'not a constituent and absent from the final co-add record (weights.csv)'
             for _st in ('I', 'V'):
                 try:
                     _h = fits.getheader(f'{base}/subtracted/{d}_{_st}_sub_{scope}.fits')
