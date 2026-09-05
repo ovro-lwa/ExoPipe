@@ -1444,6 +1444,15 @@ def main():
     else:
         copy_to_nvme(subband_map, work_dir)
 
+    # EXCLUDED subbands (STEP 1a) must not exist as directories in the work dir: the
+    # cascade and the stacker discover subbands from the work dir, not from subband_map
+    # (2026-09-05: attempt 4 still tried the excluded 73 MHz as the anchor). Renamed
+    # <sb> -> <sb>.excluded so nothing globs them; recorded in excluded_subbands.csv.
+    for _sb in sorted(getattr(args, '_excluded_subbands', set()) or set()):
+        _d = os.path.join(work_dir, _sb)
+        if os.path.isdir(_d):
+            os.rename(_d, _d + '.excluded')
+            logger.warning(f"EXCLUDED subband {_sb}: work-dir directory renamed to {_sb}.excluded")
     subband_list = sorted(
         [sb for sb in subband_map.keys()
          if os.path.isdir(os.path.join(work_dir, sb))],
