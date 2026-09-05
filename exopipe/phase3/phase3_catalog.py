@@ -218,7 +218,8 @@ def write_candidates(root, label, cands, resid, master, hdr, lst, date,
               'epoch_qa',   # 'outlier QA' tag: candidate from a coadd-omitted
                             # epoch, carried to transient review (Gregg 2026-08-26)
               'fp_prediction', 'global_snr', 'size_beams', 'size_flag',
-              'nearest_ateam', 'moon_deg']   # 2026-09-04 additions
+              'nearest_ateam', 'moon_deg',   # 2026-09-04 additions
+              'axis_norm', 'axis_flag']      # 2026-09-05 axis-ratio test
     written = []
     for i, c in enumerate(cands):
         x, y = int(c['pix_x']), int(c['pix_y'])
@@ -270,7 +271,8 @@ def write_candidates(root, label, cands, resid, master, hdr, lst, date,
                    global_snr=(round(float(c['global_snr']), 2)
                                if c.get('global_snr') not in (None, '') else ''),
                    size_beams=c.get('size_beams', ''), size_flag=c.get('size_flag', ''),
-                   nearest_ateam=c.get('nearest_ateam', ''), moon_deg=c.get('moon_deg', ''))
+                   nearest_ateam=c.get('nearest_ateam', ''), moon_deg=c.get('moon_deg', ''),
+                   axis_norm=c.get('axis_norm', ''), axis_flag=c.get('axis_flag', ''))
         written.append(row)
     # append to the single de-siloed master_catalog
     new_file = not os.path.exists(catalog_csv)

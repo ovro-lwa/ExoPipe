@@ -69,6 +69,8 @@ ATEAM_VETO_DEG_I = 5.0        # Card 6 ratified table; I downstream veto landed 
 # beam major axis from its Stage-1 product header). 2.0-2.5 beams flagged only.
 SIZE_FLOOR_BEAMS = float(os.environ.get('P3_SIZE_FLOOR_BEAMS', '2.5'))
 SIZE_FLAG_BEAMS = 2.0
+AXIS_REMOVE = float(os.environ.get('P3_AXIS_REMOVE', '2.0'))   # Gregg 2026-09-05
+AXIS_FLAG = 1.5
 SIZE_SNR_GATE = 8.0
 # Flood keying for the I 2-D curve (R-IVETO-FLOOD-CURVE-RATIFIED 2026-08-31):
 # a night is a flood night when its post-mstruct I candidate count exceeds the
@@ -551,7 +553,7 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
     return h
 
 
-def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix):
+def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix, epoch_bmin_deg=None):
     """Gaussian-fit SIZE test (Gregg 2026-09-04): for |local SNR| > 8, remove
     when (fitted FWHM major - its 1-sigma uncertainty) exceeds SIZE_FLOOR_BEAMS x
     the epoch's own beam major axis; flag between SIZE_FLAG_BEAMS and the floor.
@@ -573,20 +575,47 @@ def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix):
         return '', ''
     ratio = float(mj) / float(epoch_bmaj_deg)
     c['size_beams'] = round(ratio, 2)
+    # AXIS-RATIO test (Gregg approved 2026-09-05): fitted axis ratio over the epoch
+    # beam's own axis ratio; remove > AXIS_REMOVE above 8 sigma, flag AXIS_FLAG-AXIS_REMOVE,
+    # nothing below 8 sigma. Measured: every known real (EQ Peg, FI Cnc, J0410 pulses)
+    # within 0.70-1.16; gold real p95 1.25; the elongated I-Blue class sits at 2-15.
+    _an = None
+    try:
+        if stokes == 'V':
+            _mn = c.get('bmin_fit_deg')
+            _ar = float(mj) / float(_mn) if _mn and float(_mn) > 0 else None
+        else:
+            _ar = float(_ph['axis_ratio']) if _ph and _ph.get('axis_ratio') else None
+        if _ar and epoch_bmin_deg and float(epoch_bmin_deg) > 0:
+            _an = _ar / (float(epoch_bmaj_deg) / float(epoch_bmin_deg))
+            c['axis_norm'] = round(_an, 2)
+    except Exception:
+        _an = None
     if abs(snr) <= SIZE_SNR_GATE:
         return c['size_beams'], ''
     eff = (float(mj) - float(err if np.isfinite(err) else 0.0)) / float(epoch_bmaj_deg)
     if eff > SIZE_FLOOR_BEAMS:
         return c['size_beams'], 'remove'
+    if _an is not None and _an > AXIS_REMOVE:
+        return c['size_beams'], 'remove-axis'
+    verdict = ''
     if ratio > SIZE_FLAG_BEAMS:
-        c['size_flag'] = f'size {SIZE_FLAG_BEAMS}-{SIZE_FLOOR_BEAMS} beams'
-        return c['size_beams'], 'flag'
-    return c['size_beams'], ''
+        c['size_flag'] = f'size {SIZE_FLAG_BEAMS}-{SIZE_FLOOR_BEAMS} beams'; verdict = 'flag'
+    if _an is not None and _an > AXIS_FLAG:
+        c['axis_flag'] = f'axis {AXIS_FLAG}-{AXIS_REMOVE} x beam'; verdict = verdict or 'flag'
+    return c['size_beams'], verdict
 
 
 def _epoch_bmaj(base, d, scope, stokes):
     try:
         return float(fits.getheader(f'{base}/subtracted/{d}_{stokes}_sub_{scope}.fits')['BMAJ'])
+    except Exception:
+        return None
+
+
+def _epoch_bmin(base, d, scope, stokes):
+    try:
+        return float(fits.getheader(f'{base}/subtracted/{d}_{stokes}_sub_{scope}.fits')['BMIN'])
     except Exception:
         return None
 
@@ -1097,6 +1126,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 for c in passed:
                     c['epoch_qa'] = 'outlier QA'
             _ebI = _epoch_bmaj(base, d, scope, 'I')
+            _ebI_min = _epoch_bmin(base, d, scope, 'I')
             front = []
             for c in passed:
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
@@ -1135,7 +1165,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             _fr2 = []
             for c in front:
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
-                _sb, _sv = _size_test(c, _s, _ebI, cd, 'I', rI, beam)
+                _sb, _sv = _size_test(c, _s, _ebI, cd, 'I', rI, beam, _ebI_min)
+                if _sv == 'remove-axis':
+                    gled_rows.append(_gled_row(lst, scope, 'I', d, c, 0,
+                                               reason='axis-ratio', pass_ms=1))
+                    continue
                 if _sv == 'remove':
                     gled_rows.append(_gled_row(lst, scope, 'I', d, c, 0,
                                                reason='gaussfit-size', pass_ms=1))
@@ -1210,10 +1244,15 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             # Gaussian-fit SIZE removal above 8 sigma (Gregg 2026-09-04),
             # against the epoch's own beam (Stage-1 V product header)
             _ebV = _epoch_bmaj(base, d, scope, 'V')
+            _ebV_min = _epoch_bmin(base, d, scope, 'V')
             keptv, vetoed_v = [], []
             for c in pV:
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
-                _sb, _sv = _size_test(c, _s, _ebV, cd, 'V', rV, beam)
+                _sb, _sv = _size_test(c, _s, _ebV, cd, 'V', rV, beam, _ebV_min)
+                if _sv == 'remove-axis':
+                    gled_rows.append(_gled_row(lst, scope, 'V', d, c, 0,
+                                               reason='axis-ratio', pass_ms=1))
+                    continue
                 if _sv == 'remove':
                     gled_rows.append(_gled_row(lst, scope, 'V', d, c, 0,
                                                reason='gaussfit-size', pass_ms=''))
