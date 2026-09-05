@@ -744,8 +744,16 @@ def run_wideband_stacking(run_dir, skip_bands=()):
     regrid_cache.clear()  # free memory
 
     # -- 2d. Full-band products from Red+Green+Blue --
-    _create_full_band_products(run_dir, df_noise, band_total_weights,
-                               band_nstack, file_tag)
+    # POLICY (Gregg 2026-07-09 / re-affirmed 2026-09-05): Full is NOT formed when any
+    # band is skipped (incomplete or excluded constituent). Before 2026-09-05 this step
+    # ignored skip_bands and built Full from whatever band stacks existed (11h 2025-01-11
+    # restack: Full from Red+Green with Blue excluded) - a policy violation.
+    if 'Full' in skip_bands:
+        logger.warning("Full-band NOT FORMED: a constituent band is skipped "
+                       f"({sorted(b for b in skip_bands if b != 'Full')})")
+    else:
+        _create_full_band_products(run_dir, df_noise, band_total_weights,
+                                   band_nstack, file_tag)
 
     # -- 2e. THERMNOI header stamping --
     _stamp_subband_thermnoi(run_dir, deep_rms, tenmin_rms)
