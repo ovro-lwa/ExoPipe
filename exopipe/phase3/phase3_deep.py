@@ -1002,6 +1002,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
 
     gled_rows, gimg_rows = [], []
     v_pending, i_pending = [], []
+    _gimgI = {}   # I image rows by date, completed after the post-loop curve stage
     _fhV, _fhI = {}, {}   # conformant frame headers per date (cutouts inherit them)
     # ── R-ROUND2-RATIFIED shared per-cell inputs ────────────────────────
     # (1) BDSF parent catalog on the CURRENT I master: parents for the
@@ -1101,6 +1102,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
                 _mi = float(ms_destr_I[int(c['pix_y']), int(c['pix_x'])])
                 c['mstruct_i'] = round(_mi, 3)
+                # 2026-09-05: the I gate VALUES were computed but never recorded on the
+                # catalog / ledger rows (0 of 4,064 I catalog rows carried mstruct or sstack)
+                c['mstruct'] = round(_mi, 2)
+                try:
+                    c['sstack'] = round(float(sstack_I[int(c['pix_y']), int(c['pix_x'])]), 2)
+                except Exception:
+                    pass
                 if _s < SIGMA_MSTRUCT * max(_mi, 1.0):
                     gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,
                                                reason='mstruct_I',
@@ -1137,8 +1145,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             _drI = sv2.get_uniform_rms(rI, sv2.make_masks(
                 hdr, rI.shape)[0])
             i_pending.append((d, front, hdr, ot, float(_drI)))
-            gimg_rows.append([lst, scope, 'I', d, len(passed), len(front),
-                              '', '', '', len(_allI), 20.0])
+            _gI = [lst, scope, 'I', d, len(passed), len(front), '', '', '', len(_allI), 20.0]
+            gimg_rows.append(_gI); _gimgI[d] = _gI
         if d in resid_V:
             rV = np.nan_to_num(resid_V[d], nan=0.0)
             # P13 fix (approved 2026-08-21): ARCHIVE the search's own V residual
@@ -1377,6 +1385,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
                                            pass_ms=1, final=1))
                 finals.append(c)
+            if d_ in _gimgI:   # n_after_jupiter (post-body vetoes) and n_final for the I image row
+                _gimgI[d_][7] = sum(1 for c in front if c.get('jupiter_deg', 99) >= _jrad and c.get('moon_deg', 99) >= MOON_VETO_DEG)
+                _gimgI[d_][8] = len(finals)
             if finals and not GATE_LEDGER_ONLY:
                 pc.write_candidates(root, label, finals, resid_I[d_],
                                     master_I, hdr_, lst, d_, scope, 'I',
