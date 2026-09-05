@@ -42,7 +42,21 @@ EPH_BODIES = ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn',
               'uranus', 'neptune']
 EPH_MATCH_DEG = 1.0          # ephemeris association radius
 REPEAT_MATCH_ARCMIN = 10.0   # repeat cross-match radius (de-siloed, any LST/date)
-CUTOUT_HALF_PIX = 40         # cutout half-size
+CUTOUT_DEG = 5.0             # candidate cutout is 5 x 5 DEGREES (Gregg standard 2026-07-18,
+                             # re-ruled 2026-09-05: "for the 1000th time 5 degrees"); the
+                             # pixel half-size follows the frame's own pixel scale
+CUTOUT_HALF_PIX = 40         # legacy fixed half-size (81 px), used only if no pixel scale is readable
+
+
+def cutout_half_pix(hdr):
+    """Half-size in pixels for a CUTOUT_DEG-wide box on this frame."""
+    cd = None
+    for k in ('CDELT2', 'CDELT1', 'CD2_2', 'CD1_1'):
+        if hdr.get(k):
+            cd = abs(float(hdr[k])); break
+    if not cd:
+        return CUTOUT_HALF_PIX
+    return int(round(CUTOUT_DEG / cd / 2.0))
 
 # 50%-completeness is MEASURED (blind injection-recovery, phase3_v_c50.py) and read
 # via phase3_c50.c50_sigma(band) -> LOCAL-rms sigma of the final gated chain. NO
@@ -121,7 +135,7 @@ _WCS_CEL_KEYS = re.compile(r'^(NAXIS\d*|WCSAXES|CTYPE[12]|CRVAL[12]|CRPIX[12]|CD
 
 
 def _cutout(resid, master, x, y, hdr, frame_hdr=None):
-    h = CUTOUT_HALF_PIX
+    h = cutout_half_pix(hdr)
     n = resid.shape[0]
     x0, x1 = max(0, x - h), min(n, x + h + 1)
     y0, y1 = max(0, y - h), min(n, y + h + 1)
