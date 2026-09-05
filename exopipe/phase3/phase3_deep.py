@@ -826,6 +826,37 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                       f'{_med:.0f} mJy): {_bad}')
     except FileNotFoundError:
         pass
+    # (1d) INPUT-PROVENANCE GATE (2026-09-05, after 02h 36MHz was parked six times on
+    # a stale 2025-01-02 product from 2026-08-13 with BMAJ=0 that the 2026-09-02 rebuild
+    # never regenerated - the night has no Phase-2 product): an epoch is searched only
+    # if its subtracted products are of the current generation, i.e. the epoch is a
+    # master constituent OR a current-generation QA-omitted epoch, AND both Stokes
+    # headers carry a positive beam. Refused epochs are logged per image, never
+    # silently dropped, and never fail the cell.
+    try:
+        _cons = {str(x).split()[-1] for x in hdr0.get('HISTORY', []) if str(x).startswith('COADD constituent')}
+        _stale = []
+        for d in dates:
+            _why = ''
+            if d not in _cons and d not in qa_out:
+                _why = 'not a constituent and no current-generation QA record'
+            for _st in ('I', 'V'):
+                try:
+                    _h = fits.getheader(f'{base}/subtracted/{d}_{_st}_sub_{scope}.fits')
+                    if not (float(_h.get('BMAJ') or 0) > 0 and float(_h.get('BMIN') or 0) > 0):
+                        _why = (_why + '; ' if _why else '') + f'{_st} product BMAJ/BMIN not positive'
+                except Exception as _e:
+                    _why = (_why + '; ' if _why else '') + f'{_st} product unreadable'
+            if _why:
+                _stale.append((d, _why))
+        if _stale:
+            dates = [d for d in dates if d not in {x[0] for x in _stale}]
+            with open(f'{_refdir}/{lst}_{scope}_stale_input_excluded.csv', 'a') as _sf:
+                for d, _why in _stale:
+                    _sf.write(f'{lst},{scope},{d},"{_why}",{_attempt}\n')
+            print(f'  {lst} {scope}: INPUT-PROVENANCE GATE — {len(_stale)} epoch(s) REFUSED from search: {_stale}')
+    except Exception as _e:
+        raise RuntimeError(f'{lst} {scope}: input-provenance gate could not run ({_e}); REFUSING')
     # (1c) BEAM GATE (Gregg approved 2026-09-02, after the 2024-12-24
     # long-baseline dropout diagnosis): an epoch whose fitted-beam AREA
     # (BMAJ*BMIN of its Phase-2 survey-variant product) exceeds
