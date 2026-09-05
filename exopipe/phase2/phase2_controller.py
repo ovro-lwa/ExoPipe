@@ -1317,6 +1317,43 @@ def main():
 
     # -- STEP 1: Discovery --
     subband_map = discover_subbands(args.lst, args.date)
+    # -- STEP 1a: EXCLUSIONS (Gregg 2026-09-05: 'the policy is to not form a wideband
+    # product with an excluded subband. Maintain that policy.'). Subbands excluded in
+    # data_decisions for this night, or whose Stokes I Taper Robust-0.75 DIRTY image is
+    # corrupt (central rms > 5x the healthy baseline; R-REEXCLUDE-81-DIRTY-CORRUPT-
+    # APPROVED), are removed from the subband set BEFORE dewarp and stacking: they are
+    # never a cascade member or reference, and every wideband band containing one is
+    # NOT formed (Full is not formed when any band is not formed). Recorded in
+    # {work_dir}/excluded_subbands.csv. Phase-1-incomplete gaps keep the wait/refuse
+    # logic below; exclusion gaps do not need --allow_incomplete.
+    from exopipe.common.exclusions import excluded_subbands_for_night, dirty_gated_subbands
+    _excl_dd = excluded_subbands_for_night(args.lst, args.date, list(subband_map))
+    _excl_dirty = dirty_gated_subbands(args.lst, subband_map)
+    _excluded = {sb: 'data_decisions exclude' for sb in _excl_dd}
+    for sb, (rms, b) in _excl_dirty.items():
+        _excluded.setdefault(sb, f'dirty-rms gate: {rms:.0f} mJy > 5 x baseline {b:.0f} mJy')
+    if _excluded:
+        _BSUB0 = {'Red': {'18MHz', '23MHz', '27MHz', '32MHz', '36MHz'},
+                  'Green': {'41MHz', '46MHz', '50MHz', '55MHz', '59MHz'},
+                  'Blue': {'64MHz', '69MHz', '73MHz', '78MHz', '82MHz'}}
+        _skip_x = {b for b, subs in _BSUB0.items() if subs & set(_excluded)}
+        if _skip_x:
+            _skip_x.add('Full')
+        args._skip_wideband_excluded = _skip_x
+        args._excluded_subbands = set(_excluded)
+        for sb in sorted(_excluded, key=lambda x: int(x.replace('MHz', ''))):
+            logger.warning(f"EXCLUDED subband {sb}: {_excluded[sb]} -- removed from the "
+                           f"subband set (never dewarped, stacked or used as a reference)")
+            subband_map.pop(sb, None)
+        logger.warning(f"Wideband bands NOT FORMED (excluded constituent): {sorted(_skip_x)}")
+        os.makedirs(work_dir, exist_ok=True)
+        with open(os.path.join(work_dir, 'excluded_subbands.csv'), 'w') as _fh:
+            _fh.write('subband,reason\n')
+            for sb in sorted(_excluded):
+                _fh.write(f'{sb},{_excluded[sb]}\n')
+    else:
+        args._skip_wideband_excluded = set()
+        args._excluded_subbands = set()
 
     # -- STEP 1b: Phase-1 completeness gate (auto-wait) --
     # Discovery snapshots whatever Phase 1 has imaged so far. Launching Phase 2
@@ -1326,7 +1363,8 @@ def main():
     # Instead of failing, WAIT (poll) for Phase 1 to finish, up to
     # --phase1_wait_max; only abort if still incomplete after the timeout.
     if not args.dewarp_anchor_only:
-        expected = [sb for sb in cfg.ALL_SUBBANDS if sb not in cfg.SKIP_SUBBANDS]
+        expected = [sb for sb in cfg.ALL_SUBBANDS if sb not in cfg.SKIP_SUBBANDS
+                    and sb not in getattr(args, '_excluded_subbands', set())]
         missing = [sb for sb in expected if sb not in subband_map]
         if missing and not args.allow_incomplete and args.phase1_wait_max > 0:
             t0 = time.time()
@@ -1456,7 +1494,8 @@ def main():
     if args.skip_wideband:
         logger.info("\nSkipping wideband product formation")
     else:
-        run_wideband_formation(work_dir, logger, skip_wideband=getattr(args, '_skip_wideband_incomplete', None))
+        run_wideband_formation(work_dir, logger, skip_wideband=(set(getattr(args, '_skip_wideband_incomplete', None) or set())
+                                                                 | set(getattr(args, '_skip_wideband_excluded', None) or set())) or None)
 
     # -- STEP 6: Photometry (source-grouped) --
     if args.skip_photometry:
