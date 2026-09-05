@@ -1079,6 +1079,29 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     # (2) I-master structure map: mstruct_I is a RATIFIED I front gate
     # (R-IVETO-POLICY-RATIFIED 2026-08-31: mstruct AND sigma_stack k=5).
     ms_destr_I, _ = _mstruct_maps(master_I, mI, beam)
+    # (1e) SANITY GATE per Stokes (Gregg 2026-09-05: 'both steps are Stokes I and V, treated
+    # independently'): V epochs whose uniform frame rms exceeds SANITY_I_X x the cell median of
+    # the V frames are refused from the V search (I uses the flux-alignment QA rms above)
+    skip_V_dates = set()
+    try:
+        _vr = {}
+        for _d, _rv in resid_V.items():
+            try:
+                _vr[_d] = float(sv2.get_uniform_rms(np.nan_to_num(_rv, nan=0.0), sv2.make_masks(hdr0, _rv.shape)[0]))
+            except Exception:
+                pass
+        _vf = sorted(v for v in _vr.values() if np.isfinite(v) and v > 0)
+        if len(_vf) >= 5:
+            _vmed = _vf[len(_vf) // 2]
+            skip_V_dates = {d for d, v in _vr.items() if v > SANITY_I_X * _vmed}
+            if skip_V_dates:
+                with open(f'{_refdir}/{lst}_{scope}_sanity_V_excluded.csv', 'a') as _sf:
+                    for d in sorted(skip_V_dates):
+                        _sf.write(f'{lst},{scope},{d},{_vr[d]*1e3:.1f},{_vmed*1e3:.1f},{_attempt}\n')
+                print(f'  {lst} {scope}: SANITY GATE (V only) — {len(skip_V_dates)} epoch(s) REFUSED from the V search '
+                      f'(frame rms >{SANITY_I_X:.0f}x cell median {_vmed*1e3:.0f} mJy): {sorted(skip_V_dates)}')
+    except Exception as _e:
+        print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
     for d in dates:
         ot = _epoch_time(base, d, scope)
         hdr = _det_header(hdr0, scope, em, cd, ot)
@@ -1196,7 +1219,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             i_pending.append((d, front, hdr, ot, float(_drI)))
             _gI = [lst, scope, 'I', d, len(passed), len(front), '', '', '', len(_allI), 20.0]
             gimg_rows.append(_gI); _gimgI[d] = _gI
-        if d in resid_V:
+        if d in skip_V_dates:
+            gimg_rows.append([lst, scope, 'V', d, 0, 0, 0, 0, 0, 0, 20.0])
+        elif d in resid_V:
             rV = np.nan_to_num(resid_V[d], nan=0.0)
             # P13 fix (approved 2026-08-21): ARCHIVE the search's own V residual
             # frame — the exact frame detection runs on — with THERMNOI stamped
@@ -1488,10 +1513,25 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                                            reason=f'v110:{_pred}',
                                            pass_ms=_pm, jup_veto=0))
                 continue
-            gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
-                                       pass_ms=_pm, jup_veto=0 if _pm else '',
-                                       final=1))
-            finals.append(c)
+            c['_pm'] = _pm
+            finals.append(c)   # final=1 ledger row written after the row-line veto
+        if len(finals) >= ROWLINE_MIN:   # ROW-LINE veto, V (Gregg 2026-09-05, independent of I)
+            _ys = np.array([int(c['pix_y']) for c in finals]); _drop = set()
+            for _y in set(_ys.tolist()):
+                _m = np.where(np.abs(_ys - _y) <= 1)[0]
+                if len(_m) >= ROWLINE_MIN: _drop.update(_m.tolist())
+            if _drop:
+                _keep = []
+                for _i, c in enumerate(finals):
+                    if _i in _drop:
+                        gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, reason='row-line', pass_ms=c.get('_pm', 1)))
+                    else:
+                        _keep.append(c)
+                print(f'  {lst} {scope} {d}: ROW-LINE veto removed {len(_drop)} of {len(finals)} V finals on one pixel row')
+                finals = _keep
+        for c in finals:
+            gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, pass_ms=c.get('_pm', 1),
+                                       jup_veto=0 if c.get('_pm', 1) else '', final=1))
         if finals and not GATE_LEDGER_ONLY:
             pc.write_candidates(root, label, finals, resid_V[d], master_I,
                                 hdr, lst, d, scope, 'V', 'deep', em, cd, ot,
