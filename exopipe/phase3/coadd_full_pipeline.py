@@ -126,7 +126,7 @@ BAND_FOR_SUBBAND = {
 }
 
 OUTLIER_SIGMA = 3.0
-LOW_OUTLIER_SIGMA = float(os.environ.get('P3_LOW_OUTLIER_SIGMA', '5.0'))   # R-GC5 low side; Gregg fixes 4 vs 5
+LOW_OUTLIER_SIGMA = float(os.environ.get('P3_LOW_OUTLIER_SIGMA', '4.0'))   # R-GC5 low side: 4 sigma (Gregg 2026-09-05)
 
 
 
