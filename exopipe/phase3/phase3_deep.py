@@ -69,6 +69,8 @@ ATEAM_VETO_DEG_I = 5.0        # Card 6 ratified table; I downstream veto landed 
 # beam major axis from its Stage-1 product header). 2.0-2.5 beams flagged only.
 SIZE_FLOOR_BEAMS = float(os.environ.get('P3_SIZE_FLOOR_BEAMS', '2.5'))
 SIZE_FLAG_BEAMS = 2.0
+SANITY_I_X = float(os.environ.get('P3_SANITY_I_X', '3.0'))   # I-only search sanity gate (Gregg 2026-09-05)
+ROWLINE_MIN = 5                                              # I finals on one pixel row +/-1 -> all removed (Gregg 2026-09-05)
 AXIS_REMOVE = float(os.environ.get('P3_AXIS_REMOVE', '2.0'))   # Gregg 2026-09-05
 AXIS_FLAG = 1.5
 SIZE_SNR_GATE = 8.0
@@ -826,6 +828,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     if _qa_note:
         print(f'  {lst} {scope}: {len(_qa_note)} coadd-omitted (QA-outlier) epoch(s) '
               f'REMAIN in search per two-tier policy: {_qa_note}')
+    skip_I_dates = set()
     # (1b) SEARCH-FRAME SANITY GATE (Gregg NAMED approval 2026-08-29, the
     # narrow resolution of the open whole-image-discard ruling): an epoch
     # whose flux-alignment QA rms exceeds 10x the cell's median epoch rms
@@ -844,6 +847,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             _med = _fin[len(_fin) // 2]
             _bad = [d for d in dates
                     if _wr.get(d, 0) > 10.0 * _med]
+            # Stokes I sanity gate at SANITY_I_X (3x, Gregg 2026-09-05: CLEAN-divergence
+            # epochs sit at 4-7x; V has no CLEAN step and keeps the 10x gate)
+            _badI = [d for d in dates if d not in _bad and _wr.get(d, 0) > SANITY_I_X * _med]
+            if _badI:
+                skip_I_dates.update(_badI)
+                with open(f'{_refdir}/{lst}_{scope}_sanity_I_excluded.csv', 'a') as _sf:
+                    for d in _badI:
+                        _sf.write(f'{lst},{scope},{d},{_wr[d]:.1f},{_med:.1f},{_attempt}\n')
+                print(f'  {lst} {scope}: SANITY GATE (I only) — {len(_badI)} epoch(s) REFUSED from the I search '
+                      f'(alignment rms >{SANITY_I_X:.0f}x cell median {_med:.0f} mJy): {_badI}')
             if _bad:
                 dates = [d for d in dates if d not in _bad]
                 with open(f'{_refdir}/{lst}_{scope}_sanity_excluded.csv', 'a') as _sf:
@@ -1113,6 +1126,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             # AND mstruct on the I master; morphology veto RETIRED to
             # annotation; the 2-D dynamic curve applies POST-LOOP (flood
             # keying needs every night's post-front count first).
+            if d in skip_I_dates:
+                gimg_rows.append([lst, scope, 'I', d, 0, 0, '', '', 0, 0, 20.0]); continue
             _allI = run_identification_i(rI, master_I, hdr, beam, sstack_I)
             passed = [c for c in _allI if c['status'] == 'PASS']
             # 2026-09-04 (audit R-09): every identification-stage rejection is
@@ -1421,9 +1436,25 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                                                + ('-flood' if _flood
                                                   else ''), pass_ms=1))
                     continue
-                gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
-                                           pass_ms=1, final=1))
-                finals.append(c)
+                finals.append(c)   # the final=1 ledger row is written after the row-line veto
+            # ROW-LINE veto (Gregg 2026-09-05, ratified): >= ROWLINE_MIN I finals of one epoch on
+            # one pixel row +/-1 = the CLEAN-divergence stripe -> all of them removed, ledgered
+            if len(finals) >= ROWLINE_MIN:
+                _ys = np.array([int(c['pix_y']) for c in finals]); _drop = set()
+                for _y in set(_ys.tolist()):
+                    _m = np.where(np.abs(_ys - _y) <= 1)[0]
+                    if len(_m) >= ROWLINE_MIN: _drop.update(_m.tolist())
+                if _drop:
+                    _keep = []
+                    for _i, c in enumerate(finals):
+                        if _i in _drop:
+                            gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1, reason='row-line', pass_ms=1))
+                        else:
+                            _keep.append(c)
+                    print(f'  {lst} {scope} {d_}: ROW-LINE veto removed {len(_drop)} of {len(finals)} I finals on one pixel row')
+                    finals = _keep
+            for c in finals:
+                gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1, pass_ms=1, final=1))
             if d_ in _gimgI:   # n_after_jupiter (post-body vetoes) and n_final for the I image row
                 _gimgI[d_][7] = sum(1 for c in front if c.get('jupiter_deg', 99) >= _jrad and c.get('moon_deg', 99) >= MOON_VETO_DEG)
                 _gimgI[d_][8] = len(finals)
