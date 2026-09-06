@@ -2130,9 +2130,27 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         v_src = find_stokes_v_deep_image(sci_dir, freq_str)
         if v_src:
             v_out = f'{prep_dir}/{date}_aligned_V.fits'
-            process_variant_image(v_src, flow_offsets, scale_map_full,
-                                  tmpl_hdr, target_shape, v_out, regrid_coords)
-            v_aligned.append((date, v_out, weight))
+            # 2026-09-06 (11h 2025-04-12 Full): the archived V stack of an epoch can sit on a different
+            # pixel grid from its I stack (the I stack was restacked onto the current grid, the V stack
+            # kept the pre-restack grid). process_variant_image cannot align it with the I flow and
+            # regrid mapping, and the co-add then crashed on the missing aligned_V file. The epoch's V
+            # frame is DROPPED loudly (the I frame stays: per-Stokes constituent sets are the ruled
+            # structure, R-LOO-PER-STOKES-RATIFIED); never a silent skip, never a crash.
+            try:
+                _vh = fits.getheader(v_src); _ih = fits.getheader(align_img_path)
+                _v_shape = (int(_vh['NAXIS2']), int(_vh['NAXIS1'])); _i_shape = (int(_ih['NAXIS2']), int(_ih['NAXIS1']))
+            except Exception as _e:
+                _v_shape, _i_shape = None, None
+            if _v_shape is not None and _v_shape != _i_shape:
+                print(f"    {date}: V frame grid {_v_shape} differs from the I frame grid {_i_shape} - "
+                      f"V DROPPED for this epoch (I kept) [{os.path.basename(v_src)}]")
+            else:
+                process_variant_image(v_src, flow_offsets, scale_map_full,
+                                      tmpl_hdr, target_shape, v_out, regrid_coords)
+                if os.path.exists(v_out):
+                    v_aligned.append((date, v_out, weight))
+                else:
+                    print(f"    {date}: V frame could not be aligned ({os.path.basename(v_src)}) - V DROPPED for this epoch (I kept)")
 
         flow_str = 'flow' if flow_offsets is not None else 'no-flow'
         print(f"    {date}: scale={mean_scale:.3f} ({n_src} src)  "
