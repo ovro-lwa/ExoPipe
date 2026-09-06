@@ -20,7 +20,7 @@ Per cell (LST x band-or-scope), MEASURE:
     never left silently unscaled and never borrows a scale.
 
 APPLY (--apply): the scale is BAKED into the pixels of every product of the cell (ruled) as NEW files - the
-current generation is never rewritten in place: <cell>/<outgen>/ mirrors coadd_final/ (masters, pbcorr
+current generation is never rewritten in place: <cell>/<outgen>/ (default gen_shflux) mirrors coadd_final/ (masters, pbcorr
 siblings, loo/) and subtracted/ (residuals, clean epochs); every file name gains the 'shflux' token before the
 scope, headers gain SHSCALE, SHERR, SHNSRC, SHSRCS, SHFREQ, SHFRQSRC, SHDATE and a HISTORY line. PB_deep maps
 (beam response, dimensionless) are copied unscaled. The V master and every other product inherit the
@@ -30,7 +30,7 @@ Gregg's assessment of the measured offsets (ratified caveat), so nothing downstr
 Record: one row per cell appended to <root>/shflux_table.csv (scale, error, sources, effective frequency,
 per-source measured and model peaks) - the archived fluxscale-table class of the spec.
 
-Usage: phase3_master_shflux.py <lst> <scope> [--root R] [--apply] [--outgen coadd_final_shflux]
+Usage: phase3_master_shflux.py <lst> <scope> [--root R] [--apply] [--outgen gen_shflux]
        phase3_master_shflux.py --cells <file: lst scope per line> [...]"""
 import argparse, csv, glob, math, os, shutil, sys, time
 import numpy as np
@@ -170,7 +170,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('lst', nargs='?'); ap.add_argument('scope', nargs='?')
     ap.add_argument('--cells'); ap.add_argument('--root', default=DEFAULT_ROOT)
-    ap.add_argument('--apply', action='store_true'); ap.add_argument('--outgen', default='coadd_final_shflux')
+    ap.add_argument('--apply', action='store_true'); ap.add_argument('--outgen', default='gen_shflux')
     ap.add_argument('--table', default=None); ap.add_argument('--no-build', action='store_true')
     a = ap.parse_args()
     global NO_BUILD; NO_BUILD = a.no_build
