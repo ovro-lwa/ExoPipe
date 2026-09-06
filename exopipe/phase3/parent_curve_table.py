@@ -22,6 +22,46 @@ def table_for(stokes, band):
 def _uv(ra, dec):
     r, d = np.radians(ra), np.radians(dec)
     return np.stack([np.cos(d) * np.cos(r), np.cos(d) * np.sin(r), np.sin(d)], -1)
+# CROSS-MATCH EXEMPTION (Gregg 2026-09-06 ~11:1x UT, 'Agreed - implement the cross-match exemption'): the
+# table is a sky-area cut for the BLIND search; a position of a standing cross-match sample (Hot/Warm
+# Jupiters, 10 pc, 25 pc, flare/UCD, ATNF pulsars, Sydney stars) inside a parent's exclusion zone is NOT
+# removed - it is kept with the note 'table-exempt: xm <sample>:<name>' and judged by the cross-match
+# E statistic and forced photometry instead. Radius: one beam FWHM of the cell. P3_TABLE_XM_EXEMPT=0 disables.
+_XM = None
+_XM_SAMPLES = ('Hot_Warm_Jupiters', '10pc', '25pc', 'flare_ucd', 'pulsars_atnf', 'sydney_stars')
+_XM_DIR = '/lustre/gh/main/clv15'
+def _xm_targets():
+    global _XM
+    if _XM is None:
+        import csv
+        pts, names = [], []
+        for smp in _XM_SAMPLES:
+            fp = os.path.join(_XM_DIR, f'{smp}.csv')
+            if not os.path.exists(fp):
+                continue
+            with open(fp, encoding='utf-8-sig') as fh:
+                for r in csv.DictReader(fh):
+                    try:
+                        pts.append((float(r['ra_current']), float(r['dec_current']))); names.append(f"{smp}:{r.get('common_name', '')}")
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        arr = np.asarray(pts, float).reshape(-1, 2)
+        _XM = (cKDTree(_uv(arr[:, 0], arr[:, 1])) if len(arr) else None, names)
+    return _XM
+def xm_exempt(ra, dec, beam_deg):
+    """(mask, names) of candidate positions within one beam FWHM of a standing-sample target."""
+    ra = np.atleast_1d(np.asarray(ra, float)); dec = np.atleast_1d(np.asarray(dec, float))
+    m = np.zeros(len(ra), bool); nm = [''] * len(ra)
+    if os.environ.get('P3_TABLE_XM_EXEMPT', '1') == '0' or not (beam_deg and beam_deg > 0):
+        return m, nm
+    tree, names = _xm_targets()
+    if tree is None:
+        return m, nm
+    chord = 2 * np.sin(np.radians(beam_deg) / 2)
+    d, i = tree.query(_uv(ra, dec), k=1, distance_upper_bound=chord)
+    for j in np.where(np.isfinite(d))[0]:
+        m[j] = True; nm[j] = names[int(i[j])]
+    return m, nm
 def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec):
     """(removed: bool array, note: list[str]) for candidate positions ra/dec (deg).
     parents_radec_flux: array (N,3) of RA, Dec, peak flux (Jy) of the cell's I master catalog."""
@@ -44,4 +84,7 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec):
         for j in np.where(hit & ~cut)[0]:
             note[j] = f'table: parent S={S[m][i[j]]:.0f} at {sep_bw[j]:.2f} bw < {R:.2f} (bin {s_lo:g}-{s_hi:g})'
         cut |= hit
+    xm, xn = xm_exempt(ra, dec, beam_deg)
+    for j in np.where(cut & xm)[0]:
+        note[j] = f'table-exempt: xm {xn[j]} (would remove: {note[j]})'; cut[j] = False
     return cut, note
