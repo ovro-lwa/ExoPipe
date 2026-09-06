@@ -3231,7 +3231,11 @@ def _flow_freshness(workdir, target_dates):
     holds no flow at all (wideband: inputs dewarped in Phase 2) are not gated.
     Returns [(date, reason)]."""
     fdir = f'{workdir}/flow'
-    if not os.path.isdir(fdir) or not glob.glob(f'{fdir}/*_scaled_flow.npy'):
+    # wideband cells (Red/Green/Blue/Full) carry no co-add flows by design (inputs dewarped in
+    # Phase 2): not gated. A SUBBAND cell with an empty flow/ is a cell whose every epoch would
+    # be co-added flux-scale only - every epoch counts as missing (2026-09-06 05:0x UT, found on
+    # 23h 36MHz whose flow/ was empty after the 2026-08-30 recovery rebuild).
+    if os.path.basename(workdir).split('_', 1)[-1] in ('Red', 'Green', 'Blue', 'Full'):
         return []
     out = []
     for date, _sd, img in target_dates:
