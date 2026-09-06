@@ -2,7 +2,7 @@
  "meta": {
   "derived_utc": "2026-09-05T23:xxZ",
   "method": "p3s3_curve_derive (port of phase3_snapshot_curve.derive); table = monotone-capped, 20-candidate excess guard",
-  "operating_point": "ratio 3.0 for Stokes I (all bands) and Stokes V >= 41 MHz and wideband; ratio 2.0 for Stokes V 18-36 MHz (session recommendation 2026-09-06 00:0x UT; Gregg approved the asks, operating point pending his word)",
+  "operating_point": "ratio 3.0 for Stokes I (all bands) and Stokes V >= 41 MHz and wideband; ratio 2.0 for Stokes V 18-36 MHz - ADOPTED by Gregg 2026-09-06 ~11:1x UT. Cross-match sample positions are exempt from the removal (parent_curve_table.xm_exempt, Gregg 2026-09-06).",
   "S_definition": "parent peak flux / cell median frame global rms",
   "radius_unit": "beam widths (cell master BMAJ)",
   "source_card": "exopipe_ops/CARD_DEEP_2D_VALIDATION_20260905.md"
