@@ -1,0 +1,1392 @@
+{
+ "meta": {
+  "derived_utc": "2026-09-05T23:xxZ",
+  "method": "p3s3_curve_derive (port of phase3_snapshot_curve.derive); table = monotone-capped, 20-candidate excess guard",
+  "operating_point": "ratio 3.0 for Stokes I (all bands) and Stokes V >= 41 MHz and wideband; ratio 2.0 for Stokes V 18-36 MHz (session recommendation 2026-09-06 00:0x UT; Gregg approved the asks, operating point pending his word)",
+  "S_definition": "parent peak flux / cell median frame global rms",
+  "radius_unit": "beam widths (cell master BMAJ)",
+  "source_card": "exopipe_ops/CARD_DEEP_2D_VALIDATION_20260905.md"
+ },
+ "tables": {
+  "deep_I_18MHz": {
+   "stokes": "I",
+   "band": "18MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     2.0
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     5.0
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "n_candidates": 53297,
+   "n_cells": 20,
+   "provisional": true
+  },
+  "deep_I_23MHz": {
+   "stokes": "I",
+   "band": "23MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     6.5
+    ]
+   ],
+   "n_candidates": 84708,
+   "n_cells": 18,
+   "provisional": true
+  },
+  "deep_I_27MHz": {
+   "stokes": "I",
+   "band": "27MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 110318,
+   "n_cells": 20,
+   "provisional": true
+  },
+  "deep_I_32MHz": {
+   "stokes": "I",
+   "band": "32MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 113657,
+   "n_cells": 19,
+   "provisional": true
+  },
+  "deep_I_36MHz": {
+   "stokes": "I",
+   "band": "36MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 113776,
+   "n_cells": 21,
+   "provisional": true
+  },
+  "deep_I_41MHz": {
+   "stokes": "I",
+   "band": "41MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 200928,
+   "n_cells": 21,
+   "provisional": true
+  },
+  "deep_I_46MHz": {
+   "stokes": "I",
+   "band": "46MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 162653,
+   "n_cells": 18,
+   "provisional": true
+  },
+  "deep_I_50MHz": {
+   "stokes": "I",
+   "band": "50MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 139643,
+   "n_cells": 20,
+   "provisional": true
+  },
+  "deep_I_55MHz": {
+   "stokes": "I",
+   "band": "55MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     6.25
+    ]
+   ],
+   "n_candidates": 112110,
+   "n_cells": 19,
+   "provisional": true
+  },
+  "deep_I_59MHz": {
+   "stokes": "I",
+   "band": "59MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     7.0
+    ]
+   ],
+   "n_candidates": 83504,
+   "n_cells": 17,
+   "provisional": true
+  },
+  "deep_I_64MHz": {
+   "stokes": "I",
+   "band": "64MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     6.75
+    ]
+   ],
+   "n_candidates": 122194,
+   "n_cells": 18,
+   "provisional": true
+  },
+  "deep_I_69MHz": {
+   "stokes": "I",
+   "band": "69MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     8.25
+    ]
+   ],
+   "n_candidates": 98117,
+   "n_cells": 16,
+   "provisional": true
+  },
+  "deep_I_73MHz": {
+   "stokes": "I",
+   "band": "73MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     9.0
+    ]
+   ],
+   "n_candidates": 98940,
+   "n_cells": 20,
+   "provisional": true
+  },
+  "deep_I_78MHz": {
+   "stokes": "I",
+   "band": "78MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.5
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.75
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.0
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     3.0
+    ],
+    [
+     200,
+     1000000.0,
+     9.5
+    ]
+   ],
+   "n_candidates": 63844,
+   "n_cells": 16,
+   "provisional": true
+  },
+  "deep_I_82MHz": {
+   "stokes": "I",
+   "band": "82MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     3,
+     5,
+     1.75
+    ],
+    [
+     5,
+     8,
+     1.75
+    ],
+    [
+     8,
+     12,
+     1.75
+    ],
+    [
+     12,
+     20,
+     2.0
+    ],
+    [
+     20,
+     35,
+     2.0
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     4.0
+    ],
+    [
+     200,
+     1000000.0,
+     10.75
+    ]
+   ],
+   "n_candidates": 52767,
+   "n_cells": 19,
+   "provisional": true
+  },
+  "deep_I_Blue": {
+   "stokes": "I",
+   "band": "Blue",
+   "ratio": 3.0,
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "n_candidates": 321606,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_I_Full": {
+   "stokes": "I",
+   "band": "Full",
+   "ratio": 3.0,
+   "table": [
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 823917,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_I_Green": {
+   "stokes": "I",
+   "band": "Green",
+   "ratio": 3.0,
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "n_candidates": 424265,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_I_Red": {
+   "stokes": "I",
+   "band": "Red",
+   "ratio": 3.0,
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "n_candidates": 249493,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_18MHz": {
+   "stokes": "V",
+   "band": "18MHz",
+   "ratio": 2.0,
+   "table": [
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 42127,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_23MHz": {
+   "stokes": "V",
+   "band": "23MHz",
+   "ratio": 2.0,
+   "table": [
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 70591,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_27MHz": {
+   "stokes": "V",
+   "band": "27MHz",
+   "ratio": 2.0,
+   "table": [
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 74105,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_32MHz": {
+   "stokes": "V",
+   "band": "32MHz",
+   "ratio": 2.0,
+   "table": [
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 62799,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_36MHz": {
+   "stokes": "V",
+   "band": "36MHz",
+   "ratio": 2.0,
+   "table": [
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 46939,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_41MHz": {
+   "stokes": "V",
+   "band": "41MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 44173,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_46MHz": {
+   "stokes": "V",
+   "band": "46MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 37847,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_50MHz": {
+   "stokes": "V",
+   "band": "50MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     12,
+     20,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.5
+    ]
+   ],
+   "n_candidates": 28686,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_55MHz": {
+   "stokes": "V",
+   "band": "55MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     200,
+     1000000.0,
+     3.75
+    ]
+   ],
+   "n_candidates": 28126,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_59MHz": {
+   "stokes": "V",
+   "band": "59MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     60,
+     100,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.25
+    ]
+   ],
+   "n_candidates": 28495,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_64MHz": {
+   "stokes": "V",
+   "band": "64MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     200,
+     1000000.0,
+     4.25
+    ]
+   ],
+   "n_candidates": 35880,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_69MHz": {
+   "stokes": "V",
+   "band": "69MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 37607,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_73MHz": {
+   "stokes": "V",
+   "band": "73MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     60,
+     100,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 37176,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_78MHz": {
+   "stokes": "V",
+   "band": "78MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     6.25
+    ]
+   ],
+   "n_candidates": 42269,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_82MHz": {
+   "stokes": "V",
+   "band": "82MHz",
+   "ratio": 3.0,
+   "table": [
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     60,
+     100,
+     0.5
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "n_candidates": 37614,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_Blue": {
+   "stokes": "V",
+   "band": "Blue",
+   "ratio": 3.0,
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     3.5
+    ]
+   ],
+   "n_candidates": 50971,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_Full": {
+   "stokes": "V",
+   "band": "Full",
+   "ratio": 3.0,
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "n_candidates": 97750,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_Green": {
+   "stokes": "V",
+   "band": "Green",
+   "ratio": 3.0,
+   "table": [
+    [
+     12,
+     20,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "n_candidates": 65763,
+   "n_cells": 24,
+   "provisional": false
+  },
+  "deep_V_Red": {
+   "stokes": "V",
+   "band": "Red",
+   "ratio": 3.0,
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 124866,
+   "n_cells": 24,
+   "provisional": false
+  }
+ }
+}

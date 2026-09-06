@@ -1441,22 +1441,34 @@ def _detection_header(ctx, ep, stokes):
 
 
 def _apply_sigma_stack(cands, sigma_stack, base_thresh):
-    """Multiplicative local threshold from the noise-structure map."""
+    """Multiplicative local threshold from the noise-structure map.
+    2026-09-06 (Gregg: 'Sigma-stack almost completely removes repeating sources in Stokes I.
+    The LPT repeater ... is completely killed by sigma-stack. ... Removal by sigma-stack is
+    problematic'): sigma_stack is ANNOTATION ONLY - the multiplier and the threshold it would
+    have applied are recorded on the candidate (sstack, sstack_thr) and nothing is removed.
+    The bright-parent role it duplicated is the per-Stokes, per-band table
+    (exopipe.phase3.parent_curve_table). Escape P3_SSTACK_REMOVES=1 restores the removal
+    for comparison runs only (never production)."""
     if sigma_stack is None:
         return 0
     n_rej = 0
     h, w = sigma_stack.shape
+    _removes = os.environ.get('P3_SSTACK_REMOVES') == '1'
     for c in cands:
         if c['status'] != 'PASS':
             continue
         y = int(np.clip(c['pix_y'], 0, h - 1))
         x = int(np.clip(c['pix_x'], 0, w - 1))
         thr = base_thresh * max(float(sigma_stack[y, x]), 1.0)
+        c['sstack'] = round(float(sigma_stack[y, x]), 3)
+        c['sstack_thr'] = round(float(thr), 2)
         if abs(c.get('snr', 0.0)) < thr:
-            c['status'] = 'REJECT_SIGMA_STACK'
-            c['reject_reason'] = (f"SNR {c.get('snr', 0):+.1f} < "
-                                  f"{thr:.1f} (sigma_stack)")
-            n_rej += 1
+            c['sstack_flag'] = 1
+            if _removes:
+                c['status'] = 'REJECT_SIGMA_STACK'
+                c['reject_reason'] = (f"SNR {c.get('snr', 0):+.1f} < "
+                                      f"{thr:.1f} (sigma_stack)")
+                n_rej += 1
     return n_rej
 
 

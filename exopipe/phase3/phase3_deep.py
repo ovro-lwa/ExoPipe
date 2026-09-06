@@ -19,6 +19,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from exopipe.phase3.coadd_full_pipeline import apply_flow_field, build_striation_model
+from exopipe.phase3 import parent_curve_table as _PCT
 from exopipe.phase3.phase3_pipeline import (build_sigma_stack, run_identification_i,
                              run_identification_v, STRIATION_WINDOW_DEG)
 from exopipe.phase3.residuals import fft_upsample2, fft_decimate2, write_up_fits
@@ -1450,16 +1451,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                         np.array([c['coord'].dec.deg])), k=1)
                     _sep_bw = (2 * np.arcsin(_dd[0] / 2) * 180 / np.pi) \
                         / (em * cd)
-                    _S = _pa[_ii[0], 2] / max(drI_, 1e-12)
                     c['parent_jy'] = round(float(_pa[_ii[0], 2]), 3)
                     c['parent_off_beams'] = round(float(_sep_bw), 3)
-                    if _S >= 25.0 and _sep_bw < _r25 * (_S / 25.0) ** 0.35:
-                        cut = True
+                    # PER-STOKES, PER-BAND TABLE R(S) (Gregg 2026-09-05/06, supersedes the single
+                    # ratified curve R25 1.0/1.4 gamma 0.35; flood keying retired with it):
+                    # measured table from exopipe/common/parent_curve_tables.json
+                    _tc, _tn = _PCT.removals('I', scope, _pa, max(drI_, 1e-12), em * cd,
+                                             [c['coord'].ra.deg], [c['coord'].dec.deg])
+                    if bool(_tc[0]):
+                        cut = True; c['table_note'] = _tn[0]
                 if cut:
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
-                                               reason='curve'
-                                               + ('-flood' if _flood
-                                                  else ''), pass_ms=1))
+                                               reason='table', pass_ms=1))
                     continue
                 finals.append(c)   # the final=1 ledger row is written after the row-line veto
             # ROW-LINE veto (Gregg 2026-09-05, ratified): >= ROWLINE_MIN I finals of one epoch on
@@ -1515,6 +1518,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 continue
             c['_pm'] = _pm
             finals.append(c)   # final=1 ledger row written after the row-line veto
+        # PER-STOKES, PER-BAND TABLE R(S) for V (Gregg 2026-09-05/06): bright-parent residuals
+        # that v110 passes; parents = the cell's I master catalog, S = parent peak / this
+        # epoch's V frame global rms (drV_ when recorded, else the cell median)
+        if finals and _parents:
+            _pa_v = np.array(_parents)
+            _rmsV = float(np.nanmedian([abs(float(c.get('flux', 0))) / abs(float(c.get('global_snr', c.get('snr', 1)) or 1)) for c in finals])) if finals else 0.0
+            _tcv, _tnv = _PCT.removals('V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
+                                       [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
+            _keepv = []
+            for c, _x, _n in zip(finals, _tcv, _tnv):
+                if bool(_x):
+                    c['table_note'] = _n
+                    gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, reason='table', pass_ms=c.get('_pm', ''), jup_veto=0))
+                else:
+                    _keepv.append(c)
+            finals = _keepv
         if len(finals) >= ROWLINE_MIN:   # ROW-LINE veto, V (Gregg 2026-09-05, independent of I)
             _ys = np.array([int(c['pix_y']) for c in finals]); _drop = set()
             for _y in set(_ys.tolist()):
