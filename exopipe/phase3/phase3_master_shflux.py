@@ -47,6 +47,7 @@ FIT_MIN_SNR = 5.0               # standing rule: Gaussian fits only >= 5 sigma
 OVRO_LAT_DEG = 37.2398
 DEFAULT_ROOT = '/data07/gh/phase3/coadd_sb'
 SCALED_DIRS = ('coadd_final', 'subtracted')      # product trees that carry Jy/beam pixels
+NO_RESIDUALS = False                              # --no-residuals: masters + LOO + pbcorr only (Gregg 2026-09-06: residuals baked at push time)
 UNSCALED_PREFIX = ('PB_deep',)                    # beam maps: copied, never scaled
 
 
@@ -144,7 +145,7 @@ def apply(lst, scope, root, row, outgen):
     """Write the scaled generation: every product of coadd_final/ (incl. loo/) and subtracted/."""
     cell = f'{root}/{lst}_{scope}'; out = f'{cell}/{outgen}'; n = 0
     scale = float(row['scale'])
-    for sub in SCALED_DIRS:
+    for sub in (('coadd_final',) if NO_RESIDUALS else SCALED_DIRS):
         src = f'{cell}/{sub}'
         if not os.path.isdir(src): continue
         for p in sorted(glob.glob(f'{src}/**/*.fits', recursive=True)):
@@ -171,9 +172,9 @@ def main():
     ap.add_argument('lst', nargs='?'); ap.add_argument('scope', nargs='?')
     ap.add_argument('--cells'); ap.add_argument('--root', default=DEFAULT_ROOT)
     ap.add_argument('--apply', action='store_true'); ap.add_argument('--outgen', default='gen_shflux')
-    ap.add_argument('--table', default=None); ap.add_argument('--no-build', action='store_true')
+    ap.add_argument('--table', default=None); ap.add_argument('--no-build', action='store_true'); ap.add_argument('--no-residuals', action='store_true')
     a = ap.parse_args()
-    global NO_BUILD; NO_BUILD = a.no_build
+    global NO_BUILD, NO_RESIDUALS; NO_BUILD = a.no_build; NO_RESIDUALS = a.no_residuals
     cells = [(a.lst, a.scope)] if a.lst else [tuple(l.split()[:2]) for l in open(a.cells) if l.strip()]
     table = a.table or f'{a.root}/shflux_table.csv'
     cols = ['lst', 'scope', 'status', 'scale', 'err', 'nsrc', 'srcs', 'freq_hz', 'freq_src', 'rms_jy', 'n_written', 'detail', 'measured_at']

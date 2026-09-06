@@ -75,6 +75,10 @@ def _out_name(path, scope):
     return b[:-len(suf)] + f'_mdewarp{suf}' if b.endswith(suf) else b.replace('.fits', '_mdewarp.fits')
 
 
+MEAS_ROOT = '/fast/gh/main/phase3/mdewarp_meas'   # measurement-mode flow fields (analysis output, not a product)
+NO_RESIDUALS = False
+
+
 def run(lst, scope, root, gen, apply, table):
     import jax.numpy as jnp
     from image_plane_correction.flow import calcflow
@@ -109,6 +113,7 @@ def run(lst, scope, root, gen, apply, table):
         row['status'] = f'REFUSED regression: median VLSSr sep {m0:.2f} -> {m1:.2f} arcmin (N {n0} -> {n1}); cell left unwarped'
         row['seconds'] = f'{time.time() - t0:.0f}'; return row
     row['status'] = 'OK'
+    os.makedirs(MEAS_ROOT, exist_ok=True); np.save(f'{MEAS_ROOT}/{lst}_{scope}_flow.npy', off.astype(np.float32))   # for post-hoc position correction / assessment
     if apply:
         out = f'{cell}/{gen_used}_mdewarp' if gen_used != 'current' else f'{cell}/gen_mdewarp'; os.makedirs(out, exist_ok=True)
         np.save(f'{out}/mdewarp_flow_{scope}.npy', off.astype(np.float32))
@@ -121,7 +126,7 @@ def run(lst, scope, root, gen, apply, table):
                      MDWP50=(float(row['warp_p50_as']), 'warp amplitude p50, arcsec'), MDWP95=(float(row['warp_p95_as']), 'warp amplitude p95, arcsec'),
                      MDWDATE=(row['measured_at'], 'dewarp measured'))
         nw = 0
-        for sdir in (gdir, sdir_in):
+        for sdir in ((gdir,) if NO_RESIDUALS else (gdir, sdir_in)):
             if not os.path.isdir(sdir): continue
             for p in sorted(glob.glob(f'{sdir}/**/*.fits', recursive=True)):
                 rel = os.path.relpath(p, groot)
@@ -144,8 +149,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('lst', nargs='?'); ap.add_argument('scope', nargs='?'); ap.add_argument('--cells')
     ap.add_argument('--root', default='/data07/gh/phase3/coadd_sb'); ap.add_argument('--gen', default='gen_shflux')
-    ap.add_argument('--apply', action='store_true'); ap.add_argument('--table', default=None)
+    ap.add_argument('--apply', action='store_true'); ap.add_argument('--table', default=None); ap.add_argument('--no-residuals', action='store_true')
     a = ap.parse_args()
+    global NO_RESIDUALS; NO_RESIDUALS = a.no_residuals
     cells = [(a.lst, a.scope, a.root)] if a.lst else [tuple((l.split() + [a.root])[:3]) for l in open(a.cells) if l.strip()]
     table = a.table or f'{a.root}/mdewarp_table.csv'
     cols = ['lst', 'scope', 'gen', 'status', 'med_before', 'n_before', 'p90_before', 'med_after', 'n_after', 'p90_after', 'warp_p50_as', 'warp_p95_as', 'n_written', 'seconds', 'measured_at']
