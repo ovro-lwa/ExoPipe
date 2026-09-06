@@ -1990,6 +1990,15 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
 
     print(f"\n  {lst} {fl}: {len(target_dates)+1} dates (ref={ref_date})")
 
+    # FLOW FRESHNESS GATE (2026-09-06, recovery chain): refuse the cell when any epoch's
+    # alignment flow is missing or older than its input image (a recovered or restacked
+    # epoch would be aligned with the flow of its superseded image). Fix = --stage flow.
+    _stale = _flow_freshness(workdir, target_dates)
+    if _stale and os.environ.get('P3_ALLOW_STALE_FLOW') != '1':
+        print(f"  REFUSING {lst} {fl}: stale/missing alignment flow for "
+              f"{', '.join(f'{d} ({r})' for d, r in _stale)} - run --stage flow first")
+        return None
+
     # ── Template ──
     post_dates = [x for x in dates if x[0] >= CUTOVER_DATE]
     if post_dates:
@@ -3214,6 +3223,74 @@ def run_provisional(lsts, freqs, exclusions, args, depth='deep'):
         print("\n  No data processed.")
 
 
+def _flow_freshness(workdir, target_dates):
+    """2026-09-06 (recovery chain): which non-reference epochs have NO alignment flow
+    or a flow OLDER than their input image. The co-add only ever LOADS flow/<date>_scaled_flow.npy
+    (never recomputes), so a recovered / restacked epoch would otherwise be aligned with the
+    flow measured on its superseded image, or not at all ('flux-scale only'). Cells whose flow/
+    holds no flow at all (wideband: inputs dewarped in Phase 2) are not gated.
+    Returns [(date, reason)]."""
+    fdir = f'{workdir}/flow'
+    if not os.path.isdir(fdir) or not glob.glob(f'{fdir}/*_scaled_flow.npy'):
+        return []
+    out = []
+    for date, _sd, img in target_dates:
+        fp = f'{fdir}/{date}_scaled_flow.npy'
+        if not os.path.exists(fp):
+            out.append((date, 'no flow'))
+        elif os.path.exists(img) and os.path.getmtime(img) > os.path.getmtime(fp):
+            out.append((date, 'flow older than input image'))
+    return out
+
+
+def _run_batch_flow(all_manifest, fl):
+    """Batch optical-flow alignment for a manifest (GPU-locked; py310_orca)."""
+    manifest_path = f'{_workdir_base()}/_manifest_{fl}.json'
+    with open(manifest_path, 'w') as f:
+        json.dump(all_manifest, f)
+    print(f"\n{'─'*70}")
+    print(f"  Batch flow: {len(all_manifest)} pairs for {fl}")
+    print(f"{'─'*70}")
+    cmd = ["conda", "run", "-n", "py310_orca", "--no-capture-output",
+           "python", BATCH_FLOW_SCRIPT, "--manifest", manifest_path]
+    t0 = time.time()
+    gpu_lock_path = os.path.join(_workdir_base(), '.gpu_lock')
+    with open(gpu_lock_path, 'w') as lockf:
+        print(f"  Waiting for GPU lock...")
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        print(f"  GPU lock acquired, running batch flow")
+        result = subprocess.run(cmd, capture_output=False, timeout=7200)
+    if result.returncode != 0:
+        print(f"  WARNING: batch_flow returned {result.returncode}")
+    print(f"  Batch flow done in {time.time()-t0:.0f}s")
+    return result.returncode
+
+
+def run_flow_stage(lsts, freqs, exclusions, args):
+    """--stage flow (2026-09-06): (re)compute the alignment flows of the epochs whose flow is
+    missing or older than the input image (all epochs with --flow-all), through the same prep
+    + batch-flow code as the full path, and stop there. This is the step the provisional
+    stage's freshness gate asks for."""
+    for freq_str in freqs:
+        fl = freq_label(freq_str)
+        for lst in lsts:
+            manifest, prep = process_lst_freq(lst, freq_str, exclusions, args)
+            if not manifest:
+                print(f"  {lst} {fl}: nothing to prep"); continue
+            workdir = f'{_workdir_base()}/{lst}_{fl}'
+            if getattr(args, 'flow_all', False):
+                todo = manifest
+            else:
+                stale = {d for d, _ in _flow_freshness(workdir, [(x['date'], x['sci_dir'], x['align_img']) for x in prep['dates']])}
+                todo = [m for m in manifest if os.path.basename(m['target']).split('_scaled')[0] in stale]
+            print(f"  {lst} {fl}: {len(todo)} of {len(manifest)} epochs need a flow"
+                  + (f" ({', '.join(sorted(os.path.basename(m['target']).split('_scaled')[0] for m in todo))})" if todo else ''))
+            if todo:
+                _run_batch_flow(todo, fl)
+            left = _flow_freshness(workdir, [(x['date'], x['sci_dir'], x['align_img']) for x in prep['dates']])
+            print(f"  {lst} {fl}: flow stage done; stale/missing after: {left if left else 'none'}")
+
+
 def process_frequency(freq_str, lsts, exclusions, args):
     """Process one frequency across all LSTs.
     Groups flow alignment into one batch call per frequency."""
@@ -3280,7 +3357,9 @@ def main():
                         help='Output base directory')
     parser.add_argument('--outlier_sigma', type=float, default=OUTLIER_SIGMA,
                         help='MAD outlier threshold in sigma')
-    parser.add_argument('--stage', choices=['provisional', 'provisional-10min', 'final'],
+    parser.add_argument('--flow-all', action='store_true', dest='flow_all',
+                        help='--stage flow: recompute every epoch, not only stale/missing')
+    parser.add_argument('--stage', choices=['flow', 'provisional', 'provisional-10min', 'final'],
                         help='Two-pass co-add: provisional (deep outlier analysis), '
                              'provisional-10min (10-min interval outlier analysis), or final')
     parser.add_argument('--parallel', type=int, default=1,
@@ -3328,7 +3407,9 @@ def main():
 
     t_start = time.time()
 
-    if args.stage == 'provisional':
+    if args.stage == 'flow':
+        run_flow_stage(lsts, freqs, exclusions, args)
+    elif args.stage == 'provisional':
         run_provisional(lsts, freqs, exclusions, args, depth='deep')
     elif args.stage == 'provisional-10min':
         run_provisional(lsts, freqs, exclusions, args, depth='10min')
