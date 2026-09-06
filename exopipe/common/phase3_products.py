@@ -74,7 +74,9 @@ TAPERS = ['Taper', 'NoTaper']
 # 'loo' (leave-one-out master, tag = excluded date) and tagged 'ssub'
 # (tag = striation window) added per ratified structure spec S15
 # (R-P3-STRUCTURE-RATIFIED, 2026-08-26).
-PROC_ORDER = ['vclean', 'mstruct', 'loo', 'pbcorr', 'dewarped', 'aligned',
+# 'shflux' (SH12 absolute flux scale baked in) and 'mdewarp' (final master dewarp) added per
+# MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828 (ratified 2026-08-28; implemented 2026-09-06).
+PROC_ORDER = ['vclean', 'mstruct', 'loo', 'shflux', 'mdewarp', 'pbcorr', 'dewarped', 'aligned',
               'psfmatch', 'coadd', 'msub', 'nmsub', 'ssub', 'sigstack',
               'mosaic', 'jysr', 'feather', 'tcorr', 'lsfill',
               'psfmap', 'rgbcomp', 'molrender', 'carrender', 'pbmap']
