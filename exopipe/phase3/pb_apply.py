@@ -29,6 +29,40 @@ from reproject import reproject_interp
 from exopipe.common import phase2_config as cfg
 
 PB_DIR = "/fast/gh/main/phase3/pb_library"
+# RESIDUAL PRIMARY BEAM (Gregg 2026-09-07): one additional multiplicative step in the PB correction of
+# every master variant and residual. The library entry is a zenith-centred SIN map whose header carries the
+# analytic fit (PBRF* cards); the gain is evaluated here on the TARGET grid from those coefficients, so any
+# grid (1508/2358/3122 px) gets the exact same function. Achromatic (bandwidth smearing: dnu/nu x
+# theta/theta_beam is frequency independent), so one entry serves every subband. Set to '' to disable
+# (never in production; comparison runs only).
+RESIDUAL_PB = os.environ.get('P3_RESIDUAL_PB', '/lustre/pipeline/exopipe/phase3/pb_library/residual_pb/residual_pb_v1.fits')
+_RESID_CACHE = {}
+
+
+def residual_gain(hdr, shape, path=RESIDUAL_PB):
+    """g(ZA, az) of the residual primary beam on the grid described by hdr (a zenith-centred SIN header:
+    CRPIX1/2, CDELT1/2). Convention verified against astropy WCS on a master: intermediate x (deg) = +RA =
+    east, y = north; l = x rad, m = y rad; ZA = asin(hypot(l, m)); az = atan2(l, m) from north through east.
+    Returns (gain float32 array, version string); gain is NaN below the horizon."""
+    if not path:
+        return None, ''
+    key = (path, shape, float(hdr['CRPIX1']), float(hdr['CRPIX2']), float(hdr['CDELT1']), float(hdr['CDELT2']))
+    if key in _RESID_CACHE:
+        return _RESID_CACHE[key]
+    h = fits.getheader(path)
+    c = np.array([h[f'PBRF{k}'] for k in ('C0', 'C2', 'C4', 'A1', 'B1', 'A2', 'B2', 'A3', 'B3')], float)
+    c0 = float(h['PBRNORM']); zmax = float(h['PBRZMAX']); ver = str(h['PBRESID'])
+    ny, nx = shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    l = np.radians((xx + 1 - hdr['CRPIX1']) * hdr['CDELT1'])
+    m = np.radians((yy + 1 - hdr['CRPIX2']) * hdr['CDELT2'])
+    rr = np.hypot(l, m); above = rr <= 1.0
+    zd = np.minimum(np.degrees(np.arcsin(np.clip(rr, 0, 1))), zmax); a = np.arctan2(l, m)
+    g = (c[0] + c[1] * zd ** 2 + c[2] * zd ** 4 + zd * (c[3] * np.cos(a) + c[4] * np.sin(a))
+         + zd ** 2 * (c[5] * np.cos(a) + c[6] * np.sin(a)) + zd ** 2 * (c[7] * np.cos(2 * a) + c[8] * np.sin(2 * a))) / c0
+    g = np.clip(g, 0.5, 1.2).astype(np.float32); g[~above] = np.nan
+    _RESID_CACHE[key] = (g, ver)
+    return g, ver
 QA_ROOT = "/lustre/pipeline/exopipe/phase2"
 PB_FLOOR = 0.1
 
@@ -195,7 +229,14 @@ def wideband_pb(scope, lst, master_path, pb_dir=PB_DIR, category='deep', binidx=
     meta = dict(scope=scope, lst=lst, cadence=('deep' if binidx is None else f'bin{binidx}'),
                 n_dates=len(used), n_missing=len(missing), members=members,
                 weights={k: weights[k] for k in members},
-                used_dates=used, missing_dates=missing)
+                used_dates=used, missing_dates=missing, residual_pb='')
+    # the residual primary beam: the single additional step (Gregg 2026-09-07)
+    if pb is not None and RESIDUAL_PB:
+        _ghdr = tgt_hdr if scope == 'Full' else ref
+        g, ver = residual_gain(_ghdr, pb.shape)
+        if g is not None:
+            pb = (pb * np.where(np.isfinite(g), g, 1.0)).astype(np.float32)
+            meta['residual_pb'] = ver
     return pb, meta
 
 
@@ -216,6 +257,8 @@ def apply_pbcorr(master_path, pb_map, out_path, floor=PB_FLOOR, meta=None):
     hdr['PBCORR'] = (True, 'OVRO-LWA PB library correction applied')
     hdr['PBFLOOR'] = (floor, 'PB floor below which pixels set NaN')
     hdr['PBLIBV'] = ('v1-2026-07-04', 'PB library version')
+    if meta and meta.get('residual_pb'):
+        hdr['PBRESID'] = (meta['residual_pb'], 'residual primary beam applied (x model PB)')
     if meta:
         hdr['PBNDATE'] = (meta.get('n_dates', -1), 'Constituent nights with QA weights')
         if meta.get('n_missing'):

@@ -62,6 +62,8 @@ def do_cell(root, cell):
                 ph['PBMETHOD'] = ('time-integrated-library', 'canonical (2026-07-11)')
                 ph['PBWINDOW'] = ('60min-deep', 'PB integration window')
                 ph['BEAMMOD'] = (BEAMMOD, 'beam model')
+                if meta.get('residual_pb'):
+                    ph['PBRESID'] = (meta['residual_pb'], 'residual primary beam applied (x model PB)')
                 fits.writeto(f'{cf}/PB_deep_{scope}.fits',
                              pb_map.astype(np.float32), ph, overwrite=True)
             out = f'{cf}/{var}_pbcorr_{scope}.fits'
