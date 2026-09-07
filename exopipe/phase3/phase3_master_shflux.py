@@ -156,13 +156,17 @@ def apply(lst, scope, root, row, outgen):
             with fits.open(p) as h:
                 d = h[0].data; hd = h[0].header.copy()
             d = (np.asarray(d, dtype=np.float32) * np.float32(scale))
-            hd['SHSCALE'] = (scale, 'SH12 absolute flux scale applied (Gregg 2026-08-28)')
+            _vlssr = str(row['srcs']).startswith('VLSSr')
+            hd['SHSCALE'] = (scale, 'flux scale applied (VLSSr/RCB per LST, 2026-09-07)' if _vlssr
+                             else 'SH12 absolute flux scale applied (Gregg 2026-08-28)')
             hd['SHERR'] = (float(row['err']), '1-sigma uncertainty of SHSCALE')
-            hd['SHNSRC'] = (int(row['nsrc']), 'SH calibrators used (el > 50 deg)')
-            hd['SHSRCS'] = (row['srcs'], 'SH calibrators used')
+            hd['SHNSRC'] = (int(row['nsrc']), 'VLSSr matches in the window' if _vlssr else 'SH calibrators used (el > 50 deg)')
+            hd['SHSRCS'] = (row['srcs'], 'scale reference (window)' if _vlssr else 'SH calibrators used')
+            hd['SHMETHOD'] = ('VLSSr-dec20-60' if _vlssr else 'SH12-calibrators', 'flux scale method')
             hd['SHFREQ'] = (float(row['freq_hz']), f"model frequency Hz ({row['freq_src'][:40]})")
             hd['SHDATE'] = (row['measured_at'], 'flux scale measured')
-            hd['HISTORY'] = f"shflux: pixels x {scale:.5f} (SH12 calibrators {row['srcs']}; I Taper R-0.75 pbcorr master; stage A of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828)"
+            hd['HISTORY'] = (f"shflux: pixels x {scale:.5f} (VLSSr/RCB median ratio per LST, {row['srcs']}, N {row['nsrc']}; R-FLUX-SCALE-APPLY-VLSSR-HIGH-ELEVATION-APPROVED 2026-09-07)" if _vlssr else
+                             f"shflux: pixels x {scale:.5f} (SH12 calibrators {row['srcs']}; I Taper R-0.75 pbcorr master; stage A of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828)")
             fits.writeto(f'{dst_dir}/{_scaled_name(p, scope)}', d, hd, overwrite=True); n += 1
     return n
 
@@ -173,14 +177,30 @@ def main():
     ap.add_argument('--cells'); ap.add_argument('--root', default=DEFAULT_ROOT)
     ap.add_argument('--apply', action='store_true'); ap.add_argument('--outgen', default='gen_shflux')
     ap.add_argument('--table', default=None); ap.add_argument('--no-build', action='store_true'); ap.add_argument('--no-residuals', action='store_true')
+    # --scale-table (R-FLUX-SCALE-APPLY-VLSSR-HIGH-ELEVATION-APPROVED, Gregg 2026-09-07): the per-LST factor
+    # from the VLSSr ratio in the +20..+60 deg declination window (columns lst, scale, err, nsrc, window, ref)
+    # REPLACES the SH12 measurement; one factor for every scope of the LST hour; the apply path is unchanged.
+    ap.add_argument('--scale-table', default=None)
     a = ap.parse_args()
+    scale_tab = None
+    if a.scale_table:
+        scale_tab = {r['lst']: r for r in csv.DictReader(open(a.scale_table))}
     global NO_BUILD, NO_RESIDUALS; NO_BUILD = a.no_build; NO_RESIDUALS = a.no_residuals
     cells = [(a.lst, a.scope)] if a.lst else [tuple(l.split()[:2]) for l in open(a.cells) if l.strip()]
     table = a.table or f'{a.root}/shflux_table.csv'
     cols = ['lst', 'scope', 'status', 'scale', 'err', 'nsrc', 'srcs', 'freq_hz', 'freq_src', 'rms_jy', 'n_written', 'detail', 'measured_at']
     new = not os.path.exists(table)
     for lst, scope in cells:
-        row = measure(lst, scope, a.root); row['n_written'] = 0
+        if scale_tab is not None:
+            t = scale_tab.get(lst)
+            row = dict(lst=lst, scope=scope, status='OK' if t else 'REFUSED no factor for this LST in the scale table',
+                       scale=(t['scale'] if t else ''), err=(t['err'] if t else ''), nsrc=(t['nsrc'] if t else 0),
+                       srcs=(f"VLSSr {t['window']}" if t else ''), freq_hz=75.41e6,
+                       freq_src=(t.get('ref', 'VLSSr 73 MHz subband, one factor per LST') if t else ''), rms_jy='',
+                       detail=f'scale table {os.path.basename(a.scale_table)}', measured_at=(t['measured_at'] if t else ''))
+        else:
+            row = measure(lst, scope, a.root)
+        row['n_written'] = 0
         if row['status'] == 'OK' and a.apply:
             row['n_written'] = apply(lst, scope, a.root, row, a.outgen)
         with open(table, 'a', newline='') as f:
