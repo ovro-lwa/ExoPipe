@@ -89,7 +89,12 @@ def main():
     if MODE in ('subband', 'all'):
         cells += [(SB_ROOT, c) for c in sorted(os.listdir(SB_ROOT))
                   if re.match(r'^\d\dh_\d+MHz$', c)]
-    print(f'{len(cells)} cells ({MODE})', flush=True)
+    # P3_PBCORR_LSTS='00h,01h,...' (2026-09-07): restrict to those LST hours (parallel streams)
+    _lsts = os.environ.get('P3_PBCORR_LSTS')
+    if _lsts:
+        _keep = set(_lsts.split(','))
+        cells = [(r, c) for r, c in cells if c.split('_')[0] in _keep]
+    print(f'{len(cells)} cells ({MODE}' + (f', LSTs {_lsts}' if _lsts else '') + ')', flush=True)
     for root, cell in cells:
         ok, sk, errs = do_cell(root, cell)
         tot_ok += ok; tot_skip += sk; all_errs += errs
