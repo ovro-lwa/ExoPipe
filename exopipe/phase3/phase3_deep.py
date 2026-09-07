@@ -313,6 +313,25 @@ def _epoch_time(base, date, scope):
 
 
 def _batch_flows(cell_work, mup, items):
+    """Per-cell-serialised wrapper around _batch_flows_unlocked.
+
+    RACE FIXED 2026-09-07 (INCIDENT-FLOW-CACHE-TRUNCATED-BY-CONCURRENT-STOKES): the search
+    fleet claims cells PER STOKES (claims_I/<cell> and claims_V/<cell> are separate), so one
+    node can search the same cell in Stokes I and Stokes V at the same time, and both share
+    cell_work. Both could see a flow file missing, both launch the GPU batch, and both write
+    the same ep_*_flow.npy - a reader then got a partially written file and np.load raised
+    "cannot reshape array of size 0 into shape (6244,6244,2)" (07h 82MHz on lwacalim02).
+    The lock covers compute AND load, so a reader never sees a half-written cache."""
+    os.makedirs(cell_work, exist_ok=True)
+    with open(f'{cell_work}/.flow.lock', 'w') as _lk:
+        fcntl.flock(_lk, fcntl.LOCK_EX)
+        try:
+            return _batch_flows_unlocked(cell_work, mup, items)
+        finally:
+            fcntl.flock(_lk, fcntl.LOCK_UN)
+
+
+def _batch_flows_unlocked(cell_work, mup, items):
     """items=[(date, ep_up_path)] -> {date: ×2 flow}, via align_images.py
     (py310_orca GPU). Cached on disk; only missing pairs are recomputed."""
     pairs = []
@@ -321,7 +340,7 @@ def _batch_flows(cell_work, mup, items):
         if not os.path.exists(f'{cell_work}/{fb}_flow.npy'):
             pairs.append(f'{ep_up} {mup} {cell_work}')
     if pairs:
-        pp = f'{cell_work}/flow_pairs.txt'
+        pp = f'{cell_work}/flow_pairs_{os.getpid()}.txt'   # v2026-09-07: was a fixed name, overwritten by the other Stokes' worker
         with open(pp, 'w') as fh:
             fh.write('\n'.join(pairs) + '\n')
         env = {**os.environ,
