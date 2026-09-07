@@ -40,8 +40,15 @@ FILTER = _argv[2] if len(_argv) > 2 else None  # substring on dst path
 
 def pb_path(cell):
     lst, scope = cell.split('_', 1)
-    return (WB_PB.format(root=coadd_root(), cell=cell, scope=scope) if scope in WIDE
-            else SB_PB.format(cell=cell, scope=scope))
+    if scope not in WIDE:
+        return SB_PB.format(cell=cell, scope=scope)
+    # P3_COADD_ROOTS='root1:root2' (2026-09-07): wideband cells live in more than one root
+    # (rebuild_w2 / rebuild_v2); the first root holding the cell's PB map wins, else coadd_root().
+    for r in [x for x in os.environ.get('P3_COADD_ROOTS', '').split(':') if x]:
+        p = WB_PB.format(root=r, cell=cell, scope=scope)
+        if os.path.exists(p):
+            return p
+    return WB_PB.format(root=coadd_root(), cell=cell, scope=scope)
 
 
 def pbcorr_name(name):
