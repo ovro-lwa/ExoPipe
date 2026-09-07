@@ -60,7 +60,8 @@ def build_tasks():
         dst = os.path.join(dst_dir, new)
         if FILTER and FILTER not in dst:
             return
-        if not os.path.exists(dst):
+        # P3_PBCORR_FORCE=1 (2026-09-07, residual primary beam): regenerate an existing sibling
+        if os.environ.get('P3_PBCORR_FORCE') == '1' or not os.path.exists(dst):
             by_cell[cell].append((src, dst))
 
     for cd in sorted(glob.glob(f'{LU}/v_resid/*_*')):
