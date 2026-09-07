@@ -2665,6 +2665,40 @@ def find_wideband_deep_images(sci_dir, band, stokes, variant):
     return None
 
 
+def _variant_input_divergent(path, max_jy=1e5, min_finite=0.99):
+    """PER-VARIANT DIVERGENCE GATE (Gregg 2026-09-06/07, R-NONSURVEY-VARIANT-RECOVERY-CAMPAIGN-GO:
+    'should the co-add refuse a variant whose input epoch is divergent' - yes). The provisional
+    outlier stage measures the SURVEY variant only, so a CLEAN-diverged NoTaper/Taper-R0 epoch
+    image (|max| ~1e14) entered the variant masters and corrupted 155 of them. Returns a reason
+    string when the image is divergent (|max| above max_jy Jy/beam or finite fraction below
+    min_finite), else ''. Cheap: one read of the file."""
+    try:
+        d = np.asarray(fits.getdata(path)).squeeze()
+        fin = np.isfinite(d)
+        if not fin.any():
+            return 'no finite pixel'
+        mx = float(np.max(np.abs(d[fin])))
+        ff = float(fin.mean())
+        if mx > max_jy:
+            return f'|max| {mx:.3g} Jy/beam > {max_jy:.0e}'
+        if ff < min_finite:
+            return f'finite fraction {ff:.3f} < {min_finite}'
+        return ''
+    except Exception as e:
+        return f'unreadable ({e})'
+
+
+def _stamp_variant_gate(path, refused):
+    """HISTORY provenance of the per-variant divergence gate on a variant master."""
+    if not refused:
+        return
+    with fits.open(path, mode='update') as hd:
+        for d, why in refused:
+            hd[0].header.add_history(f'VARIANT-GATE refused {d}: divergent input ({why})')
+        hd[0].header['NVARREF'] = (len(refused), 'epochs refused by the per-variant divergence gate')
+        hd.flush()
+
+
 def run_final_lst_freq(lst, freq_str, exclusions):
     """Final co-add + subtraction + striation removal for one (LST, freq).
 
@@ -2967,6 +3001,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         print(f"  LOO masters written: {_n_loo} (N_epochs<=20 rule)")
 
     # Also create I Taper R0 co-add for subtraction
+    _variant_refused = {}      # variant -> [(date, reason)] refused by the per-variant divergence gate
     i_r0_aligned = []
     for date, sci_dir, _ in dates:
         if date not in good_dates_deep or date not in date_params:
@@ -2977,6 +3012,11 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         else:
             i_r0_img = find_wideband_deep_images(sci_dir, freq_str, 'I', 'Taper_R0')
         if not i_r0_img:
+            continue
+        _why = _variant_input_divergent(i_r0_img)
+        if _why:
+            print(f"  VARIANT GATE Taper_R0 {date}: input REFUSED - {_why} ({os.path.basename(i_r0_img)})")
+            _variant_refused.setdefault('Taper_R0', []).append((date, _why))
             continue
         i_r0_out = f'{prep_dir}/{date}_I_R0.fits'
         ok = process_variant_image(i_r0_img, params['flow'], params['scale_map'],
@@ -2992,6 +3032,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             final_i_r0_path, tmpl_hdr, dates=[d for d, _, _ in i_r0_aligned],
             sigclip=False)
         stamp_master_span(final_i_r0_path, lst, fl, [d for d, _, _ in i_r0_aligned])
+        _stamp_variant_gate(final_i_r0_path, _variant_refused.get('Taper_R0', []))
         print(f"  Final I R0 co-add: {len(i_r0_aligned)} dates")
 
     # Also create the NoTaper R0 / R0.75 variants (2-stage QA'd) so coadd_final
@@ -3009,6 +3050,11 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 _img = find_wideband_deep_images(sci_dir, freq_str, 'I', _vk)
             if not _img:
                 continue
+            _why = _variant_input_divergent(_img)
+            if _why:
+                print(f"  VARIANT GATE {_vk} {date}: input REFUSED - {_why} ({os.path.basename(_img)})")
+                _variant_refused.setdefault(_vk, []).append((date, _why))
+                continue
             _out = f'{prep_dir}/{date}_{_vk}.fits'
             ok = process_variant_image(_img, params['flow'], params['scale_map'],
                                        tmpl_hdr, target_shape, _out, params['regrid'])
@@ -3022,6 +3068,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 _path, tmpl_hdr, dates=[d for d, _, _ in _aligned],
                 sigclip=False)
             stamp_master_span(_path, lst, fl, [d for d, _, _ in _aligned])
+            _stamp_variant_gate(_path, _variant_refused.get(_vk, []))
             print(f"  Final {_vk} co-add: {len(_aligned)} dates")
 
     # ── Step 2: Per-date subtraction ──
