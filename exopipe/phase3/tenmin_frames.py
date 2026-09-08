@@ -77,9 +77,23 @@ def key_date(key):
 
 
 def _p2_10min_files(sci_dir, scope, stokes):
-    """Phase 2 10-minute Taper Robust 0 dewarped, non-pbcorr images with their DATE-OBS."""
+    """Phase 2 10-minute Taper Robust 0, non-pbcorr images with their DATE-OBS.
+    Dewarped products first; RAW FALLBACK (A-05, approved: the deep chain's raw-fallback
+    pattern extends to the 10-minute tier) when the night has no dewarped 10-minute
+    product - recorded per frame (frames.csv src_dewarped, header P2DEWARP)."""
     out = []
-    for p, _i in C.find_10min_images(sci_dir, scope.replace('MHz', ''), stokes):
+    files = [p for p, _i in C.find_10min_images(sci_dir, scope.replace('MHz', ''), stokes)]
+    dewarped = True
+    if not files:
+        d = (f'{sci_dir}/{scope}/{stokes}/10min' if not C.is_subband(scope.replace('MHz', ''))
+             else f'{sci_dir}/{scope}/{stokes}/10min')
+        if os.path.isdir(d):
+            files = sorted(os.path.join(d, f) for f in os.listdir(d)
+                           if f.endswith('.fits') and 'pbcorr' not in f and 'dewarped' not in f
+                           and 'Taper' in f and 'NoTaper' not in f
+                           and 'Robust-0' in f and 'Robust-0.75' not in f)
+        dewarped = False
+    for p in files:
         try:
             h = fits.getheader(p)
         except Exception:
@@ -87,6 +101,7 @@ def _p2_10min_files(sci_dir, scope, stokes):
         t = h.get('DATE-OBS')
         if not t:
             continue
+        h['P2DEWARP'] = (dewarped, 'Phase 2 10-minute source was dewarped')
         out.append((Time(t, scale='utc').mjd, p, h))
     return sorted(out)
 
@@ -250,7 +265,8 @@ def _build_night(args):
                      'FLUXDC': (round(dc[date], 5), 'night DC flux factor (no gradient)'),
                      'FLOWUSED': (bool(has_flow), 'night alignment flow applied (deep co-add parity)'),
                      'NINJECT': (int(ninj), 'injected sources (battery only; 0 in production)'),
-                     'SRCFRAME': (os.path.basename(src)[:68], 'Phase 2 10-minute source image')}
+                     'SRCFRAME': (os.path.basename(src)[:68], 'Phase 2 10-minute source image'),
+                     'P2DEWARP': (bool(sh.get('P2DEWARP', True)), 'Phase 2 source dewarped (False = raw fallback, A-05)')}
             fits.writeto(sub_path + '.part', sub, h, overwrite=True)
             hh, ww = sub.shape; inn = sub[hh // 4:3 * hh // 4, ww // 4:3 * ww // 4]
             pp.write_standard_header(
@@ -262,8 +278,8 @@ def _build_night(args):
                 msub=True, msubfile=os.path.basename(mI if S == 'I' else mV),
                 lstbin=int(k), p2run=p2run, scale_a=dc[date], extra=extra, validate=True)
             os.replace(sub_path + '.part', sub_path)
-            rows.append([key, date, k, S, src, round(dc[date], 5), int(has_flow), round(blank, 4), round(rmed, 4),
-                         bmaj, bmin, bpa, ninj, sub_path])
+            rows.append([key, date, k, S, src, round(dc[date], 5), int(has_flow), int(bool(sh.get('P2DEWARP', True))),
+                         round(blank, 4), round(rmed, 4), bmaj, bmin, bpa, ninj, sub_path])
             built.append((key, S))
     return rows, irows, refused, built
 
@@ -328,7 +344,7 @@ def build_cell_frames(lst, scope, out_root=None, stokes='IV', dates=None, inject
     with open(frames_csv, 'a', newline='') as f:
         fw = csv.writer(f, lineterminator='\n')
         if new_frames:
-            fw.writerow(['key', 'date', 'bin', 'stokes', 'src', 'dc', 'has_flow', 'pb_blank_frac', 'pb_ratio_median',
+            fw.writerow(['key', 'date', 'bin', 'stokes', 'src', 'dc', 'has_flow', 'src_dewarped', 'pb_blank_frac', 'pb_ratio_median',
                          'bmaj_deg', 'bmin_deg', 'bpa_deg', 'n_inject', 'sub_path'])
         for rows, _i, _r, _b in results:
             fw.writerows(rows)
