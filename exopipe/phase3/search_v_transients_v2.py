@@ -195,12 +195,22 @@ def _run_bdsf(fits_path, thresh_pix, thresh_isl, quiet=True, rms_value=None, mea
         except: continue
         # BDSF's own fitted shape (image plane, FWHM deg) — RETAINED per the
         # 2026-08-22 ruling (imfit/BDSF only; the hand-rolled refit is retired)
+        # FIX 2026-09-08 (FIX-SNAP-FIT-SIZE-UNITS-SIN-PROJECTION-VS-HEADER-BEAM, found in the
+        # snapshot tier by Gregg and confirmed here): this read size_sky, which applies the SIN
+        # Jacobian and is a PROJECTED SKY angle, and the size/axis gates compare it against the
+        # header BMAJ, a GRID quantity. Sine projection keeps the PSF constant in pixel space, so
+        # one pixel subtends sec(ZA) more sky angle radially and a point source appeared to grow
+        # with field angle while the comparator did not. size_sky_uncorr is the image-plane shape
+        # (= size_pix x CDELT) and is what belongs beside BMAJ. Positions are unaffected.
         try:
-            _mj, _mn, _pa = (float(x) for x in s.size_sky)
+            _mj, _mn, _pa = (float(x) for x in s.size_sky_uncorr)
         except Exception:
             _mj = _mn = _pa = float('nan')
         try:      # 2026-09-04: BDSF's own 1-sigma error on the major axis (Card 9 allowance)
-            _emj = float(s.size_sky_err[0])
+            # FIX 2026-09-08: this read s.size_sky_err, which DOES NOT EXIST in PyBDSF, so the
+            # except branch always fired and the ratified Card 9 allowance was silently zero for
+            # Stokes V from the day it was added. The image-plane error is size_skyE_uncorr.
+            _emj = float(s.size_skyE_uncorr[0])
         except Exception:
             _emj = float('nan')
         sources.append({'coord': SkyCoord(ra_d, dec_d, unit='deg'), 'flux': float(s.peak_flux_max),
