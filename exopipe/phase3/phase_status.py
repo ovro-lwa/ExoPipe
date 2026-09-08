@@ -6,7 +6,7 @@ Refresh the ledger with _inventory_p1p2.py -> _build_ledger.py."""
 import os, csv, glob, subprocess, time
 from collections import Counter
 
-LEDGER = '/fast/gh/main/phase3/qa_assembly_2/processing_ledger.csv'
+LEDGER = '/lustre/gh/main/clv15/processing_ledger.csv'
 DECISIONS = '/lustre/gh/main/clv15/data_decisions.csv'
 DECISIONS_FP = '/fast/gh/main/phase3/qa_assembly_2/.data_decisions.fingerprint'
 # Current-generation co-add roots, in the same precedence the consumers use

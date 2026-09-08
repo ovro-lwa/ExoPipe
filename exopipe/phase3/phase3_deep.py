@@ -747,13 +747,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     # so searching them is not a degraded result, it is a wrong one.
     # COADDOP exists precisely so the generations can never be confused.
     # Set P3_ALLOW_OLD_MASTERS=1 only for a deliberate archaeological
-    # comparison, never for production.
+    # comparison, never for production. MASTER_GEN: the current generation is
+    # ivw-mean-v3 (flat-DC flux scale, R-TILT-REMOVED-NEXTGEN landed 2026-09-08).
+    # A run launched on the superseded v2 generation must DECLARE it with
+    # P3_MASTER_GEN=ivw-mean-v2 (the fleet launcher sets it; logged per cell).
+    MASTER_GEN = os.environ.get('P3_MASTER_GEN', 'ivw-mean-v3')
     _op = hdr0.get('COADDOP')
-    if _op != 'ivw-mean-v2' and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
+    print(f'  {lst} {scope}: master generation COADDOP={_op!r} (required {MASTER_GEN!r})', flush=True)
+    if _op != MASTER_GEN and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
         raise RuntimeError(
             f'{lst} {scope}: REFUSING to search a superseded master. '
-            f'{mI} has COADDOP={_op!r}, expected \'ivw-mean-v2\' '
-            f'(plain-mean + LOO policy, ratified 2026-08-25). Rebuild the '
+            f'{mI} has COADDOP={_op!r}, expected {MASTER_GEN!r} '
+            f'(plain-mean + LOO policy, ratified 2026-08-25; flat-DC 2026-08-28). Rebuild the '
             f'cell, or point P3_COADD_ROOT at the current-generation root '
             f'(exopipe_ops/resolve_master_root.sh resolves it).')
     em, en, _, _ = fit_empirical_beam(master_I)
@@ -765,11 +770,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     mVp = f'{base}/coadd_final/V_deep_Taper_R0_{scope}.fits'
     if os.path.exists(mVp):
         _opv = fits.getheader(mVp).get('COADDOP')
-        if _opv != 'ivw-mean-v2' and \
+        if _opv != MASTER_GEN and \
                 os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
             raise RuntimeError(
                 f'{lst} {scope}: REFUSING to search a superseded V master. '
-                f'{mVp} has COADDOP={_opv!r}, expected \'ivw-mean-v2\'.')
+                f'{mVp} has COADDOP={_opv!r}, expected {MASTER_GEN!r}.')
     master_V = _load(mVp) if os.path.exists(mVp) else None
     ms_destr, ms_raw = (_mstruct_maps(master_V, mVp, beam)
                         if master_V is not None else (None, None))

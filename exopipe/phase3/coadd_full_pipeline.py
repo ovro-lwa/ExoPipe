@@ -1245,8 +1245,14 @@ def coadd_inverse_variance(image_paths, weights, output_path, ref_header,
                           else 'ivw_mean', '%g-sigma per-pixel clip'%nsig)
     # Operator version (R-LOO-MASTERS 2026-08-25): clipped-era and plain-mean
     # masters must never be confusable on disk.
+    # v3 = flat-DC flux scale (R-TILT-REMOVED-NEXTGEN landed 2026-09-08); v2
+    # masters were built with the affine tilt and are superseded.
+    _tilt_on = os.environ.get('P3_FLUXSCALE_TILT') == '1'
     out_hdr['COADDOP'] = ('ivw-clip-v1' if (sigclip and len(image_paths) >= 4)
-                          else 'ivw-mean-v2', 'co-add operator version')
+                          else ('ivw-mean-v2' if _tilt_on else 'ivw-mean-v3'),
+                          'co-add operator version')
+    out_hdr['FLUXFIT'] = ('affine-tilt' if _tilt_on else 'flat-dc',
+                          'per-epoch flux-scale fit applied to constituents')
     if dates:
         for d in dates:
             out_hdr['HISTORY'] = f"COADD constituent {d}"
@@ -2110,12 +2116,16 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
         _mean = float(coeffs[0]); _tilt = float(np.hypot(coeffs[1], coeffs[2]))
-        if (os.environ.get('P3_FLUXSCALE_FLAT_DC') == '1'   # tilt A/B switch (Gregg 2026-08-28); default unchanged
-                or n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3):
+        # R-TILT-REMOVED-NEXTGEN (Gregg 2026-08-28, landed 2026-09-08): the x/y
+        # tilt is REMOVED from production - flat DC always. P3_FLUXSCALE_TILT=1
+        # restores the affine plane for comparison runs only, never production.
+        _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
+        if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
             _dc = _mean if (0.3 < _mean < 3.0) else 1.0
             scale_map_full = np.full((h, w), _dc, dtype=float)
-            print(f"    {date}: flux-degenerate (mean={_mean:.2f} tilt={_tilt:.2f} "
-                  f"n={n_src}) -> flat DC={_dc:.2f}")
+            print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
+                  f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
+                  f"{'; degenerate' if _degen else ''})")
 
         regrid_coords = None
         if needs_regrid:
@@ -2386,12 +2396,16 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
         _mean = float(coeffs[0]); _tilt = float(np.hypot(coeffs[1], coeffs[2]))
-        if (os.environ.get('P3_FLUXSCALE_FLAT_DC') == '1'   # tilt A/B switch (Gregg 2026-08-28); default unchanged
-                or n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3):
+        # R-TILT-REMOVED-NEXTGEN (Gregg 2026-08-28, landed 2026-09-08): the x/y
+        # tilt is REMOVED from production - flat DC always. P3_FLUXSCALE_TILT=1
+        # restores the affine plane for comparison runs only, never production.
+        _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
+        if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
             _dc = _mean if (0.3 < _mean < 3.0) else 1.0
             scale_map_full = np.full((h, w), _dc, dtype=float)
-            print(f"    {date}: flux-degenerate (mean={_mean:.2f} tilt={_tilt:.2f} "
-                  f"n={n_src}) -> flat DC={_dc:.2f}")
+            print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
+                  f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
+                  f"{'; degenerate' if _degen else ''})")
 
         regrid_coords = (precompute_regrid_mapping(align_img_path, tmpl_hdr, target_shape)
                          if needs_regrid else None)
@@ -2739,7 +2753,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 except Exception:
                     _cur = None
                 break
-        if _cur == 'ivw-mean-v2' and os.environ.get('P3_FORCE_REBUILD') != '1':
+        if _cur == 'ivw-mean-v3' and os.environ.get('P3_FORCE_REBUILD') != '1':
             print(f"  {lst} {fl}: already complete (COADDOP={_cur}), skipping")
             return {'lst': lst, 'freq': fl, 'status': 'skipped'}
         if os.environ.get('P3_FORCE_REBUILD') == '1':
@@ -2899,12 +2913,16 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
         # artifact. If out of physical range, drop the tilt, use robust median DC.
         _mean = float(coeffs[0]); _tilt = float(np.hypot(coeffs[1], coeffs[2]))
-        if (os.environ.get('P3_FLUXSCALE_FLAT_DC') == '1'   # tilt A/B switch (Gregg 2026-08-28); default unchanged
-                or n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3):
+        # R-TILT-REMOVED-NEXTGEN (Gregg 2026-08-28, landed 2026-09-08): the x/y
+        # tilt is REMOVED from production - flat DC always. P3_FLUXSCALE_TILT=1
+        # restores the affine plane for comparison runs only, never production.
+        _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
+        if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
             _dc = _mean if (0.3 < _mean < 3.0) else 1.0
             scale_map_full = np.full((h, w), _dc, dtype=float)
-            print(f"    {date}: flux-degenerate (mean={_mean:.2f} tilt={_tilt:.2f} "
-                  f"n={n_src}) -> flat DC={_dc:.2f}")
+            print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
+                  f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
+                  f"{'; degenerate' if _degen else ''})")
 
         regrid_coords = (precompute_regrid_mapping(align_img_path, tmpl_hdr, target_shape)
                          if needs_regrid else None)
@@ -3122,6 +3140,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         coeffs2, n2 = scale2_meas[date]
         h, w = target_shape
         yg, xg = np.indices((h, w), dtype=float)
+        if os.environ.get('P3_FLUXSCALE_TILT') != '1':
+            coeffs2 = np.array([coeffs2[0], 0.0, 0.0])   # DC-only second pass (R-TILT-REMOVED-NEXTGEN)
         scale2_full = (coeffs2[0] + coeffs2[1] * (2.0 * xg / w - 1.0)
                        + coeffs2[2] * (2.0 * yg / h - 1.0))
         # Flux-degeneracy guard, median-relative (see PASS 1 comment)
