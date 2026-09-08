@@ -577,6 +577,7 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
         aligned=True, alignref=os.path.basename(align_file),
         msub=True, msubfile=os.path.basename(loo_file if loo_used else master_file),
         ssub=not _STRIATION_OFF, p2run=hs.get('P2RUN'), calbp=hs.get('CALBP'),
+        lstbin=(int(hs['LSTBIN']) if cadence == '10min' and hs.get('LSTBIN') is not None else None),
         p1run=hs.get('P1RUN'), extra=extra, validate=False)
     try:
         h['PRODNAME'] = (prod.build_name(
