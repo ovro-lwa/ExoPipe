@@ -387,10 +387,15 @@ def _batch_flows_unlocked(cell_work, mup, items):
     return flows
 
 
+_STRIATION_OFF = os.environ.get('P3_STRIATION_OFF') == '1'   # battery variable (Gregg 2026-09-08); production default ON
+
+
 def _residual(epoch, master, flow, hdr, cd):
     """×2-upflow refine epoch -> direct subtract master -> striation clean."""
     up = fft_decimate2(apply_flow_field(fft_upsample2(epoch), flow))
     invalid = (up == 0) | (master == 0) | ~np.isfinite(up)
+    if _STRIATION_OFF:
+        return np.where(invalid, np.nan, up - master)
     w = WCS(hdr).celestial
     # window = 8 x beam (R-STRIATION-WINDOW-APPROVED-8BEAMS 2026-08-25;
     # supersedes STRIATION_WINDOW_DEG=4.375). BMAJ from the master header.
@@ -520,7 +525,7 @@ def _v110_cell_verdicts(lst, scope, base, cell_work, master_I, hdr0, em, cd,
 
 
 def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms,
-                          master_file, loo_file, align_file, label, cell_tag):
+                          master_file, loo_file, align_file, label, cell_tag, cadence='deep'):
     """Conformant-from-birth header for an ARCHIVED search frame
     (R-CONFORMANT-FROM-BIRTH-INCL-HEADERS, Gregg 2026-09-04; products audit
     rows B-01..B-05). Time block and beam come from the epoch's OWN Stage-1
@@ -554,7 +559,8 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
         'MSTRCOOP': (str(mh.get('COADDOP', ''))[:20], 'Parent master: co-add operator'),
         'MSTRMJD': (float(mh.get('MJD-MID', 0.0)), 'Parent master: midpoint MJD'),
         'MSTRDIG': (str(mh.get('CONSTDIG', 'legacy-no-digest'))[:32], 'Parent master constituent digest (CONSTDIG)'),
-        'STRIWIN': (float(8.0 * em * cd), '[deg] Striation window (8 x beam)'),
+        'STRIWIN': (0.0 if _STRIATION_OFF else float(8.0 * em * cd), '[deg] Striation window (8 x beam; 0 = not applied)'),
+        'CADENCE': (cadence, 'Frame cadence'),
         'RUNLABEL': (str(label)[:20], 'Search run label'),
         'ORIGIN': ('exopipe phase3_deep search frame', 'Producer'),
     }
@@ -569,13 +575,16 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
         thermnoi=thermnoi, imgrms=imgrms, pbcorr=False, dewarped=True,
         aligned=True, alignref=os.path.basename(align_file),
         msub=True, msubfile=os.path.basename(loo_file if loo_used else master_file),
-        ssub=True, p2run=hs.get('P2RUN'), calbp=hs.get('CALBP'),
+        ssub=not _STRIATION_OFF, p2run=hs.get('P2RUN'), calbp=hs.get('CALBP'),
         p1run=hs.get('P1RUN'), extra=extra, validate=False)
     try:
         h['PRODNAME'] = (prod.build_name(
-            scope, stokes, 'deep', 'Taper', -0.75 if stokes == 'I' else 0.0,
-            proc=['dewarped', 'aligned', 'msub', 'ssub'],
-            lst=cell_tag.split()[0], epoch=start), 'Conformant product name')
+            scope, stokes, cadence, 'Taper',
+            -0.75 if (stokes == 'I' and cadence == 'deep') else 0.0,
+            proc=['dewarped', 'aligned', 'msub'] + ([] if _STRIATION_OFF else ['ssub']),
+            lst=cell_tag.split()[0], epoch=start,
+            lst_bin=(int(hs.get('LSTBIN')) if cadence == '10min' and hs.get('LSTBIN') is not None else None)),
+            'Conformant product name')
     except Exception as _e:   # naming grammar gap -> held for review, never silent
         h['PRODNAME'] = ('unknown', f'build_name refused: {str(_e)[:40]}')
     h.add_history(f'{label} {stokes} search frame: {os.path.basename(sp)} '
@@ -725,8 +734,19 @@ def _write_archive_frame(path, data, hdr, cell_tag, d):
     os.replace(_tmp, path)
 
 
-def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
+def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
+                  cadence='deep'):
+    """cadence='deep' (hour epochs from the co-add's Stage-1 products) or '10min'
+    (frames from tenmin_frames: PB-ratioed, DC-scaled, night-flow-aligned 10-minute
+    images minus the Taper Robust 0 master; keys 'YYYY-MM-DDTkk'). Everything after
+    the frame source is the same chain (Gregg 2026-09-08: 'identical to deep')."""
     t0 = time.time()
+    if cadence not in ('deep', '10min'):
+        raise ValueError(f'cadence {cadence!r}: deep or 10min')
+    from exopipe.phase3.tenmin_frames import key_date as _kd, tenmin_root as _tr
+    if cadence == 'deep':
+        _kd = lambda d: d
+    os.environ['P3_CADENCE'] = cadence
     # G-03 (ratified 2026-07-14/15; Gregg 2026-09-04: 'There is no pre-blank
     # authorized' - removed for the 5th time, now for BOTH Stokes): A-team is a
     # DOWNSTREAM veto stage (Card 6: six sources, V 3.0 deg / I 5.0 deg), never
@@ -739,7 +759,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     # was therefore a variant hybrid, planting master-gradient artifacts at
     # source positions and mis-calibrating beam-based tests (it also fed the
     # V search's co-located-I context). R-VARIANT-DOC: I = Taper_Robust-0.75.
-    _irob = 'R075'
+    _irob = 'R0' if cadence == '10min' else 'R075'   # 10-minute frames exist only as Robust 0
     mI = f'{base}/coadd_final/I_deep_Taper_{_irob}_{scope}.fits'
     if not os.path.exists(mI):
         # 2026-09-04 (silent-skip variant 4: offloaded flows without inputs):
@@ -790,7 +810,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     master_V = _load(mVp) if os.path.exists(mVp) else None
     ms_destr, ms_raw = (_mstruct_maps(master_V, mVp, beam)
                         if master_V is not None else (None, None))
-    cell_work = f'{WORKROOT}/{lst}_{scope}'; os.makedirs(cell_work, exist_ok=True)
+    # epoch-product root: the co-add tree (deep) or the 10-minute Stage-1 tree; masters,
+    # weights and flows always come from the co-add tree (base)
+    ebase = base if cadence == 'deep' else f'{_tr()}/{lst}_{scope}'
+    cell_work = f'{WORKROOT}/{lst}_{scope}' + ('' if cadence == 'deep' else '_10min'); os.makedirs(cell_work, exist_ok=True)
     root = os.environ.get('P3_STAGING_ROOT', pc.P.STAGING_ROOT); nwr = 0
     run_root = pc.P.transients_run(root, label, make=True)
     # refusal ledgers (beam gate, sanity gate) live under the RUN root so the
@@ -800,8 +823,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     _attempt = time.strftime('%Y%m%dT%H%M%S', time.gmtime())
 
     dates = []
-    for c in sorted(glob.glob(f'{base}/subtracted/*_I_sub_{scope}.fits')):
-        m = re.search(r'(\d{4}-\d\d-\d\d)_I_sub_', os.path.basename(c))
+    for c in sorted(glob.glob(f'{ebase}/subtracted/*_I_sub_{scope}.fits')):
+        m = re.search(r'(\d{4}-\d\d-\d\d(?:T\d\d)?)_I_sub_', os.path.basename(c))
         if m:
             dates.append(m.group(1))
     if included_dates:
@@ -834,7 +857,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         write_up_fits(fft_upsample2(master_I), hdr0, mup)
     items, epoch_I = [], {}
     for d in dates:
-        ei = _load(f'{base}/subtracted/{d}_I_sub_{scope}.fits') + master_I; epoch_I[d] = ei
+        ei = _load(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits') + master_I; epoch_I[d] = ei
         ep_up = f'{cell_work}/ep_{d}_up2.fits'
         if not os.path.exists(ep_up):
             write_up_fits(fft_upsample2(ei), hdr0, ep_up)
@@ -849,7 +872,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     # per-epoch residual still exists on disk, so the search would otherwise pull them back
     # in (e.g. vortex night 2025-05-04; mstruct can't catch it — it's not in the master).
     _excl = load_exclusions()
-    _ddrop = [d for d in dates if is_excluded(lst, scope, d, _excl)]
+    _ddrop = [d for d in dates if is_excluded(lst, scope, _kd(d), _excl)]
     if _ddrop:
         dates = [d for d in dates if d not in _ddrop]
         print(f'  {lst} {scope}: dropped {len(_ddrop)} data_decisions-excluded epoch(s): {_ddrop}')
@@ -861,7 +884,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     # drop (motivated by a 79sigma peeling-blowup flooding the list) is now
     # that flow's job, not the search's.
     qa_out = _qa_outlier_dates(lst, scope)
-    _qa_note = [d for d in dates if d in qa_out]
+    _qa_note = [d for d in dates if _kd(d) in qa_out]
     if _qa_note:
         print(f'  {lst} {scope}: {len(_qa_note)} coadd-omitted (QA-outlier) epoch(s) '
               f'REMAIN in search per two-tier policy: {_qa_note}')
@@ -883,10 +906,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         if len(_fin) >= 5:
             _med = _fin[len(_fin) // 2]
             _bad = [d for d in dates
-                    if _wr.get(d, 0) > 10.0 * _med]
+                    if _wr.get(_kd(d), 0) > 10.0 * _med]
             # Stokes I sanity gate at SANITY_I_X (3x, Gregg 2026-09-05: CLEAN-divergence
             # epochs sit at 4-7x; V has no CLEAN step and keeps the 10x gate)
-            _badI = [d for d in dates if d not in _bad and _wr.get(d, 0) > SANITY_I_X * _med]
+            _badI = [d for d in dates if d not in _bad and _wr.get(_kd(d), 0) > SANITY_I_X * _med]
             if _badI:
                 skip_I_dates.update(_badI)
                 with open(f'{_refdir}/{lst}_{scope}_sanity_I_excluded.csv', 'a') as _sf:
@@ -922,11 +945,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         _stale = []
         for d in dates:
             _why = ''
-            if _cur is not None and d not in _cons and d not in _cur:
+            if _cur is not None and _kd(d) not in _cons and _kd(d) not in _cur:
                 _why = 'not a constituent and absent from the final co-add record (weights.csv)'
             for _st in ('I', 'V'):
                 try:
-                    _h = fits.getheader(f'{base}/subtracted/{d}_{_st}_sub_{scope}.fits')
+                    _h = fits.getheader(f'{ebase}/subtracted/{d}_{_st}_sub_{scope}.fits')
                     if not (float(_h.get('BMAJ') or 0) > 0 and float(_h.get('BMIN') or 0) > 0):
                         _why = (_why + '; ' if _why else '') + f'{_st} product BMAJ/BMIN not positive'
                 except Exception as _e:
@@ -961,7 +984,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             # epoch's own fitted beam (same image family, always shipped with
             # the cell) - read it FIRST; the Phase-2 deep image is the fallback.
             try:
-                _hs = fits.getheader(f'{base}/subtracted/{d}_I_sub_{scope}.fits')
+                _hs = fits.getheader(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits')
                 if _hs.get('BMAJ') and _hs.get('BMIN'):
                     _areas[d] = float(_hs['BMAJ']) * float(_hs['BMIN'])
                     continue
@@ -973,9 +996,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             # and the gate never keyed on them. Match the survey variant with
             # or without the token, prefer the dewarped file when both exist.
             _g = sorted([x for x in
-                         glob.glob(f'{_p2}/{lst}/{d}/*/{scope}/I/deep/'
+                         glob.glob(f'{_p2}/{lst}/{_kd(d)}/*/{scope}/I/deep/'
                                    f'*_I_deep_Taper_{_irob_f}*.fits')
-                         + glob.glob(f'{_p2}/{lst}/{d}/*/{scope}/I/deep/'
+                         + glob.glob(f'{_p2}/{lst}/{_kd(d)}/*/{scope}/I/deep/'
                                      f'*Taper-*-{_irob_f}-*.fits')
                          if 'pbcorr' not in os.path.basename(x)],
                         key=lambda x: (0 if 'dewarped' in os.path.basename(x) else 1, x))
@@ -1035,6 +1058,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         for _d in dates:
             _lp = (f'{base}/coadd_final/loo/'
                    f'{_d}_{stokes_tag}_loo_{variant_tag}_{scope}.fits')
+            if cadence == '10min':
+                out[_d] = central          # 10-minute frames: central master, no leave-one-out (Gregg 2026-09-08)
+                continue
             if not os.path.exists(_lp) and 2 <= _nco <= 20 and _inm.get(_d, False):
                 # 2026-09-04 (audit R-19): an in-master epoch of an N<=20 stack
                 # without its leave-one-out master is a REFUSAL, never a silent
@@ -1066,7 +1092,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     if master_V is not None and 'V' in stokes:
         epoch_V = {}
         for d in dates:
-            vp = f'{base}/subtracted/{d}_V_sub_{scope}.fits'
+            vp = f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'
             if os.path.exists(vp):
                 epoch_V[d] = _load(vp) + master_V
         if epoch_V:
@@ -1140,7 +1166,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
     except Exception as _e:
         print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
     for d in dates:
-        ot = _epoch_time(base, d, scope)
+        ot = _epoch_time(ebase, d, scope)
         hdr = _det_header(hdr0, scope, em, cd, ot)
         # 2026-09-01 fix: hdr0 is the MASTER header, whose DURATION is the
         # month-scale coverage span. search_i_transients.get_midpoint_time
@@ -1151,10 +1177,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
         # duration. (V is immune: its deep-path mask is zenith geometry.)
         try:
             hdr['DURATION'] = float(fits.getheader(
-                f'{base}/subtracted/{d}_I_sub_{scope}.fits'
-            ).get('DURATION') or 3600.0)
+                f'{ebase}/subtracted/{d}_I_sub_{scope}.fits'
+            ).get('DURATION') or (600.0 if cadence == '10min' else 3600.0))
         except Exception:
-            hdr['DURATION'] = 3600.0
+            hdr['DURATION'] = 600.0 if cadence == '10min' else 3600.0
         wcs = WCS(hdr).celestial
         if 'I' in stokes and d in resid_I:
             rI = np.nan_to_num(resid_I[d], nan=0.0)
@@ -1173,12 +1199,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 ignore_nan=True)), 9))
             _loo_i = f'{base}/coadd_final/loo/{d}_I_loo_Taper_R075_{scope}.fits'
             _hdr_I = _archive_frame_header(
-                hdr0, base, d, scope, 'I', em, cd, None, _rmsI, mI, _loo_i, mI,
-                label, f'{lst} {scope}')
+                hdr0, ebase, d, scope, 'I', em, cd, None, _rmsI, mI, _loo_i, mI,
+                label, f'{lst} {scope}', cadence=cadence)
             _fhI[d] = _hdr_I
             if not os.path.exists(ir_path):
                 _write_archive_frame(ir_path, rI, _hdr_I, f'{lst} {scope}', d)
-            if not os.path.exists(ir_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
+            if cadence == 'deep' and not os.path.exists(ir_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
                 _write_pbcorr_sibling(ir_path, rI, _hdr_I, base, scope, f'{lst} {scope}', d)
             # R-IVETO-POLICY-RATIFIED (2026-08-31) as shipped under
             # R-ROUND2-RATIFIED (2026-09-03): front gates = sigma_stack
@@ -1197,11 +1223,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                     gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,
                                                reason=str(c['status']).lower(),
                                                pass_ms=''))
-            if d in qa_out:                       # two-tier tag, I as well as V (audit R-12)
+            if _kd(d) in qa_out:                  # two-tier tag, I as well as V (audit R-12)
                 for c in passed:
                     c['epoch_qa'] = 'outlier QA'
-            _ebI = _epoch_bmaj(base, d, scope, 'I')
-            _ebI_min = _epoch_bmin(base, d, scope, 'I')
+            _ebI = _epoch_bmaj(ebase, d, scope, 'I')
+            _ebI_min = _epoch_bmin(ebase, d, scope, 'I')
             front = []
             for c in passed:
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
@@ -1277,12 +1303,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             # header copy that gave every frame its master's time block)
             _loo_v = f'{base}/coadd_final/loo/{d}_V_loo_Taper_R0_{scope}.fits'
             _hdr_out = _archive_frame_header(
-                hdr0, base, d, scope, 'V', em, cd, _tn, _tn, mVp, _loo_v, mI,
-                label, f'{lst} {scope}')
+                hdr0, ebase, d, scope, 'V', em, cd, _tn, _tn, mVp, _loo_v, mI,
+                label, f'{lst} {scope}', cadence=cadence)
             _fhV[d] = _hdr_out
             if not os.path.exists(vr_path):
                 _write_archive_frame(vr_path, rV, _hdr_out, f'{lst} {scope}', d)
-            if not os.path.exists(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
+            if cadence == 'deep' and not os.path.exists(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
                 _write_pbcorr_sibling(vr_path, rV, _hdr_out, base, scope, f'{lst} {scope}', d)
             # sstack is INFO-ONLY (quoted on survivors, lines below), NOT a gate
             # (2026-06-23 ruling: mstruct is the sole V gate). Passing None here keeps
@@ -1292,7 +1318,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
             pV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0)
             # 'outlier QA' tag (Gregg 2026-08-26): candidates from coadd-omitted
             # epochs carry the flag through catalogs to transient review
-            if d in qa_out:
+            if _kd(d) in qa_out:
                 for _c in pV:
                     _c['epoch_qa'] = 'outlier QA'
             # R-ROUND2-RATIFIED (Gregg 2026-09-03): gaussfit is RETIRED as a
@@ -1320,8 +1346,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 c['morph_pass'], c['morph_reason'] = _t
             # Gaussian-fit SIZE removal above 8 sigma (Gregg 2026-09-04),
             # against the epoch's own beam (Stage-1 V product header)
-            _ebV = _epoch_bmaj(base, d, scope, 'V')
-            _ebV_min = _epoch_bmin(base, d, scope, 'V')
+            _ebV = _epoch_bmaj(ebase, d, scope, 'V')
+            _ebV_min = _epoch_bmin(ebase, d, scope, 'V')
             keptv, vetoed_v = [], []
             for c in pV:
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
@@ -1348,8 +1374,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                 jrad = JUPITER_VETO_DEG.get(_b)
                 # Card 7a (ratified 2026-08-11): ephemeris positions at the
                 # EPOCH's own observation time, not a fixed convention.
-                jup = _body_skycoord('jupiter', ot, d) if jrad else None
-                moon = _body_skycoord('moon', ot, d)
+                jup = _body_skycoord('jupiter', ot, _kd(d)) if jrad else None
+                moon = _body_skycoord('moon', ot, _kd(d))
                 gated = []
                 for c in keptv:
                     xx, yy = int(c['pix_x']), int(c['pix_y'])
@@ -1440,8 +1466,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                              np.cos(d_) * np.sin(r_), np.sin(d_)], -1)
         _ptree = _KD(_uv(_pa[:, 0], _pa[:, 1])) if len(_pa) else None
         _bc = _BAND_CLASS.get(scope.replace('MHz', ''), scope)
-        _tier = 'sb' if 'MHz' in scope else 'wb'
+        _tier = ('sb' if 'MHz' in scope else 'wb') + ('10' if cadence == '10min' else '')
         _p90 = FLOOD_P90_POSTMSTRUCT.get((_bc, _tier), 3 * _icmed)
+        if (_bc, _tier) not in FLOOD_P90_POSTMSTRUCT:
+            print(f'  {lst} {scope}: flood key for ({_bc},{_tier}) not calibrated - using 3x cell median ({3 * _icmed})')
         for d_, front, hdr_, ot_, drI_ in i_pending:
             # flood night = post-mstruct count above the band x tier 90th
             # percentile (R-IVETO-FLOOD-CURVE-RATIFIED; landed 2026-09-04)
@@ -1456,8 +1484,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV'):
                   '59':'Green','64':'Blue','69':'Blue','73':'Blue',
                   '78':'Blue','82':'Blue'}.get(scope.replace('MHz',''), scope)
             _jrad = JUPITER_VETO_DEG.get(_b, 0.5)
-            _jup = _body_skycoord('jupiter', ot_, d_)
-            _moon = _body_skycoord('moon', ot_, d_)
+            _jup = _body_skycoord('jupiter', ot_, _kd(d_))
+            _moon = _body_skycoord('moon', ot_, _kd(d_))
             finals = []
             for c in front:
                 _sky = _wI.pixel_to_world(int(c['pix_x']), int(c['pix_y']))
