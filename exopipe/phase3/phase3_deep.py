@@ -388,11 +388,12 @@ def _batch_flows_unlocked(cell_work, mup, items):
 
 
 _STRIATION_OFF = os.environ.get('P3_STRIATION_OFF') == '1'   # battery variable (Gregg 2026-09-08); production default ON
+_REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'         # battery variable: no per-frame x2 flow refinement (night flow only)
 
 
 def _residual(epoch, master, flow, hdr, cd):
     """×2-upflow refine epoch -> direct subtract master -> striation clean."""
-    up = fft_decimate2(apply_flow_field(fft_upsample2(epoch), flow))
+    up = epoch if _REFINE_OFF else fft_decimate2(apply_flow_field(fft_upsample2(epoch), flow))
     invalid = (up == 0) | (master == 0) | ~np.isfinite(up)
     if _STRIATION_OFF:
         return np.where(invalid, np.nan, up - master)
@@ -862,7 +863,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if not os.path.exists(ep_up):
             write_up_fits(fft_upsample2(ei), hdr0, ep_up)
         items.append((d, ep_up))
-    flows = _batch_flows(cell_work, mup, items)
+    if _REFINE_OFF:
+        print(f'  {lst} {scope}: P3_REFINE_OFF=1 - per-epoch x2 flow refinement SKIPPED (battery variant; night flow only)')
+        flows = {d_: None for d_, _p in items}
+    else:
+        flows = _batch_flows(cell_work, mup, items)
     if not os.path.exists(_gsc):
         _js.dump({'master': os.path.basename(mI), 'master_md5_data': _gen,
                   'CONSTDIG': hdr0.get('CONSTDIG', ''), 'written_by': 'phase3_deep', 'n_flows': len(flows)},
