@@ -441,7 +441,7 @@ def _build_residuals_mp(epoch, master, flows, hdr, cd, dates, nproc):
 def _sigma_stack(resids, cell_work, hdr0, tag):
     tmp = []
     for d, r in resids.items():
-        tp = f'{cell_work}/ss_{tag}_{d}.fits'
+        tp = f'{cell_work}/ss_{tag}_{d}_{os.getpid()}.fits'   # pid-unique: two searches may share a cell work dir
         fits.writeto(tp, np.nan_to_num(r).astype(np.float32), hdr0, overwrite=True)
         tmp.append(tp)
     ss = build_sigma_stack(tmp) if len(tmp) >= MIN_EPOCHS else None
