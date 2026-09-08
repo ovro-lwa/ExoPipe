@@ -68,12 +68,16 @@ ATEAM_VETO_DEG_I = 5.0        # Card 6 ratified table; I downstream veto landed 
 # Gaussian-fit SIZE removal above 8 sigma (Gregg 2026-09-04: 2.5 beams; Card 9
 # allowance: fitted FWHM minus its 1-sigma uncertainty, against the EPOCH's own
 # beam major axis from its Stage-1 product header). 2.0-2.5 beams flagged only.
-SIZE_FLOOR_BEAMS = float(os.environ.get('P3_SIZE_FLOOR_BEAMS', '2.5'))
-SIZE_FLAG_BEAMS = 2.0
+# TIGHTENED 2026-09-08 (Gregg approved) from 2.5 after FIX-DEEP-V-SIZE-UNITS: the old floor
+# was loose because Stokes V's fitted sizes were inflated by sec(zenith angle) (the SIN-projection
+# units bug) and the constant is shared by both Stokes. With units correct, real unresolved field
+# sources sit at p99 = 1.45 beams and every known real transient at 0.76-1.31.
+SIZE_FLOOR_BEAMS = float(os.environ.get('P3_SIZE_FLOOR_BEAMS', '1.5'))
+SIZE_FLAG_BEAMS = 1.3
 SANITY_I_X = float(os.environ.get('P3_SANITY_I_X', '3.0'))   # I-only search sanity gate (Gregg 2026-09-05)
 ROWLINE_MIN = 5                                              # I finals on one pixel row +/-1 -> all removed (Gregg 2026-09-05)
-AXIS_REMOVE = float(os.environ.get('P3_AXIS_REMOVE', '2.0'))   # Gregg 2026-09-05
-AXIS_FLAG = 1.5
+AXIS_REMOVE = float(os.environ.get('P3_AXIS_REMOVE', '1.5'))   # Gregg 2026-09-05, tightened 09-08 (same reasoning)
+AXIS_FLAG = 1.3
 SIZE_SNR_GATE = 8.0
 # Flood keying for the I 2-D curve (R-IVETO-FLOOD-CURVE-RATIFIED 2026-08-31):
 # a night is a flood night when its post-mstruct I candidate count exceeds the
@@ -112,7 +116,10 @@ GLED_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y',
              'jupiter_deg', 'jupiter_veto', 'final', 'n_v_epoch', 'moon_deg',
              # 2026-09-04 additions (audit R-14, R-09, size ruling, I A-team):
              'global_snr', 'size_beams', 'size_flag', 'nearest_ateam',
-             'fp_prediction']
+             'fp_prediction',
+             # 2026-09-08: the axis gate's own quantity and the size fit's 1-sigma, so a
+             # removal can be re-adjudicated from the ledger without re-searching the cell
+             'axis_norm', 'size_err_beams']
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph',
              'n_after_mstruct', 'n_after_jupiter', 'n_final',
              'n_raw_floor', 'elev_min_deg']   # 2026-09-04: raw >=floor count; elevation gate
@@ -160,7 +167,8 @@ def _gled_row(lst, scope, stokes, d, c, morph_pass, reason='', pass_ms='',
             int(final), c.get('n_v_epoch', ''), c.get('moon_deg', ''),
             (round(float(c['global_snr']), 2) if c.get('global_snr') not in (None, '') else ''),
             c.get('size_beams', ''), c.get('size_flag', ''),
-            c.get('nearest_ateam', ''), c.get('fp_prediction', '')]
+            c.get('nearest_ateam', ''), c.get('fp_prediction', ''),
+            c.get('axis_norm', ''), c.get('size_err_beams', '')]
 
 
 def _master_structure_map(vm, bpix, win_beams=4.0, valid=None, report=None):
@@ -597,6 +605,10 @@ def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix, epoch_bmin_deg=N
         return '', ''
     ratio = float(mj) / float(epoch_bmaj_deg)
     c['size_beams'] = round(ratio, 2)
+    # 2026-09-08: keep the Card 9 allowance itself on the row (in beams), so the exact
+    # quantity the gate tested - (Maj - 1 sigma)/BMAJ - is reconstructable from the ledger
+    if err is not None and np.isfinite(err):
+        c['size_err_beams'] = round(float(err) / float(epoch_bmaj_deg), 3)
     # AXIS-RATIO test (Gregg approved 2026-09-05): fitted axis ratio over the epoch
     # beam's own axis ratio; remove > AXIS_REMOVE above 8 sigma, flag AXIS_FLAG-AXIS_REMOVE,
     # nothing below 8 sigma. Measured: every known real (EQ Peg, FI Cnc, J0410 pulses)
