@@ -1122,16 +1122,21 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _catdir = f'{cell_work}/catdir'
     os.makedirs(_catdir, exist_ok=True)
     _gaulp = f'{_catdir}/master_R075_{lst}_{scope}.gaul.csv'
+    # per-cell lock (2026-09-08): the I and V searches of one cell may run at once and
+    # both build this catalog; without the lock one process removed the other's
+    # temporary master (10h Blue battery). Second arrival finds the file and skips.
+    _glk = open(f'{_catdir}/.gaul.lock', 'w'); fcntl.flock(_glk, fcntl.LOCK_EX)
     if not os.path.exists(_gaulp):
         import bdsf
-        _tmpm = f'{cell_work}/_master_tmp.fits'
+        _tmpm = f'{cell_work}/_master_tmp_{os.getpid()}.fits'
         fits.PrimaryHDU(data=master_I.astype(np.float32),
                         header=_det_header(hdr0, scope, em, cd, None)
                         ).writeto(_tmpm, overwrite=True)
         _img = bdsf.process_image(_tmpm, thresh_isl=4.0, thresh_pix=5.0,
                                   quiet=True)
-        _img.write_catalog(outfile=_gaulp, format='csv',
+        _img.write_catalog(outfile=_gaulp + '.part', format='csv',
                            catalog_type='gaul', clobber=True)
+        os.replace(_gaulp + '.part', _gaulp)
         os.remove(_tmpm)
         # CAT1 generation stamp (R-CAT1-7 2026-08-15; landed 2026-09-04): md5 of
         # the master DATA payload + extraction record, as a sidecar shipped
@@ -1144,6 +1149,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                    'note': 'stored floor 5.0 (curve consumers cut S>=25 from stored SNR); CAT3 7.0 floor is a DOC row',
                    'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
                   open(_gaulp + '.gen.json', 'w'), indent=1)
+    fcntl.flock(_glk, fcntl.LOCK_UN); _glk.close()
     _parents = _read_gaul_parents(_gaulp)
     # (2) I-master structure map: mstruct_I is a RATIFIED I front gate
     # (R-IVETO-POLICY-RATIFIED 2026-08-31: mstruct AND sigma_stack k=5).
