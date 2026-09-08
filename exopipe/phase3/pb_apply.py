@@ -28,7 +28,7 @@ from reproject import reproject_interp
 
 from exopipe.common import phase2_config as cfg
 
-PB_DIR = "/fast/gh/main/phase3/pb_library"
+PB_DIR = os.environ.get("P3_PB_LIBRARY", "/lustre/pipeline/exopipe/phase3/pb_library")   # canonical library on Lustre (2026-09-08; node-local copies verified identical, never a production default)
 # RESIDUAL PRIMARY BEAM (Gregg 2026-09-07): one additional multiplicative step in the PB correction of
 # every master variant and residual. The library entry is a zenith-centred SIN map whose header carries the
 # analytic fit (PBRF* cards); the gain is evaluated here on the TARGET grid from those coefficients, so any
