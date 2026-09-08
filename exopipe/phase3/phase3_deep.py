@@ -920,14 +920,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 skip_I_dates.update(_badI)
                 with open(f'{_refdir}/{lst}_{scope}_sanity_I_excluded.csv', 'a') as _sf:
                     for d in _badI:
-                        _sf.write(f'{lst},{scope},{d},{_wr[d]:.1f},{_med:.1f},{_attempt}\n')
+                        _sf.write(f'{lst},{scope},{d},{_wr[_kd(d)]:.1f},{_med:.1f},{_attempt}\n')
                 print(f'  {lst} {scope}: SANITY GATE (I only) — {len(_badI)} epoch(s) REFUSED from the I search '
                       f'(alignment rms >{SANITY_I_X:.0f}x cell median {_med:.0f} mJy): {_badI}')
             if _bad:
                 dates = [d for d in dates if d not in _bad]
                 with open(f'{_refdir}/{lst}_{scope}_sanity_excluded.csv', 'a') as _sf:
                     for d in _bad:
-                        _sf.write(f'{lst},{scope},{d},{_wr[d]:.1f},'
+                        _sf.write(f'{lst},{scope},{d},{_wr[_kd(d)]:.1f},'
                                   f'{_med:.1f},{_attempt}\n')
                 print(f'  {lst} {scope}: SANITY GATE — {len(_bad)} epoch(s) '
                       f'REFUSED from search (alignment rms >10x cell median '
