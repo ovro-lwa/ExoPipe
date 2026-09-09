@@ -2837,10 +2837,10 @@ def _stamp_master_standard(path, lst, fl, thermnoi=None):
         proc.append('pbcorr')
     if l:
         proc.append(f"loo-{g['date'].replace('-', '')}")
-    if g.get('sh'):
-        proc.append('shflux')
-    if g.get('md'):
-        proc.append('mdewarp')
+    if g.get('sh') or hdr.get('SHSCALE') is not None:
+        proc.append('shflux')          # absolute flux scale baked in (token from the name or the SHSCALE card)
+    if g.get('md') or hdr.get('MDWARP') is not None:
+        proc.append('mdewarp')         # final master dewarp applied (MDWARP card)
     cons = _constituent_dates(hdr)
     d0 = cons[0] if cons else str(hdr.get('DATE-OBS', ''))[:10]
     d1 = cons[-1] if cons else str(hdr.get('DATE-END', ''))[:10]
@@ -2940,7 +2940,8 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
             if not name:
                 if not h.get('DATE-OBS'):
                     raise RuntimeError(f"{lst} {fl}: epoch product {f} has no time block; REFUSING to archive")
-                _eproc = ['dewarped', 'aligned'] + (['shflux'] if e.group('sh') else []) + (['mdewarp'] if e.group('md') else [])
+                _eproc = (['dewarped', 'aligned'] + (['shflux'] if (e.group('sh') or h.get('SHSCALE') is not None) else [])
+                          + (['mdewarp'] if (e.group('md') or h.get('MDWARP') is not None) else []))
                 name = build_name(fl, st, 'deep', taper, robust, proc=_eproc, lst=lst,
                                   epoch=str(h['DATE-OBS']))
                 beam = (float(h['BMAJ']), float(h['BMIN']), float(h.get('BPA', 0.0))) if h.get('BMAJ') else None
