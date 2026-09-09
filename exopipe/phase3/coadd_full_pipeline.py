@@ -2809,9 +2809,9 @@ def _stamp_variant_gate(path, refused):
 # ─────────────────────────────────────────────────────────────────────
 def _archive_root():
     return os.environ.get('P3_ARCHIVE_ROOT', '/lustre/pipeline/exopipe/phase3')   # read at CALL time
-_MASTER_RE = re.compile(r'^(?P<st>[IV])_deep_(?P<taper>Taper|NoTaper)_(?P<rob>R075|R0)(?P<clean>_clean)?(?P<pb>_pbcorr)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
-_LOO_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_loo_(?P<taper>Taper|NoTaper)_(?P<rob>R075|R0)_(?P<fl>[A-Za-z0-9]+)\.fits$')
-_EPOCH_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_(?P<kind>clean|sub)_(?P<fl>[A-Za-z0-9]+)\.fits$')
+_MASTER_RE = re.compile(r'^(?P<st>[IV])_deep_(?P<taper>Taper|NoTaper)_(?P<rob>R075|R0)(?P<clean>_clean)?(?P<pb>_pbcorr)?(?P<sh>_shflux)?(?P<md>_mdewarp)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
+_LOO_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_loo_(?P<taper>Taper|NoTaper)_(?P<rob>R075|R0)(?P<sh>_shflux)?(?P<md>_mdewarp)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
+_EPOCH_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_(?P<kind>clean|sub)(?P<sh>_shflux)?(?P<md>_mdewarp)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
 
 
 def _constituent_dates(hdr):
@@ -2837,6 +2837,10 @@ def _stamp_master_standard(path, lst, fl, thermnoi=None):
         proc.append('pbcorr')
     if l:
         proc.append(f"loo-{g['date'].replace('-', '')}")
+    if g.get('sh'):
+        proc.append('shflux')
+    if g.get('md'):
+        proc.append('mdewarp')
     cons = _constituent_dates(hdr)
     d0 = cons[0] if cons else str(hdr.get('DATE-OBS', ''))[:10]
     d1 = cons[-1] if cons else str(hdr.get('DATE-END', ''))[:10]
@@ -2936,7 +2940,8 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
             if not name:
                 if not h.get('DATE-OBS'):
                     raise RuntimeError(f"{lst} {fl}: epoch product {f} has no time block; REFUSING to archive")
-                name = build_name(fl, st, 'deep', taper, robust, proc=['dewarped', 'aligned'], lst=lst,
+                _eproc = ['dewarped', 'aligned'] + (['shflux'] if e.group('sh') else []) + (['mdewarp'] if e.group('md') else [])
+                name = build_name(fl, st, 'deep', taper, robust, proc=_eproc, lst=lst,
                                   epoch=str(h['DATE-OBS']))
                 beam = (float(h['BMAJ']), float(h['BMIN']), float(h.get('BPA', 0.0))) if h.get('BMAJ') else None
                 write_standard_header(src, scope=fl, stokes=st, start=h.get('DATE-OBS'), end=h.get('DATE-END'),
