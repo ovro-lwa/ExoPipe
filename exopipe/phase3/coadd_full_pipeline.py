@@ -1603,6 +1603,15 @@ def process_lst_freq(lst, freq_str, exclusions, args):
     # Filter exclusions
     dates = [(d, sd, img) for d, sd, img in all_dates
              if not is_excluded(lst, freq_str, d, exclusions)]
+    # wrong-grid epochs are refused BEFORE the template is chosen (19h Full: the first post-cutover
+    # night, 2025-04-05 on the Green grid, was the template and every 3122-grid night then
+    # 'skipped' with no flow) - the template comes from the MODAL grid, as in the other stages
+    _gr0 = _grid_refused_dates(dates, f'{lst}_{fl}')
+    if _gr0:
+        with open(f'{workdir}/refusals_grid.csv', 'a') as _rf:
+            for _d in sorted(_gr0):
+                _rf.write(f'{lst},{fl},{_d},wrong grid (Phase-2 anomaly),prep\n')
+        dates = [x for x in dates if x[0] not in _gr0]
 
     # Check reference exists (per-subband fallback if its product is missing)
     ref_date_entry = _select_reference(lst, fl, workdir, dates)
@@ -1624,10 +1633,10 @@ def process_lst_freq(lst, freq_str, exclusions, args):
     print(f"  Workdir: {workdir}")
     print(f"{'═'*70}")
 
-    # Build template from a post-cutover image
+    # Build template from the MODAL post-cutover grid (never post_dates[0]: template poisoning)
     post_dates = [x for x in dates if x[0] >= CUTOVER_DATE]
     if post_dates:
-        tmpl_hdr, target_shape = build_template_header(post_dates[0][2])
+        tmpl_hdr, target_shape = _modal_grid_template(post_dates, ref_date_entry)
     else:
         # All pre-cutover: use ref as template (it'll be self-consistent)
         tmpl_hdr, target_shape = build_template_header(ref_date_entry[2])
