@@ -18,6 +18,7 @@ Usage:
   conda run -n py38_orca_nkosogor python coadd_full_pipeline.py --freq Blue
 """
 import argparse
+import csv
 import fcntl
 import os
 import shutil
@@ -2927,11 +2928,22 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
             if not name:
                 raise RuntimeError(f"{lst} {fl}: LOO {f} has no PRODNAME; REFUSING to archive")
             _atomic_copy(f'{loo}/{f}', f"{_archive_root()}/{lst}/{l['date']}/{run}/{fl}/{l['st']}/deep/{name if name.endswith('.fits') else name + '.fits'}"); n += 1
-    # aligned epoch images (the '_clean_' product of subtracted/ = flux-scaled, master-aligned epoch)
+    # aligned epoch images (the '_clean_' product of subtracted/ = flux-scaled, master-aligned epoch).
+    # Only epochs in the generation's own record (weights.csv) are archived: a product left in
+    # subtracted/ by a previous generation for a night with no current input (02h 2025-01-02,
+    # INPUT-PROVENANCE 2026-09-05) is a stale derivative - logged, never archived.
+    _wdates = set()
+    try:
+        _wdates = {r['date'] for r in csv.DictReader(open(f'{final_dir}/weights.csv'))}
+    except Exception:
+        _wdates = set()
     if os.path.isdir(sub_dir):
         for f in sorted(os.listdir(sub_dir)):
             e = _EPOCH_RE.match(f)
             if not e or e['kind'] != 'clean':
+                continue
+            if _wdates and e['date'] not in _wdates:
+                print(f"  {lst} {fl}: {f} is not in the generation record (weights.csv) - stale epoch product, NOT archived")
                 continue
             src = f'{sub_dir}/{f}'
             h = fits.getheader(src)
@@ -3574,6 +3586,23 @@ def _flow_freshness(workdir, target_dates):
     # included, needs a fresh co-add alignment flow; a raw (non-dewarped) wideband night
     # is dewarped by that flow and by nothing else.
     out = []
+    # 2026-09-09 (02h Green: Phase-2 night 2025-12-26 delivered on a 4096^2 grid instead of the
+    # Green 2358^2 grid): an epoch whose image grid differs from the cell's modal grid can never
+    # be flowed - the prep skips it ('shape mismatch') - so it is REFUSED as an epoch (logged) and
+    # must not read as a missing flow that refuses the whole cell.
+    _shapes = {}
+    for date, _sd, img in target_dates:
+        try:
+            _h = fits.getheader(img); _shapes[date] = (int(_h['NAXIS2']), int(_h['NAXIS1']))
+        except Exception:
+            _shapes[date] = None
+    _vals = [s for s in _shapes.values() if s]
+    _modal = max(set(_vals), key=_vals.count) if _vals else None
+    _wrong = [d for d, s in _shapes.items() if s and _modal and s != _modal]
+    for d in _wrong:
+        print(f"  {os.path.basename(workdir)} {d}: epoch REFUSED - wrong grid {_shapes[d]} vs modal {_modal} "
+              f"(Phase-2 anomaly; cannot be flowed; excluded from the co-add, logged)", flush=True)
+    target_dates = [x for x in target_dates if x[0] not in _wrong]
     for date, _sd, img in target_dates:
         fp = f'{fdir}/{date}_scaled_flow.npy'
         if not os.path.exists(fp):
