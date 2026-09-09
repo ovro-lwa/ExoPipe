@@ -724,6 +724,31 @@ def _write_sigstack(sstack, hdr0, run_root, lst, scope, stokes):
     return p
 
 
+def _archive_root():
+    return os.environ.get('P3_ARCHIVE_ROOT', '/lustre/pipeline/exopipe/phase3')   # read at CALL time
+
+
+def _archive_frame_publish(path, lst, scope, d, stokes, cadence, cell_tag):
+    """Write a deep search frame (or its pbcorr sibling) into the ratified archive tree
+    {LST}/{date}/{RUN}/{band}/{Stokes}/deep/<PRODNAME>.fits (Gregg 2026-09-09, contract
+    steps 0.4/51). Deep cadence only; P3_ARCHIVE_RUN names the generation; P3_ARCHIVE_WRITE=0
+    is the only way to search without archiving (scratch, never production)."""
+    if cadence != 'deep' or os.environ.get('P3_ARCHIVE_WRITE') == '0':
+        return None
+    run = os.environ.get('P3_ARCHIVE_RUN')
+    if not run:
+        raise RuntimeError(f'{cell_tag} {d}: P3_ARCHIVE_RUN unset - the generation Run directory must be '
+                           f'named; REFUSING to write a deep search frame outside the archive (contract 51)')
+    name = str(fits.getheader(path).get('PRODNAME', '') or '')
+    if not name or name == 'unknown':
+        raise RuntimeError(f'{cell_tag} {d}: {os.path.basename(path)} has no PRODNAME; REFUSING to archive')
+    dst = f'{_archive_root()}/{lst}/{d}/{run}/{scope}/{stokes}/deep/{name if name.endswith(".fits") else name + ".fits"}'
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    import shutil as _sh
+    _sh.copy2(path, dst + '.part'); os.replace(dst + '.part', dst)
+    return dst
+
+
 def _write_archive_frame(path, data, hdr, cell_tag, d):
     """Atomic write + write-time validation gate (refuses, never warns)."""
     from exopipe.common.validate_fits_headers import validate_header
@@ -1108,6 +1133,20 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 raise RuntimeError(f'{lst} {scope} {_d}: leave-one-out {stokes_tag} master '
                                    f'missing ({_lp}) for an in-master epoch of an '
                                    f'N={_nco} stack; REFUSING')
+            if os.path.exists(_lp) and cadence == 'deep':
+                # CONSTITUENT-DIGEST REFUSAL (Arch S6 2026-08-12c; R-CONSTITUENT-DIGEST 2026-09-05;
+                # landed 2026-09-09 contract step 17): a LOO master is consumed only when its
+                # PARENTDG equals the central master's CONSTDIG; a legacy LOO without PARENTDG
+                # must at least carry the master's COADDOP. Otherwise REFUSE, never subtract.
+                _lh = fits.getheader(_lp)
+                _pd = str(_lh.get('PARENTDG', '') or '')
+                _cd = str(hdr0.get('CONSTDIG', '') or '')
+                if _pd and _cd and _pd != _cd:
+                    raise RuntimeError(f'{lst} {scope} {_d}: LOO {stokes_tag} master PARENTDG={_pd} does not '
+                                       f'match the central master CONSTDIG={_cd} - stale derivative; REFUSING')
+                if not _pd and _lh.get('COADDOP') != hdr0.get('COADDOP'):
+                    raise RuntimeError(f'{lst} {scope} {_d}: LOO {stokes_tag} master COADDOP={_lh.get("COADDOP")!r} '
+                                       f'!= master {hdr0.get("COADDOP")!r} (no PARENTDG) - stale derivative; REFUSING')
             out[_d] = _load(_lp) if os.path.exists(_lp) else central
         _n = sum(1 for _d in dates if out[_d] is not central)
         if _n:
@@ -1252,6 +1291,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 _write_archive_frame(ir_path, rI, _hdr_I, f'{lst} {scope}', d)
             if cadence == 'deep' and not os.path.exists(ir_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
                 _write_pbcorr_sibling(ir_path, rI, _hdr_I, base, scope, f'{lst} {scope}', d)
+            _archive_frame_publish(ir_path, lst, scope, d, 'I', cadence, f'{lst} {scope}')
+            if os.path.exists(ir_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
+                _archive_frame_publish(ir_path.replace('_redo_resid_', '_redo_resid_pbcorr_'), lst, scope, d, 'I', cadence, f'{lst} {scope}')
             # R-IVETO-POLICY-RATIFIED (2026-08-31) as shipped under
             # R-ROUND2-RATIFIED (2026-09-03): front gates = sigma_stack
             # (applied inside run_identification_i, k=SIGMA_THRESHOLD)
@@ -1356,6 +1398,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 _write_archive_frame(vr_path, rV, _hdr_out, f'{lst} {scope}', d)
             if cadence == 'deep' and not os.path.exists(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
                 _write_pbcorr_sibling(vr_path, rV, _hdr_out, base, scope, f'{lst} {scope}', d)
+            _archive_frame_publish(vr_path, lst, scope, d, 'V', cadence, f'{lst} {scope}')
+            if os.path.exists(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
+                _archive_frame_publish(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_'), lst, scope, d, 'V', cadence, f'{lst} {scope}')
             # sstack is INFO-ONLY (quoted on survivors, lines below), NOT a gate
             # (2026-06-23 ruling: mstruct is the sole V gate). Passing None here keeps
             # run_identification_v from filtering on sigma_stack.

@@ -1165,6 +1165,7 @@ def write_loo_masters(aligned, master_path, out_dir, tag):
         loo = np.where(den > 0, (S - a * _w) / np.where(den > 0, den, 1.0), 0.0)
         hdr = mhdr.copy()
         hdr['LOOEXCL'] = (d, 'epoch excluded from this LOO master')
+        hdr['PARENTDG'] = (str(mhdr.get('CONSTDIG', ''))[:32], 'CONSTDIG of the parent central master')
         hdr['NCOADD'] = (len(aligned) - 1, 'constituents (LOO)')
         hdr['HISTORY'] = f'LOO master excluding {d} (R-LOO-MASTERS 2026-08-25)'
         save_image(f'{out_dir}/{d}_{tag}', loo.astype(np.float32), hdr)
@@ -1526,13 +1527,65 @@ def _resolve_reference_entry(lst, fl, ref_date, dates, workdir):
     return chosen
 
 
+REF_MODE = os.environ.get('P3_REF_MODE', 'master')   # 'master' (default): previous-generation master; 'table': fixed night only
+
+
+def _select_reference(lst, fl, workdir, dates):
+    """ALIGNMENT + FLUX-SCALE REFERENCE (Gregg 2026-09-09, verbatim: "previous generation
+    Master serves as Reference for alignment. If one doesn't exist, draw from a fixed
+    table."; ledger R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-MASTER).
+    When the cell's previous-generation I Taper R-0.75 master exists it is SNAPSHOTTED
+    (before the rebuild overwrites coadd_final/) and returned as the reference entry
+    ('MASTER', None, snapshot); every night, the fixed-table night included, is then a
+    target with its own flow and scale. The snapshot is fingerprinted by COADDOP+CONSTDIG
+    in flow/.reference_resolved so a changed reference moves the alignment caches aside
+    exactly as a REFERENCE_DATES change does. Without a previous master the fixed-table
+    night is resolved as before (A-02: never substituted)."""
+    prev = f'{workdir}/coadd_final/I_deep_Taper_R075_{fl}.fits'
+    if REF_MODE == 'master' and os.path.exists(prev):
+        try:
+            h = fits.getheader(prev)
+        except Exception:
+            h = None
+        if h is not None and h.get('COADDOP'):
+            sig = f"MASTER:{h.get('COADDOP')}:{h.get('CONSTDIG', 'nodigest')}"
+            mk = f'{workdir}/flow/.reference_resolved'
+            old = open(mk).read().strip() if os.path.exists(mk) else None
+            if old is not None and old != sig:
+                stale = f'{workdir}/stale_ref_{old.replace(":", "_")[:40]}_{time.strftime("%Y%m%d_%H%M")}'
+                os.makedirs(stale, exist_ok=True)
+                for sub in ('flow', 'prep', 'aligned', 'prep_final'):
+                    pth = f'{workdir}/{sub}'
+                    if os.path.isdir(pth):
+                        shutil.move(pth, f'{stale}/{sub}')
+                print(f"  [reference-change] {os.path.basename(workdir)}: reference "
+                      f"{old} -> {sig}; caches -> {stale}")
+            os.makedirs(f'{workdir}/flow', exist_ok=True)
+            os.makedirs(f'{workdir}/prep', exist_ok=True)
+            snap = f'{workdir}/prep/ref_master_prev.fits'
+            if old != sig or not os.path.exists(snap):
+                shutil.copy2(prev, snap + '.part'); os.replace(snap + '.part', snap)
+                prev_v = f'{workdir}/coadd_final/V_deep_Taper_R0_{fl}.fits'
+                if os.path.exists(prev_v):
+                    _sv = snap.replace('.fits', '_V.fits')
+                    shutil.copy2(prev_v, _sv + '.part'); os.replace(_sv + '.part', _sv)
+            with open(mk, 'w') as fh:
+                fh.write(sig)
+            print(f"  [reference] {lst} {fl}: previous-generation master is the alignment/flux "
+                  f"reference ({sig}; snapshot {os.path.basename(snap)})")
+            return ('MASTER', None, snap)
+    ref_date = REFERENCE_DATES.get(lst)
+    if not ref_date:
+        raise RuntimeError(f"{lst} {fl}: no previous-generation master and no REFERENCE_DATES "
+                           f"entry - no alignment reference; REFUSING")
+    print(f"  [reference] {lst} {fl}: no previous-generation master; fixed-table night {ref_date}")
+    return _resolve_reference_entry(lst, fl, ref_date, dates, workdir)
+
+
 def process_lst_freq(lst, freq_str, exclusions, args):
     """Full pipeline for one (LST, freq) combination.
     Returns (manifest_entries, prep_data) for batch flow phase."""
-    ref_date = REFERENCE_DATES.get(lst)
-    if not ref_date:
-        print(f"  No reference date for {lst}, skipping")
-        return [], None
+    ref_date = REFERENCE_DATES.get(lst) or 'MASTER'
 
     fl = freq_label(freq_str)
     workdir = f'{_workdir_base()}/{lst}_{fl}'
@@ -1551,7 +1604,7 @@ def process_lst_freq(lst, freq_str, exclusions, args):
              if not is_excluded(lst, freq_str, d, exclusions)]
 
     # Check reference exists (per-subband fallback if its product is missing)
-    ref_date_entry = _resolve_reference_entry(lst, fl, ref_date, dates, workdir)
+    ref_date_entry = _select_reference(lst, fl, workdir, dates)
     if ref_date_entry is None:
         print(f"  Reference {ref_date} not found for {lst} {fl} and no usable "
               f"fallback (available: {[d for d,_,_ in dates[:5]]}...)")
@@ -1591,6 +1644,11 @@ def process_lst_freq(lst, freq_str, exclusions, args):
         return [], None
 
     ref_data, ref_hdr = load_image(ref_img_path)
+    if ref_date == 'MASTER' and ref_data.shape != target_shape:
+        os.makedirs(f'{workdir}/prep', exist_ok=True)
+        ref_img_path = regrid_image(ref_img_path, tmpl_hdr, f'{workdir}/prep/ref_master_prev_regrid.fits')
+        ref_data, ref_hdr = load_image(ref_img_path)
+        print(f"  [reference] {lst} {fl}: previous master regridded to the template grid")
     ref_wcs = WCS(ref_hdr).celestial
     cd = abs(ref_hdr.get('CDELT1', ref_hdr.get('CD1_1', 0.037)))
     bmaj = ref_hdr.get('BMAJ', 5 * cd)
@@ -1708,7 +1766,15 @@ def post_flow_processing(prep_data, exclusions, args):
 
     # Also find reference Stokes V for V residuals
     ref_v_data = None
-    ref_v_variants = find_all_dewarped_variants(ref_sci_dir, freq_str)
+    if ref_sci_dir is None:      # master reference: the previous V master snapshot
+        _pv = f'{workdir}/prep/ref_master_prev_V.fits'
+        if os.path.exists(_pv):
+            _d, _ = load_image(_pv)
+            if _d.shape != target_shape:
+                regrid_image(_pv, tmpl_hdr, f'{workdir}/prep/ref_V_regrid.fits')
+                _d, _ = load_image(f'{workdir}/prep/ref_V_regrid.fits')
+            ref_v_data = _d
+    ref_v_variants = find_all_dewarped_variants(ref_sci_dir, freq_str) if ref_sci_dir else []
     for vpath, vstokes, vdepth, vkey in ref_v_variants:
         if vstokes == 'V' and vdepth == 'deep' and 'pbcorr' not in vkey:
             d, _ = load_image(vpath)
@@ -1964,10 +2030,7 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
     RMS for outlier detection.  Cleans up temporary files, keeps
     provisional co-adds and metrics CSV.
     """
-    ref_date = REFERENCE_DATES.get(lst)
-    if not ref_date:
-        print(f"  No reference date for {lst}, skipping")
-        return None
+    ref_date = REFERENCE_DATES.get(lst) or 'MASTER'
 
     fl = freq_label(freq_str)
     workdir = f'{_workdir_base()}/{lst}_{fl}'
@@ -1991,7 +2054,7 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
     dates = [(d, sd, img) for d, sd, img in all_dates
              if not is_excluded(lst, freq_str, d, exclusions)]
 
-    ref_date_entry = _resolve_reference_entry(lst, fl, ref_date, dates, workdir)
+    ref_date_entry = _select_reference(lst, fl, workdir, dates)
     if ref_date_entry is None:
         print(f"  Reference {ref_date} not found for {lst} {fl} and no usable fallback")
         return None
@@ -2035,6 +2098,11 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         return None
 
     ref_data, ref_hdr = load_image(ref_img_path)
+    if ref_date == 'MASTER' and ref_data.shape != target_shape:
+        os.makedirs(f'{workdir}/prep', exist_ok=True)
+        ref_img_path = regrid_image(ref_img_path, tmpl_hdr, f'{workdir}/prep/ref_master_prev_regrid.fits')
+        ref_data, ref_hdr = load_image(ref_img_path)
+        print(f"  [reference] {lst} {fl}: previous master regridded to the template grid")
     ref_wcs = WCS(ref_hdr).celestial
     cd = abs(ref_hdr.get('CDELT1', ref_hdr.get('CD1_1', 0.037)))
     bmaj = ref_hdr.get('BMAJ', 5 * cd)
@@ -2048,7 +2116,7 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         save_image(ref_i_path, ref_data, tmpl_hdr)
 
     # ── Reference V ──
-    ref_v_src = find_stokes_v_deep_image(ref_date_entry[1], freq_str)
+    ref_v_src = find_stokes_v_deep_image(ref_date_entry[1], freq_str) if ref_date_entry[1] else None
     ref_v_path = None
     if ref_v_src:
         ref_v_path = f'{prep_dir}/{ref_date}_aligned_V.fits'
@@ -2061,8 +2129,8 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
             process_variant_image(ref_v_src, None, identity_scale, tmpl_hdr,
                                   target_shape, ref_v_path, rg_coords)
 
-    i_aligned = [(ref_date, ref_i_path, ref_weight)]
-    v_aligned = [(ref_date, ref_v_path, ref_weight)] if ref_v_path else []
+    i_aligned = [] if ref_date == 'MASTER' else [(ref_date, ref_i_path, ref_weight)]
+    v_aligned = [(ref_date, ref_v_path, ref_weight)] if (ref_v_path and ref_date != 'MASTER') else []
 
     # ── Target dates ──
     for date, sci_dir, align_img_path in target_dates:
@@ -2265,10 +2333,7 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
     flow fields. Each interval index gets its own provisional co-add
     and residual outlier analysis across dates.
     """
-    ref_date = REFERENCE_DATES.get(lst)
-    if not ref_date:
-        print(f"  No reference date for {lst}, skipping")
-        return None
+    ref_date = REFERENCE_DATES.get(lst) or 'MASTER'
 
     fl = freq_label(freq_str)
     workdir = f'{_workdir_base()}/{lst}_{fl}'
@@ -2291,7 +2356,7 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
     dates = [(d, sd, img) for d, sd, img in all_dates
              if not is_excluded(lst, freq_str, d, exclusions)]
 
-    ref_date_entry = _resolve_reference_entry(lst, fl, ref_date, dates, workdir)
+    ref_date_entry = _select_reference(lst, fl, workdir, dates)
     if ref_date_entry is None:
         print(f"  Reference {ref_date} not found for {lst} {fl} and no usable fallback")
         return None
@@ -2322,6 +2387,11 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
         return None
 
     ref_data, ref_hdr = load_image(ref_img_path)
+    if ref_date == 'MASTER' and ref_data.shape != target_shape:
+        os.makedirs(f'{workdir}/prep', exist_ok=True)
+        ref_img_path = regrid_image(ref_img_path, tmpl_hdr, f'{workdir}/prep/ref_master_prev_regrid.fits')
+        ref_data, ref_hdr = load_image(ref_img_path)
+        print(f"  [reference] {lst} {fl}: previous master regridded to the template grid")
     ref_wcs = WCS(ref_hdr).celestial
     cd = abs(ref_hdr.get('CDELT1', ref_hdr.get('CD1_1', 0.037)))
     bmaj = ref_hdr.get('BMAJ', 5 * cd)
@@ -2330,6 +2400,8 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
     ref_rms = get_uniform_rms(ref_data, horizon_mask)
     ref_weight = 1.0 / ref_rms**2 if ref_rms > 0 else 1.0
 
+    if ref_date == 'MASTER':
+        raise RuntimeError(f'{lst} {fl}: the 10-min provisional stage is retired under the previous-master reference; per-bin masters replace it (R-TENMIN-PER-BIN-MASTERS-APPROVED 2026-09-09)')
     ref_i_10min = find_10min_images(ref_date_entry[1], freq_str, 'I')
     if not ref_i_10min:
         print(f"  No 10-min I images for reference {ref_date}, skipping")
@@ -2722,6 +2794,160 @@ def _stamp_variant_gate(path, refused):
         hd.flush()
 
 
+# ─────────────────────────────────────────────────────────────────────
+# CONFORMANT-FROM-BIRTH MASTERS + ARCHIVE WRITE (Gregg 2026-09-04 "that includes
+# headers"; Gregg 2026-09-09 "writing these files straight to Lustre"; contract
+# steps 24 and 51). Every master, variant, pbcorr sibling and LOO master gets the
+# full Phase-3 header standard and its grammar name (PRODNAME) at write time, and
+# is written into the ratified archive tree under the generation's Run directory:
+#   Coadd/{RUN}/{LST}/{band}/<PRODNAME>.fits              central masters, PB map, weights.csv
+#   {LST}/{date}/{RUN}/{band}/{I|V}/deep/<PRODNAME>.fits   LOO masters + aligned epoch images
+# P3_ARCHIVE_RUN names the generation (e.g. Run_20260909_000000); P3_ARCHIVE_ROOT
+# defaults to the ratified root. The working root keeps its copy as the consumers'
+# cache. P3_ARCHIVE_WRITE=0 is the ONLY way to build without archiving (a
+# deliberate scratch build, never production).
+# ─────────────────────────────────────────────────────────────────────
+def _archive_root():
+    return os.environ.get('P3_ARCHIVE_ROOT', '/lustre/pipeline/exopipe/phase3')   # read at CALL time
+_MASTER_RE = re.compile(r'^(?P<st>[IV])_deep_(?P<taper>Taper|NoTaper)_(?P<rob>R075|R0)(?P<clean>_clean)?(?P<pb>_pbcorr)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
+_LOO_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_loo_(?P<taper>Taper|NoTaper)_(?P<rob>R075|R0)_(?P<fl>[A-Za-z0-9]+)\.fits$')
+_EPOCH_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_(?P<kind>clean|sub)_(?P<fl>[A-Za-z0-9]+)\.fits$')
+
+
+def _constituent_dates(hdr):
+    return sorted(str(x).split()[-1] for x in hdr.get('HISTORY', []) if str(x).startswith('COADD constituent'))
+
+
+def _stamp_master_standard(path, lst, fl, thermnoi=None):
+    """Full header standard + PRODNAME on one master/variant/pbcorr/LOO file (validate=True:
+    a file that cannot carry the standard is a write failure, not a warning)."""
+    from exopipe.common.phase3_products import build_name, write_standard_header
+    bn = os.path.basename(path)
+    m = _MASTER_RE.match(bn); l = _LOO_RE.match(bn)
+    if not (m or l):
+        return None
+    g = (m or l).groupdict()
+    st, taper = g['st'], g['taper']
+    robust = -0.75 if g['rob'] == 'R075' else 0.0
+    hdr = fits.getheader(path)
+    proc = ['dewarped', 'aligned', 'coadd']
+    if m and g.get('clean'):
+        proc.append('vclean')
+    if m and g.get('pb'):
+        proc.append('pbcorr')
+    if l:
+        proc.append(f"loo-{g['date'].replace('-', '')}")
+    cons = _constituent_dates(hdr)
+    d0 = cons[0] if cons else str(hdr.get('DATE-OBS', ''))[:10]
+    d1 = cons[-1] if cons else str(hdr.get('DATE-END', ''))[:10]
+    n = int(hdr.get('NCOADD') or len(cons) or 0)
+    name = build_name(fl, st, 'deep', taper, robust, proc=proc, lst=lst,
+                      date_start=d0.replace('-', ''), date_end=d1.replace('-', ''), n_epochs=n)
+    data, _ = load_image(path)
+    mask = ~np.isfinite(data) | (data == 0)
+    rms = get_uniform_rms(data, mask)
+    beam = (float(hdr['BMAJ']), float(hdr['BMIN']), float(hdr.get('BPA', 0.0))) if hdr.get('BMAJ') else None
+    ref_sig = ''
+    try:
+        _mk = f'{os.path.dirname(os.path.dirname(path.rstrip("/")))}/flow/.reference_resolved'
+        _mk = _mk if os.path.exists(_mk) else f'{os.path.dirname(path)}/../flow/.reference_resolved'
+        ref_sig = open(_mk).read().strip() if os.path.exists(_mk) else ''
+    except Exception:
+        ref_sig = ''
+    extra = {'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)'),
+             'MSTRGEN': (str(hdr.get('COADDOP', ''))[:20], 'master generation of this product')}
+    write_standard_header(path, scope=fl, stokes=st,
+                          start=hdr.get('DATE-OBS'), end=hdr.get('DATE-END'),
+                          inttime_s=hdr.get('INTTIME'), time_basis='coadd-span',
+                          beam=beam, thermnoi=thermnoi, imgrms=rms,
+                          pbcorr=bool(m and g.get('pb')), dewarped=True, aligned=True,
+                          alignref=ref_sig[:68] or None, msub=False, ssub=False,
+                          extra=extra, validate=True)
+    return name
+
+
+def _stamp_all_masters(final_dir, lst, fl):
+    """Stamp every master/variant/pbcorr file in coadd_final/ and every LOO master."""
+    vpath = f'{final_dir}/V_deep_Taper_R0_{fl}.fits'
+    thermnoi = None
+    if os.path.exists(vpath):
+        _d, _ = load_image(vpath)
+        thermnoi = get_uniform_rms(_d, ~np.isfinite(_d) | (_d == 0))
+    n = 0
+    for f in sorted(os.listdir(final_dir)):
+        if f.endswith('.fits') and _MASTER_RE.match(f):
+            if _stamp_master_standard(f'{final_dir}/{f}', lst, fl, thermnoi):
+                n += 1
+    loo = f'{final_dir}/loo'
+    if os.path.isdir(loo):
+        for f in sorted(os.listdir(loo)):
+            if _LOO_RE.match(f) and _stamp_master_standard(f'{loo}/{f}', lst, fl, thermnoi):
+                n += 1
+    print(f"  {lst} {fl}: header standard + PRODNAME stamped on {n} master products")
+    return n
+
+
+def _atomic_copy(src, dst):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(src, dst + '.part'); os.replace(dst + '.part', dst)
+
+
+def _archive_publish_cell(final_dir, sub_dir, lst, fl):
+    """Write the cell's products into the ratified archive tree (contract 0.1/0.4)."""
+    if os.environ.get('P3_ARCHIVE_WRITE') == '0':
+        print(f"  {lst} {fl}: P3_ARCHIVE_WRITE=0 - scratch build, NOT archived (never production)")
+        return 0
+    run = os.environ.get('P3_ARCHIVE_RUN')
+    if not run:
+        raise RuntimeError(f"{lst} {fl}: P3_ARCHIVE_RUN is unset - the generation's Run directory "
+                           f"must be named (e.g. Run_20260909_000000); REFUSING (contract step 51)")
+    from exopipe.common.phase3_products import build_name, write_standard_header
+    cdir = f'{_archive_root()}/Coadd/{run}/{lst}/{fl}'
+    n = 0
+    for f in sorted(os.listdir(final_dir)):
+        src = f'{final_dir}/{f}'
+        if f.endswith('.fits') and _MASTER_RE.match(f):
+            name = fits.getheader(src).get('PRODNAME')
+            if not name:
+                raise RuntimeError(f"{lst} {fl}: {f} has no PRODNAME - not stamped; REFUSING to archive")
+            _atomic_copy(src, f'{cdir}/{name if name.endswith(".fits") else name + ".fits"}'); n += 1
+        elif f == f'PB_deep_{fl}.fits' or f == 'weights.csv':
+            _atomic_copy(src, f'{cdir}/{f}'); n += 1
+    loo = f'{final_dir}/loo'
+    if os.path.isdir(loo):
+        for f in sorted(os.listdir(loo)):
+            l = _LOO_RE.match(f)
+            if not l:
+                continue
+            name = fits.getheader(f'{loo}/{f}').get('PRODNAME')
+            if not name:
+                raise RuntimeError(f"{lst} {fl}: LOO {f} has no PRODNAME; REFUSING to archive")
+            _atomic_copy(f'{loo}/{f}', f"{_archive_root()}/{lst}/{l['date']}/{run}/{fl}/{l['st']}/deep/{name if name.endswith('.fits') else name + '.fits'}"); n += 1
+    # aligned epoch images (the '_clean_' product of subtracted/ = flux-scaled, master-aligned epoch)
+    if os.path.isdir(sub_dir):
+        for f in sorted(os.listdir(sub_dir)):
+            e = _EPOCH_RE.match(f)
+            if not e or e['kind'] != 'clean':
+                continue
+            src = f'{sub_dir}/{f}'
+            h = fits.getheader(src)
+            st = e['st']; taper = 'Taper'; robust = -0.75 if st == 'I' else 0.0
+            name = h.get('PRODNAME')
+            if not name:
+                if not h.get('DATE-OBS'):
+                    raise RuntimeError(f"{lst} {fl}: epoch product {f} has no time block; REFUSING to archive")
+                name = build_name(fl, st, 'deep', taper, robust, proc=['dewarped', 'aligned'], lst=lst,
+                                  epoch=str(h['DATE-OBS']))
+                beam = (float(h['BMAJ']), float(h['BMIN']), float(h.get('BPA', 0.0))) if h.get('BMAJ') else None
+                write_standard_header(src, scope=fl, stokes=st, start=h.get('DATE-OBS'), end=h.get('DATE-END'),
+                                      inttime_s=h.get('INTTIME'), time_basis='epoch', beam=beam,
+                                      dewarped=True, aligned=True, msub=False,
+                                      extra={'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)')}, validate=True)
+            _atomic_copy(src, f"{_archive_root()}/{lst}/{e['date']}/{run}/{fl}/{st}/deep/{name if name.endswith('.fits') else name + '.fits'}"); n += 1
+    print(f"  {lst} {fl}: {n} products written to the archive tree ({_archive_root()}, {run})")
+    return n
+
+
 def run_final_lst_freq(lst, freq_str, exclusions):
     """Final co-add + subtraction + striation removal for one (LST, freq).
 
@@ -2732,16 +2958,15 @@ def run_final_lst_freq(lst, freq_str, exclusions):
       4. For each date: new flow alignment (date → co-add), scale, subtract
       5. Striation removal on V subtracted images
     """
-    ref_date = REFERENCE_DATES.get(lst)
-    if not ref_date:
-        print(f"  No reference date for {lst}, skipping")
-        return None
+    ref_date = REFERENCE_DATES.get(lst) or 'MASTER'
 
     fl = freq_label(freq_str)
     workdir = f'{_workdir_base()}/{lst}_{fl}'
     _ensure_reference_fingerprint(workdir, lst)
     final_dir = f'{workdir}/coadd_final'
     sub_dir = f'{workdir}/subtracted'
+    if os.environ.get('P3_ARCHIVE_WRITE') != '0' and not os.environ.get('P3_ARCHIVE_RUN'):
+        raise RuntimeError(f"{lst} {fl}: P3_ARCHIVE_RUN unset (generation Run directory) and P3_ARCHIVE_WRITE!=0 - REFUSING (contract step 51)")
 
     done_marker = f'{final_dir}/.done'
     if os.path.exists(done_marker):
@@ -2800,7 +3025,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     dates_good = [(d, sd, img) for d, sd, img in dates if d in good_dates_deep]
     dates_bad = [(d, sd, img) for d, sd, img in dates if d not in good_dates_deep]
 
-    ref_date_entry = _resolve_reference_entry(lst, fl, ref_date, dates, workdir)
+    ref_date_entry = _select_reference(lst, fl, workdir, dates)
     if ref_date_entry is None:
         print(f"  Reference {ref_date} not found for {lst} {fl} and no usable fallback")
         return None
@@ -2833,6 +3058,11 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         return None
 
     ref_data, ref_hdr = load_image(ref_img_path)
+    if ref_date == 'MASTER' and ref_data.shape != target_shape:
+        os.makedirs(f'{workdir}/prep', exist_ok=True)
+        ref_img_path = regrid_image(ref_img_path, tmpl_hdr, f'{workdir}/prep/ref_master_prev_regrid.fits')
+        ref_data, ref_hdr = load_image(ref_img_path)
+        print(f"  [reference] {lst} {fl}: previous master regridded to the template grid")
     ref_wcs = WCS(ref_hdr).celestial
     cd = abs(ref_hdr.get('CDELT1', ref_hdr.get('CD1_1', 0.037)))
     bmaj = ref_hdr.get('BMAJ', 5 * cd)
@@ -2849,18 +3079,20 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     rg_ref = (precompute_regrid_mapping(ref_date_entry[2], tmpl_hdr, target_shape)
               if ref_needs_regrid else None)
 
-    # Reference date
-    ref_i_out = f'{prep_dir}/{ref_date}_I.fits'
-    process_variant_image(ref_img_path, None, identity_scale,
-                          tmpl_hdr, target_shape, ref_i_out, rg_ref)
-    if ref_date in good_dates_deep:
-        i_aligned.append((ref_date, ref_i_out, ref_weight))
-    date_params[ref_date] = {
-        'scale_map': identity_scale, 'flow': None, 'weight': ref_weight,
-        'regrid': rg_ref, 'sci_dir': ref_date_entry[1],
-        'qa3_scale': 1.0, 'qa3_tilt': 0.0, 'qa3_nsrc': -1,
-        'qa3_guard': 'reference-identity', 'qa3_rms': ref_rms,
-    }
+    # Reference date (a NIGHT reference is an identity member; a MASTER reference is not
+    # a constituent - every night is aligned and scaled to it, Gregg 2026-09-09)
+    if ref_date != 'MASTER':
+        ref_i_out = f'{prep_dir}/{ref_date}_I.fits'
+        process_variant_image(ref_img_path, None, identity_scale,
+                              tmpl_hdr, target_shape, ref_i_out, rg_ref)
+        if ref_date in good_dates_deep:
+            i_aligned.append((ref_date, ref_i_out, ref_weight))
+        date_params[ref_date] = {
+            'scale_map': identity_scale, 'flow': None, 'weight': ref_weight,
+            'regrid': rg_ref, 'sci_dir': ref_date_entry[1],
+            'qa3_scale': 1.0, 'qa3_tilt': 0.0, 'qa3_nsrc': -1,
+            'qa3_guard': 'reference-identity', 'qa3_rms': ref_rms,
+        }
 
     target_dates = [(d, sd, img) for d, sd, img in dates if d != ref_date]
 
@@ -3225,6 +3457,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     # fleet retains prep_final for the placement pass.
     if os.environ.get('P3_KEEP_PREP') != '1':
         shutil.rmtree(prep_dir, ignore_errors=True)
+    _stamp_all_masters(final_dir, lst, fl)
+    _archive_publish_cell(final_dir, sub_dir, lst, fl)
     with open(done_marker, 'w') as f:
         f.write(f'{len(dates_good)}/{len(dates)} dates\n')
     return {'lst': lst, 'freq': fl, 'n_good': len(dates_good), 'n_total': len(dates)}

@@ -38,6 +38,78 @@ PB_DIR = os.environ.get("P3_PB_LIBRARY", "/lustre/pipeline/exopipe/phase3/pb_lib
 RESIDUAL_PB = os.environ.get('P3_RESIDUAL_PB', '/lustre/pipeline/exopipe/phase3/pb_library/residual_pb/residual_pb_v1.fits')
 _RESID_CACHE = {}
 
+# ─────────────────────────────────────────────────────────────────────────────
+# THREE-FACTOR PRIMARY-BEAM CORRECTION (Gregg 2026-09-08, verbatim: "we will have the model
+# PB, the correction for chromatic aberration, and a true residual. I think it's important to
+# have the three separated."; landed 2026-09-09, contract step 22). PB_effective =
+#   (1) MODEL PB from the library                                   -> PBMODEL
+#   (2) CHROMATIC (bandwidth-smearing) term, a priori: the data are averaged over
+#       CHAN_AVG_HZ = 4 x 24 kHz = 96 kHz; for a square bandpass and a Gaussian beam the
+#       peak of a source at angular distance theta from the phase centre is reduced by
+#       I/I0 = sqrt(pi)/(2 k) erf(k),  k = sqrt(ln 2) (dnu/nu) (theta/theta_HPBW)
+#       (Bridle & Schwab, Synthesis Imaging II, eq. 18-24)              -> PBCHROM
+#   (3) TRUE RESIDUAL per band, measured by Gregg's pair test with (1)x(2) applied, as a
+#       gain exp(slope_b x ZA) from residual_pb_v2_perband.csv               -> PBRESID
+# residual_pb_v1 (one lumped map fitted at 73 MHz) is SUPERSEDED; P3_PB_THREE_FACTOR=0
+# restores it for comparison runs only, never production. A band absent from the per-band
+# residual table REFUSES (no silent fallback).
+# ─────────────────────────────────────────────────────────────────────────────
+CHAN_AVG_HZ = float(os.environ.get('P3_CHAN_AVG_HZ', '96000'))
+CHROM_VERSION = 'bs-sqbp-v1'
+THREE_FACTOR = os.environ.get('P3_PB_THREE_FACTOR', '1') != '0'
+RESIDUAL_V2_TABLE = os.environ.get('P3_RESIDUAL_PB_V2', '/lustre/pipeline/exopipe/phase3/pb_library/residual_pb/residual_pb_v2_perband.csv')
+_CHROM_CACHE = {}
+
+
+def _grid_theta_deg(hdr, shape):
+    ny, nx = shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    l = np.radians((xx + 1 - hdr['CRPIX1']) * hdr['CDELT1'])
+    m = np.radians((yy + 1 - hdr['CRPIX2']) * hdr['CDELT2'])
+    rr = np.hypot(l, m)
+    return np.degrees(np.arcsin(np.clip(rr, 0, 1))), rr <= 1.0
+
+
+def chromatic_gain(hdr, shape, freq_hz, bmaj_deg, dnu_hz=None):
+    """Factor (2): bandwidth-smearing peak attenuation on the zenith-centred grid of hdr for a
+    subband at freq_hz imaged with beam FWHM bmaj_deg. Returns (gain float32, version)."""
+    from scipy.special import erf
+    dnu = CHAN_AVG_HZ if dnu_hz is None else float(dnu_hz)
+    key = (shape, float(hdr['CRPIX1']), float(hdr['CRPIX2']), float(hdr['CDELT1']), float(hdr['CDELT2']),
+           round(float(freq_hz)), round(float(bmaj_deg), 6), dnu)
+    if key in _CHROM_CACHE:
+        return _CHROM_CACHE[key]
+    theta, above = _grid_theta_deg(hdr, shape)
+    k = np.sqrt(np.log(2.0)) * (dnu / float(freq_hz)) * (theta / float(bmaj_deg))
+    g = np.where(k > 1e-6, np.sqrt(np.pi) / (2.0 * np.maximum(k, 1e-6)) * erf(k), 1.0).astype(np.float32)
+    g[~above] = np.nan
+    _CHROM_CACHE[key] = (g, CHROM_VERSION)
+    return g, CHROM_VERSION
+
+
+_RESID2 = None
+
+
+def residual_band_slope(band):
+    """Factor (3) table: per-band slope d ln g / d ZA (per degree) measured with (1)x(2) applied."""
+    global _RESID2
+    if _RESID2 is None:
+        if not os.path.exists(RESIDUAL_V2_TABLE):
+            raise RuntimeError(f'three-factor PB: per-band residual table missing ({RESIDUAL_V2_TABLE}); REFUSING')
+        import csv as _csv
+        _RESID2 = {r['band']: r for r in _csv.DictReader(open(RESIDUAL_V2_TABLE))}
+    if band not in _RESID2:
+        raise RuntimeError(f'three-factor PB: no residual row for {band} in {RESIDUAL_V2_TABLE}; REFUSING')
+    return float(_RESID2[band]['slope_per_deg']), str(_RESID2[band].get('version', 'residual_pb_v2'))
+
+
+def residual_band_gain(hdr, shape, band):
+    theta, above = _grid_theta_deg(hdr, shape)
+    s, ver = residual_band_slope(band)
+    g = np.exp(s * theta).astype(np.float32)
+    g[~above] = np.nan
+    return g, f'{ver}:{band}'
+
 
 def residual_gain(hdr, shape, path=RESIDUAL_PB):
     """g(ZA, az) of the residual primary beam on the grid described by hdr (a zenith-centred SIN header:
@@ -229,9 +301,31 @@ def wideband_pb(scope, lst, master_path, pb_dir=PB_DIR, category='deep', binidx=
     meta = dict(scope=scope, lst=lst, cadence=('deep' if binidx is None else f'bin{binidx}'),
                 n_dates=len(used), n_missing=len(missing), members=members,
                 weights={k: weights[k] for k in members},
-                used_dates=used, missing_dates=missing, residual_pb='')
-    # the residual primary beam: the single additional step (Gregg 2026-09-07)
-    if pb is not None and RESIDUAL_PB:
+                used_dates=used, missing_dates=missing, residual_pb='', chromatic='', pb_model='v1-2026-07-04')
+    if pb is not None and THREE_FACTOR:
+        # factors (2) and (3), weighted over the member subbands exactly as the model PB is
+        _ghdr = tgt_hdr if scope == 'Full' else ref
+        try:
+            _mh = fits.getheader(master_path)
+            _bmaj = float(_mh['BMAJ']); _nu0 = float(_mh.get('RESTFRQ') or 0.0)
+        except Exception as _e:
+            raise RuntimeError(f'three-factor PB: master beam/RESTFRQ unreadable for {master_path}: {_e}; REFUSING')
+        _acc = np.zeros(pb.shape, np.float64); _racc = np.zeros(pb.shape, np.float64); _ws = 0.0
+        for sb in members:
+            w = weights.get(sb, 0.0)
+            if w <= 0:
+                continue
+            _nu = float(cfg.SUBBAND_FREQ_HZ[sb]['center'])
+            _bm = _bmaj * (_nu0 / _nu) if _nu0 > 0 else _bmaj      # beam scales as 1/nu across a band's members
+            _c, _cv = chromatic_gain(_ghdr, pb.shape, _nu, _bm)
+            _r, _rv = residual_band_gain(_ghdr, pb.shape, sb)
+            _acc += w * np.nan_to_num(_c, nan=1.0); _racc += w * np.nan_to_num(_r, nan=1.0); _ws += w
+        if _ws > 0:
+            pb = (pb * (_acc / _ws) * (_racc / _ws)).astype(np.float32)
+            meta['chromatic'] = CHROM_VERSION
+            meta['residual_pb'] = 'residual_pb_v2-perband'
+    elif pb is not None and RESIDUAL_PB:
+        # SUPERSEDED single lumped step (residual_pb_v1); comparison runs only
         _ghdr = tgt_hdr if scope == 'Full' else ref
         g, ver = residual_gain(_ghdr, pb.shape)
         if g is not None:
@@ -257,8 +351,11 @@ def apply_pbcorr(master_path, pb_map, out_path, floor=PB_FLOOR, meta=None):
     hdr['PBCORR'] = (True, 'OVRO-LWA PB library correction applied')
     hdr['PBFLOOR'] = (floor, 'PB floor below which pixels set NaN')
     hdr['PBLIBV'] = ('v1-2026-07-04', 'PB library version')
+    hdr['PBMODEL'] = ((meta or {}).get('pb_model', 'v1-2026-07-04'), 'factor 1: model PB library version')
+    if meta and meta.get('chromatic'):
+        hdr['PBCHROM'] = (meta['chromatic'], f'factor 2: bandwidth smearing, {CHAN_AVG_HZ:.0f} Hz channels')
     if meta and meta.get('residual_pb'):
-        hdr['PBRESID'] = (meta['residual_pb'], 'residual primary beam applied (x model PB)')
+        hdr['PBRESID'] = (meta['residual_pb'], 'factor 3: measured residual gain (x model x chromatic)')
     if meta:
         hdr['PBNDATE'] = (meta.get('n_dates', -1), 'Constituent nights with QA weights')
         if meta.get('n_missing'):
