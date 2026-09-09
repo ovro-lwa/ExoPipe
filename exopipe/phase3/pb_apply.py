@@ -349,6 +349,12 @@ def apply_pbcorr(master_path, pb_map, out_path, floor=PB_FLOOR, meta=None):
     out = np.full_like(img, np.nan)
     out[valid] = img[valid] / pb_map[valid]
     hdr['PBCORR'] = (True, 'OVRO-LWA PB library correction applied')
+    # the sibling must NOT inherit the master's PRODNAME (archive name collision): drop it; the
+    # header-standard pass rebuilds it from the file name with the pbcorr token (2026-09-09)
+    if 'PRODNAME' in hdr:
+        _pn = str(hdr['PRODNAME'])
+        hdr['PRODNAME'] = (_pn.replace('_dewarped_', '_pbcorr_dewarped_', 1) if '_dewarped_' in _pn and '_pbcorr_' not in _pn else _pn,
+                           'Phase 3 product name (grammar; pbcorr sibling)')
     hdr['PBFLOOR'] = (floor, 'PB floor below which pixels set NaN')
     hdr['PBLIBV'] = ('v1-2026-07-04', 'PB library version')
     hdr['PBMODEL'] = ((meta or {}).get('pb_model', 'v1-2026-07-04'), 'factor 1: model PB library version')
