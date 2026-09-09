@@ -1613,6 +1613,7 @@ def process_lst_freq(lst, freq_str, exclusions, args):
 
     ref_date = ref_date_entry[0]
     target_dates = [x for x in dates if x[0] != ref_date]
+    target_dates = [x for x in target_dates if x[0] not in _grid_refused_dates(target_dates, f'{lst}_{fl}')]
 
     if len(target_dates) < MIN_DATES_FOR_COADD - 1:
         print(f"  Only {len(target_dates)} dates after filtering, need {MIN_DATES_FOR_COADD}, skipping")
@@ -2062,6 +2063,13 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
 
     ref_date = ref_date_entry[0]
     target_dates = [x for x in dates if x[0] != ref_date]
+    _gr = _grid_refused_dates(target_dates, f'{lst}_{fl}')
+    if _gr:
+        with open(f'{workdir}/refusals_grid.csv', 'a') as _rf:
+            for _d in sorted(_gr):
+                _rf.write(f'{lst},{fl},{_d},wrong grid (Phase-2 anomaly),provisional\n')
+        target_dates = [x for x in target_dates if x[0] not in _gr]
+        dates = [x for x in dates if x[0] not in _gr]
 
     if len(target_dates) < MIN_DATES_FOR_COADD - 1:
         print(f"  Only {len(target_dates)+1} dates, need {MIN_DATES_FOR_COADD}, skipping")
@@ -3040,6 +3048,13 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     if good_dates_deep is None:
         good_dates_deep = set(d for d, _, _ in dates) - deep_outliers
 
+    _gr = _grid_refused_dates([x for x in dates], f'{lst}_{fl}')
+    if _gr:
+        with open(f'{workdir}/refusals_grid.csv', 'a') as _rf:
+            for _d in sorted(_gr):
+                _rf.write(f'{lst},{fl},{_d},wrong grid (Phase-2 anomaly),final\n')
+        dates = [x for x in dates if x[0] not in _gr]
+        good_dates_deep = {d for d in good_dates_deep if d not in _gr}
     dates_good = [(d, sd, img) for d, sd, img in dates if d in good_dates_deep]
     dates_bad = [(d, sd, img) for d, sd, img in dates if d not in good_dates_deep]
 
@@ -3569,6 +3584,34 @@ def run_provisional(lsts, freqs, exclusions, args, depth='deep'):
         print("\n  No data processed.")
 
 
+_GRID_REFUSED_CACHE = {}
+
+
+def _grid_refused_dates(target_dates, tag=''):
+    """POST-CUTOVER epochs whose image grid differs from the cell's modal post-cutover grid (a
+    Phase-2 anomaly such as 02h Green 2025-12-26 on 4096^2 instead of 2358^2): they cannot be
+    flowed or stacked, so they are REFUSED as epochs (printed once per cell, logged in
+    <workdir>/refusals_grid.csv by the caller) and excluded from every stage. Pre-cutover epochs
+    are on their own grid by design and are REGRIDDED by the prep, never refused here."""
+    post = [x for x in target_dates if x[0] >= CUTOVER_DATE]
+    shapes = {}
+    for date, _sd, img in post:
+        try:
+            _h = fits.getheader(img); shapes[date] = (int(_h['NAXIS2']), int(_h['NAXIS1']))
+        except Exception:
+            shapes[date] = None
+    vals = [s for s in shapes.values() if s]
+    modal = max(set(vals), key=vals.count) if vals else None
+    wrong = {d for d, s in shapes.items() if s and modal and s != modal}
+    for d in sorted(wrong):
+        key = (tag, d)
+        if key not in _GRID_REFUSED_CACHE:
+            _GRID_REFUSED_CACHE[key] = True
+            print(f"  {tag} {d}: epoch REFUSED - wrong grid {shapes[d]} vs modal post-cutover grid {modal} "
+                  f"(Phase-2 anomaly; cannot be flowed; excluded from the co-add, logged)", flush=True)
+    return wrong
+
+
 def _flow_freshness(workdir, target_dates):
     """2026-09-06 (recovery chain): which non-reference epochs have NO alignment flow
     or a flow OLDER than their input image. The co-add only ever LOADS flow/<date>_scaled_flow.npy
@@ -3590,19 +3633,7 @@ def _flow_freshness(workdir, target_dates):
     # Green 2358^2 grid): an epoch whose image grid differs from the cell's modal grid can never
     # be flowed - the prep skips it ('shape mismatch') - so it is REFUSED as an epoch (logged) and
     # must not read as a missing flow that refuses the whole cell.
-    _shapes = {}
-    for date, _sd, img in target_dates:
-        try:
-            _h = fits.getheader(img); _shapes[date] = (int(_h['NAXIS2']), int(_h['NAXIS1']))
-        except Exception:
-            _shapes[date] = None
-    _vals = [s for s in _shapes.values() if s]
-    _modal = max(set(_vals), key=_vals.count) if _vals else None
-    _wrong = [d for d, s in _shapes.items() if s and _modal and s != _modal]
-    for d in _wrong:
-        print(f"  {os.path.basename(workdir)} {d}: epoch REFUSED - wrong grid {_shapes[d]} vs modal {_modal} "
-              f"(Phase-2 anomaly; cannot be flowed; excluded from the co-add, logged)", flush=True)
-    target_dates = [x for x in target_dates if x[0] not in _wrong]
+    target_dates = [x for x in target_dates if x[0] not in _grid_refused_dates(target_dates, os.path.basename(workdir))]
     for date, _sd, img in target_dates:
         fp = f'{fdir}/{date}_scaled_flow.npy'
         if not os.path.exists(fp):
