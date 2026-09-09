@@ -59,6 +59,14 @@ PB_FLOOR = float(os.environ.get('P3_TENMIN_PB_FLOOR', str(PB.PB_FLOOR)))   # 0.1
 BIN_SEC = 600.0
 NBINS = 6
 MASTER_GEN = os.environ.get('P3_MASTER_GEN', 'ivw-mean-v3')
+# PER-BIN LEAVE-ONE-OUT MASTERS (Gregg 2026-09-09: "Per bin Masters are approved" / "Use leave one out"):
+# each 10-minute frame is subtracted against the leave-one-out master of ITS OWN BIN, built from the
+# same bin across nights (inverse-variance weighted by the co-add's night weights, no clipping,
+# LOO for every bin whatever N). No PB ratio: the bin's frames share the beam pattern. Measured on the
+# battery: Stage-1 I residual 12-18 per cent lower, V 4-6 per cent. P3_TENMIN_PER_BIN=0 restores the
+# deep-master x PB-ratio form for comparison only.
+PER_BIN = os.environ.get('P3_TENMIN_PER_BIN', '1') != '0'
+BIN_COADDOP = 'ivw-mean-v3-bin'
 
 
 def tenmin_root():
@@ -232,12 +240,16 @@ def _build_night(args):
                 refused.append((f'{key} {S}', 'alignment failed (grid)')); continue
             fr = np.squeeze(fits.getdata(tmp)).astype(np.float32); os.remove(tmp)
             fr[~np.isfinite(fr)] = 0.0
-            r, blank, rmed = ratios[k]
-            fr = fr * r                                   # step 1: PB ratio (0 below the floor)
+            if PER_BIN:
+                r, blank, rmed = 1.0, 0.0, 1.0            # per-bin masters share the beam: no ratio
+            else:
+                r, blank, rmed = ratios[k]
+                fr = fr * r                               # step 1: PB ratio (0 below the floor)
             bmaj, bmin, bpa = (float(sh.get('BMAJ') or 0), float(sh.get('BMIN') or 0),
                                float(sh.get('BPA') or 0.0))
             if not (bmaj > 0 and bmin > 0):
                 refused.append((f'{key} {S}', 'no beam in the Phase 2 header')); continue
+            p2run = ('Science_' + src.split('Science_')[1].split('/')[0]) if 'Science_' in src else None
             ninj = 0
             for it in inj_by_key.get(key, []):
                 if it.get('stokes', S) != S:
@@ -247,6 +259,23 @@ def _build_night(args):
                     ninj += 1
                     irows.append([key, S, it['ra'], it['dec'], it['flux_jy'], round(float(x), 2),
                                   round(float(y), 2), sub_path])
+            if PER_BIN:
+                # pass 1 ends here: the aligned, DC-scaled frame is kept for the per-bin
+                # leave-one-out subtraction in build_cell_frames (cards it needs travel in the header)
+                al_path = f'{od}/{key}_{S}_al_{scope}.fits'
+                ha = WCS(hdr0).celestial.to_header()
+                for kk, vv in (('DATE-OBS', sh.get('DATE-OBS')), ('DATE-END', sh.get('DATE-END')), ('INTTIME', sh.get('INTTIME')),
+                               ('TIMEFIX', sh.get('TIMEFIX')), ('THERMNOI', sh.get('THERMNOI')), ('BMAJ', bmaj), ('BMIN', bmin), ('BPA', bpa),
+                               ('P2DEWARP', bool(sh.get('P2DEWARP', True))), ('SRCFRAME', os.path.basename(src)[:68]),
+                               ('P2RUN', p2run), ('FLOWUSED', bool(has_flow)),
+                               ('NINJECT', int(ninj)), ('FLUXDC', round(dc[date], 5)), ('LSTBIN', int(k)), ('NIGHT', date)):
+                    if vv is not None:
+                        ha[kk] = vv
+                fits.writeto(al_path + '.part', fr.astype(np.float32), ha, overwrite=True); os.replace(al_path + '.part', al_path)
+                rows.append([key, date, k, S, src, round(dc[date], 5), int(has_flow), int(bool(sh.get('P2DEWARP', True))),
+                             0.0, 1.0, bmaj, bmin, bpa, ninj, sub_path])
+                built.append((key, S))
+                continue
             valid = (fr != 0) & (masters[S] != 0)
             sub = np.where(valid, fr - masters[S], 0.0).astype(np.float32)
             h = WCS(hdr0).celestial.to_header()
@@ -282,6 +311,98 @@ def _build_night(args):
                          round(blank, 4), round(rmed, 4), bmaj, bmin, bpa, ninj, sub_path])
             built.append((key, S))
     return rows, irows, refused, built
+
+
+def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, base, mI, mV, overwrite):
+    """Pass 2 of the per-bin design: for every Stokes and bin, the inverse-variance weighted plain
+    mean of the aligned frames of that bin across nights (weights = the co-add's own night weights,
+    weights.csv), written as the central BIN MASTER (bin_masters/), and each frame minus its own
+    LEAVE-ONE-OUT bin master, LOO_i = (S - w_i a_i) / (W - w_i) with per-pixel validity (exact
+    identity, no clipping). Every bin is LOO regardless of N (Gregg 2026-09-09). Aligned
+    intermediates are deleted after use (node-local scratch)."""
+    import hashlib
+    from exopipe.common import phase3_products as pp
+    od = f'{out_root}/{cell}/subtracted'; bd = f'{out_root}/{cell}/bin_masters'; os.makedirs(bd, exist_ok=True)
+    wts = {}
+    for r in csv.DictReader(open(f'{base}/coadd_final/weights.csv')):
+        try:
+            wts[r['date']] = float(r['weight'])
+        except (KeyError, ValueError, TypeError):
+            pass
+    for S in stokes:
+        for k in range(6):
+            als = sorted(glob.glob(f'{od}/*T{k:02d}_{S}_al_{scope}.fits'))
+            if not als:
+                continue
+            imgs, w, keys, hdrs = [], [], [], []
+            for f in als:
+                key = os.path.basename(f).split(f'_{S}_al_')[0]; date = key_date(key)
+                if date not in wts:
+                    print(f'  [per-bin] {cell} {S} bin{k} {key}: night has no co-add weight - frame REFUSED', flush=True); continue
+                with fits.open(f, memmap=False) as hh:
+                    a = np.squeeze(hh[0].data).astype(np.float32); a[~np.isfinite(a)] = 0.0
+                    hdrs.append(hh[0].header.copy())
+                imgs.append(a); w.append(wts[date]); keys.append(key)
+            if len(imgs) < 2:
+                print(f'  [per-bin] {cell} {S} bin{k}: {len(imgs)} frame(s) - no leave-one-out possible; frames REFUSED', flush=True); continue
+            w = np.array(w, np.float64)
+            Ssum = np.zeros(shape, np.float64); W = np.zeros(shape, np.float64)
+            for a, wi in zip(imgs, w):
+                v = (a != 0)
+                Ssum += wi * a; W += wi * v
+            M = np.where(W > 0, Ssum / np.where(W > 0, W, 1.0), 0.0).astype(np.float32)
+            dates = sorted(key_date(x) for x in keys)
+            dig = hashlib.md5(','.join(dates).encode()).hexdigest()
+            mh = fits.getheader(mI if S == 'I' else mV).copy()
+            mh['COADDOP'] = (BIN_COADDOP, 'per-bin inverse-variance plain mean (Gregg 2026-09-09)')
+            mh['NCOADD'] = (len(imgs), 'constituent frames (bin)'); mh['LSTBIN'] = (int(k), '10-minute bin')
+            mh['CONSTDIG'] = (dig, 'md5 of the sorted constituent night list'); mh['PARENTMS'] = (os.path.basename(mI if S == 'I' else mV)[:68], 'deep master of the cell')
+            name = pp.build_name(scope, S, '10min', 'Taper', 0.0, proc=['dewarped', 'aligned', 'coadd'], lst=lst, lst_bin=k,
+                                 date_start=dates[0].replace('-', ''), date_end=dates[-1].replace('-', ''), n_epochs=len(imgs))
+            mh['PRODNAME'] = (name, 'Phase 3 product name (grammar; CONTINUE cards)')
+            for d in dates:
+                mh['HISTORY'] = f'COADD constituent {d}'
+            mpath = f'{bd}/{S}_bin{k}_{scope}.fits'
+            fits.writeto(mpath + '.part', M, mh, overwrite=True); os.replace(mpath + '.part', mpath)
+            with open(f'{bd}/weights_{S}_bin{k}.csv', 'w', newline='') as fw_:
+                cw = csv.writer(fw_, lineterminator='\n'); cw.writerow(['key', 'weight']); cw.writerows(zip(keys, w))
+            for a, wi, key, ha in zip(imgs, w, keys, hdrs):
+                v = (a != 0)
+                den = W - wi * v
+                loo = np.where(den > 0, (Ssum - wi * a) / np.where(den > 0, den, 1.0), 0.0)
+                valid = v & (den > 0)
+                sub = np.where(valid, a - loo, 0.0).astype(np.float32)
+                sub_path = f'{od}/{key}_{S}_sub_{scope}.fits'
+                h = WCS(hdr0).celestial.to_header()
+                h['BUNIT'] = ('Jy/beam', 'Brightness unit'); h['TELESCOP'] = ('OVRO-LWA', 'Telescope')
+                extra = {'CADENCE': ('10min', 'Frame cadence'), 'LSTBIN': (int(k), '10-minute bin within the LST hour (0-5)'),
+                         'PBRATIO': ('none', 'per-bin master: no PB ratio (Gregg 2026-09-09)'),
+                         'BINMSTR': (os.path.basename(mpath), 'central bin master (bin_masters/)'),
+                         'BINLOO': (True, 'subtracted its own leave-one-out bin master'),
+                         'BINNCO': (len(imgs) - 1, 'constituents of the LOO bin master'),
+                         'BINDIG': (dig, 'constituent digest of the bin master'),
+                         'FLUXDC': (ha.get('FLUXDC'), 'night DC flux factor (no gradient)'),
+                         'FLOWUSED': (bool(ha.get('FLOWUSED', False)), 'night alignment flow applied'),
+                         'NINJECT': (int(ha.get('NINJECT', 0)), 'injected sources (battery only; 0 in production)'),
+                         'SRCFRAME': (ha.get('SRCFRAME', ''), 'Phase 2 10-minute source image'),
+                         'P2DEWARP': (bool(ha.get('P2DEWARP', True)), 'Phase 2 source dewarped (False = raw fallback, A-05)')}
+                fits.writeto(sub_path + '.part', sub, h, overwrite=True)
+                hh, ww = sub.shape; inn = sub[hh // 4:3 * hh // 4, ww // 4:3 * ww // 4]
+                pp.write_standard_header(
+                    sub_path + '.part', scope=scope, stokes=S, start=ha.get('DATE-OBS'), end=ha.get('DATE-END'),
+                    inttime_s=ha.get('INTTIME'), time_basis=str(ha.get('TIMEFIX', 'v2-phase2')).replace('v2-', '', 1),
+                    beam=(float(ha['BMAJ']), float(ha['BMIN']), float(ha.get('BPA', 0.0))), thermnoi=ha.get('THERMNOI'),
+                    imgrms=float(np.nanstd(inn[inn != 0])) if np.any(inn != 0) else None,
+                    dewarped=True, aligned=True, alignref=os.path.basename(mI if 'I' in stokes else mV),
+                    msub=True, msubfile=os.path.basename(mpath), lstbin=int(k), p2run=ha.get('P2RUN'),
+                    scale_a=ha.get('FLUXDC'), extra=extra, validate=True)
+                os.replace(sub_path + '.part', sub_path)
+            for f in als:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            print(f'  [per-bin] {cell} {S} bin{k}: {len(imgs)} frames, LOO bin master N={len(imgs)}', flush=True)
 
 
 def build_cell_frames(lst, scope, out_root=None, stokes='IV', dates=None, inject=None,
@@ -321,7 +442,10 @@ def build_cell_frames(lst, scope, out_root=None, stokes='IV', dates=None, inject
             dc[r['date']] = float(r['qa3_scale'])
         except (KeyError, ValueError, TypeError):
             pass
-    ratios, pbmeta = pb_ratio_maps(scope, lst, mI if 'I' in stokes else mV, hdr0, shape)
+    if PER_BIN:
+        ratios, pbmeta = {k: (1.0, 0.0, 1.0) for k in range(6)}, {'residual_pb': ''}
+    else:
+        ratios, pbmeta = pb_ratio_maps(scope, lst, mI if 'I' in stokes else mV, hdr0, shape)
     freq_str = scope.replace('MHz', '')
     excl = load_exclusions()
     nights = [x for x in C.discover_dates(lst, freq_str) if not is_excluded(lst, scope, x[0], excl)]
@@ -338,6 +462,8 @@ def build_cell_frames(lst, scope, out_root=None, stokes='IV', dates=None, inject
             results = pool.map(_build_night, nights)
     else:
         results = [_build_night(n) for n in nights]
+    if PER_BIN:
+        _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, base, mI, mV, overwrite)
     frames_csv = f'{out_root}/{cell}/frames.csv'
     inj_csv = f'{out_root}/{cell}/injections.csv'
     new_frames = not os.path.exists(frames_csv)

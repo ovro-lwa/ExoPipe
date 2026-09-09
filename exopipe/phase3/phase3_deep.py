@@ -775,6 +775,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if cadence == 'deep':
         _kd = lambda d: d
     os.environ['P3_CADENCE'] = cadence
+    global _STRIATION_OFF
+    if cadence == '10min' and os.environ.get('P3_STRIATION_10MIN') != '1':
+        _STRIATION_OFF = True       # Gregg 2026-09-09: striation model OFF at 10 minutes (battery: FPs x3.6-x10 with it on)
+        print(f'  {lst} {scope}: 10-minute cadence - striation model OFF (ruling 2026-09-09)', flush=True)
     # G-03 (ratified 2026-07-14/15; Gregg 2026-09-04: 'There is no pre-blank
     # authorized' - removed for the 5th time, now for BOTH Stokes): A-team is a
     # DOWNSTREAM veto stage (Card 6: six sources, V 3.0 deg / I 5.0 deg), never
@@ -884,8 +888,20 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if not os.path.exists(mup):
         write_up_fits(fft_upsample2(master_I), hdr0, mup)
     items, epoch_I = [], {}
+    _binm = {}
+    def _recon_master(d):
+        # per-bin masters (Gregg 2026-09-09): a 10-minute frame that was subtracted against its bin
+        # master is reconstructed with that bin's central master (BINMSTR), not the deep master
+        if cadence != '10min':
+            return master_I
+        _bm = fits.getheader(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits').get('BINMSTR')
+        if not _bm:
+            return master_I
+        if _bm not in _binm:
+            _binm[_bm] = _load(f'{ebase}/bin_masters/{_bm}')
+        return _binm[_bm]
     for d in dates:
-        ei = _load(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits') + master_I; epoch_I[d] = ei
+        ei = _load(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits') + _recon_master(d); epoch_I[d] = ei
         ep_up = f'{cell_work}/ep_{d}_up2.fits'
         if not os.path.exists(ep_up):
             write_up_fits(fft_upsample2(ei), hdr0, ep_up)
