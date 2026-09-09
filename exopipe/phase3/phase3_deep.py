@@ -1215,6 +1215,23 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # both build this catalog; without the lock one process removed the other's
     # temporary master (10h Blue battery). Second arrival finds the file and skips.
     _glk = open(f'{_catdir}/.gaul.lock', 'w'); fcntl.flock(_glk, fcntl.LOCK_EX)
+    # CAT1/CAT2 (R-CAT1-7 2026-08-15; contract step 23, enforced 2026-09-09): a catalog left in
+    # the work dir by a previous generation is a STALE derivative - its .gen.json digest must
+    # equal the md5 of the master being searched, else it is discarded and rebuilt (never reused).
+    if os.path.exists(_gaulp):
+        import hashlib as _hl, json as _jsn
+        _cur_md5 = _hl.md5(np.ascontiguousarray(master_I.astype(np.float32)).tobytes()).hexdigest()
+        try:
+            _old = _jsn.load(open(_gaulp + '.gen.json')).get('master_md5_data')
+        except Exception:
+            _old = None
+        if _old != _cur_md5:
+            print(f'  {lst} {scope}: parent catalog is STALE (digest {str(_old)[:8]} != master {_cur_md5[:8]}) - rebuilding', flush=True)
+            for _x in (_gaulp, _gaulp + '.gen.json'):
+                try:
+                    os.remove(_x)
+                except OSError:
+                    pass
     if not os.path.exists(_gaulp):
         import bdsf
         _tmpm = f'{cell_work}/_master_tmp_{os.getpid()}.fits'
