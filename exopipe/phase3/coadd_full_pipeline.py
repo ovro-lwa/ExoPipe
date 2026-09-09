@@ -1677,6 +1677,19 @@ def process_lst_freq(lst, freq_str, exclusions, args):
     return manifest_entries, prep_data
 
 
+def _require_flow(flow_path, date, ref_date, tag):
+    """Load the epoch's co-add alignment flow, or REFUSE (Gregg 2026-09-09, contract A5:
+    a raw night with no flow is refused; 'using flux-scale only' is no longer a path).
+    The reference epoch is the alignment target and carries no flow by construction."""
+    if os.path.exists(flow_path):
+        return np.load(flow_path)
+    if date == ref_date:
+        return None
+    raise RuntimeError(f"{tag} {date}: no co-add alignment flow at {flow_path} - REFUSING "
+                       f"(run --stage flow first; the flux-scale-only fallback was retired "
+                       f"2026-09-09, contract A5)")
+
+
 def post_flow_processing(prep_data, exclusions, args):
     """After batch flow: apply corrections to all variants, detect outliers,
     co-add, make movies."""
@@ -1722,11 +1735,7 @@ def post_flow_processing(prep_data, exclusions, args):
         # Load flow field
         scaled_base = f'{date}_scaled'
         flow_path = f'{workdir}/flow/{scaled_base}_flow.npy'
-        flow_offsets = None
-        if os.path.exists(flow_path):
-            flow_offsets = np.load(flow_path)
-        else:
-            print(f"  {date}: no flow field found, using flux-scale only")
+        flow_offsets = _require_flow(flow_path, date, ref_date, f'{lst} {fl}')
 
         # Rebuild scale map
         h, w = target_shape
@@ -2089,7 +2098,7 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
 
         flow_path = f'{workdir}/flow/{date}_scaled_flow.npy'
-        flow_offsets = np.load(flow_path) if os.path.exists(flow_path) else None
+        flow_offsets = _require_flow(flow_path, date, ref_date, f'{lst} {fl}')
 
         h, w = target_shape
         yg, xg = np.indices((h, w), dtype=float)
@@ -2369,7 +2378,7 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
         weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
 
         flow_path = f'{workdir}/flow/{date}_scaled_flow.npy'
-        flow_offsets = np.load(flow_path) if os.path.exists(flow_path) else None
+        flow_offsets = _require_flow(flow_path, date, ref_date, f'{lst} {fl}')
 
         h, w = target_shape
         yg, xg = np.indices((h, w), dtype=float)
@@ -2886,7 +2895,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
 
         flow_path = f'{workdir}/flow/{date}_scaled_flow.npy'
-        flow_offsets = np.load(flow_path) if os.path.exists(flow_path) else None
+        flow_offsets = _require_flow(flow_path, date, ref_date, f'{lst} {fl}')
 
         h, w = target_shape
         yg, xg = np.indices((h, w), dtype=float)
@@ -3320,8 +3329,10 @@ def _flow_freshness(workdir, target_dates):
     # Phase 2): not gated. A SUBBAND cell with an empty flow/ is a cell whose every epoch would
     # be co-added flux-scale only - every epoch counts as missing (2026-09-06 05:0x UT, found on
     # 23h 36MHz whose flow/ was empty after the 2026-08-30 recovery rebuild).
-    if os.path.basename(workdir).split('_', 1)[-1] in ('Red', 'Green', 'Blue', 'Full'):
-        return []
+    # 2026-09-09 (Gregg, contract A5 / FINDING-V3-WIDEBAND-MASTERS-STILL-FLOW-LESS): the
+    # wideband exemption is REMOVED. Every non-reference epoch of every cell, wideband
+    # included, needs a fresh co-add alignment flow; a raw (non-dewarped) wideband night
+    # is dewarped by that flow and by nothing else.
     out = []
     for date, _sd, img in target_dates:
         fp = f'{fdir}/{date}_scaled_flow.npy'

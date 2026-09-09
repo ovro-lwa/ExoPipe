@@ -388,7 +388,8 @@ def _batch_flows_unlocked(cell_work, mup, items):
 
 
 _STRIATION_OFF = os.environ.get('P3_STRIATION_OFF') == '1'   # battery variable (Gregg 2026-09-08); production default ON
-_REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'         # battery variable: no per-frame x2 flow refinement (night flow only)
+_REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'
+SEARCH_TIER_SIGMA = float(os.environ.get('P3_SEARCH_TIER_SIGMA', '4.0'))   # R-GC10 Layer-2 search tier (Gregg 2026-09-09)         # battery variable: no per-frame x2 flow refinement (night flow only)
 
 
 def _residual(epoch, master, flow, hdr, cd):
@@ -934,6 +935,39 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                       f'{_med:.0f} mJy): {_bad}')
     except FileNotFoundError:
         pass
+    # (1c) SEARCH-TIER QUALITY GATE (Gregg 2026-09-09, correcting the reading of the
+    # two-tier policy: "we specified a second less stringent threshold for being used
+    # for science, but it was still a threshold"; the threshold is the R-GC10 Layer-2
+    # search tier: high-rms 4 sigma MAD, no low-side rejection; co-add tier stays 3
+    # sigma). Per epoch, either Stokes above median + 4 x 1.4826 x MAD of the cell's
+    # stage-1 residual rms (residuals_provisional.csv) REFUSES the epoch from both
+    # searches, logged per image. n < 5 nights: gate skips loudly (R-GC10 rider R1).
+    try:
+        import csv as _csv
+        _prov = list(_csv.DictReader(open(f'{base}/residuals_provisional.csv')))
+        _rmsI = {r['date']: float(r['i_rms_mjy']) for r in _prov if r.get('i_rms_mjy') not in (None, '', 'nan')}
+        _rmsV = {r['date']: float(r['v_rms_mjy']) for r in _prov if r.get('v_rms_mjy') not in (None, '', 'nan')}
+        _tier = []
+        for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
+            _v = np.array(sorted(x for x in _rm.values() if np.isfinite(x) and x > 0))
+            if len(_v) < 5:
+                print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}) SKIPPED - only {len(_v)} nights with a stage-1 rms (needs 5)')
+                continue
+            _med = float(np.median(_v)); _mad = float(np.median(np.abs(_v - _med))) * 1.4826
+            _thr = _med + SEARCH_TIER_SIGMA * _mad
+            for d in dates:
+                if _rm.get(_kd(d), 0) > _thr:
+                    _tier.append((d, _st, _rm[_kd(d)], _thr))
+        _tdates = sorted({d for d, *_ in _tier})
+        if _tdates:
+            dates = [d for d in dates if d not in _tdates]
+            with open(f'{_refdir}/{lst}_{scope}_searchtier_excluded.csv', 'a') as _sf:
+                for d, _st, _r, _thr in _tier:
+                    _sf.write(f'{lst},{scope},{d},{_st},{_r:.1f},{_thr:.1f},{_attempt}\n')
+            print(f'  {lst} {scope}: SEARCH-TIER GATE - {len(_tdates)} epoch(s) REFUSED from search '
+                  f'(stage-1 rms > median + {SEARCH_TIER_SIGMA:.0f} x MAD in I or V): {_tdates}')
+    except FileNotFoundError:
+        print(f'  {lst} {scope}: SEARCH-TIER GATE SKIPPED - no residuals_provisional.csv')
     # (1d) INPUT-PROVENANCE GATE (2026-09-05, after 02h 36MHz was parked six times on
     # a stale 2025-01-02 product from 2026-08-13 with BMAJ=0 that the 2026-09-02 rebuild
     # never regenerated - the night has no Phase-2 product): an epoch is searched only
