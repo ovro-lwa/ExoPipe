@@ -375,7 +375,10 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
                 sub_path = f'{od}/{key}_{S}_sub_{scope}.fits'
                 h = WCS(hdr0).celestial.to_header()
                 h['BUNIT'] = ('Jy/beam', 'Brightness unit'); h['TELESCOP'] = ('OVRO-LWA', 'Telescope')
+                _pn = pp.build_name(scope, S, '10min', 'Taper', 0.0, proc=['dewarped', 'aligned', 'msub'], lst=lst, lst_bin=k,
+                                    epoch=str(ha.get('DATE-OBS')))
                 extra = {'CADENCE': ('10min', 'Frame cadence'), 'LSTBIN': (int(k), '10-minute bin within the LST hour (0-5)'),
+                         'PRODNAME': (_pn, 'Phase 3 product name (grammar; CONTINUE cards)'),
                          'PBRATIO': ('none', 'per-bin master: no PB ratio (Gregg 2026-09-09)'),
                          'BINMSTR': (os.path.basename(mpath), 'central bin master (bin_masters/)'),
                          'BINLOO': (True, 'subtracted its own leave-one-out bin master'),
