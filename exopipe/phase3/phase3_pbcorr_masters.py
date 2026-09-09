@@ -62,8 +62,11 @@ def do_cell(root, cell):
                 ph['PBMETHOD'] = ('time-integrated-library', 'canonical (2026-07-11)')
                 ph['PBWINDOW'] = ('60min-deep', 'PB integration window')
                 ph['BEAMMOD'] = (BEAMMOD, 'beam model')
+                ph['PBMODEL'] = (meta.get('pb_model', 'v1-2026-07-04'), 'factor 1: model PB library version')
+                if meta.get('chromatic'):
+                    ph['PBCHROM'] = (meta['chromatic'], 'factor 2: bandwidth-smearing term (a priori)')
                 if meta.get('residual_pb'):
-                    ph['PBRESID'] = (meta['residual_pb'], 'residual primary beam applied (x model PB)')
+                    ph['PBRESID'] = (meta['residual_pb'], 'factor 3: measured residual gain per band')
                 fits.writeto(f'{cf}/PB_deep_{scope}.fits',
                              pb_map.astype(np.float32), ph, overwrite=True)
             out = f'{cf}/{var}_pbcorr_{scope}.fits'
