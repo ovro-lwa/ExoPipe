@@ -983,9 +983,23 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # sigma). Per epoch, either Stokes above median + 4 x 1.4826 x MAD of the cell's
     # stage-1 residual rms (residuals_provisional.csv) REFUSES the epoch from both
     # searches, logged per image. n < 5 nights: gate skips loudly (R-GC10 rider R1).
+    # 2026-09-10 (INCIDENT-SEARCH-TIER-GATE-SKIPPED-TABLE-NOT-SHIPPED-AND-STALE): a missing table is a
+    # REFUSAL, never a skip; and the table must be THIS generation's - its date set must equal the
+    # generation record (weights.csv) - or it is a stale derivative and REFUSES.
+    if not os.path.exists(f'{base}/residuals_provisional.csv'):
+        raise RuntimeError(f'{lst} {scope}: residuals_provisional.csv missing - the search-tier gate (Gregg '
+                           f'2026-09-09, R-GC10 Layer 2) cannot run; REFUSING (never skipped)')
     try:
         import csv as _csv
         _prov = list(_csv.DictReader(open(f'{base}/residuals_provisional.csv')))
+        try:
+            _wdates = {r['date'] for r in _csv.DictReader(open(f'{base}/coadd_final/weights.csv'))}
+        except FileNotFoundError:
+            _wdates = None
+        _pdates = {r['date'] for r in _prov if r.get('date')}
+        if _wdates is not None and _pdates != _wdates:
+            raise RuntimeError(f'{lst} {scope}: residuals_provisional.csv is not this generation\'s (table dates '
+                               f'{sorted(_pdates ^ _wdates)[:4]} differ from weights.csv) - stale derivative; REFUSING')
         _rmsI = {r['date']: float(r['i_rms_mjy']) for r in _prov if r.get('i_rms_mjy') not in (None, '', 'nan')}
         _rmsV = {r['date']: float(r['v_rms_mjy']) for r in _prov if r.get('v_rms_mjy') not in (None, '', 'nan')}
         _tier = []
@@ -1007,8 +1021,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     _sf.write(f'{lst},{scope},{d},{_st},{_r:.1f},{_thr:.1f},{_attempt}\n')
             print(f'  {lst} {scope}: SEARCH-TIER GATE - {len(_tdates)} epoch(s) REFUSED from search '
                   f'(stage-1 rms > median + {SEARCH_TIER_SIGMA:.0f} x MAD in I or V): {_tdates}')
-    except FileNotFoundError:
-        print(f'  {lst} {scope}: SEARCH-TIER GATE SKIPPED - no residuals_provisional.csv')
+    except FileNotFoundError as _e:
+        raise RuntimeError(f'{lst} {scope}: search-tier gate input missing ({_e}); REFUSING')
     # (1d) INPUT-PROVENANCE GATE (2026-09-05, after 02h 36MHz was parked six times on
     # a stale 2025-01-02 product from 2026-08-13 with BMAJ=0 that the 2026-09-02 rebuild
     # never regenerated - the night has no Phase-2 product): an epoch is searched only
