@@ -148,6 +148,18 @@ def apply(lst, scope, root, row, outgen):
     for sub in (('coadd_final',) if NO_RESIDUALS else SCALED_DIRS):
         src = f'{cell}/{sub}'
         if not os.path.isdir(src): continue
+        # MIRROR, NOT OVERLAY (2026-09-10, INCIDENT-SHFLUX-OUTGEN-KEPT-STALE-LOO-MASTERS): an earlier
+        # apply into the same <outgen> left files whose source no longer exists (leave-one-out masters
+        # of epochs the rebuilt stack rejected); they were promoted and archived as generation-4
+        # products and the search refuses them by digest. Anything under <outgen>/<sub> that this
+        # apply will not (re)write is removed first, so the output is exactly the scaled source.
+        _expect = set()
+        for p in glob.glob(f'{src}/**/*.fits', recursive=True):
+            rel = os.path.relpath(p, cell); b = os.path.basename(p)
+            _expect.add(f'{out}/{os.path.dirname(rel)}/' + (b if b.startswith(UNSCALED_PREFIX) else _scaled_name(p, scope)))
+        for p in glob.glob(f'{out}/{sub}/**/*.fits', recursive=True):
+            if p not in _expect:
+                os.remove(p); print(f'    purged stale {outgen} file (no source in {sub}/): {os.path.relpath(p, cell)}', flush=True)
         for p in sorted(glob.glob(f'{src}/**/*.fits', recursive=True)):
             rel = os.path.relpath(p, cell); dst_dir = f'{out}/{os.path.dirname(rel)}'; os.makedirs(dst_dir, exist_ok=True)
             base = os.path.basename(p)

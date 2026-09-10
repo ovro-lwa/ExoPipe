@@ -1116,12 +1116,37 @@ def detect_outliers_mad(dates, rms_values, sigma_thresh=None):
 # Co-addition
 # ═══════════════════════════════════════════════════════════════════
 
+def _purge_stale_loo(aligned, out_dir, tag):
+    """Remove this Stokes' leave-one-out masters whose epoch is not in `aligned` (the current
+    constituents; empty when the stack is outside [2,20] and keeps none). Purge ONLY this
+    Stokes' files: a date-only match let the V pass delete the I side's LOO masters
+    (found 2026-09-03, 06h_55MHz)."""
+    if not os.path.isdir(out_dir):
+        return
+    _keep = {d for d, _p, _w in aligned}
+    for _f in os.listdir(out_dir):
+        _m = re.match(r'(\d{4}-\d{2}-\d{2})_', _f)
+        if _m and tag in _f and _m.group(1) not in _keep:
+            try:
+                os.remove(os.path.join(out_dir, _f))
+                print(f'    purged stale LOO master (epoch no longer a '
+                      f'constituent, or stack outside [2,20]): {_f}', flush=True)
+            except OSError:
+                pass
+
+
 def write_loo_masters(aligned, master_path, out_dir, tag):
     """Leave-one-out per-epoch masters (R-LOO-MASTERS, Gregg 2026-08-25;
     threshold corrected same day: REQUIRED for cells with N_epochs <= 20).
     Exact identity with the plain-mean master: LOO_i = (S - w_i e_i) /
     (W - w_i), computed with per-pixel validity exactly as the no-clip
     co-add (zeros = unimaged). Each product carries LOOEXCL + NCOADD."""
+    # PURGE FIRST (2026-09-10, INCIDENT-STALE-V2-LOO-MASTERS-KEPT-WHEN-STACK-GREW-PAST-20): the purge
+    # below used to run only after this N-range return, so a cell whose stack grew above 20 kept the
+    # previous generation's leave-one-out masters (03h Red: 40 v2 files beside an N=22 v3 master); the
+    # search refuses them by COADDOP/PARENTDG and the cell fails. A stack outside [2,20] keeps NO
+    # leave-one-out master of this Stokes.
+    _purge_stale_loo(aligned if 2 <= len(aligned) <= 20 else [], out_dir, tag)
     if len(aligned) > 20 or len(aligned) < 2:
         print(f"    LOO skipped for {tag}: N_epochs={len(aligned)} "
               f"outside [2,20] (R-LOO-MASTERS)", flush=True)
@@ -1146,18 +1171,6 @@ def write_loo_masters(aligned, master_path, out_dir, tag):
     # masters by date would have been handed a master built against an
     # epoch set that no longer exists. Remove anything whose date is not in
     # the current aligned set before writing.
-    _keep = {d for d, _p, _w in aligned}
-    for _f in os.listdir(out_dir):
-        _m = re.match(r'(\d{4}-\d{2}-\d{2})_', _f)
-        # purge ONLY this Stokes' files: a date-only match let the V pass
-        # delete the I side's LOO masters (found 2026-09-03, 06h_55MHz)
-        if _m and tag in _f and _m.group(1) not in _keep:
-            try:
-                os.remove(os.path.join(out_dir, _f))
-                print(f'    purged stale LOO master (epoch no longer a '
-                      f'constituent): {_f}', flush=True)
-            except OSError:
-                pass
     mhdr = fits.getheader(master_path)
     n = 0
     for d, p, w in aligned:
@@ -2910,8 +2923,16 @@ def _stamp_all_masters(final_dir, lst, fl):
 
 
 def _atomic_copy(src, dst):
+    """Archive write = copy to .part, VERIFY, rename. 2026-09-10: a cross-filesystem copy from Lustre came
+    back short (28.2 of 39.0 MB) with no error, so a size check is a write gate here: a short copy is
+    removed and REFUSED, never renamed into the archive."""
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.copy2(src, dst + '.part'); os.replace(dst + '.part', dst)
+    shutil.copy2(src, dst + '.part')
+    _ss, _ds = os.path.getsize(src), os.path.getsize(dst + '.part')
+    if _ss != _ds:
+        os.remove(dst + '.part')
+        raise RuntimeError(f'archive copy short: {dst} got {_ds} of {_ss} bytes; REFUSING (source {src})')
+    os.replace(dst + '.part', dst)
 
 
 def _archive_publish_cell(final_dir, sub_dir, lst, fl):
