@@ -15,7 +15,7 @@ import csv, glob, os
 import numpy as np
 SB = ['18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz']
 WB = {'Red': SB[:5], 'Green': SB[5:10], 'Blue': SB[10:], 'Full': SB}
-VERSION = 'fluxcorr-v1-20260911 (power-law smoothing k_b normalised at 73 MHz; global S&H factor g; wideband k = mean over constituent subbands)'
+VERSION = 'fluxcorr-v1-20260911 (LOO power-law smoothing k_b at 73 MHz=1; global S&H factor g = robust median over cells; wideband k = mean of constituent subbands)'
 
 
 def read_vector(path):
@@ -38,22 +38,28 @@ def sh_fit(stageA_csvs, k):
             w = 1.0 / e ** 2; num += w * f; den += w; n += 1; rows.append((r['lst'], r['scope'], f, e))
     if not den:
         raise RuntimeError('S&H fit: no OK stage-A cells')
-    g = num / den; ge = den ** -0.5
-    resid = np.array([(f - g) / e for _, _, f, e in rows])
-    return g, ge, n, float(np.sqrt(np.mean(resid ** 2))), rows
+    g_ivw = num / den; ge_ivw = den ** -0.5
+    resid = np.array([(f - g_ivw) / e for _, _, f, e in rows])
+    chi = float(np.sqrt(np.mean(resid ** 2)))
+    # 2026-09-11: the per-cell calibrator factors scatter far beyond their formal errors (reduced chi-square 18
+    # on generation 4), so inverse-variance weights are dominated by a handful of cells; the applied global
+    # factor is the ROBUST MEDIAN over cells with its robust error, the inverse-variance mean kept for reference.
+    v = np.array([f for _, _, f, _ in rows]); g = float(np.median(v))
+    ge = float(1.2533 * 1.4826 * np.median(np.abs(v - g)) / np.sqrt(len(v)))
+    return g, ge, n, chi, rows, g_ivw, ge_ivw
 
 
 def build_table(vector_csv, stageA_glob, out_csv):
     k = read_vector(vector_csv)
     files = sorted(glob.glob(stageA_glob))
-    g, ge, n, chi, rows = sh_fit(files, k)
+    g, ge, n, chi, rows, g_ivw, ge_ivw = sh_fit(files, k)
     with open(out_csv, 'w', newline='') as f:
-        w = csv.writer(f); w.writerow(['scope', 'k_band', 'g_abs', 'g_err', 'fluxcorr', 'n_sh_cells', 'sh_reduced_chi', 'version'])
+        w = csv.writer(f); w.writerow(['scope', 'k_band', 'g_abs', 'g_err', 'fluxcorr', 'n_sh_cells', 'sh_reduced_chi', 'g_ivw_reference', 'version'])
         for sc in SB + list(WB):
-            w.writerow([sc, f'{k[sc]:.6f}', f'{g:.6f}', f'{ge:.6f}', f'{k[sc] * g:.6f}', n, f'{chi:.3f}', VERSION])
+            w.writerow([sc, f'{k[sc]:.6f}', f'{g:.6f}', f'{ge:.6f}', f'{k[sc] * g:.6f}', n, f'{chi:.3f}', f'{g_ivw:.6f}', VERSION])
     with open(out_csv.replace('.csv', '_shcells.csv'), 'w', newline='') as f:
         w = csv.writer(f); w.writerow(['lst', 'scope', 'sh_over_k', 'err']); w.writerows(rows)
-    return dict(k=k, g=g, g_err=ge, n=n, chi=chi, out=out_csv)
+    return dict(k=k, g=g, g_err=ge, n=n, chi=chi, g_ivw=g_ivw, out=out_csv)
 
 
 def load_table(path):
