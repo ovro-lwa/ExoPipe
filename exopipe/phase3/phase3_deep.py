@@ -1170,13 +1170,17 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 # must at least carry the master's COADDOP. Otherwise REFUSE, never subtract.
                 _lh = fits.getheader(_lp)
                 _pd = str(_lh.get('PARENTDG', '') or '')
-                _cd = str(hdr0.get('CONSTDIG', '') or '')
+                # 2026-09-11: compare against THIS Stokes' own master (master_path), not hdr0 (the I master):
+                # the stacks are per Stokes (R-LOO-PER-STOKES) and a V stack that differs from the I stack has
+                # its own CONSTDIG - 02h 55MHz V was parked on a false "stale derivative" refusal.
+                _mh_own = fits.getheader(master_path)
+                _cd = str(_mh_own.get('CONSTDIG', '') or '')
                 if _pd and _cd and _pd != _cd:
                     raise RuntimeError(f'{lst} {scope} {_d}: LOO {stokes_tag} master PARENTDG={_pd} does not '
-                                       f'match the central master CONSTDIG={_cd} - stale derivative; REFUSING')
-                if not _pd and _lh.get('COADDOP') != hdr0.get('COADDOP'):
+                                       f'match the {stokes_tag} central master CONSTDIG={_cd} - stale derivative; REFUSING')
+                if not _pd and _lh.get('COADDOP') != _mh_own.get('COADDOP'):
                     raise RuntimeError(f'{lst} {scope} {_d}: LOO {stokes_tag} master COADDOP={_lh.get("COADDOP")!r} '
-                                       f'!= master {hdr0.get("COADDOP")!r} (no PARENTDG) - stale derivative; REFUSING')
+                                       f'!= {stokes_tag} master {_mh_own.get("COADDOP")!r} (no PARENTDG) - stale derivative; REFUSING')
             out[_d] = _load(_lp) if os.path.exists(_lp) else central
         _n = sum(1 for _d in dates if out[_d] is not central)
         if _n:
