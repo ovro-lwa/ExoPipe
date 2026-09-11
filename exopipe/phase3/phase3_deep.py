@@ -281,7 +281,7 @@ ALIGN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                      'phase2', 'align_images.py')
 WORKROOT = os.environ.get('P3_FLOW_ROOT', '/data07/gh/phase3/deep')   # moved off /fast (NVMe too small; was filling it)
 COADD_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); use coadd_root() at point of use
-MIN_EPOCHS = 5
+MIN_EPOCHS = int(os.environ.get('P3_MIN_EPOCHS', '3'))   # Gregg 2026-09-11: 3 for this run (was 5); thin 00h cells searched
 NPROC_RESID = int(os.environ.get('DEEP_NPROC_RESID', '6'))   # epoch-parallel residual build
 
 
