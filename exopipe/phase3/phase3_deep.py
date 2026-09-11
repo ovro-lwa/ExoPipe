@@ -776,6 +776,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _kd = lambda d: d
     os.environ['P3_CADENCE'] = cadence
     global _STRIATION_OFF
+    if cadence == '10min':
+        # GREGG 2026-09-11 (battery card section 9 approved): 10-minute tier elevation floor 25 deg, both
+        # Stokes (deep keeps 20.0 / 19.5). Measured: 25 deg removes 17 / 13 per cent of I / V finals at
+        # 0.1 / 0.0 per cent injection cost; 30 deg would cost 9 per cent of the searched area.
+        sv2.CONFIG['MIN_ELEVATION'] = float(os.environ.get('P3_TENMIN_MIN_ELEVATION', '25.0'))
+        sv2.CONFIG['I_MIN_ELEVATION'] = sv2.CONFIG['MIN_ELEVATION']
+        print(f'  {lst} {scope}: 10-minute tier elevation floor {sv2.CONFIG["MIN_ELEVATION"]:.1f} deg (Gregg 2026-09-11)')
     if cadence == '10min' and os.environ.get('P3_STRIATION_10MIN') != '1':
         _STRIATION_OFF = True       # Gregg 2026-09-09: striation model OFF at 10 minutes (battery: FPs x3.6-x10 with it on)
         print(f'  {lst} {scope}: 10-minute cadence - striation model OFF (ruling 2026-09-09)', flush=True)
