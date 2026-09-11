@@ -507,7 +507,9 @@ def _v110_cell_verdicts(lst, scope, base, cell_work, master_I, hdr0, em, cd,
     r = subprocess.run([_V110_PY, _V110_WRAP, cat, samp, outdir, 'p3']
                        + list(keys), cwd=os.path.dirname(_V110_WRAP),
                        env=env, capture_output=True, text=True,
-                       timeout=14400)
+                       # 2026-09-11: 4 h was exceeded by the V wideband cells with the most candidates (10h Blue/Full,
+                       # 21h Blue: 300-700 peaks x 20-30 epochs), each attempt failing after hours of search; 12 h default
+                       timeout=int(os.environ.get('P3_V110_TIMEOUT', '43200')))
     outp = f'{outdir}/V_top100_fp_gate_p3.csv'
     if r.returncode != 0 or not os.path.exists(outp):
         raise RuntimeError(
