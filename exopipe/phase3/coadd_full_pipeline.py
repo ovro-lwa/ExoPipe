@@ -3004,6 +3004,118 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     return n
 
 
+def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R0')):
+    """VARIANT-ONLY REBUILD (Gregg 2026-09-11 "go" on the variant-recovery steps 2-4; the 2026-09-06
+    campaign approval required a variant-only mode so the survey pair keeps its generation).
+    Rebuild the requested non-survey Stokes I variants of one cell FROM THE GENERATION'S OWN RECORDS:
+      - constituents, per-night flat-DC factor (qa3_scale) and weight from coadd_final/weights.csv,
+      - the night's co-add alignment flow from flow/<date>_scaled_flow.npy (none for a reference-identity
+        night),
+      - the generation's grid = the survey master's grid (template rebuilt as the final stage does),
+      - the per-variant divergence gate of dc6f33e on every input,
+      - the cell's absolute flux factor (SHSCALE/SH* cards of the survey master) baked in, as in the
+        generation, and the full header standard stamped.
+    NO realignment, NO reference selection, NOTHING else written: the survey pair, LOO masters, weights,
+    residuals and PB stay untouched. Output: <workdir>/variants_rebuilt/I_deep_<variant>_<fl>.fits.
+    Returns {variant: (path, n_constituents, refused)}; a variant with fewer than MIN_DATES_FOR_COADD
+    admitted inputs is reported, not written."""
+    import csv as _csv
+    fl = freq_label(freq_str)
+    workdir = f'{_workdir_base()}/{lst}_{fl}'
+    final_dir = f'{workdir}/coadd_final'
+    out_dir = f'{workdir}/variants_rebuilt'
+    prep_dir = f'{workdir}/prep_variants'
+    master = f'{final_dir}/I_deep_Taper_R075_{fl}.fits'
+    wcsv = f'{final_dir}/weights.csv'
+    for _p in (master, wcsv):
+        if not os.path.exists(_p):
+            raise RuntimeError(f'{lst} {fl}: {_p} missing - the generation record is incomplete; REFUSING')
+    mhdr = fits.getheader(master)
+    if mhdr.get('COADDOP') != 'ivw-mean-v3' or not mhdr.get('CONSTDIG'):
+        raise RuntimeError(f'{lst} {fl}: survey master is not a current-generation master '
+                           f'(COADDOP={mhdr.get("COADDOP")!r}); REFUSING')
+    rec = list(_csv.DictReader(open(wcsv)))
+    members = [r for r in rec if str(r.get('in_master', '')).strip() in ('1', 'True', 'true')]
+    if not members:
+        raise RuntimeError(f'{lst} {fl}: weights.csv lists no constituent; REFUSING')
+    # the generation's grid, rebuilt exactly as the final stage builds it
+    all_dates = discover_dates(lst, freq_str)
+    if not all_dates:
+        raise RuntimeError(f'{lst} {fl}: no Phase-2 images found; REFUSING')
+    post_dates = [x for x in all_dates if x[0] >= CUTOVER_DATE]
+    if post_dates:
+        tmpl_hdr, target_shape = _modal_grid_template(post_dates, all_dates[0])
+    else:
+        tmpl_hdr, target_shape = build_template_header(all_dates[0][2])
+    mshape = tuple(int(mhdr[f'NAXIS{i}']) for i in (2, 1))
+    if tuple(target_shape) != mshape:
+        raise RuntimeError(f'{lst} {fl}: template grid {target_shape} != survey master grid {mshape}; REFUSING')
+    sci_of = {d: sd for d, sd, _ in all_dates}
+    os.makedirs(out_dir, exist_ok=True); os.makedirs(prep_dir, exist_ok=True)
+    results = {}
+    for vk in variants:
+        aligned = []; refused = []
+        for r in members:
+            date = r['date']
+            sci_dir = r.get('sci_dir') or sci_of.get(date)
+            if not sci_dir or not os.path.isdir(sci_dir):
+                refused.append((date, 'no Science dir in the record')); continue
+            img = (find_subband_variant_image(sci_dir, freq_str, vk) if is_subband(freq_str)
+                   else find_wideband_deep_images(sci_dir, freq_str, 'I', vk))
+            if not img:
+                refused.append((date, f'no {vk} input')); continue
+            why = _variant_input_divergent(img)
+            if why:
+                print(f"  VARIANT GATE {vk} {date}: input REFUSED - {why} ({os.path.basename(img)})")
+                refused.append((date, why)); continue
+            if (r.get('qa3_guard') or '') == 'reference-identity':
+                flow = None; dc = 1.0
+            else:
+                fp = f'{workdir}/flow/{date}_scaled_flow.npy'
+                if not os.path.exists(fp):
+                    raise RuntimeError(f'{lst} {fl} {date}: recorded constituent without its flow at {fp}; REFUSING')
+                flow = np.load(fp)
+                _mean = float(r['qa3_scale'])
+                dc = _mean if (0.3 < _mean < 3.0) else 1.0      # the flat-DC rule of the build
+            weight = float(r['weight'])
+            needs_regrid = date < CUTOVER_DATE and bool(post_dates)
+            rg = precompute_regrid_mapping(img, tmpl_hdr, target_shape) if needs_regrid else None
+            out = f'{prep_dir}/{date}_{vk}.fits'
+            if os.path.exists(out):
+                os.remove(out)
+            ok = process_variant_image(img, flow, np.full(target_shape, dc, dtype=float),
+                                       tmpl_hdr, target_shape, out, rg)
+            if ok and os.path.exists(out):
+                aligned.append((date, out, weight))
+            else:
+                refused.append((date, 'alignment failed'))
+        if len(aligned) < MIN_DATES_FOR_COADD:
+            print(f"  {lst} {fl} {vk}: only {len(aligned)} admitted inputs (need {MIN_DATES_FOR_COADD}); NOT written")
+            results[vk] = (None, len(aligned), refused); continue
+        path = f'{out_dir}/I_deep_{vk}_{fl}.fits'
+        coadd_inverse_variance([p for _, p, _ in aligned], [w for _, _, w in aligned], path, tmpl_hdr,
+                               dates=[d for d, _, _ in aligned], sigclip=False)
+        stamp_master_span(path, lst, fl, [d for d, _, _ in aligned])
+        _stamp_variant_gate(path, refused)
+        # bake in the cell's absolute flux factor exactly as the generation carries it
+        if mhdr.get('SHSCALE') is not None:
+            with fits.open(path, mode='update') as hh:
+                hh[0].data = (np.asarray(hh[0].data, dtype=np.float32) * np.float32(mhdr['SHSCALE']))
+                for k in ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHDATE'):
+                    if k in mhdr:
+                        hh[0].header[k] = (mhdr[k], mhdr.comments[k])
+                hh[0].header['HISTORY'] = (f"variant-only rebuild from the generation record (weights.csv, flow/) "
+                                           f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}; shflux x {mhdr['SHSCALE']:.5f} "
+                                           f"inherited from the survey master (Gregg 2026-09-11 go)")
+                hh.flush()
+        _stamp_master_standard(path, lst, fl)
+        print(f"  {lst} {fl} {vk}: variant rebuilt from the record: {len(aligned)} constituents, "
+              f"{len(refused)} refused -> {path}")
+        results[vk] = (path, len(aligned), refused)
+    shutil.rmtree(prep_dir, ignore_errors=True)
+    return results
+
+
 def run_final_lst_freq(lst, freq_str, exclusions):
     """Final co-add + subtraction + striation removal for one (LST, freq).
 
@@ -3789,7 +3901,7 @@ def main():
                         help='MAD outlier threshold in sigma')
     parser.add_argument('--flow-all', action='store_true', dest='flow_all',
                         help='--stage flow: recompute every epoch, not only stale/missing')
-    parser.add_argument('--stage', choices=['flow', 'provisional', 'provisional-10min', 'final'],
+    parser.add_argument('--stage', choices=['flow', 'provisional', 'provisional-10min', 'final', 'variants'],
                         help='Two-pass co-add: provisional (deep outlier analysis), '
                              'provisional-10min (10-min interval outlier analysis), or final')
     parser.add_argument('--parallel', type=int, default=1,
@@ -3845,6 +3957,14 @@ def main():
         run_provisional(lsts, freqs, exclusions, args, depth='10min')
     elif args.stage == 'final':
         run_final(lsts, freqs, exclusions, args)
+    elif args.stage == 'variants':
+        # variant-only rebuild from the generation record (Gregg 2026-09-11); P3_VARIANTS_ONLY=Taper_R0,NoTaper_R0
+        _vks = tuple(v for v in os.environ.get('P3_VARIANTS_ONLY', 'Taper_R0,NoTaper_R0').split(',') if v)
+        for _l in lsts:
+            for _f in freqs:
+                _r = rebuild_variants_from_record(_l, _f, variants=_vks)
+                for _vk, (_p, _n, _ref) in _r.items():
+                    print(f'VARIANTS-STAGE {_l} {freq_label(_f)} {_vk}: {"WRITTEN " + _p if _p else "NOT WRITTEN"} ({_n} constituents, {len(_ref)} refused)', flush=True)
     else:
         for freq_str in freqs:
             process_frequency(freq_str, lsts, exclusions, args)
