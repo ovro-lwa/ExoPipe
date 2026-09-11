@@ -1112,8 +1112,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             raise RuntimeError(f'{lst} {scope}: no readable Phase-2 beam header for '
                                f'{_nobeam} - beam gate cannot run; REFUSING')
         if len(_fin) < 5:
-            raise RuntimeError(f'{lst} {scope}: only {len(_fin)} beam areas for the '
-                               f'gate median (need 5); REFUSING')
+            # GREGG 2026-09-11 ("Waive the floor. I want a complete Masters set"): a thin cell is
+            # SEARCHED with the beam gate skipped LOUDLY (as the search-tier gate does below 5
+            # nights, R-GC10 rider), never refused. Every night keeps its readable-beam requirement.
+            print(f'  {lst} {scope}: BEAM GATE SKIPPED - only {len(_fin)} nights with a beam area '
+                  f'(needs 5 for the cell median); floor waived, Gregg 2026-09-11; all {len(dates)} epochs searched')
         if len(_fin) >= 5:
             _bmed = _fin[len(_fin) // 2]
             _thr = float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5'))
