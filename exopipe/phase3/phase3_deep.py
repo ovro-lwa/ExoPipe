@@ -1011,17 +1011,39 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                f'{sorted(_pdates ^ _wdates)[:4]} differ from weights.csv) - stale derivative; REFUSING')
         _rmsI = {r['date']: float(r['i_rms_mjy']) for r in _prov if r.get('i_rms_mjy') not in (None, '', 'nan')}
         _rmsV = {r['date']: float(r['v_rms_mjy']) for r in _prov if r.get('v_rms_mjy') not in (None, '', 'nan')}
+        _key = _kd
+        if cadence == '10min':
+            # R-TENMIN-SEARCH-TIER-PER-FRAME (Gregg 2026-09-12 "Per frame is approved"; contract step 56): at 10
+            # minutes the admitted unit is the FRAME. Each frame's stage-1 residual (its leave-one-out bin
+            # subtraction, subtracted/<key>_<S>_sub) gives an inner rms; the population is every frame of the
+            # cell for that Stokes (median + 4 x 1.4826 MAD, no low side; fewer than 5 frames skips loudly);
+            # nothing is inherited from the night table (a bad night fails every frame on its own). Either
+            # Stokes above threshold refuses the frame from both searches, as at deep.
+            from exopipe.phase3.phase3_pipeline import inner_rms as _irms
+            _rmsI, _rmsV = {}, {}
+            for _d in dates:
+                for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
+                    _fp = f'{ebase}/subtracted/{_d}_{_st}_sub_{scope}.fits'
+                    if os.path.exists(_fp):
+                        try:
+                            _rv = float(_irms(np.squeeze(fits.getdata(_fp)).astype(float)))
+                            if np.isfinite(_rv) and _rv > 0:
+                                _rm[_d] = _rv
+                        except Exception as _e:
+                            print(f'  {lst} {scope} {_d}: stage-1 rms unreadable ({_e!r}) - frame keeps no rms')
+            _key = lambda d: d
         _tier = []
         for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
             _v = np.array(sorted(x for x in _rm.values() if np.isfinite(x) and x > 0))
             if len(_v) < 5:
-                print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}) SKIPPED - only {len(_v)} nights with a stage-1 rms (needs 5)')
+                print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}) SKIPPED - only {len(_v)} '
+                      f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms (needs 5)')
                 continue
             _med = float(np.median(_v)); _mad = float(np.median(np.abs(_v - _med))) * 1.4826
             _thr = _med + SEARCH_TIER_SIGMA * _mad
             for d in dates:
-                if _rm.get(_kd(d), 0) > _thr:
-                    _tier.append((d, _st, _rm[_kd(d)], _thr))
+                if _rm.get(_key(d), 0) > _thr:
+                    _tier.append((d, _st, _rm[_key(d)], _thr))
         _tdates = sorted({d for d, *_ in _tier})
         if _tdates:
             dates = [d for d in dates if d not in _tdates]
