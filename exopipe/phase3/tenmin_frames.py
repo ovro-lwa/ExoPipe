@@ -440,6 +440,43 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
             print(f'  [per-bin] {cell} {S} bin{k}: {len(imgs)} frames, LOO bin master N={len(imgs)}', flush=True)
 
 
+def _write_bin_pb_maps(out_root, cell, lst, scope, hdr0, shape, master_path):
+    """BIN PRIMARY-BEAM MAPS (contract step 61, Gregg 2026-09-12): for each 10-minute bin k the three-factor
+    map (model PB x chromatic term x per-band residual, composed by pb_apply.wideband_pb with binidx=k, exactly
+    as the deep PB_deep map but for the bin's own zenith-angle window) on the master grid, written to
+    bin_masters/PB_bin{k}_{scope}.fits with the deep map's header cards, and archived beside the bin masters
+    when archiving is on. These are the pbcorr siblings' input at 10 minutes. A missing library map REFUSES."""
+    bd = f'{out_root}/{cell}/bin_masters'; os.makedirs(bd, exist_ok=True)
+    _arun = os.environ.get('P3_ARCHIVE_RUN'); _aw = os.environ.get('P3_ARCHIVE_WRITE') != '0'
+    _aroot = os.environ.get('P3_ARCHIVE_ROOT', '/lustre/pipeline/exopipe/phase3')
+    pbhdr = None
+    for k in range(NBINS):
+        outp = f'{bd}/PB_bin{k}_{scope}.fits'
+        if os.path.exists(outp):
+            continue
+        b, meta = PB.wideband_pb(scope, lst, master_path, binidx=k)
+        if b is None:
+            raise RuntimeError(f'{cell}: no bin-{k} PB map from the library - REFUSING (contract step 61)')
+        if pbhdr is None:
+            _, pbhdr = PB.subband_deep_pb(meta['members'][0])
+        b = _pb_on_grid(b, pbhdr, hdr0, shape)
+        ph = fits.getheader(master_path).copy()
+        ph.pop('PBCORR', None)
+        ph['PBLIBV'] = ('v1-2026-07-04', 'PB library version'); ph['PBMETHOD'] = ('time-integrated-library', 'canonical (2026-07-11)')
+        ph['PBWINDOW'] = (f'10min-bin{k}', 'PB integration window'); ph['LSTBIN'] = (int(k), '10-minute bin')
+        ph['PBMODEL'] = (meta.get('pb_model', 'v1-2026-07-04'), 'factor 1: model PB library version')
+        if meta.get('chromatic'):
+            ph['PBCHROM'] = (meta['chromatic'], 'factor 2: bandwidth-smearing term (a priori)')
+        if meta.get('residual_pb'):
+            ph['PBRESID'] = (meta['residual_pb'], 'factor 3: measured residual gain per band')
+        fits.writeto(outp + '.part', b.astype(np.float32), ph, overwrite=True); os.replace(outp + '.part', outp)
+        if _aw and _arun:
+            import shutil as _sh
+            _cd = f'{_aroot}/Coadd/{_arun}/{lst}/{scope}/10min'; os.makedirs(_cd, exist_ok=True)
+            _sh.copy2(outp, f'{_cd}/PB_bin{k}_{scope}.fits.part'); os.replace(f'{_cd}/PB_bin{k}_{scope}.fits.part', f'{_cd}/PB_bin{k}_{scope}.fits')
+    print(f'  [per-bin] {cell}: bin PB maps present for bins 0-{NBINS - 1} ({bd})', flush=True)
+
+
 def build_cell_frames(lst, scope, out_root=None, stokes='IV', dates=None, inject=None,
                       overwrite=False, nproc=6):
     """Build the 10-minute Stage-1 tree for one cell (nights in parallel, fork pool).
@@ -499,6 +536,7 @@ def build_cell_frames(lst, scope, out_root=None, stokes='IV', dates=None, inject
         results = [_build_night(n) for n in nights]
     if PER_BIN:
         _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, base, mI, mV, overwrite)
+        _write_bin_pb_maps(out_root, cell, lst, scope, hdr0, shape, mI if 'I' in stokes else mV)
     frames_csv = f'{out_root}/{cell}/frames.csv'
     inj_csv = f'{out_root}/{cell}/injections.csv'
     new_frames = not os.path.exists(frames_csv)
