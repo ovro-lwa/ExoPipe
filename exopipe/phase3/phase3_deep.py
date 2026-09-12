@@ -857,10 +857,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     os.environ['P3_CADENCE'] = cadence
     global _STRIATION_OFF, _STREAM
     if os.environ.get('P3_STREAM_RESID') is None:
-        # 2026-09-12: streaming is the DEFAULT at 10 minutes (validated bit-identical on 10h Red, 2 nights, both
-        # Stokes: catalogs, 1,086 gate-ledger rows and archived frames equal); deep keeps the in-memory path until
-        # a deep cell is validated the same way (P3_STREAM_RESID=1 forces it on, =0 off, for either cadence).
-        _STREAM = (cadence == '10min')
+        # 2026-09-12: streaming is the DEFAULT for both cadences. Validated bit-identical at 10 minutes (10h Red,
+        # 2 nights: catalog, 1,086 gate-ledger rows, 12 archived frames) and at deep (00h 50MHz, 6 epochs, both
+        # Stokes: catalog 81 rows, 2,054 ledger rows, 16 archived frames). P3_STREAM_RESID=0 restores the
+        # in-memory path for either cadence.
+        _STREAM = True
     if _STREAM:
         print(f'  {lst} {scope}: STREAMING chain (flows/epochs on demand, residuals spilled to {WORKROOT})', flush=True)
     if cadence == '10min':
