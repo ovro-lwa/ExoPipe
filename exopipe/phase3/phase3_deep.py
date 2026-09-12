@@ -808,16 +808,21 @@ def _archive_frame_publish(path, lst, scope, d, stokes, cadence, cell_tag):
     {LST}/{date}/{RUN}/{band}/{Stokes}/deep/<PRODNAME>.fits (Gregg 2026-09-09, contract
     steps 0.4/51). Deep cadence only; P3_ARCHIVE_RUN names the generation; P3_ARCHIVE_WRITE=0
     is the only way to search without archiving (scratch, never production)."""
-    if cadence != 'deep' or os.environ.get('P3_ARCHIVE_WRITE') == '0':
+    if os.environ.get('P3_ARCHIVE_WRITE') == '0':
+        return None
+    # 2026-09-12 (contract step 66, Gregg "other recommendations approved"): the 10-minute cadence archives its
+    # search frames too, under {LST}/{night}/{RUN}/{band}/{Stokes}/10min/ (the night = the frame key's date part).
+    if cadence not in ('deep', '10min'):
         return None
     run = os.environ.get('P3_ARCHIVE_RUN')
     if not run:
         raise RuntimeError(f'{cell_tag} {d}: P3_ARCHIVE_RUN unset - the generation Run directory must be '
-                           f'named; REFUSING to write a deep search frame outside the archive (contract 51)')
+                           f'named; REFUSING to write a {cadence} search frame outside the archive (contract 51/66)')
     name = str(fits.getheader(path).get('PRODNAME', '') or '')
     if not name or name == 'unknown':
         raise RuntimeError(f'{cell_tag} {d}: {os.path.basename(path)} has no PRODNAME; REFUSING to archive')
-    dst = f'{_archive_root()}/{lst}/{d}/{run}/{scope}/{stokes}/deep/{name if name.endswith(".fits") else name + ".fits"}'
+    _night = d[:10]
+    dst = f'{_archive_root()}/{lst}/{_night}/{run}/{scope}/{stokes}/{cadence}/{name if name.endswith(".fits") else name + ".fits"}'
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     import shutil as _sh
     _sh.copy2(path, dst + '.part'); os.replace(dst + '.part', dst)

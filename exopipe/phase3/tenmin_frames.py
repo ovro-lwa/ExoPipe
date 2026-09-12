@@ -366,6 +366,38 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
             fits.writeto(mpath + '.part', M, mh, overwrite=True); os.replace(mpath + '.part', mpath)
             with open(f'{bd}/weights_{S}_bin{k}.csv', 'w', newline='') as fw_:
                 cw = csv.writer(fw_, lineterminator='\n'); cw.writerow(['key', 'weight']); cw.writerows(zip(keys, w))
+            # ARCHIVE (contract 4.0.1/steps 61 and 66, Gregg 2026-09-12): when the generation Run directory is named
+            # (P3_ARCHIVE_RUN) and archiving is not switched off (P3_ARCHIVE_WRITE=0 = scratch/battery), the central
+            # bin master goes to Coadd/{RUN}/{LST}/{band}/10min/<PRODNAME>.fits with bins.csv beside it, and each
+            # aligned, flux-scaled frame to {LST}/{night}/{RUN}/{band}/{S}/10min/<PRODNAME>.fits before its local copy
+            # is removed. Unset run + archiving on = REFUSAL (a 10-minute product is born in the archive or not at all).
+            _arun = os.environ.get('P3_ARCHIVE_RUN'); _aw = os.environ.get('P3_ARCHIVE_WRITE') != '0'
+            if _aw and not _arun:
+                raise RuntimeError(f'{cell} {S} bin{k}: P3_ARCHIVE_RUN unset with archiving on - REFUSING to build 10-minute '
+                                   f'products outside the archive (contract step 61); set P3_ARCHIVE_WRITE=0 for scratch')
+            if _aw:
+                import shutil as _sh
+                _aroot = os.environ.get('P3_ARCHIVE_ROOT', '/lustre/pipeline/exopipe/phase3')
+                _cd = f'{_aroot}/Coadd/{_arun}/{lst}/{scope}/10min'; os.makedirs(_cd, exist_ok=True)
+                _dst = f'{_cd}/{name if name.endswith(".fits") else name + ".fits"}'
+                _sh.copy2(mpath, _dst + '.part'); os.replace(_dst + '.part', _dst)
+                _bcsv = f'{_cd}/bins.csv'; _newb = not os.path.exists(_bcsv)
+                with open(_bcsv, 'a', newline='') as fb_:
+                    bw = csv.writer(fb_, lineterminator='\n')
+                    if _newb:
+                        bw.writerow(['stokes', 'bin', 'key', 'date', 'weight', 'bin_master', 'constdig', 'n_constituents'])
+                    for key_, wi_ in zip(keys, w):
+                        bw.writerow([S, k, key_, key_date(key_), wi_, os.path.basename(_dst), dig, len(imgs)])
+                for f_, key_, ha_ in zip(als, keys, hdrs):
+                    _pa = pp.build_name(scope, S, '10min', 'Taper', 0.0, proc=['dewarped', 'aligned'], lst=lst, lst_bin=k,
+                                        epoch=str(ha_.get('DATE-OBS')))
+                    _fd = f'{_aroot}/{lst}/{key_date(key_)}/{_arun}/{scope}/{S}/10min'; os.makedirs(_fd, exist_ok=True)
+                    _fdst = f'{_fd}/{_pa if _pa.endswith(".fits") else _pa + ".fits"}'
+                    with fits.open(f_, memmap=False) as _hh:
+                        _hd = _hh[0].header.copy(); _hd['PRODNAME'] = (_pa, 'Phase 3 product name (grammar; CONTINUE cards)')
+                        _hd['CADENCE'] = ('10min', 'Frame cadence'); _hd['LSTBIN'] = (int(k), '10-minute bin')
+                        fits.writeto(_fdst + '.part', np.squeeze(_hh[0].data).astype(np.float32), _hd, overwrite=True)
+                    os.replace(_fdst + '.part', _fdst)
             for a, wi, key, ha in zip(imgs, w, keys, hdrs):
                 v = (a != 0)
                 den = W - wi * v
