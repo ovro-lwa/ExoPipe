@@ -354,6 +354,7 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
             dates = sorted(key_date(x) for x in keys)
             dig = hashlib.md5(','.join(dates).encode()).hexdigest()
             mh = fits.getheader(mI if S == 'I' else mV).copy()
+            mh['PARENTDG'] = (str(mh.get('CONSTDIG', '') or ''), 'CONSTDIG of the deep master this bin master derives from (2026-09-12)')
             mh['COADDOP'] = (BIN_COADDOP, 'per-bin inverse-variance plain mean (Gregg 2026-09-09)')
             mh['NCOADD'] = (len(imgs), 'constituent frames (bin)'); mh['LSTBIN'] = (int(k), '10-minute bin')
             mh['CONSTDIG'] = (dig, 'md5 of the sorted constituent night list'); mh['PARENTMS'] = (os.path.basename(mI if S == 'I' else mV)[:68], 'deep master of the cell')
