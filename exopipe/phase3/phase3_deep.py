@@ -638,9 +638,19 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
         'MSTRDIG': (str(mh.get('CONSTDIG', 'legacy-no-digest'))[:32], 'Parent master constituent digest (CONSTDIG)'),
         'STRIWIN': (0.0 if _STRIATION_OFF else float(8.0 * em * cd), '[deg] Striation window (8 x beam; 0 = not applied)'),
         'CADENCE': (cadence, 'Frame cadence'),
+    }
+    if cadence == '10min':
+        # contract step 66 (2026-09-12): the archived 10-minute search frame carries its bin cards from the
+        # subtracted frame (bin master name and digest, leave-one-out flag and N, night flux factor)
+        for _k, _c in (('BINMSTR', 'central bin master (Coadd/.../10min)'), ('BINLOO', 'subtracted its own leave-one-out bin master'),
+                       ('BINNCO', 'constituents of the LOO bin master'), ('BINDIG', 'constituent digest of the bin master'),
+                       ('FLUXDC', 'night DC flux factor (no gradient)'), ('PBRATIO', 'PB ratio step (none for per-bin masters)')):
+            if hs.get(_k) is not None:
+                extra[_k] = (hs.get(_k), _c)
+    extra.update({
         'RUNLABEL': (str(label)[:20], 'Search run label'),
         'ORIGIN': ('exopipe phase3_deep search frame', 'Producer'),
-    }
+    })
     if loo_used:
         extra['LOOEXCL'] = (d, 'Epoch excluded from the LOO master')
     basis = str(hs.get('TIMEFIX', 'v2-phase2')).replace('v2-', '', 1)
