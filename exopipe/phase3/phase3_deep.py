@@ -855,7 +855,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if cadence == 'deep':
         _kd = lambda d: d
     os.environ['P3_CADENCE'] = cadence
-    global _STRIATION_OFF
+    global _STRIATION_OFF, _STREAM
+    if os.environ.get('P3_STREAM_RESID') is None:
+        # 2026-09-12: streaming is the DEFAULT at 10 minutes (validated bit-identical on 10h Red, 2 nights, both
+        # Stokes: catalogs, 1,086 gate-ledger rows and archived frames equal); deep keeps the in-memory path until
+        # a deep cell is validated the same way (P3_STREAM_RESID=1 forces it on, =0 off, for either cadence).
+        _STREAM = (cadence == '10min')
+    if _STREAM:
+        print(f'  {lst} {scope}: STREAMING chain (flows/epochs on demand, residuals spilled to {WORKROOT})', flush=True)
     if cadence == '10min':
         # GREGG 2026-09-11 (battery card section 9 approved): 10-minute tier elevation floor 25 deg, both
         # Stokes (deep keeps 20.0 / 19.5). Measured: 25 deg removes 17 / 13 per cent of I / V finals at
