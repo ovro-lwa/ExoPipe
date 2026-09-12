@@ -1014,7 +1014,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if not os.path.exists(_gsc):
         _js.dump({'master': os.path.basename(mI), 'master_md5_data': _gen,
                   'CONSTDIG': hdr0.get('CONSTDIG', ''), 'written_by': 'phase3_deep', 'n_flows': len(flows)},
-                 open(_gsc + '.part', 'w')); os.replace(_gsc + '.part', _gsc)
+                 open(_gsc + f'.part{os.getpid()}', 'w')); os.replace(_gsc + f'.part{os.getpid()}', _gsc)   # pid-unique: V and I searches of one cell may run concurrently (2026-09-12 race)
     dates = [d for d in dates if d in flows]
     # (0) drop data_decisions-excluded epochs — the master already excludes them, but the
     # per-epoch residual still exists on disk, so the search would otherwise pull them back
