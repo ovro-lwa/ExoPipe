@@ -16,9 +16,28 @@ def tables():
     if _TABLES is None:
         _TABLES = json.load(open(PATH))['tables']
     return _TABLES
+_RECORD_ONLY_SAID = set()
 def table_for(stokes, band):
-    rec = tables().get(f'deep_{stokes}_{band}')
-    return [tuple(t) for t in rec['table']] if rec else []
+    """The table for THIS cadence (P3_CADENCE: deep default, or 10min). Contract step 74 (Gregg 2026-09-09 (d),
+    2026-09-11 (c)): at 10 minutes the deep-calibrated table is NEVER applied (it over-excludes 10-15 per cent of
+    bright I injections at that cadence); a missing 10-minute table REFUSES unless P3_TABLE_RECORD_ONLY=1 declares
+    a record-only pass (the first production pass and the battery, whose tables are derived from the harvest
+    afterwards and re-gated offline) - then nothing is removed and the choice is printed once per band."""
+    cad = os.environ.get('P3_CADENCE', 'deep')
+    key = f'{cad}_{stokes}_{band}'
+    rec = tables().get(key)
+    if rec:
+        return [tuple(t) for t in rec['table']]
+    if cad == 'deep':
+        return []
+    if os.environ.get('P3_TABLE_RECORD_ONLY') == '1':
+        if key not in _RECORD_ONLY_SAID:
+            _RECORD_ONLY_SAID.add(key)
+            print(f'  [table] {key}: no 10-minute table - RECORD-ONLY pass (P3_TABLE_RECORD_ONLY=1): nothing removed; '
+                  f'the table is derived from this harvest and applied offline', flush=True)
+        return []
+    raise RuntimeError(f'[table] {key}: no 10-minute bright-parent table and P3_TABLE_RECORD_ONLY is not set - '
+                       f'REFUSING (contract step 74: the deep table is never applied at 10 minutes)')
 def _uv(ra, dec):
     r, d = np.radians(ra), np.radians(dec)
     return np.stack([np.cos(d) * np.cos(r), np.cos(d) * np.sin(r), np.sin(d)], -1)
