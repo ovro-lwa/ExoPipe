@@ -378,14 +378,55 @@ def _batch_flows_unlocked(cell_work, mup, items):
                   f'    flow batch stdout tail: {r.stdout[-600:]}', flush=True)
             raise RuntimeError(f'flow batch failed rc={r.returncode} '
                                f'(see log above); cell must be rerun')
-    flows = {}
+    flows = _Lazy() if _STREAM else {}
     for date, ep_up in items:
         fb = os.path.splitext(os.path.basename(ep_up))[0]
         fp = f'{cell_work}/{fb}_flow.npy'
         if os.path.exists(fp):
-            flows[date] = np.load(fp)
+            if _STREAM:
+                dict.__setitem__(flows, date, (lambda _fp=fp: np.load(_fp)))
+            else:
+                flows[date] = np.load(fp)
     return flows
 
+
+# STREAMING CHAIN (Gregg 2026-09-12, order agreed; proposed in CARD_TENMIN_BATTERY_20260908 section 7): with
+# P3_STREAM_RESID=1 the per-epoch x2 flow fields (~0.5 GB each), the epoch reconstructions and the residuals are
+# NOT held in memory for every epoch of the cell; each is loaded (flows, epochs) or spilled to the node-local cell
+# work dir and reloaded (residuals) on demand. Every number is computed by the same functions on the same arrays,
+# so the output is bit-identical to the in-memory path; only the footprint changes (measured 75-110 GB per
+# 10-minute search with ~150 frames held). Default OFF until validated on a cell; the deep fleet is untouched.
+_STREAM = os.environ.get('P3_STREAM_RESID') == '1'
+_SPILLED = []
+
+
+class _Lazy(dict):
+    """dict of key -> zero-argument loader; item access runs the loader (nothing cached)."""
+    def __getitem__(self, k):
+        return dict.__getitem__(self, k)()
+    def get(self, k, default=None):
+        return self[k] if k in self else default
+    def items(self):
+        return ((k, self[k]) for k in dict.keys(self))
+    def values(self):
+        return (self[k] for k in dict.keys(self))
+
+
+def _spill(arr, path):
+    np.save(path, arr); _SPILLED.append(path + ('' if path.endswith('.npy') else '.npy'))
+    return path + ('' if path.endswith('.npy') else '.npy')
+
+
+def _cleanup_spills():
+    for p in _SPILLED:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+import atexit as _atexit
+_atexit.register(_cleanup_spills)
 
 _STRIATION_OFF = os.environ.get('P3_STRIATION_OFF') == '1'   # battery variable (Gregg 2026-09-08); production default ON
 _REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'
@@ -420,13 +461,45 @@ def _resid_task(d):
         return d, None
 
 
-def _build_residuals_mp(epoch, master, flows, hdr, cd, dates, nproc):
+def _resid_task_spill(d):
+    """Streaming variant of _resid_task: the residual is written to the node-local spill dir and its
+    path returned (the parent reloads on demand). Same _residual call, same arrays."""
+    c = _RESID_CTX
+    try:
+        m = c['master'][d] if isinstance(c['master'], dict) else c['master']
+        r = _residual(c['epoch'][d], m, c['flows'][d], c['hdr'], c['cd'])
+        return d, _spill(r, f"{c['spill']}/resid_{c['tag']}_{d}_{os.getppid()}")
+    except Exception:
+        return d, None
+
+
+def _build_residuals_mp(epoch, master, flows, hdr, cd, dates, nproc, spill=None, tag=''):
     """Build per-epoch residuals in parallel. Uses fork so the big master +
     flow arrays are shared copy-on-write (not pickled); only the date index is
-    passed and the residual returned. Identical output to the serial path."""
+    passed and the residual returned. Identical output to the serial path.
+    spill (streaming): directory to write each residual to; the return is then a
+    _Lazy mapping date -> loader instead of date -> array."""
     import multiprocessing as mp
     global _RESID_CTX
-    _RESID_CTX = dict(epoch=epoch, master=master, flows=flows, hdr=hdr, cd=cd)
+    _RESID_CTX = dict(epoch=epoch, master=master, flows=flows, hdr=hdr, cd=cd, spill=spill, tag=tag)
+    if spill is not None:
+        nproc = max(1, min(nproc, len(dates)))
+        try:
+            if nproc == 1:
+                out = dict(_resid_task_spill(d) for d in dates)
+            else:
+                with mp.get_context('fork').Pool(nproc) as pool:
+                    out = dict(pool.map(_resid_task_spill, dates))
+        finally:
+            _RESID_CTX = {}
+        for pth in out.values():
+            if pth is not None:
+                _SPILLED.append(pth)
+        lz = _Lazy()
+        for d, pth in out.items():
+            if pth is not None:
+                dict.__setitem__(lz, d, (lambda _p=pth: np.load(_p)))
+        return lz
     nproc = max(1, min(nproc, len(dates)))
     try:
         if nproc == 1:
@@ -909,8 +982,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _bm not in _binm:
             _binm[_bm] = _load(f'{ebase}/bin_masters/{_bm}')
         return _binm[_bm]
+    if _STREAM:
+        epoch_I = _Lazy()
     for d in dates:
-        ei = _load(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits') + _recon_master(d); epoch_I[d] = ei
+        ei = _load(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits') + _recon_master(d)
+        if _STREAM:
+            dict.__setitem__(epoch_I, d, (lambda _d=d: _load(f'{ebase}/subtracted/{_d}_I_sub_{scope}.fits') + _recon_master(_d)))
+        else:
+            epoch_I[d] = ei
         ep_up = f'{cell_work}/ep_{d}_up2.fits'
         if not os.path.exists(ep_up):
             write_up_fits(fft_upsample2(ei), hdr0, ep_up)
@@ -1225,7 +1304,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         resid_I = _build_residuals_mp(epoch_I,
                                       _loo_masters(master_I, 'I',
                                                    'Taper_R075', mI),
-                                      flows, hdr_ref, cd, dates, NPROC_RESID)
+                                      flows, hdr_ref, cd, dates, NPROC_RESID,
+                                      spill=(cell_work if _STREAM else None), tag='I')
         dates = [d for d in dates if d in resid_I]
         sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
         _write_sigstack(sstack_I, hdr0, run_root, lst, scope, 'I')
@@ -1237,18 +1317,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # (duplicating the survey-complete V ledger into the new run's dir).
     # 'V' and 'IV' behavior unchanged.
     if master_V is not None and 'V' in stokes:
-        epoch_V = {}
+        epoch_V = _Lazy() if _STREAM else {}
         for d in dates:
             vp = f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'
             if os.path.exists(vp):
-                epoch_V[d] = _load(vp) + master_V
+                if _STREAM:
+                    dict.__setitem__(epoch_V, d, (lambda _vp=vp: _load(_vp) + master_V))
+                else:
+                    epoch_V[d] = _load(vp) + master_V
         if epoch_V:
-            vd = list(epoch_V)
+            vd = list(dict.keys(epoch_V))
             _mV = _loo_masters(master_V, 'V', 'Taper_R0', mVp)
             resid_V = _build_residuals_mp(epoch_V,
                                           {d: _mV[d] for d in vd},
-                                          {d: flows[d] for d in vd},
-                                          hdr_ref, cd, vd, NPROC_RESID)
+                                          flows,   # the builder reads flows[d] for d in vd only (same in both modes)
+                                          hdr_ref, cd, vd, NPROC_RESID,
+                                          spill=(cell_work if _STREAM else None), tag='V')
     sstack_V = _sigma_stack(resid_V, cell_work, hdr0, 'V') if resid_V else None
     _write_sigstack(sstack_V, hdr0, run_root, lst, scope, 'V')
 
