@@ -967,8 +967,6 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         m = re.search(r'(\d{4}-\d\d-\d\d(?:T\d\d)?)_I_sub_', os.path.basename(c))
         if m:
             dates.append(m.group(1))
-    if included_dates:
-        dates = [d for d in dates if d in included_dates]
     if len(dates) == 0:
         raise RuntimeError(f'{lst} {scope}: ZERO epochs found — inputs '
                            f'missing/unshipped; REFUSING (a 0-epoch cell '
@@ -1162,9 +1160,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             print(f'  {lst} {scope}: SEARCH-TIER GATE (per Stokes) - I search refuses {len(_skipI_tier)} epoch(s) {sorted(_skipI_tier)}; '
                   f'V search refuses {len(_skipV_tier)} epoch(s) {sorted(_skipV_tier)} '
                   f'(stage-1 rms > median + {SEARCH_TIER_SIGMA:.0f} x MAD of that Stokes)')
-            _both = _skipI_tier & _skipV_tier
-            if _both:
-                dates = [d for d in dates if d not in _both]      # refused from both searches on its own merits in each
+            # (an epoch refused by both Stokes stays in dates: its frames are still made; only its search is skipped)
     except FileNotFoundError as _e:
         raise RuntimeError(f'{lst} {scope}: search-tier gate input missing ({_e}); REFUSING')
     skip_I_dates.update({d for d in _skipI_tier if d in dates})      # per-Stokes search-tier refusals, I side (Gregg 2026-09-13)
@@ -1282,6 +1278,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if len(dates) < MIN_EPOCHS:
         print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} flows (MIN_EPOCHS={MIN_EPOCHS})'); return 0
 
+    if included_dates:
+        # INCREMENTAL MODE (Gregg 2026-09-13 "Proceed"): every admission gate above ran on the whole cell; only the listed
+        # epochs are now built and searched, and their rows/frames are APPENDED to the attempt (run under a copy of the
+        # published attempt). The sigma-stack annotation comes from the persisted cell map, not from the subset.
+        _inc_missing = [d for d in included_dates if d not in dates]
+        dates = [d for d in dates if d in included_dates]
+        print(f'  {lst} {scope}: INCREMENTAL - {len(dates)} listed epoch(s) to build and search'
+              + (f'; {len(_inc_missing)} listed but not admitted by the gates: {_inc_missing}' if _inc_missing else ''), flush=True)
+        if not dates:
+            print(f'  {lst} {scope}: INCREMENTAL - nothing admitted; done'); return 0
     hdr_ref = _det_header(hdr0, scope, em, cd, None)
     # R-LOO-MASTERS as SEARCH FRAMES (conformance fix 2026-09-03): an epoch
     # is differenced against ITS OWN leave-one-out master where one exists
@@ -1342,8 +1348,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                       flows, hdr_ref, cd, dates, NPROC_RESID,
                                       spill=(cell_work if _STREAM else None), tag='I')
         dates = [d for d in dates if d in resid_I]
-        sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
-        _write_sigstack(sstack_I, hdr0, run_root, lst, scope, 'I')
+        _ssI = f'{run_root}/sigstack/{lst}_{scope}_I_sigstack.fits'
+        if included_dates and os.path.exists(_ssI):
+            sstack_I = np.squeeze(fits.getdata(_ssI)).astype(float); print(f'  {lst} {scope}: INCREMENTAL - sigma-stack I from the persisted cell map')
+        else:
+            sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
+            _write_sigstack(sstack_I, hdr0, run_root, lst, scope, 'I')
     else:
         resid_I, sstack_I = {}, None   # V-only redo (Gregg 2026-08-21): Stokes I is out
     resid_V = {}
@@ -1368,8 +1378,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                           flows,   # the builder reads flows[d] for d in vd only (same in both modes)
                                           hdr_ref, cd, vd, NPROC_RESID,
                                           spill=(cell_work if _STREAM else None), tag='V')
-    sstack_V = _sigma_stack(resid_V, cell_work, hdr0, 'V') if resid_V else None
-    _write_sigstack(sstack_V, hdr0, run_root, lst, scope, 'V')
+    _ssV = f'{run_root}/sigstack/{lst}_{scope}_V_sigstack.fits'
+    if included_dates and os.path.exists(_ssV):
+        sstack_V = np.squeeze(fits.getdata(_ssV)).astype(float); print(f'  {lst} {scope}: INCREMENTAL - sigma-stack V from the persisted cell map')
+    else:
+        sstack_V = _sigma_stack(resid_V, cell_work, hdr0, 'V') if resid_V else None
+        _write_sigstack(sstack_V, hdr0, run_root, lst, scope, 'V')
 
     gled_rows, gimg_rows = [], []
     v_pending, i_pending = [], []
@@ -1576,9 +1590,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             i_pending.append((d, front, hdr, ot, float(_drI)))
             _gI = [lst, scope, 'I', d, len(passed), len(front), '', '', '', len(_allI), 20.0]
             gimg_rows.append(_gI); _gimgI[d] = _gI
-        if d in skip_V_dates:
-            gimg_rows.append([lst, scope, 'V', d, 0, 0, 0, 0, 0, 0, 20.0])
-        elif d in resid_V:
+        if d in resid_V:
             rV = np.nan_to_num(resid_V[d], nan=0.0)
             # P13 fix (approved 2026-08-21): ARCHIVE the search's own V residual
             # frame — the exact frame detection runs on — with THERMNOI stamped
@@ -1608,6 +1620,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _archive_frame_publish(vr_path, lst, scope, d, 'V', cadence, f'{lst} {scope}')
             if os.path.exists(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
                 _archive_frame_publish(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_'), lst, scope, d, 'V', cadence, f'{lst} {scope}')
+            # GREGG 2026-09-13 (decoupling): the search frame is a science product and exists for every epoch of the
+            # generation; the search-tier and sanity gates decide only whether it is SEARCHED. Skip detection here.
+            if d in skip_V_dates:
+                gimg_rows.append([lst, scope, 'V', d, 0, 0, 0, 0, 0, 0, 20.0]); continue
             # sstack is INFO-ONLY (quoted on survivors, lines below), NOT a gate
             # (2026-06-23 ruling: mstruct is the sole V gate). Passing None here keeps
             # run_identification_v from filtering on sigma_stack.
