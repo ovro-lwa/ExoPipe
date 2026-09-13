@@ -86,6 +86,9 @@ SIZE_SNR_GATE = 8.0
 # duplicates removed; wb=wideband deep, sb=subband deep): re-derive from P3S3
 # after its Stage 2 and record the change. Blue p90 = 1 is degenerate (any
 # night with >= 2 post-mstruct candidates keys the flood curve) - reported.
+# RETIRED 2026-09-05/06 with the flood-night curve it keyed, and unused since; the measured per-Stokes
+# per-band table replaced it. Kept only as the record of the calibrated deep values. Gregg 2026-09-13 on
+# the 10-minute tier: "there is no threshold until we review battery results."
 FLOOD_P90_POSTMSTRUCT = {('Red', 'wb'): 8, ('Green', 'wb'): 9, ('Blue', 'wb'): 1,
                          ('Full', 'wb'): 8, ('Red', 'sb'): 3, ('Green', 'sb'): 2,
                          ('Blue', 'sb'): 1}
@@ -1763,14 +1766,15 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             if keptv:
                 v_pending.append((d, keptv, vr_path, hdr, ot,
                                   1 if gate_ran else '', ))
-    # ── I 2-D DYNAMIC CURVE STAGE (ratified R-IVETO-FLOOD-CURVE: R25 1.0
-    # nominal / 1.4 flood, gamma 0.35, active S>=25 where S = parent peak
-    # flux over the night's uniform residual rms; flood = a night whose
-    # post-front count exceeds 3x the cell median of post-front counts).
+    # ── I 2-D BRIGHT-PARENT STAGE. The ratified flood-night curve (R25 1.0 nominal / 1.4 on a flood
+    # night) was SUPERSEDED on 2026-09-05/06 by the measured per-Stokes per-band table, and flood keying
+    # was retired with it (see the table call below): nothing downstream has read a flood classification
+    # since. The keying nevertheless survived here as three dead assignments plus a printed line claiming
+    # that an uncalibrated tier "falls back to 3x the cell median", which was never applied to anything
+    # and which the contract repeated as though it changed 10-minute products. Removed 2026-09-13.
+    # GREGG 2026-09-13, on the 10-minute flood threshold: "there is no threshold until we review battery
+    # results." There is none, at either cadence: no night is classified and no radius is widened.
     if i_pending:
-        _icnt = {d_: len(fr) for d_, fr, _h, _o, _r in i_pending}
-        _isv = sorted(_icnt.values())
-        _icmed = max(_isv[len(_isv) // 2], 1)
         from scipy.spatial import cKDTree as _KD
         _pa = np.array(_parents) if _parents else np.zeros((0, 3))
 
@@ -1779,16 +1783,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             return np.stack([np.cos(d_) * np.cos(r_),
                              np.cos(d_) * np.sin(r_), np.sin(d_)], -1)
         _ptree = _KD(_uv(_pa[:, 0], _pa[:, 1])) if len(_pa) else None
-        _bc = _BAND_CLASS.get(scope.replace('MHz', ''), scope)
-        _tier = ('sb' if 'MHz' in scope else 'wb') + ('10' if cadence == '10min' else '')
-        _p90 = FLOOD_P90_POSTMSTRUCT.get((_bc, _tier), 3 * _icmed)
-        if (_bc, _tier) not in FLOOD_P90_POSTMSTRUCT:
-            print(f'  {lst} {scope}: flood key for ({_bc},{_tier}) not calibrated - using 3x cell median ({3 * _icmed})')
         for d_, front, hdr_, ot_, drI_ in i_pending:
-            # flood night = post-mstruct count above the band x tier 90th
-            # percentile (R-IVETO-FLOOD-CURVE-RATIFIED; landed 2026-09-04)
-            _flood = _icnt[d_] > _p90
-            _r25 = 1.4 if _flood else 1.0
             # Ephemeris always-on for I (ratified; omission caught by Gregg
             # 2026-09-04 - Jupiter at 80 sigma on the Blue I pages):
             # Jupiter per band radius + Moon 15 arcmin, per-epoch positions.
