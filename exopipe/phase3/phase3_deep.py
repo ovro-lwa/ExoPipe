@@ -1146,16 +1146,28 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             for d in dates:
                 if _rm.get(_key(d), 0) > _thr:
                     _tier.append((d, _st, _rm[_key(d)], _thr))
-        _tdates = sorted({d for d, *_ in _tier})
-        if _tdates:
-            dates = [d for d in dates if d not in _tdates]
+        # GREGG 2026-09-13 ("this is a mistake. That sounds like the gate for the co-add, not the search!"): the
+        # search-tier admission is PER STOKES - an epoch (or 10-minute frame) is refused from the I search on the I
+        # stage-1 rms and from the V search on the V rms, never from both on either. Until this fix the deep run
+        # refused 472 epochs in 291 cell-Stokes on the other Stokes' rms (EQ Peg 2025-08-01 in six 21h bands).
+        _skipI_tier = {d for d, _st, *_ in _tier if _st == 'I'}
+        _skipV_tier = {d for d, _st, *_ in _tier if _st == 'V'}
+        if _tier:
             with open(f'{_refdir}/{lst}_{scope}_searchtier_excluded.csv', 'a') as _sf:
                 for d, _st, _r, _thr in _tier:
                     _sf.write(f'{lst},{scope},{d},{_st},{_r:.1f},{_thr:.1f},{_attempt}\n')
-            print(f'  {lst} {scope}: SEARCH-TIER GATE - {len(_tdates)} epoch(s) REFUSED from search '
-                  f'(stage-1 rms > median + {SEARCH_TIER_SIGMA:.0f} x MAD in I or V): {_tdates}')
+            print(f'  {lst} {scope}: SEARCH-TIER GATE (per Stokes) - I search refuses {len(_skipI_tier)} epoch(s) {sorted(_skipI_tier)}; '
+                  f'V search refuses {len(_skipV_tier)} epoch(s) {sorted(_skipV_tier)} '
+                  f'(stage-1 rms > median + {SEARCH_TIER_SIGMA:.0f} x MAD of that Stokes)')
+            _both = _skipI_tier & _skipV_tier
+            if _both:
+                dates = [d for d in dates if d not in _both]      # refused from both searches on its own merits in each
     except FileNotFoundError as _e:
         raise RuntimeError(f'{lst} {scope}: search-tier gate input missing ({_e}); REFUSING')
+    try:
+        skip_I_dates.update(_skipI_tier - set(dates) if False else {d for d in _skipI_tier if d in dates})
+    except NameError:
+        _skipV_tier = set()
     # (1d) INPUT-PROVENANCE GATE (2026-09-05, after 02h 36MHz was parked six times on
     # a stale 2025-01-02 product from 2026-08-13 with BMAJ=0 that the 2026-09-02 rebuild
     # never regenerated - the night has no Phase-2 product): an epoch is searched only
@@ -1440,6 +1452,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                         _sf.write(f'{lst},{scope},{d},{_vr[d]*1e3:.1f},{_vmed*1e3:.1f},{_attempt}\n')
                 print(f'  {lst} {scope}: SANITY GATE (V only) — {len(skip_V_dates)} epoch(s) REFUSED from the V search '
                       f'(frame rms >{SANITY_I_X:.0f}x cell median {_vmed*1e3:.0f} mJy): {sorted(skip_V_dates)}')
+        skip_V_dates |= {d for d in _skipV_tier if d in resid_V}    # per-Stokes search-tier refusals (Gregg 2026-09-13)
     except Exception as _e:
         print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
     for d in dates:
