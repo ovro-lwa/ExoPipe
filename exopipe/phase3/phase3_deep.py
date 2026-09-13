@@ -1931,6 +1931,20 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             nwr += len(finals)
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)
+    # ZERO-PRODUCT REFUSAL (2026-09-13, CLAUDE.md section 3: "a rebuild that silently no-ops is a bug"
+    # and "wrote 0 candidates never produces a done marker"). A run that searched epochs but wrote no
+    # image row wrote nothing at all - no ledger row, no frame, no residual - and must NOT print the
+    # completion line, because the fleets read that line as proof of a publishable attempt. 07h_Blue
+    # Stokes V did exactly this on 2026-09-13: 29 minutes, "124 epochs -> 0 candidates (0 gate-ledger
+    # rows, 0 image rows)", the done sentinel, and nothing on disk but two gate records; its worker then
+    # adopted the attempt four times before parking the cell. An epoch count of zero is a different and
+    # legitimate case (every epoch refused upstream) and still reports normally.
+    if dates and not gimg_rows:
+        raise RuntimeError(
+            f'{lst} {scope}: REFUSING - {len(dates)} epoch(s) entered the search and NOT ONE image row was '
+            f'written, so this run produced no ledger row, no frame and no residual. The completion line is '
+            f'withheld. Causes seen: the Stokes loop never ran because no residual of that Stokes reached it. '
+            f'Re-run this cell with unbuffered output to see which stage dropped them.')
     print(f'  {lst} {scope}: {len(dates)} epochs -> {nwr} candidates  '
           f'({len(gled_rows)} gate-ledger rows, {len(gimg_rows)} image rows)  '
           f'({(time.time()-t0)/60:.1f} min)', flush=True)
