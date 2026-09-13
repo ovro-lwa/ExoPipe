@@ -433,7 +433,7 @@ _atexit.register(_cleanup_spills)
 
 _STRIATION_OFF = os.environ.get('P3_STRIATION_OFF') == '1'   # battery variable (Gregg 2026-09-08); production default ON
 _REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'
-SEARCH_TIER_SIGMA = float(os.environ.get('P3_SEARCH_TIER_SIGMA', '4.0'))   # R-GC10 Layer-2 search tier (Gregg 2026-09-09)         # battery variable: no per-frame x2 flow refinement (night flow only)
+SEARCH_TIER_SIGMA = float(os.environ.get('P3_SEARCH_TIER_SIGMA', '5.0'))   # R-GC10 Layer-2 search tier: 4.0 (Gregg 2026-09-09) -> 5.0 (Gregg 2026-09-13 "Change to MAD 5 for exclusion from transient search")         # battery variable: no per-frame x2 flow refinement (night flow only)
 
 
 def _residual(epoch, master, flow, hdr, cd):
