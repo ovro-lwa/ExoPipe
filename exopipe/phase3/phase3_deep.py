@@ -367,7 +367,7 @@ def _batch_flows_unlocked(cell_work, mup, items):
             'P3_FLOW_PYTHON', '/opt/devel/pipeline/envs/py310_orca/bin/python')
         # 2026-09-13: ONE flow batch per node at a time (flock on a node-local lock file; the GPU aborted with
         # rc=-6 when several searches ran their flow batches together). Serialisation only - no numeric change.
-        _lock = os.environ.get('P3_FLOW_LOCK', os.path.join(WORKROOT, '.flow_batch.lock'))
+        _lock = os.environ.get('P3_FLOW_LOCK', '/fast/gh/main/phase3/.flow_batch.lock')   # node-global (one GPU per node): every search family shares it
         r = subprocess.run(['flock', '-w', '86400', _lock, flow_py, ALIGN,
                             '--pairs', pp, '--no_qa', '--save_flow'],
                            capture_output=True, text=True, env=env)
