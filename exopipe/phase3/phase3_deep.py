@@ -1164,10 +1164,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 dates = [d for d in dates if d not in _both]      # refused from both searches on its own merits in each
     except FileNotFoundError as _e:
         raise RuntimeError(f'{lst} {scope}: search-tier gate input missing ({_e}); REFUSING')
-    try:
-        skip_I_dates.update(_skipI_tier - set(dates) if False else {d for d in _skipI_tier if d in dates})
-    except NameError:
-        _skipV_tier = set()
+    skip_I_dates.update({d for d in _skipI_tier if d in dates})      # per-Stokes search-tier refusals, I side (Gregg 2026-09-13)
     # (1d) INPUT-PROVENANCE GATE (2026-09-05, after 02h 36MHz was parked six times on
     # a stale 2025-01-02 product from 2026-08-13 with BMAJ=0 that the 2026-09-02 rebuild
     # never regenerated - the night has no Phase-2 product): an epoch is searched only
