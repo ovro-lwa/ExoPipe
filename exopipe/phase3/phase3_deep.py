@@ -1862,7 +1862,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             if finals and not GATE_LEDGER_ONLY:
                 pc.write_candidates(root, label, finals, resid_I[d_],
                                     master_I, hdr_, lst, d_, scope, 'I',
-                                    'deep', em, cd, ot_, frame_hdr=_fhI.get(d_))
+                                    cadence, em, cd, ot_, frame_hdr=_fhI.get(d_))
                 nwr += len(finals)
     # ── IN-CHAIN v110 VERDICT STAGE (R-ROUND2-RATIFIED, Gregg 2026-09-03:
     # V chain = 5sig -> mstruct -> v110 in-chain [MARGINAL reading] ->
@@ -1926,7 +1926,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                        jup_veto=0 if c.get('_pm', 1) else '', final=1))
         if finals and not GATE_LEDGER_ONLY:
             pc.write_candidates(root, label, finals, resid_V[d], master_I,
-                                hdr, lst, d, scope, 'V', 'deep', em, cd, ot,
+                                hdr, lst, d, scope, 'V', cadence, em, cd, ot,
                                 frame_hdr=_fhV.get(d))
             nwr += len(finals)
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
