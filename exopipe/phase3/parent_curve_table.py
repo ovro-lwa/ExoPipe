@@ -88,10 +88,18 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec):
     cut = np.zeros(len(ra), bool); note = [''] * len(ra)
     tab = table_for(stokes, band)
     par = np.asarray(parents_radec_flux, float).reshape(-1, 3)
+    # 2026-09-20 INCIDENT FIX (Gregg's 3C 219 / 3C 327 cases): PyBDSF parent lists carry Gaussians with NaN positions;
+    # a cKDTree built on points containing NaN returns WRONG nearest neighbours silently, so every flux bin holding such a
+    # row missed its real parents and the gate let candidates on bright sources through. Non-finite parents cannot be
+    # used and are dropped here; the count is exposed for the caller's log.
+    _fin = np.isfinite(par).all(axis=1)
+    removals.n_nonfinite_parents = int((~_fin).sum())
+    par = par[_fin]
     if not tab or not len(par) or not (frame_rms_jy and frame_rms_jy > 0) or not (beam_deg and beam_deg > 0):
         return cut, note
     S = par[:, 2] / frame_rms_jy
-    pos = _uv(ra, dec)
+    okc = np.isfinite(ra) & np.isfinite(dec)
+    pos = _uv(np.where(okc, ra, 0.0), np.where(okc, dec, 0.0))
     s_top = max(t[1] for t in tab)
     for s_lo, s_hi, R in tab:
         m = (S >= s_lo) & ((S < s_hi) if s_hi < s_top else np.ones(len(S), bool))
@@ -99,7 +107,7 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec):
             continue
         d, i = cKDTree(_uv(par[m, 0], par[m, 1])).query(pos, k=1)
         sep_bw = (2 * np.arcsin(np.clip(d / 2, 0, 1)) * 180 / np.pi) / beam_deg
-        hit = sep_bw < R
+        hit = (sep_bw < R) & okc
         for j in np.where(hit & ~cut)[0]:
             note[j] = f'table: parent S={S[m][i[j]]:.0f} at {sep_bw[j]:.2f} bw < {R:.2f} (bin {s_lo:g}-{s_hi:g})'
         cut |= hit
