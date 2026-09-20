@@ -81,6 +81,10 @@ def xm_exempt(ra, dec, beam_deg):
     for j in np.where(np.isfinite(d))[0]:
         m[j] = True; nm[j] = names[int(i[j])]
     return m, nm
+import re as _re_mod
+_re_S = _re_mod.compile(r'parent S=(\d+)')
+XM_EXEMPT_SAMPLES = {'Hot_Warm_Jupiters', '10pc'}   # Gregg 2026-09-20
+XM_EXEMPT_MAX_S = 20.0                              # Gregg 2026-09-20: master source must be below 20 sigma
 def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec):
     """(removed: bool array, note: list[str]) for candidate positions ra/dec (deg).
     parents_radec_flux: array (N,3) of RA, Dec, peak flux (Jy) of the cell's I master catalog."""
@@ -111,7 +115,18 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec):
         for j in np.where(hit & ~cut)[0]:
             note[j] = f'table: parent S={S[m][i[j]]:.0f} at {sep_bw[j]:.2f} bw < {R:.2f} (bin {s_lo:g}-{s_hi:g})'
         cut |= hit
+    # R-XMATCH-EXEMPT-HWJ-10PC-ONLY-BELOW-20SIGMA (Gregg 2026-09-20, 'Proposed replacement approved'): a cross-match can
+    # exempt a candidate from the table only when the parent that triggered the cut is below 20 sigma (S < 20, parent peak
+    # over the frame rms) and only for the Hot/Warm Jupiter and 10 pc samples. Supersedes R-XMATCH-SAMPLE-POSITIONS-EXEMPT-
+    # FROM-TABLE (2026-09-06: any of six samples, any parent brightness).
     xm, xn = xm_exempt(ra, dec, beam_deg)
+    _S_hit = np.full(len(ra), np.nan)
+    for j in np.where(cut)[0]:
+        _m = _re_S.search(note[j]); _S_hit[j] = float(_m.group(1)) if _m else np.nan
     for j in np.where(cut & xm)[0]:
-        note[j] = f'table-exempt: xm {xn[j]} (would remove: {note[j]})'; cut[j] = False
+        _smp = xn[j].split(':', 1)[0]
+        if _smp in XM_EXEMPT_SAMPLES and np.isfinite(_S_hit[j]) and _S_hit[j] < XM_EXEMPT_MAX_S:
+            note[j] = f'table-exempt: xm {xn[j]}, parent S={_S_hit[j]:.0f} < {XM_EXEMPT_MAX_S:g} (would remove: {note[j]})'; cut[j] = False
+        else:
+            note[j] = f'{note[j]}; xm {xn[j]} NOT exempting (sample/parent-brightness rule 2026-09-20)'
     return cut, note
