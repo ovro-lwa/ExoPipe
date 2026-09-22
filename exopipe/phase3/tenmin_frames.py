@@ -225,6 +225,18 @@ def _build_night(args):
                 refused.append((f'{date} {S} {os.path.basename(src)}', 'DATE-OBS outside the six bins')); continue
             key = frame_key(date, k)
             sub_path = f'{od}/{key}_{S}_sub_{scope}.fits'
+            # DIVERGENCE GATE AT 10 MINUTES (Gregg 2026-09-22, "rebuild the corrupt Masters"): the per-variant gate
+            # of the deep co-add (_variant_input_divergent, |max| > 1e5 Jy/beam or finite fraction < 0.99) was never
+            # applied here, so CLEAN-diverged frames (13h 69MHz 2025-05-07 bin5, 3e31 Jy/beam) entered 25 bin masters.
+            # Checked BEFORE the skip-if-built test, and a refused frame's stale products are removed, so a frame
+            # built before the gate existed can never be searched or stacked again.
+            why = C._variant_input_divergent(src)
+            if why:
+                refused.append((f'{key} {S}', f'divergent input ({why})'))
+                for stale in (sub_path, f'{od}/{key}_{S}_al_{scope}.fits'):
+                    if os.path.exists(stale):
+                        os.remove(stale)
+                continue
             if os.path.exists(sub_path) and not overwrite:
                 built.append((key, S)); continue
             try:
@@ -313,7 +325,7 @@ def _build_night(args):
     return rows, irows, refused, built
 
 
-def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, base, mI, mV, overwrite):
+def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, base, mI, mV, overwrite, gate_refused=None):
     """Pass 2 of the per-bin design: for every Stokes and bin, the inverse-variance weighted plain
     mean of the aligned frames of that bin across nights (weights = the co-add's own night weights,
     weights.csv), written as the central BIN MASTER (bin_masters/), and each frame minus its own
@@ -329,10 +341,41 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
             wts[r['date']] = float(r['weight'])
         except (KeyError, ValueError, TypeError):
             pass
+    def _retire_bin(S, k, n_left):
+        """A bin the divergence gate leaves with fewer than two frames has no master and no search frame. Its
+        previous master, weights and search frames (all built from the refused inputs) move to superseded/ in the
+        work root and the archive - never deleted - its bins.csv rows are dropped, and <S>_bin<k>_<scope>.refused.txt
+        records why, which the verifier accepts in place of the master (2026-09-22)."""
+        why = [f'{a}: {b}' for a, b in gate_refused[(S, k)]]
+        txt = f'{S} bin{k} {scope}: {n_left} frame(s) left after the divergence gate - no bin master, bin not searched\n' + '\n'.join(why) + '\n'
+        sup = f'{bd}/superseded'
+        for f in ([f'{bd}/{S}_bin{k}_{scope}.fits', f'{bd}/weights_{S}_bin{k}.csv']
+                  + glob.glob(f'{od}/*T{k:02d}_{S}_sub_{scope}.fits') + glob.glob(f'{od}/*T{k:02d}_{S}_al_{scope}.fits')):
+            if os.path.exists(f):
+                os.makedirs(sup, exist_ok=True); os.replace(f, f'{sup}/{os.path.basename(f)}')
+        open(f'{bd}/{S}_bin{k}_{scope}.refused.txt', 'w').write(txt)
+        _arun = os.environ.get('P3_ARCHIVE_RUN')
+        if os.environ.get('P3_ARCHIVE_WRITE') != '0' and _arun:
+            _cd = f"{os.environ.get('P3_ARCHIVE_ROOT', '/lustre/pipeline/exopipe/phase3')}/Coadd/{_arun}/{lst}/{scope}/10min"
+            os.makedirs(_cd, exist_ok=True)
+            for _old in glob.glob(f'{_cd}/*_{S}_10min_*coadd*_bin{k}_*.fits'):
+                os.makedirs(f'{_cd}/superseded', exist_ok=True); os.replace(_old, f'{_cd}/superseded/{os.path.basename(_old)}')
+            _bcsv = f'{_cd}/bins.csv'
+            if os.path.exists(_bcsv):
+                rows_ = list(csv.reader(open(_bcsv)))
+                with open(_bcsv + '.part', 'w', newline='') as fb_:
+                    csv.writer(fb_, lineterminator='\n').writerows([rows_[0]] + [r for r in rows_[1:] if not (r[0] == S and r[1] == str(k))])
+                os.replace(_bcsv + '.part', _bcsv)
+            open(f'{_cd}/{S}_bin{k}_{scope}.refused.txt', 'w').write(txt)
+        print(f'  [per-bin] {cell} {S} bin{k}: RETIRED - {n_left} frame(s) after the divergence gate ({len(why)} refused)', flush=True)
+
+    gate_refused = gate_refused or {}
     for S in stokes:
         for k in range(6):
             als = sorted(glob.glob(f'{od}/*T{k:02d}_{S}_al_{scope}.fits'))
             if not als:
+                if (S, k) in gate_refused:
+                    _retire_bin(S, k, 0)
                 continue
             imgs, w, keys, hdrs = [], [], [], []
             for f in als:
@@ -344,7 +387,10 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
                     hdrs.append(hh[0].header.copy())
                 imgs.append(a); w.append(wts[date]); keys.append(key)
             if len(imgs) < 2:
-                print(f'  [per-bin] {cell} {S} bin{k}: {len(imgs)} frame(s) - no leave-one-out possible; frames REFUSED', flush=True); continue
+                print(f'  [per-bin] {cell} {S} bin{k}: {len(imgs)} frame(s) - no leave-one-out possible; frames REFUSED', flush=True)
+                if (S, k) in gate_refused:
+                    _retire_bin(S, k, len(imgs))
+                continue
             w = np.array(w, np.float64)
             Ssum = np.zeros(shape, np.float64); W = np.zeros(shape, np.float64)
             for a, wi in zip(imgs, w):
@@ -363,8 +409,14 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
             mh['PRODNAME'] = (name, 'Phase 3 product name (grammar; CONTINUE cards)')
             for d in dates:
                 mh['HISTORY'] = f'COADD constituent {d}'
+            _gr = gate_refused.get((S, k), [])
+            for _key, _why in _gr:
+                mh['HISTORY'] = f'VARIANT-GATE refused {_key}: {_why}'
+            mh['NVARREF'] = (len(_gr), 'frames refused by the divergence gate')
             mpath = f'{bd}/{S}_bin{k}_{scope}.fits'
             fits.writeto(mpath + '.part', M, mh, overwrite=True); os.replace(mpath + '.part', mpath)
+            if os.path.exists(f'{bd}/{S}_bin{k}_{scope}.refused.txt'):          # the bin has a master again
+                os.replace(f'{bd}/{S}_bin{k}_{scope}.refused.txt', f'{bd}/{S}_bin{k}_{scope}.refused.txt.superseded')
             with open(f'{bd}/weights_{S}_bin{k}.csv', 'w', newline='') as fw_:
                 cw = csv.writer(fw_, lineterminator='\n'); cw.writerow(['key', 'weight']); cw.writerows(zip(keys, w))
             # ARCHIVE (contract 4.0.1/steps 61 and 66, Gregg 2026-09-12): when the generation Run directory is named
@@ -382,13 +434,26 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
                 _cd = f'{_aroot}/Coadd/{_arun}/{lst}/{scope}/10min'; os.makedirs(_cd, exist_ok=True)
                 _dst = f'{_cd}/{name if name.endswith(".fits") else name + ".fits"}'
                 _sh.copy2(mpath, _dst + '.part'); os.replace(_dst + '.part', _dst)
-                _bcsv = f'{_cd}/bins.csv'; _newb = not os.path.exists(_bcsv)
-                with open(_bcsv, 'a', newline='') as fb_:
+                # REBUILD REPLACES, NEVER APPENDS (2026-09-22): a bin master of this (Stokes, bin) under another name
+                # (a different constituent count) is superseded - moved to 10min/superseded/, never deleted - and the
+                # (Stokes, bin) rows of bins.csv are rewritten, so the verifier reads exactly one master per bin.
+                for _old in glob.glob(f'{_cd}/*_{S}_10min_*coadd*_bin{k}_*.fits'):
+                    if os.path.basename(_old) != os.path.basename(_dst):
+                        os.makedirs(f'{_cd}/superseded', exist_ok=True)
+                        os.replace(_old, f'{_cd}/superseded/{os.path.basename(_old)}')
+                        print(f'  [per-bin] {cell} {S} bin{k}: superseded {os.path.basename(_old)} -> 10min/superseded/', flush=True)
+                _bcsv = f'{_cd}/bins.csv'
+                _hdr = ['stokes', 'bin', 'key', 'date', 'weight', 'bin_master', 'constdig', 'n_constituents']
+                _keep = ([r for r in csv.reader(open(_bcsv))][1:] if os.path.exists(_bcsv) else [])
+                _keep = [r for r in _keep if not (r[0] == S and r[1] == str(k))]
+                with open(_bcsv + '.part', 'w', newline='') as fb_:
                     bw = csv.writer(fb_, lineterminator='\n')
-                    if _newb:
-                        bw.writerow(['stokes', 'bin', 'key', 'date', 'weight', 'bin_master', 'constdig', 'n_constituents'])
+                    bw.writerow(_hdr); bw.writerows(_keep)
                     for key_, wi_ in zip(keys, w):
                         bw.writerow([S, k, key_, key_date(key_), wi_, os.path.basename(_dst), dig, len(imgs)])
+                os.replace(_bcsv + '.part', _bcsv)
+                if os.path.exists(f'{_cd}/{S}_bin{k}_{scope}.refused.txt'):
+                    os.replace(f'{_cd}/{S}_bin{k}_{scope}.refused.txt', f'{_cd}/{S}_bin{k}_{scope}.refused.txt.superseded')
                 for f_, key_, ha_ in zip(als, keys, hdrs):
                     _pa = pp.build_name(scope, S, '10min', 'Taper', 0.0, proc=['dewarped', 'aligned'], lst=lst, lst_bin=k,
                                         epoch=str(ha_.get('DATE-OBS')))
@@ -536,7 +601,13 @@ def build_cell_frames(lst, scope, out_root=None, stokes='IV', dates=None, inject
     else:
         results = [_build_night(n) for n in nights]
     if PER_BIN:
-        _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, base, mI, mV, overwrite)
+        gate_refused = {}
+        for _r0, _i, r, _b in results:
+            for label, why in r:
+                if why.startswith('divergent input'):
+                    key, S = label.split()[:2]
+                    gate_refused.setdefault((S, int(key.split('T')[1])), []).append((key, why))
+        _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, base, mI, mV, overwrite, gate_refused)
         _write_bin_pb_maps(out_root, cell, lst, scope, hdr0, shape, mI if 'I' in stokes else mV)
     frames_csv = f'{out_root}/{cell}/frames.csv'
     inj_csv = f'{out_root}/{cell}/injections.csv'
