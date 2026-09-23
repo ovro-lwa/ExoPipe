@@ -225,6 +225,20 @@ def window_model_pb(subband, t0_min, t1_min, pb_dir=PB_DIR, quantum_min=0.5):
     if key in _WIN_CACHE:
         return _WIN_CACHE[key]
     _, hdr = subband_bin_pb(subband, 0, pb_dir)
+    # NODE-LOCAL DISK CACHE (2026-09-23): the map depends only on (subband, window), never on the cell or night, so a
+    # window is computed once per node (about 50-100 s per sub-time) and reused by every cell and worker. Re-derivable
+    # scratch -> node-local /fast, never Lustre (CLAUDE.md s7). P3_PB_WINDOW_CACHE='' disables it.
+    cdir = os.environ.get('P3_PB_WINDOW_CACHE', '/fast/gh/main/phase3/pb_window_cache')
+    nsub = max(1, int(round((q1 - q0) / WIN_STEP_MIN)))
+    cfile = f'{cdir}/{subband}_{q0:05.1f}_{q1:05.1f}_n{nsub}_{os.path.basename(os.path.dirname(os.path.abspath(pb_dir)))}.npy' if cdir else None
+    if cfile and os.path.exists(cfile):
+        pb = np.load(cfile)
+        if pb.shape == (hdr['NAXIS2'], hdr['NAXIS1']):
+            h = hdr.copy(); h['PBLSTBIN'] = (-2, 'arbitrary window (see PBWIN0/PBWIN1)')
+            h['PBWIN0'] = (q0, '[min] window start from the LST hour start'); h['PBWIN1'] = (q1, '[min] window end')
+            h['PBNSUB'] = (nsub, 'Sub-times averaged within this window')
+            _WIN_CACHE[key] = (pb, h)
+            return pb, h
     gk = (hdr['NAXIS1'], hdr['CDELT1'], hdr['CRPIX1'])
     if gk not in _GRID_CACHE:
         yy, xx = np.indices((hdr['NAXIS2'], hdr['NAXIS1']))
@@ -244,6 +258,10 @@ def window_model_pb(subband, t0_min, t1_min, pb_dir=PB_DIR, quantum_min=0.5):
         resp[~(el >= 10.0)] = 0.0
         acc += resp
     pb = (acc / nsub).reshape((hdr['NAXIS2'], hdr['NAXIS1'])).astype(np.float32)
+    if cfile:
+        os.makedirs(cdir, exist_ok=True)
+        tmpf = f'{cfile}.{os.getpid()}.npy'
+        np.save(tmpf, pb); os.replace(tmpf, cfile)
     h = hdr.copy(); h['PBLSTBIN'] = (-2, 'arbitrary window (see PBWIN0/PBWIN1)')
     h['PBWIN0'] = (q0, '[min] window start from the LST hour start'); h['PBWIN1'] = (q1, '[min] window end')
     h['PBNSUB'] = (nsub, 'Sub-times averaged within this window')

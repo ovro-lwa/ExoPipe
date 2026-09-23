@@ -136,6 +136,45 @@ def _bin_of(mjd, anchor):
     return k if 0 <= k < NBINS else None
 
 
+# SIDEREAL BINS + WINDOW PB CORRECTION (Gregg 2026-09-23, "2. approved" = adopt arm b of the PB-window pilot, ledger
+# MEASURED-PBWIN-PILOT-FOUR-ARMS-...). Phase 1 cuts the hour with WSClean -intervals-out 6, i.e. six equal chunks of the
+# timesteps PRESENT, so on ~29% of nights a frame's window is not its bin's 10 minutes of LST (1.5-10 min, anywhere in
+# the hour), and _bin_of's night-anchored ordinal made that worse. Each frame is now assigned to the sidereal bin that
+# holds the MIDPOINT of its own DATE-OBS..DATE-END in LST (midpoint outside the hour: refused), and a frame whose window
+# is not the bin's nominal window is multiplied by PB_bin_k / PB_window (model PB, pb_apply.window_scope_pb - the
+# library's own construction), blanked where either is below PB_FLOOR, so every frame of a bin - and so its master -
+# carries the bin's gain pattern. Pilot: frames that change bin, 09h Green east 10-25 deg residual/master +0.365 -> +0.063,
+# west -0.173 -> -0.004. P3_TENMIN_SIDEREAL=0 restores the ordinal bins without correction (comparison runs only).
+SIDEREAL = os.environ.get('P3_TENMIN_SIDEREAL', '1') != '0'
+NOMINAL_TOL_MIN = 0.25
+_WINCORR = {}
+
+
+def _window_lst_min(sh, lst):
+    """(t0, t1) of a Phase-2 10-minute frame in minutes of LST from the start of the cell's LST hour."""
+    from exopipe.common.pipeline_config import OVRO_LOC
+    t0 = Time(sh['DATE-OBS'], scale='utc')
+    t1 = Time(sh['DATE-END'], scale='utc') if sh.get('DATE-END') else t0 + float(sh['INTTIME']) / 86400.0
+    hour = int(str(lst)[:2])
+    return tuple(((t.sidereal_time('apparent', longitude=OVRO_LOC.lon).hour - hour + 12) % 24 - 12) * 60.0 for t in (t0, t1))
+
+
+def _window_correction(scope, lst, master_path, k, t0, t1, hdr0, shape):
+    """(ratio map PB_bin_k / PB_window on the frame grid, blank fraction, median ratio); None when the window is nominal."""
+    if abs(t0 - 10.0 * k) < NOMINAL_TOL_MIN and abs(t1 - 10.0 * k - 10.0) < NOMINAL_TOL_MIN:
+        return None
+    key = (scope, lst, k, round(t0 * 2) / 2, round(t1 * 2) / 2)
+    if key not in _WINCORR:
+        sb = scope if scope in cfg.ALL_SUBBANDS else cfg.SUBBAND_BANDS[scope][0]
+        _, pbhdr = PB.subband_bin_pb(sb, 0)
+        nom = _pb_on_grid(PB.window_scope_pb(scope, lst, master_path, 10.0 * k, 10.0 * k + 10.0), pbhdr, hdr0, shape)
+        win = _pb_on_grid(PB.window_scope_pb(scope, lst, master_path, t0, t1), pbhdr, hdr0, shape)
+        ok = (nom >= PB_FLOOR) & (win >= PB_FLOOR)
+        r = np.where(ok, nom / np.where(ok, win, 1.0), 0.0).astype(np.float32)
+        _WINCORR[key] = (r, float(1.0 - ok.mean()), float(np.median(r[ok])) if ok.any() else np.nan)
+    return _WINCORR[key]
+
+
 def _pb_on_grid(pb, pbhdr, hdr0, shape):
     if pb.shape == tuple(shape):
         return pb
@@ -219,41 +258,97 @@ def _build_night(args):
         files = _p2_10min_files(sci_dir, scope, S)
         if not files:
             refused.append((f'{date} {S}', 'no 10-minute Phase 2 images')); continue
+        if overwrite:                                     # a rebuild re-keys frames (sidereal bins): clear the night's old
+            for stale in glob.glob(f'{od}/{date}T??_{S}_sub_{scope}.fits') + glob.glob(f'{od}/{date}T??_{S}_al_{scope}.fits'):
+                os.remove(stale)                          # frames first, so none survives under a key no longer built
+        placed = []                                       # (mjd, src, sh, k, t0, t1)
         for mjd, src, sh in files:
-            k = _bin_of(mjd, anchor)
-            if k is None:
-                refused.append((f'{date} {S} {os.path.basename(src)}', 'DATE-OBS outside the six bins')); continue
+            if SIDEREAL:
+                t0, t1 = _window_lst_min(sh, lst)
+                mid = 0.5 * (t0 + t1)
+                if not 0.0 <= mid < 60.0:
+                    refused.append((f'{date} {S} {os.path.basename(src)}', f'window midpoint {mid:.1f} min outside the LST hour')); continue
+                placed.append((mjd, src, sh, int(mid // 10.0), t0, t1))
+            else:
+                k = _bin_of(mjd, anchor)
+                if k is None:
+                    refused.append((f'{date} {S} {os.path.basename(src)}', 'DATE-OBS outside the six bins')); continue
+                placed.append((mjd, src, sh, k, None, None))
+        # SAME-BIN FRAMES ARE COMBINED (Gregg 2026-09-23, "combine them"): two short frames of one night whose window
+        # midpoints fall in one sidereal bin (1.5% of frames at 69 MHz) are each aligned, DC-scaled and window-PB-corrected
+        # to the bin's nominal PB, then averaged weighted by window duration with per-pixel validity. The combined frame's
+        # time block runs from the first DATE-OBS to the last DATE-END, INTTIME = the summed data duration, NCOMB = 2+.
+        groups = {}
+        for p in placed:
+            groups.setdefault(p[3], []).append(p)
+        for k in sorted(groups):
+            members = sorted(groups[k], key=lambda p: p[0])
             key = frame_key(date, k)
             sub_path = f'{od}/{key}_{S}_sub_{scope}.fits'
             # DIVERGENCE GATE AT 10 MINUTES (Gregg 2026-09-22, "rebuild the corrupt Masters"): the per-variant gate
             # of the deep co-add (_variant_input_divergent, |max| > 1e5 Jy/beam or finite fraction < 0.99) was never
             # applied here, so CLEAN-diverged frames (13h 69MHz 2025-05-07 bin5, 3e31 Jy/beam) entered 25 bin masters.
-            # Checked BEFORE the skip-if-built test, and a refused frame's stale products are removed, so a frame
-            # built before the gate existed can never be searched or stacked again.
-            why = C._variant_input_divergent(src)
-            if why:
-                refused.append((f'{key} {S}', f'divergent input ({why})'))
+            # Checked BEFORE the skip-if-built test, per member, and a key whose members are all refused has its stale
+            # products removed, so a frame built before the gate existed can never be searched or stacked again.
+            ok_members = []
+            for p in members:
+                why = C._variant_input_divergent(p[1])
+                if why:
+                    refused.append((f'{key} {S}', f'divergent input ({why})'))
+                else:
+                    ok_members.append(p)
+            if not ok_members:
                 for stale in (sub_path, f'{od}/{key}_{S}_al_{scope}.fits'):
                     if os.path.exists(stale):
                         os.remove(stale)
                 continue
             if os.path.exists(sub_path) and not overwrite:
                 built.append((key, S)); continue
-            try:
-                d0 = fits.getdata(src, memmap=True).squeeze().shape
-            except Exception as e:
-                refused.append((f'{key} {S}', f'unreadable ({e})')); continue
-            if tuple(d0) != tuple(shape) and regrid is None:
-                regrid = C.precompute_regrid_mapping(src, hdr0, shape)
-            tmp = f'{od}/.tmp_{key}_{S}_{os.getpid()}.fits'
-            ok = C.process_variant_image(src, flow, scale_map, hdr0, shape, tmp,
-                                         regrid if tuple(d0) != tuple(shape) else None)
-            if not ok or not os.path.exists(tmp):
-                refused.append((f'{key} {S}', 'alignment failed (grid)')); continue
-            fr = np.squeeze(fits.getdata(tmp)).astype(np.float32); os.remove(tmp)
-            fr[~np.isfinite(fr)] = 0.0
+            parts = []                                    # (frame, duration_s, sh, src, t0, t1, wc)
+            for mjd, src, sh, _k, t0, t1 in ok_members:
+                try:
+                    d0 = fits.getdata(src, memmap=True).squeeze().shape
+                except Exception as e:
+                    refused.append((f'{key} {S}', f'unreadable ({e})')); continue
+                if tuple(d0) != tuple(shape) and regrid is None:
+                    regrid = C.precompute_regrid_mapping(src, hdr0, shape)
+                tmp = f'{od}/.tmp_{key}_{S}_{os.getpid()}.fits'
+                ok = C.process_variant_image(src, flow, scale_map, hdr0, shape, tmp,
+                                             regrid if tuple(d0) != tuple(shape) else None)
+                if not ok or not os.path.exists(tmp):
+                    refused.append((f'{key} {S}', 'alignment failed (grid)')); continue
+                f1 = np.squeeze(fits.getdata(tmp)).astype(np.float32); os.remove(tmp)
+                f1[~np.isfinite(f1)] = 0.0
+                wc1 = _window_correction(scope, lst, c['mI'] if 'I' in stokes else c['mV'], k, t0, t1, hdr0, shape) if SIDEREAL else None
+                if wc1 is not None:
+                    f1 = (f1 * wc1[0]).astype(np.float32)      # window PB -> the bin's nominal PB (0 below the floor)
+                dur = ((t1 - t0) * 60.0 / 1.0027379) if t0 is not None else float(sh.get('INTTIME') or 600.0)
+                parts.append((f1, dur, sh, src, t0, t1, wc1))
+            if not parts:
+                continue
+            if len(parts) == 1:
+                fr, _d, sh, src, t0, t1, wc = parts[0]
+                ncomb, src2 = 1, None
+            else:
+                num = np.zeros(shape, np.float64); den = np.zeros(shape, np.float64)
+                for f1, dur, *_r in parts:
+                    v = f1 != 0; num += dur * f1; den += dur * v
+                fr = np.where(den > 0, num / np.where(den > 0, den, 1.0), 0.0).astype(np.float32)
+                lng = max(parts, key=lambda q: q[1])
+                sh = lng[2].copy(); src = lng[3]; wc = next((q[6] for q in parts if q[6] is not None), None)
+                sh['DATE-OBS'] = min(q[2]['DATE-OBS'] for q in parts)
+                ends = [q[2].get('DATE-END') for q in parts]
+                if all(ends):
+                    sh['DATE-END'] = max(ends)
+                sh['INTTIME'] = round(sum(q[1] for q in parts), 2)
+                sig = [q[2].get('THERMNOI') for q in parts]
+                if all(x is not None for x in sig):
+                    wsum = sum(q[1] for q in parts)
+                    sh['THERMNOI'] = float(np.sqrt(sum((q[1] * float(x)) ** 2 for q, x in zip(parts, sig)))) / wsum
+                t0 = min(q[4] for q in parts); t1 = max(q[5] for q in parts)
+                ncomb, src2 = len(parts), [os.path.basename(q[3]) for q in parts if q[3] != src][0]
             if PER_BIN:
-                r, blank, rmed = 1.0, 0.0, 1.0            # per-bin masters share the beam: no ratio
+                r, blank, rmed = 1.0, (wc[1] if wc else 0.0), (wc[2] if wc else 1.0)   # frames.csv: window correction
             else:
                 r, blank, rmed = ratios[k]
                 fr = fr * r                               # step 1: PB ratio (0 below the floor)
@@ -280,12 +375,15 @@ def _build_night(args):
                                ('TIMEFIX', sh.get('TIMEFIX')), ('THERMNOI', sh.get('THERMNOI')), ('BMAJ', bmaj), ('BMIN', bmin), ('BPA', bpa),
                                ('P2DEWARP', bool(sh.get('P2DEWARP', True))), ('SRCFRAME', os.path.basename(src)[:68]),
                                ('P2RUN', p2run), ('FLOWUSED', bool(has_flow)),
-                               ('NINJECT', int(ninj)), ('FLUXDC', round(dc[date], 5)), ('LSTBIN', int(k)), ('NIGHT', date)):
+                               ('NINJECT', int(ninj)), ('FLUXDC', round(dc[date], 5)), ('LSTBIN', int(k)), ('NIGHT', date),
+                               ('LSTWIN0', round(t0, 2) if t0 is not None else None), ('LSTWIN1', round(t1, 2) if t1 is not None else None),
+                               ('PBWCORR', bool(wc is not None) if SIDEREAL else None),
+                               ('NCOMB', int(ncomb) if ncomb > 1 else None), ('SRCFRM2', src2[:68] if src2 else None)):
                     if vv is not None:
                         ha[kk] = vv
                 fits.writeto(al_path + '.part', fr.astype(np.float32), ha, overwrite=True); os.replace(al_path + '.part', al_path)
                 rows.append([key, date, k, S, src, round(dc[date], 5), int(has_flow), int(bool(sh.get('P2DEWARP', True))),
-                             0.0, 1.0, bmaj, bmin, bpa, ninj, sub_path])
+                             round(blank, 4), round(rmed, 4), bmaj, bmin, bpa, ninj, sub_path])
                 built.append((key, S))
                 continue
             valid = (fr != 0) & (masters[S] != 0)
@@ -487,6 +585,11 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
                          'NINJECT': (int(ha.get('NINJECT', 0)), 'injected sources (battery only; 0 in production)'),
                          'SRCFRAME': (ha.get('SRCFRAME', ''), 'Phase 2 10-minute source image'),
                          'P2DEWARP': (bool(ha.get('P2DEWARP', True)), 'Phase 2 source dewarped (False = raw fallback, A-05)')}
+                for _c, _cm in (('LSTWIN0', '[min] frame window start from the LST hour start'), ('LSTWIN1', '[min] frame window end'),
+                                ('PBWCORR', 'window PB corrected to the bin nominal PB (2026-09-23)'),
+                                ('NCOMB', 'same-night frames combined in this bin (duration-weighted)'), ('SRCFRM2', 'another combined source frame')):
+                    if ha.get(_c) is not None:
+                        extra[_c] = (ha.get(_c), _cm)
                 fits.writeto(sub_path + '.part', sub, h, overwrite=True)
                 hh, ww = sub.shape; inn = sub[hh // 4:3 * hh // 4, ww // 4:3 * ww // 4]
                 pp.write_standard_header(
