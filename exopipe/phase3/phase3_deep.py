@@ -1403,12 +1403,21 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # both build this catalog; without the lock one process removed the other's
     # temporary master (10h Blue battery). Second arrival finds the file and skips.
     _glk = open(f'{_catdir}/.gaul.lock', 'w'); fcntl.flock(_glk, fcntl.LOCK_EX)
+    # PARENT LIST ON THE ROBUST -0.75 MASTER (Gregg 2026-09-23: "I thought I chose the Robust -0.75 Masters for the source
+    # list... The Robust 0 Masters must be used for subtraction of course"). At 10 minutes master_I is the Robust 0 master
+    # the frames are subtracted against; the parent catalogue is built on I_deep_Taper_R075 regardless (the file name
+    # already said so). Deep I searches the R075 master, so nothing changes there.
+    _pm = f'{base}/coadd_final/I_deep_Taper_R075_{scope}.fits'
+    if not os.path.exists(_pm):
+        raise RuntimeError(f'{lst} {scope}: no Robust -0.75 master {_pm} for the parent catalogue - REFUSING')
+    _pdata = master_I if _pm == mI else _load(_pm)
+    _phdr = hdr0 if _pm == mI else fits.getheader(_pm)
     # CAT1/CAT2 (R-CAT1-7 2026-08-15; contract step 23, enforced 2026-09-09): a catalog left in
     # the work dir by a previous generation is a STALE derivative - its .gen.json digest must
     # equal the md5 of the master being searched, else it is discarded and rebuilt (never reused).
     if os.path.exists(_gaulp):
         import hashlib as _hl, json as _jsn
-        _cur_md5 = _hl.md5(np.ascontiguousarray(master_I.astype(np.float32)).tobytes()).hexdigest()
+        _cur_md5 = _hl.md5(np.ascontiguousarray(_pdata.astype(np.float32)).tobytes()).hexdigest()   # the parent master (R075)
         try:
             _old = _jsn.load(open(_gaulp + '.gen.json')).get('master_md5_data')
         except Exception:
@@ -1423,8 +1432,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if not os.path.exists(_gaulp):
         import bdsf
         _tmpm = f'{cell_work}/_master_tmp_{os.getpid()}.fits'
-        fits.PrimaryHDU(data=master_I.astype(np.float32),
-                        header=_det_header(hdr0, scope, em, cd, None)
+        fits.PrimaryHDU(data=_pdata.astype(np.float32),
+                        header=_det_header(_phdr, scope, (em if _pm == mI else float(_phdr['BMAJ']) / abs(_phdr['CDELT1'])),
+                                           abs(_phdr['CDELT1']), None)   # the parent master's own beam
                         ).writeto(_tmpm, overwrite=True)
         _img = bdsf.process_image(_tmpm, thresh_isl=4.0, thresh_pix=5.0,
                                   quiet=True)
@@ -1436,9 +1446,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         # the master DATA payload + extraction record, as a sidecar shipped
         # with the catalog. CAT4 (FITS table) remains a DOC row.
         import hashlib, json
-        _md5 = hashlib.md5(np.ascontiguousarray(master_I.astype(np.float32)).tobytes()).hexdigest()
-        json.dump({'master': os.path.basename(mI), 'master_md5_data': _md5,
-                   'COADDOP': hdr0.get('COADDOP'), 'NCOADD': int(hdr0.get('NCOADD', 0) or 0),
+        _md5 = hashlib.md5(np.ascontiguousarray(_pdata.astype(np.float32)).tobytes()).hexdigest()
+        json.dump({'master': os.path.basename(_pm), 'master_md5_data': _md5,
+                   'COADDOP': _phdr.get('COADDOP'), 'NCOADD': int(_phdr.get('NCOADD', 0) or 0),
                    'thresh_pix': 5.0, 'thresh_isl': 4.0,
                    'note': 'stored floor 5.0 (curve consumers cut S>=25 from stored SNR); CAT3 7.0 floor is a DOC row',
                    'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
