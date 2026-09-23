@@ -189,6 +189,90 @@ def subband_bin_pb(subband, k, pb_dir=PB_DIR):
 
 
 # ----------------------------------------------------------------------
+# ARBITRARY-WINDOW MODEL PB (Gregg 2026-09-23: "create a custom PB for every problematic image and divide it by
+# the expected PB for that sub-LST"). The library holds the six nominal 10-minute bins; a Phase-1 10-minute image
+# covers whatever window WSClean -intervals-out 6 gave it (on 29% of nights not a sidereal bin). This evaluates the
+# library's OWN construction (tools/build_pb_library.py: the snapshot beam of OVRO-LWA_MROsoil_updatedheight.h5,
+# sampled at sub-times through the window, below 10 deg elevation -> 0, averaged) for any window [t0, t1] in
+# minutes from the start of the LST hour, on the library's pixel grid. Sub-time spacing = the library's (10/3 min),
+# so the nominal window of bin k reproduces PB_{sb}_bin{k}.fits. MODEL factor only: the chromatic and residual
+# factors are static functions of the pixel for a fixed phase centre and cancel in a window/bin ratio.
+# ----------------------------------------------------------------------
+_WIN_CACHE = {}
+_BEAM_INTERP = []
+_GRID_CACHE = {}
+WIN_STEP_MIN = 10.0 / 3.0
+
+
+def _beam_interp():
+    if not _BEAM_INTERP:
+        from exopipe.phase2.extractor_pb_75 import BeamModel, BEAM_PATH
+        b = BeamModel(BEAM_PATH); b.load_data(); _BEAM_INTERP.append(b.interpolator)
+    return _BEAM_INTERP[0]
+
+
+def window_model_pb(subband, t0_min, t1_min, pb_dir=PB_DIR, quantum_min=0.5):
+    """Model PB of `subband` time-averaged over minutes [t0_min, t1_min] of the LST hour (0 = hour start), on the
+    library grid. Window ends are rounded to `quantum_min` for caching. Returns (map float32, header)."""
+    from astropy.time import Time
+    from astropy.coordinates import SkyCoord, AltAz
+    import astropy.units as u
+    from exopipe.common.pipeline_config import OVRO_LOC
+    q0, q1 = round(t0_min / quantum_min) * quantum_min, round(t1_min / quantum_min) * quantum_min
+    if q1 <= q0:
+        q1 = q0 + quantum_min
+    key = (subband, q0, q1)
+    if key in _WIN_CACHE:
+        return _WIN_CACHE[key]
+    _, hdr = subband_bin_pb(subband, 0, pb_dir)
+    gk = (hdr['NAXIS1'], hdr['CDELT1'], hdr['CRPIX1'])
+    if gk not in _GRID_CACHE:
+        yy, xx = np.indices((hdr['NAXIS2'], hdr['NAXIS1']))
+        ra, dec = WCS(hdr).all_pix2world(xx, yy, 0)
+        _GRID_CACHE[gk] = SkyCoord(ra.ravel(), dec.ravel(), unit='deg')
+    sc = _GRID_CACHE[gk]
+    nsub = max(1, int(round((q1 - q0) / WIN_STEP_MIN)))
+    tref = Time(hdr.get('PBTREF', '2025-01-01T00:00:00'), location=OVRO_LOC)
+    freq = float(cfg.SUBBAND_FREQ_HZ[subband]['center'])
+    interp = _beam_interp()
+    acc = np.zeros(sc.size, np.float64)
+    for j in range(nsub):
+        tau_h = (q0 + (j + 0.5) * (q1 - q0) / nsub - 30.0) / 60.0      # hours from the hour midpoint
+        aa = sc.transform_to(AltAz(obstime=tref + tau_h * u.hour, location=OVRO_LOC))
+        el = aa.alt.deg
+        resp = np.asarray(interp(np.column_stack((np.full(el.size, freq), 90.0 - el, aa.az.deg % 360.0))), np.float64)
+        resp[~(el >= 10.0)] = 0.0
+        acc += resp
+    pb = (acc / nsub).reshape((hdr['NAXIS2'], hdr['NAXIS1'])).astype(np.float32)
+    h = hdr.copy(); h['PBLSTBIN'] = (-2, 'arbitrary window (see PBWIN0/PBWIN1)')
+    h['PBWIN0'] = (q0, '[min] window start from the LST hour start'); h['PBWIN1'] = (q1, '[min] window end')
+    h['PBNSUB'] = (nsub, 'Sub-times averaged within this window')
+    _WIN_CACHE[key] = (pb, h)
+    return pb, h
+
+
+def window_scope_pb(scope, lst, master_path, t0_min, t1_min, pb_dir=PB_DIR, category='deep'):
+    """Model PB of a subband or a wideband scope (Red/Green/Blue) over an arbitrary window, combined over the
+    member subbands with the SAME inverse-variance weights wideband_pb uses. Model factor only."""
+    if scope in cfg.ALL_SUBBANDS:
+        return window_model_pb(scope, t0_min, t1_min, pb_dir)[0]
+    if scope == 'Full':
+        raise RuntimeError('window_scope_pb: Full is not supported (cross-grid); REFUSING')
+    weights, _u, _m = subband_weights(lst, constituent_dates(master_path), category=category)
+    acc, ws = None, 0.0
+    for sb in cfg.SUBBAND_BANDS[scope]:
+        w = weights.get(sb, 0.0)
+        if w <= 0:
+            continue
+        m = window_model_pb(sb, t0_min, t1_min, pb_dir)[0]
+        acc = np.zeros(m.shape, np.float64) if acc is None else acc
+        acc += w * np.nan_to_num(m, nan=0.0); ws += w
+    if acc is None:
+        raise RuntimeError(f'window_scope_pb: no weighted member of {scope} for {lst}; REFUSING')
+    return (acc / ws).astype(np.float32)
+
+
+# ----------------------------------------------------------------------
 # weights from constituent-night QA CSVs
 # ----------------------------------------------------------------------
 def constituent_dates(master_path):
