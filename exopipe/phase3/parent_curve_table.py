@@ -129,4 +129,35 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec):
             note[j] = f'table-exempt: xm {xn[j]}, parent S={_S_hit[j]:.0f} < {XM_EXEMPT_MAX_S:g} (would remove: {note[j]})'; cut[j] = False
         else:
             note[j] = f'{note[j]}; xm {xn[j]} NOT exempting (sample/parent-brightness rule 2026-09-20)'
+    # PULSARS ARE KEPT (Gregg 2026-09-24: parent scintillation and intrinsic parent variability may be excluded, "although
+    # pulsars in the latter category are welcome to include"). A candidate the table would remove is kept when an ATNF
+    # pulsar lies within one beam of the target image - at ANY parent brightness, since the pulsar is the parent. Searched
+    # separately from xm_exempt, which reports only the nearest standing-sample target.
+    if cut.any():
+        pt, pn = _psr_targets()
+        if pt is not None:
+            chord = 2 * np.sin(np.radians(beam_deg) / 2)
+            for j in np.where(cut & okc)[0]:
+                k = pt.query_ball_point(pos[j], chord)
+                if k:
+                    note[j] = f'table-exempt: ATNF pulsar {pn[k[0]]} within 1 beam (Gregg 2026-09-24; would remove: {note[j]})'
+                    cut[j] = False
     return cut, note
+
+
+_PSR = None
+def _psr_targets():
+    """(cKDTree of unit vectors, names) of the ATNF pulsar sample (clv15/pulsars_atnf.csv)."""
+    global _PSR
+    if _PSR is None:
+        import csv
+        fp = os.path.join(_XM_DIR, 'pulsars_atnf.csv')
+        pts, names = [], []
+        if os.path.exists(fp):
+            for r in csv.DictReader(open(fp)):
+                try:
+                    pts.append((float(r['ra_current']), float(r['dec_current']))); names.append(r['common_name'])
+                except (KeyError, ValueError):
+                    pass
+        _PSR = (cKDTree(_uv(np.array([p[0] for p in pts]), np.array([p[1] for p in pts]))), names) if pts else (None, [])
+    return _PSR
