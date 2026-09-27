@@ -542,6 +542,9 @@ def write_standard_header(target, *, scope, stokes,
             hdr['DATE-OBS'] = (t0.isot, 'Start of first integration (UTC)')
             hdr['MJD-OBS'] = (t0.mjd, 'Start MJD (UTC)')
             hdr['DATE-END'] = (t1.isot, 'End of last integration (UTC)')
+            # 2026-09-27: MJD-END written with DATE-END - a header built from WCS(master).to_header() carried the
+            # MASTER's MJD-END onto every epoch frame (all 2,736 Run_P3S4 frames sampled disagreed with DATE-END)
+            hdr['MJD-END'] = (t1.mjd, 'End MJD (UTC)')
             hdr['DURATION'] = (duration_s,
                                '[s] Wall-clock span (DATE-END - DATE-OBS)')
             hdr['INTTIME'] = (itime, '[s] Summed integration time included')

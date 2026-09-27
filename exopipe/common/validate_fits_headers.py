@@ -1030,6 +1030,7 @@ def _stamp_times(hdr, start, end, duration_s, inttime_s, basis, pol):
     hdr['DATE-OBS'] = (start.isot, 'Start of first integration (UTC)')
     hdr['MJD-OBS'] = (start.mjd, 'Start MJD (UTC)')
     hdr['DATE-END'] = (end.isot, 'End of last integration (UTC)')
+    hdr['MJD-END'] = (end.mjd, 'End MJD (UTC)')   # 2026-09-27: never leave an inherited MJD-END beside a new DATE-END
     hdr['DURATION'] = (float(duration_s),
                        '[s] Wall-clock span (DATE-END - DATE-OBS)')
     hdr['INTTIME'] = (float(inttime_s),
