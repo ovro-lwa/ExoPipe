@@ -77,9 +77,19 @@ def xm_exempt(ra, dec, beam_deg):
     if tree is None:
         return m, nm
     chord = 2 * np.sin(np.radians(beam_deg) / 2)
-    d, i = tree.query(_uv(ra, dec), k=1, distance_upper_bound=chord)
+    pos = _uv(ra, dec)
+    d, i = tree.query(pos, k=1, distance_upper_bound=chord)
     for j in np.where(np.isfinite(d))[0]:
         m[j] = True; nm[j] = names[int(i[j])]
+        # 2026-09-27 TIE FIX: the same star sits at an IDENTICAL position in several samples (10 pc stars are also 25 pc
+        # rows), and k=1 returned whichever copy the tree yielded - so rebuilding Hot_Warm_Jupiters.csv (2026-09-26)
+        # silently flipped Struve 2398 A and Gaia DR3 2091177593123254016 from their 10 pc copy (exempting) to their
+        # 25 pc copy (not exempting). Among targets at the nearest distance, an exempting sample wins; a farther target
+        # never displaces the nearest one (that would widen the 2026-09-20 rule).
+        ties = [k for k in tree.query_ball_point(pos[j], d[j] + 1e-9)
+                if names[k].split(':', 1)[0] in XM_EXEMPT_SAMPLES]
+        if ties:
+            nm[j] = names[ties[0]]
     return m, nm
 import re as _re_mod
 _re_S = _re_mod.compile(r'parent S=(\d+)')
