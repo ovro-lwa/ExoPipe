@@ -2935,6 +2935,29 @@ def _atomic_copy(src, dst):
     os.replace(dst + '.part', dst)
 
 
+def _refuse_excluded_constituents(final_dir, lst, fl):
+    """EXCLUSION CONFORMANCE GATE at cell completion (Gregg 2026-09-27, approving the 2026-09-26 recommendation after
+    279 masters/variants of Run_20260909_000000 were found carrying nights excluded before they were written).
+    Every master, variant and LOO master of the cell is read back from its OWN header and each COADD constituent
+    is tested against data_decisions.csv re-read NOW (not the copy the run started with), with is_excluded - the
+    builder's own rule. Any excluded constituent REFUSES the cell: nothing is published and no .done is written.
+    The whole-archive audit is exopipe_ops/coadd_exclusion_conformance.py (BREACH vs STALE)."""
+    excl = load_exclusions()
+    paths = [f'{final_dir}/{f}' for f in sorted(os.listdir(final_dir)) if f.endswith('.fits') and _MASTER_RE.match(f)]
+    loo = f'{final_dir}/loo'
+    if os.path.isdir(loo):
+        paths += [f'{loo}/{f}' for f in sorted(os.listdir(loo)) if _LOO_RE.match(f)]
+    bad = []
+    for p in paths:
+        for d in _constituent_dates(fits.getheader(p)):
+            if is_excluded(lst, fl, d, excl):
+                bad.append(f'{os.path.basename(p)}:{d}')
+    if bad:
+        raise RuntimeError(f'{lst} {fl}: EXCLUSION CONFORMANCE REFUSED - {len(bad)} excluded constituent(s) in '
+                           f'{len({b.split(":")[0] for b in bad})} product(s), e.g. {bad[:4]}; not published, no .done')
+    print(f"  {lst} {fl}: exclusion conformance OK ({len(paths)} products, no excluded constituent)")
+
+
 def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     """Write the cell's products into the ratified archive tree (contract 0.1/0.4)."""
     if os.environ.get('P3_ARCHIVE_WRITE') == '0':
@@ -3633,6 +3656,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     if os.environ.get('P3_KEEP_PREP') != '1':
         shutil.rmtree(prep_dir, ignore_errors=True)
     _stamp_all_masters(final_dir, lst, fl)
+    _refuse_excluded_constituents(final_dir, lst, fl)
     _archive_publish_cell(final_dir, sub_dir, lst, fl)
     with open(done_marker, 'w') as f:
         f.write(f'{len(dates_good)}/{len(dates)} dates\n')
