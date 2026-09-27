@@ -15,6 +15,13 @@ def tables():
     global _TABLES
     if _TABLES is None:
         _TABLES = json.load(open(PATH))['tables']
+        # SUB-LST TABLES (Gregg 2026-09-27: derived for the cube-based sub-LST chain, with elevation bands) live in their
+        # own file, named by P3_TABLE_EXTRA and merged here; a named file that is missing REFUSES.  Unset = unchanged.
+        _extra = os.environ.get('P3_TABLE_EXTRA', '')
+        if _extra:
+            if not os.path.exists(_extra):
+                raise RuntimeError(f'[table] P3_TABLE_EXTRA={_extra} does not exist - REFUSING')
+            _TABLES = dict(_TABLES); _TABLES.update(json.load(open(_extra))['tables'])
     return _TABLES
 _RECORD_ONLY_SAID = set()
 def table_for(stokes, band):
@@ -24,7 +31,7 @@ def table_for(stokes, band):
     a record-only pass (the first production pass and the battery, whose tables are derived from the harvest
     afterwards and re-gated offline) - then nothing is removed and the choice is printed once per band."""
     cad = os.environ.get('P3_CADENCE', 'deep')
-    key = f'{cad}_{stokes}_{band}'
+    key = f"{os.environ.get('P3_TABLE_PREFIX') or cad}_{stokes}_{band}"   # P3_TABLE_PREFIX=sublst (2026-09-27); unset = cadence
     rec = tables().get(key)
     if rec:
         return [tuple(t) for t in rec['table']]
@@ -95,12 +102,35 @@ import re as _re_mod
 _re_S = _re_mod.compile(r'parent S=(\d+)')
 XM_EXEMPT_SAMPLES = {'Hot_Warm_Jupiters', '10pc'}   # Gregg 2026-09-20
 XM_EXEMPT_MAX_S = 20.0                              # Gregg 2026-09-20: master source must be below 20 sigma
-def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec):
+ELEV_BANDS = [tuple(float(x) for x in b.split('-')) for b in os.environ.get('P3_TABLE_ELEV_BANDS', '25-35,35-50,50-90').split(',')]
+
+
+def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, elev=None, _tab=None):
     """(removed: bool array, note: list[str]) for candidate positions ra/dec (deg).
-    parents_radec_flux: array (N,3) of RA, Dec, peak flux (Jy) of the cell's I master catalog."""
+    parents_radec_flux: array (N,3) of RA, Dec, peak flux (Jy) of the cell's I master catalog.
+    ELEVATION BANDS (Gregg 2026-09-27, sub-LST: 25-35, 35-50, >50 deg): with P3_TABLE_ELEV=1 and elev (deg, one per
+    candidate) given, each candidate uses the table <prefix>_<Stokes>_<band>_el<lo>-<hi> of its elevation band when
+    that table was installed, else the all-elevation table (the install step leaves out an elevation table that
+    measured no bin above the 20-candidate excess guard - the fallback Gregg approved).  Default: unchanged."""
     ra = np.atleast_1d(np.asarray(ra, float)); dec = np.atleast_1d(np.asarray(dec, float))
+    if _tab is None and elev is not None and os.environ.get('P3_TABLE_ELEV') == '1':
+        elev = np.atleast_1d(np.asarray(elev, float))
+        cut = np.zeros(len(ra), bool); note = [''] * len(ra)
+        pre = os.environ.get('P3_TABLE_PREFIX') or os.environ.get('P3_CADENCE', 'deep')
+        base = table_for(stokes, band)
+        lab = np.array(['all'] * len(ra), dtype=object)
+        for lo, hi in ELEV_BANDS:
+            lab[(elev >= lo) & (elev < hi)] = 'el%g-%g' % (lo, hi)
+        for L in sorted(set(lab)):
+            idx = np.where(lab == L)[0]
+            rec = tables().get(f'{pre}_{stokes}_{band}_{L}') if L != 'all' else None
+            tab = [tuple(t) for t in rec['table']] if rec else base
+            c_, n_ = removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra[idx], dec[idx], _tab=tab)
+            for j, cj, nj in zip(idx, c_, n_):
+                cut[j] = bool(cj); note[j] = (f'[{L if rec else "all-elevation"}] ' + nj) if nj else ''
+        return cut, note
     cut = np.zeros(len(ra), bool); note = [''] * len(ra)
-    tab = table_for(stokes, band)
+    tab = _tab if _tab is not None else table_for(stokes, band)
     par = np.asarray(parents_radec_flux, float).reshape(-1, 3)
     # 2026-09-20 INCIDENT FIX (Gregg's 3C 219 / 3C 327 cases): PyBDSF parent lists carry Gaussians with NaN positions;
     # a cKDTree built on points containing NaN returns WRONG nearest neighbours silently, so every flux bin holding such a
