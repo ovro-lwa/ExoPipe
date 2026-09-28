@@ -24,6 +24,7 @@ def tables():
             _TABLES = dict(_TABLES); _TABLES.update(json.load(open(_extra))['tables'])
     return _TABLES
 _RECORD_ONLY_SAID = set()
+DEEP_V_FAINT_S = 20.0   # Gregg 2026-09-28 - see table_for
 def table_for(stokes, band):
     """The table for THIS cadence (P3_CADENCE: deep default, or 10min). Contract step 74 (Gregg 2026-09-09 (d),
     2026-09-11 (c)): at 10 minutes the deep-calibrated table is NEVER applied (it over-excludes 10-15 per cent of
@@ -34,7 +35,15 @@ def table_for(stokes, band):
     key = f"{os.environ.get('P3_TABLE_PREFIX') or cad}_{stokes}_{band}"   # P3_TABLE_PREFIX=sublst (2026-09-27); unset = cadence
     rec = tables().get(key)
     if rec:
-        return [tuple(t) for t in rec['table']]
+        tab = [tuple(t) for t in rec['table']]
+        # DEEP STOKES V FAINT-PARENT ENTRIES DROPPED (Gregg 2026-09-28: "Drop them for now ... We can always revisit if my
+        # labeling of data later motivates it"): bins for Stokes I parents at or below 20x the V noise (bins ending <= 20)
+        # are not applied. Leakage of a few per cent cannot turn such a parent into a 5-sigma V candidate, and a zone around
+        # a faint I source removes real circularly polarised emitters that are themselves faint I sources. Deep only (the
+        # 10-minute tables drop them at their own re-derivation, 2026-09-26); the derived table file is left intact.
+        if key.startswith('deep_V_'):
+            tab = [t for t in tab if t[1] > DEEP_V_FAINT_S]
+        return tab
     if cad == 'deep':
         return []
     if os.environ.get('P3_TABLE_RECORD_ONLY') == '1':
