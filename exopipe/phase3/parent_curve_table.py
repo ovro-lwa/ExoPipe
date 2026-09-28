@@ -100,7 +100,10 @@ def xm_exempt(ra, dec, beam_deg):
     return m, nm
 import re as _re_mod
 _re_S = _re_mod.compile(r'parent S=(\d+)')
-XM_EXEMPT_SAMPLES = {'Hot_Warm_Jupiters', '10pc'}   # Gregg 2026-09-20
+# Gregg 2026-09-28: "No need to have the bright source exemption for any sample aside from pulsars" - the HWJ and 10 pc
+# exemptions of 2026-09-20 are withdrawn (those samples are measured by forced photometry instead); pulsars keep their
+# own exemption below. Cross-matches are still NOTED on the removal ('NOT exempting').
+XM_EXEMPT_SAMPLES = set()
 XM_EXEMPT_MAX_S = 20.0                              # Gregg 2026-09-20: master source must be below 20 sigma
 ELEV_BANDS = [tuple(float(x) for x in b.split('-')) for b in os.environ.get('P3_TABLE_ELEV_BANDS', '25-35,35-50,50-90').split(',')]
 
@@ -168,7 +171,7 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, 
         if _smp in XM_EXEMPT_SAMPLES and np.isfinite(_S_hit[j]) and _S_hit[j] < XM_EXEMPT_MAX_S:
             note[j] = f'table-exempt: xm {xn[j]}, parent S={_S_hit[j]:.0f} < {XM_EXEMPT_MAX_S:g} (would remove: {note[j]})'; cut[j] = False
         else:
-            note[j] = f'{note[j]}; xm {xn[j]} NOT exempting (sample/parent-brightness rule 2026-09-20)'
+            note[j] = f'{note[j]}; xm {xn[j]} NOT exempting (only pulsars exempt, Gregg 2026-09-28)'
     # PULSARS ARE KEPT (Gregg 2026-09-24: parent scintillation and intrinsic parent variability may be excluded, "although
     # pulsars in the latter category are welcome to include"). A candidate the table would remove is kept when an ATNF
     # pulsar lies within one beam of the target image - at ANY parent brightness, since the pulsar is the parent. Searched
