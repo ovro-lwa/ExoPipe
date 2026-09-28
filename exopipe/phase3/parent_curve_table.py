@@ -176,16 +176,74 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, 
     # pulsars in the latter category are welcome to include"). A candidate the table would remove is kept when an ATNF
     # pulsar lies within one beam of the target image - at ANY parent brightness, since the pulsar is the parent. Searched
     # separately from xm_exempt, which reports only the nearest standing-sample target.
+    # TIGHTENED (Gregg 2026-09-28, "Makes sense", on ledger CORRECTION-10H-ONSOURCE-PULSAR-ASSOCIATIONS-MOSTLY-SPURIOUS: at
+    # 10h the 1-beam test kept 234 detections of which only B0950+08's 74 were the pulsar - the rest sat on unrelated Master
+    # sources 10-31 arcmin from a pulsar). The exemption now requires that the pulsar IS the parent: EVERY Master source
+    # whose zone removes the candidate must agree with the pulsar's position at the association operating point,
+    # separation <= K_PSR x sigma_parent, sigma_parent = hypot(0.42 x beam / max(S, 5), systematic) (Gregg's method; the
+    # systematic from p3s3_astrom.sys_arcmin at the candidate's elevation, or the lowest-elevation value when not given -
+    # the setting most generous to a pulsar). The candidate itself must still lie within 1 beam of the pulsar.
     if cut.any():
         pt, pn = _psr_targets()
         if pt is not None:
             chord = 2 * np.sin(np.radians(beam_deg) / 2)
+            _el = None if elev is None else np.atleast_1d(np.asarray(elev, float))
             for j in np.where(cut & okc)[0]:
                 k = pt.query_ball_point(pos[j], chord)
-                if k:
-                    note[j] = f'table-exempt: ATNF pulsar {pn[k[0]]} within 1 beam (Gregg 2026-09-24; would remove: {note[j]})'
+                if not k:
+                    continue
+                trig = _triggering_parents(tab, par, S, pos[j], beam_deg)
+                psr_uv = _psr_uv()[k]
+                ok_all, worst = True, 0.0
+                sysd = _sys_arcmin(band, None if _el is None or j >= len(_el) else _el[j])
+                for (tra, tdec, tS) in trig:
+                    sig = np.hypot(0.42 * beam_deg * 60.0 / max(tS, 5.0), sysd)
+                    sep = np.degrees(2 * np.arcsin(np.clip(np.linalg.norm(psr_uv - _uv(np.array([tra]), np.array([tdec]))[0], axis=1) / 2, 0, 1))).min() * 60.0
+                    worst = max(worst, sep / (K_PSR * sig))
+                    ok_all &= sep <= K_PSR * sig
+                if trig and ok_all:
+                    note[j] = f'table-exempt: ATNF pulsar {pn[k[0]]} is the parent (every triggering parent within {K_PSR} sigma of it; Gregg 2026-09-24/28; would remove: {note[j]})'
                     cut[j] = False
+                else:
+                    note[j] = f'{note[j]}; ATNF pulsar {pn[k[0]]} within 1 beam NOT exempting: a triggering parent is not the pulsar ({worst:.1f} x the {K_PSR}-sigma radius; Gregg 2026-09-28)'
     return cut, note
+
+
+K_PSR = 3.034          # the association operating point (99th percentile of the Rayleigh distribution)
+
+
+def _sys_arcmin(band, el):
+    import sys as _sys
+    if '/lustre/gh/main/exopipe_ops' not in _sys.path:
+        _sys.path.insert(0, '/lustre/gh/main/exopipe_ops')
+    import p3s3_astrom as _A
+    return float(_A.sys_arcmin(band, 30.0 if el is None or not np.isfinite(el) else float(el)))
+
+
+def _triggering_parents(tab, par, S, p_uv, beam_deg):
+    """[(ra, dec, S)] of every parent whose table zone contains the position (unit vector p_uv)."""
+    out = []
+    if not tab or not len(par):
+        return out
+    s_top = max(t[1] for t in tab)
+    for s_lo, s_hi, R in tab:
+        m = (S >= s_lo) & ((S < s_hi) if s_hi < s_top else np.ones(len(S), bool))
+        if not m.any():
+            continue
+        pm = par[m]; sm = S[m]
+        sep_bw = np.degrees(2 * np.arcsin(np.clip(np.linalg.norm(_uv(pm[:, 0], pm[:, 1]) - p_uv, axis=1) / 2, 0, 1))) / beam_deg
+        for i in np.where(sep_bw < R)[0]:
+            out.append((float(pm[i, 0]), float(pm[i, 1]), float(sm[i])))
+    return out
+
+
+_PSR_UV = None
+def _psr_uv():
+    global _PSR_UV
+    if _PSR_UV is None:
+        pt, _ = _psr_targets()
+        _PSR_UV = np.asarray(pt.data) if pt is not None else np.zeros((0, 3))
+    return _PSR_UV
 
 
 _PSR = None
