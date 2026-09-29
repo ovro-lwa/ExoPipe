@@ -30,6 +30,17 @@ def _sample(m, w, shape, frame):
     return img.astype(np.float32)
 
 
+def _beam_arcmin(hpx_dir, variant, b):
+    """Scalar beam for the render header. v2 (2026-09-29): the equivalent circular FWHM of the median per-pixel Omega_eff
+    of the mosaic's own PSF map, which exists for every band including the subbands; else the July fixed table."""
+    p = f"{hpx_dir}/healpix_PSF_I_deep_{variant}_{b}_nside2048.fits"
+    if os.path.exists(p):
+        om = hp.read_map(p, verbose=False); om = om[np.isfinite(om) & (om > 0) & (om != hp.UNSEEN)]
+        if om.size:
+            return float(np.degrees(np.sqrt(np.median(om) / 1.1331)) * 60.0)
+    return BEAMS[b]
+
+
 def moll_wcs(W):
     w = WCS(naxis=2); w.wcs.ctype = ['GLON-MOL', 'GLAT-MOL']
     w.wcs.crval = [0., 0.]; w.wcs.crpix = [W/2, W/4]; w.wcs.cdelt = [-360./W, 360./W]
@@ -49,23 +60,25 @@ def build(variant, hpx_dir, suffix, out, bands=('Red', 'Green', 'Blue', 'Full'),
           moll_W=12000, car_cdelt=1.5/60):
     os.makedirs(out, exist_ok=True)
     for b in bands:
-        m = hp.read_map(f"{hpx_dir}/healpix_I_deep_{variant}_{b}{suffix}_nside2048.fits",
-                        verbose=False)
-        pxbm = BEAMS[b] / (360./moll_W*60)
+        src = f"{hpx_dir}/healpix_I_deep_{variant}_{b}{suffix}_nside2048.fits"
+        m = hp.read_map(src, verbose=False)
+        bunit = fits.getheader(src, 1).get('BUNIT', 'JY/BEAM')   # v2 jysr maps are Jy/sr - was hardcoded JY/BEAM
+        bm = _beam_arcmin(hpx_dir, variant, b)
+        pxbm = bm / (360./moll_W*60)
         # Mollweide (galactic)
         w, sh = moll_wcs(moll_W)
         img = _sample(m, w, sh, 'galactic')
-        h = w.to_header(); h['BUNIT'] = 'JY/BEAM'; h['BAND'] = b; h['VARIANT'] = variant
-        h['BMAJ'] = BEAMS[b]/60; h['PXPERBM'] = round(pxbm, 2)
+        h = w.to_header(); h['BUNIT'] = bunit; h['BAND'] = b; h['VARIANT'] = variant
+        h['BMAJ'] = bm/60; h['PXPERBM'] = round(pxbm, 2)
         fits.writeto(f"{out}/{b}_{variant}{suffix}_Mollweide.fits", img, h, overwrite=True)
         # RA/Dec (equatorial CAR)
         w2, sh2 = car_wcs(car_cdelt)
         img2 = _sample(m, w2, sh2, 'equatorial')
-        h2 = w2.to_header(); h2['BUNIT'] = 'JY/BEAM'; h2['BAND'] = b; h2['VARIANT'] = variant
-        h2['BMAJ'] = BEAMS[b]/60; h2['PXPERBM'] = round(BEAMS[b]/(car_cdelt*60), 2)
+        h2 = w2.to_header(); h2['BUNIT'] = bunit; h2['BAND'] = b; h2['VARIANT'] = variant
+        h2['BMAJ'] = bm/60; h2['PXPERBM'] = round(bm/(car_cdelt*60), 2)
         fits.writeto(f"{out}/{b}_{variant}{suffix}_RADec.fits", img2, h2, overwrite=True)
         print(f"wrote {b}: Mollweide {sh} ({pxbm:.1f}px/bm) + RADec {sh2} "
-              f"({BEAMS[b]/(car_cdelt*60):.1f}px/bm)", flush=True)
+              f"({bm/(car_cdelt*60):.1f}px/bm)", flush=True)
 
 
 if __name__ == "__main__":
@@ -76,6 +89,7 @@ if __name__ == "__main__":
     ap.add_argument('--out', default='/fast/gh/main/phase3/mosaic/fits_bands')
     ap.add_argument('--moll-width', type=int, default=12000)
     ap.add_argument('--car-arcmin', type=float, default=1.5)
+    ap.add_argument('--bands', default='Red,Green,Blue,Full', help='comma list; subband labels allowed (v2)')
     a = ap.parse_args()
-    build(a.variant, a.hpx_dir, a.suffix, a.out, moll_W=a.moll_width,
+    build(a.variant, a.hpx_dir, a.suffix, a.out, bands=a.bands.split(','), moll_W=a.moll_width,
           car_cdelt=a.car_arcmin/60)
