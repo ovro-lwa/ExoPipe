@@ -2814,6 +2814,49 @@ def _variant_input_divergent(path, max_jy=1e5, min_finite=0.99):
         return f'unreadable ({e})'
 
 
+VARIANT_REL_K = 3.0   # Gregg 2026-09-29 "Go at 3x"
+
+
+def _robust_rms_sub(path):
+    """Robust rms (1.4826 x MAD) of an image on every 4th pixel per axis, finite non-zero pixels only - the exact
+    measure of the 2026-09-29 per-epoch census (exopipe_ops/epoch_divergence_census.py), so the census predicts the gate."""
+    d = np.asarray(fits.getdata(path, memmap=True)).squeeze()[::4, ::4].astype(np.float64)
+    v = d[np.isfinite(d) & (d != 0)]
+    return float(1.4826 * np.median(np.abs(v - np.median(v)))) if v.size else float('nan')
+
+
+def _variant_relative_refusals(date_dirs, freq_str, vk, k=VARIANT_REL_K):
+    """WITHIN-CELL DIVERGENCE GATE (Gregg 2026-09-29 "Go at 3x", on the per-epoch census, ledger
+    MEASURED-EPOCH-DIVERGENCE-AND-STALE-VARIANT-MASTERS). The absolute gate (_variant_input_divergent) catches only a
+    fully diverged image; a partly diverged one can read thousands of times the survey image's noise and pass. For each
+    night: ratio = robust rms of the variant image / robust rms of the SAME night's I Taper Robust -0.75 image (the
+    survey variant, same visibilities). A night is refused when its ratio exceeds k x the median ratio of this variant
+    over the cell's nights (NoTaper keeps diffuse sky, so its normal ratio is several; the median sets the cell's own
+    normal). Nights the absolute gate refuses are left to it. A night with a variant image but no survey image cannot be
+    judged: RuntimeError - a gate refuses, it does not guess. Returns {date: reason}."""
+    rat = {}
+    for date, sci_dir in date_dirs:
+        if not sci_dir or not os.path.isdir(sci_dir):
+            continue
+        def _find(v):
+            return (find_subband_variant_image(sci_dir, freq_str, v) if is_subband(freq_str)
+                    else find_wideband_deep_images(sci_dir, freq_str, 'I', v))
+        img = _find(vk)
+        if not img or _variant_input_divergent(img):
+            continue
+        ref = _find('Taper_R075')
+        if not ref:
+            raise RuntimeError(f'{date} {freq_str}: no I Taper R-0.75 image to judge {vk} against; REFUSING')
+        a, b = _robust_rms_sub(img), _robust_rms_sub(ref)
+        if np.isfinite(a) and np.isfinite(b) and b > 0:
+            rat[date] = a / b
+    if not rat:
+        return {}
+    med = float(np.median(list(rat.values())))
+    return {d: (f'within-cell: robust rms {x:.3g} x its night\'s Taper R-0.75 = {x / med:.2f} x the cell median '
+                f'{med:.3g}, above {k:g}') for d, x in rat.items() if x > k * med}
+
+
 def _stamp_variant_gate(path, refused):
     """HISTORY provenance of the per-variant divergence gate on a variant master."""
     if not refused:
@@ -3078,6 +3121,8 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
     results = {}
     for vk in variants:
         aligned = []; refused = []
+        _rel = _variant_relative_refusals([(r['date'], r.get('sci_dir') or sci_of.get(r['date'])) for r in members],
+                                          freq_str, vk)
         for r in members:
             date = r['date']
             sci_dir = r.get('sci_dir') or sci_of.get(date)
@@ -3091,6 +3136,9 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
             if why:
                 print(f"  VARIANT GATE {vk} {date}: input REFUSED - {why} ({os.path.basename(img)})")
                 refused.append((date, why)); continue
+            if date in _rel:
+                print(f"  VARIANT GATE {vk} {date}: input REFUSED - {_rel[date]} ({os.path.basename(img)})")
+                refused.append((date, _rel[date])); continue
             if (r.get('qa3_guard') or '') == 'reference-identity':
                 flow = None; dc = 1.0
             else:
@@ -3460,6 +3508,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     # Also create I Taper R0 co-add for subtraction
     _variant_refused = {}      # variant -> [(date, reason)] refused by the per-variant divergence gate
     i_r0_aligned = []
+    _rel = _variant_relative_refusals([(d, sd) for d, sd, _ in dates if d in good_dates_deep and d in date_params],
+                                      freq_str, 'Taper_R0')
     for date, sci_dir, _ in dates:
         if date not in good_dates_deep or date not in date_params:
             continue
@@ -3474,6 +3524,10 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         if _why:
             print(f"  VARIANT GATE Taper_R0 {date}: input REFUSED - {_why} ({os.path.basename(i_r0_img)})")
             _variant_refused.setdefault('Taper_R0', []).append((date, _why))
+            continue
+        if date in _rel:
+            print(f"  VARIANT GATE Taper_R0 {date}: input REFUSED - {_rel[date]} ({os.path.basename(i_r0_img)})")
+            _variant_refused.setdefault('Taper_R0', []).append((date, _rel[date]))
             continue
         i_r0_out = f'{prep_dir}/{date}_I_R0.fits'
         ok = process_variant_image(i_r0_img, params['flow'], params['scale_map'],
@@ -3497,6 +3551,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     for _vk, _out_name in (('NoTaper_R0', f'I_deep_NoTaper_R0_{fl}.fits'),
                            ('NoTaper_R075', f'I_deep_NoTaper_R075_{fl}.fits')):
         _aligned = []
+        _rel = _variant_relative_refusals([(d, sd) for d, sd, _ in dates if d in good_dates_deep and d in date_params],
+                                          freq_str, _vk)
         for date, sci_dir, _ in dates:
             if date not in good_dates_deep or date not in date_params:
                 continue
@@ -3511,6 +3567,10 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             if _why:
                 print(f"  VARIANT GATE {_vk} {date}: input REFUSED - {_why} ({os.path.basename(_img)})")
                 _variant_refused.setdefault(_vk, []).append((date, _why))
+                continue
+            if date in _rel:
+                print(f"  VARIANT GATE {_vk} {date}: input REFUSED - {_rel[date]} ({os.path.basename(_img)})")
+                _variant_refused.setdefault(_vk, []).append((date, _rel[date]))
                 continue
             _out = f'{prep_dir}/{date}_{_vk}.fits'
             ok = process_variant_image(_img, params['flow'], params['scale_map'],
