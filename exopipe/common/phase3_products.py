@@ -78,12 +78,14 @@ TAPERS = ['Taper', 'NoTaper']
 # MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828 (ratified 2026-08-28; implemented 2026-09-06).
 PROC_ORDER = ['vclean', 'mstruct', 'loo', 'shflux', 'mdewarp', 'pbcorr', 'dewarped', 'aligned',
               'psfmatch', 'coadd', 'msub', 'nmsub', 'ssub', 'sigstack',
-              'mosaic', 'jysr', 'feather', 'tcorr', 'lsfill',
+              'mosaic', 'jysr', 'jybeam', 'feather', 'tcorr', 'lsfill',
               'psfmap', 'rgbcomp', 'molrender', 'carrender', 'pbmap']
 # Mosaic extension (agreed with the mosaic thread 2026-07-21): vclean/
 # mstruct = input-basis modifiers (lead); mosaic..lsfill = the HEALPix
 # all-sky chain; psfmap/rgbcomp/molrender/carrender = first-class mosaic
 # products (sigstack-style). Mosaic TIMEID uses the 'allsky' cell token.
+# 'jybeam' (Gregg 2026-09-29 'jybeam approved'): the apparent-flux mosaic domain (Jy/beam, weights PB^2/sigma^2 per
+# beam) beside 'jysr' (surface brightness) - both domains of mosaic v2 are archived, so the name must say which.
 # psfmatch = symmetric cross-convolution subtraction (D = G_m(x)epoch −
 # G_e(x)master, per-pair dilution renorm) — ratified into the production
 # Stokes-I chain 2026-07-05 (§5.14e); sits between alignment and msub.

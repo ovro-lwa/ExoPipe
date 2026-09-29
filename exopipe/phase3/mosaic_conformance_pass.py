@@ -38,6 +38,19 @@ def main():
         PROVBAS = ("02-staged snapshot 20260711T1807 + beam ledger "
                    "master_beam_repair_20260711_wb_apply.csv; data blocks verified "
                    "identical to coadd_final 2026-07-21 (734/734 sha256)")
+    elif MODE == 'wb2':
+        # MOSAIC v2 (Gregg 2026-09-26 Case A). Push approved 2026-09-29 ('when the rebuild and renders are done'),
+        # then 'push Taper only' - NoTaper held until the diverged NoTaper masters are rebuilt - and 'jybeam approved'.
+        SRC = "/fast/gh/main/phase3/mosaic_v2/healpix"
+        MASTERS = "/fast/gh/main/phase3/mosaic_v2/masters"
+        STG = "/fast/gh/main/phase3/mosaic_v2/archive_staging/mosaic"
+        RENDERS = "/fast/gh/main/phase3/mosaic_v2/renders"
+        SUB = "wideband"
+        SCOPES = ["Blue", "Green", "Red", "Full"]
+        LSTS = [f"{h:02d}h" for h in range(24)]
+        CANON = None     # provenance FILE = the Lustre master each staged symlink resolves to
+        PROVBAS = ("Lustre Run_20260909_000000 current masters (symlink stage, mosaic_stage_from_lustre.py); "
+                   "beams from the masters' own headers (no repair ledger); mosaic v2 2026-09-26..29")
     else:
         SRC = "/fast/gh/main/phase3/mosaic_sb/healpix_jysr_v1"
         MASTERS = "/fast/gh/main/phase3/mosaic_sb/masters"
@@ -55,11 +68,14 @@ def main():
     # product identity: current-stem prefix -> (stokes, taper, robust, base proc, product)
     VAR = {"NoTaper_R075": ("NoTaper", -0.75), "Taper_R075": ("Taper", -0.75),
            "Taper_R0": ("Taper", 0.0), "NoTaper_R0": ("NoTaper", 0.0)}
+    if MODE == 'wb2':
+        VAR = {k: v for k, v in VAR.items() if k.startswith('Taper')}   # 'push Taper only' (2026-09-29)
     PRODUCTS = []
     for v, (tp, rb) in VAR.items():
         PRODUCTS.append((f"I_deep_{v}", "I", "I", tp, rb, ["pbcorr", "coadd", "mosaic", "jysr", "feather"]))
-    PRODUCTS.append(("V_deep_Taper_R0_clean", "Vclean", "V", "Taper", 0.0,
-                     ["vclean", "pbcorr", "coadd", "mosaic", "jysr", "feather"]))
+    if MODE != 'wb2':                                  # v2 builds Stokes I only
+        PRODUCTS.append(("V_deep_Taper_R0_clean", "Vclean", "V", "Taper", 0.0,
+                         ["vclean", "pbcorr", "coadd", "mosaic", "jysr", "feather"]))
     if MODE == 'wb':
         PRODUCTS.append(("Mstruct_Taper_R0", "Mstruct", "V", "Taper", 0.0,
                          ["mstruct", "pbcorr", "coadd", "mosaic", "jysr", "feather"]))
@@ -94,7 +110,8 @@ def main():
             if not np.isfinite(sig) or sig < 1e-4:
                 continue
             h = fits.getheader(mp)
-            rows.append({'FILE': CANON.format(lst=lst, band=band, name=os.path.basename(mp)),
+            rows.append({'FILE': CANON.format(lst=lst, band=band, name=os.path.basename(mp)) if CANON
+                         else os.path.realpath(mp),
                          'MJD_OBS': h.get('MJD-OBS'), 'MJD_MID': h.get('MJD-MID'),
                          'INTTIME': h.get('INTTIME'), 'WEIGHT': 1.0 / sig ** 2,
                          'THERMNOI': h.get('THERMNOI'), 'P1RUN': str(h.get('GITTAG', ''))})
@@ -107,6 +124,8 @@ def main():
             bo = mcj.BEAM_OVERRIDE.get(f"{lst}_{band}|{vname}")
             if bo:
                 rows[-1]['_beam'] = bo
+            elif MODE == 'wb2' and h.get('BMAJ') and h.get('BMIN'):     # v2: master headers are the beam record
+                rows[-1]['_beam'] = (float(h['BMAJ']), float(h['BMIN']))
         return rows, (min(mjd0) if mjd0 else None), (max(mjd1) if mjd1 else None), itt
 
 
@@ -133,13 +152,13 @@ def main():
 
     report = {'staged': 0, 'failed': []}
 
-    def stamp(dst, scope, stokes, prov, t0, t1, itt, beam, extra):
+    def stamp(dst, scope, stokes, prov, t0, t1, itt, beam, extra, pbcorr=True):
         write_standard_header(dst, scope=scope, stokes=stokes,
                               start=Time(t0, format='mjd').isot if t0 else None,
                               end=Time(t1, format='mjd').isot if t1 else None,
                               inttime_s=itt or None, time_basis='mosaic-constituents',
                               beam=beam, thermnoi=THERM.get(scope),
-                              pbcorr=True, extra=extra, validate=False)
+                              pbcorr=pbcorr, extra=extra, validate=False)
         append_provenance_table(dst, [{k: v for k, v in r.items() if not k.startswith('_')}
                                       for r in prov])
 
@@ -160,8 +179,9 @@ def main():
                           n_epochs=n)
             extra_base = {'NSTACK': (n, 'Constituent LST tiles'),
                           'PROVBAS': PROVBAS,
-                          'BEAMNOTE': ('scalar beam = median constituent (repair ledger); '
-                                       'per-pixel Omega_eff in the psfmap product')}
+                          'BEAMNOTE': (('scalar beam = median constituent master header; ' if MODE == 'wb2' else
+                                        'scalar beam = median constituent (repair ledger); ')
+                                       + 'per-pixel Omega_eff in the psfmap product')}
             for suf, extraproc in SUFFIX_PROC.items():
                 srcf = f"{SRC}/healpix_{stem0}_{band}{suf}_jysr_nside2048.fits"
                 if not os.path.exists(srcf):
@@ -184,7 +204,8 @@ def main():
                 base_render = f"{stem0}_{band}{suf}"
                 for rdir, tok, rsuf in (("mollweide", "molrender", "_Mollweide"),
                                         ("radec", "carrender", "_RADec")):
-                    rsrc = f"{SRC}/{rdir}/{base_render}_jysr{rsuf}.fits"
+                    rsrc = (f"{RENDERS}/{band}_{stem0.replace('I_deep_', '')}{suf}_jysr{rsuf}.fits" if MODE == 'wb2'
+                            else f"{SRC}/{rdir}/{base_render}_jysr{rsuf}.fits")
                     if not os.path.exists(rsrc):
                         continue
                     rname = build_name(proc=baseproc + extraproc + [tok], **common)
@@ -195,6 +216,37 @@ def main():
                         report['staged'] += 1
                     except Exception as e:
                         report['failed'].append((rsrc, str(e)[:80]))
+            if MODE == 'wb2':
+                # the APPARENT-flux (Jy/beam) domain and its effective-PB companion: the PB-corrected masters x PB, PB
+                # used as weight only and never divided out - so neither name carries pbcorr ('jybeam approved' 2026-09-29)
+                app = [p for p in baseproc if p not in ('jysr', 'pbcorr')]
+                for srcf, proc, ex in ((f"{SRC}/healpix_{stem0}_{band}_jybeam_nside2048.fits", app + ['jybeam'], {}),
+                                       (f"{SRC}/healpix_PBeff_{stem0}_{band}_nside2048.fits", app + ['pbmap'], {'BUNIT': ''})):
+                    if not os.path.exists(srcf):
+                        report['failed'].append((srcf, 'MISSING')); continue
+                    dst = f"{STG}/{SUB}/{build_name(proc=proc, **common)}"
+                    try:
+                        shutil.copy2(srcf, dst)
+                        e2 = dict(extra_base, **ex)
+                        for k in ('FEATHER', 'NSIDE', 'BUNIT'):
+                            if k in fits.getheader(srcf, 1) and k not in ex:
+                                e2[k] = fits.getheader(srcf, 1)[k]
+                        stamp(dst, band, stokes, prov, t0, t1, itt, beam, e2, pbcorr=False)
+                        report['staged'] += 1
+                    except Exception as e:
+                        report['failed'].append((srcf, str(e)[:80])); continue
+                    if proc[-1] == 'jybeam':
+                        for rdir, tok, rsuf in (("mollweide", "molrender", "_Mollweide"), ("radec", "carrender", "_RADec")):
+                            rsrc = f"{RENDERS}/{band}_{stem0.replace('I_deep_', '')}_jybeam{rsuf}.fits"
+                            if not os.path.exists(rsrc):
+                                report['failed'].append((rsrc, 'MISSING')); continue
+                            rdst = f"{STG}/renders/{SUB}/{rdir}/{build_name(proc=proc + [tok], **common)}"
+                            try:
+                                shutil.copy2(rsrc, rdst)
+                                stamp(rdst, band, stokes, prov, t0, t1, itt, beam, extra_base, pbcorr=False)
+                                report['staged'] += 1
+                            except Exception as e:
+                                report['failed'].append((rsrc, str(e)[:80]))
             # psfmap (base variant only)
             psrc = f"{SRC}/healpix_PSF_{stem0}_{band}_nside2048.fits"
             if os.path.exists(psrc):
