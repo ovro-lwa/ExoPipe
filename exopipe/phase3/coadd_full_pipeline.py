@@ -2885,7 +2885,7 @@ def _archive_root():
     return os.environ.get('P3_ARCHIVE_ROOT', '/lustre/pipeline/exopipe/phase3')   # read at CALL time
 _MASTER_RE = re.compile(r'^(?P<st>[IV])_deep_(?P<taper>Taper|NoTaper)_(?P<rob>R075|R0)(?P<clean>_clean)?(?P<pb>_pbcorr)?(?P<sh>_shflux)?(?P<md>_mdewarp)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
 _LOO_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_loo_(?P<taper>Taper|NoTaper)_(?P<rob>R075|R0)(?P<sh>_shflux)?(?P<md>_mdewarp)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
-_EPOCH_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_(?P<kind>clean|sub)(?P<sh>_shflux)?(?P<md>_mdewarp)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
+_EPOCH_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})_(?P<st>[IV])_(?P<kind>clean|sub|epoch)(?P<sh>_shflux)?(?P<md>_mdewarp)?_(?P<fl>[A-Za-z0-9]+)\.fits$')
 
 
 def _constituent_dates(hdr):
@@ -3001,6 +3001,37 @@ def _refuse_excluded_constituents(final_dir, lst, fl):
     print(f"  {lst} {fl}: exclusion conformance OK ({len(paths)} products, no excluded constituent)")
 
 
+def _epoch_content_check(epoch_path, master_path, sub_path, stokes):
+    """CONTENT gate for an archived epoch image (Gregg 2026-09-30, after a generation's archived "epoch images" proved to
+    be residuals, verified only by name). (a) IDENTITY: epoch - residual = master (the co-add writes i_sub = i_corrected
+    - master): robust rms of (epoch - residual - master) below 1e-3 of the master's; a residual filed as an epoch fails
+    at once. (b) Stokes I only, independent of the identity: at the master's compact bright peaks (local maxima above 20 x
+    its robust rms and below 50 Jy/beam, inside 0.9 of the half-width) the median epoch/master ratio lies in 0.8-1.25 (a
+    residual reads ~0). Returns (ok, reason)."""
+    from scipy.ndimage import maximum_filter
+    e = np.squeeze(fits.getdata(epoch_path)).astype(np.float64); m = np.squeeze(fits.getdata(master_path)).astype(np.float64)
+    if e.shape != m.shape:
+        return False, f'shape {e.shape} != master {m.shape}'
+    ok = np.isfinite(e) & np.isfinite(m) & (m != 0)
+    v = m[ok]; rr = 1.4826 * np.median(np.abs(v - np.median(v)))
+    if os.path.exists(sub_path):
+        r = np.squeeze(fits.getdata(sub_path)).astype(np.float64); k = ok & np.isfinite(r)
+        d = (e - r - m)[k]; dr = 1.4826 * np.median(np.abs(d - np.median(d)))
+        if not dr < 1e-3 * rr:
+            return False, f'identity epoch - residual - master: robust rms {dr:.3g} vs master {rr:.3g}'
+    if stokes == 'I':
+        mf = np.nan_to_num(m); pk = (mf == maximum_filter(mf, size=9)) & (mf > 20 * rr) & (mf < 50)
+        yy, xx = np.nonzero(pk); h, w = m.shape
+        keep = np.hypot(xx - w / 2, yy - h / 2) / (w / 2) < 0.9; yy, xx = yy[keep], xx[keep]
+        if len(yy) < 20:
+            return False, f'only {len(yy)} bright compact master sources to test against'
+        rat = e[yy, xx] / m[yy, xx]; med = float(np.nanmedian(rat))
+        if not 0.8 <= med <= 1.25:
+            return False, f'median epoch/master at {len(yy)} master sources {med:.3f} outside 0.8-1.25'
+        return True, f'identity ok; median epoch/master {med:.3f} at {len(yy)} sources'
+    return True, 'identity ok'
+
+
 def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     """Write the cell's products into the ratified archive tree (contract 0.1/0.4)."""
     if os.environ.get('P3_ARCHIVE_WRITE') == '0':
@@ -3032,7 +3063,9 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
             if not name:
                 raise RuntimeError(f"{lst} {fl}: LOO {f} has no PRODNAME; REFUSING to archive")
             _atomic_copy(f'{loo}/{f}', f"{_archive_root()}/{lst}/{l['date']}/{run}/{fl}/{l['st']}/deep/{name if name.endswith('.fits') else name + '.fits'}"); n += 1
-    # aligned epoch images (the '_clean_' product of subtracted/ = flux-scaled, master-aligned epoch).
+    # aligned epoch images: the '_epoch_' product of subtracted/ = the flux-corrected, master-aligned epoch (CORRECTED
+    # 2026-09-30: this used to publish '_clean_', which is epoch - master - striation model, under the epoch name),
+    # each passing _epoch_content_check before it is written.
     # Only epochs in the generation's own record (weights.csv) are archived: a product left in
     # subtracted/ by a previous generation for a night with no current input (02h 2025-01-02,
     # INPUT-PROVENANCE 2026-09-05) is a stale derivative - logged, never archived.
@@ -3044,7 +3077,7 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     if os.path.isdir(sub_dir):
         for f in sorted(os.listdir(sub_dir)):
             e = _EPOCH_RE.match(f)
-            if not e or e['kind'] != 'clean':
+            if not e or e['kind'] != 'epoch':
                 continue
             if _wdates and e['date'] not in _wdates:
                 print(f"  {lst} {fl}: {f} is not in the generation record (weights.csv) - stale epoch product, NOT archived")
@@ -3065,6 +3098,10 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
                                       inttime_s=h.get('INTTIME'), time_basis='epoch', beam=beam,
                                       dewarped=True, aligned=True, msub=False,
                                       extra={'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)')}, validate=True)
+            _ok, _why = _epoch_content_check(src, f'{final_dir}/' + ('I_deep_Taper_R075' if st == 'I' else 'V_deep_Taper_R0') + f'_{fl}.fits',
+                                             src.replace('_epoch', '_sub'), st)
+            if not _ok:
+                raise RuntimeError(f'{lst} {fl}: {f} fails the epoch content check ({_why}); REFUSING to archive it as the epoch image')
             _atomic_copy(src, f"{_archive_root()}/{lst}/{e['date']}/{run}/{fl}/{st}/deep/{name if name.endswith('.fits') else name + '.fits'}"); n += 1
     print(f"  {lst} {fl}: {n} products written to the archive tree ({_archive_root()}, {run})")
     return n
@@ -3655,6 +3692,10 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         # Apply flux correction and subtract
         safe_scale = np.where(np.abs(scale2_full) > 0.1, scale2_full, 1.0)
         i_corrected = i_data / safe_scale
+        # THE ALIGNED, FLUX-CORRECTED EPOCH IMAGE itself - contract 0.2 (1), the archived epoch product (2026-09-30:
+        # it was never written, and the archive published the striation-cleaned residual under its name)
+        save_epoch_residual(f'{sub_dir}/{date}_I_epoch_{fl}.fits', i_corrected, epoch_hdr,
+                            align_img_path, tmpl_hdr, 'I')
         i_sub = i_corrected - final_i_data
 
         sub_i_path = f'{sub_dir}/{date}_I_sub_{fl}.fits'
@@ -3683,6 +3724,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             v_src = find_stokes_v_deep_image(sci_dir, freq_str)
             v_data, _ = load_image(v_path)
             v_corrected = v_data / safe_scale
+            save_epoch_residual(f'{sub_dir}/{date}_V_epoch_{fl}.fits', v_corrected, epoch_hdr,
+                                v_src, tmpl_hdr, 'V')          # the aligned, flux-corrected V epoch (2026-09-30)
             v_sub = v_corrected - final_v_data
 
             sub_v_path = f'{sub_dir}/{date}_V_sub_{fl}.fits'
