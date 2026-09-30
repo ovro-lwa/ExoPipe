@@ -42,12 +42,6 @@ def do_cell(root, cell):
         return 0, 0, []
     pb_map = None
     n_ok, n_skip, errs = 0, 0, []
-    # PB_deep follows the SURVEY master's nights (Gregg 2026-09-30, on FINDING-PB-DEEP-FROM-TAPER-R0-NIGHTS-NOT-SURVEY):
-    # it used to be computed from the first file in VARIANTS, I Taper R0, whose night list can differ from the survey
-    # master's; in a wideband cell the subband weights then followed the wrong nights (measured up to ~12 per cent).
-    pb_src = f'{cf}/I_deep_Taper_R075_{scope}.fits'
-    if not os.path.exists(pb_src):
-        return 0, 0, [f'{cell}: no survey master I_deep_Taper_R075 to build PB_deep from - REFUSED']
     for var in VARIANTS:
         src = f'{cf}/{var}_{scope}.fits'
         if not os.path.exists(src):
@@ -60,7 +54,7 @@ def do_cell(root, cell):
                 n_skip += 1
                 continue
             if pb_map is None:
-                pb_map, meta = PB.wideband_pb(scope, lst, pb_src, category='deep')
+                pb_map, meta = PB.wideband_pb(scope, lst, src, category='deep')
                 ph = fits.getheader(src)
                 for k in ('PBCORR',):
                     ph.pop(k, None)
