@@ -117,19 +117,49 @@ XM_EXEMPT_MAX_S = 20.0                              # Gregg 2026-09-20: master s
 ELEV_BANDS = [tuple(float(x) for x in b.split('-')) for b in os.environ.get('P3_TABLE_ELEV_BANDS', '25-35,35-50,50-90').split(',')]
 
 
-def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, elev=None, _tab=None):
+def _lm(ra, dec, pc):
+    """(N, 3) direction cosines (l, m, 0) about the image phase centre pc = (RA, Dec) deg: the SIN image plane, where a
+    native pixel is |CDELT| and the beam has one size at every elevation (2026-09-30, Gregg "go on step 1")."""
+    r, d = np.radians(np.asarray(ra, float)), np.radians(np.asarray(dec, float)); r0, d0 = np.radians(pc[0]), np.radians(pc[1])
+    l = np.cos(d) * np.sin(r - r0); m = np.sin(d) * np.cos(d0) - np.cos(d) * np.sin(d0) * np.cos(r - r0)
+    return np.stack([l, m, np.zeros_like(l)], -1)
+
+
+def table_metric(key):
+    """The distance a table was DERIVED in, recorded on the installed table: 'sky' (great-circle angle; every table installed
+    before 2026-09-30, and any record without the field) or 'image-pixel' (direction cosines about the image phase centre).
+    The gate measures in the same distance or refuses."""
+    return (tables().get(key) or {}).get('metric', 'sky')
+
+
+def _metric_fns(metric, phase_centre):
+    if metric == 'sky':
+        return _uv, (lambda d_: 2 * np.arcsin(np.clip(d_ / 2, 0, 1)) * 180 / np.pi)
+    if metric == 'image-pixel':
+        if phase_centre is None:
+            raise RuntimeError('[table] table derived in the image-pixel metric but no image phase centre given - REFUSING')
+        return (lambda r_, d_: _lm(r_, d_, phase_centre)), (lambda d_: np.degrees(d_))
+    raise RuntimeError(f'[table] unknown table metric {metric!r} - REFUSING')
+
+
+def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, elev=None, _tab=None, phase_centre=None,
+             _metric=None):
     """(removed: bool array, note: list[str]) for candidate positions ra/dec (deg).
     parents_radec_flux: array (N,3) of RA, Dec, peak flux (Jy) of the cell's I master catalog.
     ELEVATION BANDS (Gregg 2026-09-27, sub-LST: 25-35, 35-50, >50 deg): with P3_TABLE_ELEV=1 and elev (deg, one per
     candidate) given, each candidate uses the table <prefix>_<Stokes>_<band>_el<lo>-<hi> of its elevation band when
     that table was installed, else the all-elevation table (the install step leaves out an elevation table that
-    measured no bin above the 20-candidate excess guard - the fallback Gregg approved).  Default: unchanged."""
+    measured no bin above the 20-candidate excess guard - the fallback Gregg approved).  Default: unchanged.
+    DISTANCE METRIC (2026-09-30): each table carries the metric it was derived in (table_metric); an 'image-pixel' table
+    measures separations in direction cosines about phase_centre (the caller's image phase centre, REFUSED when absent);
+    'sky' tables are unchanged.  The pulsar and cross-match exemptions stay in sky angle (they compare catalogue
+    positions)."""
     ra = np.atleast_1d(np.asarray(ra, float)); dec = np.atleast_1d(np.asarray(dec, float))
     if _tab is None and elev is not None and os.environ.get('P3_TABLE_ELEV') == '1':
         elev = np.atleast_1d(np.asarray(elev, float))
         cut = np.zeros(len(ra), bool); note = [''] * len(ra)
         pre = os.environ.get('P3_TABLE_PREFIX') or os.environ.get('P3_CADENCE', 'deep')
-        base = table_for(stokes, band)
+        base = table_for(stokes, band); base_metric = table_metric(f'{pre}_{stokes}_{band}')
         lab = np.array(['all'] * len(ra), dtype=object)
         for lo, hi in ELEV_BANDS:
             lab[(elev >= lo) & (elev < hi)] = 'el%g-%g' % (lo, hi)
@@ -137,12 +167,16 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, 
             idx = np.where(lab == L)[0]
             rec = tables().get(f'{pre}_{stokes}_{band}_{L}') if L != 'all' else None
             tab = [tuple(t) for t in rec['table']] if rec else base
-            c_, n_ = removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra[idx], dec[idx], _tab=tab)
+            c_, n_ = removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra[idx], dec[idx], _tab=tab,
+                              phase_centre=phase_centre, _metric=(rec.get('metric', 'sky') if rec else base_metric))
             for j, cj, nj in zip(idx, c_, n_):
                 cut[j] = bool(cj); note[j] = (f'[{L if rec else "all-elevation"}] ' + nj) if nj else ''
         return cut, note
     cut = np.zeros(len(ra), bool); note = [''] * len(ra)
     tab = _tab if _tab is not None else table_for(stokes, band)
+    if _metric is None:
+        _metric = table_metric(f"{os.environ.get('P3_TABLE_PREFIX') or os.environ.get('P3_CADENCE', 'deep')}_{stokes}_{band}")
+    _to, _ang = _metric_fns(_metric, phase_centre)
     par = np.asarray(parents_radec_flux, float).reshape(-1, 3)
     # 2026-09-20 INCIDENT FIX (Gregg's 3C 219 / 3C 327 cases): PyBDSF parent lists carry Gaussians with NaN positions;
     # a cKDTree built on points containing NaN returns WRONG nearest neighbours silently, so every flux bin holding such a
@@ -156,16 +190,18 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, 
     S = par[:, 2] / frame_rms_jy
     okc = np.isfinite(ra) & np.isfinite(dec)
     pos = _uv(np.where(okc, ra, 0.0), np.where(okc, dec, 0.0))
+    posm = _to(np.where(okc, ra, 0.0), np.where(okc, dec, 0.0))      # the table's own distance (= pos for 'sky')
     s_top = max(t[1] for t in tab)
     for s_lo, s_hi, R in tab:
         m = (S >= s_lo) & ((S < s_hi) if s_hi < s_top else np.ones(len(S), bool))
         if not m.any():
             continue
-        d, i = cKDTree(_uv(par[m, 0], par[m, 1])).query(pos, k=1)
-        sep_bw = (2 * np.arcsin(np.clip(d / 2, 0, 1)) * 180 / np.pi) / beam_deg
+        d, i = cKDTree(_to(par[m, 0], par[m, 1])).query(posm, k=1)
+        sep_bw = _ang(d) / beam_deg
         hit = (sep_bw < R) & okc
+        _unit = 'bw' if _metric == 'sky' else 'bw (image-pixel)'
         for j in np.where(hit & ~cut)[0]:
-            note[j] = f'table: parent S={S[m][i[j]]:.0f} at {sep_bw[j]:.2f} bw < {R:.2f} (bin {s_lo:g}-{s_hi:g})'
+            note[j] = f'table: parent S={S[m][i[j]]:.0f} at {sep_bw[j]:.2f} {_unit} < {R:.2f} (bin {s_lo:g}-{s_hi:g})'
         cut |= hit
     # R-XMATCH-EXEMPT-HWJ-10PC-ONLY-BELOW-20SIGMA (Gregg 2026-09-20, 'Proposed replacement approved'): a cross-match can
     # exempt a candidate from the table only when the parent that triggered the cut is below 20 sigma (S < 20, parent peak
@@ -201,7 +237,7 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, 
                 k = pt.query_ball_point(pos[j], chord)
                 if not k:
                     continue
-                trig = _triggering_parents(tab, par, S, pos[j], beam_deg)
+                trig = _triggering_parents(tab, par, S, posm[j], beam_deg, *((_to, _ang) if _metric != 'sky' else ()))
                 psr_uv = _psr_uv()[k]
                 ok_all, worst = True, 0.0
                 sysd = _sys_arcmin(band, None if _el is None or j >= len(_el) else _el[j])
@@ -229,8 +265,11 @@ def _sys_arcmin(band, el):
     return float(_A.sys_arcmin(band, 30.0 if el is None or not np.isfinite(el) else float(el)))
 
 
-def _triggering_parents(tab, par, S, p_uv, beam_deg):
-    """[(ra, dec, S)] of every parent whose table zone contains the position (unit vector p_uv)."""
+def _triggering_parents(tab, par, S, p_uv, beam_deg, _to=None, _ang=None):
+    """[(ra, dec, S)] of every parent whose table zone contains the position (p_uv: the position in the table's metric,
+    a unit vector for 'sky'; _to/_ang: that metric's position and distance functions, default sky)."""
+    _to = _to or _uv
+    _ang = _ang or (lambda d_: np.degrees(2 * np.arcsin(np.clip(d_ / 2, 0, 1))))
     out = []
     if not tab or not len(par):
         return out
@@ -240,7 +279,7 @@ def _triggering_parents(tab, par, S, p_uv, beam_deg):
         if not m.any():
             continue
         pm = par[m]; sm = S[m]
-        sep_bw = np.degrees(2 * np.arcsin(np.clip(np.linalg.norm(_uv(pm[:, 0], pm[:, 1]) - p_uv, axis=1) / 2, 0, 1))) / beam_deg
+        sep_bw = _ang(np.linalg.norm(_to(pm[:, 0], pm[:, 1]) - p_uv, axis=1)) / beam_deg
         for i in np.where(sep_bw < R)[0]:
             out.append((float(pm[i, 0]), float(pm[i, 1]), float(sm[i])))
     return out
