@@ -27,7 +27,9 @@ RUNS IN THE BASE ENVIRONMENT (PyBDSF + scipy; no GPU):
 Gates (refuse, never warn): a master already carrying MDWARP is REFUSED (no dewarp is stacked on another); fewer than 10
 RBF anchors after outlier rejection = REFUSED; the VLSSr peak match (the reference-quality gate's measurement,
 coadd_full_pipeline._reference_astrom_ok) on the plain master before and after: fewer than 10 matches, or no improvement
-of the median separation = REFUSED, and the cell stays unwarped and flagged; a product whose shape differs from the
+of the median separation = REFUSED, and the cell stays unwarped and flagged; (b') the median anchor offset before minus
+the 5-fold held-out residual must reach 5 arcsec, else REFERENCE ONLY - not applied, but still the next subband's
+cascade reference (Gregg 2026-10-01: "Go with (a) and (b')"); a product whose shape differs from the
 screen refuses the cell's apply before anything is written. Recorded per cell, not gating: anchors matched and kept, the
 median anchor offset before, the in-sample residual of the screen at its anchors and the 5-fold held-out residual (the
 screen's error at anchors it was not fitted to), screen amplitude p50/p95 over the central 3/4 of the frame.
@@ -50,6 +52,7 @@ from exopipe.phase2 import cascade_dewarp as CD
 
 VLSSR_PEAKS = '/lustre/gh/calibration/pipeline/reference/surveys/vlssr_radecpeak_unresolved.txt'
 MIN_ANCHORS = 10
+HELDOUT_MIN_GAIN_AS = 5.0   # acceptance (b'), Gregg 2026-10-01: held-out anchor improvement >= 5 arcsec
 _VL = None
 
 
@@ -194,7 +197,14 @@ def _measure(lst, scope, groot, ref, vlssr, diag):
         row.update(status=f'REFUSED regression: median VLSSr sep {m0:.2f} -> {m1:.2f} arcmin (N {n0} -> {n1}); cell left unwarped',
                    seconds=f'{time.time() - t0:.0f}')
         return row, None, None
-    row['status'] = 'OK'
+    # ACCEPTANCE (Gregg 2026-10-01, "Go with (a) and (b')"): the dewarp is APPLIED only when (a) the VLSSr peak median
+    # improves (above) AND (b') the screen improves the anchors it was NOT fitted to by >= HELDOUT_MIN_GAIN_AS (median
+    # anchor offset before minus the median 5-fold held-out residual). A master passing (a) but not (b') is NOT dewarped
+    # but still serves as the cascade reference for the next subband - exactly as in the 2026-10-01 measurement, so the
+    # accepted set reproduces it (179 of 456).
+    gain = float(np.median(off) - np.nanmedian(cv))
+    row['status'] = ('OK' if gain >= HELDOUT_MIN_GAIN_AS else
+                     f'REFERENCE ONLY: held-out improvement {gain:.1f} arcsec < {HELDOUT_MIN_GAIN_AS:g}; not applied')
     # catalogue for the next cascade step: PyBDSF on the dewarped PB-corrected master (Phase 2 step 9); if that extraction
     # fails the reference does NOT advance (Phase 2 would fall back to the pre-dewarp extraction)
     tmp = f'{diag}/{scope}_pbcorr_mdewarp_tmp.fits'
@@ -272,16 +282,16 @@ def run_lst(lst, root, input_root, apply, apply_scopes, table, vlssr):
     def step(scope, ref):
         groot = _gen_root(root, input_root, lst, scope)
         row, screen, cat = _measure(lst, scope, groot, ref, vlssr, diag)
-        if row['status'] == 'OK':
-            if cat is not None:
-                accepted[scope] = (scope, cat, float(scope.replace('MHz', '')) if scope.endswith('MHz') else ref[2])
-            if apply and (not apply_scopes or scope in apply_scopes):
-                try:
-                    row['n_written'] = _apply(lst, scope, groot, root, screen, row)
-                except Exception as e:
-                    row['status'] = f'APPLY REFUSED: {str(e)[:160]}'
+        is_ref = row['status'] == 'OK' or row['status'].startswith('REFERENCE ONLY')   # passed (a): a cascade reference
+        if is_ref and cat is not None:
+            accepted[scope] = (scope, cat, float(scope.replace('MHz', '')) if scope.endswith('MHz') else ref[2])
+        if row['status'] == 'OK' and apply and (not apply_scopes or scope in apply_scopes):
+            try:
+                row['n_written'] = _apply(lst, scope, groot, root, screen, row)
+            except Exception as e:
+                row['status'] = f'APPLY REFUSED: {str(e)[:160]}'
         emit(row)
-        return row['status'] == 'OK' and cat is not None
+        return is_ref and cat is not None
 
     anchor = next((c for c in CD.ANCHOR_FALLBACK if step(c, None)), None)
     if anchor is None:
