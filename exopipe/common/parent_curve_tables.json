@@ -11,12 +11,12 @@
   "deep_I_18MHz": {
    "stokes": "I",
    "band": "18MHz",
-   "ratio": 3.0,
+   "ratio": "3.0",
    "table": [
     [
      3,
      5,
-     1.0
+     1.25
     ],
     [
      5,
@@ -31,12 +31,12 @@
     [
      12,
      20,
-     1.25
+     1.5
     ],
     [
      20,
      35,
-     1.5
+     1.75
     ],
     [
      35,
@@ -46,7 +46,7 @@
     [
      60,
      100,
-     2.5
+     2.75
     ],
     [
      100,
@@ -59,449 +59,65 @@
      8.5
     ]
    ],
-   "n_candidates": 53297,
-   "n_cells": 20,
-   "provisional": true
+   "raw_table": [
+    [
+     3,
+     5,
+     1.25
+    ],
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.0
+    ],
+    [
+     60,
+     100,
+     2.75
+    ],
+    [
+     100,
+     200,
+     5.0
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "n_candidates": 59088,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
   },
   "deep_I_23MHz": {
    "stokes": "I",
    "band": "23MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     0.75
-    ],
-    [
-     8,
-     12,
-     1.0
-    ],
-    [
-     12,
-     20,
-     1.25
-    ],
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     6.5
-    ]
-   ],
-   "n_candidates": 84708,
-   "n_cells": 18,
-   "provisional": true
-  },
-  "deep_I_27MHz": {
-   "stokes": "I",
-   "band": "27MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     1.25
-    ],
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.25
-    ],
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.25
-    ],
-    [
-     200,
-     1000000.0,
-     5.0
-    ]
-   ],
-   "n_candidates": 110318,
-   "n_cells": 20,
-   "provisional": true
-  },
-  "deep_I_32MHz": {
-   "stokes": "I",
-   "band": "32MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     1.25
-    ],
-    [
-     8,
-     12,
-     1.5
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.0
-    ],
-    [
-     200,
-     1000000.0,
-     5.0
-    ]
-   ],
-   "n_candidates": 113657,
-   "n_cells": 19,
-   "provisional": true
-  },
-  "deep_I_36MHz": {
-   "stokes": "I",
-   "band": "36MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     8,
-     12,
-     1.5
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.0
-    ],
-    [
-     200,
-     1000000.0,
-     4.75
-    ]
-   ],
-   "n_candidates": 113776,
-   "n_cells": 21,
-   "provisional": true
-  },
-  "deep_I_41MHz": {
-   "stokes": "I",
-   "band": "41MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     0.75
-    ],
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.0
-    ],
-    [
-     200,
-     1000000.0,
-     5.0
-    ]
-   ],
-   "n_candidates": 200928,
-   "n_cells": 21,
-   "provisional": true
-  },
-  "deep_I_46MHz": {
-   "stokes": "I",
-   "band": "46MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.0
-    ],
-    [
-     200,
-     1000000.0,
-     5.0
-    ]
-   ],
-   "n_candidates": 162653,
-   "n_cells": 18,
-   "provisional": true
-  },
-  "deep_I_50MHz": {
-   "stokes": "I",
-   "band": "50MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.25
-    ],
-    [
-     200,
-     1000000.0,
-     5.0
-    ]
-   ],
-   "n_candidates": 139643,
-   "n_cells": 20,
-   "provisional": true
-  },
-  "deep_I_55MHz": {
-   "stokes": "I",
-   "band": "55MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     1.25
-    ],
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.75
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.0
-    ],
-    [
-     200,
-     1000000.0,
-     6.25
-    ]
-   ],
-   "n_candidates": 112110,
-   "n_cells": 19,
-   "provisional": true
-  },
-  "deep_I_59MHz": {
-   "stokes": "I",
-   "band": "59MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     1.25
-    ],
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.75
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     2.0
-    ],
-    [
-     100,
-     200,
-     2.25
-    ],
-    [
-     200,
-     1000000.0,
-     7.0
-    ]
-   ],
-   "n_candidates": 83504,
-   "n_cells": 17,
-   "provisional": true
-  },
-  "deep_I_64MHz": {
-   "stokes": "I",
-   "band": "64MHz",
-   "ratio": 3.0,
+   "ratio": "3.0",
    "table": [
     [
      5,
@@ -516,12 +132,12 @@
     [
      12,
      20,
-     1.5
+     1.25
     ],
     [
      20,
      35,
-     1.75
+     1.5
     ],
     [
      35,
@@ -536,7 +152,7 @@
     [
      100,
      200,
-     2.25
+     2.75
     ],
     [
      200,
@@ -544,319 +160,21 @@
      6.75
     ]
    ],
-   "n_candidates": 122194,
-   "n_cells": 18,
-   "provisional": true
-  },
-  "deep_I_69MHz": {
-   "stokes": "I",
-   "band": "69MHz",
-   "ratio": 3.0,
-   "table": [
+   "raw_table": [
     [
      5,
      8,
-     1.25
-    ],
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.75
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     2.0
-    ],
-    [
-     100,
-     200,
-     2.25
-    ],
-    [
-     200,
-     1000000.0,
-     8.25
-    ]
-   ],
-   "n_candidates": 98117,
-   "n_cells": 16,
-   "provisional": true
-  },
-  "deep_I_73MHz": {
-   "stokes": "I",
-   "band": "73MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     1.25
-    ],
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.75
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     2.0
-    ],
-    [
-     100,
-     200,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     9.0
-    ]
-   ],
-   "n_candidates": 98940,
-   "n_cells": 20,
-   "provisional": true
-  },
-  "deep_I_78MHz": {
-   "stokes": "I",
-   "band": "78MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     1.5
-    ],
-    [
-     8,
-     12,
-     1.5
-    ],
-    [
-     12,
-     20,
-     1.75
-    ],
-    [
-     20,
-     35,
-     1.75
-    ],
-    [
-     35,
-     60,
-     2.0
-    ],
-    [
-     60,
-     100,
-     2.25
-    ],
-    [
-     100,
-     200,
-     3.0
-    ],
-    [
-     200,
-     1000000.0,
-     9.5
-    ]
-   ],
-   "n_candidates": 63844,
-   "n_cells": 16,
-   "provisional": true
-  },
-  "deep_I_82MHz": {
-   "stokes": "I",
-   "band": "82MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     3,
-     5,
-     1.75
-    ],
-    [
-     5,
-     8,
-     1.75
-    ],
-    [
-     8,
-     12,
-     1.75
-    ],
-    [
-     12,
-     20,
-     2.0
-    ],
-    [
-     20,
-     35,
-     2.0
-    ],
-    [
-     35,
-     60,
-     2.25
-    ],
-    [
-     60,
-     100,
-     2.5
-    ],
-    [
-     100,
-     200,
-     4.0
-    ],
-    [
-     200,
-     1000000.0,
-     10.75
-    ]
-   ],
-   "n_candidates": 52767,
-   "n_cells": 19,
-   "provisional": true
-  },
-  "deep_I_Blue": {
-   "stokes": "I",
-   "band": "Blue",
-   "ratio": 3.0,
-   "table": [
-    [
-     5,
-     8,
-     1.25
-    ],
-    [
-     8,
-     12,
-     1.25
-    ],
-    [
-     12,
-     20,
-     1.5
-    ],
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.0
-    ],
-    [
-     200,
-     1000000.0,
-     5.25
-    ]
-   ],
-   "n_candidates": 321606,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_I_Full": {
-   "stokes": "I",
-   "band": "Full",
-   "ratio": 3.0,
-   "table": [
-    [
-     12,
-     20,
-     1.25
-    ],
-    [
-     20,
-     35,
-     1.25
-    ],
-    [
-     35,
-     60,
-     1.5
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     1.75
-    ],
-    [
-     200,
-     1000000.0,
-     2.0
-    ]
-   ],
-   "n_candidates": 823917,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_I_Green": {
-   "stokes": "I",
-   "band": "Green",
-   "ratio": 3.0,
-   "table": [
-    [
-     8,
-     12,
      1.0
     ],
     [
+     8,
+     12,
+     1.25
+    ],
+    [
      12,
      20,
-     1.5
+     1.25
     ],
     [
      20,
@@ -866,33 +184,42 @@
     [
      35,
      60,
-     1.5
+     1.75
     ],
     [
      60,
      100,
-     1.75
+     2.0
     ],
     [
      100,
      200,
-     1.75
+     2.75
     ],
     [
      200,
      1000000.0,
-     3.25
+     6.75
     ]
    ],
-   "n_candidates": 424265,
+   "n_candidates": 108095,
    "n_cells": 24,
-   "provisional": false
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
   },
-  "deep_I_Red": {
+  "deep_I_27MHz": {
    "stokes": "I",
-   "band": "Red",
-   "ratio": 3.0,
+   "band": "27MHz",
+   "ratio": "3.0",
    "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
     [
      8,
      12,
@@ -901,7 +228,7 @@
     [
      12,
      20,
-     1.5
+     1.25
     ],
     [
      20,
@@ -911,42 +238,7 @@
     [
      35,
      60,
-     1.5
-    ],
-    [
-     60,
-     100,
      1.75
-    ],
-    [
-     100,
-     200,
-     1.75
-    ],
-    [
-     200,
-     1000000.0,
-     3.0
-    ]
-   ],
-   "n_candidates": 249493,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_18MHz": {
-   "stokes": "V",
-   "band": "18MHz",
-   "ratio": 2.0,
-   "table": [
-    [
-     20,
-     35,
-     0.5
-    ],
-    [
-     35,
-     60,
-     1.0
     ],
     [
      60,
@@ -964,24 +256,1515 @@
      5.0
     ]
    ],
-   "n_candidates": 42127,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_23MHz": {
-   "stokes": "V",
-   "band": "23MHz",
-   "ratio": 2.0,
-   "table": [
+   "raw_table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
     [
      35,
      60,
-     1.25
+     1.75
     ],
     [
      60,
      100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 129950,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_32MHz": {
+   "stokes": "I",
+   "band": "32MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 133109,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_36MHz": {
+   "stokes": "I",
+   "band": "36MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     1.75
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 119067,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_41MHz": {
+   "stokes": "I",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
      1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 210963,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_46MHz": {
+   "stokes": "I",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "n_candidates": 192500,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_50MHz": {
+   "stokes": "I",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     3.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 148813,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_55MHz": {
+   "stokes": "I",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     6.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     6.5
+    ]
+   ],
+   "n_candidates": 134380,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_59MHz": {
+   "stokes": "I",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     5,
+     8,
+     1.5
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     7.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     2.0
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     7.5
+    ]
+   ],
+   "n_candidates": 104453,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_64MHz": {
+   "stokes": "I",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     3,
+     5,
+     0.5
+    ],
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     7.25
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     11.5
+    ],
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     7.25
+    ]
+   ],
+   "n_candidates": 140983,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_69MHz": {
+   "stokes": "I",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     8.0
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     2.0
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     8.0
+    ]
+   ],
+   "n_candidates": 128212,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_73MHz": {
+   "stokes": "I",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     3,
+     5,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     20.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "n_candidates": 103814,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_78MHz": {
+   "stokes": "I",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     3,
+     5,
+     1.25
+    ],
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.75
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.0
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     3.0
+    ],
+    [
+     200,
+     1000000.0,
+     10.0
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     18.25
+    ],
+    [
+     5,
+     8,
+     1.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.75
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.0
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     3.0
+    ],
+    [
+     200,
+     1000000.0,
+     10.0
+    ]
+   ],
+   "n_candidates": 87912,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_82MHz": {
+   "stokes": "I",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     3,
+     5,
+     1.5
+    ],
+    [
+     5,
+     8,
+     1.5
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     2.0
+    ],
+    [
+     20,
+     35,
+     2.0
+    ],
+    [
+     35,
+     60,
+     2.5
+    ],
+    [
+     60,
+     100,
+     2.75
+    ],
+    [
+     100,
+     200,
+     4.75
+    ],
+    [
+     200,
+     1000000.0,
+     12.25
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     12.5
+    ],
+    [
+     5,
+     8,
+     1.75
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     2.0
+    ],
+    [
+     20,
+     35,
+     2.0
+    ],
+    [
+     35,
+     60,
+     2.5
+    ],
+    [
+     60,
+     100,
+     2.75
+    ],
+    [
+     100,
+     200,
+     4.75
+    ],
+    [
+     200,
+     1000000.0,
+     12.25
+    ]
+   ],
+   "n_candidates": 56827,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Blue": {
+   "stokes": "I",
+   "band": "Blue",
+   "ratio": "3.0",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     8.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 290842,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Full": {
+   "stokes": "I",
+   "band": "Full",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     4.25
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 776977,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Green": {
+   "stokes": "I",
+   "band": "Green",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "n_candidates": 396915,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Red": {
+   "stokes": "I",
+   "band": "Red",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
     ],
     [
      100,
@@ -994,857 +1777,61 @@
      2.75
     ]
    ],
-   "n_candidates": 70591,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_27MHz": {
-   "stokes": "V",
-   "band": "27MHz",
-   "ratio": 2.0,
-   "table": [
-    [
-     35,
-     60,
-     1.25
-    ],
-    [
-     60,
-     100,
-     1.25
-    ],
-    [
-     100,
-     200,
-     1.5
-    ],
-    [
-     200,
-     1000000.0,
-     2.25
-    ]
-   ],
-   "n_candidates": 74105,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_32MHz": {
-   "stokes": "V",
-   "band": "32MHz",
-   "ratio": 2.0,
-   "table": [
-    [
-     35,
-     60,
-     1.25
-    ],
-    [
-     60,
-     100,
-     1.25
-    ],
-    [
-     100,
-     200,
-     1.5
-    ],
-    [
-     200,
-     1000000.0,
-     2.25
-    ]
-   ],
-   "n_candidates": 62799,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_36MHz": {
-   "stokes": "V",
-   "band": "36MHz",
-   "ratio": 2.0,
-   "table": [
-    [
-     35,
-     60,
-     1.5
-    ],
-    [
-     100,
-     200,
-     1.5
-    ],
-    [
-     200,
-     1000000.0,
-     2.25
-    ]
-   ],
-   "n_candidates": 46939,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_41MHz": {
-   "stokes": "V",
-   "band": "41MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     100,
-     200,
-     1.0
-    ],
-    [
-     200,
-     1000000.0,
-     2.0
-    ]
-   ],
-   "n_candidates": 44173,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_46MHz": {
-   "stokes": "V",
-   "band": "46MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     12,
-     20,
-     0.75
-    ],
-    [
-     100,
-     200,
-     0.75
-    ],
-    [
-     200,
-     1000000.0,
-     2.25
-    ]
-   ],
-   "n_candidates": 37847,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_50MHz": {
-   "stokes": "V",
-   "band": "50MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     12,
-     20,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     2.5
-    ]
-   ],
-   "n_candidates": 28686,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_55MHz": {
-   "stokes": "V",
-   "band": "55MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     200,
-     1000000.0,
-     3.75
-    ]
-   ],
-   "n_candidates": 28126,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_59MHz": {
-   "stokes": "V",
-   "band": "59MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     60,
-     100,
-     0.5
-    ],
-    [
-     100,
-     200,
-     0.75
-    ],
-    [
-     200,
-     1000000.0,
-     4.25
-    ]
-   ],
-   "n_candidates": 28495,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_64MHz": {
-   "stokes": "V",
-   "band": "64MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     200,
-     1000000.0,
-     4.25
-    ]
-   ],
-   "n_candidates": 35880,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_69MHz": {
-   "stokes": "V",
-   "band": "69MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     60,
-     100,
-     0.25
-    ],
-    [
-     100,
-     200,
-     0.75
-    ],
-    [
-     200,
-     1000000.0,
-     4.75
-    ]
-   ],
-   "n_candidates": 37607,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_73MHz": {
-   "stokes": "V",
-   "band": "73MHz",
-   "ratio": 3.0,
-   "table": [
+   "raw_table": [
     [
      8,
      12,
-     0.5
+     1.0
     ],
     [
-     60,
-     100,
-     0.5
-    ],
-    [
-     100,
-     200,
-     0.5
-    ],
-    [
-     200,
-     1000000.0,
-     4.75
-    ]
-   ],
-   "n_candidates": 37176,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_78MHz": {
-   "stokes": "V",
-   "band": "78MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     35,
-     60,
-     0.5
-    ],
-    [
-     100,
-     200,
-     0.5
-    ],
-    [
-     200,
-     1000000.0,
-     6.25
-    ]
-   ],
-   "n_candidates": 42269,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_82MHz": {
-   "stokes": "V",
-   "band": "82MHz",
-   "ratio": 3.0,
-   "table": [
-    [
-     35,
-     60,
-     0.5
-    ],
-    [
-     60,
-     100,
-     0.5
-    ],
-    [
-     100,
-     200,
+     12,
+     20,
      1.25
     ],
     [
-     200,
-     1000000.0,
-     8.5
-    ]
-   ],
-   "n_candidates": 37614,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_Blue": {
-   "stokes": "V",
-   "band": "Blue",
-   "ratio": 3.0,
-   "table": [
-    [
-     12,
      20,
-     0.5
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
     ],
     [
      100,
      200,
-     0.5
-    ],
-    [
-     200,
-     1000000.0,
-     3.5
-    ]
-   ],
-   "n_candidates": 50971,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_Full": {
-   "stokes": "V",
-   "band": "Full",
-   "ratio": 3.0,
-   "table": [
-    [
-     200,
-     1000000.0,
-     1.75
-    ]
-   ],
-   "n_candidates": 97750,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "deep_V_Green": {
-   "stokes": "V",
-   "band": "Green",
-   "ratio": 3.0,
-   "table": [
-    [
-     12,
-     20,
      1.75
     ],
     [
      200,
      1000000.0,
-     1.75
+     2.75
     ]
    ],
-   "n_candidates": 65763,
+   "n_candidates": 268502,
    "n_cells": 24,
-   "provisional": false
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
   },
-  "deep_V_Red": {
-   "stokes": "V",
-   "band": "Red",
-   "ratio": 3.0,
-   "table": [
-    [
-     200,
-     1000000.0,
-     1.5
-    ]
-   ],
-   "n_candidates": 124866,
-   "n_cells": 24,
-   "provisional": false
-  },
-  "10min_V_18MHz": {
+  "deep_V_18MHz": {
    "stokes": "V",
    "band": "18MHz",
    "ratio": "2.0",
    "table": [
     [
-     20,
-     35,
-     1.0
-    ],
-    [
      35,
      60,
-     4.25
-    ],
-    [
-     60,
-     100,
-     4.5
-    ],
-    [
-     100,
-     200,
-     4.5
-    ],
-    [
-     200,
-     1000000.0,
-     8.5
-    ]
-   ],
-   "raw_table": [
-    [
-     20,
-     35,
-     1.0
-    ],
-    [
-     35,
-     60,
-     4.25
-    ],
-    [
-     60,
-     100,
-     7.0
-    ],
-    [
-     100,
-     200,
-     4.5
-    ],
-    [
-     200,
-     1000000.0,
-     8.5
-    ]
-   ],
-   "n_candidates": 71387,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_23MHz": {
-   "stokes": "V",
-   "band": "23MHz",
-   "ratio": "2.0",
-   "table": [
-    [
-     20,
-     35,
-     2.5
-    ],
-    [
-     35,
-     60,
-     2.5
-    ],
-    [
-     60,
-     100,
-     2.5
-    ],
-    [
-     100,
-     200,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     8.5
-    ]
-   ],
-   "raw_table": [
-    [
-     20,
-     35,
-     5.25
-    ],
-    [
-     35,
-     60,
-     3.75
-    ],
-    [
-     60,
-     100,
-     2.75
-    ],
-    [
-     100,
-     200,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     8.5
-    ]
-   ],
-   "n_candidates": 117858,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_27MHz": {
-   "stokes": "V",
-   "band": "27MHz",
-   "ratio": "2.0",
-   "table": [
-    [
-     20,
-     35,
-     1.75
-    ],
-    [
-     35,
-     60,
-     1.75
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     8.0
-    ]
-   ],
-   "raw_table": [
-    [
-     20,
-     35,
-     7.5
-    ],
-    [
-     35,
-     60,
-     3.0
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     8.0
-    ]
-   ],
-   "n_candidates": 108343,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_32MHz": {
-   "stokes": "V",
-   "band": "32MHz",
-   "ratio": "2.0",
-   "table": [
-    [
-     20,
-     35,
-     1.5
-    ],
-    [
-     35,
-     60,
-     1.5
-    ],
-    [
-     60,
-     100,
-     1.5
-    ],
-    [
-     100,
-     200,
-     2.0
-    ],
-    [
-     200,
-     1000000.0,
-     7.0
-    ]
-   ],
-   "raw_table": [
-    [
-     12,
-     20,
-     1.0
-    ],
-    [
-     20,
-     35,
-     8.5
-    ],
-    [
-     35,
-     60,
-     3.5
-    ],
-    [
-     60,
-     100,
-     1.5
-    ],
-    [
-     100,
-     200,
-     2.0
-    ],
-    [
-     200,
-     1000000.0,
-     7.0
-    ]
-   ],
-   "n_candidates": 94867,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_36MHz": {
-   "stokes": "V",
-   "band": "36MHz",
-   "ratio": "2.0",
-   "table": [
-    [
-     20,
-     35,
-     1.0
-    ],
-    [
-     35,
-     60,
-     1.0
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     4.0
-    ],
-    [
-     200,
-     1000000.0,
-     7.25
-    ]
-   ],
-   "raw_table": [
-    [
-     20,
-     35,
-     1.0
-    ],
-    [
-     35,
-     60,
-     1.0
-    ],
-    [
-     60,
-     100,
-     1.75
-    ],
-    [
-     100,
-     200,
-     4.0
-    ],
-    [
-     200,
-     1000000.0,
-     7.25
-    ]
-   ],
-   "n_candidates": 51641,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_41MHz": {
-   "stokes": "V",
-   "band": "41MHz",
-   "ratio": "2.0",
-   "table": [
-    [
-     60,
-     100,
-     1.5
-    ],
-    [
-     100,
-     200,
-     2.25
-    ],
-    [
-     200,
-     1000000.0,
-     7.5
-    ]
-   ],
-   "raw_table": [
-    [
-     20,
-     35,
      0.5
     ],
-    [
-     35,
-     60,
-     0.25
-    ],
-    [
-     60,
-     100,
-     1.5
-    ],
-    [
-     100,
-     200,
-     2.25
-    ],
-    [
-     200,
-     1000000.0,
-     7.5
-    ]
-   ],
-   "n_candidates": 38576,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_46MHz": {
-   "stokes": "V",
-   "band": "46MHz",
-   "ratio": "2.0",
-   "table": [
-    [
-     60,
-     100,
-     1.5
-    ],
-    [
-     100,
-     200,
-     3.0
-    ],
-    [
-     200,
-     1000000.0,
-     9.5
-    ]
-   ],
-   "raw_table": [
-    [
-     20,
-     35,
-     0.25
-    ],
-    [
-     35,
-     60,
-     0.25
-    ],
-    [
-     60,
-     100,
-     1.5
-    ],
-    [
-     100,
-     200,
-     3.0
-    ],
-    [
-     200,
-     1000000.0,
-     9.5
-    ]
-   ],
-   "n_candidates": 32494,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_50MHz": {
-   "stokes": "V",
-   "band": "50MHz",
-   "ratio": "2.0",
-   "table": [
-    [
-     100,
-     200,
-     8.0
-    ],
-    [
-     200,
-     1000000.0,
-     9.75
-    ]
-   ],
-   "raw_table": [
     [
      60,
      100,
@@ -1853,85 +1840,451 @@
     [
      100,
      200,
-     8.0
+     1.5
     ],
     [
      200,
      1000000.0,
-     9.75
+     3.25
     ]
    ],
-   "n_candidates": 20899,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_55MHz": {
-   "stokes": "V",
-   "band": "55MHz",
-   "ratio": "2.0",
-   "table": [
+   "raw_table": [
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
     [
      100,
      200,
-     4.5
+     1.5
     ],
     [
      200,
      1000000.0,
-     11.5
+     3.25
+    ]
+   ],
+   "n_candidates": 40540,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_23MHz": {
+   "stokes": "V",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
     ]
    ],
    "raw_table": [
     [
      12,
      20,
-     0.25
+     39.5
     ],
     [
-     100,
-     200,
-     4.5
-    ],
-    [
-     200,
-     1000000.0,
-     11.5
-    ]
-   ],
-   "n_candidates": 24811,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_59MHz": {
-   "stokes": "V",
-   "band": "59MHz",
-   "ratio": "2.0",
-   "table": [
-    [
-     8,
-     12,
-     1.5
+     35,
+     60,
+     1.0
     ],
     [
      60,
      100,
-     1.5
+     1.0
     ],
     [
      100,
      200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 68638,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_27MHz": {
+   "stokes": "V",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     2.25
+    ],
+    [
+     35,
+     60,
+     2.0
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 72516,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_32MHz": {
+   "stokes": "V",
+   "band": "32MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     0.25
+    ],
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 61557,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_36MHz": {
+   "stokes": "V",
+   "band": "36MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 45733,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_41MHz": {
+   "stokes": "V",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 43214,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_46MHz": {
+   "stokes": "V",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     9.0
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 36871,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_50MHz": {
+   "stokes": "V",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "n_candidates": 27976,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_55MHz": {
+   "stokes": "V",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     12,
+     20,
      2.5
     ],
     [
      200,
      1000000.0,
-     11.5
+     2.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     6.75
+    ],
+    [
+     200,
+     1000000.0,
+     2.5
+    ]
+   ],
+   "n_candidates": 27180,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_59MHz": {
+   "stokes": "V",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
     ]
    ],
    "raw_table": [
@@ -1941,9 +2294,615 @@
      8.75
     ],
     [
+     12,
+     20,
+     4.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "n_candidates": 27657,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_64MHz": {
+   "stokes": "V",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 34468,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_69MHz": {
+   "stokes": "V",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "n_candidates": 35230,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_73MHz": {
+   "stokes": "V",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "n_candidates": 34243,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_78MHz": {
+   "stokes": "V",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     5.75
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 39692,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_82MHz": {
+   "stokes": "V",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "table": [
+    [
+     35,
+     60,
+     0.25
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     2.25
+    ],
+    [
+     35,
+     60,
+     0.25
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.5
+    ]
+   ],
+   "n_candidates": 35089,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Blue": {
+   "stokes": "V",
+   "band": "Blue",
+   "ratio": "3.0",
+   "table": [
+    [
+     12,
+     20,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     8.0
+    ],
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 46634,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Full": {
+   "stokes": "V",
+   "band": "Full",
+   "ratio": "3.0",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 91528,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Green": {
+   "stokes": "V",
+   "band": "Green",
+   "ratio": "3.0",
+   "table": [
+    [
      20,
      35,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     8.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 64715,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Red": {
+   "stokes": "V",
+   "band": "Red",
+   "ratio": "3.0",
+   "table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 123208,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-24T04:11:35Z",
+   "source": "deep_tables_r3_20260924T0342.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "10min_V_18MHz": {
+   "stokes": "V",
+   "band": "18MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     20,
+     35,
+     2.25
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.75
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
      0.25
+    ],
+    [
+     20,
+     35,
+     2.25
+    ],
+    [
+     35,
+     60,
+     3.25
+    ],
+    [
+     60,
+     100,
+     4.5
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.75
+    ]
+   ],
+   "n_candidates": 71387,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_23MHz": {
+   "stokes": "V",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.75
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.75
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.75
+    ]
+   ],
+   "n_candidates": 117858,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_27MHz": {
+   "stokes": "V",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     4.0
+    ],
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.5
+    ]
+   ],
+   "n_candidates": 108343,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_32MHz": {
+   "stokes": "V",
+   "band": "32MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
     ],
     [
      60,
@@ -1953,20 +2912,409 @@
     [
      100,
      200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     7.75
+    ],
+    [
+     12,
+     20,
+     4.0
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.0
+    ],
+    [
+     60,
+     100,
+     3.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 94867,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_36MHz": {
+   "stokes": "V",
+   "band": "36MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 51641,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_41MHz": {
+   "stokes": "V",
+   "band": "41MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 38576,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_46MHz": {
+   "stokes": "V",
+   "band": "46MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     5.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     5.25
+    ],
+    [
+     8,
+     12,
+     4.25
+    ],
+    [
+     20,
+     35,
+     0.25
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     6.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "n_candidates": 32494,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_50MHz": {
+   "stokes": "V",
+   "band": "50MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     5.0
+    ],
+    [
+     200,
+     1000000.0,
+     6.0
+    ]
+   ],
+   "raw_table": [
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     5.0
+    ],
+    [
+     200,
+     1000000.0,
+     6.0
+    ]
+   ],
+   "n_candidates": 20899,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_55MHz": {
+   "stokes": "V",
+   "band": "55MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     5,
+     8,
+     2.5
+    ],
+    [
+     100,
+     200,
      2.5
     ],
     [
      200,
      1000000.0,
-     11.5
+     7.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     8.75
+    ],
+    [
+     8,
+     12,
+     0.25
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     7.25
+    ]
+   ],
+   "n_candidates": 24811,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_59MHz": {
+   "stokes": "V",
+   "band": "59MHz",
+   "ratio": "2.0",
+   "table": [
+    [
+     5,
+     8,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     7.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.5
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     7.5
     ]
    ],
    "n_candidates": 23890,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_V_64MHz": {
    "stokes": "V",
@@ -1974,44 +3322,60 @@
    "ratio": "2.0",
    "table": [
     [
-     8,
-     12,
-     1.0
+     35,
+     60,
+     0.75
     ],
     [
      100,
      200,
-     2.25
+     1.75
     ],
     [
      200,
      1000000.0,
-     11.5
+     7.25
     ]
    ],
    "raw_table": [
     [
-     8,
-     12,
-     1.0
+     3,
+     5,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.25
+    ],
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     0.75
     ],
     [
      100,
      200,
-     2.25
+     1.75
     ],
     [
      200,
      1000000.0,
-     11.5
+     7.25
     ]
    ],
    "n_candidates": 20062,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_V_69MHz": {
    "stokes": "V",
@@ -2019,42 +3383,27 @@
    "ratio": "2.0",
    "table": [
     [
-     8,
-     12,
-     1.0
+     20,
+     35,
+     0.5
     ],
     [
      60,
      100,
-     2.25
+     1.25
     ],
     [
      100,
      200,
-     2.25
+     1.25
     ],
     [
      200,
      1000000.0,
-     11.5
+     7.5
     ]
    ],
    "raw_table": [
-    [
-     5,
-     8,
-     1.75
-    ],
-    [
-     8,
-     12,
-     1.0
-    ],
-    [
-     12,
-     20,
-     0.25
-    ],
     [
      20,
      35,
@@ -2063,25 +3412,26 @@
     [
      60,
      100,
-     2.25
+     1.5
     ],
     [
      100,
      200,
-     2.25
+     1.25
     ],
     [
      200,
      1000000.0,
-     11.5
+     7.5
     ]
    ],
    "n_candidates": 20262,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_V_73MHz": {
    "stokes": "V",
@@ -2089,6 +3439,11 @@
    "ratio": "2.0",
    "table": [
     [
+     3,
+     5,
+     0.5
+    ],
+    [
      5,
      8,
      0.5
@@ -2099,21 +3454,31 @@
      0.5
     ],
     [
+     60,
+     100,
+     2.25
+    ],
+    [
      100,
      200,
-     2.25
+     2.75
     ],
     [
      200,
      1000000.0,
-     11.25
+     7.5
     ]
    ],
    "raw_table": [
     [
+     3,
+     5,
+     17.5
+    ],
+    [
      5,
      8,
-     10.25
+     1.0
     ],
     [
      12,
@@ -2123,30 +3488,31 @@
     [
      20,
      35,
-     0.5
+     0.25
     ],
     [
      60,
      100,
-     0.5
+     2.25
     ],
     [
      100,
      200,
-     2.25
+     2.75
     ],
     [
      200,
      1000000.0,
-     11.25
+     7.5
     ]
    ],
    "n_candidates": 19008,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_V_78MHz": {
    "stokes": "V",
@@ -2154,69 +3520,75 @@
    "ratio": "2.0",
    "table": [
     [
-     5,
-     8,
-     0.75
-    ],
-    [
      8,
      12,
-     0.75
+     0.25
+    ],
+    [
+     35,
+     60,
+     1.5
     ],
     [
      60,
      100,
-     2.25
+     1.5
     ],
     [
      100,
      200,
-     4.25
+     3.0
     ],
     [
      200,
      1000000.0,
-     12.75
+     8.25
     ]
    ],
    "raw_table": [
     [
+     3,
      5,
-     8,
-     2.0
+     0.25
     ],
     [
      8,
      12,
-     0.75
+     0.25
     ],
     [
      20,
      35,
-     0.5
+     0.25
+    ],
+    [
+     35,
+     60,
+     1.5
     ],
     [
      60,
      100,
-     2.25
+     1.5
     ],
     [
      100,
      200,
-     4.25
+     3.0
     ],
     [
      200,
      1000000.0,
-     12.75
+     8.25
     ]
    ],
    "n_candidates": 22087,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_V_82MHz": {
    "stokes": "V",
@@ -2226,87 +3598,88 @@
     [
      3,
      5,
-     0.75
+     0.5
     ],
     [
      5,
      8,
-     0.75
+     0.5
     ],
     [
      8,
      12,
-     0.75
+     1.0
     ],
     [
      12,
      20,
-     1.25
+     1.0
     ],
     [
+     35,
      60,
-     100,
-     2.0
+     1.25
     ],
     [
      100,
      200,
-     6.75
+     7.0
     ],
     [
      200,
      1000000.0,
-     12.75
+     8.5
     ]
    ],
    "raw_table": [
     [
      3,
      5,
-     11.75
+     0.75
     ],
     [
      5,
      8,
-     1.0
+     0.5
     ],
     [
      8,
      12,
-     0.75
+     1.0
     ],
     [
      12,
      20,
-     1.25
+     1.0
     ],
     [
      35,
      60,
-     0.75
+     1.25
     ],
     [
      60,
      100,
-     2.0
+     1.0
     ],
     [
      100,
      200,
-     6.75
+     7.0
     ],
     [
      200,
      1000000.0,
-     12.75
+     8.5
     ]
    ],
    "n_candidates": 18681,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_V_Red": {
    "stokes": "V",
@@ -2314,14 +3687,19 @@
    "ratio": "2.0",
    "table": [
     [
+     20,
+     35,
+     0.5
+    ],
+    [
      35,
      60,
-     0.75
+     0.5
     ],
     [
      60,
      100,
-     0.75
+     0.5
     ],
     [
      100,
@@ -2331,19 +3709,24 @@
     [
      200,
      1000000.0,
-     3.75
+     2.75
     ]
    ],
    "raw_table": [
     [
+     20,
+     35,
+     3.75
+    ],
+    [
      35,
      60,
-     9.5
+     0.5
     ],
     [
      60,
      100,
-     0.75
+     0.5
     ],
     [
      100,
@@ -2353,15 +3736,16 @@
     [
      200,
      1000000.0,
-     3.75
+     2.75
     ]
    ],
    "n_candidates": 148427,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_V_Green": {
    "stokes": "V",
@@ -2371,42 +3755,48 @@
     [
      20,
      35,
-     1.5
+     0.75
     ],
     [
      100,
      200,
-     1.5
+     1.0
     ],
     [
      200,
      1000000.0,
-     6.0
+     4.0
     ]
    ],
    "raw_table": [
     [
      20,
      35,
-     13.25
+     0.75
+    ],
+    [
+     60,
+     100,
+     0.25
     ],
     [
      100,
      200,
-     1.5
+     1.0
     ],
     [
      200,
      1000000.0,
-     6.0
+     4.0
     ]
    ],
    "n_candidates": 61186,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_V_Blue": {
    "stokes": "V",
@@ -2416,23 +3806,62 @@
     [
      35,
      60,
-     0.5
+     0.25
+    ],
+    [
+     100,
+     200,
+     1.0
     ],
     [
      200,
      1000000.0,
-     10.0
+     6.5
     ]
    ],
    "raw_table": [
     [
-     20,
      35,
+     60,
      0.25
     ],
     [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     6.5
+    ]
+   ],
+   "n_candidates": 34265,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_V_Full": {
+   "stokes": "V",
+   "band": "Full",
+   "ratio": "2.0",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
      35,
+     0.5
+    ],
+    [
      60,
+     100,
      0.5
     ],
     [
@@ -2443,55 +3872,43 @@
     [
      200,
      1000000.0,
-     10.0
-    ]
-   ],
-   "n_candidates": 34265,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_V_Full": {
-   "stokes": "V",
-   "band": "Full",
-   "ratio": "2.0",
-   "table": [
-    [
-     100,
-     200,
-     1.25
-    ],
-    [
-     200,
-     1000000.0,
-     4.0
+     2.75
     ]
    ],
    "raw_table": [
     [
+     12,
+     20,
+     6.25
+    ],
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
      60,
      100,
-     0.25
+     0.5
     ],
     [
      100,
      200,
-     1.25
+     1.0
     ],
     [
      200,
      1000000.0,
-     4.0
+     2.75
     ]
    ],
    "n_candidates": 87940,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_18MHz": {
    "stokes": "I",
@@ -2499,104 +3916,120 @@
    "ratio": "2.0",
    "table": [
     [
+     2,
+     3,
+     1.0
+    ],
+    [
      3,
      5,
-     1.5
+     1.0
     ],
     [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.5
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.25
+     1.5
     ],
     [
      35,
      60,
-     2.5
+     1.75
     ],
     [
      60,
      100,
-     3.25
+     3.5
     ],
     [
      100,
      200,
-     8.0
+     5.5
     ],
     [
      200,
      1000000.0,
-     10.0
+     7.5
     ]
    ],
    "raw_table": [
     [
+     1.5,
+     2,
+     0.75
+    ],
+    [
+     2,
+     3,
+     1.25
+    ],
+    [
      3,
      5,
-     1.5
+     1.0
     ],
     [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.5
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.25
+     1.5
     ],
     [
      35,
      60,
-     2.5
+     1.75
     ],
     [
      60,
      100,
-     3.25
+     3.5
     ],
     [
      100,
      200,
-     8.0
+     5.5
     ],
     [
      200,
      1000000.0,
-     10.0
+     7.5
     ]
    ],
    "n_candidates": 185786,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_23MHz": {
    "stokes": "I",
@@ -2604,99 +4037,105 @@
    "ratio": "2.0",
    "table": [
     [
+     3,
+     5,
+     1.0
+    ],
+    [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.5
+     1.0
     ],
     [
      12,
      20,
-     1.5
+     1.0
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.5
     ],
     [
      60,
      100,
-     3.0
+     2.0
     ],
     [
      100,
      200,
-     3.25
+     2.5
     ],
     [
      200,
      1000000.0,
-     8.5
+     6.0
     ]
    ],
    "raw_table": [
     [
      3,
      5,
-     0.5
+     1.0
     ],
     [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.5
+     1.0
     ],
     [
      12,
      20,
-     1.5
+     1.0
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.5
     ],
     [
      60,
      100,
-     3.0
+     2.0
     ],
     [
      100,
      200,
-     3.25
+     2.5
     ],
     [
      200,
      1000000.0,
-     8.5
+     6.0
     ]
    ],
    "n_candidates": 306379,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_27MHz": {
    "stokes": "I",
@@ -2704,94 +4143,115 @@
    "ratio": "2.0",
    "table": [
     [
+     2,
+     3,
+     1.0
+    ],
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.0
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.75
+     2.0
     ],
     [
      100,
      200,
-     3.5
+     2.5
     ],
     [
      200,
      1000000.0,
-     8.25
+     5.75
     ]
    ],
    "raw_table": [
     [
+     2,
+     3,
+     3.75
+    ],
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.0
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.75
+     2.0
     ],
     [
      100,
      200,
-     3.5
+     2.5
     ],
     [
      200,
      1000000.0,
-     8.25
+     5.75
     ]
    ],
    "n_candidates": 357023,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_32MHz": {
    "stokes": "I",
@@ -2799,99 +4259,105 @@
    "ratio": "2.0",
    "table": [
     [
+     3,
+     5,
+     1.0
+    ],
+    [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     1.75
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.25
     ],
     [
      60,
      100,
-     2.5
+     1.75
     ],
     [
      100,
      200,
-     3.75
+     2.75
     ],
     [
      200,
      1000000.0,
-     9.5
+     6.25
     ]
    ],
    "raw_table": [
     [
      3,
      5,
-     0.75
+     1.0
     ],
     [
      5,
      8,
-     1.75
+     1.25
     ],
     [
      8,
      12,
-     1.75
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     1.75
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.25
     ],
     [
      60,
      100,
-     2.5
+     1.75
     ],
     [
      100,
      200,
-     3.75
+     2.75
     ],
     [
      200,
      1000000.0,
-     9.5
+     6.25
     ]
    ],
    "n_candidates": 397596,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_36MHz": {
    "stokes": "I",
@@ -2899,94 +4365,105 @@
    "ratio": "2.0",
    "table": [
     [
+     3,
+     5,
+     1.25
+    ],
+    [
      5,
      8,
-     1.75
+     1.25
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.5
     ],
     [
      100,
      200,
-     3.75
+     2.75
     ],
     [
      200,
      1000000.0,
-     9.75
+     6.25
     ]
    ],
    "raw_table": [
     [
+     3,
+     5,
+     1.25
+    ],
+    [
      5,
      8,
-     1.75
+     1.25
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.5
     ],
     [
      100,
      200,
-     3.75
+     2.75
     ],
     [
      200,
      1000000.0,
-     9.75
+     6.25
     ]
    ],
    "n_candidates": 449336,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_41MHz": {
    "stokes": "I",
@@ -2994,99 +4471,105 @@
    "ratio": "2.0",
    "table": [
     [
+     3,
+     5,
+     1.0
+    ],
+    [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.5
     ],
     [
      100,
      200,
-     4.5
+     2.75
     ],
     [
      200,
      1000000.0,
-     10.5
+     6.5
     ]
    ],
    "raw_table": [
     [
      3,
      5,
-     0.5
+     1.0
     ],
     [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.5
     ],
     [
      100,
      200,
-     4.5
+     2.75
     ],
     [
      200,
      1000000.0,
-     10.5
+     6.5
     ]
    ],
    "n_candidates": 443131,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_46MHz": {
    "stokes": "I",
@@ -3094,99 +4577,105 @@
    "ratio": "2.0",
    "table": [
     [
+     3,
+     5,
+     1.0
+    ],
+    [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.75
     ],
     [
      100,
      200,
-     4.5
+     3.0
     ],
     [
      200,
      1000000.0,
-     10.5
+     7.25
     ]
    ],
    "raw_table": [
     [
      3,
      5,
-     0.75
+     1.0
     ],
     [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.75
     ],
     [
      100,
      200,
-     4.5
+     3.0
     ],
     [
      200,
      1000000.0,
-     10.5
+     7.25
     ]
    ],
    "n_candidates": 409778,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_50MHz": {
    "stokes": "I",
@@ -3194,104 +4683,120 @@
    "ratio": "2.0",
    "table": [
     [
+     1.5,
+     2,
+     1.0
+    ],
+    [
      3,
      5,
-     1.75
+     1.0
     ],
     [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.75
     ],
     [
      100,
      200,
-     5.0
+     3.25
     ],
     [
      200,
      1000000.0,
-     11.5
+     8.5
     ]
    ],
    "raw_table": [
     [
+     1.5,
+     2,
+     3.5
+    ],
+    [
+     2,
+     3,
+     0.5
+    ],
+    [
      3,
      5,
-     1.75
+     1.0
     ],
     [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.75
     ],
     [
      100,
      200,
-     5.0
+     3.25
     ],
     [
      200,
      1000000.0,
-     11.5
+     8.5
     ]
    ],
    "n_candidates": 377110,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_55MHz": {
    "stokes": "I",
@@ -3299,94 +4804,105 @@
    "ratio": "2.0",
    "table": [
     [
+     3,
+     5,
+     1.0
+    ],
+    [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.75
+     1.75
     ],
     [
      100,
      200,
-     5.25
+     3.5
     ],
     [
      200,
      1000000.0,
-     12.25
+     8.75
     ]
    ],
    "raw_table": [
     [
+     3,
+     5,
+     1.0
+    ],
+    [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.75
+     1.75
     ],
     [
      100,
      200,
-     5.25
+     3.5
     ],
     [
      200,
      1000000.0,
-     12.25
+     8.75
     ]
    ],
    "n_candidates": 399940,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_59MHz": {
    "stokes": "I",
@@ -3396,102 +4912,108 @@
     [
      3,
      5,
-     1.5
+     1.0
     ],
     [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     2.0
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.5
+     1.5
     ],
     [
      60,
      100,
-     3.0
+     2.25
     ],
     [
      100,
      200,
-     5.75
+     3.75
     ],
     [
      200,
      1000000.0,
-     15.0
+     9.75
     ]
    ],
    "raw_table": [
     [
+     2,
+     3,
+     0.25
+    ],
+    [
      3,
      5,
-     1.5
+     1.25
     ],
     [
      5,
      8,
-     1.75
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     2.0
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.5
+     1.5
     ],
     [
      60,
      100,
-     3.0
+     2.25
     ],
     [
      100,
      200,
-     5.75
+     3.75
     ],
     [
      200,
      1000000.0,
-     15.0
+     9.75
     ]
    ],
    "n_candidates": 365736,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_64MHz": {
    "stokes": "I",
@@ -3501,102 +5023,103 @@
     [
      3,
      5,
-     1.5
+     0.75
     ],
     [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     2.0
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.5
+     1.75
     ],
     [
      60,
      100,
-     2.75
+     2.25
     ],
     [
      100,
      200,
-     7.5
+     3.75
     ],
     [
      200,
      1000000.0,
-     14.5
+     10.25
     ]
    ],
    "raw_table": [
     [
      3,
      5,
-     2.5
+     0.75
     ],
     [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     2.0
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.5
+     1.75
     ],
     [
      60,
      100,
-     2.75
+     2.25
     ],
     [
      100,
      200,
-     7.5
+     3.75
     ],
     [
      200,
      1000000.0,
-     14.5
+     10.25
     ]
    ],
    "n_candidates": 344688,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_69MHz": {
    "stokes": "I",
@@ -3604,109 +5127,120 @@
    "ratio": "2.0",
    "table": [
     [
+     2,
+     3,
+     1.0
+    ],
+    [
      3,
      5,
-     1.5
+     1.0
     ],
     [
      5,
      8,
-     1.5
+     1.25
     ],
     [
      8,
      12,
-     2.25
+     1.5
     ],
     [
      12,
      20,
-     2.25
+     1.5
     ],
     [
      20,
      35,
-     2.25
+     1.5
     ],
     [
      35,
      60,
-     2.75
+     1.75
     ],
     [
      60,
      100,
-     3.0
+     2.25
     ],
     [
      100,
      200,
-     7.75
+     5.0
     ],
     [
      200,
      1000000.0,
-     16.75
+     11.0
     ]
    ],
    "raw_table": [
     [
      1.5,
      2,
-     1.75
+     0.5
+    ],
+    [
+     2,
+     3,
+     1.25
     ],
     [
      3,
      5,
-     4.5
+     1.0
     ],
     [
      5,
      8,
-     1.5
+     1.25
     ],
     [
      8,
      12,
-     2.25
+     1.5
     ],
     [
      12,
      20,
-     2.25
+     1.5
     ],
     [
      20,
      35,
-     2.25
+     1.5
     ],
     [
      35,
      60,
-     2.75
+     1.75
     ],
     [
      60,
      100,
-     3.0
+     2.25
     ],
     [
      100,
      200,
-     7.75
+     5.0
     ],
     [
      200,
      1000000.0,
-     16.75
+     11.0
     ]
    ],
    "n_candidates": 360306,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_73MHz": {
    "stokes": "I",
@@ -3716,112 +5250,113 @@
     [
      2,
      3,
-     1.75
+     1.25
     ],
     [
      3,
      5,
-     1.75
+     1.25
     ],
     [
      5,
      8,
-     1.75
+     1.25
     ],
     [
      8,
      12,
-     2.0
+     1.25
     ],
     [
      12,
      20,
-     2.0
+     1.25
     ],
     [
      20,
      35,
-     2.25
+     1.5
     ],
     [
      35,
      60,
-     2.75
+     2.0
     ],
     [
      60,
      100,
-     4.0
+     2.25
     ],
     [
      100,
      200,
-     8.0
+     5.25
     ],
     [
      200,
      1000000.0,
-     18.75
+     13.0
     ]
    ],
    "raw_table": [
     [
      2,
      3,
-     32.75
+     2.25
     ],
     [
      3,
      5,
-     2.0
+     1.25
     ],
     [
      5,
      8,
-     1.75
+     1.25
     ],
     [
      8,
      12,
-     2.0
+     1.25
     ],
     [
      12,
      20,
-     2.0
+     1.25
     ],
     [
      20,
      35,
-     2.25
+     1.5
     ],
     [
      35,
      60,
-     2.75
+     2.0
     ],
     [
      60,
      100,
-     4.0
+     2.25
     ],
     [
      100,
      200,
-     8.0
+     5.25
     ],
     [
      200,
      1000000.0,
-     18.75
+     13.0
     ]
    ],
    "n_candidates": 334197,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_78MHz": {
    "stokes": "I",
@@ -3829,114 +5364,125 @@
    "ratio": "2.0",
    "table": [
     [
+     1.5,
+     2,
+     1.0
+    ],
+    [
      2,
      3,
-     1.5
+     1.0
     ],
     [
      3,
      5,
-     1.5
+     1.0
     ],
     [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     2.25
+     1.5
     ],
     [
      20,
      35,
-     2.25
+     1.75
     ],
     [
      35,
      60,
-     3.0
+     2.25
     ],
     [
      60,
      100,
-     4.75
+     2.5
     ],
     [
      100,
      200,
-     9.25
+     5.75
     ],
     [
      200,
      1000000.0,
-     21.25
+     16.0
     ]
    ],
    "raw_table": [
     [
+     1.5,
+     2,
+     1.75
+    ],
+    [
      2,
      3,
-     12.0
+     1.5
     ],
     [
      3,
      5,
-     1.5
+     1.0
     ],
     [
      5,
      8,
-     1.5
+     1.0
     ],
     [
      8,
      12,
-     1.75
+     1.25
     ],
     [
      12,
      20,
-     2.25
+     1.5
     ],
     [
      20,
      35,
-     2.25
+     1.75
     ],
     [
      35,
      60,
-     3.0
+     2.25
     ],
     [
      60,
      100,
-     4.75
+     2.5
     ],
     [
      100,
      200,
-     9.25
+     5.75
     ],
     [
      200,
      1000000.0,
-     21.25
+     16.0
     ]
    ],
    "n_candidates": 326332,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_82MHz": {
    "stokes": "I",
@@ -3944,19 +5490,24 @@
    "ratio": "2.0",
    "table": [
     [
+     1.5,
+     2,
+     1.0
+    ],
+    [
      2,
      3,
-     1.25
+     1.0
     ],
     [
      3,
      5,
-     1.25
+     1.0
     ],
     [
      5,
      8,
-     1.25
+     1.5
     ],
     [
      8,
@@ -3966,49 +5517,54 @@
     [
      12,
      20,
-     2.5
+     1.75
     ],
     [
      20,
      35,
-     2.75
+     2.25
     ],
     [
      35,
      60,
-     4.0
+     2.5
     ],
     [
      60,
      100,
-     5.25
+     4.5
     ],
     [
      100,
      200,
-     10.25
+     6.25
     ],
     [
      200,
      1000000.0,
-     22.5
+     20.0
     ]
    ],
    "raw_table": [
     [
+     1.5,
+     2,
+     7.5
+    ],
+    [
      2,
      3,
-     4.25
+     1.5
     ],
     [
      3,
      5,
-     1.5
+     1.0
     ],
     [
      5,
      8,
-     1.25
+     1.5
     ],
     [
      8,
@@ -4018,40 +5574,41 @@
     [
      12,
      20,
-     2.5
+     1.75
     ],
     [
      20,
      35,
-     2.75
+     2.25
     ],
     [
      35,
      60,
-     4.0
+     2.5
     ],
     [
      60,
      100,
-     5.25
+     4.5
     ],
     [
      100,
      200,
-     10.25
+     6.25
     ],
     [
      200,
      1000000.0,
-     22.5
+     20.0
     ]
    ],
    "n_candidates": 254668,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_Red": {
    "stokes": "I",
@@ -4059,39 +5616,145 @@
    "ratio": "2.0",
    "table": [
     [
+     5,
+     8,
+     1.0
+    ],
+    [
      8,
      12,
-     1.5
+     1.0
     ],
     [
      12,
      20,
-     1.5
+     1.0
     ],
     [
      20,
      35,
-     1.75
+     1.0
     ],
     [
      35,
      60,
-     2.0
+     1.25
     ],
     [
      60,
      100,
-     2.25
+     1.5
     ],
     [
      100,
      200,
-     2.75
+     1.75
     ],
     [
      200,
      1000000.0,
-     7.0
+     4.75
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.25
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 697251,
+   "n_cells": 24,
+   "provisional": false,
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "10min_I_Green": {
+   "stokes": "I",
+   "band": "Green",
+   "ratio": "2.0",
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.25
     ]
    ],
    "raw_table": [
@@ -4103,130 +5766,46 @@
     [
      8,
      12,
-     1.5
+     1.0
     ],
     [
      12,
      20,
-     1.5
+     1.0
     ],
     [
      20,
      35,
-     1.75
+     1.25
     ],
     [
      35,
      60,
-     2.0
+     1.25
     ],
     [
      60,
      100,
-     2.25
+     1.5
     ],
     [
      100,
      200,
-     2.75
+     1.75
     ],
     [
      200,
      1000000.0,
-     7.0
-    ]
-   ],
-   "n_candidates": 697251,
-   "n_cells": 24,
-   "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
-  },
-  "10min_I_Green": {
-   "stokes": "I",
-   "band": "Green",
-   "ratio": "2.0",
-   "table": [
-    [
-     8,
-     12,
-     1.5
-    ],
-    [
-     12,
-     20,
-     1.75
-    ],
-    [
-     20,
-     35,
-     1.75
-    ],
-    [
-     35,
-     60,
-     2.0
-    ],
-    [
-     60,
-     100,
-     2.25
-    ],
-    [
-     100,
-     200,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     6.75
-    ]
-   ],
-   "raw_table": [
-    [
-     8,
-     12,
-     1.5
-    ],
-    [
-     12,
-     20,
-     1.75
-    ],
-    [
-     20,
-     35,
-     1.75
-    ],
-    [
-     35,
-     60,
-     2.0
-    ],
-    [
-     60,
-     100,
-     2.25
-    ],
-    [
-     100,
-     200,
-     2.5
-    ],
-    [
-     200,
-     1000000.0,
-     6.75
+     4.25
     ]
    ],
    "n_candidates": 885003,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_Blue": {
    "stokes": "I",
@@ -4236,102 +5815,103 @@
     [
      3,
      5,
-     1.25
+     0.75
     ],
     [
      5,
      8,
-     1.25
+     1.0
     ],
     [
      8,
      12,
-     1.5
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     3.0
+     1.75
     ],
     [
      100,
      200,
-     4.5
+     3.0
     ],
     [
      200,
      1000000.0,
-     10.75
+     7.0
     ]
    ],
    "raw_table": [
     [
      3,
      5,
-     2.5
+     0.75
     ],
     [
      5,
      8,
-     1.25
+     1.0
     ],
     [
      8,
      12,
-     1.5
+     1.25
     ],
     [
      12,
      20,
-     1.75
+     1.25
     ],
     [
      20,
      35,
-     2.0
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     3.0
+     1.75
     ],
     [
      100,
      200,
-     4.5
+     3.0
     ],
     [
      200,
      1000000.0,
-     10.75
+     7.0
     ]
    ],
    "n_candidates": 686336,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   },
   "10min_I_Full": {
    "stokes": "I",
@@ -4339,84 +5919,95 @@
    "ratio": "2.0",
    "table": [
     [
+     5,
+     8,
+     0.75
+    ],
+    [
      8,
      12,
-     1.5
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.0
     ],
     [
      20,
      35,
-     1.75
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.75
     ],
     [
      100,
      200,
-     3.0
+     2.0
     ],
     [
      200,
      1000000.0,
-     6.0
+     4.0
     ]
    ],
    "raw_table": [
     [
+     5,
+     8,
+     0.75
+    ],
+    [
      8,
      12,
-     1.5
+     1.0
     ],
     [
      12,
      20,
-     1.75
+     1.0
     ],
     [
      20,
      35,
-     1.75
+     1.25
     ],
     [
      35,
      60,
-     2.25
+     1.5
     ],
     [
      60,
      100,
-     2.5
+     1.75
     ],
     [
      100,
      200,
-     3.0
+     2.0
     ],
     [
      200,
      1000000.0,
-     6.0
+     4.0
     ]
    ],
    "n_candidates": 1220505,
    "n_cells": 24,
    "provisional": false,
-   "derived_utc": "2026-09-19T11:06:08Z",
-   "source": "tenmin_tables_20260919T1053.json",
-   "parents": "deep multi-night Taper R0 master catalogue (Gregg 2026-09-17 option 1)"
+   "derived_utc": "2026-09-23T18:10:58Z",
+   "source": "tenmin_tables_20260923T1759.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
   }
  },
  "meta_10min": {
@@ -4427,6 +6018,24 @@
    "measured": 38,
    "empty": 0,
    "backup": "/lustre/gh/main/exopipe/exopipe/common/parent_curve_tables.json.bak_20260919T110610"
+  },
+  "2026-09-23T18:10:58Z": {
+   "source": "/data07/gh/phase3/transients/Run_P3T4/tenmin_tables_20260923T1759.json",
+   "ratio": 2.0,
+   "floor": 5.0,
+   "measured": 38,
+   "empty": 0,
+   "backup": "/lustre/gh/main/exopipe/exopipe/common/parent_curve_tables.json.bak_20260923T181102"
+  }
+ },
+ "meta_deep": {
+  "2026-09-24T04:11:35Z": {
+   "source": "/data07/gh/phase3/transients/Run_P3S4/deep_tables_r3_20260924T0342.json",
+   "ratio": 3.0,
+   "floor": 5.0,
+   "measured": 38,
+   "empty": 0,
+   "backup": "/lustre/gh/main/exopipe/exopipe/common/parent_curve_tables.json.bak_20260924T043751"
   }
  }
 }
