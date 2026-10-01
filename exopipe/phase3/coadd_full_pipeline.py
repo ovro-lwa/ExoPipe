@@ -3085,7 +3085,7 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
             if not name:
                 raise RuntimeError(f"{lst} {fl}: {f} has no PRODNAME - not stamped; REFUSING to archive")
             _atomic_copy(src, f'{cdir}/{name if name.endswith(".fits") else name + ".fits"}'); n += 1
-        elif f == f'PB_deep_{fl}.fits' or f == 'weights.csv':
+        elif f in (f'PB_deep_{fl}.fits', f'PB_deep_R075_{fl}.fits', 'weights.csv'):   # one PB map per robust (2026-10-01)
             _atomic_copy(src, f'{cdir}/{f}'); n += 1
     loo = f'{final_dir}/loo'
     if os.path.isdir(loo):

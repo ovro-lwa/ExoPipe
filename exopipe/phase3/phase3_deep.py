@@ -760,12 +760,16 @@ def _epoch_bmin(base, d, scope, stokes):
 _PB_CACHE = {}
 
 
-def _write_pbcorr_sibling(frame_path, data, hdr, base, scope, cell_tag, d, pbp=None):
+def _write_pbcorr_sibling(frame_path, data, hdr, base, scope, cell_tag, d, pbp=None, robust=None):
     """S15.2 lowest-level file (4): the primary-beam-corrected sibling of the
     search frame, from the cell's time-integrated PB map (coadd_final/PB_deep).
     Conformant from birth: the frame's header + PBCORR=True + its own PRODNAME.
     Missing PB map = REFUSAL (a ruled product cannot be silently absent)."""
-    pbp = pbp or f'{base}/coadd_final/PB_deep_{scope}.fits'   # 10 minutes: the frame's bin PB map (contract step 61/66)
+    # deep: the map of the frame's robust weighting (PB step 2, 2026-10-01: I Robust -0.75 -> PB_deep_R075, V Robust 0 ->
+    # PB_deep); 10 minutes: the frame's bin PB map (contract step 61/66)
+    if pbp is None:
+        from exopipe.phase3.pb_apply import deep_pb_name as _dpn
+        pbp = f'{base}/coadd_final/{_dpn(scope, robust)}'
     if pbp not in _PB_CACHE:
         if not os.path.exists(pbp):
             # 2026-09-04 23:10 UT: 42 of 96 wideband cells have NO PB map at their
@@ -1522,7 +1526,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             if not os.path.exists(ir_path):
                 _write_archive_frame(ir_path, rI, _hdr_I, f'{lst} {scope}', d)
             if not os.path.exists(ir_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
-                _write_pbcorr_sibling(ir_path, rI, _hdr_I, base, scope, f'{lst} {scope}', d,
+                _write_pbcorr_sibling(ir_path, rI, _hdr_I, base, scope, f'{lst} {scope}', d, robust='R075',
                                       pbp=(f'{ebase}/bin_masters/PB_bin{int(_hdr_I.get("LSTBIN"))}_{scope}.fits' if cadence == '10min' and _hdr_I.get('LSTBIN') is not None else None))
             _archive_frame_publish(ir_path, lst, scope, d, 'I', cadence, f'{lst} {scope}')
             if os.path.exists(ir_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
@@ -1628,7 +1632,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             if not os.path.exists(vr_path):
                 _write_archive_frame(vr_path, rV, _hdr_out, f'{lst} {scope}', d)
             if not os.path.exists(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):
-                _write_pbcorr_sibling(vr_path, rV, _hdr_out, base, scope, f'{lst} {scope}', d,
+                _write_pbcorr_sibling(vr_path, rV, _hdr_out, base, scope, f'{lst} {scope}', d, robust='R0',
                                       pbp=(f'{ebase}/bin_masters/PB_bin{int(_hdr_out.get("LSTBIN"))}_{scope}.fits' if cadence == '10min' and _hdr_out.get('LSTBIN') is not None else None))
             _archive_frame_publish(vr_path, lst, scope, d, 'V', cadence, f'{lst} {scope}')
             if os.path.exists(vr_path.replace('_redo_resid_', '_redo_resid_pbcorr_')):

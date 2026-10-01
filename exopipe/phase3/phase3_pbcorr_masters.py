@@ -11,8 +11,9 @@ master variant (I Taper/NoTaper x R0/R075 + V Taper_R0):
     subband combination for bands, stored deep map for subbands),
   - write {stem}_pbcorr_{scope}.fits (intrinsic Jy/beam; overwrites the
     superseded snapshot-corrected file if present),
-  - write the cell's PB map ONCE as coadd_final/PB_deep_{scope}.fits
-    (the mosaic handoff artifact).
+  - write the cell's PB maps, ONE PER ROBUST WEIGHTING (PB step 2, 2026-10-01): coadd_final/PB_deep_{scope}.fits with the
+    I Taper Robust 0 beam (Robust 0 products) and coadd_final/PB_deep_R075_{scope}.fits with the survey master's beam
+    (Robust -0.75 products); each sibling divides by the map of its own robust weighting.
 Provenance: PBCORR/PBFLOOR/PBLIBV (pb_apply) + PBMETHOD/PBWINDOW/BEAMMOD.
 Skips corrupt masters (maxabs > 1e6) and logs them.
 Usage: python phase3_pbcorr_masters.py [wideband|subband|all]
@@ -40,7 +41,13 @@ def do_cell(root, cell):
     cf = f'{root}/{cell}/coadd_final'
     if not os.path.isdir(cf):
         return 0, 0, []
-    pb_map = None
+    # ONE PB MAP PER ROBUST WEIGHTING (PB step 2, Gregg 2026-10-01 "go on step 2"): the bandwidth-smearing factor depends on
+    # the image's beam, which the robust weighting sets (taper barely changes it). PB_deep_<scope>.fits keeps its meaning -
+    # built with the I Taper Robust 0 master's beam, for every Robust 0 product (I Taper/NoTaper R0, V Taper R0); NEW
+    # PB_deep_R075_<scope>.fits is built with the survey master's (I Taper Robust -0.75) beam for the Robust -0.75 products
+    # (I Taper/NoTaper R075). The pair test is flat with the survey beam on the current catalogues (2026-10-01). A missing
+    # beam source for a robust refuses that robust's siblings (never a fallback to the other map).
+    maps = {}
     n_ok, n_skip, errs = 0, 0, []
     for var in VARIANTS:
         src = f'{cf}/{var}_{scope}.fits'
@@ -53,9 +60,16 @@ def do_cell(root, cell):
                 errs.append(f'{cell} {var}: CORRUPT maxabs={mx:.3g} — skipped')
                 n_skip += 1
                 continue
-            if pb_map is None:
-                pb_map, meta = PB.wideband_pb(scope, lst, src, category='deep')
-                ph = fits.getheader(src)
+            rob = 'R075' if var.endswith('R075') else 'R0'
+            if rob not in maps:
+                bsrc = f'{cf}/I_deep_Taper_{rob}_{scope}.fits'
+                if not os.path.exists(bsrc):
+                    raise RuntimeError(f'no {os.path.basename(bsrc)} to take the Robust {rob} beam from - REFUSING')
+                if fits.getheader(bsrc).get('MDWARP'):
+                    raise RuntimeError('master-dewarped cell: its PB maps must carry the cell\'s dewarp screen and are made '
+                                       'by the dewarp install, not here - REFUSING')
+                pb_map, meta = PB.wideband_pb(scope, lst, bsrc, category='deep')
+                ph = fits.getheader(bsrc)
                 for k in ('PBCORR',):
                     ph.pop(k, None)
                 ph['PBLIBV'] = ('v1-2026-07-04', 'PB library version')
@@ -67,8 +81,12 @@ def do_cell(root, cell):
                     ph['PBCHROM'] = (meta['chromatic'], 'factor 2: bandwidth-smearing term (a priori)')
                 if meta.get('residual_pb'):
                     ph['PBRESID'] = (meta['residual_pb'], 'factor 3: measured residual gain per band')
-                fits.writeto(f'{cf}/PB_deep_{scope}.fits',
+                ph['PBROBUST'] = ('-0.75' if rob == 'R075' else '0', 'robust weighting whose beam sets factor 2')
+                ph['PBBMAJ'] = (float(fits.getheader(bsrc)['BMAJ']), 'deg, beam FWHM used in factor 2')
+                fits.writeto(f'{cf}/PB_deep_{"R075_" if rob == "R075" else ""}{scope}.fits',
                              pb_map.astype(np.float32), ph, overwrite=True)
+                maps[rob] = (pb_map, meta)
+            pb_map, meta = maps[rob]
             out = f'{cf}/{var}_pbcorr_{scope}.fits'
             PB.apply_pbcorr(src, pb_map, out, meta=meta)
             with fits.open(out, mode='update') as h:

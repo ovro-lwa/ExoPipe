@@ -90,12 +90,18 @@ def build_tasks():
 
 def do_cell(item):
     cell, pairs = item
-    pp = pb_path(cell)
+    # PB step 2 (2026-10-01): Stokes I frames are Robust -0.75 -> PB_deep_R075, Stokes V Robust 0 -> PB_deep
+    pp0 = pb_path(cell); scope = cell.split('_', 1)[1]
+    pmap = {'I': os.path.join(os.path.dirname(pp0), PB.deep_pb_name(scope, 'R075')), 'V': pp0}
     done, errs = 0, []
-    if not os.path.exists(pp):
-        return cell, 0, [f'NO-PB-MAP {pp} ({len(pairs)} files)']
-    pb = np.squeeze(fits.getdata(pp)).astype(np.float32)
+    miss = [p for p in pmap.values() if not os.path.exists(p)]
+    if miss:
+        return cell, 0, [f'NO-PB-MAP {miss} ({len(pairs)} files)']
+    pbs = {k: np.squeeze(fits.getdata(p)).astype(np.float32) for k, p in pmap.items()}
     for src, dst in pairs:
+        if ('/I/' in src) == ('/V/' in src):
+            errs.append(f'{os.path.basename(src)}: Stokes not in the path - REFUSED'); continue
+        pb = pbs['I' if '/I/' in src else 'V']
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             PB.apply_pbcorr(src, pb, dst)

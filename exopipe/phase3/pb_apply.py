@@ -138,6 +138,19 @@ def residual_gain(hdr, shape, path=RESIDUAL_PB):
 QA_ROOT = "/lustre/pipeline/exopipe/phase2"
 PB_FLOOR = 0.1
 
+
+def deep_pb_name(scope, robust):
+    """File name of a cell's deep PB map for products of one robust weighting (PB step 2, Gregg 2026-10-01): the
+    bandwidth-smearing factor uses that weighting's beam. 'R075'/'-0.75' -> PB_deep_R075_<scope>.fits (I Taper/NoTaper
+    Robust -0.75: the survey master, the Stokes I search frames); 'R0'/'0' -> PB_deep_<scope>.fits (every Robust 0
+    product incl. Stokes V). Anything else REFUSES."""
+    r = str(robust).replace('+', '')
+    if r in ('R075', '-0.75'):
+        return f'PB_deep_R075_{scope}.fits'
+    if r in ('R0', '0', '0.0'):
+        return f'PB_deep_{scope}.fits'
+    raise ValueError(f'unknown robust weighting {robust!r} for the deep PB map')
+
 _FREQ_TO_LABEL = {float(int(l[:-3])): l for l in cfg.ALL_SUBBANDS}  # 18.0 -> '18MHz'
 
 
