@@ -222,7 +222,8 @@ def _apply(lst, scope, groot, root, screen, row):
     """Resample every FITS product of the cell's generation with the one screen into <root>/<cell>/gen_mdewarp_rbf/.
     Refuses before writing if the output generation exists or any product's shape differs from the screen."""
     sx, sy = screen
-    out = f'{root}/{lst}_{scope}/{OUT_GEN}'
+    # OUT_ROOT (runtime; 2026-10-01): where the new generation is written - Lustre bulk area when /data07 is short of space
+    out = f"{os.environ.get('MDEWARP_OUT_ROOT') or root}/{lst}_{scope}/{OUT_GEN}"
     if os.path.isdir(out) and os.listdir(out):
         raise RuntimeError(f'{out} already holds files - refusing to overwrite a written generation')
     files = []
@@ -326,6 +327,29 @@ def run_lst(lst, root, input_root, apply, apply_scopes, table, vlssr):
         step(wb, accepted[near])
 
 
+def apply_saved(lst, scope, root, input_root, table, screens):
+    """APPLY FROM THE MEASUREMENT RECORD (2026-10-01, Gregg "Go on the preamble"): the cell's final row in the merged table
+    must be OK - (a) and (b') - and its saved screen (Phase-2 _save_warp_screen FITS) must carry the same anchor count;
+    then _apply writes the new generation. No re-measurement. Returns files written; raises on any mismatch."""
+    rows = [r for r in csv.DictReader(open(table)) if r['lst'] == lst and r['scope'] == scope]
+    if not rows:
+        raise RuntimeError(f'{lst} {scope}: no row in {table}')
+    row = rows[-1]
+    if row['status'] != 'OK' or float(row['anchor_off_med_as']) - float(row['cv_resid_med_as']) < HELDOUT_MIN_GAIN_AS:
+        raise RuntimeError(f'{lst} {scope}: not accepted under (a)+(b\') - status {row["status"][:40]}')
+    sp = next((p for p in (f'{d}/{lst}/maps/{scope}_warp_screen.fits' for d in screens) if os.path.exists(p)), None)
+    if sp is None:
+        raise RuntimeError(f'{lst} {scope}: no saved screen under {screens}')
+    with fits.open(sp) as h:
+        sx = h['SCREEN_X'].data.astype(np.float64); sy = h['SCREEN_Y'].data.astype(np.float64); nanc = h['SCREEN_X'].header.get('NANCHOR')
+    if int(nanc) != int(row['n_anchors']):
+        raise RuntimeError(f'{lst} {scope}: saved screen has {nanc} anchors, the table row {row["n_anchors"]} - not the final measurement')
+    groot = _gen_root(root, input_root, lst, scope)
+    if groot is None:
+        raise RuntimeError(f'{lst} {scope}: no generation root')
+    return _apply(lst, scope, groot, root, (sx, sy), row)
+
+
 def main():
     logging.basicConfig(level=logging.WARNING, format='%(message)s')
     ap = argparse.ArgumentParser()
@@ -333,8 +357,20 @@ def main():
     ap.add_argument('--root', default='/data07/gh/phase3/coadd_sb'); ap.add_argument('--input-root', default=None)
     ap.add_argument('--apply', action='store_true'); ap.add_argument('--apply-scopes', default='')
     ap.add_argument('--table', default=None); ap.add_argument('--no-residuals', action='store_true')
+    ap.add_argument('--apply-saved', default=None, help='accepted-list CSV (lst,scope): apply the saved screens, no measurement')
+    ap.add_argument('--screens', default=f'{MEAS_ROOT},{MEAS_ROOT}/from_lwacalim09')
     a = ap.parse_args()
     global NO_RESIDUALS; NO_RESIDUALS = a.no_residuals
+    if a.apply_saved:
+        want = {(r['lst'], r['scope']) for r in csv.DictReader(open(a.apply_saved))}
+        for lst in a.lsts:
+            for l_, s_ in sorted(k for k in want if k[0] == lst):
+                try:
+                    n = apply_saved(l_, s_, a.root, a.input_root, a.table or f'{a.root}/mdewarp_rbf_table.csv', a.screens.split(','))
+                    print(f'{l_} {s_}: APPLIED - {n} files written', flush=True)
+                except Exception as e:
+                    print(f'{l_} {s_}: APPLY REFUSED - {e}', flush=True)
+        return
     vlssr = CD.load_vlssr_catalog(cfg.VLSSR_CATALOG, 'VLSSr')
     if vlssr is None:
         sys.exit('REFUSED: VLSSr catalogue failed to load')
