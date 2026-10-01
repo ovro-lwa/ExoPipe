@@ -5,7 +5,8 @@
   (2) one global absolute factor g = inverse-variance mean over cells of (SH12 stage-A factor on the scaled
       generation-4 master) / k_b, i.e. the best fit to the S&H calibrators AFTER the smoothing;
   (3) per cell: FLUXCORR = k_b * g (wideband cells: k of the constituent subbands weighted equally... see below),
-      carried as header cards (FLUXBND, FLUXABS, FLUXCORR, FLUXVER) and catalog columns; pixels unchanged.
+      carried as header cards (FLUXBND, FLUXABS, FLUXCORR, FLUXVER, FLUXBAKE); from the 2026-10-01 re-bake it is IN THE
+      PIXELS (Gregg 2026-10-01) and catalogues no longer apply it to baked products.
 Wideband bands: k_band = mean of k_b over the band's constituent subbands (Red 18-36, Green 41-59, Blue 64-82,
 Full all 15) - the wideband stack is an inverse-variance combination of the subbands, so a flat mean is the
 first-order correction; recorded as such in FLUXVER.
@@ -83,11 +84,20 @@ def apply_to_catalog_rows(rows, table, flux_cols=('peak_jy', 'peak_jy_pbcorr', '
 
 CARDS = (('FLUXBND', 'k', 'per-band power-law smoothing factor (Gregg 2026-09-11)'),
          ('FLUXABS', 'g', 'global S&H absolute factor after smoothing'),
-         ('FLUXCORR', 'corr', 'multiply fluxes by this (pixels unchanged)'))
+         ('FLUXCORR', 'corr', 'k x g'))
+# BAKED INTO THE PIXELS (Gregg 2026-10-01: "Yes, bake it into the pixels in the same re-bake. It was always my intention to
+# have the flux scale correction applied to pixels."): a product whose pixels already carry k x g has FLUXBAKE = True, and
+# no consumer may apply the table to it again (build_source_catalogs_v3 refuses).
+BAKE_CARD = 'FLUXBAKE'
 
 
-def cards_for(scope, table):
+def pixels_carry_correction(hdr):
+    return bool(hdr.get(BAKE_CARD, False))
+
+
+def cards_for(scope, table, baked=False):
     t = table[scope]
     out = [(c, t[key], com) for c, key, com in CARDS]
     out.append(('FLUXVER', t['version'][:68], 'flux correction table version'))
+    out.append((BAKE_CARD, bool(baked), 'k x g already in the pixels' if baked else 'pixels unchanged: multiply fluxes by FLUXCORR'))
     return out
