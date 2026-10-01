@@ -1839,8 +1839,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     # PER-STOKES, PER-BAND TABLE R(S) (Gregg 2026-09-05/06, supersedes the single
                     # ratified curve R25 1.0/1.4 gamma 0.35; flood keying retired with it):
                     # measured table from exopipe/common/parent_curve_tables.json
+                    # phase centre = the master's CRVAL (as gate_inputs.phase_centre): an image-pixel table
+                    # measures in direction cosines about it; a sky table ignores it (Gregg 2026-10-01)
                     _tc, _tn = _PCT.removals('I', scope, _pa, max(drI_, 1e-12), em * cd,
-                                             [c['coord'].ra.deg], [c['coord'].dec.deg])
+                                             [c['coord'].ra.deg], [c['coord'].dec.deg],
+                                             phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
                     if bool(_tc[0]):
                         cut = True; c['table_note'] = _tn[0]
                 if cut:
