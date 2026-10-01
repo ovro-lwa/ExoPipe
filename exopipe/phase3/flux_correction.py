@@ -16,7 +16,9 @@ import csv, glob, os
 import numpy as np
 SB = ['18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz']
 WB = {'Red': SB[:5], 'Green': SB[5:10], 'Blue': SB[10:], 'Full': SB}
-VERSION = 'fluxcorr-v1-20260911 (LOO power-law smoothing k_b at 73 MHz=1; global S&H factor g = robust median over cells; wideband k = mean of constituent subbands)'
+VERSION = ('fluxcorr-v2-20261001 (LOO power-law smoothing k_b at 73 MHz=1, PB per robust; '
+                         'global S&H factor g = robust median over cells on the 2026-10-01 per-LST VLSSr scale; wideband k = mean of '
+                         'constituent subbands; BAKED INTO THE PIXELS)')
 
 
 def read_vector(path):
@@ -26,14 +28,20 @@ def read_vector(path):
     return k
 
 
-def sh_fit(stageA_csvs, k):
-    """Global S&H factor after smoothing: inverse-variance mean over OK stage-A cells of f_cell / k_scope."""
+def sh_fit(stageA_csvs, k, lst_rescale=None):
+    """Global S&H factor after smoothing: inverse-variance mean over OK stage-A cells of f_cell / k_scope.
+    lst_rescale {lst: r}: the stage-A factors were measured on pixels that will be multiplied by r per LST (the 2026-10-01
+    re-measured VLSSr factor relative to the one in the pixels), so f_cell / r is the factor on the re-baked pixels; an LST
+    missing from it is REFUSED (never treated as 1)."""
     num = den = 0.0; n = 0; rows = []
     for p in stageA_csvs:
         for r in csv.DictReader(open(p)):
             if r.get('status') != 'OK' or r['scope'] not in k:
                 continue
-            f = float(r['scale']) / k[r['scope']]; e = float(r['err']) / k[r['scope']]
+            if lst_rescale is not None and r['lst'] not in lst_rescale:
+                raise RuntimeError(f"S&H fit: {r['lst']} {r['scope']} has no per-LST rescale factor; REFUSING")
+            rs = lst_rescale[r['lst']] if lst_rescale is not None else 1.0
+            f = float(r['scale']) / k[r['scope']] / rs; e = float(r['err']) / k[r['scope']] / rs
             if not (e > 0):
                 continue
             w = 1.0 / e ** 2; num += w * f; den += w; n += 1; rows.append((r['lst'], r['scope'], f, e))
@@ -50,10 +58,10 @@ def sh_fit(stageA_csvs, k):
     return g, ge, n, chi, rows, g_ivw, ge_ivw
 
 
-def build_table(vector_csv, stageA_glob, out_csv):
+def build_table(vector_csv, stageA_glob, out_csv, lst_rescale=None):
     k = read_vector(vector_csv)
     files = sorted(glob.glob(stageA_glob))
-    g, ge, n, chi, rows, g_ivw, ge_ivw = sh_fit(files, k)
+    g, ge, n, chi, rows, g_ivw, ge_ivw = sh_fit(files, k, lst_rescale)
     with open(out_csv, 'w', newline='') as f:
         w = csv.writer(f); w.writerow(['scope', 'k_band', 'g_abs', 'g_err', 'fluxcorr', 'n_sh_cells', 'sh_reduced_chi', 'g_ivw_reference', 'version'])
         for sc in SB + list(WB):
@@ -101,3 +109,22 @@ def cards_for(scope, table, baked=False):
     out.append(('FLUXVER', t['version'][:68], 'flux correction table version'))
     out.append((BAKE_CARD, bool(baked), 'k x g already in the pixels' if baked else 'pixels unchanged: multiply fluxes by FLUXCORR'))
     return out
+
+
+# Rebuild paths that start from UN-SCALED inputs (variant rebuild from the generation record, un-warped reconstructions)
+# multiply by the cell's TOTAL pixel factor and carry these cards: SHSCALE alone before the 2026-10-01 re-bake, SHSCALE x
+# FLUXCORR once FLUXBAKE is set.
+CARRY_CARDS = ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHDATE',
+               'FLUXBND', 'FLUXABS', 'FLUXCORR', 'FLUXVER', BAKE_CARD)
+
+
+def pixel_factor(hdr):
+    """Total factor in a product's pixels relative to the un-scaled build; None when it carries no flux scale."""
+    if hdr.get('SHSCALE') is None:
+        return None
+    f = float(hdr['SHSCALE'])
+    if pixels_carry_correction(hdr):
+        if hdr.get('FLUXCORR') is None:
+            raise RuntimeError('FLUXBAKE set without FLUXCORR - header inconsistent; REFUSING')
+        f *= float(hdr['FLUXCORR'])
+    return f

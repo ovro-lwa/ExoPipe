@@ -3242,14 +3242,17 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
         stamp_master_span(path, lst, fl, [d for d, _, _ in aligned])
         _stamp_variant_gate(path, refused)
         # bake in the cell's absolute flux factor exactly as the generation carries it
-        if mhdr.get('SHSCALE') is not None:
+        # (2026-10-01: once the survey master carries FLUXBAKE the factor is SHSCALE x FLUXCORR - flux_correction.pixel_factor)
+        from exopipe.phase3 import flux_correction as _FC
+        _pf = _FC.pixel_factor(mhdr)
+        if _pf is not None:
             with fits.open(path, mode='update') as hh:
-                hh[0].data = (np.asarray(hh[0].data, dtype=np.float32) * np.float32(mhdr['SHSCALE']))
-                for k in ('SHSCALE', 'SHERR', 'SHNSRC', 'SHSRCS', 'SHMETHOD', 'SHFREQ', 'SHDATE'):
+                hh[0].data = (np.asarray(hh[0].data, dtype=np.float32) * np.float32(_pf))
+                for k in _FC.CARRY_CARDS:
                     if k in mhdr:
                         hh[0].header[k] = (mhdr[k], mhdr.comments[k])
                 hh[0].header['HISTORY'] = (f"variant-only rebuild from the generation record (weights.csv, flow/) "
-                                           f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}; shflux x {mhdr['SHSCALE']:.5f} "
+                                           f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}; flux x {_pf:.5f} "
                                            f"inherited from the survey master (Gregg 2026-09-11 go)")
                 hh.flush()
         _stamp_master_standard(path, lst, fl)

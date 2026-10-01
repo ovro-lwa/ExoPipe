@@ -141,10 +141,17 @@ def _scaled_name(path, scope):
     return b[:-len(suf)] + f'_shflux{suf}' if b.endswith(suf) else b.replace('.fits', '_shflux.fits')
 
 
-def apply(lst, scope, root, row, outgen):
-    """Write the scaled generation: every product of coadd_final/ (incl. loo/) and subtracted/."""
+def apply(lst, scope, root, row, outgen, corr_t=None):
+    """Write the scaled generation: every product of coadd_final/ (incl. loo/) and subtracted/.
+    From 2026-10-01 (Gregg: "Yes, bake it into the pixels in the same re-bake. It was always my intention to have the flux
+    scale correction applied to pixels.") the pixels carry SHSCALE x FLUXCORR (k x g of the flux-correction table) and the
+    FLUX* cards with FLUXBAKE = True; without the table row for the scope the apply is REFUSED."""
+    if corr_t is None or scope not in corr_t:
+        raise RuntimeError(f'{lst} {scope}: apply without the flux-correction table row for {scope} - the correction is baked '
+                           f'into the pixels (Gregg 2026-10-01); REFUSING')
+    from exopipe.phase3 import flux_correction as FC
     cell = f'{root}/{lst}_{scope}'; out = f'{cell}/{outgen}'; n = 0
-    scale = float(row['scale'])
+    scale = float(row['scale']); corr = float(corr_t[scope]['corr'])
     for sub in (('coadd_final',) if NO_RESIDUALS else SCALED_DIRS):
         src = f'{cell}/{sub}'
         if not os.path.isdir(src): continue
@@ -167,7 +174,9 @@ def apply(lst, scope, root, row, outgen):
                 shutil.copy2(p, f'{dst_dir}/{base}'); continue
             with fits.open(p) as h:
                 d = h[0].data; hd = h[0].header.copy()
-            d = (np.asarray(d, dtype=np.float32) * np.float32(scale))
+            d = (np.asarray(d, dtype=np.float32) * np.float32(scale * corr))
+            for _c, _v, _com in FC.cards_for(scope, corr_t, baked=True):
+                hd[_c] = (_v, _com)
             _vlssr = str(row['srcs']).startswith('VLSSr')
             hd['SHSCALE'] = (scale, 'flux scale applied (VLSSr/RCB per LST, 2026-09-07)' if _vlssr
                              else 'SH12 absolute flux scale applied (Gregg 2026-08-28)')
@@ -179,8 +188,110 @@ def apply(lst, scope, root, row, outgen):
             hd['SHDATE'] = (row['measured_at'], 'flux scale measured')
             hd['HISTORY'] = (f"shflux: pixels x {scale:.5f} (VLSSr/RCB median ratio per LST, {row['srcs']}, N {row['nsrc']}; R-FLUX-SCALE-APPLY-VLSSR-HIGH-ELEVATION-APPROVED 2026-09-07)" if _vlssr else
                              f"shflux: pixels x {scale:.5f} (SH12 calibrators {row['srcs']}; I Taper R-0.75 pbcorr master; stage A of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828)")
+            hd['HISTORY'] = f"fluxcorr: pixels also x FLUXCORR {corr:.5f} (k x g, {corr_t[scope]['version'][:24]})"
             fits.writeto(f'{dst_dir}/{_scaled_name(p, scope)}', d, hd, overwrite=True); n += 1
     return n
+
+
+def _md5_bytes(b):
+    import hashlib
+    return hashlib.md5(b).hexdigest()
+
+
+def rebake_file(src, dst, scope, s_old, srow, corr_t, write=False, tmp_dir=None, s_old_from_cell=False):
+    """FLUX RE-BAKE of one product (Gregg 2026-10-01: "Re-measure and re-bake the flux scale" and "Yes, bake it into the
+    pixels in the same re-bake"): pixels x (s_new / s_old) x k x g, where s_old is the per-LST VLSSr factor the pixels
+    carry (SHSCALE), s_new the re-measured one (srow: the scale-table row) and k x g the flux-correction table's FLUXCORR
+    for the scope. Read src, write dst (the same path for the working tree; the archive reads the quarantined copy).
+    Gates (refuse, never warn): PB maps are never scaled; a product without SHSCALE, or whose SHSCALE differs from s_old,
+    is REFUSED; a product already carrying FLUXBAKE is 'ALREADY' only when SHSCALE, FLUXCORR and FLUXVER equal the
+    targets exactly, otherwise REFUSED. Verification at write time: the written file is read back and must equal
+    old x factor exactly (float, NaN-aware) with the target cards before it replaces dst (os.replace from a .part in
+    dst's own directory, so no reader ever sees a partial file).
+    s_old_from_cell: the archived search frames (epoch - leave-one-out master - striation model) are made from the cell's
+    scaled products but were written without the SH cards; for them only, a missing SHSCALE means the cell's s_old (recorded
+    in the detail) and the re-baked frame gains the cards.
+    Returns dict(status, factor, md5_old, md5_new, detail)."""
+    import io
+    from exopipe.phase3 import flux_correction as FC
+    out = dict(status='', factor='', md5_old='', md5_new='', detail='')
+    if os.path.basename(src).startswith(UNSCALED_PREFIX):
+        out['status'] = 'SKIP-PB'; return out
+    s_new = float(srow['scale']); corr = float(corr_t[scope]['corr'])
+    if write:
+        raw = open(src, 'rb').read(); out['md5_old'] = _md5_bytes(raw)
+        with fits.open(io.BytesIO(raw), memmap=False) as h:
+            hd = h[0].header.copy(); d = h[0].data
+    else:                                   # dry run: header only (the pixels are read when written)
+        hd = fits.getheader(src); d = np.zeros(1, dtype=np.float32 if hd.get('BITPIX') == -32 else
+                                                 np.float64 if hd.get('BITPIX') == -64 else np.int32)
+    _note = ''
+    if hd.get('SHSCALE') is None:
+        if not s_old_from_cell:
+            out.update(status='REFUSED', detail='no SHSCALE card: the scale in the pixels is unknown'); return out
+        hd['SHSCALE'] = s_old; _note = 'SHSCALE card absent (search frame): the cell factor in force assumed; '
+    if FC.pixels_carry_correction(hd):
+        same = (abs(float(hd['SHSCALE']) - s_new) < 5e-6 and abs(float(hd.get('FLUXCORR', -1)) - corr) < 5e-7
+                and str(hd.get('FLUXVER', '')) == corr_t[scope]['version'][:68])
+        out.update(status='ALREADY' if same else 'REFUSED',
+                   detail='FLUXBAKE with the target cards' if same else
+                   f"FLUXBAKE already set with other values (SHSCALE {hd['SHSCALE']}, FLUXCORR {hd.get('FLUXCORR')})")
+        return out
+    if abs(float(hd['SHSCALE']) - s_old) > 5e-5:
+        out.update(status='REFUSED', detail=f"SHSCALE {hd['SHSCALE']} != the LST's factor in force {s_old}"); return out
+    if d is None or d.dtype.kind != 'f':
+        out.update(status='REFUSED', detail=f'data not floating point ({None if d is None else d.dtype})'); return out
+    f = (s_new / s_old) * corr; out['factor'] = f'{f:.7f}'
+    new = (d * d.dtype.type(f)).astype(d.dtype)
+    hd['SHSCALE'] = (round(s_new, 6), 'per-LST VLSSr flux scale (re-measured 2026-10-01, PB per robust)')
+    hd['SHERR'] = (float(srow['err']), '1-sigma uncertainty of SHSCALE')
+    hd['SHNSRC'] = (int(srow['nsrc']), 'VLSSr matches in the window')
+    hd['SHSRCS'] = (f"VLSSr {srow['window']}"[:68], 'scale reference (window)')
+    hd['SHDATE'] = (srow['measured_at'], 'flux scale measured')
+    hd['SHMETHOD'] = ('VLSSr-dec20-60', 'flux scale method')
+    for _c, _v, _com in FC.cards_for(scope, corr_t, baked=True):
+        hd[_c] = (_v, _com)
+    hd['HISTORY'] = (f"flux re-bake {time.strftime('%Y-%m-%d', time.gmtime())}: pixels x {f:.6f} = SHSCALE {s_old:.5f} -> "
+                     f"{s_new:.5f} x FLUXCORR {corr:.5f} (k {float(corr_t[scope]['k']):.5f} x g {float(corr_t[scope]['g']):.5f}); "
+                     f"Gregg 2026-10-01")
+    if not write:
+        out.update(status='DRY-RUN OK', detail=f'{_note}x {f:.6f}'); return out
+    part = f'{tmp_dir or os.path.dirname(dst)}/.{os.path.basename(dst)}.rebake.part'
+    fits.writeto(part, new, hd, overwrite=True, output_verify='silentfix')
+    try:
+        with fits.open(part, memmap=False) as h2:
+            back = h2[0].data; bh = h2[0].header
+            if back.shape != d.shape or not np.array_equal(back, d * d.dtype.type(f), equal_nan=True):
+                raise RuntimeError('read-back pixels differ from old x factor')
+            if not (FC.pixels_carry_correction(bh) and abs(float(bh['FLUXCORR']) - corr) < 5e-7
+                    and abs(float(bh['SHSCALE']) - s_new) < 5e-6):
+                raise RuntimeError('read-back cards differ from the targets')
+        out['md5_new'] = _md5_bytes(open(part, 'rb').read())
+        os.replace(part, dst)
+    except Exception as e:
+        if os.path.exists(part):
+            os.remove(part)
+        out.update(status='FAILED', detail=str(e)[:200]); return out
+    out.update(status='REBAKED', detail=f'{_note}x {f:.6f}')
+    return out
+
+
+def rebake_cell(lst, scope, root, s_old, srow, corr_t, write=False, record=None):
+    """Re-bake every product of the cell's canonical trees (SCALED_DIRS: coadd_final incl. loo/, subtracted/) in place.
+    Returns the per-file rows (also appended to record)."""
+    cell = f'{root}/{lst}_{scope}'; rows = []
+    for sub in SCALED_DIRS:
+        for p in sorted(glob.glob(f'{cell}/{sub}/**/*.fits', recursive=True)):
+            r = rebake_file(p, p, scope, s_old, srow, corr_t, write=write)
+            r.update(cell=f'{lst}_{scope}', path=p); rows.append(r)
+    if record:
+        new = not os.path.exists(record)
+        with open(record, 'a', newline='') as fh:
+            w = csv.DictWriter(fh, fieldnames=['cell', 'path', 'status', 'factor', 'md5_old', 'md5_new', 'detail'])
+            if new:
+                w.writeheader()
+            w.writerows(rows)
+    return rows
 
 
 def main():
@@ -193,7 +304,31 @@ def main():
     # from the VLSSr ratio in the +20..+60 deg declination window (columns lst, scale, err, nsrc, window, ref)
     # REPLACES the SH12 measurement; one factor for every scope of the LST hour; the apply path is unchanged.
     ap.add_argument('--scale-table', default=None)
+    # --fluxcorr-table (Gregg 2026-10-01): the k x g table baked with the scale (required by --apply and --rebake).
+    # --rebake --old-scale-table T: re-bake the existing products in place from the factor in force (T) to --scale-table
+    # x FLUXCORR; dry run unless --write; per-file record in --table.
+    ap.add_argument('--fluxcorr-table', default=None); ap.add_argument('--rebake', action='store_true')
+    ap.add_argument('--old-scale-table', default=None); ap.add_argument('--write', action='store_true')
     a = ap.parse_args()
+    corr_t = None
+    if a.fluxcorr_table:
+        from exopipe.phase3 import flux_correction as FC
+        corr_t = FC.load_table(a.fluxcorr_table)
+    if a.rebake:
+        if not (a.scale_table and a.old_scale_table and corr_t and a.table):
+            raise SystemExit('--rebake needs --scale-table, --old-scale-table, --fluxcorr-table and --table; REFUSING')
+        from collections import Counter
+        new_t = {r['lst']: r for r in csv.DictReader(open(a.scale_table))}
+        old_t = {r['lst']: float(r['scale']) for r in csv.DictReader(open(a.old_scale_table))}
+        cells = [(a.lst, a.scope)] if a.lst else [tuple(l.split()[:2]) for l in open(a.cells) if l.strip()]
+        for lst, scope in cells:
+            if lst not in new_t or lst not in old_t or scope not in corr_t:
+                print(f'{lst} {scope}: REFUSED - no factor (new scale {lst in new_t}, old scale {lst in old_t}, '
+                      f'fluxcorr {scope in corr_t})', flush=True)
+                continue
+            rows = rebake_cell(lst, scope, a.root, old_t[lst], new_t[lst], corr_t, write=a.write, record=a.table)
+            print(f'{lst} {scope}: ' + ', '.join(f'{k} {v}' for k, v in sorted(Counter(r["status"] for r in rows).items())), flush=True)
+        return
     scale_tab = None
     if a.scale_table:
         scale_tab = {r['lst']: r for r in csv.DictReader(open(a.scale_table))}
@@ -214,7 +349,7 @@ def main():
             row = measure(lst, scope, a.root)
         row['n_written'] = 0
         if row['status'] == 'OK' and a.apply:
-            row['n_written'] = apply(lst, scope, a.root, row, a.outgen)
+            row['n_written'] = apply(lst, scope, a.root, row, a.outgen, corr_t)
         with open(table, 'a', newline='') as f:
             wtr = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
             if new: wtr.writeheader(); new = False
