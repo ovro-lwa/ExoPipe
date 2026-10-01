@@ -298,15 +298,21 @@ def cross_match_vlssr(df_lwa, vlssr_cat, match_radius, flux_min, flux_max,
 
 
 def cross_match_subbands(df_target, df_ref, match_radius, flux_min, flux_max,
-                         logger, beam_deg=None):
+                         logger, beam_deg=None, flux_center=None):
     """Cross-match target subband extraction against reference (dewarped
     neighbor) extraction.
 
     No spectral extrapolation: frequency gap is ~45 MHz.
     Filters both catalogs to unresolved sources before matching.
 
-    Returns dict with ra_target, dec_target, ra_ref, dec_ref arrays,
-    or None if fewer than MIN_WARP_ANCHORS matched.
+    flux_center='measured-median' (cfg.CASCADE_FLUX_CENTER, Gregg 2026-10-01):
+    the flux window is [flux_min, flux_max] x the median target/reference
+    peak-flux ratio of the position matches, instead of x 1.0 - the subband
+    flux scales differ until the absolute flux scale is applied later.
+
+    Returns dict with ra_target, dec_target, ra_ref, dec_ref arrays (and
+    flux_ratio_median, the window centre used), or None if fewer than
+    MIN_WARP_ANCHORS matched.
     """
     if df_target.empty or df_ref.empty:
         return None
@@ -343,7 +349,18 @@ def cross_match_subbands(df_target, df_ref, match_radius, flux_min, flux_max,
     tgt_flux = tgt_filt['flux_peak'].values
     ref_flux = ref_filt['flux_peak'].values[idx]
     flux_ratio = tgt_flux / ref_flux
-    mask_flux = (flux_ratio > flux_min) & (flux_ratio < flux_max)
+    centre = 1.0
+    if flux_center == 'measured-median':
+        if not np.any(mask_pos):
+            logger.warning("  [Cascade Match] no position matches")
+            return None
+        centre = float(np.median(flux_ratio[mask_pos]))
+        logger.info(f"  [Cascade Match] flux window centred on the median ratio "
+                    f"{centre:.3f} of {np.sum(mask_pos)} position matches: "
+                    f"[{flux_min * centre:.3f}, {flux_max * centre:.3f}]")
+    elif flux_center is not None:
+        raise ValueError(f"unknown flux_center {flux_center!r}")
+    mask_flux = (flux_ratio > flux_min * centre) & (flux_ratio < flux_max * centre)
 
     mask = mask_pos & mask_flux
     n_matched = np.sum(mask)
@@ -362,6 +379,7 @@ def cross_match_subbands(df_target, df_ref, match_radius, flux_min, flux_max,
         'ra_cat': ref_filt['ra'].values[idx[mask]],
         'dec_cat': ref_filt['dec'].values[idx[mask]],
         'flux_peak': tgt_filt['flux_peak'].values[mask],
+        'flux_ratio_median': centre,
     }
 
 
@@ -1046,7 +1064,8 @@ def dewarp_subband(work_dir, subband, ref_catalog, ref_label, is_anchor,
             cfg.CASCADE_FLUX_RATIO_MIN,
             cfg.CASCADE_FLUX_RATIO_MAX,
             logger,
-            beam_deg=beam_deg
+            beam_deg=beam_deg,
+            flux_center=cfg.CASCADE_FLUX_CENTER
         )
 
     if anchors is None:

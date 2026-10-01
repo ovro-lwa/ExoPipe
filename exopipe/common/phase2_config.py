@@ -137,6 +137,13 @@ CASCADE_MATCH_RADIUS_BASE = 5.0   # arcmin at ANCHOR_FREQ_MHZ
 CASCADE_MATCH_RADIUS_EXPONENT = 1.5  # frequency scaling exponent
 CASCADE_FLUX_RATIO_MIN = 0.80
 CASCADE_FLUX_RATIO_MAX = 1.20
+# Centre of that window (Gregg 2026-10-01: "Go with the measured-median window; leave the anchor alone."):
+# 'measured-median' = the window is CASCADE_FLUX_RATIO_MIN/MAX x the median target/reference peak-flux ratio of the
+# step's own position matches, not x 1.0. The subband flux scales differ until the absolute flux scale is applied later,
+# and the uncentred window dropped most genuine matches at 18-32 MHz (19h 18 MHz master: 9 of 245 position matches kept;
+# nightly 18 MHz median 60% kept, worst decile 2%). Applies to the subband-to-subband cascade only; the VLSSr anchor step
+# (ANCHOR_FLUX_RATIO_*) is unchanged. None = the uncentred window.
+CASCADE_FLUX_CENTER = 'measured-median'
 
 # Source extraction (BDSF)
 BDSF_THRESH_PIX = 10.0

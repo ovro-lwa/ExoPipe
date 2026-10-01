@@ -12,7 +12,8 @@ night's images:
   anchor   the 73 MHz master (fallbacks 78, 69, 64 MHz, as Phase 2) vs VLSSr at 74 MHz: PyBDSF on the PB-corrected
            master, unresolved sources on both sides, match radius 5 arcmin, peak flux ratio 0.8-1.2;
   cascade  outward subband by subband (69 -> 18 MHz down, 78 -> 82 MHz up), each master matched to the dewarped
-           catalogue of the last ACCEPTED master of its arm: radius 5 arcmin x (73/nu)^1.5, flux ratio 0.8-1.2; three
+           catalogue of the last ACCEPTED master of its arm: radius 5 arcmin x (73/nu)^1.5, flux ratio 0.8-1.2 x the
+           median ratio of the step's position matches (phase2_config.CASCADE_FLUX_CENTER, Gregg 2026-10-01); three
            consecutive refusals halt an arm (every later subband gets a NOT ATTEMPTED row);
   wideband each Red/Green/Blue/Full master as one more cascade step from the accepted subband master whose centre
            frequency (phase2_config.SUBBAND_FREQ_HZ) is nearest the wideband master's header frequency;
@@ -96,7 +97,7 @@ NO_RESIDUALS = False
 WIDEBANDS = ('Red', 'Green', 'Blue', 'Full')
 OUT_GEN = 'gen_mdewarp_rbf'
 COLS = ['lst', 'scope', 'ref', 'status', 'input', 'med_before', 'n_before', 'p90_before', 'med_after', 'n_after', 'p90_after',
-        'n_match', 'n_anchors', 'anchor_off_med_as', 'fit_resid_med_as', 'cv_resid_med_as', 'cv_resid_p90_as',
+        'n_match', 'flux_ratio_med', 'n_anchors', 'anchor_off_med_as', 'fit_resid_med_as', 'cv_resid_med_as', 'cv_resid_p90_as',
         'warp_p50_as', 'warp_p95_as', 'n_written', 'note', 'seconds', 'measured_at']
 LOG = logging.getLogger('phase3_master_dewarp')
 
@@ -162,11 +163,14 @@ def _measure(lst, scope, groot, ref, vlssr, diag):
         fmhz = float(scope.replace('MHz', '')) if scope.endswith('MHz') else ref[2]
         r = cfg.CASCADE_MATCH_RADIUS_BASE * (cfg.ANCHOR_FREQ_MHZ / fmhz) ** cfg.CASCADE_MATCH_RADIUS_EXPONENT
         anchors = CD.cross_match_subbands(df, ref[1], r * u.arcmin, cfg.CASCADE_FLUX_RATIO_MIN,
-                                          cfg.CASCADE_FLUX_RATIO_MAX, LOG, beam_deg=beam)
+                                          cfg.CASCADE_FLUX_RATIO_MAX, LOG, beam_deg=beam,
+                                          flux_center=cfg.CASCADE_FLUX_CENTER)
     if anchors is None:
         row.update(status=f'REFUSED fewer than {cfg.MIN_WARP_ANCHORS} matched anchors ({len(df)} sources extracted)',
                    seconds=f'{time.time() - t0:.0f}'); return row, None, None
     row['n_match'] = len(anchors['ra_lwa'])
+    if 'flux_ratio_median' in anchors:   # cascade steps: centre of the flux window (target/reference peak-flux ratio)
+        row['flux_ratio_med'] = f"{anchors['flux_ratio_median']:.3f}"
     anchors = CD.reject_outlier_anchors(anchors, wcs, shape, LOG)
     if anchors is None or len(anchors['ra_lwa']) < MIN_ANCHORS:
         row.update(status=f'REFUSED fewer than {MIN_ANCHORS} anchors after outlier rejection', seconds=f'{time.time() - t0:.0f}')
