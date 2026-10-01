@@ -180,6 +180,11 @@ def extract_sources(image_path, logger):
     try:
         _mp = _anchor_maxpix(bdsf_input)
         _mp_kw = {'maxpix_isl': _mp} if _mp else {}
+        # PyBDSF sizes its worker pool from the machine's CPU count, ignoring the process's core pinning; many
+        # parallel extractions then oversubscribe the pinned cores. BDSF_NCORES (a runtime setting) caps it; unset =
+        # PyBDSF's default (unchanged behaviour). Results do not depend on it.
+        if os.environ.get('BDSF_NCORES'):
+            _mp_kw['ncores'] = int(os.environ['BDSF_NCORES'])
         if _mp:
             logger.info(f"  [BDSF] island cap: maxpix_isl={_mp} "
                         f"({ANCHOR_MAXPIX_BEAM_AREAS:.0f} beam areas)")

@@ -997,12 +997,21 @@ def process_variant_image(src_path, flow_offsets, scale_map, template_header,
     data, hdr = load_image(src_path)
 
     if data.shape != target_shape:
-        if regrid_coords is not None:
-            y_in, x_in = regrid_coords
-            data = map_coordinates(data, [y_in, x_in],
-                                   order=1, mode='constant', cval=0.0)
-        else:
-            return False
+        if regrid_coords is None:
+            # GRID MISMATCH (Gregg 2026-10-01 "Approved", ledger MEASURED-ALIGNMENT-FAILED-NIGHTS-ARE-GRID-MISMATCH):
+            # an input on another grid than the master is regridded with the mapping the co-add already applies to
+            # pre-cutover nights, from the input's own WCS; it was refused as "alignment failed" before. A mapping
+            # that cannot be built returns False (callers label it a grid mismatch).
+            try:
+                regrid_coords = precompute_regrid_mapping(src_path, template_header, target_shape)
+            except Exception as e:
+                print(f"  GRID MISMATCH {os.path.basename(src_path)} {data.shape} vs {tuple(target_shape)}: "
+                      f"regrid mapping failed ({e})")
+                return False
+            print(f"  GRID MISMATCH {os.path.basename(src_path)} {data.shape} -> {tuple(target_shape)}: regridded")
+        y_in, x_in = regrid_coords
+        data = map_coordinates(data, [y_in, x_in],
+                               order=1, mode='constant', cval=0.0)
 
     safe_scale = np.where(np.abs(scale_map) > 0.1, scale_map, 1.0)
     data = data / safe_scale
@@ -2853,8 +2862,33 @@ def _variant_relative_refusals(date_dirs, freq_str, vk, k=VARIANT_REL_K):
     if not rat:
         return {}
     med = float(np.median(list(rat.values())))
-    return {d: (f'within-cell: robust rms {x:.3g} x its night\'s Taper R-0.75 = {x / med:.2f} x the cell median '
-                f'{med:.3g}, above {k:g}') for d, x in rat.items() if x > k * med}
+    out = {d: (f'within-cell: robust rms {x:.3g} x its night\'s Taper R-0.75 = {x / med:.2f} x the cell median '
+               f'{med:.3g}, above {k:g}') for d, x in rat.items() if x > k * med}
+    # BAND-WIDE CEILING (Gregg 2026-10-01 "approved"): where most of a cell's nights are partly diverged its own median
+    # is inflated and the within-cell test admits them (25 nights in 17 masters by the 2026-09-29 census, e.g. 16h Blue
+    # NoTaper R0 at 102x and 152x). A night is also refused above k x the BAND-WIDE median ratio of this variant (median
+    # over LST cells of the cell medians, common/variant_band_medians.json). A band/variant missing from the table refuses.
+    bmed = _variant_band_median(freq_str, vk)
+    for d, x in rat.items():
+        if d not in out and x > k * bmed:
+            out[d] = (f'band-wide: robust rms {x:.3g} x its night\'s Taper R-0.75 = {x / bmed:.2f} x the {freq_str} '
+                      f'{vk} band median {bmed:.3g}, above {k:g}')
+    return out
+
+
+_BAND_MED = None
+
+
+def _variant_band_median(freq_str, vk):
+    global _BAND_MED
+    if _BAND_MED is None:
+        _BAND_MED = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                                'common', 'variant_band_medians.json')))['medians']
+    band = f'{freq_str}MHz' if str(freq_str).isdigit() else str(freq_str)   # the co-add passes subbands as '78'
+    key = f'{band}|{vk}'
+    if key not in _BAND_MED:
+        raise RuntimeError(f'{freq_str} {vk}: no band-wide median in common/variant_band_medians.json; REFUSING')
+    return float(_BAND_MED[key])
 
 
 def _stamp_variant_gate(path, refused):
@@ -3196,7 +3230,9 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
             if ok and os.path.exists(out):
                 aligned.append((date, out, weight))
             else:
-                refused.append((date, 'alignment failed'))
+                _shp = tuple(int(fits.getheader(img).get(f'NAXIS{i}', 0)) for i in (2, 1))
+                refused.append((date, f'grid mismatch {_shp} vs {tuple(target_shape)}: regrid failed'
+                                if _shp != tuple(target_shape) else 'alignment failed'))
         if len(aligned) < MIN_DATES_FOR_COADD:
             print(f"  {lst} {fl} {vk}: only {len(aligned)} admitted inputs (need {MIN_DATES_FOR_COADD}); NOT written")
             results[vk] = (None, len(aligned), refused); continue
