@@ -880,6 +880,32 @@ def regrid_image(input_path, template_header, output_path):
 # Flux scale measurement
 # ═══════════════════════════════════════════════════════════════════
 
+def _night_flux_dc(mean_scale, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs, beam_pix, mask,
+                   obs_time, tmp_path):
+    """Flux correction of one night (Gregg 2026-10-02: every admitted night is corrected by its measured scale; the window
+    that applied no correction outside 0.3-3 is removed). The first measurement (measure_flux_scale on the night BEFORE flow
+    alignment, apertures of 0.75 beam at the reference's peaks) is used when it lies in 0.3-3; outside, it is re-measured on
+    the FLOW-ALIGNED night, because a night whose sky is displaced by more than a beam reads near zero in those apertures
+    (23h Green 2025-10-29: 0.047 with its sky offset 0.9 deg, its image at the master's flux level). Returns (applied scale,
+    re-measured scale or None). Deep tier; the 10-minute provisional stage keeps its own rule (snapshot / sub-LST chat)."""
+    if 0.3 < mean_scale < 3.0:
+        return mean_scale, None
+    try:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        process_variant_image(work_path, flow_offsets, np.ones(target_shape), tmpl_hdr, target_shape, tmp_path, None)
+        al, _ = load_image(tmp_path)
+        _, c2, _ = measure_flux_scale(al, ref_data, ref_wcs, beam_pix, mask | ~np.isfinite(al) | (al == 0), obs_time)
+        m2 = float(c2[0])
+    except Exception as e:
+        print(f"    flux scale re-measure on the flow-aligned image failed ({e})", flush=True)
+        m2 = float('nan')
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    return m2, m2
+
+
 def measure_flux_scale(tgt_data, ref_data, wcs, beam_pix, horizon_mask, obs_time):
     """Measure flux scale target/reference using bright unresolved sources.
     Returns (scale_map, coeffs, n_sources)."""
@@ -2236,9 +2262,22 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         # R-TILT-REMOVED-NEXTGEN (Gregg 2026-08-28, landed 2026-09-08): the x/y
         # tilt is REMOVED from production - flat DC always. P3_FLUXSCALE_TILT=1
         # restores the affine plane for comparison runs only, never production.
+        _mean_aligned = None
         _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
         if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
-            _dc = _mean if (0.3 < _mean < 3.0) else 1.0
+            # EVERY ADMITTED NIGHT IS CORRECTED BY ITS MEASURED SCALE (Gregg 2026-10-02, "1. yes"): the old window that
+            # applied NO correction outside 0.3-3 is removed; a scale outside 0.3-3 is re-measured on the flow-aligned
+            # image first (_night_flux_dc), and a night whose scale cannot be measured is REFUSED.
+            _dc, _mean_aligned = _night_flux_dc(_mean, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs,
+                                                beam_pix, horizon_mask | tgt_mask, tgt_obs_time,
+                                                f'{prep_dir}/{date}_scale_remeasure.fits')
+            if not (np.isfinite(_dc) and _dc > 0):
+                print(f"    {date}: FLUX SCALE NOT MEASURABLE (first {_mean:.4g}, on the flow-aligned image "
+                      f"{_mean_aligned}) - REFUSED, not added to the co-add (Gregg 2026-10-02)", flush=True)
+                continue
+            if _mean_aligned is not None:
+                weight = float(_dc ** 2 / tgt_rms ** 2) if tgt_rms > 0 else 0.0
+                print(f"    {date}: scale {_mean:.4g} outside 0.3-3 -> re-measured on the flow-aligned image: {_dc:.4f}", flush=True)
             scale_map_full = np.full((h, w), _dc, dtype=float)
             print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
                   f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
@@ -3085,7 +3124,7 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
             if not name:
                 raise RuntimeError(f"{lst} {fl}: {f} has no PRODNAME - not stamped; REFUSING to archive")
             _atomic_copy(src, f'{cdir}/{name if name.endswith(".fits") else name + ".fits"}'); n += 1
-        elif f in (f'PB_deep_{fl}.fits', f'PB_deep_R075_{fl}.fits', 'weights.csv'):   # one PB map per robust (2026-10-01)
+        elif f in (f'PB_deep_{fl}.fits', f'PB_deep_R075_{fl}.fits', 'weights.csv', 'night_image_gate.csv'):   # one PB map per robust (2026-10-01); night-image gate record (2026-10-02)
             _atomic_copy(src, f'{cdir}/{f}'); n += 1
     loo = f'{final_dir}/loo'
     if os.path.isdir(loo):
@@ -3218,7 +3257,10 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
                     raise RuntimeError(f'{lst} {fl} {date}: recorded constituent without its flow at {fp}; REFUSING')
                 flow = np.load(fp)
                 _mean = float(r['qa3_scale'])
-                dc = _mean if (0.3 < _mean < 3.0) else 1.0      # the flat-DC rule of the build
+                # the factor the generation APPLIED: recorded since 2026-10-02 (flux_dc); a record from before carries the
+                # old window rule, which is what that generation applied
+                _fdc = (r.get('flux_dc') or '').strip()
+                dc = float(_fdc) if _fdc not in ('', 'affine') else (_mean if (0.3 < _mean < 3.0) else 1.0)
             weight = float(r['weight'])
             needs_regrid = date < CUTOVER_DATE and bool(post_dates)
             rg = precompute_regrid_mapping(img, tmpl_hdr, target_shape) if needs_regrid else None
@@ -3417,6 +3459,10 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         }
 
     target_dates = [(d, sd, img) for d, sd, img in dates if d != ref_date]
+    from exopipe.phase3 import night_image_gate as _NG
+    _gate_rows = {}
+    if ref_date != 'MASTER':
+        _gate_rows[ref_date] = dict(verdict='pass', reason='the reference night (identity)')
 
     for date, sci_dir, align_img_path in target_dates:
         needs_regrid = date < CUTOVER_DATE and bool(post_dates)
@@ -3479,9 +3525,25 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         # R-TILT-REMOVED-NEXTGEN (Gregg 2026-08-28, landed 2026-09-08): the x/y
         # tilt is REMOVED from production - flat DC always. P3_FLUXSCALE_TILT=1
         # restores the affine plane for comparison runs only, never production.
+        _mean_aligned = None
         _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
         if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
-            _dc = _mean if (0.3 < _mean < 3.0) else 1.0
+            # EVERY ADMITTED NIGHT IS CORRECTED BY ITS MEASURED SCALE (Gregg 2026-10-02, "1. yes"): the old window that
+            # applied NO correction outside 0.3-3 is removed; a scale outside 0.3-3 is re-measured on the flow-aligned
+            # image first (_night_flux_dc), and a night whose scale cannot be measured is REFUSED.
+            _dc, _mean_aligned = _night_flux_dc(_mean, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs,
+                                                beam_pix, horizon_mask | tgt_mask, tgt_obs_time,
+                                                f'{prep_dir}/{date}_scale_remeasure.fits')
+            if not (np.isfinite(_dc) and _dc > 0):
+                print(f"    {date}: FLUX SCALE NOT MEASURABLE (first {_mean:.4g}, on the flow-aligned image "
+                      f"{_mean_aligned}) - REFUSED, not added to the co-add (Gregg 2026-10-02)", flush=True)
+                # recorded in the night-image gate record, so the search refuses it under its true reason
+                _gate_rows[date] = dict(verdict='FAIL', reason=f'flux scale not measurable (first {_mean:.4g}, '
+                                                               f'flow-aligned {_mean_aligned})')
+                continue
+            if _mean_aligned is not None:
+                weight = float(_dc ** 2 / tgt_rms ** 2) if tgt_rms > 0 else 0.0
+                print(f"    {date}: scale {_mean:.4g} outside 0.3-3 -> re-measured on the flow-aligned image: {_dc:.4f}", flush=True)
             scale_map_full = np.full((h, w), _dc, dtype=float)
             print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
                   f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
@@ -3499,6 +3561,9 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             'qa3_guard': ('degenerate-flatDC' if (n_src < 8 or not
                           (0.7 <= _mean <= 1.4) or _tilt > 0.3) else 'pass'),
             'qa3_rms': tgt_rms,
+            # the factor actually applied (Gregg 2026-10-02 flux ruling) and the flow-aligned re-measurement, if made
+            'flux_dc': (f'{float(np.ravel(scale_map_full)[0]):.5f}' if np.ptp(scale_map_full) == 0 else 'affine'),
+            'qa3_scale_aligned': ('' if _mean_aligned is None else f'{_mean_aligned:.5f}'),
         }
 
         # Two-tier policy (Gregg 2026-08-26): per-epoch products are built
@@ -3507,6 +3572,16 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         i_out = f'{prep_dir}/{date}_I.fits'
         process_variant_image(align_img_path, flow_offsets, scale_map_full,
                               tmpl_hdr, target_shape, i_out, regrid_coords)
+        # NIGHT-IMAGE GATE (Gregg 2026-10-02 "Approved"): ahead of co-add membership AND search admission; the aligned
+        # night against the reference it was aligned to; a FAIL leaves good_dates_deep, so the I and V masters, the
+        # variants, the leave-one-out masters and in_master all follow; the record is read by the search.
+        try:
+            _gate_rows[date] = _NG.evaluate(load_image(i_out)[0], ref_data, cd, night_raw=tgt_data)
+        except Exception as _ge:
+            _gate_rows[date] = dict(verdict='FAIL', reason=f'night-image gate could not be evaluated ({_ge})'[:200])
+        if _gate_rows[date]['verdict'] == 'FAIL':
+            print(f"    {date}: NIGHT-IMAGE GATE REFUSED - {_gate_rows[date]['reason']}", flush=True)
+            good_dates_deep.discard(date)
         if date in good_dates_deep:
             i_aligned.append((date, i_out, weight))
             flow_str = 'flow' if flow_offsets is not None else 'no-flow'
@@ -3561,18 +3636,21 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
     # ── weights + third-stage QA record (R-THIRD-STAGE-QA-FLUXALIGN) and
     # LOO masters for thin cells (R-LOO-MASTERS, N_epochs <= 20) ──
+    _NG.write_record(final_dir, _gate_rows, f'co-add final stage, aligned night vs reference {ref_date}')
     import csv as _csv
     with open(f'{final_dir}/weights.csv', 'w', newline='') as _f:
         _w = _csv.writer(_f)
         _w.writerow(['date', 'weight', 'qa3_scale', 'qa3_tilt', 'qa3_nsrc',
-                     'qa3_guard', 'qa3_rms_mjy', 'sci_dir', 'in_master'])
+                     'qa3_guard', 'qa3_rms_mjy', 'sci_dir', 'in_master', 'flux_dc', 'qa3_scale_aligned'])
         for _d in sorted(date_params):
             _p = date_params[_d]
             _w.writerow([_d, f"{_p['weight']:.6f}", f"{_p.get('qa3_scale', 1):.5f}",
                          f"{_p.get('qa3_tilt', 0):.5f}", _p.get('qa3_nsrc', ''),
                          _p.get('qa3_guard', ''),
                          f"{1e3 * _p.get('qa3_rms', float('nan')):.2f}",
-                         _p.get('sci_dir', ''), int(_d in good_dates_deep)])
+                         _p.get('sci_dir', ''), int(_d in good_dates_deep),
+                         _p.get('flux_dc', '1.00000' if _p.get('qa3_guard') == 'reference-identity' else ''),
+                         _p.get('qa3_scale_aligned', '')])
     _n_loo = write_loo_masters(i_aligned, final_i_path,
                                f'{final_dir}/loo', f'I_loo_Taper_R075_{fl}.fits')
     if final_v_path:

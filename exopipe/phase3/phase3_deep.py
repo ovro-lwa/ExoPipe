@@ -1043,6 +1043,24 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if _ddrop:
         dates = [d for d in dates if d not in _ddrop]
         print(f'  {lst} {scope}: dropped {len(_ddrop)} data_decisions-excluded epoch(s): {_ddrop}')
+    # (0b) NIGHT-IMAGE GATE (Gregg 2026-10-02 "Approved"): one test per night-image, ahead of the search-admission QA
+    # below (which keeps its own logic); a night-image the gate failed is refused from BOTH searches, logged per image;
+    # a deep cell without the gate record REFUSES (a gate never skips). Deep cadence: the 10-minute tier is the
+    # snapshot / sub-LST chat's.
+    if cadence == 'deep':
+        from exopipe.phase3 import night_image_gate as _NG
+        try:
+            _ngf = _NG.failed_dates(f'{base}/coadd_final')
+        except FileNotFoundError:
+            raise RuntimeError(f'{lst} {scope}: no {_NG.GATE_FILE} in {base}/coadd_final - the night-image gate '
+                               f'(Gregg 2026-10-02) cannot run; REFUSING')
+        _ngd = [d for d in dates if _kd(d) in _ngf]
+        if _ngd:
+            dates = [d for d in dates if d not in _ngd]
+            with open(f'{_refdir}/{lst}_{scope}_nightimage_excluded.csv', 'a') as _nf:
+                for d in _ngd:
+                    _nf.write(f'{lst},{scope},{d},{_attempt}\n')
+            print(f'  {lst} {scope}: NIGHT-IMAGE GATE - {len(_ngd)} epoch(s) REFUSED from both searches: {_ngd}')
     # (1) TWO-TIER QUALITY POLICY (Gregg ruling 2026-08-26, supersedes the
     # earlier QA-outlier search drop / G-02): stage-2 QA rejection omits an
     # epoch from the CO-ADD ONLY; every non-data_decisions epoch is still
@@ -1914,8 +1932,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if finals and _parents:
             _pa_v = np.array(_parents)
             _rmsV = float(np.nanmedian([abs(float(c.get('flux', 0))) / abs(float(c.get('global_snr', c.get('snr', 1)) or 1)) for c in finals])) if finals else 0.0
+            # phase centre (2026-10-02, INCIDENT-DEEP-V-TABLE-CALL-WITHOUT-PHASE-CENTRE): the deep tables are in the
+            # image-pixel metric since 2026-10-01 and refuse without it; the I call above already passed it
             _tcv, _tnv = _PCT.removals('V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
-                                       [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
+                                       [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals],
+                                       phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
             _keepv = []
             for c, _x, _n in zip(finals, _tcv, _tnv):
                 if bool(_x):
