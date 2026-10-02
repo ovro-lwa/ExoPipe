@@ -1799,7 +1799,15 @@ def _require_flow(flow_path, date, ref_date, tag):
     a raw night with no flow is refused; 'using flux-scale only' is no longer a path).
     The reference epoch is the alignment target and carries no flow by construction."""
     if os.path.exists(flow_path):
-        return np.load(flow_path)
+        _f = np.load(flow_path)
+        # a flow that is (mostly) NaN warps the night to zeros, which the co-add then masks and the subtraction turns into
+        # minus the master - silently (2026-10-02: 09h 23MHz 2025-01-07, in its master at 3.2 per cent weight, and 09h
+        # 32MHz 2025-01-09; the only 2 of 8,740 stored flows). A gate refuses: recompute the flow.
+        _ff = float(np.isfinite(_f).mean()) if _f.size else 0.0
+        if _ff < 0.5:
+            raise RuntimeError(f"{tag} {date}: co-add alignment flow {flow_path} is {100 * (1 - _ff):.0f} per cent NaN - "
+                               f"REFUSING (recompute it with --stage flow; it would warp the night to zeros)")
+        return _f
     if date == ref_date:
         return None
     raise RuntimeError(f"{tag} {date}: no co-add alignment flow at {flow_path} - REFUSING "
