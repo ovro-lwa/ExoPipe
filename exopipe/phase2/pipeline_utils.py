@@ -379,40 +379,64 @@ def extract_sources_to_df(filename, logger=None, thresh_pix=10.0):
         return pd.DataFrame()
 
 
+def interval_midpoints(times_s, interval_s, n_intervals):
+    """MIDPOINT (MJD seconds) of each WSClean -intervals-out interval.  WSClean splits the N unique timesteps by index -
+    interval i = timesteps [i*N//n, (i+1)*N//n) - and at OVRO-LWA the MS TIME is the integration START (validate_fits_headers
+    TIMEFIX v2, re-checked 2026-10-03 against the raw 10-s visibility files), so the midpoint is (start of the interval's first
+    integration + end of its last) / 2.  Returns [(first_timestep_time, midpoint)] per interval."""
+    T = np.unique(np.asarray(times_s, dtype=float)); N = len(T); n = max(1, int(n_intervals))
+    out = []
+    for i in range(n):
+        k0, k1 = (i * N) // n, ((i + 1) * N) // n
+        if k1 <= k0:
+            raise RuntimeError("interval %d of %d holds no timestep (%d timesteps)" % (i, n, N))
+        out.append((T[k0], 0.5 * (T[k0] + T[k1 - 1] + interval_s)))
+    return out
+
+
 def add_timestamps_to_images(target_dir, prefix, ms_path, n_intervals, logger):
-    try:
-        with pt.table(ms_path, ack=False) as t:
-            times = t.getcol("TIME")
-            t_min, t_max = np.min(times), np.max(times)
-            duration = t_max - t_min
+    """Rename the interval outputs of one WSClean run (-tNNNN, or the single image) with each interval's MIDPOINT time
+    (the Phase-1 filename convention: filename timestamps are interval midpoints).
 
-        search_pat = f"{prefix}*-*.fits"
-        files = glob.glob(os.path.join(target_dir, search_pat))
-        if not files: return False
-
-        for i in range(n_intervals):
-            chunk_len = duration / n_intervals if n_intervals > 1 else duration
-            mid_mjd_sec = t_min + (i * chunk_len) + (chunk_len / 2.0)
-            ts_str = Time(mid_mjd_sec / 86400.0, format='mjd', scale='utc').datetime.strftime("%Y%m%d_%H%M%S")
-            old_suffix = f"-t{i:04d}" if n_intervals > 1 else ""
-            new_suffix = f"-{ts_str}"
-
-            for f_path in files:
-                f_name = os.path.basename(f_path)
-                if n_intervals > 1:
-                    if old_suffix in f_name:
-                        new_name = f_name.replace(old_suffix, new_suffix)
-                        shutil.move(f_path, os.path.join(target_dir, new_name))
-                else:
-                    if new_suffix not in f_name:
-                        base, ext = os.path.splitext(f_name)
-                        new_name = f"{base}{new_suffix}{ext}"
-                        shutil.move(f_path, os.path.join(target_dir, new_name))
-        return True
-    except Exception as e:
-        logger.error(f"Error renaming images: {e}")
-        traceback.print_exc()
+    FIX 2026-10-03 (Gregg: "Fix it at all stages of the pipeline"; ledger FINDING-PHASE1-SNAPSHOT-FILENAME-TIMES-WRONG).  The
+    midpoint used to be t_min + (i + 1/2) x (t_max - t_min) / n - an even division of the MS TIME span, which spans n-1
+    integrations (drift through the hour) and ignores missing integrations (a different drift per subband): the same
+    10-s integration was named 12:41:47 / 12:41:51 / 12:42:03 at 36 / 27 / 32 MHz (19h 2025-05-03), and names were off by
+    up to 26 s.  Now the MS's own integration times (interval_midpoints), and every interval image is CHECKED against its own
+    DATE-OBS (WSClean writes the interval's first timestep): a mismatch above 1 s REFUSES (raises) instead of naming an
+    image with the wrong time."""
+    with pt.table(ms_path, ack=False) as t:
+        times = t.getcol("TIME")
+        dt = float(np.median(t.getcol("INTERVAL")))
+    files = glob.glob(os.path.join(target_dir, f"{prefix}*-*.fits"))
+    if not files:
         return False
+    mids = interval_midpoints(times, dt, n_intervals)
+    for i, (t_first, t_mid) in enumerate(mids):
+        ts_str = Time(t_mid / 86400.0, format='mjd', scale='utc').datetime.strftime("%Y%m%d_%H%M%S")
+        old_suffix = f"-t{i:04d}" if n_intervals > 1 else ""
+        if n_intervals > 1:
+            mine = [f for f in files if old_suffix in os.path.basename(f)]
+        else:
+            mine = [f for f in files if f"-{ts_str}" not in os.path.basename(f)]
+        if not mine:
+            continue
+        ref = next((f for f in mine if f.endswith("-image.fits")), mine[0])
+        d_obs = fits.getheader(ref).get("DATE-OBS")
+        if d_obs:
+            d_s = Time(d_obs, format='isot', scale='utc').mjd * 86400.0
+            if abs(d_s - t_first) > 1.0:
+                raise RuntimeError(f"interval {i}: {os.path.basename(ref)} DATE-OBS {d_obs} differs from the MS interval start "
+                                   f"{Time(t_first / 86400.0, format='mjd').isot} by {d_s - t_first:+.1f} s - names not written")
+        for f_path in mine:
+            f_name = os.path.basename(f_path)
+            if n_intervals > 1:
+                new_name = f_name.replace(old_suffix, f"-{ts_str}")
+            else:
+                base, ext = os.path.splitext(f_name)
+                new_name = f"{base}-{ts_str}{ext}"
+            shutil.move(f_path, os.path.join(target_dir, new_name))
+    return True
 
 
 # --- FILE UTILITIES ---
