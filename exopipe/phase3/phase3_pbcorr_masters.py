@@ -33,7 +33,11 @@ sys.argv = _ARGV              # restore after import-protection clobber
 WB_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); coadd_root() at use
 SB_ROOT = os.environ.get('P3_COADD_SB_ROOT', '/data07/gh/phase3/coadd_sb')
 VARIANTS = ['I_deep_Taper_R0', 'I_deep_Taper_R075', 'I_deep_NoTaper_R0',
-            'I_deep_NoTaper_R075', 'V_deep_Taper_R0']
+            'I_deep_NoTaper_R075', 'V_deep_Taper_R0',
+            # the cleaned Stokes V master (vclean_masters; the Stokes V mosaic input) divides by the same Robust 0 map: left
+            # out until 2026-10-03, so PB step 2's map rewrite (2026-10-01) left 19 of its siblings stale by up to 5.6 per
+            # cent (ledger RESULT-FLUX-REBAKE-CONTENT-TEST; Gregg "preamble approved")
+            'V_deep_Taper_R0_clean']
 BEAMMOD = 'OVRO-LWA_MROsoil_updatedheight.h5'
 
 def do_cell(root, cell):

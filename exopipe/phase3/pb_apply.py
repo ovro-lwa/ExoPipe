@@ -452,6 +452,27 @@ def wideband_pb(scope, lst, master_path, pb_dir=PB_DIR, category='deep', binidx=
 # ----------------------------------------------------------------------
 # apply
 # ----------------------------------------------------------------------
+def sibling_check(sib_path, plain_path, pb_map):
+    """CONTENT test of a pbcorr sibling against a PB map (Gregg 2026-10-03, preamble approved): sibling x PB == plain
+    (relative 1e-5) wherever PB > the sibling's own PBFLOOR and the plain is finite, NaN everywhere else. Returns (ok, reason).
+    The existence of a sibling is never evidence that it matches the cell's current PB map."""
+    s = np.squeeze(fits.getdata(sib_path)).astype(np.float64); p = np.squeeze(fits.getdata(plain_path)).astype(np.float64)
+    b = np.asarray(pb_map, dtype=np.float64)
+    if not (s.shape == p.shape == b.shape):
+        return False, f'shapes {s.shape} {p.shape} {b.shape}'
+    floor = float(fits.getheader(sib_path).get('PBFLOOR', PB_FLOOR))
+    # a PB value AT the floor within float32 precision (float32 0.1 = 0.10000000149) is above it in float64 and not above it
+    # in float32: either blank or filled is correct there, so those pixels are tested by neither condition (measured
+    # 2026-10-03: one such pixel each in 02h 73MHz, 14h/16h/20h Blue)
+    tie = np.isfinite(b) & (np.abs(b - floor) <= 1e-6 * max(floor, 1.0))
+    v = np.isfinite(b) & (b > floor) & np.isfinite(p) & ~tie
+    n_out = int(np.isfinite(s[~v & ~tie]).sum())
+    if n_out:
+        return False, f'{n_out} finite pixels where PB <= {floor} or the plain is blank'
+    d = np.abs(s[v] * b[v] - p[v]); bad = int((~(d <= 1e-5 * np.abs(p[v]) + 1e-9)).sum())
+    return (bad == 0, f'sibling x PB == plain at {int(v.sum())} pixels' if bad == 0 else f'{bad} of {int(v.sum())} pixels differ')
+
+
 def apply_pbcorr(master_path, pb_map, out_path, floor=PB_FLOOR, meta=None):
     """Divide master by pb_map where pb>floor (else NaN); write _pbcorr.fits."""
     with fits.open(master_path) as h:

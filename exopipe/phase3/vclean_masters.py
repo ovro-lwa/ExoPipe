@@ -18,8 +18,9 @@ Outputs per cell (coadd_final/):
 
 I master selection: Taper_R0 for wideband scopes, Taper_R075 for subbands
 (the search convention); falls back to the other robust if the primary is
-corrupt. Idempotent per cell (skips when the pbcorr output exists, unless
-skip_existing=False).
+corrupt. Idempotent per cell: an existing pair is skipped only when the sibling passes its content test against the
+cell's current PB_deep map (pb_apply.sibling_check); a failing sibling alone is regenerated (2026-10-03). skip_existing=False
+rebuilds the pair.
 
 ENGINE: the --clean_only machinery of exopipe/phase3/search_v_transients_v2
 (the GC-PRE-1 re-absorbed PRODUCTION copy; main() Phases 2-4 + SKYSUB header
@@ -32,7 +33,8 @@ run_vclean().
 Callable contract for the golden-cell harness
 (exopipe_ops/golden_cells/bin/drive_vclean.py):
     build_vclean_cell(coadd_root, cell) -> (cell, status)
-status 'OK' / 'skip (exists)' on success; any other string is a refusal
+status 'OK' / 'skip (verified: ...)' / 'sibling regenerated (...)' on success (2026-10-03: the old 'skip (exists)' is
+retired - an existing sibling is skipped only after its content test); any other string is a refusal
 reason (caller decides exit semantics). No import-time side effects.
 
 Usage (batch, mirrors the frozen driver):
@@ -82,6 +84,32 @@ def pick_i_master(coadd_final_dir, scope):
     return None
 
 
+def write_vclean_sibling(cf, scope):
+    """Write V_deep_Taper_R0_clean_pbcorr_{scope}.fits = the cleaned master / the cell's STORED PB_deep map (PB > floor), with
+    the PB provenance of the cell's V_deep_Taper_R0 sibling (same map, same run: PBMODEL/PBCHROM/PBRESID/PBNDATE) and the
+    PBMETHOD/PBWINDOW/BEAMMOD cards phase3_pbcorr_masters.do_cell writes. The cleaning engine is not run."""
+    from exopipe.phase3 import pb_apply as PB
+    from exopipe.phase3.phase3_pbcorr_masters import BEAMMOD
+    out_ap = f'{cf}/V_deep_Taper_R0_clean_{scope}.fits'
+    out_pb = f'{cf}/V_deep_Taper_R0_clean_pbcorr_{scope}.fits'
+    ref = f'{cf}/V_deep_Taper_R0_pbcorr_{scope}.fits'
+    meta = None
+    if os.path.exists(ref):
+        rh = fits.getheader(ref)
+        meta = dict(pb_model=rh.get('PBMODEL', 'v1-2026-07-04'), chromatic=rh.get('PBCHROM'), residual_pb=rh.get('PBRESID'),
+                    n_dates=rh.get('PBNDATE', -1), n_missing=rh.get('PBMISS'))
+    pb_map = np.squeeze(fits.getdata(f'{cf}/PB_deep_{scope}.fits')).astype(np.float64)
+    PB.apply_pbcorr(out_ap, pb_map, out_pb, meta=meta)
+    with fits.open(out_pb, mode='update') as h:
+        h[0].header['PBMETHOD'] = ('time-integrated-library', 'canonical (2026-07-11)')
+        h[0].header['PBWINDOW'] = ('60min-deep', 'PB integration window')
+        h[0].header['BEAMMOD'] = (BEAMMOD, 'beam model')
+    ok, why = PB.sibling_check(out_pb, out_ap, pb_map)
+    if not ok:
+        raise RuntimeError(f'{out_pb}: written sibling fails its content test ({why})')
+    return why
+
+
 def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
     """Build V_deep_Taper_R0_clean(+pbcorr) for one cell. Returns (cell, status).
 
@@ -96,8 +124,23 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
     vp = f'{cf}/V_deep_Taper_R0_{scope}.fits'
     out_ap = f'{cf}/V_deep_Taper_R0_clean_{scope}.fits'
     out_pb = f'{cf}/V_deep_Taper_R0_clean_pbcorr_{scope}.fits'
-    if skip_existing and os.path.exists(out_pb):
-        return cell, 'skip (exists)'
+    # CONTENT GUARD, not existence (CLAUDE.md 3; Gregg 2026-10-03 "preamble approved"): an existing pair is skipped only when
+    # the sibling equals the cleaned master / the cell's CURRENT PB_deep map; otherwise only the sibling is regenerated. The
+    # existence-only skip let PB step 2's map rewrite (2026-10-01) leave 19 siblings stale by up to 5.6 per cent.
+    if skip_existing and os.path.exists(out_pb) and os.path.exists(out_ap):
+        pbp = f'{cf}/PB_deep_{scope}.fits'
+        if not os.path.exists(pbp):
+            return cell, 'NO PB MAP'
+        ok, why = PB.sibling_check(out_pb, out_ap, np.squeeze(fits.getdata(pbp)))
+        if ok:
+            return cell, 'skip (verified: sibling x PB == cleaned master)'
+        if fits.getheader(f'{cf}/I_deep_Taper_R075_{scope}.fits').get('MDWARP'):
+            return cell, (f'REFUSED stale sibling ({why}) in a master-dewarped cell: its PB maps are made by the dewarp '
+                          f'install, not here')
+        try:
+            return cell, f'sibling regenerated (was: {why}; now: {write_vclean_sibling(cf, scope)})'
+        except Exception as e:
+            return cell, f'ERROR regenerating the sibling: {e}'
     if not sane(vp):
         return cell, 'NO SANE V MASTER'
     ip = pick_i_master(cf, scope)
@@ -126,12 +169,7 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
         if r.returncode != 0 or not res:
             return cell, f'sv2 FAILED rc={r.returncode}: {r.stderr[-200:]}'
         shutil.move(res[0], out_ap)
-        pb_map = fits.getdata(pbp).astype(np.float64)
-        PB.apply_pbcorr(out_ap, pb_map, out_pb)
-        with fits.open(out_pb, mode='update') as h:
-            h[0].header['PBMETHOD'] = ('time-integrated-library',
-                                       'canonical (2026-07-11)')
-            h[0].header['PBWINDOW'] = ('60min-deep', 'PB integration window')
+        write_vclean_sibling(cf, scope)     # one writer for build and repair (2026-10-03)
         return cell, 'OK'
     except Exception as e:
         return cell, f'ERROR {e}'
@@ -166,7 +204,7 @@ def run_vclean(mode='all', npar=2, wb_root=None, sb_root=None):
     nok = nbad = 0
     with mp_.get_context('fork').Pool(npar) as pool:
         for cell, st in pool.imap_unordered(_do_cell, cells):
-            ok = st in ('OK', 'skip (exists)')
+            ok = st == 'OK' or st.startswith('skip (verified') or st.startswith('sibling regenerated')
             nok += ok
             nbad += (not ok)
             print(f'  {cell}: {st}', flush=True)
