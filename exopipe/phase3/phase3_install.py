@@ -188,7 +188,7 @@ def screen_table_unapplied(table):
     return len(have), n
 
 
-def install(cell, gen, kind, rebuild_root=None, root=ROOT):
+def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
     lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'
     os.environ.setdefault('P3_COADD_ROOT', root)
     from exopipe.phase3 import coadd_full_pipeline as C
@@ -214,6 +214,14 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
             raise RuntimeError(f'{cell}: no applied-screen record {sj} naming {gen} with an unchanged screen - REFUSING')
     # G2
     new = _fits_under(gen); cur = _fits_under(cdir)
+    # --omit-vclean (2026-10-04; Gregg deferred the cleaned-V repair, FINDING-VCLEAN-MASTERS-LIST-EXCLUDED-NIGHTS-63-CELLS, while the
+    # final deep transient list is the priority): the generation's cleaned-V products (resampled from stale cleaned-V masters
+    # that list since-excluded nights) are NOT installed; the current ones have no new counterpart, so they are quarantined
+    # (working tree and archive) - the cell has no cleaned-V product until the deferred repair rebuilds it from its V master
+    if omit_vclean:
+        om = [r for r in new if 'V_deep_Taper_R0_clean' in os.path.basename(r)]
+        new = [r for r in new if r not in om]
+        rec(cell, 'omit-vclean', gen, '', '', '', f'{len(om)} cleaned-V products of the generation not installed: {om}')
     tgt = {}
     for r in new:
         c_ = os.path.join(os.path.dirname(r), canon(os.path.basename(r)))
@@ -446,6 +454,7 @@ def main():
     ap.add_argument('--rebuild-root', default=None); ap.add_argument('--root', default=ROOT)
     ap.add_argument('--screen-table-unapplied', default=None, metavar='TABLE')
     ap.add_argument('--epochs-only', action='store_true', help='repair an installed cell whose archive lacks its epoch images')
+    ap.add_argument('--omit-vclean', action='store_true', help='do not install the generation\'s cleaned-V products (deferred repair)')
     a = ap.parse_args()
     if a.epochs_only:
         try:
@@ -461,7 +470,7 @@ def main():
     if not (a.cell and a.gen and a.kind):
         ap.error('cell, --gen and --kind are required for an install')
     try:
-        r = install(a.cell, a.gen.rstrip('/'), a.kind, a.rebuild_root, a.root)
+        r = install(a.cell, a.gen.rstrip('/'), a.kind, a.rebuild_root, a.root, omit_vclean=a.omit_vclean)
         print(f'INSTALL-OK {a.cell}: {r[0]} working files, {r[1]} archive files quarantined, {r[2]} published', flush=True)
     except Exception as e:
         rec(a.cell, 'INSTALL-FAILED', a.gen, '', '', '', str(e)[:400])
