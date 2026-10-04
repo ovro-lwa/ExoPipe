@@ -4071,7 +4071,10 @@ def _flow_freshness(workdir, target_dates):
 
 def _run_batch_flow(all_manifest, fl):
     """Batch optical-flow alignment for a manifest (GPU-locked; py310_orca)."""
-    manifest_path = f'{_workdir_base()}/_manifest_{fl}.json'
+    # one manifest PER PROCESS (2026-10-04): it is written before the GPU lock is taken, so a name shared by every cell of the
+    # frequency in the work root let a concurrent cell overwrite it - the lock holder then ran the other cell's pairs and its
+    # own flows were never computed (18h 18MHz in the 2026-10-04 rebuild; the provisional gate refused it)
+    manifest_path = f'{_workdir_base()}/_manifest_{fl}_{os.getpid()}.json'
     with open(manifest_path, 'w') as f:
         json.dump(all_manifest, f)
     print(f"\n{'─'*70}")
@@ -4139,7 +4142,7 @@ def process_frequency(freq_str, lsts, exclusions, args):
         print(f"\n  No flow pairs to process for {fl}")
     else:
         # Phase 2: Batch flow alignment
-        manifest_path = f'{_workdir_base()}/_manifest_{fl}.json'
+        manifest_path = f'{_workdir_base()}/_manifest_{fl}_{os.getpid()}.json'   # per process: see _run_batch_flow (2026-10-04)
         with open(manifest_path, 'w') as f:
             json.dump(all_manifest, f)
 
