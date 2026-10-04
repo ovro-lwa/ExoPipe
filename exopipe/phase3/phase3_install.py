@@ -17,7 +17,7 @@ GATES (refuse, never warn; nothing is moved until every gate passes):
   G2 every new file maps to one canonical name; every current FITS of coadd_final/** and subtracted/ without a new
      counterpart is listed (it is quarantined, not left behind: the working tree mirrors the generation, as the flux apply);
   G3 free space for the working-tree copy;
-  G0 the exclusion-conformance gate on the cell as it stands (and again after the install).
+  G0 the exclusion-conformance gate on the STAGED new generation (and again on the installed tree).
 INSTALL (each step verified before the next):
   a0 every new file is STAGED on the working filesystem (<cell>/.install_staging) and md5-verified against the generation
      before anything moves (a failure here leaves the cell untouched);
@@ -225,8 +225,8 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
     need = sum(os.path.getsize(f'{gen}/{r}') for r in new) * 1.05
     if shutil.disk_usage(cdir).free < need:
         raise RuntimeError(f'{cell}: {need / 1e9:.1f} GB needed on the working tree - REFUSING')
-    # G0 (also run after the install, as the co-add does): exclusion conformance of the cell as it stands
-    C._refuse_excluded_constituents(f'{cdir}/coadd_final', lst, scope)
+    # G0 is applied to the STAGED new generation below (2026-10-04: checking the cell as it stands refused rebuilt cells whose
+    # CURRENT cleaned-V masters list since-excluded nights - the breach the install replaces - while their new generation is clean)
     # a0: STAGE every new file on the working filesystem and verify it BEFORE anything is moved, so the replacement below is
     # a sequence of same-filesystem renames (a failure before it leaves the cell untouched)
     stg = f'{cdir}/.install_staging'
@@ -265,6 +265,11 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
             if not ok_:
                 shutil.rmtree(stg)
                 raise RuntimeError(f"{cell}: epoch {os.path.basename(ep)} fails the epoch content check ({why}) - REFUSING (cell untouched)")
+    # G0: exclusion conformance of the generation being installed (every product's constituents; also run after the install)
+    try:
+        C._refuse_excluded_constituents(f'{stg}/coadd_final', lst, scope)
+    except Exception:
+        shutil.rmtree(stg); raise
     rec(cell, 'gates-passed', gen, '', '', '', f'kind {kind}; {len(new)} new (staged, md5-verified), {len(cur)} current, '
                                                f'{len(orphans)} without a new counterpart; {nderiv} epochs derived, {nchk} '
                                                f'publishable epochs pass the epoch content check')
