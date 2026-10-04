@@ -33,8 +33,9 @@ cascade reference (Gregg 2026-10-01: "Go with (a) and (b')"); a product whose sh
 screen refuses the cell's apply before anything is written. Recorded per cell, not gating: anchors matched and kept, the
 median anchor offset before, the in-sample residual of the screen at its anchors and the 5-fold held-out residual (the
 screen's error at anchors it was not fitted to), screen amplitude p50/p95 over the central 3/4 of the frame.
---apply writes every FITS product of the cell's generation (coadd_final incl. loo/, pbcorr siblings, PB map, and
-subtracted/ unless --no-residuals) resampled with the one screen into <root>/<cell>/gen_mdewarp_rbf/ (new files, the
+--apply writes every FITS product of the cell's generation (coadd_final incl. loo/, PB maps, and subtracted/ unless
+--no-residuals) resampled with the one screen, and the pbcorr siblings RECOMPUTED from the resampled plain and map (each
+must pass pb_apply.sibling_check; 2026-10-04), into <root>/<cell>/gen_mdewarp_rbf/ (new files, the
 'mdewarp' token before the scope; MDWARP/MDWMETH/MDWREF/MDWNANC/MDWCV/MDWMED0/MDWMED1/MDWP50/MDWP95/MDWDATE cards +
 HISTORY); coadd_final is never touched (installation is a separate, gated step). --input-root I reads a cell's
 generation from I/<lst>_<scope>/ where that exists (reconstructed un-warped inputs of previously flow-dewarped cells).
@@ -95,7 +96,7 @@ def _out_name(path, scope):
     return b[:-len(suf)] + f'_mdewarp{suf}' if b.endswith(suf) else b.replace('.fits', '_mdewarp.fits')
 
 
-MEAS_ROOT = '/fast/gh/main/phase3/mdewarp_rbf'   # screens + Phase-2 diagnostics per LST (analysis output, not a product)
+MEAS_ROOT = os.environ.get('MDEWARP_MEAS_ROOT') or '/fast/gh/main/phase3/mdewarp_rbf'   # screens + Phase-2 diagnostics per LST (analysis output, not a product); env for a re-measurement beside an earlier one (2026-10-04)
 NO_RESIDUALS = False
 WIDEBANDS = ('Red', 'Green', 'Blue', 'Full')
 OUT_GEN = 'gen_mdewarp_rbf'
@@ -246,8 +247,18 @@ def _apply(lst, scope, groot, root, screen, row):
                  MDWP50=(float(row['warp_p50_as']), 'screen amplitude p50, arcsec'),
                  MDWP95=(float(row['warp_p95_as']), 'screen amplitude p95, arcsec'),
                  MDWDATE=(row['measured_at'], 'dewarp measured'))
-    nw = 0
+    # PB-CORRECTED SIBLINGS ARE RECOMPUTED, NOT RESAMPLED (Gregg 2026-10-04; preamble "RBF master-dewarp install"): the
+    # resampled ratio is not the ratio of the resampled plain to the resampled map, so a resampled sibling fails
+    # sibling x PB == plain. Every other product (plain masters, PB maps, leave-one-out masters, residuals) is resampled;
+    # each coadd_final/*_pbcorr_* sibling is then resampled plain / resampled PB map of its own robust weighting (R075 ->
+    # PB_deep_R075, else PB_deep, as phase3_pbcorr_masters.do_cell), NaN where the map is at or below the sibling's PBFLOOR,
+    # and must pass pb_apply.sibling_check before the cell counts as written.
+    from exopipe.phase3 import pb_apply as PB
+    sibs = [p for p in files if os.path.dirname(p) == f'{groot}/coadd_final' and '_pbcorr_' in os.path.basename(p)]
+    nw = 0; warped = {}
     for p in files:
+        if p in sibs:
+            continue
         rel = os.path.relpath(p, groot); dst = f'{out}/{os.path.dirname(rel)}'; os.makedirs(dst, exist_ok=True)
         with fits.open(p) as h:   # header and array shape kept (frequency/Stokes axes stay for downstream PyBDSF)
             shp = h[0].data.shape; d = np.squeeze(h[0].data).astype(np.float32); hh = h[0].header.copy()
@@ -257,6 +268,28 @@ def _apply(lst, scope, groot, root, screen, row):
         hh['HISTORY'] = (f'mdewarp: resampled with the RBF screen measured on I_deep_Taper_R075_{scope} vs {row["ref"]} '
                          f'(stage B of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828; method ruled 2026-10-01)')
         fits.writeto(f'{dst}/{_out_name(p, scope)}', w, hh, overwrite=False); nw += 1
+        if os.path.dirname(p) == f'{groot}/coadd_final':
+            warped[os.path.basename(p)] = (f'{dst}/{_out_name(p, scope)}', np.squeeze(w).astype(np.float64))
+    for p in sibs:
+        b = os.path.basename(p); plain = b.replace('_pbcorr_', '_', 1)
+        pbn = f'PB_deep_R075_{scope}.fits' if '_R075_' in b else f'PB_deep_{scope}.fits'
+        if plain not in warped or pbn not in warped:
+            raise RuntimeError(f'{b}: no resampled {plain if plain not in warped else pbn} to recompute the sibling from')
+        (pl_path, pl), (_, pbm) = warped[plain], warped[pbn]
+        with fits.open(p) as h:
+            shp = h[0].data.shape; hh = h[0].header.copy()
+        floor = float(hh.get('PBFLOOR', PB.PB_FLOOR))
+        ok_ = np.isfinite(pbm) & (pbm > floor) & np.isfinite(pl)
+        s = np.full(pl.shape, np.nan, dtype=np.float32); s[ok_] = (pl[ok_] / pbm[ok_]).astype(np.float32)
+        for k, v in cards.items():
+            hh[k] = v
+        hh['HISTORY'] = (f'mdewarp: RECOMPUTED as the resampled {plain} / the resampled {pbn} (PB > {floor:g}), not '
+                         f'resampled (2026-10-04)')
+        dst = f'{out}/coadd_final'; os.makedirs(dst, exist_ok=True); o = f'{dst}/{_out_name(p, scope)}'
+        fits.writeto(o, s.reshape(shp), hh, overwrite=False); nw += 1
+        ok, why = PB.sibling_check(o, pl_path, pbm)
+        if not ok:
+            raise RuntimeError(f'{b}: recomputed sibling fails its content test ({why})')
     return nw
 
 
@@ -288,7 +321,13 @@ def run_lst(lst, root, input_root, apply, apply_scopes, table, vlssr):
             accepted[scope] = (scope, cat, float(scope.replace('MHz', '')) if scope.endswith('MHz') else ref[2])
         if row['status'] == 'OK' and apply and (not apply_scopes or scope in apply_scopes):
             try:
-                row['n_written'] = _apply(lst, scope, groot, root, screen, row)
+                # applied with the SAVED screen (float32 on disk), so every written product is exactly reproducible from
+                # the measurement record by the install's content test (2026-10-04)
+                with fits.open(f'{diag}/maps/{scope}_warp_screen.fits') as h:
+                    saved = (h['SCREEN_X'].data.astype(np.float64), h['SCREEN_Y'].data.astype(np.float64))
+                    if int(h['SCREEN_X'].header.get('NANCHOR', -1)) != int(row['n_anchors']):
+                        raise RuntimeError('saved screen anchor count differs from the measurement row')
+                row['n_written'] = _apply(lst, scope, groot, root, saved, row)
             except Exception as e:
                 row['status'] = f'APPLY REFUSED: {str(e)[:160]}'
         emit(row)
