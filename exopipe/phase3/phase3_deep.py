@@ -1061,6 +1061,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 for d in _ngd:
                     _nf.write(f'{lst},{scope},{d},{_attempt}\n')
             print(f'  {lst} {scope}: NIGHT-IMAGE GATE - {len(_ngd)} epoch(s) REFUSED from both searches: {_ngd}')
+        # (0c) EPOCH GATE (Gregg 2026-10-04, option B: "Dont force products for crappy nights"): a night whose epoch image
+        # fails its content test (coadd_final/epoch_gate.csv, made against THIS cell's current I master) is refused from BOTH
+        # searches; a missing or stale record REFUSES the cell (a gate never skips).
+        from exopipe.phase3 import epoch_gate as _EG
+        try:
+            _egf = _EG.failed_dates(f'{base}/coadd_final', scope)
+        except FileNotFoundError:
+            raise RuntimeError(f'{lst} {scope}: no {_EG.GATE_FILE} in {base}/coadd_final - the epoch gate (Gregg 2026-10-04) '
+                               f'cannot run; REFUSING')
+        _egd = [d for d in dates if _kd(d) in _egf]
+        if _egd:
+            dates = [d for d in dates if d not in _egd]
+            with open(f'{_refdir}/{lst}_{scope}_epochgate_excluded.csv', 'a') as _ef:
+                for d in _egd:
+                    _ef.write(f'{lst},{scope},{d},{_attempt}\n')
+            print(f'  {lst} {scope}: EPOCH GATE - {len(_egd)} epoch(s) REFUSED from both searches: {_egd}')
     # (1) TWO-TIER QUALITY POLICY (Gregg ruling 2026-08-26, supersedes the
     # earlier QA-outlier search drop / G-02): stage-2 QA rejection omits an
     # epoch from the CO-ADD ONLY; every non-data_decisions epoch is still

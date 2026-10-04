@@ -3443,6 +3443,18 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 _rf.write(f'{lst},{fl},{_d},wrong grid (Phase-2 anomaly),final\n')
         dates = [x for x in dates if x[0] not in _gr]
         good_dates_deep = {d for d in good_dates_deep if d not in _gr}
+    # EPOCH GATE (Gregg 2026-10-04, option B: "Dont force products for crappy nights"): a night the cell's epoch-gate record
+    # FAILS leaves co-add membership (its residual stays a two-tier product; the search refuses it through the same record).
+    # The record of the generation being rebuilt is read WITHOUT the master check: a night's verdict is its own flux deficit,
+    # and the new generation's record is made after this build (install / content test).
+    from exopipe.phase3 import epoch_gate as _EGm
+    try:
+        _egm = _EGm.failed_dates(f'{workdir}/coadd_final', check_master=False)
+    except FileNotFoundError:
+        _egm = set()
+    if _egm & good_dates_deep:
+        print(f"  {lst} {fl}: EPOCH GATE - night(s) {sorted(_egm & good_dates_deep)} leave co-add membership", flush=True)
+        good_dates_deep = good_dates_deep - _egm
     dates_good = [(d, sd, img) for d, sd, img in dates if d in good_dates_deep]
     dates_bad = [(d, sd, img) for d, sd, img in dates if d not in good_dates_deep]
 
