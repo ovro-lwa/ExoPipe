@@ -21,6 +21,9 @@ GATES (refuse, never warn; nothing is moved until every gate passes):
 INSTALL (each step verified before the next):
   a0 every new file is STAGED on the working filesystem (<cell>/.install_staging) and md5-verified against the generation
      before anything moves (a failure here leaves the cell untouched);
+  a1 the per-night EPOCH IMAGE of every night with a residual is staged too: the generation's own, or (a dewarped cell that
+     was not rebuilt: its working tree never held them) derived as residual + master; G4: every epoch the archive step will
+     publish passes coadd_full_pipeline._epoch_content_check in staging, or the install is refused with the cell untouched;
   a working tree: each current file (and, for a rebuild, each listed cell file / directory) is COPIED to the working
     quarantine WQ/<cell>/<rel> and md5-verified, then removed; each staged file is renamed to its canonical name (same
     filesystem); manifest rows in RECORD;
@@ -101,6 +104,24 @@ def _move_to_wq(cell, src, rel):
         os.remove(dst + '.part'); raise RuntimeError(f'working quarantine copy of {src} not verified (md5)')
     os.replace(dst + '.part', dst); n = os.path.getsize(src); os.remove(src)
     rec(cell, 'working-quarantine', src, dst, m0, n)
+
+
+def _derive_epoch(sub_path, master_path, out_path):
+    """The night's epoch image = its master-subtracted residual + the cell master (the co-add's i_sub = i_corrected - master),
+    float32, with the residual's own header (its time block, beam, flux and dewarp cards) minus PRODNAME, so the archive step
+    names it as an epoch image (build_name from DATE-OBS) and stamps the standard header."""
+    import numpy as np
+    from astropy.io import fits
+    with fits.open(sub_path) as h:
+        r = h[0].data.astype(np.float32); hh = h[0].header.copy()
+    m = np.squeeze(fits.getdata(master_path)).astype(np.float32)
+    if np.squeeze(r).shape != m.shape:
+        raise RuntimeError(f'{sub_path}: shape {np.squeeze(r).shape} != master {m.shape}')
+    for k in ('PRODNAME', 'CHECKSUM', 'DATASUM'):
+        hh.remove(k, ignore_missing=True, remove_all=True)
+    hh['HISTORY'] = (f'epoch image = {os.path.basename(sub_path)} + {os.path.basename(master_path)} (derived at install, '
+                     f'2026-10-04; the co-add residual is epoch - master)')
+    fits.writeto(out_path, (np.squeeze(r) + m).reshape(r.shape).astype(np.float32), hh, overwrite=False)
 
 
 def _screen_dir(arch, run):
@@ -217,8 +238,35 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
         if md5(d) != m0:
             raise RuntimeError(f'{cell}: staging copy of {r} not verified (md5) - REFUSING (cell untouched)')
         staged[c_] = (d, m0, s_)
+    # a1 EPOCH IMAGES + gate G4 (2026-10-04): the ratified per-night epoch image must exist in the new generation. A rebuilt
+    # generation carries them; a dewarped generation of a cell that was NOT rebuilt was resampled from a working tree that never
+    # held them (the 2026-10-01 epoch repair wrote residual + master into the ARCHIVE only), so they are derived here, in staging,
+    # as that repair and the co-add define them: epoch = the night's master-subtracted residual + the cell master (I: Taper
+    # Robust -0.75 survey master, V: Taper Robust 0). Found on the first install (01h 18MHz, 11:24 UTC): its archive epochs were
+    # quarantined and none published. G4: every epoch the archive step will publish (a night of the generation's weights.csv the
+    # night-image gate did not refuse) must pass _epoch_content_check HERE, before anything moves; a failure refuses the install.
+    wfin = f'{rebuild_root}/coadd_final' if rebuild_root else f'{cdir}/coadd_final'
+    wdates = {r['date'] for r in csv.DictReader(open(f'{wfin}/weights.csv'))}
+    from exopipe.phase3 import night_image_gate as NG
+    gfail = NG.failed_dates(wfin); nderiv = nchk = 0
+    for p in sorted(glob.glob(f'{stg}/subtracted/*_sub_{scope}.fits')):
+        e_ = C._EPOCH_RE.match(os.path.basename(p))
+        if not e_ or e_['kind'] != 'sub':
+            continue
+        ep = f"{stg}/subtracted/{e_['date']}_{e_['st']}_epoch_{scope}.fits"
+        mp = f"{stg}/coadd_final/" + ('I_deep_Taper_R075' if e_['st'] == 'I' else 'V_deep_Taper_R0') + f'_{scope}.fits'
+        if not os.path.exists(ep):
+            _derive_epoch(p, mp, ep); rel = os.path.relpath(ep, stg)
+            staged[rel] = (ep, md5(ep), f'derived at install: {os.path.basename(p)} + {os.path.basename(mp)}'); tgt[f'derived:{rel}'] = rel
+            nderiv += 1
+        if e_['date'] in wdates and e_['date'] not in gfail:
+            ok_, why = C._epoch_content_check(ep, mp, p, e_['st']); nchk += 1
+            if not ok_:
+                shutil.rmtree(stg)
+                raise RuntimeError(f"{cell}: epoch {os.path.basename(ep)} fails the epoch content check ({why}) - REFUSING (cell untouched)")
     rec(cell, 'gates-passed', gen, '', '', '', f'kind {kind}; {len(new)} new (staged, md5-verified), {len(cur)} current, '
-                                               f'{len(orphans)} without a new counterpart')
+                                               f'{len(orphans)} without a new counterpart; {nderiv} epochs derived, {nchk} '
+                                               f'publishable epochs pass the epoch content check')
     # a: working tree
     for r in sorted(set(cur)):
         _move_to_wq(cell, f'{cdir}/{r}', r)
