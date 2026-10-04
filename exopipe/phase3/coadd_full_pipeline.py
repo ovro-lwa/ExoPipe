@@ -883,22 +883,23 @@ def regrid_image(input_path, template_header, output_path):
 def _night_flux_dc(mean_scale, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs, beam_pix, mask,
                    obs_time, tmp_path):
     """Flux correction of one night (Gregg 2026-10-02: every admitted night is corrected by its measured scale; the window
-    that applied no correction outside 0.3-3 is removed). The first measurement (measure_flux_scale on the night BEFORE flow
-    alignment, apertures of 0.75 beam at the reference's peaks) is used when it lies in 0.3-3; outside, it is re-measured on
-    the FLOW-ALIGNED night, because a night whose sky is displaced by more than a beam reads near zero in those apertures
-    (23h Green 2025-10-29: 0.047 with its sky offset 0.9 deg, its image at the master's flux level). Returns (applied scale,
-    re-measured scale or None). Deep tier; the 10-minute provisional stage keeps its own rule (snapshot / sub-LST chat)."""
-    if 0.3 < mean_scale < 3.0:
-        return mean_scale, None
+    that applied no correction outside 0.3-3 is removed). Gregg 2026-10-04 ("1 approved"): the APPLIED scale is ALWAYS
+    measured on the FLOW-ALIGNED night, read at the reference peaks' own pixels (measure_flux_scale at_peak_pixel=True).
+    mean_scale - the first measurement, on the night BEFORE alignment, the maximum within 0.75 beam of each reference peak -
+    read high on noisy nights (every co-add came out 2-6 per cent below its reference) and failed outright for a night
+    displaced by more than a beam (23h Green 2025-10-29: 0.047); it is still recorded (qa3_scale) but never applied.
+    Returns (applied scale, the same value); NaN when not measurable - the caller refuses the night. Deep tier; the
+    10-minute provisional stage keeps its own rule (snapshot / sub-LST chat)."""
     try:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         process_variant_image(work_path, flow_offsets, np.ones(target_shape), tmpl_hdr, target_shape, tmp_path, None)
         al, _ = load_image(tmp_path)
-        _, c2, _ = measure_flux_scale(al, ref_data, ref_wcs, beam_pix, mask | ~np.isfinite(al) | (al == 0), obs_time)
+        _, c2, _ = measure_flux_scale(al, ref_data, ref_wcs, beam_pix, mask | ~np.isfinite(al) | (al == 0), obs_time,
+                                      at_peak_pixel=True)
         m2 = float(c2[0])
     except Exception as e:
-        print(f"    flux scale re-measure on the flow-aligned image failed ({e})", flush=True)
+        print(f"    flux scale measurement on the flow-aligned image failed ({e})", flush=True)
         m2 = float('nan')
     finally:
         if os.path.exists(tmp_path):
@@ -906,9 +907,16 @@ def _night_flux_dc(mean_scale, work_path, flow_offsets, tmpl_hdr, target_shape, 
     return m2, m2
 
 
-def measure_flux_scale(tgt_data, ref_data, wcs, beam_pix, horizon_mask, obs_time):
+def measure_flux_scale(tgt_data, ref_data, wcs, beam_pix, horizon_mask, obs_time, at_peak_pixel=False):
     """Measure flux scale target/reference using bright unresolved sources.
-    Returns (scale_map, coeffs, n_sources)."""
+    Returns (scale_map, coeffs, n_sources).
+    at_peak_pixel (deep tier; Gregg 2026-10-04, "1 approved"): the target is a FLOW-ALIGNED night or epoch, read at the
+    reference peak's own PIXEL. The default reads the target's MAXIMUM within 0.75 beam of each peak, which reads high on a
+    noisy night (measured 2026-10-04: masters rebuilt against their previous master came out 0.944 / 0.970 / 0.979 of it,
+    and every night of 13h 18MHz read 0.86-1.00 of the reference at its peaks after correction). Same reference-peak
+    selection and the same robust fit in both modes. With at_peak_pixel, fewer than 5 usable sources return NaN (not
+    measurable: the caller refuses the night, ruling 2026-10-02) instead of 1.0. The default mode stays for the flow-input
+    image and the 10-minute tier (snapshot / sub-LST chat)."""
     h, w = ref_data.shape
     ap_r = max(int(np.ceil(beam_pix * 0.75)), 3)
     ms = max(int(beam_pix * 1.5), 5)
@@ -936,10 +944,17 @@ def measure_flux_scale(tgt_data, ref_data, wcs, beam_pix, horizon_mask, obs_time
         if y2 - y1 < 3 or x2 - x1 < 3:
             continue
 
-        tgt_peak = float(np.nanmax(tgt_data[y1:y2, x1:x2]))
-        ref_peak = float(np.nanmax(ref_data[y1:y2, x1:x2]))
+        if at_peak_pixel:
+            # the value AT the peak pixel: no maximum over noisy pixels; any finite non-zero value counts (a requirement
+            # that it be positive would bias the ratio up)
+            tgt_peak = float(tgt_data[sy, sx]); ref_peak = float(ref_data[sy, sx])
+            usable = ref_peak > 0 and np.isfinite(tgt_peak) and tgt_peak != 0.0
+        else:
+            tgt_peak = float(np.nanmax(tgt_data[y1:y2, x1:x2]))
+            ref_peak = float(np.nanmax(ref_data[y1:y2, x1:x2]))
+            usable = ref_peak > 0 and tgt_peak > 0
 
-        if ref_peak > 0 and tgt_peak > 0:
+        if usable:
             ref_patch = ref_data[y1:y2, x1:x2]
             total = float(np.nansum(ref_patch[ref_patch > 0.3 * ref_peak]))
             if total > 2.5 * ref_peak * (2 * ap_r + 1):
@@ -948,6 +963,8 @@ def measure_flux_scale(tgt_data, ref_data, wcs, beam_pix, horizon_mask, obs_time
                            'pix_x': int(sx), 'pix_y': int(sy)})
 
     if len(ratios) < 5:
+        if at_peak_pixel:
+            return np.full((h, w), np.nan), np.array([np.nan, 0.0, 0.0]), len(ratios)
         return np.ones((h, w)), np.array([1.0, 0.0, 0.0]), len(ratios)
 
     xs = np.array([r['pix_x'] for r in ratios], dtype=float)
@@ -2273,9 +2290,9 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         _mean_aligned = None
         _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
         if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
-            # EVERY ADMITTED NIGHT IS CORRECTED BY ITS MEASURED SCALE (Gregg 2026-10-02, "1. yes"): the old window that
-            # applied NO correction outside 0.3-3 is removed; a scale outside 0.3-3 is re-measured on the flow-aligned
-            # image first (_night_flux_dc), and a night whose scale cannot be measured is REFUSED.
+            # EVERY ADMITTED NIGHT IS CORRECTED BY ITS MEASURED SCALE (Gregg 2026-10-02, "1. yes"); the applied scale is
+            # measured on the FLOW-ALIGNED night at the reference peak pixels (Gregg 2026-10-04, "1 approved":
+            # _night_flux_dc), and a night whose scale cannot be measured is REFUSED.
             _dc, _mean_aligned = _night_flux_dc(_mean, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs,
                                                 beam_pix, horizon_mask | tgt_mask, tgt_obs_time,
                                                 f'{prep_dir}/{date}_scale_remeasure.fits')
@@ -2285,7 +2302,8 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
                 continue
             if _mean_aligned is not None:
                 weight = float(_dc ** 2 / tgt_rms ** 2) if tgt_rms > 0 else 0.0
-                print(f"    {date}: scale {_mean:.4g} outside 0.3-3 -> re-measured on the flow-aligned image: {_dc:.4f}", flush=True)
+                print(f"    {date}: applied scale {_dc:.4f} (flow-aligned night at the reference peak pixels; "
+                      f"pre-alignment aperture maximum {_mean:.4g}, recorded only)", flush=True)
             scale_map_full = np.full((h, w), _dc, dtype=float)
             print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
                   f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
@@ -3155,6 +3173,14 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
         _wdates = {r['date'] for r in csv.DictReader(open(f'{final_dir}/weights.csv'))}
     except Exception:
         _wdates = set()
+    # NIGHT-IMAGE GATE (Gregg 2026-10-02): a night the gate refused is refused here too - its epoch is not archived (it
+    # cannot pass the epoch content check: measured 2026-10-04, median epoch/master 0.002 for 13h/18h 18MHz 2025-04-05);
+    # every other epoch must still pass the check below, or the publish refuses.
+    from exopipe.phase3 import night_image_gate as _NGp
+    try:
+        _gate_fail = _NGp.failed_dates(final_dir)
+    except FileNotFoundError:
+        _gate_fail = set()
     if os.path.isdir(sub_dir):
         for f in sorted(os.listdir(sub_dir)):
             e = _EPOCH_RE.match(f)
@@ -3162,6 +3188,9 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
                 continue
             if _wdates and e['date'] not in _wdates:
                 print(f"  {lst} {fl}: {f} is not in the generation record (weights.csv) - stale epoch product, NOT archived")
+                continue
+            if e['date'] in _gate_fail:
+                print(f"  {lst} {fl}: {f} - night refused by the night-image gate; epoch NOT archived")
                 continue
             src = f'{sub_dir}/{f}'
             h = fits.getheader(src)
@@ -3536,9 +3565,9 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         _mean_aligned = None
         _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
         if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
-            # EVERY ADMITTED NIGHT IS CORRECTED BY ITS MEASURED SCALE (Gregg 2026-10-02, "1. yes"): the old window that
-            # applied NO correction outside 0.3-3 is removed; a scale outside 0.3-3 is re-measured on the flow-aligned
-            # image first (_night_flux_dc), and a night whose scale cannot be measured is REFUSED.
+            # EVERY ADMITTED NIGHT IS CORRECTED BY ITS MEASURED SCALE (Gregg 2026-10-02, "1. yes"); the applied scale is
+            # measured on the FLOW-ALIGNED night at the reference peak pixels (Gregg 2026-10-04, "1 approved":
+            # _night_flux_dc), and a night whose scale cannot be measured is REFUSED.
             _dc, _mean_aligned = _night_flux_dc(_mean, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs,
                                                 beam_pix, horizon_mask | tgt_mask, tgt_obs_time,
                                                 f'{prep_dir}/{date}_scale_remeasure.fits')
@@ -3551,7 +3580,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 continue
             if _mean_aligned is not None:
                 weight = float(_dc ** 2 / tgt_rms ** 2) if tgt_rms > 0 else 0.0
-                print(f"    {date}: scale {_mean:.4g} outside 0.3-3 -> re-measured on the flow-aligned image: {_dc:.4f}", flush=True)
+                print(f"    {date}: applied scale {_dc:.4f} (flow-aligned night at the reference peak pixels; "
+                      f"pre-alignment aperture maximum {_mean:.4g}, recorded only)", flush=True)
             scale_map_full = np.full((h, w), _dc, dtype=float)
             print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
                   f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
@@ -3779,8 +3809,10 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         i_data, _ = load_image(i_path)
         combined_mask = coadd_mask | (~np.isfinite(i_data)) | (i_data == 0)
         obs_time = get_midpoint_time(ref_hdr, i_path)
+        # epoch (flow-aligned) against the final master, read at the master's peak pixels (Gregg 2026-10-04, "1 approved":
+        # the aperture maximum read high and left a negative imprint of the bright sources in the residuals)
         _, coeffs2, n2 = measure_flux_scale(
-            i_data, final_i_data, final_wcs, beam_pix, combined_mask, obs_time)
+            i_data, final_i_data, final_wcs, beam_pix, combined_mask, obs_time, at_peak_pixel=True)
         scale2_meas[date] = (coeffs2, n2)
     _dcs = [float(c[0][0]) for c in scale2_meas.values() if c[1] >= 8]
     med_dc = float(np.median(_dcs)) if _dcs else 1.0
