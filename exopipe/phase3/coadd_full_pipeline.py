@@ -3107,28 +3107,37 @@ def _epoch_content_check(epoch_path, master_path, sub_path, stokes):
     at once. (b) Stokes I only, independent of the identity: at the master's compact bright peaks (local maxima above 20 x
     its robust rms and below 50 Jy/beam, inside 0.9 of the half-width) the median epoch/master ratio lies in 0.8-1.25 (a
     residual reads ~0). Returns (ok, reason)."""
-    from scipy.ndimage import maximum_filter
     e = np.squeeze(fits.getdata(epoch_path)).astype(np.float64); m = np.squeeze(fits.getdata(master_path)).astype(np.float64)
+    r = np.squeeze(fits.getdata(sub_path)).astype(np.float64) if os.path.exists(sub_path) else None
+    ok, why, _med, _n = _epoch_content_arrays(e, m, r, stokes)
+    return ok, why
+
+
+def _epoch_content_arrays(e, m, r, stokes):
+    """The epoch content test on arrays (epoch e, master m, residual r or None) - ONE definition for the archive publish and
+    the epoch gate (epoch_gate.py; Gregg 2026-10-04 option B). Returns (ok, reason, median epoch/master at the master's bright
+    compact sources or None, number of those sources)."""
+    from scipy.ndimage import maximum_filter
     if e.shape != m.shape:
-        return False, f'shape {e.shape} != master {m.shape}'
+        return False, f'shape {e.shape} != master {m.shape}', None, 0
     ok = np.isfinite(e) & np.isfinite(m) & (m != 0)
     v = m[ok]; rr = 1.4826 * np.median(np.abs(v - np.median(v)))
-    if os.path.exists(sub_path):
-        r = np.squeeze(fits.getdata(sub_path)).astype(np.float64); k = ok & np.isfinite(r)
+    if r is not None:
+        k = ok & np.isfinite(r)
         d = (e - r - m)[k]; dr = 1.4826 * np.median(np.abs(d - np.median(d)))
         if not dr < 1e-3 * rr:
-            return False, f'identity epoch - residual - master: robust rms {dr:.3g} vs master {rr:.3g}'
+            return False, f'identity epoch - residual - master: robust rms {dr:.3g} vs master {rr:.3g}', None, 0
     if stokes == 'I':
         mf = np.nan_to_num(m); pk = (mf == maximum_filter(mf, size=9)) & (mf > 20 * rr) & (mf < 50)
         yy, xx = np.nonzero(pk); h, w = m.shape
         keep = np.hypot(xx - w / 2, yy - h / 2) / (w / 2) < 0.9; yy, xx = yy[keep], xx[keep]
         if len(yy) < 20:
-            return False, f'only {len(yy)} bright compact master sources to test against'
+            return False, f'only {len(yy)} bright compact master sources to test against', None, len(yy)
         rat = e[yy, xx] / m[yy, xx]; med = float(np.nanmedian(rat))
         if not 0.8 <= med <= 1.25:
-            return False, f'median epoch/master at {len(yy)} master sources {med:.3f} outside 0.8-1.25'
-        return True, f'identity ok; median epoch/master {med:.3f} at {len(yy)} sources'
-    return True, 'identity ok'
+            return False, f'median epoch/master at {len(yy)} master sources {med:.3f} outside 0.8-1.25', med, len(yy)
+        return True, f'identity ok; median epoch/master {med:.3f} at {len(yy)} sources', med, len(yy)
+    return True, 'identity ok', None, 0
 
 
 def _archive_publish_cell(final_dir, sub_dir, lst, fl):
@@ -3150,7 +3159,7 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
             if not name:
                 raise RuntimeError(f"{lst} {fl}: {f} has no PRODNAME - not stamped; REFUSING to archive")
             _atomic_copy(src, f'{cdir}/{name if name.endswith(".fits") else name + ".fits"}'); n += 1
-        elif f in (f'PB_deep_{fl}.fits', f'PB_deep_R075_{fl}.fits', 'weights.csv', 'night_image_gate.csv'):   # one PB map per robust (2026-10-01); night-image gate record (2026-10-02)
+        elif f in (f'PB_deep_{fl}.fits', f'PB_deep_R075_{fl}.fits', 'weights.csv', 'night_image_gate.csv', 'epoch_gate.csv'):   # one PB map per robust (2026-10-01); night-image gate record (2026-10-02)
             _atomic_copy(src, f'{cdir}/{f}'); n += 1
     loo = f'{final_dir}/loo'
     if os.path.isdir(loo):
@@ -3176,6 +3185,14 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     # NIGHT-IMAGE GATE (Gregg 2026-10-02): a night the gate refused is refused here too - its epoch is not archived (it
     # cannot pass the epoch content check: measured 2026-10-04, median epoch/master 0.002 for 13h/18h 18MHz 2025-04-05);
     # every other epoch must still pass the check below, or the publish refuses.
+    # EPOCH GATE (Gregg 2026-10-04, option B): a night whose epoch image fails its content test gets no epoch product. With the
+    # cell's epoch_gate.csv (made against THIS master, else REFUSED as stale) its FAIL nights are skipped here; without it every
+    # epoch must still pass the check below (the rule before the gate).
+    from exopipe.phase3 import epoch_gate as _EGp
+    try:
+        _epoch_fail = _EGp.failed_dates(final_dir, fl)
+    except FileNotFoundError:
+        _epoch_fail = set()
     from exopipe.phase3 import night_image_gate as _NGp
     try:
         _gate_fail = _NGp.failed_dates(final_dir)
@@ -3191,6 +3208,9 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
                 continue
             if e['date'] in _gate_fail:
                 print(f"  {lst} {fl}: {f} - night refused by the night-image gate; epoch NOT archived")
+                continue
+            if e['date'] in _epoch_fail:
+                print(f"  {lst} {fl}: {f} - night refused by the epoch gate; epoch NOT archived")
                 continue
             src = f'{sub_dir}/{f}'
             h = fits.getheader(src)

@@ -239,32 +239,43 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
         if md5(d) != m0:
             raise RuntimeError(f'{cell}: staging copy of {r} not verified (md5) - REFUSING (cell untouched)')
         staged[c_] = (d, m0, s_)
-    # a1 EPOCH IMAGES + gate G4 (2026-10-04): the ratified per-night epoch image must exist in the new generation. A rebuilt
-    # generation carries them; a dewarped generation of a cell that was NOT rebuilt was resampled from a working tree that never
-    # held them (the 2026-10-01 epoch repair wrote residual + master into the ARCHIVE only), so they are derived here, in staging,
-    # as that repair and the co-add define them: epoch = the night's master-subtracted residual + the cell master (I: Taper
-    # Robust -0.75 survey master, V: Taper Robust 0). Found on the first install (01h 18MHz, 11:24 UTC): its archive epochs were
-    # quarantined and none published. G4: every epoch the archive step will publish (a night of the generation's weights.csv the
-    # night-image gate did not refuse) must pass _epoch_content_check HERE, before anything moves; a failure refuses the install.
+    # a1 EPOCH IMAGES + the EPOCH GATE (Gregg 2026-10-04 option B: "Dont force products for crappy nights. We want to find
+    # those nights and exclude them via approved QA."). The new generation's every night with a residual is tested by
+    # epoch_gate (the archive's own epoch content test; Stokes I decides for the night): a FAIL night gets no epoch product
+    # and is refused from both searches through the record written below; a FAIL night INSIDE the master refuses the install
+    # (the master must be rebuilt without it). Every other night of the generation record that the night-image gate did not
+    # refuse must have its epoch image: the generation's own (rebuilt) or derived here as residual + master (a dewarped cell
+    # that was not rebuilt; its working tree never held epochs - found on the first install, 01h 18MHz), and each passes
+    # _epoch_content_check before anything moves.
     wfin = f'{rebuild_root}/coadd_final' if rebuild_root else f'{cdir}/coadd_final'
-    wdates = {r['date'] for r in csv.DictReader(open(f'{wfin}/weights.csv'))}
-    from exopipe.phase3 import night_image_gate as NG
-    gfail = NG.failed_dates(wfin); nderiv = nchk = 0
+    wrows = {r['date']: r for r in csv.DictReader(open(f'{wfin}/weights.csv'))}
+    from exopipe.phase3 import night_image_gate as NG, epoch_gate as EG
+    gfail = NG.failed_dates(wfin)
+    erows = EG.evaluate_cell(f'{stg}/coadd_final', f'{stg}/subtracted', scope)
+    efail = {d for d, r in erows.items() if r['verdict'] == 'FAIL'}
+    inm = sorted(d for d in efail if wrows.get(d, {}).get('in_master') == '1' and d not in gfail)
+    if inm:
+        shutil.rmtree(stg)
+        raise RuntimeError(f'{cell}: night(s) {inm} IN THE MASTER fail the epoch gate - the master must be rebuilt without them; '
+                           f'REFUSING (cell untouched)')
+    nderiv = nchk = 0
     for p in sorted(glob.glob(f'{stg}/subtracted/*_sub_{scope}.fits')):
         e_ = C._EPOCH_RE.match(os.path.basename(p))
         if not e_ or e_['kind'] != 'sub':
             continue
-        ep = f"{stg}/subtracted/{e_['date']}_{e_['st']}_epoch_{scope}.fits"
+        d_ = e_['date']
+        if d_ not in wrows or d_ in gfail or d_ in efail:   # refused or outside the generation record: no epoch product
+            continue
+        ep = f"{stg}/subtracted/{d_}_{e_['st']}_epoch_{scope}.fits"
         mp = f"{stg}/coadd_final/" + ('I_deep_Taper_R075' if e_['st'] == 'I' else 'V_deep_Taper_R0') + f'_{scope}.fits'
         if not os.path.exists(ep):
             _derive_epoch(p, mp, ep); rel = os.path.relpath(ep, stg)
             staged[rel] = (ep, md5(ep), f'derived at install: {os.path.basename(p)} + {os.path.basename(mp)}'); tgt[f'derived:{rel}'] = rel
             nderiv += 1
-        if e_['date'] in wdates and e_['date'] not in gfail:
-            ok_, why = C._epoch_content_check(ep, mp, p, e_['st']); nchk += 1
-            if not ok_:
-                shutil.rmtree(stg)
-                raise RuntimeError(f"{cell}: epoch {os.path.basename(ep)} fails the epoch content check ({why}) - REFUSING (cell untouched)")
+        ok_, why = C._epoch_content_check(ep, mp, p, e_['st']); nchk += 1
+        if not ok_:
+            shutil.rmtree(stg)
+            raise RuntimeError(f"{cell}: epoch {os.path.basename(ep)} fails the epoch content check ({why}) - REFUSING (cell untouched)")
     # G0: exclusion conformance of the generation being installed (every product's constituents; also run after the install)
     try:
         C._refuse_excluded_constituents(f'{stg}/coadd_final', lst, scope)
@@ -272,7 +283,7 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
         shutil.rmtree(stg); raise
     rec(cell, 'gates-passed', gen, '', '', '', f'kind {kind}; {len(new)} new (staged, md5-verified), {len(cur)} current, '
                                                f'{len(orphans)} without a new counterpart; {nderiv} epochs derived, {nchk} '
-                                               f'publishable epochs pass the epoch content check')
+                                               f'publishable epochs pass the epoch content check; epoch gate FAIL nights {sorted(efail)}')
     # a: working tree
     for r in sorted(set(cur)):
         _move_to_wq(cell, f'{cdir}/{r}', r)
@@ -301,8 +312,13 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
     shutil.rmtree(stg)
     if sorted(_fits_under(cdir)) != sorted(tgt.values()):
         raise RuntimeError(f'{cell}: working tree after install != the generation file set - STOPPED')
-    # b: stamp + exclusion conformance
+    # the epoch-gate record of the installed generation (made against the staged master = the installed one)
     fd, sd = f'{cdir}/coadd_final', f'{cdir}/subtracted'
+    if os.path.exists(f'{fd}/{EG.GATE_FILE}'):
+        _move_to_wq(cell, f'{fd}/{EG.GATE_FILE}', f'coadd_final/{EG.GATE_FILE}')
+    EG.write_record(fd, erows); rec(cell, 'epoch-gate-record', f'{fd}/{EG.GATE_FILE}', '', md5(f'{fd}/{EG.GATE_FILE}'), '',
+                                    f'{len(erows)} nights, FAIL {sorted(efail)}')
+    # b: stamp + exclusion conformance
     C._stamp_all_masters(fd, lst, scope)
     C._refuse_excluded_constituents(fd, lst, scope)
     # c: archive quarantine, then publish
@@ -350,12 +366,17 @@ def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
             nm = None
         if nm:
             by_name[nm if nm.endswith('.fits') else nm + '.fits'] = p
-    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv'):
+    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv', 'epoch_gate.csv'):
         by_name[f] = f'{fd}/{f}'
     bad = [p for p in now if os.path.basename(p) not in by_name or md5(p) != md5(by_name[os.path.basename(p)])]
     if bad:
         raise RuntimeError(f'{cell}: archive audit - {len(bad)} files whose md5 differs from the working source, e.g. {bad[:2]} - FAILED')
     wdates = {r['date'] for r in csv.DictReader(open(f'{fd}/weights.csv'))}; gfail = NG.failed_dates(fd)
+    from exopipe.phase3 import epoch_gate as EG
+    try:
+        gfail = gfail | EG.failed_dates(fd, scope)
+    except FileNotFoundError:
+        pass
     miss = []
     for p in sorted(glob.glob(f'{sd}/*_sub_{scope}.fits')):
         e_ = C._EPOCH_RE.match(os.path.basename(p))
@@ -382,24 +403,34 @@ def epochs_only(cell, root=ROOT):
     if not run:
         raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
     fd, sd = f'{cdir}/coadd_final', f'{cdir}/subtracted'
-    wdates = {r['date'] for r in csv.DictReader(open(f'{fd}/weights.csv'))}; gfail = NG.failed_dates(fd)
+    wrows = {r['date']: r for r in csv.DictReader(open(f'{fd}/weights.csv'))}; gfail = NG.failed_dates(fd)
+    # EPOCH GATE (Gregg 2026-10-04 option B): the record of the installed generation; FAIL nights get no epoch product; a FAIL
+    # night inside the master refuses (the master must be rebuilt without it)
+    from exopipe.phase3 import epoch_gate as EG
+    erows = EG.evaluate_cell(fd, sd, scope); efail = {d for d, r in erows.items() if r['verdict'] == 'FAIL'}
+    inm = sorted(d for d in efail if wrows.get(d, {}).get('in_master') == '1' and d not in gfail)
+    if inm:
+        raise RuntimeError(f'{cell}: night(s) {inm} IN THE MASTER fail the epoch gate - the master must be rebuilt without them; REFUSING')
     new, bad = [], []
     for p in sorted(glob.glob(f'{sd}/*_sub_{scope}.fits')):
         e_ = C._EPOCH_RE.match(os.path.basename(p))
         if not e_ or e_['kind'] != 'sub':
             continue
+        if e_['date'] not in wrows or e_['date'] in gfail or e_['date'] in efail:
+            continue
         ep = f"{sd}/{e_['date']}_{e_['st']}_epoch_{scope}.fits"
         mp = f'{fd}/' + ('I_deep_Taper_R075' if e_['st'] == 'I' else 'V_deep_Taper_R0') + f'_{scope}.fits'
         if not os.path.exists(ep):
             _derive_epoch(p, mp, ep); new.append(ep)
-        if e_['date'] in wdates and e_['date'] not in gfail:
-            ok_, why = C._epoch_content_check(ep, mp, p, e_['st'])
-            if not ok_:
-                bad.append(f'{os.path.basename(ep)}: {why}')
+        ok_, why = C._epoch_content_check(ep, mp, p, e_['st'])
+        if not ok_:
+            bad.append(f'{os.path.basename(ep)}: {why}')
     if bad:
         for ep in new:
             os.remove(ep)
         raise RuntimeError(f'{cell}: {len(bad)} epochs fail the epoch content check, e.g. {bad[:2]} - REFUSING (derived epochs removed)')
+    EG.write_record(fd, erows); rec(cell, 'epoch-gate-record', f'{fd}/{EG.GATE_FILE}', '', md5(f'{fd}/{EG.GATE_FILE}'), '',
+                                    f'{len(erows)} nights, FAIL {sorted(efail)}')
     for ep in new:
         rec(cell, 'epoch-derived', ep, '', md5(ep), os.path.getsize(ep), 'residual + master (epochs-only repair)')
     arch = C._archive_root(); mdir = f'{arch}/Coadd/{run}/{lst}/{scope}'
