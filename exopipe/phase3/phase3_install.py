@@ -12,7 +12,8 @@ A rebuilt cell that is also master-dewarped is installed from its 'mdewarp' gene
 
 GATES (refuse, never warn; nothing is moved until every gate passes):
   G1 the generation's content test passed: GEN/../INSTALL_CONTENT_OK exists and names this GEN (written only by the content
-     test of the generation's kind: check_mdewarp_gen for 'mdewarp', the rebuild content test for 'rebuild');
+     test of the generation's kind: check_mdewarp_gen for 'mdewarp'; for 'rebuild', promote_rebuild.py, which presents the
+     files check_rebuild.py tested (T1-T7, REBUILD_CONTENT_OK) under canonical names as hard links - the same inodes);
   G2 every new file maps to one canonical name; every current FITS of coadd_final/** and subtracted/ without a new
      counterpart is listed (it is quarantined, not left behind: the working tree mirrors the generation, as the flux apply);
   G3 free space for the working-tree copy;
@@ -31,9 +32,16 @@ INSTALL (each step verified before the next):
     coadd_full_pipeline._archive_publish_cell writes the cell (epochs of gate-refused nights are not archived, every other
     epoch must pass the epoch content check);
   d audit: the cell's archive deep files (search frames excluded) are exactly the files the publish wrote, each md5 = its
-    working source.
-CLI: python -m exopipe.phase3.phase3_install <cell> --gen GEN --kind mdewarp|rebuild [--rebuild-root RR] [--root R]"""
-import argparse, csv, glob, hashlib, os, re, shutil, sys, time
+    working source;
+  e screen (kind 'mdewarp'): the RBF screen the generation was resampled with (check_mdewarp_gen D3 proves it exactly and
+    records it in GEN/../APPLIED_SCREEN.json; gate G1b checks the record and the screen's md5 before anything moves) is
+    published to <archive>/mdewarp_screens/<run>/<lst>_<scope>_warp_screen.fits, md5-verified, and its row written to
+    mdewarp_screens.csv there (S-2 answer to the snapshot chat, CROSS_CHAT_COORDINATION.md 2026-10-04); a screen it
+    replaces is quarantined first.
+CLI: python -m exopipe.phase3.phase3_install <cell> --gen GEN --kind mdewarp|rebuild [--rebuild-root RR] [--root R]
+     python -m exopipe.phase3.phase3_install --screen-table-unapplied TABLE   (after all installs: one applied=0 row per
+     measured cell that was not applied, with its status, so a cell without a screen is known not to have been applied)"""
+import argparse, csv, fcntl, glob, hashlib, json, os, re, shutil, sys, time
 
 ROOT = '/data07/gh/phase3/coadd_sb'
 WQ = '/lustre/gh/main/phase3/working_quarantine_20261004'
@@ -43,6 +51,9 @@ CELL_FILES = ('weights.csv', 'night_image_gate.csv')                            
 CELL_TOP = ('residuals_provisional.csv', 'outliers.csv', 'residuals.csv')            # in the cell directory
 CELL_DIRS = ('flow', 'coadd_provisional')                                            # in the cell directory
 RCOLS = ['time', 'cell', 'step', 'path', 'dest', 'md5', 'bytes', 'detail']
+SCREEN_COLS = ['lst', 'scope', 'applied', 'status', 'n_anchors', 'vlssr_med_before_arcmin', 'vlssr_med_after_arcmin',
+               'heldout_resid_med_arcsec', 'anchor_off_med_arcsec', 'screen_p50_arcsec', 'screen_p95_arcsec', 'screen_file',
+               'screen_md5', 'measured_at', 'written_utc']
 # SNAPSHOT / SUB-LST FREEZE (2026-10-04): those tiers read the archive deep masters LIVE through 912 links in
 # /lustre/pipeline/exopipe/phase3/snapshot_masters/; moving a master to quarantine breaks them (16 already broken by the
 # 2026-09-27..10-01 archive replacements). No install until the other chat's frozen copy is in place and its checks passed,
@@ -92,6 +103,69 @@ def _move_to_wq(cell, src, rel):
     rec(cell, 'working-quarantine', src, dst, m0, n)
 
 
+def _screen_dir(arch, run):
+    return f'{arch}/mdewarp_screens/{run}'
+
+
+def _screen_row(sdir, row):
+    """Write (replace) one (lst, scope) row of mdewarp_screens.csv under an exclusive lock (installs run in parallel)."""
+    os.makedirs(sdir, exist_ok=True); p = f'{sdir}/mdewarp_screens.csv'
+    with open(f'{sdir}/.mdewarp_screens.lock', 'w') as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        rows = list(csv.DictReader(open(p))) if os.path.exists(p) else []
+        rows = [r for r in rows if (r['lst'], r['scope']) != (row['lst'], row['scope'])] + [row]
+        with open(p + '.part', 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=SCREEN_COLS); w.writeheader()
+            w.writerows(sorted(rows, key=lambda r: (r['lst'], r['scope'])))
+        os.replace(p + '.part', p)
+
+
+def _publish_screen(cell, arch, run, qroot, meta):
+    """Step e: the applied screen beside the archive masters, md5-verified; a screen it replaces is quarantined first."""
+    lst, scope = cell.split('_', 1); sdir = _screen_dir(arch, run); os.makedirs(sdir, exist_ok=True)
+    dst = f'{sdir}/{lst}_{scope}_warp_screen.fits'
+    if os.path.exists(dst):
+        q = f'{qroot}/{os.path.relpath(dst, arch)}'
+        if os.path.exists(q):
+            raise RuntimeError(f'{cell}: screen quarantine destination exists: {q} - STOPPED')
+        os.makedirs(os.path.dirname(q), exist_ok=True); m = md5(dst); os.rename(dst, q); rec(cell, 'archive-quarantine', dst, q, m)
+    shutil.copy2(meta['screen'], dst + '.part')
+    if md5(dst + '.part') != meta['screen_md5']:
+        os.remove(dst + '.part'); raise RuntimeError(f'{cell}: published screen copy not verified (md5) - STOPPED')
+    os.replace(dst + '.part', dst); rec(cell, 'screen-published', meta['screen'], dst, meta['screen_md5'], os.path.getsize(dst))
+    _screen_row(sdir, dict(lst=lst, scope=scope, applied=1, status=meta['status'], n_anchors=meta['n_anchors'],
+                           vlssr_med_before_arcmin=meta['med_before'], vlssr_med_after_arcmin=meta['med_after'],
+                           heldout_resid_med_arcsec=meta['cv_resid_med_as'], anchor_off_med_arcsec=meta['anchor_off_med_as'],
+                           screen_p50_arcsec=meta['warp_p50_as'], screen_p95_arcsec=meta['warp_p95_as'],
+                           screen_file=os.path.basename(dst), screen_md5=meta['screen_md5'], measured_at=meta['measured_at'],
+                           written_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())))
+
+
+def screen_table_unapplied(table):
+    """After all installs: one applied=0 row for every measured (lst, scope) of TABLE (the merged measurement table, final row
+    per cell) that has no applied row, with its status - so a missing screen reads as 'measured, not applied'."""
+    from exopipe.phase3 import coadd_full_pipeline as C
+    run = os.environ.get('P3_ARCHIVE_RUN')
+    if not run:
+        raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
+    sdir = _screen_dir(C._archive_root(), run); p = f'{sdir}/mdewarp_screens.csv'
+    have = {(r['lst'], r['scope']) for r in csv.DictReader(open(p)) if r['applied'] == '1'} if os.path.exists(p) else set()
+    final = {}
+    for r in csv.DictReader(open(table)):
+        final[(r['lst'], r['scope'])] = r
+    n = 0
+    for (lst, scope), r in sorted(final.items()):
+        if (lst, scope) in have:
+            continue
+        _screen_row(sdir, dict(lst=lst, scope=scope, applied=0, status=r['status'][:120], n_anchors=r.get('n_anchors', ''),
+                               vlssr_med_before_arcmin=r.get('med_before', ''), vlssr_med_after_arcmin=r.get('med_after', ''),
+                               heldout_resid_med_arcsec=r.get('cv_resid_med_as', ''), anchor_off_med_arcsec=r.get('anchor_off_med_as', ''),
+                               screen_p50_arcsec='', screen_p95_arcsec='', screen_file='', screen_md5='',
+                               measured_at=r.get('measured_at', ''), written_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())))
+        n += 1
+    return len(have), n
+
+
 def install(cell, gen, kind, rebuild_root=None, root=ROOT):
     lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'
     os.environ.setdefault('P3_COADD_ROOT', root)
@@ -109,6 +183,13 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
     if kind == 'rebuild' or rebuild_root:
         if not rebuild_root or not os.path.exists(f'{rebuild_root}/REBUILD_CONTENT_OK'):
             raise RuntimeError(f'{cell}: a rebuilt cell needs --rebuild-root with REBUILD_CONTENT_OK - REFUSING')
+    # G1b (kind 'mdewarp'): the applied screen is on record for this generation and unchanged since the content test
+    smeta = None
+    if kind == 'mdewarp':
+        sj = f'{os.path.dirname(gen.rstrip("/"))}/APPLIED_SCREEN.json'
+        smeta = json.load(open(sj)) if os.path.exists(sj) else None
+        if not smeta or smeta.get('gen') != gen.rstrip('/') or not os.path.exists(smeta['screen']) or md5(smeta['screen']) != smeta['screen_md5']:
+            raise RuntimeError(f'{cell}: no applied-screen record {sj} naming {gen} with an unchanged screen - REFUSING')
     # G2
     new = _fits_under(gen); cur = _fits_under(cdir)
     tgt = {}
@@ -206,15 +287,25 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
     bad = [p for p in now if os.path.basename(p) not in by_name or md5(p) != md5(by_name[os.path.basename(p)])]
     if bad:
         raise RuntimeError(f'{cell}: archive audit - {len(bad)} files whose md5 differs from the working source, e.g. {bad[:2]} - FAILED')
-    rec(cell, 'installed-and-audited', gen, '', '', '', f'{len(tgt)} working files, {len(old)} archive files quarantined, {n} published')
+    # e: the applied screen beside the archive masters
+    if smeta:
+        _publish_screen(cell, arch, run, qroot, smeta)
+    rec(cell, 'installed-and-audited', gen, '', '', '', f'{len(tgt)} working files, {len(old)} archive files quarantined, {n} published'
+                                                        + ('; screen published' if smeta else ''))
     return len(tgt), len(old), n
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('cell'); ap.add_argument('--gen', required=True); ap.add_argument('--kind', required=True, choices=('mdewarp', 'rebuild'))
+    ap.add_argument('cell', nargs='?'); ap.add_argument('--gen'); ap.add_argument('--kind', choices=('mdewarp', 'rebuild'))
     ap.add_argument('--rebuild-root', default=None); ap.add_argument('--root', default=ROOT)
+    ap.add_argument('--screen-table-unapplied', default=None, metavar='TABLE')
     a = ap.parse_args()
+    if a.screen_table_unapplied:
+        n1, n0 = screen_table_unapplied(a.screen_table_unapplied)
+        print(f'SCREEN-TABLE {n1} applied rows kept, {n0} applied=0 rows written', flush=True); return
+    if not (a.cell and a.gen and a.kind):
+        ap.error('cell, --gen and --kind are required for an install')
     try:
         r = install(a.cell, a.gen.rstrip('/'), a.kind, a.rebuild_root, a.root)
         print(f'INSTALL-OK {a.cell}: {r[0]} working files, {r[1]} archive files quarantined, {r[2]} published', flush=True)
