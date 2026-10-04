@@ -42,6 +42,7 @@ INSTALL (each step verified before the next):
     mdewarp_screens.csv there (S-2 answer to the snapshot chat, CROSS_CHAT_COORDINATION.md 2026-10-04); a screen it
     replaces is quarantined first.
 CLI: python -m exopipe.phase3.phase3_install <cell> --gen GEN --kind mdewarp|rebuild [--rebuild-root RR] [--root R]
+     python -m exopipe.phase3.phase3_install <cell> --epochs-only   (repair: an installed cell's missing archive epochs)
      python -m exopipe.phase3.phase3_install --screen-table-unapplied TABLE   (after all installs: one applied=0 row per
      measured cell that was not applied, with its status, so a cell without a screen is known not to have been applied)"""
 import argparse, csv, fcntl, glob, hashlib, json, os, re, shutil, sys, time
@@ -316,25 +317,7 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
     t0 = time.time()
     n = C._archive_publish_cell(fd, sd, lst, scope)
     # d: audit
-    now = [p for p in sorted(glob.glob(f'{mdir}/*')) if os.path.isfile(p)]
-    now += [p for p in sorted(glob.glob(f'{arch}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits')) if '_msub' not in os.path.basename(p)]
-    if len(now) != n:   # every old file was quarantined first, so what is present is what the publish wrote
-        raise RuntimeError(f'{cell}: archive audit - {len(now)} files present, {n} published - FAILED')
-    by_name = {}
-    for p in glob.glob(f'{fd}/*.fits') + glob.glob(f'{fd}/loo/*.fits') + glob.glob(f'{sd}/*_epoch_*.fits'):
-        nm = None
-        try:
-            from astropy.io import fits as _f
-            nm = _f.getheader(p).get('PRODNAME')
-        except Exception:
-            pass
-        if nm:
-            by_name[nm if nm.endswith('.fits') else nm + '.fits'] = p
-    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv'):
-        by_name[f] = f'{fd}/{f}'
-    bad = [p for p in now if os.path.basename(p) not in by_name or md5(p) != md5(by_name[os.path.basename(p)])]
-    if bad:
-        raise RuntimeError(f'{cell}: archive audit - {len(bad)} files whose md5 differs from the working source, e.g. {bad[:2]} - FAILED')
+    _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n)
     # e: the applied screen beside the archive masters
     if smeta:
         _publish_screen(cell, arch, run, qroot, smeta)
@@ -343,12 +326,99 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT):
     return len(tgt), len(old), n
 
 
+def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
+    """Step d. (1) the cell's archive deep files (search frames excluded) are exactly the files the publish wrote (every old one
+    was quarantined first), each with the md5 of its working source; (2) EPOCH COMPLETENESS (2026-10-04, after the first install
+    published no epochs and (1) could not see it): every night of the generation's weights.csv that the night-image gate did not
+    refuse and that has a residual has its epoch image in the archive, for each Stokes with a residual."""
+    from astropy.io import fits as _f
+    from exopipe.phase3 import coadd_full_pipeline as C, night_image_gate as NG
+    now = [p for p in sorted(glob.glob(f'{mdir}/*')) if os.path.isfile(p)]
+    now += [p for p in sorted(glob.glob(f'{arch}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits')) if '_msub' not in os.path.basename(p)]
+    if len(now) != n:
+        raise RuntimeError(f'{cell}: archive audit - {len(now)} files present, {n} published - FAILED')
+    by_name = {}
+    for p in glob.glob(f'{fd}/*.fits') + glob.glob(f'{fd}/loo/*.fits') + glob.glob(f'{sd}/*_epoch_*.fits'):
+        try:
+            nm = _f.getheader(p).get('PRODNAME')
+        except Exception:
+            nm = None
+        if nm:
+            by_name[nm if nm.endswith('.fits') else nm + '.fits'] = p
+    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv'):
+        by_name[f] = f'{fd}/{f}'
+    bad = [p for p in now if os.path.basename(p) not in by_name or md5(p) != md5(by_name[os.path.basename(p)])]
+    if bad:
+        raise RuntimeError(f'{cell}: archive audit - {len(bad)} files whose md5 differs from the working source, e.g. {bad[:2]} - FAILED')
+    wdates = {r['date'] for r in csv.DictReader(open(f'{fd}/weights.csv'))}; gfail = NG.failed_dates(fd)
+    miss = []
+    for p in sorted(glob.glob(f'{sd}/*_sub_{scope}.fits')):
+        e_ = C._EPOCH_RE.match(os.path.basename(p))
+        if not e_ or e_['date'] not in wdates or e_['date'] in gfail:
+            continue
+        ep = [q for q in glob.glob(f"{arch}/{lst}/{e_['date']}/{run}/{scope}/{e_['st']}/deep/*.fits")
+              if not any(t in os.path.basename(q) for t in ('_msub', '_pbcorr', '_loo'))]
+        if not ep:
+            miss.append(f"{e_['date']} {e_['st']}")
+    if miss:
+        raise RuntimeError(f'{cell}: archive audit - {len(miss)} searched nights without an archived epoch image, e.g. {miss[:4]} - FAILED')
+
+
+def epochs_only(cell, root=ROOT):
+    """REPAIR of an installed cell whose archive lacks its epoch images (Gregg 2026-10-04, "1. Approved": the first install,
+    01h 18MHz, quarantined its archived epochs and published none). As a1 + G4 of the install, on the WORKING tree: derive each
+    night's epoch (residual + master) where none exists, refuse unless every publishable epoch passes _epoch_content_check
+    (derived files removed again), then publish the cell (_archive_publish_cell rewrites its products byte-identically and adds
+    the epochs) and run the step-d audit including epoch completeness."""
+    lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'
+    os.environ.setdefault('P3_COADD_ROOT', root)
+    from exopipe.phase3 import coadd_full_pipeline as C, night_image_gate as NG
+    run = os.environ.get('P3_ARCHIVE_RUN')
+    if not run:
+        raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
+    fd, sd = f'{cdir}/coadd_final', f'{cdir}/subtracted'
+    wdates = {r['date'] for r in csv.DictReader(open(f'{fd}/weights.csv'))}; gfail = NG.failed_dates(fd)
+    new, bad = [], []
+    for p in sorted(glob.glob(f'{sd}/*_sub_{scope}.fits')):
+        e_ = C._EPOCH_RE.match(os.path.basename(p))
+        if not e_ or e_['kind'] != 'sub':
+            continue
+        ep = f"{sd}/{e_['date']}_{e_['st']}_epoch_{scope}.fits"
+        mp = f'{fd}/' + ('I_deep_Taper_R075' if e_['st'] == 'I' else 'V_deep_Taper_R0') + f'_{scope}.fits'
+        if not os.path.exists(ep):
+            _derive_epoch(p, mp, ep); new.append(ep)
+        if e_['date'] in wdates and e_['date'] not in gfail:
+            ok_, why = C._epoch_content_check(ep, mp, p, e_['st'])
+            if not ok_:
+                bad.append(f'{os.path.basename(ep)}: {why}')
+    if bad:
+        for ep in new:
+            os.remove(ep)
+        raise RuntimeError(f'{cell}: {len(bad)} epochs fail the epoch content check, e.g. {bad[:2]} - REFUSING (derived epochs removed)')
+    for ep in new:
+        rec(cell, 'epoch-derived', ep, '', md5(ep), os.path.getsize(ep), 'residual + master (epochs-only repair)')
+    arch = C._archive_root(); mdir = f'{arch}/Coadd/{run}/{lst}/{scope}'
+    n = C._archive_publish_cell(fd, sd, lst, scope)
+    _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n)
+    rec(cell, 'epochs-published-and-audited', '', '', '', '', f'{len(new)} epochs derived; {n} products published and audited')
+    return len(new), n
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('cell', nargs='?'); ap.add_argument('--gen'); ap.add_argument('--kind', choices=('mdewarp', 'rebuild'))
     ap.add_argument('--rebuild-root', default=None); ap.add_argument('--root', default=ROOT)
     ap.add_argument('--screen-table-unapplied', default=None, metavar='TABLE')
+    ap.add_argument('--epochs-only', action='store_true', help='repair an installed cell whose archive lacks its epoch images')
     a = ap.parse_args()
+    if a.epochs_only:
+        try:
+            r = epochs_only(a.cell, a.root)
+            print(f'EPOCHS-OK {a.cell}: {r[0]} epochs derived, {r[1]} products published and audited', flush=True)
+        except Exception as e:
+            rec(a.cell, 'EPOCHS-FAILED', '', '', '', '', str(e)[:400])
+            print(f'EPOCHS-FAILED {a.cell}: {e}', flush=True); sys.exit(1)
+        return
     if a.screen_table_unapplied:
         n1, n0 = screen_table_unapplied(a.screen_table_unapplied)
         print(f'SCREEN-TABLE {n1} applied rows kept, {n0} applied=0 rows written', flush=True); return
