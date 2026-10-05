@@ -48,8 +48,11 @@ CLI: python -m exopipe.phase3.phase3_install <cell> --gen GEN --kind mdewarp|reb
 import argparse, csv, fcntl, glob, hashlib, json, os, re, shutil, sys, time
 
 ROOT = '/data07/gh/phase3/coadd_sb'
-WQ = '/lustre/gh/main/phase3/working_quarantine_20261004'
-QROOT_NAME = 'Run_INSTALL_QUARANTINE_20261004'
+# ONE QUARANTINE PAIR PER INSTALL ROUND (2026-10-05): a second install of an installed cell (the cubic re-apply) would find
+# the first round's destinations and stop; the round names both (working tree and archive), default the first round
+INSTALL_ROUND = os.environ.get('P3_INSTALL_ROUND', '20261004')
+WQ = f'/lustre/gh/main/phase3/working_quarantine_{INSTALL_ROUND}'
+QROOT_NAME = f'Run_INSTALL_QUARANTINE_{INSTALL_ROUND}'
 RECORD = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261004/install_record.csv'
 CELL_FILES = ('weights.csv', 'night_image_gate.csv')                                 # in coadd_final/
 CELL_TOP = ('residuals_provisional.csv', 'outliers.csv', 'residuals.csv')            # in the cell directory
@@ -198,10 +201,28 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
     # G-1: the snapshot / sub-LST tiers no longer read the archive masters live
     if not os.path.exists(FREEZE_MARKER):
         raise RuntimeError(f'{cell}: {FREEZE_MARKER} absent - the snapshot / sub-LST freeze is not confirmed; REFUSING')
+    # G-1b (2026-10-05): the freeze is VERIFIED, not only recorded - no snapshot_masters link may resolve into the deep archive
+    # masters this install moves (the frozen copy is the snapshot_masters_gen4 tree)
+    _live = [l for l in glob.glob('/lustre/pipeline/exopipe/phase3/snapshot_masters/**/*.fits', recursive=True)
+             if os.path.realpath(l).startswith(f'{C._archive_root()}/Coadd/')]
+    if _live:
+        raise RuntimeError(f'{cell}: {len(_live)} snapshot_masters links resolve into the deep archive masters (e.g. {_live[0]}) - '
+                           f'an install would move what the snapshot tier reads; REFUSING')
     # G1
     okf = f'{os.path.dirname(gen.rstrip("/"))}/INSTALL_CONTENT_OK'
     if not (os.path.exists(okf) and gen.rstrip('/') in open(okf).read()):
         raise RuntimeError(f'{cell}: no content-test record {okf} naming {gen} - REFUSING')
+    if kind == 'mdewarp':
+        # THE CUBIC RE-APPLY RULING (Gregg 2026-10-05, "Okay approved"): a dewarp generation resampled any other way is REFUSED
+        # (the 2026-10-04 bilinear generations lowered compact-source peaks 1-5 per cent): its content record (D6, the peak test)
+        # names the method and every product carries it
+        from astropy.io import fits as _f
+        from exopipe.phase3 import phase3_master_dewarp as _MD
+        if f'files resampled {_MD.RESAMPLE_METHOD}' not in open(okf).read():
+            raise RuntimeError(f'{cell}: {okf} is not a {_MD.RESAMPLE_METHOD} content record (D1-D6) - REFUSING')
+        _bm = [r for r in _fits_under(gen) if _f.getheader(f'{gen}/{r}').get('MDWINTP') != _MD.RESAMPLE_METHOD]
+        if _bm:
+            raise RuntimeError(f'{cell}: {len(_bm)} generation products lack MDWINTP={_MD.RESAMPLE_METHOD}, e.g. {_bm[0]} - REFUSING')
     if kind == 'rebuild' or rebuild_root:
         if not rebuild_root or not os.path.exists(f'{rebuild_root}/REBUILD_CONTENT_OK'):
             raise RuntimeError(f'{cell}: a rebuilt cell needs --rebuild-root with REBUILD_CONTENT_OK - REFUSING')

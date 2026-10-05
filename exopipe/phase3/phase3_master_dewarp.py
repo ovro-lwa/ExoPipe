@@ -18,8 +18,9 @@ night's images:
   wideband each Red/Green/Blue/Full master as one more cascade step from the accepted subband master whose centre
            frequency (phase2_config.SUBBAND_FREQ_HZ) is nearest the wideband master's header frequency;
   screen   iterative 3-sigma outlier clip of the anchors, then a multiquadric RBF screen per axis (smoothing 1.5, shape
-           parameter = mean anchor nearest-neighbour distance: phase2_config WARP_RBF_*), applied by bilinear
-           resampling (cascade_dewarp.apply_warp; NaN outside the image). Per-LST extraction settings (elevation
+           parameter = mean anchor nearest-neighbour distance: phase2_config WARP_RBF_*), applied by CUBIC-SPLINE
+           resampling (resample(): Gregg 2026-10-05; bilinear lowered compact-source peaks 1-5 per cent; the blanked area
+           is cascade_dewarp.apply_warp's, NaN outside the image). Per-LST extraction settings (elevation
            floors, island cap) are set exactly as run_cascade_dewarping sets them.
 RUNS IN THE BASE ENVIRONMENT (PyBDSF + scipy; no GPU):
     python -m exopipe.phase3.phase3_master_dewarp <lst> [<lst> ...] [--root R] [--input-root I] [--apply [--apply-scopes 18MHz,23MHz]]
@@ -36,7 +37,7 @@ screen's error at anchors it was not fitted to), screen amplitude p50/p95 over t
 --apply writes every FITS product of the cell's generation (coadd_final incl. loo/, PB maps, and subtracted/ unless
 --no-residuals) resampled with the one screen, and the pbcorr siblings RECOMPUTED from the resampled plain and map (each
 must pass pb_apply.sibling_check; 2026-10-04), into <root>/<cell>/gen_mdewarp_rbf/ (new files, the
-'mdewarp' token before the scope; MDWARP/MDWMETH/MDWREF/MDWNANC/MDWCV/MDWMED0/MDWMED1/MDWP50/MDWP95/MDWDATE cards +
+'mdewarp' token before the scope; MDWARP/MDWMETH/MDWINTP/MDWREF/MDWNANC/MDWCV/MDWMED0/MDWMED1/MDWP50/MDWP95/MDWDATE cards +
 HISTORY); coadd_final is never touched (installation is a separate, gated step). --input-root I reads a cell's
 generation from I/<lst>_<scope>/ where that exists (reconstructed un-warped inputs of previously flow-dewarped cells).
 One row per cell attempt in <root>/mdewarp_rbf_table.csv; screens (FITS) and Phase-2 diagnostics in MEAS_ROOT/<lst>/.
@@ -94,6 +95,26 @@ def _fix2d(hdr):
 def _out_name(path, scope):
     b = os.path.basename(path); suf = f'_{scope}.fits'
     return b[:-len(suf)] + f'_mdewarp{suf}' if b.endswith(suf) else b.replace('.fits', '_mdewarp.fits')
+
+
+RESAMPLE_METHOD = 'cubic-spline'
+
+
+def resample(d, sx, sy):
+    """THE master dewarp's resampling (Gregg 2026-10-05, "Okay approved" - the cubic re-apply): a cubic spline (scipy
+    map_coordinates order 3; NaN set to 0 for the spline) sampled where the screen points, as cascade_dewarp.apply_warp
+    samples (output[y, x] = input[y + sy, x + sx]). The blanked (NaN) area is EXACTLY apply_warp's, so masks, PB floors
+    and the recomputed pbcorr siblings are unchanged. Bilinear resampling at the native pixel scale lowered compact-source
+    peak heights by 1-5 per cent with the integrated flux unchanged (FINDING-RBF-DEWARP-BILINEAR-PEAK-LOSS, 2026-10-05);
+    the spline keeps them within 0.6 per cent. Returns None on a shape mismatch, as apply_warp."""
+    from scipy.ndimage import map_coordinates
+    ny, nx = d.shape
+    if (ny, nx) != sx.shape:
+        return None
+    gy, gx = np.mgrid[0:ny, 0:nx]
+    out = map_coordinates(np.nan_to_num(d, nan=0.0), [gy + sy, gx + sx], order=3, mode='constant', cval=0.0)
+    out[~np.isfinite(CD.apply_warp(d, sx, sy))] = np.nan
+    return out
 
 
 MEAS_ROOT = os.environ.get('MDEWARP_MEAS_ROOT') or '/fast/gh/main/phase3/mdewarp_rbf'   # screens + Phase-2 diagnostics per LST (analysis output, not a product); env for a re-measurement beside an earlier one (2026-10-04)
@@ -190,7 +211,7 @@ def _measure(lst, scope, groot, ref, vlssr, diag):
     row.update(anchor_off_med_as=f'{np.median(off):.1f}', fit_resid_med_as=f'{np.median(fit):.1f}',
                cv_resid_med_as=f'{np.nanmedian(cv):.1f}', cv_resid_p90_as=f'{np.nanpercentile(cv, 90):.1f}',
                warp_p50_as=f'{np.percentile(ac, 50):.1f}', warp_p95_as=f'{np.percentile(ac, 95):.1f}')
-    d1 = CD.apply_warp(d0, sx, sy)
+    d1 = resample(d0, sx, sy)
     m1, n1, p1 = vlssr_offsets(d1, hdr); row.update(med_after=f'{m1:.3f}', n_after=n1, p90_after=f'{p1:.3f}')
     CD.save_diagnostics(anchors, sx, sy, wcs, shape, scope, diag, row['ref'], LOG)
     CD._save_warp_screen(sx, sy, wcs, scope, diag, 'rbf', cfg.WARP_RBF_KERNEL, row['n_anchors'], LOG)
@@ -210,7 +231,7 @@ def _measure(lst, scope, groot, ref, vlssr, diag):
     # fails the reference does NOT advance (Phase 2 would fall back to the pre-dewarp extraction)
     tmp = f'{diag}/{scope}_pbcorr_mdewarp_tmp.fits'
     with fits.open(pbc) as h:   # original header and array shape, as Phase 2 writes *_dewarped.fits (PyBDSF reads the frequency axis)
-        fits.writeto(tmp, CD.apply_warp(np.squeeze(h[0].data).astype(np.float32), sx, sy).reshape(h[0].data.shape),
+        fits.writeto(tmp, resample(np.squeeze(h[0].data).astype(np.float32), sx, sy).reshape(h[0].data.shape),
                      h[0].header, overwrite=True)
     cat = CD.extract_sources(tmp, LOG); os.remove(tmp)
     if cat.empty:
@@ -239,6 +260,7 @@ def _apply(lst, scope, groot, root, screen, row):
         raise RuntimeError(f'{len(bad)} products differ from the screen shape or already carry MDWARP, e.g. {bad[:3]}')
     cards = dict(MDWARP=(True, 'final master dewarp applied (Gregg 2026-08-28)'),
                  MDWMETH=('rbf-multiquadric', 'Phase-2 RBF dewarp (Gregg 2026-10-01)'),
+                 MDWINTP=(RESAMPLE_METHOD, 'resampling: spline order 3, NaN area of order 1 (2026-10-05)'),
                  MDWREF=(row['ref'][:60], 'dewarp reference'),
                  MDWNANC=(int(row['n_anchors']), 'RBF anchors after outlier rejection'),
                  MDWCV=(float(row['cv_resid_med_as']), 'median 5-fold held-out anchor residual, arcsec'),
@@ -262,11 +284,11 @@ def _apply(lst, scope, groot, root, screen, row):
         rel = os.path.relpath(p, groot); dst = f'{out}/{os.path.dirname(rel)}'; os.makedirs(dst, exist_ok=True)
         with fits.open(p) as h:   # header and array shape kept (frequency/Stokes axes stay for downstream PyBDSF)
             shp = h[0].data.shape; d = np.squeeze(h[0].data).astype(np.float32); hh = h[0].header.copy()
-        w = CD.apply_warp(d, sx, sy).astype(np.float32).reshape(shp)
+        w = resample(d, sx, sy).astype(np.float32).reshape(shp)
         for k, v in cards.items():
             hh[k] = v
         hh['HISTORY'] = (f'mdewarp: resampled with the RBF screen measured on I_deep_Taper_R075_{scope} vs {row["ref"]} '
-                         f'(stage B of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828; method ruled 2026-10-01)')
+                         f'(stage B of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828; method ruled 2026-10-01; cubic-spline resampling 2026-10-05)')
         fits.writeto(f'{dst}/{_out_name(p, scope)}', w, hh, overwrite=False); nw += 1
         if os.path.dirname(p) == f'{groot}/coadd_final':
             warped[os.path.basename(p)] = (f'{dst}/{_out_name(p, scope)}', np.squeeze(w).astype(np.float64))
