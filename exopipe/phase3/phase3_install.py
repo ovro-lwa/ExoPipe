@@ -258,10 +258,13 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
             raise RuntimeError(f'{cell}: two generation files map to {c_} - REFUSING')
         tgt[r] = c_
     orphans = sorted(set(cur) - set(tgt.values()))
-    # G3
+    # G3 + FLOOR (2026-10-05, Gregg 'Approved 1-3'; INCIDENT-DATA07-FULL-HALF-INSTALLED-CELLS-ROUND-20261005: the working disk is
+    # shared and went to 0 bytes mid-install, where even a rename fails): staging must leave P3_INSTALL_FREE_FLOOR_GB free
     need = sum(os.path.getsize(f'{gen}/{r}') for r in new) * 1.05
-    if shutil.disk_usage(cdir).free < need:
-        raise RuntimeError(f'{cell}: {need / 1e9:.1f} GB needed on the working tree - REFUSING')
+    floor = float(os.environ.get('P3_INSTALL_FREE_FLOOR_GB', '0')) * 1e9; free = shutil.disk_usage(cdir).free
+    if free < need + floor:
+        raise RuntimeError(f'{cell}: {need / 1e9:.1f} GB needed on the working tree + a {floor / 1e9:.0f} GB floor, {free / 1e9:.1f} GB '
+                           f'free - REFUSING (cell untouched)')
     # G0 is applied to the STAGED new generation below (2026-10-04: checking the cell as it stands refused rebuilt cells whose
     # CURRENT cleaned-V masters list since-excluded nights - the breach the install replaces - while their new generation is clean)
     # a0: STAGE every new file on the working filesystem and verify it BEFORE anything is moved, so the replacement below is
