@@ -58,9 +58,10 @@ HELDOUT_MIN_GAIN_AS = 5.0   # acceptance (b'), Gregg 2026-10-01: held-out anchor
 _VL = None
 
 
-def vlssr_offsets(data, hdr):
+def vlssr_offsets(data, hdr, per_source=False):
     """Median VLSSr separation (arcmin) of the 50 brightest central peaks, N matches (< 60 arcmin), p90.
-    Port of coadd_full_pipeline._reference_astrom_ok's measurement (same peak finder, same boxes)."""
+    Port of coadd_full_pipeline._reference_astrom_ok's measurement (same peak finder, same boxes). per_source=True
+    (2026-10-05, content test D5 of a re-apply) also returns {peak pixel (y, x): separation} as a fourth value."""
     global _VL
     from astropy.coordinates import SkyCoord
     import astropy.units as u
@@ -70,8 +71,8 @@ def vlssr_offsets(data, hdr):
     a = np.nan_to_num(np.asarray(data, dtype=float)); w = WCS(hdr).celestial
     n = a.shape[0]; q = n // 8; cen = a[q:-q, q:-q]
     mfl = maximum_filter(cen, size=25); py, px = np.where((cen == mfl) & (cen > 0))
-    if not len(py): return float('nan'), 0, float('nan')
-    fx = cen[py, px]; seps = []
+    if not len(py): return (float('nan'), 0, float('nan')) + (({},) if per_source else ())
+    fx = cen[py, px]; seps = []; per = {}
     for i in np.argsort(fx)[::-1][:50]:
         y, x = int(py[i]) + q, int(px[i]) + q
         box = a[y - 4:y + 5, x - 4:x + 5]
@@ -79,9 +80,9 @@ def vlssr_offsets(data, hdr):
         cy, cx = center_of_mass(np.maximum(box, 0))
         sky = w.pixel_to_world(x - 4 + cx, y - 4 + cy)
         d = float(sky.separation(_VL).arcmin.min())
-        if d < 60: seps.append(d)
-    if not seps: return float('nan'), 0, float('nan')
-    return float(np.median(seps)), len(seps), float(np.percentile(seps, 90))
+        if d < 60: seps.append(d); per[(y, x)] = d
+    if not seps: return (float('nan'), 0, float('nan')) + (({},) if per_source else ())
+    return (float(np.median(seps)), len(seps), float(np.percentile(seps, 90))) + ((per,) if per_source else ())
 
 
 def _fix2d(hdr):

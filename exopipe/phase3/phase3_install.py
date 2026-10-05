@@ -191,13 +191,10 @@ def screen_table_unapplied(table):
     return len(have), n
 
 
-def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
-    lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'
-    os.environ.setdefault('P3_COADD_ROOT', root)
+def _gates(cell, gen, kind, rebuild_root=None):
+    """G-1, G-1b, G1 (+ the cubic ruling), the rebuild record and G1b - nothing has moved yet. Shared by install() and
+    resume() (2026-10-05). Returns the applied-screen record (kind 'mdewarp') or None."""
     from exopipe.phase3 import coadd_full_pipeline as C
-    run = os.environ.get('P3_ARCHIVE_RUN')
-    if not run:
-        raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
     # G-1: the snapshot / sub-LST tiers no longer read the archive masters live
     if not os.path.exists(FREEZE_MARKER):
         raise RuntimeError(f'{cell}: {FREEZE_MARKER} absent - the snapshot / sub-LST freeze is not confirmed; REFUSING')
@@ -233,6 +230,17 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
         smeta = json.load(open(sj)) if os.path.exists(sj) else None
         if not smeta or smeta.get('gen') != gen.rstrip('/') or not os.path.exists(smeta['screen']) or md5(smeta['screen']) != smeta['screen_md5']:
             raise RuntimeError(f'{cell}: no applied-screen record {sj} naming {gen} with an unchanged screen - REFUSING')
+    return smeta
+
+
+def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
+    lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'
+    os.environ.setdefault('P3_COADD_ROOT', root)
+    from exopipe.phase3 import coadd_full_pipeline as C
+    run = os.environ.get('P3_ARCHIVE_RUN')
+    if not run:
+        raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
+    smeta = _gates(cell, gen, kind, rebuild_root)
     # G2
     new = _fits_under(gen); cur = _fits_under(cdir)
     # --omit-vclean (2026-10-04; Gregg deferred the cleaned-V repair, FINDING-VCLEAN-MASTERS-LIST-EXCLUDED-NIGHTS-63-CELLS, while the
@@ -335,36 +343,44 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
                 shutil.rmtree(f'{cdir}/{d}')
             if os.path.isdir(f'{rebuild_root}/{d}'):
                 shutil.copytree(f'{rebuild_root}/{d}', f'{cdir}/{d}'); rec(cell, 'cell-dir', f'{rebuild_root}/{d}', f'{cdir}/{d}')
-    for c_, (d0, m0, s_) in sorted(staged.items()):
-        d = f'{cdir}/{c_}'; os.makedirs(os.path.dirname(d), exist_ok=True)
-        os.replace(d0, d); rec(cell, 'installed', s_, d, m0, os.path.getsize(d))
-    shutil.rmtree(stg)
-    if sorted(_fits_under(cdir)) != sorted(tgt.values()):
-        raise RuntimeError(f'{cell}: working tree after install != the generation file set - STOPPED')
-    # the epoch-gate record of the installed generation (made against the staged master = the installed one)
+    return _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, smeta)
+
+
+def _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, smeta, old=None):
+    """Everything after the working-quarantine moves: install step a's renames, the set check, the epoch-gate record, b,
+    c, d, e. Shared by install() and resume() (2026-10-05). old (resume state R2) = the archive files this attempt already
+    quarantined: renames, record, b and the archive quarantine are done; the publish, audit and screen run."""
+    from exopipe.phase3 import coadd_full_pipeline as C, epoch_gate as EG
     fd, sd = f'{cdir}/coadd_final', f'{cdir}/subtracted'
-    if os.path.exists(f'{fd}/{EG.GATE_FILE}'):
-        _move_to_wq(cell, f'{fd}/{EG.GATE_FILE}', f'coadd_final/{EG.GATE_FILE}')
-    EG.write_record(fd, erows); rec(cell, 'epoch-gate-record', f'{fd}/{EG.GATE_FILE}', '', md5(f'{fd}/{EG.GATE_FILE}'), '',
-                                    f'{len(erows)} nights, FAIL {sorted(efail)}')
-    # b: stamp + exclusion conformance
-    C._stamp_all_masters(fd, lst, scope)
-    C._refuse_excluded_constituents(fd, lst, scope)
-    # c: archive quarantine, then publish
     arch = C._archive_root(); qroot = f'{arch}/{QROOT_NAME}'
     mdir = f'{arch}/Coadd/{run}/{lst}/{scope}'
-    old = [p for p in sorted(glob.glob(f'{mdir}/*')) if os.path.isfile(p)]
-    old += [p for p in sorted(glob.glob(f'{arch}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits')) if '_msub' not in os.path.basename(p)]
-    for p in old:
-        q = f'{qroot}/{os.path.relpath(p, arch)}'
-        if os.path.exists(q):
-            raise RuntimeError(f'{cell}: archive quarantine destination exists: {q} - STOPPED')
-        os.makedirs(os.path.dirname(q), exist_ok=True); m = md5(p)
-        s0 = os.stat(p); os.rename(p, q); s1 = os.stat(q)
-        if (s1.st_ino, s1.st_size) != (s0.st_ino, s0.st_size):
-            os.rename(q, p); raise RuntimeError(f'{cell}: archive quarantine move of {p} not verified; moved back - STOPPED')
-        rec(cell, 'archive-quarantine', p, q, m, s0.st_size)
-    t0 = time.time()
+    if old is None:
+        for c_, (d0, m0, s_) in sorted(staged.items()):
+            d = f'{cdir}/{c_}'; os.makedirs(os.path.dirname(d), exist_ok=True)
+            os.replace(d0, d); rec(cell, 'installed', s_, d, m0, os.path.getsize(d))
+        shutil.rmtree(stg)
+        if sorted(_fits_under(cdir)) != sorted(tgt.values()):
+            raise RuntimeError(f'{cell}: working tree after install != the generation file set - STOPPED')
+        # the epoch-gate record of the installed generation (made against the staged master = the installed one)
+        if os.path.exists(f'{fd}/{EG.GATE_FILE}'):
+            _move_to_wq(cell, f'{fd}/{EG.GATE_FILE}', f'coadd_final/{EG.GATE_FILE}')
+        EG.write_record(fd, erows); rec(cell, 'epoch-gate-record', f'{fd}/{EG.GATE_FILE}', '', md5(f'{fd}/{EG.GATE_FILE}'), '',
+                                        f'{len(erows)} nights, FAIL {sorted(efail)}')
+        # b: stamp + exclusion conformance
+        C._stamp_all_masters(fd, lst, scope)
+        C._refuse_excluded_constituents(fd, lst, scope)
+        # c: archive quarantine, then publish
+        old = [p for p in sorted(glob.glob(f'{mdir}/*')) if os.path.isfile(p)]
+        old += [p for p in sorted(glob.glob(f'{arch}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits')) if '_msub' not in os.path.basename(p)]
+        for p in old:
+            q = f'{qroot}/{os.path.relpath(p, arch)}'
+            if os.path.exists(q):
+                raise RuntimeError(f'{cell}: archive quarantine destination exists: {q} - STOPPED')
+            os.makedirs(os.path.dirname(q), exist_ok=True); m = md5(p)
+            s0 = os.stat(p); os.rename(p, q); s1 = os.stat(q)
+            if (s1.st_ino, s1.st_size) != (s0.st_ino, s0.st_size):
+                os.rename(q, p); raise RuntimeError(f'{cell}: archive quarantine move of {p} not verified; moved back - STOPPED')
+            rec(cell, 'archive-quarantine', p, q, m, s0.st_size)
     n = C._archive_publish_cell(fd, sd, lst, scope)
     # d: audit
     _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n)
@@ -374,6 +390,99 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
     rec(cell, 'installed-and-audited', gen, '', '', '', f'{len(tgt)} working files, {len(old)} archive files quarantined, {n} published'
                                                         + ('; screen published' if smeta else ''))
     return len(tgt), len(old), n
+
+
+def resume(cell, gen, kind, root=ROOT, omit_vclean=False, execute=False):
+    """RESUME AN INSTALL INTERRUPTED MID-WAY (2026-10-05, INCIDENT-DATA07-FULL-HALF-INSTALLED-CELLS-ROUND-20261005: /data07 ran out
+    of space during round 20261005). The gates of install() run again; then the state of the cell's latest attempt with this
+    generation (its record rows from 'gates-passed' on, and the files on disk) must be one of two, else REFUSED:
+      R1 renames not started: the attempt moved the cell's working files to the working quarantine and installed none; the
+         working tree holds no coadd_final/subtracted FITS; .install_staging holds every generation file under its canonical
+         name (md5 = its generation source) plus epochs derived at install (each passes the epoch content check again); the
+         epoch gate and G0 are evaluated again on the staging -> _finish: renames, record, b, c, d, e.
+      R2 archive publish interrupted: the attempt has 'installed' and 'archive-quarantine' rows, no 'installed-and-audited', no
+         staging; the working tree is exactly the installed set and every epoch reads with the master's shape -> _finish from
+         the publish (atomic rewrites of what it wrote before), audit, screen.
+    Not for rebuilt cells (their cell files move before the renames). DRY RUN unless execute=True: prints the state and the
+    checks, moves nothing."""
+    import collections
+    import numpy as _np
+    from astropy.io import fits as _f
+    lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'; stg = f'{cdir}/.install_staging'; gen = gen.rstrip('/')
+    os.environ.setdefault('P3_COADD_ROOT', root)
+    from exopipe.phase3 import coadd_full_pipeline as C, epoch_gate as EG
+    run = os.environ.get('P3_ARCHIVE_RUN')
+    if not run:
+        raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
+    smeta = _gates(cell, gen, kind)
+    allr = [r for r in csv.DictReader(open(RECORD)) if r['cell'] == cell]
+    gi = max((i for i, r in enumerate(allr) if r['step'] == 'gates-passed' and r['path'].rstrip('/') == gen), default=None)
+    if gi is None:
+        raise RuntimeError(f'{cell}: no gates-passed record for {gen} - nothing to resume; REFUSING')
+    att = allr[gi:]; steps = collections.Counter(r['step'] for r in att)
+    if steps['installed-and-audited'] or steps['cell-file'] or steps['cell-dir']:
+        raise RuntimeError(f'{cell}: the attempt finished, or is a rebuilt cell ({dict(steps)}) - REFUSING')
+    cur = _fits_under(cdir)
+    new = _fits_under(gen)
+    if omit_vclean:
+        new = [r for r in new if 'V_deep_Taper_R0_clean' not in os.path.basename(r)]
+    tgt = {r: os.path.join(os.path.dirname(r), canon(os.path.basename(r))) for r in new}
+    if steps['working-quarantine'] and not steps['installed'] and not steps['archive-quarantine'] and not cur and os.path.isdir(stg):
+        have = set(_fits_under(stg))
+        miss = sorted(set(tgt.values()) - have)
+        if miss:
+            raise RuntimeError(f'{cell}: R1 staging lacks {len(miss)} generation files, e.g. {miss[:2]} - REFUSING')
+        staged = {}
+        for r, c_ in sorted(tgt.items()):
+            m0 = md5(f'{gen}/{r}')
+            if md5(f'{stg}/{c_}') != m0:
+                raise RuntimeError(f'{cell}: staged {c_} differs from its generation source (md5) - REFUSING')
+            staged[c_] = (f'{stg}/{c_}', m0, f'{gen}/{r}')
+        extra = sorted(have - set(tgt.values()))
+        odd = [x for x in extra if not (C._EPOCH_RE.match(os.path.basename(x)) and C._EPOCH_RE.match(os.path.basename(x))['kind'] == 'epoch')]
+        if odd:
+            raise RuntimeError(f'{cell}: R1 staging holds {len(odd)} files that are neither generation files nor derived epochs, e.g. {odd[:2]} - REFUSING')
+        erows = EG.evaluate_cell(f'{stg}/coadd_final', f'{stg}/subtracted', scope)
+        efail = {d for d, r_ in erows.items() if r_['verdict'] == 'FAIL'}
+        for x in extra:
+            e_ = C._EPOCH_RE.match(os.path.basename(x))
+            mp = f"{stg}/coadd_final/" + ('I_deep_Taper_R075' if e_['st'] == 'I' else 'V_deep_Taper_R0') + f'_{scope}.fits'
+            ok_, why = C._epoch_content_check(f'{stg}/{x}', mp, f'{stg}/{x}'.replace('_epoch_', '_sub_'), e_['st'])
+            if not ok_:
+                raise RuntimeError(f'{cell}: staged epoch {x} fails the epoch content check ({why}) - REFUSING')
+            staged[x] = (f'{stg}/{x}', md5(f'{stg}/{x}'), 'derived at install (resumed 2026-10-05)'); tgt[f'derived:{x}'] = x
+        C._refuse_excluded_constituents(f'{stg}/coadd_final', lst, scope)
+        print(f'{cell} R1 (renames not started): {len(staged)} staged files verified, {len(extra)} of them derived epochs (content check '
+              f'passed); working tree empty; {steps["working-quarantine"]} files in the working quarantine this attempt; epoch gate FAIL '
+              f'nights {sorted(efail)}', flush=True)
+        if not execute:
+            print(f'{cell} DRY RUN - would rename {len(staged)} files into the working tree, then the epoch-gate record, stamp, '
+                  f'archive quarantine, publish, audit, screen', flush=True)
+            return None
+        return _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, smeta)
+    if steps['installed'] and steps['archive-quarantine'] and not os.path.exists(stg):
+        inst = {os.path.relpath(r['dest'], cdir) for r in att if r['step'] == 'installed'}
+        if set(cur) != inst:
+            raise RuntimeError(f'{cell}: R2 working tree differs from the installed set ({len(set(cur) ^ inst)} files) - REFUSING')
+        shp = _np.squeeze(_f.getdata(f'{cdir}/coadd_final/I_deep_Taper_R075_{scope}.fits')).shape; bad = []
+        for x in sorted(cur):
+            if '_epoch_' in os.path.basename(x):
+                try:
+                    if _np.squeeze(_f.getdata(f'{cdir}/{x}')).shape != shp:
+                        bad.append(x)
+                except Exception:
+                    bad.append(x)
+        if bad:
+            raise RuntimeError(f'{cell}: R2 epoch file(s) unreadable or of another shape {bad[:3]} - REFUSING')
+        old = [r['path'] for r in att if r['step'] == 'archive-quarantine']
+        print(f'{cell} R2 (publish interrupted): working tree = the {len(inst)} installed files, every epoch readable; {len(old)} archive '
+              f'files quarantined this attempt', flush=True)
+        if not execute:
+            print(f'{cell} DRY RUN - would publish, audit and publish the screen', flush=True)
+            return None
+        return _finish(cell, gen, cdir, stg, {}, {x: x for x in sorted(inst)}, None, None, lst, scope, run, smeta, old=old)
+    raise RuntimeError(f'{cell}: not a resumable state (attempt steps {dict(steps)}, {len(cur)} working FITS, staging '
+                       f'{"present" if os.path.isdir(stg) else "absent"}) - REFUSING')
 
 
 def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
@@ -476,7 +585,21 @@ def main():
     ap.add_argument('--screen-table-unapplied', default=None, metavar='TABLE')
     ap.add_argument('--epochs-only', action='store_true', help='repair an installed cell whose archive lacks its epoch images')
     ap.add_argument('--omit-vclean', action='store_true', help='do not install the generation\'s cleaned-V products (deferred repair)')
+    ap.add_argument('--resume', action='store_true', help='continue an install interrupted mid-way (dry run unless --execute)')
+    ap.add_argument('--execute', action='store_true', help='with --resume: act, not only report')
     a = ap.parse_args()
+    if a.resume:
+        if not (a.cell and a.gen and a.kind):
+            ap.error('cell, --gen and --kind are required for --resume')
+        try:
+            r = resume(a.cell, a.gen, a.kind, a.root, omit_vclean=a.omit_vclean, execute=a.execute)
+            if r:
+                print(f'INSTALL-OK {a.cell} (resumed): {r[0]} working files, {r[1]} archive files quarantined, {r[2]} published', flush=True)
+        except Exception as e:
+            if a.execute:
+                rec(a.cell, 'RESUME-FAILED', a.gen, '', '', '', str(e)[:400])
+            print(f'RESUME-REFUSED {a.cell}: {e}', flush=True); sys.exit(1)
+        return
     if a.epochs_only:
         try:
             r = epochs_only(a.cell, a.root)
