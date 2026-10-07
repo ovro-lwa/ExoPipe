@@ -156,7 +156,11 @@ def _measure_job(args):
 # ----------------------------------------------------------------------------------------------------------------------------
 #  one subband-night
 # ----------------------------------------------------------------------------------------------------------------------------
-def process_subband(pool, lst, date, sb_dir, dest_root, copy=True, copy_reasons=jfq.COPY_REASONS):
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+def process_subband(pool, lst, date, sb_dir, dest_root, copy=True, copy_reasons=jfq.COPY_REASONS, budget=None):
     t0 = time.time()
     subband = os.path.basename(sb_dir)
     run = os.path.basename(os.path.dirname(sb_dir))
@@ -238,6 +242,17 @@ def process_subband(pool, lst, date, sb_dir, dest_root, copy=True, copy_reasons=
     out["n_jupiter"] = sum(r["reason"] == "jupiter" for r in rows)
     out["n_other"] = len(rows) - out["n_jupiter"]
     dest = jfq.dest_dir_for(lst, date, run, subband, dest_root)
+    if rows and copy and budget is not None:  # refuse BEFORE writing anything for this subband-night
+        snap = os.path.join(sb_dir, "snapshots")
+        need = 0
+        for r in rows:
+            if r["reason"] in copy_reasons:
+                for key in ("v_file", "i_file"):
+                    f = jfq._archived(snap, r.get(key, ""))
+                    need += os.path.getsize(f) if f else 0
+        if budget["used"] + need > budget["max"]:
+            raise BudgetExceeded("copy budget: %.1f GB used + %.1f GB needed > %.1f GB (nothing written for %s %s %s)"
+                                 % (budget["used"] / 1e9, need / 1e9, budget["max"] / 1e9, lst, date, subband))
     if rows:                                  # the record of every flagged integration, copies or not
         os.makedirs(dest, exist_ok=True)
         jfq.write_record(rows, os.path.join(dest, jfq.RECORD_NAME.format(subband=subband)))
@@ -247,6 +262,8 @@ def process_subband(pool, lst, date, sb_dir, dest_root, copy=True, copy_reasons=
                                       written_by="jupiter_flag_backfill (archive backfill)")
             out["copied"] = s["copied"] + s["present"]
             out["copy_bytes"] = s["bytes"]
+            if budget is not None:
+                budget["used"] += s["bytes"]
             if s["missing"]:
                 out["error"] = "missing in archive: %s" % s["missing"][:5]
     out["wall_s"] = round(time.time() - t0, 1)
@@ -335,12 +352,15 @@ def verify_tree(dest_root, phase1_root=PHASE1_ROOT, remeasure=True, nproc=8):
           the same value (the copy is the archive's file);
       (b) every record row with reason 'jupiter' has its pilot V copy (and its pilot I copy when the record names one), and no
           copied pilot image lacks a 'jupiter' row (no extra or missing copies);
-      (c) re-measured from the COPY (not the record): Jupiter's |V| within 1 beam of its ephemeris position is >= DETECT_SNR x
-          the robust noise for every 'jupiter' row, and the copy's QA-box statistic reproduces the row's recomputed statistic
-          (it is that integration's own image);
+      (c) re-measured from the COPY (not the record): Jupiter's |V| within 1 beam of its ephemeris position (computed from the
+          copy's own DATE-OBS) is >= DETECT_SNR x the robust noise for every 'jupiter' row; the copy's QA-box statistic
+          reproduces the row's (it is that integration's own image; exact when the record was measured on these bytes - the
+          archive backfill - and within the fpack quantisation, 2%, for an in-pipeline record measured before compression);
+          and the masked, Jupiter-removed flag statistic recomputed from the copy is <= the row's flag threshold;
       (d) the record's Jupiter-removed statistic is <= its threshold for every 'jupiter' row.
-    Returns (n_dirs, failures list)."""
+    Returns (n_dirs, failures list); totals in verify_tree.totals."""
     fails = []
+    verify_tree.totals = dict(dirs=0, flagged_rows=0, jupiter_rows=0, copies=0, copy_bytes=0)
     dirs = sorted({os.path.dirname(p) for p in glob.glob(os.path.join(dest_root, "*", "*", "*", "*", jfq.RECORD_NAME.format(subband="*")))})
     jobs = []
     for d in dirs:
@@ -365,6 +385,10 @@ def verify_tree(dest_root, phase1_root=PHASE1_ROOT, remeasure=True, nproc=8):
             if not src or not os.path.exists(src) or jfq.sha256(src) != h:
                 fails.append((d, "archive source missing or sha256 differs: %s" % n))
         jup = [r for r in rows if r["reason"] == "jupiter"]
+        verify_tree.totals["flagged_rows"] += len(rows)
+        verify_tree.totals["jupiter_rows"] += len(jup)
+        verify_tree.totals["copies"] += len(sums)
+        verify_tree.totals["copy_bytes"] += sum(os.path.getsize(os.path.join(d, n)) for n in sums if os.path.exists(os.path.join(d, n)))
         want = set()
         for r in jup:
             for key in ("v_file", "i_file"):
@@ -393,7 +417,11 @@ def verify_tree(dest_root, phase1_root=PHASE1_ROOT, remeasure=True, nproc=8):
         for d, idx, msg in res:
             if msg:
                 fails.append((d, "row %s: %s" % (idx, msg)))
+    verify_tree.totals["dirs"] = len(dirs)
     return len(dirs), fails
+
+
+QUANT_TOL = 0.02     # copy fpack-compressed after an in-pipeline record was measured on the uncompressed file
 
 
 def _verify_job(job):
@@ -401,13 +429,18 @@ def _verify_job(job):
     try:
         m = jfq.measure_integration(vp, _location(), psf=_psf(pp) if pp else None, i_path=ip)
         msgs = []
+        exact = os.path.basename(vp) == r["v_file"]          # the record was measured on these very bytes
+        tol = 1e-6 if exact else QUANT_TOL
         if not (m.get("status") == "measured" and m["snr_v"] >= jfq.DETECT_SNR):
             msgs.append("copy shows Jupiter at S/N %.1f < %.0f" % (m.get("snr_v", np.nan), jfq.DETECT_SNR))
         want = float(r["qa_rms_recomputed"])
-        if abs(m["qa_rms_recomputed"] - want) > 1e-6 * max(abs(want), 1e-30) + 1e-9:
+        if abs(m["qa_rms_recomputed"] - want) > tol * max(abs(want), 1e-30) + 1e-9:
             msgs.append("copy's QA statistic %.9g != record %.9g (not this integration's image)" % (m["qa_rms_recomputed"], want))
         if m.get("date_obs") != r.get("date_obs"):
             msgs.append("copy DATE-OBS %s != record %s" % (m.get("date_obs"), r.get("date_obs")))
+        thr = float(r["qa_high"])
+        if m.get("status") == "measured" and m["s_jupiter_removed"] > thr * (1.0 + (0.0 if exact else QUANT_TOL)):
+            msgs.append("masked Jupiter-removed statistic from the copy %.6g > flag threshold %.6g" % (m["s_jupiter_removed"], thr))
         return d, r["snapshot_index"], "; ".join(msgs)
     except Exception as e:
         return d, r["snapshot_index"], "re-measure failed: %s" % e
@@ -426,12 +459,17 @@ def main():
     ap.add_argument("--out", help="census / run summary CSV")
     ap.add_argument("--nproc", type=int, default=8)
     ap.add_argument("--no-copy", action="store_true")
+    ap.add_argument("--max-copy-gb", type=float, default=None,
+                    help="refuse (stop the run) before a subband-night whose copies would take this process past the budget")
     a = ap.parse_args()
     if a.mode == "verify":
         n, fails = verify_tree(a.dest_root, a.phase1_root, nproc=a.nproc)
         for d, msg in fails:
             print("FAIL %s: %s" % (d, msg))
-        print("VERIFY %s: %d subband directories, %d failures" % ("OK" if not fails else "FAILED", n, len(fails)))
+        t = verify_tree.totals
+        print("VERIFY %s: %d subband directories, %d failures; %d flagged-integration rows, %d 'jupiter' rows, %d copies, %.2f GB"
+              % ("OK" if not fails else "FAILED", n, len(fails), t["flagged_rows"], t["jupiter_rows"], t["copies"],
+                 t["copy_bytes"] / 1e9))
         sys.exit(1 if fails else 0)
     if a.cells:
         cells = [(c.split("_")[0], c.split("_")[1], "") for c in a.cells.split(",")]
@@ -452,7 +490,9 @@ def main():
         print("census: %d subband-nights -> %s" % (len(rows), a.out))
         return
     subs = set(a.subbands.split(",")) if a.subbands else None
+    budget = dict(used=0, max=a.max_copy_gb * 1e9) if a.max_copy_gb is not None else None
     summ = []
+    stop = None
     with Pool(a.nproc) as pool:
         for lst, date, el in cells:
             runs = latest_runs(os.path.join(a.phase1_root, lst, date))
@@ -467,12 +507,19 @@ def main():
                     print(json.dumps(o), flush=True)
                     continue
                 try:
-                    o, _ = process_subband(pool, lst, date, sd, a.dest_root, copy=not a.no_copy)
+                    o, _ = process_subband(pool, lst, date, sd, a.dest_root, copy=not a.no_copy, budget=budget)
+                except BudgetExceeded as e:
+                    stop = str(e)
+                    o = dict(lst=lst, date=date, subband=sb, error="STOPPED: %s" % e)
                 except Exception as e:
                     o = dict(lst=lst, date=date, subband=sb, error="%s: %s" % (type(e).__name__, e))
                 o["jup_el_mid"] = el
                 summ.append(o)
                 print(json.dumps(o), flush=True)
+                if stop:
+                    break
+            if stop:
+                break
     if a.out and summ:
         keys = []
         for o in summ:
@@ -481,6 +528,9 @@ def main():
             w = csv.DictWriter(f, fieldnames=keys)
             w.writeheader()
             w.writerows(summ)
+    if stop:
+        print("REFUSED (copy budget): %s" % stop, flush=True)
+        sys.exit(2)
 
 
 if __name__ == "__main__":
