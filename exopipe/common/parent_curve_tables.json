@@ -6061,6 +6061,8000 @@
    "source": "tenmin_tables_20260923T1759.json",
    "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
    "beam_unit": "target-image beam: each detection frame BMAJ (frames.csv); null = cell median frame beam"
+  },
+  "deep_I_18MHz_el25-35": {
+   "stokes": "I",
+   "band": "18MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     3,
+     5,
+     0.75
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     3.75
+    ],
+    [
+     100,
+     200,
+     5.75
+    ],
+    [
+     200,
+     1000000.0,
+     9.0
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.75
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     3.75
+    ],
+    [
+     100,
+     200,
+     5.75
+    ],
+    [
+     200,
+     1000000.0,
+     9.0
+    ]
+   ],
+   "n_candidates": 7660,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_18MHz_el35-50": {
+   "stokes": "I",
+   "band": "18MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     4.75
+    ],
+    [
+     200,
+     1000000.0,
+     7.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     4.75
+    ],
+    [
+     200,
+     1000000.0,
+     7.5
+    ]
+   ],
+   "n_candidates": 15450,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_18MHz_el50-90": {
+   "stokes": "I",
+   "band": "18MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.75
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.25
+    ],
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     5.75
+    ]
+   ],
+   "n_candidates": 34312,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_23MHz_el25-35": {
+   "stokes": "I",
+   "band": "23MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     4.5
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     4.5
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "n_candidates": 15284,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_23MHz_el35-50": {
+   "stokes": "I",
+   "band": "23MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "n_candidates": 29448,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_23MHz_el50-90": {
+   "stokes": "I",
+   "band": "23MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 59832,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_27MHz_el25-35": {
+   "stokes": "I",
+   "band": "27MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     3.5
+    ],
+    [
+     200,
+     1000000.0,
+     8.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     3.5
+    ],
+    [
+     200,
+     1000000.0,
+     8.25
+    ]
+   ],
+   "n_candidates": 18032,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_27MHz_el35-50": {
+   "stokes": "I",
+   "band": "27MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 34621,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_27MHz_el50-90": {
+   "stokes": "I",
+   "band": "27MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.25
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.25
+    ]
+   ],
+   "n_candidates": 71251,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_32MHz_el25-35": {
+   "stokes": "I",
+   "band": "32MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     7.75
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     7.75
+    ]
+   ],
+   "n_candidates": 18376,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_32MHz_el35-50": {
+   "stokes": "I",
+   "band": "32MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     2.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 35721,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_32MHz_el50-90": {
+   "stokes": "I",
+   "band": "32MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 72976,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_36MHz_el25-35": {
+   "stokes": "I",
+   "band": "36MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     6.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     6.5
+    ]
+   ],
+   "n_candidates": 16574,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_36MHz_el35-50": {
+   "stokes": "I",
+   "band": "36MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 31990,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_36MHz_el50-90": {
+   "stokes": "I",
+   "band": "36MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     2.5
+    ],
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 63982,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_41MHz_el25-35": {
+   "stokes": "I",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.75
+    ]
+   ],
+   "n_candidates": 27558,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_41MHz_el35-50": {
+   "stokes": "I",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 55511,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_41MHz_el50-90": {
+   "stokes": "I",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 117403,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_46MHz_el25-35": {
+   "stokes": "I",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 25067,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_46MHz_el35-50": {
+   "stokes": "I",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.25
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 51254,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_46MHz_el50-90": {
+   "stokes": "I",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "n_candidates": 106627,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_50MHz_el25-35": {
+   "stokes": "I",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     7.75
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     7.75
+    ]
+   ],
+   "n_candidates": 19078,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_50MHz_el35-50": {
+   "stokes": "I",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 40106,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_50MHz_el50-90": {
+   "stokes": "I",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 82701,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_55MHz_el25-35": {
+   "stokes": "I",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     8.5
+    ]
+   ],
+   "n_candidates": 16846,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_55MHz_el35-50": {
+   "stokes": "I",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "n_candidates": 35553,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_55MHz_el50-90": {
+   "stokes": "I",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     3,
+     5,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.25
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     12.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.25
+    ]
+   ],
+   "n_candidates": 76006,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_59MHz_el25-35": {
+   "stokes": "I",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     9.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     9.5
+    ]
+   ],
+   "n_candidates": 13221,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_59MHz_el35-50": {
+   "stokes": "I",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     8.25
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     8.25
+    ]
+   ],
+   "n_candidates": 27414,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_59MHz_el50-90": {
+   "stokes": "I",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.75
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 58956,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_64MHz_el25-35": {
+   "stokes": "I",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     9.0
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     9.0
+    ]
+   ],
+   "n_candidates": 17571,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_64MHz_el35-50": {
+   "stokes": "I",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     6.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     6.0
+    ]
+   ],
+   "n_candidates": 36554,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_64MHz_el50-90": {
+   "stokes": "I",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     3,
+     5,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     10.0
+    ],
+    [
+     5,
+     8,
+     0.25
+    ],
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 80441,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_69MHz_el25-35": {
+   "stokes": "I",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     9.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.5
+    ],
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     9.5
+    ]
+   ],
+   "n_candidates": 15750,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_69MHz_el35-50": {
+   "stokes": "I",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     6.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     6.25
+    ]
+   ],
+   "n_candidates": 32812,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_69MHz_el50-90": {
+   "stokes": "I",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     3,
+     5,
+     0.75
+    ],
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     10.0
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     5.25
+    ]
+   ],
+   "n_candidates": 74058,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_73MHz_el25-35": {
+   "stokes": "I",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     9.75
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     9.75
+    ]
+   ],
+   "n_candidates": 12535,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_73MHz_el35-50": {
+   "stokes": "I",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     8.75
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.5
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.75
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     8.75
+    ]
+   ],
+   "n_candidates": 26357,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_73MHz_el50-90": {
+   "stokes": "I",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     6.0
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     15.5
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     6.0
+    ]
+   ],
+   "n_candidates": 60296,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_78MHz_el25-35": {
+   "stokes": "I",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     3.0
+    ],
+    [
+     200,
+     1000000.0,
+     10.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.75
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     3.0
+    ],
+    [
+     200,
+     1000000.0,
+     10.5
+    ]
+   ],
+   "n_candidates": 11070,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_78MHz_el35-50": {
+   "stokes": "I",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     9.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     9.25
+    ]
+   ],
+   "n_candidates": 22360,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_78MHz_el50-90": {
+   "stokes": "I",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     6.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     12.75
+    ],
+    [
+     5,
+     8,
+     1.5
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     2.0
+    ],
+    [
+     100,
+     200,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     6.5
+    ]
+   ],
+   "n_candidates": 50197,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_82MHz_el25-35": {
+   "stokes": "I",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.5
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.75
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     4.0
+    ],
+    [
+     200,
+     1000000.0,
+     13.0
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.5
+    ],
+    [
+     5,
+     8,
+     1.75
+    ],
+    [
+     8,
+     12,
+     1.5
+    ],
+    [
+     12,
+     20,
+     1.75
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     4.0
+    ],
+    [
+     200,
+     1000000.0,
+     13.0
+    ]
+   ],
+   "n_candidates": 7622,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_82MHz_el35-50": {
+   "stokes": "I",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     3,
+     5,
+     1.25
+    ],
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     4.0
+    ],
+    [
+     200,
+     1000000.0,
+     11.25
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     6.5
+    ],
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.75
+    ],
+    [
+     35,
+     60,
+     1.75
+    ],
+    [
+     60,
+     100,
+     2.5
+    ],
+    [
+     100,
+     200,
+     4.0
+    ],
+    [
+     200,
+     1000000.0,
+     11.25
+    ]
+   ],
+   "n_candidates": 14942,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_82MHz_el50-90": {
+   "stokes": "I",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     8.75
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     1.0
+    ],
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     2.25
+    ],
+    [
+     60,
+     100,
+     2.25
+    ],
+    [
+     100,
+     200,
+     2.75
+    ],
+    [
+     200,
+     1000000.0,
+     8.75
+    ]
+   ],
+   "n_candidates": 31420,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Blue_el25-35": {
+   "stokes": "I",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     2.75
+    ],
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     5.0
+    ]
+   ],
+   "n_candidates": 36565,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Blue_el35-50": {
+   "stokes": "I",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     7.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 74251,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Blue_el50-90": {
+   "stokes": "I",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     4.0
+    ],
+    [
+     5,
+     8,
+     7.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 166244,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Full_el25-35": {
+   "stokes": "I",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 93062,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Full_el35-50": {
+   "stokes": "I",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 198560,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Full_el50-90": {
+   "stokes": "I",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "n_candidates": 451256,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Green_el25-35": {
+   "stokes": "I",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.25
+    ],
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 52138,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Green_el35-50": {
+   "stokes": "I",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.5
+    ]
+   ],
+   "n_candidates": 104639,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Green_el50-90": {
+   "stokes": "I",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 220260,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Red_el25-35": {
+   "stokes": "I",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     3.75
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.75
+    ],
+    [
+     200,
+     1000000.0,
+     3.75
+    ]
+   ],
+   "n_candidates": 37150,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Red_el35-50": {
+   "stokes": "I",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.5
+    ]
+   ],
+   "n_candidates": 70550,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I_Red_el50-90": {
+   "stokes": "I",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 145158,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_18MHz_el25-35": {
+   "stokes": "V",
+   "band": "18MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     2.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 3226,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_18MHz_el35-50": {
+   "stokes": "V",
+   "band": "18MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "n_candidates": 8465,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_18MHz_el50-90": {
+   "stokes": "V",
+   "band": "18MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "raw_table": [
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "n_candidates": 26506,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_23MHz_el25-35": {
+   "stokes": "V",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "n_candidates": 5620,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_23MHz_el35-50": {
+   "stokes": "V",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     8.75
+    ],
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 15463,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_23MHz_el50-90": {
+   "stokes": "V",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     0.25
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     3.0
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 45795,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_27MHz_el25-35": {
+   "stokes": "V",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "n_candidates": 6433,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_27MHz_el35-50": {
+   "stokes": "V",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     60,
+     100,
+     0.75
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 17358,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_27MHz_el50-90": {
+   "stokes": "V",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     0.25
+    ],
+    [
+     35,
+     60,
+     0.25
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     4.25
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 46679,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_32MHz_el25-35": {
+   "stokes": "V",
+   "band": "32MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "raw_table": [
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 5679,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_32MHz_el35-50": {
+   "stokes": "V",
+   "band": "32MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 15174,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_32MHz_el50-90": {
+   "stokes": "V",
+   "band": "32MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     0.25
+    ],
+    [
+     35,
+     60,
+     0.25
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     13.75
+    ],
+    [
+     35,
+     60,
+     0.75
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 38728,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_36MHz_el25-35": {
+   "stokes": "V",
+   "band": "36MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 4503,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_36MHz_el35-50": {
+   "stokes": "V",
+   "band": "36MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 11649,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_36MHz_el50-90": {
+   "stokes": "V",
+   "band": "36MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 28187,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:33:47Z",
+   "source": "deep_elev_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_41MHz_el25-35": {
+   "stokes": "V",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "n_candidates": 4831,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_41MHz_el35-50": {
+   "stokes": "V",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 11623,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_41MHz_el50-90": {
+   "stokes": "V",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 25335,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_46MHz_el25-35": {
+   "stokes": "V",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 4547,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_46MHz_el35-50": {
+   "stokes": "V",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 10630,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_46MHz_el50-90": {
+   "stokes": "V",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     4.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 20295,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_50MHz_el25-35": {
+   "stokes": "V",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "n_candidates": 3896,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_50MHz_el35-50": {
+   "stokes": "V",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     4.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 8361,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_50MHz_el50-90": {
+   "stokes": "V",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 14122,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_55MHz_el25-35": {
+   "stokes": "V",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     3.25
+    ]
+   ],
+   "n_candidates": 3674,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_55MHz_el35-50": {
+   "stokes": "V",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 8069,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_55MHz_el50-90": {
+   "stokes": "V",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     6.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 13873,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_59MHz_el25-35": {
+   "stokes": "V",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     3.5
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     3.5
+    ]
+   ],
+   "n_candidates": 4063,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_59MHz_el35-50": {
+   "stokes": "V",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.5
+    ]
+   ],
+   "n_candidates": 8292,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_59MHz_el50-90": {
+   "stokes": "V",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     3.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 13667,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_64MHz_el25-35": {
+   "stokes": "V",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 5100,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_64MHz_el35-50": {
+   "stokes": "V",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 10725,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_64MHz_el50-90": {
+   "stokes": "V",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 17022,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_69MHz_el25-35": {
+   "stokes": "V",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     3.75
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     3.75
+    ]
+   ],
+   "n_candidates": 5511,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_69MHz_el35-50": {
+   "stokes": "V",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     2.75
+    ]
+   ],
+   "n_candidates": 10945,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_69MHz_el50-90": {
+   "stokes": "V",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     9.25
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 16816,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_73MHz_el25-35": {
+   "stokes": "V",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 5497,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_73MHz_el35-50": {
+   "stokes": "V",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "n_candidates": 10924,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_73MHz_el50-90": {
+   "stokes": "V",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 16045,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_78MHz_el25-35": {
+   "stokes": "V",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     4.25
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.25
+    ]
+   ],
+   "n_candidates": 6536,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_78MHz_el35-50": {
+   "stokes": "V",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 12635,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_78MHz_el50-90": {
+   "stokes": "V",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     35,
+     60,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     3.0
+    ]
+   ],
+   "n_candidates": 18050,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_82MHz_el25-35": {
+   "stokes": "V",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 5991,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_82MHz_el35-50": {
+   "stokes": "V",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     2.25
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     4.5
+    ]
+   ],
+   "n_candidates": 11048,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_82MHz_el50-90": {
+   "stokes": "V",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     35,
+     60,
+     0.25
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "raw_table": [
+    [
+     35,
+     60,
+     0.5
+    ],
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.25
+    ],
+    [
+     200,
+     1000000.0,
+     4.0
+    ]
+   ],
+   "n_candidates": 16039,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Blue_el25-35": {
+   "stokes": "V",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     2.25
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     5.5
+    ],
+    [
+     200,
+     1000000.0,
+     2.25
+    ]
+   ],
+   "n_candidates": 7097,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Blue_el35-50": {
+   "stokes": "V",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     2.0
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     5.25
+    ],
+    [
+     200,
+     1000000.0,
+     2.0
+    ]
+   ],
+   "n_candidates": 14068,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Blue_el50-90": {
+   "stokes": "V",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     7.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 22954,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Full_el25-35": {
+   "stokes": "V",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 8624,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Full_el35-50": {
+   "stokes": "V",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 22398,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Full_el50-90": {
+   "stokes": "V",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 57887,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Green_el25-35": {
+   "stokes": "V",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     6.0
+    ],
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 6806,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Green_el35-50": {
+   "stokes": "V",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     6.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 16814,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Green_el50-90": {
+   "stokes": "V",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     4.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 38421,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Red_el25-35": {
+   "stokes": "V",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 9831,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Red_el35-50": {
+   "stokes": "V",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 28845,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_V_Red_el50-90": {
+   "stokes": "V",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 81827,
+   "n_cells": 24,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-06T05:57:14Z",
+   "source": "deep_elev_r3.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
   }
  },
  "meta_10min": {
@@ -6098,6 +14092,16 @@
    "measured": 38,
    "empty": 0,
    "backup": "/lustre/gh/main/exopipe/exopipe/common/parent_curve_tables.json.bak_20261001T062536"
+  },
+  "2026-10-07T03:54:33Z": {
+   "source": "/fast/gh/main/phase3/deep_tables_elev_20261006/deep_elev_candidate.json",
+   "metric": "image-pixel",
+   "elevation_bands": "25-35,35-50,50-90 (20-25 report-only; all-elevation fallback)",
+   "ratio": "3.0 (V 18-36 MHz 2.0)",
+   "floor": 5.0,
+   "measured": 114,
+   "backup": "/lustre/gh/main/exopipe/exopipe/common/parent_curve_tables.json.bak_20261007T035433",
+   "ruling": "Gregg 2026-10-04 \"Yes on 1 and 2\""
   }
  }
 }
