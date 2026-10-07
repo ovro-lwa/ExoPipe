@@ -259,7 +259,10 @@ def verify(cell_dir, exclusions=None, verdict_rows=None):
 
 # ── WHAT A MASTER MUST CARRY (2026-10-07 rulings audit: these steps run only in campaign scripts, so a plain rebuild would lose them) ──
 REQUIRED_FLUXVER = 'fluxcorr-v2-20261001'    # the flux correction table in force (re-bake 2026-10-01); change only with a new ruled table
-DEWARP_ACCEPTED = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261001/accepted_179.csv'   # Gregg 2026-10-01 "Go with (a) and (b')"
+# the cells the RBF master dewarp was APPLIED to: the archived screen record (phase3_install writes it; applied=1). NOT the 10-01
+# acceptance list (179): acceptance was re-measured on the flux-rebaked inputs on 2026-10-04 and 170 passed (Gregg 2026-10-01 "Go with
+# (a) and (b')" applied to the re-baked masters) - corrected 2026-10-07 after the first version of this check used the 179
+DEWARP_ACCEPTED = '/lustre/pipeline/exopipe/phase3/mdewarp_screens/Run_20260909_000000/mdewarp_screens.csv'
 DEWARP_INTERP = 'cubic-spline'                # R-MDEWARP-CUBIC-REAPPLY, Gregg 2026-10-05 "Okay approved"
 
 
@@ -288,7 +291,7 @@ def verify_products(cell_dir, token='', cell=None):
         # a flux-scaled generation keeps the PB maps' plain names (they are not scaled); a dewarp generation tokens them
         if not (os.path.exists(os.path.join(fd, pb)) or os.path.exists(os.path.join(fd, plain))):
             out.append(f'{lst} {band}: PB map {plain} missing')
-    acc = {(r['lst'], r['scope']) for r in (_rcsv(DEWARP_ACCEPTED) or [])}
+    acc = {(r['lst'], r['scope']) for r in (_rcsv(DEWARP_ACCEPTED) or []) if r.get('applied', '1') == '1'}
     if not acc:
         out.append(f'{lst} {band}: master-dewarp acceptance list {DEWARP_ACCEPTED} unreadable')
     elif (lst, band) in acc:
