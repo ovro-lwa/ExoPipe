@@ -538,6 +538,22 @@ def run_stage_image(args):
             if bad_idx:
                 utils.flag_bad_integrations(concat_ms, bad_idx, n_ints, logger)
 
+            # --- 4b. JUPITER CHECK OF THE FLAGGED INTEGRATIONS (Gregg 2026-10-07, ruling on question 12) ---
+            # Record only: the flag above is decided and applied before this runs and is never changed by it.  Writes
+            # QA/jupiter_flag_qa_<subband>.csv; never raises (jupiter_flag_qa); opt-out EXOPIPE_JUPITER_FLAG_QA=0.
+            if bad_idx:
+                try:
+                    from exopipe.phase1 import jupiter_flag_qa
+                    with table(concat_ms, ack=False) as _t:
+                        _scans = sorted(set(_t.getcol("SCAN_NUMBER")))
+                    jupiter_flag_qa.record_flagged(
+                        pilot_v, stats, bad_idx, qa_dir=os.path.join(args.work_dir, "QA"), subband=subband_val,
+                        location=config.OVRO_LOC, scans=_scans, logger=logger,
+                        cell=dict(lst=lst_label, run=org_args.run_label if org_args else args.run_label,
+                                  date=str((org_args.start_time if org_args else args.start_time) or "")[:10]))
+                except Exception as e:
+                    logger.error(f"Jupiter check of flagged integrations not run (flag unaffected): {e}")
+
             # --- 5. HOT BASELINE REMOVAL ---
             run_hot = org_args.hot_baselines if org_args else getattr(args, 'hot_baselines', False)
             if run_hot and hot_baseline_worker is not None:
@@ -959,6 +975,15 @@ def run_stage_image(args):
         for f in glob.glob(os.path.join(archive_source, "*")):
             if os.path.isfile(f):
                 shutil.copy(f, archive_base)
+
+        # 7b. Copy the Jupiter-caused flagged integrations' ARCHIVED pilot I/V images (sha256-verified copies, never moves) to
+        # the Jovian directory for Jovian processing (Gregg 2026-10-07, ruling on question 12); never raises (jupiter_flag_qa).
+        try:
+            from exopipe.phase1 import jupiter_flag_qa
+            jupiter_flag_qa.copy_from_archive(archive_base, lst_label_val, obs_date, archive_label, subband_val,
+                                              logger=logger)
+        except Exception as e:
+            logger.error(f"Jupiter-flagged copies not made (archive unaffected): {e}")
 
         # --- Centralized samples archive ---
         # /lustre/gh/main/samples/{sample_name}/{target_name}/{subband}/
