@@ -41,7 +41,11 @@ frame BEFORE subtraction; the truth is written to injections.csv. Injected trees
 are built under a separate out_root and never mixed with production frames.
 
 Refusals (never silent): master not the declared generation; night without a
-flow, a DC record, or a Phase 2 10-minute product; PB map unavailable.
+DC record or a Phase 2 10-minute product; PB map unavailable.  A night WITHOUT A
+FLOW is not refused: it is processed with the flux scale only (has_flow=0,
+FLOWUSED=False).  This module built the frames of the RETIRED old 10-minute chain
+(Run_P3T4); the production 10-minute tier is the cube-based sub-LST chain.
+(Docstring corrected 2026-10-07, Gregg "All approved", Q15(2).)
 """
 import os, sys, csv, glob, re, json, time
 import numpy as np
