@@ -439,6 +439,14 @@ _REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'
 SEARCH_TIER_SIGMA = float(os.environ.get('P3_SEARCH_TIER_SIGMA', '5.0'))   # R-GC10 Layer-2 search tier: 4.0 (Gregg 2026-09-09) -> 5.0 (Gregg 2026-09-13 "Change to MAD 5 for exclusion from transient search")         # battery variable: no per-frame x2 flow refinement (night flow only)
 
 
+def _mid_hour_elev(lst, ra, dec):
+    """Elevation (deg) at the deep frame's mid-hour (LST + 0.5 h) at OVRO: the elevation the deep bright-source band tables were
+    derived at (p3s3_curve_derive.elev_at, key 'mid') and are applied at in the conformance (p3s2_conform, P3_TABLE_ELEV=1)."""
+    lstdeg = 15.0 * (int(lst[:-1]) + 0.5); lat = np.radians(37.2398)
+    hr = np.radians(lstdeg - np.asarray(ra, float)); dr = np.radians(np.asarray(dec, float))
+    return np.degrees(np.arcsin(np.sin(dr) * np.sin(lat) + np.cos(dr) * np.cos(lat) * np.cos(hr)))
+
+
 def _residual(epoch, master, flow, hdr, cd):
     """×2-upflow refine epoch -> direct subtract master -> striation clean."""
     up = epoch if _REFINE_OFF else fft_decimate2(apply_flow_field(fft_upsample2(epoch), flow))
@@ -891,6 +899,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         sv2.CONFIG['MIN_ELEVATION'] = float(os.environ.get('P3_TENMIN_MIN_ELEVATION', '25.0'))
         sv2.CONFIG['I_MIN_ELEVATION'] = sv2.CONFIG['MIN_ELEVATION']
         print(f'  {lst} {scope}: 10-minute tier elevation floor {sv2.CONFIG["MIN_ELEVATION"]:.1f} deg (Gregg 2026-09-11)')
+    if cadence == 'deep':
+        # GREGG 2026-10-06 ("3. (c)", after the 20-25 deg analysis: 32 per cent of Stokes I detections in 12 per cent of the sky
+        # above 20 deg): the deep elevation floor moves to 25 deg for both Stokes, as the 10-minute tier (was 20.0 / 19.5)
+        sv2.CONFIG['MIN_ELEVATION'] = float(os.environ.get('P3_DEEP_MIN_ELEVATION', '25.0'))
+        sv2.CONFIG['I_MIN_ELEVATION'] = sv2.CONFIG['MIN_ELEVATION']
+        print(f'  {lst} {scope}: deep elevation floor {sv2.CONFIG["MIN_ELEVATION"]:.1f} deg (Gregg 2026-10-06)')
     if cadence == '10min' and os.environ.get('P3_STRIATION_10MIN') != '1':
         _STRIATION_OFF = True       # Gregg 2026-09-09: striation model OFF at 10 minutes (battery: FPs x3.6-x10 with it on)
         print(f'  {lst} {scope}: 10-minute cadence - striation model OFF (ruling 2026-09-09)', flush=True)
@@ -1879,8 +1893,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     # measured table from exopipe/common/parent_curve_tables.json
                     # phase centre = the master's CRVAL (as gate_inputs.phase_centre): an image-pixel table
                     # measures in direction cosines about it; a sky table ignores it (Gregg 2026-10-01)
+                    # ELEVATION-BAND TABLES IN THE SEARCH (Gregg 2026-10-06 "2. yes"): deep, with P3_TABLE_ELEV=1, each candidate
+                    # is judged by the band table of its mid-hour elevation, as the conformance judges it (removals ignores elev
+                    # otherwise); other cadences unchanged
                     _tc, _tn = _PCT.removals('I', scope, _pa, max(drI_, 1e-12), em * cd,
                                              [c['coord'].ra.deg], [c['coord'].dec.deg],
+                                             elev=(_mid_hour_elev(lst, [c['coord'].ra.deg], [c['coord'].dec.deg]) if cadence == 'deep' else None),
                                              phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
                     if bool(_tc[0]):
                         cut = True; c['table_note'] = _tn[0]
@@ -1952,6 +1970,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # image-pixel metric since 2026-10-01 and refuse without it; the I call above already passed it
             _tcv, _tnv = _PCT.removals('V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
                                        [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals],
+                                       elev=(_mid_hour_elev(lst, [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
+                                             if cadence == 'deep' else None),   # elevation-band tables in the search (Gregg 2026-10-06)
                                        phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
             _keepv = []
             for c, _x, _n in zip(finals, _tcv, _tnv):
