@@ -223,6 +223,22 @@ def _gates(cell, gen, kind, rebuild_root=None):
     if kind == 'rebuild' or rebuild_root:
         if not rebuild_root or not os.path.exists(f'{rebuild_root}/REBUILD_CONTENT_OK'):
             raise RuntimeError(f'{cell}: a rebuilt cell needs --rebuild-root with REBUILD_CONTENT_OK - REFUSING')
+    # G-MEMBERSHIP (2026-10-07, Gregg "Yes, go"): no master is installed whose member nights disagree with the membership rulings
+    # (exopipe.phase3.membership.verify - exclusions, stage 2 with the ruled PSF-matched metric, the stage-3 window, the night-image and
+    # epoch-image checks). A rebuilt cell is verified in its rebuild root; a re-dewarp keeps the membership of the installed cell.
+    from exopipe.phase3 import membership as _MB
+    _mcell = f'{rebuild_root}/{cell}' if (kind == 'rebuild' or rebuild_root) else f'{ROOT}/{cell}'
+    _mv = _MB.verify(_mcell)
+    if _mv:
+        raise RuntimeError(f'{cell}: master membership violates the rulings ({len(_mv)}): ' + ' | '.join(_mv[:5]) + ' - REFUSING')
+    # G-PRODUCTS (2026-10-07): what a master must carry - the ruled flux scale in the pixels, both PB maps, the cubic RBF dewarp on an
+    # accepted cell (membership.verify_products); checked on the generation that is installed (the dewarp generation for kind 'mdewarp')
+    # the GENERATION being installed (it holds coadd_final/); a master-dewarp generation names its files with the '_mdewarp' token
+    if not os.path.isdir(os.path.join(gen, 'coadd_final')):
+        raise RuntimeError(f'{cell}: generation {gen} has no coadd_final/ - REFUSING')
+    _pv = _MB.verify_products(gen, token=('_mdewarp' if kind == 'mdewarp' else ''), cell=cell)
+    if _pv:
+        raise RuntimeError(f'{cell}: the master does not carry what the rulings require ({len(_pv)}): ' + ' | '.join(_pv[:5]) + ' - REFUSING')
     # G1b (kind 'mdewarp'): the applied screen is on record for this generation and unchanged since the content test
     smeta = None
     if kind == 'mdewarp':

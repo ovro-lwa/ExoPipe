@@ -132,6 +132,15 @@ GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph',
 GATE_LEDGER_ONLY = os.environ.get('P3_GATE_LEDGER_ONLY', '') == '1'
 
 
+def _elev_floor(stokes):
+    """The elevation floor (deg) the detection mask of this Stokes actually used - recorded per night in v_deep_images.csv
+    elev_min_deg (2026-10-07: it was a literal 20.0 whatever the floor was)."""
+    if stokes == 'I':
+        from exopipe.phase3 import search_i_transients as _sitm
+        return float(_sitm.CONFIG['MIN_ELEVATION'])
+    return float(sv2.CONFIG['MIN_ELEVATION'])
+
+
 def _append_locked(path, cols, rows):
     """Lock-serialized CSV append (same pattern as phase3_i_deep)."""
     if not rows:
@@ -285,6 +294,10 @@ ALIGN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKROOT = os.environ.get('P3_FLOW_ROOT', '/data07/gh/phase3/deep')   # moved off /fast (NVMe too small; was filling it)
 COADD_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); use coadd_root() at point of use
 MIN_EPOCHS = int(os.environ.get('P3_MIN_EPOCHS', '3'))   # Gregg 2026-09-11: 3 for this run (was 5); thin 00h cells searched
+# DEEP (2026-10-07, rulings audit): Gregg's 2026-09-11 "Lower MIN_EPOCHS to 3 for this run" was scoped to that run (ledger: "a later
+# run reverts to 5 unless re-ruled") and was never reverted. The deep cadence is back at 5 (on 2026-10-07 every searched deep cell had
+# 5 or more nights, so nothing changes today); the 10-minute cadence keeps MIN_EPOCHS (the snapshot / sub-LST chat's).
+DEEP_MIN_EPOCHS = int(os.environ.get('P3_DEEP_MIN_EPOCHS', '5'))
 NPROC_RESID = int(os.environ.get('DEEP_NPROC_RESID', '6'))   # epoch-parallel residual build
 
 
@@ -904,7 +917,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         # above 20 deg): the deep elevation floor moves to 25 deg for both Stokes, as the 10-minute tier (was 20.0 / 19.5)
         sv2.CONFIG['MIN_ELEVATION'] = float(os.environ.get('P3_DEEP_MIN_ELEVATION', '25.0'))
         sv2.CONFIG['I_MIN_ELEVATION'] = sv2.CONFIG['MIN_ELEVATION']
-        print(f'  {lst} {scope}: deep elevation floor {sv2.CONFIG["MIN_ELEVATION"]:.1f} deg (Gregg 2026-10-06)')
+        # the Stokes I DETECTION mask is search_i_transients' own (phase3_pipeline.run_identification_i -> sit.make_masks); the
+        # 2026-10-06 change set only the V module, so Stokes I still detected down to 20 deg and lost 20-25 deg only at publish
+        # (found by the 2026-10-07 rulings audit) - the floor is now the same in both detection masks
+        from exopipe.phase3 import search_i_transients as _sit
+        _sit.CONFIG['MIN_ELEVATION'] = sv2.CONFIG['MIN_ELEVATION']
+        print(f'  {lst} {scope}: deep elevation floor {sv2.CONFIG["MIN_ELEVATION"]:.1f} deg, Stokes I and V detection masks (Gregg 2026-10-06)')
     if cadence == '10min' and os.environ.get('P3_STRIATION_10MIN') != '1':
         _STRIATION_OFF = True       # Gregg 2026-09-09: striation model OFF at 10 minutes (battery: FPs x3.6-x10 with it on)
         print(f'  {lst} {scope}: 10-minute cadence - striation model OFF (ruling 2026-09-09)', flush=True)
@@ -954,6 +972,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             f'(plain-mean + LOO policy, ratified 2026-08-25; flat-DC 2026-08-28). Rebuild the '
             f'cell, or point P3_COADD_ROOT at the current-generation root '
             f'(exopipe_ops/resolve_master_root.sh resolves it).')
+    # ── MASTER-MEMBERSHIP GATE (2026-10-07, Gregg "Yes, go") ───────────
+    # REFUSES, does not warn. The stage-2 (PSF-matched metric) and stage-3 (flux-alignment window) membership rulings of 2026-08-26
+    # were applied in August by side scripts and lost at the 2026-09-10 rebuild, so vetoed nights sat in 119 masters. A deep cell is
+    # searched only when its master's member nights satisfy every membership ruling (exopipe.phase3.membership.verify: exclusions,
+    # stage 2 with the ruled metric, stage-3 window, night-image and epoch-image checks). Deep cadence only; the 10-minute tier is the
+    # snapshot / sub-LST chat's (cross-tier note in the ledger). P3_ALLOW_OLD_MASTERS=1 bypasses it for archaeology, never production.
+    if cadence == 'deep' and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
+        from exopipe.phase3 import membership as _MB
+        _mv = _MB.verify(base) + _MB.verify_products(base)   # membership + what the master must carry (flux scale, PB, dewarp)
+        if _mv:
+            raise RuntimeError(f'{lst} {scope}: REFUSING to search - the master violates the membership rulings: '
+                               + ' | '.join(_mv[:5]) + (f' (+{len(_mv) - 5} more)' if len(_mv) > 5 else ''))
+        print(f'  {lst} {scope}: master membership verified against the rulings (stage 2 {_MB.STAGE2_METRIC}, stage-3 window)', flush=True)
     em, en, _, _ = fit_empirical_beam(master_I)
     if not np.isfinite(em) or em <= 0:   # beam fit can fail (e.g. 14h Blue) -> NaN propagates into headers
         print(f'  {lst} {scope}: empirical-beam fit returned NaN; using fallback beam=7px')
@@ -992,8 +1023,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         raise RuntimeError(f'{lst} {scope}: ZERO epochs found — inputs '
                            f'missing/unshipped; REFUSING (a 0-epoch cell '
                            f'is never legitimate)')
-    if len(dates) < MIN_EPOCHS:
-        print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} epochs (MIN_EPOCHS={MIN_EPOCHS})'); return 0
+    _minE = DEEP_MIN_EPOCHS if cadence == 'deep' else MIN_EPOCHS
+    if len(dates) < _minE:
+        print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} epochs (minimum {_minE}, cadence {cadence})'); return 0
 
     mup = f'{cell_work}/master_up2.fits'
     # FLOW-CACHE GENERATION GATE (constituent-generation ruling 2026-08-12, approved
@@ -1330,8 +1362,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                       f'{[(d, round(_areas[d]/_bmed, 2)) for d in _bbad]}')
     if len(dates) == 0:
         raise RuntimeError(f'{lst} {scope}: ZERO flows — REFUSING')
-    if len(dates) < MIN_EPOCHS:
-        print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} flows (MIN_EPOCHS={MIN_EPOCHS})'); return 0
+    if len(dates) < _minE:
+        print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} flows (minimum {_minE}, cadence {cadence})'); return 0
 
     if included_dates:
         # INCREMENTAL MODE (Gregg 2026-09-13 "Proceed"): every admission gate above ran on the whole cell; only the listed
@@ -1586,7 +1618,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # annotation; the 2-D dynamic curve applies POST-LOOP (flood
             # keying needs every night's post-front count first).
             if d in skip_I_dates:
-                gimg_rows.append([lst, scope, 'I', d, 0, 0, '', '', 0, 0, 20.0]); continue
+                gimg_rows.append([lst, scope, 'I', d, 0, 0, '', '', 0, 0, _elev_floor('I')]); continue
             _allI = run_identification_i(rI, master_I, hdr, beam, sstack_I)
             passed = [c for c in _allI if c['status'] == 'PASS']
             # 2026-09-04 (audit R-09): every identification-stage rejection is
@@ -1653,7 +1685,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _drI = sv2.get_uniform_rms(rI, sv2.make_masks(
                 hdr, rI.shape)[0])
             i_pending.append((d, front, hdr, ot, float(_drI)))
-            _gI = [lst, scope, 'I', d, len(passed), len(front), '', '', '', len(_allI), 20.0]
+            _gI = [lst, scope, 'I', d, len(passed), len(front), '', '', '', len(_allI), _elev_floor('I')]
             gimg_rows.append(_gI); _gimgI[d] = _gI
         if d in resid_V:
             rV = np.nan_to_num(resid_V[d], nan=0.0)
@@ -1688,7 +1720,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # GREGG 2026-09-13 (decoupling): the search frame is a science product and exists for every epoch of the
             # generation; the search-tier and sanity gates decide only whether it is SEARCHED. Skip detection here.
             if d in skip_V_dates:
-                gimg_rows.append([lst, scope, 'V', d, 0, 0, 0, 0, 0, 0, 20.0]); continue
+                gimg_rows.append([lst, scope, 'V', d, 0, 0, 0, 0, 0, 0, _elev_floor('V')]); continue
             # sstack is INFO-ONLY (quoted on survivors, lines below), NOT a gate
             # (2026-06-23 ruling: mstruct is the sole V gate). Passing None here keeps
             # run_identification_v from filtering on sigma_stack.
@@ -1820,7 +1852,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             gimg_rows.append([lst, scope, 'V', d, len(pV), n_after_morph,
                               n_after_ms if gate_ran else '',
                               (n_after_ms - len(vetoed_jup)) if gate_ran else '',
-                              len(keptv), len(pV), 20.0])
+                              len(keptv), len(pV), _elev_floor('V')])
             # R-ROUND2-RATIFIED: survivors are NOT final until the frozen
             # v110 gate rules on them — stash for the per-cell verdict
             # stage below (one gate invocation per cell; the archived

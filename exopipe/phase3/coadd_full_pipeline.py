@@ -2371,16 +2371,28 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
             prov_v_path, tmpl_hdr)
 
     # ── Residual analysis ──
-    prov_i_data, _ = load_image(prov_i_path)
+    # STAGE 2 = OPTION 2 (R-STAGE2-PSFMATCH+QA3-RANGE-RULED, Gregg 2026-08-26; in this code since 2026-10-07 - in August it ran only
+    # as the side script exopipe_ops/reverdict_stage2.py and the 2026-09-10 rebuild lost its verdicts): Stokes I = the PSF-matched
+    # residual rms of the night against the provisional master (exopipe.phase3.membership.psfmatched_rms, the August recipe);
+    # Stokes V = the unmatched night-minus-provisional rms (unchanged). The old unmatched I value is kept in the record
+    # (i_rms_unmatched_mjy). A night whose metric cannot be measured is an outlier (refused), never a silent pass.
+    from exopipe.phase3 import membership as _MB
+    prov_i_data, prov_i_hdr = load_image(prov_i_path)
     prov_v_data = None
     if prov_v_path:
         prov_v_data, _ = load_image(prov_v_path)
 
     metrics = []
     for date, i_path, weight in i_aligned:
-        i_data, _ = load_image(i_path)
-        i_rms = compute_residual_rms(i_data, prov_i_data, horizon_mask,
-                                      margin_frac=0.15)
+        i_data, i_hdr = load_image(i_path)
+        i_rms_unmatched = compute_residual_rms(i_data, prov_i_data, horizon_mask,
+                                               margin_frac=0.15)
+        try:
+            i_rms, _dc2 = _MB.psfmatched_rms(i_data, prov_i_data, prov_i_hdr, get_midpoint_time(i_hdr, i_path),
+                                             i_hdr.get('BMAJ'))
+        except Exception as _e:
+            print(f"    {date}: STAGE-2 METRIC NOT MEASURABLE ({_e}) - the night is refused", flush=True)
+            i_rms, _dc2 = np.nan, np.nan
 
         v_rms = np.nan
         v_match = [x for x in v_aligned if x[0] == date]
@@ -2396,6 +2408,9 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
             'weight': weight,
             'has_flow': os.path.exists(f'{workdir}/flow/{date}_scaled_flow.npy'),
             'is_reference': date == ref_date,
+            'i_rms_unmatched_mjy': float(i_rms_unmatched * 1000) if np.isfinite(i_rms_unmatched) else np.nan,
+            'scale2_matched': _dc2,
+            'stage2_metric': _MB.STAGE2_METRIC,
         })
 
     # ── Outlier detection ──
@@ -2403,10 +2418,12 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
     i_rms_list = [m['i_rms_mjy'] for m in metrics]
     v_rms_list = [m['v_rms_mjy'] for m in metrics]
 
-    i_outliers, i_thresh = detect_outliers_mad(dates_list, i_rms_list)
-    v_outliers, v_thresh = detect_outliers_mad(dates_list, v_rms_list)
     beam_outliers, _ = coadd_beam_gate(lst, fl, dates_list)   # 2026-09-05: subband path
-    all_outliers = set(i_outliers) | set(v_outliers) | set(beam_outliers)
+    i_outliers, v_outliers, i_thresh, v_thresh, all_outliers = _MB.stage2_outliers(dates_list, i_rms_list, v_rms_list, beam_outliers)
+    # a night whose Stokes I metric is not finite is refused (detect_outliers_mad skips non-finite values: without this it would pass)
+    _unmeasured = {m['date'] for m in metrics if not np.isfinite(m['i_rms_mjy'])}
+    i_outliers = set(i_outliers) | _unmeasured
+    all_outliers = set(all_outliers) | _unmeasured
 
     for m in metrics:
         m['i_outlier'] = m['date'] in set(i_outliers)
@@ -2417,13 +2434,19 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         m['v_thresh_mjy'] = v_thresh
 
     n_out = len(all_outliers)
-    print(f"  Outliers (MAD {OUTLIER_SIGMA}σ): "
+    print(f"  Outliers (MAD {OUTLIER_SIGMA}σ; stage 2 {_MB.STAGE2_METRIC}): "
           f"I>{i_thresh:.1f}mJy({len(i_outliers)})  "
           f"V>{v_thresh:.1f}mJy({len(v_outliers)})  "
           f"→ {n_out} excluded, {len(i_aligned)-n_out} good")
 
     pd.DataFrame(metrics).to_csv(
         f'{workdir}/residuals_provisional.csv', index=False)
+    # the stage-2 verdict record (membership.verify reads it from coadd_final; the final stage publishes it there)
+    _MB.write_verdict(workdir, [dict(date=m['date'], i_match_rms_mjy=m['i_rms_mjy'], v_rms_mjy=m['v_rms_mjy'],
+                                     scale2_matched=m['scale2_matched'], i_outlier=m['i_outlier'], v_outlier=m['v_outlier'],
+                                     beam_outlier=m['beam_outlier'], outlier=m['outlier'], i_thresh_mjy=i_thresh,
+                                     v_thresh_mjy=v_thresh, metric=_MB.STAGE2_METRIC, measured_against='provisional')
+                                for m in metrics])
 
     # ── Cleanup temporary files (keep provisional co-adds) ──
     shutil.rmtree(prep_dir, ignore_errors=True)
@@ -2775,13 +2798,22 @@ def build_striation_model(data, wcs, mask, ra_window_beams=20, beam_pix=7.0):
     hw = wp // 2
     model = np.zeros_like(data)
     na = 0
+    # 2026-10-07 SPEED-UP, BIT-IDENTICAL: the pixels are grouped by Dec strip ONCE instead of a full-image scan per strip (~4,000
+    # strips x ~10 M pixels was ~90 per cent of the time). A stable sort by strip keeps each strip's pixels in row-major order - the
+    # order np.where(ib) gave - so np.argsort(ras) below sees the same array and every output pixel is unchanged (identity test
+    # exopipe_ops/striation_identity_test.py, np.array_equal on real images).
+    _flat = np.flatnonzero(valid.ravel())
+    _bins = dbi.ravel()[_flat]
+    _o = np.argsort(_bins, kind='stable')
+    _flat, _bins = _flat[_o], _bins[_o]
+    _st = np.searchsorted(_bins, np.arange(nb), side='left')
+    _en = np.searchsorted(_bins, np.arange(nb), side='right')
     for b in range(nb):
-        ib = (dbi == b) & valid
-        n = np.sum(ib)
+        n = int(_en[b] - _st[b])
         if n < 20:
             continue
         na += 1
-        py, px = np.where(ib)
+        py, px = np.divmod(_flat[_st[b]:_en[b]], w)
         vals = data[py, px]
         ras = ra_map[py, px]
         o = np.argsort(ras)
@@ -3435,6 +3467,13 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     good_dates_deep = get_good_dates_for_interval(workdir, interval=None)
     if good_dates_deep is None:
         good_dates_deep = set(d for d, _, _ in dates) - deep_outliers
+    # STAGE 2 RECORD REQUIRED (2026-10-07): membership must come from the ruled metric (R-STAGE2-PSFMATCH+QA3-RANGE-RULED); a
+    # provisional stage run by older code has no verdict record with it - REFUSE before any work (re-run the provisional stage)
+    from exopipe.phase3 import membership as _MB3
+    _s2rows = _MB3._rcsv(f'{workdir}/{_MB3.VERDICT_FILE}')
+    if not _s2rows or {r.get('metric') for r in _s2rows} != {_MB3.STAGE2_METRIC}:
+        raise RuntimeError(f'{lst} {fl}: no stage-2 verdict with the ruled metric {_MB3.STAGE2_METRIC} from the provisional stage '
+                           f'({workdir}/{_MB3.VERDICT_FILE}) - re-run the provisional stage; REFUSING the final stage')
 
     _gr = _grid_refused_dates([x for x in dates], f'{lst}_{fl}')
     if _gr:
@@ -3562,6 +3601,16 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
         mean_scale = float(coeffs[0])
         weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
+        # STAGE 3 - the flux-alignment window is a co-add MEMBERSHIP VETO (R-THIRD-STAGE-QA-FLUXALIGN 2026-08-25, "gate refuses,
+        # never warns"; R-QA3-BOUNDS-PROCESS-APPROVED 2026-08-26: 0.7-1.6, lower edge 0.35 at 18 MHz and 0.55 at 23/27 MHz). In this
+        # code since 2026-10-07: the August drops were side-script edits that the 2026-09-10 rebuild lost. The scale tested is this
+        # measurement (before flow alignment), the one the window was set on. The night keeps its per-night products (two-tier).
+        from exopipe.phase3 import membership as _MB3
+        _qa3_in = _MB3.qa3_inside(fl, mean_scale)
+        if not _qa3_in:
+            print(f"    {date}: STAGE-3 WINDOW REFUSED - flux-alignment scale {mean_scale:.4g} outside "
+                  f"{_MB3.qa3_window(fl)[0]:g}-{_MB3.qa3_window(fl)[1]:g}; leaves the co-add (products still built)", flush=True)
+            good_dates_deep.discard(date)
 
         flow_path = f'{workdir}/flow/{date}_scaled_flow.npy'
         flow_offsets = _require_flow(flow_path, date, ref_date, f'{lst} {fl}')
@@ -3625,9 +3674,9 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         date_params[date] = {
             'scale_map': scale_map_full, 'flow': flow_offsets, 'weight': weight,
             'regrid': regrid_coords, 'sci_dir': sci_dir,
-            # third-stage QA record (R-THIRD-STAGE-QA-FLUXALIGN 2026-08-25):
-            # recorded per epoch; drops nothing until thresholds are approved
-            'qa3_scale': _mean, 'qa3_tilt': _tilt, 'qa3_nsrc': n_src,
+            # third-stage QA record (R-THIRD-STAGE-QA-FLUXALIGN 2026-08-25; the window veto is applied above since 2026-10-07 -
+            # 'qa3_guard' is the 2026-06-21 affine-fit degeneracy label, NOT the stage-3 verdict; 'qa3_window' is)
+            'qa3_scale': _mean, 'qa3_tilt': _tilt, 'qa3_nsrc': n_src, 'qa3_window': 'inside' if _qa3_in else 'OUTSIDE',
             'qa3_guard': ('degenerate-flatDC' if (n_src < 8 or not
                           (0.7 <= _mean <= 1.4) or _tilt > 0.3) else 'pass'),
             'qa3_rms': tgt_rms,
@@ -3711,7 +3760,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     with open(f'{final_dir}/weights.csv', 'w', newline='') as _f:
         _w = _csv.writer(_f)
         _w.writerow(['date', 'weight', 'qa3_scale', 'qa3_tilt', 'qa3_nsrc',
-                     'qa3_guard', 'qa3_rms_mjy', 'sci_dir', 'in_master', 'flux_dc', 'qa3_scale_aligned'])
+                     'qa3_guard', 'qa3_rms_mjy', 'sci_dir', 'in_master', 'flux_dc', 'qa3_scale_aligned', 'qa3_window'])
         for _d in sorted(date_params):
             _p = date_params[_d]
             _w.writerow([_d, f"{_p['weight']:.6f}", f"{_p.get('qa3_scale', 1):.5f}",
@@ -3720,7 +3769,17 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                          f"{1e3 * _p.get('qa3_rms', float('nan')):.2f}",
                          _p.get('sci_dir', ''), int(_d in good_dates_deep),
                          _p.get('flux_dc', '1.00000' if _p.get('qa3_guard') == 'reference-identity' else ''),
-                         _p.get('qa3_scale_aligned', '')])
+                         _p.get('qa3_scale_aligned', ''),
+                         'reference' if _p.get('qa3_guard') == 'reference-identity' else _p.get('qa3_window', '')])
+    # STAGE-2 VERDICT beside the master + THE MEMBERSHIP CONTENT TEST (2026-10-07): the provisional stage's verdict record is published
+    # with the master, and the cell's membership is verified against every membership ruling - a violation REFUSES the build (no
+    # REBUILD_CONTENT_OK, so it can never be installed or searched)
+    from exopipe.phase3 import membership as _MB3
+    shutil.copy2(f'{workdir}/{_MB3.VERDICT_FILE}', f'{final_dir}/{_MB3.VERDICT_FILE}')
+    _mv = _MB3.verify(workdir, exclusions)
+    if _mv:
+        raise RuntimeError(f'{lst} {fl}: MEMBERSHIP CONTENT TEST FAILED ({len(_mv)}): ' + ' | '.join(_mv[:5]) + ' - REFUSING the build')
+    print(f"  {lst} {fl}: membership content test PASS (stage 2 {_MB3.STAGE2_METRIC}; stage-3 window; night / epoch checks; exclusions)")
     _n_loo = write_loo_masters(i_aligned, final_i_path,
                                f'{final_dir}/loo', f'I_loo_Taper_R075_{fl}.fits')
     if final_v_path:

@@ -155,7 +155,11 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, 
     'sky' tables are unchanged.  The pulsar and cross-match exemptions stay in sky angle (they compare catalogue
     positions)."""
     ra = np.atleast_1d(np.asarray(ra, float)); dec = np.atleast_1d(np.asarray(dec, float))
-    if _tab is None and elev is not None and os.environ.get('P3_TABLE_ELEV') == '1':
+    # 2026-10-07 (rulings audit): ON BY DEFAULT for every caller that passes an elevation (the deep search and the deep conformance -
+    # Gregg 2026-10-04 "Yes on 1", 2026-10-06 "2. yes"); it needed P3_TABLE_ELEV=1 set by hand, so a default run silently dropped the
+    # ruling. P3_TABLE_ELEV=0 turns it off for a comparison run only. The 10-minute conformance computes an elevation only when the
+    # variable is set explicitly, so the snapshot / sub-LST behaviour is unchanged.
+    if _tab is None and elev is not None and os.environ.get('P3_TABLE_ELEV', '1') == '1':
         elev = np.atleast_1d(np.asarray(elev, float))
         cut = np.zeros(len(ra), bool); note = [''] * len(ra)
         pre = os.environ.get('P3_TABLE_PREFIX') or os.environ.get('P3_CADENCE', 'deep')
