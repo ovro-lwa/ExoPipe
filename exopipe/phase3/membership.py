@@ -284,9 +284,10 @@ def verify_products(cell_dir, token='', cell=None):
         if h.get('FLUXBAKE') is not True or not str(h.get('FLUXVER', '')).startswith(REQUIRED_FLUXVER) or h.get('SHSCALE') is None:
             out.append(f'{lst} {band}: {m} does not carry the ruled flux scale (FLUXBAKE {h.get("FLUXBAKE")}, FLUXVER '
                        f'{str(h.get("FLUXVER", ""))[:24]!r}, SHSCALE {h.get("SHSCALE")}; required FLUXBAKE True, {REQUIRED_FLUXVER})')
-    for pb in (f'PB_deep{token}_{band}.fits', f'PB_deep_R075{token}_{band}.fits'):
-        if not os.path.exists(os.path.join(fd, pb)):
-            out.append(f'{lst} {band}: PB map {pb} missing')
+    for pb, plain in ((f'PB_deep{token}_{band}.fits', f'PB_deep_{band}.fits'), (f'PB_deep_R075{token}_{band}.fits', f'PB_deep_R075_{band}.fits')):
+        # a flux-scaled generation keeps the PB maps' plain names (they are not scaled); a dewarp generation tokens them
+        if not (os.path.exists(os.path.join(fd, pb)) or os.path.exists(os.path.join(fd, plain))):
+            out.append(f'{lst} {band}: PB map {plain} missing')
     acc = {(r['lst'], r['scope']) for r in (_rcsv(DEWARP_ACCEPTED) or [])}
     if not acc:
         out.append(f'{lst} {band}: master-dewarp acceptance list {DEWARP_ACCEPTED} unreadable')
