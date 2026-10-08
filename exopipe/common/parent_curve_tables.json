@@ -14055,6 +14055,5439 @@
    "source": "deep_elev_r3.json",
    "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/data07/gh/phase3/transients/Run_P3S4/parent_catalogs)",
    "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median"
+  },
+  "deep_I-multi_18MHz": {
+   "stokes": "I-multi",
+   "band": "18MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.5
+    ],
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 12417,
+   "n_cells": 15,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_18MHz_el25-35": {
+   "stokes": "I-multi",
+   "band": "18MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     3,
+     5,
+     0.5
+    ],
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.25
+    ]
+   ],
+   "n_candidates": 1930,
+   "n_cells": 15,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_18MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "18MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 3952,
+   "n_cells": 15,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_18MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "18MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.75
+    ]
+   ],
+   "n_candidates": 6535,
+   "n_cells": 15,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_23MHz": {
+   "stokes": "I-multi",
+   "band": "23MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.5
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 49913,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_23MHz_el25-35": {
+   "stokes": "I-multi",
+   "band": "23MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 7544,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_23MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "23MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 14979,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_23MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "23MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.25
+    ],
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.25
+    ],
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 27390,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_27MHz": {
+   "stokes": "I-multi",
+   "band": "27MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.0
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 41645,
+   "n_cells": 18,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_27MHz_el25-35": {
+   "stokes": "I-multi",
+   "band": "27MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.0
+    ],
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     0.75
+    ],
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 6729,
+   "n_cells": 18,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_27MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "27MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     5,
+     8,
+     1.25
+    ],
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 12109,
+   "n_cells": 18,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_27MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "27MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.25
+    ],
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 22807,
+   "n_cells": 18,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_32MHz": {
+   "stokes": "I-multi",
+   "band": "32MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 28099,
+   "n_cells": 16,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_32MHz_el25-35": {
+   "stokes": "I-multi",
+   "band": "32MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 4542,
+   "n_cells": 16,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_32MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "32MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 8409,
+   "n_cells": 16,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_32MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "32MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 15148,
+   "n_cells": 16,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_36MHz": {
+   "stokes": "I-multi",
+   "band": "36MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 23084,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_36MHz_el25-35": {
+   "stokes": "I-multi",
+   "band": "36MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 4088,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_36MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "36MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.25
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 7388,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_36MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "36MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 11608,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_41MHz": {
+   "stokes": "I-multi",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 25970,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_41MHz_el25-35": {
+   "stokes": "I-multi",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 4375,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_41MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 8963,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_41MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 12632,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_46MHz": {
+   "stokes": "I-multi",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 5940,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_46MHz_el25-35": {
+   "stokes": "I-multi",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.75
+    ],
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 1384,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_46MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     1.0
+    ],
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 2368,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_46MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 2188,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_50MHz": {
+   "stokes": "I-multi",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 2083,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_50MHz_el25-35": {
+   "stokes": "I-multi",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.25
+    ]
+   ],
+   "n_candidates": 347,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_50MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 853,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_50MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.25
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 883,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_55MHz": {
+   "stokes": "I-multi",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.25
+    ]
+   ],
+   "n_candidates": 383,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_55MHz_el35-50": {
+   "stokes": "I-multi",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.25
+    ]
+   ],
+   "n_candidates": 178,
+   "n_cells": 16,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_55MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     60,
+     100,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ]
+   ],
+   "n_candidates": 146,
+   "n_cells": 19,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_59MHz": {
+   "stokes": "I-multi",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     0.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.5
+    ],
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.5
+    ]
+   ],
+   "n_candidates": 69,
+   "n_cells": 19,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_59MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     0.5
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     0.5
+    ]
+   ],
+   "n_candidates": 37,
+   "n_cells": 13,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_64MHz": {
+   "stokes": "I-multi",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.75
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.75
+    ]
+   ],
+   "n_candidates": 69,
+   "n_cells": 13,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_64MHz_el50-90": {
+   "stokes": "I-multi",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     1.0
+    ]
+   ],
+   "n_candidates": 37,
+   "n_cells": 8,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_69MHz": {
+   "stokes": "I-multi",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.5
+    ]
+   ],
+   "n_candidates": 50,
+   "n_cells": 9,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_73MHz": {
+   "stokes": "I-multi",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.5
+    ]
+   ],
+   "n_candidates": 54,
+   "n_cells": 10,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_78MHz": {
+   "stokes": "I-multi",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     20,
+     35,
+     0.75
+    ]
+   ],
+   "raw_table": [
+    [
+     20,
+     35,
+     0.75
+    ]
+   ],
+   "n_candidates": 39,
+   "n_cells": 7,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_82MHz": {
+   "stokes": "I-multi",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 29,
+   "n_cells": 6,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Blue": {
+   "stokes": "I-multi",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     35,
+     60,
+     0.5
+    ]
+   ],
+   "raw_table": [
+    [
+     8,
+     12,
+     0.25
+    ],
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     35,
+     60,
+     0.5
+    ]
+   ],
+   "n_candidates": 169,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Blue_el50-90": {
+   "stokes": "I-multi",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     35,
+     60,
+     0.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.5
+    ],
+    [
+     35,
+     60,
+     0.5
+    ]
+   ],
+   "n_candidates": 97,
+   "n_cells": 15,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Full": {
+   "stokes": "I-multi",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 350378,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Full_el25-35": {
+   "stokes": "I-multi",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 44787,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Full_el35-50": {
+   "stokes": "I-multi",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 98898,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Full_el50-90": {
+   "stokes": "I-multi",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     0.75
+    ],
+    [
+     35,
+     60,
+     1.0
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 206693,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Green": {
+   "stokes": "I-multi",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 97654,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Green_el25-35": {
+   "stokes": "I-multi",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 14490,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Green_el35-50": {
+   "stokes": "I-multi",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 29551,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Green_el50-90": {
+   "stokes": "I-multi",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.5
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.25
+    ]
+   ],
+   "n_candidates": 53613,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Red": {
+   "stokes": "I-multi",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 78405,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Red_el25-35": {
+   "stokes": "I-multi",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.25
+    ],
+    [
+     35,
+     60,
+     1.5
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 12257,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Red_el35-50": {
+   "stokes": "I-multi",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     1.0
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.5
+    ],
+    [
+     100,
+     200,
+     1.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 23316,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_I-multi_Red_el50-90": {
+   "stokes": "I-multi",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "raw_table": [
+    [
+     12,
+     20,
+     0.75
+    ],
+    [
+     20,
+     35,
+     1.0
+    ],
+    [
+     35,
+     60,
+     1.25
+    ],
+    [
+     60,
+     100,
+     1.25
+    ],
+    [
+     100,
+     200,
+     1.25
+    ],
+    [
+     200,
+     1000000.0,
+     1.5
+    ]
+   ],
+   "n_candidates": 42832,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_I.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_rebuild_list.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_18MHz": {
+   "stokes": "V-multi",
+   "band": "18MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 97,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_18MHz_el50-90": {
+   "stokes": "V-multi",
+   "band": "18MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 63,
+   "n_cells": 11,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_23MHz": {
+   "stokes": "V-multi",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     60,
+     100,
+     0.25
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 1890,
+   "n_cells": 16,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_23MHz_el25-35": {
+   "stokes": "V-multi",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 66,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_23MHz_el35-50": {
+   "stokes": "V-multi",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     60,
+     100,
+     0.5
+    ],
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 358,
+   "n_cells": 16,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_23MHz_el50-90": {
+   "stokes": "V-multi",
+   "band": "23MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 1466,
+   "n_cells": 15,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_27MHz": {
+   "stokes": "V-multi",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.75
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 1623,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_27MHz_el25-35": {
+   "stokes": "V-multi",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 74,
+   "n_cells": 11,
+   "provisional": false,
+   "elevation_band": [
+    25,
+    35
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_27MHz_el35-50": {
+   "stokes": "V-multi",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 340,
+   "n_cells": 13,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_27MHz_el50-90": {
+   "stokes": "V-multi",
+   "band": "27MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     0.5
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 1209,
+   "n_cells": 12,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_32MHz": {
+   "stokes": "V-multi",
+   "band": "32MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     100,
+     200,
+     1.0
+    ],
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 642,
+   "n_cells": 13,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_32MHz_el35-50": {
+   "stokes": "V-multi",
+   "band": "32MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 110,
+   "n_cells": 12,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_32MHz_el50-90": {
+   "stokes": "V-multi",
+   "band": "32MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 507,
+   "n_cells": 12,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_36MHz": {
+   "stokes": "V-multi",
+   "band": "36MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "n_candidates": 64,
+   "n_cells": 16,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_36MHz_el50-90": {
+   "stokes": "V-multi",
+   "band": "36MHz",
+   "ratio": "2.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "n_candidates": 50,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T16:52:58Z",
+   "source": "multi_r2V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T16:52:58Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_41MHz": {
+   "stokes": "V-multi",
+   "band": "41MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "n_candidates": 146,
+   "n_cells": 18,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_46MHz": {
+   "stokes": "V-multi",
+   "band": "46MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     0.25
+    ]
+   ],
+   "n_candidates": 120,
+   "n_cells": 17,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_50MHz": {
+   "stokes": "V-multi",
+   "band": "50MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [
+    [
+     60,
+     100,
+     0.25
+    ]
+   ],
+   "n_candidates": 119,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_55MHz": {
+   "stokes": "V-multi",
+   "band": "55MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 148,
+   "n_cells": 17,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_59MHz": {
+   "stokes": "V-multi",
+   "band": "59MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 138,
+   "n_cells": 19,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_64MHz": {
+   "stokes": "V-multi",
+   "band": "64MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 258,
+   "n_cells": 19,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_69MHz": {
+   "stokes": "V-multi",
+   "band": "69MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 283,
+   "n_cells": 19,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_73MHz": {
+   "stokes": "V-multi",
+   "band": "73MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 257,
+   "n_cells": 22,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_78MHz": {
+   "stokes": "V-multi",
+   "band": "78MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 286,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_82MHz": {
+   "stokes": "V-multi",
+   "band": "82MHz",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 143,
+   "n_cells": 17,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_Blue": {
+   "stokes": "V-multi",
+   "band": "Blue",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 237,
+   "n_cells": 21,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_Full": {
+   "stokes": "V-multi",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 100,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_Full_el50-90": {
+   "stokes": "V-multi",
+   "band": "Full",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "n_candidates": 62,
+   "n_cells": 14,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_Green": {
+   "stokes": "V-multi",
+   "band": "Green",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [],
+   "raw_table": [],
+   "n_candidates": 139,
+   "n_cells": 20,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_Red": {
+   "stokes": "V-multi",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 304,
+   "n_cells": 13,
+   "provisional": false,
+   "elevation_band": null,
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_Red_el35-50": {
+   "stokes": "V-multi",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     1.0
+    ]
+   ],
+   "n_candidates": 43,
+   "n_cells": 10,
+   "provisional": false,
+   "elevation_band": [
+    35,
+    50
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
+  },
+  "deep_V-multi_Red_el50-90": {
+   "stokes": "V-multi",
+   "band": "Red",
+   "ratio": "3.0",
+   "metric": "image-pixel",
+   "table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "raw_table": [
+    [
+     200,
+     1000000.0,
+     0.75
+    ]
+   ],
+   "n_candidates": 251,
+   "n_cells": 11,
+   "provisional": false,
+   "elevation_band": [
+    50,
+    90
+   ],
+   "derived_utc": "2026-10-08T08:46:02Z",
+   "source": "multi_r3_V.json",
+   "parents": "Robust -0.75 master catalogue I_deep_Taper_R075 (/fast/gh/main/phase3/p3s5_parents_union_20261008)",
+   "beam_unit": "target-image beam: each detection searched deep epoch frame BMAJ (archive msub_ssub); null = cell median",
+   "derived_utc_class": "2026-10-08T08:46:02Z",
+   "excluded_cells": "/fast/gh/main/phase3/multiples_tables_20261008/excluded_cells_V.txt",
+   "class_definition": "repeat class: harvest rows that reached the table, partner in another (LST, night) cell within one beam width (multiples fork, Gregg 2026-09-06 / 2026-10-08)"
   }
  },
  "meta_10min": {
@@ -14102,6 +19535,17 @@
    "measured": 114,
    "backup": "/lustre/gh/main/exopipe/exopipe/common/parent_curve_tables.json.bak_20261007T035433",
    "ruling": "Gregg 2026-10-04 \"Yes on 1 and 2\""
+  },
+  "2026-10-08T16:53:22Z": {
+   "source": "/fast/gh/main/phase3/multiples_tables_20261008",
+   "kind": "MULTIPLES tables deep_<S>-multi_<band>[_el..]",
+   "metric": "image-pixel",
+   "elevation_bands": "25-35,35-50,50-90 + all-elevation (20-25 report-only)",
+   "ratio": "3.0 (V 18-36 MHz 2.0)",
+   "floor": 5.0,
+   "measured": 89,
+   "backup": "/lustre/gh/main/exopipe/exopipe/common/parent_curve_tables.json.bak_20261008T165322",
+   "ruling": "Gregg 2026-09-06 (custom multiples tables) + 2026-10-08 (\"2. yes\"; \"approved\")"
   }
  }
 }
