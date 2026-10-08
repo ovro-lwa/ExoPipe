@@ -973,8 +973,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             f'cell, or point P3_COADD_ROOT at the current-generation root '
             f'(exopipe_ops/resolve_master_root.sh resolves it).')
     # ── MASTER-MEMBERSHIP GATE (2026-10-07, Gregg "Yes, go") ───────────
-    # REFUSES, does not warn. The stage-2 (PSF-matched metric) and stage-3 (flux-alignment window) membership rulings of 2026-08-26
-    # were applied in August by side scripts and lost at the 2026-09-10 rebuild, so vetoed nights sat in 119 masters. A deep cell is
+    # REFUSES, does not warn. The stage-3 (flux-alignment window) membership ruling of 2026-08-26 was applied in August by side
+    # scripts and lost at the 2026-09-10 rebuild; stage 2 is the non-matched metric (canon section 7, 2026-09-05). A deep cell is
     # searched only when its master's member nights satisfy every membership ruling (exopipe.phase3.membership.verify: exclusions,
     # stage 2 with the ruled metric, stage-3 window, night-image and epoch-image checks). Deep cadence only; the 10-minute tier is the
     # snapshot / sub-LST chat's (cross-tier note in the ledger). P3_ALLOW_OLD_MASTERS=1 bypasses it for archaeology, never production.

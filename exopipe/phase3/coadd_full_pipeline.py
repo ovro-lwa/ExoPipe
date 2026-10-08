@@ -2371,11 +2371,10 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
             prov_v_path, tmpl_hdr)
 
     # ── Residual analysis ──
-    # STAGE 2 = OPTION 2 (R-STAGE2-PSFMATCH+QA3-RANGE-RULED, Gregg 2026-08-26; in this code since 2026-10-07 - in August it ran only
-    # as the side script exopipe_ops/reverdict_stage2.py and the 2026-09-10 rebuild lost its verdicts): Stokes I = the PSF-matched
-    # residual rms of the night against the provisional master (exopipe.phase3.membership.psfmatched_rms, the August recipe);
-    # Stokes V = the unmatched night-minus-provisional rms (unchanged). The old unmatched I value is kept in the record
-    # (i_rms_unmatched_mjy). A night whose metric cannot be measured is an outlier (refused), never a silent pass.
+    # STAGE 2 = the NON-MATCHED residual rms of the night against the provisional master (Gregg 2026-09-01, "non-matched throughout is
+    # the target"; 2026-09-04, "Non-matched everywhere is correct including for the search frame" - superseding the PSF matching of the
+    # 2026-08-26 Option-2 ruling). 2026-10-08: a PSF-matched metric put here on 2026-10-07 contradicted those rulings and is removed. A
+    # night whose metric cannot be measured is an outlier (refused), never a silent pass. The verdict is recorded (stage2_verdict.csv).
     from exopipe.phase3 import membership as _MB
     prov_i_data, prov_i_hdr = load_image(prov_i_path)
     prov_v_data = None
@@ -2385,14 +2384,8 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
     metrics = []
     for date, i_path, weight in i_aligned:
         i_data, i_hdr = load_image(i_path)
-        i_rms_unmatched = compute_residual_rms(i_data, prov_i_data, horizon_mask,
-                                               margin_frac=0.15)
-        try:
-            i_rms, _dc2 = _MB.psfmatched_rms(i_data, prov_i_data, prov_i_hdr, get_midpoint_time(i_hdr, i_path),
-                                             i_hdr.get('BMAJ'))
-        except Exception as _e:
-            print(f"    {date}: STAGE-2 METRIC NOT MEASURABLE ({_e}) - the night is refused", flush=True)
-            i_rms, _dc2 = np.nan, np.nan
+        i_rms = compute_residual_rms(i_data, prov_i_data, horizon_mask,
+                                      margin_frac=0.15)
 
         v_rms = np.nan
         v_match = [x for x in v_aligned if x[0] == date]
@@ -2408,8 +2401,6 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
             'weight': weight,
             'has_flow': os.path.exists(f'{workdir}/flow/{date}_scaled_flow.npy'),
             'is_reference': date == ref_date,
-            'i_rms_unmatched_mjy': float(i_rms_unmatched * 1000) if np.isfinite(i_rms_unmatched) else np.nan,
-            'scale2_matched': _dc2,
             'stage2_metric': _MB.STAGE2_METRIC,
         })
 
@@ -2442,8 +2433,8 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
     pd.DataFrame(metrics).to_csv(
         f'{workdir}/residuals_provisional.csv', index=False)
     # the stage-2 verdict record (membership.verify reads it from coadd_final; the final stage publishes it there)
-    _MB.write_verdict(workdir, [dict(date=m['date'], i_match_rms_mjy=m['i_rms_mjy'], v_rms_mjy=m['v_rms_mjy'],
-                                     scale2_matched=m['scale2_matched'], i_outlier=m['i_outlier'], v_outlier=m['v_outlier'],
+    _MB.write_verdict(workdir, [dict(date=m['date'], i_rms_mjy=m['i_rms_mjy'], v_rms_mjy=m['v_rms_mjy'],
+                                     i_outlier=m['i_outlier'], v_outlier=m['v_outlier'],
                                      beam_outlier=m['beam_outlier'], outlier=m['outlier'], i_thresh_mjy=i_thresh,
                                      v_thresh_mjy=v_thresh, metric=_MB.STAGE2_METRIC, measured_against='provisional')
                                 for m in metrics])
@@ -3467,8 +3458,9 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     good_dates_deep = get_good_dates_for_interval(workdir, interval=None)
     if good_dates_deep is None:
         good_dates_deep = set(d for d, _, _ in dates) - deep_outliers
-    # STAGE 2 RECORD REQUIRED (2026-10-07): membership must come from the ruled metric (R-STAGE2-PSFMATCH+QA3-RANGE-RULED); a
-    # provisional stage run by older code has no verdict record with it - REFUSE before any work (re-run the provisional stage)
+    # STAGE 2 RECORD REQUIRED (2026-10-07; metric corrected 2026-10-08): membership must come from the ruled non-matched metric
+    # (canon section 7, 2026-09-05: no PSF matching anywhere); a provisional stage run by other code (the PSF-matched records of
+    # 2026-10-07, or none) has no verdict record with it - REFUSE before any work (re-run the provisional stage)
     from exopipe.phase3 import membership as _MB3
     _s2rows = _MB3._rcsv(f'{workdir}/{_MB3.VERDICT_FILE}')
     if not _s2rows or {r.get('metric') for r in _s2rows} != {_MB3.STAGE2_METRIC}:

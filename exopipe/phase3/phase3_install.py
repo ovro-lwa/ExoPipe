@@ -224,7 +224,7 @@ def _gates(cell, gen, kind, rebuild_root=None):
         if not rebuild_root or not os.path.exists(f'{rebuild_root}/REBUILD_CONTENT_OK'):
             raise RuntimeError(f'{cell}: a rebuilt cell needs --rebuild-root with REBUILD_CONTENT_OK - REFUSING')
     # G-MEMBERSHIP (2026-10-07, Gregg "Yes, go"): no master is installed whose member nights disagree with the membership rulings
-    # (exopipe.phase3.membership.verify - exclusions, stage 2 with the ruled PSF-matched metric, the stage-3 window, the night-image and
+    # (exopipe.phase3.membership.verify - exclusions, stage 2 with the ruled non-matched metric, the stage-3 window, the night-image and
     # epoch-image checks). A rebuilt cell is verified in its rebuild root; a re-dewarp keeps the membership of the installed cell.
     from exopipe.phase3 import membership as _MB
     _mcell = rebuild_root.rstrip('/') if (kind == 'rebuild' or rebuild_root) else f'{ROOT}/{cell}'   # --rebuild-root IS the cell's rebuild dir

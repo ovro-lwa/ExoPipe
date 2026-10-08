@@ -1,18 +1,20 @@
 """membership.py - THE co-add membership rulings in one place (Gregg 2026-10-07: "Yes, go but I want the list of every step that was
 ratified lest we end up back here again in a week"; ledger APPROVED-FIX-STAGE2-STAGE3-VETOES-AND-RULINGS-REGISTER).
 
-WHY THIS MODULE EXISTS: the two QA rulings of 2026-08-26 were carried out in August by side scripts that edited each cell's records
-(exopipe_ops/reverdict_stage2.py, apply_blessed_drops*.py); the 2026-09-10 rebuild regenerated the records with the old metric and no
-stage-3 test, and the vetoed nights went back into the masters (measured 2026-10-07: 132 stage-2 rejects and 30 stage-3 nights in 119
-of 456 masters). Here the rulings are CODE, read by the co-add (coadd_full_pipeline), by the install (phase3_install) and by the deep
-search (phase3_deep), and `verify` REFUSES a master whose member nights disagree with them.
+WHY THIS MODULE EXISTS: the stage-3 QA ruling of 2026-08-25/26 ran in August only in side scripts that edited each cell's records
+(apply_blessed_drops*.py); the 2026-09-10 rebuild had no stage-3 test, and nights outside the window went back into the masters. Here
+the rulings are CODE, read by the co-add (coadd_full_pipeline), by the install (phase3_install) and by the deep search (phase3_deep),
+and `verify` REFUSES a master whose member nights disagree with them. (The 2026-10-07 count of "132 stage-2 rejects in the masters"
+used the superseded PSF-matched metric and is withdrawn.)
 
 RULINGS ENCODED (fix_ledger ids; Gregg's words in the register RATIFIED_STEPS_REGISTER.csv):
-  stage 2 - R-STAGE2-PSFMATCH+QA3-RANGE-RULED (2026-08-26, "OPTION 2"): the Stokes I metric is the PSF-matched residual rms of the night
-            against the master; Stokes V the unmatched night-minus-master rms; outliers by the production MAD rule (high side 3 sigma,
-            low side R-GC5), union of the Stokes, plus the co-add beam gate. psfmatched_rms() is the recipe of the August re-verdict that
-            Gregg's sign-off tables were built from (reverdict_stage2.py), verbatim: empirical beams, symmetric cross-convolution, second
-            scale fit, dilution renormalisation, 8-beam destripe, robust inner rms.
+  stage 2 - the NON-MATCHED residual rms of the night against the provisional master, Stokes I (inner 70 %) and Stokes V (inner 50 %),
+            coadd_full_pipeline.compute_residual_rms; outliers by the production MAD rule (high side OUTLIER_SIGMA, low side R-GC5),
+            union of the Stokes, plus the co-add beam gate (2026-09-02/05); a night whose Stokes I value cannot be measured is refused.
+            Canon: PHASE3_ARCHITECTURE.md section 7, amended 2026-09-05 - "there is NO PSF matching anywhere in the production chain"
+            (Gregg 2026-09-01 "non-matched throughout is the target"; 2026-09-04 "Non-matched everywhere is correct including for the
+            search frame"; R-ISEARCHFRAME-NOPSF-SUPERSEDES-PSFMATCH, R-NONMATCHED-EVERYWHERE-INCL-SEARCH-FRAME). The PSF-matched
+            metric of the 2026-08-26 Option-2 ruling is SUPERSEDED; it was wrongly put back here on 2026-10-07 and removed 2026-10-08.
   stage 3 - R-THIRD-STAGE-QA-FLUXALIGN (2026-08-25, "gate refuses, never warns") + R-QA3-BOUNDS-PROCESS-APPROVED (2026-08-26): the
             flux-alignment scale (measure_flux_scale default estimator, measured before flow alignment - the quantity the window was set
             on) inside 0.7-1.6 for >= 41 MHz and every wideband; lower edge 0.35 at 18 MHz, 0.55 at 23 and 27 MHz. 32 and 36 MHz have no
@@ -22,30 +24,30 @@ RULINGS ENCODED (fix_ledger ids; Gregg's words in the register RATIFIED_STEPS_RE
   also checked by verify (implemented elsewhere, recorded per cell): exclusions (data_decisions.csv, absolute), the night-image check
             (2026-10-02), the epoch-image check (2026-10-04), grid refusals.
 
-RECORDS: <cell>/coadd_final/stage2_verdict.csv - one row per night: the stage-2 values and verdicts, the metric version, and what the
-metric was measured against ('provisional' = the build's provisional master; 'master:<md5 prefix>' = a verification of an installed master
-by the dry run). verify() requires it, with metric == STAGE2_METRIC.
+RECORDS: the build's own stage-2 record - <cell>/coadd_final/stage2_verdict.csv (builds from 2026-10-08) or, for a master built
+earlier, <cell>/residuals_provisional.csv (the provisional stage has written the same non-matched values there since 2026-08-12).
+verify() re-applies the outlier rule to the RECORDED VALUES, so a flag edited by a script cannot decide membership, and reports every
+night whose recorded flag disagrees with the rule (stage2_record). A record of another metric is refused.
 
-CLI (production; read-only unless --write):
-  python -m exopipe.phase3.membership verdict <cell_dir> [--write]   stage-2 metric of every night against the cell's installed master
-  python -m exopipe.phase3.membership verify  <cell_dir>             the content test; exit 1 on any violation
-  python -m exopipe.phase3.membership dryrun  <cell_dir> [--out DIR] [--write-if-consistent]   required vs actual membership (JSON)
-  python -m exopipe.phase3.membership adopt   <cell_dir> <verdict_csv>  install a reviewed dry-run verdict when membership agrees
+CLI (production; read-only):
+  python -m exopipe.phase3.membership verify <cell_dir>   the content test (membership + products); exit 1 on any violation
+  python -m exopipe.phase3.membership stage2 <cell_dir>   the stage-2 record, the rule re-applied, and any disagreement (JSON)
 """
 import csv
-import hashlib
 import json
 import os
 import sys
 
 import numpy as np
 
-STAGE2_METRIC = 'psfmatched-option2-v1'
+STAGE2_METRIC = 'nonmatched-provisional-v1'
+SUPERSEDED_METRICS = ('psfmatched-option2-v1',)   # 2026-10-07 PSF-matched records: refused (canon section 7, 2026-09-05)
 QA3_HI = 1.6
 QA3_LO = {'18MHz': 0.35, '23MHz': 0.55, '27MHz': 0.55}
 QA3_LO_DEFAULT = 0.7
 VERDICT_FILE = 'stage2_verdict.csv'
-VERDICT_FIELDS = ['date', 'i_match_rms_mjy', 'v_rms_mjy', 'scale2_matched', 'i_outlier', 'v_outlier', 'beam_outlier', 'outlier',
+BUILD_RECORD = 'residuals_provisional.csv'
+VERDICT_FIELDS = ['date', 'i_rms_mjy', 'v_rms_mjy', 'i_outlier', 'v_outlier', 'beam_outlier', 'outlier',
                   'i_thresh_mjy', 'v_thresh_mjy', 'metric', 'measured_against']
 
 
@@ -88,61 +90,6 @@ def solar_quarantined(lst, band, date):
     return fs in q
 
 
-def inner_rms(d, margin):
-    """Robust rms of the inner (1 - 2 x margin) of the frame: finite non-zero pixels, 4-MAD clip, standard deviation (reverdict recipe)."""
-    h, w = d.shape
-    m = int(min(h, w) * margin)
-    v = d[m:h - m, m:w - m]
-    v = v[np.isfinite(v) & (v != 0)]
-    if v.size < 100:
-        return float('nan')
-    med = np.median(v)
-    mad = 1.4826 * np.median(np.abs(v - med))
-    v = v[np.abs(v - med) < 4 * mad]
-    return float(np.std(v))
-
-
-def _empirical_beam_px(img, hdr_bmaj_px):
-    from exopipe.phase3.identify import fit_empirical_beam
-    em = fit_empirical_beam(img)
-    a = em[0] if np.isfinite(em[0]) and em[0] > 0 else hdr_bmaj_px
-    b = em[1] if np.isfinite(em[1]) and em[1] > 0 else a
-    return (float(a), float(b), 0.0)
-
-
-def psfmatched_rms(epoch, master, master_hdr, obs_time, epoch_bmaj_deg=None):
-    """Stokes I stage-2 metric (Option 2): (rms in Jy of the PSF-matched night-minus-master residual, second-fit scale).
-    epoch and master on the same grid (Jy/beam); master_hdr gives the WCS, CDELT1 and BMAJ."""
-    from astropy.convolution import convolve_fft
-    from astropy.wcs import WCS
-    from exopipe.phase3.phase3_i_psfmatch_ab import gk, dilution
-    from exopipe.phase3.coadd_full_pipeline import measure_flux_scale, build_striation_model
-    cd = abs(float(master_hdr['CDELT1']))
-    w = WCS(master_hdr).celestial
-    bm_px = _empirical_beam_px(master, float(master_hdr['BMAJ']) / cd)
-    be_px = _empirical_beam_px(epoch, float(epoch_bmaj_deg or master_hdr['BMAJ']) / cd)
-    invalid = (epoch == 0) | (master == 0) | ~np.isfinite(epoch)
-    Ec = convolve_fft(np.nan_to_num(epoch), gk(*bm_px), allow_huge=True, normalize_kernel=True)
-    Mc = convolve_fft(np.nan_to_num(master), gk(*be_px), allow_huge=True, normalize_kernel=True)
-    bp_eff = float(np.hypot(be_px[0], bm_px[0]))
-    try:
-        mask = invalid | ~np.isfinite(Ec) | ~np.isfinite(Mc)
-        _, co, ns = measure_flux_scale(Ec, Mc, w, bp_eff, mask, obs_time)
-        dc2 = float(co[0])
-        if ns >= 8 and 0.5 <= dc2 <= 2.0:
-            h_, w_ = master.shape
-            yg, xg = np.indices((h_, w_), dtype=float)
-            sm = co[0] + co[1] * (2 * xg / w_ - 1) + co[2] * (2 * yg / h_ - 1)
-            Ec = np.where(np.abs(sm) > 0.1, Ec / sm, Ec)
-    except Exception:
-        dc2 = float('nan')
-    f = dilution(be_px, bm_px)
-    diff = (Ec - Mc) / max(f, 1e-3)
-    smod, _ = build_striation_model(np.nan_to_num(np.where(invalid, 0, diff)), w, invalid,
-                                    ra_window_beams=8.0 * bp_eff, beam_pix=1.0)
-    return inner_rms(np.where(invalid, np.nan, diff - smod), 0.15), dc2
-
-
 def stage2_outliers(dates, i_vals, v_vals, beam_outliers=()):
     """The production outlier rule on the stage-2 values: coadd_full_pipeline.detect_outliers_mad per Stokes (high side OUTLIER_SIGMA,
     low side R-GC5), union with the beam gate. Returns (i_out, v_out, i_thr, v_thr, all_out)."""
@@ -170,87 +117,68 @@ def _rcsv(p):
         return list(csv.DictReader(f))
 
 
-def _md5_prefix(path):
-    from astropy.io import fits
-    d = np.squeeze(fits.getdata(path)).astype(np.float32)
-    return hashlib.md5(np.ascontiguousarray(np.nan_to_num(d)).tobytes()).hexdigest()[:12]
-
-
 def cell_band(cell_dir):
     lst, band = os.path.basename(cell_dir.rstrip('/')).split('_', 1)
     return lst, band
 
 
-def verdict_against_master(cell_dir, write=False, log=print):
-    """Stage-2 metric of every night of a cell against its INSTALLED master (dry run / verification): night = master + archived residual
-    (subtracted/<date>_I_sub_<band>.fits), exactly as the August re-verdict. Returns the rows; with write=True also writes the record.
-    Stokes V: inner rms of the archived V residual (night minus master) at margin 0.25."""
-    from astropy.io import fits
-    from exopipe.phase3.coadd_full_pipeline import get_midpoint_time
-    lst, band = cell_band(cell_dir)
-    fd = os.path.join(cell_dir, 'coadd_final')
-    mi = os.path.join(fd, f'I_deep_Taper_R075_{band}.fits')
-    if not os.path.exists(mi):
-        raise RuntimeError(f'{lst} {band}: no installed Stokes I master {mi}')
-    with fits.open(mi) as h:
-        mI = np.squeeze(h[0].data).astype(np.float32)
-        hI = h[0].header.copy()
-    W = _rcsv(os.path.join(fd, 'weights.csv')) or []
-    dates = [r['date'] for r in W]
-    tag = 'master:' + _md5_prefix(mi)
-    rows = []
-    for d in dates:
-        sp = os.path.join(cell_dir, 'subtracted', f'{d}_I_sub_{band}.fits')
-        vp = os.path.join(cell_dir, 'subtracted', f'{d}_V_sub_{band}.fits')
-        i_rms = v_rms = dc2 = float('nan')
-        if os.path.exists(sp):
-            with fits.open(sp) as h:
-                sub = np.squeeze(h[0].data).astype(np.float32)
-                sh = h[0].header.copy()
-            if sub.shape == mI.shape:
-                try:
-                    i_rms, dc2 = psfmatched_rms(mI + sub, mI, hI, get_midpoint_time(sh, sp), sh.get('BMAJ'))
-                except Exception as ex:
-                    log(f'  {lst} {band} {d}: stage-2 metric failed ({ex})')
-        if os.path.exists(vp):
-            with fits.open(vp) as h:
-                v_rms = inner_rms(np.squeeze(h[0].data).astype(np.float32), 0.25)
-        rows.append(dict(date=d, i_match_rms_mjy=1e3 * i_rms, v_rms_mjy=1e3 * v_rms, scale2_matched=dc2))
-    from exopipe.phase3.coadd_full_pipeline import coadd_beam_gate
+def _num(x):
     try:
-        beam_out, _ = coadd_beam_gate(lst, band, dates)
-    except Exception:
-        beam_out = []
-    i_out, v_out, i_thr, v_thr, allout = stage2_outliers(dates, [r['i_match_rms_mjy'] for r in rows],
-                                                        [r['v_rms_mjy'] for r in rows], beam_out)
-    for r in rows:
-        r.update(i_outlier=r['date'] in i_out, v_outlier=r['date'] in v_out, beam_outlier=r['date'] in set(beam_out),
-                 outlier=r['date'] in allout, i_thresh_mjy=i_thr, v_thresh_mjy=v_thr, metric=STAGE2_METRIC, measured_against=tag)
-        for k in ('i_match_rms_mjy', 'v_rms_mjy', 'scale2_matched', 'i_thresh_mjy', 'v_thresh_mjy'):
-            r[k] = '' if not np.isfinite(r[k]) else round(float(r[k]), 4)
-    if write:
-        write_verdict(fd, rows)
-    return rows
+        return float(x)
+    except (TypeError, ValueError):
+        return float('nan')
 
 
-def verify(cell_dir, exclusions=None, verdict_rows=None):
+def _flag(x):
+    return str(x).strip() in ('True', '1', 'true')
+
+
+def stage2_record(cell_dir):
+    """Stage 2 of the build that made the cell's master, with the outlier rule RE-APPLIED to the recorded values.
+    Source: coadd_final/stage2_verdict.csv when its metric is STAGE2_METRIC, else the build's <cell>/residuals_provisional.csv when it
+    names no other metric (builds before 2026-10-07 wrote no metric column; their values are compute_residual_rms, the ruled metric).
+    The rule: stage2_outliers on the recorded Stokes I and V values with the build's beam-gate flag; a non-finite Stokes I value is
+    refused. Returns dict(outlier={date: bool}, source, disagree=[...], problem): disagree lists each night whose recorded outlier flag
+    differs from the rule re-applied (the record was edited after the build, or made under another rule); problem says why no usable
+    record exists (None when one does)."""
+    fd = os.path.join(cell_dir, 'coadd_final')
+    V = _rcsv(os.path.join(fd, VERDICT_FILE))
+    if V and {r.get('metric') for r in V} == {STAGE2_METRIC}:
+        src, rows = os.path.join(fd, VERDICT_FILE), V
+    else:
+        src = os.path.join(cell_dir, BUILD_RECORD)
+        rows = _rcsv(src)
+        if not rows:
+            return dict(outlier={}, source=None, disagree=[],
+                        problem=f'no stage-2 record ({VERDICT_FILE} with metric {STAGE2_METRIC}, or {BUILD_RECORD})')
+        other = {r.get('stage2_metric') for r in rows} - {None, '', STAGE2_METRIC}
+        if other:
+            return dict(outlier={}, source=src, disagree=[],
+                        problem=f'{BUILD_RECORD} measured with {sorted(other)} - not the ruled non-matched metric')
+    dates = [r['date'] for r in rows]
+    i_vals = [_num(r.get('i_rms_mjy')) for r in rows]
+    beam = {r['date'] for r in rows if _flag(r.get('beam_outlier'))}
+    _, _, _, _, out = stage2_outliers(dates, i_vals, [_num(r.get('v_rms_mjy')) for r in rows], beam)
+    out |= {d for d, x in zip(dates, i_vals) if not np.isfinite(x)}
+    disagree = [f'{r["date"]}: recorded outlier={r.get("outlier")}, rule gives {r["date"] in out}'
+                for r in rows if _flag(r.get('outlier')) != (r['date'] in out)]
+    return dict(outlier={d: d in out for d in dates}, source=src, disagree=disagree, problem=None)
+
+
+def verify(cell_dir, exclusions=None):
     """THE CONTENT TEST of a cell's master membership against the rulings. Returns a list of violations (empty = pass).
-    A master night (weights.csv in_master 1) must: not be excluded (data_decisions); pass stage 2 in a current-metric record; lie inside
-    the stage-3 window (the reference night excepted); not FAIL the night-image or the epoch-image check. A non-member that passes
-    every check is a violation too (a good night left out). verdict_rows: evaluate with these stage-2 rows instead of the record
-    (the dry run's comparison before anything is written)."""
+    A master night (weights.csv in_master 1) must: not be excluded (data_decisions); pass stage 2 (the rule re-applied to the build's
+    own non-matched record, stage2_record); lie inside the stage-3 window (the reference night excepted); not be a sunlit night; not FAIL
+    the night-image or the epoch-image check. A non-member that passes every check is a violation too (a good night left out)."""
     lst, band = cell_band(cell_dir)
     fd = os.path.join(cell_dir, 'coadd_final')
     W = _rcsv(os.path.join(fd, 'weights.csv'))
     if W is None:
         return [f'{lst} {band}: no weights.csv - membership unknown']
-    V = verdict_rows if verdict_rows is not None else _rcsv(os.path.join(fd, VERDICT_FILE))
-    if V is None:
-        return [f'{lst} {band}: no {VERDICT_FILE} - stage 2 never measured with the ruled metric']
-    bad_metric = {r.get('metric') for r in V} - {STAGE2_METRIC}
-    if bad_metric:
-        return [f'{lst} {band}: {VERDICT_FILE} metric {sorted(bad_metric)} != {STAGE2_METRIC}']
-    S2 = {r['date']: r for r in V}
+    st2 = stage2_record(cell_dir)
+    if st2['problem']:
+        return [f'{lst} {band}: stage 2 - {st2["problem"]}']
+    S2 = st2['outlier']
     NG = {r['date']: r.get('verdict') for r in (_rcsv(os.path.join(fd, 'night_image_gate.csv')) or [])}
     EG = {r['date']: r.get('verdict') for r in (_rcsv(os.path.join(fd, 'epoch_gate.csv')) or [])}
     if exclusions is None:
@@ -265,10 +193,9 @@ def verify(cell_dir, exclusions=None, verdict_rows=None):
         why = []
         if is_excluded(lst, band, d, exclusions):   # is_excluded strips 'MHz' itself
             why.append('excluded in data_decisions')
-        s2 = S2.get(d)
-        if s2 is None:
-            why.append('no stage-2 verdict')
-        elif s2.get('outlier') in ('True', '1', True):
+        if d not in S2:
+            why.append('no stage-2 value in the build record')
+        elif S2[d]:
             why.append('stage-2 outlier')
         if not ref and not qa3_inside(band, r.get('qa3_scale')):
             why.append(f'stage-3 scale {r.get("qa3_scale")} outside {qa3_window(band)}')
@@ -353,47 +280,14 @@ def unprocessed_nights(cell_dir, exclusions=None):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[0] not in ('verdict', 'verify', 'dryrun', 'adopt'):
+    if len(argv) < 2 or argv[0] not in ('verify', 'stage2'):
         sys.exit(__doc__)
     cmd, cell = argv[0], argv[1].rstrip('/')
-    if cmd == 'dryrun':
-        # STEP 3 of the 2026-10-07 plan: the stage-2 metric against the installed master, then the membership the rulings require vs
-        # the membership the master has. --write-if-consistent writes the verdict record ONLY when they agree (the cell needs no rebuild)
-        rows = verdict_against_master(cell, write=False)
-        for r in rows:
-            for k in ('i_outlier', 'v_outlier', 'beam_outlier', 'outlier'):
-                r[k] = str(bool(r[k]))
-        v = verify(cell, verdict_rows=rows)
-        wrote = False
-        if '--out' in argv:   # the computed verdict saved OUTSIDE the cell, for review and a later 'adopt'
-            od = argv[argv.index('--out') + 1]; os.makedirs(od, exist_ok=True)
-            with open(os.path.join(od, f'{os.path.basename(cell)}.stage2_verdict.csv'), 'w', newline='') as f:
-                wcsv = csv.DictWriter(f, fieldnames=VERDICT_FIELDS, extrasaction='ignore'); wcsv.writeheader(); wcsv.writerows(rows)
-        if not v and '--write-if-consistent' in argv:
-            write_verdict(os.path.join(cell, 'coadd_final'), rows); wrote = True
-        print(json.dumps(dict(cell=os.path.basename(cell), nights=len(rows), consistent=not v, wrote=wrote,
-                              in_master_vetoed=[x for x in v if ': IN the master' in x],
-                              left_out_good=[x for x in v if ': LEFT OUT' in x],
-                              stage2_outliers=[r['date'] for r in rows if r['outlier'] == 'True'])))
-        return 0
-    if cmd == 'verdict':
-        rows = verdict_against_master(cell, write='--write' in argv)
-        n = sum(1 for r in rows if r['outlier'])
-        print(json.dumps(dict(cell=os.path.basename(cell), nights=len(rows), stage2_outliers=n,
-                              outliers=[r['date'] for r in rows if r['outlier']], written='--write' in argv)))
-        return 0
-    if cmd == 'adopt':
-        # install a reviewed dry-run verdict as the cell's record - ONLY when the installed master already satisfies every ruling with it
-        rows = _rcsv(argv[2])
-        if not rows or {r.get('metric') for r in rows} != {STAGE2_METRIC}:
-            sys.exit(f'REFUSED: {argv[2]} is not a {STAGE2_METRIC} verdict')
-        v = verify(cell, verdict_rows=rows)
-        if v:
-            print(f'NOT ADOPTED {os.path.basename(cell)}: the master disagrees with the rulings ({len(v)}) - it needs a rebuild')
-            return 1
-        write_verdict(os.path.join(cell, 'coadd_final'), rows)
-        print(f'ADOPTED {os.path.basename(cell)}: {len(rows)} nights; membership verified against the rulings')
-        return 0
+    if cmd == 'stage2':
+        r = stage2_record(cell)
+        print(json.dumps(dict(cell=os.path.basename(cell), source=r['source'], problem=r['problem'],
+                              outliers=sorted(d for d, o in r['outlier'].items() if o), disagree=r['disagree'])))
+        return 0 if not r['problem'] else 1
     v = verify(cell) + verify_products(cell)
     print(f'MEMBERSHIP+PRODUCTS {"PASS" if not v else "FAIL"} {os.path.basename(cell)}' + ''.join('\n  ' + x for x in v))
     return 0 if not v else 1
