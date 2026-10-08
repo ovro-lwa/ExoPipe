@@ -54,7 +54,7 @@ INSTALL_ROUND = os.environ.get('P3_INSTALL_ROUND', '20261004')
 WQ = f'/lustre/gh/main/phase3/working_quarantine_{INSTALL_ROUND}'
 QROOT_NAME = f'Run_INSTALL_QUARANTINE_{INSTALL_ROUND}'
 RECORD = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261004/install_record.csv'
-CELL_FILES = ('weights.csv', 'night_image_gate.csv')                                 # in coadd_final/
+CELL_FILES = ('weights.csv', 'night_image_gate.csv', 'stage2_verdict.csv')          # in coadd_final/ (stage-2 verdict: 2026-10-08)
 CELL_TOP = ('residuals_provisional.csv', 'outliers.csv', 'residuals.csv')            # in the cell directory
 CELL_DIRS = ('flow', 'coadd_provisional')                                            # in the cell directory
 RCOLS = ['time', 'cell', 'step', 'path', 'dest', 'md5', 'bytes', 'detail']
@@ -227,7 +227,7 @@ def _gates(cell, gen, kind, rebuild_root=None):
     # (exopipe.phase3.membership.verify - exclusions, stage 2 with the ruled PSF-matched metric, the stage-3 window, the night-image and
     # epoch-image checks). A rebuilt cell is verified in its rebuild root; a re-dewarp keeps the membership of the installed cell.
     from exopipe.phase3 import membership as _MB
-    _mcell = f'{rebuild_root}/{cell}' if (kind == 'rebuild' or rebuild_root) else f'{ROOT}/{cell}'
+    _mcell = rebuild_root.rstrip('/') if (kind == 'rebuild' or rebuild_root) else f'{ROOT}/{cell}'   # --rebuild-root IS the cell's rebuild dir
     _mv = _MB.verify(_mcell)
     if _mv:
         raise RuntimeError(f'{cell}: master membership violates the rulings ({len(_mv)}): ' + ' | '.join(_mv[:5]) + ' - REFUSING')
@@ -523,7 +523,7 @@ def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
             nm = None
         if nm:
             by_name[nm if nm.endswith('.fits') else nm + '.fits'] = p
-    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv', 'epoch_gate.csv'):
+    for f in ('PB_deep_%s.fits' % scope, 'PB_deep_R075_%s.fits' % scope, 'weights.csv', 'night_image_gate.csv', 'epoch_gate.csv', 'stage2_verdict.csv'):
         by_name[f] = f'{fd}/{f}'
     bad = [p for p in now if os.path.basename(p) not in by_name or md5(p) != md5(by_name[os.path.basename(p)])]
     if bad:
