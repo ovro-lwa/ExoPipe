@@ -41,7 +41,7 @@ def table_for(stokes, band):
         # are not applied. Leakage of a few per cent cannot turn such a parent into a 5-sigma V candidate, and a zone around
         # a faint I source removes real circularly polarised emitters that are themselves faint I sources. Deep only (the
         # 10-minute tables drop them at their own re-derivation, 2026-09-26); the derived table file is left intact.
-        if key.startswith('deep_V_'):
+        if key.startswith('deep_V_') or key.startswith('deep_V-multi_'):   # 2026-10-08: the multiples tables too (as removals)
             tab = [t for t in tab if t[1] > DEEP_V_FAINT_S]
         return tab
     if cad == 'deep':
