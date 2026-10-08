@@ -3494,6 +3494,13 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     if _egm & good_dates_deep:
         print(f"  {lst} {fl}: EPOCH GATE - night(s) {sorted(_egm & good_dates_deep)} leave co-add membership", flush=True)
         good_dates_deep = good_dates_deep - _egm
+    # SUNLIT NIGHTS (Gregg 2026-10-08 "Correct.", his 2026-09-26 intent): a band-night the solar contamination audit QUARANTINEs
+    # leaves co-add membership (products still built; the search refuses its detections at publish - the daytime gate)
+    from exopipe.phase3 import membership as _MBs
+    _sol = {d for d, _, _ in dates if _MBs.solar_quarantined(lst, fl, d)} & good_dates_deep
+    if _sol:
+        print(f"  {lst} {fl}: SUNLIT-NIGHT GATE - night(s) {sorted(_sol)} quarantined by the solar audit leave co-add membership", flush=True)
+        good_dates_deep = good_dates_deep - _sol
     dates_good = [(d, sd, img) for d, sd, img in dates if d in good_dates_deep]
     dates_bad = [(d, sd, img) for d, sd, img in dates if d not in good_dates_deep]
 

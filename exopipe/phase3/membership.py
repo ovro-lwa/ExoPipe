@@ -18,6 +18,7 @@ RULINGS ENCODED (fix_ledger ids; Gregg's words in the register RATIFIED_STEPS_RE
             on) inside 0.7-1.6 for >= 41 MHz and every wideband; lower edge 0.35 at 18 MHz, 0.55 at 23 and 27 MHz. 32 and 36 MHz have no
             separate ruling and take the general 0.7 (stated to Gregg 2026-10-07). A night outside leaves the co-add; it is not removed
             from the search by this module (search removal goes through Gregg's data_decisions sign-off, 2026-08-26 flow).
+  sunlit  - Gregg 2026-09-26 intent + 2026-10-08 "Correct.": a band-night the solar contamination audit QUARANTINEs leaves the co-add.
   also checked by verify (implemented elsewhere, recorded per cell): exclusions (data_decisions.csv, absolute), the night-image check
             (2026-10-02), the epoch-image check (2026-10-04), grid refusals.
 
@@ -60,6 +61,31 @@ def qa3_inside(band, scale):
         return False
     lo, hi = qa3_window(band)
     return bool(np.isfinite(s) and lo <= s <= hi)
+
+
+# SUNLIT NIGHTS (Gregg 2026-09-26: "The intention was to refuse frames with the Sun above -12 deg Evening: refuse frames with the Sun above
+# -18 deg. This has led to bad data in the Masters"; 2026-10-08, on keeping the solar-audit quarantined nights out of the masters: "Correct.")
+# A band-night whose subband the solar contamination audit QUARANTINEs leaves the co-add; a wideband leaves when any constituent subband is
+# quarantined (the is_excluded rule). The audit covers subbands below 46 MHz. Missing audit = REFUSE (a gate never admits what it cannot judge).
+SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'
+_SOLAR = None
+
+
+def solar_quarantined(lst, band, date):
+    global _SOLAR
+    if _SOLAR is None:
+        if not os.path.exists(SOLAR_AUDIT):
+            raise RuntimeError(f'solar contamination audit {SOLAR_AUDIT} missing - REFUSING (sunlit-night gate, Gregg 2026-10-08)')
+        _SOLAR = {}
+        for r in _rcsv(SOLAR_AUDIT):
+            if r.get('verdict', '').startswith('QUARANTINE'):
+                _SOLAR.setdefault((r['lst'], r['date']), set()).add(r['subband'].replace('MHz', ''))
+    q = _SOLAR.get((lst, date), set())
+    fs = band.replace('MHz', '')
+    if fs in ('Red', 'Green', 'Blue', 'Full'):
+        from exopipe.phase3.coadd_full_pipeline import _WB_SUBS
+        return bool(_WB_SUBS[fs] & q)
+    return fs in q
 
 
 def inner_rms(d, margin):
@@ -248,6 +274,8 @@ def verify(cell_dir, exclusions=None, verdict_rows=None):
             why.append(f'stage-3 scale {r.get("qa3_scale")} outside {qa3_window(band)}')
         if NG.get(d) == 'FAIL':
             why.append('night-image check FAIL')
+        if solar_quarantined(lst, band, d):
+            why.append('solar-audit QUARANTINE (sunlit night, Gregg 2026-10-08)')
         if EG.get(d) == 'FAIL':
             why.append('epoch-image check FAIL')
         if member and why:
