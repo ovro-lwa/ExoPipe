@@ -25,7 +25,9 @@ night's images:
 RUNS IN THE BASE ENVIRONMENT (PyBDSF + scipy; no GPU):
     python -m exopipe.phase3.phase3_master_dewarp <lst> [<lst> ...] [--root R] [--input-root I] [--apply [--apply-scopes 18MHz,23MHz]]
 
-Gates (refuse, never warn): a master already carrying MDWARP is REFUSED (no dewarp is stacked on another); fewer than 10
+Gates (refuse, never warn): a master already carrying MDWARP is never re-measured or re-dewarped (no dewarp is stacked on
+another) - since 2026-10-09 (Gregg "1. Go.") it serves the cascade as a reference with its own catalogue instead of counting
+as a refusal; fewer than 10
 RBF anchors after outlier rejection = REFUSED; the VLSSr peak match (the reference-quality gate's measurement,
 coadd_full_pipeline._reference_astrom_ok) on the plain master before and after: fewer than 10 matches, or no improvement
 of the median separation = REFUSED, and the cell stays unwarped and flagged; (b') the median anchor offset before minus
@@ -159,6 +161,9 @@ def _screen_residuals(anchors, wcs, sx, sy, cd_as, k=5, seed=0):
     return np.hypot(dx, dy) * cd_as, fit, cv
 
 
+ALREADY_DEWARPED = 'ALREADY DEWARPED (MDWARP): cascade reference only - not re-measured, not re-dewarped'
+
+
 def _measure(lst, scope, groot, ref, vlssr, diag):
     """One master. ref None = the anchor step against VLSSr; else (label, catalogue, nominal MHz) of the accepted master
     it cascades from. Returns (row, screen or None, dewarped catalogue or None)."""
@@ -175,7 +180,17 @@ def _measure(lst, scope, groot, ref, vlssr, diag):
     with fits.open(plain) as h:
         d0 = np.squeeze(h[0].data).astype(np.float32); hdr = h[0].header.copy()
     if hdr.get('MDWARP') or fits.getheader(pbc).get('MDWARP'):
-        row['status'] = 'REFUSED input already carries MDWARP (a dewarp is never stacked on another)'; return row, None, None
+        # 2026-10-09 (Gregg "1. Go."): a master already carrying the dewarp is NEVER re-measured or re-dewarped (no dewarp is
+        # stacked on another), but it SERVES THE CASCADE AS A REFERENCE - its own PB-corrected catalogue is the dewarped catalogue
+        # the next subband is matched to - and it is not a refusal. Until now it was refused, and three such masters in a row
+        # halted the arm (00h, 2026-10-08: 55/50/46 MHz refused, 41-18 MHz never measured).
+        cat = CD.extract_sources(pbc, LOG)
+        if cat is None or cat.empty:
+            row.update(status='REFUSED already dewarped (MDWARP) and its catalogue extraction failed: not a cascade reference',
+                       seconds=f'{time.time() - t0:.0f}')
+            return row, None, None
+        row.update(status=ALREADY_DEWARPED, seconds=f'{time.time() - t0:.0f}')
+        return row, None, cat
     wcs = WCS(hdr).celestial; shape = d0.shape; beam = hdr.get('BMAJ')
     cd_as = abs(float(hdr.get('CDELT1') or hdr.get('CD1_1'))) * 3600.0
     m0, n0, p0 = vlssr_offsets(d0, hdr); row.update(med_before=f'{m0:.3f}', n_before=n0, p90_before=f'{p0:.3f}')
@@ -339,7 +354,8 @@ def run_lst(lst, root, input_root, apply, apply_scopes, table, vlssr):
     def step(scope, ref):
         groot = _gen_root(root, input_root, lst, scope)
         row, screen, cat = _measure(lst, scope, groot, ref, vlssr, diag)
-        is_ref = row['status'] == 'OK' or row['status'].startswith('REFERENCE ONLY')   # passed (a): a cascade reference
+        is_ref = (row['status'] == 'OK' or row['status'].startswith('REFERENCE ONLY')    # passed (a): a cascade reference
+                  or row['status'] == ALREADY_DEWARPED)                                  # 2026-10-09: an installed dewarp
         if is_ref and cat is not None:
             accepted[scope] = (scope, cat, float(scope.replace('MHz', '')) if scope.endswith('MHz') else ref[2])
         if row['status'] == 'OK' and apply and (not apply_scopes or scope in apply_scopes):
