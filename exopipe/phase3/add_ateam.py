@@ -2,8 +2,10 @@
 """
 add_ateam.py -- add the peeled A-team back into a Phase-3 mosaic for inspection.
 
-The A-team (Cyg A, Cas A, Vir A, Tau A) are peeled during imaging, leaving holes at their
-positions. This adds each back as a beam-shaped Gaussian at its position, with the flux
+Cyg A, Cas A and Vir A are peeled during imaging, leaving holes at their positions. Tau A is NOT
+peeled: the Phase-1 peel model (sources.json) holds only Cyg A, Cas A and Vir A (FINDING-TAU-A-NOT-IN-PHASE1-PEEL-
+MODEL-05H-MASTERS; Gregg 2026-10-11: a Phase-1 bug he fixes, nothing redone), so Tau A is already in the images and is
+NOT added back (adding it would double it). This adds each back as a beam-shaped Gaussian at its position, with the flux
 from the PIPELINE calibrator flux models (workingv18/generate_flux_models.py -- Baars-fit
 Cyg A, epoch-2023.5 definitive Cas A, log-poly Vir A, 970*(nu/1GHz)^-0.30 Tau A),
 evaluated at each band centre. The mosaics are PB-corrected, so the intrinsic (above-beam)
@@ -36,8 +38,8 @@ ATEAM_POS = {
     'Cyg A': (299.8719, 40.7345),
     'Cas A': (350.8349, 58.8375),
     'Vir A': (187.7059, 12.3911),
-    'Tau A': (83.6331, 22.0145),   # Crab (not in the TTCal peel model, but peeled + modelled)
 }
+# Tau A (Crab, 83.6331 +22.0145) is not peeled in Phase 1 (2026-10-11) - it stays in the images and is never added back here.
 
 
 def _band_flux_models():
