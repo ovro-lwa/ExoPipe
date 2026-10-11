@@ -1472,9 +1472,13 @@ def _apply_sigma_stack(cands, sigma_stack, base_thresh):
     return n_rej
 
 
-def run_identification_i(diff, master, hdr, bpix, sigma_stack=None):
+def run_identification_i(diff, master, hdr, bpix, sigma_stack=None,
+                         refuse_on_extraction_failure=False):
     """The real Stokes I chain (search_i_transients) on a residual, with
-    the sigma_stack as a multiplicative local threshold."""
+    the sigma_stack as a multiplicative local threshold.
+    refuse_on_extraction_failure=True (the deep search, Gregg 2026-10-11): a
+    PyBDSF failure raises search_v_transients_v2.SourceExtractionFailed to the
+    caller instead of the fallback peak finder."""
     from exopipe.phase3 import search_i_transients as sit
     wcs = WCS(hdr).celestial
     horizon, ateam, badwcs, obs_time, _ = sit.make_masks(hdr, diff.shape,
@@ -1483,7 +1487,8 @@ def run_identification_i(diff, master, hdr, bpix, sigma_stack=None):
     diff_rms = sit.get_uniform_rms(diff, horizon)
     cands = sit.extract_positive_peaks(
         diff.astype(np.float32), hdr, horizon, ateam, badwcs,
-        wcs, obs_time, diff_rms, bpix)
+        wcs, obs_time, diff_rms, bpix,
+        refuse_on_failure=refuse_on_extraction_failure)
     sit.assign_local_snr(cands, diff, excl, bpix,
                          sit.CONFIG['SIGMA_THRESHOLD'])
     _apply_sigma_stack(cands, sigma_stack, sit.CONFIG['SIGMA_THRESHOLD'])
@@ -1497,14 +1502,17 @@ def run_identification_i(diff, master, hdr, bpix, sigma_stack=None):
 
 
 def run_identification_v(vresid, master_i, hdr, bpix, sigma_stack=None,
-                         sigma_thresh=6.0, i_leakage_mult=None):
+                         sigma_thresh=6.0, i_leakage_mult=None,
+                         refuse_on_extraction_failure=False):
     """Signed V detection (search_v_transients_v2.extract_v_peaks runs
     BDSF on +V and -V — both circular polarization handednesses), local SNR,
     and optional sigma_stack threshold. The I-counterpart leakage rule is OFF
     by default (i_leakage_mult=None): the veto-ROC test (Gregg 2026-06-30) showed
     it costs ~25% (Red) / ~14% (Green) injection retention for negligible FP
     rejection beyond mstruct — mstruct + morphology veto carry the FP rejection.
-    Pass i_leakage_mult=20.0 to restore the old rule (reject if peak|I|>mult*|V|)."""
+    Pass i_leakage_mult=20.0 to restore the old rule (reject if peak|I|>mult*|V|).
+    refuse_on_extraction_failure=True (the deep search, Gregg 2026-10-11): a PyBDSF
+    failure raises sv2.SourceExtractionFailed instead of searching with zero sources."""
     from exopipe.phase3 import search_v_transients_v2 as sv2
     wcs = WCS(hdr).celestial
     horizon, ateam, badwcs, obs_time, _coords, _el = sv2.make_masks(
@@ -1512,7 +1520,8 @@ def run_identification_v(vresid, master_i, hdr, bpix, sigma_stack=None,
     v_rms = float(sv2.get_uniform_rms(vresid, horizon))
     cands = sv2.extract_v_peaks(
         vresid.astype(np.float32), hdr, horizon, ateam, badwcs,
-        wcs, obs_time, sv2.CONFIG['CANDIDATE_SIGMA'], v_rms)
+        wcs, obs_time, sv2.CONFIG['CANDIDATE_SIGMA'], v_rms,
+        refuse_on_failure=refuse_on_extraction_failure)
     sv2.assign_local_snr(cands, vresid, horizon | ateam | badwcs, bpix,
                          sigma_thresh)
     _apply_sigma_stack(cands, sigma_stack, sigma_thresh)

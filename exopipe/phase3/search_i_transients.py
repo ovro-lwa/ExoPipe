@@ -429,11 +429,16 @@ def _run_bdsf(path, thresh_pix, thresh_isl, rms_value=None, mean_map='default'):
 
 
 def extract_positive_peaks(diff_data, diff_header, horizon_mask, ateam_mask,
-                           invalid_wcs_mask, wcs, obs_time, diff_rms, beam_pix):
+                           invalid_wcs_mask, wcs, obs_time, diff_rms, beam_pix,
+                           refuse_on_failure=False):
     """Extract positive peaks from difference image using BDSF.
 
     Only searches for positive residuals (transient brighter in target
-    than reference). Falls back to simple peak-finding if BDSF fails.
+    than reference). Falls back to simple peak-finding if BDSF fails -
+    unless refuse_on_failure=True (the deep search, Gregg 2026-10-11:
+    "a crashed image is recorded as refused, with the error, and is not
+    counted as searched"): then a PyBDSF failure raises
+    search_v_transients_v2.SourceExtractionFailed and no fallback runs.
     """
     post_mask = horizon_mask | ateam_mask | invalid_wcs_mask
     candidates = []
@@ -468,6 +473,11 @@ def extract_positive_peaks(diff_data, diff_header, horizon_mask, ateam_mask,
             print(f"  BDSF: {len(srcs)} positive peaks above horizon/A-team")
 
         except Exception as e:
+            if refuse_on_failure:
+                from exopipe.phase3 import search_v_transients_v2 as _sv2
+                if isinstance(e, _sv2.NODE_ERRORS):
+                    raise      # memory / disk: a node condition - the attempt fails and is retried, never a refusal
+                raise _sv2._extraction_refusal('Stokes I search image', e) from e
             print(f"  BDSF failed: {e}")
             print(f"  Falling back to simple peak-finding...")
             srcs = _fallback_peak_find(diff_data, diff_rms, beam_pix,

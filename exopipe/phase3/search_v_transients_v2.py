@@ -178,6 +178,26 @@ def get_uniform_rms(data, horizon_mask):
 # ================================================================
 # BDSF EXTRACTION
 # ================================================================
+class SourceExtractionFailed(RuntimeError):
+    """PyBDSF raised on a search image (Gregg 2026-10-11, 'Agreed': "a crashed image is recorded as refused, with the
+    error, and is not counted as searched. The rest of the cell is searched normally."). Raised by extract_v_peaks and
+    search_i_transients.extract_positive_peaks when the caller passes refuse_on_failure=True, IN PLACE OF the old
+    zero-source result (V) or the non-validated fallback peak finder (I); str() is the error text. The deep search
+    (phase3_deep.run_deep_cell) catches exactly this class per image and records the refusal. Callers that do not ask
+    for the refusal keep the old behaviour (ledger FINDING-SEARCH-SWALLOWS-PYBDSF-FAILURES-SILENT-ZERO-CANDIDATES)."""
+
+
+# A MemoryError or OSError during extraction is a node condition (memory, disk), not the image: the refusing callers
+# re-raise it as it is, so the cell attempt fails and is retried - it never becomes a refusal of the image.
+NODE_ERRORS = (MemoryError, OSError)
+
+
+def _extraction_refusal(image_label, e):
+    """The SourceExtractionFailed for the PyBDSF exception e on image_label (one line, the exception type named)."""
+    return SourceExtractionFailed(f"PyBDSF raised {type(e).__name__} on the {image_label}: "
+                                  + ' '.join(str(e).split()))
+
+
 def _run_bdsf(fits_path, thresh_pix, thresh_isl, quiet=True, rms_value=None, mean_map=None):
     import bdsf
     kw = dict(thresh_pix=thresh_pix, thresh_isl=thresh_isl, quiet=quiet)
@@ -228,7 +248,10 @@ def _filter_by_mask(sources, mask, shape):
 # ================================================================
 # V PEAK EXTRACTION
 # ================================================================
-def extract_v_peaks(v_data, v_header, horizon_mask, ateam_mask, invalid_wcs_mask, wcs, obs_time, bdsf_thresh, v_rms):
+def extract_v_peaks(v_data, v_header, horizon_mask, ateam_mask, invalid_wcs_mask, wcs, obs_time, bdsf_thresh, v_rms,
+                    refuse_on_failure=False):
+    # refuse_on_failure=True (the deep search, Gregg 2026-10-11): a PyBDSF failure on either signed image raises
+    # SourceExtractionFailed - the whole V image is refused, never searched with zero sources on that sign
     candidates = []; post_mask = horizon_mask | ateam_mask | invalid_wcs_mask
     tmp_dir = tempfile.mkdtemp(prefix='bdsf_v_')
     try:
@@ -244,6 +267,10 @@ def extract_v_peaks(v_data, v_header, horizon_mask, ateam_mask, invalid_wcs_mask
                 n_pre = len(srcs); srcs = _filter_by_mask(srcs, post_mask, v_data.shape)
                 print(f"    BDSF {sign_label}: {n_pre} -> {len(srcs)} after mask")
             except Exception as e:
+                if refuse_on_failure:
+                    if isinstance(e, NODE_ERRORS):
+                        raise
+                    raise _extraction_refusal(f'{sign_label}-signed Stokes V search image', e) from e
                 print(f"    BDSF {sign_label} failed: {e}"); srcs = []
             for s in srcs:
                 snr = sign_mult * s['flux'] / v_rms

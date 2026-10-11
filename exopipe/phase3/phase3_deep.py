@@ -1566,6 +1566,25 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         skip_V_dates |= {d for d in _skipV_tier if d in resid_V}    # per-Stokes search-tier refusals (Gregg 2026-09-13)
     except Exception as _e:
         print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
+    # (1f) SOURCE-EXTRACTION REFUSAL (Gregg 2026-10-11, 'Agreed': "a crashed image is recorded as refused, with the error,
+    # and is not counted as searched. The rest of the cell is searched normally."; ledger
+    # FINDING-SEARCH-SWALLOWS-PYBDSF-FAILURES-SILENT-ZERO-CANDIDATES). Deep cadence: PyBDSF failing on a search image raises
+    # sv2.SourceExtractionFailed (no zero-source result, no fallback finder); the loop below catches exactly that, writes one
+    # row per refused image to refusals/<lst>_<scope>_extraction_<S>_excluded.csv (lst, scope, date, Stokes, reason, attempt,
+    # UTC time) and writes NO image row, gate-ledger row or candidate for it - its search frame stays archived (the frame
+    # exists for every epoch, Gregg 2026-09-13) - and the cell's other images are searched as before. The 10-minute cadence
+    # (sub-LST tier, the snapshot / sub-LST chat's) keeps the old behaviour until ruled for that tier.
+    _xrefuse = cadence == 'deep'
+    _xref = {'I': [], 'V': []}
+
+    def _refuse_extraction(st, d, err):
+        _xref[st].append(d)
+        with open(f'{_refdir}/{lst}_{scope}_extraction_{st}_excluded.csv', 'a', newline='') as _xf_:
+            csv.writer(_xf_, lineterminator='\n').writerow(
+                [lst, scope, d, st, f'source extraction failed: {err}', _attempt,
+                 time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())])
+        print(f'  {lst} {scope} {d}: SOURCE-EXTRACTION GATE - Stokes {st} image REFUSED, not searched '
+              f'(source extraction failed: {err})', flush=True)
     for d in dates:
         ot = _epoch_time(ebase, d, scope)
         hdr = _det_header(hdr0, scope, em, cd, ot)
@@ -1619,7 +1638,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # keying needs every night's post-front count first).
             if d in skip_I_dates:
                 gimg_rows.append([lst, scope, 'I', d, 0, 0, '', '', 0, 0, _elev_floor('I')]); continue
-            _allI = run_identification_i(rI, master_I, hdr, beam, sstack_I)
+            _xfI = None
+            try:
+                _allI = run_identification_i(rI, master_I, hdr, beam, sstack_I,
+                                             refuse_on_extraction_failure=_xrefuse)
+            except sv2.SourceExtractionFailed as _xf:
+                _xfI = _xf
+                _refuse_extraction('I', d, _xf)
+        # the I chain continues only for an image whose extraction ran (a refused image has no row anywhere); the
+        # header is split, not a 'continue', so the V search of the same epoch still runs in a stokes='IV' search
+        if 'I' in stokes and d in resid_I and _xfI is None:
             passed = [c for c in _allI if c['status'] == 'PASS']
             # 2026-09-04 (audit R-09): every identification-stage rejection is
             # a gate-ledger row (local-SNR floor, sigma_stack, merge)
@@ -1726,7 +1754,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # run_identification_v from filtering on sigma_stack.
             # WRITE FLOOR = 5sigma (Gregg 2026-06-30): retain >=5sigma in the CSV for
             # repeaters/cross-match; the mstruct gate (below) still vetoes structure.
-            pV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0)
+            try:
+                pV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0,
+                                          refuse_on_extraction_failure=_xrefuse)
+            except sv2.SourceExtractionFailed as _xf:
+                _refuse_extraction('V', d, _xf); continue
             # 'outlier QA' tag (Gregg 2026-08-26): candidates from coadd-omitted
             # epochs carry the flag through catalogs to transient review
             if _kd(d) in qa_out:
@@ -2046,14 +2078,20 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # adopted the attempt four times before parking the cell. An epoch count of zero is a different and
     # legitimate case (every epoch refused upstream) and still reports normally.
     if dates and not gimg_rows:
+        # a run in which source extraction failed on EVERY image it searched writes no image row and is refused here as
+        # well (the attempt fails and the fleet retries it): the 2026-10-04 test harness made every PyBDSF call fail
         raise RuntimeError(
             f'{lst} {scope}: REFUSING - {len(dates)} epoch(s) entered the search and NOT ONE image row was '
             f'written, so this run produced no ledger row, no frame and no residual. The completion line is '
             f'withheld. Causes seen: the Stokes loop never ran because no residual of that Stokes reached it. '
+            f'Source extraction failed on {len(_xref["I"])} I and {len(_xref["V"])} V image(s) of this run '
+            f'(refusals/{lst}_{scope}_extraction_<S>_excluded.csv). '
             f'Re-run this cell with unbuffered output to see which stage dropped them.')
     print(f'  {lst} {scope}: {len(dates)} epochs -> {nwr} candidates  '
           f'({len(gled_rows)} gate-ledger rows, {len(gimg_rows)} image rows)  '
-          f'({(time.time()-t0)/60:.1f} min)', flush=True)
+          + (f'(source extraction failed, image REFUSED and not searched: I {len(_xref["I"])}, V {len(_xref["V"])})  '
+             if _xrefuse else '')
+          + f'({(time.time()-t0)/60:.1f} min)', flush=True)
     return nwr
 
 
