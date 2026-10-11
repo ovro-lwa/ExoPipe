@@ -3786,6 +3786,13 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     # STAGE-2 VERDICT beside the master + THE MEMBERSHIP CONTENT TEST (2026-10-07): the provisional stage's verdict record is published
     # with the master, and the cell's membership is verified against every membership ruling - a violation REFUSES the build (no
     # REBUILD_CONTENT_OK, so it can never be installed or searched)
+    # THE REFERENCE NIGHT IS A MASTER NIGHT (Gregg 2026-10-11, verbatim: "The reference night should come only from master nights"): a
+    # build aligned and flux-scaled to a fixed-table NIGHT (no previous-generation master - R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-
+    # MASTER) whose reference night did not end up a member of the master is REFUSED (14 installed masters of the 2026-09-08 build had
+    # a stage-2-rejected reference night)
+    if ref_date != 'MASTER' and ref_date not in good_dates_deep:
+        raise RuntimeError(f'{lst} {fl}: the alignment/flux reference night {ref_date} is not a member of the master - the reference '
+                           f'comes only from master nights (Gregg 2026-10-11); REFUSING the build')
     from exopipe.phase3 import membership as _MB3
     shutil.copy2(f'{workdir}/{_MB3.VERDICT_FILE}', f'{final_dir}/{_MB3.VERDICT_FILE}')
     _mv = _MB3.verify(workdir, exclusions)
