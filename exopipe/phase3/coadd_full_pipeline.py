@@ -31,6 +31,13 @@ import subprocess
 import warnings
 from multiprocessing import Pool
 import numpy as np
+# ONE MODULE INSTANCE (2026-10-11): run as `python -m exopipe.phase3.coadd_full_pipeline` this file is __main__, and a module that
+# imports exopipe.phase3.coadd_full_pipeline (membership.verify -> is_excluded) got a SECOND copy whose load_exclusions state
+# (_PERBAND_EXCL) was never filled - the final stage's membership content test then read [PERBAND] rows as whole exclusions and
+# refused 09h Full (2025-01-06, per-band rows at 23/32/36 MHz and Red). Registering this instance under its package name makes
+# every importer share it.
+if __name__ == '__main__':
+    sys.modules.setdefault('exopipe.phase3.coadd_full_pipeline', sys.modules[__name__])
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', message='.*FITSFixedWarning.*')
 warnings.filterwarnings('ignore', message='.*datfix.*')
