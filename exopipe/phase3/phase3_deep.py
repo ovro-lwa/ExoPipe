@@ -297,7 +297,10 @@ MIN_EPOCHS = int(os.environ.get('P3_MIN_EPOCHS', '3'))   # Gregg 2026-09-11: 3 f
 # DEEP (2026-10-07, rulings audit): Gregg's 2026-09-11 "Lower MIN_EPOCHS to 3 for this run" was scoped to that run (ledger: "a later
 # run reverts to 5 unless re-ruled") and was never reverted. The deep cadence is back at 5 (on 2026-10-07 every searched deep cell had
 # 5 or more nights, so nothing changes today); the 10-minute cadence keeps MIN_EPOCHS (the snapshot / sub-LST chat's).
-DEEP_MIN_EPOCHS = int(os.environ.get('P3_DEEP_MIN_EPOCHS', '5'))
+# GREGG 2026-10-11, verbatim: "The deep search needs at least 5?! Thats nonsense and not something I would have ratified. If theres
+# a Master, you only need 1 night to do a search." - the deep cadence searches any cell with one or more epochs (the 5 was a rider of
+# the search design, never a ruled threshold: FINDING-THIN-CELLS-POLICY-SKIPPED-BY-MIN-EPOCHS-5-AFTER-FLOOR-WAIVER-FOR-GREGG).
+DEEP_MIN_EPOCHS = int(os.environ.get('P3_DEEP_MIN_EPOCHS', '1'))
 NPROC_RESID = int(os.environ.get('DEEP_NPROC_RESID', '6'))   # epoch-parallel residual build
 
 
