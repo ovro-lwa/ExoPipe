@@ -90,6 +90,25 @@ def solar_quarantined(lst, band, date):
     return fs in q
 
 
+# NAMED OUT-OF-MASTER NIGHTS (Gregg 2026-10-11 '(b)', on 17h 18 MHz 2025-05-05: leave it out of the master, search it). A band-night Gregg
+# has ruled out of the master BY NAME although it passes every membership check: the co-add final stage leaves it out, and verify neither
+# reports it as 'left out but passes' nor accepts it as a member. It is NOT a search removal (that is data_decisions.csv) - the night keeps
+# its own gates in the search. The table is code (named_out_of_master.csv beside this module; one row per ruling with Gregg's words and
+# the ledger id), never edited by a script. Missing table = REFUSE.
+NAMED_OUT_OF_MASTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'named_out_of_master.csv')
+_NAMED_OUT = None
+
+
+def named_out_of_master(lst, band, date):
+    global _NAMED_OUT
+    if _NAMED_OUT is None:
+        rows = _rcsv(NAMED_OUT_OF_MASTER)
+        if rows is None:
+            raise RuntimeError(f'{NAMED_OUT_OF_MASTER} missing - REFUSING (named out-of-master rulings, Gregg 2026-10-11)')
+        _NAMED_OUT = {(r['lst'], r['band'].replace('MHz', ''), r['date']) for r in rows if r.get('ruling', '').strip()}
+    return (lst, band.replace('MHz', ''), date) in _NAMED_OUT
+
+
 def stage2_outliers(dates, i_vals, v_vals, beam_outliers=()):
     """The production outlier rule on the stage-2 values: coadd_full_pipeline.detect_outliers_mad per Stokes (high side OUTLIER_SIGMA,
     low side R-GC5), union with the beam gate. Returns (i_out, v_out, i_thr, v_thr, all_out)."""
@@ -205,9 +224,12 @@ def verify(cell_dir, exclusions=None):
             why.append('solar-audit QUARANTINE (sunlit night, Gregg 2026-10-08)')
         if EG.get(d) == 'FAIL':
             why.append('epoch-image check FAIL')
+        named = named_out_of_master(lst, band, d)
+        if member and named:
+            why.append('ruled out of the master by name (named_out_of_master.csv)')
         if member and why:
             out.append(f'{lst} {band} {d}: IN the master but ' + '; '.join(why))
-        elif not member and not why:
+        elif not member and not why and not named:
             out.append(f'{lst} {band} {d}: LEFT OUT of the master but passes every membership ruling')
     return out
 

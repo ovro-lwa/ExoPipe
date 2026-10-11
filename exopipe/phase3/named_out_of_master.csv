@@ -1,0 +1,2 @@
+lst,band,date,ruling,ruled_utc,ledger_id
+17h,18MHz,2025-05-05,"Gregg 2026-10-11: '(b)' - out of the 17h 18 MHz master, searched (epoch gate with it in the dewarped master 1.2535 > 1.25; without it 1.2072; flux-alignment guard degenerate-flatDC, measured scale 0.459, 4.9 per cent of the master weight)",2026-10-11 ~03:55 UTC (terminal),R-GREGG-20261011-17H18-0505-OPTION-B

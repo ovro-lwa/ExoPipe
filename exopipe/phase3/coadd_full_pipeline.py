@@ -3493,6 +3493,12 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     if _sol:
         print(f"  {lst} {fl}: SUNLIT-NIGHT GATE - night(s) {sorted(_sol)} quarantined by the solar audit leave co-add membership", flush=True)
         good_dates_deep = good_dates_deep - _sol
+    # NAMED OUT-OF-MASTER NIGHTS (Gregg 2026-10-11 '(b)'): a band-night ruled out of the master by name (membership.named_out_of_master)
+    # leaves co-add membership; it is still searched under its own gates (not a data_decisions exclusion)
+    _nom = {d for d, _, _ in dates if _MBs.named_out_of_master(lst, fl, d)} & good_dates_deep
+    if _nom:
+        print(f"  {lst} {fl}: NAMED OUT-OF-MASTER - night(s) {sorted(_nom)} ruled out of the master by name leave co-add membership", flush=True)
+        good_dates_deep = good_dates_deep - _nom
     dates_good = [(d, sd, img) for d, sd, img in dates if d in good_dates_deep]
     dates_bad = [(d, sd, img) for d, sd, img in dates if d not in good_dates_deep]
 
