@@ -231,6 +231,19 @@ def verify(cell_dir, exclusions=None):
             out.append(f'{lst} {band} {d}: IN the master but ' + '; '.join(why))
         elif not member and not why and not named:
             out.append(f'{lst} {band} {d}: LEFT OUT of the master but passes every membership ruling')
+    # NIGHTS ABSENT FROM THE RECORD (Gregg 2026-10-11 'Approved'): a night that never entered weights.csv is never tested above. A
+    # non-excluded night with a Stokes I residual in the cell but no row in the record is a violation (Q28: 11h 2025-01-10 was
+    # re-admitted 2026-09-20 after its 36-82 MHz masters were built; for three weeks it was in no master and searched nowhere).
+    _sd = os.path.join(cell_dir, 'subtracted')
+    if os.path.isdir(_sd):
+        import re
+        from exopipe.phase3.coadd_full_pipeline import is_excluded as _isx
+        _pat = re.compile(r'^(\d{4}-\d\d-\d\d)_I_sub(?:_\w+?)?_' + re.escape(band) + r'\.fits$')
+        _wd = {r['date'] for r in W}
+        for d in sorted({m.group(1) for f in os.listdir(_sd) for m in [_pat.match(f)] if m} - _wd):
+            if not _isx(lst, band, d, exclusions):
+                out.append(f'{lst} {band} {d}: has a Stokes I residual in the cell but is ABSENT from the co-add record (weights.csv) '
+                           f'- never tested against the membership rulings; the master must be rebuilt')
     return out
 
 
