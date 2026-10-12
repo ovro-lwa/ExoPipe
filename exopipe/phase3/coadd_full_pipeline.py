@@ -82,6 +82,10 @@ SUBBANDS = [18, 23, 27, 32, 36, 41, 46, 50, 55, 59, 64, 69, 73, 78, 82]
 WIDEBAND_BANDS = ['Red', 'Green', 'Blue', 'Full']
 EXCLUDED_LSTS = set()           # 11h/12h no longer hard-excluded (Gregg 2026-06-26)
 MIN_DATES_FOR_COADD = 3
+# VARIANT co-adds (I Taper R0, NoTaper R0 / R0.75) build from 2 nights (Gregg 2026-10-11, '(a)' on 23h Green: the variant gate refused
+# 2025-08-09's Taper R0 input, leaving 2 of its 3 nights, so no Taper R0 master, no Robust-0 PB map, no cleaned V). The survey master
+# and the Stokes V master keep MIN_DATES_FOR_COADD.
+MIN_DATES_FOR_VARIANT = 2
 
 REFERENCE_DATES = {
     # 00h: mosaic-coverage cell (Gregg 2026-07-05) — deliberately SHALLOW,
@@ -3280,7 +3284,7 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
         generation, and the full header standard stamped.
     NO realignment, NO reference selection, NOTHING else written: the survey pair, LOO masters, weights,
     residuals and PB stay untouched. Output: <workdir>/variants_rebuilt/I_deep_<variant>_<fl>.fits.
-    Returns {variant: (path, n_constituents, refused)}; a variant with fewer than MIN_DATES_FOR_COADD
+    Returns {variant: (path, n_constituents, refused)}; a variant with fewer than MIN_DATES_FOR_VARIANT
     admitted inputs is reported, not written."""
     import csv as _csv
     fl = freq_label(freq_str)
@@ -3362,8 +3366,8 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
                 _shp = tuple(int(fits.getheader(img).get(f'NAXIS{i}', 0)) for i in (2, 1))
                 refused.append((date, f'grid mismatch {_shp} vs {tuple(target_shape)}: regrid failed'
                                 if _shp != tuple(target_shape) else 'alignment failed'))
-        if len(aligned) < MIN_DATES_FOR_COADD:
-            print(f"  {lst} {fl} {vk}: only {len(aligned)} admitted inputs (need {MIN_DATES_FOR_COADD}); NOT written")
+        if len(aligned) < MIN_DATES_FOR_VARIANT:
+            print(f"  {lst} {fl} {vk}: only {len(aligned)} admitted inputs (need {MIN_DATES_FOR_VARIANT}); NOT written")
             results[vk] = (None, len(aligned), refused); continue
         path = f'{out_dir}/I_deep_{vk}_{fl}.fits'
         coadd_inverse_variance([p for _, p, _ in aligned], [w for _, _, w in aligned], path, tmpl_hdr,
@@ -3837,7 +3841,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         if ok and os.path.exists(i_r0_out):
             i_r0_aligned.append((date, i_r0_out, params['weight']))
 
-    if len(i_r0_aligned) >= MIN_DATES_FOR_COADD:
+    if len(i_r0_aligned) >= MIN_DATES_FOR_VARIANT:
         final_i_r0_path = f'{final_dir}/I_deep_Taper_R0_{fl}.fits'
         coadd_inverse_variance(
             [p for _, p, _ in i_r0_aligned],
@@ -3879,7 +3883,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                                        tmpl_hdr, target_shape, _out, params['regrid'])
             if ok and os.path.exists(_out):
                 _aligned.append((date, _out, params['weight']))
-        if len(_aligned) >= MIN_DATES_FOR_COADD:
+        if len(_aligned) >= MIN_DATES_FOR_VARIANT:
             _path = f'{final_dir}/{_out_name}'
             coadd_inverse_variance(
                 [p for _, p, _ in _aligned],
