@@ -68,13 +68,20 @@ ALLOW_WRITE_PATH = re.compile(
 WRITE_FLAGS = re.compile(r'O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND')
 
 
+# Files whose PURPOSE is to act when executed or imported (not importable library modules):
+# __main__.py runs `exopipe3` under `python -m exopipe.phase3`; the parity sitecustomize installs the write guard in
+# Python subprocesses by design (core/parity_sitecustomize).
+_ENTRY_FILES = ('__main__.py', os.path.join('parity_sitecustomize', 'sitecustomize.py'))
+
+
 def _modules():
     out = []
     for dp, dn, fn in os.walk(PKG):
         dn[:] = [d for d in dn if d != '__pycache__']
         for f in sorted(fn):
-            if f.endswith('.py'):
-                out.append(os.path.join(dp, f))
+            p = os.path.join(dp, f)
+            if f.endswith('.py') and not any(p.endswith(os.sep + e) for e in _ENTRY_FILES):
+                out.append(p)
     return out
 
 

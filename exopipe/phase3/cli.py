@@ -20,25 +20,29 @@ import importlib       # noqa: E402
 
 # (name, one-line summary, group) in pipeline order. The module is exopipe.phase3.steps.<name>.
 STEPS = [
-    ('flow', 'alignment flows: per-night co-add flows (deep); per-frame flows to the multi-night master (snapshot)', 'build'),
-    ('masters', 'co-add masters + LOO + QA gates; V clean; flux scale; PB maps; master catalogue; content tests', 'build'),
-    ('dewarp', 'master dewarp per LST: RBF screen on the rebuilt masters, cubic apply, content test D1-D6', 'build'),
-    ('install', 'gated install of rebuilt products into the working tree; quarantine round; re-search queue', 'build'),
-    ('frames', 'per-epoch / per-bin residuals and search frames, pbcorr siblings, noise maps', 'search'),
-    ('search', 'detection + gates with fitted positions (deep, sub-LST, snapshot)', 'search'),
-    ('catalog', 'harvest, merge, conformance, association, identity, E statistic, selection, names; snapshot chain', 'search'),
-    ('forced', 'forced photometry (Gaussian fit >= 7 sigma, empirical-beam template below); event panels', 'publish'),
-    ('curves', 'light-curve products', 'publish'),
-    ('pages', 'review pages (served queues, inspection twins, multiples), fingerprint skip', 'publish'),
-    ('serve', 'review servers and the hub; served-queue content test; exact-pid restart', 'publish'),
-    ('archive', 'manifest, checksum transfer, content audit, quarantine; retire excluded nights; rollback', 'publish'),
-    ('mosaic', 'mosaicked products', 'capability'),
-    ('photometry', 'photometry of input samples (Hot/Warm Jupiters, flare/UCD, 10/25/50 pc)', 'capability'),
-    ('followup', 'follow-up of high-interest candidates (honing, dynamic spectra, periodicity, folding, dedispersion)', 'capability'),
-    ('jupiter', 'the Jupiter reflection program', 'capability'),
-    ('verify', 'run the content test of any product class alone', 'tools'),
-    ('status', 'per-cell completion, exclusion conformance, stale products, coverage; emits item lists', 'tools'),
-    ('run', 'multi-node runner: jobs, queues, --after, hold/release/drain/retry (replaces fleets and dated drivers)', 'tools'),
+    # per hour: one LST hour of one night, in near real time, against the installed masters (DESIGN 12.1)
+    ('frames', 'per-epoch / per-window / per-frame residuals and search frames, pbcorr siblings, noise maps', 'per hour'),
+    ('flow', 'alignment flows: snapshot frames and sub-LST windows (per hour); per-night co-add flows (masters builds)', 'per hour'),
+    ('search', 'detection + gates with fitted positions (deep, sub-LST, snapshot)', 'per hour'),
+    ('catalog', 'merge, conformance, association, identity, selection, names (--incremental adds one hour); snapshot chain', 'per hour'),
+    ('forced', 'forced photometry (Gaussian fit >= 7 sigma, empirical-beam template below); event panels', 'per hour'),
+    ('curves', 'light-curve products', 'per hour'),
+    ('pages', 'review pages (served queues, inspection twins, multiples), incremental or full', 'per hour'),
+    ('serve', 'review servers and the hub; served-queue and exclusion content tests; exact-pid restart', 'per hour'),
+    ('archive', 'manifest, checksum transfer, content audit, quarantine; retire excluded nights; rollback', 'per hour'),
+    # survey (intermittent): many hours on disk (DESIGN 12.2)
+    ('masters', 'co-add masters + LOO + QA gates; V clean; flux scale; PB maps; source catalogue (all tiers)', 'survey'),
+    ('dewarp', 'master dewarp per LST: RBF screen on the rebuilt masters, cubic apply, content test D1-D6', 'survey'),
+    ('install', 'gated install of rebuilt products into the working tree; quarantine round; re-run list', 'survey'),
+    ('calibrate', 'versioned reference tables: derive, diff, install, verify', 'survey'),
+    ('mosaic', 'mosaicked products', 'survey'),
+    ('photometry', 'photometry of input samples (Hot/Warm Jupiters, flare/UCD, 10/25/50 pc)', 'survey'),
+    ('followup', 'follow-up of high-interest candidates (honing, dynamic spectra, periodicity, folding, dedispersion)', 'survey'),
+    ('jupiter', 'the Jupiter reflection program', 'survey'),
+    # tools
+    ('status', 'completion, exclusion conformance, stale products, coverage, rebuild due; emits item lists', 'tools'),
+    ('verify', 'run the content test of any product class alone; compare two product roots (parity)', 'tools'),
+    ('run', 'multi-node runner: jobs, chains (e.g. the per-hour chain), --after, --code, hold/release/drain/retry', 'tools'),
 ]
 
 # Selectors a step may declare in SELECTORS; cli adds the flags.
@@ -51,6 +55,7 @@ _SELECTOR_FLAGS = {
     'stokes': (['--stokes'], dict(help='Stokes: I, V or I,V')),
     'exclude_cells': (['--exclude-cells'], dict(help='cells to leave out (same grammar as --cells)')),
     'run_label': (['--run'], dict(dest='run_label', help='run label of the products to read/write (e.g. P3S5)')),
+    'epochs': (['--epochs'], dict(help='per-hour items <LST>_<date> (all bands and tiers of that hour): 04h_2025-10-14, @file')),
 }
 
 

@@ -54,15 +54,48 @@ def content_test(cls, name=None):
 
 
 def classes():
+    _discover()
     return sorted(set(OWNERS) | set(_TESTS))
+
+
+_DISCOVERED = False
+_DISCOVERY_ERRORS = {}   # module -> error text (a broken tests module must not hide every other class's tests)
+
+
+def _discover():
+    """Import every lib/<step>/tests*.py module (where steps register their content tests)."""
+    global _DISCOVERED
+    if _DISCOVERED:
+        return
+    _DISCOVERED = True
+    import pkgutil
+    import exopipe.phase3.lib as lib
+    for sub in pkgutil.iter_modules(lib.__path__):
+        if not sub.ispkg:
+            continue
+        pkg = importlib.import_module(f'exopipe.phase3.lib.{sub.name}')
+        for m in pkgutil.iter_modules(pkg.__path__):
+            if m.name == 'tests' or m.name.startswith('tests_'):
+                name = f'exopipe.phase3.lib.{sub.name}.{m.name}'
+                try:
+                    importlib.import_module(name)
+                except Exception as e:
+                    _DISCOVERY_ERRORS[name] = f'{type(e).__name__}: {e}'
 
 
 def tests_for(cls):
     if cls not in _TESTS and cls in OWNERS:
-        importlib.import_module(OWNERS[cls])
+        try:
+            importlib.import_module(OWNERS[cls])
+        except ImportError:
+            pass
     if cls not in _TESTS:
+        _discover()
+    if cls not in _TESTS:
+        broken = '; '.join(f'{k} ({v})' for k, v in _DISCOVERY_ERRORS.items())
         raise KeyError(f'no content test registered for product class {cls!r} - every class a step writes must '
-                       f'have one (known classes: {", ".join(classes())})')
+                       f'have one (known classes: {", ".join(classes())})' + (f'; test modules that failed to import: '
+                                                                              f'{broken}' if broken else ''))
     return _TESTS[cls]
 
 

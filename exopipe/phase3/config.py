@@ -78,7 +78,8 @@ class paths(_Section):
     # Product roots that hold PRODUCTION data. While PRODUCTION_WRITES is False (the refactor window, until each
     # step's parity run passes and Gregg approves its cutover) a step refuses to write under any of them: parity and
     # scratch runs pass --out to their own roots.
-    PRODUCTION_ROOTS = ('/lustre/pipeline/exopipe/phase3', '/data07/gh/phase3', '/lustre/gh/main/phase3')
+    PRODUCTION_ROOTS = ('/lustre/pipeline/exopipe/phase3', '/data07/gh/phase3', '/lustre/gh/main/phase3',
+                        '/fast/gh/main/phase3')   # node-local production run roots (deep forced, snapshot forced work)
     PRODUCTION_WRITES = False
     # Config keys ('section.KEY') whose values are PINNED inputs - frozen, checksummed inputs a ruling names (e.g. a
     # frozen master tree, a tier-rule pin). They are protected like the keys in PROTECTED (DESIGN 11.4, 11.6).
@@ -610,6 +611,22 @@ def _load_site(cfg):
     return path
 
 
+def _load_drafts():
+    """REFACTOR WINDOW ONLY: step sections written by the implementation agents as exopipe/phase3/_cfgdraft_*.py are
+    loaded here until the refactor chat folds them into this file (then the drafts and this function are deleted)."""
+    import glob as _g
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in sorted(_g.glob(os.path.join(here, '_cfgdraft_*.py'))):
+        spec = importlib.util.spec_from_file_location('exopipe.phase3.' + os.path.basename(path)[:-3], path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for k, v in vars(mod).items():
+            if inspect.isclass(v) and issubclass(v, _Section) and v is not _Section and not k.startswith('_'):
+                if k in globals() and globals()[k] is not v:
+                    raise RuntimeError(f'config draft {path} redefines section {k!r}')
+                globals()[k] = v
+
+
 def _collect():
     secs = {}
     for name, obj in list(globals().items()):
@@ -618,6 +635,7 @@ def _collect():
     return secs
 
 
+_load_drafts()
 CFG = _Config(_collect())
 SITE_FILE = _load_site(CFG)
 
