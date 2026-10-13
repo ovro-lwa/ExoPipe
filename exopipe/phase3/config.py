@@ -84,6 +84,18 @@ class astrometry(_Section):
                   (0, 45): {'Red': 2.6, 'Green': 1.9, 'Blue': 1.4}}
     SYS_SCALE = {('V', 'Red'): 1.5}      # class scale of the systematic (build_source_catalogs_v3.SYS_SCALE)
     STAT_COEFF = 0.42                    # statistical error = STAT_COEFF x beam FWHM / S/N, per axis (S3b)
+    # Association criterion (exopipe_ops/build_source_catalogs_v3.K_ASSOC, whose comment follows verbatim; multiples_fork
+    # parses the value out of that file's source text today - this is the value it reads):
+    # ---- association criterion (Gregg 2026-09-05, R-ASSOCIATION-RADIUS-QUADRATURE):
+    # two detections/sources associate when their separation is below
+    #   K_ASSOC x sqrt(stat_i^2 + sys_i^2 + stat_j^2 + sys_j^2)
+    # stat = 0.42 x beam FWHM / SNR per detection (SNR floored at 5; _stat_as), sys = the detection's
+    # systematic astrometric error measured from the data (below), K_ASSOC = 3.034 =
+    # the 99th percentile of the Rayleigh distribution of a 2-D Gaussian offset.
+    # No per-band operating radius, no floor, no cap. A source with N detections
+    # carries stat = sqrt(sum w^2 stat^2) / sum w with w = 1/(stat^2 + sys^2) per detection, and the systematic
+    # averaged down with the same weights (2026-09-27: this comment said w = SNR^2 and 'its band's sys'; code is inverse variance).
+    K_ASSOC = 3.034                      # dimensionless multiplier of the quadrature sum (99th percentile, Rayleigh)
 
 
 class fitting(_Section):
