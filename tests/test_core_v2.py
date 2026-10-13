@@ -509,6 +509,152 @@ def test_item3_planned_outputs_item_refusals_exit_codes():
 
 
 # =====================================================================================================================
+# item 4 - runner: --code worktrees, forwarded overrides, chains
+# =====================================================================================================================
+
+class runner_cfg:
+    """Set CFG.runner attributes for the block (restored after)."""
+
+    def __init__(self, **kw):
+        self.kw = kw
+
+    def __enter__(self):
+        from exopipe.phase3.config import CFG
+        self.old = {k: getattr(CFG.runner, k) for k in self.kw}
+        for k, v in self.kw.items():
+            setattr(CFG.runner, k, v)
+        return CFG
+
+    def __exit__(self, *exc):
+        from exopipe.phase3.config import CFG
+        for k, v in self.old.items():
+            setattr(CFG.runner, k, v)
+
+
+def _git(repo, *args):
+    r = subprocess.run(['git', '-C', repo, '-c', 'user.name=test', '-c', 'user.email=test@example.invalid']
+                       + list(args), capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_item4_code_worktree_runs_pinned_steps():
+    import socket
+    from exopipe.phase3.core import runner
+    with Scratch('item4code') as d:
+        # a synthetic repository whose exopipe.phase3 entry point reports the file it runs from
+        repo = os.path.join(d, 'repo')
+        os.makedirs(os.path.join(repo, 'exopipe', 'phase3'))
+        open(os.path.join(repo, 'exopipe', '__init__.py'), 'w').write('')
+        open(os.path.join(repo, 'exopipe', 'phase3', '__init__.py'), 'w').write('')
+        open(os.path.join(repo, 'exopipe', 'phase3', '__main__.py'), 'w').write(
+            'import os, sys\nprint("PINNED-CODE", os.path.abspath(__file__), " ".join(sys.argv[1:]))\n'
+            'sys.exit(0)\n')
+        subprocess.run(['git', 'init', '-q', repo], check=True, capture_output=True)
+        _git(repo, 'add', '-A')
+        _git(repo, 'commit', '-q', '-m', 'pinned')
+        sha = _git(repo, 'rev-parse', 'HEAD')
+        code_root = os.path.join(d, '_code')
+        jobs = os.path.join(d, 'jobs')
+        with runner_cfg(JOBS_ROOT=jobs, CODE_REPO=repo, CODE_WORKTREES_ROOT=code_root, POLL_S=1):
+            # once per commit, reused
+            s1, path, created = runner.ensure_code_worktree(sha[:9])
+            assert s1 == sha and created and path == os.path.join(code_root, sha)
+            s2, path2, created2 = runner.ensure_code_worktree(sha)
+            assert path2 == path and not created2
+            main = os.path.join(path, 'exopipe', 'phase3', '__main__.py')
+            assert os.path.isfile(main) and not os.access(main, os.W_OK) and not os.access(path, os.W_OK)
+            assert _git(path, 'rev-parse', 'HEAD') == sha
+            assert os.path.isdir(os.path.join(path, 'exopipe', 'phase3', '__pycache__'))   # compiled before chmod
+            raises(SystemExit, runner.ensure_code_worktree, 'no-such-commit-xyz')
+            # a job pinned to the commit: the step process runs from the worktree; the commit is recorded
+            job = runner.submit('t4code', ['search', '--cells', '{item}'], ['04h_Red'],
+                                [(socket.gethostname(), 1)], start=False, code=sha[:9],
+                                forward=['--set', 'runner.POLL_S=7'])
+            j = runner.load_job(job)
+            assert j['code_commit'] == sha and j['code_root'] == path and j['code_repo'] == repo
+            runner.worker(job)
+            st = runner.item_state(job, '04h_Red')
+            assert st['status'] == 'done' and st['code_commit'] == sha, st
+            log = open(st['log']).read()
+            assert f'PINNED-CODE {main} search --cells 04h_Red --set runner.POLL_S=7' in log, log
+            # list_jobs skips the code-worktree root and anything without a job.json
+            os.makedirs(os.path.join(jobs, '_code'))
+            assert runner.list_jobs() == [job]
+
+
+def test_item4_chain_steps_per_item():
+    import socket
+    from exopipe.phase3.core import runner
+    with Scratch('item4chain') as d:
+        good = os.path.join(d, 'good.csv')
+        late = os.path.join(d, 'late.csv')           # missing at first: step 2 refuses, step 3 never runs
+        open(good, 'w').write('a,b\n1,2\n')
+        # a template without {item} would get '--cells <item>' appended (verify has no --cells): every step names it
+        chains = {'t4': ['verify --list --glob {item} --cores none', 'verify csv_table {item} --cores none',
+                         ['verify', '--list', '--glob', '{item}', '--cores', 'none']]}
+        with runner_cfg(JOBS_ROOT=os.path.join(d, 'jobs'), CHAINS=chains, POLL_S=1):
+            raises(SystemExit, runner.submit, None, [], [good], [('localhost', 1)], start=False, chain='nope')
+            raises(SystemExit, runner.submit, None, ['verify'], [good], [('localhost', 1)], start=False, chain='t4')
+            job = runner.submit(None, [], [good, late], [(socket.gethostname(), 1)], start=False, chain='t4',
+                                forward=['--set', 'runner.POLL_S=7'])
+            j = runner.load_job(job)
+            assert job.endswith('_t4') and j['chain'] == 't4' and len(j['chain_steps']) == 3
+            runner.worker(job)
+            g, l_ = runner.item_state(job, good), runner.item_state(job, late)
+            assert g['status'] == 'done' and [s['status'] for s in g['steps']] == ['done'] * 3, g
+            assert all(s['argv'][-2:] == ['--set', 'runner.POLL_S=7'] for s in g['steps'])
+            assert l_['status'] == 'refused' and [s['status'] for s in l_['steps']] == ['done', 'refused'], l_
+            assert l_['steps'][1]['rc'] == 2 and l_['step'] == 1
+            assert runner.job_state(job) == ('finished', {'done': 1, 'refused': 1})
+            # `run status` shows the step each item reached (the existing columns unchanged)
+            r = cli('run', 'status', job, '--cores', 'none', '--set', f'runner.JOBS_ROOT={os.path.join(d, "jobs")}')
+            assert r.returncode == 0, r.stderr
+            assert 'steps 3/3' in r.stdout and 'steps 1/3 at step 2 verify (refused)' in r.stdout, r.stdout
+            # a retried chain item resumes at the step that stopped it
+            open(late, 'w').write('a\n1\n')
+            assert runner.retry(job, ('refused',), start=False) == 1
+            first_start = l_['steps'][0]['started']
+            runner.worker(job)
+            l2 = runner.item_state(job, late)
+            assert l2['status'] == 'done' and [s['status'] for s in l2['steps']] == ['done'] * 3, l2
+            assert l2['steps'][0]['started'] == first_start            # step 1 was not run again
+            assert open(l2['log']).read().count('step 1/3') == 1
+
+
+def test_item4_submit_forwards_set_and_config():
+    import socket
+    from exopipe.phase3.core import runner
+    with Scratch('item4fwd') as d:
+        jobs = os.path.join(d, 'jobs')
+        ov = os.path.join(d, 'campaign.py')
+        open(ov, 'w').write('runner.FREE_CORES_CMD = "echo 0-3"\n')
+        # a protected key is refused at submit; no job is created
+        r = cli('run', 'submit', '--no-start', '--nodes', 'localhost:1', '--items', 'runner', '--cores', 'none',
+                '--set', f'runner.JOBS_ROOT={jobs}', '--set', 'paths.DATA_DECISIONS=/tmp/x', '--',
+                'config', '--section', '{item}')
+        assert r.returncode == 2 and 'PROTECTED' in r.stderr and not os.path.isdir(jobs), (r.returncode, r.stderr)
+        # --set and --config before '--' reach the step command and the job record
+        r = cli('run', 'submit', '--no-start', '--name', 'fw', '--nodes', f'{socket.gethostname()}:1',
+                '--items', 'runner', '--cores', 'none', '--set', f'runner.JOBS_ROOT={jobs}',
+                '--set', 'runner.POLL_S=7', '--config', ov, '--', 'config', '--section', '{item}')
+        assert r.returncode == 0, r.stderr
+        job = r.stdout.split()[1].rstrip(':')
+        with runner_cfg(JOBS_ROOT=jobs):
+            j = runner.load_job(job)
+            assert j['forward_argv'] == ['--set', f'runner.JOBS_ROOT={jobs}', '--set', 'runner.POLL_S=7',
+                                         '--config', ov], j['forward_argv']
+            assert j['overrides']['set'] == [f'runner.JOBS_ROOT={jobs}', 'runner.POLL_S=7']
+            assert j['overrides']['config'] == ov and len(j['overrides']['config_sha1']) == 40
+            assert not os.path.exists(os.path.join(runner.job_dir(job), 'supervisor.log'))   # --no-start
+            runner.worker(job)
+            st = runner.item_state(job, 'runner')
+            assert st['status'] == 'done', st
+            log = open(st['log']).read()
+            assert 'override runner.POLL_S: 30 -> 7' in log and "override runner.FREE_CORES_CMD" in log, log
+
+
+# =====================================================================================================================
 
 def _all_tests():
     return [(n, f) for n, f in sorted(globals().items()) if n.startswith('test_') and callable(f)]

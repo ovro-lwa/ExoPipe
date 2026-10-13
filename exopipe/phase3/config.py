@@ -261,6 +261,18 @@ class runner(_Section):
     JOBS_ROOT = '/lustre/gh/main/exopipe_ops/jobs'                            # job records of `exopipe3 run`
     SSH_PREFIX_ENV = {'SSH_AUTH_SOCK': ''}                                     # ssh from lwacalim07 (CLAUDE.md 8)
     POLL_S = 30                                                                # s, --after / status polling
+    # `run submit --code COMMIT`: every step process of the job runs from a read-only `git worktree add --detach` of
+    # that commit, made once per commit under this root and reused (DESIGN 11.7; replaces the sub-LST frozen code).
+    CODE_WORKTREES_ROOT = '/lustre/gh/main/exopipe_ops/jobs/_code'
+    CODE_REPO = None             # repository the --code commits come from; None = the repository this package runs from
+    # Named chains for `run submit --chain NAME --items ...` (DESIGN 11.3): each item runs through the steps in order,
+    # on one node, and stops at its first non-zero exit (refused / no-input / error recorded per step); a retried item
+    # resumes at its first step not done. A step is a command-line template: {item} is replaced by the item; a
+    # template without {item} gets '--cells <item>' appended. Example (for when the steps exist):
+    #   'deep-cell': ['masters --tier deep --cells {item} --stages build,vclean,fluxscale,pbmaps',
+    #                 'dewarp --tier deep --cells {item}', 'install --tier deep --cells {item}',
+    #                 'masters --tier deep --cells {item} --stages sources']
+    CHAINS = {}
 
 
 class site(_Section):

@@ -1,14 +1,18 @@
 """The multi-node runner behind `exopipe3 run` - one implementation for every fleet, queue and driver.
 
-A JOB runs one step over a list of ITEMS (cells, LSTs, frame batches) on a set of nodes. Its record lives in
-``CFG.runner.JOBS_ROOT/<job>/`` (a handful of files per item, on Lustre):
+A JOB runs one step (or a CHAIN of steps) over a list of ITEMS (cells, LSTs, frame batches) on a set of nodes. Its
+record lives in ``CFG.runner.JOBS_ROOT/<job>/`` (a handful of files per item, on Lustre):
 
-    job.json              id, step argv template, nodes and lanes, --after, --retry, state, created, launch host
+    job.json              id, step argv template, nodes and lanes, --after, --retry, state, created, launch host;
+                          forward_argv / overrides (the --set, --config, --ruling-for, --parity given to `run submit`,
+                          forwarded into every step command); chain + chain_steps (a chain job); code_commit +
+                          code_root (a --code job)
     items.txt             the items in run order (rewritten by `run reorder`)
     items/<item>.json     per item: status (queued|running|done|refused|no-input|error|failed), host, pid, rc,
-                          attempts, started, finished, log path
+                          attempts, started, finished, log path; code_commit (--code); steps (chain: one entry per
+                          step run, with its own status, rc, started, finished)
     claims/<item>/        atomic claim (mkdir) by the worker that runs the item
-    logs/<item>.log       the step's stdout/stderr for that item
+    logs/<item>.log       the step's stdout/stderr for that item (every step of a chain, in order)
     HOLD                  present = workers take no new items (running items finish)
     DRAIN.<host>          present = workers on <host> exit after their current item
 
@@ -18,6 +22,17 @@ item runs as ``python -m exopipe.phase3 <step> ... `` with the item substituted 
 is the step's exit code: 0 done, 2 refused, 3 no-input, other error; an error is retried up to --retry times.
 ``--after JOB`` waits until that job's record is finished (every item in a terminal state) - never on log text,
 process names or pids.
+
+Chains (``run submit --chain NAME``; ``CFG.runner.CHAINS``): one worker runs every step of an item in order on its
+node; the item stops at its first non-zero exit, and its status is that step's (refused / no-input / error). A retried
+chain item resumes at its first step not done.
+
+Pinned code (``run submit --code COMMIT``): ``ensure_code_worktree`` makes ONE read-only ``git worktree add --detach``
+of the commit under ``CFG.runner.CODE_WORKTREES_ROOT/<sha>`` (reused by every later job of that commit) and every step
+process of the job runs from it (cwd and PYTHONPATH). The supervisor and worker loops run from the tree that submitted
+the job, so the job record format is the submitting runner's; the step code is the commit's. Legacy code roots of the
+site file (clv15, exopipe_ops) are still imported in place. To delete a code worktree: ``chmod -R u+w <path> && git -C
+<repo> worktree remove <path>``.
 """
 import json
 import os
@@ -34,6 +49,10 @@ RC_STATUS = {0: 'done', 2: 'refused', 3: 'no-input'}
 def _cfg():
     from exopipe.phase3.config import CFG
     return CFG
+
+
+def _pkg_root():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 def jobs_root():
@@ -117,38 +136,174 @@ def parse_nodes(spec):
     return out
 
 
-def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, python=None, start=True):
-    """Create a job record and (unless start=False) launch its supervisor in the background."""
+# ---------------------------------------------------------------------------------------------------------------------
+# pinned code: read-only git worktrees of a commit (run submit --code COMMIT)
+# ---------------------------------------------------------------------------------------------------------------------
+
+def code_repo():
+    """The repository `--code` commits come from (runner.CODE_REPO, default the repository this package runs from)."""
+    return _cfg().runner.CODE_REPO or _pkg_root()
+
+
+def _git(repo, *args, timeout=600):
+    return subprocess.run(['git', '-C', repo] + list(args), capture_output=True, text=True, timeout=timeout)
+
+
+def _is_code_worktree(path, sha):
+    if not os.path.isdir(path):
+        return False
+    r = _git(path, 'rev-parse', 'HEAD', timeout=60)
+    return r.returncode == 0 and r.stdout.strip() == sha
+
+
+def _make_read_only(path):
+    for dp, dn, fn in os.walk(path, topdown=False):
+        for x in fn + dn:
+            p = os.path.join(dp, x)
+            if not os.path.islink(p):
+                os.chmod(p, os.stat(p).st_mode & ~0o222)
+    os.chmod(path, os.stat(path).st_mode & ~0o222)
+
+
+def ensure_code_worktree(commit, repo=None, root=None, python=None, wait_s=900):
+    """(sha, path, created): a read-only ``git worktree add --detach`` of ``commit`` under ``root``/<full sha>, made
+    once per commit (an existing worktree of that sha is reused; concurrent submits serialise on <path>.lock). The
+    sources are byte-compiled with ``python`` before the tree is made read-only."""
     cfg = _cfg()
+    repo = repo or code_repo()
+    root = root or cfg.runner.CODE_WORKTREES_ROOT
+    r = _git(repo, 'rev-parse', '--verify', '--quiet', f'{commit}^{{commit}}', timeout=60)
+    sha = r.stdout.strip()
+    if r.returncode != 0 or len(sha) != 40:
+        raise SystemExit(f'refused: --code {commit}: not a commit of {repo}')
+    path = os.path.join(root, sha)
+    if _is_code_worktree(path, sha):
+        return sha, path, False
+    os.makedirs(root, exist_ok=True)
+    lock = path + '.lock'
+    t0 = time.time()
+    while True:
+        try:
+            os.mkdir(lock)
+            break
+        except FileExistsError:
+            if time.time() - t0 > wait_s:
+                raise SystemExit(f'refused: {lock} held for more than {wait_s} s (another submit is creating the '
+                                 f'worktree, or a stale lock: remove it by hand)')
+            time.sleep(2)
+    try:
+        if _is_code_worktree(path, sha):
+            return sha, path, False
+        if os.path.exists(path):
+            raise SystemExit(f'refused: {path} exists but is not a worktree of {sha}; remove it by hand')
+        r = _git(repo, 'worktree', 'add', '--detach', path, sha)
+        if r.returncode != 0:
+            raise SystemExit(f'refused: git worktree add {path} {sha} failed: {r.stderr.strip()[-400:]}')
+        subprocess.run([python or sys.executable, '-m', 'compileall', '-q', path], capture_output=True, timeout=1800)
+        _make_read_only(path)
+    finally:
+        os.rmdir(lock)
+    return sha, path, True
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# jobs
+# ---------------------------------------------------------------------------------------------------------------------
+
+def chain_steps(name):
+    """The step argv templates of the chain ``name`` (runner.CHAINS; each a command-line string or an argv list)."""
+    chains = _cfg().runner.CHAINS
+    if name not in chains:
+        raise SystemExit(f'refused: no chain {name!r} in runner.CHAINS (chains: {", ".join(sorted(chains)) or "none"})')
+    steps = [shlex.split(s) if isinstance(s, str) else list(s) for s in chains[name]]
+    if not steps or not all(steps):
+        raise SystemExit(f'refused: chain {name!r} has an empty step')
+    return steps
+
+
+def _overrides_of(forward):
+    out = {'set': [], 'config': None, 'ruling_for': [], 'parity': False}
+    i = 0
+    while i < len(forward):
+        a = forward[i]
+        if a in ('--set', '--ruling-for') and i + 1 < len(forward):
+            out['set' if a == '--set' else 'ruling_for'].append(forward[i + 1])
+            i += 2
+            continue
+        if a == '--config' and i + 1 < len(forward):
+            out['config'] = forward[i + 1]
+            try:
+                import hashlib
+                out['config_sha1'] = hashlib.sha1(open(forward[i + 1], 'rb').read()).hexdigest()
+            except OSError:
+                out['config_sha1'] = None
+            i += 2
+            continue
+        if a == '--parity':
+            out['parity'] = True
+        i += 1
+    return out
+
+
+def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, python=None, start=True, chain=None,
+           forward=(), code=None):
+    """Create a job record and (unless start=False) launch its supervisor in the background.
+
+    chain:   a runner.CHAINS name: every item runs through its steps in order (step_argv must then be empty).
+    forward: argv tokens added to every step command (`run submit --set/--config/--ruling-for/--parity`).
+    code:    a commit: step processes run from its read-only worktree (``ensure_code_worktree``)."""
+    cfg = _cfg()
+    if chain and step_argv:
+        raise SystemExit('refused: give either --chain NAME or a step command after --, not both')
+    steps = chain_steps(chain) if chain else None
+    if gpu:
+        bad = [h for h, _ in nodes if h not in cfg.site.GPU_HOSTS]
+        if bad:
+            raise SystemExit(f'refused: --gpu but {bad} are not GPU hosts in the site file (GPU_HOSTS)')
+    python = python or sys.executable
+    code_commit = code_root = None
+    if code:
+        code_commit, code_root, _ = ensure_code_worktree(code, python=python)
     stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-    job = f'{stamp}_{name}' if name else f'{stamp}_{step_argv[0]}'
+    label = name or chain or step_argv[0]
+    job = f'{stamp}_{label}'
     d = job_dir(job)
     os.makedirs(os.path.join(d, 'items'))
     os.makedirs(os.path.join(d, 'claims'))
     os.makedirs(os.path.join(d, 'logs'))
     with open(os.path.join(d, 'items.txt'), 'w') as f:
         f.write(''.join(f'{it}\n' for it in item_list))
-    if gpu:
-        bad = [h for h, _ in nodes if h not in cfg.site.GPU_HOSTS]
-        if bad:
-            raise SystemExit(f'refused: --gpu but {bad} are not GPU hosts in the site file (GPU_HOSTS)')
-    j = {'id': job, 'step_argv': list(step_argv), 'nodes': [list(n) for n in nodes], 'after': after,
+    forward = list(forward or ())
+    j = {'id': job, 'step_argv': list(step_argv) if not chain else [f'chain:{chain}'],
+         'nodes': [list(n) for n in nodes], 'after': after,
          'retry': int(retry), 'gpu': bool(gpu), 'created': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-         'launch_host': socket.gethostname(), 'python': python or sys.executable,
-         'pkg_root': os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-         'site_file': os.environ.get('EXOPIPE3_SITE', ''), 'n_items': len(item_list), 'jobs_root': jobs_root()}
+         'launch_host': socket.gethostname(), 'python': python, 'pkg_root': _pkg_root(),
+         'site_file': os.environ.get('EXOPIPE3_SITE', ''), 'n_items': len(item_list), 'jobs_root': jobs_root(),
+         'forward_argv': forward, 'overrides': _overrides_of(forward),
+         'chain': chain, 'chain_steps': steps,
+         'code_commit': code_commit, 'code_root': code_root, 'code_repo': code_repo() if code else None}
     _wjson(os.path.join(d, 'job.json'), j)
     if start:
-        log = os.path.join(d, 'supervisor.log')
-        cmd = [j['python'], '-m', 'exopipe.phase3', 'run', 'supervise', job, '--cores', 'none'] + _root_set(j)
-        subprocess.Popen(cmd, stdout=open(log, 'a'), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                         cwd=j['pkg_root'], start_new_session=True, env=_child_env(j))
+        start_supervisor(job)
     return job
 
 
-def _child_env(j):
+def start_supervisor(job):
+    """Launch the job's supervisor in the background (it starts the workers on every node)."""
+    j = load_job(job)
+    log = os.path.join(job_dir(job), 'supervisor.log')
+    cmd = [j['python'], '-m', 'exopipe.phase3', 'run', 'supervise', job, '--cores', 'none'] + _root_set(j)
+    subprocess.Popen(cmd, stdout=open(log, 'a'), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                     cwd=j['pkg_root'], start_new_session=True, env=_child_env(j))
+
+
+def _child_env(j, root=None):
+    """Environment of a process the runner starts. ``root`` (a --code worktree) replaces the package root on
+    PYTHONPATH, so the step imports the pinned commit's exopipe and nothing from the submitting tree."""
     env = dict(os.environ)
-    env['PYTHONPATH'] = j['pkg_root'] + (':' + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    root = root or j['pkg_root']
+    rest = [p for p in (env.get('PYTHONPATH') or '').split(os.pathsep) if p and p not in (j['pkg_root'], root)]
+    env['PYTHONPATH'] = os.pathsep.join([root] + rest)
     if j.get('site_file'):
         env['EXOPIPE3_SITE'] = j['site_file']
     env.update(_cfg().runner.ENV_DEFAULTS)
@@ -213,13 +368,22 @@ def _release(job, item):
         pass
 
 
-def _argv_for(j, item):
-    argv = list(j['step_argv'])
+def _subst(argv, item):
     if any('{item}' in a for a in argv):
-        argv = [a.replace('{item}', item) for a in argv]
-    else:
-        argv += ['--cells', item]
-    return argv
+        return [a.replace('{item}', item) for a in argv]
+    return list(argv) + ['--cells', item]
+
+
+def _argv_for(j, item):
+    """The step command of one item (single-step job): the template with the item, plus the forwarded arguments."""
+    return _subst(j['step_argv'], item) + list(j.get('forward_argv') or [])
+
+
+def step_argvs(j, item):
+    """Every step command of one item, in order (one for a step job, one per chain step for a chain job)."""
+    if j.get('chain_steps'):
+        return [_subst(a, item) + list(j.get('forward_argv') or []) for a in j['chain_steps']]
+    return [_argv_for(j, item)]
 
 
 def worker(job, lane=0):
@@ -246,29 +410,63 @@ def worker(job, lane=0):
         if picked is None:
             print(f'{_now()} no unclaimed items; worker exits', flush=True)
             return
-        it, st = picked
-        attempts = int(st.get('attempts', 0)) + 1
-        log = os.path.join(d, 'logs', f'{_safe(it)}.log')
-        argv = [j['python'], '-m', 'exopipe.phase3'] + _argv_for(j, it)
-        rec = {'status': 'running', 'host': host, 'lane': lane, 'attempts': attempts, 'started': _now(), 'log': log,
-               'argv': argv}
-        _wjson(os.path.join(d, 'items', f'{_safe(it)}.json'), rec)
-        with open(log, 'a') as lf:
-            lf.write(f'\n===== {_now()} {host} lane {lane} attempt {attempts}: {" ".join(map(shlex.quote, argv))}\n')
+        _run_item(j, job, picked[0], picked[1], host, lane)
+        _release(job, picked[0])
+
+
+def _run_item(j, job, it, st, host, lane):
+    d = job_dir(job)
+    ipath = os.path.join(d, 'items', f'{_safe(it)}.json')
+    attempts = int(st.get('attempts', 0)) + 1
+    log = os.path.join(d, 'logs', f'{_safe(it)}.log')
+    argvs = step_argvs(j, it)
+    chain = bool(j.get('chain_steps'))
+    steps = list(st.get('steps') or []) if chain else None
+    root = j.get('code_root') or j['pkg_root']
+    head = [j['python'], '-m', 'exopipe.phase3']
+    rec = {'status': 'running', 'host': host, 'lane': lane, 'attempts': attempts, 'started': _now(), 'log': log,
+           'argv': head + argvs[0]}
+    if j.get('code_commit'):
+        rec['code_commit'] = j['code_commit']
+    if chain:
+        rec.update(chain=j['chain'], steps=steps)
+    _wjson(ipath, rec)
+    status, rc = 'done', 0
+    with open(log, 'a') as lf:
+        for k, argv in enumerate(argvs):
+            if chain and k < len(steps) and steps[k].get('status') == 'done':
+                continue                      # done in an earlier attempt: resume at the first step not done
+            full = head + argv
+            tag = f' step {k + 1}/{len(argvs)}' if chain else ''
+            lf.write(f'\n===== {_now()} {host} lane {lane} attempt {attempts}{tag}: {" ".join(map(shlex.quote, full))}'
+                     + (f'  [code {j["code_commit"]}]' if j.get('code_commit') else '') + '\n')
             lf.flush()
-            p = subprocess.Popen(argv, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                 cwd=j['pkg_root'], env=_child_env(j))
-            rec['pid'] = p.pid
-            _wjson(os.path.join(d, 'items', f'{_safe(it)}.json'), rec)
+            p = subprocess.Popen(full, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=root,
+                                 env=_child_env(j, root))
+            rec.update(argv=full, pid=p.pid)
+            if chain:
+                entry = {'step': k, 'name': argv[0], 'argv': full, 'status': 'running', 'started': _now(),
+                         'pid': p.pid, 'attempt': attempts}
+                if k < len(steps):
+                    steps[k] = entry
+                else:
+                    steps.append(entry)
+                rec['step'] = k
+            _wjson(ipath, rec)
             rc = p.wait()
-        status = RC_STATUS.get(rc, 'error')
-        if status == 'error' and attempts <= int(j.get('retry', 0)):
-            status = 'queued'                       # retried by the next free worker
-        elif status == 'error':
-            status = 'failed'
-        rec.update(status=status, rc=rc, finished=_now())
-        _wjson(os.path.join(d, 'items', f'{_safe(it)}.json'), rec)
-        _release(job, it)
+            s = RC_STATUS.get(rc, 'error')
+            if chain:
+                entry.update(status=s, rc=rc, finished=_now())
+                _wjson(ipath, rec)
+            if rc != 0:
+                status = s
+                break
+    if status == 'error' and attempts <= int(j.get('retry', 0)):
+        status = 'queued'                       # retried by the next free worker
+    elif status == 'error':
+        status = 'failed'
+    rec.update(status=status, rc=rc, finished=_now())
+    _wjson(ipath, rec)
 
 
 def hold(job, on=True):
@@ -283,8 +481,9 @@ def drain(job, host):
     open(os.path.join(job_dir(job), f'DRAIN.{host}'), 'w').write(_now() + '\n')
 
 
-def retry(job, which=('failed',)):
-    """Re-queue items whose status is in ``which`` (e.g. failed, refused) and start a supervisor again."""
+def retry(job, which=('failed',), start=True):
+    """Re-queue items whose status is in ``which`` (e.g. failed, refused) and start a supervisor again. A chain item
+    keeps its per-step record and resumes at its first step not done."""
     n = 0
     for it in items(job):
         st = item_state(job, it)
@@ -292,12 +491,8 @@ def retry(job, which=('failed',)):
             st.update(status='queued', attempts=0)
             _wjson(os.path.join(job_dir(job), 'items', f'{_safe(it)}.json'), st)
             n += 1
-    j = load_job(job)
-    if n:
-        log = os.path.join(job_dir(job), 'supervisor.log')
-        subprocess.Popen([j['python'], '-m', 'exopipe.phase3', 'run', 'supervise', job, '--cores', 'none'] + _root_set(j),
-                         stdout=open(log, 'a'), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                         cwd=j['pkg_root'], start_new_session=True, env=_child_env(j))
+    if n and start:
+        start_supervisor(job)
     return n
 
 
@@ -314,10 +509,12 @@ def reorder(job, first):
 
 
 def list_jobs(n=20):
+    """The latest job ids (directories holding a job.json; the code-worktree root and other entries are skipped)."""
     root = jobs_root()
     if not os.path.isdir(root):
         return []
-    return sorted(os.listdir(root))[-n:]
+    return sorted(x for x in os.listdir(root)
+                  if not x.startswith(('_', '.')) and os.path.isfile(os.path.join(root, x, 'job.json')))[-n:]
 
 
 def _now():

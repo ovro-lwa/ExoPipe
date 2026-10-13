@@ -33,6 +33,7 @@ exopipe3 config --step <step>       # every section the step declares (CONFIG), 
 | check any product's content | `exopipe3 verify <class> <files>` | `steps/verify.py`; tests live with their step | - |
 | see what is done / stale / missing | `exopipe3 status` | `steps/status.py` | - |
 | run a step over many cells on many nodes | `exopipe3 run submit --nodes ... -- <step> ...` | `steps/run.py` -> `core/runner.py` | `runner`, site file |
+| run several steps per cell in order (a chain), or from a pinned commit | `exopipe3 run submit --chain NAME --items ...`; `--code COMMIT` | `core/runner.py` | `runner.CHAINS`, `runner.CODE_WORKTREES_ROOT` |
 
 `core/` holds what every step shares and nothing else: `exclusions` (the only reader of data_decisions.csv),
 `products` (names and standard headers), `astrometry` (position errors), `fitting` (Gaussian / template fits, fitted
