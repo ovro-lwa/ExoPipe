@@ -219,7 +219,7 @@ def test_item1_one_entry_grammar_and_whole_dict_refusal():
             CFG.apply_override_file(f)
             assert CFG.fitting.K_TEMPLATE[('sublst', 'I')] == (0.4, 0.4) and CFG.runner.POLL_S == 3
     from exopipe.phase3.config import CFG
-    assert CFG.fitting.K_TEMPLATE[('sublst', 'V')] == (0.658, 0.499) and CFG.overrides == []   # reset() restored
+    assert CFG.fitting.K_TEMPLATE[('sublst', 'V')] == before[('sublst', 'V')] and CFG.overrides == []   # reset() restored
 
 
 def test_item1_ledger_lookup_is_tolerant():
