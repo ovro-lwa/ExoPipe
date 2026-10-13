@@ -1,0 +1,213 @@
+"""exopipe3 - the ONE entry point of the OVRO-LWA ExoPipe Phase 3 pipeline.
+
+    exopipe3 --help                 the steps, in pipeline order
+    exopipe3 <step> --help          what the step reads and writes, its failure modes, every flag
+    exopipe3 config [--section S]   every tunable (one file: exopipe/phase3/config.py)
+
+Every step is independently runnable by a person or by Claude, documents its inputs, outputs and failure modes in
+--help, refuses (exit 2) instead of warning, has --dry-run, and writes a machine-readable record of what it did under
+<out>/_records/<step>/. Exit codes: 0 done (every content test passed), 1 error, 2 refused by a gate, 3 nothing to do.
+"""
+import os
+import sys
+
+from exopipe.phase3.core import env as _env
+
+_env.apply()            # before anything imports numpy (core/env.py)
+
+import argparse        # noqa: E402
+import importlib       # noqa: E402
+
+# (name, one-line summary, group) in pipeline order. The module is exopipe.phase3.steps.<name>.
+STEPS = [
+    ('flow', 'alignment flows: per-night co-add flows (deep); per-frame flows to the multi-night master (snapshot)', 'build'),
+    ('masters', 'co-add masters + LOO + QA gates; V clean; flux scale; PB maps; master catalogue; content tests', 'build'),
+    ('dewarp', 'master dewarp per LST: RBF screen on the rebuilt masters, cubic apply, content test D1-D6', 'build'),
+    ('install', 'gated install of rebuilt products into the working tree; quarantine round; re-search queue', 'build'),
+    ('frames', 'per-epoch / per-bin residuals and search frames, pbcorr siblings, noise maps', 'search'),
+    ('search', 'detection + gates with fitted positions (deep, sub-LST, snapshot)', 'search'),
+    ('catalog', 'harvest, merge, conformance, association, identity, E statistic, selection, names; snapshot chain', 'search'),
+    ('forced', 'forced photometry (Gaussian fit >= 7 sigma, empirical-beam template below); event panels', 'publish'),
+    ('curves', 'light-curve products', 'publish'),
+    ('pages', 'review pages (served queues, inspection twins, multiples), fingerprint skip', 'publish'),
+    ('serve', 'review servers and the hub; served-queue content test; exact-pid restart', 'publish'),
+    ('archive', 'manifest, checksum transfer, content audit, quarantine; retire excluded nights; rollback', 'publish'),
+    ('mosaic', 'mosaicked products', 'capability'),
+    ('photometry', 'photometry of input samples (Hot/Warm Jupiters, flare/UCD, 10/25/50 pc)', 'capability'),
+    ('followup', 'follow-up of high-interest candidates (honing, dynamic spectra, periodicity, folding, dedispersion)', 'capability'),
+    ('jupiter', 'the Jupiter reflection program', 'capability'),
+    ('verify', 'run the content test of any product class alone', 'tools'),
+    ('status', 'per-cell completion, exclusion conformance, stale products, coverage; emits item lists', 'tools'),
+    ('run', 'multi-node runner: jobs, queues, --after, hold/release/drain/retry (replaces fleets and dated drivers)', 'tools'),
+]
+
+# Selectors a step may declare in SELECTORS; cli adds the flags.
+_SELECTOR_FLAGS = {
+    'tier': (['--tier'], dict(help='tier: deep, sublst or snapshot (the step lists the tiers it supports)')),
+    'cells': (['--cells'], dict(help='cells: 04h_Full, 04h_*, @file, record:STATUS:STEP@OUT, JOB:STATUS')),
+    'lsts': (['--lsts'], dict(help='LSTs: 04h, 04h,05h, @file')),
+    'nights': (['--nights'], dict(help='nights YYYY-MM-DD: list, @file')),
+    'scopes': (['--scopes'], dict(help='subbands/bands: 18MHz, Red, Full, ...')),
+    'stokes': (['--stokes'], dict(help='Stokes: I, V or I,V')),
+    'exclude_cells': (['--exclude-cells'], dict(help='cells to leave out (same grammar as --cells)')),
+    'run_label': (['--run'], dict(dest='run_label', help='run label of the products to read/write (e.g. P3S5)')),
+}
+
+
+def _common(p, step_mod):
+    g = p.add_argument_group('common to every step')
+    g.add_argument('--out', help='product root for this run (default: the step\'s production root from config; '
+                                 'production roots refuse writes while paths.PRODUCTION_WRITES is False)')
+    g.add_argument('--work', help='node-local scratch root (default from the site file)')
+    g.add_argument('--set', action='append', default=[], metavar='SECTION.KEY=VALUE',
+                   help='override one tunable for this run (recorded); repeatable')
+    g.add_argument('--config', metavar='FILE', help='python file of section.KEY = value overrides (recorded)')
+    g.add_argument('--dry-run', action='store_true', help='plan only: inputs found, outputs, gates; writes nothing')
+    g.add_argument('--resume', action='store_true',
+                   help='skip units whose record is done and whose inputs, admitted nights, code, config are '
+                        'unchanged and whose outputs pass their content tests now')
+    g.add_argument('--fresh', action='store_true', help='ignore earlier records and outputs of the selected units')
+    g.add_argument('--workers', type=int, default=None, help='parallel units in this process (default from config)')
+    g.add_argument('--cores', default='auto', help="CPU cores: 'auto' = recorder-free cores of this node "
+                                                   "(node_free_cores.sh), 'none' = no pinning, or a list 0-23,30-39")
+    g.add_argument('--threads', type=int, default=None, help='BLAS/OpenMP threads per process')
+    g.add_argument('--waive', action='append', default=[], metavar='TEST',
+                   help='waive one named content test or gate; requires --ruling')
+    g.add_argument('--ruling', action='append', default=[], metavar='TEXT',
+                   help="Gregg's words, UTC and ledger ID for each --waive (same order)")
+    for sel in getattr(step_mod, 'SELECTORS', ()):
+        flags, kw = _SELECTOR_FLAGS[sel]
+        kw = dict(kw)
+        if sel == 'tier' and getattr(step_mod, 'TIERS', None):
+            kw['choices'] = list(step_mod.TIERS)
+            kw['default'] = step_mod.TIERS[0]
+            kw['help'] = f"tier ({', '.join(step_mod.TIERS)}; default {step_mod.TIERS[0]})"
+        g.add_argument(*flags, **kw)
+
+
+def _pin(cores):
+    if cores in (None, 'none'):
+        return None
+    if cores == 'auto':
+        import subprocess
+        from exopipe.phase3.config import CFG
+        try:
+            cores = subprocess.run(CFG.runner.FREE_CORES_CMD, shell=True, capture_output=True, text=True,
+                                   timeout=30).stdout.strip()
+        except Exception:
+            cores = ''
+        if not cores:
+            raise SystemExit('refused: could not read the recorder-free cores (runner.FREE_CORES_CMD); '
+                             'pass --cores LIST or --cores none')
+    cpus = set()
+    for part in cores.split(','):
+        a, _, b = part.partition('-')
+        cpus.update(range(int(a), int(b or a) + 1))
+    os.sched_setaffinity(0, cpus)
+    return cores
+
+
+def _guard_out(out):
+    from exopipe.phase3.config import CFG
+    if CFG.paths.PRODUCTION_WRITES:
+        return
+    real = os.path.realpath(out)
+    for root in CFG.paths.PRODUCTION_ROOTS:
+        r = os.path.realpath(root)
+        if real == r or real.startswith(r.rstrip('/') + '/'):
+            raise SystemExit(f'refused: --out {out} is under the production root {root} and paths.PRODUCTION_WRITES '
+                             f'is False (refactor window). Write parity/scratch output to your own root.')
+
+
+def _config_cmd(argv):
+    p = argparse.ArgumentParser(prog='exopipe3 config', description='Show the Phase 3 tunables (config.py).')
+    p.add_argument('--section', help='print one section with its comments (units, rulings)')
+    p.add_argument('--set', action='append', default=[], help='show the effect of overrides')
+    p.add_argument('--hash', action='store_true', help='print the config hash')
+    a = p.parse_args(argv)
+    from exopipe.phase3.config import CFG, SITE_FILE
+    CFG.apply_override_strings(a.set)
+    if a.hash:
+        print(CFG.hash())
+        return 0
+    print(CFG.describe(a.section))
+    if not a.section:
+        print(f'\nsite file: {SITE_FILE or "(none: EXOPIPE3_SITE unset)"}')
+    for o in CFG.overrides:
+        print(f'override {o[0]}: {o[1]!r} -> {o[2]!r}')
+    return 0
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog='exopipe3', description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest='step', metavar='<step>')
+    group = None
+    for name, summary, grp in STEPS:
+        sub.add_parser(name, help=summary + ('' if grp == group else f'   [{grp}]'), add_help=False)
+        group = grp
+    sub.add_parser('config', help='show every tunable (config.py)', add_help=False)
+    return p
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] in ('-h', '--help'):
+        build_parser().print_help()
+        return 0
+    name, rest = argv[0], argv[1:]
+    if name == 'config':
+        return _config_cmd(rest)
+    if name not in [s[0] for s in STEPS]:
+        build_parser().print_help()
+        print(f'\nunknown step {name!r}', file=sys.stderr)
+        return 1
+    # The step module is imported only to build its parser; heavy imports belong inside its run().
+    mod = importlib.import_module(f'exopipe.phase3.steps.{name}')
+    sp = argparse.ArgumentParser(prog=f'exopipe3 {name}', description=mod.__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    mod.add_arguments(sp)
+    _common(sp, mod)
+    tail = []
+    if name == 'run' and '--' in rest:           # `exopipe3 run submit ... -- <step command>`
+        i = rest.index('--')
+        rest, tail = rest[:i], rest[i + 1:]
+    args = sp.parse_args(rest)
+    args.step_argv = tail
+    if len(args.waive) != len(args.ruling):
+        sp.error('every --waive needs its own --ruling "<Gregg\'s words, UTC, ledger ID>"')
+    _env.apply(args.threads)
+
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import record
+    if args.config:
+        CFG.apply_override_file(args.config)
+    CFG.apply_override_strings(args.set)
+    pinned = _pin(args.cores)
+    out = args.out or mod.default_out(args)
+    if getattr(mod, 'WRITES', True) and not args.dry_run:
+        _guard_out(out)
+    run = record.Run(name, [f'exopipe3 {name}'] + rest, out, CFG, dry_run=args.dry_run,
+                     waivers=list(zip(args.waive, args.ruling)), resume=args.resume, fresh=args.fresh)
+    run.cores = pinned
+    run.no_records = not getattr(mod, 'WRITES', True)
+    try:
+        rc = mod.run(args, run)
+    except record.Refusal as e:
+        print(f'REFUSED: {e}', file=sys.stderr)
+        rc = record.EXIT_REFUSED
+    except record.NoInput as e:
+        print(f'NO-INPUT: {e}', file=sys.stderr)
+        rc = record.EXIT_NO_INPUT
+    finally:
+        summ = run.write_summary()
+    if rc is None:
+        rc = run.exit_code()
+    by = run.summary()
+    print(f'exopipe3 {name}: {", ".join(f"{k} {v}" for k, v in sorted(by.items())) or "no units"}; exit {rc}'
+          + (f'; record {summ}' if summ else ''), file=sys.stderr)
+    return rc
+
+
+if __name__ == '__main__':
+    sys.exit(main())
