@@ -189,7 +189,7 @@ def test_item1_one_entry_grammar_and_whole_dict_refusal():
         k = CFG.fitting.K_TEMPLATE
         assert k[('sublst', 'V')] == (0.6, 0.5) and len(k) == 4
         assert all(k[x] == before[x] for x in before if x != ('sublst', 'V'))
-        assert CFG.overrides[-1][:3] == ('fitting.K_TEMPLATE[sublst,V]', (0.658, 0.499), (0.6, 0.5))
+        assert CFG.overrides[-1][:3] == ('fitting.K_TEMPLATE[sublst,V]', before[('sublst', 'V')], (0.6, 0.5))
         assert CFG.get('fitting.K_TEMPLATE[sublst,V]') == (0.6, 0.5)
         # ints become floats inside the tuple; quotes around entry names are accepted
         CFG.set("fitting.K_TEMPLATE['deep','I']", '(1, 1)')
