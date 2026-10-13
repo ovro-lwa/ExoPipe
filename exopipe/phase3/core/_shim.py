@@ -53,6 +53,8 @@ LEGACY = {
     'exopipe.phase3.vclean_masters': 'exopipe.phase3.lib.masters.vclean_masters',
     # stage 4: dewarp
     'exopipe.phase3.phase3_master_dewarp': 'exopipe.phase3.lib.dewarp.master_dewarp',
+    # stage 4: install
+    'exopipe.phase3.phase3_install': 'exopipe.phase3.lib.install.install',
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)
