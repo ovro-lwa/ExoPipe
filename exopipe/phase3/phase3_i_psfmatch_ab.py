@@ -27,7 +27,7 @@ from astropy.wcs import WCS
 from astropy.convolution import Gaussian2DKernel, convolve_fft
 from exopipe.phase3.phase3_deep import _load, NPROC_RESID
 from exopipe.phase3.phase3_deep import _residual as _refine_subtract   # not used for matched path
-from exopipe.phase3.coadd_full_pipeline import apply_flow_field, build_striation_model, get_midpoint_time
+from exopipe.phase3.lib.masters.coadd import apply_flow_field, build_striation_model, get_midpoint_time
 from exopipe.phase3.core.residuals import fft_upsample2, fft_decimate2
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.phase3_i_gate_ledger import _mstruct_i
@@ -65,7 +65,7 @@ def matched_resid(ep_aligned, master, up2, hdr_ref, cd, be, bm, mfs_args=None):
     matched pair (Gregg's fix: kills the PSF-peak-biased scale error) ->
     difference -> RENORMALIZE by the per-pair dilution factor (honest point-
     transient flux units) -> destripe."""
-    from exopipe.phase3.coadd_full_pipeline import measure_flux_scale
+    from exopipe.phase3.lib.masters.coadd import measure_flux_scale
     ref = fft_decimate2(apply_flow_field(fft_upsample2(ep_aligned), up2))
     invalid = (ref == 0) | (master == 0) | ~np.isfinite(ref)
     Ec = convolve_fft(np.nan_to_num(ref), gk(*bm), allow_huge=True,
@@ -104,7 +104,7 @@ def _r0_aligned_epoch(base, lst, scope, date, master, mh, wcsm, beam):
     """Rebuild the R0 stage-B aligned epoch (recipe = phase3_i_inspect_r0.py):
     raw Taper_R0 wideband -> regrid -> guarded flux scale -> stage-B flow."""
     import tempfile, shutil
-    from exopipe.phase3.coadd_full_pipeline import (discover_dates, find_wideband_deep_images,
+    from exopipe.phase3.lib.masters.coadd import (discover_dates, find_wideband_deep_images,
                                      load_image, measure_flux_scale, regrid_image)
     sd = dict((d, s) for d, s, _ in discover_dates(lst, scope)).get(date)
     wb = find_wideband_deep_images(sd, scope, 'I', 'Taper_R0')

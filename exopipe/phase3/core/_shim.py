@@ -41,6 +41,16 @@ LEGACY = {
     'exopipe.common.roots': 'exopipe.phase3.config',                     # absorbed verbatim (module-level names)
     'exopipe.common.phase3_paths': 'exopipe.phase3.config',              # absorbed verbatim (module-level names)
     'exopipe.phase3.identify': 'exopipe.phase3.core.fitting',            # fit_empirical_beam absorbed verbatim
+    # stage 4: masters
+    'exopipe.phase3.coadd_full_pipeline': 'exopipe.phase3.lib.masters.coadd',
+    'exopipe.phase3.epoch_gate': 'exopipe.phase3.lib.masters.epoch_gate',
+    'exopipe.phase3.flux_correction': 'exopipe.phase3.lib.masters.flux_correction',
+    'exopipe.phase3.membership': 'exopipe.phase3.lib.masters.membership',
+    'exopipe.phase3.night_image_gate': 'exopipe.phase3.lib.masters.night_image_gate',
+    'exopipe.phase3.pb_apply': 'exopipe.phase3.lib.masters.pb_apply',
+    'exopipe.phase3.phase3_master_shflux': 'exopipe.phase3.lib.masters.shflux',
+    'exopipe.phase3.phase3_pbcorr_masters': 'exopipe.phase3.lib.masters.pbcorr_masters',
+    'exopipe.phase3.vclean_masters': 'exopipe.phase3.lib.masters.vclean_masters',
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)

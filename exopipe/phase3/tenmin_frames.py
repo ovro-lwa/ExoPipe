@@ -55,9 +55,9 @@ from astropy.time import Time
 from exopipe.phase3.config import coadd_root, required_root
 from exopipe.phase3.core import products as pp
 from exopipe.common import phase2_config as cfg
-from exopipe.phase3 import coadd_full_pipeline as C
-from exopipe.phase3 import pb_apply as PB
-from exopipe.phase3.coadd_full_pipeline import load_exclusions, is_excluded
+from exopipe.phase3.lib.masters import coadd as C
+from exopipe.phase3.lib.masters import pb_apply as PB
+from exopipe.phase3.lib.masters.coadd import load_exclusions, is_excluded
 
 PB_FLOOR = float(os.environ.get('P3_TENMIN_PB_FLOOR', str(PB.PB_FLOOR)))   # 0.1 as pbcorr
 BIN_SEC = 600.0

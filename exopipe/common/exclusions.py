@@ -9,7 +9,7 @@ def excluded_subbands_for_night(lst, date, subbands):
     """Subset of `subbands` (e.g. '73MHz') that data_decisions excludes for (lst, date).
     Delegates to the single data_decisions reader (coadd_full_pipeline.load_exclusions /
     is_excluded) so Phase 2 can never disagree with Phase 3."""
-    from exopipe.phase3.coadd_full_pipeline import load_exclusions, is_excluded
+    from exopipe.phase3.lib.masters.coadd import load_exclusions, is_excluded
     excl = load_exclusions()
     return {sb for sb in subbands if is_excluded(lst, sb, date, excl)}
 

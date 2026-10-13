@@ -8,6 +8,6 @@ from exopipe.phase3.mosaic_coadd_jysr import *  # noqa
 # staging pass.
 from exopipe.phase3.mosaic_conformance_pass import *  # noqa
 from exopipe.phase3.mosaic_flux_vs_zd import *  # noqa
-from exopipe.phase3.pb_apply import *  # noqa
+from exopipe.phase3.lib.masters.pb_apply import *  # noqa
 from exopipe.phase3.pb_render import *  # noqa
 from exopipe.phase3.verify_mosaic import *  # noqa

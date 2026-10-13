@@ -39,7 +39,7 @@ def master_md5(master_path):
 def evaluate_cell(final_dir, sub_dir, fl):
     """{date: row} for every night with a Stokes I residual in sub_dir, tested against final_dir's I survey master."""
     from astropy.io import fits
-    from exopipe.phase3 import coadd_full_pipeline as C
+    from exopipe.phase3.lib.masters import coadd as C
     mp = f'{final_dir}/I_deep_Taper_R075_{fl}.fits'
     m = np.squeeze(fits.getdata(mp)).astype(np.float64); mmd5 = master_md5(mp)
     rows = {}

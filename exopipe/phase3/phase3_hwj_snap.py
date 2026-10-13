@@ -162,7 +162,7 @@ def do_unit(task):
         except Exception:
             shifts = {}
     # PB at position (time-integrated subband deep PB)
-    from exopipe.phase3 import pb_apply as PB
+    from exopipe.phase3.lib.masters import pb_apply as PB
     pb_at = {}
     try:
         pbd, pbh = PB.subband_deep_pb(task['sb'])

@@ -75,7 +75,7 @@ from scipy.optimize import curve_fit
 warnings.filterwarnings('ignore')
 
 # Proven algorithms reused from the pipeline being replaced
-from exopipe.phase3 import coadd_full_pipeline as cfp
+from exopipe.phase3.lib.masters import coadd as cfp
 
 # phase3_subtract_lab parses argv at import time; shield it
 _argv = sys.argv

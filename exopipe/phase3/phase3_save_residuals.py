@@ -17,7 +17,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from exopipe.phase3.phase3_deep import _load, fft_upsample2, fft_decimate2
-from exopipe.phase3.coadd_full_pipeline import apply_flow_field, build_striation_model
+from exopipe.phase3.lib.masters.coadd import apply_flow_field, build_striation_model
 from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
 from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.core import products as pp

@@ -169,7 +169,7 @@ def _publish_screen(cell, arch, run, qroot, meta):
 def screen_table_unapplied(table):
     """After all installs: one applied=0 row for every measured (lst, scope) of TABLE (the merged measurement table, final row
     per cell) that has no applied row, with its status - so a missing screen reads as 'measured, not applied'."""
-    from exopipe.phase3 import coadd_full_pipeline as C
+    from exopipe.phase3.lib.masters import coadd as C
     run = os.environ.get('P3_ARCHIVE_RUN')
     if not run:
         raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
@@ -194,7 +194,7 @@ def screen_table_unapplied(table):
 def _gates(cell, gen, kind, rebuild_root=None):
     """G-1, G-1b, G1 (+ the cubic ruling), the rebuild record and G1b - nothing has moved yet. Shared by install() and
     resume() (2026-10-05). Returns the applied-screen record (kind 'mdewarp') or None."""
-    from exopipe.phase3 import coadd_full_pipeline as C
+    from exopipe.phase3.lib.masters import coadd as C
     # G-1: the snapshot / sub-LST tiers no longer read the archive masters live
     if not os.path.exists(FREEZE_MARKER):
         raise RuntimeError(f'{cell}: {FREEZE_MARKER} absent - the snapshot / sub-LST freeze is not confirmed; REFUSING')
@@ -226,7 +226,7 @@ def _gates(cell, gen, kind, rebuild_root=None):
     # G-MEMBERSHIP (2026-10-07, Gregg "Yes, go"): no master is installed whose member nights disagree with the membership rulings
     # (exopipe.phase3.membership.verify - exclusions, stage 2 with the ruled non-matched metric, the stage-3 window, the night-image and
     # epoch-image checks). A rebuilt cell is verified in its rebuild root; a re-dewarp keeps the membership of the installed cell.
-    from exopipe.phase3 import membership as _MB
+    from exopipe.phase3.lib.masters import membership as _MB
     _mcell = rebuild_root.rstrip('/') if (kind == 'rebuild' or rebuild_root) else f'{ROOT}/{cell}'   # --rebuild-root IS the cell's rebuild dir
     _mv = _MB.verify(_mcell)
     if _mv:
@@ -252,7 +252,7 @@ def _gates(cell, gen, kind, rebuild_root=None):
 def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
     lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'
     os.environ.setdefault('P3_COADD_ROOT', root)
-    from exopipe.phase3 import coadd_full_pipeline as C
+    from exopipe.phase3.lib.masters import coadd as C
     run = os.environ.get('P3_ARCHIVE_RUN')
     if not run:
         raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
@@ -305,7 +305,7 @@ def install(cell, gen, kind, rebuild_root=None, root=ROOT, omit_vclean=False):
     # _epoch_content_check before anything moves.
     wfin = f'{rebuild_root}/coadd_final' if rebuild_root else f'{cdir}/coadd_final'
     wrows = {r['date']: r for r in csv.DictReader(open(f'{wfin}/weights.csv'))}
-    from exopipe.phase3 import night_image_gate as NG, epoch_gate as EG
+    from exopipe.phase3.lib.masters import night_image_gate as NG, epoch_gate as EG
     gfail = NG.failed_dates(wfin)
     erows = EG.evaluate_cell(f'{stg}/coadd_final', f'{stg}/subtracted', scope)
     efail = {d for d, r in erows.items() if r['verdict'] == 'FAIL'}
@@ -369,7 +369,7 @@ def _finish(cell, gen, cdir, stg, staged, tgt, erows, efail, lst, scope, run, sm
     """Everything after the working-quarantine moves: install step a's renames, the set check, the epoch-gate record, b,
     c, d, e. Shared by install() and resume() (2026-10-05). old (resume state R2) = the archive files this attempt already
     quarantined: renames, record, b and the archive quarantine are done; the publish, audit and screen run."""
-    from exopipe.phase3 import coadd_full_pipeline as C, epoch_gate as EG
+    from exopipe.phase3.lib.masters import coadd as C, epoch_gate as EG
     fd, sd = f'{cdir}/coadd_final', f'{cdir}/subtracted'
     arch = C._archive_root(); qroot = f'{arch}/{QROOT_NAME}'
     mdir = f'{arch}/Coadd/{run}/{lst}/{scope}'
@@ -429,7 +429,7 @@ def resume(cell, gen, kind, root=ROOT, omit_vclean=False, execute=False):
     from astropy.io import fits as _f
     lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'; stg = f'{cdir}/.install_staging'; gen = gen.rstrip('/')
     os.environ.setdefault('P3_COADD_ROOT', root)
-    from exopipe.phase3 import coadd_full_pipeline as C, epoch_gate as EG
+    from exopipe.phase3.lib.masters import coadd as C, epoch_gate as EG
     run = os.environ.get('P3_ARCHIVE_RUN')
     if not run:
         raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
@@ -510,7 +510,7 @@ def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
     published no epochs and (1) could not see it): every night of the generation's weights.csv that the night-image gate did not
     refuse and that has a residual has its epoch image in the archive, for each Stokes with a residual."""
     from astropy.io import fits as _f
-    from exopipe.phase3 import coadd_full_pipeline as C, night_image_gate as NG
+    from exopipe.phase3.lib.masters import coadd as C, night_image_gate as NG
     now = [p for p in sorted(glob.glob(f'{mdir}/*')) if os.path.isfile(p)]
     now += [p for p in sorted(glob.glob(f'{arch}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits')) if '_msub' not in os.path.basename(p)]
     if len(now) != n:
@@ -529,7 +529,7 @@ def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
     if bad:
         raise RuntimeError(f'{cell}: archive audit - {len(bad)} files whose md5 differs from the working source, e.g. {bad[:2]} - FAILED')
     wdates = {r['date'] for r in csv.DictReader(open(f'{fd}/weights.csv'))}; gfail = NG.failed_dates(fd)
-    from exopipe.phase3 import epoch_gate as EG
+    from exopipe.phase3.lib.masters import epoch_gate as EG
     try:
         gfail = gfail | EG.failed_dates(fd, scope)
     except FileNotFoundError:
@@ -555,7 +555,7 @@ def epochs_only(cell, root=ROOT):
     the epochs) and run the step-d audit including epoch completeness."""
     lst, scope = cell.split('_', 1); cdir = f'{root}/{cell}'
     os.environ.setdefault('P3_COADD_ROOT', root)
-    from exopipe.phase3 import coadd_full_pipeline as C, night_image_gate as NG
+    from exopipe.phase3.lib.masters import coadd as C, night_image_gate as NG
     run = os.environ.get('P3_ARCHIVE_RUN')
     if not run:
         raise RuntimeError('P3_ARCHIVE_RUN unset - REFUSING')
@@ -563,7 +563,7 @@ def epochs_only(cell, root=ROOT):
     wrows = {r['date']: r for r in csv.DictReader(open(f'{fd}/weights.csv'))}; gfail = NG.failed_dates(fd)
     # EPOCH GATE (Gregg 2026-10-04 option B): the record of the installed generation; FAIL nights get no epoch product; a FAIL
     # night inside the master refuses (the master must be rebuilt without it)
-    from exopipe.phase3 import epoch_gate as EG
+    from exopipe.phase3.lib.masters import epoch_gate as EG
     erows = EG.evaluate_cell(fd, sd, scope); efail = {d for d, r in erows.items() if r['verdict'] == 'FAIL'}
     inm = sorted(d for d in efail if wrows.get(d, {}).get('in_master') == '1' and d not in gfail)
     if inm:

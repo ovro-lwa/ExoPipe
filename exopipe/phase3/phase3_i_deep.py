@@ -60,7 +60,7 @@ from exopipe.phase3.phase3_i_psfmatch_ab import matched_resid, gk
 from exopipe.phase3.phase3_i_gate_ledger import bilobe_measurables, _mstruct_i
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.core.fitting import fit_empirical_beam
-from exopipe.phase3.coadd_full_pipeline import (OVRO_LOC, load_exclusions, is_excluded,
+from exopipe.phase3.lib.masters.coadd import (OVRO_LOC, load_exclusions, is_excluded,
                                  get_midpoint_time)
 from exopipe.phase3 import search_i_transients as sit
 from exopipe.phase3 import phase3_veto as pv

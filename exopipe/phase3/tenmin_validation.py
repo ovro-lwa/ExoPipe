@@ -23,7 +23,7 @@ import numpy as np
 _ARGV = list(sys.argv); sys.argv = ['tenmin_val']
 from astropy.io import fits
 from astropy.wcs import WCS
-from exopipe.phase3 import coadd_full_pipeline as C
+from exopipe.phase3.lib.masters import coadd as C
 from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
 sys.argv = _ARGV              # restore after import-protection clobber
 

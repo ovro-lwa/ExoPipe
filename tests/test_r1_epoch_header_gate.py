@@ -37,7 +37,7 @@ _IMPORT_ERROR = None
 try:
     import numpy as np
     from astropy.io import fits
-    import exopipe.phase3.coadd_full_pipeline as cfp
+    import exopipe.phase3.lib.masters.coadd as cfp
 except Exception as e:                                    # pragma: no cover
     _IMPORT_ERROR = f'{e.__class__.__name__}: {e}'
 

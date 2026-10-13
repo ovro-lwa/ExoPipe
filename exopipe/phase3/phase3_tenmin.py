@@ -29,7 +29,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.time import Time
-from exopipe.phase3 import coadd_full_pipeline as C
+from exopipe.phase3.lib.masters import coadd as C
 from exopipe.phase3.phase3_pipeline import build_sigma_stack, run_identification_i, run_identification_v
 from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.tenmin_validation import setup_date_params, align_date_intervals
@@ -306,7 +306,7 @@ def run_tenmin_search(lst, scope, label='PROD', included_dates=None,
     # 10-min night set inconsistent with deep (deep-rejected nights leaked into
     # the 10-min reference -> cand-#11-class false positives). The SEARCH still
     # runs on every epoch; only the master (reference) is restricted to survivors.
-    from exopipe.phase3.coadd_full_pipeline import (load_exclusions, is_excluded,
+    from exopipe.phase3.lib.masters.coadd import (load_exclusions, is_excluded,
                                      get_good_dates_for_interval)
     _excl = load_exclusions()
     base = set(included_dates) if included_dates else set(dates_all)

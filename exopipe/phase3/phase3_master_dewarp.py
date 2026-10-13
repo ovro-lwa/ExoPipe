@@ -291,7 +291,7 @@ def _apply(lst, scope, groot, root, screen, row):
     # each coadd_final/*_pbcorr_* sibling is then resampled plain / resampled PB map of its own robust weighting (R075 ->
     # PB_deep_R075, else PB_deep, as phase3_pbcorr_masters.do_cell), NaN where the map is at or below the sibling's PBFLOOR,
     # and must pass pb_apply.sibling_check before the cell counts as written.
-    from exopipe.phase3 import pb_apply as PB
+    from exopipe.phase3.lib.masters import pb_apply as PB
     sibs = [p for p in files if os.path.dirname(p) == f'{groot}/coadd_final' and '_pbcorr_' in os.path.basename(p)]
     nw = 0; warped = {}
     for p in files:

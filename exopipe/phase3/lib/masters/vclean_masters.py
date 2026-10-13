@@ -55,7 +55,7 @@ from astropy.io import fits
 WB_ROOT = None   # NO default (Gregg 2026-09-04): coadd_root() at point of use
 SB_ROOT = '/data07/gh/phase3/coadd_sb'
 TMP_ROOT = '/fast/gh/main/tmp'
-SV2_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+SV2_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                           'search_v_transients_v2.py')
 SV2_TIMEOUT_S = 7200
 
@@ -88,8 +88,8 @@ def write_vclean_sibling(cf, scope):
     """Write V_deep_Taper_R0_clean_pbcorr_{scope}.fits = the cleaned master / the cell's STORED PB_deep map (PB > floor), with
     the PB provenance of the cell's V_deep_Taper_R0 sibling (same map, same run: PBMODEL/PBCHROM/PBRESID/PBNDATE) and the
     PBMETHOD/PBWINDOW/BEAMMOD cards phase3_pbcorr_masters.do_cell writes. The cleaning engine is not run."""
-    from exopipe.phase3 import pb_apply as PB
-    from exopipe.phase3.phase3_pbcorr_masters import BEAMMOD
+    from exopipe.phase3.lib.masters import pb_apply as PB
+    from exopipe.phase3.lib.masters.pbcorr_masters import BEAMMOD
     out_ap = f'{cf}/V_deep_Taper_R0_clean_{scope}.fits'
     out_pb = f'{cf}/V_deep_Taper_R0_clean_pbcorr_{scope}.fits'
     ref = f'{cf}/V_deep_Taper_R0_pbcorr_{scope}.fits'
@@ -117,7 +117,7 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
     master, or the PB_deep map is missing — the PB map must exist first
     (phase3_pbcorr_masters / drive_pbcorr).
     """
-    from exopipe.phase3 import pb_apply as PB
+    from exopipe.phase3.lib.masters import pb_apply as PB
 
     lst, scope = cell.split('_', 1)
     cf = f'{coadd_root}/{cell}/coadd_final'
@@ -156,8 +156,8 @@ def build_vclean_cell(coadd_root, cell, tmp_root=None, skip_existing=True):
         env = {**os.environ, 'OMP_NUM_THREADS': '2', 'MKL_NUM_THREADS': '2',
                'OPENBLAS_NUM_THREADS': '2'}
         # sv2 imports exopipe.* (GC-PRE-1 rewrite): repo root on PYTHONPATH.
-        repo_root = os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__))))
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))))
         env['PYTHONPATH'] = repo_root + (
             os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
         r = subprocess.run(

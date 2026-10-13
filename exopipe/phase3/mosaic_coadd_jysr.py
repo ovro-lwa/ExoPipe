@@ -93,7 +93,7 @@ def _paths(root, lst, variant, band, product='I'):
         name = f"I_deep_{variant}_pbcorr_{band}.fits"
     # PB step 2 (2026-10-01): the weighting map of the product's own robust weighting (Robust -0.75 variants ->
     # PB_deep_R075; Robust 0 and every Stokes V product -> PB_deep)
-    from exopipe.phase3.pb_apply import deep_pb_name
+    from exopipe.phase3.lib.masters.pb_apply import deep_pb_name
     rob = 'R075' if (product == 'I' and str(variant).endswith('R075')) else 'R0'
     return (os.path.join(root, lst, name),
             os.path.join(root, lst, deep_pb_name(band, rob)))

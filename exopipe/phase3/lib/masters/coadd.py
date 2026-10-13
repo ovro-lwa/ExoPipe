@@ -37,7 +37,7 @@ import numpy as np
 # refused 09h Full (2025-01-06, per-band rows at 23/32/36 MHz and Red). Registering this instance under its package name makes
 # every importer share it.
 if __name__ == '__main__':
-    sys.modules.setdefault('exopipe.phase3.coadd_full_pipeline', sys.modules[__name__])
+    sys.modules.setdefault('exopipe.phase3.lib.masters.coadd', sys.modules[__name__])
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', message='.*FITSFixedWarning.*')
 warnings.filterwarnings('ignore', message='.*datfix.*')
@@ -72,7 +72,7 @@ DECISIONS_CSV = '/lustre/gh/main/clv15/data_decisions.csv'  # canonical (Gregg m
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # GC-PRE-2 (Gregg 2026-08-12): flow batch script lives in exopipe/common/
 # (cross-phase core infrastructure); shelled into py310_orca, never imported.
-BATCH_FLOW_SCRIPT = os.path.join(os.path.dirname(SCRIPT_DIR), 'common',
+BATCH_FLOW_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR))), 'common',
                                  'batch_flow_align.py')
 
 OVRO_LOC = EarthLocation(lat=37.2397*u.deg, lon=-118.2816*u.deg, height=1222*u.m)
@@ -2386,7 +2386,7 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
     # the target"; 2026-09-04, "Non-matched everywhere is correct including for the search frame" - superseding the PSF matching of the
     # 2026-08-26 Option-2 ruling). 2026-10-08: a PSF-matched metric put here on 2026-10-07 contradicted those rulings and is removed. A
     # night whose metric cannot be measured is an outlier (refused), never a silent pass. The verdict is recorded (stage2_verdict.csv).
-    from exopipe.phase3 import membership as _MB
+    from exopipe.phase3.lib.masters import membership as _MB
     prov_i_data, prov_i_hdr = load_image(prov_i_path)
     prov_v_data = None
     if prov_v_path:
@@ -2981,7 +2981,7 @@ _BAND_MED = None
 def _variant_band_median(freq_str, vk):
     global _BAND_MED
     if _BAND_MED is None:
-        _BAND_MED = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        _BAND_MED = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
                                                 'common', 'variant_band_medians.json')))['medians']
     band = f'{freq_str}MHz' if str(freq_str).isdigit() else str(freq_str)   # the co-add passes subbands as '78'
     key = f'{band}|{vk}'
@@ -3222,12 +3222,12 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     # EPOCH GATE (Gregg 2026-10-04, option B): a night whose epoch image fails its content test gets no epoch product. With the
     # cell's epoch_gate.csv (made against THIS master, else REFUSED as stale) its FAIL nights are skipped here; without it every
     # epoch must still pass the check below (the rule before the gate).
-    from exopipe.phase3 import epoch_gate as _EGp
+    from exopipe.phase3.lib.masters import epoch_gate as _EGp
     try:
         _epoch_fail = _EGp.failed_dates(final_dir, fl)
     except FileNotFoundError:
         _epoch_fail = set()
-    from exopipe.phase3 import night_image_gate as _NGp
+    from exopipe.phase3.lib.masters import night_image_gate as _NGp
     try:
         _gate_fail = _NGp.failed_dates(final_dir)
     except FileNotFoundError:
@@ -3376,7 +3376,7 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
         _stamp_variant_gate(path, refused)
         # bake in the cell's absolute flux factor exactly as the generation carries it
         # (2026-10-01: once the survey master carries FLUXBAKE the factor is SHSCALE x FLUXCORR - flux_correction.pixel_factor)
-        from exopipe.phase3 import flux_correction as _FC
+        from exopipe.phase3.lib.masters import flux_correction as _FC
         _pf = _FC.pixel_factor(mhdr)
         if _pf is not None:
             with fits.open(path, mode='update') as hh:
@@ -3472,7 +3472,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     # STAGE 2 RECORD REQUIRED (2026-10-07; metric corrected 2026-10-08): membership must come from the ruled non-matched metric
     # (canon section 7, 2026-09-05: no PSF matching anywhere); a provisional stage run by other code (the PSF-matched records of
     # 2026-10-07, or none) has no verdict record with it - REFUSE before any work (re-run the provisional stage)
-    from exopipe.phase3 import membership as _MB3
+    from exopipe.phase3.lib.masters import membership as _MB3
     _s2rows = _MB3._rcsv(f'{workdir}/{_MB3.VERDICT_FILE}')
     if not _s2rows or {r.get('metric') for r in _s2rows} != {_MB3.STAGE2_METRIC}:
         raise RuntimeError(f'{lst} {fl}: no stage-2 verdict with the ruled metric {_MB3.STAGE2_METRIC} from the provisional stage '
@@ -3489,7 +3489,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     # FAILS leaves co-add membership (its residual stays a two-tier product; the search refuses it through the same record).
     # The record of the generation being rebuilt is read WITHOUT the master check: a night's verdict is its own flux deficit,
     # and the new generation's record is made after this build (install / content test).
-    from exopipe.phase3 import epoch_gate as _EGm
+    from exopipe.phase3.lib.masters import epoch_gate as _EGm
     try:
         _egm = _EGm.failed_dates(f'{workdir}/coadd_final', check_master=False)
     except FileNotFoundError:
@@ -3499,7 +3499,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         good_dates_deep = good_dates_deep - _egm
     # SUNLIT NIGHTS (Gregg 2026-10-08 "Correct.", his 2026-09-26 intent): a band-night the solar contamination audit QUARANTINEs
     # leaves co-add membership (products still built; the search refuses its detections at publish - the daytime gate)
-    from exopipe.phase3 import membership as _MBs
+    from exopipe.phase3.lib.masters import membership as _MBs
     _sol = {d for d, _, _ in dates if _MBs.solar_quarantined(lst, fl, d)} & good_dates_deep
     if _sol:
         print(f"  {lst} {fl}: SUNLIT-NIGHT GATE - night(s) {sorted(_sol)} quarantined by the solar audit leave co-add membership", flush=True)
@@ -3583,7 +3583,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         }
 
     target_dates = [(d, sd, img) for d, sd, img in dates if d != ref_date]
-    from exopipe.phase3 import night_image_gate as _NG
+    from exopipe.phase3.lib.masters import night_image_gate as _NG
     _gate_rows = {}
     if ref_date != 'MASTER':
         _gate_rows[ref_date] = dict(verdict='pass', reason='the reference night (identity)')
@@ -3621,7 +3621,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         # never warns"; R-QA3-BOUNDS-PROCESS-APPROVED 2026-08-26: 0.7-1.6, lower edge 0.35 at 18 MHz and 0.55 at 23/27 MHz). In this
         # code since 2026-10-07: the August drops were side-script edits that the 2026-09-10 rebuild lost. The scale tested is this
         # measurement (before flow alignment), the one the window was set on. The night keeps its per-night products (two-tier).
-        from exopipe.phase3 import membership as _MB3
+        from exopipe.phase3.lib.masters import membership as _MB3
         _qa3_in = _MB3.qa3_inside(fl, mean_scale)
         if not _qa3_in:
             print(f"    {date}: STAGE-3 WINDOW REFUSED - flux-alignment scale {mean_scale:.4g} outside "
@@ -3797,7 +3797,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     if ref_date != 'MASTER' and ref_date not in good_dates_deep:
         raise RuntimeError(f'{lst} {fl}: the alignment/flux reference night {ref_date} is not a member of the master - the reference '
                            f'comes only from master nights (Gregg 2026-10-11); REFUSING the build')
-    from exopipe.phase3 import membership as _MB3
+    from exopipe.phase3.lib.masters import membership as _MB3
     shutil.copy2(f'{workdir}/{_MB3.VERDICT_FILE}', f'{final_dir}/{_MB3.VERDICT_FILE}')
     _mv = _MB3.verify(workdir, exclusions)
     if _mv:

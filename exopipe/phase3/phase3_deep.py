@@ -18,7 +18,7 @@ _ARGV = list(sys.argv)        # captured before lab imports that reset sys.argv
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
-from exopipe.phase3.coadd_full_pipeline import apply_flow_field, build_striation_model
+from exopipe.phase3.lib.masters.coadd import apply_flow_field, build_striation_model
 from exopipe.phase3 import parent_curve_table as _PCT
 from exopipe.phase3.phase3_pipeline import (build_sigma_stack, run_identification_i,
                              run_identification_v, STRIATION_WINDOW_DEG)
@@ -36,7 +36,7 @@ _ATEAM_COORDS = _SC([sv2.CONFIG['A_TEAM'][k]['coord'].ra.deg
 from scipy.ndimage import uniform_filter
 from astropy.time import Time
 from astropy.coordinates import get_body, SkyCoord
-from exopipe.phase3.coadd_full_pipeline import OVRO_LOC, load_exclusions, is_excluded
+from exopipe.phase3.lib.masters.coadd import OVRO_LOC, load_exclusions, is_excluded
 
 # ── FINAL V-deep search inventory (Gregg 2026-06-30; minimal veto, no silent gates) ──
 # Applied IN-ORDER, all enforced by construction here (no hand-run side scripts):
@@ -792,7 +792,7 @@ def _write_pbcorr_sibling(frame_path, data, hdr, base, scope, cell_tag, d, pbp=N
     # deep: the map of the frame's robust weighting (PB step 2, 2026-10-01: I Robust -0.75 -> PB_deep_R075, V Robust 0 ->
     # PB_deep); 10 minutes: the frame's bin PB map (contract step 61/66)
     if pbp is None:
-        from exopipe.phase3.pb_apply import deep_pb_name as _dpn
+        from exopipe.phase3.lib.masters.pb_apply import deep_pb_name as _dpn
         pbp = f'{base}/coadd_final/{_dpn(scope, robust)}'
     if pbp not in _PB_CACHE:
         if not os.path.exists(pbp):
@@ -982,7 +982,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # stage 2 with the ruled metric, stage-3 window, night-image and epoch-image checks). Deep cadence only; the 10-minute tier is the
     # snapshot / sub-LST chat's (cross-tier note in the ledger). P3_ALLOW_OLD_MASTERS=1 bypasses it for archaeology, never production.
     if cadence == 'deep' and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
-        from exopipe.phase3 import membership as _MB
+        from exopipe.phase3.lib.masters import membership as _MB
         _mv = _MB.verify(base) + _MB.verify_products(base)   # membership + what the master must carry (flux scale, PB, dewarp)
         if _mv:
             raise RuntimeError(f'{lst} {scope}: REFUSING to search - the master violates the membership rulings: '
@@ -1097,7 +1097,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # a deep cell without the gate record REFUSES (a gate never skips). Deep cadence: the 10-minute tier is the
     # snapshot / sub-LST chat's.
     if cadence == 'deep':
-        from exopipe.phase3 import night_image_gate as _NG
+        from exopipe.phase3.lib.masters import night_image_gate as _NG
         try:
             _ngf = _NG.failed_dates(f'{base}/coadd_final')
         except FileNotFoundError:
@@ -1113,7 +1113,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         # (0c) EPOCH GATE (Gregg 2026-10-04, option B: "Dont force products for crappy nights"): a night whose epoch image
         # fails its content test (coadd_final/epoch_gate.csv, made against THIS cell's current I master) is refused from BOTH
         # searches; a missing or stale record REFUSES the cell (a gate never skips).
-        from exopipe.phase3 import epoch_gate as _EG
+        from exopipe.phase3.lib.masters import epoch_gate as _EG
         try:
             _egf = _EG.failed_dates(f'{base}/coadd_final', scope)
         except FileNotFoundError:

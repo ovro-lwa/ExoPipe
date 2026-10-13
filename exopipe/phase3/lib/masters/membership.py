@@ -85,7 +85,7 @@ def solar_quarantined(lst, band, date):
     q = _SOLAR.get((lst, date), set())
     fs = band.replace('MHz', '')
     if fs in ('Red', 'Green', 'Blue', 'Full'):
-        from exopipe.phase3.coadd_full_pipeline import _WB_SUBS
+        from exopipe.phase3.lib.masters.coadd import _WB_SUBS
         return bool(_WB_SUBS[fs] & q)
     return fs in q
 
@@ -95,7 +95,7 @@ def solar_quarantined(lst, band, date):
 # reports it as 'left out but passes' nor accepts it as a member. It is NOT a search removal (that is data_decisions.csv) - the night keeps
 # its own gates in the search. The table is code (named_out_of_master.csv beside this module; one row per ruling with Gregg's words and
 # the ledger id), never edited by a script. Missing table = REFUSE.
-NAMED_OUT_OF_MASTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'named_out_of_master.csv')
+NAMED_OUT_OF_MASTER = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'named_out_of_master.csv')
 _NAMED_OUT = None
 
 
@@ -112,7 +112,7 @@ def named_out_of_master(lst, band, date):
 def stage2_outliers(dates, i_vals, v_vals, beam_outliers=()):
     """The production outlier rule on the stage-2 values: coadd_full_pipeline.detect_outliers_mad per Stokes (high side OUTLIER_SIGMA,
     low side R-GC5), union with the beam gate. Returns (i_out, v_out, i_thr, v_thr, all_out)."""
-    from exopipe.phase3.coadd_full_pipeline import detect_outliers_mad
+    from exopipe.phase3.lib.masters.coadd import detect_outliers_mad
     i_out, i_thr = detect_outliers_mad(list(dates), list(i_vals))
     v_out, v_thr = detect_outliers_mad(list(dates), list(v_vals))
     return set(i_out), set(v_out), i_thr, v_thr, set(i_out) | set(v_out) | set(beam_outliers)
@@ -201,9 +201,9 @@ def verify(cell_dir, exclusions=None):
     NG = {r['date']: r.get('verdict') for r in (_rcsv(os.path.join(fd, 'night_image_gate.csv')) or [])}
     EG = {r['date']: r.get('verdict') for r in (_rcsv(os.path.join(fd, 'epoch_gate.csv')) or [])}
     if exclusions is None:
-        from exopipe.phase3.coadd_full_pipeline import load_exclusions
+        from exopipe.phase3.lib.masters.coadd import load_exclusions
         exclusions = load_exclusions()
-    from exopipe.phase3.coadd_full_pipeline import is_excluded
+    from exopipe.phase3.lib.masters.coadd import is_excluded
     out = []
     for r in W:
         d = r['date']
@@ -237,7 +237,7 @@ def verify(cell_dir, exclusions=None):
     _sd = os.path.join(cell_dir, 'subtracted')
     if os.path.isdir(_sd):
         import re
-        from exopipe.phase3.coadd_full_pipeline import is_excluded as _isx
+        from exopipe.phase3.lib.masters.coadd import is_excluded as _isx
         _pat = re.compile(r'^(\d{4}-\d\d-\d\d)_I_sub(?:_\w+?)?_' + re.escape(band) + r'\.fits$')
         _wd = {r['date'] for r in W}
         for d in sorted({m.group(1) for f in os.listdir(_sd) for m in [_pat.match(f)] if m} - _wd):
@@ -299,7 +299,7 @@ def unprocessed_nights(cell_dir, exclusions=None):
     its gate records (night_image_gate.csv, refusals_grid.csv): candidates for a night the co-add never saw - a re-admitted night,
     or Phase-2 data that arrived after the build (FINDING-495). A REPORT for the dry run, not a gate: a night the build refused as a
     blank field leaves no record file and shows here too."""
-    from exopipe.phase3.coadd_full_pipeline import discover_dates, is_excluded, load_exclusions
+    from exopipe.phase3.lib.masters.coadd import discover_dates, is_excluded, load_exclusions
     lst, band = cell_band(cell_dir)
     fs = band.replace('MHz', '')
     if exclusions is None:

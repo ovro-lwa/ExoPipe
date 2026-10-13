@@ -80,7 +80,7 @@ def pbcorr_master(root, lst, scope):
     cf = f'{root}/{lst}_{scope}/coadd_final'
     p = f'{cf}/I_deep_Taper_R075_pbcorr_{scope}.fits'
     if not os.path.exists(p) and not NO_BUILD:
-        from exopipe.phase3 import phase3_pbcorr_masters as PBM
+        from exopipe.phase3.lib.masters import pbcorr_masters as PBM
         n_ok, n_skip, errs = PBM.do_cell(root, f'{lst}_{scope}')
         for e in errs: print('  pbcorr:', e)
     return p if os.path.exists(p) else None
@@ -149,7 +149,7 @@ def apply(lst, scope, root, row, outgen, corr_t=None):
     if corr_t is None or scope not in corr_t:
         raise RuntimeError(f'{lst} {scope}: apply without the flux-correction table row for {scope} - the correction is baked '
                            f'into the pixels (Gregg 2026-10-01); REFUSING')
-    from exopipe.phase3 import flux_correction as FC
+    from exopipe.phase3.lib.masters import flux_correction as FC
     cell = f'{root}/{lst}_{scope}'; out = f'{cell}/{outgen}'; n = 0
     scale = float(row['scale']); corr = float(corr_t[scope]['corr'])
     for sub in (('coadd_final',) if NO_RESIDUALS else SCALED_DIRS):
@@ -213,7 +213,7 @@ def rebake_file(src, dst, scope, s_old, srow, corr_t, write=False, tmp_dir=None,
     in the detail) and the re-baked frame gains the cards.
     Returns dict(status, factor, md5_old, md5_new, detail)."""
     import io
-    from exopipe.phase3 import flux_correction as FC
+    from exopipe.phase3.lib.masters import flux_correction as FC
     out = dict(status='', factor='', md5_old='', md5_new='', detail='')
     if os.path.basename(src).startswith(UNSCALED_PREFIX):
         out['status'] = 'SKIP-PB'; return out
@@ -312,7 +312,7 @@ def main():
     a = ap.parse_args()
     corr_t = None
     if a.fluxcorr_table:
-        from exopipe.phase3 import flux_correction as FC
+        from exopipe.phase3.lib.masters import flux_correction as FC
         corr_t = FC.load_table(a.fluxcorr_table)
     if a.rebake:
         if not (a.scale_table and a.old_scale_table and corr_t and a.table):

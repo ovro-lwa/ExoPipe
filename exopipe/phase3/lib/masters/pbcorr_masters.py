@@ -24,7 +24,7 @@ _ARGV = list(sys.argv); sys.argv = ['pbmasters']
 import os, re, glob
 import numpy as np
 from astropy.io import fits
-from exopipe.phase3 import pb_apply as PB
+from exopipe.phase3.lib.masters import pb_apply as PB
 sys.argv = _ARGV              # restore after import-protection clobber
 
 # v2-rebuild campaign (Gregg close-out 2026-08-29): PB siblings must be
