@@ -285,7 +285,48 @@ class runner(_Section):
     #   'deep-cell': ['masters --tier deep --cells {item} --stages build,vclean,fluxscale,pbmaps',
     #                 'dewarp --tier deep --cells {item}', 'install --tier deep --cells {item}',
     #                 'masters --tier deep --cells {item} --stages sources']
-    CHAINS = {}
+    # Named chains (DESIGN 11.3, 12): `exopipe3 run submit --chain NAME --items ...` runs each item through these step
+    # commands in order on one node; an item stops at its first non-zero exit (2 refused / 3 no-input / other error).
+    # {item} is the item. The per-hour chain is the unit a merged Phase 1-2-3 controller will run (DESIGN 12.3).
+    CHAINS = {
+        # per hour: one LST hour of one night, every tier, against the installed masters (item kind: epoch 04h_2025-10-14)
+        'epoch': ['frames --tier deep --epochs {item}',
+                  'search --tier deep --epochs {item}',
+                  'catalog --tier deep --incremental --epochs {item}',
+                  'forced --tier deep --epochs {item}',
+                  'frames --tier sublst --epochs {item}',
+                  'flow --tier sublst --epochs {item}',
+                  'search --tier sublst --epochs {item}',
+                  'catalog --tier sublst --incremental --epochs {item}',
+                  'frames --tier snapshot --epochs {item}',
+                  'flow --tier snapshot --epochs {item}',
+                  'search --tier snapshot --epochs {item}',
+                  'curves --tier snapshot --epochs {item}',
+                  'catalog --tier snapshot --epochs {item}',
+                  'forced --tier snapshot --epochs {item}',
+                  'pages --epochs {item}',
+                  'serve --epochs {item}',
+                  'archive push --epochs {item}'],
+        # survey build of one deep cell (item kind: cell 04h_Full); dewarp (per LST) and install follow separately
+        'deep-build-cell': ['masters --tier deep --stages stage-in --cells {item}',
+                            'flow --tier deep --cells {item}',
+                            'masters --tier deep --stages build,pbmaps,vclean,fluxscale,verify --cells {item}'],
+        # re-run every hour of a cell against its rebuilt + installed master (item kind: cell)
+        'deep-rerun-cell': ['search --tier deep --cells {item}',
+                            'catalog --tier deep --cells {item}'],
+        # sub-LST masters of one LST (item kind: lst 09h)
+        'sublst-lst': ['masters --tier sublst --lsts {item}',
+                       'flow --tier sublst --lsts {item}',
+                       'frames --tier sublst --lsts {item}',
+                       'search --tier sublst --lsts {item}',
+                       'catalog --tier sublst --lsts {item}'],
+        # one snapshot cell (item kind: night cell 18h_2025-04-11)
+        'snapshot-cell': ['frames --tier snapshot --cells {item}',
+                          'flow --tier snapshot --cells {item}',
+                          'search --tier snapshot --cells {item}',
+                          'curves --tier snapshot --cells {item}',
+                          'catalog --tier snapshot --cells {item}'],
+    }
 
 
 class site(_Section):
