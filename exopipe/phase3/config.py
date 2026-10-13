@@ -250,8 +250,10 @@ class fitting(_Section):
     # superseded: I 0.520/0.510 (ratified 2026-10-11), V 0.575/0.531 (adopted 2026-10-11) - measured with the mirrored beam
     K_TEMPLATE = {('deep', 'I'): (0.542, 0.500),
                   ('deep', 'V'): (0.572, 0.551),
-                  ('sublst', 'I'): (0.476, 0.423),   # Gregg 2026-10-13 'Use the measured 10-min K'
-                  ('sublst', 'V'): (0.658, 0.499)}   #   (R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED)
+                  # sub-LST: re-measured after the mirror fix (exopipe_ops ac2d267; injection errors projected on the true
+                  # beam axes, 5370179); superseded I 0.476/0.423, V 0.658/0.499 (measured with the mirrored template)
+                  ('sublst', 'I'): (0.464, 0.450),
+                  ('sublst', 'V'): (0.599, 0.602)}
     # snapshot tier: the template module's own measured K (template_fit_validation run_20261004b): major 0.60
     # (0.81 at >= 69 MHz), minor 0.86
     K_SNAPSHOT = (0.60, 0.86)

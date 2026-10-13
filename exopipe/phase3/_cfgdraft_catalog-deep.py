@@ -147,7 +147,7 @@ class catalog_fitpos(_Section):
     ON_CENTRE_PX = 0.01                                   # px, fitted position this close to a pixel centre counts; ops/deep_fit_positions.py:147, sublst_fit_positions.py:57
     ON_CENTRE_MAX_FRAC = 0.01                             # refuse above 1 per cent of fitted rows (chance 0.03 per cent); ops/deep_fit_positions.py:149 [lit]
     KEEP_DEEP_SYSTEMATIC = {'deep': True, 'sublst': False}   # sub-LST blanks pos_sys/pos_err (error model A, 2026-10-08/10); ops/sublst_fit_positions.py:56
-    SUBLST_K_ARG = 'I=0.476,0.423 V=0.658,0.499'          # must equal fitting.K_TEMPLATE[('sublst', S)]; ops/sublst_catalogs.sh:213 [arg:--k] (R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED)
+    SUBLST_K_ARG = 'I=0.464,0.450 V=0.599,0.602'          # must equal fitting.K_TEMPLATE[('sublst', S)]; ops/sublst_catalogs.sh:216 (ac2d267) [arg:--k] (R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED)
     RULED = {'TIERS': 'R-GREGG-20261012-FITTED-DETECTION-POSITIONS-REQUIRED'}
 
 
