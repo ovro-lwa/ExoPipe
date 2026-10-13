@@ -13,7 +13,6 @@ import csv
 import hashlib
 import os
 import re
-import socket
 import time
 
 from exopipe.phase3.core.record import Refusal
@@ -401,14 +400,15 @@ def md5_many(paths, threads=None):
 
 
 def host():
-    return socket.gethostname()
+    """This host's short name, the key of the site tables (core.env.host: the domain part stripped)."""
+    from exopipe.phase3.core import env
+    return env.host()
 
 
 def local_to_host(path):
-    """True when ``path`` lies under a node-local root of this host (site NODE_LOCAL_ROOTS)."""
-    roots = (cfg().site.NODE_LOCAL_ROOTS or {}).get(host(), []) if isinstance(cfg().site.NODE_LOCAL_ROOTS, dict) else []
-    p = os.path.abspath(path)
-    return any(p == r.rstrip('/') or p.startswith(r.rstrip('/') + '/') for r in roots)
+    """True when ``path`` lies under a node-local root of this host (site NODE_LOCAL_ROOTS, core.env.node_local_holder)."""
+    from exopipe.phase3.core import env
+    return env.node_local_holder(path) == env.host()
 
 
 def nearest_existing(path):

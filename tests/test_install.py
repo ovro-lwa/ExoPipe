@@ -319,6 +319,72 @@ def test_units():
        and items['12h_2025-01-01'] == ['12h_41MHz', '12h_Red'] and head['cells'] == '12h_41MHz,12h_Red')
     ok('re-run file: core.cells reads the items', cells.expand(f'@{p}') == ['12h_2025-01-01', '12h_2025-01-02']
        and all(cells.parse_epoch(x) for x in cells.expand(f'@{p}')))
+    test_review_fixes()
+
+
+def test_review_fixes():
+    """Review 2026-10-13: ruled ledger IDs exist; the production install lock; host helpers; the newest-record verify rule."""
+    import fcntl
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import env, record
+    from exopipe.phase3.lib.install import steps_common as SC, steps_deep as SD, steps_enqueue as SE
+    # every RULED ledger ID of both sections is a row of the fix ledger
+    with open(CFG.paths.FIX_LEDGER, newline='', encoding='utf-8', errors='replace') as f:
+        rd = csv.reader(f)
+        h = next(rd)
+        ids = {r[h.index('fix_id')] for r in rd if len(r) > h.index('fix_id')}
+    want = set()
+    for sec in (CFG.install, CFG.install_enqueue):
+        for v in getattr(sec, 'RULED', {}).values():
+            want |= set(v if isinstance(v, (tuple, list)) else (v,))
+    ok('RULED ledger IDs are rows of the fix ledger', want and want <= ids, f'missing {sorted(want - ids)}')
+    ok('PRODUCTION_LOCK is protected', 'PRODUCTION_LOCK' in CFG.install.PROTECTED_KEYS)
+    # the production install lock (install_cell.sh:18-20): taken (blocking) on production roots, never under --out
+    lk = f'{ROOT}/unit/install.lock'
+    old = CFG.install.PRODUCTION_LOCK
+    CFG.install.PRODUCTION_LOCK = lk
+    try:
+        with SD.production_lock(types.SimpleNamespace(rerooted=True)) as p:
+            ok('production lock: not taken under --out', p is None and not os.path.exists(lk))
+        with SD.production_lock(types.SimpleNamespace(rerooted=False)) as p:
+            g = open(lk)
+            try:
+                fcntl.flock(g, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = False
+            except BlockingIOError:
+                held = True
+            g.close()
+            ok('production lock: held on production roots (a second flock is refused)', p == lk and held)
+        g = open(lk)
+        fcntl.flock(g, fcntl.LOCK_EX | fcntl.LOCK_NB)        # released after the install
+        g.close()
+        ok('production lock: released afterwards', True)
+    finally:
+        CFG.install.PRODUCTION_LOCK = old
+    # host helpers = core.env (short host name, the key of the site tables)
+    ok('host() = core.env.host()', SC.host() == env.host() and '.' not in SC.host())
+    roots_here = (CFG.site.NODE_LOCAL_ROOTS or {}).get(env.host(), [])
+    ok('local_to_host: a path under this host\'s node-local root', (not roots_here) or SC.local_to_host(
+        os.path.join(roots_here[0], 'x', 'y')), str(roots_here))
+    ok('local_to_host: a shared path is not node-local', not SC.local_to_host('/lustre/gh/main/phase3/x'))
+    # the enqueue / cleanup precondition: the NEWEST install/recover/verify record must be done with install.V passing
+    out = f'{ROOT}/unit/vrec'
+    rr = types.SimpleNamespace(out=out)
+
+    def put(unit, status, t, v=True):
+        record.atomic_write_json(record.record_path(out, 'install', unit), dict(
+            unit=unit, status=status, started=t, finished=t,
+            tests=[dict(name='install.V', passed=v)] if v is not None else []))
+    put('12h_Red', 'done', '2026-10-13T01:00:00Z')
+    ok('verify rule: a done install with install.V passes', SE._verify_passed(rr, '12h_Red') == (True, '12h_Red'))
+    put('12h_Red.verify', 'done', '2026-10-13T02:00:00Z')
+    put('12h_Red', 'error', '2026-10-13T03:00:00Z', v=None)
+    ok('verify rule: an install attempt that failed AFTER the last verify refuses', SE._verify_passed(rr, '12h_Red')[0]
+       is False)
+    put('12h_Red.verify', 'done', '2026-10-13T04:00:00Z')
+    ok('verify rule: a verify after the failed attempt passes', SE._verify_passed(rr, '12h_Red') == (True, '12h_Red.verify'))
+    put('12h_Red.recover', 'done', '2026-10-13T05:00:00Z', v=None)
+    ok('verify rule: a recover after the last verify needs a new verify', SE._verify_passed(rr, '12h_Red')[0] is False)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -346,6 +412,7 @@ def test_e2e():
     old_state, old_holder = CFG.install_enqueue.SEARCH_STATE_ROOT, getattr(CFG.site, 'FLOW_HOLDER', None)
     try:
         _e2e(run, nights, hdrs)
+        _e2e_rebuild(run, nights, hdrs)
     finally:
         SD.snapshot_link_scan, PI.glob = real_scan, real_glob
         CFG.install_enqueue.SEARCH_STATE_ROOT = old_state
@@ -497,6 +564,71 @@ def _e2e(run, nights, hdrs):
     rc = cli('install', '--cells', CELL, '--tier', 'deep', '--stages', 'verify', '--out', out, '--cores', 'none')
     rec = record(out, f'{CELL}.verify')
     ok('E: verify alone done', rc == 0 and rec['status'] == 'done', rec['reason'][:200])
+
+
+def _e2e_rebuild(run, nights, hdrs):
+    """F (review 2026-10-13): kind rebuild with a rebuild root - the cell files (coadd_final/{weights, night_image_gate,
+    stage2_verdict}.csv), the top files (residuals_provisional.csv, outliers.csv) and every file under flow/ and
+    coadd_provisional/ (a nested file and a dot file too) are quarantined by phase3_install; G-DEST must have planned each
+    of those destinations BEFORE staging (install_manifest.rows_match_files fails a working-quarantine row that was not
+    planned), and the rebuild's cell files and directories replace them."""
+    from exopipe.phase3.core import validate
+    out = f'{ROOT}/outF'
+    cdir = build_current(out, hdrs, nights, run)
+    open(f'{cdir}/outliers.csv', 'w').write('date,why\n')
+    for rel, text in (('flow/2025-01-01/f.npy', 'old flow'), ('flow/.flowmeta', 'old meta'), ('flow/index.csv', 'a\n'),
+                      ('coadd_provisional/p.txt', 'old provisional')):
+        os.makedirs(os.path.dirname(f'{cdir}/{rel}'), exist_ok=True)
+        open(f'{cdir}/{rel}', 'w').write(text)
+    tmp_gen = build_generation(f'{ROOT}/genF_tmp/{CELL}/gen_mdewarp_rbf', hdrs, nights, seed=3)
+    gen = f'{ROOT}/promoted/{CELL}'                          # promoted generation: canonical names (promote_rebuild.py:21-24)
+    for p in glob.glob(f'{tmp_gen}/**/*.fits', recursive=True):
+        rel = os.path.relpath(p, tmp_gen)
+        dst = os.path.join(gen, os.path.dirname(rel), os.path.basename(rel).replace('_mdewarp', '', 1))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(p, dst)
+    open(f'{ROOT}/promoted/INSTALL_CONTENT_OK', 'w').write(f'{ROOT}/promoted/other_cell\n{gen}\n')
+    rr = f'{ROOT}/rebuild/{CELL}'
+    os.makedirs(f'{rr}/coadd_final', exist_ok=True)
+    for f in ('weights.csv', 'night_image_gate.csv', 'stage2_verdict.csv'):
+        shutil.copy2(f'{REAL_CELL}/coadd_final/{f}', f'{rr}/coadd_final/{f}')
+    shutil.copy2(f'{REAL_CELL}/residuals_provisional.csv', f'{rr}/residuals_provisional.csv')
+    open(f'{rr}/outliers.csv', 'w').write('date,why\nnew,1\n')
+    for rel in ('flow/2025-01-01/f.npy', 'flow/new.csv', 'coadd_provisional/p.txt'):
+        os.makedirs(os.path.dirname(f'{rr}/{rel}'), exist_ok=True)
+        open(f'{rr}/{rel}', 'w').write('new ' + rel)
+    open(f'{rr}/REBUILD_CONTENT_OK', 'w').write(f'{rr}\nT1-T8 passed 2026-10-13T00:00:00Z (synthetic)\n')
+    old = {os.path.relpath(p, cdir): md5(p) for p in glob.glob(f'{cdir}/**/*', recursive=True) + glob.glob(f'{cdir}/flow/.*')
+           if os.path.isfile(p)}
+    rc = cli('install', '--cells', CELL, '--kind', 'rebuild', '--gen', gen, '--rebuild-root', rr, '--out', out,
+             '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0')
+    rec = record(out, CELL)
+    ok('F: kind rebuild with a rebuild root -> done', rc == 0 and rec and rec['status'] == 'done',
+       f'rc {rc}, {rec and rec["reason"][:300]}')
+    if not rec or rec['status'] != 'done':
+        for t in failed_tests(rec):
+            print('   failed:', t['name'], str(t.get('detail'))[:400])
+        return
+    man = list(csv.DictReader(open(f'{out}/_records/install/{CELL}.manifest.csv')))
+    planned = {r['dest'] for r in man if r['step'] == 'plan-dest'}
+    moved = {r['dest'] for r in man if r['section'] == 'action' and r['step'] == 'working-quarantine'}
+    rnd = rec['meta']['round']
+    wq = f'{out}/working_quarantine_{rnd}/{CELL}'
+    special = [f'{wq}/{x}' for x in ('coadd_final/weights.csv', 'coadd_final/night_image_gate.csv',
+                                     'coadd_final/stage2_verdict.csv', 'coadd_final/epoch_gate.csv',
+                                     'residuals_provisional.csv', 'outliers.csv', 'flow/2025-01-01/f.npy', 'flow/.flowmeta',
+                                     'flow/index.csv', 'coadd_provisional/p.txt')]
+    ok('F: every working-quarantine move was planned before staging (G-DEST complete for a rebuilt cell)',
+       moved and moved == planned & moved and all(d in planned for d in special),
+       f'{len(moved)} moved, {len(moved - planned)} unplanned, missing {[d for d in special if d not in planned][:3]}')
+    ok('F: every quarantined working file (cell files, flow/, coadd_provisional/) kept with its md5',
+       all(os.path.exists(f'{wq}/{r}') and md5(f'{wq}/{r}') == m for r, m in old.items()), f'{len(old)} files')
+    ok('F: the rebuild\'s cell files and directories installed', md5(f'{cdir}/outliers.csv') == md5(f'{rr}/outliers.csv')
+       and md5(f'{cdir}/flow/new.csv') == md5(f'{rr}/flow/new.csv') and not os.path.exists(f'{cdir}/flow/index.csv')
+       and not os.path.exists(f'{cdir}/flow/.flowmeta'))
+    res = validate.run('install_manifest', f'{out}/_records/install/{CELL}.manifest.csv')
+    ok('F: install_manifest content test passes', all(r['passed'] for r in res), '; '.join(r['detail'][:150] for r in res))
+    ok('F: the rebuild verdict recorded', 'T1-T8 passed' in (rec['meta'].get('rebuild_verdict') or ''))
 
 
 def main():

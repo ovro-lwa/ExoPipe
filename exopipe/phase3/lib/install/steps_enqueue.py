@@ -237,9 +237,10 @@ def enqueue_cell(u, cell, roots, run_obj, stages, echo, verified_now=False):
     if dry and not ok and verified_now:
         gates.check('V', True, f'verify runs in this invocation before the enqueue (dry run: not run)')
     else:
-        gates.check('V', ok, (f'record {name} holds a passing install.V' if ok else
-                              f'no done install/verify record of {cell} with a passing install.V under {roots.records} '
-                              f'(run --stages verify first)'))
+        gates.check('V', ok, (f'record {name} (the newest install/recover/verify record) holds a passing install.V'
+                              if ok else
+                              f'the newest install/recover/verify record of {cell} under {roots.records} is not done '
+                              f'with a passing install.V (run --stages verify first)'))
     gates.finish()
     out_path = None
     if 'enqueue' in stages:
@@ -293,14 +294,18 @@ def enqueue_cell(u, cell, roots, run_obj, stages, echo, verified_now=False):
 
 
 def _verify_passed(roots, cell):
-    """(True, record) when an install record (<cell>) or a verify record (<cell>.verify) of this out root is done and
-    holds a passing verify gate install.V."""
+    """(True, record) when the NEWEST record of this out root that installed, recovered or verified the cell (<cell>,
+    <cell>.recover, <cell>.verify) is done and holds a passing verify gate install.V - production runs the verify right
+    before the enqueue every time (install_cell.sh:19-24, also for kind 'installed'), so a verify older than a later
+    install attempt (refused, failed mid-way) or a recover never vouches for the tree as it is now."""
     from exopipe.phase3.core import record
-    for name in (cell, f'{cell}.verify'):
-        rec = record.load_record(roots.out, 'install', name)
-        if rec and rec.get('status') == 'done' and any(t.get('name') == 'install.V' and t.get('passed')
-                                                        for t in rec.get('tests') or []):
-            return True, name
+    recs = [(n, record.load_record(roots.out, 'install', n)) for n in (cell, f'{cell}.recover', f'{cell}.verify')]
+    recs = [(n, r) for n, r in recs if r]
+    if not recs:
+        return False, None
+    name, rec = max(recs, key=lambda x: (x[1].get('finished') or '', x[1].get('started') or '', x[0].endswith('.verify')))
+    if rec.get('status') == 'done' and any(t.get('name') == 'install.V' and t.get('passed') for t in rec.get('tests') or []):
+        return True, name
     return False, None
 
 
@@ -325,8 +330,9 @@ def cleanup_cell(u, cell, roots, run_obj, echo, enqueue_too=False):
         return
     ok, name = _verify_passed(roots, cell)
     if not ok:
-        raise Refusal(f'V: cleanup of {cell} refused: no done install/verify record with a passing gate install.V under '
-                      f'{roots.records} (install_cell.sh removes the scratch only after the verify passed)')
+        raise Refusal(f'V: cleanup of {cell} refused: the newest install/recover/verify record under {roots.records} is '
+                      f'not done with a passing gate install.V (install_cell.sh removes the scratch only after the verify '
+                      f'passed)')
     notlocal = [t for t in existing if not SC.local_to_host(t)]
     if notlocal:
         raise Refusal(f'H: cleanup of {cell} refused: {notlocal} not node-local to {SC.host()} (site NODE_LOCAL_ROOTS)')

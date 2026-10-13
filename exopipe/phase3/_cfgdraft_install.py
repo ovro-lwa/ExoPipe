@@ -25,7 +25,7 @@ class install(_Section):
     paths.PHASE3_ARCHIVE_ROOT, paths.ARCHIVE_RUN. With --out every write destination is re-rooted under --out (parity,
     scratch): <out>/coadd_sb, <out>/archive, <out>/working_quarantine_<round>, <out>/install_record.csv."""
     PROTECTED_KEYS = ('WORKING_QUARANTINE_FMT', 'ARCHIVE_QUARANTINE_FMT', 'RECORD_CSV', 'FREEZE_MARKER',
-                      'SNAPSHOT_MASTERS_LINK_TREE')
+                      'SNAPSHOT_MASTERS_LINK_TREE', 'PRODUCTION_LOCK')
     # ---- archive layout (under paths.PHASE3_ARCHIVE_ROOT / paths.ARCHIVE_RUN)
     ARCHIVE_MASTERS_FMT = '{archive}/Coadd/{run}/{lst}/{scope}'          # PI literal (phase3_install.py:375); R-MASTERS-TOP-LEVEL-LIKE-MOSAICS (ledger 507), R-MASTERS-BESIDE-MOSAICS (549)
     ARCHIVE_NIGHT_GLOB = '{archive}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits'  # PI literal; per-night deep files; phase3_install.py:393, :515
@@ -66,6 +66,7 @@ class install(_Section):
     SCREEN_STATUS_MAXLEN = 120                            # PI literal; characters of the status column; phase3_install.py:185; dewarp_lst.sh:83 (= dewarp.SCREEN_STATUS_MAX_CHARS)
     # ---- concurrency and I/O
     LANES = 1                                             # installs at a time per output root (lane locks under <out>/_records/install/_locks); install_cell.sh:18-20 (flock); 2 approved by APPROVED-RESUME-SPACE-D6-REVISION (1848), 3 in install_runner.sh:14 (superseded)
+    PRODUCTION_LOCK = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/.install.lock'   # PROTECTED; the production launchers' one-install-at-a-time lock (install_cell.sh:18-20 `exec 9> $D/.install.lock; flock 9`, shared by chain_cell.sh and dewarp_lst.sh): an install on the PRODUCTION roots also holds it (blocking), so it never overlaps an install_cell.sh install of the same working tree (ledger 1845); never taken under --out. None once no production launcher is left (after cutover)
     MD5_BLOCK_BYTES = 4 * 2 ** 20                         # bytes per md5 read in the step's content tests; phase3_install.py:74 (no effect on results)
     MD5_THREADS = 8                                       # parallel md5 reads in the install_manifest / archive_cell content tests (I/O bound; no effect on results)
     RULED = {'FREE_FLOOR_GB': 'APPROVED-RESUME-SPACE-D6-REVISION',

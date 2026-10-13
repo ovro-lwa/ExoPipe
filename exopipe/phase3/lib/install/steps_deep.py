@@ -405,6 +405,25 @@ def lane_lock(records_dir, lanes):
         time.sleep(5)
 
 
+@contextlib.contextmanager
+def production_lock(roots):
+    """install_cell.sh:18-20 (`exec 9> $D/.install.lock; flock 9`, around the phase3_install call): an install on the
+    PRODUCTION roots also holds the production launchers' lock (install.PRODUCTION_LOCK), blocking, so it never overlaps
+    an install_cell.sh install of the same working tree (chain_cell.sh and dewarp_lst.sh both go through it; /data07 ran
+    full under concurrent installs, ledger 1845). Under --out nothing production is written: not taken."""
+    p = _cfg().install.PRODUCTION_LOCK
+    if roots.rerooted or not p:
+        yield None
+        return
+    f = open(p, 'w')                     # production opens it with '>' too
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield p
+    finally:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
+
+
 def manifest_path(roots, cell):
     return os.path.join(roots.records, f'{cell}.manifest.csv')
 
@@ -421,7 +440,9 @@ def install_cell(u, plan, gates, echo):
     plan_rows = plan.rows(gate_summary='; '.join(f"{t['name']}={'pass' if t['passed'] else 'FAIL'}" for t in u.tests))
     SC.write_manifest(mpath, plan_rows)
     os.makedirs(os.path.dirname(roots.record_csv), exist_ok=True)
-    with lane_lock(roots.records, C.LANES) as lane:
+    with lane_lock(roots.records, C.LANES) as lane, production_lock(roots) as plock:
+        if plock:
+            u.note(f'holding the production install lock {plock} (install_cell.sh:18-20)')
         off = SC.log_offset(roots.record_csv)
         with SC.pi_context(PI, roots, plan.round) as settings:
             u.note(f'lane {lane}; in-place phase3_install.install(cell={cell}, gen={plan.gen}, kind={plan.kind}, '
