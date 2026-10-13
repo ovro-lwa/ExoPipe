@@ -168,7 +168,8 @@ def forbidden_overrides(c=None):
         if not sec.startswith('masters') or getattr(c, sec, None) is None:
             continue
         kind = apply_map(sec).get(key, '')
-        if key in protected_keys(sec):
+        replay = len(o) > 4 and isinstance(o[4], str) and o[4].startswith('parity replay')
+        if key in protected_keys(sec) and not replay:   # config.py admits a protected key only as a --parity replay
             bad.append((o[0], f'{sec}.{key} is protected (pinned input / ruling-fixed / mirror value)'))
         elif kind == 'mirror':
             bad.append((o[0], f'{sec}.{key} is a MIRROR of a literal inside the in-place code: an override would be '
