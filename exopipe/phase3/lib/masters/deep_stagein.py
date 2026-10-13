@@ -66,11 +66,12 @@ def reference_tables():
     rows = {}
     if s.REF_OVERRIDE_I_TABLE and os.path.exists(s.REF_OVERRIDE_I_TABLE):
         for r in csv.DictReader(open(s.REF_OVERRIDE_I_TABLE)):
-            rows[r['cell']] = dict(table=os.path.basename(s.REF_OVERRIDE_I_TABLE), constdig=None, I=r['path'], V=None)
+            rows[r['cell']] = dict(table=os.path.basename(s.REF_OVERRIDE_I_TABLE), constdig=None, I=r['path'], V=None,
+                                   generation='same-constituents')
     if s.REF_PREVGEN_TABLE and os.path.exists(s.REF_PREVGEN_TABLE):
         for r in csv.DictReader(open(s.REF_PREVGEN_TABLE)):
             rows[r['cell']] = dict(table=os.path.basename(s.REF_PREVGEN_TABLE), constdig=r['constdig'], I=r['I'],
-                                   V=r['V'] or None)
+                                   V=r['V'] or None, generation='previous-generation')
     return rows
 
 
@@ -156,7 +157,8 @@ def find_prescreen_copy(cell, st, var, rob, target):
 def _history(var, generation, label, path, f):
     """The HISTORY line production writes for each branch (rebuild_cell.sh:72, 89, 109, 113 and e5c218e)."""
     if generation == 'previous-generation':
-        return f'2026-10-13 rebuild reference: PREVIOUS-GENERATION pre-screen {var} ({path} / pixel factor {f:.6f}; Gregg (A))'
+        how = f'{path} / pixel factor {f:.6f}' if f is not None else f'{path}, native'
+        return f'2026-10-13 rebuild reference: PREVIOUS-GENERATION pre-screen {var} ({how}; Gregg (A))'
     if label == 'unwarped-copy':
         return f'2026-10-09 rebuild reference: native un-warped {var} (override {path} / pixel factor {f:.6f})'
     if label == 'predewarp-quarantine':
@@ -230,7 +232,8 @@ def resolve_reference(cell, C, read_data=True, tables=None):
         label, path, hs = hit
         if label == 'superseded-archive':
             f, strip = None, False
-            src = f'superseded {path.split("/")[-1]}'
+            src = (f'previous-generation pre-screen {path}, native' if gen == 'previous-generation' else
+                   f'superseded {path.split("/")[-1]}')
         else:
             f = FC.pixel_factor(hs) if (label == 'current-master' or hs.get('FLUXBAKE')) else 1.0
             if not _factor_ok(f):
@@ -255,10 +258,16 @@ def resolve_reference(cell, C, read_data=True, tables=None):
 
 
 def _crosscheck_tables(cell, entries, tables):
-    """A hand-table row for the cell must name exactly the file the resolver chose, Stokes by Stokes (V None = none)."""
+    """A hand-table row for the cell must name exactly the file the resolver chose, Stokes by Stokes (V None = none), as
+    the same generation: a ref_override_I.csv row claims the current constituents - reached only as the previous
+    generation, the row is stale and production refuses it (rebuild_cell.sh:62-64), so this refuses too."""
     row = tables.get(cell)
     if not row:
         return
+    if row.get('generation') and entries and entries[0]['generation'] != row['generation']:
+        raise Refusal(f'{cell}: {row["table"]} gives a {row["generation"]} reference but the current master '
+                      f'({entries[0]["target"]} sought) resolves to the {entries[0]["generation"]} '
+                      f'({entries[0]["source"]}) - the table row is stale; correct it (production refuses this cell too)')
     for e in entries:
         want = row[e['stokes']]
         got = e['source']

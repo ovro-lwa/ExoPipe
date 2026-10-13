@@ -334,6 +334,18 @@ def test_stagein_branches():
         row = {CELL: dict(table='ref_prevgen.csv', constdig='0' * 32, I=ents[0]['source'], V=ents[1]['source'])}
         ok, why = _refuses(lambda: R(read_data=False, tables=row), 'declares')
         check('a prevgen row declaring another CONSTDIG refuses', ok, why)
+        row = {CELL: dict(table='ref_override_I.csv', constdig=None, I=ents[0]['source'], V=None, generation='same-constituents')}
+        ok, why = _refuses(lambda: R(read_data=False, tables=row), 'stale')
+        check('a ref_override_I row reached only as the previous generation refuses (stale row, as production)', ok, why)
+        # previous generation found in the superseded archive (native): no factor, HISTORY says native
+        _clean('q_*')
+        sup = f'{T}/sup/{lst}/{sc}'
+        write(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_p.fits', IMG, master_header(prev_dates))
+        ents = R()
+        check('previous generation from the superseded archive: native, no factor',
+              ents[0]['generation'] == 'previous-generation' and ents[0]['branch'] == 'superseded-archive'
+              and ents[0]['factor'] is None and ents[0]['history'].endswith(', native; Gregg (A))'), str(ents[0]['history']))
+        _clean('sup')
         # a root node-local to another host, reached before any copy: refuse (the copy may sit there)
         CFG.set('masters_stagein.REFERENCE_COPY_ROOTS', repr((('unwarped-copy', '/fast/gh/main/phase3/unwarped_ref_*', 'flat'),)))
         from exopipe.phase3.core import env as _env
