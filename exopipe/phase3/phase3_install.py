@@ -214,7 +214,7 @@ def _gates(cell, gen, kind, rebuild_root=None):
         # (the 2026-10-04 bilinear generations lowered compact-source peaks 1-5 per cent): its content record (D6, the peak test)
         # names the method and every product carries it
         from astropy.io import fits as _f
-        from exopipe.phase3 import phase3_master_dewarp as _MD
+        from exopipe.phase3.lib.dewarp import master_dewarp as _MD
         if f'files resampled {_MD.RESAMPLE_METHOD}' not in open(okf).read():
             raise RuntimeError(f'{cell}: {okf} is not a {_MD.RESAMPLE_METHOD} content record (D1-D6) - REFUSING')
         _bm = [r for r in _fits_under(gen) if _f.getheader(f'{gen}/{r}').get('MDWINTP') != _MD.RESAMPLE_METHOD]

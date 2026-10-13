@@ -51,6 +51,8 @@ LEGACY = {
     'exopipe.phase3.phase3_master_shflux': 'exopipe.phase3.lib.masters.shflux',
     'exopipe.phase3.phase3_pbcorr_masters': 'exopipe.phase3.lib.masters.pbcorr_masters',
     'exopipe.phase3.vclean_masters': 'exopipe.phase3.lib.masters.vclean_masters',
+    # stage 4: dewarp
+    'exopipe.phase3.phase3_master_dewarp': 'exopipe.phase3.lib.dewarp.master_dewarp',
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)
