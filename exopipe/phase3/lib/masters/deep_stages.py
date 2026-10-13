@@ -20,8 +20,8 @@ import glob
 import json
 import os
 import shutil
-import socket
 import sys
+import traceback
 
 from exopipe.phase3.core import record
 from exopipe.phase3.core.record import NoInput, Refusal
@@ -30,6 +30,14 @@ STAGE_ORDER = ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', '
 # the stage whose done record a stage requires (spec 1.2); sources requires the install step's record instead
 REQUIRES = {'build': 'stage-in', 'pbmaps': 'build', 'vclean': 'pbmaps', 'fluxscale': 'vclean', 'verify': 'fluxscale',
             'variants': 'build'}
+# stages whose products derive from the build's master: they refuse when a night the build admitted is excluded NOW
+# (DESIGN 5 / deep requirement (d): an exclusion change invalidates every result built on the old admitted set)
+BUILD_DERIVED = ('pbmaps', 'vclean', 'fluxscale', 'verify', 'variants')
+# what a cell directory may hold when the build starts: stage-in's reference + carried epoch-gate record, the flow step's
+# flow/ and its prep-stage caches (coadd.process_lst_freq). Anything a build writes means an earlier build ran here.
+BUILD_PRODUCT_PATHS = ('coadd_final/weights.csv', 'coadd_final/.done', 'coadd_final/loo', 'coadd_final/stage2_verdict.csv',
+                       'coadd_final/night_image_gate.csv', 'coadd_provisional', 'residuals_provisional.csv', 'subtracted',
+                       'prep_final')
 WAIVE_REFERENCE = 'masters.reference'                 # --waive masters.reference --ruling "..." for --reference path:/night:
 WAIVE_INSTALL_RECORD = 'masters.sources.install_record'   # window: installed cells have no install-step record yet
 
@@ -53,9 +61,10 @@ def add_arguments(p):
 def default_out(args):
     """Deep product root: --out, else the site file's MASTERS_GEN_ROOT for this host, else masters.DEEP_GEN_ROOT (production
     scratch generation root - writes refused while paths.PRODUCTION_WRITES is False)."""
+    from exopipe.phase3.core import env
     c = _cfg()
     by_host = getattr(c.site, 'MASTERS_GEN_ROOT', None) or {}
-    return by_host.get(socket.gethostname()) or c.masters.DEEP_GEN_ROOT
+    return by_host.get(env.host()) or c.masters.DEEP_GEN_ROOT
 
 
 # =====================================================================================================================
@@ -91,19 +100,77 @@ def done_record(out, stage, cell):
     return rec if rec and rec.get('status') == 'done' else None
 
 
+def exclusion_stale(out, cell):
+    """Nights the cell's done build record admitted that data_decisions.csv excludes NOW ([] = still current, or no done
+    build record). Exclusions are absolute: a product derived from such a build is never extended or resumed."""
+    rec = done_record(out, 'build', cell)
+    if not rec or not rec.get('admitted'):
+        return []
+    from exopipe.phase3.core import exclusions
+    lst, sc = cell.split('_', 1)
+    ex = exclusions.load()
+    return [d for d in rec['admitted'] if ex.is_excluded(lst, sc, d)]
+
+
 def require_stage(out, stage, cell, ran_now):
-    """Refuse unless the stage this one depends on is done for the cell (its record), or ran done in this invocation."""
+    """Refuse unless the stage this one depends on is done for the cell (its record), or ran done in this invocation.
+    A record from an earlier invocation must still be current (DESIGN 11.5: the chain of records): every output it lists
+    still exists (a --fresh --supersede stage-in moves the cell away), and - for the stages derived from the build - no
+    night the build admitted is excluded now."""
     need = REQUIRES.get(stage)
     if not need:
         return None
     if ran_now.get((need, cell)) == 'done':
-        return record.load_record(out, 'masters', f'{need}_{cell}')
-    rec = done_record(out, need, cell)
-    if rec is None:
-        got = record.load_record(out, 'masters', f'{need}_{cell}')
-        raise Refusal(f'{stage}: the {need} stage of {cell} is not done under {out} (record status '
-                      f'{got.get("status") if got else "missing"}) - run --stages {need} first (spec 1.2)')
+        rec = record.load_record(out, 'masters', f'{need}_{cell}')
+    else:
+        rec = done_record(out, need, cell)
+        if rec is None:
+            got = record.load_record(out, 'masters', f'{need}_{cell}')
+            raise Refusal(f'{stage}: the {need} stage of {cell} is not done under {out} (record status '
+                          f'{got.get("status") if got else "missing"}) - run --stages {need} first (spec 1.2)')
+        gone = [o['path'] for o in rec.get('outputs') or [] if not os.path.exists(o['path'])]
+        if gone:
+            raise Refusal(f'{stage}: {len(gone)} output(s) of the done {need} record of {cell} are gone (e.g. {gone[0]}) - '
+                          f'the cell was superseded or removed; re-run --stages {need} (DESIGN 11.5)')
+    if stage in BUILD_DERIVED and ran_now.get(('build', cell)) != 'done':
+        stale = exclusion_stale(out, cell)
+        if stale:
+            raise Refusal(f'{stage}: the build of {cell} admitted night(s) {stale} that data_decisions.csv excludes now - '
+                          f'rebuild from stage-in (--fresh --supersede TAG); exclusions are absolute (G-M01, DESIGN 5 (d))')
     return rec
+
+
+def build_clean_start(cell_dir, sc):
+    """[reasons] why the cell directory is not as stage-in (+ the flow step) left it: a product of an earlier build, or a
+    stage-in reference that no longer equals its coadd_final_ref/ copy. The in-place co-add takes coadd_final/
+    I_deep_Taper_R075_<scope>.fits as its alignment and flux reference (coadd._select_reference): after a build that file is
+    the NEW master, so a second build in the same directory aligns to it (or moves the flows aside when its CONSTDIG
+    differs). Production never meets this: a rebuild always starts from a clean scratch cell (rebuild_cell.sh:34) and a
+    content-tested cell is never rebuilt in place (chain_cell.sh:23)."""
+    from exopipe.phase3.lib.masters import deep_inplace as IP
+    why = []
+    for p in BUILD_PRODUCT_PATHS:              # an empty directory (a stage that refused before writing) is not a product
+        q = os.path.join(cell_dir, p)
+        if os.path.isdir(q) and not os.path.islink(q):
+            if any(True for _ in os.scandir(q)):
+                why.append(p + '/')
+        elif os.path.lexists(q):
+            why.append(p)
+    for var in ('I_deep_Taper_R075', 'V_deep_Taper_R0'):
+        ref = os.path.join(cell_dir, 'coadd_final_ref', f'{var}_{sc}.fits')
+        cur = os.path.join(cell_dir, 'coadd_final', f'{var}_{sc}.fits')
+        if os.path.exists(ref) and (not os.path.exists(cur) or IP.sha1_file(cur) != IP.sha1_file(ref)):
+            why.append(f'coadd_final/{var}_{sc}.fits != the stage-in reference coadd_final_ref/{var}_{sc}.fits')
+    return why
+
+
+def not_here(path, what, stage):
+    """Refuse when ``path`` is node-local to ANOTHER host (site NODE_LOCAL_ROOTS): the same path here is another disk or
+    absent - chain_cell.sh:17 runs only on the host holding the working tree; a site check, never a host name in code."""
+    from exopipe.phase3.core import env
+    if not env.readable_here(path):
+        raise Refusal(f'{stage}: {what} {path} is node-local to {env.node_local_holder(path)}, not this host '
+                      f'({env.host()}) - run the {stage} there (chain_cell.sh:17)')
 
 
 def free_space_gate(out):
@@ -203,6 +270,7 @@ def stage_in(cell, args, run, out, ran_now):
                 u.add_input(t)
         C = DS.working_cell(cell, ov)
         u.note(f'working cell {C}' + (' (ref_override.csv)' if cell in ov else ''))
+        not_here(C, 'the working cell', 'stage-in')
         if mode == 'previous-master':
             entries = DS.resolve_reference(cell, C, tables=tables)
         else:
@@ -258,8 +326,8 @@ def stage_in(cell, args, run, out, ran_now):
 # stage: build (provisional + final co-add)
 # =====================================================================================================================
 
-def _refuse_or_noinput(u, tee, stage, noinput=('No images for',), refuse=('REFUSING', 'Only', 'Reference', 'No flow/',
-                                                                            'No provisional', 'REJECTED')):
+def _refuse_or_noinput(u, tee, stage, noinput=('No images for',), refuse=('REFUSING', 'Only', 'Too few', 'Reference',
+                                                                            'No flow/', 'No provisional', 'REJECTED')):
     """The in-place co-add returned None: choose NoInput (no Phase-2 image) or Refusal and copy its printed reason. The
     verdict came from the return value; the captured lines only name the reason."""
     line = tee.find(*noinput)
@@ -288,6 +356,19 @@ def _build_outputs(cell_dir, sc):
     return out
 
 
+def build_nights(cell, out):
+    """(coadd module, Phase-2 dates, core Exclusions, co-add exclusion state, admitted nights) of a deep cell: the co-add's
+    own finder and BOTH exclusion readers (G-M01). Used by the build and by its --resume decision (admitted set now)."""
+    from exopipe.phase3.lib.masters import deep_inplace as IP
+    lst, sc = cell.split('_', 1)
+    mods, _ = inplace(out)
+    co = mods['coadd']
+    dates = co.discover_dates(lst, _freq(sc))
+    nights = [d for d, _, _ in dates]
+    ex, excl = IP.exclusion_readers_agree(lst, sc, nights, co) if nights else (None, None)
+    return co, dates, ex, excl, (ex.admitted(lst, sc, nights) if nights else [])
+
+
 def build(cell, args, run, out, ran_now):
     from exopipe.phase3.lib.masters import deep_inplace as IP
     lst, sc = cell.split('_', 1)
@@ -296,6 +377,11 @@ def build(cell, args, run, out, ran_now):
     with run.unit(f'build_{cell}', tier='deep', stage='build', cell=cell) as u:
         prev = require_stage(out, 'build', cell, ran_now)
         flow_note = flow_gate(out, cell, u)          # cheap gates first: G-M05 at record level
+        dirty = build_clean_start(cell_dir, sc)
+        if dirty:
+            u.refuse(f'{cell_dir} is not as stage-in left it ({"; ".join(dirty[:4])}): a build runs once on a clean cell '
+                     f'(rebuild_cell.sh:34; G-M25) - its reference would be the earlier build\'s master. Re-run '
+                     f'`masters --stages stage-in --fresh --supersede TAG`, the flow step, then the build')
         free_space_gate(out)
         mods, applied = inplace(out)
         co = mods['coadd']
@@ -308,14 +394,15 @@ def build(cell, args, run, out, ran_now):
                   _cfg().masters_build.VARIANT_BAND_MEDIANS, _cfg().masters_build.VLSSR_PEAKS, _cfg().paths.DATA_DECISIONS):
             if not os.path.exists(p):
                 u.refuse(f'input table {p} missing')
-            u.add_input(p)
+            if p != _cfg().paths.DATA_DECISIONS:   # the exclusion state is the ADMITTED set (set_admitted), not the file
+                u.add_input(p)
+        u.note(f'data_decisions.csv sha1 {IP.sha1_file(_cfg().paths.DATA_DECISIONS)} (the admitted set below is its effect '
+               f'on this cell; --resume compares the admitted set)')
         reference = (prev or {}).get('meta', {}).get('reference', 'previous-master')
-        dates = co.discover_dates(lst, freq)
+        _co, dates, ex, excl, admitted = build_nights(cell, out)
         if not dates:
             raise NoInput(f'No Phase-2 images for {lst} {sc} under {co.PHASE2_ROOT}')
         nights = [d for d, _, _ in dates]
-        ex, excl = IP.exclusion_readers_agree(lst, sc, nights, co)
-        admitted = ex.admitted(lst, sc, nights)
         u.set_admitted(admitted)
         u.note(f'{len(nights)} Phase-2 nights, {len(admitted)} admitted; excluded {sorted(set(nights) - set(admitted))}')
         if not admitted:
@@ -323,7 +410,10 @@ def build(cell, args, run, out, ran_now):
         for d, _sd, img in dates:
             if d in admitted:
                 u.add_input(img)
-        for p in sorted(glob.glob(os.path.join(cell_dir, 'flow', '*'))) + sorted(glob.glob(os.path.join(cell_dir, 'coadd_final', '*'))):
+        # identity of what stage-in and the flow step left: the flows, the reference COPIES (coadd_final/{I,V} are the same
+        # bytes - build_clean_start - but the build overwrites them with the new masters) and the carried epoch-gate record
+        for p in (sorted(glob.glob(os.path.join(cell_dir, 'flow', '*'))) + sorted(glob.glob(os.path.join(cell_dir, 'coadd_final_ref', '*')))
+                  + [os.path.join(cell_dir, 'coadd_final', 'epoch_gate.csv')]):
             if os.path.isfile(p):
                 u.add_input(p)
         u.note(f'flow step: {flow_note}')
@@ -384,6 +474,13 @@ def flow_gate(out, cell, u=None):
 # stage: pbmaps
 # =====================================================================================================================
 
+def siblings_expected(fd, sc):
+    """pbcorr siblings pbmaps must leave: the five I/V variants (masters_pbmaps.SIBLINGS_AFTER_PBMAPS), + the cleaned V when
+    pbmaps runs again after vclean (do_cell regenerates its sibling too: V_deep_Taper_R0_clean is in PB_VARIANTS)."""
+    return (_cfg().masters_pbmaps.SIBLINGS_AFTER_PBMAPS
+            + int(os.path.exists(os.path.join(fd, f'V_deep_Taper_R0_clean_{sc}.fits'))))
+
+
 def pbmaps(cell, args, run, out, ran_now):
     from astropy.io import fits
     from exopipe.phase3.lib.masters import deep_inplace as IP
@@ -423,9 +520,11 @@ def pbmaps(cell, args, run, out, ran_now):
         for v in plains:
             u.add_output(os.path.join(fd, f'{v}_pbcorr_{sc}.fits'), 'pbcorr_sibling', cell=cell)
         nsib = len(glob.glob(os.path.join(fd, f'*_pbcorr_{sc}.fits')))
-        u.check('masters_pbmaps.siblings_after_pbmaps', nsib == s.SIBLINGS_AFTER_PBMAPS, value=nsib,
-                detail=f'{nsib} siblings after pbmaps ({s.SIBLINGS_AFTER_PBMAPS} expected: the five I/V variants; '
-                       f'check_rebuild.py T4 expects 6 once the cleaned V exists)')
+        want = siblings_expected(fd, sc)
+        u.check('masters_pbmaps.siblings_after_pbmaps', nsib == want, value=nsib,
+                detail=f'{nsib} siblings after pbmaps ({want} expected: the five I/V variants'
+                       f'{" + the cleaned V" if want > s.SIBLINGS_AFTER_PBMAPS else ""}; check_rebuild.py T4 expects 6 '
+                       f'once the cleaned V exists)')
 
 
 # =====================================================================================================================
@@ -611,6 +710,16 @@ def p3s5_parents():
     return P
 
 
+def installed_cell_violations(installed, cell):
+    """membership.verify + membership.verify_products of the INSTALLED cell - production's `python -m exopipe.phase3.membership
+    verify /data07/.../<cell>` (install_cell.sh:70-71), which stops the chain before the parent catalogue is built. Run here
+    on every sources unit (also when the install record is waived during the window, and after an exclusion added since the
+    install: a catalogue is never built on a master holding an excluded constituent)."""
+    from exopipe.phase3.lib.masters import membership as MB
+    cd = os.path.join(installed, cell)
+    return list(MB.verify(cd)) + list(MB.verify_products(cd))
+
+
 def sources(cell, args, run, out, ran_now):
     from astropy.io import fits
     from exopipe.phase3.core import fitsio
@@ -632,10 +741,18 @@ def sources(cell, args, run, out, ran_now):
             u.check(WAIVE_INSTALL_RECORD, False, detail=f'{len(recs)} install record(s), none done; the installed tree '
                                                         f'{installed} accepted by ruling')
         master = os.path.join(installed, cell, 'coadd_final', f'I_deep_Taper_R075_{sc}.fits')
+        not_here(master, 'the installed master', 'sources')
         if not os.path.exists(master):
             u.refuse(f'installed master {master} missing')
         u.add_input(master)
         h = fits.getheader(master)
+        inplace(out)                       # the co-add's exclusion reader and membership's config values for the check below
+        viol = installed_cell_violations(installed, cell)
+        u.check('masters_sources.installed_cell_membership', not viol, value=len(viol),
+                detail=('; '.join(viol[:3]) if viol else f'membership.verify + verify_products of {installed}/{cell}: PASS'))
+        if viol:                           # a gate, not a content test: never waivable (an excluded constituent)
+            u.refuse(f'the installed cell fails membership.verify / verify_products ({len(viol)}: {viol[0][:300]}) - no '
+                     f'parent catalogue on it (install_cell.sh:70-71 stops the chain before p3s5_parents; G-M26)')
         if s.REQUIRE_DEWARP_SCREEN:
             rec = _cfg().masters_verify.DEWARP_SCREEN_RECORD
             rows = MB._rcsv(rec)
@@ -717,6 +834,10 @@ def _plan_stage_in(cell, args, out, planned):
         return lines, [str(e)]
     C = DS.working_cell(cell, ov)
     lines.append(f'working cell {C}' + (' (ref_override.csv)' if cell in ov else ''))
+    try:
+        not_here(C, 'the working cell', 'stage-in')
+    except Refusal as e:
+        return lines, [str(e)]
     mode, val = parse_reference(args.reference)
     try:
         if mode == 'previous-master':
@@ -776,6 +897,9 @@ def _plan_build(cell, args, out, planned):
         lines.append('flow step: ' + flow_gate(out, cell))
     except Refusal as e:
         gates.append(str(e))
+    dirty = build_clean_start(os.path.join(out, cell), sc) if 'stage-in' not in planned else []
+    if dirty:
+        gates.append(f'cell not as stage-in left it ({"; ".join(dirty[:3])}): stage-in --fresh --supersede TAG first (G-M25)')
     lines.append(f'in place: coadd.run_provisional_lst_freq({lst!r}, {_freq(sc)!r}) then run_final_lst_freq; env '
                  f'{IP.call_env_values(["masters", "masters_build"])}')
     lines.append(f'outputs: {out}/{cell}/coadd_final/ 5 variants [master], loo/ [loo_master], weights.csv + '
@@ -791,6 +915,10 @@ def _plan_simple(stage):
         need = REQUIRES.get(stage)
         if need and need not in planned and not done_record(out, need, cell):
             gates.append(f'no done {need} record (run --stages {need} first)')
+        if stage in BUILD_DERIVED and 'build' not in planned:
+            stale = exclusion_stale(out, cell)
+            if stale:
+                gates.append(f'the build admitted night(s) {stale} excluded now (rebuild from stage-in; G-M01)')
         s = _cfg()
         if stage == 'pbmaps':
             lines.append(f'in place: pbcorr_masters.do_cell({out!r}, {cell!r}); PB library {s.masters_pbmaps.PB_LIBRARY}; '
@@ -822,6 +950,13 @@ def _plan_simple(stage):
                          f'{dest}/parent_catalogs/master_R075_{cell}.gaul.csv [master_catalog]')
             if not os.path.exists(m):
                 gates.append('installed master missing')
+            else:
+                inplace(out)
+                viol = installed_cell_violations(installed, cell)
+                if viol:
+                    gates.append(f'installed cell fails membership.verify / verify_products ({len(viol)}): {viol[0][:200]}')
+                else:
+                    lines.append('installed cell: membership.verify + verify_products PASS (install_cell.sh:70-71)')
             if not [r for r in _install_records(args.deep_install_records or out, cell) if r.get('status') == 'done']:
                 if WAIVE_INSTALL_RECORD in (getattr(args, 'waive', None) or []):
                     lines.append(f'no done install record: accepted by --waive {WAIVE_INSTALL_RECORD} (ruling recorded)')
@@ -866,6 +1001,28 @@ def dry_run(cells, stages, args, out):
 # entry
 # =====================================================================================================================
 
+def _resume_ok(run, name, st, cell, out):
+    """--resume: (skip?, why). The record must pass record.resume_check; the build's with the admitted night set computed
+    NOW (data_decisions.csv is not a build input: its effect on the cell is the admitted set), and every stage derived from
+    the build only while no night that build admitted is excluded now."""
+    admitted = None
+    if st == 'build':
+        if not done_record(out, 'build', cell):
+            return False, 'no done record'
+        from exopipe.phase3.lib.masters import deep_inplace as IP
+        try:
+            with IP.capture_stdout(None, echo=False):       # the finder's [failsafe] lines belong to the build's log
+                admitted = build_nights(cell, out)[4]
+        except (Refusal, NoInput) as e:
+            return False, f'admitted set not computable now ({e})'
+    ok, why = run.resume_check(name, inputs=None, admitted=admitted)
+    if ok and st in BUILD_DERIVED:
+        stale = exclusion_stale(out, cell)
+        if stale:
+            return False, f'the build admitted night(s) {stale} excluded now'
+    return ok, why
+
+
 def run(args, run):
     from exopipe.phase3.lib.masters import deep_inplace as IP
     IP.refuse_forbidden_overrides()
@@ -882,14 +1039,24 @@ def run(args, run):
         for st in stages:
             name = f'{st}_{cell}'
             if args.resume and not args.fresh:
-                ok, why = run.resume_check(name, inputs=None, admitted=None)
+                ok, why = _resume_ok(run, name, st, cell, out)
                 if ok:
                     u = run.unit(name, tier='deep', stage=st, cell=cell)
                     u.status, u.reason = 'skipped-valid', why
                     ran_now[(st, cell)] = 'done'
                     print(f'{name}: skipped ({why})', file=sys.stderr)
                     continue
-            STAGES[st](cell, args, run, out, ran_now)
+            n0 = len(run.units)
+            try:
+                STAGES[st](cell, args, run, out, ran_now)
+            except Exception as e:             # the unit's record says error (UnitRecord.__exit__); the next cell goes on
+                if len(run.units) == n0:       # raised before its unit existed: record the outcome as that unit's
+                    u = run.unit(name, tier='deep', stage=st, cell=cell)
+                    u.status = ('refused' if isinstance(e, Refusal) else 'no-input' if isinstance(e, NoInput) else 'error')
+                    u.reason = str(e) if isinstance(e, (Refusal, NoInput)) else f'{type(e).__name__}: {e}'
+                    u.write()
+                if not isinstance(e, (Refusal, NoInput)):
+                    traceback.print_exc()
             u = run.units[-1]
             ran_now[(st, cell)] = u.status
             print(f'{name}: {u.status}' + (f' - {u.reason}' if u.reason else ''), file=sys.stderr)

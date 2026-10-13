@@ -294,6 +294,30 @@ def test_gates(tmp):
     check('G-W: production measure/gen/archive/record roots refuse', len(bad) == 4, f'{len(bad)} violations')
     roots = SC.Roots(types.SimpleNamespace(out=tmp, work=None), types.SimpleNamespace(out_root=tmp, run_id='x'))
     check('G-W: a --out under /tmp passes', SC.gate_write_roots(roots, list(SC.STAGES)) == [])
+    # G-D1: a root node-local to ANOTHER host (site NODE_LOCAL_ROOTS) refuses even when the same path exists here
+    holder = next(iter(CFG.site.NODE_LOCAL_ROOTS or {}), None)
+    if holder:
+        local = CFG.site.NODE_LOCAL_ROOTS[holder][0]
+        orig_host = _env.host
+        try:
+            _env.host = lambda: holder + '_elsewhere'
+            roots.rebuild = os.path.join(local, 'some_rebuild_root')
+            bad = SC.gate_input_roots(roots, ['apply'])
+            check('G-D1: an input root node-local to another host refuses', any('node-local to ' + holder in b for b in bad),
+                  bad[0][:120] if bad else 'no violation')
+            _env.host = lambda: holder
+            bad = SC.gate_input_roots(roots, ['apply'])
+            check('G-D1: on the holder itself only the missing directory refuses',
+                  not any('node-local' in b for b in bad) and any('not a directory' in b for b in bad), str(bad)[:120])
+        finally:
+            _env.host = orig_host
+    # G-D2 routing from the screen record: the LATEST row per (lst, scope) decides (production chain_cell.sh:41)
+    p = os.path.join(tmp, 'route_record.csv')
+    open(p, 'w').write('lst,scope,applied\n05h,27MHz,1\n05h,27MHz,0\n05h,32MHz,0\n05h,32MHz,1\n05h,36MHz,0\n')
+    routed, src = SC.routed_scopes(types.SimpleNamespace(record_csv=p, production_record=p))
+    check("G-D2: ROUTE_SOURCE 'screen_record' is the default (production since exopipe_ops e16201c)",
+          CFG.dewarp.ROUTE_SOURCE == 'screen_record')
+    check('G-D2: routing takes the latest record row per cell', routed == {('05h', '32MHz')} and src == p, str(routed))
 
 
 def test_table_and_screen(tmp):
@@ -368,6 +392,7 @@ def build_round(tmp):
     rl = os.path.join(ops, CFG.dewarp.ROUTE_LIST)
     os.makedirs(os.path.dirname(rl))
     open(rl, 'w').write('lst,scope\n' + ''.join(f'{LST},{s}\n' for s in ('27MHz', '32MHz', '36MHz', '46MHz')))
+    make_generation(working, '06h_27MHz', 900)       # a second LST for the measure stage (two LSTs in one run)
     # the measurement: final rows + saved screens (constant integer shift: the cubic resample is a pure shift)
     mdir = os.path.join(tmp, 'meas')
     m27 = os.path.join(promoted, f'{LST}_27MHz', 'coadd_final', 'I_deep_Taper_R075_27MHz.fits')
@@ -404,17 +429,37 @@ def common_sets(r):
             '--set', f'paths.COADD_SB_ROOT={r["working"]}', '--set', f'paths.OPS_ROOT={r["ops"]}', '--cores', 'none']
 
 
+def seed_record(out, applied_scopes):
+    """The copy of the archived screen record a re-rooted run routes from (a parity harness seeds it from production):
+    applied=1 rows (status OK, a screen file with its md5, as the install publishes) for ``applied_scopes``."""
+    from exopipe.phase3.lib.install import install as INS
+    sdir = INS._screen_dir(os.path.join(out, 'archive'), CFG.paths.ARCHIVE_RUN)
+    os.makedirs(sdir, exist_ok=True)
+    for s in applied_scopes:
+        f = f'{LST}_{s}_warp_screen.fits'
+        open(os.path.join(sdir, f), 'wb').write(f'screen {s}'.encode())
+        INS._screen_row(sdir, dict(lst=LST, scope=s, applied=1, status='OK', n_anchors=40, vlssr_med_before_arcmin='2.0',
+                                   vlssr_med_after_arcmin='1.0', heldout_resid_med_arcsec='5.0',
+                                   anchor_off_med_arcsec='20.0', screen_p50_arcsec='1.0', screen_p95_arcsec='2.0',
+                                   screen_file=f, screen_md5=SC.md5(os.path.join(sdir, f)),
+                                   measured_at='2026-10-01T00:00:00Z', written_utc='2026-10-01T00:00:00Z'))
+    return os.path.join(sdir, 'mdewarp_screens.csv')
+
+
 def test_end_to_end(tmp):
     r = build_round(tmp)
     check('synthetic measurement: >= 10 VLSSr peak matches after the shift', r['n1'] >= 10, f'n={r["n1"]}')
     work = os.path.join(tmp, 'work')
     # --- A: measure only
     outA = os.path.join(tmp, 'outA')
-    rc, txt, s = cli_in_process('dewarp', '--lsts', LST, '--stages', 'stage,measure', '--threads', '1', '--out', outA,
-                                '--work', work, *common_sets(r))
-    ra = rec(outA, LST)
+    rc, txt, s = cli_in_process('dewarp', '--lsts', f'{LST},06h', '--stages', 'stage,measure', '--threads', '1', '--out',
+                                outA, '--work', work, *common_sets(r))
+    ra, ra6 = rec(outA, LST), rec(outA, '06h')
     check('measure: exit 0 (staging md5-verified, run_lst in place, table content-tested)',
           rc == 0 and ra and ra['status'] == 'done', f'rc {rc}, {s} s; ' + (ra['reason'] if ra else txt[-300:]))
+    check('measure: a second LST of the same run measures into the same run directory (one table per LST)',
+          ra6 and ra6['status'] == 'done' and ra and ra6['meta'].get('measure_dir') == ra['meta'].get('measure_dir'),
+          (ra6['reason'] if ra6 else txt[-300:]))
     if ra:
         t = [o for o in ra['outputs'] if o['class'] == 'dewarp_table']
         check('measure: the table is a fresh <out>/measure/<run_id>/tables/table_05h.csv with 19 rows',
@@ -424,6 +469,7 @@ def test_end_to_end(tmp):
         check('measure: node-local staging removed', not glob.glob(os.path.join(work, 'dewarp_stage_*')))
     # --- B: apply, verify, record on five cells (parity guard on)
     outB = os.path.join(tmp, 'outB')
+    seed_record(outB, ('27MHz', '32MHz', '36MHz', '46MHz'))       # routing (default 'screen_record'): 41 MHz not routed
     cells_b = ','.join(f'{LST}_{x}' for x in ('27MHz', '32MHz', '36MHz', '41MHz', '46MHz'))
     rc, txt, s = cli('dewarp', '--cells', cells_b, '--stages', 'apply,verify,record', '--measurement', r['meas'], '--out',
                      outB, '--work', work, '--parity', *common_sets(r))
@@ -454,11 +500,16 @@ def test_end_to_end(tmp):
     check('not-accepted cell: done, install kind rebuild',
           c32 and c32['status'] == 'done' and (c32['meta'].get('install') or {}).get('kind') == 'rebuild',
           c32['reason'] if c32 else '')
-    check('not-accepted cell: one applied=0 row (install class screen_table + inline row check)',
-          [(x['lst'], x['scope'], x['applied']) for x in rows] == [(LST, '32MHz', '0')]
-          and rows[0]['status'].startswith('rebuilt 2026-10-08') and c32
+    r32 = [x for x in rows if x['scope'] == '32MHz']
+    check('not-accepted cell: its row set applied=0, the other rows untouched (install class screen_table + inline check)',
+          [(x['lst'], x['scope'], x['applied']) for x in rows] == [(LST, s, '0' if s == '32MHz' else '1')
+                                                                   for s in ('27MHz', '32MHz', '36MHz', '46MHz')]
+          and r32[0]['status'].startswith('rebuilt 2026-10-08') and c32
           and {t['name'] for t in c32['tests'] if t['passed']} >= {'screen_table.rows', 'dewarp.record_row'},
           str([t['name'] for t in c32['tests']]) if c32 else str(rows))
+    check('not-accepted cell: the shared record is not an input (never self-stale); the replaced row is kept',
+          c32 and csvp not in (c32.get('inputs') or {}) and (c32['meta'].get('screen_row_replaced') or [{}])[0].get('applied')
+          == '1' and (c32['meta'].get('routing_row') or [{}])[0].get('applied') == '1')
     check('accepted cell whose apply refused: refused G-R2, no applied=0 row, no generation',
           c36 and c36['status'] == 'refused' and 'G-R2' in c36['reason']
           and not os.path.exists(os.path.join(outB, 'gen', f'{LST}_36MHz', 'gen_mdewarp_rbf')),
@@ -468,6 +519,24 @@ def test_end_to_end(tmp):
     check('input carries MDWARP: refused G-D7', c46 and c46['status'] == 'refused' and 'G-D7' in c46['reason'])
     glog = os.path.join(outB, '_records', '_parity_guard_refusals.log')
     check('parity guard: no write outside --out/--work', not os.path.exists(glog) or not open(glog).read().strip())
+    # --- B2: the not-accepted cell is no longer routed (its applied=0 row); --resume still finds its own done record
+    if c32 and c32['status'] == 'done':
+        dirty = str(c32.get('commit') or '').endswith('-dirty')
+        rc, txt, s = cli('dewarp', '--cells', f'{LST}_32MHz', '--stages', 'apply,verify,record', '--measurement', r['meas'],
+                         '--out', outB, '--resume', *common_sets(r))
+        c = rec(outB, f'{LST}_32MHz')
+        if dirty:       # a record written from a dirty tree is never resumed: the G-D2 refusal names why
+            check('--resume: a done cell no longer routed is planned from its own record (dirty tree: refused, reason '
+                  'given)', rc == 2 and c and 'G-D2' in c['reason'] and 'earlier dewarp record is not current' in c['reason'],
+                  f'rc {rc}; ' + (c['reason'][:160] if c else txt[-200:]))
+        else:
+            check('--resume: a done cell no longer routed is skipped (its record is current)',
+                  rc == 0 and c and c['status'] == 'done', f'rc {rc}; ' + txt[-200:])
+        rc, txt, s = cli('dewarp', '--cells', f'{LST}_32MHz', '--stages', 'record', '--measurement', r['meas'], '--out',
+                         outB, *common_sets(r))
+        c = rec(outB, f'{LST}_32MHz')
+        check('after its applied=0 row the cell is not routed: G-D2 without --resume', rc == 2 and c and 'G-D2' in c['reason'],
+              f'rc {rc}; ' + (c['reason'][:100] if c else txt[-200:]))
     if not ok27:
         return
     # --- C: verify alone (context from the record, scratch mode)
@@ -506,8 +575,10 @@ def test_stale_measurement(tmp):
     open(okf, 'w').write(f'{r["promoted"]}/{LST}_32MHz\nT1-T8 passed 2026-10-14T00:00:00Z (synthetic, after the measurement)\n')
     out = os.path.join(tmp, 'outG')
     rc, txt, s = cli('dewarp', '--cells', f'{LST}_32MHz', '--stages', 'record', '--measurement', r['meas'], '--out', out,
-                     *common_sets(r))
+                     '--set', 'dewarp.ROUTE_SOURCE=accepted_list', *common_sets(r))     # routed by the round's hand list
     c = rec(out, f'{LST}_32MHz')
+    check("ROUTE_SOURCE 'accepted_list' routes from the hand list (no screen record under --out needed)",
+          c is not None and 'G-D2' not in (c.get('reason') or ''), f'rc {rc}; ' + (c['reason'][:100] if c else txt[-200:]))
     check('G-A11: a measurement older than the rebuild is refused (no applied=0 row written)',
           rc == 2 and c and 'G-A11' in c['reason'] and not os.path.exists(os.path.join(out, 'archive')),
           f'rc {rc}, {s} s; ' + (c['reason'][:100] if c else txt[-200:]))
@@ -515,10 +586,10 @@ def test_stale_measurement(tmp):
 
 def test_real_products():
     M = '/fast/gh/main/phase3/mdewarp_rbf_20261008/from_lwacalim09'
-    for t in (f'{M}/tables/table_12h.csv', f'{M}/tables/table_23h.csv'):
-        if os.path.isfile(t):
-            ok, v, d = T.table_rows(t)
-            check(f'real (read-only): dewarp_table {os.path.basename(t)}', ok, f'{v}')
+    # production moves an LST's table aside (table_<LST>.csv.prev_<date>) before re-measuring it: test what is there
+    for t in sorted(glob.glob(f'{M}/tables/table_1[2-3]h.csv*') + glob.glob(f'{M}/tables/table_2[2-3]h.csv*'))[:4]:
+        ok, v, d = T.table_rows(t, lst=os.path.basename(t)[6:9])
+        check(f'real (read-only): dewarp_table {os.path.basename(t)}', ok, f'{v}; {d[:100]}')
     scr = f'{M}/12h/maps/Red_warp_screen.fits'
     if os.path.isfile(scr):
         ok, v, d = T.screen_record(scr)
@@ -526,6 +597,15 @@ def test_real_products():
     gen = '/lustre/gh/main/phase3/mdewarp_rbf_gen_20261007/12h_Red/gen_mdewarp_rbf'
     if os.path.isdir(gen):
         for fn in (T.applied_screen, T.products, T.d4_tested_pixels):
+            if fn is T.applied_screen:      # production moves an LST's measurement aside before re-measuring it
+                try:                        # (2026-10-13: from_lwacalim09/12h -> 12h.prev_20261012): no context left
+                    scr = json.load(open(os.path.join(os.path.dirname(gen), SC.APPLIED_SCREEN))).get('screen') or ''
+                except (OSError, ValueError):
+                    scr = ''
+                if not os.path.isfile(scr):
+                    print(f'SKIP  real (read-only): dewarped_master.applied_screen 12h_Red (its screen {scr} was moved '
+                          f'by production)', flush=True)
+                    continue
             ok, v, d = fn(gen)
             check(f'real (read-only): dewarped_master.{fn.__name__} 12h_Red', ok, str(d)[:120])
 

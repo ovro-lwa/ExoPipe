@@ -23,6 +23,7 @@ Run standalone:  python tests/test_masters-tiers.py [test_name ...]
 """
 import csv
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -335,12 +336,97 @@ def test_stack_gate():
     record.atomic_write_json(record.record_path(run.out_root, 'masters', 'stack_09h_2030-01-01_18MHz'), {'status': 'done'})
     record.atomic_write_json(record.record_path(run.out_root, 'masters', 'stack_09h_2030-01-02_18MHz'), {'status': 'refused'})
     bad, refused = TS.stack_gate(run, '09h', '18MHz', jobs)
-    assert len(bad) == 1 and refused == ['09h_2030-01-02'], (bad, refused)
+    assert len(bad) == 2 and refused == [('09h_2030-01-02', 'I'), ('09h_2030-01-02', 'V')], (bad, refused)
     with Patch((CFG.masters_sublst, 'LOO_ADMITS_REFUSED_STACKS', True)):
         bad, refused = TS.stack_gate(run, '09h', '18MHz', jobs)
-        assert bad == [] and refused == ['09h_2030-01-02']
+        assert bad == [] and refused == [('09h_2030-01-02', 'I'), ('09h_2030-01-02', 'V')]
     bad, _ = TS.stack_gate(run, '09h', '23MHz', jobs + [('09h_2030-01-01', '23MHz', ['I'], '/x')])
-    assert bad == ['09h_2030-01-01 23MHz (missing)'], bad
+    assert bad == ['09h_2030-01-01 23MHz I (missing)'], bad
+    # review 2026-10-13: a DONE unit whose Stokes V the stacker refused (item refusal) is not complete - production stops
+    # the LST when any job lacks its completion line (nocat:208-218)
+    adm_v = os.path.join(run.out_root, '09h', '09h_2030-01-03', '27MHz', 'V', 'admission_09h_2030-01-03_27MHz_V.csv')
+    record.atomic_write_json(record.record_path(run.out_root, 'masters', 'stack_09h_2030-01-03_27MHz'),
+                             {'status': 'done', 'refused_items': [{'path': adm_v, 'reason': 'REFUSED: x', 'gate': 'g'}]})
+    j27 = [('09h_2030-01-03', '27MHz', ['I', 'V'], '/x')]
+    bad, refused = TS.stack_gate(run, '09h', '27MHz', j27)
+    assert bad == ['09h_2030-01-03 27MHz V (refused)'] and refused == [('09h_2030-01-03', 'V')], (bad, refused)
+    # a stack unit recorded under the frames step (per hour, stack_night) is found; the newest record wins
+    record.atomic_write_json(record.record_path(run.out_root, 'frames', 'stack_09h_2030-01-04_32MHz'),
+                             {'status': 'done', 'finished': '2026-10-13T10:00:00Z'})
+    record.atomic_write_json(record.record_path(run.out_root, 'masters', 'stack_09h_2030-01-04_32MHz'),
+                             {'status': 'refused', 'finished': '2026-10-13T09:00:00Z'})
+    bad, _ = TS.stack_gate(run, '09h', '32MHz', [('09h_2030-01-04', '32MHz', ['I', 'V'], '/x')])
+    assert bad == [], bad
+
+
+FAKE_LOO = r'''
+import argparse, sys
+ap = argparse.ArgumentParser()
+for k in ('--root', '--master-root', '--lst', '--subband', '--stokes'):
+    ap.add_argument(k)
+a = ap.parse_args()
+if a.stokes == 'V':
+    sys.exit('REFUSED: synthetic loo refusal')
+print('SUBLST-LOO %s %s %s windows=0 residuals=0 refused_night=0' % (a.lst, a.subband, a.stokes))
+'''
+
+
+def test_loo_gates():
+    """G-S05 admission count refuses BEFORE the engine runs (nocat:210-211); a loo engine refusal of one Stokes refuses the
+    unit (nocat:232-233: the LST stops unless all 30 SUBLST-LOO lines), the other Stokes still runs."""
+    d = os.path.join(scratch(), 'loo_gates')
+    os.makedirs(d, exist_ok=True)
+    fake = os.path.join(d, 'fake_loo.py')
+    open(fake, 'w').write(FAKE_LOO)
+    wp = os.path.join(d, 'w.csv')
+    open(wp, 'w').write('date,weight\n')
+    run = new_run('loo_gates_out')
+    lst, sb, cell = '09h', '18MHz', '09h_2030-01-01'
+    sdir = os.path.join(run.out_root, lst, cell, sb)
+    for S in ('I', 'V'):
+        os.makedirs(os.path.join(sdir, S), exist_ok=True)
+        open(os.path.join(sdir, S, f'sublst_{cell}_{sb}_{S}_w0.fits'), 'wb').write(b'x')
+    open(os.path.join(sdir, 'I', f'admission_{cell}_{sb}_I.csv'), 'w').write('ts\n')
+    record.atomic_write_json(record.record_path(run.out_root, 'masters', f'stack_{lst}_2030-01-01_{sb}'), {'status': 'done'})
+    jobs = [(cell, sb, ['I', 'V'], '/x')]
+    CFG.set('masters.PYTHON_SITE_KEY[sublst-loo]', 'default')
+    try:
+        with Patch((TS, 'frozen_weights', lambda l, b: wp), (TS, 'pins_ok', lambda: ([], [])),
+                   (TS, 'script', lambda short: fake)):
+            TS._loo_unit(run, TS.Opts(), run.out_root, lst, sb, ['I', 'V'], jobs, [])
+            u = run.units[-1]
+            assert u.status == 'refused' and 'admission files' in u.reason, (u.status, u.reason)
+            assert not os.path.exists(os.path.join(run.out_root, lst, 'logs', f'loo_{lst}_{sb}_I.log'))   # engine not run
+            open(os.path.join(sdir, 'V', f'admission_{cell}_{sb}_V.csv'), 'w').write('ts\n')
+            TS._loo_unit(run, TS.Opts(), run.out_root, lst, sb, ['I', 'V'], jobs, [])
+            u = run.units[-1]
+            assert u.status == 'refused' and u.reason.startswith('G-S06') and 'V: REFUSED' in u.reason, (u.status, u.reason)
+            assert len(u.meta.get('legacy_calls', [])) == 2                  # both Stokes ran
+    finally:
+        CFG.reset()
+
+
+def test_sources_prep_waivers():
+    """sources: no subband under coadd_<LST> refuses (catpub pcheck exits 1, :60); prep: sources node-local to another
+    host refuse (G-S08, sublst_prep_lst.sh:13 as a site check); never-waivable tests refuse a --waive."""
+    from exopipe.phase3.core import env
+    run = new_run('src_out')
+    sel = TS.Selection()
+    sel.lsts = ['09h']
+    TS.stage_sources(run, TS.Opts(), sel, run.out_root)
+    u = run.units[-1]
+    assert u.status == 'refused' and 'G-S10' in u.reason, (u.status, u.reason)
+    pairs, _, _ = TS.prep_pairs('09h', run.out_root)
+    holder = env.node_local_holder(CFG.paths.COADD_SB_ROOT)
+    assert holder, 'paths.COADD_SB_ROOT is not node-local in the site file'
+    with Patch((env, 'host', lambda: holder)):
+        assert TS.prep_locality_problem(pairs) == ''
+    with Patch((env, 'host', lambda: 'otherhost')):
+        why = TS.prep_locality_problem(pairs)
+        assert why.startswith('G-S08') and holder in why, why
+    r = record.Run('masters', ['t'], run.out_root, CFG, waivers=[('snapshot.G-D02_md5_equals_manifest', 'x')])
+    assert 'never waivable' in TS.waiver_problem(r)
+    assert TS.waiver_problem(record.Run('masters', ['t'], run.out_root, CFG, waivers=[('sublst_window.window_siblings', 'x')])) == ''
 
 
 def test_admit_noinput():
@@ -533,6 +619,74 @@ def test_snapshot_units():
         TN._MAN.clear()
 
 
+FAKE_PARENTCAT = r'''
+import argparse, hashlib, json, os, sys
+import numpy as np
+from astropy.io import fits
+ap = argparse.ArgumentParser()
+for k in ('--out-dir', '--work', '--nproc', '--only'):
+    ap.add_argument(k)
+a = ap.parse_args()
+os.makedirs(a.out_dir, exist_ok=True)
+bad = []
+for pair in a.only.split(','):
+    if pair.endswith('_Red'):
+        print('FAILED %s 0 gaussians 0.1 s RuntimeError(synthetic)' % pair); bad.append(pair); continue
+    m = os.path.join(os.environ['FAKE_FROZEN'], pair, 'coadd_final', 'I_deep_Taper_R075_%s.fits' % pair.split('_', 1)[1])
+    d = np.squeeze(fits.getdata(m)).astype(float); d[~np.isfinite(d)] = 0; d[np.abs(d) > 1e6] = 0
+    out = os.path.join(a.out_dir, 'master_R075_%s.gaul.csv' % pair)
+    open(out, 'w').write('# Gaussian list\n# Gaus_id, Isl_id, Source_id, Wave_id, RA, E_RA, DEC\n'
+                         '0, 0, 0, 0, 10.0, 0.1, 40.0\n1, 1, 1, 0, 11.0, 0.1, 41.0\n')
+    json.dump({'master': m, 'master_md5_data': hashlib.md5(np.ascontiguousarray(d.astype(np.float32)).tobytes()).hexdigest(),
+               'CONSTDIG': fits.getheader(m).get('CONSTDIG'), 'thresh_pix': 7.0, 'thresh_isl': 4.0, 'atrous_do': False,
+               'rows_pybdsf': 3, 'rows_dropped_nonfinite_position': 1}, open(out + '.gen.json', 'w'))
+    print('BUILT %s 2 gaussians 0.1 s ' % pair)
+print('PARENTCAT-CONTRACT-END built %d, failed %d %s' % (len(a.only.split(',')) - len(bad), len(bad), bad))
+sys.exit(1 if bad else 0)
+'''
+
+
+def test_snapshot_sources():
+    """M21 carried (review 2026-10-13): the sources stage runs the in-place builder through core.legacy.run, tests every BUILT
+    catalogue (class snapshot_parent_catalog: sidecar digest = the zapped master data now, recipe, rows), records a FAILED
+    pair as an item refusal, and refuses earlier catalogues under --out (the builder would skip them silently)."""
+    import numpy as np
+    from astropy.io import fits
+    d = os.path.join(scratch(), 'snapsrc')
+    frozen = os.path.join(d, 'frozen')
+    for slot in ('14h_41MHz', '09h_Red'):
+        p = os.path.join(frozen, slot, 'coadd_final', f'I_deep_Taper_R075_{slot.split("_", 1)[1]}.fits')
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        a = np.random.RandomState(5).normal(size=(16, 16)).astype(np.float32)
+        a[0, 0], a[1, 1] = np.nan, 3e7
+        h = fits.Header()
+        h['CONSTDIG'] = 'abc123'
+        fits.writeto(p, a, h, overwrite=True)
+    fake = os.path.join(d, 'fake_parentcat.py')
+    open(fake, 'w').write(FAKE_PARENTCAT)
+    orig = TN.script
+    os.environ['FAKE_FROZEN'] = frozen
+    try:
+        with Patch((CFG.masters_snapshot, 'FROZEN_ROOT', frozen),
+                   (TN, 'script', lambda short: fake if short == 'parentcat' else orig(short))):
+            run = new_run('snapsrc_out')
+            TN.stage_sources(run, TS.Opts(work=os.path.join(d, 'work')), ['14h_41MHz', '09h_Red'])
+            u = run.units[-1]
+            assert u.status == 'done' and len(u.outputs) == 1 and len(u.refused_items) == 1, (u.status, u.reason)
+            assert all(t['passed'] for t in u.tests), u.tests
+            cat = TN.parent_paths(run, '14h_41MHz')[0]
+            g = json.load(open(cat + '.gen.json'))
+            g['master_md5_data'] = '0' * 32                                  # a catalogue of other data fails
+            json.dump(g, open(cat + '.gen.json', 'w'))
+            r = validate.run('snapshot_parent_catalog', cat)
+            assert not r[0]['passed'] and 'md5' in r[0]['detail'], r
+            run2 = new_run('snapsrc_out')
+            TN.stage_sources(run2, TS.Opts(work=os.path.join(d, 'work')), ['14h_41MHz'])
+            assert run2.units[-1].status == 'refused' and 'G-S01' in run2.units[-1].reason, run2.units[-1].reason
+    finally:
+        os.environ.pop('FAKE_FROZEN', None)
+
+
 # =====================================================================================================================
 # read-only checks on real production
 # =====================================================================================================================
@@ -560,6 +714,21 @@ def test_real_content():
         print(f'  PASS {cls} on {os.path.basename(p)}: ' + '; '.join(str(t['detail'])[:90] for t in r))
 
 
+def test_real_snapshot_parents():
+    """The installed snapshot parent set (M21, exopipe_ops 3ff6565): a seeded sample of catalogues passes the contract test."""
+    import random
+    d = CFG.masters_snapshot.PARENT_CATALOG_DIR
+    cats = sorted(f for f in os.listdir(d) if f.endswith('.gaul.csv')) if os.path.isdir(d) else []
+    if not cats:
+        print('  (production snapshot parent catalogues not reachable: skipped)')
+        return
+    assert len(cats) == CFG.masters_snapshot.N_SLOTS, len(cats)
+    for f in random.Random(20261013).sample(cats, 4):
+        r = validate.run('snapshot_parent_catalog', os.path.join(d, f))
+        assert r and all(t['passed'] for t in r), (f, r)
+        print(f'  PASS snapshot_parent_catalog on {f}: {r[0]["detail"][:110]}')
+
+
 def test_real_stack_night_dry():
     """The per-hour interface frames imports, in --dry-run on a real night: prints the plan, writes nothing."""
     if not os.path.isdir(f'{CFG.paths.SNAPSHOT_CUBES_ROOT}/09h_2024-12-29'):
@@ -575,9 +744,10 @@ def test_real_stack_night_dry():
     assert sorted(main + deep) == sorted(prod), (main, deep, prod)
 
 
-TESTS = [test_config, test_grammar, test_outcome, test_cpv, test_stack_unit, test_stack_gate, test_admit_noinput,
-         test_loo_products,
-         test_snapshot_units, test_real_mirrors, test_real_content, test_real_stack_night_dry]
+TESTS = [test_config, test_grammar, test_outcome, test_cpv, test_stack_unit, test_stack_gate, test_loo_gates,
+         test_sources_prep_waivers, test_admit_noinput, test_loo_products,
+         test_snapshot_units, test_snapshot_sources, test_real_mirrors, test_real_content, test_real_stack_night_dry,
+         test_real_snapshot_parents]
 
 
 def main(argv):

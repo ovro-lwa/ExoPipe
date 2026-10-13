@@ -177,8 +177,9 @@ def record(u, roots, cell, row):
         probe = os.path.dirname(probe)
     if not os.access(probe, os.W_OK):
         u.refuse(f'G-R1: the archive record directory {sdir} is not writable ({probe})')
-    if os.path.isfile(roots.record_csv):
-        u.add_input(roots.record_csv)
+    # the record file is this stage's OUTPUT (one row replaced, INS._screen_row): it is not fingerprinted as an input (it
+    # would make the unit stale the moment it is written); the row it replaces is kept in the record instead
+    u.meta['screen_row_replaced'] = SC.routing_row(roots, cell)
     r = SC.not_accepted_row(lst, scope, row, utcnow())
     INS._screen_row(sdir, r)
     try:
@@ -198,17 +199,35 @@ def record(u, roots, cell, row):
     print(f'{lst}_{scope}: screen record set applied=0 - {r["status"]}', flush=True)
 
 
-def run_cell(run, args, roots, lst, cell, meas, stages, route_src=None):
-    """The cell unit: acceptance, then apply/verify (accepted) or record (not accepted)."""
+def _resume(run, cell, meas):
+    """(ok, why) for --resume: the core record check plus 'the record used THIS measurement' (a re-measured LST - new
+    directory, new table - makes every cell record of the LST stale even when the old table is unchanged on disk)."""
+    from exopipe.phase3.core import record as R
+    if meas is None or not meas.exists():
+        return False, 'no current measurement'
+    rec = R.load_record(run.out_root, 'dewarp', cell)
+    if rec and (rec.get('meta') or {}).get('measurement') != meas.dir:
+        return False, f"record used the measurement {(rec.get('meta') or {}).get('measurement')}, this run {meas.dir}"
+    return run.resume_check(cell, None, None)
+
+
+def run_cell(run, args, roots, lst, cell, meas, stages, route_src=None, resume_only=None):
+    """The cell unit: acceptance, then apply/verify (accepted) or record (not accepted). ``resume_only`` (the G-D2 reason):
+    the cell is no longer routed and is planned only because this step's own record of it is done (--resume): skipped
+    when that record is current, refused with the G-D2 reason otherwise."""
     from exopipe.phase3.core import record as R, validate
     c = SC.C()
     scope = cell.split('_', 1)[1]
-    if run.resume and not run.fresh and meas is not None and meas.exists():
-        ok, why = run.resume_check(cell, None, None)
+    if run.resume and not run.fresh:
+        ok, why = _resume(run, cell, meas)
         if ok:
             u = run.unit(cell, lst=lst, kind='cell')
             u.status, u.reason = 'skipped-valid', why
             print(f'{cell}: resumed ({why})')
+            return u
+        if resume_only:
+            with run.unit(cell, lst=lst, kind='cell') as u:
+                u.refuse(f'{resume_only}; its earlier dewarp record is not current ({why})')
             return u
     with run.unit(cell, lst=lst, kind='cell') as u:
         u.meta['stages'] = [s for s in stages if s in SC.CELL_STAGES]
@@ -217,8 +236,11 @@ def run_cell(run, args, roots, lst, cell, meas, stages, route_src=None):
         if not meas.exists():
             u.refuse(f'no measurement table {meas.table}')
         u.add_input(meas.table)
-        if route_src and os.path.isfile(route_src):
-            u.add_input(route_src)
+        u.meta['route_source'] = c.ROUTE_SOURCE
+        if c.ROUTE_SOURCE == 'accepted_list' and route_src and os.path.isfile(route_src):
+            u.add_input(route_src)                       # a hand list: its fingerprint is the routing evidence
+        elif route_src:                                  # the shared screen record: the cell's row is the evidence
+            u.meta['routing_row'] = SC.routing_row(roots, cell)
         u.meta['measurement'] = meas.dir
         if getattr(args, 'measurement', None):        # an earlier measurement is an input: it must pass its own test
             for r in validate.run('dewarp_table', meas.table, lst=lst):

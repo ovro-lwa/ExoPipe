@@ -59,23 +59,27 @@ def stage(u, lst, srcs, work):
     os.makedirs(root, exist_ok=True)
     sdir = tempfile.mkdtemp(prefix=f'dewarp_stage_{lst}_', dir=root)
     n = 0
-    for s, d, files in srcs:
-        if not d:
-            u.note(f'stage: {lst}_{s}: no measured master in REBUILD_ROOT or paths.COADD_SB_ROOT (MD records the scope as '
-                   f'REFUSED no generation root)')
-            continue
-        miss = [f for f in files if not os.path.isfile(f)]
-        if miss:
-            raise SC.refusal(f'G-D6: staging {lst}_{s}: {miss[0]} missing (dewarp_lst.sh:28-29 stops the LST)')
-        dst = os.path.join(sdir, f'{lst}_{s}', 'coadd_final')
-        os.makedirs(dst)
-        for f in files:
-            m0 = SC.md5(f)
-            t = os.path.join(dst, os.path.basename(f))
-            shutil.copy2(f, t)
-            if SC.md5(t) != m0:
-                raise SC.refusal(f'G-D6: the staged copy of {f} differs from its source (md5)')
-            n += 1
+    try:
+        for s, d, files in srcs:
+            if not d:
+                u.note(f'stage: {lst}_{s}: no measured master in REBUILD_ROOT or paths.COADD_SB_ROOT (MD records the scope '
+                       f'as REFUSED no generation root)')
+                continue
+            miss = [f for f in files if not os.path.isfile(f)]
+            if miss:
+                raise SC.refusal(f'G-D6: staging {lst}_{s}: {miss[0]} missing (dewarp_lst.sh:28-29 stops the LST)')
+            dst = os.path.join(sdir, f'{lst}_{s}', 'coadd_final')
+            os.makedirs(dst)
+            for f in files:
+                m0 = SC.md5(f)
+                t = os.path.join(dst, os.path.basename(f))
+                shutil.copy2(f, t)
+                if SC.md5(t) != m0:
+                    raise SC.refusal(f'G-D6: the staged copy of {f} differs from its source (md5)')
+                n += 1
+    except BaseException:
+        shutil.rmtree(sdir, ignore_errors=True)       # a refused staging leaves no scratch behind
+        raise
     u.note(f'stage: {n} files copied to {sdir}, md5-verified')
     return sdir
 
@@ -85,8 +89,13 @@ def _measure_in_place(u, lst, root, input_root, mdir, vl):
     import threadpoolctl
     from exopipe.phase3.lib.dewarp import master_dewarp as MD
     c = SC.C()
-    os.makedirs(os.path.join(mdir, 'tables'))          # a fresh measurement directory per run: never overwrite a screen
+    # a fresh measurement directory per run (never overwrite a screen); several LSTs of one run share it (one table and
+    # one <LST>/ per LST, MD's layout), so the LST's own table and screen directory must not exist yet
+    os.makedirs(os.path.join(mdir, 'tables'), exist_ok=True)
     table = os.path.join(mdir, 'tables', f'table_{lst}.csv')
+    if os.path.exists(table) or os.path.exists(os.path.join(mdir, lst)):
+        raise SC.refusal(f'{lst}: {table} or {os.path.join(mdir, lst)} already exists in this run\'s measurement '
+                         f'directory - a measurement is never appended to or overwritten')
     saved = {k: os.environ.get(k) for k in ('BDSF_NCORES',)}
     os.environ['BDSF_NCORES'] = str(c.BDSF_NCORES)     # read by cascade_dewarp.extract_sources (CD:186-187)
     old_meas = MD.MEAS_ROOT
@@ -161,12 +170,17 @@ def run_measure(run, args, roots, lst, cells_, stages):
         if vl is None:
             u.refuse(f'G-D4: the VLSSr catalogue {c.VLSSR_CATALOG} failed to load (phase3_master_dewarp.py:452-454)')
         staging = None
-        if c.STAGE_INPUTS:
-            staging = stage(u, lst, srcs, roots.work)
-            root, input_root = staging, None
-        else:
-            root, input_root = roots.working, roots.rebuild
-        table = _measure_in_place(u, lst, root, input_root, roots.measure_dir, vl)
+        try:
+            if c.STAGE_INPUTS:
+                staging = stage(u, lst, srcs, roots.work)
+                root, input_root = staging, None
+            else:
+                root, input_root = roots.working, roots.rebuild
+            table = _measure_in_place(u, lst, root, input_root, roots.measure_dir, vl)
+        except BaseException:
+            if staging:                         # node-local scratch never outlives a refused or failed measurement
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
         meas = SC.Measurement(roots.measure_dir, lst)
         e = u.add_output(table, 'dewarp_table', lst=lst)
         e['ctx'] = {'lst': lst}

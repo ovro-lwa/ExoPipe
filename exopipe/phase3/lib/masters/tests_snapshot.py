@@ -10,10 +10,19 @@
                             x 6 bins + deep), each finite, inside masters_snapshot.PB_LIBRARY_VALUE_RANGE with some pixel above
                             0.1, PBBEAM = the model beam, PBSCOPE / PBLSTBIN = its name; rehash re-reads every map and compares
                             md5, range and cards with the row.
-Both tests work on a production file without context (`exopipe3 verify <class> <file>`).
+  snapshot_parent_catalog   master_R075_<LST>_<scope>.gaul.csv (+ .gen.json) of the snapshot parent set (M21, exopipe_ops
+                            a670970 / 3ff6565): the sidecar names the slot's frozen gen-4 R075 master and its master_md5_data
+                            equals the md5 of that master's float32 data after the builder's zap (non-finite and |x| >
+                            PARENT_ZAP_JYB -> 0, phase3_deep._load), re-read now; CONSTDIG = the master's; thresh_pix /
+                            thresh_isl / atrous_do = the recipe; Gaussian rows = rows_pybdsf - rows dropped > 0, every RA/Dec
+                            finite (snapshot_parentcat_sanitize).
+All tests work on a production file without context (`exopipe3 verify <class> <file>`).
 """
 import csv
+import hashlib
+import json
 import os
+import re
 
 from exopipe.phase3.core.validate import content_test
 
@@ -120,3 +129,76 @@ def library_maps(path, rehash=True, **ctx):
             problems.append(f'{f}: PBSCOPE/PBLSTBIN {r["pbscope"]}/{r["pblstbin"]} != {sb}/{k}')
     return _verdict(problems, len(rows), f'{len(rows)} model-beam maps finite, in range, beam {s.PB_BEAM_MODEL}'
                                          f'{" (re-read now)" if rehash else ""}')
+
+
+_PARENT_RE = re.compile(r'^master_R075_(\d\dh)_(\d+MHz|Red|Green|Blue|Full)\.gaul\.csv$')
+
+
+def parent_master_path(slot):
+    """The frozen gen-4 parent master of a slot (snapshot_parentcat_contract.py:49)."""
+    s = _T()._sec()
+    band = slot.split('_', 1)[1]
+    return os.path.join(s.FROZEN_ROOT, slot, 'coadd_final', s.PARENT_MASTER_FILE.format(b=band))
+
+
+def parent_data_md5(master):
+    """md5 of the master's float32 data after phase3_deep._load's zap (non-finite and |x| > PARENT_ZAP_JYB set to 0), as
+    the builder digests it (snapshot_parentcat_contract.py:54, 66)."""
+    import numpy as np
+    from astropy.io import fits
+    a = np.squeeze(fits.getdata(master)).astype(float)
+    a[~np.isfinite(a)] = 0.0
+    a[np.abs(a) > _T()._sec().PARENT_ZAP_JYB] = 0.0
+    return hashlib.md5(np.ascontiguousarray(a.astype(np.float32)).tobytes()).hexdigest()
+
+
+@content_test('snapshot_parent_catalog')
+def parent_catalog_contract(path, **ctx):
+    import numpy as np
+    s = _T()._sec()
+    m = _PARENT_RE.match(os.path.basename(path))
+    if not m:
+        return False, None, f'not a snapshot parent catalogue name: {os.path.basename(path)}'
+    slot = f'{m.group(1)}_{m.group(2)}'
+    side = path + '.gen.json'
+    if not os.path.isfile(side):
+        return False, None, 'no .gen.json sidecar'
+    g = json.load(open(side))
+    master = parent_master_path(slot)
+    problems = []
+    if g.get('master') != master:
+        problems.append(f'sidecar master {g.get("master")} != {master}')
+    if not os.path.isfile(master):
+        return False, None, f'parent master {master} missing'
+    from astropy.io import fits
+    hdr = fits.getheader(master)
+    md5 = parent_data_md5(master)
+    if g.get('master_md5_data') != md5:
+        problems.append(f'sidecar md5 {str(g.get("master_md5_data"))[:8]} != master data now {md5[:8]}')
+    if g.get('CONSTDIG') != hdr.get('CONSTDIG'):
+        problems.append(f'sidecar CONSTDIG {g.get("CONSTDIG")} != master {hdr.get("CONSTDIG")}')
+    if (g.get('thresh_pix'), g.get('thresh_isl'), bool(g.get('atrous_do'))) != \
+            (s.PARENT_THRESH_PIX, s.PARENT_THRESH_ISL, bool(s.PARENT_ATROUS)):
+        problems.append(f'recipe thresh_pix {g.get("thresh_pix")} thresh_isl {g.get("thresh_isl")} atrous '
+                        f'{g.get("atrous_do")} != {s.PARENT_THRESH_PIX} / {s.PARENT_THRESH_ISL} / {s.PARENT_ATROUS}')
+    ra, dec = [], []
+    with open(path) as f:
+        for ln in f:
+            if not ln.strip() or ln.startswith('#'):
+                continue
+            q = ln.split(',')
+            try:
+                ra.append(float(q[4]))
+                dec.append(float(q[6]))
+            except (ValueError, IndexError):
+                ra.append(float('nan'))
+                dec.append(float('nan'))
+    n = len(ra)
+    want = int(g.get('rows_pybdsf', -1)) - int(g.get('rows_dropped_nonfinite_position', 0))
+    if n <= 0 or n != want:
+        problems.append(f'{n} Gaussian rows, sidecar says {want}')
+    nbad = int(np.sum(~(np.isfinite(ra) & np.isfinite(dec)))) if n else 0
+    if nbad:
+        problems.append(f'{nbad} rows with a non-finite RA/Dec')
+    return _verdict(problems, n, f'{n} Gaussian rows on {os.path.basename(master)} (data md5 {md5[:8]} = sidecar, '
+                                 f'thresh_pix {s.PARENT_THRESH_PIX}, thresh_isl {s.PARENT_THRESH_ISL})')

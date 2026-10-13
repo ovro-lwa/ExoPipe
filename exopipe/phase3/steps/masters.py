@@ -76,8 +76,13 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = no input; 1 =
   G-M21 master-dewarped cell / corrupt variant / PB error in pbmaps.  G-M22 vclean status != OK.
   G-M23 no scale or correction row, table sha1 differs, product already scaled (D4).  G-M24 a T1-T8 test fails unwaived.
   G-M25 earlier outputs present without --fresh --supersede TAG; override master inconsistent; pixel factor outside 0.3-3;
-        not exactly one superseded master; pinned table sha1 differs.  G-M26 sources: no install record / sidecar md5 /
-        0 rows / dewarp screen applied but no MDWARP.  G-M27 < 40 GB free on the --out filesystem.
+        not exactly one superseded master; pinned table sha1 differs; build on a cell that already holds a build or whose
+        stage-in reference was overwritten (rebuild_cell.sh:34: a build runs once on a clean cell).  G-M26 sources: no
+        install record / the installed cell fails membership.verify or verify_products (install_cell.sh:70-71) / sidecar
+        md5 / 0 rows / dewarp screen applied but no MDWARP.  G-M27 < 40 GB free on the --out filesystem.
+  Chain of records (DESIGN 11.5): a stage refuses when the done record it depends on lists outputs that are gone, or (pbmaps
+  .. verify, variants) when a night the build admitted is excluded now. The working cell / installed master node-local to
+  another host refuses (site NODE_LOCAL_ROOTS; chain_cell.sh:17).
   Window: --set on a key in a section's PROTECTED_KEYS (pinned inputs, ruling-fixed values, and every MIRROR of a literal
   inside the in-place code) refuses (exit 2, config.py). --epochs / --nights refuse for the deep tier (exit 2).
   Inherited P3_* environment variables are removed before the in-place modules are imported (recorded in the build note).

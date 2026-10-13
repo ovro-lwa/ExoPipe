@@ -60,12 +60,16 @@ class dewarp(_Section):
     #                                                          :452); R-MASTER-DEWARP-RBF-MULTIQUADRIC
     VLSSR_CATALOG_SHA1 = '6ed0113e57c0a42eb1425a4b56d657e5b4da15e7'   # sha1 of VLSSR_CATALOG, measured 2026-10-13 (G-D3)
 
-    # ---- routing: which rebuilt cells are sent to the LST dewarp (batch row B-11; default = today's behaviour) ----
-    ROUTE_SOURCE = 'accepted_list'     # 'accepted_list' = today (chain_cell.sh:38, dewarp_driver.sh:5; B-11 option c) |
-    #                                    'screen_record' = applied=1 rows of the archived record (B-11 options a/b)
+    # ---- routing: which rebuilt cells are sent to the LST dewarp (batch row B-11; default = production's behaviour) ----
+    ROUTE_SOURCE = 'screen_record'     # 'screen_record' = the cell's LATEST row of the archived screen record says applied=1:
+    #                                    PRODUCTION since exopipe_ops e16201c (2026-10-13 04:57 UTC, chain_cell.sh:38-44;
+    #                                    ledger IMPL-D1-COADD-BEAM-GATE-READS-COADD-IMAGE-AND-REBUILD-ROUND-20261013
+    #                                    'CHAIN FIX': the list disagreed with the record for 7 of 32 cells) = B-11 option (a)
+    #                                    as the deep chat implemented it | 'accepted_list' = the 2026-10-07 round's hand
+    #                                    list (production until e16201c; B-11 option c)
     ROUTE_LIST = 'membership_rebuild_20261007/accepted_rebuilt.csv'   # path relative to paths.OPS_ROOT (protected); `lst,scope`
-    #                                    CSV, 65 rows on 2026-10-13 (17 uncommitted, incl. 23h,23MHz); fingerprinted into
-    #                                    every cell record (chain_cell.sh:38; dewarp_driver.sh:5)
+    #                                    CSV, 65 rows on 2026-10-13 (17 uncommitted); read only with ROUTE_SOURCE
+    #                                    'accepted_list' (then fingerprinted into every cell record; dewarp_driver.sh:5)
 
     # ---- the archived screen record (the ONE source of truth for "dewarped cell", DESIGN 8a) ----
     # (the archive Run = paths.ARCHIVE_RUN: dewarp_lst.sh:17 (P3_ARCHIVE_RUN), :84; chain_cell.sh:14; install_cell.sh:11;

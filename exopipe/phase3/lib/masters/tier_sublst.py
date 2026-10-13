@@ -38,12 +38,15 @@ Outputs (production layout under --out, default paths.SUBLST_ROOT; [product clas
   the production names. Run records: <out>/_records/masters/<unit>.json.
 
 Failure modes (exit 2 = refused, the gate named in the record): earlier products of a unit under --out without --fresh
---supersede TAG (G-S01); a cell without a cube MANIFEST.txt (G-S02); the stacker or the loo engine refusing (G-S04, G-S06; a refused Stokes is an item refusal of the unit); loo before every planned
-stack job is done (G-S05; masters_sublst.LOO_ADMITS_REFUSED_STACKS); a missing prep source or a copy whose md5 differs (G-S08);
-a tier-rule pin missing or altered (G-S09); stale parent catalogues that cannot be rebuilt here (G-S10:
-sublst_parent_catalogs.py writes only to its literal root, so a rebuild runs only with --out = paths.SUBLST_ROOT); config that
-differs from an in-place literal it mirrors; core.exclusions and the co-add reader disagreeing (G-M01); a site PYTHON key
-missing. Inherited P3_* variables are removed from the process before the in-place imports (noted in the records). Exit 3:
+--supersede TAG (G-S01); a cell without a cube MANIFEST.txt (G-S02); the stacker refusing a Stokes (G-S04: an item
+refusal of the stack unit, which then blocks the LST's loo); the loo engine refusing either Stokes (G-S06: the loo unit is
+refused, as production stops the LST, nocat:232-233); loo before every planned (night, subband, Stokes) stack job is done, or
+with fewer admission files than jobs (G-S05; masters_sublst.LOO_ADMITS_REFUSED_STACKS); a missing prep source, a copy whose
+md5 differs, or prep sources node-local to another host (G-S08); a tier-rule pin missing or altered (G-S09); no subband
+under coadd_<LST>, or stale parent catalogues that cannot be rebuilt here (G-S10: sublst_parent_catalogs.py writes only to its
+literal root, so a rebuild runs only with --out = paths.SUBLST_ROOT); config that differs from an in-place literal it
+mirrors; a --waive of a never-waivable test (NEVER_WAIVABLE); core.exclusions and the co-add reader disagreeing (G-M01); a
+site PYTHON key missing. Inherited P3_* variables are removed from the process before the in-place imports (noted in the records). Exit 3:
 nothing to do - no cell, or every job of the plan left out by rule (G-S03: the reasons are in the admit record; production
 goes on with 0 jobs); exit 1: an engine error (no completion line and no REFUSED line).
 
@@ -156,6 +159,22 @@ def script(short):
 
 _ENGINE_PYTHON = {'stack': 'sublst-stack', 'loo': 'sublst-loo', 'sources': 'sources'}
 
+# tests and checks of these tiers no --waive may cover (DESIGN 11.6: a digest mismatch, an excluded night, a missing time
+# block, a missing PB map are never waivable)
+NEVER_WAIVABLE = ('sublst_input_copy.copy_md5_equals_source', 'sublst_job_plan.plan_well_formed',
+                  'sublst_window.window_matches_admission', 'sublst_window_master.window_master_record',
+                  'sublst_fluxdc_record.fluxdc_current', 'master_catalog.sidecar_md5',
+                  'snapshot_master_registry.registry_matches_tree', 'snapshot_pb_library.library_maps',
+                  'snapshot.G-D01_links_into_frozen_tree', 'snapshot.G-D02_md5_equals_manifest', 'snapshot.G-D02_counts',
+                  'snapshot.G-D03_library_complete', 'loo.admission_files')
+
+
+def waiver_problem(run):
+    """'' or the refusal of a --waive that names a never-waivable test of these tiers."""
+    bad = sorted({t for t, _ in (run.waivers or []) if t in NEVER_WAIVABLE})
+    return (f'--waive {", ".join(bad)}: never waivable (DESIGN 11.6: digest mismatch, excluded night, time block, PB map)'
+            if bad else '')
+
 
 def python_key(engine):
     """The site PYTHON key of an in-place engine: masters.PYTHON_SITE_KEY (the step owner's section) for stack, loo and
@@ -239,16 +258,18 @@ def mirror_violations():
 class Opts:
     """Run options a unit needs (from the CLI args, or given by an importing step such as frames)."""
 
-    def __init__(self, fresh=False, supersede=None, resume=False, workers=None, sublst_jobs=None, sublst_deepflow_jobs=None):
+    def __init__(self, fresh=False, supersede=None, resume=False, workers=None, sublst_jobs=None, sublst_deepflow_jobs=None,
+                 work=None):
         self.fresh, self.supersede, self.resume, self.workers = bool(fresh), supersede, bool(resume), workers
         self.sublst_jobs, self.sublst_deepflow_jobs = sublst_jobs, sublst_deepflow_jobs
+        self.work = work              # --work: node-local scratch root (core.fitsio.scratch_dir)
 
     @classmethod
     def from_args(cls, args):
         return cls(fresh=getattr(args, 'fresh', False), supersede=getattr(args, 'supersede', None),
                    resume=getattr(args, 'resume', False), workers=getattr(args, 'workers', None),
                    sublst_jobs=getattr(args, 'sublst_jobs', None),
-                   sublst_deepflow_jobs=getattr(args, 'sublst_deepflow_jobs', None))
+                   sublst_deepflow_jobs=getattr(args, 'sublst_deepflow_jobs', None), work=getattr(args, 'work', None))
 
 
 def resolve_stages(args, tier):
@@ -406,18 +427,26 @@ def md5_file(path, bs=1 << 22):
     return h.hexdigest()
 
 
-def pool_map(fn, items, workers):
+def pool_map(fn, items, workers, run=None, name_of=None):
     """fn(item) for every item, ``workers`` at a time (threads: every unit's work is a child process). A unit's error is in
-    its record already; it is printed and the others go on."""
+    its record already; it is printed and the others go on. An exception raised BEFORE the item's unit opened (input
+    discovery, resume check) is recorded as that unit's error (run + name_of(item)), never only printed."""
     from concurrent.futures import ThreadPoolExecutor
     if not items:
         return
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
-        for f in [ex.submit(fn, it) for it in items]:
+        for it, f in [(it, ex.submit(fn, it)) for it in items]:
             try:
                 f.result()
             except Exception as e:
                 say(f'  unit error: {type(e).__name__}: {str(e)[:300]}')
+                name = name_of(it) if (run is not None and name_of) else None
+                if name and not any(u.name == name for u in run.units):
+                    try:
+                        with run.unit(name):
+                            raise e
+                    except Exception:
+                        pass
 
 
 def exclusion_readers_agree(lst, scope, nights):
@@ -585,15 +614,24 @@ def prep_pairs(lst, root):
 
 def _locality(path):
     """'' or a note naming the host whose node-local root holds ``path`` (site NODE_LOCAL_ROOTS)."""
-    import socket
-    host = socket.gethostname().split('.')[0]
-    for h, roots in (cfg().site.NODE_LOCAL_ROOTS or {}).items():
-        for r in roots:
-            if path.startswith(r.rstrip('/') + '/') and h != host:
-                return f' (node-local to {h}: run this unit there)'
-    if path.startswith(('/fast/', '/data0')):
-        return f' (a node-local path; this is {host})'
-    return ''
+    from exopipe.phase3.core import env
+    h = env.node_local_holder(path)
+    return f' (node-local to {h}: run this unit there)' if h and h != env.host() else ''
+
+
+def prep_locality_problem(pairs):
+    """G-S08 locality (sublst_prep_lst.sh:13 'run on lwacalim07 (sources are local there)', as a site check): '' or the
+    refusal when a prep source root is node-local to ANOTHER host (site NODE_LOCAL_ROOTS) - the same path here is another
+    disk or absent, and a footprint file found here could be a different file."""
+    from exopipe.phase3.core import env
+    s = _sec()
+    cands = [cfg().paths.COADD_SB_ROOT, s.PREP_FOOTPRINT_DIR, prep_parents_dir(), frozen_masters()]
+    cands += [p for src, _, _ in pairs for p in src.split(' | ')]
+    away = sorted({h for h in (env.node_local_holder(p) for p in cands) if h and h != env.host()})
+    if not away:
+        return ''
+    return (f'G-S08: REFUSING: prep sources are node-local to {", ".join(away)} (site NODE_LOCAL_ROOTS); this is '
+            f'{env.host()} - run the prep unit there (sublst_prep_lst.sh:13)')
 
 
 def cpv(src, dst):
@@ -621,9 +659,14 @@ def stage_prep(run, opts, sel, root):
         pairs, notes, roots = prep_pairs(lst, root)
         missing = [(src, kind) for src, _, kind in pairs if ' | ' in src or not os.path.isfile(src)]
         nparent = sum(1 for p in pairs if p[2] == 'parent')
+        away = prep_locality_problem(pairs)
         if run.dry_run:
             say(f'[sublst prep {lst}] {len(pairs)} copies -> {root} ({sum(1 for p in pairs if os.path.isfile(p[1]))} '
                 f'destinations exist; identical ones are kept); {nparent} parent files (>= {s.PREP_MIN_PARENTS} needed)')
+            if away:
+                say(f'    WOULD REFUSE: {away}')
+                bad += 1
+                continue
             for n in notes:
                 say(f'    {n}')
             for src, kind in missing[:6]:
@@ -637,6 +680,8 @@ def stage_prep(run, opts, sel, root):
         if resume_skip(run, opts, name, [p[0] for p in pairs if os.path.isfile(p[0])], None):
             continue
         with run.unit(name, lst=lst, stage='prep') as u:
+            if away:
+                u.refuse(away)
             if missing:
                 src, kind = missing[0]
                 u.refuse(f'G-S08: REFUSING: missing {kind} source {src}{_locality(src.split(" | ")[0])} '
@@ -786,6 +831,15 @@ def admit_plan(lst, cells, subbands_=None):
     return out, outd, drop
 
 
+def solar_audit_path():
+    """The solar audit the night rule reads (clv15 phase3_snapshot_search.SOLAR_AUDIT, in place; P3_* cleared first): an
+    input of every admit and stack unit, so an audit change makes their records stale."""
+    from exopipe.phase3.core import env
+    env.legacy()
+    import phase3_snapshot_search as PS
+    return PS.SOLAR_AUDIT
+
+
 def plan_paths(run, key):
     d = os.path.join(run.out_root, '_plans')
     return os.path.join(d, f'sublst_jobs_{key}.txt'), os.path.join(d, f'sublst_jobs_{key}_deepflow.txt')
@@ -839,6 +893,11 @@ def stage_admit(run, opts, sel):
                    ([f'P3_* variables set in this process: {env_set} (the in-place modules read them)'] if env_set else [])
         if run.dry_run:
             say(f'[sublst admit {key}] {len(cells)} cells x {len(sel.subbands)} subbands -> {jf}')
+            try:
+                for sb in sel.subbands:
+                    exclusion_readers_agree(lst, sb, [c.split('_', 1)[1] for c in cells])
+            except Refusal as e:
+                problems.append(f'G-M01: {e}')
             for p in problems:
                 say(f'    WOULD REFUSE: {p}')
             if not cells:
@@ -866,7 +925,8 @@ def stage_admit(run, opts, sel):
             for sb in sel.subbands:
                 ex, _ = exclusion_readers_agree(lst, sb, nights)
             u.set_admitted([f'{n}/{sb}' for n in nights for sb in sel.subbands if not ex.is_excluded(lst, sb, n)])
-            for p in pins + [frozen_weights(lst, sb) for sb in sel.subbands] + [cfg().paths.DATA_DECISIONS]:
+            for p in pins + [frozen_weights(lst, sb) for sb in sel.subbands] + [cfg().paths.DATA_DECISIONS,
+                                                                                 solar_audit_path()]:
                 if os.path.exists(p):
                     u.add_input(p)
             for c in cells:
@@ -969,7 +1029,7 @@ def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
     odir = os.path.join(root, lst, cell, sb)
     cubes, master, weights = stack_inputs(lst, cell, sb, croot)
     pins, _ = pins_ok()
-    inputs = cubes + [master, weights, script('stack')] + pins + list(plan_files)
+    inputs = cubes + [master, weights, script('stack'), solar_audit_path()] + pins + list(plan_files)
     if resume_skip(run, opts, name, [p for p in inputs if os.path.exists(p)], [f'{night}/{sb}']):
         return
     with run.unit(name, lst=lst, cell=cell, subband=sb, stokes=stokes, cube_root=croot, stage='stack') as u:
@@ -980,7 +1040,8 @@ def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
             u.refuse(f'G-S04: REFUSED: {lst} {sb} {night} is excluded in data_decisions.csv (core.exclusions)')
         u.set_admitted([f'{night}/{sb}'])
         for p in inputs:
-            u.add_input(p)
+            if os.path.exists(p):
+                u.add_input(p)
         clear_earlier(run, opts, u, [odir], f'{cell} {sb}')
         for S in stokes:
             u.plan(stack_products(root, lst, cell, sb, S)['admission'], 'sublst_admission')
@@ -1071,7 +1132,7 @@ def stage_stack(run, opts, sel, root, planned_now=False, lst_test=True):
             bad += bool(n_miss or n_old)
             continue
         pool_map(lambda x: _stack_unit(run, opts, root, lst, x[0], x[1], x[2], x[3], files), units,
-                 opts.workers or s.PARALLEL['stack'])
+                 opts.workers or s.PARALLEL['stack'], run, lambda x: stack_unit_name(lst, x[0].split('_', 1)[1], x[1]))
         if lst_test and any(u.name.startswith(f'stack_{lst}_') and u.status == 'done' for u in run.units):
             lst_test_unit(run, lst, root, files)
     return bad
@@ -1107,10 +1168,15 @@ def stack_night(run, lst, night, sublst_root=None, subbands=None, stokes=('I', '
     workers      stack units at once (default masters_sublst.PARALLEL['stack'])
     fresh, supersede, resume   as the common flags (--fresh --supersede TAG moves earlier products; --resume by record)
     Returns {'admit_unit', 'stack_units', 'jobs', 'left_out', 'would_refuse'} ('jobs'/'left_out' from the admit record;
-    'would_refuse' counts dry-run refusals)."""
+    'would_refuse' counts dry-run refusals). Raises record.Refusal (dry run too) when an in-place literal differs from its
+    config mirror or a never-waivable test is waived (the start-up checks of `masters --tier sublst`)."""
     from exopipe.phase3.core import cells as CL
     CL.parse_epoch(f'{lst}_{night}')
     clear_p3_env()
+    viol = mirror_violations()          # the same start-up checks as `masters --tier sublst` (the admit rule uses the mirrors)
+    if viol or waiver_problem(run):
+        raise Refusal(('config differs from the in-place code it mirrors: ' + '; '.join(viol)) if viol
+                      else waiver_problem(run))
     opts = Opts(fresh=fresh, supersede=supersede, resume=resume, workers=workers)
     sel = Selection.one_night(lst, night, subbands, stokes)
     root = sublst_root or run.out_root
@@ -1132,20 +1198,44 @@ def stack_night(run, lst, night, sublst_root=None, subbands=None, stokes=('I', '
 # stage: loo  (clv15/phase3_sublst_loo.py in place; nocat:225-234)
 # =====================================================================================================================
 
+STACK_RECORD_STEPS = ('masters', 'frames')     # stack units are recorded under the CALLER's step: masters (--stages stack)
+                                               # or frames (per hour, through stack_night)
+_ADM_RE = re.compile(r'^admission_.+_([IV])\.csv$')
+
+
+def stack_record(run, lst, night, sb):
+    """The newest record of a night's stack unit under this run's root, whichever step ran it (STACK_RECORD_STEPS)."""
+    best = None
+    for step in dict.fromkeys((run.step,) + STACK_RECORD_STEPS):
+        rec = record.load_record(run.out_root, step, stack_unit_name(lst, night, sb))
+        if rec is not None and (best is None or str(rec.get('finished', '')) > str(best.get('finished', ''))):
+            best = rec
+    return best
+
+
 def stack_gate(run, lst, sb, jobs):
-    """G-S05: every planned stack job of this subband has a done stack record (or a refused one when
-    masters_sublst.LOO_ADMITS_REFUSED_STACKS) - production stops the LST otherwise (nocat:208-218)."""
-    ok_status = ('done', 'refused') if _sec().LOO_ADMITS_REFUSED_STACKS else ('done',)
+    """G-S05: every planned stack job (cell, subband, Stokes) of this subband has its done stack record - production stops
+    the LST when ANY job lacks its completion line, a refused job included (nocat:208-218). A refused Stokes inside a done
+    unit (refused_items) counts as refused. With masters_sublst.LOO_ADMITS_REFUSED_STACKS refused jobs pass. Returns
+    (['<cell> <sb> <Stokes> (<status>)' failing], [(cell, Stokes) refused])."""
+    admit_refused = _sec().LOO_ADMITS_REFUSED_STACKS
     bad, refused = [], []
-    for c, jsb, _, _ in jobs:
+    for c, jsb, st, _ in jobs:
         if jsb != sb:
             continue
-        rec = record.load_record(run.out_root, run.step, stack_unit_name(lst, c.split('_', 1)[1], sb))
+        rec = stack_record(run, lst, c.split('_', 1)[1], sb)
         status = rec.get('status') if rec else 'missing'
-        if status == 'refused':
-            refused.append(c)
-        if status not in ok_status:
-            bad.append(f'{c} {sb} ({status})')
+        item_refused = set()
+        for r in (rec or {}).get('refused_items') or []:
+            m = _ADM_RE.match(os.path.basename(str(r.get('path', ''))))
+            if m:
+                item_refused.add(m.group(1))
+        for S in st:
+            s_status = 'refused' if status == 'refused' or (status == 'done' and S in item_refused) else status
+            if s_status == 'refused':
+                refused.append((c, S))
+            if s_status != 'done' and not (s_status == 'refused' and admit_refused):
+                bad.append(f'{c} {sb} {S} ({s_status})')
     return bad, refused
 
 
@@ -1170,18 +1260,24 @@ def _loo_unit(run, opts, root, lst, sb, stokes, jobs, plan_files):
         if refused:
             u.note(f'stack jobs refused (admitted by LOO_ADMITS_REFUSED_STACKS): {refused}')
         n_adm = len(glob.glob(os.path.join(sroot, f'{lst}_*', sb, '[IV]', f'admission_{lst}_*_{sb}_*.csv')))
-        n_jobs = sum(len(st) for c, jsb, st, _ in jobs if jsb == sb and c not in refused)
+        n_jobs = sum(1 for c, jsb, st, _ in jobs if jsb == sb for S in st if (c, S) not in refused)
+        # nocat:210-211: every job logged complete but fewer admission files than jobs -> REFUSING, before any LOO runs
+        if n_adm < n_jobs:
+            u.refuse(f'G-S05: {n_adm} admission files for {n_jobs} done (night, Stokes) stack jobs of {lst} {sb} under '
+                     f'{sroot} (nocat:210-211)')
         u.check('loo.admission_files', n_adm >= n_jobs, value=n_adm,
                 detail=f'{n_adm} admission files for {n_jobs} done (night, Stokes) jobs (nocat:210)')
         from exopipe.phase3.core import exclusions
         ex = exclusions.load()
         u.set_admitted([f'{n}/{sb}' for n in nights if not ex.is_excluded(lst, sb, n)])
         for p in inputs:
-            u.add_input(p)
+            if os.path.exists(p):
+                u.add_input(p)
         if not stacks:
             raise NoInput(f'no window stacks of {lst} {sb} under {sroot}')
         clear_earlier(run, opts, u, [os.path.join(mroot, sb)] +
                       sorted(glob.glob(os.path.join(sroot, f'{lst}_*', sb, '[IV]', '*_resid_loo.fits'))), f'{lst} {sb} loo')
+        engine_refused = []
         for S in stokes:
             log = os.path.join(sroot, 'logs', f'loo_{lst}_{sb}_{S}.log')
             st, why, lines = run_engine(u, 'loo', 'loo', ['--root', sroot, '--master-root', mroot, '--lst', lst,
@@ -1195,6 +1291,7 @@ def _loo_unit(run, opts, root, lst, sb, stokes, jobs, plan_files):
                 raise RuntimeError(f'loo {lst} {sb} {S}: {why} (log {log})')
             if st == 'refused':
                 u.refuse_item(os.path.join(mroot, sb, S), why, gate='G-S06 loo')
+                engine_refused.append(f'{S}: {why[:300]}')
                 continue
             m = re.search(r'windows=(\d+) residuals=(\d+) refused_night=(\d+)', why)
             nwin, nres = int(m.group(1)), int(m.group(2))
@@ -1207,6 +1304,10 @@ def _loo_unit(run, opts, root, lst, sb, stokes, jobs, plan_files):
                 u.add_output(p[:-5] + '_weights.csv', 'csv_table', required_columns=('night', 'weight'), min_rows=2)
             for p in resid:
                 u.add_output(p, 'sublst_loo_residual', master_root=mroot)
+        # nocat:232-233: the LST stops unless every (subband, Stokes) LOO logged its SUBLST-LOO line - a refused LOO refuses
+        # the unit (both Stokes still run, as production's xargs runs all 30), so frames' wideband / x2 never start on it
+        if engine_refused:
+            u.refuse(f'G-S06: loo engine refused {lst} {sb} ' + '; '.join(engine_refused))
 
 
 def stage_loo(run, opts, sel, root, planned_now=False, stacks_now=False):
@@ -1245,7 +1346,7 @@ def stage_loo(run, opts, sel, root, planned_now=False, stacks_now=False):
                          if gate else 'stack records complete'))
             continue
         pool_map(lambda sb: _loo_unit(run, opts, root, lst, sb, sel.stokes, jobs, files), list(sel.subbands),
-                 opts.workers or _sec().PARALLEL['loo'])
+                 opts.workers or _sec().PARALLEL['loo'], run, lambda sb: f'loo_{lst}_{sb}')
     return bad
 
 
@@ -1292,7 +1393,7 @@ def stage_sources(run, opts, sel, root, planned_now=False):
                 say(f'    WOULD REFUSE: P3_* variables set in this process: {env_set}')
             if not scopes:
                 say('    no coadd_<LST> scopes yet: ' + ("written by this invocation's prep stage" if planned_now
-                                                          else 'NO-INPUT - run --stages prep first'))
+                                                          else 'WOULD REFUSE (G-S10) - run --stages prep first'))
             if stale and not rebuild_ok:
                 say(f'    WOULD REFUSE (G-S10): rebuild needed but sublst_parent_catalogs.py writes only to {sublst_root()}')
             elif stale:
@@ -1302,8 +1403,8 @@ def stage_sources(run, opts, sel, root, planned_now=False):
         with run.unit(name, lst=lst, stage='sources') as u:
             if env_set:
                 u.refuse(f'P3_* variables set in this process: {env_set} (gate_inputs reads them at import)')
-            if not scopes:
-                raise NoInput(f'no scopes under {coadd} (run --stages prep first)')
+            if not scopes:     # catpub pcheck exits 1 when coadd_<LST> holds no subband (sublst_catalog_publish.sh:60)
+                u.refuse(f'G-S10: no subband under {coadd} - the parent check has nothing to check (run --stages prep first)')
             masters = {sc: os.path.join(coadd, f'{lst}_{sc}', 'coadd_final', f'I_deep_Taper_R075_{sc}.fits') for sc in scopes}
             for p in masters.values():
                 u.add_input(p)
@@ -1373,8 +1474,8 @@ def run(args, run):
     say(f'masters --tier sublst: stages {",".join(stages)}; LSTs {",".join(sel.lsts) or "-"}; out {root}'
         + ('; DRY RUN (nothing written)' if run.dry_run else ''))
     viol = mirror_violations()
-    if viol:
-        msg = 'config differs from the in-place code it mirrors: ' + '; '.join(viol)
+    msg = ('config differs from the in-place code it mirrors: ' + '; '.join(viol)) if viol else waiver_problem(run)
+    if msg:
         if run.dry_run:
             say(f'WOULD REFUSE: {msg}')
             return record.EXIT_REFUSED

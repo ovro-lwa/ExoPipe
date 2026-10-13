@@ -141,8 +141,28 @@ class masters_snapshot(_Section):
                                               # 0.0 .. 0.99987, all finite (the bounds of masters_pbmaps.PB_VALUE_RANGE)
     FREEZE_ALLOWED = False                    # the freeze stage writes production (freeze:66-105); plan only in the window
     MD5_WORKERS = 8                           # files hashed at once in verify-frozen (Lustre reads; operational, no product effect)
-    PROTECTED_KEYS = ('LINK_ROOT', 'FROZEN_ROOT', 'FROZEN_MANIFEST_SHA1', 'FREEZE_ALLOWED', 'PB_MODEL_BINS')
+    # ---- snapshot bright-source PARENT catalogues (M21, exopipe_ops a670970 / 3ff6565; review 2026-10-13) -----------------
+    # One recipe for all 456 (LST, scope) pairs: exopipe_ops/snapshot_parentcat_contract.py (pc) in place - the deep search's
+    # builder functions (phase3_deep._load, phase3_tenmin._det_header, bdsf.process_image) on the frozen gen-4 R075 masters,
+    # then snapshot_parentcat_sanitize + the .gen.json sidecar. Class snapshot_parent_catalog (tests_snapshot.py).
+    PARENT_CATALOG_DIR = '/lustre/gh/main/exopipe_ops/snapshot_master_catalogs'   # the installed set the snapshot chain reads
+                                              # (3ff6565; also forced_snapshot.MASTER_CATS, curves.MASTER_CATALOG_DIR,
+                                              # catalog_snapshot.MASTER_CATALOGS name this root - one name at fold-in)
+    PARENT_MASTER_FILE = 'I_deep_Taper_R075_{b}.fits'   # the parent master of every pair, in FROZEN_ROOT (pc:49; R-CAT5)
+    PARENT_THRESH_PIX = 7.0                   # sigma (pc:34 THRESH_PIX; R-CAT3)
+    PARENT_THRESH_ISL = 4.0                   # sigma (pc:34 THRESH_ISL)
+    PARENT_ATROUS = False                     # no atrous module (pc:69 atrous_do)
+    PARENT_ZAP_JYB = 1.0e6                    # Jy/beam: phase3_deep._load sets |x| above this and non-finite pixels to 0 before
+                                              # the build and the sidecar digest (phase3_deep.py:311-312)
+    PARENT_NPROC = 8                          # builder processes (pc:85 --nproc default; operational, no product effect)
+    PROTECTED_KEYS = ('LINK_ROOT', 'FROZEN_ROOT', 'FROZEN_MANIFEST_SHA1', 'FREEZE_ALLOWED', 'PB_MODEL_BINS',
+                      # mirrors of literals in snapshot_parentcat_contract.py / phase3_deep._load
+                      'PARENT_MASTER_FILE', 'PARENT_THRESH_PIX', 'PARENT_THRESH_ISL', 'PARENT_ATROUS', 'PARENT_ZAP_JYB')
     RULED = {'FROZEN_ROOT': 'FREEZE-SNAPSHOT-MASTERS-GEN4',
              'FROZEN_MANIFEST_SHA1': 'FREEZE-SNAPSHOT-MASTERS-GEN4',
              'PB_MODEL_FILES': 'RULING-SNAPSHOT-TIER-PB-CORRECTION-MODEL-BEAM-ONLY',
-             'PB_BEAM_MODEL': 'RULING-SNAPSHOT-TIER-PB-CORRECTION-MODEL-BEAM-ONLY'}
+             'PB_BEAM_MODEL': 'RULING-SNAPSHOT-TIER-PB-CORRECTION-MODEL-BEAM-ONLY',
+             'PARENT_THRESH_PIX': 'REBUILT-SNAPSHOT-PARENT-CATALOGUES-ONE-RECIPE-20261013',
+             'PARENT_THRESH_ISL': 'REBUILT-SNAPSHOT-PARENT-CATALOGUES-ONE-RECIPE-20261013',
+             'PARENT_ATROUS': 'REBUILT-SNAPSHOT-PARENT-CATALOGUES-ONE-RECIPE-20261013',
+             'PARENT_MASTER_FILE': 'REBUILT-SNAPSHOT-PARENT-CATALOGUES-ONE-RECIPE-20261013'}

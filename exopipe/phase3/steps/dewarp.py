@@ -23,9 +23,13 @@ every routed cell of that LST, so two cells of one LST are never measured in two
         --waive dewarped_master.D6_product:<file> --ruling "<Gregg's words, UTC, ledger ID>"
 
 Selection: --cells (deep cells <LST>_<scope>; grouped by LST) or --lsts (every ROUTED PROMOTED cell of the LST: routed by
-dewarp.ROUTE_SOURCE - today the round's list accepted_rebuilt.csv - with a promoted rebuild <REBUILD_ROOT>/<cell>/coadd_final
-and <REBUILD_CHECK_ROOT>/<cell>/REBUILD_CONTENT_OK). Neither = every LST with a routed promoted cell. With --stages
-stage,measure an LST is measured whether or not it has a routed cell.
+dewarp.ROUTE_SOURCE - 'screen_record' (production since 2026-10-13, chain_cell.sh): the cell's latest row of the archived
+screen record says applied=1; 'accepted_list': the 2026-10-07 round's accepted_rebuilt.csv - with a promoted rebuild
+<REBUILD_ROOT>/<cell>/coadd_final and <REBUILD_CHECK_ROOT>/<cell>/REBUILD_CONTENT_OK). Neither = every LST with a routed
+promoted cell. With --stages stage,measure an LST is measured whether or not it has a routed cell. A re-rooted run (--out)
+routes from ITS copy of the record (<out>/archive/...: the parity harness seeds it with the production record).
+Production's equivalent of `dewarp_lst.sh <LST>` (which always removes the previous scratch generation, dewarp_lst.sh:57)
+is `--lsts <LST> --fresh`: without --fresh an existing <GEN_ROOT>/<cell> refuses (G-A3).
 
 Stages (--stages, pipeline order; default all):
   stage    copy I_deep_Taper_R075_<s>.fits + its pbcorr sibling of the 19 scopes (first of dewarp.REBUILD_ROOT,
@@ -40,8 +44,8 @@ Stages (--stages, pipeline order; default all):
 
 Inputs:  the 19 x 2 measured masters of the LST (dewarp.REBUILD_ROOT before the working tree paths.COADD_SB_ROOT, per
          file); the generation of each routed accepted cell (<REBUILD_ROOT>/<cell>/{coadd_final/**,subtracted/} when that
-         holds coadd_final, else the working tree's); <REBUILD_CHECK_ROOT>/<cell>/REBUILD_CONTENT_OK; the routing list
-         (paths.OPS_ROOT/dewarp.ROUTE_LIST) or the screen record; VLSSr
+         holds coadd_final, else the working tree's); <REBUILD_CHECK_ROOT>/<cell>/REBUILD_CONTENT_OK; the screen record
+         (routing; the cell's row is kept in its record) or the routing list (paths.OPS_ROOT/dewarp.ROUTE_LIST); VLSSr
          catalogue + peak list (pinned by sha1); data_decisions.csv through core/exclusions; --measurement DIR
          (DIR/tables/table_<LST>.csv, DIR/<LST>/maps/<scope>_warp_screen.fits); --prior-gen-root DIR.
 Outputs (product classes):
@@ -65,7 +69,8 @@ Failure modes (exit 2 = refused, with the gate named; 3 = no routed promoted cel
         dewarp.PROTECTED_KEYS: config refuses their override), an exopipe module loaded from outside this branch
   G-D0b the production modules check_mdewarp_gen's child imports (phase3_master_dewarp, pb_apply, cascade_dewarp, ...)
         differ from the branch modules the step applies with (only the moved pb_apply import line may differ); after the
-        run, the child's code fingerprint differs from what was checked     G-D1 an input root missing on this host
+        run, the child's code fingerprint differs from what was checked     G-D1 an input root missing on this host, or
+        an input / write root node-local to another host (site NODE_LOCAL_ROOTS)
   G-D2  a requested cell not routed / not promoted / without REBUILD_CONTENT_OK   G-D3 VLSSr file sha1 differs from config
   G-D4  VLSSr catalogue fails to load      G-D5 a measured master holds a night data_decisions.csv excludes
   G-D6  a staged copy differs (md5)        G-D7 a routed cell's input master already carries MDWARP
@@ -119,8 +124,21 @@ def default_out(args):
     return CFG.dewarp.GEN_ROOT
 
 
-def _plan(args, roots, stages):
-    """{lst: [cells that pass G-D2/G-D7]}, {cell: refusal reason}, routing source path."""
+def _done_cell_record(run, cell):
+    """Under --resume (not --fresh): this step's own done record of the cell, else None. A cell this step already
+    finished may no longer be routed (its applied=0 row, written by the record stage, ends its routing under
+    ROUTE_SOURCE 'screen_record' - as dewarp_lst.sh:94 removes the promoted marker); --resume must still skip it."""
+    from exopipe.phase3.core import record
+    if run is None or not run.resume or run.fresh:
+        return None
+    rec = record.load_record(run.out_root, 'dewarp', cell)
+    return rec if rec and rec.get('status') == 'done' and (rec.get('meta') or {}).get('install') else None
+
+
+def _plan(args, roots, stages, run=None):
+    """{lst: [cells that pass G-D2/G-D7]}, {cell: refusal reason}, routing source path, {cell: G-D2 reason} of the
+    planned cells that are no longer routed but have a done record of this step (--resume only: skipped when the
+    record is current, refused with the G-D2 reason otherwise)."""
     from exopipe.phase3.core import cells as _cells
     from exopipe.phase3.lib.dewarp import steps_common as SC
     measure_only = not any(s in SC.CELL_STAGES for s in stages)
@@ -133,15 +151,18 @@ def _plan(args, roots, stages):
     if measure_only:
         if lsts is None:
             raise ValueError('--stages stage,measure needs --lsts or --cells')
-        return {l: [] for l in lsts}, {}, None
+        return {l: [] for l in lsts}, {}, None, {}
     routed, src = SC.routed_scopes(roots)
-    plan, refused = {}, {}
+    plan, refused, resume_only = {}, {}, {}
     if cell_list is not None:
         for cell in cell_list:
             lst = cell.split('_', 1)[0]
             plan.setdefault(lst, [])
             why = SC.cell_gate(roots, cell, routed)
-            if why:
+            if why and why.startswith('G-D2') and 'not routed' in why and _done_cell_record(run, cell):
+                resume_only[cell] = why
+                plan[lst].append(cell)
+            elif why:
                 refused[cell] = why
             else:
                 plan[lst].append(cell)
@@ -157,7 +178,7 @@ def _plan(args, roots, stages):
                     refused[cell] = why
                 else:
                     plan[lst].append(cell)
-    return plan, refused, src
+    return plan, refused, src, resume_only
 
 
 def _mb(p):
@@ -185,6 +206,9 @@ def _dry_run(args, run, roots, stages, gate_bad, gw, staging, plan, refused, rou
                                    'child\'s production modules equal the branch\'s; input roots present)'))
     would += gate_bad
     pr(f'    G-W: ' + ('WOULD REFUSE - ' + '; '.join(gw) if gw else 'pass (no write root under a production root)'))
+    if staging and staging.startswith('(refuses'):       # the measure stage needs node-local scratch (--work / site)
+        would.append(f'staging: {staging[1:-1]}')
+        pr(f'    staging: WOULD REFUSE - {staging[1:-1]}')
     if 'measure' in stages:
         g3 = SC.gate_pinned_inputs()
         pr(f'    G-D3: ' + ('WOULD REFUSE - ' + '; '.join(g3) if g3 else 'pass (VLSSr peak list and catalogue sha1 equal '
@@ -225,6 +249,12 @@ def _dry_run(args, run, roots, stages, gate_bad, gw, staging, plan, refused, rou
         elif args.measurement:
             meas = SC.Measurement(args.measurement, lst)
             pr(f'    measurement: {meas.table} ({"present" if meas.exists() else "MISSING - cells refused"})')
+            if meas.exists() and good:     # the cell units refuse a table failing its own content test (incomplete, ...)
+                from exopipe.phase3.lib.dewarp import tests as _T
+                ok, v, d = _T.table_rows(meas.table, lst=lst)
+                pr(f'    dewarp_table.rows: ' + (f'pass ({v})' if ok else f'WOULD REFUSE every cell - {d}'))
+                if not ok:
+                    would.append(f'--measurement table {meas.table} fails dewarp_table.rows: {d}')
         for cell in good:
             scope = cell.split('_', 1)[1]
             gen = roots.gen_of(cell)
@@ -284,7 +314,7 @@ def run(args, run):
         return 1
     roots = SC.Roots(args, run)
     gate_bad, _ = SC.gate_in_place(import_heavy=True)
-    gate_bad += SC.gate_input_roots(roots, stages)
+    gate_bad += SC.gate_input_roots(roots, stages, args.measurement)
     if 'verify' in stages:
         try:
             gate_bad += SC.gate_child_modules()[0]           # G-D0b (the content-test child's code)
@@ -305,7 +335,7 @@ def run(args, run):
         if gw:
             raise Refusal('G-W: ' + '; '.join(gw))
     try:
-        plan, refused, route_src = _plan(args, roots, stages)
+        plan, refused, route_src, resume_only = _plan(args, roots, stages, run)
     except ValueError as e:
         print(f'error: {e}', file=sys.stderr)
         return 1
@@ -338,7 +368,7 @@ def run(args, run):
                 u.refuse(refused[cell])
         for cell in good:
             try:
-                SCELL.run_cell(run, args, roots, lst, cell, meas, stages, route_src)
+                SCELL.run_cell(run, args, roots, lst, cell, meas, stages, route_src, resume_only.get(cell))
             except Exception as e:          # recorded as 'error' by the unit (exit 1 at the end); the next cell goes on
                 print(f'{cell}: unit ERROR {type(e).__name__}: {e}', file=sys.stderr)
     return None

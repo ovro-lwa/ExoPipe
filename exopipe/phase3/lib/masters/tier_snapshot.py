@@ -14,6 +14,11 @@ Stages (default --stages = masters.DEFAULT_STAGES['snapshot'] = verify-frozen):
   freeze         plan only in the refactor window: under --dry-run, exopipe_ops/snapshot_masters_freeze.py --dry-run runs in
                  place (read only) and its plan is printed; without --dry-run the stage refuses (G-D04: it writes production
                  and re-points the 912 links; masters_snapshot.FREEZE_ALLOWED False, paths.PRODUCTION_WRITES False).
+  sources        (review 2026-10-13; selectable once masters.STAGES['snapshot'] lists it) unit sources_snapshot: the snapshot
+                 bright-source PARENT catalogues on ONE recipe (M21: exopipe_ops/snapshot_parentcat_contract.py in place,
+                 thresh_pix 7.0 / thresh_isl 4.0, no atrous, on the frozen gen-4 I Taper R-0.75 masters) into
+                 <out>/snapshot_master_catalogs/master_R075_<slot>.gaul.csv + .gen.json [snapshot_parent_catalog]; the
+                 production set (masters_snapshot.PARENT_CATALOG_DIR) is checked with `exopipe3 verify snapshot_parent_catalog`.
 
 Inputs (read only): <LINK_ROOT>/<slot>/coadd_final/{I,V}_deep_Taper_R0_<band>.fits (912 symlinks), <FROZEN_ROOT>/<slot>/coadd_final/
 (4 files per slot) and <FROZEN_ROOT>/MANIFEST.csv (sha1 pinned in config), the PB library.
@@ -52,7 +57,10 @@ SECTION = 'masters_snapshot'
 REGISTRY_COLUMNS = ['slot', 'file', 'path', 'size', 'md5_now', 'md5_manifest', 'link', 'link_target', 'md5_ok', 'link_ok']
 PBLIB_COLUMNS = ['file', 'md5', 'size', 'shape', 'min', 'max', 'finite', 'pbbeam', 'pbscope', 'pblstbin']
 COMBINED = 'snapshot_master_registry_gen4.csv'
-SCRIPTS = {'freeze': ('exopipe_ops', 'snapshot_masters_freeze.py'), 'snapsearch': ('clv15', 'phase3_snapshot_search.py')}
+SCRIPTS = {'freeze': ('exopipe_ops', 'snapshot_masters_freeze.py'), 'snapsearch': ('clv15', 'phase3_snapshot_search.py'),
+           'parentcat': ('exopipe_ops', 'snapshot_parentcat_contract.py'),
+           # the builder imports phase3_deep._load from the production package; its branch copy (pure git mv) is checked
+           'deepload': ('package', 'lib/search/deep_search.py')}
 _MAN_LOCK = threading.Lock()
 _MAN = {}
 
@@ -77,7 +85,9 @@ def coadd_tree():
 def script(short):
     from exopipe.phase3.core import env
     rootname, name = SCRIPTS[short]
-    p = os.path.join(env.legacy_root(rootname), name)
+    base = (os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) if rootname == 'package'
+            else env.legacy_root(rootname))
+    p = os.path.join(base, name)
     if not os.path.isfile(p):
         raise Refusal(f'in-place code {p} not found')
     return p
@@ -89,6 +99,15 @@ MIRRORS = [
     ('masters_snapshot.FROZEN_ROOT', lambda s: s.FROZEN_ROOT, 'freeze', r'^FROZEN = "([^"]+)"', str),
     ('masters_pbmaps.PB_LIBRARY', lambda s: pb_library(), 'snapsearch', r'^PB_LIBRARY = "([^"]+)"', str),
     ('masters_snapshot.PB_MODEL_BINS', lambda s: s.PB_MODEL_BINS, 'snapsearch', r'^N_TIME_BINS = (\d+)', int),
+    ('masters_snapshot.FROZEN_ROOT', lambda s: s.FROZEN_ROOT, 'parentcat', r'^GEN4 = "([^"]+)"', str),
+    ('masters_snapshot.PARENT_THRESH_PIX / PARENT_THRESH_ISL', lambda s: (s.PARENT_THRESH_PIX, s.PARENT_THRESH_ISL),
+     'parentcat', r'^THRESH_PIX, THRESH_ISL = ([0-9.]+), ([0-9.]+)', None),
+    ('masters_snapshot.PARENT_MASTER_FILE', lambda s: s.PARENT_MASTER_FILE.format(b='%s'), 'parentcat',
+     r'coadd_final/(I_deep_Taper_R075_%s\.fits)" % \(GEN4', str),
+    ('masters_snapshot.PARENT_ATROUS', lambda s: s.PARENT_ATROUS, 'parentcat', r'"atrous_do": (True|False)',
+     lambda t: t == 'True'),
+    ('masters_snapshot.PARENT_ZAP_JYB', lambda s: s.PARENT_ZAP_JYB, 'deepload', r'a\[np\.abs\(a\) > ([0-9.e+]+)\] = 0\.0',
+     float),
 ]
 
 
@@ -102,8 +121,10 @@ def mirror_violations():
         m = re.search(rx, texts[path], re.M)
         if not m:
             bad.append(f'{label}: literal not found in {path} (pattern {rx!r})')
-        elif conv(m.group(1)) != get(s):
-            bad.append(f'{label} = {get(s)!r} but {os.path.basename(path)} uses {conv(m.group(1))!r}')
+            continue
+        have = tuple(float(x) for x in m.groups()) if conv is None else conv(m.group(1))
+        if have != get(s):
+            bad.append(f'{label} = {get(s)!r} but {os.path.basename(path)} uses {have!r}')
     return bad
 
 
@@ -362,7 +383,8 @@ def stage_verify(run, opts, slots):
     if not slots:
         with run.unit('verify-frozen', stage='verify-frozen') as u:
             raise NoInput('no slot selected')
-    TS.pool_map(lambda slot: _slot_unit(run, opts, slot), slots, opts.workers or s.MD5_WORKERS)
+    TS.pool_map(lambda slot: _slot_unit(run, opts, slot), slots, opts.workers or s.MD5_WORKERS, run,
+                lambda slot: f'verify-frozen_{slot}')
     _pblib_unit(run, opts)
     if full:
         _combined_unit(run, slots)
@@ -390,6 +412,85 @@ def stage_freeze(run, opts):
 
 
 # =====================================================================================================================
+# stage: sources - the snapshot bright-source PARENT catalogues (M21; exopipe_ops a670970 builder, 3ff6565 installed set)
+# =====================================================================================================================
+
+_BUILT_RE = re.compile(r'^(BUILT|FAILED) (\d\dh_\w+) (\d+) gaussians [0-9.]+ s ?(.*)$')
+
+
+def parent_dir(run):
+    """Where the stage writes: <out>/snapshot_master_catalogs (the production set is masters_snapshot.PARENT_CATALOG_DIR,
+    an ops path: an install writes there only after cutover)."""
+    return os.path.join(run.out_root, 'snapshot_master_catalogs')
+
+
+def parent_paths(run, slot):
+    cat = os.path.join(parent_dir(run), f'master_R075_{slot}.gaul.csv')
+    return cat, cat + '.gen.json'
+
+
+def stage_sources(run, opts, slots):
+    """One unit sources_snapshot: exopipe_ops/snapshot_parentcat_contract.py in place (core.legacy.run, site 'default'
+    interpreter) with --out-dir <out>/snapshot_master_catalogs --work <node-local scratch> --only <slots>; every BUILT
+    catalogue is tested (class snapshot_parent_catalog), every FAILED pair is an item refusal; earlier catalogues of the
+    selected slots under --out refuse without --fresh --supersede (the builder itself silently skips a pair whose sidecar
+    exists, pc:91-92)."""
+    from exopipe.phase3.core import fitsio, legacy
+    from exopipe.phase3.lib.masters import tests_snapshot as TSN
+    s = _sec()
+    masters = {slot: TSN.parent_master_path(slot) for slot in slots}
+    miss = [sl for sl, p in masters.items() if not os.path.isfile(p)]
+    old = TS.earlier_products([p for sl in slots for p in parent_paths(run, sl)])
+    if run.dry_run:
+        TS.say(f'[snapshot sources] {len(slots)} parent catalogues -> {parent_dir(run)} (production set: '
+               f'{s.PARENT_CATALOG_DIR}); recipe thresh_pix {s.PARENT_THRESH_PIX} thresh_isl {s.PARENT_THRESH_ISL} '
+               f'atrous {s.PARENT_ATROUS} on {s.PARENT_MASTER_FILE}')
+        TS.say(f'    {legacy.interpreter("default")} {script("parentcat")} --out-dir {parent_dir(run)} --work <node-local '
+               f'scratch> --nproc {opts.workers or s.PARENT_NPROC} --only <{len(slots)} slots>')
+        if miss:
+            TS.say(f'    {len(miss)} slot(s) without a parent master (the builder fails them): {miss[:4]}')
+        if old and not (opts.fresh and opts.supersede):
+            TS.say(f'    WOULD REFUSE (earlier catalogues under --out, e.g. {old[0]}): pass --fresh --supersede TAG')
+        return int(bool(old) and not (opts.fresh and opts.supersede))
+    if not slots:
+        with run.unit('sources_snapshot', stage='sources') as u:
+            raise NoInput('no slot selected')
+    with run.unit('sources_snapshot', stage='sources', slots=len(slots)) as u:
+        for p in masters.values():
+            if os.path.exists(p):
+                u.add_input(p)
+        u.add_input(script('parentcat'))
+        TS.clear_earlier(run, opts, u, old, 'snapshot parent catalogues', gate='G-S01')
+        for sl in slots:
+            u.plan(parent_paths(run, sl)[0], 'snapshot_parent_catalog')
+        work = fitsio.scratch_dir('snapshot_parentcat', opts.work)
+        log = os.path.join(run.out_root, 'snapshot', 'logs', 'parentcat_contract.log')
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        open(log, 'w').close()
+        res = legacy.run(script('parentcat'), ['--out-dir', parent_dir(run), '--work', work, '--nproc',
+                                               opts.workers or s.PARENT_NPROC, '--only', ','.join(slots)],
+                         python='default', log=log, unit=u, refusal_codes=(), refusal_text=())
+        lines = open(log, errors='replace').read().splitlines()
+        seen = {}
+        for ln in lines:
+            m = _BUILT_RE.match(ln.strip())
+            if m:
+                seen[m.group(2)] = (m.group(1), m.group(4))
+        if res.rc != 0 and not any(v[0] == 'FAILED' for v in seen.values()):
+            raise RuntimeError(f'snapshot_parentcat_contract.py exit {res.rc} with no FAILED pair (log {log})')
+        fitsio.cleanup(work)
+        for sl in slots:
+            cat = parent_paths(run, sl)[0]
+            st, why = seen.get(sl, ('', ''))
+            if st == 'BUILT':
+                u.add_output(cat, 'snapshot_parent_catalog', slot=sl)
+            elif st == 'FAILED':
+                u.refuse_item(cat, f'builder FAILED {sl}: {why[:300]}', gate='snapshot parent builder')
+        u.note(next((ln for ln in reversed(lines) if ln.startswith('PARENTCAT-CONTRACT-END')), f'builder exit {res.rc}'))
+    TS.say(f'  sources_snapshot: {u.status}' + (f' ({u.reason[:200]})' if u.reason else ''))
+
+
+# =====================================================================================================================
 # the tier interface (steps/masters.py dispatches here)
 # =====================================================================================================================
 
@@ -410,8 +511,8 @@ def run(args, run):
     TS.say(f'masters --tier snapshot: stages {",".join(stages)}; {len(slots)} slots; out {run.out_root}'
            + ('; DRY RUN (nothing written)' if run.dry_run else ''))
     viol = mirror_violations()
-    if viol:
-        msg = 'config differs from the in-place code it mirrors: ' + '; '.join(viol)
+    msg = ('config differs from the in-place code it mirrors: ' + '; '.join(viol)) if viol else TS.waiver_problem(run)
+    if msg:
         if run.dry_run:
             TS.say(f'WOULD REFUSE: {msg}')
             return record.EXIT_REFUSED
@@ -422,6 +523,8 @@ def run(args, run):
             bad += stage_verify(run, opts, slots)
         elif st == 'freeze':
             bad += stage_freeze(run, opts)
+        elif st == 'sources':          # reachable once masters.STAGES['snapshot'] lists it (step owner's draft)
+            bad += stage_sources(run, opts, slots) or 0
     if run.dry_run:
         return record.EXIT_REFUSED if bad else record.EXIT_DONE
     return None

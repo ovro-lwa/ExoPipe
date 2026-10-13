@@ -29,7 +29,7 @@ class masters(_Section):
     # (crosscheck 1.1 group 3; decision 6), not a masters stage.
     STAGES = {'deep': ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants'),
               'sublst': ('prep', 'admit', 'stack', 'loo', 'sources'),
-              'snapshot': ('verify-frozen', 'freeze')}
+              'snapshot': ('verify-frozen', 'freeze', 'sources')}   # sources: snapshot parent catalogues (M21; review 2026-10-13)
     # deep default = the build part of the chain 'deep-build-cell' (masters --stages stage-in -> flow -> masters (default)):
     # a single masters invocation cannot hold stage-in and build, the flow step runs between them
     DEFAULT_STAGES = {'deep': ('build', 'pbmaps', 'vclean', 'fluxscale', 'verify'),
@@ -92,7 +92,9 @@ class masters_build(_Section):
     CUTOVER_DATE = '2024-12-27'               # nights before are regridded; after, off the modal grid = refused (coadd_full_pipeline.py:79; R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED)
     FLOW_MAX_NAN_FRACTION = 0.5               # flow more than 50 per cent NaN refuses the night (coadd_full_pipeline.py:1830-1836; FINDING-FIVE-GOOD-NIGHTS-BAD-RESIDUALS-ARE-FLOW-FAILURES)
     ALLOW_STALE_FLOW = False                  # P3_ALLOW_STALE_FLOW bypass of the freshness gate - never set (coadd_full_pipeline.py:2176; RATIFY-COADD-FLOW-REFRESH-STAGE-AND-FRESHNESS-GATE)
-    RAW_INPUT_FLOW_RULE = 'survey-image-flow' # B-03 default (c): raw V/variant inputs take the night's survey-image flow (coadd_full_pipeline.py:653-726, 2867-2899; defect M9)
+    RAW_INPUT_FLOW_RULE = 'survey-image-flow' # B-03 (c) = production: raw V/variant inputs take the night's survey-image flow (coadd_full_pipeline.py:653-726, 2867-2899; defect M9).
+                                              # Gregg ruled B-03 (a) 2026-10-13 (R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32): one input resolver, raw only
+                                              # with a flow measured on that image, one regrid for every off-grid input - NOT IMPLEMENTED (edits of the in-place co-add)
     PROVISIONAL_V_GRID_MISMATCH = 'drop'      # B-03 default (c): a V frame on another grid than its I frame is dropped in the provisional stage (coadd_full_pipeline.py:2339-2351; FIX-COADD-V-FRAME-ON-DIFFERENT-GRID-DROPPED-LOUDLY)
     # reference
     REF_MODE = 'master'                       # previous-generation I Taper R-0.75 master (coadd_full_pipeline.py:1607; R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-MASTER)
@@ -132,11 +134,14 @@ class masters_build(_Section):
     MAD_MIN_VALUES = 5                        # fewer finite values = no outliers at all (coadd_full_pipeline.py:1157-1158; silent today)
     BEAM_GATE_RATIO = 1.5                     # x set-median fitted-beam area (coadd_full_pipeline.py:1136; R-BEAM-GATE-APPROVED-AND-SHIPPED)
     BEAM_GATE_MIN_AREAS = 5                   # fewer readable areas = gate does nothing (coadd_full_pipeline.py:1134)
-    BEAM_GATE_IMAGE = 'glob-first-any-science-dir'   # B-07 default (c) / defect D1: first glob hit over every Science dir (coadd_full_pipeline.py:1119-1128)
+    BEAM_GATE_IMAGE = 'admitted-image'        # D1 (Gregg 2026-10-13 'Approved'; exopipe 24929f8, merged 622fed1): the beam of the image the co-add admits - latest
+                                              # Science dir, Taper R-0.75, dewarped else the RAW failsafe; no image / unreadable header = that night unjudged (coadd.coadd_beam_gate)
     PROVISIONAL_SIGCLIP = (True, 4.0, 4)      # (clip, sigma, minimum images): provisional co-add clips (coadd_full_pipeline.py:1253-1254, 2371-2382); B-09 default (b)
     LEGACY_STAGE2_RECORD = 'accept-residuals_provisional'   # B-04 default (c): membership.stage2_record falls back (membership.py:155-184)
     # final stage membership (two-tier: products for every non-excluded night)
-    EPOCH_GATE_SOURCE = 'carried-record'      # B-05 default (c): coadd_final/epoch_gate.csv read with check_master=False (coadd_full_pipeline.py:3492-3499); options (a)/(b) not implemented -> protected
+    EPOCH_GATE_SOURCE = 'carried-record'      # B-05 (c) = production: coadd_final/epoch_gate.csv read with check_master=False (coadd_full_pipeline.py:3492-3499).
+                                              # Gregg ruled B-05 (a) 2026-10-13 (same ledger row): test every night against the build's own master, rebuild without
+                                              # failing in-master nights (bounded passes, recorded) - NOT IMPLEMENTED; protected until it is
     SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # membership.py:72; R-SUNLIT-NIGHTS-OUT-OF-MASTERS
     SOLAR_AUDIT_SHA1 = '24151ffaa1b7f11faa7adeab5d0f9cb6cfae8da4'
     NAMED_OUT_OF_MASTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'named_out_of_master.csv')   # package data file beside config.py, 1 row; membership.py:98; R-GREGG-20261011-17H18-0505-OPTION-B
@@ -174,7 +179,8 @@ class masters_build(_Section):
                       'SAFE_SCALE_FLOOR', 'STAGE2_MARGIN_FRAC', 'STAGE2_CLIP_SIGMA', 'MAD_MIN_VALUES', 'BEAM_GATE_RATIO',
                       'BEAM_GATE_MIN_AREAS', 'BEAM_GATE_IMAGE', 'PROVISIONAL_SIGCLIP', 'LEGACY_STAGE2_RECORD',
                       'VARIANT_MAX_ABS_JY', 'VARIANT_MIN_FINITE', 'VARIANT_REL_K', 'VARIANT_FLUXDC_LEGACY', 'COADDOP',
-                      'FLUXFIT', 'LOO_N_RANGE', 'STRIATION_WINDOW_BEAMS', 'EPOCH_CHECK', 'JUPITER_MASK_DEEP')
+                      'FLUXFIT', 'LOO_N_RANGE', 'STRIATION_WINDOW_BEAMS', 'EPOCH_CHECK', 'JUPITER_MASK_DEEP',
+                      'FORCE_REBUILD')   # FORCE_REBUILD: False would re-enable the in-place .done skip guard (CLAUDE.md 3; the wrapper refuses a skip)
     RULED = {'CUTOVER_DATE': 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED',
              'FLOW_MAX_NAN_FRACTION': 'FINDING-FIVE-GOOD-NIGHTS-BAD-RESIDUALS-ARE-FLOW-FAILURES',
              'ALLOW_STALE_FLOW': 'RATIFY-COADD-FLOW-REFRESH-STAGE-AND-FRESHNESS-GATE',
@@ -186,6 +192,7 @@ class masters_build(_Section):
              'STAGE2_METRIC': 'CORRECTION-STAGE2-PSFMATCH-REINTRODUCED-20261007-REMOVED',
              'OUTLIER_SIGMA': 'C-03', 'LOW_OUTLIER_SIGMA': ('R-LOW-OUTLIER-4SIGMA', 'R-GC5-ASYMMETRIC-GATE-WANTED'),
              'BEAM_GATE_RATIO': 'R-BEAM-GATE-APPROVED-AND-SHIPPED',
+             'BEAM_GATE_IMAGE': 'IMPL-D1-COADD-BEAM-GATE-READS-COADD-IMAGE-AND-REBUILD-ROUND-20261013',
              'SOLAR_AUDIT': 'R-SUNLIT-NIGHTS-OUT-OF-MASTERS',
              'NAMED_OUT_OF_MASTER': 'R-GREGG-20261011-17H18-0505-OPTION-B',
              'QA3_HI': 'R-QA3-BOUNDS-PROCESS-APPROVED', 'QA3_LO': 'R-QA3-BOUNDS-PROCESS-APPROVED',

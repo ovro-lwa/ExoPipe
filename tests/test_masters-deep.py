@@ -136,7 +136,7 @@ def test_config():
           not hasattr(CFG.masters, 'ARCHIVE_RUN') and not hasattr(CFG.masters_pbmaps, 'PB_QA_ROOT'))
     # protected / mirror keys are refused by config.py; a wrapper key is accepted (and reset)
     for k in ('masters_build.BEAM_GATE_RATIO', 'masters_fluxscale.SCALE_TABLE', 'masters_sources.THRESH_PIX',
-              'masters.STAGES'):
+              'masters.STAGES', 'masters_build.FORCE_REBUILD'):
         try:
             CFG.set(k, '1.0')
             ok = False
@@ -588,6 +588,114 @@ def test_real_products():
         print(f'SKIP  {REAL_PARENT} missing')
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# 8. review fixes 2026-10-13: build clean start, chain-of-records currency, installed-cell gate of sources, T-test failures
+# ---------------------------------------------------------------------------------------------------------------------
+
+def test_review_fixes():
+    from exopipe.phase3.core import record as R
+    from exopipe.phase3.lib.masters import deep_stages as DS, deep_verify as DV
+    from exopipe.phase3.lib.masters import deep_inplace as IP
+    lst, sc = CELL.split('_')
+    # (1) build_clean_start: a stage-in cell is clean; any earlier build product or an overwritten reference is not
+    cd = f'{T}/rf/{CELL}'
+    write(f'{cd}/coadd_final/I_deep_Taper_R075_{sc}.fits', IMG, master_header(DATES))
+    write(f'{cd}/coadd_final/V_deep_Taper_R0_{sc}.fits', IMG * 0.1, master_header(DATES))
+    os.makedirs(f'{cd}/coadd_final_ref')
+    for v in ('I_deep_Taper_R075', 'V_deep_Taper_R0'):
+        shutil.copy(f'{cd}/coadd_final/{v}_{sc}.fits', f'{cd}/coadd_final_ref/')
+    os.makedirs(f'{cd}/flow')
+    os.makedirs(f'{cd}/coadd_provisional')               # empty: a provisional stage that refused before writing
+    check('clean start: a stage-in cell (+ flow/, an empty coadd_provisional/) is clean', DS.build_clean_start(cd, sc) == [],
+          str(DS.build_clean_start(cd, sc)))
+    with open(f'{cd}/residuals_provisional.csv', 'w') as f:
+        f.write('date\n')
+    check('clean start: an earlier provisional record refuses', DS.build_clean_start(cd, sc) == ['residuals_provisional.csv'])
+    os.remove(f'{cd}/residuals_provisional.csv')
+    write(f'{cd}/coadd_final/I_deep_Taper_R075_{sc}.fits', IMG * 1.5, master_header(DATES))   # the new master overwrote it
+    why = DS.build_clean_start(cd, sc)
+    check('clean start: a reference overwritten by a build refuses', len(why) == 1 and 'I_deep_Taper_R075' in why[0], str(why))
+    shutil.copy(f'{cd}/coadd_final_ref/I_deep_Taper_R075_{sc}.fits', f'{cd}/coadd_final/')
+    # (2) the CLI refuses a second build on a built cell before any in-place call (G-M25 at build)
+    out = f'{T}/rf'
+    with open(f'{cd}/coadd_final/weights.csv', 'w') as f:
+        f.write('date,in_master\n')
+    R.atomic_write_json(R.record_path(out, 'masters', f'stage-in_{CELL}'), {'status': 'done', 'outputs': [], 'meta': {}})
+    rc, txt = cli('--tier', 'deep', '--cells', CELL, '--out', out, '--cores', 'none', '--stages', 'build',
+                  '--set', 'masters.FREE_FLOOR_GB[deep]=0')
+    rec = json.load(open(f'{out}/_records/masters/build_{CELL}.json'))
+    check('a build on a built cell is refused (exit 2) and names stage-in --fresh --supersede', rc == 2 and
+          rec['status'] == 'refused' and 'supersede' in rec['reason'] and 'coadd_final/weights.csv' in rec['reason'],
+          rec.get('reason', '')[:200])
+    rc, txt = cli('--tier', 'deep', '--cells', CELL, '--out', out, '--cores', 'none', '--stages', 'build', '--dry-run')
+    check('the dry run shows the clean-start gate', rc == 2 and 'not as stage-in left it' in txt, txt[-300:])
+    # (3) chain of records: outputs of a done prerequisite record gone -> refuse; a night the build admitted excluded now
+    o2 = f'{T}/rf2'
+    R.atomic_write_json(R.record_path(o2, 'masters', 'build_23h_23MHz'),
+                        {'status': 'done', 'admitted': ['2025-08-09', '2025-08-18'],
+                         'outputs': [{'path': f'{o2}/23h_23MHz/coadd_final/I_deep_Taper_R075_23MHz.fits', 'class': 'master'}]})
+    ok, why = _refuses(lambda: DS.require_stage(o2, 'pbmaps', '23h_23MHz', {}), 'are gone')
+    check('pbmaps refused when the done build record\'s outputs are gone (superseded cell)', ok, why)
+    write(f'{o2}/23h_23MHz/coadd_final/I_deep_Taper_R075_23MHz.fits', IMG, master_header(DATES))
+    check('exclusion_stale: 23h 23MHz 2025-08-18 (excluded 2026-10-12) found in the build\'s admitted set',
+          DS.exclusion_stale(o2, '23h_23MHz') == ['2025-08-18'], str(DS.exclusion_stale(o2, '23h_23MHz')))
+    ok, why = _refuses(lambda: DS.require_stage(o2, 'pbmaps', '23h_23MHz', {}), 'excludes now')
+    check('pbmaps refused: the build admitted a night excluded now (exclusions absolute)', ok, why)
+    ok2 = DS.require_stage(o2, 'pbmaps', '23h_23MHz', {('build', '23h_23MHz'): 'done'}) is not None
+    check('... but not when the build ran in this invocation', ok2)
+    R.atomic_write_json(R.record_path(o2, 'masters', 'build_23h_23MHz'),
+                        {'status': 'done', 'admitted': ['2025-08-09'], 'outputs': []})
+    check('exclusion_stale: [] when every admitted night is still admitted', DS.exclusion_stale(o2, '23h_23MHz') == [])
+    # (4) the co-add's 'Too few aligned dates' return is a refusal that names its reason
+    tee = IP.Tee(None)
+    tee.write('  Too few aligned dates (2)\n')
+    ok, why = _refuses(lambda: DS._refuse_or_noinput(None, tee, 'co-add provisional'), 'Too few aligned dates')
+    check('co-add None after "Too few aligned dates" -> refusal naming it', ok, why)
+    # (5) pbmaps sibling expectation: 5, or 6 when the cleaned V exists (pbmaps re-run after vclean)
+    fd = f'{T}/rf3/{CELL}/coadd_final'
+    os.makedirs(fd)
+    n5 = DS.siblings_expected(fd, sc)
+    write(f'{fd}/V_deep_Taper_R0_clean_{sc}.fits', IMG * 0.1)
+    check('pbmaps siblings expected: 5, 6 with the cleaned V', (n5, DS.siblings_expected(fd, sc)) == (5, 6))
+    # (6) master_generation T2 / T7 FAIL on a broken record (the T-tests discriminate)
+    gd = f'{T}/rf4/{CELL}/gen_shflux'
+    os.makedirs(gd)
+    os.makedirs(f'{T}/rf4/{CELL}/coadd_final')
+    with open(f'{T}/rf4/{CELL}/coadd_final/weights.csv', 'w') as f:
+        f.write('date,in_master,flux_dc\n2025-01-02,1,1.0\n2025-01-03,1,1.01\n')
+    with open(f'{T}/rf4/{CELL}/coadd_final/night_image_gate.csv', 'w') as f:
+        f.write('date,verdict\n2025-01-02,PASS\n2025-01-03,FAIL\n')
+    with open(f'{T}/rf4/{CELL}/residuals_provisional.csv', 'w') as f:
+        f.write('date\n2025-01-02\n')
+    ok2, _, det2 = DV.t2(gd)
+    ok7, _, det7 = DV.t7(gd)
+    check('T2 fails: a night-image FAIL night in the master', not ok2 and '2025-01-03' in det2, det2)
+    check('T7 fails: residuals_provisional.csv dates != weights.csv dates', not ok7 and '2025-01-03' in det7, det7)
+    # (6b) node-local working cell of another host refuses (chain_cell.sh:17, via the site's NODE_LOCAL_ROOTS)
+    old = CFG.site.NODE_LOCAL_ROOTS
+    try:
+        CFG.site.NODE_LOCAL_ROOTS = {'not-this-host': [f'{T}/rf']}
+        ok, why = _refuses(lambda: DS.not_here(f'{T}/rf/{CELL}', 'the working cell', 'stage-in'), 'node-local to not-this-host')
+    finally:
+        CFG.site.NODE_LOCAL_ROOTS = old
+    check('a working cell node-local to another host refuses', ok, why)
+    # (7) sources: the installed cell's membership.verify (install_cell.sh:70-71) - real, read-only
+    real = '/data07/gh/phase3/coadd_sb'
+    if os.path.isdir(f'{real}/21h_18MHz/coadd_final'):
+        DS.inplace(f'{T}/rf5')
+        v = DS.installed_cell_violations(real, '21h_18MHz')
+        check('installed 21h_18MHz fails membership.verify (2025-08-06 excluded 2026-10-13, still in its master)',
+              any('2025-08-06' in x and 'excluded' in x for x in v), str(v[:2]))
+        rc, txt = cli('--tier', 'deep', '--cells', '21h_18MHz', '--out', f'{T}/rf5', '--cores', 'none', '--stages', 'sources',
+                      '--waive', 'masters.sources.install_record', '--ruling', 'test (no product)')
+        rec = json.load(open(f'{T}/rf5/_records/masters/sources_21h_18MHz.json'))
+        check('sources refused on an installed master holding an excluded night, before PyBDSF (exit 2)',
+              rc == 2 and rec['status'] == 'refused' and 'membership' in rec['reason']
+              and not os.path.exists(f'{T}/rf5/parent_catalogs'), rec.get('reason', '')[:200])
+    else:
+        print(f'SKIP  {real}/21h_18MHz missing (not lwacalim07)')
+
+
 def main():
     t0 = time.time()
     if os.path.exists(T):
@@ -595,7 +703,7 @@ def main():
     os.makedirs(T)
     try:
         for fn in (test_config, test_resolve_stages, test_stagein_branches, test_inplace, test_content_synthetic, test_cli,
-                   test_real_products):
+                   test_review_fixes, test_real_products):
             print(f'---- {fn.__name__}', flush=True)
             try:
                 fn()

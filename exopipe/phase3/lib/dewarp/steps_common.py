@@ -226,8 +226,11 @@ def scratch_root(work):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def routed_scopes(roots):
-    """{(lst, scope)} routed to the LST dewarp. ROUTE_SOURCE 'accepted_list' = the round's hand list (chain_cell.sh:38,
-    dewarp_driver.sh:5; today); 'screen_record' = the applied=1 rows of the archived screen record this run uses."""
+    """{(lst, scope)} routed to the LST dewarp. ROUTE_SOURCE 'screen_record' (production since exopipe_ops e16201c,
+    2026-10-13 04:57 UTC, chain_cell.sh:38-44; ledger IMPL-D1-COADD-BEAM-GATE-READS-COADD-IMAGE-AND-REBUILD-ROUND-20261013
+    'CHAIN FIX') = the cells whose LATEST row of the archived screen record this run uses says applied=1 (production's
+    `{(lst, scope): applied}` dict - the last row wins); 'accepted_list' = the 2026-10-07 round's hand list
+    accepted_rebuilt.csv (production until e16201c; dewarp_driver.sh:5 still reads it to choose the LSTs it waits for)."""
     c = C()
     if c.ROUTE_SOURCE == 'accepted_list':
         path = route_list_path()
@@ -240,9 +243,25 @@ def routed_scopes(roots):
     if c.ROUTE_SOURCE == 'screen_record':
         path = roots.record_csv
         if not os.path.isfile(path):
-            raise refusal(f'G-D2: ROUTE_SOURCE screen_record but {path} does not exist')
-        return {(r['lst'], r['scope']) for r in read_table(path) if r.get('applied') == '1'}, path
+            raise refusal(f'G-D2: ROUTE_SOURCE screen_record but {path} does not exist (a re-rooted run needs a copy of '
+                          f'the production record under --out: {roots.production_record})')
+        latest = {}
+        for r in read_table(path):
+            latest[(r.get('lst'), r.get('scope'))] = r.get('applied')
+        return {k for k, v in latest.items() if v == '1'}, path
     raise refusal(f"G-D2: dewarp.ROUTE_SOURCE {c.ROUTE_SOURCE!r} is neither 'accepted_list' nor 'screen_record'")
+
+
+def routing_row(roots, cell):
+    """The screen-record row(s) of a cell at routing time (the evidence of the routing decision, kept in the cell record's
+    meta; the shared record file itself is not fingerprinted as an input: the install and this step's record stage rewrite
+    it, which would make every cell record stale at once)."""
+    lst, scope = cell.split('_', 1)
+    try:
+        return [{k: r.get(k) for k in ('applied', 'status', 'screen_md5', 'written_utc')}
+                for r in read_table(roots.record_csv) if (r.get('lst'), r.get('scope')) == (lst, scope)]
+    except OSError:
+        return None
 
 
 def route_list_path():
@@ -311,12 +330,23 @@ def gate_write_roots(roots, stages, staging=None):
     return bad
 
 
-def gate_input_roots(roots, stages):
-    """G-D1: the input roots are directories on this host (no host names: the roots decide)."""
+def gate_input_roots(roots, stages, measurement=None):
+    """G-D1: the input roots are directories on this host, and no root (input or derived write root) is node-local to
+    ANOTHER host per the site file NODE_LOCAL_ROOTS (core.env.readable_here: the same path here is a different disk -
+    chain_cell.sh:17 / reapply_cubic.sh:20 refused by host name). No host names in code: the site file decides."""
+    from exopipe.phase3.core import env
     need = [('dewarp.REBUILD_ROOT', roots.rebuild), ('paths.COADD_SB_ROOT', roots.working)]
     if any(s in stages for s in CELL_STAGES):
         need.append(('dewarp.REBUILD_CHECK_ROOT', roots.check))
-    return [f'G-D1: {k} {p} is not a directory on this host' for k, p in need if not os.path.isdir(p)]
+    if measurement:
+        need.append(('--measurement', measurement))
+    bad = []
+    for k, p in need + [(w, p) for w, p in roots.write_roots(stages)]:
+        if not env.readable_here(p):
+            bad.append(f'G-D1: {k} {p} is node-local to {env.node_local_holder(p)}, not this host ({env.host()})')
+    bad += [f'G-D1: {k} {p} is not a directory on this host' for k, p in need
+            if env.readable_here(p) and not os.path.isdir(p)]
+    return bad
 
 
 def gate_pinned_inputs():
