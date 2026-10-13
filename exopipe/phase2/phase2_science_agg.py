@@ -58,17 +58,17 @@ def _qa_prefix(run_dir):
     return ""
 
 try:
-    from exopipe.phase3 import flux_check_cutout
+    from exopipe.phase3.lib.photometry import flux_check_cutout
 except ImportError:
     flux_check_cutout = None
 
 try:
-    from exopipe.phase3 import solar_system_cutout
+    from exopipe.phase3.lib.photometry import solar_system_cutout
 except ImportError:
     solar_system_cutout = None
 
 try:
-    from exopipe.phase3 import cutout
+    from exopipe.phase3.lib.photometry import cutout
 except ImportError:
     cutout = None
 

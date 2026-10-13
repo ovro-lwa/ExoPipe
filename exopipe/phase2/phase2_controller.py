@@ -268,7 +268,7 @@ def _photometry_worker(task):
 
     Returns list of (sample_name, target_name, summary_row_dict) tuples.
     """
-    from exopipe.phase3 import cutout
+    from exopipe.phase3.lib.photometry import cutout
 
     band_label = task['band_label']
     targets_by_sample = task['targets_by_sample']
@@ -326,13 +326,13 @@ def run_all_photometry(work_dir, subband_list, args, logger):
     logger.info("=" * 60)
 
     try:
-        from exopipe.phase3 import cutout
+        from exopipe.phase3.lib.photometry import cutout
     except ImportError:
         cutout = None
         logger.warning("cutout module not available  skipping target photometry")
 
     try:
-        from exopipe.phase3 import solar_system_cutout
+        from exopipe.phase3.lib.photometry import solar_system_cutout
     except ImportError:
         solar_system_cutout = None
         logger.warning("solar_system_cutout not available  skipping solar system")
@@ -525,7 +525,7 @@ def run_all_photometry(work_dir, subband_list, args, logger):
     if cutout and subband_list:
         logger.info("\n--- Solar System Photometry ---")
         try:
-            from exopipe.phase3.solar_system_cutout import (
+            from exopipe.phase3.lib.photometry.solar_system_cutout import (
                 SOLAR_SYSTEM_BODIES, get_body_position, get_obs_midpoint,
                 MIN_ELEVATION
             )

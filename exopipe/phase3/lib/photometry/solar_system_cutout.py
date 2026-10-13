@@ -60,7 +60,7 @@ except ImportError:
 
 # --- Reuse flux measurement from cutout.py ---
 try:
-    from exopipe.phase3.cutout import robust_measure_flux, CUTOUT_SIZE, MIN_ELEVATION, get_beam_size_arcsec
+    from exopipe.phase3.lib.photometry.cutout import robust_measure_flux, CUTOUT_SIZE, MIN_ELEVATION, get_beam_size_arcsec
 except ImportError:
     # Fallback defaults if cutout.py not importable
     CUTOUT_SIZE = 2.0 * u.deg

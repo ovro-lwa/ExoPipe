@@ -26,7 +26,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-from exopipe.phase3 import flux_check_cutout
+from exopipe.phase3.lib.photometry import flux_check_cutout
 
 try:
     import transient_search as trans_tools
@@ -34,12 +34,12 @@ except ImportError:
     trans_tools = None
 
 try:
-    from exopipe.phase3 import solar_system_cutout
+    from exopipe.phase3.lib.photometry import solar_system_cutout
 except ImportError:
     solar_system_cutout = None
 
 try:
-    from exopipe.phase3 import cutout
+    from exopipe.phase3.lib.photometry import cutout
 except ImportError:
     cutout = None
 

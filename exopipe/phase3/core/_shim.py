@@ -65,6 +65,10 @@ LEGACY = {
     'exopipe.phase3.phase3_veto': 'exopipe.phase3.lib.search.veto',
     'exopipe.phase3.search_i_transients': 'exopipe.phase3.lib.search.search_i',
     'exopipe.phase3.search_v_transients_v2': 'exopipe.phase3.lib.search.search_v',
+    # stage 4: photometry
+    'exopipe.phase3.cutout': 'exopipe.phase3.lib.photometry.cutout',
+    'exopipe.phase3.flux_check_cutout': 'exopipe.phase3.lib.photometry.flux_check_cutout',
+    'exopipe.phase3.solar_system_cutout': 'exopipe.phase3.lib.photometry.solar_system_cutout',
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)

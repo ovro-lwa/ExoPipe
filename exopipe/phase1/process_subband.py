@@ -47,12 +47,12 @@ except ImportError:
     load_ref_catalog = None
 
 try:
-    from exopipe.phase3 import cutout
+    from exopipe.phase3.lib.photometry import cutout
 except ImportError:
     cutout = None
 
 try:
-    from exopipe.phase3 import solar_system_cutout
+    from exopipe.phase3.lib.photometry import solar_system_cutout
 except ImportError:
     solar_system_cutout = None
 
