@@ -3028,7 +3028,7 @@ def _constituent_dates(hdr):
 def _stamp_master_standard(path, lst, fl, thermnoi=None):
     """Full header standard + PRODNAME on one master/variant/pbcorr/LOO file (validate=True:
     a file that cannot carry the standard is a write failure, not a warning)."""
-    from exopipe.common.phase3_products import build_name, write_standard_header
+    from exopipe.phase3.core.products import build_name, write_standard_header
     bn = os.path.basename(path)
     m = _MASTER_RE.match(bn); l = _LOO_RE.match(bn)
     if not (m or l):
@@ -3183,7 +3183,7 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     if not run:
         raise RuntimeError(f"{lst} {fl}: P3_ARCHIVE_RUN is unset - the generation's Run directory "
                            f"must be named (e.g. Run_20260909_000000); REFUSING (contract step 51)")
-    from exopipe.common.phase3_products import build_name, write_standard_header
+    from exopipe.phase3.core.products import build_name, write_standard_header
     cdir = f'{_archive_root()}/Coadd/{run}/{lst}/{fl}'
     n = 0
     for f in sorted(os.listdir(final_dir)):

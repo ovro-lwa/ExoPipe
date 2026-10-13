@@ -15,7 +15,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 
 from . import config as C
-from exopipe.common.phase3_products import build_name, write_standard_header
+from exopipe.phase3.core.products import build_name, write_standard_header
 
 
 # --- naming -----------------------------------------------------------------

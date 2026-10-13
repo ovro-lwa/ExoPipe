@@ -64,7 +64,7 @@ from exopipe.phase3.coadd_full_pipeline import (OVRO_LOC, load_exclusions, is_ex
                                  get_midpoint_time)
 from exopipe.phase3 import search_i_transients as sit
 from exopipe.phase3 import phase3_veto as pv
-from exopipe.common import phase3_products as prod
+from exopipe.phase3.core import products as prod
 
 COADD_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); use coadd_root() at point of use
 FLOW_ROOT = os.environ.get('P3_FLOW_ROOT', '/data07/gh/phase3/deep')

@@ -20,7 +20,7 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from exopipe.phase3 import assemble as live
 from exopipe.phase3 import phase3_i_deep_final as F
-from exopipe.common import phase3_products as prod
+from exopipe.phase3.core import products as prod
 
 ROOT = live.ROOT
 CSV = f'{ROOT}/I_deep_FINAL_transients.csv'

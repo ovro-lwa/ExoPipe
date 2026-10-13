@@ -20,7 +20,7 @@ from exopipe.phase3.phase3_deep import _load, fft_upsample2, fft_decimate2
 from exopipe.phase3.coadd_full_pipeline import apply_flow_field, build_striation_model
 from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
 from exopipe.phase3.identify import fit_empirical_beam
-from exopipe.common import phase3_products as pp
+from exopipe.phase3.core import products as pp
 from exopipe.common import phase3_paths as P
 
 LABEL = _ARGV[3] if len(_ARGV) > 3 else 'PROD'

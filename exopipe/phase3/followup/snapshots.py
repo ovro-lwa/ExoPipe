@@ -128,7 +128,7 @@ def save_burst_allsky(cand, lst, date, scope, ra, dec, frame_times, outdir,
     Returns list of written paths.
     """
     from . import io_products as IO
-    from exopipe.common.phase3_products import build_name
+    from exopipe.phase3.core.products import build_name
     if _phase1_snap_dir(lst, date, scope) is None:
         return []
     sx, sy = _load_warp(scope, lst, date)

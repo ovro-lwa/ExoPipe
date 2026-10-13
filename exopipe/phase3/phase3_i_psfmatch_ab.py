@@ -188,7 +188,7 @@ def main():
     os.makedirs(ad, exist_ok=True)
     rp = f'{ad}/psfmatchv2_{date}_{robust}_I_resid.fits'
     fits.writeto(rp, resid.astype(np.float32), wcs.to_header(), overwrite=True)
-    from exopipe.common import phase3_products as prod
+    from exopipe.phase3.core import products as prod
     prod.write_standard_header(
         rp, scope=scope, stokes='I',
         start=eh.get('DATE-OBS'), end=eh.get('DATE-END'),

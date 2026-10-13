@@ -641,7 +641,7 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
     FREQ/STOKES axes with WCSAXES=4 (the convention DS9 accepts - the banned
     class is WCSAXES=2 alongside CTYPE3); parent-master provenance is
     RELABELLED (MSTR*), never inherited as this frame's own."""
-    from exopipe.common import phase3_products as prod
+    from exopipe.phase3.core import products as prod
     from astropy.time import TimeDelta as _TD
     sp = f'{base}/subtracted/{d}_{stokes}_sub_{scope}.fits'
     hs = fits.getheader(sp)

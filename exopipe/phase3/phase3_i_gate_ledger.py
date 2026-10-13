@@ -233,7 +233,7 @@ def run(lst, scope):
         wcs = WCS(hdr).celestial
         # archive the refined residual (search frame) with a conformant name
         try:
-            from exopipe.common import phase3_products as prod
+            from exopipe.phase3.core import products as prod
             ad = f'{RESID_ARCHIVE}/{lst}_{scope}'
             os.makedirs(ad, exist_ok=True)
             rn = prod.build_name(scope, 'I', 'deep', 'Taper', -0.75,

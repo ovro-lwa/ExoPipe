@@ -35,6 +35,8 @@ import sys
 
 # old dotted name -> new dotted name (one entry per move made on the branch)
 LEGACY = {
+    # stage 3 (core)
+    'exopipe.common.phase3_products': 'exopipe.phase3.core.products',     # moved 742bff3; old-path alias removed
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)

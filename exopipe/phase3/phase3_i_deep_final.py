@@ -30,7 +30,7 @@ from astropy.coordinates import SkyCoord, AltAz
 import astropy.units as u
 from exopipe.phase3 import assemble as live
 from exopipe.phase3 import phase3_final_csv as fc
-from exopipe.common import phase3_products as prod
+from exopipe.phase3.core import products as prod
 
 ROOT = live.ROOT
 OUTCSV = f'{ROOT}/I_deep_FINAL_transients.csv'

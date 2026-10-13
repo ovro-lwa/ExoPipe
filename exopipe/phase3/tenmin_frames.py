@@ -53,7 +53,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.time import Time
 from exopipe.common.roots import coadd_root, required_root
-from exopipe.common import phase3_products as pp
+from exopipe.phase3.core import products as pp
 from exopipe.common import phase2_config as cfg
 from exopipe.phase3 import coadd_full_pipeline as C
 from exopipe.phase3 import pb_apply as PB
@@ -435,7 +435,7 @@ def _per_bin_loo_subtract(out_root, cell, lst, scope, stokes, hdr0, shape, cd, b
     identity, no clipping). Every bin is LOO regardless of N (Gregg 2026-09-09). Aligned
     intermediates are deleted after use (node-local scratch)."""
     import hashlib
-    from exopipe.common import phase3_products as pp
+    from exopipe.phase3.core import products as pp
     od = f'{out_root}/{cell}/subtracted'; bd = f'{out_root}/{cell}/bin_masters'; os.makedirs(bd, exist_ok=True)
     wts = {}
     for r in csv.DictReader(open(f'{base}/coadd_final/weights.csv')):

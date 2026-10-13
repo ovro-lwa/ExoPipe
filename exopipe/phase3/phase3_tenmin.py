@@ -35,7 +35,7 @@ from exopipe.phase3.identify import fit_empirical_beam
 from exopipe.phase3.tenmin_validation import setup_date_params, align_date_intervals
 from exopipe.phase3 import phase3_veto as pv
 from exopipe.phase3 import phase3_catalog as pc
-from exopipe.common import phase3_products as pp
+from exopipe.phase3.core import products as pp
 from exopipe.common import phase3_paths as P
 from exopipe.common import phase2_config as cfg
 from exopipe.phase3 import leakage_check as _LC

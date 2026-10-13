@@ -85,7 +85,7 @@ from exopipe.phase3.residuals import (match_to_beam, inner_rms, gaussian_stamp,
 sys.argv = _argv
 
 from exopipe.common import phase2_config as cfg
-from exopipe.common import phase3_products as p3p
+from exopipe.phase3.core import products as p3p
 
 # ═══════════════════════════════════════════════════════════════════
 # Configuration
