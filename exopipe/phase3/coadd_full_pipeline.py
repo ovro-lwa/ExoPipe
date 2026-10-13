@@ -1114,18 +1114,22 @@ def coadd_beam_gate(lst, fl, dates_list):
     whose Phase-2 survey Stokes I (Taper R-0.75) fitted-beam AREA exceeds 1.5x the
     median of the candidate set (long-baseline dropout). Keyed on I. Fails OPEN per
     epoch when no survey product/beam header is found. Returns (refused_dates, areas)."""
+    import contextlib, io
     _bareas = {}
     for _d in dates_list:
-        _g = [x for x in glob.glob(
-            f'/lustre/pipeline/exopipe/phase2/{lst}/{_d}/*/{fl}/I/deep/'
-            f'*Taper_Robust-0.75_dewarped*.fits')
-            + glob.glob(
-            f'/lustre/pipeline/exopipe/phase2/{lst}/{_d}/*/{fl}/I/deep/'
-            f'*Taper-*-Robust-0.75-*dewarped*.fits')
-            if 'pbcorr' not in os.path.basename(x)]
-        if _g:
+        # D1 (refactor chat; Gregg 2026-10-13 'Approved'): the beam of the image the CO-ADD admits - the latest Science dir, Taper
+        # (not NoTaper) R-0.75, dewarped else the RAW failsafe image, by the co-add's own finders. Until 2026-10-13 a glob over EVERY
+        # Science dir that also matched NoTaper and only dewarped files, read in filesystem order: 11h 2024-12-24 was refused on an
+        # older Science dir's beam (4.1-4.4x the median; 0.97-0.99x in the image the co-add uses), and a RAW-only night failed open.
+        _sci = find_latest_science_dir(lst, _d)
+        _img = None
+        if _sci:
+            with contextlib.redirect_stdout(io.StringIO()):          # the finders' failsafe note belongs to the co-add, not the gate
+                _img = (find_subband_alignment_image(_sci, fl[:-3]) if fl.endswith('MHz')
+                        else find_wideband_alignment_image(_sci, fl, lst, _d))
+        if _img:
             try:
-                _h = fits.getheader(_g[0])
+                _h = fits.getheader(_img)
                 _bareas[_d] = float(_h['BMAJ']) * float(_h['BMIN'])
             except Exception:
                 pass
