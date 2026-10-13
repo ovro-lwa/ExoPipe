@@ -40,8 +40,8 @@ if _FP_OUT:
                     out[f] = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12]
                 except OSError:
                     pass
-        main = getattr(sys.modules.get('__main__'), '__file__', None)
-        if main and os.path.exists(main):
+        main = getattr(sys.modules.get('__main__'), '__file__', None) or (sys.argv[0] if sys.argv else None)
+        if main and main not in ('-c', '-m') and os.path.isfile(main):
             out[os.path.abspath(main)] = hashlib.sha1(open(main, 'rb').read()).hexdigest()[:12]
         try:
             with open(_FP_OUT + '.tmp', 'w') as fo:

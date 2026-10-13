@@ -24,7 +24,9 @@ is the step's exit code: 0 done, 2 refused, 3 no-input, other error; an error is
 process names or pids.
 
 Chains (``run submit --chain NAME``; ``CFG.runner.CHAINS``): one worker runs every step of an item in order on its
-node; the item stops at its first non-zero exit, and its status is that step's (refused / no-input / error). A retried
+node; a step that ends no-input (exit 3: nothing to do for this item) is recorded and the chain goes on; the item stops
+at its first refused (2) or error exit, and its status is that step's. An item where every step had no input ends
+no-input. A retried
 chain item resumes at its first step not done.
 
 Pinned code (``run submit --code COMMIT``): ``ensure_code_worktree`` makes ONE read-only ``git worktree add --detach``
@@ -369,9 +371,12 @@ def _release(job, item):
 
 
 def _subst(argv, item):
-    if any('{item}' in a for a in argv):
-        return [a.replace('{item}', item) for a in argv]
-    return list(argv) + ['--cells', item]
+    out = list(argv)
+    for k, v in (getattr(_cfg().runner, 'CHAIN_VARS', None) or {}).items():   # named variables, e.g. {deep_run}
+        out = [a.replace('{' + k + '}', str(v)) for a in out]
+    if any('{item}' in a for a in out):
+        return [a.replace('{item}', item) for a in out]
+    return out + ['--cells', item]
 
 
 def _argv_for(j, item):
@@ -432,6 +437,7 @@ def _run_item(j, job, it, st, host, lane):
         rec.update(chain=j['chain'], steps=steps)
     _wjson(ipath, rec)
     status, rc = 'done', 0
+    n_noinput = 0
     with open(log, 'a') as lf:
         for k, argv in enumerate(argvs):
             if chain and k < len(steps) and steps[k].get('status') == 'done':
@@ -458,9 +464,14 @@ def _run_item(j, job, it, st, host, lane):
             if chain:
                 entry.update(status=s, rc=rc, finished=_now())
                 _wjson(ipath, rec)
+            if rc == 3 and chain:
+                n_noinput += 1                # nothing to do for this item in this step: the chain goes on (DESIGN 12)
+                continue
             if rc != 0:
                 status = s
                 break
+    if chain and status == 'done' and n_noinput == len(argvs):
+        status = 'no-input'                   # every step had nothing to do
     if status == 'error' and attempts <= int(j.get('retry', 0)):
         status = 'queued'                       # retried by the next free worker
     elif status == 'error':

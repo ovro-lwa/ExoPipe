@@ -201,6 +201,18 @@ def atomic_write_json(path, obj):
     os.replace(tmp, path)
 
 
+def _jsonable_ctx(ctx):
+    """A content-test context as stored in a record (JSON types; anything else as its string)."""
+    out = {}
+    for k, v in ctx.items():
+        try:
+            json.dumps(v)
+            out[k] = v
+        except (TypeError, ValueError):
+            out[k] = str(v)
+    return out
+
+
 def record_path(out_root, step, unit):
     return os.path.join(out_root, '_records', step, f'{unit}.json')
 
@@ -347,6 +359,8 @@ class UnitRecord:
     def add_output(self, path, cls, test=True, **ctx):
         from exopipe.phase3.core import validate
         entry = {'path': os.path.abspath(path), 'class': cls}
+        if ctx:
+            entry['ctx'] = _jsonable_ctx(ctx)      # the same context is passed back when --resume / verify re-test it
         self.outputs.append(entry)
         if test:
             for r in validate.run(cls, path, **ctx):
@@ -478,12 +492,19 @@ def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None
         f = getattr(m, '__file__', None) if m else None
         if f and f.endswith('.py') and hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12] != h:
             return False, f'code changed: {mod}'
+    for f, h in ((rec.get('meta') or {}).get('legacy_code') or {}).items():   # code of in-place children (core/legacy)
+        try:
+            cur = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12]
+        except OSError:
+            return False, f'child code missing: {f}'
+        if cur != h:
+            return False, f'child code changed: {f}'
     if retest:
         from exopipe.phase3.core import validate
         for o in rec.get('outputs', []):
             if not os.path.exists(o['path']):
                 return False, f"output missing: {o['path']}"
-            for r in validate.run(o['class'], o['path']):
+            for r in validate.run(o['class'], o['path'], **(o.get('ctx') or {})):
                 if not r['passed']:
                     return False, f"output fails {r['name']}: {o['path']}"
     return True, 'record done; inputs, admitted nights, code, config unchanged; outputs pass their content tests'

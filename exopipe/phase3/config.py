@@ -296,12 +296,16 @@ class runner(_Section):
     # Named chains (DESIGN 11.3, 12): `exopipe3 run submit --chain NAME --items ...` runs each item through these step
     # commands in order on one node; an item stops at its first non-zero exit (2 refused / 3 no-input / other error).
     # {item} is the item. The per-hour chain is the unit a merged Phase 1-2-3 controller will run (DESIGN 12.3).
+    CHILD_ENV_CLEAR_PREFIXES = ('P3_', 'P3S', 'P3T', 'SUBLST_', 'SNAP_', 'FORK_', 'CATPUB_', 'NOCAT_', 'DEEP_FORCED_',
+                                'FT_', 'TENMIN_', 'GEN4_')   # production switch families never inherited by a child
+    CHAIN_VARS = {'deep_run': 'P3S5'}      # {deep_run} in a chain template: the current deep transient run label
     CHAINS = {
         # per hour: one LST hour of one night, every tier, against the installed masters (item kind: epoch 04h_2025-10-14)
         'epoch': ['frames --tier deep --epochs {item}',
                   'search --tier deep --epochs {item}',
-                  'catalog --tier deep --incremental --epochs {item}',
-                  'forced --tier deep --epochs {item}',
+                  'photometry --tier deep --epochs {item}',
+                  'catalog --tier deep --incremental --run {deep_run} --epochs {item}',
+                  'forced --tier deep --run {deep_run} --epochs {item}',
                   'frames --tier sublst --epochs {item}',
                   'flow --tier sublst --epochs {item}',
                   'search --tier sublst --epochs {item}',
@@ -312,8 +316,8 @@ class runner(_Section):
                   'curves --tier snapshot --epochs {item}',
                   'catalog --tier snapshot --epochs {item}',
                   'forced --tier snapshot --epochs {item}',
-                  'pages --epochs {item}',
-                  'serve --epochs {item}',
+                  'pages --run {deep_run} --epochs {item}',
+                  'serve --run {deep_run} --epochs {item}',
                   'archive push --epochs {item}'],
         # survey build of one deep cell (item kind: cell 04h_Full); dewarp (per LST) and install follow separately
         'deep-build-cell': ['masters --tier deep --stages stage-in --cells {item}',

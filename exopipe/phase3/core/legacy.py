@@ -7,7 +7,8 @@ window (DESIGN 11.1: steps call production code in place; crosscheck 4.6 found s
 
 What the child gets:
 - the interpreter named by the site file's PYTHON[python] ('default', 'flow', 'py36', 'casa', 'tess');
-- the parent's environment with inherited P3_* variables CLEARED (a stale P3_COADD_ROOT never leaks in), then ``env``,
+- the parent's environment with inherited production switches CLEARED (runner.CHILD_ENV_CLEAR_PREFIXES: P3_*, P3S*,
+  P3T*, SUBLST_*, SNAP_*, ... - a stale P3_COADD_ROOT or SUBLST_TABLES never leaks in), then ``env``,
   then runner.ENV_DEFAULTS (NUMPY_MADVISE_HUGEPAGE=0) and EXOPIPE3_SITE;
 - PYTHONPATH prefixed with core/parity_sitecustomize: under ``parity_root`` (or the parent's --parity) every write outside
   the parity roots is refused in the child too; and the child writes at exit the sha1 of every imported legacy / exopipe
@@ -52,7 +53,8 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
     cfg = _cfg()
     py = interpreter(python)
     argv = [py] + (['-m', target] if module else [target]) + [str(a) for a in args]
-    child = {k: v for k, v in os.environ.items() if not k.startswith('P3_')}
+    clear = tuple(getattr(cfg.runner, 'CHILD_ENV_CLEAR_PREFIXES', ('P3_',)))
+    child = {k: v for k, v in os.environ.items() if not k.startswith(clear)}
     child.update({k: str(v) for k, v in (env or {}).items()})
     child.update(cfg.runner.ENV_DEFAULTS)
     if os.environ.get('EXOPIPE3_SITE'):
