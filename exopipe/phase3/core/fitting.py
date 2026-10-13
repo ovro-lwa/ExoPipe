@@ -214,6 +214,31 @@ def template_fit(img, wcs, x0, y0, bmaj_deg, bmin_deg, bpa_deg, rms, k=None, sta
 # Fitted position of a detection / forced measurement (deep and sub-LST: the ONE shared function)
 # =====================================================================================================================
 
+def forced_value_rms(d, w, ra, dec):
+    """The forced measurement at one position (exopipe_ops/deep_forced_radio.forced_value_rms, verbatim): bilinear value
+    at (ra, dec); rms = 1.4826 x MAD of the 41 x 41 stamp without its central 5 x 5 (NaN when fewer than 200 usable
+    pixels or the position is within 26 px of the edge). The value and rms detection_position is called with."""
+    from scipy.ndimage import map_coordinates
+    x, y = [float(v) for v in w.world_to_pixel_values(ra, dec)]
+    ny, nx = d.shape
+    if not (np.isfinite(x) and np.isfinite(y) and 25 < x < nx - 26 and 25 < y < ny - 26):
+        return float('nan'), float('nan')
+    val = float(map_coordinates(d, [[y], [x]], order=1, mode='constant', cval=np.nan)[0])
+    xi, yi = int(round(x)), int(round(y))
+    s = d[yi - 20:yi + 21, xi - 20:xi + 21].copy()
+    s[18:23, 18:23] = np.nan
+    s = s[np.isfinite(s) & (s != 0)]
+    return val, (1.4826 * float(np.median(np.abs(s - np.median(s)))) if s.size > 200 else float('nan'))
+
+
+def lst_deg_at_mjd(mjd):
+    """Apparent local sidereal angle (deg) at MJD, at the observatory longitude (common/pipeline_config.OVRO_LOC)."""
+    import astropy.units as u
+    from astropy.time import Time
+    from exopipe.common.pipeline_config import OVRO_LOC
+    return float(Time(mjd, format='mjd').sidereal_time('apparent', longitude=OVRO_LOC.lon.deg * u.deg).deg)
+
+
 def k_template(tier, stokes):
     k = _cfg().fitting.K_TEMPLATE.get((tier, stokes))
     if k is None:
