@@ -22,7 +22,7 @@ from exopipe.phase3.coadd_full_pipeline import apply_flow_field, build_striation
 from exopipe.phase3 import parent_curve_table as _PCT
 from exopipe.phase3.phase3_pipeline import (build_sigma_stack, run_identification_i,
                              run_identification_v, STRIATION_WINDOW_DEG)
-from exopipe.phase3.residuals import fft_upsample2, fft_decimate2, write_up_fits
+from exopipe.phase3.core.residuals import fft_upsample2, fft_decimate2, write_up_fits
 from exopipe.phase3.identify import fit_empirical_beam
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3 import phase3_veto as pv

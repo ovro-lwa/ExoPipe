@@ -80,7 +80,7 @@ from exopipe.phase3 import coadd_full_pipeline as cfp
 # phase3_subtract_lab parses argv at import time; shield it
 _argv = sys.argv
 sys.argv = ['phase3_pipeline']
-from exopipe.phase3.residuals import (match_to_beam, inner_rms, gaussian_stamp,
+from exopipe.phase3.core.residuals import (match_to_beam, inner_rms, gaussian_stamp,
                                  beam_area_px)
 sys.argv = _argv
 

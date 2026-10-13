@@ -27,7 +27,7 @@ from exopipe.phase3.phase3_deep import _load, _residual
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.phase3_i_gate_ledger import _mstruct_i
 from exopipe.phase3.identify import fit_empirical_beam
-from exopipe.phase3.residuals import gaussian_stamp
+from exopipe.phase3.core.residuals import gaussian_stamp
 from exopipe.phase3.coadd_full_pipeline import (discover_dates, find_wideband_deep_images,
                                  load_image, measure_flux_scale, apply_flow_field,
                                  regrid_image, get_midpoint_time)

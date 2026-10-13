@@ -28,11 +28,11 @@ from astropy.convolution import Gaussian2DKernel, convolve_fft
 from exopipe.phase3.phase3_deep import _load, NPROC_RESID
 from exopipe.phase3.phase3_deep import _residual as _refine_subtract   # not used for matched path
 from exopipe.phase3.coadd_full_pipeline import apply_flow_field, build_striation_model, get_midpoint_time
-from exopipe.phase3.residuals import fft_upsample2, fft_decimate2
+from exopipe.phase3.core.residuals import fft_upsample2, fft_decimate2
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.phase3_i_gate_ledger import _mstruct_i
 from exopipe.phase3.identify import fit_empirical_beam
-from exopipe.phase3.residuals import gaussian_stamp
+from exopipe.phase3.core.residuals import gaussian_stamp
 from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
 from exopipe.phase3 import search_i_transients as sit
 from exopipe.phase3 import phase3_veto as pv

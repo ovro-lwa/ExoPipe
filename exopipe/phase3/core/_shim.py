@@ -37,6 +37,7 @@ import sys
 LEGACY = {
     # stage 3 (core)
     'exopipe.common.phase3_products': 'exopipe.phase3.core.products',     # moved 742bff3; old-path alias removed
+    'exopipe.phase3.residuals': 'exopipe.phase3.core.residuals',
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)
