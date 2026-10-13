@@ -172,10 +172,9 @@ class search_snapshot(_Section):
     MIN_STAGED_FRAMES = 1000                # decompressed staged frames per cell (P3_FLEET_MIN_FRAMES; v9:199-202)
     OUT_MIN_FREE_GB = 50                    # GB free on the node-local output filesystem (new: v9's 800 GB (v9:95) covers the
                                             # staging, which is now the frames step's; the search writes CSVs and models only)
-    EXCLUDED_STAGED_SUBBAND = 'unaccounted' # a STAGED subband excluded in data_decisions.csv (SS exits 3, no output): 'unaccounted'
-                                            # = v9:218-229 (neither runinfo nor night-refusal record -> SEARCH-INCOMPLETE; the unit is
-                                            # refused, gate 'exclusion'); 'accounted' = the excluded subband counts as an outcome
-                                            # (spec 1.3 outcome list) - a result-changing choice for Gregg (open question)
+    EXCLUDED_STAGED_SUBBAND = 'accounted'   # a STAGED subband excluded in data_decisions.csv (SS exits 3, no output) counts as an
+                                            # outcome (exclusions are absolute), as v9 since exopipe_ops a40b088 (v9:217-224; 07h
+                                            # 2025-10-14 failed the guard twice); 'unaccounted' = v9 before it (SEARCH-INCOMPLETE)
     KEEP_FAILED_LOGS = True                 # v9 deletes OUT of an incomplete cell (v9:228, :267); its logs are kept under
                                             # <out>/_failed/<cell>_<UTC>/ first (new; evidence only, never read as a product)
     SHIP_POLICY = 'no-clobber'              # cp -n (v9:336-337); an existing DIFFERENT file refuses the unit (content test
@@ -191,7 +190,7 @@ class search_snapshot(_Section):
     WIDEBAND_OUTCOMES = ('searched', 'night-refused', 'excluded', 'no-members', 'too-few-frames', 'not-run')   # GS:132-135
     RULED = {'MIN_STAGED_FRAMES': 'INCIDENT-FAST-FULL-SILENT-SHIPPING-FAILURES',
              'FLOW_REQUIRED': 'R-SNAP-FLOW-ALIGNMENT-AND-FLOW-MOVIE-ARE-PIPELINE-PRODUCTS-FLEET-V4',
-             'EXCLUDED_STAGED_SUBBAND': 'IMPLEMENTED-SNAPSHOT-NIGHT-REFUSED-BANDS-ACCOUNTED-20261013',
+             'EXCLUDED_STAGED_SUBBAND': 'FIX-FLEET-GUARD-EXCLUDED-SUBBANDS-20261013',
              'PAUSE_1MIN': 'PAUSE-WIDEBAND-10S-AND-1MIN-IN-THE-FLEET'}
     # engine-hard-coded constants and pinned inputs (no override can change them)
     PROTECTED_KEYS = ('MIN_ELEVATION_DEG', 'INTEGRATION_S', 'TIER1MIN_TIME_BASIS', 'MIN_BLOCK_FRAMES', 'PAIR_TOL_S',

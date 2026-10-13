@@ -683,13 +683,14 @@ def test_snapshot_completeness_gates():
     except RuntimeError as e:
         assert 'SEARCH-INCOMPLETE' in str(e)
     excl = {'18MHz': ok['18MHz'], '23MHz': {'stokes': {'V': 'excluded', 'I': 'excluded'}}}
+    assert s.EXCLUDED_STAGED_SUBBAND == 'accounted'          # v9 since exopipe_ops a40b088
+    TN.subband_completeness(u, plan, '/x', excl)
+    setattr_tmp(s, 'EXCLUDED_STAGED_SUBBAND', 'unaccounted')  # v9 before it
     try:
         TN.subband_completeness(u, plan, '/x', excl)
-        raise AssertionError('excluded staged subband accepted under v9 accounting')
+        raise AssertionError('excluded staged subband accepted under the pre-a40b088 accounting')
     except record.Refusal as e:
         assert 'gate exclusion' in str(e)
-    setattr_tmp(s, 'EXCLUDED_STAGED_SUBBAND', 'accounted')
-    TN.subband_completeness(u, plan, '/x', excl)
     restore()
     none = {'18MHz': {'stokes': {'V': 'failed: x', 'I': 'failed: x'}}}
     try:
@@ -706,7 +707,7 @@ def test_snapshot_completeness_gates():
         raise AssertionError('wideband not-run accepted')
     except RuntimeError as e:
         assert 'Red_V:not-run' in str(e) and 'I:no-outcome-record' in str(e)
-    print('completeness gates: night-refused accounted, crash/unaccounted/abort/exclusion and wideband not-run refused')
+    print('completeness gates: night-refused and excluded accounted, crash/unaccounted/abort and wideband not-run refused')
 
 
 def test_content_tests_negative():

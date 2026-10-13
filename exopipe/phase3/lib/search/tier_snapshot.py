@@ -439,7 +439,7 @@ def subband_completeness(u, plan, out, outcomes):
     if excl_only:
         raise _h().refusal(f'SEARCH-INCOMPLETE {plan["cell"]} (gate exclusion): staged subband x Stokes {" ".join(excl_only)} '
                            f'excluded in data_decisions.csv - the engine writes no output and v9 counts it unaccounted '
-                           f'(search_snapshot.EXCLUDED_STAGED_SUBBAND = unaccounted; open question for Gregg)')
+                           f'(search_snapshot.EXCLUDED_STAGED_SUBBAND = unaccounted, v9 before exopipe_ops a40b088)')
     if n_ri == 0 and n_nr == 0:
         raise RuntimeError(f'FLEET-ABORT {plan["cell"]} produced no runinfo and no refusal record - systemic failure '
                            f'(v9:231-234 stops the node: hold this node in the runner)')
