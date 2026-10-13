@@ -28,6 +28,10 @@ def _load():
 def c50_sigma(band):
     """Measured final-gate C50 for `band` in LOCAL-rms sigma, or None if unmeasured.
     None -> the catalog writes a blank c50_mjy (never a hard-wired fallback)."""
+    # 2026-10-13 (Gregg on M6: 'Fine' - blank now): the measured table predates the production gate chain (no v110, bright-parent table,
+    # size or row-line gates), lives on one node's local disk (M4) and was applied to Stokes I from Stokes V injections (M5): every band
+    # is UNMEASURED until a production-chain re-measurement replaces it, so the catalogue writes a blank c50_mjy
+    return None
     rec = _load().get(band)
     if not rec:
         return None
