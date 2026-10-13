@@ -809,6 +809,166 @@ def test_item5_cli_parity_flag():
 
 
 # =====================================================================================================================
+# item 6 - verify compare
+# =====================================================================================================================
+
+def _parity_side(root, side, data, gittag, utc, bmaj=0.25, rows=None, rec_status='done'):
+    """One side of a synthetic parity pair: 3 FITS (one renamed on side B), a CSV, a JSON, a run record."""
+    import numpy as np
+    from astropy.io import fits
+    cell = os.path.join(root, '04h_Red')
+    os.makedirs(cell, exist_ok=True)
+    stamp = utc.replace('-', '').replace(':', '')[:15] + 'Z'
+
+    def fits_file(name, arr):
+        h = fits.PrimaryHDU(np.asarray(arr, np.float32))
+        h.header['BMAJ'] = bmaj
+        h.header['BUNIT'] = 'Jy/beam'
+        h.header['DATE'] = utc
+        h.header['GITTAG'] = gittag
+        h.header['HISTORY'] = f'built {utc} by masters_{stamp}_lwacalim09_4242 in {root}/04h_Red'
+        h.header['HISTORY'] = 'constituents: 2024-12-20 2024-12-21'
+        h.writeto(os.path.join(cell, name), overwrite=True, checksum=True)
+
+    fits_file('I_master.fits', data)
+    fits_file('unchanged.fits', np.ones((4, 4)))
+    fits_file('old_name.fits' if side == 'A' else 'new_name.fits', np.full((3, 3), 2.0))
+    with open(os.path.join(cell, 'detections.csv'), 'w') as f:
+        f.write('id,ra,flux,path\n' + ''.join(f'{r[0]},{r[1]},{r[2]},{root}/04h_Red/I_master.fits\n'
+                                              for r in (rows or [(1, '10.5', '1.25'), (2, '11.0', '0.5')])))
+    with open(os.path.join(cell, 'unit.json'), 'w') as f:
+        json.dump({'run_id': f'search_{side}', 'started': utc, 'status': rec_status, 'n': [1, 2, 3],
+                   'out': f'{root}/04h_Red'}, f)
+    os.makedirs(os.path.join(root, '_records', 'masters'), exist_ok=True)
+    with open(os.path.join(root, '_records', 'masters', 'x.json'), 'w') as f:
+        json.dump({'side': side}, f)                       # compared only with --include-records
+
+
+def test_item6_verify_compare():
+    import csv as _csv
+    import numpy as np
+    from astropy.io import fits
+    from exopipe.phase3.core import compare as cmp
+    with Scratch('item6') as d:
+        data = np.arange(64, dtype=np.float32).reshape(8, 8)
+        data[0, 0] = np.nan
+        A, B = os.path.join(d, 'A'), os.path.join(d, 'B')
+        _parity_side(A, 'A', data, 'exopipe@d4889d3', '2026-10-12T22:00:00')
+        _parity_side(B, 'B', data, 'exopipe@1fd3460', '2026-10-13T03:10:00')
+        open(os.path.join(A, 'only_in_old.csv'), 'w').write('a\n1\n')
+        mp = os.path.join(d, 'map.csv')
+        open(mp, 'w').write('old,new\n04h_Red/old_name.fits,04h_Red/new_name.fits\n')
+        pd_file = os.path.join(d, 'permitted.csv')
+
+        def permitted(*rows):
+            with open(pd_file, 'w') as f:
+                f.write('# signatures for this test\nid,ledger_id,class,path,kind,key,tolerance,note\n')
+                f.write(''.join(','.join(r) + '\n' for r in rows))
+            return pd_file
+
+        def diffs(rep):
+            return [r for r in rep.rows if r['level'] == 'DIFF']
+
+        drop = ('PD-DROP', 'FIX-X', '*', 'only_in_old.csv', 'missing', '', '', 'retired product')
+        # only provenance differs (DATE ignored, HISTORY timestamps/run id/root normalised, GITTAG permitted as
+        # PD-GITTAG) - and one file is missing in B
+        rep = cmp.compare_roots(A, B, 'auto', mapping=mp)
+        assert rep.pairs == 5 and rep.verdict == 'FAIL', rep.summary()
+        assert [(r['kind'], r['a']) for r in diffs(rep)] == [('missing', 'only_in_old.csv')], diffs(rep)
+        perm = [r for r in rep.rows if r['level'] == 'PERM']
+        assert len(perm) == 3 and {(r['key'], r['permitted_by']) for r in perm} == {('GITTAG', 'PD-GITTAG')}
+        # the missing file permitted by a named signature -> PASS
+        rep = cmp.compare_roots(A, B, 'auto', mapping=mp, permitted=permitted(drop))
+        assert rep.verdict == 'PASS' and rep.rules_used == {'PD-DROP': 1, 'PD-GITTAG': 3}, rep.summary()
+        # without the product map the renamed product is missing + extra
+        rep = cmp.compare_roots(A, B, 'fits')
+        assert sorted((r['kind'], r['a'] or r['b']) for r in diffs(rep)) == \
+            [('extra', '04h_Red/new_name.fits'), ('missing', '04h_Red/old_name.fits')]
+        # run records are skipped unless --include-records
+        assert cmp.compare_roots(A, B, 'json').verdict == 'PASS'
+        rep = cmp.compare_roots(A, B, 'json', opts=cmp.Options(include_records=True))
+        assert [r['key'] for r in diffs(rep)] == ['side']
+
+        # FITS: one pixel off by 1e-3, one NaN more, a science card changed (BMAJ, in every file of B2)
+        B2 = os.path.join(d, 'B2')
+        d2 = data.copy()
+        d2[4, 4] += 1e-3
+        d2[1, 1] = np.nan
+        _parity_side(B2, 'B', d2, 'exopipe@1fd3460', '2026-10-13T03:10:00', bmaj=0.26)
+        rep = cmp.compare_roots(A, B2, 'fits', mapping=mp)
+        got = {(r['kind'], r['key']) for r in diffs(rep) if r['a'] == '04h_Red/I_master.fits'}
+        assert got == {('data', ''), ('nanmask', ''), ('header', 'BMAJ')}, got
+        drow = next(r for r in diffs(rep) if r['kind'] == 'data')
+        assert abs(drow['value'] - 1e-3) < 1e-5 and 'maxabs/rms' in drow['detail'], drow
+        assert next(r for r in diffs(rep) if r['kind'] == 'nanmask')['value'] == 1
+        # the signature's tolerance decides: 1e-2 permits the data difference, 1e-4 does not
+        rules = [('PD-NAN', 'L1', 'fits', '*I_master.fits', 'nanmask', '', '', ''),
+                 ('PD-BEAM', 'L2', 'fits', '*', 'header', 'BMAJ', '', '')]
+        rep = cmp.compare_roots(A, B2, 'fits', mapping=mp,
+                                permitted=permitted(*rules, ('PD-DATA', 'L3', 'fits', '*', 'data', '', '1e-2', '')))
+        assert rep.verdict == 'PASS', diffs(rep)
+        assert rep.rules_used == {'PD-NAN': 1, 'PD-BEAM': 3, 'PD-DATA': 1, 'PD-GITTAG': 3}, rep.rules_used
+        rep = cmp.compare_roots(A, B2, 'fits', mapping=mp,
+                                permitted=permitted(*rules, ('PD-DATA', 'L3', 'fits', '*', 'data', '', '1e-4', '')))
+        assert rep.verdict == 'FAIL' and [r['kind'] for r in diffs(rep)] == ['data']
+        # the comparison tolerance (--fits-atol) makes the pixels equal
+        rep = cmp.compare_roots(A, B2, 'fits', mapping=mp, permitted=permitted(*rules),
+                                opts=cmp.Options(fits_atol=1e-2))
+        assert rep.verdict == 'PASS', diffs(rep)
+        # a real HISTORY change is a difference
+        B3 = os.path.join(d, 'B3')
+        _parity_side(B3, 'B', data, 'exopipe@1fd3460', '2026-10-13T03:10:00')
+        with fits.open(os.path.join(B3, '04h_Red', 'unchanged.fits'), mode='update') as h:
+            h[0].header['HISTORY'] = 'an extra processing step'
+        rep = cmp.compare_roots(A, B3, 'fits', mapping=mp)
+        assert [r['kind'] for r in diffs(rep)] == ['history'], diffs(rep)
+
+        # CSV: exact by default (the path column differs only by root); rtol; row order ignored; keyed rows
+        B4 = os.path.join(d, 'B4')
+        _parity_side(B4, 'B', data, 'x', '2026-10-13T03:10:00', rows=[(2, '11.0', '0.5'), (1, '10.5', '1.2500000001')])
+        rep = cmp.compare_roots(A, B4, 'csv')
+        assert [(r['kind'], r['key']) for r in diffs(rep) if r['kind'] != 'missing'] == [('cell', 'flux')]
+        assert cmp.compare_roots(A, B4, 'csv', permitted=permitted(drop),
+                                 opts=cmp.Options(rtol=1e-6)).verdict == 'PASS'
+        B5 = os.path.join(d, 'B5')
+        _parity_side(B5, 'B', data, 'x', '2026-10-13T03:10:00',
+                     rows=[(1, '10.5', '1.25'), (2, '11.0', '0.5'), (3, '12.0', '0.1')])
+        rep = cmp.compare_roots(A, B5, 'csv', opts=cmp.Options(csv_keys=['id']))
+        got = sorted((r['kind'], r['detail']) for r in diffs(rep) if r['a'] == '04h_Red/detections.csv')
+        assert got == [('rows', 'row count A=2 B=3'), ('rows', "row in B only: ('3',)")], got
+
+        # JSON: ignore keys and roots; a real value change
+        B6 = os.path.join(d, 'B6')
+        _parity_side(B6, 'B', data, 'x', '2026-10-13T03:10:00', rec_status='refused')
+        rep = cmp.compare_roots(A, B6, 'json')
+        assert [(r['key'], r['detail']) for r in diffs(rep)] == [('status', "'done' vs 'refused'")], diffs(rep)
+
+        # the command: report files; exit 0 only when every difference is permitted
+        rdir = os.path.join(d, 'report')
+        r = cli('verify', 'compare', A, B, '--class', 'auto', '--map', mp, '--permitted-diffs', permitted(drop),
+                '--report', rdir, '--cores', 'none')
+        assert r.returncode == 0 and 'verdict: PASS' in r.stdout, (r.returncode, r.stdout, r.stderr)
+        s = json.load(open(os.path.join(rdir, 'parity_summary.json')))
+        assert s['verdict'] == 'PASS' and s['pairs_compared'] == 5 and s['rules_source_sha256'] == cmp.SOURCE_SHA256
+        rows = list(_csv.DictReader(open(os.path.join(rdir, 'parity_report.csv'))))
+        assert {x['level'] for x in rows} == {'OK', 'PERM'} and os.path.isfile(os.path.join(rdir, 'parity_summary.txt'))
+        r = cli('verify', 'compare', A, B2, '--class', 'fits', '--map', mp, '--report', rdir, '--cores', 'none')
+        assert r.returncode == 2 and 'verdict: FAIL' in r.stdout and 'DIFF  nanmask' in r.stdout, r.stdout
+        r = cli('verify', 'compare', A, B4, '--class', 'csv', '--rtol', '1e-6', '--permitted-diffs', permitted(drop),
+                '--report', rdir, '--cores', 'none')
+        assert r.returncode == 0, r.stdout
+        empty_a, empty_b = os.path.join(d, 'e1'), os.path.join(d, 'e2')
+        os.makedirs(empty_a)
+        os.makedirs(empty_b)
+        assert cli('verify', 'compare', empty_a, empty_b, '--report', rdir, '--cores', 'none').returncode == 3
+        assert cli('verify', 'compare', A, '--report', rdir, '--cores', 'none').returncode == 1
+        bad = os.path.join(d, 'bad_pd.csv')
+        open(bad, 'w').write('just,some,columns\n1,2,3\n')
+        r = cli('verify', 'compare', A, B, '--permitted-diffs', bad, '--report', rdir, '--cores', 'none')
+        assert r.returncode == 1 and 'permitted-differences file' in r.stderr, r.stderr
+
+
+# =====================================================================================================================
 
 def _all_tests():
     return [(n, f) for n, f in sorted(globals().items()) if n.startswith('test_') and callable(f)]

@@ -31,6 +31,7 @@ exopipe3 config --step <step>       # every section the step declares (CONFIG), 
 | follow up a candidate | `exopipe3 followup` | `steps/followup.py` -> `followup/` | `followup` |
 | Jupiter reflection program | `exopipe3 jupiter` | `steps/jupiter.py` -> `lib/jupiter/` | `jupiter` |
 | check any product's content | `exopipe3 verify <class> <files>` | `steps/verify.py`; tests live with their step | - |
+| compare two product roots (parity) | `exopipe3 verify compare ROOT_A ROOT_B --class fits --permitted-diffs F --map M` | `steps/verify.py` -> `core/compare.py` | - |
 | see what is done / stale / missing | `exopipe3 status` | `steps/status.py` | - |
 | run a step over many cells on many nodes | `exopipe3 run submit --nodes ... -- <step> ...` | `steps/run.py` -> `core/runner.py` | `runner`, site file |
 | run several steps per cell in order (a chain), or from a pinned commit | `exopipe3 run submit --chain NAME --items ...`; `--code COMMIT` | `core/runner.py` | `runner.CHAINS`, `runner.CODE_WORKTREES_ROOT` |
