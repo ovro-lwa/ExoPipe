@@ -154,7 +154,7 @@ def run_runnables(root, use_old_names=False, pairs=()):
             rc, out = r.returncode, r.stdout + r.stderr
         except subprocess.TimeoutExpired:
             rc, out = 'timeout', ''
-        shown = [normalise(c, root, pairs) for c in cmd[1:]]
+        shown = [normalise(c, root) for c in cmd[1:]]       # the command as run (current names)
         return old, dict(cmd=' '.join(['python'] + shown), rc=rc, out=normalise(out, root, pairs))
 
     try:
