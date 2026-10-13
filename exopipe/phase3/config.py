@@ -75,6 +75,43 @@ class exclusions(_Section):
     PERBAND_TAG = '[PERBAND]'      # reason tag of a per-image row: excludes only its own scope (Gregg 2026-08-26)
 
 
+class astrometry(_Section):
+    """Position-uncertainty model (core/astrometry.py; COADD_ASTROMETRIC_ERROR.md 2026-07-07/08, ratified)."""
+    # per-axis systematic scatter (arcmin) by elevation bin (deg) and band class (S3, scaled to the S2b per-axis MAD)
+    SYS_ARCMIN = {(75, 90): {'Red': 1.9, 'Green': 1.3, 'Blue': 1.0},
+                  (60, 75): {'Red': 1.9, 'Green': 1.4, 'Blue': 1.1},
+                  (45, 60): {'Red': 2.2, 'Green': 1.5, 'Blue': 1.1},
+                  (0, 45): {'Red': 2.6, 'Green': 1.9, 'Blue': 1.4}}
+    SYS_SCALE = {('V', 'Red'): 1.5}      # class scale of the systematic (build_source_catalogs_v3.SYS_SCALE)
+    STAT_COEFF = 0.42                    # statistical error = STAT_COEFF x beam FWHM / S/N, per axis (S3b)
+
+
+class fitting(_Section):
+    """Source fits shared by search, catalog and forced in every tier (core/fitting.py). CLAUDE.md 5 (Gregg 2026-10-04):
+    Gaussian fit (free size and shape) at or above GAUSS_SNR; below, a template fit (empirical beam fixed, amplitude and
+    position free); positions carry their errors."""
+    GAUSS_SNR = 7.0                      # sigma; Gaussian at or above, template below (CLAUDE.md 5)
+    RADIO_SNR_FLOOR = 4.0                # sigma; radio positions computed at |S/N| >= this (deep_forced_radio)
+    # Template error scale K (68th percentile of |error| x S/N / FWHM per beam axis), (major, minor), per tier and Stokes:
+    K_TEMPLATE = {('deep', 'I'): (0.520, 0.510),     # RATIFIED Gregg 2026-10-11 (deep forced-chain calibration)
+                  ('deep', 'V'): (0.575, 0.531),     # ADOPTED Gregg 2026-10-11
+                  ('sublst', 'I'): (0.476, 0.423),   # Gregg 2026-10-13 'Use the measured 10-min K'
+                  ('sublst', 'V'): (0.658, 0.499)}   #   (R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED)
+    # snapshot tier: the template module's own measured K (template_fit_validation run_20261004b): major 0.60
+    # (0.81 at >= 69 MHz), minor 0.86
+    K_SNAPSHOT = (0.60, 0.86)
+    K_SNAPSHOT_MAJOR_HIGH = 0.81
+    K_SNAPSHOT_HIGH_MHZ = 69.0
+    TEMPLATE_WIN_BEAMS = 0.8             # fit window radius, x FWHM(major)
+    TEMPLATE_MAX_SHIFT_BEAMS = 0.5       # bound on the shift from the peak start, x FWHM(major)
+    TEMPLATE_SEARCH_BEAMS = 1.0          # peak start sought within this radius of the given position, x FWHM(major)
+    # Orientation of the template beam in pixel space. 'legacy-mirrored' reproduces the production template fit, whose
+    # beam is the mirror image of the header beam (pixel +x taken as east although CDELT1 < 0; refactor finding D5,
+    # 2026-10-13, put to Gregg by both chats). 'wcs' is the corrected beam; switching needs Gregg's ruling and a
+    # re-measured K for every tier.
+    TEMPLATE_BEAM_ORIENTATION = 'legacy-mirrored'
+
+
 class runner(_Section):
     """Defaults for `exopipe3 run` and for every step's process environment."""
     from exopipe.phase3.core import env as _env
