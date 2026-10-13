@@ -303,8 +303,8 @@ class runner(_Section):
     CHAIN_VARS = {'deep_run': 'P3S5'}      # {deep_run} in a chain template: the current deep transient run label
     CHAINS = {
         # per hour: one LST hour of one night, every tier, against the installed masters (item kind: epoch 04h_2025-10-14)
-        'epoch': ['frames --tier deep --epochs {item}',
-                  'search --tier deep --epochs {item}',
+        # deep frames are made by the deep search engine (frames_residuals.DEEP_PRODUCER 'search'): no frames step here
+        'epoch': ['search --tier deep --epochs {item}',
                   'photometry --tier deep --epochs {item}',
                   'catalog --tier deep --incremental --run {deep_run} --epochs {item}',
                   'forced --tier deep --run {deep_run} --epochs {item}',

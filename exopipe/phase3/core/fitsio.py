@@ -53,10 +53,8 @@ def read_image(path, cache=True):
 
 def scratch_root(work=None):
     from exopipe.phase3.config import CFG
-    if work:
-        return work
     host = socket.gethostname()
-    root = CFG.site.SCRATCH_ROOT.get(host) if isinstance(CFG.site.SCRATCH_ROOT, dict) else None
+    root = work or (CFG.site.SCRATCH_ROOT.get(host) if isinstance(CFG.site.SCRATCH_ROOT, dict) else None)
     if not root:
         from exopipe.phase3.core.record import Refusal
         raise Refusal(f'no node-local scratch root for {host}: pass --work /fast/... or set SCRATCH_ROOT in the site '
