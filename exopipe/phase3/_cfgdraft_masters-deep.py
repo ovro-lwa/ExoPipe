@@ -58,8 +58,8 @@ class masters_stagein(_Section):
     # B-12 default (c): the per-cell override tables of the 2026-10-07 round are honoured, pinned by sha1 (uncommitted edits!)
     REF_OVERRIDE_TABLE = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/ref_override.csv'        # 8 rows; ROUND-RESTART-LIST-A-87-CELLS-FLEET-QUEUE-ALIGNED (ledger 2076); rebuild_cell.sh:23
     REF_OVERRIDE_TABLE_SHA1 = '76016a8b6b2517df3c77895cc4975a5de14b0434'
-    REF_OVERRIDE_I_TABLE = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/ref_override_I.csv'    # 4 rows, paths on lwacalim07 /fast; R-GREGG-20261009-DEWARP-CASCADE-23HGREEN-3CELLS-FAST; rebuild_cell.sh:53-79
-    REF_OVERRIDE_I_TABLE_SHA1 = 'e5363aebdb875923c4212a128b05d2e486f44102'
+    REF_OVERRIDE_I_TABLE = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/ref_override_I.csv'    # 6 rows (exopipe_ops 4779053), paths on lwacalim07 /fast; R-GREGG-20261009-DEWARP-CASCADE-23HGREEN-3CELLS-FAST; rebuild_cell.sh:53-79
+    REF_OVERRIDE_I_TABLE_SHA1 = 'd5b9c99fd928a0b7fe0b567b06d5d7ba3f16ca38'
     PREDEWARP_QUARANTINE = '/lustre/gh/main/phase3/working_quarantine_20261004'   # RBF-dewarped cells' pre-dewarp masters (rebuild_cell.sh:80)
     SUPERSEDED_ARCHIVE = '/lustre/pipeline/exopipe/phase3/Coadd/Run_20260909_000000_SUPERSEDED_20260927'   # flow-dewarped cells (rebuild_cell.sh:25, 94-104)
     EPOCH_GATE_CARRY_DIR = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/epoch_gate_carry'    # empty since 2026-10-10 (rebuild_cell.sh:41); B-05 default (c)
