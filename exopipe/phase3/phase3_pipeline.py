@@ -1503,7 +1503,7 @@ def run_identification_i(diff, master, hdr, bpix, sigma_stack=None,
 
 def run_identification_v(vresid, master_i, hdr, bpix, sigma_stack=None,
                          sigma_thresh=6.0, i_leakage_mult=None,
-                         refuse_on_extraction_failure=False):
+                         refuse_on_extraction_failure=False, zenith_time=None):
     """Signed V detection (search_v_transients_v2.extract_v_peaks runs
     BDSF on +V and -V — both circular polarization handednesses), local SNR,
     and optional sigma_stack threshold. The I-counterpart leakage rule is OFF
@@ -1512,11 +1512,13 @@ def run_identification_v(vresid, master_i, hdr, bpix, sigma_stack=None,
     rejection beyond mstruct — mstruct + morphology veto carry the FP rejection.
     Pass i_leakage_mult=20.0 to restore the old rule (reject if peak|I|>mult*|V|).
     refuse_on_extraction_failure=True (the deep search, Gregg 2026-10-11): a PyBDSF
-    failure raises sv2.SourceExtractionFailed instead of searching with zero sources."""
+    failure raises sv2.SourceExtractionFailed instead of searching with zero sources.
+    zenith_time (2026-10-13, M23): the 10-minute caller passes the window frame's own mid-time, so the elevation mask is
+    measured from the true zenith (sv2.make_masks); None (every deep caller) keeps the phase-centre zenith."""
     from exopipe.phase3 import search_v_transients_v2 as sv2
     wcs = WCS(hdr).celestial
     horizon, ateam, badwcs, obs_time, _coords, _el = sv2.make_masks(
-        hdr, vresid.shape)
+        hdr, vresid.shape, zenith_time=zenith_time)
     v_rms = float(sv2.get_uniform_rms(vresid, horizon))
     cands = sv2.extract_v_peaks(
         vresid.astype(np.float32), hdr, horizon, ateam, badwcs,

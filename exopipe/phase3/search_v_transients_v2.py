@@ -142,7 +142,19 @@ def get_obs_time(header, fits_path=None):
         block = 3600.0  # safe default; never use 0
     return Time(header.get('DATE-OBS'), format='isot', scale='utc') + TimeDelta(block * 0.5, format='sec')
 
-def make_masks(header, shape, fits_path=None):
+def frame_mid_time(header):
+    """A frame's OWN mid-time (CLAUDE.md s7: epoch products carry their own v2 time block): MJD-MID, else the
+    DATE-OBS..DATE-END midpoint, else DATE-OBS + DURATION/2.  Refuses when the header carries none of them."""
+    if header.get('MJD-MID') is not None:
+        return Time(float(header['MJD-MID']), format='mjd', scale='utc')
+    if header.get('DATE-OBS') and header.get('DATE-END'):
+        t0, t1 = Time(header['DATE-OBS'], format='isot', scale='utc'), Time(header['DATE-END'], format='isot', scale='utc')
+        return t0 + (t1 - t0) * 0.5
+    if header.get('DATE-OBS') and header.get('DURATION'):
+        return Time(header['DATE-OBS'], format='isot', scale='utc') + TimeDelta(float(header['DURATION']) * 0.5, format='sec')
+    raise RuntimeError('frame_mid_time: the header carries no MJD-MID, DATE-OBS/DATE-END or DATE-OBS/DURATION - REFUSING')
+
+def make_masks(header, shape, fits_path=None, zenith_time=None):
     wcs = WCS(header).celestial
     h, w = shape
     y, x = np.indices((h, w))
@@ -155,7 +167,15 @@ def make_masks(header, shape, fits_path=None):
     # NOTE: this assumes phase center == zenith. True for the deep co-adds, NOT
     # for 10-min blocks (zenith offset from the fixed phase center) -- those
     # need a separate, time-based path before this is run on them.
-    zenith = SkyCoord(header['CRVAL1'], header['CRVAL2'], unit='deg')
+    # 10-MINUTE PATH (2026-10-13, refactor chat M23; Gregg 2026-10-13 approved): zenith_time = the window frame's own
+    # mid-time (frame_mid_time).  The zenith is OVRO's zenith at that time, so elevation is the same geometry off the TRUE
+    # zenith; a 10-minute window's zenith lies up to 25 minutes of hour angle (~5 deg) from the hour-centre phase centre.
+    # zenith_time=None (every deep caller) leaves the deep path unchanged.
+    if zenith_time is not None:
+        zenith = SkyCoord(alt=90.0 * u.deg, az=0.0 * u.deg,
+                          frame=AltAz(obstime=zenith_time, location=OVRO_LOC)).icrs
+    else:
+        zenith = SkyCoord(header['CRVAL1'], header['CRVAL2'], unit='deg')
     el_deg = 90.0 - coords.separation(zenith).deg
     horizon_mask = el_deg < CONFIG['MIN_ELEVATION']
     invalid_wcs_mask = np.isnan(ra) | np.isnan(dec) | np.isnan(el_deg)
