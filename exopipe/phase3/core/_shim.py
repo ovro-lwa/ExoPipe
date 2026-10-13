@@ -40,6 +40,7 @@ LEGACY = {
     'exopipe.phase3.residuals': 'exopipe.phase3.core.residuals',
     'exopipe.common.roots': 'exopipe.phase3.config',                     # absorbed verbatim (module-level names)
     'exopipe.common.phase3_paths': 'exopipe.phase3.config',              # absorbed verbatim (module-level names)
+    'exopipe.phase3.identify': 'exopipe.phase3.core.fitting',            # fit_empirical_beam absorbed verbatim
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)

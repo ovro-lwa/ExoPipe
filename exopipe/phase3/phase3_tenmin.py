@@ -31,7 +31,7 @@ from astropy.wcs import WCS
 from astropy.time import Time
 from exopipe.phase3 import coadd_full_pipeline as C
 from exopipe.phase3.phase3_pipeline import build_sigma_stack, run_identification_i, run_identification_v
-from exopipe.phase3.identify import fit_empirical_beam
+from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.tenmin_validation import setup_date_params, align_date_intervals
 from exopipe.phase3 import phase3_veto as pv
 from exopipe.phase3 import phase3_catalog as pc

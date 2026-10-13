@@ -25,7 +25,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from exopipe.phase3.phase3_deep import _load, _residual, _mstruct_maps, SIGMA_MSTRUCT
 from exopipe.phase3.phase3_tenmin import _det_header
-from exopipe.phase3.identify import fit_empirical_beam
+from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.core.residuals import inner_rms, gaussian_stamp
 from exopipe.phase3 import phase3_veto as pv
 from exopipe.phase3 import search_v_transients_v2 as sv2

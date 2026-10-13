@@ -201,7 +201,7 @@ def apply_veto(cands, diff, master, hdr, beam, cd, wcs, obs_time, ar_max=None,
     catalog instead. `arms` selects which tests run (G-09, Gregg 2026-08-21:
     the deep V chain passes ('gaussfit',) — bright_mask and bilobe replaced by
     the v110 FP gate); the default preserves every other caller's behavior."""
-    from exopipe.phase3.identify import fit_empirical_beam
+    from exopipe.phase3.core.fitting import fit_empirical_beam
     if ar_max is None:
         em, en, _ep, _nm = fit_empirical_beam(master)
         ar_max = max(2.0, 1.5 * em / max(en, 1e-3))

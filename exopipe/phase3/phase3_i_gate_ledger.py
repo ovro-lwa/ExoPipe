@@ -31,7 +31,7 @@ from exopipe.phase3.phase3_deep import (_load, _master_structure_map, _build_res
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
 from exopipe.phase3.coadd_full_pipeline import build_striation_model, get_midpoint_time
-from exopipe.phase3.identify import fit_empirical_beam
+from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3 import search_v_transients_v2 as sv2
 from exopipe.phase3 import search_i_transients as sit
 from exopipe.phase3 import phase3_veto as pv

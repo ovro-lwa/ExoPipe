@@ -18,7 +18,7 @@ from exopipe.phase3.phase3_deep import (_load, _mstruct_maps, _build_residuals_m
                          _qa_outlier_dates, SIGMA_MSTRUCT, NPROC_RESID, MIN_EPOCHS,
                          load_exclusions, is_excluded, pick_i_master)
 from exopipe.phase3.phase3_pipeline import run_identification_v
-from exopipe.phase3.identify import fit_empirical_beam
+from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3 import phase3_veto as pv
 
 OUT = '/data07/gh/phase3/transients/Run_GATES'

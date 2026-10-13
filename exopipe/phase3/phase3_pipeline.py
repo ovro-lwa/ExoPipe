@@ -1856,7 +1856,7 @@ def stage_search(ctx, dry_run=False):
     transients/ catalog. Only INCOADD-included epochs are searched."""
     from exopipe.phase3 import phase3_veto as pv
     from exopipe.phase3 import phase3_catalog as pc
-    from exopipe.phase3.identify import fit_empirical_beam
+    from exopipe.phase3.core.fitting import fit_empirical_beam
     epochs = [e for e in ctx['epochs'] if e.get('msub_paths')]
     incl_dates = set(ctx.get('included_dates', []))
     if incl_dates:
