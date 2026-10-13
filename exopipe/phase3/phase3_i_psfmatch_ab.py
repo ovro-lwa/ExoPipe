@@ -25,17 +25,17 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.convolution import Gaussian2DKernel, convolve_fft
-from exopipe.phase3.phase3_deep import _load, NPROC_RESID
-from exopipe.phase3.phase3_deep import _residual as _refine_subtract   # not used for matched path
+from exopipe.phase3.lib.search.deep_search import _load, NPROC_RESID
+from exopipe.phase3.lib.search.deep_search import _residual as _refine_subtract   # not used for matched path
 from exopipe.phase3.lib.masters.coadd import apply_flow_field, build_striation_model, get_midpoint_time
 from exopipe.phase3.core.residuals import fft_upsample2, fft_decimate2
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.phase3_i_gate_ledger import _mstruct_i
 from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.core.residuals import gaussian_stamp
-from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
-from exopipe.phase3 import search_i_transients as sit
-from exopipe.phase3 import phase3_veto as pv
+from exopipe.phase3.lib.search.identification import STRIATION_WINDOW_DEG
+from exopipe.phase3.lib.search import search_i as sit
+from exopipe.phase3.lib.search import veto as pv
 
 OUT = '/data07/gh/phase3/transients/Run_I_GATES'
 N_PER, N_FRAMES = 120, 3

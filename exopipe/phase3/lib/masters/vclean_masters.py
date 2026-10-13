@@ -55,8 +55,8 @@ from astropy.io import fits
 WB_ROOT = None   # NO default (Gregg 2026-09-04): coadd_root() at point of use
 SB_ROOT = '/data07/gh/phase3/coadd_sb'
 TMP_ROOT = '/fast/gh/main/tmp'
-SV2_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                          'search_v_transients_v2.py')
+SV2_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          'search', 'search_v.py')
 SV2_TIMEOUT_S = 7200
 
 

@@ -14,12 +14,12 @@ import os, re, glob, csv, fcntl
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
-from exopipe.phase3.phase3_deep import (_load, _mstruct_maps, _build_residuals_mp, _det_header, _epoch_time,
+from exopipe.phase3.lib.search.deep_search import (_load, _mstruct_maps, _build_residuals_mp, _det_header, _epoch_time,
                          _qa_outlier_dates, SIGMA_MSTRUCT, NPROC_RESID, MIN_EPOCHS,
                          load_exclusions, is_excluded, pick_i_master)
-from exopipe.phase3.phase3_pipeline import run_identification_v
+from exopipe.phase3.lib.search.identification import run_identification_v
 from exopipe.phase3.core.fitting import fit_empirical_beam
-from exopipe.phase3 import phase3_veto as pv
+from exopipe.phase3.lib.search import veto as pv
 
 OUT = '/data07/gh/phase3/transients/Run_GATES'
 LEDGER = f'{OUT}/gate_ledger.csv'

@@ -3,4 +3,4 @@ from exopipe.phase3.phase3_final_survivors import *  # noqa
 from exopipe.phase3.phase3_gate_analysis import *  # noqa
 from exopipe.phase3.phase3_gate_ledger import *  # noqa
 from exopipe.phase3.phase3_i_gate_ledger import *  # noqa
-from exopipe.phase3.phase3_veto import *  # noqa
+from exopipe.phase3.lib.search.veto import *  # noqa

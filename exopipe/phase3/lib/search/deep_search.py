@@ -19,15 +19,15 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from exopipe.phase3.lib.masters.coadd import apply_flow_field, build_striation_model
-from exopipe.phase3 import parent_curve_table as _PCT
-from exopipe.phase3.phase3_pipeline import (build_sigma_stack, run_identification_i,
+from exopipe.phase3.lib.search import parent_curve_table as _PCT
+from exopipe.phase3.lib.search.identification import (build_sigma_stack, run_identification_i,
                              run_identification_v, STRIATION_WINDOW_DEG)
 from exopipe.phase3.core.residuals import fft_upsample2, fft_decimate2, write_up_fits
 from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.phase3_tenmin import _det_header
-from exopipe.phase3 import phase3_veto as pv
-from exopipe.phase3 import phase3_catalog as pc
-from exopipe.phase3 import search_v_transients_v2 as sv2
+from exopipe.phase3.lib.search import veto as pv
+from exopipe.phase3.lib.search import candidates as pc
+from exopipe.phase3.lib.search import search_v as sv2
 from astropy.coordinates import SkyCoord as _SC
 _ATEAM_COORDS = _SC([sv2.CONFIG['A_TEAM'][k]['coord'].ra.deg
                      for k in sv2.CONFIG['A_TEAM']],
@@ -136,7 +136,7 @@ def _elev_floor(stokes):
     """The elevation floor (deg) the detection mask of this Stokes actually used - recorded per night in v_deep_images.csv
     elev_min_deg (2026-10-07: it was a literal 20.0 whatever the floor was)."""
     if stokes == 'I':
-        from exopipe.phase3 import search_i_transients as _sitm
+        from exopipe.phase3.lib.search import search_i as _sitm
         return float(_sitm.CONFIG['MIN_ELEVATION'])
     return float(sv2.CONFIG['MIN_ELEVATION'])
 
@@ -289,7 +289,7 @@ def _body_skycoord(body, obs_time_str, date):
 # (exopipe/phase2/align_images.py, byte-identical to the frozen clv15
 # original) — never execute frozen-tree code from the production path.
 # Shelled into py310_orca (JAX), never imported.
-ALIGN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+ALIGN = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
                      'phase2', 'align_images.py')
 WORKROOT = os.environ.get('P3_FLOW_ROOT', '/data07/gh/phase3/deep')   # moved off /fast (NVMe too small; was filling it)
 COADD_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); use coadd_root() at point of use
@@ -923,7 +923,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         # the Stokes I DETECTION mask is search_i_transients' own (phase3_pipeline.run_identification_i -> sit.make_masks); the
         # 2026-10-06 change set only the V module, so Stokes I still detected down to 20 deg and lost 20-25 deg only at publish
         # (found by the 2026-10-07 rulings audit) - the floor is now the same in both detection masks
-        from exopipe.phase3 import search_i_transients as _sit
+        from exopipe.phase3.lib.search import search_i as _sit
         _sit.CONFIG['MIN_ELEVATION'] = sv2.CONFIG['MIN_ELEVATION']
         print(f'  {lst} {scope}: deep elevation floor {sv2.CONFIG["MIN_ELEVATION"]:.1f} deg, Stokes I and V detection masks (Gregg 2026-10-06)')
     if cadence == '10min' and os.environ.get('P3_STRIATION_10MIN') != '1':
@@ -1212,7 +1212,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # cell for that Stokes (median + 4 x 1.4826 MAD, no low side; fewer than 5 frames skips loudly);
             # nothing is inherited from the night table (a bad night fails every frame on its own). Either
             # Stokes above threshold refuses the frame from both searches, as at deep.
-            from exopipe.phase3.phase3_pipeline import inner_rms as _irms
+            from exopipe.phase3.lib.search.identification import inner_rms as _irms
             _rmsI, _rmsV = {}, {}
             for _d in dates:
                 for _st, _rm in (('I', _rmsI), ('V', _rmsV)):

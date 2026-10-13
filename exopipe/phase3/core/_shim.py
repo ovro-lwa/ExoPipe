@@ -55,6 +55,16 @@ LEGACY = {
     'exopipe.phase3.phase3_master_dewarp': 'exopipe.phase3.lib.dewarp.master_dewarp',
     # stage 4: install
     'exopipe.phase3.phase3_install': 'exopipe.phase3.lib.install.install',
+    # stage 4: search
+    'exopipe.phase3.dipole_lib': 'exopipe.phase3.lib.search.dipole_lib',
+    'exopipe.phase3.parent_curve_table': 'exopipe.phase3.lib.search.parent_curve_table',
+    'exopipe.phase3.phase3_c50': 'exopipe.phase3.lib.search.c50',
+    'exopipe.phase3.phase3_catalog': 'exopipe.phase3.lib.search.candidates',
+    'exopipe.phase3.phase3_deep': 'exopipe.phase3.lib.search.deep_search',
+    'exopipe.phase3.phase3_pipeline': 'exopipe.phase3.lib.search.identification',
+    'exopipe.phase3.phase3_veto': 'exopipe.phase3.lib.search.veto',
+    'exopipe.phase3.search_i_transients': 'exopipe.phase3.lib.search.search_i',
+    'exopipe.phase3.search_v_transients_v2': 'exopipe.phase3.lib.search.search_v',
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)

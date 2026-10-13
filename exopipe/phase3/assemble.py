@@ -11,7 +11,7 @@ import os, csv, glob
 from astropy.io import fits
 from astropy.time import Time
 import astropy.units as u
-from exopipe.phase3 import search_i_transients as sit
+from exopipe.phase3.lib.search import search_i as sit
 
 # TO-MOVE-TO-COMMON-CONFIG: hardcoded path constants (ROOT, LEDGERS, COADD)
 # must migrate to the shared exopipe config module at move time.
@@ -74,7 +74,7 @@ def epoch_mid(lst, band, date):
 # stokes, lst_filter) would shadow the extracted seed helper load_rows();
 # import it directly as exopipe.phase3.phase3_tenmin_assemble.
 try:
-    from exopipe.phase3.phase3_catalog import *  # noqa
+    from exopipe.phase3.lib.search.candidates import *  # noqa
 except (ImportError, AttributeError) as _e:  # circular-import guard only
     if 'partially initialized' not in str(_e):
         raise

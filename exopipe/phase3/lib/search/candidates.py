@@ -35,7 +35,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from exopipe.phase3 import config as P
-from exopipe.phase3.phase3_c50 import c50_sigma
+from exopipe.phase3.lib.search.c50 import c50_sigma
 
 OVRO = EarthLocation(lat=37.2339 * u.deg, lon=-118.2817 * u.deg, height=1222 * u.m)
 EPH_BODIES = ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn',

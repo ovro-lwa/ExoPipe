@@ -145,7 +145,7 @@ def leakage_screen_constrained(master_i, v_therm):
 FLOW_CONDA_ENV = 'py310_orca'
 # GC-PRE-2 (Gregg 2026-08-12): flow batch script lives in exopipe/common/
 # (cross-phase core infrastructure); shelled into py310_orca, never imported.
-BATCH_FLOW_SCRIPT = os.path.join(os.path.dirname(SCRIPT_DIR), 'common',
+BATCH_FLOW_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR))), 'common',
                                  'batch_flow_align.py')
 
 # Deep variants to align + archive per epoch. The (taper, robust,
@@ -1479,7 +1479,7 @@ def run_identification_i(diff, master, hdr, bpix, sigma_stack=None,
     refuse_on_extraction_failure=True (the deep search, Gregg 2026-10-11): a
     PyBDSF failure raises search_v_transients_v2.SourceExtractionFailed to the
     caller instead of the fallback peak finder."""
-    from exopipe.phase3 import search_i_transients as sit
+    from exopipe.phase3.lib.search import search_i as sit
     wcs = WCS(hdr).celestial
     horizon, ateam, badwcs, obs_time, _ = sit.make_masks(hdr, diff.shape,
                                                          wcs)
@@ -1513,7 +1513,7 @@ def run_identification_v(vresid, master_i, hdr, bpix, sigma_stack=None,
     Pass i_leakage_mult=20.0 to restore the old rule (reject if peak|I|>mult*|V|).
     refuse_on_extraction_failure=True (the deep search, Gregg 2026-10-11): a PyBDSF
     failure raises sv2.SourceExtractionFailed instead of searching with zero sources."""
-    from exopipe.phase3 import search_v_transients_v2 as sv2
+    from exopipe.phase3.lib.search import search_v as sv2
     wcs = WCS(hdr).celestial
     horizon, ateam, badwcs, obs_time, _coords, _el = sv2.make_masks(
         hdr, vresid.shape)
@@ -1854,8 +1854,8 @@ def stage_search(ctx, dry_run=False):
     surviving candidates — astrometry + Gaussian photometry + FITS/PNG
     cutouts, channel-routed, repeat-matched — into the survey-wide
     transients/ catalog. Only INCOADD-included epochs are searched."""
-    from exopipe.phase3 import phase3_veto as pv
-    from exopipe.phase3 import phase3_catalog as pc
+    from exopipe.phase3.lib.search import veto as pv
+    from exopipe.phase3.lib.search import candidates as pc
     from exopipe.phase3.core.fitting import fit_empirical_beam
     epochs = [e for e in ctx['epochs'] if e.get('msub_paths')]
     incl_dates = set(ctx.get('included_dates', []))

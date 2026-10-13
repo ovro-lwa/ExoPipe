@@ -24,7 +24,7 @@ from . import resolve as R
 from . import refs
 from . import photometry as PHOT
 from exopipe.common.pipeline_config import OVRO_LOC
-from exopipe.phase3.phase3_catalog import ephemeris_label
+from exopipe.phase3.lib.search.candidates import ephemeris_label
 
 
 # ── T1: morphology vs the SUBBAND empirical I beam (Gregg's method) ─────────

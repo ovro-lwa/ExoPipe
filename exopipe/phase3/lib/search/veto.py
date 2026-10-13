@@ -133,7 +133,7 @@ def bilobe_ghost_reason(diff, x, y, beam, rms, cd, dipmap=None, wcs=None):
     # spare a candidate (symmetric dipoles already vetoed above, irrespective of PA).
     if dipmap is None or len(dipmap) == 0 or wcs is None:
         return 'keep'
-    from exopipe.phase3.dipole_lib import lobe_centroid as _cen, sky_pa as _skypa, pa_diff as _padiff
+    from exopipe.phase3.lib.search.dipole_lib import lobe_centroid as _cen, sky_pa as _skypa, pa_diff as _padiff
     if cand_pos:
         cxc, cyc = _cen(diff, x, y, +1, beam); cxp, cyp = _cen(diff, px, py, -1, beam)
         cand_pa = _skypa(wcs, cxc, cyc, cxp, cyp)
@@ -215,7 +215,7 @@ def apply_veto(cands, diff, master, hdr, beam, cd, wcs, obs_time, ar_max=None,
     dipmap = None
     if rms > 0 and 'bilobe' in arms:
         try:
-            from exopipe.phase3.dipole_lib import find_true_dipoles
+            from exopipe.phase3.lib.search.dipole_lib import find_true_dipoles
             dipmap = find_true_dipoles(diff, beam, sig=NEG_SIG, wcs=wcs)
         except Exception:
             dipmap = None

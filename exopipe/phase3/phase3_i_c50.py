@@ -23,7 +23,7 @@ import os, csv, math, tempfile, shutil
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
-from exopipe.phase3.phase3_deep import _load, _residual
+from exopipe.phase3.lib.search.deep_search import _load, _residual
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.phase3_i_gate_ledger import _mstruct_i
 from exopipe.phase3.core.fitting import fit_empirical_beam
@@ -31,7 +31,7 @@ from exopipe.phase3.core.residuals import gaussian_stamp
 from exopipe.phase3.lib.masters.coadd import (discover_dates, find_wideband_deep_images,
                                  load_image, measure_flux_scale, apply_flow_field,
                                  regrid_image, get_midpoint_time)
-from exopipe.phase3 import search_i_transients as sit
+from exopipe.phase3.lib.search import search_i as sit
 
 OUT = '/data07/gh/phase3/transients/Run_I_GATES/c50'
 N_PER, N_FRAMES = 120, 3

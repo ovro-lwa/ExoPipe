@@ -29,7 +29,7 @@ import numpy as np
 import astropy.units as u
 from astropy.coordinates import SkyCoord, get_body, EarthLocation, AltAz
 from astropy.time import Time
-from exopipe.phase3.phase3_c50 import c50_sigma
+from exopipe.phase3.lib.search.c50 import c50_sigma
 
 OUT = '/data07/gh/phase3/transients/Run_FINAL'
 FINAL = f'{OUT}/V_deep_FINAL_transients.csv'
@@ -237,7 +237,7 @@ def main():
     # after rank14: fitted FWHM in beams + axis ratio + fit residual, measured
     # with the production fitter on the saved all-sky V frames; blank <7sigma
     # (no full-frame residuals archived for the faint tail)) ----
-    from exopipe.phase3 import phase3_veto as pv
+    from exopipe.phase3.lib.search import veto as pv
     from astropy.wcs import WCS
     from astropy.io import fits as _fits
     by_epoch = defaultdict(list)

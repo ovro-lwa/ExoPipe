@@ -23,13 +23,13 @@ from datetime import datetime, timezone
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
-from exopipe.phase3.phase3_deep import _load, _residual, _mstruct_maps, SIGMA_MSTRUCT
+from exopipe.phase3.lib.search.deep_search import _load, _residual, _mstruct_maps, SIGMA_MSTRUCT
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.core.residuals import inner_rms, gaussian_stamp
-from exopipe.phase3 import phase3_veto as pv
-from exopipe.phase3 import search_v_transients_v2 as sv2
-from exopipe.phase3 import phase3_c50
+from exopipe.phase3.lib.search import veto as pv
+from exopipe.phase3.lib.search import search_v as sv2
+from exopipe.phase3.lib.search import c50 as phase3_c50
 
 N_PER_FRAME, N_FRAMES = 150, 4
 SNR_LO, SNR_HI = 3.0, 12.0

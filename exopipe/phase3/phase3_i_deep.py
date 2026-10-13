@@ -55,15 +55,15 @@ import astropy.units as u
 from scipy.ndimage import maximum_filter
 from astropy.convolution import convolve_fft
 
-from exopipe.phase3.phase3_deep import _load, _sigma_stack, MIN_EPOCHS
+from exopipe.phase3.lib.search.deep_search import _load, _sigma_stack, MIN_EPOCHS
 from exopipe.phase3.phase3_i_psfmatch_ab import matched_resid, gk
 from exopipe.phase3.phase3_i_gate_ledger import bilobe_measurables, _mstruct_i
 from exopipe.phase3.phase3_tenmin import _det_header
 from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.lib.masters.coadd import (OVRO_LOC, load_exclusions, is_excluded,
                                  get_midpoint_time)
-from exopipe.phase3 import search_i_transients as sit
-from exopipe.phase3 import phase3_veto as pv
+from exopipe.phase3.lib.search import search_i as sit
+from exopipe.phase3.lib.search import veto as pv
 from exopipe.phase3.core import products as prod
 
 COADD_ROOT = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04); use coadd_root() at point of use

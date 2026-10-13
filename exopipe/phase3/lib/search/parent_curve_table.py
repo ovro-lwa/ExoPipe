@@ -10,7 +10,7 @@ import json, os
 import numpy as np
 from scipy.spatial import cKDTree
 _TABLES = None
-PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'common', 'parent_curve_tables.json')
+PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'common', 'parent_curve_tables.json')
 def tables():
     global _TABLES
     if _TABLES is None:

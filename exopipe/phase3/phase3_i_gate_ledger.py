@@ -24,18 +24,18 @@ import os, re, glob, csv, fcntl
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
-from exopipe.phase3.phase3_deep import (_load, _master_structure_map, _build_residuals_mp,
+from exopipe.phase3.lib.search.deep_search import (_load, _master_structure_map, _build_residuals_mp,
                          _mstruct_validity_guard,
                          _qa_outlier_dates, NPROC_RESID, MIN_EPOCHS,
                          load_exclusions, is_excluded)
 from exopipe.phase3.phase3_tenmin import _det_header
-from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
+from exopipe.phase3.lib.search.identification import STRIATION_WINDOW_DEG
 from exopipe.phase3.lib.masters.coadd import build_striation_model, get_midpoint_time
 from exopipe.phase3.core.fitting import fit_empirical_beam
-from exopipe.phase3 import search_v_transients_v2 as sv2
-from exopipe.phase3 import search_i_transients as sit
-from exopipe.phase3 import phase3_veto as pv
-from exopipe.phase3.phase3_deep import _sigma_stack
+from exopipe.phase3.lib.search import search_v as sv2
+from exopipe.phase3.lib.search import search_i as sit
+from exopipe.phase3.lib.search import veto as pv
+from exopipe.phase3.lib.search.deep_search import _sigma_stack
 
 OUT = '/data07/gh/phase3/transients/Run_I_GATES'
 PSFM = os.environ.get('I_LEDGER_PSFMATCH') == '1'   # matched-chain mode

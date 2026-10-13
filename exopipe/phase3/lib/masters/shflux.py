@@ -39,7 +39,7 @@ from astropy.wcs import WCS
 sys.path.insert(0, '/lustre/gh/main/exopipe')
 from exopipe.common import pipeline_config as pc
 from exopipe.common import phase2_config as cfg
-from exopipe.phase3.phase3_catalog import gaussian_photometry
+from exopipe.phase3.lib.search.candidates import gaussian_photometry
 from exopipe.phase3.verify_mosaic import model_flux
 
 SH_MIN_ELEVATION_DEG = 50.0     # ruled 2026-08-28

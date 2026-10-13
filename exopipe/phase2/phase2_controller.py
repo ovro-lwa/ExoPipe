@@ -747,13 +747,13 @@ def run_all_transient_searches(work_dir, subband_list, catalog_path, logger,
     # absorb (R-GC9, Gregg 2026-08-13): missing callee = hard refusal, never
     # a silent no-op of the Phase-2 per-epoch V search.
     pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    v_script = os.path.join(pkg_dir, 'phase3', 'search_v_transients_v2.py')
+    v_script = os.path.join(pkg_dir, 'phase3', 'lib', 'search', 'search_v.py')
     if not os.path.exists(v_script):
         raise RuntimeError(
             f"search_v_transients_v2.py not found at {v_script} — "
             "Phase-2 V transient search REFUSED (R-GC9)")
     try:
-        from exopipe.phase3.search_i_transients import run_search as _test_import
+        from exopipe.phase3.lib.search.search_i import run_search as _test_import
         del _test_import
     except ImportError:
         logger.warning("search_i_transients not importable — I search disabled")
@@ -1046,7 +1046,7 @@ def _run_v_search(v_image, i_image, catalog_path=None, out_dir=None,
     # sv2 lives in phase3/ after the absorb (R-GC9, Gregg 2026-08-13):
     # missing callee = hard refusal, never a silent 0-detection return.
     pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    script = os.path.join(pkg_dir, 'phase3', 'search_v_transients_v2.py')
+    script = os.path.join(pkg_dir, 'phase3', 'lib', 'search', 'search_v.py')
     if not os.path.exists(script):
         raise RuntimeError(
             f"search_v_transients_v2.py not found at {script} — "
@@ -1099,7 +1099,7 @@ def _run_i_search(tgt_image, ref_image, catalog_path=None, out_dir=None,
                   sigma=7.0):
     """Run Stokes I transient search via direct import."""
     try:
-        from exopipe.phase3.search_i_transients import run_search
+        from exopipe.phase3.lib.search.search_i import run_search
     except ImportError:
         print(f"  WARNING: search_i_transients not importable")
         return 0

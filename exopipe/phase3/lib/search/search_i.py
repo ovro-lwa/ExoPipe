@@ -324,7 +324,7 @@ def run_alignment(tgt_path, ref_scaled_path, out_dir, conda_env):
     # exopipe/phase2/ in the refactored tree (was beside this script in the
     # frozen flat clv15 layout).
     align_script = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
         'phase2', 'align_images.py')
     if not os.path.exists(align_script):
         print("  align_images.py not found  skipping alignment")
@@ -474,7 +474,7 @@ def extract_positive_peaks(diff_data, diff_header, horizon_mask, ateam_mask,
 
         except Exception as e:
             if refuse_on_failure:
-                from exopipe.phase3 import search_v_transients_v2 as _sv2
+                from exopipe.phase3.lib.search import search_v as _sv2
                 if isinstance(e, _sv2.NODE_ERRORS):
                     raise      # memory / disk: a node condition - the attempt fails and is retried, never a refusal
                 raise _sv2._extraction_refusal('Stokes I search image', e) from e

@@ -30,16 +30,16 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.time import Time
 from exopipe.phase3.lib.masters import coadd as C
-from exopipe.phase3.phase3_pipeline import build_sigma_stack, run_identification_i, run_identification_v
+from exopipe.phase3.lib.search.identification import build_sigma_stack, run_identification_i, run_identification_v
 from exopipe.phase3.core.fitting import fit_empirical_beam
 from exopipe.phase3.tenmin_validation import setup_date_params, align_date_intervals
-from exopipe.phase3 import phase3_veto as pv
-from exopipe.phase3 import phase3_catalog as pc
+from exopipe.phase3.lib.search import veto as pv
+from exopipe.phase3.lib.search import candidates as pc
 from exopipe.phase3.core import products as pp
 from exopipe.phase3 import config as P
 from exopipe.common import phase2_config as cfg
 from exopipe.phase3 import leakage_check as _LC
-from exopipe.phase3 import search_v_transients_v2 as sv2
+from exopipe.phase3.lib.search import search_v as sv2
 from astropy.coordinates import SkyCoord as _SC
 from scipy.ndimage import maximum_filter as _maxf
 
