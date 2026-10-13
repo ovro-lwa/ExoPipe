@@ -121,28 +121,3 @@ def write_up_fits(data, hdr0, path):
         if k in hdr0:
             h[k] = hdr0[k]
     fits.writeto(path, data.astype(np.float32), h, overwrite=True)
-
-
-
-
-# constituents (step-3 moves)
-# Guarded star-imports: phase3_i_psfmatch_ab and phase3_save_residuals reach
-# back into this seed's helpers (directly and via phase3_deep). When a
-# constituent-first import arrives here mid-cycle, the re-export is skipped
-# (the helpers above are already defined and satisfy the cycle); a direct
-# import of this module re-exports everything.
-try:
-    from exopipe.phase3.phase3_i_psfmatch_ab import *  # noqa
-except (ImportError, AttributeError) as _e:  # circular-import guard only
-    if 'partially initialized' not in str(_e):
-        raise
-try:
-    from exopipe.phase3.phase3_pbcorr_residuals import *  # noqa
-except (ImportError, AttributeError) as _e:  # circular-import guard only
-    if 'partially initialized' not in str(_e):
-        raise
-try:
-    from exopipe.phase3.phase3_save_residuals import *  # noqa
-except (ImportError, AttributeError) as _e:  # circular-import guard only
-    if 'partially initialized' not in str(_e):
-        raise
