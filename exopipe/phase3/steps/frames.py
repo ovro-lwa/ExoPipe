@@ -96,9 +96,11 @@ def add_arguments(p):
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.frames import deep_step
     st = f'deep: {",".join(CFG.frames.STAGES["deep"])} (frames.STAGES)'
-    order = getattr(getattr(CFG, 'frames_tiers', None), 'ORDER', None) or {}
-    st += ''.join(f'; {t}: {",".join(order[t])} (frames_tiers.ORDER; defaults per mode in frames_tiers.STAGES)'
-                  for t in ('sublst', 'snapshot') if t in order)
+    secs = CFG.sections()
+    for t in ('sublst', 'snapshot'):            # the tiers' own sections (unit frames-tiers): frames_<tier>.ORDER
+        order = getattr(secs.get(f'frames_{t}'), 'ORDER', None)
+        if order:
+            st += f'; {t}: {",".join(order)} (frames_{t}.ORDER)'
     g = p.add_argument_group('frames: stages (every tier)')
     g.add_argument('--stages', help=f'stages to run, always in the tier\'s order: {st}')
     g.add_argument('--from', dest='from_stage', metavar='STAGE', help='first stage of the tier\'s order')

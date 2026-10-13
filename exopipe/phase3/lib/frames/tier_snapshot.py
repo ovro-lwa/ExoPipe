@@ -21,8 +21,10 @@ DESIGN 12.1; the same item kind in bulk).
           subband directories [snapshot_regrid]; nothing to regrid = no-input.
   wideband  not offered in the window (frames.md B9: production builds the 10-s Red/Green/Blue co-adds in memory inside the
           group search and persists only wideband_members_<S>.csv; persisting them is new behaviour for the snapshot chat).
-  cube    unit <cell>_cube: one flowed-frame cube per (subband, Stokes): clv15/phase3_snapshot_cube.py write (flow
-          interpreter, astropy >= 5.3) then verify (py36), CUBE_WRITE_PROCS at a time, into node-local
+  cube    unit <cell>_cube (a COMPLETE cell of this unit's own done record is skipped, as cube pass :35; any other
+          earlier cubes refuse without --fresh): one flowed-frame cube per (subband, Stokes):
+          clv15/phase3_snapshot_cube.py write (flow interpreter, astropy >= 5.3) then verify (py36), CUBE_WRITE_PROCS at a
+          time, into node-local
           <scratch>/cube_pass/<cell>/cubes; shipped by copy + md5 to <cubes root>/<cell>/ with MANIFEST.txt (one line per cube:
           md5, copy-OK, its VERIFY line; last line COMPLETE <cell> cubes=N subbands=M node=... code=...), cube_write.log,
           cube_verify.log [snapshot_cube]. Gates: N-G4 broken link, N-G6 a staged subband without Master, no flow fields,
@@ -30,12 +32,17 @@ DESIGN 12.1; the same item kind in bulk).
           writer's astropy (the engine refuses). The flow fields are read from --snap-flow-dir, else the flow step's
           node-local <scratch>/<cell>/flow, else its shipped copy <paths.SNAPSHOT_FLOW_ROOT>/<cell>; copying the fields to
           the flow tree is the flow step's `ship` (not done here).
-  movies  unit <cell>_movies: the 19 frame movies (clv15/phase3_snapshot_frame_movie.py in place, flow interpreter) from the
-          staged flowed frames (--snap-movie-source staged) or the shipped cubes (cube) into <movies root>/<cell>/
-          (frames_<cell>_<band>_I.mp4, movies.log; MOVIES_DONE touched as today for its current readers) [frame_movie]; and,
-          with frames_snapshot.FLOW_MOVIES, per subband the flow movie + series (clv15/phase3_snapshot_flow_movie.py,
-          FLOW_MOVIE_PROCS at a time, header = the first flowed Stokes I frame) shipped to
-          <paths.SNAPSHOT_FLEET_OUT>/<cell>/flow/ [flow_movie]. N-G10: a frame-movie failure refuses this unit only.
+  movies  unit <cell>_movies: with frames_snapshot.FLOW_MOVIES first (v9:277), per staged subband the flow movie + series
+          (clv15/phase3_snapshot_flow_movie.py, FLOW_MOVIE_PROCS at a time, header = the first flowed Stokes I frame, whose
+          |CDELT2| is the arcmin scale - M31; a subband without one gets no movie, item refused) shipped as production does
+          (cp -n) to <paths.SNAPSHOT_FLEET_OUT>/<cell>/flow/ [flow_movie] - an earlier shipped file is kept and the item
+          refused by name unless --fresh; then the 19 frame movies (clv15/phase3_snapshot_frame_movie.py in place, flow
+          interpreter) from the staged flowed frames (--snap-movie-source staged) or the shipped cubes (cube) into
+          <movies root>/<cell>/ (frames_<cell>_<band>_I.mp4, movies.log; MOVIES_DONE touched as today for its current
+          readers) [frame_movie]. N-G10: a frame-movie failure refuses this unit only.
+Engine arguments: a config value equal to the in-place engine's own default is not passed (a default run has the
+production command line); an overridden key is passed; a config value that differs from the engine default without an
+override refuses as drift (engine_flags).
 
 Roots: staging and cube work are node-local under the scratch root (--work, else the site SCRATCH_ROOT of this host;
 --snap-stage-root names an existing staging root to read). Products go to the production roots (paths.SNAPSHOT_CUBES_ROOT,
@@ -101,6 +108,64 @@ def md5_file(path, bs=1 << 22):
         for b in iter(lambda: f.read(bs), b''):
             h.update(b)
     return h.hexdigest()
+
+
+def engine_defaults(script):
+    """{'--flag': default} of the in-place engine's argparse calls with a literal default (a module-level constant name is
+    resolved), read from its source with ast - nothing imported. The engine's own defaults are the production values."""
+    import ast
+    with open(script) as f:
+        tree = ast.parse(f.read())
+    consts = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            try:
+                consts[node.targets[0].id] = ast.literal_eval(node.value)
+            except ValueError:
+                pass
+    out = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, 'attr', None) == 'add_argument' and node.args
+                and isinstance(node.args[0], ast.Constant) and str(node.args[0].value).startswith('--')):
+            continue
+        for kw in node.keywords:
+            if kw.arg == 'default':
+                if isinstance(kw.value, ast.Name) and kw.value.id in consts:
+                    out[node.args[0].value] = consts[kw.value.id]
+                else:
+                    try:
+                        out[node.args[0].value] = ast.literal_eval(kw.value)
+                    except ValueError:
+                        pass
+    return out
+
+
+def engine_flags(script, spec, section='frames_snapshot'):
+    """The engine arguments for [(flag, KEY, config value)]: none when the value equals the engine's own default (a
+    default run has exactly the production command line), the flag when the key was overridden (--set / --config).
+    A config value that differs from the engine default WITHOUT an override is drift (the engine changed in production,
+    or the config draft is wrong): refused - the config stays the one place the value is read from."""
+    from exopipe.phase3.core.record import Refusal
+    dflt = engine_defaults(script)
+    over = {o[0].split('[', 1)[0] for o in cfg().overrides}
+    args = []
+    for flag, key, val in spec:
+        if flag not in dflt:
+            raise Refusal(f'{os.path.basename(script)} has no literal default for {flag} (engine changed?): '
+                          f'{section}.{key} cannot be checked against it')
+        d = dflt[flag]
+        if isinstance(val, float) and isinstance(d, (int, float)):
+            same = abs(float(d) - val) <= 1e-12 * max(1.0, abs(val))
+        else:
+            same = val == d
+        if same:
+            continue
+        if f'{section}.{key}' not in over:
+            raise Refusal(f'config drift: {os.path.basename(script)} {flag} defaults to {d!r}, {section}.{key} = {val!r} '
+                          f'without an override - update the config draft to the engine (production) value, or pass '
+                          f'--set {section}.{key}=... to choose it')
+        args += [flag, str(val)]
+    return args
 
 
 def add_arguments(p):
@@ -317,7 +382,7 @@ def staged_names(d):
 
 
 def stage_stage(ctx, cell, lst, date, sbs):
-    from exopipe.phase3.core.record import Refusal, NoInput
+    from exopipe.phase3.core.record import Refusal
     S = ctx.S
     name = f'{cell}_stage'
     if ctx.dry:
@@ -354,6 +419,11 @@ def stage_stage(ctx, cell, lst, date, sbs):
     if staged_names_any(d) and not getattr(ctx.args, 'fresh', False):
         try:
             stage_input(ctx, cell)                     # the done stage record of this unit, its file set intact
+            from exopipe.phase3.core import record
+            held = set(((record.load_record(ctx.run.out_root, ctx.run.step, name) or {}).get('meta') or {})
+                       .get('subbands') or {})
+            if not set(sbs) <= held:                   # and it holds every subband this run asks for
+                raise Refusal(f'the staging holds {sorted(held)}, this run asks {sbs}')
             u = ctx.run.unit(name)
             u.status, u.reason = 'skipped-valid', (f'the staging {d} of this unit\'s done record is intact (same file set); '
                                                    f'pass --fresh to stage again')
@@ -451,8 +521,8 @@ def stage_stage(ctx, cell, lst, date, sbs):
         if bad:
             u.refuse('N-G2 staging incomplete: ' + '; '.join(bad[:6]) + (f' (+{len(errors)} copy/funpack errors)'
                                                                        if errors else ''))
-        if total == 0:
-            raise NoInput(f'no Phase-1 frames for {cell} in {",".join(sbs)}')
+        if total == 0:              # cube pass :61 STAGE-REFUSED at 0 frames; the fleet refuses it as < MIN_FRAMES (v9:199)
+            u.refuse(f'N-G2 no Phase-1 frame staged for {cell} in {",".join(sbs)} (discovery listed none)')
         u.check('stage.min_frames', total >= S.MIN_FRAMES[ctx.chain], value=total,
                 detail=f'N-G3: {total} decompressed frames, need {S.MIN_FRAMES[ctx.chain]} (chain {ctx.chain}; v9:199-201)')
         for sb in lists:
@@ -499,6 +569,8 @@ def stage_input(ctx, cell, u=None):
             raise Refusal(f'staged {sb} files of {cell} differ from the stage record (set changed since staging)')
         if names:
             out[sb] = names
+    if u is not None:                                   # the chain of records (DESIGN 11.5): this unit read that record
+        u.add_input(record.record_path(ctx.run.out_root, ctx.run.step, f'{cell}_stage'), extra={'role': 'stage record'})
     return d, out
 
 
@@ -533,7 +605,7 @@ def stage_regrid(ctx, cell, lst, date, sbs):
     mode = S.OFF_GRID[ctx.chain]
     if ctx.dry:
         plan(f'  STAGE regrid {cell}: chain {ctx.chain} ({mode}); masters under {ctx.C.masters_snapshot.LINK_ROOT}')
-        br = broken_links(ctx, lst, S.SUBBANDS)
+        br = broken_links(ctx, lst, sbs)
         ctx.gate('N-G4 Master links', not br, f'broken: {br}' if br else 'no broken link')
         miss = [sb for sb in sbs if not os.path.exists(ctx.master(lst, sb))]
         if miss:
@@ -548,7 +620,8 @@ def stage_regrid(ctx, cell, lst, date, sbs):
         d, staged = stage_input(ctx, cell, u)
         refuse_production_writes([d])
         u.set_admitted([f'{date}/{sb}' for sb in staged])
-        br = broken_links(ctx, lst, S.SUBBANDS)
+        # the fleet tests every subband of its run ($SUBBANDS, v9:147), the cube pass the staged ones ($SBS, :68-76)
+        br = broken_links(ctx, lst, sbs if mode == 'regrid' else [sb for sb in staged if sb in sbs])
         if br:
             u.refuse(f'N-G4 broken Master link(s) {br} under {ctx.C.masters_snapshot.LINK_ROOT} (a fault, never "no Master"; '
                      f'v9:146-151)')
@@ -559,16 +632,16 @@ def stage_regrid(ctx, cell, lst, date, sbs):
             if sb not in sbs:
                 continue
             first = os.path.join(d, sb, staged[sb][0])
-            nax = raw_cards(first).get('NAXIS1', S.ON_GRID_NAXIS)
+            nax = raw_cards(first).get('NAXIS1')
             m = ctx.master(lst, sb)
             if mode == 'refuse':
-                if os.path.exists(m):
+                if os.path.exists(m):                  # an unreadable header on either side refuses (cube pass :79-81)
                     mnax = raw_cards(m).get('NAXIS1')
-                    if nax != mnax:
+                    if nax is None or mnax is None or nax != mnax:
                         u.refuse(f'N-G5 {sb}: frames {nax} px, own Master {mnax} px - off their Master\'s grid (cube pass '
                                  f':78-81; OFF_GRID[cube] = refuse, B-22)')
                 continue
-            if nax == S.ON_GRID_NAXIS:
+            if nax is None or nax == S.ON_GRID_NAXIS:          # the fleet counts an unreadable header as on grid (v9:129-130)
                 continue
             if not os.path.exists(m):
                 u.note(f'REGRID-SKIPPED {cell} {sb} no Master of its own - frames left on their grid (v9:133)')
@@ -608,6 +681,17 @@ def flow_dir(ctx, cell):
     raise Refusal(f'no flow fields for {cell}: no --snap-flow-dir, no node-local flow dir, no {d}')
 
 
+def cubes_complete(dest):
+    """The cell's shipped MANIFEST.txt ends with its COMPLETE line (cube pass :35)."""
+    p = os.path.join(dest, 'MANIFEST.txt')
+    try:
+        with open(p) as f:
+            lines = [l for l in f.read().splitlines() if l.strip()]
+    except OSError:
+        return False
+    return bool(lines) and lines[-1].startswith('COMPLETE ')
+
+
 def _date_u():
     t = time.gmtime()
     return time.strftime('%a %b ', t) + f'{t.tm_mday:2d}' + time.strftime(' %H:%M:%S UTC %Y', t)
@@ -633,12 +717,32 @@ def stage_cube(ctx, cell, lst, date, sbs):
         for k in ('cube_write', 'cube_verify'):
             ok, py = check_interpreter(interpreter_key('frames_snapshot', k))
             ctx.gate(f'interpreter {k}', ok, py)
+        try:
+            q = engine_flags(legacy_script('clv15', 'phase3_snapshot_cube.py'), [('--quant', 'CUBE_QUANT', S.CUBE_QUANT)])
+            ctx.gate('engine defaults', True, f'cube write extra arguments: {q or "none (production command line)"}')
+        except Refusal as e:
+            ctx.gate('engine defaults', False, str(e))
         ex = os.path.exists(os.path.join(dest, 'MANIFEST.txt'))
         ctx.gate('earlier cubes', not ex or getattr(ctx.args, 'fresh', False),
-                 f'{dest}/MANIFEST.txt ' + ('exists (pass --fresh)' if ex else 'absent'))
+                 f'{dest}/MANIFEST.txt ' + ('exists (pass --fresh; a COMPLETE cell of this unit\'s own done record is '
+                                            'skipped)' if ex else 'absent'))
         plan(f'    UNIT {name}: {2 * len(sbs)} cubes planned')
         ctx.planned += 1
         return
+    if not getattr(ctx.args, 'fresh', False) and cubes_complete(dest):
+        # cube pass :35: a cell whose MANIFEST ends COMPLETE is not cubed again (a re-write changes the bytes: RICE dither).
+        # This unit's own done record + a MANIFEST that passes its test now = skipped-valid; any other COMPLETE cell refuses
+        # below (cubes of an earlier run, never overwritten without --fresh).
+        from exopipe.phase3.core import record, validate
+        rec = record.load_record(ctx.run.out_root, ctx.run.step, name)
+        man = os.path.join(dest, 'MANIFEST.txt')
+        if rec and rec.get('status') == 'done' and man in {o['path'] for o in rec.get('outputs', [])} \
+                and all(r['passed'] for r in validate.run('snapshot_cube', man)):
+            u = ctx.run.unit(name)
+            u.status, u.reason = 'skipped-valid', (f'{man} is COMPLETE, written by this unit\'s done record and passes its '
+                                                   f'content test (cube pass :35 skips a COMPLETE cell); --fresh rebuilds')
+            say(f'frames: {name} skipped ({u.reason})')
+            return
     with ctx.run.unit(name, tier=TIER, stage='cube', cell=cell) as u:
         d, staged = stage_input(ctx, cell, u)
         staged = {sb: v for sb, v in staged.items() if sb in sbs}
@@ -660,11 +764,8 @@ def stage_cube(ctx, cell, lst, date, sbs):
         refuse_production_writes([work, dest])
         earlier = os.path.isdir(dest) and (os.path.exists(os.path.join(dest, 'MANIFEST.txt'))
                                           or any(f.endswith('.fits') for f in os.listdir(dest)))
-        if earlier:
-            from exopipe.phase3.core import record
-            rec = record.load_record(ctx.run.out_root, ctx.run.step, name)
-            if not getattr(ctx.args, 'fresh', False) and not (rec and rec.get('status') == 'done'):
-                u.refuse(f'cubes of an earlier run present in {dest} - pass --fresh to replace them')
+        if earlier and not getattr(ctx.args, 'fresh', False):
+            u.refuse(f'cubes of an earlier run present in {dest} - pass --fresh to replace them')
         shutil.rmtree(work, ignore_errors=True)
         os.makedirs(cub)
         jobs = [(sb, st) for sb in sorted(staged, key=lambda s: int(s[:-3])) for st in ('I', 'V')]
@@ -672,13 +773,14 @@ def stage_cube(ctx, cell, lst, date, sbs):
             u.plan(os.path.join(dest, f'{cell}_{sb}_{st}_flowcube.fits'), 'snapshot_cube')
         wpy, vpy = interpreter_key('frames_snapshot', 'cube_write'), interpreter_key('frames_snapshot', 'cube_verify')
         script = legacy_script('clv15', 'phase3_snapshot_cube.py')
+        qargs = engine_flags(script, [('--quant', 'CUBE_QUANT', S.CUBE_QUANT)])
         results = {}
 
         def one(job):
             sb, st = job
             cube = os.path.join(cub, f'{cell}_{sb}_{st}_flowcube.fits')
             wargs = ['write', '--stage', os.path.join(d, sb), '--cell', cell, '--subband', sb, '--stokes', st,
-                     '--flows', fd, '--out', cub] + (['--quant', str(S.CUBE_QUANT)] if S.CUBE_QUANT != 8.0 else [])
+                     '--flows', fd, '--out', cub] + qargs
             wres, wl = engine(script, wargs, wpy, os.path.join(work, f'cube_write_{sb}_{st}.log'), unit=u)
             if not wres.ok:
                 results[job] = ('refused' if wres.refused else 'error', refusal_line(wl, wres), None)
@@ -744,19 +846,94 @@ def first_flowed_I(sd):
     return c[0] if c else None
 
 
+def strip_legacy_header(log):
+    """core.legacy.run opens a child's log with a blank line and a '===== <UTC> <argv>' line; a log that is a product
+    (movies.log, movie_<sb>.log) keeps the engine's own lines only, as production writes it ('> log')."""
+    try:
+        with open(log, errors='replace') as f:
+            lines = f.read().splitlines(True)
+    except OSError:
+        return
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i < len(lines) and lines[i].startswith('===== '):
+        with open(log + '.tmp', 'w') as f:
+            f.writelines(lines[i + 1:])
+        os.replace(log + '.tmp', log)
+
+
+def frame_movie_args(ctx, script):
+    S = ctx.S
+    fargs = []
+    if tuple(S.FRAME_BANDS) != tuple(S.SUBBANDS) + ('Red', 'Green', 'Blue', 'Full'):
+        fargs += ['--bands', ','.join(S.FRAME_BANDS)]
+    return fargs + engine_flags(script, [('--k', 'STRETCH_K', S.STRETCH_K), ('--size', 'MOVIE_WIDTH_PX', S.MOVIE_WIDTH_PX),
+                                         ('--fps', 'MOVIE_FPS', S.MOVIE_FPS), ('--crf', 'MOVIE_CRF', S.MOVIE_CRF)])
+
+
+def flow_movies(ctx, u, cell, d, staged, ship):
+    """Per staged subband the flow movie + series (v9:277: phase3_snapshot_flow_movie.py, FLOW_MOVIE_PROCS at a time, the
+    header frame = the first flowed Stokes I frame, whose |CDELT2| sets the arcmin scale - M31, clv15 98595b3), rendered
+    in node-local scratch and shipped as production does (cp -n, v9:346). A subband without a flowed I frame gets no movie
+    (production's call fails without --header-fits; the engine would otherwise assume the 18 MHz pixel). A shipped file of
+    an earlier run is not overwritten (cp -n) and the item is refused by name unless --fresh replaces it."""
+    S = ctx.S
+    fd, how = flow_dir(ctx, cell)
+    mwork = os.path.join(ctx.scratch(), 'snapshot_movies_work', cell)
+    shutil.rmtree(mwork, ignore_errors=True)
+    os.makedirs(mwork)
+    fscript = legacy_script('clv15', 'phase3_snapshot_flow_movie.py')
+    dargs = engine_flags(fscript, [('--duration-s', 'FLOW_MOVIE_DURATION_S', S.FLOW_MOVIE_DURATION_S)])
+    fres, hdrs = {}, {}
+    order = sorted(staged, key=lambda s: int(s[:-3]))
+    for sb in order:
+        hdrs[sb] = first_flowed_I(os.path.join(d, sb))
+
+    def fm(sb):
+        out = os.path.join(mwork, f'flow_{sb}.mp4')
+        a = ['--flows', fd, '--subband', sb, '--header-fits', hdrs[sb], '--out', out] + dargs
+        fres[sb] = engine(fscript, a, interpreter_key('frames_snapshot', 'flow_movies'),
+                          os.path.join(mwork, f'movie_{sb}.log'), unit=u, refusal_codes=())[0]
+    parallel(fm, [sb for sb in order if hdrs[sb]], S.FLOW_MOVIE_PROCS)
+    os.makedirs(ship, exist_ok=True)
+    fresh = bool(getattr(ctx.args, 'fresh', False))
+    for sb in order:
+        target = os.path.join(ship, f'flow_{sb}.mp4')
+        mp4 = os.path.join(mwork, f'flow_{sb}.mp4')
+        if not hdrs[sb]:
+            u.refuse_item(target, f'flow movie {sb}: no flowed Stokes I frame in {os.path.join(d, sb)} for --header-fits '
+                                  f'(its |CDELT2| is the pixel scale, M31)', gate='N-G10 flow movie')
+            continue
+        if sb not in fres or fres[sb].rc != 0 or not os.path.exists(mp4):
+            u.refuse_item(target, f'flow movie {sb}: {fres[sb].reason if sb in fres else "not run"} '
+                                  f'(log {mwork}/movie_{sb}.log)', gate='N-G10 flow movie')
+            continue
+        strip_legacy_header(os.path.join(mwork, f'movie_{sb}.log'))
+        kept = []
+        for fn in (f'flow_{sb}.mp4', f'flow_{sb}_series.png', f'flow_{sb}_series.csv', f'movie_{sb}.log'):
+            s_, t_ = os.path.join(mwork, fn), os.path.join(ship, fn)
+            if not os.path.exists(s_):
+                continue
+            if os.path.exists(t_) and not fresh:
+                kept.append(fn)                                    # cp -n keeps the earlier file (v9:346)
+                continue
+            shutil.copyfile(s_, t_ + '.part')
+            os.replace(t_ + '.part', t_)
+        if kept:
+            u.refuse_item(target, f'flow movie {sb}: earlier file(s) {kept} in {ship} not overwritten (cp -n, v9:346) - '
+                                  f'move them aside or pass --fresh', gate='N-G10 flow movie ship')
+            continue
+        u.add_output(target, 'flow_movie', flow_dir=fd, header_fits=hdrs[sb])
+    shutil.rmtree(mwork, ignore_errors=True)
+
+
 def stage_movies(ctx, cell, lst, date, sbs):
     from exopipe.phase3.core.record import Refusal
     S = ctx.S
     name = f'{cell}_movies'
     mv = os.path.join(ctx.product_root('snapshot_movies'), cell)
     ship = os.path.join(ctx.product_root('snapshot_fleet_out'), cell, 'flow')
-    fargs = []
-    if tuple(S.FRAME_BANDS) != tuple(S.SUBBANDS) + ('Red', 'Green', 'Blue', 'Full'):
-        fargs += ['--bands', ','.join(S.FRAME_BANDS)]
-    for flag, val, prod in (('--k', S.STRETCH_K, 12.0), ('--size', S.MOVIE_WIDTH_PX, 754), ('--fps', S.MOVIE_FPS, 24.0),
-                            ('--crf', S.MOVIE_CRF, 26)):
-        if val != prod:
-            fargs += [flag, str(val)]
     if ctx.dry:
         plan(f'  STAGE movies {cell}: frame movies from the {ctx.movie_source} frames -> {mv}'
              + (f'; flow movies -> {ship}' if ctx.flow_movies else ''))
@@ -775,7 +952,17 @@ def stage_movies(ctx, cell, lst, date, sbs):
         for k in ('frame_movies', 'flow_movies'):
             ok, py = check_interpreter(interpreter_key('frames_snapshot', k))
             ctx.gate(f'interpreter {k}', ok, py)
-        plan(f'    UNIT {name}: phase3_snapshot_frame_movie.py {cell} {mv} '
+        fargs = []
+        try:
+            fargs = frame_movie_args(ctx, legacy_script('clv15', 'phase3_snapshot_frame_movie.py'))
+            if ctx.flow_movies:
+                engine_flags(legacy_script('clv15', 'phase3_snapshot_flow_movie.py'),
+                             [('--duration-s', 'FLOW_MOVIE_DURATION_S', S.FLOW_MOVIE_DURATION_S)])
+            ctx.gate('engine defaults', True, 'config = the engines\' defaults, or overridden')
+        except Refusal as e:
+            ctx.gate('engine defaults', False, str(e))
+        plan(f'    UNIT {name}: ' + ('flow movies per staged subband, then ' if ctx.flow_movies else '')
+             + f'phase3_snapshot_frame_movie.py {cell} {mv} '
              + (f'--frames-root <staging>' if ctx.movie_source == 'staged' else '--cube-root <cubes root>')
              + (' ' + ' '.join(fargs) if fargs else ''))
         ctx.planned += 1
@@ -793,6 +980,7 @@ def stage_movies(ctx, cell, lst, date, sbs):
         staged = {sb: v for sb, v in staged.items() if sb in sbs}
         u.set_admitted([f'{date}/{sb}' for sb in (staged or sbs)])
         script = legacy_script('clv15', 'phase3_snapshot_frame_movie.py')
+        fargs = frame_movie_args(ctx, script)
         if ctx.movie_source == 'staged':
             src_args = ['--frames-root', d]
         else:
@@ -809,12 +997,17 @@ def stage_movies(ctx, cell, lst, date, sbs):
             rec = record.load_record(ctx.run.out_root, ctx.run.step, name)
             if not (rec and log in {o['path'] for o in rec.get('outputs', [])}):
                 u.refuse(f'movies of an earlier run present in {mv} - pass --fresh to replace them')
+        # the fleet makes the flow movies first (v9:277), then the frame movies (v9:285); a frame-movie failure does not
+        # take the flow movies with it (N-G10 refuses this unit after both)
+        if ctx.flow_movies and staged:
+            flow_movies(ctx, u, cell, d, staged, ship)
         os.makedirs(mv, exist_ok=True)
         if os.path.exists(log):
             os.remove(log)                                   # production truncates it ('> movies.log')
         t0 = time.time()
         res, lines = engine(script, [cell, mv] + src_args + fargs,
                             interpreter_key('frames_snapshot', 'frame_movies'), log, unit=u, refusal_codes=())
+        strip_legacy_header(log)
         total = [l for l in lines if l.startswith('TOTAL')]
         if res.rc != 0 or not total:
             u.refuse(f'N-G10 FRAMEMOVIES-FAILED {cell}: {refusal_line(lines, res)} (see {log})')
@@ -826,35 +1019,4 @@ def stage_movies(ctx, cell, lst, date, sbs):
             if os.path.getmtime(p) >= t0 - 2:
                 u.add_output(p, 'frame_movie', cell=cell)
         u.add_output(log, 'frame_movie', cell=cell, bands=expect)
-        if ctx.flow_movies and staged:
-            fd, how = flow_dir(ctx, cell)
-            mwork = os.path.join(ctx.scratch(), 'snapshot_movies_work', cell)
-            shutil.rmtree(mwork, ignore_errors=True)
-            os.makedirs(mwork)
-            fscript = legacy_script('clv15', 'phase3_snapshot_flow_movie.py')
-            fres = {}
-
-            def fm(sb):
-                hdr = first_flowed_I(os.path.join(d, sb))
-                out = os.path.join(mwork, f'flow_{sb}.mp4')
-                a = ['--flows', fd, '--subband', sb, '--header-fits', hdr or '', '--out', out]
-                if S.FLOW_MOVIE_DURATION_S != 10.0:
-                    a += ['--duration-s', str(S.FLOW_MOVIE_DURATION_S)]
-                fres[sb] = engine(fscript, a, interpreter_key('frames_snapshot', 'flow_movies'),
-                                  os.path.join(mwork, f'movie_{sb}.log'), unit=u, refusal_codes=())[0]
-            parallel(fm, sorted(staged, key=lambda s: int(s[:-3])), S.FLOW_MOVIE_PROCS)
-            os.makedirs(ship, exist_ok=True)
-            for sb in sorted(staged, key=lambda s: int(s[:-3])):
-                mp4 = os.path.join(mwork, f'flow_{sb}.mp4')
-                if sb not in fres or fres[sb].rc != 0 or not os.path.exists(mp4):
-                    u.refuse_item(os.path.join(ship, f'flow_{sb}.mp4'), f'flow movie {sb}: '
-                                  f'{fres[sb].reason if sb in fres else "not run"} (log {mwork}/movie_{sb}.log)',
-                                  gate='N-G10 flow movie')
-                    continue
-                for fn in (f'flow_{sb}.mp4', f'flow_{sb}_series.png', f'flow_{sb}_series.csv', f'movie_{sb}.log'):
-                    s_, t_ = os.path.join(mwork, fn), os.path.join(ship, fn)
-                    if os.path.exists(s_) and not os.path.exists(t_):       # cp -n (v9:340)
-                        shutil.copyfile(s_, t_)
-                u.add_output(os.path.join(ship, f'flow_{sb}.mp4'), 'flow_movie', flow_dir=fd)
-            shutil.rmtree(mwork, ignore_errors=True)
     report(u)

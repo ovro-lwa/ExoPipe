@@ -265,10 +265,24 @@ def _syn_cell(root):
         f.write('date,weight,qa3_rms_mjy,in_master\n')
         for dd, im in zip(SYN_DATES, (1, 0, 1, 1)):
             f.write(f'{dd},0.1,100.0,{im}\n')
+    _syn_nightimage(fd, fail=(SYN_DATES[2],))
+    for dd in SYN_DATES:                       # the engine's epoch list is the stage-1 file names (placeholders here)
+        open(os.path.join(root, '07h_18MHz', 'subtracted', f'{dd}_I_sub_18MHz.fits'), 'w').close()
     yy, xx = np.mgrid[0:256, 0:256]
     pb = np.exp(-((xx - 128.0) ** 2 + (yy - 128.0) ** 2) / (2 * 60.0 ** 2)).astype(np.float32)
     fits.writeto(os.path.join(fd, 'PB_deep_18MHz.fits'), pb)
     return pb
+
+
+def _syn_nightimage(final_dir, fail):
+    """The cell's night-image gate record (lib/masters/night_image_gate format): the nights in ``fail`` FAIL."""
+    import csv
+    from exopipe.phase3.lib.masters import night_image_gate as ng
+    with open(os.path.join(final_dir, ng.GATE_FILE), 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=ng.COLS)
+        w.writeheader()
+        for dd in SYN_DATES:
+            w.writerow(dict(date=dd, verdict='FAIL' if dd in fail else 'PASS', method='synthetic'))
 
 
 def _syn_frame(path, date, loo, rng, template_hdr):
@@ -372,10 +386,32 @@ def test_register():
     assert len([o for o in u.outputs if o['class'] == 'search_frame']) == 8          # 2 frames + 2 siblings + 4 copies
     rec = record.load_record(out, 'frames', plan.name)
     assert rec['status'] == 'done' and len(rec['refused_items']) == 4
-    # verify stage re-tests exactly the recorded outputs
+    fc = next(t for t in u.tests if t['name'] == 'frame_count')
+    assert '1 removed per the gate records' in fc['detail'] and '1 unaccounted' in fc['detail'], fc
+    # verify stage re-tests exactly the recorded outputs (and the exclusions now)
     deep_step._verify_unit(ctx, plan)
     v = run.units[-1]
     assert v.status == 'done' and len(v.outputs) == len(rec['outputs']), (v.status, v.reason)
+    assert any(t['name'] == 'exclusion_conformance' and t['passed'] for t in v.tests)
+    # frame_count is checked against the gate records, not against the engine's own rows: a night the night-image record
+    # FAILs although the engine made its frame (and wrote no row) refuses the unit
+    _syn_nightimage(os.path.join(root, '07h_18MHz', 'coadd_final'), fail=(SYN_DATES[1], SYN_DATES[2]))
+    u2 = run.unit(plan.name + '_neg', tier='deep', stage='residuals')
+    with u2:
+        for dd in owed:
+            u2.plan(spec.frame_path(dd, 'V'), 'search_frame')
+            u2.plan(spec.frame_path(dd, 'V', True), 'search_frame')
+        deep_step.register(u2, ctx, plan, c, spec, res, owed, excl)
+    failed2 = {t['name'] for t in u2.tests if not t['passed']}
+    assert u2.status == 'refused' and {'frame_count', 'gate_records_agree'} <= failed2, (u2.status, failed2)
+    _syn_nightimage(os.path.join(root, '07h_18MHz', 'coadd_final'), fail=(SYN_DATES[2],))
+    # archive-quarantine: archive copies into a production archive root refuse (production quarantines first)
+    ctx_p = deep_step.Ctx(_Args(out=out, work=os.path.join(d, 'work_root'), deep_rebuild=True), run, ['residuals'])
+    assert ctx_p.archive_refusal() is None
+    ctx_p.archive_root = CFG.paths.PHASE3_ARCHIVE_ROOT
+    assert ctx_p.archive_refusal().startswith('archive-quarantine'), ctx_p.archive_refusal()
+    ctx_p.archive_copy = False
+    assert ctx_p.archive_refusal() is None
     # negative copies: each content test fails on a corrupted file
     from astropy.io import fits
     import numpy as np
@@ -495,6 +531,17 @@ def test_real():
     assert rc == 0, (rc, e[-500:])
     rec = json.load(open(os.path.join(d, 'adopt', '_records', 'frames', '07h_18MHz_V_adopt_20261012T212735_verify.json')))
     assert rec['status'] == 'done' and all(t['passed'] for t in rec['tests'])
+    assert {'attempt_after_current_masters', 'exclusion_conformance', 'frame_count'} <= {t['name'] for t in rec['tests']}
+    # an attempt made before the cell's current masters (2026-10-05 < masters 2026-10-10) is never adopted (fleet D6)
+    old_att = REAL_ATT_V.replace('20261012T212735', '20261005T090523')
+    if os.path.isdir(old_att):
+        rc, o, e = _cli(['frames', '--tier', 'deep', '--stages', 'verify', '--deep-adopt', old_att, '--cores', 'none',
+                         '--out', os.path.join(d, 'adopt_old')])
+        rec = json.load(open(os.path.join(d, 'adopt_old', '_records', 'frames',
+                                          '07h_18MHz_V_adopt_20261005T090523_verify.json')))
+        bad = {t['name'] for t in rec['tests'] if not t['passed']}
+        assert rc == 2 and rec['status'] == 'refused' and 'attempt_after_current_masters' in bad, (rc, sorted(bad))
+        lines.append('adopt 07h_18MHz_V_20261005T090523 (before the current masters): refused attempt_after_current_masters')
     lines.append(f"adopt {os.path.basename(REAL_ATT_V)}: {len(rec['outputs'])} outputs, {len(rec['tests'])} tests pass")
     rc, o, e = _cli(['frames', '--tier', 'deep', '--cells', '07h_18MHz', '--stokes', 'V', '--dry-run', '--cores', 'none',
                      '--out', os.path.join(d, 'dry'), '--work', os.path.join(d, 'work')])

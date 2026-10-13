@@ -207,25 +207,34 @@ def brox_args(names):
     return out
 
 
-def batch_flow(u, args, cell, todo, out_root, script):
+def solve_gpu(args):
+    """(GPU ids, site locks of the first) for a solve with pairs to compute. G-D18 refuses on a host with no GPU id (--gpus
+    or site GPU_IDS: a JAX batch would silently fall back to the CPU - production runs it on the deep GPU host only,
+    chain_cell.sh:17) or with no site GPU lock for that GPU (steps_common.required_gpu_locks)."""
+    gpus = C.parse_gpus(args.gpus) or C.site_gpu_ids()
+    if not gpus:
+        raise Refusal(f'G-D18: no GPU id for {C.host()} (--gpus, or GPU_IDS in the site file) - the flow batch needs a GPU')
+    return gpus, C.required_gpu_locks(gpus[0], 'G-D18')
+
+
+def batch_flow(u, args, cell, todo, out_root, script, gpu_locks=None):
     """Port of coadd._run_batch_flow (coadd_full_pipeline.py:4186-4209): same script and pairs; through core.legacy.run
     under site PYTHON['flow'] (absolute interpreter; P3_* cleared); <out>/.gpu_lock plus the site GPU locks of this host
     held around the call; timeout BATCH_TIMEOUT_S; rc recorded (G-D15 - the refusal itself comes from the outputs)."""
     from exopipe.phase3.core import legacy
     c = C.cfg()
+    gpus, site_locks = gpu_locks or solve_gpu(args)
     mdir = os.path.join(out_root, '_records', 'flow', 'manifests')
     os.makedirs(mdir, exist_ok=True)
     man = os.path.join(mdir, f'{cell}_pairs_{C.utcstamp()}_{os.getpid()}.json')
     C.write_json_atomic(man, todo)
-    gpus = C.parse_gpus(args.gpus) or C.site_gpu_ids()
     env = {'XLA_PYTHON_CLIENT_PREALLOCATE': c.flow.XLA_PREALLOCATE}
     if c.flow.XLA_MEM_FRACTION.get('deep') is not None:
         env['XLA_PYTHON_CLIENT_MEM_FRACTION'] = c.flow.XLA_MEM_FRACTION['deep']
     if C.parse_gpus(args.gpus):
-        env['CUDA_VISIBLE_DEVICES'] = gpus[0]        # production sets none (one GPU on lwacalim07)
-    locks = ([os.path.join(out_root, '.gpu_lock')] if c.flow_prep.OUT_ROOT_GPU_LOCK else []) + \
-        C.site_gpu_locks(gpus[0] if gpus else '*')
-    log = os.path.join(out_root, '_records', 'flow', 'logs', f'{cell}_solve.log')
+        env['CUDA_VISIBLE_DEVICES'] = gpus[0]        # production sets none (one GPU on the deep host)
+    locks = ([os.path.join(out_root, '.gpu_lock')] if c.flow_prep.OUT_ROOT_GPU_LOCK else []) + site_locks
+    log =os.path.join(out_root, '_records', 'flow', 'logs', f'{cell}_solve.log')
     os.makedirs(os.path.dirname(log), exist_ok=True)
     argv = ['--manifest', man] + brox_args((('ALPHA', '--alpha'), ('GAMMA', '--gamma'),
                                             ('SCALE_FACTOR', '--scale_factor'), ('PREPROCESS_WEIGHT', '--preprocess_weight')))
@@ -279,7 +288,9 @@ def run(args, run):
         prev = record.load_record(run.out_root, 'flow', cell)
         if run.resume and prev and prev.get('status') == 'done' and \
                 set(stages) <= set((prev.get('meta') or {}).get('stages_done') or ()):
-            ok, why = run.resume_check(cell, inputs=None, admitted=prev.get('admitted'))
+            ok, why, admitted = _resume_identity(args, cell, prev)
+            if ok:
+                ok, why = run.resume_check(cell, inputs=None, admitted=admitted)
             if ok:
                 u = run.unit(cell, tier='deep')
                 u.status, u.reason = 'skipped-valid', why
@@ -289,6 +300,33 @@ def run(args, run):
         with run.unit(cell, tier='deep', stages=list(stages)) as u:
             run_cell(u, args, run, cell, stages, prev)
     return None
+
+
+def _resume_identity(args, cell, prev):
+    """(ok, why, admitted nights now) for --resume: the admitted nights and their alignment images are discovered NOW (a new
+    or newly excluded Phase-2 night changes the flow set) and must equal the record's; the stored-flow source is re-listed
+    when the record ran stage-in. Never the record's own values (README rule 5)."""
+    from exopipe.phase3.core import cells, exclusions
+    lst, sc = cells.parse_cell(cell)
+    try:
+        CO = coadd_module(None, lambda s: None)
+        found, entries = admitted_entries(CO, exclusions.load(), lst, sc, CO.load_exclusions())
+    except (Refusal, RuntimeError) as e:
+        return False, f'resume identity: {e}', None
+    admitted = sorted(d for d, _, _ in entries)
+    imgs_now = {os.path.abspath(img) for _, _, img in entries}
+    imgs_rec = {p for p, fp in (prev.get('inputs') or {}).items()
+                if isinstance(fp, dict) and str(fp.get('role', '')).startswith('alignment-image:')}
+    if imgs_now != imgs_rec:
+        return False, (f'alignment images changed since the record ({len(imgs_rec)} -> {len(imgs_now)}; new '
+                       f'{sorted(os.path.basename(p) for p in imgs_now - imgs_rec)[:3]})'), admitted
+    if 'stage-in' in ((prev.get('meta') or {}).get('stages_done') or ()) and C.cfg().flow_prep.STAGE_IN_FLOWS:
+        src = ((prev.get('meta') or {}).get('stage_in') or {}).get('source')
+        files = [os.path.join(r, f) for r, _, fl in os.walk(src) for f in fl] if src and os.path.isdir(src) else []
+        ok, why = C.listing_current(prev, 'stored flows', files)
+        if not ok:
+            return False, why, admitted
+    return True, '', admitted
 
 
 def run_cell(u, args, run, cell, stages, prev):
@@ -415,6 +453,7 @@ def _run_stages(u, args, run, cell, lst, sc, W, stages, prev, done_before, CO, E
                           f'masters provisional stage deletes prep/) - run --stages prep,solve,check again')
         u.note(f'{lst} {sc}: {len(todo)} of {len(prep_meta["manifest"])} epochs need a flow'
                + (f' ({", ".join(sorted(_date_of_target(m) for m in todo))})' if todo else ''))
+        gpu_locks = solve_gpu(args) if todo else None       # G-D18 before anything is moved aside
         if todo and c.flow_prep.MOVE_ASIDE_STALE:
             sdir, moved = move_aside(W, [_date_of_target(m) for m in todo])
             if moved:
@@ -423,7 +462,7 @@ def _run_stages(u, args, run, cell, lst, sc, W, stages, prev, done_before, CO, E
         script = CO.BATCH_FLOW_SCRIPT
         u.add_input(script, extra={'role': 'code'})
         if todo:
-            batch_flow(u, args, cell, todo, out_root, script)
+            batch_flow(u, args, cell, todo, out_root, script, gpu_locks)
             recomputed = {_date_of_target(m) for m in todo}
         u.meta['recomputed'] = sorted(recomputed)
     # ---- check (after solve; alone = the verdict on the flows on disk) -------------------------------------------------
@@ -527,15 +566,24 @@ def plan(args, run, cells_, stages):
                     f'[coadd_flow] + _scaled_dewarp.fits [flow_dewarp_image] - '
                     + ('recompute (stale/missing in the out root now)' if d in fresh or args.deep_flow_all else 'fresh now'))
             if 'solve' in stages:
-                gpus = C.parse_gpus(args.gpus) or C.site_gpu_ids()
-                locks = ([os.path.join(run.out_root, '.gpu_lock')] if c.flow_prep.OUT_ROOT_GPU_LOCK else []) + \
-                    C.site_gpu_locks(gpus[0] if gpus else '*')
+                try:
+                    _g, site_locks = solve_gpu(args)
+                except Refusal as e:
+                    site_locks = []
+                    if fresh or args.deep_flow_all:           # a solve with pairs to compute would refuse (G-D18)
+                        refused.append(str(e))
+                    else:
+                        say(f'solve: nothing stale now; with pairs to compute it would refuse: {e}')
+                locks = ([os.path.join(run.out_root, '.gpu_lock')] if c.flow_prep.OUT_ROOT_GPU_LOCK else []) + site_locks
+                ba = brox_args((('ALPHA', '--alpha'), ('GAMMA', '--gamma'), ('SCALE_FACTOR', '--scale_factor'),
+                                ('PREPROCESS_WEIGHT', '--preprocess_weight')))
                 say(f'solve: {(c.site.PYTHON or {}).get("flow")} {CO.BATCH_FLOW_SCRIPT} --manifest <records>/manifests/'
-                    f'{cell}_pairs_<UTC>.json{" " + " ".join(brox_args((("ALPHA", "--alpha"),))) if brox_args((("ALPHA", "--alpha"),)) else ""}'
+                    f'{cell}_pairs_<UTC>.json{(" " + " ".join(ba)) if ba else ""}'
                     f' over the stale/missing pairs{" (--deep-flow-all: all)" if args.deep_flow_all else ""}; G-D13 '
                     f'move-aside {c.flow_prep.MOVE_ASIDE_STALE}; locks {locks}; timeout {c.flow_prep.BATCH_TIMEOUT_S} s')
             say('gates: G-D0 masters stage-in, G-D1 exclusion readers agree, G-D8/9 reference + astrometry (in place), G-D10 '
-                'grid, G-D11 >= 2 targets, G-D13 move-aside, G-D14 freshness of every target, G-D16 finite >= 0.5')
+                'grid, G-D11 >= 2 targets, G-D13 move-aside, G-D14 freshness of every target, G-D16 finite >= 0.5, '
+                'G-D18 GPU id + site GPU lock (solve with pairs)')
         except (Refusal, NoInput) as e:
             refused.append(str(e))
         for line in P:

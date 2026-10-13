@@ -18,7 +18,6 @@ the residuals record - never a glob - or, with ``--deep-adopt``, registers and t
 """
 import hashlib
 import os
-import socket
 import sys
 import time
 
@@ -53,7 +52,9 @@ def add_arguments(p):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def _host():
-    return socket.gethostname()
+    """This host's short name (core.env.host: the key of the site tables GPU_HOSTS and of DEEP_ATTEMPTS_ROOT's {host})."""
+    from exopipe.phase3.core import env
+    return env.host()
 
 
 def attempts_root_production():
@@ -226,6 +227,21 @@ class Ctx:
                     'frame-only rebuild, never chained before search - pass --deep-rebuild to state that this run is one')
         return None
 
+    def archive_refusal(self):
+        """archive-quarantine: production quarantines the cell's earlier archive search frames of the Stokes BEFORE the
+        engine writes its archive copies (p3s5_search_fleet.sh:192-194 -> p3s5_quarantine_frames.py: the engine copies with
+        copy2 + os.replace, overwriting an earlier frame of the same name and leaving the frames of nights it no longer
+        builds). That step is archive's (spec B-55; search runs it as its stage quarantine) and is not wired into a
+        frame-only rebuild: archive copies into a production archive root refuse instead of overwriting unquarantined
+        frames. Unreachable while paths.PRODUCTION_WRITES is False (the archive root is then <out>/archive)."""
+        hit = _under_production(self.archive_root) if self.archive_copy else None
+        if hit:
+            return (f'archive-quarantine: archive copies would go into the production archive {self.archive_root} (under '
+                    f'{hit}) without the pre-write quarantine of the cell\'s earlier archive frames that production runs '
+                    f'first (p3s5_search_fleet.sh:192-194, p3s5_quarantine_frames.py; `exopipe3 archive quarantine`) - '
+                    f'run that first and wire it here, or pass --no-archive-copy')
+        return None
+
     def seam_refusal(self):
         if not self.engine_frames_only:
             return (f'engine-seam: run_deep_cell in {self.engine_file} has no frames_only keyword yet - the search '
@@ -343,7 +359,7 @@ def _residuals_unit(ctx, plan):
     with u:
         for n in ctx.notes:
             u.note(n)
-        pr = ctx.producer_refusal()
+        pr = ctx.producer_refusal() or ctx.archive_refusal()
         if pr:
             raise Refusal(pr)
         root = deep_cells.coadd_root_of(plan.cell, getattr(ctx.args, 'coadd_root', None))
@@ -369,6 +385,11 @@ def _residuals_unit(ctx, plan):
         u.set_admitted(admitted)
         u.note(f'exclusions {excl.fingerprint()}')
         owed = [d for d in admitted if not plan.dates or d in plan.dates]
+        if plan.dates and not owed:
+            # the engine's incremental outcome without its flow batch (phase3_deep.py:1371-1380 'nothing admitted; done'):
+            # every listed night is excluded or not an epoch of this cell
+            raise NoInput(f'none of the listed nights {plan.dates} is an admitted epoch of {plan.cell} (excluded by '
+                          f'data_decisions or no stage-1 product): nothing to build')
         attempt = _new_attempt(ctx, plan)
         spec = deep_engine.UnitSpec(tier='deep', cadence='deep', lst=c.lst, scope=c.scope, stokes=plan.stokes,
                                     label=ctx.label, included_dates=plan.dates, attempt=attempt, coadd_root=root,
@@ -456,10 +477,34 @@ def register(u, ctx, plan, c, spec, res, owed, excl):
     bad = sorted(k[0] for k in found['frames'] if excl.is_excluded(c.lst, c.scope, k[0][:10]))
     u.check('exclusion_conformance', not bad, value=len(bad),
             detail=('frames of excluded nights: ' + ', '.join(bad[:5])) if bad else 'no frame of an excluded night')
-    nf = sum(1 for d in owed if (d, S) in found['frames'])
-    u.check('frame_count', nf == len(owed) - len(removed) - len(unaccounted), value=nf,
-            detail=f'{nf} frames = {len(owed)} owed - {len(removed)} removed by whole-epoch gates - '
-                   f'{len(unaccounted)} unaccounted (recorded)')
+    # frame_count against an INDEPENDENT model (the classification above partitions the owed epochs by construction, so
+    # it cannot fail): the gate records the engine reads - data_decisions (already out of `owed`), night_image_gate.csv,
+    # epoch_gate.csv and the 10x sanity rule on weights.csv - predict which owed epochs a whole-epoch gate removes
+    # (deep_cells.preview, read now, after the run); the provenance and beam gates need every stage-1 header and are taken
+    # from the engine's own rows. Frames must exist exactly for the rest (verify_p3s3_stage.py:109-130: frames = the
+    # epochs left after the whole-epoch gates), and the engine's night-image / epoch-gate / 10x rows must name exactly the
+    # epochs the records predict. Unaccounted epochs (no flow, residual task; recorded above) are left out of both sides.
+    from exopipe.phase3.lib.frames import deep_cells
+    pv = deep_cells.preview(c, S, excl, included=plan.dates)
+    own, unacc = set(owed), set(unaccounted)
+    have = {d for d in owed if (d, S) in found['frames']}
+    rows = {k: (set(deep_engine.refusal_dates(found['refusals'][k])) if k in found['refusals'] else set()) & own - unacc
+            for k in deep_engine.WHOLE_EPOCH_KINDS}
+    model = {k: set(pv[k]) & own - unacc for k in ('nightimage', 'epochgate', 'sanity')}
+    differ = {k: sorted(rows[k] ^ model[k]) for k in model if rows[k] != model[k]}
+    u.check('gate_records_agree', not differ, value=sum(len(x) for x in differ.values()),
+            detail=('engine rows vs the gate records differ (kind: epochs): ' + '; '.join(f'{k}: {x[:4]}' for k, x in
+                                                                                       differ.items()))
+            if differ else 'night-image, epoch-gate and 10x rows name exactly the epochs the gate records predict')
+    by_records = set().union(*model.values())
+    by_engine = (rows['stale_input'] | rows['beam']) - by_records
+    expected = own - by_records - by_engine - unacc
+    nf = len(have)
+    u.check('frame_count', have == expected, value=nf,
+            detail=(f'{nf} frames = {len(owed)} owed - {len(by_records)} removed per the gate records (night-image, '
+                    f'epoch gate, 10x) - {len(by_engine)} by the provenance / beam gates - {len(unacc)} unaccounted '
+                    f'(recorded)') if have == expected else
+            f'frames for {sorted(have - expected)[:4]} not expected; no frame for {sorted(expected - have)[:4]}')
     rep = deep_engine.reported_set(res, S)
     if rep is not None:
         scanned = {os.path.abspath(p) for p in written}
@@ -592,6 +637,19 @@ def _verify_unit(ctx, plan):
             else:
                 u.add_output(p, cls)
         u.meta['attempt'] = (rec.get('meta') or {}).get('attempt')
+        # exclusions NOW (DESIGN 8(d): an exclusion change invalidates earlier results): no recorded frame of a night
+        # data_decisions excludes today (verify_p3s3_stage.py STALE rule, p3s3_stale_exclusions)
+        from exopipe.phase3.core import exclusions
+        from exopipe.phase3.lib.frames.deep_engine import _FRAME_RE
+        excl = exclusions.load()
+        lst, scope = plan.cell.split('_', 1)
+        fd = sorted({m['d'] for m in (_FRAME_RE.match(os.path.basename(o['path'])) for o in outs
+                                      if o['class'] == 'search_frame') if m})
+        bad = [x for x in fd if excl.is_excluded(lst, scope, x[:10])]
+        u.set_admitted(excl.admitted(lst, scope, [x[:10] for x in fd]))
+        u.check('exclusion_conformance', not bad, value=len(bad),
+                detail=('recorded frames of nights excluded now: ' + ', '.join(bad[:5])) if bad else
+                f'no recorded frame of a night excluded now ({excl.fingerprint()})')
 
 
 def _adopt_unit(ctx, d):
@@ -635,9 +693,22 @@ def _adopt_unit(ctx, d):
             u.add_output(found['sigstack'][S], 'noise_map')
         if found['pbcorr_missing']:
             u.add_output(found['pbcorr_missing'], 'frame_refusals')
+        excl = exclusions.load()
+        have = {dd for dd, _ in frames}
+        bad = sorted(x for x in have if excl.is_excluded(lst, scope, x[:10]))
+        u.check('exclusion_conformance', not bad, value=len(bad),
+                detail=('frames of nights excluded now: ' + ', '.join(bad)) if bad else 'no frame of an excluded night')
         if c is not None:
-            excl = exclusions.load()
-            have = {dd for dd, _ in frames}
+            # the fleet's adoption rule (p3s5_search_fleet.sh:176-181, D6 grouping 09995b5): an attempt whose cell log is
+            # not newer than EITHER current master of the cell was made against a previous master and is never adopted
+            log = os.path.join(d, f'{cell}.log')
+            lt = os.stat(log).st_mtime_ns if os.path.exists(log) else None
+            older = [os.path.basename(mp) for mp in (c.master('I'), c.master('V'))
+                     if os.path.exists(mp) and (lt is None or not lt > os.stat(mp).st_mtime_ns)]
+            u.check('attempt_after_current_masters', not older, value=len(older),
+                    detail=(f'attempt log {"missing" if lt is None else "not newer than"} the current '
+                            f'{", ".join(older)}: made against a previous master (never adopted, p3s5_search_fleet.sh:'
+                            f'176-181)') if older else 'attempt log newer than both current masters of the cell')
             whole = set()
             for kind in deep_engine.WHOLE_EPOCH_KINDS:
                 p = found['refusals'].get(kind)
@@ -645,16 +716,13 @@ def _adopt_unit(ctx, d):
                     whole |= set(deep_engine.refusal_dates(p))
             adm = excl.admitted(lst, scope, c.epoch_dates())
             missing = [x for x in adm if x not in have and x not in whole]
-            bad = sorted(x for x in have if excl.is_excluded(lst, scope, x[:10]))
             u.set_admitted(adm)
             u.check('frame_count', not missing, value=len(have),
                     detail=(f'admitted epochs of the cell now with neither a frame nor a whole-epoch refusal row: '
                             f'{missing[:6]}' if missing else f'{len(have)} frames + {len(whole)} whole-epoch refusals '
                                                              f'cover the {len(adm)} admitted epochs of the cell now'))
-            u.check('exclusion_conformance', not bad, value=len(bad),
-                    detail=('frames of nights excluded now: ' + ', '.join(bad)) if bad else 'no frame of an excluded night')
         else:
-            u.note(f'co-add cell {cell} not reachable from this node: frame count and exclusion checks not run')
+            u.note(f'co-add cell {cell} not reachable from this node: master-age and frame-count checks not run')
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -668,7 +736,7 @@ def print_plan(ctx, plans, adopt):
     from exopipe.phase3.lib.frames import deep_cells, deep_engine
     pr = print
     pr(f'frames --tier deep (dry run): {len(plans)} unit(s); stages {",".join(ctx.stages)}; run label {ctx.label}')
-    prod = ctx.producer_refusal() if 'residuals' in ctx.stages and plans else None
+    prod = (ctx.producer_refusal() or ctx.archive_refusal()) if 'residuals' in ctx.stages and plans else None
     seam = ctx.seam_refusal() if 'residuals' in ctx.stages and plans else None
     pr(f'  deep frame producer {ctx.producer!r}' + (f' -> every residuals unit REFUSES ({prod})' if prod else
                                                    (' (frame-only rebuild stated: --deep-rebuild)'
@@ -737,11 +805,19 @@ def print_plan(ctx, plans, adopt):
                            'epoch-gate FAIL' if d in pv['epochgate'] else '10x sanity' if d in pv['sanity'] else
                            'not an epoch of this cell')
                     pr(f'    listed night {d}: no frame ({why}; recorded as an item refusal)')
-        if plan.dates and not pv['owed']:
-            pr('    REFUSE all-listed    every listed night is removed by a whole-epoch gate: every planned item refused')
+        # in the order of the real unit: deep-producer / archive-quarantine, (pre-gates above), engine-seam, no listed
+        # night admitted (no-input), then the engine (LOO refusal; every listed night gated -> every item refused)
+        if prod or seam:
+            pr(f"    REFUSE {prod.split(':', 1)[0] if prod else 'engine-seam':13s} (see above)")
             n_ref += 1
-        elif prod or seam or bad:
-            pr(f"    REFUSE {'deep-producer' if prod else 'engine-seam' if seam else 'loo-master':13s} (see above)")
+        elif plan.dates and not [d for d in plan.dates if d in pv['dates'] and d not in pv['excluded']]:
+            pr('    NO-INPUT listed      no listed night is an admitted epoch of this cell')
+            n_noin += 1
+        elif bad:
+            pr(f"    REFUSE {'loo-master':13s} (see above)")
+            n_ref += 1
+        elif plan.dates and not pv['owed']:
+            pr('    REFUSE all-listed    every listed night is removed by a whole-epoch gate: every planned item refused')
             n_ref += 1
         n = len(pv['owed'])
         pr(f"    planned: {2 * n} search_frame ({n} frames + {n} pbcorr siblings) in <attempt>/Run_{ctx.label}/"

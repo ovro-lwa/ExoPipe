@@ -58,19 +58,24 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
             core.exclusions and the co-add module disagree; G-D2 no Phase-2 input (exit 3); G-D7 stored-flow copy failed;
             G-D8 no reference; G-D9 reference astrometry (A-02, fail closed, in place); G-D11 fewer than 2 target nights;
             G-D14 a target night with a missing or stale flow after solve (mtime, as today, and the recorded input digest);
-            G-D16 a flow less than 50 per cent finite. Recorded per night: G-D10 wrong grid, G-D12 shape mismatch;
-            G-D13 stale pairs moved aside before solve; G-D15 batch exit code.
-  snapshot  G-S1 no GPU id (--gpus or site GPU_IDS); G-S2 no done frames stage record, or the staging differs from it;
-            G-S3 a broken Master link / G-S4 a staged subband without a Master (the whole cell is refused); G-S5 frames off
-            their own Master's grid; G-S6 per subband, BY NAME: an expected frame (staged minus WSCNVIS = 0) without its
+            G-D16 a flow less than 50 per cent finite; G-D18 a solve with pairs to compute on a host with no GPU id or no
+            site GPU lock. Recorded per night: G-D10 wrong grid, G-D12 shape mismatch; G-D13 stale pairs moved aside
+            before solve; G-D15 batch exit code.
+  snapshot  G-S1 no GPU id (--gpus or site GPU_IDS) or no site GPU lock for one; G-S2 no done frames stage record, one
+            made on another node, or a staging that differs from it (.filelist, names_sha1); G-S3 a broken Master link /
+            G-S4 a subband without a Master / G-S5 staged frames off their own Master's grid (the whole cell is
+            refused); G-S6 per subband, BY NAME: an expected frame (staged minus WSCNVIS = 0) without its
             _flowed.fits - a set comparison, never a count (snapshot defect D12; cf72d51); G-S7 FAILED rows; G-S8 a flowed
             Stokes I frame without its field; G-S9 ship: a destination with different bytes, or a copy whose checksum differs.
   sublst    G-C1 no night-weight record; G-C2 mixed flux scales in a window (in the module); G-C3/G-C4 window and per-night
             rules (refusals BY RULING, the unit still completes); G-C5 residuals of an earlier run present (use --fresh
             --supersede TAG); G-C6 aligner exit code (module); G-C7 expected residuals missing unless exactly the approved
-            (night, window) rows; G-C9 a residual without JUPMASK or whose LOOMSTR names no arm-A Master; G-C11 no GPU id;
-            G-C12 a stack of an excluded night (flow_refine.EXCLUDED_STACK).
+            (night, window) rows; G-C9 a residual without JUPMASK or whose LOOMSTR names no arm-A Master; G-C11 no GPU id
+            or no site GPU lock for it (the lock is the child's P3_FLOW_LOCK); G-C12 a stack of an excluded night
+            (flow_refine.EXCLUDED_STACK).
   every tier: a drift-guard difference between config and an in-place module; an override that cannot reach a child.
+  GPU locks: every GPU child runs under the lock production holds on that GPU, named in the site file (GPU_LOCKS); a
+            host/GPU the site names no lock for is refused (the site file's rule), never run lock-less.
 
 Examples:
   exopipe3 flow --tier deep --cells 23h_23MHz --out /lustre/gh/main/exopipe_ops/refactor_20261012/parity/flow --dry-run
@@ -126,9 +131,10 @@ def resolve_stages(args):
         raise ValueError(f'unknown stage(s) {bad} for tier {args.tier}; stages in order: {", ".join(allowed)}')
     stages = [s for s in allowed if s in want]
     if args.from_stage or args.until_stage:
-        lo = allowed.index(args.from_stage) if args.from_stage else allowed.index(stages[0])
-        hi = allowed.index(args.until_stage) if args.until_stage else allowed.index(stages[-1])
-        stages = list(allowed[lo:hi + 1])
+        # --from/--until narrow --stages (or the default list); they never add a stage the list leaves out
+        lo = allowed.index(args.from_stage) if args.from_stage else 0
+        hi = allowed.index(args.until_stage) if args.until_stage else len(allowed) - 1
+        stages = [s for s in stages if lo <= allowed.index(s) <= hi]
     if not stages:
         raise ValueError('no stage selected')
     return stages

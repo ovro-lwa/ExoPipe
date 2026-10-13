@@ -2,7 +2,7 @@
 config._load_drafts during the refactor window; the refactor chat folds it into config.py at ``# @@STEP-SECTIONS@@``.
 
 Sections HERE: ``frames`` (the deep tier's stages and attempt root) and ``frames_residuals``
-(what only the deep frame-only rebuild decides). The sub-LST / snapshot sections (frames_tiers, frames_armA, ...) are the
+(what only the deep frame-only rebuild decides). The sub-LST / snapshot sections (frames_sublst, frames_snapshot) are the
 frames-tiers unit's draft.
 
 Decisions of the refactor chat (2026-10-13 ~04:30 UTC, plan/specs/_CROSSCHECK.md top + group 14 + section 4.3), applied:
@@ -24,7 +24,7 @@ from exopipe.phase3.config import _Section
 
 class frames(_Section):
     """exopipe3 frames - the deep tier's stages and attempt root (spec frames.md 1.2, 4). Sub-LST / snapshot stage orders
-    and roots: frames_tiers (unit frames-tiers)."""
+    and roots: frames_sublst, frames_snapshot (unit frames-tiers)."""
     STAGES = {'deep': ('residuals', 'verify')}     # default --stages of the deep tier, in run order (spec 1.2)
     OPTIONAL_STAGES = {'deep': ()}                 # stages that run only when named in --stages
     # Production attempt root of the deep frame build: one collect tree per node, one attempt directory

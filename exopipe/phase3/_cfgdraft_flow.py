@@ -47,7 +47,9 @@ class flow(_Section):
                                  #   snapshot: XLA_PYTHON_CLIENT_MEM_FRACTION, v9:183, cube:96; sublst: DEEP_XLA_MEMFRAC=0.5,
                                  #   sublst_refine_pass.sh:22 (module default 0.45, phase3_sublst_refine.py:98)
     GPU_LOCK_WAIT_S = 86400      # s, longest wait for a GPU lock held by this step (phase3_sublst_refine.py:192 and phase3_deep.py:390
-                                 #   use flock -w 86400); lock files per (host, GPU) from the site file GPU_LOCKS
+                                 #   use flock -w 86400); lock files per (host, GPU) from the site file GPU_LOCKS. Every GPU child
+                                 #   (deep solve, snapshot flow, sub-LST refine) refuses on a host/GPU the site names no lock for
+                                 #   (the site file's rule: a GPU another chat holds stays unused until the site names its lock)
     RULED = {'GPU_LOCK_WAIT_S': 'FIXED-FLOW-BATCH-EXCLUSIVE-PER-NODE-GPU-RC-6'}
 
 
@@ -65,7 +67,7 @@ class flow_prep(_Section):
                                  #   RI-ops-deep-masters-002 (today the stale flow stays and the provisional stage refuses the cell);
                                  #   False = production behaviour
     OUT_ROOT_GPU_LOCK = True     # hold <out>/.gpu_lock around the batch as coadd._run_batch_flow does (coadd_full_pipeline.py:4198-4202);
-                                 #   the site GPU_LOCKS of this host (node-global, ledger 1095) are held as well when the site names them
+                                 #   the site GPU_LOCKS of this host and GPU (node-global, ledger 1095) are held as well (required)
     RULED = {'MOVE_ASIDE_STALE': 'RATIFY-COADD-FLOW-REFRESH-STAGE-AND-FRESHNESS-GATE'}
 
 
@@ -134,8 +136,9 @@ class flow_refine(_Section):
     JUPITER_MASK_RADIUS_BEAMS = 2.0  # x BMAJ, Jupiter masked per night in the LOO sums; phase3_jupiter_mask.py:14 (drift-guarded);
                                      #   RULING-MOVING-JUPITER-MASK-IN-MASTERS (ledger 1783)
     DURATION_FALLBACK_S = 600.0      # s, DURATION card when DATE-OBS/END unreadable (TEFFSEC first); refine.py:232-235 (literal; B-30)
-    FLOW_LOCK = '/fast/gh/main/phase3/.sublst_refine_gpu{gpu}.lock'   # P3_FLOW_LOCK per GPU (the module flocks it around align_images);
-                                     #   sublst_refine_pass.sh:22; used when the site file names no GPU_LOCKS for this host and GPU
+                                     # (the six literals above are documented, never passed: an override refuses in refine)
+    # P3_FLOW_LOCK (sublst_refine_pass.sh:22, /fast/gh/main/phase3/.sublst_refine_gpu<g>.lock) = the site GPU_LOCKS entry of
+    #   (host, GPU); a host/GPU the site names no lock for is refused (G-C11) - review 2026-10-13 removed the FLOW_LOCK fallback
     APPROVED_REFUSALS_CSV = '/lustre/gh/main/exopipe_ops/sublst_refine_approved_refusals.csv'   # 9 rows, 2 (LST, subband);
                                      #   sublst_refine_approved.py:14; IMPLEMENTED-01H-PROCEED-WITHOUT-18MHZ-20251014-W0-2 (1679),
                                      #   APPLIED-02H-50MHZ-20250103-REFUSAL (1873); moves to the rulings registry (DESIGN 11.6). PROTECTED

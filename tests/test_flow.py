@@ -62,6 +62,30 @@ def run_cli(argv):
     return rc
 
 
+class site_gpus:
+    """Patch the site GPU tables IN-PROCESS for this host (the tests run on any host, GPU node or not, and never take a
+    production GPU lock): ids = list of GPU ids or None (host absent from GPU_IDS); locks = {gpu id (int, as the site file
+    keys them): [scratch lock files]} or None (host absent from GPU_LOCKS). Restored on exit."""
+
+    def __init__(self, ids, locks):
+        self.ids, self.locks = ids, locks
+
+    def __enter__(self):
+        self.saved = (getattr(CFG.site, 'GPU_IDS', None), getattr(CFG.site, 'GPU_LOCKS', None))
+        h = env.host()
+        CFG.site.GPU_IDS = {h: self.ids} if self.ids is not None else {}
+        CFG.site.GPU_LOCKS = {h: self.locks} if self.locks is not None else {}
+        return self
+
+    def __exit__(self, *exc):
+        CFG.site.GPU_IDS, CFG.site.GPU_LOCKS = self.saved
+        return False
+
+
+def scratch_locks(base, ids=(0, 1)):
+    return {g: [os.path.join(base, 'locks', f'gpu{g}.lock')] for g in ids}
+
+
 # =====================================================================================================================
 def test_config_and_stages():
     from exopipe.phase3.steps import flow as F
@@ -85,13 +109,33 @@ def test_config_and_stages():
     assert F.resolve_stages(a) == ['stage-in', 'prep']
     a.stages, a.until_stage, a.from_stage = 'check,solve', None, None
     assert F.resolve_stages(a) == ['solve', 'check']
+    a.stages, a.from_stage = 'stage-in,check', 'prep'           # --from narrows --stages, never adds prep/solve
+    assert F.resolve_stages(a) == ['check'], F.resolve_stages(a)
+    a.stages, a.from_stage, a.until_stage = None, 'prep', 'solve'
+    assert F.resolve_stages(a) == ['prep', 'solve']
+    a.from_stage = a.until_stage = None
     a.stages = 'reference'
     try:
         F.resolve_stages(a)
         raise AssertionError('reference is a masters stage now')
     except ValueError:
         pass
-    print('ok config + stages')
+    # the site file keys GPU_LOCKS by int GPU id; the step's ids are strings ('0' from --gpus / GPU_IDS)
+    with site_gpus(['0', '1'], {0: ['/tmp/x0.lock'], 1: ['/tmp/x1.lock']}):
+        assert C.site_gpu_locks('1') == ['/tmp/x1.lock'] and C.required_gpu_locks('0', 'G-T') == ['/tmp/x0.lock']
+    with site_gpus(['0'], None):                                 # a GPU host the site names no lock for: refused
+        try:
+            C.required_gpu_locks('0', 'G-T')
+            raise AssertionError('no site GPU lock must refuse')
+        except record.Refusal as e:
+            assert 'G-T' in str(e) and 'no GPU lock' in str(e), e
+    with site_gpus(['0'], {0: ['/fast/gh/main/phase3/.exopipe3_test_absent.lock']}):   # absent under a production root
+        try:
+            C.required_gpu_locks('0', 'G-T')
+            raise AssertionError('an absent lock under a production root must refuse (never created)')
+        except record.Refusal as e:
+            assert 'production root' in str(e), e
+    print('ok config + stages + site GPU lock lookup')
 
 
 def test_items():
@@ -218,8 +262,23 @@ def test_snapshot_flow_and_ship():
     base = os.path.join(ROOT, 'snap')
     cell = '18h_2030-01-02'
     stage = make_snapshot_cell(base, cell, ['36MHz', '41MHz'], zero_vis_v={('36MHz', 2)}, blank_i={('41MHz', 3)})
+    sbs = ['36MHz', '41MHz']
     rec = os.path.join(base, 'stage_record.json')
-    json.dump({'status': 'done', 'unit': f'{cell}_stage', 'meta': {'stage_root': stage}}, open(rec, 'w'))
+    sdir = os.path.join(stage, cell)
+
+    def stage_meta(**kw):
+        """The meta the frames stage unit writes (lib/frames/tier_snapshot.stage_stage): stage_dir, host, chain and per
+        subband I/V counts, names_sha1, wscnvis0, unreadable_header."""
+        subs = {}
+        for sb in sbs:
+            names = sorted(f for f in os.listdir(os.path.join(sdir, sb)) if f.endswith('-image.fits'))
+            subs[sb] = {'I': sum('Clean' in n for n in names), 'V': sum('Pilot' in n for n in names),
+                        'names_sha1': SS.staged_names_sha1(sdir, sb), 'unreadable_header': [],
+                        'wscnvis0': [n for n in names if C.zero_visibility(os.path.join(sdir, sb, n))[0]]}
+        m = {'stage_dir': sdir, 'host': env.host(), 'chain': 'search', 'subbands': subs}
+        m.update(kw)
+        return {'status': 'done', 'unit': f'{cell}_stage', 'meta': m}
+    json.dump(stage_meta(), open(rec, 'w'))
     fake = os.path.join(base, 'fake_flow.py')
     open(fake, 'w').write(FAKE_FLOW)
     out, work = os.path.join(base, 'out'), os.path.join(base, 'work')
@@ -227,17 +286,44 @@ def test_snapshot_flow_and_ship():
     saved = (CFG.flow_snapshot.MASTERS_ROOT, dict(CFG.site.PYTHON))
     CFG.flow_snapshot.MASTERS_ROOT = os.path.join(base, 'masters')
     CFG.site.PYTHON = dict(CFG.site.PYTHON, flow=PY)
+    locks = scratch_locks(base)
+    gpus = site_gpus(['0', '1'], locks)          # host-independent: this host's GPU tables replaced in-process
+    gpus.__enter__()
     try:
-        argv = ['flow', '--tier', 'snapshot', '--cells', cell, '--gpus', '0,1', '--work', work, '--out', out,
-                '--snap-stage-record', rec]
+        # the cell gates look at the launcher's whole subband selection (fleet v9:146-181): a cell named without subbands
+        # is refused when any subband lacks a Master, staged or not (only 36 and 41 MHz have one here); the cube chain looks
+        # at the staged subbands only (cube:66-92)
+        ns = __import__('argparse').Namespace(gpus=None, snap_stage_record=rec, snap_stage_root=None, work=work, tier='snapshot')
+        R = type('R', (), {'out_root': out})()
+        allsb = list(CFG.instrument.ALL_SUBBANDS)
+        _i, why = SS.cell_gates(ns, R, cell, allsb)
+        assert why and why.startswith('G-S4') and '18MHz' in why and '36MHz' not in why, why
+        json.dump(stage_meta(chain='cube'), open(rec, 'w'))
+        _i, why = SS.cell_gates(ns, R, cell, allsb)
+        assert why is None and _i['locks'] == {'0': locks[0], '1': locks[1]}, (why, _i.get('locks'))
+        json.dump(stage_meta(), open(rec, 'w'))
+        argv = ['flow', '--tier', 'snapshot', '--cells', cell, '--scopes', ','.join(sbs), '--gpus', '0,1', '--work', work,
+                '--out', out, '--snap-stage-record', rec]
         rc = run_cli(argv)
         assert rc == 0, rc
-        for sb in ('36MHz', '41MHz'):
+        for sb in sbs:
             r = record.load_record(out, 'flow', f'flow_{cell}_{sb}')
             assert r['status'] == 'done', (sb, r['status'], r['reason'])
-            assert r['meta']['frame_list_source'] == '.filelist'
+            assert r['meta']['frame_list_source'] == '.filelist (names_sha1 = stage record)', r['meta']['frame_list_source']
+            assert any(i.get('role') == 'frames stage record' for i in r['inputs'].values()), 'stage record not an input'
         r36 = record.load_record(out, 'flow', f'flow_{cell}_36MHz')
         assert r36['meta']['zero_vis']['n'] == 1 and r36['meta']['gpu'] == '0'
+        assert r36['meta']['zero_vis']['source'] == 'stage record meta.subbands.wscnvis0', r36['meta']['zero_vis']
+        assert [p for p, _w in r36['meta']['child']['locks']] == locks[0], r36['meta']['child']['locks']   # the site lock
+        # --resume identity: the staged frames are RE-LISTED (the listing JSON itself never changes on a resume)
+        ok, why = C.listing_current(r36, 'staged frames', SS.staged_on_disk(sdir, '36MHz'))
+        assert ok, why
+        f0 = SS.staged_on_disk(sdir, '36MHz')[0]
+        st0 = os.stat(f0)
+        os.utime(f0, ns=(st0.st_atime_ns, st0.st_mtime_ns + 10 ** 9))      # a frame rewritten after the flow
+        ok, why = C.listing_current(r36, 'staged frames', SS.staged_on_disk(sdir, '36MHz'))
+        assert not ok and 'staged frames changed' in why, why
+        os.utime(f0, ns=(st0.st_atime_ns, st0.st_mtime_ns))
         assert record.load_record(out, 'flow', f'flow_{cell}_41MHz')['meta']['gpu'] == '1'     # round-robin
         ship = record.load_record(out, 'flow', f'ship_{cell}')
         assert ship['status'] == 'done', ship['reason']
@@ -266,21 +352,57 @@ def test_snapshot_flow_and_ship():
         r = record.load_record(out, 'flow', f'flow_{cell}_41MHz')
         assert r['status'] == 'refused' and 'G-S6' in r['reason'] and '41MHz-Pilot-Snapshot-20300101_120010' in r['reason'], r['reason']
         del os.environ['FAKE_SKIP_V']
+        # G-S2: the staged names differ from the stage record's names_sha1 (the .filelist still matches) -> refused
+        bad = stage_meta()
+        bad['meta']['subbands']['36MHz']['names_sha1'] = '0' * 40
+        rec_bad = os.path.join(base, 'stage_record_bad.json')
+        json.dump(bad, open(rec_bad, 'w'))
+        rc = run_cli(argv[:-1] + [rec_bad, '--scopes', '36MHz', '--stages', 'flow'])
+        r = record.load_record(out, 'flow', f'flow_{cell}_36MHz')
+        assert rc == 2 and 'G-S2' in r['reason'] and 'names_sha1' in r['reason'], (rc, r['reason'])
+        # G-S2: a stage record made on another node (the staging is node-local) -> the whole cell refused
+        json.dump(stage_meta(host='nohost-elsewhere'), open(rec_bad, 'w'))
+        rc = run_cli(argv[:-1] + [rec_bad, '--stages', 'flow'])
+        r = record.load_record(out, 'flow', f'flow_{cell}_41MHz')
+        assert rc == 2 and 'G-S2' in r['reason'] and 'nohost-elsewhere' in r['reason'], (rc, r['reason'])
         # G-S2: a staged file the list does not name refuses the subband
         wfits(os.path.join(stage, cell, '36MHz', '36MHz-Clean-Snapshot-20300101_130000-image.fits'), np.zeros((N, N)))
         rc = run_cli(argv + ['--scopes', '36MHz', '--stages', 'flow'])
         assert rc == 2
         r = record.load_record(out, 'flow', f'flow_{cell}_36MHz')
         assert 'G-S2' in r['reason'], r['reason']
-        # G-S1: no GPU anywhere -> every subband unit refused with the cell's reason
-        rc = run_cli(['flow', '--tier', 'snapshot', '--cells', cell, '--work', work, '--out', out, '--snap-stage-record', rec,
-                      '--stages', 'flow'])
+        os.remove(os.path.join(stage, cell, '36MHz', '36MHz-Clean-Snapshot-20300101_130000-image.fits'))
+        # G-S1 (the check that used to depend on the host): no GPU id for this host and no --gpus -> every subband unit
+        # refused with the cell's reason (site GPU tables patched in-process: the same on a GPU host and on a CPU host)
+        noflags = [a for a in argv if a not in ('--gpus', '0,1')]
+        with site_gpus(None, None):
+            rc = run_cli(noflags + ['--stages', 'flow'])
         assert rc == 2
-        assert 'G-S1' in record.load_record(out, 'flow', f'flow_{cell}_41MHz')['reason']
+        for sb in sbs:
+            r = record.load_record(out, 'flow', f'flow_{cell}_{sb}')
+            assert r['status'] == 'refused' and r['reason'].startswith('G-S1') and 'no GPU ids' in r['reason'], r['reason']
+        # G-S1, the site's lock rule: GPU ids but no site GPU lock for them -> refused, never run lock-less
+        with site_gpus(['0', '1'], None):
+            rc = run_cli(noflags + ['--stages', 'flow'])
+        assert rc == 2
+        r = record.load_record(out, 'flow', f'flow_{cell}_36MHz')
+        assert r['reason'].startswith('G-S1') and 'no GPU lock' in r['reason'], r['reason']
+        # an override the in-place module cannot take refuses (the content test would judge blanks by another rule)
+        rc = run_cli(argv + ['--stages', 'flow', '--set', 'flow_snapshot.BLANK_FINITE_FRACTION=0.6'])
+        r = record.load_record(out, 'flow', f'flow_{cell}_36MHz')
+        assert rc == 2 and 'BLANK_FINITE_FRACTION' in r['reason'], (rc, r['reason'])
+        # G-S5: a staged subband off its own Master's grid -> the whole cell refused before any GPU work (cube:78-81)
+        wfits(os.path.join(base, 'masters', '18h_41MHz', 'coadd_final', 'I_deep_Taper_R0_41MHz.fits'),
+              np.zeros((2 * N, 2 * N)))
+        rc = run_cli(argv + ['--stages', 'flow'])
+        r = record.load_record(out, 'flow', f'flow_{cell}_36MHz')
+        assert rc == 2 and r['reason'].startswith('G-S5') and '41MHz' in r['reason'], (rc, r['reason'])
     finally:
+        gpus.__exit__(None, None, None)
         CFG.flow_snapshot.MASTERS_ROOT, CFG.site.PYTHON = saved[0], saved[1]
         SS.FLOW_SCRIPT = ('clv15', 'phase3_snapshot_flow.py')
-    print('ok snapshot flow + ship (round-robin, set gate G-S6, G-S2, G-S1, no csv append, idempotent ship)')
+    print('ok snapshot flow + ship (round-robin, site GPU locks, set gate G-S6 with the record\'s zero-vis list, G-S2 '
+          '(list, names_sha1, node), G-S1 (ids, lock rule), G-S4 selection, G-S5, no csv append, idempotent ship)')
 
 
 # =====================================================================================================================
@@ -351,18 +473,34 @@ def test_sublst_refine_verdict():
     out, work = os.path.join(base, 'out'), os.path.join(base, 'work')
     argv = ['flow', '--tier', 'sublst', '--cells', f'{lst}_{sb}', '--gpus', '1', '--work', work, '--out', out,
             '--sublst-stack-root', stack_root]
+    locks = scratch_locks(base)
+    gpus = site_gpus(['0', '1'], locks)          # host-independent: this host's GPU tables replaced in-process
+    gpus.__enter__()
     try:
         model = T.sublst_model(lst, sb, stack_root=os.path.join(stack_root, lst), refresh=True)
         assert len(model['expected']) == 2 * 6 * 4 and all(v == 3 for v in model['nloo'].values())
+        # G-C11: a GPU the site names no lock for refuses before anything runs (the child's P3_FLOW_LOCK is that lock)
+        with site_gpus(['0', '1'], None):
+            assert run_cli(argv) == 2
+        r = record.load_record(out, 'flow', f'refine_{lst}_{sb}')
+        assert r['reason'].startswith('G-C11') and 'no GPU lock' in r['reason'], r['reason']
+        # a rule literal of the module overridden: it cannot reach the child -> refused
+        assert run_cli(argv + ['--set', 'flow_refine.MIN_LOO_WEIGHTED_NIGHTS=3']) == 2
+        assert 'MIN_LOO_WEIGHTED_NIGHTS' in record.load_record(out, 'flow', f'refine_{lst}_{sb}')['reason']
         rc = run_cli(argv)
         assert rc == 0, rc
         r = record.load_record(out, 'flow', f'refine_{lst}_{sb}')
         assert r['status'] == 'done' and r['meta']['verdict']['on_disk'] == 48, (r['status'], r['reason'], r['meta'].get('verdict'))
-        assert r['meta']['child_env']['P3_FLOW_LOCK'].endswith('.sublst_refine_gpu1.lock')
+        assert r['meta']['child_env']['P3_FLOW_LOCK'] == locks[1][0], r['meta']['child_env']     # the site lock of GPU 1
         assert r['meta']['child_env']['DEEP_XLA_MEMFRAC'] == '0.5'
         # a re-run without --fresh refuses (G-C5); with --fresh --supersede the residuals are moved aside, then rewritten
         assert run_cli(argv) == 2
         assert 'G-C5' in record.load_record(out, 'flow', f'refine_{lst}_{sb}')['reason']
+        # G-C11 is checked BEFORE --fresh moves anything aside: the residuals stay where they are
+        with site_gpus(None, None):
+            assert run_cli([a for a in argv if a not in ('--gpus', '1')] + ['--fresh', '--supersede', 't0']) == 2
+        assert len(T.residuals_on_disk(os.path.join(out, f'{lst}_x2'), lst, sb)) == 48
+        assert not os.path.exists(os.path.join(out, '_superseded', 't0'))
         # a night with no flow returned (module exit 3): refused unless EXACTLY the approved (night, window) rows
         os.environ['FAKE_SKIP'] = '2031-02-02,4'
         assert run_cli(argv + ['--fresh', '--supersede', 't1']) == 2
@@ -375,6 +513,15 @@ def test_sublst_refine_verdict():
         r = record.load_record(out, 'flow', f'refine_{lst}_{sb}')
         assert r['status'] == 'done' and len(r['refused_items']) == 2 and r['refused_items'][0]['gate'] == 'G-C7', r
         del os.environ['FAKE_SKIP']
+        # --resume: the window stacks are re-listed (a re-stacked night is a changed input), never trusted from the record
+        r = record.load_record(out, 'flow', f'refine_{lst}_{sb}')
+        stacks_now = sorted(p for nd in T.sublst_model(lst, sb, stack_root=os.path.join(stack_root, lst),
+                                                      refresh=True)['stacks'].values() for p in nd.values())
+        assert C.listing_current(r, 'window stacks', stacks_now)[0]
+        os.utime(stacks_now[0])
+        assert not C.listing_current(r, 'window stacks', stacks_now)[0]
+        assert run_cli(argv + ['--resume']) == 2         # not resumed -> re-run -> G-C5 (earlier residuals present)
+        assert 'G-C5' in record.load_record(out, 'flow', f'refine_{lst}_{sb}')['reason']
         # check alone, and the content test on the x2 directory
         assert run_cli(['flow', '--tier', 'sublst', '--cells', f'{lst}_{sb}', '--stages', 'check', '--out', out,
                         '--sublst-stack-root', stack_root]) == 0
@@ -388,11 +535,24 @@ def test_sublst_refine_verdict():
             'sublst_x2_residual', p, stack_root=os.path.join(stack_root, lst))}
         r1 = res['sublst_x2_residual.allowed_and_complete']
         assert not r1['passed'] and 'LOONCOAD 7' in r1['detail'], r1
+        # per hour (one night): the refine log holds THIS run only (production truncates it per run, `> $L`), so the frames
+        # S-G8 gate / sublst_refine_approved.py never count an earlier run's REFUSED lines; the earlier log is kept
+        log = os.path.join(out, f'{lst}_x2', 'logs', f'{lst}_{sb}.log')
+        nprev = len(os.listdir(os.path.join(out, f'{lst}_x2', 'logs', '_previous')))
+        rc = run_cli(['flow', '--tier', 'sublst', '--cells', f'{lst}_2031-02-01_{sb}', '--gpus', '1', '--work', work,
+                      '--out', out, '--sublst-stack-root', stack_root, '--fresh', '--supersede', 't3'])
+        r = record.load_record(out, 'flow', f'refine_{lst}_{sb}_2031-02-01')
+        assert rc == 0 and r['status'] == 'done', (rc, r['status'], r['reason'])
+        body = open(log).read()
+        assert body.count('SUBLST-REFINE ') == 1 and body.count('\n===== ') == 1, body[-400:]
+        assert len(os.listdir(os.path.join(out, f'{lst}_x2', 'logs', '_previous'))) == nprev + 1
     finally:
+        gpus.__exit__(None, None, None)
         CFG.flow_refine.WEIGHTS_CSV, CFG.flow_refine.APPROVED_REFUSALS_CSV, LOO.WEIGHTS_CSV, CFG.site.PYTHON = saved
         SL.REFINE_SCRIPT = ('clv15', 'phase3_sublst_refine.py')
         os.environ.pop('FAKE_WEIGHTS', None)
-    print('ok sub-LST refine: verdict R1/R2/cards, G-C5, G-C7 exact approved set, check alone')
+    print('ok sub-LST refine: verdict R1/R2/cards, G-C5, G-C7 exact approved set, G-C11 lock rule before any move, '
+          'unreachable override refused, check alone')
 
 
 # =====================================================================================================================
@@ -438,11 +598,42 @@ def test_deep_stagein_check():
         assert r['meta']['stage_in']['copied'] == 7 and r['meta']['stages_done'] == ['stage-in', 'check']
         assert sorted(r['admitted']) == nights
         assert sum(1 for o in r['outputs'] if o['class'] == 'coadd_flow') == 3
+        # --resume identity: the admitted nights and their images are discovered NOW, the stored flows re-listed
+        from exopipe.phase3.lib.flow import steps_deep as SD
+        A = __import__('argparse').Namespace(deep_flow_from=src)
+        ok, why, adm = SD._resume_identity(A, cell, r)
+        assert ok and adm == nights, (ok, why, adm)
+        extra = wfits(os.path.join(p2, lst, '2031-03-04', 'Science_20310101_000000', '23MHz', 'I', 'deep',
+                                   '23MHz-I-Taper-3600s-Robust-0.75-20310304_000000-image_dewarped.fits'), np.ones((N, N)))
+        ok, why, adm = SD._resume_identity(A, cell, r)
+        assert not ok and 'alignment images changed' in why and '2031-03-04' in adm, (ok, why, adm)
+        shutil.rmtree(os.path.join(p2, lst, '2031-03-04'))
+        assert extra
         # an input image newer than its flow -> G-D14 at check
         time.sleep(1.1)
         os.utime(imgs['2031-03-02'])
         rc = run_cli(['flow', '--tier', 'deep', '--cells', cell, '--out', out, '--stages', 'check'])
         assert rc == 2 and 'G-D14' in record.load_record(out, 'flow', cell)['reason']
+        # G-D18: a solve with a pair to compute (2031-03-02 is stale now) on a host with no GPU id, or with no site GPU
+        # lock, refuses BEFORE the stale outputs are moved aside (G-D13) - site GPU tables patched in-process
+        os.makedirs(os.path.join(W, 'prep'), exist_ok=True)
+        tgt = wfits(os.path.join(W, 'prep', '2031-03-02_scaled.fits'), np.ones((N, N)))
+        dates = [{'date': n, 'sci_dir': os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(imgs[n])))),
+                  'align_img': imgs[n], 'needs_regrid': False, 'weight': 1.0} for n in nights]
+        prev = record.load_record(out, 'flow', cell)
+        prev['meta']['prep'] = {'ref_date': 'MASTER', 'manifest': [{'target': tgt, 'reference': 'x'}], 'dates': dates,
+                                'targets': [[d['date'], d['sci_dir'], d['align_img']] for d in dates], 'grid_refused': [],
+                                'reference_signature': f'MASTER:ivw-mean-v3:{"0" * 32}'}
+        record.atomic_write_json(record.record_path(out, 'flow', cell), prev)
+        for ids, lk, why in ((None, None, 'no GPU id'), (['0'], None, 'no GPU lock')):
+            with site_gpus(ids, lk):
+                rc = run_cli(['flow', '--tier', 'deep', '--cells', cell, '--out', out, '--stages', 'solve'])
+            r = record.load_record(out, 'flow', cell)
+            assert rc == 2 and r['reason'].startswith('G-D18') and why in r['reason'], (rc, r['reason'])
+            assert os.path.exists(os.path.join(W, 'flow', '2031-03-02_scaled_flow.npy'))
+            assert not [d for d in os.listdir(W) if d.startswith('stale_flow_')], os.listdir(W)
+            r['meta']['prep'] = prev['meta']['prep']
+            record.atomic_write_json(record.record_path(out, 'flow', cell), r)
     finally:
         CFG.paths.PHASE2_ROOT, CO.PHASE2_ROOT = saved
     # flow_prep_scaled: <date>_scaled.fits = input / safe(scale map from _scale.json) (coadd_full_pipeline.py:1772-1798)
@@ -465,7 +656,7 @@ def test_deep_stagein_check():
     res = {x['name']: x['passed'] for x in __import__('exopipe.phase3.core.validate', fromlist=['run']).run(
         'flow_reference', os.path.join(prep, 'ref_master_prev.fits'))}
     assert all(res.values()), res
-    print('ok deep: G-D0, stored-flow stage-in + manifest, check (coadd_flow tests), G-D14, flow_prep_scaled, flow_reference')
+    print('ok deep: G-D0, stored-flow stage-in + manifest, check (coadd_flow tests), G-D14, G-D18 (no GPU id / no site lock, before any move-aside), flow_prep_scaled, flow_reference')
 
 
 def main():

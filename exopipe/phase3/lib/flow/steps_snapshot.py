@@ -14,8 +14,10 @@ staged on this node). Units:
                      <out>/snapshot_fleet_out/<cell>/flow/ (production paths.SNAPSHOT_FLOW_ROOT / SNAPSHOT_FLEET_OUT), each
                      copy verified by sha1; a destination with different bytes refuses (G-S9; today `cp -n` keeps the old
                      file silently, v9:336-341). The flow movies and series are frames' `movies` stage (_CROSSCHECK group 4).
-Cell gates (whole cell refused, every subband unit records the reason): G-S1 no GPU id; G-S2 no done frames stage record;
-G-S3 a broken Master link; G-S4 a selected staged subband without a Master (v9:146-181).
+Cell gates (whole cell refused, every subband unit records the reason): G-S1 no GPU id, or no site GPU lock for a GPU;
+G-S2 no done frames stage record, or one made on another node; G-S3 a broken Master link / G-S4 a subband without a Master
+(over the launcher's subband selection: every selected subband in the search chain, v9:146-181; the staged ones in the
+cube chain, cube:66-92); G-S5 a staged subband off its own Master's grid (cube:78-81).
 """
 import glob
 import json
@@ -161,9 +163,30 @@ def staged_on_disk(sdir, sb):
     return sorted(os.path.join(d, f) for f in os.listdir(d) if C.is_staged_frame(f)) if os.path.isdir(d) else []
 
 
+def _record_subband(rec, sb):
+    """meta.subbands[sb] of the frames stage record (I, V, names_sha1, wscnvis0, unreadable_header), or {}."""
+    subs = ((rec or {}).get('meta') or {}).get('subbands')
+    return subs.get(sb) or {} if isinstance(subs, dict) else {}
+
+
+def staged_names_sha1(sdir, sb):
+    """sha1 of the sorted staged *-image.fits names of a subband, as the frames stage record writes it (names_sha1)."""
+    import hashlib
+    d = os.path.join(sdir, sb)
+    names = sorted(f for f in os.listdir(d) if f.endswith('-image.fits')) if os.path.isdir(d) else []
+    return hashlib.sha1('\n'.join(names).encode()).hexdigest()
+
+
 def zero_vis_set(frames, rec, sb):
+    """(the staged frames whose own header records WSCNVIS = 0, source): the frames stage record's per-subband list
+    (meta.subbands[sb].wscnvis0, written by `frames --tier snapshot --stages stage`; DESIGN 11.5 - read what the previous
+    stage recorded), else the headers read here (v9:162-175; an unreadable header = has visibilities, B-23)."""
     meta = (rec or {}).get('meta') or {}
     zv = meta.get('zero_vis')
+    rs = _record_subband(rec, sb)
+    if isinstance(rs.get('wscnvis0'), list):
+        names = {os.path.basename(x) for x in rs['wscnvis0']}
+        return {p for p in frames if os.path.basename(p) in names}, 'stage record meta.subbands.wscnvis0'
     if isinstance(zv, dict) and sb in zv:
         names = {os.path.basename(x) for x in zv[sb]}
         return {p for p in frames if os.path.basename(p) in names}, 'stage record'
@@ -185,32 +208,57 @@ def _naxis1(path):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def cell_gates(args, run, cell, sbs):
-    """(info dict, refusal text or None) for the whole cell - the fleet refuses the cell as a whole (v9:146-181)."""
+    """(info dict, refusal text or None) for the whole cell - the fleet refuses the cell as a whole (v9:146-181; cube:66-92).
+    ``sbs`` = the subband selection of the cell (every subband unless named), as the launchers' SUBBANDS."""
     lst = cell.split('_')[0]
     c = C.cfg().flow_snapshot
     info = {'gpus': C.parse_gpus(args.gpus) or C.site_gpu_ids()}
     if not info['gpus']:
         return info, (f'G-S1: no GPU ids for {C.host()} (--gpus, or GPU_IDS in the site file) - the flow is required '
                       f'(R-SNAP-FLOW-ALIGNMENT-AND-FLOW-MOVIE-ARE-PIPELINE-PRODUCTS-FLEET-V4)')
+    try:
+        info['locks'] = {g: C.required_gpu_locks(g, 'G-S1') for g in info['gpus']}
+    except Refusal as e:
+        return info, str(e)
     rec, rpath = stage_record(args, run, cell)
     info.update(stage_record=rpath, stage_status=(rec or {}).get('status'))
     if c.REQUIRE_STAGE_RECORD and (not rec or rec.get('status') != 'done'):
         return info, (f'G-S2: no done `frames --tier snapshot --stages stage` record of {cell} '
                       f'({rpath or "none found"}; status {(rec or {}).get("status")}) - flow reads only what the stage '
                       f'record lists (DESIGN 11.5); flow_snapshot.REQUIRE_STAGE_RECORD=False reads the staging instead')
+    rhost = ((rec or {}).get('meta') or {}).get('host')
+    if rhost and not C.same_host(rhost, C.host()) and not args.snap_stage_root:
+        return info, (f'G-S2: the staging of {cell} was made on {rhost} (stage record {rpath}), this is {C.host()} - the '
+                      f'staging is node-local; run flow on the node that holds it (the chain keeps the item on one node)')
     try:
         sdir = stage_dir(args, cell, rec)
     except Refusal as e:
         return info, f'staging root: {e}'
     info.update(stage_dir=sdir, rec=rec)
-    broken = [sb for sb in sbs if os.path.islink(C.snapshot_master(lst, sb)) and not os.path.exists(C.snapshot_master(lst, sb))]
+    staged = [sb for sb in sbs if staged_on_disk(sdir, sb)]
+    # the subbands the launcher's cell gates look at: the fleet (search chain) every subband of SUBBANDS, staged or not
+    # (v9:146-151 broken links, v9:152-155 + 176-181 no Master); the cube pass the staged subband directories (cube:66-92)
+    chain = ((rec or {}).get('meta') or {}).get('chain')
+    gate_sbs = staged if chain == 'cube' else list(sbs)
+    info['gate_subbands'] = gate_sbs
+    broken = [sb for sb in gate_sbs if os.path.islink(C.snapshot_master(lst, sb))
+              and not os.path.exists(C.snapshot_master(lst, sb))]
     if broken:
         return info, f'G-S3: broken Master link(s) {broken} under {c.MASTERS_ROOT} - the whole cell is refused (v9:146-151)'
-    staged = [sb for sb in sbs if staged_on_disk(sdir, sb)]
-    nomaster = [sb for sb in staged if not os.path.exists(C.snapshot_master(lst, sb))]
+    nomaster = [sb for sb in gate_sbs if not os.path.exists(C.snapshot_master(lst, sb))]
     if nomaster:
-        return info, (f'G-S4: staged subband(s) without a Taper R0 Master {nomaster} - the whole cell is refused (the '
+        return info, (f'G-S4: subband(s) without a Taper R0 Master {nomaster} - the whole cell is refused (the '
                       f'hourly-screen fallback is retired; RESEARCH-24-HOURLY-SCREEN-SUBBANDS-EXECUTING; v9:176-181)')
+    # G-S5: every staged subband on its OWN Master's grid (first staged frame vs Master NAXIS1; cube:66-81 refuses the whole
+    # cell - pilot frames must have been regridded by `frames --tier snapshot --stages regrid`, v8.1 own-Master rule)
+    offgrid = []
+    for sb in staged:
+        f1 = staged_on_disk(sdir, sb)[0]
+        nm, nf = _naxis1(C.snapshot_master(lst, sb)), _naxis1(f1)
+        if nm != nf:
+            offgrid.append(f'{sb} frames {nf} px, own Master {nm} px')
+    if offgrid:
+        return info, f'G-S5: frames off their own Master\'s grid: {offgrid} - the whole cell is refused (cube:78-81)'
     info['staged_subbands'] = staged
     return info, None
 
@@ -239,7 +287,11 @@ def _supersede_work(flow_dir, sb):
     if not olds:
         return None
     dst = os.path.join(flow_dir, f'_previous_{C.utcstamp()}_{sb}')
-    os.makedirs(dst, exist_ok=True)
+    k = 1
+    while os.path.lexists(dst):                 # two runs in one second: never rename onto (and lose) earlier files
+        dst = os.path.join(flow_dir, f'_previous_{C.utcstamp()}_{sb}.{k}')
+        k += 1
+    os.makedirs(dst)
     for p in olds:
         os.rename(p, os.path.join(dst, os.path.basename(p)))
     return dst
@@ -257,6 +309,7 @@ def flow_subband(u, args, run, cell, sb, gpu, info, partial_list):
     master = C.snapshot_master(lst, sb)
     u.meta.update(cell=cell, subband=sb, gpu=gpu, stage_dir=sdir, flow_dir=flow_dir, master=master,
                   stage_record=info.get('stage_record'), partial=bool(partial_list))
+    C.refuse_unreachable(('flow_snapshot.BLANK_FINITE_FRACTION',), 'phase3_snapshot_flow.py (blank rule, :99)')
     if C.subband_mhz(sb) > c.flow_snapshot.FLOW_MAX_MHZ:
         raise NoInput(f'{sb} above flow_snapshot.FLOW_MAX_MHZ {c.flow_snapshot.FLOW_MAX_MHZ}: not flowed (the search does not '
                       f'require flowed frames there)')
@@ -284,12 +337,15 @@ def flow_subband(u, args, run, cell, sb, gpu, info, partial_list):
         raise Refusal(f'G-S2: the staging of {sb} differs from its list ({src}): {len(miss)} listed not staged '
                       f'{[os.path.basename(x) for x in miss[:3]]}, {len(extra)} staged not listed '
                       f'{[os.path.basename(x) for x in extra[:3]]}')
-    u.meta['frame_list_source'] = src
-    # ---- G-S5: frames on their own Master's grid --------------------------------------------------------------------
-    nm, nf = _naxis1(master), _naxis1(listed[0])
-    if nm != nf:
-        raise Refusal(f'G-S5: {sb} frames NAXIS1 {nf} != its own Master NAXIS1 {nm} (pilot frames are regridded by '
-                      f'`frames --tier snapshot --stages regrid` first; v8.1 own-Master rule)')
+    want_sha1 = _record_subband(rec, sb).get('names_sha1')
+    if want_sha1 and staged_names_sha1(sdir, sb) != want_sha1:
+        raise Refusal(f'G-S2: the staged frame names of {sb} differ from the frames stage record (names_sha1 '
+                      f'{want_sha1[:12]} recorded, {staged_names_sha1(sdir, sb)[:12]} on disk) - the staging changed since '
+                      f'the stage unit; stage again')
+    u.meta['frame_list_source'] = src + (' (names_sha1 = stage record)' if want_sha1 else '')
+    if info.get('stage_record') and os.path.exists(info['stage_record']):
+        u.add_input(info['stage_record'], extra={'role': 'frames stage record'})
+    # (G-S5, the own-Master grid, is a cell gate: cell_gates)
     rdir = os.path.join(run.out_root, '_records', 'flow', 'inputs')
     C.add_listing_input(u, os.path.join(rdir, f'flow_{cell}_{sb}_frames.json'), listed, 'staged frames')
     u.add_input(master, extra={'role': 'subband Master'})
@@ -323,7 +379,7 @@ def flow_subband(u, args, run, cell, sb, gpu, info, partial_list):
     script = C.legacy_script(*FLOW_SCRIPT)
     u.add_input(script, extra={'role': 'code'})
     log = os.path.join(flow_dir, f'flow_{sb}.log')
-    with C.hold_locks(C.site_gpu_locks(gpu), c.flow.GPU_LOCK_WAIT_S, u.note) as held:
+    with C.hold_locks(C.required_gpu_locks(gpu, 'G-S1'), c.flow.GPU_LOCK_WAIT_S, u.note) as held:
         res = legacy.run(script, argv, python='flow', env=env, log=log, refusal_codes=(), refusal_text=(), unit=u)
     u.meta['child'] = dict(rc=res.rc, wall_s=res.wall_s, locks=held, log=log)
     if res.rc != 0:
@@ -387,6 +443,7 @@ def _atomic_copy(src, dst):
 
 
 def ship_cell(u, args, run, cell, sbs, flow_recs):
+    from exopipe.phase3.core import record
     c = C.cfg()
     fields_dir, qa_dir = product_dirs(args, run, cell)
     u.meta.update(cell=cell, fields_dir=fields_dir, qa_dir=qa_dir)
@@ -398,6 +455,8 @@ def ship_cell(u, args, run, cell, sbs, flow_recs):
                           f'cell is shipped until every selected subband is flowed')
         if (r.get('meta') or {}).get('partial'):
             raise Refusal(f'ship: flow_{cell}_{sb} was a partial (--snap-frames) run - never shipped')
+        # the flow unit record is an input: a re-flow of the subband invalidates a --resume of the ship (DESIGN 11.5)
+        u.add_input(record.record_path(run.out_root, 'flow', f'flow_{cell}_{sb}'), extra={'role': 'flow unit record'})
         fd = r['meta']['flow_dir']
         for p in sorted(glob.glob(os.path.join(fd, f'flow_{sb}_*.npy'))):
             plan.append((p, os.path.join(fields_dir, os.path.basename(p))))
@@ -435,12 +494,25 @@ def ship_cell(u, args, run, cell, sbs, flow_recs):
 # run
 # ---------------------------------------------------------------------------------------------------------------------
 
-def _resumable(run, name):
-    from exopipe.phase3.core import record
+def _resumable(run, name, cell=None, sb=None):
+    """The resume reason when the unit may be skipped, else None. A flow unit is re-listed (its staged frames now vs the
+    recorded listing) and its admitted night recomputed from data_decisions now - never the record's own values."""
+    from exopipe.phase3.core import exclusions, record
     prev = record.load_record(run.out_root, 'flow', name)
     if not (run.resume and prev and prev.get('status') == 'done'):
         return None
-    ok, why = run.resume_check(name, inputs=None, admitted=prev.get('admitted'))
+    admitted = None
+    if sb:
+        lst, date = cell.split('_')
+        sdir = (prev.get('meta') or {}).get('stage_dir')
+        ok, why = C.listing_current(prev, 'staged frames', staged_on_disk(sdir, sb) if sdir else [])
+        if not ok:
+            print(f'flow snapshot {name}: not resumed ({why})')
+            return None
+        admitted = [] if exclusions.load().is_excluded(lst, sb, date) else [date]
+    ok, why = run.resume_check(name, inputs=None, admitted=admitted)
+    if not ok:
+        print(f'flow snapshot {name}: not resumed ({why})')
     return why if ok else None
 
 
@@ -465,6 +537,7 @@ def run(args, run):
     if args.snap_frames:
         partial = [l.strip() for l in open(args.snap_frames) if l.strip() and not l.startswith('#')]
     for cell, sbs, explicit in cells_:
+        selection = list(sbs)         # the launcher's SUBBANDS: the cell gates G-S3/G-S4 look at all of them (v9:146-181)
         if not explicit:              # every subband the staging holds (v9:47; an unstaged subband is not a unit)
             try:
                 _rec, _ = stage_record(args, run, cell)
@@ -474,7 +547,7 @@ def run(args, run):
                 staged = []
             sbs = staged or sbs
         if 'flow' in stages:
-            info, refusal = cell_gates(args, run, cell, sbs)
+            info, refusal = cell_gates(args, run, cell, selection)
             gpus = info.get('gpus') or []
             if refusal:
                 for sb in sbs:
@@ -489,7 +562,7 @@ def run(args, run):
                 def lane(g, mine):
                     for sb in mine:
                         name = f'flow_{cell}_{sb}'
-                        why = _resumable(run, name) if partial is None else None
+                        why = _resumable(run, name, cell, sb) if partial is None else None
                         if why:
                             _skip(run, name, why)
                             continue
@@ -526,7 +599,8 @@ def plan(args, run, cells_, stages):
         say = P.append
         info, refusal = cell_gates(args, run, cell, sbs)
         fields_dir, qa_dir = product_dirs(args, run, cell)
-        say(f'cell {cell} (tier snapshot, stages {",".join(stages)}); subbands {",".join(sbs)}; GPUs {info.get("gpus")}')
+        say(f'cell {cell} (tier snapshot, stages {",".join(stages)}); subbands {",".join(sbs)}; GPUs {info.get("gpus")}; '
+            f'GPU locks {info.get("locks", "(not resolved)")}')
         say(f'stage record: {info.get("stage_record") or "none"} (status {info.get("stage_status")}); staging '
             f'{info.get("stage_dir", "(not resolved)")}')
         for k, sb in enumerate(sbs):
@@ -551,9 +625,9 @@ def plan(args, run, cells_, stages):
                 f'`frames --tier snapshot --stages stage,regrid` on this node first; the chain keeps the item on one node)')
         if 'ship' in stages:
             say(f'ship: fields -> {fields_dir} [snapshot_flow_field]; flow_<sb>.csv/.log -> {qa_dir}; G-S9 differing bytes refuse')
-        say('gates: G-S1 GPU ids, G-S2 stage record + staging = its list, G-S3 broken Master link, G-S4 Master missing, '
-            'G-S5 grid, G-S6 per-subband SET of expected (staged minus WSCNVIS = 0) vs flowed, G-S7 FAILED rows, '
-            'G-S8 field per flowed I frame, G-S9 ship')
+        say('gates: G-S1 GPU ids + the site GPU lock of each, G-S2 stage record (done, this node) + staging = its list and '
+            'names_sha1, G-S3 broken Master link, G-S4 Master missing, G-S5 own-Master grid, G-S6 per-subband SET of '
+            'expected (staged minus WSCNVIS = 0) vs flowed, G-S7 FAILED rows, G-S8 field per flowed I frame, G-S9 ship')
         for line in P:
             print(f'[plan] {line}')
         if refusal:

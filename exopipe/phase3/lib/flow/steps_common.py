@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import re
-import socket
 import sys
 import time
 
@@ -227,6 +226,25 @@ def add_listing_input(u, json_path, files, role, dry_run=False):
     return lst
 
 
+def listing_current(rec, role, files):
+    """(ok, why) for --resume: the listing input of ``role`` recorded in ``rec`` equals the listing of ``files`` NOW (same
+    member set, each with the same size and mtime_ns). record.resume_check re-fingerprints the small listing JSON only -
+    a file this run never rewrites on a resume - so the set it stands for must be re-listed here (DESIGN 11.5)."""
+    for p, fp in ((rec or {}).get('inputs') or {}).items():
+        if isinstance(fp, dict) and fp.get('role') == f'listing:{role}':
+            try:
+                with open(p) as f:
+                    old = json.load(f)['files']
+            except (OSError, ValueError, KeyError):
+                return False, f'{role} listing {p} unreadable'
+            now = listing(files)
+            if old == now:
+                return True, ''
+            return False, (f'{role} changed since the record ({len(old)} -> {len(now)} files, '
+                           f'{len({tuple(x) for x in now} ^ {tuple(x) for x in old})} differing entries)')
+    return False, f'no {role} listing in the record'
+
+
 def add_code_inputs(u, paths):
     """Every script a unit shells out to (and the in-place modules it imports in a child) is an input with role 'code'
     (record.code_fingerprint sees only in-process modules; DESIGN 11.5)."""
@@ -240,7 +258,14 @@ def add_code_inputs(u, paths):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def host():
-    return socket.gethostname()
+    """This host's short name, the key of every per-host site table (core.env.host)."""
+    from exopipe.phase3.core import env
+    return env.host()
+
+
+def same_host(a, b):
+    """Two host names equal as short names (a record may hold a fully qualified one)."""
+    return bool(a) and bool(b) and str(a).split('.')[0] == str(b).split('.')[0]
 
 
 def legacy_script(root_name, rel):
@@ -266,7 +291,9 @@ def site_gpu_locks(gpu, h=None):
     if ent is None:
         return []
     if isinstance(ent, dict):
-        v = ent.get(gpu, ent.get(str(gpu), ent.get('*', [])))
+        # GPU ids reach here as strings (--gpus, site_gpu_ids); the site file keys them as ints ({0: [...], 1: [...]})
+        keys = [gpu, str(gpu)] + ([int(gpu)] if str(gpu).isdigit() else []) + ['*']
+        v = next((ent[k] for k in keys if k in ent), [])
     else:
         v = ent
     return [v] if isinstance(v, str) else list(v or [])
@@ -274,6 +301,40 @@ def site_gpu_locks(gpu, h=None):
 
 def parse_gpus(spec):
     return [g.strip() for g in str(spec).split(',') if g.strip()] if spec else []
+
+
+def _lock_creatable(p):
+    """A lock file that does not exist may be created only outside every production root (refactor window)."""
+    return os.path.exists(p) or cfg().production_root_of(p) is None or cfg().paths.PRODUCTION_WRITES
+
+
+def required_gpu_locks(gpu, gate, h=None):
+    """The site GPU_LOCKS of (host, gpu) every GPU child runs under (spec section 8 rows 20-21: FIXED-FLOW-BATCH-EXCLUSIVE-
+    PER-NODE-GPU-RC-6, FIXED-FLOW-LOCK-NODE-GLOBAL-INJECTION-RUN-RETRY: the lock is the one production holds on that GPU,
+    named in the site file). REFUSES (gate ``gate``) when the site names no lock for this host and GPU - the site file's
+    rule: a GPU whose production lock the site does not name is not used by the flow step - or when a named lock file is
+    absent under a production root (it is not created there during the refactor window)."""
+    h = h or host()
+    locks = site_gpu_locks(gpu, h)
+    if not locks:
+        raise Refusal(f'{gate}: the site file names no GPU lock for {h} GPU {gpu} (GPU_LOCKS) - a GPU child runs only under '
+                      f'the lock production holds on that GPU (FIXED-FLOW-BATCH-EXCLUSIVE-PER-NODE-GPU-RC-6); name it in the '
+                      f'site file first')
+    absent = [p for p in locks if not _lock_creatable(p)]
+    if absent:
+        raise Refusal(f'{gate}: GPU lock file(s) {absent} of {h} GPU {gpu} do not exist and lie under a production root - '
+                      f'not created (refactor window); create them or fix the site GPU_LOCKS')
+    return locks
+
+
+def refuse_unreachable(keys, where):
+    """Config keys that only DOCUMENT a literal of an in-place module running in a child process: an explicit override cannot
+    reach that module, so it refuses (spec section 3 drift guard; the step's own content tests would otherwise judge the
+    products by a rule the module did not apply)."""
+    hit = [k for k in keys if overridden(k)]
+    if hit:
+        raise Refusal(f'{", ".join(hit)} overridden, but {where} applies its own literal in a child process - the override '
+                      f'cannot reach it during the refactor window')
 
 
 @contextlib.contextmanager

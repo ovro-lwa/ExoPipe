@@ -23,7 +23,7 @@ tier_snapshot.py run(args, run), optional default_out(args); their tests in test
 
 def select_stages(args, tier):
     """The stages of this invocation for ``tier`` (deep; the sub-LST and snapshot tiers order their own stages from
-    frames_tiers), in the tier's order: --stages (default frames.STAGES[tier]; an optional stage,
+    frames_sublst / frames_snapshot), in the tier's order: --stages (default frames.STAGES[tier]; an optional stage,
     frames.OPTIONAL_STAGES[tier], runs only when named), then --from / --until over that order (steps/frames.py adds the
     flags; cli.py does not have them yet, spec B6)."""
     from exopipe.phase3.config import CFG

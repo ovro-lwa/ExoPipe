@@ -103,6 +103,32 @@ def test_config():
         CFG.reset()
 
 
+def test_engine_flags():
+    from exopipe.phase3.core.record import Refusal
+    fm = os.path.join(CFG.paths.CLV15_ROOT, 'phase3_snapshot_frame_movie.py')
+    cu = os.path.join(CFG.paths.CLV15_ROOT, 'phase3_snapshot_cube.py')
+    d = TN.engine_defaults(cu)
+    check('engine defaults read from the source (cube --quant = QUANT = 8.0)', d.get('--quant') == 8.0, str(d))
+    S = CFG.frames_snapshot
+    check('config = engine defaults -> production command line (no extra argument)',
+          TN.engine_flags(fm, [('--k', 'STRETCH_K', S.STRETCH_K), ('--size', 'MOVIE_WIDTH_PX', S.MOVIE_WIDTH_PX),
+                               ('--fps', 'MOVIE_FPS', S.MOVIE_FPS), ('--crf', 'MOVIE_CRF', S.MOVIE_CRF)]) == []
+          and TN.engine_flags(cu, [('--quant', 'CUBE_QUANT', S.CUBE_QUANT)]) == [])
+    try:
+        TN.engine_flags(fm, [('--k', 'STRETCH_K', 11.0)])
+        check('a config value != the engine default without an override refuses (drift)', False)
+    except Refusal as e:
+        check('a config value != the engine default without an override refuses (drift)', 'drift' in str(e), str(e))
+    try:
+        CFG.set('frames_snapshot.MOVIE_CRF', '20')
+        got = TN.engine_flags(fm, [('--crf', 'MOVIE_CRF', CFG.frames_snapshot.MOVIE_CRF)])
+        check('an overridden value is passed to the engine', got == ['--crf', '20'], str(got))
+    except ConfigRefusal as e:
+        check('an overridden value is passed to the engine', False, str(e))
+    finally:
+        CFG.reset()
+
+
 def test_stage_grammar():
     class A:
         stages = None
@@ -266,6 +292,14 @@ def test_sublst_engines():
         f.write(f'SUBLST-REFINE {LST} 27MHz aligned=2 refused=1 refused_rule=0 refused_night=0\nREFUSED-NIGHT 27MHz w0 x: no flow returned\n')
     rc, out = exopipe3(*common, '--stages', 'wideband', '--fresh')
     check('S-G8: an unapproved refine refusal refuses wideband', rc == 2 and 'S-G8' in out, out[-600:])
+    rc, out = exopipe3('--tier', 'sublst', '--lsts', LST, '--scopes', 'Red', '--sublst-loo-evidence', 'log', '--out', root,
+                       '--parity', '--stages', 'tree')
+    check('S-G8: tree B of a group refuses while a member\'s refine is incomplete (nocat:236-247 before :264)',
+          rc == 2 and 'S-G8' in out and records(root).get(f'{LST}_tree_Red', {}).get('status') == 'refused', out[-600:])
+    os.utime(os.path.join(root, f'{LST}_x2', 'logs', f'{LST}_18MHz.log'), (1, 1))
+    rc, out = exopipe3('--tier', 'sublst', '--lsts', LST, '--scopes', '18MHz', '--sublst-loo-evidence', 'log', '--out', root,
+                       '--parity', '--stages', 'tree')
+    check('S-G8: tree B refuses on a refine log older than the window stacks', rc == 2 and 'older than' in out, out[-600:])
 
 
 # =====================================================================================================================
@@ -370,6 +404,37 @@ def test_snapshot_engines():
     check('flow_movie passes with the flow dir', all(x['passed'] for x in validate.run(
         'flow_movie', os.path.join(out, 'snapshot_fleet_out', CELL, 'flow', 'flow_18MHz.mp4'), flow_dir=fd)))
     print(f'    (snapshot cube + movie engine runs: {time.time() - t0:.1f} s)')
+    fmv = os.path.join(out, 'snapshot_fleet_out', CELL, 'flow', 'flow_18MHz.mp4')
+    flog = os.path.join(out, 'snapshot_fleet_out', CELL, 'flow', 'movie_18MHz.log')
+    ftxt = open(flog).read() if os.path.exists(flog) else ''
+    check('flow movie log shipped without the legacy.run header, pixel scale of the own grid (M31)',
+          not ftxt.lstrip().startswith('=====') and 'pixel scale 4.6020 arcmin' in ftxt, ftxt[:300])
+    mlog = open(os.path.join(out, 'snapshot_movies', CELL, 'movies.log')).read()
+    check('movies.log as production writes it (no legacy.run header line)', '=====' not in mlog, mlog[:200])
+    with open(flog, 'w') as f:
+        f.write(ftxt.replace('pixel scale 4.6020', 'pixel scale 2.9400'))
+    check('flow_movie fails when its pixel scale is not the header frame\'s |CDELT2| (M31)',
+          not all(x['passed'] for x in validate.run('flow_movie', fmv, flow_dir=fd)))
+    with open(flog, 'w') as f:
+        f.write(ftxt)
+    rc, o = exopipe3(*common, '--stages', 'movies')
+    mv = records(out).get(f'{CELL}_movies', {})
+    check('a re-run keeps earlier shipped flow movies (cp -n) and refuses that item by name',
+          mv.get('status') == 'done' and any('cp -n' in r['reason'] for r in mv.get('refused_items', [])),
+          f'{mv.get("status")} {mv.get("refused_items")} {o[-400:]}')
+    for p in glob.glob(os.path.join(sd, '*Clean-Snapshot-*-image_flowed.fits')):
+        os.remove(p)
+    rc, o = exopipe3(*common, '--stages', 'movies', '--fresh')
+    mv = records(out).get(f'{CELL}_movies', {})
+    check('no flowed Stokes I frame: the flow movie item is refused (no 4.602 arcmin fallback)',
+          any('no flowed Stokes I frame' in r['reason'] for r in mv.get('refused_items', [])),
+          f'{mv.get("status")} {mv.get("refused_items")} {o[-400:]}')
+    rc, o = exopipe3('--tier', 'snapshot', '--cells', f'{CELL}_23MHz', '--snap-discovery', 'integration',
+                     '--set', f'paths.PHASE1_ROOT={p1}', '--set', 'frames_snapshot.MIN_FREE_GB[search]=0',
+                     '--work', os.path.join(T, 'scratch0'), '--out', os.path.join(T, 'snapout0'), '--parity', '--stages', 'stage')
+    st0 = records(os.path.join(T, 'snapout0')).get(f'{CELL}_stage', {})
+    check('N-G2: a cell with no Phase-1 frame refuses the stage (cube pass :61)', rc == 2 and st0.get('status') == 'refused'
+          and 'N-G2' in st0.get('reason', ''), f'{rc} {st0.get("reason")} {o[-300:]}')
     cube = os.path.join(dest, f'{CELL}_18MHz_I_flowcube.fits')
     with open(os.path.join(dest, 'MANIFEST.txt')) as f:
         txt = f.read()
@@ -398,9 +463,13 @@ def test_real():
                    ('snapshot_cube', f'{CFG.paths.SNAPSHOT_CUBES_ROOT}/18h_2025-04-11/MANIFEST.txt'),
                    ('snapshot_cube', f'{CFG.paths.SNAPSHOT_CUBES_ROOT}/18h_2025-04-11/18h_2025-04-11_36MHz_V_flowcube.fits'),
                    ('frame_movie', f'{CFG.frames_snapshot.MOVIES_ROOT}/18h_2025-04-11/movies.log'),
-                   ('flow_movie', f'{CFG.paths.SNAPSHOT_FLEET_OUT}/18h_2025-04-11/flow/flow_36MHz.mp4')):
+                   ('flow_movie', f'{CFG.paths.SNAPSHOT_FLEET_OUT}/18h_2025-10-15/flow/flow_46MHz.mp4')):
         r = validate.run(cls, p)
         check(f'real {cls} {os.path.basename(p)}', all(x['passed'] for x in r), str(r)[:300])
+    # a flow movie shipped before the M31 fix (clv15 98595b3, 2026-10-13 01:40) used the 18 MHz pixel at 36 MHz
+    r = validate.run('flow_movie', f'{CFG.paths.SNAPSHOT_FLEET_OUT}/18h_2025-04-11/flow/flow_36MHz.mp4')
+    check('real pre-M31 flow movie 18h_2025-04-11 36MHz fails the scale test', not all(x['passed'] for x in r)
+          and 'pixel-scale' in str(r), str(r)[:300])
     rc, o = exopipe3('--tier', 'sublst', '--lsts', '09h', '--stages', 'tree,verify', '--scopes', '55MHz', '--dry-run')
     check('dry run on real LST 09h (tree, verify)', rc == 0 and 'UNIT 09h_tree_55MHz' in o, o[-500:])
     rc, o = exopipe3('--tier', 'snapshot', '--cells', '18h_2025-04-11_36MHz', '--stages', 'stage,regrid',
@@ -414,6 +483,7 @@ def main():
     os.makedirs(T)
     try:
         test_config()
+        test_engine_flags()
         test_stage_grammar()
         test_items()
         test_sublst_engines()

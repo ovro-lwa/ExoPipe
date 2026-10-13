@@ -15,8 +15,9 @@ re-tests run the same checks from the path alone):
                    cubes = 2 x subbands = the cube files present
   frame_movie      frames_<cell>_<band>_I.mp4: non-empty, ffprobe decodes >= 1 frame; movies.log: a TOTAL line, and the
                    bands it lists (or ctx bands) each have their mp4
-  flow_movie       flow_<sb>.mp4: decodes >= 1 frame; flow_<sb>_series.csv beside it with the 4 production columns and one
-                   row per flow field of the subband (ctx flow_dir, else paths.SNAPSHOT_FLOW_ROOT/<cell>)
+  flow_movie       flow_<sb>.mp4: decodes >= 1 frame; its arcmin scale (movie_<sb>.log) = |CDELT2| x 60 of the header frame
+                   (ctx header_fits, else the own Master; M31); flow_<sb>_series.csv beside it with the 4 production columns
+                   and one row per flow field of the subband (ctx flow_dir, else paths.SNAPSHOT_FLOW_ROOT/<cell>)
 Not tested stand-alone (needs the staging): the cube pixels against the flowed frames - that is the writer's own
 `phase3_snapshot_cube.py verify` (run at write time, its VERIFY line is in MANIFEST.txt and checked here).
 """
@@ -294,11 +295,41 @@ def frame_movie_content(path, bands=None, **ctx):
     return n >= 1, n, f'{n} decoded frames'
 
 
+def _flow_movie_scale(path, sb, header_fits=None):
+    """Problems with the arcmin scale of a flow movie (spec frames.md 6 'scale'; M31, clv15 98595b3): its log
+    movie_<sb>.log beside it states 'pixel scale X arcmin per native pixel' with X = |CDELT2| x 60 of the header frame the
+    movie was made with (ctx header_fits while it exists), else of the subband's own Master (the flowed frames sit on its
+    grid: regridded onto it, or native on it - flow G-S5). A missing line (a movie made before the fix) or the 18 MHz
+    fallback WARNING fails."""
+    log = os.path.join(os.path.dirname(path), f'movie_{sb}.log')
+    if not os.path.exists(log):
+        return [f'no {os.path.basename(log)} beside the movie (its pixel scale is unknown)']
+    txt = open(log, errors='replace').read()
+    got = re.findall(r'^pixel scale ([0-9.]+) arcmin per native pixel', txt, flags=re.M)
+    if 'WARNING: no --header-fits' in txt or not got:
+        return [f'{os.path.basename(log)}: no pixel-scale line from the header frame (made before M31 or without '
+                f'--header-fits: the 18 MHz 4.602 arcmin assumed)']
+    ref = header_fits if header_fits and os.path.exists(header_fits) else None
+    if ref is None:
+        d = os.path.dirname(os.path.abspath(path))
+        cell = os.path.basename(os.path.dirname(d)) if os.path.basename(d) == 'flow' else ''
+        C = _cfg()
+        ref = C.frames_snapshot.MASTER_FILE.format(links=C.masters_snapshot.LINK_ROOT, lst=cell.split('_')[0], sb=sb)
+    c = _cards(ref)
+    if 'CDELT2' not in c:
+        return [f'no CDELT2 in the reference header {ref}']
+    want = abs(float(c['CDELT2'])) * 60.0
+    if abs(float(got[-1]) - want) > 5e-5 + 1e-6 * want:          # the log prints 4 decimals
+        return [f'pixel scale {got[-1]} arcmin != |CDELT2| x 60 = {want:.4f} of {os.path.basename(ref)}']
+    return []
+
+
 @content_test('flow_movie')
-def flow_movie_content(path, flow_dir=None, **ctx):
-    """flow_<sb>.mp4 decodable (>= 1 frame); flow_<sb>_series.csv beside it with columns ts, median_arcmin, p90_arcmin,
-    max_arcmin and one row per flow field flow_<sb>_<ts>.npy of the cell (ctx flow_dir, else paths.SNAPSHOT_FLOW_ROOT/<cell>,
-    the cell being the parent of the 'flow' directory)."""
+def flow_movie_content(path, flow_dir=None, header_fits=None, **ctx):
+    """flow_<sb>.mp4 decodable (>= 1 frame); its arcmin scale = |CDELT2| x 60 of the header frame (ctx header_fits, else
+    the own Master; read from movie_<sb>.log beside it - M31); flow_<sb>_series.csv beside it with columns ts,
+    median_arcmin, p90_arcmin, max_arcmin and one row per flow field flow_<sb>_<ts>.npy of the cell (ctx flow_dir, else
+    paths.SNAPSHOT_FLOW_ROOT/<cell>, the cell being the parent of the 'flow' directory)."""
     b = os.path.basename(path)
     m = _FLOWMOVIE_RE.match(b)
     if not m:
@@ -308,6 +339,7 @@ def flow_movie_content(path, flow_dir=None, **ctx):
     n = _decoded_frames(path) if os.path.getsize(path) else 0
     if n < 1:
         msgs.append('mp4 empty or not decodable')
+    msgs += _flow_movie_scale(path, sb, header_fits)
     ser = os.path.join(os.path.dirname(path), f'flow_{sb}_series.csv')
     if not os.path.exists(ser):
         msgs.append(f'no {os.path.basename(ser)}')

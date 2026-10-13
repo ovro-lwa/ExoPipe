@@ -177,13 +177,19 @@ def pregates(c, stokes, tier='deep', date=None, work_cell=None, x2_mode='compute
     out.append(_gate('D-G1', os.path.exists(mI), f'I master {os.path.basename(mI)}'
                      + ('' if os.path.exists(mI) else ' MISSING - inputs missing or unshipped (phase3_deep.py:945-950)')))
     gen = v['master_gen']
+    # search_inputs.ALLOW_OLD_MASTERS (P3_ALLOW_OLD_MASTERS=1, an archaeology comparison key, never production) bypasses
+    # the generation and membership gates in the engine (phase3_deep.py:971, 984, 1001): the pre-gates follow it
+    old_ok = bool(v['allow_old_masters'])
     if os.path.exists(mI):
         opi = c.header(mI).get('COADDOP')
         opv = c.header(mV).get('COADDOP') if os.path.exists(mV) else None
-        ok = opi == gen and (opv is None or opv == gen)
+        ok = old_ok or (opi == gen and (opv is None or opv == gen))
         out.append(_gate('D-G2', ok, f'COADDOP I {opi!r}' + (f', V {opv!r}' if os.path.exists(mV) else ', no V master')
-                         + f' (required {gen!r}; phase3_deep.py:968-977, 997-1004)'))
-    if tier == 'deep':
+                         + f' (required {gen!r}; phase3_deep.py:968-977, 997-1004)'
+                         + (' - bypassed: ALLOW_OLD_MASTERS' if old_ok else '')))
+    if tier == 'deep' and old_ok:
+        out.append(_gate('D-G3', True, 'membership gate bypassed: ALLOW_OLD_MASTERS (phase3_deep.py:984)'))
+    elif tier == 'deep':
         try:
             from exopipe.phase3.lib.masters import membership as mb
             viol = mb.verify(c.base) + mb.verify_products(c.base)

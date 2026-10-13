@@ -696,6 +696,8 @@ def stage_wideband(ctx, lst, nights, per_hour):
                                 u.add_output(p, 'sublst_wideband')
                     elif l.startswith('SKIP '):
                         u.note(l.strip()[:300])
+                    elif l.startswith('REFUSED-BAND-RULE '):        # the engine's own band-rule refusal (clv15 6f5fb31)
+                        u.refuse_item(os.path.join(root, f'{lst}_{n}', G), l.strip()[:300], gate='exclusions')
             u.note(f'{nwin} wideband {G} window(s) over {len(run_n)} night(s)')
             if nwin == 0 and not per_hour:
                 u.refuse(f'S-G10 no wideband {G} windows over {lst} (nocat:261)')
@@ -712,6 +714,14 @@ def stage_wideband(ctx, lst, nights, per_hour):
 # stage: tree
 # ---------------------------------------------------------------------------------------------------------------------
 
+def tree_refine_gate(ctx, lst, b, base=None):
+    """S-G8 for tree B: [(subband, ok, why, refine log)] for every subband whose arm-B residuals the band's tree reads (the
+    band itself, or a group's members - its wideband set-B residuals are built from theirs). Production builds the tree only
+    after the x2 refine of every subband is complete (nocat:236-247, then :264)."""
+    sbs = group_members(b) if b in _GROUPS_ALL else [b]
+    return [(sb,) + tuple(refine_complete(ctx, lst, sb, base)) for sb in sbs]
+
+
 def stage_tree(ctx, lst):
     S = ctx.S
     bands = [b for b in S.TREE_BANDS if not ctx.scopes or b in ctx.scopes]
@@ -725,6 +735,8 @@ def stage_tree(ctx, lst):
         for b in bands:
             n = len(glob.glob(os.path.join(ctx.x2_dir(lst, base), f'{lst}_*', b, '?', f'sublst_{lst}_*_{b}_?_w?_resid_loo.fits')))
             plan(f'    UNIT {lst}_tree_{b}: {n} arm-B residual file(s)')
+            for sb, ok, why, _ in tree_refine_gate(ctx, lst, b, base):
+                ctx.gate(f'S-G8 x2 complete {sb}', ok, why)
             ctx.planned += 1
         return
     script = legacy_script('clv15', 'phase3_sublst_tenmin_tree.py')
@@ -741,7 +753,9 @@ def stage_tree(ctx, lst):
         pbs = sorted(glob.glob(os.path.join(root, f'{lst}_*', b, 'I', f'sublst_{lst}_*_{b}_I_w?_pb.fits')))
         wp = frozen_weights(lst, b)
         rlog = os.path.join(x2, 'logs', f'{lst}_{b}.log')
-        inputs = res_ + pbs + [p for p in (wp, rlog, script) if os.path.exists(p)]
+        gate = tree_refine_gate(ctx, lst, b)
+        inputs = res_ + pbs + [p for p in (wp, rlog, script) if os.path.exists(p)] \
+            + [g[3] for g in gate if g[3] != rlog and os.path.exists(g[3])]
         nights = sorted({re.search(r'_(\d{4}-\d\d-\d\d)_', os.path.basename(p)).group(1) for p in res_})
         admitted = exclusions().admitted(lst, b, nights)
         if try_resume(ctx.run, ctx.args, name, inputs, admitted):
@@ -750,6 +764,10 @@ def stage_tree(ctx, lst):
             for p in inputs:
                 u.add_input(p)
             u.set_admitted(admitted)
+            for sb, ok, why, _ in gate:
+                if not ok:
+                    u.refuse(f'S-G8 x2 refine of {lst} {sb} not complete ({why}): tree B is built only after the refine of '
+                             f'every subband it reads (nocat:236-247 before :264)')
             cdir = os.path.join(tree, f'{lst}_{b}')
             clean_start(ctx.run, ctx.args, name, [os.path.join(cdir, 'frames.csv')])
             log = os.path.join(root, 'logs', f'tree_{lst}_{b}.log')

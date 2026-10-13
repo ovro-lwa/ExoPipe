@@ -112,6 +112,11 @@ def drift_guard(note):
     C.drift_guard([('flow_refine.WEIGHTS_CSV', LOO.WEIGHTS_CSV, None),
                    ('flow_refine.MEMBERSHIP_VETO_PIN', (TR.MEMBERSHIP_VETO_PIN, TR.MEMBERSHIP_VETO_PIN_MD5), None),
                    ('flow_refine.JUPITER_MASK_RADIUS_BEAMS', JM.RADIUS_BEAMS, None)], note)
+    # the module's rule literals (refine.py:129, 165-166, 203, 221, 232-235): documented in flow_refine, never passed
+    C.refuse_unreachable(tuple(f'flow_refine.{k}' for k in ('MIN_NIGHTS_PER_WINDOW', 'MIN_WEIGHTED_NIGHTS_PER_WINDOW',
+                                                             'MIN_LOO_WEIGHTED_NIGHTS', 'X2_VALID_FOOTPRINT', 'ALIGNER_OK_RC',
+                                                             'DURATION_FALLBACK_S')),
+                         'phase3_sublst_refine.py')
     f = C.cfg().flow
     if (f.ALPHA, f.GAMMA, f.SCALE_FACTOR, f.PREPROCESS_WEIGHT) != (1.3, 150.0, 0.7, 1.5):
         raise Refusal('flow.ALPHA/GAMMA/SCALE_FACTOR/PREPROCESS_WEIGHT overridden: the sub-LST refine module shells '
@@ -195,6 +200,16 @@ def refine_unit(u, args, run, lst, sb, nights):
         if fr.EXCLUDED_STACK == 'refuse':
             raise Refusal(msg + ' (the stacks predate the exclusion; rebuild them with masters --tier sublst)')
         u.note(msg + ' (flow_refine.EXCLUDED_STACK=record: production behaviour)')
+    # ---- G-C11: a GPU and the lock production holds on it (site GPU_IDS / GPU_LOCKS; sublst_refine_pass.sh:22 passes the
+    #      per-GPU lock as P3_FLOW_LOCK, which the module flocks around align_images). Checked BEFORE anything is moved. ----
+    gpus = C.parse_gpus(args.gpus) or C.site_gpu_ids()
+    if not gpus:
+        raise Refusal(f'G-C11: no GPU id for {C.host()} (--gpus, or GPU_IDS in the site file)')
+    g = gpus[0]
+    locks = C.required_gpu_locks(g, 'G-C11')
+    lock = locks[0]
+    if len(locks) > 1:
+        u.note(f'site names {len(locks)} locks for GPU {g}; the module takes one (P3_FLOW_LOCK={lock})')
     # ---- G-C5: earlier residuals of this (LST, subband[, nights]) -------------------------------------------------------
     x2 = os.path.join(run.out_root, f'{lst}_x2')
     old = T.residuals_on_disk(x2, lst, sb, nset)
@@ -205,17 +220,19 @@ def refine_unit(u, args, run, lst, sb, nights):
                           f'--supersede TAG to move them aside first (as sublst_resume_from_x2.sh:54-56 does by hand)')
         moves = C.supersede(sorted(old.values()), run.out_root, run.out_root, args.supersede, f'flow refine {u.name} --fresh')
         u.note(f'--fresh: {len(moves)} earlier residuals moved aside under {run.out_root}/_superseded/{args.supersede}/')
-    if os.path.exists(log) and not nights:
+    if os.path.exists(log):
+        # one run per log, as production's `> $L` (sublst_refine_pass.sh:23): the frames S-G8 gate and
+        # sublst_refine_approved.py read the log's REFUSED lines against its LAST SUBLST-REFINE line, so a per-hour run
+        # (--nights) must not append to an earlier run's log either; the earlier log is kept under logs/_previous/
         prev_dir = os.path.join(x2, 'logs', '_previous')
         os.makedirs(prev_dir, exist_ok=True)
-        os.rename(log, os.path.join(prev_dir, f'{lst}_{sb}.log.{C.utcstamp()}'))
+        dst = os.path.join(prev_dir, f'{lst}_{sb}.log.{C.utcstamp()}')
+        k = 1
+        while os.path.lexists(dst):             # two runs in one second: never rename onto (and lose) an earlier log
+            dst = os.path.join(prev_dir, f'{lst}_{sb}.log.{C.utcstamp()}.{k}')
+            k += 1
+        os.rename(log, dst)
     # ---- the child ------------------------------------------------------------------------------------------------------
-    gpus = C.parse_gpus(args.gpus) or C.site_gpu_ids()
-    if not gpus:
-        raise Refusal(f'G-C11: no GPU id for {C.host()} (--gpus, or GPU_IDS in the site file)')
-    g = gpus[0]
-    locks = C.site_gpu_locks(g)
-    lock = locks[0] if locks else fr.FLOW_LOCK.format(gpu=g)
     work = os.path.join(fitsio.scratch_root(args.work), fr.WORK_SUBDIR, f'gpu{g}')
     argv = ['--root', os.path.join(base, lst), '--out', x2, '--work', work, '--lst', lst, '--subband', sb]
     if nights:
@@ -277,7 +294,18 @@ def run(args, run):
             name = unit_name('refine', lst, sb, nights)
             prev = record.load_record(run.out_root, 'flow', name)
             if run.resume and prev and prev.get('status') == 'done':
-                ok, why = run.resume_check(name, inputs=None, admitted=prev.get('admitted'))
+                # the window stacks re-listed now (a re-stacked or new night changes the leave-one-out Masters) and the
+                # admitted nights recomputed from data_decisions now - never the record's own values
+                from exopipe.phase3.lib.flow import tests as T
+                model = T.sublst_model(lst, sb, stack_root=os.path.join(_stack_base(args), lst), refresh=True)
+                stacks = sorted(p for nd in model['stacks'].values() for p in nd.values())
+                ok, why = C.listing_current(prev, 'window stacks', stacks)
+                if ok:
+                    _p, excl = excluded_stacks(model, lst, sb)
+                    nights_now = sorted({n for nd in model['stacks'].values() for n in nd})
+                    ok, why = run.resume_check(name, inputs=None, admitted=[n for n in nights_now if n not in excl])
+                if not ok:
+                    print(f'flow sublst {name}: not resumed ({why})')
                 if ok:
                     u = run.unit(name, tier='sublst')
                     u.status, u.reason = 'skipped-valid', why
@@ -336,9 +364,14 @@ def plan(args, run, its, stages):
             if 'refine' in stages:
                 if have and not run.fresh:
                     refusal = refusal or f'G-C5: {len(have)} earlier residuals under {x2} (needs --fresh --supersede TAG)'
+                lock = '-'
                 if not gpus:
                     refusal = refusal or f'G-C11: no GPU id for {C.host()}'
-                lock = (C.site_gpu_locks(gpus[0]) or [fr.FLOW_LOCK.format(gpu=gpus[0])])[0] if gpus else '-'
+                else:
+                    try:
+                        lock = C.required_gpu_locks(gpus[0], 'G-C11')[0]
+                    except Refusal as e:
+                        refusal = refusal or str(e)
                 print(f'[plan]   refine: {c.site.PYTHON.get("default")} clv15/phase3_sublst_refine.py --root '
                       f'{os.path.join(base, lst)} --out {x2} --work <work>/{fr.WORK_SUBDIR}/gpu{gpus[0] if gpus else "?"} '
                       f'--lst {lst} --subband {sb}' + (f' --nights {",".join(nights)}' if nights else '')
