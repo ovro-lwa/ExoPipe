@@ -135,6 +135,15 @@ def _parity(args, out):
     import importlib as _il
     guard = _il.import_module('exopipe.phase3.core.guard')
     roots = [out] + ([args.work] if args.work else [])
+    if not args.work:            # node-local scratch (core/fitsio.scratch_dir) is temporary, never a product
+        from exopipe.phase3.config import CFG
+        from exopipe.phase3.core import fitsio
+        try:
+            scratch = fitsio.scratch_root(None)
+        except Exception:
+            scratch = None
+        if scratch and CFG.production_root_of(scratch) is None:
+            roots.append(scratch)
     log = os.path.join(out, '_records', '_parity_guard_refusals.log')
     guard.install(roots, log=log)
     guard.export_env(roots, log=log)
