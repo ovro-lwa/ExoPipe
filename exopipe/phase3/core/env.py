@@ -39,3 +39,25 @@ def legacy_root(name):
         if r.rstrip('/').endswith('/' + name):
             return r
     raise KeyError(f'no legacy code root {name!r} in the site file LEGACY_CODE_ROOTS')
+
+
+def host():
+    """This host's short name (lwacalim07), the key of every per-host site table."""
+    import socket
+    return socket.gethostname().split('.')[0]
+
+
+def node_local_holder(path):
+    """The host whose site NODE_LOCAL_ROOTS hold ``path`` (None: shared storage, readable from every node)."""
+    from exopipe.phase3.config import CFG
+    p = os.path.abspath(path)
+    for h, roots in (CFG.site.NODE_LOCAL_ROOTS or {}).items():
+        if any(p == r.rstrip('/') or p.startswith(r.rstrip('/') + '/') for r in roots):
+            return h
+    return None
+
+
+def readable_here(path):
+    """False when ``path`` is node-local to ANOTHER host: the same path here is a different disk (or absent)."""
+    h = node_local_holder(path)
+    return h is None or h == host()

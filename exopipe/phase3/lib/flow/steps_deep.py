@@ -115,7 +115,7 @@ def stored_flow_source(cell, args):
     if args.deep_flow_from:
         return args.deep_flow_from, '--deep-flow-from'
     DS = importlib.import_module('exopipe.phase3.lib.masters.deep_stagein')
-    ov, _ = DS.override_tables()
+    ov = DS.working_root_table()
     Cdir = DS.working_cell(cell, ov)
     return os.path.join(Cdir, 'flow'), ('ref_override.csv row' if cell in ov else 'paths.COADD_SB_ROOT') + f' ({Cdir})'
 

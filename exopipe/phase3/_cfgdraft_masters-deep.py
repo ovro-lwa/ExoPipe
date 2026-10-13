@@ -55,18 +55,35 @@ class masters_stagein(_Section):
     carried in (port of rebuild_cell.sh:23, 36-43, 47-120 in lib/masters/deep_stagein.py; the flow copy :44 is the flow
     step's). The working cell is paths.COADD_SB_ROOT/<cell> unless REF_OVERRIDE_TABLE names another root."""
     REF_PIXEL_FACTOR_RANGE = (0.3, 3.0)   # SHSCALE x FLUXCORR of a baked reference must lie strictly inside (rebuild_cell.sh:70, 87, 107)
-    # B-12 default (c): the per-cell override tables of the 2026-10-07 round are honoured, pinned by sha1 (uncommitted edits!)
+    # B-12 default (c): ref_override.csv (working-cell root) honoured, pinned by sha1
     REF_OVERRIDE_TABLE = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/ref_override.csv'        # 8 rows; ROUND-RESTART-LIST-A-87-CELLS-FLEET-QUEUE-ALIGNED (ledger 2076); rebuild_cell.sh:23
     REF_OVERRIDE_TABLE_SHA1 = '76016a8b6b2517df3c77895cc4975a5de14b0434'
-    REF_OVERRIDE_I_TABLE = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/ref_override_I.csv'    # 6 rows (exopipe_ops 4779053), paths on lwacalim07 /fast; R-GREGG-20261009-DEWARP-CASCADE-23HGREEN-3CELLS-FAST; rebuild_cell.sh:53-79
-    REF_OVERRIDE_I_TABLE_SHA1 = 'd5b9c99fd928a0b7fe0b567b06d5d7ba3f16ca38'
-    PREDEWARP_QUARANTINE = '/lustre/gh/main/phase3/working_quarantine_20261004'   # RBF-dewarped cells' pre-dewarp masters (rebuild_cell.sh:80)
-    SUPERSEDED_ARCHIVE = '/lustre/pipeline/exopipe/phase3/Coadd/Run_20260909_000000_SUPERSEDED_20260927'   # flow-dewarped cells (rebuild_cell.sh:25, 94-104)
+    # The reference resolver (lib/masters/deep_stagein.resolve_reference): same constituents -> previous generation -> refuse,
+    # over pre-screen (un-warped) copies indexed by CONSTDIG. Search order: (label, directory or glob, layout); within a glob
+    # the newest directory (by name) first; the first root with a copy wins. layout 'cell' = <dir>/<cell>/coadd_final/<var>_<sc>.fits,
+    # 'flat' = <dir>/<cell>/<var>_<sc>.fits, 'archive' = <dir>/<LST>/<sc>/<sc>_<st>_deep_Taper_<rob>_*.fits (native only; exactly 1).
+    REFERENCE_COPY_ROOTS = (
+        ('predewarp-quarantine', '/lustre/gh/main/phase3/working_quarantine_20261004', 'cell'),             # rebuild_cell.sh:80-93
+        ('superseded-archive', '/lustre/pipeline/exopipe/phase3/Coadd/Run_20260909_000000_SUPERSEDED_20260927', 'archive'),   # :94-104
+        ('unwarped-copy', '/fast/gh/main/phase3/unwarped_ref_*', 'flat'),           # ref_override_I.csv's copies (lwacalim07-local); :53-79
+        ('quarantine-copy', '/lustre/gh/main/phase3/working_quarantine_*', 'cell'), # every later working quarantine
+    )
+    PREVIOUS_GENERATION_REFERENCE = True  # Gregg 2026-10-13 '(A) is approved' (exopipe_ops e5c218e): no copy of the current constituents
+                                          # -> the replaced master's pre-screen copy (its CONSTDIG = the current master's ALIGNREF)
+    V_OPTIONAL_BRANCHES = ('unwarped-copy', 'quarantine-copy', 'previous-generation')   # no V copy = no V reference only here (rebuild_cell.sh:65-67, e5c218e); elsewhere refused
+    # Production's hand tables: per-row CROSS-CHECKS of the resolver (a row must name the file chosen), not inputs; '' = off
+    REF_OVERRIDE_I_TABLE = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/ref_override_I.csv'    # R-GREGG-20261009-DEWARP-CASCADE-23HGREEN-3CELLS-FAST; rebuild_cell.sh:53-79
+    REF_PREVGEN_TABLE = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/ref_prevgen.csv'          # exopipe_ops e5c218e
+    PREDEWARP_QUARANTINE = '/lustre/gh/main/phase3/working_quarantine_20261004'   # (= REFERENCE_COPY_ROOTS[0]; kept for the plan text)
+    SUPERSEDED_ARCHIVE = '/lustre/pipeline/exopipe/phase3/Coadd/Run_20260909_000000_SUPERSEDED_20260927'   # (= REFERENCE_COPY_ROOTS[1])
     EPOCH_GATE_CARRY_DIR = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/epoch_gate_carry'    # empty since 2026-10-10 (rebuild_cell.sh:41); B-05 default (c)
     STRIP_CARD_PREFIXES = ('SH', 'FLUX')  # cards removed from a reconstructed native reference (rebuild_cell.sh:74, 91, 111)
-    PROTECTED_KEYS = ('REF_OVERRIDE_TABLE', 'REF_OVERRIDE_TABLE_SHA1', 'REF_OVERRIDE_I_TABLE', 'REF_OVERRIDE_I_TABLE_SHA1')
+    PROTECTED_KEYS = ('REF_OVERRIDE_TABLE', 'REF_OVERRIDE_TABLE_SHA1', 'REF_OVERRIDE_I_TABLE', 'REF_PREVGEN_TABLE',
+                      'PREVIOUS_GENERATION_REFERENCE', 'V_OPTIONAL_BRANCHES')
     RULED = {'REF_OVERRIDE_TABLE': 'ROUND-RESTART-LIST-A-87-CELLS-FLEET-QUEUE-ALIGNED',
-             'REF_OVERRIDE_I_TABLE': 'R-GREGG-20261009-DEWARP-CASCADE-23HGREEN-3CELLS-FAST'}
+             'REF_OVERRIDE_I_TABLE': 'R-GREGG-20261009-DEWARP-CASCADE-23HGREEN-3CELLS-FAST',
+             'PREVIOUS_GENERATION_REFERENCE': 'IMPL-REBUILD-REFERENCE-A-PREVIOUS-GENERATION-PRESCREEN-20261013',
+             'REF_PREVGEN_TABLE': 'IMPL-REBUILD-REFERENCE-A-PREVIOUS-GENERATION-PRESCREEN-20261013'}
 
 
 class masters_build(_Section):

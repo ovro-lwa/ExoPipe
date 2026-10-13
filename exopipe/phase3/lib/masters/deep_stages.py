@@ -195,14 +195,16 @@ def stage_in(cell, args, run, out, ran_now):
             else:
                 u.refuse(f'{cell_dir} exists - a rebuild always starts from a clean cell directory (rebuild_cell.sh:34; '
                          f'G-M25); pass --fresh --supersede TAG to move it aside with a sha1 manifest')
-        ov, ovi = DS.override_tables()
-        for t in (_cfg().masters_stagein.REF_OVERRIDE_TABLE, _cfg().masters_stagein.REF_OVERRIDE_I_TABLE):
-            if os.path.exists(t):
+        ov = DS.working_root_table()
+        tables = DS.reference_tables()
+        for t in (_cfg().masters_stagein.REF_OVERRIDE_TABLE, _cfg().masters_stagein.REF_OVERRIDE_I_TABLE,
+                  _cfg().masters_stagein.REF_PREVGEN_TABLE):
+            if t and os.path.exists(t):
                 u.add_input(t)
         C = DS.working_cell(cell, ov)
         u.note(f'working cell {C}' + (' (ref_override.csv)' if cell in ov else ''))
         if mode == 'previous-master':
-            entries = DS.native_reference(cell, C, ovi)
+            entries = DS.resolve_reference(cell, C, tables=tables)
         else:
             ruling = run.waived(WAIVE_REFERENCE)
             if not ruling:
@@ -241,7 +243,8 @@ def stage_in(cell, args, run, out, ran_now):
         for (st, p, q, hist), e in zip(written, [e for e in entries if e['data'] is not None]):
             u.note(f'reference {e["var"]}: {e["src"]}; CONSTDIG {e["constdig"]} NCOADD {e["ncoadd"]}')
             prev = f'{C}/coadd_final/{e["var"]}_{sc}.fits' if mode == 'previous-master' else None
-            u.add_output(q, 'reference_master', source=e['source'], factor=e['factor'], previous=prev)
+            u.add_output(q, 'reference_master', source=e['source'], factor=e['factor'], previous=prev,
+                         generation=e.get('generation'))
         if not written and mode != 'night':
             u.refuse('no reference master written (G-M04)')
         if egc:          # the carried record (the co-add final stage reads it: G-M10)
@@ -709,7 +712,7 @@ def _plan_stage_in(cell, args, out, planned):
     if os.path.exists(cell_dir) and not (args.fresh and getattr(args, 'supersede', None)):
         gates.append(f'{cell_dir} exists (G-M25: --fresh --supersede TAG)')
     try:
-        ov, ovi = DS.override_tables()
+        ov = DS.working_root_table()
     except Refusal as e:
         return lines, [str(e)]
     C = DS.working_cell(cell, ov)
@@ -717,13 +720,13 @@ def _plan_stage_in(cell, args, out, planned):
     mode, val = parse_reference(args.reference)
     try:
         if mode == 'previous-master':
-            ents = DS.native_reference(cell, C, ovi, read_data=False)
+            ents = DS.resolve_reference(cell, C, read_data=False)
         elif mode == 'path':
             ents = DS.reference_from_path(val, read_data=False)
         else:
             ents = []
         for e in ents:
-            lines.append(f"reference {e['var']}: branch {e['branch']}; source {e['source']}; factor {e['factor']}; "
+            lines.append(f"reference {e['var']}: {e.get('generation')}, branch {e['branch']}; source {e['source']}; factor {e['factor']}; "
                          f"CONSTDIG {e['constdig']} NCOADD {e['ncoadd']}" + (f"; {e['none_reason']}" if e['none_reason'] else ''))
     except Refusal as e:
         gates.append(f'reference: {e}')

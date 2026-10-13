@@ -214,12 +214,21 @@ def native_unwarped(path, **ctx):
 
 @content_test('reference_master')
 def constdig_equals_previous(path, **ctx):
-    """CONSTDIG = the md5 of its own constituents, and = the previous master's when the unit names it (ctx previous=)."""
+    """CONSTDIG = the md5 of its own constituents, and, when the unit names the previous (current) master (ctx previous=),
+    = its CONSTDIG (same constituents) or = the CONSTDIG in its ALIGNREF card (ctx generation='previous-generation': the
+    master it replaced; Gregg (A), e5c218e)."""
     h = _hdr(path)
     dates = constituent_dates(h)
     own = h.get('CONSTDIG') == constdig(dates) if dates else False
     prev = ctx.get('previous')
-    pv = _hdr(prev).get('CONSTDIG') if prev and os.path.exists(prev) else None
+    hp = _hdr(prev) if prev and os.path.exists(prev) else None
+    if hp is None:
+        pv = None
+    elif ctx.get('generation') == 'previous-generation':
+        from exopipe.phase3.lib.masters.deep_stagein import alignref_digest
+        pv = alignref_digest(hp)
+    else:
+        pv = hp.get('CONSTDIG')
     ok = own and (pv is None or pv == h.get('CONSTDIG'))
     return ok, h.get('CONSTDIG'), (f'own constituents {"match" if own else "DIFFER"}; previous master '
                                    + (f'CONSTDIG {pv} {"=" if pv == h.get("CONSTDIG") else "!="}' if pv else 'not given'))

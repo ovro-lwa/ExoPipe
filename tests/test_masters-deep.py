@@ -10,6 +10,7 @@ with a message when a product is not present on this node. Nothing is written un
 on real data (the deep build is exercised up to its first gate only).
 """
 import csv
+import glob
 import hashlib
 import json
 import os
@@ -153,8 +154,7 @@ def test_config():
             (CFG.masters_build.VARIANT_BAND_MEDIANS, CFG.masters_build.VARIANT_BAND_MEDIANS_SHA1),
             (CFG.masters_fluxscale.SCALE_TABLE, CFG.masters_fluxscale.SCALE_TABLE_SHA1),
             (CFG.masters_fluxscale.FLUXCORR_TABLE, CFG.masters_fluxscale.FLUXCORR_TABLE_SHA1),
-            (CFG.masters_stagein.REF_OVERRIDE_TABLE, CFG.masters_stagein.REF_OVERRIDE_TABLE_SHA1),
-            (CFG.masters_stagein.REF_OVERRIDE_I_TABLE, CFG.masters_stagein.REF_OVERRIDE_I_TABLE_SHA1)]
+            (CFG.masters_stagein.REF_OVERRIDE_TABLE, CFG.masters_stagein.REF_OVERRIDE_TABLE_SHA1)]
     for p, want in pins:
         try:
             got = IP.sha1_pin(p, want, 'test')
@@ -190,83 +190,161 @@ def test_resolve_stages():
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# 3. stage-in reference branches (port of rebuild_cell.sh:47-117)
+# 3. stage-in reference resolver (port of rebuild_cell.sh:47-117 + e5c218e as one rule indexed by CONSTDIG)
 # ---------------------------------------------------------------------------------------------------------------------
+
+def _roots(extra_local=None):
+    """Test copy roots in production's order, under the scratch tree."""
+    r = [('predewarp-quarantine', f'{T}/wq', 'cell'), ('superseded-archive', f'{T}/sup', 'archive'),
+         ('unwarped-copy', f'{T}/uw_*', 'flat'), ('quarantine-copy', f'{T}/q_*', 'cell')]
+    return repr(tuple(r))
+
 
 def _set_roots():
     CFG.set('paths.COADD_SB_ROOT', f'{T}/wt')
+    CFG.set('masters_stagein.REFERENCE_COPY_ROOTS', _roots())
     CFG.set('masters_stagein.PREDEWARP_QUARANTINE', f'{T}/wq')
     CFG.set('masters_stagein.SUPERSEDED_ARCHIVE', f'{T}/sup')
     CFG.set('masters_stagein.EPOCH_GATE_CARRY_DIR', f'{T}/egc')
 
 
+def _clean(*names):
+    for n in names:
+        for d in glob.glob(f'{T}/{n}'):
+            shutil.rmtree(d)
+
+
+def _refuses(fn, needle):
+    try:
+        fn()
+        return False, 'no refusal'
+    except Refusal as ex:
+        return needle in str(ex), str(ex)[:200]
+
+
 def test_stagein_branches():
     from exopipe.phase3.lib.masters import deep_stagein as DS
     lst, sc = CELL.split('_')
-    ov, ovi = DS.override_tables()
-    check(f'{CELL} is in neither override table', CELL not in ov and CELL not in ovi)
+    ov = DS.working_root_table()
+    tabs = DS.reference_tables()
+    check(f'{CELL} is in no hand table', CELL not in ov and CELL not in tabs)
+    check('prevgen table precedes ref_override_I (11h_18MHz row from ref_prevgen.csv)',
+          tabs.get('11h_18MHz', {}).get('table') == 'ref_prevgen.csv' and tabs['11h_18MHz']['V'] is None)
     _set_roots()
+    _clean('wq', 'sup', 'uw_*', 'q_*')
+    R = lambda **kw: DS.resolve_reference(CELL, C, tables=kw.pop('tables', {}), **kw)
     try:
-        # (4) current master / pixel factor
+        # current master / pixel factor (not dewarped)
         fd = make_working_cell(f'{T}/wt', CELL)
         C = DS.working_cell(CELL, ov)
         check('working cell = paths.COADD_SB_ROOT/<cell>', C == f'{T}/wt/{CELL}')
-        ents = DS.native_reference(CELL, C, ovi)
+        ents = R()
         e = ents[0]
         f = 1.05 * 0.98
         d = fits.getdata(f'{fd}/I_deep_Taper_R075_{sc}.fits').astype(np.float64)
-        check('branch 4 chosen', e['branch'] == 'current-master' and abs(e['factor'] - f) < 1e-12)
-        check('branch 4 pixels = master / factor (float64 then float32)',
+        check('current-master chosen (same constituents)', e['branch'] == 'current-master' and
+              e['generation'] == 'same-constituents' and abs(e['factor'] - f) < 1e-12)
+        check('current-master pixels = master / factor (float64 then float32)',
               np.array_equal(e['data'], (d / f).astype(np.float32)))
-        check('branch 4 SH*/FLUX* cards stripped', not [k for k in e['header'] if k.startswith(('SH', 'FLUX'))])
-        check('branch 4 HISTORY text as production', e['history'] ==
+        check('SH*/FLUX* cards stripped', not [k for k in e['header'] if k.startswith(('SH', 'FLUX'))])
+        check('current-master HISTORY text as production', e['history'] ==
               f'2026-10-04 rebuild reference: native un-warped I_deep_Taper_R075 (current master / pixel factor {f:.6f})')
         out_cell = f'{T}/refs/{CELL}'
         written = DS.write_reference(out_cell, sc, ents)
         check('both references written + coadd_final_ref copies', len(written) == 2 and
               all(os.path.exists(q) for _, _, q, _ in written))
         r = tests_of('reference_master', written[0][2], source=e['source'], factor=e['factor'],
-                     previous=f'{fd}/I_deep_Taper_R075_{sc}.fits')
+                     previous=f'{fd}/I_deep_Taper_R075_{sc}.fits', generation=e['generation'])
         check('reference_master tests pass on the written reference', all(x['passed'] for x in r.values()),
               '; '.join(f"{k}: {x['detail']}" for k, x in r.items() if not x['passed']))
-        # factor outside 0.3-3 refuses
         make_working_cell(f'{T}/wt', CELL, factor_shscale=5.0)
-        try:
-            DS.native_reference(CELL, C, ovi, read_data=False)
-            ok = False
-        except Refusal as ex:
-            ok = 'unusable' in str(ex)
-        check('pixel factor outside 0.3-3 refuses', ok)
-        # (2) MDWARP + pre-dewarp master of the same CONSTDIG in the quarantine
+        ok, why = _refuses(lambda: R(read_data=False), 'unusable')
+        check('pixel factor outside 0.3-3 refuses', ok, why)
+        # dewarped + pre-dewarp copy of the same CONSTDIG in the quarantine
         make_working_cell(f'{T}/wt', CELL, mdwarp=True)
         make_working_cell(f'{T}/wq', CELL)
-        ents = DS.native_reference(CELL, C, ovi, read_data=False)
-        check('branch 2 (pre-dewarp quarantine) chosen', ents[0]['branch'] == 'predewarp-quarantine')
-        # (3) MDWARP, no quarantine: exactly one native superseded master with the CONSTDIG
-        shutil.rmtree(f'{T}/wq')
+        ents = R(read_data=False)
+        check('predewarp-quarantine chosen (I and V)', [x['branch'] for x in ents] == ['predewarp-quarantine'] * 2)
+        # dewarped, no quarantine copy: exactly one native superseded master with the CONSTDIG
+        _clean('wq')
         sup = f'{T}/sup/{lst}/{sc}'
         write(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_a.fits', IMG, master_header(DATES))
         write(f'{sup}/{sc}_V_deep_Taper_Robust+0.0_a.fits', IMG * 0.1, master_header(DATES))
-        ents = DS.native_reference(CELL, C, ovi)
-        check('branch 3 (superseded archive) chosen, pixels unchanged', ents[0]['branch'] == 'superseded-archive'
-              and np.array_equal(ents[0]['data'], IMG))
+        ents = R()
+        check('superseded-archive chosen, pixels unchanged', ents[0]['branch'] == 'superseded-archive'
+              and np.array_equal(ents[0]['data'], IMG) and ents[0]['factor'] is None)
         write(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_b.fits', IMG, master_header(DATES))
-        try:
-            DS.native_reference(CELL, C, ovi, read_data=False)
-            ok = False
-        except Refusal as ex:
-            ok = 'need exactly 1' in str(ex)
-        check('two superseded masters with the CONSTDIG refuse', ok)
+        ok, why = _refuses(lambda: R(read_data=False), 'need exactly 1')
+        check('two superseded masters with the CONSTDIG refuse', ok, why)
         os.remove(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_b.fits')
         write(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_a.fits', IMG, master_header(DATES, {'SHSCALE': 1.0}))
-        try:
-            DS.native_reference(CELL, C, ovi, read_data=False)
-            ok = False
-        except Refusal as ex:
-            ok = 'not native' in str(ex)
-        check('a non-native superseded master refuses', ok)
+        ok, why = _refuses(lambda: R(read_data=False), 'not native')
+        check('a non-native superseded master refuses', ok, why)
+        _clean('sup')
+        # the unwarped copy (ref_override_I's role): newest directory with the CONSTDIG wins; a stale-CONSTDIG copy is skipped
+        write(f'{T}/uw_20261009/{CELL}/I_deep_Taper_R075_{sc}.fits', IMG * 1.05, master_header(DATES, dict(BAKED)))
+        write(f'{T}/uw_20261013/{CELL}/I_deep_Taper_R075_{sc}.fits', IMG, master_header(DATES[:3], dict(BAKED)))
+        ents = R(read_data=False)
+        check('unwarped-copy chosen; stale-CONSTDIG newer copy skipped; no V reference',
+              ents[0]['branch'] == 'unwarped-copy' and '/uw_20261009/' in ents[0]['source']
+              and ents[1]['branch'] == 'none' and 'NONE' in ents[1]['none_reason'], str(DS.plan_summary(ents)))
+        check('unwarped-copy HISTORY = production override text', ents[0]['history'].startswith(
+              '2026-10-09 rebuild reference: native un-warped I_deep_Taper_R075 (override '))
+        # the hand table as a cross-check: a row naming another file refuses; the same file passes
+        row = {CELL: dict(table='ref_override_I.csv', constdig=None, I=f'{T}/uw_20261013/{CELL}/I_deep_Taper_R075_{sc}.fits', V=None)}
+        ok, why = _refuses(lambda: R(read_data=False, tables=row), 'disagree')
+        check('a hand-table row naming another file refuses', ok, why)
+        row[CELL]['I'] = ents[0]['source']
+        check('a hand-table row naming the chosen file passes', R(read_data=False, tables=row)[0]['source'] == row[CELL]['I'])
+        _clean('uw_*')
+        # previous generation (Gregg (A)): no copy of the current constituents -> the ALIGNREF master's pre-screen copy
+        prev_dates = DATES + ['2025-01-09']
+        prev_cd = master_header(prev_dates)['CONSTDIG']
+        for st_, var_ in (('I', 'I_deep_Taper_R075'), ('V', 'V_deep_Taper_R0')):
+            hh = fits.getheader(f'{fd}/{var_}_{sc}.fits')
+            hh['ALIGNREF'] = f'MASTER:ivw-mean-v3:{prev_cd}'
+            fits.writeto(f'{fd}/{var_}_{sc}.fits', fits.getdata(f'{fd}/{var_}_{sc}.fits'), hh, overwrite=True)
+        ok, why = _refuses(lambda: R(read_data=False), 'nor of the previous generation')
+        check('no copy of either generation refuses', ok, why)
+        write(f'{T}/q_20261004/{CELL}/coadd_final/I_deep_Taper_R075_{sc}.fits', IMG * 1.05, master_header(prev_dates, dict(BAKED)))
+        write(f'{T}/q_20261008b/{CELL}/coadd_final/I_deep_Taper_R075_{sc}.fits', IMG, master_header(prev_dates, dict(BAKED, MDWARP=True)))
+        ents = R()
+        e = ents[0]
+        check('previous-generation chosen: pre-screen copy (dewarped copy skipped), pixels / factor',
+              e['generation'] == 'previous-generation' and '/q_20261004/' in e['source'] and e['constdig'] == prev_cd
+              and abs(e['factor'] - 1.05 * 0.98) < 1e-12
+              and np.array_equal(e['data'], ((IMG * 1.05).astype(np.float32).astype(np.float64) / e['factor']).astype(np.float32)),
+              str(DS.plan_summary(ents)))
+        check('previous-generation HISTORY = production (e5c218e) text', e['history'] ==
+              f'2026-10-13 rebuild reference: PREVIOUS-GENERATION pre-screen I_deep_Taper_R075 ({e["source"]} / pixel factor {1.05 * 0.98:.6f}; Gregg (A))')
+        check('previous-generation without a V copy: no V reference', ents[1]['branch'] == 'none')
+        write(f'{T}/q_20261004/{CELL}/coadd_final/V_deep_Taper_R0_{sc}.fits', IMG * 0.1, master_header(prev_dates, dict(BAKED)))
+        ents = R()
+        check('previous-generation V from its pre-screen copy', ents[1]['generation'] == 'previous-generation'
+              and ents[1]['constdig'] == prev_cd and ents[1]['source'].endswith(f'V_deep_Taper_R0_{sc}.fits'))
+        written = DS.write_reference(f'{T}/refs_pg/{CELL}', sc, ents)
+        r = tests_of('reference_master', written[0][2], source=ents[0]['source'], factor=ents[0]['factor'],
+                     previous=f'{fd}/I_deep_Taper_R075_{sc}.fits', generation='previous-generation')
+        check('reference_master tests pass on a previous-generation reference (CONSTDIG = current ALIGNREF)',
+              all(x['passed'] for x in r.values()), '; '.join(f"{k}: {x['detail']}" for k, x in r.items() if not x['passed']))
+        r = tests_of('reference_master', written[0][2], source=ents[0]['source'], factor=ents[0]['factor'],
+                     previous=f'{fd}/I_deep_Taper_R075_{sc}.fits')
+        check('the same reference FAILS the same-constituents CONSTDIG test (the test discriminates)',
+              not r['constdig_equals_previous']['passed'])
+        row = {CELL: dict(table='ref_prevgen.csv', constdig='0' * 32, I=ents[0]['source'], V=ents[1]['source'])}
+        ok, why = _refuses(lambda: R(read_data=False, tables=row), 'declares')
+        check('a prevgen row declaring another CONSTDIG refuses', ok, why)
+        # a root node-local to another host, reached before any copy: refuse (the copy may sit there)
+        CFG.set('masters_stagein.REFERENCE_COPY_ROOTS', repr((('unwarped-copy', '/fast/gh/main/phase3/unwarped_ref_*', 'flat'),)))
+        from exopipe.phase3.core import env as _env
+        if _env.node_local_holder('/fast/gh/main/phase3/x') not in (None, _env.host()):
+            ok, why = _refuses(lambda: R(read_data=False), 'node-local to')
+            check('a node-local root of another host refuses', ok, why)
+        else:
+            check('a node-local root of another host refuses (skipped: run on a host other than its holder)', True)
     finally:
         CFG.reset()
+        _clean('wq', 'sup', 'uw_*', 'q_*')
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -289,8 +367,8 @@ def test_cli():
     make_working_cell(f'{T}/wt', CELL)
     out = f'{T}/out'
     common = ['--tier', 'deep', '--cells', CELL, '--out', out, '--cores', 'none',
-              '--set', f'paths.COADD_SB_ROOT={T}/wt', '--set', f'masters_stagein.PREDEWARP_QUARANTINE={T}/wq',
-              '--set', f'masters_stagein.SUPERSEDED_ARCHIVE={T}/sup', '--set', f'masters_stagein.EPOCH_GATE_CARRY_DIR={T}/egc',
+              '--set', f'paths.COADD_SB_ROOT={T}/wt', '--set', f'masters_stagein.REFERENCE_COPY_ROOTS={_roots()}',
+              '--set', f'masters_stagein.EPOCH_GATE_CARRY_DIR={T}/egc',
               '--set', 'masters.FREE_FLOOR_GB[deep]=0']
     rc, txt = cli('--help')
     check('masters --help works', rc == 0 and 'DEEP TIER' in txt and '--deep-installed-root' in txt, txt[-300:])

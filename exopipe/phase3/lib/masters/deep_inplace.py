@@ -62,7 +62,8 @@ WIRING = {
         'FREE_FLOOR_GB': 'step', 'EXTRA_PRODUCTION_ROOTS': 'step'},
     'masters_stagein': {
         'REF_PIXEL_FACTOR_RANGE': 'step', 'REF_OVERRIDE_TABLE': 'step', 'REF_OVERRIDE_TABLE_SHA1': 'step',
-        'REF_OVERRIDE_I_TABLE': 'step', 'REF_OVERRIDE_I_TABLE_SHA1': 'step', 'PREDEWARP_QUARANTINE': 'step',
+        'REF_OVERRIDE_I_TABLE': 'step', 'REF_PREVGEN_TABLE': 'step', 'REFERENCE_COPY_ROOTS': 'step',
+        'PREVIOUS_GENERATION_REFERENCE': 'step', 'V_OPTIONAL_BRANCHES': 'step', 'PREDEWARP_QUARANTINE': 'step',
         'SUPERSEDED_ARCHIVE': 'step', 'EPOCH_GATE_CARRY_DIR': 'step', 'STRIP_CARD_PREFIXES': 'step'},
     'masters_build': {
         'CUTOVER_DATE': 'attr:coadd.CUTOVER_DATE', 'FLOW_MAX_NAN_FRACTION': 'mirror',
