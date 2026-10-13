@@ -315,6 +315,9 @@ def main(argv=None):
     if rc is None:
         rc = run.exit_code()
     by = run.summary()
+    for u in run.units:                  # why: one line per unit that did not end done (the record holds the rest)
+        if u.status in ('refused', 'error') and u.reason:
+            print(f'  {u.status} {u.name}: {u.reason[:600]}', file=sys.stderr)
     print(f'exopipe3 {name}: {", ".join(f"{k} {v}" for k, v in sorted(by.items())) or "no units"}; exit {rc}'
           + (f'; record {summ}' if summ else ''), file=sys.stderr)
     return rc

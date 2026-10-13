@@ -324,8 +324,11 @@ def stage_fit(u, args, run_, roots, plan, scope_globals, work):
     if old:
         rf = record.load_record(run_.out_root, 'jupiter', _unit_name('fit', plan.cell))
         re_ = record.load_record(run_.out_root, 'jupiter', _unit_name('extract', plan.cell))
-        stale = rf is None or re_ is None or (re_.get('finished') or '') > (rf.get('finished') or '')
-        if stale and args.fresh:
+        # only a DONE fit record vouches for the fits on disk (a refused or errored one is newer than the extract it
+        # refused on and would hide the staleness); --fresh always moves existing fits aside (the engine appends and skips)
+        stale = (rf is None or rf.get('status') != 'done' or re_ is None
+                 or (re_.get('finished') or '') > (rf.get('finished') or ''))
+        if args.fresh:
             d = K.supersede(old, od, args.supersede)
             u.note(f'J10: {len(old)} fits file(s) moved aside to {d}')
         elif stale:
