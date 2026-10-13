@@ -266,6 +266,9 @@ def main(argv=None):
         # overrides to every step process, which checks them against its own --out.
         CFG.authorize(args.ruling_for, out=args.out or mod.default_out(args),
                       mode='forward' if name == 'run' else 'run')
+        # parity replay of protected inputs (config.set): only under --parity into a non-production --out
+        CFG.parity_replay = bool(getattr(args, 'parity', False) and name != 'run' and args.out
+                                 and CFG.production_root_of(args.out) is None)
         if args.config:
             CFG.apply_override_file(args.config)
         CFG.apply_override_strings(args.set)

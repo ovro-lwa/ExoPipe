@@ -481,10 +481,17 @@ class _Config:
         if not key.isupper() or key in _META or not hasattr(s, key):
             raise KeyError(f'unknown config key {dotted!r} (exopipe3 config --section {sec} lists the keys)')
         base = f'{sec}.{key}'
-        if self.protected(base):
+        if self.protected(base) and not getattr(self, 'parity_replay', False):
             raise ConfigRefusal(f'{base} is PROTECTED (config.PROTECTED / paths.PINNED_INPUTS): no --set or --config '
-                                f'can change it; it changes only by a commit to exopipe/phase3/config.py')
-        authority = self._authority(dotted, base)
+                                f'can change it; it changes only by a commit to exopipe/phase3/config.py (a --parity run '
+                                f'into a non-production --out may replay a historical value)')
+        if self.protected(base):
+            # PARITY REPLAY: a shadow of a production run must see the inputs that run saw (e.g. the exclusion list of
+            # that moment). Allowed only under --parity (every write confined to the parity root by core/guard) and
+            # a non-production --out; recorded with this authority so no product of such a run can be installed.
+            authority = 'parity replay: protected key overridden inside a --parity run (writes confined to --out)'
+        else:
+            authority = self._authority(dotted, base)
         top = getattr(s, key)
         if path:
             new_top, old, new = _set_entry(top, path, value, dotted)
