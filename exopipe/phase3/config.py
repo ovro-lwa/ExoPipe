@@ -69,6 +69,12 @@ class paths(_Section):
     PRODUCTION_WRITES = False
 
 
+class exclusions(_Section):
+    """Exclusion rule parameters (core/exclusions.py is the only reader of data_decisions.csv)."""
+    SUBBAND_ONLY = ('18MHz',)      # subbands whose exclusion does NOT propagate to their band (Gregg 2026-06-29)
+    PERBAND_TAG = '[PERBAND]'      # reason tag of a per-image row: excludes only its own scope (Gregg 2026-08-26)
+
+
 class runner(_Section):
     """Defaults for `exopipe3 run` and for every step's process environment."""
     from exopipe.phase3.core import env as _env
