@@ -20,6 +20,7 @@ SUMMARY = 'multi-node runner'
 TIERS = None
 SELECTORS = ()
 WRITES = False
+CONFIG = ('runner',)      # config sections this step reads (plus config.SHARED_SECTIONS)
 
 
 def add_arguments(p):

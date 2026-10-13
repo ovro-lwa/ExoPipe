@@ -608,3 +608,30 @@ def _collect():
 
 CFG = _Config(_collect())
 SITE_FILE = _load_site(CFG)
+
+# Sections every step reads, whatever it declares: they are always part of a step's resume hash (critique_rulings 6.5:
+# a per-section hash must not miss the shared sections).
+SHARED_SECTIONS = ('instrument', 'paths', 'exclusions', 'astrometry', 'fitting')
+
+
+def declared_sections(mod):
+    """The sections a step module declares in ``CONFIG`` (a tuple of section names), or None when it declares none.
+    An unknown section name raises KeyError."""
+    decl = getattr(mod, 'CONFIG', None)
+    if decl is None:
+        return None
+    decl = (decl,) if isinstance(decl, str) else tuple(decl)
+    unknown = [s for s in decl if s not in CFG.sections()]
+    if unknown:
+        raise KeyError(f'step {getattr(mod, "__name__", mod)} declares unknown config section(s) {unknown} in CONFIG; '
+                       f'sections: {", ".join(CFG.sections())}')
+    return decl
+
+
+def step_sections(mod):
+    """The sections whose values make a step's config hash (DESIGN 11.4): its CONFIG plus SHARED_SECTIONS, or None
+    (every section) for a step that declares no CONFIG."""
+    decl = declared_sections(mod)
+    if decl is None:
+        return None
+    return tuple(dict.fromkeys(decl + SHARED_SECTIONS))

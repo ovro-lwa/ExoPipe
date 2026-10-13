@@ -246,6 +246,95 @@ def test_item1_ledger_lookup_is_tolerant():
 
 
 # =====================================================================================================================
+# item 2 - per-step CONFIG declaration
+# =====================================================================================================================
+
+def _fake_step(name, **attrs):
+    """Register a synthetic step module exopipe.phase3.steps.<name> (removed by the caller)."""
+    import types
+    mod = types.ModuleType(f'exopipe.phase3.steps.{name}')
+    mod.__doc__ = f'synthetic step {name}'
+    for k, v in attrs.items():
+        setattr(mod, k, v)
+    sys.modules[mod.__name__] = mod
+    return mod
+
+
+def _stdout_of(fn, *a):
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = fn(*a)
+    return rc, buf.getvalue()
+
+
+def test_item2_step_config_declaration():
+    from exopipe.phase3 import cli, config
+    from exopipe.phase3.core import record
+    names = ['_t2_nocfg', '_t2_empty', '_t2_runner', '_t2_bad']
+    try:
+        m_no = _fake_step('_t2_nocfg')
+        m_empty = _fake_step('_t2_empty', CONFIG=())
+        m_runner = _fake_step('_t2_runner', CONFIG=('runner',))
+        m_bad = _fake_step('_t2_bad', CONFIG=('no_such_section',))
+        shared = config.SHARED_SECTIONS
+        assert config.step_sections(m_no) is None                      # backward compatible: every section
+        assert config.step_sections(m_empty) == shared
+        assert config.step_sections(m_runner) == ('runner',) + shared
+        assert 'no_such_section' in str(raises(KeyError, config.step_sections, m_bad))
+        # the real steps import and declare
+        import exopipe.phase3.steps.run as srun
+        import exopipe.phase3.steps.verify as sver
+        assert config.declared_sections(srun) == ('runner',) and config.declared_sections(sver) == ()
+        # `exopipe3 config --step`: 'not declared' for a step without CONFIG; the sections for one with it
+        rc, out = _stdout_of(cli._config_cmd, ['--step', '_t2_nocfg'])
+        assert rc == 0 and 'not declared' in out, out
+        rc, out = _stdout_of(cli._config_cmd, ['--step', '_t2_runner'])
+        assert rc == 0 and 'class runner(_Section)' in out and 'FREE_CORES_CMD' in out, out
+        assert 'class fitting' not in out and 'shared sections' in out
+        rc, _ = _stdout_of(cli._config_cmd, ['--step', '_t2_bad'])
+        assert rc == 1
+        # the run record's config_hash covers only the declared + shared sections
+        with cfg_restored() as CFG, Scratch('item2') as d:
+            CFG.authorize([], out=d)
+            runs = {n: record.Run('t2', ['x'], d, CFG, config_sections=config.step_sections(m))
+                    for n, m in (('no', m_no), ('empty', m_empty), ('runner', m_runner))}
+            for r in runs.values():
+                r.commit = 'abc1234'                       # a clean-tree commit (item 3 tests the dirty case)
+            h0 = {n: r.header() for n, r in runs.items()}
+            assert h0['empty']['config_hash'] == CFG.hash(shared) and h0['empty']['config_sections'] == sorted(shared)
+            assert h0['no']['config_hash'] == CFG.hash() and h0['no']['config_sections'] is None
+            CFG.set('runner.POLL_S', '11')                 # a section the 'empty' step does not read
+            h1 = {n: r.header() for n, r in runs.items()}
+            assert h1['empty']['config_hash'] == h0['empty']['config_hash']
+            assert h1['runner']['config_hash'] != h0['runner']['config_hash']
+            assert h1['no']['config_hash'] != h0['no']['config_hash']
+            # resume: a done unit of the 'empty' step survives the runner override; a shared-section change does not
+            src = os.path.join(d, 'in.csv')
+            dst = os.path.join(d, 'out.csv')
+            open(src, 'w').write('a,b\n1,2\n')
+            open(dst, 'w').write('a,b\n1,2\n')
+            r1 = runs['empty']
+            with r1.unit('u1') as u:
+                u.add_input(src)
+                u.add_output(dst, 'csv_table')
+            assert u.status == 'done', (u.status, u.reason)
+            ok, why = r1.resume_check('u1', inputs=[src], admitted=None)
+            CFG.set('runner.POLL_S', '12')
+            r2 = record.Run('t2', ['x'], d, CFG, config_sections=config.step_sections(m_empty))
+            r2.commit = 'abc1234'
+            ok2, why2 = r2.resume_check('u1', inputs=[src], admitted=None)
+            CFG.set('astrometry.SYS_SCALE', "{('V', 'Red'): 1.6}")
+            ok3, why3 = r2.resume_check('u1', inputs=[src], admitted=None)
+            assert ok and ok2, (why, why2)
+            assert ok3 is False and why3 == 'config changed', (ok3, why3)
+    finally:
+        for n in names:
+            sys.modules.pop(f'exopipe.phase3.steps.{n}', None)
+
+
+# =====================================================================================================================
 
 def _all_tests():
     return [(n, f) for n, f in sorted(globals().items()) if n.startswith('test_') and callable(f)]

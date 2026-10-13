@@ -16,6 +16,7 @@ SUMMARY = 'run the content test of any product class alone'
 TIERS = None
 SELECTORS = ()
 WRITES = False
+CONFIG = ()               # reads no step section (config.SHARED_SECTIONS only)
 
 
 def add_arguments(p):

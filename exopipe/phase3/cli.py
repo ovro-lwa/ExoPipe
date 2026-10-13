@@ -134,6 +134,7 @@ def _print_overrides(CFG):
 def _config_cmd(argv):
     p = argparse.ArgumentParser(prog='exopipe3 config', description='Show the Phase 3 tunables (config.py).')
     p.add_argument('--section', help='print one section with its comments (units, rulings)')
+    p.add_argument('--step', help='print every section the step declares in CONFIG (and name the shared sections)')
     p.add_argument('--set', action='append', default=[], help='show the effect of overrides (SECTION.KEY[entry]=V)')
     p.add_argument('--config', metavar='FILE', help='show the effect of a file of overrides')
     p.add_argument('--ruling-for', action='append', default=[], metavar='SECTION.KEY=LEDGER_ID',
@@ -152,12 +153,47 @@ def _config_cmd(argv):
     except (KeyError, ValueError) as e:
         print(f'error: {_msg(e)}', file=sys.stderr)
         return 1
+    if a.step:
+        return _describe_step(a.step, CFG, a.hash)
     if a.hash:
         print(CFG.hash())
         return 0
     print(CFG.describe(a.section))
     if not a.section:
         print(f'\nsite file: {SITE_FILE or "(none: EXOPIPE3_SITE unset)"}')
+    _print_overrides(CFG)
+    return 0
+
+
+def _describe_step(name, CFG, hash_only=False):
+    from exopipe.phase3 import config
+    _env.legacy()
+    try:
+        mod = importlib.import_module(f'exopipe.phase3.steps.{name}')
+    except ImportError as e:
+        print(f'error: no step module exopipe.phase3.steps.{name} ({e})', file=sys.stderr)
+        return 1
+    try:
+        decl = config.declared_sections(mod)
+    except KeyError as e:
+        print(f'error: {_msg(e)}', file=sys.stderr)
+        return 1
+    if hash_only:
+        print(CFG.hash(config.step_sections(mod)))
+        return 0
+    if decl is None:
+        print(f'step {name}: CONFIG not declared - add CONFIG = (sections it reads) to exopipe/phase3/steps/{name}.py. '
+              f'Until then its resume hash covers every section (exopipe3 config lists them).')
+        return 0
+    shared = [s for s in config.SHARED_SECTIONS if s not in decl]
+    print(f'# step {name} declares CONFIG = {decl!r}')
+    print(f'# shared sections (always in its resume hash): {", ".join(config.SHARED_SECTIONS)}')
+    for sec in decl:
+        print(f'\n# ---- section {sec} ' + '-' * 60)
+        print(CFG.describe(sec))
+    if shared:
+        print(f'# not declared but shared (read with exopipe3 config --section S): {", ".join(shared)}')
+    print(f'# step config hash: {CFG.hash(config.step_sections(mod))}')
     _print_overrides(CFG)
     return 0
 
@@ -203,9 +239,10 @@ def main(argv=None):
         sp.error('every --waive needs its own --ruling "<Gregg\'s words, UTC, ledger ID>"')
     _env.apply(args.threads)
 
-    from exopipe.phase3.config import CFG, ConfigRefusal
+    from exopipe.phase3.config import CFG, ConfigRefusal, step_sections
     from exopipe.phase3.core import record
     try:
+        sections = step_sections(mod)          # CONFIG + shared sections: the step's resume hash (DESIGN 11.4)
         # Ruled keys may be overridden with --ruling-for or into a non-production --out; `run submit` forwards its
         # overrides to every step process, which checks them against its own --out.
         CFG.authorize(args.ruling_for, out=args.out or mod.default_out(args),
@@ -225,7 +262,8 @@ def main(argv=None):
     if getattr(mod, 'WRITES', True) and not args.dry_run:
         _guard_out(out)
     run = record.Run(name, [f'exopipe3 {name}'] + rest, out, CFG, dry_run=args.dry_run,
-                     waivers=list(zip(args.waive, args.ruling)), resume=args.resume, fresh=args.fresh)
+                     waivers=list(zip(args.waive, args.ruling)), resume=args.resume, fresh=args.fresh,
+                     config_sections=sections)
     run.cores = pinned
     run.no_records = not getattr(mod, 'WRITES', True)
     try:

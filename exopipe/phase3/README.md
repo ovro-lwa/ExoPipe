@@ -8,6 +8,7 @@ transient detections, catalogues, review pages and archived products, in three t
 exopipe3 --help                     # the steps, in pipeline order
 exopipe3 <step> --help              # what it reads, what it writes, how it fails, every flag
 exopipe3 config --section <step>    # that step's tunables, with units and the rulings that set them
+exopipe3 config --step <step>       # every section the step declares (CONFIG), one place
 ```
 
 ## Where things are
@@ -71,6 +72,7 @@ Failure modes: ... (exit 2 = refused, with the gate named)
 SUMMARY = '...'
 TIERS = ('deep', 'sublst')          # or None
 SELECTORS = ('tier', 'cells')       # flags cli.py adds
+CONFIG = ('search', 'fitting')      # config sections it reads: its resume hash + `exopipe3 config --step`
 WRITES = True
 
 def add_arguments(p): ...           # step-specific flags only

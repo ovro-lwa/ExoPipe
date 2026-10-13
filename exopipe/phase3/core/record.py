@@ -130,7 +130,8 @@ def load_record(out_root, step, unit):
 class Run:
     """One invocation of one step."""
 
-    def __init__(self, step, argv, out_root, cfg, dry_run=False, waivers=None, resume=False, fresh=False):
+    def __init__(self, step, argv, out_root, cfg, dry_run=False, waivers=None, resume=False, fresh=False,
+                 config_sections=None):
         self.step = step
         self.argv = list(argv)
         self.out_root = out_root
@@ -146,11 +147,25 @@ class Run:
         pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         self.commit = git_commit(pkg)
         self.units = []
+        # the sections the step declares (CONFIG) plus the shared ones; None = every section (no CONFIG declared)
+        self.config_sections = tuple(config_sections) if config_sections is not None else None
+
+    @property
+    def config_hash(self):
+        """Hash of the config sections this step reads - the config identity --resume compares."""
+        return self.cfg.hash(self.config_sections)
+
+    def resume_check(self, unit, inputs, admitted, retest=True):
+        """``resume_check`` for a unit of this run, with this step's config hash."""
+        return resume_check(self.out_root, self.step, unit, inputs=inputs, admitted=admitted, cfg_hash=self.config_hash,
+                            retest=retest)
 
     def header(self):
         return {'record_version': RECORD_VERSION, 'step': self.step, 'run_id': self.run_id, 'argv': self.argv,
                 'host': self.host, 'pid': self.pid, 'user': getpass.getuser(), 'commit': self.commit,
-                'config_hash': self.cfg.hash(), 'site_sha1': getattr(self.cfg, 'site_sha1', None),
+                'config_hash': self.config_hash, 'config_hash_all': self.cfg.hash(),
+                'config_sections': sorted(self.config_sections) if self.config_sections is not None else None,
+                'site_sha1': getattr(self.cfg, 'site_sha1', None),
                 # [key, repr(old), repr(new), source, authority]; authority: None (unruled key), 'ruling:<ledger ID>',
                 # 'non-production out:<dir>' - install and serve refuse products whose ruled override has no ruling
                 'config_overrides': [[o[0], repr(o[1]), repr(o[2]), o[3], o[4] if len(o) > 4 else None]
