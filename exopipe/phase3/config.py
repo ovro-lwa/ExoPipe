@@ -245,6 +245,7 @@ class site(_Section):
     NODE_LOCAL_ROOTS = {}
     PYTHON = {}
     SCRATCH_ROOT = {}
+    LEGACY_CODE_ROOTS = []      # refactor window: clv15 / exopipe_ops roots the steps call in place (DESIGN 11.1)
 
 
 # =====================================================================================================================
@@ -377,6 +378,7 @@ def _load_site(cfg):
     path = os.environ.get('EXOPIPE3_SITE')
     if not path:
         return None
+    cfg.site_sha1 = hashlib.sha1(open(path, 'rb').read()).hexdigest()[:12]
     spec = importlib.util.spec_from_file_location('exopipe3_site', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

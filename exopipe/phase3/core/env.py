@@ -16,3 +16,17 @@ def apply(threads=None):
     if threads:
         for k in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
             os.environ[k] = str(threads)
+
+
+def legacy():
+    """Refactor window (DESIGN 11.1): let clv15 / exopipe_ops modules be called in place. Appends the site file's
+    LEGACY_CODE_ROOTS to sys.path (after the package, so nothing in them shadows it) and installs the import finder that
+    maps pre-refactor dotted names (exopipe.phase3.coadd_full_pipeline, ...) to their new modules without any file at
+    the old paths (core/_shim.py). Idempotent."""
+    import sys
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import _shim
+    for root in CFG.site.LEGACY_CODE_ROOTS:
+        if root not in sys.path:
+            sys.path.append(root)
+    _shim.install_legacy_finder()

@@ -162,6 +162,7 @@ def main(argv=None):
         build_parser().print_help()
         print(f'\nunknown step {name!r}', file=sys.stderr)
         return 1
+    _env.legacy()       # refactor window: legacy roots + old-name finder (core/env.legacy)
     # The step module is imported only to build its parser; heavy imports belong inside its run().
     mod = importlib.import_module(f'exopipe.phase3.steps.{name}')
     sp = argparse.ArgumentParser(prog=f'exopipe3 {name}', description=mod.__doc__,

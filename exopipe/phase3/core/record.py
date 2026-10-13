@@ -67,13 +67,23 @@ def same_fingerprint(a, b):
     return a.get('size') == b.get('size') and a.get('mtime_ns') == b.get('mtime_ns')
 
 
+def _legacy_roots():
+    try:
+        from exopipe.phase3.config import CFG
+        return tuple(r.rstrip('/') + '/' for r in CFG.site.LEGACY_CODE_ROOTS)
+    except Exception:
+        return ()
+
+
 def code_fingerprint():
-    """sha1 of every exopipe source file currently imported (the code that produced this unit)."""
+    """sha1 of every source file the unit imported from exopipe AND from the legacy code roots (clv15, exopipe_ops)
+    called in place during the refactor window - the code that produced this unit (DESIGN 11.5)."""
     out = {}
+    roots = _legacy_roots()
     for name, mod in list(sys.modules.items()):
-        if not name.startswith('exopipe'):
-            continue
         f = getattr(mod, '__file__', None)
+        if not (name.startswith('exopipe') or (f and roots and os.path.abspath(f).startswith(roots))):
+            continue
         if f and f.endswith('.py') and os.path.exists(f):
             out[name] = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12]
     return out
@@ -134,7 +144,7 @@ class Run:
     def header(self):
         return {'record_version': RECORD_VERSION, 'step': self.step, 'run_id': self.run_id, 'argv': self.argv,
                 'host': self.host, 'pid': self.pid, 'user': getpass.getuser(), 'commit': self.commit,
-                'config_hash': self.cfg.hash(), 'config_overrides': [list(o[:1]) + [repr(o[1]), repr(o[2]), o[3]]
+                'config_hash': self.cfg.hash(), 'site_sha1': getattr(self.cfg, 'site_sha1', None), 'config_overrides': [list(o[:1]) + [repr(o[1]), repr(o[2]), o[3]]
                                                                      for o in self.cfg.overrides],
                 'waivers': [{'test': t, 'ruling': r} for t, r in self.waivers], 'dry_run': self.dry_run}
 
