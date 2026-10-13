@@ -335,6 +335,180 @@ def test_item2_step_config_declaration():
 
 
 # =====================================================================================================================
+# item 3 - record: FITS identity, dirty trees, planned outputs, exit codes
+# =====================================================================================================================
+
+def _write_fits(path, data, checksum=True, **cards):
+    import numpy as np
+    from astropy.io import fits
+    h = fits.PrimaryHDU(np.asarray(data, dtype=np.float32))
+    for k, v in cards.items():
+        h.header[k] = v
+    h.header['HISTORY'] = 'synthetic test product'
+    h.writeto(path, overwrite=True, checksum=checksum)
+
+
+def test_item3_fits_identity():
+    import numpy as np
+    from astropy.io import fits
+    from exopipe.phase3.core import record
+    with Scratch('item3fits') as d:
+        p = os.path.join(d, 'm.fits')
+        data = np.arange(64, dtype=np.float32).reshape(8, 8)
+        _write_fits(p, data, COADDOP='inverse-variance', FLUXBAKE='scale_v4', FLUXVER=4, MDWARP=True,
+                    CONSTDIG='abc123', NCOADD=17, OBJECT="it's")
+        hdr = fits.getheader(p)
+        cards = record.fits_primary_cards(p)
+        for k in ('DATASUM', 'COADDOP', 'FLUXBAKE', 'FLUXVER', 'MDWARP', 'CONSTDIG', 'NCOADD', 'OBJECT', 'NAXIS1'):
+            assert cards[k] == hdr[k], (k, cards[k], hdr[k])
+        fp = record.fingerprint(p, hash_limit_bytes=0)        # as for a large FITS: no sha1 of the bytes
+        assert 'sha1' not in fp and fp['datasum'] == hdr['DATASUM']
+        assert fp['cards'] == {'COADDOP': 'inverse-variance', 'FLUXBAKE': 'scale_v4', 'FLUXVER': 4, 'MDWARP': True,
+                               'CONSTDIG': 'abc123', 'NCOADD': 17}
+        assert 'datasum' in record.fingerprint(p) and 'sha1' in record.fingerprint(p)   # small files keep sha1 too
+        # mtime is not identity when a digest exists
+        st = os.stat(p)
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 10))
+        assert record.same_fingerprint(fp, record.fingerprint(p, hash_limit_bytes=0))
+        # same size, same mtime, different data -> different DATASUM -> different
+        data2 = data.copy()
+        data2[3, 3] += 1
+        _write_fits(p, data2, COADDOP='inverse-variance', FLUXBAKE='scale_v4', FLUXVER=4, MDWARP=True,
+                    CONSTDIG='abc123', NCOADD=17, OBJECT="it's")
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+        fp2 = record.fingerprint(p, hash_limit_bytes=0)
+        assert fp2['size'] == fp['size'] and fp2['mtime_ns'] == fp['mtime_ns']
+        assert not record.same_fingerprint(fp, fp2)
+        # same data, new processing card (a re-bake) -> different
+        _write_fits(p, data2, COADDOP='inverse-variance', FLUXBAKE='scale_v4', FLUXVER=5, MDWARP=True,
+                    CONSTDIG='abc123', NCOADD=17, OBJECT="it's")
+        fp3 = record.fingerprint(p, hash_limit_bytes=0)
+        assert fp3['datasum'] == fp2['datasum'] and not record.same_fingerprint(fp2, fp3)
+        # one side with a digest, the other without -> different; neither -> size + mtime
+        q = os.path.join(d, 'nosum.fits')
+        _write_fits(q, data, checksum=False)
+        fq = record.fingerprint(q, hash_limit_bytes=0)
+        assert 'datasum' not in fq and fq['cards'] == {}
+        no_digest = {k: v for k, v in fp.items() if k != 'datasum'}
+        assert not record.same_fingerprint(fp, no_digest) and not record.same_fingerprint(no_digest, fp)
+        assert record.same_fingerprint(fq, record.fingerprint(q, hash_limit_bytes=0))
+        # not a FITS file: no FITS identity, no error
+        t = os.path.join(d, 'x.fits')
+        open(t, 'w').write('not fits')
+        assert 'datasum' not in record.fingerprint(t) and record.fits_primary_cards(t) == {}
+        # resume through the digest: a large-FITS input recorded without sha1 survives a touch, not a data change
+        with cfg_restored() as CFG:
+            CFG.authorize([], out=d)
+            run = record.Run('t3', ['x'], d, CFG, config_sections=())
+            run.commit = 'abc1234'
+            out = os.path.join(d, 'out.csv')
+            open(out, 'w').write('a\n1\n')
+            with run.unit('u') as u:
+                u.inputs[os.path.abspath(p)] = record.fingerprint(p, hash_limit_bytes=0)
+                u.add_output(out, 'csv_table')
+            st = os.stat(p)
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 5 * 10 ** 9))
+            ok, why = run.resume_check('u', inputs=[p], admitted=None)
+            assert ok, why
+            _write_fits(p, data, COADDOP='inverse-variance', FLUXBAKE='scale_v4', FLUXVER=5, MDWARP=True,
+                        CONSTDIG='abc123', NCOADD=17, OBJECT="it's")
+            ok, why = run.resume_check('u', inputs=[p], admitted=None)
+            assert not ok and why.startswith('input changed'), why
+
+
+def test_item3_dirty_tree_never_resumed():
+    from exopipe.phase3.core import record
+    with cfg_restored() as CFG, Scratch('item3dirty') as d:
+        CFG.authorize([], out=d)
+        out = os.path.join(d, 'o.csv')
+        open(out, 'w').write('a\n1\n')
+        for commit, want in (('abc1234', True), ('abc1234-dirty', False)):
+            run = record.Run('t3d', ['x'], d, CFG, config_sections=())
+            run.commit = commit
+            with run.unit('u') as u:
+                u.add_output(out, 'csv_table')
+            assert u.status == 'done'
+            ok, why = run.resume_check('u', inputs=[], admitted=None)
+            assert ok is want, (commit, why)
+            if not want:
+                assert 'dirty tree' in why and 'abc1234-dirty' in why
+
+
+def test_item3_planned_outputs_item_refusals_exit_codes():
+    from exopipe.phase3.core import record
+    with cfg_restored() as CFG, Scratch('item3plan') as d:
+        CFG.authorize([], out=d)
+
+        def csvf(name, text='a\n1\n'):
+            p = os.path.join(d, name)
+            open(p, 'w').write(text)
+            return p
+
+        def unit(run, name, plan=(), write=(), refuse=(), raise_=None, **ctx):
+            with run.unit(name) as u:
+                for p in plan:
+                    u.plan(p, 'csv_table')
+                for p in write:
+                    u.add_output(p, 'csv_table', **ctx)
+                for p in refuse:
+                    u.refuse_item(p, 'night rule: sun above -12 deg', gate='night_rule')
+                if raise_:
+                    raise raise_
+            return u
+
+        a, b, c = csvf('a.csv'), csvf('b.csv'), csvf('c.csv')
+        run = record.Run('t3p', ['x'], d, CFG, config_sections=())
+        # every planned output written or refused -> done (exit 0), the refusal recorded
+        u = unit(run, 'complete', plan=(a, b, c), write=(a, b), refuse=(c,))
+        assert u.status == 'done', (u.status, u.reason)
+        rec = record.load_record(d, 't3p', 'complete')
+        assert rec['refused_items'][0]['gate'] == 'night_rule' and len(rec['planned']) == 3
+        assert rec['record_version'] == 2
+        # a planned output neither written nor refused -> error (the unit dropped an item silently)
+        u = unit(run, 'short', plan=(a, b, c), write=(a, b))
+        assert u.status == 'error' and '1 of 3 planned outputs' in u.reason and c in u.reason, u.reason
+        # every planned item refused -> the unit is refused
+        u = unit(run, 'allref', plan=(a, b), refuse=(a, b))
+        assert u.status == 'refused' and 'every planned item refused' in u.reason
+        # a written output that fails its test refuses the unit ...
+        u = unit(run, 'badtest', plan=(a, b), write=(a, b), required_columns=('zz',))
+        assert u.status == 'refused' and 'content test failed' in u.reason
+        # ... unless that item is itself recorded as refused
+        with run.unit('badref') as u:
+            u.plan(a, 'csv_table')
+            u.plan(b, 'csv_table')
+            u.add_output(a, 'csv_table')
+            u.add_output(b, 'csv_table', required_columns=('zz',))
+            u.refuse_item(b, 'size gate: 2.9 beams > 2.5')
+        assert u.status == 'done', (u.status, u.reason)
+        # refuse_item needs a reason
+        raises(ValueError, record.UnitRecord(run, 'x', {}).refuse_item, a, '')
+        # without a plan: refusals only -> refused; nothing -> no-input
+        assert unit(run, 'onlyref', refuse=(a,)).status == 'refused'
+        assert unit(run, 'nothing').status == 'no-input'
+        assert unit(run, 'whole', raise_=record.Refusal('beam gate')).status == 'refused'
+        assert unit(run, 'noin', raise_=record.NoInput('no frames')).status == 'no-input'
+
+        def code(*statuses):
+            r = record.Run('t3e', ['x'], d, CFG, dry_run=True)
+            for i, s in enumerate(statuses):
+                uu = record.UnitRecord(r, f'u{i}', {})
+                uu.status = s
+                r.units.append(uu)
+            return r.exit_code()
+
+        assert code() == 3
+        assert code('no-input', 'no-input') == 3
+        assert code('done', 'no-input') == 0                  # was 3 before DESIGN 11.5
+        assert code('done', 'skipped-valid') == 0
+        assert code('done', 'refused', 'no-input') == 2
+        assert code('refused', 'error') == 1
+        assert run.exit_code() == 1                           # the 'short' unit errored
+        summ = json.load(open(run.write_summary()))
+        assert {x['unit']: x['n_refused_items'] for x in summ['units']}['complete'] == 1
+
+
+# =====================================================================================================================
 
 def _all_tests():
     return [(n, f) for n, f in sorted(globals().items()) if n.startswith('test_') and callable(f)]

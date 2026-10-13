@@ -50,7 +50,10 @@ resume), `cells` (cell / item-list grammar), `runner` (multi-node jobs), `env` (
    `--out`, and the run record shows the override with its authority.
 3. **Gates refuse.** A failed gate raises `record.Refusal` (exit 2) with the reason; it never warns and continues.
 4. **Every product class has a content test** registered with `@content_test('<class>')`. A unit is done only when
-   it wrote at least one output and every output passed. "Wrote 0" is never done (exit 3, recorded).
+   it wrote at least one output and every output passed. "Wrote 0" is never done (exit 3, recorded). A unit that
+   declares its planned outputs (`u.plan(path, cls)`) is done only when each was written and passed or was refused
+   by a named gate (`u.refuse_item(path, reason)`); exit 2 only when a unit itself is refused, exit 3 only when every
+   unit had no input.
 5. **No marker files.** `--resume` trusts the run record only when inputs, admitted nights, code and config are
    unchanged and the outputs pass their tests now.
 6. **Exclusions are absolute.** Ask `core.exclusions`; record the admitted night set on every unit that used one.

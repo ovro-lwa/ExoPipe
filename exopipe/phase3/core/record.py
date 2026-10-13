@@ -6,12 +6,21 @@ the command line, code fingerprint (sha1 of every exopipe source file the step i
 host and cores, inputs with fingerprints, the admitted night set (exclusion state), outputs with their product class,
 every content test with its value, refusals and waivers.
 
-Rules (CLAUDE.md 3, 4b; architecture 11.1):
+Rules (CLAUDE.md 3, 4b; architecture 11.1; DESIGN 11.5):
 - A unit is ``done`` only when it wrote at least one output and EVERY output passed its content test.
+- A unit that declares its PLANNED outputs (``u.plan(path, cls)``) is done only when every planned output was written
+  and passed, or a recorded item refusal names it (``u.refuse_item(path, reason)``: one image, band or window refused
+  by a named gate while the unit completes). A planned output neither written nor refused is an error (exit 1); a unit
+  whose every planned item was refused is refused (exit 2).
 - "wrote 0" is never done: a unit with nothing to do ends ``no-input`` with a reason (exit 3).
 - A gate refuses (``Refusal``, exit 2); it never warns and continues.
+- Exit code of a run: 1 if any unit errored, else 2 if any unit was refused, else 3 only when EVERY unit had no input,
+  else 0 (every unit done, skipped as valid, or recorded no-input).
 - ``--resume`` skips a unit only when its record says done AND its inputs, admitted nights, code and config are
   unchanged AND every output still passes its content test now (``resume_check``). There are no marker files.
+- Input identity: a FITS input is identified by its data digest (DATASUM) and processing cards (COADDOP, FLUXBAKE,
+  FLUXVER, MDWARP, CONSTDIG, PBVER, NCOADD) read from the primary header; mtime is never identity when a digest
+  exists. A record written from a dirty tree (commit '<sha>-dirty') is never resumed.
 """
 import getpass
 import hashlib
@@ -22,7 +31,12 @@ import sys
 import time
 import traceback
 
-RECORD_VERSION = 1
+RECORD_VERSION = 2          # 2: FITS identity cards in input fingerprints, planned outputs, item refusals
+
+FITS_SUFFIXES = ('.fits', '.fit', '.fts')
+# Primary-header cards that identify a FITS input beside its data digest (DESIGN 11.5; critique_rulings 6.1-6.2):
+# the co-add operator, flux bake and its version, master dewarp, constituent digest, PB version, constituents.
+FITS_PROCESSING_CARDS = ('COADDOP', 'FLUXBAKE', 'FLUXVER', 'MDWARP', 'CONSTDIG', 'PBVER', 'NCOADD')
 
 
 class Refusal(Exception):
@@ -40,30 +54,102 @@ def utcnow():
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
 
+def _fits_value(text):
+    """Value of a FITS header card (the text after '= '): str, bool, int or float (raw text when unparseable)."""
+    t = text.strip()
+    if t.startswith("'"):
+        out, i = [], 1
+        while i < len(t):
+            if t[i] == "'":
+                if t[i + 1:i + 2] == "'":
+                    out.append("'")
+                    i += 2
+                    continue
+                break
+            out.append(t[i])
+            i += 1
+        return ''.join(out).rstrip()
+    v = t.split('/', 1)[0].strip()
+    if v in ('T', 'F'):
+        return v == 'T'
+    for conv in (int, lambda x: float(x.replace('D', 'E'))):
+        try:
+            return conv(v)
+        except ValueError:
+            pass
+    return v
+
+
+def fits_primary_cards(path, max_blocks=400):
+    """Cards of the PRIMARY header of a FITS file, read header-only (2880-byte blocks up to END; no astropy, no
+    data read). {} for a file that does not start with SIMPLE. The first value of a repeated keyword is kept."""
+    cards = {}
+    with open(path, 'rb') as f:
+        for n in range(max_blocks):
+            blk = f.read(2880)
+            if len(blk) < 2880 or (n == 0 and not blk.startswith(b'SIMPLE')):
+                return cards if n else {}
+            for i in range(0, 2880, 80):
+                card = blk[i:i + 80].decode('ascii', 'replace')
+                key = card[:8].strip()
+                if key == 'END':
+                    return cards
+                if card[8:10] == '= ' and key not in cards:
+                    cards[key] = _fits_value(card[10:])
+    return cards
+
+
+def fits_identity(path):
+    """{'datasum': ..., 'cards': {...}} of a FITS file from its primary header: DATASUM (the data digest written at
+    write time; omitted when absent, or '0' on a primary HDU without data) and the processing cards present."""
+    try:
+        cards = fits_primary_cards(path)
+    except OSError:
+        return {}
+    out = {'cards': {k: cards[k] for k in FITS_PROCESSING_CARDS if k in cards}}
+    ds = cards.get('DATASUM')
+    if ds not in (None, '') and not (str(ds).strip() == '0' and cards.get('NAXIS', 0) == 0):
+        out['datasum'] = str(ds).strip()
+    return out
+
+
 def fingerprint(path, hash_limit_bytes=16 * 2 ** 20):
     """Identity of an input file: size + mtime (ns) for all files, plus sha1 of the bytes for files up to
-    ``hash_limit_bytes`` (CSV tables, small FITS). Large FITS are identified by size + mtime + their CONSTDIG /
-    CHECKSUM header card when present (read lazily by the caller via ``extra``)."""
+    ``hash_limit_bytes`` (CSV tables, small FITS). A FITS file (.fits/.fit/.fts) also carries its DATASUM and the
+    processing cards of its primary header (``fits_identity``: a cheap header-only read), so a large FITS input is
+    identified by its data digest, never by its modification time."""
     try:
         st = os.stat(path)
     except FileNotFoundError:
         return {'missing': True}
     fp = {'size': st.st_size, 'mtime_ns': st.st_mtime_ns}
-    if st.st_size <= hash_limit_bytes and os.path.isfile(path):
+    if not os.path.isfile(path):
+        return fp
+    if st.st_size <= hash_limit_bytes:
         h = hashlib.sha1()
         with open(path, 'rb') as f:
             for blk in iter(lambda: f.read(1 << 20), b''):
                 h.update(blk)
         fp['sha1'] = h.hexdigest()
+    if path.lower().endswith(FITS_SUFFIXES):
+        fp.update(fits_identity(path))
     return fp
 
 
 def same_fingerprint(a, b):
-    """Two fingerprints describe the same bytes. sha1 decides when both have one; otherwise size + mtime."""
+    """Two fingerprints describe the same content.
+
+    - sha1 of the bytes decides when both have one;
+    - else a FITS data digest (DATASUM) decides when either has one: equal only when both carry the same DATASUM, the
+      same processing cards and the same size - modification time is never identity when a digest exists;
+    - else size + mtime."""
     if a.get('missing') or b.get('missing'):
         return False
     if 'sha1' in a and 'sha1' in b:
         return a['sha1'] == b['sha1']
+    if 'datasum' in a or 'datasum' in b:
+        return (a.get('datasum') == b.get('datasum') and (a.get('cards') or {}) == (b.get('cards') or {})
+                and a.get('size') == b.get('size'))
     return a.get('size') == b.get('size') and a.get('mtime_ns') == b.get('mtime_ns')
 
 
@@ -192,6 +278,8 @@ class Run:
         return by
 
     def exit_code(self):
+        """DESIGN 11.5: 1 if any unit errored; else 2 if any unit was refused (a unit with item refusals that
+        completed is done, not refused); else 3 only when EVERY unit had no input; else 0."""
         st = [u.status for u in self.units]
         if not st:
             return EXIT_NO_INPUT
@@ -199,16 +287,19 @@ class Run:
             return EXIT_ERROR
         if 'refused' in st:
             return EXIT_REFUSED
-        if all(s in ('done', 'skipped-valid') for s in st):
+        if all(s == 'no-input' for s in st):
+            return EXIT_NO_INPUT
+        if all(s in ('done', 'skipped-valid', 'no-input') for s in st):
             return EXIT_DONE
-        return EXIT_NO_INPUT
+        return EXIT_ERROR
 
     def write_summary(self):
         if self.dry_run or getattr(self, 'no_records', False):
             return None
         p = os.path.join(self.out_root, '_records', self.step, '_runs', f'{self.run_id}.json')
         atomic_write_json(p, dict(self.header(), finished=utcnow(), started=self.started, summary=self.summary(),
-                                  units=[{'unit': u.name, 'status': u.status, 'reason': u.reason}
+                                  units=[{'unit': u.name, 'status': u.status, 'reason': u.reason,
+                                          'n_planned': len(u.planned), 'n_refused_items': len(u.refused_items)}
                                          for u in self.units]))
         return p
 
@@ -218,8 +309,11 @@ class UnitRecord:
 
         with run.unit('04h_Full') as u:
             u.add_input(path)
+            for p in planned_paths:
+                u.plan(p, 'search_frame')          # the outputs this unit owes (from the plan / --dry-run logic)
             ...write...
             u.add_output(out_path, 'master')      # runs the class content tests now
+            u.refuse_item(p, 'elevation gate: 18 deg < 25 deg', gate='elevation')   # one planned item refused
     """
 
     def __init__(self, run, name, meta):
@@ -233,6 +327,8 @@ class UnitRecord:
         self.outputs = []
         self.tests = []
         self.notes = []
+        self.planned = {}            # abs path -> product class: the outputs this unit owes
+        self.refused_items = []      # [{'path', 'reason', 'gate'}]: planned items refused by a named gate
         self.t0 = time.time()
 
     # ---- inputs -------------------------------------------------------------------------------------------------
@@ -276,22 +372,55 @@ class UnitRecord:
         self.notes.append(text)
 
     def refuse(self, reason):
+        """Refuse the WHOLE unit (exit 2)."""
         raise Refusal(reason)
+
+    # ---- planned outputs and item refusals (DESIGN 11.5) --------------------------------------------------------
+    def plan(self, path, cls):
+        """Declare an output this unit owes. At exit the unit is done only when every planned output was written
+        (``add_output``) and passed its content test, or a recorded item refusal names it (``refuse_item``)."""
+        p = os.path.abspath(path)
+        self.planned[p] = cls
+        return p
+
+    def refuse_item(self, path, reason, gate=None):
+        """Record that one planned item (an image, a band, a window) is refused by a named gate while the unit goes
+        on. A refused item is a complete outcome for that item; the reason is kept in the record."""
+        if not reason:
+            raise ValueError('refuse_item needs the reason (the gate and its value)')
+        self.refused_items.append({'path': os.path.abspath(path), 'reason': str(reason), 'gate': gate})
 
     # ---- context ------------------------------------------------------------------------------------------------
     def __enter__(self):
         return self
 
+    def _final_status(self):
+        refused = {r['path'] for r in self.refused_items}
+        failed = [t for t in self.failed_tests() if t.get('path') not in refused]
+        if failed:
+            return 'refused', 'content test failed: ' + '; '.join(
+                f"{t['name']} ({t.get('detail') or t.get('value')})" for t in failed[:5])
+        written = {o['path'] for o in self.outputs}
+        if self.planned:
+            missing = sorted(p for p in self.planned if p not in written and p not in refused)
+            if missing:
+                return 'error', (f'{len(missing)} of {len(self.planned)} planned outputs neither written nor refused: '
+                                 + ', '.join(missing[:5]) + (' ...' if len(missing) > 5 else ''))
+            if not (written & set(self.planned)) and all(p in refused for p in self.planned):
+                return 'refused', f'every planned item refused ({len(self.planned)}): ' + '; '.join(
+                    f"{os.path.basename(r['path'])}: {r['reason']}" for r in self.refused_items[:5])
+            return 'done', (f'{len(refused & set(self.planned))} planned item(s) refused by a gate'
+                            if refused & set(self.planned) else '')
+        if not self.outputs:
+            if self.refused_items:
+                return 'refused', f'every item refused ({len(self.refused_items)}): ' + '; '.join(
+                    f"{os.path.basename(r['path'])}: {r['reason']}" for r in self.refused_items[:5])
+            return 'no-input', self.reason or 'no output written (never a done state)'
+        return 'done', ''
+
     def __exit__(self, etype, exc, tb):
         if etype is None:
-            failed = self.failed_tests()
-            if failed:
-                self.status, self.reason = 'refused', 'content test failed: ' + '; '.join(
-                    f"{t['name']} ({t.get('detail') or t.get('value')})" for t in failed[:5])
-            elif not self.outputs:
-                self.status, self.reason = 'no-input', self.reason or 'no output written (never a done state)'
-            else:
-                self.status = 'done'
+            self.status, self.reason = self._final_status()
         elif issubclass(etype, Refusal):
             self.status, self.reason = 'refused', str(exc)
         elif issubclass(etype, NoInput):
@@ -308,7 +437,9 @@ class UnitRecord:
         return dict(self.run.header(), unit=self.name, meta=self.meta, status=self.status, reason=self.reason,
                     started=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.t0)), finished=utcnow(),
                     wall_s=round(time.time() - self.t0, 1), inputs=self.inputs, admitted=self.admitted,
-                    outputs=self.outputs, tests=self.tests, notes=self.notes, code=code_fingerprint())
+                    outputs=self.outputs, tests=self.tests, notes=self.notes, code=code_fingerprint(),
+                    planned=[{'path': p, 'class': c} for p, c in sorted(self.planned.items())],
+                    refused_items=self.refused_items)
 
     def write(self):
         if self.run.dry_run:
@@ -319,8 +450,9 @@ class UnitRecord:
 def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None, retest=True):
     """(True, reason) when the unit may be skipped under --resume; (False, reason) otherwise.
 
-    Skip only when: a record exists with status done; every recorded input still has the same fingerprint (and
-    ``inputs``, when given, equals the recorded input set); the admitted night set is unchanged; the code that
+    Skip only when: a record exists with status done and was written from a clean tree (a commit ending '-dirty' is
+    never resumed: its code is not identified by the commit); every recorded input still has the same fingerprint
+    (and ``inputs``, when given, equals the recorded input set); the admitted night set is unchanged; the code that
     produced it is unchanged (sha1 of each recorded exopipe module); the config hash is unchanged; and every output
     passes its content test now."""
     rec = load_record(out_root, step, unit)
@@ -328,6 +460,8 @@ def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None
         return False, 'no record'
     if rec.get('status') != 'done':
         return False, f"record status {rec.get('status')}"
+    if str(rec.get('commit') or '').endswith('-dirty'):
+        return False, f"record written from a dirty tree (commit {rec.get('commit')}): never resumed"
     for p, fp in rec.get('inputs', {}).items():
         if not same_fingerprint(fp, fingerprint(p)):
             return False, f'input changed: {p}'
