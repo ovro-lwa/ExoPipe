@@ -69,6 +69,107 @@ class paths(_Section):
     PRODUCTION_WRITES = False
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Data roots and the Phase 3 directory layout of the pre-refactor package, absorbed VERBATIM (refactor 2026-10-13,
+# MOVE_PLAN.md 2.0) from exopipe/common/roots.py and exopipe/common/phase3_paths.py. Module-level names, not a section:
+# they read the environment exactly as before (required_root / coadd_root at call time, STAGING_ROOT at import).
+#
+# From exopipe/common/roots.py - "Canonical data roots - REQUIRED from the environment, no defaults.
+# Gregg 2026-09-04: the superseded sigma-clipped co-add tree (/fast/gh/main/phase3/coadd) was deleted and every module
+# default that pointed at it was removed ("remove the defaults"). A run that does not state its co-add root explicitly
+# must fail loudly here, never fall through to a stale generation." (R-COADD-ROOT-NO-DEFAULTS)
+# ---------------------------------------------------------------------------------------------------------------------
+
+class RootUnset(RuntimeError):
+    pass
+
+
+def required_root(var, purpose):
+    v = os.environ.get(var)
+    if not v:
+        raise RootUnset(
+            f"{var} is not set ({purpose}). No default exists: the retired "
+            f"/fast/gh/main/phase3/coadd tree was deleted 2026-09-04 and module "
+            f"defaults were removed on Gregg's order. Export {var} to the "
+            f"current-generation cell root (wideband: rebuild_w2/rebuild_v2 "
+            f"on the node's /fast; subband: /data07/gh/phase3/coadd_sb).")
+    return v
+
+
+def coadd_root():
+    """Root holding <lst>_<scope>/coadd_final/ and <lst>_<scope>/subtracted/."""
+    return required_root('P3_COADD_ROOT', 'co-add cell root: masters + subtracted epochs')
+
+
+# From exopipe/common/phase3_paths.py - "canonical Phase 3 directory layout (PHASE3_STRUCTURE.md).
+# Staging on /fast MIRRORS the final /lustre tree so promotion is a plain copy. One builder for every write site;
+# nothing constructs paths ad hoc.
+#     {root}/{LST}/{date}/P3_{label}/{scope}/{Stokes}/{cadence}/    per-epoch
+#     {root}/{LST}/coadd/Run_{label}_{lo}-{hi}/{scope}/{Stokes}/{cadence}/   masters
+#     {root}/transients/Run_{label}/...                            survey-wide blind search
+#     {root}/samples/{sample}/{target}/                            targeted forced photometry
+# scope in {18MHz...82MHz, Red, Green, Blue, Full}; Stokes in {I, V}; cadence in {deep, 10min}"
+
+STAGING_ROOT = os.environ.get('P3_STAGING_ROOT',
+                              '/data07/gh/phase3')  # conformant FINAL products (lwacalim07;
+                                                # /fast too small). Flat working staging
+                                                # (WORKDIR_BASE) stays on /fast for I/O.
+                                                # P3_STAGING_ROOT: staged-node override
+                                                # (lwacalim01/02 have no /data07).
+ARCHIVE_ROOT = '/lustre/pipeline/exopipe/phase3'  # promotion target
+
+
+def epoch_dir(root, lst, date, label, scope, stokes, cadence, make=False):
+    """Per-epoch product dir: aligned+scaled variants + final subtracted images."""
+    p = os.path.join(root, lst, date, f'P3_{label}', scope, stokes, cadence)
+    if make:
+        os.makedirs(p, exist_ok=True)
+    return p
+
+
+def coadd_dir(root, lst, label, date_lo, date_hi, scope, stokes, cadence,
+              make=False):
+    """Co-add Run dir (sibling of date dirs; spans dates; date range in name)."""
+    run = f'Run_{label}_{date_lo}-{date_hi}'
+    p = os.path.join(root, lst, 'coadd', run, scope, stokes, cadence)
+    if make:
+        os.makedirs(p, exist_ok=True)
+    return p
+
+
+def coadd_run_root(root, lst, label, date_lo, date_hi, make=False):
+    """The co-add Run root (holds QA csvs spanning scopes/Stokes)."""
+    p = os.path.join(root, lst, 'coadd', f'Run_{label}_{date_lo}-{date_hi}')
+    if make:
+        os.makedirs(p, exist_ok=True)
+    return p
+
+
+def transients_run(root, label, make=False):
+    """Survey-wide blind-search Run (spans ALL LSTs+dates; de-siloed)."""
+    p = os.path.join(root, 'transients', f'Run_{label}')
+    if make:
+        os.makedirs(p, exist_ok=True)
+    return p
+
+
+def candidate_dir(root, label, cand_id, make=False):
+    p = os.path.join(transients_run(root, label), 'candidates', cand_id)
+    if make:
+        os.makedirs(p, exist_ok=True)
+    return p
+
+
+def sample_dir(root, sample, target, make=False):
+    """Targeted forced-photometry per (sample, target). sample e.g.
+    solar_system, 10pc, Hot_Warm_Jupiters, Local_Volume."""
+    safe = target.replace(' ', '_')
+    p = os.path.join(root, 'samples', sample, safe)
+    if make:
+        os.makedirs(p, exist_ok=True)
+    return p
+
+
 class exclusions(_Section):
     """Exclusion rule parameters (core/exclusions.py is the only reader of data_decisions.csv)."""
     SUBBAND_ONLY = ('18MHz',)      # subbands whose exclusion does NOT propagate to their band (Gregg 2026-06-29)
