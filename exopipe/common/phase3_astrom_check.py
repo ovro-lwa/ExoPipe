@@ -7,7 +7,7 @@ median separation per band. Acceptance (healthy tiles): <= ACCEPT_AMIN.
 Usage: python phase3_astrom_check.py <LST> [accept_arcmin=2.5]
 Exit 0 = all bands pass; 1 = any band fails/missing.
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import sys
 import os
 import numpy as np

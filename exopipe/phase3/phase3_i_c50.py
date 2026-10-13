@@ -16,7 +16,7 @@ Per (LST, band, date, robust):
 Outputs per-injection CSV to Run_I_GATES/c50/ + prints detect-C50 and mstruct-C50.
 Usage: python phase3_i_c50.py <LST> <BAND> <DATE> <R0|R075>
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import sys
 _ARGV = list(sys.argv)
 import os, csv, math, tempfile, shutil

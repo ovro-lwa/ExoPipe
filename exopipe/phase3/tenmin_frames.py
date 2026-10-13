@@ -52,7 +52,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.time import Time
-from exopipe.common.roots import coadd_root, required_root
+from exopipe.phase3.config import coadd_root, required_root
 from exopipe.phase3.core import products as pp
 from exopipe.common import phase2_config as cfg
 from exopipe.phase3 import coadd_full_pipeline as C

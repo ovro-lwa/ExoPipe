@@ -12,7 +12,7 @@ flux-scaling, no native subtraction is redone — only the ×2 refine + detect.
 
 I = direct + sigma_stack + veto;  V = signed ±V + 20×I rule, SAME ×2 flow as I.
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import os, sys, glob, re, subprocess, time, csv, fcntl
 _ARGV = list(sys.argv)        # captured before lab imports that reset sys.argv
 import numpy as np

@@ -50,7 +50,7 @@ OUT_SUBDIR = _env('OUT_SUBDIR', 'candinv')
 
 def candidate_dir(cand_id, make=False):
     """Dedicated candinv dossier dir: {OUT_ROOT}/transients/Run_{LABEL}/candinv/{id}/."""
-    from exopipe.common import phase3_paths as _P
+    from exopipe.phase3 import config as _P
     d = os.path.join(_P.transients_run(OUT_ROOT, OUT_LABEL, make=make),
                      OUT_SUBDIR, cand_id)
     if make:

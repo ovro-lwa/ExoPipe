@@ -17,7 +17,7 @@ EVERY gate quantity recorded, NONE applied:
   sign-relative), bilobe (production params), gaussfit (|snr|>8), n_epoch_raw
 Usage: python phase3_i_gate_ledger.py <LST> <SCOPE>
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import sys
 _ARGV = list(sys.argv)
 import os, re, glob, csv, fcntl

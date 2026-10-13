@@ -36,7 +36,7 @@ from exopipe.phase3.tenmin_validation import setup_date_params, align_date_inter
 from exopipe.phase3 import phase3_veto as pv
 from exopipe.phase3 import phase3_catalog as pc
 from exopipe.phase3.core import products as pp
-from exopipe.common import phase3_paths as P
+from exopipe.phase3 import config as P
 from exopipe.common import phase2_config as cfg
 from exopipe.phase3 import leakage_check as _LC
 from exopipe.phase3 import search_v_transients_v2 as sv2

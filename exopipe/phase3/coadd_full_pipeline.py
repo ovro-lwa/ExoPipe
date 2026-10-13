@@ -65,7 +65,7 @@ WORKDIR_BASE = os.environ.get('P3_COADD_ROOT')   # NO default (Gregg 2026-09-04)
 
 def _workdir_base():
     if not WORKDIR_BASE:
-        from exopipe.common.roots import required_root
+        from exopipe.phase3.config import required_root
         return required_root('P3_COADD_ROOT', 'co-add work/output root; or pass --workdir')
     return WORKDIR_BASE
 DECISIONS_CSV = '/lustre/gh/main/clv15/data_decisions.csv'  # canonical (Gregg move 2026-08-10; -> exopipe_ops/ at refactor)

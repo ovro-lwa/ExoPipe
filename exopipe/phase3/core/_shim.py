@@ -38,6 +38,8 @@ LEGACY = {
     # stage 3 (core)
     'exopipe.common.phase3_products': 'exopipe.phase3.core.products',     # moved 742bff3; old-path alias removed
     'exopipe.phase3.residuals': 'exopipe.phase3.core.residuals',
+    'exopipe.common.roots': 'exopipe.phase3.config',                     # absorbed verbatim (module-level names)
+    'exopipe.common.phase3_paths': 'exopipe.phase3.config',              # absorbed verbatim (module-level names)
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)

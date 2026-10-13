@@ -40,7 +40,7 @@ reason (caller decides exit semantics). No import-time side effects.
 Usage (batch, mirrors the frozen driver):
     python vclean_masters.py [wideband|subband|all] [NPAR]
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import os
 import re
 import sys

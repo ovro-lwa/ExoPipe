@@ -18,7 +18,7 @@ Provenance: PBCORR/PBFLOOR/PBLIBV (pb_apply) + PBMETHOD/PBWINDOW/BEAMMOD.
 Skips corrupt masters (maxabs > 1e6) and logs them.
 Usage: python phase3_pbcorr_masters.py [wideband|subband|all]
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import sys
 _ARGV = list(sys.argv); sys.argv = ['pbmasters']
 import os, re, glob

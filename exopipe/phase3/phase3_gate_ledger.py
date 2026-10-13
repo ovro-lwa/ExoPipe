@@ -7,7 +7,7 @@ NO sigma-stack. For each raw candidate records: snr(local), mstruct value, co-lo
 I/V at rb=0, bilobe flag (production params, per-epoch global rms), gaussfit flag.
 Usage: python phase3_gate_ledger.py <LST> <SCOPE>
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import sys
 _ARGV = list(sys.argv)
 import os, re, glob, csv, fcntl

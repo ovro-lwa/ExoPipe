@@ -18,7 +18,7 @@ phase3_i_deep_final.py — DEFINITIVE Run_I_DEEP deliverables (Gregg spec
      - rankNNNN.reg          1-degree circle at the merged position
 Usage: python phase3_i_deep_final.py [TOP_N]   (default 20)
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import sys
 _ARGV = list(sys.argv)
 import os, csv, glob, shutil

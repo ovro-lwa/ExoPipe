@@ -15,7 +15,7 @@ Method (faithful to phase3_deep.run_deep_cell's V path, mstruct sole gate):
   Recovery binned by LOCAL-rms SNR; raw 50% crossing (NO logistic fit). The final
   (mstruct) crossing is recorded as the band's measured C50.
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import sys
 _ARGV = list(sys.argv)   # capture BEFORE heavy imports — phase3_deep clobbers sys.argv at import
 import os, csv, copy, glob, re

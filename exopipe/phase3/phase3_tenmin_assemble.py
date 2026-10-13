@@ -16,7 +16,7 @@ maps (wideband: /fast coadd coadd_final; subband: coadd_sb).
 
 Usage: phase3_tenmin_assemble.py {wb|sb} {V|I} [--lst 01h]
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import os, sys, csv, glob, argparse
 import numpy as np
 from collections import defaultdict

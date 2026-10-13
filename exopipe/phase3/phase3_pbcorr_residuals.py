@@ -17,7 +17,7 @@ skipped. One worker per cell (PB map read once). Progress + error log to
 /data07/gh/phase3/logs/pbcorr_residuals_20260727.log; summary ledger row.
 Usage: phase3_pbcorr_residuals.py [nproc]
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import os, re, sys, glob, csv, datetime
 from collections import defaultdict
 from multiprocessing import Pool

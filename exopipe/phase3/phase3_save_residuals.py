@@ -10,7 +10,7 @@ provenance are sourced from the original Phase 2 deep image (B's _sub headers
 carry the co-add date, not the epoch). Residual = ×2-upflow(epoch) − master −
 striation, exactly as the search ran. Deterministically regenerable.
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import os, sys, glob, re
 _ARGV = list(sys.argv)
 import numpy as np
@@ -21,7 +21,7 @@ from exopipe.phase3.coadd_full_pipeline import apply_flow_field, build_striation
 from exopipe.phase3.phase3_pipeline import STRIATION_WINDOW_DEG
 from exopipe.phase3.identify import fit_empirical_beam
 from exopipe.phase3.core import products as pp
-from exopipe.common import phase3_paths as P
+from exopipe.phase3 import config as P
 
 LABEL = _ARGV[3] if len(_ARGV) > 3 else 'PROD'
 ROOT = os.environ.get('P3_STAGING_ROOT', P.STAGING_ROOT)   # /data07 override

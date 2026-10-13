@@ -42,7 +42,7 @@ Outputs (env-overridable for fleet path parity — no node needs /data07):
   P3_RESID_ROOT  residual archive     (default /data07/gh/phase3/i_resid)
 Usage: python phase3_i_deep.py <LST> <SCOPE>
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import sys
 _ARGV = list(sys.argv)          # BEFORE phase3_deep import (argv clobber gotcha)
 import os, re, glob, csv, fcntl, time

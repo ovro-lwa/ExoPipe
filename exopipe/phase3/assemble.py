@@ -6,7 +6,7 @@ load_rows, epoch_mid, FP_CLASS, ATEAM and the ROOT/COADD/REPEAT_DEG constants,
 plus internal deps LEDGERS and the _HDR cache that they reference).
 The remaining assembly-capability content arrives at move time.
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import os, csv, glob
 from astropy.io import fits
 from astropy.time import Time

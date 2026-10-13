@@ -17,7 +17,7 @@ striation rms benefit on the 10-min residual (trivial vs difficult), and
 
 Stage 1 (this run): rms A-vs-B + striation. Stage 2 (--scurve): C50 + FP.
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import os, sys, glob
 import numpy as np
 _ARGV = list(sys.argv); sys.argv = ['tenmin_val']

@@ -51,7 +51,7 @@ USAGE
   python phase3_pipeline.py --selftest_beam
   python phase3_pipeline.py --selftest_leakage
 """
-from exopipe.common.roots import coadd_root
+from exopipe.phase3.config import coadd_root
 import argparse
 import glob
 import json

@@ -27,7 +27,7 @@ from . import astrometry as AST
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 import astropy.units as u
-from exopipe.common import phase3_paths as P
+from exopipe.phase3 import config as P
 
 
 def _reticle(ax, x, y, gap=9, length=20, color='lime', lw=1.3):
