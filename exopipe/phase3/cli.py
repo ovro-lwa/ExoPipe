@@ -60,8 +60,13 @@ def _common(p, step_mod):
                                  'production roots refuse writes while paths.PRODUCTION_WRITES is False)')
     g.add_argument('--work', help='node-local scratch root (default from the site file)')
     g.add_argument('--set', action='append', default=[], metavar='SECTION.KEY=VALUE',
-                   help='override one tunable for this run (recorded); repeatable')
+                   help='override one tunable for this run (recorded); repeatable. One dict entry: '
+                        'SECTION.KEY[entry]=VALUE (tuple keys comma-separated: fitting.K_TEMPLATE[deep,I]=(0.5,0.5)). '
+                        'Protected keys refuse; a ruled key needs --ruling-for or a non-production --out')
     g.add_argument('--config', metavar='FILE', help='python file of section.KEY = value overrides (recorded)')
+    g.add_argument('--ruling-for', action='append', default=[], metavar='SECTION.KEY=LEDGER_ID',
+                   help="authorise overriding a RULED key with Gregg's ruling: the ledger ID must be a row of "
+                        "paths.FIX_LEDGER (recorded with the override); repeatable")
     g.add_argument('--dry-run', action='store_true', help='plan only: inputs found, outputs, gates; writes nothing')
     g.add_argument('--resume', action='store_true',
                    help='skip units whose record is done and whose inputs, admitted nights, code, config are '
@@ -111,30 +116,49 @@ def _guard_out(out):
     from exopipe.phase3.config import CFG
     if CFG.paths.PRODUCTION_WRITES:
         return
-    real = os.path.realpath(out)
-    for root in CFG.paths.PRODUCTION_ROOTS:
-        r = os.path.realpath(root)
-        if real == r or real.startswith(r.rstrip('/') + '/'):
-            raise SystemExit(f'refused: --out {out} is under the production root {root} and paths.PRODUCTION_WRITES '
-                             f'is False (refactor window). Write parity/scratch output to your own root.')
+    root = CFG.production_root_of(out)
+    if root is not None:
+        raise SystemExit(f'refused: --out {out} is under the production root {root} and paths.PRODUCTION_WRITES '
+                         f'is False (refactor window). Write parity/scratch output to your own root.')
+
+
+def _msg(e):
+    return e.args[0] if isinstance(e, KeyError) and e.args else e
+
+
+def _print_overrides(CFG):
+    for o in CFG.overrides:
+        print(f'override {o[0]}: {o[1]!r} -> {o[2]!r}' + (f'   [{o[4]}]' if o[4] else ''))
 
 
 def _config_cmd(argv):
     p = argparse.ArgumentParser(prog='exopipe3 config', description='Show the Phase 3 tunables (config.py).')
     p.add_argument('--section', help='print one section with its comments (units, rulings)')
-    p.add_argument('--set', action='append', default=[], help='show the effect of overrides')
+    p.add_argument('--set', action='append', default=[], help='show the effect of overrides (SECTION.KEY[entry]=V)')
+    p.add_argument('--config', metavar='FILE', help='show the effect of a file of overrides')
+    p.add_argument('--ruling-for', action='append', default=[], metavar='SECTION.KEY=LEDGER_ID',
+                   help='check a ruling ID for a ruled key (as a step would)')
     p.add_argument('--hash', action='store_true', help='print the config hash')
     a = p.parse_args(argv)
-    from exopipe.phase3.config import CFG, SITE_FILE
-    CFG.apply_override_strings(a.set)
+    from exopipe.phase3.config import CFG, SITE_FILE, ConfigRefusal
+    try:
+        CFG.authorize(a.ruling_for, mode='display')
+        if a.config:
+            CFG.apply_override_file(a.config)
+        CFG.apply_override_strings(a.set)
+    except ConfigRefusal as e:
+        print(f'REFUSED: {e}', file=sys.stderr)
+        return 2
+    except (KeyError, ValueError) as e:
+        print(f'error: {_msg(e)}', file=sys.stderr)
+        return 1
     if a.hash:
         print(CFG.hash())
         return 0
     print(CFG.describe(a.section))
     if not a.section:
         print(f'\nsite file: {SITE_FILE or "(none: EXOPIPE3_SITE unset)"}')
-    for o in CFG.overrides:
-        print(f'override {o[0]}: {o[1]!r} -> {o[2]!r}')
+    _print_overrides(CFG)
     return 0
 
 
@@ -179,13 +203,25 @@ def main(argv=None):
         sp.error('every --waive needs its own --ruling "<Gregg\'s words, UTC, ledger ID>"')
     _env.apply(args.threads)
 
-    from exopipe.phase3.config import CFG
+    from exopipe.phase3.config import CFG, ConfigRefusal
     from exopipe.phase3.core import record
-    if args.config:
-        CFG.apply_override_file(args.config)
-    CFG.apply_override_strings(args.set)
+    try:
+        # Ruled keys may be overridden with --ruling-for or into a non-production --out; `run submit` forwards its
+        # overrides to every step process, which checks them against its own --out.
+        CFG.authorize(args.ruling_for, out=args.out or mod.default_out(args),
+                      mode='forward' if name == 'run' else 'run')
+        if args.config:
+            CFG.apply_override_file(args.config)
+        CFG.apply_override_strings(args.set)
+        out = args.out or mod.default_out(args)
+        CFG.check_out(out)
+    except ConfigRefusal as e:
+        print(f'REFUSED: {e}', file=sys.stderr)
+        return record.EXIT_REFUSED
+    except (KeyError, ValueError) as e:
+        print(f'error: {_msg(e)}', file=sys.stderr)
+        return record.EXIT_ERROR
     pinned = _pin(args.cores)
-    out = args.out or mod.default_out(args)
     if getattr(mod, 'WRITES', True) and not args.dry_run:
         _guard_out(out)
     run = record.Run(name, [f'exopipe3 {name}'] + rest, out, CFG, dry_run=args.dry_run,

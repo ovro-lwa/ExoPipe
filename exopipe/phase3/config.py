@@ -7,8 +7,15 @@ How to use
              with its comments (unit and ruling of every value).
 - Override:  per run, on any step: ``--set search.V_FLOOR_SIGMA=4.5`` (repeatable) or ``--config my_overrides.py``
              (a python file of ``section.KEY = value`` lines). Every override is written into the run record
-             and the products' HISTORY. Changing a ruled value without Gregg's ruling is a conformance breach;
-             the run record makes it visible.
+             and the products' HISTORY.
+- One entry: ``--set fitting.K_TEMPLATE[sublst,V]=(0.66,0.50)`` changes ONE entry of a dict (tuple keys written
+             comma-separated, nested dicts with one bracket per level); a whole-dict override that omits any key
+             of the current value is refused (it would silently delete the omitted entries).
+- Protected: ``PROTECTED`` below (the exclusion file and rule parameters, the production-root guard, the ledger,
+             pinned inputs) - no override can change them; change them in this file, by a commit.
+- Ruled:     a section's ``RULED = {'KEY': 'ledger ID'}`` names the keys a ruling of Gregg's set. Overriding one needs
+             ``--ruling-for section.KEY=<ledger ID>`` (the ID must be a row of ``paths.FIX_LEDGER``) or a ``--out``
+             outside every production root; the override and its authority go into the run record.
 
 Conventions
 -----------
@@ -29,14 +36,19 @@ import importlib.util
 import inspect
 import json
 import os
+import re
+
+
+_META = ('RULED',)      # UPPER_CASE section attributes that DESCRIBE tunables; never tunables themselves
 
 
 class _Section:
-    """Base class of a config section: UPPER_CASE class attributes are the tunables."""
+    """Base class of a config section: UPPER_CASE class attributes are the tunables. ``RULED`` (optional) maps a key to
+    the ledger ID(s) of the ruling that set it."""
 
     @classmethod
     def items(cls):
-        return [(k, getattr(cls, k)) for k in sorted(vars(cls)) if k.isupper()]
+        return [(k, getattr(cls, k)) for k in sorted(vars(cls)) if k.isupper() and k not in _META]
 
 
 # =====================================================================================================================
@@ -61,12 +73,23 @@ class paths(_Section):
     PHASE2_ROOT = '/lustre/pipeline/exopipe/phase2'
     PHASE3_ARCHIVE_ROOT = '/lustre/pipeline/exopipe/phase3'
     DATA_DECISIONS = '/lustre/gh/main/clv15/data_decisions.csv'    # Gregg's exclusions (read only; core/exclusions)
+    FIX_LEDGER = '/lustre/gh/main/clv15/fix_ledger.csv'            # Gregg's ruling ledger (read only; --ruling-for IDs)
     REFERENCE_DIR = '/lustre/gh/main/exopipe/reference'            # small publishable reference CSVs
     # Product roots that hold PRODUCTION data. While PRODUCTION_WRITES is False (the refactor window, until each
     # step's parity run passes and Gregg approves its cutover) a step refuses to write under any of them: parity and
     # scratch runs pass --out to their own roots.
     PRODUCTION_ROOTS = ('/lustre/pipeline/exopipe/phase3', '/data07/gh/phase3', '/lustre/gh/main/phase3')
     PRODUCTION_WRITES = False
+    # Config keys ('section.KEY') whose values are PINNED inputs - frozen, checksummed inputs a ruling names (e.g. a
+    # frozen master tree, a tier-rule pin). They are protected like the keys in PROTECTED (DESIGN 11.4, 11.6).
+    PINNED_INPUTS = ()
+
+
+# Keys no --set / --config can change (DESIGN 11.4; critique_rulings 4.1): the exclusion file and every exclusion rule
+# parameter, the ruling ledger, the production-root guard and the list of pinned inputs (and, through it, each pinned
+# input). 'section.*' protects a whole section. Change them in this file, by a commit.
+PROTECTED = ('paths.DATA_DECISIONS', 'paths.FIX_LEDGER', 'paths.PRODUCTION_WRITES', 'paths.PRODUCTION_ROOTS',
+             'paths.PINNED_INPUTS', 'exclusions.*')
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -197,6 +220,7 @@ class astrometry(_Section):
     # carries stat = sqrt(sum w^2 stat^2) / sum w with w = 1/(stat^2 + sys^2) per detection, and the systematic
     # averaged down with the same weights (2026-09-27: this comment said w = SNR^2 and 'its band's sys'; code is inverse variance).
     K_ASSOC = 3.034                      # dimensionless multiplier of the quadrature sum (99th percentile, Rayleigh)
+    RULED = {'K_ASSOC': 'R-ASSOCIATION-RADIUS-QUADRATURE'}
 
 
 class fitting(_Section):
@@ -223,6 +247,9 @@ class fitting(_Section):
     # 2026-10-13, put to Gregg by both chats). 'wcs' is the corrected beam; switching needs Gregg's ruling and a
     # re-measured K for every tier.
     TEMPLATE_BEAM_ORIENTATION = 'legacy-mirrored'
+    RULED = {'GAUSS_SNR': 'RULING-TEMPLATE-FIT-BELOW-7-SIGMA',
+             'K_TEMPLATE': ('IMPL-DEEP-FORCED-KV-FITKIND-EVALJOIN', 'R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED'),
+             'TEMPLATE_BEAM_ORIENTATION': 'FINDING-TEMPLATE-FIT-MIRRORED-BEAM-20261013'}
 
 
 class runner(_Section):
@@ -260,6 +287,11 @@ class site(_Section):
 # Machinery: the CFG namespace, overrides, hash, printing. Nothing below is a tunable.
 # =====================================================================================================================
 
+class ConfigRefusal(ValueError):
+    """An override the config refuses: a protected key, a ruled key without a ruling, an unknown ledger ID, a whole-dict
+    override that omits entries. The CLI prints it and exits 2."""
+
+
 class _Config:
     """The namespace of all sections: CFG.<section>.<KEY>."""
 
@@ -267,24 +299,141 @@ class _Config:
         self._sections = dict(sections)
         for name, sec in sections.items():
             setattr(self, name, sec)
-        self.overrides = []          # [(dotted key, old value, new value, source)]
+        # [(dotted key, old value, new value, source, authority)]; authority is None for an unruled key, else
+        # 'ruling:<ledger ID>', 'non-production out:<dir>', 'display only' or 'forwarded (checked by the step)'
+        self.overrides = []
+        self._undo = []              # [(section, key, previous value)] for reset()
+        self._auth = {'rulings': {}, 'out': None, 'mode': 'run'}
 
     def sections(self):
         return dict(self._sections)
 
     def get(self, dotted):
-        sec, key = _split(dotted)
-        return getattr(self._section(sec), key)
+        sec, key, path = _parse_key(dotted)
+        v = getattr(self._section(sec), key)
+        for toks in path:
+            v = v[_entry_key(v, toks, dotted)]
+        return v
 
+    # ---- protected and ruled keys -------------------------------------------------------------------------------
+    def protected(self, dotted):
+        """True when no override may change ``section.KEY`` (PROTECTED, 'section.*', paths.PINNED_INPUTS)."""
+        sec, key, _ = _parse_key(dotted)
+        base = f'{sec}.{key}'
+        pinned = tuple(getattr(self._sections.get('paths'), 'PINNED_INPUTS', ()) or ())
+        return base in PROTECTED or f'{sec}.*' in PROTECTED or base in pinned
+
+    def ruled(self, dotted):
+        """The ledger ID(s) of the ruling that set ``section.KEY`` (from the section's RULED), or None."""
+        sec, key, _ = _parse_key(dotted)
+        r = (getattr(self._section(sec), 'RULED', None) or {}).get(key)
+        if r is None:
+            return None
+        return tuple(r) if isinstance(r, (list, tuple)) else (r,)
+
+    def production_root_of(self, path):
+        """The production root (paths.PRODUCTION_ROOTS) that holds ``path``, or None."""
+        real = os.path.realpath(path)
+        for root in self.paths.PRODUCTION_ROOTS:
+            r = os.path.realpath(root)
+            if real == r or real.startswith(r.rstrip('/') + '/'):
+                return root
+        return None
+
+    def authorize(self, rulings=(), out=None, mode='run'):
+        """How ruled keys may be overridden in this process (the CLI calls it before applying overrides).
+
+        rulings: ['section.KEY=LEDGER_ID', ...] (--ruling-for) or a dict; every ID must be a row of paths.FIX_LEDGER.
+        out:     the run's product root; outside every production root, a ruled key may be overridden without a ruling.
+        mode:    'run' (check), 'display' (`exopipe3 config`: shown, nothing written), 'forward' (`run submit`: the
+                 overrides are forwarded to each step process, which checks them against its own --out)."""
+        if isinstance(rulings, dict):
+            items = list(rulings.items())
+        else:
+            items = []
+            for r in rulings or ():
+                if '=' not in r:
+                    raise ConfigRefusal(f'--ruling-for expects SECTION.KEY=LEDGER_ID, got {r!r}')
+                k, v = r.split('=', 1)
+                items.append((k.strip(), v.strip()))
+        from exopipe.phase3.core import ledger
+        for k, lid in items:
+            _parse_key(k)
+            try:
+                ok = ledger.has_id(lid, self.paths.FIX_LEDGER)
+            except OSError as e:
+                raise ConfigRefusal(f'--ruling-for {k}={lid}: the ledger {self.paths.FIX_LEDGER} is not readable ({e})')
+            if not ok:
+                raise ConfigRefusal(f'--ruling-for {k}={lid}: no row with fix_id {lid!r} in {self.paths.FIX_LEDGER}')
+        self._auth = {'rulings': dict(items), 'out': out, 'mode': mode}
+
+    def _authority(self, dotted, base):
+        ids = self.ruled(base)
+        if not ids:
+            return None
+        lid = self._auth['rulings'].get(dotted) or self._auth['rulings'].get(base)
+        if lid:
+            return f'ruling:{lid}'
+        if self._auth['mode'] == 'display':
+            return 'display only'
+        if self._auth['mode'] == 'forward':
+            return 'forwarded (checked by the step)'
+        out = self._auth['out']
+        if out and self.production_root_of(out) is None:
+            return f'non-production out:{os.path.abspath(out)}'
+        raise ConfigRefusal(
+            f'{base} carries a ruling ({", ".join(ids)}): override it only with --ruling-for {base}=<ledger ID> '
+            f'(a row of {self.paths.FIX_LEDGER}) or into a --out outside every production root '
+            f'(this run writes to {out or "the step production root"})')
+
+    def check_out(self, out):
+        """Re-check, once the run's final --out is known, every ruled override that was allowed for a non-production
+        out (a step whose default root depends on an override could otherwise move it into production)."""
+        for o in self.overrides:
+            if o[4] and o[4].startswith('non-production out:') and self.production_root_of(out) is not None:
+                raise ConfigRefusal(f'{o[0]} carries a ruling and was overridden without one, but this run writes '
+                                    f'under the production root {self.production_root_of(out)} ({out})')
+
+    # ---- overrides ----------------------------------------------------------------------------------------------
     def set(self, dotted, value, source='--set'):
-        sec, key = _split(dotted)
+        """Override one tunable: 'section.KEY' (whole value) or 'section.KEY[entry]...' (one entry of a dict)."""
+        sec, key, path = _parse_key(dotted)
         s = self._section(sec)
-        if not key.isupper() or not hasattr(s, key):
+        if not key.isupper() or key in _META or not hasattr(s, key):
             raise KeyError(f'unknown config key {dotted!r} (exopipe3 config --section {sec} lists the keys)')
-        old = getattr(s, key)
-        new = _coerce(value, old) if isinstance(value, str) else value
-        setattr(s, key, new)
-        self.overrides.append((dotted, old, new, source))
+        base = f'{sec}.{key}'
+        if self.protected(base):
+            raise ConfigRefusal(f'{base} is PROTECTED (config.PROTECTED / paths.PINNED_INPUTS): no --set or --config '
+                                f'can change it; it changes only by a commit to exopipe/phase3/config.py')
+        authority = self._authority(dotted, base)
+        top = getattr(s, key)
+        if path:
+            new_top, old, new = _set_entry(top, path, value, dotted)
+        else:
+            old = top
+            new = _coerce(value, old) if isinstance(value, str) else _like(value, old)
+            if isinstance(old, dict):
+                _refuse_omitted(old, new, dotted)
+            new_top = new
+        setattr(s, key, new_top)
+        self._undo.append((s, key, top))
+        self.overrides.append((dotted, old, new, source, authority))
+
+    def reset(self):
+        """Undo every override applied in this process (tests; `exopipe3 config`)."""
+        while self._undo:
+            s, key, prev = self._undo.pop()
+            setattr(s, key, prev)
+        self.overrides = []
+
+    def ruled_overrides(self):
+        """[{key, ruled_by, authority}] for every override of a ruled key (written into each run record)."""
+        out = []
+        for o in self.overrides:
+            ids = self.ruled(o[0])
+            if ids:
+                out.append({'key': o[0], 'ruled_by': list(ids), 'authority': o[4]})
+        return out
 
     def apply_override_strings(self, items, source='--set'):
         for it in items or []:
@@ -334,9 +483,74 @@ class _Config:
 
 
 def _split(dotted):
-    if '.' not in dotted:
-        raise KeyError(f'config key must be SECTION.KEY, got {dotted!r}')
-    return dotted.split('.', 1)
+    sec, key, _ = _parse_key(dotted)
+    return sec, key
+
+
+_KEY_RE = re.compile(r'^\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)((?:\[[^\[\]]*\])*)\s*$')
+
+
+def _parse_key(dotted):
+    """'section.KEY[a,b][c]' -> ('section', 'KEY', [['a', 'b'], ['c']])."""
+    m = _KEY_RE.match(dotted or '')
+    if not m:
+        raise KeyError(f'config key must be SECTION.KEY or SECTION.KEY[entry], got {dotted!r}')
+    path = [[t.strip().strip('\'"') for t in sub.split(',')] for sub in re.findall(r'\[([^\[\]]*)\]', m.group(3))]
+    return m.group(1), m.group(2), path
+
+
+def _entry_key(d, toks, dotted):
+    """The existing key of dict ``d`` written as ``toks`` ('deep,I' -> ('deep', 'I'); '75,90' -> (75, 90))."""
+    if not isinstance(d, dict):
+        raise KeyError(f'{dotted}: {type(d).__name__} has no entries (only dicts take [entry])')
+    for k in d:
+        if isinstance(k, tuple):
+            if len(k) == len(toks) and all(str(x) == t for x, t in zip(k, toks)):
+                return k
+        elif len(toks) == 1 and str(k) == toks[0]:
+            return k
+    raise KeyError(f'{dotted}: no entry [{",".join(toks)}]; entries: '
+                   + ', '.join('[' + (','.join(map(str, k)) if isinstance(k, tuple) else str(k)) + ']' for k in d))
+
+
+def _set_entry(d, path, value, dotted):
+    """Copy of dict ``d`` with the entry at ``path`` replaced; returns (new dict, old entry, new entry)."""
+    k = _entry_key(d, path[0], dotted)
+    new_d = dict(d)
+    if len(path) > 1:
+        new_d[k], old, new = _set_entry(d[k], path[1:], value, dotted)
+        return new_d, old, new
+    old = d[k]
+    new = _coerce(value, old) if isinstance(value, str) else _like(value, old)
+    if isinstance(old, dict):
+        _refuse_omitted(old, new, dotted)
+    new_d[k] = new
+    return new_d, old, new
+
+
+def _refuse_omitted(old, new, dotted):
+    if not isinstance(new, dict):
+        return
+    missing = [k for k in old if k not in new]
+    if missing:
+        raise ConfigRefusal(f'whole-dict override of {dotted} omits {len(missing)} of its {len(old)} entries '
+                            f'({", ".join(map(repr, missing[:6]))}{" ..." if len(missing) > 6 else ""}); give every '
+                            f'entry, or change one entry with {dotted}[entry]=value')
+
+
+def _like(v, old):
+    """Normalise a parsed value to the shape of the current one (list -> tuple, int -> float), recursively."""
+    if isinstance(old, bool) or v is None or old is None:
+        return v
+    if isinstance(old, float) and isinstance(v, int) and not isinstance(v, bool):
+        return float(v)
+    if isinstance(old, tuple) and isinstance(v, (list, tuple)):
+        if len(v) == len(old):
+            return tuple(_like(x, o) for x, o in zip(v, old))
+        return tuple(v)
+    if isinstance(old, dict) and isinstance(v, dict):
+        return {k: (_like(x, old[k]) if k in old else x) for k, x in v.items()}
+    return v
 
 
 def _coerce(text, old):
@@ -354,11 +568,7 @@ def _coerce(text, old):
             return v if (old is None or isinstance(v, str)) else text
         except (ValueError, SyntaxError):
             return text
-    v = ast.literal_eval(text)
-    if isinstance(old, float) and isinstance(v, int):
-        v = float(v)
-    if isinstance(old, tuple) and isinstance(v, list):
-        v = tuple(v)
+    v = _like(ast.literal_eval(text), old)
     if type(v) is not type(old):
         raise ValueError(f'expected {type(old).__name__}, got {text!r}')
     return v

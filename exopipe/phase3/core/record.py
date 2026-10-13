@@ -101,6 +101,12 @@ def git_commit(path):
         return 'unknown'
 
 
+def unruled_overrides(rec):
+    """The overrides of RULED keys in a run record that carry no ledger ruling (allowed only into a non-production
+    --out). install and serve refuse a product whose record lists any (DESIGN 11.4)."""
+    return [o for o in (rec.get('ruled_overrides') or []) if not str(o.get('authority') or '').startswith('ruling:')]
+
+
 def atomic_write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f'{path}.tmp.{os.getpid()}'
@@ -144,8 +150,12 @@ class Run:
     def header(self):
         return {'record_version': RECORD_VERSION, 'step': self.step, 'run_id': self.run_id, 'argv': self.argv,
                 'host': self.host, 'pid': self.pid, 'user': getpass.getuser(), 'commit': self.commit,
-                'config_hash': self.cfg.hash(), 'site_sha1': getattr(self.cfg, 'site_sha1', None), 'config_overrides': [list(o[:1]) + [repr(o[1]), repr(o[2]), o[3]]
-                                                                     for o in self.cfg.overrides],
+                'config_hash': self.cfg.hash(), 'site_sha1': getattr(self.cfg, 'site_sha1', None),
+                # [key, repr(old), repr(new), source, authority]; authority: None (unruled key), 'ruling:<ledger ID>',
+                # 'non-production out:<dir>' - install and serve refuse products whose ruled override has no ruling
+                'config_overrides': [[o[0], repr(o[1]), repr(o[2]), o[3], o[4] if len(o) > 4 else None]
+                                     for o in self.cfg.overrides],
+                'ruled_overrides': self.cfg.ruled_overrides() if hasattr(self.cfg, 'ruled_overrides') else [],
                 'waivers': [{'test': t, 'ruling': r} for t, r in self.waivers], 'dry_run': self.dry_run}
 
     def unit(self, name, **meta):

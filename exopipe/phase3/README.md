@@ -42,7 +42,11 @@ resume), `cells` (cell / item-list grammar), `runner` (multi-node jobs), `env` (
 
 1. **Inputs, outputs and failure modes in `--help`.** The module docstring is the help text.
 2. **Every tunable in `config.py`**, in the step's section, with its unit and ruling. No constants that change results
-   inside `steps/` or `lib/`; no `os.environ` switches; no host names (the site file holds them).
+   inside `steps/` or `lib/`; no `os.environ` switches; no host names (the site file holds them). Overrides:
+   `--set section.KEY=V` or one dict entry `--set section.KEY[entry]=V` (a whole dict that omits entries is refused);
+   `config.PROTECTED` keys (exclusions, production-root guard, ledger, pinned inputs) cannot be overridden; a key in a
+   section's `RULED` needs `--ruling-for section.KEY=<ledger ID>` (checked in clv15/fix_ledger.csv) or a non-production
+   `--out`, and the run record shows the override with its authority.
 3. **Gates refuse.** A failed gate raises `record.Refusal` (exit 2) with the reason; it never warns and continues.
 4. **Every product class has a content test** registered with `@content_test('<class>')`. A unit is done only when
    it wrote at least one output and every output passed. "Wrote 0" is never done (exit 3, recorded).
