@@ -69,13 +69,14 @@ def _discover():
 
 
 def tests_for(cls):
+    # Always discover first: a class may register tests in several modules (e.g. a record class shared by two steps),
+    # and stopping at the first module that registers it would silently drop the others.
+    _discover()
     if cls not in _TESTS and cls in OWNERS:
         try:
             importlib.import_module(OWNERS[cls])
         except ImportError:
             pass
-    if cls not in _TESTS:
-        _discover()
     if cls not in _TESTS:
         broken = '; '.join(f'{k} ({v})' for k, v in _DISCOVERY_ERRORS.items())
         raise KeyError(f'no content test registered for product class {cls!r} - every class a step writes must '
