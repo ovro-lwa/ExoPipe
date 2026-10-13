@@ -16,7 +16,7 @@ subprocesses (cp, rsync, shell redirections), C extensions writing through their
 os function to a local name before the guard was installed.
 
 Allowed: the roots given to ``install`` (a parity run passes --out and --work; the run records live under --out) plus
-``DEFAULT_ALLOWED`` (/tmp, /dev/null) and $TMPDIR; /dev/stdout, /dev/stderr and /dev/tty are never refused. Paths are
+``DEFAULT_ALLOWED`` (/tmp, /dev/shm, /dev/null) and $TMPDIR; /dev/stdout, /dev/stderr and /dev/tty are never refused. Paths are
 compared after realpath, so a symlink cannot lead out of an allowed root.
 
 Subprocesses: ``export_env(roots)`` sets EXOPIPE3_PARITY_ROOT (os.pathsep-joined roots) and puts
@@ -34,7 +34,7 @@ import sys
 
 ENV_ROOTS = 'EXOPIPE3_PARITY_ROOT'
 ENV_LOG = 'EXOPIPE3_PARITY_LOG'
-DEFAULT_ALLOWED = ('/tmp', '/dev/null')
+DEFAULT_ALLOWED = ('/tmp', '/dev/shm', '/dev/null')     # /dev/shm: RAM temp space (in-place fit modules write there)
 _DEVICES = ('/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty')     # never products; compared before realpath
 SITECUSTOMIZE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'parity_sitecustomize')
 _WFLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
