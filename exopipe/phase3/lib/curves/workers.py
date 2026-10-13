@@ -47,8 +47,9 @@ def table_path(out_dir, cell, sb, st):
 
 def argv(C, paths_cfg, script, cell, sb, st, stage_sb, out_dir):
     """The production argument list (v9:366-370) for one (subband, Stokes)."""
-    a = ['extract', '--cell', cell, '--subband', sb, '--stage', stage_sb, '--proto-root', paths_cfg.SNAPSHOT_FLEET_OUT,
-         '--master-catalogs', C.MASTER_CATALOG_DIR, '--out', out_dir, '--stokes', st]
+    a = (['extract', '--cell', cell, '--subband', sb] + (['--stage', stage_sb] if stage_sb else [])   # none: archive frames
+         + ['--proto-root', paths_cfg.SNAPSHOT_FLEET_OUT, '--master-catalogs', C.MASTER_CATALOG_DIR, '--out', out_dir,
+            '--stokes', st])
     if C.CHAIN_RUN_DIR:
         a += ['--run-dir', C.CHAIN_RUN_DIR]
     if os.path.realpath(paths_cfg.CLV15_ROOT) != os.path.realpath(os.path.dirname(script)):
@@ -179,15 +180,37 @@ def staged_frames(stage_sb):
     return out
 
 
-def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples):
+def archive_frames(cell, sb):
+    """{'I': {ts: path}, 'V': {...}}: the Phase-1 archive frames the extractor reads when it gets no --stage - its own
+    lister, clv15 phase3_snapshot_search.discover_frames(stage_root=None, flow_select=False), called in place."""
+    from exopipe.phase3.core import env
+    env.legacy()
+    from phase3_snapshot_search import discover_frames
+    lst, date = cell.split('_')[:2]
+    fr = discover_frames(lst, date, sb, stage_root=None, flow_select=False)
+    return {st: dict(fr.get(st, [])) for st in ('I', 'V')}
+
+
+def _frame_cards(p):
+    """Header cards of one frame: the primary HDU of a staged (funpacked) frame, HDU 1 of an archive tile-compressed one."""
+    from exopipe.phase3.core.record import fits_primary_cards
+    cards = fits_primary_cards(p)
+    if not int(cards.get('NAXIS', 0) or 0) and p.endswith('.fz'):
+        from astropy.io import fits
+        with fits.open(p) as h:
+            cards = dict(h[1].header)
+    return cards
+
+
+def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=None, sb=None):
     """Fallback counts of one written table (spec section 5: kept as today, counted per pair) and the post-check of G4:
     frames_absent_from_admission (admitted by default, LC:156), admission_table_missing, scale_from_all_frames (NADMIT 0,
     LC:166), zero_vis_frames_kept (staged frames with WSCNVIS = 0: ledger 1016/2258 not applied by the extractor),
     missing_sample_files (CH:1643-1645), unstaged_frames (frames of the table without a staged file: the extractor read the
-    archive copy; G4), naxis of the first staged frame."""
+    archive copy; G4), naxis of the first frame. stage_sb None = archive frames (curves.FRAME_SOURCE 'archive'; give cell
+    and sb): every frame is read from the archive by design, unstaged_frames is 0."""
     import csv
     from astropy.io import fits
-    from exopipe.phase3.core.record import fits_primary_cards
     with fits.open(table, memmap=True) as h:
         ts = [x.decode().strip() if isinstance(x, bytes) else str(x).strip() for x in h['FRAMES'].data['ts']]
         nadmit = int(h[0].header['NADMIT'])
@@ -195,14 +218,14 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples):
     if os.path.exists(admission_csv):
         with open(admission_csv) as f:
             adm = {r['ts'] for r in csv.DictReader(f)}
-    staged = staged_frames(stage_sb)[st]
+    staged = staged_frames(stage_sb)[st] if stage_sb else archive_frames(cell, sb)[st]
     zero, naxis = 0, None
     for t in ts:
         p = staged.get(t)
         if not p:
             continue
         try:
-            cards = fits_primary_cards(p)
+            cards = _frame_cards(p)
         except OSError:
             continue
         if naxis is None:

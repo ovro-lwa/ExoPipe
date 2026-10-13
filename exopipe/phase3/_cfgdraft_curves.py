@@ -88,7 +88,11 @@ class curves(_Section):
     KEEP_STAGE = False                       # remove a self-made stage after the unit; BF:83
     INCOMPLETE_STOPS_CHAIN = False           # a refused curves unit does not stop the cell's later chain steps (today the fleet writes DONE regardless, v9:379-380); B-30 / B-19
     LOG_TAIL_LINES = 40                      # lines of each extractor log kept in the run record (production never ships the extractor logs, v9:336 vs :370)
-    STAGE_ROOT_AUTO = True                   # no --stage-root and no 'stage' stage: use the frames snapshot staging of this node, <scratch root>/<frames_snapshot.STAGE_SUBDIR>/<cell> (v9:87; chains 'epoch' and 'snapshot-cell' pass no --stage-root); G4 checks it
+    STAGE_ROOT_AUTO = True                   # FRAME_SOURCE 'staged', no --stage-root and no 'stage' stage: use the frames snapshot staging of this node, <scratch root>/<frames_snapshot.STAGE_SUBDIR>/<cell> (v9:87); G4 checks it
+    FRAME_SOURCE = 'archive'                 # 'archive': the extractor reads the Phase-1 archive frames itself (no --stage; clv15 e0785b7 read_frame,
+                                             # bit-identical to staged frames, 10,129/10,129 rows; the production regeneration recipe, exopipe_ops 3035b47) -
+                                             # no staging, any node; 'staged': the fleet recipe (v9:366-370), frames staged node-local first (G4).
+                                             # --stage-root always means 'staged'.
 
     RULED = {
         'STAMP_PX': 'IMPLEMENTED-SNAPSHOT-LIGHT-CURVE-PRODUCT-EXTRACTOR-SIX-CELL-TEST',

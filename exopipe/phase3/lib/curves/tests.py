@@ -383,6 +383,28 @@ def rows(path, master_catalog=None, chain_rows=None, **ctx):
     return True, len(mrows), rep
 
 
+@content_test(CLS, 'parent_catalogue')
+def parent_catalogue(path, master_catalog=None, **ctx):
+    """MCATSHA (clv15 e0785b7, 2026-10-13) = the sha256 of the Master catalogue the rows came from: a table built on other
+    parents fails. A table written before the card existed passes on its rows alone (light_curve.rows checks them)."""
+    import hashlib
+    t = _load(path)
+    got = _hdr(t, 'MCATSHA')
+    if not got:
+        return True, None, 'no MCATSHA (a table written before clv15 e0785b7); rows checked by light_curve.rows'
+    tok = _tokens(t)
+    catp = master_catalog or os.path.join(_C().MASTER_CATALOG_DIR, f"master_R075_{tok['lst']}_{tok['sb']}.gaul.csv")
+    if not os.path.exists(catp):
+        return False, got[:12], f'Master catalogue {catp} absent'
+    h = hashlib.sha256()
+    with open(catp, 'rb') as f:
+        for blk in iter(lambda: f.read(1 << 20), b''):
+            h.update(blk)
+    want = h.hexdigest()[:64]
+    return got == want, got[:12], (f'MCATSHA {got[:12]} = sha256 of {os.path.basename(catp)}' if got == want else
+                                   f'MCATSHA {got[:12]} != sha256 {want[:12]} of {os.path.basename(catp)} (other parents)')
+
+
 @content_test(CLS, 'provenance')
 def provenance(path, flowtree=None, **ctx):
     t = _load(path)

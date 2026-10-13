@@ -1,7 +1,8 @@
 """exopipe3 curves - light-curve products (snapshot tier): every Master Gaussian and target position, in every 10-s frame.
 
-    exopipe3 curves --cells 18h_2025-04-11 --stage-root /fast/gh/main/phase3/snapshot_stage/18h_2025-04-11 --out /fast/gh/p
-    exopipe3 curves --epochs 18h_2025-04-11 --out DIR                 # per-hour chain item (DESIGN 12.1): frames' staging
+    exopipe3 curves --cells 18h_2025-04-11 --out DIR                  # archive frames (default curves.FRAME_SOURCE), any node
+    exopipe3 curves --epochs 18h_2025-04-11 --out DIR                 # per-hour chain item (DESIGN 12.1)
+    exopipe3 curves --cells 18h_2025-04-11 --stage-root /fast/gh/main/phase3/snapshot_stage/18h_2025-04-11 --out DIR   # staged
     exopipe3 curves --cells 18h_2025-04-11_36MHz --stage-root DIR --out DIR --supersede redo1   # one subband, replace
     exopipe3 curves --cells '18h_*' --stage-root '/fast/stage/{cell}' --out DIR --resume       # several staged cells
     exopipe3 curves --cells 18h_2025-04-11 --dry-run --out /tmp/x                              # plan only
@@ -12,15 +13,18 @@ limits the subbands; an --epochs item <LST>_<date> is the snapshot cell of that 
 Tiers: snapshot only - the sub-LST per-source curves stay in `catalog --tier sublst` (they decide the tie), and the deep tier
 has no light-curve product (forced tables and follow-up curves are `forced` / `photometry` / `followup`).
 
-Per hour (DESIGN 12.1; chains 'epoch' and 'snapshot-cell' in runner.CHAINS): after `frames --tier snapshot` (stage, regrid),
-`flow` and `search`, on the node holding the staged frames: `curves --tier snapshot --epochs <LST>_<date>`. Without
---stage-root the staged cell is frames' node-local staging <scratch root>/<frames_snapshot.STAGE_SUBDIR>/<cell>
-(curves.STAGE_ROOT_AUTO; v9:87), checked by gate G4. Intermittent (12.2): backfill of cells searched without tables,
-`exopipe3 run submit ... -- curves --cells @list --stage-root '<dir>/{cell}' --resume`.
+Frames: curves.FRAME_SOURCE 'archive' (default; the production regeneration recipe, exopipe_ops 3035b47): the extractor reads
+the Phase-1 archive frames itself (clv15 e0785b7 read_frame; bit-identical to staged frames, 10,129/10,129 rows) - no
+staging, any node. 'staged' (the fleet recipe, v9:366-370) or --stage-root: frames staged node-local first; without
+--stage-root the staged cell is frames' staging <scratch root>/<frames_snapshot.STAGE_SUBDIR>/<cell> (curves.STAGE_ROOT_AUTO;
+v9:87), checked by gate G4.
+Per hour (DESIGN 12.1; chains 'epoch' and 'snapshot-cell' in runner.CHAINS): after `flow` and `search`:
+`curves --tier snapshot --epochs <LST>_<date>`. Intermittent (12.2): backfill or regeneration of many cells,
+`exopipe3 run submit ... -- curves --cells @list --resume`.
 
 Inputs (production paths; shared roots from config.paths, the rest in `exopipe3 config --section curves`):
-  staged frames      --stage-root DIR (or frames' staging): <DIR>/<sb>/ decompressed Phase-1 frames as the fleet /
-                     `frames --tier snapshot` stage them (pilot-era frames regridded); the extractor lists them itself
+  frames             the Phase-1 archive (FRAME_SOURCE archive), or --stage-root DIR / frames' staging: <DIR>/<sb>/
+                     decompressed frames as the fleet / `frames --tier snapshot` stage them; the extractor lists them itself
   search outputs     paths.SNAPSHOT_FLEET_OUT/<cell>/admission_<sb>.csv, runinfo_<sb>_<S>_median.json,
                      nightrefused_<sb>_<S>_median.json
   search finished    curves.FLEET_CLAIMS_ROOT/<cell>/done (window; curves.SEARCH_DONE_EVIDENCE)
@@ -41,13 +45,13 @@ Outputs:
 
 Failure modes (exit 2 = refused, with the gate named; item refusals are recorded per pair and the unit completes):
   unit refused   G1 search not finished (a searched subband/Stokes without runinfo or night-refusal record, or no fleet
-                 'done'); G2 data_decisions.csv missing; G4 stage missing or incomplete (subband directory, leftovers, count
+                 'done'); G2 data_decisions.csv missing; G4 (staged frames only) stage missing or incomplete (subband directory, leftovers, count
                  != .filelist); G12 publish conflict (a differing table already published, no --supersede); G13 the in-place
                  module's literals differ from config (protected keys: no override exists); G14 CHAIN_RUN_DIR into a
                  production root without a ruling; G16 --stokes V alone; LC8 a published table of an excluded (LST,
                  subband, date); a table failing a content test; --out under a production tree while
                  paths.PRODUCTION_WRITES is False; site PYTHON['py36'] or the clv15 legacy root missing.
-  pair refused   G4 a frame of the table was not staged (archive copy read); G6 no Master catalogue; G7 no row inside the
+  pair refused   G4 (staged frames only) a frame of the table was not staged (archive copy read); G6 no Master catalogue; G7 no row inside the
                  frame; G8 frames do not share one WCS; G9 no flow field; G10 V without its Stokes I table / V scale
                  differs from I; G11 no frames of that Stokes; G12 conflict; a content test failed before publishing.
   not planned    (recorded) subbands not searched (no admission table), excluded (G2), flow-unregistered (G3).
@@ -120,11 +124,17 @@ def _stokes(spec):
     raise ValueError(f'--stokes {spec!r}: give I,V (default) or I')
 
 
+def _archive(args):
+    """True when the extractor reads the Phase-1 archive frames itself (curves.FRAME_SOURCE 'archive', no --stage-root)."""
+    from exopipe.phase3.config import CFG
+    return CFG.curves.FRAME_SOURCE == 'archive' and not args.stage_root
+
+
 def _stages(args, auto=True):
     if args.stages:
         st = tuple(s.strip() for s in args.stages.split(',') if s.strip())
     else:
-        st = ('extract', 'publish') if (args.stage_root or auto) else STAGES
+        st = ('extract', 'publish') if (args.stage_root or auto or _archive(args)) else STAGES
     unknown = [s for s in st if s not in STAGES]
     if unknown:
         raise ValueError(f'--stages: unknown {unknown}; stages are {", ".join(STAGES)}')
@@ -133,7 +143,10 @@ def _stages(args, auto=True):
                          'extracted and tested; extract alone would leave unpublished tables in scratch)')
     if 'stage' in st and args.stage_root:
         raise ValueError('--stages stage with --stage-root: the stage exists already; drop one of them')
-    if 'extract' in st and 'stage' not in st and not args.stage_root and not auto:
+    if 'stage' in st and _archive(args):
+        raise ValueError("--stages stage: curves.FRAME_SOURCE is 'archive' - the extractor reads the archive frames, "
+                         "nothing to stage (give --stage-root or set curves.FRAME_SOURCE=staged for the fleet recipe)")
+    if 'extract' in st and 'stage' not in st and not args.stage_root and not auto and not _archive(args):
         raise ValueError('--stages extract,publish needs --stage-root (curves.STAGE_ROOT_AUTO is False)')
     return st
 
@@ -323,8 +336,11 @@ def run(args, run):
             pl = P.plan_cell(cell, sbs, stokes, ex, C, CFG.instrument.ALL_SUBBANDS)
             g1 = P.search_done(pl, C) if pl['searched'] else (False, 'G15: no admission table (cell not searched)')
             issues, notes = {}, []
-            sroot = _stage_root(args, cell, E['scratch_root'], len(units)) if 'stage' not in stages else None
-            if 'stage' in stages:
+            sroot = (_stage_root(args, cell, E['scratch_root'], len(units))
+                     if 'stage' not in stages and not _archive(args) else None)
+            if _archive(args):
+                print('   frames: the Phase-1 archive, read by the extractor (curves.FRAME_SOURCE archive; no staging)')
+            elif 'stage' in stages:
                 notes.append('REFUSE G4/B7: the stage stage needs the frames stage function (not yet)')
             elif not sroot:
                 notes.append('REFUSE G4: no --stage-root and no scratch root to find frames\' staging')
@@ -353,7 +369,8 @@ def run(args, run):
                 continue
             print(f'curves {name}: not resumed ({why})', file=sys.stderr)
         with run.unit(name, tier='snapshot', cell=cell) as u:
-            _run_unit(u, args, run, pl, stokes, stages, ex, E, _stage_root(args, cell, E['scratch_root'], len(units)))
+            _run_unit(u, args, run, pl, stokes, stages, ex, E,
+                      None if _archive(args) else _stage_root(args, cell, E['scratch_root'], len(units)))
     return None
 
 
@@ -366,6 +383,7 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
     cell = pl['cell']
     u.add_input(CFG.paths.DATA_DECISIONS, extra={'exclusions': ex.fingerprint()})
     u.meta.update({'stokes': list(stokes), 'stages': list(stages), 'stage_root': stage_root,
+                   'frame_source': 'archive' if _archive(args) else 'staged',
                    'interpreter': E['python'], 'extractor': E['script'],
                    'subbands': {sb: {'status': i['status'], 'reason': i['reason']} for sb, i in pl['subbands'].items()},
                    'pairs': {}})
@@ -400,18 +418,20 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
     # ---- stage ------------------------------------------------------------------------------------------------------
     if 'stage' in stages:
         _stage(cell, pl, args)                                 # refuses (B7) until the frames stage function exists
-    if not stage_root or not os.path.isdir(stage_root):
-        raise record.Refusal(f'G4: staged cell {stage_root or "(none)"} does not exist on {run.host} (pass --stage-root, '
-                             f'or stage it with `exopipe3 frames --tier snapshot --stages stage,regrid --cells {cell}`)')
-    issues = P.stage_problems(stage_root, dict(pl, planned=run_sbs))
-    if issues:
-        raise record.Refusal(f'G4: staged cell {stage_root} incomplete: ' + '; '.join(f'{sb}: {v}' for sb, v in
-                                                                                    issues.items()))
+    if not _archive(args):                                     # G4: the staged cell (fleet recipe); none to check for archive frames
+        if not stage_root or not os.path.isdir(stage_root):
+            raise record.Refusal(f'G4: staged cell {stage_root or "(none)"} does not exist on {run.host} (pass '
+                                 f'--stage-root, or stage it with `exopipe3 frames --tier snapshot --stages stage,regrid '
+                                 f'--cells {cell}`, or use curves.FRAME_SOURCE=archive)')
+        issues = P.stage_problems(stage_root, dict(pl, planned=run_sbs))
+        if issues:
+            raise record.Refusal(f'G4: staged cell {stage_root} incomplete: ' + '; '.join(f'{sb}: {v}' for sb, v in
+                                                                                        issues.items()))
     # ---- extract: the in-place extractor, PROCS subbands at a time (I then V each) ------------------------------------
     scratch = fitsio.scratch_dir('curves_extract', args.work)
     u.meta['scratch'] = scratch
-    specs = [W.make_spec(C, CFG.paths, E['script'], PYTHON, cell, sb, stokes, os.path.join(stage_root, sb),
-                         os.path.join(scratch, sb)) for sb in run_sbs]
+    specs = [W.make_spec(C, CFG.paths, E['script'], PYTHON, cell, sb, stokes,
+                         os.path.join(stage_root, sb) if stage_root else None, os.path.join(scratch, sb)) for sb in run_sbs]
 
     def progress(sb, res):
         txt = ', '.join(f'{s} {r.get("status")}' + (f' ({r.get("gate")})' if r.get('gate') else '')
@@ -454,8 +474,9 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
                 u.note(f"{key} error: {r.get('reason')}" + (f" | {r.get('traceback', '')[-1500:]}"
                                                              if r.get('traceback') else ''))
                 continue
-            facts = W.table_facts(r['path'], st, os.path.join(stage_root, sb),
-                                  os.path.join(pl['search_dir'], f'admission_{sb}.csv'), CFG.paths.CLV15_ROOT, C.SAMPLES)
+            facts = W.table_facts(r['path'], st, os.path.join(stage_root, sb) if stage_root else None,
+                                  os.path.join(pl['search_dir'], f'admission_{sb}.csv'), CFG.paths.CLV15_ROOT, C.SAMPLES,
+                                  cell=cell, sb=sb)
             ent['fallbacks'] = {k: facts[k] for k in ('frames_absent_from_admission', 'admission_table_missing',
                                                       'scale_from_all_frames', 'zero_vis_frames_kept',
                                                       'missing_sample_files')}

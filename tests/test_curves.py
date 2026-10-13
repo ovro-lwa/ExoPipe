@@ -156,7 +156,7 @@ def make_cell(root, subbands=(SB,), staged=(SB,), catalog_for=(SB,), flow_regist
 def _sets(R):
     return ['--set', f"paths.SNAPSHOT_FLEET_OUT={R['search']}", '--set', f"curves.MASTER_CATALOG_DIR={R['mcat']}",
             '--set', f"paths.CLV15_ROOT={R['samples']}", '--set', f"paths.SNAPSHOT_FLOW_ROOT={R['flow']}",
-            '--set', f"curves.FLEET_CLAIMS_ROOT={R['claims']}"]
+            '--set', f"curves.FLEET_CLAIMS_ROOT={R['claims']}", '--set', 'curves.FRAME_SOURCE=staged']   # synthetic staged cells
 
 
 @contextlib.contextmanager
@@ -282,6 +282,16 @@ def test_stages():
     import argparse
     from exopipe.phase3.steps import curves as S
     ns = argparse.Namespace
+    CFG = _cfg()
+    assert CFG.curves.FRAME_SOURCE == 'archive'                       # the regeneration recipe (clv15 e0785b7, ops 3035b47)
+    assert S._archive(ns(stage_root=None)) and not S._archive(ns(stage_root='/x'))
+    assert S._stages(ns(stages=None, stage_root=None), auto=False) == ('extract', 'publish')   # archive: nothing to stage
+    try:
+        S._stages(ns(stages='stage,extract,publish', stage_root=None))
+        raise AssertionError('--stages stage accepted with archive frames')
+    except ValueError:
+        pass
+    CFG.set('curves.FRAME_SOURCE', 'staged')
     assert S._stages(ns(stages=None, stage_root='/x')) == ('extract', 'publish')
     assert S._stages(ns(stages=None, stage_root=None)) == ('extract', 'publish')            # frames' staging (auto)
     assert S._stages(ns(stages=None, stage_root=None), auto=False) == ('stage', 'extract', 'publish')
@@ -294,6 +304,7 @@ def test_stages():
             raise AssertionError(f'{bad} accepted')
         except ValueError:
             pass
+    CFG.reset()
     # stage root: --stage-root with {cell}; one literal DIR for several cells refused; auto = frames' staging
     CFG = _cfg()
     assert S._stage_root(ns(stage_root='/s/{cell}'), 'c1', None, 2) == '/s/c1'
@@ -432,6 +443,10 @@ def test_lock_and_classify():
     assert a == ['extract', '--cell', CELL, '--subband', SB, '--stage', '/st/36MHz', '--proto-root',
                  CFG.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs', CFG.curves.MASTER_CATALOG_DIR, '--out', '/o',
                  '--stokes', 'I'], a
+    # archive frames (the regeneration recipe, exopipe_ops 3035b47): no --stage
+    a = W.argv(CFG.curves, CFG.paths, os.path.join(clv, W.SCRIPT), CELL, SB, 'I', None, '/o')
+    assert a == ['extract', '--cell', CELL, '--subband', SB, '--proto-root', CFG.paths.SNAPSHOT_FLEET_OUT,
+                 '--master-catalogs', CFG.curves.MASTER_CATALOG_DIR, '--out', '/o', '--stokes', 'I'], a
 
 
 def test_end2end():
@@ -555,6 +570,9 @@ def test_negative():
     assert failed(corrupt(pI, set_card('PBCORR', True))) == ['provenance']
     assert failed(corrupt(pI, set_card('SUBBAND', '41MHz'))) == ['structure']
     assert failed(corrupt(pI, set_card('NADMIT', 1))) == ['structure']
+    from astropy.io import fits as _f
+    if _f.getheader(pI).get('MCATSHA'):                       # the extractor stamps it since clv15 e0785b7
+        assert failed(corrupt(pI, set_card('MCATSHA', '0' * 64))) == ['parent_catalogue']
 
     def bad_bin(h):
         h['FRAMES'].data['bin'][0] = 5
@@ -607,6 +625,7 @@ def test_real_products():
     CFG = _cfg()
     cell = '18h_2025-04-11'
     report = []
+    from astropy.io import fits
     for p, want_fail in ((f'{REAL_LC}/{cell}/{cell}_18MHz_I_lightcurves.fits', []),
                          (f'{REAL_LC}/{cell}/{cell}_18MHz_V_lightcurves.fits', ['light_curve.flux_scale']),
                          (f'{REAL_LC}/09h_2024-12-24/09h_2024-12-24_36MHz_I_lightcurves.fits', [])):
@@ -615,6 +634,11 @@ def test_real_products():
             continue
         res = validate.run('light_curve', p)
         fails = sorted(r['name'] for r in res if not r['passed'])
+        if not fits.getheader(p).get('MCATSHA') and 'light_curve.rows' in fails:
+            # built on the parent catalogues before the one-recipe rebuild (a670970): its master rows no longer match -
+            # correctly failed; LAUNCH-SNAPSHOT-LIGHTCURVES-NEW-PARENTS-20261013 regenerates it
+            fails.remove('light_curve.rows')
+            print(f'    real: {os.path.basename(p)} predates the contract parents (no MCATSHA): rows fail as they should')
         report.append((os.path.basename(p), fails))
         assert fails == want_fail, (p, [(r['name'], r['detail']) for r in res if not r['passed']])
     print('    real tables: ' + '; '.join(f'{n}: {"all pass" if not f else "fails " + ",".join(f)}' for n, f in report))
@@ -625,6 +649,18 @@ def test_real_products():
     assert rc == 2 and so.count(' planned ') == 15 and 'outputs: 30 light_curve tables' in so, (rc, so[-2000:], se)
     assert 'G1 search finished: ok' in so and 'REFUSE G4' in so
     assert os.listdir(out) == [], os.listdir(out)
+    # --dry-run with archive frames (default FRAME_SOURCE): no stage to check, no G4 refusal
+    rc, so, se = _cli(['curves', '--cells', cell, '--out', out, '--work', os.path.join(out, 'w'), '--dry-run',
+                       '--cores', 'none'])
+    assert rc == 0 and 'frames: the Phase-1 archive' in so and 'REFUSE G4' not in so, (rc, so[-1500:], se[-500:])
+    assert os.listdir(out) == [], os.listdir(out)
+    # table_facts over the real archive frames (stage None): every frame found, none 'unstaged'
+    from exopipe.phase3.lib.curves import workers as W
+    p = f'{REAL_LC}/{cell}/{cell}_18MHz_I_lightcurves.fits'
+    if os.path.exists(p):
+        fa = W.table_facts(p, 'I', None, os.path.join(CFG.paths.SNAPSHOT_FLEET_OUT, cell, 'admission_18MHz.csv'),
+                           CFG.paths.CLV15_ROOT, CFG.curves.SAMPLES, cell=cell, sb='18MHz')
+        assert fa['unstaged_frames'] == 0 and fa['naxis'] and fa['naxis'][0] > 0, fa
 
 
 def test_failures():
