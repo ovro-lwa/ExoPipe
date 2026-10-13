@@ -39,7 +39,7 @@ import os
 import re
 
 
-_META = ('RULED',)      # UPPER_CASE section attributes that DESCRIBE tunables; never tunables themselves
+_META = ('RULED', 'PROTECTED_KEYS')      # UPPER_CASE section attributes that DESCRIBE tunables; never tunables themselves
 
 
 class _Section:
@@ -84,6 +84,18 @@ class paths(_Section):
     # Config keys ('section.KEY') whose values are PINNED inputs - frozen, checksummed inputs a ruling names (e.g. a
     # frozen master tree, a tier-rule pin). They are protected like the keys in PROTECTED (DESIGN 11.4, 11.6).
     PINNED_INPUTS = ()
+    # Canonical shared roots used by several steps (one name each - steps reference these, never their own copy).
+    # Production roots of TODAY (no renames in the refactor window).
+    COADD_SB_ROOT = '/data07/gh/phase3/coadd_sb'                 # deep working tree <LST>_<scope>/{coadd_final,subtracted,flow}
+    TRANSIENTS_ROOT = '/data07/gh/phase3/transients'             # deep / sub-LST run dirs Run_<label>/
+    ARCHIVE_RUN = 'Run_20260909_000000'                          # current Phase 3 archive generation under PHASE3_ARCHIVE_ROOT
+    SUBLST_ROOT = '/lustre/gh/main/phase3/sublst'                # sub-LST products (coadd, stacks, search_B, code_frozen)
+    SNAPSHOT_FLEET_OUT = '/lustre/gh/main/exopipe_ops/snapshot_fleet_out'   # snapshot per-cell outputs (production)
+    SNAPSHOT_FLOW_ROOT = '/lustre/pipeline/exopipe/phase3/snapshot_flow'
+    SNAPSHOT_CUBES_ROOT = '/lustre/pipeline/exopipe/phase3/snapshot_cubes'
+    SNAPSHOT_REVIEW_ROOT = '/data07/gh/phase3/snapshot_search/review'       # served snapshot runs (Run_SNAP*)
+    OPS_ROOT = '/lustre/gh/main/exopipe_ops'                     # job records, state files (not products)
+    CLV15_ROOT = '/lustre/gh/main/clv15'
 
 
 # Keys no --set / --config can change (DESIGN 11.4; critique_rulings 4.1): the exclusion file and every exclusion rule
@@ -334,7 +346,8 @@ class _Config:
         sec, key, _ = _parse_key(dotted)
         base = f'{sec}.{key}'
         pinned = tuple(getattr(self._sections.get('paths'), 'PINNED_INPUTS', ()) or ())
-        return base in PROTECTED or f'{sec}.*' in PROTECTED or base in pinned
+        own = tuple(getattr(self._sections.get(sec), 'PROTECTED_KEYS', ()) or ())   # a section's own protected keys
+        return base in PROTECTED or f'{sec}.*' in PROTECTED or base in pinned or key in own
 
     def ruled(self, dotted):
         """The ledger ID(s) of the ruling that set ``section.KEY`` (from the section's RULED), or None."""

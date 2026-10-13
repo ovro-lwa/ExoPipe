@@ -128,3 +128,42 @@ def expand_cells(spec):
     for c in cells:
         parse_cell(c)
     return cells
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Named item kinds (crosscheck 4.4). A step declares its kind in --help; the runner chains fan items out per kind.
+#   cell        deep  <LST>_<scope>            04h_Full, 13h_41MHz
+#   lst         any   <LST>                    04h
+#   epoch       all   <LST>_<date>             04h_2025-10-14   (one hour of one night: all bands, all tiers; DESIGN 12)
+#   night_cell  snapshot / sub-LST <LST>_<date>[_<subband>]   18h_2025-04-11, 18h_2025-04-11_36MHz
+# ---------------------------------------------------------------------------------------------------------------------
+_EPOCH_RE = re.compile(r'^(?P<lst>\d\dh)_(?P<date>\d{4}-\d{2}-\d{2})(?:_(?P<sb>\d+MHz|Red|Green|Blue|Full))?$')
+
+
+def parse_epoch(item):
+    """'04h_2025-10-14' -> ('04h', '2025-10-14'); refuses anything else (a subband suffix is not an epoch)."""
+    m = _EPOCH_RE.match(item)
+    if not m or m['sb']:
+        raise ValueError(f'not an epoch item: {item!r} (expected <LST>_<YYYY-MM-DD>, e.g. 04h_2025-10-14)')
+    return m['lst'], m['date']
+
+
+def parse_night_cell(item):
+    """'18h_2025-04-11' or '18h_2025-04-11_36MHz' -> (lst, date, subband-or-None)."""
+    m = _EPOCH_RE.match(item)
+    if not m or (m['sb'] and m['sb'] not in scopes()):
+        raise ValueError(f'not a night cell: {item!r} (expected <LST>_<YYYY-MM-DD>[_<subband|band>])')
+    return m['lst'], m['date'], m['sb']
+
+
+def parse_lst(item):
+    if item not in LSTS:
+        raise ValueError(f'not an LST: {item!r} (00h..23h)')
+    return item
+
+
+def expand_epochs(spec):
+    items = expand(spec, kind='epoch')
+    for it in items:
+        parse_epoch(it)
+    return items

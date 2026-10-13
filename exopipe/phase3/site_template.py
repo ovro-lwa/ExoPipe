@@ -6,7 +6,7 @@ they live in config.py. The site file's sha1 is written into every run record.
 """
 NODE_POOLS = {}            # pool name -> [host, ...] or [(host, lanes), ...] ('exopipe3 run submit --nodes <pool>')
 GPU_HOSTS = []             # hosts whose GPU runs the flow batch ('run submit --gpu' refuses any other host)
-PYTHON = {}                # 'default' -> interpreter for most steps; 'flow' -> interpreter with JAX (image_plane_correction)
+PYTHON = {}                # keys: 'default' (most steps), 'flow' (JAX flows), 'py36' (legacy scripts on Python 3.6), 'casa', 'tess'
 SCRATCH_ROOT = {}          # host -> node-local scratch root (never Lustre)
 NODE_LOCAL_ROOTS = {}      # host -> [roots of node-local product trees], for data locality
 LEGACY_CODE_ROOTS = []     # refactor window only: roots of clv15 / exopipe_ops code the steps call in place

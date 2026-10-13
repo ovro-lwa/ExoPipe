@@ -30,3 +30,12 @@ def legacy():
         if root not in sys.path:
             sys.path.append(root)
     _shim.install_legacy_finder()
+
+
+def legacy_root(name):
+    """The site's legacy code root named 'clv15' or 'exopipe_ops' (refactor window only)."""
+    from exopipe.phase3.config import CFG
+    for r in CFG.site.LEGACY_CODE_ROOTS:
+        if r.rstrip('/').endswith('/' + name):
+            return r
+    raise KeyError(f'no legacy code root {name!r} in the site file LEGACY_CODE_ROOTS')
