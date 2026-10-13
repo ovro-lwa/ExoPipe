@@ -68,6 +68,9 @@ def _common(p, step_mod):
                    help="authorise overriding a RULED key with Gregg's ruling: the ledger ID must be a row of "
                         "paths.FIX_LEDGER (recorded with the override); repeatable")
     g.add_argument('--dry-run', action='store_true', help='plan only: inputs found, outputs, gates; writes nothing')
+    g.add_argument('--parity', action='store_true',
+                   help='parity run: refuse (PermissionError) every write outside --out, --work, /tmp and /dev/null, in '
+                        'this process and in every Python subprocess it starts (core/guard.py); needs --out')
     g.add_argument('--resume', action='store_true',
                    help='skip units whose record is done and whose inputs, admitted nights, code, config are '
                         'unchanged and whose outputs pass their content tests now')
@@ -120,6 +123,17 @@ def _guard_out(out):
     if root is not None:
         raise SystemExit(f'refused: --out {out} is under the production root {root} and paths.PRODUCTION_WRITES '
                          f'is False (refactor window). Write parity/scratch output to your own root.')
+
+
+def _parity(args, out):
+    """Install the parity write guard for this process and its Python subprocesses (DESIGN 11.1)."""
+    import importlib as _il
+    guard = _il.import_module('exopipe.phase3.core.guard')
+    roots = [out] + ([args.work] if args.work else [])
+    log = os.path.join(out, '_records', '_parity_guard_refusals.log')
+    guard.install(roots, log=log)
+    guard.export_env(roots, log=log)
+    print(f'parity guard: writes allowed only under {", ".join(guard.allowed_roots())}', file=sys.stderr)
 
 
 def _msg(e):
@@ -261,6 +275,11 @@ def main(argv=None):
     pinned = _pin(args.cores)
     if getattr(mod, 'WRITES', True) and not args.dry_run:
         _guard_out(out)
+    if args.parity and name != 'run':          # `run submit --parity` forwards it to every step command instead
+        if not args.out:
+            print('REFUSED: --parity needs --out (the parity root)', file=sys.stderr)
+            return record.EXIT_REFUSED
+        _parity(args, out)
     run = record.Run(name, [f'exopipe3 {name}'] + rest, out, CFG, dry_run=args.dry_run,
                      waivers=list(zip(args.waive, args.ruling)), resume=args.resume, fresh=args.fresh,
                      config_sections=sections)

@@ -62,7 +62,9 @@ resume), `cells` (cell / item-list grammar), `runner` (multi-node jobs), `env` (
 8. **`--dry-run`** prints the plan (inputs found, outputs, gates) and writes nothing.
 9. **Rulings that waive a test are arguments**: `--waive TEST --ruling "<Gregg's words, UTC, ledger ID>"`.
 10. **While `paths.PRODUCTION_WRITES` is False** (the refactor window) no step writes under a production root; parity
-    runs pass `--out` to their own root.
+    runs pass `--out` to their own root and `--parity`, which refuses (PermissionError) every write outside `--out`,
+    `--work`, /tmp and /dev/null in the step and in every Python subprocess it starts (`core/guard.py`,
+    `core/parity_sitecustomize/`).
 
 ## Writing a step (for maintainers)
 

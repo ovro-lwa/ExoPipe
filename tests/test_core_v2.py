@@ -655,6 +655,160 @@ def test_item4_submit_forwards_set_and_config():
 
 
 # =====================================================================================================================
+# item 5 - parity write guard
+# =====================================================================================================================
+
+def _under_default_allowed(path):
+    """True when ``path`` lies under a root the guard always allows (/tmp, $TMPDIR): denial cannot be shown there."""
+    r = os.path.realpath(path) + '/'
+    roots = ['/tmp'] + ([os.environ['TMPDIR']] if os.environ.get('TMPDIR') else [])
+    return any(r.startswith(os.path.realpath(x).rstrip('/') + '/') for x in roots)
+
+
+def test_item5_guard_in_process():
+    import io
+    import pathlib
+    import tempfile as tf
+    import numpy as np
+    from astropy.io import fits
+    from exopipe.phase3.core import guard
+    with Scratch('item5') as d:
+        if _under_default_allowed(d):
+            print(f'SKIP denial checks: scratch {d} is under /tmp or $TMPDIR, which the guard always allows')
+            return
+        out, other = os.path.join(d, 'out'), os.path.join(d, 'other')
+        os.makedirs(other)
+        victim = os.path.join(other, 'victim.txt')
+        open(victim, 'w').write('production bytes')
+        # default roots kept: astropy probes mmap support with a temporary file in /tmp on every write
+        guard.install([out], log=os.path.join(d, 'refusals.log'))
+        try:
+            assert guard.active()
+            # allowed: under --out (created, with the parents it needs), /dev/null, an existing directory, reads
+            os.makedirs(os.path.join(out, 'a', 'b'))
+            f = os.path.join(out, 'a', 'f.txt')
+            with open(f, 'w') as fh:
+                fh.write('ok')
+            open('/dev/null', 'w').close()
+            os.makedirs(other, exist_ok=True)
+            assert open(victim).read() == 'production bytes'
+            fits.writeto(os.path.join(out, 'ok.fits'), np.zeros((2, 2), np.float32))
+            os.symlink(other, os.path.join(out, 'escape'))          # a link inside --out may be made ...
+            p = pathlib.Path(other)
+            denied = {
+                'open w': lambda: open(os.path.join(other, 'x'), 'w'),
+                'open a': lambda: open(victim, 'a'),
+                'open r+': lambda: open(victim, 'r+'),
+                'io.open wb': lambda: io.open(os.path.join(other, 'x'), 'wb'),
+                'os.open': lambda: os.open(os.path.join(other, 'x'), os.O_WRONLY | os.O_CREAT),
+                'os.mkdir': lambda: os.mkdir(os.path.join(other, 'sub')),
+                'os.makedirs': lambda: os.makedirs(os.path.join(other, 's1', 's2')),
+                'os.remove': lambda: os.remove(victim),
+                'os.unlink': lambda: os.unlink(victim),
+                'os.rename out': lambda: os.rename(victim, os.path.join(out, 'v')),
+                'os.replace in': lambda: os.replace(f, os.path.join(other, 'y')),
+                'shutil.copy': lambda: shutil.copy(f, other),
+                'shutil.copyfile': lambda: shutil.copyfile(f, os.path.join(other, 'y')),
+                'shutil.copy2': lambda: shutil.copy2(f, os.path.join(other, 'y')),
+                'shutil.move': lambda: shutil.move(victim, os.path.join(out, 'm')),
+                'shutil.copytree': lambda: shutil.copytree(os.path.join(out, 'a'), os.path.join(other, 'tree')),
+                'shutil.rmtree': lambda: shutil.rmtree(other),
+                'os.symlink': lambda: os.symlink(f, os.path.join(other, 'ln')),
+                'pathlib write_text': lambda: (p / 'pw.txt').write_text('x'),
+                'pathlib mkdir': lambda: (p / 'pd').mkdir(),
+                'pathlib unlink': lambda: pathlib.Path(victim).unlink(),
+                'numpy save': lambda: np.save(os.path.join(other, 'x.npy'), np.zeros(2)),
+                'tempfile': lambda: tf.mkstemp(dir=other),
+                'fits.writeto': lambda: fits.writeto(os.path.join(other, 'x.fits'), np.zeros((2, 2))),
+                'HDUList.writeto': lambda: fits.HDUList([fits.PrimaryHDU()]).writeto(os.path.join(other, 'h.fits')),
+                'PrimaryHDU.writeto': lambda: fits.PrimaryHDU().writeto(os.path.join(other, 'p.fits')),
+                'symlink escape': lambda: open(os.path.join(out, 'escape', 'z'), 'w'),   # ... but not followed out
+            }
+            for name, fn in denied.items():
+                e = raises(PermissionError, fn)
+                assert isinstance(e, guard.ParityWriteRefused) and e.filename, (name, e)
+            assert sorted(os.listdir(other)) == ['victim.txt'], os.listdir(other)
+            assert open(victim).read() == 'production bytes'
+            assert guard._STATE['refused'] >= len(denied)
+        finally:
+            guard.uninstall()
+        assert not guard.active()
+        open(os.path.join(other, 'after.txt'), 'w').write('free again')          # restored
+        log = open(os.path.join(d, 'refusals.log')).read()
+        assert log.count('PARITY GUARD') >= len(denied) and victim in log
+
+
+def test_item5_guard_reaches_subprocesses():
+    from exopipe.phase3.core import guard
+    with Scratch('item5sub') as d:
+        if _under_default_allowed(d):
+            print(f'SKIP denial checks: scratch {d} is under /tmp or $TMPDIR, which the guard always allows')
+            return
+        out, other = os.path.join(d, 'out'), os.path.join(d, 'other')
+        os.makedirs(out)
+        os.makedirs(other)
+        script = os.path.join(d, 'legacy.py')
+        gcode = f'open({os.path.join(other, "g.txt")!r}, "w")'        # a grandchild Python process
+        open(script, 'w').write(f'''
+import json, os, subprocess, sys
+import numpy as np
+from astropy.io import fits            # imported AFTER the guard (the sitecustomize ran first): the import hook patches it
+out, other = {out!r}, {other!r}
+res = {{}}
+def attempt(name, fn):
+    try:
+        fn()
+        res[name] = 'ok'
+    except PermissionError as e:
+        res[name] = 'refused'
+attempt('open_out', lambda: open(os.path.join(out, 'a.txt'), 'w').write('x'))
+attempt('open_other', lambda: open(os.path.join(other, 'b.txt'), 'w').write('x'))
+attempt('fits_out', lambda: fits.writeto(os.path.join(out, 'e.fits'), np.zeros((2, 2))))
+attempt('fits_other', lambda: fits.writeto(os.path.join(other, 'c.fits'), np.zeros((2, 2))))
+attempt('hdul_other', lambda: fits.HDUList([fits.PrimaryHDU()]).writeto(os.path.join(other, 'd.fits')))
+attempt('fits_patched', lambda: None if 'guard' in fits.HDUList.writeto.__module__ else 1 / 0)
+g = subprocess.run([sys.executable, '-c', {gcode!r}], capture_output=True, text=True)
+res['grandchild'] = 'refused' if g.returncode != 0 and 'ParityWriteRefused' in g.stderr else 'ok'
+print(json.dumps(res))
+''')
+        env = guard.export_env([out], env=dict(os.environ))
+        assert env['PYTHONPATH'].split(os.pathsep)[0] == guard.SITECUSTOMIZE_DIR
+        r = subprocess.run([PY, script], env=env, capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0, r.stderr
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+        assert res == {'open_out': 'ok', 'open_other': 'refused', 'fits_out': 'ok', 'fits_other': 'refused',
+                       'hdul_other': 'refused', 'fits_patched': 'ok', 'grandchild': 'refused'}, (res, r.stderr)
+        assert os.listdir(other) == [] and 'PARITY GUARD' in r.stderr
+        # without the variable the sitecustomize does nothing
+        env2 = dict(env)
+        env2.pop(guard.ENV_ROOTS)
+        r = subprocess.run([PY, '-c', f'open({os.path.join(other, "free.txt")!r}, "w")'], env=env2,
+                           capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0 and os.listdir(other) == ['free.txt'], r.stderr
+
+
+def test_item5_cli_parity_flag():
+    with Scratch('item5cli') as d:
+        if _under_default_allowed(d):
+            print(f'SKIP: scratch {d} is under /tmp or $TMPDIR, which the guard always allows')
+            return
+        out, other = os.path.join(d, 'out'), os.path.join(d, 'other')
+        os.makedirs(other)
+        good = os.path.join(d, 'good.csv')
+        open(good, 'w').write('a\n1\n')
+        r = cli('verify', 'csv_table', good, '--cores', 'none', '--parity')
+        assert r.returncode == 2 and '--parity needs --out' in r.stderr, r.stderr
+        r = cli('verify', 'csv_table', good, '--cores', 'none', '--parity', '--out', out,
+                '--emit-failing', os.path.join(other, 'failing.txt'))
+        assert r.returncode == 1 and 'ParityWriteRefused' in r.stderr and 'PARITY GUARD' in r.stderr, r.stderr
+        assert os.listdir(other) == []
+        assert 'PARITY GUARD' in open(os.path.join(out, '_records', '_parity_guard_refusals.log')).read()
+        r = cli('verify', 'csv_table', good, '--cores', 'none', '--parity', '--out', out,
+                '--emit-failing', os.path.join(out, 'failing.txt'))
+        assert r.returncode == 0 and os.path.isfile(os.path.join(out, 'failing.txt')), r.stderr
+
+
+# =====================================================================================================================
 
 def _all_tests():
     return [(n, f) for n, f in sorted(globals().items()) if n.startswith('test_') and callable(f)]
