@@ -243,8 +243,11 @@ class fitting(_Section):
     GAUSS_SNR = 7.0                      # sigma; Gaussian at or above, template below (CLAUDE.md 5)
     RADIO_SNR_FLOOR = 4.0                # sigma; radio positions computed at |S/N| >= this (deep_forced_radio)
     # Template error scale K (68th percentile of |error| x S/N / FWHM per beam axis), (major, minor), per tier and Stokes:
-    K_TEMPLATE = {('deep', 'I'): (0.520, 0.510),     # RATIFIED Gregg 2026-10-11 (deep forced-chain calibration)
-                  ('deep', 'V'): (0.575, 0.531),     # ADOPTED Gregg 2026-10-11
+    # deep: re-measured 2026-10-13 with the fixed (WCS-oriented) template and an un-mirrored axis projection, same plan,
+    # frames and seeds (exopipe_ops 554b721; D5 approved, RULINGS-GREGG-20261013B-MIRROR-EXCLUSIONS-ALL-APPROVED);
+    # superseded: I 0.520/0.510 (ratified 2026-10-11), V 0.575/0.531 (adopted 2026-10-11) - measured with the mirrored beam
+    K_TEMPLATE = {('deep', 'I'): (0.542, 0.500),
+                  ('deep', 'V'): (0.572, 0.551),
                   ('sublst', 'I'): (0.476, 0.423),   # Gregg 2026-10-13 'Use the measured 10-min K'
                   ('sublst', 'V'): (0.658, 0.499)}   #   (R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED)
     # snapshot tier: the template module's own measured K (template_fit_validation run_20261004b): major 0.60
@@ -259,10 +262,13 @@ class fitting(_Section):
     # beam is the mirror image of the header beam (pixel +x taken as east although CDELT1 < 0; refactor finding D5,
     # 2026-10-13, put to Gregg by both chats). 'wcs' is the corrected beam; switching needs Gregg's ruling and a
     # re-measured K for every tier.
-    TEMPLATE_BEAM_ORIENTATION = 'legacy-mirrored'
+    TEMPLATE_BEAM_ORIENTATION = 'wcs'    # D5 approved 2026-10-13 04:20 UTC; production clv15 44f0155. Parity against products
+                                         # made before 04:20 UTC sets fitting.TEMPLATE_BEAM_ORIENTATION=legacy-mirrored
+                                         # (and the superseded K) into its non-production --out.
     RULED = {'GAUSS_SNR': 'RULING-TEMPLATE-FIT-BELOW-7-SIGMA',
-             'K_TEMPLATE': ('IMPL-DEEP-FORCED-KV-FITKIND-EVALJOIN', 'R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED'),
-             'TEMPLATE_BEAM_ORIENTATION': 'FINDING-TEMPLATE-FIT-MIRRORED-BEAM-20261013'}
+             'K_TEMPLATE': ('RULINGS-GREGG-20261013B-MIRROR-EXCLUSIONS-ALL-APPROVED',
+                            'R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED'),
+             'TEMPLATE_BEAM_ORIENTATION': 'RULINGS-GREGG-20261013B-MIRROR-EXCLUSIONS-ALL-APPROVED'}
 
 
 class runner(_Section):

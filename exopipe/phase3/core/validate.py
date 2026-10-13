@@ -16,31 +16,16 @@ Registering a test (in the module that owns the product class)::
 
 A test returns ``(passed, value, detail)``; raising is recorded as a failed test with the exception text.
 
-Which module owns which class is listed in ``OWNERS`` so ``verify`` can import only what it needs.
+Tests live in lib/<step>/tests*.py and are discovered on first use; ``OWNERS`` lists the few registered elsewhere.
 """
 import importlib
 import traceback
 
 _TESTS = {}      # class -> [(name, fn)]
 
-# product class -> module that registers its tests (imported on demand by run()).
+# product class -> module that registers its tests, only for classes registered OUTSIDE lib/<step>/tests*.py (those
+# are found by discovery, _discover below).
 OWNERS = {
-    # masters / dewarp / install (deep, sub-LST, snapshot masters)
-    'master': 'exopipe.phase3.steps.masters', 'loo_master': 'exopipe.phase3.steps.masters',
-    'vclean_master': 'exopipe.phase3.steps.masters', 'pb_map': 'exopipe.phase3.steps.masters',
-    'pbcorr_sibling': 'exopipe.phase3.steps.masters', 'master_catalog': 'exopipe.phase3.steps.masters',
-    'membership_record': 'exopipe.phase3.steps.masters', 'weights_table': 'exopipe.phase3.steps.masters',
-    'flow': 'exopipe.phase3.steps.flow', 'dewarped_master': 'exopipe.phase3.steps.dewarp',
-    'dewarp_screen': 'exopipe.phase3.steps.dewarp', 'install_manifest': 'exopipe.phase3.steps.install',
-    # frames / search / catalogues
-    'epoch_image': 'exopipe.phase3.steps.frames', 'search_frame': 'exopipe.phase3.steps.frames',
-    'noise_map': 'exopipe.phase3.steps.frames', 'detections': 'exopipe.phase3.steps.search',
-    'gate_ledger': 'exopipe.phase3.steps.search', 'candidate_catalog': 'exopipe.phase3.steps.catalog',
-    'source_catalog': 'exopipe.phase3.steps.catalog', 'forced_table': 'exopipe.phase3.steps.forced',
-    'light_curve': 'exopipe.phase3.steps.curves', 'review_page': 'exopipe.phase3.steps.pages',
-    'served_queue': 'exopipe.phase3.steps.serve', 'archive_manifest': 'exopipe.phase3.steps.archive',
-    'mosaic': 'exopipe.phase3.steps.mosaic', 'photometry_table': 'exopipe.phase3.steps.photometry',
-    # generic
     'fits_header': 'exopipe.phase3.core.products', 'csv_table': 'exopipe.phase3.core.validate',
 }
 
