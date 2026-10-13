@@ -79,7 +79,9 @@ class paths(_Section):
     # step's parity run passes and Gregg approves its cutover) a step refuses to write under any of them: parity and
     # scratch runs pass --out to their own roots.
     PRODUCTION_ROOTS = ('/lustre/pipeline/exopipe/phase3', '/data07/gh/phase3', '/lustre/gh/main/phase3',
-                        '/fast/gh/main/phase3')   # node-local production run roots (deep forced, snapshot forced work)
+                        '/fast/gh/main/phase3',   # node-local production run roots (deep forced, snapshot forced work)
+                        '/lustre/gh/main/phase3_collect',                     # deep search attempts (p3s5 collect)
+                        '/lustre/gh/main/exopipe_ops/snapshot_fleet_out')     # snapshot per-cell outputs
     PRODUCTION_WRITES = False
     # Config keys ('section.KEY') whose values are PINNED inputs - frozen, checksummed inputs a ruling names (e.g. a
     # frozen master tree, a tier-rule pin). They are protected like the keys in PROTECTED (DESIGN 11.4, 11.6).
