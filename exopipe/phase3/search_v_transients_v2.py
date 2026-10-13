@@ -283,6 +283,10 @@ def extract_v_peaks(v_data, v_header, horizon_mask, ateam_mask, invalid_wcs_mask
                                    'int_flux': sign_mult*s.get('total_flux', s['flux']),
                                    'el': el, 'pix_x': s['pix_x'], 'pix_y': s['pix_y'],
                                    'bmaj_fit_deg': s.get('bmaj_fit_deg'),
+                                   # 2026-10-13 (refactor chat D2, verified): the fit's 1-sigma major-axis error was computed (above)
+                                   # but not carried, so phase3_deep._size_test used err 0 and the >8-sigma size removal tested
+                                   # Maj > 1.5 beams instead of the ruled (Maj - 1 sigma) > 1.5 beams (Gregg 2026-09-04)
+                                   'bmaj_fit_err_deg': s.get('bmaj_fit_err_deg'),
                                    'bmin_fit_deg': s.get('bmin_fit_deg'),
                                    'pa_fit_deg': s.get('pa_fit_deg'),
                                    'n_pix': 0, 'status': 'PASS', 'reject_reason': ''})
