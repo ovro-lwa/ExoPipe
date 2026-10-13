@@ -24,7 +24,7 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from collections import defaultdict
 
-from exopipe.phase3 import phase3_final_csv as fcsv  # load_xcat, CATS
+from exopipe.phase3.lib.catalog import xcat as fcsv  # load_xcat, CATS
 sys.argv = _ARGV              # restore after import-protection clobber
 
 RF = '/data07/gh/phase3/transients/Run_FINAL'

@@ -29,7 +29,7 @@ from collections import defaultdict
 
 from exopipe.phase3 import assemble as live
 from exopipe.phase3 import phase3_i_deep_final as F
-from exopipe.phase3 import phase3_final_csv as fc
+from exopipe.phase3.lib.catalog import xcat as fc
 from astropy.time import Time
 sys.argv = _ARGV              # restore after import-protection clobber
 

@@ -79,7 +79,7 @@ except (ImportError, AttributeError) as _e:  # circular-import guard only
     if 'partially initialized' not in str(_e):
         raise
 try:
-    from exopipe.phase3.phase3_final_csv import *  # noqa
+    from exopipe.phase3.lib.catalog.xcat import *  # noqa
 except (ImportError, AttributeError) as _e:  # circular-import guard only
     if 'partially initialized' not in str(_e):
         raise

@@ -29,7 +29,7 @@ from astropy.nddata import Cutout2D
 from astropy.coordinates import SkyCoord, AltAz
 import astropy.units as u
 from exopipe.phase3 import assemble as live
-from exopipe.phase3 import phase3_final_csv as fc
+from exopipe.phase3.lib.catalog import xcat as fc
 from exopipe.phase3.core import products as prod
 
 ROOT = live.ROOT

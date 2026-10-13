@@ -76,6 +76,8 @@ LEGACY = {
     'exopipe.phase3.verify_mosaic': 'exopipe.phase3.lib.mosaic.verify_mosaic',
     # stage 4: status
     'exopipe.phase3.phase_status': 'exopipe.phase3.lib.status.phase_status',
+    # stage 4: catalog
+    'exopipe.phase3.phase3_final_csv': 'exopipe.phase3.lib.catalog.xcat',
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)
