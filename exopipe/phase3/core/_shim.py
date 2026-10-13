@@ -69,6 +69,11 @@ LEGACY = {
     'exopipe.phase3.cutout': 'exopipe.phase3.lib.photometry.cutout',
     'exopipe.phase3.flux_check_cutout': 'exopipe.phase3.lib.photometry.flux_check_cutout',
     'exopipe.phase3.solar_system_cutout': 'exopipe.phase3.lib.photometry.solar_system_cutout',
+    # stage 4: mosaic
+    'exopipe.phase3.make_band_products': 'exopipe.phase3.lib.mosaic.band_products',
+    'exopipe.phase3.mosaic_coadd_jysr': 'exopipe.phase3.lib.mosaic.coadd_jysr',
+    'exopipe.phase3.mosaic_conformance_pass': 'exopipe.phase3.lib.mosaic.conformance_pass',
+    'exopipe.phase3.verify_mosaic': 'exopipe.phase3.lib.mosaic.verify_mosaic',
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)

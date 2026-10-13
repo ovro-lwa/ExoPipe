@@ -21,7 +21,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.time import Time
 
-from exopipe.phase3 import mosaic_coadd_jysr as mcj
+from exopipe.phase3.lib.mosaic import coadd_jysr as mcj
 from exopipe.phase3.core.products import build_name, write_standard_header, append_provenance_table
 
 def main():

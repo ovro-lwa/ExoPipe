@@ -126,7 +126,7 @@ def build_projected(variant=VARIANT, src_hpx=SRC_HPX,
                     srcs=None, moll_W=12000, car_cdelt=1.5 / 60):
     """Mollweide + RA/Dec FITS: reproject the CLEAN mosaic, then add the A-team
     ANALYTICALLY in-frame (avoids the reproject-of-undersampled-peak squareness)."""
-    from exopipe.phase3 import make_band_products as mbp
+    from exopipe.phase3.lib.mosaic import band_products as mbp
     srcs = srcs or ateam_sources()
     os.makedirs(f"{out_root}/mollweide", exist_ok=True)
     os.makedirs(f"{out_root}/radec", exist_ok=True)
