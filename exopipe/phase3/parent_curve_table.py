@@ -173,7 +173,10 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, 
             tab = [tuple(t) for t in rec['table']] if rec else base
             if rec and f'{pre}_{stokes}'.startswith('deep_V'):   # the 2026-09-28 deep V faint-parent drop, as table_for (2026-10-06)
                 tab = [t for t in tab if t[1] > DEEP_V_FAINT_S]
-            c_, n_ = removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra[idx], dec[idx], _tab=tab,
+            # 2026-10-13 (refactor chat M16, verified): the candidates' elevations go into the per-band call, so the pulsar 'must be
+            # the parent' test (R-...-PULSAR-MUST-BE-THE-PARENT, Gregg 2026-09-28) uses each candidate's own systematic, not the
+            # 30-deg fallback (_tab is set here, so the call does not split by elevation again)
+            c_, n_ = removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra[idx], dec[idx], elev=elev[idx], _tab=tab,
                               phase_centre=phase_centre, _metric=(rec.get('metric', 'sky') if rec else base_metric))
             for j, cj, nj in zip(idx, c_, n_):
                 cut[j] = bool(cj); note[j] = (f'[{L if rec else "all-elevation"}] ' + nj) if nj else ''
