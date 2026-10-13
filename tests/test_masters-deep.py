@@ -1,0 +1,524 @@
+"""Tests of the masters-deep unit (steps/masters.py dispatcher + deep tier; lib/masters/deep_*.py; lib/masters/tests.py;
+_cfgdraft_masters-deep.py). Plain asserts, no pytest:
+
+    NUMPY_MADVISE_HUGEPAGE=0 EXOPIPE3_SITE=/lustre/gh/main/exopipe_ops/exopipe3_site.py \
+        /opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3 tests/test_masters-deep.py
+
+Synthetic data only under /tmp/exopipe3_tests_masters-deep/ (removed at the end). READ-ONLY checks on real production
+products (the 23h_23MHz rebuild scratch on lwacalim07 /fast, the installed 23h_Green cell and its parent catalogue): skipped
+with a message when a product is not present on this node. Nothing is written under a production root; no processing runs
+on real data (the deep build is exercised up to its first gate only).
+"""
+import csv
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)
+os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
+os.environ.setdefault('EXOPIPE3_SITE', '/lustre/gh/main/exopipe_ops/exopipe3_site.py')
+PY = sys.executable
+T = '/tmp/exopipe3_tests_masters-deep'
+CELL = '05h_64MHz'          # in neither ref_override table (checked below)
+REAL_GEN = '/fast/gh/main/phase3/rebuild_20261007/23h_23MHz/gen_shflux'
+REAL_CHECK = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/check_23h_23MHz.txt'
+REAL_PARENT = '/lustre/gh/main/phase3_collect/p3s5_collect_lwacalim07/parent_catalogs/master_R075_23h_Green.gaul.csv'
+
+import numpy as np                                        # noqa: E402
+from astropy.io import fits                               # noqa: E402
+
+from exopipe.phase3.core import env as _env               # noqa: E402
+_env.apply()
+_env.legacy()
+from exopipe.phase3.config import CFG, ConfigRefusal      # noqa: E402
+from exopipe.phase3.core import validate                  # noqa: E402
+from exopipe.phase3.core.record import Refusal            # noqa: E402
+
+RESULTS = []
+
+
+def check(name, cond, detail=''):
+    RESULTS.append((name, bool(cond), detail))
+    print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f'  ({detail})' if detail else ''), flush=True)
+
+
+def tests_of(cls, path, **ctx):
+    return {r['name'].split('.', 1)[1]: r for r in validate.run(cls, path, **ctx)}
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# synthetic products
+# ---------------------------------------------------------------------------------------------------------------------
+
+def master_header(dates, extra=None):
+    h = fits.Header()
+    h['CTYPE1'], h['CTYPE2'], h['CDELT1'], h['CDELT2'] = 'RA---SIN', 'DEC--SIN', -0.0767, 0.0767
+    h['CRPIX1'], h['CRPIX2'], h['CRVAL1'], h['CRVAL2'] = 32.0, 32.0, 75.0, 37.2
+    h['BMAJ'], h['BMIN'], h['BPA'], h['RESTFRQ'] = 0.2, 0.18, 30.0, 64.0e6
+    h['COADDOP'], h['FLUXFIT'], h['NCOADD'] = 'ivw-mean-v3', 'flat-dc', len(dates)
+    h['CONSTDIG'] = hashlib.md5(','.join(sorted(set(dates))).encode()).hexdigest()
+    for d in dates:
+        h['HISTORY'] = f'COADD constituent {d}'
+    for k, v in (extra or {}).items():
+        h[k] = v
+    return h
+
+
+def write(path, data, hdr=None):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fits.writeto(path, np.asarray(data, dtype=np.float32), hdr, overwrite=True)
+    return path
+
+
+DATES = ['2025-01-02', '2025-01-03', '2025-01-05', '2025-01-07']
+RNG = np.random.default_rng(7)
+IMG = (RNG.normal(0, 0.1, (64, 64)) + 0).astype(np.float32)
+IMG[20, 20] = 50.0
+BAKED = {'SHSCALE': 1.05, 'FLUXBAKE': True, 'FLUXCORR': 0.98, 'FLUXBND': 0.99, 'FLUXABS': 0.99, 'FLUXVER': 'fluxcorr-v2-x',
+         'SHERR': 0.01}
+
+
+def make_working_cell(root, cell, mdwarp=False, factor_shscale=1.05):
+    lst, sc = cell.split('_')
+    fd = os.path.join(root, cell, 'coadd_final')
+    extra = dict(BAKED, SHSCALE=factor_shscale)
+    if mdwarp:
+        extra['MDWARP'] = True
+    write(f'{fd}/I_deep_Taper_R075_{sc}.fits', IMG * 1.05 * 0.98, master_header(DATES, extra))
+    write(f'{fd}/V_deep_Taper_R0_{sc}.fits', IMG * 0.1, master_header(DATES, extra))
+    with open(f'{fd}/epoch_gate.csv', 'w') as f:
+        f.write('date,i_ratio,n_src,verdict,reason,master_md5,method\n')
+        f.write('2025-01-02,0.99,40,pass,,abc,epoch content test\n2025-01-03,0.70,40,FAIL,low,abc,epoch content test\n')
+    os.makedirs(os.path.join(root, cell, 'flow'), exist_ok=True)
+    return fd
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 1. config draft conventions (refactor decisions 2026-10-13 ~04:30)
+# ---------------------------------------------------------------------------------------------------------------------
+
+def test_config():
+    from exopipe.phase3.lib.masters import deep_inplace as IP
+    from exopipe.phase3.core import ledger
+    mine = IP.MASTERS_SECTIONS
+    for sec in mine:
+        s = getattr(CFG, sec, None)
+        check(f'config section {sec} loaded', s is not None)
+        if s is None:
+            continue
+        check(f'{sec}: no lower-case markers', not hasattr(s, '_apply') and not hasattr(s, '_protected'))
+        keys = {k for k, _ in s.items()}
+        wiring = IP.WIRING.get(sec, {})
+        check(f'{sec}: every key wired', keys == set(wiring), f'unwired {sorted(keys - set(wiring))}, '
+                                                              f'stale {sorted(set(wiring) - keys)}')
+        prot = set(getattr(s, 'PROTECTED_KEYS', ()) or ())
+        mirrors = {k for k, v in wiring.items() if v == 'mirror'}
+        check(f'{sec}: every mirror key protected', mirrors <= prot, f'unprotected mirrors {sorted(mirrors - prot)}')
+        check(f'{sec}: PROTECTED_KEYS exist', prot <= keys, f'unknown {sorted(prot - keys)}')
+        for k, ids in (getattr(s, 'RULED', {}) or {}).items():
+            for lid in (ids if isinstance(ids, (tuple, list)) else (ids,)):
+                check(f'{sec}.{k} ruling {lid} in the fix ledger', ledger.has_id(lid, CFG.paths.FIX_LEDGER))
+    vocab = {'default', 'flow', 'py36', 'casa', 'tess'}
+    vals = set(CFG.masters.PYTHON_SITE_KEY.values())
+    check('PYTHON_SITE_KEY uses the site vocabulary only', vals <= vocab, f'{sorted(vals - vocab)}')
+    check('PYTHON_SITE_KEY keys exist in the site file', vals <= set(CFG.site.PYTHON), f'site {sorted(CFG.site.PYTHON)}')
+    check('sub-LST wideband is not a masters stage (frames owns it)', 'wideband' not in CFG.masters.STAGES['sublst'])
+    check('deep default stages = the build part of deep-build-cell',
+          tuple(CFG.masters.DEFAULT_STAGES['deep']) == ('build', 'pbmaps', 'vclean', 'fluxscale', 'verify'))
+    check('no own key for shared roots', not hasattr(CFG.masters, 'DEEP_WORKING_TREE') and
+          not hasattr(CFG.masters, 'ARCHIVE_RUN') and not hasattr(CFG.masters_pbmaps, 'PB_QA_ROOT'))
+    # protected / mirror keys are refused by config.py; a wrapper key is accepted (and reset)
+    for k in ('masters_build.BEAM_GATE_RATIO', 'masters_fluxscale.SCALE_TABLE', 'masters_sources.THRESH_PIX',
+              'masters.STAGES'):
+        try:
+            CFG.set(k, '1.0')
+            ok = False
+        except (ConfigRefusal, ValueError):
+            ok = True
+        CFG.reset()
+        check(f'override of {k} refused', ok)
+    CFG.set('masters_verify.T1_TOL', '0.02')
+    ok = CFG.masters_verify.T1_TOL == 0.02 and not IP.forbidden_overrides()
+    CFG.reset()
+    check('override of a wrapper key accepted (masters_verify.T1_TOL)', ok and CFG.masters_verify.T1_TOL == 0.01)
+    # pinned tables (read-only): the sha1 in config equals the file
+    pins = [(CFG.masters_build.SOLAR_AUDIT, CFG.masters_build.SOLAR_AUDIT_SHA1),
+            (CFG.masters_build.NAMED_OUT_OF_MASTER, CFG.masters_build.NAMED_OUT_OF_MASTER_SHA1),
+            (CFG.masters_build.VARIANT_BAND_MEDIANS, CFG.masters_build.VARIANT_BAND_MEDIANS_SHA1),
+            (CFG.masters_fluxscale.SCALE_TABLE, CFG.masters_fluxscale.SCALE_TABLE_SHA1),
+            (CFG.masters_fluxscale.FLUXCORR_TABLE, CFG.masters_fluxscale.FLUXCORR_TABLE_SHA1),
+            (CFG.masters_stagein.REF_OVERRIDE_TABLE, CFG.masters_stagein.REF_OVERRIDE_TABLE_SHA1),
+            (CFG.masters_stagein.REF_OVERRIDE_I_TABLE, CFG.masters_stagein.REF_OVERRIDE_I_TABLE_SHA1)]
+    for p, want in pins:
+        try:
+            got = IP.sha1_pin(p, want, 'test')
+            check(f'pin {os.path.basename(p)}', got == want)
+        except Refusal as e:
+            check(f'pin {os.path.basename(p)}', False, str(e)[:160])
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 2. stage selection
+# ---------------------------------------------------------------------------------------------------------------------
+
+def test_resolve_stages():
+    import argparse
+    from exopipe.phase3.steps import masters as M
+
+    def ns(**kw):
+        d = dict(tier='deep', stages=None, from_stage=None, until_stage=None)
+        d.update(kw)
+        return argparse.Namespace(**d)
+    check('default deep stages', M.resolve_stages(ns()) == ('build', 'pbmaps', 'vclean', 'fluxscale', 'verify'))
+    check('--stages kept in tier order', M.resolve_stages(ns(stages='verify,stage-in')) == ('stage-in', 'verify'))
+    check('--from/--until slice', M.resolve_stages(ns(from_stage='pbmaps', until_stage='fluxscale')) ==
+          ('pbmaps', 'vclean', 'fluxscale'))
+    check('--stages + --until slice', M.resolve_stages(ns(stages='stage-in', until_stage='build')) == ('stage-in', 'build'))
+    try:
+        M.resolve_stages(ns(stages='wideband'))
+        ok = False
+    except SystemExit:
+        ok = True
+    check('unknown stage refused (exit 1)', ok)
+    check('sub-LST default stages', M.resolve_stages(ns(tier='sublst')) == ('prep', 'admit', 'stack', 'loo'))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 3. stage-in reference branches (port of rebuild_cell.sh:47-117)
+# ---------------------------------------------------------------------------------------------------------------------
+
+def _set_roots():
+    CFG.set('paths.COADD_SB_ROOT', f'{T}/wt')
+    CFG.set('masters_stagein.PREDEWARP_QUARANTINE', f'{T}/wq')
+    CFG.set('masters_stagein.SUPERSEDED_ARCHIVE', f'{T}/sup')
+    CFG.set('masters_stagein.EPOCH_GATE_CARRY_DIR', f'{T}/egc')
+
+
+def test_stagein_branches():
+    from exopipe.phase3.lib.masters import deep_stagein as DS
+    lst, sc = CELL.split('_')
+    ov, ovi = DS.override_tables()
+    check(f'{CELL} is in neither override table', CELL not in ov and CELL not in ovi)
+    _set_roots()
+    try:
+        # (4) current master / pixel factor
+        fd = make_working_cell(f'{T}/wt', CELL)
+        C = DS.working_cell(CELL, ov)
+        check('working cell = paths.COADD_SB_ROOT/<cell>', C == f'{T}/wt/{CELL}')
+        ents = DS.native_reference(CELL, C, ovi)
+        e = ents[0]
+        f = 1.05 * 0.98
+        d = fits.getdata(f'{fd}/I_deep_Taper_R075_{sc}.fits').astype(np.float64)
+        check('branch 4 chosen', e['branch'] == 'current-master' and abs(e['factor'] - f) < 1e-12)
+        check('branch 4 pixels = master / factor (float64 then float32)',
+              np.array_equal(e['data'], (d / f).astype(np.float32)))
+        check('branch 4 SH*/FLUX* cards stripped', not [k for k in e['header'] if k.startswith(('SH', 'FLUX'))])
+        check('branch 4 HISTORY text as production', e['history'] ==
+              f'2026-10-04 rebuild reference: native un-warped I_deep_Taper_R075 (current master / pixel factor {f:.6f})')
+        out_cell = f'{T}/refs/{CELL}'
+        written = DS.write_reference(out_cell, sc, ents)
+        check('both references written + coadd_final_ref copies', len(written) == 2 and
+              all(os.path.exists(q) for _, _, q, _ in written))
+        r = tests_of('reference_master', written[0][2], source=e['source'], factor=e['factor'],
+                     previous=f'{fd}/I_deep_Taper_R075_{sc}.fits')
+        check('reference_master tests pass on the written reference', all(x['passed'] for x in r.values()),
+              '; '.join(f"{k}: {x['detail']}" for k, x in r.items() if not x['passed']))
+        # factor outside 0.3-3 refuses
+        make_working_cell(f'{T}/wt', CELL, factor_shscale=5.0)
+        try:
+            DS.native_reference(CELL, C, ovi, read_data=False)
+            ok = False
+        except Refusal as ex:
+            ok = 'unusable' in str(ex)
+        check('pixel factor outside 0.3-3 refuses', ok)
+        # (2) MDWARP + pre-dewarp master of the same CONSTDIG in the quarantine
+        make_working_cell(f'{T}/wt', CELL, mdwarp=True)
+        make_working_cell(f'{T}/wq', CELL)
+        ents = DS.native_reference(CELL, C, ovi, read_data=False)
+        check('branch 2 (pre-dewarp quarantine) chosen', ents[0]['branch'] == 'predewarp-quarantine')
+        # (3) MDWARP, no quarantine: exactly one native superseded master with the CONSTDIG
+        shutil.rmtree(f'{T}/wq')
+        sup = f'{T}/sup/{lst}/{sc}'
+        write(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_a.fits', IMG, master_header(DATES))
+        write(f'{sup}/{sc}_V_deep_Taper_Robust+0.0_a.fits', IMG * 0.1, master_header(DATES))
+        ents = DS.native_reference(CELL, C, ovi)
+        check('branch 3 (superseded archive) chosen, pixels unchanged', ents[0]['branch'] == 'superseded-archive'
+              and np.array_equal(ents[0]['data'], IMG))
+        write(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_b.fits', IMG, master_header(DATES))
+        try:
+            DS.native_reference(CELL, C, ovi, read_data=False)
+            ok = False
+        except Refusal as ex:
+            ok = 'need exactly 1' in str(ex)
+        check('two superseded masters with the CONSTDIG refuse', ok)
+        os.remove(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_b.fits')
+        write(f'{sup}/{sc}_I_deep_Taper_Robust-0.75_a.fits', IMG, master_header(DATES, {'SHSCALE': 1.0}))
+        try:
+            DS.native_reference(CELL, C, ovi, read_data=False)
+            ok = False
+        except Refusal as ex:
+            ok = 'not native' in str(ex)
+        check('a non-native superseded master refuses', ok)
+    finally:
+        CFG.reset()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 4. the CLI: stage-in, refusal of a second stage-in, --fresh --supersede, build refused without flows
+# ---------------------------------------------------------------------------------------------------------------------
+
+def cli(*args):
+    env = dict(os.environ)
+    p = subprocess.run([PY, '-m', 'exopipe.phase3', 'masters'] + list(args), cwd=REPO, env=env, capture_output=True,
+                       text=True, timeout=300)
+    return p.returncode, p.stdout + p.stderr
+
+
+def test_cli():
+    lst, sc = CELL.split('_')
+    if os.path.isdir(f'{T}/wt'):
+        shutil.rmtree(f'{T}/wt')
+    if os.path.isdir(f'{T}/sup'):
+        shutil.rmtree(f'{T}/sup')
+    make_working_cell(f'{T}/wt', CELL)
+    out = f'{T}/out'
+    common = ['--tier', 'deep', '--cells', CELL, '--out', out, '--cores', 'none',
+              '--set', f'paths.COADD_SB_ROOT={T}/wt', '--set', f'masters_stagein.PREDEWARP_QUARANTINE={T}/wq',
+              '--set', f'masters_stagein.SUPERSEDED_ARCHIVE={T}/sup', '--set', f'masters_stagein.EPOCH_GATE_CARRY_DIR={T}/egc',
+              '--set', 'masters.FREE_FLOOR_GB[deep]=0']
+    rc, txt = cli('--help')
+    check('masters --help works', rc == 0 and 'DEEP TIER' in txt and '--deep-installed-root' in txt, txt[-300:])
+    rc, txt = cli(*common, '--stages', 'stage-in', '--dry-run')
+    check('stage-in --dry-run plans, writes nothing', rc == 0 and 'branch current-master' in txt and not os.path.exists(out),
+          txt[-400:])
+    rc, txt = cli(*common, '--stages', 'stage-in')
+    rec = json.load(open(f'{out}/_records/masters/stage-in_{CELL}.json'))
+    classes = sorted(o['class'] for o in rec['outputs'])
+    check('stage-in done (exit 0)', rc == 0 and rec['status'] == 'done', txt[-400:])
+    check('stage-in outputs: 2 reference masters + carried epoch-gate record',
+          classes == ['csv_table', 'reference_master', 'reference_master'], str(classes))
+    eg = f'{out}/{CELL}/coadd_final/epoch_gate.csv'
+    check('epoch-gate record carried byte-identical', open(eg).read() == open(f'{T}/wt/{CELL}/coadd_final/epoch_gate.csv').read())
+    check('stage-in copies no flows (the flow step does)', not os.path.exists(f'{out}/{CELL}/flow'))
+    check('every content test of stage-in passed', all(t['passed'] or t.get('waived') for t in rec['tests']))
+    rc, txt = cli(*common, '--stages', 'stage-in')
+    rec2 = json.load(open(f'{out}/_records/masters/stage-in_{CELL}.json'))
+    check('second stage-in refused (G-M25, exit 2)', rc == 2 and rec2['status'] == 'refused' and 'exists' in rec2['reason'],
+          rec2.get('reason', '')[:200])
+    rc, txt = cli(*common, '--stages', 'stage-in', '--fresh', '--supersede', 't1')
+    check('--fresh --supersede moves the cell aside with a manifest',
+          rc == 0 and os.path.isdir(f'{out}/_superseded/t1/{CELL}') and os.path.exists(f'{out}/_superseded/t1/{CELL}.manifest.csv'),
+          txt[-300:])
+    rc, txt = cli(*common)                                  # default stages: build first
+    recb = json.load(open(f'{out}/_records/masters/build_{CELL}.json'))
+    check('build refused without the flow step (G-M05, exit 2)', rc == 2 and recb['status'] == 'refused'
+          and 'flow' in recb['reason'], recb.get('reason', '')[:200])
+    check('later stages not attempted after a refusal', not os.path.exists(f'{out}/_records/masters/pbmaps_{CELL}.json'))
+    rc, txt = cli(*common, '--set', 'masters_build.COADDOP=x')
+    check('--set on a mirror key refused by config (exit 2)', rc == 2 and 'PROTECTED' in txt, txt[-200:])
+    rc, txt = cli(*common, '--epochs', f'{lst}_2025-01-02')
+    check('--epochs refused for the deep tier (exit 2)', rc == 2 and 'intermittent' in txt, txt[-200:])
+    rc, txt = cli('--tier', 'deep', '--cells', CELL, '--stages', 'stage-in', '--cores', 'none')
+    # cli._guard_out raises SystemExit('refused: ...') -> exit 1 today (cli.py is shared; reported in the impl note)
+    check('default --out (production generation root) refused while PRODUCTION_WRITES is False',
+          rc != 0 and 'PRODUCTION_WRITES is False' in txt and not os.path.exists('/fast/gh/main/phase3/rebuild_20261007/_records/masters'),
+          txt[-200:])
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 5. in-place helpers
+# ---------------------------------------------------------------------------------------------------------------------
+
+def test_inplace():
+    from exopipe.phase3.lib.masters import deep_inplace as IP
+    os.environ['P3_COADD_ROOT'] = '/nowhere'
+    gone = IP.clear_inherited_p3()
+    check('inherited P3_* cleared', 'P3_COADD_ROOT' in gone and 'P3_COADD_ROOT' not in os.environ)
+    with IP.call_env(['masters', 'masters_build']) as env:
+        inside = (os.environ.get('P3_ARCHIVE_WRITE'), os.environ.get('P3_FORCE_REBUILD'), os.environ.get('P3_ARCHIVE_RUN'))
+    check('call env = rebuild_cell.sh:26 exports', inside == ('0', '1', CFG.paths.ARCHIVE_RUN) and env['P3_REF_MODE'] == 'master')
+    check('call env restored', 'P3_ARCHIVE_WRITE' not in os.environ)
+    IP.set_import_env()
+    applied = dict(IP.apply_attrs('masters_build'))
+    from exopipe.phase3.lib.masters import coadd, night_image_gate
+    check('attr keys applied to the in-place modules', coadd.MIN_DATES_FOR_VARIANT == 2 and coadd.LOW_OUTLIER_SIGMA == 4.0
+          and night_image_gate.THRESHOLD == 0.5 and applied.get('coadd.REF_MODE') == 'master')
+    try:
+        IP.check_mirrors()
+        IP.check_import_env()
+        ok = True
+    except Refusal as e:
+        ok = str(e)
+    check('mirror literals equal config; pb_apply imported with the config values', ok is True, str(ok)[:200])
+    try:
+        ex, _ = IP.exclusion_readers_agree('23h', '23MHz', ['2025-08-09', '2025-08-16', '2025-08-18', '2025-09-09'])
+        check('exclusion readers agree (real data_decisions.csv, 23h 23MHz)', ex.admitted('23h', '23MHz', ['2025-08-16']) == [])
+    except Refusal as e:
+        check('exclusion readers agree', False, str(e)[:200])
+    check('production paths recognised', IP.is_production_path('/lustre/gh/main/phase3_collect/x') and
+          IP.is_production_path(os.path.join(CFG.paths.OPS_ROOT, 'x')) and not IP.is_production_path(T))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 6. content tests on synthetic files
+# ---------------------------------------------------------------------------------------------------------------------
+
+def test_content_synthetic():
+    lst, sc = CELL.split('_')
+    cd = f'{T}/cells/{CELL}'
+    fd = f'{cd}/coadd_final'
+    good = write(f'{fd}/I_deep_Taper_R075_{sc}.fits', IMG, master_header(DATES))
+    r = tests_of('master', good)
+    check('master: CONSTDIG/NCOADD consistent passes', r['constdig_matches_history']['passed'])
+    check('master: integrity passes', r['integrity']['passed'])
+    bad = write(f'{fd}/I_deep_Taper_R0_{sc}.fits', IMG, master_header(DATES, {'NCOADD': 3}))
+    check('master: NCOADD != constituents fails', not tests_of('master', bad)['constdig_matches_history']['passed'])
+    blown = IMG.copy()
+    blown[0, 0] = 2e5
+    bad = write(f'{fd}/I_deep_NoTaper_R0_{sc}.fits', blown, master_header(DATES))
+    check('master: |pixel| >= 1e5 fails integrity', not tests_of('master', bad)['integrity']['passed'])
+    # LOO
+    parent_h = fits.getheader(good)
+    lh = master_header(DATES, {'NCOADD': 3, 'LOOEXCL': '2025-01-02', 'PARENTDG': parent_h['CONSTDIG']})
+    loo = write(f'{fd}/loo/2025-01-02_I_loo_Taper_R075_{sc}.fits', IMG, lh)
+    check('loo_master: derivative of the parent passes', tests_of('loo_master', loo)['parentdg']['passed'])
+    lh['PARENTDG'] = 'x' * 32
+    loo2 = write(f'{fd}/loo/2025-01-03_I_loo_Taper_R075_{sc}.fits', IMG, lh)
+    check('loo_master: wrong PARENTDG fails', not tests_of('loo_master', loo2)['parentdg']['passed'])
+    check('loo_master: count per Stokes (2 of NCOADD 4) fails', not tests_of('loo_master', loo)['count_per_stokes']['passed'])
+    # PB map + sibling
+    yy, xx = np.mgrid[:64, :64]
+    pb = np.clip(1 - ((yy - 32) ** 2 + (xx - 32) ** 2) / 900.0, 0, 1).astype(np.float32)
+    ph = fits.Header({'PBLIBV': 'v1-2026-07-04', 'PBMODEL': 'v1-2026-07-04', 'PBCHROM': 'bs-sqbp-v1',
+                      'PBRESID': 'residual_pb_v2-perband', 'PBROBUST': '0', 'PBBMAJ': 0.2})
+    for name in ('PB_deep', 'PB_deep_R075'):
+        write(f'{fd}/{name}_{sc}.fits', pb, ph)
+    r = tests_of('pb_map', f'{fd}/PB_deep_{sc}.fits')
+    check('pb_map: values and both maps pass', r['values']['passed'] and r['both_maps']['passed'],
+          r['values']['detail'])
+    zero = write(f'{T}/cells/zero/coadd_final/PB_deep_{sc}.fits', np.zeros((64, 64)), ph)
+    check('pb_map: all-zero map fails (latent defect D2)', not tests_of('pb_map', zero)['values']['passed'])
+    sib = np.where(pb > 0.1, IMG / np.where(pb > 0, pb, 1), np.nan).astype(np.float32)
+    sp = write(f'{fd}/I_deep_Taper_R075_pbcorr_{sc}.fits', sib, fits.Header({'PBFLOOR': 0.1}))
+    r = tests_of('pbcorr_sibling', sp)
+    check('pbcorr_sibling: sibling x PB = plain passes', r['sibling_check']['passed'] and r['tested_pixels']['passed'],
+          r['sibling_check']['detail'])
+    sib2 = sib.copy()
+    sib2[32, 32] *= 1.01
+    sp2 = write(f'{T}/cells/{CELL}b/coadd_final/I_deep_Taper_R075_pbcorr_{sc}.fits', sib2, fits.Header({'PBFLOOR': 0.1}))
+    shutil.copy(good, f'{T}/cells/{CELL}b/coadd_final/I_deep_Taper_R075_{sc}.fits')
+    shutil.copy(f'{fd}/PB_deep_R075_{sc}.fits', f'{T}/cells/{CELL}b/coadd_final/PB_deep_R075_{sc}.fits')
+    check('pbcorr_sibling: 1 per cent off at one pixel fails', not tests_of('pbcorr_sibling', sp2)['sibling_check']['passed'])
+    # weights_table
+    with open(f'{fd}/weights.csv', 'w') as f:
+        f.write('date,weight,qa3_scale,qa3_tilt,qa3_nsrc,qa3_guard,qa3_rms_mjy,sci_dir,in_master,flux_dc,qa3_window\n')
+        for d in DATES:
+            f.write(f'{d},1,1.0,0,50,pass,10,/x,1,1.0,inside\n')
+    with open(f'{cd}/residuals_provisional.csv', 'w') as f:
+        f.write('lst,freq,date,i_rms_mjy,v_rms_mjy,weight,has_flow,is_reference,stage2_metric,i_outlier,v_outlier,'
+                'beam_outlier,outlier,i_thresh_mjy,v_thresh_mjy\n')
+        for d in DATES[:3]:
+            f.write(f'{lst},{sc},{d},10,5,1,True,False,nonmatched-provisional-v1,False,False,False,False,20,10\n')
+    check('weights_table: dates differ from residuals_provisional.csv fails (T7)',
+          not tests_of('weights_table', f'{fd}/weights.csv')['columns_and_rows']['passed'])
+    with open(f'{cd}/residuals_provisional.csv', 'a') as f:
+        f.write(f'{lst},{sc},{DATES[3]},11,5,1,True,False,nonmatched-provisional-v1,False,False,False,False,20,10\n')
+    check('weights_table: equal date sets pass',
+          tests_of('weights_table', f'{fd}/weights.csv')['columns_and_rows']['passed'])
+    with open(f'{fd}/stage2_verdict.csv', 'w') as f:
+        f.write('date,i_rms_mjy,v_rms_mjy,i_outlier,v_outlier,beam_outlier,outlier,i_thresh_mjy,v_thresh_mjy,metric,'
+                'measured_against\n2025-01-02,10,5,False,False,False,False,20,10,psfmatched-option2-v1,provisional\n')
+    check('membership_record: a superseded metric fails',
+          not tests_of('membership_record', f'{fd}/stage2_verdict.csv')['stage2_metric']['passed'])
+    # master_catalog: sidecar digests
+    pdir = f'{T}/parent_catalogs'
+    os.makedirs(pdir, exist_ok=True)
+    gaul = f'{pdir}/master_R075_{CELL}.gaul.csv'
+    with open(gaul, 'w') as f:
+        f.write('# Gaussian list\n# Gaus_id, RA\n   0, 1.0\n   1, 2.0\n')
+    d = fits.getdata(good).astype(np.float32)
+    meta = {'master': os.path.basename(good), 'thresh_isl': 4.0, 'thresh_pix': 5.0,
+            'master_md5_data': hashlib.md5(np.ascontiguousarray(d).tobytes()).hexdigest()}
+    json.dump(meta, open(gaul + '.gen.json', 'w'))
+    r = tests_of('master_catalog', gaul, master=good)
+    check('master_catalog: raw digest, rows, recipe pass', r['sidecar_md5']['passed'] and r['rows']['passed'] and
+          r['recipe']['passed'], r['sidecar_md5']['detail'])
+    meta['master_md5_data'] = 'f' * 32
+    json.dump(meta, open(gaul + '.gen.json', 'w'))
+    check('master_catalog: a digest of another master fails', not tests_of('master_catalog', gaul, master=good)['sidecar_md5']['passed'])
+    with open(gaul, 'w') as f:
+        f.write('# Gaussian list\n')
+    check('master_catalog: 0 rows fails', not tests_of('master_catalog', gaul, master=good)['rows']['passed'])
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 7. read-only checks on real production products
+# ---------------------------------------------------------------------------------------------------------------------
+
+def test_real_products():
+    from exopipe.phase3.lib.masters import deep_verify as DV
+    from exopipe.phase3.lib.masters import deep_stages as DSt
+    row = DSt.scale_row('23h', '23MHz')
+    prod = None
+    tab = '/fast/gh/main/phase3/rebuild_20261007/shflux_table.csv'
+    if os.path.exists(tab):
+        prod = [r for r in csv.DictReader(open(tab)) if r['lst'] == '23h' and r['scope'] == '23MHz'][-1:]
+    if prod:
+        p = prod[0]
+        check('shflux row = production row (23h 23MHz)', all(str(row[k]) == p[k] for k in ('status', 'scale', 'err', 'nsrc',
+                                                                                          'srcs', 'freq_src', 'detail')),
+              f"{row['scale']} vs {p['scale']}")
+    else:
+        print('SKIP  production shflux_table.csv not on this node')
+    if os.path.isdir(REAL_GEN):
+        t0 = time.time()
+        res = {n: (ok, v, d) for n, ok, v, d in DV.run_all(REAL_GEN)}
+        check('T1-T8 pass on the production 23h_23MHz generation', all(ok for ok, _, _ in res.values()),
+              '; '.join(f'{n}: {d}' for n, (ok, v, d) in res.items() if not ok))
+        txt = open(REAL_CHECK).read() if os.path.exists(REAL_CHECK) else ''
+        check('T1 value = production check file (median 0.9969 at 468 peaks)',
+              'at 468 peaks: median 0.9969' in res['T1'][2] and 'median 0.9969' in txt, res['T1'][2])
+        check('T5 count = production (114 files)', res['T5'][1] == 114)
+        print(f'      (T1-T8 in {time.time() - t0:.1f} s)')
+        r = tests_of('master', f'{os.path.dirname(REAL_GEN)}/coadd_final/I_deep_Taper_R075_23MHz.fits')
+        check('master tests pass on the production 23h_23MHz master', all(x['passed'] for x in r.values()))
+    else:
+        print(f'SKIP  {REAL_GEN} not on this node (installed and removed, or another node)')
+    if os.path.exists(REAL_PARENT):
+        r = tests_of('master_catalog', REAL_PARENT)
+        check('master_catalog tests pass on the installed 23h_Green parent catalogue (NaN-border digest)',
+              all(x['passed'] for x in r.values()), '; '.join(x['detail'] for x in r.values() if not x['passed']))
+    else:
+        print(f'SKIP  {REAL_PARENT} missing')
+
+
+def main():
+    t0 = time.time()
+    if os.path.exists(T):
+        shutil.rmtree(T)
+    os.makedirs(T)
+    try:
+        for fn in (test_config, test_resolve_stages, test_stagein_branches, test_inplace, test_content_synthetic, test_cli,
+                   test_real_products):
+            print(f'---- {fn.__name__}', flush=True)
+            try:
+                fn()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                check(f'{fn.__name__} raised', False, f'{type(e).__name__}: {e}')
+    finally:
+        shutil.rmtree(T, ignore_errors=True)
+    bad = [r for r in RESULTS if not r[1]]
+    print(f'\n{len(RESULTS) - len(bad)} of {len(RESULTS)} checks passed in {time.time() - t0:.0f} s')
+    return 1 if bad else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
