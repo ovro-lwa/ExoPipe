@@ -13,10 +13,12 @@ constituent master, canonical coadd_final path, verified data-identical
 
 Constituent membership is RECOMPUTED with the same guards as the build
 (missing / census-skip / <100 valid px / CORRUPT-FLAT sigma<1e-4), not parsed
-from exopipe.common.roots import coadd_root
 from logs. Read-only on sources; writes only under archive_staging/.
 """
 import os, sys, csv, shutil
+# 2026-10-13 (refactor chat, verified): this import had been inserted INSIDE the docstring by ecc6557, so coadd_root was undefined
+# and mode 'wb' raised NameError at CANON. ('wb' covers 00h-22h because the July 2026 v1 mosaic masters had no 23h; 'wb2' covers 24.)
+from exopipe.common.roots import coadd_root
 import numpy as np
 from astropy.io import fits
 from astropy.time import Time
