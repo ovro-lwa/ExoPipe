@@ -78,6 +78,8 @@ LEGACY = {
     'exopipe.phase3.phase_status': 'exopipe.phase3.lib.status.phase_status',
     # stage 4: catalog
     'exopipe.phase3.phase3_final_csv': 'exopipe.phase3.lib.catalog.xcat',
+    # stage 4: flow
+    'exopipe.common.batch_flow_align': 'exopipe.phase3.lib.flow.batch_flow_align',   # run BY PATH, never imported
 }
 
 # (kind, old dotted name, --help probe argv or None = never executed by the test, launched by)

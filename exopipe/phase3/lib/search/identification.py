@@ -145,7 +145,7 @@ def leakage_screen_constrained(master_i, v_therm):
 FLOW_CONDA_ENV = 'py310_orca'
 # GC-PRE-2 (Gregg 2026-08-12): flow batch script lives in exopipe/common/
 # (cross-phase core infrastructure); shelled into py310_orca, never imported.
-BATCH_FLOW_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR))), 'common',
+BATCH_FLOW_SCRIPT = os.path.join(os.path.dirname(SCRIPT_DIR), 'flow',
                                  'batch_flow_align.py')
 
 # Deep variants to align + archive per epoch. The (taper, robust,
