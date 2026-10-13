@@ -1758,8 +1758,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # WRITE FLOOR = 5sigma (Gregg 2026-06-30): retain >=5sigma in the CSV for
             # repeaters/cross-match; the mstruct gate (below) still vetoes structure.
             try:
+                # 10-MINUTE V MASK (2026-10-13, M23; Gregg 2026-10-13 approved): a 10-minute window's zenith is not the
+                # hour-centre phase centre, so its elevation mask is measured from the zenith at the frame's OWN mid-time
+                # (the V subtracted frame's time block); the deep cadence passes None and is unchanged
+                _ztV = (sv2.frame_mid_time(fits.getheader(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'))
+                        if cadence == '10min' else None)
                 pV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0,
-                                          refuse_on_extraction_failure=_xrefuse)
+                                          refuse_on_extraction_failure=_xrefuse, zenith_time=_ztV)
             except sv2.SourceExtractionFailed as _xf:
                 _refuse_extraction('V', d, _xf); continue
             # 'outlier QA' tag (Gregg 2026-08-26): candidates from coadd-omitted

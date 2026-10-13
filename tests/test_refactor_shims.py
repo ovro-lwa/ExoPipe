@@ -132,6 +132,8 @@ def _pairs():
 
 def normalise(text, root, pairs=()):
     text = text.replace(os.path.realpath(root), '<ROOT>').replace(root, '<ROOT>')
+    # traceback line numbers move whenever main's commits are merged into the branch; the frames are what matter
+    text = re.sub(r'(File "[^"]+", line )\d+', r'\g<1>N', text)
     for new, old in pairs:
         text = re.sub(r'(?<![\w.])' + re.escape(new) + r'(?![\w])', old, text)
     return text
@@ -230,7 +232,8 @@ def check_runnables(verbose=True):
             fails.append(f'{old}: not run')
             continue
         first = (c['out'].strip().splitlines() or [''])[0][:110]
-        same = c['rc'] == b['rc'] and c['out'] == b['out']
+        _ln = lambda t: re.sub(r'(File "[^"]+", line )\d+', r'\g<1>N', t)   # baseline predates the line-number rule
+        same = c['rc'] == b['rc'] and _ln(c['out']) == _ln(b['out'])
         if verbose:
             print(f'    {"OK  " if same else "DIFF"} rc={c["rc"]} (baseline {b["rc"]})  {c["cmd"]}  | {first}')
         if not same:
