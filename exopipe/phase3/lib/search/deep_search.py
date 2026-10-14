@@ -84,10 +84,13 @@ SEARCH_TIER_MIN = int(os.environ.get('P3_SEARCH_TIER_MIN', '5'))          # the 
 BEAM_GATE_MIN_NIGHTS = int(os.environ.get('P3_BEAM_GATE_MIN_NIGHTS', '5'))   # the search's beam gate
 
 
-def _enough(n, need, what):
-    """WAVE2 B-30: True when a cell-median gate has its minimum count ``need``; else the skip is counted (never refused)."""
+def _enough(n, need, what, count=True):
+    """WAVE2 B-30: True when a cell-median gate has its minimum count ``need``; else the skip is counted (never refused) -
+    ``count`` False: the gate guards no search of this unit (another Stokes' gate in a one-Stokes unit), nothing counted."""
     if n >= need:
         return True
+    if not count:
+        return False
     from exopipe.phase3.core import fallback
     fallback.site('fallbacks.SEARCH_GATE_SKIP_FALLBACK', f'{what}: {n} (needs {need}) - the gate is skipped', n=1)
     return False
@@ -1340,7 +1343,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
             _v = np.array(sorted(x for x in _rm.values() if np.isfinite(x) and x > 0))
             if not _enough(len(_v), SEARCH_TIER_MIN, f'{lst} {scope}: search-tier gate ({_st}), '      # WAVE2 B-30
-                           f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms'):
+                           f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms', count=_st in stokes):
                 print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}) SKIPPED - only {len(_v)} '
                       f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms (needs {SEARCH_TIER_MIN})')
                 continue
@@ -1683,7 +1686,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                               f'computed - the epoch would escape the V sanity gate')
                 pass
         _vf = sorted(v for v in _vr.values() if np.isfinite(v) and v > 0)
-        if _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms'):   # WAVE2 B-30
+        if _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms',   # WAVE2 B-30
+                   count=bool(resid_V)):         # an I-only unit (or no V epoch) has no V search for the gate to guard
             _vmed = _vf[len(_vf) // 2]
             skip_V_dates = {d for d, v in _vr.items() if v > SANITY_I_X * _vmed}
             if skip_V_dates:

@@ -375,7 +375,13 @@ def main():
               r is False and ref is None and cnt.get(K) == 1 and r5 is True and not cnt5.get(K), (r, ref, cnt, r5, cnt5))
         rr, refr, _ = under(K, 'refuse', lambda: DS._enough(4, 5, 'cell X: gate Y, nights'))
         check('the skip key can be set to refuse (not the ruled value)', rr is None and K in (refr or ''), refr)
+        rn, refn, (refsn, cntn) = under(K, 'refuse', lambda: DS._enough(0, 5, 'cell X: V gate in an I unit', count=False))
+        check('a gate that guards no search of the unit (count=False) is skipped silently, never counted or refused',
+              rn is False and refn is None and not cntn.get(K), (rn, refn, cntn))
         src = open(DS.__file__).read()
+        check('the V sanity gate counts only when the unit runs a V search; the search-tier gate only for the unit\'s Stokes '
+              '(review 2026-10-14 M1: every I unit counted a V skip)',
+              "count=bool(resid_V))" in src and "with a stage-1 rms', count=_st in stokes)" in src)
         uses = {n: src.count(f'_enough(len({v}), {n}') for v, n in (('_fin', 'SANITY_MIN_NIGHTS'), ('_v', 'SEARCH_TIER_MIN'),
                                                                      ('_fin', 'BEAM_GATE_MIN_NIGHTS'), ('_vf', 'SANITY_MIN_NIGHTS'))}
         left = re.findall(r'if len\((_fin|_v|_vf)\) *(?:>=|<) *5\b', src)
