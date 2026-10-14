@@ -1172,6 +1172,10 @@ def coadd_beam_gate(lst, fl, dates_list):
             print(f"  BEAM GATE: {len(beam_outliers)} epoch(s) refused "
                   f"from the master (fitted-beam area >1.5x set median): "
                   f"{[(d, round(_bareas[d]/_bmed, 2)) for d in beam_outliers]}")
+    else:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30 (Gregg 2026-10-14: the minimum kept, a skip counted)
+        fallback.site('fallbacks.MASTERS_BEAM_GATE_SKIP_FALLBACK', f'{lst} {fl}: co-add beam gate skipped - {len(_bfin)} '
+                      f'nights with a readable beam area (needs 5)')
     return beam_outliers, _bareas
 
 # ═══════════════════════════════════════════════════════════════════

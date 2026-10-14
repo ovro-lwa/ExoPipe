@@ -242,6 +242,56 @@ def main():
         m = fallback.mark()
         check('pick_i_master: the preferred robust sane is not a fallback',
               VC.pick_i_master(cf, '41MHz').endswith('R075_41MHz.fits') and fallback.since(m) == ([], {}))
+        # ---- minimum counts (Gregg 2026-10-14): the co-add beam gate's skip below 5 readable beam areas is COUNTED ---------
+        K = 'fallbacks.MASTERS_BEAM_GATE_SKIP_FALLBACK'
+        bdir = f'{T}/beam'
+        os.makedirs(bdir, exist_ok=True)
+        imgs = {}
+        for i in range(6):
+            imgs[f'2025-01-0{i + 1}'] = f'{bdir}/img{i}.fits'
+            wfits(imgs[f'2025-01-0{i + 1}'], np.zeros((4, 4)), BMAJ=0.25, BMIN=0.20)
+        orig = (C.find_latest_science_dir, C.find_subband_alignment_image)
+        C.find_latest_science_dir = lambda lst, d: d
+        C.find_subband_alignment_image = lambda sci, sb: imgs.get(sci)
+        try:
+            CFG.reset()
+            m = fallback.mark()
+            r4 = C.coadd_beam_gate('04h', '41MHz', sorted(imgs)[:4])
+            c4 = fallback.since(m)[1].get(K)
+            m = fallback.mark()
+            r5 = C.coadd_beam_gate('04h', '41MHz', sorted(imgs)[:5])
+            c5 = fallback.since(m)[1].get(K)
+        finally:
+            C.find_latest_science_dir, C.find_subband_alignment_image = orig
+        check('co-add beam gate: 4 readable beam areas -> skipped and counted once (production result unchanged); 5 -> runs, '
+              'nothing counted', r4[0] == [] and len(r4[1]) == 4 and c4 == 1 and r5[0] == [] and not c5, (r4, c4, r5, c5))
+        # ---- the PB weights' missing Phase-2 noise files: every night counted; a wideband sibling above the limit refuses -
+        from exopipe.phase3.core import record
+        from exopipe.phase3.lib.masters import deep_stages as DS
+        K2 = 'fallbacks.PB_QA_MISSING_FALLBACK'
+        run = record.Run('masters', ['test'], f'{T}/pbqa_out', CFG, dry_run=True)
+
+        def gate(sc, nd, nm, frac, name):
+            fd = f'{T}/pbqa_{name}'
+            os.makedirs(fd, exist_ok=True)
+            wfits(f'{fd}/I_deep_Taper_R075_pbcorr_{sc}.fits', np.zeros((4, 4)), PBNDATE=nd, PBMISS=nm)
+            rows = DS.pb_qa_missing(fd, sc, ['I_deep_Taper_R075', 'V_deep_Taper_R0'])
+            m = fallback.mark()
+            with run.unit(f'pbqa_{name}') as u:
+                DS.pb_qa_gate(u, f'12h_{sc}', sc, rows, frac)
+                u.add_output(f'{fd}/I_deep_Taper_R075_pbcorr_{sc}.fits', 'csv_table', test=False)
+            return u.status, u.reason, fallback.since(m)[1].get(K2), rows
+        st1 = gate('73MHz', 20, 10, 0.25, 'sub')                   # over the limit: a subband's weights cancel
+        st2 = gate('Blue', 24, 2, 0.25, 'wb_under')
+        st3 = gate('Blue', 20, 10, 0.25, 'wb_over')
+        st4 = gate('Blue', 20, 10, 1.0, 'wb_production')
+        st5 = gate('Blue', 30, 0, 0.25, 'wb_none')
+        check('PB weights: missing noise files counted per cell (10 / 2 / 10 / 10 / 0); a subband never refused (10 of 30); a '
+              'wideband refused only above masters_pbmaps.PB_QA_MISSING_MAX_FRAC (10 of 30 at 0.25), not at 2 of 26 or under '
+              'production\'s 1.0', st1[:1] == ('done',) and st1[2] == 10 and st2[0] == 'done' and st2[2] == 2
+              and st3[0] == 'refused' and 'PB_QA_MISSING_MAX_FRAC' in st3[1] and st3[2] == 10
+              and st4[0] == 'done' and st4[2] == 10 and st5[0] == 'done' and not st5[2] and st1[3] == [('I_deep_Taper_R075', 20, 10)],
+              (st1, st2, st3, st4, st5))
     finally:
         CFG.reset()
         shutil.rmtree(T, ignore_errors=True)

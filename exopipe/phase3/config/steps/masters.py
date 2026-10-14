@@ -216,6 +216,7 @@ class masters_build(_Section):
              'STAGE2_METRIC': 'CORRECTION-STAGE2-PSFMATCH-REINTRODUCED-20261007-REMOVED',
              'OUTLIER_SIGMA': 'C-03', 'LOW_OUTLIER_SIGMA': ('R-LOW-OUTLIER-4SIGMA', 'R-GC5-ASYMMETRIC-GATE-WANTED'),
              'BEAM_GATE_RATIO': 'R-BEAM-GATE-APPROVED-AND-SHIPPED',
+             'BEAM_GATE_MIN_AREAS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS',
              'BEAM_GATE_IMAGE': 'IMPL-D1-COADD-BEAM-GATE-READS-COADD-IMAGE-AND-REBUILD-ROUND-20261013',
              'SOLAR_AUDIT': 'R-SUNLIT-NIGHTS-OUT-OF-MASTERS',
              'NAMED_OUT_OF_MASTER': 'R-GREGG-20261011-17H18-0505-OPTION-B',
@@ -252,6 +253,10 @@ class masters_pbmaps(_Section):
     SIBLING_TOL = dict(rel=1e-5, abs=1e-9, floor_tie=1e-6)   # sibling x PB = plain where PB > floor (pb_apply.py:455-473)
     SIBLINGS_AFTER_PBMAPS = 5                 # 5 variants before vclean; 6 in the scaled generation (check_rebuild.py:88)
     PB_VALUE_RANGE = (-0.01, 1.001)           # content test of every PB map: measured 2026-10-13 min -0.0058 (23h Green PB_deep), max 0.9938-0.9999 (library and deep maps)
+    PB_QA_MISSING_MAX_FRAC = 0.25             # a WIDEBAND PB sibling missing the Phase-2 noise file of more than this fraction of its nights refuses
+                                              # (deep_stages.pb_qa_gate; every missing night counted). PROPOSED 2026-10-14 by the refactor chat -
+                                              # Gregg to confirm (not in RULED until he does); production 1.0 = no limit. Census 2026-10-14: no
+                                              # wideband master misses a night; 4 subband masters (12h 69-82 MHz) miss 1-2 (<= 7.7%)
     PROTECTED_KEYS = ('PB_THREE_FACTOR', 'PB_CHROM_VERSION', 'PB_FLOOR', 'PBLIBV', 'PB_MAP_NAMES',
                       'CORRUPT_MAX_JY', 'SIBLING_TOL')
     RULED = {'PB_LIBRARY': 'FIX-PB-LIBRARY-DEFAULT-WAS-NODE-LOCAL',

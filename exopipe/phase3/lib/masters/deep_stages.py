@@ -528,6 +528,41 @@ def siblings_expected(fd, sc):
             + int(os.path.exists(os.path.join(fd, f'V_deep_Taper_R0_clean_{sc}.fits'))))
 
 
+def pb_qa_missing(fd, sc, variants):
+    """[(variant, nights with a Phase-2 noise file, nights without)] of the pbcorr siblings of ``variants`` in ``fd``, from the
+    cards pb_apply.apply_pbcorr stamps (PBNDATE, PBMISS): a night without its QA thermal-noise file is left out of the PB
+    weights (pb_apply.subband_weights)."""
+    from astropy.io import fits
+    out = []
+    for v in variants:
+        p = os.path.join(fd, f'{v}_pbcorr_{sc}.fits')
+        if os.path.exists(p):
+            h = fits.getheader(p)
+            out.append((v, int(h.get('PBNDATE', -1)), int(h.get('PBMISS', 0) or 0)))
+    return out
+
+
+def pb_qa_gate(u, cell, sc, rows, max_frac):
+    """B-30 (Gregg 2026-10-14): every night missing from the PB weights is COUNTED (fallbacks.PB_QA_MISSING_FALLBACK, the
+    survey variant's count once per cell); a WIDEBAND scope - its member subbands mixed by those weights; a single subband's
+    weights cancel - refuses when a sibling misses more than ``max_frac`` of its nights (masters_pbmaps.PB_QA_MISSING_MAX_FRAC,
+    PROPOSED 0.25; production 1.0 = no limit)."""
+    from exopipe.phase3.core import fallback
+    u.meta['pb_qa_nights'] = {v: {'with_noise_file': nd, 'missing': nm} for v, nd, nm in rows}
+    survey = next(((v, nd, nm) for v, nd, nm in rows if v == 'I_deep_Taper_R075'), rows[0] if rows else None)
+    if survey and survey[2]:
+        fallback.site('fallbacks.PB_QA_MISSING_FALLBACK', f'{cell}: {survey[2]} of {survey[1] + survey[2]} nights lack their '
+                      f'Phase-2 noise file - left out of the PB weights', n=survey[2])
+    if sc.endswith('MHz'):
+        return
+    over = [(v, nd, nm) for v, nd, nm in rows if nm and nm / max(1, nd + nm) > float(max_frac)]
+    if over:
+        v, nd, nm = over[0]
+        u.refuse(f'PB weights: {v} misses the Phase-2 noise file of {nm} of {nd + nm} nights ({nm / (nd + nm):.0%}), above '
+                 f'masters_pbmaps.PB_QA_MISSING_MAX_FRAC {float(max_frac):.0%} - a wideband PB mixes its subbands by those '
+                 f'weights')
+
+
 def pbmaps(cell, args, run, out, ran_now):
     from astropy.io import fits
     from exopipe.phase3.lib.masters import deep_inplace as IP
@@ -566,6 +601,7 @@ def pbmaps(cell, args, run, out, ran_now):
             u.add_output(os.path.join(fd, name.format(scope=sc)), 'pb_map', cell=cell)
         for v in plains:
             u.add_output(os.path.join(fd, f'{v}_pbcorr_{sc}.fits'), 'pbcorr_sibling', cell=cell)
+        pb_qa_gate(u, cell, sc, pb_qa_missing(fd, sc, plains), s.PB_QA_MISSING_MAX_FRAC)     # WAVE2 B-30
         nsib = len(glob.glob(os.path.join(fd, f'*_pbcorr_{sc}.fits')))
         want = siblings_expected(fd, sc)
         u.check('masters_pbmaps.siblings_after_pbmaps', nsib == want, value=nsib,

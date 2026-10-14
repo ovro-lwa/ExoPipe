@@ -99,7 +99,7 @@ WIRING = {
         'PB_RESIDUAL_V2_TABLE': 'env-import:P3_RESIDUAL_PB_V2', 'PB_FLOOR': 'mirror', 'PBLIBV': 'mirror',
         'BEAM_MODEL': 'attr:pbcorr_masters.BEAMMOD', 'PB_VARIANTS': 'attr:pbcorr_masters.VARIANTS',
         'PB_MAP_NAMES': 'mirror', 'CORRUPT_MAX_JY': 'mirror', 'SIBLING_TOL': 'mirror', 'SIBLINGS_AFTER_PBMAPS': 'step',
-        'PB_VALUE_RANGE': 'step'},
+        'PB_VALUE_RANGE': 'step', 'PB_QA_MISSING_MAX_FRAC': 'step'},
     'masters_vclean': {
         'TIMEOUT_S': 'attr:vclean_masters.SV2_TIMEOUT_S', 'THREADS': 'mirror', 'SANE_MAX_JY': 'mirror',
         'I_MASTER_PREFERENCE': 'mirror', 'ENGINE_ELEV_DEG': 'mirror', 'ENGINE_ATEAM_PREBLANK': 'mirror'},

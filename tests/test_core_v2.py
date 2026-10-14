@@ -1420,7 +1420,8 @@ def test_item7_parity_file_keys():
     B = 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'
     LATER = {'R-GREGG-20261014-REFACTOR-A2B-C8B-C8C', 'R-GREGG-20261014-REFACTOR-A2-C8D',
              'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}     # clv15 fix_ledger.csv
-    PROPOSED = set()       # 2026-10-14: MASTER_SPAN_SOURCE and EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
+    PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
+                                                             # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
     path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     bad, n = [], 0
     for ln in open(path):
