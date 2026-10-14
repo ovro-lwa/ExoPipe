@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-ROOT = '/lustre/gh/main/exopipe_refactor'
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the tree under test
 sys.path.insert(0, ROOT)
 os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 os.environ.setdefault('EXOPIPE3_SITE', '/lustre/gh/main/exopipe_ops/exopipe3_site.py')
@@ -802,6 +802,22 @@ def test_forced_probe_before_stop():
 
 
 # ---- read-only checks on production -----------------------------------------------------------------------------------------
+def test_server_env_mirrors_launcher():
+    """serve.SERVER_ENV['snapshot'] = the environment the production launcher gives classify_transients.py
+    (snapshot_serve.sh, read at run time): same variable names, same literal values (templated ones are filled per run).
+    The staged astrometry bundle added P3_LOC_COMMON_LINKS=1 on install (2026-10-14) - a drift here fails."""
+    import re
+    lines = [l for l in open(os.path.join(OPS, 'snapshot_serve.sh')) if 'classify_transients.py --run' in l and 'nohup' in l]
+    assert lines, 'no classify_transients.py launch line in snapshot_serve.sh'
+    want = CFG.serve.SERVER_ENV['snapshot']
+    for l in lines:
+        env = dict(re.findall(r'\b([A-Z][A-Z0-9_]+)=(\S+)', l.split('nohup')[0]))
+        assert set(env) == set(want), ('SERVER_ENV[snapshot] names', sorted(set(env) ^ set(want)))
+        lit = {k: v for k, v in want.items() if '{' not in str(v)}
+        assert all(env[k] == str(v) for k, v in lit.items()), ('literal values', {k: (env[k], v) for k, v in lit.items()})
+    ok(f'SERVER_ENV[snapshot] = snapshot_serve.sh launch environment ({len(lines)} launch lines, {len(want)} variables)')
+
+
 def test_production_readonly():
     import argparse
     import re
@@ -861,6 +877,7 @@ def main():
         test_stage_halting()
         test_inplace_gate_agrees()
         test_forced_probe_before_stop()
+        test_server_env_mirrors_launcher()
         test_production_readonly()
     finally:
         for port in (28766, 28796, 28801):           # never leave a stand-in server behind

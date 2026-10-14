@@ -168,10 +168,10 @@ class serve(_Section):
         'sublst': {'P3_QUEUE_BAND_ALIAS': '1', 'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}',
                    'P3_XTIER_FRAME': 'dewarped', 'P3_LOC_COMMON_LINKS': '1', 'NUMPY_MADVISE_HUGEPAGE': '0'},
                    # sublst_serve.sh:140 (singles); sublst_cumulative.sh:139 (multiples, M22 6b8a23a); ledgers 1983, 1995, 2110
-        'snapshot': {'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}', 'P3_XTIER_FRAME': 'dewarped',
-                     'P3_XTIER_SUBBAND_STACK_PREFIXES': 'Run_SLST,Run_SNAP', 'NUMPY_MADVISE_HUGEPAGE': '0'},
-                     # snapshot_serve.sh:72; ledger 2030. P3_LOC_COMMON_LINKS=1 joins when the staged bundle installs (ledger 2114;
-                     # staged_20261008_pertie_astrometry/snapshot_serve.sh:74, exopipe_ops 3909fd2) - THIS entry only
+        'snapshot': {'P3_LOC_COMMON_LINKS': '1', 'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}',
+                     'P3_XTIER_FRAME': 'dewarped', 'P3_XTIER_SUBBAND_STACK_PREFIXES': 'Run_SLST,Run_SNAP', 'NUMPY_MADVISE_HUGEPAGE': '0'},
+                     # snapshot_serve.sh:74, :86 (the bundle installed 2026-10-14 03:25 UTC, exopipe_ops 82f7102 / clv15 493d860;
+                     # P3_LOC_COMMON_LINKS=1: Gregg 2026-10-09 item 4, ledger 2114); ledger 2030
         # the snapshot FORCED pages: their own launcher's five (snapshot_forced_serve_20261007.sh:49), kept apart from
         # 'snapshot' because the staged bundle changes snapshot_serve.sh only (key '<tier>-<family>', plan.server_env_extra)
         'snapshot-forced': {'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}',

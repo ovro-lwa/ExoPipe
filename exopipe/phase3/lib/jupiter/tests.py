@@ -466,8 +466,9 @@ def assign_recomputed(path, **ctx):
     """assign_<tier>.csv: rows and order = the meas rows; meas columns copied (used/refused changed only by tier rule 4,
     phase3_tier_rules.flux_scale_failed in place); fit_* = the fit record; detected = converged and |snr| >= DET_SNR and (V or
     peak > 0); for detected rows sigma_arcmin = phase3_snapshot_astro.sigma_axis_arcmin(band or its wideband representative,
-    |snr|, jup_el, fitted=True) floored at 1e-3 (TODAY's model: a product made before a ruled model change fails here, by
-    band), separations and Rayleigh percentiles from the fit offsets and the ephemeris moon offsets, assignment / unclear_rank
+    |snr|, jup_el, fitted=True, sys_arcmin=S) floored at 1e-3, S = untied_sys_arcmin(band, jup_el) for the 10s / 1min tiers and
+    None (the deep table) for 10min, and sys_source names it (clv15 493d860, Gregg 2026-10-08 ruling item 2; TODAY's model: a
+    product made before a ruled model change fails here, by band), separations and Rayleigh percentiles from the fit offsets and the ephemeris moon offsets, assignment / unclear_rank
     / reflection_candidate by the rule of :387-399. moons_<tier>.json: one entry per integration = the ephemeris offsets at its
     first row time (0.001 arcmin)."""
     if path.endswith('.json'):
@@ -532,8 +533,13 @@ def assign_recomputed(path, **ctx):
         e = at(float(r['t_unix']))
         sb = r['band'] if r['band'] in J.SUBBANDS else M.WIDE_REP_SUBBAND[r['band']]
         snr = abs(float(x['snr']))
-        sig = max(astro.sigma_axis_arcmin(sb, snr, float(r['jup_el']), fitted=True), M.SIGMA_FLOOR_ARCMIN)
-        exact = '%.2f' % sig == r.get('sigma_arcmin')
+        el = float(r['jup_el'])
+        # the systematic of a never reference-tied 10-s / 1-min fit: the tie-measured p90 of its OWN band and elevation
+        # (phase3_jupiter_measure.py:383-391, clv15 493d860 - looked up by r['band'], not the wideband representative)
+        sysj = astro.untied_sys_arcmin(r['band'], el) if tier in ('10s', '1min') else None
+        sig = max(astro.sigma_axis_arcmin(sb, snr, el, fitted=True, sys_arcmin=sysj), M.SIGMA_FLOOR_ARCMIN)
+        want_src = astro.UNTIED_SYS_SOURCE if sysj is not None else 'deep-table'
+        exact = '%.2f' % sig == r.get('sigma_arcmin') and r.get('sys_source', want_src) == want_src
         if not exact:
             bad['sigma model'] += 1
             sigma_bands.add(r['band'])

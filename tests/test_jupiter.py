@@ -533,9 +533,16 @@ def test_real_products_readonly():
         r = validate.run('jupiter_cutouts', f'{REAL}/{f}')
         check(f'real {f}', r[0]['passed'], r[0]['detail'])
     r = validate.run('jupiter_assign', f'{REAL}/assign_1min.csv')
-    check('real assign_1min fails only on the pre-Q14 sigma model (41, 64 MHz)', not r[0]['passed'] and
-          "problems: sigma model" in r[0]['detail'] and "['41MHz', '64MHz']" in r[0]['detail'] and 'assignment' not in r[0]['detail'],
-          r[0]['detail'])
+    import csv as _csv
+    pre_untied = 'sys_source' not in (next(_csv.reader(open(f'{REAL}/assign_1min.csv'))) or [])
+    if pre_untied:
+        # made before clv15 493d860 (10-s / 1-min fits take the untied systematic; no sys_source column): today's sigma model
+        # differs in every band of a detected row - a stale product, correctly failed; nothing else may fail
+        check('real assign_1min (pre-493d860) fails only on the sigma model', not r[0]['passed'] and
+              "problems: sigma model" in r[0]['detail'] and 'assignment' not in r[0]['detail']
+              and 'identity' not in r[0]['detail'] and 'fit fields' not in r[0]['detail'], r[0]['detail'])
+    else:
+        check('real assign_1min (made with the untied systematic) passes', r[0]['passed'], r[0]['detail'])
     RES = '/lustre/gh/main/phase3/sublst/superseded_reserve_20261007/05h/root/lustre/gh/main/phase3/sublst'
     from exopipe.phase3.lib.jupiter import tests as T
     check('real meas_1min admission coverage against the pre-bake reserve', T.admission_coverage(f'{REAL}/meas_1min.csv',
