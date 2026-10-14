@@ -17,8 +17,11 @@ ordinary tunables named *_FALLBACK):
 
 A refusal is STICKY: it is also recorded here, and the unit that was running refuses at its end even when code between
 the site and the unit caught the exception (the moved production modules hold many broad ``except Exception``).
-In a child process (core.legacy.run) the policies arrive as JSON in EXOPIPE3_FALLBACK_POLICY, and the counts and
-refusals go back through EXOPIPE3_FALLBACK_OUT (written at exit by core/parity_sitecustomize/sitecustomize.py).
+Children: a step process exports its policies (EXOPIPE3_FALLBACK_POLICY, with EXOPIPE3_FALLBACK_POLICY_PID = its pid -
+it keeps reading config itself) and its pid as the spool owner (EXOPIPE3_FALLBACK_SPOOL_OWNER), so every descendant uses
+the step's policies. A child started by core.legacy.run (EXOPIPE3_FALLBACK_OUT set) owns its events and dumps them at exit
+(core/parity_sitecustomize/sitecustomize.py; one file per process, so its own descendants' dumps never overwrite it); a
+forked worker or a descendant started any other way writes each event to the owner's spool at once.
 Design: exopipe_ops/refactor_20261012/plan/wave2/B30_DESIGN.md.
 """
 import collections
@@ -43,7 +46,8 @@ _LOCK = threading.Lock()
 # with it and it skips atexit, so it writes each event to a spool file at once, which the parent drains (mark / since /
 # take / dump). A process started fresh (core.legacy.run) is its own owner and sends its state back through
 # EXOPIPE3_FALLBACK_OUT instead.
-_OWNER = os.getpid()
+_OUT = os.environ.get('EXOPIPE3_FALLBACK_OUT')
+_OWNER = os.getpid() if _OUT else int(os.environ.get('EXOPIPE3_FALLBACK_SPOOL_OWNER') or os.getpid())
 _ENV = None
 
 
@@ -52,10 +56,12 @@ class FallbackRefused(Refusal):
 
 
 def _env_policies():
+    """The policies a parent passed down; {} in the process that exported them (it reads config, overrides included)."""
     global _ENV
     if _ENV is None:
         raw = os.environ.get('EXOPIPE3_FALLBACK_POLICY')
-        _ENV = json.loads(raw) if raw else {}
+        mine = os.environ.get('EXOPIPE3_FALLBACK_POLICY_PID') == str(os.getpid())
+        _ENV = json.loads(raw) if (raw and not mine) else {}
     return _ENV
 
 
@@ -189,6 +195,14 @@ def all_keys(cfg=None):
     return {f'{SECTION}.{k}': v for k, v in getattr(cfg, SECTION).items()}
 
 
+def export_env():
+    """A step process (cli.main, after its overrides): every descendant - legacy.run children, forked workers, plain
+    subprocesses - uses this process's policies, and a descendant that does not dump its own state spools it here."""
+    os.environ['EXOPIPE3_FALLBACK_POLICY'] = json.dumps(all_keys(), sort_keys=True)
+    os.environ['EXOPIPE3_FALLBACK_POLICY_PID'] = str(os.getpid())
+    os.environ['EXOPIPE3_FALLBACK_SPOOL_OWNER'] = str(os.getpid())
+
+
 def child_env():
     """The environment entries a child needs: every fallback key's policy as JSON (the parent's config, overrides
     included)."""
@@ -196,24 +210,43 @@ def child_env():
 
 
 def dump(path):
-    """Write this process's counts and refusals (a child, at exit) - its forked workers' spooled events included."""
+    """Write this process's counts and refusals (a child, at exit) - its forked workers' spooled events included - to
+    <path>.<pid> (a descendant that inherited the same EXOPIPE3_FALLBACK_OUT writes its own file)."""
     _drain()
-    tmp = path + '.tmp'
+    out = f'{path}.{os.getpid()}'
     with _LOCK:
         d = {'counts': dict(COUNTS), 'refusals': list(REFUSALS)}
-    with open(tmp, 'w') as f:
+    with open(out + '.tmp', 'w') as f:
         json.dump(d, f)
-    os.replace(tmp, path)
+    os.replace(out + '.tmp', out)
 
 
-def load(path):
-    """(counts, refusals) a child wrote; ({}, []) when it wrote none (it never imported this module)."""
-    try:
-        with open(path) as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return {}, []
-    return dict(d.get('counts') or {}), [tuple(r) for r in d.get('refusals') or []]
+def load(path, remove=True):
+    """(counts, refusals) a child and its descendants wrote (<path>.<pid> files, and <path> itself); ({}, []) when none
+    imported this module. The files are removed after reading (remove=True)."""
+    import glob as _glob
+    counts, refs = collections.Counter(), []
+    for p in [path] + sorted(_glob.glob(glob_escape(path) + '.*')):
+        if p.endswith('.tmp') or not os.path.isfile(p):
+            continue
+        try:
+            with open(p) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        counts.update({k: int(n) for k, n in (d.get('counts') or {}).items()})
+        refs.extend(tuple(r) for r in d.get('refusals') or [])
+        if remove:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return dict(counts), refs
+
+
+def glob_escape(p):
+    import glob as _glob
+    return _glob.escape(p)
 
 
 # ---- comparing a moved module with its production original ----------------------------------------------------------

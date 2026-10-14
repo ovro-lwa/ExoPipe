@@ -105,11 +105,7 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
             os.remove(fp_path)
         except OSError:
             pass
-    fb_counts, fb_refs = fallback.load(fb_path)
-    try:
-        os.remove(fb_path)
-    except OSError:
-        pass
+    fb_counts, fb_refs = fallback.load(fb_path)        # the child's and its descendants' (<fb_path>.<pid>), removed
     hit = next((t for t in refusal_text if t in tail), None)
     refused = rc in refusal_codes or (hit is not None and rc != 0)
     reason = '' if rc == 0 and not refused else (

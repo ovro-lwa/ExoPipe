@@ -1231,6 +1231,64 @@ def test_item7_site_lines_pure_insertion():
     assert not fallback.same_code_modulo_sites(PROD_MOD, more), 'an if with real code is not a site'
 
 
+GRANDPARENT = """
+import subprocess, sys
+sys.path.insert(0, %r)
+from astropy.io import fits
+from exopipe.phase3.lib.masters import coadd
+try:
+    coadd.get_midpoint_time(fits.Header(), '/x/parent.fits')
+except Exception:
+    pass
+subprocess.run([sys.executable, %r, '3'], check=True)     # a plain subprocess grandchild inheriting EXOPIPE3_FALLBACK_OUT
+print('parent done')
+"""
+
+
+def test_item7_fallback_plain_subprocess_and_grandchild():
+    """A descendant NOT started by core.legacy.run (a plain subprocess, as vclean_masters starts search_v.py) uses the step
+    process's policies (exported by cli.main: export_env) and spools its events to it - the running unit records them;
+    a grandchild of a legacy.run child writes its own dump file (it would overwrite its parent's)."""
+    import subprocess
+    from exopipe.phase3.core import fallback, legacy, record
+    keep = {k: os.environ.get(k) for k in ('EXOPIPE3_FALLBACK_POLICY', 'EXOPIPE3_FALLBACK_POLICY_PID',
+                                           'EXOPIPE3_FALLBACK_SPOOL_OWNER')}
+    try:
+        with cfg_restored() as CFG, Scratch('item7p') as d:
+            CFG.authorize([], out=d)
+            script = os.path.join(d, 'child.py')
+            open(script, 'w').write(CHILD % REPO)
+            out = os.path.join(d, 'a.csv')
+            open(out, 'w').write('a\n1\n')
+            run = record.Run('t7p', ['x'], d, CFG, config_sections=())
+            CFG.set(KEY, 'fallback')
+            fallback.export_env()                        # what cli.main does after its overrides
+            assert fallback.policy(KEY) == 'fallback'    # the exporting process keeps reading config
+            with run.unit('plain_counts') as u:
+                subprocess.run([PY, script, '2'], check=True, capture_output=True)
+                u.add_output(out, 'csv_table')
+            rec = record.load_record(d, 't7p', 'plain_counts')
+            assert u.status == 'done' and rec['fallbacks'] == {KEY: 2}, (u.status, rec.get('fallbacks'))
+            CFG.set(KEY, 'refuse')
+            fallback.export_env()
+            with run.unit('plain_refuses') as u2:
+                subprocess.run([PY, script, '1'], check=True, capture_output=True)   # exits 0: it swallowed the refusal
+                u2.add_output(out, 'csv_table')
+            assert u2.status == 'refused' and KEY in u2.reason, (u2.status, u2.reason)
+            CFG.set(KEY, 'fallback')
+            parent = os.path.join(d, 'parent.py')
+            open(parent, 'w').write(GRANDPARENT % (REPO, script))
+            res = legacy.run(parent, [], log=os.path.join(d, 'gp.log'))
+            assert res.ok and res.fallbacks == {KEY: 4}, (res.rc, res.reason, res.fallbacks)
+    finally:
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        fallback._ENV = None
+
+
 def test_item7_fallback_registry():
     """Every fallback key is RULED, is set to 'fallback' in the production parity file, and is named by a
     fallback.site(<key>) call; every such call names its key as a string literal that is a config key (an AST scan: no
