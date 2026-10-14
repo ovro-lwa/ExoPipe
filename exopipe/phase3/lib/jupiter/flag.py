@@ -231,7 +231,11 @@ def stage_verify(args, run_, roots, state, verify_root):
                              env=_env(threads=False), cwd=state, log=raw,
                              parity_root=os.pathsep.join(roots.guard) if roots.guard else None, unit=u)
             drop = re.compile('|'.join(re.escape(x) for x in F.VERIFY_DROP))
-            lines = [l for l in open(raw, errors='replace').read().splitlines()[1:] if not drop.search(l)]
+            raw_lines = open(raw, errors='replace').read().splitlines()
+            # core.legacy.run writes a blank line and its '===== <UTC> <argv>' header before the child's output: the
+            # VERIFY file holds the tool's output only, filtered as the launcher's grep -v (launcher :52-53)
+            head = next((i for i, l in enumerate(raw_lines) if l.startswith('===== ')), -1)
+            lines = [l for l in raw_lines[head + 1:] if not drop.search(l)]
         finally:
             os.remove(raw)
         out = os.path.join(state, 'VERIFY_' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '.txt')

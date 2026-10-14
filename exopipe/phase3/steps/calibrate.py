@@ -35,11 +35,14 @@ version); `exopipe3 run` never fans it out by item; sub-runs inside a unit run a
              per cell) -> bandvec (LOO iteration) -> table (flux_correction.sh_fit); template-k: inject (deep
              deep_forced_kcal_20261013/kinj_deep.py, sub-LST kcal_tenmin_inject.py, in place) -> summary (or the stored trials)
     diff     candidate vs installed: every table key; served and judged sources the change touches (the conformance table
-             step replayed on the served list with both tables; flux factors per LST / band; K factors)
+             step replayed on the served list with both tables: changed detections, served sources gone / reduced, judged
+             ones, detections returning from the served pass's table removals, in-search removals the candidate keeps;
+             flux factors per LST / band; K factors)
     install  gated (a done diff of the same candidate sha256, --install-ruling <ledger ID>, never a subset derivation):
              a NEW versioned file, a mirror at the production path under --out, a config patch (tables.* and every key that
              mirrors the pointer) and a draft ledger row - the production file, config.py and fix_ledger.csv are never written
-    verify   content tests of the installed table (sha256 pin, form, recomputed from its recorded inputs) or of --candidate
+    verify   content tests of the installed table (sha256 pin, form, recomputed from its recorded inputs) or of --candidate;
+             template-k: config K = the in-place production literal of the tier, deep K recomputed from the stored trials
 
 Inputs:  installed tables (config `tables`, sha256-pinned); harvest list p3s5_state/published_{V,I}.csv (deep) or the
          sub-LST collect layout (lwacalim08 /fast); published attempts' v_deep_ledger.csv; parent catalogues of the current
@@ -58,7 +61,10 @@ Failure modes (exit 2 = refused, the gate named): G3 a harvest cell without a cu
          changed; G11 an LST without VLSSr matches; G12 the S&H fit (no OK cell, an LST without rescale); G13 band vector not
          converged; G15 a fluxcorr patch without REQUIRED_FLUXVER; G16 K outside (0, 5) or one Stokes; G17 K measured with
          another template orientation; G18/G22 install without --install-ruling, without a done diff of the same candidate,
-         or into a production root (the window); G19 an installed table whose sha256 differs from its pin; G23 exclusion list
+         or into a production root (the window); G19 an installed table whose sha256 differs from its pin (every pinned
+         table verify reads); K lock: config fitting K of a tier differs from the in-place production literal
+         (calibrate_template_k.INPLACE_K); verify of a table whose declared derivation / trials are node-local to another
+         host (run it there); G23 exclusion list
          unreadable (or harvest rows on excluded nights with EXCLUDED_ROWS='refuse'); G24 install of a subset derivation;
          TABLE-NOTES (sub-LST diff); a stage directory that exists (pass --fresh or --resume). Exit 3 = nothing to do.
          Exit 1 = error (an in-place script crashed: its log is in the stage directory).
@@ -218,6 +224,7 @@ def _one(args, run, cls, tier, action):
         raise Refusal(f'calibrate {cls} --tier {tier} derive: no derivation in this unit (spec B6: no trials source)')
     version = _version(args, run, cls, tier, action, known, sel)
     ctx = K.Ctx(args, run, cls, tier, action, version)
+    ctx.stages = list(sel)            # the derive sub-stages of THIS invocation (a dry-run plans a later one from an earlier one)
     mod = _module(cls)
     if action == 'derive':
         fns = {'bright_parent': {'inputs': mod.derive_inputs if hasattr(mod, 'derive_inputs') else None,
@@ -264,6 +271,7 @@ def run(args, run):
             except Refusal as e:
                 u = run.unit(K.unit_name(cls, tier, 'verify', 'installed'))
                 u.status, u.reason = 'refused', str(e)
+                u.write()                     # the refusal is recorded like any unit outcome (no-op under --dry-run)
                 print(f'REFUSED {cls} {tier}: {e}')
         return 0 if run.dry_run else None
     _one(args, run, args.table, args.tier, args.action)

@@ -218,7 +218,7 @@ def expected_tables(path):
         cls, tier, paths = cal['class'], cal['tier'], cal['derivations']
         miss = [p for p in paths if not os.path.exists(p)]
         if miss:
-            return None, f'derivations not readable: {miss[:2]}'
+            return None, f'UNREADABLE: derivations not readable: {miss[:2]}'
         if cls == 'bright-parent' and tier == 'deep':
             inst = K.read_json(cal['installed_at_build']['path'])['tables']
             D3, D2 = (K.read_json(p) for p in paths)
@@ -232,8 +232,8 @@ def expected_tables(path):
     if _same_path(path, C.tables.BRIGHT_PARENT_DEEP):
         dv = C.tables.BRIGHT_PARENT_DEEP_DERIVATIONS
         miss = [p for g in dv.values() for p in g if not os.path.exists(p)]
-        if miss:
-            return None, f'derivations of the installed file not readable here: {miss[:2]}'
+        if miss:      # declared but node-local elsewhere / gone: never a silent pass (verify on the host that holds them)
+            return None, f'UNREADABLE: derivations of the installed file not readable on this host: {miss[:2]}'
         a3, a2 = (K.read_json(p) for p in dv['all-elevation'])
         got, _ = BP.build_deep(a3, a2, *dv['all-elevation'], t, ('all-elevation',))
         exp.update({k: v['table'] for k, v in got.items()})
@@ -256,8 +256,8 @@ def equals_derivation(path, **ctx):
     from exopipe.phase3.lib.calibrate.bright_parent import family
     K = _K()
     exp, why = expected_tables(path)
-    if exp is None:
-        return True, None, f'NOT RECOMPUTED: {why}'
+    if exp is None:       # declared derivations that cannot be read fail; a file with none declared passes as NOT RECOMPUTED
+        return not why.startswith('UNREADABLE'), None, (why if why.startswith('UNREADABLE') else f'NOT RECOMPUTED: {why}')
     _, t = _tables_of(path)
     fams = {family(k) for k in exp}
     have = {k for k in t if family(k) in fams}
@@ -301,6 +301,20 @@ def reconciles(path, **ctx):
         if sv.get('removed_candidate', 0) - sv.get('removed_installed', 0) != \
                 sum(1 for r in rows if r['change'] == 'newly removed') - sum(1 for r in rows if r['change'] == 'newly kept'):
             errs.append('removed counts do not reconcile with the changed rows')
+        ss = sv.get('served_sources')
+        if ss is not None:          # served-source fates reconcile with the changed rows (served_change_20261006.py port)
+            for S in ('I', 'V'):
+                n_rows = sum(1 for r in rows if r['stokes'] == S and r['change'] == 'newly removed' and r['served_identity'])
+                if (ss.get('member_detections_leaving') or {}).get(S, 0) != n_rows:
+                    errs.append(f'Stokes {S}: member detections leaving {(ss.get("member_detections_leaving") or {}).get(S, 0)} '
+                                f'!= {n_rows} newly removed served rows')
+                losing = sum(1 for k in (sv.get('served_identities_losing') or {}) if k.startswith(S + ':'))
+                touched = sum(v for k, v in (ss.get('by_status') or {}).items() if k.split('|')[0] == S and k.split('|')[1] != 'unchanged')
+                if losing != touched:
+                    errs.append(f'Stokes {S}: {touched} sources gone/reduced != {losing} served identities losing detections')
+            jp = ss.get('judged_csv')
+            if jp and os.path.exists(jp) and len(K.read_csv(jp)) != sum((ss.get('judged_by_status') or {}).values()):
+                errs.append('judged sources csv != judged_by_status')
         tn = sv.get('table_notes')
         if tn is not None and tn.get('bad'):
             errs.append(f"TABLE-NOTES: {tn['bad']} of {tn['n']} removals without an elevation band and (image-pixel)")
@@ -555,6 +569,7 @@ def _fc_inputs(path):
 @content_test('fluxcorr_table')
 def structure(path, **ctx):
     F = _cfg().calibrate_fluxcorr
+    q = 10.0 ** -F.TABLE_DECIMALS          # one unit of the last written decimal
     rs = _K().read_csv(path)
     errs = []
     if [r['scope'] for r in rs] != list(F.SUBBANDS) + list(F.WIDEBAND):
@@ -565,13 +580,14 @@ def structure(path, **ctx):
     for r in rs:
         kk, gg = float(r['k_band']), float(r['g_abs'])
         # fluxcorr = round6(k x g) of the UNROUNDED k and g (build_table :65-70): against the rounded k, g the exact bound
-        # is 0.5e-6 x (k + g + 1) (production's v2 table reaches 7.8e-7; a wideband k, a mean, reaches 1.3e-6)
-        if abs(float(r['fluxcorr']) - kk * gg) > 0.5e-6 * (abs(kk) + abs(gg) + 1) + 1e-9:
+        # is 0.5 q x (k + g + 1) (production's v2 table reaches 7.8e-7; a wideband k, a mean, reaches 1.3e-6)
+        if abs(float(r['fluxcorr']) - kk * gg) > 0.5 * q * (abs(kk) + abs(gg) + 1) + 1e-9:
             errs.append(f"{r['scope']}: fluxcorr != k x g")
             break
     from exopipe.phase3.core.cells import band_members
     for b in F.WIDEBAND:
-        if b in k and abs(k[b] - sum(k[s] for s in band_members(b)) / len(band_members(b))) > 5e-6:
+        # round6 of the mean of the unrounded members vs the mean of the rounded members: within q (0.5 q each side)
+        if b in k and abs(k[b] - sum(k[s] for s in band_members(b)) / len(band_members(b))) > q + 1e-9:
             errs.append(f'{b}: k is not the mean of its members')
     return not errs, len(rs), '; '.join(errs) or '19 scopes, one g / n / version, fluxcorr = k x g, wideband k = mean of members'
 

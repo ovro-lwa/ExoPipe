@@ -16,8 +16,9 @@ derive  inject          deep: deep_forced_kcal_20261013/kinj_deep.py IN PLACE (t
 diff    K_new / K_old per axis against fitting.K_TEMPLATE; template-fit rows of the served list (when it has pos_kind)
 install gates G16 (0 < K < 5, both Stokes), G17 (the record's template orientation = fitting.TEMPLATE_BEAM_ORIENTATION),
         G18 (--install-ruling); the record as a versioned file, a patch of fitting.K_TEMPLATE, a draft ledger row
-verify  deep: K recomputed from the stored trials equals fitting.K_TEMPLATE (3 decimals); sub-LST / snapshot: the config
-        values only (bounds, both Stokes, ruled) - their trials are not on Lustre
+verify  every tier: config K = the literal of the in-place production code that fits with it (INPLACE_K lock); deep: K
+        recomputed from the stored trials equals fitting.K_TEMPLATE (3 decimals; trials node-local elsewhere = refused);
+        sub-LST / snapshot: bounds, both Stokes, ruled - their trials are not on Lustre
 """
 import glob
 import os
@@ -295,13 +296,59 @@ def install(ctx):
                'ruling': {'id': rid, 'words': ctx.args.install_words},
                'code_literals': [f'{a} ({b})' for a, b in K.code_literals(old_arg)],
                'production_writes': bool(C.paths.PRODUCTION_WRITES)}
+        src, got, _want = inplace_k(ctx.tier)     # the in-place production literal changes in the same commit (verify locks it)
+        man['inplace_literal'] = {'source': src, 'value': got, 'must_become': {S: list(v) for S, v in vals.items()}
+                                  if ctx.tier != 'snapshot' else None}
         mp = K.write_json(os.path.join(d, 'install_manifest.json'), man)
         u.add_output(mp, 'install_bundle')
     return None
 
 
+def inplace_k(tier):
+    """(source file, K as the in-place production code holds it, K as config holds it) for a tier, read without importing:
+    deep {'I': (maj, min), 'V': ...} = ops/deep_forced_radio.py K_TEMPLATE; sub-LST the same from the FITPOS_K line of
+    ops/sublst_catalogs.sh (--k S=maj,min); snapshot (K_MAJOR, K_MINOR, K_MAJOR_HIGH) of clv15/phase3_template_fit.py.
+    The in-place value is None when the literal is not found (the check then fails)."""
+    import ast
+    import re
+    from exopipe.phase3.core import env
+    C = K.CFG()
+    root, rel, name = C.calibrate_template_k.INPLACE_K[tier]
+    src = os.path.join(env.legacy_root(root), rel)
+    text = open(src).read()
+    got = None
+    if tier == 'sublst':
+        m = re.search(rf'^\s*{name}="([^"]*)"', text, re.M)
+        if m:
+            got = {S: (float(a), float(b)) for S, a, b in re.findall(r'--k\s+([IV])=([0-9.]+),([0-9.]+)', m.group(1))} or None
+        want = {S: tuple(C.fitting.K_TEMPLATE.get(('sublst', S)) or ()) for S in ('I', 'V')}
+        return src, got, want
+    names = tuple(x.strip() for x in name.split(','))
+    for node in ast.parse(text).body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        t = node.targets[0]
+        tn = (t.id,) if isinstance(t, ast.Name) else tuple(getattr(e, 'id', None) for e in getattr(t, 'elts', ()))
+        if tn == names:
+            try:
+                got = ast.literal_eval(node.value)
+            except ValueError:
+                got = None
+            break
+    if tier == 'deep':
+        got = {S: tuple(v) for S, v in got.items()} if isinstance(got, dict) else None
+        want = {S: tuple(C.fitting.K_TEMPLATE.get(('deep', S)) or ()) for S in ('I', 'V')}
+        if got is not None:
+            got = {S: got.get(S) for S in ('I', 'V')}
+    else:
+        got = tuple(got) if isinstance(got, tuple) else None
+        want = (C.fitting.K_SNAPSHOT[0], C.fitting.K_SNAPSHOT[1], C.fitting.K_SNAPSHOT_MAJOR_HIGH)
+    return src, got, want
+
+
 def verify(ctx):
-    """deep: recompute K from tables.K_RECORDS['deep'] and compare with fitting.K_TEMPLATE; every tier: bounds, both Stokes,
+    """deep: recompute K from tables.K_RECORDS['deep'] and compare with fitting.K_TEMPLATE; every tier: the config K equals
+    the literal of the in-place production code that fits with it (calibrate_template_k.INPLACE_K), bounds, both Stokes,
     the ruling of the key. A candidate record (--candidate) is checked by its content tests."""
     if ctx.args.candidate:
         return K.verify(ctx, [(ctx.args.candidate, 'candidate', 'template_k_record')])
@@ -311,6 +358,8 @@ def verify(ctx):
             if ctx.tier != 'snapshot' else {'K_SNAPSHOT': C.fitting.K_SNAPSHOT},
             'trials': C.tables.K_RECORDS.get(ctx.tier)}
     if ctx.dry:
+        src, got, want = inplace_k(ctx.tier)
+        plan['inplace'] = {'source': src, 'value': got, 'equals_config': got == want}
         return plan
     d = os.path.join(ctx.vdir, 'verify-installed')
     if os.path.exists(d):
@@ -321,6 +370,12 @@ def verify(ctx):
     with ctx.run.unit(ctx.unit_name('verify-installed'), cls=ctx.cls, tier=ctx.tier, version=ctx.version, stage='verify') as u:
         lo, hi = Q.K_BOUNDS
         rep = {'tier': ctx.tier, 'config': plan['config'], 'checks': []}
+        # lock: the config K of this tier = the literal of the production code that fits with it in place (a re-measure
+        # lands there first: exopipe_ops 554b721 deep, ac2d267 sub-LST, clv15 a715a1b snapshot)
+        src, got, want = inplace_k(ctx.tier)
+        u.add_input(src)
+        u.check('template_k.inplace_literal', got is not None and got == want, value={'inplace': got, 'config': want},
+                detail=f'{src} (calibrate_template_k.INPLACE_K[{ctx.tier!r}]) vs config fitting')
         if ctx.tier == 'snapshot':
             ks = (C.fitting.K_SNAPSHOT[0], C.fitting.K_SNAPSHOT[1], C.fitting.K_SNAPSHOT_MAJOR_HIGH)
             u.check('template_k.config_bounds', all(lo < x < hi for x in ks), value=ks, detail='fitting.K_SNAPSHOT, K_SNAPSHOT_MAJOR_HIGH')
@@ -334,6 +389,10 @@ def verify(ctx):
                     detail='fitting.RULED names the ruling of K_TEMPLATE')
             tdir = C.tables.K_RECORDS.get(ctx.tier)
             files = sorted(glob.glob(os.path.join(tdir, 'trials_*.csv'))) if tdir else []
+            if tdir and not files:      # declared but not readable here (node-local elsewhere): never a silent pass
+                u.check('template_k.recompute', False, value=tdir,
+                        detail=f'tables.K_RECORDS[{ctx.tier!r}] = {tdir}: no trials_*.csv readable on this host (node-local; '
+                               f'run the verify on the host that holds it)')
             if files:
                 for p in files:
                     u.add_input(p)

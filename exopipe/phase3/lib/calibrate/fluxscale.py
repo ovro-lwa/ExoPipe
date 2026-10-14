@@ -274,7 +274,15 @@ def _loo_arith(V, T, NV, norm):
     k2 = {b: k[b] / (1.0 + m.get(b, 0.0)) for b in k}
     n = k2[norm]
     k2 = {b: v / n for b, v in k2.items()}
-    K.write_csv(NV, ['subband', 'factor'], [{'subband': b, 'factor': f'{v:.6f}'} for b, v in k2.items()])
+    # written exactly as the heredoc writes it (csv.writer default line ends, CRLF; :22-23): a vector adopted after step
+    # 2+ is then byte-identical to production's recipe (band_vector_final_20261001.csv = band_vector_loo6.csv, CRLF)
+    tmp = f'{NV}.tmp.{os.getpid()}'
+    with open(tmp, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['subband', 'factor'])
+        for b, v in k2.items():
+            w.writerow([b, f'{v:.6f}'])
+    os.replace(tmp, NV)
     worst = max(abs(v) for v in m.values())
     return worst, m
 
@@ -473,7 +481,7 @@ def install(ctx):
     rid = K.check_ruling(ctx.args)
     cp = candidate_path(ctx)
     cand_sha = K.sha256(cp)
-    diff_rec = K.diff_gate(ctx.out, ctx.cls, ctx.tier, ctx.version, cand_sha)
+    diff_rec = K.diff_gate(ctx.out, ctx.cls, ctx.tier, ctx.version, cand_sha, installed_sha=K.sha256(K.need_file(inst_p, 'installed table')))
     K.fresh_stage_dir(d, ctx.args.fresh)
     with ctx.run.unit(ctx.unit_name('install'), cls=ctx.cls, tier=ctx.tier, version=ctx.version, stage='install') as u:
         u.add_input(cp)

@@ -159,7 +159,12 @@ def st_geometry(u, c, t0):
 def st_masters(u, c, t0):
     V = _C().jupiter_v2
     from exopipe.phase3.core import legacy
-    scr = os.path.join(c.scr, V.SCRATCH['masters'])
+    # the module writes its crops/parts under its OWN literal SCR (a production run sets no module global; masters refuses
+    # into a non-production --out), so run_all.sh's 'cd $SCR' and 'rm -rf $SCR/V*/<cell>/{crops,parts}' use that root,
+    # never --work (a --work elsewhere would clear an empty directory while the module re-used stale crops)
+    scr = mirrors.module_literals(c.mod('masters/jupv2_masters.py'))['SCR'][0]
+    if os.path.abspath(scr) != os.path.abspath(os.path.join(c.scr, V.SCRATCH['masters'])):
+        u.note(f'masters scratch = the module literal SCR {scr} (not --work {c.scr})')
     cores = K.pin_free_cores(c.args) or ''
     test_failed = None
     for s in V.MASTERS_STAGES:

@@ -80,7 +80,7 @@ class tables(_Section):
     SNAPSHOT_ASSOC_CALIB = '/lustre/gh/main/exopipe_ops/staged_20261008_pertie_astrometry/snapshot_assoc_calib_v1.json'   # ledger 2094 item 5; staged phase3_snapshot_astro.py:232-234
     SNAPSHOT_ASSOC_CALIB_SHA256 = 'a0e7a80a0ce0b0aadb402c7ec17db7be42f4a01d1fb0f9da1c96cb90c1a9360d'
     SNAPSHOT_FORCED_CEILING = '/lustre/gh/main/exopipe_ops/staged_20261008_pertie_astrometry/snapshot_forced_ceiling_v2.json'   # ledger 2110 item 7, ledger 2123 (B); staged snapshot_forced_assoc.py:87-89
-    SNAPSHOT_FORCED_CEILING_SHA256 = 'f9c711f796042a2e9382f6c19b2b6870857790746e69b133e3b95dc35c7eb7d0'
+    SNAPSHOT_FORCED_CEILING_SHA256 = 'c5db06f5705c4b2401a28cd3afb77b66dcc382e297d5f5443f33b04e2f3ccb60'   # = staged snapshot_forced_assoc.py:89 CEIL_CALIB_SHA256, re-pinned 2026-10-13 (exopipe_ops 3909fd2, localizer 43db654; result identical); was f9c711f7...
     # ---- sub-LST window-tie tables: md5 exactly as ops/sublst_pertie.py pins them
     SUBLST_PERTIE_TABLES = {'fallback': ('/lustre/gh/main/exopipe_ops/sublst_pertie_fallback.json', '915333b506488b3804736c6d6c24046e'),             # sublst_pertie.py:90-91
                             'frame_fallback': ('/lustre/gh/main/exopipe_ops/sublst_pertie_frame_fallback.json', 'f3c74d0e89faf50650dde80abfac4065'),   # :540-541
@@ -246,9 +246,12 @@ class calibrate_fluxcorr(_Section):
     WIDEBAND = ('Red', 'Green', 'Blue', 'Full')   # k = mean of member subbands; flux_correction.py:18, :26-27
     VERSION_TEMPLATE = ('fluxcorr-{version}-{yyyymmdd} (LOO power-law smoothing k_b at 73 MHz=1, PB per robust; global S&H factor g = robust '
                         'median over cells on the {scale_date} per-LST VLSSr scale; wideband k = mean of constituent subbands; BAKED INTO THE PIXELS)')   # flux_correction.py:19-21 (v2 string reproduced exactly: version 'v2', yyyymmdd '20261001', scale_date '2026-10-01')
-    TABLE_TOL = 5e-7               # |fluxcorr - k x g| on 6-decimal rows; check_rebuild.py:95-96 (CARD_TOL FLUXCORR)
+    TABLE_DECIMALS = 6             # k_band, g_abs, fluxcorr written to 6 decimals (flux_correction.build_table :65-70); the fluxcorr_table
+                                   # structure test derives its exact bounds from it: |fluxcorr - k x g| <= 0.5e-6 x (k + g + 1) (round6 of the
+                                   # UNROUNDED product; v2 reaches 2.6e-7 of that scale), |k(wideband) - mean k(members)| <= 1e-6 (v2: 4e-7).
+                                   # (Was TABLE_TOL 5e-7 = check_rebuild.py:95-96 CARD_TOL, a header-card tolerance never applied here.)
     RULED = {'BANDVEC_TOL': 'R-FLUX-SCALE-POWERLAW-SMOOTHNESS-THEN-SH-FIT', 'BANDVEC_LOO': 'METHOD-BAND-VECTOR-LEAVE-ONE-BAND-OUT-CONVERGENCE'}
-    PROTECTED_KEYS = ('SUBBANDS', 'WIDEBAND', 'VERSION_TEMPLATE')
+    PROTECTED_KEYS = ('SUBBANDS', 'WIDEBAND', 'VERSION_TEMPLATE', 'TABLE_DECIMALS')
 
 
 class calibrate_template_k(_Section):
@@ -276,5 +279,10 @@ class calibrate_template_k(_Section):
     # the FORCED start with the injected S/N in both tiers (deep kinj_deep.py:97, :105; sub-LST (a) of kcal_tenmin_inject.py:132, ledger 2285)
     TRIALS_COLUMNS = {'deep': ('tf_status', 'ok', 'err_maj_deg', 'err_min_deg'),
                       'sublst': ('a_status', 'ok', 'a_err_maj_deg', 'a_err_min_deg')}
+    # where the production code that fits IN PLACE holds each tier's K (legacy root, file, literal): `template-k verify`
+    # refuses when config fitting.K_TEMPLATE / K_SNAPSHOT differs from it (review 2026-10-13: a re-measure lands there first)
+    INPLACE_K = {'deep': ('exopipe_ops', 'deep_forced_radio.py', 'K_TEMPLATE'),                        # :77 (554b721, ledger 2322)
+                 'sublst': ('exopipe_ops', 'sublst_catalogs.sh', 'FITPOS_K'),                          # :216 (ac2d267, ledger 2327)
+                 'snapshot': ('clv15', 'phase3_template_fit.py', 'K_MAJOR, K_MINOR, K_MAJOR_HIGH')}    # :42 (a715a1b, ledger 2330)
     RULED = {'K_PERCENTILE': 'R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED', 'SNR_KEY': 'R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED'}
-    PROTECTED_KEYS = ('TRIALS_ORIENTATION', 'INJECT_ORIENTATION', 'TRIALS_COLUMNS')
+    PROTECTED_KEYS = ('TRIALS_ORIENTATION', 'INJECT_ORIENTATION', 'TRIALS_COLUMNS', 'INPLACE_K')

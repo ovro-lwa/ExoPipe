@@ -7,16 +7,20 @@ Synthetic data in a fresh directory under /tmp/exopipe3_tests_jupiter/ (removed 
 - end2end: a synthetic Jupiter cell (2 subbands x I,V; 12 frames; flowed cubes, window stacks, arm-A residuals, x2
   residuals, admission tables, ephemeris) measured by the REAL engine clv15/phase3_jupiter_measure.py in place (extract under
   py310_orca, fit with CASA imfit, assign, test) into a /tmp --out under the write guard; every content test passes; the
-  engine's own CONTENT_TEST.txt is ALL-PASS; run.log lines; --resume skips all four units; a re-run of extract refuses the
-  stale fits (J10) unless --fresh --supersede TAG; corrupted products fail their class tests.
+  engine's own CONTENT_TEST.txt is ALL-PASS; run.log lines; --resume skips all four units (from a dirty worktree: the
+  dry run shows each unit re-run, 'record written from a dirty tree'); fit refuses on another node than its extract; a re-run
+  of extract refuses the stale fits (J10) unless --fresh --supersede TAG; corrupted products fail their class tests (meas,
+  fits, cutouts, assign, crop, cell); the 8800 page server (jupiter_server.py in place) on a parity port passes its served
+  test (slider = the M33 integrations, PNGs decode) and fails it when the table on disk changes; exact-pid stop.
 - gates: J1, J7 (FLUXBAKE), J4 (no JUPMASK), J12, J13, pinned-input override into production, MIRROR override refused,
   stage selection.
 - flag-backfill: J30 code gate, explicit window, shard assignment = the launcher's awk, budget integer division, J31, J32,
   verify of an empty copy tree through the real tool.
 - serve: the v2 static server started on a parity port, its served content test, exact-pid stop.
 - dry runs of every action on the real cell 05h_2024-12-29 (read only).
-Read-only checks of real production products (content tests on 05h_2024-12-29, the window, the ephemeris, the 2026-10-07
-VERIFY file, one flagged copy directory).
+Read-only checks of real production products (content tests on 05h_2024-12-29 Phase-1 and V2 products, the window, the
+ephemeris, the 2026-10-07 VERIFY file, the occurrence results); class_negatives: every class test fails on a corrupted copy
+(real products copied to the scratch directory, minimal synthetic layouts for the large V2 products).
 """
 import csv
 import io
@@ -235,9 +239,28 @@ def test_end2end():
         runlog = open(os.path.join(out, 'products', 'logs', 'run.log')).read()
         check('run.log DONE line as the launcher', f'DONE {CELL} ALL-PASS' in runlog, runlog)
         check('nothing written outside --out / --work', not os.path.exists(os.path.join(sl, '..', 'stray')))
-        # resume: every unit skipped (records, inputs, code, config unchanged; outputs re-tested, the cell test in place)
-        rc, txt = step(['jupiter', 'measure', '--resume'] + common)
-        check('--resume skips the 4 units', rc == 0 and txt.count('skipped (resume') == 4, txt[-1500:])
+        # resume: every unit skipped (records, inputs, code, config unchanged; outputs re-tested, the cell test in place).
+        # A record written from a dirty tree is never resumed (core/record): with other units being edited in the worktree
+        # the check asserts that refusal instead, through the dry run (which plans the resume decision and writes nothing).
+        if not str(ex.get('commit') or '').endswith('-dirty'):
+            rc, txt = step(['jupiter', 'measure', '--resume'] + common)
+            check('--resume skips the 4 units', rc == 0 and txt.count('skipped (resume') == 4, txt[-1500:])
+        else:
+            rc, txt = step(['jupiter', 'measure', '--resume', '--dry-run'] + common)
+            check('--resume from a dirty tree: the 4 units re-run (record written from a dirty tree, never resumed)',
+                  txt.count('run (record written from a dirty tree') == 4 and 'skip (' not in txt, txt[-1500:])
+        # fit runs on the node that ran extract (crops are node-local): an extract record from another host refuses
+        xp = os.path.join(out, '_records', 'jupiter', f'measure.extract.{CELL}.json')
+        saved = open(xp).read()
+        x = json.loads(saved)
+        x['meta']['host'] = 'otherhost'
+        open(xp, 'w').write(json.dumps(x))
+        try:
+            rc, txt = step(['jupiter', 'measure', '--stages', 'fit', '--fresh', '--supersede', 't0'] + common)
+        finally:
+            open(xp, 'w').write(saved)
+        check('fit refused on another node than the extract (crops node-local); nothing moved aside', rc == 2 and
+              'node-local to otherhost' in txt and not os.path.exists(os.path.join(od, '_superseded', 't0')), txt[-800:])
         # J10: extract again, then fit refuses the stale fits; --fresh --supersede moves them aside and fits again
         rc, txt = step(['jupiter', 'measure', '--stages', 'extract,fit'] + common)
         check('J10 stale fits refused after a new extract', rc == 2 and 'J10 stale fits' in txt, txt[-1500:])
@@ -246,6 +269,40 @@ def test_end2end():
               os.path.exists(os.path.join(od, '_superseded', 't1', 'MANIFEST.csv')), txt[-1500:])
         # corrupted products fail their class tests
         corrupt_checks(od, work)
+        serve_phase1(od)
+
+
+def serve_phase1(od):
+    """The 8800 Phase-1 page server (exopipe_ops/jupiter_server.py, in place) on a parity port over a copy of the synthetic
+    products: the served test passes (index = the ALL-PASS cells, night pages, slider maximum by the M33 rule, PNGs decode);
+    an assign table changed on disk after serving (one more 10-s integration) fails the slider check; exact-pid stop."""
+    from exopipe.phase3.lib.jupiter import serve as S
+    off = 1000
+    port = CFG.jupiter_serve.PORTS['phase1'] + off
+    if S.listeners(port):
+        print(f'skip phase1 serve test: port {port} in use')
+        return
+    out = os.path.join(TMP, 'serve1')
+    shutil.copytree(od, os.path.join(out, 'products', CELL), ignore=shutil.ignore_patterns('_superseded'))
+    rc, txt = step(['jupiter', 'serve', '--stages', 'phase1', '--port-offset', str(off), '--out', out])
+    rec = os.path.join(out, '_served', f'jupiter_{port}.json')
+    try:
+        tests = [x for r in records(out).values() for x in r['tests']]
+        check('phase1 server started on the parity port; served test passes (slider = M33 integrations, PNGs decode)',
+              rc == 0 and tests and all(x['passed'] for x in tests), txt[-1500:])
+        ap = os.path.join(out, 'products', CELL, 'assign_10s.csv')
+        rows = list(csv.DictReader(open(ap)))
+        rows[-1]['t_unix'] = '%.1f' % (float(rows[-1]['t_unix']) + 100.0)      # a 13th integration the server never showed
+        with open(ap, 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+        r = validate.run('jupiter_served_page', rec)
+        check('served page whose slider disagrees with the M33 integrations fails jupiter_served_page',
+              not r[0]['passed'] and 'slider max 11' in r[0]['detail'] and '13 integrations' in r[0]['detail'], r[0]['detail'])
+    finally:
+        rc, txt = step(['jupiter', 'serve', '--stages', 'phase1', '--port-offset', str(off), '--out', out, '--stop'])
+    check('phase1 server: exact-pid stop; port free', rc == 0 and not S.listeners(port), txt[-500:])
 
 
 def corrupt_checks(od, work):
@@ -265,6 +322,19 @@ def corrupt_checks(od, work):
     open(p, 'w').write('\n'.join(lines + lines[:1]) + '\n')
     r = validate.run('jupiter_fits', p)
     check('duplicate fit record fails jupiter_fits', not r[0]['passed'] and 'duplicates 1' in r[0]['detail'], r[0]['detail'])
+    # cutouts: the stored pixels around Jupiter of one frame changed -> the bilinear value no longer equals the meas value
+    p = os.path.join(tmp, 'cutouts_10s_41MHz_I.npz')
+    z = dict(np.load(p, allow_pickle=False))
+    r = validate.run('jupiter_cutouts', p)
+    check('copied cutouts pass jupiter_cutouts', r[0]['passed'], r[0]['detail'])
+    cut = z['cut'].copy()
+    H = cut.shape[1] // 2
+    cut[4, H - 2:H + 3, H - 2:H + 3] += np.float16(5.0)
+    z['cut'] = cut
+    np.savez_compressed(p, **z)
+    r = validate.run('jupiter_cutouts', p)
+    check('changed cutout pixels at Jupiter fail jupiter_cutouts', not r[0]['passed'] and '1 disagree' in r[0]['detail'],
+          r[0]['detail'])
     p = os.path.join(tmp, 'assign_10s.csv')
     rows = list(csv.DictReader(open(p)))
     i = next(i for i, x in enumerate(rows) if x['detected'] == '1')
@@ -367,8 +437,22 @@ def test_flag():
     os.makedirs(empty)
     rc, txt = step(['jupiter', 'flag-backfill', '--stages', 'verify', '--flagged-root', empty, '--out', out, '--cores', 'none'])
     vf = [f for f in os.listdir(state) if f.startswith('VERIFY_')]
+    vtxt = open(os.path.join(state, vf[0])).read() if len(vf) == 1 else ''
     check('verify through the real tool on an empty tree: VERIFY OK, class test passes', rc == 0 and len(vf) == 1 and
-          'VERIFY OK: 0 subband directories' in open(os.path.join(state, vf[0])).read(), txt[-800:])
+          'VERIFY OK: 0 subband directories' in vtxt, txt[-800:])
+    check('the VERIFY file holds the tool output only (no runner header), as the launcher tee', '=====' not in vtxt
+          and vtxt.splitlines()[0].startswith('VERIFY'), vtxt[:300])
+    # negative: a VERIFY file with a FAIL line, or with counts other than the verify unit read, fails its class test
+    bad = os.path.join(TMP, 'VERIFY_bad.txt')
+    real = open(os.path.join(CFG.jupiter_flag.STATE_DIR, 'VERIFY_20261007T111100Z.txt')).read()
+    open(bad, 'w').write('FAIL 03h/2025-01-05/Run_x/18MHz: sha256 differs\n' + real)
+    r = validate.run('jupiter_flag_verify', bad)
+    check('VERIFY file with a FAIL line fails jupiter_flag_verify', not r[0]['passed'] and '1 FAIL lines' in r[0]['detail'],
+          r[0]['detail'])
+    open(bad, 'w').write(real)
+    r = validate.run('jupiter_flag_verify', bad, expected={'dirs': 2581, 'jupiter_rows': 2117})
+    check('VERIFY counts that differ from the verify unit fail jupiter_flag_verify', not r[0]['passed'] and 'differ' in
+          r[0]['detail'], r[0]['detail'])
     rc, txt = step(['jupiter', 'flag-backfill', '--dry-run', '--nodes', 'lwacalim01,lwacalim02,lwacalim04,lwacalim05'])
     check('dry-run on the production state: 222 cells, 4 shards, 500 GB each', 'run: 222 cells over 4 nodes' in txt and
           '--max-copy-gb 500' in txt, txt[-1500:])
@@ -428,6 +512,11 @@ def test_config_and_mirrors():
                 check(f'ruling {s}.{k} = a ledger row', ledger.has_id(lid, CFG.paths.FIX_LEDGER), lid)
     n = sum(mirrors.check_literals(m) for m in mirrors.ACTION_MODULES.values())
     check(f'every MIRROR key equals its in-place module literal ({n} keys)', n >= 50)
+    import re
+    txt = open(os.path.join(CFG.jupiter.V2_CODE_ROOT, 'integrate', 'run_integration.sh')).read()
+    notes = dict(re.findall(r'^NOTE\[(\w+)\]="(.*)"$', txt, re.M))
+    check('jupiter_v2.ROOT_NOTES = run_integration.sh NOTE[...] verbatim (ledger 1973)', notes == dict(CFG.jupiter_v2.ROOT_NOTES),
+          sorted(set(notes) ^ set(CFG.jupiter_v2.ROOT_NOTES)))
 
 
 def test_real_products_readonly():
@@ -459,12 +548,220 @@ def test_real_products_readonly():
     check('real backfill VERIFY file', r[0]['passed'] and r[0]['value'] == 2581, r[0]['detail'])
     r = validate.run('jupiter_occurrence', '/lustre/gh/main/phase3/jupiter/v2/occurrence/validation/content_test_results.json')
     check('real occurrence results = the accepted waiver', r[0]['passed'], r[0]['detail'])
+    # the V2 classes on the published 05h_2024-12-29 products (the fast ones; renders, quarantine and the masters tree are
+    # re-hashed in 1-12 min on Lustre - checked by the review run, plan/impl/jupiter.md section 4)
+    for cls, rel in (('jupiter_geom_raw', 'nightgeom/horizons_2024-12-29/manifest.json'),
+                     ('jupiter_geom', f'nightgeom/{REAL_CELL}/CONTENT_TEST.txt'),
+                     ('jupiter_v2_root', f'masters/derived/V2/{REAL_CELL}/CONTENT_TEST.txt'),
+                     ('jupiter_blue_anchor', f'anchor/{REAL_CELL}/V2/MANIFEST.sha256'),
+                     ('jupiter_refcheck', f'integrate/inputs/ref_offsets_{REAL_CELL}.csv'),
+                     ('jupiter_metrics', f'integrate/{REAL_CELL}/CONTENT_TEST_metrics.txt'),
+                     ('jupiter_site_summary', f'site/{REAL_CELL}/CONTENT_TEST.txt'),
+                     ('jupiter_disclosure', 'integrate/occurrence_disclosed_failures.json')):
+        r = validate.run(cls, os.path.join(V2, rel))
+        check(f'real {cls} ({rel})', all(x['passed'] for x in r), [x['detail'] for x in r])
+
+
+V2 = '/lustre/gh/main/phase3/jupiter/v2'
+
+
+def _rewrite(path, fn):
+    s = open(path).read()
+    t = fn(s)
+    assert t != s, f'corruption of {path} changed nothing'
+    open(path, 'w').write(t)
+
+
+def test_class_negatives():
+    """Each class test fails on a corrupted COPY of a product (real products copied to /tmp, or a minimal synthetic layout
+    where the real product is large): ephemeris, window, the V2 and occurrence classes."""
+    import tarfile
+    base = os.path.join(TMP, 'neg')
+    os.makedirs(base)
+
+    def neg(cls, path, why, **ctx):
+        r = validate.run(cls, path, **ctx)
+        check(f'{why} fails {cls}', not all(x['passed'] for x in r), [x['detail'] for x in r])
+
+    def pos(cls, path, why, **ctx):
+        r = validate.run(cls, path, **ctx)
+        check(f'{why} passes {cls}', all(x['passed'] for x in r), [x['detail'] for x in r])
+
+    # ephemeris: an angle outside [0, 360) / rows cut so the window is not covered
+    e = os.path.join(base, 'ephem', 'jupiter_ephem_2024-12-29.csv')
+    os.makedirs(os.path.dirname(e))
+    shutil.copy('/lustre/gh/main/phase3/jupiter/ephem/jupiter_ephem_2024-12-29.csv', e)
+    pos('jupiter_ephem', e, 'copied ephemeris')
+    lines = open(e).read().splitlines()
+    i = lines[0].split(',').index('cml_earth')
+    f = lines[5].split(',')
+    f[i] = '400.0'
+    lines[5] = ','.join(f)
+    open(e, 'w').write('\n'.join(lines) + '\n')
+    neg('jupiter_ephem', e, 'an ephemeris angle of 400 deg')
+    open(e, 'w').write('\n'.join(lines[:1] + [lines[1]] + lines[200:]) + '\n')
+    neg('jupiter_ephem', e, 'an ephemeris with a gap')
+    # window: a duplicated cell / a cell below 30 deg
+    w = os.path.join(base, 'nights.csv')
+    real = open(CFG.jupiter.WINDOW_CSV).read().splitlines()
+    open(w, 'w').write('\n'.join(real + real[1:2]) + '\n')
+    neg('jupiter_window', w, 'a window with a duplicated cell')
+    f = real[1].split(',')
+    f[4] = '29.9'
+    open(w, 'w').write('\n'.join(real[:1] + [','.join(f)] + real[2:]) + '\n')
+    neg('jupiter_window', w, 'a window cell at 29.9 deg')
+    # a backfill copy directory (the tool's own verify_tree in place): one copied image byte changed
+    src = '/lustre/gh/main/phase3/jupiter/phase1_flagged/07h/2025-01-08/Run_20260506_012543/23MHz'
+    pos('jupiter_flagged_copy', src, 'a real backfill copy directory (read only)')
+    cd = os.path.join(base, 'flagged', *src.split(os.sep)[-4:])
+    shutil.copytree(src, cd)
+    pos('jupiter_flagged_copy', cd, 'its copy')
+    img = next(os.path.join(cd, x) for x in sorted(os.listdir(cd)) if x.endswith('-image.fits.fs'))
+    b = bytearray(open(img, 'rb').read())
+    b[-100] ^= 0xFF
+    open(img, 'wb').write(bytes(b))
+    neg('jupiter_flagged_copy', cd, 'a copied pilot image changed')
+    # raw Horizons fetch: one table changed
+    hz = os.path.join(base, 'horizons')
+    shutil.copytree(os.path.join(V2, 'nightgeom', 'horizons_2024-12-29'), hz)
+    pos('jupiter_geom_raw', os.path.join(hz, 'manifest.json'), 'copied Horizons fetch')
+    t = sorted(x for x in os.listdir(hz) if x.endswith('.txt'))[0]
+    _rewrite(os.path.join(hz, t), lambda s: s.replace('.', ',', 1))
+    neg('jupiter_geom_raw', os.path.join(hz, 'manifest.json'), 'a changed raw Horizons table')
+    # nightgeom: a geometry table rewritten after its verdict / a verdict whose last line disagrees
+    ng = os.path.join(base, 'nightgeom', REAL_CELL)
+    shutil.copytree(os.path.join(V2, 'nightgeom', REAL_CELL), ng)
+    os.utime(os.path.join(ng, 'CONTENT_TEST.txt'), (time.time() - 100, time.time() - 100))
+    for x in os.listdir(ng):
+        if x != 'CONTENT_TEST.txt':
+            os.utime(os.path.join(ng, x), (time.time() - 200, time.time() - 200))
+    pos('jupiter_geom', os.path.join(ng, 'CONTENT_TEST.txt'), 'copied nightgeom cell')
+    os.utime(os.path.join(ng, 'geom_10s.csv'))
+    neg('jupiter_geom', os.path.join(ng, 'CONTENT_TEST.txt'), 'a geometry table newer than its verdict')
+    # derived root: one assign row dropped
+    dr = os.path.join(base, 'derived', REAL_CELL)
+    shutil.copytree(os.path.join(V2, 'masters', 'derived', 'V2', REAL_CELL), dr, symlinks=True)
+    pos('jupiter_v2_root', os.path.join(dr, 'CONTENT_TEST.txt'), 'copied V2 derived root')
+    _rewrite(os.path.join(dr, 'assign_10min.csv'), lambda s: '\n'.join(s.splitlines()[:-1]) + '\n')
+    neg('jupiter_v2_root', os.path.join(dr, 'CONTENT_TEST.txt'), 'a derived root with an assign row missing')
+    # metrics: one metrics file unreadable
+    md = os.path.join(base, 'integrate', REAL_CELL)
+    shutil.copytree(os.path.join(V2, 'integrate', REAL_CELL), md)
+    now = time.time()
+    for x in os.listdir(md):
+        os.utime(os.path.join(md, x), (now - 300, now - 300))
+    os.utime(os.path.join(md, 'CONTENT_TEST_metrics.txt'), (now - 100, now - 100))
+    pos('jupiter_metrics', os.path.join(md, 'CONTENT_TEST_metrics.txt'), 'copied metrics')
+    _rewrite(os.path.join(md, 'metrics_V2.json'), lambda s: s[:len(s) // 2])
+    neg('jupiter_metrics', os.path.join(md, 'CONTENT_TEST_metrics.txt'), 'a truncated metrics_V2.json')
+    # site summary: freshness line failed / a failure outside the accepted set named
+    ss = os.path.join(base, 'site_CONTENT_TEST.txt')
+    shutil.copy(os.path.join(V2, 'site', REAL_CELL, 'CONTENT_TEST.txt'), ss)
+    pos('jupiter_site_summary', ss, 'copied site summary')
+    _rewrite(ss, lambda s: s.replace('FRESHNESS -> PASS', 'FRESHNESS -> FAIL'))
+    neg('jupiter_site_summary', ss, 'a summary whose freshness failed')
+    shutil.copy(os.path.join(V2, 'site', REAL_CELL, 'CONTENT_TEST.txt'), ss)
+    _rewrite(ss, lambda s: s.replace('L1.IoD', 'L1.IoX'))
+    neg('jupiter_site_summary', ss, 'a summary naming a failure outside the accepted set')
+    # occurrence results + disclosure record: a failing value changed in the live results
+    occ = os.path.join(base, 'v2', 'occurrence', 'validation', 'content_test_results.json')
+    dis = os.path.join(base, 'v2', CFG.jupiter_occurrence.DISCLOSURE)
+    os.makedirs(os.path.dirname(occ))
+    os.makedirs(os.path.dirname(dis))
+    shutil.copy(os.path.join(V2, 'occurrence', 'validation', 'content_test_results.json'), occ)
+    d = json.load(open(os.path.join(V2, CFG.jupiter_occurrence.DISCLOSURE)))
+    d['source'] = occ
+    json.dump(d, open(dis, 'w'))
+    pos('jupiter_occurrence', occ, 'copied occurrence results')
+    pos('jupiter_disclosure', dis, 'copied disclosure record')
+    res = json.load(open(occ))
+    x = next(r for r in res['results'] if r.get('gating') and not r.get('passed'))
+    x['value'] = (x['value'] + 1.0) if isinstance(x.get('value'), (int, float)) else 'changed'
+    json.dump(res, open(occ, 'w'))
+    neg('jupiter_occurrence', occ, 'an accepted failure whose live value changed')
+    neg('jupiter_disclosure', dis, 'a disclosure record whose live value changed')
+    res = json.load(open(os.path.join(V2, 'occurrence', 'validation', 'content_test_results.json')))
+    next(r for r in res['results'] if r.get('gating') and r.get('passed'))['passed'] = False
+    json.dump(res, open(occ, 'w'))
+    neg('jupiter_occurrence', occ, 'a fourth failing gating test')
+    # minimal synthetic layouts for the large V2 products (masters tree 710 files, Blue anchor 55 MB, crop archives 170 MB,
+    # renders 898 files per root, quarantine 43,086 files)
+    m = os.path.join(base, 'masters')
+    os.makedirs(os.path.join(m, 'V2', REAL_CELL))
+    open(os.path.join(m, 'V2', REAL_CELL, 'meas_10s.csv'), 'w').write('a\n1\n')
+    os.utime(os.path.join(m, 'V2', REAL_CELL, 'meas_10s.csv'), (now - 300, now - 300))
+    open(os.path.join(m, f'CONTENT_TEST_{REAL_CELL}.txt'), 'w').write('T1 ... -> PASS\nALL-PASS\n')
+    pos('jupiter_v2_masters', os.path.join(m, f'CONTENT_TEST_{REAL_CELL}.txt'), 'synthetic masters tree')
+    os.utime(os.path.join(m, 'V2', REAL_CELL, 'meas_10s.csv'), (time.time() + 100, time.time() + 100))
+    neg('jupiter_v2_masters', os.path.join(m, f'CONTENT_TEST_{REAL_CELL}.txt'), 'a variant file newer than the masters verdict')
+    open(os.path.join(m, f'CONTENT_TEST_{REAL_CELL}.txt'), 'w').write('T1 ... -> FAIL\nALL-PASS\n')
+    neg('jupiter_v2_masters', os.path.join(m, f'CONTENT_TEST_{REAL_CELL}.txt'), 'a masters verdict with a FAIL line')
+    import hashlib
+
+    def manifest_dir(d, names, verdict):
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'MANIFEST.sha256'), 'w') as fh:
+            for nm in names:
+                p = os.path.join(d, nm)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                open(p, 'w').write(f'content of {nm}\n')
+                fh.write(f'{hashlib.sha256(open(p, "rb").read()).hexdigest()}  {nm}\n')
+        if verdict:
+            open(verdict, 'w').write('B1 ... -> PASS\nALL-PASS\n')
+            os.utime(verdict, (time.time() + 5, time.time() + 5))
+    an = os.path.join(base, 'anchor', REAL_CELL, 'V2')
+    manifest_dir(an, ['blue_10s.csv', 'blue_1min.csv'], os.path.join(base, 'anchor', REAL_CELL, 'CONTENT_TEST_blue_V2.txt'))
+    pos('jupiter_blue_anchor', os.path.join(an, 'MANIFEST.sha256'), 'synthetic Blue anchor')
+    open(os.path.join(an, 'blue_10s.csv'), 'a').write('x\n')
+    os.utime(os.path.join(an, 'blue_10s.csv'), (now - 300, now - 300))
+    neg('jupiter_blue_anchor', os.path.join(an, 'MANIFEST.sha256'), 'a Blue anchor member changed after its manifest')
+    rd = os.path.join(base, 'renders', 'V2.r20990101T000000Z')
+    manifest_dir(rd, ['10s/panel_a.png', 'index.json'], None)
+    open(os.path.join(rd, 'RENDER_TEST.txt'), 'w').write('T1 -> PASS\nALL-PASS\n')
+    pos('jupiter_site_render', os.path.join(rd, 'MANIFEST.sha256'), 'synthetic render')
+    os.remove(os.path.join(rd, '10s', 'panel_a.png'))
+    neg('jupiter_site_render', os.path.join(rd, 'MANIFEST.sha256'), 'a render with a manifest member missing')
+    q = os.path.join(base, 'quarantine')
+    manifest_dir(q, ['renders/V0.r1/a.png', 'renders/V1.r2/b.png'], None)
+    open(os.path.join(q, 'DELETED_x_list.txt'), 'w').write('V1.r2\n')       # one render directory name per line, as the real list
+    shutil.rmtree(os.path.join(q, 'renders', 'V1.r2'))
+    pos('jupiter_render_quarantine', os.path.join(q, 'MANIFEST.sha256'), 'synthetic quarantine (a recorded deletion)')
+    open(os.path.join(q, 'renders', 'V0.r1', 'a.png'), 'a').write('x')
+    neg('jupiter_render_quarantine', os.path.join(q, 'MANIFEST.sha256'), 'a quarantined file changed')
+    pv = os.path.join(base, 'provenance')
+    os.makedirs(pv)
+    src = os.path.join(pv, 'c1.fits')
+    open(src, 'wb').write(b'crop bytes')
+    with tarfile.open(os.path.join(pv, 'crops_V2.tar'), 'w') as tf:
+        tf.add(src, arcname='c1.fits')
+    open(os.path.join(pv, 'crops_V2.csv'), 'w').write(
+        f'member,bytes,sha256\nc1.fits,10,{hashlib.sha256(b"crop bytes").hexdigest()}\n')
+    open(os.path.join(pv, 'CONTENT_TEST_crops_V2.txt'), 'w').write('TRANSFER -> PASS\nALL-PASS\n')
+    pos('jupiter_crop_archive', os.path.join(pv, 'crops_V2.tar'), 'synthetic crop archive')
+    open(os.path.join(pv, 'crops_V2.csv'), 'w').write('member,bytes,sha256\nc1.fits,10,' + '0' * 64 + '\n')
+    neg('jupiter_crop_archive', os.path.join(pv, 'crops_V2.tar'), 'a crop archive member whose sha256 differs from its row')
+    rc_ = os.path.join(base, 'inputs')
+    os.makedirs(rc_)
+    ro = os.path.join(rc_, f'ref_offsets_{REAL_CELL}.csv')
+    for name in (f'ref_offsets_{REAL_CELL}.csv', f'window_summary_{REAL_CELL}.csv'):
+        shutil.copy(os.path.join(V2, 'integrate', 'inputs', name), rc_)
+    pos('jupiter_refcheck', ro, 'copied reference-tie tables')
+    rows = list(csv.DictReader(open(ro)))
+    rows[0]['dx'] = '%.3f' % (float(rows[0]['dx']) + 9.0)        # one reference offset changed: its window's medians move
+    with open(ro, 'w', newline='') as fh:
+        wr = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        wr.writeheader()
+        wr.writerows(rows)
+    neg('jupiter_refcheck', ro, 'a reference offset that no longer gives the window summary')
+    open(os.path.join(rc_, f'window_summary_{REAL_CELL}.csv'), 'w').write(
+        open(os.path.join(V2, 'integrate', 'inputs', f'window_summary_{REAL_CELL}.csv')).readline())
+    neg('jupiter_refcheck', ro, 'a reference-tie window summary without rows')
 
 
 def main():
     try:
         for t in (test_config_and_mirrors, test_gates, test_flag, test_serve, test_dry_runs_real, test_real_products_readonly,
-                  test_end2end):
+                  test_class_negatives, test_end2end):
             print(f'--- {t.__name__}')
             t()
     finally:

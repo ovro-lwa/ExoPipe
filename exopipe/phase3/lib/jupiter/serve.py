@@ -152,7 +152,8 @@ def plan(args, roots):
 
 def start(spec, roots):
     """setsid + nohup semantics: new session, stdin /dev/null, stdout+stderr to the log, other descriptors closed."""
-    env = dict(os.environ)
+    clear = tuple(getattr(_C().runner, 'CHILD_ENV_CLEAR_PREFIXES', ('P3_',)))    # as core.legacy.run: no inherited switch
+    env = {k: v for k, v in os.environ.items() if not k.startswith(clear)}
     env.update(_C().jupiter.ENV)
     env.pop('PYTHONPATH', None)
     if roots.guard:

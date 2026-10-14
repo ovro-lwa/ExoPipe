@@ -403,6 +403,7 @@ def derive_inputs(ctx):
                 man['parents_dir'] = parents_union(ctx, u, sdir_harvest=sdir)
         else:
             man['parents_dir'] = sublst_env(ctx, sdir)['P3_PARENT_DIR']
+        man['parents_gen'] = add_parent_inputs(u, man['parents_dir'])
         # multiples: per-Stokes exclude lists frozen
         if ctx.cls == 'multiples':
             man['exclude_cells'] = {}
@@ -432,7 +433,7 @@ def derive_inputs(ctx):
 
 
 def stokes_of(ctx):
-    want = [s.strip() for s in (ctx.args.stokes or 'V,I').split(',') if s.strip()]
+    want = [s.strip() for s in (ctx.args.stokes or ','.join(ctx.C.calibrate_bright_parent.STOKES)).split(',') if s.strip()]
     bad = [s for s in want if s not in ('I', 'V')]
     if bad:
         raise ValueError(f'--stokes {ctx.args.stokes}: I and/or V')
@@ -482,6 +483,16 @@ def parents_union(ctx, u, sdir_harvest):
         raise Refusal(f'{len(hit)} harvest cell(s) have no parent catalogue on their current master: {hit[:10]} '
                       f'(build them with masters --stages sources; gate G3)')
     return out
+
+
+def add_parent_inputs(u, parents_dir):
+    """Fingerprint the parent catalogues by their .gen.json sidecars (each names the md5 of the master it was made on; spec
+    7.2 item 13): a changed union makes the derivation's record stale. Returns the number of sidecars."""
+    import glob
+    gens = sorted(glob.glob(os.path.join(parents_dir, '*.gen.json'))) if parents_dir and os.path.isdir(parents_dir) else []
+    for p in gens:
+        u.add_input(p)
+    return len(gens)
 
 
 def count_excluded_rows(ctx, sdir, man):
@@ -616,6 +627,7 @@ def derive_curves(ctx):
         for f in man['files']:
             u.add_input(f)
         u.add_input(script)
+        add_parent_inputs(u, man['parents_dir'])
 
         def one(job):
             name, env, argv = job
@@ -671,11 +683,19 @@ def derive_build(ctx):
     B = ctx.C.calibrate_bright_parent
     d = ctx.stage_dir('build')
     if ctx.dry:
+        plan = {'installed': installed_path(ctx.tier), 'build_keys': B.BUILD_KEYS.get(ctx.tier)}
+        if not ctx.args.curves and 'curves' in ctx.stages:
+            # the curves stage runs EARLIER IN THIS INVOCATION: the build reads the derivations that stage writes and lists
+            # in its record (never a glob), so the plan names them instead of refusing on a record that does not exist yet
+            names = {'bright-parent': {'deep': ('deep_elev_r3.json', 'deep_elev_r2V.json'), 'sublst': ('sublst_tables_<UTC>.json',)},
+                     'multiples': {'deep': ('multi_r3_I.json', 'multi_r3_V.json', 'multi_r2V.json')}}[ctx.cls][ctx.tier]
+            return dict(plan, after='the curves stage of this version (earlier in this invocation)',
+                        derivations=[os.path.join(ctx.stage_dir('curves'), n) for n in names])
         try:
             paths = _curves_files(ctx)[0]
         except (Refusal, ValueError) as e:
             paths = [f'(not yet: {e})']
-        return {'derivations': paths, 'installed': installed_path(ctx.tier), 'build_keys': B.BUILD_KEYS.get(ctx.tier)}
+        return dict(plan, derivations=paths)
     if ctx.skip_if_current('derive-build'):
         return None
     paths, subset, excl, _rec = _curves_files(ctx)
@@ -829,6 +849,17 @@ def served_replay(ctx, base, merged, parents, run_dir, lists, d, u):
             'tally': {'|'.join(k): v for k, v in sorted(tally.items())}, 'served_tiers': list(tiers),
             'served_sources_checked': len(served) > 0, 'n_served_members': len(served), 'n_judged': len(judg),
             'served_identities_losing': {k: v[0] for k, v in sorted(ids.items())}, 'mode': mode}
+    # what changes for the served sources (served_change_20261006.py, band-gate part): gone / reduced / unchanged per source,
+    # the judged ones listed; the night-rejected and re-searched fates of that script belonged to the P3S4 -> P3S5 hand-over
+    src, jud, leave, jrows = cuts.source_fates(rows, old, new, served, cuts.judged_labels(run_dir, C.calibrate.JUDGEMENTS,
+                                                                                       stokes=tuple(st)))
+    sp_ = os.path.join(d, 'served_sources_judged.csv')
+    K.write_csv(sp_, ['stokes', 'source', 'label', 'status', 'detections', 'band_removed'], jrows)
+    summ['served_sources'] = {'by_status': {'|'.join(k): v for k, v in sorted(src.items())},
+                              'judged_by_status': {'|'.join(k): v for k, v in sorted(jud.items())},
+                              'member_detections_leaving': dict(sorted(leave.items())), 'judged_csv': sp_}
+    if ctx.cls == 'bright-parent' and ctx.tier == 'deep':
+        summ['returning'] = returning(ctx, run_dir, rms, new_t, P, parents, lat)
     if ctx.tier == 'sublst':
         n, bad, ex = cuts.table_notes(rows, new)
         summ['table_notes'] = {'n': n, 'bad': bad, 'example': ex}
@@ -840,6 +871,22 @@ def served_replay(ctx, base, merged, parents, run_dir, lists, d, u):
         G, _ = _gate_inputs(ctx, parents)
         summ['in_search'] = in_search_kept(ctx, label, rms, new_t, P, G, lat)
     return summ
+
+
+def returning(ctx, run_dir, rms, new_t, P, parents, lat):
+    """Detections the installed gate removed at the served pass (<run>/master_catalog_removed.csv, a removal reason naming the
+    table) that the candidate gate keeps: they return to the list (served_change_20261006.py:76-81). Returns counts by Stokes."""
+    import collections
+    from exopipe.phase3.lib.calibrate import cuts
+    p = os.path.join(run_dir, 'master_catalog_removed.csv')
+    if not os.path.exists(p):
+        return {'list': None, 'n_table_removed': 0, 'returning': {}}
+    st = set(stokes_of(ctx))
+    rem = [r for r in K.read_csv(p) if 'table' in (r.get('removal_reason') or r.get('reason') or '') and r.get('stokes') in st]
+    G, _ = _gate_inputs(ctx, parents)
+    ret = cuts.cuts(rem, rms, new_t, P, G, cadence='deep', elev_on=True, lat_deg=lat) if rem else {}
+    n = collections.Counter(r['stokes'] for i, r in enumerate(rem) if not ret[i][0])
+    return {'list': p, 'n_table_removed': len(rem), 'returning': dict(sorted(n.items()))}
 
 
 def in_search_kept(ctx, label, rms, new_t, P, G, lat):
@@ -949,7 +996,7 @@ def install(ctx):
     rid = K.check_ruling(ctx.args)
     cp = candidate_path(ctx)
     cand_sha = K.sha256(cp)
-    diff_rec = K.diff_gate(ctx.out, ctx.cls, ctx.tier, ctx.version, cand_sha)
+    diff_rec = K.diff_gate(ctx.out, ctx.cls, ctx.tier, ctx.version, cand_sha, installed_sha=K.sha256(K.need_file(inst_p, 'installed table')))
     cand = K.read_json(cp)
     if (cand.get('meta') or {}).get('calibrate', {}).get('subset'):
         raise Refusal('install: the candidate was derived from a subset (--cells / --exclude-cells / --stokes): never '

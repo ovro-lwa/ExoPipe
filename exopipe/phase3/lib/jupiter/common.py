@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import shutil
-import socket
 import time
 import uuid
 
@@ -41,7 +40,9 @@ def C():
 
 
 def host():
-    return socket.gethostname()
+    """This host's short name (core.env.host: the key of every per-host site table)."""
+    from exopipe.phase3.core import env
+    return env.host()
 
 
 def utc():

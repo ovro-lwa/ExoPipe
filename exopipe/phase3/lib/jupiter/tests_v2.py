@@ -11,7 +11,7 @@ the product (it writes its verdict into the product directory, so it cannot be a
   jupiter_v2_root           masters/derived/<V>/<cell>/CONTENT_TEST.txt        verdict, links resolve, assign rows = meas rows
   jupiter_crop_archive      provenance/<cell>/crops_<label>.tar                members re-hashed = crops_<label>.csv; verdict
   jupiter_blue_anchor       anchor/<cell>/<label>/MANIFEST.sha256              members re-hashed; CONTENT_TEST_blue_<label>
-  jupiter_refcheck          integrate/inputs/ref_offsets_<cell>.csv            both reference-tie tables parse, rows present
+  jupiter_refcheck          integrate/inputs/ref_offsets_<cell>.csv            window_summary tie columns recomputed from ref_offsets
   jupiter_metrics           integrate/<cell>/CONTENT_TEST_metrics.txt          verdict, metrics_<label>.json per root, freshness
   jupiter_site_render       site/<cell>/renders/<label>.r<UTC>/MANIFEST.sha256 members re-hashed; RENDER_TEST.txt ALL-PASS
   jupiter_site_summary      site/<cell>/CONTENT_TEST.txt                       ALL-PASS (except exactly the accepted failures)
@@ -201,17 +201,59 @@ def blue_manifest(path, **ctx):
 
 @content_test('jupiter_refcheck')
 def ref_inputs(path, **ctx):
-    """integrate/inputs/ref_offsets_<cell>.csv and window_summary_<cell>.csv (the reference-tie inputs): both parse with rows.
-    Not yet: the tables re-made by the refcheck script and compared (spec M3) - that runs only in `v2 --stages refcheck`."""
+    """integrate/inputs/ref_offsets_<cell>.csv and window_summary_<cell>.csv (the reference-tie inputs made by
+    v2/integrate/inputs/jup_refcheck_20241229.py): both parse with rows; the summary's windows = the (subband, window) pairs
+    with reference fits, in the script's order; per window the reference-tie columns recomputed from ref_offsets by the
+    script's rules (:61-70): n_ref, n_near6 (sep_deg < 6), ref_dx/ref_dy = median offsets, ref_scatter = median distance
+    from that median, near_dx/near_dy = medians of the near ones (2 decimals); jup<S>_dx_tied = jup<S>_dx - ref_dx (to the
+    2-decimal rounding of both). Not checked here: the reference fits themselves (re-made only by `v2 --stages refcheck`,
+    which keeps an existing table only when it is byte-identical to the fresh one)."""
+    import statistics as st
+    import math
     d = os.path.dirname(os.path.abspath(path))
     cell = re.sub(r'^ref_offsets_|\.csv$', '', os.path.basename(path))
-    out = []
-    for p in (path, os.path.join(d, f'window_summary_{cell}.csv')):
-        if not os.path.exists(p):
-            return False, None, f'{os.path.basename(p)} missing'
-        rows = list(csv.DictReader(open(p, newline='')))
-        out.append(len(rows))
-    return all(out), out[0], f'ref_offsets {out[0]} rows, window_summary {out[1]} rows'
+    ws = os.path.join(d, f'window_summary_{cell}.csv')
+    if not os.path.exists(ws):
+        return False, None, f'{os.path.basename(ws)} missing'
+    refs = list(csv.DictReader(open(path, newline='')))
+    summ = list(csv.DictReader(open(ws, newline='')))
+    if not refs or not summ:
+        return False, len(refs), f'ref_offsets {len(refs)} rows, window_summary {len(summ)} rows'
+    groups = {}
+    for r in refs:
+        groups.setdefault((r['sb'], r['w']), []).append(r)
+    order = sorted(groups, key=lambda k: (_C().jupiter.SUBBANDS.index(k[0]) if k[0] in _C().jupiter.SUBBANDS else 99, k[1]))
+    if [(e['sb'], e['w']) for e in summ] != order:
+        return False, len(summ), f'summary windows {len(summ)} != the {len(order)} (subband, window) pairs with reference fits'
+
+    def f(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return float('nan')
+
+    def same(a, b, tol=0.0051):
+        return (math.isnan(a) and math.isnan(b)) or abs(a - b) <= tol
+    bad = []
+    for e in summ:
+        rr = groups[(e['sb'], e['w'])]
+        dx, dy = [f(r['dx']) for r in rr], [f(r['dy']) for r in rr]
+        near = [r for r in rr if f(r['sep_deg']) < 6]
+        mdx, mdy = st.median(dx), st.median(dy)
+        want = {'n_ref': len(rr), 'n_near6': len(near), 'ref_dx': round(mdx, 2), 'ref_dy': round(mdy, 2),
+                'ref_scatter': round(st.median(math.hypot(a - mdx, b - mdy) for a, b in zip(dx, dy)), 2),
+                'near_dx': round(st.median(f(r['dx']) for r in near), 2) if near else float('nan'),
+                'near_dy': round(st.median(f(r['dy']) for r in near), 2) if near else float('nan')}
+        for k, v in want.items():
+            if not same(f(e.get(k)), float(v)):
+                bad.append(f"{e['sb']} {e['w']} {k} {e.get(k)} != {v}")
+        for S in ('I', 'V'):
+            for ax, m in (('dx', mdx), ('dy', mdy)):
+                if e.get(f'jup{S}_{ax}') not in (None, ''):
+                    if not same(f(e.get(f'jup{S}_{ax}_tied')), f(e[f'jup{S}_{ax}']) - m, tol=0.0101):
+                        bad.append(f"{e['sb']} {e['w']} jup{S}_{ax}_tied")
+    return not bad, len(summ), (f'ref_offsets {len(refs)} rows over {len(order)} windows; window_summary {len(summ)} rows; '
+                                f'{len(bad)} recomputed values differ' + (f' ({"; ".join(bad[:3])})' if bad else ''))
 
 
 @content_test('jupiter_metrics')

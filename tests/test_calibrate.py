@@ -27,7 +27,6 @@ import io
 import json
 import os
 import shutil
-import socket
 import sys
 import time
 
@@ -74,14 +73,18 @@ def synthetic_tables(d, **values):
 
 
 def cli(*argv):
-    """exopipe3 in process; returns (exit code, stderr+stdout text)."""
+    """exopipe3 in process; returns (exit code, stderr+stdout text). The --set overrides of one call are undone after it
+    (CFG.reset), as a new process would start without them."""
     from exopipe.phase3 import cli as C
+    from exopipe.phase3.config import CFG
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf), contextlib.redirect_stdout(buf):
         try:
             rc = C.main(list(argv) + (['--cores', 'none'] if '--help' not in argv else []))
         except SystemExit as e:              # argparse (--help, a bad flag)
             rc = e.code
+        finally:
+            CFG.reset()
     return rc, buf.getvalue()
 
 
@@ -336,9 +339,13 @@ def _deep_setup(name):
 def test_deep_e2e():
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.calibrate import common as K
+    from exopipe.phase3.core import record
     d, inst, p3, p2, sha = _deep_setup('deep_e2e')
     out = os.path.join(d, 'out')
-    with synthetic_tables(d, BRIGHT_PARENT_DEEP=inst, BRIGHT_PARENT_DEEP_SHA256=sha):
+    with synthetic_tables(d, BRIGHT_PARENT_DEEP=inst, BRIGHT_PARENT_DEEP_SHA256=sha), \
+            patched(record, git_commit=lambda path: 'abc1234'):
+        # the code commit is pinned to a CLEAN one for this test (other units edit the worktree concurrently, and a record
+        # written from a dirty tree is never resumed - checked separately below)
         rc, txt = cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--stages', 'build', '--curves', f'{p3},{p2}',
                       '--version', 't1', '--out', out)
         assert rc == 0, txt
@@ -354,6 +361,22 @@ def test_deep_e2e():
         rc, txt = cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--stages', 'build', '--curves', f'{p3},{p2}',
                       '--version', 't1', '--out', out, '--resume')
         assert rc == 0 and 'skipped-valid 1' in txt, txt
+        # a changed input (the derivation) is never resumed: the stage then refuses to overwrite (no --fresh)
+        dd = K.read_json(p3)
+        dd['meta']['derived_utc'] = '2031-01-01T00:00:00Z'
+        wjson(p3, dd)
+        rc, txt = cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--stages', 'build', '--curves', f'{p3},{p2}',
+                      '--version', 't1', '--out', out, '--resume')
+        assert rc == 2 and 'input changed' in txt and 'never overwritten' in txt, txt
+        dd['meta']['derived_utc'] = '2030-01-01T00:00:00Z'
+        wjson(p3, dd)
+        with patched(record, git_commit=lambda path: 'abc1234-dirty'):      # a record of a dirty tree is never resumed
+            rc, txt = cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--stages', 'build', '--curves',
+                          f'{p3},{p2}', '--version', 't1x', '--out', out)
+            assert rc == 0, txt
+            rc, txt = cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--stages', 'build', '--curves',
+                          f'{p3},{p2}', '--version', 't1x', '--out', out, '--resume')
+            assert rc == 2 and 'dirty tree' in txt and 'never resumed' in txt, txt
         # install before a diff: G22
         rc, txt = cli('calibrate', 'bright-parent', 'install', '--tier', 'deep', '--version', 't1', '--install-ruling', RULING,
                       '--out', out)
@@ -366,6 +389,23 @@ def test_deep_e2e():
         assert rc == 0, txt
         ds = K.read_json(rec(out, 'bright-parent.deep.diff.t1')['outputs'][0]['path'])
         assert ds['tables'] == {'added': 4, 'changed': 4}, ds['tables']
+        # a diff made against an installed file that has changed since is stale (G22)
+        inst2 = wjson(os.path.join(d, 'installed2', 'parent_curve_tables.json'),
+                      dict(K.read_json(inst), meta={'method': 'synthetic, changed'}))
+        with patched(CFG.tables, BRIGHT_PARENT_DEEP=inst2, BRIGHT_PARENT_DEEP_SHA256=K.sha256(inst2)):
+            rc, txt = cli('calibrate', 'bright-parent', 'install', '--tier', 'deep', '--version', 't1', '--install-ruling',
+                          RULING, '--out', out)
+            assert rc == 2 and 'stale' in txt, txt
+        # a derivation that overrode a RULED key without a ruling (allowed only into a non-production --out) never installs
+        rc, txt = cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--stages', 'build', '--curves', f'{p3},{p2}',
+                      '--version', 't3', '--set', 'calibrate_bright_parent.RATIO_LOW_V=2.5', '--out', out)
+        assert rc == 0, txt
+        rc, txt = cli('calibrate', 'bright-parent', 'diff', '--tier', 'deep', '--version', 't3', '--table-only', '--waive',
+                      'calibrate.diff.served', '--ruling', 'test', '--out', out)
+        assert rc == 0, txt
+        rc, txt = cli('calibrate', 'bright-parent', 'install', '--tier', 'deep', '--version', 't3', '--install-ruling', RULING,
+                      '--out', out)
+        assert rc == 2 and 'without a ruling' in txt and 'RATIO_LOW_V' in txt, txt
         # install: needs a ruling that is a ledger row
         for extra, why in (([], 'install-ruling'), (['--install-ruling', 'NOT-A-LEDGER-ROW-XYZ'], 'fix_id')):
             rc, txt = cli('calibrate', 'bright-parent', 'install', '--tier', 'deep', '--version', 't1', '--out', out, *extra)
@@ -425,18 +465,11 @@ class FakeG:
 
 
 def test_served_replay():
-    import numpy as np
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.calibrate import bright_parent as BP
     from exopipe.phase3.lib.calibrate import common as K
-    from exopipe.phase3.lib.search import parent_curve_table as P
     d = _fresh('served')
-    # a position with no ATNF pulsar near it (the pulsar exemption would change the verdicts)
-    pt, _ = P._psr_targets()
-    for dec in (37.5, 41.5, 45.5, 49.5, 33.5):
-        if pt is None or not pt.query_ball_point(P._uv(np.array([FakeG.RA0]), np.array([dec]))[0], 2 * np.sin(np.radians(3.0) / 2)):
-            FakeG.DEC0 = dec
-            break
+    _fake_dec()
     base = {'meta': {}, 'tables': {'deep_V_18MHz': dict(stokes='V', band='18MHz', ratio='2.0', metric='image-pixel',
                                                         table=[[100, 1e6, 1.0]])}, 'meta_deep': {}}
     inst = wjson(os.path.join(d, 'installed.json'), base)
@@ -449,6 +482,10 @@ def test_served_replay():
                          ra=f'{FakeG.RA0:.5f}', dec=f'{FakeG.DEC0 + off * FakeG.BEAM:.5f}', peak_jy='0.05', global_snr='5.0',
                          snr='5.0'))
     wcsv(os.path.join(run, 'master_catalog_asrun.csv'), list(rows[0]), rows)
+    # served-pass removals naming the table: at 4 beams the candidate keeps it (returns), at 0.25 beam it removes it
+    rem = [dict(r, cand_id=f'R{i}', dec=f'{FakeG.DEC0 + off * FakeG.BEAM:.5f}', removal_reason='per-band per-Stokes table: x')
+           for i, (r, off) in enumerate(((rows[3], 4.0), (rows[0], 0.25)))]
+    wcsv(os.path.join(run, 'master_catalog_removed.csv'), list(rem[0]), rem)
     wcsv(os.path.join(run, 'source_catalogs_V', '18MHz_sources_survivors.csv'), ['source_id', 'identity_id'],
          [dict(source_id='S1', identity_id='J0430+40')])
     wcsv(os.path.join(run, 'source_catalogs_V', '18MHz_source_members.csv'), ['source_id', 'cand_id'],
@@ -472,6 +509,18 @@ def test_served_replay():
     assert set(ch) == {'C1', 'C2'} and ch['C1']['change'] == 'newly removed' and ch['C1']['served_identity'] == 'J0430+40'
     assert ch['C1']['judged'] == 'probably-real' and '[el50-90]' in ch['C1']['band_note'] and ch['C1']['elev_band'] == '50-90'
     assert s['served_identities_losing'] == {'V:J0430+40': 'probably-real'} and s['tally'] == {'V|newly removed|50-90': 2}
+    # what changes for the served sources (served_change_20261006.py port): J0430+40 loses its only member -> gone (judged)
+    ss = s['served_sources']
+    assert ss['by_status'] == {'V|gone': 1} and ss['judged_by_status'] == {'V|gone': 1}, ss
+    assert ss['member_detections_leaving'] == {'V': 1} and K.read_csv(ss['judged_csv'])[0]['label'] == 'probably-real'
+    assert s['returning'] == {'list': os.path.join(run, 'master_catalog_removed.csv'), 'n_table_removed': 2,
+                              'returning': {'V': 1}}, s['returning']
+    # negative: the summary's served-source counts no longer reconcile with the rows
+    from exopipe.phase3.core import validate
+    full = K.read_json(r['outputs'][0]['path'])
+    full['served']['served_sources']['member_detections_leaving'] = {'V': 2}
+    badp = wjson(os.path.join(d, 'bad_diff_summary.json'), full)
+    assert not validate.run('calibration_diff', badp)[0]['passed']
     # elevation mode (the 2026-10-06 replay): the installed side without elevations
     with patched(CFG.tables, BRIGHT_PARENT_DEEP=inst, BRIGHT_PARENT_DEEP_SHA256=K.sha256(inst)), \
             patched(CFG.calibrate, DIFF_LEDGER_LABEL={'deep': None, 'sublst': None}), \
@@ -479,6 +528,55 @@ def test_served_replay():
         rc, txt = cli('calibrate', 'bright-parent', 'diff', '--tier', 'deep', '--candidate', cand, '--served-run', run,
                       '--parents', parents, '--stokes', 'V', '--diff-mode', 'elevation', '--fresh', '--out', out)
         assert rc == 0, txt
+
+
+def _fake_dec():
+    """FakeG.DEC0 = a declination with no ATNF pulsar within 3 deg of the parent (the pulsar exemption would change verdicts)."""
+    import numpy as np
+    from exopipe.phase3.lib.search import parent_curve_table as P
+    pt, _ = P._psr_targets()
+    for dec in (37.5, 41.5, 45.5, 49.5, 33.5):
+        if pt is None or not pt.query_ball_point(P._uv(np.array([FakeG.RA0]), np.array([dec]))[0], 2 * np.sin(np.radians(3.0) / 2)):
+            FakeG.DEC0 = dec
+            return dec
+    raise AssertionError('no pulsar-free test position')
+
+
+def test_sublst_replay():
+    """Sub-LST diff with the 10-minute table step replayed (window mid-time elevation, frame beam, prefix sublst, merged over
+    the deep file) and the TABLE-NOTES gate (sublst_catalogs.sh:187-201): a candidate whose removals name no elevation band
+    is refused."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.calibrate import bright_parent as BP
+    from exopipe.phase3.lib.calibrate import common as K
+    d = _fresh('sublst_replay')
+    _fake_dec()
+    deep = wjson(os.path.join(d, 'deep.json'), {'meta': {}, 'tables': {}})
+    tab = lambda r, **kw: dict(stokes='V', band='18MHz', metric='image-pixel', table=[[100, 1e6, r]], **kw)
+    inst = wjson(os.path.join(d, 'inst_sublst.json'), {'meta': {}, 'tables': {'sublst_V_18MHz': tab(1.0)}})
+    cand = wjson(os.path.join(d, 'cand.json'), {'meta': {'source': 's', 'derivation': {}, 'rule': 'r'}, 'tables': {
+        'sublst_V_18MHz': tab(1.0), 'sublst_V_18MHz_el50-90': tab(3.0, elevation='el50-90')}})
+    nob = wjson(os.path.join(d, 'cand_noband.json'), {'meta': {'source': 's', 'derivation': {}, 'rule': 'r'}, 'tables': {
+        'sublst_V_18MHz': tab(3.0)}})
+    run = os.path.join(d, 'Run_SLSTX')
+    rows = [dict(cand_id=f'C{i}', lst='04h', date='2030-01-01T02', band='18MHz', stokes='V', ra=f'{FakeG.RA0:.5f}',
+                 dec=f'{FakeG.DEC0 + off * FakeG.BEAM:.5f}', peak_jy='0.05', global_snr='5.0', snr='5.0')
+            for i, off in enumerate((0.25, 1.6, 4.0))]
+    wcsv(os.path.join(run, 'master_catalog_asrun.csv'), list(rows[0]), rows)
+    out = os.path.join(d, 'out')
+    with patched(CFG.tables, BRIGHT_PARENT_SUBLST=inst, BRIGHT_PARENT_SUBLST_SHA256=K.sha256(inst), BRIGHT_PARENT_DEEP=deep), \
+            patched(BP, _gate_inputs=lambda ctx, parents, lst=None: (FakeG(), {'fake': lst})):
+        rc, txt = cli('calibrate', 'bright-parent', 'diff', '--tier', 'sublst', '--candidate', cand, '--served-run', run,
+                      '--stokes', 'V', '--out', out)
+        assert rc == 0, txt
+        r = rec(out, f'bright-parent.sublst.diff.cand-{K.sha256(cand)[:12]}')
+        s = K.read_json(r['outputs'][0]['path'])['served']
+        assert s['removed_installed'] == 1 and s['removed_candidate'] == 2 and s['changed'] == 1, s
+        assert s['table_notes'] == {'n': 2, 'bad': 0, 'example': ''}, s['table_notes']
+        assert r['meta']['gate_inputs_env'] == {'04h': {'fake': '04h'}}            # one gate-input import per LST of the list
+        rc, txt = cli('calibrate', 'bright-parent', 'diff', '--tier', 'sublst', '--candidate', nob, '--served-run', run,
+                      '--stokes', 'V', '--out', out)
+        assert rc == 2 and 'table_notes' in txt, txt                                 # TABLE-NOTES refuses
 
 
 def test_orchestration():
@@ -763,24 +861,239 @@ def test_template_k():
     assert rc == 2 and 'not implemented' in txt, txt
 
 
+def _copy(src, d, sidecars=('.provenance.json',)):
+    """A copy of a product (and its sidecars) in d; returns the copy's path."""
+    os.makedirs(d, exist_ok=True)
+    dst = os.path.join(d, os.path.basename(src))
+    shutil.copyfile(src, dst)
+    for sc in sidecars:
+        if os.path.exists(src + sc):
+            shutil.copyfile(src + sc, dst + sc)
+    return dst
+
+
+def test_negatives():
+    """Every content test of every product class the step writes passes on a valid product and FAILS on a copy corrupted
+    in exactly what it checks (the content tests would catch wrong logic, not only a missing file)."""
+    import itertools
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import validate
+    from exopipe.phase3.lib.calibrate import bright_parent as BP
+    from exopipe.phase3.lib.calibrate import common as K
+    d, inst, p3, p2, sha = _deep_setup('neg')
+    out = os.path.join(d, 'out')
+    seq = itertools.count()
+    checked = set()
+
+    def ok(cls, path):
+        bad = [(x['name'], x['detail']) for x in validate.run(cls, path) if not x['passed']]
+        assert not bad, (cls, path, bad)
+
+    def corrupt(cls, test, src, edit, sidecars=('.provenance.json',)):
+        """Copy src (and sidecars), apply edit(copy path), assert <cls>.<test> fails on the copy."""
+        dst = _copy(src, os.path.join(d, 'corrupt', f'{next(seq)}'), sidecars)
+        edit(dst)
+        res = {x['name']: x for x in validate.run(cls, dst)}
+        assert not res[f'{cls}.{test}']['passed'], (cls, test, res[f'{cls}.{test}'])
+        checked.add(f'{cls}.{test}')
+        return dst
+
+    def jedit(fn):
+        def e(p):
+            o = K.read_json(p)
+            fn(o)
+            wjson(p, o)
+        return e
+
+    def cedit(fn, terminator='\n'):
+        def e(p):
+            rows = K.read_csv(p)
+            rows = fn(rows) or rows
+            wcsv(p, list(rows[0]), rows, lineterminator=terminator)
+        return e
+
+    with synthetic_tables(d, BRIGHT_PARENT_DEEP=inst, BRIGHT_PARENT_DEEP_SHA256=sha):
+        assert cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--stages', 'build', '--curves', f'{p3},{p2}',
+                   '--version', 'n1', '--out', out)[0] == 0
+        cand = rec(out, 'bright-parent.deep.derive-build.n1')['outputs'][0]['path']
+        assert cli('calibrate', 'bright-parent', 'diff', '--tier', 'deep', '--version', 'n1', '--table-only', '--waive',
+                   'calibrate.diff.served', '--ruling', 'test', '--out', out)[0] == 0
+        diff_p = rec(out, 'bright-parent.deep.diff.n1')['outputs'][0]['path']
+        assert cli('calibrate', 'bright-parent', 'install', '--tier', 'deep', '--version', 'n1', '--install-ruling', RULING,
+                   '--out', out)[0] == 0
+        bundle = rec(out, 'bright-parent.deep.install.n1')['outputs'][0]['path']
+        assert cli('calibrate', 'bright-parent', 'verify', '--tier', 'deep', '--candidate', cand, '--out', out)[0] == 0
+        vrep = rec(out, f'bright-parent.deep.verify-candidate.cand-{K.sha256(cand)[:12]}')['outputs'][0]['path']
+        # ---- bright_parent_curves (the in-place derivation's JSON)
+        ok('bright_parent_curves', p3)
+        corrupt('bright_parent_curves', 'meta_form', p3, jedit(lambda o: o['meta'].update(metric='sky')))
+        corrupt('bright_parent_curves', 'bins_sane', p3, jedit(lambda o: o['curves']['deep_I_18MHz']['bins'][0].update(R2=0.3)))
+        # ---- bright_parent_table
+        ok('bright_parent_table', cand)
+        corrupt('bright_parent_table', 'keys_form', cand, jedit(lambda o: o['tables'].update(foo_bar={'table': []})))
+        corrupt('bright_parent_table', 'metric', cand, jedit(lambda o: o['tables']['deep_I_18MHz_el25-35'].update(metric='sky')))
+        corrupt('bright_parent_table', 'monotone_guard', cand,
+                jedit(lambda o: o['tables']['deep_I_18MHz_el25-35'].update(table=[[35, 60, 4.0], [200, 1e6, 3.0]])))
+        corrupt('bright_parent_table', 'equals_derivation', cand,
+                jedit(lambda o: o['tables']['deep_I_18MHz_el25-35'].update(table=[[35, 60, 0.5], [200, 1e6, 3.0]])))
+        # sha_pinned: a copy at the pinned path whose bytes differ from the pin
+        pinned = _copy(inst, os.path.join(d, 'pinned'))
+        with patched(CFG.tables, BRIGHT_PARENT_DEEP=pinned):
+            assert {x['name']: x['passed'] for x in validate.run('bright_parent_table', pinned)}['bright_parent_table.sha_pinned']
+            jedit(lambda o: o['tables']['deep_I_18MHz'].update(n_candidates=501))(pinned)
+            assert not {x['name']: x['passed'] for x in validate.run('bright_parent_table', pinned)}['bright_parent_table.sha_pinned']
+            checked.add('bright_parent_table.sha_pinned')
+        # sublst_present (G21): the installed sub-LST file with an all-elevation key missing
+        sub = derivation({'sublst_V_18MHz': curve(BINS_A), 'sublst_V_18MHz_el50-90': curve(BINS_B)}, 2.0, eb='25-35,35-50,50-90',
+                         cadence='10min')
+        sp = wjson(os.path.join(d, 'sub', 'parent_curve_tables_sublst.json'), BP.build_sublst(sub, '/x/sub.json')[0])
+        with patched(CFG.tables, BRIGHT_PARENT_SUBLST=sp, BRIGHT_PARENT_SUBLST_SHA256=K.sha256(sp)):
+            assert {x['name']: x['passed'] for x in validate.run('bright_parent_table', sp)}['bright_parent_table.sublst_present']
+            jedit(lambda o: o['tables'].pop('sublst_I_Full'))(sp)
+            assert not {x['name']: x['passed'] for x in validate.run('bright_parent_table', sp)}['bright_parent_table.sublst_present']
+            checked.add('bright_parent_table.sublst_present')
+        # ---- calibration_diff
+        ok('calibration_diff', diff_p)
+        corrupt('calibration_diff', 'reconciles', diff_p, jedit(lambda o: o['tables'].update(added=5)))
+        # ---- install_bundle (the manifest names its files: corrupted copies of those are re-pointed)
+        ok('install_bundle', bundle)
+        man = K.read_json(bundle)
+        corrupt('install_bundle', 'files_sha', bundle, jedit(lambda o: o['versioned'].update(sha256='0' * 64)))
+        mir = _copy(man['mirror']['path'], os.path.join(d, 'corrupt', 'mirror'))
+        jedit(lambda o: o['tables']['10min_I_18MHz'].update(table=[[1, 2, 9.0]]))(mir)
+        corrupt('install_bundle', 'mirror_equals', bundle, jedit(lambda o: o['mirror'].update(path=mir, sha256=K.sha256(mir))))
+        pp = _copy(man['patch'], os.path.join(d, 'corrupt', 'patch'))
+        open(pp, 'w').write('')
+        corrupt('install_bundle', 'patch_names', bundle, jedit(lambda o: o.update(patch=pp)))
+        lp = _copy(man['ledger_draft'], os.path.join(d, 'corrupt', 'ledger'))
+        cedit(lambda rows: [dict(r, status='implemented') for r in rows])(lp)
+        corrupt('install_bundle', 'ledger_draft', bundle, jedit(lambda o: o.update(ledger_draft=lp)))
+        # ---- calibration_verify
+        ok('calibration_verify', vrep)
+        corrupt('calibration_verify', 'results_pass', vrep, jedit(lambda o: o['targets'][0]['results'][0].update(passed=False)))
+    # ---- calibration_inputs
+    st = os.path.join(d, 'inputs', 'state')
+    os.makedirs(st)
+    pub = os.path.join(st, 'published_V.csv')
+    open(pub, 'w').write('21h_46MHz,nodeX,aV\n04h_Full,nodeY,bV\n')
+    manp = wjson(os.path.join(d, 'inputs', 'inputs_manifest.json'), {'class': 'bright-parent', 'tier': 'deep',
+                                                                      'files': {pub: K.sha256(pub)}})
+    ok('calibration_inputs', manp)
+
+    def _touch(p):
+        open(pub + '.bad', 'w').write(open(pub).read() + '04h_Full,nodeZ,cV\n')
+        o = K.read_json(p)
+        o['files'] = {pub + '.bad': 'f' * 64}
+        wjson(p, o)
+    corrupt('calibration_inputs', 'files', manp, _touch)
+    bad_pub = os.path.join(d, 'inputs', 'bad', 'published_V.csv')
+    os.makedirs(os.path.dirname(bad_pub))
+    open(bad_pub, 'w').write('21h_46MHz,nodeX\n')
+    corrupt('calibration_inputs', 'harvest', manp, jedit(lambda o: o.update(files={bad_pub: K.sha256(bad_pub)})))
+    # ---- vlssr_ratios, scale_table
+    pr, po = _scale_inputs(_fresh('neg/scale'))
+    ok('vlssr_ratios', pr)
+    corrupt('vlssr_ratios', 'columns_rows', pr, cedit(lambda rows: rows[0].update(ratio='-1.0')))
+    assert cli('calibrate', 'scale', 'derive', '--stages', 'table', '--ratios', pr, '--old-scale-table', po, '--version',
+               'v9-20300101', '--out', out)[0] == 0
+    t = rec(out, 'scale.deep.derive-table.v9-20300101')['outputs'][0]['path']
+    ok('scale_table', t)
+    corrupt('scale_table', 'rows', t, cedit(lambda rows: rows[:-1]))
+    corrupt('scale_table', 'recompute', t, cedit(lambda rows: rows[3].update(scale='9.99999')))
+    # ---- shflux_stagea, fluxcorr_table, band_vector
+    vec, scale, glob_ = _fc_inputs(_fresh('neg/fc'))
+    sa = sorted(__import__('glob').glob(glob_))[0]
+    ok('shflux_stagea', sa)
+    corrupt('shflux_stagea', 'rows_status', sa, cedit(lambda rows: rows[1].update(status='WEIRD')))
+    assert cli('calibrate', 'fluxcorr', 'derive', '--stages', 'table', '--stagea', glob_, '--band-vector', vec,
+               '--scale-candidate', scale, '--version', 'v9-20300101', '--out', out)[0] == 0
+    f = rec(out, 'fluxcorr.deep.derive-table.v9-20300101')['outputs'][0]['path']
+    ok('fluxcorr_table', f)
+    sh = ('.provenance.json',)
+    corrupt('fluxcorr_table', 'structure', f, cedit(lambda rows: rows[0].update(fluxcorr=f"{float(rows[0]['fluxcorr']) + 0.01:.6f}"),
+                                                   '\r\n'), sh)
+    corrupt('fluxcorr_table', 'recompute', f, cedit(lambda rows: rows[0].update(g_ivw_reference='0.999999'), '\r\n'), sh)
+    sbv = sorted(CFG.calibrate_fluxcorr.SUBBANDS)
+
+    def fake_run(u, target, args, env=None, log=None, cwd=None, module=False, timeout=None):
+        m = 0.02 if env['VLSSR_OUT'].endswith('loo1') else 0.002
+        wcsv(os.path.join(env['VLSSR_OUT'], 'smooth_by_subband_powerlaw.csv'), ['subband', 'raw_median_pct'],
+             [dict(subband=b, raw_median_pct=f'{100 * m:.2f}') for b in sbv])
+        return type('R', (), {'tail': '', 'ok': True})()
+    with patched(K, run_legacy=fake_run):
+        assert cli('calibrate', 'fluxcorr', 'derive', '--stages', 'bandvec', '--band-vector-start', vec, '--version', 'n1',
+                   '--out', out)[0] == 0
+    bvf = rec(out, 'fluxcorr.deep.derive-bandvec.n1')['outputs'][0]['path']
+    ok('band_vector', bvf)
+    corrupt('band_vector', 'norm', bvf, cedit(lambda rows: [dict(r, factor='1.010000') if r['subband'] == '73MHz' else r
+                                                            for r in rows], '\r\n'))
+    loo1 = os.path.join(os.path.dirname(bvf), 'loo1', 'smooth_by_subband_powerlaw.csv')
+    corrupt('band_vector', 'converged', bvf, lambda p: wjson(p + '.provenance.json',
+                                                             dict(K.read_json(p + '.provenance.json'), convergence=loo1)))
+    # ---- template_k_trials, template_k_record
+    kd = _fresh('neg/k')
+    tr = _trials(kd)
+    ok('template_k_trials', tr)
+    corrupt('template_k_trials', 'columns', tr, cedit(lambda rows: [{k: v for k, v in r.items() if k != 'tf_status'} for r in rows]))
+    corrupt('template_k_trials', 'status_counts', tr,
+            cedit(lambda rows: [dict(r, tf_status='at-bound') if r['stokes'] == 'V' else r for r in rows]))
+    assert cli('calibrate', 'template-k', 'derive', '--tier', 'deep', '--stages', 'summary', '--trials', os.path.dirname(tr),
+               '--version', 'n1', '--out', out)[0] == 0
+    kr = rec(out, 'template-k.deep.derive-summary.n1')['outputs'][0]['path']
+    ok('template_k_record', kr)
+    corrupt('template_k_record', 'recompute', kr, jedit(lambda o: o['K']['I'].update(major=o['K']['I']['major'] + 0.01)))
+    corrupt('template_k_record', 'bounds', kr, jedit(lambda o: o['K']['V'].update(major=7.0)))
+    corrupt('template_k_record', 'interval', kr, jedit(lambda o: o['K']['I'].update(boot_major_16_84=[0.0, 0.01])))
+    corrupt('template_k_record', 'orientation', kr, jedit(lambda o: o.update(orientation='mirrored')))
+    # every registered test of every class this step writes was corrupted at least once
+    from exopipe.phase3.lib.calibrate import tests as _t      # noqa: F401 (registers the classes)
+    classes = ('calibration_inputs', 'bright_parent_curves', 'bright_parent_table', 'calibration_diff', 'install_bundle',
+               'vlssr_ratios', 'scale_table', 'shflux_stagea', 'band_vector', 'fluxcorr_table', 'template_k_trials',
+               'template_k_record', 'calibration_verify')
+    every = {f'{c}.{n}' for c in classes for n, _fn in validate.tests_for(c)}
+    assert every == checked, sorted(every ^ checked)
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # real products (READ ONLY; outputs only under the scratch root)
 # ---------------------------------------------------------------------------------------------------------------------
 
 def test_real():
     from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import env
     from exopipe.phase3.lib.calibrate import common as K
-    if socket.gethostname().split('.')[0] != 'lwacalim07' or not os.path.exists(CFG.tables.BRIGHT_PARENT_DEEP_DERIVATIONS['multiples'][0]):
-        print('  real: SKIPPED (the derivations are lwacalim07 node-local)')
+    from exopipe.phase3.lib.calibrate import fluxscale as FS
+    from exopipe.phase3.lib.calibrate import template_k as TK
+    probe = CFG.tables.BRIGHT_PARENT_DEEP_DERIVATIONS['multiples'][0]
+    if not (env.readable_here(probe) and os.path.exists(probe)):
+        print(f'  real: SKIPPED (the derivations are node-local to {env.node_local_holder(probe)})')
         return
     out = _fresh('real')
     rc, txt = cli('calibrate', 'all', 'verify', '--out', out)
-    assert rc == 0, txt
+    # the in-place K lock (template_k.inplace_k): config fitting.K_SNAPSHOT vs clv15/phase3_template_fit.py - on 2026-10-13
+    # config.py still held the mirrored-template K (0.60, 0.86, 0.81) after clv15 a715a1b (0.683, 0.737, 0.639): refused
+    _s, got, want = TK.inplace_k('snapshot')
+    snap_ok = got == want
+    assert rc == (0 if snap_ok else 2), txt
     units = [u for u in os.listdir(os.path.join(out, '_records', 'calibrate')) if u.endswith('.json')]
     assert len(units) == 7, units
     for u in units:
         r = json.load(open(os.path.join(out, '_records', 'calibrate', u)))
+        if u.startswith('template-k.snapshot.') and not snap_ok:
+            assert r['status'] == 'refused' and failed(r)[0] == 'template_k.inplace_literal', (u, r['reason'])
+            continue
         assert r['status'] == 'done' and not failed(r), (u, r['reason'])
+    for u in ('scale.deep.verify-installed.installed', 'fluxcorr.deep.verify-set.installed'):   # G19 pins checked by verify
+        assert any(t['name'] == 'calibrate.sha_pinned' and t['passed'] for t in rec(out, u)['tests']), u
+    # band-vector LOO arithmetic: steps 2-7 of the 2026-10-01 iteration reproduced byte for byte (CRLF, as the heredoc)
+    bv = os.path.dirname(CFG.tables.BAND_VECTOR_CONVERGENCE)
+    bv = os.path.dirname(bv)
+    for k in range(2, 8):
+        nv = os.path.join(out, f'nv{k}.csv')
+        FS._loo_arith(os.path.join(bv, f'band_vector_loo{k - 1}.csv'), os.path.join(bv, f'loo{k}', 'smooth_by_subband_powerlaw.csv'),
+                      nv, '73MHz')
+        assert K.sha256(nv) == K.sha256(os.path.join(bv, f'band_vector_loo{k}.csv')), k
+    assert K.sha256(os.path.join(bv, 'band_vector_loo6.csv')) == CFG.tables.BAND_VECTOR_SHA256    # loo6 = the adopted vector
     eq = [t for t in rec(out, 'bright-parent.deep.verify-installed.installed')['tests'] if t['name'].endswith('equals_derivation')][0]
     assert eq['value'] == 241, eq                                                         # 38 + 114 + 89 keys recomputed
     inst = K.read_json(CFG.tables.BRIGHT_PARENT_DEEP)['tables']
@@ -811,12 +1124,15 @@ def test_real():
     assert rc == 0, txt
     kr = K.read_json(rec(out, 'template-k.deep.derive-summary.p1')['outputs'][0]['path'])
     assert all((round(kr['K'][S]['major'], 3), round(kr['K'][S]['minor'], 3)) == CFG.fitting.K_TEMPLATE[('deep', S)] for S in 'IV')
-    rc, txt = cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--dry-run', '--out', out)
+    rc, txt = cli('calibrate', 'bright-parent', 'derive', '--tier', 'deep', '--dry-run', '--out', os.path.join(out, 'dry'))
     assert rc == 0 and 'p3s3_curve_derive.py' in txt and '"P3S3_CURVE_RATIO": "2"' in txt, txt
+    assert 'earlier in this invocation' in txt and 'deep_elev_r2V.json' in txt, txt        # build planned from this run's curves
+    assert not os.path.exists(os.path.join(out, 'dry')), 'the dry run wrote under --out'
 
 
 TESTS = ['test_config', 'test_lock', 'test_key_loops', 'test_merge', 'test_config_patch', 'test_deep_e2e', 'test_served_replay',
-         'test_orchestration', 'test_sublst', 'test_scale', 'test_fluxcorr', 'test_template_k', 'test_real']
+         'test_sublst_replay', 'test_orchestration', 'test_sublst', 'test_scale', 'test_fluxcorr', 'test_template_k',
+         'test_negatives', 'test_real']
 
 
 def main(names):

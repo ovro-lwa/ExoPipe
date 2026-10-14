@@ -477,8 +477,24 @@ def check_ruling(args):
     return rid
 
 
-def diff_gate(out, cls, tier, version, cand_sha):
-    """Gate G22: a done diff record of the same candidate sha256 (calibrate.DIFF_REQUIRED_FOR_INSTALL)."""
+def diff_gate(out, cls, tier, version, cand_sha, installed_sha=None):
+    """Gate G22: a done diff record of the same candidate sha256 (calibrate.DIFF_REQUIRED_FOR_INSTALL) - and, for a table
+    file, made against the installed file as it is NOW (a diff against another file, or before the installed table changed,
+    is stale); and no derive / diff record of this version overrides a RULED key without a ruling (DESIGN 11.4: install
+    refuses a product whose record shows such an override)."""
+    from exopipe.phase3.core.record import unruled_overrides
+    bad = []
+    for p in sorted(glob.glob(os.path.join(out, '_records', 'calibrate', f'{cls}.{tier}.*.{version}.json'))):
+        act = os.path.basename(p)[len(f'{cls}.{tier}.'):-len(f'.{version}.json')]
+        if act.startswith('derive-') or act == 'diff':
+            try:
+                rec_ = read_json(p)
+            except (OSError, ValueError):
+                continue
+            bad += [f"{act}: {o.get('key')} ({o.get('authority')})" for o in unruled_overrides(rec_)]
+    if bad:
+        raise Refusal(f'install: the records of {cls} {tier} {version} override ruled keys without a ruling: {bad[:5]} '
+                      f'(re-derive with --ruling-for SECTION.KEY=<ledger ID>, or without the override; gate G22, DESIGN 11.4)')
     if not CFG().calibrate.DIFF_REQUIRED_FOR_INSTALL:
         return None
     rec = load_record(out, unit_name(cls, tier, 'diff', version))
@@ -487,6 +503,12 @@ def diff_gate(out, cls, tier, version, cand_sha):
     if (rec.get('meta') or {}).get('candidate_sha256') != cand_sha:
         raise Refusal(f'install: the diff record compared candidate sha256 {(rec.get("meta") or {}).get("candidate_sha256")} '
                       f'but the candidate is now {cand_sha} (gate G22)')
+    if installed_sha is not None:
+        ds = outputs_of(rec, 'calibration_diff')
+        got = read_json(ds[0]).get('installed_sha256') if ds and os.path.exists(ds[0]) else None
+        if got != installed_sha:
+            raise Refusal(f'install: the diff compared against installed sha256 {got}, the installed table is now '
+                          f'{installed_sha}: the diff is stale - run diff again (gate G22)')
     return record_path(out, unit_name(cls, tier, 'diff', version))
 
 
@@ -504,6 +526,7 @@ class Ctx:
         self.version = version
         self.vdir = version_dir(self.out, cls, tier, version)
         self.dry = run.dry_run
+        self.stages = []            # derive sub-stages selected in this invocation (set by steps/calibrate._one)
 
     def unit_name(self, action=None):
         return unit_name(self.cls, self.tier, action or self.action, self.version)
@@ -563,11 +586,27 @@ def verify(ctx, targets):
                 continue
             u.add_input(p)
             res = validate.run(c, p)
+            pin = pinned_sha(p)
+            if pin:                      # gate G19 for every pinned table (scale, fluxcorr, band vector, ...): sha256 = its pin
+                key, want = pin
+                got = sha256(p)
+                res.append({'name': 'calibrate.sha_pinned', 'passed': got == want, 'value': got[:16],
+                            'detail': f'tables.{key}_SHA256 {"=" if got == want else "!="} {want[:16]} (gate G19)'})
             for r in res:
                 u.check(r['name'], r['passed'], value=r['value'], detail=r['detail'], cls=c, path=p)
             rep['targets'].append({'path': p, 'label': lab, 'class': c, 'sha256': sha256(p), 'results': res})
         rp = write_json(os.path.join(d, 'verify_report.json'), rep)
         u.add_output(rp, 'calibration_verify')
+    return None
+
+
+def pinned_sha(path):
+    """(tables key, pinned sha256) when ``path`` is the file a `tables.<KEY>` names and `tables.<KEY>_SHA256` exists; else None."""
+    T = CFG().tables
+    rp = os.path.realpath(path)
+    for k, v in T.items():
+        if isinstance(v, str) and v.startswith('/') and os.path.realpath(v) == rp and hasattr(T, k + '_SHA256'):
+            return k, getattr(T, k + '_SHA256')
     return None
 
 

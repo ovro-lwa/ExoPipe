@@ -275,7 +275,8 @@ def stage_extract(u, args, run_, roots, plan, scope_globals, work):
     for t in TIERS:
         p = os.path.join(od, f'meas_{t}.csv')
         if os.path.exists(p) and fresh(p):
-            u.add_output(p, 'jupiter_meas')
+            # a --scopes run (non-production --out, J13) measures only those subbands: TEST4 at file level covers them
+            u.add_output(p, 'jupiter_meas', **({'subbands': list(scope_globals['BANDS'])} if scope_globals else {}))
             written += 1
     for p in sorted(glob.glob(os.path.join(od, 'cutouts_*.npz'))):
         if fresh(p):
@@ -299,6 +300,13 @@ def stage_extract(u, args, run_, roots, plan, scope_globals, work):
 
 
 def _crop_host_check(u, run_, roots, plan, od):
+    """fit runs on the node that ran extract (spec 7.1 item 11): the crops are node-local, and the same path on another
+    node is another disk. The extract record's host decides when the record exists; otherwise (products of the old
+    launcher) the first referenced crop must be readable here."""
+    rec = record.load_record(run_.out_root, 'jupiter', _unit_name('extract', plan.cell)) or {}
+    xhost = (rec.get('meta') or {}).get('host') or str(rec.get('host') or '').split('.')[0]
+    if xhost and xhost != K.host():
+        u.refuse(f'the crops of {plan.cell} are node-local to {xhost} (its extract record); this is {K.host()} - run fit there')
     for t in ('10s', '1min'):
         p = os.path.join(od, f'meas_{t}.csv')
         if not os.path.exists(p):
@@ -307,9 +315,8 @@ def _crop_host_check(u, run_, roots, plan, od):
             for r in csv.DictReader(f):
                 if r['crop']:
                     if not os.path.exists(r['crop']):
-                        rec = record.load_record(run_.out_root, 'jupiter', _unit_name('extract', plan.cell)) or {}
                         u.refuse(f"the crops of {plan.cell} are node-local and not on {K.host()} (first: {r['crop']}); the "
-                                 f"extract ran on {rec.get('host', 'an unknown host')} - run fit there")
+                                 f"extract ran on {xhost or 'an unknown host'} - run fit there")
                     return
 
 

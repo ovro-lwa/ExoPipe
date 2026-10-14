@@ -150,6 +150,47 @@ def compare(rows, old, new, served, judg, cadence='deep', lat_deg=37.2398):
     return out, tally
 
 
+def judged_labels(run_dir, pattern, stokes=('I', 'V')):
+    """{(Stokes, source_id): label or judge_confidence or 'judged'} of the classify actions - the label served_change_20261006.py
+    reports (:47-52; the 2026-10-06 dry run's `judgements` keeps judge_confidence only)."""
+    out = {}
+    for S in stokes:
+        jp = pattern.format(run=run_dir, S=S)
+        if not os.path.exists(jp):
+            continue
+        for ln in open(jp):
+            try:
+                j = json.loads(ln)
+            except ValueError:
+                continue
+            if j.get('action') == 'classify':
+                out[(S, j['source_id'])] = j.get('label') or j.get('judge_confidence') or 'judged'
+    return out
+
+
+def source_fates(rows, old, new, served, labels):
+    """Per served source (served_change_20261006.py:53-75, the band-gate part): its member detections in ``rows`` that the
+    candidate removes where the installed gate kept them LEAVE it; a source is 'gone' when every member leaves, 'reduced'
+    when some do, else 'unchanged'. Returns (status Counter[(Stokes, status)], judged Counter[(Stokes, status)],
+    leaving Counter[Stokes], rows of the judged sources)."""
+    members = collections.defaultdict(list)
+    for i, r in enumerate(rows):
+        sv = served.get(r['cand_id'])
+        if sv:
+            members[sv].append(i)
+    src, jud, leave, out = collections.Counter(), collections.Counter(), collections.Counter(), []
+    for (S, sid), idx in sorted(members.items()):
+        n_leave = sum(1 for i in idx if new.get(i, (False, ''))[0] and not old.get(i, (False, ''))[0])
+        status = 'gone' if n_leave == len(idx) else ('reduced' if n_leave else 'unchanged')
+        src[(S, status)] += 1
+        leave[S] += n_leave
+        if (S, sid) in labels:
+            jud[(S, status)] += 1
+            out.append(dict(stokes=S, source=sid, label=labels[(S, sid)], status=status, detections=len(idx),
+                            band_removed=n_leave))
+    return src, jud, leave, out
+
+
 def table_notes(rows, cut):
     """The TABLE-NOTES content test of the 10-minute chain (sublst_catalogs.sh:187-201) on the notes of the rows a gate
     removes: (n bright-parent removals, n without an elevation band and the image-pixel metric, first bad note)."""

@@ -183,7 +183,8 @@ def rows_and_columns(path, **ctx):
 def admission_coverage(path, **ctx):
     """TEST4 at file level against the admission tables under jupiter.SUBLST_ROOT (the 2026-10-05 products need the pre-bake
     reserve: --set jupiter.SUBLST_ROOT=<reserve>): 10-s keys are admission rows with data (refused != blank, window set) and at
-    most TEST4_MAX_MISSING of those are absent; 1-min nframes <= the admitted frames of that LST minute."""
+    most TEST4_MAX_MISSING of those are absent; 1-min nframes <= the admitted frames of that LST minute. Bands: every subband,
+    or ctx subbands= (a --scopes run, recorded with the output so --resume re-tests the same set)."""
     J, M = _C().jupiter, _C().jupiter_measure
     tier, cell = _tier_of(path, 'meas'), _cell_of(path)
     if tier == '10min':
@@ -195,7 +196,7 @@ def admission_coverage(path, **ctx):
     for r in rows:
         got.setdefault((r['band'], r['stokes']), []).append(r)
     n_exp = n_miss = extra = over = no_adm = 0
-    for band in J.SUBBANDS:
+    for band in (ctx.get('subbands') or J.SUBBANDS):        # a --scopes run measured only these (the engine's BANDS)
         for S in ('I', 'V'):
             adm = os.path.join(sl, lst, cell, band, S, f'admission_{cell}_{band}_{S}.csv')
             rr = got.get((band, S), [])
@@ -793,13 +794,44 @@ def _get(port, route, timeout):
         return e.code, b''
 
 
+def integration_count(rows, tier, tol):
+    """Integrations of a night page (exopipe_ops/jupiter_server.integrations after M33, 6b8a23a), recomputed: 10 s = groups of
+    ALL bands' I and V rows, a group taking every row within tol seconds of its first row (rows in time order); 1 min / 10
+    min = distinct (key, t_unix)."""
+    if tier != '10s':
+        return len({(r['key'], float(r['t_unix'])) for r in rows})
+    n, g0 = 0, None
+    for t in sorted(float(r['t_unix']) for r in rows):
+        if g0 is None or t - g0 > tol:
+            n, g0 = n + 1, t
+    return n
+
+
+def _png_ok(data):
+    """A PNG that decodes (matplotlib's reader) to a non-empty image."""
+    import io
+    if not data.startswith(b'\x89PNG'):
+        return False
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.image as mpimg
+        a = mpimg.imread(io.BytesIO(data), format='png')
+        return a.ndim >= 2 and a.shape[0] > 0 and a.shape[1] > 0
+    except Exception:      # noqa: BLE001
+        return False
+
+
 @content_test('jupiter_served_page')
 def served(path, **ctx):
     """The serve record (<out>/_served/jupiter_<port>.json: which, port, root). 8800 (phase1): GET / answers 200 and lists
     exactly the cells of the root whose CONTENT_TEST.txt holds ALL-PASS; each listed cell's night page answers 200 for every
-    tier; /reflections answers 200 with one row link per reflection candidate (reflection_candidate 1) of the listed cells; one
-    panel PNG decodes. 8801 (v2): every <cell>/index.html under the site root is served byte-identical; site.json's first root
-    is the ruled root (jupiter_v2.RULED_ROOT). Not yet: the night page's slider maximum recomputed by the M33 rule."""
+    tier and its slider maximum = (number of integrations - 1) recomputed here from assign_<tier>.csv by the M33 rule (10 s:
+    every band's I and V rows grouped within jupiter_serve.TOL_S of the group's first row, exopipe_ops 6b8a23a; 1 min /
+    10 min: distinct (key, time)), with as many slider keys; /reflections answers 200 with one row link per reflection
+    candidate (reflection_candidate 1) of the listed cells; for the first listed cell one panel PNG (first integration) and
+    one Stokes I light-curve PNG per tier decode. 8801 (v2): every <cell>/index.html under the site root is served
+    byte-identical; site.json's first root is the ruled root (jupiter_v2.RULED_ROOT)."""
     rec = json.load(open(path))
     S = _C().jupiter_serve
     port, root, which = rec['port'], rec['root'], rec['which']
@@ -820,11 +852,26 @@ def served(path, **ctx):
         if listed != want:
             return False, len(listed), f'index lists {len(listed)} cells, the root has {len(want)} ALL-PASS cells'
         bad = []
+        tol = _C().jupiter_serve.TOL_S
+        first_keys = {}
         for c in listed:
             for t in _C().jupiter.CADENCES:
-                code, _ = _get(port, f'/night/{c}?tier={t}', to)
+                code, page = _get(port, f'/night/{c}?tier={t}', to)
                 if code != 200:
                     bad.append(f'{c} {t} -> {code}')
+                    continue
+                page = page.decode('utf-8', 'replace')
+                ap = os.path.join(root, c, f'assign_{t}.csv')
+                rows = _read_csv(ap)[1] if os.path.exists(ap) else []
+                n = integration_count(rows, t, tol[t])
+                m = re.search(r"type='range' min='0' max='(\d+)'", page)
+                k = re.search(r'const keys = (\[.*?\]);', page)
+                keys = json.loads(k.group(1)) if k else None
+                if not m or int(m.group(1)) != max(n - 1, 0) or keys is None or len(keys) != n:
+                    bad.append(f'{c} {t}: slider max {m.group(1) if m else "?"}, {len(keys) if keys is not None else "?"} keys; '
+                               f'{n} integrations by the M33 rule')
+                elif keys:
+                    first_keys[(c, t)] = keys[0]
         code, body = _get(port, '/reflections', to)
         n_ref = sum(int((r.get('reflection_candidate') or '0') == '1') for c in listed for t in _C().jupiter.CADENCES
                     for r in (_read_csv(os.path.join(root, c, f'assign_{t}.csv'))[1]
@@ -834,11 +881,13 @@ def served(path, **ctx):
             bad.append(f'/reflections -> {code}, {n_rows} rows vs {n_ref} reflection candidates')
         if listed:
             c = listed[0]
-            rows = _read_csv(os.path.join(root, c, 'assign_10s.csv'))[1] if os.path.exists(os.path.join(root, c, 'assign_10s.csv')) else []
-            if rows:
-                code, png = _get(port, f'/panel/{c}/10s/{rows[0]["key"]}.png', to)
-                if code != 200 or not png.startswith(b'\x89PNG'):
-                    bad.append(f'panel PNG -> {code}')
+            for t in _C().jupiter.CADENCES:
+                if (c, t) not in first_keys:
+                    continue
+                for route in (f'/panel/{c}/{t}/{first_keys[(c, t)]}.png', f'/lc/{c}/{t}/I.png'):
+                    code, png = _get(port, route, to)
+                    if code != 200 or not _png_ok(png):
+                        bad.append(f'{route} -> {code}, not a decodable PNG')
         return not bad, len(listed), f'{len(listed)} cells served; problems: {"; ".join(bad[:4]) or "none"}'
     if which == 'v2':
         bad, n = [], 0
