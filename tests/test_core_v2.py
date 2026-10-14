@@ -1358,12 +1358,15 @@ def test_item7_parity_file_keys():
     """The production parity file (parity/production_20261013.cfg): every line names a config key; outside section fallbacks
     (where a count-only site's ruled default IS production's 'fallback') each line differs from the config default - a line
     equal to the default would mean the default is not the ruled value, or the line is dead; and each such key carries the
-    2026-10-13 ruling in RULED unless it is a PROPOSED value awaiting Gregg (listed here)."""
+    2026-10-13 ruling, or one of Gregg's 2026-10-14 refactor rulings, in RULED unless it is a PROPOSED value awaiting Gregg
+    (listed here; none today)."""
     import ast
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import fallback
     B = 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'
-    PROPOSED = {'masters_build.MASTER_SPAN_SOURCE', 'masters_build.EPOCH_GATE_MAX_PASSES'}     # DECISIONS_PENDING A.0, B.4
+    LATER = {'R-GREGG-20261014-REFACTOR-A2B-C8B-C8C', 'R-GREGG-20261014-REFACTOR-A2-C8D',
+             'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}     # clv15 fix_ledger.csv
+    PROPOSED = set()       # 2026-10-14: MASTER_SPAN_SOURCE and EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
     path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     bad, n = [], 0
     for ln in open(path):
@@ -1383,8 +1386,8 @@ def test_item7_parity_file_keys():
             bad.append(f'{k}: the parity value {v} equals the config default')
         ids = CFG.ruled(k) or ()
         ids = (ids,) if isinstance(ids, str) else tuple(ids)
-        if k not in PROPOSED and B not in ids:
-            bad.append(f'{k}: no {B} in RULED ({ids})')
+        if k not in PROPOSED and not ({B} | LATER) & set(ids):
+            bad.append(f'{k}: no {B} (or a 2026-10-14 refactor ruling) in RULED ({ids})')
     assert n and not bad, bad
 
 

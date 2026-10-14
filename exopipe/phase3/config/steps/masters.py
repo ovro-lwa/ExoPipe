@@ -157,10 +157,10 @@ class masters_build(_Section):
                                               # 'carried-record' = production: coadd_final/epoch_gate.csv read with check_master=False (coadd_full_pipeline.py:3492-3499)
     EPOCH_GATE_MAX_PASSES = 3                 # passes of the final co-add at most (B-05 'a bounded number of passes'); the cell refuses when the last pass still
                                               # has a FAIL night in the master, and at any pass whose own record breaks membership (a removed night that passes
-                                              # the master built without it: Gregg names it out of the master). 3 PROPOSED 2026-10-14 - Gregg to confirm (not
-                                              # in RULED until he does); production 1 (no rebuild pass)
+                                              # the master built without it: Gregg names it out of the master). 3 and the refusal: Gregg 2026-10-14 approved the
+                                              # refactor chat's recommendation; production 1 (no rebuild pass)
     MASTER_SPAN_SOURCE = 'constituent'        # the master time span (DATE-OBS/-END, INTTIME, MJD-*) from each constituent's OWN image (the one the
-                                              # co-add used) - PROPOSED 2026-10-14 (B-30 skeptic), Gregg to confirm; 'phase2-glob' = production
+                                              # co-add used) - found by the B-30 skeptic, Gregg 2026-10-14 "Approved."; 'phase2-glob' = production
                                               # (coadd_full_pipeline.py:428-449 globs miss raw-failsafe and non-3xxx-s images: 688 night-cells in
                                               # 221 of 456 cells, 19h 41MHz DATE-OBS 2025-04-21 for 2025-04-10, INTTIME 38870 s for 52171 s)
     SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # membership.py:72; R-SUNLIT-NIGHTS-OUT-OF-MASTERS
@@ -204,6 +204,8 @@ class masters_build(_Section):
                       'FORCE_REBUILD')   # FORCE_REBUILD: False would re-enable the in-place .done skip guard (CLAUDE.md 3; the wrapper refuses a skip)
     RULED = {'CUTOVER_DATE': 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED',
              'EPOCH_GATE_SOURCE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'EPOCH_GATE_MAX_PASSES': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),
+             'MASTER_SPAN_SOURCE': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS',
              'FLOW_MAX_NAN_FRACTION': 'FINDING-FIVE-GOOD-NIGHTS-BAD-RESIDUALS-ARE-FLOW-FAILURES',
              'ALLOW_STALE_FLOW': 'RATIFY-COADD-FLOW-REFRESH-STAGE-AND-FRESHNESS-GATE',
              'REF_MODE': 'R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-MASTER',
