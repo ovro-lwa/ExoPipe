@@ -101,13 +101,17 @@ def test_config():
     assert int(grep_const(ss, r'\("admitted", int\(len\(sel\) >= (\d+)\)\)')) == n.MIN_BLOCK_FRAMES
     assert grep_const(ss, r'^SOLAR_AUDIT = os.environ.get\("P3_SOLAR_AUDIT", "([^"]+)"\)') == n.SOLAR_AUDIT
     assert float(grep_const(os.path.join(CLV, 'phase3_snapshot_group_search.py'), r'^PAIR_TOL_S = ([\d.]+)')) == n.PAIR_TOL_S
+    assert int(grep_const(ss, r'    if len\(sigs\) >= (\d+):')) == n.NOISE_OUTLIER_MIN_FRAMES
+    assert int(grep_const(os.path.join(CLV, 'phase3_snapshot_group_search.py'), r'if admitted\.sum\(\) < (\d+):')) \
+        == n.WIDEBAND_MIN_FRAMES
     assert float(grep_const(os.path.join(BR, 'lib/search/search_i.py'), r"'MIN_ELEVATION': ([\d.]+)")) == s.I_MASK_FLOOR_DEG
     ds = os.path.join(BR, 'lib/search/deep_search.py')
     for env, key in (('P3_MIN_EPOCHS', 'MIN_EPOCHS'), ('P3_SIZE_FLOOR_BEAMS', 'SIZE_FLOOR_BEAMS'),
                      ('P3_AXIS_REMOVE', 'AXIS_REMOVE'), ('P3_SANITY_I_X', 'SANITY_I_X'),
                      ('P3_SEARCH_TIER_SIGMA', 'SEARCH_TIER_SIGMA'), ('P3_BEAM_GATE_RATIO', 'BEAM_GATE_RATIO'),
                      ('P3_V110_TIMEOUT', 'V110_TIMEOUT_S'), ('P3_TENMIN_MIN_ELEVATION', 'MIN_ELEVATION_DEG'),
-                     ('P3_MASTER_GEN', 'MASTER_GEN')):
+                     ('P3_MASTER_GEN', 'MASTER_GEN'), ('P3_SANITY_MIN_NIGHTS', 'SANITY_MIN_NIGHTS'),
+                     ('P3_SEARCH_TIER_MIN', 'SEARCH_TIER_MIN'), ('P3_BEAM_GATE_MIN_NIGHTS', 'BEAM_GATE_MIN_NIGHTS')):
         v = grep_const(ds, r"os\.environ\.get\('" + env + r"', '([^']+)'\)")
         assert str(v) == str(getattr(s, key)) or float(v) == float(getattr(s, key)), (env, v, getattr(s, key))
     pct = os.path.join(BR, 'lib/search/parent_curve_table.py')
@@ -802,7 +806,29 @@ def test_snapshot_completeness_gates():
         raise AssertionError('wideband not-run accepted')
     except RuntimeError as e:
         assert 'Red_V:not-run' in str(e) and 'I:no-outcome-record' in str(e)
-    print('completeness gates: night-refused and excluded accounted, crash/unaccounted/abort and wideband not-run refused')
+    # B-30 (Gregg 2026-10-14): a skipped 10-s noise-outlier refusal (runinfo flood_10s.noise_median_jyb NaN) and a band group
+    # not searched for too few frames are COUNTED, never refused
+    from exopipe.phase3.core import fallback
+    d2 = os.path.join(TMP, 'skips')
+    os.makedirs(d2)
+    for tag, fl in (('18MHz_V', {'noise_median_jyb': float('nan'), 'n_noise_refused': 0}),
+                    ('18MHz_I', {'noise_median_jyb': 0.12, 'n_noise_refused': 1}), ('23MHz_V', None)):
+        json.dump(dict({'subband': tag.split('_')[0]}, **({'flood_10s': fl} if fl is not None else {})),
+                  open(os.path.join(d2, f'runinfo_{tag}_{s.MODE}.json'), 'w'))
+    outc = {'18MHz': {'stokes': {'V': 'searched', 'I': 'searched'}}, '23MHz': {'stokes': {'V': 'searched', 'I': 'night-refused'}}}
+    m = fallback.mark()
+    skipped, unknown = TN.noise_outlier_skips(plan, d2, outc)
+    cnt = fallback.since(m)[1].get('fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK')
+    assert skipped == [f'18MHz_V_{s.MODE}'] and unknown == [f'23MHz_V_{s.MODE}'] and cnt == 1, (skipped, unknown, cnt)
+    for st in ('V', 'I'):
+        json.dump({'stokes': st, 'groups': {'Red': 'too-few-frames', 'Green': 'no-members', 'Blue': 'excluded'}},
+                  open(os.path.join(d2, f'wideband_outcome_{st}.json'), 'w'))
+    m = fallback.mark()
+    TN.wideband_completeness(u, plan, d2)
+    cnt2 = fallback.since(m)[1].get('fallbacks.SNAPSHOT_WIDEBAND_SKIP_FALLBACK')
+    assert cnt2 == 2, cnt2
+    print('completeness gates: night-refused and excluded accounted, crash/unaccounted/abort and wideband not-run refused; '
+          'a skipped noise-outlier refusal (1) and too-few-frames groups (2) counted, an old runinfo without the summary noted')
 
 
 def test_content_tests_negative():

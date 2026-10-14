@@ -454,6 +454,11 @@ class search_snapshot(_Section):
     INTEGRATION_S = 10.03102041             # s; SS:133 (R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES)
     TIER1MIN_TIME_BASIS = 'integration-midpoint-dateobs-v1'   # runinfo frame_time_1min; SS:134
     MIN_BLOCK_FRAMES = 3                    # admitted frames per 1-minute block; SS:1132
+    NOISE_OUTLIER_MIN_FRAMES = 10           # admitted frames with a noise estimate the 10-s noise-outlier refusal needs (SS:816); fewer:
+                                            # skipped - runinfo flood_10s.noise_median_jyb NaN - and COUNTED by the step
+                                            # (fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK; Gregg 2026-10-14: the minimum kept, never refused)
+    WIDEBAND_MIN_FRAMES = 10                # frames with data a band group's wideband search needs (GS:358); fewer: outcome 'too-few-frames',
+                                            # COUNTED by the step (fallbacks.SNAPSHOT_WIDEBAND_SKIP_FALLBACK)
     PAIR_TOL_S = 1.0                        # s; wideband members of one integration (GS:68)
     NIGHT_RULE_STATUS = 'refused-night-rule'   # status of a nightrefused_<tag>.json record (SS:508; the rule itself -
                                             # night_verdict, a715a1b - is the engine's, never mirrored here)
@@ -461,7 +466,9 @@ class search_snapshot(_Section):
     RULED = {'MIN_STAGED_FRAMES': 'INCIDENT-FAST-FULL-SILENT-SHIPPING-FAILURES',
              'FLOW_REQUIRED': 'R-SNAP-FLOW-ALIGNMENT-AND-FLOW-MOVIE-ARE-PIPELINE-PRODUCTS-FLEET-V4',
              'EXCLUDED_STAGED_SUBBAND': 'FIX-FLEET-GUARD-EXCLUDED-SUBBANDS-20261013',
-             'PAUSE_1MIN': 'PAUSE-WIDEBAND-10S-AND-1MIN-IN-THE-FLEET'}
+             'PAUSE_1MIN': 'PAUSE-WIDEBAND-10S-AND-1MIN-IN-THE-FLEET',
+             'NOISE_OUTLIER_MIN_FRAMES': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'WIDEBAND_MIN_FRAMES': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}
     # engine-hard-coded constants and pinned inputs (no override can change them)
     PROTECTED_KEYS = ('MIN_ELEVATION_DEG', 'INTEGRATION_S', 'TIER1MIN_TIME_BASIS', 'MIN_BLOCK_FRAMES', 'PAIR_TOL_S',
+                      'NOISE_OUTLIER_MIN_FRAMES', 'WIDEBAND_MIN_FRAMES',
                       'NIGHT_RULE_STATUS', 'WIDEBAND_OUTCOMES', 'GROUPS', 'SOLAR_AUDIT', 'SOLAR_AUDIT_MD5', 'MASTERS')
