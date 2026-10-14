@@ -277,7 +277,8 @@ class serve(_Section):
     # server never reads). Production ('snapshot' only, no gate on deep / sub-LST / forced pages) is the parity file's value.
     # Also the restart-only deep pages (stratified sample 'deep-strat', the deep forced runs 'deep-deep-forced'): they are gated
     # when restarted (servers.restart_port). PROTECTED (and RULED): no --set / --config changes it outside a --parity replay
-    # into a non-production --out (review 2026-10-14 m6: --ruling-for accepts any ledger ID, so RULED alone was weaker).
+    # into a non-production --out (review 2026-10-14 m6: --ruling-for accepts any ledger ID, so RULED alone was weaker); so the
+    # parity file, which sets it, applies only in a --parity run (exopipe3 config --config refuses it, as any protected key).
     EXCLUSION_GATE_TIERS = ('snapshot', 'snapshot-forced', 'deep', 'sublst', 'deep-strat', 'deep-deep-forced')
     HOLD_FP_VERDICTS = ('FP', 'probably-FP', 'lean-FP')   # snapshot_rechain_batch.sh:379 (R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS, ledger 1698)
     HOLD_NOTE_CHARS = 200                   # carry_missed.csv judge_note cut; snapshot_rechain_batch.sh:397
