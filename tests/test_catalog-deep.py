@@ -717,6 +717,12 @@ def test_content_tests_catch_defects():
     assert not ok('fitted_catalog', fo, **ctx), 'a moved peak position passed'
     write_csv(fo, cols, out_rows(stat='0.0'))
     assert not ok('fitted_catalog', fo, **ctx), 'a fitted row with a 0.0 statistical error passed'
+    CFG.catalog_fitpos.ZERO_STAT_ERROR = 'report'                     # production (the parity file): reported, not failed
+    try:
+        res = validate.run('fitted_catalog', fo, **ctx)
+        assert all(r['passed'] for r in res) and any('reported' in r['detail'] for r in res), res
+    finally:
+        CFG.catalog_fitpos.ZERO_STAT_ERROR = 'refuse'
     # union without the stokes column (pre-D9)
     os.makedirs(f'{d}/run/source_catalogs', exist_ok=True)
     write_csv(f'{d}/run/source_catalogs/Full_sources_survivors.csv', ['source_id', 'band'], [dict(source_id='J1', band='Full')])

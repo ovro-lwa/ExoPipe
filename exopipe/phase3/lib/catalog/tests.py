@@ -441,7 +441,7 @@ def fitted_positions(path, **ctx):
     miss = [c for c in DET_COLS if c not in cols]
     if miss:
         return False, None, f'missing fitted-position columns {miss}'
-    msgs = []
+    msgs, zero = [], []
     nk = {k: 0 for k in KINDS}
     for r in rows:
         k = r.get('pos_kind')
@@ -454,7 +454,12 @@ def fitted_positions(path, **ctx):
         if k != 'peak':
             a, b = _f(r['pos_stat_maj_arcsec']), _f(r['pos_stat_min_arcsec'])
             if not (a > 0 and b > 0):
-                msgs.append(f"{r['cand_id']}: {k} fit without positive statistical errors")
+                zero.append(f"{r['cand_id']}: {k} fit without positive statistical errors (S/N {r.get('pos_snr')})")
+    report = ''
+    if zero and cfg.catalog_fitpos.ZERO_STAT_ERROR == 'report':
+        report = f'; reported (catalog_fitpos.ZERO_STAT_ERROR report): {len(zero)} {zero[:3]}'
+    else:
+        msgs += zero
     inp = ctx.get('input') or _stage_info(path).get('input')
     if inp and os.path.exists(inp):
         _, irows = _rows(inp)
@@ -481,7 +486,7 @@ def fitted_positions(path, **ctx):
             msgs.append(f'{s["fitted_on_pixel_centre"]} of {nf} fitted rows on a pixel centre')
     else:
         msgs.append('fit_positions_summary.json not found')
-    return _fail(msgs, len(rows), f'{len(rows)} rows: ' + ', '.join(f'{k} {v}' for k, v in nk.items()))
+    return _fail(msgs, len(rows), f'{len(rows)} rows: ' + ', '.join(f'{k} {v}' for k, v in nk.items()) + report)
 
 
 def _tier_of(band):

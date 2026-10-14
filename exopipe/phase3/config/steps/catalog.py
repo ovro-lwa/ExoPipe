@@ -160,7 +160,11 @@ class catalog_fitpos(_Section):
     ON_CENTRE_MAX_FRAC = 0.01                             # refuse above 1 per cent of fitted rows (chance 0.03 per cent); ops/deep_fit_positions.py:149 [lit]
     KEEP_DEEP_SYSTEMATIC = {'deep': True, 'sublst': False}   # sub-LST blanks pos_sys/pos_err (error model A, 2026-10-08/10); ops/sublst_fit_positions.py:56
     SUBLST_K_ARG = 'I=0.464,0.450 V=0.599,0.602'          # must equal fitting.K_TEMPLATE[('sublst', S)]; ops/sublst_catalogs.sh:216 (ac2d267) [arg:--k] (R-GREGG-20261013-TENMIN-TEMPLATE-K-MEASURED)
-    RULED = {'TIERS': 'R-GREGG-20261012-FITTED-DETECTION-POSITIONS-REQUIRED'}
+    # a fitted row (gaussian / template) whose written statistical error is not positive - e.g. 0.0 for a Gaussian with an absurd
+    # fitted S/N (2026-10-14: 2 rows of Run_P3S5, S/N 26,889 and 47,189) - fails the fitted_catalog content test ('refuse': B-32,
+    # each detection's fitted error) or is reported only ('report' = production: the builder and source_localization take 0.0)
+    ZERO_STAT_ERROR = 'refuse'
+    RULED = {'TIERS': 'R-GREGG-20261012-FITTED-DETECTION-POSITIONS-REQUIRED', 'ZERO_STAT_ERROR': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
 
 
 class catalog_select(_Section):
