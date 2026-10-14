@@ -51,8 +51,10 @@ _METHOD_RE = re.compile(r'^fixed-gauss at catalog position, beam \d+\.\dx\d+\.\d
 def fixed_gauss(frame, ra, dec):
     """Least-squares amplitude of a Gaussian with the frame header's beam centred on (ra, dec) over a stamp of
     max(6, 1.5 BMAJ) px (A = sum(m d) / sum(m m)); None off the frame, at an edge, on a non-finite stamp or without a
-    beam - recomputed here for the content test with the definition of p3s3_forced_phot.py:45-67, INCLUDING its beam
-    orientation (major axis at angle BPA from the pixel x axis; see the impl note's finding on the 90 deg rotation)."""
+    beam - recomputed here for the content test with the definition of p3s3_forced_phot.py:45-67: since exopipe_ops
+    8639b21 (Gregg 2026-10-14 'Yes to the forced-flux fix') the model is the shared WCS-oriented beam
+    (phase3_template_fit.beam_icov_pix = core.fitting.beam_icov_pix, orientation 'wcs'); the hand-built Gaussian before it
+    read low by 2ab/(a^2+b^2)."""
     import numpy as np
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -70,7 +72,6 @@ def fixed_gauss(frame, ra, dec):
         bmaj, bmin = float(h.get('BMAJ') or 0) / cd, float(h.get('BMIN') or 0) / cd
         if bmaj <= 0 or bmin <= 0:
             return None
-        bpa = math.radians(float(h.get('BPA') or 0.0))
         r = int(max(cf.STAMP_RADIUS_MIN_PX, round(cf.STAMP_RADIUS_BEAMS * bmaj)))
         xi, yi = int(round(x)), int(round(y))
         if not (r <= yi < d.shape[0] - r and r <= xi < d.shape[1] - r):
@@ -79,11 +80,9 @@ def fixed_gauss(frame, ra, dec):
         if not np.isfinite(st).all():
             return None
         yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
-        X, Y = xx - (x - xi), yy - (y - yi)
-        sx, sy = bmaj / cf.FWHM_TO_SIGMA, bmin / cf.FWHM_TO_SIGMA
-        xr = X * math.cos(bpa) + Y * math.sin(bpa)
-        yr = -X * math.sin(bpa) + Y * math.cos(bpa)
-        m = np.exp(-0.5 * ((xr / sx) ** 2 + (yr / sy) ** 2))
+        from exopipe.phase3.core import fitting as FT
+        icov = FT.beam_icov_pix(float(h['BMAJ']), float(h['BMIN']), float(h.get('BPA') or 0.0), w, orientation='wcs')
+        m = FT.beam_model(icov, 1.0, x - xi, y - yi, xx.astype(float), yy.astype(float))
         return float(np.sum(m * st) / max(np.sum(m * m), 1e-12))
 
 

@@ -192,7 +192,7 @@ def test_inplace_truth():
     FS = _src(os.path.join(OPS, 'p3s3_forced_phot.py'))
     for txt in ("glob.glob(f'{U}/%s')" % cf.CATALOG_GLOB, "glob.glob(f'{d}/%s')" % cf.SURVIVORS_GLOB,
                 'max(%d, round(%s * bmaj))' % (cf.STAMP_RADIUS_MIN_PX, cf.STAMP_RADIUS_BEAMS),
-                'bmaj / %s, bmin / %s' % (cf.FWHM_TO_SIGMA, cf.FWHM_TO_SIGMA), 'len(_cache) > %d' % cf.FRAME_CACHE,
+                'TF.beam_icov_pix(', 'TF.beam_model(icov, 1.0', 'len(_cache) > %d' % cf.FRAME_CACHE,
                 'round(A, %d)' % cf.DECIMALS, "forced_method='%s'" % cf.NO_FRAME):
         check('truth p3s3_forced_phot contains %r' % txt, txt in FS)
     check('truth forced_catflux.DONE_RE matches the script\'s summary line',
@@ -317,10 +317,10 @@ def test_catflux():
           r46[0]['forced_jy'])
     check('catflux no frame row: method "no frame / off-frame", blank values',
           r46[1]['forced_method'] == 'no frame / off-frame' and r46[1]['forced_jy'] == '')
-    a, b = 0.6, 0.3
-    want = 10.0 * 2 * a * b / (a * a + b * b)
-    check('FINDING catflux beam rotated 90 deg: BMAJ = 2 BMIN, BPA 0 -> forced_jy = 10 x 2ab/(a^2+b^2) = %.3f (not 10)'
-          % want, abs(float(r55[0]['forced_jy']) - want) < 0.02, r55[0]['forced_jy'])
+    # exopipe_ops 8639b21 (Gregg 2026-10-14 'Yes to the forced-flux fix'): the WCS-oriented beam model recovers the
+    # injected flux of an elongated beam (the hand-built Gaussian before it gave 10 x 2ab/(a^2+b^2) = 8.000)
+    check('catflux elongated beam (BMAJ = 2 BMIN, BPA 0): forced_jy = the injected 10 Jy (8639b21; was 8.000)',
+          abs(float(r55[0]['forced_jy']) - 10.0) < 0.02, r55[0]['forced_jy'])
     t = [x for x in rec.get('tests', []) if x['name'] == 'catalog_forced_columns.catflux_columns']
     check('catflux content test ran on the three outputs and passed', len(t) == 3 and all(x['passed'] for x in t),
           str([x.get('detail') for x in t]))
