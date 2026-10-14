@@ -29,6 +29,13 @@ def _rows(path):
         return rd.fieldnames or [], list(rd)
 
 
+def _list_rows(path):
+    """(header, rows as lists): for a CSV that repeats column names (master_catalog.csv after the fit)."""
+    with open(path, newline='') as f:
+        rd = csv.reader(f)
+        return next(rd, []), list(rd)
+
+
 def _float(x):
     try:
         v = float(x)
@@ -96,7 +103,8 @@ def preflight_report(path, **ctx):
 def tier_rules_recomputed(path, **ctx):
     """Tier rules 3/4 and the 10-minute elevation floor recomputed with the in-place functions: every removed row satisfies
     its rule (and carries it), no kept row of master_catalog.csv satisfies any (kept rows at their PEAK position when
-    fitted positions were added later)."""
+    fitted positions were added later). The floor at the FITTED positions (exopipe_ops 24d2b39): every row of
+    master_catalog_elevation_floor_fitted.csv lies below the floor at its fitted position, with that elevation written."""
     import numpy as np
     clv, ops = _legacy('clv15'), _legacy('exopipe_ops')
     import phase3_tier_rules as TR
@@ -122,6 +130,16 @@ def tier_rules_recomputed(path, **ctx):
                 bad.append(r['cand_id'])
         return not bad, len(rows), f'{len(rows)} removed below {floor} deg, {len(bad)} not below it / wrong value' + (
             f' e.g. {bad[:3]}' if bad else '')
+    if base == 'master_catalog_elevation_floor_fitted.csv':
+        lhdr, lrows = _list_rows(path)          # the catalogue repeats column names after the fit: last occurrence, as the stage
+        ix = {c: i for i, c in enumerate(lhdr)}
+        bad = []
+        for r in lrows:
+            e = float(G.window_elevation(r[ix['lst']], r[ix['date']], float(r[ix['ra']]), float(r[ix['dec']])))
+            if not (np.isfinite(e) and e < floor) or r[ix['window_elevation_deg']] != '%.2f' % e:
+                bad.append(r[ix['cand_id']])
+        return not bad, len(lrows), f'{len(lrows)} removed below {floor} deg at their fitted positions, {len(bad)} not ' \
+                                    f'below it / wrong value' + (f' e.g. {bad[:3]}' if bad else '')
     if base == 'master_catalog.csv':
         if not _is_sublst(path, ctx):
             return _NA
@@ -293,7 +311,8 @@ def sublst_table_notes(path, **ctx):
 def sublst_fitted_positions(path, **ctx):
     """F3 on the written rows (sub-LST): pos_kind gaussian|template|peak on every row; ra/dec = pos_ra/pos_dec; the peak
     kept in peak_ra/peak_dec; finite positive statistical errors; the deep systematic blanked (pos_sys_arcsec,
-    pos_err_maj/min_arcsec empty: error model A)."""
+    pos_err_maj/min_arcsec empty: error model A); every row at or above the 10-minute elevation floor at its FITTED position
+    (exopipe_ops 24d2b39 - a catalogue fitted before it can fail here, as production's 06h did)."""
     if not _is_sublst(path, ctx):
         return _NA
     hdr, rows = _rows(path)
@@ -309,7 +328,17 @@ def sublst_fitted_positions(path, **ctx):
                 or not ((_float(r.get('pos_stat_maj_arcsec')) or 0) > 0 and (_float(r.get('pos_stat_min_arcsec')) or 0) > 0) \
                 or any(r.get(c) for c in blank):
             bad.append(r['cand_id'])
-    return not bad, len(rows), f'{len(rows)} rows {kinds}; {len(bad)} failing F3/blank' + (f' e.g. {bad[:3]}' if bad else '')
+    import numpy as np
+    _legacy('exopipe_ops')
+    import gate_inputs as G
+    low = []
+    for r in rows:
+        e = float(G.window_elevation(r['lst'], r['date'], float(r['ra']), float(r['dec'])))
+        if not (np.isfinite(e) and e >= G.TENMIN_ELEV_FLOOR_DEG):
+            low.append(r['cand_id'])
+    return not bad and not low, len(rows), f'{len(rows)} rows {kinds}; {len(bad)} failing F3/blank' + (
+        f' e.g. {bad[:3]}' if bad else '') + f'; {len(low)} below {G.TENMIN_ELEV_FLOOR_DEG} deg at the fitted position' + (
+        f' e.g. {low[:3]}' if low else '')
 
 
 @content_test('selection', name='sublst_selection')

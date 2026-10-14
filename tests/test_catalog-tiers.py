@@ -6,7 +6,8 @@
 1. config: the four sections load, PROTECTED_KEYS ([lit] and pinned keys) refuse overrides, [env]/[arg] keys do not, every
    RULED ID is a row of the fix ledger;
 2. binding: every [lit] key of both tiers equals its in-place literal (read-only AST of the production files);
-3. ported shell / heredoc logic on synthetic data (split, TABLE-NOTES, tables check, veto pairs, flux bake, search
+3. ported shell / heredoc logic on synthetic data (split, TABLE-NOTES, tables check, veto pairs, the elevation floor at
+   the fitted positions against production's own heredoc (24d2b39), flux bake, search
    complete, compare copy, cells file, code sha256, frame-time marks, unmarked rows, combined store, prefit counts, tie
    shards, memory model, argparse defaults, chain arguments);
 4. content tests on synthetic files (pass and fail cases);
@@ -176,6 +177,40 @@ def test_ported_sublst():
     ok('compare_copy content test passes against its source', TS.compare_copy_equal(f'{T}/cmp/catalog', source=U)[0])
     open(f'{T}/cmp/catalog/a.csv', 'w').write('changed\n')
     ok('compare_copy content test fails on a changed file', not TS.compare_copy_equal(f'{T}/cmp/catalog', source=U)[0])
+
+
+def test_ported_sublst_floor_fitted():
+    """exopipe_ops 24d2b39: the port of the PYE2 heredoc writes the bytes production's own heredoc (read from the live
+    sublst_catalogs.sh) writes, on a catalogue that repeats column names as master_catalog.csv does after the fit."""
+    from exopipe.phase3.lib.catalog import tier_sublst as S, tests_sublst as TS
+    src = open(f'{OPS_REAL}/sublst_catalogs.sh').read()
+    a, b = src.find("<<'PYE2'"), src.find('\nPYE2\n')
+    ok('production sublst_catalogs.sh holds the PYE2 heredoc (24d2b39) - if not, the port is stale', 0 < a < b)
+    heredoc = src[src.index('\n', a) + 1:b + 1]
+    hdr = ['cand_id', 'lst', 'date', 'band', 'stokes', 'ra', 'dec', 'axis_flag', 'size_flag', 'peak_ra', 'peak_dec',
+           'axis_flag', 'size_flag', 'pos_kind']
+    rows = [['I1', '14h', '2025-04-06T00', '41MHz', 'I', '210.0', '37.0', 'a1', 's1', '210.0', '37.0', 'a2', 's2', 'gaussian'],
+            ['I2', '14h', '2025-04-06T02', 'Full', 'I', '30.0', '-60.0', 'a1', 's1', '30.1', '-59.9', 'a2', 's2', 'template'],
+            ['V1', '14h', '2025-04-06T01', '18MHz', 'V', '211.0', '38.0', '', 's1', '211.0', '38.0', 'x', '', 'peak']]
+    for d in ('fa', 'fb'):
+        wcsv(f'{T}/{d}/master_catalog.csv', hdr, rows)
+    p = subprocess.run([PY, '-', f'{T}/fa'], input=heredoc, universal_newlines=True, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT)
+    line = S.elevation_floor_fitted(f'{T}/fb', OPS_REAL)
+    names = ('master_catalog.csv', 'master_catalog_elevation_floor_fitted.csv')
+    same = p.returncode == 0 and all(open(f'{T}/fa/{n}', 'rb').read() == open(f'{T}/fb/{n}', 'rb').read() for n in names)
+    with open(f'{T}/fb/master_catalog_elevation_floor_fitted.csv', newline='') as f:
+        gone = list(csv.reader(f))
+    with open(f'{T}/fb/master_catalog.csv', newline='') as f:
+        kept_hdr = next(csv.reader(f))
+    ok('fitted-position floor: the port writes the bytes of production\'s heredoc; repeated columns kept; I2 removed',
+       same and line in p.stdout and kept_hdr == hdr and [r[0] for r in gone[1:]] == ['I2'], (p.returncode, p.stdout[-300:]))
+    r = TS.tier_rules_recomputed(f'{T}/fb/master_catalog_elevation_floor_fitted.csv')
+    ok('tier_rule_removals passes on the fitted-floor removals (below the floor, elevation written)', r[0] and r[1] == 1, r)
+    gone[1][-1] = '31.00'
+    wcsv(f'{T}/fc/master_catalog_elevation_floor_fitted.csv', gone[0], gone[1:])
+    ok('tier_rule_removals fails on a wrong elevation value', not TS.tier_rules_recomputed(
+        f'{T}/fc/master_catalog_elevation_floor_fitted.csv')[0])
 
 
 def test_ported_snapshot():
@@ -667,6 +702,7 @@ def main():
         test_config()
         test_binding()
         test_ported_sublst()
+        test_ported_sublst_floor_fitted()
         test_ported_snapshot()
         test_content_tests()
         stub = build_stubs()

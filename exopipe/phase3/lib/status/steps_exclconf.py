@@ -10,10 +10,10 @@ Three parts (deep; sub-LST and snapshot have the served part only):
                    'COADD constituent' HISTORY line judged with core.exclusions now; BREACH when the newest
                    data_decisions backup at or before the master's mtime already excluded it (judged with core.exclusions
                    on that backup), STALE when it did not, UNKNOWN-EPOCH when no backup is that old (the snapshot choice
-                   of coadd_exclusion_conformance.py:47-80). One difference, on purpose: the backup is judged with the
-                   co-add rule (a band master is excluded by its member subbands), where the production script's
-                   excluded_at (:48-53) looks the BAND name up among the backup's subband rows - so it calls every
-                   band-master constituent excluded before the build STALE, never BREACH (finding, reported).
+                   of coadd_exclusion_conformance.py:47-80). The backup is judged with the co-add rule (a band master
+                   is excluded by its member subbands), as the production script does since exopipe_ops c1e4a5d (its
+                   excluded_at looked the BAND name up among the backup's subband rows, so a band-master constituent
+                   excluded before the build read STALE, never BREACH - refactor finding, fixed 2026-10-14).
   served-run       every CSV of each run the hub registry serves for the tier (judgements/ skipped): each row keyed by
                    snapshot_serve_exclusion_gate.keys_of (in place; its main() is NOT called - it writes into the run dir),
                    plus lst/date/scope rows (search image tables); each key judged with core.exclusions now.

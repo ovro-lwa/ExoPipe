@@ -21,7 +21,8 @@ Stages (--stages a,b / --from S / --until S; default all, in this order):
   tier-rules  tier rule 3 (deep-search refusals), tier rule 4 (failed flux scale), 10-minute elevation floor (S-G8..10)
   tie-pulsars sublst_pertie.py measure + frames on the rows near ATNF pulsars (S-G11)
   conform     p3s2_conform.py with the sub-LST tables, always (S-G6, S-G13, exopipe_ops 7042670) + TABLE-NOTES content test
-  fitpos      sublst_fit_positions.py, template K per Stokes = fitting.K_TEMPLATE[('sublst', S)] (S-G14, exopipe_ops 70003ad)
+  fitpos      sublst_fit_positions.py, template K per Stokes = fitting.K_TEMPLATE[('sublst', S)] (S-G14, exopipe_ops 70003ad),
+              then the 10-minute elevation floor again at the FITTED positions (S-G10; exopipe_ops 24d2b39)
   select      select_v3.py (no verdict file, as production: question Q7) + p3s2_ephem_filter.py + split (S-G15)
   tie         sublst_pertie.py measure + frames on every selected row (S-G11: the window tie T1-T13 at the fitted positions)
   veto        leak_veto_sublst.py per (band, Stokes) of master_catalog.csv (S-G16; output unserved, B-24)
@@ -42,7 +43,8 @@ Inputs:  search outputs paths.SUBLST_ROOT/search_<arm>/<LST>_*_[IV]/, the arm's 
          stacks SUBLST_ROOT/<LST>/, the cubes, the search state ops/sublst_search_state_<arm>/{done,claims,failed},
          data_decisions.csv (merge staleness gate, in place), the sub-LST bright-parent tables of the code tree.
 Outputs (product classes): master_catalog.csv (merged_record -> tier_rule_removals -> conformant_catalog -> fitted_catalog),
-         master_catalog_{deepsearch_refused,fluxscale_refused,elevation_floor}.csv (tier_rule_removals), frame_times.csv
+         master_catalog_{deepsearch_refused,fluxscale_refused,elevation_floor,elevation_floor_fitted}.csv
+         (tier_rule_removals), frame_times.csv
          (frame_table), selected_*.csv (selection), pertie/pertie_detections.csv (window_tie), leakveto/*.csv
          (leak_veto_table), source_catalogs_{noveto,veto}_<K>/ (source_catalog), localizations_{noveto,veto}/localizations.csv
          (localization_table), rejected.csv + rejected_index.npz + detection_ts.csv (rejected_record), the compare copy
@@ -902,6 +904,39 @@ def elevation_floor(U, ops):
             % (len(gone), len(rows), G.TENMIN_ELEV_FLOOR_DEG))
 
 
+def elevation_floor_fitted(U, ops):
+    """sublst_catalogs.sh:221-247 (PYE2; exopipe_ops 24d2b39, 2026-10-14): the 10-minute elevation floor again, at the
+    FITTED position - the fit moves a detection by up to ~100 arcsec, so one just above the floor at its peak can fall below
+    it (06h 2025-01-06 59 MHz I_0156: 24.902 deg) and the window tie has no bin there; the ruled floor (Gregg 2026-10-01)
+    applies at the detection's best position. List rows, not dicts: after the fit master_catalog.csv repeats column names
+    (axis_flag, axis_norm, fp_prediction, size_beams, size_flag) - a column is read at its LAST occurrence, as the heredoc's
+    index map. A row whose elevation is not finite REFUSES."""
+    import numpy as np
+    G = _imp(ops, 'gate_inputs')
+    with open(f"{U}/master_catalog.csv", newline="") as f:
+        rd = csv.reader(f)
+        hdr = next(rd)
+        rows = list(rd)
+    ix = {c: i for i, c in enumerate(hdr)}
+    keep, gone = [], []
+    for r in rows:
+        e = float(G.window_elevation(r[ix["lst"]], r[ix["date"]], float(r[ix["ra"]]), float(r[ix["dec"]])))
+        if not np.isfinite(e):
+            refuse(f"S-G10: REFUSING: no elevation for {r[ix['cand_id']]} at its fitted position")
+        (keep if e >= G.TENMIN_ELEV_FLOOR_DEG else gone).append(r if e >= G.TENMIN_ELEV_FLOOR_DEG else r + ["%.2f" % e])
+    with open(f"{U}/master_catalog.csv.new", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(hdr)
+        w.writerows(keep)
+    with open(f"{U}/master_catalog_elevation_floor_fitted.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(hdr + ["window_elevation_deg"])
+        w.writerows(gone)
+    os.replace(f"{U}/master_catalog.csv.new", f"{U}/master_catalog.csv")
+    return ("elevation floor (fitted positions): %d of %d detections removed (below %g deg at their window mid-time)"
+            % (len(gone), len(rows), G.TENMIN_ELEV_FLOOR_DEG))
+
+
 def table_notes(removed_csv):
     """sublst_catalogs.sh:189-201 (PYT): every bright-parent table removal names its elevation band and the image-pixel
     metric. Returns (line, n, bad)."""
@@ -1257,9 +1292,12 @@ def st_fitpos(ctx, s, plan):
          + ['--nproc', str(shared('catalog_fitpos', 'NPROC', 'sublst'))])
     plan.append(f'fitted positions: {ctx.py["default"]} {script} ' + ' '.join(a) + '   >> catalogs.log (S-G14: F1-F4 in the '
                 f'module)')
+    plan.append(f'elevation floor at the fitted positions (in process): gate_inputs.window_elevation >= '
+                f'{ctx.c.ELEV_FLOOR_DEG} deg -> master_catalog_elevation_floor_fitted.csv (S-G10; exopipe_ops 24d2b39)')
     if ctx.dry:
         return
-    s.code(script, ctx.opsc('deep_forced_radio.py'))
+    env_leaks(INPROC_ENV)
+    s.code(script, ctx.opsc('deep_forced_radio.py'), ctx.opsc('gate_inputs.py'))
     s.inp(f'{U}/master_catalog.csv')
     ctx.log.say(f'fitted detection positions on the searched frames (template K: {" ".join(k_arg())})')
     res = call(ctx, s, script, a, env=ctx.env(), log=ctx.log.path, cwd=U)
@@ -1270,6 +1308,18 @@ def st_fitpos(ctx, s, plan):
     ok = last_line(res.tail, r'^FIT-POSITIONS-OK')
     ctx.log.say(ok[:400])
     s.u.note(ok)
+    try:
+        with stdout_to(ctx.log.path):
+            line = elevation_floor_fitted(U, ctx.ops)
+            print(line, flush=True)
+    except _record().Refusal:
+        raise
+    except Exception as e:
+        ctx.log.say('REFUSING: elevation floor (fitted positions) failed')
+        refuse(f'S-G10 elevation floor (fitted positions) failed: {type(e).__name__}: {e}')
+    ctx.log.say(line)
+    s.u.note(line)
+    s.out(f'{U}/master_catalog_elevation_floor_fitted.csv', 'tier_rule_removals')
     s.out(f'{U}/master_catalog.csv', 'fitted_catalog')
     if os.path.exists(f'{U}/fit_positions_record.csv'):
         s.out(f'{U}/fit_positions_record.csv', 'csv_table')
