@@ -864,15 +864,23 @@ def strip_legacy_header(log):
 
 
 def movie_skips(cell, lines):
-    """B-30 (Gregg 2026-10-14: the minimum kept, every skip recorded, never refused): a band the frame-movie engine made no
-    movie of - fewer than frames_snapshot.MIN_FRAMES_PER_BAND staged flowed frames, its line 'too few staged flowed frames for
-    <subband>' (phase3_snapshot_frame_movie.py:56-57) - is COUNTED (fallbacks.FRAME_MOVIE_SKIP_FALLBACK). Returns them."""
+    """B-30 (Gregg 2026-10-14: the minimums kept, every skip recorded, never refused), from the lines the frame-movie engine
+    printed: a band it made no movie of - fewer than frames_snapshot.MIN_FRAMES_PER_BAND staged flowed frames, 'too few staged
+    flowed frames for <subband>' (phase3_snapshot_frame_movie.py:56-57) - is COUNTED (fallbacks.FRAME_MOVIE_SKIP_FALLBACK); a
+    movie whose background median came from every frame with data - fewer than MOVIE_BACKGROUND_MIN_ADMITTED admitted frames,
+    'BACKGROUND <sb>: <n> admitted frames < 10 - ...' (clv15 40381cb, :111-112) - is COUNTED
+    (fallbacks.FRAME_MOVIE_BACKGROUND_FALLBACK). Returns (bands without a movie, bands with the fallback background)."""
+    from exopipe.phase3.core import fallback
+    S = cfg().frames_snapshot
     few = [l.rsplit(' ', 1)[-1] for l in lines if l.startswith('too few staged flowed frames for ')]
+    bg = [l.split()[1].rstrip(':') for l in lines if l.startswith('BACKGROUND ') and len(l.split()) > 1]
     if few:
-        from exopipe.phase3.core import fallback
         fallback.site('fallbacks.FRAME_MOVIE_SKIP_FALLBACK', f'{cell}: no frame movie of {few} - fewer than '
-                      f'{cfg().frames_snapshot.MIN_FRAMES_PER_BAND} staged flowed frames', n=len(few))
-    return few
+                      f'{S.MIN_FRAMES_PER_BAND} staged flowed frames', n=len(few))
+    if bg:
+        fallback.site('fallbacks.FRAME_MOVIE_BACKGROUND_FALLBACK', f'{cell}: the movie background of {bg} from every frame '
+                      f'with data - fewer than {S.MOVIE_BACKGROUND_MIN_ADMITTED} admitted frames', n=len(bg))
+    return few, bg
 
 
 def frame_movie_args(ctx, script):

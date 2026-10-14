@@ -200,8 +200,9 @@ class frames_snapshot(_Section):
     MOVIE_CRF = 26                          # frame_movie:32
     MIN_FRAMES_PER_BAND = 10                # fewer staged flowed frames = no movie for that band; frame_movie:56 (engine literal); a band
                                             # skipped so is COUNTED by the step (fallbacks.FRAME_MOVIE_SKIP_FALLBACK; Gregg 2026-10-14)
-    MOVIE_BACKGROUND_MIN_ADMITTED = 10      # fewer admitted frames = the movie's background from every frame with data; frame_movie:110
-                                            # (engine literal; the engine prints nothing then, so the step cannot count it yet)
+    MOVIE_BACKGROUND_MIN_ADMITTED = 10      # fewer admitted frames = the movie's background from every frame with data; frame_movie:110-112
+                                            # (engine literals, both drift-checked); its 'BACKGROUND <sb>: ...' line (clv15 40381cb) is
+                                            # COUNTED by the step (fallbacks.FRAME_MOVIE_BACKGROUND_FALLBACK)
     FLOW_MOVIES = True                      # flow_<sb>.mp4 + series per subband (v9:270-271); frames owns them (crosscheck decision 6)
     FLOW_MOVIE_DURATION_S = 10.0            # s (Gregg 2026-09-12); flow_movie:28
     FLOW_MOVIE_PROCS = 4                    # subbands at once; v9:271 (xargs -P 4)
