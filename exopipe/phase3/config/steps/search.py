@@ -78,6 +78,11 @@ class search_detect(_Section):
                                                             # R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT)
     SEARCH_TIER_SIGMA = 5.0                                 # x 1.4826 MAD above the median, per Stokes; P3_SEARCH_TIER_SIGMA (deep_search.py:455)
     BEAM_GATE_RATIO = 1.5                                   # x median fitted-beam area; P3_BEAM_GATE_RATIO (deep_search.py:1353; R-BEAM-REFUSALS-STAND-1P5)
+    # the cell-median gates' minimum counts (Gregg 2026-10-14: production's 5 each, kept; a skip is counted -
+    # fallbacks.SEARCH_GATE_SKIP_FALLBACK - never refused): P3_SANITY_MIN_NIGHTS, P3_SEARCH_TIER_MIN, P3_BEAM_GATE_MIN_NIGHTS
+    SANITY_MIN_NIGHTS = 5                                   # nights with a measured noise (I qa3 / V frame rms) for the sanity gates
+    SEARCH_TIER_MIN = 5                                     # nights with a stage-1 rms, per Stokes, for the search-tier gate
+    BEAM_GATE_MIN_NIGHTS = 5                                # nights with a beam area for the beam gate (Gregg 2026-09-11 floor waived)
     REFINE_X2 = True                                        # False = P3_REFINE_OFF=1 (deep_search.py:454); deep refines (production)
     NPROC_RESID = 6                                         # processes; DEEP_NPROC_RESID (deep_search.py:304)
     FLOW_XLA_MEM_FRACTION = 0.5                             # DEEP_XLA_MEMFRAC (deep_search.py:378)
@@ -140,7 +145,8 @@ class search_detect(_Section):
              'AXIS_REMOVE': ('R-SIZE-AXIS-GATE-1.5-RATIFIED', 'R-GATE-TIGHTENED-SIZE-1.5-AXIS-1.5-VALIDATED-ON-KNOWN-TRANSIENTS'),
              'SANITY_X': 'R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT',
              'SEARCH_TIER_SIGMA': 'R-SEARCH-TIER-THRESHOLD-5-SIGMA-MAD-LANDED-RESEARCH-WORKLIST-493',
-             'BEAM_GATE_RATIO': 'R-BEAM-REFUSALS-STAND-1P5'}
+             'BEAM_GATE_RATIO': 'R-BEAM-REFUSALS-STAND-1P5',
+             'SANITY_MIN_NIGHTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'SEARCH_TIER_MIN': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'BEAM_GATE_MIN_NIGHTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}
     PROTECTED_KEYS = ('I_MASK_FLOOR_DEG', 'DETECTION_FLOOR_SIGMA', 'V_BDSF_THRESH_PIX', 'I_BDSF_THRESH_PIX', 'I_BDSF_THRESH_ISL',
                       'LOCAL_SNR_ANNULUS_BEAMS', 'LOCAL_SNR_MIN_PIX', 'EXTRACTION_FAILURE', 'MSTRUCT_K', 'STRIATION_WINDOW_BEAMS',
                       'SIGMA_STACK_BUILD_MIN', 'VETO_SNR_GATE', 'VETO_MASK_JY', 'VETO_ONSRC_JY', 'VETO_MASK_COEF_DEG', 'VETO_ATEAM_JY',
@@ -327,6 +333,9 @@ class search_sublst(_Section):
     SANITY_I_X = 3.0                        # x cell median qa3; P3_SANITY_I_X; DS:77
     SEARCH_TIER_SIGMA = 5.0                 # x 1.4826 MAD; P3_SEARCH_TIER_SIGMA; DS:455
     BEAM_GATE_RATIO = 1.5                   # x median beam area; P3_BEAM_GATE_RATIO; DS:1353
+    SANITY_MIN_NIGHTS = 5                   # the sanity gates' minimum count; P3_SANITY_MIN_NIGHTS (Gregg 2026-10-14: 5 kept, skips counted)
+    SEARCH_TIER_MIN = 5                     # FRAMES with a stage-1 rms per Stokes at 10 minutes; P3_SEARCH_TIER_MIN (5 kept, skips counted)
+    BEAM_GATE_MIN_NIGHTS = 5                # the beam gate's minimum count; P3_BEAM_GATE_MIN_NIGHTS (5 kept, skips counted)
     V110_TIMEOUT_S = 43200                  # s; P3_V110_TIMEOUT; DS:615 (INCIDENT-V110-STAGE-4H-TIMEOUT)
     TABLE_ELEV = True                       # P3_TABLE_ELEV=1 (parent_curve_table.py:162 default); record-only here
     TABLE_ELEV_BANDS = '25-35,35-50,50-90'  # deg; P3_TABLE_ELEV_BANDS (parent_curve_table.py:117 default)
@@ -387,7 +396,8 @@ class search_sublst(_Section):
              'SEARCH_TIER_SIGMA': 'R-SEARCH-TIER-THRESHOLD-5-SIGMA-MAD-LANDED-RESEARCH-WORKLIST-493',
              'BEAM_GATE_RATIO': 'R-BEAM-REFUSALS-STAND-1P5',
              'REFINE_X2': 'R-SUBLST-19H-CARD-SECTION-9-ALL-YES',
-             'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
+             'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'SANITY_MIN_NIGHTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'SEARCH_TIER_MIN': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'BEAM_GATE_MIN_NIGHTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}
     # engine-hard-coded (CADENCE: the tier IS the 10-minute cadence; I_MASK_FLOOR_DEG: search_i's module constant) and pinned
     # (MASTER_GEN: R-TILT-REMOVED-NEXTGEN; the trees; the v110 null tables and their md5s)
     PROTECTED_KEYS = ('CADENCE', 'I_MASK_FLOOR_DEG', 'MASTER_GEN', 'TREE_SUBDIRS', 'V110_NULL_TRIALS', 'V110_NULL_TRIALS_MD5',

@@ -13,6 +13,8 @@ import ast
 import json
 import math
 import os
+import re
+import subprocess
 import shutil
 import sys
 import textwrap
@@ -365,6 +367,40 @@ def main():
         check('deep engine child: a Refusal (a fallback site) is refused, exit 2', rc == 2 and res['status'] == 'refused', res)
         check('10-minute engine child: a Refusal (a fallback site) is refused, exit 2', rc10 == 2 and res10['refusal'] is True,
               (rc10, res10))
+        # ---- the cell-median gates' minimum counts (Gregg 2026-10-14): named, production's 5; a skip counted, never refused --
+        K = 'fallbacks.SEARCH_GATE_SKIP_FALLBACK'
+        r, ref, (refs, cnt) = under(K, 'fallback', lambda: DS._enough(4, 5, 'cell X: gate Y, nights'))
+        r5, ref5, (refs5, cnt5) = under(K, 'fallback', lambda: DS._enough(5, 5, 'cell X: gate Y, nights'))
+        check('a gate below its minimum count is skipped and COUNTED under the ruled value; at the minimum it runs, nothing counted',
+              r is False and ref is None and cnt.get(K) == 1 and r5 is True and not cnt5.get(K), (r, ref, cnt, r5, cnt5))
+        rr, refr, _ = under(K, 'refuse', lambda: DS._enough(4, 5, 'cell X: gate Y, nights'))
+        check('the skip key can be set to refuse (not the ruled value)', rr is None and K in (refr or ''), refr)
+        src = open(DS.__file__).read()
+        uses = {n: src.count(f'_enough(len({v}), {n}') for v, n in (('_fin', 'SANITY_MIN_NIGHTS'), ('_v', 'SEARCH_TIER_MIN'),
+                                                                     ('_fin', 'BEAM_GATE_MIN_NIGHTS'), ('_vf', 'SANITY_MIN_NIGHTS'))}
+        left = re.findall(r'if len\((_fin|_v|_vf)\) *(?:>=|<) *5\b', src)
+        check('the four cell-median gates (I sanity, search tier, beam, V sanity) decide through _enough with their named '
+              'minimum, no literal 5 left', uses == {'SANITY_MIN_NIGHTS': 1, 'SEARCH_TIER_MIN': 1, 'BEAM_GATE_MIN_NIGHTS': 1}
+              and src.count('_enough(len(_fin), SANITY_MIN_NIGHTS') == 1 and src.count('_enough(len(_vf), SANITY_MIN_NIGHTS') == 1
+              and not left, (uses, left))
+        CFG.reset()
+        CFG.authorize([], out=T)
+        CFG.set('search_detect.SANITY_MIN_NIGHTS', '7')
+        CFG.set('search_sublst.SEARCH_TIER_MIN', '6')
+        env = DST.engine_env(f'{T}/c', f'{T}/a', f'{T}/f', 'X', f'{T}/ar', f'{T}/tmp')
+        env10 = TS.engine_env({'label': 'SLST09B', 'arm': 'B', 'lst': '09h'}, f'{T}/att')
+        CFG.reset()
+        check('the minimum counts reach both engines from config (deep and 10-minute)',
+              env.get('P3_SANITY_MIN_NIGHTS') == '7' and env.get('P3_SEARCH_TIER_MIN') == '5'
+              and env.get('P3_BEAM_GATE_MIN_NIGHTS') == '5' and env10.get('P3_SEARCH_TIER_MIN') == '6'
+              and env10.get('P3_SANITY_MIN_NIGHTS') == '5', ({k: env.get(k) for k in ('P3_SANITY_MIN_NIGHTS', 'P3_SEARCH_TIER_MIN')},
+                                                             env10.get('P3_SEARCH_TIER_MIN')))
+        pr = subprocess.run([sys.executable, '-c', 'import sys; sys.path.insert(0, %r); from exopipe.phase3.lib.search import '
+                             'deep_search as D; print(D.SANITY_MIN_NIGHTS, D.SEARCH_TIER_MIN, D.BEAM_GATE_MIN_NIGHTS)' % REPO],
+                            env=dict(os.environ, P3_SANITY_MIN_NIGHTS='3', P3_SEARCH_TIER_MIN='4'), stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, universal_newlines=True, timeout=600)
+        check('the engine reads its minimum counts from the environment (default 5 = production)',
+              pr.stdout.strip().splitlines()[-1:] == ['3 4 5'], pr.stdout[-300:])
     finally:
         CFG.reset()
         os.environ.pop('EXOPIPE3_EPHEMERIS_TIME', None)

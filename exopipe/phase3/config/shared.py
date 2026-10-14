@@ -198,6 +198,8 @@ class fallbacks(_Section):
     # |pixel| > 1e6 Jy/beam zapped to 0 (deep_search._load) - a per-item drop: ruled 'counted' (the ruling's "per-item
     # drops counted in the run record"), n = pixels
     SEARCH_ZAP_PIXELS_FALLBACK = 'fallback'
+    SEARCH_GATE_SKIP_FALLBACK = 'fallback'   # a cell-median gate skipped for want of its minimum count (deep_search._enough); COUNTED, never
+                                             # refused (Gregg 2026-10-14, the refactor chat's recommendation)
     # no beam (the I master's empirical-beam fit NaN, a structure-map beam <= 0) -> 7 pixels (deep_search)
     SEARCH_BEAM_FALLBACK = 'refuse'
     # destriping the V master failed -> the raw master structure map gates the search (deep_search._mstruct_maps)
@@ -234,6 +236,7 @@ class fallbacks(_Section):
     # search, its residual savers - and search_v's copy in V-clean) - a per-item drop: ruled 'counted', n = rows
     STRIATION_WCS_BLOCK_FALLBACK = 'fallback'
     RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_EPHEMERIS_LABEL_FALLBACK', 'VCLEAN_BEAM_FALLBACK', 'STRIATION_WCS_BLOCK_FALLBACK', 'LOC_MASTER_BEAM_FALLBACK', 'LOCALIZATION_FALLBACK', 'INSTALL_AUDIT_EPOCH_GATE_FALLBACK', 'CATALOG_IDENTITY_POS_ERR_FALLBACK', 'CATALOG_IDENTITY_ROW_FALLBACK', 'CATALOG_SSTACK_THRESHOLD_FALLBACK', 'CATALOG_EPHEM_RETRO_FALLBACK', 'CATALOG_EPHEM_TIME_FALLBACK')}
+    RULED['SEARCH_GATE_SKIP_FALLBACK'] = ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS')
     RULED['LOC_FORK_ONLY_FALLBACK'] = 'R-GREGG-20261014-REFACTOR-A2B-C8B-C8C'
 
 

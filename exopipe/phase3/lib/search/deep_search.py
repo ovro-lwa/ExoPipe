@@ -75,6 +75,22 @@ ATEAM_VETO_DEG_I = 5.0        # Card 6 ratified table; I downstream veto landed 
 SIZE_FLOOR_BEAMS = float(os.environ.get('P3_SIZE_FLOOR_BEAMS', '1.5'))
 SIZE_FLAG_BEAMS = 1.3
 SANITY_I_X = float(os.environ.get('P3_SANITY_I_X', '3.0'))   # I-only search sanity gate (Gregg 2026-09-05)
+# WAVE2 B-30 (Gregg 2026-10-14, R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS: the refactor chat's recommendation): the
+# cell-median gates' minimum counts, named (production's literal 5 each; config search_detect / search_sublst); a gate skipped
+# for want of them is COUNTED in the unit record (fallbacks.SEARCH_GATE_SKIP_FALLBACK), never refused (Gregg 2026-09-11 "Waive
+# the floor. I want a complete Masters set")
+SANITY_MIN_NIGHTS = int(os.environ.get('P3_SANITY_MIN_NIGHTS', '5'))      # the I (qa3) and V (frame rms) sanity gates
+SEARCH_TIER_MIN = int(os.environ.get('P3_SEARCH_TIER_MIN', '5'))          # the search-tier gate, per Stokes (frames at 10 min)
+BEAM_GATE_MIN_NIGHTS = int(os.environ.get('P3_BEAM_GATE_MIN_NIGHTS', '5'))   # the search's beam gate
+
+
+def _enough(n, need, what):
+    """WAVE2 B-30: True when a cell-median gate has its minimum count ``need``; else the skip is counted (never refused)."""
+    if n >= need:
+        return True
+    from exopipe.phase3.core import fallback
+    fallback.site('fallbacks.SEARCH_GATE_SKIP_FALLBACK', f'{what}: {n} (needs {need}) - the gate is skipped', n=1)
+    return False
 ROWLINE_MIN = 5                                              # I finals on one pixel row +/-1 -> all removed (Gregg 2026-09-05)
 AXIS_REMOVE = float(os.environ.get('P3_AXIS_REMOVE', '1.5'))   # Gregg 2026-09-05, tightened 09-08 (same reasoning)
 AXIS_FLAG = 1.3
@@ -1241,7 +1257,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _wr = {r['date']: float(r['qa3_rms_mjy']) for r in _wrows
                if r.get('qa3_rms_mjy') not in (None, '', 'nan')}
         _fin = sorted(v for v in _wr.values() if np.isfinite(v) and v > 0)
-        if len(_fin) >= 5:
+        if _enough(len(_fin), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes I sanity gate, nights with a qa3 rms'):   # WAVE2 B-30
             _med = _fin[len(_fin) // 2]
             _unm_qa3 = {d for d in dates if not (_wr.get(_kd(d), 0) > 0)}   # WAVE2 B-30: unmeasured (named after (1e))
             _bad = [d for d in dates
@@ -1323,9 +1339,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _tier = []
         for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
             _v = np.array(sorted(x for x in _rm.values() if np.isfinite(x) and x > 0))
-            if len(_v) < 5:
+            if not _enough(len(_v), SEARCH_TIER_MIN, f'{lst} {scope}: search-tier gate ({_st}), '      # WAVE2 B-30
+                           f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms'):
                 print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}) SKIPPED - only {len(_v)} '
-                      f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms (needs 5)')
+                      f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms (needs {SEARCH_TIER_MIN})')
                 continue
             _med = float(np.median(_v)); _mad = float(np.median(np.abs(_v - _med))) * 1.4826
             _thr = _med + SEARCH_TIER_SIGMA * _mad
@@ -1442,13 +1459,15 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _nobeam:
             raise RuntimeError(f'{lst} {scope}: no readable Phase-2 beam header for '
                                f'{_nobeam} - beam gate cannot run; REFUSING')
-        if len(_fin) < 5:
+        _bok = _enough(len(_fin), BEAM_GATE_MIN_NIGHTS, f'{lst} {scope}: beam gate, nights with a beam area')   # WAVE2 B-30
+        if not _bok:
             # GREGG 2026-09-11 ("Waive the floor. I want a complete Masters set"): a thin cell is
             # SEARCHED with the beam gate skipped LOUDLY (as the search-tier gate does below 5
             # nights, R-GC10 rider), never refused. Every night keeps its readable-beam requirement.
             print(f'  {lst} {scope}: BEAM GATE SKIPPED - only {len(_fin)} nights with a beam area '
-                  f'(needs 5 for the cell median); floor waived, Gregg 2026-09-11; all {len(dates)} epochs searched')
-        if len(_fin) >= 5:
+                  f'(needs {BEAM_GATE_MIN_NIGHTS} for the cell median); floor waived, Gregg 2026-09-11; all {len(dates)} '
+                  f'epochs searched')
+        if _bok:
             _bmed = _fin[len(_fin) // 2]
             _thr = float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5'))
             _bbad = [d for d in dates
@@ -1664,7 +1683,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                               f'computed - the epoch would escape the V sanity gate')
                 pass
         _vf = sorted(v for v in _vr.values() if np.isfinite(v) and v > 0)
-        if len(_vf) >= 5:
+        if _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms'):   # WAVE2 B-30
             _vmed = _vf[len(_vf) // 2]
             skip_V_dates = {d for d, v in _vr.items() if v > SANITY_I_X * _vmed}
             if skip_V_dates:

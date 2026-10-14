@@ -375,6 +375,8 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
            'P3_MIN_EPOCHS': str(int(sd.SIGMA_STACK_MIN_EPOCHS)), 'P3_SIZE_FLOOR_BEAMS': repr(float(sd.SIZE_FLOOR_BEAMS)),
            'P3_AXIS_REMOVE': repr(float(sd.AXIS_REMOVE)), 'P3_SANITY_I_X': repr(float(sd.SANITY_X)),
            'P3_SEARCH_TIER_SIGMA': repr(float(sd.SEARCH_TIER_SIGMA)), 'P3_BEAM_GATE_RATIO': repr(float(sd.BEAM_GATE_RATIO)),
+           'P3_SANITY_MIN_NIGHTS': str(int(sd.SANITY_MIN_NIGHTS)), 'P3_SEARCH_TIER_MIN': str(int(sd.SEARCH_TIER_MIN)),
+           'P3_BEAM_GATE_MIN_NIGHTS': str(int(sd.BEAM_GATE_MIN_NIGHTS)),
            'P3_V110_TIMEOUT': str(int(sf.TIMEOUT_S)), 'DEEP_NPROC_RESID': str(int(sd.NPROC_RESID)),
            'DEEP_XLA_MEMFRAC': repr(float(sd.FLOW_XLA_MEM_FRACTION)), 'P3_FLOW_PYTHON': legacy.interpreter(sd.FLOW_PYTHON),
            'P3_FLOW_LOCK': sd.FLOW_LOCK, 'TMPDIR': tmpdir, 'PYTHONUNBUFFERED': '1',
