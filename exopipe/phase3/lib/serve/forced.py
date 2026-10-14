@@ -7,8 +7,9 @@ switch, one unit per page (snapshot_forced_serve_20261007.sh:60-101):
   2. it holds its queue, catalogue view, localization offsets and association table, else refused;
   3. the AD Leo check (test_snapshot_forced_reserve.py adleo --absent-ok <run>, site PYTHON 'py36'; Gregg 2026-10-08), else
      refused;
-  4. the serve-time exclusion gate on the run: report only (gate key 'snapshot-forced' is not in EXCLUSION_GATE_TIERS;
-     production has no gate on these pages);
+  4. the serve-time exclusion gate on the run: refuses the page under the ruled value (gate key 'snapshot-forced' in
+     EXCLUSION_GATE_TIERS: Gregg 2026-10-14 R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS); production has no
+     gate on these pages (the parity file: report only);
   5. the port's old server: anything but a review server refuses; the same run already served = nothing to do (no-input);
      stopped by exact pid (FORCED_STOP_TIMEOUT_S);
   6. Gregg's judgements carried (snapshot_carry_judgements.py OLD NEW, after the old server exited) when the old journal is
@@ -98,7 +99,8 @@ def switch_page(run, plan, pg, state, utc):
         if not res.ok:
             u.refuse(f'AD Leo check ({scripts.last_line(res.tail)}) - old page kept')
         scan = exclusion_gate.scan_snapshot_run(D)
-        u.note(f'G17 serve-time exclusion gate (report only for the forced pages): {scan.summary()}')
+        u.note(f'G17 serve-time exclusion gate ({"refusing" if exclusion_gate.refuses("snapshot", "forced") else "report only"} '
+               f'for the forced pages): {scan.summary()}')
         if scan.hits and exclusion_gate.refuses('snapshot', 'forced'):
             u.refuse(f'G17 serve-time exclusion gate: {scan.summary()}')
         old, oenv = _old_server(pg)

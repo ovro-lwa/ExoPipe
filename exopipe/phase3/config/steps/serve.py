@@ -270,10 +270,13 @@ class serve(_Section):
     # Serve-time exclusion gate (G17). It RUNS for every tier and page family (tier parsers in lib/serve/exclusion_gate.py)
     # and REFUSES only for the gate keys listed here (key = the tier for its review pages, '<tier>-<family>' otherwise, e.g.
     # 'snapshot-forced'); for the others it records the rows on excluded cell-bands as a report (unit notes, dry-run plan). Snapshot: Gregg 2026-10-13 ruling 2 'Fine.' (RULINGS-GREGG-20261013-DECISIONS-1-7-AND-TENMIN-TABLES,
-    # ledger 2297; IMPLEMENTED-SNAPSHOT-SERVE-EXCLUSION-GATE-20261013, ledger 2301; f1996ee). Deep / sub-LST: open (spec 12.8;
-    # measured 2026-10-13 ~09:4x UTC on the served Run_P3S5 views + queues: 756 of 311,733 rows on 35 excluded cell-bands,
-    # 21h 2025-08-06 the most; sub-LST 0). Production serves deep / sub-LST without a gate: enabling it is Gregg's. PROTECTED.
-    EXCLUSION_GATE_TIERS = ('snapshot',)
+    # ledger 2297; IMPLEMENTED-SNAPSHOT-SERVE-EXCLUSION-GATE-20261013, ledger 2301; f1996ee). Deep, sub-LST and the snapshot forced
+    # pages: Gregg 2026-10-14 approved enforcing it (R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS); deep / sub-LST
+    # refuse PER PAGE on the rows that page's server reads (lib/serve/exclusion_gate.scan_page; 2026-10-14 ~20:3x UTC on the
+    # served Run_P3S5: 0 rows on excluded nights in any page - a first folder-wide scan's 34 were 2026-10-07 index files the
+    # server never reads). Production ('snapshot' only, no gate on deep / sub-LST / forced pages) is the parity file's value.
+    # PROTECTED.
+    EXCLUSION_GATE_TIERS = ('snapshot', 'snapshot-forced', 'deep', 'sublst')
     HOLD_FP_VERDICTS = ('FP', 'probably-FP', 'lean-FP')   # snapshot_rechain_batch.sh:379 (R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS, ledger 1698)
     HOLD_NOTE_CHARS = 200                   # carry_missed.csv judge_note cut; snapshot_rechain_batch.sh:397
     # how the HOLD check reads the OLD journal: 'driver' = the batch driver's heredoc, production today
@@ -327,4 +330,6 @@ class serve(_Section):
         'DEEP_VIEW_REVIEW_DIR': 'FIX-REFACTOR-DEFECTS-D2-D6-D7-D9-D10-AND-RULINGS-D1-D5-D8-20261013',
         'HOLD_FP_VERDICTS': 'R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS',
         'SNAPSHOT_LOCALIZE': 'R-SNAP-EACH-DETECTION-OWN-FIT-AND-PER-TIER-COMBINED-POSITIONS-IMPLEMENTED',
+        'EXCLUSION_GATE_TIERS': ('RULINGS-GREGG-20261013-DECISIONS-1-7-AND-TENMIN-TABLES',
+                                 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),
     }

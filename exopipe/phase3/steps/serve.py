@@ -49,7 +49,8 @@ Failure modes (exit 2 = refused, the gate named in the record; the refused page 
   G5-G7 sub-LST Stokes keys / review_dir merge; G8 sub-LST generation mix; G9 localizations / figures; G10 page index;
   G11 nothing swapped in on a refused build; G12 one build at a time (lock); G13 port ownership; G14 exact-pid stop failed;
   G15 not exactly one judging server for a twin; G16 no HTTP 200 in time; G17 serve-time exclusion gate (refuses for
-  serve.EXCLUSION_GATE_TIERS = snapshot, reports for the other tiers); G18 carry preconditions; G19 HOLD rule; G20 review
+  serve.EXCLUSION_GATE_TIERS: a snapshot run; a deep / sub-LST page holding, in what its server reads, a row on an
+  excluded night; a snapshot forced page - reports for the keys not listed); G18 carry preconditions; G19 HOLD rule; G20 review
   disk space; G21 snapshot localization; G22 snapshot copy; G23 parity guard (offset, production servers); G24 the server
   refused to start; G25 not the review host; G26 run label required; G28 an earlier stage's record missing or stale;
   the pages merge absent or stale (deep). Exit 3: nothing to do (no page selected, nothing to carry). Exit 1: error.

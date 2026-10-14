@@ -7,7 +7,7 @@ views  (unit deep_<run>_views)  the parity mirror (parity only); the pages merge
        (p3s3_serve_stokes.sh:15-55, review_dir per serve.DEEP_VIEW_REVIEW_DIR); per selected multiples Stokes: the fork
        queue and view (p3s3_serve_multiples.sh:14-131; G3 refuses that page only) and multiples_fork.py served <S> in place
        (G4, p3s3_serve_multiples.sh:136-137). Outputs: served_queue, served_view (content tests run on write).
-test   (unit deep_<run>_test)   G1, G17 (report only for deep: serve.EXCLUSION_GATE_TIERS), the content tests again, the
+test   (unit deep_<run>_test)   G1, G17 per page (serve.EXCLUSION_GATE_TIERS), the content tests again, the
        App probe of every page (expected index sources; an unexplained 404 refuses the page).
 carry  (unit deep_<run>_carry, only with --carry-from)  deep_carry_judgements.py OLD U in place (G18).
 start  (one unit per page)       G13 / G14 / G16 / G24 in servers.replace; record class served_page.
@@ -97,11 +97,7 @@ def views_stage(run, plan, state):
                 continue
             u.add_output(qpath, 'served_queue')
             u.add_output(v['dir'], 'served_view', tier='deep')
-        dirs = [pg.at('catalog') for pg in plan.pages]
-        scan = exclusion_gate.scan_tier_views(U, dirs, [pg.at('queue') for pg in plan.pages])
-        u.meta['exclusion_report'] = {' '.join(k): n for k, n in scan.per_key().items()}
-        u.note(f'G17 serve-time exclusion gate (report only for deep until Gregg rules, spec 12.8): {scan.summary()}')
-        u.meta['refused_pages'] = dict(state['refused'])
+        u.meta['refused_pages'] = dict(state['refused'])      # G17 (exclusions) runs per page in the test stage
     return u
 
 
@@ -170,9 +166,13 @@ def describe(plan, stages, args):
                 nost.append(os.path.basename(p))
     print('  G2 union with a stokes column: ' + ('ok' if not nost else f'WOULD REFUSE - {len(nost)} union files carry no '
                                                   f'stokes column (built before the D9 fix 09995b5), e.g. {nost[0]}'))
-    dirs = [pg.at('catalog', U) for pg in plan.pages]
-    scan = exclusion_gate.scan_tier_views(U, dirs, [pg.at('queue', U) for pg in plan.pages])
-    print(f'  G17 serve-time exclusion gate on the served views (report only for deep): {scan.summary()}')
+    refuses = exclusion_gate.refuses('deep')
+    for pg in plan.pages:
+        if pg.family != 'review':
+            continue
+        scan = exclusion_gate.scan_page(U, pg.at('catalog', U), pg.at('queue', U))
+        print(f'  G17 serve-time exclusion gate, page {pg.key} ({"refusing" if refuses else "report only"}; the rows its '
+              f'server reads): {scan.summary()}' + (' - WOULD NOT BE SERVED' if scan.hits and refuses else ''))
     for ST in ('V', 'I'):
         for t in _S().DEEP_SINGLES_TIERS:
             q = queues.tier_queue_path(U, f'{ST}_{t}')

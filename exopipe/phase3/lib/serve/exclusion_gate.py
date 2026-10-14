@@ -12,8 +12,18 @@ tier only (snapshot_serve_exclusion_gate.py, f1996ee). Its row keying (cand_id '
 
 Verdicts come from core.exclusions (a FRESH Exclusions(), never the process cache: the list is read now). For the snapshot
 tier the in-place gate (production's reader, coadd_full_pipeline.is_excluded) also runs, and the two readers must agree
-(a disagreement refuses with both lists). Whether a hit REFUSES is config serve.EXCLUSION_GATE_TIERS (snapshot today);
-for the other tiers the hits are reported (unit notes, dry-run plan) - enabling deep / sub-LST is Gregg's (spec 12.8).
+(a disagreement refuses with both lists). Whether a hit REFUSES is config serve.EXCLUSION_GATE_TIERS; for the keys not in
+it the hits are reported (unit notes, dry-run plan). Gregg 2026-10-14 approved enforcing it for the deep and sub-LST pages
+and the snapshot forced pages too (R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS); production ('snapshot' only)
+is the parity file's value.
+
+What is scanned. Snapshot (and the forced pages): every CSV of the run, as the in-place gate scans it (snapshot_run_files).
+Deep / sub-LST, PER PAGE: exactly what the page's review server reads (scan_page) - its queue's page ids, and for its
+--catalog-dir each band's <band>_sources_survivors.csv and <band>_source_members.csv, each survivor's page folder
+<run>/<review_dir>: detections.csv and its panel images (classify_transients.load_sources, non-blind). A file the server
+does not read is not scanned: on 2026-10-14 the deep multiples view folders held 34 rows on excluded nights, all in
+*_pages_index_*.csv files of 2026-10-07 that production leaves in place and never reads (deep chat, confirmed read only);
+the served pages held none.
 """
 import csv
 import glob
@@ -162,14 +172,51 @@ def scan_snapshot_run(run, ex=None):
     return scan_files(snapshot_run_files(run), keys_snapshot, run, ex=ex)
 
 
-def scan_tier_views(U, dirs, queues=(), ex=None):
-    """Deep / sub-LST: every CSV of the served view directories plus the served queues' page ids."""
+# The review server of every deep and sub-LST page (program 'classify': exopipe_ops/classify_transients.py), mirrored here
+# and drift-tested against its source (tests/test_serve.py test_exclusion_gate_server_mirrors):
+SERVER_BANDS = ('Blue', 'Full', 'Green', 'Red', '82MHz', '78MHz', '73MHz', '69MHz', '64MHz', '59MHz', '55MHz', '50MHz',
+                '46MHz', '41MHz', '36MHz', '32MHz', '27MHz', '23MHz', '18MHz')                  # BANDS (:49-52)
+SERVER_PANEL_RE = re.compile(r'^rank\d+_(\d{2}h)_(\d{4}-\d{2}-\d{2}(?:_bin\d+)?)_([A-Za-z0-9]+?)'
+                             r'(_blind)?\.png$')                                                # PNG_RE (:54-55)
+
+
+def server_files(U, cat_dir):
+    """(tables, page folders) a review server with --catalog-dir ``cat_dir`` serving run ``U`` reads
+    (classify_transients.load_sources): each band's survivors and members tables that exist, and the page folder of
+    every survivor row (<U>/<review_dir>, when it is a directory)."""
+    tables, folders = [], []
+    for band in SERVER_BANDS:
+        sp = os.path.join(cat_dir, f'{band}_sources_survivors.csv')
+        if os.path.exists(sp):
+            tables.append(sp)
+            with open(sp, newline='') as fh:
+                for row in csv.DictReader(fh):
+                    rd = (row.get('review_dir') or '').strip()
+                    if rd and os.path.isdir(os.path.join(U, rd)):
+                        folders.append(os.path.join(U, rd))
+        mp = os.path.join(cat_dir, f'{band}_source_members.csv')
+        if os.path.exists(mp):
+            tables.append(mp)
+    return tables, sorted(set(folders))
+
+
+def scan_page(U, cat_dir, queue, ex=None):
+    """Deep / sub-LST: the rows of ONE page as its review server reads them - its queue's page ids, the survivors and
+    members tables of its --catalog-dir, and each survivor's page folder (detections.csv rows; the panel images, keyed by
+    the (LST, night, band) of their names). Returns a Scan."""
     ex = ex or fresh_exclusions()
-    files = sorted(sum((glob.glob(os.path.join(d, '*.csv')) for d in dirs if os.path.isdir(d)), []))
-    scan = scan_files(files, keys_tier, U, ex=ex)
-    for q in queues:
-        if os.path.exists(q):
-            scan_queue(q, U, ex=ex, scan=scan)
+    tables, folders = server_files(U, cat_dir)
+    scan = scan_files(tables + [os.path.join(f, 'detections.csv') for f in folders
+                                if os.path.exists(os.path.join(f, 'detections.csv'))], keys_tier, U, ex=ex)
+    for f in folders:
+        rel = os.path.relpath(f, U)
+        for fn in sorted(os.listdir(f)):
+            m = SERVER_PANEL_RE.match(fn)
+            if m and not m.group(4):                 # the server shows the non-blind panels only
+                scan.n_rows += 1
+                _check(scan, ex, os.path.join(rel, fn), fn, [(m.group(1), m.group(2)[:10], m.group(3))])
+    if queue and os.path.exists(queue):
+        scan_queue(queue, U, ex=ex, scan=scan)
     return scan
 
 

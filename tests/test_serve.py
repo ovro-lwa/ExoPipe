@@ -516,12 +516,94 @@ def test_exclusion_gate():
     V = f'{T}/gate_views/source_catalogs_V'
     wcsv(f'{V}/Blue_source_members.csv', MEM, [dict(source_id='J1', band='Blue', cand_id='VD_04h_2025-01-01_Blue_0001'),
                                                dict(source_id='J2', band='Red', cand_id='VD_05h_2025-01-02_Red_0001')])
-    scan = exclusion_gate.scan_tier_views(os.path.dirname(V), [V], ex=ex)
+    scan = exclusion_gate.scan_page(os.path.dirname(V), V, None, ex=ex)
     assert scan.per_key() == {('04h', '2025-01-01', 'Blue'): 1}, scan.summary()    # 64 MHz excludes Blue; 18 MHz not Red
     ok('exclusion gate: verdicts from core.exclusions (a 64 MHz exclusion excludes Blue; the 18 MHz carve-out keeps Red)')
-    assert exclusion_gate.refuses('snapshot') and not exclusion_gate.refuses('deep') and not exclusion_gate.refuses(
-        'snapshot', 'forced')
-    ok('exclusion gate refuses for serve.EXCLUSION_GATE_TIERS only (snapshot review), reports elsewhere')
+    ruled = CFG.serve.EXCLUSION_GATE_TIERS
+    assert set(ruled) == {'snapshot', 'snapshot-forced', 'deep', 'sublst'}, ruled
+    assert all(exclusion_gate.refuses(*k) for k in (('snapshot',), ('snapshot', 'forced'), ('deep',), ('sublst',)))
+    assert not exclusion_gate.refuses('deep', 'strat') and not exclusion_gate.refuses('jupiter')
+    CFG.serve.EXCLUSION_GATE_TIERS = ('snapshot',)                  # production (the parity file)
+    try:
+        assert exclusion_gate.refuses('snapshot') and not exclusion_gate.refuses('deep') and not exclusion_gate.refuses(
+            'sublst') and not exclusion_gate.refuses('snapshot', 'forced')
+    finally:
+        CFG.serve.EXCLUSION_GATE_TIERS = ruled
+    ok('exclusion gate refuses for serve.EXCLUSION_GATE_TIERS: ruled snapshot, snapshot forced, deep and sub-LST pages '
+       '(Gregg 2026-10-14); the production value refuses snapshot runs only')
+
+
+def test_exclusion_gate_scan_page():
+    """Deep / sub-LST: the gate reads exactly what the page's review server reads (classify_transients.load_sources) -
+    each band's survivors and members, each survivor's page folder (detections.csv, non-blind panels), the queue - and
+    nothing else in the folder (2026-10-14: 34 rows of 2026-10-07 index files the server never reads were counted)."""
+    from exopipe.phase3.core.exclusions import Exclusions
+    dd = f'{T}/scan_page/data_decisions.csv'
+    wcsv(dd, ['lst', 'subband', 'date', 'verdict', 'reason'],
+         [dict(lst='04h', subband='64MHz', date='2025-01-01', verdict='exclude', reason='x')])      # excludes 64MHz, Blue, Full
+    ex = Exclusions(dd)
+    U = f'{T}/scan_page/Run_X'
+    C = f'{U}/source_catalogs_V'
+    bad_c, good_c = 'VD_04h_2025-01-01_64MHz_0001', 'VD_05h_2025-01-02_64MHz_0001'
+    rows = dict(rank=1, identity_id='', n_det=1, best_date='', best_snr=9, snr_rep=4)
+    wcsv(f'{C}/64MHz_sources_survivors.csv', SURV, [
+        dict(rows, source_id='J1', band='64MHz', best_cand_id=good_c, review_dir='candidates/V/p1'),
+        dict(rows, source_id='J2', band='64MHz', best_cand_id=good_c, review_dir='candidates/V/p2'),
+        dict(rows, source_id='J3', band='64MHz', best_cand_id=good_c, review_dir='candidates/V/missing')])
+    wcsv(f'{C}/64MHz_source_members.csv', MEM, [dict(source_id='J1', band='64MHz', cand_id=good_c, det_date='')])
+    os.makedirs(f'{U}/candidates/V/p1')
+    os.makedirs(f'{U}/candidates/V/p2')
+    for f in ('rank00001_05h_2025-01-02_64MHz.png', 'rank00002_04h_2025-01-01_Blue_blind.png', 'notes.png'):
+        open(f'{U}/candidates/V/p1/{f}', 'w').close()
+    wcsv(f'{U}/candidates/V/p2/detections.csv', ['cand_id', 'lst', 'date', 'band'],
+         [dict(cand_id=good_c, lst='05h', date='2025-01-02', band='64MHz')])
+    q = f'{U}/judgements/queue_V.txt'
+    os.makedirs(os.path.dirname(q))
+    open(q, 'w').write('J1_05h_2025-01-02_64MHz\nJ2_05h_2025-01-02_64MHz\n')
+    # files the server never reads, each holding a row on the excluded night: none may count
+    wcsv(f'{C}/64MHz_pages_index_V.csv', IDX, [dict(source_id='J9_04h_2025-01-01_64MHz', band='64MHz', rank=1, review_dir='')])
+    wcsv(f'{C}/Foo_sources_survivors.csv', SURV, [dict(rows, source_id='J8', band='Foo', best_cand_id=bad_c, review_dir='')])
+    wcsv(f'{C}/master_catalog_removed.csv', ['cand_id'], [dict(cand_id=bad_c)])
+    s0 = exclusion_gate.scan_page(U, C, q, ex=ex)
+    assert not s0.hits and s0.n_files == 4 and s0.n_rows == 8, (s0.summary(), s0.n_files, s0.n_rows)
+    ok('exclusion gate per page: files the server never reads (an old pages index, a band it does not list, a removed-rows '
+       'table) and blind panels are not scanned; survivors, members, detections.csv, panels and the queue are (0 hits)')
+    # each path the server reads, one at a time, carries a row on the excluded night
+    def hit(label, edit):
+        shutil.copytree(U, f'{U}_{label}')
+        edit(f'{U}_{label}')
+        sc = exclusion_gate.scan_page(f'{U}_{label}', f'{U}_{label}/source_catalogs_V', q.replace(U, f'{U}_{label}'), ex=ex)
+        assert len(sc.hits) == 1 and sc.per_key() == {('04h', '2025-01-01', '64MHz'): 1} or label in ('blue_panel',) and \
+            sc.per_key() == {('04h', '2025-01-01', 'Blue'): 1}, (label, sc.summary())
+    hit('survivor', lambda R: wcsv(f'{R}/source_catalogs_V/64MHz_sources_survivors.csv', SURV, [
+        dict(rows, source_id='J1', band='64MHz', best_cand_id=bad_c, review_dir='candidates/V/p1')]))
+    hit('member', lambda R: wcsv(f'{R}/source_catalogs_V/64MHz_source_members.csv', MEM,
+                                 [dict(source_id='J1', band='64MHz', cand_id=bad_c, det_date='')]))
+    hit('detection', lambda R: wcsv(f'{R}/candidates/V/p2/detections.csv', ['cand_id', 'lst', 'date', 'band'],
+                                    [dict(cand_id=bad_c, lst='04h', date='2025-01-01', band='64MHz')]))
+    hit('panel', lambda R: open(f'{R}/candidates/V/p1/rank00003_04h_2025-01-01_64MHz.png', 'w').close())
+    hit('blue_panel', lambda R: open(f'{R}/candidates/V/p1/rank00004_04h_2025-01-01_Blue.png', 'w').close())
+    hit('queue', lambda R: open(f'{R}/judgements/queue_V.txt', 'a').write('J7_04h_2025-01-01_64MHz\n'))
+    ok('exclusion gate per page: a row on an excluded night in a survivors table, a members table, a page folder\'s '
+       'detections.csv, a panel image name or the queue is found (one hit each)')
+
+
+def test_exclusion_gate_server_mirrors():
+    """The gate's mirrors of the review server (band list, panel-name pattern) equal classify_transients.py's own."""
+    import ast
+    tree = ast.parse(open(f'{OPS}/classify_transients.py').read())
+    got = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            n = node.targets[0].id
+            if n == 'BANDS':
+                got['BANDS'] = tuple(ast.literal_eval(node.value))
+            elif n == 'PNG_RE':
+                got['PNG_RE'] = ast.literal_eval(node.value.args[0])     # re.compile(r'...' r'...'): one string constant
+    assert got.get('BANDS') == exclusion_gate.SERVER_BANDS, (got.get('BANDS'), exclusion_gate.SERVER_BANDS)
+    assert got.get('PNG_RE') == exclusion_gate.SERVER_PANEL_RE.pattern, (got.get('PNG_RE'),
+                                                                         exclusion_gate.SERVER_PANEL_RE.pattern)
+    ok('exclusion gate mirrors: SERVER_BANDS and SERVER_PANEL_RE equal classify_transients.BANDS / PNG_RE')
 
 
 def test_hub():
@@ -664,6 +746,50 @@ def test_views_stage():
     assert os.path.islink(f'{plan.U}/candidates') and not os.path.islink(f'{plan.U}/judgements')
     ok(f'deep views stage through record.Run: done, {len(rec["outputs"])} outputs tested on write, I-multi refused (G3), '
        f'parity mirror (candidates linked, judgements copied)')
+
+
+def test_exclusion_gate_per_page_stage():
+    """The test stage gates PER PAGE (Gregg 2026-10-14): a page whose server reads a row on an excluded night is refused
+    (its start unit refuses; its current server keeps running), the other pages are not; a stale file the server never
+    reads changes nothing; under the production value (the parity file) nothing is refused and the hits are reported."""
+    from exopipe.phase3.core.exclusions import Exclusions
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import deep, flow
+    dd = f'{T}/perpage/data_decisions.csv'
+    wcsv(dd, ['lst', 'subband', 'date', 'verdict', 'reason'],          # the V pages' J0002 (Red) and J0006 (23MHz)
+         [dict(lst='05h', subband='23MHz', date='2025-01-02', verdict='exclude', reason='x')])
+    ex = Exclusions(dd)
+    orig, ruled = exclusion_gate.fresh_exclusions, CFG.serve.EXCLUSION_GATE_TIERS
+    exclusion_gate.fresh_exclusions = lambda: ex
+    try:
+        for value, label in ((ruled, 'ruled'), (('snapshot',), 'production')):
+            CFG.serve.EXCLUSION_GATE_TIERS = value
+            a = _ns(tier='deep', run_label='TEST')
+            out = f'{T}/perpage_out_{label}'
+            plan = planmod.make(a, out)
+            plan.U_src = f'{T}/deep_base/Run_TEST'
+            run = Run('serve', ['test'], out, CFG, config_sections=None)
+            state = flow.new_state()
+            deep.views_stage(run, plan, state)
+            pre = dict(state['refused'])
+            # a stale file in the I page's folder that its server never reads, holding a row on the excluded night
+            wcsv(f'{plan.U}/source_catalogs_I/Red_pages_index_I.csv', IDX,
+                 [dict(source_id='J0002+0002_05h_2025-01-02_Red', band='Red', rank=1, review_dir='')])
+            u = flow.test_stage(run, plan, state, 'deep_Run_TEST_test', probe=False)
+            assert u.status == 'done', (label, u.status, u.reason)
+            g = u.meta['exclusion_gate']
+            hit = {k for k, v in g['pages'].items() if v['hits']}
+            assert 'V' in hit and 'I' not in hit and 'I' in g['pages'], (label, g)
+            new = {k: v for k, v in state['refused'].items() if k not in pre}
+            if label == 'ruled':
+                assert g['refuses'] and set(new) == hit and all(v.startswith('G17') for v in new.values()), (new, hit)
+            else:
+                assert not g['refuses'] and not new, new
+        ok(f'exclusion gate in the test stage: under the ruled value exactly the pages whose server reads rows on the excluded '
+           f'night are refused ({sorted(hit)}); the I page (a stale index file only) is not; under the production value '
+           f'nothing is refused')
+    finally:
+        exclusion_gate.fresh_exclusions, CFG.serve.EXCLUSION_GATE_TIERS = orig, ruled
 
 
 # ---- 5. a refused stage stops the later stages (review 2026-10-13) ----------------------------------------------------------
@@ -871,9 +997,12 @@ def main():
         test_generation_mix()
         test_journals()
         test_exclusion_gate()
+        test_exclusion_gate_scan_page()
+        test_exclusion_gate_server_mirrors()
         test_hub()
         test_processes()
         test_views_stage()
+        test_exclusion_gate_per_page_stage()
         test_stage_halting()
         test_inplace_gate_agrees()
         test_forced_probe_before_stop()

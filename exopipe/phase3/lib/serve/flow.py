@@ -65,13 +65,13 @@ def require_done(run, unit, what):
 
 
 # ---- test -----------------------------------------------------------------------------------------------------------
-def test_stage(run, plan, state, unit_name, root=None, views_for_gate=None, probe=True):
+def test_stage(run, plan, state, unit_name, root=None, probe=True):
     """G1 (non-empty queue per page), G17 (serve-time exclusion gate), the content tests of each page's queue and view
     again, and the App probe (expected index sources, 0 unexplained drops) of every selected page."""
     U = root or plan.U
     with run.unit(unit_name, stage='test', tier=plan.tier, run=plan.run_name, parity=plan.parity) as u:
         excl_note(u)
-        dirs, queues = [], []
+        gated = []
         for pg in plan.pages:
             if pg.key in state['refused']:
                 continue
@@ -85,22 +85,38 @@ def test_stage(run, plan, state, unit_name, root=None, views_for_gate=None, prob
             for f in sorted(os.listdir(cat)) if os.path.isdir(cat) else []:
                 if f.endswith('.csv'):
                     u.add_input(os.path.join(cat, f))
-            dirs.append(cat)
-            queues.append(q)
+            gated.append(pg)
             if plan.tier != 'snapshot':
                 u.add_output(q, 'served_queue', tier=plan.tier)
                 u.add_output(cat, 'served_view', tier=plan.tier)
         # G17: the serve-time exclusion gate (refuses for serve.EXCLUSION_GATE_TIERS, reports for the others)
+        refuses = exclusion_gate.refuses(plan.tier, plan.family)
+        gkey = exclusion_gate.gate_key(plan.tier, plan.family)
         if plan.tier == 'snapshot':
             scan = exclusion_gate.scan_snapshot_run(U)
+            u.meta['exclusion_gate'] = {'hits': len(scan.hits), 'refuses': refuses, 'key': gkey,
+                                        'per_key': {' '.join(k): n for k, n in scan.per_key().items()}}
+            if scan.hits and refuses:
+                u.refuse(f'G17 serve-time exclusion gate: {scan.summary()} - NOT served (re-chain those cells first)')
+            u.note(f'G17 serve-time exclusion gate ({"refusing" if refuses else "report only"}): {scan.summary()}')
         else:
-            scan = exclusion_gate.scan_tier_views(U, views_for_gate or dirs, queues)
-        refuses = exclusion_gate.refuses(plan.tier, plan.family)
-        u.meta['exclusion_gate'] = {'hits': len(scan.hits), 'per_key': {' '.join(k): n for k, n in scan.per_key().items()},
-                                    'refuses': refuses, 'key': exclusion_gate.gate_key(plan.tier, plan.family)}
-        if scan.hits and refuses:
-            u.refuse(f'G17 serve-time exclusion gate: {scan.summary()} - NOT served (re-chain those cells first)')
-        u.note(f'G17 serve-time exclusion gate ({"refusing" if refuses else "report only"}): {scan.summary()}')
+            # deep / sub-LST, PER PAGE (Gregg 2026-10-14, R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS): the rows
+            # the page's own server reads (exclusion_gate.scan_page); a page holding one on an excluded night is not served
+            # - its current server keeps running - and the other pages are
+            pages = {}
+            for pg in gated:
+                scan = exclusion_gate.scan_page(U, pg.at('catalog', U), pg.at('queue', U))
+                pages[pg.key] = {'hits': len(scan.hits), 'files': scan.n_files, 'rows': scan.n_rows,
+                                 'per_key': {' '.join(k): n for k, n in scan.per_key().items()}}
+                if scan.hits and refuses:
+                    state['refused'][pg.key] = (f'G17 serve-time exclusion gate: {scan.summary()} - NOT served (its pass must '
+                                                f'apply today\'s exclusions first; the page\'s current server keeps running)')
+                    u.note(state['refused'][pg.key])
+                else:
+                    u.note(f'G17 serve-time exclusion gate ({"refusing" if refuses else "report only"}), page {pg.key}: '
+                           f'{scan.summary()}')
+            u.meta['exclusion_gate'] = {'hits': sum(v['hits'] for v in pages.values()), 'refuses': refuses, 'key': gkey,
+                                        'pages': pages}
         # the expected index sources of each page
         exp = {}
         for pg in plan.pages:
