@@ -13,6 +13,10 @@ Stages (in-place calls through core.legacy.run; the order is fixed):
           (lib/pages/panels.py) is the unit's planned outputs. Incremental by construction: build_i14 keeps a page whose
           fingerprint is unchanged (renamed to its new rank, touched) and renders only new or changed pages; --full (or
           pages.PAGE_FINGERPRINT_SKIP False) removes the set's sidecars first so every page renders.
+  stale   ops/p3s3_stale_panels.py U <pass start> in place (p3s3_pass.sh after every set's pages, before the merge; exopipe_ops
+          8826836): in each page folder the pass wrote, panels older than the pass start are moved aside, never deleted, with a
+          sha256 manifest - the server shows EVERY panel in a folder (2026-10-14: 32 panels of since-excluded nights served).
+          The pass start is the earliest recorded start of the current build units (a --resume keeps an earlier invocation's)
   merge   lib/pages/merge.run (ops/p3s3_merge_review_dir.py, pages.REVIEW_DIR_MERGE['deep']; or the M14 keyed merge)
   strat   ops/deep_stratified_queue.py <S> <per stratum> <seed> (on request; the script hard-codes the production run dir)
 Localization tables are catalog's (catalog --stages localize, crosscheck decision 6): build reads them (gate P4) and draws
@@ -480,6 +484,52 @@ def figs(c, u, plan):
                f'swallowed as build_i14:966-970)')
 
 
+def stage_stale(c, run, done):
+    """Panels of earlier passes in the page folders this pass wrote, moved aside - never deleted - by ops/p3s3_stale_panels.py
+    in place (production p3s3_pass.sh, after every set's pages and before the merge: exopipe_ops 8826836; the deep chat
+    2026-10-14 on the refactor chat's finding that classify_transients shows EVERY panel in a page folder, so a detection
+    that left a source - a since-excluded night - kept its panel on the served page).
+    Pass start = the EARLIEST recorded start (meta pass_t0) of the done build units of the sets that have pages: every
+    current panel was rendered or re-timed by its set's build at or after that start, while a build kept by --resume (or
+    run by an earlier invocation) predates this one - production's P3_PAGES_RESUME_SINCE. A set with pages but no done build
+    record refuses the stage: its panels share the page folders (shared layout) and would be moved as stale."""
+    from exopipe.phase3.core import record
+    C = common.CFG().pages
+    name = unit_name(c, 'stale')
+    with run.unit(name, tier=TIER, stage='stale') as u:
+        t0s, missing = {}, []
+        for K in C.PAGE_SETS[TIER]:
+            if not would_render(c, K):
+                continue                                   # no pages input: the set writes no page folder
+            rec = record.load_record(run.out_root, 'pages', unit_name(c, 'build', K)) or {}
+            t0 = (rec.get('meta') or {}).get('pass_t0')
+            if rec.get('status') != 'done' or not t0:
+                missing.append(f'{K} ({rec.get("status") or "no record"})')
+            else:
+                t0s[K] = int(t0)
+        if missing:
+            raise common.Refusal(f'stale panels: set(s) {", ".join(missing)} have pages but no done build - their panels share '
+                                 f'the page folders and would be moved aside as stale; build every set first')
+        if not t0s:
+            raise common.NoInput('stale panels: no page set has a done build (no page folder to clean)')
+        T0 = min(t0s.values())
+        u.meta.update(pass_t0=T0, build_pass_t0=t0s)
+        script = common.legacy_script(c.roots, 'ops', 'p3s3_stale_panels.py')
+        res = common.lrun(u, script, [c.U, str(T0)], python='default', cwd=c.U, log=os.path.join(c.U, 'pages_stale.log'))
+        lines = [l for l in common_tail_lines(os.path.join(c.U, 'pages_stale.log'), 40)
+                 if l.startswith(('stale panels:', 'STALE-PANELS-OK', 'STALE-PANELS CONTENT TEST FAIL'))]
+        for l in lines[-2:]:
+            u.note(l)
+        if not res.ok:
+            raise common.Refusal(f'stale panels FAILED - pass aborted (D10): {(lines[-1] if lines else res.reason)[:300]}')
+        q = os.path.join(c.U, f"stale_panels_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(T0))}")
+        if not os.path.exists(os.path.join(q, 'MANIFEST.sha256')):
+            raise common.NoInput(f'stale panels: none older than {T0} in the page folders the builds wrote - nothing moved')
+        u.meta['quarantine'] = q
+        u.add_output(os.path.join(q, 'MANIFEST.sha256'), 'stale_panels_manifest', run=c.U)
+        done[name] = 'done'
+
+
 def stage_merge(c, run, done):
     from exopipe.phase3.lib.pages import merge
     C, D = common.CFG().pages, common.CFG().pages_deep
@@ -551,6 +601,8 @@ def run(args, run_):
                 shared_resume_guard(c, run_)           # one pass start for every set rendered (shared layout)
                 for K in c.sets:
                     stage_build(c, run_, done, K)
+            elif st == 'stale':
+                stage_stale(c, run_, done)
             elif st == 'merge':
                 stage_merge(c, run_, done)
             elif st == 'strat':
@@ -563,9 +615,12 @@ def run(args, run_):
 
 
 def _rec_status(run_, name):
+    return _rec(run_, name).get('status', 'none')
+
+
+def _rec(run_, name):
     from exopipe.phase3.core import record
-    rec = record.load_record(run_.out_root, 'pages', name)
-    return (rec or {}).get('status', 'none')
+    return record.load_record(run_.out_root, 'pages', name) or {}
 
 
 def dry_run(c, args, run_):
@@ -638,6 +693,11 @@ def dry_run(c, args, run_):
                     f'{"(none: partial)" if sel is not None else (C.QUEUE_NAMES["fork"] if K in C.FORK_SETS else C.QUEUE_NAMES["singles"]).format(K=K)}'
                     f'; P2 input record: {rec}{extra}')
             say(f'    command per shard: build_i14_pages_std7.py source_catalogs/pages_input_<K>.csv {c.U} <shard> {c.shards}')
+        elif st == 'stale':
+            t0s = {K: (_rec(run_, unit_name(c, 'build', K)).get('meta') or {}).get('pass_t0') for K in C.PAGE_SETS[TIER]
+                   if would_render(c, K)}
+            say(f'    ops/p3s3_stale_panels.py {c.U} <earliest build start> (in place): build starts {t0s} - a set with pages '
+                f'and no done build refuses (this invocation\'s builds record their start when they run)')
         elif st == 'merge':
             idx = glob.glob(os.path.join(R, 'source_catalogs', '*_pages_index*.csv'))
             sv = glob.glob(os.path.join(R, 'source_catalogs', '*_sources_survivors.csv'))

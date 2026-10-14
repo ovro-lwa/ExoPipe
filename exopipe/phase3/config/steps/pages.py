@@ -42,7 +42,8 @@ class pages(_Section):
     PROTECTED_KEYS = ('RUN_DIR', 'QUEUE_NAMES', 'INDEX_NAMES', 'PASS_T0_REQUIRED', 'REQUIRE_CATALOG_RECORD') + _PAGES_MIRROR
     # ---- what runs ------------------------------------------------------------------------------------------------
     # deep: catalog --stages localize writes the localization tables BEFORE pages (crosscheck decision 6, group 6)
-    STAGES = {'deep': ('tess', 'input', 'build', 'merge'),                    # p3s3_pass.sh:58-63, 137-195
+    STAGES = {'deep': ('tess', 'input', 'build', 'stale', 'merge'),           # p3s3_pass.sh:58-63, 137-195 (+ 'stale':
+                                                                            # exopipe_ops 8826836, p3s3_stale_panels.py)
               'sublst': ('prep', 'input', 'build', 'index', 'place'),         # sublst_publish_lst.sh:26-38
               'snapshot': ('build', 'filtercat')}                             # snapshot_rechain_batch.sh:362-366
     ON_REQUEST_STAGES = {'deep': ('strat',), 'sublst': (), 'snapshot': ()}   # never in the default list (Gregg 2026-09-24 strat)

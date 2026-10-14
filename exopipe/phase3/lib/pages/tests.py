@@ -280,6 +280,35 @@ def queue_order(path, **ctx):
 # pages_input
 # ---------------------------------------------------------------------------------------------------------------------
 
+@content_test('stale_panels_manifest')
+def stale_manifest_verifies(path, **ctx):
+    """<run>/stale_panels_<pass start>/MANIFEST.sha256 (ops/p3s3_stale_panels.py, the deep 'stale' stage): every listed
+    file lies in the quarantine folder with its listed sha256, and none of them is back at its path in the run (ctx run:
+    the run directory; default the folder's parent) - nothing was lost, nothing deleted, nothing stale left served."""
+    import hashlib
+    q = os.path.dirname(path)
+    run = ctx.get('run') or os.path.dirname(q)
+    bad, n = [], 0
+    for line in open(path):
+        if '  ' not in line:
+            continue
+        want, rel = line.rstrip('\n').split('  ', 1)
+        n += 1
+        f = os.path.join(q, rel)
+        if not os.path.isfile(f):
+            bad.append(f'{rel}: not in the quarantine')
+            continue
+        h = hashlib.sha256()
+        with open(f, 'rb') as fh:
+            for blk in iter(lambda: fh.read(1 << 20), b''):
+                h.update(blk)
+        if h.hexdigest() != want:
+            bad.append(f'{rel}: sha256 differs from the manifest')
+        if os.path.exists(os.path.join(run, rel)):
+            bad.append(f'{rel}: back in the run')
+    return (n > 0 and not bad), n, (f'{n} files moved aside, all verify' if not bad else '; '.join(bad[:5]))
+
+
 @content_test('pages_input')
 def pages_input_rows(path, **ctx):
     """Deep: the 46 columns in the heredoc's order, one row per survivors row of the set (rows without date/LST dropped),

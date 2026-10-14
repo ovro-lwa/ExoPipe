@@ -150,7 +150,7 @@ def make_stub_root():
     open(os.path.join(root, 'std7_panel.py'), 'w').write('# stub\n')
     open(os.path.join(root, 'p3s3_astrom.py'), 'w').write('# stub\n')
     open(os.path.join(root, 'tess', 'tess_coverage.py'), 'w').write(STUB_TESS)
-    for f in ('p3s3_tier_pages_input.py', 'p3s3_merge_review_dir.py', 'classify_transients.py'):
+    for f in ('p3s3_tier_pages_input.py', 'p3s3_merge_review_dir.py', 'classify_transients.py', 'p3s3_stale_panels.py'):
         os.symlink(os.path.join(OPS, f), os.path.join(root, f))
     return root
 
@@ -558,6 +558,70 @@ def test_real_products_read_only():
     print(f'PASS content tests ran on {len(items)} production products (results above)')
 
 
+def test_stale_panels(out):
+    """exopipe_ops 8826836 mirrored (deep stage 'stale', ops/p3s3_stale_panels.py in place): in the page folders the builds
+    wrote, panels older than the EARLIEST recorded build start are moved aside - never deleted - with a sha256 manifest; a
+    folder no build wrote is left as it is; a later invocation that runs only the stage uses the recorded build starts, not
+    its own; a set with pages but no done build refuses the stage."""
+    U = os.path.join(out, 'Run_T1')
+    rc, o = cli(out, '--stages', 'input,build', '--sets', 'V_wb,I_wb,V_fwb', '--fresh')
+    assert rc == 0, o[-600:]
+    time.sleep(1.2)                                    # the next build starts in a later second
+    rc, o = cli(out, '--stages', 'build', '--sets', 'I_wb', '--fresh')
+    assert rc == 0, o[-600:]
+    t0s = {K: rec(out, f'T1:build:{K}')['meta']['pass_t0'] for K in ('V_wb', 'I_wb', 'V_fwb')}
+    assert t0s['I_wb'] > t0s['V_wb'] == t0s['V_fwb'], t0s
+    folder = next(d for d in sorted(glob.glob(f'{U}/candidates/I/J0101+0101_*/'))
+                  if glob.glob(f'{d}rank*.png'))                   # written by the V_wb / V_fwb builds (the earlier start)
+    current = sorted(glob.glob(f'{folder}rank*.png'))
+    old = time.time() - 86400
+    stale = os.path.join(folder, 'rank0099_21h_2025-08-06_Full')
+    for ext in ('.png', '.page.json'):
+        open(stale + ext, 'w').write('old pass')
+        os.utime(stale + ext, (old, old))
+    lone = f'{U}/candidates/I/J9999+9999_01h_2025-01-01_Red'
+    os.makedirs(lone)
+    open(f'{lone}/rank0001_01h_2025-01-01_Red.png', 'w').write('no build wrote this folder')
+    os.utime(f'{lone}/rank0001_01h_2025-01-01_Red.png', (old, old))
+    rc, o = cli(out, '--stages', 'stale')
+    r = rec(out, 'T1:stale')
+    assert rc == 0 and r['status'] == 'done', (rc, r and (r['status'], r['reason']), o[-600:])
+    T0 = min(t0s.values())
+    assert r['meta']['pass_t0'] == T0 and r['meta']['build_pass_t0'] == t0s, r['meta']
+    Q = os.path.join(U, 'stale_panels_' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(T0)))
+    rel = os.path.relpath(stale, U)
+    assert not os.path.exists(stale + '.png') and not os.path.exists(stale + '.page.json'), os.listdir(folder)
+    assert os.path.exists(os.path.join(Q, rel + '.png')) and os.path.exists(os.path.join(Q, rel + '.page.json'))
+    man = open(os.path.join(Q, 'MANIFEST.sha256')).read().splitlines()
+    assert sorted(l.split('  ', 1)[1] for l in man) == sorted([rel + '.png', rel + '.page.json']), man
+    assert sorted(glob.glob(f'{folder}rank*.png')) == current, 'a current panel was moved'
+    assert os.path.exists(f'{lone}/rank0001_01h_2025-01-01_Red.png'), 'a folder no build wrote was touched'
+    assert r['outputs'] and r['outputs'][0]['class'] == 'stale_panels_manifest' and all(t['passed'] for t in r['tests']), r
+    from exopipe.phase3.core import validate
+    shutil.copy2(os.path.join(Q, rel + '.png'), stale + '.png')                   # a moved panel back in the run ...
+    try:
+        res = validate.run('stale_panels_manifest', os.path.join(Q, 'MANIFEST.sha256'), run=U)
+        assert not all(t['passed'] for t in res) and 'back in the run' in ' '.join(t['detail'] for t in res), res
+    finally:
+        os.remove(stale + '.png')
+    open(os.path.join(Q, rel + '.page.json'), 'a').write('x')                    # ... or a quarantined file changed
+    res = validate.run('stale_panels_manifest', os.path.join(Q, 'MANIFEST.sha256'), run=U)
+    assert not all(t['passed'] for t in res) and 'sha256 differs' in ' '.join(t['detail'] for t in res), res
+    # a set with pages (catalogue folder + pages input) but no build record refuses the stage
+    os.makedirs(f'{U}/source_catalogs_I_fwb', exist_ok=True)
+    shutil.copy(f'{U}/source_catalogs/pages_input_V_fwb.csv', f'{U}/source_catalogs/pages_input_I_fwb.csv')
+    try:
+        rc, o = cli(out, '--stages', 'stale')
+        r = rec(out, 'T1:stale')
+        assert rc == 2 and r['status'] == 'refused' and 'I_fwb (no record)' in r['reason'], (rc, r and r['reason'])
+    finally:
+        os.remove(f'{U}/source_catalogs/pages_input_I_fwb.csv')
+        os.rmdir(f'{U}/source_catalogs_I_fwb')
+    print('PASS stale panels (exopipe_ops 8826836): an old panel and its sidecar moved aside under a manifest at the earliest '
+          'build start; current panels and a folder no build wrote untouched; a later stage-only invocation uses the recorded '
+          'starts; a set with pages and no build refuses')
+
+
 def test_b30_page_failures():
     """B-30 (a): a missing astrometry figure refuses the deep build (pages_deep.FIGURE_FAILURE 'refuse', ruled) and is
     recorded under the production value 'record'; failed sub-LST page shards likewise (pages_sublst.SHARD_FAILURE)."""
@@ -614,6 +678,7 @@ def main():
         test_mirror_drift()
         test_negative_content_tests()
         test_real_products_read_only()
+        test_stale_panels(out)
         test_b30_page_failures()
     finally:
         shutil.rmtree(T, ignore_errors=True) if not os.environ.get("KEEP_T") else None
