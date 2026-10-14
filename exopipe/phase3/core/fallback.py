@@ -136,8 +136,14 @@ def _drain():
 
 def site(key, detail, n=1):
     """A fallback site was reached. 'fallback': count ``n`` and return (the caller keeps production behaviour);
-    'refuse': record and raise FallbackRefused."""
-    if policy(key) == 'fallback':
+    'refuse': record and raise FallbackRefused. An invalid policy value refuses too, recorded first, so that a caller's
+    broad except cannot hide it (the step refuses it at start - check_values; a child can still be handed one)."""
+    try:
+        pol = policy(key)
+    except Refusal as e:
+        _record('refuse', key, 1, f'{detail} [{e}]')
+        raise FallbackRefused(f'B-30 fallback site {key}: {detail} - REFUSED: its policy is invalid ({e})')
+    if pol == 'fallback':
         _record('count', key, n, detail)
         return
     _record('refuse', key, 1, detail)
@@ -208,9 +214,19 @@ def export_env():
 
 
 def child_env():
-    """The environment entries a child needs: every fallback key's policy as JSON (the parent's config, overrides
-    included)."""
+    """The environment entries a child needs: every fallback key's policy as JSON - the policies this process was handed
+    when it did not export them itself (a legacy.run inside a child passes the step's on, never the child's own config
+    defaults), else this process's config, overrides included."""
+    raw = os.environ.get('EXOPIPE3_FALLBACK_POLICY')
+    if raw and os.environ.get('EXOPIPE3_FALLBACK_POLICY_PID') != str(os.getpid()):
+        return {'EXOPIPE3_FALLBACK_POLICY': raw}
     return {'EXOPIPE3_FALLBACK_POLICY': json.dumps(all_keys(), sort_keys=True)}
+
+
+def check_values(cfg=None):
+    """[problems]: each fallback key whose value is not one of POLICIES (cli.main refuses the step on any: a misspelt
+    policy would otherwise surface only where a site is reached)."""
+    return [f'{k} = {v!r} (one of {POLICIES})' for k, v in sorted(all_keys(cfg).items()) if v not in POLICIES]
 
 
 def dump(path):

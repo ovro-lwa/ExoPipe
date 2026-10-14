@@ -285,6 +285,10 @@ def main(argv=None):
         CFG.apply_override_strings(args.set)
         out = args.out or mod.default_out(args)
         CFG.check_out(out)
+        from exopipe.phase3.core import fallback as _fb, wrap as _wr
+        _bad = _fb.check_values() + _wr.check_values()      # B-30 / B-32: a misspelt policy or wrap value refuses here
+        if _bad:
+            raise ConfigRefusal('invalid value(s): ' + '; '.join(_bad))
     except ConfigRefusal as e:
         print(f'REFUSED: {e}', file=sys.stderr)
         return record.EXIT_REFUSED

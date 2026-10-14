@@ -67,16 +67,19 @@ if _FB_OUT:
                 pass
     _atexit_fb.register(_dump_fb)
 
-# IMPORT WRAPS (core/wrap.py; B-32 first): with EXOPIPE3_WRAPS set, each named PRODUCTION module loads as always, then its
-# branch patch file loads BY PATH (it imports nothing from the branch: a child's `exopipe` can be the production package),
-# checks its pins against the production source and applies with the config values the parent passed.
+# IMPORT WRAPS (core/wrap.py; B-32 first): with EXOPIPE3_WRAPS naming modules ('{}' = none), each named PRODUCTION module
+# loads as always, then its branch patch file loads BY PATH (it imports nothing from the branch: a child's `exopipe` can be the
+# production package), is registered as sys.modules['exopipe3_wrap.<module>'] (the code fingerprint above records it), checks
+# its pin against the production source and applies with the config values the parent passed.
 _WRAPS = os.environ.get('EXOPIPE3_WRAPS', '')
+_WR = {}
 if _WRAPS:
     import json as _json_w
+    _WR = _json_w.loads(_WRAPS)
+if _WR:
     import importlib.abc as _iabc_w
     import importlib.machinery as _imach_w
     import importlib.util as _iutil_w
-    _WR = _json_w.loads(_WRAPS)
 
     def _fallback_module():
         m = sys.modules.get('exopipe.phase3.core.fallback')
@@ -100,9 +103,10 @@ if _WRAPS:
             def _exec(module, _orig=_orig, _name=name):
                 _orig(module)
                 w = _WR[_name]
-                ps = _iutil_w.spec_from_file_location(f'_exopipe3_wrap_{_name}', w['patch'])
+                ps = _iutil_w.spec_from_file_location(f'exopipe3_wrap.{_name}', w['patch'])
                 pm = _iutil_w.module_from_spec(ps)
                 ps.loader.exec_module(pm)
+                sys.modules[f'exopipe3_wrap.{_name}'] = pm      # named in the child's code fingerprint (review MINOR 5)
                 pm.apply(module, w['cfg'], _fallback_module())
             spec.loader.exec_module = _exec
             return spec

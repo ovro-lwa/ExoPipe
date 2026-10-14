@@ -8,13 +8,15 @@ clv15 phase3_snapshot_anchor.py and sublst_pertie.py all get the same estimator.
 the production package (source_localization.py puts /lustre/gh/main/exopipe first on sys.path), so this file imports nothing
 from the branch; core/fallback.py arrives as an argument (loaded by path by the finder).
 
-Pins: the sha1 of the source TEXT of every production function replaced or wrapped (from its `def` to the next top-level
-statement - the same in every Python version a child may run), at exopipe_ops 43db654 (source_localization.py, 2026-10-13
-01:32). A mismatch refuses at import: production changed - re-port this file (even a comment edit asks for that). Design: exopipe_ops/refactor_20261012/plan/wave2/B32_DESIGN.md.
+Pin: the sha1 of the whole production FILE (its bytes) at exopipe_ops 43db654 (source_localization.py, 2026-10-13 01:32) -
+any edit refuses at import, so no decorator, second definition or module-level rebinding of a replaced function can slip
+past (review MINOR 2); the per-function text pins below only name what changed in the refusal. A mismatch: production
+changed - re-port this file (even a comment edit asks for that). Design: exopipe_ops/refactor_20261012/plan/wave2/B32_DESIGN.md.
 """
 import hashlib
 import math
 
+FILE_SHA1 = 'd7428c9413d860e8ada5e6da73704ffa0bb3e241'               # source_localization.py at exopipe_ops 43db654
 PINS = {'combine': 'b18c57212fb748fa484df807b6ee853c83352fba',       # source_localization.py:221-258
         'detections': '99ce029f955ca17e88f5ca9fa61448ee43b2d5d7',    # :108-176
         'beam_as': 'c3ba730f3a5a4bd898a2e2a6361b50df81956b35',       # :76-88
@@ -183,10 +185,19 @@ def locate_site(mod, fallback):
     return locate
 
 
+def check_file(path):
+    """[] when the production file is the one this patch was written for (FILE_SHA1, its bytes - no locale decoding,
+    review MINOR 3), else what changed: the pinned functions whose text differs, or 'the file' (an edit elsewhere)."""
+    with open(path, 'rb') as f:
+        raw = f.read()
+    if hashlib.sha1(raw).hexdigest() == FILE_SHA1:
+        return []
+    return check_pins(raw.decode('utf-8', 'replace')) or ['the file (outside the pinned functions)']
+
+
 def apply(mod, cfg, fallback):
     """Wrap ``mod`` (the production source_localization) under ``cfg`` ({key: value}); ``fallback`` = core/fallback.py."""
-    with open(mod.__file__) as f:
-        bad = check_pins(f.read())
+    bad = check_file(mod.__file__)
     if bad:
         raise RuntimeError(f'B-32 wrap of {mod.__file__}: production changed {bad} since the patch was written - REFUSING '
                            f'(re-port lib/catalog/wraps/source_localization.py)')

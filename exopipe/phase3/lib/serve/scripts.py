@@ -6,8 +6,9 @@ only names the scripts (resolved under ``core.env.legacy_root('exopipe_ops')``) 
 does not do, each documented where it is used:
   run_shell()   the one bash script serve calls in place (snapshot_localize_tiers.sh): core.legacy.run always puts a
                 Python interpreter in front of its target, so the script runs through bash with the SAME environment rules
-                (runner.CHILD_ENV_CLEAR_PREFIXES cleared, runner.ENV_DEFAULTS, EXOPIPE3_SITE, the parity sitecustomize on
-                PYTHONPATH so its Python children are guarded)
+                (runner.CHILD_ENV_CLEAR_PREFIXES cleared, runner.ENV_DEFAULTS, EXOPIPE3_SITE, the parity sitecustomize first
+                on PYTHONPATH - always, as core.legacy.run: it guards a parity run's writes and installs the B-32 import wraps
+                (EXOPIPE3_WRAPS) in every Python child; with neither variable set it installs nothing)
   server_env()  the environment of a long-lived server (procs.start): the same rules, without the exit-time fingerprint
                 file (a server never exits normally); its code identity is recorded by the App probe child instead
 The scripts move into lib/serve/ at absorption (MOVE_PLAN 2.11), when the owning chats stop editing them.
@@ -70,7 +71,9 @@ def site_value(name, default=None):
 def _base_env(extra=None, with_parity=True):
     """os.environ with every inherited production switch family cleared (runner.CHILD_ENV_CLEAR_PREFIXES: P3_*, P3S*,
     SUBLST_*, ... - as core.legacy.run), then ``extra`` (a value None or '' = left unset), runner.ENV_DEFAULTS,
-    EXOPIPE3_SITE; in a parity run the parity sitecustomize stays first on PYTHONPATH (core.legacy.run's rules)."""
+    EXOPIPE3_SITE; the parity sitecustomize first on PYTHONPATH, always (core.legacy.run's rules: it applies the B-32 import
+    wraps in every Python child of the script - the snapshot localization's build_localizations.py and astrometry panel - and
+    guards a parity run's writes), EXOPIPE3_PARITY_ROOT in a parity run."""
     from exopipe.phase3.config import CFG
     clear = tuple(getattr(CFG.runner, 'CHILD_ENV_CLEAR_PREFIXES', ('P3_',)))
     env = {k: v for k, v in os.environ.items() if not k.startswith(clear)}
@@ -82,11 +85,11 @@ def _base_env(extra=None, with_parity=True):
     env.update(CFG.runner.ENV_DEFAULTS)
     if os.environ.get('EXOPIPE3_SITE'):
         env['EXOPIPE3_SITE'] = os.environ['EXOPIPE3_SITE']
+    from exopipe.phase3.core import guard
+    parts = [p for p in (env.get('PYTHONPATH') or '').split(os.pathsep) if p and p != guard.SITECUSTOMIZE_DIR]
+    env['PYTHONPATH'] = os.pathsep.join([guard.SITECUSTOMIZE_DIR] + parts)     # B-32 review M1: always (was parity only)
     if with_parity and os.environ.get('EXOPIPE3_PARITY_ROOT'):
-        from exopipe.phase3.core import guard
         env['EXOPIPE3_PARITY_ROOT'] = os.environ['EXOPIPE3_PARITY_ROOT']
-        parts = [p for p in (env.get('PYTHONPATH') or '').split(os.pathsep) if p and p != guard.SITECUSTOMIZE_DIR]
-        env['PYTHONPATH'] = os.pathsep.join([guard.SITECUSTOMIZE_DIR] + parts)
     return env
 
 
