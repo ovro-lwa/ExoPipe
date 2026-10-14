@@ -518,7 +518,7 @@ class catalog_snapshot(_Section):
                       'REPEAT_SKY_RATE_ARCSEC_S', 'CHECKSOURCE_MATCH_ARCMIN', 'ASTROM_FIT_SNR', 'NO_SOURCE_SNR',
                       'REJECT_NO_SOURCE_FIT', 'REJECT_UNCONSTRAINED_FIT', 'CLUSTER', 'GATE3D', 'GATE3D_NTHR', 'LC_CACHE_DEFAULT',
                       'VETO_PROCS_DEFAULT', 'REFASTRO_SHARDS_DEFAULT', 'REF_MAX_SEP_DEG', 'TEST_GATE3D_PCT', 'TEST_MEMBER_ORDER',
-                      'PRE_BUNDLE_TIE_MODEL')
+                      'TEST_GHOST_LEAK_DEG', 'PRE_BUNDLE_TIE_MODEL')
     # ---- driver (snapshot_rechain_batch.sh). Shared roots: paths.SNAPSHOT_FLEET_OUT (the chain's --proto-root,
     # snapshot_rechain_batch.sh:280), paths.CLV15_ROOT (--samples-dir, phase3_snapshot_chain.py:3329), paths.SNAPSHOT_REVIEW_ROOT
     # (the served run, :56), paths.OPS_ROOT
@@ -599,6 +599,8 @@ class catalog_snapshot(_Section):
     # ---- run content test (snapshot_rechain_content_test.py R1-R7 operating points)
     TEST_GATE3D_PCT = 95.0                                # snapshot_rechain_content_test.py:71
     TEST_MEMBER_ORDER = 'time, subband, Stokes'           # snapshot_rechain_content_test.py:71 (Gregg 2026-10-07 item 23)
+    TEST_GHOST_LEAK_DEG = 1.0                             # snapshot_rechain_content_test.py LEAK_DEG (R3, exopipe_ops 56810b9): a removed
+                                                          # ghost leaks when a served row of its cand_id lies within this of its position
     # ---- added by catalog-tiers (values = snapshot_rechain_batch.sh's own; each a [step] key)
     NODE_FAST_ROOT = '/fast/gh/main/phase3'               # NODE_FAST = <root>/rechain_<NAME> on every node (tie outputs, fit shards); snapshot_rechain_batch.sh:58
     APPROVAL_MARKER = '/lustre/gh/main/exopipe_ops/snapshot_rechain_{name}.APPROVED'   # production approval marker (read only; --snap-approval-marker); snapshot_rechain_batch.sh:53

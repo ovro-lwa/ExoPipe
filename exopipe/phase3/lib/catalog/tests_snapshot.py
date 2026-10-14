@@ -41,7 +41,7 @@ def run_checks(run):
                 'under served %s' % (r1[0], pf.get('n_at_per_frame_fit_step'), r1[1], r1[2])))
     dfiles = sorted(glob.glob(os.path.join(run, 'candidates', '*', '*', 'detections.csv')))
     n_rows = n_bad = n_nocol = 0
-    served = set()
+    served_pos = {}                     # cand_id -> [(ra, dec)] of every served row (R3)
     for p in dfiles:
         with open(p, newline='') as f:
             rd = csv.DictReader(f)
@@ -51,7 +51,10 @@ def run_checks(run):
                 continue
             for r in rd:
                 n_rows += 1
-                served.add(r.get('cand_id', ''))
+                try:
+                    served_pos.setdefault(r.get('cand_id', ''), []).append((float(r['ra']), float(r['dec'])))
+                except (KeyError, TypeError, ValueError):
+                    served_pos.setdefault(r.get('cand_id', ''), []).append((float('nan'), float('nan')))
                 a, b = _f(r.get('pos_err_stat_arcsec')), _f(r.get('pos_err_arcsec'))
                 if a is None or b is None or a <= 0 or b <= 0:
                     n_bad += 1
@@ -61,10 +64,18 @@ def run_checks(run):
     grows = list(csv.DictReader(open(gp))) if os.path.exists(gp) else None
     n_g = (S.get('domain_dropped') or {}).get('ghost')
     has_g = any(x.split('_', 1)[1] in tuple(c.GHOST_DATES) for x in S.get('cells', []))
-    leak = sorted({r['cand_id'] for r in (grows or [])} & served)
+    # A LEAK IS THE SAME DETECTION SERVED, not the same cand_id (exopipe_ops 56810b9: a cand_id names a FRAME, so other
+    # sources of a ghost's frame read as served ghosts): a served row of the removed cand_id within TEST_GHOST_LEAK_DEG of its
+    # position; an unreadable served position counts as a leak (the production expression, kept: min(1.0, nan) is 1.0)
+    def _sep(ra1, de1, ra2, de2):
+        x = (math.sin(math.radians(de1)) * math.sin(math.radians(de2))
+             + math.cos(math.radians(de1)) * math.cos(math.radians(de2)) * math.cos(math.radians(ra1 - ra2)))
+        return math.degrees(math.acos(max(-1.0, min(1.0, x))))
+    leak = sorted({g['cand_id'] for g in (grows or []) for (ra_s, de_s) in served_pos.get(g['cand_id'], ())
+                   if _sep(float(g['ra_deg']), float(g['dec_deg']), ra_s, de_s) < float(c.TEST_GHOST_LEAK_DEG)})
     out.append(('R3', grows is not None and len(grows) == n_g and (len(grows) > 0 or not has_g) and not leak,
-                'ghost_removed.csv rows %s, summary %s, ghost-date cells %s, removed cand_ids served %d' % (
-                    None if grows is None else len(grows), n_g, has_g, len(leak))))
+                'ghost_removed.csv rows %s, summary %s, ghost-date cells %s, removed detections served %d%s' % (
+                    None if grows is None else len(grows), n_g, has_g, len(leak), (' e.g. ' + leak[0]) if leak else '')))
     tc = S.get('tie_cache') or {}
     out.append(('R4', tc.get('tied_now') == 0, 'tie cache: %s from the cache, %s tied in this run' % (
         tc.get('from_cache'), tc.get('tied_now'))))

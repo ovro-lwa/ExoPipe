@@ -327,6 +327,24 @@ def test_content_tests():
     write_snapshot_run(run, ['14h_2025-03-09'])
     r = TP.snapshot_run_content(run)
     ok('snapshot_run passes on a conformant synthetic run', r[0], r[2])
+    # R3 (exopipe_ops 56810b9): a removed ghost leaks only when a served row of its cand_id lies within 1 deg of it - a cand_id
+    # names a frame, so another source of the ghost's frame is not a leak; an unreadable served position is
+    g3 = f'{T}/snaprun_r3'
+    write_snapshot_run(g3, ['14h_2025-03-09'])
+    S3 = json.load(open(f'{g3}/chain_summary.json'))
+    S3['domain_dropped'] = {'ghost': 1}
+    json.dump(S3, open(f'{g3}/chain_summary.json', 'w'))
+    wcsv(f'{g3}/ghost_removed.csv', ['cand_id', 'ra_deg', 'dec_deg'], [['c1', '40.0', '0.0']])
+    det = f'{g3}/candidates/Red/rank0001_Red_J0000+0000/detections.csv'
+    hdr3 = ['cand_id', 'ra', 'dec', 'pos_err_stat_arcsec', 'pos_err_arcsec']
+    res3 = {}
+    for label, pos in (('another source of the frame', ('10.0', '0.0')), ('the same detection', ('40.3', '0.2')),
+                       ('an unreadable position', ('', ''))):
+        wcsv(det, hdr3, [['c1', pos[0], pos[1], '30', '60']])
+        res3[label] = dict((n, (p_, d_)) for n, p_, d_ in TP.run_checks(g3))['R3']
+    ok('snapshot_run R3: a served row of the removed cand_id 30 deg away is not a leak; within 1 deg, or unreadable, is',
+       res3['another source of the frame'][0] and not res3['the same detection'][0]
+       and not res3['an unreadable position'][0], res3)
     with open(f'{run}/source_catalogs/Red_sources_survivors.csv', 'a') as f:
         f.write('J9999+0000,V,-5.0\n')
     r = TP.snapshot_run_content(run)
