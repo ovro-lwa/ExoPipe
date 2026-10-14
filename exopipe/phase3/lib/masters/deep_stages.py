@@ -140,6 +140,20 @@ def require_stage(out, stage, cell, ran_now):
     return rec
 
 
+def _epoch_gate_carry():
+    v = _cfg().masters_stagein.EPOCH_GATE_CARRY
+    if v not in ('none', 'carry'):
+        raise Refusal(f'masters_stagein.EPOCH_GATE_CARRY {v!r}: none (B-05 a) or carry (production)')
+    return v
+
+
+def _epoch_gate_source():
+    v = _cfg().masters_build.EPOCH_GATE_SOURCE
+    if v not in ('own-master', 'carried-record'):
+        raise Refusal(f'masters_build.EPOCH_GATE_SOURCE {v!r}: own-master (B-05 a) or carried-record (production)')
+    return v
+
+
 def build_clean_start(cell_dir, sc):
     """[reasons] why the cell directory is not as stage-in (+ the flow step) left it: a product of an earlier build, or a
     stage-in reference that no longer equals its coadd_final_ref/ copy. The in-place co-add takes coadd_final/
@@ -291,7 +305,11 @@ def stage_in(cell, args, run, out, ran_now):
             if os.path.exists(p):
                 u.add_input(p)
         u.note('reference: ' + DS.describe(entries))
-        egc = DS.epoch_gate_source(cell, C)
+        carry = _epoch_gate_carry()
+        egc = DS.epoch_gate_source(cell, C) if carry == 'carry' else None
+        if carry == 'none':
+            u.note('no epoch-gate record carried in (B-05 a: masters_stagein.EPOCH_GATE_CARRY none) - the build tests every '
+                   'night against its own master')
         os.makedirs(os.path.join(cell_dir, 'coadd_final'), exist_ok=True)
         if egc:
             u.add_input(egc)
@@ -300,7 +318,7 @@ def stage_in(cell, args, run, out, ran_now):
             fails = [r['date'] for r in csv.DictReader(open(dst)) if r.get('verdict') == 'FAIL']
             u.check('epoch_gate_carried', IP.sha1_file(dst) == IP.sha1_file(egc), value=len(fails),
                     detail=f'epoch-gate record carried in from {egc}: FAIL {fails}')
-        else:
+        elif carry == 'carry':
             u.note('no epoch-gate record to carry (rebuild_cell.sh:42 skips)')
         u.note(f'next: exopipe3 flow --tier deep --cells {cell} --out {out} (copies the stored flows of {C}/flow and '
                f'computes the stale ones against this reference), then masters --stages build,...')
@@ -318,8 +336,12 @@ def stage_in(cell, args, run, out, ran_now):
         if egc:          # the carried record (the co-add final stage reads it: G-M10)
             u.add_output(os.path.join(cell_dir, 'coadd_final', 'epoch_gate.csv'), 'csv_table',
                          required_columns=('date', 'i_ratio', 'verdict', 'master_md5'), min_rows=1)
-        elif mode == 'night':
+        elif mode == 'night' and carry == 'carry':
             raise NoInput('--reference night: nothing written for the cell (no reference, no epoch-gate record)')
+        elif mode == 'night':
+            u.check('stage-in.nothing_to_stage', True, value=0,
+                    detail='--reference night: no reference master (the build takes the fixed-table night) and no carried '
+                           'epoch-gate record (B-05 a) - the cell directory is ready for the flow step')
 
 
 # =====================================================================================================================
@@ -433,6 +455,17 @@ def build(cell, args, run, out, ran_now):
                     _refuse_or_noinput(u, tee, 'co-add final')
                 if fin.get('status') == 'skipped':
                     u.refuse('co-add skipped the build (.done + current COADDOP) - FORCE_REBUILD not applied')
+                if _epoch_gate_source() == 'own-master':    # B-05 (a): gate on this build's master, bounded passes
+                    from exopipe.phase3.lib.masters import epoch_gate_passes as EGP
+
+                    def _rerun():
+                        r = co.run_final_lst_freq(lst, freq, excl)
+                        if r is None:
+                            _refuse_or_noinput(u, tee, 'co-add final (B-05 rebuild pass)')
+                        if r.get('status') == 'skipped':
+                            u.refuse('co-add skipped a B-05 rebuild pass (.done + current COADDOP)')
+                        return r
+                    fin = EGP.run_passes(u, _rerun, cell_dir, sc, out, fin)
             except RuntimeError as e:                 # every in-place gate that raises (G-M02/04/05/09/16/19)
                 u.refuse(str(e)[:1500])
         u.note(f'co-add final: {fin.get("n_good")}/{fin.get("n_total")} nights in the master')
@@ -853,8 +886,9 @@ def _plan_stage_in(cell, args, out, planned):
         gates.append(f'reference: {e}')
     if mode != 'previous-master' and WAIVE_REFERENCE not in (getattr(args, 'waive', None) or []):
         gates.append(f'--reference {mode}:{val} needs --waive {WAIVE_REFERENCE} --ruling "..."')
-    egc = DS.epoch_gate_source(cell, C)
-    lines.append(f'epoch-gate record: {egc or "none to carry"}')
+    egc = DS.epoch_gate_source(cell, C) if _epoch_gate_carry() == 'carry' else None
+    lines.append(f'epoch-gate record: {egc or "none to carry"}' if _epoch_gate_carry() == 'carry' else
+                 'epoch-gate record: none carried (B-05 a: the build gates every night on its own master)')
     fsrc = os.path.join(C, 'flow')
     nf = sum(len(fs) for _, _, fs in os.walk(fsrc)) if os.path.isdir(fsrc) else 0
     lines.append(f'outputs: {cell_dir}/coadd_final/{{I_deep_Taper_R075,V_deep_Taper_R0}}_{sc}.fits, coadd_final_ref/ copies '
@@ -900,6 +934,13 @@ def _plan_build(cell, args, out, planned):
     dirty = build_clean_start(os.path.join(out, cell), sc) if 'stage-in' not in planned else []
     if dirty:
         gates.append(f'cell not as stage-in left it ({"; ".join(dirty[:3])}): stage-in --fresh --supersede TAG first (G-M25)')
+    try:
+        lines.append('epoch gate: ' + ('on this build\'s own master after the final co-add, up to '
+                                       f'{_cfg().masters_build.EPOCH_GATE_MAX_PASSES} final pass(es) without in-master FAIL '
+                                       'nights (B-05 a)' if _epoch_gate_source() == 'own-master' else
+                                       'the carried record of stage-in (production; the install evaluates the new master)'))
+    except Refusal as e:
+        gates.append(str(e))
     lines.append(f'in place: coadd.run_provisional_lst_freq({lst!r}, {_freq(sc)!r}) then run_final_lst_freq; env '
                  f'{IP.call_env_values(["masters", "masters_build"])}')
     lines.append(f'outputs: {out}/{cell}/coadd_final/ 5 variants [master], loo/ [loo_master], weights.csv + '

@@ -387,14 +387,23 @@ def test_cli():
     rc, txt = cli(*common, '--stages', 'stage-in', '--dry-run')
     check('stage-in --dry-run plans, writes nothing', rc == 0 and 'branch current-master' in txt and not os.path.exists(out),
           txt[-400:])
-    rc, txt = cli(*common, '--stages', 'stage-in')
+    # production behaviour (the parity file's value): the carried epoch-gate record
+    rc, txt = cli(*common, '--stages', 'stage-in', '--set', 'masters_stagein.EPOCH_GATE_CARRY=carry')
     rec = json.load(open(f'{out}/_records/masters/stage-in_{CELL}.json'))
     classes = sorted(o['class'] for o in rec['outputs'])
     check('stage-in done (exit 0)', rc == 0 and rec['status'] == 'done', txt[-400:])
-    check('stage-in outputs: 2 reference masters + carried epoch-gate record',
+    check('stage-in (EPOCH_GATE_CARRY carry = production) outputs: 2 reference masters + carried epoch-gate record',
           classes == ['csv_table', 'reference_master', 'reference_master'], str(classes))
     eg = f'{out}/{CELL}/coadd_final/epoch_gate.csv'
     check('epoch-gate record carried byte-identical', open(eg).read() == open(f'{T}/wt/{CELL}/coadd_final/epoch_gate.csv').read())
+    # the ruled default (B-05 a): no record carried in
+    out_r = f'{T}/out_b05'
+    rc, txt = cli(*[x if x != out else out_r for x in common], '--stages', 'stage-in')
+    rec_r = json.load(open(f'{out_r}/_records/masters/stage-in_{CELL}.json'))
+    check('stage-in (default EPOCH_GATE_CARRY none, B-05 a): 2 reference masters, no epoch-gate record carried',
+          rc == 0 and sorted(o['class'] for o in rec_r['outputs']) == ['reference_master', 'reference_master']
+          and not os.path.exists(f'{out_r}/{CELL}/coadd_final/epoch_gate.csv')
+          and any('no epoch-gate record carried' in n for n in rec_r.get('notes', [])), (txt[-300:], rec_r.get('notes')))
     check('stage-in copies no flows (the flow step does)', not os.path.exists(f'{out}/{CELL}/flow'))
     check('every content test of stage-in passed', all(t['passed'] or t.get('waived') for t in rec['tests']))
     rc, txt = cli(*common, '--stages', 'stage-in')
@@ -415,9 +424,8 @@ def test_cli():
     rc, txt = cli(*common, '--epochs', f'{lst}_2025-01-02')
     check('--epochs refused for the deep tier (exit 2)', rc == 2 and 'intermittent' in txt, txt[-200:])
     rc, txt = cli('--tier', 'deep', '--cells', CELL, '--stages', 'stage-in', '--cores', 'none')
-    # cli._guard_out raises SystemExit('refused: ...') -> exit 1 today (cli.py is shared; reported in the impl note)
-    check('default --out (production generation root) refused while PRODUCTION_WRITES is False',
-          rc != 0 and 'PRODUCTION_WRITES is False' in txt and not os.path.exists('/fast/gh/main/phase3/rebuild_20261007/_records/masters'),
+    check('default --out (production generation root) refused while PRODUCTION_WRITES is False (exit 2)',
+          rc == 2 and 'PRODUCTION_WRITES is False' in txt and not os.path.exists('/fast/gh/main/phase3/rebuild_20261007/_records/masters'),
           txt[-200:])
 
 

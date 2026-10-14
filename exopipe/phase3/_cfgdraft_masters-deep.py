@@ -76,11 +76,14 @@ class masters_stagein(_Section):
     REF_PREVGEN_TABLE = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/ref_prevgen.csv'          # exopipe_ops e5c218e
     PREDEWARP_QUARANTINE = '/lustre/gh/main/phase3/working_quarantine_20261004'   # (= REFERENCE_COPY_ROOTS[0]; kept for the plan text)
     SUPERSEDED_ARCHIVE = '/lustre/pipeline/exopipe/phase3/Coadd/Run_20260909_000000_SUPERSEDED_20260927'   # (= REFERENCE_COPY_ROOTS[1])
-    EPOCH_GATE_CARRY_DIR = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/epoch_gate_carry'    # empty since 2026-10-10 (rebuild_cell.sh:41); B-05 default (c)
+    EPOCH_GATE_CARRY_DIR = '/lustre/gh/main/exopipe_ops/membership_rebuild_20261007/epoch_gate_carry'    # empty since 2026-10-10 (rebuild_cell.sh:41); read only when EPOCH_GATE_CARRY is 'carry'
+    EPOCH_GATE_CARRY = 'none'                 # B-05 (a), Gregg 2026-10-13: no carried epoch-gate record - the build gates every night on its OWN master
+                                              # (masters_build.EPOCH_GATE_SOURCE 'own-master'); 'carry' = production (rebuild_cell.sh:39-43: the carried record, else the cell's own)
     STRIP_CARD_PREFIXES = ('SH', 'FLUX')  # cards removed from a reconstructed native reference (rebuild_cell.sh:74, 91, 111)
     PROTECTED_KEYS = ('REF_OVERRIDE_TABLE', 'REF_OVERRIDE_TABLE_SHA1', 'REF_OVERRIDE_I_TABLE', 'REF_PREVGEN_TABLE',
                       'PREVIOUS_GENERATION_REFERENCE', 'V_OPTIONAL_BRANCHES')
     RULED = {'REF_OVERRIDE_TABLE': 'ROUND-RESTART-LIST-A-87-CELLS-FLEET-QUEUE-ALIGNED',
+             'EPOCH_GATE_CARRY': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'REF_OVERRIDE_I_TABLE': 'R-GREGG-20261009-DEWARP-CASCADE-23HGREEN-3CELLS-FAST',
              'PREVIOUS_GENERATION_REFERENCE': 'IMPL-REBUILD-REFERENCE-A-PREVIOUS-GENERATION-PRESCREEN-20261013',
              'REF_PREVGEN_TABLE': 'IMPL-REBUILD-REFERENCE-A-PREVIOUS-GENERATION-PRESCREEN-20261013'}
@@ -139,9 +142,11 @@ class masters_build(_Section):
     PROVISIONAL_SIGCLIP = (True, 4.0, 4)      # (clip, sigma, minimum images): provisional co-add clips (coadd_full_pipeline.py:1253-1254, 2371-2382); B-09 default (b)
     LEGACY_STAGE2_RECORD = 'accept-residuals_provisional'   # B-04 default (c): membership.stage2_record falls back (membership.py:155-184)
     # final stage membership (two-tier: products for every non-excluded night)
-    EPOCH_GATE_SOURCE = 'carried-record'      # B-05 (c) = production: coadd_final/epoch_gate.csv read with check_master=False (coadd_full_pipeline.py:3492-3499).
-                                              # Gregg ruled B-05 (a) 2026-10-13 (same ledger row): test every night against the build's own master, rebuild without
-                                              # failing in-master nights (bounded passes, recorded) - NOT IMPLEMENTED; protected until it is
+    EPOCH_GATE_SOURCE = 'own-master'          # B-05 (a), Gregg 2026-10-13: after the final co-add every night is tested against THIS build's master and the final
+                                              # co-add reruns without the in-master FAIL nights (lib/masters/epoch_gate_passes.py; plan/wave2/B05_DESIGN.md);
+                                              # 'carried-record' = production: coadd_final/epoch_gate.csv read with check_master=False (coadd_full_pipeline.py:3492-3499)
+    EPOCH_GATE_MAX_PASSES = 3                 # passes of the final co-add at most (B-05 'a bounded number of passes'); the cell refuses when the last pass still
+                                              # has a FAIL night in the master. 3 PROPOSED 2026-10-14 - Gregg to confirm; production 1 (no rebuild pass)
     SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # membership.py:72; R-SUNLIT-NIGHTS-OUT-OF-MASTERS
     SOLAR_AUDIT_SHA1 = '24151ffaa1b7f11faa7adeab5d0f9cb6cfae8da4'
     NAMED_OUT_OF_MASTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'named_out_of_master.csv')   # package data file beside config.py, 1 row; membership.py:98; R-GREGG-20261011-17H18-0505-OPTION-B
@@ -171,7 +176,7 @@ class masters_build(_Section):
     KEEP_PREP = False                         # P3_KEEP_PREP unset (coadd_full_pipeline.py:4029)
     PROTECTED_KEYS = ('ALLOW_STALE_FLOW', 'FLUXSCALE_TILT', 'SOLAR_AUDIT', 'SOLAR_AUDIT_SHA1', 'NAMED_OUT_OF_MASTER',
                       'NAMED_OUT_OF_MASTER_SHA1', 'ARCHIVE_WRITE', 'VARIANT_BAND_MEDIANS', 'VARIANT_BAND_MEDIANS_SHA1',
-                      'EPOCH_GATE_SOURCE', 'FLOW_MAX_NAN_FRACTION', 'RAW_INPUT_FLOW_RULE', 'PROVISIONAL_V_GRID_MISMATCH',
+                      'FLOW_MAX_NAN_FRACTION', 'RAW_INPUT_FLOW_RULE', 'PROVISIONAL_V_GRID_MISMATCH',
                       'REF_ASTROM_PIVOT_MHZ', 'REF_ASTROM_EXPONENT', 'REF_ASTROM_MIN_ANCHORS', 'REF_ASTROM_N_PEAKS',
                       'REF_ASTROM_MATCH_MAX_ARCMIN', 'FLUXSCALE_ESTIMATOR', 'FLUXSCALE_SNR_MIN', 'FLUXSCALE_PEAK_JY',
                       'FLUXSCALE_MIN_ELEV_DEG', 'FLUXSCALE_APERTURE_BEAMS', 'FLUXSCALE_MAXFILTER_BEAMS',
@@ -182,6 +187,7 @@ class masters_build(_Section):
                       'FLUXFIT', 'LOO_N_RANGE', 'STRIATION_WINDOW_BEAMS', 'EPOCH_CHECK', 'JUPITER_MASK_DEEP',
                       'FORCE_REBUILD')   # FORCE_REBUILD: False would re-enable the in-place .done skip guard (CLAUDE.md 3; the wrapper refuses a skip)
     RULED = {'CUTOVER_DATE': 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED',
+             'EPOCH_GATE_SOURCE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'EPOCH_GATE_MAX_PASSES': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'FLOW_MAX_NAN_FRACTION': 'FINDING-FIVE-GOOD-NIGHTS-BAD-RESIDUALS-ARE-FLOW-FAILURES',
              'ALLOW_STALE_FLOW': 'RATIFY-COADD-FLOW-REFRESH-STAGE-AND-FRESHNESS-GATE',
              'REF_MODE': 'R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-MASTER',

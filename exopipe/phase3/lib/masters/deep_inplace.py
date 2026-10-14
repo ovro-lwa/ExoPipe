@@ -64,7 +64,7 @@ WIRING = {
         'REF_PIXEL_FACTOR_RANGE': 'step', 'REF_OVERRIDE_TABLE': 'step', 'REF_OVERRIDE_TABLE_SHA1': 'step',
         'REF_OVERRIDE_I_TABLE': 'step', 'REF_PREVGEN_TABLE': 'step', 'REFERENCE_COPY_ROOTS': 'step',
         'PREVIOUS_GENERATION_REFERENCE': 'step', 'V_OPTIONAL_BRANCHES': 'step', 'PREDEWARP_QUARANTINE': 'step',
-        'SUPERSEDED_ARCHIVE': 'step', 'EPOCH_GATE_CARRY_DIR': 'step', 'STRIP_CARD_PREFIXES': 'step'},
+        'SUPERSEDED_ARCHIVE': 'step', 'EPOCH_GATE_CARRY_DIR': 'step', 'EPOCH_GATE_CARRY': 'step', 'STRIP_CARD_PREFIXES': 'step'},
     'masters_build': {
         'CUTOVER_DATE': 'attr:coadd.CUTOVER_DATE', 'FLOW_MAX_NAN_FRACTION': 'mirror',
         'ALLOW_STALE_FLOW': 'env-call:P3_ALLOW_STALE_FLOW', 'RAW_INPUT_FLOW_RULE': 'mirror',
@@ -80,7 +80,7 @@ WIRING = {
         'STAGE2_CLIP_SIGMA': 'mirror', 'OUTLIER_SIGMA': 'attr:coadd.OUTLIER_SIGMA',
         'LOW_OUTLIER_SIGMA': 'attr:coadd.LOW_OUTLIER_SIGMA', 'MAD_MIN_VALUES': 'mirror', 'BEAM_GATE_RATIO': 'mirror',
         'BEAM_GATE_MIN_AREAS': 'mirror', 'BEAM_GATE_IMAGE': 'mirror', 'PROVISIONAL_SIGCLIP': 'mirror',
-        'LEGACY_STAGE2_RECORD': 'mirror', 'EPOCH_GATE_SOURCE': 'step', 'SOLAR_AUDIT': 'attr:membership.SOLAR_AUDIT',
+        'LEGACY_STAGE2_RECORD': 'mirror', 'EPOCH_GATE_SOURCE': 'step', 'EPOCH_GATE_MAX_PASSES': 'step', 'SOLAR_AUDIT': 'attr:membership.SOLAR_AUDIT',
         'SOLAR_AUDIT_SHA1': 'step', 'NAMED_OUT_OF_MASTER': 'attr:membership.NAMED_OUT_OF_MASTER',
         'NAMED_OUT_OF_MASTER_SHA1': 'step', 'QA3_HI': 'attr:membership.QA3_HI', 'QA3_LO': 'attr:membership.QA3_LO',
         'QA3_LO_DEFAULT': 'attr:membership.QA3_LO_DEFAULT',
