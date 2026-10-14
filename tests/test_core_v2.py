@@ -1085,6 +1085,50 @@ def test_item7_fallback_children():
         assert u2.status == 'done' and rec['fallbacks'] == {KEY: 3}, (u2.status, rec.get('fallbacks'))
 
 
+PROD_MOD = """def f(h, p):
+    try:
+        x = read(p)
+    except Exception:
+        x = None
+    if h.get('A'):
+        y = 1
+    if not x:
+        return 0
+    return x + y
+"""
+BRANCH_MOD = """def f(h, p):
+    try:
+        x = read(p)
+    except Exception:
+        x = None
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.IMAGE_TIME_FALLBACK', f'{p}: unreadable')
+    if h.get('A'):
+        y = 1
+    else:
+        fallback.site('fallbacks.IMAGE_TIME_FALLBACK', 'no A')
+    if 'B' not in h:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.IMAGE_TIME_FALLBACK',
+                      'no B')
+    if not x:
+        return 0
+    return x + y
+"""
+
+
+def test_item7_site_lines_pure_insertion():
+    """A B-30 site is a pure insertion of whole lines: removing them gives the production text byte for byte (dewarp G-D0b
+    compares that way); a comment edit, a changed condition or an `if` that does more than a site is still a difference."""
+    from exopipe.phase3.core import fallback
+    assert fallback.strip_site_lines(BRANCH_MOD) == PROD_MOD, fallback.strip_site_lines(BRANCH_MOD)
+    assert fallback.same_code_modulo_sites(PROD_MOD, BRANCH_MOD)
+    assert not fallback.same_code_modulo_sites(PROD_MOD + '# local edit\n', BRANCH_MOD)
+    assert not fallback.same_code_modulo_sites(PROD_MOD, BRANCH_MOD.replace("if h.get('A'):", "if h.get('a'):"))
+    more = BRANCH_MOD.replace("    if 'B' not in h:\n", "    if 'B' not in h:\n        z = 2\n")
+    assert not fallback.same_code_modulo_sites(PROD_MOD, more), 'an if with real code is not a site'
+
+
 def test_item7_fallback_registry():
     """Every fallback key is RULED, is set to 'fallback' in the production parity file, and is named by a
     fallback.site('<key>' call in the code; every such call names a config key (no dead keys, no unkeyed sites)."""

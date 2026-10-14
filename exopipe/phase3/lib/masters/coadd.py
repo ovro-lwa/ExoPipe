@@ -221,6 +221,9 @@ def epoch_time_header(tmpl_hdr, src_path):
         src = fits.getheader(src_path)
     except Exception:
         src = None
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.EPOCH_TIME_SOURCE_FALLBACK', f'{src_path}: header unreadable ({sys.exc_info()[1]}) - '
+                      f'the residual would carry no time block')
     for k in _EPOCH_TIME_KEYS:
         if src is not None and k in src:
             out[k] = src[k]
@@ -451,24 +454,37 @@ def stamp_master_span(path, lst, scope, dates):
     standard): DATE-OBS=earliest start, DATE-END=latest end, DURATION=wall span,
     INTTIME=summed integration, MJD-MID=span midpoint, NSTACK=#epochs. Without this
     the master inherits one epoch's date from tmpl_hdr."""
+    from exopipe.phase3.core import fallback      # WAVE2 B-30 (MASTER_SPAN_FALLBACK: each silent case below)
     starts, ends, intt = [], [], 0.0
     for d in sorted(set(dates)):
         src = _phase2_time_source(lst, d, scope)
         if not src:
+            fallback.site('fallbacks.MASTER_SPAN_FALLBACK', f'{lst} {scope} {d}: no Phase-2 time source - the master '
+                          f'span would leave the night out')
             continue
         try:
             sh = fits.getheader(src)
         except Exception:
+            fallback.site('fallbacks.MASTER_SPAN_FALLBACK', f'{src}: header unreadable ({sys.exc_info()[1]}) - the '
+                          f'master span would leave {d} out')
             continue
         if sh.get('DATE-OBS'):
             starts.append(Time(sh['DATE-OBS'], scale='utc'))
+        else:
+            fallback.site('fallbacks.MASTER_SPAN_FALLBACK', f'{src}: no DATE-OBS - the master span would start without {d}')
         if sh.get('DATE-END'):
             ends.append(Time(sh['DATE-END'], scale='utc'))
+        else:
+            fallback.site('fallbacks.MASTER_SPAN_FALLBACK', f'{src}: no DATE-END - the master span would end without {d}')
         try:
             intt += float(sh.get('INTTIME', 0) or 0)
         except Exception:
+            fallback.site('fallbacks.MASTER_SPAN_FALLBACK', f'{src}: INTTIME {sh.get("INTTIME")!r} unparsable - left '
+                          f'out of the summed integration')
             pass
     if not starts or not ends:
+        fallback.site('fallbacks.MASTER_SPAN_FALLBACK', f'{path}: no constituent DATE-OBS / DATE-END - the master would '
+                      f'keep the template epoch time')
         return
     t0, t1 = min(starts), max(ends)
     try:
@@ -485,6 +501,8 @@ def stamp_master_span(path, lst, scope, dates):
             H['TIMEFIX'] = ('v2-coadd-span', 'master time = constituent span')
             hd.flush()
     except Exception:
+        fallback.site('fallbacks.MASTER_SPAN_FALLBACK', f'{path}: the span time block could not be written '
+                      f'({sys.exc_info()[1]})')
         pass
 
 
@@ -1631,6 +1649,11 @@ def _select_reference(lst, fl, workdir, dates):
             h = fits.getheader(prev)
         except Exception:
             h = None
+        if h is None or not h.get('COADDOP'):
+            from exopipe.phase3.core import fallback      # WAVE2 B-30
+            fallback.site('fallbacks.REFERENCE_MASTER_FALLBACK', f'{prev}: ' + ('header unreadable' if h is None else
+                          'no COADDOP card') + f' - the alignment reference would be the fixed-table night '
+                          f'{REFERENCE_DATES.get(lst)} instead of this previous master')
         if h is not None and h.get('COADDOP'):
             sig = f"MASTER:{h.get('COADDOP')}:{h.get('CONSTDIG', 'nodigest')}"
             mk = f'{workdir}/flow/.reference_resolved'
@@ -4147,6 +4170,9 @@ def _grid_refused_dates(target_dates, tag=''):
             _h = fits.getheader(img); shapes[date] = (int(_h['NAXIS2']), int(_h['NAXIS1']))
         except Exception:
             shapes[date] = None
+            from exopipe.phase3.core import fallback      # WAVE2 B-30
+            fallback.site('fallbacks.GRID_HEADER_FALLBACK', f'{img}: header unreadable ({sys.exc_info()[1]}) - {date} '
+                          f'would pass the grid gate unchecked')
     vals = [s for s in shapes.values() if s]
     modal = max(set(vals), key=vals.count) if vals else None
     wrong = {d for d, s in shapes.items() if s and modal and s != modal}

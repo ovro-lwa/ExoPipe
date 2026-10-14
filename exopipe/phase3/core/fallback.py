@@ -122,3 +122,55 @@ def load(path):
     except (OSError, ValueError):
         return {}, []
     return dict(d.get('counts') or {}), [tuple(r) for r in d.get('refusals') or []]
+
+
+# ---- comparing a moved module with its production original ----------------------------------------------------------
+
+def _is_site_stmt(n):
+    import ast
+    if isinstance(n, ast.ImportFrom) and n.module == 'exopipe.phase3.core' and [a.name for a in n.names] == ['fallback']:
+        return True
+    if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call):
+        f = n.value.func
+        return isinstance(f, ast.Attribute) and f.attr == 'site' and isinstance(f.value, ast.Name) and f.value.id == 'fallback'
+    return False
+
+
+def site_lines(text):
+    """Line numbers (1-based) of the B-30 site statements of a module: `from exopipe.phase3.core import fallback`,
+    `fallback.site(...)`, an `if` (no else) whose body is only those, and an `else:` branch that is only those (the
+    `else:` line included when it stands alone). A site is a pure insertion of whole lines."""
+    import ast
+    lines = text.split('\n')
+    out = set()
+
+    def only_sites(stmts):
+        return bool(stmts) and all(_is_site_stmt(x) or (isinstance(x, ast.If) and not x.orelse and only_sites(x.body))
+                                   for x in stmts)
+    for node in ast.walk(ast.parse(text)):
+        for field in ('body', 'orelse', 'finalbody'):
+            stmts = getattr(node, field, None)
+            if not (isinstance(stmts, list) and stmts and isinstance(stmts[0], ast.stmt)):
+                continue
+            for st in stmts:
+                if _is_site_stmt(st) or (isinstance(st, ast.If) and not st.orelse and only_sites(st.body)):
+                    out.update(range(st.lineno, st.end_lineno + 1))
+        if isinstance(node, ast.If) and node.orelse and only_sites(node.orelse) and not isinstance(node.orelse[0], ast.If):
+            k = node.orelse[0].lineno - 1                     # the `else:` line, when it stands alone
+            if lines[k - 1].strip() == 'else:':
+                out.add(k)
+                for st in node.orelse:
+                    out.update(range(st.lineno, st.end_lineno + 1))
+    return out
+
+
+def strip_site_lines(text):
+    """The module text without its B-30 site lines (site_lines): what is left is the production text."""
+    drop = site_lines(text)
+    return '\n'.join(x for i, x in enumerate(text.split('\n'), 1) if i not in drop)
+
+
+def same_code_modulo_sites(production_text, branch_text):
+    """True when the branch module is the production module plus B-30 site lines only: byte equality once they are
+    removed (a comment-only or any other edit of production still differs - the gates that use this stay byte-strict)."""
+    return production_text == strip_site_lines(branch_text)

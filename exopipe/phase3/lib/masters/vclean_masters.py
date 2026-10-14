@@ -80,6 +80,10 @@ def pick_i_master(coadd_final_dir, scope):
     for var in order:
         p = f'{coadd_final_dir}/I_deep_{var}_{scope}.fits'
         if sane(p):
+            if var != order[0]:
+                from exopipe.phase3.core import fallback      # WAVE2 B-30
+                fallback.site('fallbacks.VCLEAN_I_MASTER_FALLBACK', f'{coadd_final_dir}/I_deep_{order[0]}_{scope}.fits '
+                              f'missing or corrupt - the V clean would use I_deep_{var}')
             return p
     return None
 

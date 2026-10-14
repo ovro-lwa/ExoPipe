@@ -183,6 +183,9 @@ def subband_deep_pb(subband, pb_dir=PB_DIR):
             deep = h[0].data.astype(np.float32)
             hdr = h[0].header.copy()
     else:                                    # fallback: mean of the 6 bins
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.PB_DEEP_MAP_FALLBACK', f'{deep_path} absent - the deep PB would be the mean of the six '
+                      f'10-min bins')
         stack = []
         hdr = None
         for k in range(6):
@@ -259,6 +262,10 @@ def window_model_pb(subband, t0_min, t1_min, pb_dir=PB_DIR, quantum_min=0.5):
         _GRID_CACHE[gk] = SkyCoord(ra.ravel(), dec.ravel(), unit='deg')
     sc = _GRID_CACHE[gk]
     nsub = max(1, int(round((q1 - q0) / WIN_STEP_MIN)))
+    if 'PBTREF' not in hdr:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.PB_REFERENCE_TIME_FALLBACK', f'{subband} PB window {q0}-{q1} min: the PB header has no '
+                      f'PBTREF - the beam would be computed at 2025-01-01T00:00 UTC')
     tref = Time(hdr.get('PBTREF', '2025-01-01T00:00:00'), location=OVRO_LOC)
     freq = float(cfg.SUBBAND_FREQ_HZ[subband]['center'])
     interp = _beam_interp()
@@ -397,6 +404,10 @@ def wideband_pb(scope, lst, master_path, pb_dir=PB_DIR, category='deep', binidx=
                     _FULL_REPROJ_CACHE[sb] = grid
             acc += w * np.nan_to_num(grid, nan=0.0)
             wsum += w
+        if not wsum > 0:
+            from exopipe.phase3.core import fallback      # WAVE2 B-30
+            fallback.site('fallbacks.PB_WEIGHTS_FALLBACK', f'{lst} {scope}: no member subband with a positive weight - the '
+                          f'PB would be the unnormalized sum (zeros)')
         pb = (acc / wsum).astype(np.float32) if wsum > 0 else acc.astype(np.float32)
     else:
         # single grid (subband or one band) -> direct weighted sum
@@ -425,6 +436,10 @@ def wideband_pb(scope, lst, master_path, pb_dir=PB_DIR, category='deep', binidx=
             _bmaj = float(_mh['BMAJ']); _nu0 = float(_mh.get('RESTFRQ') or 0.0)
         except Exception as _e:
             raise RuntimeError(f'three-factor PB: master beam/RESTFRQ unreadable for {master_path}: {_e}; REFUSING')
+        if not _nu0 > 0:
+            from exopipe.phase3.core import fallback      # WAVE2 B-30
+            fallback.site('fallbacks.PB_RESTFRQ_FALLBACK', f'{master_path}: no RESTFRQ - the member beams of {scope} would '
+                          f'not be scaled as 1/nu in factor 2')
         _acc = np.zeros(pb.shape, np.float64); _racc = np.zeros(pb.shape, np.float64); _ws = 0.0
         for sb in members:
             w = weights.get(sb, 0.0)

@@ -412,7 +412,8 @@ def child_repo(script=None):
 
 def gate_child_modules(script=None):
     """G-D0b: the production modules the content-test child imports are the code the step measures and applies with in
-    process (byte-equal; master_dewarp.py may differ only by its rewritten pb_apply import). Returns (violations,
+    process (byte-equal; master_dewarp.py may differ only by its rewritten pb_apply import, and a branch module by its B-30
+    fallback-site statements - core.fallback.same_code_modulo_sites: the production code once they are removed). Returns (violations,
     {production path: sha1[:12]}) - the sha1s are compared with the child's own fingerprint after it ran."""
     repo = child_repo(script)
     if not repo:
@@ -427,7 +428,9 @@ def gate_child_modules(script=None):
         pt, bt = open(pp).read(), open(bp).read()
         for have, want in CHILD_PERMITTED_LINE_DIFFS.get(br_rel, ()):
             bt = bt.replace(have + '\n', want + '\n', 1)
-        if pt != bt:
+        from exopipe.phase3.core import fallback
+        if pt != bt and not fallback.same_code_modulo_sites(pt, bt):   # B-30 sites are pure insertions (a no-op under
+            #                                                              'fallback'; under 'refuse' the step refuses)
             pl, bl = pt.splitlines(), bt.splitlines()
             first = next((i for i, (a, b) in enumerate(zip(pl, bl)) if a != b), min(len(pl), len(bl)))
             bad.append(f'G-D0b: the content-test child would run {pp}, which differs from the branch {bp} at line '

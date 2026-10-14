@@ -142,7 +142,27 @@ class fallbacks(_Section):
     # an image with no DATE-OBS / DATE-BEG / MJD-OBS and no YYYYMMDD_HHMMSS in its name gets 2025-01-01T00:00 UTC
     # (lib/masters/coadd.py get_midpoint_time = coadd_full_pipeline.py:187-203: masters build epochs, search identification)
     IMAGE_TIME_FALLBACK = 'refuse'
-    RULED = {'IMAGE_TIME_FALLBACK': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
+    # a residual's per-epoch source header unreadable -> its time block dropped (coadd.epoch_time_header)
+    EPOCH_TIME_SOURCE_FALLBACK = 'refuse'
+    # master time span: a night without a time source / header / DATE-OBS / DATE-END left out, INTTIME
+    # unparsable ignored, no span or a failed write -> the template epoch time (coadd.stamp_master_span)
+    MASTER_SPAN_FALLBACK = 'refuse'
+    # previous master present but unreadable / no COADDOP -> the fixed-table night becomes the
+    # alignment reference (coadd._select_reference)
+    REFERENCE_MASTER_FALLBACK = 'refuse'
+    # unreadable image header -> the night passes the post-cutover grid gate unchecked (coadd._grid_refused_dates)
+    GRID_HEADER_FALLBACK = 'refuse'
+    # 60-min PB map absent -> the mean of the six 10-min bins (pb_apply.subband_deep_pb)
+    PB_DEEP_MAP_FALLBACK = 'refuse'
+    # PB map without PBTREF -> the window beam computed at 2025-01-01 (pb_apply)
+    PB_REFERENCE_TIME_FALLBACK = 'refuse'
+    # no member subband with a positive weight -> an unnormalized (zero) multi-grid PB (pb_apply.wideband_pb)
+    PB_WEIGHTS_FALLBACK = 'refuse'
+    # master without RESTFRQ -> member beams not scaled 1/nu in the bandwidth-smearing factor (pb_apply)
+    PB_RESTFRQ_FALLBACK = 'refuse'
+    # preferred I master missing or corrupt -> the V clean uses the other robust (vclean_masters.pick_i_master)
+    VCLEAN_I_MASTER_FALLBACK = 'refuse'
+    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK')}
 
 
 class runner(_Section):
