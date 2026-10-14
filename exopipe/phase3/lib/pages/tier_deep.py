@@ -476,7 +476,8 @@ def figs(c, u, plan):
     if missing:
         if D.FIGURE_FAILURE == 'refuse':
             raise common.Refusal(f'{len(missing)} of {len(want)} astrometry figures missing, e.g. {missing[:3]}')
-        u.note(f'{len(missing)} of {len(want)} astrometry figures missing (swallowed as build_i14:966-970; B-30 open)')
+        u.note(f'{len(missing)} of {len(want)} astrometry figures missing (pages_deep.FIGURE_FAILURE record = production: '
+               f'swallowed as build_i14:966-970)')
 
 
 def stage_merge(c, run, done):

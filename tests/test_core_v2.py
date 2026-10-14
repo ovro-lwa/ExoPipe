@@ -1322,6 +1322,40 @@ def test_item7_fallback_registry():
     assert not missing, f'not set to fallback in the parity file: {missing}'
 
 
+def test_item7_parity_file_keys():
+    """The production parity file (parity/production_20261013.cfg): every line names a config key; outside section fallbacks
+    (where a count-only site's ruled default IS production's 'fallback') each line differs from the config default - a line
+    equal to the default would mean the default is not the ruled value, or the line is dead; and each such key carries the
+    2026-10-13 ruling in RULED unless it is a PROPOSED value awaiting Gregg (listed here)."""
+    import ast
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import fallback
+    B = 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'
+    PROPOSED = {'masters_build.MASTER_SPAN_SOURCE', 'masters_build.EPOCH_GATE_MAX_PASSES'}     # DECISIONS_PENDING A.0, B.4
+    path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
+    bad, n = [], 0
+    for ln in open(path):
+        ln = ln.split('#', 1)[0].strip()
+        if not ln:
+            continue
+        k, v = (x.strip() for x in ln.split('=', 1))
+        n += 1
+        try:
+            default = CFG.get(k)
+        except Exception as e:                     # noqa: BLE001 - an unknown key is the failure reported
+            bad.append(f'{k}: not a config key ({e})')
+            continue
+        if k.startswith(fallback.SECTION + '.'):
+            continue
+        if ast.literal_eval(v) == default:
+            bad.append(f'{k}: the parity value {v} equals the config default')
+        ids = CFG.ruled(k) or ()
+        ids = (ids,) if isinstance(ids, str) else tuple(ids)
+        if k not in PROPOSED and B not in ids:
+            bad.append(f'{k}: no {B} in RULED ({ids})')
+    assert n and not bad, bad
+
+
 def _all_tests():
     return [(n, f) for n, f in sorted(globals().items()) if n.startswith('test_') and callable(f)]
 

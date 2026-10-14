@@ -558,6 +558,45 @@ def test_real_products_read_only():
     print(f'PASS content tests ran on {len(items)} production products (results above)')
 
 
+def test_b30_page_failures():
+    """B-30 (a): a missing astrometry figure refuses the deep build (pages_deep.FIGURE_FAILURE 'refuse', ruled) and is
+    recorded under the production value 'record'; failed sub-LST page shards likewise (pages_sublst.SHARD_FAILURE)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.pages import tier_sublst as TS
+    out = os.path.join(T, 'out_b30')
+    U = os.path.join(out, 'Run_T1')
+    make_run(U)
+    os.remove(f'{U}/localization_figs/J0101+0101.png')            # the one identity with n_det 2 has no figure
+    rc, o = cli(out, '--stages', 'tess,input,build', '--sets', 'V_wb')
+    b = rec(out, 'T1:build:V_wb')
+    assert rc == 2 and b['status'] == 'refused' and 'astrometry figures missing' in b['reason'], (rc, b and b['reason'], o[-400:])
+    rc, o = cli(out, '--stages', 'build', '--sets', 'V_wb', '--set', 'pages_deep.FIGURE_FAILURE=record')
+    b = rec(out, 'T1:build:V_wb')
+    assert rc == 0 and b['status'] == 'done' and b['meta']['figures']['missing'] == 1, (rc, b and b['status'], o[-400:])
+    run = record.Run('pages', ['test'], os.path.join(T, 'out_b30_shards'), CFG, dry_run=True)
+    bad = [('I_sb', 0, 'build_tenmin_pages.py: exit 1')]
+    with run.unit('shards-ruled') as u:
+        try:
+            TS.shard_failures(u, bad)
+            refused = 'no refusal'
+        except record.Refusal as e:
+            refused = 'page shard(s) failed' in str(e)
+    assert refused is True, refused
+    CFG.authorize([], out=T)
+    CFG.set('pages_sublst.SHARD_FAILURE', 'record')
+    try:
+        with run.unit('shards-production') as u2:
+            TS.shard_failures(u2, bad)
+            TS.shard_failures(u2, [])
+        # not refused, the failure recorded (this synthetic unit has no outputs, so it ends no-input, not done)
+        assert u2.status != 'refused' and any('page shard(s) failed' in n for n in u2.notes), (u2.status, u2.notes)
+    finally:
+        CFG.reset()
+    print('PASS B-30 page failures: a missing astrometry figure / a failed page shard refuses under the ruled value, '
+          'recorded under the production value')
+
+
 def main():
     t0 = time.time()
     if os.path.exists(T):
@@ -575,6 +614,7 @@ def main():
         test_mirror_drift()
         test_negative_content_tests()
         test_real_products_read_only()
+        test_b30_page_failures()
     finally:
         shutil.rmtree(T, ignore_errors=True) if not os.environ.get("KEEP_T") else None
     print(f'ALL PASS in {time.time() - t0:.0f} s')

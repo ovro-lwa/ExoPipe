@@ -215,16 +215,24 @@ def stage_build(c, run, done, lst):
             res = [(K, s, f.result()) for K, s, f in futs]
         bad = [(K, s, r.reason) for K, s, r in res if not r.ok]
         u.meta.update(sets=sets, shards=len(jobs), failed_shards=bad)
-        if bad:
-            if S.SHARD_FAILURE == 'refuse':
-                raise common.Refusal(f'{len(bad)} page shard(s) failed, e.g. {bad[0]}')
-            u.note(f'{len(bad)} page shard(s) failed (recorded, as sublst_pages_build.sh:16-19; B-30 open): {bad[:3]}')
+        shard_failures(u, bad)
         png_re = common.server_png_re(c.roots)
         pngs = sorted(p for p in glob.glob(os.path.join(P, 'candidates', '*', '*', '*.png')) if png_re.match(os.path.basename(p)))
         for p in pngs:
             u.add_output(p, 'review_page', tier=TIER, roots=c.roots)
         u.meta['blocks'] = {S_: sum(1 for p in pngs if f'/candidates/{S_}/' in p) for S_ in ('I', 'V')}
         done[name] = 'done'
+
+
+def shard_failures(u, bad):
+    """B-30 (a): failed page shards [(set, shard, reason)] refuse the build (pages_sublst.SHARD_FAILURE 'refuse', ruled) or
+    are recorded on the unit ('record', production: sublst_pages_build.sh:16-19 waits without checking)."""
+    if not bad:
+        return
+    if common.CFG().pages_sublst.SHARD_FAILURE == 'refuse':
+        raise common.Refusal(f'{len(bad)} page shard(s) failed, e.g. {bad[0]}')
+    u.note(f'{len(bad)} page shard(s) failed (pages_sublst.SHARD_FAILURE record = production, as sublst_pages_build.sh:16-19): '
+           f'{bad[:3]}')
 
 
 def stage_index(c, run, done, lst, K):

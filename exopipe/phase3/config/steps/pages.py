@@ -173,7 +173,8 @@ class pages_deep(_Section):
     LOC_TABLES = ('source_catalogs/localizations.csv', 'source_catalogs/localization_offsets.csv')   # gate P4: present before build (p3s3_pass.sh:132-134 order)
     FIGURE_MIN_DETECTIONS = 2    # astrometry figure only for identities with n_det > 1; build_i14:959
     FIGURE_TIMEOUT_S = 600       # s per figure subprocess; build_i14:968
-    FIGURE_FAILURE = 'record'    # deep swallows figure failures (build_i14:966-970): missing figures counted; 'refuse' = B-30 a
+    FIGURE_FAILURE = 'refuse'    # B-30 (a): a missing astrometry figure (a failed sub-product) refuses the build; 'record' = production
+                                 # (build_i14:966-970 swallows figure failures; the missing ones counted in the record)
     # ---- TESS coverage (an annotation, never a gate) ----
     TESS_ENABLED = True          # tiers with tess_coverage.csv today: deep only (p3s3_pass.sh:62); HANDOFF-TESS-COVERAGE-SNAPSHOT-SUBLST-RUNS open (spec 12.8)
     TESS_IS_GATE = False         # a failure is recorded (unit no-input with the reason), never refused; p3s3_pass.sh:62-63
@@ -188,9 +189,10 @@ class pages_deep(_Section):
     STRAT_EL_BINS_DEG = (30.0, 50.0)       # deg; deep_stratified_queue.py:76 (mirror)
     STRAT_PARENT_BINS_BEAMS = (1.0, 3.0)   # target-image beams; deep_stratified_queue.py:77 (mirror)
     STRAT_PARENT_SNR_MIN = 20.0  # parent peak / cell median frame rms; deep_stratified_queue.py:74 (mirror)
-    RULED = {'TESS_IS_GATE': 'IMPL-TESS-COVERAGE-ON-PAGES-AND-LIGHTCURVE-SKILL',
+    RULED = {'TESS_IS_GATE': ('IMPL-TESS-COVERAGE-ON-PAGES-AND-LIGHTCURVE-SKILL', 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'),
              'TESS_STATUSES': 'IMPL-TESS-SIMULTANEOUS-ONLY-AND-SOURCE-HEADER-LAYOUT',
-             'PASS_ENV': 'R-GREGG-20261013-RULINGS-ON-PENDING-DECISIONS'}
+             'PASS_ENV': 'R-GREGG-20261013-RULINGS-ON-PENDING-DECISIONS',
+             'FIGURE_FAILURE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}       # B-30: "TESS stays an annotation" (TESS_IS_GATE False)
 
 
 class pages_sublst(_Section):
@@ -210,14 +212,16 @@ class pages_sublst(_Section):
     OLD_CHAIN_FLAG = True        # source_class OLD-CHAIN where compare_<lst>/old exists (10h, 19h); sublst_pages_prep.py:32, 95
     WIPE_CANDIDATES = True       # rm -rf <P>/candidates before the shards; sublst_pages_build.sh:9 (no fingerprint skip in this tier)
     FRESH_RUN_DIR = True         # rm -rf <P> before prep; sublst_publish_lst.sh:27
-    SHARD_FAILURE = 'record'     # a crashed shard is recorded; the LST is placed when every index passes (sublst_pages_build.sh:16-19; B-30 a = 'refuse')
+    SHARD_FAILURE = 'refuse'     # B-30 (a): a crashed page shard (a failed sub-product) refuses the build; 'record' = production
+                                 # (sublst_pages_build.sh:16-19 waits without checking; the LST is placed when every index passes)
     PLACE_TARGET = '{review_host}:/data07/gh/phase3/transients/{run}/'   # rsync -a --delete; sublst_publish_lst.sh:38 ({review_host} = the site file's REVIEW_HOST; no host name in config, README rule 2)
     PLACE_DELETE = True         # --delete (stale 19h test pages, 2026-09-30)
     CODE_PINNED = True           # the in-place code must be a verified frozen tree (FROZEN.ok + MANIFEST.sha256; sublst_code_root.sh:15-31)
     RULED = {'SERVED_CATALOG_TAG': 'R-SUBLST-FORCED-SKIP-V110-AND-LEAK-VETO',
              'PLACE_DELETE': 'R-NEW-CHAIN-TAKES-OVER-10MIN-PAGES-CUMULATIVE',
              'CODE_PINNED': 'INSTALLED-FROZEN-CODE-PER-10MIN-LAUNCH-20261011',
-             'ARM': 'R-10MIN-TIER-NEW-CUBE-CHAIN-ADOPTED'}
+             'ARM': 'R-10MIN-TIER-NEW-CUBE-CHAIN-ADOPTED',
+             'SHARD_FAILURE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
 
 
 class pages_snapshot(_Section):
