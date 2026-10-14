@@ -9,6 +9,8 @@
   item 4  runner: --code COMMIT read-only worktrees, --set/--config forwarded to the step, chains
   item 5  parity write guard (in-process and, through the sitecustomize, in subprocesses)
   item 6  `exopipe3 verify compare` (FITS, CSV, JSON; permitted-difference signatures; product map)
+  item 7  B-30 fallback sites (core/fallback.py): refuse or count, sticky refusal through broad excepts, children's
+          policies and counts through core.legacy.run, the key registry (every key ruled, in the parity file, used)
 
 Every test makes its own scratch directory and removes it. Scratch root: $EXOPIPE3_TEST_SCRATCH, else
 /fast/gh/refactor_scratch/infra when it exists and is writable, else the system temp directory. Nothing outside the
@@ -969,6 +971,140 @@ def test_item6_verify_compare():
 
 
 # =====================================================================================================================
+
+# =====================================================================================================================
+# item 7 - B-30 fallback sites (core/fallback.py): refuse / count, sticky refusal, children (core.legacy.run)
+# =====================================================================================================================
+
+KEY = 'fallbacks.IMAGE_TIME_FALLBACK'
+
+
+def test_item7_fallback_policy_count_refuse():
+    from exopipe.phase3.core import fallback
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.masters import coadd
+    from astropy.io import fits
+    with cfg_restored() as CFG:
+        assert fallback.policy(KEY) == 'refuse' and CFG.ruled(KEY), 'the ruled default is refuse, with its ruling'
+        raises(KeyError, fallback.policy, 'fallbacks.IMAGE_TIME')                 # a fallback key ends in _FALLBACK
+        raises(KeyError, fallback.policy, 'catalog.SEARCH_QUARANTINE_FALLBACK')    # ... and lives in section fallbacks
+        assert KEY in fallback.all_keys() and fallback.all_keys()[KEY] == 'refuse'
+        h = fits.Header()
+        n0 = len(fallback.REFUSALS)
+        e = raises(fallback.FallbackRefused, coadd.get_midpoint_time, h, '/x/no_time_here.fits')
+        assert KEY in str(e) and 'no_time_here.fits' in str(e) and isinstance(e, Refusal)
+        assert fallback.REFUSALS[n0:] and fallback.REFUSALS[-1][0] == KEY
+        # a header time or a name timestamp is not a fallback: no site reached
+        m = fallback.mark()
+        h2 = fits.Header()
+        h2['DATE-OBS'] = '2025-08-16T09:36:31'
+        assert coadd.get_midpoint_time(h2).isot.startswith('2025-08-16T09:36:31')
+        assert coadd.get_midpoint_time(h, '/x/23MHz-I-20250816_093631-image.fits').isot.startswith('2025-08-16T09:36:31')
+        assert fallback.since(m) == ([], {})
+        # production value: the default, counted
+        CFG.authorize([], out='/tmp/x')
+        CFG.set(KEY, 'fallback')
+        m = fallback.mark()
+        assert coadd.get_midpoint_time(h, '/x/a.fits').isot.startswith('2025-01-01T00:00:00')
+        coadd.get_midpoint_time(h)
+        assert fallback.since(m) == ([], {KEY: 2})
+        CFG.set(KEY, 'sometimes')
+        raises(Refusal, fallback.policy, KEY)                                       # one of refuse / fallback
+
+
+def test_item7_fallback_sticky_unit_and_record():
+    from exopipe.phase3.core import fallback, record
+    from exopipe.phase3.lib.masters import coadd
+    from astropy.io import fits
+    with cfg_restored() as CFG, Scratch('item7') as d:
+        CFG.authorize([], out=d)
+        out = os.path.join(d, 'a.csv')
+        open(out, 'w').write('a\n1\n')
+        run = record.Run('t7', ['x'], d, CFG, config_sections=())
+        # a refusal caught by the code between the site and the unit (a broad except, as the moved modules hold):
+        # the unit still refuses, naming the site
+        with run.unit('swallowed') as u:
+            try:
+                coadd.get_midpoint_time(fits.Header(), '/x/b.fits')
+            except Exception:                    # noqa: BLE001 - what production code does
+                pass
+            u.add_output(out, 'csv_table')
+        assert u.status == 'refused' and KEY in u.reason and 'caught before the unit' in u.reason, (u.status, u.reason)
+        rec = record.load_record(d, 't7', 'swallowed')
+        assert rec['fallback_refusals'][0]['key'] == KEY
+        # the next unit starts clean
+        with run.unit('clean') as u2:
+            u2.add_output(out, 'csv_table')
+        assert u2.status == 'done' and 'fallback_refusals' not in record.load_record(d, 't7', 'clean')
+        # production value: done, the counts in the record
+        CFG.set(KEY, 'fallback')
+        with run.unit('counted') as u3:
+            coadd.get_midpoint_time(fits.Header())
+            coadd.get_midpoint_time(fits.Header())
+            u3.add_output(out, 'csv_table')
+        rec = record.load_record(d, 't7', 'counted')
+        assert u3.status == 'done' and rec['fallbacks'] == {KEY: 2}, (u3.status, rec.get('fallbacks'))
+
+
+CHILD = """
+import sys
+sys.path.insert(0, %r)
+from astropy.io import fits
+from exopipe.phase3.lib.masters import coadd
+for _ in range(int(sys.argv[1])):
+    try:
+        coadd.get_midpoint_time(fits.Header(), '/x/child.fits')
+    except Exception:
+        pass                       # swallowed: the child exits 0
+print('child done')
+"""
+
+
+def test_item7_fallback_children():
+    from exopipe.phase3.core import fallback, legacy, record
+    with cfg_restored() as CFG, Scratch('item7c') as d:
+        CFG.authorize([], out=d)
+        script = os.path.join(d, 'child.py')
+        open(script, 'w').write(CHILD % REPO)
+        out = os.path.join(d, 'a.csv')
+        open(out, 'w').write('a\n1\n')
+        run = record.Run('t7c', ['x'], d, CFG, config_sections=())
+        # ruled: the child refuses at the site and swallows it; the result and the parent unit are refused all the same
+        with run.unit('child_refuses') as u:
+            res = legacy.run(script, ['1'], log=os.path.join(d, 'c1.log'), unit=u)
+            u.add_output(out, 'csv_table')
+        assert res.rc == 0 and res.refused and KEY in res.reason and res.fallback_refusals, (res.rc, res.reason)
+        assert u.status == 'refused' and KEY in u.reason, (u.status, u.reason)
+        # production value, set by an override in the PARENT: the child counts (the policy reaches it as JSON)
+        CFG.set(KEY, 'fallback')
+        with run.unit('child_counts') as u2:
+            res = legacy.run(script, ['3'], log=os.path.join(d, 'c2.log'))          # no unit=: the process state carries it
+            u2.add_output(out, 'csv_table')
+        assert res.ok and res.fallbacks == {KEY: 3}, (res.rc, res.reason, res.fallbacks)
+        rec = record.load_record(d, 't7c', 'child_counts')
+        assert u2.status == 'done' and rec['fallbacks'] == {KEY: 3}, (u2.status, rec.get('fallbacks'))
+
+
+def test_item7_fallback_registry():
+    """Every fallback key is RULED, is set to 'fallback' in the production parity file, and is named by a
+    fallback.site('<key>' call in the code; every such call names a config key (no dead keys, no unkeyed sites)."""
+    import re
+    from exopipe.phase3.core import fallback
+    from exopipe.phase3.config import CFG
+    keys = fallback.all_keys()
+    assert keys, 'no fallback keys'
+    calls = set()
+    for dp, dn, fn in os.walk(os.path.join(REPO, 'exopipe')):
+        dn[:] = [x for x in dn if x != '__pycache__']
+        for f in fn:
+            if f.endswith('.py') and f != 'fallback.py':
+                calls |= set(re.findall(r"fallback\.site\(\s*'([a-z_]+\.[A-Z0-9_]+)'", open(os.path.join(dp, f)).read()))
+    assert calls == set(keys), ('unkeyed sites', sorted(calls - set(keys)), 'dead keys', sorted(set(keys) - calls))
+    assert all(CFG.ruled(k) for k in keys), [k for k in keys if not CFG.ruled(k)]
+    par = open(os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')).read()
+    missing = [k for k in keys if not re.search(rf"^{re.escape(k)} = 'fallback'$", par, re.M)]
+    assert not missing, f'not set to fallback in the parity file: {missing}'
+
 
 def _all_tests():
     return [(n, f) for n, f in sorted(globals().items()) if n.startswith('test_') and callable(f)]

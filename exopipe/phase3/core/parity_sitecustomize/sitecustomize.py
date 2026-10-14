@@ -51,6 +51,22 @@ if _FP_OUT:
             pass
     _atexit.register(_dump_fp)
 
+# B-30 FALLBACK STATE of a legacy child (core.legacy.run, core/fallback.py): with EXOPIPE3_FALLBACK_OUT set, write at exit
+# the counts and refusals of the fallback sites the child reached - only when it imported core/fallback (a branch module;
+# production modules never do), so the parent's unit records them.
+_FB_OUT = os.environ.get('EXOPIPE3_FALLBACK_OUT', '')
+if _FB_OUT:
+    import atexit as _atexit_fb
+
+    def _dump_fb():
+        m = sys.modules.get('exopipe.phase3.core.fallback')
+        if m is not None:
+            try:
+                m.dump(_FB_OUT)
+            except OSError:
+                pass
+    _atexit_fb.register(_dump_fb)
+
 # chain to any other sitecustomize on the path (the environment's own, if it has one)
 try:
     import importlib.machinery as _m

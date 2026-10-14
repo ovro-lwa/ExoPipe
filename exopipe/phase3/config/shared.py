@@ -133,6 +133,18 @@ class fitting(_Section):
              'TEMPLATE_BEAM_ORIENTATION': 'RULINGS-GREGG-20261013B-MIRROR-EXCLUSIONS-ALL-APPROVED'}
 
 
+class fallbacks(_Section):
+    """B-30 (a), Gregg 2026-10-13: no silent fallbacks (core/fallback.py). One key per fallback site - a place where code
+    substituted a default for missing, unreadable or degenerate input and carried on: 'refuse' (ruled) = the site refuses,
+    naming itself and its input; 'fallback' (production) = production behaviour, counted in the unit record (field
+    `fallbacks`). exopipe/phase3/parity/production_20261013.cfg sets every key to 'fallback'. One section for every step
+    (a site in shared code - coadd.get_midpoint_time - serves several), so it is in every step's resume hash."""
+    # an image with no DATE-OBS / DATE-BEG / MJD-OBS and no YYYYMMDD_HHMMSS in its name gets 2025-01-01T00:00 UTC
+    # (lib/masters/coadd.py get_midpoint_time = coadd_full_pipeline.py:187-203: masters build epochs, search identification)
+    IMAGE_TIME_FALLBACK = 'refuse'
+    RULED = {'IMAGE_TIME_FALLBACK': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
+
+
 class runner(_Section):
     """Defaults for `exopipe3 run` and for every step's process environment."""
     from exopipe.phase3.core import env as _env

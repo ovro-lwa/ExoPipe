@@ -200,6 +200,9 @@ def get_midpoint_time(header, fits_path=None):
             return Time(f'{m.group(1)[:4]}-{m.group(1)[4:6]}-{m.group(1)[6:8]}T'
                        f'{m.group(2)[:2]}:{m.group(2)[2:4]}:{m.group(2)[4:6]}',
                        format='isot', scale='utc')
+    from exopipe.phase3.core import fallback      # WAVE2 B-30 (production: 'fallback' - this default, counted)
+    fallback.site('fallbacks.IMAGE_TIME_FALLBACK', f'{fits_path or "image"}: no DATE-OBS / DATE-BEG / MJD-OBS and no '
+                  f'YYYYMMDD_HHMMSS in its name - its time would be 2025-01-01T00:00 UTC')
     return Time('2025-01-01T00:00:00', scale='utc')
 
 

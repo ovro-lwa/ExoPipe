@@ -343,6 +343,8 @@ class UnitRecord:
         self.planned = {}            # abs path -> product class: the outputs this unit owes
         self.refused_items = []      # [{'path', 'reason', 'gate'}]: planned items refused by a named gate
         self.t0 = time.time()
+        from exopipe.phase3.core import fallback   # B-30: the fallback sites reached while this unit runs (children
+        self._fallback_mark = fallback.mark()       # included: core.legacy.run absorbs theirs into this process)
 
     # ---- inputs -------------------------------------------------------------------------------------------------
     def add_input(self, path, extra=None):
@@ -433,7 +435,25 @@ class UnitRecord:
             return 'no-input', self.reason or 'no output written (never a done state)'
         return 'done', ''
 
+    def _fallback_state(self):
+        """(refusals, counts) of the fallback sites reached since this unit started, its children's included
+        (core/fallback.py)."""
+        from exopipe.phase3.core import fallback
+        return fallback.since(self._fallback_mark)
+
     def __exit__(self, etype, exc, tb):
+        refs = self._fallback_state()[0]
+        if refs and not (etype is not None and issubclass(etype, Refusal)):
+            # STICKY (B-30): a fallback site refused inside the unit, and code between the site and the unit caught it
+            # (or the unit went on and failed later) - the unit refuses with the site named
+            if etype is not None:
+                self.notes.append('after a refused fallback site: ' +
+                                  ''.join(traceback.format_exception_only(etype, exc)).strip()[:2000])
+            key, detail = refs[0]
+            self.status, self.reason = 'refused', (f'B-30 fallback site {key}: {detail} - REFUSED (caught before the '
+                                                   f'unit; {len(refs)} refusal(s) in the unit)')
+            self.write()
+            return etype is not None and issubclass(etype, (Refusal, NoInput, Exception))
         if etype is None:
             self.status, self.reason = self._final_status()
         elif issubclass(etype, Refusal):
@@ -454,7 +474,16 @@ class UnitRecord:
                     wall_s=round(time.time() - self.t0, 1), inputs=self.inputs, admitted=self.admitted,
                     outputs=self.outputs, tests=self.tests, notes=self.notes, code=code_fingerprint(),
                     planned=[{'path': p, 'class': c} for p, c in sorted(self.planned.items())],
-                    refused_items=self.refused_items)
+                    refused_items=self.refused_items, **self._fallback_fields())
+
+    def _fallback_fields(self):
+        refs, counts = self._fallback_state()
+        out = {}
+        if counts:
+            out['fallbacks'] = dict(sorted(counts.items()))
+        if refs:
+            out['fallback_refusals'] = [{'key': k, 'detail': d} for k, d in refs]
+        return out
 
     def write(self):
         if self.run.dry_run:

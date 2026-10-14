@@ -3,7 +3,7 @@
 Where things are
 ----------------
   config/shared.py              the sections every step reads: instrument, paths (and PROTECTED), exclusions, astrometry,
-                                fitting, runner, site (site = filled from the site file EXOPIPE3_SITE)
+                                fitting, fallbacks (B-30), runner, site (site = filled from the site file EXOPIPE3_SITE)
   config/steps/frames.py        `exopipe3 frames`
   config/steps/flow.py          `exopipe3 flow`
   config/steps/search.py        `exopipe3 search`
@@ -83,8 +83,8 @@ class _Section:
 
 # The settings: shared.py (every step) and one module per command (STEP_CONFIG_MODULES), all in this package. They import
 # _Section from here, so they are imported after it.
-from exopipe.phase3.config.shared import (PROTECTED, astrometry, exclusions, fitting, instrument, paths,  # noqa: E402
-                                          runner, site)
+from exopipe.phase3.config.shared import (PROTECTED, astrometry, exclusions, fallbacks, fitting,  # noqa: E402
+                                          instrument, paths, runner, site)
 
 
 
@@ -586,7 +586,7 @@ SITE_FILE = _load_site(CFG)
 
 # Sections every step reads, whatever it declares: they are always part of a step's resume hash (critique_rulings 6.5:
 # a per-section hash must not miss the shared sections).
-SHARED_SECTIONS = ('instrument', 'paths', 'exclusions', 'astrometry', 'fitting')
+SHARED_SECTIONS = ('instrument', 'paths', 'exclusions', 'astrometry', 'fitting', 'fallbacks')
 
 
 def declared_sections(mod):

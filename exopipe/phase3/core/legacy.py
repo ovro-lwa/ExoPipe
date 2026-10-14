@@ -13,6 +13,10 @@ What the child gets:
 - PYTHONPATH prefixed with core/parity_sitecustomize: under ``parity_root`` (or the parent's --parity) every write outside
   the parity roots is refused in the child too; and the child writes at exit the sha1 of every imported legacy / exopipe
   source file (returned in ``res.fingerprint`` and added to the unit's record, so --resume notices a production edit);
+- B-30: the policy of every fallback key (EXOPIPE3_FALLBACK_POLICY, the parent's config with its overrides); a branch
+  module in the child that reaches a fallback site counts or refuses there, and its counts and refusals come back in
+  ``res.fallbacks`` / ``res.fallback_refusals`` and into this process's fallback state, so the running unit records
+  them (a refusal makes ``refused`` True even at exit 0, and the unit refuses - core/fallback.py);
 - the script's own sys.path handling is left alone: it runs exactly as production runs it.
 The child's stdout and stderr go to ``log`` (and a tail is kept). ``refused`` is True when the exit code is in
 ``refusal_codes`` or the output contains one of ``refusal_text``; ``ok`` only when rc == 0 and not refused.
@@ -25,9 +29,10 @@ import time
 
 
 class LegacyResult:
-    def __init__(self, rc, log, tail, fingerprint, refused, reason, wall_s, argv):
+    def __init__(self, rc, log, tail, fingerprint, refused, reason, wall_s, argv, fallbacks=None, fallback_refusals=()):
         self.rc, self.log, self.tail, self.fingerprint = rc, log, tail, fingerprint
         self.refused, self.reason, self.wall_s, self.argv = refused, reason, wall_s, argv
+        self.fallbacks, self.fallback_refusals = dict(fallbacks or {}), list(fallback_refusals)
 
     @property
     def ok(self):
@@ -69,6 +74,12 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
     os.close(fp_fd)
     child['EXOPIPE3_FINGERPRINT_OUT'] = fp_path
     child['EXOPIPE3_FINGERPRINT_ROOTS'] = os.pathsep.join(cfg.site.LEGACY_CODE_ROOTS)
+    from exopipe.phase3.core import fallback
+    child.update(fallback.child_env())
+    fb_fd, fb_path = tempfile.mkstemp(prefix='exopipe3_fb_', suffix='.json')
+    os.close(fb_fd)
+    os.remove(fb_path)                  # written by the child only when it imported core/fallback
+    child['EXOPIPE3_FALLBACK_OUT'] = fb_path
     t0 = time.time()
     lf = open(log, 'a') if log else tempfile.TemporaryFile(mode='w+')
     try:
@@ -94,12 +105,22 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
             os.remove(fp_path)
         except OSError:
             pass
+    fb_counts, fb_refs = fallback.load(fb_path)
+    try:
+        os.remove(fb_path)
+    except OSError:
+        pass
     hit = next((t for t in refusal_text if t in tail), None)
     refused = rc in refusal_codes or (hit is not None and rc != 0)
     reason = '' if rc == 0 and not refused else (
         f"{os.path.basename(target)} exit {rc}" + (f" ({hit}: {_line_with(tail, hit)})" if hit else '')
         + ('' if refused else ' - error'))
-    res = LegacyResult(rc, log, tail, fp, refused, reason, round(time.time() - t0, 1), argv)
+    fallback.absorb(fb_counts, fb_refs)    # into this process's state: the running unit takes them (with or without unit=)
+    if fb_refs:                         # B-30: sticky - refused in the child even if the child carried on
+        refused = True
+        reason = (f'{os.path.basename(target)}: B-30 fallback site {fb_refs[0][0]}: {fb_refs[0][1]} - REFUSED'
+                  + (f' (exit {rc})' if rc else ''))
+    res = LegacyResult(rc, log, tail, fp, refused, reason, round(time.time() - t0, 1), argv, fb_counts, fb_refs)
     if unit is not None:
         unit.meta.setdefault('legacy_calls', []).append({'argv': argv, 'rc': rc, 'wall_s': res.wall_s, 'log': log})
         unit.meta.setdefault('legacy_code', {}).update(fp)
