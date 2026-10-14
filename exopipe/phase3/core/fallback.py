@@ -30,7 +30,11 @@ import os
 import tempfile
 import threading
 
-from exopipe.phase3.core.record import Refusal
+try:
+    from exopipe.phase3.core.record import Refusal
+except ImportError:             # loaded by path in a child whose `exopipe` is the production package (core/wrap.py)
+    class Refusal(Exception):
+        """Stand-in: the parent reads this process's dump, never the exception object."""
 
 POLICIES = ('refuse', 'fallback')
 SECTION = 'fallbacks'

@@ -74,8 +74,10 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
     os.close(fp_fd)
     child['EXOPIPE3_FINGERPRINT_OUT'] = fp_path
     child['EXOPIPE3_FINGERPRINT_ROOTS'] = os.pathsep.join(cfg.site.LEGACY_CODE_ROOTS)
-    from exopipe.phase3.core import fallback
+    from exopipe.phase3.core import fallback, wrap
     child.update(fallback.child_env())
+    child.pop('EXOPIPE3_WRAPS', None)          # the wraps of THIS config only (core/wrap.py; B-32)
+    child.update(wrap.child_env())
     fb_fd, fb_path = tempfile.mkstemp(prefix='exopipe3_fb_', suffix='.json')
     os.close(fb_fd)
     os.remove(fb_path)                  # written by the child only when it imported core/fallback

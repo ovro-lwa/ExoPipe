@@ -93,7 +93,16 @@ class astrometry(_Section):
     # carries stat = sqrt(sum w^2 stat^2) / sum w with w = 1/(stat^2 + sys^2) per detection, and the systematic
     # averaged down with the same weights (2026-09-27: this comment said w = SNR^2 and 'its band's sys'; code is inverse variance).
     K_ASSOC = 3.034                      # dimensionless multiplier of the quadrature sum (99th percentile, Rayleigh)
-    RULED = {'K_ASSOC': 'R-ASSOCIATION-RADIUS-QUADRATURE'}
+    # B-32 (a), Gregg 2026-10-13: ONE localization estimator and ONE error source in every tier - applied to the in-place
+    # exopipe_ops/source_localization.py by the import wrap (core/wrap.py, lib/catalog/wraps/source_localization.py)
+    LOC_ESTIMATOR = 'ivw-sandwich'       # the inverse-variance mean with the sandwich error sqrt(w^T V w), a non-positive
+                                         # variance refuses; 'production' = GLS (inv / pinv) outside the 10-minute tier
+    LOC_ERROR_SOURCE = 'fitted'          # each detection's fitted statistical error (det_stat_err_arcsec), per detection the
+                                         # fitted row over a fork-tier row, none -> refuse; 'production' = first row seen, else
+                                         # 0.42 x beam / SNR. Served Run_P3S5 2026-10-14 07:50: every singles detection
+                                         # carries it, the multiples-fork tiers none - 52% of identities would refuse
+                                         # (plan/wave2/B32_DESIGN.md; Gregg to choose: DECISIONS_PENDING C.8b)
+    RULED = {'K_ASSOC': 'R-ASSOCIATION-RADIUS-QUADRATURE', 'LOC_ESTIMATOR': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'LOC_ERROR_SOURCE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
 
 
 class fitting(_Section):
@@ -162,6 +171,10 @@ class fallbacks(_Section):
     PB_RESTFRQ_FALLBACK = 'refuse'
     # preferred I master missing or corrupt -> the V clean uses the other robust (vclean_masters.pick_i_master)
     VCLEAN_I_MASTER_FALLBACK = 'refuse'
+    # B-32: a band without a Master -> the localization takes 900 arcsec as its beam (source_localization.beam_as, wrapped)
+    LOC_MASTER_BEAM_FALLBACK = 'refuse'
+    # B-32: a failing identity is swallowed by build_localizations.py (except in the 10-minute tier) - recorded (sticky)
+    LOCALIZATION_FALLBACK = 'refuse'
     # |pixel| > 1e6 Jy/beam zapped to 0 (deep_search._load) - a per-item drop: ruled 'counted' (the ruling's "per-item
     # drops counted in the run record"), n = pixels
     SEARCH_ZAP_PIXELS_FALLBACK = 'fallback'
@@ -200,7 +213,7 @@ class fallbacks(_Section):
     # a pixel block whose world coordinates fail is left out of the striation model (coadd.build_striation_model - the
     # search, its residual savers - and search_v's copy in V-clean) - a per-item drop: ruled 'counted', n = rows
     STRIATION_WCS_BLOCK_FALLBACK = 'fallback'
-    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_EPHEMERIS_LABEL_FALLBACK', 'VCLEAN_BEAM_FALLBACK', 'STRIATION_WCS_BLOCK_FALLBACK')}
+    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_EPHEMERIS_LABEL_FALLBACK', 'VCLEAN_BEAM_FALLBACK', 'STRIATION_WCS_BLOCK_FALLBACK', 'LOC_MASTER_BEAM_FALLBACK', 'LOCALIZATION_FALLBACK')}
 
 
 class runner(_Section):

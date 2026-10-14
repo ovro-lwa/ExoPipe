@@ -67,6 +67,47 @@ if _FB_OUT:
                 pass
     _atexit_fb.register(_dump_fb)
 
+# IMPORT WRAPS (core/wrap.py; B-32 first): with EXOPIPE3_WRAPS set, each named PRODUCTION module loads as always, then its
+# branch patch file loads BY PATH (it imports nothing from the branch: a child's `exopipe` can be the production package),
+# checks its pins against the production source and applies with the config values the parent passed.
+_WRAPS = os.environ.get('EXOPIPE3_WRAPS', '')
+if _WRAPS:
+    import json as _json_w
+    import importlib.abc as _iabc_w
+    import importlib.machinery as _imach_w
+    import importlib.util as _iutil_w
+    _WR = _json_w.loads(_WRAPS)
+
+    def _fallback_module():
+        m = sys.modules.get('exopipe.phase3.core.fallback')
+        if m is None:
+            _fp = os.path.join(os.path.dirname(_HERE), 'fallback.py')
+            _s = _iutil_w.spec_from_file_location('exopipe.phase3.core.fallback', _fp)
+            m = _iutil_w.module_from_spec(_s)
+            sys.modules['exopipe.phase3.core.fallback'] = m
+            _s.loader.exec_module(m)
+        return m
+
+    class _WrapFinder(_iabc_w.MetaPathFinder):
+        def find_spec(self, name, path, target=None):
+            if name not in _WR:
+                return None
+            spec = _imach_w.PathFinder.find_spec(name, path)
+            if spec is None or spec.loader is None:
+                return None
+            _orig = spec.loader.exec_module
+
+            def _exec(module, _orig=_orig, _name=name):
+                _orig(module)
+                w = _WR[_name]
+                ps = _iutil_w.spec_from_file_location(f'_exopipe3_wrap_{_name}', w['patch'])
+                pm = _iutil_w.module_from_spec(ps)
+                ps.loader.exec_module(pm)
+                pm.apply(module, w['cfg'], _fallback_module())
+            spec.loader.exec_module = _exec
+            return spec
+    sys.meta_path.insert(0, _WrapFinder())
+
 # chain to any other sitecustomize on the path (the environment's own, if it has one)
 try:
     import importlib.machinery as _m

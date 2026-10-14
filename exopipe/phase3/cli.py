@@ -302,8 +302,9 @@ def main(argv=None):
             print('REFUSED: --parity needs --out (the parity root)', file=sys.stderr)
             return record.EXIT_REFUSED
         _parity(args, out)
-    from exopipe.phase3.core import fallback
+    from exopipe.phase3.core import fallback, wrap
     fallback.export_env()                      # B-30: descendants use this step's policies; non-legacy ones spool here
+    wrap.export_env()                          # B-32: descendants wrap the same in-place modules (core/wrap.py)
     run = record.Run(name, [f'exopipe3 {name}'] + rest, out, CFG, dry_run=args.dry_run,
                      waivers=list(zip(args.waive, args.ruling)), resume=args.resume, fresh=args.fresh,
                      config_sections=sections)
