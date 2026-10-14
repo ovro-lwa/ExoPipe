@@ -631,6 +631,46 @@ def _e2e_rebuild(run, nights, hdrs):
     ok('F: the rebuild verdict recorded', 'T1-T8 passed' in (rec['meta'].get('rebuild_verdict') or ''))
 
 
+def test_b30_audit_epoch_gate():
+    """B-30 (a): the archive audit with no epoch_gate.csv - production takes no night as epoch-gate refused (counted under
+    'fallback'); the ruled value refuses (fallbacks.INSTALL_AUDIT_EPOCH_GATE_FALLBACK)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import fallback
+    from exopipe.phase3.lib.install import install as PI
+    d = os.path.join(ROOT, 'b30_audit')
+    fd, sd, mdir, arch = (os.path.join(d, x) for x in ('coadd_final', 'subtracted', 'mdir', 'arch'))
+    for x in (fd, sd, mdir, arch):
+        os.makedirs(x)
+    with open(os.path.join(fd, 'weights.csv'), 'w') as f:
+        f.write('date,in_master\n')
+    with open(os.path.join(fd, 'night_image_gate.csv'), 'w') as f:
+        f.write('date,verdict\n')
+    k = 'fallbacks.INSTALL_AUDIT_EPOCH_GATE_FALLBACK'
+    call = lambda: PI._archive_audit(CELL, fd, sd, mdir, arch, 'Run_T', LST, SCOPE, 0)
+    for pol in ('refuse', 'fallback'):
+        CFG.reset()
+        CFG.authorize([], out=ROOT)
+        CFG.set(k, pol)
+        m = fallback.mark()
+        try:
+            call()
+            got = 'passed'
+        except fallback.FallbackRefused as e:
+            got = str(e)
+        st = fallback.since(m)
+        CFG.reset()
+        if pol == 'refuse':
+            ok('B-30: the archive audit without epoch_gate.csv refuses under the ruled value', k in got and 'epoch_gate.csv' in got,
+               got[:200])
+        else:
+            ok('B-30: ... and passes as production under fallback, counted', got == 'passed' and st[1] == {k: 1}, (got[:200], st))
+    with open(os.path.join(fd, 'epoch_gate.csv'), 'w') as f:
+        f.write('date,verdict\n')
+    m = fallback.mark()
+    call()
+    ok('B-30: the audit with its epoch_gate.csv is not a fallback', fallback.since(m) == ([], {}), fallback.since(m))
+
+
 def main():
     if os.path.exists(ROOT):
         shutil.rmtree(ROOT)
@@ -639,6 +679,7 @@ def main():
     try:
         test_units()
         test_e2e()
+        test_b30_audit_epoch_gate()
     finally:
         shutil.rmtree(ROOT, ignore_errors=True)
         try:

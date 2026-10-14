@@ -230,7 +230,9 @@ def enqueue_cell(u, cell, roots, run_obj, stages, echo, verified_now=False):
         gates.check('Q', not held, f'{cell} {"HELD" if held else "not held"} by {CE.HOLD_LIST}')
     else:
         gates.check('Q', True, 'install_enqueue.HOLD_LIST None (twopass hold retired, ruling 2122); queued without a '
-                               'parent-catalogue precondition (B-30 default (c), install_cell.sh:26)')
+                               'parent-catalogue precondition: parent catalogues are made by masters --stages sources and the '
+                               'catalog preflight refuses a cell without one, naming that command (B-30 (a): no silent path; '
+                               'production builds them here, install_cell.sh:26, and queues the cell even when that fails)')
     # V: a cell is queued only after its installed tree passed the membership + product verify (install_cell.sh:23-24 stops
     # the chain before the enqueue on a failed verify) - a done install/verify record of this out root with install.V passed
     ok, name = _verify_passed(roots, cell)

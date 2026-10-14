@@ -533,6 +533,9 @@ def _archive_audit(cell, fd, sd, mdir, arch, run, lst, scope, n):
     try:
         gfail = gfail | EG.failed_dates(fd, scope)
     except FileNotFoundError:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.INSTALL_AUDIT_EPOCH_GATE_FALLBACK', f'{cell}: {fd}/epoch_gate.csv missing - the archive audit '
+                      f'would take no night as epoch-gate refused (every searched night must then have an archived epoch)')
         pass
     miss = []
     for p in sorted(glob.glob(f'{sd}/*_sub_{scope}.fits')):
