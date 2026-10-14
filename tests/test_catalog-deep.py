@@ -694,6 +694,29 @@ def test_content_tests_catch_defects():
     write_csv(lo, ['cand_id', 'identity_id', 'det_sigma_arcsec'], [dict(cand_id='c1', identity_id='J1', det_sigma_arcsec='5'),
                                                                      dict(cand_id='c1', identity_id='J1', det_sigma_arcsec='5')])
     assert not ok('localization_table', lo)
+    # fitted positions (2026-10-14 replay): peak_ra/peak_dec equal the input as NUMBERS at the writer's 5 decimals - an input
+    # '42.9882' written '42.98820' passes; a real move fails; a fitted row whose statistical error is 0.0 fails (two such Gaussian
+    # fits in production's Run_P3S5, fitted S/N 26,889 and 47,189)
+    from exopipe.phase3.lib.catalog import tests as CT
+    fi, fo = f'{d}/fit_in.csv', f'{d}/fit_out.csv'
+    write_csv(fi, ['cand_id', 'ra', 'dec'], [dict(cand_id='c1', ra='336.51088', dec='42.9882'), dict(cand_id='c2', ra='31.3357', dec='6.5207')])
+    json.dump({'fitted_rows': 2, 'fitted_on_pixel_centre': 0, 'refused': []}, open(f'{d}/fit_positions_summary.json', 'w'))
+
+    def out_rows(stat='0.5', pra2='31.33570'):
+        base = dict(pos_kind='gaussian', pos_err_maj_arcsec='9.0', pos_err_min_arcsec='9.0', pos_err_pa_deg='', pos_stat_maj_arcsec=stat,
+                    pos_stat_min_arcsec=stat, pos_sys_arcsec='8.0', pos_snr='9.0', pos_offset_arcmin='0.1', pos_reason='x')
+        return [dict(base, cand_id='c1', ra='336.51090', dec='42.98821', pos_ra='336.51090', pos_dec='42.98821', peak_ra='336.51088',
+                     peak_dec='42.98820'),
+                dict(base, cand_id='c2', ra='31.33572', dec='6.52071', pos_ra='31.33572', pos_dec='6.52071', peak_ra=pra2,
+                     peak_dec='6.52070')]
+    cols = ['cand_id', 'ra', 'dec'] + list(CT.DET_COLS)
+    ctx = dict(input=fi, **{'fit_positions_summary.json': f'{d}/fit_positions_summary.json'})
+    write_csv(fo, cols, out_rows())
+    assert ok('fitted_catalog', fo, **ctx), validate.run('fitted_catalog', fo, **ctx)
+    write_csv(fo, cols, out_rows(pra2='31.33580'))
+    assert not ok('fitted_catalog', fo, **ctx), 'a moved peak position passed'
+    write_csv(fo, cols, out_rows(stat='0.0'))
+    assert not ok('fitted_catalog', fo, **ctx), 'a fitted row with a 0.0 statistical error passed'
     # union without the stokes column (pre-D9)
     os.makedirs(f'{d}/run/source_catalogs', exist_ok=True)
     write_csv(f'{d}/run/source_catalogs/Full_sources_survivors.csv', ['source_id', 'band'], [dict(source_id='J1', band='Full')])

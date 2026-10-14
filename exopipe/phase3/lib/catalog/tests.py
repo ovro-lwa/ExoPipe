@@ -461,7 +461,14 @@ def fitted_positions(path, **ctx):
         if [r['cand_id'] for r in irows] != [r['cand_id'] for r in rows]:
             msgs.append('cand_ids differ from the stage input (set or order)')
         else:
-            moved = sum(1 for a, b in zip(irows, rows) if (a['ra'], a['dec']) != (b['peak_ra'], b['peak_dec']))
+            # compared as numbers at the writer's precision (deep_forced_radio writes 5 decimals: an input '42.9882' becomes
+            # '42.98820'; the 2026-10-14 replay's 26,946 text-only differences were all of that kind)
+            def _same(x, y):
+                try:
+                    return abs(float(x) - float(y)) <= 5e-6
+                except (TypeError, ValueError):
+                    return x == y
+            moved = sum(1 for a, b in zip(irows, rows) if not (_same(a['ra'], b['peak_ra']) and _same(a['dec'], b['peak_dec'])))
             if moved:
                 msgs.append(f'{moved} rows whose peak_ra/peak_dec is not the input position')
     sp = _sibling(path, 'fit_positions_summary.json', ctx)
