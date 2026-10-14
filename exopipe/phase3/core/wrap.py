@@ -27,7 +27,8 @@ WRAPS = {
         'keys': {'astrometry.LOC_ESTIMATOR': ('production', ('ivw-sandwich', 'production')),
                  'astrometry.LOC_ERROR_SOURCE': ('production', ('fitted', 'production')),
                  'fallbacks.LOC_MASTER_BEAM_FALLBACK': ('fallback', ('refuse', 'fallback')),
-                 'fallbacks.LOCALIZATION_FALLBACK': ('fallback', ('refuse', 'fallback'))},
+                 'fallbacks.LOCALIZATION_FALLBACK': ('fallback', ('refuse', 'fallback')),
+                 'fallbacks.LOC_FORK_ONLY_FALLBACK': ('fallback', ('refuse', 'fallback'))},
     },
 }
 

@@ -75,14 +75,18 @@ def ivw_combine(mod):
     return combine
 
 
-def fitted_detections(mod):
+def fitted_detections(mod, fallback):
     """detections() with each detection's FITTED error: per cand_id the member row carrying a finite positive
     det_stat_err_arcsec (singles tiers) wins over a row without one (the multiples-fork tiers carry peak positions and no
-    error - production keeps the FIRST row seen over the sorted globs); a detection with no fitted row anywhere REFUSES.
-    Otherwise production's code (pinned), step for step."""
+    error - production keeps the FIRST row seen over the sorted globs). A detection with no fitted row anywhere: listed ONLY
+    in multiples-fork tiers (_fsb / _fwb) it is left out of the combined position, counted once per identity
+    (fallbacks.LOC_FORK_ONLY_FALLBACK; Gregg 2026-10-14, C.8b (b): until the fork builder fits its detections); with a
+    singles-tier row it REFUSES (a missing fitted error). Otherwise production's code (pinned), step for step."""
     import csv
     import glob
     import os
+    import re
+    fork_dir = re.compile(r'_f(sb|wb)$')
 
     def detections(ident, U):
         srcs = []
@@ -109,10 +113,13 @@ def fitted_detections(mod):
             except (TypeError, ValueError):
                 v = float('nan')
             return v if (math.isfinite(v) and v > 0) else None
-        dets = []
+        dets, fork_only = [], []
         for cid, cands in rows.items():
             pick = next(((s, m) for s, m in cands if own_err(m) is not None), None)
             if pick is None:
+                if all(fork_dir.search(os.path.basename(s['_dir'])) for s, _ in cands):
+                    fork_only.append(cid)                    # C.8b (b): left out, counted per identity below
+                    continue
                 raise RuntimeError(f'{ident}: detection {cid} has no fitted statistical error in any tier '
                                    f'({len(cands)} member row(s)) - REFUSING (B-32: each detection\'s fitted error)')
             s, m = pick
@@ -143,6 +150,10 @@ def fitted_detections(mod):
                              lst=lst, date=m['det_date'], el=el, stat=stat, stat_source=stat_src, sys=sysd,
                              sys_source=sys_src, sig=math.hypot(stat, sysd), beam=mod.beam_as(s['band']), **fr,
                              epoch=(lst, m['det_date'][:10])))
+        if fork_only:
+            fallback.site('fallbacks.LOC_FORK_ONLY_FALLBACK', f'{ident}: {len(fork_only)} detection(s) only in multiples-fork '
+                          f'tiers, without a fitted error (e.g. {fork_only[:3]}), left out of the combined position '
+                          f'({len(dets)} kept) - Gregg 2026-10-14 C.8b (b), until the fork fits its detections', n=1)
         return srcs, dets
     detections.__doc__ = 'B-32 (a): each detection with its fitted error (wrapped).'
     return detections
@@ -204,7 +215,7 @@ def apply(mod, cfg, fallback):
     if cfg.get('astrometry.LOC_ESTIMATOR') == 'ivw-sandwich':
         mod.combine = ivw_combine(mod)
     if cfg.get('astrometry.LOC_ERROR_SOURCE') == 'fitted':
-        mod.detections = fitted_detections(mod)
+        mod.detections = fitted_detections(mod, fallback)
     mod.beam_as = beam_as_site(mod, fallback)
     mod.locate = locate_site(mod, fallback)
     mod.B32_WRAPPED = dict(cfg)

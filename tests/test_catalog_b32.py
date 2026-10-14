@@ -178,7 +178,7 @@ def main():
         SL.beam_as = lambda band: 600.0
         _, d_prod = SL.detections('ID1', U)
         try:
-            _, d_fit = W.fitted_detections(SL)('ID1', U)
+            _, d_fit = W.fitted_detections(SL, fallback)('ID1', U)
         except Exception as e:                     # noqa: BLE001 - reported by the check below
             d_fit = f'{type(e).__name__}: {e}'
         check('production keeps the FIRST row (the fork tier sorts first): the model error', len(d_prod) == 1
@@ -191,12 +191,35 @@ def main():
         wcsv(f'{U}/source_catalogs_V_fsb/41MHz_source_members.csv',
              [dict(mem, source_id='F1', det_stat_err_arcsec=''),
               dict(mem, source_id='F1', cand_id='V1_14h_2025-08-11_41MHz_0002', det_date='2025-08-11', det_stat_err_arcsec='')])
+        k = 'fallbacks.LOC_FORK_ONLY_FALLBACK'
+        CFG.reset()
+        m = fallback.mark()
         try:
-            W.fitted_detections(SL)('ID1', U)
+            _, d2 = W.fitted_detections(SL, fallback)('ID1', U)
+        except Exception as e:                     # noqa: BLE001 - reported by the check below
+            d2 = f'{type(e).__name__}: {e}'
+        st = fallback.since(m)
+        check('C.8b (b), ruled default: a fork-only detection is left out of the combined position, counted once for the '
+              'identity', isinstance(d2, list) and [d['cand_id'] for d in d2] == [mem['cand_id']] and st == ([], {k: 1})
+              and CFG.fallbacks.LOC_FORK_ONLY_FALLBACK == 'fallback', (d2, st))
+        CFG.authorize([], out=T)
+        CFG.set(k, 'refuse')
+        try:
+            W.fitted_detections(SL, fallback)('ID1', U)
+            got = 'no refusal'
+        except fallback.FallbackRefused as e:
+            got = str(e)
+        CFG.reset()
+        check('... and refuses the identity under refuse', k in got and '0002' in got, got)
+        wcsv(f'{U}/source_catalogs_V_sb/41MHz_source_members.csv', [mem, dict(mem, cand_id='V1_14h_2025-08-12_41MHz_0003',
+                                                                              det_date='2025-08-12', det_stat_err_arcsec='')])
+        try:
+            W.fitted_detections(SL, fallback)('ID1', U)
             refused = 'no refusal'
         except Exception as e:                     # noqa: BLE001 - any other exception is a failure of this check
-            refused = isinstance(e, RuntimeError) and '0002' in str(e) or f'{type(e).__name__}: {e}'
-        check('fitted: a fork-only detection (no fitted error anywhere) refuses', refused is True, refused)
+            refused = isinstance(e, RuntimeError) and '0003' in str(e) or f'{type(e).__name__}: {e}'
+        check('a SINGLES-tier detection without its fitted error still refuses (a missing input, not the fork case)',
+              refused is True, refused)
         SL.beam_as = saved_beam
 
         # ---- the child path end to end ---------------------------------------------------------------------------------
