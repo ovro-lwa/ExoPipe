@@ -306,9 +306,11 @@ def main(argv=None):
         rc = mod.run(args, run)
     except record.Refusal as e:
         print(f'REFUSED: {e}', file=sys.stderr)
+        run.run_reason = f'refused: {e}'           # a run-level refusal before any unit: kept in the run summary
         rc = record.EXIT_REFUSED
     except record.NoInput as e:
         print(f'NO-INPUT: {e}', file=sys.stderr)
+        run.run_reason = f'no-input: {e}'
         rc = record.EXIT_NO_INPUT
     finally:
         summ = run.write_summary()

@@ -681,19 +681,47 @@ def test_review_fixes():
     check('a working cell node-local to another host refuses', ok, why)
     # (7) sources: the installed cell's membership.verify (install_cell.sh:70-71) - real, read-only
     real = '/data07/gh/phase3/coadd_sb'
-    if os.path.isdir(f'{real}/21h_18MHz/coadd_final'):
+    if os.path.isdir(real):
         DS.inplace(f'{T}/rf5')
-        v = DS.installed_cell_violations(real, '21h_18MHz')
-        check('installed 21h_18MHz fails membership.verify (2025-08-06 excluded 2026-10-13, still in its master)',
-              any('2025-08-06' in x and 'excluded' in x for x in v), str(v[:2]))
-        rc, txt = cli('--tier', 'deep', '--cells', '21h_18MHz', '--out', f'{T}/rf5', '--cores', 'none', '--stages', 'sources',
-                      '--waive', 'masters.sources.install_record', '--ruling', 'test (no product)')
-        rec = json.load(open(f'{T}/rf5/_records/masters/sources_21h_18MHz.json'))
+        # the installed cells change as production installs rebuilds (21h_18MHz held 2025-08-06 until round 20261013):
+        # take the first installed cell whose master holds a now-excluded night, and a clean one for the positive check
+        bad = clean = None
+        for c in sorted(os.listdir(real)):
+            if not os.path.isdir(f'{real}/{c}/coadd_final') or (bad and clean):
+                continue
+            try:
+                v = DS.installed_cell_violations(real, c)
+            except Exception:
+                continue
+            if not bad and any('excluded' in x for x in v):
+                bad = (c, v)
+            elif not clean and not v:
+                clean = c
+        check('an installed cell without violations passes membership.verify', clean is not None, 'no clean cell found')
+        if clean:
+            # the same check with one of the clean cell's master nights added to the exclusions: membership.verify flags it
+            from exopipe.phase3.lib.masters import coadd as CO, membership as MB
+            lst_c, sc_c = clean.split('_', 1)
+            w = list(csv.DictReader(open(f'{real}/{clean}/coadd_final/weights.csv')))
+            night = next(r['date'] for r in w if str(r.get('in_master', '1')) == '1')
+            ex = set(CO.load_exclusions()) | {(lst_c, sc_c.replace('MHz', ''), night)}
+            vv = list(MB.verify(f'{real}/{clean}', exclusions=ex))
+            check(f'membership.verify flags a master night of {clean} once it is excluded ({night})',
+                  any(night in x and 'excluded' in x for x in vv), str(vv[:2]))
+        if bad is None:
+            print('SKIP  no installed master holds an excluded night today: the sources refusal on a real cell is not '
+                  'exercised (membership.verify itself is checked above with an injected exclusion)')
+            return
+        c, v = bad
+        check(f'installed {c} fails membership.verify (an excluded night still in its master)', True, str(v[:2]))
+        rc, txt = cli('--tier', 'deep', '--cells', c, '--out', f'{T}/rf5', '--work', f'{T}/w5', '--cores', 'none',
+                      '--stages', 'sources', '--waive', 'masters.sources.install_record', '--ruling', 'test (no product)')
+        rec = json.load(open(f'{T}/rf5/_records/masters/sources_{c}.json'))
         check('sources refused on an installed master holding an excluded night, before PyBDSF (exit 2)',
               rc == 2 and rec['status'] == 'refused' and 'membership' in rec['reason']
               and not os.path.exists(f'{T}/rf5/parent_catalogs'), rec.get('reason', '')[:200])
     else:
-        print(f'SKIP  {real}/21h_18MHz missing (not lwacalim07)')
+        print(f'SKIP  {real} missing (not lwacalim07)')
 
 
 def main():

@@ -310,6 +310,7 @@ class Run:
             return None
         p = os.path.join(self.out_root, '_records', self.step, '_runs', f'{self.run_id}.json')
         atomic_write_json(p, dict(self.header(), finished=utcnow(), started=self.started, summary=self.summary(),
+                                  reason=getattr(self, 'run_reason', None),
                                   units=[{'unit': u.name, 'status': u.status, 'reason': u.reason,
                                           'n_planned': len(u.planned), 'n_refused_items': len(u.refused_items)}
                                          for u in self.units]))

@@ -81,7 +81,11 @@ class paths(_Section):
     PRODUCTION_ROOTS = ('/lustre/pipeline/exopipe/phase3', '/data07/gh/phase3', '/lustre/gh/main/phase3',
                         '/fast/gh/main/phase3',   # node-local production run roots (deep forced, snapshot forced work)
                         '/lustre/gh/main/phase3_collect',                     # deep search attempts (p3s5 collect)
-                        '/lustre/gh/main/exopipe_ops/snapshot_fleet_out')     # snapshot per-cell outputs
+                        '/lustre/gh/main/exopipe_ops/snapshot_fleet_out',     # snapshot per-cell outputs
+                        # production search state (markers, claims, published lists, logs): never written by the branch
+                        '/lustre/gh/main/exopipe_ops/p3s5_state', '/lustre/gh/main/exopipe_ops/p3s4_state',
+                        '/lustre/gh/main/exopipe_ops/snapshot_batch', '/lustre/gh/main/exopipe_ops/sublst_search_state_A',
+                        '/lustre/gh/main/exopipe_ops/sublst_search_state_B')
     PRODUCTION_WRITES = False
     # Config keys ('section.KEY') whose values are PINNED inputs - frozen, checksummed inputs a ruling names (e.g. a
     # frozen master tree, a tier-rule pin). They are protected like the keys in PROTECTED (DESIGN 11.4, 11.6).
@@ -254,10 +258,10 @@ class fitting(_Section):
                   # beam axes, 5370179); superseded I 0.476/0.423, V 0.658/0.499 (measured with the mirrored template)
                   ('sublst', 'I'): (0.464, 0.450),
                   ('sublst', 'V'): (0.599, 0.602)}
-    # snapshot tier: the template module's own measured K (template_fit_validation run_20261004b): major 0.60
-    # (0.81 at >= 69 MHz), minor 0.86
-    K_SNAPSHOT = (0.60, 0.86)
-    K_SNAPSHOT_MAJOR_HIGH = 0.81
+    # snapshot tier: the template module's own K, re-measured with the template no longer mirrored (clv15 a715a1b,
+    # phase3_template_fit.py:42; 97,200 trials): major 0.683 (0.639 at >= 69 MHz), minor 0.737; superseded 0.60/0.81/0.86
+    K_SNAPSHOT = (0.683, 0.737)
+    K_SNAPSHOT_MAJOR_HIGH = 0.639
     K_SNAPSHOT_HIGH_MHZ = 69.0
     TEMPLATE_WIN_BEAMS = 0.8             # fit window radius, x FWHM(major)
     TEMPLATE_MAX_SHIFT_BEAMS = 0.5       # bound on the shift from the peak start, x FWHM(major)
@@ -299,7 +303,7 @@ class runner(_Section):
     # commands in order on one node; an item stops at its first non-zero exit (2 refused / 3 no-input / other error).
     # {item} is the item. The per-hour chain is the unit a merged Phase 1-2-3 controller will run (DESIGN 12.3).
     CHILD_ENV_CLEAR_PREFIXES = ('P3_', 'P3S', 'P3T', 'SUBLST_', 'SNAP_', 'FORK_', 'CATPUB_', 'NOCAT_', 'DEEP_FORCED_',
-                                'FT_', 'TENMIN_', 'GEN4_')   # production switch families never inherited by a child
+                                'FT_', 'TENMIN_', 'GEN4_', 'BDSF_')   # production switch families never inherited by a child
     CHAIN_VARS = {'deep_run': 'P3S5'}      # {deep_run} in a chain template: the current deep transient run label
     CHAINS = {
         # per hour: one LST hour of one night, every tier, against the installed masters (item kind: epoch 04h_2025-10-14)

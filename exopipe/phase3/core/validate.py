@@ -27,6 +27,12 @@ _TESTS = {}      # class -> [(name, fn)]
 # are found by discovery, _discover below).
 OWNERS = {
     'fits_header': 'exopipe.phase3.core.products', 'csv_table': 'exopipe.phase3.core.validate',
+    # follow-up registers its classes in the step module (steps/followup.py), not in lib/followup/tests*.py
+    **{c: 'exopipe.phase3.steps.followup' for c in (
+        'ep_wxt_coverage_gaps', 'ep_wxt_fetch_log', 'ep_wxt_plan', 'ep_wxt_raw', 'ep_wxt_refused', 'fold_table',
+        'followup_dossier', 'followup_figure', 'followup_fits', 'followup_page', 'followup_region',
+        'followup_summary', 'followup_table', 'honing_stamp', 'honing_table', 'periodicity_lightcurves',
+        'periodicity_merged', 'periodicity_table', 'tess_lightcurve', 'tess_summary')},
 }
 
 
