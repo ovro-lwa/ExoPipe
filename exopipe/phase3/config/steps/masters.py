@@ -159,6 +159,10 @@ class masters_build(_Section):
                                               # has a FAIL night in the master, and at any pass whose own record breaks membership (a removed night that passes
                                               # the master built without it: Gregg names it out of the master). 3 PROPOSED 2026-10-14 - Gregg to confirm (not
                                               # in RULED until he does); production 1 (no rebuild pass)
+    MASTER_SPAN_SOURCE = 'constituent'        # the master time span (DATE-OBS/-END, INTTIME, MJD-*) from each constituent's OWN image (the one the
+                                              # co-add used) - PROPOSED 2026-10-14 (B-30 skeptic), Gregg to confirm; 'phase2-glob' = production
+                                              # (coadd_full_pipeline.py:428-449 globs miss raw-failsafe and non-3xxx-s images: 688 night-cells in
+                                              # 221 of 456 cells, 19h 41MHz DATE-OBS 2025-04-21 for 2025-04-10, INTTIME 38870 s for 52171 s)
     SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # membership.py:72; R-SUNLIT-NIGHTS-OUT-OF-MASTERS
     SOLAR_AUDIT_SHA1 = '24151ffaa1b7f11faa7adeab5d0f9cb6cfae8da4'
     NAMED_OUT_OF_MASTER = os.path.join(_PHASE3, 'named_out_of_master.csv')   # package data file in exopipe/phase3/, 1 row; membership.py:98; R-GREGG-20261011-17H18-0505-OPTION-B

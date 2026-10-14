@@ -86,6 +86,12 @@ MIN_DATES_FOR_COADD = 3
 # 2025-08-09's Taper R0 input, leaving 2 of its 3 nights, so no Taper R0 master, no Robust-0 PB map, no cleaned V). The survey master
 # and the Stokes V master keep MIN_DATES_FOR_COADD.
 MIN_DATES_FOR_VARIANT = 2
+# MASTER TIME SPAN SOURCE (WAVE2 B-30 skeptic, 2026-10-14): 'phase2-glob' (production) re-finds each night's time block with two
+# file-name globs (_phase2_time_source), which miss raw-failsafe constituents and integrations not starting with '3' (688
+# night-cells in 221 of 456 installed cells; 19h 41MHz: DATE-OBS 2025-04-21 for a first night 2025-04-10, INTTIME 38870 s for
+# 52171 s); 'constituent' reads the time block of the image the co-add actually used for the night. The step sets it from
+# masters_build.MASTER_SPAN_SOURCE.
+MASTER_SPAN_SOURCE = 'phase2-glob'
 
 REFERENCE_DATES = {
     # 00h: mosaic-coverage cell (Gregg 2026-07-05) — deliberately SHALLOW,
@@ -449,15 +455,17 @@ def _phase2_time_source(lst, date, scope):
     return best
 
 
-def stamp_master_span(path, lst, scope, dates):
+def stamp_master_span(path, lst, scope, dates, sources=None):
     """Stamp a deep MASTER co-add with the constituent SPAN time block (header
     standard): DATE-OBS=earliest start, DATE-END=latest end, DURATION=wall span,
     INTTIME=summed integration, MJD-MID=span midpoint, NSTACK=#epochs. Without this
-    the master inherits one epoch's date from tmpl_hdr."""
+    the master inherits one epoch's date from tmpl_hdr. ``sources`` = {date: the night's image the co-add used} (read under
+    MASTER_SPAN_SOURCE 'constituent')."""
     from exopipe.phase3.core import fallback      # WAVE2 B-30 (MASTER_SPAN_FALLBACK: each silent case below)
     starts, ends, intt = [], [], 0.0
     for d in sorted(set(dates)):
-        src = _phase2_time_source(lst, d, scope)
+        src = ((sources or {}).get(d) if MASTER_SPAN_SOURCE == 'constituent'
+               else _phase2_time_source(lst, d, scope))
         if not src:
             fallback.site('fallbacks.MASTER_SPAN_FALLBACK', f'{lst} {scope} {d}: no Phase-2 time source - the master '
                           f'span would leave the night out')
@@ -3339,6 +3347,7 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
     all_dates = discover_dates(lst, freq_str)
     if not all_dates:
         raise RuntimeError(f'{lst} {fl}: no Phase-2 images found; REFUSING')
+    _span_sources = {_d: _img for _d, _sd, _img in all_dates}  # each night's own image: the master time span (MASTER_SPAN_SOURCE)
     post_dates = [x for x in all_dates if x[0] >= CUTOVER_DATE]
     if post_dates:
         tmpl_hdr, target_shape = _modal_grid_template(post_dates, all_dates[0])
@@ -3402,7 +3411,7 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
         path = f'{out_dir}/I_deep_{vk}_{fl}.fits'
         coadd_inverse_variance([p for _, p, _ in aligned], [w for _, _, w in aligned], path, tmpl_hdr,
                                dates=[d for d, _, _ in aligned], sigclip=False)
-        stamp_master_span(path, lst, fl, [d for d, _, _ in aligned])
+        stamp_master_span(path, lst, fl, [d for d, _, _ in aligned], sources=_span_sources)
         _stamp_variant_gate(path, refused)
         # bake in the cell's absolute flux factor exactly as the generation carries it
         # (2026-10-01: once the survey master carries FLUXBAKE the factor is SHSCALE x FLUXCORR - flux_correction.pixel_factor)
@@ -3515,6 +3524,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 _rf.write(f'{lst},{fl},{_d},wrong grid (Phase-2 anomaly),final\n')
         dates = [x for x in dates if x[0] not in _gr]
         good_dates_deep = {d for d in good_dates_deep if d not in _gr}
+    _span_sources = {_d: _img for _d, _sd, _img in dates}      # each night's own image: the master time span (MASTER_SPAN_SOURCE)
     # EPOCH GATE (Gregg 2026-10-04, option B: "Dont force products for crappy nights"): a night the cell's epoch-gate record
     # FAILS leaves co-add membership (its residual stays a two-tier product; the search refuses it through the same record).
     # The record of the generation being rebuilt is read WITHOUT the master check: a night's verdict is its own flux deficit,
@@ -3769,7 +3779,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         [w for _, _, w in i_aligned],
         final_i_path, tmpl_hdr, dates=[d for d, _, _ in i_aligned],
         sigclip=False)
-    stamp_master_span(final_i_path, lst, fl, [d for d, _, _ in i_aligned])
+    stamp_master_span(final_i_path, lst, fl, [d for d, _, _ in i_aligned], sources=_span_sources)
     print(f"  Final I co-add: {len(i_aligned)} dates → {final_i_path}")
 
     # Also create V co-add
@@ -3796,7 +3806,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             [w for _, _, w in v_aligned],
             final_v_path, tmpl_hdr, dates=[d for d, _, _ in v_aligned],
             sigclip=False)
-        stamp_master_span(final_v_path, lst, fl, [d for d, _, _ in v_aligned])
+        stamp_master_span(final_v_path, lst, fl, [d for d, _, _ in v_aligned], sources=_span_sources)
         print(f"  Final V co-add: {len(v_aligned)} dates → {final_v_path}")
 
     # ── weights + third-stage QA record (R-THIRD-STAGE-QA-FLUXALIGN) and
@@ -3878,7 +3888,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             [w for _, _, w in i_r0_aligned],
             final_i_r0_path, tmpl_hdr, dates=[d for d, _, _ in i_r0_aligned],
             sigclip=False)
-        stamp_master_span(final_i_r0_path, lst, fl, [d for d, _, _ in i_r0_aligned])
+        stamp_master_span(final_i_r0_path, lst, fl, [d for d, _, _ in i_r0_aligned], sources=_span_sources)
         _stamp_variant_gate(final_i_r0_path, _variant_refused.get('Taper_R0', []))
         print(f"  Final I R0 co-add: {len(i_r0_aligned)} dates")
 
@@ -3920,7 +3930,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 [w for _, _, w in _aligned],
                 _path, tmpl_hdr, dates=[d for d, _, _ in _aligned],
                 sigclip=False)
-            stamp_master_span(_path, lst, fl, [d for d, _, _ in _aligned])
+            stamp_master_span(_path, lst, fl, [d for d, _, _ in _aligned], sources=_span_sources)
             _stamp_variant_gate(_path, _variant_refused.get(_vk, []))
             print(f"  Final {_vk} co-add: {len(_aligned)} dates")
 

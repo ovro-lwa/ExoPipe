@@ -92,6 +92,7 @@ def main():
         src = wfits(f'{T}/src_0817.fits', np.zeros((4, 4)), DATE_OBS='2025-08-17T09:00:00', DATE_END='2025-08-17T10:00:00',
                     INTTIME=3600.0)
         saved['ts'] = C._phase2_time_source
+        C.MASTER_SPAN_SOURCE = 'phase2-glob'                                                # production's finder, stubbed
         C._phase2_time_source = lambda lst, d, scope: src if d == '2025-08-17' else None
         both('fallbacks.MASTER_SPAN_FALLBACK', lambda: C.stamp_master_span(master, '23h', '23MHz', ['2025-08-16', '2025-08-17']),
              lambda r: fits.getheader(master)['DATE-OBS'].startswith('2025-08-17T09:00:00'), 'stamp_master_span (night without a time source)')
@@ -100,6 +101,22 @@ def main():
         check('stamp_master_span: every night with its time block is not a fallback', fallback.since(m) == ([], {})
               and fits.getheader(master)['NSTACK'] == 1)
         C._phase2_time_source = saved.pop('ts')
+        # MASTER_SPAN_SOURCE 'constituent' (B-30 skeptic MAJOR 1): each night's OWN image - a raw-failsafe name with a
+        # 2949 s integration the production globs cannot match - gives the span; a night without its image refuses
+        saved['span'] = C.MASTER_SPAN_SOURCE
+        C.MASTER_SPAN_SOURCE = 'constituent'
+        raw = wfits(f'{T}/41MHz-I-Taper-2949s-Robust-0.75-20250502_123513-image.fits', np.zeros((4, 4)),
+                    DATE_OBS='2025-05-02T12:35:13', DATE_END='2025-05-02T13:24:22', INTTIME=2949.0)
+        m = fallback.mark()
+        C.stamp_master_span(master, '19h', '41MHz', ['2025-05-02', '2025-08-17'], sources={'2025-05-02': raw, '2025-08-17': src})
+        h = fits.getheader(master)
+        check('constituent span: each night\'s own image (raw-failsafe name included), no site',
+              fallback.since(m) == ([], {}) and h['DATE-OBS'].startswith('2025-05-02T12:35:13')
+              and h['DATE-END'].startswith('2025-08-17T10:00:00') and abs(h['INTTIME'] - 6549.0) < 1e-6, dict(h))
+        both('fallbacks.MASTER_SPAN_FALLBACK', lambda: C.stamp_master_span(master, '19h', '41MHz', ['2025-05-02', '2025-05-03'],
+                                                                             sources={'2025-05-02': raw}),
+             lambda r: True, 'constituent span (a night without its image)')
+        C.MASTER_SPAN_SOURCE = saved.pop('span')
 
         # ---- coadd._select_reference: a previous master without COADDOP ------------------------------------------
         wd = f'{T}/wd/23h_23MHz'

@@ -91,7 +91,8 @@ WIRING = {
         'VARIANT_BAND_MEDIANS_SHA1': 'step', 'VARIANT_FLUXDC_LEGACY': 'mirror', 'VARIANTS_ONLY': 'arg',
         'COADDOP': 'mirror', 'FLUXFIT': 'mirror', 'LOO_N_RANGE': 'mirror', 'STRIATION_WINDOW_BEAMS': 'mirror',
         'EPOCH_CHECK': 'mirror', 'JUPITER_MASK_DEEP': 'mirror', 'ARCHIVE_WRITE': 'env-call:P3_ARCHIVE_WRITE',
-        'FORCE_REBUILD': 'env-call:P3_FORCE_REBUILD', 'KEEP_PREP': 'env-call:P3_KEEP_PREP'},
+        'FORCE_REBUILD': 'env-call:P3_FORCE_REBUILD', 'KEEP_PREP': 'env-call:P3_KEEP_PREP',
+        'MASTER_SPAN_SOURCE': 'attr:coadd.MASTER_SPAN_SOURCE'},
     'masters_pbmaps': {
         'PB_LIBRARY': 'env-import:P3_PB_LIBRARY', 'PB_THREE_FACTOR': 'env-import:P3_PB_THREE_FACTOR',
         'PB_CHAN_AVG_HZ': 'env-import:P3_CHAN_AVG_HZ', 'PB_CHROM_VERSION': 'mirror',
