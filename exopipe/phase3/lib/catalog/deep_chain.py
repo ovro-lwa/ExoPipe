@@ -939,6 +939,17 @@ class DeepRun:
             self._same_reads(u, 'ops/p3s3_identity.py', tier_files | union_files, self._expected_survivors() | exp_union)
             for p in sorted(tier_files | union_files):
                 u.add_input(p)
+            noerr, unparsed = deep_ported.identity_row_fallbacks(tier_files)      # WAVE2 B-30: pre-check (M4)
+            if noerr:
+                from exopipe.phase3.core import fallback      # WAVE2 B-30
+                fallback.site('fallbacks.CATALOG_IDENTITY_POS_ERR_FALLBACK', f'{len(noerr)} survivors row(s) without a positive '
+                              f'finite pos_err_arcsec, e.g. {noerr[:3]} - p3s3_identity.py would take 60 arcsec (empty / 0), '
+                              f'associate no row of the run (one NaN: the search radius is K x sqrt 2 x the largest error), '
+                              f'associate everything (inf) or let it name the identity (negative)', n=len(noerr))
+            if unparsed:
+                from exopipe.phase3.core import fallback      # WAVE2 B-30 (a per-item drop: counted)
+                fallback.site('fallbacks.CATALOG_IDENTITY_ROW_FALLBACK', f'{len(unparsed)} survivors row(s) p3s3_identity.py '
+                              f'cannot parse, e.g. {unparsed[:3]} - left out of every identity', n=len(unparsed))
             rc, tail, _ = self.call(u, 'p3s3_identity.py', [self.U], self.env(), self.log)
             if rc != 0:
                 self.say('identity FAILED - pass aborted (D10)')

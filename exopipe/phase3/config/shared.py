@@ -177,6 +177,12 @@ class fallbacks(_Section):
     LOCALIZATION_FALLBACK = 'refuse'
     # install archive audit: no epoch_gate.csv -> no night taken as epoch-gate refused (install._archive_audit)
     INSTALL_AUDIT_EPOCH_GATE_FALLBACK = 'refuse'
+    # catalog identity (pre-check of ops/p3s3_identity.py:34-39): a survivors row without a positive pos_err_arcsec ->
+    # 60 arcsec (empty / 0); one NaN makes the run's search radius NaN (no row associates); inf associates every row;
+    # a negative one names its identity (the 'smallest' error)
+    CATALOG_IDENTITY_POS_ERR_FALLBACK = 'refuse'
+    # ... a row it cannot parse is left out of every identity - a per-item drop: ruled 'counted', n = rows
+    CATALOG_IDENTITY_ROW_FALLBACK = 'fallback'
     # |pixel| > 1e6 Jy/beam zapped to 0 (deep_search._load) - a per-item drop: ruled 'counted' (the ruling's "per-item
     # drops counted in the run record"), n = pixels
     SEARCH_ZAP_PIXELS_FALLBACK = 'fallback'
@@ -215,7 +221,7 @@ class fallbacks(_Section):
     # a pixel block whose world coordinates fail is left out of the striation model (coadd.build_striation_model - the
     # search, its residual savers - and search_v's copy in V-clean) - a per-item drop: ruled 'counted', n = rows
     STRIATION_WCS_BLOCK_FALLBACK = 'fallback'
-    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_EPHEMERIS_LABEL_FALLBACK', 'VCLEAN_BEAM_FALLBACK', 'STRIATION_WCS_BLOCK_FALLBACK', 'LOC_MASTER_BEAM_FALLBACK', 'LOCALIZATION_FALLBACK', 'INSTALL_AUDIT_EPOCH_GATE_FALLBACK')}
+    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_EPHEMERIS_LABEL_FALLBACK', 'VCLEAN_BEAM_FALLBACK', 'STRIATION_WCS_BLOCK_FALLBACK', 'LOC_MASTER_BEAM_FALLBACK', 'LOCALIZATION_FALLBACK', 'INSTALL_AUDIT_EPOCH_GATE_FALLBACK', 'CATALOG_IDENTITY_POS_ERR_FALLBACK', 'CATALOG_IDENTITY_ROW_FALLBACK')}
 
 
 class runner(_Section):

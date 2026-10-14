@@ -89,6 +89,36 @@ def identity_reads(run_dir, skip_dirs):
     return {os.path.abspath(f) for f in tier}, {os.path.abspath(f) for f in union}
 
 
+def identity_row_fallbacks(tier_files):
+    """WAVE2 B-30 pre-check (M4) of ops/p3s3_identity.py's row parse (:34-39) over the files it reads: (rows without a positive
+    finite pos_err_arcsec - empty / 0 the module takes as 60 arcsec; one NaN makes the run's search radius (K x sqrt 2 x the
+    largest error) NaN, so NO row of the run associates; inf associates with every row; a negative one (hypot in the test)
+    names its identity as the 'smallest' error; rows it cannot parse - it
+    leaves them out of every identity), each as '<tier dir>/<file>:<row>'. A row missing a column it indexes makes the module
+    itself fail (the stage refuses, D-G21), so it is not listed here."""
+    import math
+    noerr, bad = [], []
+    for f in sorted(tier_files):
+        tag = f'{os.path.basename(os.path.dirname(f))}/{os.path.basename(f)}'
+        with open(f, newline='') as fh:
+            for i, r in enumerate(csv.DictReader(fh)):
+                try:                       # the module's own order (:35-37): the first exception decides, as there
+                    r['band']
+                    float(r['ra'])
+                    float(r['dec'])
+                    pe = float(r.get('pos_err_arcsec') or 0)
+                    r['source_id']
+                    abs(float(r.get('best_snr') or 0))
+                except KeyError:
+                    continue
+                except ValueError:
+                    bad.append(f'{tag}:{i}')
+                    continue
+                if not (math.isfinite(pe) and pe > 0):
+                    noerr.append(f'{tag}:{i}')
+    return noerr, bad
+
+
 def localize_reads(run_dir, pattern):
     """The survivors files ops/build_localizations.py (:21) and source_localization.py (:112) read."""
     return {os.path.abspath(p) for p in glob.glob(f'{run_dir}/{pattern}/*_sources_survivors.csv')}

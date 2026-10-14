@@ -552,6 +552,44 @@ def test_b30_unharvested_merge():
     assert 'merged_record' in r['reason'] and r['meta'].get('unharvested_warning'), r['reason'][:300]
 
 
+def test_b30_identity_pre_check():
+    """B-30 (a) pre-check of ops/p3s3_identity.py (deep_ported.identity_row_fallbacks, in its own parse order): a survivors
+    row without a positive finite pos_err_arcsec refuses the identity stage under the ruled value (the module would take 60
+    arcsec; a NaN would stop every association of the run) and is counted under 'fallback' (production's result); an
+    unparsable row is a counted per-item drop."""
+    from exopipe.phase3.lib.catalog import deep_ported as P
+    d = f'{T}/b30_identity/source_catalogs_V_wb'
+    os.makedirs(d, exist_ok=True)
+    base = dict(source_id='J0000+0000', band='Full', ra='10.0', dec='20.0', best_snr='9.0', pos_err_arcsec='60.0')
+    cases = ['60.0', '', '0', 'nan', 'inf', '-5']
+    rws = [dict(base, pos_err_arcsec=v) for v in cases] + [dict(base, ra='x'), dict(base, best_snr='y', pos_err_arcsec='')]
+    write_csv(f'{d}/Full_sources_survivors.csv', list(base), rws)
+    noerr, bad = P.identity_row_fallbacks({f'{d}/Full_sources_survivors.csv'})
+    tag = 'source_catalogs_V_wb/Full_sources_survivors.csv'
+    assert noerr == [f'{tag}:{i}' for i in (1, 2, 3, 4, 5)] and bad == [f'{tag}:6', f'{tag}:7'], (noerr, bad)
+    # the chain: one tier row loses its error between the fork and the union (where the forced step edits the files)
+    make_world()
+    cli(expect=0)
+    blank = None
+    for p in sorted(glob.glob(f'{U}/source_catalogs_*/*_sources_survivors.csv')):
+        rr = rows(p)
+        cols = list(rr[0].keys()) + ['forced_jy'] if rr else ['source_id', 'forced_jy']
+        if rr and blank is None:
+            rr[0]['pos_err_arcsec'], blank = '', p
+        write_csv(p, cols, [dict(r, forced_jy='1.0') for r in rr])
+    time.sleep(1.1)
+    os.makedirs(f'{U}/_records/forced', exist_ok=True)
+    json.dump({'status': 'done', 'finished': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'unit': LABEL},
+              open(f'{U}/_records/forced/{LABEL}.json', 'w'))
+    k = 'fallbacks.CATALOG_IDENTITY_POS_ERR_FALLBACK'
+    cli('--from', 'union', expect=2)
+    r = rec(f'{LABEL}.identity')
+    assert r['status'] == 'refused' and k in r['reason'] and os.path.basename(blank) in r['reason'], r['reason'][:300]
+    cli('--from', 'identity', '--set', f'{k}=fallback', expect=0)
+    r = rec(f'{LABEL}.identity')
+    assert r['status'] == 'done' and r.get('fallbacks') == {k: 1}, (r['status'], r.get('fallbacks'))
+
+
 def test_binding_against_production_and_a_mismatch():
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.catalog import deep_binding as B
@@ -670,7 +708,7 @@ def test_compileall():
 
 ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
-         'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
+         'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge', 'test_b30_identity_pre_check',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']
 
