@@ -8,8 +8,8 @@ the path) BEFORE anything is written, and the refusal is printed to stderr (and 
 when set), so it stays visible even where legacy code swallows OSError.
 
 Guarded: builtins.open / io.open (modes w, a, x, +), os.open (write flags), os.rename / os.replace / os.renames (both
-paths), os.remove / os.unlink / os.rmdir, os.mkdir / os.makedirs (unless the directory exists), os.symlink / os.link
-(the new name), os.truncate, shutil.copyfile / copy / copy2 / copytree (destination), shutil.move (both), shutil.rmtree,
+paths), os.remove / os.unlink / os.rmdir, os.mkdir / os.makedirs (unless the directory exists), os.symlink (the new name),
+os.link (the new name, and its source must lie under a root: a hard link would let a later write reach it), os.truncate, shutil.copyfile / copy / copy2 / copytree (destination), shutil.move (both), shutil.rmtree,
 pathlib's accessor (Path.mkdir/unlink/rename/...), and astropy.io.fits writeto (HDUList.writeto and fits.writeto,
 patched when astropy.io.fits is imported, before or after the guard). Reads are never refused. Not guarded: non-Python
 subprocesses (cp, rsync, shell redirections), C extensions writing through their own I/O, and modules that bound an
@@ -17,7 +17,12 @@ os function to a local name before the guard was installed.
 
 Allowed: the roots given to ``install`` (a parity run passes --out and --work; the run records live under --out) plus
 ``DEFAULT_ALLOWED`` (/tmp, /dev/shm, /dev/null) and $TMPDIR; /dev/stdout, /dev/stderr and /dev/tty are never refused. Paths are
-compared after realpath, so a symlink cannot lead out of an allowed root.
+compared after realpath - symlinks resolved component by component, a '..' applied after the link before it (never
+lexically first: 'out/link/../x' is where the kernel puts it) - so a symlink cannot lead a write out of an allowed root.
+An operation on a directory ENTRY itself (os.remove / unlink / rmdir, rename / replace, the new name of os.symlink / link,
+shutil.move's source, their pathlib forms) resolves only the entry's parent directory: removing, renaming or re-pointing a
+link inside a root never touches its target (2026-10-14: the deep catalogue replay's p3s3_merge.py re-points
+refusals/<file> links to the attempts' files on Lustre, and the guard refused the unlink of the link as a write there).
 
 Subprocesses: ``export_env(roots)`` sets EXOPIPE3_PARITY_ROOT (os.pathsep-joined roots) and puts
 ``parity_sitecustomize/`` first on PYTHONPATH; its sitecustomize.py installs this guard in every Python process
@@ -57,7 +62,17 @@ def allowed_roots():
 
 
 def _real(path):
-    return os.path.realpath(os.path.abspath(path))
+    return os.path.realpath(path)          # not realpath(abspath(path)): abspath folds 'link/..' before the link is read
+
+
+def _entry(path):
+    """Where the directory entry ``path`` names lies: its parent directory resolved, its own name kept (a symlink AT
+    ``path`` is the entry itself, not its target)."""
+    p = path.rstrip('/') or '/'
+    head, tail = os.path.split(p)
+    if tail in ('', '.', '..'):
+        return _real(p)
+    return os.path.join(_real(head or '.'), tail)
 
 
 def _norm(path, dir_fd=None):
@@ -72,14 +87,15 @@ def _norm(path, dir_fd=None):
     return path
 
 
-def is_allowed(path):
-    """True when writing ``path`` is allowed (or no guard is installed)."""
+def is_allowed(path, entry=False):
+    """True when writing ``path`` is allowed (or no guard is installed); ``entry``: an operation on the directory entry
+    ``path`` itself (its parent resolved, not the link it may be)."""
     roots = _STATE['roots']
     if roots is None or path is None:
         return True
     if os.path.abspath(path) in _DEVICES:
         return True
-    r = _real(path)
+    r = _entry(path) if entry else _real(path)
     for root in roots:
         if r == root or r.startswith(root.rstrip('/') + '/'):
             return True
@@ -106,10 +122,10 @@ def _refuse(path, what):
     raise ParityWriteRefused(errno.EACCES, 'parity guard: write outside the parity roots refused (%s)' % what, path)
 
 
-def check(path, what='write', dir_fd=None):
-    """Raise ParityWriteRefused when ``path`` may not be written under the active guard."""
+def check(path, what='write', dir_fd=None, entry=False):
+    """Raise ParityWriteRefused when ``path`` may not be written under the active guard (``entry``: see is_allowed)."""
     p = _norm(path, dir_fd)
-    if not is_allowed(p):
+    if not is_allowed(p, entry):
         _refuse(p, what)
 
 
@@ -132,17 +148,19 @@ def _w_os_open(path, flags, *a, **k):
 
 
 def _two(name):
+    """rename / replace: both names are directory entries (a link is moved or replaced, never its target)."""
     def w(src, dst, *a, **k):
-        check(src, name + ' (source)', k.get('src_dir_fd'))
-        check(dst, name + ' (destination)', k.get('dst_dir_fd'))
+        check(src, name + ' (source)', k.get('src_dir_fd'), entry=True)
+        check(dst, name + ' (destination)', k.get('dst_dir_fd'), entry=True)
         return _STATE['orig'][name](src, dst, *a, **k)
     w.__name__ = name.split('.')[-1]
     return w
 
 
-def _one(name):
+def _one(name, entry=True):
+    """remove / unlink / rmdir act on the entry; shutil.rmtree (entry=False) removes what lies under the resolved path."""
     def w(path, *a, **k):
-        check(path, name, k.get('dir_fd'))
+        check(path, name, k.get('dir_fd'), entry=entry)
         return _STATE['orig'][name](path, *a, **k)
     w.__name__ = name.split('.')[-1]
     return w
@@ -165,9 +183,22 @@ def _w_mkdir(name):
     return w
 
 
-def _dst(name):
+def _w_link(name):
+    """os.link / Path.link_to: the new name is an entry, and the SOURCE must lie under a root too - a hard link of a file
+    outside the roots would let a later write through the new name change that file (the guard sees only the new name).
+    Callers that link to save a copy (sublst_build, phase3_hwj_phot) fall back to shutil.copy2 on the OSError."""
     def w(src, dst, *a, **k):
-        check(dst, name, k.get('dir_fd'))
+        check(dst, name, k.get('dst_dir_fd'), entry=True)
+        check(src, name + ' (source: a hard link of a file outside the roots)', k.get('src_dir_fd'))
+        return _STATE['orig'][name](src, dst, *a, **k)
+    w.__name__ = name.split('.')[-1]
+    return w
+
+
+def _dst(name, entry=True):
+    """symlink: the new name is an entry; shutil.copytree (entry=False) writes under the resolved destination."""
+    def w(src, dst, *a, **k):
+        check(dst, name, k.get('dir_fd'), entry=entry)
         return _STATE['orig'][name](src, dst, *a, **k)
     w.__name__ = name.split('.')[-1]
     return w
@@ -189,7 +220,7 @@ def _w_copy(name):
 
 
 def _w_move(src, dst, *a, **k):
-    check(src, 'shutil.move (source)')
+    check(src, 'shutil.move (source)', entry=True)
     check(_copy_target(src, dst), 'shutil.move (destination)')
     return _STATE['orig']['shutil.move'](src, dst, *a, **k)
 
@@ -215,7 +246,7 @@ def _w_fits_writeto(filename, *a, **k):
 _OS_ONE = ('remove', 'unlink', 'rmdir')
 _OS_DIR = ('mkdir', 'makedirs')
 _OS_TWO = ('rename', 'replace')
-_OS_DST = ('symlink', 'link')
+_OS_DST = ('symlink',)
 
 
 def _patch(obj, attr, key, wrapper):
@@ -283,12 +314,13 @@ def install(allowed_roots, defaults=DEFAULT_ALLOWED, log=None):
         _patch(os, n, 'os.' + n, _two('os.' + n))
     for n in _OS_DST:
         _patch(os, n, 'os.' + n, _dst('os.' + n))
+    _patch(os, 'link', 'os.link', _w_link('os.link'))
     _patch(os, 'truncate', 'os.truncate', _w_truncate)
     for n in ('copyfile', 'copy', 'copy2'):
         _patch(shutil, n, 'shutil.' + n, _w_copy('shutil.' + n))
-    _patch(shutil, 'copytree', 'shutil.copytree', _dst('shutil.copytree'))
+    _patch(shutil, 'copytree', 'shutil.copytree', _dst('shutil.copytree', entry=False))
     _patch(shutil, 'move', 'shutil.move', _w_move)
-    _patch(shutil, 'rmtree', 'shutil.rmtree', _one('shutil.rmtree'))
+    _patch(shutil, 'rmtree', 'shutil.rmtree', _one('shutil.rmtree', entry=False))
     try:                                  # pathlib binds os functions in its accessor at import (Python < 3.11)
         import pathlib
         acc = getattr(pathlib, '_NormalAccessor', None)
@@ -302,7 +334,7 @@ def install(allowed_roots, defaults=DEFAULT_ALLOWED, log=None):
                               ('rename', _two('pathlib.rename'), 'pathlib.rename'),
                               ('replace', _two('pathlib.replace'), 'pathlib.replace'),
                               ('symlink', _dst('pathlib.symlink'), 'pathlib.symlink'),
-                              ('link_to', _dst('pathlib.link_to'), 'pathlib.link_to'),
+                              ('link_to', _w_link('pathlib.link_to'), 'pathlib.link_to'),
                               ('open', _w_open if is_io else _w_os_open, 'open' if is_io else 'os.open')):
                 if hasattr(acc, n):
                     if key not in _STATE['orig']:

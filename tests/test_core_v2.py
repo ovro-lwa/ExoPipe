@@ -696,6 +696,33 @@ def test_item5_guard_in_process():
             assert open(victim).read() == 'production bytes'
             fits.writeto(os.path.join(out, 'ok.fits'), np.zeros((2, 2), np.float32))
             os.symlink(other, os.path.join(out, 'escape'))          # a link inside --out may be made ...
+            # ... and links to outside files removed, renamed, replaced and swept by rmtree: an operation on a directory
+            # ENTRY touches the link, never its target (2026-10-14: the catalogue replay's p3s3_merge.py re-points
+            # refusals/<file> links to the attempts' files and was refused at the unlink)
+            ln = os.path.join(out, 'ln_victim')
+            os.symlink(victim, ln)
+            os.unlink(ln)
+            os.symlink(victim, ln)
+            os.rename(ln, ln + '2')
+            os.symlink(victim, ln)
+            os.replace(ln, ln + '2')
+            pathlib.Path(ln + '2').unlink()
+            os.makedirs(os.path.join(out, 'linked'))
+            os.symlink(victim, os.path.join(out, 'linked', 'l'))
+            shutil.rmtree(os.path.join(out, 'linked'))
+            os.symlink(victim, ln)
+            shutil.move(ln, os.path.join(out, 'moved_ln'))
+            assert open(victim).read() == 'production bytes' and os.path.islink(os.path.join(out, 'moved_ln'))
+            # a hard link of an outside file is refused; the callers' copy fallback then makes an independent file
+            hl = os.path.join(out, 'hl.txt')
+            try:
+                os.link(victim, hl)
+            except OSError:
+                shutil.copy2(victim, hl)
+            assert not os.path.samefile(victim, hl)
+            open(hl, 'w').write('parity bytes')
+            assert open(victim).read() == 'production bytes'
+            os.link(f, os.path.join(out, 'hl_inside.txt'))          # a hard link inside the roots is fine
             p = pathlib.Path(other)
             denied = {
                 'open w': lambda: open(os.path.join(other, 'x'), 'w'),
@@ -725,12 +752,22 @@ def test_item5_guard_in_process():
                 'HDUList.writeto': lambda: fits.HDUList([fits.PrimaryHDU()]).writeto(os.path.join(other, 'h.fits')),
                 'PrimaryHDU.writeto': lambda: fits.PrimaryHDU().writeto(os.path.join(other, 'p.fits')),
                 'symlink escape': lambda: open(os.path.join(out, 'escape', 'z'), 'w'),   # ... but not followed out
+                'entry under a linked dir': lambda: os.unlink(os.path.join(out, 'escape', 'victim.txt')),
+                'rename under a linked dir': lambda: os.rename(os.path.join(out, 'escape', 'victim.txt'),
+                                                               os.path.join(out, 'stolen')),
+                'symlink name under a linked dir': lambda: os.symlink(f, os.path.join(out, 'escape', 'ln2')),
+                # '..' after a link is applied where the kernel applies it (out/escape/.. = the scratch dir, not out)
+                'dotdot after a link': lambda: open(os.path.join(out, 'escape', '..', 'dd.txt'), 'w'),
+                'dotdot entry after a link': lambda: os.symlink(f, os.path.join(out, 'escape', '..', 'dd_ln')),
+                'os.link of an outside file': lambda: os.link(victim, os.path.join(out, 'hl2.txt')),
+                'Path.link_to of an outside file': lambda: pathlib.Path(victim).link_to(os.path.join(out, 'hl3.txt')),
             }
             for name, fn in denied.items():
                 e = raises(PermissionError, fn)
                 assert isinstance(e, guard.ParityWriteRefused) and e.filename, (name, e)
             assert sorted(os.listdir(other)) == ['victim.txt'], os.listdir(other)
             assert open(victim).read() == 'production bytes'
+            assert not os.path.exists(os.path.join(d, 'dd.txt')) and not os.path.lexists(os.path.join(d, 'dd_ln'))
             assert guard._STATE['refused'] >= len(denied)
         finally:
             guard.uninstall()
