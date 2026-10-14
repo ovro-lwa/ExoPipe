@@ -152,3 +152,217 @@ def phase1_frames(lst, date, subband, phase1_root=None, report=None):
     if report is not None:
         report.update(rep)
     return out
+
+
+# =====================================================================================================================
+# Phase 2 deep images of one night (B-03 (a), Gregg 2026-10-13; the same-state reading, 2026-10-14)
+# =====================================================================================================================
+# The ONE copy of the co-add's five image finders (lib/masters/coadd.py = production coadd_full_pipeline.py):
+#   find_subband_alignment_image, find_wideband_alignment_image  -> survey_image   (I Taper Robust-0.75: the flow is measured on it)
+#   find_subband_variant_image, find_wideband_deep_images        -> variant_image  (the I variants)
+#   find_stokes_v_deep_image                                     -> stokes_v_image (V Taper Robust-0)
+# Each chooses as its finder does: the first match in the sorted directory listing, the dewarped file preferred and the raw
+# file the fallback (the co-add's "failsafe"). FINDER_PINS are the sha1 of each finder's source text (from its 'def' to the
+# next top-level statement) this copy was made from; lib/masters/input_resolver refuses to stand in for a finder whose text
+# changed (a fold-in of a production edit needs a re-port here first).
+FINDER_PINS = {'find_subband_alignment_image': '538ca2958ddf70966cac8253dea9f34572577d6e',
+               'find_wideband_alignment_image': '2f1081e46c0010d2de1d08cc895b2093b1a2ada3',
+               'find_subband_variant_image': 'fd19d7ffbe0a6556ac77908cc7004fa8392478f8',
+               'find_wideband_deep_images': '2b6f4f885cfcfd1ea2a89ce89c6121f29ab10136',
+               'find_stokes_v_deep_image': '2ea538378dddfc8ce4bfb2e0e314925c1a21d31f',
+               'is_subband': 'd55ee27938d347484d6c7508dad692d619b86b8e',
+               'find_latest_science_dir': 'b5cea611a115359a2a15c1fcc83e78d155c5f0c8'}
+VARIANTS = ('Taper_R0', 'Taper_R075', 'NoTaper_R0', 'NoTaper_R075')
+
+
+def source_block(text, name):
+    """The source text of the top-level function ``name`` in a module's text: its 'def' line to the next top-level statement
+    (the unit FINDER_PINS hash); None when absent."""
+    m = re.search(r'^def ' + re.escape(name) + r'\(.*?(?=^\S)', text, re.S | re.M)
+    return m.group(0) if m else None
+
+
+def pin_mismatches(module_text):
+    """[finder] whose source text in ``module_text`` differs from FINDER_PINS (absent = differs)."""
+    import hashlib
+    out = []
+    for name, want in FINDER_PINS.items():
+        blk = source_block(module_text, name)
+        if blk is None or hashlib.sha1(blk.encode()).hexdigest() != want:
+            out.append(name)
+    return out
+
+
+def is_subband(freq):
+    """= coadd.is_subband: a subband given by its MHz number (int or str), one of the instrument's subbands."""
+    try:
+        return int(freq) in {int(str(s).replace('MHz', '')) for s in _cfg().instrument.ALL_SUBBANDS}
+    except (ValueError, TypeError):
+        return False
+
+
+def latest_science_dir(lst, date, phase2_root=None):
+    """= coadd.find_latest_science_dir: the night's latest Phase 2 Science_* directory, or None."""
+    dirs = sorted(glob.glob(f'{phase2_root or _cfg().paths.PHASE2_ROOT}/{lst}/{date}/Science_*'))
+    return dirs[-1] if dirs else None
+
+
+def _listing(d):
+    return sorted(os.listdir(d)) if os.path.isdir(d) else None
+
+
+def survey_subband(sci_dir, freq_mhz):
+    """= coadd.find_subband_alignment_image (without its print): (path or None, raw) of a subband night's I survey image,
+    Taper Robust-0.75, not pbcorr; raw: no dewarped file, the raw one is used (the co-add's '[failsafe]')."""
+    d = f'{sci_dir}/{freq_mhz}MHz/I/deep'
+    files = _listing(d)
+    if files is None:
+        return None, False
+
+    def base(f):
+        return 'Taper' in f and 'NoTaper' not in f and 'Robust-0.75' in f and 'pbcorr' not in f and f.endswith('.fits')
+    for f in files:
+        if base(f) and f.endswith('_dewarped.fits'):
+            return os.path.join(d, f), False
+    for f in files:
+        if base(f) and 'dewarped' not in f and f.endswith('-image.fits'):
+            return os.path.join(d, f), True
+    return None, False
+
+
+def survey_wideband(sci_dir, band):
+    """= coadd.find_wideband_alignment_image (without its print): (path or None, raw) of a band night's I survey image."""
+    d = f'{sci_dir}/{band}/I/deep'
+    files = _listing(d)
+    if files is None:
+        return None, False
+
+    def base(f):
+        return 'Taper' in f and 'NoTaper' not in f and 'Robust-0.75' in f and 'pbcorr' not in f and f.endswith('.fits')
+    for f in files:
+        if base(f) and 'dewarped' in f:
+            return os.path.join(d, f), False
+    for f in files:
+        if base(f) and 'dewarped' not in f:
+            return os.path.join(d, f), True
+    return None, False
+
+
+def variant_subband(sci_dir, freq_mhz, variant):
+    """= coadd.find_subband_variant_image: a subband night's I variant image ('Taper_R0', 'NoTaper_R0', 'NoTaper_R075'),
+    not pbcorr, dewarped preferred."""
+    taper, rob = variant.split('_')
+    rtok = 'Robust-0.75' if rob == 'R075' else 'Robust-0'
+    d = f'{sci_dir}/{freq_mhz}MHz/I/deep'
+    files = _listing(d)
+    if files is None:
+        return None
+
+    def base(f):
+        if 'pbcorr' in f or not f.endswith('.fits'):
+            return False
+        if taper == 'Taper' and 'NoTaper' in f:
+            return False
+        if taper == 'NoTaper' and 'NoTaper' not in f:
+            return False
+        if rtok == 'Robust-0':
+            return 'Robust-0-' in f
+        return 'Robust-0.75' in f
+    for f in files:
+        if base(f) and f.endswith('_dewarped.fits'):
+            return os.path.join(d, f)
+    for f in files:
+        if base(f) and 'dewarped' not in f and f.endswith('-image.fits'):
+            return os.path.join(d, f)
+    return None
+
+
+def variant_wideband(sci_dir, band, stokes, variant):
+    """= coadd.find_wideband_deep_images: a band night's deep image of ``variant`` ('Taper_R0', 'Taper_R075', 'NoTaper_R0',
+    'NoTaper_R075') and Stokes, not pbcorr, dewarped preferred."""
+    d = f'{sci_dir}/{band}/{stokes}/deep'
+    files = _listing(d)
+    if files is None:
+        return None
+    taper_key = 'NoTaper' if 'NoTaper' in variant else 'Taper'
+    robust_key = 'Robust-0.75' if 'R075' in variant else 'Robust-0'
+
+    def matches(f):
+        if not f.endswith('.fits') or 'pbcorr' in f:
+            return False
+        if taper_key == 'NoTaper' and 'NoTaper' not in f:
+            return False
+        if taper_key == 'Taper' and 'NoTaper' in f:
+            return False
+        if robust_key == 'Robust-0.75' and 'Robust-0.75' not in f:
+            return False
+        if robust_key == 'Robust-0' and 'Robust-0.75' in f:
+            return False
+        return robust_key in f and taper_key in f
+    for f in files:
+        if matches(f) and 'dewarped' in f:
+            return os.path.join(d, f)
+    for f in files:
+        if matches(f) and 'dewarped' not in f:
+            return os.path.join(d, f)
+    return None
+
+
+def stokes_v_image(sci_dir, freq_str):
+    """= coadd.find_stokes_v_deep_image: the night's V deep image, Taper Robust-0, not pbcorr, dewarped preferred."""
+    d = f'{sci_dir}/{freq_str}MHz/V/deep' if is_subband(freq_str) else f'{sci_dir}/{freq_str}/V/deep'
+    files = _listing(d)
+    if files is None:
+        return None
+
+    def base(f):
+        return ('Taper' in f and 'NoTaper' not in f and 'Robust-0' in f and 'Robust-0.75' not in f and 'pbcorr' not in f
+                and f.endswith('.fits'))
+    for f in files:
+        if base(f) and 'dewarped' in f:
+            return os.path.join(d, f)
+    for f in files:
+        if base(f) and 'dewarped' not in f:
+            return os.path.join(d, f)
+    return None
+
+
+def survey_image(sci_dir, scope):
+    """(path or None, raw) of the night's I survey image - the image its co-add flow is measured on, and so the alignment of
+    every product of the night. scope: a subband's MHz number (int or str) or a band name, as the co-add passes it."""
+    return survey_subband(sci_dir, scope) if is_subband(scope) else survey_wideband(sci_dir, scope)
+
+
+def product_image(sci_dir, scope, product):
+    """The night's image of ``product``: 'V' (V Taper Robust-0) or an I variant ('Taper_R0', 'Taper_R075', 'NoTaper_R0',
+    'NoTaper_R075'), as the co-add's finder for it chooses."""
+    if product == 'V':
+        return stokes_v_image(sci_dir, scope)
+    if product not in VARIANTS:
+        raise ValueError(f'unknown Phase 2 product {product!r} (V or one of {VARIANTS})')
+    if is_subband(scope):
+        return variant_subband(sci_dir, scope, product)
+    return variant_wideband(sci_dir, scope, 'I', product)
+
+
+def dewarped(path):
+    """The dewarp state of a chosen Phase 2 image: 'dewarped' in its file name - the test every finder applies to choose it."""
+    return path is not None and 'dewarped' in os.path.basename(path)
+
+
+def state_mismatch(sci_dir, scope, path, product):
+    """B-03 same-state (Gregg 2026-10-14): None when ``path`` - the night's V or I-variant image - is in the same dewarp state
+    as the night's survey image, whose flow aligns every product of the night; else why it is refused. A raw product on a
+    dewarped survey image keeps its ionospheric warp (the survey's flow no longer carries it); a dewarped product on a raw
+    survey image gets the raw flow's warp correction a second time. Both raw is kept: the flow was measured on that night's
+    raw survey image, which carries the same warp."""
+    if path is None:
+        return None
+    surv, _raw = survey_image(sci_dir, scope)
+    if surv is None:
+        return f'{product}: no survey image of the night to take the flow from'
+    if dewarped(path) == dewarped(surv):
+        return None
+    if dewarped(surv):
+        return f'raw {product} on a dewarped survey image (its warp would stay: the flow is measured on the dewarped image)'
+    return f'dewarped {product} on a raw survey image (the raw image\'s flow would apply its warp correction again)'

@@ -199,11 +199,15 @@ def t6(gen_dir):
     c = _ctx(gen_dir)
     R, G, sc = c['R'], c['G'], c['sc']
     inm = sorted(d for d, x in _weights(R).items() if x.get('in_master') == '1')
+    from exopipe.phase3.lib.masters import input_resolver
+    refused_v = {r['date'] for r in input_resolver.read_refusals(R) if r.get('product') == 'V'}   # B-03 same-state: no V epoch
     eb = []
     for st in ('I', 'V'):
         m = f'{G}/coadd_final/' + sname(('I_deep_Taper_R075' if st == 'I' else 'V_deep_Taper_R0') + f'_{sc}.fits', sc)
         mdat = np.asarray(fitsio.read_image(m)[0], dtype=np.float64)          # once per Stokes (review item 14)
         for d in inm:
+            if st == 'V' and d in refused_v:
+                continue
             e = f'{G}/subtracted/{d}_{st}_epoch{_cfg().masters_fluxscale.TOKEN}_{sc}.fits'
             s_ = f'{G}/subtracted/{d}_{st}_sub{_cfg().masters_fluxscale.TOKEN}_{sc}.fits'
             if not os.path.exists(e):
@@ -213,7 +217,8 @@ def t6(gen_dir):
             okk, why, _m, _n = CFP._epoch_content_arrays(_rd(e), mdat, r, st)
             if not okk:
                 eb.append(f'{d} {st}: {why}')
-    return not eb, len(inm), f'{len(inm)} in-master nights x 2 Stokes; failing {eb[:4]}'
+    return not eb, len(inm), (f'{len(inm)} in-master nights x 2 Stokes; failing {eb[:4]}'
+                              + (f'; V input refused (B-03 same-state) on {sorted(refused_v)}' if refused_v else ''))
 
 
 def t7(gen_dir):

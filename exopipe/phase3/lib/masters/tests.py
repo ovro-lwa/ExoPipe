@@ -419,13 +419,57 @@ def every_admitted_night_has_products(path, **ctx):
         ex = exclusions.load()
         miss = []
         nights = [d for d in sorted(W) if not ex.is_excluded(loc['lst'], loc['scope'], d)]
+        refused_v = _refused_v_nights(loc['cell_dir'])
         for d in nights:
             for st in ('I', 'V'):
+                if st == 'V' and d in refused_v:
+                    continue
                 for kind in ('epoch', 'sub', 'clean'):
                     if not os.path.exists(os.path.join(sd, f'{d}_{st}_{kind}{loc["token"]}_{loc["scope"]}.fits')):
                         miss.append(f'{d}_{st}_{kind}')
-        return not miss, len(nights), f'{len(nights)} admitted nights; missing {miss[:6]}'
-    return _cached(('nightprods',) + _dirstate(sd) + (loc['token'],), f)
+        return not miss, len(nights), (f'{len(nights)} admitted nights; missing {miss[:6]}'
+                                       + (f'; V input refused (B-03 same-state) on {sorted(refused_v)}' if refused_v else ''))
+    return _cached(('nightprods',) + _dirstate(sd) + (loc['token'],) + _dirstate(loc['cell_dir']), f)
+
+
+def _refused_v_nights(cell_dir):
+    """Nights whose V input the B-03 same-state rule refused (<cell>/refusals_input.csv): no V epoch / residual is made."""
+    from exopipe.phase3.lib.masters import input_resolver
+    return {r['date'] for r in input_resolver.read_refusals(cell_dir) if r.get('product') == 'V'}
+
+
+# =====================================================================================================================
+# input_refusals (B-03 same-state)
+# =====================================================================================================================
+
+@content_test('input_refusals')
+def refusals_hold(path, **ctx):
+    """<cell>/refusals_input.csv: the header, no (night, product) twice, and every row still holds on the Phase 2 tree - the
+    named image is the one the finder chooses for the night and product, and its dewarp state differs from the night's
+    survey image (core.inputs.state_mismatch)."""
+    from exopipe.phase3.core import inputs as I
+    from exopipe.phase3.lib.masters import input_resolver
+    with open(path, newline='') as f:
+        rd = csv.DictReader(f)
+        cols, rows = rd.fieldnames, list(rd)
+    if cols != input_resolver.REFUSALS_HEADER:
+        return False, None, f'columns {cols} != {input_resolver.REFUSALS_HEADER}'
+    probs, seen = [], set()
+    for r in rows:
+        key = (r['date'], r['product'])
+        if key in seen:
+            probs.append(f'{key} twice')
+        seen.add(key)
+        sci = I.latest_science_dir(r['lst'], r['date'])
+        fq = r['scope'][:-3] if r['scope'].endswith('MHz') else r['scope']
+        prod = 'V' if r['product'] == 'V' else r['product'].split('_', 1)[1]
+        p = I.product_image(sci, fq, prod) if sci else None
+        if p is None or os.path.basename(p) != r['image']:
+            probs.append(f"{r['date']} {r['product']}: the finder now chooses {os.path.basename(p) if p else None}, "
+                         f"not {r['image']}")
+        elif not I.state_mismatch(sci, fq, p, r['product']):
+            probs.append(f"{r['date']} {r['product']}: {r['image']} is now in its survey image's state")
+    return not probs, len(rows), f'{len(rows)} refusals' + (f'; {probs[:4]}' if probs else ' hold on the Phase 2 tree')
 
 
 # =====================================================================================================================

@@ -105,9 +105,11 @@ class masters_build(_Section):
     CUTOVER_DATE = '2024-12-27'               # nights before are regridded; after, off the modal grid = refused (coadd_full_pipeline.py:79; R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED)
     FLOW_MAX_NAN_FRACTION = 0.5               # flow more than 50 per cent NaN refuses the night (coadd_full_pipeline.py:1830-1836; FINDING-FIVE-GOOD-NIGHTS-BAD-RESIDUALS-ARE-FLOW-FAILURES)
     ALLOW_STALE_FLOW = False                  # P3_ALLOW_STALE_FLOW bypass of the freshness gate - never set (coadd_full_pipeline.py:2176; RATIFY-COADD-FLOW-REFRESH-STAGE-AND-FRESHNESS-GATE)
-    RAW_INPUT_FLOW_RULE = 'survey-image-flow' # B-03 (c) = production: raw V/variant inputs take the night's survey-image flow (coadd_full_pipeline.py:653-726, 2867-2899; defect M9).
-                                              # Gregg ruled B-03 (a) 2026-10-13 (R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32): one input resolver, raw only
-                                              # with a flow measured on that image, one regrid for every off-grid input - NOT IMPLEMENTED (edits of the in-place co-add)
+    INPUT_RESOLVER = 'core.inputs'            # B-03 (a): the co-add's five image finders replaced by core.inputs' copy (lib/masters/input_resolver.py; the same file chosen,
+                                              # pinned); 'coadd-finders' = production (coadd_full_pipeline.py:653-753, 2912-2946)
+    RAW_INPUT_FLOW_RULE = 'same-state'        # B-03 (a), the same-state reading (Gregg 2026-10-14): a night's V / I-variant image whose dewarp state differs from the night's
+                                              # survey image is refused (refusals_input.csv; needs INPUT_RESOLVER core.inputs); 'survey-image-flow' = production: every product
+                                              # takes the survey image's flow (defect M9: 26 V / 40 / 35 / 26 variant night-cells raw on a dewarped survey, 1 each dewarped on raw)
     PROVISIONAL_V_GRID_MISMATCH = 'drop'      # B-03 default (c): a V frame on another grid than its I frame is dropped in the provisional stage (coadd_full_pipeline.py:2339-2351; FIX-COADD-V-FRAME-ON-DIFFERENT-GRID-DROPPED-LOUDLY)
     # reference
     REF_MODE = 'master'                       # previous-generation I Taper R-0.75 master (coadd_full_pipeline.py:1607; R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-MASTER)
@@ -192,7 +194,7 @@ class masters_build(_Section):
     KEEP_PREP = False                         # P3_KEEP_PREP unset (coadd_full_pipeline.py:4029)
     PROTECTED_KEYS = ('ALLOW_STALE_FLOW', 'FLUXSCALE_TILT', 'SOLAR_AUDIT', 'SOLAR_AUDIT_SHA1', 'NAMED_OUT_OF_MASTER',
                       'NAMED_OUT_OF_MASTER_SHA1', 'ARCHIVE_WRITE', 'VARIANT_BAND_MEDIANS', 'VARIANT_BAND_MEDIANS_SHA1',
-                      'FLOW_MAX_NAN_FRACTION', 'RAW_INPUT_FLOW_RULE', 'PROVISIONAL_V_GRID_MISMATCH',
+                      'FLOW_MAX_NAN_FRACTION', 'PROVISIONAL_V_GRID_MISMATCH',
                       'REF_ASTROM_PIVOT_MHZ', 'REF_ASTROM_EXPONENT', 'REF_ASTROM_MIN_ANCHORS', 'REF_ASTROM_N_PEAKS',
                       'REF_ASTROM_MATCH_MAX_ARCMIN', 'FLUXSCALE_ESTIMATOR', 'FLUXSCALE_SNR_MIN', 'FLUXSCALE_PEAK_JY',
                       'FLUXSCALE_MIN_ELEV_DEG', 'FLUXSCALE_APERTURE_BEAMS', 'FLUXSCALE_MAXFILTER_BEAMS',
@@ -203,6 +205,8 @@ class masters_build(_Section):
                       'FLUXFIT', 'LOO_N_RANGE', 'STRIATION_WINDOW_BEAMS', 'EPOCH_CHECK', 'JUPITER_MASK_DEEP',
                       'FORCE_REBUILD')   # FORCE_REBUILD: False would re-enable the in-place .done skip guard (CLAUDE.md 3; the wrapper refuses a skip)
     RULED = {'CUTOVER_DATE': 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED',
+             'INPUT_RESOLVER': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'RAW_INPUT_FLOW_RULE': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),
              'EPOCH_GATE_SOURCE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'EPOCH_GATE_MAX_PASSES': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),
              'MASTER_SPAN_SOURCE': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS',

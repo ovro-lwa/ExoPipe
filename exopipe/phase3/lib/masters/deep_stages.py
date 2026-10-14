@@ -246,6 +246,9 @@ def inplace(out):
     applied = IP.apply_attrs('masters_build') + IP.apply_attrs('masters_verify') + IP.apply_attrs('masters_fluxscale',
                                                                                                     only_modules=('membership',))
     IP.check_mirrors(modules=('coadd',))
+    from exopipe.phase3.lib.masters import input_resolver        # B-03 (a): the finders through core.inputs, same-state
+    b = _cfg().masters_build
+    applied.append(('coadd finders', input_resolver.install(co, b.INPUT_RESOLVER, b.RAW_INPUT_FLOW_RULE)))
     return _SETUP['mods'], applied
 
 
@@ -487,6 +490,16 @@ def build(cell, args, run, out, ran_now):
         grid = os.path.join(cell_dir, 'refusals_grid.csv')
         if os.path.exists(grid):
             u.note('grid refusals (G-M03): ' + ' | '.join(l.strip() for l in open(grid))[:1000])
+        from exopipe.phase3.lib.masters import input_resolver
+        refused_inputs = input_resolver.read_refusals(cell_dir)
+        if refused_inputs:                     # B-03 same-state: the night's V / variant image not in its survey image's state
+            by = {}
+            for r in refused_inputs:
+                by.setdefault(r['product'], []).append(r['date'])
+            u.meta['input_refusals'] = {k: sorted(v) for k, v in by.items()}
+            u.note(f'input refusals (B-03 same-state, {input_resolver.REFUSALS_FILE}): '
+                   + '; '.join(f'{k} {len(v)} night(s) {sorted(v)}' for k, v in sorted(by.items()))[:1500])
+            u.add_output(input_resolver.refusals_path(cell_dir), 'input_refusals', cell=cell)
         for p, cls in _build_outputs(cell_dir, sc):
             u.add_output(p, cls, cell=cell)
 
@@ -954,6 +967,12 @@ def _plan_build(cell, args, out, planned):
     if nraw:
         lines.append(f'{nraw} night(s) without a dewarped Phase-2 image: the RAW image is used and the flow dewarps it '
                      f'(coadd failsafe; RAW_INPUT_FLOW_RULE {_cfg().masters_build.RAW_INPUT_FLOW_RULE!r}, B-03)')
+    if _cfg().masters_build.RAW_INPUT_FLOW_RULE == 'same-state':
+        from exopipe.phase3.lib.masters import input_resolver
+        pv = input_resolver.preview(lst, sc, dates)
+        lines.append('B-03 same-state: ' + ('; '.join(f'{k} refused on {len(v)} night(s) {v}' for k, v in sorted(pv.items()))
+                                            if pv else 'every V / variant image in its night\'s survey-image state')
+                     + ' (excluded nights included)')
     nights = [d for d, _, _ in dates]
     try:
         ex, _ = IP.exclusion_readers_agree(lst, sc, nights, co)

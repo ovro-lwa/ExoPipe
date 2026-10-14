@@ -67,7 +67,7 @@ WIRING = {
         'SUPERSEDED_ARCHIVE': 'step', 'EPOCH_GATE_CARRY_DIR': 'step', 'EPOCH_GATE_CARRY': 'step', 'STRIP_CARD_PREFIXES': 'step'},
     'masters_build': {
         'CUTOVER_DATE': 'attr:coadd.CUTOVER_DATE', 'FLOW_MAX_NAN_FRACTION': 'mirror',
-        'ALLOW_STALE_FLOW': 'env-call:P3_ALLOW_STALE_FLOW', 'RAW_INPUT_FLOW_RULE': 'mirror',
+        'ALLOW_STALE_FLOW': 'env-call:P3_ALLOW_STALE_FLOW', 'INPUT_RESOLVER': 'step', 'RAW_INPUT_FLOW_RULE': 'step',
         'PROVISIONAL_V_GRID_MISMATCH': 'mirror', 'REF_MODE': 'attr:coadd.REF_MODE',
         'REFERENCE_DATES': 'attr:coadd.REFERENCE_DATES', 'REF_ASTROM_MAX_ARCMIN': 'attr:coadd.REF_ASTROM_MAX_AMIN',
         'REF_ASTROM_PIVOT_MHZ': 'mirror', 'REF_ASTROM_EXPONENT': 'mirror', 'REF_ASTROM_MIN_ANCHORS': 'mirror',
