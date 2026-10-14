@@ -65,7 +65,10 @@ resume), `cells` (cell / item-list grammar), `runner` (multi-node jobs), `env` (
 10. **While `paths.PRODUCTION_WRITES` is False** (the refactor window) no step writes under a production root; parity
     runs pass `--out` to their own root and `--parity`, which refuses (PermissionError) every write outside `--out`,
     `--work`, /tmp and /dev/null in the step and in every Python subprocess it starts (`core/guard.py`,
-    `core/parity_sitecustomize/`).
+    `core/parity_sitecustomize/`; /dev/shm and the host's site SCRATCH_ROOT are also allowed).
+11. **American English** in new text - comments, docstrings, `--help`, messages, docs (catalog, color, center, gray,
+    meter, analyze; CLAUDE.md 8b, Gregg 2026-10-14). Existing text is converted only where it is edited for another
+    reason, and never inside a string that matches production output (log lines, engine messages a gate greps).
 
 ## Writing a step (for maintainers)
 
