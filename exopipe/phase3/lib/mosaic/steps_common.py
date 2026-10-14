@@ -580,6 +580,8 @@ def run_tasks(tasks, lane_sets, task_dir, label='task'):
                 out = {'status': 'error', 'message': f'worker wrote no result (exit {res.rc}): {res.tail[-800:]}'}
             out.update(rc=res.rc, wall_s=res.wall_s, legacy_code=res.fingerprint, log=t.get('log'),
                        argv=' '.join(res.argv))
+            if res.fallback_refusals:          # B-30: a fallback site refused in the worker, whatever its own except did
+                out.update(status='refused', message=res.reason)
             with lock:
                 results[t['key']] = out
             print(f"mosaic {label} {t['key']}: {out.get('status')} ({res.wall_s:.0f} s)"

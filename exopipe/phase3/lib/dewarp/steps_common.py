@@ -429,7 +429,7 @@ def gate_child_modules(script=None):
         for have, want in CHILD_PERMITTED_LINE_DIFFS.get(br_rel, ()):
             bt = bt.replace(have + '\n', want + '\n', 1)
         from exopipe.phase3.core import fallback
-        if pt != bt and not fallback.same_code_modulo_sites(pt, bt):   # B-30 sites are pure insertions (a no-op under
+        if pt != bt and not fallback.same_code_modulo_sites(pt, bt, pure_calls=('_deep_path',)):   # B-30 sites: pure insertions (no-op under
             #                                                              'fallback'; under 'refuse' the step refuses)
             pl, bl = pt.splitlines(), bt.splitlines()
             first = next((i for i, (a, b) in enumerate(zip(pl, bl)) if a != b), min(len(pl), len(bl)))

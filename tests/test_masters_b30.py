@@ -143,6 +143,22 @@ def main():
             PB._DEEP_CACHE.pop('41MHz', None)
             return PB.subband_deep_pb('41MHz', pbd)
         both('fallbacks.PB_DEEP_MAP_FALLBACK', deep, lambda r: np.allclose(r[0], 0.75), 'subband_deep_pb (no deep map)')
+        # a CACHED six-bin mean is the fallback at every use (skeptic MINOR 3: only the first use was counted)
+        CFG.authorize([], out=T)
+        CFG.set('fallbacks.PB_DEEP_MAP_FALLBACK', 'fallback')
+        m = fallback.mark()
+        PB._DEEP_CACHE.pop('41MHz', None)
+        PB.subband_deep_pb('41MHz', pbd)
+        PB.subband_deep_pb('41MHz', pbd)                                   # cache hit
+        check('subband_deep_pb: a cached six-bin mean is counted at every use', fallback.since(m)[1] ==
+              {'fallbacks.PB_DEEP_MAP_FALLBACK': 2}, fallback.since(m))
+        CFG.reset()
+        try:
+            PB.subband_deep_pb('41MHz', pbd)
+            hit_refused = False
+        except fallback.FallbackRefused:
+            hit_refused = True
+        check('subband_deep_pb: a cached six-bin mean refuses under the ruled policy', hit_refused)
         wfits(PB._deep_path('41MHz', pbd), np.full((8, 8), 0.75), **wcs_cards())
         m = fallback.mark()
         deep()
@@ -157,6 +173,30 @@ def main():
             PB._WIN_CACHE.clear()
             return PB.window_model_pb('41MHz', 0.0, 10.0, pbd)
         both('fallbacks.PB_REFERENCE_TIME_FALLBACK', window, lambda r: r[0].shape == (8, 8), 'window_model_pb (no PBTREF)')
+        # the memory cache and the node-local disk cache (skeptic MINOR 3: a cached window built at the default time was
+        # used silently - the disk cache was read before the site, and its file name does not record PBTREF)
+        CFG.authorize([], out=T)
+        CFG.set('fallbacks.PB_REFERENCE_TIME_FALLBACK', 'fallback')
+        PB._WIN_CACHE.clear()
+        PB.window_model_pb('41MHz', 0.0, 10.0, pbd)
+        m = fallback.mark()
+        PB.window_model_pb('41MHz', 0.0, 10.0, pbd)                        # memory-cache hit
+        check('window_model_pb: a memory-cached window without PBTREF is counted at every use',
+              fallback.since(m)[1] == {'fallbacks.PB_REFERENCE_TIME_FALLBACK': 1}, fallback.since(m))
+        CFG.reset()
+        cdir = f'{T}/wincache'
+        os.makedirs(cdir, exist_ok=True)
+        np.save(f'{cdir}/41MHz_000.0_010.0_n3_{os.path.basename(os.path.dirname(os.path.abspath(pbd)))}.npy',
+                np.ones((8, 8), np.float32))
+        os.environ['P3_PB_WINDOW_CACHE'] = cdir
+        PB._WIN_CACHE.clear()
+        try:
+            PB.window_model_pb('41MHz', 0.0, 10.0, pbd)
+            disk_refused = False
+        except fallback.FallbackRefused:
+            disk_refused = True
+        os.environ['P3_PB_WINDOW_CACHE'] = ''
+        check('window_model_pb: a disk-cached window refuses before use when the library map has no PBTREF', disk_refused)
         PB._beam_interp = saved.pop('interp')
         c = saved.pop('cache')
         if c is None:

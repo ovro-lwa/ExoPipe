@@ -133,27 +133,42 @@ def test_refusal_r1_signature():
 
 
 def test_refusal_missing_source_and_keys():
-    """(iii) unresolvable source or keys = refusal, never fallback."""
+    """(iii) unresolvable source or keys = refusal, never fallback. Under the B-30 ruled policy an unreadable source is
+    refused already by epoch_time_header (fallbacks.EPOCH_TIME_SOURCE_FALLBACK); under the production value that site is
+    counted and save_epoch_residual refuses, as before."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import fallback
+    key = 'fallbacks.EPOCH_TIME_SOURCE_FALLBACK'
     tmp = tempfile.mkdtemp(prefix='r1gate_')
     try:
         tmpl, _, _ = _setup(tmp)
         data = np.zeros((4, 4), dtype=np.float32)
         out = os.path.join(tmp, 'nosrc_I_sub.fits')
-        for bad_src in (None,
-                        os.path.join(tmp, 'DOES_NOT_EXIST.fits'),
-                        _mk_source(os.path.join(tmp, 'nobeam.fits'), {})):
-            raised = False
-            try:
-                cfp.save_epoch_residual(out, data,
-                                        cfp.epoch_time_header(tmpl, bad_src),
-                                        bad_src, tmpl, 'I')
-            except cfp.EpochHeaderRefusal as e:
-                raised = True
-                assert 'Fallback to template/master values is forbidden' \
-                    in str(e)
-            assert raised, f'missing source {bad_src!r} was NOT refused'
-            assert not os.path.exists(out), 'refusal must write nothing'
+        for pol in ('refuse', 'fallback'):
+            CFG.reset()
+            CFG.authorize([], out=tmp)
+            CFG.set(key, pol)
+            for bad_src in (None,
+                            os.path.join(tmp, 'DOES_NOT_EXIST.fits'),
+                            _mk_source(os.path.join(tmp, 'nobeam.fits'), {})):
+                unreadable = bad_src is None or not os.path.exists(bad_src)
+                raised = False
+                try:
+                    cfp.save_epoch_residual(out, data,
+                                            cfp.epoch_time_header(tmpl, bad_src),
+                                            bad_src, tmpl, 'I')
+                except fallback.FallbackRefused as e:
+                    raised = True
+                    assert pol == 'refuse' and unreadable and key in str(e), (pol, bad_src, str(e))
+                except cfp.EpochHeaderRefusal as e:
+                    raised = True
+                    assert not (pol == 'refuse' and unreadable), (pol, bad_src)
+                    assert 'Fallback to template/master values is forbidden' \
+                        in str(e)
+                assert raised, f'missing source {bad_src!r} was NOT refused ({pol})'
+                assert not os.path.exists(out), 'refusal must write nothing'
     finally:
+        CFG.reset()
         shutil.rmtree(tmp, ignore_errors=True)
 
 

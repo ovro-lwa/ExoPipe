@@ -176,6 +176,10 @@ def subband_deep_pb(subband, pb_dir=PB_DIR):
     hour by build_pb_library.build_deep). Falls back to the equal-weight mean of the six
     10-min bins if the deep map is absent (numerically identical, for backward compat)."""
     if subband in _DEEP_CACHE:
+        if not os.path.exists(_deep_path(subband, pb_dir)):   # a cached six-bin mean is the fallback at every use
+            from exopipe.phase3.core import fallback      # WAVE2 B-30
+            fallback.site('fallbacks.PB_DEEP_MAP_FALLBACK', f'{_deep_path(subband, pb_dir)} absent - the cached deep PB is '
+                          f'the mean of the six 10-min bins')
         return _DEEP_CACHE[subband]
     deep_path = _deep_path(subband, pb_dir)
     if os.path.exists(deep_path):
@@ -239,8 +243,16 @@ def window_model_pb(subband, t0_min, t1_min, pb_dir=PB_DIR, quantum_min=0.5):
         q1 = q0 + quantum_min
     key = (subband, q0, q1)
     if key in _WIN_CACHE:
+        if 'PBTREF' not in _WIN_CACHE[key][1]:        # the cached header is the library map's: no PBTREF = the default time
+            from exopipe.phase3.core import fallback      # WAVE2 B-30
+            fallback.site('fallbacks.PB_REFERENCE_TIME_FALLBACK', f'{subband} PB window {q0}-{q1} min: the cached window was '
+                          f'computed at 2025-01-01T00:00 UTC (no PBTREF)')
         return _WIN_CACHE[key]
     _, hdr = subband_bin_pb(subband, 0, pb_dir)
+    if 'PBTREF' not in hdr:                         # before the disk cache: a cached window keeps no record of its PBTREF
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.PB_REFERENCE_TIME_FALLBACK', f'{subband} PB window {q0}-{q1} min: the PB header has no '
+                      f'PBTREF - the beam would be computed at 2025-01-01T00:00 UTC')
     # NODE-LOCAL DISK CACHE (2026-09-23): the map depends only on (subband, window), never on the cell or night, so a
     # window is computed once per node (about 50-100 s per sub-time) and reused by every cell and worker. Re-derivable
     # scratch -> node-local /fast, never Lustre (CLAUDE.md s7). P3_PB_WINDOW_CACHE='' disables it.
@@ -262,10 +274,6 @@ def window_model_pb(subband, t0_min, t1_min, pb_dir=PB_DIR, quantum_min=0.5):
         _GRID_CACHE[gk] = SkyCoord(ra.ravel(), dec.ravel(), unit='deg')
     sc = _GRID_CACHE[gk]
     nsub = max(1, int(round((q1 - q0) / WIN_STEP_MIN)))
-    if 'PBTREF' not in hdr:
-        from exopipe.phase3.core import fallback      # WAVE2 B-30
-        fallback.site('fallbacks.PB_REFERENCE_TIME_FALLBACK', f'{subband} PB window {q0}-{q1} min: the PB header has no '
-                      f'PBTREF - the beam would be computed at 2025-01-01T00:00 UTC')
     tref = Time(hdr.get('PBTREF', '2025-01-01T00:00:00'), location=OVRO_LOC)
     freq = float(cfg.SUBBAND_FREQ_HZ[subband]['center'])
     interp = _beam_interp()
@@ -392,6 +400,10 @@ def wideband_pb(scope, lst, master_path, pb_dir=PB_DIR, category='deep', binidx=
             if w <= 0:
                 continue
             if binidx is None and sb in _FULL_REPROJ_CACHE:
+                if not os.path.exists(_deep_path(sb, pb_dir)):
+                    from exopipe.phase3.core import fallback      # WAVE2 B-30
+                    fallback.site('fallbacks.PB_DEEP_MAP_FALLBACK', f'{_deep_path(sb, pb_dir)} absent - the cached Full-grid '
+                                  f'PB of {sb} is the mean of the six 10-min bins')
                 grid = _FULL_REPROJ_CACHE[sb]
             else:
                 data, hdr = _pb_of(sb)

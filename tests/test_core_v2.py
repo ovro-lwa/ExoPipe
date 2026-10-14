@@ -1085,6 +1085,108 @@ def test_item7_fallback_children():
         assert u2.status == 'done' and rec['fallbacks'] == {KEY: 3}, (u2.status, rec.get('fallbacks'))
 
 
+def _fork_worker(i):
+    """A fork-pool worker that reaches a site and swallows it, as coadd._run_final_worker does."""
+    from astropy.io import fits
+    from exopipe.phase3.lib.masters import coadd
+    try:
+        coadd.get_midpoint_time(fits.Header(), f'/x/w{i}.fits')
+    except Exception:                                # noqa: BLE001
+        pass
+    return i
+
+
+def test_item7_fallback_fork_workers():
+    """Sites reached inside FORKED pool workers (their memory dies with them, and they skip atexit): the events reach the
+    parent's unit through the spool - a swallowed refusal still refuses the unit, a count is still recorded."""
+    import multiprocessing as mp
+    from exopipe.phase3.core import record
+    with cfg_restored() as CFG, Scratch('item7f') as d:
+        CFG.authorize([], out=d)
+        out = os.path.join(d, 'a.csv')
+        open(out, 'w').write('a\n1\n')
+        run = record.Run('t7f', ['x'], d, CFG, config_sections=())
+        with run.unit('fork_refuse') as u:
+            with mp.get_context('fork').Pool(2) as pool:
+                assert pool.map(_fork_worker, range(3)) == [0, 1, 2]
+            u.add_output(out, 'csv_table')
+        assert u.status == 'refused' and KEY in u.reason, (u.status, u.reason)
+        CFG.set(KEY, 'fallback')
+        with run.unit('fork_count') as u2:
+            with mp.get_context('fork').Pool(2) as pool:
+                pool.map(_fork_worker, range(5))
+            u2.add_output(out, 'csv_table')
+        rec = record.load_record(d, 't7f', 'fork_count')
+        assert u2.status == 'done' and rec['fallbacks'] == {KEY: 5}, (u2.status, rec.get('fallbacks'))
+
+
+def test_item7_fallback_threads_and_outside_units():
+    """Units in threads each take their own thread's events; events outside every unit go to the run record, and a
+    refusal there refuses the run."""
+    import threading
+    from astropy.io import fits
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.masters import coadd
+    with cfg_restored() as CFG, Scratch('item7t') as d:
+        CFG.authorize([], out=d)
+        CFG.set(KEY, 'fallback')
+        out = os.path.join(d, 'a.csv')
+        open(out, 'w').write('a\n1\n')
+        run = record.Run('t7t', ['x'], d, CFG, config_sections=())
+        go = threading.Barrier(2)
+
+        def work(name, n):
+            with run.unit(name) as u:
+                go.wait()
+                for _ in range(n):
+                    coadd.get_midpoint_time(fits.Header())
+                u.add_output(out, 'csv_table')
+        ts = [threading.Thread(target=work, args=(f'th{n}', n)) for n in (2, 7)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        got = {n: record.load_record(d, 't7t', f'th{n}').get('fallbacks') for n in (2, 7)}
+        assert got == {2: {KEY: 2}, 7: {KEY: 7}}, got
+        coadd.get_midpoint_time(fits.Header())                      # outside every unit: the run's record holds it
+        assert run.fallback_outside() == ([], {KEY: 1}) and run.exit_code() == 0, run.fallback_outside()
+        CFG.set(KEY, 'refuse')
+        try:
+            coadd.get_midpoint_time(fits.Header(), '/x/outside.fits')
+        except Exception:                            # noqa: BLE001 - caught outside a unit (mosaic's task runner)
+            pass
+        assert run.exit_code() == 2, 'a refusal outside every unit refuses the run'
+        summ = json.load(open(run.write_summary()))
+        assert summ['fallbacks_outside_units'] == {KEY: 1} and summ['fallback_refusals_outside_units'][0]['key'] == KEY
+
+
+def test_item7_fallback_sticky_outcomes():
+    """After a caught refusal: a later error keeps its traceback in the notes (the unit refuses, the site named); a
+    KeyboardInterrupt keeps its own outcome ('error: interrupted') and propagates."""
+    from astropy.io import fits
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.masters import coadd
+    with cfg_restored() as CFG, Scratch('item7s') as d:
+        run = record.Run('t7s', ['x'], d, CFG, config_sections=())
+        with run.unit('later_error') as u:
+            try:
+                coadd.get_midpoint_time(fits.Header(), '/x/a.fits')
+            except Exception:                        # noqa: BLE001
+                pass
+            {}['missing']
+        assert u.status == 'refused' and KEY in u.reason and any('Traceback' in n and 'KeyError' in n for n in u.notes)
+        try:
+            with run.unit('interrupted') as u2:
+                try:
+                    coadd.get_midpoint_time(fits.Header(), '/x/b.fits')
+                except Exception:                    # noqa: BLE001
+                    pass
+                raise KeyboardInterrupt
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError('KeyboardInterrupt swallowed')
+        assert u2.status == 'error' and u2.reason == 'interrupted', (u2.status, u2.reason)
+
+
 PROD_MOD = """def f(h, p):
     try:
         x = read(p)
@@ -1131,18 +1233,30 @@ def test_item7_site_lines_pure_insertion():
 
 def test_item7_fallback_registry():
     """Every fallback key is RULED, is set to 'fallback' in the production parity file, and is named by a
-    fallback.site('<key>' call in the code; every such call names a config key (no dead keys, no unkeyed sites)."""
+    fallback.site(<key>) call; every such call names its key as a string literal that is a config key (an AST scan: no
+    quoting style or computed key escapes it - a computed key would fail at run time under every policy)."""
+    import ast
     import re
     from exopipe.phase3.core import fallback
     from exopipe.phase3.config import CFG
     keys = fallback.all_keys()
     assert keys, 'no fallback keys'
-    calls = set()
+    calls, bad = set(), []
     for dp, dn, fn in os.walk(os.path.join(REPO, 'exopipe')):
         dn[:] = [x for x in dn if x != '__pycache__']
         for f in fn:
-            if f.endswith('.py') and f != 'fallback.py':
-                calls |= set(re.findall(r"fallback\.site\(\s*'([a-z_]+\.[A-Z0-9_]+)'", open(os.path.join(dp, f)).read()))
+            if not f.endswith('.py') or f == 'fallback.py':
+                continue
+            p = os.path.join(dp, f)
+            for n in ast.walk(ast.parse(open(p).read())):
+                if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == 'site'
+                        and isinstance(n.func.value, ast.Name) and n.func.value.id == 'fallback'):
+                    a0 = n.args[0] if n.args else None
+                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                        calls.add(a0.value)
+                    else:
+                        bad.append(f'{os.path.relpath(p, REPO)}:{n.lineno}')
+    assert not bad, f'fallback.site calls without a literal key: {bad}'
     assert calls == set(keys), ('unkeyed sites', sorted(calls - set(keys)), 'dead keys', sorted(set(keys) - calls))
     assert all(CFG.ruled(k) for k in keys), [k for k in keys if not CFG.ruled(k)]
     par = open(os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')).read()

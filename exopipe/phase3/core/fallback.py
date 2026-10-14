@@ -24,14 +24,26 @@ Design: exopipe_ops/refactor_20261012/plan/wave2/B30_DESIGN.md.
 import collections
 import json
 import os
+import tempfile
+import threading
 
 from exopipe.phase3.core.record import Refusal
 
 POLICIES = ('refuse', 'fallback')
 SECTION = 'fallbacks'
 SUFFIX = '_FALLBACK'
-COUNTS = collections.Counter()      # key -> fallbacks taken in this process (policy 'fallback')
-REFUSALS = []                       # [(key, detail)] refused in this process (policy 'refuse'), in order
+# State of this process. EVENTS = [[thread id, key, kind ('count' | 'refuse'), n, detail, taken]] in order; a unit takes
+# the events of its own thread since it started (threaded units each get theirs), the run records what no unit took.
+# COUNTS / REFUSALS are the same events as totals (for readers that want them). One lock: sites can run in threads.
+EVENTS = []
+COUNTS = collections.Counter()
+REFUSALS = []
+_LOCK = threading.Lock()
+# The process whose units record. A FORKED worker (multiprocessing fork pool) sees its parent's pid here: its memory dies
+# with it and it skips atexit, so it writes each event to a spool file at once, which the parent drains (mark / since /
+# take / dump). A process started fresh (core.legacy.run) is its own owner and sends its state back through
+# EXOPIPE3_FALLBACK_OUT instead.
+_OWNER = os.getpid()
 _ENV = None
 
 
@@ -63,34 +75,111 @@ def policy(key):
     return v
 
 
+def _spool_dir():
+    return os.path.join(tempfile.gettempdir(), f'exopipe3_fallback_spool_{_OWNER}')
+
+
+def _record(kind, key, n, detail, tid=None, spool=True):
+    tid = threading.get_ident() if tid is None else tid
+    with _LOCK:
+        EVENTS.append([tid, key, kind, int(n), str(detail), False])
+        if kind == 'count':
+            COUNTS[key] += int(n)
+        else:
+            REFUSALS.append((key, str(detail)))
+    if spool and os.getpid() != _OWNER:          # a forked worker: write the event out now
+        try:
+            d = _spool_dir()
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, f'{os.getpid()}.jsonl'), 'a') as f:
+                f.write(json.dumps([kind, key, int(n), str(detail)]) + '\n')
+        except OSError:
+            pass
+
+
+def _drain():
+    """Absorb the spooled events of this process's forked workers (owner only); attributed to the draining thread."""
+    if os.getpid() != _OWNER:
+        return
+    d = _spool_dir()
+    if not os.path.isdir(d):
+        return
+    for fn in sorted(os.listdir(d)):
+        p = os.path.join(d, fn)
+        try:
+            with open(p) as f:
+                lines = f.read().split('\n')
+            os.remove(p)
+        except OSError:
+            continue
+        for ln in lines:
+            try:
+                kind, key, n, detail = json.loads(ln)
+            except ValueError:                   # empty, or a worker killed mid-write
+                continue
+            _record(kind, key, n, detail, spool=False)
+    try:
+        os.rmdir(d)
+    except OSError:
+        pass
+
+
 def site(key, detail, n=1):
     """A fallback site was reached. 'fallback': count ``n`` and return (the caller keeps production behaviour);
     'refuse': record and raise FallbackRefused."""
     if policy(key) == 'fallback':
-        COUNTS[key] += n
+        _record('count', key, n, detail)
         return
-    REFUSALS.append((key, str(detail)))
+    _record('refuse', key, 1, detail)
     raise FallbackRefused(f'B-30 fallback site {key}: {detail} - REFUSED (no silent fallbacks, Gregg 2026-10-13; '
                           f"{key}='fallback' keeps the production behaviour, counted)")
 
 
 def mark():
-    """The state to compare against later (a unit takes it when it starts)."""
-    return len(REFUSALS), COUNTS.copy()
+    """The state to compare against later (a unit or a run takes it when it starts)."""
+    _drain()
+    with _LOCK:
+        return len(EVENTS), threading.get_ident()
+
+
+def _select(m, take, any_thread=False, untaken_only=False):
+    _drain()
+    n0, tid = m
+    refs, counts = [], collections.Counter()
+    with _LOCK:
+        for e in EVENTS[n0:]:
+            if (not any_thread and e[0] != tid) or (untaken_only and e[5]):
+                continue
+            if take:
+                e[5] = True
+            if e[2] == 'count':
+                counts[e[1]] += e[3]
+            else:
+                refs.append((e[1], e[4]))
+    return refs, dict(counts)
 
 
 def since(m):
-    """(refusals, counts) recorded after mark ``m``."""
-    n, c = m
-    out = COUNTS.copy()
-    out.subtract(c)
-    return REFUSALS[n:], {k: v for k, v in out.items() if v > 0}
+    """(refusals, counts) of this thread recorded after mark ``m``."""
+    return _select(m, take=False)
+
+
+def take(m):
+    """since(m), marking those events as taken (a unit at its end: what the run's record must not count again)."""
+    return _select(m, take=True)
+
+
+def outside(m):
+    """(refusals, counts) after mark ``m``, any thread, that no unit took (a run at its end)."""
+    return _select(m, take=False, any_thread=True, untaken_only=True)
 
 
 def absorb(counts, refusals):
     """Add a child's counts and refusals to this process's state (core.legacy.run), so the running unit records them."""
-    COUNTS.update({k: int(n) for k, n in (counts or {}).items()})
-    REFUSALS.extend(tuple(r) for r in refusals or ())
+    for k, n in (counts or {}).items():
+        _record('count', k, n, 'in a child process', spool=False)
+    for r in refusals or ():
+        _record('refuse', r[0], 1, r[1], spool=False)
 
 
 def all_keys(cfg=None):
@@ -107,10 +196,13 @@ def child_env():
 
 
 def dump(path):
-    """Write this process's counts and refusals (a child, at exit)."""
+    """Write this process's counts and refusals (a child, at exit) - its forked workers' spooled events included."""
+    _drain()
     tmp = path + '.tmp'
+    with _LOCK:
+        d = {'counts': dict(COUNTS), 'refusals': list(REFUSALS)}
     with open(tmp, 'w') as f:
-        json.dump({'counts': dict(COUNTS), 'refusals': REFUSALS}, f)
+        json.dump(d, f)
     os.replace(tmp, path)
 
 
@@ -136,41 +228,84 @@ def _is_site_stmt(n):
     return False
 
 
-def site_lines(text):
-    """Line numbers (1-based) of the B-30 site statements of a module: `from exopipe.phase3.core import fallback`,
-    `fallback.site(...)`, an `if` (no else) whose body is only those, and an `else:` branch that is only those (the
-    `else:` line included when it stands alone). A site is a pure insertion of whole lines."""
+# calls a site's `if` test or arguments may make (no side effects); anything else keeps the statement - a difference
+_PURE_FUNCS = {'len', 'any', 'all', 'int', 'float', 'str', 'repr', 'sorted', 'min', 'max', 'abs', 'isinstance', 'hasattr',
+               'getattr', 'bool', 'round', 'sum', 'set', 'list', 'tuple', 'dict', 'enumerate', 'zip', 'range', 'type'}
+_PURE_METHODS = {'get', 'exists', 'isfile', 'isdir', 'isfinite', 'isnan', 'any', 'all', 'sum', 'abs', 'size', 'basename',
+                 'dirname', 'join', 'items', 'keys', 'values', 'exc_info', 'isot', 'strip', 'startswith', 'endswith',
+                 'lower', 'upper', 'format', 'split'}
+
+
+def _pure(node, extra=()):
     import ast
+    for n in ast.walk(node):
+        if isinstance(n, (ast.Yield, ast.YieldFrom, ast.Await, ast.Lambda)) or type(n).__name__ == 'NamedExpr':
+            return False
+        if isinstance(n, ast.Call):
+            f = n.func
+            if isinstance(f, ast.Name) and (f.id in _PURE_FUNCS or f.id in extra):
+                continue
+            if isinstance(f, ast.Attribute) and f.attr in _PURE_METHODS:
+                continue
+            return False
+    return True
+
+
+def site_lines(text, pure_calls=()):
+    """Line numbers (1-based) of the B-30 site statements of a module: `from exopipe.phase3.core import fallback`,
+    `fallback.site(...)` with pure arguments, an `if` (no else) with a pure test whose body is only those, and an `else:`
+    branch that is only those (its `else:` line, comment allowed, included). Each must stand alone on its lines (no `;`).
+    ``pure_calls``: module functions a test or argument may call besides the builtins / methods allowed (a path helper).
+    A statement that fails any check stays - the comparison then shows a difference (fail-safe)."""
+    import ast
+    import textwrap
     lines = text.split('\n')
     out = set()
 
+    def alone(st):
+        seg = textwrap.dedent('\n'.join(lines[st.lineno - 1:st.end_lineno]))
+        try:
+            return len(ast.parse(seg).body) == 1
+        except SyntaxError:
+            return False
+
+    def is_site(st):
+        if not _is_site_stmt(st) or not alone(st):
+            return False
+        if isinstance(st, ast.Expr):
+            c = st.value
+            return all(_pure(x, pure_calls) for x in c.args) and all(_pure(k.value, pure_calls) for k in c.keywords)
+        return True
+
     def only_sites(stmts):
-        return bool(stmts) and all(_is_site_stmt(x) or (isinstance(x, ast.If) and not x.orelse and only_sites(x.body))
-                                   for x in stmts)
+        return bool(stmts) and all(is_site(x) or (isinstance(x, ast.If) and not x.orelse and _pure(x.test, pure_calls)
+                                                  and only_sites(x.body)) for x in stmts)
+
     for node in ast.walk(ast.parse(text)):
         for field in ('body', 'orelse', 'finalbody'):
             stmts = getattr(node, field, None)
             if not (isinstance(stmts, list) and stmts and isinstance(stmts[0], ast.stmt)):
                 continue
             for st in stmts:
-                if _is_site_stmt(st) or (isinstance(st, ast.If) and not st.orelse and only_sites(st.body)):
+                if is_site(st) or (isinstance(st, ast.If) and not st.orelse and _pure(st.test, pure_calls)
+                                   and only_sites(st.body) and alone(st)):
                     out.update(range(st.lineno, st.end_lineno + 1))
         if isinstance(node, ast.If) and node.orelse and only_sites(node.orelse) and not isinstance(node.orelse[0], ast.If):
             k = node.orelse[0].lineno - 1                     # the `else:` line, when it stands alone
-            if lines[k - 1].strip() == 'else:':
+            if lines[k - 1].split('#')[0].strip() == 'else:':
                 out.add(k)
                 for st in node.orelse:
                     out.update(range(st.lineno, st.end_lineno + 1))
     return out
 
 
-def strip_site_lines(text):
+def strip_site_lines(text, pure_calls=()):
     """The module text without its B-30 site lines (site_lines): what is left is the production text."""
-    drop = site_lines(text)
+    drop = site_lines(text, pure_calls)
     return '\n'.join(x for i, x in enumerate(text.split('\n'), 1) if i not in drop)
 
 
-def same_code_modulo_sites(production_text, branch_text):
+def same_code_modulo_sites(production_text, branch_text, pure_calls=()):
     """True when the branch module is the production module plus B-30 site lines only: byte equality once they are
     removed (a comment-only or any other edit of production still differs - the gates that use this stay byte-strict)."""
-    return production_text == strip_site_lines(branch_text)
+    return production_text == strip_site_lines(branch_text, pure_calls)

@@ -245,6 +245,8 @@ class Run:
         pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         self.commit = git_commit(pkg)
         self.units = []
+        from exopipe.phase3.core import fallback   # B-30: fallback events of this run that no unit took (outside units)
+        self._fallback_mark = fallback.mark()
         # the sections the step declares (CONFIG) plus the shared ones; None = every section (no CONFIG declared)
         self.config_sections = tuple(config_sections) if config_sections is not None else None
 
@@ -293,24 +295,35 @@ class Run:
         """DESIGN 11.5: 1 if any unit errored; else 2 if any unit was refused (a unit with item refusals that
         completed is done, not refused); else 3 only when EVERY unit had no input; else 0."""
         st = [u.status for u in self.units]
-        if not st:
-            return EXIT_NO_INPUT
         if 'error' in st:
             return EXIT_ERROR
-        if 'refused' in st:
+        if 'refused' in st or self.fallback_outside()[0]:   # B-30: a site refused outside every unit refuses the run
             return EXIT_REFUSED
+        if not st:
+            return EXIT_NO_INPUT
         if all(s == 'no-input' for s in st):
             return EXIT_NO_INPUT
         if all(s in ('done', 'skipped-valid', 'no-input') for s in st):
             return EXIT_DONE
         return EXIT_ERROR
 
+    def fallback_outside(self):
+        """(refusals, counts) of the fallback sites reached during this run that no unit took (core/fallback.py)."""
+        from exopipe.phase3.core import fallback
+        return fallback.outside(self._fallback_mark)
+
     def write_summary(self):
         if self.dry_run or getattr(self, 'no_records', False):
             return None
         p = os.path.join(self.out_root, '_records', self.step, '_runs', f'{self.run_id}.json')
+        refs, counts = self.fallback_outside()
+        extra = {}
+        if counts:
+            extra['fallbacks_outside_units'] = dict(sorted(counts.items()))
+        if refs:
+            extra['fallback_refusals_outside_units'] = [{'key': k, 'detail': d} for k, d in refs]
         atomic_write_json(p, dict(self.header(), finished=utcnow(), started=self.started, summary=self.summary(),
-                                  reason=getattr(self, 'run_reason', None),
+                                  reason=getattr(self, 'run_reason', None), **extra,
                                   units=[{'unit': u.name, 'status': u.status, 'reason': u.reason,
                                           'n_planned': len(u.planned), 'n_refused_items': len(u.refused_items)}
                                          for u in self.units]))
@@ -436,24 +449,29 @@ class UnitRecord:
         return 'done', ''
 
     def _fallback_state(self):
-        """(refusals, counts) of the fallback sites reached since this unit started, its children's included
-        (core/fallback.py)."""
+        """(refusals, counts) of the fallback sites reached since this unit started in its thread, its children's and
+        forked workers' included (core/fallback.py); at the unit's end, the events it took."""
+        if getattr(self, '_fallback_taken', None) is not None:
+            return self._fallback_taken
         from exopipe.phase3.core import fallback
         return fallback.since(self._fallback_mark)
 
     def __exit__(self, etype, exc, tb):
-        refs = self._fallback_state()[0]
-        if refs and not (etype is not None and issubclass(etype, Refusal)):
+        from exopipe.phase3.core import fallback
+        self._fallback_taken = fallback.take(self._fallback_mark)
+        refs = self._fallback_taken[0]
+        if refs and (etype is None or (issubclass(etype, Exception) and not issubclass(etype, Refusal))):
             # STICKY (B-30): a fallback site refused inside the unit, and code between the site and the unit caught it
-            # (or the unit went on and failed later) - the unit refuses with the site named
+            # (or the unit went on and failed later) - the unit refuses with the site named. KeyboardInterrupt / SystemExit
+            # keep their own outcome (below).
             if etype is not None:
-                self.notes.append('after a refused fallback site: ' +
-                                  ''.join(traceback.format_exception_only(etype, exc)).strip()[:2000])
+                self.notes.append('after a refused fallback site: '
+                                  + ''.join(traceback.format_exception(etype, exc, tb))[-4000:])
             key, detail = refs[0]
             self.status, self.reason = 'refused', (f'B-30 fallback site {key}: {detail} - REFUSED (caught before the '
                                                    f'unit; {len(refs)} refusal(s) in the unit)')
             self.write()
-            return etype is not None and issubclass(etype, (Refusal, NoInput, Exception))
+            return etype is not None
         if etype is None:
             self.status, self.reason = self._final_status()
         elif issubclass(etype, Refusal):

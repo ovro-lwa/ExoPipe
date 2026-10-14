@@ -193,6 +193,9 @@ def readonly_reference(CO, lst, scope, W):
         h = fits.getheader(prev)
         if h.get('COADDOP'):
             return 'MASTER', f"MASTER:{h.get('COADDOP')}:{h.get('CONSTDIG', 'nodigest')}"
+        from exopipe.phase3.core import fallback      # WAVE2 B-30: the masters build's REFERENCE_MASTER site, mirrored
+        fallback.site('fallbacks.REFERENCE_MASTER_FALLBACK', f'{prev}: no COADDOP card - the flows would be measured against '
+                      f'the fixed-table night {CO.REFERENCE_DATES.get(lst)} instead of this previous master')
     return CO.REFERENCE_DATES.get(lst), None
 
 
