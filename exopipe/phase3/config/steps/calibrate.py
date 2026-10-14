@@ -1,29 +1,38 @@
-"""Config draft of `exopipe3 calibrate` (unit calibrate; REFACTOR WINDOW ONLY - config.py loads every _cfgdraft_*.py until the
-refactor chat folds them into config.py, then this file is deleted).
+"""Configuration of `exopipe3 calibrate` - every tunable of the command, one section per stage or tier.
 
-Source: plan/specs/calibrate.md section 3 (values = production at exopipe main 03ca797, exopipe_ops 0c1580c, clv15 9b6525d;
-re-read 2026-10-13 ~05:00 UTC: every sha256 below was recomputed and equals the spec's). "ledger N" = line N of
-clv15/fix_ledger.csv. Every RULED value is a fix_id of that ledger (tests/test_calibrate.py checks each one).
-
-Sections defined HERE: tables (shared: the installed reference tables, read by every consumer), calibrate (shared keys of the
-step), calibrate_bright_parent, calibrate_multiples, calibrate_scale, calibrate_fluxcorr, calibrate_template_k.
-Not here (classes not implemented in this unit yet - see plan/impl/calibrate.md): calibrate_snapshot_curve,
-calibrate_snapshot_astrom, calibrate_completeness.
-
-Changes from the spec block (all pure, no product change):
-- Constants that live INSIDE an in-place module and cannot be set by the step (S_EDGES, SEP_STEP_BW, SEP_MAX_BW, N_NULL,
-  NULL_CAP_DEG, NULL_SEED, MIN_CANDIDATES_PER_BIN, SMOOTH_KERNEL_BINS, REPORT_RATIO, PASS_LEDGER_VERDICTS of
-  p3s3_curve_derive / phase3_snapshot_curve; VLSS_MIN_JY, MATCH_FRAC, ISO_FRAC, MIN_SUBBANDS, PB_MIN, ALPHA, PL_MAX_SCATTER,
-  VLSSR_CATALOG of vlssr_flux_check; INJECT_SNRS, START_OFFSET_MAX_BEAMS, MIN_SEP_BEAMS, BRIGHT_AVOID_* of the injection
-  scripts) are NOT config keys during the window: a key the step cannot apply would make the config untrue. They are listed
-  in the section docstrings with their file:line and become keys when the code is absorbed into lib/calibrate.
-- Values the step DOES apply (argv / environment of the in-place call, its own ported arithmetic, its gates) are keys. Where
-  the in-place module also holds the value as a literal (post_process's 20-candidate guard and monotone cap; scale_table_v4's
-  window and rounding), the step checks the module against the key before using it (lock) and refuses on a difference.
-- Shared roots come from config.paths (COADD_SB_ROOT, TRANSIENTS_ROOT, SUBLST_ROOT, OPS_ROOT, ...), never a key here.
+Units folded here: calibrate. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step calibrate` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit calibrate (was exopipe/phase3/_cfgdraft_calibrate.py)
+# Config draft of `exopipe3 calibrate` (unit calibrate; REFACTOR WINDOW ONLY - config.py loads every config/steps/*.py until the
+# refactor chat folds them into config.py, then this file is deleted).
+#
+# Source: plan/specs/calibrate.md section 3 (values = production at exopipe main 03ca797, exopipe_ops 0c1580c, clv15 9b6525d;
+# re-read 2026-10-13 ~05:00 UTC: every sha256 below was recomputed and equals the spec's). "ledger N" = line N of
+# clv15/fix_ledger.csv. Every RULED value is a fix_id of that ledger (tests/test_calibrate.py checks each one).
+#
+# Sections defined HERE: tables (shared: the installed reference tables, read by every consumer), calibrate (shared keys of the
+# step), calibrate_bright_parent, calibrate_multiples, calibrate_scale, calibrate_fluxcorr, calibrate_template_k.
+# Not here (classes not implemented in this unit yet - see plan/impl/calibrate.md): calibrate_snapshot_curve,
+# calibrate_snapshot_astrom, calibrate_completeness.
+#
+# Changes from the spec block (all pure, no product change):
+# - Constants that live INSIDE an in-place module and cannot be set by the step (S_EDGES, SEP_STEP_BW, SEP_MAX_BW, N_NULL,
+#   NULL_CAP_DEG, NULL_SEED, MIN_CANDIDATES_PER_BIN, SMOOTH_KERNEL_BINS, REPORT_RATIO, PASS_LEDGER_VERDICTS of
+#   p3s3_curve_derive / phase3_snapshot_curve; VLSS_MIN_JY, MATCH_FRAC, ISO_FRAC, MIN_SUBBANDS, PB_MIN, ALPHA, PL_MAX_SCATTER,
+#   VLSSR_CATALOG of vlssr_flux_check; INJECT_SNRS, START_OFFSET_MAX_BEAMS, MIN_SEP_BEAMS, BRIGHT_AVOID_* of the injection
+#   scripts) are NOT config keys during the window: a key the step cannot apply would make the config untrue. They are listed
+#   in the section docstrings with their file:line and become keys when the code is absorbed into lib/calibrate.
+# - Values the step DOES apply (argv / environment of the in-place call, its own ported arithmetic, its gates) are keys. Where
+#   the in-place module also holds the value as a literal (post_process's 20-candidate guard and monotone cap; scale_table_v4's
+#   window and rounding), the step checks the module against the key before using it (lock) and refuses on a difference.
+# - Shared roots come from config.paths (COADD_SB_ROOT, TRANSIENTS_ROOT, SUBLST_ROOT, OPS_ROOT, ...), never a key here.
+# =====================================================================================================================
 
 class tables(_Section):
     """Installed reference tables: path + sha256 + version, read by every consumer (search, catalog, forced, masters, fitting).

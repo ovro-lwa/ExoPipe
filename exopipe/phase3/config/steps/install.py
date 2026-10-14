@@ -1,23 +1,32 @@
-"""Config draft (refactor window) for `exopipe3 install` (deep only - refactor-chat decision 6, crosscheck group 13):
-sections install and install_enqueue.
+"""Configuration of `exopipe3 install` - every tunable of the command, one section per stage or tier.
 
-Loaded by config._load_drafts() until the refactor chat folds these classes into config.py at '# @@STEP-SECTIONS@@'
-(spec plan/specs/install.md section 3). Every value keeps the production value of the baseline and names its source
-(file:line) and ruling. Host names are not here: the flow holder and the node-local roots come from the site file
-(FLOW_HOLDER, NODE_LOCAL_ROOTS).
-
-Shared roots are NOT copied here (decision 3): the working tree is CFG.paths.COADD_SB_ROOT, the archive
-CFG.paths.PHASE3_ARCHIVE_ROOT, the archive generation CFG.paths.ARCHIVE_RUN, the ops root CFG.paths.OPS_ROOT. The step
-refuses an override of those four (an override of the working root would otherwise move the default --out away from the
-production guard while the archive stayed production).
-
-WINDOW NOTE: during the refactor window the install itself is the production module called in place
-(exopipe/phase3/lib/install/install.py = phase3_install.py, "PI"). PI hard-codes some values below (marked 'PI literal');
-the step checks at start that each still equals PI's literal and refuses an override it cannot honour (until absorption),
-so these values are documented and hashed, not yet levers.
+Units folded here: install. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step install` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit install (was exopipe/phase3/_cfgdraft_install.py)
+# Config draft (refactor window) for `exopipe3 install` (deep only - refactor-chat decision 6, crosscheck group 13):
+# sections install and install_enqueue.
+#
+# Loaded by config._load_drafts() until the refactor chat folds these classes into config.py at '# @@STEP-SECTIONS@@'
+# (spec plan/specs/install.md section 3). Every value keeps the production value of the baseline and names its source
+# (file:line) and ruling. Host names are not here: the flow holder and the node-local roots come from the site file
+# (FLOW_HOLDER, NODE_LOCAL_ROOTS).
+#
+# Shared roots are NOT copied here (decision 3): the working tree is CFG.paths.COADD_SB_ROOT, the archive
+# CFG.paths.PHASE3_ARCHIVE_ROOT, the archive generation CFG.paths.ARCHIVE_RUN, the ops root CFG.paths.OPS_ROOT. The step
+# refuses an override of those four (an override of the working root would otherwise move the default --out away from the
+# production guard while the archive stayed production).
+#
+# WINDOW NOTE: during the refactor window the install itself is the production module called in place
+# (exopipe/phase3/lib/install/install.py = phase3_install.py, "PI"). PI hard-codes some values below (marked 'PI literal');
+# the step checks at start that each still equals PI's literal and refuses an override it cannot honour (until absorption),
+# so these values are documented and hashed, not yet levers.
+# =====================================================================================================================
 
 class install(_Section):
     """exopipe3 install: gated install of a new deep cell generation into the working tree and the archive (B10;

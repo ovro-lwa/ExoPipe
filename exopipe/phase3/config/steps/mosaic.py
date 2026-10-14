@@ -1,25 +1,34 @@
-"""Config draft of `exopipe3 mosaic` (refactor window; config.py auto-loads _cfgdraft_*.py until the refactor chat folds these
-sections into config.py at '# @@STEP-SECTIONS@@'). Source: plan/specs/mosaic.md section 3, with one change the computed task
-made: the LST list is no longer a fixed range - it is the LST directories of the input master generation that exist
-(mosaic.LSTS = None; deep chat 927a836: 'new mosaic step takes its LST list from the masters that exist').
+"""Configuration of `exopipe3 mosaic` - every tunable of the command, one section per stage or tier.
 
-Every value names its unit, its ruling (a fix_id of clv15/fix_ledger.csv; checked by tests/test_mosaic.py) and the production
-file:line it was taken from. Production code: exopipe main 927a836 (CJ = exopipe/phase3/lib/mosaic/coadd_jysr.py, same lines
-as the production mosaic_coadd_jysr.py; BP = lib/mosaic/band_products.py = make_band_products.py; VM =
-lib/mosaic/verify_mosaic.py; CP = lib/mosaic/conformance_pass.py = mosaic_conformance_pass.py), exopipe_ops HEAD (STG =
-mosaic_stage_from_lustre.py, ANC = mosaic_v2_flux_anchor_measure.py, run_mosaic_v2*.sh, run_mosaic_jobs.sh).
-
-Protection (config.py honours both metas):
-  RULED           a key a ruling of Gregg's set: override only with --ruling-for <section.KEY>=<ledger ID> or into a
-                  non-production --out.
-  PROTECTED_KEYS  (a) pinned inputs; (b) values the IN-PLACE code reads from its OWN literals during the window (the engine's
-                  arithmetic literals, the ops scripts' ROOT / VARMAP / name patterns, the renderer's CAR extent, the anchor
-                  script's photometry). An override could not reach them, so config refuses it; steps/mosaic.py also refuses
-                  to start when a value here differs from the in-place literal (gate G0). Keys the step passes as arguments
-                  or sets on the imported module (NSIDE excepted, see below) are ordinary tunables.
+Units folded here: mosaic. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step mosaic` lists the sections.
 """
 from exopipe.phase3.config import _Section, instrument
 
+
+# =====================================================================================================================
+# unit mosaic (was exopipe/phase3/_cfgdraft_mosaic.py)
+# Config draft of `exopipe3 mosaic` (refactor window; config.py auto-loads config/steps/*.py until the refactor chat folds these
+# sections into config.py at '# @@STEP-SECTIONS@@'). Source: plan/specs/mosaic.md section 3, with one change the computed task
+# made: the LST list is no longer a fixed range - it is the LST directories of the input master generation that exist
+# (mosaic.LSTS = None; deep chat 927a836: 'new mosaic step takes its LST list from the masters that exist').
+#
+# Every value names its unit, its ruling (a fix_id of clv15/fix_ledger.csv; checked by tests/test_mosaic.py) and the production
+# file:line it was taken from. Production code: exopipe main 927a836 (CJ = exopipe/phase3/lib/mosaic/coadd_jysr.py, same lines
+# as the production mosaic_coadd_jysr.py; BP = lib/mosaic/band_products.py = make_band_products.py; VM =
+# lib/mosaic/verify_mosaic.py; CP = lib/mosaic/conformance_pass.py = mosaic_conformance_pass.py), exopipe_ops HEAD (STG =
+# mosaic_stage_from_lustre.py, ANC = mosaic_v2_flux_anchor_measure.py, run_mosaic_v2*.sh, run_mosaic_jobs.sh).
+#
+# Protection (config.py honours both metas):
+#   RULED           a key a ruling of Gregg's set: override only with --ruling-for <section.KEY>=<ledger ID> or into a
+#                   non-production --out.
+#   PROTECTED_KEYS  (a) pinned inputs; (b) values the IN-PLACE code reads from its OWN literals during the window (the engine's
+#                   arithmetic literals, the ops scripts' ROOT / VARMAP / name patterns, the renderer's CAR extent, the anchor
+#                   script's photometry). An override could not reach them, so config refuses it; steps/mosaic.py also refuses
+#                   to start when a value here differs from the in-place literal (gate G0). Keys the step passes as arguments
+#                   or sets on the imported module (NSIDE excepted, see below) are ordinary tunables.
+# =====================================================================================================================
 
 class mosaic(_Section):
     """`exopipe3 mosaic` - all-sky HEALPix mosaics of the deep masters (PHASE3_ARCHITECTURE.md 7bis; mosaic v2, Gregg

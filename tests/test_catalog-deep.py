@@ -645,7 +645,7 @@ def test_content_tests_catch_defects():
 
 
 def test_compileall():
-    files = [f'{REPO}/exopipe/phase3/steps/catalog.py', f'{REPO}/exopipe/phase3/_cfgdraft_catalog-deep.py',
+    files = [f'{REPO}/exopipe/phase3/steps/catalog.py', f'{REPO}/exopipe/phase3/config/steps/catalog.py',
              __file__] + glob.glob(f'{REPO}/exopipe/phase3/lib/catalog/deep_*.py') + [f'{REPO}/exopipe/phase3/lib/catalog/tests.py']
     r = subprocess.run([sys.executable, '-m', 'py_compile'] + files, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr

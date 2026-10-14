@@ -64,7 +64,7 @@ def synthetic_tables(d, **values):
     source parsed first by the install's config patch (lib/calibrate/common.config_sources)."""
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.calibrate import common as K
-    src = os.path.join(d, '_cfgdraft_synthetic_tables.py')
+    src = os.path.join(d, 'synthetic_tables_config.py')
     open(src, 'w').write('from exopipe.phase3.config import _Section\n\n\nclass tables(_Section):\n'
                          + ''.join(f'    {k} = {v!r}\n' for k, v in values.items()))
     real = K.config_sources
@@ -323,7 +323,7 @@ def test_config_patch():
     # one K entry
     rx = r"(\(\s*'deep'\s*,\s*'I'\s*\)\s*:\s*\()([^)]*)(\))"
     patch3, ch3 = K.config_patch({}, entry_edits=[('fitting', 'K_TEMPLATE', rx, r'\g<1>0.999, 0.888\g<3>')])
-    assert ('fitting', 'K_TEMPLATE') in ch3 and '0.999, 0.888' in patch3 and 'config.py' in patch3
+    assert ('fitting', 'K_TEMPLATE') in ch3 and '0.999, 0.888' in patch3 and 'config/shared.py' in patch3
     for f in K.config_sources():                         # the patch never touches the sources
         assert '0.999, 0.888' not in open(f).read()
 

@@ -1,21 +1,30 @@
-"""Config draft (refactor window) for `exopipe3 archive` (spec plan/specs/archive.md section 3): sections archive,
-archive_quarantine, archive_sync, archive_retire, archive_push, archive_snapshot, archive_rollback.
+"""Configuration of `exopipe3 archive` - every tunable of the command, one section per stage or tier.
 
-Loaded by config._load_drafts() until the refactor chat folds these classes into config.py at '# @@STEP-SECTIONS@@'.
-Every value keeps the production value of the baseline and names its source (file:line; 'ops/' = /lustre/gh/main/
-exopipe_ops/) and its ruling (fix_ledger.csv ID). Shared roots are NOT copied (refactor decision 3): the archive is
-CFG.paths.PHASE3_ARCHIVE_ROOT, the generation Run CFG.paths.ARCHIVE_RUN, the ops root CFG.paths.OPS_ROOT, the snapshot
-ship root CFG.paths.SNAPSHOT_FLEET_OUT, the sub-LST / snapshot trees CFG.paths.SUBLST_ROOT / SNAPSHOT_*_ROOT. Templates
-below are expanded by the step: {ops} = paths.OPS_ROOT, {state} = archive.STATE_DIR, {root} = the archive root of the run
-(paths.PHASE3_ARCHIVE_ROOT, or --archive-root for a mirror), {run} = the generation Run (paths.ARCHIVE_RUN or
---generation-run), {round} = the quarantine round.
-
-PROTECTED_KEYS hold two kinds of key: safety rules no override may relax (NEVER_DELETE, SAME_FILESYSTEM_ONLY, ...), and
-values that MIRROR a literal inside a production helper the step runs in place during the window (an override would make
-the step's plan disagree with what the helper does, so it is refused until absorption).
+Units folded here: archive. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step archive` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit archive (was exopipe/phase3/_cfgdraft_archive.py)
+# Config draft (refactor window) for `exopipe3 archive` (spec plan/specs/archive.md section 3): sections archive,
+# archive_quarantine, archive_sync, archive_retire, archive_push, archive_snapshot, archive_rollback.
+#
+# Loaded by config._load_drafts() until the refactor chat folds these classes into config.py at '# @@STEP-SECTIONS@@'.
+# Every value keeps the production value of the baseline and names its source (file:line; 'ops/' = /lustre/gh/main/
+# exopipe_ops/) and its ruling (fix_ledger.csv ID). Shared roots are NOT copied (refactor decision 3): the archive is
+# CFG.paths.PHASE3_ARCHIVE_ROOT, the generation Run CFG.paths.ARCHIVE_RUN, the ops root CFG.paths.OPS_ROOT, the snapshot
+# ship root CFG.paths.SNAPSHOT_FLEET_OUT, the sub-LST / snapshot trees CFG.paths.SUBLST_ROOT / SNAPSHOT_*_ROOT. Templates
+# below are expanded by the step: {ops} = paths.OPS_ROOT, {state} = archive.STATE_DIR, {root} = the archive root of the run
+# (paths.PHASE3_ARCHIVE_ROOT, or --archive-root for a mirror), {run} = the generation Run (paths.ARCHIVE_RUN or
+# --generation-run), {round} = the quarantine round.
+#
+# PROTECTED_KEYS hold two kinds of key: safety rules no override may relax (NEVER_DELETE, SAME_FILESYSTEM_ONLY, ...), and
+# values that MIRROR a literal inside a production helper the step runs in place during the window (an override would make
+# the step's plan disagree with what the helper does, so it is refused until absorption).
+# =====================================================================================================================
 
 class archive(_Section):
     """`exopipe3 archive` - shared values (brief B17; CLAUDE.md 7 and 8). Archive root = paths.PHASE3_ARCHIVE_ROOT, current

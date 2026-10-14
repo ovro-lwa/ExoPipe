@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""STANDING TEST - `exopipe3 dewarp` (steps/dewarp.py, lib/dewarp/steps_*.py, lib/dewarp/tests.py, _cfgdraft_dewarp.py).
+"""STANDING TEST - `exopipe3 dewarp` (steps/dewarp.py, lib/dewarp/steps_*.py, lib/dewarp/tests.py, config/steps/dewarp.py).
 
 Synthetic part (a fresh directory /tmp/exopipe3_tests_dewarp/<pid>, removed at the end; every step command runs with --out in
 it, the apply/verify/record run with --parity):

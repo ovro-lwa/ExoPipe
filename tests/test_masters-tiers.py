@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """STANDING TEST - unit masters-tiers: `exopipe3 masters --tier sublst|snapshot` (lib/masters/tier_sublst.py, tier_snapshot.py,
-tests_sublst.py, tests_snapshot.py, _cfgdraft_masters-tiers.py).
+tests_sublst.py, tests_snapshot.py, config/steps/masters.py).
 
 Synthetic part (a fresh directory under /tmp/exopipe3_tests_masters-tiers/, removed at the end):
   config      sections load; every RULED ledger ID is a row of the fix ledger; PROTECTED_KEYS refuse an override, an

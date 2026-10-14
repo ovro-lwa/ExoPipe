@@ -1,22 +1,31 @@
-"""Config draft of `exopipe3 dewarp` (refactor window; config.py auto-loads _cfgdraft_*.py until the refactor chat folds this
-section into config.py at '# @@STEP-SECTIONS@@'). Source: plan/specs/dewarp.md section 3. Every value names its unit, its
-ruling (fix_id of clv15/fix_ledger.csv) and the production file:line it was taken from (exopipe main 03ca797, exopipe_ops
-0c1580c; MD = exopipe/phase3/lib/dewarp/master_dewarp.py, same line numbers as the production phase3_master_dewarp.py).
+"""Configuration of `exopipe3 dewarp` - every tunable of the command, one section per stage or tier.
 
-Shared roots are NOT in this section (refactor chat decision 3, 2026-10-13 ~04:30 UTC): the deep working tree is
-paths.COADD_SB_ROOT (was dewarp.WORKING_ROOT), the archive Run of the screen record is paths.ARCHIVE_RUN (was
-dewarp.SCREEN_RECORD_RUN), the archive root paths.PHASE3_ARCHIVE_ROOT, and the ops root paths.OPS_ROOT (ROUTE_LIST is relative
-to it). CONTENT_CHECK_SCRIPT is relative to core.env.legacy_root('exopipe_ops').
-
-PROTECTED_KEYS (config.py honours it; decision 4) holds two groups:
-  - pinned inputs and the product names the window forbids renaming (DESIGN 11.4);
-  - the keys whose values the in-place modules (phase3_master_dewarp, cascade_dewarp, phase2_config, pb_apply, membership,
-    check_mdewarp_gen) read from their OWN constants during the window - an override would not reach them (DESIGN 11.1).
-    steps/dewarp.py also refuses to start when one of these differs from the in-place constant (gate G-D0). At absorption into
-    lib/ the in-place code takes them as arguments and they move from PROTECTED_KEYS to RULED only.
+Units folded here: dewarp. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step dewarp` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit dewarp (was exopipe/phase3/_cfgdraft_dewarp.py)
+# Config draft of `exopipe3 dewarp` (refactor window; config.py auto-loads config/steps/*.py until the refactor chat folds this
+# section into config.py at '# @@STEP-SECTIONS@@'). Source: plan/specs/dewarp.md section 3. Every value names its unit, its
+# ruling (fix_id of clv15/fix_ledger.csv) and the production file:line it was taken from (exopipe main 03ca797, exopipe_ops
+# 0c1580c; MD = exopipe/phase3/lib/dewarp/master_dewarp.py, same line numbers as the production phase3_master_dewarp.py).
+#
+# Shared roots are NOT in this section (refactor chat decision 3, 2026-10-13 ~04:30 UTC): the deep working tree is
+# paths.COADD_SB_ROOT (was dewarp.WORKING_ROOT), the archive Run of the screen record is paths.ARCHIVE_RUN (was
+# dewarp.SCREEN_RECORD_RUN), the archive root paths.PHASE3_ARCHIVE_ROOT, and the ops root paths.OPS_ROOT (ROUTE_LIST is relative
+# to it). CONTENT_CHECK_SCRIPT is relative to core.env.legacy_root('exopipe_ops').
+#
+# PROTECTED_KEYS (config.py honours it; decision 4) holds two groups:
+#   - pinned inputs and the product names the window forbids renaming (DESIGN 11.4);
+#   - the keys whose values the in-place modules (phase3_master_dewarp, cascade_dewarp, phase2_config, pb_apply, membership,
+#     check_mdewarp_gen) read from their OWN constants during the window - an override would not reach them (DESIGN 11.1).
+#     steps/dewarp.py also refuses to start when one of these differs from the in-place constant (gate G-D0). At absorption into
+#     lib/ the in-place code takes them as arguments and they move from PROTECTED_KEYS to RULED only.
+# =====================================================================================================================
 
 class dewarp(_Section):
     """`exopipe3 dewarp` - deep master dewarp per LST (B6, contract step 21; DESIGN 2 row 3).

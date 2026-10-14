@@ -549,7 +549,7 @@ def test_deep_cli():
 def test_import_side_effects():
     sys.path.insert(0, os.path.join(REPO, 'tests'))
     import test_import_side_effects as T
-    mine = [b for b in T.ast_violations() if '/forced' in b[0] or '_cfgdraft_forced' in b[0]]
+    mine = [b for b in T.ast_violations() if '/forced' in b[0] or 'config/steps/forced.py' in b[0]]
     check('no module-level side effects in the forced files (AST layer of the standing test)', not mine, str(mine))
 
 

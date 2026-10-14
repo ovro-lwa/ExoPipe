@@ -1,23 +1,32 @@
-"""Config draft of the `exopipe3 flow` sections (refactor window; folded into config.py by the refactor chat).
+"""Configuration of `exopipe3 flow` - every tunable of the command, one section per stage or tier.
 
-Spec: exopipe_ops/refactor_20261012/plan/specs/flow.md section 3, adapted to the binding decisions at the top of
-plan/specs/_CROSSCHECK.md (2026-10-13 ~04:30 UTC):
-- masters owns the deep native-reference reconstruction and the epoch-gate carry: the spec's section flow_reference is NOT
-  here. The deep reference mode and fixed-table nights, CUTOVER_DATE, MIN_DATES_FOR_COADD, the reference astrometry gate,
-  FLOW_MAX_NAN_FRACTION and SAFE_SCALE_FLOOR are read from masters_build (one home); the stored-flow source cell from
-  masters' own working-cell rule (lib/masters/deep_stagein.working_cell, masters_stagein tables);
-- frames owns the snapshot flow movies: the spec's section flow_movie is NOT here (frames_movies);
-- shared roots come from config.paths (SUBLST_ROOT, SNAPSHOT_FLEET_OUT, SNAPSHOT_FLOW_ROOT, PHASE3_ARCHIVE_ROOT,
-  COADD_SB_ROOT); interpreters are site PYTHON 'default' and 'flow' only.
-
-Every value is today's production value with its unit, the ruling (ledger fix_id) or "no ruling found", and the source
-file:line (exopipe 03ca797, clv15 9b6525d, exopipe_ops 0c1580c). ``RULED`` and ``PROTECTED_KEYS`` are honoured by config.py.
-Values that copy a constant of an in-place module are checked against the live module at every run (the flow drift guard:
-a difference refuses unless the key was overridden explicitly; an override that cannot reach the module - one that runs in
-a child process - refuses).
+Units folded here: flow. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step flow` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit flow (was exopipe/phase3/_cfgdraft_flow.py)
+# Config draft of the `exopipe3 flow` sections (refactor window; folded into config.py by the refactor chat).
+#
+# Spec: exopipe_ops/refactor_20261012/plan/specs/flow.md section 3, adapted to the binding decisions at the top of
+# plan/specs/_CROSSCHECK.md (2026-10-13 ~04:30 UTC):
+# - masters owns the deep native-reference reconstruction and the epoch-gate carry: the spec's section flow_reference is NOT
+#   here. The deep reference mode and fixed-table nights, CUTOVER_DATE, MIN_DATES_FOR_COADD, the reference astrometry gate,
+#   FLOW_MAX_NAN_FRACTION and SAFE_SCALE_FLOOR are read from masters_build (one home); the stored-flow source cell from
+#   masters' own working-cell rule (lib/masters/deep_stagein.working_cell, masters_stagein tables);
+# - frames owns the snapshot flow movies: the spec's section flow_movie is NOT here (frames_movies);
+# - shared roots come from config.paths (SUBLST_ROOT, SNAPSHOT_FLEET_OUT, SNAPSHOT_FLOW_ROOT, PHASE3_ARCHIVE_ROOT,
+#   COADD_SB_ROOT); interpreters are site PYTHON 'default' and 'flow' only.
+#
+# Every value is today's production value with its unit, the ruling (ledger fix_id) or "no ruling found", and the source
+# file:line (exopipe 03ca797, clv15 9b6525d, exopipe_ops 0c1580c). ``RULED`` and ``PROTECTED_KEYS`` are honoured by config.py.
+# Values that copy a constant of an in-place module are checked against the live module at every run (the flow drift guard:
+# a difference refuses unless the key was overridden explicitly; an override that cannot reach the module - one that runs in
+# a child process - refuses).
+# =====================================================================================================================
 
 class flow(_Section):
     """exopipe3 flow - optical-flow alignment on the GPU (image_plane_correction Brox flow, JAX, site PYTHON['flow']).

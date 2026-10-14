@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TEST - `exopipe3 install` (steps/install.py, lib/install/steps_*.py, lib/install/tests.py, _cfgdraft_install.py).
+"""TEST - `exopipe3 install` (steps/install.py, lib/install/steps_*.py, lib/install/tests.py, config/steps/install.py).
 
 Synthetic data in a fresh directory /tmp/exopipe3_tests_install/<pid>/ (removed at the end). Nothing outside it is
 written. Production files are only READ: the headers of the real 12h_Red mdewarp generation and the four small records of

@@ -316,15 +316,15 @@ def repo_root():
 
 
 def config_sources():
-    """The config source files: exopipe/phase3/config.py and (refactor window) every _cfgdraft_*.py beside it."""
-    here = os.path.join(repo_root(), 'exopipe', 'phase3')
-    return [os.path.join(here, 'config.py')] + sorted(glob.glob(os.path.join(here, '_cfgdraft_*.py')))
+    """The config source files: the package exopipe/phase3/config/ (__init__.py, shared.py, steps/<step>.py)."""
+    here = os.path.join(repo_root(), 'exopipe', 'phase3', 'config')
+    return [os.path.join(here, '__init__.py'), os.path.join(here, 'shared.py')] + sorted(
+        p for p in glob.glob(os.path.join(here, 'steps', '*.py')) if os.path.basename(p) != '__init__.py')
 
 
 def _section_spans():
-    """{section: (source file, {KEY: (first line, last line)})} for every config section defined in config.py or a
-    _cfgdraft_*.py, from each file's syntax tree (1-based inclusive line numbers). The drafts are executed by config.py
-    without a sys.modules entry, so inspect cannot name their files: the sources are parsed directly."""
+    """{section: (source file, {KEY: (first line, last line)})} for every config section defined in the config package
+    (exopipe/phase3/config/), from each file's syntax tree (1-based inclusive line numbers)."""
     import ast
     want = set(CFG().sections()) - {'site'}
     out = {}
@@ -617,9 +617,10 @@ def code_literals(strings):
     root = os.path.join(repo_root(), 'exopipe', 'phase3')
     strings = [x for x in strings if x and len(x) >= 8]
     for dp, dn, fn in os.walk(root):
-        dn[:] = [x for x in dn if x != '__pycache__' and not (os.path.basename(dp) == 'lib' and x == 'calibrate')]
+        dn[:] = [x for x in dn if x != '__pycache__' and not (os.path.basename(dp) == 'lib' and x == 'calibrate')
+                 and not (dp == root and x == 'config')]          # the config sources are patched, not scanned
         for n in fn:
-            if not n.endswith('.py') or n == 'config.py' or n.startswith('_cfgdraft_'):
+            if not n.endswith('.py'):
                 continue
             p = os.path.join(dp, n)
             try:

@@ -1,19 +1,29 @@
-"""Config draft of `exopipe3 pages` (refactor window; config.py loads it until the refactor chat folds it in).
+"""Configuration of `exopipe3 pages` - every tunable of the command, one section per stage or tier.
 
-Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/pages.md section 3, adapted to the binding decisions at the top
-of plan/specs/_CROSSCHECK.md (2026-10-13 ~04:30 UTC): sections are `pages` and `pages_<tier>` only; deep combined localization
-is catalog's (catalog_localize) - pages reads the tables and keeps the figures; pages owns the review_dir merge and its ONE
-config key (pages.REVIEW_DIR_MERGE; serve reads the merged files); shared roots come from CFG.paths; interpreters are the site
-PYTHON keys default / py36 / tess. Source lines checked against the files on disk 2026-10-13 ~04:00-04:40 UTC (exopipe_ops
-e46bd45, clv15 9dbbbb3). Abbreviations: build_i14 = ops/build_i14_pages_std7.py, tenmin = ops/build_tenmin_pages.py,
-snap_pages = clv15/phase3_snapshot_pages.py; "ledger N" = line N of clv15/fix_ledger.csv.
-
-PROTECTED_KEYS holds (a) product names frozen in the refactor window and pinned roots, and (b) MIRROR keys: constants that
-live INSIDE the in-place production modules (an override would not reach the module). Before a stage runs a module, the step
-reads every mirror constant from the module's SOURCE (lib/pages/mirror.py ANCHORS; nothing imported) and refuses on any
-difference (gate P3). The mirror keys become live parameters when the modules are absorbed into lib/pages.
+Units folded here: pages. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step pages` lists the sections.
 """
 from exopipe.phase3.config import _Section
+
+
+# =====================================================================================================================
+# unit pages (was exopipe/phase3/_cfgdraft_pages.py)
+# Config draft of `exopipe3 pages` (refactor window; config.py loads it until the refactor chat folds it in).
+#
+# Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/pages.md section 3, adapted to the binding decisions at the top
+# of plan/specs/_CROSSCHECK.md (2026-10-13 ~04:30 UTC): sections are `pages` and `pages_<tier>` only; deep combined localization
+# is catalog's (catalog_localize) - pages reads the tables and keeps the figures; pages owns the review_dir merge and its ONE
+# config key (pages.REVIEW_DIR_MERGE; serve reads the merged files); shared roots come from CFG.paths; interpreters are the site
+# PYTHON keys default / py36 / tess. Source lines checked against the files on disk 2026-10-13 ~04:00-04:40 UTC (exopipe_ops
+# e46bd45, clv15 9dbbbb3). Abbreviations: build_i14 = ops/build_i14_pages_std7.py, tenmin = ops/build_tenmin_pages.py,
+# snap_pages = clv15/phase3_snapshot_pages.py; "ledger N" = line N of clv15/fix_ledger.csv.
+#
+# PROTECTED_KEYS holds (a) product names frozen in the refactor window and pinned roots, and (b) MIRROR keys: constants that
+# live INSIDE the in-place production modules (an override would not reach the module). Before a stage runs a module, the step
+# reads every mirror constant from the module's SOURCE (lib/pages/mirror.py ANCHORS; nothing imported) and refuses on any
+# difference (gate P3). The mirror keys become live parameters when the modules are absorbed into lib/pages.
+# =====================================================================================================================
 
 _PAGES_MIRROR = ('PNG_DPI', 'PANEL_CUT_DEG', 'PANEL_OBS_LAT_DEG', 'HOURS_EL_MIN_DEG', 'PANEL_TEXT_WRAP_CHARS',
                  'FORCED_READING', 'FRAME_CACHE', 'PREDICTED_PANELS', 'PRED_V_MATCH_ARCMIN', 'PRED_I_PARENT_MIN_JY',

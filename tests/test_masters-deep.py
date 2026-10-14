@@ -1,5 +1,5 @@
 """Tests of the masters-deep unit (steps/masters.py dispatcher + deep tier; lib/masters/deep_*.py; lib/masters/tests.py;
-_cfgdraft_masters-deep.py). Plain asserts, no pytest:
+config/steps/masters.py). Plain asserts, no pytest:
 
     NUMPY_MADVISE_HUGEPAGE=0 EXOPIPE3_SITE=/lustre/gh/main/exopipe_ops/exopipe3_site.py \
         /opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3 tests/test_masters-deep.py

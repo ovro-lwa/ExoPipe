@@ -10,5 +10,5 @@
     template_k.py     template-fit error scale K per tier and Stokes (summary from trials; sub-LST injection in place)
     tests.py          content tests of every product class the step writes (discovered by core/validate)
 
-Nothing here is a tunable: values come from config sections tables, calibrate and calibrate_* (_cfgdraft_calibrate.py).
+Nothing here is a tunable: values come from config sections tables, calibrate and calibrate_* (config/steps/calibrate.py).
 """

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""STANDING TEST - `exopipe3 followup` (steps/followup.py, _cfgdraft_followup.py, followup/_cfg_adapter.py).
+"""STANDING TEST - `exopipe3 followup` (steps/followup.py, config/steps/followup.py, followup/_cfg_adapter.py).
 
   cli          --help; design-pending ops refuse before any read (G5, nothing written); a flag the op does not use (exit 1)
   config       the seven sections load; PROTECTED keys refuse (G6); RULED ledger IDs exist; pinned input into a production

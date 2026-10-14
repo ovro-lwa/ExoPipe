@@ -1,16 +1,25 @@
-"""Config draft of `exopipe3 serve` (refactor window; folded into config.py by the refactor chat).
+"""Configuration of `exopipe3 serve` - every tunable of the command, one section per stage or tier.
 
-Every value keeps the production value of 2026-10-13 (exopipe_ops HEAD 0c1580c + 6b8a23a M22) and names its source
-file:line and, where one exists, the ledger ID of the ruling that set it (clv15/fix_ledger.csv). Host names live in the
-site file (REVIEW_HOST, CHAIN_HOST); interpreters are the site PYTHON keys 'default' (servers, every in-place script on the
-review host) and 'py36' (the chain host's gate, the forced AD Leo check); the legacy code root (exopipe_ops: the servers'
-cwd and every in-place script) is core.env.legacy_root('exopipe_ops'). Shared roots come from config.paths
-(TRANSIENTS_ROOT for deep / sub-LST runs, SNAPSHOT_REVIEW_ROOT for snapshot runs, SUBLST_ROOT, OPS_ROOT) - never a copy here
-(refactor-chat decisions 2026-10-13, _CROSSCHECK.md top). The review_dir merge belongs to `pages` (decision 6, group 12):
-its environment key is pages.REVIEW_DIR_MERGE, read by serve for the sub-LST cumulative build.
+Units folded here: serve. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step serve` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit serve (was exopipe/phase3/_cfgdraft_serve.py)
+# Config draft of `exopipe3 serve` (refactor window; folded into config.py by the refactor chat).
+#
+# Every value keeps the production value of 2026-10-13 (exopipe_ops HEAD 0c1580c + 6b8a23a M22) and names its source
+# file:line and, where one exists, the ledger ID of the ruling that set it (clv15/fix_ledger.csv). Host names live in the
+# site file (REVIEW_HOST, CHAIN_HOST); interpreters are the site PYTHON keys 'default' (servers, every in-place script on the
+# review host) and 'py36' (the chain host's gate, the forced AD Leo check); the legacy code root (exopipe_ops: the servers'
+# cwd and every in-place script) is core.env.legacy_root('exopipe_ops'). Shared roots come from config.paths
+# (TRANSIENTS_ROOT for deep / sub-LST runs, SNAPSHOT_REVIEW_ROOT for snapshot runs, SUBLST_ROOT, OPS_ROOT) - never a copy here
+# (refactor-chat decisions 2026-10-13, _CROSSCHECK.md top). The review_dir merge belongs to `pages` (decision 6, group 12):
+# its environment key is pages.REVIEW_DIR_MERGE, read by serve for the sub-LST cumulative build.
+# =====================================================================================================================
 
 class serve(_Section):
     """exopipe3 serve: review servers (classify_transients.py, run in place), inspection twins, review hub and inspection

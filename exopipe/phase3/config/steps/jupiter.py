@@ -1,24 +1,33 @@
-"""Config draft of `exopipe3 jupiter` (refactor window; folded into config.py by the refactor chat).
+"""Configuration of `exopipe3 jupiter` - every tunable of the command, one section per stage or tier.
 
-Sections: jupiter (roots, bands, interpreters, environment), jupiter_measure (Phase-1 measurement), jupiter_v2 (V2 Master
-variants, geometry, Blue anchor, metrics, site), jupiter_occurrence (Nancay occurrence maps), jupiter_flag (Phase-1 Jupiter
-flag backfill), jupiter_serve (8800 / 8801).
-
-Conventions of this draft (spec plan/specs/jupiter.md section 3):
-- Every value: unit, ruling (ledger fix_id where one exists) and the production file:line it mirrors.
-- PROTECTED_KEYS: no --set / --config override (config._Config.protected honours a section's PROTECTED_KEYS).
-- RULED: {KEY: ledger fix_id} - an override needs --ruling-for or a non-production --out (config.py machinery).
-- PINNED-INPUT keys (jupiter.SUBLST_ROOT, CUBES_ROOT, EPHEM_DIR, DEEP_WEIGHTS): an override is allowed only into a non-production --out
-  (parity against the pre-bake reserve); the step refuses it into a production --out (lib/jupiter/common.py).
-- MIRROR keys: the in-place module reads its OWN literal. lib/jupiter/mirrors.py compares every MIRROR key with the module
-  literal at step start (refuses when they differ) and refuses an override of a MIRROR key unless the in-place driver can
-  set that module global (the redirectable roots); production runs set nothing.
-Values re-read 2026-10-13 at clv15 HEAD (phase3_jupiter_measure.py last changed 91f5b87), exopipe_ops HEAD (jupiter_server.py
-6b8a23a), exopipe 7965688 Phase-1 files (sha256 pinned below), V2 code files on disk (/lustre/gh/main/phase3/jupiter/v2/code,
-not a git repository: identified per run by sha256 in the run record).
+Units folded here: jupiter. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step jupiter` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit jupiter (was exopipe/phase3/_cfgdraft_jupiter.py)
+# Config draft of `exopipe3 jupiter` (refactor window; folded into config.py by the refactor chat).
+#
+# Sections: jupiter (roots, bands, interpreters, environment), jupiter_measure (Phase-1 measurement), jupiter_v2 (V2 Master
+# variants, geometry, Blue anchor, metrics, site), jupiter_occurrence (Nancay occurrence maps), jupiter_flag (Phase-1 Jupiter
+# flag backfill), jupiter_serve (8800 / 8801).
+#
+# Conventions of this draft (spec plan/specs/jupiter.md section 3):
+# - Every value: unit, ruling (ledger fix_id where one exists) and the production file:line it mirrors.
+# - PROTECTED_KEYS: no --set / --config override (config._Config.protected honours a section's PROTECTED_KEYS).
+# - RULED: {KEY: ledger fix_id} - an override needs --ruling-for or a non-production --out (config.py machinery).
+# - PINNED-INPUT keys (jupiter.SUBLST_ROOT, CUBES_ROOT, EPHEM_DIR, DEEP_WEIGHTS): an override is allowed only into a non-production --out
+#   (parity against the pre-bake reserve); the step refuses it into a production --out (lib/jupiter/common.py).
+# - MIRROR keys: the in-place module reads its OWN literal. lib/jupiter/mirrors.py compares every MIRROR key with the module
+#   literal at step start (refuses when they differ) and refuses an override of a MIRROR key unless the in-place driver can
+#   set that module global (the redirectable roots); production runs set nothing.
+# Values re-read 2026-10-13 at clv15 HEAD (phase3_jupiter_measure.py last changed 91f5b87), exopipe_ops HEAD (jupiter_server.py
+# 6b8a23a), exopipe 7965688 Phase-1 files (sha256 pinned below), V2 code files on disk (/lustre/gh/main/phase3/jupiter/v2/code,
+# not a git repository: identified per run by sha256 in the run record).
+# =====================================================================================================================
 
 class jupiter(_Section):
     """exopipe3 jupiter - the Jupiter reflection program (cross tier). Roots, bands, interpreters, environment."""

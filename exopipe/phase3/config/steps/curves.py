@@ -1,14 +1,23 @@
-"""Config draft of `exopipe3 curves` (refactor window; config.py loads it until the refactor chat folds it in).
+"""Configuration of `exopipe3 curves` - every tunable of the command, one section per stage or tier.
 
-Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/curves.md section 3. Line numbers cite the production files
-as of clv15 6f71d28 / exopipe_ops 6b8a23a (2026-10-13):
-  LC = clv15/phase3_snapshot_lightcurves.py (extractor, last changed 98595b3)   SS = clv15/phase3_snapshot_search.py
-  RA = clv15/phase3_snapshot_refastro.py   CH = clv15/phase3_snapshot_chain.py
-  v9 = exopipe_ops/snapshot_fleet_node_v9.sh   BF = exopipe_ops/snapshot_lightcurve_backfill.sh
-"Ledger N" = line N of clv15/fix_ledger.csv.
+Units folded here: curves. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step curves` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit curves (was exopipe/phase3/_cfgdraft_curves.py)
+# Config draft of `exopipe3 curves` (refactor window; config.py loads it until the refactor chat folds it in).
+#
+# Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/curves.md section 3. Line numbers cite the production files
+# as of clv15 6f71d28 / exopipe_ops 6b8a23a (2026-10-13):
+#   LC = clv15/phase3_snapshot_lightcurves.py (extractor, last changed 98595b3)   SS = clv15/phase3_snapshot_search.py
+#   RA = clv15/phase3_snapshot_refastro.py   CH = clv15/phase3_snapshot_chain.py
+#   v9 = exopipe_ops/snapshot_fleet_node_v9.sh   BF = exopipe_ops/snapshot_lightcurve_backfill.sh
+# "Ledger N" = line N of clv15/fix_ledger.csv.
+# =====================================================================================================================
 
 class curves(_Section):
     """`exopipe3 curves` - the snapshot light-curve product (snapshot contract section 3; preamble C approved 2026-09-17,

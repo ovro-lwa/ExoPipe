@@ -1,23 +1,32 @@
-"""Config draft of `exopipe3 photometry` (refactor window; loaded by config._load_drafts until the refactor chat folds these
-sections into config.py at `# @@STEP-SECTIONS@@`). Spec: exopipe_ops/refactor_20261012/plan/specs/photometry.md section 3,
-with the refactor chat's decisions (_CROSSCHECK.md top, 2026-10-13 ~04:30 UTC): photometry owns the deep target photometry
-(frames, stage, measure, evaluate - forced keeps catflux, the deep panels and the snapshot event panels); interpreters are the
-site PYTHON keys 'default' (deep engines) and 'py36' (snapshot engines); shared roots come from config.paths.
+"""Configuration of `exopipe3 photometry` - every tunable of the command, one section per stage or tier.
 
-Every value: unit in the name or comment, the ruling (ledger ID, clv15/fix_ledger.csv) where one set it, and the production
-file:line it describes (exopipe_ops / clv15 HEAD of 2026-10-13). During the window the engines run IN PLACE
-(core/legacy.run): a value marked MIRROR is a literal of the in-place engine, read here only by the step's gates and content
-tests; the engine keeps its own copy. MIRROR keys and pinned inputs are in PROTECTED_KEYS, so no --set/--config can change
-them (an override would change nothing in the products); tests/test_photometry.py compares each MIRROR value with the
-engine's literal. At absorption the engine reads config and the protection of its MIRROR keys is lifted.
-
-Shared values are referenced, not copied: paths.CLV15_ROOT (sample lists), paths.COADD_SB_ROOT (deep cell roots, the parent
-check's P3_COADD_ROOT), paths.TRANSIENTS_ROOT (searched deep runs), paths.SNAPSHOT_FLEET_OUT (snapshot search outputs: noise
-medians, runinfo), paths.PHASE3_ARCHIVE_ROOT (the snapshot photometry cutouts, sub-directory search_snapshot.CUTOUT_SUBDIR);
-catalog_snapshot.MASTER_CATALOGS and CURVE_CONSTANTS (zone screen); fitting.* (radio positions).
+Units folded here: photometry. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step photometry` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit photometry (was exopipe/phase3/_cfgdraft_photometry.py)
+# Config draft of `exopipe3 photometry` (refactor window; loaded by config._load_drafts until the refactor chat folds these
+# sections into config.py at `# @@STEP-SECTIONS@@`). Spec: exopipe_ops/refactor_20261012/plan/specs/photometry.md section 3,
+# with the refactor chat's decisions (_CROSSCHECK.md top, 2026-10-13 ~04:30 UTC): photometry owns the deep target photometry
+# (frames, stage, measure, evaluate - forced keeps catflux, the deep panels and the snapshot event panels); interpreters are the
+# site PYTHON keys 'default' (deep engines) and 'py36' (snapshot engines); shared roots come from config.paths.
+#
+# Every value: unit in the name or comment, the ruling (ledger ID, clv15/fix_ledger.csv) where one set it, and the production
+# file:line it describes (exopipe_ops / clv15 HEAD of 2026-10-13). During the window the engines run IN PLACE
+# (core/legacy.run): a value marked MIRROR is a literal of the in-place engine, read here only by the step's gates and content
+# tests; the engine keeps its own copy. MIRROR keys and pinned inputs are in PROTECTED_KEYS, so no --set/--config can change
+# them (an override would change nothing in the products); tests/test_photometry.py compares each MIRROR value with the
+# engine's literal. At absorption the engine reads config and the protection of its MIRROR keys is lifted.
+#
+# Shared values are referenced, not copied: paths.CLV15_ROOT (sample lists), paths.COADD_SB_ROOT (deep cell roots, the parent
+# check's P3_COADD_ROOT), paths.TRANSIENTS_ROOT (searched deep runs), paths.SNAPSHOT_FLEET_OUT (snapshot search outputs: noise
+# medians, runinfo), paths.PHASE3_ARCHIVE_ROOT (the snapshot photometry cutouts, sub-directory search_snapshot.CUTOUT_SUBDIR);
+# catalog_snapshot.MASTER_CATALOGS and CURVE_CONSTANTS (zone screen); fitting.* (radio positions).
+# =====================================================================================================================
 
 class photometry(_Section):
     """exopipe3 photometry - photometry of the input samples at their catalogue positions (deep, snapshot; sub-LST refused):

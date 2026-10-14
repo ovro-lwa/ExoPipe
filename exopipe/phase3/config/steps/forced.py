@@ -1,23 +1,32 @@
-"""Config draft of `exopipe3 forced` (refactor window; loaded by config._load_drafts until the refactor chat folds these
-sections into config.py at `# @@STEP-SECTIONS@@`). Spec: exopipe_ops/refactor_20261012/plan/specs/forced.md section 3, as
-amended by the refactor chat's decisions (_CROSSCHECK.md top, 2026-10-13 ~04:30 UTC): the deep family-A measurement (frames,
-stage, measure, evaluate) belongs to `photometry`; `forced` keeps family B (catflux), family C (snapshot event panels) and the
-deep family-A `panels` stage, which reads photometry's evaluate record.
+"""Configuration of `exopipe3 forced` - every tunable of the command, one section per stage or tier.
 
-Every value: unit in the comment, the ruling (ledger ID) where one set it, and the production file:line it describes
-(exopipe_ops / clv15 at HEAD of 2026-10-13 ~04:30 UTC). During the window every stage runs the production script IN PLACE
-(core/legacy.run, DESIGN 11.1): the values below that describe a literal of an in-place script are NOT read by that script.
-The step therefore refuses a --set/--config override of any key outside lib/forced/common.STEERING (an override would change
-nothing in the products), and tests/test_forced.py compares the in-place values here with the literals of the files they
-name (a test, never a runtime read).
-
-Shared roots are NOT repeated here (decision 3): paths.TRANSIENTS_ROOT (deep runs, catflux run dirs, deep page runs),
-paths.SNAPSHOT_REVIEW_ROOT (served snapshot runs), paths.SNAPSHOT_FLEET_OUT (noise tables, hour-median models),
-paths.COADD_SB_ROOT (deep working tree: the Stokes I fallback of catflux, coadd_root.txt of the snapshot pages),
-paths.CLV15_ROOT (target lists). The interpreters are site PYTHON keys (decision 2).
+Units folded here: forced. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step forced` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit forced (was exopipe/phase3/_cfgdraft_forced.py)
+# Config draft of `exopipe3 forced` (refactor window; loaded by config._load_drafts until the refactor chat folds these
+# sections into config.py at `# @@STEP-SECTIONS@@`). Spec: exopipe_ops/refactor_20261012/plan/specs/forced.md section 3, as
+# amended by the refactor chat's decisions (_CROSSCHECK.md top, 2026-10-13 ~04:30 UTC): the deep family-A measurement (frames,
+# stage, measure, evaluate) belongs to `photometry`; `forced` keeps family B (catflux), family C (snapshot event panels) and the
+# deep family-A `panels` stage, which reads photometry's evaluate record.
+#
+# Every value: unit in the comment, the ruling (ledger ID) where one set it, and the production file:line it describes
+# (exopipe_ops / clv15 at HEAD of 2026-10-13 ~04:30 UTC). During the window every stage runs the production script IN PLACE
+# (core/legacy.run, DESIGN 11.1): the values below that describe a literal of an in-place script are NOT read by that script.
+# The step therefore refuses a --set/--config override of any key outside lib/forced/common.STEERING (an override would change
+# nothing in the products), and tests/test_forced.py compares the in-place values here with the literals of the files they
+# name (a test, never a runtime read).
+#
+# Shared roots are NOT repeated here (decision 3): paths.TRANSIENTS_ROOT (deep runs, catflux run dirs, deep page runs),
+# paths.SNAPSHOT_REVIEW_ROOT (served snapshot runs), paths.SNAPSHOT_FLEET_OUT (noise tables, hour-median models),
+# paths.COADD_SB_ROOT (deep working tree: the Stokes I fallback of catflux, coadd_root.txt of the snapshot pages),
+# paths.CLV15_ROOT (target lists). The interpreters are site PYTHON keys (decision 2).
+# =====================================================================================================================
 
 class forced(_Section):
     """exopipe3 forced - shared settings: family B (deep catalogue forced flux, stage catflux), family A page stage (deep

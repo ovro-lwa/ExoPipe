@@ -1,17 +1,26 @@
-"""Config draft of `exopipe3 status` (refactor window; folded into config.py by the refactor chat).
+"""Configuration of `exopipe3 status` - every tunable of the command, one section per stage or tier.
 
-Sections: status (shared keys), status_report, status_rebuild (NEW: --rebuild-due), status_ledger, status_coverage,
-status_conformance, status_qa, status_pages, status_snapshot. Spec: exopipe_ops/refactor_20261012/plan/specs/status.md
-section 3. Every value: unit, ruling (ledger ID or document), source file:line of the production value ("ops/" =
-/lustre/gh/main/exopipe_ops, "pkg/" = /lustre/gh/main/exopipe/exopipe). Roots shared by several steps are NOT repeated
-here (crosscheck decision 3): paths.COADD_SB_ROOT (deep working tree), paths.TRANSIENTS_ROOT, paths.ARCHIVE_RUN,
-paths.PHASE1_ROOT, paths.PHASE2_ROOT, paths.PHASE3_ARCHIVE_ROOT, paths.OPS_ROOT, paths.CLV15_ROOT,
-paths.SNAPSHOT_FLEET_OUT, paths.SNAPSHOT_REVIEW_ROOT, paths.SUBLST_ROOT; the hub folder is serve.HUB_DIR.
-Placeholders expanded by the step: {qa} = status.QA_DIR, {hub} = serve.HUB_DIR, {p2} = paths.PHASE2_ROOT,
-{ops} = paths.OPS_ROOT, {root} = paths.COADD_SB_ROOT.
+Units folded here: status. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step status` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit status (was exopipe/phase3/_cfgdraft_status.py)
+# Config draft of `exopipe3 status` (refactor window; folded into config.py by the refactor chat).
+#
+# Sections: status (shared keys), status_report, status_rebuild (NEW: --rebuild-due), status_ledger, status_coverage,
+# status_conformance, status_qa, status_pages, status_snapshot. Spec: exopipe_ops/refactor_20261012/plan/specs/status.md
+# section 3. Every value: unit, ruling (ledger ID or document), source file:line of the production value ("ops/" =
+# /lustre/gh/main/exopipe_ops, "pkg/" = /lustre/gh/main/exopipe/exopipe). Roots shared by several steps are NOT repeated
+# here (crosscheck decision 3): paths.COADD_SB_ROOT (deep working tree), paths.TRANSIENTS_ROOT, paths.ARCHIVE_RUN,
+# paths.PHASE1_ROOT, paths.PHASE2_ROOT, paths.PHASE3_ARCHIVE_ROOT, paths.OPS_ROOT, paths.CLV15_ROOT,
+# paths.SNAPSHOT_FLEET_OUT, paths.SNAPSHOT_REVIEW_ROOT, paths.SUBLST_ROOT; the hub folder is serve.HUB_DIR.
+# Placeholders expanded by the step: {qa} = status.QA_DIR, {hub} = serve.HUB_DIR, {p2} = paths.PHASE2_ROOT,
+# {ops} = paths.OPS_ROOT, {root} = paths.COADD_SB_ROOT.
+# =====================================================================================================================
 
 class status(_Section):
     """`exopipe3 status` - completion, coverage, gaps, exclusion conformance, stale products, rebuild due, served diffs,

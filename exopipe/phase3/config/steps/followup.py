@@ -1,27 +1,36 @@
-"""Config draft of `exopipe3 followup` (refactor window; config.py loads it until the refactor chat folds it in).
+"""Configuration of `exopipe3 followup` - every tunable of the command, one section per stage or tier.
 
-Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/followup.md section 3 (values and lines checked again
-2026-10-13 ~05:00 UTC against exopipe_ops 554b721, exopipe main ac3d841, clv15 cb371c9). Abbreviations of the source
-files (all IN PLACE during the window, DESIGN 11.1):
-  EP  = exopipe_ops/einstein_probe/ep_wxt_plan_fetch.py (e8338e6: pointing bound 6 h)
-  TL  = exopipe_ops/tess/tess_lightcurve.py              HO = exopipe_ops/phase3_honing.py
-  G2  = exopipe_ops/steep_catalog/stage2g2_lightcurves_p3.py   H4 = .../stage2h4_periodicity_win.py
-  PG  = exopipe_ops/steep_catalog/stage2i_periodicity_page.py  SF = .../steep_fold.py   SD = .../source_diag_page.py
-  FC  = exopipe/phase3/followup/config.py (package, imported in-process by `investigate` / `summary`)
-"Ledger N" = line N of clv15/fix_ledger.csv.
-
-Guards (config.py honours PROTECTED_KEYS and RULED; steps/followup.py honours `pinned_inputs`):
-- PROTECTED_KEYS: (a) production roots (use --out instead) and (b) values that MIRROR a literal inside the in-place code:
-  an override would be recorded but not applied, so no --set / --config can change them (spec 'WINDOW-LOCKED', gate G6).
-  They move out of PROTECTED_KEYS key by key when the consumer is absorbed into lib/followup/. The step also checks, at
-  start, that the in-place sources still carry the mirrored literals named in followup.MIRRORS (gate G6b).
-- RULED: a ruling of Gregg's set the value AND the step passes it to the in-place code (argv or environment), so an
-  override is applied: allowed with --ruling-for section.KEY=<ledger ID> or into a non-production --out.
-- pinned_inputs (lower case = not a tunable): inputs a ruling or a delivered product names; the step refuses an override
-  unless --out is outside every production root (paths.PRODUCTION_ROOTS and followup.PRODUCTION_ROOTS).
+Units folded here: followup. A key in its section's PROTECTED_KEYS is locked
+(a mirror of in-place code, a pinned input or a ruling-fixed value: it changes only by a commit); RULED names the
+ledger ID of the ruling behind a key. Per run: --set SECTION.KEY=VALUE or --config FILE; `exopipe3 config --step followup` lists the sections.
 """
 from exopipe.phase3.config import _Section
 
+
+# =====================================================================================================================
+# unit followup (was exopipe/phase3/_cfgdraft_followup.py)
+# Config draft of `exopipe3 followup` (refactor window; config.py loads it until the refactor chat folds it in).
+#
+# Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/followup.md section 3 (values and lines checked again
+# 2026-10-13 ~05:00 UTC against exopipe_ops 554b721, exopipe main ac3d841, clv15 cb371c9). Abbreviations of the source
+# files (all IN PLACE during the window, DESIGN 11.1):
+#   EP  = exopipe_ops/einstein_probe/ep_wxt_plan_fetch.py (e8338e6: pointing bound 6 h)
+#   TL  = exopipe_ops/tess/tess_lightcurve.py              HO = exopipe_ops/phase3_honing.py
+#   G2  = exopipe_ops/steep_catalog/stage2g2_lightcurves_p3.py   H4 = .../stage2h4_periodicity_win.py
+#   PG  = exopipe_ops/steep_catalog/stage2i_periodicity_page.py  SF = .../steep_fold.py   SD = .../source_diag_page.py
+#   FC  = exopipe/phase3/followup/config.py (package, imported in-process by `investigate` / `summary`)
+# "Ledger N" = line N of clv15/fix_ledger.csv.
+#
+# Guards (config.py honours PROTECTED_KEYS and RULED; steps/followup.py honours `pinned_inputs`):
+# - PROTECTED_KEYS: (a) production roots (use --out instead) and (b) values that MIRROR a literal inside the in-place code:
+#   an override would be recorded but not applied, so no --set / --config can change them (spec 'WINDOW-LOCKED', gate G6).
+#   They move out of PROTECTED_KEYS key by key when the consumer is absorbed into lib/followup/. The step also checks, at
+#   start, that the in-place sources still carry the mirrored literals named in followup.MIRRORS (gate G6b).
+# - RULED: a ruling of Gregg's set the value AND the step passes it to the in-place code (argv or environment), so an
+#   override is applied: allowed with --ruling-for section.KEY=<ledger ID> or into a non-production --out.
+# - pinned_inputs (lower case = not a tunable): inputs a ruling or a delivered product names; the step refuses an override
+#   unless --out is outside every production root (paths.PRODUCTION_ROOTS and followup.PRODUCTION_ROOTS).
+# =====================================================================================================================
 
 class followup(_Section):
     """exopipe3 followup - values shared by the follow-up sub-operations (architecture 9; steps/followup.py)."""
