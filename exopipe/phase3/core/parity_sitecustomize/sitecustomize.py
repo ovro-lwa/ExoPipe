@@ -22,6 +22,9 @@ if _ROOTS:
 # CODE FINGERPRINT of a legacy child (core/legacy.run): with EXOPIPE3_FINGERPRINT_OUT set, write at exit a JSON
 # {module file: sha1[:12]} of every imported source file under the legacy roots (EXOPIPE3_FINGERPRINT_ROOTS,
 # os.pathsep-separated) or in an 'exopipe' package, so the parent's run record names the code that produced its products.
+# One file PER PROCESS (<path>.<pid>; legacy.run merges them) and none when this process imported no such file: a
+# descendant that outlives the child - a multiprocessing forkserver exits after its parent and runs atexit - wrote '{}' over
+# the child's fingerprint (a race legacy.run usually won; 2026-10-14, phase3_snapshot_refastro's forkserver pool).
 _FP_OUT = os.environ.get('EXOPIPE3_FINGERPRINT_OUT', '')
 if _FP_OUT:
     import atexit as _atexit
@@ -43,10 +46,13 @@ if _FP_OUT:
         main = getattr(sys.modules.get('__main__'), '__file__', None) or (sys.argv[0] if sys.argv else None)
         if main and main not in ('-c', '-m') and os.path.isfile(main):
             out[os.path.abspath(main)] = hashlib.sha1(open(main, 'rb').read()).hexdigest()[:12]
+        if not out:
+            return
+        mine = f'{_FP_OUT}.{os.getpid()}'
         try:
-            with open(_FP_OUT + '.tmp', 'w') as fo:
+            with open(mine + '.tmp', 'w') as fo:
                 json.dump(out, fo, indent=0, sort_keys=True)
-            os.replace(_FP_OUT + '.tmp', _FP_OUT)
+            os.replace(mine + '.tmp', mine)
         except OSError:
             pass
     _atexit.register(_dump_fp)

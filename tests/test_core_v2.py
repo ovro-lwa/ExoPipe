@@ -1322,6 +1322,38 @@ def test_item7_fallback_registry():
     assert not missing, f'not set to fallback in the parity file: {missing}'
 
 
+def test_item3_child_code_fingerprint_per_process():
+    """core.legacy.run records the code of every Python process of a child: each writes <path>.<pid> (parity sitecustomize)
+    and the parent merges them - a grandchild's own module is in the record (one shared file kept only the last writer's),
+    and a multiprocessing forkserver, which exits AFTER the child and runs atexit, neither erases the child's record nor
+    leaves a stray file (it imported no recorded code: nothing written). 2026-10-14: phase3_snapshot_refastro's forkserver."""
+    import glob as _glob
+    from exopipe.phase3.core import legacy
+    with Scratch('fp') as d:
+        for name in ('exopipe_fp_main', 'exopipe_fp_grand'):
+            open(os.path.join(d, f'{name}.py'), 'w').write('X = 1\n')
+        grand = os.path.join(d, 'grand.py')
+        open(grand, 'w').write(f'import sys\nsys.path.insert(0, {d!r})\nimport exopipe_fp_grand\n')
+        child = os.path.join(d, 'child.py')
+        open(child, 'w').write(
+            'import multiprocessing as mp, os, subprocess, sys\n'
+            'def sq(x):\n    return x * x\n'
+            "if __name__ == '__main__':\n"
+            f'    sys.path.insert(0, {d!r})\n'
+            '    import exopipe_fp_main\n'
+            f'    subprocess.run([sys.executable, {grand!r}], check=True)\n'
+            "    with mp.get_context('forkserver').Pool(2) as p:\n"
+            "        print('POOL', sum(p.map(sq, range(10))))\n")
+        before = set(_glob.glob(os.path.join(tempfile.gettempdir(), 'exopipe3_fp_*')))
+        r = legacy.run(child, [], log=os.path.join(d, 'c.log'))
+        assert r.ok and 'POOL 285' in r.tail, r.tail[-300:]
+        names = {os.path.basename(f) for f in r.fingerprint}
+        assert {'exopipe_fp_main.py', 'exopipe_fp_grand.py', 'child.py'} <= names, sorted(names)
+        time.sleep(1.0)                         # the forkserver exits a moment after the child
+        stray = set(_glob.glob(os.path.join(tempfile.gettempdir(), 'exopipe3_fp_*'))) - before
+        assert not stray, f'stray fingerprint files: {sorted(stray)}'
+
+
 def test_item7_parity_file_keys():
     """The production parity file (parity/production_20261013.cfg): every line names a config key; outside section fallbacks
     (where a count-only site's ruled default IS production's 'fallback') each line differs from the config default - a line

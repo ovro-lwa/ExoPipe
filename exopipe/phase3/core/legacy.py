@@ -21,6 +21,7 @@ What the child gets:
 The child's stdout and stderr go to ``log`` (and a tail is kept). ``refused`` is True when the exit code is in
 ``refusal_codes`` or the output contains one of ``refusal_text``; ``ok`` only when rc == 0 and not refused.
 """
+import glob
 import json
 import os
 import subprocess
@@ -97,16 +98,18 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
         lf.flush()
     tail = _tail(log, tail_lines) if log else _tail_file(lf, tail_lines)
     lf.close()
-    try:
-        with open(fp_path) as f:
-            fp = json.load(f)
-    except (OSError, ValueError):
-        fp = {}
-    finally:
+    fp = {}
+    for p in [fp_path] + sorted(glob.glob(glob.escape(fp_path) + '.*')):   # one file per process of the child (sitecustomize)
         try:
-            os.remove(fp_path)
-        except OSError:
+            with open(p) as f:
+                fp.update(json.load(f))
+        except (OSError, ValueError):
             pass
+        finally:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
     fb_counts, fb_refs = fallback.load(fb_path)        # the child's and its descendants' (<fb_path>.<pid>), removed
     hit = next((t for t in refusal_text if t in tail), None)
     refused = rc in refusal_codes or (hit is not None and rc != 0)
