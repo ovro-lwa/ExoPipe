@@ -94,14 +94,18 @@ class catalog_merge(_Section):
     BACKING_CAP_DEG = 0.5                                 # deg, one-to-one nearest final-ledger row per (cell, Stokes, date); ops/p3s3_merge.py:21 [lit]; ops/p3s2_conform.py:95 (backing rule 2026-09-05; R-APPROVALS-20260904-2000UT)
     DUPLICATE_ROUND_DEG = 1e-4                            # deg, (cell, Stokes, date, round(ra,4), round(dec,4)) duplicate key; ops/p3s3_merge.py:137, p3s2_conform.py:474 (audit R-07)
     STALENESS_GATE = True                                 # refuse attempts that searched a now-excluded epoch; ops/p3s3_merge.py:24-33 (CORRECTION-ITEM6-...-STALE-ATTEMPTS-AFTER-EXCLUSION-EDITS, 2026-09-07)
-    UNHARVESTED = 'warn'                                  # 'warn' (today, ops/p3s3_merge.py:34-37; counted in the record) | 'refuse' (B-30 a, not ruled) [step: the harvest stage refuses an unpullable attempt either way, D-G3]
+    UNHARVESTED = 'refuse'                                # B-30 (a): a published attempt the merge finds unharvested (its rows would be left out
+                                                          # of the merged catalogue) refuses; 'warn' = production (ops/p3s3_merge.py:34-37, the
+                                                          # rows dropped with a printed warning; counted in the record) [step: the harvest stage
+                                                          # refuses an unpullable attempt and the merge a changed published list, D-G3]
     CADENCE_LABEL_REPAIR = {'P3T4': '10min'}              # rows of a 10-min generation relabelled; ops/p3s3_merge.py:145 [lit] (Gregg 2026-09-16 "do the second")
     COPY_CANDIDATE_DIRS = True                            # copytree of every attempt's candidates/<id>/; ops/p3s3_merge.py:53-58 (speed-up 62 waits; K10)
     ZERO_ACCEPTED_REFUSES = True                          # ops/p3s3_merge.py:159-160
     TEST_BACKING_KEYS = 40                                # (cell, Stokes, date) keys whose one-to-one backing the merged_record content test re-runs from the ledger (seeded sample) [step] (new: content test)
     PROTECTED_KEYS = ('BACKING_CAP_DEG', 'CADENCE_LABEL_REPAIR')   # window-bound
     RULED = {'BACKING_CAP_DEG': 'R-APPROVALS-20260904-2000UT',
-             'STALENESS_GATE': 'CORRECTION-ITEM6-IS-EXCLUDED-CLAIM-WAS-WRONG-STALE-ATTEMPTS-AFTER-EXCLUSION-EDITS'}
+             'STALENESS_GATE': 'CORRECTION-ITEM6-IS-EXCLUDED-CLAIM-WAS-WRONG-STALE-ATTEMPTS-AFTER-EXCLUSION-EDITS',
+             'UNHARVESTED': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
 
 
 class catalog_conform(_Section):

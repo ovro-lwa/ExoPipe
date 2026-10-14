@@ -535,6 +535,23 @@ def test_harvest_refuses_unharvested_outside_production():
     assert 'D-G3' in rec(f'{LABEL}.harvest')['reason']
 
 
+def test_b30_unharvested_merge():
+    """B-30 (a): a published attempt the merge finds unharvested (its ledger gone after the harvest) refuses the merge under
+    the ruled catalog_merge.UNHARVESTED 'refuse', the site named; under production's 'warn' p3s3_merge drops its rows with a
+    warning and the merged_record content test refuses the unit anyway (rows read != accepted + refused)."""
+    make_world()
+    cli('--stages', 'preflight,harvest', expect=0)
+    led = sorted(p for p in glob.glob(f'{T}/collect/**/transients/Run_{LABEL}/v_deep_ledger.csv', recursive=True))
+    assert len(led) == 4, led
+    os.remove(led[0])
+    cli('--stages', 'merge', expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and r['reason'].startswith('B-30 (catalog_merge.UNHARVESTED=refuse)'), r['reason'][:300]
+    cli('--stages', 'merge', '--set', 'catalog_merge.UNHARVESTED=warn', expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert 'merged_record' in r['reason'] and r['meta'].get('unharvested_warning'), r['reason'][:300]
+
+
 def test_binding_against_production_and_a_mismatch():
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.catalog import deep_binding as B
@@ -653,7 +670,8 @@ def test_compileall():
 
 ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
-         'test_harvest_refuses_unharvested_outside_production', 'test_binding_against_production_and_a_mismatch',
+         'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
+         'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']
 
 
