@@ -129,7 +129,11 @@ class search_detect(_Section):
     DURATION_FALLBACK_S = 3600.0                            # s; epoch DURATION when the product has none (deep_search.py:1604-1606; B-30)
     CENTRAL_RMS_HALF_PX = 512                               # px; frame rms box = min(512, h/4, w/4) (deep_search.py:1618, 1732)
     PB_FLOOR = 0.05                                         # pbcorr sibling PB floor (deep_search.py:810; contract 34)
-    RULED = {'ELEVATION_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
+    EPHEMERIS_TIME = 'frame-mid'                            # B-30 (a) 'ephemerides at frame mid-time': Jupiter / Moon positions at the
+                                                            # frame's own mid-time; 'date-obs' = production (its DATE-OBS, Card 7a) - the
+                                                            # engine child reads EXOPIPE3_EPHEMERIS_TIME (deep_step.engine_env)
+    RULED = {'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'ELEVATION_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
              'MIN_EPOCHS': 'IMPL-REFERENCE-NIGHT-MUST-BE-MASTER-NIGHT-AND-14-REBUILD',
              'SIZE_FLOOR_BEAMS': ('R-SIZE-AXIS-GATE-1.5-RATIFIED', 'R-GATE-TIGHTENED-SIZE-1.5-AXIS-1.5-VALIDATED-ON-KNOWN-TRANSIENTS'),
              'AXIS_REMOVE': ('R-SIZE-AXIS-GATE-1.5-RATIFIED', 'R-GATE-TIGHTENED-SIZE-1.5-AXIS-1.5-VALIDATED-ON-KNOWN-TRANSIENTS'),

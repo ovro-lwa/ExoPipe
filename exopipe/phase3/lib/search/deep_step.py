@@ -347,6 +347,7 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
            'DEEP_XLA_MEMFRAC': repr(float(sd.FLOW_XLA_MEM_FRACTION)), 'P3_FLOW_PYTHON': legacy.interpreter(sd.FLOW_PYTHON),
            'P3_FLOW_LOCK': sd.FLOW_LOCK, 'TMPDIR': tmpdir, 'PYTHONUNBUFFERED': '1',
            'PYTHONPATH': _PKG_ROOT + (os.pathsep + os.environ['PYTHONPATH'] if os.environ.get('PYTHONPATH') else '')}
+    env['EXOPIPE3_EPHEMERIS_TIME'] = sd.EPHEMERIS_TIME     # WAVE2 B-30: 'frame-mid' (ruled) | 'date-obs' (production)
     if not si.ARCHIVE_WRITE:
         env['P3_ARCHIVE_WRITE'] = '0'
     if not sd.REFINE_X2:
@@ -1385,6 +1386,7 @@ def _child(spec_path):
     spec = json.load(open(spec_path))
     sys.argv = ['search']                      # production: sys.argv=['p3s3'] before the import (lab imports reset argv)
     out, rc = {'status': 'error', 'reason': 'not started'}, 1
+    from exopipe.phase3.core.record import Refusal
     try:
         from exopipe.phase3.core import env as E
         E.apply()
@@ -1396,6 +1398,9 @@ def _child(spec_path):
         n = run_deep_cell(spec['lst'], spec['scope'], **kw)
         print(f"P3S3-CELL-DONE {spec['cell']}", flush=True)     # the sentinel today's readers look for (verify_p3s3_stage.py)
         out, rc = {'status': 'done', 'n_written': int(n or 0)}, 0
+    except Refusal as e:                       # a named gate of the engine (B-30 fallback sites included): refused, exit 2
+        traceback.print_exc()
+        out, rc = {'status': 'refused', 'reason': str(e)}, 2
     except RuntimeError as e:
         msg = str(e)
         traceback.print_exc()

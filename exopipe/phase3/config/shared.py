@@ -162,7 +162,38 @@ class fallbacks(_Section):
     PB_RESTFRQ_FALLBACK = 'refuse'
     # preferred I master missing or corrupt -> the V clean uses the other robust (vclean_masters.pick_i_master)
     VCLEAN_I_MASTER_FALLBACK = 'refuse'
-    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK')}
+    # |pixel| > 1e6 Jy/beam zapped to 0 (deep_search._load) - a per-item drop: ruled 'counted' (the ruling's "per-item
+    # drops counted in the run record"), n = pixels
+    SEARCH_ZAP_PIXELS_FALLBACK = 'fallback'
+    # no beam (the I master's empirical-beam fit NaN, a structure-map beam <= 0) -> 7 pixels (deep_search)
+    SEARCH_BEAM_FALLBACK = 'refuse'
+    # destriping the V master failed -> the raw master structure map gates the search (deep_search._mstruct_maps)
+    SEARCH_MSTRUCT_DESTRIPE_FALLBACK = 'refuse'
+    # build_name refused -> the search frame is written with PRODNAME 'unknown' (deep_search frame header)
+    SEARCH_PRODNAME_FALLBACK = 'refuse'
+    # the cell's PB map missing -> the pbcorr sibling is not written, recorded as owed (deep_search)
+    SEARCH_PB_SIBLING_FALLBACK = 'refuse'
+    # an epoch without an alignment flow is not searched (deep_search.run_deep_cell)
+    SEARCH_EPOCH_FLOW_FALLBACK = 'refuse'
+    # a residual that failed to build in a pool worker -> the epoch is not searched (deep_search, site in the parent)
+    SEARCH_RESIDUAL_FALLBACK = 'refuse'
+    # the V sanity gate could not run, or one epoch's V rms failed -> the epoch escapes the gate (deep_search)
+    SEARCH_SANITY_FALLBACK = 'refuse'
+    # coadd_final/weights.csv missing -> the search-frame sanity gate / the generation check / the leave-one-out
+    # masters silently not used (deep_search)
+    SEARCH_WEIGHTS_FALLBACK = 'refuse'
+    # an epoch frame without a (numeric) DURATION -> 600 / 3600 s (deep_search frame header)
+    SEARCH_DURATION_FALLBACK = 'refuse'
+    # no / unparsable epoch time -> Jupiter and Moon at 00:00 UTC of the date (deep_search._body_skycoord)
+    SEARCH_EPHEMERIS_TIME_FALLBACK = 'refuse'
+    # the OVRO-LWA beam model unavailable or failing -> the analytic cos^1.6 response (search_v)
+    SEARCH_PB_MODEL_FALLBACK = 'refuse'
+    # no frequency card -> the label in the file name + 2.3 MHz (search_v._get_freq_mhz)
+    SEARCH_FREQ_FALLBACK = 'refuse'
+    # a pixel block whose world coordinates fail is left out of the striation model (search_v) - a per-item
+    # drop: ruled 'counted', n = rows
+    SEARCH_WCS_BLOCK_FALLBACK = 'fallback'
+    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_PB_MODEL_FALLBACK', 'SEARCH_FREQ_FALLBACK', 'SEARCH_WCS_BLOCK_FALLBACK')}
 
 
 class runner(_Section):
