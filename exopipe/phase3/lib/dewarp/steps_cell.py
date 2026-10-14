@@ -36,6 +36,21 @@ def _tree_size(d):
     return n, b
 
 
+def pb_weights_gate(u, cell, groot):
+    """B-30 (review 2026-10-14 m3): a master-dewarped cell's PB maps are its source generation's, resampled (master_dewarp
+    apply_saved), and each recomputed pbcorr sibling keeps its source sibling's PBNDATE / PBMISS - so the source siblings' cards
+    are the PB weights this apply installs. Their nights without a Phase-2 noise file are counted and a wideband over
+    masters_pbmaps.PB_QA_MISSING_MAX_FRAC refuses (lib/masters/pb_qa.py), as the masters pbmaps stage does for a plain cell,
+    whose refusal never reaches a dewarped one (G-M21)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.masters import pb_qa
+    scope = cell.split('_', 1)[1]
+    fd = os.path.join(groot, 'coadd_final')
+    pm = CFG.masters_pbmaps
+    plains = [v for v in pm.PB_VARIANTS if os.path.exists(os.path.join(fd, f'{v}_{scope}.fits'))]
+    pb_qa.pb_qa_gate(u, cell, scope, pb_qa.pb_qa_missing(fd, scope, plains), pm.PB_QA_MISSING_MAX_FRAC)
+
+
 def apply(u, run, roots, cell, meas, row):
     """G-A2, G-A3 (+ --fresh removal, recorded), then phase3_master_dewarp.apply_saved in place. Returns the generation."""
     from exopipe.phase3.lib.dewarp import master_dewarp as MD
@@ -58,6 +73,11 @@ def apply(u, run, roots, cell, meas, row):
         if not run.fresh:
             u.refuse(f'G-A3: {gen} already holds files - refusing to overwrite a written generation (pass --fresh to '
                      f'remove <GEN_ROOT>/{cell} first, as dewarp_lst.sh:57 does)')
+    # the source generation and its PB weights BEFORE --fresh removes anything (a refusal keeps the previous generation)
+    groot = MD._gen_root(roots.working, roots.rebuild, lst, scope)
+    if groot is None:
+        u.refuse(f'G-A2: {cell} has no generation root under {roots.rebuild} or {roots.working}')
+    pb_weights_gate(u, cell, groot)
     if run.fresh and os.path.isdir(celldir):
         if os.path.abspath(celldir) != os.path.abspath(os.path.join(roots.gen, cell)):
             raise RuntimeError(f'refusing to remove {celldir}: not <GEN_ROOT>/{cell}')
@@ -65,9 +85,6 @@ def apply(u, run, roots, cell, meas, row):
         shutil.rmtree(celldir)
         u.meta['removed_previous'] = {'path': celldir, 'files': n, 'bytes': b}
         u.note(f'--fresh: removed the previous {celldir} ({n} files, {b} bytes; dewarp_lst.sh:57)')
-    groot = MD._gen_root(roots.working, roots.rebuild, lst, scope)
-    if groot is None:
-        u.refuse(f'G-A2: {cell} has no generation root under {roots.rebuild} or {roots.working}')
     src = []
     for sub in ('coadd_final',) + (('subtracted',) if c.APPLY_RESIDUALS else ()):
         for dp, _, fs in os.walk(os.path.join(groot, sub)):

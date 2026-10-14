@@ -584,6 +584,55 @@ def test_stale_measurement(tmp):
           f'rc {rc}, {s} s; ' + (c['reason'][:100] if c else txt[-200:]))
 
 
+def test_pb_weights(tmp):
+    """B-30 (review 2026-10-14 m3): the apply checks the PB weights it installs - the cards of the source generation's
+    siblings, which the recomputed siblings keep - before --fresh removes the previous generation: a wideband missing the
+    noise file of 2 of 4 nights refuses with the previous generation kept and apply_saved never called; 2 of 32 are counted
+    and the apply goes on (apply_saved stubbed)."""
+    from exopipe.phase3.core import fallback, record
+    from exopipe.phase3.lib.dewarp import master_dewarp as MD
+    from exopipe.phase3.lib.dewarp import steps_cell as SCL
+    calls, orig, cell = [], MD.apply_saved, '12h_Blue'
+    MD.apply_saved = lambda *a, **k: calls.append(a) or 0
+    res = {}
+    try:
+        for name, nd, nm in (('over', 2, 2), ('under', 30, 2)):
+            base = os.path.join(tmp, f'pbw_{name}')
+            fd = os.path.join(base, 'working', cell, 'coadd_final')
+            os.makedirs(fd)
+            fits.writeto(os.path.join(fd, 'I_deep_Taper_R075_Blue.fits'), np.zeros((2, 2), np.float32))
+            h = fits.Header()
+            h['PBNDATE'], h['PBMISS'] = nd, nm
+            fits.writeto(os.path.join(fd, 'I_deep_Taper_R075_pbcorr_Blue.fits'), np.zeros((2, 2), np.float32), h)
+            scr = os.path.join(base, 'screen.fits')
+            hl = fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.zeros((2, 2), np.float32), name='SCREEN_X')])
+            hl['SCREEN_X'].header['NANCHOR'] = 10
+            hl.writeto(scr)
+            gen_root = os.path.join(base, 'gen')
+            prev = os.path.join(gen_root, cell, SC.C().GEN_DIR)
+            os.makedirs(prev)
+            open(os.path.join(prev, 'old.fits'), 'w').write('previous generation')
+            roots = types.SimpleNamespace(gen=gen_root, working=os.path.join(base, 'working'), rebuild=None,
+                                          gen_of=lambda c, _g=gen_root: os.path.join(_g, c, SC.C().GEN_DIR))
+            meas = types.SimpleNamespace(screen=lambda sc, _s=scr: _s, table=os.path.join(base, 'table.csv'), dir=base)
+            run = record.Run('dewarp', ['test'], base, CFG, dry_run=True)
+            del calls[:]
+            m = fallback.mark()
+            with run.unit(cell) as u:
+                SCL.apply(u, types.SimpleNamespace(fresh=True), roots, cell, meas, {'n_anchors': '10'})
+            res[name] = (u.status, u.reason[:160], len(calls), os.path.exists(os.path.join(prev, 'old.fits')),
+                         fallback.since(m)[1].get('fallbacks.PB_QA_MISSING_FALLBACK'))
+    finally:
+        MD.apply_saved = orig
+    st, why, nc, kept, cnt = res['over']
+    check('PB weights at the apply: 2 of 4 nights missing on a wideband refuses before --fresh removes the previous '
+          'generation and before apply_saved', st == 'refused' and 'PB_QA_MISSING_MAX_FRAC' in why and nc == 0 and kept,
+          res['over'])
+    st, why, nc, kept, cnt = res['under']
+    check('PB weights at the apply: 2 of 32 missing are counted (fallbacks.PB_QA_MISSING_FALLBACK = 2) and the apply goes on',
+          st != 'refused' and nc == 1 and not kept and cnt == 2, res['under'])
+
+
 def test_real_products():
     M = '/fast/gh/main/phase3/mdewarp_rbf_20261008/from_lwacalim09'
     # production moves an LST's table aside (table_<LST>.csv.prev_<date>) before re-measuring it: test what is there
@@ -620,6 +669,7 @@ def main():
         test_table_and_screen(SCRATCH)
         test_end_to_end(SCRATCH)
         test_stale_measurement(SCRATCH)
+        test_pb_weights(SCRATCH)
         test_real_products()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)
