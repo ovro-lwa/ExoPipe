@@ -137,7 +137,7 @@ def parent_catalogues_current(path, coadd_root=None, sample=None, **ctx):
     cfg = _cfg()
     if not os.path.isdir(path):
         return False, None, f'{path} is not a directory'
-    root = coadd_root or cfg.catalog.DEEP_COADD_ROOT
+    root = coadd_root or cfg.paths.COADD_SB_ROOT          # the deep masters (shared root; catalog.DEEP_COADD_ROOT is gone)
     cats = sorted(glob.glob(os.path.join(path, 'master_R075_*.gaul.csv')))
     msgs = []
     if not cats:
@@ -381,8 +381,8 @@ def _sha1(path):
 @content_test('frame_table')
 def frame_cache(path, sample=20, **ctx):
     """frame_times.csv: date_obs < date_end on every row, one row per key; frame_beam_ratio.csv: BMAJ/BMIN >= 1 on every
-    row, one row per key; for a seeded sample of keys the archived searched frame's header (beside the run) gives the
-    cached values (ops/p3s2_conform.py:106-124, 324-337)."""
+    row, one row per key; frame_beam_bmaj.csv (D8, ops 283a513): BMAJ > 0, one row per key; for a seeded sample of keys
+    the archived searched frame's header (beside the run) gives the cached values (ops/p3s2_conform.py:106-147, 324-337)."""
     cols, rows = _rows(path)
     name = os.path.basename(path)
     msgs = []
@@ -392,16 +392,21 @@ def frame_cache(path, sample=20, **ctx):
     if len(keys) != len(set(keys)):
         msgs.append(f'{len(keys) - len(set(keys))} duplicate keys')
     times = 'date_obs' in cols
+    bmaj = 'bmaj_deg' in cols            # frame_beam_bmaj.csv: the searched frame's BMAJ (ops/p3s2_conform.py, D8, ops 283a513)
     if times:
         bad = [k for k, r in zip(keys, rows) if not (r['date_obs'] < r['date_end'])]
         if bad:
             msgs.append(f'{len(bad)} rows with date_obs >= date_end, e.g. {bad[:2]}')
+    elif bmaj:
+        bad = [k for k, r in zip(keys, rows) if not (_f(r['bmaj_deg']) > 0)]
+        if bad:
+            msgs.append(f'{len(bad)} rows without a positive BMAJ, e.g. {bad[:2]}')
     elif 'ratio' in cols:
         bad = [k for k, r in zip(keys, rows) if not (_f(r['ratio']) >= 0.999)]
         if bad:
             msgs.append(f'{len(bad)} rows with BMAJ/BMIN < 1, e.g. {bad[:2]}')
     else:
-        return False, None, f'{name}: neither date_obs nor ratio columns'
+        return False, None, f'{name}: neither date_obs, bmaj_deg nor ratio columns'
     run = _run_dir(path, ctx)
     n_hdr = 0
     pick = random.Random(20261013).sample(range(len(rows)), min(sample, len(rows)))
@@ -416,6 +421,9 @@ def frame_cache(path, sample=20, **ctx):
         if times:
             if str(h.get('DATE-OBS', ''))[:19] != rows[i]['date_obs'][:19]:
                 msgs.append(f'{keys[i]}: DATE-OBS {h.get("DATE-OBS")} != cached {rows[i]["date_obs"]}')
+        elif bmaj:
+            if h.get('BMAJ') is None or abs(float(h['BMAJ']) - _f(rows[i]['bmaj_deg'])) > 1e-9 * max(1.0, float(h['BMAJ'])):
+                msgs.append(f'{keys[i]}: BMAJ {h.get("BMAJ")} != cached {rows[i]["bmaj_deg"]}')
         elif h.get('BMAJ') and h.get('BMIN'):
             if abs(float(h['BMAJ']) / float(h['BMIN']) - _f(rows[i]['ratio'])) > 1e-3:
                 msgs.append(f'{keys[i]}: BMAJ/BMIN {float(h["BMAJ"]) / float(h["BMIN"]):.4f} != cached {rows[i]["ratio"]}')
@@ -509,7 +517,10 @@ def selection_rows(path, **ctx):
             if out:
                 msgs.append(f'{len(out)} rows not in selected_all.csv')
         return _fail(msgs, len(rows), f'{len(rows)} rows of {st} {t}')
-    mc = _sibling(path, cfg.catalog_select.VERDICT_INPUT, ctx)
+    # M8 (ops f15c489) is the DEEP pass's verdict input (ops/p3s3_pass.sh:57); the sub-LST chain selects without a verdict
+    # file (ops/sublst_catalogs.sh:219, spec Q7: 'pending' on every row), so the comparison is deep-only (catalog-tiers F2)
+    tier = ctx.get('tier') or ('sublst' if rows and rows[0].get('cadence') == '10min' else 'deep')
+    mc = _sibling(path, cfg.catalog_select.VERDICT_INPUT, ctx) if tier == 'deep' else None
     if mc:
         ver = {r['cand_id']: r.get('fp_prediction', '') for r in _rows(mc)[1]}
         out = [c for c in ids if c not in ver]

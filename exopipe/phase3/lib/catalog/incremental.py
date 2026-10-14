@@ -84,6 +84,13 @@ SOURCE_FIELDS = ('band', 'comp', 'source_id', 'ra', 'dec', 'n_det', 'best_cand_i
 DELTA_FIELDS = ('band', 'change', 'renamed', 'source_id', 'prev_source_ids', 'n_det', 'n_added', 'n_removed', 'comp')
 BLOCK_FILES = ('master_catalog.csv', 'refused.csv', 'ledger.csv', 'images.csv', 'frames.csv', 'fitcache.csv', 'epoch.json')
 FIT_KINDS = ('gaussian', 'template', 'peak')      # deep_fit_positions.KINDS (:41); used by the epoch_block content test
+# p3s2_conform.py's per-run frame caches, keyed by (stokes, lst, band, date) and never re-read for a key already cached
+# (:106-124 frame_beam_ratio, :125-147 frame_beam_bmaj (D8, ops 283a513), :349-360 frame_times). An incremental workspace keeps
+# them across associate runs; a key whose frame changed since (a re-extracted epoch: new attempt, new frame) must not be served
+# from the cache, or the workspace would differ from a full rebuild into an empty --out (review 2026-10-13).
+FRAME_CACHES = ('frame_times.csv', 'frame_beam_ratio.csv', 'frame_beam_bmaj.csv')
+FRAME_CACHE_RECORD = 'frame_cache_frames.json'
+_FRAME_RE = re.compile(r'(\d{4}-\d\d-\d\d)_([IV])_redo_resid_(\w+)\.fits$')
 # environment variables of the caller that an in-place stage would read and that core.legacy.run does not clear (it clears
 # P3_*): refused at start unless the stage sets them itself (each changes a result silently)
 LEAK_PREFIXES = ('P3S', 'FORK_', 'BDSF_')
@@ -854,6 +861,15 @@ def union_tiers(U):
     file can be present, ``_build_stage``)."""
     tiers = tuple(_deep('catalog_identity', 'UNION_TIERS'))
     kinds = tuple(_deep('catalog_identity', 'UNION_KINDS'))
+    # review 2026-10-13: the previous union files are moved aside first (as the deep chain does, D9): a band that has left
+    # every primary tier would otherwise keep its old union file, which p3s3_identity.py globs and rewrites
+    outd = f'{U}/source_catalogs'
+    olds = [f for f in sorted(os.listdir(outd)) if any(f.endswith(f'_{k}.csv') for k in kinds)] if os.path.isdir(outd) else []
+    if olds:
+        sup = os.path.join(U, C().STATE_DIR, 'superseded', f'union_{_utc("%Y%m%dT%H%M%SZ")}')
+        os.makedirs(sup, exist_ok=True)
+        for f in olds:
+            os.replace(os.path.join(outd, f), os.path.join(sup, f))
     files = {}
     for K in tiers:
         d = f'{U}/source_catalogs_{K}'
@@ -1174,10 +1190,73 @@ def assemble(ctx, epochs, excl, u=None):
             m = re.match(r'(?:master_R075_)?(\d\dh)_', item)
             if m and m.group(1) in lsts:
                 _link(os.path.realpath(os.path.join(sd, item)), os.path.join(U, sub, item))
+    dropped = prune_frame_caches(U, ctx.state_dir, sorted(want))
+    if dropped:
+        summary['frame_cache_rows_dropped'] = dropped
     summary['merge_output_sha1'] = _sha1_file(f'{U}/master_catalog.csv')
     if u is not None:
         u.note(f'assembled: {json.dumps(summary, sort_keys=True)}')
     return summary
+
+
+def _frame_key(path):
+    """'S|lst|band|date' of a searched-frame link <U>/{vresid,iresid}/<lst>_<band>/<date>_<S>_redo_resid_<band>.fits, the
+    key p3s2_conform.py gives it (the cell dir's LST, the band from the file name); None for another name."""
+    m = _FRAME_RE.match(os.path.basename(path))
+    if not m:
+        return None
+    return '|'.join((m.group(2), os.path.basename(os.path.dirname(path)).split('_')[0], m.group(3), m.group(1)))
+
+
+def _frame_identity(path):
+    try:
+        st = os.stat(path)                      # follows the link: the frame file itself
+        return [os.path.realpath(path), st.st_size, st.st_mtime_ns]
+    except OSError:
+        return None
+
+
+def prune_frame_caches(U, state_dir, frame_paths):
+    """Keep in each conformance frame cache of the workspace only the rows whose frame is the one the row was read from
+    (same target, size and mtime as recorded at the previous assembly); every other row is dropped so conformance reads
+    that header again, as a full rebuild into an empty --out does. Writes the record for the next assembly. Returns
+    {cache name: rows dropped}."""
+    cur = {}
+    for p in frame_paths:
+        k = _frame_key(p)
+        if k:
+            cur[k] = _frame_identity(p)
+    rec_p = os.path.join(state_dir, FRAME_CACHE_RECORD)
+    try:
+        prev = json.load(open(rec_p)) if os.path.exists(rec_p) else {}
+    except (OSError, ValueError):
+        prev = {}
+    dropped = {}
+    for name in FRAME_CACHES:
+        p = os.path.join(U, name)
+        if not os.path.exists(p):
+            continue
+        h, rows = _read_csv(p)
+        try:
+            ix = [h.index(c) for c in ('stokes', 'lst', 'band', 'date')]
+        except ValueError:
+            os.replace(p, p + '.unreadable')     # not a cache conformance wrote: set aside, conformance rebuilds it
+            dropped[name] = 'unreadable'
+            continue
+        keep = []
+        for r in rows:
+            k = '|'.join(r[i] for i in ix)
+            if cur.get(k) is not None and prev.get(k) == cur[k]:
+                keep.append(r)
+        if len(keep) != len(rows):
+            dropped[name] = len(rows) - len(keep)
+            if keep:
+                _write_csv(p, h, keep)
+            else:
+                os.remove(p)                    # empty: conformance writes it afresh
+    os.makedirs(state_dir, exist_ok=True)
+    _write_json(rec_p, cur)
+    return dropped
 
 
 def _load_state(ctx):

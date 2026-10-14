@@ -177,20 +177,27 @@ def copy_state(src, dst, keep_cell=None):
 
 # ---- preflight (ops/fork_serve_p3s5_20261008.sh:20-30) ---------------------------------------------------------------
 
-def parents_missing(par, coadd_root):
-    """The installed cells (a master under <coadd_root>/<cell>/coadd_final/, as ops/p3s5_parent_union.py:16-20 scans them)
-    whose catalogue or sidecar is not in the snapshot ``par``. Machine-readable replacement of the regex over the printed
-    list (fork_serve:24); the digest currency of each catalogue is the parent_snapshot content test and gate_inputs."""
+def parents_missing(par, coadd_root, reasons=None):
+    """The cells of <coadd_root>/[0-2][0-9]h_* (ops/p3s5_parent_union.py:16-20 scans them) without a catalogue + sidecar in
+    the snapshot ``par``: (installed cells, missing cells). A cell directory WITHOUT a master is missing too, as production
+    counts it ('no master', p3s5_parent_union.py:19-20) and refuses the pass on it (fork_serve_p3s5_20261008.sh:22-27).
+    Machine-readable replacement of the regex over the printed list (fork_serve:24); the digest currency of each
+    catalogue is the parent_snapshot content test and gate_inputs. ``reasons`` (a dict) receives cell -> reason."""
     cells, miss = [], []
     for cdir in sorted(glob.glob(f'{coadd_root}/[0-2][0-9]h_*')):
         cell = os.path.basename(cdir)
         lst, sc = cell.split('_', 1)
         if not os.path.exists(f'{cdir}/coadd_final/I_deep_Taper_R075_{sc}.fits'):
+            miss.append(cell)
+            if reasons is not None:
+                reasons[cell] = 'no master'
             continue
         cells.append(cell)
         name = f'{par}/master_R075_{lst}_{sc}.gaul.csv'
         if not (os.path.exists(name) and os.path.exists(name + '.gen.json')):
             miss.append(cell)
+            if reasons is not None:
+                reasons[cell] = 'no catalogue on the current master'
     return cells, miss
 
 

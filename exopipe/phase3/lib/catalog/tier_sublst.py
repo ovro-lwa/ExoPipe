@@ -959,8 +959,9 @@ def veto_pairs(U):
 
 def search_complete(ctx):
     """S-G1 (sublst_catalog_chain.sh:17-22; sublst_catalog_publish.sh:38-47): done >= 36 - 2 x NO_WINDOWS, no claim, no
-    failure in the arm's search state; and, where the LST's run log exists, a search end after its last tree-B build (or
-    every done marker newer than it). Returns (ok, detail). The search run records replace this at cutover."""
+    failure in the arm's search state; and the LST's run log <OPS_ROOT>/sublst_run_<LST>.log with a search end after its last
+    '4 tree B built' line (or every done marker newer than it) - no run log or no tree-B line refuses, as the production
+    launcher does. Returns (ok, detail). The search run records replace this at cutover."""
     c = ctx.c
     st = ctx.search_state
     nowin = sorted(glob.glob(f'{ctx.tree}/{ctx.lst}_*/NO_WINDOWS.txt'))
@@ -977,10 +978,19 @@ def search_complete(ctx):
               f'{len(claims)} claims, {len(failed)} failed')
     ok = len(done) >= nj and not claims and not failed
     runlog = os.path.join(ctx.cfg.paths.OPS_ROOT, f'sublst_run_{ctx.lst}.log')
-    if ok and os.path.exists(runlog):
+    # review 2026-10-13: the production launcher (sublst_catalog_publish.sh, run by sublst_followon / sublst_frozen_run)
+    # REFUSES when the run log has no '4 tree B built' line or does not exist: `NTB=$(grep -n ...)` (:39) and
+    # `[ -n "$NTB" ] && {...} && ... || REFUSING catpub` (:44-47). The port skipped the condition in that case.
+    if ok and not os.path.exists(runlog):
+        detail += f'; no run log {runlog}: REFUSED (sublst_catalog_publish.sh:39, :44-47)'
+        ok = False
+    if ok:
         lines = open(runlog, errors='replace').read().splitlines()
         tb = [i for i, ln in enumerate(lines) if '4 tree B built' in ln]
-        if tb:
+        if not tb:
+            detail += f"; run log {runlog} has no '4 tree B built' line: REFUSED (sublst_catalog_publish.sh:39, :44-47)"
+            ok = False
+        else:
             ended = any(re.search(r'5 search complete|6 catalogues \+ comparison done', ln) for ln in lines[tb[-1]:])
             if not ended:
                 try:
@@ -1607,6 +1617,12 @@ def run(args, run):
         for name in sel:
             with run.unit(f'{ctx.unit}.{name}', tier=TIER, lst=ctx.lst, arm=ctx.arm, stage=name) as u:
                 st = Stage(ctx, name, u)
+                i_ = STAGES.index(name)
+                if name != sel[0] and STAGES[i_ - 1] not in sel:
+                    # review 2026-10-13: a gap in --stages (e.g. conform,select without fitpos) is checked like a --from:
+                    # the skipped stage's record must be done and current, else this stage would read outputs no record
+                    # vouches for (DESIGN 11.5)
+                    restored = check_from(ctx.U, ctx.unit, STAGES, i_, ctx.recdir, IN_PLACE)
                 for n_ in restored:
                     u.note(n_)
                 restored = []

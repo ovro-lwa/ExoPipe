@@ -422,6 +422,21 @@ def test_preflight_refuses_missing_parent():
     r = rec(f'{LABEL}.preflight')
     assert r['status'] == 'refused' and 'exopipe3 masters --tier deep --stages sources --cells 05h_Red' in r['reason'], r['reason']
     assert not glob.glob(f'{T}/exopipe_ops/p3s5_parents*'), 'a parent build was attempted'
+    # review 2026-10-13: a cell directory WITHOUT a master refuses, as production (p3s5_parent_union.py:19-20 'no master';
+    # fork_serve_p3s5_20261008.sh:22-27 refuses the pass on it)
+    make_world()
+    os.makedirs(f'{T}/coadd_sb/06h_Blue/coadd_final')
+    rc, err = cli('--stages', 'preflight', expect=2)
+    r = rec(f'{LABEL}.preflight')
+    assert r['status'] == 'refused' and 'without a master' in r['reason'] and '06h_Blue' in r['reason'], r['reason']
+    # the parent_snapshot test reads the masters root from paths.COADD_SB_ROOT when no context is given (verify CLI; it
+    # raised AttributeError on the removed catalog.DEEP_COADD_ROOT before the review)
+    shutil.rmtree(f'{T}/coadd_sb/06h_Blue')
+    patch_cfg()
+    from exopipe.phase3.core import validate
+    res = validate.run('parent_snapshot', f'{T}/cands', sample=2)
+    unpatch_cfg()
+    assert res and all(x['passed'] for x in res), res
 
 
 def test_chain_to_fork_then_union_to_list():
@@ -607,6 +622,26 @@ def test_content_tests_catch_defects():
                                       'pos_sys_arcsec', 'pos_snr', 'pos_offset_arcmin', 'pos_reason', 'peak_ra', 'peak_dec'],
               [dict(cand_id='c1', ra='1', dec='2', pos_kind='', pos_ra='1', pos_dec='2')])
     assert not ok('fitted_catalog', f'{d}/run/fitted.csv')
+    # review 2026-10-13: selection M8 - deep: fp_prediction must be the verdict file's; sub-LST (cadence 10min, no verdict
+    # file, spec Q7): not compared (catalog-tiers F2)
+    os.makedirs(f'{d}/m8', exist_ok=True)
+    write_csv(f'{d}/m8/master_catalog.csv', ['cand_id', 'fp_prediction'], [dict(cand_id='c1', fp_prediction='not-FP')])
+    sel_cols = ['cand_id', 'stokes', 'band', 'snr', 'parent_excluded', 'cadence', 'fp_prediction']
+    write_csv(f'{d}/m8/selected_all.csv', sel_cols, [dict(cand_id='c1', stokes='V', band='Full', snr='6.0',
+                                                          parent_excluded='0', cadence='deep', fp_prediction='pending')])
+    assert not ok('selection', f'{d}/m8/selected_all.csv'), 'deep selection with a pending fp_prediction passed (M8)'
+    write_csv(f'{d}/m8/selected_all.csv', sel_cols, [dict(cand_id='c1', stokes='V', band='Full', snr='6.0',
+                                                          parent_excluded='0', cadence='10min', fp_prediction='pending')])
+    from exopipe.phase3.lib.catalog import tests as T_
+    assert T_.selection_rows(f'{d}/m8/selected_all.csv')[0], 'sub-LST selection compared with a verdict file it never read'
+    assert T_.selection_rows(f'{d}/m8/selected_all.csv', tier='sublst')[0]
+    # review 2026-10-13: frame_beam_bmaj.csv (D8 cache, ops 283a513) is a frame_table: a non-positive BMAJ fails
+    write_csv(f'{d}/run/frame_beam_bmaj.csv', ['stokes', 'lst', 'band', 'date', 'bmaj_deg'],
+              [dict(stokes='V', lst='05h', band='Full', date='2030-01-01', bmaj_deg='0.21')])
+    assert ok('frame_table', f'{d}/run/frame_beam_bmaj.csv')
+    write_csv(f'{d}/run/frame_beam_bmaj.csv', ['stokes', 'lst', 'band', 'date', 'bmaj_deg'],
+              [dict(stokes='V', lst='05h', band='Full', date='2030-01-01', bmaj_deg='0')])
+    assert not ok('frame_table', f'{d}/run/frame_beam_bmaj.csv')
 
 
 def test_compileall():

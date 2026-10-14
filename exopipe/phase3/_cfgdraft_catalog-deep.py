@@ -104,7 +104,7 @@ class catalog_conform(_Section):
     SIZE_REMOVE_BEAMS = 2.5                               # beams (nominal band beam), above SIZE_SNR; ops/p3s2_conform.py:22 [lit] (Gregg 2026-09-04 ~20:00 UT)
     SIZE_FLAG_BEAMS = 2.0                                 # beams; ops/p3s2_conform.py:22 [lit]
     SIZE_SNR = 8.0                                        # sigma, size/axis rules act above it; ops/p3s2_conform.py:22 [lit]
-    NOMINAL_BEAM_ARCSEC = {'Red': 787.0, 'Green': 518.0, 'Blue': 374.0, 'Full': 528.0}   # arcsec; size_beams overwrite (D8, ruling pending: parity keeps it); ops/p3s2_conform.py:24 [lit]
+    NOMINAL_BEAM_ARCSEC = {'Red': 787.0, 'Green': 518.0, 'Blue': 374.0, 'Full': 528.0}   # arcsec; ops/p3s2_conform.py:24 [lit] - UNUSED since D8 (Gregg 2026-10-13 'Approved', ops 283a513): conformance keeps the search's own epoch-beam size_beams/axis_norm; a row without them gets FWHM / its searched frame's BMAJ (frame_beam_bmaj.csv); c50_mjy blanked on every conformed row (M6)
     AXIS_REMOVE = 2.0                                     # x epoch-beam axis ratio, above SIZE_SNR; ops/p3s2_conform.py:105 [lit] (Gregg 2026-09-05)
     AXIS_FLAG = 1.5                                       # ops/p3s2_conform.py:105 [lit]
     SANITY_X = 3.0                                        # x cell median frame noise (I qa3_rms_mjy, V THERMNOI); ops/p3s2_conform.py:129 [lit] (Gregg 2026-09-05 ratified)
@@ -190,8 +190,8 @@ class catalog_associate(_Section):
     FOOTPRINT_NMC = 4000                                  # Monte-Carlo points; ops/build_source_catalogs_v3.py:302
     FOOTPRINT_SEED = 20260828                             # ops/build_source_catalogs_v3.py:301
     SKY_DEG2 = 41253.0                                    # deg^2; ops/build_source_catalogs_v3.py:309
-    REPEAT_ELEV_FLOOR_DEG = 20.0                          # deg, repeat-significance cap and M (M13: for Gregg; deep floor is 25); ops/build_source_catalogs_v3.py:850, :860
-    REPEAT_EPOCH_AREA_DEG2 = 13570.0                      # deg^2 cap at 20 deg (finding: divided by the SUM of caps, open); ops/build_source_catalogs_v3.py:851
+    REPEAT_ELEV_FLOOR_DEG = {'deep': 25.0, 'sublst': 25.0}   # deg, repeat-significance covering-epoch count M, per-epoch cap and shuffle cap = the tier's ruled floor (M13(a), Gregg 2026-10-13 '(a)', ops e46bd45; was 20): ops/build_source_catalogs_v3.py:338 EFLOOR = gate_inputs.DEEP_ELEV_FLOOR_DEG / TENMIN_ELEV_FLOOR_DEG (bound via catalog_conform.DEEP_ELEV_FLOOR_DEG), p3s3_repeat_shuffle.py:19
+    REPEAT_EPOCH_AREA_DEG2 = 11909.36                     # deg^2 = SKY_DEG2 x (1 - sin floor) / 2 at the 25-deg floor (13,572 at the old 20 deg); ops/build_source_catalogs_v3.py:339 _CAP_EL (e46bd45); the per-epoch area is still divided by the SUM of caps (finding (b), not ruled, open)
     SIDEREAL_RATE_ARCSEC_S = 15.041                       # arcsec/s; ops/build_source_catalogs_v3.py:333
     MI_CONSTRAIN_K = 3.0                                  # drift > 3 x pair statistical error (Gregg 2026-09-21 item 4); ops/build_source_catalogs_v3.py:379
     SSTACK_THRESHOLD_FALLBACK = 7.0                       # sigma; used only if search_i_transients.CONFIG is not importable; ops/build_source_catalogs_v3.py:615-617 (B-30)

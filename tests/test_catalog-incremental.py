@@ -310,6 +310,38 @@ def test_assembly_order_independent():
     return out
 
 
+def test_frame_caches_and_union_fresh():
+    """review 2026-10-13: the conformance frame caches of the workspace keep only rows whose frame is unchanged since the
+    previous assembly (a re-extracted epoch's new frame is read again, as in a full rebuild into an empty --out), and the
+    union moves the previous union files aside (a band that left every primary tier keeps no stale union file)."""
+    out = os.path.join(TMP, 'asm_1')
+    ctx = _FakeCtx(out, os.path.join(TMP, 'srcrun'))
+    links = sorted(os.path.join(dp, f) for sub in ('vresid', 'iresid') for dp, _, fs in os.walk(os.path.join(out, sub))
+                   for f in fs)
+    keys = [I._frame_key(p).split('|') for p in links]
+    I._write_csv(os.path.join(out, 'frame_times.csv'), ['stokes', 'lst', 'band', 'date', 'date_obs', 'date_end'],
+                 [k + ['x', 'y'] for k in keys] + [['V', '23h', 'Gone', '2030-01-01', 'x', 'y']])
+    I.assemble(ctx, I.epochs_in_state(ctx.state_dir), _FakeExcl(()))
+    kept = I._read_csv(os.path.join(out, 'frame_times.csv'))[1]
+    first = len(kept) == len(keys) and not any(r[2] == 'Gone' for r in kept)
+    os.utime(os.path.realpath(links[0]), (1e9, 1e9))      # the frame of one key changed (a re-extracted epoch)
+    I.assemble(ctx, I.epochs_in_state(ctx.state_dir), _FakeExcl(()))
+    kept2 = {tuple(r[:4]) for r in I._read_csv(os.path.join(out, 'frame_times.csv'))[1]}
+    second = tuple(keys[0]) not in kept2 and len(kept2) == len(keys) - 1
+    ok('assembly.frame_caches_follow_the_frames', first and second,
+       f'{len(keys)} keys cached; a key without a frame dropped: {first}; the key whose frame changed dropped: {second}')
+    sc = os.path.join(out, 'source_catalogs')
+    os.makedirs(sc, exist_ok=True)
+    I._write_csv(os.path.join(sc, 'Gone_sources_survivors.csv'), ['source_id', 'band'], [['J1', 'Gone']])
+    tdir = os.path.join(out, 'source_catalogs_V_wb')
+    os.makedirs(tdir, exist_ok=True)
+    I._write_csv(os.path.join(tdir, 'Full_sources_survivors.csv'), ['source_id', 'band'], [['J2', 'Full']])
+    written = I.union_tiers(out)
+    ok('union.previous_files_moved_aside', not os.path.exists(os.path.join(sc, 'Gone_sources_survivors.csv'))
+       and os.path.join(sc, 'Full_sources_survivors.csv') in written,
+       f'written {[os.path.basename(w) for w in written]}; Gone_sources_survivors.csv superseded')
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # content tests on synthetic products
 # ---------------------------------------------------------------------------------------------------------------------
@@ -545,6 +577,7 @@ def main():
         test_engine_removal_and_change(ns)
         test_classify_delta()
         asm = test_assembly_order_independent()
+        test_frame_caches_and_union_fresh()
         test_content_tests(ns, asm)
         test_epoch_phase_end_to_end()
         if not a.no_real and os.path.isdir(RUN):

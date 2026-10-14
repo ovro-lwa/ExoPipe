@@ -496,6 +496,16 @@ def test_e2e_sublst(site):
     rc, out = cli(common + ['--stages', 'preflight'], site)
     ok('sub-LST preflight refuses an incomplete search (35 of 36 done): exit 2, S-G1', rc == 2 and 'S-G1' in out, out[-400:])
     open(f'{ops}/sublst_search_state_B/done/14h_job35', 'w').close()
+    # review 2026-10-13: as the production launcher (sublst_catalog_publish.sh:39, :44-47), no run log / no '4 tree B built'
+    # line in it refuses; a search end after the tree-B line passes
+    rc, out = cli(common + ['--stages', 'preflight'], site)
+    ok('sub-LST preflight refuses without the run log (S-G1, sublst_catalog_publish.sh:44)', rc == 2 and 'run log' in out,
+       out[-400:])
+    open(f'{ops}/sublst_run_14h.log', 'w').write('Tue Oct 13 01:00:00 UTC 2026 3 stacks done\n')
+    rc, out = cli(common + ['--stages', 'preflight'], site)
+    ok("sub-LST preflight refuses a run log without '4 tree B built' (S-G1)", rc == 2 and 'tree B built' in out, out[-400:])
+    open(f'{ops}/sublst_run_14h.log', 'a').write('Tue Oct 13 02:00:00 UTC 2026 4 tree B built\n'
+                                                 'Tue Oct 13 03:00:00 UTC 2026 5 search complete\n')
     rc, out = cli(common + ['--stages', 'preflight'], site)
     rec = json.load(open(f'{U}/_records/catalog/14h_B.preflight.json'))
     ok('sub-LST preflight done (S-G1, S-G2 pcheck child on a synthetic master, tables, pinned md5, bindings)',
@@ -541,6 +551,11 @@ def test_e2e_sublst(site):
     ok('--from refuses when the in-place file and its stage copy both changed (exit 2)', rc == 2, out[-300:])
     rc, out = cli(common + ['--stages', 'tier-rules', '--set', 'catalog_sublst.ELEV_FLOOR_DEG=20.0'], site)
     ok('an override of a [lit] key is refused by config (exit 2)', rc == 2 and 'PROTECTED' in out, out[-300:])
+    # review 2026-10-13: a gap in --stages is checked like a --from (conform without a tie-pulsars record refuses)
+    rc, out = cli(common + ['--stages', 'preflight,conform'], site)
+    rec = json.load(open(f'{U}/_records/catalog/14h_B.conform.json'))
+    ok('--stages with a gap (preflight,conform): conform refuses without the record of tie-pulsars (exit 2)',
+       rc == 2 and rec['status'] == 'refused' and '14h_B.tie-pulsars' in (rec.get('reason') or ''), (rc, rec.get('reason')))
 
 
 def test_e2e_snapshot(site):

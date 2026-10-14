@@ -31,7 +31,6 @@ import hashlib
 import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -41,8 +40,9 @@ from exopipe.phase3.core import legacy, record
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.catalog import deep_binding, deep_ported, deep_records
 
-ENV_PREFIXES = ('P3S', 'FORK_', 'BDSF_')   # module switches core.legacy.run does not clear (it clears P3_*): blanked unless set
-CACHES = ('frame_times.csv', 'frame_beam_ratio.csv', 'fit_positions_cache.csv', 'stale_attempts.csv')
+ENV_PREFIXES = ('P3S', 'FORK_', 'BDSF_')   # module switches blanked in the child unless the stage sets them (core.legacy.run
+                                           # also clears runner.CHILD_ENV_CLEAR_PREFIXES; BDSF_ is not among those)
+CACHES = ('frame_times.csv', 'frame_beam_ratio.csv', 'frame_beam_bmaj.csv', 'fit_positions_cache.csv', 'stale_attempts.csv')
 DEEP_SECTIONS = ('catalog', 'catalog_merge', 'catalog_conform', 'catalog_fitpos', 'catalog_select', 'catalog_associate',
                  'catalog_fork', 'catalog_identity', 'catalog_localize', 'astrometry', 'fitting')
 # The keys of the catalog sections the deep chain USES: its own orchestration and the values it passes to the in-place
@@ -144,7 +144,8 @@ class DeepRun:
         self.U = os.path.abspath(run.out_root)
         self.prod = CFG.production_root_of(self.U) is not None
         self.dry = run.dry_run
-        self.host = socket.gethostname()
+        from exopipe.phase3.core import env as core_env
+        self.host = core_env.host()          # short host name (the harvest compares it with the published node names)
         self.label_dir = os.path.join(self.U, '_records', 'catalog', self.label)
         self.sup_root = os.path.join(self.label_dir, '_superseded', run.run_id)
         self.log = os.path.join(self.U, c.DEEP_LOG)
@@ -453,7 +454,8 @@ class DeepRun:
             return False
         from exopipe.phase3.core import validate
         for o in rec.get('outputs', []):
-            if not os.path.exists(o['path']) or any(not r['passed'] for r in validate.run(o['class'], o['path'])):
+            if not os.path.exists(o['path']) or any(not r['passed'] for r in validate.run(o['class'], o['path'],
+                                                                                          **(o.get('ctx') or {}))):
                 return False
         x = self.run.unit(unit, stage=stage)
         x.status, x.reason = 'skipped-valid', why
@@ -517,8 +519,16 @@ class DeepRun:
                 if rc != 0:
                     u.refuse(f'p3s5_parent_union.py exit {rc}: {tail[-1] if tail else ""}')
                 self.say(tail[-1][:400] if tail else 'parent union: no output')
-            cells, miss = deep_ported.parents_missing(par, root)
-            u.meta['parents_missing'] = miss
+            why = {}
+            cells, miss = deep_ported.parents_missing(par, root, why)
+            u.meta['parents_missing'] = {x: why.get(x, '') for x in miss}
+            nomaster = [x for x in miss if why.get(x) == 'no master']
+            if nomaster:
+                # production counts a cell directory without a master as missing and refuses the pass on it
+                # (ops/p3s5_parent_union.py:19-20; fork_serve_p3s5_20261008.sh:22-27)
+                u.refuse(f'D-G1: {len(nomaster)} cell director(ies) under {root} without a master '
+                         f'(I_deep_Taper_R075_<band>.fits): {nomaster[:12]}{" ..." if len(nomaster) > 12 else ""} - '
+                         f'install or remove them before the pass (the production pass refuses on them too)')
             if miss:
                 # D-G1: parents are built ONLY by masters --stages sources (refactor decision 2026-10-13, group 8)
                 u.refuse(f'D-G1: {len(miss)} installed cell(s) without a parent catalogue on the current master in {par}: '
@@ -682,7 +692,7 @@ class DeepRun:
                 self.out(u, os.path.join(self.U, name))
             self.write_stage_json(d, merge_copy=merge_copy, parent_dir=par)
             self.out(u, os.path.join(d, 'master_catalog.csv'), 'conformant_catalog')
-            for name in ('frame_times.csv', 'frame_beam_ratio.csv'):
+            for name in ('frame_times.csv', 'frame_beam_ratio.csv', 'frame_beam_bmaj.csv'):   # bmaj: D8, ops 283a513
                 p = os.path.join(self.U, name)
                 if os.path.exists(p):
                     self.out(u, p, 'frame_table', cache=True, run_dir=self.U)
@@ -1090,7 +1100,11 @@ class DeepRun:
                     cmd([self.py, self.script('p3s5_parent_union.py'), par], self.env()[1], f'{par}.union_1.log')
                     p(f'    candidates: ' + ', '.join(f'{x} [{ex(x)}]' for x in c.catalog.DEEP_PARENT_CANDIDATES))
                 if os.path.isdir(root):
-                    cells_now, miss = deep_ported.parents_missing(par, root)
+                    why = {}
+                    cells_now, miss = deep_ported.parents_missing(par, root, why)
+                    nm = [x for x in miss if why.get(x) == 'no master']
+                    if nm:
+                        p(f'    cell dirs without a master: {len(nm)} {nm[:8]} - REFUSED (D-G1, as production)')
                     if os.path.isdir(par):
                         p(f'    installed cells {len(cells_now)}; without a catalogue in {par}: {len(miss)}'
                           + (f' - REFUSED: `{c.catalog.PARENTS_COMMAND.format(cells=",".join(miss[:8]))}`' if miss else ''))
@@ -1131,7 +1145,7 @@ class DeepRun:
                 for x in (c.catalog.SOLAR_AUDIT, c.catalog.PULSARS_CSV, c.catalog.TABLES_DEEP, c.catalog.DEEP_ROOTS_CSV):
                     p(f'    reads {x} [{ex(x)}]')
                 p('    writes: master_catalog.csv (conformant), master_catalog_asrun.csv, master_catalog_removed.csv, '
-                  'frame_beam_ratio.csv + frame_times.csv (caches); classes conformant_catalog, frame_table')
+                  'frame_beam_ratio.csv + frame_beam_bmaj.csv + frame_times.csv (caches); classes conformant_catalog, frame_table')
                 p('    gates: master_catalog.csv = the merge record copy (restored when conform starts the run); D-G9..D-G16')
             elif stage == 'fitpos':
                 if not self.deep_label:
