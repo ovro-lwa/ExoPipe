@@ -811,24 +811,31 @@ def test_snapshot_completeness_gates():
     from exopipe.phase3.core import fallback
     d2 = os.path.join(TMP, 'skips')
     os.makedirs(d2)
-    for tag, fl in (('18MHz_V', {'noise_median_jyb': float('nan'), 'n_noise_refused': 0}),
-                    ('18MHz_I', {'noise_median_jyb': 0.12, 'n_noise_refused': 1}), ('23MHz_V', None)):
-        json.dump(dict({'subband': tag.split('_')[0]}, **({'flood_10s': fl} if fl is not None else {})),
-                  open(os.path.join(d2, f'runinfo_{tag}_{s.MODE}.json'), 'w'))
+    nan, ok_ = {'noise_median_jyb': float('nan'), 'n_noise_refused': 0}, {'noise_median_jyb': 0.12, 'n_noise_refused': 1}
+    for tag, f10, f1 in (('18MHz_V', nan, ok_), ('18MHz_I', ok_, nan), ('23MHz_V', None, None)):
+        json.dump(dict({'subband': tag.split('_')[0]}, **({'flood_10s': f10} if f10 is not None else {}),
+                       **({'flood_1min': f1} if f1 is not None else {})), open(os.path.join(d2, f'runinfo_{tag}_{s.MODE}.json'), 'w'))
     outc = {'18MHz': {'stokes': {'V': 'searched', 'I': 'searched'}}, '23MHz': {'stokes': {'V': 'searched', 'I': 'night-refused'}}}
     m = fallback.mark()
     skipped, unknown = TN.noise_outlier_skips(plan, d2, outc)
     cnt = fallback.since(m)[1].get('fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK')
-    assert skipped == [f'18MHz_V_{s.MODE}'] and unknown == [f'23MHz_V_{s.MODE}'] and cnt == 1, (skipped, unknown, cnt)
+    assert skipped == [f'18MHz_V_{s.MODE}:10s', f'18MHz_I_{s.MODE}:1min'] and unknown == [f'23MHz_V_{s.MODE}'] and cnt == 2, \
+        (skipped, unknown, cnt)
+    m = fallback.mark()                     # the call site: subband_completeness counts them (review 2026-10-14 m5)
+    TN.subband_completeness(u, plan, d2, outc)
+    assert fallback.since(m)[1].get('fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK') == 2
     for st in ('V', 'I'):
-        json.dump({'stokes': st, 'groups': {'Red': 'too-few-frames', 'Green': 'no-members', 'Blue': 'excluded'}},
+        json.dump({'stokes': st, 'groups': {'Red': 'too-few-frames', 'Green': 'searched', 'Blue': 'excluded'}},
                   open(os.path.join(d2, f'wideband_outcome_{st}.json'), 'w'))
+        json.dump({'flood_10s': ok_, 'flood_1min': nan}, open(os.path.join(d2, f'runinfo_Green_{st}_{s.MODE}.json'), 'w'))
     m = fallback.mark()
     TN.wideband_completeness(u, plan, d2)
-    cnt2 = fallback.since(m)[1].get('fallbacks.SNAPSHOT_WIDEBAND_SKIP_FALLBACK')
-    assert cnt2 == 2, cnt2
+    cnts = fallback.since(m)[1]
+    assert cnts.get('fallbacks.SNAPSHOT_WIDEBAND_SKIP_FALLBACK') == 2 and cnts.get(
+        'fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK') == 2, cnts
     print('completeness gates: night-refused and excluded accounted, crash/unaccounted/abort and wideband not-run refused; '
-          'a skipped noise-outlier refusal (1) and too-few-frames groups (2) counted, an old runinfo without the summary noted')
+          'skipped noise-outlier refusals counted at 10 s and 1 minute (2) and in the group searches (2), too-few-frames '
+          'groups (2), an old runinfo without the summary noted')
 
 
 def test_content_tests_negative():

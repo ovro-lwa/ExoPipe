@@ -457,13 +457,32 @@ def subband_completeness(u, plan, out, outcomes):
         u.note(f'noise-outlier refusal: no flood_10s summary in runinfo of {unknown[:6]} - cannot tell whether it ran')
 
 
-def noise_outlier_skips(plan, out, outcomes):
-    """B-30 (Gregg 2026-10-14: the minimum kept, every skip recorded, never refused): a searched subband x Stokes whose
-    10-s noise-outlier refusal did not run - fewer than search_snapshot.NOISE_OUTLIER_MIN_FRAMES admitted frames with a noise
-    estimate; the engine then writes runinfo flood_10s.noise_median_jyb NaN (phase3_snapshot_search.py detect, SS:816-828) -
-    is COUNTED (fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK). Returns (tags counted, tags whose runinfo has no flood_10s
-    summary - cannot tell)."""
+def _noise_skips_in(path):
+    """(tiers of one runinfo whose noise-outlier refusal did not run - '10s' from flood_10s, '1min' from flood_1min - , known):
+    the engine writes noise_median_jyb NaN when fewer than search_snapshot.NOISE_OUTLIER_MIN_FRAMES admitted frames (blocks at
+    1 minute) have a noise estimate (phase3_snapshot_search.py detect, SS:816-828; the 1-minute tier and the group search call
+    the same detect). known False: no summary to tell (an older runinfo, or the file unreadable here)."""
     import math
+    try:
+        with open(path) as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        return [], False
+    tiers, known = [], False
+    for tier, key in (('10s', 'flood_10s'), ('1min', 'flood_1min')):
+        fl = info.get(key)
+        if isinstance(fl, dict) and 'noise_median_jyb' in fl:
+            known = True
+            med = fl.get('noise_median_jyb')
+            if med is None or not math.isfinite(float(med)):
+                tiers.append(tier)
+    return tiers, known
+
+
+def noise_outlier_skips(plan, out, outcomes):
+    """B-30 (Gregg 2026-10-14: the minimum kept, every skip recorded, never refused): each searched subband x Stokes x tier
+    (10 s, 1 minute) whose noise-outlier refusal did not run is COUNTED (fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK).
+    Returns (counted 'tag:tier', tags whose runinfo has no summary - cannot tell). The group searches: wideband_completeness."""
     from exopipe.phase3.core import fallback
     s = cfg().search_snapshot
     skipped, unknown = [], []
@@ -472,21 +491,14 @@ def noise_outlier_skips(plan, out, outcomes):
             if outcomes.get(sb, {}).get('stokes', {}).get(st) != 'searched':
                 continue
             tag = f'{sb}_{st}_{s.MODE}'
-            try:
-                with open(os.path.join(out, f'runinfo_{tag}.json')) as f:
-                    fl = json.load(f).get('flood_10s')
-            except (OSError, ValueError):
-                fl = None                     # unreadable here: cannot tell (the completeness gate judged its presence)
-            if not isinstance(fl, dict) or 'noise_median_jyb' not in fl:
+            tiers, known = _noise_skips_in(os.path.join(out, f'runinfo_{tag}.json'))
+            if not known:
                 unknown.append(tag)
-                continue
-            med = fl.get('noise_median_jyb')
-            if med is None or not math.isfinite(float(med)):
-                skipped.append(tag)
+            skipped += [f'{tag}:{t}' for t in tiers]
     if skipped:
-        fallback.site('fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK', f'{plan["cell"]}: the 10-s noise-outlier refusal did not '
-                      f'run (fewer than {s.NOISE_OUTLIER_MIN_FRAMES} admitted frames with a noise estimate) for {skipped[:6]}',
-                      n=len(skipped))
+        fallback.site('fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK', f'{plan["cell"]}: the noise-outlier refusal did not '
+                      f'run (fewer than {s.NOISE_OUTLIER_MIN_FRAMES} admitted frames / blocks with a noise estimate) for '
+                      f'{skipped[:6]}', n=len(skipped))
     return skipped, unknown
 
 
@@ -536,13 +548,27 @@ def wideband_completeness(u, plan, out):
                   or (v == 'night-refused' and os.path.exists(os.path.join(out, f'nightrefused_{grp}_{st}_{s.MODE}.json'))))
             if not ok:
                 bad.append(f'{grp}_{st}:{v}')
-    few = [f'{grp}_{st}' for st in ('V', 'I') if os.path.exists(os.path.join(out, f'wideband_outcome_{st}.json'))
-           for grp, v in sorted(json.load(open(os.path.join(out, f'wideband_outcome_{st}.json'))).get('groups', {}).items())
-           if v == 'too-few-frames']
+    from exopipe.phase3.core import fallback
+    few, gskip = [], []
+    for st in ('V', 'I'):
+        op = os.path.join(out, f'wideband_outcome_{st}.json')
+        if not os.path.exists(op):
+            continue
+        with open(op) as f:
+            groups = json.load(f).get('groups', {})
+        for grp, v in sorted(groups.items()):
+            if v == 'too-few-frames':
+                few.append(f'{grp}_{st}')
+            elif v == 'searched':                # the group search's own noise-outlier refusals (the same detect)
+                gskip += [f'{grp}_{st}_{s.MODE}:{t}' for t in
+                          _noise_skips_in(os.path.join(out, f'runinfo_{grp}_{st}_{s.MODE}.json'))[0]]
     if few:                                 # B-30 (Gregg 2026-10-14): a group skipped for want of frames is counted, never refused
-        from exopipe.phase3.core import fallback
         fallback.site('fallbacks.SNAPSHOT_WIDEBAND_SKIP_FALLBACK', f'{plan["cell"]}: wideband group(s) {few} not searched - fewer '
                       f'than {s.WIDEBAND_MIN_FRAMES} frames with data', n=len(few))
+    if gskip:
+        fallback.site('fallbacks.SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK', f'{plan["cell"]}: the group search\'s noise-outlier '
+                      f'refusal did not run (fewer than {s.NOISE_OUTLIER_MIN_FRAMES} admitted frames / blocks with a noise '
+                      f'estimate) for {gskip[:6]}', n=len(gskip))
     u.check('completeness:widebands', not bad, value=len(bad), detail=' '.join(bad) or 'every group accounted for')
     if bad:
         raise RuntimeError(f'SEARCH-INCOMPLETE {plan["cell"]} wideband group search unaccounted: {" ".join(bad)} - not '
