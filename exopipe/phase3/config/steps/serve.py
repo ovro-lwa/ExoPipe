@@ -26,8 +26,8 @@ class serve(_Section):
     hub, for every tier. Ports, run roots, titles and the per-tier server environment decide what Gregg and the team see.
     Host names live in the site file (REVIEW_HOST, CHAIN_HOST; the hub tunnel host stays in build_review_hub.py:29 in place)."""
     # keys no --set / --config can change (DESIGN 11.4; honoured by config/__init__.py)
-    PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'INSPECTION_HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
-                      'OTHER_SERVED_PORTS', 'JUPITER_ROOTS')
+    PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'INSPECTION_HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT',
+                      'OTHER_SERVED_PORTS', 'JUPITER_ROOTS')     # EXCLUSION_GATE_TIERS: RULED instead (2026-10-14, below)
 
     # ---- served runs (production product roots, from config.paths; PROTECTED) ----------------------------------------
     RUN_ROOT_KEY = {'deep': 'TRANSIENTS_ROOT',        # /data07/gh/phase3/transients; p3s3_serve_stokes.sh:9
@@ -275,7 +275,8 @@ class serve(_Section):
     # refuse PER PAGE on the rows that page's server reads (lib/serve/exclusion_gate.scan_page; 2026-10-14 ~20:3x UTC on the
     # served Run_P3S5: 0 rows on excluded nights in any page - a first folder-wide scan's 34 were 2026-10-07 index files the
     # server never reads). Production ('snapshot' only, no gate on deep / sub-LST / forced pages) is the parity file's value.
-    # PROTECTED.
+    # RULED, not PROTECTED (2026-10-14, as every wave-2 key): a production run changes it only with --ruling-for <ledger ID>; a
+    # run into a non-production --out (parity) may set production's value - the parity file is applied outside --parity too.
     EXCLUSION_GATE_TIERS = ('snapshot', 'snapshot-forced', 'deep', 'sublst')
     HOLD_FP_VERDICTS = ('FP', 'probably-FP', 'lean-FP')   # snapshot_rechain_batch.sh:379 (R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS, ledger 1698)
     HOLD_NOTE_CHARS = 200                   # carry_missed.csv judge_note cut; snapshot_rechain_batch.sh:397

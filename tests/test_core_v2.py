@@ -826,10 +826,20 @@ print(json.dumps(res))
         assert r.returncode == 0 and os.listdir(other) == ['free.txt'], r.stderr
 
 
+def _under_cli_allowed(path):
+    """True when ``path`` lies under a root a CLI --parity run allows without --work: /tmp, $TMPDIR, or this host's site
+    SCRATCH_ROOT (the default --work; lwacalim07 has one since 2026-10-14)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import env
+    scr = (CFG.site.SCRATCH_ROOT or {}).get(env.host()) if isinstance(CFG.site.SCRATCH_ROOT, dict) else None
+    r = os.path.realpath(path) + '/'
+    return _under_default_allowed(path) or bool(scr and r.startswith(os.path.realpath(scr).rstrip('/') + '/'))
+
+
 def test_item5_cli_parity_flag():
     with Scratch('item5cli') as d:
-        if _under_default_allowed(d):
-            print(f'SKIP: scratch {d} is under /tmp or $TMPDIR, which the guard always allows')
+        if _under_cli_allowed(d):
+            print(f'SKIP: scratch {d} is under /tmp, $TMPDIR or this host\'s site SCRATCH_ROOT, which a parity run allows')
             return
         out, other = os.path.join(d, 'out'), os.path.join(d, 'other')
         os.makedirs(other)
