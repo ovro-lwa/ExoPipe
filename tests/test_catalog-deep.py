@@ -717,6 +717,7 @@ def test_content_tests_catch_defects():
     assert not ok('fitted_catalog', fo, **ctx), 'a moved peak position passed'
     write_csv(fo, cols, out_rows(stat='0.0'))
     assert not ok('fitted_catalog', fo, **ctx), 'a fitted row with a 0.0 statistical error passed'
+    from exopipe.phase3.config import CFG
     CFG.catalog_fitpos.ZERO_STAT_ERROR = 'report'                     # production (the parity file): reported, not failed
     try:
         res = validate.run('fitted_catalog', fo, **ctx)
