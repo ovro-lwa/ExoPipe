@@ -92,6 +92,17 @@ MIN_DATES_FOR_VARIANT = 2
 # 52171 s); 'constituent' reads the time block of the image the co-add actually used for the night. The step sets it from
 # masters_build.MASTER_SPAN_SOURCE.
 MASTER_SPAN_SOURCE = 'phase2-glob'
+# OFF-GRID SURVEY IMAGES (B-03 (a), Gregg 2026-10-13: "one regrid for every off-grid input; the four wrong-grid nights kept out
+# by rows you add"): 'refuse' (production) refuses a post-cutover night whose image is off the cell's modal post-cutover grid
+# (_grid_refused_dates; refusals_grid.csv); 'regrid' regrids it onto the template like a pre-cutover night (_off_grid at every
+# regrid decision), and the four wrong-grid nights must be excluded in data_decisions.csv (the masters build and the flow step
+# refuse their cells until they are). The step sets it from masters_build.OFF_GRID_SURVEY.
+OFF_GRID_SURVEY = 'refuse'
+# A PRODUCT ON ANOTHER GRID THAN ITS NIGHT'S I IMAGE (B-03 (a), the same ruling): 'drop' (production) drops such a V frame in the
+# provisional stage, and the final stage hands every product its I image's regrid mapping (process_variant_image regrids an
+# input off the master's shape from its own WCS only when it gets no mapping); 'regrid' aligns such a product with no I mapping,
+# so it is regridded from its own WCS in both stages (_product_mapping). The step sets it from masters_build.PRODUCT_GRID_MISMATCH.
+PRODUCT_GRID_MISMATCH = 'drop'
 
 REFERENCE_DATES = {
     # 00h: mosaic-coverage cell (Gregg 2026-07-05) — deliberately SHALLOW,
@@ -1761,7 +1772,7 @@ def process_lst_freq(lst, freq_str, exclusions, args):
 
     # Prepare reference
     ref_img_path = ref_date_entry[2]
-    if ref_date < CUTOVER_DATE and post_dates:
+    if (ref_date < CUTOVER_DATE and post_dates) or _off_grid(ref_date, ref_img_path, target_shape):   # B-03 (a)
         regrid_path = f'{workdir}/prep/ref_{ref_date}_regrid.fits'
         ref_img_path = regrid_image(ref_img_path, tmpl_hdr, regrid_path)
         print(f"  Regridded reference")
@@ -1801,6 +1812,8 @@ def process_lst_freq(lst, freq_str, exclusions, args):
 
         # Regrid if needed
         needs_regrid = date < CUTOVER_DATE and post_dates
+        if not needs_regrid and _off_grid(date, align_img_path, target_shape):    # B-03 (a)
+            needs_regrid = True
         if needs_regrid:
             rg_path = f'{workdir}/prep/{date}_regrid.fits'
             work_path = regrid_image(align_img_path, tmpl_hdr, rg_path)
@@ -2231,6 +2244,8 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
     # ── Reference I ──
     ref_img_path = ref_date_entry[2]
     ref_needs_regrid = ref_date < CUTOVER_DATE and bool(post_dates)
+    if not ref_needs_regrid and _off_grid(ref_date, ref_date_entry[2], target_shape):    # B-03 (a)
+        ref_needs_regrid = True
     if ref_needs_regrid:
         ref_img_path = regrid_image(ref_img_path, tmpl_hdr,
                                      f'{prep_dir}/ref_{ref_date}_regrid.fits')
@@ -2280,6 +2295,8 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
     for date, sci_dir, align_img_path in target_dates:
         t0 = time.time()
         needs_regrid = date < CUTOVER_DATE and bool(post_dates)
+        if not needs_regrid and _off_grid(date, align_img_path, target_shape):    # B-03 (a)
+            needs_regrid = True
 
         if needs_regrid:
             work_path = regrid_image(align_img_path, tmpl_hdr,
@@ -2386,12 +2403,15 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
                 _v_shape = (int(_vh['NAXIS2']), int(_vh['NAXIS1'])); _i_shape = (int(_ih['NAXIS2']), int(_ih['NAXIS1']))
             except Exception as _e:
                 _v_shape, _i_shape = None, None
-            if _v_shape is not None and _v_shape != _i_shape:
+            if _v_shape is not None and _v_shape != _i_shape and PRODUCT_GRID_MISMATCH != 'regrid':
                 print(f"    {date}: V frame grid {_v_shape} differs from the I frame grid {_i_shape} - "
                       f"V DROPPED for this epoch (I kept) [{os.path.basename(v_src)}]")
             else:
+                if _v_shape is not None and _v_shape != _i_shape:                  # B-03 (a): regridded, not dropped
+                    print(f"    {date}: V frame grid {_v_shape} differs from the I frame grid {_i_shape} - regridded from "
+                          f"its own WCS [{os.path.basename(v_src)}]")
                 process_variant_image(v_src, flow_offsets, scale_map_full,
-                                      tmpl_hdr, target_shape, v_out, regrid_coords)
+                                      tmpl_hdr, target_shape, v_out, _product_mapping(v_src, align_img_path, regrid_coords))
                 if os.path.exists(v_out):
                     v_aligned.append((date, v_out, weight))
                 else:
@@ -2548,6 +2568,8 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
 
     ref_img_path = ref_date_entry[2]
     ref_needs_regrid = ref_date < CUTOVER_DATE and bool(post_dates)
+    if not ref_needs_regrid and _off_grid(ref_date, ref_date_entry[2], target_shape):    # B-03 (a)
+        ref_needs_regrid = True
     if ref_needs_regrid:
         ref_img_path = regrid_image(ref_img_path, tmpl_hdr,
                                      f'{prep_dir}/ref_{ref_date}_regrid.fits')
@@ -2593,6 +2615,8 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
 
     for date, sci_dir, align_img_path in target_dates:
         needs_regrid = date < CUTOVER_DATE and bool(post_dates)
+        if not needs_regrid and _off_grid(date, align_img_path, target_shape):    # B-03 (a)
+            needs_regrid = True
         if needs_regrid:
             work_path = regrid_image(align_img_path, tmpl_hdr,
                                       f'{prep_dir}/{date}_regrid.fits')
@@ -3400,6 +3424,8 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
                 dc = float(_fdc) if _fdc not in ('', 'affine') else (_mean if (0.3 < _mean < 3.0) else 1.0)
             weight = float(r['weight'])
             needs_regrid = date < CUTOVER_DATE and bool(post_dates)
+            if not needs_regrid and _off_grid(date, img, target_shape):    # B-03 (a)
+                needs_regrid = True
             rg = precompute_regrid_mapping(img, tmpl_hdr, target_shape) if needs_regrid else None
             out = f'{prep_dir}/{date}_{vk}.fits'
             if os.path.exists(out):
@@ -3582,6 +3608,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
     ref_img_path = ref_date_entry[2]
     ref_needs_regrid = ref_date < CUTOVER_DATE and bool(post_dates)
+    if not ref_needs_regrid and _off_grid(ref_date, ref_date_entry[2], target_shape):    # B-03 (a)
+        ref_needs_regrid = True
     if ref_needs_regrid:
         ref_img_path = regrid_image(ref_img_path, tmpl_hdr,
                                      f'{prep_dir}/ref_{ref_date}_regrid.fits')
@@ -3637,6 +3665,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
     for date, sci_dir, align_img_path in target_dates:
         needs_regrid = date < CUTOVER_DATE and bool(post_dates)
+        if not needs_regrid and _off_grid(date, align_img_path, target_shape):    # B-03 (a)
+            needs_regrid = True
         if needs_regrid:
             work_path = regrid_image(align_img_path, tmpl_hdr,
                                       f'{prep_dir}/{date}_regrid.fits')
@@ -3791,7 +3821,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
     # Also create V co-add
     v_aligned = []
-    for date, sci_dir, _ in dates:
+    for date, sci_dir, _i_img in dates:
         if date not in date_params:
             continue
         params = date_params[date]
@@ -3800,7 +3830,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             continue
         v_out = f'{prep_dir}/{date}_V.fits'
         ok = process_variant_image(v_img, params['flow'], params['scale_map'],
-                                    tmpl_hdr, target_shape, v_out, params['regrid'])
+                                    tmpl_hdr, target_shape, v_out, _product_mapping(v_img, _i_img, params['regrid']))   # B-03 (a)
         # two-tier policy: V prep for every epoch; co-add membership QA-gated
         if ok and os.path.exists(v_out) and date in good_dates_deep:
             v_aligned.append((date, v_out, params['weight']))
@@ -3863,7 +3893,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     i_r0_aligned = []
     _rel = _variant_relative_refusals([(d, sd) for d, sd, _ in dates if d in good_dates_deep and d in date_params],
                                       freq_str, 'Taper_R0')
-    for date, sci_dir, _ in dates:
+    for date, sci_dir, _i_img in dates:
         if date not in good_dates_deep or date not in date_params:
             continue
         params = date_params[date]
@@ -3884,7 +3914,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             continue
         i_r0_out = f'{prep_dir}/{date}_I_R0.fits'
         ok = process_variant_image(i_r0_img, params['flow'], params['scale_map'],
-                                    tmpl_hdr, target_shape, i_r0_out, params['regrid'])
+                                    tmpl_hdr, target_shape, i_r0_out, _product_mapping(i_r0_img, _i_img, params['regrid']))   # B-03 (a)
         if ok and os.path.exists(i_r0_out):
             i_r0_aligned.append((date, i_r0_out, params['weight']))
 
@@ -3906,7 +3936,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         _aligned = []
         _rel = _variant_relative_refusals([(d, sd) for d, sd, _ in dates if d in good_dates_deep and d in date_params],
                                           freq_str, _vk)
-        for date, sci_dir, _ in dates:
+        for date, sci_dir, _i_img in dates:
             if date not in good_dates_deep or date not in date_params:
                 continue
             params = date_params[date]
@@ -3927,7 +3957,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 continue
             _out = f'{prep_dir}/{date}_{_vk}.fits'
             ok = process_variant_image(_img, params['flow'], params['scale_map'],
-                                       tmpl_hdr, target_shape, _out, params['regrid'])
+                                       tmpl_hdr, target_shape, _out, _product_mapping(_img, _i_img, params['regrid']))   # B-03 (a)
             if ok and os.path.exists(_out):
                 _aligned.append((date, _out, params['weight']))
         if len(_aligned) >= MIN_DATES_FOR_VARIANT:
@@ -4193,6 +4223,8 @@ def _grid_refused_dates(target_dates, tag=''):
     vals = [s for s in shapes.values() if s]
     modal = max(set(vals), key=vals.count) if vals else None
     wrong = {d for d, s in shapes.items() if s and modal and s != modal}
+    if OFF_GRID_SURVEY == 'regrid':          # B-03 (a): an off-grid post-cutover night is regridded (_off_grid), not refused
+        return set()
     for d in sorted(wrong):
         key = (tag, d)
         if key not in _GRID_REFUSED_CACHE:
@@ -4200,6 +4232,37 @@ def _grid_refused_dates(target_dates, tag=''):
             print(f"  {tag} {d}: epoch REFUSED - wrong grid {shapes[d]} vs modal post-cutover grid {modal} "
                   f"(Phase-2 anomaly; cannot be flowed; excluded from the co-add, logged)", flush=True)
     return wrong
+
+
+def _off_grid(date, img, target_shape):
+    """B-03 (a), OFF_GRID_SURVEY 'regrid': True for a post-cutover night whose image (the survey image) is not on the
+    template grid - it is regridded onto it as a pre-cutover night is. Always False under 'refuse' (production refuses such a
+    night in _grid_refused_dates) and for the previous-master reference ('MASTER': regridded on its own path). An unreadable
+    header is the B-30 grid-header site (production: the night passes unchecked)."""
+    if OFF_GRID_SURVEY != 'regrid' or date == 'MASTER' or date < CUTOVER_DATE:
+        return False
+    try:
+        _h = fits.getheader(img)
+        return (int(_h['NAXIS2']), int(_h['NAXIS1'])) != tuple(target_shape)
+    except Exception:
+        from exopipe.phase3.core import fallback
+        fallback.site('fallbacks.GRID_HEADER_FALLBACK', f'{img}: header unreadable ({sys.exc_info()[1]}) - {date} would '
+                      f'pass the grid check unchecked')
+        return False
+
+
+def _image_shape(path):
+    _h = fits.getheader(path)
+    return int(_h['NAXIS2']), int(_h['NAXIS1'])
+
+
+def _product_mapping(src_path, i_img, i_mapping):
+    """B-03 (a), PRODUCT_GRID_MISMATCH 'regrid': the regrid mapping to align a night's product (V, an I variant) with - its
+    I image's mapping when the product has the I image's shape (production's assumption: one grid per night), else None, so
+    process_variant_image regrids it from its own WCS when it is off the master's shape. Under 'drop' the I mapping, always."""
+    if PRODUCT_GRID_MISMATCH != 'regrid' or i_img is None:
+        return i_mapping
+    return i_mapping if _image_shape(src_path) == _image_shape(i_img) else None
 
 
 def _flow_freshness(workdir, target_dates):

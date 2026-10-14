@@ -110,7 +110,15 @@ class masters_build(_Section):
     RAW_INPUT_FLOW_RULE = 'same-state'        # B-03 (a), the same-state reading (Gregg 2026-10-14): a night's V / I-variant image whose dewarp state differs from the night's
                                               # survey image is refused (refusals_input.csv; needs INPUT_RESOLVER core.inputs); 'survey-image-flow' = production: every product
                                               # takes the survey image's flow (defect M9: 26 V / 40 / 35 / 26 variant night-cells raw on a dewarped survey, 1 each dewarped on raw)
-    PROVISIONAL_V_GRID_MISMATCH = 'drop'      # B-03 default (c): a V frame on another grid than its I frame is dropped in the provisional stage (coadd_full_pipeline.py:2339-2351; FIX-COADD-V-FRAME-ON-DIFFERENT-GRID-DROPPED-LOUDLY)
+    PRODUCT_GRID_MISMATCH = 'regrid'          # B-03 (a) "one regrid for every off-grid input": a night's V / I variant on another grid (shape) than its I image is regridded
+                                              # from its own WCS in the provisional and final stage (coadd._product_mapping); 'drop' = production: the provisional stage drops
+                                              # such a V (coadd_full_pipeline.py:2339-2351; FIX-COADD-V-FRAME-ON-DIFFERENT-GRID-DROPPED-LOUDLY) and the final stage hands every
+                                              # product its I image's regrid mapping (was masters_build.PROVISIONAL_V_GRID_MISMATCH, a mirror)
+    OFF_GRID_SURVEY = 'regrid'                # B-03 (a): a post-cutover night whose survey image is off the cell's modal grid is regridded (coadd._off_grid at every regrid
+                                              # decision, the build and the flow step); 'refuse' = production (coadd._grid_refused_dates, refusals_grid.csv)
+    WRONG_GRID_NIGHTS = (('02h', 'Green', '2025-12-26'), ('12h', 'Full', '2025-04-11'), ('14h', 'Full', '2025-05-07'),
+                         ('19h', 'Full', '2025-04-05'))   # the Phase 2 images on a wrong grid (R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED 'Leave excluded.'): under
+                                              # OFF_GRID_SURVEY 'regrid' a build or flow run of their cell refuses until data_decisions.csv excludes the night (Gregg's rows)
     # reference
     REF_MODE = 'master'                       # previous-generation I Taper R-0.75 master (coadd_full_pipeline.py:1607; R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-MASTER)
     REFERENCE_DATES = {'00h': '2025-08-09', '01h': '2024-12-21', '02h': '2024-12-21', '03h': '2024-12-21', '04h': '2024-12-21',
@@ -194,7 +202,7 @@ class masters_build(_Section):
     KEEP_PREP = False                         # P3_KEEP_PREP unset (coadd_full_pipeline.py:4029)
     PROTECTED_KEYS = ('ALLOW_STALE_FLOW', 'FLUXSCALE_TILT', 'SOLAR_AUDIT', 'SOLAR_AUDIT_SHA1', 'NAMED_OUT_OF_MASTER',
                       'NAMED_OUT_OF_MASTER_SHA1', 'ARCHIVE_WRITE', 'VARIANT_BAND_MEDIANS', 'VARIANT_BAND_MEDIANS_SHA1',
-                      'FLOW_MAX_NAN_FRACTION', 'PROVISIONAL_V_GRID_MISMATCH',
+                      'FLOW_MAX_NAN_FRACTION', 'WRONG_GRID_NIGHTS',
                       'REF_ASTROM_PIVOT_MHZ', 'REF_ASTROM_EXPONENT', 'REF_ASTROM_MIN_ANCHORS', 'REF_ASTROM_N_PEAKS',
                       'REF_ASTROM_MATCH_MAX_ARCMIN', 'FLUXSCALE_ESTIMATOR', 'FLUXSCALE_SNR_MIN', 'FLUXSCALE_PEAK_JY',
                       'FLUXSCALE_MIN_ELEV_DEG', 'FLUXSCALE_APERTURE_BEAMS', 'FLUXSCALE_MAXFILTER_BEAMS',
@@ -206,6 +214,9 @@ class masters_build(_Section):
                       'FORCE_REBUILD')   # FORCE_REBUILD: False would re-enable the in-place .done skip guard (CLAUDE.md 3; the wrapper refuses a skip)
     RULED = {'CUTOVER_DATE': 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED',
              'INPUT_RESOLVER': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'PRODUCT_GRID_MISMATCH': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'OFF_GRID_SURVEY': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'WRONG_GRID_NIGHTS': ('R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED', 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'),
              'RAW_INPUT_FLOW_RULE': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),
              'EPOCH_GATE_SOURCE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'EPOCH_GATE_MAX_PASSES': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),

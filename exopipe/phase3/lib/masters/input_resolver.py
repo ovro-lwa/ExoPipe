@@ -158,3 +158,29 @@ def preview(lst, scope, dates):
             if I.state_mismatch(sci, fq, p, prod):
                 out.setdefault('V' if prod == 'V' else f'I_{prod}', []).append(d)
     return out
+
+
+def wrong_grid_unexcluded(lst, scope, nights):
+    """B-03 (a), masters_build.OFF_GRID_SURVEY 'regrid': the cell's masters_build.WRONG_GRID_NIGHTS among ``nights`` (its
+    Phase 2 nights) that data_decisions.csv does not exclude. With the grid refusal gone they would be regridded into the
+    master; the ruling keeps them out by exclusion rows (Gregg's to add). [] under 'refuse' (production refuses them by grid)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import exclusions
+    b = CFG.masters_build
+    if b.OFF_GRID_SURVEY != 'regrid':
+        return []
+    ex = exclusions.load()
+    return sorted(d for lt, sc, d in b.WRONG_GRID_NIGHTS
+                  if (lt, sc) == (lst, scope) and d in set(nights) and not ex.is_excluded(lst, scope, d))
+
+
+def wrong_grid_refusal(lst, scope, nights):
+    """The refusal text for the cell, or None (see wrong_grid_unexcluded)."""
+    bad = wrong_grid_unexcluded(lst, scope, nights)
+    if not bad:
+        return None
+    return (f'B-03 (a): {lst} {scope} night(s) {bad} are Phase 2 images on a wrong pixel grid (R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED); '
+            f'with masters_build.OFF_GRID_SURVEY regrid the grid refusal that kept them out is gone, and the ruling keeps them out '
+            f'by data_decisions.csv rows that do not exist yet (Gregg\'s to add; DECISIONS_EXPLAINED_20261014.md section 3) - '
+            f'refusing the cell until they do')
+

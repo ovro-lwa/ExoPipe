@@ -8,6 +8,10 @@ per-night product test and T6 accept the missing V products of exactly those nig
 check fails if the copy chose another file, the rule refused a matching product or admitted a mismatched one, a refusal
 was recorded twice or not at all, 'coadd-finders' did not restore the co-add's own finders, a changed finder was used, or
 an unrefused night's missing V product passed.
+Steps 3-4: a product on another grid than its night's I image is aligned from its own WCS (PRODUCT_GRID_MISMATCH 'regrid'; a
+point source lands on its sky position, which the I image's mapping misses); a post-cutover survey image off the template
+grid is regridded at every regrid decision, not refused (OFF_GRID_SURVEY 'regrid'); the four wrong-grid nights' cells refuse
+until data_decisions.csv excludes the night.
 Run: python tests/test_masters_b03.py
 """
 import contextlib
@@ -296,6 +300,162 @@ def test_real_preview():
               {k: sorted(v) for k, v in pv.items()} == {k: sorted(v) for k, v in want.items()}, (pv, want))
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# 5. step 3: a product on another grid than its night's I image is regridded from its own WCS
+# ---------------------------------------------------------------------------------------------------------------------
+
+def _wcs_image(path, n, cdelt, src=None):
+    """An n x n image centred on (150, 40) deg with pixel size cdelt deg; a 1 Jy point source at sky position src."""
+    from astropy.wcs import WCS
+    w = WCS(naxis=2)
+    w.wcs.ctype = ['RA---SIN', 'DEC--SIN']
+    w.wcs.crval = [150.0, 40.0]
+    w.wcs.crpix = [n / 2 + 0.5, n / 2 + 0.5]
+    w.wcs.cdelt = [-cdelt, cdelt]
+    h = w.to_header()
+    h['BMAJ'], h['BMIN'], h['BPA'] = 2 * cdelt, 2 * cdelt, 0.0
+    d = np.zeros((n, n), np.float32)
+    if src is not None:
+        x, y = w.all_world2pix(src[0], src[1], 0)
+        d[int(round(float(y))), int(round(float(x)))] = 1.0
+    fits.writeto(path, d, h, overwrite=True)
+    return w, h
+
+
+def test_product_grid():
+    d = os.path.join(T, 'grid')
+    os.makedirs(d, exist_ok=True)
+    src = (152.0, 41.5)
+    wt, th = _wcs_image(os.path.join(d, 'tmpl.fits'), 64, 0.5)              # the master grid
+    _wcs_image(os.path.join(d, 'I.fits'), 48, 0.6)                          # the night's I image (pre-cutover grid)
+    _wcs_image(os.path.join(d, 'V.fits'), 40, 0.75, src)                    # its V on a third grid
+    _wcs_image(os.path.join(d, 'V_same.fits'), 48, 0.6, src)                # a V on the I image's grid
+    i_map = co.precompute_regrid_mapping(os.path.join(d, 'I.fits'), th, (64, 64))
+    xe, ye = (float(v) for v in wt.all_world2pix(src[0], src[1], 0))
+    keep = co.PRODUCT_GRID_MISMATCH
+    res = {}
+    try:
+        for mode in ('drop', 'regrid'):
+            co.PRODUCT_GRID_MISMATCH = mode
+            for v in ('V', 'V_same'):
+                out = os.path.join(d, f'{v}_{mode}_aligned.fits')
+                m = co._product_mapping(os.path.join(d, f'{v}.fits'), os.path.join(d, 'I.fits'), i_map)
+                quiet(co.process_variant_image, os.path.join(d, f'{v}.fits'), None, np.ones((64, 64)), th, (64, 64), out, m)
+                a = fits.getdata(out)
+                yp, xp = np.unravel_index(int(np.nanargmax(a)), a.shape)
+                res[(mode, v)] = (m is i_map, round(float(np.hypot(xp - xe, yp - ye)), 1))
+    finally:
+        co.PRODUCT_GRID_MISMATCH = keep
+    check('drop (production): a V on a third grid gets the I image\'s mapping and lands off its sky position',
+          res[('drop', 'V')][0] and res[('drop', 'V')][1] > 3, res)
+    check('regrid: that V is regridded from its own WCS and lands on its sky position (within 1 px)',
+          not res[('regrid', 'V')][0] and res[('regrid', 'V')][1] <= 1.0, res)
+    check('regrid: a V on its I image\'s grid keeps the I mapping (production\'s case), on its position',
+          res[('regrid', 'V_same')][0] and res[('regrid', 'V_same')][1] <= 1.0 and res[('drop', 'V_same')] == res[('regrid', 'V_same')], res)
+    # the call sites: the provisional V is no longer dropped under 'regrid', and every final-stage product takes _product_mapping
+    import ast
+    tree = ast.parse(open(co.__file__).read())
+    fn = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    calls = {}
+    for name in ('run_provisional_lst_freq', 'run_final_lst_freq'):
+        for node in ast.walk(fn[name]):
+            if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'process_variant_image':
+                last = node.args[-1] if len(node.args) >= 7 else None
+                src0 = getattr(node.args[0], 'id', '')
+                calls.setdefault(name, []).append((src0, isinstance(last, ast.Call) and getattr(last.func, 'id', '') == '_product_mapping'))
+    prov = dict(calls['run_provisional_lst_freq'])
+    fin = dict(calls['run_final_lst_freq'])
+    check('provisional: the night\'s V goes through _product_mapping (the reference V keeps its own mapping)',
+          prov.get('v_src') is True and prov.get('ref_v_src') is False, calls['run_provisional_lst_freq'])
+    check('final: V, I Taper R0 and the NoTaper variants go through _product_mapping',
+          fin.get('v_img') is True and fin.get('i_r0_img') is True and fin.get('_img') is True, calls['run_final_lst_freq'])
+    txt = ast.get_source_segment(open(co.__file__).read(), fn['run_provisional_lst_freq'])
+    check("provisional: the V DROP needs PRODUCT_GRID_MISMATCH != 'regrid'",
+          "_v_shape != _i_shape and PRODUCT_GRID_MISMATCH != 'regrid':" in txt)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 6. step 4: an off-grid post-cutover survey image is regridded, not refused; the four wrong-grid nights' gate
+# ---------------------------------------------------------------------------------------------------------------------
+
+def test_off_grid():
+    from exopipe.phase3.core import exclusions, fallback
+    d = os.path.join(T, 'offgrid')
+    os.makedirs(d, exist_ok=True)
+    on, off = os.path.join(d, 'on.fits'), os.path.join(d, 'off.fits')
+    fits.writeto(on, np.zeros((8, 8), np.float32), overwrite=True)
+    fits.writeto(off, np.zeros((6, 6), np.float32), overwrite=True)
+    bad = os.path.join(d, 'bad.fits')
+    open(bad, 'w').write('not a fits file')
+    post, pre = '2025-03-01', '2024-12-20'
+    keep = co.OFF_GRID_SURVEY
+    try:
+        co.OFF_GRID_SURVEY = 'refuse'
+        r_ref = (co._off_grid(post, off, (8, 8)), co._grid_refused_dates([(post, None, off), ('2025-03-02', None, on),
+                                                                          ('2025-03-03', None, on)], 'test_a'))
+        co.OFF_GRID_SURVEY = 'regrid'
+        r_reg = (co._off_grid(post, off, (8, 8)), co._off_grid(post, on, (8, 8)), co._off_grid(pre, off, (8, 8)),
+                 co._off_grid('MASTER', off, (8, 8)),
+                 co._grid_refused_dates([(post, None, off), ('2025-03-02', None, on), ('2025-03-03', None, on)], 'test_b'))
+        CFG.reset()
+        try:
+            quiet(co._off_grid, post, bad, (8, 8))
+            refused = False
+        except fallback.FallbackRefused as e:
+            refused = 'GRID_HEADER_FALLBACK' in str(e)
+        CFG.authorize([], out=T)
+        CFG.set('fallbacks.GRID_HEADER_FALLBACK', 'fallback')
+        m = fallback.mark()
+        counted = (quiet(co._off_grid, post, bad, (8, 8))[0], fallback.since(m)[1].get('fallbacks.GRID_HEADER_FALLBACK'))
+        CFG.reset()
+    finally:
+        co.OFF_GRID_SURVEY = keep
+    check("refuse (production): the off-grid night is refused by grid and _off_grid says nothing",
+          r_ref == (False, {post}), r_ref)
+    check("regrid: the off-grid post-cutover night is regridded (True), the on-grid one not, pre-cutover and MASTER by their "
+          "own paths; nothing refused by grid", r_reg == (True, False, False, False, set()), r_reg)
+    check('regrid: an unreadable header is the B-30 grid-header site (refuses under the ruled policy; production counts it)',
+          refused and counted == (False, 1), (refused, counted))
+    # every regrid decision consults _off_grid
+    import re
+    src = open(co.__file__).read()
+    tests_ = re.findall(r'\n( *)(ref_)?needs_regrid = (?:ref_)?date < CUTOVER_DATE and[^\n]*\n( *)([^\n]*)', src)
+    ok_sites = [t for t in tests_ if '_off_grid(' in t[3]]
+    prep_ref = '(ref_date < CUTOVER_DATE and post_dates) or _off_grid(ref_date, ref_img_path, target_shape)' in src
+    check(f'every cutover regrid decision is followed by _off_grid ({len(ok_sites)} of {len(tests_)}; prep reference too)',
+          len(tests_) == 8 and len(ok_sites) == 8 and prep_ref and src.count('CUTOVER_DATE and') == 9, (len(tests_), len(ok_sites)))
+    # the four wrong-grid nights
+    ex_path = os.path.join(d, 'decisions.csv')
+    with open(ex_path, 'w') as f:
+        f.write('lst,subband,date,verdict,reason,score_thermal_noise,score_flux_scale,score_ionosphere\n')
+        f.write('12h,Full,2025-04-11,exclude,wrong grid,,,\n')
+    orig_load = exclusions.load
+    try:
+        exclusions.load = lambda path=None: exclusions.Exclusions(ex_path)
+        g = {c: IR.wrong_grid_refusal(*c.split('_'), nights) for c, nights in (
+            ('02h_Green', ['2025-12-25', '2025-12-26']), ('12h_Full', ['2025-04-11']), ('19h_Full', ['2025-04-06']),
+            ('02h_Blue', ['2025-12-26']))}
+        CFG.authorize([], out=T)
+        CFG.set('masters_build.OFF_GRID_SURVEY', 'refuse')
+        g_prod = IR.wrong_grid_refusal('02h', 'Green', ['2025-12-26'])
+        CFG.reset()
+    finally:
+        exclusions.load = orig_load
+    check('wrong-grid gate (regrid): 02h Green with 2025-12-26 and no row refuses, naming the night and the missing rows',
+          g['02h_Green'] is not None and '2025-12-26' in g['02h_Green'] and 'data_decisions' in g['02h_Green'], g)
+    check('wrong-grid gate: a cell whose night has its row passes; a cell without the night, or another band, passes',
+          g['12h_Full'] is None and g['19h_Full'] is None and g['02h_Blue'] is None, g)
+    check("wrong-grid gate: none under OFF_GRID_SURVEY 'refuse' (production: the grid refusal keeps them out)", g_prod is None)
+    # real data (read only): today none of the four has its row, so their cells refuse under the ruled value
+    real = {}
+    for lst, sc, night_ in CFG.masters_build.WRONG_GRID_NIGHTS:
+        fq = sc[:-3] if sc.endswith('MHz') else sc
+        nights = [x[0] for x in quiet(co.discover_dates, lst, fq)[0]]
+        real[f'{lst}_{sc}'] = (night_ in nights, IR.wrong_grid_refusal(lst, sc, nights) is not None)
+    check('real: each of the four wrong-grid nights is a Phase 2 night of its cell, and the cell refuses until its row exists',
+          all(v == (True, True) for v in real.values()), real)
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
@@ -304,6 +464,8 @@ def main():
         test_same_state()
         test_night_checks()
         test_real_preview()
+        test_product_grid()
+        test_off_grid()
     finally:
         shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

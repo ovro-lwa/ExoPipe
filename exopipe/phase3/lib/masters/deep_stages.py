@@ -439,6 +439,10 @@ def build(cell, args, run, out, ran_now):
         u.note(f'{len(nights)} Phase-2 nights, {len(admitted)} admitted; excluded {sorted(set(nights) - set(admitted))}')
         if not admitted:
             raise NoInput(f'every Phase-2 night of {lst} {sc} is excluded in data_decisions.csv')
+        from exopipe.phase3.lib.masters import input_resolver
+        why = input_resolver.wrong_grid_refusal(lst, sc, nights)       # B-03 (a): the four wrong-grid nights
+        if why:
+            u.refuse(why)
         for d, _sd, img in dates:
             if d in admitted:
                 u.add_input(img)
@@ -974,6 +978,10 @@ def _plan_build(cell, args, out, planned):
                                             if pv else 'every V / variant image in its night\'s survey-image state')
                      + ' (excluded nights included)')
     nights = [d for d, _, _ in dates]
+    from exopipe.phase3.lib.masters import input_resolver
+    why = input_resolver.wrong_grid_refusal(lst, sc, nights)           # B-03 (a): the four wrong-grid nights
+    if why:
+        gates.append(why)
     try:
         ex, _ = IP.exclusion_readers_agree(lst, sc, nights, co)
         adm = ex.admitted(lst, sc, nights)

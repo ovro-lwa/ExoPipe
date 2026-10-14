@@ -95,6 +95,14 @@ def coadd_module(out_root, note):
         ('paths.PHASE2_ROOT', CO.PHASE2_ROOT, lambda v: setattr(CO, 'PHASE2_ROOT', v)),
         ('paths.DATA_DECISIONS', CO.DECISIONS_CSV, None),
     ], note)
+    # B-03 (a): the masters build's input resolver and off-grid rule, set as the build sets them (deep_stages.inplace) - ruled
+    # changes of the in-place module, so not drift-guarded
+    from exopipe.phase3.lib.masters import input_resolver
+    b = C.cfg().masters_build
+    input_resolver.install(CO, b.INPUT_RESOLVER, b.RAW_INPUT_FLOW_RULE)
+    CO.OFF_GRID_SURVEY = b.OFF_GRID_SURVEY
+    if b.INPUT_RESOLVER != 'coadd-finders' or b.OFF_GRID_SURVEY != 'refuse':
+        note(f'B-03 (a): coadd finders {b.INPUT_RESOLVER}, OFF_GRID_SURVEY {b.OFF_GRID_SURVEY!r}')
     if out_root:
         CO._update_workdir(out_root)
     return CO
@@ -377,6 +385,10 @@ def _run_stages(u, args, run, cell, lst, sc, W, stages, prev, done_before, CO, E
     found, entries = admitted_entries(CO, E, lst, sc, excl)
     if not found:
         raise NoInput(f'G-D2: no Phase-2 alignment image for {cell} under {CO.PHASE2_ROOT}/{lst}')
+    from exopipe.phase3.lib.masters import input_resolver
+    why = input_resolver.wrong_grid_refusal(lst, sc, [d for d, _, _ in found])     # B-03 (a): the four wrong-grid nights
+    if why:
+        raise Refusal(why)
     u.set_admitted([d for d, _, _ in entries])
     u.meta['excluded_nights'] = sorted({d for d, _, _ in found} - {d for d, _, _ in entries})
     for d, _, img in entries:
@@ -547,6 +559,10 @@ def plan(args, run, cells_, stages):
                 say(f'  {nraw} admitted night(s) without a dewarped image: the RAW image is the flow input (failsafe)')
             if not found:
                 refused.append('G-D2: no Phase-2 input')
+            from exopipe.phase3.lib.masters import input_resolver
+            why = input_resolver.wrong_grid_refusal(lst, sc, [d for d, _, _ in found])
+            if why:
+                refused.append(why)
             if 'stage-in' in stages and c.flow_prep.STAGE_IN_FLOWS:
                 try:
                     src, how = stored_flow_source(cell, args)
