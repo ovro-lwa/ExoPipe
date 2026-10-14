@@ -781,6 +781,9 @@ class DeepRun:
                 self.say(f'{K}: no selected rows yet')
                 raise NoInput(f'{K}: no selected rows (ops/p3s3_pass.sh:79-80: its catalogue directory removed)')
             os.makedirs(out_dir)
+            if st == 'I':          # WAVE2 B-30 pre-check (M4): the builder's sigma-stack threshold (:613-617) falls back to 7.0
+                from exopipe.phase3.lib.catalog import incremental as _inc      # silently when its source cannot be read
+                u.meta['sstack_threshold'] = list(_inc.sstack_threshold())
             rc, tail, _ = self.call(u, 'build_source_catalogs_v3.py', [f'selected_{st}_{tier}.csv', f'source_catalogs_{K}',
                                                                       'v_deep_images.csv'], self.env(),
                                     os.path.join(self.U, f'catalogs_inc_{K}.log'), mode='w')

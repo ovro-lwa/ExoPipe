@@ -523,6 +523,39 @@ def make_synth_run(root, epoch, n_det=6, seed=3):
     return rows
 
 
+def test_b30_sstack_threshold():
+    """B-30 (a): the sigma-stack threshold read from the production search_i_transients.py; an unreadable source refuses
+    under the ruled value (fallbacks.CATALOG_SSTACK_THRESHOLD_FALLBACK) and gives the builder's 7.0, counted, under 'fallback'."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import fallback
+    k = 'fallbacks.CATALOG_SSTACK_THRESHOLD_FALLBACK'
+    m = fallback.mark()
+    thr, src = I.sstack_threshold()
+    ok('B-30: the readable production source gives its threshold, no fallback', thr == 7.0 and 'CONFIG[SIGMA_THRESHOLD]' in src
+       and fallback.since(m) == ([], {}), (thr, src, fallback.since(m)))
+    sec = CFG.catalog_incremental
+    real = sec.SSTACK_SOURCE              # a PROTECTED key: patched on the section for this check, restored below
+    for pol in ('refuse', 'fallback'):
+        CFG.reset()
+        CFG.authorize([], out=TMP)
+        CFG.set(k, pol)
+        sec.SSTACK_SOURCE = os.path.join(TMP, 'no_such_search_i.py')
+        m = fallback.mark()
+        try:
+            got = I.sstack_threshold()
+        except fallback.FallbackRefused as e:
+            got = str(e)
+        finally:
+            sec.SSTACK_SOURCE = real
+        st = fallback.since(m)
+        CFG.reset()
+        if pol == 'refuse':
+            ok('B-30: an unreadable threshold source refuses under the ruled value', isinstance(got, str) and k in got, got)
+        else:
+            ok('B-30: ... and gives the builder fallback 7.0 under fallback, counted', got[0] == 7.0 and st[1] == {k: 1},
+               (got, st))
+
+
 def test_epoch_phase_end_to_end():
     """The epoch phase on a synthetic run: the in-place deep_fit_positions.py runs through core.legacy.run, the block passes
     epoch_block; a second run of the same epoch takes every fit from the cache (deep_fit_positions' own cache key) and
@@ -580,6 +613,7 @@ def main():
         test_frame_caches_and_union_fresh()
         test_content_tests(ns, asm)
         test_epoch_phase_end_to_end()
+        test_b30_sstack_threshold()
         if not a.no_real and os.path.isdir(RUN):
             test_real_partitions(a.slow)
             test_real_engine_batches(ns)

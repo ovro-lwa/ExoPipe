@@ -313,6 +313,9 @@ def sstack_threshold():
                         return float(ast.literal_eval(v)), f'{c.SSTACK_SOURCE} CONFIG[SIGMA_THRESHOLD]'
     except (OSError, SyntaxError, ValueError):
         pass
+    from exopipe.phase3.core import fallback      # WAVE2 B-30
+    fallback.site('fallbacks.CATALOG_SSTACK_THRESHOLD_FALLBACK', f'{c.SSTACK_SOURCE} unreadable or without CONFIG[SIGMA_THRESHOLD] - '
+                  f'the sigma-stack singleton gate would use {c.SSTACK_FALLBACK} (the builder\'s :617 fallback)')
     return float(c.SSTACK_FALLBACK), f'fallback {c.SSTACK_FALLBACK} ({c.SSTACK_SOURCE} unreadable; builder :617)'
 
 
