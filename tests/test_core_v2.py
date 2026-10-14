@@ -1398,13 +1398,25 @@ def test_item3_child_code_fingerprint_per_process():
             f'    subprocess.run([sys.executable, {grand!r}], check=True)\n'
             "    with mp.get_context('forkserver').Pool(2) as p:\n"
             "        print('POOL', sum(p.map(sq, range(10))))\n")
-        before = set(_glob.glob(os.path.join(tempfile.gettempdir(), 'exopipe3_fp_*')))
-        r = legacy.run(child, [], log=os.path.join(d, 'c.log'))
+        made, mkstemp = [], tempfile.mkstemp   # THIS run's fingerprint path: another process's run (a replay, a parallel
+                                               # test) makes and removes its own exopipe3_fp_* files in the same /tmp
+
+        def _mk(*a, **k):
+            fd, path = mkstemp(*a, **k)
+            made.append(path)
+            return fd, path
+        tempfile.mkstemp = _mk
+        try:
+            r = legacy.run(child, [], log=os.path.join(d, 'c.log'))
+        finally:
+            tempfile.mkstemp = mkstemp
         assert r.ok and 'POOL 285' in r.tail, r.tail[-300:]
         names = {os.path.basename(f) for f in r.fingerprint}
         assert {'exopipe_fp_main.py', 'exopipe_fp_grand.py', 'child.py'} <= names, sorted(names)
+        fps = [m for m in made if os.path.basename(m).startswith('exopipe3_fp_')]
+        assert len(fps) == 1, made
         time.sleep(1.0)                         # the forkserver exits a moment after the child
-        stray = set(_glob.glob(os.path.join(tempfile.gettempdir(), 'exopipe3_fp_*'))) - before
+        stray = _glob.glob(fps[0] + '*')        # the path itself or a process's <path>.<pid>
         assert not stray, f'stray fingerprint files: {sorted(stray)}'
 
 
