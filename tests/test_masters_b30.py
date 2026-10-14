@@ -243,6 +243,21 @@ def main():
         check('pick_i_master: the preferred robust sane is not a fallback',
               VC.pick_i_master(cf, '41MHz').endswith('R075_41MHz.fits') and fallback.since(m) == ([], {}))
         # ---- minimum counts (Gregg 2026-10-14): the co-add beam gate's skip below 5 readable beam areas is COUNTED ---------
+        # drift (review 2026-10-14 m2): the config's copies of the gate's literals - the minimum number of readable beam areas
+        # and the ratio to the set median - equal the branch module's and production's (coadd_full_pipeline.py, of which
+        # lib/masters/coadd.py is the copy), and the skip's '(needs N)' text names the same minimum
+        import re
+        bsrc = open(C.__file__).read()
+        psrc = open('/lustre/gh/main/exopipe/exopipe/phase3/coadd_full_pipeline.py').read()
+        mins = [re.findall(r'\n    if len\(_bfin\) >= (\d+):\n', x) for x in (bsrc, psrc)]
+        rats = [re.findall(r'_bareas\.get\(d, 0\) > ([0-9.]+) \* _bmed\]', x) for x in (bsrc, psrc)]
+        need = re.findall(r'nights with a readable beam area \(needs (\d+)\)', bsrc)
+        B = CFG.masters_build
+        check('co-add beam gate: config BEAM_GATE_MIN_AREAS / BEAM_GATE_RATIO = the literals in the branch module and in '
+              'production; the skip text names the same minimum',
+              all(m == [str(B.BEAM_GATE_MIN_AREAS)] for m in mins) and all(len(r) == 1 and float(r[0]) == B.BEAM_GATE_RATIO
+                                                                            for r in rats)
+              and need == [str(B.BEAM_GATE_MIN_AREAS)], (mins, rats, need))
         K = 'fallbacks.MASTERS_BEAM_GATE_SKIP_FALLBACK'
         bdir = f'{T}/beam'
         os.makedirs(bdir, exist_ok=True)
