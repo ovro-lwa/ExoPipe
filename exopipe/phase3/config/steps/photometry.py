@@ -9,8 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit photometry (was exopipe/phase3/_cfgdraft_photometry.py)
-# Config draft of `exopipe3 photometry` (refactor window; loaded by config._load_drafts until the refactor chat folds these
-# sections into config.py at `# @@STEP-SECTIONS@@`). Spec: exopipe_ops/refactor_20261012/plan/specs/photometry.md section 3,
+# Configuration of `exopipe3 photometry`. Spec: exopipe_ops/refactor_20261012/plan/specs/photometry.md section 3,
 # with the refactor chat's decisions (_CROSSCHECK.md top, 2026-10-13 ~04:30 UTC): photometry owns the deep target photometry
 # (frames, stage, measure, evaluate - forced keeps catflux, the deep panels and the snapshot event panels); interpreters are the
 # site PYTHON keys 'default' (deep engines) and 'py36' (snapshot engines); shared roots come from config.paths.

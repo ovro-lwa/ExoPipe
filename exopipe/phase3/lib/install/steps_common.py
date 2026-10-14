@@ -163,7 +163,7 @@ SHARED_ROOT_KEYS = ('paths.COADD_SB_ROOT', 'paths.PHASE3_ARCHIVE_ROOT', 'paths.A
 
 
 def check_protected_overrides():
-    """Refuse an override of the shared roots install writes under (config.py's PROTECTED_KEYS already refuses the install
+    """Refuse an override of the shared roots install writes under (the config's PROTECTED_KEYS already refuses the install
     sections' own protected keys at --set time)."""
     C = cfg()
     for o in C.overrides:

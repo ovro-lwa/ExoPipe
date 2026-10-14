@@ -144,7 +144,7 @@ def engine_flags(script, spec, section='frames_snapshot'):
     """The engine arguments for [(flag, KEY, config value)]: none when the value equals the engine's own default (a
     default run has exactly the production command line), the flag when the key was overridden (--set / --config).
     A config value that differs from the engine default WITHOUT an override is drift (the engine changed in production,
-    or the config draft is wrong): refused - the config stays the one place the value is read from."""
+    or the config is wrong): refused - the config stays the one place the value is read from."""
     from exopipe.phase3.core.record import Refusal
     dflt = engine_defaults(script)
     over = {o[0].split('[', 1)[0] for o in cfg().overrides}
@@ -162,7 +162,7 @@ def engine_flags(script, spec, section='frames_snapshot'):
             continue
         if f'{section}.{key}' not in over:
             raise Refusal(f'config drift: {os.path.basename(script)} {flag} defaults to {d!r}, {section}.{key} = {val!r} '
-                          f'without an override - update the config draft to the engine (production) value, or pass '
+                          f'without an override - update config/steps/frames.py to the engine (production) value, or pass '
                           f'--set {section}.{key}=... to choose it')
         args += [flag, str(val)]
     return args

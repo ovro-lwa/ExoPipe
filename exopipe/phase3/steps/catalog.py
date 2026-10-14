@@ -63,24 +63,10 @@ SUMMARY = 'harvest, merge, conformance, fitted positions, selection, association
 TIERS = ('deep', 'sublst', 'snapshot')
 SELECTORS = ('tier', 'run_label', 'lsts', 'cells', 'stokes', 'exclude_cells', 'epochs')
 WRITES = True
-_WANT_CONFIG = ('catalog', 'catalog_merge', 'catalog_conform', 'catalog_fitpos', 'catalog_select', 'catalog_associate',
-                'catalog_fork', 'catalog_identity', 'catalog_localize', 'catalog_sublst', 'catalog_sublst_tie',
-                'catalog_sublst_veto', 'catalog_snapshot', 'catalog_incremental', 'astrometry', 'fitting', 'exclusions',
-                'paths', 'instrument', 'runner', 'site')
-
-
-def _declared_config():
-    """CONFIG = the sections this step reads that exist (the tier and incremental drafts are written by other units in
-    the refactor window; a missing one must not break `exopipe3 catalog`)."""
-    try:
-        from exopipe.phase3.config import CFG
-        have = CFG.sections()
-    except Exception:
-        return ('catalog',)
-    return tuple(s for s in _WANT_CONFIG if s in have)
-
-
-CONFIG = _declared_config()
+CONFIG = ('catalog', 'catalog_merge', 'catalog_conform', 'catalog_fitpos', 'catalog_select', 'catalog_associate',
+          'catalog_fork', 'catalog_identity', 'catalog_localize', 'catalog_sublst', 'catalog_sublst_tie',
+          'catalog_sublst_veto', 'catalog_snapshot', 'catalog_incremental', 'astrometry', 'fitting', 'exclusions',
+          'paths', 'instrument', 'runner', 'site')
 
 _TIER_ERRORS = {}     # tier -> why its module could not be loaded (reported by run and --help)
 

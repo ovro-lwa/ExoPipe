@@ -9,8 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit forced (was exopipe/phase3/_cfgdraft_forced.py)
-# Config draft of `exopipe3 forced` (refactor window; loaded by config._load_drafts until the refactor chat folds these
-# sections into config.py at `# @@STEP-SECTIONS@@`). Spec: exopipe_ops/refactor_20261012/plan/specs/forced.md section 3, as
+# Configuration of `exopipe3 forced`. Spec: exopipe_ops/refactor_20261012/plan/specs/forced.md section 3, as
 # amended by the refactor chat's decisions (_CROSSCHECK.md top, 2026-10-13 ~04:30 UTC): the deep family-A measurement (frames,
 # stage, measure, evaluate) belongs to `photometry`; `forced` keeps family B (catflux), family C (snapshot event panels) and the
 # deep family-A `panels` stage, which reads photometry's evaluate record.

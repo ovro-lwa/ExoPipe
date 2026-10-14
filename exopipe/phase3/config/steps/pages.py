@@ -9,7 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit pages (was exopipe/phase3/_cfgdraft_pages.py)
-# Config draft of `exopipe3 pages` (refactor window; config.py loads it until the refactor chat folds it in).
+# Configuration of `exopipe3 pages`.
 #
 # Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/pages.md section 3, adapted to the binding decisions at the top
 # of plan/specs/_CROSSCHECK.md (2026-10-13 ~04:30 UTC): sections are `pages` and `pages_<tier>` only; deep combined localization

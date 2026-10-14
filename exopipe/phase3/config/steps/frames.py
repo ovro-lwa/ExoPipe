@@ -9,8 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit frames-deep (was exopipe/phase3/_cfgdraft_frames-deep.py)
-# Config draft of `exopipe3 frames`, deep tier (unit frames-deep; spec plan/specs/frames.md section 3). Loaded by
-# config._load_drafts during the refactor window; the refactor chat folds it into config.py at ``# @@STEP-SECTIONS@@``.
+# Configuration of `exopipe3 frames`, deep tier (unit frames-deep; spec plan/specs/frames.md section 3).
 #
 # Sections HERE: ``frames`` (the deep tier's stages and attempt root) and ``frames_residuals``
 # (what only the deep frame-only rebuild decides). The sub-LST / snapshot sections (frames_sublst, frames_snapshot) are the
@@ -26,7 +25,7 @@ from exopipe.phase3.config import _Section
 #   ENGINE_PYTHON, UNACCOUNTED_EPOCHS). The engine literals that decide a frame and that search does NOT carry are mirrored
 #   below (frames_residuals, PROTECTED); if search ever carries the same key, engine_values refuses unless both agree.
 # - Shared roots come from config.paths (PHASE3_ARCHIVE_ROOT, ARCHIVE_RUN, OPS_ROOT): no frames copy of them.
-# - Protection by PROTECTED_KEYS / RULED (honoured by config.py); no lower-case markers.
+# - Protection by PROTECTED_KEYS / RULED (honoured by config/__init__.py); no lower-case markers.
 # Values = production at the refactor baseline; file:line cites the production source (phase3_deep.py = the worktree's
 # lib/search/deep_search.py, same line numbers).
 # =====================================================================================================================
@@ -85,8 +84,7 @@ class frames_residuals(_Section):
 
 # =====================================================================================================================
 # unit frames-tiers (was exopipe/phase3/_cfgdraft_frames-tiers.py)
-# Config draft of `exopipe3 frames --tier sublst|snapshot` (unit frames-tiers; refactor window: config.py loads it until the
-# refactor chat folds it in at `# @@STEP-SECTIONS@@`).
+# Configuration of `exopipe3 frames --tier sublst|snapshot` (unit frames-tiers).
 #
 # Two sections, one per tier (crosscheck decision 7: name = <step>_<tier>): `frames_sublst` and `frames_snapshot`. Values =
 # production at the refactor baseline; spec plan/specs/frames.md sections 3, 3.9, 5.2, 5.3, adapted to the binding decisions at
@@ -101,7 +99,7 @@ class frames_residuals(_Section):
 #   CLV15_ROOT, PHASE1_ROOT); the frozen deep records from masters_sublst.FROZEN_RECORDS; the snapshot master links from
 #   masters_snapshot.LINK_ROOT - never a second key for them here.
 # - interpreters: site PYTHON keys default / flow / py36 only.
-# - RULED and PROTECTED_KEYS (honoured by config.py). PROTECTED_KEYS also holds every value HARD-CODED in an in-place clv15
+# - RULED and PROTECTED_KEYS (honoured by config/__init__.py). PROTECTED_KEYS also holds every value HARD-CODED in an in-place clv15
 #   engine (no argument reaches it): an override could not change the product, so no override is accepted until the engine is
 #   absorbed into lib/frames. Keys that reach an engine argument are passed only when they differ from the production
 #   default, so a default run has exactly the production command line.

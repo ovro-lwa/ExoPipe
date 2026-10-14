@@ -12,15 +12,15 @@ _PHASE3 = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file
 
 # =====================================================================================================================
 # unit masters-deep (was exopipe/phase3/_cfgdraft_masters-deep.py)
-# REFACTOR WINDOW config draft of `exopipe3 masters` - the shared section `masters` (step owner) and the DEEP tier sections
-# (unit masters-deep). Loaded by config._load_drafts() until the refactor chat folds it into config.py at @@STEP-SECTIONS@@.
+# Configuration of `exopipe3 masters` - the shared section `masters` (step owner) and the DEEP tier sections
+# (unit masters-deep).
 #
 # Source of every value: plan/specs/masters.md section 3 (values = today's production values, file:line of the production
 # code cited per key). The sub-LST and snapshot tier sections (masters_sublst, masters_snapshot) are NOT here: they are
 # the tier agents' drafts.
 #
 # Conventions (refactor chat decisions 2026-10-13 ~04:30, _CROSSCHECK.md): UPPER-case keys only, with ``RULED`` (ledger ID of
-# the ruling that set a key) and ``PROTECTED_KEYS`` (keys no --set / --config may change; config.py refuses them, exit 2).
+# the ruling that set a key) and ``PROTECTED_KEYS`` (keys no --set / --config may change; the config machinery refuses them, exit 2).
 # PROTECTED_KEYS holds (a) pinned inputs and ruling-fixed values, (b) every MIRROR key - a literal or a default argument bound
 # inside the in-place code (lib/masters/*.py moved by pure git mv; exopipe_ops scripts): the value documents it, an override
 # could not reach the code, so it is refused until the module is absorbed into lib/ and reads config - and (c) values whose
@@ -161,7 +161,7 @@ class masters_build(_Section):
                                               # in RULED until he does); production 1 (no rebuild pass)
     SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # membership.py:72; R-SUNLIT-NIGHTS-OUT-OF-MASTERS
     SOLAR_AUDIT_SHA1 = '24151ffaa1b7f11faa7adeab5d0f9cb6cfae8da4'
-    NAMED_OUT_OF_MASTER = os.path.join(_PHASE3, 'named_out_of_master.csv')   # package data file beside config.py, 1 row; membership.py:98; R-GREGG-20261011-17H18-0505-OPTION-B
+    NAMED_OUT_OF_MASTER = os.path.join(_PHASE3, 'named_out_of_master.csv')   # package data file in exopipe/phase3/, 1 row; membership.py:98; R-GREGG-20261011-17H18-0505-OPTION-B
     NAMED_OUT_OF_MASTER_SHA1 = '57f9e985fb2d6bacc3c822772261223375786f46'
     QA3_HI = 1.6                              # stage-3 window upper edge (membership.py:45; R-THIRD-STAGE-QA-FLUXALIGN, R-QA3-BOUNDS-PROCESS-APPROVED)
     QA3_LO = {'18MHz': 0.35, '23MHz': 0.55, '27MHz': 0.55}   # membership.py:46
@@ -321,8 +321,7 @@ class masters_sources(_Section):
 
 # =====================================================================================================================
 # unit masters-tiers (was exopipe/phase3/_cfgdraft_masters-tiers.py)
-# REFACTOR WINDOW config draft of `exopipe3 masters --tier sublst|snapshot` (unit masters-tiers). Loaded by
-# config._load_drafts() until the refactor chat folds it into config.py at @@STEP-SECTIONS@@.
+# Configuration of `exopipe3 masters --tier sublst|snapshot` (unit masters-tiers).
 #
 # Source of every value: plan/specs/masters.md section 3 (classes masters_sublst, masters_snapshot), adapted to the DECISIONS OF
 # THE REFACTOR CHAT (plan/specs/_CROSSCHECK.md, 2026-10-13 ~04:30 UTC): shared roots come from CFG.paths (SUBLST_ROOT,
@@ -344,7 +343,7 @@ class masters_sources(_Section):
 # masters.DEFAULT_STAGES (stage order), masters.PYTHON_SITE_KEY (engine interpreters), masters_sources.SUBLST_NPROC (processes of sublst_parent_catalogs.py, catpub:65),
 # masters_pbmaps.PB_LIBRARY (the model-beam PB library, one name for both tiers).
 #
-# PROTECTED_KEYS holds two kinds of key, both refused by config.py on --set / --config (exit 2):
+# PROTECTED_KEYS holds two kinds of key, both refused by the config machinery on --set / --config (exit 2):
 #   pins     frozen, checksummed inputs a ruling names (tier-rule pins, the frozen record and master trees, the manifest sha1)
 #   mirrors  values that are LITERALS inside the in-place clv15 / exopipe_ops code (no argument carries them): an override
 #            could be recorded but never applied, so it is refused until the module is absorbed into lib/ and reads config.

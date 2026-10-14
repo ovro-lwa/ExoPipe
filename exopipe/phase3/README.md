@@ -7,15 +7,16 @@ transient detections, catalogues, review pages and archived products, in three t
 ```
 exopipe3 --help                     # the steps, in pipeline order
 exopipe3 <step> --help              # what it reads, what it writes, how it fails, every flag
-exopipe3 config --section <step>    # that step's tunables, with units and the rulings that set them
+exopipe3 config                     # every config section and the file that holds it
+exopipe3 config --section <section> # one section: its file:line, units, rulings; L = locked, R = ruled keys
 exopipe3 config --step <step>       # every section the step declares (CONFIG), one place
 ```
 
 ## Where things are
 
-| You want to... | Run | Code | Parameters |
+| You want to... | Run | Code | Parameters (`config/steps/<step>.py`) |
 |---|---|---|---|
-| build co-add masters (and LOO masters, V clean, flux scale, PB maps, master catalogue) | `exopipe3 masters` | `steps/masters.py` -> `lib/masters/` | `config.py` class `masters` |
+| build co-add masters (and LOO masters, V clean, flux scale, PB maps, master catalogue) | `exopipe3 masters` | `steps/masters.py` -> `lib/masters/` | `masters`, `masters_*` |
 | compute alignment flows | `exopipe3 flow` | `steps/flow.py` -> `lib/flow/` | `flow` |
 | dewarp masters (per LST) | `exopipe3 dewarp` | `steps/dewarp.py` -> `lib/dewarp/` | `dewarp` |
 | install rebuilt products into the working tree | `exopipe3 install` | `steps/install.py` -> `lib/install/` | `install` |
@@ -44,12 +45,14 @@ resume), `cells` (cell / item-list grammar), `runner` (multi-node jobs), `env` (
 ## Rules every step follows
 
 1. **Inputs, outputs and failure modes in `--help`.** The module docstring is the help text.
-2. **Every tunable in `config.py`**, in the step's section, with its unit and ruling. No constants that change results
+2. **Every tunable in the config package** (`exopipe/phase3/config/`): the step's sections in `config/steps/<step>.py`,
+   the shared ones in `config/shared.py`, each with its unit and ruling. No constants that change results
    inside `steps/` or `lib/`; no `os.environ` switches; no host names (the site file holds them). Overrides:
    `--set section.KEY=V` or one dict entry `--set section.KEY[entry]=V` (a whole dict that omits entries is refused);
-   `config.PROTECTED` keys (exclusions, production-root guard, ledger, pinned inputs) cannot be overridden; a key in a
-   section's `RULED` needs `--ruling-for section.KEY=<ledger ID>` (checked in clv15/fix_ledger.csv) or a non-production
-   `--out`, and the run record shows the override with its authority.
+   `PROTECTED` keys (config/shared.py: exclusions, production-root guard, ledger, pinned inputs) and each section's
+   `PROTECTED_KEYS` cannot be overridden; a key in a section's `RULED` needs `--ruling-for section.KEY=<ledger ID>`
+   (checked in clv15/fix_ledger.csv) or a non-production `--out`, and the run record shows the override with its
+   authority.
 3. **Gates refuse.** A failed gate raises `record.Refusal` (exit 2) with the reason; it never warns and continues.
 4. **Every product class has a content test** registered with `@content_test('<class>')`. A unit is done only when
    it wrote at least one output and every output passed. "Wrote 0" is never done (exit 3, recorded). A unit that

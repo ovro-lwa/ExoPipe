@@ -9,8 +9,7 @@ from exopipe.phase3.config import _Section, instrument
 
 # =====================================================================================================================
 # unit mosaic (was exopipe/phase3/_cfgdraft_mosaic.py)
-# Config draft of `exopipe3 mosaic` (refactor window; config.py auto-loads config/steps/*.py until the refactor chat folds these
-# sections into config.py at '# @@STEP-SECTIONS@@'). Source: plan/specs/mosaic.md section 3, with one change the computed task
+# Configuration of `exopipe3 mosaic`. Source: plan/specs/mosaic.md section 3, with one change the computed task
 # made: the LST list is no longer a fixed range - it is the LST directories of the input master generation that exist
 # (mosaic.LSTS = None; deep chat 927a836: 'new mosaic step takes its LST list from the masters that exist').
 #
@@ -20,7 +19,7 @@ from exopipe.phase3.config import _Section, instrument
 # lib/mosaic/verify_mosaic.py; CP = lib/mosaic/conformance_pass.py = mosaic_conformance_pass.py), exopipe_ops HEAD (STG =
 # mosaic_stage_from_lustre.py, ANC = mosaic_v2_flux_anchor_measure.py, run_mosaic_v2*.sh, run_mosaic_jobs.sh).
 #
-# Protection (config.py honours both metas):
+# Protection (the config machinery honours both metas):
 #   RULED           a key a ruling of Gregg's set: override only with --ruling-for <section.KEY>=<ledger ID> or into a
 #                   non-production --out.
 #   PROTECTED_KEYS  (a) pinned inputs; (b) values the IN-PLACE code reads from its OWN literals during the window (the engine's

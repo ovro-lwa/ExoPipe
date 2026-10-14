@@ -2,7 +2,7 @@
 
     exopipe3 --help                 the steps, in pipeline order
     exopipe3 <step> --help          what the step reads and writes, its failure modes, every flag
-    exopipe3 config [--section S]   every tunable (one file: exopipe/phase3/config.py)
+    exopipe3 config [--section S]   every tunable (exopipe/phase3/config/: shared.py + steps/<step>.py)
 
 Every step is independently runnable by a person or by Claude, documents its inputs, outputs and failure modes in
 --help, refuses (exit 2) instead of warning, has --dry-run, and writes a machine-readable record of what it did under
@@ -162,8 +162,8 @@ def _print_overrides(CFG):
 
 
 def _config_cmd(argv):
-    p = argparse.ArgumentParser(prog='exopipe3 config', description='Show the Phase 3 tunables (config.py).')
-    p.add_argument('--section', help='print one section with its comments (units, rulings)')
+    p = argparse.ArgumentParser(prog='exopipe3 config', description='Show the Phase 3 tunables (exopipe/phase3/config/: shared.py, steps/<step>.py).')
+    p.add_argument('--section', help='print one section with its comments (units, rulings), its file:line, L = locked and R = ruled keys')
     p.add_argument('--step', help='print every section the step declares in CONFIG (and name the shared sections)')
     p.add_argument('--set', action='append', default=[], help='show the effect of overrides (SECTION.KEY[entry]=V)')
     p.add_argument('--config', metavar='FILE', help='show the effect of a file of overrides')
@@ -236,7 +236,7 @@ def build_parser():
     for name, summary, grp in STEPS:
         sub.add_parser(name, help=summary + ('' if grp == group else f'   [{grp}]'), add_help=False)
         group = grp
-    sub.add_parser('config', help='show every tunable (config.py)', add_help=False)
+    sub.add_parser('config', help='show every tunable (exopipe/phase3/config/)', add_help=False)
     return p
 
 

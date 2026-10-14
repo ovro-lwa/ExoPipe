@@ -9,11 +9,10 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit install (was exopipe/phase3/_cfgdraft_install.py)
-# Config draft (refactor window) for `exopipe3 install` (deep only - refactor-chat decision 6, crosscheck group 13):
+# Configuration of `exopipe3 install` (deep only - refactor-chat decision 6, crosscheck group 13):
 # sections install and install_enqueue.
 #
-# Loaded by config._load_drafts() until the refactor chat folds these classes into config.py at '# @@STEP-SECTIONS@@'
-# (spec plan/specs/install.md section 3). Every value keeps the production value of the baseline and names its source
+# Spec plan/specs/install.md section 3. Every value keeps the production value of the baseline and names its source
 # (file:line) and ruling. Host names are not here: the flow holder and the node-local roots come from the site file
 # (FLOW_HOLDER, NODE_LOCAL_ROOTS).
 #

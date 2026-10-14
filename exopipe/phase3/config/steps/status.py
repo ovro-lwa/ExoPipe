@@ -9,7 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit status (was exopipe/phase3/_cfgdraft_status.py)
-# Config draft of `exopipe3 status` (refactor window; folded into config.py by the refactor chat).
+# Configuration of `exopipe3 status`.
 #
 # Sections: status (shared keys), status_report, status_rebuild (NEW: --rebuild-due), status_ledger, status_coverage,
 # status_conformance, status_qa, status_pages, status_snapshot. Spec: exopipe_ops/refactor_20261012/plan/specs/status.md

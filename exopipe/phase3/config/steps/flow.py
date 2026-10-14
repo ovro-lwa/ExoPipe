@@ -9,7 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit flow (was exopipe/phase3/_cfgdraft_flow.py)
-# Config draft of the `exopipe3 flow` sections (refactor window; folded into config.py by the refactor chat).
+# Configuration of the `exopipe3 flow` sections.
 #
 # Spec: exopipe_ops/refactor_20261012/plan/specs/flow.md section 3, adapted to the binding decisions at the top of
 # plan/specs/_CROSSCHECK.md (2026-10-13 ~04:30 UTC):
@@ -22,7 +22,7 @@ from exopipe.phase3.config import _Section
 #   COADD_SB_ROOT); interpreters are site PYTHON 'default' and 'flow' only.
 #
 # Every value is today's production value with its unit, the ruling (ledger fix_id) or "no ruling found", and the source
-# file:line (exopipe 03ca797, clv15 9b6525d, exopipe_ops 0c1580c). ``RULED`` and ``PROTECTED_KEYS`` are honoured by config.py.
+# file:line (exopipe 03ca797, clv15 9b6525d, exopipe_ops 0c1580c). ``RULED`` and ``PROTECTED_KEYS`` are honoured by config/__init__.py.
 # Values that copy a constant of an in-place module are checked against the live module at every run (the flow drift guard:
 # a difference refuses unless the key was overridden explicitly; an override that cannot reach the module - one that runs in
 # a child process - refuses).

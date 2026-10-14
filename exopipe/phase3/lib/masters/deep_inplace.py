@@ -4,7 +4,7 @@ exopipe_ops scripts in place; nothing is copied). The deep tier calls them IN PR
 script run as a CHILD goes through core/legacy.run (refactor decision 1) - the deep tier has none.
 
 ``WIRING`` (below) says, per config section and key, how the value reaches the in-place code (it is code knowledge, so it
-lives here, not in the config draft):
+lives here, not in the config):
   attr:<module>.<NAME>     module attribute set before the call (read at call time); a dict value with several names
                            (attr:night_image_gate.THRESHOLD,MAX_SHIFT_DEG,...) sets NAME = value[name.lower()]
   env-import:<VAR>         environment variable read when the module is FIRST imported (set by the step before import)

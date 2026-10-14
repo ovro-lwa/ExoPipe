@@ -9,7 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit curves (was exopipe/phase3/_cfgdraft_curves.py)
-# Config draft of `exopipe3 curves` (refactor window; config.py loads it until the refactor chat folds it in).
+# Configuration of `exopipe3 curves`.
 #
 # Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/curves.md section 3. Line numbers cite the production files
 # as of clv15 6f71d28 / exopipe_ops 6b8a23a (2026-10-13):

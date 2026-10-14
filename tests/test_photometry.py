@@ -6,7 +6,7 @@
 Synthetic data in a fresh directory under /tmp/exopipe3_tests_photometry/ (removed at the end). Production code and
 products are only READ.
 
-- mirrors: every MIRROR value of the config draft equals the in-place engine's literal (ast / source text of
+- mirrors: every MIRROR value of the config equals the in-place engine's literal (ast / source text of
   deep_forced_phot.py, deep_forced_frames.py, deep_forced_eval.py, deep_forced_radio.py, snapshot_forced_phot.py,
   snapshot_forced_eval.py, gate_inputs.py, phase3_snapshot_cutouts.py, phase3_snapshot_astro.py, phase3_tier_rules.py);
   the product formats the content tests read (forced, radio, entry, blank, admission columns) = the engine's header rows;

@@ -9,8 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit catalog-deep (was exopipe/phase3/_cfgdraft_catalog-deep.py)
-# REFACTOR WINDOW DRAFT (unit catalog-deep): the config sections of `exopipe3 catalog` shared by every tier, and the deep
-# ones. config.py loads this file (config._load_drafts) until the refactor chat folds it into config.py.
+# Unit catalog-deep: the config sections of `exopipe3 catalog` shared by every tier, and the deep ones.
 #
 # Source: plan/specs/catalog.md section 3 (values = production values at exopipe_ops 0c1580c / clv15 9b6525d / exopipe
 # 03ca797; each line names its source file:line and its ruling). Paths named 'ops' = /lustre/gh/main/exopipe_ops,
@@ -25,7 +24,7 @@ from exopipe.phase3.config import _Section
 #             override would change nothing while the module carries its own literal, and the record would lie. A bound key of
 #             a shared section (astrometry, fitting, paths) is refused by the step at its first unit.
 #   [step]    used by the step's own (ported) code (steps/catalog.py, lib/catalog/deep_*.py)
-# Protection uses the section metas config.py honours (refactor decisions 2026-10-13, _CROSSCHECK.md item 4): PROTECTED_KEYS
+# Protection uses the section metas the config machinery honours (refactor decisions 2026-10-13, _CROSSCHECK.md item 4): PROTECTED_KEYS
 # (no --set / --config) and RULED (override only with --ruling-for or into a non-production --out).
 # Shared roots are NOT repeated here (decision item 3): CFG.paths.TRANSIENTS_ROOT (deep run dirs), COADD_SB_ROOT (masters),
 # PHASE3_ARCHIVE_ROOT + ARCHIVE_RUN (searched frames), CLV15_ROOT (sample catalogues), OPS_ROOT (search state); the
@@ -261,9 +260,9 @@ class catalog_localize(_Section):
 
 # =====================================================================================================================
 # unit catalog-incremental (was exopipe/phase3/_cfgdraft_catalog-incremental.py)
-# Config draft (refactor window) - unit catalog-incremental: `exopipe3 catalog --tier deep --incremental` (DESIGN 12.1, 12.3).
+# Unit catalog-incremental: `exopipe3 catalog --tier deep --incremental` (DESIGN 12.1, 12.3).
 #
-# Loaded by config._load_drafts until the refactor chat folds it into config.py. ONE section, catalog_incremental. It holds
+# ONE section, catalog_incremental. It holds
 # only what is NEW to the incremental path. Every value the full deep chain also uses is read from the step owner's
 # sections, so each value lives in one place (lib/catalog/incremental.py, `_deep()`):
 #   label            catalog.DEEP_RUN_LABEL (when --run is not given)
@@ -345,9 +344,9 @@ class catalog_incremental(_Section):
 
 # =====================================================================================================================
 # unit catalog-tiers (was exopipe/phase3/_cfgdraft_catalog-tiers.py)
-# Config draft of the catalog-tiers unit (exopipe3 catalog --tier sublst | snapshot) - REFACTOR WINDOW ONLY.
+# The catalog-tiers unit (exopipe3 catalog --tier sublst | snapshot).
 #
-# config.py loads this file (``_load_drafts``) until the refactor chat folds the four sections into config.py. Values are the
+# Values are the
 # production values at exopipe_ops 0c1580c / clv15 39bdfd3 (spec plan/specs/catalog.md section 3, copied verbatim, plus the
 # path templates and interpreter roles the tier modules need, each with its source line).
 #
@@ -358,7 +357,7 @@ class catalog_incremental(_Section):
 #   [lit:F:N] a literal in the in-place module F at line N: the tier module reads it at start (AST, no import) and REFUSES on
 #             a difference; a --set of a [lit] key REFUSES until the module is absorbed (it would change nothing)
 #   [step]    used by the tier module's own (ported) code
-# ``PROTECTED_KEYS`` (honoured by config.py since 2337938) lists the keys no --set / --config may change: the pinned inputs of the
+# ``PROTECTED_KEYS`` (honoured by the config machinery since 2337938) lists the keys no --set / --config may change: the pinned inputs of the
 # spec's lower-case ``protected`` tuples AND every [lit] key (an override of a value the in-place module holds as a literal would
 # change nothing and make the record lie, spec section 3). ``RULED`` names the ledger ID of each ruled key (checked IDs).
 # Shared roots are config.paths (SUBLST_ROOT, SNAPSHOT_FLEET_OUT, SNAPSHOT_REVIEW_ROOT, OPS_ROOT, CLV15_ROOT, ...; refactor chat

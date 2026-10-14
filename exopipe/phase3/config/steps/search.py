@@ -9,8 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit search-deep (was exopipe/phase3/_cfgdraft_search-deep.py)
-# Config draft of `exopipe3 search --tier deep` (unit search-deep; REFACTOR WINDOW ONLY - config.py loads every config/steps/*.py
-# until the refactor chat folds them into config.py at `# @@STEP-SECTIONS@@`, then this file is deleted).
+# Configuration of `exopipe3 search --tier deep` (unit search-deep).
 #
 # Source: plan/specs/search.md section 3 (values = production defaults at exopipe main 03ca797, clv15 9b6525d, exopipe_ops 6b8a23a;
 # every comment names the unit, the ruling and the production file:line), adapted to the refactor chat's binding decisions of
@@ -20,7 +19,7 @@ from exopipe.phase3.config import _Section
 #   <step> and <step>_<stage> (DESIGN 11.4) and read only by lib/search/deep_step.py and lib/search/tests.py.
 # - shared roots come from config.paths (COADD_SB_ROOT, ARCHIVE_RUN, PHASE3_ARCHIVE_ROOT, PHASE2_ROOT, OPS_ROOT, ...), never a key
 #   here; ops state and scripts are named RELATIVE to paths.OPS_ROOT / core.env.legacy_root('exopipe_ops').
-# - PROTECTED_KEYS (config.py refuses any override): pinned inputs (tables, null tables, md5s, roots.csv, master generation) and
+# - PROTECTED_KEYS (the config machinery refuses any override): pinned inputs (tables, null tables, md5s, roots.csv, master generation) and
 #   ENGINE LITERALS - values hard-coded inside the in-place engine (deep_search.py and the modules it imports) that no environment
 #   variable reaches. An override of an engine literal could not change the result, so it is refused until the engine is absorbed;
 #   lib/search/deep_step.engine_literals() checks at every start that each such config value equals the engine's own value and
@@ -246,8 +245,7 @@ class search_run(_Section):
 
 # =====================================================================================================================
 # unit search-tiers (was exopipe/phase3/_cfgdraft_search-tiers.py)
-# Config draft of `exopipe3 search --tier sublst|snapshot` (unit search-tiers; refactor window: config.py loads it until
-# the refactor chat folds it in at `# @@STEP-SECTIONS@@`).
+# Configuration of `exopipe3 search --tier sublst|snapshot` (unit search-tiers).
 #
 # Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/search.md sections 3, 5.2-5.4, 7.3 (sub-LST and snapshot
 # parts). Two sections, one per tier, named <step>_<tier>: `search_sublst` (the sub-LST search pass, its engine environment,
@@ -265,7 +263,7 @@ class search_run(_Section):
 # Ruling IDs are fix_ids of clv15/fix_ledger.csv.
 #
 # Conventions (binding decisions of the refactor chat, _CROSSCHECK.md top, core 2337938):
-# - PROTECTED_KEYS (honoured by config.py: no --set/--config can change them) holds (a) the keys whose value is HARD-CODED in
+# - PROTECTED_KEYS (honoured by config/__init__.py: no --set/--config can change them) holds (a) the keys whose value is HARD-CODED in
 #   an in-place engine (no argument, no environment variable reaches it: an override would make the config untrue;
 #   tests/test_search-tiers.py checks each against the engine's constant) and (b) pinned inputs and their md5s.
 # - RULED = {'KEY': '<fix_id of clv15/fix_ledger.csv>'} (every ID checked against the ledger by the tests).

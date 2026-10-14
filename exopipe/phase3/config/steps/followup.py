@@ -9,7 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit followup (was exopipe/phase3/_cfgdraft_followup.py)
-# Config draft of `exopipe3 followup` (refactor window; config.py loads it until the refactor chat folds it in).
+# Configuration of `exopipe3 followup`.
 #
 # Spec: /lustre/gh/main/exopipe_ops/refactor_20261012/plan/specs/followup.md section 3 (values and lines checked again
 # 2026-10-13 ~05:00 UTC against exopipe_ops 554b721, exopipe main ac3d841, clv15 cb371c9). Abbreviations of the source
@@ -21,7 +21,7 @@ from exopipe.phase3.config import _Section
 #   FC  = exopipe/phase3/followup/config.py (package, imported in-process by `investigate` / `summary`)
 # "Ledger N" = line N of clv15/fix_ledger.csv.
 #
-# Guards (config.py honours PROTECTED_KEYS and RULED; steps/followup.py honours `pinned_inputs`):
+# Guards (the config machinery honours PROTECTED_KEYS and RULED; steps/followup.py honours `pinned_inputs`):
 # - PROTECTED_KEYS: (a) production roots (use --out instead) and (b) values that MIRROR a literal inside the in-place code:
 #   an override would be recorded but not applied, so no --set / --config can change them (spec 'WINDOW-LOCKED', gate G6).
 #   They move out of PROTECTED_KEYS key by key when the consumer is absorbed into lib/followup/. The step also checks, at

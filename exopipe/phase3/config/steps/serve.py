@@ -9,7 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit serve (was exopipe/phase3/_cfgdraft_serve.py)
-# Config draft of `exopipe3 serve` (refactor window; folded into config.py by the refactor chat).
+# Configuration of `exopipe3 serve`.
 #
 # Every value keeps the production value of 2026-10-13 (exopipe_ops HEAD 0c1580c + 6b8a23a M22) and names its source
 # file:line and, where one exists, the ledger ID of the ruling that set it (clv15/fix_ledger.csv). Host names live in the
@@ -25,7 +25,7 @@ class serve(_Section):
     """exopipe3 serve: review servers (classify_transients.py, run in place), inspection twins, review hub and inspection
     hub, for every tier. Ports, run roots, titles and the per-tier server environment decide what Gregg and the team see.
     Host names live in the site file (REVIEW_HOST, CHAIN_HOST; the hub tunnel host stays in build_review_hub.py:29 in place)."""
-    # keys no --set / --config can change (DESIGN 11.4; honoured by config.py)
+    # keys no --set / --config can change (DESIGN 11.4; honoured by config/__init__.py)
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'INSPECTION_HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
                       'OTHER_SERVED_PORTS', 'JUPITER_ROOTS')
 

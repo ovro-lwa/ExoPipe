@@ -9,7 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit jupiter (was exopipe/phase3/_cfgdraft_jupiter.py)
-# Config draft of `exopipe3 jupiter` (refactor window; folded into config.py by the refactor chat).
+# Configuration of `exopipe3 jupiter`.
 #
 # Sections: jupiter (roots, bands, interpreters, environment), jupiter_measure (Phase-1 measurement), jupiter_v2 (V2 Master
 # variants, geometry, Blue anchor, metrics, site), jupiter_occurrence (Nancay occurrence maps), jupiter_flag (Phase-1 Jupiter
@@ -18,7 +18,7 @@ from exopipe.phase3.config import _Section
 # Conventions of this draft (spec plan/specs/jupiter.md section 3):
 # - Every value: unit, ruling (ledger fix_id where one exists) and the production file:line it mirrors.
 # - PROTECTED_KEYS: no --set / --config override (config._Config.protected honours a section's PROTECTED_KEYS).
-# - RULED: {KEY: ledger fix_id} - an override needs --ruling-for or a non-production --out (config.py machinery).
+# - RULED: {KEY: ledger fix_id} - an override needs --ruling-for or a non-production --out (config/__init__.py).
 # - PINNED-INPUT keys (jupiter.SUBLST_ROOT, CUBES_ROOT, EPHEM_DIR, DEEP_WEIGHTS): an override is allowed only into a non-production --out
 #   (parity against the pre-bake reserve); the step refuses it into a production --out (lib/jupiter/common.py).
 # - MIRROR keys: the in-place module reads its OWN literal. lib/jupiter/mirrors.py compares every MIRROR key with the module

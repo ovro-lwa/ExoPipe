@@ -97,24 +97,9 @@ SELECTORS = ('tier', 'cells', 'lsts', 'nights', 'scopes', 'stokes', 'exclude_cel
 WRITES = True
 TIER_MODULES = {'deep': 'exopipe.phase3.lib.masters.deep_stages', 'sublst': 'exopipe.phase3.lib.masters.tier_sublst',
                 'snapshot': 'exopipe.phase3.lib.masters.tier_snapshot'}
-_WANT_CONFIG = ('masters', 'masters_stagein', 'masters_build', 'masters_pbmaps', 'masters_vclean', 'masters_fluxscale',
-                'masters_verify', 'masters_sources', 'masters_sublst', 'masters_snapshot', 'paths', 'exclusions',
-                'instrument', 'runner', 'site')
-
-
-def _declared_config():
-    """CONFIG = the sections the step reads (spec 3), limited to those that exist: during the refactor window the tier
-    sections masters_sublst / masters_snapshot come from the tier agents' config drafts and may not be loaded yet (an
-    unknown section in CONFIG would make every masters command exit 1)."""
-    try:
-        from exopipe.phase3.config import CFG
-        have = CFG.sections()
-    except Exception:
-        return _WANT_CONFIG
-    return tuple(s for s in _WANT_CONFIG if s in have)
-
-
-CONFIG = _declared_config()
+CONFIG = ('masters', 'masters_stagein', 'masters_build', 'masters_pbmaps', 'masters_vclean', 'masters_fluxscale',
+          'masters_verify', 'masters_sources', 'masters_sublst', 'masters_snapshot', 'paths', 'exclusions',
+          'instrument', 'runner', 'site')
 _TIER_IMPORT_ERRORS = {}
 
 

@@ -9,8 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit calibrate (was exopipe/phase3/_cfgdraft_calibrate.py)
-# Config draft of `exopipe3 calibrate` (unit calibrate; REFACTOR WINDOW ONLY - config.py loads every config/steps/*.py until the
-# refactor chat folds them into config.py, then this file is deleted).
+# Configuration of `exopipe3 calibrate` (unit calibrate).
 #
 # Source: plan/specs/calibrate.md section 3 (values = production at exopipe main 03ca797, exopipe_ops 0c1580c, clv15 9b6525d;
 # re-read 2026-10-13 ~05:00 UTC: every sha256 below was recomputed and equals the spec's). "ledger N" = line N of

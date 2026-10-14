@@ -9,10 +9,9 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit archive (was exopipe/phase3/_cfgdraft_archive.py)
-# Config draft (refactor window) for `exopipe3 archive` (spec plan/specs/archive.md section 3): sections archive,
+# Configuration of `exopipe3 archive` (spec plan/specs/archive.md section 3): sections archive,
 # archive_quarantine, archive_sync, archive_retire, archive_push, archive_snapshot, archive_rollback.
 #
-# Loaded by config._load_drafts() until the refactor chat folds these classes into config.py at '# @@STEP-SECTIONS@@'.
 # Every value keeps the production value of the baseline and names its source (file:line; 'ops/' = /lustre/gh/main/
 # exopipe_ops/) and its ruling (fix_ledger.csv ID). Shared roots are NOT copied (refactor decision 3): the archive is
 # CFG.paths.PHASE3_ARCHIVE_ROOT, the generation Run CFG.paths.ARCHIVE_RUN, the ops root CFG.paths.OPS_ROOT, the snapshot

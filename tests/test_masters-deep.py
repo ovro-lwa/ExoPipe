@@ -101,7 +101,7 @@ def make_working_cell(root, cell, mdwarp=False, factor_shscale=1.05):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# 1. config draft conventions (refactor decisions 2026-10-13 ~04:30)
+# 1. config conventions (refactor decisions 2026-10-13 ~04:30)
 # ---------------------------------------------------------------------------------------------------------------------
 
 def test_config():

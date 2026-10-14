@@ -1,6 +1,6 @@
 """Read-only lookup of ledger IDs in Gregg's fix ledger (``CFG.paths.FIX_LEDGER``, clv15/fix_ledger.csv).
 
-Used by config.py to check ``--ruling-for SECTION.KEY=LEDGER_ID``: an override of a ruled key is accepted with a
+Used by exopipe/phase3/config to check ``--ruling-for SECTION.KEY=LEDGER_ID``: an override of a ruled key is accepted with a
 ruling only when that ID is a row of the ledger. The ledger is append-only and written by hand, so the reader is
 tolerant: CRLF line ends, a UTF-8 byte-order mark, rows with fewer or more fields than the header, and SHIFTED rows
 whose ID sits in the date column (``R-XREF-REJECTED-TIME-FREQ,2026-09-20,...``; 151 such rows on 2026-10-13) are all

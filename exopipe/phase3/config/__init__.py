@@ -2,56 +2,59 @@
 
 Where things are
 ----------------
-  config/shared.py         the sections every step reads: instrument, paths (and PROTECTED), exclusions, astrometry,
-                           fitting, runner, site (site = filled from the site file EXOPIPE3_SITE)
-  config/steps/frames.py    `exopipe3 frames`
-  config/steps/flow.py      `exopipe3 flow`
-  config/steps/search.py    `exopipe3 search`
-  config/steps/catalog.py   `exopipe3 catalog`
-  config/steps/forced.py    `exopipe3 forced`
-  config/steps/curves.py    `exopipe3 curves`
-  config/steps/pages.py     `exopipe3 pages`
-  config/steps/serve.py     `exopipe3 serve`
-  config/steps/archive.py   `exopipe3 archive`
-  config/steps/masters.py   `exopipe3 masters`
-  config/steps/dewarp.py    `exopipe3 dewarp`
-  config/steps/install.py   `exopipe3 install`
-  config/steps/calibrate.py `exopipe3 calibrate`
-  config/steps/mosaic.py    `exopipe3 mosaic`
-  config/steps/photometry.py `exopipe3 photometry`
-  config/steps/followup.py  `exopipe3 followup`
-  config/steps/jupiter.py   `exopipe3 jupiter`
-  config/steps/status.py    `exopipe3 status`
-  config/__init__.py       this file: the machinery (CFG, overrides, hash, describe) - nothing here is a tunable
+  config/shared.py              the sections every step reads: instrument, paths (and PROTECTED), exclusions, astrometry,
+                                fitting, runner, site (site = filled from the site file EXOPIPE3_SITE)
+  config/steps/frames.py        `exopipe3 frames`
+  config/steps/flow.py          `exopipe3 flow`
+  config/steps/search.py        `exopipe3 search`
+  config/steps/catalog.py       `exopipe3 catalog`
+  config/steps/forced.py        `exopipe3 forced`
+  config/steps/curves.py        `exopipe3 curves`
+  config/steps/pages.py         `exopipe3 pages`
+  config/steps/serve.py         `exopipe3 serve`
+  config/steps/archive.py       `exopipe3 archive`
+  config/steps/masters.py       `exopipe3 masters`
+  config/steps/dewarp.py        `exopipe3 dewarp`
+  config/steps/install.py       `exopipe3 install`
+  config/steps/calibrate.py     `exopipe3 calibrate`
+  config/steps/mosaic.py        `exopipe3 mosaic`
+  config/steps/photometry.py    `exopipe3 photometry`
+  config/steps/followup.py      `exopipe3 followup`
+  config/steps/jupiter.py       `exopipe3 jupiter`
+  config/steps/status.py        `exopipe3 status`
+  config/__init__.py            this file: the machinery (CFG, overrides, hash, describe) - nothing here is a tunable
 A key listed in its section's PROTECTED_KEYS (or in shared.PROTECTED) is locked: a mirror of in-place code, a pinned input
 or a ruling-fixed value - it changes only by a commit (`exopipe3 config --section S` marks them).
 
 How to use
 ----------
 - Read:      ``from exopipe.phase3.config import CFG``; ``CFG.search.V_FLOOR_SIGMA``.
-- Inspect:   ``exopipe3 config`` lists every section; ``exopipe3 config --section search`` prints that section
-             with its comments (unit and ruling of every value).
+- Inspect:   ``exopipe3 config`` lists every section and the file that holds it; ``exopipe3 config --section search``
+             prints that section with its comments (unit and ruling of every value), its file:line, and marks every
+             locked key (L) and ruled key (R); ``exopipe3 config --step masters`` prints every section a step reads.
 - Override:  per run, on any step: ``--set search.V_FLOOR_SIGMA=4.5`` (repeatable) or ``--config my_overrides.py``
              (a python file of ``section.KEY = value`` lines). Every override is written into the run record
              and the products' HISTORY.
 - One entry: ``--set fitting.K_TEMPLATE[sublst,V]=(0.66,0.50)`` changes ONE entry of a dict (tuple keys written
              comma-separated, nested dicts with one bracket per level); a whole-dict override that omits any key
              of the current value is refused (it would silently delete the omitted entries).
-- Protected: ``PROTECTED`` (config/shared.py) (the exclusion file and rule parameters, the production-root guard, the ledger,
-             pinned inputs) - no override can change them; change them in this file, by a commit.
+- Protected: ``PROTECTED`` (config/shared.py: the exclusion file and rule parameters, the production-root guard, the
+             ledger, pinned inputs), ``paths.PINNED_INPUTS`` and each section's ``PROTECTED_KEYS`` - no override can
+             change them; change them in the file that holds them, by a commit.
 - Ruled:     a section's ``RULED = {'KEY': 'ledger ID'}`` names the keys a ruling of Gregg's set. Overriding one needs
              ``--ruling-for section.KEY=<ledger ID>`` (the ID must be a row of ``paths.FIX_LEDGER``) or a ``--out``
              outside every production root; the override and its authority go into the run record.
 
 Conventions
 -----------
-- One class per step (``masters``, ``search``, ...) plus shared sections (``instrument``, ``paths``,
-  ``exclusions``, ``astrometry``, ``products``, ``qa``, ``runner``, ``site``).
+- One class per step or stage (``masters``, ``masters_build``, ``search``, ...) in the step's file, plus the shared
+  sections of config/shared.py (``instrument``, ``paths``, ``exclusions``, ``astrometry``, ``fitting``, ``runner``,
+  ``site``).
 - Every value carries its unit (in the name or the comment) and the ledger ID of the ruling that set it.
 - Tables that are data (scale tables, bright-parent tables, dewarp acceptance) are referenced by versioned path,
   never edited in place.
 - Host names, node pools, GPU hosts and python environments are NOT here: they live in the site file named by
-  the environment variable ``EXOPIPE3_SITE`` (ops, not git), loaded into ``CFG.site`` below. No production
+  the environment variable ``EXOPIPE3_SITE`` (ops, not git), loaded into ``CFG.site`` (section ``site``). No production
   module names a host (PHASE3_ARCHITECTURE.md 0.1).
 - Library modules read ``CFG`` when they are imported; the CLI applies ``--set`` / ``--config`` overrides
   before it imports any step, so overrides reach every module.
@@ -326,7 +329,7 @@ class _Config:
         base = f'{sec}.{key}'
         if self.protected(base) and not getattr(self, 'parity_replay', False):
             raise ConfigRefusal(f'{base} is PROTECTED (config.PROTECTED / paths.PINNED_INPUTS): no --set or --config '
-                                f'can change it; it changes only by a commit to exopipe/phase3/config.py (a --parity run '
+                                f'can change it; it changes only by a commit to the file that holds it (exopipe3 config --section S names it; a --parity run '
                                 f'into a non-production --out may replay a historical value)')
         if self.protected(base):
             # PARITY REPLAY: a shadow of a production run must see the inputs that run saw (e.g. the exclusion list of
@@ -393,22 +396,49 @@ class _Config:
         return hashlib.sha1(json.dumps(snap, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
     def describe(self, section=None):
+        """No section: one line per section (name, keys, file, first docstring line). A section: its source with its
+        file:line, every locked key marked L (no override changes it) and every ruled key R (an override needs
+        --ruling-for or a non-production --out)."""
         if section is None:
             out = []
             for name, sec in self._sections.items():
                 doc = (inspect.getdoc(sec) or '').splitlines()
-                out.append(f'{name:14s} {len(sec.items()):4d} keys  {doc[0] if doc else ""}')
+                f = _where(sec)[0].replace('exopipe/phase3/', '', 1)
+                out.append(f'{name:24s} {len(sec.items()):4d} keys  {f:24s} {doc[0] if doc else ""}')
             return '\n'.join(out)
         sec = self._section(section)
         try:
-            return inspect.getsource(sec)
+            lines, first = inspect.getsourcelines(sec)
         except (OSError, TypeError):
             return '\n'.join(f'{k} = {v!r}' for k, v in sec.items())
+        keys = [k for k, _ in sec.items()]
+        locked = {k for k in keys if self.protected(f'{section}.{k}')}
+        ruled = {k for k in keys if self.ruled(f'{section}.{k}')} - locked
+        out = [f'# {_where(sec)[0]}:{first} - section {section}: {len(keys)} keys; L = locked ({len(locked)}: changes only '
+               f'by a commit), R = ruled ({len(ruled)}: an override needs --ruling-for SECTION.KEY=<ledger ID> or a '
+               f'non-production --out)']
+        for line in lines:
+            m = re.match(r'^ {4}([A-Z][A-Z0-9_]*)\s*=', line)
+            k = m.group(1) if m else None
+            out.append(('L ' if k in locked else 'R ' if k in ruled else '  ') + line.rstrip('\n'))
+        return '\n'.join(out)
 
     def _section(self, name):
         if name not in self._sections:
             raise KeyError(f'unknown config section {name!r}; sections: {", ".join(self._sections)}')
         return self._sections[name]
+
+
+def _where(sec):
+    """(file relative to the repository, first line) of a section class; ('?', 0) when its source cannot be found."""
+    try:
+        f = inspect.getsourcefile(sec)
+        return os.path.relpath(f, _REPO), inspect.getsourcelines(sec)[1]
+    except (OSError, TypeError):
+        return '?', 0
+
+
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 def _split(dotted):

@@ -9,8 +9,7 @@ from exopipe.phase3.config import _Section
 
 # =====================================================================================================================
 # unit dewarp (was exopipe/phase3/_cfgdraft_dewarp.py)
-# Config draft of `exopipe3 dewarp` (refactor window; config.py auto-loads config/steps/*.py until the refactor chat folds this
-# section into config.py at '# @@STEP-SECTIONS@@'). Source: plan/specs/dewarp.md section 3. Every value names its unit, its
+# Configuration of `exopipe3 dewarp`. Source: plan/specs/dewarp.md section 3. Every value names its unit, its
 # ruling (fix_id of clv15/fix_ledger.csv) and the production file:line it was taken from (exopipe main 03ca797, exopipe_ops
 # 0c1580c; MD = exopipe/phase3/lib/dewarp/master_dewarp.py, same line numbers as the production phase3_master_dewarp.py).
 #
@@ -19,7 +18,7 @@ from exopipe.phase3.config import _Section
 # dewarp.SCREEN_RECORD_RUN), the archive root paths.PHASE3_ARCHIVE_ROOT, and the ops root paths.OPS_ROOT (ROUTE_LIST is relative
 # to it). CONTENT_CHECK_SCRIPT is relative to core.env.legacy_root('exopipe_ops').
 #
-# PROTECTED_KEYS (config.py honours it; decision 4) holds two groups:
+# PROTECTED_KEYS (the config machinery honours it; decision 4) holds two groups:
 #   - pinned inputs and the product names the window forbids renaming (DESIGN 11.4);
 #   - the keys whose values the in-place modules (phase3_master_dewarp, cascade_dewarp, phase2_config, pb_apply, membership,
 #     check_mdewarp_gen) read from their OWN constants during the window - an override would not reach them (DESIGN 11.1).
