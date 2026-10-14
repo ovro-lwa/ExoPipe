@@ -863,6 +863,18 @@ def strip_legacy_header(log):
         os.replace(log + '.tmp', log)
 
 
+def movie_skips(cell, lines):
+    """B-30 (Gregg 2026-10-14: the minimum kept, every skip recorded, never refused): a band the frame-movie engine made no
+    movie of - fewer than frames_snapshot.MIN_FRAMES_PER_BAND staged flowed frames, its line 'too few staged flowed frames for
+    <subband>' (phase3_snapshot_frame_movie.py:56-57) - is COUNTED (fallbacks.FRAME_MOVIE_SKIP_FALLBACK). Returns them."""
+    few = [l.rsplit(' ', 1)[-1] for l in lines if l.startswith('too few staged flowed frames for ')]
+    if few:
+        from exopipe.phase3.core import fallback
+        fallback.site('fallbacks.FRAME_MOVIE_SKIP_FALLBACK', f'{cell}: no frame movie of {few} - fewer than '
+                      f'{cfg().frames_snapshot.MIN_FRAMES_PER_BAND} staged flowed frames', n=len(few))
+    return few
+
+
 def frame_movie_args(ctx, script):
     S = ctx.S
     fargs = []
@@ -1008,6 +1020,7 @@ def stage_movies(ctx, cell, lst, date, sbs):
         res, lines = engine(script, [cell, mv] + src_args + fargs,
                             interpreter_key('frames_snapshot', 'frame_movies'), log, unit=u, refusal_codes=())
         strip_legacy_header(log)
+        movie_skips(cell, lines)
         total = [l for l in lines if l.startswith('TOTAL')]
         if res.rc != 0 or not total:
             u.refuse(f'N-G10 FRAMEMOVIES-FAILED {cell}: {refusal_line(lines, res)} (see {log})')

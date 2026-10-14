@@ -103,6 +103,30 @@ def test_config():
         CFG.reset()
 
 
+def test_movie_minimums():
+    """B-30 (Gregg 2026-10-14): the frame-movie engine's two minimum counts are mirrored (protected) and drift-checked, and a
+    band the engine made no movie of for too few staged flowed frames is COUNTED (fallbacks.FRAME_MOVIE_SKIP_FALLBACK)."""
+    import re as _re
+    from exopipe.phase3.core import fallback
+    src = open(os.path.join(CFG.paths.CLV15_ROOT, 'phase3_snapshot_frame_movie.py')).read()
+    m1 = _re.search(r'    if len\(fl\) < (\d+):\n        print\("too few staged flowed frames for", sb\)', src)
+    m2 = _re.search(r'use = ok if ok\.sum\(\) >= (\d+) else', src)
+    S = CFG.frames_snapshot
+    check('frame-movie minimums mirror the engine (MIN_FRAMES_PER_BAND, MOVIE_BACKGROUND_MIN_ADMITTED)',
+          m1 and m2 and int(m1.group(1)) == S.MIN_FRAMES_PER_BAND and int(m2.group(1)) == S.MOVIE_BACKGROUND_MIN_ADMITTED,
+          (m1 and m1.group(1), m2 and m2.group(1)))
+    lines = ['13h_2025-04-07 18MHz: 412 frames, rms 0.02', 'too few staged flowed frames for 23MHz',
+             'too few staged flowed frames for 82MHz', 'TOTAL 17 movies']
+    mk = fallback.mark()
+    few = TN.movie_skips('13h_2025-04-07', lines)
+    cnt = fallback.since(mk)[1].get('fallbacks.FRAME_MOVIE_SKIP_FALLBACK')
+    mk = fallback.mark()
+    none = TN.movie_skips('13h_2025-04-07', lines[:1] + lines[-1:])
+    cnt0 = fallback.since(mk)[1].get('fallbacks.FRAME_MOVIE_SKIP_FALLBACK')
+    check('a band without a movie for too few frames is counted (2 of 2), none when every band has one',
+          few == ['23MHz', '82MHz'] and cnt == 2 and none == [] and not cnt0, (few, cnt, none, cnt0))
+
+
 def test_engine_flags():
     from exopipe.phase3.core.record import Refusal
     fm = os.path.join(CFG.paths.CLV15_ROOT, 'phase3_snapshot_frame_movie.py')
@@ -483,6 +507,7 @@ def main():
     os.makedirs(T)
     try:
         test_config()
+        test_movie_minimums()
         test_engine_flags()
         test_stage_grammar()
         test_items()

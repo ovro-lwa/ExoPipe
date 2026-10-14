@@ -198,7 +198,10 @@ class frames_snapshot(_Section):
     MOVIE_WIDTH_PX = 754                    # frame_movie:30
     MOVIE_FPS = 24.0                        # frame_movie:32
     MOVIE_CRF = 26                          # frame_movie:32
-    MIN_FRAMES_PER_BAND = 10                # fewer staged flowed frames = no movie for that band; frame_movie:56 (engine literal)
+    MIN_FRAMES_PER_BAND = 10                # fewer staged flowed frames = no movie for that band; frame_movie:56 (engine literal); a band
+                                            # skipped so is COUNTED by the step (fallbacks.FRAME_MOVIE_SKIP_FALLBACK; Gregg 2026-10-14)
+    MOVIE_BACKGROUND_MIN_ADMITTED = 10      # fewer admitted frames = the movie's background from every frame with data; frame_movie:110
+                                            # (engine literal; the engine prints nothing then, so the step cannot count it yet)
     FLOW_MOVIES = True                      # flow_<sb>.mp4 + series per subband (v9:270-271); frames owns them (crosscheck decision 6)
     FLOW_MOVIE_DURATION_S = 10.0            # s (Gregg 2026-09-12); flow_movie:28
     FLOW_MOVIE_PROCS = 4                    # subbands at once; v9:271 (xargs -P 4)
@@ -209,6 +212,7 @@ class frames_snapshot(_Section):
                    'frame_movies': 'flow',  # FLOWPY, v9:279; cube pass:136
                    'flow_movies': 'flow'}   # FLOWPY, v9:271
     RULED = {'OFF_GRID': 'APPROVED-AND-BUILT-PREAMBLE-E-PILOT-CELLS-REGRID-AND-RAISED-DIRTY-I-FLOOR-CALIBRATION-PENDING', 'CUBE_QUANT': 'R-SNAP-CUBES-STEP1-BUILT-TEST-RUNNING',
-             'FRAME_BANDS': 'R-FRAME-MOVIES-19-BANDS', 'STRETCH_K': 'R-FRAME-MOVIE-STRETCH-PM12'}
+             'FRAME_BANDS': 'R-FRAME-MOVIES-19-BANDS', 'STRETCH_K': 'R-FRAME-MOVIE-STRETCH-PM12',
+             'MIN_FRAMES_PER_BAND': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'MOVIE_BACKGROUND_MIN_ADMITTED': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}
     PROTECTED_KEYS = ('REGRID_ORDER', 'CUBE_FLOW_SCALE_PX', 'CUBE_PRODUCT', 'CUBES_PER_SUBBAND', 'MIN_FRAMES_PER_BAND',
-                      'ORDER', 'INTERPRETER')
+                      'MOVIE_BACKGROUND_MIN_ADMITTED', 'ORDER', 'INTERPRETER')
