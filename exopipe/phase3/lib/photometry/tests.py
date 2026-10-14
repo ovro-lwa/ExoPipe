@@ -32,7 +32,6 @@ import json
 import math
 import os
 import re
-import socket
 
 from exopipe.phase3.core.validate import content_test
 
@@ -105,8 +104,9 @@ def current_safe_names():
 def node_local_elsewhere(path):
     """The host whose node-local root holds ``path`` when that host is not this one (site NODE_LOCAL_ROOTS / SCRATCH_ROOT),
     else None. Such a path cannot be read here: a content check on it says 'not checkable here'."""
+    from exopipe.phase3.core import env
     c = _cfg()
-    me = socket.gethostname().split('.')[0]
+    me = env.host()
     roots = {}
     for h, rr in (c.site.NODE_LOCAL_ROOTS or {}).items():
         roots.setdefault(h, []).extend(rr)
@@ -348,13 +348,20 @@ def fl5_thermnoi(path, **ctx):
 
 
 @content_test('photometry_frame_list', 'FL6_refused_cells')
-def fl6_refused(path, refused_cells=(), **ctx):
+def fl6_refused(path, refused_cells=(), refused_stokes_i_cells=(), **ctx):
+    """No row of a cell the frame-list engine refused whole (parents, PB_deep map, no search frames:
+    deep_forced_frames.py:34, :36, :55), and no Stokes I row of a cell whose Robust -0.75 PB map is missing (each I frame
+    refused, :50-51; its V rows stay listed)."""
     _, rows = read_csv(path)
     ref = {c for c in (refused_cells or ())}
+    iref = {c for c in (refused_stokes_i_cells or ())}
     hit = sorted({'%s_%s' % (r['lst'], r['band']) for r in rows} & ref)
-    if hit:
-        return False, len(hit), 'rows of refused cells: %s' % _fmt(hit)
-    return True, len(ref), 'no row of the %d refused cells' % len(ref)
+    hit_i = sorted({'%s_%s' % (r['lst'], r['band']) for r in rows if r['stokes'] == 'I'} & iref)
+    if hit or hit_i:
+        return False, len(hit) + len(hit_i), ('rows of refused cells: %s' % _fmt(hit) if hit else '') + (
+            '%sStokes I rows of cells without their I PB map: %s' % ('; ' if hit else '', _fmt(hit_i)) if hit_i else '')
+    return True, len(ref) + len(iref), 'no row of the %d refused cells%s' % (len(ref), (
+        '; no Stokes I row of the %d cells without their I PB map' % len(iref)) if iref else '')
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -489,8 +496,8 @@ def _table_pass(path):
                     if pk not in POS_KINDS or not pr:
                         b3.append('line %d: |snr| %s without a radio-position record (pos_kind %r)' % (n, row[ix['snr']], pk))
                 fk = key[2:]
-                t4_rows.setdefault(fk, []).append((float(row[ix['ra']]), float(row[ix['dec']]), row[ix['value']],
-                                                   row[ix['rms']], n))
+                t4_rows.setdefault(fk, []).append((row[ix['ra']], row[ix['dec']], row[ix['value']], row[ix['rms']], n,
+                                                   key[0], key[1]))
             elif kind == 'control':
                 n_c += 1
                 if last is None:
@@ -518,9 +525,20 @@ def _table_pass(path):
     return res
 
 
+def _list_positions():
+    """{(sample, name): [(ra, dec)]} of the measured sample lists - the exact positions the engine measured at
+    (deep_forced_phot.py:86-89 floats of ra_current / dec_current); a row prints them to 5 decimals (:288), and the 10 pc
+    list carries up to 9, so a re-measurement at the printed position differs by the rounding (0.04 arcsec)."""
+    out = {}
+    for tag, nm, ra, dec in sample_targets():
+        out.setdefault((tag, nm), []).append((ra, dec))
+    return out
+
+
 def _t4(path, res):
     """Re-measure T4_ROWS_PER_FRAME target rows on T4_FRAMES frames of the shard file (frame path from the sibling
-    admission file frames_NNN.csv)."""
+    admission file frames_NNN.csv) at the target's EXACT list position (the entry of the current list whose position
+    prints as the row's ra/dec); a row whose entry is no longer in the lists is re-measured at its printed position."""
     import numpy as np
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -535,7 +553,8 @@ def _t4(path, res):
     fpath = {(r['lst'], r['band'], r['date'], r['stokes']): r['path'] for r in ar}
     keys = sorted(rows)
     step = max(1, len(keys) // max(1, m.T4_FRAMES))
-    bad, done, n_else = [], 0, 0
+    bad, done, n_else, n_printed = [], 0, 0, 0
+    lists = _list_positions()
     for k in keys[::step][:m.T4_FRAMES]:
         p = fpath.get(k)
         if not p:
@@ -547,7 +566,13 @@ def _t4(path, res):
         with fits.open(p, memmap=False) as h:
             d = np.squeeze(h[0].data).astype(np.float64)
             w = WCS(h[0].header).celestial
-        for ra, dec, vs, rs, n in rows[k][:m.T4_ROWS_PER_FRAME]:
+        for ras, decs, vs, rs, n, smp, nm in rows[k][:m.T4_ROWS_PER_FRAME]:
+            exact = [(a, b) for a, b in lists.get((smp, nm), ()) if '%.5f' % a == ras and '%.5f' % b == decs]
+            if exact:
+                ra, dec = exact[0]
+            else:
+                ra, dec = float(ras), float(decs)
+                n_printed += 1
             v, r_ = _measure_one(d, w, ra, dec, m.EDGE_PX['deep'], m.STAMP_PX, m.STAMP_CORE_PX,
                                  m.STAMP_MIN_PIXELS['deep'], m.RMS_MAD_FACTOR)
             if not (abs(v - float(vs)) <= _sigfig_tol(vs) and abs(r_ - float(rs)) <= _sigfig_tol(rs)):
@@ -556,6 +581,7 @@ def _t4(path, res):
     if bad:
         return False, len(bad), _fmt(bad)
     return True, done, '%d target rows re-measured on their frames: value and stamp rms equal to 5 significant figures' % done \
+        + ('; %d at the printed position (entry no longer in the lists)' % n_printed if n_printed else '') \
         + ('; %d frames not checkable here (node-local to another host)' % n_else if n_else else '')
 
 
@@ -796,7 +822,7 @@ def _deep_eval_checks(eval_dir):
         emp = float(cl[int(math.ceil(len(cl) * (1 - rate)))]) if len(cl) and rate * len(cl) >= 1 else float('nan')
         gth = float(norm.isf(rate)) if S == 'I' else float(norm.isf(rate / 2))
         want = {'target_trials_clean_gated': str(ntr), 'n_controls_clean_gated': str(len(cl)),
-                'gaussian_threshold': '%.2f' % gth,
+                'rate_for_1_false_alarm': '%.2e' % rate, 'gaussian_threshold': '%.2f' % gth,
                 'control_threshold': ('%.2f' % emp) if np.isfinite(emp) else 'controls too few (need >= %d)'
                                                                                 % int(math.ceil(1 / rate)),
                 'controls_ge5': str(int((cl >= 5).sum())), 'controls_ge6': str(int((cl >= 6).sum())),
@@ -1193,8 +1219,11 @@ def _snapshot_eval(ev, ctx):
         rows, ncell, nall = zone_rows(ev, stage1, ctx.get('max_cells'), procs)
         diff = ['%s: file %s recomputed %s' % (' '.join(k), a, b) for k, a, b in rows if a != b]
         nz = sum(1 for _, _, b in rows if b == 'zone')
-        res['Z1'] = (not diff, len(diff), _fmt(diff) if diff else '%d rows of %d cells%s recomputed (%d zone, %d clean): all '
-                     'equal' % (len(rows), ncell, '' if ncell == nall else ' (of %d)' % nall, nz, len(rows) - nz))
+        if not T:       # test_snapshot_forced_reserve.cmd_zones :215-216 refuses an evaluation without targets_ge4 rows
+            res['Z1'] = (False, 0, 'no targets_ge4.csv rows to recompute (the production zone test refuses this)')
+        else:
+            res['Z1'] = (not diff, len(diff), _fmt(diff) if diff else '%d rows of %d cells%s recomputed (%d zone, %d clean): '
+                         'all equal' % (len(rows), ncell, '' if ncell == nall else ' (of %d)' % nall, nz, len(rows) - nz))
     except Exception as x:      # noqa: BLE001
         res['Z1'] = (False, None, 'zone recomputation failed: %s' % x)
     tasks = [(r['cell'], r['kind'], stage1, c.paths.SNAPSHOT_FLEET_OUT) for r in cells]
@@ -1352,7 +1381,7 @@ def _cutout_for(root, smp, band, name, cell, st):
     return sorted(glob.glob(pat))
 
 
-def _snap_measure(cube, x, y, stamp, core, minfrac):
+def _snap_measure(cube, x, y, stamp, core, minfrac, madf):
     """Target value and stamp rms in every plane (snapshot_forced_phot.measure :79-104 for one position, written out)."""
     import numpy as np
     N, ny, nx = cube.shape
@@ -1373,7 +1402,7 @@ def _snap_measure(cube, x, y, stamp, core, minfrac):
            + (1 - fx) * fy * cube[:, y0 + 1, x0] + fx * fy * cube[:, y0 + 1, x0 + 1])
     st = cube[:, ya:yb, xa:xb].reshape(N, -1)[:, sl.ravel()]
     med = np.nanmedian(st, axis=1)
-    rms = 1.4826 * np.nanmedian(np.abs(st - med[:, None]), axis=1)
+    rms = madf * np.nanmedian(np.abs(st - med[:, None]), axis=1)
     return val, rms
 
 
@@ -1409,7 +1438,7 @@ def n4(path, cutout_root=None, **ctx):
             tx = float(np.nanmedian(h['TIMES'].data['target_x']))
             ty = float(np.nanmedian(h['TIMES'].data['target_y']))
             cube = np.asarray(h[0].data[fr], np.float32)
-        got = _snap_measure(cube, tx, ty, m.STAMP_PX, m.STAMP_CORE_PX, m.MIN_STAMP_FRAC['snapshot'])
+        got = _snap_measure(cube, tx, ty, m.STAMP_PX, m.STAMP_CORE_PX, m.MIN_STAMP_FRAC['snapshot'], m.RMS_MAD_FACTOR)
         v_npz, r_npz = d['val10'][i, 0, fr], d['rms10'][i, 0, fr]
         if got is None:
             if np.isfinite(v_npz).any():
@@ -1594,13 +1623,18 @@ def zf1(path, **ctx):
 
 
 def write_zone_flags(path, rows):
-    """Write the recomputed screens (Z1) as the production flags file (test_snapshot_forced_reserve.py:234-239)."""
+    """Write the recomputed screens (Z1) as the production flags file (test_snapshot_forced_reserve.cmd_zones :225-239):
+    one row per key, the LAST of the rows in evaluation order (sb then wb, cells sorted) - production's dict 'seen' - and
+    the keys sorted."""
+    seen = {}
+    for k, a, b in rows:
+        seen[tuple(k)] = (a, b)
     tmp = '%s.tmp.%d' % (path, os.getpid())
     with open(tmp, 'w', newline='') as f:
         wr = csv.writer(f)
         wr.writerow(list(ZONE_FLAG_COLUMNS))
-        for k, a, b in sorted(rows):
-            wr.writerow(list(k) + [a, b])
+        for k, v in sorted(seen.items()):
+            wr.writerow(list(k) + list(v))
     os.replace(tmp, path)
     return path
 

@@ -41,16 +41,23 @@ Stages:  measure (snapshot_forced_phot.py per band, --band-procs at once, node-l
          (measure.<cell>.<band+band> for a band subset), evaluate.<kind>.<tag>, evaluate.zones.<tag>.
 
 Records: <out>/_records/photometry/<unit>.json; engine logs <out>/_records/photometry/logs/. No marker files.
+--dry-run: prints the plan and writes nothing; exit 2 when a gate would refuse (the plan names it), else 0. A stage whose
+  inputs an EARLIER stage of the same invocation writes (stage/measure after frames, evaluate after measure) is planned from
+  that stage's outputs, not from records on disk.
 Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do; 1 = error):
   run level: PHOT-ENV (caller environment sets P3S*/DEEP_FORCED_*/SF_*/FORCED_TEST_*/SUBLST_*), PHOT-SAMPLE-PIN (a sample
   list differs from its pinned sha1), PHOT-SUBLST-NO-ENGINE, PHOT-FULL (snapshot Full), a missing pinned input.
   deep: F-SRCRUN, F-PARENTDIR, a cell root not readable here; F-PARENTS / F-PB / F-NOFRAMES per cell (item refusals, the
   run goes on); F-NOFRAMES for every cell (exit 3); S-STAGE (copy failed or incomplete); M-CHAIN (no done record of the
-  previous stage, a frame list changed since its record, inputs not readable without a stage, shards missing, forced files
-  no shard record lists); E-ORDER / E-POSCOLS / E-RADIO (the evaluation's own refusals); M-NOISE per hour (item refusal).
+  previous stage, a frame list changed since its record, a staged list made from another frame list, inputs not readable
+  without a stage, shards missing, forced or blank files no shard record lists); F-NOFRAMES vs F-PARENTS/F-PB when the
+  frame-list engine wrote no row (exit 3 only when no selected cell has a search frame, else refused); E-ORDER /
+  E-POSCOLS / E-RADIO (the evaluation's own refusals); M-NOISE per hour (item refusal).
   snapshot: SM-NOCUT (no cutout: exit 3), SM-DONE (a band refused, a REFUSED manifest row, no ok row; a crash = error),
-  SM-SUBSET (a band subset over a full-band manifest), SM-STALE (npz of measured bands not rewritten; --fresh replaces),
-  SE-LISTED, SE-NONE, SE-DONE (a cell without a complete stage 1), the evaluation's own refusals.
+  SM-SUBSET (a band subset over a full-band manifest), SM-STALE (npz of measured bands not rewritten; --fresh moves them
+  to <out>/quarantine_superseded_photometry_<run id>/<cell>/ with a sha256 manifest - never deleted), SE-LISTED, SE-NONE,
+  SE-DONE (a cell without a complete stage 1), the evaluation's own refusals, Z (no targets_ge4 rows, or a recomputed
+  zone screen differs: the zone-flag file is not written).
   Any failing content test refuses its unit.
 """
 import importlib
@@ -78,7 +85,7 @@ def add_arguments(p):
     d.add_argument('--frames', metavar='FILE', help='measure/evaluate from this frame list instead of the frames/stage '
                                                      'record (e.g. a list built by the deep chat; its sha1 is recorded)')
     d.add_argument('--shards', type=int, help='measure: shards (default photometry_measure.SHARDS[deep] = 32; another value '
-                                              'changes the blank-sky rows)')
+                                              'changes the blank-sky rows and is recorded as a config override)')
     d.add_argument('--stage-root', metavar='DIR', help='stage: node-local root of the copies (default --work or the site '
                                                        'SCRATCH_ROOT + photometry_frames.STAGE_SUBDIR)')
     s = p.add_argument_group('snapshot tier')
@@ -91,7 +98,15 @@ def add_arguments(p):
                                            'subset needs another name when a full-band manifest exists)')
     s.add_argument('--stage1', metavar='DIR', help='evaluate: the stage-1 root (default <out>/stage1)')
     s.add_argument('--kinds', help='evaluate: sb, wb or sb,wb (default photometry_evaluate.KINDS[snapshot])')
-    s.add_argument('--survey-cells', type=int, help='evaluate: survey size for the survey thresholds (default 402)')
+    s.add_argument('--survey-cells', type=int, help='evaluate: survey size for the survey thresholds (default '
+                                                    'photometry_evaluate.SURVEY_CELLS[snapshot] = 402; a RULED key: another '
+                                                    'value needs --ruling-for or a non-production --out, and is recorded as '
+                                                    'a config override)')
+    s.add_argument('--refused-cells', action='append', metavar='KIND=FILE',
+                   help='evaluate: the per-kind cell,reason list of cells refused before evaluation (e.g. the '
+                        'refused_cells_sb_<tag>.csv of a production evaluation, to replay it); it must list every cell '
+                        'photometry_evaluate.REFUSED_CELLS refuses for that kind. Default: that pinned file plus the cells '
+                        'whose measure unit was refused')
     s.add_argument('--eval-procs', type=int, help='evaluate: cells evaluated at a time (--nproc; outputs identical)')
     s.add_argument('--eval-tag', help='evaluate: output directories eval_<tag>, eval_wb_<tag> (default the UTC date)')
 
@@ -122,6 +137,7 @@ def run(args, run):
         K.gate_pinned_inputs([e.REFUSED_CELLS['snapshot'], e.DEEP_SEARCH_PIN['snapshot'], c.paths.DATA_DECISIONS,
                               c.catalog_snapshot.CURVE_CONSTANTS])
     try:
+        flag_overrides(args, c)
         stages = K.resolve_stages(args, args.tier)
         K.plan(run, 'photometry --tier %s: stages %s; out %s%s' % (args.tier, ','.join(stages), run.out_root,
                                                                    ' (dry run: nothing written)' if run.dry_run else ''))
@@ -129,6 +145,30 @@ def run(args, run):
     except ValueError as e:
         print('error: %s' % e, file=sys.stderr)
         return record.EXIT_ERROR
-    if run.dry_run:
+    if run.dry_run:            # the plan printed; a gate the real run would hit makes the dry run exit 2 as well
+        wr = getattr(run, 'photometry_would_refuse', [])
+        if wr:
+            print('dry run: %d gate(s) would refuse: %s' % (len(wr), '; '.join(wr)[:600]), file=sys.stderr)
+            return record.EXIT_REFUSED
         return record.EXIT_DONE
     return rc
+
+
+def flag_overrides(args, c):
+    """--shards and --survey-cells change products (the blank-sky rows; the survey thresholds), so a value other than the
+    config one is applied AS a config override (photometry_measure.SHARDS[deep], photometry_evaluate.SURVEY_CELLS[snapshot]):
+    recorded in every unit record's config_overrides and config hash, and a RULED key refuses without --ruling-for or a
+    non-production --out (config._authority) - never a silent flag."""
+    from exopipe.phase3.config import ConfigRefusal
+    from exopipe.phase3.core import record
+    for flag, dotted, val, cur in (('--shards', 'photometry_measure.SHARDS[deep]', args.shards,
+                                    c.photometry_measure.SHARDS['deep']),
+                                   ('--survey-cells', 'photometry_evaluate.SURVEY_CELLS[snapshot]', args.survey_cells,
+                                    c.photometry_evaluate.SURVEY_CELLS['snapshot'])):
+        if val is not None and val < 1:
+            raise ValueError('%s %d: must be >= 1' % (flag, val))
+        if val is not None and val != cur:
+            try:
+                c.set(dotted, str(val), source=flag)
+            except ConfigRefusal as e:
+                raise record.Refusal('%s %s: %s' % (flag, val, e))

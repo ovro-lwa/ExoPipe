@@ -3,7 +3,6 @@ the in-place call wrapper, record helpers and the dry-run plan printer. No resul
 sections photometry*); the engines run IN PLACE through core/legacy.run (DESIGN 11.1)."""
 import hashlib
 import os
-import socket
 import sys
 
 from exopipe.phase3.core import record
@@ -16,12 +15,29 @@ def cfg():
 
 
 def hostname():
-    return socket.gethostname().split('.')[0]
+    """This host's short name (core/env.host: the key of every per-host site table)."""
+    from exopipe.phase3.core import env
+    return env.host()
 
 
 def plan(run, text):
     """One line of the plan (--dry-run prints the plan; a real run prints it too, as its log)."""
     print('PLAN %s' % text, flush=True)
+
+
+def would_refuse(run, stage, msg):
+    """--dry-run: print the refusal the real run would raise and remember it (the dry run then exits 2, as a refused run
+    would; steps/photometry.py)."""
+    plan(run, '[%s]   WOULD REFUSE %s' % (stage, msg))
+    run.photometry_would_refuse = getattr(run, 'photometry_would_refuse', []) + ['%s: %s' % (stage, msg)]
+
+
+def earlier_in_this_run(args, stage, before):
+    """True when ``stage`` is selected in THIS invocation ahead of ``before`` (run_tier sets args.photometry_stages):
+    in a --dry-run nothing is written, so a later stage's inputs are the outputs that stage would write, not records on
+    disk (DESIGN 11.5: each stage reads the files the previous stage's record lists)."""
+    st = list(getattr(args, 'photometry_stages', ()) or ())
+    return stage in st and before in st and st.index(stage) < st.index(before)
 
 
 def sha1_file(path):

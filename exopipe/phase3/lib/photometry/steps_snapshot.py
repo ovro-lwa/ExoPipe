@@ -114,6 +114,30 @@ def listing_sha1(files):
     return h.hexdigest()
 
 
+def quarantine(run, cell, paths, reason):
+    """Move superseded stage-1 files of ``cell`` out of the product directory, never delete them (CLAUDE.md 7; the
+    production re-serve did the same, snapshot_forced_reserve_20261007.sh:104-113): to
+    <out>/quarantine_superseded_photometry_<run id>/<cell>/, each with a row of MANIFEST_sha256.csv
+    (sha256,bytes,moved_from,moved_to,reason), the checksum verified after the move. Returns the moved paths."""
+    q = os.path.join(run.out_root, 'quarantine_superseded_photometry_%s' % run.run_id)
+    man = os.path.join(q, 'MANIFEST_sha256.csv')
+    os.makedirs(os.path.join(q, cell), exist_ok=True)
+    moved = []
+    new = not os.path.exists(man)
+    with open(man, 'a') as mf:
+        if new:
+            mf.write('sha256,bytes,moved_from,moved_to,reason\n')
+        for p in sorted(paths):
+            h = hashlib.sha256(open(p, 'rb').read()).hexdigest()
+            dst = os.path.join(q, cell, os.path.basename(p))
+            os.replace(p, dst)
+            if hashlib.sha256(open(dst, 'rb').read()).hexdigest() != h:
+                raise Refusal('SM-STALE: quarantine checksum of %s differs after the move' % dst)
+            mf.write('%s,%d,%s,%s,%s\n' % (h, os.path.getsize(dst), p, dst, reason.replace(',', ';')))
+            moved.append(dst)
+    return moved
+
+
 def unit_name(cell, bands):
     full = list(K.cfg().photometry.SNAPSHOT_BANDS)
     return 'measure.%s' % cell if list(bands) == full else 'measure.%s.%s' % (cell, '+'.join(bands))
@@ -148,7 +172,7 @@ def stage_measure(run, args):
                       [b for b in bands if not files[b]] or 'none'))
             mp = os.path.join(stage1, cell, man_name)
             if list(bands) != list(c.photometry.SNAPSHOT_BANDS) and man_name == m.MANIFEST_NAME and os.path.exists(mp):
-                K.plan(run, '[measure]   WOULD REFUSE SM-SUBSET: %s exists (full-band manifest); give --manifest-name' % mp)
+                K.would_refuse(run, 'measure', 'SM-SUBSET: %s exists (full-band manifest); give --manifest-name' % mp)
             continue
         units += measure_cell(run, args, cell, bands, files, root, stage1, man_name)
     return units
@@ -189,7 +213,8 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name):
             r = T.c1(files[b][0])
             u.note('photometry_cutout C1-C4 (report only) %s: %s %s' % (os.path.relpath(files[b][0], root),
                                                                       'PASS' if r[0] else 'FAIL', r[2]))
-        work = fitsio.scratch_dir('photometry_snap_%s' % cell, args.work)
+        work = fitsio.scratch_dir('photometry_snap_%s' % cell,
+                                  os.path.join(fitsio.scratch_root(args.work), m.WORK_SUBDIR['snapshot']))
         u.meta['work_dir'] = work
         procs = args.band_procs or m.BAND_PROCS['snapshot']
         out = {}
@@ -240,10 +265,10 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name):
         if stale:
             if not run.fresh:
                 u.refuse('SM-STALE: %s holds %d npz of the measured bands that this measurement did not write (e.g. %s); '
-                         'rerun with --fresh to replace them' % (dst, len(stale), os.path.basename(stale[0])))
-            for p in stale:
-                os.remove(p)
-            u.meta['removed_stale'] = [os.path.basename(p) for p in stale]
+                         'rerun with --fresh to move them to a quarantine directory' % (dst, len(stale),
+                                                                                       os.path.basename(stale[0])))
+            u.meta['quarantined_stale'] = quarantine(run, cell, stale, 'superseded: not rewritten by the stage-1 '
+                                                     'measurement of %s (bands %s)' % (cell, '+'.join(withc)))
         for p in npz:
             u.plan(os.path.join(dst, os.path.basename(p)), 'photometry_snapshot_npz')
         u.plan(mpath, 'photometry_manifest')
@@ -275,6 +300,58 @@ def refused_list(kind):
         if kind in ks:
             out.append((r['cell'], r['reason']))
     return out
+
+
+def refused_given(args):
+    """{kind: path} of --refused-cells KIND=FILE: the per-kind 'cell,reason' list of cells refused before evaluation that
+    a production evaluation used (snapshot_forced_reserve_20261007.sh:138-147 wrote refused_cells_<kind>_<tag>.csv) - a
+    replay passes it so the engine's refused_cells.csv and drops.csv are the production ones."""
+    kinds = K.cfg().photometry_evaluate.KINDS['snapshot']
+    out = {}
+    for item in getattr(args, 'refused_cells', None) or []:
+        k, sep, p = item.partition('=')
+        if not sep or k.strip() not in kinds or not p.strip():
+            raise ValueError('--refused-cells %r: expected KIND=FILE with KIND in %s' % (item, kinds))
+        out[k.strip()] = os.path.abspath(p.strip())
+    return out
+
+
+def refused_for(kind, given, stage1, cells):
+    """(OrderedDict cell -> reason, path of a given list or None) of the cells refused before the evaluation of ``kind``.
+    Default: the pinned file's rows for the kind in file order (reserve :140-141), then the cells whose measure unit was
+    refused (:142-144). A given list (--refused-cells) is read as written and must hold every pinned cell of the kind (the
+    pinned cells are never re-admitted, DECISION-FORCED-CORRUPT-CUTOUT-CELLS-REFUSED); the measure refusals are added after
+    its rows."""
+    from collections import OrderedDict
+    from exopipe.phase3.lib.photometry.tests import read_csv
+    pinned = refused_list(kind)
+    ref = OrderedDict()
+    path = given.get(kind)
+    if path:
+        if not os.path.isfile(path):
+            raise Refusal('SE-LISTED: --refused-cells %s=%s: no such file' % (kind, path))
+        cols, rows = read_csv(path)
+        if cols[:2] != ['cell', 'reason']:
+            raise Refusal('SE-LISTED: --refused-cells %s=%s: header %s, expected cell,reason' % (kind, path, cols))
+        for r in rows:
+            ref.setdefault(r['cell'], r['reason'])
+        miss = [cl for cl, _ in pinned if cl not in ref]
+        if miss:
+            raise Refusal('SE-LISTED: --refused-cells %s=%s omits the pinned refused cell(s) %s of %s '
+                          '(DECISION-FORCED-CORRUPT-CUTOUT-CELLS-REFUSED: never re-admitted)'
+                          % (kind, path, miss, K.cfg().photometry_evaluate.REFUSED_CELLS['snapshot']))
+    else:
+        for cl, why in pinned:
+            ref.setdefault(cl, why)
+    for cl, why in _measure_refusals(stage1, cells).items():
+        ref.setdefault(cl, why)
+    return ref, (path if path and len(ref) == len(rows) else None)
+
+
+def refused_text(ref):
+    """The per-kind list the engine reads (--refused-cells), as the reserve script wrote it: 'cell,reason' + one
+    '<cell>,<reason>' line per cell (:138-147; a comma in a reason would split it there, so it is written as ';')."""
+    return 'cell,reason\n' + ''.join('%s,%s\n' % (cl, why.replace(',', ';')) for cl, why in ref.items())
 
 
 def _records_root(stage1):
@@ -324,33 +401,49 @@ def stage_evaluate(run, args):
     tag = args.eval_tag or time.strftime('%Y%m%d', time.gmtime())
     items, explicit = select_cells(args, stage1)
     cells = sorted({cl for cl, _ in items})
+    pending = set()      # dry run: cells whose stage 1 the measure stage of THIS invocation writes (nothing on disk yet)
+    if run.dry_run and K.earlier_in_this_run(args, 'measure', 'evaluate') \
+            and os.path.abspath(stage1) == os.path.abspath(os.path.join(run.out_root, 'stage1')):
+        mitems, _ = select_cells(args, c.paths.SNAPSHOT_FLEET_OUT)
+        pending = {cl for cl, _ in mitems}
+        if not explicit:
+            cells = sorted(set(cells) | pending)
     K.plan(run, '[evaluate] stage 1 %s: %d cells; kinds %s; tag %s -> %s (snapshot_forced_eval.py in place, --nproc %d, '
                 '--survey-cells %d)' % (stage1, len(cells), kinds, tag,
                                         ', '.join(os.path.join(run.out_root, ev.EVAL_DIR[k].format(tag=tag)) for k in kinds),
                                         args.eval_procs or ev.EVAL_PROCS['snapshot'],
                                         args.survey_cells or ev.SURVEY_CELLS['snapshot']))
+    if pending:
+        K.plan(run, '[evaluate]   stage 1 of %d cells from the measure stage of this run (their measure records are read '
+                    'after measure finishes; a refused cell is listed refused, an errored one refuses SE-DONE)'
+               % len(pending & set(cells)))
     if not cells:
         msg = 'SE-NONE: no stage-1 cell under %s' % stage1
         if run.dry_run:
-            K.plan(run, '[evaluate]   WOULD REFUSE ' + msg)
+            K.would_refuse(run, 'evaluate', msg)
             return []
         raise Refusal(msg)
     units = []
     done_kinds = []
+    given = refused_given(args)
     for kind in kinds:
-        ref = dict(refused_list(kind))
-        rr = _measure_refusals(stage1, cells)
-        for cl, why in rr.items():
-            ref.setdefault(cl, why)
+        try:
+            ref, ref_path = refused_for(kind, given, stage1, cells)
+        except Refusal as e:
+            if run.dry_run:
+                K.would_refuse(run, 'evaluate', str(e))
+                continue
+            raise
         listed = sorted(set(cells) & set(ref))
         if explicit and listed:
             msg = 'SE-LISTED: cells both selected and refused for %s: %s' % (kind, listed)
             if run.dry_run:
-                K.plan(run, '[evaluate]   WOULD REFUSE ' + msg)
+                K.would_refuse(run, 'evaluate', msg)
                 continue
             raise Refusal(msg)
         ecells = [cl for cl in cells if cl not in ref]
-        evid = {cl: done_evidence(stage1, cl, kind) for cl in ecells}
+        evid = {cl: (True, 'measure stage of this run') if cl in pending else done_evidence(stage1, cl, kind)
+                for cl in ecells}
         nodone = sorted(cl for cl, (ok, _) in evid.items() if not ok)
         evdir = os.path.join(run.out_root, ev.EVAL_DIR[kind].format(tag=tag))
         name = 'evaluate.%s.%s' % (kind, tag)
@@ -360,7 +453,7 @@ def stage_evaluate(run, args):
             msg = 'SE-DONE: %d cells without a complete stage 1 for %s (e.g. %s: %s)' % (
                 len(nodone), kind, nodone[0], evid[nodone[0]][1])
             if run.dry_run:
-                K.plan(run, '[evaluate]   WOULD REFUSE ' + msg)
+                K.would_refuse(run, 'evaluate', msg)
                 continue
             raise Refusal(msg)
         if run.dry_run:
@@ -374,13 +467,24 @@ def stage_evaluate(run, args):
                       cells=len(ecells)) as u:
             if not ecells:
                 raise NoInput('SE-NONE: every selected cell is refused for %s' % kind)
-            rf = os.path.join(run.out_root, ev.REFUSED_FILE.format(kind=kind, tag=tag))
-            K.write_text_atomic(rf, 'cell,reason\n' + ''.join('%s,%s\n' % (cl, ref[cl].replace(',', ';'))
-                                                               for cl in sorted(ref)))
+            if ref_path:            # a given list holding every refused cell: passed to the engine as written
+                rf = ref_path
+            else:
+                rf = K.write_text_atomic(os.path.join(run.out_root, ev.REFUSED_FILE.format(kind=kind, tag=tag)),
+                                         refused_text(ref))
+            u.meta['refused_cells_file'] = rf
             u.add_input(rf)
             u.add_input(ev.REFUSED_CELLS['snapshot'])
             u.add_input(ev.DEEP_SEARCH_PIN['snapshot'])
             u.add_input(c.paths.DATA_DECISIONS)
+            # the a-priori screen's inputs (snapshot_forced_eval.zone_flags): the curve file and the gen-4 Master
+            # catalogs of the evaluated LSTs and bands (rebuilt 2026-10-13: an evaluation of the old set is not resumed)
+            u.add_input(c.catalog_snapshot.CURVE_CONSTANTS)
+            for lst in sorted({cl[:3] for cl in ecells}):
+                for b in kind_bands(kind):
+                    gp = os.path.join(c.catalog_snapshot.MASTER_CATALOGS, 'master_R075_%s_%s.gaul.csv' % (lst, b))
+                    if os.path.exists(gp):
+                        u.add_input(gp)
             for cl in ecells:
                 u.add_input(os.path.join(stage1, cl))
                 for mp in sorted(glob.glob(os.path.join(stage1, cl, 'forced_manifest*.csv'))):
@@ -436,10 +540,16 @@ def zone_flags(run, args, stage1, tag, done_kinds):
         rows = []
         for kind, evdir in done_kinds:
             p = os.path.join(evdir, 'targets_ge4.csv')
-            if os.path.exists(p):
-                u.add_input(p)
+            if not (os.path.exists(p) and T.read_csv(p)[1]):
+                # test_snapshot_forced_reserve.cmd_zones :215-216: an evaluation without targets_ge4 rows refuses Z
+                u.refuse('Z: no targets_ge4.csv rows in %s' % evdir)
+            u.add_input(p)
             r, _, _ = T.zone_rows(evdir, stage1, None, ev.CONTENT_TEST_PROCS)
             rows.extend(r)
+        diff = [k for k, a, b in rows if a != b]
+        if diff:            # cmd_zones fails (:220-224) BEFORE it writes the flags file (:225-230)
+            u.refuse('Z1: %d targets_ge4 rows whose recomputed screen differs from the evaluation (e.g. %s); flags file '
+                     'not written' % (len(diff), ' '.join(diff[0])))
         u.plan(path, 'photometry_zone_flags')
         T.write_zone_flags(path, rows)
         u.add_output(path, 'photometry_zone_flags')
@@ -451,6 +561,7 @@ STAGE_FUNCS = {'measure': stage_measure, 'evaluate': stage_evaluate}
 
 def run_tier(run, args, stages):
     gate_full(args)
+    args.photometry_stages = list(stages)      # a dry run plans a stage from an earlier stage of this invocation
     for st in stages:
         units = STAGE_FUNCS[st](run, args)
         if run.dry_run:
