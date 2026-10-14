@@ -800,8 +800,9 @@ def preflight(args, run, cell, lst, band, stokes, date):
     return plan
 
 
-def engine_env(plan, attempt):
-    """search.md 7.3 (sub-LST rows): the engine environment, built from config only."""
+def engine_env(plan, attempt, tmpdir=None):
+    """search.md 7.3 (sub-LST rows): the engine environment, built from config only. ``tmpdir``: the child's TMPDIR (detect
+    passes a short one, deep_step.engine_tmpdir: AF_UNIX socket paths); default <attempt>/tmp."""
     from exopipe.phase3.lib.search.deep_step import ephemeris_time
     s = cfg().search_sublst
     label = plan['label']
@@ -830,7 +831,7 @@ def engine_env(plan, attempt):
         'P3_TABLE_ELEV': '1' if s.TABLE_ELEV else '0',
         'P3_TABLE_ELEV_BANDS': s.TABLE_ELEV_BANDS,
         'P3_TABLE_XM_EXEMPT': '1' if s.TABLE_XM_EXEMPT else '0',
-        'TMPDIR': os.path.join(attempt, 'tmp'),
+        'TMPDIR': tmpdir or os.path.join(attempt, 'tmp'),
     }
 
 
@@ -907,15 +908,20 @@ def detect(run, u, plan, attempt):
     result = os.path.join(attempt, '.engine_result.json')
     a = dict(lst=plan['lst'], band=plan['band'], cell=plan['cell'], label=plan['label'], stokes=plan['stokes'],
              cadence=s.CADENCE, included_dates=plan['included_dates'], markers=list(s.REFUSAL_MARKERS), result=result)
-    env = dict(engine_env(plan, attempt), PYTHONPATH=pkg_root())
+    from exopipe.phase3.lib.search.deep_step import engine_tmpdir
+    etmp = engine_tmpdir(s.ENGINE_TMP_ROOT, f'{plan["cell"]}_{plan["stokes"]}')     # short: AF_UNIX socket paths
+    env = dict(engine_env(plan, attempt, etmp), PYTHONPATH=pkg_root())
     u.meta['engine'] = dict(python_key=s.ENGINE_PYTHON, cwd=attempt, log=log,
                             env={k: v for k, v in sorted(env.items()) if v is not None})
     spec = os.path.join(attempt, '.engine_spec.json')      # never inline: the argv is the log's header line (engine_child)
     with open(spec + '.tmp', 'w') as f:
         json.dump(a, f)
     os.replace(spec + '.tmp', spec)
-    res_p = legacy_call('exopipe.phase3.lib.search.tier_sublst', ['--engine-child', spec], s.ENGINE_PYTHON, env,
-                        log, unit=u, cwd=attempt, module=True)
+    try:
+        res_p = legacy_call('exopipe.phase3.lib.search.tier_sublst', ['--engine-child', spec], s.ENGINE_PYTHON, env,
+                            log, unit=u, cwd=attempt, module=True)
+    finally:
+        shutil.rmtree(etmp, ignore_errors=True)
     u.meta['engine'].update(exit=res_p.rc, wall_s=res_p.wall_s)
     res = None
     if os.path.exists(result):

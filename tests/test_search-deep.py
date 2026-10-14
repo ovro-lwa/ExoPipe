@@ -423,6 +423,20 @@ def test_engine_child():
         os.makedirs(d, exist_ok=True)
     f = dict(base=os.path.join(TMP, 'coadd', CELL))
     os.makedirs(f['base'], exist_ok=True)
+    # the engine child's TMPDIR (P4 parity run 2026-10-14: a TMPDIR under a deep work root failed PyBDSF's multiprocessing
+    # Manager with 'AF_UNIX path too long'): short, under search_run.ENGINE_TMP_ROOT, removed after the child
+    d = DS.engine_tmpdir('/tmp', f'{CELL}_V')
+    check('engine TMPDIR: short and under the root (room for <TMPDIR>/pymp-*/listener-* within 107 bytes)',
+          d.startswith('/tmp/e3_') and len(d) + 32 <= 107 and os.path.isdir(d), d)
+    shutil.rmtree(d, ignore_errors=True)
+    deep = os.path.join(TMP, 'x' * 90)
+    try:
+        DS.engine_tmpdir(deep, f'{CELL}_V')
+        why = 'no refusal'
+    except record.Refusal as e:
+        why = str(e)
+    check('engine TMPDIR: a root too deep for the sockets refuses', 'AF_UNIX' in why and not glob.glob(f'{deep}/e3_*'), why)
+    before = set(glob.glob(f'/tmp/e3_{CELL}_I_*'))
     t0 = time.time()
     try:
         DS.stage_detect(u, item, ctx, f)
@@ -437,6 +451,8 @@ def test_engine_child():
           == os.path.join(TMP, 'coadd'))
     log = open(f['log']).read()
     check('engine child: log in the attempt, sentinel withheld on refusal', 'REFUSING' in log and 'P3S3-CELL-DONE' not in log)
+    check('engine child: its short TMPDIR is removed after the child', set(glob.glob(f'/tmp/e3_{CELL}_I_*')) == before,
+          sorted(set(glob.glob(f'/tmp/e3_{CELL}_I_*')) - before))
 
 
 def test_cli():

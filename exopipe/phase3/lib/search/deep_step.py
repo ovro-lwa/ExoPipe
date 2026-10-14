@@ -51,6 +51,27 @@ _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 EPHEMERIS_TIMES = ('frame-mid', 'date-obs')
 
 
+# The engine child's TMPDIR: PyBDSF's multiprocessing Manager listens on an AF_UNIX socket at
+# <TMPDIR>/pymp-XXXXXXXX/listener-XXXXXXXX, and Linux caps a socket path at 107 bytes - a TMPDIR under a deep work root failed
+# with 'AF_UNIX path too long' -> EOFError in the engine (P4 parity run, 2026-10-14). Production sets no TMPDIR (/tmp).
+_AF_UNIX_MAX = 107
+_MP_SOCKET_TAIL = len('/pymp-XXXXXXXX/listener-XXXXXXXX')
+
+
+def engine_tmpdir(root, tag):
+    """A short per-unit TMPDIR for an engine child under ``root`` (search_run / search_sublst.ENGINE_TMP_ROOT, default /tmp
+    as production); refuses a root that leaves no room for multiprocessing's sockets. The caller removes it after the child."""
+    import tempfile
+    from exopipe.phase3.core.record import Refusal
+    os.makedirs(root, exist_ok=True)
+    d = tempfile.mkdtemp(prefix=f'e3_{tag}_', dir=root)
+    if len(d) + _MP_SOCKET_TAIL > _AF_UNIX_MAX:
+        shutil.rmtree(d, ignore_errors=True)
+        raise Refusal(f'engine TMPDIR {d} under {root} leaves no room for multiprocessing\'s AF_UNIX sockets (a path is at '
+                      f'most {_AF_UNIX_MAX} bytes): set a shorter ENGINE_TMP_ROOT')
+    return d
+
+
 def ephemeris_time(value, key):
     """EXOPIPE3_EPHEMERIS_TIME for an engine child: ``value`` of config key ``key``; an unknown value refuses here, before
     any child starts (the engine refuses it too)."""
@@ -805,7 +826,8 @@ def stage_detect(u, item, ctx, f):
     before = len(_image_rows(attempt, label, item.stokes))
     tmpd = os.path.join(ctx['tmp'], item.name + '_' + tag)
     os.makedirs(tmpd, exist_ok=True)
-    env = engine_env(os.path.dirname(f['base']), attempt, ctx['flow_root'], label, ctx['archive_root'], tmpd)
+    etmp = engine_tmpdir(c.search_run.ENGINE_TMP_ROOT, f'{item.cell}_{item.stokes}')     # short: AF_UNIX socket paths
+    env = engine_env(os.path.dirname(f['base']), attempt, ctx['flow_root'], label, ctx['archive_root'], etmp)
     spec = dict(lst=item.lst, scope=item.scope, cell=item.cell, label=label, stokes=item.stokes, cadence=c.search.CADENCE,
                 included_dates=item.dates if item.mode == 'incremental' else None, markers=list(c.search.REFUSAL_MARKERS),
                 result=os.path.join(tmpd, 'result.json'))
@@ -814,8 +836,11 @@ def stage_detect(u, item, ctx, f):
         json.dump(spec, fh, indent=1)
     t_detect = time.time()
     u.meta.update(attempt_staged=attempt, engine_env={k: v for k, v in env.items() if k.startswith(('P3_', 'DEEP_'))})
-    res = legacy.run(_CHILD_MODULE, ['--child', spec_path], python=c.search.ENGINE_PYTHON, module=True, env=env, cwd=attempt,
-                     log=log, refusal_codes=(2,), refusal_text=(), unit=u)
+    try:
+        res = legacy.run(_CHILD_MODULE, ['--child', spec_path], python=c.search.ENGINE_PYTHON, module=True, env=env, cwd=attempt,
+                         log=log, refusal_codes=(2,), refusal_text=(), unit=u)
+    finally:
+        shutil.rmtree(etmp, ignore_errors=True)
     try:
         result = json.load(open(spec['result']))
     except (OSError, ValueError):

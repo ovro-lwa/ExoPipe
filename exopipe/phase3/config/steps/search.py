@@ -219,6 +219,8 @@ class search_run(_Section):
     RETRIES = 6                                             # runner error retries (p3s5_search_fleet.sh:276); refusals are terminal
     RETRY_BACKOFF_S = 120                                   # s x attempt (p3s5_search_fleet.sh:289)
     WORK_SUBDIR = 'search_deep'                             # window: <--work or site SCRATCH_ROOT>/<this>/{attempts,flowroot,tmp}
+    ENGINE_TMP_ROOT = '/tmp'                                # the engine child's TMPDIR root (a short e3_<cell>_<S>_* per unit): production
+                                                            # sets no TMPDIR; PyBDSF's multiprocessing sockets need a path <= 107 bytes
     PRODUCTION_WORK_ROOT = '/fast/gh/main/phase3/s2work_p3s5'           # P3_FLOW_ROOT (p3s5_search_fleet.sh:32); used only when
     PRODUCTION_ATTEMPT_ROOT = '/fast/gh/main/phase3/p3s5_staging/attempts'   # paths.PRODUCTION_WRITES is True (p3s5_search_fleet.sh:30)
     COLLECT_ROOT = '/lustre/gh/main/phase3_collect/p3s5_collect_{host}'   # the step's production --out (p3s5_search_fleet.sh:33)
@@ -300,6 +302,7 @@ class search_sublst(_Section):
     PUBLISH_ITEMS = ('Run_{label}', 'transients', '{cell}.log', 'flow/{cell}_10min/catdir', 'flow/{cell}_10min/v110_out')
                                             # copied from the attempt, rsync -a semantics; SP:53-55 (the last two when present)
     WORK_SUBDIR = 'sublst_search/{arm}'     # attempt dirs <scratch>/<this>/<cell>_<S>_<UTC>/ (+ /flow); SP:25, :42-43
+    ENGINE_TMP_ROOT = '/tmp'                # the engine child's TMPDIR root, as search_run.ENGINE_TMP_ROOT (SP sets no TMPDIR)
     KEEP_ATTEMPT_ON_SUCCESS = False         # SP:57 'rm -rf $att' after a published success; a failed attempt is always kept (SP:52)
     BANDS = _SUBBANDS + ('Red', 'Green', 'Blue')   # 15 subbands + the three wideband groups; no Full in this tier (B-82; NOCAT:271)
     SEARCH_ORDER = ('Blue', 'Green', 'Red', '82MHz', '78MHz', '73MHz', '69MHz', '64MHz', '59MHz', '55MHz', '50MHz', '46MHz',
