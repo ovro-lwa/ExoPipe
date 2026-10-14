@@ -15,6 +15,8 @@ Synthetic data under /tmp/exopipe3_tests_serve/ (removed at the end):
      classify_transients.py in the scratch tree), listeners, readiness, exact-pid stop, replace, inspection twin,
      --restart through the CLI, served_page / stopped_page tests.
   4. deep `views` stage end to end through record.Run (records under the scratch root).
+  5. (review 2026-10-13) a refused stage stops the later ones (deep G2, sub-LST G8 / G11, snapshot G17), the in-place
+     exclusion gate and core.exclusions agree, the forced switch probes before it stops the old server.
 READ-ONLY checks on production: the planned argv of every page against the live servers (titles' served time taken from
 the live argv), `serve --tier deep --run P3S5 --dry-run`, content tests on real queues and views.
 """
@@ -270,7 +272,15 @@ def test_deep_ports():
     os.utime(f'{D}/source_catalogs/Red_pages_index_V.csv', (t, t))
     stale, detail2 = views.deep_merge_current(D)
     assert not stale and 'older than the page index' in detail2, detail2
-    ok('deep: the pages merge is required current (merged union newer than every page index)')
+    E = f'{T}/deep_hdr/Run_TEST'                     # a header-only union file: the merge never rewrites it
+    shutil.copytree(base, E)
+    wcsv(f'{E}/source_catalogs/41MHz_sources_survivors.csv', SURV + ['stokes'], [])
+    t0 = time.time() - 1000
+    os.utime(f'{E}/source_catalogs/41MHz_sources_survivors.csv', (t0, t0))
+    good3, detail3 = views.deep_merge_current(E)
+    assert good3, detail3
+    ok('deep: the pages merge is required current (merged union newer than every page index; a header-only union file, '
+       'which the merge leaves untouched, does not count)')
     return B
 
 
@@ -451,6 +461,9 @@ def test_journals():
     notfp2, _ = journals.hold_check(old, new, reader='carry')
     assert notfp2 == ['J1 (real)'], notfp2
     ok(f'HOLD rule (carry reader, the R6 fix): a retracted verdict is not a missed verdict ({notfp} -> {notfp2})')
+    assert CFG.serve.HOLD_JOURNAL_READER == 'driver' and journals.hold_check(old, new)[0] == notfp
+    assert open(f'{new}/judgements/carry_missed.csv').read() == prod_missed
+    ok('HOLD rule default = the batch driver reader (production; R6 not ruled): byte-identical to the heredoc')
     open(f'{new}/judgements/judgements.jsonl', 'w').write('')
     r = {x['name']: x for x in validate.run('judgement_journal', f'{new}/judgements/judgements.jsonl')}
     assert not r['judgement_journal.hold_rule']['passed']
@@ -653,6 +666,141 @@ def test_views_stage():
        f'parity mirror (candidates linked, judgements copied)')
 
 
+# ---- 5. a refused stage stops the later stages (review 2026-10-13) ----------------------------------------------------------
+def _ns(**kw):
+    import argparse
+    base = dict(tier='deep', run_label=None, port_offset=20000, pages=None, stokes=None, lsts=None, label=None, source=None,
+                family=None, forced_tag=None, restart=None, stop=None, carry_from=None, no_twins=False, no_hub=False,
+                forced_refresh_siblings=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_stage_halting():
+    from exopipe.phase3.core.exclusions import Exclusions
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import deep, snapshot_copy
+
+    def no_start(*a, **k):
+        raise AssertionError('a server was (re)started after a refused stage')
+    orig = (servers.replace, servers.start_twin)
+    servers.replace = servers.start_twin = no_start
+    try:
+        # deep: G2 (a union without 'stokes') refuses the views -> no test, no start (the previous views are never served)
+        src = f'{T}/halt_deep_src/Run_TEST'
+        shutil.copytree(f'{T}/deep_base/Run_TEST', src)
+        p = f'{src}/source_catalogs/Red_sources_survivors.csv'
+        wcsv(p, SURV, list(csv.DictReader(open(p))))
+        a = _ns(tier='deep', run_label='TEST')
+        out = f'{T}/halt_deep_out'
+        plan = planmod.make(a, out)
+        plan.U_src = src
+        run = Run('serve', ['test'], out, CFG, config_sections=None)
+        deep.run(a, run, plan, deep.STAGES)
+        assert [u.name for u in run.units] == ['deep_Run_TEST_views'], [u.name for u in run.units]
+        assert run.units[0].status == 'refused' and 'G2' in run.units[0].reason and run.exit_code() == 2
+        ok('deep: G2 refuses the views stage and nothing after it runs (no test, no server started) - exit 2')
+        # sub-LST: G8 refuses the build -> the views stage never runs on a stale build directory
+        R = f'{T}/lstruns'                          # made by test_generation_mix: 05h has no pertie_detections.csv
+        olr = sublst_build.lst_run
+        sublst_build.lst_run = lambda l: f'{R}/Run_SLST{l[:-1]}B'
+        try:
+            a2 = _ns(tier='sublst', lsts='05h')
+            out2 = f'{T}/halt_sublst_out'
+            plan2 = planmod.make(a2, out2)
+            B = sublst_build.build_dir(plan2)
+            os.makedirs(f'{B}/candidates/I')        # a stale build left by an earlier failed build
+            run2 = Run('serve', ['test'], out2, CFG, config_sections=None)
+            sublst_build.run(a2, run2, plan2, sublst_build.STAGES)
+        finally:
+            sublst_build.lst_run = olr
+        assert [u.name for u in run2.units] == ['sublst_Run_SLSTB_build'] and run2.units[0].status == 'refused', \
+            [(u.name, u.status) for u in run2.units]
+        assert 'G8' in run2.units[0].reason and run2.exit_code() == 2 and not os.path.exists(plan2.U)
+        ok('sub-LST: G8 refuses the build and nothing after it runs (the stale build is never viewed or swapped in)')
+        # sub-LST G11: a page refused on the build (here by the App probe) refuses the swap - nothing swapped in
+        state = {'refused': {'V': 'App probe: 2 queue ids the server cannot resolve (404) - not served',
+                             'V-multi': 'NO-INPUT: V: no multi-integration sources - multiples page not served'},
+                 'expected': {}, 'served': {}}
+        u = sublst_build.carry_swap_stage(run2, plan2, state)
+        assert u.status == 'refused' and 'G11' in u.reason and 'V-multi' not in u.reason, (u.status, u.reason)
+        assert os.path.isdir(B) and not os.path.exists(plan2.U)
+        ok('sub-LST G11: a page refused on the build refuses the swap (a multiples page with no source does not)')
+        # snapshot: the serve-time exclusion gate refuses the source -> nothing copied
+        ex = Exclusions()
+        l_, s_, d_ = sorted(k for k in ex.rows if k not in ex.perband and k[1].isdigit())[0]
+        srcs = f'{T}/halt_snap_src/Run_SNAPTEST'
+        wcsv(f'{srcs}/detections.csv', ['cand_id', 'snr'], [dict(cand_id=f'{l_}_{d_}_{s_}MHz_V_10s_20250101_000000', snr=9)])
+        a3 = _ns(tier='snapshot', run_label='Run_SNAPTEST', source=srcs, label='halt test')
+        out3 = f'{T}/halt_snap_out'
+        plan3 = planmod.make(a3, out3)
+        run3 = Run('serve', ['test'], out3, CFG, config_sections=None)
+        snapshot_copy.run(a3, run3, plan3, snapshot_copy.STAGES)
+        assert [u.name for u in run3.units] == ['snapshot_Run_SNAPTEST_gate'], [u.name for u in run3.units]
+        assert run3.units[0].status == 'refused' and 'G17' in run3.units[0].reason and run3.exit_code() == 2
+        assert not os.path.exists(plan3.U)
+        ok(f'snapshot: G17 refuses the chain run ({l_} {d_} {s_}MHz excluded now) and nothing is copied or served')
+    finally:
+        servers.replace, servers.start_twin = orig
+
+
+def test_inplace_gate_agrees():
+    """G17 two readers: production's gate (snapshot_serve_exclusion_gate.py through core.legacy.run, its reader
+    coadd_full_pipeline.is_excluded) and core.exclusions refuse the same rows (subband exact; a wideband through a member
+    subband) - FOLD_IN row f1996ee."""
+    from exopipe.phase3.core.exclusions import Exclusions
+    ex = Exclusions()
+    l_, s_, d_ = sorted(k for k in ex.rows if k not in ex.perband and k[1].isdigit())[0]
+    R = f'{T}/gate_run/Run_SNAPG'
+    wcsv(f'{R}/detections.csv', ['cand_id', 'cell', 'bands'],
+         [dict(cand_id=f'{l_}_{d_}_{s_}MHz_V_10s_x'), dict(cand_id='04h_2030-01-01_Red_V_10s_x'),
+          dict(cell=f'{l_}_{d_}', bands='Red;Green')])
+    wcsv(f'{R}/judgements/carry_report.csv', ['cand_id'], [dict(cand_id=f'{l_}_{d_}_{s_}MHz_V_10s_x')])  # never scanned
+    scan = exclusion_gate.scan_snapshot_run(R)
+    rc, out, refusals = exclusion_gate.run_inplace_gate(R)
+    agree, detail = exclusion_gate.agree(scan, refusals, rc)
+    assert rc == 1 and agree and scan.hits and ('04h', '2030-01-01', 'Red') not in scan.per_key(), (rc, detail)
+    ok(f'G17 two readers: the in-place gate (core.legacy.run) and core.exclusions refuse the same rows ({detail})')
+
+
+def test_forced_probe_before_stop():
+    """forced switch: the App probe runs before the old server is stopped (a failed probe keeps the old page served)."""
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import exclusion_gate as eg, flow, forced
+    a = _ns(tier='snapshot', family='forced', forced_tag='TEST', pages='forced-V-10s')
+    out = f'{T}/forced_out'
+    plan = planmod.make(a, out)
+    pg = plan.pages[0]
+    stopped = []
+
+    class Res:
+        ok, rc, tail = True, 0, 'AD Leo: absent'
+    old = {'pid': 1, 'comm': 'python3', 'argv': [PY, 'classify_transients.py', '--run', f'{out}/snapshot/OLDRUN', '--port',
+                                                 str(pg.port)], 'cwd': OPS}
+
+    def probe_fails(*x, **k):
+        raise Refusal('App probe of page forced-V-10s failed (rc 1): test')
+    saved = (forced.ready, forced.missing_files, forced._parity_copy, scripts.run, eg.scan_snapshot_run, forced._old_server,
+             servers.app_probe, procs.stop_exact)
+    forced.ready = lambda name: (True, 'FT-READY')
+    forced.missing_files = lambda pg_, D: []
+    forced._parity_copy = lambda pg_: None
+    scripts.run = lambda *x, **k: Res()
+    eg.scan_snapshot_run = lambda D, ex=None: eg.Scan()
+    forced._old_server = lambda pg_: (old, {})
+    servers.app_probe = probe_fails
+    procs.stop_exact = lambda info, **k: stopped.append(info['pid']) or 'stopped'
+    try:
+        run = Run('serve', ['test'], out, CFG, config_sections=None)
+        forced.switch_page(run, plan, pg, flow.new_state(), 'UTC')
+    finally:
+        (forced.ready, forced.missing_files, forced._parity_copy, scripts.run, eg.scan_snapshot_run, forced._old_server,
+         servers.app_probe, procs.stop_exact) = saved
+    u = run.units[-1]
+    assert u.status == 'refused' and 'App probe' in u.reason and not stopped, (u.status, u.reason, stopped)
+    ok('forced switch: a failed App probe refuses BEFORE the old server is stopped (the old page stays served)')
+
+
 # ---- read-only checks on production -----------------------------------------------------------------------------------------
 def test_production_readonly():
     import argparse
@@ -710,6 +858,9 @@ def main():
         test_hub()
         test_processes()
         test_views_stage()
+        test_stage_halting()
+        test_inplace_gate_agrees()
+        test_forced_probe_before_stop()
         test_production_readonly()
     finally:
         for port in (28766, 28796, 28801):           # never leave a stand-in server behind

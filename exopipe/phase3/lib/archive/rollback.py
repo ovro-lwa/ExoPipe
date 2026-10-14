@@ -32,8 +32,10 @@ def _since(text):
     return t, float(e)
 
 
-def plan(ctx, manifest, cell, st, since, occupant_q, checksum=True):
-    """(rows, problems): the restore rows (restore_refused_frames.py:31-51)."""
+def plan(ctx, manifest, cell, st, since, occupant_q, checksum=True, ex=None):
+    """(rows, problems): the restore rows (restore_refused_frames.py:31-51). A row whose original path is a file of an
+    excluded (LST, scope, date) is a problem (G20: exclusion is absolute - a rollback never puts an excluded night's file
+    back into the generation Run; restore_refused_frames.py had no such case: its nine sets held no excluded night)."""
     since_iso, since_s = _since(since)
     _, man = K.read_csv(manifest)
     rows, bad = [], []
@@ -43,6 +45,10 @@ def plan(ctx, manifest, cell, st, since, occupant_q, checksum=True):
         if (r.get('moved_at') or '') < since_iso:
             continue
         p, q = r['path'], r['dest']
+        key = K.excluded_key(ex, p, ctx.archive_root) if ex is not None else None
+        if key:
+            bad.append(f'{p}: excluded {key} in data_decisions.csv - never restored (G20, exclusion absolute)')
+            continue
         occ = ''
         if os.path.lexists(p):
             if occupant_q and os.path.getmtime(p) >= since_s:
@@ -81,8 +87,15 @@ def run_action(ctx, args, run, unit_fn, items, stokes):
                 if not os.path.exists(man):
                     raise NoInput(f'no quarantine manifest {man}')
                 u.add_input(man)
-                rows, bad = plan(ctx, man, cell, st, args.since, args.occupant_quarantine, checksum=not ctx.dry)
+                from exopipe.phase3.core import exclusions
+                ex = exclusions.load()                  # G1: missing / unreadable data_decisions.csv refuses (C-09)
+                u.add_input(ex.path, extra=ex.fingerprint())
+                rows, bad = plan(ctx, man, cell, st, args.since, args.occupant_quarantine, checksum=not ctx.dry, ex=ex)
                 u.meta.update(n_rows=len(rows), n_problems=len(bad), problems=bad[:20])
+                excl = [b for b in bad if '(G20' in b]
+                if excl:
+                    raise Refusal(f'G20: REFUSED: {len(excl)} row(s) would put a file of an excluded (LST, scope, date) back '
+                                  f'into the generation Run - nothing moved; e.g. {excl[0]}')
                 if bad:
                     raise Refusal(f'G15: REFUSED: {len(bad)} problem(s) found - nothing moved; e.g. {bad[0]}')
                 if not rows:
@@ -98,19 +111,25 @@ def run_action(ctx, args, run, unit_fn, items, stokes):
                 ids = K.require_ruling(args.apply_ruling, f'rollback of {cell} {st}')
                 u.meta['ruling_ids'] = ids
                 ctx.guard_writes([ctx.archive_root] + [r['path'] for r in rows[:1]], f'rollback of {cell} {st}')
+                K.refuse_live_writers(ctx, [(cell, st)], f'rollback of {cell} {st}')
                 with K.CsvAppender(out, cols) as w:
                     for o in rows:
-                        if o['retired_to']:
-                            b, m, t = K.quarantine_move(o['path'], o['retired_to'], 'md5', what='rollback occupant')
-                            o['retired_md5'] = m
-                        s0 = os.stat(o['dest'])
-                        if os.path.lexists(o['path']):
-                            raise Refusal(f"G15: {o['path']} became occupied during the rollback - STOPPED")
-                        os.rename(o['dest'], o['path'])
-                        s1 = os.stat(o['path'])
-                        if (s1.st_ino, s1.st_size) != (s0.st_ino, s0.st_size):
-                            os.rename(o['path'], o['dest'])
-                            raise Refusal(f"G5: {o['path']} not verified after the rename; moved back")
+                        try:
+                            if o['retired_to']:
+                                b, m, t = K.quarantine_move(o['path'], o['retired_to'], 'md5', what='rollback occupant')
+                                o['retired_md5'] = m
+                            s0 = os.stat(o['dest'])
+                            if os.path.lexists(o['path']):
+                                raise Refusal(f"G15: {o['path']} became occupied during the rollback - STOPPED")
+                            os.rename(o['dest'], o['path'])
+                            s1 = os.stat(o['path'])
+                            if (s1.st_ino, s1.st_size) != (s0.st_ino, s0.st_size):
+                                os.rename(o['path'], o['dest'])
+                                raise Refusal(f"G5: {o['path']} not verified after the rename; moved back")
+                        except BaseException:
+                            if o['retired_md5']:          # the occupant moved but the restore did not: record that move
+                                w.write(dict(o, action='occupant moved, restore failed'))
+                            raise
                         o['restored_at'] = K.utc()
                         w.write(o)
                 u.add_output(out, 'restore_manifest')

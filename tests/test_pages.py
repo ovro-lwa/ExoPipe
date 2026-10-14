@@ -33,6 +33,8 @@ T = '/tmp/exopipe3_tests_pages'
 OPS = '/lustre/gh/main/exopipe_ops'
 INDEX_COLS = ['source_id', 'band', 'rank', 'review_dir', 'kind', 'date', 'ra', 'dec', 'flux_jy', 'xm_best', 'xm_all',
               'xm_dist_pc', 'xm_sep_arcmin', 'xm_offset_pct', 'xm_p_chance']
+DIRTY = subprocess.run(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no'], stdout=subprocess.PIPE,
+                       universal_newlines=True).stdout.strip() != ''
 
 STUB_BUILDER = r'''#!/usr/bin/env python3
 """STUB of build_i14_pages_std7.py for tests: same argv, env, page plan, panel names, sidecar fingerprint skip, pass-T0 cleanup,
@@ -285,9 +287,14 @@ def test_deep_chain_cli():
     assert rc == 0, o
     b3 = rec(out, 'T1:build:V_wb')
     assert b3['meta']['rendered'] == 1 and b3['meta']['kept_unchanged'] == 2, b3['meta']
-    # --resume with nothing changed: the units are kept
+    # --resume with nothing changed: the units are kept - unless the worktree is dirty (core/record: a record written from a
+    # dirty tree is never resumed; other agents edit the shared worktree during the window)
     rc, o = cli(out, '--stages', 'input,build', '--sets', 'V_wb', '--resume')
-    assert rc == 0 and 'skipped-valid 2' in o, o
+    if DIRTY:
+        assert rc == 0 and 'skipped-valid' not in o, o
+        print('  (worktree dirty: core never resumes a dirty-tree record - checked that nothing was kept)')
+    else:
+        assert rc == 0 and 'skipped-valid 2' in o, o
     # --full: every page renders
     rc, o = cli(out, '--stages', 'build', '--sets', 'V_wb', '--full')
     assert rc == 0, o
@@ -324,6 +331,124 @@ def test_dry_run_and_refusals(out):
     rc, o = cli(out2, '--stages', 'build', '--sets', 'V_wb')
     assert rc == 2 and 'P2' in rec(out2, 'T1:build:V_wb')['reason'], o
     print('PASS dry run writes nothing; P1, protected key, P4, P2 refuse (exit 2)')
+
+
+def test_review_fixes_resume_identity(src_out):
+    """Review fixes 2026-10-13: (1) shared layout - under --resume the build units are kept all together or not at all (one
+    P3S3_PASS_T0 for every set rendered; build_i14:978-987 deletes older same-key panels); (2) the build environment
+    (P3_PARENT_DIR) is resume identity; (3) a partial (--cells) record never stands for the full set; (4) a --dry-run with
+    --from-run plans from the source run (no false P6 / P4)."""
+    from exopipe.phase3.lib.pages import tier_deep as TD, common as CM
+    out = os.path.join(T, 'out_resume')
+    U = os.path.join(out, 'Run_T1')
+    make_run(U)
+    rc, o = cli(out, '--stages', 'input,build', '--sets', 'V_wb,V_fwb')
+    assert rc == 0, o
+    assert rec(out, 'T1:build:V_wb')['meta']['build_env']['P3_PARENT_DIR'] == os.path.join(T, 'parents')
+    # the decision logic in process (the core part of resume - record done, inputs, code, config, outputs - is stubbed, so
+    # the test does not depend on a clean worktree): a stub context of the CLI run above
+    c = TD.Ctx()
+    c.U, c.label, c.sets, c.layout, c.full, c.only, c.cells = U, 'T1', ['V_wb', 'V_fwb'], 'shared', False, None, None
+    c.t0, c.parent, c.roots_map, c.coadd_root = int(time.time()), os.path.join(T, 'parents'), CM.CFG().pages.MASTER_ROOTS_MAP, None
+
+    class _Run:
+        resume, fresh, out_root = True, False, out
+    keep_core = {'T1:build:V_wb', 'T1:build:V_fwb'}
+    real = CM.resume_skip
+    CM.resume_skip = lambda run, name, enabled=None: ((True, 'core ok') if (run.resume if enabled is None else enabled)
+                                                      and name in keep_core else (False, 'core says no'))
+    try:
+        # nothing changed: both sets kept, no withholding
+        TD.shared_resume_guard(c, _Run())
+        assert c.build_resume is None and TD.build_resume(c, _Run(), 'V_wb')[0] and TD.build_resume(c, _Run(), 'V_fwb')[0]
+        # (1) V_fwb must render (its core resume fails) -> resume withheld for every build unit, V_wb rebuilt too
+        keep_core.discard('T1:build:V_fwb')
+        TD.shared_resume_guard(c, _Run())
+        assert c.build_resume is False and 'V_fwb must render' in c.resume_withheld, c.resume_withheld
+        assert not TD.build_resume(c, _Run(), 'V_wb')[0]
+        # ... but not in the per-set layout (no shared directories)
+        c.layout = 'per-set'
+        TD.shared_resume_guard(c, _Run())
+        assert c.build_resume is None and TD.build_resume(c, _Run(), 'V_wb')[0]
+        c.layout = 'shared'
+        # a set that would not render (no pages-input row: NO-INPUT) does not withhold the others
+        pin = f'{U}/source_catalogs/pages_input_V_fwb.csv'
+        os.rename(pin, pin + '.x')
+        TD.shared_resume_guard(c, _Run())
+        os.rename(pin + '.x', pin)
+        assert c.build_resume is None, c.resume_withheld
+        keep_core.add('T1:build:V_fwb')
+        # (2) a new parent snapshot (P3_PARENT_DIR) is not resumed
+        c.build_resume = None
+        c.parent = os.path.join(T, 'parents2')
+        ok, why = TD.build_resume(c, _Run(), 'V_wb')
+        assert not ok and 'environment' in why, why
+        c.parent = os.path.join(T, 'parents')
+        # --full and partial runs never resume
+        c.full = True
+        assert not TD.build_resume(c, _Run(), 'V_wb')[0]
+        c.full = False
+    finally:
+        CM.resume_skip = real
+    # (3) a partial re-render (--cells) record does not stand for the full set
+    rc, o = cli(out, '--stages', 'build', '--sets', 'V_wb', '--cells', '05h_Full')
+    assert rc == 0 and rec(out, 'T1:build:V_wb')['meta']['partial'] is True, o
+    CM.resume_skip = lambda run, name, enabled=None: (True, 'core ok')
+    try:
+        ok, why = TD.build_resume(c, _Run(), 'V_wb')
+        assert not ok and 'partial' in why, why
+    finally:
+        CM.resume_skip = real
+    # (4) dry run with --from-run: planned from the source run, no false refusal, nothing written
+    out4 = os.path.join(T, 'out_dry_from')
+    rc, o = cli(out4, '--dry-run', '--from-run', os.path.join(src_out, 'Run_T1'), '--sets', 'V_wb')
+    assert rc == 0 and 'inputs planned from the --from-run source' in o and 'WOULD REFUSE' not in o, o
+    assert not os.path.exists(out4), 'dry run wrote under --out'
+    print('PASS review fixes: shared-layout resume all-or-nothing, build env + partial records not resumed, dry run '
+          'from --from-run')
+
+
+def test_review_fixes_sublst_gates():
+    """Review fixes 2026-10-13: P16 frozen-tree manifest parsed as `sha256sum -c` (no properly formatted line refuses; the
+    binary '*' marker verifies; a changed file refuses); P17 place target from the site REVIEW_HOST only."""
+    import hashlib
+    from exopipe.phase3.lib.pages import tier_sublst as TS
+    tree = os.path.join(T, 'frz', '14h_X')
+    for d in ('exopipe_ops', 'clv15'):
+        os.makedirs(os.path.join(tree, d))
+    f = os.path.join(tree, 'exopipe_ops', 'a.py')
+    open(f, 'w').write('x = 1\n')
+    open(os.path.join(tree, 'FROZEN.ok'), 'w').write('ok\n')
+    roots = {'ops': os.path.join(tree, 'exopipe_ops'), 'clv15': os.path.join(tree, 'clv15')}
+    man = os.path.join(tree, 'MANIFEST.sha256')
+    h = hashlib.sha256(b'x = 1\n').hexdigest()
+    for text, ok in (('', False), ('not a checksum line\n', False), (f'{h}  exopipe_ops/a.py\n', True),
+                     (f'{h} *exopipe_ops/a.py\n', True), (f'{"0" * 64}  exopipe_ops/a.py\n', False)):
+        open(man, 'w').write(text)
+        t, why = TS.frozen_tree(roots)
+        assert bool(t) == ok, (text, t, why)
+    from exopipe.phase3.config import CFG
+
+    class _C:
+        place_target = None
+    had = 'REVIEW_HOST' in vars(CFG.site)
+    old = getattr(CFG.site, 'REVIEW_HOST', None)
+    try:
+        if had:
+            delattr(CFG.site, 'REVIEW_HOST')
+        tgt, why = TS.place_target(_C(), '/x/Run_SLST14B')
+        assert tgt is None and 'REVIEW_HOST' in why, (tgt, why)
+        CFG.site.REVIEW_HOST = 'reviewhost'
+        tgt, why = TS.place_target(_C(), '/x/Run_SLST14B')
+        assert tgt == 'reviewhost:/data07/gh/phase3/transients/Run_SLST14B/', tgt
+    finally:
+        if had:
+            CFG.site.REVIEW_HOST = old
+        elif 'REVIEW_HOST' in vars(CFG.site):
+            delattr(CFG.site, 'REVIEW_HOST')
+    assert not hasattr(CFG.pages_sublst, 'REVIEW_HOST'), 'host name back in config'
+    print('PASS review fixes: P16 manifest as sha256sum -c (empty / malformed / changed refuse, * marker verifies); P17 '
+          'target from the site REVIEW_HOST')
 
 
 def test_m14_per_set():
@@ -444,6 +569,8 @@ def main():
         out = test_deep_chain_cli()
         test_fork_rows_equal_real_script()
         test_dry_run_and_refusals(out)
+        test_review_fixes_resume_identity(out)
+        test_review_fixes_sublst_gates()
         test_m14_per_set()
         test_mirror_drift()
         test_negative_content_tests()

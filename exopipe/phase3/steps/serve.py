@@ -53,6 +53,9 @@ Failure modes (exit 2 = refused, the gate named in the record; the refused page 
   disk space; G21 snapshot localization; G22 snapshot copy; G23 parity guard (offset, production servers); G24 the server
   refused to start; G25 not the review host; G26 run label required; G28 an earlier stage's record missing or stale;
   the pages merge absent or stale (deep). Exit 3: nothing to do (no page selected, nothing to carry). Exit 1: error.
+  A refused (or errored) run-level stage stops every later stage of the invocation (views/test/carry; build/views/test/
+  swap; gate/copy/localize/gate-copy/carry/test): nothing is copied, swapped in or (re)started after a refusal.
+  --resume is not used: a served page is live state - every selected page is re-served and the verify stage re-tests it.
 Per-hour and intermittent use: serve is in the per-hour chain (runner.CHAINS['epoch'], after pages): the servers load
   their catalogues at start (classify_transients.py:2493-2510), so adding an hour's sources = re-serving the tier's pages
   from the updated catalogues (--epochs is accepted and recorded; the work is the same re-serve). Survey use: after a full

@@ -6,8 +6,8 @@ only names the scripts (resolved under ``core.env.legacy_root('exopipe_ops')``) 
 does not do, each documented where it is used:
   run_shell()   the one bash script serve calls in place (snapshot_localize_tiers.sh): core.legacy.run always puts a
                 Python interpreter in front of its target, so the script runs through bash with the SAME environment rules
-                (P3_* cleared, runner.ENV_DEFAULTS, EXOPIPE3_SITE, the parity sitecustomize on PYTHONPATH so its Python
-                children are guarded)
+                (runner.CHILD_ENV_CLEAR_PREFIXES cleared, runner.ENV_DEFAULTS, EXOPIPE3_SITE, the parity sitecustomize on
+                PYTHONPATH so its Python children are guarded)
   server_env()  the environment of a long-lived server (procs.start): the same rules, without the exit-time fingerprint
                 file (a server never exits normally); its code identity is recorded by the App probe child instead
 The scripts move into lib/serve/ at absorption (MOVE_PLAN 2.11), when the owning chats stop editing them.
@@ -68,10 +68,12 @@ def site_value(name, default=None):
 
 
 def _base_env(extra=None, with_parity=True):
-    """os.environ with inherited P3_* cleared, then ``extra`` (a value None or '' = left unset), runner.ENV_DEFAULTS,
+    """os.environ with every inherited production switch family cleared (runner.CHILD_ENV_CLEAR_PREFIXES: P3_*, P3S*,
+    SUBLST_*, ... - as core.legacy.run), then ``extra`` (a value None or '' = left unset), runner.ENV_DEFAULTS,
     EXOPIPE3_SITE; in a parity run the parity sitecustomize stays first on PYTHONPATH (core.legacy.run's rules)."""
     from exopipe.phase3.config import CFG
-    env = {k: v for k, v in os.environ.items() if not k.startswith('P3_')}
+    clear = tuple(getattr(CFG.runner, 'CHILD_ENV_CLEAR_PREFIXES', ('P3_',)))
+    env = {k: v for k, v in os.environ.items() if not k.startswith(clear)}
     for k, v in (extra or {}).items():
         if v is None or v == '':
             env.pop(k, None)

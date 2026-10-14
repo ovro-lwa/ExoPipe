@@ -90,21 +90,26 @@ def rows_for(key, files, archive_root, listed=None):
 
 
 def universe_filter(args):
-    """keep(lst, date, scope) from --cells (deep cells / patterns), --nights, --exclude-cells; and the LST list (--lsts,
-    or the LSTs of --cells)."""
+    """keep(lst, date, scope) from --cells (deep cells / patterns), --nights, --exclude-cells, --epochs (per-hour items
+    <LST>_<date>: only those (LST, night) pairs); and the LST list (--lsts, or the LSTs of --cells / --epochs)."""
     from exopipe.phase3.core import cells as CC
     cells = set(CC.expand_cells(args.cells)) if getattr(args, 'cells', None) else None
     excl = set(CC.expand_cells(args.exclude_cells)) if getattr(args, 'exclude_cells', None) else set()
     nights = set(CC.expand(args.nights)) if getattr(args, 'nights', None) else None
     lsts = list(CC.expand(args.lsts, universe=CC.LSTS)) if getattr(args, 'lsts', None) else None
+    epochs = {CC.parse_epoch(e) for e in CC.expand_epochs(args.epochs)} if getattr(args, 'epochs', None) else None
     if cells and not lsts:
         lsts = sorted({c.split('_', 1)[0] for c in cells})
+    if epochs is not None:
+        lsts = sorted({l for l, _ in epochs} & set(lsts)) if lsts else sorted({l for l, _ in epochs})
 
     def keep(lst, date, scope):
         c = f'{lst}_{scope}'
-        return ((cells is None or c in cells) and c not in excl and (nights is None or date in nights))
+        return ((cells is None or c in cells) and c not in excl and (nights is None or date in nights)
+                and (epochs is None or (lst, date) in epochs))
     return keep, lsts, {'cells': sorted(cells) if cells else None, 'nights': sorted(nights) if nights else None,
-                        'lsts': lsts, 'exclude_cells': sorted(excl) or None}
+                        'lsts': lsts, 'exclude_cells': sorted(excl) or None,
+                        'epochs': sorted(f'{l}_{d}' for l, d in epochs) if epochs is not None else None}
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -136,6 +141,8 @@ def run_deep(ctx, args, run, unit_fn):
             raise Refusal('G11: the plan re-derived now differs from the approved manifest ' + args.manifest + ': '
                           + '; '.join(diffs[:4]) + ' - a fresh plan must be approved')
         ctx.guard_writes([ctx.archive_root, ctx.manifest_dir('retire_excluded')], 'retire-excluded apply')
+        K.refuse_live_writers(ctx, sorted({(f'{k[0]}_{k[2]}', s) for k in plan for s in ('V', 'I')}),
+                              'retire-excluded apply')
         approved = ruling
     kdir = os.path.join(ctx.manifest_dir('retire_excluded'), ctx.stamp)
     applied = os.path.join(kdir, f'APPLIED_excluded_archive_products_{ctx.stamp}.csv')

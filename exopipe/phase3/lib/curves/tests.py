@@ -20,14 +20,28 @@ its content against the writer, clv15/phase3_snapshot_lightcurves.py (LC), and t
                     table's (abs V_SCALE_TOL) - ledger 2311 (M30). Every V table written before clv15 98595b3 fails here.
   rows        (LC5) kinds master:<code> / target:<sample tag> (/ chain:<rung> only with CHAIN_RUN_DIR); >= 1 master row;
                     master ids M_<LST>_<sb>_<Gaus_id:05d>, unique, each Gaussian in the Master catalogue with the same RA,
-                    DEC, Peak_flux (float32), Isl_rms (float32) and S_Code; reported: duplicate target ids (spec Q5)
-                    (LC:56-87; ledger 1413)
+                    DEC, Peak_flux (float32), Isl_rms (float32) and S_Code; with ctx frame_header (the first frame's
+                    header, which the step passes): the master rows are EXACTLY the catalogue's finite-position Gaussians
+                    inside that frame with the extractor's margin - every parent in the field has a row (regeneration test
+                    T2, exopipe_ops snapshot_lightcurves_regen_test.py:59-76); reported: duplicate target ids (spec Q5)
+                    (LC:65-96, :120-132; ledger 1413)
+  parent_catalogue  MCATSHA (clv15 e0785b7) = sha256 of the Master catalogue of the rows (regeneration test T1, :57-58); a
+                    table without the card passes on its rows alone, unless ctx require_mcatsha (the step: the current
+                    extractor always writes it)
+  same_as_previous  only with ctx previous (the table a --supersede replaces): the frame list (ts, admitted) equals the
+                    previous table's, and FLUX and RMS are bit-identical (NaN-aware) at every row whose (ra, dec) is
+                    bit-identical in it (regeneration tests T3 and T4, :78-99): a re-extraction from the same frames and
+                    flow fields reproduces the published values; a legitimate change needs --waive with Gregg's ruling
   provenance  (LC6) PRODUCT, BUNIT, PBCORR False, PBMODEL 'model beam only', STAMP, NBINS, PBLIB, FLOWTREE, RUNDIR as
                     configured; MASTCAT, CODEVER, EXTRACT present                                    (LC:197-210; ledger 1231)
+  frames also checks FRAMES.admitted against the search's admission table (a ts absent from it is admitted, LC:105-109,
+                    :163) when that table exists (ctx admission; default paths.SNAPSHOT_FLEET_OUT/<cell>/admission_<sb>.csv;
+                    regeneration test T3 without an old table, :103-107)
 
-Context keys (all optional): naxis=(NAXIS1, NAXIS2) of the frames; sibling_i=path of the Stokes I table (default: the _I_
-file beside a _V_ file); master_catalog=path (default from curves.MASTER_CATALOG_DIR); flowtree=path (default
-paths.SNAPSHOT_FLOW_ROOT); chain_rows=bool (default: curves.CHAIN_RUN_DIR set).
+Context keys (all optional): naxis=(NAXIS1, NAXIS2) of the frames; frame_header={card: value} of the first frame;
+sibling_i=path of the Stokes I table (default: the _I_ file beside a _V_ file); master_catalog=path (default from
+curves.MASTER_CATALOG_DIR); flowtree=path (default paths.SNAPSHOT_FLOW_ROOT); chain_rows=bool (default:
+curves.CHAIN_RUN_DIR set); admission=path ('' = not compared); require_mcatsha=bool; previous=path.
 The unit checks of the step (LC7 curves.complete, LC8 curves.no_excluded_products) live in steps/curves.py.
 """
 import datetime
@@ -150,8 +164,15 @@ def structure(path, **ctx):
     return True, f'{nrows}x{nfr}', f'{nrows} rows x {nfr} frames, {nb} PB bins'
 
 
+def _admission_flags(path):
+    """{ts: admitted} of a search admission table as the extractor reads it (LC:105-109)."""
+    import csv
+    with open(path) as fh:
+        return {r['ts']: r.get('admitted', '1') == '1' for r in csv.DictReader(fh)}
+
+
 @content_test(CLS, 'frames')
-def frames(path, **ctx):
+def frames(path, admission=None, **ctx):
     import numpy as np
     t = _load(path)
     C = _C()
@@ -182,6 +203,20 @@ def frames(path, **ctx):
     nad = int(np.sum(f['admitted'].astype(bool)))
     fex = float(np.mean(f['flow_exact'].astype(bool)))
     rep = f'{len(ts)} frames, {nad} admitted, flow_exact fraction {fex:.3f}'
+    if admission is None:
+        from exopipe.phase3.config import CFG
+        tok = _tokens(t)
+        admission = os.path.join(CFG.paths.SNAPSHOT_FLEET_OUT, f"{tok['lst']}_{tok['date']}", f"admission_{tok['sb']}.csv")
+    adm = _admission_flags(admission) if admission and os.path.exists(admission) else {}
+    if adm:                                   # T3 (regen_test.py:103-107): as the extractor reads it, absent = admitted
+        want = [adm.get(x, True) for x in ts]
+        got = [bool(x) for x in f['admitted']]
+        if got != want:
+            bad.append(f'FRAMES.admitted differs from the admission table {admission} in '
+                       f'{sum(1 for a, b in zip(got, want) if a != b)} frames')
+        rep += f'; admitted flags = {os.path.basename(admission)}'
+    else:
+        rep += '; no admission table to compare'
     if bad:
         return False, len(ts), '; '.join(bad) + ' | ' + rep
     return True, len(ts), rep
@@ -211,7 +246,7 @@ def values(path, naxis=None, **ctx):
     m = C.INFIELD_MARGIN_PX
     nout = int(np.sum(~(np.isfinite(px) & np.isfinite(py) & (px >= m) & (py >= m))))
     edge = 'lower edge only (frame size unknown)'
-    if naxis:
+    if naxis and int(naxis[0]) > 0 and int(naxis[1]) > 0:
         nx, ny = int(naxis[0]), int(naxis[1])
         nout += int(np.sum((px >= nx - m) | (py >= ny - m)))
         edge = f'frame {nx}x{ny}'
@@ -319,8 +354,33 @@ def _catalog(path):
     return out
 
 
+def _infield_master_ids(cat, frame_header, lst, sb, margin):
+    """The master row ids the extractor writes for catalogue ``cat`` (``_catalog``) in a frame with ``frame_header``:
+    finite-position Gaussians whose pixel (the header's celestial WCS, origin 0) lies in [margin, N - margin) on both axes
+    (LC:65-81, :120-129; regen_test.py:59-71)."""
+    import warnings
+    import numpy as np
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    h = fits.Header()
+    for k, v in frame_header.items():
+        try:
+            h[k] = v
+        except (ValueError, KeyError, TypeError):
+            pass
+    keys = [k for k, g in cat.items() if np.isfinite(g[0]) and np.isfinite(g[1])]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        w = WCS(h).celestial
+        px, py = w.all_world2pix(np.array([cat[k][0] for k in keys], float), np.array([cat[k][1] for k in keys], float), 0)
+    px, py = np.asarray(px, float), np.asarray(py, float)
+    nx, ny = int(h['NAXIS1']), int(h['NAXIS2'])
+    inf = np.isfinite(px) & np.isfinite(py) & (px >= margin) & (px < nx - margin) & (py >= margin) & (py < ny - margin)
+    return {'M_%s_%s_%05d' % (lst, sb, k) for k, ok in zip(keys, inf) if ok}
+
+
 @content_test(CLS, 'rows')
-def rows(path, master_catalog=None, chain_rows=None, **ctx):
+def rows(path, master_catalog=None, chain_rows=None, frame_header=None, **ctx):
     import numpy as np
     t = _load(path)
     C = _C()
@@ -375,22 +435,36 @@ def rows(path, master_catalog=None, chain_rows=None, **ctx):
             if nmis:
                 bad.append(f'{nmis} master rows not matching their Gaussian in {os.path.basename(catp)} (id, RA, DEC, '
                            f'Peak_flux, Isl_rms, S_Code; first {first})')
+    complete = 'in-field completeness not checked (no first-frame header in the context)'
+    if frame_header and os.path.exists(catp):        # T2: every parent in the field has a row, and only those
+        want = _infield_master_ids(_catalog(catp), frame_header, tok['lst'], tok['sb'], C.INFIELD_MARGIN_PX)
+        got = set(mids)
+        if got != want:
+            miss, extra = sorted(want - got), sorted(got - want)
+            bad.append(f'master rows {len(got)} != the {len(want)} finite Gaussians of {os.path.basename(catp)} inside the '
+                       f'first frame (missing {len(miss)}{" e.g. " + miss[0] if miss else ""}, extra {len(extra)}'
+                       f'{" e.g. " + extra[0] if extra else ""})')
+        complete = f'master rows = the {len(want)} catalogue Gaussians inside the first frame'
     tids = [ids[j] for j, k in enumerate(kinds) if k.startswith('target:')]
     dup_t = len(tids) - len(set(tids))
-    rep = f'{len(mrows)} master rows, {len(tids)} target rows, duplicate target ids (reported): {dup_t}'
+    rep = f'{len(mrows)} master rows, {len(tids)} target rows, duplicate target ids (reported): {dup_t}; {complete}'
     if bad:
         return False, len(mrows), '; '.join(bad) + ' | ' + rep
     return True, len(mrows), rep
 
 
 @content_test(CLS, 'parent_catalogue')
-def parent_catalogue(path, master_catalog=None, **ctx):
+def parent_catalogue(path, master_catalog=None, require_mcatsha=False, **ctx):
     """MCATSHA (clv15 e0785b7, 2026-10-13) = the sha256 of the Master catalogue the rows came from: a table built on other
-    parents fails. A table written before the card existed passes on its rows alone (light_curve.rows checks them)."""
+    parents fails (regeneration test T1). A table written before the card existed passes on its rows alone (light_curve.rows
+    checks them) - unless ``require_mcatsha`` (the step passes it: the extractor it runs always writes the card, and the
+    regeneration test fails a table without it)."""
     import hashlib
     t = _load(path)
     got = _hdr(t, 'MCATSHA')
     if not got:
+        if require_mcatsha:
+            return False, None, 'no MCATSHA card: not written by the current extractor (clv15 e0785b7 stamps it)'
         return True, None, 'no MCATSHA (a table written before clv15 e0785b7); rows checked by light_curve.rows'
     tok = _tokens(t)
     catp = master_catalog or os.path.join(_C().MASTER_CATALOG_DIR, f"master_R075_{tok['lst']}_{tok['sb']}.gaul.csv")
@@ -403,6 +477,42 @@ def parent_catalogue(path, master_catalog=None, **ctx):
     want = h.hexdigest()[:64]
     return got == want, got[:12], (f'MCATSHA {got[:12]} = sha256 of {os.path.basename(catp)}' if got == want else
                                    f'MCATSHA {got[:12]} != sha256 {want[:12]} of {os.path.basename(catp)} (other parents)')
+
+
+@content_test(CLS, 'same_as_previous')
+def same_as_previous(path, previous=None, **ctx):
+    """Only with ``previous`` (the published table a --supersede replaces; the step passes it): T3 the frame list (ts,
+    admitted) equals the previous table's; T4 at every row whose (ra, dec) is bit-identical in the previous table, FLUX and
+    RMS are equal exactly, NaN where NaN (exopipe_ops snapshot_lightcurves_regen_test.py:78-99, the regeneration recipe's
+    install gate: a re-extraction - from the archive or a stage - reproduces the published values)."""
+    import numpy as np
+    from astropy.io import fits
+    if not previous:
+        return True, None, 'no previous table (nothing replaced)'
+    if not os.path.exists(previous):
+        return False, None, f'previous table {previous} absent'
+    with fits.open(path, memmap=False) as h, fits.open(previous, memmap=False) as o:
+        fr, fo = h['FRAMES'].data, o['FRAMES'].data
+        if ([_s(x).strip() for x in fo['ts']] != [_s(x).strip() for x in fr['ts']]
+                or list(fo['admitted'].astype(bool)) != list(fr['admitted'].astype(bool))):
+            return False, None, f'frame list or admission differs from the previous table {os.path.basename(previous)}'
+        so, src = o['SOURCES'].data, h['SOURCES'].data
+        key_old = {(float(a), float(b)): i for i, (a, b) in enumerate(zip(so['ra'], so['dec']))}
+        pairs = [(key_old[(float(a), float(b))], j) for j, (a, b) in enumerate(zip(src['ra'], src['dec']))
+                 if (float(a), float(b)) in key_old]
+        bad = []
+        if pairs:
+            I = np.array([p[0] for p in pairs])
+            J = np.array([p[1] for p in pairs])
+            for ext in ('FLUX', 'RMS'):
+                a, b = o[ext].data[I], h[ext].data[J]
+                fa, fb = np.isfinite(a), np.isfinite(b)
+                if not ((fa == fb).all() and (a[fa] == b[fb]).all()):
+                    bad.append(f'{ext} differs from the previous table at {len(pairs)} identical positions')
+    if bad:
+        return False, len(pairs), '; '.join(bad) + f' ({os.path.basename(previous)})'
+    return True, len(pairs), (f'{len(pairs)} identical-position rows equal to the previous table; frame list and admission '
+                              f'equal')
 
 
 @content_test(CLS, 'provenance')

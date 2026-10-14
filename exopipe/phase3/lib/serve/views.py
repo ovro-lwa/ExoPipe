@@ -63,20 +63,24 @@ def deep_merge_current(U):
         return False, f'no union survivors under {U}/source_catalogs (catalog union not run)'
     if not idx:
         return False, f'no page index under {U}/source_catalogs (pages not built)'
-    nolink, linked = [], 0
+    nolink, linked, merged = [], 0, []
     for p in surv:
         with open(p) as f:
             rd = csv.DictReader(f)
+            rows = list(rd)
+            if not rows:            # header only: the merge leaves it untouched (p3s3_merge_review_dir.py:57 'continue')
+                continue
             if 'review_dir' not in (rd.fieldnames or []):
                 nolink.append(os.path.basename(p))
                 continue
-            linked += sum(1 for r in rd if r.get('review_dir'))
+            merged.append(p)
+            linked += sum(1 for r in rows if r.get('review_dir'))
     if nolink:
         return False, f'{len(nolink)} union files carry no review_dir column (pages merge absent), e.g. {nolink[0]}'
     if not linked:
         return False, 'no union row links a page (pages merge absent)'
     t_idx = max(os.path.getmtime(p) for p in idx)
-    stale = [os.path.basename(p) for p in surv if os.path.getmtime(p) < t_idx]
+    stale = [os.path.basename(p) for p in merged if os.path.getmtime(p) < t_idx]
     if stale:
         newest = max(idx, key=os.path.getmtime)
         return False, (f'{len(stale)} union files are older than the page index {os.path.basename(newest)} (the pages merge '

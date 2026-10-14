@@ -9,9 +9,14 @@
   end2end     the whole step on a synthetic cell: the REAL clv15 extractor runs in place on synthetic staged frames (a test
               seam points discover_frames at a synthetic Phase-1 tree); tables published and tested; V carries the I scale;
               G6 item refusals; --resume skips; re-run conflicts (G12); --supersede moves the old tables
-  negative    each content test fails on a corrupted copy of a synthetic table
-  real        READ-ONLY: content tests on production tables (I passes all; V written before clv15 98595b3 fails only
-              flux_scale), and --dry-run on the real cell 18h_2025-04-11
+  negative    each content test fails on a corrupted copy of a synthetic table, incl. the regeneration gates T1-T4 in the
+              step's context (first-frame completeness, MCATSHA required, admission flags, same_as_previous)
+  archive     curves.FRAME_SOURCE 'archive' (default): the real extractor reads synthetic archive frames (no --stage);
+              --supersede reproduces the published values (same_as_previous); G17 off-grid archive frames refused
+  real        READ-ONLY: production tables on the pre-contract parents fail rows exactly (+ flux_scale for V written before
+              clv15 98595b3); tables on the contract parents (exopipe_ops 3035b47 regeneration) pass everything, also with
+              the step's context against the table they replaced; G17 on the pilot-era cell 01h_2024-12-24; --dry-run on
+              the real cell 18h_2025-04-11
 
 Scratch: /tmp/exopipe3_tests_curves/ (removed at the end). Nothing outside it is written; production trees are only read.
 Needs: EXOPIPE3_SITE (the site file; its LEGACY_CODE_ROOTS name clv15), the production interpreter
@@ -45,6 +50,10 @@ if _root and _clv:
     _SS.PHASE1_ROOT = _root
 """
 REAL_LC = '/lustre/gh/main/exopipe_ops/snapshot_lightcurves'
+# the 2026-10-13 regeneration for the contract parent catalogues (exopipe_ops 3035b47): versioned set before install, and
+# the quarantine the old (pre-contract) tables move to at install - both read only
+REAL_V2 = '/lustre/gh/main/exopipe_ops/snapshot_lightcurves_v2_20261013'
+REAL_QUAR = '/lustre/gh/main/clv15/quarantine_superseded_20261013/snapshot_lightcurves_pre_contractcat'
 CELL = '18h_2030-01-01'
 LST, DATE = '18h', '2030-01-01'
 SB = '36MHz'
@@ -84,9 +93,10 @@ def _wcs_header(ra0=270.0, dec0=40.0):
 
 
 def make_cell(root, subbands=(SB,), staged=(SB,), catalog_for=(SB,), flow_registered_false=(), with_claim=True,
-              nan_target=False):
-    """A synthetic searched cell under ``root``: Phase-1 placeholders, staged frames, search outputs, Master catalogue,
-    samples, flow fields. Returns the dict of roots."""
+              nan_target=False, archive_fits=False):
+    """A synthetic searched cell under ``root``: Phase-1 placeholders (real frames with ``archive_fits``: the archive the
+    extractor reads with curves.FRAME_SOURCE 'archive'), staged frames, search outputs, Master catalogue, samples, flow
+    fields. Returns the dict of roots."""
     import numpy as np
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -143,6 +153,8 @@ def make_cell(root, subbands=(SB,), staged=(SB,), catalog_for=(SB,), flow_regist
                 h = hdr.copy()
                 h['WSCNVIS'] = 0 if (st == 'V' and j == 5) else 1000
                 fits.writeto(os.path.join(sd, name), img, h)
+                if archive_fits:                                  # the archive frame itself (uncompressed: read_frame HDU 0)
+                    fits.writeto(os.path.join(run, name), img, h, overwrite=True)
             if j % 2 == 0:                                            # flow fields for every other instant only
                 off = np.zeros((NX // 8 + 1, NX // 8 + 1, 2), np.float16)
                 np.save(os.path.join(R['flow'], CELL, f'flow_{sb}_{ts}.npy'), off)
@@ -153,10 +165,10 @@ def make_cell(root, subbands=(SB,), staged=(SB,), catalog_for=(SB,), flow_regist
     return R
 
 
-def _sets(R):
+def _sets(R, staged=True):
     return ['--set', f"paths.SNAPSHOT_FLEET_OUT={R['search']}", '--set', f"curves.MASTER_CATALOG_DIR={R['mcat']}",
             '--set', f"paths.CLV15_ROOT={R['samples']}", '--set', f"paths.SNAPSHOT_FLOW_ROOT={R['flow']}",
-            '--set', f"curves.FLEET_CLAIMS_ROOT={R['claims']}", '--set', 'curves.FRAME_SOURCE=staged']   # synthetic staged cells
+            '--set', f"curves.FLEET_CLAIMS_ROOT={R['claims']}"] + (['--set', 'curves.FRAME_SOURCE=staged'] if staged else [])
 
 
 @contextlib.contextmanager
@@ -617,31 +629,188 @@ def test_negative():
     # frame-size bound (ctx naxis): a frame smaller than the rows' pixels fails values
     res = {r['name'].split('.', 1)[1]: r for r in validate.run('light_curve', pI, naxis=(60, 60), **ctx)}
     assert failed(res) == ['values']
+    # ---- the regeneration recipe's gates T1-T4 (exopipe_ops 3035b47 snapshot_lightcurves_regen_test.py) in the step's ctx
+    from exopipe.phase3.lib.curves import workers as W
+    adm = os.path.join(R['search'], CELL, f'admission_{SB}.csv')
+    fa = W.table_facts(pI, 'I', os.path.join(R['stage'], SB), adm, R['samples'], _cfg().curves.SAMPLES)
+    assert fa['naxis'] == (NX, NX) and fa['frame_header']['NAXIS1'] == NX and fa['mixed_grid_frames'] == 0, fa
+    full = dict(ctx, frame_header=fa['frame_header'], require_mcatsha=True, admission=adm)
+
+    def run_ctx(p, **kw):
+        return {r['name'].split('.', 1)[1]: r for r in validate.run('light_curve', p, **dict(full, **kw))}
+    res = run_ctx(pI)
+    assert failed(res) == [] and 'the 7 catalogue Gaussians inside the first frame' in res['rows']['detail'], res['rows']
+    # T2: a first frame on which fewer Gaussians fall inside the margin -> the table has extra master rows
+    res = run_ctx(pI, frame_header=dict(fa['frame_header'], NAXIS1=60, NAXIS2=60))
+    assert failed(res) == ['rows'] and 'extra' in res['rows']['detail'] and 'missing 0' in res['rows']['detail'], res['rows']
+    # T2: a catalogue with one more Gaussian inside the frame -> a parent without its row (and MCATSHA no longer matches: T1)
+    cat2 = os.path.join(root, 'cat_plus_one.gaul.csv')
+    with open(ctx['master_catalog']) as f, open(cat2, 'w') as g:
+        g.write(f.read() + '10, 10, 270.2, 40.3, 15.0, 1.0, S\n')
+    res = run_ctx(pI, master_catalog=cat2)
+    assert failed(res) == ['parent_catalogue', 'rows'] and 'missing 1' in res['rows']['detail'], res['rows']
+    # T1: a table without MCATSHA passes alone (rows decide) and fails where the step requires the card
+    res = corrupt(pI, lambda h: h[0].header.remove('MCATSHA'))
+    assert failed(res) == [] and 'no MCATSHA' in res['parent_catalogue']['detail']
+    nom = os.path.join(bad_dir, os.path.basename(pI))
+    assert failed(run_ctx(nom)) == ['parent_catalogue']
+    # T3: admission flags differing from the search's admission table (frame 3 admitted there now)
+    adm2 = os.path.join(root, 'admission_changed.csv')
+    with open(adm) as f, open(adm2, 'w') as g:
+        g.write(f.read().replace(f',{TS[3]},,1.0,0,0,-20,,0', f',{TS[3]},,1.0,0,0,-20,,1'))
+    res = run_ctx(pI, admission=adm2)
+    assert failed(res) == ['frames'] and 'admission table' in res['frames']['detail'], res['frames']
+    # T3/T4: against the table it replaces - itself passes; a value changed at an identical position fails; a frame flag fails
+    assert failed(run_ctx(pI, previous=pI)) == []
+    prev = os.path.join(root, 'previous_I.fits')
+    with fits.open(pI) as h:
+        h2 = fits.HDUList([x.copy() for x in h])
+    h2['FLUX'].data[0, 1] += 0.001
+    h2.writeto(prev, overwrite=True)
+    res = run_ctx(pI, previous=prev)
+    assert failed(res) == ['same_as_previous'] and 'FLUX differs' in res['same_as_previous']['detail'], res
+    h2['FLUX'].data[0, 1] -= 0.001
+    h2['FRAMES'].data['admitted'][0] = not h2['FRAMES'].data['admitted'][0]
+    h2.writeto(prev, overwrite=True)
+    res = run_ctx(pI, previous=prev)
+    assert failed(res) == ['same_as_previous'] and 'frame list' in res['same_as_previous']['detail'], res
+
+
+@contextlib.contextmanager
+def _parent_archive(phase1, master):
+    """Synthetic archive for the step's OWN process too (archive frames: workers.archive_frames lists them, G17 reads the
+    first frame and the own Master): discover_frames' default root and workers.master_file patched, restored afterwards."""
+    from exopipe.phase3.core import env
+    from exopipe.phase3.lib.curves import workers as W
+    env.legacy()
+    import phase3_snapshot_search as SS
+    old_def, old_mf = SS.discover_frames.__defaults__, W.master_file
+    SS.discover_frames.__defaults__ = (phase1,) + tuple(old_def[1:])
+    W.master_file = lambda lst, sb: master
+    try:
+        yield
+    finally:
+        SS.discover_frames.__defaults__ = old_def
+        W.master_file = old_mf
+
+
+def test_archive():
+    """curves.FRAME_SOURCE 'archive' (default; the regeneration recipe, exopipe_ops 3035b47 / clv15 e0785b7): the REAL
+    extractor reads the archive frames itself (no --stage); the step's context carries the regeneration gates T1-T4; a
+    --supersede re-extraction reproduces the published values (same_as_previous); G17 refuses archive frames off the own
+    Master's grid (the fleet would regrid them)."""
+    import numpy as np
+    from astropy.io import fits
+    root = _fresh('archive')
+    R = make_cell(root, archive_fits=True)
+    master_on = os.path.join(root, 'master_on_grid.fits')       # the own Master on the frames' grid (128 px)
+    fits.writeto(master_on, np.zeros((NX, NX), 'float32'), _wcs_header())
+
+    def argv(out, *extra):
+        return (['curves', '--cells', CELL, '--out', out, '--work', R['work'], '--cores', 'none'] + _sets(R, staged=False)
+                + list(extra))
+    recp = os.path.join(R['out'], '_records', 'curves', f'{CELL}.json')
+    with _step_env(R), _parent_archive(R['phase1'], master_on):
+        rc, out, err = _cli(argv(R['out']))
+    rec = json.load(open(recp))
+    assert rc == 0 and rec['status'] == 'done', (rc, rec['reason'], err[-2000:])
+    assert rec['meta']['frame_source'] == 'archive' and rec['meta']['stage_root'] is None, rec['meta']
+    assert all('--stage' not in c['argv'] for c in rec['meta']['legacy_calls']), rec['meta']['legacy_calls']
+    names = {t['name'] for t in rec['tests']}
+    assert {'light_curve.parent_catalogue', 'light_curve.same_as_previous'} <= names, names
+    rows = [t for t in rec['tests'] if t['name'] == 'light_curve.rows']
+    assert rows and all('catalogue Gaussians inside the first frame' in t['detail'] for t in rows), rows
+    o = rec['outputs'][0]['ctx']
+    assert o['require_mcatsha'] and o['frame_header']['NAXIS1'] == NX and o['admission'].endswith(f'admission_{SB}.csv'), o
+    # --supersede: the re-extraction from the same frames and flow fields reproduces the published values (T3/T4)
+    time.sleep(1.1)
+    with _step_env(R), _parent_archive(R['phase1'], master_on):
+        rc, out, err = _cli(argv(R['out'], '--supersede', 'regen1'))
+    rec = json.load(open(recp))
+    assert rc == 0 and rec['status'] == 'done', (rc, rec['reason'])
+    sap = [t for t in rec['tests'] if t['name'] == 'light_curve.same_as_previous']
+    assert len(sap) == 2 and all(t['passed'] and 'identical-position rows equal' in t['detail'] for t in sap), sap
+    assert all(o['ctx']['previous'].startswith(os.path.join(R['out'], '_superseded', 'regen1')) for o in rec['outputs'])
+    # G17: the own Master on another grid (the fleet regrids the archive frames onto it) -> both pairs refused before
+    # extraction; every planned pair refused = the unit is refused
+    master_off = os.path.join(root, 'master_off_grid.fits')
+    h = _wcs_header()
+    h['NAXIS1'] = h['NAXIS2'] = 2 * NX
+    fits.writeto(master_off, np.zeros((2 * NX, 2 * NX), 'float32'), h)
+    out2 = os.path.join(root, 'out2')
+    with _step_env(R), _parent_archive(R['phase1'], master_off):
+        rc, out, err = _cli(argv(out2))
+    rec = json.load(open(os.path.join(out2, '_records', 'curves', f'{CELL}.json')))
+    assert rc == 2 and rec['status'] == 'refused', (rc, rec['status'], rec['reason'])
+    assert sorted(r['gate'] for r in rec['refused_items']) == ['G17', 'G17'] and not rec['meta'].get('legacy_calls'), rec
+    with _step_env(R), _parent_archive(R['phase1'], master_off):          # the dry-run shows it
+        rc, out, err = _cli(argv(out2, '--dry-run'))
+    assert rc == 2 and f'{SB} pairs refused - G17' in out, (rc, out[-1500:])
+    with _step_env(R), _parent_archive(R['phase1'], master_off):          # the fleet recipe (--stage-root): no G17
+        rc, out, err = _cli(argv(out2, '--stage-root', R['stage'], '--dry-run'))
+    assert rc == 0 and 'G17' not in out, (rc, out[-1500:])
+
+
+def _real_table(cell, name, new):
+    """A production table read only: built on the contract parent catalogues (new: MCATSHA present, clv15 e0785b7; the
+    regeneration exopipe_ops 3035b47 installs them in place) or on the pre-contract ones (no MCATSHA: still installed, or
+    moved to the regeneration's quarantine at install). None when absent."""
+    from astropy.io import fits
+    for root in ((REAL_LC, REAL_V2) if new else (REAL_LC, REAL_QUAR)):
+        p = os.path.join(root, cell, name)
+        if os.path.exists(p) and bool(fits.getheader(p).get('MCATSHA')) == new:
+            return p
+    return None
 
 
 def test_real_products():
-    """READ-ONLY: content tests on production tables and --dry-run on the real cell 18h_2025-04-11."""
+    """READ-ONLY: content tests on production tables (pre-contract parents fail rows - and V written before clv15 98595b3
+    fails flux_scale - exactly; contract-parent tables pass everything, also with the step's context: first-frame
+    completeness T2, MCATSHA T1, admission T3, and same_as_previous T3/T4 against the table they replaced - production's
+    regeneration test passed them); G17 on a pilot-era cell; --dry-run on the real cell 18h_2025-04-11."""
     from exopipe.phase3.core import validate
+    from exopipe.phase3.lib.curves import workers as W
     CFG = _cfg()
     cell = '18h_2025-04-11'
     report = []
-    from astropy.io import fits
-    for p, want_fail in ((f'{REAL_LC}/{cell}/{cell}_18MHz_I_lightcurves.fits', []),
-                         (f'{REAL_LC}/{cell}/{cell}_18MHz_V_lightcurves.fits', ['light_curve.flux_scale']),
-                         (f'{REAL_LC}/09h_2024-12-24/09h_2024-12-24_36MHz_I_lightcurves.fits', [])):
-        if not os.path.exists(p):
-            print(f'    real: {p} absent - skipped')
-            continue
-        res = validate.run('light_curve', p)
-        fails = sorted(r['name'] for r in res if not r['passed'])
-        if not fits.getheader(p).get('MCATSHA') and 'light_curve.rows' in fails:
-            # built on the parent catalogues before the one-recipe rebuild (a670970): its master rows no longer match -
-            # correctly failed; LAUNCH-SNAPSHOT-LIGHTCURVES-NEW-PARENTS-20261013 regenerates it
-            fails.remove('light_curve.rows')
-            print(f'    real: {os.path.basename(p)} predates the contract parents (no MCATSHA): rows fail as they should')
-        report.append((os.path.basename(p), fails))
-        assert fails == want_fail, (p, [(r['name'], r['detail']) for r in res if not r['passed']])
+    n_old = n_new = 0
+    for c, sb in (('18h_2025-04-11', '18MHz'), ('09h_2024-12-24', '36MHz'), ('02h_2024-12-28', '18MHz'),
+                  ('02h_2024-12-28', '82MHz')):
+        for st in ('I', 'V'):
+            name = f'{c}_{sb}_{st}_lightcurves.fits'
+            p = _real_table(c, name, new=False)
+            if p:                       # pre-contract parents: rows MUST fail (every catalogue was rebuilt, a670970);
+                n_old += 1              # V written before 98595b3 (M30) also fails flux_scale; nothing else may fail
+                res = validate.run('light_curve', p)
+                fails = sorted(r['name'] for r in res if not r['passed'])
+                want = ['light_curve.rows'] + (['light_curve.flux_scale'] if st == 'V' else [])
+                assert fails == sorted(want), (p, [(r['name'], r['detail']) for r in res if not r['passed']])
+                report.append((f'{name} (pre-contract parents)', fails))
+            q = _real_table(c, name, new=True)
+            if q:                       # contract parents: everything passes, alone and with the step's context
+                n_new += 1
+                res = validate.run('light_curve', q)
+                assert all(r['passed'] for r in res), (q, [(r['name'], r['detail']) for r in res if not r['passed']])
+                fa = W.table_facts(q, st, None, os.path.join(CFG.paths.SNAPSHOT_FLEET_OUT, c, f'admission_{sb}.csv'),
+                                   CFG.paths.CLV15_ROOT, CFG.curves.SAMPLES, cell=c, sb=sb)
+                assert fa['naxis'] and fa['naxis'][0] in (1508, 2358, 3122) and fa['frame_header'], fa   # .fs and .fz
+                assert fa['unstaged_frames'] == 0 and fa['mixed_grid_frames'] == 0, fa
+                ctx = {'naxis': fa['naxis'], 'frame_header': fa['frame_header'], 'require_mcatsha': True,
+                       'admission': os.path.join(CFG.paths.SNAPSHOT_FLEET_OUT, c, f'admission_{sb}.csv')}
+                if p:
+                    ctx['previous'] = p
+                res = {r['name']: r for r in validate.run('light_curve', q, **ctx)}
+                assert all(r['passed'] for r in res.values()), [(r['name'], r['detail']) for r in res.values()
+                                                                 if not r['passed']]
+                assert 'catalogue Gaussians inside the first frame' in res['light_curve.rows']['detail']
+                assert not p or res['light_curve.same_as_previous']['value'] > 0, res['light_curve.same_as_previous']
+                report.append((f'{name} (contract parents)', []))
+    assert n_old and n_new, (n_old, n_new)
     print('    real tables: ' + '; '.join(f'{n}: {"all pass" if not f else "fails " + ",".join(f)}' for n, f in report))
+    # G17: a pilot-era cell's archive frames are 4096 px, its Masters 1508/2358/3122 px - the fleet regrids them in the staging
+    why = W.archive_grid_problem('01h_2024-12-24', '18MHz')
+    assert why and why.startswith('G17') and '4096 px' in why, why
+    assert W.archive_grid_problem(cell, '18MHz') is None
     # --dry-run: the real cell plans 15 subbands x 2 Stokes; the missing stage refuses (exit 2); nothing written
     out = _fresh('dry')
     rc, so, se = _cli(['curves', '--cells', cell, '--stage-root', os.path.join(out, 'nostage'), '--out', out,
@@ -652,15 +821,15 @@ def test_real_products():
     # --dry-run with archive frames (default FRAME_SOURCE): no stage to check, no G4 refusal
     rc, so, se = _cli(['curves', '--cells', cell, '--out', out, '--work', os.path.join(out, 'w'), '--dry-run',
                        '--cores', 'none'])
-    assert rc == 0 and 'frames: the Phase-1 archive' in so and 'REFUSE G4' not in so, (rc, so[-1500:], se[-500:])
+    assert rc == 0 and 'frames: the Phase-1 archive' in so and 'REFUSE G4' not in so and 'G17' not in so, \
+        (rc, so[-1500:], se[-500:])
     assert os.listdir(out) == [], os.listdir(out)
-    # table_facts over the real archive frames (stage None): every frame found, none 'unstaged'
-    from exopipe.phase3.lib.curves import workers as W
-    p = f'{REAL_LC}/{cell}/{cell}_18MHz_I_lightcurves.fits'
-    if os.path.exists(p):
-        fa = W.table_facts(p, 'I', None, os.path.join(CFG.paths.SNAPSHOT_FLEET_OUT, cell, 'admission_18MHz.csv'),
-                           CFG.paths.CLV15_ROOT, CFG.curves.SAMPLES, cell=cell, sb='18MHz')
-        assert fa['unstaged_frames'] == 0 and fa['naxis'] and fa['naxis'][0] > 0, fa
+    # --dry-run of a pilot-era cell with archive frames: every planned subband G17 -> the unit would be refused (exit 2)
+    rc, so, se = _cli(['curves', '--cells', '01h_2024-12-24', '--out', out, '--work', os.path.join(out, 'w'), '--dry-run',
+                       '--cores', 'none'])
+    n_planned = so.count(' planned ')
+    assert rc == 2 and n_planned and so.count('pairs refused - G17') == n_planned, (rc, n_planned, so[-1500:])
+    assert os.listdir(out) == [], os.listdir(out)
 
 
 def test_failures():
@@ -698,7 +867,7 @@ def test_failures():
 
 
 TESTS = [test_items, test_config, test_stages, test_plan, test_publish, test_lock_and_classify, test_end2end,
-         test_failures, test_negative, test_real_products]
+         test_failures, test_negative, test_archive, test_real_products]
 
 
 def main(argv):

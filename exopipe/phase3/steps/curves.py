@@ -23,6 +23,7 @@ Per hour (DESIGN 12.1; chains 'epoch' and 'snapshot-cell' in runner.CHAINS): aft
 `exopipe3 run submit ... -- curves --cells @list --resume`.
 
 Inputs (production paths; shared roots from config.paths, the rest in `exopipe3 config --section curves`):
+  own Masters        masters_snapshot.LINK_ROOT/<LST>_<sb>/coadd_final/I_deep_Taper_R0_<sb>.fits (header only: G17)
   frames             the Phase-1 archive (FRAME_SOURCE archive), or --stage-root DIR / frames' staging: <DIR>/<sb>/
                      decompressed frames as the fleet / `frames --tier snapshot` stage them; the extractor lists them itself
   search outputs     paths.SNAPSHOT_FLEET_OUT/<cell>/admission_<sb>.csv, runinfo_<sb>_<S>_median.json,
@@ -53,15 +54,23 @@ Failure modes (exit 2 = refused, with the gate named; item refusals are recorded
                  paths.PRODUCTION_WRITES is False; site PYTHON['py36'] or the clv15 legacy root missing.
   pair refused   G4 (staged frames only) a frame of the table was not staged (archive copy read); G6 no Master catalogue; G7 no row inside the
                  frame; G8 frames do not share one WCS; G9 no flow field; G10 V without its Stokes I table / V scale
-                 differs from I; G11 no frames of that Stokes; G12 conflict; a content test failed before publishing.
+                 differs from I; G11 no frames of that Stokes; G12 conflict; G17 (archive frames only) the subband's
+                 archive frames are off its own Master's grid - the fleet regrids them in the staging (pilot era,
+                 v9:126-139), so only the fleet recipe (--stage-root) extracts them; a content test failed before
+                 publishing (LC1-LC6 incl. the regeneration recipe's T1-T5, exopipe_ops 3035b47: MCATSHA present and
+                 equal to the catalogue's sha256, Master rows = the catalogue's Gaussians inside the first frame, admitted
+                 flags = the admission table, V scale = I; with --supersede also the replaced table's frame list and its
+                 values at identical positions - light_curve.same_as_previous).
   not planned    (recorded) subbands not searched (no admission table), excluded (G2), flow-unregistered (G3).
   exit 3         no admission table in the cell (G15), or no planned subband. exit 1: an extractor error (log tail kept).
 Fallbacks kept as today until Gregg rules (B-23, B-30, B-58), counted per pair: frames absent from the admission table are
 admitted; no admitted frame -> scale from every frame; a missing sample file adds no rows; zero-visibility frames kept.
 
 Refactor window (DESIGN 11.1; refactor decisions 1-2): clv15/phase3_snapshot_lightcurves.py runs IN PLACE with production's
-arguments (v9:366-370) through core.legacy.run under the site interpreter 'py36'; curves.PROCS subbands at a time, each the
-Stokes I process then the Stokes V process.
+arguments (v9:366-370; without --stage = exopipe_ops snapshot_lightcurves_regen_20261013.sh:35-36) through core.legacy.run
+under the site interpreter 'py36'; curves.PROCS subbands at a time, each the Stokes I process then the Stokes V process (the
+regeneration runs --stokes I,V in one process: its V pass takes the I scale from memory, here from the I table's header
+written just before - the same FLUXSCAL / NREFSCAL, LC:187-200).
 NOT YET: the `stage` stage (staging by this step itself, `--stages stage,extract,publish`) needs the `frames --tier snapshot`
 stage function (spec B7) and refuses until it exists. --workers is ignored (cells run one after another).
 """
@@ -73,7 +82,7 @@ from exopipe.phase3.lib.curves import tests as _content_tests  # noqa: F401  (re
 SUMMARY = 'light-curve products (snapshot: every Master Gaussian and target position in every 10-s frame, per subband and Stokes)'
 TIERS = ('snapshot',)
 SELECTORS = ('tier', 'cells', 'epochs', 'scopes', 'stokes', 'exclude_cells')
-CONFIG = ('curves', 'frames_snapshot', 'paths', 'exclusions', 'instrument', 'runner', 'site')
+CONFIG = ('curves', 'frames_snapshot', 'masters_snapshot', 'paths', 'exclusions', 'instrument', 'runner', 'site')
 WRITES = True
 STAGES = ('stage', 'extract', 'publish')
 PYTHON = 'py36'                 # site interpreter of the in-place extractor (production: v9:44, BF:15; refactor decision 2)
@@ -232,6 +241,22 @@ def _stage(cell, plan, args):
                   f'{cell}` (or the fleet) and pass --stage-root, or drop --stages stage')
 
 
+def _archive_grid(cell, sbs):
+    """{subband: G17 reason} for the subbands whose ARCHIVE frames are off their own Master's grid (lib/curves/workers.
+    archive_grid_problem; the fleet regrids them in the staging, v9:126-139). A subband whose archive cannot be listed is
+    left to the extractor (it raises, and the pair is an error, as production)."""
+    from exopipe.phase3.lib.curves import workers as W
+    out = {}
+    for sb in sbs:
+        try:
+            why = W.archive_grid_problem(cell, sb)
+        except Exception:
+            why = None
+        if why:
+            out[sb] = why
+    return out
+
+
 def _environment(CFG, args, stages):
     """Run-level facts and refusals: interpreter, clv15 root, extractor script, G13 lock, scratch root."""
     from exopipe.phase3.core import env, fitsio, legacy, record
@@ -335,11 +360,13 @@ def run(args, run):
             name = items.unit_name(cell, sbs, stokes)
             pl = P.plan_cell(cell, sbs, stokes, ex, C, CFG.instrument.ALL_SUBBANDS)
             g1 = P.search_done(pl, C) if pl['searched'] else (False, 'G15: no admission table (cell not searched)')
-            issues, notes = {}, []
+            issues, notes, g17 = {}, [], {}
             sroot = (_stage_root(args, cell, E['scratch_root'], len(units))
                      if 'stage' not in stages and not _archive(args) else None)
             if _archive(args):
-                print('   frames: the Phase-1 archive, read by the extractor (curves.FRAME_SOURCE archive; no staging)')
+                g17 = _archive_grid(cell, [sb for sb in pl["planned"] if pl["subbands"][sb]["catalog_exists"]])
+                notes.append('frames: the Phase-1 archive, read by the extractor (curves.FRAME_SOURCE archive; no staging)')
+                notes += [f'{sb} pairs refused - {why}' for sb, why in g17.items()]
             elif 'stage' in stages:
                 notes.append('REFUSE G4/B7: the stage stage needs the frames stage function (not yet)')
             elif not sroot:
@@ -353,7 +380,8 @@ def run(args, run):
                 print('   NO-INPUT: no planned subband')
                 continue
             any_input = True
-            if not g1[0] or issues or notes:
+            if (not g1[0] or issues or any(n.startswith('REFUSE') for n in notes)
+                    or (g17 and all(sb in g17 for sb in pl['planned']))):       # every planned pair G17: unit refused
                 rc = record.EXIT_REFUSED
         return rc if any_input or rc == record.EXIT_REFUSED else record.EXIT_NO_INPUT
 
@@ -413,6 +441,16 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
                 pairs[f'{sb}_{st}'] = {'status': 'refused', 'gate': 'G6', 'reason': why}
         else:
             run_sbs.append(sb)
+    if _archive(args):                                          # G17: archive frames the fleet would have regridded
+        for sb in run_sbs:                                      # the own Masters G17 reads (header): inputs of the unit
+            if os.path.exists(W.master_file(pl['lst'], sb)):
+                u.add_input(W.master_file(pl['lst'], sb))
+        g17 = _archive_grid(cell, run_sbs)
+        for sb, why in g17.items():
+            for st in stokes:
+                u.refuse_item(dst[(sb, st)], why, gate='G17')
+                pairs[f'{sb}_{st}'] = {'status': 'refused', 'gate': 'G17', 'reason': why}
+        run_sbs = [sb for sb in run_sbs if sb not in g17]
     if not run_sbs:
         return
     # ---- stage ------------------------------------------------------------------------------------------------------
@@ -488,13 +526,21 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
                 u.refuse_item(d, why, gate='G4')
                 ent.update(status='refused', gate='G4', reason=why)
                 continue
+            ent['mixed_grid_frames'] = facts['mixed_grid_frames']    # reported (frames whose NAXIS1 != the first's)
             if st == 'V' and 'I' in stokes and sb not in published_i:
                 why = (f'G10: the Stokes I table of this subband was not published ({pairs.get(sb + "_I", {}).get("status")}'
                        f'); V carries its scale and is not published alone')
                 u.refuse_item(d, why, gate='G10')
                 ent.update(status='refused', gate='G10', reason=why)
                 continue
-            ctx = {'naxis': facts['naxis'], 'flowtree': CFG.paths.SNAPSHOT_FLOW_ROOT}
+            # content-test context: the regeneration recipe's gates T1-T5 (exopipe_ops snapshot_lightcurves_regen_test.py)
+            # on every table - MCATSHA required (T1), Master rows = the catalogue's Gaussians in the first frame (T2), admitted
+            # flags = the admission table (T3); with --supersede the replaced table (T3/T4); V scale = I (T5, flux_scale)
+            ctx = {'naxis': facts['naxis'], 'flowtree': CFG.paths.SNAPSHOT_FLOW_ROOT, 'frame_header': facts['frame_header'],
+                   'require_mcatsha': True, 'admission': os.path.join(pl['search_dir'], f'admission_{sb}.csv'),
+                   'master_catalog': pl['subbands'][sb]['catalog']}
+            if args.supersede and os.path.exists(d) and not PUB.same_bytes(r['path'], d):
+                ctx['previous'] = d
             if st == 'V':
                 ctx['sibling_i'] = os.path.join(os.path.dirname(r['path']), P.table_name(cell, sb, 'I'))
             pre = validate.run('light_curve', r['path'], **ctx)
@@ -517,6 +563,9 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
                 ent.update(status='refused', gate='G12', reason=pdetail)
                 continue
             ctx_pub = dict(ctx)
+            ctx_pub.pop('previous', None)
+            if status == 'superseded':                   # the replaced table now lives in the supersede quarantine
+                ctx_pub['previous'] = os.path.join(out, '_superseded', args.supersede, cell, os.path.basename(d))
             if st == 'V':
                 ctx_pub['sibling_i'] = published_i.get(sb)
             u.add_output(d, 'light_curve', **ctx_pub)

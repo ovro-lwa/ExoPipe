@@ -12,7 +12,6 @@ import csv
 import hashlib
 import os
 import re
-import socket
 import time
 
 from exopipe.phase3.core.record import Refusal
@@ -278,13 +277,39 @@ def writer_claim(cell, stokes):
     except OSError:
         return True, '(unreadable owner file)'
     host, _, pid = owner.partition(':')
-    if host == socket.gethostname().split('.')[0] and pid.isdigit():
+    from exopipe.phase3.core import env
+    if host == env.host() and pid.isdigit():
         try:
-            os.kill(int(pid), 0)
+            os.kill(int(pid), 0)                 # signal 0: existence probe of that exact pid, nothing is sent
             return True, owner
-        except OSError:
+        except ProcessLookupError:
             return False, owner + ' (dead)'
+        except PermissionError:                  # the pid exists (another user's process): live
+            return True, owner
     return True, owner
+
+
+def refuse_live_writers(ctx, cells_stokes, what):
+    """G12 on the PRODUCTION archive (the fleet's claims name production cells; a mirror has no concurrent writer): refuse
+    when the search fleet holds a live claim of any (cell, Stokes)."""
+    if not ctx.production_archive:
+        return
+    for cell, st in cells_stokes:
+        live, owner = writer_claim(cell, st)
+        if live:
+            raise Refusal(f'G12: {what}: the search fleet holds a live claim of {cell} {st} ({owner}) - a concurrent writer')
+
+
+def excluded_key(ex, path, root):
+    """(lst, date, scope) when ``path`` (<root>/<LST>/<date>/<run>/<scope>/...) is a file of an EXCLUDED key under
+    core.exclusions (the only reader of data_decisions.csv), else None. Exclusion is absolute (CLAUDE.md 2): no action
+    may put such a file back into the generation Run (sync publish / replace, rollback - gate G20)."""
+    rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root)).split(os.sep)
+    if len(rel) < 5 or rel[0] == '..':
+        return None
+    if ex.is_excluded(rel[0], rel[3], rel[1]):
+        return rel[0], rel[1], rel[3]
+    return None
 
 
 def intermediate(name):

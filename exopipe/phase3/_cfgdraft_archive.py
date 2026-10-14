@@ -175,9 +175,10 @@ class archive_push(_Section):
     # pre-search quarantine: p3s5_quarantine_frames.py:17); the round is --round (archive_quarantine.ROUND_DEFAULT).
     EPOCH_REPLACE_QUARANTINE_PREFIX = 'Run_SEARCH_QUARANTINE_'
     # Product class of an archived per-epoch file, by name tokens, first match wins: (token that must be present, second
-    # token or None, class). The archived copy is content-tested with the producing step's class test.
-    EPOCH_NAME_CLASSES = (('_msub', '_pbcorr', 'search_frame_pbcorr'), ('_msub', None, 'search_frame'),
-                          ('_loo', None, 'loo_master'), ('', None, 'epoch_image'))
+    # token or None, class). The archived copy is content-tested with the producing step's class test. A search frame and
+    # its pbcorr sibling are ONE class, search_frame (lib/frames/tests.py: pbcorr_matches_plain tests the sibling); every
+    # class named here must be registered (review 2026-10-13: 'search_frame_pbcorr' was not -> KeyError on every real hour).
+    EPOCH_NAME_CLASSES = (('_msub', None, 'search_frame'), ('_loo', None, 'loo_master'), ('', None, 'epoch_image'))
     REFUSE_CHANGED_SOURCE = True         # source size/checksum must equal the manifest at transfer; push_mosaic_v2:62-64
     # Files refused from any push (classification of the broken one-off exopipe/tools/phase3_archive_manifest.py:29-31).
     INTERMEDIATE_PATTERN = r'(ep_.*_up2|_flow\.npy$|^work_|^tmp|\.claim$|\.pybdsf\.log$|\.lock$|\.casalog$|^_|\.tmp$|\.partial$|\.part$)'
@@ -190,8 +191,12 @@ class archive_push(_Section):
 class archive_snapshot(_Section):
     """Snapshot-tier archive actions: supersede = ops/snapshot_frametime_ship.sh (run in place); quarantine-rows =
     ops/snapshot_quarantine_wideband_fits.py (run in place)."""
-    PROTECTED_KEYS = ('SHIP_SCRIPT', 'ROW_SCRIPT', 'SHIP_NEW_GLOBS', 'SHIP_OLD_GLOBS', 'ROW_QUARANTINE_MARK', 'ROW_QUARANTINE_BANDS')
+    PROTECTED_KEYS = ('SHIP_SCRIPT', 'ROW_SCRIPT', 'SHIP_NEW_GLOBS', 'SHIP_OLD_GLOBS', 'ROW_QUARANTINE_MARK', 'ROW_QUARANTINE_BANDS',
+                      'SUPERSEDE_PRESHIP_TESTS')
     SHIP_SCRIPT = '{ops}/snapshot_frametime_ship.sh'
+    # MIRROR of the launcher's sequencing (snapshot_frametime_rerun.sh:223-232): the ship runs only when the kept 10-s
+    # inputs are unchanged and content tests A-E of snapshot_frametime_content_test.py passed on the work dir (gate G14).
+    SUPERSEDE_PRESHIP_TESTS = ('A', 'B', 'C', 'D', 'E')
     FRAMETIME_QUARANTINE_ROOT = '/lustre/pipeline/exopipe/phase3/Run_SNAP_FRAMETIME_QUARANTINE_20261007'   # snapshot_frametime_rerun.sh:70
     PHOT_ROOT = '/lustre/pipeline/exopipe/phase3/photometry'       # snapshot_frametime_rerun.sh:69
     # Scope approval of the frame-time re-run (RULING-GREGG-20261008-FRAMETIME-RERUN-REJECTED-ACCEPT-ERROR-UNTIL-MAJOR-REDO,

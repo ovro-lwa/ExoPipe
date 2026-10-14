@@ -168,6 +168,7 @@ def build_stage(run, plan):
             if not res.ok:
                 u.refuse(f'G10 pages index {K}: {res.reason or scripts.last_line(res.tail)}')
         u.add_output(B, 'sublst_cumulative', with_served_tests=False)
+    return u
 
 
 def views_stage(run, plan, state):
@@ -218,15 +219,22 @@ def views_stage(run, plan, state):
             u.add_output(QM, 'served_queue')
             u.add_output(mv['dir'], 'served_view', tier='sublst')
         u.meta['refused_pages'] = dict(state['refused'])
+    return u
 
 
-def carry_swap_stage(run, plan):
-    """Copy the journals into B, swap B in, append the between lines. Returns the journal source run."""
+def carry_swap_stage(run, plan, state):
+    """Copy the journals into B, swap B in, append the between lines. Returns the unit. G11 (validate before the swap,
+    sublst_cumulative.sh:65-74): a page refused on the build by the views or test stage (anything but a multiples page with
+    no multi-integration source, sublst_cumulative.sh:80) refuses the swap - the served product and its servers untouched."""
     S = _CFG().serve
     B = build_dir(plan)
     with run.unit(f'sublst_{plan.run_name}_swap', stage='carry+swap', tier='sublst', parity=plan.parity) as u:
         if not os.path.isdir(B):
             u.refuse(f'no build directory {B}')
+        blocking = {k: why for k, why in state['refused'].items() if not str(why).startswith('NO-INPUT: ')}
+        if blocking:
+            u.refuse('G11 validate before the swap: ' + '; '.join(f'{k}: {why}' for k, why in sorted(blocking.items()))[:800]
+                     + ' - nothing swapped in, the served product and its servers untouched')
         src = plan.U_src if plan.parity else plan.U
         copied = journals.sublst_copy_journals(src, B)
         u.note(f'journals copied from {src}: {len(copied)}')
@@ -247,6 +255,7 @@ def carry_swap_stage(run, plan):
                 os.makedirs(os.path.dirname(j), exist_ok=True)
         if not any(os.path.exists(os.path.join(plan.U, J, 'judgements.jsonl')) for J in S.SUBLST_JOURNALS):
             u.add_output(plan.U, 'sublst_cumulative', with_served_tests=False)
+    return u
 
 
 def run(args, run, plan, stages):
@@ -257,22 +266,28 @@ def run(args, run, plan, stages):
         raise Refusal('sub-LST: carry, swap and start run only together (the journal lines written between the copy and '
                       'the swap are appended at the swap, sublst_cumulative.sh:106-120)')
     with build_lock(plan):
+        # each stage runs only after the previous one ended done (flow.halts; G11: a refused build, views or test leaves
+        # the served product and its four servers untouched - nothing is swapped in, sublst_cumulative.sh:26-74)
         if 'build' in stages:
-            build_stage(run, plan)
+            if flow.halts(build_stage(run, plan), 'build', need_done=True):
+                return
         if 'views' in stages:
-            views_stage(run, plan, state)
+            if flow.halts(views_stage(run, plan, state), 'views', need_done=True):
+                return
         elif 'test' in stages or 'start' in stages:
             rec = flow.require_done(run, f'sublst_{plan.run_name}_views', 'the sub-LST views')
             state['refused'].update((rec.get('meta') or {}).get('refused_pages') or {})
         B = build_dir(plan)
         if 'test' in stages:
-            flow.test_stage(run, plan, state, f'sublst_{plan.run_name}_test', root=B)
+            if flow.halts(flow.test_stage(run, plan, state, f'sublst_{plan.run_name}_test', root=B), 'test'):
+                return
         elif 'start' in stages:
             exp, refused = flow.expected_from_record(run, f'sublst_{plan.run_name}_test', 'start')
             state['expected'].update(exp)
             state['refused'].update(refused)
         if 'start' in stages:
-            carry_swap_stage(run, plan)
+            if flow.halts(carry_swap_stage(run, plan, state), 'carry+swap', need_done=True):
+                return
             flow.start_stage(run, plan, state)
     if 'hub' in stages and not getattr(args, 'no_hub', False):
         flow.hub_stage(run, plan, state, remove=S.HUB_REMOVE_TIERS.get('sublst', ()))

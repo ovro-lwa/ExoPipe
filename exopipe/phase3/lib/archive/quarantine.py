@@ -159,7 +159,7 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
             if K.production_like(p):
                 raise Refusal(f'G2: quarantine apply would write under the production tree {K.production_like(p)} ({p}) '
                               f'and paths.PRODUCTION_WRITES is False (refactor window: plan only, or a mirror --archive-root)')
-    if check_writer:
+    if check_writer and production:              # the fleet's claims name production cells; a mirror has no such writer
         live, owner = K.writer_claim(cell, stokes)
         if live:
             raise Refusal(f'G12: the search fleet holds a live claim of {cell} {stokes} ({owner}) - a concurrent writer')

@@ -242,10 +242,12 @@ def no_excluded_product_left(path, **ctx):
         return False, len(not_excl), f'{len(not_excl)} recorded key(s) no longer excluded, e.g. {not_excl[0]}'
     cells, nights = filt.get('cells'), filt.get('nights')
     excl = set(filt.get('exclude_cells') or [])
+    epochs = {tuple(e.split('_', 1)) for e in filt['epochs']} if filt.get('epochs') is not None else None
 
     def keep(lst, date, scope):
         c = f'{lst}_{scope}'
-        return (cells is None or c in cells) and c not in excl and (nights is None or date in nights)
+        return ((cells is None or c in cells) and c not in excl and (nights is None or date in nights)
+                and (epochs is None or (lst, date) in epochs))
     found = R.scan_excluded(rec['archive_root'], rec['run'], tuple(rec.get('cadences') or ()), ex, lsts=filt.get('lsts'),
                             keep=keep)
     now = {p for v in found.values() for p in v}

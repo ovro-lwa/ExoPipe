@@ -18,6 +18,7 @@ with pages.REVIEW_DIR_MERGE['sublst'].
 import glob
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -49,13 +50,22 @@ def frozen_tree(roots):
         return None, f'ops ({ops}) and clv15 ({clv}) are not one tree - one run never mixes code trees'
     if not (os.path.isfile(os.path.join(tree, 'FROZEN.ok')) and os.path.isfile(os.path.join(tree, 'MANIFEST.sha256'))):
         return None, f'{tree} is not a frozen code tree (no FROZEN.ok / MANIFEST.sha256)'
+    # as `sha256sum -c --quiet --status MANIFEST.sha256` (sublst_code_root.sh:23): a line is '<64 hex>  <path>' (text mode)
+    # or '<64 hex> *<path>' (binary mode); other lines are improperly formatted and skipped (no --strict); every formatted
+    # line must verify, and a manifest with NO properly formatted line refuses (sha256sum -c exits 1 on it)
     n = 0
     with open(os.path.join(tree, 'MANIFEST.sha256')) as f:
         for line in f:
-            parts = line.rstrip('\n').split('  ', 1)
-            if len(parts) != 2:
+            line = line.rstrip('\n')
+            esc = line.startswith('\\')                  # GNU escaping of a name holding '\' or a newline
+            if esc:
+                line = line[1:]
+            want, sep, rel = line[:64], line[64:66], line[66:]
+            if not (re.fullmatch(r'[0-9a-fA-F]{64}', want) and sep in ('  ', ' *') and rel):
                 continue
-            want, rel = parts
+            if esc:
+                rel = rel.replace('\\\\', '\x00').replace('\\n', '\n').replace('\x00', '\\')
+            want = want.lower()
             p = os.path.join(tree, rel)
             try:
                 h = hashlib.sha256(open(p, 'rb').read()).hexdigest()
@@ -64,6 +74,8 @@ def frozen_tree(roots):
             if h != want:
                 return None, f'{tree}/MANIFEST.sha256 does not verify: {rel} changed after the freeze'
             n += 1
+    if not n:
+        return None, f'{tree}/MANIFEST.sha256 has no properly formatted checksum line (sha256sum -c refuses it)'
     return tree, None
 
 
@@ -240,15 +252,28 @@ def stage_index(c, run, done, lst, K):
         done[name] = 'done'
 
 
+def place_target(c, P):
+    """(target, None) or (None, reason): --sublst-place-target, else pages_sublst.PLACE_TARGET on the site file's REVIEW_HOST
+    (sublst_publish_lst.sh:38; host names live only in the site file - README rule 2)."""
+    if c.place_target:
+        return c.place_target, None
+    from exopipe.phase3.config import CFG
+    host = getattr(CFG.site, 'REVIEW_HOST', None)
+    if not host:
+        return None, 'the site file names no REVIEW_HOST (the host the sub-LST pages are placed on); pass --sublst-place-target'
+    return common.CFG().pages_sublst.PLACE_TARGET.format(review_host=host, run=os.path.basename(P)), None
+
+
 def stage_place(c, run, done, lst):
     from exopipe.phase3.config import CFG
     S = common.CFG().pages_sublst
     name = f'{lst}:place'
     P = P_of(c, lst)
     run_name = os.path.basename(P)
-    host = getattr(CFG.site, 'REVIEW_HOST', None) or S.REVIEW_HOST
-    target = c.place_target or S.PLACE_TARGET.format(review_host=host, run=run_name)
+    target, why = place_target(c, P)
     with run.unit(name, tier=TIER, stage='place', lst=lst, target=target) as u:
+        if not target:
+            raise common.Refusal(f'P17 place: {why}')
         for K in c.sets:
             if has_sel(P, K):
                 common.prerequisite(run, done, f'{lst}:index:{K}')
@@ -330,11 +355,16 @@ def dry_run(c, run_):
                 if 'WOULD REFUSE' in l:
                     refuse.append(f'{lst} {st}: P3 mirror drift')
         if 'place' in c.stages:
-            host = S.REVIEW_HOST
-            tgt = c.place_target or S.PLACE_TARGET.format(review_host=host, run=os.path.basename(P))
-            print(f'    place: rsync -a --delete {P}/ {tgt}' + ('  -> WOULD REFUSE (review host = production)' if ':' in tgt.split('/')[0] else ''))
-            if ':' in tgt.split('/')[0]:
-                refuse.append(f'{lst}: P17 place target {tgt} is production')
+            tgt, why = place_target(c, P)
+            if not tgt:
+                print(f'    place: WOULD REFUSE ({why})')
+                refuse.append(f'{lst}: P17 {why}')
+            else:
+                remote = ':' in tgt.split('/')[0]
+                print(f'    place: rsync -a{" --delete" if S.PLACE_DELETE else ""} {P}/ {tgt}'
+                      + ('  -> WOULD REFUSE (review host = production)' if remote else ''))
+                if remote:
+                    refuse.append(f'{lst}: P17 place target {tgt} is production')
     for r in refuse:
         print(f'  WOULD REFUSE: {r}')
     return 2 if refuse else 0

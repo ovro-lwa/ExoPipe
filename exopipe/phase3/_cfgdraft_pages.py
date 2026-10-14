@@ -27,7 +27,9 @@ class pages(_Section):
     """exopipe3 pages - review pages of every tier (B16 [49]; contract steps 43, 49, 81; snapshot SC 5.2): stages, page sets,
     processes, page layout (M14), the review_dir merge (owned here; serve reads), record chain, and the renderer constants
     that live inside the in-place modules (mirror keys)."""
-    PROTECTED_KEYS = ('RUN_DIR', 'QUEUE_NAMES', 'INDEX_NAMES', 'PASS_T0_REQUIRED') + _PAGES_MIRROR
+    # REQUIRE_CATALOG_RECORD is protected (review 2026-10-13): P2 across steps is not implemented in the window (production
+    # catalogues carry no record), so an override to True would be a silent no-op - a key no override may pretend to set
+    PROTECTED_KEYS = ('RUN_DIR', 'QUEUE_NAMES', 'INDEX_NAMES', 'PASS_T0_REQUIRED', 'REQUIRE_CATALOG_RECORD') + _PAGES_MIRROR
     # ---- what runs ------------------------------------------------------------------------------------------------
     # deep: catalog --stages localize writes the localization tables BEFORE pages (crosscheck decision 6, group 6)
     STAGES = {'deep': ('tess', 'input', 'build', 'merge'),                    # p3s3_pass.sh:58-63, 137-195
@@ -141,8 +143,11 @@ class pages_deep(_Section):
     """Deep tier: pages input (port of the p3s3_pass.sh:137-169 heredoc; ops/p3s3_tier_pages_input.py in place for the fork
     sets), the build environment of the production pass, astrometry figures (drawn inside build_i14), TESS coverage
     (ops/tess/tess_coverage.py in place) and the stratified queue (ops/deep_stratified_queue.py in place)."""
+    # COLUMNS, DROP_ROWS_WITHOUT_DATE_OR_LST and FIGURE_TIMEOUT_S describe fixed behaviour of the port / the in-place builder
+    # that no code reads (review 2026-10-13): protected, so an override cannot pretend to change it (B-30 needs code)
     PROTECTED_KEYS = ('PASS_MS', 'TESS_ORBIT_REFRESH_DAYS', 'TESS_ORBIT_URL', 'TESS_INTEGRATION_S', 'STRAT_EL_BINS_DEG',
-                      'STRAT_PARENT_BINS_BEAMS', 'STRAT_PARENT_SNR_MIN')
+                      'STRAT_PARENT_BINS_BEAMS', 'STRAT_PARENT_SNR_MIN', 'COLUMNS', 'DROP_ROWS_WITHOUT_DATE_OR_LST',
+                      'FIGURE_TIMEOUT_S')
     # ---- input (DUP-11: three behaviours kept 1:1 until a parity-tested merge) ----
     SINGLES_SETS = ('V_wb', 'I_wb', 'V_sb', 'I_sb')   # loop order of the heredoc; p3s3_pass.sh:144
     COLUMNS = 46                 # columns of a deep pages_input file (header of Run_P3S5 pages_input_V_wb.csv)
@@ -181,7 +186,8 @@ class pages_deep(_Section):
 class pages_sublst(_Section):
     """Sub-LST page run (ops/sublst_pages_prep.py, p3t_pages_input.py, build_tenmin_pages.py, p3t_pages_index.py in place) and the
     publish wrapper's page part (sublst_publish_lst.sh, sublst_pages_build.sh). Product root of the inputs: CFG.paths.SUBLST_ROOT."""
-    PROTECTED_KEYS = ('SERVED_CATALOG_TAG', 'REQUIRED_FILES', 'RUN_COLUMN')
+    # LOO_MASTER and OLD_CHAIN_FLAG describe sublst_pages_prep.py in place (B-27, E22): protected, no code reads them (review)
+    PROTECTED_KEYS = ('SERVED_CATALOG_TAG', 'REQUIRED_FILES', 'RUN_COLUMN', 'LOO_MASTER', 'OLD_CHAIN_FLAG')
     ARM = 'B'                    # catalogue arm served (cube-based chain, set B); sublst_publish_lst.sh:28, 31
     SEARCH_ROOT = '{root}/search_{arm}'   # SUBLST_SEARCH_ROOT; sublst_publish_lst.sh:31; sublst_pages_build.sh:8
     LOC_REQUIRED = '{root}/compare_{lst}/new_{arm}/catalog/localizations_noveto/localizations.csv'   # refusal P11; sublst_publish_lst.sh:26
@@ -195,9 +201,8 @@ class pages_sublst(_Section):
     WIPE_CANDIDATES = True       # rm -rf <P>/candidates before the shards; sublst_pages_build.sh:9 (no fingerprint skip in this tier)
     FRESH_RUN_DIR = True         # rm -rf <P> before prep; sublst_publish_lst.sh:27
     SHARD_FAILURE = 'record'     # a crashed shard is recorded; the LST is placed when every index passes (sublst_pages_build.sh:16-19; B-30 a = 'refuse')
-    PLACE_TARGET = '{review_host}:/data07/gh/phase3/transients/{run}/'   # rsync -a --delete; sublst_publish_lst.sh:38
-    REVIEW_HOST = 'lwacalim07'   # sublst_publish_lst.sh:38 (a site value; site REVIEW_HOST overrides it when the site file names one)
-    PLACE_DELETE = True          # --delete (stale 19h test pages, 2026-09-30)
+    PLACE_TARGET = '{review_host}:/data07/gh/phase3/transients/{run}/'   # rsync -a --delete; sublst_publish_lst.sh:38 ({review_host} = the site file's REVIEW_HOST; no host name in config, README rule 2)
+    PLACE_DELETE = True         # --delete (stale 19h test pages, 2026-09-30)
     CODE_PINNED = True           # the in-place code must be a verified frozen tree (FROZEN.ok + MANIFEST.sha256; sublst_code_root.sh:15-31)
     RULED = {'SERVED_CATALOG_TAG': 'R-SUBLST-FORCED-SKIP-V110-AND-LEAK-VETO',
              'PLACE_DELETE': 'R-NEW-CHAIN-TAKES-OVER-10MIN-PAGES-CUMULATIVE',

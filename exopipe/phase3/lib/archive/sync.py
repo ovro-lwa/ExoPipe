@@ -170,17 +170,34 @@ def sync_unit(u, ctx, S, att, cell, st, args):
         raise Refusal(f'G8: {e}')
     c = counts(acts)
     ex = _exclusions()
+    u.add_input(ex.path, extra=ex.fingerprint())
     retire_excl = [a for x, a, p in acts if x == 'retire' and _excluded(ex, a, ctx.archive_root)]
+    # G20 (exclusion absolute, CLAUDE.md 2; never waivable): a publish / replace row on an excluded (LST, scope, date)
+    # would put that night's frame back into the generation Run - the attempt searched a night excluded since (an
+    # attempt older than data_decisions.csv is never adopted: FIX-FLEET-ADOPTED-PRE-EXCLUSION-ATTEMPTS-20261012). The
+    # production module plans these rows as any other (p3s5_archive_sync.py:62-68); the step refuses them.
+    readmit = [[x, a] for x, a, p in acts if x in ('publish', 'replace') and _excluded(ex, a, ctx.archive_root)]
+    keep_excl = [a for x, a, p in acts if x == 'keep' and _excluded(ex, a, ctx.archive_root)]
     rec = {'kind': 'plan', 'cell': cell, 'stokes': st, 'attempt': att, 'archive_root': ctx.archive_root, 'run': ctx.gen_run,
-           'actions': [list(x) for x in acts], 'counts': c, 'retire_excluded': retire_excl, 'written_utc': K.utc(),
-           'exclusions': ex.fingerprint()}
+           'actions': [list(x) for x in acts], 'counts': c, 'retire_excluded': retire_excl, 'readmit_excluded': readmit,
+           'keep_excluded': keep_excl, 'written_utc': K.utc(), 'exclusions': ex.fingerprint()}
     u.meta['counts'] = c
     u.note(f'{cell} {st}: ' + ', '.join(f'{k} {v}' for k, v in c.items()) + ('' if ctx.apply else ' (plan)'))
+    if keep_excl:
+        u.note(f'{len(keep_excl)} kept archive frame(s) are of excluded (LST, scope, date) (the attempt predates the '
+               f'exclusion): sync leaves them; `archive retire-excluded` moves them (Gregg\'s go, ledger 2278)')
+    u.check('archive.G20_exclusion_no_readmit', not readmit, len(readmit),
+            (f'{len(readmit)} publish/replace row(s) on excluded (LST, scope, date) - the attempt searched an excluded '
+             f'night; re-search the cell, never sync it: e.g. {readmit[0]}') if readmit else
+            'no publish/replace row on an excluded (LST, scope, date)')
     if not ctx.apply:
         p = os.path.join(ctx.manifest_dir('sync'), f'{cell}_{st}_plan_{ctx.stamp}.json')
         K.write_json(p, rec)
         u.add_output(p, 'archive_sync_record')
         return c
+    if readmit:
+        raise Refusal(f'G20: sync of {cell} {st} would put {len(readmit)} frame(s) of excluded (LST, scope, date) back '
+                      f'into the archive (exclusion absolute), e.g. {readmit[0][1]} - nothing moved')
     # ---- apply (mirror in the window; production after cutover)
     if args.manifest:
         old = K.read_json(args.manifest)
@@ -197,7 +214,13 @@ def sync_unit(u, ctx, S, att, cell, st, args):
         raise Refusal(f'G12: the search fleet holds a live claim of {cell} {st} ({owner})')
     todo = [x for x in acts if x[0] != 'keep']
     if not todo:
+        # production applies only when something is to do (p3s5_archive_sync.py:129): no manifest file is created
         u.note('nothing to do: every archive frame equals its attempt frame')
+        rec.update(kind='closing', applied_actions=rec['actions'], closing_not_keep=[], written_utc=K.utc())
+        p = os.path.join(ctx.manifest_dir('sync'), f'{cell}_{st}_closing_{ctx.stamp}.json')
+        K.write_json(p, rec)
+        u.add_output(p, 'archive_sync_record')
+        return c
     need = sum(os.path.getsize(p) for x, a, p in todo if x in ('replace', 'publish'))
     ok, free = K.free_space_ok(ctx.archive_root, K.sec().FREE_SPACE_FLOOR_GB)
     if not ok:
@@ -256,8 +279,8 @@ def _exclusions():
 
 
 def _excluded(ex, path, archive_root):
-    rel = os.path.relpath(path, archive_root).split(os.sep)    # <LST>/<date>/<run>/<scope>/<S>/<cadence>/<name>
-    return len(rel) >= 4 and ex.is_excluded(rel[0], rel[3], rel[1])
+    """<LST>/<date>/<run>/<scope>/<S>/<cadence>/<name> of an excluded (LST, scope, date) (common.excluded_key)."""
+    return K.excluded_key(ex, path, archive_root) is not None
 
 
 def refused_rows(S, ctx, att, cell, st, checksum=True):
@@ -317,6 +340,7 @@ def retire_refused_unit(u, ctx, S, att, cell, st, args):
         raise Refusal('G11: plan differs from --manifest: ' + '; '.join(diffs[:3]))
     qman = os.path.join(ctx.applied_manifest_dir('frame_quarantine', K.sec().FRAME_QUARANTINE_MANIFEST_DIR), f'{cell}_{st}.csv')
     ctx.guard_writes([ctx.archive_root, qman], f'retire-refused apply of {cell} {st}')
+    K.refuse_live_writers(ctx, [(cell, st)], f'retire-refused of {cell} {st}')
     t0 = K.utc()
     with K.CsvAppender(qman, K.sec().QUARANTINE_COLUMNS) as w:
         for r in rows:

@@ -101,6 +101,7 @@ def gate_stage(run, plan):
             os.makedirs(os.path.dirname(p), exist_ok=True)
             open(p, 'w').write(scripts.last_line(out) + '\n')
             u.add_output(p, 'exclusion_check')
+    return u
 
 
 def copy_stage(run, plan):
@@ -130,6 +131,7 @@ def copy_stage(run, plan):
         if p.returncode != 0:
             u.refuse(f'G22 snapshot copy: rsync rc {p.returncode}: {scripts.last_line(p.stdout.decode("utf-8", "replace"))}')
         u.add_output(DST, 'review_copy', source=plan.source)
+    return u
 
 
 def localize_stage(run, plan):
@@ -145,6 +147,7 @@ def localize_stage(run, plan):
             u.refuse(f'G21 snapshot localization failed (rc {rc}): {scripts.last_line(out)} - serve stopped, servers untouched')
         for T in ('10s', '1min'):
             u.add_output(os.path.join(DST, f'source_catalogs_loc_{T}', 'localizations.csv'), 'csv_table', min_rows=1)
+    return u
 
 
 def gate_copy_stage(run, plan):
@@ -161,12 +164,13 @@ def gate_copy_stage(run, plan):
             u.refuse(f'G17 serve-time exclusion gate REFUSED {plan.run_name} on the review copy: {scan.summary()} - serve '
                      f'stopped, servers untouched (see {DST}/serve_exclusion_refusals.csv)')
         u.add_output(os.path.join(DST, 'serve_exclusion_check.txt'), 'exclusion_check', run=DST)
+    return u
 
 
 def carry_stage(run, plan, args):
     spec = getattr(args, 'carry_from', None) or 'served'
     if spec == 'none':
-        return
+        return None
     DST = plan.U
     with run.unit(f'snapshot_{plan.run_name}_carry', stage='carry', tier='snapshot') as u:
         old = journals.resolve_carry_from(plan, spec)
@@ -184,22 +188,28 @@ def carry_stage(run, plan, args):
                      f'{DST}/judgements/carry_missed.csv')
         u.note(f'carry: {nmiss} missed verdict(s), all FP verdicts - serving; list {DST}/judgements/carry_missed.csv')
         u.add_output(j, 'judgement_journal')
+    return u
 
 
 def run(args, run, plan, stages):
     state = flow.new_state()
-    if 'gate' in stages:
-        gate_stage(run, plan)
-    if 'copy' in stages:
-        copy_stage(run, plan)
-    if 'localize' in stages:
-        localize_stage(run, plan)
-    if 'gate-copy' in stages:
-        gate_copy_stage(run, plan)
-    if 'carry' in stages:
-        carry_stage(run, plan, args)
+    # a refused stage stops the later ones (flow.halts): snapshot_serve.sh exits at a refused gate (:27 exit 5), localization
+    # (:46 exit 4), gate on the copy (:48 exit 5), carry (:38 exit 3; the batch driver's HOLD, snapshot_rechain_batch.sh:406)
+    # - nothing copied, no server replaced. A recorded no-input (the parity gate on a remote source, localization off) does
+    # not stop.
+    if 'gate' in stages and flow.halts(gate_stage(run, plan), 'gate'):
+        return
+    if 'copy' in stages and flow.halts(copy_stage(run, plan), 'copy', need_done=True):
+        return
+    if 'localize' in stages and flow.halts(localize_stage(run, plan), 'localize'):
+        return
+    if 'gate-copy' in stages and flow.halts(gate_copy_stage(run, plan), 'gate-copy', need_done=True):
+        return
+    if 'carry' in stages and flow.halts(carry_stage(run, plan, args), 'carry'):
+        return
     if 'test' in stages:
-        flow.test_stage(run, plan, state, f'snapshot_{plan.run_name}_test', probe=False)
+        if flow.halts(flow.test_stage(run, plan, state, f'snapshot_{plan.run_name}_test', probe=False), 'test'):
+            return
     elif 'start' in stages:
         exp, refused = flow.expected_from_record(run, f'snapshot_{plan.run_name}_test', 'start')
         state['expected'].update(exp)

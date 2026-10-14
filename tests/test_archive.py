@@ -134,6 +134,18 @@ def test_deep(out, root, E, A):
     rc = main_cli(['retire-excluded', '--archive-root', root, '--lsts', '12h', '--out', out, '--dry-run'])
     ok(rc == 0 and not os.path.exists(os.path.join(out, '_records')), 'retire-excluded --dry-run: exit 0, nothing written')
 
+    # ---- per-hour selection (--epochs): only that (LST, night); an action without per-hour items refuses the flag
+    eo = out + '_epochs'
+    rc = main_cli(['retire-excluded', '--archive-root', root, '--epochs', f'12h_{a}', '--out', eo])
+    ok(rc == 0 and rec(eo, 'retire-excluded_deep')['meta']['n_files'] == 0, 'retire-excluded --epochs <admitted hour>: 0 files')
+    rc = main_cli(['retire-excluded', '--archive-root', root, '--epochs', f'12h_{E}', '--out', eo])
+    ok(rc == 0 and rec(eo, 'retire-excluded_deep')['meta']['n_files'] == n_excl,
+       f'retire-excluded --epochs <excluded hour>: the {n_excl} files of that hour only')
+    ok(all(t['passed'] for t in rec(eo, 'retire-excluded_deep')['tests']), 'retirement audit honours --epochs')
+    rc = main_cli(['quarantine', '--archive-root', root, '--epochs', f'12h_{a}', '--out', eo])
+    ok(rc == 1, 'quarantine --epochs: error (not a per-hour selector of that action; never silently ignored)')
+    shutil.rmtree(eo, ignore_errors=True)
+
     # ---- retire-excluded plan
     rc = main_cli(['retire-excluded', '--archive-root', root, '--lsts', '12h', '--out', out])
     ok(rc == 0, 'retire-excluded plan exit 0')
@@ -155,9 +167,13 @@ def test_deep(out, root, E, A):
     rc = main_cli(['retire-excluded', '--lsts', '12h', '--out', out, '--apply', '--apply-ruling', RULING,
                    '--manifest', plan[0]])
     ok(rc == 2 and 'G2' in rec(out, 'retire-excluded_deep_run')['reason'], 'apply on the production archive: G2 (exit 2)')
+    for rp in glob.glob(os.path.join(out, '_records', 'archive', 'retire-excluded_*.json')):   # as if written from a
+        r_ = json.load(open(rp))                                                                 # clean tree (resumable)
+        r_['commit'] = str(r_.get('commit') or '').replace('-dirty', '')
+        json.dump(r_, open(rp, 'w'))
     rc = main_cli(['retire-excluded', '--archive-root', root, '--lsts', '12h', '--out', out, '--apply', '--apply-ruling',
-                   RULING, '--manifest', plan[0]])
-    ok(rc == 0, 'retire-excluded apply on the mirror: exit 0')
+                   RULING, '--manifest', plan[0], '--resume'])
+    ok(rc == 0, 'retire-excluded apply on the mirror (with --resume: the done PLAN records never vouch for the apply): exit 0')
     left = glob.glob(os.path.join(root, '12h', E, RUN, '*', '*', '*', '*.fits'))
     moved = glob.glob(os.path.join(root, 'Run_EXCLUDED_QUARANTINE_20261012', '12h', E, RUN, '*', '*', '*', '*.fits'))
     ok(not left and len(moved) == n_excl, 'every excluded file moved to Run_EXCLUDED_QUARANTINE_20261012')
@@ -201,6 +217,24 @@ def test_deep(out, root, E, A):
                                    frame_name('27MHz', 'V', d) + '.fits')), 'retired frame in the sync quarantine')
     ok(not glob.glob(os.path.join(root, '12h', '*', RUN, '27MHz', 'V', 'deep', '*.part')), 'no .part left')
 
+    # ---- G20: an attempt holding a frame of the EXCLUDED night (its archive copy retired above) would publish it back
+    att2 = os.path.join(BASE, 'collect', 'attempts', '12h_27MHz_V_20261005T000000')
+    fd2 = os.path.join(att2, 'Run_P3S5', 'vresid', '12h_27MHz')
+    write_fits(os.path.join(fd2, f'{a}_V_redo_resid_27MHz.fits'), 1.0, prodname=frame_name('27MHz', 'V', a))
+    write_fits(os.path.join(fd2, f'{E}_V_redo_resid_27MHz.fits'), 1.0, prodname=frame_name('27MHz', 'V', E))
+    s2 = ['--archive-root', root, '--cells', '12h_27MHz', '--stokes', 'V', '--attempt', att2, '--out', out,
+          '--set', EPOCH_CLASSES]
+    rc = main_cli(['sync'] + s2)
+    sr = rec(out, 'sync_12h_27MHz_V')
+    ok(rc == 2 and 'G20' in sr['reason'], f"sync plan with a publish row on an excluded night: refused G20 ({sr['reason'][:80]})")
+    rc = main_cli(['sync', '--apply', '--apply-ruling', RULING] + s2)
+    sr = rec(out, 'sync_12h_27MHz_V')
+    ok(rc == 2 and 'G20' in sr['reason'] and not os.path.exists(archive_frame(root, E, '27MHz', 'V', frame_name('27MHz', 'V', E)))
+       and os.path.exists(archive_frame(root, b, '27MHz', 'V', frame_name('27MHz', 'V', b))),
+       'sync apply refused by G20 before anything moved (excluded frame not published, retire rows not moved)')
+    rc = main_cli(['sync', '--waive', 'archive.G20_exclusion_no_readmit', '--ruling', RULING] + s2)
+    ok(rc == 2 and 'never waivable' in rec(out, 'sync_deep_run')['reason'], 'G20 is never waivable')
+
     # ---- pre-search quarantine (27MHz I): old frames (3 days) before the launch, a new one after
     newf = write_fits(archive_frame(root, c, '27MHz', 'I', frame_name('27MHz', 'I', c)), 1.0, prodname='x')
     launch = str(int(time.time() - 3600))
@@ -225,6 +259,10 @@ def test_deep(out, root, E, A):
        'old frames moved, the frame newer than the launch kept')
     man = os.path.join(out, 'manifests', 'frame_quarantine', '12h_27MHz_I.csv')
     ok(len(list(csv.DictReader(open(man)))) == 3, 'manifest of record: 3 rows (path,dest,bytes,md5,cell,stokes,moved_at)')
+    raw = open(man, 'rb').read()
+    ok(raw.startswith(b','.join(c.encode() for c in CFG.archive.QUARANTINE_COLUMNS) + b'\r\n')
+       and raw.count(b'\r\n') == 4 and raw.count(b'\n') == 4,
+       'manifest lines are CRLF like production (p3s5_quarantine_frames.py csv.DictWriter; frame_quarantine/*.csv)')
 
     # ---- rollback of that quarantine
     since = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 600))
@@ -240,6 +278,19 @@ def test_deep(out, root, E, A):
     rc = main_cli(['rollback'] + rb)
     ok(rc == 2 and 'G15' in rec(out, 'rollback_12h_27MHz_I')['reason'] and 'occupied' in rec(out, 'rollback_12h_27MHz_I')['reason'],
        'second rollback plan: originals occupied -> G15 refused, nothing moved (the P10f case)')
+    # G20: a quarantined frame of the EXCLUDED night is never rolled back into the generation Run
+    xp = archive_frame(root, E, '27MHz', 'I', frame_name('27MHz', 'I', E))
+    xq = os.path.join(root, 'Run_SEARCH_QUARANTINE_T9', os.path.relpath(xp, root))
+    write_fits(xq, 1.0)
+    from exopipe.phase3.lib.archive import common as K
+    xman = os.path.join(BASE, 'xman', '12h_27MHz_I.csv')
+    K.write_csv(xman, CFG.archive.QUARANTINE_COLUMNS, [dict(path=xp, dest=xq, bytes=os.path.getsize(xq),
+                                                             md5=K.checksum(xq), cell='12h_27MHz', stokes='I',
+                                                             moved_at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))])
+    rc = main_cli(['rollback', '--archive-root', root, '--cells', '12h_27MHz', '--stokes', 'I', '--manifest', xman,
+                   '--since', since, '--out', out])
+    ok(rc == 2 and 'G20' in rec(out, 'rollback_12h_27MHz_I')['reason'] and not os.path.exists(xp),
+       'rollback of a frame of an excluded night: G20 refused, nothing restored')
     return att
 
 
@@ -339,6 +390,18 @@ def test_snapshot(out):
     u = rec(out, f'supersede_{cell}')
     ok(rc == 0 and u['meta']['plan_counts']['replaced_fleet'] == 2 and u['meta']['plan_counts']['superseded_no_successor'] == 1,
        f"supersede plan (ship listing ported): {u['meta'].get('plan_counts')}")
+    # G14 pre-ship: the launcher ships only after the kept 10-s check and content tests A-E passed on the work dir
+    rc = main_cli(['supersede', '--apply'] + sargs)
+    u = rec(out, f'supersede_{cell}')
+    ok(rc == 2 and 'G14' in u['reason'] and open(os.path.join(ship, cell, 'group_I.log')).read().startswith('old'),
+       'supersede apply without passing pre-ship checks: G14 refused, nothing shipped')
+    open(os.path.join(w, 'kept_10s_check.log'), 'w').close()
+    for k in 'ABCDE':
+        open(os.path.join(w, f'test_{k}.log'), 'w').write(f'TEST {k} {cell}: synthetic, 0 failures -> '
+                                                          f'{"FAIL" if k == "C" else "PASS"}\n')
+    rc = main_cli(['supersede', '--apply'] + sargs)
+    ok(rc == 2 and 'content test C did not pass' in rec(out, f'supersede_{cell}')['reason'], 'a FAIL test log refuses (G14)')
+    open(os.path.join(w, 'test_C.log'), 'w').write(f'TEST C {cell}: synthetic, 0 failures -> PASS\n')
     rc = main_cli(['supersede', '--apply'] + sargs)
     u = rec(out, f'supersede_{cell}')
     ok(rc == 0 and u['status'] == 'done' and u['meta']['shipped']['quarantined'] == 3,
@@ -378,8 +441,43 @@ def test_misc(out, root):
     ok(rc == 2, '--waive of a never-waivable test is refused')
     rc = main_cli(['supersede', '--tier', 'deep', '--out', out])
     ok(rc == 1, 'supersede is not a deep action (exit 1)')
-    rc = main_cli(['retire-excluded', '--tier', 'snapshot', '--cells', '21h_2025-08-06', '--out', out, '--apply'])
-    ok(rc == 2, 'retire-excluded --tier snapshot --apply refused (report only)')
+    rc = main_cli(['retire-excluded', '--tier', 'snapshot', '--cells', '21h_2025-08-06', '--out', out, '--apply',
+                   '--archive-root', root])
+    ok(rc == 2 and 'report only' in rec(out, 'retire-excluded_snapshot_run')['reason'],
+       'retire-excluded --tier snapshot --apply refused (report only), not merely by G2')
+    # every class the per-epoch audit assigns is a registered class; a pbcorr sibling is a search_frame
+    from exopipe.phase3.lib.archive.sync import class_of
+    known = set(validate.classes())
+    missing = [c for _, _, c in CFG.archive_push.EPOCH_NAME_CLASSES if c not in known]
+    ok(not missing, f'archive_push.EPOCH_NAME_CLASSES classes are registered (missing: {missing})')
+    ok(class_of('Blue_V_deep_Taper_Robust+0.0_pbcorr_dewarped_aligned_msub_ssub_LST12h_20250506T045557.fits') == 'search_frame'
+       and class_of('18MHz_V_deep_Taper_Robust+0.0_loo-20250806_shflux_mdewarp_dewarped_aligned_coadd_LST21h_20250508-20250906_N014.fits')
+       == 'loo_master', 'class_of: pbcorr sibling -> search_frame, LOO master -> loo_master')
+    # G12 on the production archive: a live claim (this process) refuses, a dead pid does not
+    from exopipe.phase3.core import env
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.archive import common as K
+    cdir = os.path.join(BASE, 'claims')
+    os.makedirs(os.path.join(cdir, 'claims_V', '12h_27MHz'))
+    open(os.path.join(cdir, 'claims_V', '12h_27MHz', 'owner'), 'w').write(f'{env.host()}:{os.getpid()}\n')
+    os.makedirs(os.path.join(cdir, 'claims_I', '12h_27MHz'))
+    open(os.path.join(cdir, 'claims_I', '12h_27MHz', 'owner'), 'w').write(f'{env.host()}:4194303\n')
+
+    class _Ctx:
+        production_archive = True
+    try:
+        CFG.set('archive.WRITER_CLAIM', repr(cdir + '/claims_{stokes}/{cell}/owner'))
+        try:
+            K.refuse_live_writers(_Ctx(), [('12h_27MHz', 'V')], 'test')
+            live_refused = False
+        except Refusal as e:
+            live_refused = 'G12' in str(e)
+        K.refuse_live_writers(_Ctx(), [('12h_27MHz', 'I')], 'test')        # dead pid: no refusal
+        _Ctx.production_archive = False
+        K.refuse_live_writers(_Ctx(), [('12h_27MHz', 'V')], 'test')        # a mirror archive: no fleet claim applies
+    finally:
+        CFG.reset()
+    ok(live_refused, 'G12: a live fleet claim refuses an apply on the production archive; a dead pid / a mirror does not')
 
 
 def test_real():

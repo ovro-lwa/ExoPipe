@@ -67,8 +67,12 @@ Failure modes (exit 2 = refused, the gate named): G1 data_decisions.csv unreadab
          --apply-ruling naming a fix_ledger ID; G11 the plan re-derived now differs from --manifest; G12 a live fleet claim
          (concurrent writer) or a fit store written in the last 10 min; G13 fit-store header; G14 supersede approval marker /
          ship not verified; G15 rollback problems; G16 retirement audit (files left); G17 sync not closed on 'keep'; G18 no
-         generation Run; G19 free space; a never-waivable test named in --waive. Exit 3 = nothing to do (no attempt, no file,
-         no manifest row); exit 1 = error. Nothing is ever deleted (archive.NEVER_DELETE).
+         generation Run; G19 free space; G20 exclusion absolute: a sync publish/replace or a rollback would put a file of an
+         excluded (LST, scope, date) back into the generation Run (never waivable); a never-waivable test named in --waive.
+         G12 (live fleet claim) is checked before every apply that moves files of a production (cell, Stokes): quarantine,
+         sync, retire-refused, retire-excluded, rollback. Exit 3 = nothing to do (no attempt, no file, no manifest row);
+         exit 1 = error (incl. --epochs on an action that has no per-hour items). Nothing is ever deleted
+         (archive.NEVER_DELETE).
 
 Refactor window (DESIGN 11.1): production helpers are called IN PLACE - p3s5_quarantine_frames.py (subprocess), the membership
 precheck (production code in a child), p3s5_archive_sync.plan/same_data (in-process), snapshot_frametime_ship.sh and
@@ -93,6 +97,9 @@ STAGES = {'push': ('manifest', 'transfer', 'audit'), 'sync': ('manifest', 'trans
           'quarantine': ('manifest', 'quarantine'), 'retire-excluded': ('manifest', 'quarantine', 'audit'),
           'retire-refused': ('manifest', 'quarantine', 'audit'), 'supersede': ('manifest', 'transfer', 'quarantine', 'audit'),
           'quarantine-rows': ('manifest', 'quarantine'), 'rollback': ('manifest', 'quarantine', 'audit'), 'audit': ('audit',)}
+
+# Actions that take per-hour --epochs items (DESIGN 12.1); any other action refuses the flag instead of ignoring it.
+EPOCH_ACTIONS = ('push', 'retire-excluded')
 
 # Actions whose apply moves or writes files of the archive tree (--archive-root); G2 is checked on that root before
 # anything else. supersede / quarantine-rows check their own roots (ship, photometry, quarantine; fit stores, QDIR).
@@ -212,18 +219,29 @@ def run(args, run):
         print(f'error: archive {args.action} is not available for --tier {tier} (tier {tier}: '
               f'{", ".join(ACTIONS_BY_TIER[tier])})', file=sys.stderr)
         return record.EXIT_ERROR
+    if getattr(args, 'epochs', None) and args.action not in EPOCH_ACTIONS:
+        print(f'error: --epochs (per-hour items) is not a selector of archive {args.action} (only '
+              f'{", ".join(EPOCH_ACTIONS)}); it would be ignored', file=sys.stderr)
+        return record.EXIT_ERROR
     statuses = []
 
     def unit_fn(name, body, describe=None, **meta):
         if run.resume and not run.fresh and not run.dry_run:
             ok, why = run.resume_check(name, None, None)
+            # a plan and an apply of the same unit share its name: a done PLAN record never vouches for an apply (the
+            # files would not move), nor an apply for other stages - the record's apply flag and stages must match
+            prev = record.load_record(run.out_root, run.step, name) if ok else None
+            if ok and prev is not None and ((prev.get('meta') or {}).get('apply') != bool(args.apply)
+                                            or (prev.get('meta') or {}).get('stages') != list(args._stages)):
+                ok, why = False, (f"record is of another mode (apply {(prev.get('meta') or {}).get('apply')}, stages "
+                                  f"{(prev.get('meta') or {}).get('stages')})")
             if ok:
-                u = run.unit(name, action=args.action, tier=tier, **meta)
+                u = run.unit(name, action=args.action, tier=tier, apply=bool(args.apply), stages=list(args._stages), **meta)
                 u.status, u.reason = 'skipped-valid', why
                 statuses.append(u.status)
                 print(f'skipped   {name}: {why}')
                 return u
-        u = run.unit(name, action=args.action, tier=tier, apply=bool(args.apply), **meta)
+        u = run.unit(name, action=args.action, tier=tier, apply=bool(args.apply), stages=list(args._stages), **meta)
         res, finished = None, False
         with u:
             res = body(u)

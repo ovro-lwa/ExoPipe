@@ -8,6 +8,7 @@ State passed between stages of one invocation (``state`` dict):
 """
 import json
 import os
+import sys
 
 from exopipe.phase3.core import record as recmod
 from exopipe.phase3.core.record import Refusal
@@ -21,6 +22,22 @@ def _S():
 
 def new_state():
     return {'refused': {}, 'expected': {}, 'served': {}}
+
+
+def halts(u, what, need_done=False):
+    """True when the unit ``u`` of an earlier stage of this invocation stops the later stages: it ended refused or error
+    (with need_done: anything but done). A unit's `with` block records a Refusal and swallows it, so without this check
+    a refused gate was followed by the next stage - a sub-LST build swapped in after its views were refused (G11;
+    sublst_cumulative.sh:72-73 exits before the swap), deep pages restarted on the previous serve's views after G2 refused
+    the new ones (p3s3_serve_stokes.sh:29 exits), a snapshot run copied after the exclusion gate refused it
+    (snapshot_serve.sh:27 exit 5). The refused unit gives the run its exit code (2)."""
+    if u is None:
+        return False
+    if u.status in ('refused', 'error') or (need_done and u.status != 'done'):
+        print(f'serve: stage {what} ended {u.status} ({(u.reason or "")[:300]}) - the later stages of this invocation '
+              f'are not run', file=sys.stderr)
+        return True
+    return False
 
 
 def excl_note(u):

@@ -192,14 +192,76 @@ def archive_frames(cell, sb):
 
 
 def _frame_cards(p):
-    """Header cards of one frame: the primary HDU of a staged (funpacked) frame, HDU 1 of an archive tile-compressed one."""
+    """Header cards of one frame: the primary HDU of a staged (funpacked) frame; HDU 1 of an archive tile-compressed one
+    (.fs on the 2024 runs, .fz on the 2025 ones - any frame whose primary HDU has no image), as the extractor's
+    SS.read_frame takes it (clv15 phase3_snapshot_search.py:300-310). (Review 2026-10-13: '.fs' was not handled - every
+    2024 archive frame gave NAXIS 0 and content test LC3 refused every 2024 table read from the archive.)"""
     from exopipe.phase3.core.record import fits_primary_cards
     cards = fits_primary_cards(p)
-    if not int(cards.get('NAXIS', 0) or 0) and p.endswith('.fz'):
+    if not int(cards.get('NAXIS', 0) or 0):
         from astropy.io import fits
         with fits.open(p) as h:
-            cards = dict(h[1].header)
+            if len(h) > 1:
+                cards = dict(h[1].header)
     return cards
+
+
+def _json_header(cards):
+    """The cards of a frame header as JSON values (COMMENT / HISTORY / blank dropped): the first frame's WCS travels in the
+    content-test context (light_curve.rows completeness = the regeneration test T2) and in the run record."""
+    out = {}
+    for k, v in cards.items():
+        if not k or k in ('COMMENT', 'HISTORY') or k in out:
+            continue
+        if isinstance(v, (bool, int, str)) or (isinstance(v, float) and v == v):
+            out[k] = v
+        else:
+            out[k] = str(v)
+    return out
+
+
+def master_file(lst, sb):
+    """The subband's own snapshot Master (frames_snapshot.MASTER_FILE under masters_snapshot.LINK_ROOT; v9:135)."""
+    from exopipe.phase3.config import CFG
+    return CFG.frames_snapshot.MASTER_FILE.format(links=CFG.masters_snapshot.LINK_ROOT, lst=lst, sb=sb)
+
+
+def archive_grid_problem(cell, sb):
+    """Gate G17 (archive frames only, curves.FRAME_SOURCE 'archive'): why the archive frames of (cell, sb) are NOT the
+    frames the fleet recipe extracts from, else None. The fleet regrids a subband in the staging when its first frame has
+    NAXIS1 != frames_snapshot.ON_GRID_NAXIS (1508; an unreadable header counts as 1508) and the subband has its own Master,
+    onto that Master's grid (snapshot_fleet_node_v9.sh:126-139; clv15 phase3_snapshot_regrid.py:23-25 regrids every frame
+    whose NAXIS1 differs from the Master's): the pilot-era cells (4096 px, December 2024 before the 27th). The archive
+    frames of such a subband are on another grid than the flow fields (computed on the regridded frames) and than the
+    staged tables; the regeneration recipe's T4 (exopipe_ops snapshot_lightcurves_regen_test.py:86-98) fails them and
+    nothing is installed - here they are refused before extraction: use the fleet recipe (--stage-root of a regridded
+    stage, or curves.FRAME_SOURCE=staged). The frame v9 tests is the first staged '*-image.fits' by name (`ls | head -1`,
+    v9:128): the archive frame of both Stokes whose name without .fs/.fz sorts first."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core.record import fits_primary_cards
+    lst = cell.split('_')[0]
+    on_grid = int(CFG.frames_snapshot.ON_GRID_NAXIS)
+    fr = archive_frames(cell, sb)
+    paths = [p for st in ('I', 'V') for p in fr.get(st, {}).values()]
+    if not paths:
+        return None                                         # no frame: the extractor's own outcome (G11)
+    first = min(paths, key=lambda p: re.sub(r'\.f[sz]$', '', os.path.basename(p)))
+    try:
+        nax = int(_frame_cards(first).get('NAXIS1') or on_grid)
+    except (OSError, ValueError, TypeError):
+        nax = on_grid                                       # v9:129-130: ${NAX:-1508}
+    if nax == on_grid:
+        return None
+    m = master_file(lst, sb)
+    try:
+        mnax = int(fits_primary_cards(m).get('NAXIS1') or 0) if os.path.exists(m) else None
+    except OSError:
+        mnax = None
+    if mnax and nax != mnax:                                # no own Master: v9 leaves the frames on their grid (REGRID-SKIPPED)
+        return (f'G17: archive frames of {cell} {sb} are {nax} px (first frame {os.path.basename(first)}); the fleet '
+                f'regrids them in the staging onto the own Master ({mnax} px; v9:126-139), so the archive frames are not '
+                f'the extracted frames - use --stage-root (a regridded stage) or curves.FRAME_SOURCE=staged')
+    return None
 
 
 def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=None, sb=None):
@@ -207,8 +269,12 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=N
     frames_absent_from_admission (admitted by default, LC:156), admission_table_missing, scale_from_all_frames (NADMIT 0,
     LC:166), zero_vis_frames_kept (staged frames with WSCNVIS = 0: ledger 1016/2258 not applied by the extractor),
     missing_sample_files (CH:1643-1645), unstaged_frames (frames of the table without a staged file: the extractor read the
-    archive copy; G4), naxis of the first frame. stage_sb None = archive frames (curves.FRAME_SOURCE 'archive'; give cell
-    and sb): every frame is read from the archive by design, unstaged_frames is 0."""
+    archive copy; G4), naxis of the first frame (None when unreadable), frame_header (the first frame's header cards as
+    JSON: the WCS the extractor selected its rows with, LC:118-127 - content test light_curve.rows completeness),
+    mixed_grid_frames (frames whose NAXIS1 differs from the first frame's: reported - where the fleet does not regrid,
+    v9:126-139, the staged frames are the archive frames). stage_sb None = archive
+    frames (curves.FRAME_SOURCE 'archive'; give cell and sb): every frame is read from the archive by design,
+    unstaged_frames is 0."""
     import csv
     from astropy.io import fits
     with fits.open(table, memmap=True) as h:
@@ -219,7 +285,7 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=N
         with open(admission_csv) as f:
             adm = {r['ts'] for r in csv.DictReader(f)}
     staged = staged_frames(stage_sb)[st] if stage_sb else archive_frames(cell, sb)[st]
-    zero, naxis = 0, None
+    zero, naxis, header, mixed = 0, None, None, 0
     for t in ts:
         p = staged.get(t)
         if not p:
@@ -229,15 +295,22 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=N
         except OSError:
             continue
         if naxis is None:
-            naxis = (int(cards.get('NAXIS1', 0)), int(cards.get('NAXIS2', 0)))
+            naxis = (int(cards.get('NAXIS1', 0) or 0), int(cards.get('NAXIS2', 0) or 0))
+            if t == ts[0]:                       # the extractor's first frame (LC:118-127): its WCS selects the rows
+                header = _json_header(cards)
+        elif int(cards.get('NAXIS1', 0) or 0) != naxis[0]:
+            mixed += 1
         nv = cards.get('WSCNVIS', 1)
         try:
             if nv is not None and float(nv) == 0:
                 zero += 1
         except (TypeError, ValueError):
             pass
+    if naxis is not None and (naxis[0] <= 0 or naxis[1] <= 0):
+        naxis = None                             # unknown - never a 0 x 0 frame
     return {'frames_absent_from_admission': len(ts) if adm is None else sum(1 for t in ts if t not in adm),
             'admission_table_missing': adm is None, 'scale_from_all_frames': nadmit == 0,
             'zero_vis_frames_kept': zero,
             'missing_sample_files': [fn for _tag, fn in samples if not os.path.exists(os.path.join(samples_dir, fn))],
-            'unstaged_frames': sum(1 for t in ts if t not in staged), 'naxis': naxis}
+            'unstaged_frames': sum(1 for t in ts if t not in staged), 'naxis': naxis, 'frame_header': header,
+            'mixed_grid_frames': mixed}

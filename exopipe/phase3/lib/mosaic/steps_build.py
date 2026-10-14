@@ -291,7 +291,10 @@ def run_coadd(args, run, jobs, plans, ctx, state):
                         u.refuse(f'{dom}: the engine did not write {name}')
                 for dom, name, cls in planned:
                     os.replace(os.path.join(tmps[(job.name, dom)], name), os.path.join(hp_dir, name))
-                partial = len(P.lsts) < C.mosaic.REQUIRE_N_LSTS
+                # review 2026-10-13: a map with fewer CONTRIBUTING tiles than REQUIRE_N_LSTS (a waived --lsts subset, or
+                # tiles the engine guard skipped under TILE_GUARD_ACTION 'skip-and-record' = today's behaviour) is a
+                # partial build for the coverage content test - else the test turned skip-and-record into a refusal
+                partial = len(contributing) < C.mosaic.REQUIRE_N_LSTS
                 psf_name = SC.coadd_products(job, 'jysr')[1][0]
                 jysr_name = SC.coadd_products(job, 'jysr')[0][0]
                 jyb_name = SC.coadd_products(job, 'jybeam')[0][0]

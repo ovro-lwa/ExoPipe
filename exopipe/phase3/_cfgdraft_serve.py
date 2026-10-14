@@ -170,8 +170,13 @@ class serve(_Section):
                    # sublst_serve.sh:140 (singles); sublst_cumulative.sh:139 (multiples, M22 6b8a23a); ledgers 1983, 1995, 2110
         'snapshot': {'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}', 'P3_XTIER_FRAME': 'dewarped',
                      'P3_XTIER_SUBBAND_STACK_PREFIXES': 'Run_SLST,Run_SNAP', 'NUMPY_MADVISE_HUGEPAGE': '0'},
-                     # snapshot_serve.sh:72; ledger 2030. P3_LOC_COMMON_LINKS=1 joins when the staged bundle installs (ledger 2114).
-                     # The forced pages use the same five (snapshot_forced_serve_20261007.sh:49)
+                     # snapshot_serve.sh:72; ledger 2030. P3_LOC_COMMON_LINKS=1 joins when the staged bundle installs (ledger 2114;
+                     # staged_20261008_pertie_astrometry/snapshot_serve.sh:74, exopipe_ops 3909fd2) - THIS entry only
+        # the snapshot FORCED pages: their own launcher's five (snapshot_forced_serve_20261007.sh:49), kept apart from
+        # 'snapshot' because the staged bundle changes snapshot_serve.sh only (key '<tier>-<family>', plan.server_env_extra)
+        'snapshot-forced': {'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}',
+                            'P3_XTIER_FRAME': 'dewarped', 'P3_XTIER_SUBBAND_STACK_PREFIXES': 'Run_SLST,Run_SNAP',
+                            'NUMPY_MADVISE_HUGEPAGE': '0'},
         'jupiter': {},                      # the live 8800 / 8801 servers carry no P3_* variable
     }
     STOP_TIMEOUT_S = 10.0                   # s, exact-pid SIGTERM then wait; restart_inspection_twin.sh:53-56 (40 x 0.25 s);
@@ -257,15 +262,18 @@ class serve(_Section):
     # and REFUSES only for the gate keys listed here (key = the tier for its review pages, '<tier>-<family>' otherwise, e.g.
     # 'snapshot-forced'); for the others it records the rows on excluded cell-bands as a report (unit notes, dry-run plan). Snapshot: Gregg 2026-10-13 ruling 2 'Fine.' (RULINGS-GREGG-20261013-DECISIONS-1-7-AND-TENMIN-TABLES,
     # ledger 2297; IMPLEMENTED-SNAPSHOT-SERVE-EXCLUSION-GATE-20261013, ledger 2301; f1996ee). Deep / sub-LST: open (spec 12.8;
-    # serve measured 106 deep view rows on 6 excluded cell-bands, sub-LST 0). PROTECTED.
+    # measured 2026-10-13 ~09:4x UTC on the served Run_P3S5 views + queues: 756 of 311,733 rows on 35 excluded cell-bands,
+    # 21h 2025-08-06 the most; sub-LST 0). Production serves deep / sub-LST without a gate: enabling it is Gregg's. PROTECTED.
     EXCLUSION_GATE_TIERS = ('snapshot',)
     HOLD_FP_VERDICTS = ('FP', 'probably-FP', 'lean-FP')   # snapshot_rechain_batch.sh:379 (R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS, ledger 1698)
     HOLD_NOTE_CHARS = 200                   # carry_missed.csv judge_note cut; snapshot_rechain_batch.sh:397
-    # how the HOLD check reads the OLD journal: 'carry' = as the carry reads it (action classify, scope source, a retract
-    # clears; snapshot_carry_judgements.py:57-69) - the R6 reader fix of the spec; 'driver' = the batch driver's heredoc
-    # (snapshot_rechain_batch.sh:381-384: last record per source_id of scope source, any action). Measured: no difference
-    # on today's journals (every record is action classify, scope source).
-    HOLD_JOURNAL_READER = 'carry'
+    # how the HOLD check reads the OLD journal: 'driver' = the batch driver's heredoc, production today
+    # (snapshot_rechain_batch.sh:381-384: last record per source_id of scope source, any action); 'carry' = as the carry
+    # reads it (action classify, scope source, a retract clears; snapshot_carry_judgements.py:57-69) - the inventory's
+    # defect R6 (ops-snapshot-rest.md:879: a retract / skip record can raise a spurious HOLD), NOT ruled: production
+    # behaviour until Gregg rules (review 2026-10-13). Measured: no difference on today's journals (every record is action
+    # classify, scope source).
+    HOLD_JOURNAL_READER = 'driver'
     SNAPSHOT_LOCALIZE = True                # per-tier positions + figures before the servers (snapshot_serve.sh:44-46, ledger 1831)
 
     # ---- snapshot forced photometry pages (port of snapshot_forced_serve_20261007.sh, the 'switch' and 'refresh-siblings'

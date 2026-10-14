@@ -106,10 +106,13 @@ def run_supersede(ctx, args, run, unit_fn):
                 return plan
             if not ctx.apply:
                 p = os.path.join(ctx.manifest_dir('supersede'), f'{cell}_plan_{ctx.stamp}.json')
+                pre = preship_problems(wd)
                 K.write_json(p, {'action': 'supersede', 'cell': cell, 'workdir': wd, 'roots': [ship, phot, quar],
                                  'plan': plan, 'inputs': _fingerprints([os.path.join(wd, 'out', f) for f in plan['new_fleet']]),
-                                 'script': K.expand(_sn().SHIP_SCRIPT), 'written_utc': K.utc()})
+                                 'preship_problems': pre, 'script': K.expand(_sn().SHIP_SCRIPT), 'written_utc': K.utc()})
                 u.add_output(p, 'archive_plan')
+                if pre:
+                    u.note(f'the apply would refuse (G14 pre-ship checks): {"; ".join(pre[:3])}')
                 return plan
             ctx.guard_writes([ship, phot, quar], f'supersede {cell}')
             production = any(K.production_like(r) for r in (ship, phot, quar))
@@ -117,6 +120,13 @@ def run_supersede(ctx, args, run, unit_fn):
             if production and not os.path.exists(marker):
                 raise Refusal(f'G14: no {marker} (Gregg approves the activity preamble first, CLAUDE.md 4b; '
                               f'snapshot_frametime_rerun.sh:80-81)')
+            bad = preship_problems(wd)
+            u.check('archive.G14_preship_content_tests', not bad, len(bad),
+                    '; '.join(bad[:3]) if bad else 'kept 10-s inputs unchanged; content tests ' +
+                    ','.join(_sn().SUPERSEDE_PRESHIP_TESTS) + ' PASS in the work dir')
+            if bad:
+                raise Refusal(f'G14: {cell}: the work dir did not pass the pre-ship checks (snapshot_frametime_rerun.sh:223-'
+                              f'232 ships only after them) - nothing shipped: ' + '; '.join(bad[:3]))
             from exopipe.phase3.core import legacy
             log = os.path.join(ctx.out, 'logs', 'archive', f'supersede_{cell}.log')
             os.makedirs(os.path.dirname(log), exist_ok=True)
@@ -134,6 +144,32 @@ def run_supersede(ctx, args, run, unit_fn):
             return plan
         unit_fn(f'supersede_{lst}_{date}', body, describe=lambda p: ', '.join(f'{k} {len(v)}' for k, v in p.items()
                                                                                  if k.startswith(('replaced', 'super', 'new'))))
+
+
+_TEST_LINE = re.compile(r'^TEST (\S+) .*-> (PASS|FAIL)\s*$', re.M)
+
+
+def preship_problems(wd):
+    """The checks snapshot_frametime_rerun.sh runs on a work dir BEFORE its ship step (:223-232): the kept 10-s inputs
+    unchanged (W/kept_10s_check.log written and empty: `sha256sum -c --quiet` prints nothing on success) and every
+    content test of archive_snapshot.SUPERSEDE_PRESHIP_TESTS passed (W/test_<K>.log holds 'TEST <K> ... -> PASS'; the
+    test exits 0 exactly when it prints PASS, snapshot_frametime_content_test.py:809). [] = ship allowed."""
+    bad = []
+    kept = os.path.join(wd, 'kept_10s_check.log')
+    if not os.path.exists(kept):
+        bad.append(f'no {kept} (kept 10-s inputs never checked)')
+    elif os.path.getsize(kept):
+        bad.append(f'kept 10-s inputs changed (see {kept})')
+    for k in _sn().SUPERSEDE_PRESHIP_TESTS:
+        p = os.path.join(wd, f'test_{k}.log')
+        try:
+            hits = [m for m in _TEST_LINE.finditer(open(p, errors='replace').read()) if m.group(1) == k]
+        except OSError:
+            bad.append(f'no {p} (content test {k} never ran)')
+            continue
+        if not hits or hits[-1].group(2) != 'PASS':
+            bad.append(f'content test {k} did not pass ({p})')
+    return bad
 
 
 def _fingerprints(paths):

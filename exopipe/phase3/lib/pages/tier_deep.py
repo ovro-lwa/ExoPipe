@@ -116,8 +116,69 @@ def build_env(c, K, only_file=None):
     return env
 
 
-def loc_tables(c):
-    return [os.path.join(c.U, t) for t in common.CFG().pages_deep.LOC_TABLES]
+def build_env_key(c, K):
+    """The build environment that identifies a build unit for --resume: build_env minus the per-invocation pass start and
+    the partial-render file (P3_PARENT_DIR, the roots map, the coadd root, the label, sort and queue switches stay)."""
+    return {k: v for k, v in build_env(c, K).items() if k not in ('P3S3_PASS_T0', 'P3_PAGES_ONLY_FILE')}
+
+
+def sample_paths():
+    """The cross-match sample CSVs build_i14 reads: the footer samples (CATS, build_i14:35-36, 723-736) and the distance table
+    (build_i14:471-477, the same ten names as build_tenmin's CATS = pages.XMATCH_SAMPLES['sublst']). Existing files only: a
+    missing file never matches a fingerprint (record.same_fingerprint), and the builder skips an absent sample."""
+    C = common.CFG().pages
+    names = list(dict.fromkeys(tuple(C.XMATCH_SAMPLES['deep']) + tuple(C.XMATCH_SAMPLES['sublst'])))
+    return [p for p in (os.path.join(C.XMATCH_SAMPLE_DIR, f'{n}.csv') for n in names) if os.path.isfile(p)]
+
+
+def build_resume(c, run_, K):
+    """(ok, why): may the build unit of set K be kept under --resume / --epochs? common.resume_skip (record done; recorded
+    inputs, step code, in-place code, config unchanged; outputs pass now) AND what the record's file list cannot show:
+    the same build environment (build_env_key: a new --deep-parent-dir or roots map re-renders, as every production pass
+    does) and a FULL render on both sides (a --cells / --only-pages record never stands for the set; --full never resumes)."""
+    from exopipe.phase3.core import record
+    if c.full or c.only is not None or c.cells:
+        return False, 'partial (--cells / --only-pages) or --full build: never resumed'
+    name = unit_name(c, 'build', K)
+    ok, why = common.resume_skip(run_, name, enabled=getattr(c, 'build_resume', None))
+    if not ok:
+        return ok, why
+    meta = (record.load_record(run_.out_root, 'pages', name) or {}).get('meta') or {}
+    if meta.get('partial'):
+        return False, 'the record is of a partial render (--cells / --only-pages)'
+    if meta.get('build_env') != build_env_key(c, K):
+        return False, 'build environment changed (P3_PARENT_DIR / roots map / coadd root / switches)'
+    return True, why
+
+
+def would_render(c, K):
+    """The build of set K would run build_i14 (not NO-INPUT): its catalogue directory exists and its pages input has a row."""
+    return (os.path.isdir(os.path.join(c.U, f'source_catalogs_{K}'))
+            and common.n_rows(os.path.join(c.U, 'source_catalogs', f'pages_input_{K}.csv')) >= 1)
+
+
+def shared_resume_guard(c, run_):
+    """Shared layout (pages.PANEL_DIR_LAYOUT 'shared', production): every set writes into candidates/I/<page id> and
+    build_i14 deletes each same-(LST, night, band) panel older than P3S3_PASS_T0 (build_i14:978-987), so ONE pass start must
+    cover every set that is rendered: a set kept by --resume while another is rebuilt would lose its shadowed panels and,
+    when the rebuilt set comes EARLIER in the build order, the server would show the rebuilt set's panel where a full
+    production pass shows the later set's (classify_transients.py:595-616, newest wins). So under --resume / --epochs the
+    build units are kept all together or not at all: when any set would render, every selected set is rebuilt
+    (unchanged pages are kept by build_i14's fingerprint skip and touched, as every production pass does)."""
+    c.build_resume, c.resume_withheld = None, ''
+    if c.layout != 'shared' or not run_.resume or run_.fresh:
+        return
+    keep = [K for K in c.sets if build_resume(c, run_, K)[0]]
+    render = [K for K in c.sets if K not in keep and would_render(c, K)]
+    if keep and render:
+        c.build_resume = False
+        c.resume_withheld = (f'--resume withheld for every build unit: {",".join(render)} must render and the shared layout '
+                             f'needs one pass start for every set ({",".join(keep)} would otherwise keep panels older than '
+                             f'P3S3_PASS_T0 that build_i14 deletes; build_i14:978-987)')
+
+
+def loc_tables(c, base=None):
+    return [os.path.join(base or c.U, t) for t in common.CFG().pages_deep.LOC_TABLES]
 
 
 def loc_ndet(c):
@@ -217,13 +278,16 @@ def stage_tess(c, run, done):
         if not D.TESS_ENABLED:
             raise common.NoInput('pages_deep.TESS_ENABLED is False')
         mirror.gate(u, c.roots, TIER, 'tess')
-        for p in (os.path.join(c.U, 'master_catalog.csv'), os.path.join(c.U, 'frame_times.csv')):
+        script = common.legacy_script(c.roots, 'ops', 'tess/tess_coverage.py')
+        # inputs: the detections, their frame times and the cached TESS orbit table beside the script (tess_coverage.py:38;
+        # the script refreshes it when older than 7 days) - a refreshed table changes the coverage, so it is resume identity
+        for p in (os.path.join(c.U, 'master_catalog.csv'), os.path.join(c.U, 'frame_times.csv'),
+                  os.path.join(os.path.dirname(script), 'TESS_orbit_times.csv')):
             if os.path.exists(p):
                 u.add_input(p)
-        script = common.legacy_script(c.roots, 'ops', 'tess/tess_coverage.py')
         if not common.interpreter_or_none('tess'):
-            msg = ("TESS COVERAGE NOT COMPUTED: no site PYTHON['tess'] interpreter on this host (production: "
-                   "/fast/gh/main/envs/tess/bin/python on lwacalim07) - the pages say 'coverage not computed'")
+            msg = ("TESS COVERAGE NOT COMPUTED: the site PYTHON['tess'] interpreter is not on this host (the TESS environment "
+                   "is node-local, p3s3_pass.sh:62) - the pages say 'coverage not computed'")
             if D.TESS_IS_GATE:
                 raise common.Refusal(msg)
             raise common.NoInput(msg)
@@ -278,18 +342,21 @@ def stage_input(c, run, done, K):
 def stage_build(c, run, done, K):
     C, D = common.CFG().pages, common.CFG().pages_deep
     name = unit_name(c, 'build', K)
-    ok, why = common.resume_skip(run, name)
+    ok, why = build_resume(c, run, K)
     if ok:
         common.mark_skipped(run, name, why)
         done[name] = 'resumed'
         return
     pin = os.path.join(c.U, 'source_catalogs', f'pages_input_{K}.csv')
     with run.unit(name, tier=TIER, stage='build', set=K, layout=c.layout, pass_t0=c.t0) as u:
+        if getattr(c, 'resume_withheld', ''):
+            u.note(c.resume_withheld)
         prov = common.prerequisite(run, done, unit_name(c, 'input', K), [pin])
         if prov == 'no-input' or common.n_rows(pin) < 1:
             raise common.NoInput(f'set {K}: no pages-input row (p3s3_pass.sh:178-179)')
         u.meta['input_provenance'] = prov
         u.meta['test_ctx'] = {'roots': c.roots, 'tier': TIER, 'layout': c.layout, 'set': K}
+        u.meta['build_env'] = build_env_key(c, K)          # resume identity beside the recorded files (build_resume)
         miss = [p for p in loc_tables(c) if not (os.path.exists(p) and os.path.getsize(p) > 0)]
         if miss:
             raise common.Refusal(f'P4: localization tables missing {miss} - catalog --stages localize writes them before '
@@ -311,7 +378,8 @@ def stage_build(c, run, done, K):
                 + sorted(glob.glob(os.path.join(c.U, f'source_catalogs_{K}', '*_source_members.csv')))
                 + [p for p in (os.path.join(c.U, 'v_deep_images.csv'), os.path.join(c.U, 'v_deep_ledger.csv'),
                                os.path.join(c.U, f'source_catalogs_{K}', 'E_params.json'), c.roots_map) if os.path.exists(p)]
-                + panels.cell_inputs(c.U, plan.cells()) + panels.master_paths(c.roots_map, plan.cells()))
+                + panels.cell_inputs(c.U, plan.cells()) + panels.master_paths(c.roots_map, plan.cells())
+                + sample_paths())
         common.exclusion_bookkeeping(u, plan.panel_keys())
         for png, cls in ((p, 'review_page') for p in plan.panels):
             u.plan(png, cls)
@@ -479,6 +547,7 @@ def run(args, run_):
                 for K in c.sets:
                     stage_input(c, run_, done, K)
             elif st == 'build':
+                shared_resume_guard(c, run_)           # one pass start for every set rendered (shared layout)
                 for K in c.sets:
                     stage_build(c, run_, done, K)
             elif st == 'merge':
@@ -502,8 +571,12 @@ def dry_run(c, args, run_):
     C, D = common.CFG().pages, common.CFG().pages_deep
     lines, refuse = [], []
     say = lines.append
+    # with --from-run the stagein stage builds the run directory from the source run first: plan from the source (what the
+    # stages would read after the copy), never from the absent / stale target (a false P6 / P4 'WOULD REFUSE')
+    R = os.path.abspath(c.from_run) if (c.from_run and 'stagein' in c.stages) else c.U
     say(f'exopipe3 pages --tier deep --run {c.label}: DRY RUN (nothing written)')
-    say(f'  run directory  {c.U}' + ('' if os.path.isdir(c.U) else '  (absent)'))
+    say(f'  run directory  {c.U}' + ('' if os.path.isdir(c.U) else '  (absent)')
+        + (f'; inputs planned from the --from-run source {R}' if R != c.U else ''))
     say(f'  legacy roots   ' + ', '.join(f'{k}={v}' for k, v in sorted(c.roots.items()))
         + (f'  (overridden: {sorted(common.overridden(c.roots))})' if common.overridden(c.roots) else ''))
     say(f'  stages {",".join(c.stages)}; sets {",".join(c.sets)}; {c.shards} shards per set; layout {c.layout}; merge '
@@ -521,21 +594,21 @@ def dry_run(c, args, run_):
             say(f'    -> {c.U}/tess_coverage.csv [tess_coverage]' + ('' if py else '  (would end NO-INPUT: coverage not computed)'))
             lines.extend(mirror.plan_lines(c.roots, TIER, 'tess'))
         elif st == 'input':
-            mc = os.path.join(c.U, 'master_catalog.csv')
+            mc = os.path.join(R, 'master_catalog.csv')
             if not os.path.exists(mc):
                 refuse.append(f'input: P6 no {mc}')
             for K in c.sets:
-                if K in C.FORK_SETS and not os.path.isdir(os.path.join(c.U, f'source_catalogs_{K}')):
+                if K in C.FORK_SETS and not os.path.isdir(os.path.join(R, f'source_catalogs_{K}')):
                     say(f'    {K}: no source_catalogs_{K}/ -> NO-INPUT')
                     continue
-                kept, dropped = ((PI.fork_rows(c.U, K, D.FORK_PAGES_LABEL, c.label) if K in C.FORK_SETS
-                                  else PI.singles_rows(c.U, K, c.label)) if os.path.exists(mc) else ([], 0))
+                kept, dropped = ((PI.fork_rows(R, K, D.FORK_PAGES_LABEL, c.label) if K in C.FORK_SETS
+                                  else PI.singles_rows(R, K, c.label)) if os.path.exists(mc) else ([], 0))
                 how = 'ops/p3s3_tier_pages_input.py (in place)' if K in C.FORK_SETS else 'port of p3s3_pass.sh:137-169'
-                say(f'    {K}: {len(PI.survivors_files(c.U, K))} survivors files -> {kept and len(kept) or 0} rows '
+                say(f'    {K}: {len(PI.survivors_files(R, K))} survivors files -> {kept and len(kept) or 0} rows '
                     f'({dropped} without date/LST dropped) -> source_catalogs/pages_input_{K}.csv [pages_input]; {how}')
             lines.extend(mirror.plan_lines(c.roots, TIER, 'input'))
         elif st == 'build':
-            miss = [p for p in loc_tables(c) if not os.path.exists(p)]
+            miss = [p for p in loc_tables(c, R) if not os.path.exists(p)]
             say(f'    gate P4 localization tables (catalog --stages localize): ' + ('present' if not miss else f'MISSING {miss}'))
             if miss:
                 refuse.append(f'build: P4 missing {miss}')
@@ -546,13 +619,13 @@ def dry_run(c, args, run_):
             say(f'    roots map {c.roots_map}; env {build_env(c, "V_wb")}')
             lines.extend(mirror.plan_lines(c.roots, TIER, 'build'))
             for K in c.sets:
-                pin = os.path.join(c.U, 'source_catalogs', f'pages_input_{K}.csv')
+                pin = os.path.join(R, 'source_catalogs', f'pages_input_{K}.csv')
                 if not os.path.exists(pin):
                     say(f'    {K}: no pages_input_{K}.csv yet (input stage writes it)')
                     continue
-                pf = panels.Plan(c.U, K, C.PAGE_SORT_KEY, c.layout)
+                pf = panels.Plan(R, K, C.PAGE_SORT_KEY, c.layout)
                 sel = only_ids(c, pf)
-                pl = pf if sel is None else panels.Plan(c.U, K, C.PAGE_SORT_KEY, c.layout, only=sel)
+                pl = pf if sel is None else panels.Plan(R, K, C.PAGE_SORT_KEY, c.layout, only=sel)
                 have = sum(1 for p in pl.panels if os.path.exists(p))
                 rec = _rec_status(run_, unit_name(c, 'input', K))
                 extra = ''
@@ -565,14 +638,17 @@ def dry_run(c, args, run_):
                     f'; P2 input record: {rec}{extra}')
             say(f'    command per shard: build_i14_pages_std7.py source_catalogs/pages_input_<K>.csv {c.U} <shard> {c.shards}')
         elif st == 'merge':
-            idx = glob.glob(os.path.join(c.U, 'source_catalogs', '*_pages_index*.csv'))
-            sv = glob.glob(os.path.join(c.U, 'source_catalogs', '*_sources_survivors.csv'))
+            idx = glob.glob(os.path.join(R, 'source_catalogs', '*_pages_index*.csv'))
+            sv = glob.glob(os.path.join(R, 'source_catalogs', '*_sources_survivors.csv'))
             say(f'    {len(sv)} union survivors files, {len(idx)} page indexes; mode {C.DEEP_MERGE}; env '
                 f'{C.REVIEW_DIR_MERGE["deep"]} -> review_dir column [survivors_review_dir]')
             say(f'    P2 build records: ' + ', '.join(f'{K} {_rec_status(run_, unit_name(c, "build", K))}' for K in D.SINGLES_SETS))
         elif st == 'strat':
-            say('    ops/deep_stratified_queue.py runs only on the production run directory (hard-coded :24) -> WOULD REFUSE '
-                'outside it')
+            prod = os.path.join(common.CFG().paths.TRANSIENTS_ROOT, f'Run_{c.label}')
+            say('    ops/deep_stratified_queue.py runs only on the production run directory (hard-coded :24)'
+                + ('' if os.path.realpath(c.U) == os.path.realpath(prod) else f' -> WOULD REFUSE ({c.U} is not {prod})'))
+            if os.path.realpath(c.U) != os.path.realpath(prod):
+                refuse.append(f'strat: the in-place script writes only {prod}')
     refuse += [l.strip() for l in lines if 'gate P3 mirror: WOULD REFUSE' in l]
     print('\n'.join(lines))
     for r in refuse:

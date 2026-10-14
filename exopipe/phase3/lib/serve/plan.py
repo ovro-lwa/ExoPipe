@@ -23,7 +23,6 @@ plus, in a parity plan only, --lists-dir <out>/review_lists on classify pages (s
 import glob
 import os
 import re
-import socket
 
 from exopipe.phase3.core.record import Refusal
 from exopipe.phase3.lib.serve import procs, scripts
@@ -109,11 +108,17 @@ class Plan:
         self.gates.append((gate, msg))
 
     # ---- environment and argv of the servers -----------------------------------------------------------------------
+    def env_key(self):
+        """serve.SERVER_ENV key of this plan's servers: '<tier>-<family>' when config has one (the snapshot forced pages,
+        whose launcher is not snapshot_serve.sh), else the tier."""
+        k = f'{self.tier}-{self.family}'
+        return k if k in _CFG().serve.SERVER_ENV else self.tier
+
     def server_env_extra(self):
         S = _CFG().serve
         fmt = dict(deep_xtier=S.DEEP_XTIER.format(label=self.label or ''), other_deep_xtier=S.OTHER_TIERS_DEEP_XTIER,
                    tenmin_xtier=S.TENMIN_XTIER)
-        return {k: str(v).format(**fmt) for k, v in S.SERVER_ENV[self.tier].items()}
+        return {k: str(v).format(**fmt) for k, v in S.SERVER_ENV[self.env_key()].items()}
 
     def server_env(self):
         return scripts.server_env(self.server_env_extra())
@@ -325,8 +330,9 @@ def make(args, out):
                 p.refuse_later('G13', f'config: port {port} is given to two pages ({seen[port]} and {(t, k)})')
             seen[port] = (t, k)
     if not p.parity:
+        from exopipe.phase3.core.env import host
         rh = scripts.site_value('REVIEW_HOST')
-        me = socket.gethostname().split('.')[0]
+        me = host()
         if not rh:
             p.refuse_later('G25', 'site REVIEW_HOST is unset: a production serve runs only on the review host '
                                   '(sublst_serve.sh:12; sublst_cumulative.sh:13)')

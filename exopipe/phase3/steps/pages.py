@@ -42,7 +42,9 @@ Failure modes (exit 2 = refused, the gate named in the record): P1 no --run; P2 
   nothing to do (e.g. a set with no pages-input row). TESS never refuses (recorded NO-INPUT: 'coverage not computed').
 Per-hour vs intermittent: per hour (DESIGN 12.1, chain 'epoch'): --epochs <LST>_<date> after catalog --incremental; the deep
   build is incremental by construction (build_i14 keeps every page whose fingerprint is unchanged and renders new/changed pages),
-  unchanged units are kept by the record. Intermittent: the full pass over a rebuilt catalogue (--full forces every page).
+  unchanged units are kept by the record (deep build units in the shared layout: all together or none, one pass start for every
+  set rendered; a changed --deep-parent-dir / roots map, or a partial record, is never kept). Intermittent: the full pass over a
+  rebuilt catalogue (--full forces every page).
 Production code runs IN PLACE during the refactor window through core.legacy.run (build_i14_pages_std7.py, std7_panel.py,
   p3s3_tier_pages_input.py, p3s3_merge_review_dir.py, tess_coverage.py, deep_stratified_queue.py, sublst_pages_prep.py,
   p3t_pages_input.py, build_tenmin_pages.py, p3t_pages_index.py, phase3_snapshot_pages.py, snapshot_rechain_content_test.py,

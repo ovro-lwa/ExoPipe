@@ -12,7 +12,10 @@
              staged names and provenance as the production conformance pass writes them; --resume skips every unit;
              the first run is a --parity run (write guard in the step and in every child)
   gates      G1 (an excluded constituent, also through the weighting-PB reference master), G3 (two candidates), G4
-             (--lsts subset; waiver), G7 (P3_PB_* set), G11, G0 (an engine literal changed), G12 (explicit NoTaper conform)
+             (--lsts subset; waiver), G7 (P3_PB_* set), G11, G0 (an engine literal changed), G12 (explicit NoTaper conform;
+             with the waiver it goes on to staging); end2end also: G13 (a jysr render missing from the render record)
+  guard      G9: a CORRUPT-FLAT tile skipped and recorded (skip-and-record), census = engine, partial build for the
+             coverage test; TILE_GUARD_ACTION refuse refuses
   qa         the qa stage at NSIDE 2048 on a synthetic noise map: the REAL anchor script and VLSSr check in place; tables
              pass mosaic_qa_table; conform/_tables copies them
   negative   content tests fail on corrupted copies (BUNIT, dec floor, a staged name whose N disagrees, pixels changed)
@@ -310,6 +313,22 @@ def test_end2end():
             print('  end2end: worktree dirty - checked that --resume refuses to trust the records (record.py rule)')
         else:
             assert se.count('skipped (resume') >= 3, se[-2000:]
+        # G13 (review 2026-10-13): a jysr render missing from the render record refuses the conform unit and stages
+        # nothing (it used to be skipped silently while the jybeam renders refused). Records copied into another --out.
+        out3 = os.path.join(SCRATCH, 'out_g13')
+        rdir = os.path.join(out3, '_records', 'mosaic')
+        for st in ('coadd', 'render'):
+            os.makedirs(os.path.join(rdir, st), exist_ok=True)
+            r = _rec(out, f'{st}/Blue_Taper_R075')
+            if st == 'render':
+                r['outputs'] = [o for o in r['outputs'] if '_jysr_' not in os.path.basename(o['path'])]
+            with open(os.path.join(rdir, st, 'Blue_Taper_R075.json'), 'w') as f:
+                json.dump(r, f)
+        rc, so, se = _main(['mosaic', '--jobs', 'Blue_Taper_R075', '--stages', 'conform', '--out', out3,
+                            '--cores', 'none'] + SMALL)
+        r3 = _rec(out3, 'conform/Blue_Taper_R075')
+        assert rc == 2 and r3['status'] == 'refused' and 'G13' in r3['reason'] and 'render record' in r3['reason'], r3
+        assert not os.listdir(os.path.join(out3, 'archive_staging', 'mosaic', 'wideband')), 'half-staged files left'
         shutil.rmtree(stage, ignore_errors=True)
         print(f'  end2end: {wall:.0f} s for one job (stage, census, 2 co-adds, 2 renders, conform)')
         return out
@@ -377,6 +396,42 @@ def test_gates():
                              '--cores', 'none'])
         r = _rec(out2, 'conform/Blue_NoTaper_R075')
         assert rc == 2 and r['status'] == 'refused' and 'G12' in r['reason'], (rc, r)
+        # G12 waived (review 2026-10-13): the job goes on to staging (here refused for its missing coadd record, never
+        # silently skipped as before) and the unit carries the waiver
+        rc, _so, se = _main(['mosaic', '--jobs', 'Blue_NoTaper_R075', '--stages', 'conform', '--out', out2,
+                             '--cores', 'none', '--waive', 'mosaic.conform_taper_only', '--ruling', 'test waiver'])
+        r = _rec(out2, 'conform/Blue_NoTaper_R075')
+        assert rc == 2 and r['status'] == 'refused' and 'G12' not in r['reason'] and 'coadd record' in r['reason'] \
+            and any('G12 WAIVED' in n for n in r['notes']), (rc, r)
+    finally:
+        _unsmall()
+
+
+def test_guard():
+    """G9 (review 2026-10-13): a CORRUPT-FLAT tile under TILE_GUARD_ACTION 'skip-and-record' (today's behaviour) is skipped
+    by the engine and recorded; the census agrees with the engine; the maps count as a partial build in the coverage
+    content test (23 contributing tiles). TILE_GUARD_ACTION 'refuse' refuses the job instead."""
+    from astropy.io import fits
+    _make_generation()
+    _small_world()
+    try:
+        p = os.path.join(GEN, '06h', 'Blue', _name('Blue', 'Taper_R0', '06h'))
+        with fits.open(p, mode='update') as h:
+            h[0].data[...] = 0.0                       # flat: apparent MAD 0 -> the 1e-6 floor < 1e-4 = CORRUPT-FLAT
+        out = os.path.join(SCRATCH, 'out_guard')
+        work = os.path.join(SCRATCH, 'work_guard')
+        rc, so, se = _main(['mosaic', '--jobs', 'Blue_Taper_R0', '--stages', 'inputs,coadd', '--out', out, '--work', work]
+                           + SMALL)
+        assert rc == 0, (rc, se[-3000:])
+        co = _rec(out, 'coadd/Blue_Taper_R0')
+        assert co['status'] == 'done' and co['meta']['skipped'] == [['06h', 'CORRUPT-FLAT']], co['meta'].get('skipped')
+        assert len(co['meta']['contributing']) == 23 and '06h' not in co['meta']['contributing']
+        assert all(o['ctx']['partial'] is True for o in co['outputs']), [o['ctx'].get('partial') for o in co['outputs']]
+        assert any('CORRUPT-FLAT' in n for n in co['notes']), co['notes']
+        rc, so, se = _main(['mosaic', '--jobs', 'Blue_Taper_R0', '--stages', 'inputs', '--out', out, '--work', work,
+                            '--set', 'mosaic.TILE_GUARD_ACTION=refuse'] + SMALL)
+        r = _rec(out, 'inputs/Blue_Taper_R0')
+        assert rc == 2 and r['status'] == 'refused' and 'G9' in r['reason'] and '06h CORRUPT-FLAT' in r['reason'], (rc, r)
     finally:
         _unsmall()
 
@@ -505,7 +560,7 @@ def main(names):
     shutil.rmtree(SCRATCH, ignore_errors=True)
     os.makedirs(SCRATCH)
     try:
-        order = ['config', 'jobs', 'end2end', 'gates', 'qa', 'negative', 'real']
+        order = ['config', 'jobs', 'end2end', 'gates', 'guard', 'qa', 'negative', 'real']
         out = None
         for n in order:
             if names and n not in names and not (n == 'end2end' and 'negative' in names):

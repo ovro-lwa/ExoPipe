@@ -109,6 +109,11 @@ def switch_page(run, plan, pg, state, utc):
                 raise NoInput(f'{pg.port} already serves {pg.run_name} - nothing to do')
             if plan.parity and not servers._under(orun, plan.out):
                 u.refuse(f'G23 parity guard: port {pg.port} is held by {orun}, not a run of {plan.out}')
+        # the expected index sources (the server's own App on the new run's files; no journal read) BEFORE the old server is
+        # stopped: a probe that fails refuses with the old page still served (production restores the old server on every
+        # failure after its stop, snapshot_forced_serve_20261007.sh:78-90)
+        exp = servers.app_probe(plan, pg, D, unit=u)
+        if old is not None:
             notes.append(procs.stop_exact(old, timeout=S.FORCED_STOP_TIMEOUT_S, poll=1.0))
             oj = os.path.join(orun, 'judgements', 'judgements.jsonl')
             if journals.journal_nonempty(oj):
@@ -122,7 +127,6 @@ def switch_page(run, plan, pg, state, utc):
                     u.refuse(f'judgement carry {orun} -> {D} failed ({e}); the old server is restarted on {pg.port}')
             else:
                 notes.append(f'judgements on {pg.port}: none in {orun} (no journal) - nothing to carry')
-        exp = servers.app_probe(plan, pg, D, unit=u)
         p, argv, cwd, log = servers.start_page(plan, pg, utc, D)
         okr, detail = procs.wait_ready(pg.port, p, S.READY_TIMEOUT_S['snapshot'], S.READY_POLL_S, log)
         if not okr:
@@ -161,8 +165,8 @@ def refresh_siblings(run, plan, state, utc):
                 raise NoInput(f'siblings of {pg.port} current')
             if plan.parity and not servers._under(D, plan.out):
                 u.refuse(f'G23 parity guard: port {pg.port} is held by {D}, not a run of {plan.out}')
+            exp = servers.app_probe(plan, pg, D, unit=u)       # before the stop: a failed probe keeps the page served
             u.note(procs.stop_exact(old, timeout=_CFG().serve.FORCED_STOP_TIMEOUT_S, poll=1.0))
-            exp = servers.app_probe(plan, pg, D, unit=u)
             p, argv, cwd, log = servers.start_page(plan, pg, utc, D)
             okr, detail = procs.wait_ready(pg.port, p, _CFG().serve.READY_TIMEOUT_S['snapshot'], 5.0, log)
             if not okr:

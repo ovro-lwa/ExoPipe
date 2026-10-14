@@ -144,9 +144,11 @@ def stage_job(job, coadd_rec, render_rec, out_root):
             'jysr')
         for rdir, tok, rsuf in (('mollweide', 'molrender', '_Mollweide'), ('radec', 'carrender', '_RADec')):   # CP:206-220
             rsrc = rfiles.get(f'{job.scope}_{job.variant}_jysr{rsuf}.fits')
-            if rsrc:
-                one(rsrc, f'{stg}/renders/{sub}/{rdir}/{build_name(proc=base + [tok], **common)}', dict(extra_base), True,
-                    f'jysr_{rdir}')
+            if not rsrc:      # G13 (review 2026-10-13): as the jybeam renders - never stage a job with a render missing
+                failed.append((f'{job.scope}_{job.variant}_jysr{rsuf}.fits', 'MISSING from the render record'))
+                continue
+            one(rsrc, f'{stg}/renders/{sub}/{rdir}/{build_name(proc=base + [tok], **common)}', dict(extra_base), True,
+                f'jysr_{rdir}')
     else:
         failed.append((jysr_n, 'MISSING from the coadd record'))
     # apparent-flux domain and its PB_eff companion (CP:221-251): no pbcorr token, PBCORR False
@@ -215,11 +217,14 @@ def run_conform(args, run, jobs, explicit_jobs=False):
     state = {}
     for job in jobs:
         name = SC.unit_name('conform', job)
-        if job.variant not in K.VARIANTS or job.scope not in K.SCOPES:
+        # G12 (review 2026-10-13): with --waive mosaic.conform_taper_only --ruling an explicitly named job of a variant
+        # outside mosaic_conform.VARIANTS is STAGED (the waiver used to be accepted and the job silently skipped)
+        g12_waiver = bool(explicit_jobs and job.variant not in K.VARIANTS and run.waived('mosaic.conform_taper_only'))
+        if (job.variant not in K.VARIANTS and not g12_waiver) or job.scope not in K.SCOPES:
             why = (f'not staged: {job.variant} not in mosaic_conform.VARIANTS {K.VARIANTS} (push Taper only, '
-                   f'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY)' if job.variant not in K.VARIANTS else
+                   f'R-JYBEAM-TOKEN-AND-MOSAIC-V2-PUSH-TAPER-ONLY)' if job.variant not in K.VARIANTS and not g12_waiver else
                    f'not staged: {job.scope} not in mosaic_conform.SCOPES (no sub-band staging mode exists)')
-            if explicit_jobs and job.variant not in K.VARIANTS and not run.waived('mosaic.conform_taper_only'):
+            if explicit_jobs and job.variant not in K.VARIANTS and not g12_waiver:
                 with run.unit(name, job=job.name) as u:
                     u.refuse('G12: ' + why + ' - staging it needs --waive mosaic.conform_taper_only --ruling "..."')
                 state[job.name] = 'refused'
@@ -239,6 +244,8 @@ def run_conform(args, run, jobs, explicit_jobs=False):
                 continue
         try:
             with run.unit(name, job=job.name) as u:
+                if g12_waiver:
+                    u.note(f'G12 WAIVED ({job.variant} staged): {run.waived("mosaic.conform_taper_only")}')
                 if not crec or crec.get('status') != 'done':
                     u.refuse(f"conform needs a done coadd record ({'none' if not crec else crec.get('status')})")
                 if not rrec or rrec.get('status') != 'done':

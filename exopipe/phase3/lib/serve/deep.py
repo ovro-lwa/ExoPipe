@@ -102,12 +102,13 @@ def views_stage(run, plan, state):
         u.meta['exclusion_report'] = {' '.join(k): n for k, n in scan.per_key().items()}
         u.note(f'G17 serve-time exclusion gate (report only for deep until Gregg rules, spec 12.8): {scan.summary()}')
         u.meta['refused_pages'] = dict(state['refused'])
+    return u
 
 
 def carry_stage(run, plan, args):
     spec = getattr(args, 'carry_from', None)
     if not spec:
-        return
+        return None
     with run.unit(f'deep_{plan.run_name}_carry', stage='carry', tier='deep') as u:
         old = journals.resolve_carry_from(plan, spec)
         u.note(f'carry from {old}')
@@ -123,23 +124,28 @@ def carry_stage(run, plan, args):
         if not n:
             from exopipe.phase3.core.record import NoInput
             raise NoInput(f'no judgement to carry from {old}')
+    return u
 
 
 def run(args, run, plan, stages):
     state = flow.new_state()
+    # a refused views / test / carry stage stops the later stages (flow.halts): no server is replaced after a refusal
     if 'views' in stages:
-        views_stage(run, plan, state)
+        if flow.halts(views_stage(run, plan, state), 'views'):
+            return
     elif any(s in stages for s in ('test', 'start')):
         rec = flow.require_done(run, _views_unit(plan), 'the deep views')
         state['refused'].update((rec.get('meta') or {}).get('refused_pages') or {})
     if 'test' in stages:
-        flow.test_stage(run, plan, state, _test_unit(plan))
+        if flow.halts(flow.test_stage(run, plan, state, _test_unit(plan)), 'test'):
+            return
     elif 'start' in stages:
         exp, refused = flow.expected_from_record(run, _test_unit(plan), 'start')
         state['expected'].update(exp)
         state['refused'].update(refused)
     if 'carry' in stages:
-        carry_stage(run, plan, args)
+        if flow.halts(carry_stage(run, plan, args), 'carry'):
+            return
     if 'start' in stages:
         flow.start_stage(run, plan, state)
     if 'twins' in stages and not getattr(args, 'no_twins', False):
