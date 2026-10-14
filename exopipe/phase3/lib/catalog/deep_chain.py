@@ -749,10 +749,21 @@ class DeepRun:
             if rc != 0:
                 self.say('selection (select_v3) FAILED - pass aborted (D10)')
                 u.refuse(f'D-G18 select_v3 exit {rc}: {tail[-1] if tail else ""}')
+            n_retro = deep_ported.ephem_retro_rows(self.U)       # WAVE2 B-30: pre-check (M4)
+            if n_retro:
+                from exopipe.phase3.core import fallback      # WAVE2 B-30
+                fallback.site('fallbacks.CATALOG_EPHEM_RETRO_FALLBACK', f'{n_retro} I row(s) of selected_all.csv without in-chain '
+                              f'Jupiter / Moon separations - p3s2_ephem_filter.py would compute them at the epoch DATE-OBS, not '
+                              f'the frame mid-time', n=n_retro)
             rc, tail, _ = self.call(u, 'p3s2_ephem_filter.py', [], self.env(), slog)
             if rc != 0:
                 self.say('ephemeris filter FAILED - pass aborted (D10)')
                 u.refuse(f'D-G18 ephemeris filter exit {rc}: {tail[-1] if tail else ""}')
+            n_lst = deep_ported.ephem_time_fallbacks('\n'.join(tail or []))
+            if n_lst:
+                from exopipe.phase3.core import fallback      # WAVE2 B-30
+                fallback.site('fallbacks.CATALOG_EPHEM_TIME_FALLBACK', f'p3s2_ephem_filter.py timed {n_lst} (cell, date) '
+                              f'epoch(s) by date + LST hour as UT (no Phase-2 or frame DATE-OBS)', n=n_lst)
             u.note(tail[-1] if tail else '')
             counts = deep_ported.split_selection(self.U)
             u.meta['split'] = {f'{s}_{t}': n for (s, t), n in counts.items()}
@@ -832,6 +843,12 @@ class DeepRun:
             if rc != 0:
                 self.say(f'multiples fork {S} REFUSED ({flog}) - pass aborted')
                 u.refuse(f'D-G20 multiples fork {S} exit {rc}: {tail[-1] if tail else ""}')
+            with open(flog, errors='replace') as _fl:              # WAVE2 B-30: the fork's own ephemeris filter run
+                n_lst = deep_ported.ephem_time_fallbacks(_fl.read())
+            if n_lst:
+                from exopipe.phase3.core import fallback      # WAVE2 B-30
+                fallback.site('fallbacks.CATALOG_EPHEM_TIME_FALLBACK', f'multiples fork {S}: p3s2_ephem_filter.py timed {n_lst} '
+                              f'(cell, date) epoch(s) by date + LST hour as UT (no Phase-2 or frame DATE-OBS)', n=n_lst)
             rc, tail, hits = self.call(u, 'multiples_fork.py', ['check', S], env, flog,
                                        keep=('FORK CONTENT TEST',))
             line = hits[-1] if hits else ''

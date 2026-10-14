@@ -1345,8 +1345,20 @@ def st_select(ctx, s, plan):
     res = call(ctx, s, sel, ['master_catalog.csv', 'selected_all.csv'], env=ctx.env(P3_NO_PARENT_EXCL=excl),
                log=ctx.log.path, cwd=U)
     need_ok(res, 'S-G15 select_v3.py', say=lambda: ctx.log.say('SELECT FAILED'))
+    from exopipe.phase3.lib.catalog import deep_ported as _DP
+    n_retro = _DP.ephem_retro_rows(U)                     # WAVE2 B-30: pre-check (M4)
+    if n_retro:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.CATALOG_EPHEM_RETRO_FALLBACK', f'{n_retro} I row(s) of {U}/selected_all.csv without in-chain '
+                      f'Jupiter / Moon separations - p3s2_ephem_filter.py would compute them at the epoch DATE-OBS, not the '
+                      f'frame mid-time', n=n_retro)
     res = call(ctx, s, eph, [], env=ctx.env(), log=ctx.log.path, cwd=U)
     need_ok(res, 'S-G15 p3s2_ephem_filter.py', say=lambda: ctx.log.say('EPHEMERIS FILTER FAILED'))
+    n_lst = _DP.ephem_time_fallbacks(res.tail)
+    if n_lst:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.CATALOG_EPHEM_TIME_FALLBACK', f'p3s2_ephem_filter.py timed {n_lst} (cell, date) epoch(s) by '
+                      f'date + LST hour as UT (no Phase-2 or frame DATE-OBS)', n=n_lst)
     ctx.log.say('split by Stokes: subbands and wideband groups')
     try:
         lines = split(U, tuple(split_cfg['wb']), split_cfg['sb'])

@@ -119,6 +119,24 @@ def identity_row_fallbacks(tier_files):
     return noerr, bad
 
 
+def ephem_retro_rows(run_dir):
+    """WAVE2 B-30 pre-check (M4) of ops/p3s2_ephem_filter.py (:45-46): the I rows of <run>/selected_all.csv whose Jupiter /
+    Moon separations it computes (empty jupiter_deg) - at the epoch's DATE-OBS (its :24-38), not the frame mid-time."""
+    n = 0
+    with open(os.path.join(run_dir, 'selected_all.csv'), newline='') as f:
+        for r in csv.DictReader(f):
+            if r.get('stokes') == 'I' and not (r.get('jupiter_deg') or '').strip():
+                n += 1
+    return n
+
+
+def ephem_time_fallbacks(text):
+    """The (cell, date) epochs ops/p3s2_ephem_filter.py timed by its LST approximation (date + LST hour as UT), from its
+    printed count (:63; WAVE2 B-30)."""
+    import re
+    return sum(int(x) for x in re.findall(r'(\d+) \(cell,date\) fell back to the LST approximation', text or ''))
+
+
 def localize_reads(run_dir, pattern):
     """The survivors files ops/build_localizations.py (:21) and source_localization.py (:112) read."""
     return {os.path.abspath(p) for p in glob.glob(f'{run_dir}/{pattern}/*_sources_survivors.csv')}

@@ -257,6 +257,9 @@ def make_ops():
 # ---------------------------------------------------------------------------------------------------------------------
 # synthetic run: masters, parents, search state, published attempts
 # ---------------------------------------------------------------------------------------------------------------------
+# the in-chain Jupiter separation of the attempts' I rows: the search writes it on every row since 2026-09-04 ('Ephemeris
+# always-on for I'; the served Run_P3S5 has no I row without it) - test_b30_ephem_pre_check blanks it
+WORLD_I_JUPITER_DEG = '50.0'
 MC_COLS = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'ra', 'dec', 'peak_jy', 'snr', 'global_snr', 'jupiter_deg',
            'moon_deg', 'epoch_qa', 'size_beams', 'size_flag', 'axis_norm']
 LED_COLS = ['lst', 'scope', 'stokes', 'date', 'final', 'ra', 'dec', 'veto_reason', 'snr', 'peak_jy', 'pix_y']
@@ -306,7 +309,7 @@ def make_attempt(cell, st, node='nodeA', att='20300104T000000'):
         cid = f'{st}{extra}{lst}_{date}_{band}_{n:04d}'
         rows.append(dict(cand_id=cid, lst=lst, date=date, band=band, stokes=st, cadence='deep', ra=f'{ra:.5f}',
                          dec=f'{dec:.5f}', peak_jy=f'{snr / 2:.3f}', snr=f'{snr:.2f}', global_snr=f'{snr:.2f}',
-                         jupiter_deg='' if st == 'I' else '50.0', moon_deg='', epoch_qa='', size_beams='1.0',
+                         jupiter_deg=WORLD_I_JUPITER_DEG if st == 'I' else '50.0', moon_deg='', epoch_qa='', size_beams='1.0',
                          size_flag='', axis_norm='1.0'))
         return ra, dec
 
@@ -590,6 +593,34 @@ def test_b30_identity_pre_check():
     assert r['status'] == 'done' and r.get('fallbacks') == {k: 1}, (r['status'], r.get('fallbacks'))
 
 
+def test_b30_ephem_pre_check():
+    """B-30 (a) pre-check of ops/p3s2_ephem_filter.py (deep_ported.ephem_retro_rows): I rows of selected_all.csv without
+    in-chain Jupiter / Moon separations would be computed at the epoch DATE-OBS, not the frame mid-time - the select stage
+    refuses under the ruled value, counts under 'fallback'; the filter's printed LST-approximation count is parsed."""
+    global WORLD_I_JUPITER_DEG
+    from exopipe.phase3.lib.catalog import deep_ported as P
+    line = ('ephem retro-filter: dropped 0 Jupiter + 0 Moon I rows; 12 remain; epoch times from Phase-2/frame headers, '
+            '3 (cell,date) fell back to the LST approximation')
+    assert P.ephem_time_fallbacks(line) == 3 and P.ephem_time_fallbacks(line.replace(' 3 (', ' 0 (')) == 0
+    k = 'fallbacks.CATALOG_EPHEM_RETRO_FALLBACK'
+    WORLD_I_JUPITER_DEG = ''
+    try:
+        make_world()
+    finally:
+        WORLD_I_JUPITER_DEG = '50.0'
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select', expect=2)
+    r = rec(f'{LABEL}.select')
+    assert r['status'] == 'refused' and k in r['reason'] and 'I row(s)' in r['reason'], r['reason'][:300]
+    n = P.ephem_retro_rows(U)           # the refused select wrote selected_all.csv: the chain re-runs to it
+    k2 = 'fallbacks.CATALOG_EPHEM_TIME_FALLBACK'      # the world's 2030 epochs have no Phase-2 image: the filter's LST guess
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select', '--set', f'{k}=fallback', '--set', f'{k2}=fallback',
+        expect=0)
+    r = rec(f'{LABEL}.select')
+    fb = r.get('fallbacks') or {}
+    assert n > 0 and r['status'] == 'done' and fb.get(k) == n and fb.get(k2, 0) > 0 and set(fb) == {k, k2}, (n, r['status'], fb)
+    assert P.ephem_retro_rows(U) == 0, 'the in-place filter fills the separations it computes'
+
+
 def test_binding_against_production_and_a_mismatch():
     from exopipe.phase3.config import CFG
     from exopipe.phase3.lib.catalog import deep_binding as B
@@ -709,6 +740,7 @@ def test_compileall():
 ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge', 'test_b30_identity_pre_check',
+         'test_b30_ephem_pre_check',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']
 
