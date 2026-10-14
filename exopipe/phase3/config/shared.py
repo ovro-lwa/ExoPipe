@@ -173,27 +173,34 @@ class fallbacks(_Section):
     SEARCH_PRODNAME_FALLBACK = 'refuse'
     # the cell's PB map missing -> the pbcorr sibling is not written, recorded as owed (deep_search)
     SEARCH_PB_SIBLING_FALLBACK = 'refuse'
-    # an epoch without an alignment flow is not searched (deep_search.run_deep_cell)
+    # an epoch without an alignment flow is not searched (deep_search.run_deep_cell; named after the data_decisions /
+    # night-image / epoch gates, which refuse their epochs anyway), n = epochs
     SEARCH_EPOCH_FLOW_FALLBACK = 'refuse'
-    # a residual that failed to build in a pool worker -> the epoch is not searched (deep_search, site in the parent)
+    # a residual that failed to build in a pool worker -> the epoch is not searched (deep_search, site in the parent),
+    # n = epochs
     SEARCH_RESIDUAL_FALLBACK = 'refuse'
-    # the V sanity gate could not run, or one epoch's V rms failed -> the epoch escapes the gate (deep_search)
+    # a sanity / search-tier gate could not measure an epoch -> the epoch escapes the gate (deep_search): the V gate could
+    # not run, an epoch's V frame rms failed, an epoch of weights.csv without a qa3 rms, a tabled epoch (deep) or an
+    # existing frame (10 min) without a stage-1 rms; n = epochs
     SEARCH_SANITY_FALLBACK = 'refuse'
-    # coadd_final/weights.csv missing -> the search-frame sanity gate / the generation check / the leave-one-out
-    # masters silently not used (deep_search)
+    # coadd_final/weights.csv missing -> the search-frame sanity gate / the generation check / the input-provenance
+    # gate's generation test / the leave-one-out masters silently not used (deep_search; one count per check skipped)
     SEARCH_WEIGHTS_FALLBACK = 'refuse'
     # an epoch frame without a (numeric) DURATION -> 600 / 3600 s (deep_search frame header)
     SEARCH_DURATION_FALLBACK = 'refuse'
-    # no / unparsable epoch time -> Jupiter and Moon at 00:00 UTC of the date (deep_search._body_skycoord)
+    # no / unparsable epoch time -> Jupiter and Moon at 00:00 UTC of the date (deep_search._body_skycoord); the frame's
+    # mid-time unreadable under search_detect / search_sublst.EPHEMERIS_TIME 'frame-mid' -> its DATE-OBS (_eph_time)
     SEARCH_EPHEMERIS_TIME_FALLBACK = 'refuse'
-    # the OVRO-LWA beam model unavailable or failing -> the analytic cos^1.6 response (search_v)
-    SEARCH_PB_MODEL_FALLBACK = 'refuse'
-    # no frequency card -> the label in the file name + 2.3 MHz (search_v._get_freq_mhz)
-    SEARCH_FREQ_FALLBACK = 'refuse'
-    # a pixel block whose world coordinates fail is left out of the striation model (search_v) - a per-item
-    # drop: ruled 'counted', n = rows
-    SEARCH_WCS_BLOCK_FALLBACK = 'fallback'
-    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_PB_MODEL_FALLBACK', 'SEARCH_FREQ_FALLBACK', 'SEARCH_WCS_BLOCK_FALLBACK')}
+    # a body's position failing -> the candidate is not labelled with it (candidates.ephemeris_label, the `body` column)
+    SEARCH_EPHEMERIS_LABEL_FALLBACK = 'refuse'
+    # the V-clean engine (search_v.main --clean_only, run by masters V-clean): V and I masters without BMAJ and no --beam
+    # -> 5 pixels (the template and striation sizes). Not sites: search_v.main's primary-beam correction (beam model,
+    # frequency) - apply_pb_correction's pb / true_flux are read by nothing, so no product depends on it
+    VCLEAN_BEAM_FALLBACK = 'refuse'
+    # a pixel block whose world coordinates fail is left out of the striation model (coadd.build_striation_model - the
+    # search, its residual savers - and search_v's copy in V-clean) - a per-item drop: ruled 'counted', n = rows
+    STRIATION_WCS_BLOCK_FALLBACK = 'fallback'
+    RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_EPHEMERIS_LABEL_FALLBACK', 'VCLEAN_BEAM_FALLBACK', 'STRIATION_WCS_BLOCK_FALLBACK')}
 
 
 class runner(_Section):

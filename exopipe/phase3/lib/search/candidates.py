@@ -124,7 +124,10 @@ def ephemeris_label(ra, dec, obs_time):
             bp = get_body(b, t, OVRO)
             if SkyCoord(bp.ra, bp.dec).separation(co).deg < EPH_MATCH_DEG:
                 return b
-        except Exception:
+        except Exception as _e:                       # WAVE2 B-30: named (was a silent pass)
+            from exopipe.phase3.core import fallback      # WAVE2 B-30
+            fallback.site('fallbacks.SEARCH_EPHEMERIS_LABEL_FALLBACK', f'{b} at {obs_time}: its position failed '
+                          f'({type(_e).__name__}: {_e}) - the candidate at ({ra:.4f}, {dec:.4f}) would not be labelled')
             pass
     return ''
 

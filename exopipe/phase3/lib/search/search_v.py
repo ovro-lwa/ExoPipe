@@ -82,21 +82,13 @@ def _get_beam_model():
         from exopipe.phase2.extractor_pb_75 import BeamModel, BEAM_PATH
         if os.path.exists(BEAM_PATH): _BEAM_MODEL = BeamModel(BEAM_PATH)
     except Exception: pass
-    if _BEAM_MODEL is None:
-        from exopipe.phase3.core import fallback      # WAVE2 B-30
-        fallback.site('fallbacks.SEARCH_PB_MODEL_FALLBACK', 'the OVRO-LWA beam model could not be loaded - the primary-beam '
-                      'response at candidate positions would be the analytic cos^1.6 model')
     return _BEAM_MODEL
 
 def _pb_at_coords(ra_deg, dec_deg, obs_time, freq_hz):
     bm = _get_beam_model()
     if bm is not None:
         try: return np.asarray(bm.get_response(ra_deg, dec_deg, obs_time, freq_hz), dtype=float)
-        except Exception:
-            from exopipe.phase3.core import fallback      # WAVE2 B-30
-            fallback.site('fallbacks.SEARCH_PB_MODEL_FALLBACK', f'the beam model failed at {np.size(ra_deg)} position(s) - '
-                          f'the analytic cos^1.6 response would be used')
-            pass
+        except Exception: pass
     coords = SkyCoord(np.atleast_1d(ra_deg), np.atleast_1d(dec_deg), unit='deg')
     altaz = coords.transform_to(AltAz(obstime=obs_time, location=OVRO_LOC))
     za = 90.0 - altaz.alt.deg
@@ -113,10 +105,6 @@ def _get_freq_mhz(header, fits_path=None):
         if val and float(val) > 1e6: return float(val) / 1e6
     if fits_path:
         m = re.search(r'(?<!\d)(\d{2,3})MHz', os.path.basename(fits_path), re.IGNORECASE)
-        if m:
-            from exopipe.phase3.core import fallback      # WAVE2 B-30
-            fallback.site('fallbacks.SEARCH_FREQ_FALLBACK', f'{fits_path}: no frequency card - it would be the label in '
-                          f'the file name + 2.3 MHz')
         if m: return float(m.group(1)) + 2.3
     return None
 
@@ -585,8 +573,8 @@ def build_striation_model(v_data, wcs, exclusion_mask, ra_window_beams=20, beam_
         try: r,d = wcs.all_pix2world(x_idx[y0:ye],y_idx[y0:ye],0); ra_map[y0:ye]=r; dec_map[y0:ye]=d
         except:
             from exopipe.phase3.core import fallback      # WAVE2 B-30 (a per-item drop: counted)
-            fallback.site('fallbacks.SEARCH_WCS_BLOCK_FALLBACK', f'rows {y0}-{ye}: world coordinates failed - the block '
-                          f'is left out of the striation model', n=ye - y0)
+            fallback.site('fallbacks.STRIATION_WCS_BLOCK_FALLBACK', f'rows {y0}-{ye}: world coordinates failed '
+                          f'({sys.exc_info()[1]!r}) - the block is left out of the striation model', n=ye - y0)
             pass
     valid = ~exclusion_mask & np.isfinite(dec_map) & np.isfinite(ra_map)
     if np.sum(valid)==0: return np.zeros_like(v_data), 0
@@ -1005,6 +993,10 @@ def main():
         if bmaj>0: v_hdr['BMAJ']=i_hdr['BMAJ']; v_hdr['BMIN']=i_hdr.get('BMIN',bmaj); v_hdr['BPA']=i_hdr.get('BPA',0)
     cd = abs(wcs.wcs.cdelt[0]) if hasattr(wcs.wcs,'cdelt') else 0.03125
     if args.beam: bmaj=args.beam/60.0
+    if bmaj<=0:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.VCLEAN_BEAM_FALLBACK', f'{args.v_image} and {args.i_image} carry no BMAJ and no --beam was '
+                      f'given - the beam would be 5 pixels')
     if bmaj<=0: bmaj=5*cd
     bpix=bmaj/cd; bam=bmaj*60
     print(f"  Beam = {bam:.1f}' ({bpix:.1f} pix)")

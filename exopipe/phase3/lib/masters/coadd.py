@@ -2823,6 +2823,9 @@ def build_striation_model(data, wcs, mask, ra_window_beams=20, beam_pix=7.0):
             ra_map[y0:ye] = r
             dec_map[y0:ye] = d
         except Exception:
+            from exopipe.phase3.core import fallback      # WAVE2 B-30 (a per-item drop: counted)
+            fallback.site('fallbacks.STRIATION_WCS_BLOCK_FALLBACK', f'rows {y0}-{ye}: world coordinates failed '
+                          f'({sys.exc_info()[1]!r}) - the block is left out of the striation model', n=ye - y0)
             pass
     valid = ~mask & np.isfinite(dec_map) & np.isfinite(ra_map)
     if np.sum(valid) == 0:

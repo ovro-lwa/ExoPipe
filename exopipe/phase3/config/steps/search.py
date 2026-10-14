@@ -129,9 +129,10 @@ class search_detect(_Section):
     DURATION_FALLBACK_S = 3600.0                            # s; epoch DURATION when the product has none (deep_search.py:1604-1606; B-30)
     CENTRAL_RMS_HALF_PX = 512                               # px; frame rms box = min(512, h/4, w/4) (deep_search.py:1618, 1732)
     PB_FLOOR = 0.05                                         # pbcorr sibling PB floor (deep_search.py:810; contract 34)
-    EPHEMERIS_TIME = 'frame-mid'                            # B-30 (a) 'ephemerides at frame mid-time': Jupiter / Moon positions at the
-                                                            # frame's own mid-time; 'date-obs' = production (its DATE-OBS, Card 7a) - the
-                                                            # engine child reads EXOPIPE3_EPHEMERIS_TIME (deep_step.engine_env)
+    EPHEMERIS_TIME = 'frame-mid'                            # B-30 (a) 'ephemerides at frame mid-time': Jupiter / Moon vetoes and the
+                                                            # candidates' body labels at the frame's own mid-time; 'date-obs' = production
+                                                            # (its DATE-OBS, Card 7a) - the engine child reads EXOPIPE3_EPHEMERIS_TIME
+                                                            # (deep_step.engine_env; the 10-minute tier: search_sublst.EPHEMERIS_TIME)
     RULED = {'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'ELEVATION_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
              'MIN_EPOCHS': 'IMPL-REFERENCE-NIGHT-MUST-BE-MASTER-NIGHT-AND-14-REBUILD',
@@ -327,6 +328,9 @@ class search_sublst(_Section):
     TABLE_ELEV = True                       # P3_TABLE_ELEV=1 (parent_curve_table.py:162 default); record-only here
     TABLE_ELEV_BANDS = '25-35,35-50,50-90'  # deg; P3_TABLE_ELEV_BANDS (parent_curve_table.py:117 default)
     TABLE_XM_EXEMPT = True                  # P3_TABLE_XM_EXEMPT=1 (parent_curve_table.py:90 default)
+    EPHEMERIS_TIME = 'frame-mid'            # B-30 (a) 'ephemerides at frame mid-time', as search_detect.EPHEMERIS_TIME: Jupiter /
+                                            # Moon vetoes and the candidates' body labels at the window frame's own mid-time;
+                                            # 'date-obs' = production (EXOPIPE3_EPHEMERIS_TIME; tier_sublst.engine_env)
     # engine constants the content tests read (not settable during the window: no environment variable reaches them)
     I_MASK_FLOOR_DEG = 20.0                 # deg; the Stokes I detection mask keeps search_i's module floor at 10 min (the 10-min
                                             # branch sets only the V module; search_i.py:67; DS:911-917; defect R7, report-only, B-25)
@@ -379,7 +383,8 @@ class search_sublst(_Section):
              'SANITY_I_X': 'R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT',
              'SEARCH_TIER_SIGMA': 'R-SEARCH-TIER-THRESHOLD-5-SIGMA-MAD-LANDED-RESEARCH-WORKLIST-493',
              'BEAM_GATE_RATIO': 'R-BEAM-REFUSALS-STAND-1P5',
-             'REFINE_X2': 'R-SUBLST-19H-CARD-SECTION-9-ALL-YES'}
+             'REFINE_X2': 'R-SUBLST-19H-CARD-SECTION-9-ALL-YES',
+             'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
     # engine-hard-coded (CADENCE: the tier IS the 10-minute cadence; I_MASK_FLOOR_DEG: search_i's module constant) and pinned
     # (MASTER_GEN: R-TILT-REMOVED-NEXTGEN; the trees; the v110 null tables and their md5s)
     PROTECTED_KEYS = ('CADENCE', 'I_MASK_FLOOR_DEG', 'MASTER_GEN', 'TREE_SUBDIRS', 'V110_NULL_TRIALS', 'V110_NULL_TRIALS_MD5',

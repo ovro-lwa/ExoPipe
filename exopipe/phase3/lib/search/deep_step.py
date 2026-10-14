@@ -47,6 +47,17 @@ TIER = 'deep'
 _ATT_RE = re.compile(r'^(?P<cell>\d\dh_(?:\d+MHz|Red|Green|Blue|Full))_(?P<s>[IV])_(?P<att>\d{8}T\d{6})$')
 _CHILD_MODULE = 'exopipe.phase3.lib.search.deep_step'
 _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+# WAVE2 B-30: the values of search_detect / search_sublst.EPHEMERIS_TIME (deep_search._eph_time reads them in the engine)
+EPHEMERIS_TIMES = ('frame-mid', 'date-obs')
+
+
+def ephemeris_time(value, key):
+    """EXOPIPE3_EPHEMERIS_TIME for an engine child: ``value`` of config key ``key``; an unknown value refuses here, before
+    any child starts (the engine refuses it too)."""
+    if value not in EPHEMERIS_TIMES:
+        from exopipe.phase3.core.record import Refusal
+        raise Refusal(f'{key} = {value!r} is not one of {EPHEMERIS_TIMES} - REFUSING')
+    return value
 
 
 def _cfg():
@@ -347,7 +358,7 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
            'DEEP_XLA_MEMFRAC': repr(float(sd.FLOW_XLA_MEM_FRACTION)), 'P3_FLOW_PYTHON': legacy.interpreter(sd.FLOW_PYTHON),
            'P3_FLOW_LOCK': sd.FLOW_LOCK, 'TMPDIR': tmpdir, 'PYTHONUNBUFFERED': '1',
            'PYTHONPATH': _PKG_ROOT + (os.pathsep + os.environ['PYTHONPATH'] if os.environ.get('PYTHONPATH') else '')}
-    env['EXOPIPE3_EPHEMERIS_TIME'] = sd.EPHEMERIS_TIME     # WAVE2 B-30: 'frame-mid' (ruled) | 'date-obs' (production)
+    env['EXOPIPE3_EPHEMERIS_TIME'] = ephemeris_time(sd.EPHEMERIS_TIME, 'search_detect.EPHEMERIS_TIME')   # WAVE2 B-30
     if not si.ARCHIVE_WRITE:
         env['P3_ARCHIVE_WRITE'] = '0'
     if not sd.REFINE_X2:

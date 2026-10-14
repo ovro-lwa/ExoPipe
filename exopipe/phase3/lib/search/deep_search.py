@@ -276,17 +276,35 @@ def _jupiter_skycoord(date):
     return SkyCoord(jb.ra, jb.dec)
 
 
+def _eph_mode():
+    """search_detect / search_sublst.EPHEMERIS_TIME as the search step passed it (EXOPIPE3_EPHEMERIS_TIME: deep_step.engine_env,
+    tier_sublst.engine_env); a process no step started takes the ruled default. An unknown value REFUSES (a typo never selects
+    production's DATE-OBS). WAVE2 B-30."""
+    from exopipe.phase3.lib.search.deep_step import EPHEMERIS_TIMES
+    v = os.environ.get('EXOPIPE3_EPHEMERIS_TIME')
+    if v is None:
+        from exopipe.phase3.config import CFG
+        v = CFG.search_detect.EPHEMERIS_TIME
+    if v not in EPHEMERIS_TIMES:
+        raise RuntimeError(f'EXOPIPE3_EPHEMERIS_TIME = {v!r} is not one of {EPHEMERIS_TIMES} - REFUSING')
+    return v
+
+
 def _eph_time(base, date, scope, ot):
-    """The time of the epoch's ephemerides (WAVE2 B-30 (a), Gregg 2026-10-13: "ephemerides at frame mid-time"): ruled
-    'frame-mid' = the frame's own mid-time (search_v.frame_mid_time of its I subtracted header); production 'date-obs' = its
-    DATE-OBS, ``ot`` (Card 7a). EXOPIPE3_EPHEMERIS_TIME is set by the search step from search_detect.EPHEMERIS_TIME. The
-    frame headers keep DATE-OBS = ot (_det_header). None (no time block) -> _body_skycoord's fallback site."""
-    if os.environ.get('EXOPIPE3_EPHEMERIS_TIME', 'date-obs') != 'frame-mid':
+    """The time of the epoch's ephemerides - its Jupiter / Moon vetoes and its candidates' body labels (WAVE2 B-30 (a), Gregg
+    2026-10-13: "ephemerides at frame mid-time"): ruled 'frame-mid' = the frame's own mid-time (search_v.frame_mid_time of its
+    I subtracted header, whose DATE-OBS is ``ot``); production 'date-obs' = ``ot`` (Card 7a). The frame headers keep
+    DATE-OBS = ot (_det_header). A frame whose mid-time cannot be read is the EPHEMERIS_TIME site (DATE-OBS under 'fallback')."""
+    if _eph_mode() == 'date-obs':
         return ot
+    p = f'{base}/subtracted/{date}_I_sub_{scope}.fits'
     try:
-        return sv2.frame_mid_time(fits.getheader(f'{base}/subtracted/{date}_I_sub_{scope}.fits')).isot
-    except Exception:
-        return None
+        return sv2.frame_mid_time(fits.getheader(p)).isot
+    except Exception as e:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.SEARCH_EPHEMERIS_TIME_FALLBACK', f'{date}: the frame mid-time of {p} cannot be read '
+                      f'({type(e).__name__}: {e}) - its ephemerides would be at DATE-OBS {ot}')
+        return ot
 
 
 def _body_skycoord(body, obs_time_str, date):
@@ -329,12 +347,25 @@ DEEP_MIN_EPOCHS = int(os.environ.get('P3_DEEP_MIN_EPOCHS', '1'))
 NPROC_RESID = int(os.environ.get('DEEP_NPROC_RESID', '6'))   # epoch-parallel residual build
 
 
+def _unmeasured_searched(dates, skip, resid, unm_qa3, unm_tier):
+    """WAVE2 B-30: {Stokes: [epochs]} that will be searched although the sanity / search-tier gates could not measure them
+    (``unm_qa3``: epochs without a qa3 rms in weights.csv; ``unm_tier``: (epoch, Stokes) without a stage-1 rms). ``skip`` /
+    ``resid``: per-Stokes refused epochs / built residuals. An epoch a gate refused (gone from ``dates``, or in ``skip``) or
+    without a frame for that Stokes (no residual) is not searched, so it is never named."""
+    return {st: sorted(d for d in dates if d not in skip[st] and d in resid[st] and (d in unm_qa3 or (d, st) in unm_tier))
+            for st in ('I', 'V')}
+
+
+_ZAP_COUNTED = set()   # WAVE2 B-30: files whose zapped pixels this process has counted (streaming re-reads an epoch at every use)
+
+
 def _load(p):
     a = fits.getdata(p).squeeze().astype(float)
     # zap non-finite + corrupt pixels (real sky is << 1e4 Jy/beam; some B
     # co-adds carry a single garbage pixel ~1e26 that breaks the beam fit)
     a[~np.isfinite(a)] = 0.0
-    if (np.abs(a) > 1.0e6).any():
+    if p not in _ZAP_COUNTED and (np.abs(a) > 1.0e6).any():
+        _ZAP_COUNTED.add(p)                            # WAVE2 B-30: once per file
         from exopipe.phase3.core import fallback      # WAVE2 B-30 (a per-item drop: counted)
         fallback.site('fallbacks.SEARCH_ZAP_PIXELS_FALLBACK', f'{p}: pixel(s) above 1e6 Jy/beam zapped to 0',
                       n=int((np.abs(a) > 1.0e6).sum()))
@@ -554,7 +585,8 @@ def _build_residuals_mp(epoch, master, flows, hdr, cd, dates, nproc, spill=None,
         if any(pth is None for pth in out.values()):
             from exopipe.phase3.core import fallback      # WAVE2 B-30
             fallback.site('fallbacks.SEARCH_RESIDUAL_FALLBACK', f'{tag}: the residual of epoch(s) '
-                          f'{sorted(d for d, pth in out.items() if pth is None)} could not be built - not searched')
+                          f'{sorted(d for d, pth in out.items() if pth is None)} could not be built - not searched',
+                          n=sum(1 for pth in out.values() if pth is None))
         for pth in out.values():
             if pth is not None:
                 _SPILLED.append(pth)
@@ -575,7 +607,8 @@ def _build_residuals_mp(epoch, master, flows, hdr, cd, dates, nproc, spill=None,
     if any(r is None for r in out.values()):
         from exopipe.phase3.core import fallback      # WAVE2 B-30
         fallback.site('fallbacks.SEARCH_RESIDUAL_FALLBACK', f'{tag}: the residual of epoch(s) '
-                      f'{sorted(d for d, r in out.items() if r is None)} could not be built - not searched')
+                      f'{sorted(d for d, r in out.items() if r is None)} could not be built - not searched',
+                      n=sum(1 for r in out.values() if r is None))
     return {d: r for d, r in out.items() if r is not None}
 
 
@@ -1129,10 +1162,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _js.dump({'master': os.path.basename(mI), 'master_md5_data': _gen,
                   'CONSTDIG': hdr0.get('CONSTDIG', ''), 'written_by': 'phase3_deep', 'n_flows': len(flows)},
                  open(_gsc + f'.part{os.getpid()}', 'w')); os.replace(_gsc + f'.part{os.getpid()}', _gsc)   # pid-unique: V and I searches of one cell may run concurrently (2026-09-12 race)
-    if any(d not in flows for d in dates):
-        from exopipe.phase3.core import fallback      # WAVE2 B-30
-        fallback.site('fallbacks.SEARCH_EPOCH_FLOW_FALLBACK', f'{lst} {scope}: no alignment flow for epoch(s) '
-                      f'{[d for d in dates if d not in flows]} - they would not be searched')
+    _noflow = [d for d in dates if d not in flows]   # WAVE2 B-30: the site is after the exclusion gates below
     dates = [d for d in dates if d in flows]
     # (0) drop data_decisions-excluded epochs — the master already excludes them, but the
     # per-epoch residual still exists on disk, so the search would otherwise pull them back
@@ -1176,6 +1206,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 for d in _egd:
                     _ef.write(f'{lst},{scope},{d},{_attempt}\n')
             print(f'  {lst} {scope}: EPOCH GATE - {len(_egd)} epoch(s) REFUSED from both searches: {_egd}')
+    # WAVE2 B-30: epochs without a flow that the gates above do not refuse (data_decisions; deep: night-image, epoch gate)
+    _noflow = [d for d in _noflow if not is_excluded(lst, scope, _kd(d), _excl)
+               and not (cadence == 'deep' and (_kd(d) in _ngf or _kd(d) in _egf))]
+    if _noflow:
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.SEARCH_EPOCH_FLOW_FALLBACK', f'{lst} {scope}: no alignment flow for epoch(s) {_noflow} '
+                      f'- they would not be searched', n=len(_noflow))
     # (1) TWO-TIER QUALITY POLICY (Gregg ruling 2026-08-26, supersedes the
     # earlier QA-outlier search drop / G-02): stage-2 QA rejection omits an
     # epoch from the CO-ADD ONLY; every non-data_decisions epoch is still
@@ -1196,6 +1233,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # 10^5-10^16 Jy/beam, tranche-2a) and is NOT transient-searched. A
     # refusal, logged per image; the only images the search may drop on
     # its own are ones the QA has MEASURED as broken.
+    _unm_qa3, _unm_tier = set(), set()   # WAVE2 B-30: epochs the sanity / search-tier gates could not measure
     try:
         import csv as _csv
         _wrows = list(_csv.DictReader(
@@ -1205,6 +1243,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _fin = sorted(v for v in _wr.values() if np.isfinite(v) and v > 0)
         if len(_fin) >= 5:
             _med = _fin[len(_fin) // 2]
+            _unm_qa3 = {d for d in dates if not (_wr.get(_kd(d), 0) > 0)}   # WAVE2 B-30: unmeasured (named after (1e))
             _bad = [d for d in dates
                     if _wr.get(_kd(d), 0) > 10.0 * _med]
             # Stokes I sanity gate at SANITY_I_X (3x, Gregg 2026-09-05: CLEAN-divergence
@@ -1293,6 +1332,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             for d in dates:
                 if _rm.get(_key(d), 0) > _thr:
                     _tier.append((d, _st, _rm[_key(d)], _thr))
+            _unm_tier |= {(d, _st) for d in dates if not (_rm.get(_key(d), 0) > 0)}   # WAVE2 B-30: named after (1e)
         # GREGG 2026-09-13 ("this is a mistake. That sounds like the gate for the co-add, not the search!"): the
         # search-tier admission is PER STOKES - an epoch (or 10-minute frame) is refused from the I search on the I
         # stage-1 rms and from the V search on the V rms, never from both on either. Until this fix the deep run
@@ -1317,6 +1357,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # master constituent OR a current-generation QA-omitted epoch, AND both Stokes
     # headers carry a positive beam. Refused epochs are logged per image, never
     # silently dropped, and never fail the cell.
+    if not os.path.exists(f'{base}/coadd_final/weights.csv'):
+        from exopipe.phase3.core import fallback      # WAVE2 B-30
+        fallback.site('fallbacks.SEARCH_WEIGHTS_FALLBACK', f'{base}/coadd_final/weights.csv missing - the input-provenance '
+                      f'gate would not test the epochs\' generation')
     try:
         _cons = {str(x).split()[-1] for x in hdr0.get('HISTORY', []) if str(x).startswith('COADD constituent')}
         # current-generation record = the FINAL co-add's weights.csv (lists every epoch the
@@ -1536,6 +1580,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
 
     gled_rows, gimg_rows = [], []
     v_pending, i_pending = [], []
+    _te_v = {}    # WAVE2 B-30: each V epoch's ephemeris time (its vetoes; its candidates' body labels)
     _gimgI = {}   # I image rows by date, completed after the post-loop curve stage
     _fhV, _fhI = {}, {}   # conformant frame headers per date (cutouts inherit them)
     # ── R-ROUND2-RATIFIED shared per-cell inputs ────────────────────────
@@ -1630,9 +1675,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                       f'(frame rms >{SANITY_I_X:.0f}x cell median {_vmed*1e3:.0f} mJy): {sorted(skip_V_dates)}')
         skip_V_dates |= {d for d in _skipV_tier if d in resid_V}    # per-Stokes search-tier refusals (Gregg 2026-09-13)
     except Exception as _e:
-        print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
         from exopipe.phase3.core import fallback      # WAVE2 B-30
+        if isinstance(_e, fallback.FallbackRefused):   # WAVE2 B-30: a frame's site above refused (recorded once): raise it
+            raise
+        print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
         fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope}: the V sanity gate could not run ({_e})')
+    # WAVE2 B-30: an epoch searched although the sanity / search-tier gates could not measure it - named here, where each
+    # Stokes' search set is final (an epoch a gate refused, or without a frame, is not searched and never refuses the cell)
+    for _st, _ds in _unmeasured_searched(dates, {'I': skip_I_dates, 'V': skip_V_dates}, {'I': resid_I, 'V': resid_V},
+                                         _unm_qa3, _unm_tier).items():
+        if _ds:
+            from exopipe.phase3.core import fallback      # WAVE2 B-30
+            fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope} {_st}: epoch(s) {_ds} would be searched '
+                          f'unmeasured (no qa3 rms in weights.csv / no stage-1 {_st} rms)', n=len(_ds))
     # (1f) SOURCE-EXTRACTION REFUSAL (Gregg 2026-10-11, 'Agreed': "a crashed image is recorded as refused, with the error,
     # and is not counted as searched. The rest of the cell is searched normally."; ledger
     # FINDING-SEARCH-SWALLOWS-PYBDSF-FAILURES-SILENT-ZERO-CANDIDATES). Deep cadence: PyBDSF failing on a search image raises
@@ -1897,6 +1952,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 # Card 7a (ratified 2026-08-11): ephemeris positions at the
                 # EPOCH's own observation time, not a fixed convention.
                 _te = _eph_time(ebase, d, scope, ot)      # WAVE2 B-30: frame mid-time (ruled) | DATE-OBS (production)
+                _te_v[d] = _te                            # WAVE2 B-30: the body labels below use the same time
                 jup = _body_skycoord('jupiter', _te, _kd(d)) if jrad else None
                 moon = _body_skycoord('moon', _te, _kd(d))
                 gated = []
@@ -2076,7 +2132,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             if finals and not GATE_LEDGER_ONLY:
                 pc.write_candidates(root, label, finals, resid_I[d_],
                                     master_I, hdr_, lst, d_, scope, 'I',
-                                    cadence, em, cd, ot_, frame_hdr=_fhI.get(d_))
+                                    cadence, em, cd, _te_, frame_hdr=_fhI.get(d_))   # WAVE2 B-30: labels at _te_
                 nwr += len(finals)
     # ── IN-CHAIN v110 VERDICT STAGE (R-ROUND2-RATIFIED, Gregg 2026-09-03:
     # V chain = 5sig -> mstruct -> v110 in-chain [MARGINAL reading] ->
@@ -2145,8 +2201,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                        jup_veto=0 if c.get('_pm', 1) else '', final=1))
         if finals and not GATE_LEDGER_ONLY:
             pc.write_candidates(root, label, finals, resid_V[d], master_I,
-                                hdr, lst, d, scope, 'V', cadence, em, cd, ot,
-                                frame_hdr=_fhV.get(d))
+                                hdr, lst, d, scope, 'V', cadence, em, cd,
+                                _te_v[d] if d in _te_v else _eph_time(ebase, d, scope, ot),   # WAVE2 B-30: labels at the
+                                frame_hdr=_fhV.get(d))                                        # vetoes' time
             nwr += len(finals)
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)

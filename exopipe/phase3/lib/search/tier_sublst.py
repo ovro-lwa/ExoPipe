@@ -802,10 +802,12 @@ def preflight(args, run, cell, lst, band, stokes, date):
 
 def engine_env(plan, attempt):
     """search.md 7.3 (sub-LST rows): the engine environment, built from config only."""
+    from exopipe.phase3.lib.search.deep_step import ephemeris_time
     s = cfg().search_sublst
     label = plan['label']
     return {
         'XLA_PYTHON_CLIENT_PREALLOCATE': 'true' if s.XLA_PREALLOCATE else 'false',
+        'EXOPIPE3_EPHEMERIS_TIME': ephemeris_time(s.EPHEMERIS_TIME, 'search_sublst.EPHEMERIS_TIME'),   # WAVE2 B-30
         'P3_TENMIN_ROOT': tree_root(plan['arm']),
         'P3_COADD_ROOT': coadd_root(plan['lst']),
         'P3_MASTER_GEN': s.MASTER_GEN,
@@ -866,7 +868,9 @@ def engine_child(argj):
         if isinstance(e, SystemExit) and e.code in (0, None):
             raise
         msg = str(e)
-        refused = isinstance(e, RuntimeError) and any(m in msg for m in a['markers'])
+        from exopipe.phase3.core.record import Refusal
+        # WAVE2 B-30: a Refusal (a fallback site, core/fallback.py) is refused, exit 2, as in deep_step._child
+        refused = isinstance(e, Refusal) or (isinstance(e, RuntimeError) and any(m in msg for m in a['markers']))
         traceback.print_exc()
         sys.stdout.flush()
         _w({'ok': False, 'type': type(e).__name__, 'message': msg[:4000], 'refusal': refused})
