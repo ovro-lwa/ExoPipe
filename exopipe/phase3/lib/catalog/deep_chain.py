@@ -56,7 +56,7 @@ LIVE_KEYS = {
                 'DEEP_ASSOC_WORKERS', 'DEEP_LOG', 'DEEP_PYTHON', 'PARENTS_COMMAND', 'BINDING_CHECK', 'FORCED_STEP'),
     'catalog_merge': ('HARVEST_STOKES', 'HARVEST_SSH_SLEEP_S', 'HARVEST_DEST_ROOT', 'UNHARVESTED', 'TEST_BACKING_KEYS'),
     'catalog_conform': ('SIZE_STEP', 'TABLE_ELEV'),
-    'catalog_fitpos': ('NPROC',),
+    'catalog_fitpos': ('NPROC', 'ZERO_STAT_ERROR'),       # ZERO_STAT_ERROR: read by the fitted_catalog content test of the fitpos stage
     'catalog_select': ('PARENT_EXCLUSION', 'VERDICT_INPUT'),
     'catalog_associate': (),
     'catalog_fork': ('STOKES', 'NPROC', 'N_RANDOM', 'TABLES_SOURCE_DIR'),
