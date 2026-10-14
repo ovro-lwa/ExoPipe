@@ -675,15 +675,17 @@ def test_item5_guard_in_process():
     from astropy.io import fits
     from exopipe.phase3.core import guard
     with Scratch('item5') as d:
-        if _under_default_allowed(d):
-            print(f'SKIP denial checks: scratch {d} is under /tmp or $TMPDIR, which the guard always allows')
-            return
         out, other = os.path.join(d, 'out'), os.path.join(d, 'other')
         os.makedirs(other)
         victim = os.path.join(other, 'victim.txt')
         open(victim, 'w').write('production bytes')
-        # default roots kept: astropy probes mmap support with a temporary file in /tmp on every write
-        guard.install([out], log=os.path.join(d, 'refusals.log'))
+        # the guard WITHOUT its always-allowed /tmp and $TMPDIR (review 2026-10-14 t2: under /tmp every denial check was
+        # skipped): a private temporary directory instead, which astropy's mmap probe uses on every write
+        ptmp = os.path.join(d, 'ptmp')
+        os.makedirs(ptmp)
+        saved = (tf.tempdir, os.environ.get('TMPDIR'))
+        tf.tempdir, os.environ['TMPDIR'] = ptmp, ptmp
+        guard.install([out], defaults=('/dev/null',), log=os.path.join(d, 'refusals.log'))
         try:
             assert guard.active()
             # allowed: under --out (created, with the parents it needs), /dev/null, an existing directory, reads
@@ -771,6 +773,11 @@ def test_item5_guard_in_process():
             assert guard._STATE['refused'] >= len(denied)
         finally:
             guard.uninstall()
+            tf.tempdir = saved[0]
+            if saved[1] is None:
+                os.environ.pop('TMPDIR', None)
+            else:
+                os.environ['TMPDIR'] = saved[1]
         assert not guard.active()
         open(os.path.join(other, 'after.txt'), 'w').write('free again')          # restored
         log = open(os.path.join(d, 'refusals.log')).read()
