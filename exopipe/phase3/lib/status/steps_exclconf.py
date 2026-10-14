@@ -9,8 +9,11 @@ Three parts (deep; sub-LST and snapshot have the served part only):
   master-working   NEW: the installed working-tree masters (<COADD_SB_ROOT>/<cell>/coadd_final/WORKING_MASTERS): every
                    'COADD constituent' HISTORY line judged with core.exclusions now; BREACH when the newest
                    data_decisions backup at or before the master's mtime already excluded it (judged with core.exclusions
-                   on that backup), STALE when it did not, UNKNOWN-EPOCH when no backup is that old (the rule of
-                   coadd_exclusion_conformance.py:47-80).
+                   on that backup), STALE when it did not, UNKNOWN-EPOCH when no backup is that old (the snapshot choice
+                   of coadd_exclusion_conformance.py:47-80). One difference, on purpose: the backup is judged with the
+                   co-add rule (a band master is excluded by its member subbands), where the production script's
+                   excluded_at (:48-53) looks the BAND name up among the backup's subband rows - so it calls every
+                   band-master constituent excluded before the build STALE, never BREACH (finding, reported).
   served-run       every CSV of each run the hub registry serves for the tier (judgements/ skipped): each row keyed by
                    snapshot_serve_exclusion_gate.keys_of (in place; its main() is NOT called - it writes into the run dir),
                    plus lst/date/scope rows (search image tables); each key judged with core.exclusions now.
@@ -152,7 +155,7 @@ def scan_csv(args):
     ex = E.load()
     hits, n, nk, cache = [], 0, 0, {}
     try:
-        with open(path, newline='', encoding='utf-8', errors='replace') as fh:
+        with open(path, newline='', encoding='utf-8') as fh:     # undecodable = unreadable (the gate's rule, :67-85)
             rd = csv.DictReader(fh)
             if not rd.fieldnames:
                 return hits, 0, 0, ''
@@ -172,7 +175,7 @@ def scan_csv(args):
                                          row_id=row.get('cand_id') or row.get('cell') or row.get('source_id') or '',
                                          lst=k[0], date=k[1], band=k[2], verdict='EXCLUDED-ROW',
                                          note='excluded now (core.exclusions)'))
-    except (OSError, csv.Error) as e:
+    except (OSError, csv.Error, UnicodeDecodeError) as e:
         return hits, n, nk, f'{rel}: {e}'
     return hits, n, nk, ''
 
@@ -182,8 +185,7 @@ def served_run_files(run_dir):
     out = []
     for p in sorted(glob.glob(os.path.join(run_dir, '**', '*.csv'), recursive=True)):
         rel = os.path.relpath(p, run_dir)
-        if rel.split(os.sep)[0] in C.EXCLCONF_SKIP_DIRS or any(part in C.EXCLCONF_SKIP_DIRS
-                                                                 for part in rel.split(os.sep)[:-1]):
+        if any(rel.startswith(d + os.sep) for d in C.EXCLCONF_SKIP_DIRS):   # top level only, as the gate (:65)
             continue
         if os.path.basename(p) in C.EXCLCONF_SKIP_FILES:
             continue

@@ -161,14 +161,28 @@ def coverage_rows(path, **ctx):
                 return False, k, f"census_class {r['census_class']} != {COV.census_class(r)} (census precedence)"
         return True, len(rows), f'{len(rows)} rows; {sum(int(r["gap"]) for r in rows)} gaps; exclusions agree now'
     if 'windows' in cols or 'in_worklist' in cols:      # sub-LST / snapshot
-        need = COV.SUBLST_COLUMNS if 'windows' in cols else COV.SNAPSHOT_COLUMNS
+        sub = 'windows' in cols
+        need = COV.SUBLST_COLUMNS if sub else COV.SNAPSHOT_COLUMNS
         miss = [c for c in need if c not in cols]
         if miss:
             return False, None, f'missing columns {miss}'
+        ship = K.cfg().paths.SNAPSHOT_FLEET_OUT
         for r in rows:
+            k = (r['lst'], r['scope']) if sub else r['cell']
             if int(r['gap']) != int(bool(r['reason'])):
-                return False, r.get('cell') or (r.get('lst'), r.get('scope')), 'gap without reason or reason without gap'
-        return True, len(rows), f'{len(rows)} rows; {sum(int(r["gap"]) for r in rows)} gaps'
+                return False, k, 'gap without reason or reason without gap'
+            want = COV.sublst_reasons(r) if sub else COV.snapshot_reasons(r)
+            got = [x.split(':')[0] for x in r['reason'].split('; ') if x]
+            if got != [x.split(':')[0] for x in want]:
+                return False, k, f'reasons {got} != re-derived from the row {want}'
+            if sub:
+                for S in ('V', 'I'):                  # 'done' only from the search record, re-read now
+                    if (r[f'search_{S}'] == 'done') != COV.sublst_search_record(f"{r['lst']}_{r['scope']}", S)[0]:
+                        return False, k, f'search_{S}={r[f"search_{S}"]} but the search record says otherwise now'
+            elif int(r['shipped']) != int(COV.snapshot_search_records(os.path.join(ship, r['cell']))[0]):
+                return False, k, f"shipped={r['shipped']} but the cell's runinfo / night-refusal records say otherwise now"
+        return True, len(rows), (f'{len(rows)} rows; {sum(int(r["gap"]) for r in rows)} gaps; reasons and search records '
+                                 f're-derived')
     return False, None, 'not a coverage table (no census_class / windows / in_worklist column)'
 
 
@@ -206,6 +220,13 @@ def rebuild_due_rule(path, **ctx):
         for d in new:
             if ex.is_excluded(lst, scope, d):
                 return False, c, f'new night {d} is excluded now'
+        if r['new_source'] not in RB.NEW_SOURCES:
+            return False, c, f"new_source {r['new_source']!r}"
+        if r['new_source'] == 'admission-record':     # D-ADMIT hook: every new night is a row of the cell's record
+            rp = os.path.join(root, c, 'coadd_final', str(K.cfg().status_rebuild.ADMISSION_RECORD))
+            adm = {x['date'] for x in _rows(rp)} if os.path.exists(rp) else set()
+            if set(new) - adm:
+                return False, c, f'new night(s) {sorted(set(new) - adm)[:3]} not in the admission record {rp}'
         w = os.path.join(root, c, 'coadd_final', K.cfg().status_rebuild.BUILD_RECORD)
         if os.path.exists(w):
             wr = _rows(w)
@@ -325,8 +346,7 @@ def report_counts(path, **ctx):
     section is present (empty is allowed, absent is not)."""
     from exopipe.phase3.lib.status import steps_report as RP
     if not path.endswith('.json'):
-        txt = open(path).read()
-        return (('ExoPipe' in txt or 'status' in txt) and len(txt) > 20), len(txt), 'report text'
+        return _report_text(path)
     j = json.load(open(path))
     miss = [s for s in RP.REPORT_SECTIONS if s not in j]
     if miss:
@@ -339,7 +359,66 @@ def report_counts(path, **ctx):
     fp = K.exclusions().fingerprint()
     if dd.get('sha1') == fp['sha1'] and dd.get('n_exclude_keys') != fp['n_exclude_rows']:
         return False, None, 'exclude-key count differs from core.exclusions on the same file'
-    return True, len(j), 'every section present; counters agree'
+    bad = _masters_rederived(j)
+    if bad:
+        return False, None, bad
+    return True, len(j), 'every section present; counters agree (ledger, data_decisions, masters re-read from the files)'
+
+
+def _masters_rederived(j):
+    """The masters section re-derived from the master FILES now (phase_status.master_inventory: COADDOP card), for every
+    root the report read, when no master of that root was written after the report (else the state moved on: skipped)."""
+    from exopipe.phase3.lib.status import phase_status as PS
+    import calendar
+    import time as _t
+    try:
+        written = calendar.timegm(_t.strptime(j.get('written', ''), '%Y-%m-%dT%H:%M:%SZ'))
+    except ValueError:
+        return f"report 'written' time unreadable: {j.get('written')!r}"
+    for r, v in (j.get('masters') or {}).items():
+        if not isinstance(v, dict):
+            continue
+        if not os.path.isdir(r):
+            return f'masters root {r} read by the report is gone'
+        cells = [d for d in K.listdir(r) if len(d) > 3 and d[2] == 'h' and '_' in d]
+        inv = PS.master_inventory(r, cells)
+        if inv['newest'] and inv['newest'][0] > written + 1:
+            continue
+        if (inv['masters'], inv['coaddop'], len(cells)) != (v.get('masters_coaddop'), v.get('coaddop'), v.get('cells')):
+            return (f"masters of {r}: report {v.get('masters_coaddop')} {v.get('coaddop')} in {v.get('cells')} cells, "
+                    f"the files now {inv['masters']} {inv['coaddop']} in {len(cells)} cells")
+    return ''
+
+
+def _report_text(path):
+    """The text twin of a report: every CLAUDE.md 1 section line is present and its counts equal the JSON beside it."""
+    from exopipe.phase3.lib.status import steps_report as RP
+    txt = open(path).read()
+    jp = path[:-4] + '.json'
+    if not os.path.exists(jp):
+        return False, None, f'no JSON twin {os.path.basename(jp)} beside the text'
+    j = json.load(open(jp))
+    lines = txt.splitlines()
+    if RP.TEXT_HEADER not in lines:
+        return False, None, f'no line {RP.TEXT_HEADER!r}'
+    lines = lines[lines.index(RP.TEXT_HEADER) + 1:]           # the new sections (phase_status.py's own text precedes)
+    miss = [t for t in RP.TEXT_TAGS if not any(ln.startswith(t) for ln in lines)]
+    if miss:
+        return False, miss, f'section lines absent: {miss}'
+    led = next(ln for ln in lines if ln.startswith('[ledger]'))
+    if not led.startswith(f"[ledger] {j['phase_completion']['rows']} "):
+        return False, led[:80], f"ledger row count differs from the JSON ({j['phase_completion']['rows']})"
+    dd = next(ln for ln in lines if ln.startswith('[data_decisions]'))
+    if not dd.startswith(f"[data_decisions] {j['data_decisions']['n_exclude_keys']} exclude keys") or \
+            j['data_decisions']['sha1'][:12] not in dd:
+        return False, dd[:80], 'data_decisions line differs from the JSON'
+    rj = next(ln for ln in lines if ln.startswith('[re-adjudication]'))
+    if not rj.startswith(f"[re-adjudication] {j['readjudication']['rows']} "):
+        return False, rj[:80], 're-adjudication count differs from the JSON'
+    ms = next(ln for ln in lines if ln.startswith('[masters]'))
+    if ms != '[masters] ' + RP.masters_text(j['masters']):
+        return False, ms[:120], 'masters line differs from the JSON'
+    return True, len(lines), 'every section line present; counts equal the JSON twin'
 
 
 def _sha1(p):
@@ -348,7 +427,10 @@ def _sha1(p):
 
 
 @content_test('readjudication_list')
-def readjudication_rows(path, **ctx):
+def readjudication_rows(path, ledger=None, ledger_sha1=None, previous=None, **ctx):
+    """Columns; every row an all- or partial-excluded night with an exclude row now; go_no_go text. With the run's context
+    (the ledger it read and the previous state it compared with): the rows are EXACTLY the excluded nights whose
+    (p1_peel, p2) differs from the previous state - none missing, none extra (CLAUDE.md 1.3)."""
     R = K.cfg().status_report
     cols = _cols(path)
     if cols != list(R.READJUDICATION_COLUMNS):
@@ -363,6 +445,14 @@ def readjudication_rows(path, **ctx):
             return False, (r['lst'], r['date']), 'night has no exclude row now'
         if r['go_no_go'] != R.READJUDICATION_GO:
             return False, (r['lst'], r['date']), 'go_no_go text'
+    if previous is not None and ledger and os.path.exists(ledger) and ledger_sha1 and _sha1(ledger) == ledger_sha1:
+        from exopipe.phase3.lib.status import steps_report as RP
+        want = {(r['lst'], r['date']) for r in RP.readjudication_rows(_rows(ledger), previous)}
+        got = {(r['lst'], r['date']) for r in rows}
+        if want != got:
+            return False, len(want ^ got), (f'{len(want - got)} advanced excluded nights missing (e.g. {sorted(want - got)[:2]}), '
+                                            f'{len(got - want)} listed without an advance')
+        return True, len(rows), f'{len(rows)} excluded nights advanced since the previous state (re-derived from the ledger)'
     return True, len(rows), f'{len(rows)} excluded nights proposed for re-adjudication (empty allowed)'
 
 
@@ -526,8 +616,12 @@ def ratio_rule(path, **ctx):
             return False, r.get('path'), f'area_ratio {q} != bmaj x bmin / cell median {a * b / m:.4f}'
     fl = os.path.join(os.path.dirname(path), 'beam_audit_flagged.csv')
     if os.path.exists(fl):
-        want = {r['path'] for r in rows if _f(r['area_ratio']) is not None and _f(r['area_ratio']) >= Q.BEAM_RATIO_FLAG}
-        got = {r['path'] for r in _rows(fl)}
+        # beam_audit.py:82 flags on the unrounded ratio, the file stores it to 3 decimals (:79): a stored ratio within
+        # half a unit of the threshold is undecidable from the file and left out of the comparison
+        amb = {r['path'] for r in rows if _f(r['area_ratio']) is not None and
+               abs(_f(r['area_ratio']) - Q.BEAM_RATIO_FLAG) <= 0.0005}
+        want = {r['path'] for r in rows if _f(r['area_ratio']) is not None and _f(r['area_ratio']) >= Q.BEAM_RATIO_FLAG} - amb
+        got = {r['path'] for r in _rows(fl)} - amb
         if want != got:
             return False, len(want ^ got), f'flagged file differs from rows with area_ratio >= {Q.BEAM_RATIO_FLAG}'
     return True, len(rows), f'{len(rows)} epochs; ratios and flags re-derived'
@@ -549,8 +643,22 @@ def png_decodes(path, **ctx):
     return True, (w, h), 'decodes; size as configured; not blank'
 
 
+def _bandpass_decimals():
+    """The rounding of bandpass_phase_warp.py (round(v, N) at :112), read from its source (never executed)."""
+    from exopipe.phase3.lib.status import steps_inplace as IP
+    m = re.search(r'round\(v,\s*(\d+)\)', open(IP.legacy_script(K.cfg().status_qa.BANDPASS_SCRIPT)).read())
+    return int(m.group(1)) if m else None
+
+
 @content_test('bandpass_phase_qa')
-def bandpass_rows(path, **ctx):
+def bandpass_rows(path, tables_list=None, **ctx):
+    """One row per table (and, given the run's shard list ``tables_list``, exactly the listed tables); error rows carry no
+    measures; ratio = res_hi / res_in within the rounding of the three stored values (round(v, BANDPASS_DECIMALS),
+    bandpass_phase_warp.py:86-87, :112); rows sorted by (cal_date, cal_lst) (run_bandpass_phase_qa.sh:19)."""
+    nd = K.cfg().status_qa.BANDPASS_DECIMALS
+    if _bandpass_decimals() != nd:
+        return False, None, f'status_qa.BANDPASS_DECIMALS {nd} differs from the in-place script ({_bandpass_decimals()})'
+    h = 0.5 * 10.0 ** -nd                             # half a unit of the last stored decimal
     rows = _rows(path)
     seen = set()
     for r in rows:
@@ -562,12 +670,22 @@ def bandpass_rows(path, **ctx):
                 return False, r['table'], 'error row with measures'
             continue
         ri, rh, ra = _f(r['res_in']), _f(r['res_hi']), _f(r['ratio'])
-        if None not in (ri, rh, ra) and ri > 0 and abs(rh / ri - ra) > 0.002 + 1e-3 * abs(ra):
-            return False, r['table'], f'ratio {ra} != res_hi/res_in {rh / ri:.4f}'
+        if None not in (ri, rh, ra) and ri > h:
+            bound = h * (1.0 + 1.0 / (ri - h) + (rh + h) / (ri - h) ** 2) * 1.001
+            if abs(rh / ri - ra) > bound:
+                return False, r['table'], f'ratio {ra} != res_hi/res_in {rh / ri:.5f} (rounding bound {bound:.5f})'
     keys = [(r['cal_date'], r['cal_lst']) for r in rows]
     if keys != sorted(keys):
         return False, None, 'rows not sorted by (cal_date, cal_lst)'
-    return True, len(rows), f'{len(rows)} tables, {sum(1 for r in rows if r.get("error"))} failed'
+    if tables_list:
+        if not os.path.exists(tables_list):
+            return False, tables_list, 'the shard table list of the run is gone (cannot check one row per table)'
+        want = {ln.strip() for ln in open(tables_list) if ln.strip()}
+        if want != seen:
+            return False, len(want ^ seen), (f'{len(want - seen)} listed tables without a row (e.g. {sorted(want - seen)[:1]}), '
+                                             f'{len(seen - want)} rows not in the list')
+    return True, len(rows), f'{len(rows)} tables, {sum(1 for r in rows if r.get("error"))} failed' + \
+        (' ; one row per listed table' if tables_list else '')
 
 
 @content_test('provenance_audit')
@@ -666,13 +784,23 @@ def status_page(path, **ctx):
             return False, None, f'page summary differs from {lat} ({npass} of {len(rows)})'
         return True, npass, f'{npass} of {len(rows)} PASS as the table'
     if b == C.status_pages.REGISTER_PAGE:
+        # the page's count table (build_ratified_register.py:77-78: one <th> per status of REGISTER_ORDER present, then
+        # 'total'; one <td> per count) equals Counter(status) of the register beside it (this run's, else production's)
         reg = os.path.join(os.path.dirname(d), 'clv15', os.path.basename(C.status_report.REGISTER))
         reg = reg if os.path.exists(reg) else C.status_report.REGISTER
-        cnt = collections.Counter(r['status'] for r in _rows(reg))
-        for st, n in cnt.items():
-            if st and str(n) not in s:
-                return False, st, f'count of {st} ({n}) not on the page'
-        return True, sum(cnt.values()), 'status counts on the page'
+        rr = _rows(reg)
+        cnt = collections.Counter(r['status'] for r in rr)
+        m = re.search(r'<table><tr>((?:<th>[^<]*</th>)+)</tr><tr>((?:<td[^>]*>[^<]*</td>)+)</tr></table>', s)
+        if not m:
+            return False, None, 'no status count table on the page'
+        page = dict(zip(re.findall(r'<th>([^<]*)</th>', m.group(1)), re.findall(r'<td[^>]*>([^<]*)</td>', m.group(2))))
+        want = {st: str(cnt[st]) for st in C.status_pages.REGISTER_ORDER if cnt.get(st)}
+        want['total'] = str(len(rr))
+        if page != want:
+            diff = sorted(k for k in set(page) | set(want) if page.get(k) != want.get(k))
+            return False, diff[:3], f'page counts differ from {reg}: ' + ', '.join(
+                f'{k} page {page.get(k)} register {want.get(k)}' for k in diff[:3])
+        return True, len(rr), f'status counts on the page = {os.path.basename(reg)} ({len(rr)} rows)'
     links = set(re.findall(r'href="((?:nights|dates)/[^"]+\.html)"', s))
     missing = [u for u in links if not os.path.exists(os.path.join(d, u))]
     if missing:
@@ -785,7 +913,11 @@ def status_precedence(path, **ctx):
 
 
 @content_test('snapshot_batch_list')
-def list_rule(path, **ctx):
+def list_rule(path, all=None, max_new=None, base=None, **ctx):
+    """list = base + new (no duplicate); every new cell is a candidate whose audit status is in LIST_OK (LIST_OK_ALL with
+    --all); new cells in candidate order; at most max_new new cells unless --all; every candidate not listed is in
+    left_out.txt (snapshot_batch_lists.py:86-115). ``all``/``max_new``/``base`` come from the run (record context); without
+    them only the status set LIST_OK_ALL is checked."""
     C = K.cfg().status_snapshot
     cells = [l.split()[0] for l in open(path) if l.strip()]
     if len(cells) != len(set(cells)):
@@ -800,10 +932,20 @@ def list_rule(path, **ctx):
     cands = [l.strip() for l in open(cand) if l.strip()]
     lefts = {l.split()[0] for l in open(left) if l.strip()}
     new = [c for c in cands if c in cells]
+    ok = C.LIST_OK_ALL if (all is None or all) else C.LIST_OK
     for c in new:
-        if st.get(c) not in C.LIST_OK_ALL:
-            return False, c, f'new cell with audit status {st.get(c)}'
+        if st.get(c) not in ok:
+            return False, c, f'new cell with audit status {st.get(c)} (allowed {list(ok)})'
     missing = [c for c in cands if c not in cells and c not in lefts]
     if missing:
         return False, missing[0], 'candidate neither listed nor in left_out'
+    if base is not None:
+        if not os.path.exists(base):
+            return False, base, 'base list of the run is gone'
+        bl = [l.split()[0] if len(l.split()) == 1 else '_'.join(l.split()[:2]) for l in open(base)
+              if l.split() and not l.split()[0].startswith('#')]
+        if cells != bl + new:
+            return False, None, f'list != base ({len(bl)}) + new candidates in candidate order ({len(new)})'
+    if all is False and max_new is not None and len(new) > int(max_new):
+        return False, len(new), f'{len(new)} new cells > max_new {max_new}'
     return True, len(cells), f'{len(cells)} cells ({len(new)} new); every candidate listed or left out with its status'

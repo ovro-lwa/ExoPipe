@@ -108,18 +108,19 @@ def served_diff(run_a, run_b, tier):
     for (S, _), cids in B.items():
         in_b[S].update(cids)
     root = K.cfg().paths.COADD_SB_ROOT
-    fails = {}
+    fails, gate_unread = {}, []
 
     def rejected(cell, night):
         if cell not in fails:
             f = set()
             fin = os.path.join(root, cell, 'coadd_final')
             from exopipe.phase3.lib.masters import night_image_gate as NG, epoch_gate as EG
-            for fn in (lambda: NG.failed_dates(fin), lambda: EG.failed_dates(fin, cell.split('_', 1)[1])):
+            for gname, fn in (('night_image_gate', lambda: NG.failed_dates(fin)),
+                              ('epoch_gate', lambda: EG.failed_dates(fin, cell.split('_', 1)[1]))):
                 try:
                     f |= set(fn())
-                except Exception:                     # noqa: BLE001 - served_change :27-30 (a record absent / stale)
-                    pass
+                except Exception as e:                # noqa: BLE001 - served_change :27-30 skips it; counted (S-G16)
+                    gate_unread.append(f'{cell} {gname}: {type(e).__name__}: {e}'[:200])
             fails[cell] = f
         return night[:10] in fails[cell]
     jud = judgements(run_a)
@@ -155,6 +156,7 @@ def served_diff(run_a, run_b, tier):
             rows.append(dict(stokes=S, source=sid, side='B', status='new', label=jud.get((S, sid), ''),
                              detections=len(cids), kept=0, night_rejected=0, research=0, removed=0, lost=0))
     summary = {'A': run_a, 'B': run_b, 'tier': tier, 'researched_cells': len(researched),
+               'gate_records_unread': len(gate_unread), 'gate_records_unread_examples': gate_unread[:20],
                'counts': {f'{S} {st}': n for (S, st), n in sorted(summ.items())},
                'served_A': {S: sum(1 for (s, _) in A if s == S) for S in ('I', 'V')},
                'served_B': {S: sum(1 for (s, _) in B if s == S) for S in ('I', 'V')}}
@@ -163,7 +165,8 @@ def served_diff(run_a, run_b, tier):
 
 def summary_text(summary):
     L = [f"served diff {os.path.basename(summary['A'])} -> {os.path.basename(summary['B'])} (tier {summary['tier']}; "
-         f"{summary['researched_cells']} cells searched anew)"]
+         f"{summary['researched_cells']} cells searched anew; {summary.get('gate_records_unread', 0)} cell gate records "
+         f"unreadable - their nights not judged night_rejected)"]
     c = summary['counts']
     for S in ('I', 'V'):
         L.append(f"Stokes {S}: {summary['served_A'][S]} served sources in A - unchanged {c.get(f'{S} unchanged', 0)}, "

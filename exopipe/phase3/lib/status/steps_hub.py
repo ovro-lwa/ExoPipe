@@ -19,6 +19,8 @@ import shutil
 
 from exopipe.phase3.lib.status import steps_common as K
 
+HISTORY_COLUMNS = ('checked_utc', 'cells', 'pass', 'fail', 'fail_not_in_rebuild_list')   # conformance_check.py:47-48
+
 
 def membership_drift():
     """S-G6: lines where the branch membership module differs from production other than import lines and the
@@ -35,8 +37,8 @@ def membership_drift():
     for ln in difflib.unified_diff(a, b, lineterm='', n=0):
         if ln.startswith(('---', '+++', '@@')):
             continue
-        body = ln[1:]
-        if 'import' in body or body.strip().startswith('NAMED_OUT_OF_MASTER ='):
+        body = ln[1:].strip()
+        if body.startswith(('import ', 'from ')) or body.startswith('NAMED_OUT_OF_MASTER ='):
             continue
         bad.append(ln[:160])
     pa = os.path.join(os.path.dirname(prod), 'named_out_of_master.csv')

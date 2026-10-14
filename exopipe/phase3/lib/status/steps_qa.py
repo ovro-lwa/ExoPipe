@@ -27,6 +27,7 @@ from exopipe.phase3.lib.status import steps_common as K
 STAGES = ('bandpass', 'qa-table', 'solar', 'provenance', 'beam', 'noise', 'outliers')
 OUTLIER_COLUMNS = ('lst', 'subband', 'date', 'verdict_proposed', 'reason', 'n_rejected', 'n_cells', 'leaked_lsts')
 SOLAR_DIFF_COLUMNS = ('lst', 'date', 'subband', 'installed_verdict', 'candidate_verdict', 'change')
+BEAM_COLUMNS = ('lst', 'date', 'scope', 'stokes', 'bmaj_as', 'bmin_as', 'cell_median_area', 'area_ratio', 'err', 'path')  # beam_audit.py:73-79
 
 
 def sha1_of(path):
@@ -137,8 +138,18 @@ def run_noise(out, unit, log):
     return legacy.run(IP.legacy_script('qa_noise_vs_freq_plot.py'), [dest], python='default', log=log, unit=unit), dest
 
 
-def date_outliers(ex):
-    """(proposals, verdict table) - propagate_date_outliers.py:17-51 selection over the CURRENT working tree."""
+# The rows that keep a date-level proposal out: production skips (lst, subband, date) keys with ANY row in data_decisions
+# (propagate_date_outliers.py:40-42: exclude, keep, ... - a 'keep' is Gregg's readmission). core/exclusions (the only
+# reader of the file) exposes exclude rows only, so proposals on a night Gregg kept are possible here; the shared fix
+# (core/exclusions keeping every row's key) is reported in plan/impl/status.md. The rule used is recorded per run.
+OUTLIER_EXISTING_RULE = 'exclude rows (core.exclusions); production: every row of any verdict'
+
+
+def date_outliers(ex, unreadable=None):
+    """(proposals, files read) - propagate_date_outliers.py:17-51 selection over the CURRENT working tree. Each file is
+    read row by row as the tool reads it (csv.DictReader(open(f)), :23-24: rows before an error are kept); a file the
+    tool's bare except would cut short (:25-26) is cut short here too and appended to ``unreadable`` (S-G16: counted)."""
+    import csv
     import glob
     C = K.cfg()
     Q = C.status_qa
@@ -148,10 +159,12 @@ def date_outliers(ex):
         cell = os.path.basename(os.path.dirname(f))
         lst = cell.split('_')[0]
         try:
-            for r in K.read_csv(f):
-                verdict[r['date']][lst][cell] = (str(r['outlier']) == 'True')
-        except (OSError, KeyError):
-            pass                                      # as the tool (:25-26); counted by the caller
+            with open(f) as fh:
+                for r in csv.DictReader(fh):
+                    verdict[r['date']][lst][cell] = (str(r['outlier']) == 'True')
+        except Exception as e:                        # noqa: BLE001 - as the tool (:25-26)
+            if unreadable is not None:
+                unreadable.append(f'{f}: {type(e).__name__}: {e}'[:300])
     rows = []
     for date, by_lst in sorted(verdict.items()):
         cells = [(lst, c, o) for lst, cc in by_lst.items() for c, o in cc.items()]
@@ -182,6 +195,9 @@ def run_bandpass(out, work, unit, log):
     dest = K.check_write(K.place(out, 'QA', Q.BANDPASS_QA))
     wd = os.path.join(work or K.place(out, 'status', ''), 'bpqa')
     os.makedirs(wd, exist_ok=True)
+    import glob
+    for old in glob.glob(os.path.join(wd, 'bpqa_*.csv')):   # a fresh shard set: never merge an earlier run's shards
+        os.remove(old)
     tables = bandpass_tables()
     lst = os.path.join(wd, 'tables.txt')
     with open(lst, 'w') as f:
@@ -194,11 +210,9 @@ def run_bandpass(out, work, unit, log):
                           log=os.path.join(wd, f'bpqa_{i}.log'), unit=unit)
     res = K.thread_map(shard, range(n), n)
     rows = []
-    for i in range(n):
-        p = os.path.join(wd, f'bpqa_{i}.csv')
-        if os.path.exists(p):
-            rows += K.read_csv(p)
-    rows.sort(key=lambda r: (r['cal_date'], r['cal_lst']))     # run_bandpass_phase_qa.sh:18
+    for p in sorted(glob.glob(os.path.join(wd, 'bpqa_*.csv'))):   # run_bandpass_phase_qa.sh:17 (name order)
+        rows += K.read_csv(p)
+    rows.sort(key=lambda r: (r['cal_date'], r['cal_lst']))     # run_bandpass_phase_qa.sh:19
     if rows:
         K.write_csv(dest, list(rows[0].keys()), rows)
     unit.meta['bandpass'] = {'tables': len(tables), 'rows': len(rows), 'failed': sum(1 for r in rows if r.get('error')),

@@ -1,5 +1,7 @@
-"""`status --rebuild-due` - which deep masters are due for a rebuild (NEW; PHASE3_ARCHITECTURE.md section 0, C-10:
-"default trigger = +50% accumulated observing time since the last build"; DESIGN 12.2).
+"""`status --rebuild-due` - a REPORT of the deep cells whose admitted observing time grew by >= DUE_FRACTION (50 per
+cent) since their master's build (NEW; PHASE3_ARCHITECTURE.md section 0, C-10; DESIGN 12.2). NEVER A TRIGGER: D-ADMIT
+(ledger 2335, Gregg 2026-10-13) - "the master rebuild is NOT triggered automatically at +50 per cent admitted time ...
+the user invokes the rebuild". Nothing consumes the table; the item list is for the user's own `masters --cells @FILE`.
 
 The measure (config status_rebuild, whose docstring is the definition of record; repeated in every table row and the
 unit record):
@@ -8,8 +10,10 @@ unit record):
               a build night with no such image in its sci_dir had no data of the scope at the build (t = 0; listed);
   build set = the rows of the installed master's coadd_final/weights.csv (the nights its build admitted, in_master 0/1),
               measured in the Science run the build used (sci_dir);
-  new set   = nights admitted NOW (a Phase 2 image of the scope exists; core.exclusions does not exclude the night) that
-              are not in the build set, measured in the newest Science run holding the image;
+  new set   = nights admitted since the build, not in the build set. status_rebuild.NEW_SET_SOURCE 'on-disk' (window:
+              no D-ADMIT admission record exists yet): a Phase 2 image of the scope exists and core.exclusions does not
+              exclude the night, measured in the newest Science run holding the image; 'admission-record' (the hook for
+              D-ADMIT): the rows of <cell>/coadd_final/<ADMISSION_RECORD> not excluded now, each measured in its sci_dir;
   DUE       when T_new >= status_rebuild.DUE_FRACTION x T_build. No build record + admitted nights = 'never-built' (due).
   A night without an image or without INTTIME is 'unmeasured': the cell is listed 'unmeasured' (due undecided), never
   given a default duration.
@@ -20,13 +24,42 @@ import os
 from exopipe.phase3.lib.status import steps_common as K
 
 COLUMNS = ('cell', 'lst', 'scope', 'status', 'due', 'frac_new', 'build_s', 'new_s', 'n_build', 'n_build_in_master',
-           'build_in_master_s', 'master_inttime_s', 'master_ncoadd', 'n_new', 'new_nights', 'n_unmeasured', 'unmeasured',
-           'build_without_image', 'excluded_since_build', 'due_fraction', 'measure')
+           'build_in_master_s', 'master_inttime_s', 'master_ncoadd', 'n_new', 'new_nights', 'new_source', 'n_unmeasured',
+           'unmeasured', 'build_without_image', 'excluded_since_build', 'due_fraction', 'measure')
 STATUSES = ('due', 'not-due', 'never-built', 'no-data', 'unmeasured')
+NEW_SOURCES = ('on-disk', 'admission-record')
 MEASURE = ('t=INTTIME of the Phase 2 deep I Taper Robust-0.75 image of the night (dewarped, else its plain parent; '
            'scope of the cell); build=coadd_final/weights.csv rows in their sci_dir (no image there: t=0); '
-           'new=admitted now (image present in the newest Science run, not excluded) and not measured in the build; '
-           'due iff new_s >= due_fraction x build_s')
+           'new=admitted since the build (new_source: on-disk = image present in the newest Science run, not excluded; '
+           'admission-record = the D-ADMIT record rows, not excluded) and not measured in the build; '
+           'due iff new_s >= due_fraction x build_s; a report, never a rebuild trigger (D-ADMIT)')
+
+
+def check_source():
+    """The new-set source of this run (refuses an unknown source or 'admission-record' without a record name)."""
+    from exopipe.phase3.core.record import Refusal
+    R = K.cfg().status_rebuild
+    if R.NEW_SET_SOURCE not in NEW_SOURCES:
+        raise Refusal(f'status_rebuild.NEW_SET_SOURCE {R.NEW_SET_SOURCE!r} is not one of {NEW_SOURCES}')
+    if R.NEW_SET_SOURCE == 'admission-record' and not R.ADMISSION_RECORD:
+        raise Refusal("S-G11: status_rebuild.NEW_SET_SOURCE 'admission-record' needs status_rebuild.ADMISSION_RECORD (the "
+                      "D-ADMIT admission record beside weights.csv; none is written yet) - no fallback to 'on-disk'")
+    return R.NEW_SET_SOURCE
+
+
+def admitted_since_build(cell):
+    """D-ADMIT HOOK: [(date, sci_dir)] of the cell's admission record (status_rebuild.ADMISSION_RECORD beside weights.csv),
+    [] when the cell has none; a record missing a column of ADMISSION_COLUMNS raises ValueError (the cell is then
+    'unmeasured', never given a default)."""
+    R = K.cfg().status_rebuild
+    p = os.path.join(K.cfg().paths.COADD_SB_ROOT, cell, 'coadd_final', R.ADMISSION_RECORD)
+    if not os.path.exists(p):
+        return []
+    rows = K.read_csv(p)
+    miss = [c for c in R.ADMISSION_COLUMNS if rows and c not in rows[0]]
+    if miss:
+        raise ValueError(f'{p}: admission record without column(s) {miss}')
+    return [(r['date'], r['sci_dir']) for r in rows]
 
 
 def _patterns(lst, scope):
@@ -98,16 +131,30 @@ def cell_row(cell, ex, p2_dates):
             in_s += t
             n_in += 1
     new, new_s = [], 0.0
-    for d in p2_dates.get(lst, ()):
-        if (d in bdates and d not in no_image) or ex.is_excluded(lst, scope, d):
+    if R.NEW_SET_SOURCE == 'admission-record':
+        try:
+            cand = [(d, (image_in(sd, lst, scope) if sd else None)) for d, sd in admitted_since_build(cell)]
+        except (OSError, ValueError) as e:
+            cand = []
+            unmeasured.append(f'(admission record unreadable: {e})'[:200])
+    else:
+        cand = []
+        for d in p2_dates.get(lst, ()):
+            if (d in bdates and d not in no_image) or ex.is_excluded(lst, scope, d):
+                continue                              # (as below; skipped before the image lookup: no listing)
+            img = None
+            for rd in sorted(_p2_runs(lst, d), reverse=(R.NEW_RUN_RULE == 'newest')):
+                img = image_in(rd, lst, scope)
+                if img:
+                    break
+            if img:                                   # no Phase 2 product of this scope: not admitted
+                cand.append((d, img))
+    for d, img in cand:
+        if (d in bdates and d not in no_image) or ex.is_excluded(lst, scope, d) or d in new:
             continue
-        img = None
-        for rd in sorted(_p2_runs(lst, d), reverse=(R.NEW_RUN_RULE == 'newest')):
-            img = image_in(rd, lst, scope)
-            if img:
-                break
-        if not img:
-            continue                                  # no Phase 2 product of this scope: not admitted
+        if R.NEW_SET_SOURCE == 'admission-record' and img is None:
+            unmeasured.append(f'{d}(admitted: no Phase 2 image of the survey variant in its sci_dir)')
+            continue
         t, why = night_time(img)
         if t is None:
             unmeasured.append(f'{d}(new: {why})')
@@ -118,7 +165,8 @@ def cell_row(cell, ex, p2_dates):
     row = dict(cell=cell, lst=lst, scope=scope, build_s=round(build_s, 3), new_s=round(new_s, 3),
                n_build=len(bdates), n_build_in_master=n_in, build_in_master_s=round(in_s, 3),
                master_inttime_s=mc.get('INTTIME', ''), master_ncoadd=mc.get('NCOADD', ''), n_new=len(new),
-               new_nights=';'.join(new), n_unmeasured=len(unmeasured), unmeasured=';'.join(unmeasured),
+               new_nights=';'.join(new), new_source=R.NEW_SET_SOURCE, n_unmeasured=len(unmeasured),
+               unmeasured=';'.join(unmeasured),
                build_without_image=';'.join(no_image),
                excluded_since_build=';'.join(excl_since), due_fraction=R.DUE_FRACTION, measure=MEASURE)
     if build is None:
@@ -137,6 +185,7 @@ def cell_row(cell, ex, p2_dates):
 def rebuild_due(cells, ex, workers=None):
     C = K.cfg()
     import re
+    check_source()
     lsts = sorted({c.split('_', 1)[0] for c in cells})
     p2_dates = {l: [d for d in K.listdir(os.path.join(C.paths.PHASE2_ROOT, l)) if re.match(r'^\d{4}-\d{2}-\d{2}$', d)]
                 for l in lsts}

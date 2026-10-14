@@ -9,7 +9,6 @@ import glob
 import hashlib
 import json
 import os
-import socket
 import time
 
 from exopipe.phase3.core.record import Refusal, NoInput
@@ -69,9 +68,20 @@ def place(out, kind, name):
     return os.path.join(out, kind, name)
 
 
+def narrowed(name, filename):
+    """``filename`` with the unit's selection suffix (_<8 hex>) before its extension, so a narrowed run's table never
+    overwrites the full run's (the record names already differ, unit_name)."""
+    import re
+    m = re.search(r'_[0-9a-f]{8}$', name)
+    if not m:
+        return filename
+    root, ext = os.path.splitext(filename)
+    return root + m.group(0) + ext
+
+
 def unit_name(action, stage, tier, items=None):
     """<action>_<stage>_<tier>[_<8 hex of sha1(selected items)>] (a narrowed run never overwrites a full run's record)."""
-    base = f"{action}_{stage.replace('-', '')}_{tier or 'none'}"
+    base = f"{action.replace('-', '')}_{stage.replace('-', '')}_{tier or 'none'}"
     if items:
         base += '_' + hashlib.sha1('\n'.join(sorted(items)).encode()).hexdigest()[:8]
     return base
@@ -80,11 +90,6 @@ def unit_name(action, stage, tier, items=None):
 # ---------------------------------------------------------------------------------------------------------------------
 # gates
 # ---------------------------------------------------------------------------------------------------------------------
-
-def _under(path, root):
-    p, r = os.path.realpath(os.path.abspath(path)), os.path.realpath(os.path.abspath(root))
-    return p == r or p.startswith(r.rstrip('/') + '/')
-
 
 def check_write(path):
     """S-G3 (any time) + S-G2 (window): refuse a planned output in status.NEVER_WRITE, or - while
@@ -107,29 +112,20 @@ def check_write(path):
     return path
 
 
-def node_local_owner(path):
-    """(host, root) when ``path`` lies under a node-local root of the site file (NODE_LOCAL_ROOTS), else None."""
-    for host, roots in (cfg().site.NODE_LOCAL_ROOTS or {}).items():
-        for r in roots:
-            if _under(path, r):
-                return host, r
-    return None
-
-
 def need_inputs(paths, what):
-    """S-G5: a stage whose input is node-local and absent on this host refuses with the host named; S-G11: an empty root
-    key refuses (no fallback root)."""
-    me = socket.gethostname().split('.')[0]
+    """S-G5: a stage whose input is node-local to ANOTHER host (site NODE_LOCAL_ROOTS) refuses with the host named - also
+    when the same path exists here, where it is a different disk (core.env.readable_here); S-G11: an empty root key
+    refuses (no fallback root); an input not found refuses."""
+    from exopipe.phase3.core import env as E
     for p in paths:
         if not p:
             raise Refusal(f'S-G11: {what}: an input root key is empty - no fallback root (R-COADD-ROOT-NO-DEFAULTS)')
-        if os.path.exists(p):
-            continue
-        own = node_local_owner(p)
-        if own and own[0] != me:
-            raise Refusal(f'S-G5: {what} reads {p}, node-local to {own[0]} ({own[1]}); this host is {me}. Run this stage '
-                          f'on {own[0]}')
-        raise Refusal(f'{what}: input {p} not found')
+        if not E.readable_here(p):
+            owner = E.node_local_holder(p)
+            raise Refusal(f'S-G5: {what} reads {p}, node-local to {owner} (site NODE_LOCAL_ROOTS); this host is '
+                          f'{E.host()}. Run this stage on {owner}')
+        if not os.path.exists(p):
+            raise Refusal(f'{what}: input {p} not found')
 
 
 def exclusions():

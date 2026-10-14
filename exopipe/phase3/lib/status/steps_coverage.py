@@ -13,9 +13,18 @@ Census class (precedence of completeness_census_20260821.py:49-60, current roots
   backfill-stageb  master exists, nothing local
   '+partial-exclusion' is appended (not to 'excluded') when some other scope of the (LST, night) has an exclude row
   (the census used the ledger's dd_status 'partial-excluded', :58-59; here core/exclusions rows, read now).
-Sub-LST: one row per (LST, scope): 10-minute windows, search state per Stokes, the LST's published run and its
-generation (pos_kind + pertie_detections.csv: sublst_cumulative.py:78-86), served in the hub registry.
-Snapshot: one row per night cell of the v9 worklist and the shipped cells: shipped, in a served snapshot run.
+Sub-LST: one row per (LST, scope): 10-minute windows, search per Stokes, the LST's published run and its generation
+(pos_kind + pertie_detections.csv: sublst_cumulative.py:78-86), served in the hub registry. A search is DONE by its
+RECORD - the shipped search log <SUBLST_SEARCH_OUT>/<cell>_<S>/<cell>.log holding the end line 'SUBLST-SEARCH-DONE
+<cell> <S>' and the 'N epochs -> M candidates' line, with no Traceback / REFUSING (the acceptance rule of
+ops/sublst_search_pass.sh:48-53, which ships the log only when it holds) - never by the state dir's done/ marker; the
+marker is reported beside it (done_marker_<S>; a disagreement is named in marker_disagrees). 'failed' / 'claimed' come
+from the state dir (no record exists for them).
+Snapshot: one row per night cell of the v9 worklist and the shipped cells. SEARCHED by its RECORDS: the shipped cell dir
+has at least one admission_<sb>.csv and, for every one of them, runinfo_<sb>_<S>_median.json or
+nightrefused_<sb>_<S>_median.json for S = I and V (the subband completeness rule of snapshot_fleet_node_v9.sh, the
+curves G1 rule) - never by snapshot_fleet_claims/<cell>/done, reported beside it (claim_done). Measured 2026-10-14:
+records and markers agree on 536 of 536 sub-LST jobs and 422 of 422 snapshot cells.
 """
 import collections
 import json
@@ -29,9 +38,10 @@ DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 DEEP_COLUMNS = ('lst', 'scope', 'date', 'cell', 'p2_runs', 'excluded', 'partial_exclusion', 'residual',
                 'in_build_record', 'in_master', 'master_exists', 'epoch_archived_I', 'frame_archived_I',
                 'frame_archived_V', 'searched_V', 'searched_I', 'p1_newer_than_p2', 'census_class', 'gap')
-SUBLST_COLUMNS = ('lst', 'scope', 'windows', 'no_windows', 'search_V', 'search_I', 'lst_run', 'lst_run_generation_ok',
-                  'served', 'gap', 'reason')
-SNAPSHOT_COLUMNS = ('cell', 'lst', 'date', 'in_worklist', 'shipped', 'ship_dir', 'served_run', 'gap', 'reason')
+SUBLST_COLUMNS = ('lst', 'scope', 'windows', 'no_windows', 'search_V', 'search_I', 'done_marker_V', 'done_marker_I',
+                  'marker_disagrees', 'lst_run', 'lst_run_generation_ok', 'served', 'gap', 'reason')
+SNAPSHOT_COLUMNS = ('cell', 'lst', 'date', 'in_worklist', 'shipped', 'n_admitted_subbands', 'unaccounted', 'claim_done',
+                    'marker_disagrees', 'ship_dir', 'served_run', 'gap', 'reason')
 
 
 def census_class(r):
@@ -246,7 +256,42 @@ def served_sublst_lsts():
     return set(), ''
 
 
-def sublst_coverage(lsts_spec):
+def sublst_search_record(cell, S):
+    """(done, detail) from the shipped search log of (cell, Stokes): the acceptance rule of sublst_search_pass.sh:48-53
+    (done line present, the 'N epochs -> M candidates' line present, no Traceback / REFUSING)."""
+    CC = K.cfg().status_coverage
+    lst, sb = cell.split('_', 1)
+    p = os.path.join(K.expand(CC.SUBLST_SEARCH_OUT), CC.SUBLST_SEARCH_RECORD.format(cell=cell, S=S))
+    try:
+        with open(p, errors='replace') as f:
+            txt = f.read()
+    except OSError:
+        return False, 'no shipped search log'
+    if re.search(r'^Traceback \(most recent call last\)|REFUSING', txt, re.M):
+        return False, 'search log holds a Traceback / REFUSING'
+    if not re.search(rf'{re.escape(lst)} {re.escape(sb)}: [0-9]+ epochs -> [0-9]+ candidates', txt):
+        return False, "search log without the 'epochs -> candidates' line"
+    if CC.SUBLST_SEARCH_DONE_LINE.format(cell=cell, S=S) not in txt:
+        return False, 'search log without its end line'
+    return True, p
+
+
+def sublst_reasons(r):
+    """The gap reasons of a sub-LST coverage row from its own columns (writer and content test)."""
+    reasons = []
+    if str(r['windows']) == '1':
+        if not (r['search_V'] == 'done' and r['search_I'] == 'done'):
+            reasons.append('search not done (no search record)')
+        if not r['lst_run']:
+            reasons.append('LST not published')
+        elif str(r['lst_run_generation_ok']) != '1':
+            reasons.append('LST run of an older generation')
+        if r['lst_run'] and str(r['served']) != '1':
+            reasons.append('LST not in the served cumulative run')
+    return reasons
+
+
+def sublst_coverage(lsts_spec, workers=None):
     from exopipe.phase3.core import cells
     C = K.cfg()
     CC = C.status_coverage
@@ -260,6 +305,8 @@ def sublst_coverage(lsts_spec):
     served, _ = served_sublst_lsts()
     serve = getattr(C, 'serve', None)
     pat = getattr(serve, 'SUBLST_LST_RUN', 'Run_SLST{hh}B')
+    jobs = [(f'{l}_{s}', S) for l in lsts for s in C.instrument.ALL_SUBBANDS for S in ('V', 'I')]
+    recs = dict(zip(jobs, K.thread_map(lambda j: sublst_search_record(*j), jobs, workers)))
     rows = []
     for l in lsts:
         rd = os.path.join(K.runs_root('sublst'), pat.format(hh=l[:2]))
@@ -271,19 +318,18 @@ def sublst_coverage(lsts_spec):
                      no_windows=int(os.path.exists(os.path.join(wd, 'NO_WINDOWS.txt'))),
                      lst_run=os.path.basename(rd) if has_run else '', lst_run_generation_ok=int(gen_ok),
                      served=int(l in served))
+            dis = []
             for S in ('V', 'I'):
                 k = st.get(f'{l}_{s}:{S}', set())
-                r[f'search_{S}'] = 'done' if 'done' in k else ('failed' if 'failed' in k else ('claimed' if 'claims' in k
-                                                                                                else ''))
-            reasons = []
-            if r['windows'] and not (r['search_V'] == 'done' and r['search_I'] == 'done'):
-                reasons.append('search not done')
-            if r['windows'] and not has_run:
-                reasons.append('LST not published')
-            elif r['windows'] and not gen_ok:
-                reasons.append('LST run of an older generation: ' + why)
-            if r['windows'] and has_run and not r['served']:
-                reasons.append('LST not in the served cumulative run')
+                done, _ = recs[(f'{l}_{s}', S)]
+                r[f'search_{S}'] = 'done' if done else ('failed' if 'failed' in k else ('claimed' if 'claims' in k else ''))
+                r[f'done_marker_{S}'] = int('done' in k)
+                if done != ('done' in k):
+                    dis.append(f"{S}: {'record without a done marker' if done else 'done marker without a search record'}")
+            r['marker_disagrees'] = '; '.join(dis)
+            reasons = sublst_reasons(r)
+            if 'LST run of an older generation' in reasons:
+                reasons[reasons.index('LST run of an older generation')] = 'LST run of an older generation: ' + why
             r['gap'] = int(bool(reasons))
             r['reason'] = '; '.join(reasons)
             rows.append(r)
@@ -312,7 +358,18 @@ def _cells_of(path):
     return out
 
 
-def snapshot_coverage(cells_spec):
+def snapshot_search_records(cell_dir):
+    """(searched, n admitted subbands, [unaccounted '<sb>_<S>']) of a shipped snapshot cell from its RECORDS: every
+    admission_<sb>.csv has runinfo_<sb>_<S>_median.json or nightrefused_<sb>_<S>_median.json for S = I, V (the fleet's
+    subband completeness rule, snapshot_fleet_node_v9.sh; curves G1); no admission table = not searched."""
+    names = set(K.listdir(cell_dir))
+    adm = sorted(n[len('admission_'):-len('.csv')] for n in names if n.startswith('admission_') and n.endswith('.csv'))
+    miss = [f'{sb}_{S}' for sb in adm for S in ('I', 'V')
+            if f'runinfo_{sb}_{S}_median.json' not in names and f'nightrefused_{sb}_{S}_median.json' not in names]
+    return bool(adm) and not miss, len(adm), miss
+
+
+def snapshot_coverage(cells_spec, workers=None):
     C = K.cfg()
     wl = K.expand(C.status_coverage.SNAPSHOT_WORKLIST)
     claims = K.expand(C.status_snapshot.FLEET_CLAIMS)
@@ -330,19 +387,28 @@ def snapshot_coverage(cells_spec):
                 served.setdefault(c, []).append(run)
         except (OSError, ValueError):
             pass
+    recs = dict(zip(universe, K.thread_map(lambda c: snapshot_search_records(os.path.join(ship, c)), universe, workers)))
     rows = []
     for c in universe:
         l, d = c.split('_', 1)
-        r = dict(cell=c, lst=l, date=d, in_worklist=int(c in work),
-                 shipped=int(os.path.exists(os.path.join(claims, c, 'done'))), ship_dir=int(c in shipped_dirs),
-                 served_run=';'.join(sorted(served.get(c, []))))
-        reasons = []
-        if r['in_worklist'] and not r['shipped']:
-            reasons.append('in the worklist, not shipped')
+        done, n_adm, miss = recs[c]
+        claim = os.path.exists(os.path.join(claims, c, 'done'))
+        r = dict(cell=c, lst=l, date=d, in_worklist=int(c in work), shipped=int(done), n_admitted_subbands=n_adm,
+                 unaccounted=' '.join(miss[:30]), claim_done=int(claim),
+                 marker_disagrees=('' if done == claim else ('records complete without the fleet claim done' if done
+                                                             else 'fleet claim done without complete search records')),
+                 ship_dir=int(c in shipped_dirs), served_run=';'.join(sorted(served.get(c, []))))
+        reasons = snapshot_reasons(r)
         r['gap'] = int(bool(reasons))
         r['reason'] = '; '.join(reasons)
         rows.append(r)
     return rows, universe
+
+
+def snapshot_reasons(r):
+    """The gap reasons of a snapshot coverage row from its own columns (writer and content test)."""
+    return (['in the worklist, not searched (no complete runinfo / night-refusal records)']
+            if str(r['in_worklist']) == '1' and str(r['shipped']) != '1' else [])
 
 
 def served_snapshot_runs():

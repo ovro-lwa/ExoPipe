@@ -1,7 +1,9 @@
 """`status report` stages that are not coverage / rebuild / stale / exclusion / served-diff: the session summary
 (CLAUDE.md section 1), the re-adjudication list, the cell-load review (contract step 50) and the membership violations.
 
-summary          pkg/phase3/phase_status.py IN PLACE (branch lib/status/phase_status.py, identical bytes since f824776):
+summary          pkg/phase3/phase_status.py IN PLACE (branch lib/status/phase_status.py: f824776 pure rename, then one edit
+                 2026-10-14 - masters counted from I_deep_Taper_R075_<scope>.fits carrying COADDOP, newest master by that
+                 file, never coadd_final/.done; production still counts the markers, 0 of them today against 456 masters):
                  its globals set from config (LEDGER, DECISIONS, DECISIONS_FP, COADD_ROOTS, RETIRED_COADD) and main()'s
                  text captured; with status_report.FINGERPRINT_MODE 'read' the production fingerprint file is COPIED into
                  <out>/status and phase_status writes the copy (the SessionStart hook's "changed" flag is never consumed).
@@ -21,7 +23,6 @@ import glob
 import json
 import os
 import shutil
-import socket
 import subprocess
 import time
 
@@ -30,6 +31,10 @@ from exopipe.phase3.lib.status import steps_common as K
 REPORT_SECTIONS = ('node_allocation', 'phase_completion', 'data_decisions', 'masters', 'served_runs', 'readjudication',
                    'conformance', 'rulings_not_enforced', 'canon_check')
 LEDGER_COUNTERS = ('p1', 'p2', 'p1_peel', 'qa_verdict')
+# the text report: the new sections follow this header line (after phase_status.py's own text), one line per tag
+TEXT_HEADER = '===== exopipe3 status: sections of CLAUDE.md section 1 ====='
+TEXT_TAGS = ('[nodes]', '[ledger]', '[data_decisions]', '[masters]', '[served]', '[re-adjudication]', '[conformance]',
+             '[rulings not enforced]', '[canon check]')
 CELL_LOAD_SORT = 'detections_5sig descending (p3s3_pass.sh:218)'
 
 
@@ -39,19 +44,25 @@ def ledger_counts(rows):
 
 def legacy_summary_text(out, allowed, unit=None, log=None):
     """phase_status.main() in place (attr). Returns (rc, text)."""
+    from exopipe.phase3.core import env as E
     from exopipe.phase3.lib.status import steps_inplace as IP
     C = K.cfg()
     R = C.status_report
     fp_copy = K.place(out, 'status', '.data_decisions.fingerprint')
+    # the production fingerprint lives on a node-local disk: on another host the same path is a different file
+    here = E.readable_here(R.DECISIONS_FINGERPRINT) and os.path.exists(R.DECISIONS_FINGERPRINT)
     if R.FINGERPRINT_MODE == 'write':
         fp = K.check_write(R.DECISIONS_FINGERPRINT)
     else:
         os.makedirs(os.path.dirname(fp_copy), exist_ok=True)
-        if R.FINGERPRINT_MODE == 'read' and os.path.exists(R.DECISIONS_FINGERPRINT):
+        if R.FINGERPRINT_MODE == 'read' and here:
             shutil.copyfile(R.DECISIONS_FINGERPRINT, fp_copy)
         fp = fp_copy
-    if unit is not None and os.path.exists(R.DECISIONS_FINGERPRINT):
+    if unit is not None and here:
         unit.add_input(R.DECISIONS_FINGERPRINT)
+    elif unit is not None:
+        unit.note(f'{R.DECISIONS_FINGERPRINT} not read on {E.host()} (node-local to '
+                  f'{E.node_local_holder(R.DECISIONS_FINGERPRINT) or "no host"} or absent): no CHANGED flag compared')
     attrs = dict(LEDGER=C.status.LEDGER, DECISIONS=C.paths.DATA_DECISIONS, DECISIONS_FP=fp,
                  COADD_ROOTS=list(R.COADD_ROOTS), RETIRED_COADD=R.RETIRED_COADD)
     rc, text, _ = IP.call_attr('exopipe.phase3.lib.status.phase_status', attrs, 'main', allowed_roots=allowed, log=log,
@@ -69,17 +80,47 @@ def canon_check():
 
 
 def masters_section():
+    """Per co-add root: cells, cells with a build record (coadd_final/weights.csv), masters = I_deep_Taper_R075_<scope>
+    .fits carrying COADDOP (phase_status.master_inventory: the file, never a .done marker) per COADDOP value, and the
+    newest master's write time and age from that file. Every cell of each root is counted (no precedence here)."""
+    from exopipe.phase3.core import env as E
+    from exopipe.phase3.lib.status import phase_status as PS
     C = K.cfg()
     out = {}
-    me = socket.gethostname().split('.')[0]
+    me = E.host()
     for r in C.status_report.COADD_ROOTS:
-        if os.path.isdir(r):
+        if not E.readable_here(r):           # node-local to another host: the same path here is a different disk
+            out[r] = f'node-local to {E.node_local_holder(r)}, not read on {me}'
+        elif os.path.isdir(r):
             cells = [d for d in K.listdir(r) if len(d) > 3 and d[2] == 'h' and '_' in d]
+            inv = PS.master_inventory(r, cells)
+            nw = inv['newest']
             out[r] = {'cells': len(cells), 'with_weights_record': sum(
-                1 for c in cells if os.path.exists(os.path.join(r, c, 'coadd_final', 'weights.csv')))}
+                1 for c in cells if os.path.exists(os.path.join(r, c, 'coadd_final', 'weights.csv'))),
+                'masters_coaddop': inv['masters'], 'coaddop': inv['coaddop'], 'masters_without_coaddop':
+                inv['without_coaddop'], 'master_file': PS.MASTER,
+                'newest_master': (os.path.relpath(nw[1], r) if nw else None),
+                'newest_master_utc': (time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(nw[0])) if nw else None),
+                'newest_master_age_h': (round((time.time() - nw[0]) / 3600, 1) if nw else None)}
         else:
             out[r] = f'absent on {me}'
     return out
+
+
+def masters_text(masters):
+    """The [masters] line of the text report from the JSON masters section (the content test compares the two; roots
+    and COADDOP values in sorted order, as the JSON is written with sorted keys)."""
+    parts = []
+    for r, v in sorted(masters.items()):
+        if isinstance(v, dict):
+            parts.append(f"{r}: {v['cells']} cells, {v['masters_coaddop']} masters carrying COADDOP "
+                         f"{dict(sorted(v['coaddop'].items()))}"
+                         + (f", {v['masters_without_coaddop']} without" if v.get('masters_without_coaddop') else '')
+                         + (f", newest {v['newest_master']} {v['newest_master_age_h']} h ago" if v.get('newest_master')
+                            else ''))
+        else:
+            parts.append(f'{r}: {v}')
+    return '; '.join(parts)
 
 
 def conformance_section(out_root):
@@ -169,7 +210,9 @@ def cell_load(run_dir):
     for p in pin:
         for r in K.read_csv(p):
             src[(r.get('stokes', ''), r['lst'], r['date'], r['band'])] += 1
-    keys = sorted(set(det) | set(src), key=lambda k: -(det.get(k, 0)))
+    # p3s3_pass.sh:218 sorts by detections only, over a set: ties come out in hash order (differs per process); the key
+    # breaks ties deterministically (the same rows, an order production can also produce)
+    keys = sorted(set(det) | set(src), key=lambda k: (-(det.get(k, 0)), k))
     rows = [dict(stokes=k[0], lst=k[1], date=k[2], band=k[3], detections_5sig=det.get(k, 0), served_sources=src.get(k, 0))
             for k in keys]
     return rows, [sel] + pin

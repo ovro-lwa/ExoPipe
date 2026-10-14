@@ -4,7 +4,7 @@ pages; every list it prints that names items is written as an item list usable a
     exopipe3 status                                          # the session report (CLAUDE.md section 1), tier deep
     exopipe3 status --coverage --gaps --emit gaps.txt        # deep coverage; the gap cells as an item list
     exopipe3 status --gaps --emit-kind epoch --emit hours.txt    # the gap hours (<LST>_<date>) for the per-hour chain
-    exopipe3 status --rebuild-due --emit due.txt             # masters due a rebuild (+50% observing time, C-10)
+    exopipe3 status --rebuild-due --emit due.txt             # REPORT: cells whose admitted time grew >= 50% (C-10)
     exopipe3 status --stale record --records /fast/gh/refactor_scratch/parity     # stale run records
     exopipe3 status --stale search_attempt,master            # attempts / masters an exclusion edit made stale
     exopipe3 status --exclusion-conformance --tier snapshot  # served rows on excluded cell-bands
@@ -42,7 +42,8 @@ Outputs (product classes; under --out, layout <out>/{status,QA,review_hub,clv15,
          status_report       status/report_<tier>_<UTC>.{txt,json}  (summary)
          readjudication_list QA/readjudication_list_<YYYYMMDD>.csv   (summary; proposals for Gregg)
          coverage_table      QA/coverage_<tier>[_<hash>].csv        (coverage, gaps)
-         rebuild_due         QA/rebuild_due_deep[_<hash>].csv       (rebuild-due; measure: config status_rebuild)
+         rebuild_due         QA/rebuild_due_deep[_<hash>].csv       (rebuild-due; measure: config status_rebuild;
+                                                                     a report - nothing consumes it, D-ADMIT)
          exclusion_conformance QA/exclusion_conformance_<tier>.csv + QA/coadd_exclusion_conformance.csv (deep archive)
          stale_table         status/stale_<tier>_<class>.csv        (stale)
          served_diff         status/served_diff_<A>_<B>_rows.csv (+ _summary.json / _summary.txt beside it)
@@ -87,6 +88,10 @@ STAGES = {'report': REPORT_STAGES,
           'conformance': ('membership',), 'pages': ('nights', 'data-processing'), 'ledger': ('ledger',),
           'register': ('register',), 'eligibility': ('eligibility',), 'batch-list': ('batch-list',)}
 LISTING = ('coverage', 'gaps', 'exclusion-conformance', 'violations', 'stale', 'rebuild-due', 'summary')
+# batch-list flags -> config keys (the values decide the list: config status_snapshot, snapshot_batch_lists.py:70-76)
+_BATCH_FLAGS = (('--max-new', 'MAX_NEW'), ('--max-gate-gb', 'MAX_GATE_GB'), ('--lc-cache', 'LC_CACHE'),
+                ('--base-detections', 'BASE_DETECTIONS'), ('--base-loaded', 'BASE_LOADED'),
+                ('--new-detections', 'NEW_DETECTIONS'), ('--new-loaded', 'NEW_LOADED'))
 
 
 def add_arguments(p):
@@ -111,8 +116,10 @@ def add_arguments(p):
                                                                     'the run the hub serves for the tier) to B')
     g.add_argument('--cell-load', action='store_true', help='per (Stokes, LST, night, band) detections and served sources '
                                                               'of the run (--run; contract step 50)')
-    g.add_argument('--rebuild-due', action='store_true', help='deep masters due a rebuild: +status_rebuild.DUE_FRACTION '
-                                                                'accumulated observing time since the build (C-10)')
+    g.add_argument('--rebuild-due', action='store_true',
+                   help='REPORT of the deep cells whose admitted observing time grew by >= status_rebuild.DUE_FRACTION '
+                        'since their master build (C-10). Never a trigger (D-ADMIT, Gregg 2026-10-13: the user invokes '
+                        'the rebuild, e.g. `exopipe3 masters --cells @due.txt`)')
     g.add_argument('--emit', metavar='FILE', help='write the item list of the selected listing stage to FILE')
     g.add_argument('--emit-kind', choices=('cell', 'epoch', 'lst', 'night_cell', 'unit'),
                    help='item kind of the lists (default status.EMIT_KIND[tier]; stale lists keep their own kind)')
@@ -137,13 +144,8 @@ def add_arguments(p):
     g.add_argument('--list-out', help='batch-list: the list written (required)')
     g.add_argument('--base', help='batch-list: base cells (required in the refactor window, S-G8)')
     g.add_argument('--order', help='batch-list: candidate order (default status_snapshot.ORDER_LIST)')
-    g.add_argument('--max-new', type=int, default=100)
-    g.add_argument('--max-gate-gb', type=int, default=300)
-    g.add_argument('--lc-cache', type=int, default=4000)
-    g.add_argument('--base-detections', type=int, default=11530)
-    g.add_argument('--base-loaded', type=int, default=213270)
-    g.add_argument('--new-detections', type=int, default=25624)
-    g.add_argument('--new-loaded', type=int, default=314396)
+    for flag, key in _BATCH_FLAGS:
+        g.add_argument(flag, type=int, help=f'batch-list: status_snapshot.{key} for this run (recorded)')
     g.add_argument('--all', action='store_true', help='batch-list: every eligible cell')
 
 
@@ -193,6 +195,20 @@ class _Ctx:
             if spec:
                 out += cells.expand(spec, universe=uni)
         return sorted(set(out))
+
+    def deep_spec(self):
+        """The deep-cell selection of this run for deep_universe: --cells, else the cells of the --lsts, else the cells of the
+        LSTs of the --epochs (rows are then filtered to the epochs); None = every cell."""
+        from exopipe.phase3.core import cells
+        a = self.args
+        if a.cells:
+            return a.cells
+        lsts = []
+        if a.lsts:
+            lsts = cells.expand(a.lsts, universe=list(cells.LSTS))
+        elif a.epochs:
+            lsts = sorted({cells.parse_epoch(e)[0] for e in cells.expand_epochs(a.epochs)})
+        return ','.join(f'{l}_*' for l in lsts) if lsts else None
 
     def unit(self, action, stage, items=None):
         return self.K.unit_name(action, stage, self.tier if action in ('report', 'eligibility', 'batch-list',
@@ -271,6 +287,10 @@ def _apply_flag_overrides(args):
         v = getattr(args, flag, None)
         if v is not None:
             CFG.set(key, v, source=f'--{flag.replace("_", "-")}')
+    for flag, key in _BATCH_FLAGS:
+        v = getattr(args, flag[2:].replace('-', '_'), None)
+        if v is not None:
+            CFG.set(f'status_snapshot.{key}', v, source=flag)
     if args.fingerprint:
         CFG.set('status_report.FINGERPRINT_MODE', args.fingerprint, source='--fingerprint')
 
@@ -291,6 +311,8 @@ def run(args, run):
             return 2
         raise
     ctx = _Ctx(args, run)
+    if args.resume:
+        print('status: --resume has no effect - a report is the state now, every stage is recomputed', file=sys.stderr)
     if run.dry_run:
         return _dry_run(ctx, stages)
     for s in stages:
@@ -378,7 +400,7 @@ def _plan(ctx, s):
     if s in ('coverage', 'gaps'):
         u = ctx.unit('report', 'gaps' if s == 'gaps' else 'coverage', sel)
         if tier == 'deep':
-            cells = COV.deep_universe(a.cells)
+            cells = COV.deep_universe(ctx.deep_spec())
             need = COV.deep_inputs()
             notes = [f'{len(cells)} cells, {len({c.split("_")[0] for c in cells})} LSTs; archive columns '
                      f'{C.status_coverage.ARCHIVE_COLUMNS}, searched columns {C.status_coverage.SEARCHED_COLUMNS} '
@@ -391,19 +413,24 @@ def _plan(ctx, s):
         return dict(unit=u, inputs=need, need=need, notes=notes,
                     outputs=[(table, 'coverage_table'), (K.place(out, 'items', f'{u}.txt'), 'item_list')])
     if s == 'rebuild-due':
+        from exopipe.phase3.lib.status import steps_rebuild as RB
+        RB.check_source()
         u = ctx.unit('report', s, sel)
-        cells = COV.deep_universe(a.cells)
+        cells = COV.deep_universe(ctx.deep_spec())
         need = [C.paths.COADD_SB_ROOT, C.paths.PHASE2_ROOT]
         return dict(unit=u, inputs=need, need=need,
                     outputs=[(K.place(out, 'QA', 'rebuild_due_deep' + u[len('report_rebuilddue_deep'):] + '.csv'),
                               'rebuild_due'), (K.place(out, 'items', f'{u}.txt'), 'item_list')],
                     notes=[f'{len(cells)} cells; DUE when T_new >= {C.status_rebuild.DUE_FRACTION} x T_build; '
-                           f't = {C.status_rebuild.TIME_CARD} of the Phase 2 deep image (config status_rebuild)'])
+                           f't = {C.status_rebuild.TIME_CARD} of the Phase 2 deep image (config status_rebuild); new '
+                           f'nights from {C.status_rebuild.NEW_SET_SOURCE} (D-ADMIT admission records: '
+                           f'{C.status_rebuild.ADMISSION_RECORD or "none yet"}); a report, never a rebuild trigger'])
     if s == 'exclusion-conformance':
         u = ctx.unit('report', s, sel)
         runs = sorted(K.served_runs(tier))
         run_dirs = [os.path.join(K.runs_root(tier), r) for r in runs]
-        outs = [(K.place(out, 'QA', C.status_conformance.EXCLCONF_TABLE.format(tier=tier)), 'exclusion_conformance'),
+        outs = [(K.place(out, 'QA', K.narrowed(u, C.status_conformance.EXCLCONF_TABLE.format(tier=tier))),
+                 'exclusion_conformance'),
                 (K.place(out, 'items', f'{u}.txt'), 'item_list')]
         need = list(run_dirs)
         arch = a.archive_root or C.status_conformance.MASTERS_ARCHIVE_ROOT
@@ -418,7 +445,7 @@ def _plan(ctx, s):
         from exopipe.phase3.lib.status import steps_report as RP
         t = RP.membership_table(out)
         return dict(unit=u, inputs=[t or K.expand(C.status_conformance.LATEST)],
-                    outputs=[(K.place(out, 'status', 'violations_deep.csv'), 'stale_table'),
+                    outputs=[(K.place(out, 'status', K.narrowed(u, 'violations_deep.csv')), 'stale_table'),
                              (K.place(out, 'items', f'{u}.txt'), 'item_list')])
     if s == 'stale':
         classes = _stale_classes(ctx)
@@ -427,7 +454,7 @@ def _plan(ctx, s):
         if 'record' in classes:
             notes.append('record roots: ' + ', '.join(ST.record_roots(a.records)) or 'none with _records/')
         u = ctx.unit('report', 'stale_' + '_'.join(classes), sel)
-        return dict(unit=u, notes=notes, outputs=[(K.place(out, 'status', f'stale_{tier}_{"_".join(classes)}.csv'),
+        return dict(unit=u, notes=notes, outputs=[(K.place(out, 'status', K.narrowed(u, f'stale_{tier}_{"_".join(classes)}.csv')),
                                                    'stale_table'), (K.place(out, 'items', f'{u}.txt'), 'item_list')])
     if s == 'served-diff':
         A, B = _served_pair(ctx)
@@ -567,12 +594,12 @@ def _stage_summary(ctx):
         jpath = K.place(out, 'status', f'report_{tier}_{ctx.utc}.json')
         RP.report_json(jpath, rep)
         txt = [legacy.rstrip()] if legacy else []
-        txt += ['===== exopipe3 status: sections of CLAUDE.md section 1 =====',
+        txt += [RP.TEXT_HEADER,
                 f"[nodes] {rep['node_allocation']}",
                 f"[ledger] {rep['phase_completion']['rows']} (LST, night) rows; counts {rep['phase_completion']['counts']}",
                 f"[data_decisions] {fp['n_exclude_rows']} exclude keys, {rep['data_decisions']['excluded_nights']} "
                 f"(LST, night)s with an exclude row; sha1 {fp['sha1'][:12]}",
-                f"[masters] " + '; '.join(f'{k}: {v}' for k, v in rep['masters'].items()),
+                '[masters] ' + RP.masters_text(rep['masters']),
                 f"[served] " + '; '.join(f"{p['stokes']} {p['page']} {p['run']} :{p['port']}"
                                         for p in rep['served_runs'].get('pages', [])),
                 f"[re-adjudication] {len(rrows)} excluded (LST, night)s advanced since {prev_src} -> {rpath}",
@@ -585,7 +612,8 @@ def _stage_summary(ctx):
         u.meta.update(readjudication_state=state, dd_sha1=fp['sha1'], exclusions=fp)
         for p in (jpath, tpath):
             u.add_output(p, 'status_report')
-        u.add_output(rpath, 'readjudication_list')
+        u.add_output(rpath, 'readjudication_list', ledger=C.status.LEDGER, ledger_sha1=led_sha, previous=prev,
+                     previous_source=prev_src)
         ctx.emit(u, 'summary', 'epoch', [f"{r['lst']}_{r['date']}" for r in rrows], rpath, 'go_no_go=' +
                  C.status_report.READJUDICATION_GO.replace('|', '/'))
 
@@ -602,23 +630,23 @@ def _stage_coverage(ctx, gaps=False):
         u.meta['exclusions'] = ex.fingerprint()
         if tier == 'deep':
             K.need_inputs(COV.deep_inputs(), stage)
-            rows, cells = COV.deep_coverage(a.cells, ex, workers=a.workers)
+            rows, cells = COV.deep_coverage(ctx.deep_spec(), ex, workers=a.workers)
+            from exopipe.phase3.core import cells as CL
             if a.epochs:
-                from exopipe.phase3.core import cells as CL
-                want = set(CL.expand_epochs(a.epochs))
+                want = {'_'.join(CL.parse_epoch(e)[:2]) for e in CL.expand_epochs(a.epochs)}
                 rows = [r for r in rows if f"{r['lst']}_{r['date']}" in want]
             if a.nights:
-                want = set(a.nights.split(','))
+                want = set(CL.expand(a.nights))
                 rows = [r for r in rows if r['date'] in want]
             cols = COV.DEEP_COLUMNS
             u.meta['cells'] = len(cells)
         elif tier == 'sublst':
             K.need_inputs(COV.sublst_inputs(), stage)
-            rows, _ = COV.sublst_coverage(a.lsts or a.cells)
+            rows, _ = COV.sublst_coverage(a.lsts or a.cells, workers=a.workers)
             cols = COV.SUBLST_COLUMNS
         else:
             K.need_inputs(COV.snapshot_inputs(), stage)
-            rows, _ = COV.snapshot_coverage(a.cells)
+            rows, _ = COV.snapshot_coverage(a.cells, workers=a.workers)
             cols = COV.SNAPSHOT_COLUMNS
         suffix = name[len(f'report_{stage}_{tier}'):]
         table = K.place(out, 'QA', f'coverage_{tier}{suffix}.csv')
@@ -656,11 +684,13 @@ def _stage_rebuild_due(ctx):
         ex = K.exclusions()
         u.add_input(C.paths.DATA_DECISIONS)
         K.need_inputs([C.paths.COADD_SB_ROOT, C.paths.PHASE2_ROOT], 'rebuild-due')
-        cells = COV.deep_universe(a.cells)
+        cells = COV.deep_universe(ctx.deep_spec())
         rows = RB.rebuild_due(cells, ex, workers=a.workers)
         table = K.place(out, 'QA', 'rebuild_due_deep' + name[len('report_rebuilddue_deep'):] + '.csv')
         K.write_csv(table, RB.COLUMNS, rows)
         u.meta.update(measure=C.status_rebuild.__doc__, due_fraction=C.status_rebuild.DUE_FRACTION,
+                      new_set_source=C.status_rebuild.NEW_SET_SOURCE, admission_record=C.status_rebuild.ADMISSION_RECORD,
+                      trigger='none: a report (D-ADMIT, ledger 2335 - the user invokes the rebuild)',
                       exclusions=ex.fingerprint(),
                       counts=dict(collections.Counter(r['status'] for r in rows)),
                       total_build_s=round(sum(float(r['build_s'] or 0) for r in rows), 1),
@@ -668,8 +698,8 @@ def _stage_rebuild_due(ctx):
         u.add_output(table, 'rebuild_due')
         due = [r['cell'] for r in rows if RB.is_due(r)]
         ctx.emit(u, 'rebuild-due', 'cell', due, table, 'status=due|never-built')
-        print(f'rebuild-due: {len(rows)} cells; ' + ', '.join(f'{k} {n}' for k, n in sorted(u.meta['counts'].items()))
-              + f' -> {table}')
+        print(f'rebuild-due (report only; new nights {RB.check_source()}): {len(rows)} cells; '
+              + ', '.join(f'{k} {n}' for k, n in sorted(u.meta['counts'].items())) + f' -> {table}')
         for r in rows:
             if r['status'] in ('due', 'never-built', 'unmeasured'):
                 print(f"  {r['cell']:10s} {r['status']:11s} new {float(r['new_s'] or 0) / 3600:7.2f} h of build "
@@ -692,7 +722,7 @@ def _stage_exclusion_conformance(ctx):
         K.need_inputs(run_dirs, 'exclusion-conformance (served runs)')
         if tier == 'deep':
             K.need_inputs([C.paths.COADD_SB_ROOT], 'exclusion-conformance (working tree)')
-            cells = COV.deep_universe(a.cells)
+            cells = COV.deep_universe(ctx.deep_spec())
             rows += XC.working_tree_audit(cells, ex, workers=a.workers)
             arch = a.archive_root or C.status_conformance.MASTERS_ARCHIVE_ROOT
             if arch != 'none':
@@ -709,8 +739,11 @@ def _stage_exclusion_conformance(ctx):
         u.meta['served'] = {f'{k[0]} {k[1]}': v for k, v in counts.items()}
         if errors:
             u.meta['unreadable_files'] = errors[:50]
-            u.note(f'{len(errors)} served CSV files could not be read (listed in meta.unreadable_files)')
-        table = K.place(out, 'QA', C.status_conformance.EXCLCONF_TABLE.format(tier=tier))
+        # a served CSV that cannot be read is not audited: the unit refuses, as the serve-time gate does
+        # (snapshot_serve_exclusion_gate.py:83-85 "could not be read - nothing served")
+        u.check('exclusion_conformance.served_files_readable', not errors, value=len(errors),
+                detail=('; '.join(errors[:3]) if errors else 'every served CSV read'))
+        table = K.place(out, 'QA', K.narrowed(name, C.status_conformance.EXCLCONF_TABLE.format(tier=tier)))
         K.write_csv(table, XC.COLUMNS, rows)
         u.add_output(table, 'exclusion_conformance')
         kind = ctx.emit_kind()
@@ -730,9 +763,12 @@ def _stage_violations(ctx):
     name = ctx.unit('report', 'violations', sel)
     with ctx.run.unit(name, tier='deep', stage='violations') as u:
         from exopipe.phase3.lib.status import steps_coverage as COV
-        rows, src = RP.violations(out, set(COV.deep_universe(a.cells)) if a.cells else None)
+        K.exclusions()                                    # S-G1 in every stage
+        u.add_input(ctx.C.paths.DATA_DECISIONS)
+        spec = ctx.deep_spec()
+        rows, src = RP.violations(out, set(COV.deep_universe(spec)) if spec else None)
         u.add_input(src)
-        table = K.place(out, 'status', 'violations_deep.csv')
+        table = K.place(out, 'status', K.narrowed(name, 'violations_deep.csv'))
         K.write_csv(table, ST.COLUMNS, [dict(**{'class': 'violation'}, item=r['cell'], kind='cell', status='FAIL',
                                              reason=(r.get('first_violation') or 'membership violation')[:300],
                                              step='masters', root=src, detail=f"{r.get('n_violations')} violations")
@@ -772,7 +808,7 @@ def _stage_stale(ctx):
                 got = [dict(item=r['lst'] + '_' + r['band'], kind='cell', status='stale',
                             reason=f"constituent {r['date']} excluded after the master was written ({r['note']})",
                             step='masters', root=r['file'], detail=r['verdict'])
-                       for r in XC.working_tree_audit(COV.deep_universe(a.cells), ex, workers=a.workers)
+                       for r in XC.working_tree_audit(COV.deep_universe(ctx.deep_spec()), ex, workers=a.workers)
                        if r['verdict'] == 'STALE']
             elif cls == 'frame_time':
                 got, src = ST.stale_frame_time(a.cells)
@@ -798,7 +834,7 @@ def _stage_stale(ctx):
             for r in got:
                 r['class'] = cls
             rows += got
-        table = K.place(out, 'status', f'stale_{tier}_{"_".join(classes)}{name[len("report_stale_" + "_".join(classes) + "_" + tier):]}.csv')
+        table = K.place(out, 'status', K.narrowed(name, f'stale_{tier}_{"_".join(classes)}.csv'))
         K.write_csv(table, ST.COLUMNS, rows)
         u.add_output(table, 'stale_table')
         kinds = sorted({r['kind'] for r in rows})
@@ -843,6 +879,7 @@ def _stage_cell_load(ctx):
     K, C, a, out, tier = ctx.K, ctx.C, ctx.args, ctx.out, ctx.tier
     label = a.run_label or C.status.SEARCH_LABEL.get(tier)
     with ctx.run.unit(ctx.unit('report', f'cellload_{label}'), tier=tier, stage='cell-load', run=label) as u:
+        K.exclusions()                                    # S-G1 in every stage
         rd = K.resolve_run(label, tier)
         K.need_inputs([rd], 'cell-load')
         rows, inputs = RP.cell_load(rd)
@@ -884,13 +921,13 @@ def _qa_stage(ctx, s):
             if rc != 0:
                 raise Refusal(f'solar_contamination_audit.py rc {rc}: {text[-300:]}')
             u.add_output(cand, 'solar_audit')
-            u.add_output(diff, 'csv_table')
+            u.add_output(diff, 'csv_table', required_columns=list(QA.SOLAR_DIFF_COLUMNS))
         elif s == 'beam':
             res, d = QA.run_beam(out, u, log)
             if not res.ok:
                 raise Refusal(f'beam_audit.py failed: {res.reason}')
             u.add_output(os.path.join(d, 'beam_audit_all.csv'), 'beam_audit')
-            u.add_output(os.path.join(d, 'beam_audit_flagged.csv'), 'csv_table')
+            u.add_output(os.path.join(d, 'beam_audit_flagged.csv'), 'csv_table', required_columns=list(QA.BEAM_COLUMNS))
         elif s == 'noise':
             res, dest = QA.run_noise(out, u, log)
             if not res.ok:
@@ -898,8 +935,14 @@ def _qa_stage(ctx, s):
             u.add_output(dest, 'noise_plot')
             u.meta['tail'] = res.tail[-1500:]
         elif s == 'outliers':
-            rows, files = QA.date_outliers(ex)
+            unreadable = []
+            rows, files = QA.date_outliers(ex, unreadable)
             u.meta['residual_records'] = len(files)
+            u.meta['existing_rule'] = QA.OUTLIER_EXISTING_RULE
+            if unreadable:                                # S-G16: skipped as the tool skips them, counted and named
+                u.meta['unreadable_residual_records'] = unreadable[:50]
+                u.note(f'{len(unreadable)} residuals_provisional.csv files skipped (unreadable), as '
+                       f'propagate_date_outliers.py:25-26')
             dest = K.place(out, 'QA', C.status_qa.OUTLIER_PROPOSALS)
             K.write_csv(dest, QA.OUTLIER_COLUMNS, rows)
             u.add_output(dest, 'date_outlier_proposals')
@@ -908,7 +951,8 @@ def _qa_stage(ctx, s):
             res, dest, tables = QA.run_bandpass(out, a.work, u, log)
             if not os.path.exists(dest):
                 raise Refusal(f'bandpass: no shard produced a row ({len(tables)} tables)')
-            u.add_output(dest, 'bandpass_phase_qa')
+            # shard exit codes are in meta.bandpass.shard_rc; completeness is the content test (one row per listed table)
+            u.add_output(dest, 'bandpass_phase_qa', tables_list=u.meta['bandpass']['list'])
         elif s == 'provenance':
             for script, rc, dest, tail in QA.run_provenance(out, rd, u, log, ctx.allowed):
                 if rc != 0:
@@ -939,7 +983,7 @@ def _stage_membership(ctx):
         if rc != 0:
             raise Refusal(f'conformance_check.main rc {rc}: {text[-400:]}')
         u.add_output(latest, 'membership_conformance')
-        u.add_output(hist, 'csv_table')
+        u.add_output(hist, 'csv_table', required_columns=list(HB.HISTORY_COLUMNS), min_rows=1)
         u.add_output(page, 'status_page')
         n = sum(1 for r in K.read_csv(latest) if r['status'] == 'FAIL')
         print(text.strip().splitlines()[-1] if text.strip() else f'conformance -> {latest}')
@@ -1060,5 +1104,6 @@ def _stage_batch_list(ctx):
         import hashlib
         u.check('batch_list.sha256_printed', sha == hashlib.sha256(open(a.list_out, 'rb').read()).hexdigest(),
                 value=sha, detail='CELLS_FILE_SHA256 printed by the script = sha256 of the list')
-        u.add_output(a.list_out, 'snapshot_batch_list')
+        u.add_output(a.list_out, 'snapshot_batch_list', all=bool(a.all), max_new=int(ctx.C.status_snapshot.MAX_NEW),
+                     base=os.path.abspath(a.base))
         print(res.tail.strip())

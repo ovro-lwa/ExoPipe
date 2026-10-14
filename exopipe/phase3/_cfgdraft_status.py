@@ -95,9 +95,12 @@ class status_report(_Section):
 
 
 class status_rebuild(_Section):
-    """`status --rebuild-due` (NEW; PHASE3_ARCHITECTURE.md section 0, C-10: "Co-add master sets are rebuilt intermittently:
-    default trigger = +50% accumulated observing time since the last build"; Class C, confirmed refactor deliverable
-    2026-08-11; DESIGN 12.2, Gregg 2026-10-13 "if the amount of images on disk increases substantially (say by 50%)").
+    """`status --rebuild-due` (NEW; PHASE3_ARCHITECTURE.md section 0, C-10: "+50% accumulated observing time since the last
+    build"; DESIGN 12.2, Gregg 2026-10-13 "if the amount of images on disk increases substantially (say by 50%)").
+    A REPORT, NEVER A TRIGGER: D-ADMIT (R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32, ledger 2335):
+    "the master rebuild is NOT triggered automatically at +50 per cent admitted time - that is a guideline for the cadence;
+    the user invokes the rebuild". Nothing reads the table or its item list as an input; the user passes the list to
+    `exopipe3 masters --cells @due.txt` when they choose to rebuild.
 
     HOW ACCUMULATED TIME IS MEASURED (deep cell = <LST>_<scope>; recorded in every row and in the unit record):
       t(night)   = TIME_CARD (INTTIME, s) of the night's Phase 2 deep image of the cell's scope, survey variant IMAGE_GLOB
@@ -111,8 +114,12 @@ class status_rebuild(_Section):
                    BUILD_RECORD (weights.csv: every night the build considered after exclusions, in_master 0 or 1), each
                    measured in the Science run the build used (its sci_dir).
       T_build    = sum of t over the build set (QA-rejected nights included: they were on disk at the build).
-      new set    = nights ADMITTED NOW and not in the build set: a Phase 2 deep image of the scope exists (newest Science_*
-                   holding one) and core.exclusions.is_excluded(lst, scope, night) is False.
+      new set    = nights ADMITTED since the build and not in the build set. NEW_SET_SOURCE says where they come from:
+                   'on-disk' (the refactor window; D-ADMIT's per-hour admission records do not exist yet): every night
+                   with a Phase 2 deep image of the scope (newest Science_* holding one) that core.exclusions does not
+                   exclude now; 'admission-record' (once the D-ADMIT admit stage writes ADMISSION_RECORD beside
+                   weights.csv, rows date + sci_dir as weights.csv): the record's nights, measured in their sci_dir,
+                   that are not excluded now (a cell without the record has none admitted).
       T_new      = sum of t over the new set.   DUE when T_new >= DUE_FRACTION x T_build.
       Nights of the build set that are now excluded are not subtracted (that master is stale by exclusion: --stale master /
       --exclusion-conformance); a cell with no build record and admitted nights is listed 'never-built' (due).
@@ -128,8 +135,14 @@ class status_rebuild(_Section):
                            '{scope}_I_deep_Taper_Robust-0.75_*_LST{lst}.fits')}
     BUILD_RECORD = 'weights.csv'  # coadd_final/weights.csv (date, ..., sci_dir, in_master); ops/conformance_check.py:34
     MASTER = 'I_deep_Taper_R075_{scope}.fits'   # reference master (INTTIME, NCOADD cross-check in the content test)
-    NEW_RUN_RULE = 'newest'       # Science_* chosen for a new night: the newest (name order) holding the image
-    RULED = {'DUE_FRACTION': 'DOC'}
+    NEW_RUN_RULE = 'newest'       # Science_* chosen for a new night ('on-disk'): the newest (name order) holding the image
+    # HOOK for D-ADMIT (ledger 2335, 'admission record beside weights.csv'): 'on-disk' until the admit stage exists;
+    # 'admission-record' reads <cell>/coadd_final/ADMISSION_RECORD (columns ADMISSION_COLUMNS; refused when the key is
+    # None or a record lacks a column). No admission record exists on 2026-10-14 (no code writes one yet).
+    NEW_SET_SOURCE = 'on-disk'
+    ADMISSION_RECORD = None
+    ADMISSION_COLUMNS = ('date', 'sci_dir')
+    RULED = {'DUE_FRACTION': ('DOC', 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32')}
 
 
 class status_ledger(_Section):
@@ -167,7 +180,13 @@ class status_coverage(_Section):
     # Report the (LST, night)s whose newest Phase 1 run is newer than the newest Phase 2 Science dir (MEASURED-23-CELLS-
     # PHASE1-RERUN-NEWER-THAN-PHASE2, ledger 2146: "a check the status command could carry"). Report column only.
     P1_NEWER_THAN_P2 = True
+    # Sub-LST search: a (cell, Stokes) is DONE by its record, the shipped search log (sublst_search_pass.sh:24 OUT =
+    # sublst/search_$ARM, :53 ships <cell>.log only after its acceptance checks :48-52), never by the state dir's done/
+    # marker (CLAUDE.md: no marker files); the state dir gives only 'failed' / 'claimed' and the marker shown beside it.
     SUBLST_SEARCH_STATE = '{ops}/sublst_search_state_B'      # done/claims/failed/<LST>_<scope>:<S>; ops-sublst.md
+    SUBLST_SEARCH_OUT = '{sublst}/search_B'                  # sublst_search_pass.sh:24 (ARM B)
+    SUBLST_SEARCH_RECORD = '{cell}_{S}/{cell}.log'           # the shipped search log; sublst_search_pass.sh:53
+    SUBLST_SEARCH_DONE_LINE = 'SUBLST-SEARCH-DONE {cell} {S}'   # printed after run_deep_cell returns; :48, checked :52
     SUBLST_WINDOWS = '{sublst}/tenmin_root_x2'               # <LST>_<scope>/frames.csv (catalog.md 4 preflight)
     SUBLST_REQUIRED_COLUMN = 'pos_kind'           # published LST run without it = pre-fitted generation; sublst_cumulative.py:83-86 (444656a)
     SUBLST_REQUIRED_FILE = 'pertie_detections.csv'   # sublst_cumulative.py:79-81 (window tie)
@@ -232,6 +251,7 @@ class status_qa(_Section):
     BANDPASS_SHARDS = 16                                   # run_bandpass_phase_qa.sh:9 (pure)
     BANDPASS_SCRIPT = 'bandpass_phase_warp.py'             # ops; run with site PYTHON['casa']
     BANDPASS_QA = 'bandpass_phase_qa.csv'                  # under <out>/QA; run_bandpass_phase_qa.sh:19
+    BANDPASS_DECIMALS = 4        # mirrors bandpass_phase_warp.py:112 round(v, 4): the content test's rounding bound on ratio
     # ---- provenance (candidate_provenance_audit.py, perframe_solar_check.py; R-NIGHT-RULE-HORIZON-PLUS-SOLAR-AUDIT 1534) ----
     PROVENANCE_TABLE = 'candidate_provenance_audit.csv'    # candidate_provenance_audit.py:27 (redirected under <out>/QA)
     PERFRAME_TABLE = 'perframe_solar_check.csv'            # perframe_solar_check.py:21 (redirected under <out>/QA)
@@ -259,8 +279,17 @@ class status_snapshot(_Section):
     DEFAULT_WORKLIST = '{ops}/snapshot_fleet_worklist_v9_20261005.txt'   # snapshot_batch_audit.py:139
     ORDER_LIST = '{ops}/snapshot_prefit_worklist_20261008.txt'   # snapshot_batch_lists.py:69
     ELIGIBILITY_TABLE = 'eligibility.csv'                  # under <out>/snapshot (the batch driver writes <L>/eligibility.csv)
-    LIST_OK = ('PREFIT-DONE',)                             # snapshot_batch_lists.py:93
-    LIST_OK_ALL = ('PREFIT-DONE', 'TO-PREFIT', 'PREFIT-STALE')   # with --all; :93
+    LIST_OK = ('PREFIT-DONE',)                             # snapshot_batch_lists.py:93 (content-test oracle)
+    LIST_OK_ALL = ('PREFIT-DONE', 'TO-PREFIT', 'PREFIT-STALE')   # with --all; :93 (content-test oracle)
+    # batch-list selection, passed to snapshot_batch_lists.py explicitly (the step's --max-new etc. override one run,
+    # recorded as overrides). Values = the script's own argparse defaults, snapshot_batch_lists.py:70-76.
+    MAX_NEW = 100                # cells per batch; :70
+    MAX_GATE_GB = 300            # GB of chain memory a batch may need (driver model); :71
+    LC_CACHE = 4000              # P3_LC_CACHE_MAX the run will use; :72
+    BASE_DETECTIONS = 11530      # fit-step detections per base cell without a PREFIT_DONE count (batch 2: 945,417 / 82); :73
+    BASE_LOADED = 213270         # loaded detections per base cell without a count (batch 2: 17,487,733 / 82); :74
+    NEW_DETECTIONS = 25624       # fit-step detections per new cell without a marker (40-cell sample: 1,024,951 / 40); :75
+    NEW_LOADED = 314396          # loaded detections per new cell without a marker (the same sample: 12,575,826 / 40); :76
     STATUS_ORDER = ('NOT-SHIPPED', 'HOLD-DIRTY', 'HOLD-CHAIN-REFUSAL', 'WAIT-FRAMETIME-JOB', 'WAIT-LIGHTCURVES',
                     'WRITER-ACTIVE', 'PREFIT-DONE', 'PREFIT-STALE', 'TO-PREFIT')   # snapshot_batch_audit.py:109-125
     FRAMETIME_THREADS = 16                                 # snapshot_frametime_worklist.py:53 (pure)
