@@ -404,6 +404,12 @@ def build(cell, args, run, out, ran_now):
             u.refuse(f'{cell_dir} is not as stage-in left it ({"; ".join(dirty[:4])}): a build runs once on a clean cell '
                      f'(rebuild_cell.sh:34; G-M25) - its reference would be the earlier build\'s master. Re-run '
                      f'`masters --stages stage-in --fresh --supersede TAG`, the flow step, then the build')
+        own = _epoch_gate_source() == 'own-master'
+        carried = os.path.join(cell_dir, 'coadd_final', 'epoch_gate.csv')
+        if own and os.path.exists(carried):
+            u.refuse(f'{carried} exists: masters_build.EPOCH_GATE_SOURCE own-master builds without a carried record (B-05 a) - '
+                     f'the co-add would drop its FAIL nights before the gate. Re-run `masters --stages stage-in --fresh '
+                     f'--supersede TAG` with masters_stagein.EPOCH_GATE_CARRY none, the flow step, then the build')
         free_space_gate(out)
         mods, applied = inplace(out)
         co = mods['coadd']
@@ -439,6 +445,13 @@ def build(cell, args, run, out, ran_now):
             if os.path.isfile(p):
                 u.add_input(p)
         u.note(f'flow step: {flow_note}')
+        factor = None
+        if own:                 # the gate evaluates in the frame of the baked generation (verify T6, install)
+            factor, what = bake_factor(lst, sc)
+            for p in (_cfg().masters_fluxscale.SCALE_TABLE, _cfg().masters_fluxscale.FLUXCORR_TABLE):
+                u.add_input(p)
+            u.note(f'B-05 epoch gate frame: x{factor:.5f} ({what})' if factor else
+                   f'B-05 epoch gate frame: unbaked products - {what} (the fluxscale stage refuses the cell)')
         extra = {}
         if reference.startswith('night:'):
             co.REFERENCE_DATES = dict(co.REFERENCE_DATES, **{lst: reference.split(':', 1)[1]})
@@ -455,7 +468,7 @@ def build(cell, args, run, out, ran_now):
                     _refuse_or_noinput(u, tee, 'co-add final')
                 if fin.get('status') == 'skipped':
                     u.refuse('co-add skipped the build (.done + current COADDOP) - FORCE_REBUILD not applied')
-                if _epoch_gate_source() == 'own-master':    # B-05 (a): gate on this build's master, bounded passes
+                if own:                                      # B-05 (a): gate on this build's master, bounded passes
                     from exopipe.phase3.lib.masters import epoch_gate_passes as EGP
 
                     def _rerun():
@@ -465,7 +478,8 @@ def build(cell, args, run, out, ran_now):
                         if r.get('status') == 'skipped':
                             u.refuse('co-add skipped a B-05 rebuild pass (.done + current COADDOP)')
                         return r
-                    fin = EGP.run_passes(u, _rerun, cell_dir, sc, out, fin)
+                    fin = EGP.run_passes(u, _rerun, cell_dir, sc, out, fin, run.run_id,
+                                         lambda: mods['membership'].verify(cell_dir, excl), factor=factor)
             except RuntimeError as e:                 # every in-place gate that raises (G-M02/04/05/09/16/19)
                 u.refuse(str(e)[:1500])
         u.note(f'co-add final: {fin.get("n_good")}/{fin.get("n_total")} nights in the master')
@@ -614,6 +628,23 @@ def scale_row(lst, scope):
                 srcs=(f"VLSSr {t['window']}" if t else ''), freq_hz=s.SCALE_MODEL_FREQ_HZ,
                 freq_src=(t.get('ref', 'VLSSr 73 MHz subband, one factor per LST') if t else ''), rms_jy='',
                 detail=f'scale table {os.path.basename(s.SCALE_TABLE)}', measured_at=(t['measured_at'] if t else ''))
+
+
+def bake_factor(lst, scope):
+    """(factor, what): SHSCALE[lst] x FLUXCORR[scope] as the fluxscale stage will bake it into the pixels (shflux.apply:
+    float32(scale x corr)), from the same pinned tables (refuses on a pin mismatch, as the fluxscale stage does); (None, why)
+    when the fluxscale stage would refuse the cell."""
+    from exopipe.phase3.lib.masters import deep_inplace as IP, flux_correction as FC
+    s = _cfg().masters_fluxscale
+    IP.sha1_pin(s.SCALE_TABLE, s.SCALE_TABLE_SHA1, 'scale table v4 (G-M23)')
+    IP.sha1_pin(s.FLUXCORR_TABLE, s.FLUXCORR_TABLE_SHA1, 'flux correction table v2 (G-M23)')
+    row = scale_row(lst, scope)
+    corr_t = FC.load_table(s.FLUXCORR_TABLE)
+    if row['status'] != 'OK':
+        return None, row['status']
+    if scope not in corr_t:
+        return None, f'no flux-correction row for {scope} in {s.FLUXCORR_TABLE}'
+    return float(row['scale']) * float(corr_t[scope]['corr']), f"SHSCALE {row['scale']} x FLUXCORR {corr_t[scope]['corr']}"
 
 
 def append_shflux_row(table, row):
@@ -892,7 +923,7 @@ def _plan_stage_in(cell, args, out, planned):
     fsrc = os.path.join(C, 'flow')
     nf = sum(len(fs) for _, _, fs in os.walk(fsrc)) if os.path.isdir(fsrc) else 0
     lines.append(f'outputs: {cell_dir}/coadd_final/{{I_deep_Taper_R075,V_deep_Taper_R0}}_{sc}.fits, coadd_final_ref/ copies '
-                 f'[reference_master], coadd_final/epoch_gate.csv [csv_table]')
+                 f'[reference_master]' + (', coadd_final/epoch_gate.csv [csv_table]' if egc else ''))
     lines.append(f'next: flow --tier deep (copies the {nf} stored flow files of {fsrc}, computes the stale ones), then '
                  f'masters build')
     return lines, gates
@@ -935,10 +966,18 @@ def _plan_build(cell, args, out, planned):
     if dirty:
         gates.append(f'cell not as stage-in left it ({"; ".join(dirty[:3])}): stage-in --fresh --supersede TAG first (G-M25)')
     try:
+        own = _epoch_gate_source() == 'own-master'
         lines.append('epoch gate: ' + ('on this build\'s own master after the final co-add, up to '
                                        f'{_cfg().masters_build.EPOCH_GATE_MAX_PASSES} final pass(es) without in-master FAIL '
-                                       'nights (B-05 a)' if _epoch_gate_source() == 'own-master' else
+                                       'nights (B-05 a); membership verified with the record; passes kept under '
+                                       f'{out}/_epoch_gate_passes/{cell}/<run id>/' if own else
                                        'the carried record of stage-in (production; the install evaluates the new master)'))
+        if own and os.path.exists(os.path.join(out, cell, 'coadd_final', 'epoch_gate.csv')) and 'stage-in' not in planned:
+            gates.append('coadd_final/epoch_gate.csv exists (carried): own-master builds without one - stage-in --fresh '
+                         '--supersede TAG with masters_stagein.EPOCH_GATE_CARRY none first (B-05 a)')
+        if own:
+            f, what = bake_factor(lst, sc)
+            lines.append(f'epoch gate frame: x{f:.5f} ({what})' if f else f'epoch gate frame: unbaked - {what}')
     except Refusal as e:
         gates.append(str(e))
     lines.append(f'in place: coadd.run_provisional_lst_freq({lst!r}, {_freq(sc)!r}) then run_final_lst_freq; env '

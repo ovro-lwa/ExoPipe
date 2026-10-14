@@ -143,10 +143,12 @@ class masters_build(_Section):
     LEGACY_STAGE2_RECORD = 'accept-residuals_provisional'   # B-04 default (c): membership.stage2_record falls back (membership.py:155-184)
     # final stage membership (two-tier: products for every non-excluded night)
     EPOCH_GATE_SOURCE = 'own-master'          # B-05 (a), Gregg 2026-10-13: after the final co-add every night is tested against THIS build's master and the final
-                                              # co-add reruns without the in-master FAIL nights (lib/masters/epoch_gate_passes.py; plan/wave2/B05_DESIGN.md);
+                                              # co-add reruns without the in-master FAIL nights (lib/masters/epoch_gate_passes.py; exopipe_ops/refactor_20261012/plan/wave2/B05_DESIGN.md);
                                               # 'carried-record' = production: coadd_final/epoch_gate.csv read with check_master=False (coadd_full_pipeline.py:3492-3499)
     EPOCH_GATE_MAX_PASSES = 3                 # passes of the final co-add at most (B-05 'a bounded number of passes'); the cell refuses when the last pass still
-                                              # has a FAIL night in the master. 3 PROPOSED 2026-10-14 - Gregg to confirm; production 1 (no rebuild pass)
+                                              # has a FAIL night in the master, and at any pass whose own record breaks membership (a removed night that passes
+                                              # the master built without it: Gregg names it out of the master). 3 PROPOSED 2026-10-14 - Gregg to confirm (not
+                                              # in RULED until he does); production 1 (no rebuild pass)
     SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # membership.py:72; R-SUNLIT-NIGHTS-OUT-OF-MASTERS
     SOLAR_AUDIT_SHA1 = '24151ffaa1b7f11faa7adeab5d0f9cb6cfae8da4'
     NAMED_OUT_OF_MASTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'named_out_of_master.csv')   # package data file beside config.py, 1 row; membership.py:98; R-GREGG-20261011-17H18-0505-OPTION-B
@@ -187,7 +189,7 @@ class masters_build(_Section):
                       'FLUXFIT', 'LOO_N_RANGE', 'STRIATION_WINDOW_BEAMS', 'EPOCH_CHECK', 'JUPITER_MASK_DEEP',
                       'FORCE_REBUILD')   # FORCE_REBUILD: False would re-enable the in-place .done skip guard (CLAUDE.md 3; the wrapper refuses a skip)
     RULED = {'CUTOVER_DATE': 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED',
-             'EPOCH_GATE_SOURCE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'EPOCH_GATE_MAX_PASSES': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'EPOCH_GATE_SOURCE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'FLOW_MAX_NAN_FRACTION': 'FINDING-FIVE-GOOD-NIGHTS-BAD-RESIDUALS-ARE-FLOW-FAILURES',
              'ALLOW_STALE_FLOW': 'RATIFY-COADD-FLOW-REFRESH-STAGE-AND-FRESHNESS-GATE',
              'REF_MODE': 'R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-MASTER',
