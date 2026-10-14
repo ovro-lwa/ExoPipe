@@ -156,11 +156,16 @@ class forced_snapshot(_Section):
                 'verify': 'FORCED-VERIFY-OK', 'masters': 'master links'}
     # items the review host's localization writes, copied back to the work run (pages_run:38-41)
     LOC_COPY_BACK = ('source_catalogs', 'source_catalogs_{S}_loc', 'localization_figs', 'coadd_root.txt')
+    # Exclusions downstream (Gregg 2026-10-14, the refactor chat's recommendation; the snapshot chat agreed): a selected event
+    # on an excluded (LST, band, night) - core.exclusions, read now; a wideband excluded with any member subband - refuses the
+    # build before any in-place call: the evaluation predates the exclusion and is redone first. 'build' = production (no gate)
+    EXCLUDED_EVENTS = 'refuse'
     PROTECTED_KEYS = ('MASTER_CATS', 'FROZEN_MASTERS')
     RULED = {'REFUSE_FULL': 'INCIDENT-SNAP-FULL-CUTOUTS-EQUAL-RED-62-CELLS', 'CADENCES': 'SNAP-FORCED-ONE-TIER-PER-PAGE',
              'MERGE_ARCMIN': 'R-FORCED-PAGES-ASTROMETRY-FILTERS-MERGE', 'ASTROM_SNR': 'RULING-TEMPLATE-FIT-BELOW-7-SIGMA',
              'VI_NOTE_SIGMA': 'R-FORCED-VI-NOTE-NEVER-GATE', 'TIE_LARGE_X_SYS': 'R-REFERENCES-AT-ALL-ELEVATIONS',
-             'FROZEN_MASTERS': 'FREEZE-SNAPSHOT-MASTERS-GEN4', 'BLOCK_MIN_FRAMES': 'R-FORCED-PANELS-SERVED'}
+             'FROZEN_MASTERS': 'FREEZE-SNAPSHOT-MASTERS-GEN4', 'BLOCK_MIN_FRAMES': 'R-FORCED-PANELS-SERVED',
+             'EXCLUDED_EVENTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}
 
 
 class forced_assoc(_Section):

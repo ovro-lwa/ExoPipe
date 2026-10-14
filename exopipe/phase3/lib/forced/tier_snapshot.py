@@ -203,6 +203,22 @@ def selected_events(ev_dirs, S, cad, keep=None):
     return out
 
 
+def excluded_events(rows, ex=None):
+    """[(cell, band, ts)] of the selected evaluation rows on an excluded (LST, band, night) - core.exclusions read now (a
+    wideband is excluded with any excluded member subband, the 18 MHz carve-out kept)."""
+    from exopipe.phase3.core.exclusions import Exclusions
+    ex = ex or Exclusions()
+    out = []
+    for r in rows:
+        cell = r.get('cell') or ''
+        if '_' not in cell:
+            continue
+        lst, date = cell.split('_', 1)
+        if ex.is_excluded(lst, r.get('band', ''), date[:10]):
+            out.append((cell, r.get('band', ''), r.get('ts', '')))
+    return out
+
+
 def _has_events(c):
     return bool(selected_events((c.ev_sb, c.ev_wb), c.S, c.cad, keep=lambda r: _keep(c, r)))
 
@@ -257,6 +273,15 @@ def stage_build(c):
             for fn in ('thresholds.csv', 'targets_ge4.csv'):
                 if os.path.exists(os.path.join(ev, fn)):
                     u.add_input(os.path.join(ev, fn))
+        if s.EXCLUDED_EVENTS not in ('refuse', 'build'):
+            u.refuse(f'forced_snapshot.EXCLUDED_EVENTS {s.EXCLUDED_EVENTS!r}: refuse or build')
+        if s.EXCLUDED_EVENTS == 'refuse':        # Gregg 2026-10-14: exclusions enforced downstream
+            bad = excluded_events(selected_events((c.ev_sb, c.ev_wb), c.S, c.cad,
+                                                  keep=(lambda r: _keep(c, r)) if c.items else None))
+            u.meta['excluded_events'] = len(bad)
+            if bad:
+                u.refuse(f'{len(bad)} selected event(s) on an excluded night, e.g. {bad[:3]} - the evaluation predates the '
+                         f'exclusion: redo it first (forced_snapshot.EXCLUDED_EVENTS refuse)')
         if c.items:
             _restrict_evals(c, u)
         u.meta['host'] = K.hostname()

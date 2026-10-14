@@ -503,6 +503,38 @@ def test_snapshot_cli(W, ev_sb, ev_wb):
     check('G35: a build on an existing run name is refused (exit 2) before any in-place call',
           rc == 2 and rec.get('status') == 'refused' and 'G35' in rec.get('reason', '') and not rec['meta'].get('legacy_calls'),
           '%s %s' % (rc, rec.get('reason')))
+    # exclusions enforced downstream (Gregg 2026-10-14): a selected event on an excluded night refuses the build before any
+    # in-place call (the evaluation predates the exclusion)
+    from exopipe.phase3.core.exclusions import Exclusions
+    from exopipe.phase3.lib.forced.tier_snapshot import excluded_events
+    dd = os.path.join(TMP, 'excl_dd.csv')
+    with open(dd, 'w') as f:
+        f.write('lst,subband,date,verdict,reason\n04h,64MHz,2025-01-01,exclude,x\n')
+    exs = Exclusions(dd)
+    rows = [{'cell': '04h_2025-01-01', 'band': '64MHz', 'ts': 't1'}, {'cell': '04h_2025-01-01', 'band': 'Blue', 'ts': 't2'},
+            {'cell': '04h_2025-01-01', 'band': 'Red', 'ts': 't3'}, {'cell': '04h_2025-01-02', 'band': '64MHz', 'ts': 't4'}]
+    bad = excluded_events(rows, ex=exs)
+    check('excluded_events: the excluded subband and its wideband (64 MHz in Blue) on that night; not Red, not another night',
+          [b_[2] for b_ in bad] == ['t1', 't2'], str(bad))
+    ex = Exclusions()
+    l_, s_, d_ = sorted(k for k in ex.rows if k not in ex.perband and k[1].isdigit())[0]
+    ex_sb, ex_wb = os.path.join(TMP, 'excl_eval_sb'), os.path.join(TMP, 'excl_eval_wb')
+    shutil.copytree(ev_sb, ex_sb)
+    shutil.copytree(ev_wb, ex_wb)
+    tp = os.path.join(ex_sb, 'targets_ge4.csv')
+    rows = list(csv.DictReader(open(tp)))
+    sel = next(r for r in rows if r['stokes'] == 'V' and r['tier'] == '10s' and r['screen'] == 'clean' and abs(float(r['snr'])) >= 4.9)
+    sel['cell'], sel['band'] = f'{l_}_{d_}', f'{s_}MHz'
+    with open(tp, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    rc, err = cli(['forced', '--tier', 'snapshot', '--cores', 'none', '--out', W, '--snap-eval-sb', ex_sb, '--snap-eval-wb', ex_wb,
+                   '--stokes', 'V', '--snap-cadence', '10s', '--snap-name', 'Run_SNAPFORCED_V10s_EXCL', '--stages', 'build'])
+    rec = record.load_record(W, 'forced', 'C_build_Run_SNAPFORCED_V10s_EXCL') or {}
+    check('a build whose selected event lies on an excluded night is refused (exit 2) before any in-place call',
+          rc == 2 and rec.get('status') == 'refused' and 'excluded night' in rec.get('reason', '')
+          and not rec['meta'].get('legacy_calls'), '%s %s' % (rc, rec.get('reason')))
     rc, err = cli(base + ['--epochs', '06h_2025-01-03'])
     recs = [record.load_record(W, 'forced', 'C_build_Run_SNAPFORCED_%s_E06h_2025-01-03' % x) or {}
             for x in ('I10s', 'I1min', 'V10s', 'V1min')]
