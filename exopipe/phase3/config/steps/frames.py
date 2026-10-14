@@ -67,17 +67,17 @@ class frames_residuals(_Section):
                                        # (phase3_deep.py:1617-1618, 1731-1732)
     SANITY_ALIGN_X = 10.0              # x cell median weights.csv qa3_rms_mjy: the epoch is removed, NO frame (phase3_deep.py:1159;
                                        # R-SEARCH-SANITY-GATE-10X, R-BEAM-AND-10X-REFUSED-EPOCHS-STAY-OUT-NO-FRAMES-OWED)
-    GATE_MIN_NIGHTS = 5                # nights with a value, else the 10x sanity gate is skipped (silently, inventory E12) and the
-                                       # beam gate loudly (floor waived) (phase3_deep.py:1156, 1345-1351)
+    # (GATE_MIN_NIGHTS, the sanity / beam gates' 5, is gone: the engine reads its minimum counts from P3_SANITY_MIN_NIGHTS /
+    # P3_SEARCH_TIER_MIN / P3_BEAM_GATE_MIN_NIGHTS since 2026-10-14 - search_detect / search_sublst keys, passed by
+    # lib/frames/deep_engine.child_env as by the search step)
     LOO_NCOADD_RANGE = (2, 20)         # nights (NCOADD of the own-Stokes central master): inside it an in-master epoch must
                                        # subtract its own LOO master (phase3_deep.py:1403; audit R-19)
     SIGSTACK_FLOOR = 1.0               # ratio; noise map = across-epoch MAD / clean-sky median, floored at 1 (phase3_pipeline.py
                                        # :1383-1390 = lib/search/identification.py build_sigma_stack)
-    PROTECTED_KEYS = ('DEEP_PRODUCER', 'PB_FLOOR', 'CENTRAL_RMS_HALF_PX', 'SANITY_ALIGN_X', 'GATE_MIN_NIGHTS',
+    PROTECTED_KEYS = ('DEEP_PRODUCER', 'PB_FLOOR', 'CENTRAL_RMS_HALF_PX', 'SANITY_ALIGN_X',
                       'LOO_NCOADD_RANGE', 'SIGSTACK_FLOOR')
     RULED = {'PB_FLOOR': 'LANDED-P3S3-PRODUCTS-667a56e',
              'SANITY_ALIGN_X': ('R-SEARCH-SANITY-GATE-10X', 'R-BEAM-AND-10X-REFUSED-EPOCHS-STAY-OUT-NO-FRAMES-OWED'),
-             'GATE_MIN_NIGHTS': 'R-BEAM-GATE-FIVE-NIGHT-FLOOR-WAIVED-THIN-CELLS-SEARCHED',
              'LOO_NCOADD_RANGE': ('R-LOO-MASTERS-AND-REDO-SEQUENCE', 'R-LOO-PER-STOKES-RATIFIED'),
              'SIGSTACK_FLOOR': 'LANDED-P3S3-PRODUCTS-667a56e'}
 

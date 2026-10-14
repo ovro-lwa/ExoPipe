@@ -44,13 +44,15 @@ VALUE_KEYS = (
     ('nproc_resid', 'NPROC_RESID', 'env'), ('min_epochs', 'MIN_EPOCHS', 'env'),
     ('sigstack_min_epochs', 'SIGMA_STACK_MIN_EPOCHS', 'env'), ('sanity_i_x', 'SANITY_X', 'env'),
     ('search_tier_sigma', 'SEARCH_TIER_SIGMA', 'env'), ('beam_gate_ratio', 'BEAM_GATE_RATIO', 'env'),
+    ('sanity_min_nights', 'SANITY_MIN_NIGHTS', 'env'), ('search_tier_min', 'SEARCH_TIER_MIN', 'env'),
+    ('beam_gate_min_nights', 'BEAM_GATE_MIN_NIGHTS', 'env'),
     ('beam_gate_on', 'BEAM_GATE_ON', 'env'), ('flow_xla_mem_fraction', 'FLOW_XLA_MEM_FRACTION', 'env'),
     ('flow_python', 'FLOW_PYTHON', 'env'), ('flow_lock', 'FLOW_LOCK', 'env'),
     ('run_label', 'RUN_LABEL', 'step'), ('stokes_order', 'STOKES_ORDER', 'step'), ('python', 'ENGINE_PYTHON', 'step'),
     ('unaccounted', 'UNACCOUNTED_EPOCHS', 'step'),
     ('striation_window_beams', 'STRIATION_WINDOW_BEAMS', 'mirror'), ('sigstack_build_min', 'SIGMA_STACK_BUILD_MIN', 'mirror'),
     ('pb_floor', 'PB_FLOOR', 'mirror'), ('rms_box_half_px', 'CENTRAL_RMS_HALF_PX', 'mirror'),
-    ('sanity_align_x', 'SANITY_ALIGN_X', 'mirror'), ('gate_min_nights', 'GATE_MIN_NIGHTS', 'mirror'),
+    ('sanity_align_x', 'SANITY_ALIGN_X', 'mirror'),
     ('loo_ncoadd_range', 'LOO_NCOADD_RANGE', 'mirror'), ('sigstack_floor', 'SIGSTACK_FLOOR', 'mirror'),
 )
 _SECTIONS = {'deep': ('search', 'search_inputs', 'search_detect', 'frames_residuals'),
@@ -260,6 +262,11 @@ def child_env(spec, cfg=None):
         s['P3_BEAM_GATE_OFF'] = '1'
     s['P3_SANITY_I_X'] = repr(v['sanity_i_x'])
     s['P3_SEARCH_TIER_SIGMA'] = repr(v['search_tier_sigma'])
+    # the cell-median gates' minimum counts (Gregg 2026-10-14: 5 kept, a skip counted; deep_search.py:82-84), as the search
+    # step passes them (deep_step.engine_env, tier_sublst.engine_env)
+    s['P3_SANITY_MIN_NIGHTS'] = str(int(v['sanity_min_nights']))
+    s['P3_SEARCH_TIER_MIN'] = str(int(v['search_tier_min']))
+    s['P3_BEAM_GATE_MIN_NIGHTS'] = str(int(v['beam_gate_min_nights']))
     s['DEEP_XLA_MEMFRAC'] = repr(v['flow_xla_mem_fraction'])
     if v['flow_lock']:
         s['P3_FLOW_LOCK'] = v['flow_lock']        # node-global lock shared with production searches (one GPU batch per node)

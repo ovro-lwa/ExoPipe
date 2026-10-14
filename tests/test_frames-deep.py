@@ -105,6 +105,50 @@ def test_config():
     print('config: sections load, protected keys refuse, ruling IDs exist, engine values from search sections')
 
 
+def test_preview_sanity_minimum():
+    """The preview's 10x sanity discard runs with the engine's own minimum, search_detect.SANITY_MIN_NIGHTS (the engine reads
+    P3_SANITY_MIN_NIGHTS; review 2026-10-14 m1): 6 nights with a qa3 rms -> the 50x night removed at 5, none at 7."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.frames import deep_cells
+    dates = [f'2025-01-0{i}' for i in range(1, 7)]
+
+    class FakeCell:
+        lst, scope, final = '07h', '18MHz', os.path.join(SCR, 'no_such_cell', 'coadd_final')
+
+        def epoch_dates(self):
+            return list(dates)
+
+        def weights(self):
+            return [{'date': d, 'qa3_rms_mjy': q} for d, q in zip(dates, ('10', '10', '10', '10', '10', '500'))]
+
+        def in_master(self):
+            return {}
+
+        def master(self, st):
+            return os.path.join(SCR, 'no_such_master.fits')
+
+        def loo(self, d, st):
+            return os.path.join(SCR, 'no_such_loo.fits')
+
+        def header(self, p):
+            return {}
+
+    class NoExcl:
+        def is_excluded(self, *a):
+            return False
+    d = _fresh('preview')
+    at5 = deep_cells.preview(FakeCell(), 'V', NoExcl())['sanity']
+    CFG.reset()
+    CFG.authorize([], out=d)
+    CFG.set('search_detect.SANITY_MIN_NIGHTS', '7')
+    try:
+        at7 = deep_cells.preview(FakeCell(), 'V', NoExcl())['sanity']
+    finally:
+        CFG.reset()
+    assert at5 == ['2025-01-06'] and at7 == [], (at5, at7)
+    print('preview: the 10x sanity discard uses search_detect.SANITY_MIN_NIGHTS (5: removed; 7: gate skipped)')
+
+
 def test_seam():
     import ast
     from exopipe.phase3.lib.frames import deep_engine, deep_seam
@@ -177,6 +221,10 @@ def test_overrides():
         pass
     notes = deep_engine.check_overrides(C(['search_detect.MSTRUCT_K', 'search_detect.SANITY_X']))
     assert len(notes) == 1 and 'MSTRUCT_K' in notes[0], notes
+    # the gates' minimum counts reach the engine (P3_SANITY_MIN_NIGHTS etc.; review 2026-10-14 m1): neither refused nor noted
+    notes = deep_engine.check_overrides(C(['search_detect.SANITY_MIN_NIGHTS', 'search_detect.SEARCH_TIER_MIN',
+                                           'search_sublst.BEAM_GATE_MIN_NIGHTS']))
+    assert not notes, notes
     print('overrides: engine literal refused, detection key noted')
 
 
@@ -226,6 +274,20 @@ def test_child():
         assert env['P3_COADD_ROOT'] == REAL_CELL_ROOT and env['P3_ARCHIVE_RUN'] == 'Run_TEST'
         assert env['P3_MASTER_GEN'] == 'ivw-mean-v3' and env['P3_DEEP_MIN_EPOCHS'] == '1' and env['P3_MIN_EPOCHS'] == '3'
         assert env['P3_STREAM_RESID'] == '1' and env['DEEP_NPROC_RESID'] == '6' and 'P3_REFINE_OFF' not in env
+        assert (env['P3_SANITY_MIN_NIGHTS'], env['P3_SEARCH_TIER_MIN'], env['P3_BEAM_GATE_MIN_NIGHTS']) == ('5', '5', '5'), env
+        # an override of a minimum reaches the child (deep: search_detect; 10-minute: search_sublst) - review 2026-10-14 m1
+        from exopipe.phase3.config import CFG
+        CFG.reset()
+        CFG.authorize([], out=d)
+        CFG.set('search_detect.SANITY_MIN_NIGHTS', '7')
+        CFG.set('search_sublst.SEARCH_TIER_MIN', '6')
+        try:
+            e7 = deep_engine.child_env(spec('OK'))
+            vs = deep_engine.engine_values('sublst')
+        finally:
+            CFG.reset()
+        assert (e7['P3_SANITY_MIN_NIGHTS'], e7['P3_SEARCH_TIER_MIN'], e7['P3_BEAM_GATE_MIN_NIGHTS']) == ('7', '5', '5'), e7
+        assert (vs['sanity_min_nights'], vs['search_tier_min'], vs['beam_gate_min_nights']) == (5, 6, 5), vs
         assert env['P3_STAGING_ROOT'] == os.path.join(d, 'att_OK') and env['P3_VRESID_ROOT'].endswith('Run_OK/vresid')
         assert os.path.exists(os.path.join(d, 'att_OK', '07h_18MHz.log'))
         for label, exc in (('SKIP', NoInput), ('REF', Refusal), ('ERR', RuntimeError), ('CRASH', RuntimeError)):
@@ -556,7 +618,7 @@ def test_real():
     print('real:\n  ' + '\n  '.join(lines))
 
 
-TESTS = ['test_config', 'test_seam', 'test_items', 'test_overrides', 'test_child', 'test_register', 'test_cli', 'test_real']
+TESTS = ['test_config', 'test_seam', 'test_items', 'test_overrides', 'test_preview_sanity_minimum', 'test_child', 'test_register', 'test_cli', 'test_real']
 
 
 def main(argv):

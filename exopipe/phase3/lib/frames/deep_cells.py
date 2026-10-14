@@ -300,7 +300,7 @@ def preview(c, stokes, excl, included=None, tier='deep'):
                 continue
             wr[r['date']] = q
         fin = sorted(q for q in wr.values() if math.isfinite(q) and q > 0)
-        if len(fin) >= v['gate_min_nights']:
+        if len(fin) >= v['sanity_min_nights']:          # deep_search.py:1263 (SANITY_MIN_NIGHTS = P3_SANITY_MIN_NIGHTS)
             med = fin[len(fin) // 2]
             res['sanity'] = [d for d in rem if wr.get(d, 0) > v['sanity_align_x'] * med]
             rem = [d for d in rem if d not in res['sanity']]
