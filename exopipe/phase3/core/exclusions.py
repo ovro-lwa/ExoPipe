@@ -41,6 +41,8 @@ class Exclusions:
             raise Refusal(f'exclusion list not found at {self.path} - never proceed with an empty exclusion set '
                           f'(ruling C-09, Gregg 2026-08-11)')
         self.rows = set()          # (lst, scope without 'MHz', date) with verdict 'exclude'
+        self.keys_any = set()      # the same key for EVERY row, any verdict (a 'keep' is Gregg's readmission): a rule that
+                                   # must not re-propose a decided night skips these (propagate_date_outliers.py:40-42)
         self.perband = set()       # the subset tagged [PERBAND]
         self.reasons = {}
         with open(self.path, 'rb') as f:
@@ -49,9 +51,10 @@ class Exclusions:
         try:
             rd = csv.DictReader(raw.decode('utf-8').splitlines())
             for r in rd:
+                key = (r['lst'].strip(), _norm_scope(r['subband']), r['date'].strip())
+                self.keys_any.add(key)
                 if (r.get('verdict') or '').strip() != 'exclude':
                     continue
-                key = (r['lst'].strip(), _norm_scope(r['subband']), r['date'].strip())
                 self.rows.add(key)
                 self.reasons[key] = r.get('reason', '')
                 if self.perband_tag in (r.get('reason') or ''):

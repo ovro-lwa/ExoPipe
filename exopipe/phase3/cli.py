@@ -121,13 +121,15 @@ def _pin(cores):
 
 
 def _guard_out(out):
+    """The refusal text when --out is a production root during the refactor window, else None (exit 2, not 1)."""
     from exopipe.phase3.config import CFG
     if CFG.paths.PRODUCTION_WRITES:
-        return
+        return None
     root = CFG.production_root_of(out)
     if root is not None:
-        raise SystemExit(f'refused: --out {out} is under the production root {root} and paths.PRODUCTION_WRITES '
-                         f'is False (refactor window). Write parity/scratch output to your own root.')
+        return (f'--out {out} is under the production root {root} and paths.PRODUCTION_WRITES is False (refactor '
+                f'window). Write parity/scratch output to your own root.')
+    return None
 
 
 def _parity(args, out):
@@ -291,7 +293,10 @@ def main(argv=None):
         return record.EXIT_ERROR
     pinned = _pin(args.cores)
     if getattr(mod, 'WRITES', True) and not args.dry_run:
-        _guard_out(out)
+        why = _guard_out(out)
+        if why:
+            print(f'REFUSED: {why}', file=sys.stderr)
+            return record.EXIT_REFUSED
     if args.parity and name != 'run':          # `run submit --parity` forwards it to every step command instead
         if not args.out:
             print('REFUSED: --parity needs --out (the parity root)', file=sys.stderr)

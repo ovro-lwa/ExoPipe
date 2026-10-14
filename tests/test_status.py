@@ -201,7 +201,8 @@ def build_world():
     wcsv(f'{W}/clv15/data_decisions.csv.bak_20250101', dd_cols, allx)
     wcsv(f'{W}/clv15/data_decisions.csv', dd_cols, allx + [
         dict(lst='05h', subband='18MHz', date='2099-01-02', verdict='exclude', reason='peeling divergence'),
-        dict(lst='05h', subband='46MHz', date='2099-01-04', verdict='keep', reason='readmitted')])
+        dict(lst='05h', subband='46MHz', date='2099-01-04', verdict='keep', reason='readmitted'),
+        dict(lst='06h', subband='46MHz', date='2099-01-05', verdict='keep', reason='readmitted (date-outlier rule test)')])
     wcsv(f'{W}/clv15/processing_ledger.csv', LEDGER_COLS, ledger_rows())
     # the newest production re-adjudication list (the first summary's baseline): 05h 2099-01-03 has advanced since
     rcols = list(CFG.status_report.READJUDICATION_COLUMNS)
@@ -1046,8 +1047,9 @@ def test_qa():
     diff = [o['path'] for o in recs['solar']['outputs'] if o['path'].endswith('.diff.csv')][0]
     check('solar diff against the installed table: 1 block added', [x['change'] for x in rows(diff)] == ['added'], rows(diff))
     op = os.path.join(out, 'QA', 'date_outlier_proposals.csv')
-    check('outliers: 2099-01-05 rejected in 4 of 5 cells, leaked at 06h -> 15 proposals, data_decisions never written',
-          len(rows(op)) == 15 and {x['lst'] for x in rows(op)} == {'06h'}, rows(op)[:2])
+    check('outliers: 2099-01-05 rejected in 4 of 5 cells, leaked at 06h -> 14 proposals (46 MHz has a keep row, never '
+          're-proposed), data_decisions never written', len(rows(op)) == 14 and {x['lst'] for x in rows(op)} == {'06h'}
+          and '46MHz' not in {x['subband'] for x in rows(op)}, rows(op)[:2])
     bp = os.path.join(out, 'QA', 'bandpass_phase_qa.csv')
     check('bandpass: 3 shards merged, one row per table, error row kept', len(rows(bp)) == 5 and
           sum(1 for x in rows(bp) if x['error']) == 1)

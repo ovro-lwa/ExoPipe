@@ -139,10 +139,9 @@ def run_noise(out, unit, log):
 
 
 # The rows that keep a date-level proposal out: production skips (lst, subband, date) keys with ANY row in data_decisions
-# (propagate_date_outliers.py:40-42: exclude, keep, ... - a 'keep' is Gregg's readmission). core/exclusions (the only
-# reader of the file) exposes exclude rows only, so proposals on a night Gregg kept are possible here; the shared fix
-# (core/exclusions keeping every row's key) is reported in plan/impl/status.md. The rule used is recorded per run.
-OUTLIER_EXISTING_RULE = 'exclude rows (core.exclusions); production: every row of any verdict'
+# (propagate_date_outliers.py:40-42: exclude, keep, ... - a 'keep' is Gregg's readmission), read here from
+# core.exclusions.keys_any (the only reader of the file). The rule used is recorded per run.
+OUTLIER_EXISTING_RULE = 'every row of any verdict (core.exclusions.keys_any), as production'
 
 
 def date_outliers(ex, unreadable=None):
@@ -174,7 +173,7 @@ def date_outliers(ex, unreadable=None):
             leak = sorted({lst for lst, cc in by_lst.items() if any(not o for o in cc.values())})
             for lst in leak:
                 for sb in Q.OUTLIER_SUBBANDS:
-                    if (lst, sb.replace('MHz', ''), date) in ex.rows:
+                    if (lst, sb.replace('MHz', ''), date) in ex.keys_any:
                         continue
                     rows.append(dict(lst=lst, subband=sb, date=date, verdict_proposed='exclude',
                                      reason=f'date-level outlier (rejected {n_rej}/{n_tot} cells) - PROPOSAL for Gregg',
