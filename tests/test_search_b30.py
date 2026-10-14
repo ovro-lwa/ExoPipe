@@ -157,10 +157,12 @@ def main():
               env.get('EXOPIPE3_EPHEMERIS_TIME') == 'frame-mid' == env10.get('EXOPIPE3_EPHEMERIS_TIME')
               == CFG.search_sublst.EPHEMERIS_TIME, (env.get('EXOPIPE3_EPHEMERIS_TIME'), env10.get('EXOPIPE3_EPHEMERIS_TIME')))
         CFG.authorize([], out=T)
+        CFG.parity_replay = True              # as a --parity run into a non-production --out (the file holds protected lines)
         CFG.apply_override_file(PARITY)
         env = DST.engine_env(f'{T}/c', f'{T}/a', f'{T}/f', 'X', f'{T}/ar', f'{T}/tmp')
         env10 = TS.engine_env(plan, f'{T}/att')
         CFG.reset()
+        CFG.parity_replay = False
         check('the parity file gives both tiers production\'s date-obs', env['EXOPIPE3_EPHEMERIS_TIME'] == 'date-obs'
               == env10['EXOPIPE3_EPHEMERIS_TIME'], (env['EXOPIPE3_EPHEMERIS_TIME'], env10['EXOPIPE3_EPHEMERIS_TIME']))
         CFG.authorize([], out=T)

@@ -232,6 +232,15 @@ def carry_swap_stage(run, plan, state):
         if not os.path.isdir(B):
             u.refuse(f'no build directory {B}')
         blocking = {k: why for k, why in state['refused'].items() if not str(why).startswith('NO-INPUT: ')}
+        # G17 again just before the swap (review 2026-10-14 M1): after the swap every page's server - refused or not -
+        # reads the new run by path, so the whole build is gated here, on the build directory
+        from exopipe.phase3.lib.serve import exclusion_gate
+        if exclusion_gate.refuses('sublst', plan.family):
+            for pg in plan.pages:
+                if pg.family == 'review' and pg.program == 'classify' and pg.key not in state['refused']:
+                    scan = exclusion_gate.scan_server_page(pg, B)
+                    if scan.hits:
+                        blocking[pg.key] = f'G17 serve-time exclusion gate at the swap: {scan.summary()}'
         if blocking:
             u.refuse('G11 validate before the swap: ' + '; '.join(f'{k}: {why}' for k, why in sorted(blocking.items()))[:800]
                      + ' - nothing swapped in, the served product and its servers untouched')

@@ -29,6 +29,7 @@ import csv
 import glob
 import os
 import re
+import collections
 from collections import Counter
 
 from exopipe.phase3.core.record import Refusal
@@ -100,6 +101,7 @@ class Scan:
         self.hits = []            # (file, row id, lst, date, band)
         self.n_rows = self.n_keyed = self.n_files = 0
         self.cache = {}
+        self.unreadable = []      # files / folders a report-only scan could not read (scan_page strict=False)
 
     def per_key(self):
         return Counter((h[2], h[3], h[4]) for h in self.hits)
@@ -108,7 +110,8 @@ class Scan:
         per = self.per_key()
         return (f'{self.n_rows} rows in {self.n_files} files, {self.n_keyed} keyed ({len(self.cache)} distinct cell-bands), '
                 f'{len(self.hits)} on excluded cell-bands' + (': ' + '; '.join(f'{k[0]} {k[1]} {k[2]}: {n}' for k, n in
-                                                                              sorted(per.items())) if per else ''))
+                                                                              sorted(per.items())) if per else '')
+                + (f'; {len(self.unreadable)} not readable (report only): {self.unreadable[:3]}' if self.unreadable else ''))
 
 
 def _check(scan, ex, rel, rid, keys):
@@ -180,44 +183,132 @@ SERVER_PANEL_RE = re.compile(r'^rank\d+_(\d{2}h)_(\d{4}-\d{2}-\d{2}(?:_bin\d+)?)
                              r'(_blind)?\.png$')                                                # PNG_RE (:54-55)
 
 
-def server_files(U, cat_dir):
-    """(tables, page folders) a review server with --catalog-dir ``cat_dir`` serving run ``U`` reads
-    (classify_transients.load_sources): each band's survivors and members tables that exist, and the page folder of
-    every survivor row (<U>/<review_dir>, when it is a directory)."""
-    tables, folders = [], []
+def _server_band(token):
+    """The band of a panel name's band token: a deep / sub-LST token is the band; a snapshot token carries its instant after
+    the band (classify_transients.py:1532-1536)."""
+    if token in SERVER_BANDS:
+        return token
+    pre = [b for b in SERVER_BANDS if token.startswith(b)]
+    return max(pre, key=len) if pre else token
+
+
+def scan_page(U, cat_dir, queue, ex=None, loc_offsets=None, strict=True):
+    """Deep / sub-LST: the rows of ONE page as its review server (classify_transients.load_sources, non-blind) shows them:
+      - its queue's page ids;
+      - each band's <band>_sources_survivors.csv of --catalog-dir (SERVER_BANDS);
+      - each survivor's page folder <U>/<review_dir>: its detections.csv rows and every non-blind panel image (the server
+        shows every panel in the folder, keyed here by the (LST, night, band) of its name);
+      - the <band>_source_members.csv rows the server turns into shown detections: members of a survivor's identity, for an
+        identity whose folders hold no detections.csv (the server skips a member of no survivor, and lists members as
+        detections only when no detections.csv was read, :641-660);
+      - with ``loc_offsets`` (a page run with --loc-offsets): the rows of that localization_offsets.csv for the cand_ids the
+        page shows (they are page text).
+    ``strict`` False (report only): a file or folder that vanished or cannot be read (a pass running) is listed in
+    scan.unreadable, never raised - a report never stops a serve; True: it refuses (the page cannot be verified)."""
+    ex = ex or fresh_exclusions()
+    scan = Scan()
+
+    def unreadable(path, e):
+        rel = os.path.relpath(path, U)
+        if strict:
+            raise Refusal(f'G17 serve-time exclusion gate: {rel} could not be read ({e}) - refused')
+        scan.unreadable.append(rel)
+
+    def rows_of(path):
+        try:
+            with open(path, newline='') as fh:
+                return list(csv.DictReader(fh))
+        except (OSError, csv.Error, UnicodeDecodeError) as e:
+            unreadable(path, e)
+            return None
+
+    def check_rows(path, rows):
+        scan.n_files += 1
+        rel = os.path.relpath(path, U)
+        for row in rows:
+            scan.n_rows += 1
+            _check(scan, ex, rel, row.get('cand_id') or row.get('best_cand_id') or row.get('source_id') or '',
+                   keys_tier(row))
+
+    ident, folders = {}, collections.defaultdict(list)          # survivor source_id -> identity; identity -> folders
     for band in SERVER_BANDS:
         sp = os.path.join(cat_dir, f'{band}_sources_survivors.csv')
-        if os.path.exists(sp):
-            tables.append(sp)
-            with open(sp, newline='') as fh:
-                for row in csv.DictReader(fh):
-                    rd = (row.get('review_dir') or '').strip()
-                    if rd and os.path.isdir(os.path.join(U, rd)):
-                        folders.append(os.path.join(U, rd))
+        if not os.path.exists(sp):
+            continue
+        rows = rows_of(sp)
+        if rows is None:
+            continue
+        check_rows(sp, rows)
+        for row in rows:
+            sid = row.get('source_id', '')
+            ident[sid] = (row.get('identity_id') or '').strip() or sid
+            rd = (row.get('review_dir') or '').strip()
+            if rd and os.path.isdir(os.path.join(U, rd)):
+                folders[ident[sid]].append(os.path.join(U, rd))
+    shown, with_csv = set(), set()
+    for idt, fl in sorted(folders.items()):
+        for f in sorted(set(fl)):
+            dp = os.path.join(f, 'detections.csv')
+            if os.path.exists(dp):
+                rows = rows_of(dp)
+                if rows is not None:
+                    with_csv.add(idt)
+                    shown.update(r.get('cand_id', '') for r in rows)
+                    check_rows(dp, rows)
+            try:
+                names = sorted(os.listdir(f))
+            except OSError as e:
+                unreadable(f, e)
+                continue
+            rel = os.path.relpath(f, U)
+            for fn in names:
+                m = SERVER_PANEL_RE.match(fn)
+                if m and not m.group(4):                 # the server shows the non-blind panels only
+                    scan.n_rows += 1
+                    _check(scan, ex, os.path.join(rel, fn), fn, [(m.group(1), m.group(2)[:10], _server_band(m.group(3)))])
+    for band in SERVER_BANDS:
         mp = os.path.join(cat_dir, f'{band}_source_members.csv')
-        if os.path.exists(mp):
-            tables.append(mp)
-    return tables, sorted(set(folders))
-
-
-def scan_page(U, cat_dir, queue, ex=None):
-    """Deep / sub-LST: the rows of ONE page as its review server reads them - its queue's page ids, the survivors and
-    members tables of its --catalog-dir, and each survivor's page folder (detections.csv rows; the panel images, keyed by
-    the (LST, night, band) of their names). Returns a Scan."""
-    ex = ex or fresh_exclusions()
-    tables, folders = server_files(U, cat_dir)
-    scan = scan_files(tables + [os.path.join(f, 'detections.csv') for f in folders
-                                if os.path.exists(os.path.join(f, 'detections.csv'))], keys_tier, U, ex=ex)
-    for f in folders:
-        rel = os.path.relpath(f, U)
-        for fn in sorted(os.listdir(f)):
-            m = SERVER_PANEL_RE.match(fn)
-            if m and not m.group(4):                 # the server shows the non-blind panels only
-                scan.n_rows += 1
-                _check(scan, ex, os.path.join(rel, fn), fn, [(m.group(1), m.group(2)[:10], m.group(3))])
+        if not os.path.exists(mp):
+            continue
+        rows = rows_of(mp)
+        if rows is None:
+            continue
+        mine = [r for r in rows if r.get('source_id', '') in ident and ident[r['source_id']] not in with_csv]
+        shown.update(r.get('cand_id', '') for r in mine)
+        check_rows(mp, mine)
+    if loc_offsets and os.path.exists(loc_offsets):
+        rows = rows_of(loc_offsets)
+        if rows is not None:
+            check_rows(loc_offsets, [r for r in rows if r.get('cand_id', '') in shown])
     if queue and os.path.exists(queue):
-        scan_queue(queue, U, ex=ex, scan=scan)
+        try:
+            scan_queue(queue, U, ex=ex, scan=scan)
+        except (OSError, UnicodeDecodeError) as e:
+            unreadable(queue, e)
     return scan
+
+
+def page_loc_offsets(pg, U):
+    """The localization_offsets.csv a page's server reads with --loc-offsets (classify_transients.py:2469-2470), else None."""
+    if not getattr(pg, 'loc_offsets', False):
+        return None
+    d = pg.at('loc_dir', U) if pg.c.get('loc_dir') else os.path.join(U, 'source_catalogs')
+    return os.path.join(d, 'localization_offsets.csv')
+
+
+def scan_server_page(pg, U, strict=True, ex=None):
+    """scan_page for a planned review page (its queue, catalogue view and offsets table under run ``U``)."""
+    return scan_page(U, pg.at('catalog', U), pg.at('queue', U), ex=ex, loc_offsets=page_loc_offsets(pg, U), strict=strict)
+
+
+def scan_server_argv(argv, strict=True, ex=None):
+    """scan_page for a RUNNING classify server, from its argv (--run, --queue, --catalog-dir, --loc-dir, --loc-offsets)."""
+    from exopipe.phase3.lib.serve import procs
+    U = procs.argv_value(argv, '--run')
+    ld = procs.argv_value(argv, '--loc-dir')
+    lo = os.path.join(ld or os.path.join(U, 'source_catalogs'), 'localization_offsets.csv') if '--loc-offsets' in argv else None
+    return scan_page(U, procs.argv_value(argv, '--catalog-dir') or os.path.join(U, 'source_catalogs'),
+                     procs.argv_value(argv, '--queue'), ex=ex, loc_offsets=lo, strict=strict)
 
 
 def run_inplace_gate(run_dir, host=None, unit=None):

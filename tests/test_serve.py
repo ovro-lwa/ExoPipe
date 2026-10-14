@@ -514,23 +514,30 @@ def test_exclusion_gate():
           dict(lst='05h', subband='18MHz', date='2025-01-02', verdict='exclude', reason='x')])
     ex = Exclusions(dd)
     V = f'{T}/gate_views/source_catalogs_V'
+    wcsv(f'{V}/Blue_sources_survivors.csv', SURV, [dict(rank=1, source_id='J1', identity_id='', band='Blue', n_det=1,
+                                                        best_cand_id='VD_06h_2025-01-03_Blue_0001', best_date='', best_snr=9,
+                                                        review_dir='', snr_rep=4),
+                                                   dict(rank=2, source_id='J2', identity_id='', band='Red', n_det=1,
+                                                        best_cand_id='VD_06h_2025-01-03_Red_0001', best_date='', best_snr=9,
+                                                        review_dir='', snr_rep=4)])
     wcsv(f'{V}/Blue_source_members.csv', MEM, [dict(source_id='J1', band='Blue', cand_id='VD_04h_2025-01-01_Blue_0001'),
                                                dict(source_id='J2', band='Red', cand_id='VD_05h_2025-01-02_Red_0001')])
     scan = exclusion_gate.scan_page(os.path.dirname(V), V, None, ex=ex)
     assert scan.per_key() == {('04h', '2025-01-01', 'Blue'): 1}, scan.summary()    # 64 MHz excludes Blue; 18 MHz not Red
     ok('exclusion gate: verdicts from core.exclusions (a 64 MHz exclusion excludes Blue; the 18 MHz carve-out keeps Red)')
     ruled = CFG.serve.EXCLUSION_GATE_TIERS
-    assert set(ruled) == {'snapshot', 'snapshot-forced', 'deep', 'sublst'}, ruled
-    assert all(exclusion_gate.refuses(*k) for k in (('snapshot',), ('snapshot', 'forced'), ('deep',), ('sublst',)))
-    assert not exclusion_gate.refuses('deep', 'strat') and not exclusion_gate.refuses('jupiter')
+    assert set(ruled) == {'snapshot', 'snapshot-forced', 'deep', 'sublst', 'deep-strat', 'deep-deep-forced'}, ruled
+    assert all(exclusion_gate.refuses(*k) for k in (('snapshot',), ('snapshot', 'forced'), ('deep',), ('sublst',),
+                                                     ('deep', 'strat'), ('deep', 'deep-forced')))
+    assert not exclusion_gate.refuses('jupiter')
     CFG.serve.EXCLUSION_GATE_TIERS = ('snapshot',)                  # production (the parity file)
     try:
         assert exclusion_gate.refuses('snapshot') and not exclusion_gate.refuses('deep') and not exclusion_gate.refuses(
             'sublst') and not exclusion_gate.refuses('snapshot', 'forced')
     finally:
         CFG.serve.EXCLUSION_GATE_TIERS = ruled
-    ok('exclusion gate refuses for serve.EXCLUSION_GATE_TIERS: ruled snapshot, snapshot forced, deep and sub-LST pages '
-       '(Gregg 2026-10-14); the production value refuses snapshot runs only')
+    ok('exclusion gate refuses for serve.EXCLUSION_GATE_TIERS: ruled snapshot, snapshot forced, deep (review, stratified, '
+       'deep forced) and sub-LST pages (Gregg 2026-10-14); the production value refuses snapshot runs only')
 
 
 def test_exclusion_gate_scan_page():
@@ -564,6 +571,9 @@ def test_exclusion_gate_scan_page():
     wcsv(f'{C}/64MHz_pages_index_V.csv', IDX, [dict(source_id='J9_04h_2025-01-01_64MHz', band='64MHz', rank=1, review_dir='')])
     wcsv(f'{C}/Foo_sources_survivors.csv', SURV, [dict(rows, source_id='J8', band='Foo', best_cand_id=bad_c, review_dir='')])
     wcsv(f'{C}/master_catalog_removed.csv', ['cand_id'], [dict(cand_id=bad_c)])
+    # member rows the server does not show: of no survivor; of a survivor whose folder holds a detections.csv (J2, p2)
+    with open(f'{C}/64MHz_source_members.csv', 'a') as fh:
+        fh.write(f'J99,64MHz,{bad_c},\nJ2,64MHz,{bad_c},\n')
     s0 = exclusion_gate.scan_page(U, C, q, ex=ex)
     assert not s0.hits and s0.n_files == 4 and s0.n_rows == 8, (s0.summary(), s0.n_files, s0.n_rows)
     ok('exclusion gate per page: files the server never reads (an old pages index, a band it does not list, a removed-rows '
@@ -584,8 +594,38 @@ def test_exclusion_gate_scan_page():
     hit('panel', lambda R: open(f'{R}/candidates/V/p1/rank00003_04h_2025-01-01_64MHz.png', 'w').close())
     hit('blue_panel', lambda R: open(f'{R}/candidates/V/p1/rank00004_04h_2025-01-01_Blue.png', 'w').close())
     hit('queue', lambda R: open(f'{R}/judgements/queue_V.txt', 'a').write('J7_04h_2025-01-01_64MHz\n'))
-    ok('exclusion gate per page: a row on an excluded night in a survivors table, a members table, a page folder\'s '
-       'detections.csv, a panel image name or the queue is found (one hit each)')
+    hit('snapshot_token_panel', lambda R: open(f'{R}/candidates/V/p1/rank00005_04h_2025-01-01_64MHz20250101043000.png',
+                                               'w').close())
+    ok('exclusion gate per page: a row on an excluded night in a survivors table, a shown member, a page folder\'s '
+       'detections.csv, a panel image name (a band token with its instant too) or the queue is found (one hit each)')
+    # --loc-offsets: the offsets rows of the cand_ids the page shows are page text; other rows are not read
+    lo = f'{U}/source_catalogs/localization_offsets.csv'
+    wcsv(lo, ['cand_id', 'identity_id', 'sep_arcsec', 'sep_beams', 'offset_pct'],
+         [dict(cand_id=bad_c, identity_id='J9', sep_arcsec=1, sep_beams=0.1, offset_pct=10)])
+    assert not exclusion_gate.scan_page(U, C, q, ex=ex, loc_offsets=lo).hits     # bad_c is shown by no row of the page
+    shutil.copytree(U, f'{U}_lo')
+    wcsv(f'{U}_lo/candidates/V/p2/detections.csv', ['cand_id', 'lst', 'date', 'band'],
+         [dict(cand_id=bad_c.replace('04h_2025-01-01', '05h_2025-01-02'), lst='05h', date='2025-01-02', band='64MHz')])
+    wcsv(f'{U}_lo/source_catalogs/localization_offsets.csv', ['cand_id', 'identity_id', 'sep_arcsec', 'sep_beams', 'offset_pct'],
+         [dict(cand_id=bad_c.replace('04h_2025-01-01', '05h_2025-01-02'), identity_id='J2', sep_arcsec=1, sep_beams=0.1,
+               offset_pct=10)])
+    s_no = exclusion_gate.scan_page(f'{U}_lo', f'{U}_lo/source_catalogs_V', None, ex=ex)
+    s_lo = exclusion_gate.scan_page(f'{U}_lo', f'{U}_lo/source_catalogs_V', None, ex=ex,
+                                    loc_offsets=f'{U}_lo/source_catalogs/localization_offsets.csv')
+    assert (s_lo.n_files, s_lo.n_rows) == (s_no.n_files + 1, s_no.n_rows + 1), (s_no.summary(), s_lo.summary())
+    ok('exclusion gate per page: --loc-offsets rows count only for the cand_ids the page shows')
+    # report only (strict False): an unreadable table is listed, never raised; refusing (strict True): it refuses
+    shutil.copytree(U, f'{U}_ur')
+    os.remove(f'{U}_ur/source_catalogs_V/64MHz_source_members.csv')
+    os.makedirs(f'{U}_ur/source_catalogs_V/64MHz_source_members.csv')             # exists, cannot be read
+    sr = exclusion_gate.scan_page(f'{U}_ur', f'{U}_ur/source_catalogs_V', None, ex=ex, strict=False)
+    assert sr.unreadable == ['source_catalogs_V/64MHz_source_members.csv'] and 'not readable' in sr.summary(), sr.summary()
+    try:
+        exclusion_gate.scan_page(f'{U}_ur', f'{U}_ur/source_catalogs_V', None, ex=ex, strict=True)
+        raise AssertionError('an unreadable table did not refuse a refusing scan')
+    except Refusal as e:
+        assert 'could not be read' in str(e), e
+    ok('exclusion gate per page: an unreadable file is listed in a report and refuses only when the gate refuses')
 
 
 def test_exclusion_gate_server_mirrors():
@@ -697,6 +737,24 @@ def test_processes():
     rr = json.load(open(f'{out}/_records/serve/pages/restart_28766.json'))
     assert rr['argv'] == rec['argv'] and rr['pid'] != rec['pid'] and procs.listeners(28766) == [rr['pid']]
     ok('serve --restart 28766 (CLI): same argv, new pid, exit 0')
+    # G17 at the restart (review 2026-10-14 m4): the page's files hold a row on an excluded night -> refused before the
+    # running server is stopped
+    from exopipe.phase3.core.exclusions import Exclusions
+    exr = Exclusions()
+    l_, s_, d_ = sorted(k for k in exr.rows if k not in exr.perband and k[1].isdigit())[0]
+    sp = f'{U}/source_catalogs_V/{s_}MHz_sources_survivors.csv'
+    wcsv(sp, SURV, [dict(rank=1, source_id='J0009+0009', identity_id='', band=f'{s_}MHz', n_det=1,
+                         best_cand_id=f'VD_{l_}_{d_}_{s_}MHz_0001', best_date=d_, best_snr=9, review_dir='', snr_rep=4)])
+    try:
+        p = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--restart', '28766', '--out', out, '--port-offset',
+                            str(offset), '--cores', 'none'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=400)
+        rr2 = json.load(open(f'{out}/_records/serve/restart_28766.json'))
+        assert p.returncode == 2 and rr2['status'] == 'refused' and 'G17' in rr2['reason'], (p.stdout.decode()[-500:], rr2)
+        assert procs.listeners(28766) == [rr['pid']], 'the running server was stopped'
+    finally:
+        os.remove(sp)
+    ok(f'serve --restart 28766 refused by G17 ({l_} {d_} {s_}MHz excluded now) before the running server is stopped')
     p = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--restart', '8767', '--out', out, '--cores', 'none'], env=env,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     ur = json.load(open(f'{out}/_records/serve/restart_8767.json'))
@@ -783,11 +841,79 @@ def test_exclusion_gate_per_page_stage():
             new = {k: v for k, v in state['refused'].items() if k not in pre}
             if label == 'ruled':
                 assert g['refuses'] and set(new) == hit and all(v.startswith('G17') for v in new.values()), (new, hit)
+                # start: the refused pages' start units refuse, the others start; the run exits 2
+                started = []
+                for pg_ in plan.pages:                    # the App probe is not run here (probe=False): stand-in counts
+                    state['expected'].setdefault(pg_.key, {'n': 1, 'kind': 'stand-in'})
+                orig_rep = servers.replace
+                servers.replace = lambda plan_, pg_, utc_, root=None, expected=None, notes=None: (
+                    started.append(pg_.key) or (f'{out}/stub_{pg_.key}.json', {}))
+                try:
+                    flow.start_stage(run, plan, state)
+                finally:
+                    servers.replace = orig_rep
+                su = {x.meta.get('page'): x for x in run.units if x.meta.get('stage') == 'start'}
+                assert set(started) == {k for k in su if k not in state['refused']} and 'I' in started, (started, list(su))
+                assert all(su[k].status == 'refused' and su[k].reason.startswith('G17') for k in new), \
+                    {k: (su[k].status, su[k].reason[:80]) for k in new}
+                assert run.exit_code() == 2
+                # a later start in ANOTHER invocation after data_decisions.csv changed: the test record is not current (G28)
+                open(dd, 'a').write('08h,23MHz,2025-01-05,exclude,y\n')
+                try:
+                    run2 = Run('serve', ['test'], out, CFG, config_sections=None)
+                    try:
+                        flow.expected_from_record(run2, 'deep_Run_TEST_test', 'start')
+                        raise AssertionError('a start after an exclusion change used the old test record')
+                    except Refusal as e:
+                        assert 'G28' in str(e) and 'data_decisions' in str(e), e
+                finally:
+                    with open(dd) as fh:
+                        keep = [l for l in fh if not l.startswith('08h,23MHz,2025-01-05')]
+                    open(dd, 'w').writelines(keep)
+                # the start re-scans each deep page (its files may change after the test stage)
+                mem = f'{plan.U}/source_catalogs_I/Red_source_members.csv'
+                orows = list(csv.DictReader(open(mem)))
+                srow = next(r for r in orows)
+                wcsv(mem, list(orows[0].keys()), orows + [dict(srow, cand_id='ID_05h_2025-01-02_Red_0099')])
+                state3 = {'refused': {k: v for k, v in state['refused'].items() if k != 'I'}, 'expected': state['expected'],
+                          'served': {}}
+                run3 = Run('serve', ['test'], out, CFG, config_sections=None)
+                servers.replace = lambda *a_, **k_: (_ for _ in ()).throw(AssertionError('I was replaced'))
+                try:
+                    flow.start_stage(run3, plan, state3)
+                finally:
+                    servers.replace = orig_rep
+                    wcsv(mem, list(orows[0].keys()), orows)
+                ui = next(x for x in run3.units if x.meta.get('page') == 'I')
+                assert ui.status == 'refused' and 'G17 serve-time exclusion gate at start' in ui.reason, (ui.status, ui.reason)
             else:
                 assert not g['refuses'] and not new, new
         ok(f'exclusion gate in the test stage: under the ruled value exactly the pages whose server reads rows on the excluded '
-           f'night are refused ({sorted(hit)}); the I page (a stale index file only) is not; under the production value '
-           f'nothing is refused')
+           f'night are refused ({sorted(hit)}) and their start units refuse while the I page (a stale index file only) starts '
+           f'(exit 2); a start in another invocation after data_decisions.csv changed refuses (G28); the start re-scans a '
+           f'page whose files changed after the test stage; under the production value nothing is refused')
+        # sub-LST: the swap is gated on the build directory (every page's server reads the swapped run by path)
+        CFG.serve.EXCLUSION_GATE_TIERS = ruled
+        R = f'{T}/lstruns'
+        olr = sublst_build.lst_run
+        sublst_build.lst_run = lambda l: f'{R}/Run_SLST{l[:-1]}B'
+        try:
+            a2 = _ns(tier='sublst', lsts='05h')
+            out2 = f'{T}/perpage_sublst_out'
+            plan2 = planmod.make(a2, out2)
+            B = sublst_build.build_dir(plan2)
+            vpg = next(x for x in plan2.pages if x.key == 'V')
+            wcsv(os.path.join(vpg.at('catalog', B), '23MHz_sources_survivors.csv'), SURV,
+                 [dict(rank=1, source_id='J0006+0006', identity_id='', band='23MHz', n_det=1,
+                       best_cand_id='V1_05h_2025-01-02T03_23MHz_0001', best_date='2025-01-02', best_snr=9, review_dir='',
+                       snr_rep=4)])
+            run4 = Run('serve', ['test'], out2, CFG, config_sections=None)
+            u4 = sublst_build.carry_swap_stage(run4, plan2, flow.new_state())
+            assert u4.status == 'refused' and 'G17 serve-time exclusion gate at the swap' in u4.reason, (u4.status, u4.reason)
+            assert not os.path.exists(plan2.U) or not os.path.samefile(plan2.U, B)
+        finally:
+            sublst_build.lst_run = olr
+        ok('exclusion gate at the sub-LST swap: a build holding a row on an excluded night is not swapped in (no page served)')
     finally:
         exclusion_gate.fresh_exclusions, CFG.serve.EXCLUSION_GATE_TIERS = orig, ruled
 

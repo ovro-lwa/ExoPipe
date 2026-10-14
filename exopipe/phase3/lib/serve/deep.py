@@ -170,7 +170,7 @@ def describe(plan, stages, args):
     for pg in plan.pages:
         if pg.family != 'review':
             continue
-        scan = exclusion_gate.scan_page(U, pg.at('catalog', U), pg.at('queue', U))
+        scan = exclusion_gate.scan_server_page(pg, U, strict=False)
         print(f'  G17 serve-time exclusion gate, page {pg.key} ({"refusing" if refuses else "report only"}; the rows its '
               f'server reads): {scan.summary()}' + (' - WOULD NOT BE SERVED' if scan.hits and refuses else ''))
     for ST in ('V', 'I'):

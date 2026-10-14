@@ -174,6 +174,7 @@ def _config_cmd(argv):
     from exopipe.phase3.config import CFG, SITE_FILE, ConfigRefusal
     try:
         CFG.authorize(a.ruling_for, mode='display')
+        CFG.parity_replay = True             # display only (nothing runs): a parity file's protected lines are shown as set
         if a.config:
             CFG.apply_override_file(a.config)
         CFG.apply_override_strings(a.set)

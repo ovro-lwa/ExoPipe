@@ -251,6 +251,16 @@ def restart_port(port, out, notes, offset=0):
     recs = []
     for info in infos:
         _window_guard(info, out, program)
+    # G17 before anything is stopped (review 2026-10-14 m4): the restarted server re-reads the page's current files
+    from exopipe.phase3.lib.serve import exclusion_gate
+    fam = (S.PAGES.get((tier, key)) or {}).get('family', 'review')
+    if program == 'classify' and exclusion_gate.refuses(tier, fam):
+        for info in infos:
+            scan = (exclusion_gate.scan_snapshot_run(procs.argv_value(info['argv'], '--run')) if tier == 'snapshot'
+                    else exclusion_gate.scan_server_argv(info['argv']))
+            if scan.hits:
+                raise Refusal(f'G17 serve-time exclusion gate at the restart of {port}: {scan.summary()} - not restarted '
+                              f'(the running server is left as it is)')
     for info in infos:
         env = procs.environ(info['pid'])
         log = info.get('stdout') if info.get('stdout', '').startswith('/') else os.devnull

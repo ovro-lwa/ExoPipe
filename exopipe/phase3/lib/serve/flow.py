@@ -41,10 +41,16 @@ def halts(u, what, need_done=False):
 
 
 def excl_note(u):
+    """The exclusion list read now: its fingerprint in the unit, and the file an INPUT of the unit, so a later stage of
+    another invocation that requires this record (require_done, G28) refuses once data_decisions.csv changed (review
+    2026-10-14 M1: a test stage passed, an exclusion added, a start in a separate invocation served the page)."""
     try:
-        fp = exclusion_gate.fresh_exclusions().fingerprint()
+        ex = exclusion_gate.fresh_exclusions()
+        fp = ex.fingerprint()
         u.note(f'exclusions: {fp}')
         u.meta['exclusions'] = fp
+        if getattr(ex, 'path', None) and os.path.exists(ex.path):
+            u.add_input(ex.path)
     except Refusal as e:
         raise Refusal(f'G17 serve-time exclusion gate: {e}')
 
@@ -101,11 +107,12 @@ def test_stage(run, plan, state, unit_name, root=None, probe=True):
             u.note(f'G17 serve-time exclusion gate ({"refusing" if refuses else "report only"}): {scan.summary()}')
         else:
             # deep / sub-LST, PER PAGE (Gregg 2026-10-14, R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS): the rows
-            # the page's own server reads (exclusion_gate.scan_page); a page holding one on an excluded night is not served
-            # - its current server keeps running - and the other pages are
+            # the page's own server shows (exclusion_gate.scan_page); a deep page holding one on an excluded night is not
+            # served - its current server keeps running - and the other deep pages are. Sub-LST: any refused page refuses
+            # the swap of the whole build (G11), so no sub-LST page is replaced (its servers share the run directory)
             pages = {}
             for pg in gated:
-                scan = exclusion_gate.scan_page(U, pg.at('catalog', U), pg.at('queue', U))
+                scan = exclusion_gate.scan_server_page(pg, U, strict=refuses)
                 pages[pg.key] = {'hits': len(scan.hits), 'files': scan.n_files, 'rows': scan.n_rows,
                                  'per_key': {' '.join(k): n for k, n in scan.per_key().items()}}
                 if scan.hits and refuses:
@@ -158,6 +165,14 @@ def start_stage(run, plan, state, root=None, utc=None):
             exp = state['expected'].get(pg.key)
             if exp is None:
                 u.refuse(f'page {pg.key}: no expected source count (the test stage did not pass for it)')
+            # G17 again just before the server is replaced (review 2026-10-14 M1): the exclusions or the page folders may
+            # have changed since the test stage. Deep only: sub-LST decides before its swap (sublst_build.carry_swap_stage)
+            if (plan.tier == 'deep' and pg.program == 'classify' and pg.family == 'review'
+                    and exclusion_gate.refuses(plan.tier, plan.family)):
+                scan = exclusion_gate.scan_server_page(pg, root or plan.U)
+                if scan.hits:
+                    u.refuse(f'G17 serve-time exclusion gate at start: {scan.summary()} - NOT served (the page\'s current '
+                             f'server keeps running)')
             notes = []
             q = pg.at('queue', root or plan.U)
             u.add_input(q)
