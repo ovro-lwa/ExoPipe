@@ -31,6 +31,7 @@ fingerprints and the admitted night set), quarantine before a FRESH attempt only
 grep), mandatory parent catalogue before publish, publish layout and register row, hygiene once both Stokes are published.
 Dropped by design: input shipping and flow-holder fetches (a chain stays on the node that holds the cell, DESIGN 11.3).
 """
+import contextlib
 import csv
 import fcntl
 import glob
@@ -39,7 +40,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import sys
 import time
 
@@ -55,7 +55,8 @@ def _cfg():
 
 
 def _host():
-    return socket.gethostname().split('.')[0]
+    from exopipe.phase3.core import env as E
+    return E.host()
 
 
 def _utc_tag(t=None):
@@ -464,6 +465,21 @@ def _gpu_host():
     return _host() in set(_cfg().site.GPU_HOSTS or ())
 
 
+def generation_nights(base, m_i):
+    """The nights of the master's generation record as the engine's input-provenance gate reads them (deep_search.py:1264-
+    1275): every date of coadd_final/weights.csv (omitted epochs included) and every 'COADD constituent <date>' HISTORY line of
+    the I master."""
+    from astropy.io import fits
+    out = set()
+    w = os.path.join(base, 'coadd_final', 'weights.csv')
+    if os.path.exists(w):
+        with open(w, newline='') as fh:
+            out |= {r['date'] for r in csv.DictReader(fh) if r.get('date')}
+    hist = fits.getheader(m_i).get('HISTORY', [])
+    out |= {str(x).split()[-1] for x in hist if str(x).startswith('COADD constituent')}
+    return out
+
+
 def subtracted_dates(base, scope, stokes):
     out = []
     for p in sorted(glob.glob(os.path.join(base, 'subtracted', f'*_{stokes}_sub_{scope}.fits'))):
@@ -473,9 +489,11 @@ def subtracted_dates(base, scope, stokes):
     return out
 
 
-def preflight(item, ctx, u=None, fix=False):
+def preflight(item, ctx, u=None, fix=False, resume_probe=False):
     """The facts of one unit; raises record.Refusal (a gate) or record.NoInput. With fix=True (a real run, not --dry-run) it may
-    act on the run's OWN flow root: drop a stale cache on a GPU host, seed from --deep-flow-from. Read-only otherwise."""
+    act on the run's OWN flow root: drop a stale cache on a GPU host, seed from --deep-flow-from. Read-only otherwise.
+    resume_probe=True (the --resume identity check): an incremental unit's base attempt is not re-resolved (after a publish
+    the newest register row is the unit's own attempt) - its record's own base inputs are re-fingerprinted instead."""
     from exopipe.phase3.core import exclusions
     from exopipe.phase3.core.record import NoInput, Refusal
     c = _cfg()
@@ -501,6 +519,10 @@ def preflight(item, ctx, u=None, fix=False):
         f.update(attempt=att, label=os.path.basename(runs[0])[4:], att_tag=m['att'])
         f['gates'].append(('attempt', True, att))
         return f
+    from exopipe.phase3.core import env as E
+    if not E.readable_here(base):
+        raise Refusal(f'{item.cell}: the cell inputs {base} are node-local to {E.node_local_holder(base)} (site NODE_LOCAL_ROOTS), '
+                      f'not readable on {_host()}; run there')
     if not os.path.isdir(base):
         raise Refusal(f'{item.cell}: no cell inputs at {base} on {_host()} (the deep inputs are node-local; run where they are)')
     cf = os.path.join(base, 'coadd_final')
@@ -550,15 +572,32 @@ def preflight(item, ctx, u=None, fix=False):
         if len(present) < len(item.dates):
             f['notes'].append(f'listed nights without an epoch product: {sorted(set(item.dates) - set(present))}')
         b = item.base if item.base != 'published' else resolve_published(item.cell, item.stokes, ctx['out'])
-        if not b or not os.path.isdir(b):
+        if resume_probe:
+            b = None
+        elif not b or not os.path.isdir(b):
             raise Refusal(f'{item.cell} {item.stokes}: no published attempt to extend (p3s4_incremental_fleet.sh refuses the '
                           f'same; run the bulk search of the cell first)')
-        mb = _ATT_RE.match(os.path.basename(b.rstrip('/')))
-        if not mb or (mb['cell'], mb['s']) != (item.cell, item.stokes):
+        mb = _ATT_RE.match(os.path.basename(b.rstrip('/'))) if b else None
+        if b and (not mb or (mb['cell'], mb['s']) != (item.cell, item.stokes)):
             raise Refusal(f'{b} is not an attempt of {item.cell} Stokes {item.stokes}')
-        if not glob.glob(os.path.join(b, 'transients', f'Run_{ctx["label"]}')):
-            raise Refusal(f'{b}: no transients/Run_{ctx["label"]}/ to append to (label mismatch: --run {ctx["label"]})')
-        f['base_attempt'] = b
+        if b:
+            if not glob.glob(os.path.join(b, 'transients', f'Run_{ctx["label"]}')):
+                raise Refusal(f'{b}: no transients/Run_{ctx["label"]}/ to append to (label mismatch: --run {ctx["label"]})')
+            f['base_attempt'] = b
+            # A night already searched in the base attempt would be appended twice; a night of the master's generation record
+            # (weights.csv / HISTORY constituent: the nights the engine's input-provenance gate E15 admits) that the base did not
+            # search is a RE-ADMITTED epoch, which Gregg ruled is searched by a FULL re-search of the cell, never appended
+            # (R-SIGMA-STACK-INCLUDES-THE-RE-ADMITTED-EPOCH-BACKFILL-BY-RE-SEARCH, 2026-09-13; spec search.md section 8)
+            searched = {r['date'] for r in _image_rows(b, ctx['label'], item.stokes)}
+            dup = sorted(set(live) & searched)
+            readm = sorted((set(live) & generation_nights(base, m_i)) - searched)
+            if dup or readm:
+                raise Refusal(f'{item.cell} {item.stokes}: ' + '; '.join(
+                    ([f'{", ".join(dup)} already searched in {os.path.basename(b)} (an append would duplicate its rows)']
+                     if dup else [])
+                    + ([f'{", ".join(readm)} in the master\'s generation record: a re-admitted epoch is searched by a full '
+                        f're-search of the cell (search --tier deep --cells {item.cell} --fresh), never appended '
+                        f'(R-SIGMA-STACK-INCLUDES-THE-RE-ADMITTED-EPOCH-BACKFILL-BY-RE-SEARCH)'] if readm else [])))
     for name, path, ok, detail, refuse in pinned_inputs(item.stokes):
         f['gates'].append((f'G2 {name}', ok, detail))
         if not ok and refuse:
@@ -577,6 +616,8 @@ def preflight(item, ctx, u=None, fix=False):
     if free is not None and free < need and fix:
         raise RuntimeError(f'{ctx["work_fs"]}: {free:.0f} GB free < {need} GB (search_run.FAST_MIN_FREE_GB) - node condition, '
                            f'not an attempt; retry when space is free')
+    if resume_probe:                # a done unit's identity does not depend on the flow work dir (hygiene removes it)
+        return f
     # flow cache of the cell
     cw = os.path.join(ctx['flow_root'], item.cell)
     state, nf = flow_cache_state(cw, m_i, len(dates_i))
@@ -594,13 +635,21 @@ def preflight(item, ctx, u=None, fix=False):
             f['notes'].append(f'flow cache would be seeded from {src} (currency checked after the copy)')
     gpu = _gpu_host()
     f.update(flow_state=state, n_flows=nf, gpu=gpu, cell_work=cw)
-    if state == 'stale':
-        if not gpu:
-            raise Refusal(f'{item.cell}: the flow cache in {cw} is of another master generation and {_host()} has no GPU to '
-                          f'recompute it (search-only node: not ready)')
+    if state == 'stale' and not gpu:
+        raise Refusal(f'{item.cell}: the flow cache in {cw} is of another master generation and {_host()} has no GPU to '
+                      f'recompute it (search-only node: not ready)')
+    if gpu and state in ('stale', 'unverified', 'partial'):
+        # GPU host: a cache the currency script does not call current (stale = exit 1; no sidecar = exit 2, which 'partial'
+        # always is) is DROPPED and the search computes every flow (p3s5_search_fleet.sh:96-98: `! p3s3_cache_current.py`
+        # drops on any non-zero exit)
         if fix:
             drop_flow_cache(cw)
-            f['notes'].append('stale flow cache dropped; the GPU computes the flows in the search')
+            f['notes'].append(f'flow cache {state} ({nf} flows) dropped (p3s5_search_fleet.sh:96-98); the GPU computes the '
+                              f'flows in the search')
+            state, nf = 'none', 0
+            f.update(flow_state=state, n_flows=nf)
+        else:
+            f['notes'].append(f'flow cache {state} ({nf} flows) would be dropped (p3s5_search_fleet.sh:96-98)')
     elif state in ('none', 'partial') and not gpu and not seed_pending:
         raise Refusal(f'{item.cell}: flow cache {state} ({nf} flows for {len(dates_i)} epochs) in {cw} and {_host()} has no GPU '
                       f'(site GPU_HOSTS) - not ready (search-only node); run on a GPU host or seed with --deep-flow-from')
@@ -613,10 +662,10 @@ def preflight(item, ctx, u=None, fix=False):
     return f
 
 
-def add_inputs(u, item, f):
-    """Fingerprint the unit's inputs (record v2: FITS by DATASUM + processing cards; per-epoch products by size/mtime/cards,
-    not by a full sha1 of every epoch frame)."""
-    from exopipe.phase3.core import record
+def input_paths(item, f):
+    """(small, per-epoch) input paths of a unit: small files fingerprinted by sha1 / FITS identity, per-epoch products and LOO
+    masters by size/mtime/cards. The same set is the unit's input identity under --resume (a new epoch product, LOO or V master
+    makes a unit not resumable - the fleet's adoption test, p3s5_search_fleet.sh:174-190 incl. D6)."""
     from exopipe.phase3.lib.search import parent_curve_table as PCT
     c = _cfg()
     base = f['base']
@@ -625,15 +674,23 @@ def add_inputs(u, item, f):
              os.path.join(cf, 'night_image_gate.csv'), os.path.join(cf, 'epoch_gate.csv'), PCT.PATH,
              c.search_tables.PULSAR_CSV, os.path.join(c.paths.OPS_ROOT, c.search_inputs.ROOTS_CSV)]
     small += sorted(glob.glob(os.path.join(cf, f'PB_deep*_{item.scope}.fits')))
-    for p in small:
-        if p and os.path.exists(p):
-            u.add_input(p)
-    for p in sorted(glob.glob(os.path.join(base, 'subtracted', f'*_sub_{item.scope}.fits'))) + \
-            sorted(glob.glob(os.path.join(cf, 'loo', f'*_loo_*_{item.scope}.fits'))):
-        u.inputs[os.path.abspath(p)] = record.fingerprint(p, hash_limit_bytes=0)
+    small = [p for p in small if p and os.path.exists(p)]
     if f.get('base_attempt'):
-        for p in sorted(glob.glob(os.path.join(f['base_attempt'], 'transients', 'Run_*', '*.csv'))):
-            u.add_input(p)
+        small += sorted(glob.glob(os.path.join(f['base_attempt'], 'transients', 'Run_*', '*.csv')))
+    big = (sorted(glob.glob(os.path.join(base, 'subtracted', f'*_sub_{item.scope}.fits')))
+           + sorted(glob.glob(os.path.join(cf, 'loo', f'*_loo_*_{item.scope}.fits'))))
+    return small, big
+
+
+def add_inputs(u, item, f):
+    """Fingerprint the unit's inputs (record v2: FITS by DATASUM + processing cards; per-epoch products by size/mtime/cards,
+    not by a full sha1 of every epoch frame)."""
+    from exopipe.phase3.core import record
+    small, big = input_paths(item, f)
+    for p in small:
+        u.add_input(p)
+    for p in big:
+        u.inputs[os.path.abspath(p)] = record.fingerprint(p, hash_limit_bytes=0)
     u.set_admitted(f['admitted'])
 
 
@@ -686,20 +743,12 @@ def stage_quarantine(u, item, ctx, f):
         launch = ctx['t0']
     else:
         raise Refusal(f'search_run.QUARANTINE_EPOCH {sr.QUARANTINE_EPOCH!r}: launch-file or job-created')
-    try:
-        from exopipe.phase3.lib.archive import quarantine_search_frames as QF     # archive's function, when it lands
-    except ImportError:
-        QF = None
     if c.paths.PRODUCTION_WRITES:
-        if QF is not None:
-            QF(item.cell, item.stokes, launch, sr.QUARANTINE_ROUND)
-            return
-        from exopipe.phase3.core import env as E, legacy
-        res = legacy.run(os.path.join(E.legacy_root('exopipe_ops'), sr.QUARANTINE_SCRIPT), [item.cell, item.stokes, repr(launch)],
-                         python='default', env={'P3S5_QROUND': sr.QUARANTINE_ROUND}, refusal_codes=(1,),
-                         log=os.path.join(ctx['out'], '_records', 'search', 'logs', f'{item.name}.quarantine.log'), unit=u)
-        if not res.ok:
-            raise Refusal(f'frame quarantine refused - not searched ({res.reason})')
+        # the archive step's quarantine (lib/archive/quarantine.py): production's helper in place, recorded in this unit
+        # with its gates (G2, G7 precheck) and manifest; the writer claim (G12) is the search's own cell lock
+        from exopipe.phase3.lib.archive.quarantine import quarantine_for_search
+        quarantine_for_search(u, item.cell, item.stokes, launch, sr.QUARANTINE_ROUND, apply=True, check_writer=False,
+                              log=os.path.join(ctx['out'], '_records', 'search', 'logs', f'{item.name}.quarantine.log'))
         return
     # window: the frames production WOULD move (p3s5_quarantine_frames.py:50-51), nothing moved
     arch = c.paths.PHASE3_ARCHIVE_ROOT
@@ -718,7 +767,7 @@ def stage_quarantine(u, item, ctx, f):
     os.replace(plan + '.part', plan)
     u.add_output(plan, 'csv_table', required_columns=('path', 'dest', 'bytes'))
     u.note(f'quarantine (window, plan only): {len(old)} archive frame(s) older than the launch epoch would be moved '
-           f'(lib.archive.quarantine_search_frames {"available" if QF else "not yet written"})')
+           f'(a production run moves them with lib.archive.quarantine.quarantine_for_search)')
 
 
 def stage_detect(u, item, ctx, f):
@@ -768,6 +817,9 @@ def stage_detect(u, item, ctx, f):
         raise Refusal(f'engine refused: {result.get("reason", res.reason)[:600]}')
     if res.rc != 0 or result.get('status') != 'done':
         raise RuntimeError(f'engine error rc {res.rc}: {str(result.get("reason") or res.tail[-600:])[:800]}')
+    n_thr = open(log, errors='replace').read().count('Thread raised exception')
+    if n_thr:          # PyBDSF island-fit exceptions inside its worker pool: published, recorded (p3s5_search_fleet.sh:214-215)
+        u.note(f'{n_thr} PyBDSF island-fit exception(s) in the log (published; recorded)')
     after = len(_image_rows(attempt, label, item.stokes))
     f['new_image_rows'] = after - before
     if after == before:
@@ -945,10 +997,13 @@ def side_outputs(item, ctx, f):
     out = []
     cw = f.get('cell_work') or os.path.join(ctx['flow_root'], item.cell)
     g = os.path.join(cw, 'catdir', f'master_R075_{item.cell}.gaul.csv')
-    if os.path.exists(g):
+    # an incremental attempt publishes its run tree and logs only (p3s4_incremental_fleet.sh:47): never the parent catalogue or
+    # the v110 verdicts - the incremental v110 file holds only the appended epochs' survivors and would replace the cell's
+    incremental = item.mode == 'incremental'
+    if os.path.exists(g) and not incremental:
         out.append((g, 'master_catalog', {}, os.path.join(ctx['out'], 'parent_catalogs', os.path.basename(g))))
     v = os.path.join(cw, 'v110_out', 'V_top100_fp_gate_p3.csv')
-    if item.stokes == 'V' and os.path.exists(v) and os.path.getmtime(v) >= f.get('t_detect', 0):
+    if item.stokes == 'V' and not incremental and os.path.exists(v) and os.path.getmtime(v) >= f.get('t_detect', 0):
         cat = os.path.join(f['attempt'], 'transients', f'Run_{f["label"]}', 'master_catalog.csv')
         out.append((v, 'fp_gate_verdicts', {'catalog': cat}, os.path.join(ctx['out'], 'v110_products', item.cell, os.path.basename(v))))
     # archive copies written by this detect (PRODNAME of each attempt frame; mtime >= detect start)
@@ -1112,8 +1167,7 @@ def run_unit(u, item, stages, ctx):
             raise Refusal(f'replay runs fit and verify only (not {bad})')
         rdir = os.path.join(ctx['out'], 'replay', os.path.basename(f['attempt'].rstrip('/')))
         fit_csv = os.path.join(rdir, 'fit_positions.csv')
-        if 'fit' in stages:
-            stage_fit(u, item, ctx, f, fit_csv)
+        if 'fit' in stages and stage_fit(u, item, ctx, f, fit_csv) is not None:
             u.add_output(fit_csv, 'detection_positions', tier=TIER, attempt=f['attempt'])
         if 'verify' in stages:
             outs = [o for o in outputs_of(item, ctx, f) if o[1] != 'detection_positions']
@@ -1160,8 +1214,7 @@ def after_detect(u, item, ctx, f, stages):
         u.plan(os.path.join(published_name, 'transients', f'Run_{f["label"]}', 'v_deep_images.csv'), 'image_ledger')
     fit_csv = os.path.join(f['attempt'], 'fit_positions.csv')
     if 'fit' in stages:
-        stage_fit(u, item, ctx, f, fit_csv)
-        if published_name:
+        if stage_fit(u, item, ctx, f, fit_csv) is not None and published_name:      # None: search_fit.ON False (recorded)
             u.plan(os.path.join(published_name, 'fit_positions.csv'), 'detection_positions')
     outs = outputs_of(item, ctx, f, fit_csv=fit_csv if 'fit' in stages else None)
     sides = side_outputs(item, ctx, f)
@@ -1243,8 +1296,10 @@ def run(args, run):
     if mism:
         raise Refusal('config is untrue about the in-place engine (engine literals): ' + '; '.join(
             f'{k} = {a!r} but {w} = {b!r}' for k, a, b, w in mism[:5]))
-    ctx = dict(out=out, work_fs=work if os.path.exists(work) else (os.path.dirname(work) if os.path.exists(os.path.dirname(work))
-                                                                    else '/'),
+    work_fs = os.path.abspath(work)
+    while not os.path.exists(work_fs):              # the filesystem the work root will live on (nearest existing ancestor)
+        work_fs = os.path.dirname(work_fs)
+    ctx = dict(out=out, work_fs=work_fs,
                attempts=attempts, flow_root=flow_root, tmp=tmp, archive_root=archive_root, dry_run=run.dry_run,
                flow_from=getattr(args, 'deep_flow_from', None), keep_work=getattr(args, 'deep_keep_work', False),
                label=args.run_label or c.search.RUN_LABEL, roots=roots_table(), t0=t0)
@@ -1257,8 +1312,12 @@ def run(args, run):
     for it in items:
         if run.resume and not run.fresh and it.mode != 'replay':
             try:
-                pf = preflight(it, ctx, fix=False)
-                ok, why = run.resume_check(it.name, inputs=None, admitted=pf['admitted'])
+                pf = preflight(it, ctx, fix=False, resume_probe=True)
+                small, big = input_paths(it, pf)
+                # bulk: the input SET must be the recorded one (a new epoch product, LOO or V master breaks it: D6); an
+                # incremental unit's record also lists its base attempt's tables, re-fingerprinted by resume_check itself
+                ok, why = run.resume_check(it.name, inputs=None if it.mode == 'incremental' else small + big,
+                                           admitted=pf['admitted'])
                 if ok:
                     from exopipe.phase3.core import record
                     ch = _legacy_code_changed(record.load_record(run.out_root, run.step, it.name))
@@ -1273,7 +1332,8 @@ def run(args, run):
                 ctx.setdefault('published', {}).setdefault(it.cell, set()).add(it.stokes)
                 continue
         with run.unit(it.name, tier=TIER, cell=it.cell, stokes=it.stokes, mode=it.mode) as u:
-            run_unit(u, it, stages, ctx)
+            with cell_lock(ctx, it):
+                run_unit(u, it, stages, ctx)
         if (run.dry_run or stages == ['preflight']) and u.status == 'no-input' and u.reason.startswith('no output written'):
             u.status, u.reason = 'planned', 'preflight passed (plan only)'    # records are not written for a plan
             continue
@@ -1284,9 +1344,36 @@ def run(args, run):
             print(f'{u.status.upper()} {it.name}: {u.reason[:300]}', flush=True)
         if not run.dry_run and (it is items[-1] or items[items.index(it) + 1].cell != it.cell):
             hygiene(ctx, it.cell)
-    if run.dry_run or stages == ['preflight']:
-        return 2 if refused else 0
+    if run.dry_run or stages == ['preflight']:      # plans: 'planned' counts as done; errors and refusals keep their exit
+        st = [u.status for u in run.units]
+        if 'error' in st:
+            return 1
+        if refused:
+            return 2
+        return 3 if st and all(s == 'no-input' for s in st) else 0
     return None
+
+
+@contextlib.contextmanager
+def cell_lock(ctx, item):
+    """One search of a cell at a time on this work root: the flow cache of a cell is never dropped, counted or written while
+    another search of the cell runs (p3s5_search_fleet.sh:94,169 wait for any run_deep_cell of the cell; p3s4_incremental_
+    fleet.sh:58; dc7910b). An exclusive flock on <flow root>/.<cell>.search.lock, held for the whole unit; a second unit waits.
+    Plans (--dry-run) and read-only replays take no lock."""
+    if ctx['dry_run'] or item.mode == 'replay':
+        yield
+        return
+    p = os.path.join(ctx['flow_root'], f'.{item.cell}.search.lock')
+    with open(p, 'a') as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f'{item.name}: another search of {item.cell} holds {p} - waiting for it to finish', flush=True)
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 # =====================================================================================================================

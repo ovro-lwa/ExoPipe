@@ -304,7 +304,8 @@ def stage_fit(c):
         c.need_work_here('fit')
         if c.cfg.forced.INPLACE_TEMPLATE_ORIENTATION != c.cfg.fitting.TEMPLATE_BEAM_ORIENTATION:
             u.note('D5: the in-place template fit uses the %s beam (clv15 44f0155) while core/fitting\'s switch says %s; '
-                   'the products follow the in-place code (K re-measurement pending, Gregg 2026-10-13)'
+                   'the products follow the in-place code (its K: phase3_template_fit.K_MAJOR / K_MINOR / '
+                   'K_MAJOR_HIGH, re-measured un-mirrored in clv15 a715a1b)'
                    % (c.cfg.forced.INPLACE_TEMPLATE_ORIENTATION, c.cfg.fitting.TEMPLATE_BEAM_ORIENTATION))
         fp = os.path.join(c.RUN, 'forced_fits.csv')
         u.plan(fp, 'forced_fits')

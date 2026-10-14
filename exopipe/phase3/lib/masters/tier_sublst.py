@@ -1436,7 +1436,8 @@ def stage_sources(run, opts, sel, root, planned_now=False):
                 if stale:
                     u.refuse(f'G-S10: parent catalogues of {lst} still refused after the rebuild: {stale}')
             for sc in scopes:
-                u.add_output(os.path.join(pdir, f'master_R075_{lst}_{sc}.gaul.csv'), 'master_catalog', master=masters[sc])
+                u.add_output(os.path.join(pdir, f'master_R075_{lst}_{sc}.gaul.csv'), 'master_catalog', master=masters[sc],
+                             tier='sublst')
             say(f'  {name}: {len(scopes)} parent catalogues current')
     return bad
 

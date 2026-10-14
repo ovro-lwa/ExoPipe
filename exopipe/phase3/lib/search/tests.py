@@ -244,6 +244,11 @@ def schema_and_backing(path, stokes=None, cell=None, tier='deep', **ctx):
             probs.append(f'{cid}: |snr| {r["snr"]} below the Stokes {r["stokes"]} floor {fl}')
         if not (math.isfinite(_f(r['ra'])) and math.isfinite(_f(r['dec']))):
             probs.append(f'{cid}: ra/dec not finite')
+    # duplicate rows: same date and position to 4 decimals (verify_p3s3_stage.py:144-149, 166)
+    pos = [(r['date'], round(_f(r['ra']), 4), round(_f(r['dec']), 4)) for r in rows]
+    ndup = len(pos) - len(set(pos))
+    if ndup:
+        probs.append(f'{ndup} duplicate catalogue rows (same date, ra, dec to 4 decimals)')
     if stokes and any(u[2] != stokes for u in units):
         probs.append(f'Stokes {sorted(u[2] for u in units)} != the unit Stokes {stokes}')
     if cell and any(f'{u[0]}_{u[1]}' != cell for u in units):
@@ -339,8 +344,9 @@ def complete(path, stokes=None, cell=None, tier='deep', **ctx):
 def one_row_per_searched_epoch(path, stokes=None, cell=None, tier='deep', **ctx):
     """v_deep_images.csv: GIMG_COLS; one row per (date, Stokes); elev_min_deg = the configured mask floor of that Stokes and
     tier (deep 25/25, sub-LST V 25 / I 20; attempts before exopipe d8beb0d recorded a literal 20.0); no row on a date refused
-    from both searches or whose image was refused; one search frame per row (verify_p3s3 condition 2: frames = image rows;
-    before code floor 20260913T054452 a sanity-refused epoch may lack its frame)."""
+    from both searches or whose image was refused; one search frame per row and no other frame of that Stokes (verify_p3s3
+    condition 2: frames = image rows + extraction-refused images; before code floor 20260913T054452 a sanity-refused epoch may
+    lack its frame); no image row on a night data_decisions excludes now (verify_p3s3 STALE, p3s3_stale_exclusions.py)."""
     cols, rows = _rows(path)
     if cols != GIMG_COLS:
         return False, len(rows), f'header != GIMG_COLS (11, deep_search.py:126-128): {cols}'
@@ -391,6 +397,20 @@ def one_row_per_searched_epoch(path, stokes=None, cell=None, tier='deep', **ctx)
                     continue
                 else:
                     probs.append(f'no search frame for {st} {d} ({os.path.basename(frame_path(att, lab, lst, scope, d, st))})')
+            # frames = image rows exactly (verify_p3s3_stage.py:109-131): a frame of this Stokes with neither an image row nor
+            # an extraction refusal is an extra frame (the count comparison fails it there)
+            fdir = os.path.dirname(frame_path(att, lab, lst, scope, '0000-00-00', st))
+            fre = re.compile(r'^(\d{4}-\d\d-\d\d(?:T\d\d)?)_' + st + r'_redo_resid_' + re.escape(scope) + r'\.fits$')
+            on_disk = {m.group(1) for m in (fre.match(n) for n in (os.listdir(fdir) if os.path.isdir(fdir) else ())) if m}
+            extra = sorted(on_disk - dates - extraction)
+            if extra:
+                probs.append(f'{len(extra)} {st} search frame(s) without an image row or an extraction refusal: {extra[:5]}')
+    # STALE (verify_p3s3_stage.py:106-107; p3s3_stale_exclusions.py:25-27): an epoch searched (image row) on a night
+    # data_decisions.csv excludes NOW - the merge gate refuses such an attempt
+    for (lst, scope, st) in units:
+        bad = _excluded_now(lst, scope, {r['date'][:10] for r in rows if r['stokes'] == st})
+        if bad:
+            probs.append(f'STALE: Stokes {st} searched night(s) data_decisions excludes now: {bad[:5]}')
     if probs:
         return _fail(probs, len(rows))
     return True, len(rows), f'{len(rows)} image rows, {nframes} search frames'
@@ -459,6 +479,7 @@ def _match_frame(path):
     from astropy.io import fits
     from astropy.wcs import WCS
     from exopipe.common.validate_fits_headers import validate_header
+    from exopipe.phase3.lib.search.candidates import cutout_half_pix
     rd = run_dir_of(path)
     if not rd:
         return False, None, 'not inside transients/Run_<label>/'
@@ -490,6 +511,10 @@ def _match_frame(path):
                 sd = np.asarray(h[0].data, dtype=np.float64)
             if str(sh.get('CANDID', '')) != cid:
                 probs.append(f'{cid}: CANDID {sh.get("CANDID")!r}')
+            # deep stamps are 5 x 5 deg (verify_p3s3_stage.py:168-177): a legacy 81-px box where the frame's pixel scale
+            # needs more pixels fails
+            if cid[1:2] == 'D' and sh.get('NAXIS1') == 81 and 2 * cutout_half_pix(sh) + 1 > 81:
+                probs.append(f'{cid}: legacy 81-px stamp, not 5 deg ({2 * cutout_half_pix(sh) + 1} px needed)')
             fpath = frame_path(att, lab, r['lst'], r['band'], r['date'], r['stokes'])
             if fpath not in frames:
                 if not os.path.exists(fpath):
@@ -566,13 +591,23 @@ def every_survivor(path, catalog=None, **ctx):
 def fitted(path, tier='deep', attempt=None, **ctx):
     """fit_positions.csv: cand_id + DET_COLS + frame, frame_sha1, fit_frac_px; the same cand_id set and order as the attempt's
     master_catalog.csv; pos_kind in {gaussian, template, peak}; peak_ra/peak_dec = the catalogue ra/dec; at most 1 % of fitted
-    rows within 0.01 px of a pixel centre (deep_fit_positions.py:146-150); frame_sha1 = the searched frame on disk; sub-LST:
-    pos_sys / pos_err blank and pos_stat > 0. Reports the peak-fallback fraction (pos_kind 'peak') per frame."""
+    rows within 0.01 px of a pixel centre (deep_fit_positions.py:146-150; the tier's own constants: search_fit for deep,
+    search_<tier>.FIT_ON_CENTRE_* otherwise); frame_sha1 = the searched frame on disk; a tier with FIT_BLANKED (sub-LST, error
+    model A, sublst_fit_positions.py:56): those columns blank and pos_stat > 0. Reports the peak-fallback fraction (pos_kind
+    'peak') per frame."""
     from exopipe.phase3.config import CFG
     cols, rows = _rows(path)
     want = ['cand_id'] + det_cols() + FIT_EXTRA
     if cols != want:
         return False, len(rows), f'header != cand_id + DET_COLS + {FIT_EXTRA}: {cols[:5]}...'
+    # the tier's own fit constants: deep = search_fit; sub-LST = search_sublst.FIT_* (error model A blanks FIT_BLANKED)
+    if tier == 'deep':
+        on_px, on_max, blanked = CFG.search_fit.ON_CENTRE_PX, CFG.search_fit.ON_CENTRE_MAX_FRAC, ()
+    else:
+        sec = getattr(CFG, f'search_{tier}', None)
+        if sec is None or not hasattr(sec, 'FIT_ON_CENTRE_PX'):
+            return False, len(rows), f'no fit constants for tier {tier!r} (config section search_{tier})'
+        on_px, on_max, blanked = sec.FIT_ON_CENTRE_PX, sec.FIT_ON_CENTRE_MAX_FRAC, tuple(getattr(sec, 'FIT_BLANKED', ()))
     att = attempt or os.path.dirname(path)
     summ = os.path.join(os.path.dirname(path), 'fit_positions_summary.json')
     if not attempt and os.path.exists(summ):     # a replay sidecar names the (read-only) attempt it fitted
@@ -584,7 +619,6 @@ def fitted(path, tier='deep', attempt=None, **ctx):
     if [r['cand_id'] for r in crow] != [r['cand_id'] for r in rows]:
         probs.append(f'cand_id set/order differs from the catalogue ({len(rows)} vs {len(crow)} rows)')
     cbyid = {r['cand_id']: r for r in crow}
-    fc = CFG.search_fit
     on_ctr = nfit = 0
     shas = {}
     per_frame = {}
@@ -601,13 +635,14 @@ def fitted(path, tier='deep', attempt=None, **ctx):
             pf[1] += 1
         if k in ('gaussian', 'template'):
             nfit += 1
-            if r['fit_frac_px'] not in ('', None) and _f(r['fit_frac_px']) < fc.ON_CENTRE_PX:
+            if r['fit_frac_px'] not in ('', None) and _f(r['fit_frac_px']) < on_px:
                 on_ctr += 1
         if k in FIT_KINDS and not (math.isfinite(_f(r['pos_ra'])) and math.isfinite(_f(r['pos_dec']))):
             probs.append(f"{r['cand_id']}: {k} position not finite")
-        if tier == 'sublst' and fc.BLANK_SYSTEMATIC.get('sublst'):
-            if r['pos_sys_arcsec'] or r['pos_err_maj_arcsec']:
-                probs.append(f"{r['cand_id']}: sub-LST systematic not blank")
+        if blanked:
+            full = [c for c in blanked if r.get(c)]
+            if full:
+                probs.append(f"{r['cand_id']}: {tier} {full} not blank (error model A)")
             if not _f(r['pos_stat_maj_arcsec']) > 0:
                 probs.append(f"{r['cand_id']}: pos_stat not > 0")
         fp = os.path.join(att, r['frame'])
@@ -617,8 +652,8 @@ def fitted(path, tier='deep', attempt=None, **ctx):
             probs.append(f"{r['cand_id']}: frame {r['frame']} missing")
         elif shas[r['frame']] != r['frame_sha1']:
             probs.append(f"{r['cand_id']}: frame sha1 {r['frame_sha1'][:8]} != the frame on disk {shas[r['frame']][:8]}")
-    if nfit and on_ctr / nfit > fc.ON_CENTRE_MAX_FRAC:
-        probs.append(f'{on_ctr} of {nfit} fitted rows ({100.0 * on_ctr / nfit:.2f} %) within {fc.ON_CENTRE_PX} px of a pixel centre')
+    if nfit and on_ctr / nfit > on_max:
+        probs.append(f'{on_ctr} of {nfit} fitted rows ({100.0 * on_ctr / nfit:.2f} %) within {on_px} px of a pixel centre')
     npk = sum(v[1] for v in per_frame.values())
     worst = max(((v[1] / v[0], f) for f, v in per_frame.items() if v[0]), default=(0.0, ''))
     value = round(npk / len(rows), 4) if rows else 0.0

@@ -18,7 +18,7 @@ Families and stages
 Unit of work / item kinds: deep catflux = the run directory (all its catalogues); deep panels = one page run; snapshot = one
 (Stokes, cadence) run NAME (units C_<stage>_<NAME>). Per hour (DESIGN 12.1, chain 'epoch'): --epochs <LST>_<date>
   deep      catflux over the run's catalogues as `catalog --incremental` left them (every row re-measured on the frame of its
-            best detection; needs --run LABEL - the chain template must carry it);
+            best detection; needs --run LABEL - the 'epoch' chain passes --run {deep_run}, runner.CHAIN_VARS);
   snapshot  one run per Stokes and cadence (default I,V x 10s,1min) named forced_snapshot.EPOCH_NAME, built from that hour's
             rows of the evaluations - partial, not servable; a combination without an event ends no-input.
 Survey (DESIGN 12.2): catflux after a full publish pass; panels after a photometry evaluation; one snapshot run per (Stokes,

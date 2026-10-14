@@ -98,6 +98,7 @@ Refactor window (DESIGN 11.1): every sub-operation calls today's code IN PLACE -
 core.legacy.run with production's argv and environment (values from config), the follow-up package in-process with its
 CANDINV_* paths set from config (followup/_cfg_adapter.py). The content tests of the 20 follow-up classes live here.
 """
+import calendar
 import csv
 import gzip
 import json
@@ -359,7 +360,7 @@ def _gates(args, run):
         py = CFG.site.PYTHON.get(CFG.followup.TESS_PYTHON_KEY)
         if not py or not os.access(py, os.X_OK):
             problems.append(f'G8: the TESS interpreter site.PYTHON[{CFG.followup.TESS_PYTHON_KEY!r}] = {py!r} is not '
-                            f'executable on {run.host} (the TESS environment exists on lwacalim07 only)')
+                            f'executable on {run.host} (a node-local environment: run on the host that holds it)')
     return problems
 
 
@@ -850,7 +851,11 @@ def _snap_peak_vi(ev):
     if not ss:
         return '', '', False
     best = max(ss, key=lambda r: abs(r.get('V_snr', 0)))
-    unphys = any(abs(r.get('V_snr', 0) or 0) >= 7.0 and (r.get('vi_ratio') or 0) > 1.25 for r in ss)
+    # attic/run_all_top50.py:51-52 literals 7.0 / 1.25 = the package's STRONG_SNR / VI_RATIO_UNPHYSICAL (score.py:30-31
+    # applies the same rule with them); read from config (PROTECTED mirrors of FC:114 / FC:144), not literals here
+    S = _cfg().followup_investigate
+    unphys = any(abs(r.get('V_snr', 0) or 0) >= S.STRONG_SNR and (r.get('vi_ratio') or 0) > S.VI_RATIO_UNPHYSICAL
+                 for r in ss)
     return _round(best.get('vi_ratio'), 3), best.get('scope', ''), unphys
 
 
@@ -1134,7 +1139,8 @@ def _recorded(run, path, unit, record_dirs):
             continue
         fin = rec.get('finished') or ''
         try:
-            fin_t = time.mktime(time.strptime(fin, '%Y-%m-%dT%H:%M:%SZ')) - time.timezone
+            fin_t = calendar.timegm(time.strptime(fin, '%Y-%m-%dT%H:%M:%SZ'))   # UTC (mktime - timezone is off by the
+                                                                                # DST hour wherever local time has DST)
         except ValueError:
             continue
         if rec.get('status') == 'done' and any(o.get('path') == ap for o in rec.get('outputs', [])) and fin_t + 1 >= mt:

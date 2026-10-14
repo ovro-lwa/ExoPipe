@@ -11,9 +11,13 @@ Per hour vs intermittent (DESIGN 12): per hour, `--epochs <LST>_<date>` searches
 --cells / --scopes given) against the INSTALLED masters; the deep tier runs the engine's incremental mode (every admission gate
 on the whole cell, only that epoch built and searched, its rows appended to a copy of the cell's published attempt). In bulk
 (intermittent: the re-run of every hour of a cell after its master was rebuilt and installed) `--cells` / `--lsts` search
-whole cells; `--nights D1,D2` with `--cells` runs the same incremental mode on chosen nights of whole cells (production's
-re-admission fleet, p3s4_incremental_fleet.sh). Item kinds (core/cells): deep cell <LST>_<scope> (--cells), epoch <LST>_<date>
-(--epochs). The unit of work is printed in the plan (--dry-run).
+whole cells; `--nights D1,D2` with `--cells` runs the same incremental mode on chosen nights of whole cells (the mechanism of
+p3s4_incremental_fleet.sh). Appending is for nights OUTSIDE the master's generation record only: a night of the record
+(weights.csv / HISTORY constituent) is a re-admitted epoch and refuses - Gregg 2026-09-13 ruled re-admitted epochs are
+searched by a full re-search of the cell (`--cells <cell> --fresh`). Today the engine's input-provenance gate (E15) refuses a
+night outside the record, so a per-hour deep search of a NEW night ends no-input until that gate is ruled for per-hour use.
+Item kinds (core/cells): deep cell <LST>_<scope> (--cells), epoch <LST>_<date> (--epochs). The unit of work is printed in the
+plan (--dry-run).
 
 Deep tier (lib/search/deep_step.py). Unit: <cell>_<S> in bulk (12h_Red_V), <cell>_<S>_<date> per hour / incremental,
 <cell>_<S>_replay_<attempt> for a read-only replay; Stokes V before I (search.STOKES_ORDER: the V search computes the flows the
@@ -43,7 +47,9 @@ Failure modes (exit 2 = refused, the gate named in the record): every engine gat
          REFUSING/REFUSED); preflight: a missing master / gate record, a superseded COADDOP, the membership rulings, stale
          search-tier table, a missing or stale flow cache on a node without a GPU (site GPU_HOSTS), pinned-input md5 (G2),
          --out/--work under a production tree (G3), config untrue about an engine literal, --inject (no deep injection path,
-         Q9); per hour / incremental: no published attempt to extend; fit: a
+         Q9); per hour / incremental: no published attempt to extend, a night already searched in it, a night of the
+         master's generation record (weights.csv / HISTORY constituent: a re-admitted epoch is searched by a full re-search of
+         the cell, never appended - R-SIGMA-STACK-INCLUDES-THE-RE-ADMITTED-EPOCH-BACKFILL-BY-RE-SEARCH); fit: a
          detection without its searched frame, a catalogue already fitted, > 1 % of fitted rows on a pixel centre; verify:
          any content test. Exit 3 = nothing to do (policy skip below search_detect.MIN_EPOCHS; per hour: the epoch is
          excluded or has no product); exit 1 = error (engine crash, flow batch rc not in (0, 2), node short of disk).
@@ -51,8 +57,6 @@ Failure modes (exit 2 = refused, the gate named in the record): every engine gat
 Sub-LST and snapshot tiers: lib/search/tier_sublst.py and tier_snapshot.py (their flags are prefixed --sublst- / --snap-).
 """
 import importlib
-import os
-import socket
 
 SUMMARY = 'detection + gates with fitted positions (deep, sub-LST, snapshot)'
 TIERS = ('deep', 'sublst', 'snapshot')
@@ -113,23 +117,11 @@ def add_arguments(p):
             mod.add_arguments(p)
 
 
-def _host():
-    return socket.gethostname().split('.')[0]
-
-
 def default_out(args):
-    """The tier's production root (the collect root of today's fleets); refused for writes while paths.PRODUCTION_WRITES is
-    False - pass --out."""
+    """The tier's production root (the collect root of today's fleets), from the tier module; refused for writes while
+    paths.PRODUCTION_WRITES is False - pass --out."""
     tier = getattr(args, 'tier', None) or TIERS[0]
-    mod = _tier_module(tier, required=False)
-    if mod is not None and hasattr(mod, 'default_out'):
-        return mod.default_out(args)
-    from exopipe.phase3.config import CFG
-    root = CFG.search_run.COLLECT_ROOT.get(tier)
-    if root is None:
-        return '/tmp'
-    arm = getattr(args, 'sublst_arm', None) or getattr(CFG.search_inputs, 'SUBLST_ARM', 'B')
-    return root.format(host=_host(), arm=arm)
+    return _tier_module(tier).default_out(args)
 
 
 def resolve_stages(args, stages, optional=()):

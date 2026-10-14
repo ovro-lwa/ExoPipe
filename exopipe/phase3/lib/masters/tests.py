@@ -784,7 +784,8 @@ def dewarp_consistent(path, **ctx):
     from exopipe.phase3.lib.masters import membership as MB
     b = os.path.basename(path)
     m = re.match(r'^master_R075_(\d\dh)_(\d+MHz|Red|Green|Blue|Full)\.gaul\.csv$', b)
-    if not m or os.path.basename(os.path.dirname(os.path.abspath(path))).startswith('parent_catalogs_'):
+    if (not m or ctx.get('tier') in ('sublst', 'snapshot')
+            or os.path.basename(os.path.dirname(os.path.abspath(path))).startswith('parent_catalogs_')):
         return True, None, 'not a deep parent catalogue (no screen record applies)'
     rec = _cfg().masters_verify.DEWARP_SCREEN_RECORD
     rows_ = MB._rcsv(rec)

@@ -292,6 +292,9 @@ def test_catflux():
     _survivors(os.path.join(U, 'source_catalogs_V_sb', '55MHz_sources_survivors.csv'),
                [dict(rank='rank0001', source_id='J1000+3000b', ra='150.00000', dec='30.00000', band='55MHz',
                      lst_cells='04h', best_cand_id='VD_04h_2025-01-02_55MHz_0001', best_date='2025-01-02', best_snr='20')])
+    # a catalogue without rows: p3s3_forced_phot.py:73-74 leaves it as it is (no forced columns) and the pass goes on
+    empty = os.path.join(U, 'source_catalogs_V_sb', '64MHz_sources_survivors.csv')
+    _survivors(empty, [])
     rc, err = cli(['forced', '--tier', 'deep', '--run', 'TESTF', '--stages', 'catflux', '--out', U, '--cores', 'none',
                    '--dry-run'])
     check('catflux --dry-run on a synthetic run exits 0', rc == 0, err[-300:])
@@ -319,8 +322,10 @@ def test_catflux():
     check('FINDING catflux beam rotated 90 deg: BMAJ = 2 BMIN, BPA 0 -> forced_jy = 10 x 2ab/(a^2+b^2) = %.3f (not 10)'
           % want, abs(float(r55[0]['forced_jy']) - want) < 0.02, r55[0]['forced_jy'])
     t = [x for x in rec.get('tests', []) if x['name'] == 'catalog_forced_columns.catflux_columns']
-    check('catflux content test ran on both outputs and passed', len(t) == 2 and all(x['passed'] for x in t),
+    check('catflux content test ran on the three outputs and passed', len(t) == 3 and all(x['passed'] for x in t),
           str([x.get('detail') for x in t]))
+    check('catflux leaves a catalogue without rows as it is (no forced columns), as p3s3_forced_phot.py:73-74',
+          'forced_jy' not in open(empty).readline())
     # --resume: skipped only from a clean tree with unchanged inputs/code/config and outputs passing now
     rc2, err2 = cli(['forced', '--tier', 'deep', '--run', 'TESTF', '--out', U, '--cores', 'none', '--resume'])
     if str(rec.get('commit', '')).endswith('-dirty'):

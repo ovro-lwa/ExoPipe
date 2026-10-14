@@ -512,6 +512,22 @@ def test_summary():
     want = SC.p_astrophysical(ev)['p_astro']
     assert rows[0]['rank'] == '1' and float(rows[0]['p_astro']) == want and rows[1]['error'], rows
     assert json.load(open(os.path.join(cdir, f'{c1.cand_id}_evidence.json')))['p_astro']['p_astro'] == want
+    # snap_unphysical: the attic rule (|V S/N| >= 7.0 and V/I > 1.25, attic/run_all_top50.py:51-52) through config
+    from exopipe.phase3.steps import followup as F
+    attic = lambda ss: any(abs(r.get('V_snr', 0) or 0) >= 7.0 and (r.get('vi_ratio') or 0) > 1.25 for r in ss)  # noqa
+    for ss in ([{'V_snr': 7.0, 'vi_ratio': 1.26}], [{'V_snr': -6.99, 'vi_ratio': 3.0}], [{'V_snr': 9.0, 'vi_ratio': 1.25}],
+               [{'V_snr': 5.0, 'vi_ratio': 2.0}, {'V_snr': -8.0, 'vi_ratio': None}, {'V_snr': 7.5, 'vi_ratio': 1.3}]):
+        assert F._snap_peak_vi({'snapshot_spectrum': ss})[2] == attic(ss), ss
+    # G28 provenance time: a record's 'finished' (UTC text) compared in UTC (calendar.timegm, not mktime)
+    rdir = os.path.join(d, 'rec')
+    os.makedirs(rdir)
+    tgt = _write(os.path.join(d, 'lc3_x.npz'), 'x')
+    os.utime(tgt, (1760000000, 1760000000))                    # 2025-10-09T08:53:20Z
+    for fin, want in (('2025-10-09T08:53:21Z', True), ('2025-10-09T08:53:17Z', False)):
+        with open(os.path.join(rdir, 'lc3_x.json'), 'w') as f:
+            json.dump({'status': 'done', 'finished': fin, 'outputs': [{'path': os.path.abspath(tgt)}]}, f)
+        run_ = type('R', (), {'units': []})()
+        assert (F._recorded(run_, tgt, 'lc3_x', [rdir]) is not None) == want, fin
 
 
 def test_hone():

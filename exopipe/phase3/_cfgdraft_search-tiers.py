@@ -9,9 +9,11 @@ step owner's (_cfgdraft_search-deep.py) and are NOT read by the tier modules: wh
 per-tier dict of a deep section (search_inputs.SUBLST_TREE, search_run.FAST_MIN_FREE_GB['sublst'], ...), the value lives
 HERE once, and the refactor chat merges the two at fold-in (listed in plan/impl/search-tiers.md).
 
-Production sources cited (heads read 2026-10-13): exopipe_ops 6b8a23a (sublst_search_pass.sh = SP, sublst_run_lst_nocat.sh
-= NOCAT, snapshot_fleet_node_v9.sh = v9, sublst_fit_positions.py = SFP); clv15 98595b3 (phase3_snapshot_search.py = SS,
-phase3_snapshot_group_search.py = GS); branch lib/search/deep_search.py = DS (the moved phase3_deep.py, same line numbers).
+Production sources cited (heads read 2026-10-13; review 2026-10-13 re-read them): exopipe_ops a40b088 (sublst_search_pass.sh
+= SP, sublst_run_lst_nocat.sh = NOCAT, snapshot_fleet_node_v9.sh = v9, sublst_fit_positions.py = SFP); clv15 a715a1b
+(phase3_snapshot_search.py = SS - its night rule is the deep daytime gate since a715a1b and is NOT mirrored here: the engine
+runs in place; phase3_snapshot_group_search.py = GS); branch lib/search/deep_search.py = DS (the moved phase3_deep.py, same
+line numbers).
 Ruling IDs are fix_ids of clv15/fix_ledger.csv.
 
 Conventions (binding decisions of the refactor chat, _CROSSCHECK.md top, core 2337938):
@@ -159,21 +161,21 @@ class search_snapshot(_Section):
     NPAR = 4                                # subband searches at a time (v9:35, xargs -P)
     GROUPS_PARALLEL_STOKES = False          # False = V then I serially (v9:235-239); True = speed-up S5 (pure: two processes)
     FLOW_REQUIRED = True                    # P3_SNAP_FLOW=1 (v9:64, :236): searches the _flowed frames, refuses an unflowed subband
-    FLOW_MAX_MHZ = 1000.0                   # MHz; P3_SNAP_FLOW_MAX_MHZ (SS:662 default)
+    FLOW_MAX_MHZ = 1000.0                   # MHz; P3_SNAP_FLOW_MAX_MHZ (SS:667 default)
     PAUSE_1MIN = False                      # P3_SNAP_PAUSE_1MIN (v9:81-84; pause lifted 2026-10-08 06:47 UTC): no 1-minute tier, and
                                             # the group search skipped (v9:235); --snap-pause-1min sets it
-    CUTOUTS_ON = True                       # P3_SNAP_CUTOUTS (SS:1310 default '1'; photometry cutout cubes, a product of `photometry`)
+    CUTOUTS_ON = True                       # P3_SNAP_CUTOUTS (SS:1315 default '1'; photometry cutout cubes, a product of `photometry`)
     CUTOUT_SUBDIR = 'photometry'            # P3_SNAP_CUTOUT_ROOT = paths.PHASE3_ARCHIVE_ROOT/<this> (= phase3_snapshot_cutouts.
                                             # ROOT_DEFAULT); while paths.PRODUCTION_WRITES is False: <out>/<this>. Product class
                                             # photometry_cutout (owned by photometry; recorded by this step on write)
-    SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # P3_SOLAR_AUDIT (SS:414), pinned (G2)
+    SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # P3_SOLAR_AUDIT (SS:419), pinned (G2)
     SOLAR_AUDIT_MD5 = 'f5e4ef1124230351603fba34018a1f4a'   # md5 read 2026-10-13 (spec search.md 3); a different file refuses
     # ---- gates ported from v9 (preflight / completeness) --------------------------------------------------------------------
     MIN_STAGED_FRAMES = 1000                # decompressed staged frames per cell (P3_FLEET_MIN_FRAMES; v9:199-202)
     OUT_MIN_FREE_GB = 50                    # GB free on the node-local output filesystem (new: v9's 800 GB (v9:95) covers the
                                             # staging, which is now the frames step's; the search writes CSVs and models only)
     EXCLUDED_STAGED_SUBBAND = 'accounted'   # a STAGED subband excluded in data_decisions.csv (SS exits 3, no output) counts as an
-                                            # outcome (exclusions are absolute), as v9 since exopipe_ops a40b088 (v9:217-224; 07h
+                                            # outcome (exclusions are absolute), as v9 since exopipe_ops a40b088 (v9:217-235; 07h
                                             # 2025-10-14 failed the guard twice); 'unaccounted' = v9 before it (SEARCH-INCOMPLETE)
     KEEP_FAILED_LOGS = True                 # v9 deletes OUT of an incomplete cell (v9:228, :267); its logs are kept under
                                             # <out>/_failed/<cell>_<UTC>/ first (new; evidence only, never read as a product)
@@ -184,9 +186,10 @@ class search_snapshot(_Section):
     MIN_ELEVATION_DEG = 30.0                # deg; SS:78 (R-SNAP-ELEVATION-FLOOR-30-DEG)
     INTEGRATION_S = 10.03102041             # s; SS:133 (R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES)
     TIER1MIN_TIME_BASIS = 'integration-midpoint-dateobs-v1'   # runinfo frame_time_1min; SS:134
-    MIN_BLOCK_FRAMES = 3                    # admitted frames per 1-minute block; SS:1135
+    MIN_BLOCK_FRAMES = 3                    # admitted frames per 1-minute block; SS:1132
     PAIR_TOL_S = 1.0                        # s; wideband members of one integration (GS:68)
-    NIGHT_RULE_STATUS = 'refused-night-rule'   # status of a nightrefused_<tag>.json record (SS:497)
+    NIGHT_RULE_STATUS = 'refused-night-rule'   # status of a nightrefused_<tag>.json record (SS:508; the rule itself -
+                                            # night_verdict, a715a1b - is the engine's, never mirrored here)
     WIDEBAND_OUTCOMES = ('searched', 'night-refused', 'excluded', 'no-members', 'too-few-frames', 'not-run')   # GS:132-135
     RULED = {'MIN_STAGED_FRAMES': 'INCIDENT-FAST-FULL-SILENT-SHIPPING-FAILURES',
              'FLOW_REQUIRED': 'R-SNAP-FLOW-ALIGNMENT-AND-FLOW-MOVIE-ARE-PIPELINE-PRODUCTS-FLEET-V4',

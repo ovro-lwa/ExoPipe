@@ -120,6 +120,10 @@ def catflux_columns(path, run_dir=None, recheck=True, **ctx):
     if S not in ('I', 'V'):
         return False, None, 'not a per-Stokes catalogue directory: %s' % dname
     header, rows = _read_csv(path)
+    if not rows:
+        # p3s3_forced_phot.py:73-74 (`if not rows: continue`) leaves a catalogue without rows as it is - no forced columns
+        # are added, nothing is measured, and the pass goes on (review fix 2026-10-13: this test refused it)
+        return True, 0, 'no rows: left as it is by p3s3_forced_phot.py:73-74 (nothing to measure)'
     miss = [c for c in cf.COLUMNS if c not in header]
     if miss:
         return False, None, 'columns missing: %s' % miss

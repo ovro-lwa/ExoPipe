@@ -20,9 +20,10 @@ Stages (search_snapshot.STAGES; the step's --stages/--from/--until pick a subset
   subbands      clv15 phase3_snapshot_search.py per subband IN PLACE (core.legacy.run, site PYTHON['py36'], production
                 arguments: --stokes VI --mode median --thresh 5.0 --nthreads 8 --stage-root <stage>/<sb>; P3_SNAP_FLOW=1),
                 NPAR at a time, into the node-local output <scratch>/snapshot_out/<cell>/; then SUBBAND COMPLETENESS (with
-                the completeness stage): every staged subband x Stokes has its runinfo OR its night-refusal record, else
-                SEARCH-INCOMPLETE (error, retried; v9:206-229); no runinfo and no record at all = systemic failure (v9
-                FLEET-ABORT, error). The photometry cutout cubes the engine writes (class photometry_cutout, owned by
+                the completeness stage): every staged subband x Stokes has its runinfo OR its night-refusal record, or the
+                subband is excluded in data_decisions.csv (accounted, as v9 since exopipe_ops a40b088; search_snapshot.
+                EXCLUDED_STAGED_SUBBAND), else SEARCH-INCOMPLETE (error, retried; v9:207-240); no runinfo and no record at all
+                = systemic failure (v9 FLEET-ABORT, error). The photometry cutout cubes the engine writes (class photometry_cutout, owned by
                 `photometry`) are recorded on write.
   widebands     clv15 phase3_snapshot_group_search.py per Stokes, V then I (v9:235-239); skipped with --snap-bands subbands,
                 a subband item or the 1-minute pause; then WIDEBAND COMPLETENESS: wideband_outcome_<S>.json exists and
@@ -51,7 +52,7 @@ Outputs (product classes): runinfo_<tag>.json (snapshot_search: with its candida
          cubes under <out>/photometry/ while paths.PRODUCTION_WRITES is False (photometry_cutout); injection runs:
          injected_<sb>_<S>.csv (injection_book). tag = <subband|group>_<S>_median.
 Failure modes: exit 2 = a gate refused (staging incomplete, broken/missing Master, flow incomplete, too few frames, pinned md5,
-         a staged subband excluded under v9's accounting, no-clobber, a production --out while paths.PRODUCTION_WRITES is
+         a staged excluded subband only with EXCLUDED_STAGED_SUBBAND='unaccounted' (v9 before a40b088), no-clobber, a production --out while paths.PRODUCTION_WRITES is
          False, every planned search refused); exit 1 = SEARCH-INCOMPLETE / systemic failure (an engine crash, a full disk:
          logs kept under <out>/_failed/<cell>_<UTC>/), too little free disk; exit 3 = no item.
 """
@@ -409,10 +410,13 @@ def search_subbands(u, plan, out, env, inject=None):
 
 
 def subband_completeness(u, plan, out, outcomes):
-    """v9:206-234 with the accounting rule of IMPLEMENTED-SNAPSHOT-NIGHT-REFUSED-BANDS-ACCOUNTED-20261013."""
+    """v9:207-240 (exopipe_ops a40b088): every staged subband x Stokes has its runinfo or its night-rule refusal record
+    (IMPLEMENTED-SNAPSHOT-NIGHT-REFUSED-BANDS-ACCOUNTED-20261013), or the subband is excluded in data_decisions.csv (the
+    engine's exit 3, phase3_snapshot_search.py main: 'EXCLUDED ... REFUSING'; accounted when EXCLUDED_STAGED_SUBBAND =
+    'accounted', FIX-FLEET-GUARD-EXCLUDED-SUBBANDS-20261013); no runinfo and no record at all = FLEET-ABORT."""
     s = cfg().search_snapshot
     n_ri = n_nr = 0
-    miss, excl_only = [], []
+    miss, excl_only, excl_ok = [], [], []
     for sb in plan['subbands']:
         if not plan['staged'].get(sb):
             continue
@@ -423,7 +427,7 @@ def subband_completeness(u, plan, out, outcomes):
             elif v == 'night-refused':
                 n_nr += 1
             elif v == 'excluded' and s.EXCLUDED_STAGED_SUBBAND == 'accounted':
-                pass
+                excl_ok.append(f'{sb}_{st}')
             elif v == 'excluded':
                 excl_only.append(f'{sb}_{st}')
             else:
@@ -443,6 +447,9 @@ def subband_completeness(u, plan, out, outcomes):
     if n_ri == 0 and n_nr == 0:
         raise RuntimeError(f'FLEET-ABORT {plan["cell"]} produced no runinfo and no refusal record - systemic failure '
                            f'(v9:231-234 stops the node: hold this node in the runner)')
+    if excl_ok:                             # v9:235 EXCLUDED-SUBBANDS log line
+        u.note(f'EXCLUDED-SUBBANDS {plan["cell"]}: {len(excl_ok)} of {n_exp} searches excluded by data_decisions (accounted, '
+               f'not searched): {" ".join(excl_ok)}')
     if n_nr:
         u.note(f'NIGHT-REFUSED {plan["cell"]}: {n_nr} of {n_exp} searches refused by the night rule (recorded)')
 
@@ -563,8 +570,8 @@ def ship(u, src, dst, fresh, out_root):
     s = cfg().search_snapshot
     os.makedirs(dst, exist_ok=True)
     names = sorted({os.path.basename(p) for pat in s.SHIP_PATTERNS for p in glob.glob(os.path.join(src, pat))})
-    copied, same, clash, kept = [], [], [], []
-    for n in names:
+    todo, same, clash, kept = [], [], [], []
+    for n in names:                     # classify first: a refused ship copies nothing (review 2026-10-13: was partial)
         a, b = os.path.join(src, n), os.path.join(dst, n)
         if os.path.exists(b):
             if _same(a, b):
@@ -576,18 +583,53 @@ def ship(u, src, dst, fresh, out_root):
             if not fresh:
                 clash.append(n)
                 continue
-            keep = os.path.join(out_root, '_superseded', f'{os.path.basename(dst)}_{_h().utc_stamp()}')
-            os.makedirs(keep, exist_ok=True)
-            shutil.copy2(b, os.path.join(keep, n))
-        tmp = f'{b}.tmp.{os.getpid()}'
-        shutil.copy2(a, tmp)
-        os.replace(tmp, b)
-        copied.append(n)
-    u.meta['shipped'] = dict(dir=dst, copied=len(copied), identical=len(same), clashes=clash, logs_kept=kept)
+        todo.append(n)
+    copied, stale = [], []
+    keep = os.path.join(out_root, '_superseded', f'{os.path.basename(dst)}_{_h().utc_stamp()}')
+    if not clash:
+        if fresh:                       # --fresh: earlier outcome files the new search contradicts are moved aside
+            stale = stale_outcome_files(src, dst)
+            for n in stale:
+                os.makedirs(keep, exist_ok=True)
+                shutil.move(os.path.join(dst, n), os.path.join(keep, n))
+        for n in todo:
+            a, b = os.path.join(src, n), os.path.join(dst, n)
+            if os.path.exists(b):       # fresh: the replaced file is kept
+                os.makedirs(keep, exist_ok=True)
+                shutil.copy2(b, os.path.join(keep, n))
+            tmp = f'{b}.tmp.{os.getpid()}'
+            shutil.copy2(a, tmp)
+            os.replace(tmp, b)
+            copied.append(n)
+    u.meta['shipped'] = dict(dir=dst, copied=len(copied), identical=len(same), clashes=clash, logs_kept=kept,
+                             superseded_stale=stale)
     u.check('ship.no_clobber', not clash, value=len(clash),
-            detail=(f'existing different product files kept and the unit refused: {clash[:5]}' if clash else
-                    f'{len(copied)} copied, {len(same)} identical already present, {len(kept)} earlier logs kept (cp -n)'))
+            detail=(f'existing different product files kept, nothing copied, the unit refused: {clash[:5]}' if clash else
+                    f'{len(copied)} copied, {len(same)} identical already present, {len(kept)} earlier logs kept (cp -n)'
+                    + (f', {len(stale)} contradicted earlier outcome files moved aside (--fresh)' if stale else '')))
     return not clash
+
+
+_TAG_FILES = ('runinfo_{t}.json', 'noise_{t}.csv', 'noise_{t}_1min.csv', 'candidates_{t}.csv', 'candidates_{t}_1min.csv',
+              'events_{t}.csv', 'events_{t}_1min.csv', 'model_{t}.fits')
+
+
+def stale_outcome_files(src, dst):
+    """Files of an earlier ship (dst) that the new search (src) contradicts, per search tag <band>_<S>_<mode>: a new runinfo
+    makes an earlier nightrefused_<tag>.json stale; a new night-refusal record makes the earlier runinfo and the tag's tables
+    and model stale (e.g. a band the 2026-10-13 night rule, clv15 a715a1b, now admits). Without them moved aside the shipped
+    cell holds both outcomes of one search and its content tests refuse it (v9 asks for the old outputs to be moved aside by
+    hand: snapshot_fleet_node_v9.sh:48-50)."""
+    out = []
+    for p in glob.glob(os.path.join(src, 'runinfo_*.json')):
+        t = os.path.basename(p)[len('runinfo_'):-len('.json')]
+        if os.path.exists(os.path.join(dst, f'nightrefused_{t}.json')):
+            out.append(f'nightrefused_{t}.json')
+    for p in glob.glob(os.path.join(src, 'nightrefused_*.json')):
+        t = os.path.basename(p)[len('nightrefused_'):-len('.json')]
+        out += [f.format(t=t) for f in _TAG_FILES if os.path.exists(os.path.join(dst, f.format(t=t)))
+                and not os.path.exists(os.path.join(src, f.format(t=t)))]
+    return sorted(set(out))
 
 
 def keep_failed_logs(run, name, out):
@@ -800,6 +842,12 @@ def _inject_run(args, run, u, plan, out, env, inject, tag, ship_dir, stages):
         shutil.copy2(os.path.abspath(inject), manifest)
     u.add_input(manifest)
     inj = os.path.join(out, 'injected')
+    # the engine cuts the photometry cubes from the INJECTED cube under the same file names as the baseline search and
+    # overwrites them (phase3_snapshot_search._do_inject, then write_cutouts: phase3_snapshot_cutouts.py:174-175): an
+    # injection run, never a product, must not write that product (review 2026-10-13; v9's battery hook would - its cell
+    # list snapshot_battery_cells.txt is empty today, so no shipped product is affected)
+    env = dict(env, P3_SNAP_CUTOUTS='0')
+    u.note('injection run: P3_SNAP_CUTOUTS=0 (photometry cutout cubes are cut by the baseline search only)')
     outcomes = search_subbands(u, plan, inj, env, inject=manifest)
     if 'completeness' in stages:
         subband_completeness(u, plan, inj, outcomes)
@@ -846,6 +894,8 @@ def run(args, run):
         try:
             run_unit(args, run, item, cell, sb, stages, inject=inject)
         except Exception as e:                  # recorded as the unit's error (exit 1); the other cells still run
+            if not any(u.name == item or u.name.startswith(item + '.inject.') for u in run.units):
+                H.record_failure(run, item + ('.inject' if inject else ''), e, tier=TIER)   # raised before the record opened
             print(f'[{item}] ERROR {type(e).__name__}: {e}', flush=True)
     if run.dry_run:
         return H.dry_exit(run, 'cell(s)')

@@ -253,6 +253,19 @@ def test_sublst_engine_child():
     with open(os.path.join(att, '09h_18MHz.log')) as f:
         log = f.read()
     assert 'COADDOP=' in log and "required 'ivw-mean-v3'" in log
+    # review fix 2026-10-13: the engine arguments travel in <attempt>/.engine_spec.json, never inline - core.legacy.run
+    # writes the argv as the log's header line and an inline spec put 'REFUSING' (the refusal markers) into every log, so
+    # sublst_search_log (SP:51: no REFUSING line) refused every completed search
+    hdr = [ln for ln in log.splitlines() if ln.startswith('===== ')]
+    assert hdr and all('REFUSING' not in ln and 'REFUSED' not in ln for ln in hdr), hdr
+    assert os.path.exists(os.path.join(att, '.engine_spec.json'))
+    ok_log = os.path.join(TMP, 'log_ok', '09h_18MHz.log')
+    os.makedirs(os.path.dirname(ok_log))
+    with open(ok_log, 'w') as f:
+        f.write(hdr[0] + '\n  09h 18MHz: 3 epochs -> 0 candidates  (17 gate-ledger rows, 3 image rows)  (3.0 min)\n'
+                'SUBLST-SEARCH-DONE 09h_18MHz I\n')
+    res = validate.run('sublst_search_log', ok_log)
+    assert all(r['passed'] for r in res), res
     open(os.path.join(root, 'coadd_09h', '09h_18MHz', 'coadd_final', 'I_deep_Taper_R0_18MHz.fits'), 'w').write('not fits')
     att2 = os.path.join(TMP, 'att2')
     os.makedirs(att2)
@@ -328,12 +341,8 @@ def test_fit_sidecar():
     for r in rows:
         assert r['pos_sys_arcsec'] == '' and r['pos_err_maj_arcsec'] == '' and float(r['pos_stat_maj_arcsec']) > 0
     assert summ['cutouts_equal'] == 2 and summ['attempt'] == att and summ['peak_fallback_fraction'] == 0.0
-    if not hasattr(CFG.search_fit, 'BLANK_SYSTEMATIC'):
-        # EXTERNAL (step owner): lib/search/tests.py reads search_fit.BLANK_SYSTEMATIC['sublst'], which
-        # _cfgdraft_search-deep.py no longer defines (the sub-LST value is search_sublst.FIT_BLANKED) - supplied here so the
-        # sidecar is still checked against the owner's schema; reported in plan/impl/search-tiers.md
-        print('  NOTE external: search_fit.BLANK_SYSTEMATIC missing (owner test reads it); supplied for this check')
-        setattr_tmp(CFG.search_fit, 'BLANK_SYSTEMATIC', {'deep': False, 'sublst': True})
+    # the owner's test reads the sub-LST constants from search_sublst (FIT_ON_CENTRE_*, FIT_BLANKED) since the 2026-10-13
+    # review (it read search_fit.BLANK_SYSTEMATIC['sublst'], absent: AttributeError on every sub-LST sidecar)
     res = validate.run('detection_positions', p, tier='sublst', attempt=att)
     assert all(r['passed'] for r in res), res
     restore()
@@ -357,8 +366,6 @@ def test_sublst_replay_unit():
     root = os.path.join(TMP, 'sublst_replay')
     setattr_tmp(CFG.paths, 'SUBLST_ROOT', root)
     make_sublst_cell(root)
-    if not hasattr(CFG.search_fit, 'BLANK_SYSTEMATIC'):
-        setattr_tmp(CFG.search_fit, 'BLANK_SYSTEMATIC', {'deep': False, 'sublst': True})    # EXTERNAL, see test_fit_sidecar
     att = os.path.join(TMP, 'replay_att')
     make_attempt(att)
     before = {p: os.stat(os.path.join(dp, p)).st_mtime_ns for dp, _d, fs in os.walk(att) for p in fs}
@@ -378,6 +385,49 @@ def test_sublst_replay_unit():
     assert run.units[0].status == 'refused' and 'replay' in run.units[0].reason
     restore()
     print('sub-LST run_unit: replay of an attempt through the fit stage (read only, recorded), detect+replay refused')
+
+
+def test_preflight_failure_recorded():
+    """Review fix 2026-10-13: a unit whose preflight raises (before its record opens) is recorded - refused for a gate,
+    error otherwise - so the run's exit code shows it (before: printed only, exit 0 or 3)."""
+    out = os.path.join(TMP, 'pf_out')
+    for exc, status, code in ((record.Refusal('a gate refused in preflight'), 'refused', 2),
+                              (OSError('unreadable header'), 'error', 1)):
+        def boom(*a, **k):
+            raise exc
+        setattr_tmp(TS, 'preflight', boom)
+        run = record.Run('search', ['test'], out, CFG)
+        TS.run(ns(cells='09h_18MHz', stokes='I', work=os.path.join(TMP, 'w')), run)
+        assert [(u.name, u.status) for u in run.units] == [('sublst-B_09h_18MHz_I', status)], \
+            [(u.name, u.status, u.reason) for u in run.units]
+        assert run.exit_code() == code
+        assert json.load(open(os.path.join(out, '_records', 'search', 'sublst-B_09h_18MHz_I.json')))['status'] == status
+        restore()
+        setattr_tmp(TN, 'preflight', boom)
+        run = record.Run('search', ['test'], out, CFG)
+        TN.run(ns(cells='21h_2025-08-26', work=os.path.join(TMP, 'w')), run)
+        assert [(u.name, u.status) for u in run.units] == [('21h_2025-08-26', status)], run.units
+        assert run.exit_code() == code
+        restore()
+    # a search with 0 candidates has no master_catalog.csv (candidates.py:277-282): the fit stage has nothing to fit and
+    # is not an error (before: FileNotFoundError, every 0-candidate unit failed)
+    root = os.path.join(TMP, 'sublst_nocat')
+    setattr_tmp(CFG.paths, 'SUBLST_ROOT', root)
+    make_sublst_cell(root)
+    att = os.path.join(TMP, 'nocat_att')
+    make_attempt(att)
+    os.remove(os.path.join(att, 'transients', 'Run_SLST09B', 'master_catalog.csv'))
+    run = record.Run('search', ['test'], os.path.join(TMP, 'nocat_out'), CFG)
+    TS.run(ns(cells='09h_18MHz', stokes='I', stages='fit', replay_attempt=att, work=os.path.join(TMP, 'w')), run)
+    u = run.units[0]
+    assert u.status == 'no-input' and any('nothing to fit' in n for n in u.notes), (u.status, u.reason, u.notes)
+    restore()
+    # a product class with no registered content test refuses the unit (review fix: was a note)
+    u = record.Run('search', ['test'], os.path.join(TMP, 'nt_out'), CFG, dry_run=True).unit('nt')
+    TS.record_output(u, os.path.join(TMP, 'x.csv'), 'no_such_class_xyz')
+    assert u.failed_tests() and u._final_status()[0] == 'refused', u.tests
+    print('preflight failures recorded (refused exit 2 / error exit 1); a 0-candidate unit fits nothing, no error; '
+          'an untested class refuses')
 
 
 # =====================================================================================================================
@@ -522,9 +572,10 @@ cols = [fits.Column(name='ts', format='15A', array=np.array(['20250826_063402'] 
         fits.Column(name='global_rms_jyb', format='E', array=np.ones(3, np.float32))]
 cols += [fits.Column(name=n, format=f, array=np.full(3, v)) for n, f, v in
          (('ra_deg', 'D', 10.0), ('dec_deg', 'D', 20.0), ('target_x', 'E', 10.0), ('target_y', 'E', 10.0))]
-fits.HDUList([fits.PrimaryHDU(np.zeros((3, 20, 20), np.float32), header=h),
-              fits.BinTableHDU.from_columns(cols, name='TIMES')]).writeto(
-    os.path.join(cut, 'X_21h_20250826T063357_V.fits'), overwrite=True)
+if os.environ.get('P3_SNAP_CUTOUTS', '1') != '0':                        # as phase3_snapshot_search.py:1315
+    fits.HDUList([fits.PrimaryHDU(np.zeros((3, 20, 20), np.float32), header=h),
+                  fits.BinTableHDU.from_columns(cols, name='TIMES')]).writeto(
+        os.path.join(cut, 'X_21h_20250826T063357_V.fits'), overwrite=True)
 if night:
     raise RuntimeError('REFUSED (night rule): no frame passes - refusal recorded')
 '''
@@ -544,6 +595,17 @@ json.dump({'lst': a.lst, 'date': a.date, 'stokes': st, 'error': 'RuntimeError: R
            'groups': {'Red': 'searched', 'Green': 'night-refused', 'Blue': 'too-few-frames'}},
           open(os.path.join(a.out, 'wideband_outcome_%s.json' % st), 'w'))
 raise SystemExit('REFUSED (night rule) Green - refusal recorded')
+'''
+
+FAKE_RECOVER = r'''
+import argparse, csv
+ap = argparse.ArgumentParser()
+ap.add_argument('--simple', action='store_true')
+for a in ('--inj-dir', '--manifest', '--out'):
+    ap.add_argument(a)
+a = ap.parse_args()
+with open(a.out, 'w') as f:
+    w = csv.writer(f); w.writerow(['inj_id', 'stokes', 'tier', 'n_det']); w.writerow(['i0', 'V', '10s', 1])
 '''
 
 
@@ -655,6 +717,39 @@ def test_snapshot_end_to_end():
         assert run.units[0].status == 'refused' and 'ship.no_clobber' in run.units[0].reason, run.units[0].reason
         run = go(fresh=True)
         assert run.units[0].status == 'done' and glob_one(os.path.join(out, '_superseded', '*', 'events_18MHz_V_median.csv'))
+        # an earlier ship holding the OTHER outcome of a search (a night-refusal record of a band the new night rule admits):
+        # without --fresh the cell's content tests refuse it; --fresh moves the contradicted record aside (review fix)
+        shutil.copy2(os.path.join(ship, 'nightrefused_23MHz_V_median.json'), os.path.join(ship, 'nightrefused_18MHz_V_median.json'))
+        run = go()
+        assert run.units[0].status == 'refused' and 'night-refusal record exists' in run.units[0].reason, run.units[0].reason
+        run = go(fresh=True)
+        assert run.units[0].status == 'done', run.units[0].reason
+        assert not os.path.exists(os.path.join(ship, 'nightrefused_18MHz_V_median.json'))
+        assert run.units[0].meta['shipped']['superseded_stale'] == ['nightrefused_18MHz_V_median.json']
+        # a clash refuses with NOTHING copied (review fix: the ship was partial)
+        with open(os.path.join(ship, 'events_18MHz_V_median.csv'), 'a') as f:
+            f.write('9,9\n')
+        os.remove(os.path.join(ship, 'runinfo_41MHz_I_median.json'))
+        run = go()
+        assert run.units[0].status == 'refused' and not os.path.exists(os.path.join(ship, 'runinfo_41MHz_I_median.json'))
+        run = go(fresh=True)
+        assert run.units[0].status == 'done', run.units[0].reason
+        # an injection run (review fix 2026-10-13): the engine is told P3_SNAP_CUTOUTS=0, so the baseline's photometry cubes
+        # are not overwritten by cubes cut from the injected frames; the run is recorded under <out>/inject/<tag>/
+        open(os.path.join(fake, 'phase3_snapshot_recover.py'), 'w').write(FAKE_RECOVER)
+        cubes = glob_one(os.path.join(out, 'photometry', '*', '*', '*', '*.fits'))
+        before = {p: os.stat(p).st_mtime_ns for p in cubes}
+        man = os.path.join(TMP, 'manifest.csv')
+        open(man, 'w').write('inj_id,stokes,subband\ni0,V,18MHz\n')
+        run = record.Run('search', ['test'], out, CFG)
+        TN.run(ns(cells='21h_2025-08-26', snap_stage_root=stage_root, work=os.path.join(TMP, 'work'), inject=man,
+                  inject_tag='t1'), run)
+        ui = run.units[0]
+        assert ui.name == '21h_2025-08-26.inject.t1' and ui.status == 'done', (ui.name, ui.status, ui.reason)
+        assert ui.meta['engine_env']['P3_SNAP_CUTOUTS'] == '1'          # the baseline environment, recorded
+        assert any('P3_SNAP_CUTOUTS=0' in n for n in ui.notes), ui.notes
+        assert before and {p: os.stat(p).st_mtime_ns for p in cubes} == before, 'an injection run rewrote photometry cubes'
+        assert os.path.exists(os.path.join(out, 'inject', 't1', '21h_2025-08-26', 'recovery_table.csv'))
         print(f'snapshot end to end (fake engines via core.legacy.run): outcomes, night-rule items, completeness, verify, '
               f'ship no-clobber, record ({time.time() - t0:.1f} s)')
     finally:
@@ -768,7 +863,8 @@ def main():
     os.makedirs(TMP)
     t0 = time.time()
     try:
-        for t in (test_config, test_items, test_sublst_preflight, test_sublst_engine_child, test_fit_sidecar, test_sublst_replay_unit, test_lease,
+        for t in (test_config, test_items, test_sublst_preflight, test_sublst_engine_child, test_fit_sidecar, test_sublst_replay_unit,
+                  test_preflight_failure_recorded, test_lease,
                   test_publish_rollback, test_snapshot_preflight, test_snapshot_completeness_gates,
                   test_snapshot_end_to_end, test_content_tests_negative, test_cli_dry_run):
             t()

@@ -30,7 +30,7 @@ Stages (search_sublst.STAGES; --stages/--from/--until of the step pick a subset,
              free space on the attempt filesystem (FAST_MIN_FREE_GB: a node condition = error, retried by the runner).
   detect     lib/search/deep_search.run_deep_cell(lst, band, label='SLST<hh><arm>', stokes=S, cadence='10min') IN PLACE in a
              fresh child process run by core.legacy.run (site PYTHON['default']; module mode, this file's --engine-child
-             entry; the parity guard and the child's code fingerprint come with it) whose environment is built from config:
+             entry, its arguments in <attempt>/.engine_spec.json; the parity guard and the child's code fingerprint come with it) whose environment is built from config:
              every inherited P3_* variable cleared, then P3_TENMIN_ROOT, P3_COADD_ROOT, P3_MASTER_GEN, P3_TABLE_PREFIX=sublst_search,
              P3_TABLE_RECORD_ONLY=1, P3_REFINE_OFF=1, P3_ARCHIVE_WRITE=0, P3_FLOW_ROOT/P3_STAGING_ROOT/P3_[IV]RESID_ROOT in
              the attempt dir, and the engine's tunables (search_sublst). Log: <attempt>/<cell>.log.
@@ -51,9 +51,9 @@ Inputs:  <paths.SUBLST_ROOT>/<TREE_SUBDIRS[arm]>/<cell>/{subtracted/<YYYY-MM-DDT
 Outputs (product classes): transients/Run_<label>/master_catalog.csv (detections), v_deep_ledger.csv (gate_ledger),
          v_deep_images.csv (image_ledger), refusals/<cell>_<kind>_excluded.csv (refusal_record), sigstack/*.fits
          (noise_map), Run_<label>/{iresid,vresid}/<cell>/*_redo_resid[_pbcorr]_<band>.fits (search_frame),
-         transients/Run_<label>/candidates/ (candidate_stamps), catdir/master_R075_<cell>.gaul.csv (sublst_parent_catalog),
+         transients/Run_<label>/candidates/ (candidate_stamps), catdir/master_R075_<cell>.gaul.csv (master_catalog, masters' class),
          v110_out/V_top100_fp_gate_p3.csv (fp_gate_verdicts, V), fit_positions.csv (detection_positions); --replay-attempt
-         or a run without publish also writes verify_report.json (search_verify_report).
+         or a run without publish also writes verify_report.json (sublst_verify_report); <cell>.log (sublst_search_log).
 Failure modes: exit 3 = no window (NO_WINDOWS.txt) / fewer than MIN_EPOCHS windows / incremental night with no window;
          exit 2 = a gate refused (the engine's REFUSING/REFUSED RuntimeError, a missing master or table, COADDOP, a pinned
          md5, an in-search table removal, a content test, an override of an engine-locked key, a production --out while
@@ -242,18 +242,24 @@ def has_tests(cls):
         return False
 
 
+def _untested(u, cls, path, n=1):
+    """A product of a class with no registered content test REFUSES the unit (README 4: every class written has a content
+    test; review 2026-10-13 - was a note, so a missing test module passed silently)."""
+    u.meta.setdefault('untested_products', []).append({'path': os.path.abspath(path), 'class': cls, 'n': n})
+    u.check(f'content_test_registered:{cls}', False, value=n, cls=cls, path=path,
+            detail=f'no content test registered for product class {cls!r} ({n} file(s), e.g. {path})')
+
+
 def record_output(u, path, cls, **ctx):
-    """add_output when the class has a registered content test; otherwise the product is listed in the record's
-    meta['untested_products'] with a note (never an output without a test: --resume would re-test it)."""
+    """add_output when the class has a registered content test; otherwise the unit is refused (_untested)."""
     if has_tests(cls):
         return u.add_output(path, cls, **ctx)
-    u.meta.setdefault('untested_products', []).append({'path': os.path.abspath(path), 'class': cls})
-    u.note(f'untested product (no content test registered for class {cls!r} yet): {path}')
+    _untested(u, cls, path)
     return None
 
 
 def record_outputs(u, paths, cls, **ctx):
-    """record_output for many files of one class; without a registered test ONE summary entry (count + directory)."""
+    """record_output for many files of one class; without a registered test the unit is refused (one check)."""
     paths = list(paths)
     if not paths:
         return 0
@@ -261,9 +267,7 @@ def record_outputs(u, paths, cls, **ctx):
         for p in paths:
             u.add_output(p, cls, **ctx)
         return len(paths)
-    u.meta.setdefault('untested_products', []).append(
-        {'class': cls, 'n': len(paths), 'dirs': sorted({os.path.dirname(os.path.abspath(p)) for p in paths})[:20]})
-    u.note(f'{len(paths)} untested products of class {cls!r} (no content test registered yet; listed in meta)')
+    _untested(u, cls, paths[0], n=len(paths))
     return len(paths)
 
 
@@ -271,13 +275,27 @@ def precheck(u, path, cls, label='pre-publish'):
     """Run the class's content tests on a file without recording it as an output (the verify stage, before publish)."""
     from exopipe.phase3.core import validate
     if not has_tests(cls):
-        u.note(f'{label}: no content test registered for class {cls!r}: {path}')
-        return True
+        _untested(u, cls, path)
+        return False
     ok = True
     for r in validate.run(cls, path):
         u.check(f"{label}:{r['name']}", r['passed'], value=r['value'], detail=r['detail'], cls=cls, path=path)
         ok = ok and r['passed']
     return ok
+
+
+def record_failure(run, name, exc, **meta):
+    """A unit that raised BEFORE its record was opened (preflight: an unreadable header, the exclusion list, no scratch root)
+    is recorded with that outcome - refused (Refusal), no-input (NoInput) or error - so the run's exit code and records show
+    it (README 3-4). Before the review fix (2026-10-13) it was only printed: the unit was missing from the run and the exit
+    code ignored it (0 when the other units were done, 3 when it was the only one)."""
+    if any(u.name == name for u in list(run.units)):
+        return
+    try:
+        with run.unit(name, **meta):
+            raise exc
+    except Exception:                    # errors re-raise from the record's __exit__ (status 'error', record written)
+        pass
 
 
 def dry_exit(run, what='unit(s)'):
@@ -814,12 +832,19 @@ def engine_env(plan, attempt):
     }
 
 
-# The child process (core.legacy.run, module mode: `python -m exopipe.phase3.lib.search.tier_sublst --engine-child JSON`):
+# The child process (core.legacy.run, module mode: `python -m exopipe.phase3.lib.search.tier_sublst --engine-child SPEC`):
 # one call of the engine exactly as SP:44-48 (sys.argv=['sublst']), from the branch, with the legacy roots appended and the
 # old-name finder installed (core.env.legacy; MOVE_LOG decision 1). It writes a result record; exit 0 done, 2 refused, 1 error.
+# SPEC is the path of a JSON file in the attempt (review 2026-10-13): core.legacy.run writes the argv as the log's header line,
+# and an inline JSON carried the refusal markers ('REFUSING') into <cell>.log, so the sublst_search_log content test (SP:51:
+# no REFUSING line) refused every completed search. An inline JSON object is still accepted.
 def engine_child(argj):
     import traceback
-    a = json.loads(argj)
+    if argj.lstrip().startswith('{'):
+        a = json.loads(argj)
+    else:
+        with open(argj) as f:
+            a = json.load(f)
     sys.argv = ['sublst']
 
     def _w(o):
@@ -881,7 +906,11 @@ def detect(run, u, plan, attempt):
     env = dict(engine_env(plan, attempt), PYTHONPATH=pkg_root())
     u.meta['engine'] = dict(python_key=s.ENGINE_PYTHON, cwd=attempt, log=log,
                             env={k: v for k, v in sorted(env.items()) if v is not None})
-    res_p = legacy_call('exopipe.phase3.lib.search.tier_sublst', ['--engine-child', json.dumps(a)], s.ENGINE_PYTHON, env,
+    spec = os.path.join(attempt, '.engine_spec.json')      # never inline: the argv is the log's header line (engine_child)
+    with open(spec + '.tmp', 'w') as f:
+        json.dump(a, f)
+    os.replace(spec + '.tmp', spec)
+    res_p = legacy_call('exopipe.phase3.lib.search.tier_sublst', ['--engine-child', spec], s.ENGINE_PYTHON, env,
                         log, unit=u, cwd=attempt, module=True)
     u.meta['engine'].update(exit=res_p.rc, wall_s=res_p.wall_s)
     res = None
@@ -1185,7 +1214,8 @@ def verify(u, root, plan, label='verify'):
     for p, cls, ctx in products(root, plan):
         n += 1
         if not has_tests(cls):
-            u.note(f'{label}: no content test registered for class {cls!r}: {p}')
+            _untested(u, cls, p)
+            ok = False
             continue
         for r in validate.run(cls, p, **ctx):
             u.check(f"{label}:{r['name']}", r['passed'], value=r['value'], detail=r['detail'], cls=cls, path=p)
@@ -1384,12 +1414,22 @@ def run_unit(args, run, cell, lst, band, stokes, date, stages, work_root):
         own = root == attempt                      # this run's own attempt (else a replay / earlier attempt: read only)
         side = attempt if own else os.path.join(run.out_root, 'replay' if replay else 'restage', unit)
         if 'fit' in stages:
-            fit_sidecar(root, plan['label'], side, prev_dir=plan['publish'] if date else None,
-                        only_dates=set(plan['included_dates']) if date else None,
-                        say=lambda m: print(f'[{unit}] {m}', flush=True))
-            if not own:
-                record_output(u, os.path.join(side, 'fit_positions.csv'), 'detection_positions', tier=TIER,
-                              stokes=stokes, cell=cell, attempt=root)
+            cat = os.path.join(_run_root(root, plan['label']), 'master_catalog.csv')
+            if not os.path.exists(cat):
+                # the engine creates master_catalog.csv with its first candidate row (candidates.py:277-282): a search with
+                # 0 candidates has none (01h_50MHz V, published 2026-10-08: '3 epochs -> 0 candidates'). Nothing to fit -
+                # never an error; but a catalogue missing after the engine reported candidates refuses (review 2026-10-13)
+                n_eng = (u.meta.get('engine') or {}).get('rc')
+                if n_eng:
+                    u.refuse(f'fit: no {cat} although the engine reported {n_eng} candidate(s)')
+                u.note(f'fit: no master_catalog.csv under {root} (0 detections) - nothing to fit, no sidecar written')
+            else:
+                fit_sidecar(root, plan['label'], side, prev_dir=plan['publish'] if date else None,
+                            only_dates=set(plan['included_dates']) if date else None,
+                            say=lambda m: print(f'[{unit}] {m}', flush=True))
+                if not own:
+                    record_output(u, os.path.join(side, 'fit_positions.csv'), 'detection_positions', tier=TIER,
+                                  stokes=stokes, cell=cell, attempt=root)
         if 'verify' in stages and not (own and date and 'publish' in stages):
             # per-hour mode verifies AFTER the transactional publish (the attempt holds only the new night's frames)
             ok = verify(u, root, plan, label='verify')
@@ -1445,10 +1485,12 @@ def run(args, run):
     workers = max(1, int(getattr(args, 'workers', None) or 1))
     jobs = [(args, run, cell, lst, band, S, date, stages, work_root) for cell, lst, band, S, date in units]
     def one(j):
+        name = _unit_name(_arm(args), j[2], j[5], j[6])
         try:
             run_unit(*j)
         except Exception as e:                  # recorded as the unit's error (exit 1); the other units still run
-            print(f'[{_unit_name(_arm(args), j[2], j[5], j[6])}] ERROR {type(e).__name__}: {e}', flush=True)
+            record_failure(run, name, e, tier=TIER)
+            print(f'[{name}] ERROR {type(e).__name__}: {e}', flush=True)
     if workers == 1 or run.dry_run:
         for j in jobs:
             one(j)

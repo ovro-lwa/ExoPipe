@@ -259,6 +259,35 @@ def test_content_tests_synthetic():
     ok, det = results_of('refusal_record', p)
     check('refusal_record FAILS on a wrong column count', not ok and 'columns' in det, det)
     open(p, 'w').write(f'{LST},{SCOPE},{D3},1.62,1.5,{ATT_TAG}\n')
+    # review 2026-10-13: verify_p3s3_stage conditions the tests now carry
+    p = os.path.join(rd, 'master_catalog.csv')
+    keep = open(p).read()
+    lines = keep.splitlines()
+    dup = lines[1].split(',')
+    dup[0] = f'ID_{LST}_{D1}_{SCOPE}_0002'
+    open(p, 'w').write('\n'.join(lines + [','.join(dup)]) + '\n')
+    ok, det = results_of('detections', p, stokes='I', cell=CELL)
+    check('detections FAILS on a duplicate row (same date and position; verify_p3s3_stage.py:144-149)',
+          not ok and 'duplicate catalogue rows' in det, det)
+    open(p, 'w').write(keep)
+    extra = T.frame_path(att, 'P3S5', LST, SCOPE, D3, 'I')
+    make_frame(extra, [], seed=9)
+    ok, det = results_of('image_ledger', os.path.join(rd, 'v_deep_images.csv'), stokes='I', cell=CELL)
+    check('image_ledger FAILS on a frame without an image row (frames = image rows, verify_p3s3_stage.py:130)',
+          not ok and 'without an image row' in det, det)
+    os.remove(extra)
+    dd = os.path.join(TMP, 'data_decisions.csv')
+    with open(dd, 'w') as fh:
+        fh.write('lst,subband,date,verdict,reason\n')
+        fh.write(f'{LST},27MHz,{D2},exclude,synthetic test\n')      # a Red member subband -> Red excluded on D2
+    real_dd = CFG.paths.DATA_DECISIONS
+    CFG.paths.DATA_DECISIONS = dd
+    try:
+        ok, det = results_of('image_ledger', os.path.join(rd, 'v_deep_images.csv'), stokes='I', cell=CELL)
+        check('image_ledger FAILS on an epoch searched on a night excluded now (STALE, p3s3_stale_exclusions.py)',
+              not ok and 'STALE' in det and D2 in det, det)
+    finally:
+        CFG.paths.DATA_DECISIONS = real_dd
     return att, rd
 
 
@@ -279,6 +308,23 @@ def test_fit_stage(att, rd):
           and s['per_frame'][0]['rows'] == 2, s.get('per_frame'))
     ok, det = results_of('detection_positions', out, tier='deep')
     check('detection_positions passes on the sidecar', ok, det)
+    # sub-LST reading of the same class: the tier's own section (search_sublst.FIT_BLANKED), never search_fit.BLANK_SYSTEMATIC
+    if hasattr(CFG, 'search_sublst'):
+        ok, det = results_of('detection_positions', out, tier='sublst')
+        check('detection_positions (sub-LST) FAILS when the error-model-A columns are not blank', not ok and 'not blank' in det,
+              det)
+        keep_s = open(out).read()
+        rows_s = list(csv.DictReader(open(out)))
+        for r in rows_s:
+            for c in CFG.search_sublst.FIT_BLANKED:
+                r[c] = ''
+        with open(out, 'w', newline='') as fh:
+            wr = csv.DictWriter(fh, fieldnames=list(rows_s[0].keys()))
+            wr.writeheader()
+            wr.writerows(rows_s)
+        ok, det = results_of('detection_positions', out, tier='sublst')
+        check('detection_positions (sub-LST) passes with FIT_BLANKED blank', ok, det)
+        open(out, 'w').write(keep_s)
     # breakage: a frame changed after the fit
     fr = T.frame_path(att, 'P3S5', LST, SCOPE, D1, 'I')
     keep = open(fr, 'rb').read()
@@ -411,8 +457,76 @@ def test_cli():
         check('dry-run on the real cell 12h_Red: plan printed, exit 0, nothing written',
               rc == 0 and 'planned 2' in out and 'gate E3 membership rulings: ok' in out and not os.path.exists(
                   os.path.join(TMP, 'dry')), out.strip()[-200:])
+        # per hour on a night of the master's generation record (12h Red 2025-05-10: in weights.csv, beam-refused in the
+        # published attempt): a re-admitted epoch is never appended (R-SIGMA-STACK-INCLUDES-THE-RE-ADMITTED-EPOCH-...)
+        rc, out = cli('--tier', 'deep', '--epochs', '12h_2025-05-10', '--scopes', 'Red', '--stokes', 'I', '--dry-run', '--out',
+                      os.path.join(TMP, 'dry'), '--work', os.path.join(TMP, 'w'), '--cores', 'none')
+        check('per hour: a night of the generation record refuses (full re-search ruling), nothing written',
+              rc == 2 and 'R-SIGMA-STACK-INCLUDES-THE-RE-ADMITTED-EPOCH-BACKFILL-BY-RE-SEARCH' in out
+              and not os.path.exists(os.path.join(TMP, 'dry')), out.strip()[-240:])
+        rc, out = cli('--tier', 'deep', '--epochs', '12h_2031-01-01', '--scopes', 'Red', '--stokes', 'I', '--dry-run', '--out',
+                      os.path.join(TMP, 'dry'), '--work', os.path.join(TMP, 'w'), '--cores', 'none')
+        check('per hour: a night without an epoch product is no-input (exit 3)', rc == 3 and 'no epoch product' in out,
+              out.strip()[-200:])
     else:
         print('skip: /data07/gh/phase3/coadd_sb not on this node (dry-run on a real cell)')
+
+
+def test_preflight_review():
+    """Review 2026-10-13: on a GPU host a flow cache the currency script does not call current is dropped
+    (p3s5_search_fleet.sh:96-98); one search of a cell at a time on a work root (p3s5_search_fleet.sh:94,169)."""
+    from exopipe.phase3.core.record import Refusal
+    base = '/data07/gh/phase3/coadd_sb/12h_Red'
+    if not (os.path.isdir(base) and DS._gpu_host()):
+        print('skip: preflight review checks need the real cell 12h_Red on a GPU host')
+        return
+    fr = os.path.join(TMP, 'w_pf', 'flowroot')
+    cw = os.path.join(fr, CELL)
+    os.makedirs(cw)
+    import numpy as np
+    np.save(os.path.join(cw, 'ep_2025-05-10_up2_flow.npy'), np.zeros(4, np.float32))     # a legacy cache: no sidecar
+    ctx = dict(out=os.path.join(TMP, 'pf_out'), roots=DS.roots_table(), flow_root=fr, work_fs=REPO, label='P3S5',
+               flow_from=None, dry_run=True)
+    item = DS.Item(CELL, 'V', 'bulk')
+    try:
+        f = DS.preflight(item, ctx, fix=False)
+        check('GPU host, unverified cache, plan: reported as would be dropped, nothing removed',
+              f['flow_state'] in ('unverified', 'partial') and any('would be dropped' in n for n in f['notes'])
+              and os.path.exists(os.path.join(cw, 'ep_2025-05-10_up2_flow.npy')), f['notes'][-1:])
+        f = DS.preflight(item, ctx, fix=True)
+        check('GPU host, unverified cache, run: dropped, the search computes the flows',
+              f['flow_state'] == 'none' and not glob.glob(os.path.join(cw, 'ep_*_flow.npy')), f['notes'][-1:])
+    except Refusal as e:
+        check('GPU host preflight on 12h_Red', False, str(e)[:200])
+    # --resume identity: the recorded input SET (a new epoch product / LOO / V master makes a unit not resumable: the fleet's
+    # adoption test incl. D6), on a record written by add_inputs over the real cell (commit made clean for the probe)
+    f = DS.preflight(item, ctx, fix=False, resume_probe=True)
+    small, big = DS.input_paths(item, f)
+    rout = os.path.join(TMP, 'resume_out')
+    run = record.Run('search', ['test'], rout, CFG)
+    u = run.unit(item.name)
+    DS.add_inputs(u, item, f)
+    u.status = 'done'
+    u.write()
+    rp = record.record_path(rout, 'search', item.name)
+    rec = json.load(open(rp))
+    rec['commit'] = 'abc1234'
+    json.dump(rec, open(rp, 'w'))
+    ok1, why1 = record.resume_check(rout, 'search', item.name, inputs=small + big, admitted=f['admitted'],
+                                    cfg_hash=run.config_hash)
+    ok2, why2 = record.resume_check(rout, 'search', item.name, inputs=small + big + [os.path.join(
+        f['base'], 'subtracted', '2031-01-01_I_sub_Red.fits')], admitted=f['admitted'], cfg_hash=run.config_hash)
+    check('resume: same input set resumes; one more epoch product does not', ok1 and not ok2 and 'input set' in why2,
+          (why1, why2))
+    ctx['dry_run'] = False
+    lock = os.path.join(fr, f'.{CELL}.search.lock')
+    probe = ('import fcntl,sys; f=open(sys.argv[1],"a")\ntry:\n fcntl.flock(f, fcntl.LOCK_EX|fcntl.LOCK_NB); print("FREE")\n'
+             'except BlockingIOError:\n print("HELD")')
+    with DS.cell_lock(ctx, item):
+        held = subprocess.run([PY, '-c', probe, lock], capture_output=True, text=True).stdout.strip()
+    free = subprocess.run([PY, '-c', probe, lock], capture_output=True, text=True).stdout.strip()
+    check('cell lock: a second search of the cell waits while a unit runs, free after', (held, free) == ('HELD', 'FREE'),
+          (held, free))
 
 
 def test_real_products():
@@ -450,6 +564,7 @@ def main():
         test_publish_path(att, rd)
         test_engine_child()
         test_cli()
+        test_preflight_review()
         test_real_products()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
