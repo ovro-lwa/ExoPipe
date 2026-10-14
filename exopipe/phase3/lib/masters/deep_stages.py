@@ -542,6 +542,21 @@ def pb_qa_missing(fd, sc, variants):
     return out
 
 
+def pb_qa_inputs(fd, lst, sc):
+    """[(beam master, nights with a Phase-2 noise file, nights without)] of the I masters the PB maps are made from
+    (pb_apply.wideband_pb: subband_weights over constituent_dates of I_deep_Taper_<robust>), read BEFORE pbmaps writes anything
+    (review 2026-10-14 m4: the refusal came after do_cell had overwritten the maps). The siblings' PBNDATE / PBMISS cards
+    (pb_qa_missing) are the same split, compared after do_cell."""
+    from exopipe.phase3.lib.masters import pb_apply as PB
+    out = []
+    for rob in ('R075', 'R0'):
+        b = os.path.join(fd, f'I_deep_Taper_{rob}_{sc}.fits')
+        if os.path.exists(b):
+            _w, used, missing = PB.subband_weights(lst, PB.constituent_dates(b))
+            out.append((f'I_deep_Taper_{rob}', len(used), len(missing)))
+    return out
+
+
 def pb_qa_gate(u, cell, sc, rows, max_frac):
     """B-30 (Gregg 2026-10-14): every night missing from the PB weights is COUNTED (fallbacks.PB_QA_MISSING_FALLBACK, the
     survey variant's count once per cell); a WIDEBAND scope - its member subbands mixed by those weights; a single subband's
@@ -591,6 +606,8 @@ def pbmaps(cell, args, run, out, ran_now):
             u.plan(os.path.join(fd, name.format(scope=sc)), 'pb_map')
         for v in plains:
             u.plan(os.path.join(fd, f'{v}_pbcorr_{sc}.fits'), 'pbcorr_sibling')
+        pre = pb_qa_inputs(fd, lst, sc)                                   # WAVE2 B-30: before anything is written
+        pb_qa_gate(u, cell, sc, pre, s.PB_QA_MISSING_MAX_FRAC)
         with IP.capture_stdout(_log(out, cell, 'pbmaps')):
             n_ok, n_skip, errs = pbcorr_masters.do_cell(out, cell)
             print('do_cell', (n_ok, n_skip, errs))
@@ -601,7 +618,11 @@ def pbmaps(cell, args, run, out, ran_now):
             u.add_output(os.path.join(fd, name.format(scope=sc)), 'pb_map', cell=cell)
         for v in plains:
             u.add_output(os.path.join(fd, f'{v}_pbcorr_{sc}.fits'), 'pbcorr_sibling', cell=cell)
-        pb_qa_gate(u, cell, sc, pb_qa_missing(fd, sc, plains), s.PB_QA_MISSING_MAX_FRAC)     # WAVE2 B-30
+        cards = dict((v, (nd, nm)) for v, nd, nm in pb_qa_missing(fd, sc, plains))      # WAVE2 B-30: the cards cross-check
+        for v, nd, nm in pre:
+            if v in cards and cards[v] != (nd, nm):
+                u.note(f'PB weights: {v} sibling cards PBNDATE/PBMISS {cards[v]} differ from the pre-check {(nd, nm)} '
+                       f'(the Phase-2 QA tree changed during the stage?)')
         nsib = len(glob.glob(os.path.join(fd, f'*_pbcorr_{sc}.fits')))
         want = siblings_expected(fd, sc)
         u.check('masters_pbmaps.siblings_after_pbmaps', nsib == want, value=nsib,

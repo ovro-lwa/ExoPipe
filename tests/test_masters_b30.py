@@ -286,6 +286,93 @@ def main():
         st3 = gate('Blue', 20, 10, 0.25, 'wb_over')
         st4 = gate('Blue', 20, 10, 1.0, 'wb_production')
         st5 = gate('Blue', 30, 0, 0.25, 'wb_none')
+        # the stage gates BEFORE do_cell writes anything, from the beam masters' constituents (review 2026-10-14 m4 / m5)
+        orig_qa = (PB.QA_ROOT, PB.constituent_dates)
+        qa = f'{T}/qa_root'
+        for dte in ('2025-01-01', '2025-01-02', '2025-01-03'):
+            os.makedirs(f'{qa}/12h/{dte}/Science_x/QA', exist_ok=True)
+            open(f'{qa}/12h/{dte}/Science_x/QA/{dte}_12h_thermal_noise.csv', 'w').write('category,freq,weight\ndeep,73.0,1.0\n')
+        PB.QA_ROOT = qa
+        PB.constituent_dates = lambda mp: ['2025-01-01', '2025-01-02', '2025-01-03', '2025-01-04']
+        try:
+            fdq = f'{T}/pbqa_inputs'
+            wfits(f'{fdq}/I_deep_Taper_R075_Blue.fits', np.zeros((2, 2)))
+            pre = DS.pb_qa_inputs(fdq, '12h', 'Blue')
+        finally:
+            PB.QA_ROOT, PB.constituent_dates = orig_qa
+        check('pb_qa_inputs: the beam master\'s nights split by their noise file (3 with, 1 without), before any write',
+              pre == [('I_deep_Taper_R075', 3, 1)], pre)
+        # the stage itself (review 2026-10-14 m5): a wideband cell over the limit refuses and do_cell - the writer of the PB
+        # maps and siblings - is never called; at the limit's other side the stage reaches do_cell. Stubbed: the record
+        # chain, the in-place module setup (tested in test_masters-deep) and do_cell; the config's PB library and residual
+        # table point at empty stand-ins (record.fingerprint hashes every input).
+        from exopipe.phase3.lib.masters import deep_inplace as IP
+        from exopipe.phase3.lib.masters import pbcorr_masters as PCM
+
+        class _Sec:
+            def __init__(self, base, **kw):
+                self._b, self._kw = base, kw
+
+            def __getattr__(self, k):
+                return self._kw[k] if k in self._kw else getattr(self._b, k)
+
+        class _Cfg:
+            def __init__(self, base, sec):
+                self._b, self._sec = base, sec
+
+            def __getattr__(self, k):
+                return self._sec if k == 'masters_pbmaps' else getattr(self._b, k)
+
+        class _Reached(Exception):
+            pass
+
+        calls = []
+
+        def _do_cell(out, cell):
+            calls.append(cell)
+            raise _Reached(cell)
+
+        os.makedirs(f'{T}/pblib_empty', exist_ok=True)
+        open(f'{T}/residual_stub.csv', 'w').write('band,gain\n')
+        saved = (DS.require_stage, DS.inplace, DS._cfg, IP.check_import_env, IP.apply_attrs, IP.check_mirrors, PCM.do_cell,
+                 PB.QA_ROOT, PB.constituent_dates)
+        DS.require_stage = lambda *a: None
+        DS.inplace = lambda out: None
+        DS._cfg = lambda: _Cfg(CFG, _Sec(CFG.masters_pbmaps, PB_LIBRARY=f'{T}/pblib_empty',
+                                         PB_RESIDUAL_V2_TABLE=f'{T}/residual_stub.csv'))
+        IP.check_import_env = lambda: None
+        IP.apply_attrs = lambda *a, **k: []
+        IP.check_mirrors = lambda *a, **k: None
+        PCM.do_cell = _do_cell
+        PB.QA_ROOT = qa                                    # QA files for 2025-01-01..03; 2025-01-04..05 have none
+        try:
+            res = {}
+            for name, dates in (('over', ['2025-01-01', '2025-01-02', '2025-01-04', '2025-01-05']),   # 2 of 4 missing
+                                ('under', ['2025-01-01', '2025-01-02', '2025-01-03', '2025-01-04'])):  # 1 of 4 = the limit
+                out = f'{T}/pbmaps_stage_{name}'
+                if os.path.isdir(out):
+                    shutil.rmtree(out)
+                wfits(f'{out}/12h_Blue/coadd_final/I_deep_Taper_R075_Blue.fits', np.zeros((2, 2)))
+                PB.constituent_dates = lambda mp, _d=dates: list(_d)
+                srun = record.Run('masters', ['test'], out, CFG, dry_run=True)
+                del calls[:]
+                try:
+                    DS.pbmaps('12h_Blue', None, srun, out, {})
+                    reached = False
+                except _Reached:
+                    reached = True
+                res[name] = (srun.units[-1].status, srun.units[-1].reason, list(calls), reached,
+                             sorted(os.listdir(f'{out}/12h_Blue/coadd_final')))
+        finally:
+            (DS.require_stage, DS.inplace, DS._cfg, IP.check_import_env, IP.apply_attrs, IP.check_mirrors, PCM.do_cell,
+             PB.QA_ROOT, PB.constituent_dates) = saved
+        st, why, cl, reached, files = res['over']
+        check('pbmaps stage: a wideband cell missing 2 of 4 noise files refuses BEFORE do_cell (never called; nothing written)',
+              st == 'refused' and 'PB_QA_MISSING_MAX_FRAC' in why and not cl and not reached
+              and files == ['I_deep_Taper_R075_Blue.fits'], res['over'])
+        st, why, cl, reached, files = res['under']
+        check('pbmaps stage: 1 of 4 missing (at the 25% limit, not above) passes the gate and reaches do_cell',
+              cl == ['12h_Blue'] and reached, res['under'])
         check('PB weights: missing noise files counted per cell (10 / 2 / 10 / 10 / 0); a subband never refused (10 of 30); a '
               'wideband refused only above masters_pbmaps.PB_QA_MISSING_MAX_FRAC (10 of 30 at 0.25), not at 2 of 26 or under '
               'production\'s 1.0', st1[:1] == ('done',) and st1[2] == 10 and st2[0] == 'done' and st2[2] == 2
