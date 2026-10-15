@@ -452,7 +452,11 @@ class DeepRun:
             return False
         if (rec.get('meta') or {}).get('scripts') != self.scripts_sha1(stage):
             return False
-        from exopipe.phase3.core import validate
+        from exopipe.phase3.core import record, validate
+        ok, _why = record.code_current(rec)      # the branch's modules and the in-place children's code, as now (2026-10-15)
+        if not ok:
+            print(f'{unit}: not resumed ({_why})', file=sys.stderr)
+            return False
         for o in rec.get('outputs', []):
             if not os.path.exists(o['path']) or any(not r['passed'] for r in validate.run(o['class'], o['path'],
                                                                                           **(o.get('ctx') or {}))):

@@ -38,6 +38,24 @@ PATCH_RUNNERS = ('mdewarp_rbf_20261004/install_runner.sh', 'mdewarp_rbf_20261004
                  'mdewarp_rbf_20261004/chain_11h.sh', 'membership_rebuild_20261007/install_runner.sh')
 
 
+def merge_fingerprint(into, more):
+    """Merge code fingerprints {file: sha1[:12]} (one per process of a child, or one per child of a unit): a file two
+    processes ran in different versions becomes 'mixed:<h1>,<h2>' - a value no file matches, so --resume re-runs the unit
+    (2026-10-15 second review: the last process in pid order used to win)."""
+    for f, h in (more or {}).items():
+        old = into.get(f)
+        if old is None or old == h:
+            into[f] = h
+            continue
+        hs = []
+        for x in (old, h):
+            for y in (str(x)[6:].split(',') if str(x).startswith('mixed:') else [str(x)]):
+                if y not in hs:
+                    hs.append(y)
+        into[f] = hs[0] if len(hs) == 1 else 'mixed:' + ','.join(hs)
+    return into
+
+
 def patch_path(target):
     """True when ``target`` - a script path, a module name ('p3s5_patch_cell', 'a.b.p3s5_repatch_epochgate') or a command
     line ('bash -c "p3s5_patch_runner.sh cells.txt 4"': each word) - names one of the patch scripts or of the runners
@@ -151,7 +169,7 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
     for p in [fp_path] + sorted(glob.glob(glob.escape(fp_path) + '.*')):   # one file per process of the child (sitecustomize)
         try:
             with open(p) as f:
-                fp.update(json.load(f))
+                merge_fingerprint(fp, json.load(f))
         except (OSError, ValueError):
             pass
         finally:
@@ -173,7 +191,7 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
     res = LegacyResult(rc, log, tail, fp, refused, reason, round(time.time() - t0, 1), argv, fb_counts, fb_refs)
     if unit is not None:
         unit.meta.setdefault('legacy_calls', []).append({'argv': argv, 'rc': rc, 'wall_s': res.wall_s, 'log': log})
-        unit.meta.setdefault('legacy_code', {}).update(fp)
+        merge_fingerprint(unit.meta.setdefault('legacy_code', {}), fp)
     return res
 
 

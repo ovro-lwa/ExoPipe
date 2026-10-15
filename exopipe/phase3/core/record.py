@@ -161,7 +161,7 @@ def _legacy_roots():
         return ()
 
 
-_CODE_RAN = {}          # abs source path -> sha1[:12] when this process last executed that module's code (import, reload)
+_CODE_RAN = {}          # abs source path -> [sha1[:12] of each distinct source this process executed (import, reload)]
 _CODE_SEEN = {}         # module name -> sha1[:12] when first fingerprinted: modules executed before this module existed
 
 
@@ -180,9 +180,20 @@ def _audit(event, args):
         co = args[0]
         f = getattr(co, 'co_filename', None)
         if f and f.endswith('.py') and getattr(co, 'co_name', None) == '<module>':
-            _CODE_RAN[os.path.abspath(f)] = _sha12(f)
+            seen = _CODE_RAN.setdefault(os.path.abspath(f), [])
+            h = _sha12(f)
+            if h not in seen:
+                seen.append(h)
     except Exception:                       # noqa: BLE001 - an audit hook must not break the event it observes
         pass
+
+
+def ran_hash(hashes):
+    """The one hash a record names for a file this process executed: its hash, or 'mixed:h1,h2' when it executed more
+    than one version (a reload after an edit, a re-import) - a value no file matches, so --resume re-runs the unit
+    (2026-10-15 second review: the last version used to win)."""
+    hs = list(dict.fromkeys(hashes))
+    return hs[0] if len(hs) == 1 else 'mixed:' + ','.join(hs)
 
 
 if hasattr(sys, 'addaudithook'):
@@ -223,7 +234,7 @@ def code_fingerprint(changed=None, files=None):
             continue
         af = os.path.abspath(f)
         now = _sha12(af) if os.path.exists(af) else None
-        ran = _CODE_RAN.get(af)
+        ran = ran_hash(_CODE_RAN[af]) if _CODE_RAN.get(af) else None
         if ran is None:
             ran = _CODE_SEEN.setdefault(name, now) if now is not None else _CODE_SEEN.get(name)
         if ran is None:
@@ -234,6 +245,38 @@ def code_fingerprint(changed=None, files=None):
         if changed is not None and now != ran:
             changed[name] = now or 'missing'
     return out
+
+
+def code_current(rec):
+    """(ok, why) of the code a record names, as THIS process would run it - the one rule of --resume, the deep catalogue
+    chain's --resume and status --stale. Every recorded module is resolved as this process imports it (module_file: its
+    module, else the import system; for a synthetic module the import system cannot find - a wrap patch - the recorded
+    file): its source must have the recorded hash. A module that cannot be found, a recorded file that is gone, or a
+    'mixed:' hash (the run executed more than one version) is not current. Every in-place child's file
+    (meta.legacy_code: absolute paths of the shared legacy roots) must have its recorded hash. The recorded path itself is
+    never trusted for an importable module: another checkout of the same code resumes, other code never does (2026-10-15
+    second review)."""
+    files = rec.get('code_files') or {}
+    for mod, h in (rec.get('code') or {}).items():
+        if str(h).startswith('mixed:'):
+            return False, f'code changed during the run that made the unit: {mod} ({h})'
+        f = module_file(mod) or files.get(mod)
+        if not f:
+            return False, f'code not found now: {mod}'
+        if not f.endswith('.py'):
+            continue
+        if not os.path.exists(f) or _sha12(f) != h:
+            return False, f'code changed: {mod}'
+    for f, h in ((rec.get('meta') or {}).get('legacy_code') or {}).items():   # code of in-place children (core/legacy)
+        if str(h).startswith('mixed:'):
+            return False, f'child code changed during the run: {f} ({h})'
+        try:
+            cur = _sha12(f)
+        except OSError:
+            return False, f'child code missing: {f}'
+        if cur != str(h)[:12]:
+            return False, f'child code changed: {f}'
+    return True, ''
 
 
 def git_commit(path):
@@ -601,18 +644,9 @@ def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None
         return False, 'admitted night set changed (exclusions)'
     if cfg_hash is not None and cfg_hash != rec.get('config_hash'):
         return False, 'config changed'
-    files = rec.get('code_files') or {}
-    for mod, h in (rec.get('code') or {}).items():       # every recorded module, imported in this process or not
-        f = files.get(mod) or module_file(mod)
-        if f and f.endswith('.py') and (not os.path.exists(f) or _sha12(f) != h):
-            return False, f'code changed: {mod}'
-    for f, h in ((rec.get('meta') or {}).get('legacy_code') or {}).items():   # code of in-place children (core/legacy)
-        try:
-            cur = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12]
-        except OSError:
-            return False, f'child code missing: {f}'
-        if cur != h:
-            return False, f'child code changed: {f}'
+    ok, why = code_current(rec)                         # every recorded module as this process runs it; the children's
+    if not ok:
+        return False, why
     if retest:
         from exopipe.phase3.core import validate
         for o in rec.get('outputs', []):

@@ -74,10 +74,10 @@ def test_runtime_refusals():
     from exopipe.phase3.lib.status import steps_inplace as IPL
     from exopipe.phase3.lib.calibrate import common as CC
     from exopipe.phase3.lib.catalog import incremental as INC
-    ops = '/lustre/gh/main/exopipe_ops'
+    ops = os.path.join(T, 'no_such_ops')     # the refusal is by name: never hand the real patch scripts to a runner here
     calls = [('core.legacy.run(script)', lambda: L.run(os.path.join(ops, 'p3s5_patch_cell.py'), ['05h_23MHz'])),
-             ('core.legacy.run(bash -c ...)', lambda: L.run('/bin/bash', ['-c', 'p3s5_patch_runner.sh cells.txt 4'])),
-             ('core.legacy.run(a runner)', lambda: L.run('/bin/bash', [os.path.join(ops, 'membership_rebuild_20261007/install_runner.sh')])),
+             ('core.legacy.run(bash -c ...)', lambda: L.run(os.path.join(T, 'no_such_bash'), ['-c', 'p3s5_patch_runner.sh cells.txt 4'])),
+             ('core.legacy.run(a runner)', lambda: L.run(os.path.join(T, 'no_such_bash'), [os.path.join(ops, 'membership_rebuild_20261007/install_runner.sh')])),
              ('core.legacy.run(concatenated name)', lambda: L.run(os.path.join(ops, 'p3s5_patch_' + 'cell.py'))),
              ('steps_inplace.legacy_script', lambda: IPL.legacy_script('p3s5_patch_untouched.sh')),
              ('steps_inplace.import_quiet', lambda: IPL.import_quiet('p3s5_patch_cell')),
@@ -97,6 +97,13 @@ def test_runtime_refusals():
         except Exception as e:                   # noqa: BLE001
             bad.append(f'{name}: {type(e).__name__}: {e}')
     check(f'every in-place entry point refuses a patch path ({len(calls)} spellings)', not bad, bad)
+    os.makedirs(T, exist_ok=True)
+    child = os.path.join(T, 'imports_a_patch.py')
+    with open(child, 'w') as f:
+        f.write('import p3s5_patch_cell\n')
+    res = L.run(child, [], log=os.path.join(T, 'imports_a_patch.log'))
+    check('an in-place child that imports a patch module fails there (the children\'s import guard)',
+          res.rc != 0 and 'patch path' in (res.tail or ''), (res.rc, (res.tail or '')[-300:]))
     ok = not L.patch_path(os.path.join(ops, 'p3s3_merge.py')) and not L.patch_path('p3s3_sources') \
         and not L.patch_path('/x/patch_lists/dewarped_05h_18MHz.txt') and not L.patch_path(os.path.join(ops, 'p3s5_parents.py'))
     check('an ordinary script, module or file is not a patch path', ok)

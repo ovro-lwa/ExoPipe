@@ -18,7 +18,6 @@ qa_night_pages    ledger (LST, night)s without a hub night page (content test P1
 ledger            ledger rows that differ from a fresh inventory (steps_ledger: the ledger stage run into --out).
 """
 import glob
-import hashlib
 import json
 import os
 import re
@@ -61,14 +60,6 @@ def record_roots(extra=()):
     return out
 
 
-def _file_sha12(path):
-    try:
-        with open(path, 'rb') as f:
-            return hashlib.sha1(f.read()).hexdigest()[:12]
-    except OSError:
-        return None
-
-
 def record_staleness(rec, ex):
     """(stale reasons, not-done status or '') of one unit record."""
     from exopipe.phase3.core import record as R
@@ -89,16 +80,9 @@ def record_staleness(rec, ex):
             why.append('config changed (sections ' + (','.join(secs) if secs else 'all') + ')')
     except Exception as e:                                   # noqa: BLE001 - a section no longer defined
         why.append(f'config sections not computable now ({e})')
-    files = rec.get('code_files') or {}
-    for mod, h in (rec.get('code') or {}).items():
-        f = files.get(mod) or R.module_file(mod)          # the recorded path (records since 2026-10-15), else resolved now
-        if f and f.endswith('.py') and os.path.exists(f) and _file_sha12(f) != h:
-            why.append(f'code changed: {mod}')
-            break
-    for f, h in ((rec.get('meta') or {}).get('legacy_code') or {}).items():
-        if os.path.exists(f) and _file_sha12(f) not in (None, str(h)[:12]):
-            why.append(f'legacy code changed: {f}')
-            break
+    ok, cwhy = R.code_current(rec)                         # the one code rule of --resume (core.record.code_current)
+    if not ok:
+        why.append(cwhy)
     for o in rec.get('outputs') or ():
         if not os.path.exists(o['path']):
             why.append(f"output missing: {o['path']}")
@@ -106,7 +90,9 @@ def record_staleness(rec, ex):
     adm = rec.get('admitted') or []
     unit = rec.get('unit') or ''
     if adm and ex is not None:
-        m = re.match(r'^(\d\dh)_(\d+MHz|Red|Green|Blue|Full)(?:_|$)', unit)
+        # <cell>... units, and <stage>_<cell> units (masters: build_23h_23MHz, build-stats_23h_23MHz)
+        m = (re.match(r'^(\d\dh)_(\d+MHz|Red|Green|Blue|Full)(?:_|$)', unit)
+             or re.match(r'^[a-z][a-z-]*_(\d\dh)_(\d+MHz|Red|Green|Blue|Full)$', unit))
         if m:
             bad = ex.excluded_constituents(m.group(1), m.group(2), adm)
             if bad:
