@@ -140,6 +140,74 @@ def test_reference():
         check('reference copies: a copy with other content is never replaced', 'other content' in str(e), str(e))
 
 
+def _old_prep_body(co, date, sci_dir, align_img_path, workdir, tmpl_hdr, target_shape, ref_data, ref_wcs, beam_pix,
+                   horizon_mask, ref_img_path, post_dates):
+    """process_lst_freq's loop body as it was before prep_night (2026-10-15), pinned here: (manifest entry, row) or None."""
+    import json
+    needs_regrid = date < co.CUTOVER_DATE and post_dates
+    if not needs_regrid and co._off_grid(date, align_img_path, target_shape):
+        needs_regrid = True
+    if needs_regrid:
+        work_path = co.regrid_image(align_img_path, tmpl_hdr, f'{workdir}/prep/{date}_regrid.fits')
+    else:
+        work_path = align_img_path
+    tgt_data, tgt_hdr = co.load_image(work_path)
+    if tgt_data.shape != target_shape:
+        return None
+    tgt_mask = ~np.isfinite(tgt_data) | (tgt_data == 0)
+    tgt_obs_time = co.get_midpoint_time(tgt_hdr, work_path)
+    tgt_rms = co.get_uniform_rms(tgt_data, tgt_mask)
+    scale_map, coeffs, n_src = co.measure_flux_scale(tgt_data, ref_data, ref_wcs, beam_pix, horizon_mask | tgt_mask, tgt_obs_time)
+    mean_scale = float(coeffs[0])
+    tgt_rms_scaled = tgt_rms / abs(mean_scale) if abs(mean_scale) > 0.1 else tgt_rms
+    weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
+    safe_scale = np.where(np.abs(scale_map) > 0.1, scale_map, 1.0)
+    scaled_path = f'{workdir}/prep/{date}_scaled.fits'
+    co.save_image(scaled_path, tgt_data / safe_scale, tgt_hdr)
+    with open(f'{workdir}/prep/{date}_scale.json', 'w') as f:
+        json.dump({'coeffs': coeffs.tolist(), 'n_sources': n_src, 'mean_scale': mean_scale, 'tgt_rms': tgt_rms,
+                   'tgt_rms_scaled': tgt_rms_scaled, 'weight': weight}, f)
+    return ({'target': scaled_path, 'reference': ref_img_path, 'out_dir': f'{workdir}/flow'},
+            {'date': date, 'sci_dir': sci_dir, 'align_img': align_img_path, 'needs_regrid': needs_regrid,
+             'scale_map_coeffs': coeffs.tolist(), 'weight': weight, 'tgt_rms': tgt_rms, 'tgt_rms_scaled': tgt_rms_scaled})
+
+
+def test_prep_night_equivalence():
+    """coadd.prep_night (slice 2: the one per-night prep of a build and of an admission) writes exactly what the loop body
+    of process_lst_freq wrote before it was extracted - same bytes, same manifest entry and row - on real nights of a real
+    cell against a real reference (13h_78MHz: its installed master in native units)."""
+    import contextlib
+    import filecmp
+    import io
+    from astropy.wcs import WCS
+    from exopipe.phase3.lib.masters import coadd as co
+    root = CFG.paths.COADD_SB_ROOT
+    ents = A.installed_reference('13h_78MHz', os.path.join(root, '13h_78MHz'))
+    rp = A.write_reference(os.path.join(T, 'prepref'), '78MHz', ents)['I']
+    tmpl_hdr, target_shape = co.build_template_header(rp)
+    ref_data, ref_hdr = co.load_image(rp)
+    cd = abs(ref_hdr.get('CDELT1', ref_hdr.get('CD1_1', 0.037)))
+    ref = dict(img_path=rp, data=ref_data, wcs=WCS(ref_hdr).celestial, beam_pix=ref_hdr.get('BMAJ', 5 * cd) / cd,
+               horizon_mask=~np.isfinite(ref_data) | (ref_data == 0), tmpl_hdr=tmpl_hdr, target_shape=target_shape)
+    with contextlib.redirect_stdout(io.StringIO()):
+        nights = co.discover_dates('13h', '78')
+    picked = [x for x in nights if x[0] >= co.CUTOVER_DATE][:2]
+    same, rows = True, []
+    for date, sd, img in picked:
+        wo, wn = os.path.join(T, 'prep_old'), os.path.join(T, 'prep_new')
+        for w in (wo, wn):
+            os.makedirs(os.path.join(w, 'prep'), exist_ok=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            old = _old_prep_body(co, date, sd, img, wo, tmpl_hdr, target_shape, ref['data'], ref['wcs'], ref['beam_pix'],
+                                 ref['horizon_mask'], rp, [True])
+            new = co.prep_night(date, sd, img, ref, wn, [True])
+        for f in (f'{date}_scaled.fits', f'{date}_scale.json'):
+            same &= filecmp.cmp(os.path.join(wo, 'prep', f), os.path.join(wn, 'prep', f), shallow=False)
+        same &= old[1] == new[1] and old[0]['target'].replace(wo, wn) == new[0]['target'] and old[0]['reference'] == new[0]['reference']
+        rows.append(date)
+    check(f'prep_night = the extracted loop body, byte for byte ({", ".join(rows)})', same and len(rows) == 2, rows)
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
@@ -147,6 +215,7 @@ def main():
         test_nights_rule()
         test_nights_real()
         test_reference()
+        test_prep_night_equivalence()
     finally:
         shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

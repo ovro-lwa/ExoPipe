@@ -1820,75 +1820,85 @@ def process_lst_freq(lst, freq_str, exclusions, args):
     }
 
     manifest_entries = []
+    ref = dict(img_path=ref_img_path, data=ref_data, wcs=ref_wcs, beam_pix=beam_pix, horizon_mask=horizon_mask,
+               tmpl_hdr=tmpl_hdr, target_shape=target_shape)
 
     for date, sci_dir, align_img_path in target_dates:
-        t0 = time.time()
-
-        # Regrid if needed
-        needs_regrid = date < CUTOVER_DATE and post_dates
-        if not needs_regrid and _off_grid(date, align_img_path, target_shape):    # B-03 (a)
-            needs_regrid = True
-        if needs_regrid:
-            rg_path = f'{workdir}/prep/{date}_regrid.fits'
-            work_path = regrid_image(align_img_path, tmpl_hdr, rg_path)
-        else:
-            work_path = align_img_path
-
-        tgt_data, tgt_hdr = load_image(work_path)
-        if tgt_data.shape != target_shape:
-            print(f"  {date}: shape mismatch {tgt_data.shape} vs {target_shape}, skipping")
+        one = prep_night(date, sci_dir, align_img_path, ref, workdir, post_dates)
+        if one is None:
             continue
-
-        tgt_mask = ~np.isfinite(tgt_data) | (tgt_data == 0)
-        tgt_obs_time = get_midpoint_time(tgt_hdr, work_path)
-        tgt_rms = get_uniform_rms(tgt_data, tgt_mask)
-
-        # Flux scale
-        scale_map, coeffs, n_src = measure_flux_scale(
-            tgt_data, ref_data, ref_wcs, beam_pix,
-            horizon_mask | tgt_mask, tgt_obs_time)
-
-        mean_scale = float(coeffs[0])
-        tgt_rms_scaled = tgt_rms / abs(mean_scale) if abs(mean_scale) > 0.1 else tgt_rms
-        weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
-
-        # Save flux-scaled alignment image for flow input
-        safe_scale = np.where(np.abs(scale_map) > 0.1, scale_map, 1.0)
-        tgt_scaled = tgt_data / safe_scale
-        scaled_path = f'{workdir}/prep/{date}_scaled.fits'
-        save_image(scaled_path, tgt_scaled, tgt_hdr)
-
-        # Save scale parameters
-        scale_path = f'{workdir}/prep/{date}_scale.json'
-        with open(scale_path, 'w') as f:
-            json.dump({
-                'coeffs': coeffs.tolist(), 'n_sources': n_src,
-                'mean_scale': mean_scale, 'tgt_rms': tgt_rms,
-                'tgt_rms_scaled': tgt_rms_scaled, 'weight': weight,
-            }, f)
-
-        # Add to flow manifest
-        manifest_entries.append({
-            'target': scaled_path,
-            'reference': ref_img_path,
-            'out_dir': f'{workdir}/flow',
-        })
-
-        dt = time.time() - t0
-        print(f"  {date}: scale={mean_scale:.3f} ({n_src} src)  "
-              f"rms={tgt_rms*1000:.1f}→{tgt_rms_scaled*1000:.1f} mJy  "
-              f"w={weight:.3f}  {dt:.1f}s")
-
-        prep_data['dates'].append({
-            'date': date, 'sci_dir': sci_dir,
-            'align_img': align_img_path,
-            'needs_regrid': needs_regrid,
-            'scale_map_coeffs': coeffs.tolist(),
-            'weight': weight,
-            'tgt_rms': tgt_rms, 'tgt_rms_scaled': tgt_rms_scaled,
-        })
+        manifest_entries.append(one[0])
+        prep_data['dates'].append(one[1])
 
     return manifest_entries, prep_data
+
+
+def prep_night(date, sci_dir, align_img_path, ref, workdir, post_dates):
+    """ONE NIGHT of the flow-input prep (the body of process_lst_freq's loop; D-ADMIT slice 2 calls it for an admitted
+    night): regrid to the template grid when needed (a pre-cutover night of a cell with post-cutover nights, or off the
+    grid), the first flux scale against the reference, <workdir>/prep/<date>_scaled.fits (the flow input) and
+    <date>_scale.json. ``ref``: dict(img_path, data, wcs, beam_pix, horizon_mask, tmpl_hdr, target_shape) of the
+    reference; ``post_dates``: the cell's post-cutover nights (any true value: a pre-cutover night is regridded).
+    Returns (flow manifest entry, prep dates row), or None when the night's shape differs from the template (skipped)."""
+    t0 = time.time()
+    target_shape, tmpl_hdr = ref['target_shape'], ref['tmpl_hdr']
+
+    # Regrid if needed
+    needs_regrid = date < CUTOVER_DATE and post_dates
+    if not needs_regrid and _off_grid(date, align_img_path, target_shape):    # B-03 (a)
+        needs_regrid = True
+    if needs_regrid:
+        rg_path = f'{workdir}/prep/{date}_regrid.fits'
+        work_path = regrid_image(align_img_path, tmpl_hdr, rg_path)
+    else:
+        work_path = align_img_path
+
+    tgt_data, tgt_hdr = load_image(work_path)
+    if tgt_data.shape != target_shape:
+        print(f"  {date}: shape mismatch {tgt_data.shape} vs {target_shape}, skipping")
+        return None
+
+    tgt_mask = ~np.isfinite(tgt_data) | (tgt_data == 0)
+    tgt_obs_time = get_midpoint_time(tgt_hdr, work_path)
+    tgt_rms = get_uniform_rms(tgt_data, tgt_mask)
+
+    # Flux scale
+    scale_map, coeffs, n_src = measure_flux_scale(
+        tgt_data, ref['data'], ref['wcs'], ref['beam_pix'],
+        ref['horizon_mask'] | tgt_mask, tgt_obs_time)
+
+    mean_scale = float(coeffs[0])
+    tgt_rms_scaled = tgt_rms / abs(mean_scale) if abs(mean_scale) > 0.1 else tgt_rms
+    weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
+
+    # Save flux-scaled alignment image for flow input
+    safe_scale = np.where(np.abs(scale_map) > 0.1, scale_map, 1.0)
+    tgt_scaled = tgt_data / safe_scale
+    scaled_path = f'{workdir}/prep/{date}_scaled.fits'
+    save_image(scaled_path, tgt_scaled, tgt_hdr)
+
+    # Save scale parameters
+    scale_path = f'{workdir}/prep/{date}_scale.json'
+    with open(scale_path, 'w') as f:
+        json.dump({
+            'coeffs': coeffs.tolist(), 'n_sources': n_src,
+            'mean_scale': mean_scale, 'tgt_rms': tgt_rms,
+            'tgt_rms_scaled': tgt_rms_scaled, 'weight': weight,
+        }, f)
+
+    dt = time.time() - t0
+    print(f"  {date}: scale={mean_scale:.3f} ({n_src} src)  "
+          f"rms={tgt_rms*1000:.1f}→{tgt_rms_scaled*1000:.1f} mJy  "
+          f"w={weight:.3f}  {dt:.1f}s")
+
+    # the flow manifest entry and the prep record's row
+    return ({'target': scaled_path, 'reference': ref['img_path'], 'out_dir': f'{workdir}/flow'},
+            {'date': date, 'sci_dir': sci_dir,
+             'align_img': align_img_path,
+             'needs_regrid': needs_regrid,
+             'scale_map_coeffs': coeffs.tolist(),
+             'weight': weight,
+             'tgt_rms': tgt_rms, 'tgt_rms_scaled': tgt_rms_scaled})
 
 
 def _require_flow(flow_path, date, ref_date, tag):
