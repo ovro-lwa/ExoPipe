@@ -188,7 +188,12 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
         if live:
             raise Refusal(f'G12: the search fleet holds a live claim of {cell} {stokes} ({owner}) - a concurrent writer')
     t0 = K.utc()
-    if production:
+    admitted = admitted_cell(cell)
+    if admitted:
+        u.note(f'{cell}: holds night(s) admitted into its master ({admitted}): production\'s helper would refuse them as '
+               f'absent nights (its own membership check, p3s5_quarantine_frames.py:41-49) - its move loop is run by its port '
+               f'(D-ADMIT; the plan, G2 and G12 as above)')
+    if production and not admitted:
         _apply_helper(u, cell, stokes, launch, round_name, rows, manifest, t0, log)
     else:
         with K.CsvAppender(manifest, K.sec().QUARANTINE_COLUMNS) as w:
@@ -200,6 +205,19 @@ def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, arch
     u.add_output(manifest, 'quarantine_manifest', since=t0)
     u.note(f'{cell} {stokes}: {len(rows)} earlier search frames quarantined')
     return rows
+
+
+def admitted_cell(cell):
+    """D-ADMIT: the nights admitted into the master of ``cell`` (the cell tree the precheck child reads: the first of
+    PRECHECK_CELL_ROOTS holding PRECHECK_CELL_MARKER), under the ruled reading (masters_admit.ADMITTED_NIGHTS) - [] under
+    production's, or for a cell without admissions."""
+    from exopipe.phase3.lib.masters import admit as AD
+    if AD.admitted_policy() != 'admitted':
+        return []
+    q = _q()
+    base = next((os.path.join(r, cell) for r in q.PRECHECK_CELL_ROOTS
+                 if os.path.exists(os.path.join(r, cell, q.PRECHECK_CELL_MARKER))), None)
+    return sorted(AD.admitted_rows(base)) if base else []
 
 
 def _apply_helper(u, cell, stokes, launch, round_name, rows, manifest, t0, log):

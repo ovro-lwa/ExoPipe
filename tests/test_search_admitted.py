@@ -19,6 +19,7 @@ Run: python tests/test_search_admitted.py [--quick]   (--quick: parts 1 and 2 on
 """
 import ast
 import csv
+import glob
 import inspect
 import json
 import os
@@ -133,6 +134,43 @@ def test_nights(cd):
         os.environ.pop(ADS.POLICY_ENV, None)
 
 
+def test_unreadable_and_same_state(cd):
+    """MINOR 10 (eighth review): an unreadable admitted product refuses its night by name, not the engine; same_state_v."""
+    p = os.path.join(cd, 'subtracted', f'2026-10-20_I_sub_{SC}.fits')
+    keep = open(p, 'rb').read()
+    open(p, 'wb').write(b'not a FITS file')
+    os.environ[ADS.POLICY_ENV] = 'admitted'
+    try:
+        try:
+            ok, bad = ADS.nights(cd, SC, 'deep')
+            r = None
+        except Exception as e:                       # noqa: BLE001 - the failure this test guards against
+            ok, bad, r = {}, {}, f'{type(e).__name__}: {e}'
+    finally:
+        os.environ.pop(ADS.POLICY_ENV, None)
+        open(p, 'wb').write(keep)
+    check('an unreadable admitted product refuses its night by name (E15), the engine goes on', r is None
+          and '2026-10-20' not in ok and 'unreadable' in bad.get('2026-10-20', ''), (r, sorted(ok), bad))
+    adm = {'a': dict(v_products='refused (B-03 same-state): x'), 'b': dict(v_products='admitted'),
+           'c': dict(v_products='no V image'), 'd': dict(v_products='refused (alignment: the V image ...)')}
+    check('same_state_v: only an admitted night whose V the same-state rule refused (a member\'s refusals_input.csv rule)',
+          ADS.same_state_v(adm) == {'a'}, ADS.same_state_v(adm))
+
+
+def test_unit_outputs():
+    """MINOR 7 (eighth review): an admitted night's own sigma stacks are outputs of the search unit (class noise_map)."""
+    from exopipe.phase3.lib.search import deep_step as DS
+    att = os.path.join(T, 'outputs_att')
+    sd = os.path.join(att, 'transients', 'Run_X', 'sigstack')
+    os.makedirs(sd)
+    for name in (f'{CELL}_I_sigstack.fits', f'{CELL}_I_sigstack_2026-10-20.fits', f'{CELL}_V_sigstack_2026-10-20.fits'):
+        open(os.path.join(sd, name), 'w').close()
+    outs = DS.outputs_of(DS.Item(CELL, 'I', 'bulk'), {}, dict(attempt=att, label='X'))
+    got = sorted(os.path.basename(p) for p, cls, _c in outs if cls == 'noise_map')
+    check('the search unit\'s outputs: the cell\'s map and each admitted night\'s own stack of its Stokes',
+          got == [f'{CELL}_I_sigstack.fits', f'{CELL}_I_sigstack_2026-10-20.fits'], got)
+
+
 def test_values():
     adm = {'a': dict(night_image='pass', epoch_gate='pass', qa3_rms_mjy='12.5', stage2_i_rms_mjy='3.25', stage2_v_rms_mjy=''),
            'b': dict(night_image='FAIL', epoch_gate='pass', qa3_rms_mjy='nan', stage2_i_rms_mjy='x', stage2_v_rms_mjy='4'),
@@ -222,6 +260,15 @@ sys.path.insert(0, sys.argv[1])
 from exopipe.phase3.core import env
 env.legacy()
 from exopipe.phase3.lib.search import deep_search as E
+fail = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
+if fail:                         # force this night's Stokes I residual to fail (the builder then drops it, B-30 counted)
+    for _name in ('_resid_task', '_resid_task_spill'):
+        _f0 = getattr(E, _name)
+        def _w(d, _f=_f0):
+            if d == fail and E._RESID_CTX.get('tag') == 'I':
+                return d, None
+            return _f(d)
+        setattr(E, _name, _w)
 out = {'ok': False}
 try:
     n = E.run_deep_cell(sys.argv[2], sys.argv[3], label='ADMITTEST', included_dates=json.loads(sys.argv[4]), stokes='IV')
@@ -250,17 +297,19 @@ def strip_constituents(path, nights):
     return len(hist) - len(keep)
 
 
-def engine(root, work, label_root, policy, dates):
+def engine(root, work, label_root, policy, dates, fail_i=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith('P3_')}
     env.update(PYTHONPATH=REPO, P3_COADD_ROOT=root, P3_FLOW_ROOT=work, P3_STAGING_ROOT=label_root,
                P3_IRESID_ROOT=os.path.join(label_root, 'iresid'), P3_VRESID_ROOT=os.path.join(label_root, 'vresid'),
                P3_REFINE_OFF='1', P3_ARCHIVE_WRITE='0', P3_V110_OFF='1', P3_MASTER_GEN='ivw-mean-v3',
                P3_FLOW_LOCK=os.path.join(work, '.flow.lock'))
     env[ADS.POLICY_ENV] = policy
+    if fail_i:                                       # production's handling of a failed residual: dropped, counted
+        env.update(DEEP_NPROC_RESID='1', EXOPIPE3_FALLBACK_POLICY=json.dumps({'fallbacks.SEARCH_RESIDUAL_FALLBACK': 'fallback'}))
     res = os.path.join(label_root, f'result_{policy}.json')
     os.makedirs(label_root, exist_ok=True)
-    p = subprocess.run(['nice', sys.executable, '-c', _DRIVER, REPO, LST, SC, json.dumps(dates), res], env=env,
-                       capture_output=True, text=True, timeout=5400)
+    p = subprocess.run(['nice', sys.executable, '-c', _DRIVER, REPO, LST, SC, json.dumps(dates), res]
+                       + ([json.dumps(fail_i)] if fail_i else []), env=env, capture_output=True, text=True, timeout=5400)
     log = p.stdout + p.stderr
     open(os.path.join(label_root, f'engine_{policy}.log'), 'w').write(log)
     return (json.load(open(res)) if os.path.exists(res) else {'ok': False, 'error': f'rc {p.returncode}'}), log
@@ -360,6 +409,85 @@ def test_end_to_end():
     check('every gate-ledger row of the admitted night carries the value of ITS OWN stack at its pixel', n > 0 and not bad,
           (n, bad[:3]))
     print(f'  (end to end: {len(pop)} nights in the cell\'s record; the log is {att}/engine_admitted.log)')
+    A0, B0 = nights
+    # MAJOR 1 (eighth review): a night whose I residual fails leaves both searches - and both of the admitted night's stacks
+    fail_n = want[0]
+    att1 = os.path.join(T, 'attempt_fail')
+    res, log1 = engine(wt, work, att1, 'admitted', [A0], fail_i=fail_n)
+    st1 = {m.group(1): m.group(3).split(',') for m in re.finditer(
+        r"05h 78MHz ([IV]): admitted night (\S+): own sigma stack over \d+ of the cell's searched nights \+ itself: (\S*)", log1)
+        if m.group(2) == A0}
+    check('MAJOR (eighth review): a night whose I residual failed (production: dropped, counted) is in neither of the admitted '
+          'night\'s stacks - the V epochs follow the I-filtered dates, as production\'s',
+          res['ok'] and st1.get('I') == [d for d in want if d != fail_n] and st1.get('V') == [d for d in vwant if d != fail_n],
+          (res, {k: len(v) for k, v in st1.items()}, fail_n in st1.get('V', []), log1[-600:]))
+    # MAJOR 2 (eighth review): an admitted night whose V the same-state rule refused - I searched, V skipped (not refused by E15)
+    import io as _io
+    aside = os.path.join(T, 'aside_v')
+    os.makedirs(aside, exist_ok=True)
+    vprods = sorted(glob.glob(os.path.join(cd, 'subtracted', f'{A0}_V_*')))
+    adm_p = os.path.join(cd, 'coadd_final', A.ADMISSIONS)
+    adm_keep = open(adm_p, newline='').read()
+    rows_ = list(csv.DictReader(_io.StringIO(adm_keep)))
+    for r in rows_:
+        if r['date'] == A0:
+            r['v_products'] = 'refused (B-03 same-state): forced (test)'
+    with open(adm_p, 'w', newline='') as f:
+        dw = csv.DictWriter(f, fieldnames=list(rows_[0].keys()))
+        dw.writeheader()
+        dw.writerows(rows_)
+    for q in vprods:
+        os.replace(q, os.path.join(aside, os.path.basename(q)))
+    att2 = os.path.join(T, 'attempt_vsame')
+    try:
+        res, log2 = engine(wt, work, att2, 'admitted', [A0])
+    finally:
+        for q in vprods:
+            os.replace(os.path.join(aside, os.path.basename(q)), q)
+        open(adm_p, 'w', newline='').write(adm_keep)
+    img2 = list(csv.DictReader(open(os.path.join(att2, 'transients', 'Run_ADMITTEST', 'v_deep_images.csv')))) if os.path.exists(
+        os.path.join(att2, 'transients', 'Run_ADMITTEST', 'v_deep_images.csv')) else []
+    check('MAJOR (eighth review): an admitted night whose V image the same-state rule refused keeps its I search (E15 skips '
+          'its V, as for a member with its refusals_input.csv row) and has no V search',
+          res['ok'] and not re.search(rf'INPUT-PROVENANCE GATE[^\n]*{A0}', log2)
+          and [r['stokes'] for r in img2 if r['date'] == A0] == ['I'], (res, [(r['stokes'], r['date']) for r in img2],
+                                                                       log2[-600:]))
+    # MINOR 6 (eighth review): an admitted night is appended alone
+    att3 = os.path.join(T, 'attempt_mixed')
+    res, log3 = engine(wt, work, att3, 'admitted', [A0, want[0]])
+    check('an incremental list holding an admitted night and another night is refused (an admitted night is appended alone)',
+          not res['ok'] and 'appended alone' in res.get('error', ''), (res, log3[-400:]))
+    # a member's results do not change because nights were admitted (the reviewer's gap): the same member night searched
+    # with the admitted nights' products and record present, and with them moved out of the copy
+    m = want[0]
+
+    def member_rows(att_):
+        rd_ = os.path.join(att_, 'transients', 'Run_ADMITTEST')
+        out_ = {}
+        for name in ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv'):
+            p_ = os.path.join(rd_, name)
+            rows__ = list(csv.DictReader(open(p_))) if os.path.exists(p_) else []
+            out_[name] = sorted(json.dumps(r, sort_keys=True) for r in rows__ if r.get('date') == m)
+        return out_
+    attm1 = os.path.join(T, 'attempt_member_with')
+    res1, logm1 = engine(wt, work, attm1, 'admitted', [m])
+    moved = sorted(glob.glob(os.path.join(cd, 'subtracted', f'{A0}_*')) + glob.glob(os.path.join(cd, 'subtracted', f'{B0}_*'))
+                   + [adm_p])
+    aside2 = os.path.join(T, 'aside_adm')
+    os.makedirs(aside2, exist_ok=True)
+    for q in moved:
+        os.replace(q, os.path.join(aside2, os.path.basename(q)))
+    attm0 = os.path.join(T, 'attempt_member_without')
+    try:
+        res0, logm0 = engine(wt, work, attm0, 'admitted', [m])
+    finally:
+        for q in moved:
+            os.replace(os.path.join(aside2, os.path.basename(q)), q)
+    r1, r0 = member_rows(attm1), member_rows(attm0)
+    check('a member night\'s catalogue, gate-ledger and image rows are the same with the admitted nights present and with '
+          'them taken out of the cell (no population of its gates or stack holds an admitted night)',
+          res1['ok'] and res0['ok'] and r1 == r0 and r1['v_deep_images.csv'],
+          (res1, res0, {k: (len(r1[k]), len(r0[k])) for k in r1}, logm1[-300:], logm0[-300:]))
 
 
 def main(argv):
@@ -369,6 +497,8 @@ def main(argv):
         test_policy()
         cd = _cell(os.path.join(T, 'unit'))
         test_nights(cd)
+        test_unreadable_and_same_state(cd)
+        test_unit_outputs()
         test_values()
         test_residuals_and_stacks()
         test_engine_source()

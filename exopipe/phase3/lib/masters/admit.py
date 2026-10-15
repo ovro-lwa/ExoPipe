@@ -111,9 +111,32 @@ def science_dirs_before(sci_dir, t, lst, freq_str, date, co):
 
 
 def admitted_nights(cell_dir):
-    """Nights coadd_final/admissions.csv holds (admitted or refused there): never admitted twice."""
+    """Nights coadd_final/admissions.csv holds (admitted or refused there) for the installed master - never admitted
+    twice into it. A row made into another master counts for nothing (eighth review: a record left beside a new master by an
+    interrupted install would otherwise block the night for good; the admit stage moves such a record aside)."""
     p = os.path.join(cell_dir, 'coadd_final', ADMISSIONS)
-    return {r['date'] for r in _rows(p)} if os.path.exists(p) else set()
+    if not os.path.exists(p):
+        return set()
+    rows = _rows(p)
+    ident = master_identity(cell_dir) if rows else ('', '')
+    return {r['date'] for r in rows if (r.get('reference_constdig'), r.get('reference_md5')) == ident}
+
+
+def stale_admissions(cell_dir):
+    """Move coadd_final/admissions.csv aside (to admissions.superseded_<UTC>.csv beside it, never deleted) when it holds a
+    row made into another master than the installed one; returns the new path, else None."""
+    import time as _time
+    p = os.path.join(cell_dir, 'coadd_final', ADMISSIONS)
+    if not os.path.exists(p):
+        return None
+    rows = _rows(p)
+    ident = master_identity(cell_dir) if rows else ('', '')
+    if all((r.get('reference_constdig'), r.get('reference_md5')) == ident for r in rows):
+        return None
+    dst = os.path.join(cell_dir, 'coadd_final',
+                       f'admissions.superseded_{_time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())}_{os.getpid()}.csv')
+    os.replace(p, dst)
+    return dst
 
 
 def scale2_problems(cell_dir):

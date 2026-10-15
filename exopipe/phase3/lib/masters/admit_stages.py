@@ -84,6 +84,35 @@ def population_problem(cd, cell, co):
     if stale:
         return (f'{cell}: night(s) {stale} of the build population are excluded in data_decisions.csv now - a population '
                 f'holding them is not one to judge an admitted night by (rebuild the cell)')
+    return provisional_problem(cd, cell)
+
+
+def provisional_problem(cd, cell):
+    """Why the cell cannot measure an admitted night's stage-2 values, else None: the provisional master of a Stokes whose
+    stage-2 values the build recorded (residuals_provisional.csv: I always, V when a member has one) is missing - the
+    admitted night's value would be blank, the search-tier gate would find it unmeasured and, under the ruled B-30 policy,
+    refuse the cell's whole search (eighth review: 41 installed cells keep no coadd_provisional/). A rebuild decides."""
+    import csv
+    import math
+    from exopipe.phase3.lib.masters import admit as A
+    sc = cell.split('_', 1)[1]
+    need = ['I']
+    p = os.path.join(cd, A.BUILD_NIGHTS)
+    if os.path.exists(p):
+        with open(p, newline='') as f:
+            for r in csv.DictReader(f):
+                try:
+                    if math.isfinite(float(r.get('v_rms_mjy'))):
+                        need.append('V')
+                        break
+                except (TypeError, ValueError):
+                    pass
+    for st, v in PROV:
+        pp = os.path.join(cd, 'coadd_provisional', f'{v}_{sc}.fits')
+        if st in need and not os.path.exists(pp):
+            return (f'{pp} missing: the provisional {st} master the build measured stage 2 against - an admitted night\'s '
+                    f'stage-2 {st} value (the search-tier gate\'s) cannot be measured, and the search would refuse the cell '
+                    f'for it; not admitted (a rebuild decides)')
     return None
 
 
@@ -201,6 +230,7 @@ def admit_prep(cell, args, run, out, ran_now):
                 rows.append(row)
                 inp = os.path.join(W, 'prep', f'{d}_regrid.fits') if row['needs_regrid'] else img
                 u.add_output(sp, 'flow_prep_scaled', input_image=inp)
+        u.set_admitted([r['date'] for r in rows])   # the nights prepared (eighth review): one refused as an item is retried
         u.meta['admit'] = dict(reference={e['stokes']: dict(path=refs.get(e['stokes']), source=e['path'], factor=e['factor'],
                                                             constdig=e['constdig'], mdwarp=e['mdwarp']) for e in ents},
                                pairs=pairs, dates=[dict(r, needs_regrid=bool(r['needs_regrid'])) for r in rows])
@@ -313,41 +343,42 @@ def cell_lock(W):
     return f
 
 
-class ErrorWatch:
-    """An error is never a verdict (seventh review): two production try/excepts the admission runs turn an exception into
-    a verdict - coadd._night_flux_dc returns NaN ('not measurable', the night refused at alignment) and final_night's
-    night-image gate returns FAIL ('could not be evaluated') - and an admission row is final (never admitted twice), so a
-    disk-full or I/O error refused a night for good. Inside the block, the co-add functions those blocks call
-    (process_variant_image, load_image, measure_flux_scale; the night-image gate's evaluate) record an exception that
-    leaves them into one of those two functions (CALLERS - not one another function handles as part of its own logic)
-    before it goes on as before; ``errors`` lists them. The functions are restored on exit."""
-    NAMES = ('process_variant_image', 'load_image', 'measure_flux_scale')
-    CALLERS = ('_night_flux_dc', 'final_night')
+# production's own words when one of its try/excepts turns an exception into a verdict: coadd._night_flux_dc's print (the scale
+# then NaN, the night refused at alignment) and final_night's night-image gate reason (FAIL) - pinned against coadd.py by
+# tests/test_masters_admit6.py, so a rewording fails a test, never a night
+ERROR_TEXTS = ('flux scale measurement on the flow-aligned image failed', 'night-image gate could not be evaluated')
 
-    def __init__(self, co):
-        from exopipe.phase3.lib.masters import night_image_gate as NG
-        self.targets = [(co, n) for n in self.NAMES] + [(NG, 'evaluate')]
-        self.errors, self.orig = [], []
+
+class ErrorWatch:
+    """An error is never a verdict (seventh and eighth reviews): an admission row is final (never admitted twice), and two
+    production try/excepts turn ANY exception into a verdict - so a disk-full or I/O error refused a night for good. The
+    block captures final_night's printed lines (passed on to the stage's log at its end) and ``errors`` lists those - and the
+    night-image gate's reason (gate()) - in production's own words for an exception turned verdict (ERROR_TEXTS): every
+    exception in the two blocks, whatever statement raised it (the eighth review found the first watch, on the functions
+    those blocks call, missed the blocks' own statements)."""
+
+    def __init__(self):
+        import contextlib
+        import io
+        self.errors, self.buf = [], io.StringIO()
+        self._redirect = contextlib.redirect_stdout(self.buf)
 
     def __enter__(self):
-        for mod, n in self.targets:
-            f = getattr(mod, n)
-            self.orig.append((mod, n, f))
-
-            def watched(*a, _f=f, _n=n, **k):
-                try:
-                    return _f(*a, **k)
-                except Exception as e:
-                    if sys._getframe(1).f_code.co_name in self.CALLERS:
-                        self.errors.append(f'{_n}: {type(e).__name__}: {e}'[:300])
-                    raise
-            setattr(mod, n, watched)
+        self._redirect.__enter__()
         return self
 
     def __exit__(self, *exc):
-        for mod, n, f in reversed(self.orig):
-            setattr(mod, n, f)
+        self._redirect.__exit__(*exc)
+        text = self.buf.getvalue()
+        sys.stdout.write(text)                       # the night's lines into the stage's log, as before
+        self.errors += [ln.strip()[:300] for ln in text.splitlines() if ERROR_TEXTS[0] in ln]
         return False
+
+    def gate(self, nr):
+        """Record a night-image FAIL that is production's word for an exception."""
+        reason = str(((nr or {}).get('gate') or {}).get('reason') or '')
+        if reason.startswith(ERROR_TEXTS[1]):
+            self.errors.append(reason[:300])
 
 
 def prep_changed(prep):
@@ -518,6 +549,9 @@ def admit_stage(cell, args, run, out, ran_now):
             S = BS.settings_in_force(co, _cfg())
             prep_rows = {r['date']: r for r in ((prep.get('meta') or {}).get('admit') or {}).get('dates', [])}
             flow_outs = {o['path']: o for o in frec.get('outputs', [])}
+            stale_rec = A.stale_admissions(cd)
+            if stale_rec:                                              # rows of a master the cell no longer has (eighth review)
+                u.note(f'coadd_final/{A.ADMISSIONS} holds admissions into another master - moved aside to {stale_rec}')
             prep_final, native, subd = os.path.join(W, 'prep_final'), os.path.join(W, 'sub_native'), os.path.join(cd, 'subtracted')
             for d_ in (prep_final, native, subd):                      # a copied tree may lack subtracted/
                 os.makedirs(d_, exist_ok=True)
@@ -526,6 +560,7 @@ def admit_stage(cell, args, run, out, ran_now):
             bs_sha1 = _sha1(os.path.join(cd, 'coadd_final', BS.FILE))
             ref_md5 = A.master_identity(cd)[1]                         # the master's pixels (its CONSTDIG names its nights only)
             n_adm = n_ref = 0
+            decided = []                                               # the nights given a row by this run (eighth review)
             with IP.capture_stdout(DS._log(out, cell, 'admit'), echo=False):
                 for d, sd, img in todo:
                     rowd = dict.fromkeys(ADMISSION_COLS, '')
@@ -587,8 +622,9 @@ def admit_stage(cell, args, run, out, ran_now):
                     move_aside_files(prep_final, [f'{d}_regrid.fits', f'{d}_scale_remeasure.fits', f'{d}_I.fits',
                                                   f'{d}_V.fits'], stamp)
                     move_aside_files(native, [f'{d}_{st}_{kind}_{fl}.fits' for st, kind in PRODUCTS], stamp)
-                    with ErrorWatch(co) as watch:
+                    with ErrorWatch() as watch:
                         nr = co.final_night(d, sd, img, fref, W, prep_final, [True], lst, fl, 'MASTER')
+                    watch.gate(nr)
                     refused_ = nr is None or nr['params'] is None or (nr['gate'] or {}).get('verdict') == 'FAIL'
                     if refused_ and watch.errors:                      # an error, not a verdict: retried, no row
                         refuse_night(f'an error during its alignment or night-image check ({watch.errors[0]}) - not a '
@@ -602,6 +638,7 @@ def admit_stage(cell, args, run, out, ran_now):
                         refuse_night(f'refused at alignment: {reason}', 'admit.alignment')
                         write_admissions(cd, [rowd])
                         n_ref += 1
+                        decided.append(d)
                         continue
                     pa = nr['params']
                     v_out = os.path.join(prep_final, f'{d}_V.fits')
@@ -663,6 +700,7 @@ def admit_stage(cell, args, run, out, ran_now):
                         refuse_night(why, 'admit.night_image' if ng['verdict'] == 'FAIL' else 'admit.epoch')
                         write_admissions(cd, [rowd])                   # no product published (the epoch gate's rule)
                         n_ref += 1
+                        decided.append(d)
                         continue
                     parts = {}
                     for k, (dest, dd, hd) in baked.items():
@@ -676,8 +714,10 @@ def admit_stage(cell, args, run, out, ran_now):
                     rowd.update(verdict='admitted')
                     write_admissions(cd, [rowd])                       # the row as soon as the products are in place
                     n_adm += 1
+                    decided.append(d)
                     for k in parts:
                         u.add_output(dests[k], 'admitted_epoch', source=(img if k[0] == 'I' else v_img))
+            u.set_admitted(sorted(decided))     # a night refused as an item (no row) is not finished: --resume retries it
             if n_adm or n_ref:
                 u.add_output(os.path.join(cd, 'coadd_final', A.ADMISSIONS), 'admissions')
             u.meta['admit'] = dict(admitted=n_adm, refused=n_ref, guard_median=med, guard_median_source=med_src,

@@ -1027,6 +1027,8 @@ def outputs_of(item, ctx, f, fit_csv=None):
     ss = os.path.join(rd, 'sigstack', f'{cell}_{S}_sigstack.fits')
     if os.path.exists(ss):
         out.append((ss, 'noise_map', {}))
+    for p in sorted(glob.glob(os.path.join(rd, 'sigstack', f'{cell}_{S}_sigstack_*.fits'))):   # D-ADMIT: an admitted night's
+        out.append((p, 'noise_map', {}))                                                    # own stack (eighth review)
     sub = 'iresid' if S == 'I' else 'vresid'
     for p in sorted(glob.glob(os.path.join(att, f'Run_{label}', sub, cell, f'*_{S}_redo_resid_*.fits'))):
         out.append((p, 'search_frame', {'stokes': S, 'cell': cell, 'tier': TIER}))     # plain frames and pbcorr siblings: one

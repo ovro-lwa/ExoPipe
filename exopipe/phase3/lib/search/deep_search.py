@@ -1418,6 +1418,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _cur = {r['date'] for r in csv.DictReader(open(_wcsv))} if os.path.exists(_wcsv) else None
         _stale = []
         _vref = _same_state_refused_v(base)       # WAVE2 B-03: nights whose V input the masters build refused (same-state)
+        _vref = _vref | _ADS.same_state_v(_adm)   # WAVE2 D-ADMIT: an admitted night's same-state V refusal (admissions.csv)
         for d in dates:
             _why = ''
             if _cur is not None and _kd(d) not in _cons and _kd(d) not in _cur and _kd(d) not in _adm:   # WAVE2 D-ADMIT: admitted accepted
@@ -1534,6 +1535,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
               + (f'; {len(_inc_missing)} listed but not admitted by the gates: {_inc_missing}' if _inc_missing else ''), flush=True)
         if not dates:
             print(f'  {lst} {scope}: INCREMENTAL - nothing admitted; done'); return 0
+        if any(d in _adm for d in dates) and any(d not in _adm for d in dates):   # WAVE2 D-ADMIT (eighth review)
+            raise RuntimeError(f'{lst} {scope}: INCREMENTAL - admitted night(s) {sorted(d for d in dates if d in _adm)} listed with '   # WAVE2 D-ADMIT
+                               f'other night(s) {sorted(d for d in dates if d not in _adm)}: an admitted night is appended alone '   # WAVE2 D-ADMIT
+                               f'(its gates and stack take the cell\'s nights) - REFUSING')
     _rdates = _ADS.residual_dates(dates, _pop, _adm)                       # WAVE2 D-ADMIT: = dates, + the cell's nights an admitted
     _ssA_I, _ssA_V = {}, {}                                                # WAVE2 D-ADMIT: night's own stack needs (incremental)
     hdr_ref = _det_header(hdr0, scope, em, cd, None)
@@ -1611,6 +1616,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if 'I' in stokes:                                                      # WAVE2 D-ADMIT: each admitted night's own stack (Gregg 2026-10-14)
         _ssA_I = _ADS.stacks(dates, _pop, _adm, resid_I, lambda _r: _sigma_stack(_r, cell_work, hdr0, 'I'),   # WAVE2 D-ADMIT
                              lambda _s, _d: _write_sigstack(_s, hdr0, run_root, lst, scope, 'I', night=_d), f'{lst} {scope} I')
+        _pop = [d for d in _pop if d in resid_I]                           # WAVE2 D-ADMIT: a night whose I residual failed leaves
+    _rdates = _ADS.residual_dates(dates, _pop, _adm)                       # WAVE2 D-ADMIT: both, as production's dates (eighth review)
     resid_V = {}
     # 2026-09-01 fix: honor stokes='I' — the V side previously ran whenever
     # a V master existed, so an I-only extraction silently re-searched V

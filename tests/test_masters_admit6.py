@@ -17,6 +17,7 @@ Run: python tests/test_masters_admit6.py
 import calendar
 import csv
 import glob
+import inspect
 import json
 import os
 import re
@@ -253,7 +254,7 @@ def _stash(cd, tag):
         shutil.rmtree(os.path.join(d, '_superseded'), ignore_errors=True)
 
 
-def _run_masters(wt, out, stages):
+def _run_masters(wt, out, stages, resume=False):
     """The masters step's deep stages in-process through deep_stages.run (its read-only and resume rules), --out ``out``
     - the unit record of the last stage run."""
     import argparse
@@ -263,7 +264,7 @@ def _run_masters(wt, out, stages):
     run = R.Run('masters', ['test'], out, CFG, config_sections=())
     run.commit = 'abc1234'
     a = argparse.Namespace(cells=CELL, lsts=None, scopes=None, exclude_cells=None, epochs=None, stages_resolved=list(stages),
-                           out=out, deep_installed_root=wt, reference=None, dry_run=False, resume=False, fresh=False)
+                           out=out, deep_installed_root=wt, reference=None, dry_run=False, resume=resume, fresh=False)
     DS.run(a, run)
     return run.units[-1]
 
@@ -523,14 +524,16 @@ def test_failure_paths(nights):
             finally:
                 setattr(mod, name, real_f)
             R1 = rows()
-            u2 = _run_admit(wt, out)
+            rec1 = json.load(open(os.path.join(out, '_records', 'masters', f'admit_{CELL}.json')))
+            u2 = _run_masters(wt, out, ['admit'], resume=True)        # eighth review: --resume retries it, never skips
             R2 = rows()
-            check(f'MAJOR (seventh review): an error inside {"the flux-scale measurement" if name != "evaluate" else "the night-image check"} '
-                  f'is no verdict: the night refused as an item (retried), no row; the next run admits it',
+            check(f'MAJOR (seventh, eighth review): an error inside {"the flux-scale measurement" if name != "evaluate" else "the night-image check"} '
+                  f'is no verdict: the night refused as an item, no row, not in the unit\'s finished nights; a --resume run '
+                  f'retries it (not skipped) and admits it',
                   u.status == 'done' and n2 not in R1 and set(gates(u).values()) == {'admit.error'}
-                  and R1.get(n1, {}).get('verdict') == 'admitted' and u2.status == 'done'
-                  and R2.get(n2, {}).get('verdict') == 'admitted', (u.status, u.reason, gates(u), sorted(R1), u2.status,
-                                                                     sorted(R2)))
+                  and R1.get(n1, {}).get('verdict') == 'admitted' and rec1.get('admitted') == [n1]
+                  and u2.status == 'done' and R2.get(n2, {}).get('verdict') == 'admitted',
+                  (u.status, u.reason, gates(u), sorted(R1), rec1.get('admitted'), u2.status, u2.reason, sorted(R2)))
         # (12) a V image the build cannot align (process_variant_image returns False): I admitted, V refused by name
         _stash(cd, 'valign')
         rpv = co.process_variant_image
@@ -603,6 +606,40 @@ def test_failure_paths(nights):
               u.status == 'done' and res.get('admitted_epoch.admitted_header') is False
               and not all(t['passed'] for t in res2) and any('2099-01-01' in str(t.get('detail')) for t in res2),
               (u.status, res, [(t['name'], t['passed'], str(t.get('detail'))[:120]) for t in res2]))
+        # (16) MAJOR (eighth review): no admission into a cell without the provisional masters its stage-2 values need
+        from exopipe.phase3.lib.masters import admit_stages as AS2
+        pdir = os.path.join(cd, 'coadd_provisional')
+        for st_, v_ in AS2.PROV:
+            pp = os.path.join(pdir, f'{v_}_{SC}.fits')
+            os.replace(pp, pp + '.held')
+            try:
+                why_ = AS2.population_problem(cd, CELL, co)
+            finally:
+                os.replace(pp + '.held', pp)
+            check(f'MAJOR (eighth review): without the provisional {st_} master the cell admits no night (its stage-2 {st_} '
+                  f'value - the search-tier gate\'s - could not be measured)', why_ and f'provisional {st_} master' in why_, why_)
+        # (17) MINOR (eighth review): production's own words for an exception turned verdict are where the watch reads them
+        check('the error watch reads production\'s own words: coadd._night_flux_dc prints the first, final_night\'s gate '
+              'reason starts with the second (a rewording fails here, never a night)',
+              AS2.ERROR_TEXTS[0] in inspect.getsource(co._night_flux_dc)
+              and f"reason=f'{AS2.ERROR_TEXTS[1]}" in inspect.getsource(co.final_night))
+        # (18) MINOR (eighth review): a record of admissions into another master counts for nothing and is moved aside
+        adm_p = os.path.join(cd, 'coadd_final', A.ADMISSIONS)
+        rr = list(csv.DictReader(open(adm_p, newline='')))
+        for r_ in rr:
+            r_['reference_md5'] = '0' * 32
+        with open(adm_p, 'w', newline='') as f_:
+            dw_ = csv.DictWriter(f_, fieldnames=list(rr[0].keys()))
+            dw_.writeheader()
+            dw_.writerows(rr)
+        before = A.admitted_nights(cd)
+        u18 = _run_admit(wt, out)
+        R18 = rows()
+        sup = glob.glob(os.path.join(cd, 'coadd_final', 'admissions.superseded_*.csv'))
+        check('MINOR (eighth review): rows made into another master block no night (never twice is per master); the stage '
+              'moves that record aside (kept) and admits the nights into this master again',
+              before == set() and u18.status == 'done' and sup and all(R18.get(d, {}).get('verdict') == 'admitted' for d in nights),
+              (sorted(before), u18.status, u18.reason, sup, sorted(R18)))
     finally:
         CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD = saved
 

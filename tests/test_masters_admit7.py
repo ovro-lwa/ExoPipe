@@ -184,6 +184,36 @@ def test_quarantine_precheck(cd):
           ok_adm and msg_adm.startswith('PRECHECK-OK') and 'rebuild pending' in msg_adm, msg_adm)
 
 
+def test_quarantine_apply(cd):
+    """MAJOR (eighth review): production's frame-quarantine helper re-runs production's membership check and refuses a cell
+    holding an admitted night; under the ruled reading such a cell's moves are run by the helper's port, under production's by
+    the helper (its own refusal, as production)."""
+    import inspect
+    from exopipe.phase3.lib.archive import quarantine as Q
+
+    class _Q:
+        PRECHECK_CELL_ROOTS = (os.path.dirname(cd),)
+        PRECHECK_CELL_MARKER = 'coadd_final/weights.csv'
+    real = Q._q
+    Q._q = lambda: _Q
+    try:
+        admission(cd, NEW)
+        got = Q.admitted_cell(CELL)
+        CFG.masters_admit.ADMITTED_NIGHTS = 'absent'
+        try:
+            prod = Q.admitted_cell(CELL)
+        finally:
+            CFG.masters_admit.ADMITTED_NIGHTS = 'admitted'
+        os.remove(os.path.join(cd, 'coadd_final', A.ADMISSIONS))
+        none = Q.admitted_cell(CELL)
+    finally:
+        Q._q = real
+    src = inspect.getsource(Q.quarantine_for_search)
+    check('the quarantine apply: a cell holding an admitted night (ruled reading) takes the port, every other cell - and every '
+          'cell under production\'s reading - production\'s helper', got == [NEW] and prod == [] and none == []
+          and 'if production and not admitted:' in src and 'admitted = admitted_cell(cell)' in src, (got, prod, none))
+
+
 def test_no_other_caller():
     """No branch module calls membership.verify but admit.py (and membership.py itself): every step reads admitted nights
     through the one entry point. (The quarantine precheck's child template is a string - production's code in a child; its
@@ -210,6 +240,7 @@ def main():
         test_the_reading(cd)
         test_call_sites(cd)
         test_quarantine_precheck(cd)
+        test_quarantine_apply(cd)
         test_no_other_caller()
     finally:
         shutil.rmtree(T, ignore_errors=True)

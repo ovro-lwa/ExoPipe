@@ -78,8 +78,15 @@ def test_nights_rule():
         w = csv.writer(f)
         w.writerow(['lst', 'freq', 'date', 'i_rms_mjy'])
         w.writerows([['23h', '23MHz', '2025-01-01', '1'], ['23h', '23MHz', '2025-01-02', '1']])
+    from astropy.io import fits as _fits
+    import numpy as _np
+    _h = _fits.Header()
+    _h['CONSTDIG'] = 'synthetic'
+    _fits.writeto(os.path.join(cell, 'coadd_final', 'I_deep_Taper_R075_23MHz.fits'), _np.ones((4, 4), _np.float32), _h)
+    ident = A.master_identity(cell)                              # an admission row names the master it was made into
     with open(os.path.join(cell, 'coadd_final', A.ADMISSIONS), 'w', newline='') as f:
-        csv.writer(f).writerows([['date', 'verdict'], ['2025-01-04', 'admitted']])
+        csv.writer(f).writerows([['date', 'verdict', 'reference_constdig', 'reference_md5'],
+                                 ['2025-01-04', 'admitted', ident[0], ident[1]]])
     with open(os.path.join(cell, 'coadd_final', 'weights.csv'), 'w', newline='') as f:
         csv.writer(f).writerows([['date', 'weight'], ['2025-01-01', '1'], ['2025-01-02', '1']])
     t = calendar.timegm((2026, 1, 1, 0, 0, 0))                    # the build fixed its night set here (its weights.csv)
@@ -112,6 +119,15 @@ def test_nights_rule():
           'Science dir whose name carries no time counts as before)',
           set(why) == set(want) and all(want[d] in why[d] for d in want) and old in why['2025-01-08']
           and 'Science_oddname' in why['2025-01-12'], why)
+    with open(os.path.join(cell, 'coadd_final', A.ADMISSIONS), 'w', newline='') as f:
+        csv.writer(f).writerows([['date', 'verdict', 'reference_constdig', 'reference_md5'],
+                                 ['2025-01-04', 'admitted', ident[0], '0' * 32]])
+    take2, _why2 = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex({'2025-01-06'}), co)
+    check('nights: a row made into another master (its data md5 another) blocks nothing - never twice is per master '
+          '(eighth review)', '2025-01-04' in [x[0] for x in take2], take2)
+    with open(os.path.join(cell, 'coadd_final', A.ADMISSIONS), 'w', newline='') as f:
+        csv.writer(f).writerows([['date', 'verdict', 'reference_constdig', 'reference_md5'],
+                                 ['2025-01-04', 'admitted', ident[0], ident[1]]])
     take, why = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()), co, nights=['2025-01-05', '2025-01-03', '2025-02-01'])
     check('nights: --epochs restricts to the named nights; a named night that does not qualify or does not exist says why',
           [x[0] for x in take] == ['2025-01-05'] and set(why) == {'2025-01-03', '2025-02-01'}
@@ -384,9 +400,12 @@ def make_admission_copy(cell, night, root):
     from exopipe.phase3.lib.masters import build_stats as BS, coadd as co
     src, dst = os.path.join(CFG.paths.COADD_SB_ROOT, cell), os.path.join(root, cell)
     os.makedirs(os.path.join(dst, 'coadd_final'), exist_ok=True)
+    os.makedirs(os.path.join(dst, 'coadd_provisional'), exist_ok=True)
     lst, sc = cell.split('_', 1)
     for rel in [r for r, _c in A.BUILD_RECORDS] + ['coadd_final/stage2_verdict.csv', f'coadd_final/I_deep_Taper_R075_{sc}.fits',
-                                                   f'coadd_final/V_deep_Taper_R0_{sc}.fits']:
+                                                   f'coadd_final/V_deep_Taper_R0_{sc}.fits',
+                                                   f'coadd_provisional/I_deep_Taper_R075_{sc}.fits',   # stage 2's references
+                                                   f'coadd_provisional/V_deep_Taper_R0_{sc}.fits']:
         if os.path.exists(os.path.join(src, rel)):
             shutil.copy2(os.path.join(src, rel), os.path.join(dst, rel))
     for rel, col in list(A.BUILD_RECORDS) + [('coadd_final/stage2_verdict.csv', 'date')]:
@@ -588,6 +607,10 @@ def test_admit_prep():
           and okn is None and unread == 'unreadable', (bad, mshape, okn, unread))
     wtg = os.path.join(T, 'admit_wtg')
     make_admission_copy('02h_Green', '2025-12-26', wtg)          # the wrong-grid night made new (out of every record)
+    for v_ in ('I_deep_Taper_R075', 'V_deep_Taper_R0'):          # 02h_Green keeps no coadd_provisional/ (41 cells): its final
+        q_ = os.path.join(wtg, '02h_Green', 'coadd_provisional', f'{v_}_Green.fits')   # masters stand in, test only, so
+        if not os.path.exists(q_):                                # the cell passes the provisional gate and reaches the night
+            shutil.copy2(os.path.join(wtg, '02h_Green', 'coadd_final', f'{v_}_Green.fits'), q_)
     pg = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters', '--tier', 'deep', '--cells', '02h_Green',
                          '--stages', 'admit-prep', '--cores', 'none', '--out', out, '--deep-installed-root', wtg], cwd=REPO,
                         env=dict(os.environ), capture_output=True, text=True, timeout=1800)

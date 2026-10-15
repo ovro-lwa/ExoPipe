@@ -46,7 +46,11 @@ def nights(base, scope, cadence='deep'):
                 if st == 'I':
                     why.append('no I product')
                 continue
-            h = fits.getheader(p)
+            try:
+                h = fits.getheader(p)
+            except Exception as e:                   # an unreadable product refuses its night, not the cell (eighth review)
+                why.append(f'{st} product unreadable ({type(e).__name__}: {e})'[:200])
+                continue
             if h.get('ADMITTED') is not True or str(h.get('ADMITREF') or '') != cdg:
                 why.append(f'{st} product without the admission\'s cards (ADMITTED {h.get("ADMITTED")!r}, ADMITREF '
                            f'{h.get("ADMITREF")!r}, master {cdg!r})')
@@ -55,6 +59,13 @@ def nights(base, scope, cadence='deep'):
         else:
             ok[d] = r
     return ok, bad
+
+
+def same_state_v(adm):
+    """The admitted nights whose V image the B-03 same-state rule refused (admissions.csv v_products): no V product by rule
+    - the V search skips the night and the I search keeps it, as for a member with its refusals_input.csv row (eighth
+    review: E15 refused such a night from both searches)."""
+    return {d for d, r in adm.items() if str(r.get('v_products') or '').startswith('refused (B-03 same-state)')}
 
 
 def gate_failures(adm):

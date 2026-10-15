@@ -33,7 +33,8 @@ import re
 from exopipe.phase3.core.validate import content_test
 
 _FRAME_RE = re.compile(r'^(?P<d>\d{4}-\d\d-\d\d(?:T\d\d)?)_(?P<s>[IV])_redo_resid(?P<pb>_pbcorr)?_(?P<scope>\w+?)\.fits$')
-_SIGSTACK_RE = re.compile(r'^(?P<lst>\d\dh)_(?P<scope>\w+?)_(?P<s>[IV])_sigstack\.fits$')
+_SIGSTACK_RE = re.compile(r'^(?P<lst>\d\dh)_(?P<scope>\w+?)_(?P<s>[IV])_sigstack(?:_(?P<night>\d{4}-\d\d-\d\d))?\.fits$')
+# (D-ADMIT: <cell>_<S>_sigstack_<night>.fits is an admitted night's own stack - the cell's nights plus that night)
 _PBMISS_RE = re.compile(r'^pbcorr_missing_(?P<lst>\d\dh)_(?P<scope>\w+?)\.csv$')
 _DATE = re.compile(r'^\d{4}-\d\d-\d\d(T\d\d)?$')
 _DATE_DEEP = re.compile(r'^\d{4}-\d\d-\d\d$')
@@ -385,6 +386,8 @@ def sigstack_cards(path, **ctx):
     for k in ('DATE-OBS', 'BMAJ', 'BMIN'):
         if hdr.get(k) is None:
             probs.append(f'no {k}')
+    if m and m['night'] and str(hdr.get('ADMITTED', '')).strip() != m['night']:     # D-ADMIT: an admitted night's own stack
+        probs.append(f'ADMITTED {hdr.get("ADMITTED")!r} (name says {m["night"]})')
     return not probs, st, '; '.join(probs) if probs else 'cards ok'
 
 
