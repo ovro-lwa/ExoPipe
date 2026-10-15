@@ -382,6 +382,9 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
            'P3_FLOW_LOCK': sd.FLOW_LOCK, 'TMPDIR': tmpdir, 'PYTHONUNBUFFERED': '1',
            'PYTHONPATH': _PKG_ROOT + (os.pathsep + os.environ['PYTHONPATH'] if os.environ.get('PYTHONPATH') else '')}
     env['EXOPIPE3_EPHEMERIS_TIME'] = ephemeris_time(sd.EPHEMERIS_TIME, 'search_detect.EPHEMERIS_TIME')   # WAVE2 B-30
+    from exopipe.phase3.lib.masters import admit as _AD
+    from exopipe.phase3.lib.search import admitted as _ADS
+    env[_ADS.POLICY_ENV] = _AD.admitted_policy(c.masters_admit.ADMITTED_NIGHTS)    # D-ADMIT: how the engine reads admitted nights
     if not si.ARCHIVE_WRITE:
         env['P3_ARCHIVE_WRITE'] = '0'
     if not sd.REFINE_X2:
@@ -582,9 +585,12 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
         if not os.path.exists(p):
             raise Refusal(f'{item.cell}: {name} missing - gate {gate} cannot run; refused (never skipped)')
     if not si.ALLOW_OLD_MASTERS:
-        from exopipe.phase3.lib.masters import membership as MB
-        viol = MB.verify(base) + MB.verify_products(base)
-        f['gates'].append(('E3 membership rulings', not viol, f'{len(viol)} violation(s)'))
+        from exopipe.phase3.lib.masters import admit as AD, membership as MB
+        viol, rep = AD.verify(base)                    # D-ADMIT: an admitted night is 'admitted, rebuild pending', not absent
+        viol = viol + MB.verify_products(base)
+        f['gates'].append(('E3 membership rulings', not viol, f'{len(viol)} violation(s)'
+                           + (f'; {len(rep)} admitted night(s), rebuild pending' if rep else '')))
+        f['notes'] += rep
         if viol:
             raise Refusal(f'{item.cell}: the master violates the membership rulings (gate E3): ' + ' | '.join(viol[:3]))
     dates_i = subtracted_dates(base, item.scope, 'I')
@@ -706,7 +712,9 @@ def input_paths(item, f):
     base = f['base']
     cf = os.path.join(base, 'coadd_final')
     small = [f['m_i'], f.get('m_v'), os.path.join(base, 'residuals_provisional.csv'), os.path.join(cf, 'weights.csv'),
-             os.path.join(cf, 'night_image_gate.csv'), os.path.join(cf, 'epoch_gate.csv'), PCT.PATH,
+             os.path.join(cf, 'night_image_gate.csv'), os.path.join(cf, 'epoch_gate.csv'),
+             os.path.join(cf, 'admissions.csv'),                  # D-ADMIT: which nights the engine accepts as admitted
+             PCT.PATH,
              c.search_tables.PULSAR_CSV, os.path.join(c.paths.OPS_ROOT, c.search_inputs.ROOTS_CSV)]
     small += sorted(glob.glob(os.path.join(cf, f'PB_deep*_{item.scope}.fits')))
     small = [p for p in small if p and os.path.exists(p)]

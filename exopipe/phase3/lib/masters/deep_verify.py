@@ -233,11 +233,11 @@ def t7(gen_dir):
 def t8(gen_dir):
     """T8 membership rulings on the cell (membership.verify) and what the scaled generation must carry
     (membership.verify_products with the '_shflux' token), RBF master dewarp ignored before the dewarp."""
-    from exopipe.phase3.lib.masters import membership as MB
+    from exopipe.phase3.lib.masters import admit as AD, membership as MB
     c = _ctx(gen_dir)
     R, G, sc, cell = c['R'], c['G'], c['sc'], c['cell']
     tok = _cfg().masters_fluxscale.TOKEN
-    mv = MB.verify(R)
+    mv = AD.verify(R)[0]                               # D-ADMIT: a night admitted into the master is not a violation
     tok_ = tok if os.path.exists(f'{G}/coadd_final/I_deep_Taper_R075{tok}_{sc}.fits') else ''
     ign = tuple(_cfg().masters_verify.T8_IGNORE)
     pv = [x for x in MB.verify_products(G, token=tok_, cell=cell) if not any(i in x for i in ign)]

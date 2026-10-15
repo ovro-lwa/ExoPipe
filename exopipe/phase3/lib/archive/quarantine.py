@@ -36,7 +36,13 @@ base = next((b for b in cands if os.path.exists("%%s/%%s" %% (b, marker))), None
 if base is None:
     print("PRECHECK-NO-INPUTS %%s: no cell inputs to judge the membership rulings - NOTHING quarantined - STOPPED" %% cell)
     sys.exit(4)
-v = _MB.verify(base) + _MB.verify_products(base)
+_vm = _MB.verify(base)
+_vp = _MB.verify_products(base)
+v = _vm + _vp
+if len(sys.argv) > 2:          # D-ADMIT: the violations, for the parent's reading of the cell's admitted nights
+    import json
+    with open(sys.argv[2], 'w') as _f:
+        json.dump({'base': base, 'membership': _vm, 'products': _vp}, _f)
 if v:
     print("PRECHECK-FAIL %%s: master fails the membership rulings (%%s%%s) - the search would refuse it; NOTHING quarantined - STOPPED"
           %% (cell, v[0][:160], " ..." if len(v) > 1 else ""))
@@ -98,14 +104,32 @@ def plan_frame_quarantine(cell, stokes, launch, round_name, archive_root=None, r
 
 
 def membership_precheck(cell, unit=None, log=None):
-    """G7: production's membership verdict on the cell (child process, production code). Returns (ok, message)."""
+    """G7: production's membership verdict on the cell (child process, production code), read with the cell's admitted
+    nights (D-ADMIT, masters_admit.ADMITTED_NIGHTS): the child also writes its violations to a file and a failure that is
+    only nights admitted into the master ('admitted, rebuild pending': lib/masters/admit.membership) passes. Returns
+    (ok, message)."""
+    import json
+    import shutil
+    import tempfile
     from exopipe.phase3.core import legacy
+    from exopipe.phase3.lib.masters import admit as AD
     q = _q()
     code = _PRECHECK % {'repo': K.sec().LEGACY_CWD, 'roots': tuple(q.PRECHECK_CELL_ROOTS), 'marker': q.PRECHECK_CELL_MARKER}
-    res = legacy.run('-c', [code, cell], python='default', cwd=K.sec().LEGACY_CWD, log=log, unit=unit,
-                     refusal_codes=(4, 5), refusal_text=('STOPPED',))
-    line = next((l for l in reversed(res.tail.splitlines()) if l.startswith('PRECHECK-')), res.tail[-300:])
-    return res.ok, line
+    td = tempfile.mkdtemp(prefix='exopipe3_precheck_')
+    try:
+        jp = os.path.join(td, 'violations.json')
+        res = legacy.run('-c', [code, cell, jp], python='default', cwd=K.sec().LEGACY_CWD, log=log, unit=unit,
+                         refusal_codes=(4, 5), refusal_text=('STOPPED',))
+        line = next((l for l in reversed(res.tail.splitlines()) if l.startswith('PRECHECK-')), res.tail[-300:])
+        if not res.ok and line.startswith('PRECHECK-FAIL') and os.path.exists(jp):
+            with open(jp) as f:
+                got = json.load(f)
+            viol, rep = AD.membership(got['base'], got['membership'])
+            if not viol and not got['products']:
+                return True, f'PRECHECK-OK {cell} {got["base"]} (' + '; '.join(rep) + ')'
+        return res.ok, line
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
 
 
 def quarantine_for_search(u, cell, stokes, launch, round_name, apply=False, archive_root=None, run_name=None,

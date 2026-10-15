@@ -146,6 +146,7 @@ class CellPlan:
         eg = f'{cd}/coadd_final/epoch_gate.csv'
         if os.path.exists(eg):
             out.append(('working-quarantine', eg, f'{wq}/{cell}/coadd_final/epoch_gate.csv'))
+        out += [('working-quarantine', p, f'{wq}/{cell}/{os.path.relpath(p, cd)}') for p in admission_files(cd)]   # D-ADMIT
         mdir = self.roots.masters_dir(self.lst, self.scope)
         old = [p for p in sorted(glob.glob(f'{mdir}/*')) if os.path.isfile(p)]
         old += [p for p in sorted(glob.glob(self.roots.night_glob(self.lst, self.scope)))
@@ -480,6 +481,10 @@ def install_cell(u, plan, gates, echo):
             if carried:
                 u.note(f'cell records carried into the working cell (B-03 input refusals, D-ADMIT build statistics): {carried}')
             add_carried_outputs(u, carried)
+            adm = quarantine_admissions(PI, plan)         # D-ADMIT: the admissions into the replaced master
+            if adm:
+                u.note(f'admissions into the replaced master moved to the working quarantine ({len(adm)} files: '
+                       f'admissions.csv, admit/)')
         if text.strip():
             u.note('phase3_install output: ' + text.strip()[-3000:])
         rows = SC.action_rows(roots.record_csv, off, cell)
@@ -517,6 +522,33 @@ def carry_record(PI, plan, rel):
     shutil.copy2(src, dst)
     PI.rec(plan.cell, 'cell-file', src, dst, PI.md5(dst))
     return dst
+
+
+def admission_files(cdir):
+    """D-ADMIT: the files of the admissions into the cell's master - coadd_final/admissions.csv and every file of the
+    admission work dir <cell>/admit/ (reference copies of that master, prep, flows; hidden files included)."""
+    from exopipe.phase3.lib.masters import admit as AD
+    out = [os.path.join(cdir, 'coadd_final', AD.ADMISSIONS)] if os.path.exists(os.path.join(cdir, 'coadd_final',
+                                                                                           AD.ADMISSIONS)) else []
+    for dp, _dn, fn in sorted(os.walk(os.path.join(cdir, AD.ADMIT_DIR))):
+        out += [os.path.join(dp, f) for f in sorted(fn)]
+    return out
+
+
+def quarantine_admissions(PI, plan):
+    """D-ADMIT: a new generation replaces the master the cell's nights were admitted into - their products are among the
+    files phase3_install quarantined; their record and work files go to the same round's working quarantine (moved and
+    md5-verified, never deleted; only the emptied admit/ directories are removed), so a night is admissible against the new
+    master (admit.nights_to_admit never admits a night admissions.csv holds). Returns the moved paths."""
+    from exopipe.phase3.lib.masters import admit as AD
+    moved = admission_files(plan.cdir)
+    for p in moved:
+        PI._move_to_wq(plan.cell, p, os.path.relpath(p, plan.cdir))
+    w = os.path.join(plan.cdir, AD.ADMIT_DIR)
+    if os.path.isdir(w):
+        for dp, _dn, _fn in list(os.walk(w, topdown=False)):     # deepest first
+            os.rmdir(dp)                                       # empty directories only (never a tree removal)
+    return moved
 
 
 def carry_input_refusals(PI, plan):
@@ -571,9 +603,11 @@ def add_screen_output(u, roots, cell, applied_json):
 def verify_cell(u, cdir, gates, echo):
     """Stage verify: the installed cell against every membership and product ruling (install_cell.sh:23-24 =
     `python -m exopipe.phase3.membership verify <cell>`, membership.py:317-329)."""
-    from exopipe.phase3.lib.masters import membership as MB
-    v = MB.verify(cdir) + MB.verify_products(cdir)
-    text = f'MEMBERSHIP+PRODUCTS {"PASS" if not v else "FAIL"} {os.path.basename(cdir)}' + ''.join('\n  ' + x for x in v)
+    from exopipe.phase3.lib.masters import admit as AD, membership as MB
+    v, rep = AD.verify(cdir)                           # D-ADMIT: an admitted night is reported, not a violation
+    v = v + MB.verify_products(cdir)
+    text = (f'MEMBERSHIP+PRODUCTS {"PASS" if not v else "FAIL"} {os.path.basename(cdir)}' + ''.join('\n  ' + x for x in v)
+            + ''.join('\n  ' + x for x in rep))
     echo('  ' + text.replace('\n', '\n  '))
     gates.check('V', not v, text, value=len(v))
 
@@ -625,6 +659,9 @@ def recover_cell(u, cell, args, roots, run_obj, echo):
             carried = carry_cell_records(PI, types.SimpleNamespace(rebuild_root=rebuild_root, cdir=roots.cdir(cell), cell=cell))
             if carried:
                 u.note(f'cell records carried into the working cell (recover): {carried}')
+            adm = quarantine_admissions(PI, types.SimpleNamespace(cdir=roots.cdir(cell), cell=cell))   # D-ADMIT, as above
+            if adm:
+                u.note(f'admissions into the replaced master moved to the working quarantine (recover): {len(adm)} files')
     echo(text.rstrip())
     u.note(text.strip()[-3000:])
     if res is None:

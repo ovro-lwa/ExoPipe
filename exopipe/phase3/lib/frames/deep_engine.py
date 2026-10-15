@@ -267,6 +267,9 @@ def child_env(spec, cfg=None):
     s['P3_SANITY_MIN_NIGHTS'] = str(int(v['sanity_min_nights']))
     s['P3_SEARCH_TIER_MIN'] = str(int(v['search_tier_min']))
     s['P3_BEAM_GATE_MIN_NIGHTS'] = str(int(v['beam_gate_min_nights']))
+    from exopipe.phase3.lib.masters import admit as _AD                 # D-ADMIT: how the engine reads admitted nights, as the
+    from exopipe.phase3.lib.search import admitted as _ADS              # search step passes it (deep_step.engine_env)
+    s[_ADS.POLICY_ENV] = _AD.admitted_policy(cfg.masters_admit.ADMITTED_NIGHTS)
     s['DEEP_XLA_MEMFRAC'] = repr(v['flow_xla_mem_fraction'])
     if v['flow_lock']:
         s['P3_FLOW_LOCK'] = v['flow_lock']        # node-global lock shared with production searches (one GPU batch per node)

@@ -459,6 +459,19 @@ def _e2e(run, nights, hdrs):
                 and 'mdewarp_screens.csv' not in p}
     msub = f'{arch}/{LST}/{nights[0]}/{run}/{SCOPE}/I/deep/frame_msub_ssub.fits'
     msub_md5 = md5(msub)
+    # D-ADMIT: admissions into the master this install replaces - admissions.csv and the admission work dir (a hidden file,
+    # a hidden directory, nested dirs) - go to the working quarantine with the products (moved, never deleted)
+    from exopipe.phase3.lib.masters import admit_stages as AS
+    with open(f'{cdir}/coadd_final/admissions.csv', 'w', newline='') as f:
+        w_ = csv.DictWriter(f, fieldnames=list(AS.ADMISSION_COLS))
+        w_.writeheader()
+        w_.writerow(dict(dict.fromkeys(AS.ADMISSION_COLS, ''), date='2099-01-02', verdict='refused', reason='test'))
+    adm_files = ['coadd_final/admissions.csv', 'admit/ref/I_deep_Taper_R075_x.fits', 'admit/.admit.lock',
+                 'admit/prep/_superseded/20261015T000000Z_1/a_scaled.fits', 'admit/.hidden/b.txt']
+    for r in adm_files[1:]:
+        os.makedirs(os.path.dirname(f'{cdir}/{r}'), exist_ok=True)
+        open(f'{cdir}/{r}', 'w').write(f'admission file {r}')
+    adm_md5 = {r: md5(f'{cdir}/{r}') for r in adm_files}
     t0 = time.time()
     rc = cli('install', '--cells', CELL, '--gen', gen, *common)
     rec = record(out, CELL)
@@ -486,6 +499,11 @@ def _e2e(run, nights, hdrs):
     ok('B: every replaced working FITS (incl. the orphan) in the working quarantine with its md5', moved_ok,
        f'{len(old_cur)} files')
     ok('B: orphan gone from the working tree', not os.path.exists(f'{cdir}/subtracted/2099-01-01_I_clean_{SCOPE}.fits'))
+    ok('B: the admissions of the replaced master (admissions.csv, every file of admit/, hidden ones included) are in the '
+       'working quarantine with their md5; admit/ is gone (empty directories only were removed)',
+       all(os.path.exists(f'{wq}/{r}') and md5(f'{wq}/{r}') == m for r, m in adm_md5.items())
+       and not os.path.exists(f'{cdir}/admit') and not os.path.exists(f'{cdir}/coadd_final/admissions.csv'),
+       [r for r, m in adm_md5.items() if not (os.path.exists(f'{wq}/{r}') and md5(f'{wq}/{r}') == m)])
     aq = f'{arch}/Run_INSTALL_QUARANTINE_{rnd}'
     aq_ok = all(os.path.exists(f'{aq}/{os.path.relpath(p, arch)}') and md5(f'{aq}/{os.path.relpath(p, arch)}') == m
                 for p, m in old_arch.items() if '_msub' not in p)

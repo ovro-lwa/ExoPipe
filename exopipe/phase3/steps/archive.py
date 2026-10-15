@@ -85,7 +85,8 @@ SUMMARY = 'manifest, checksum transfer, content audit, quarantine; retire exclud
 TIERS = ('deep', 'sublst', 'snapshot')
 SELECTORS = ('tier', 'cells', 'lsts', 'nights', 'stokes', 'run_label', 'exclude_cells', 'epochs')
 CONFIG = ('archive', 'archive_quarantine', 'archive_sync', 'archive_retire', 'archive_push', 'archive_snapshot',
-          'archive_rollback', 'paths', 'exclusions', 'instrument', 'runner', 'site')
+          'archive_rollback', 'paths', 'exclusions', 'instrument', 'runner', 'site',
+          'masters_admit')                  # ADMITTED_NIGHTS: the quarantine precheck's reading of admitted nights (G7)
 WRITES = True
 
 ACTIONS = ('push', 'sync', 'quarantine', 'retire-excluded', 'retire-refused', 'supersede', 'quarantine-rows', 'rollback',

@@ -237,3 +237,92 @@ def write_reference(cell_dir, scope, ents):
             os.replace(tmp, p)
         out[e['stokes']] = p
     return out
+
+
+# ── admitted nights in every check that reads a cell (slices 5 and 6; plan/wave2/DADMIT_DESIGN.md "Slices 5 and 6 as they will
+# be written"). One switch for every step, masters_admit.ADMITTED_NIGHTS: 'admitted' (the ruling) or 'absent' (production: an
+# admitted night is what production calls a non-excluded night absent from the co-add record).
+ADMITTED_NIGHTS = ('admitted', 'absent')
+
+
+def admitted_policy(value=None):
+    """masters_admit.ADMITTED_NIGHTS, or ``value`` checked; an unknown value refuses (a typo never selects either reading)."""
+    if value is None:
+        from exopipe.phase3.config import CFG
+        value = CFG.masters_admit.ADMITTED_NIGHTS
+    if value not in ADMITTED_NIGHTS:
+        raise Refusal(f'masters_admit.ADMITTED_NIGHTS = {value!r} is not one of {ADMITTED_NIGHTS}')
+    return value
+
+
+def master_path(cell_dir):
+    sc = os.path.basename(cell_dir.rstrip('/')).split('_', 1)[1]
+    return os.path.join(cell_dir, 'coadd_final', f'I_deep_Taper_R075_{sc}.fits')
+
+
+def master_identity(cell_dir):
+    """(CONSTDIG, md5 of the float32 data) of the cell's I master, read as installed_reference and the epoch gate read them
+    (('', '') without a master). CONSTDIG is the digest of the constituent dates only - a re-dewarped or re-baked master keeps
+    it - so an admission records both."""
+    from astropy.io import fits
+    from exopipe.phase3.lib.masters import epoch_gate as EG
+    p = master_path(cell_dir)
+    if not os.path.exists(p):
+        return '', ''
+    return str(fits.getheader(p).get('CONSTDIG') or ''), EG.master_md5(p)
+
+
+def admitted_rows(cell_dir):
+    """{date: admissions.csv row} of the nights admitted into the cell's installed master: verdict 'admitted', made into this
+    master (reference_constdig and reference_md5 its CONSTDIG and data md5 - an admission into another master counts for
+    nothing). {} without the record."""
+    p = os.path.join(cell_dir, 'coadd_final', ADMISSIONS)
+    if not os.path.exists(p):
+        return {}
+    rows = [r for r in _rows(p) if r.get('verdict') == 'admitted']
+    if not rows:
+        return {}
+    cdg, md5 = master_identity(cell_dir)
+    return {r['date']: r for r in rows
+            if cdg and r.get('reference_constdig') == cdg and r.get('reference_md5') == md5}
+
+
+def absent_violation(lst, band, date):
+    """membership.verify's sentence for a non-excluded night with a Stokes I residual in the cell but no weights.csv row -
+    production's text (membership.py, the 2026-10-11 absent-night rule), pinned by tests/test_masters_admit7.py against
+    membership.verify's own output: if production rewords it, the violation stays a violation."""
+    return (f'{lst} {band} {date}: has a Stokes I residual in the cell but is ABSENT from the co-add record (weights.csv) '
+            f'- never tested against the membership rulings; the master must be rebuilt')
+
+
+def membership(cell_dir, violations, policy=None):
+    """(violations, reports) of a cell from membership.verify's ``violations`` (this process's or a child's): under
+    'admitted' each admitted night's absent-night violation leaves the violations and is reported as '<lst> <band> <date>:
+    admitted <utc> into the installed master, rebuild pending'. Every other violation stays; under 'absent' nothing
+    changes."""
+    viol = list(violations)
+    if admitted_policy(policy) != 'admitted' or not viol:
+        return viol, []
+    rows = admitted_rows(cell_dir)
+    if not rows:
+        return viol, []
+    from exopipe.phase3.lib.masters.membership import cell_band
+    lst, band = cell_band(cell_dir)
+    which = {absent_violation(lst, band, d): d for d in rows}
+    keep, reports = [], []
+    for v in viol:
+        d = which.get(v)
+        if d is None:
+            keep.append(v)
+        else:
+            reports.append(f'{lst} {band} {d}: admitted {rows[d].get("utc", "")} into the installed master, rebuild pending')
+    return keep, reports
+
+
+def verify(cell_dir, exclusions=None, policy=None, mb=None):
+    """membership.verify of the cell read with its admitted nights - (violations, reports), see membership(). The one entry
+    point of every branch step that verifies a cell (``mb``: the membership module a caller loaded, default the branch's);
+    membership.py stays production's text (S-G6)."""
+    if mb is None:
+        from exopipe.phase3.lib.masters import membership as mb
+    return membership(cell_dir, mb.verify(cell_dir, exclusions), policy)

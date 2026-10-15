@@ -227,8 +227,9 @@ def _gates(cell, gen, kind, rebuild_root=None):
     # (exopipe.phase3.membership.verify - exclusions, stage 2 with the ruled non-matched metric, the stage-3 window, the night-image and
     # epoch-image checks). A rebuilt cell is verified in its rebuild root; a re-dewarp keeps the membership of the installed cell.
     from exopipe.phase3.lib.masters import membership as _MB
+    from exopipe.phase3.lib.masters import admit as _ADV     # WAVE2 D-ADMIT: a night admitted into the master is not a violation
     _mcell = rebuild_root.rstrip('/') if (kind == 'rebuild' or rebuild_root) else f'{ROOT}/{cell}'   # --rebuild-root IS the cell's rebuild dir
-    _mv = _MB.verify(_mcell)
+    _mv = _ADV.verify(_mcell)[0]                              # WAVE2 D-ADMIT (production: _MB.verify(_mcell))
     if _mv:
         raise RuntimeError(f'{cell}: master membership violates the rulings ({len(_mv)}): ' + ' | '.join(_mv[:5]) + ' - REFUSING')
     # G-PRODUCTS (2026-10-07): what a master must carry - the ruled flux scale in the pixels, both PB maps, the cubic RBF dewarp on an

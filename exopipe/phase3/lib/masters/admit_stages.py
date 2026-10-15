@@ -241,7 +241,7 @@ def plan_admit_prep(cell, args, out, planned):
 # =====================================================================================================================
 
 ADMISSION_COLS = ('date', 'verdict', 'reason', 'image', 'image_sha1', 'v_image', 'v_image_sha1', 'v_products', 'flow',
-                  'flow_sha1', 'reference_constdig', 'pixel_factor', 'dc1', 'dc2', 'dc2_nsrc', 'guard_median',
+                  'flow_sha1', 'reference_constdig', 'reference_md5', 'pixel_factor', 'dc1', 'dc2', 'dc2_nsrc', 'guard_median',
                   'guard_median_source', 'night_image', 'night_image_reason', 'epoch_gate', 'epoch_ratio', 'epoch_reason',
                   'qa3_scale', 'qa3_window', 'stage2_i_rms_mjy', 'stage2_i', 'stage2_v_rms_mjy', 'stage2_v', 'qa3_rms_mjy',
                   'beam_area', 'beam_gate', 'build_stats_sha1', 'commit', 'utc')
@@ -493,11 +493,13 @@ def admit_stage(cell, args, run, out, ran_now):
             stamp = f'{R.utcnow().replace(":", "")}_{os.getpid()}'
             commit = R.git_commit(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
             bs_sha1 = _sha1(os.path.join(cd, 'coadd_final', BS.FILE))
+            ref_md5 = A.master_identity(cd)[1]                         # the master's pixels (its CONSTDIG names its nights only)
             n_adm = n_ref = 0
             with IP.capture_stdout(DS._log(out, cell, 'admit'), echo=False):
                 for d, sd, img in todo:
                     rowd = dict.fromkeys(ADMISSION_COLS, '')
                     rowd.update(date=d, image=img, image_sha1=_sha1(img), reference_constdig=ents[0]['constdig'] or '',
+                                reference_md5=ref_md5,
                                 pixel_factor=f'{factor:.9f}', guard_median=f'{med:.6f}', guard_median_source=med_src,
                                 build_stats_sha1=bs_sha1, commit=commit, utc=R.utcnow())
                     dests = {k: os.path.join(subd, f'{d}_{k[0]}_{k[1]}_{fl}.fits') for k in PRODUCTS}

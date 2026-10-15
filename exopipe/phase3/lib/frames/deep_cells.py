@@ -191,11 +191,13 @@ def pregates(c, stokes, tier='deep', date=None, work_cell=None, x2_mode='compute
         out.append(_gate('D-G3', True, 'membership gate bypassed: ALLOW_OLD_MASTERS (phase3_deep.py:984)'))
     elif tier == 'deep':
         try:
-            from exopipe.phase3.lib.masters import membership as mb
-            viol = mb.verify(c.base) + mb.verify_products(c.base)
+            from exopipe.phase3.lib.masters import admit as ad, membership as mb
+            viol, rep = ad.verify(c.base)                 # D-ADMIT: an admitted night is 'admitted, rebuild pending'
+            viol = viol + mb.verify_products(c.base)
             out.append(_gate('D-G3', not viol, 'membership.verify + verify_products: '
                              + ('pass' if not viol else ' | '.join(viol[:3]) + (f' (+{len(viol) - 3} more)' if len(viol) > 3
-                                                                                  else ''))))
+                                                                                  else ''))
+                             + (f' ({len(rep)} admitted, rebuild pending)' if rep else '')))
         except Exception as e:
             out.append(_gate('D-G3', False, f'membership check could not run: {type(e).__name__}: {e}'))
     dates = c.epoch_dates()

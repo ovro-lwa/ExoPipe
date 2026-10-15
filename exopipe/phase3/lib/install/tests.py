@@ -173,10 +173,12 @@ def rows_match_files(path, **ctx):
 
 @content_test('installed_cell', name='membership')
 def ic_membership(path, **ctx):
-    """membership.verify (T8, part 1): every master night obeys the membership rulings."""
-    from exopipe.phase3.lib.masters import membership as MB
-    v = MB.verify(os.path.abspath(path).rstrip('/'))
-    return not v, len(v), 'membership rulings hold' if not v else _short(v, 3)
+    """membership.verify (T8, part 1): every master night obeys the membership rulings; a night admitted into the master
+    is reported, not a violation (D-ADMIT, masters_admit.ADMITTED_NIGHTS: lib/masters/admit.verify)."""
+    from exopipe.phase3.lib.masters import admit as AD
+    v, rep = AD.verify(os.path.abspath(path).rstrip('/'))
+    return not v, len(v), (('membership rulings hold' + (f' ({len(rep)} admitted, rebuild pending)' if rep else ''))
+                           if not v else _short(v, 3))
 
 
 @content_test('installed_cell', name='products')

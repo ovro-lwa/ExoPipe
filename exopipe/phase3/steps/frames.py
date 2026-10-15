@@ -82,7 +82,8 @@ def _config_sections():
     from exopipe.phase3.config import CFG
     secs = CFG.sections()
     own = tuple(s for s in secs if s == 'frames' or s.startswith('frames_'))
-    return own + tuple(s for s in _SEARCH_SECTIONS if s in secs) + ('paths', 'exclusions', 'instrument', 'site', 'runner')
+    return own + tuple(s for s in _SEARCH_SECTIONS if s in secs) + ('paths', 'exclusions', 'instrument', 'site', 'runner',
+                                                                     'masters_admit')   # ADMITTED_NIGHTS (D-G3, the engine)
 
 
 CONFIG = _config_sections()

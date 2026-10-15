@@ -337,11 +337,17 @@ class masters_verify(_Section):
 
 
 class masters_admit(_Section):
-    """D-ADMIT (a) slice 4, the admit stage (lib/masters/admit_stages.admit_stage)."""
+    """D-ADMIT (a): the admit stage (slice 4, lib/masters/admit_stages.admit_stage) and how every step reads an admitted night
+    (slices 5 and 6: lib/masters/admit.verify - membership - and lib/search/admitted - the deep search)."""
     DC2_MEDIAN_WITHOUT_RECORD = None          # the cell median of the second-pass DC that coadd.subtract_night's degeneracy guard
                                               # uses for a cell whose build did not record it (every cell built before builds kept it):
                                               # None = the stage refuses (no silent substitute); DECISIONS_PENDING item 10 recommends 1.0
                                               # (today's rule gives 0.995-1.004 in the 143 cells whose build log is kept)
+    ADMITTED_NIGHTS = 'admitted'              # 'admitted' (ruled): membership reports a night admitted into the installed master as
+                                              # 'admitted, rebuild pending' and the deep search accepts it, judged against the cell's own
+                                              # nights; 'absent' (production): it is a night absent from the co-add record - a membership
+                                              # violation, refused by the search's input-provenance gate E15. One value for every step
+    RULED = {'ADMITTED_NIGHTS': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'}
 
 
 class masters_sources(_Section):

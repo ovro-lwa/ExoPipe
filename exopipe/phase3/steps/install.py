@@ -73,8 +73,9 @@ import os
 SUMMARY = 'gated install of rebuilt deep products into the working tree; quarantine round; re-run list'
 TIERS = ('deep',)
 SELECTORS = ('tier', 'cells', 'exclude_cells')
-CONFIG = ('install', 'install_enqueue', 'dewarp', 'masters')    # dewarp.RESAMPLE_METHOD is checked against the in-place
-#                                                                  cubic gate; masters: membership rulings (G-MEM, V)
+CONFIG = ('install', 'install_enqueue', 'dewarp', 'masters', 'masters_admit')    # dewarp.RESAMPLE_METHOD is checked against the in-place
+#                                                                  cubic gate; masters: membership rulings (G-MEM, V);
+#                                                                  masters_admit: ADMITTED_NIGHTS (D-ADMIT)
 WRITES = True
 
 STAGES = ('plan', 'install', 'verify', 'enqueue', 'cleanup')

@@ -531,7 +531,7 @@ def build(cell, args, run, out, ran_now):
                             u.refuse('co-add skipped a B-05 rebuild pass (.done + current COADDOP)')
                         return r
                     fin = EGP.run_passes(u, _rerun, cell_dir, sc, out, fin, run.run_id,
-                                         lambda: mods['membership'].verify(cell_dir, excl), factor=factor)
+                                         lambda: _admit().verify(cell_dir, excl, mb=mods['membership'])[0], factor=factor)
             except RuntimeError as e:                 # every in-place gate that raises (G-M02/04/05/09/16/19)
                 u.refuse(str(e)[:1500])
         u.note(f'co-add final: {fin.get("n_good")}/{fin.get("n_total")} nights in the master')
@@ -855,10 +855,11 @@ def installed_cell_violations(installed, cell):
     """membership.verify + membership.verify_products of the INSTALLED cell - production's `python -m exopipe.phase3.membership
     verify /data07/.../<cell>` (install_cell.sh:70-71), which stops the chain before the parent catalogue is built. Run here
     on every sources unit (also when the install record is waived during the window, and after an exclusion added since the
-    install: a catalogue is never built on a master holding an excluded constituent)."""
-    from exopipe.phase3.lib.masters import membership as MB
+    install: a catalogue is never built on a master holding an excluded constituent). A night admitted into the master is
+    not a violation (D-ADMIT: lib/masters/admit.verify)."""
+    from exopipe.phase3.lib.masters import admit as AD, membership as MB
     cd = os.path.join(installed, cell)
-    return list(MB.verify(cd)) + list(MB.verify_products(cd))
+    return list(AD.verify(cd)[0]) + list(MB.verify_products(cd))
 
 
 def sources(cell, args, run, out, ran_now):
@@ -999,7 +1000,7 @@ def build_stats_stage(cell, args, run, out, ran_now):
     --fresh replaces it, of either basis, the old one moved aside to coadd_final/build_stats.superseded_<UTC>.json. The
     record is written to a temporary name, content-tested and only then renamed (a failing record never stays). No input
     without the records. The beam block says whether today's gate rule flags the nights the build flagged ('agree')."""
-    from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP, membership as MB
+    from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP
     lst, sc = cell.split('_', 1)
     src = args.deep_installed_root or _cfg().paths.COADD_SB_ROOT
     cell_src = os.path.join(src, cell)
@@ -1027,7 +1028,7 @@ def build_stats_stage(cell, args, run, out, ran_now):
                      f'rebuild the cell (exclusions are absolute, DESIGN 5 (d))')
         mods, _ = inplace(out)
         with IP.capture_stdout(_log(out, cell, 'build-stats'), echo=False):   # the stage-2 rule's notes: in the stage's log
-            viol = list(MB.verify(cell_src))
+            viol = list(_admit().verify(cell_src)[0])        # D-ADMIT: a night admitted into the master is not a violation
             try:
                 st = None if viol else BS.compute(cell_src, lst, sc, mods['coadd'], _cfg(), 'stage')
             except BS.NoRecord as e:
@@ -1071,6 +1072,11 @@ STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vcle
 def _admit_stages():
     from exopipe.phase3.lib.masters import admit_stages
     return admit_stages
+
+
+def _admit():
+    from exopipe.phase3.lib.masters import admit
+    return admit
 
 
 # =====================================================================================================================
@@ -1260,7 +1266,7 @@ def _plan_simple(stage):
         elif stage == 'variants':
             lines.append(f'in place: coadd.rebuild_variants_from_record(variants={args.deep_variants or s.masters_build.VARIANTS_ONLY})')
         elif stage == 'build-stats':
-            from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP, membership as MB
+            from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP
             src = args.deep_installed_root or s.paths.COADD_SB_ROOT
             cs = os.path.join(src, cell)
             dest = os.path.join(cs, 'coadd_final', BS.FILE)
@@ -1281,7 +1287,7 @@ def _plan_simple(stage):
                 if stale:
                     gates.append(f'night(s) {stale} of the build population are excluded now (rebuild the cell)')
                 inplace(out)
-                viol = list(MB.verify(cs))
+                viol = list(_admit().verify(cs)[0])           # D-ADMIT: as the stage reads it
                 if viol:
                     gates.append(f'the cell fails membership.verify ({len(viol)}): {viol[0][:200]}')
         return lines, gates

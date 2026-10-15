@@ -180,11 +180,12 @@ def admissions_record(path, **ctx):
     """D-ADMIT: <cell>/coadd_final/admissions.csv - the columns (admit_stages.ADMISSION_COLS), each night once, a verdict
     of 'admitted' or 'refused' with a reason for every refusal; an admitted night has its I epoch, sub and clean - and its
     V ones when v_products says 'admitted' - in the cell's subtracted/ with ADMITTED True and ADMITREF its master's
-    CONSTDIG, and its night-image and epoch checks passed; a refused night has no product there, and no ADMITTED product
-    in subtracted/ lacks an admitted row (an orphan of an interrupted run); the image, V image and flow sha1s are those of
-    the files."""
+    CONSTDIG, its row the identity of the installed master (CONSTDIG and data md5: admit.master_identity - an admission
+    into another master no longer describes the cell), and its night-image and epoch checks passed; a refused night has no
+    product there, and no ADMITTED product in subtracted/ lacks an admitted row (an orphan of an interrupted run); the image,
+    V image and flow sha1s are those of the files."""
     from astropy.io import fits
-    from exopipe.phase3.lib.masters import admit_stages as AS
+    from exopipe.phase3.lib.masters import admit as A, admit_stages as AS
     rows = list(csv.DictReader(open(path, newline='')))
     cols = tuple(rows[0].keys()) if rows else ()
     probs = []
@@ -193,6 +194,7 @@ def admissions_record(path, **ctx):
     cell = os.path.dirname(os.path.dirname(os.path.abspath(path)))
     sc = os.path.basename(cell).split('_', 1)[1]
     seen, admitted = set(), set()
+    ident = A.master_identity(cell) if any(r.get('verdict') == 'admitted' for r in rows) else None
     for r in rows:
         d = r.get('date')
         if d in seen:
@@ -208,6 +210,9 @@ def admissions_record(path, **ctx):
             admitted.add(d)
             if r.get('night_image') == 'FAIL' or r.get('epoch_gate') != 'pass':
                 probs.append(f'{d}: admitted although a refusing check failed')
+            if (r.get('reference_constdig'), r.get('reference_md5')) != ident:
+                probs.append(f'{d}: admitted into another master (CONSTDIG / data md5 {r.get("reference_constdig")} / '
+                             f'{r.get("reference_md5")} are not the installed master\'s)')
             for p in prods:
                 if not os.path.exists(p):
                     probs.append(f'{d}: admitted but {os.path.basename(p)} missing')
@@ -685,11 +690,11 @@ def _record_dirs(path):
 def verify(path, **ctx):
     """membership.verify(cell) returns no violation (incl. nights absent from the record) - the final stage's own rule
     (coadd_full_pipeline.py:3800-3805; IMPL-MEMBERSHIP-VERIFY-NIGHTS-ABSENT-FROM-RECORD)."""
-    from exopipe.phase3.lib.masters import membership as MB
+    from exopipe.phase3.lib.masters import admit as AD
     cell_dir, _ = _record_dirs(path)
     if not _CELL_RE.match(os.path.basename(cell_dir)):
         return False, None, f'{cell_dir}: not a <LST>_<scope> cell directory (membership.verify keys the cell by its name)'
-    v = MB.verify(cell_dir)
+    v, _rep = AD.verify(cell_dir)                      # D-ADMIT: a night admitted into the master is not a violation
     return not v, len(v), f'{len(v)} violations {v[:3]}'
 
 

@@ -928,14 +928,14 @@ def _write_pbcorr_sibling(frame_path, data, hdr, base, scope, cell_tag, d, pbp=N
     return out
 
 
-def _write_sigstack(sstack, hdr0, run_root, lst, scope, stokes):
+def _write_sigstack(sstack, hdr0, run_root, lst, scope, stokes, night=None):   # WAVE2 D-ADMIT: night
     """Persist the per-pixel across-epoch noise map (grammar token 'sigstack';
     products audit B-11: built in memory only before 2026-09-04). Archive class
     to be ruled; written under the run root so the gate's input is on disk."""
     if sstack is None:
         return None
     d = f'{run_root}/sigstack'; os.makedirs(d, exist_ok=True)
-    p = f'{d}/{lst}_{scope}_{stokes}_sigstack.fits'
+    p = f'{d}/{lst}_{scope}_{stokes}_sigstack' + (f'_{night}' if night else '') + '.fits'   # WAVE2 D-ADMIT: an admitted night's own
     h = WCS(hdr0).celestial.to_header()
     for k in ('DATE-OBS', 'DATE-END', 'MJD-OBS', 'MJD-MID', 'DURATION', 'INTTIME', 'TIMEFIX',
               'BMAJ', 'BMIN', 'BPA', 'RESTFRQ', 'NSTACK', 'NCOADD', 'COADDOP'):
@@ -944,6 +944,8 @@ def _write_sigstack(sstack, hdr0, run_root, lst, scope, stokes):
     h['BUNIT'] = ('ratio', 'across-epoch MAD noise / thermal, floored at 1')
     h['PRODUCT'] = ('sigstack', 'Ensemble per-pixel noise-structure map')
     h['STOKES'] = (stokes, 'Stokes parameter')
+    if night:                                                              # WAVE2 D-ADMIT
+        h['ADMITTED'] = (night, 'the cell\'s searched nights plus this admitted night')
     fits.writeto(p + '.part', np.asarray(sstack, dtype=np.float32), h, overwrite=True)
     os.replace(p + '.part', p)
     return p
@@ -1089,7 +1091,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # snapshot / sub-LST chat's (cross-tier note in the ledger). P3_ALLOW_OLD_MASTERS=1 bypasses it for archaeology, never production.
     if cadence == 'deep' and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
         from exopipe.phase3.lib.masters import membership as _MB
-        _mv = _MB.verify(base) + _MB.verify_products(base)   # membership + what the master must carry (flux scale, PB, dewarp)
+        from exopipe.phase3.lib.masters import admit as _ADV               # WAVE2 D-ADMIT: membership read with the admitted nights
+        from exopipe.phase3.lib.search import admitted as _ADS             # WAVE2 D-ADMIT
+        _mv, _mrep = _ADV.verify(base, policy=_ADS.policy())               # WAVE2 D-ADMIT (production: _MB.verify(base))
+        _mv = _mv + _MB.verify_products(base)   # membership + what the master must carry (flux scale, PB, dewarp)
+        for _x in _mrep:                                                   # WAVE2 D-ADMIT: 'admitted, rebuild pending'
+            print(f'  {_x}', flush=True)
         if _mv:
             raise RuntimeError(f'{lst} {scope}: REFUSING to search - the master violates the membership rulings: '
                                + ' | '.join(_mv[:5]) + (f' (+{len(_mv) - 5} more)' if len(_mv) > 5 else ''))
@@ -1138,6 +1145,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _minE = DEEP_MIN_EPOCHS if cadence == 'deep' else MIN_EPOCHS
     if len(dates) < _minE:
         print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} epochs (minimum {_minE}, cadence {cadence})'); return 0
+    from exopipe.phase3.lib.search import admitted as _ADS                 # WAVE2 D-ADMIT: the nights admitted into this master
+    _adm, _adm_bad = _ADS.nights(base, scope, cadence)                     # WAVE2 D-ADMIT ({}, {} under production's reading)
+    if _adm:                                                               # WAVE2 D-ADMIT
+        print(f'  {lst} {scope}: {len(_adm)} admitted night(s) {sorted(_adm)}, judged against the cell\'s own nights',   # WAVE2 D-ADMIT
+              flush=True)
 
     mup = f'{cell_work}/master_up2.fits'
     # FLOW-CACHE GENERATION GATE (constituent-generation ruling 2026-08-12, approved
@@ -1213,6 +1225,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         except FileNotFoundError:
             raise RuntimeError(f'{lst} {scope}: no {_NG.GATE_FILE} in {base}/coadd_final - the night-image gate '
                                f'(Gregg 2026-10-02) cannot run; REFUSING')
+        _ngf = set(_ngf) | _ADS.gate_failures(_adm)[0]                     # WAVE2 D-ADMIT: an admitted night's verdict, admissions.csv
         _ngd = [d for d in dates if _kd(d) in _ngf]
         if _ngd:
             dates = [d for d in dates if d not in _ngd]
@@ -1229,6 +1242,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         except FileNotFoundError:
             raise RuntimeError(f'{lst} {scope}: no {_EG.GATE_FILE} in {base}/coadd_final - the epoch gate (Gregg 2026-10-04) '
                                f'cannot run; REFUSING')
+        _egf = set(_egf) | _ADS.gate_failures(_adm)[1]                     # WAVE2 D-ADMIT: an admitted night's verdict, admissions.csv
         _egd = [d for d in dates if _kd(d) in _egf]
         if _egd:
             dates = [d for d in dates if d not in _egd]
@@ -1273,6 +1287,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _fin = sorted(v for v in _wr.values() if np.isfinite(v) and v > 0)
         if _enough(len(_fin), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes I sanity gate, nights with a qa3 rms'):   # WAVE2 B-30
             _med = _fin[len(_fin) // 2]
+            _wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}                # WAVE2 D-ADMIT: an admitted night's own value, after the median
             _unm_qa3 = {d for d in dates if not (_wr.get(_kd(d), 0) > 0)}   # WAVE2 B-30: unmeasured (named after (1e))
             _bad = [d for d in dates
                     if _wr.get(_kd(d), 0) > 10.0 * _med]
@@ -1360,6 +1375,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 continue
             _med = float(np.median(_v)); _mad = float(np.median(np.abs(_v - _med))) * 1.4826
             _thr = _med + SEARCH_TIER_SIGMA * _mad
+            _rm = {**_rm, **_ADS.values(_adm, f'stage2_{_st.lower()}_rms_mjy')}   # WAVE2 D-ADMIT: an admitted night's own value, after
+                                                                           # the threshold (the same provisional-stage metric)
             for d in dates:
                 if _rm.get(_key(d), 0) > _thr:
                     _tier.append((d, _st, _rm[_key(d)], _thr))
@@ -1403,8 +1420,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _vref = _same_state_refused_v(base)       # WAVE2 B-03: nights whose V input the masters build refused (same-state)
         for d in dates:
             _why = ''
-            if _cur is not None and _kd(d) not in _cons and _kd(d) not in _cur:
+            if _cur is not None and _kd(d) not in _cons and _kd(d) not in _cur and _kd(d) not in _adm:   # WAVE2 D-ADMIT: admitted accepted
                 _why = 'not a constituent and absent from the final co-add record (weights.csv)'
+                if _kd(d) in _adm_bad:                                     # WAVE2 D-ADMIT
+                    _why += f'; {_adm_bad[_kd(d)]}'                        # WAVE2 D-ADMIT
             for _st in ('I', 'V'):
                 if _st == 'V' and _kd(d) in _vref and not os.path.exists(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'):   # WAVE2 B-03
                     continue                      # WAVE2 B-03: no V frame by the build's rule - the V search skips it, I keeps it
@@ -1468,7 +1487,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     _areas[d] = float(_h['BMAJ']) * float(_h['BMIN'])
                 except Exception:
                     pass
-        _fin = sorted(_areas.values())
+        _fin = sorted(v for d, v in _areas.items() if d not in _adm)       # WAVE2 D-ADMIT: the cell's nights (production: all)
         # 2026-09-04 (audit R-15): the gate REFUSES instead of failing open -
         # an epoch without a readable beam header cannot be admitted, and a
         # set too small to key the median cannot be searched unguarded.
@@ -1504,6 +1523,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if len(dates) < _minE:
         print(f'  {lst} {scope}: P3-POLICY-SKIP only {len(dates)} flows (minimum {_minE}, cadence {cadence})'); return 0
 
+    _pop = [d for d in dates if d not in _adm]                             # WAVE2 D-ADMIT: the cell's searched nights
     if included_dates:
         # INCREMENTAL MODE (Gregg 2026-09-13 "Proceed"): every admission gate above ran on the whole cell; only the listed
         # epochs are now built and searched, and their rows/frames are APPENDED to the attempt (run under a copy of the
@@ -1514,6 +1534,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
               + (f'; {len(_inc_missing)} listed but not admitted by the gates: {_inc_missing}' if _inc_missing else ''), flush=True)
         if not dates:
             print(f'  {lst} {scope}: INCREMENTAL - nothing admitted; done'); return 0
+    _rdates = _ADS.residual_dates(dates, _pop, _adm)                       # WAVE2 D-ADMIT: = dates, + the cell's nights an admitted
+    _ssA_I, _ssA_V = {}, {}                                                # WAVE2 D-ADMIT: night's own stack needs (incremental)
     hdr_ref = _det_header(hdr0, scope, em, cd, None)
     # R-LOO-MASTERS as SEARCH FRAMES (conformance fix 2026-09-03): an epoch
     # is differenced against ITS OWN leave-one-out master where one exists
@@ -1530,10 +1552,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         from exopipe.phase3.core import fallback      # WAVE2 B-30
         fallback.site('fallbacks.SEARCH_WEIGHTS_FALLBACK', f'{base}/coadd_final/weights.csv missing - no epoch would be '
                       f'searched against its leave-one-out master')
-    def _loo_masters(central, stokes_tag, variant_tag, master_path):
+    def _loo_masters(central, stokes_tag, variant_tag, master_path, _dl=None):   # WAVE2 D-ADMIT: _dl, the dates (default dates)
         out = {}
         _nco = int(fits.getheader(master_path).get('NCOADD', 0) or 0)
-        for _d in dates:
+        for _d in (dates if _dl is None else _dl):                         # WAVE2 D-ADMIT
             _lp = (f'{base}/coadd_final/loo/'
                    f'{_d}_{stokes_tag}_loo_{variant_tag}_{scope}.fits')
             if cadence == '10min':
@@ -1573,18 +1595,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if 'I' in stokes:
         resid_I = _build_residuals_mp(epoch_I,
                                       _loo_masters(master_I, 'I',
-                                                   'Taper_R075', mI),
-                                      flows, hdr_ref, cd, dates, NPROC_RESID,
+                                                   'Taper_R075', mI, _rdates),   # WAVE2 D-ADMIT: _rdates
+                                      flows, hdr_ref, cd, _rdates, NPROC_RESID,   # WAVE2 D-ADMIT (production: dates)
                                       spill=(cell_work if _STREAM else None), tag='I')
         dates = [d for d in dates if d in resid_I]
         _ssI = f'{run_root}/sigstack/{lst}_{scope}_I_sigstack.fits'
         if included_dates and os.path.exists(_ssI):
             sstack_I = np.squeeze(fits.getdata(_ssI)).astype(float); print(f'  {lst} {scope}: INCREMENTAL - sigma-stack I from the persisted cell map')
         else:
-            sstack_I = _sigma_stack(resid_I, cell_work, hdr0, 'I')
+            sstack_I = _sigma_stack(_ADS.only(resid_I, _ADS.without(dates, _adm)), cell_work, hdr0, 'I')   # WAVE2 D-ADMIT: the
+                                                                           # cell's nights (production: resid_I - the same mapping)
             _write_sigstack(sstack_I, hdr0, run_root, lst, scope, 'I')
     else:
         resid_I, sstack_I = {}, None   # V-only redo (Gregg 2026-08-21): Stokes I is out
+    if 'I' in stokes:                                                      # WAVE2 D-ADMIT: each admitted night's own stack (Gregg 2026-10-14)
+        _ssA_I = _ADS.stacks(dates, _pop, _adm, resid_I, lambda _r: _sigma_stack(_r, cell_work, hdr0, 'I'),   # WAVE2 D-ADMIT
+                             lambda _s, _d: _write_sigstack(_s, hdr0, run_root, lst, scope, 'I', night=_d), f'{lst} {scope} I')
     resid_V = {}
     # 2026-09-01 fix: honor stokes='I' — the V side previously ran whenever
     # a V master existed, so an I-only extraction silently re-searched V
@@ -1592,7 +1618,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # 'V' and 'IV' behavior unchanged.
     if master_V is not None and 'V' in stokes:
         epoch_V = _Lazy() if _STREAM else {}
-        for d in dates:
+        for d in _rdates:                                                  # WAVE2 D-ADMIT (production: dates)
             vp = f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'
             if os.path.exists(vp):
                 if _STREAM:
@@ -1601,7 +1627,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     epoch_V[d] = _load(vp) + master_V
         if epoch_V:
             vd = list(dict.keys(epoch_V))
-            _mV = _loo_masters(master_V, 'V', 'Taper_R0', mVp)
+            _mV = _loo_masters(master_V, 'V', 'Taper_R0', mVp, _rdates)     # WAVE2 D-ADMIT: _rdates
             resid_V = _build_residuals_mp(epoch_V,
                                           {d: _mV[d] for d in vd},
                                           flows,   # the builder reads flows[d] for d in vd only (same in both modes)
@@ -1611,8 +1637,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if included_dates and os.path.exists(_ssV):
         sstack_V = np.squeeze(fits.getdata(_ssV)).astype(float); print(f'  {lst} {scope}: INCREMENTAL - sigma-stack V from the persisted cell map')
     else:
-        sstack_V = _sigma_stack(resid_V, cell_work, hdr0, 'V') if resid_V else None
+        sstack_V = (_sigma_stack(_ADS.only(resid_V, _ADS.without(dates, _adm)), cell_work, hdr0, 'V')   # WAVE2 D-ADMIT: the
+                    if resid_V else None)                                  # cell's nights (production: resid_V - the same mapping)
         _write_sigstack(sstack_V, hdr0, run_root, lst, scope, 'V')
+    _ssA_V = _ADS.stacks(dates, _pop, _adm, resid_V, lambda _r: _sigma_stack(_r, cell_work, hdr0, 'V'),   # WAVE2 D-ADMIT
+                         lambda _s, _d: _write_sigstack(_s, hdr0, run_root, lst, scope, 'V', night=_d), f'{lst} {scope} V')
 
     gled_rows, gimg_rows = [], []
     v_pending, i_pending = [], []
@@ -1699,11 +1728,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope} {_d}: the V frame rms could not be '
                               f'computed - the epoch would escape the V sanity gate')
                 pass
-        _vf = sorted(v for v in _vr.values() if np.isfinite(v) and v > 0)
+        _vf = sorted(v for _d, v in _vr.items() if np.isfinite(v) and v > 0 and _d not in _adm)   # WAVE2 D-ADMIT: the cell's nights
         if _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms',   # WAVE2 B-30
                    count=bool(resid_V)):         # an I-only unit (or no V epoch) has no V search for the gate to guard
             _vmed = _vf[len(_vf) // 2]
-            skip_V_dates = {d for d, v in _vr.items() if v > SANITY_I_X * _vmed}
+            skip_V_dates = {d for d, v in _vr.items() if v > SANITY_I_X * _vmed and d in dates}   # WAVE2 D-ADMIT: searched nights
             if skip_V_dates:
                 with open(f'{_refdir}/{lst}_{scope}_sanity_V_excluded.csv', 'a') as _sf:
                     for d in sorted(skip_V_dates):
@@ -1806,7 +1835,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 gimg_rows.append([lst, scope, 'I', d, 0, 0, '', '', 0, 0, _elev_floor('I')]); continue
             _xfI = None
             try:
-                _allI = run_identification_i(rI, master_I, hdr, beam, sstack_I,
+                _allI = run_identification_i(rI, master_I, hdr, beam, _ssA_I.get(d, sstack_I),   # WAVE2 D-ADMIT: its own stack
                                              refuse_on_extraction_failure=_xrefuse)
             except sv2.SourceExtractionFailed as _xf:
                 _xfI = _xf
@@ -1836,7 +1865,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 # catalog / ledger rows (0 of 4,064 I catalog rows carried mstruct or sstack)
                 c['mstruct'] = round(_mi, 2)
                 try:
-                    c['sstack'] = round(float(sstack_I[int(c['pix_y']), int(c['pix_x'])]), 2)
+                    c['sstack'] = round(float(_ssA_I.get(d, sstack_I)[int(c['pix_y']), int(c['pix_x'])]), 2)   # WAVE2 D-ADMIT
                 except Exception:
                     pass
                 if _s < SIGMA_MSTRUCT * max(_mi, 1.0):
@@ -2001,8 +2030,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     # ledger needs them on vetoed rows too, not just survivors)
                     c['mstruct'] = round(msv, 2)
                     c['mstruct_raw'] = round(float(ms_raw[yy, xx]), 2)
-                    c['sstack'] = (round(float(sstack_V[yy, xx]), 2)
-                                   if sstack_V is not None else '')
+                    _ssv = _ssA_V.get(d, sstack_V)                                 # WAVE2 D-ADMIT: an admitted night's own stack
+                    c['sstack'] = (round(float(_ssv[yy, xx]), 2)
+                                   if _ssv is not None else '')
                     if snr < SIGMA_MSTRUCT * max(msv, 1.0):       # mstruct sole gate
                         vetoed_ms.append(c)
                         continue
