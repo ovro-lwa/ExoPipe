@@ -19,7 +19,6 @@ ledger            ledger rows that differ from a fresh inventory (steps_ledger: 
 """
 import glob
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -70,18 +69,6 @@ def _file_sha12(path):
         return None
 
 
-def _module_file(name):
-    m = sys.modules.get(name)
-    f = getattr(m, '__file__', None) if m else None
-    if f:
-        return f
-    try:
-        spec = importlib.util.find_spec(name)
-    except (ImportError, ValueError, AttributeError):
-        return None
-    return getattr(spec, 'origin', None) if spec else None
-
-
 def record_staleness(rec, ex):
     """(stale reasons, not-done status or '') of one unit record."""
     from exopipe.phase3.core import record as R
@@ -102,8 +89,9 @@ def record_staleness(rec, ex):
             why.append('config changed (sections ' + (','.join(secs) if secs else 'all') + ')')
     except Exception as e:                                   # noqa: BLE001 - a section no longer defined
         why.append(f'config sections not computable now ({e})')
+    files = rec.get('code_files') or {}
     for mod, h in (rec.get('code') or {}).items():
-        f = _module_file(mod)
+        f = files.get(mod) or R.module_file(mod)          # the recorded path (records since 2026-10-15), else resolved now
         if f and f.endswith('.py') and os.path.exists(f) and _file_sha12(f) != h:
             why.append(f'code changed: {mod}')
             break

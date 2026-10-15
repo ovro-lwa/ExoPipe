@@ -28,9 +28,38 @@ if _ROOTS:
 _FP_OUT = os.environ.get('EXOPIPE3_FINGERPRINT_OUT', '')
 if _FP_OUT:
     import atexit as _atexit
+    import hashlib as _hashlib
+    # Each module's source is hashed when its code is executed (an audit hook, Python 3.8+: its import, or a reload) and
+    # the main script now, before it runs - not at exit: a file edited while the child runs would otherwise be recorded as
+    # the code that ran (2026-10-15 review). Python 3.6 / 3.7 children have no audit hooks: there the modules are hashed
+    # at exit, as before.
+    _FP_RAN = {}
+
+    def _fp_sha(f):
+        with open(f, 'rb') as fo:
+            return _hashlib.sha1(fo.read()).hexdigest()[:12]
+
+    if hasattr(sys, 'addaudithook'):
+        def _fp_audit(event, args):
+            if event != 'exec':
+                return
+            try:
+                co = args[0]
+                f = getattr(co, 'co_filename', None)
+                if f and f.endswith('.py') and getattr(co, 'co_name', None) == '<module>':
+                    _FP_RAN[os.path.abspath(f)] = _fp_sha(f)
+            except Exception:                  # an audit hook must never break the event it observes
+                pass
+        sys.addaudithook(_fp_audit)
+    try:
+        _m0 = sys.argv[0] if sys.argv else None
+        if _m0 and _m0 not in ('-c', '-m') and os.path.isfile(_m0):
+            _FP_RAN.setdefault(os.path.abspath(_m0), _fp_sha(_m0))
+    except (OSError, AttributeError):
+        pass
 
     def _dump_fp():
-        import hashlib, json
+        import json
         roots = tuple(r.rstrip('/') + '/' for r in os.environ.get('EXOPIPE3_FINGERPRINT_ROOTS', '').split(os.pathsep) if r)
         out = {}
         for name, mod in list(sys.modules.items()):
@@ -40,12 +69,12 @@ if _FP_OUT:
             f = os.path.abspath(f)
             if name.startswith('exopipe') or (roots and f.startswith(roots)):
                 try:
-                    out[f] = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12]
+                    out[f] = _FP_RAN.get(f) or _fp_sha(f)
                 except OSError:
                     pass
         main = getattr(sys.modules.get('__main__'), '__file__', None) or (sys.argv[0] if sys.argv else None)
         if main and main not in ('-c', '-m') and os.path.isfile(main):
-            out[os.path.abspath(main)] = hashlib.sha1(open(main, 'rb').read()).hexdigest()[:12]
+            out[os.path.abspath(main)] = _FP_RAN.get(os.path.abspath(main)) or _fp_sha(main)
         if not out:
             return
         mine = f'{_FP_OUT}.{os.getpid()}'

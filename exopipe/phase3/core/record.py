@@ -161,17 +161,58 @@ def _legacy_roots():
         return ()
 
 
-_CODE_SEEN = {}         # module name -> sha1[:12] of its source file when this process first fingerprinted it
+_CODE_RAN = {}          # abs source path -> sha1[:12] when this process last executed that module's code (import, reload)
+_CODE_SEEN = {}         # module name -> sha1[:12] when first fingerprinted: modules executed before this module existed
 
 
-def code_fingerprint(changed=None):
+def _sha12(path):
+    with open(path, 'rb') as f:
+        return hashlib.sha1(f.read()).hexdigest()[:12]
+
+
+def _audit(event, args):
+    """Audit hook (Python 3.8+): a module's source is hashed when its code is executed - its import or a reload - so a
+    record names the code the process ran, whenever the record is written (2026-10-15 review: modules imported inside a
+    unit, e.g. the in-place co-add, were hashed at the unit's end, after a possible edit). Never raises."""
+    if event != 'exec':
+        return
+    try:
+        co = args[0]
+        f = getattr(co, 'co_filename', None)
+        if f and f.endswith('.py') and getattr(co, 'co_name', None) == '<module>':
+            _CODE_RAN[os.path.abspath(f)] = _sha12(f)
+    except Exception:                       # noqa: BLE001 - an audit hook must not break the event it observes
+        pass
+
+
+if hasattr(sys, 'addaudithook'):
+    sys.addaudithook(_audit)
+
+
+def module_file(name):
+    """The source file of module ``name``: the imported module's __file__, else where the import system finds it now
+    (resume_check and status --stale compare every recorded module, imported in this process or not)."""
+    import importlib.util
+    m = sys.modules.get(name)
+    f = getattr(m, '__file__', None) if m else None
+    if f:
+        return f
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError, AttributeError):
+        return None
+    return getattr(spec, 'origin', None) if spec else None
+
+
+def code_fingerprint(changed=None, files=None):
     """sha1 of every source file the unit imported from exopipe AND from the legacy code roots (clv15, exopipe_ops)
-    called in place during the refactor window - the code that produced this unit (DESIGN 11.5). Each module's hash is
-    the one taken the first time this process saw it (Run() takes them for every module imported before the run starts;
-    a module imported later is hashed at the first record after its import), not the file when the record is written: a
-    file edited during a long run keeps the hash of what the run loaded, so --resume re-runs the unit. ``changed`` (a
-    dict), when given, receives {module: sha1 on disk now ('missing' when the file is gone)} for every such edited file
-    (2026-10-15: the deep catalogue replay's records hashed two config files edited 6 min after the run had loaded them)."""
+    called in place during the refactor window - the code that produced this unit (DESIGN 11.5). A module's hash is the
+    one taken when this process executed its code (the audit hook above: import time, and again at a reload); a module
+    executed before this module was imported is hashed the first time it is fingerprinted (Run() does it at the start).
+    So a file edited during a long run keeps the hash of what the run executed, and --resume re-runs the unit.
+    ``changed`` (a dict), when given, receives {module: sha1 on disk now ('missing' when gone)} for every file edited since
+    it was executed; ``files`` (a dict) receives {module: absolute source path} (2026-10-15: the deep catalogue replay's
+    records hashed two config files edited 6 min after the run had loaded them)."""
     out = {}
     roots = _legacy_roots()
     for name, mod in list(sys.modules.items()):
@@ -180,12 +221,17 @@ def code_fingerprint(changed=None):
             continue
         if not (f and f.endswith('.py')):
             continue
-        now = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12] if os.path.exists(f) else None
-        first = _CODE_SEEN.setdefault(name, now) if now is not None else _CODE_SEEN.get(name)
-        if first is None:
+        af = os.path.abspath(f)
+        now = _sha12(af) if os.path.exists(af) else None
+        ran = _CODE_RAN.get(af)
+        if ran is None:
+            ran = _CODE_SEEN.setdefault(name, now) if now is not None else _CODE_SEEN.get(name)
+        if ran is None:
             continue
-        out[name] = first
-        if changed is not None and now != first:
+        out[name] = ran
+        if files is not None:
+            files[name] = af
+        if changed is not None and now != ran:
             changed[name] = now or 'missing'
     return out
 
@@ -503,14 +549,14 @@ class UnitRecord:
         return etype is not None and issubclass(etype, (Refusal, NoInput))   # swallow gate outcomes, not errors
 
     def to_dict(self):
-        changed = {}
+        changed, files = {}, {}
         d = dict(self.run.header(), unit=self.name, meta=self.meta, status=self.status, reason=self.reason,
                  started=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.t0)), finished=utcnow(),
                  wall_s=round(time.time() - self.t0, 1), inputs=self.inputs, admitted=self.admitted,
-                 outputs=self.outputs, tests=self.tests, notes=self.notes, code=code_fingerprint(changed),
-                 planned=[{'path': p, 'class': c} for p, c in sorted(self.planned.items())],
+                 outputs=self.outputs, tests=self.tests, notes=self.notes, code=code_fingerprint(changed, files),
+                 code_files=files, planned=[{'path': p, 'class': c} for p, c in sorted(self.planned.items())],
                  refused_items=self.refused_items, **self._fallback_fields())
-        if changed:            # source files edited on disk after this process loaded them: the record keeps the loaded hash
+        if changed:            # source files edited on disk after this process executed them: the record keeps the run's hash
             d['code_changed_on_disk'] = changed
         return d
 
@@ -555,10 +601,10 @@ def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None
         return False, 'admitted night set changed (exclusions)'
     if cfg_hash is not None and cfg_hash != rec.get('config_hash'):
         return False, 'config changed'
-    for mod, h in (rec.get('code') or {}).items():
-        m = sys.modules.get(mod)
-        f = getattr(m, '__file__', None) if m else None
-        if f and f.endswith('.py') and hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12] != h:
+    files = rec.get('code_files') or {}
+    for mod, h in (rec.get('code') or {}).items():       # every recorded module, imported in this process or not
+        f = files.get(mod) or module_file(mod)
+        if f and f.endswith('.py') and (not os.path.exists(f) or _sha12(f) != h):
             return False, f'code changed: {mod}'
     for f, h in ((rec.get('meta') or {}).get('legacy_code') or {}).items():   # code of in-place children (core/legacy)
         try:

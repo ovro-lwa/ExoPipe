@@ -436,59 +436,116 @@ def test_item3_dirty_tree_never_resumed():
                 assert 'dirty tree' in why and 'abc1234-dirty' in why
 
 
-def test_item3_code_hash_as_loaded():
-    """A record's code hashes are each module's source as this process first saw it (Run() takes them for every module
-    already imported), not the file when the record is written: a module edited on disk during a run keeps the hash of
-    what the run loaded, the record lists the edit (code_changed_on_disk) and --resume re-runs the unit; a run that saw
-    no edit lists none (2026-10-15: the deep catalogue replay's records hashed two config files edited 6 min after the
-    run had loaded them)."""
+def test_item3_code_hash_as_executed():
+    """A record's code hashes are each module's source as this process EXECUTED it - its import or a reload (an audit
+    hook); a module executed before core.record existed as first fingerprinted (Run() does it at the start) - never the
+    file when the record is written. The 2026-10-15 review's cases: (a) a module imported before Run() and edited; (b) a
+    module imported INSIDE the unit and edited before the unit ends; (c) a reload runs the edited code, and the record
+    names it; (d) --resume compares every recorded module, imported in the resuming process or not, by its recorded file
+    and else where the import system finds it; (e) an in-place child records its module's hash at import, not at exit;
+    and a module gone since is listed as missing, a run that saw no edit lists none (2026-10-15: the deep catalogue
+    replay's records hashed two config files edited 6 min after the run had loaded them)."""
     import hashlib
-    from exopipe.phase3.core import record
-    names = ('exopipe_fpseen_edit', 'exopipe_fpseen_same')
+    import importlib
+    import threading
+    from exopipe.phase3.core import legacy, record
+    names = ('exopipe_fpseen_a', 'exopipe_fpseen_b', 'exopipe_fpseen_same', 'exopipe_fpseen_r', 'exopipe_fpseen_child')
 
     def h(p):
         return hashlib.sha1(open(p, 'rb').read()).hexdigest()[:12]
+
+    def write(p, v):                  # each version a different size: a same-second edit cannot hide behind a stale .pyc
+        open(p, 'w').write(f'X = {v}\n' + '#' * v + '\n')
+    dwb, sys.dont_write_bytecode = sys.dont_write_bytecode, True
     with cfg_restored() as CFG, Scratch('fpseen') as d:
         CFG.authorize([], out=d)
-        paths = {n: os.path.join(d, f'{n}.py') for n in names}
-        for p in paths.values():
-            open(p, 'w').write('X = 1\n')
+        P = {n: os.path.join(d, f'{n}.py') for n in names}
+        for p in P.values():
+            write(p, 1)
         sys.path.insert(0, d)
         try:
-            for n in names:
+            for n in ('exopipe_fpseen_a', 'exopipe_fpseen_same', 'exopipe_fpseen_r'):
                 __import__(n)
             out = os.path.join(d, 'o.csv')
             open(out, 'w').write('a\n1\n')
             run = record.Run('t3h', ['x'], d, CFG, config_sections=())
             run.commit = 'abc1234'
-            loaded = h(paths['exopipe_fpseen_edit'])
-            open(paths['exopipe_fpseen_edit'], 'w').write('X = 2\n')          # edited after the run loaded it
+            a1 = h(P['exopipe_fpseen_a'])
+            write(P['exopipe_fpseen_a'], 2)                                    # (a)
             with run.unit('u') as u:
+                __import__('exopipe_fpseen_b')                                 # (b) imported inside the unit ...
+                b1 = h(P['exopipe_fpseen_b'])
+                write(P['exopipe_fpseen_b'], 2)                                # ... edited before it ends
+                write(P['exopipe_fpseen_r'], 2)                                # (c) edited, then reloaded: v2 runs
+                importlib.reload(sys.modules['exopipe_fpseen_r'])
+                r2 = h(P['exopipe_fpseen_r'])
                 u.add_output(out, 'csv_table')
             rec = record.load_record(d, 't3h', 'u')
-            assert rec['code']['exopipe_fpseen_edit'] == loaded != h(paths['exopipe_fpseen_edit']), rec['code']
-            assert rec['code']['exopipe_fpseen_same'] == h(paths['exopipe_fpseen_same'])
-            assert rec.get('code_changed_on_disk') == {'exopipe_fpseen_edit': h(paths['exopipe_fpseen_edit'])}, rec.get(
-                'code_changed_on_disk')
+            code, chg = rec['code'], rec.get('code_changed_on_disk') or {}
+            assert code['exopipe_fpseen_a'] == a1 and chg.get('exopipe_fpseen_a') == h(P['exopipe_fpseen_a']), (code, chg)
+            assert code['exopipe_fpseen_b'] == b1 and chg.get('exopipe_fpseen_b') == h(P['exopipe_fpseen_b']), (code, chg)
+            assert code['exopipe_fpseen_r'] == r2 and 'exopipe_fpseen_r' not in chg and sys.modules['exopipe_fpseen_r'].X == 2
+            assert code['exopipe_fpseen_same'] == h(P['exopipe_fpseen_same']) and 'exopipe_fpseen_same' not in chg
+            assert rec['code_files']['exopipe_fpseen_b'] == os.path.abspath(P['exopipe_fpseen_b']), rec['code_files']
             ok, why = run.resume_check('u', inputs=[], admitted=None)
-            assert not ok and why == 'code changed: exopipe_fpseen_edit', why
-            os.remove(paths['exopipe_fpseen_edit'])                              # a file gone since: listed as missing
+            assert not ok and why.startswith('code changed: exopipe_fpseen_'), why
+            # (d) the record names only a module this process no longer has: compared by its recorded file, and - for a
+            # record without code_files (written before 2026-10-15) - where the import system finds it
+            rp = record.record_path(d, 't3h', 'u')
+            rec['code'] = {'exopipe_fpseen_a': a1}
+            for k in ('exopipe_fpseen_a', 'exopipe_fpseen_b'):
+                sys.modules.pop(k, None)
+            for keep_files in (True, False):
+                r = dict(rec, code_files={'exopipe_fpseen_a': os.path.abspath(P['exopipe_fpseen_a'])} if keep_files else {})
+                record.atomic_write_json(rp, r)
+                ok, why = run.resume_check('u', inputs=[], admitted=None)
+                assert not ok and why == 'code changed: exopipe_fpseen_a', (keep_files, why)
+            write(P['exopipe_fpseen_a'], 1)
+            ok, why = run.resume_check('u', inputs=[], admitted=None)
+            assert ok, why
+            os.remove(P['exopipe_fpseen_same'])                                # a file gone since: listed as missing
             with run.unit('u2') as u:
                 u.add_output(out, 'csv_table')
             rec2 = record.load_record(d, 't3h', 'u2')
-            assert rec2['code']['exopipe_fpseen_edit'] == loaded and rec2['code_changed_on_disk'] == {
-                'exopipe_fpseen_edit': 'missing'}, rec2.get('code_changed_on_disk')
+            assert (rec2['code_changed_on_disk'] or {}).get('exopipe_fpseen_same') == 'missing', rec2.get('code_changed_on_disk')
+            # (e) a child imports its module, the file is edited while the child runs: the child's record has the hash of
+            # what it imported
+            child = os.path.join(d, 'child.py')
+            open(child, 'w').write(
+                'import os, sys, time\n'
+                f'sys.path.insert(0, {d!r})\n'
+                'import exopipe_fpseen_child\n'
+                f'open({os.path.join(d, "ready")!r}, "w").close()\n'
+                'for _ in range(1200):\n'
+                f'    if os.path.exists({os.path.join(d, "go")!r}):\n'
+                '        break\n'
+                '    time.sleep(0.05)\n')
+            c1, res = h(P['exopipe_fpseen_child']), []
+            t = threading.Thread(target=lambda: res.append(legacy.run(child, [], log=os.path.join(d, 'c.log'))))
+            t.start()
+            for _ in range(1200):
+                if os.path.exists(os.path.join(d, 'ready')):
+                    break
+                time.sleep(0.05)
+            write(P['exopipe_fpseen_child'], 2)
+            open(os.path.join(d, 'go'), 'w').close()
+            t.join(120)
+            fp = res[0].fingerprint if res else {}
+            assert res and res[0].ok and fp.get(os.path.abspath(P['exopipe_fpseen_child'])) == c1 != h(P['exopipe_fpseen_child']), fp
             run3 = record.Run('t3i', ['x'], d, CFG, config_sections=())
             run3.commit = 'abc1234'
-            sys.modules.pop('exopipe_fpseen_edit', None)                         # (not imported by this "run")
+            for k in names:
+                sys.modules.pop(k, None)
             with run3.unit('u') as u:
                 u.add_output(out, 'csv_table')
             assert 'code_changed_on_disk' not in record.load_record(d, 't3i', 'u')
         finally:
+            sys.dont_write_bytecode = dwb
             sys.path.remove(d)
             for n in names:
                 sys.modules.pop(n, None)
                 record._CODE_SEEN.pop(n, None)
+                record._CODE_RAN.pop(os.path.abspath(P[n]), None)
 
 
 def test_item3_planned_outputs_item_refusals_exit_codes():
