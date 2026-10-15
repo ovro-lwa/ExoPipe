@@ -452,13 +452,13 @@ def _refused_v_nights(cell_dir):
 
 @content_test('build_stats')
 def build_stats_rederived(path, **ctx):
-    """<cell>/coadd_final/build_stats.json: every number re-derived from the files it names - the stage-2, search-tier and
-    sanity statistics from the build's records, the beam areas from the images it names (read again) - and the build
-    record's own stage-2 thresholds equal to the re-derived high thresholds."""
-    from exopipe.phase3.lib.masters import build_stats as BS
-    c = _cfg()
-    probs = BS.recheck(path, c, (float(c.masters_build.OUTLIER_SIGMA), float(c.masters_build.LOW_OUTLIER_SIGMA)))
-    return not probs, len(probs), '; '.join(probs[:4]) or 'every number re-derived from its sources'
+    """<cell>/coadd_final/build_stats.json: the cell, sources and nights its folder gives; every number re-derived from the
+    cell's own records with the recorded settings - stage 2, search tier and the Stokes I sanity population from the
+    records, the beam areas from the images the beam gate reads in the Science dirs the build used (read again) - and the
+    thresholds the build applied equal to the re-derived ones exactly (build_stats.recheck)."""
+    from exopipe.phase3.lib.masters import build_stats as BS, coadd as co
+    probs = BS.recheck(path, co)
+    return not probs, len(probs), '; '.join(probs[:4]) or 'every number re-derived from the cell\'s records'
 
 
 # =====================================================================================================================

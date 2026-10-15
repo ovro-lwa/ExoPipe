@@ -56,8 +56,8 @@ def add_arguments(p):
                    help='variants stage: which I variants rebuild_variants_from_record rebuilds (default '
                         'masters_build.VARIANTS_ONLY = Taper_R0,NoTaper_R0)')
     g.add_argument('--deep-installed-root', dest='deep_installed_root', metavar='DIR',
-                   help='sources, build-stats: the installed working tree holding <cell>/coadd_final/ (default '
-                        'paths.COADD_SB_ROOT)')
+                   help='sources: the installed working tree holding <cell>/coadd_final/; build-stats: the cell tree whose '
+                        'records it reads and beside which it writes the record (default paths.COADD_SB_ROOT)')
     g.add_argument('--deep-install-records', dest='deep_install_records', metavar='OUT',
                    help="sources: product root whose _records/install/ holds the cell's install record (default --out)")
 
@@ -519,7 +519,7 @@ def build(cell, args, run, out, ran_now):
                          'enough nights in that state (what such a cell should do is Gregg\'s: DECISIONS_PENDING.md)')
         if _cfg().masters_build.WRITE_BUILD_STATS:       # D-ADMIT (a): the population the later admitted nights are judged by
             from exopipe.phase3.lib.masters import build_stats as BS
-            bs = BS.write(cell_dir, BS.compute(cell_dir, lst, sc, co, _cfg()))
+            bs = BS.write(cell_dir, BS.compute(cell_dir, lst, sc, co, _cfg(), 'build'))
             u.add_output(bs, 'build_stats', cell=cell)
         for p, cls in _build_outputs(cell_dir, sc):
             u.add_output(p, cls, cell=cell)
@@ -924,62 +924,84 @@ def variants(cell, args, run, out, ran_now):
 # =====================================================================================================================
 
 def _build_stats_sources(cell_src):
-    """The build records build_stats.compute reads from a cell directory: (stage-2 record, residuals_provisional.csv,
-    weights.csv)."""
+    """The build records build_stats.compute reads from a cell directory, each once (stage-2 record, residuals_provisional.csv,
+    weights.csv; for a build older than stage2_verdict.csv the stage-2 record IS residuals_provisional.csv)."""
     from exopipe.phase3.lib.masters import build_stats as BS
-    return (BS.stage2_source(cell_src)[0], os.path.join(cell_src, 'residuals_provisional.csv'),
-            os.path.join(cell_src, 'coadd_final', 'weights.csv'))
+    return list(dict.fromkeys((BS.stage2_source(cell_src)[0], os.path.join(cell_src, BS.BUILD_NIGHTS),
+                               os.path.join(cell_src, BS.WEIGHTS))))
 
 
-def _build_stats_built_here(out, cell):
-    """True when the done build of the cell under --out lists <out>/<cell>/coadd_final/build_stats.json as an output (the
-    build wrote it: masters_build.WRITE_BUILD_STATS)."""
+def build_stats_population(cell_src, cell):
+    """(nights of the cell's build population - every night of residuals_provisional.csv, member or not -, those of them
+    data_decisions.csv excludes NOW). A population holding an excluded night is not one to judge an admitted night by:
+    exclusions are absolute (DESIGN 5 (d); the rule exclusion_stale applies to a build's admitted set)."""
+    from exopipe.phase3.core import exclusions
     from exopipe.phase3.lib.masters import build_stats as BS
-    dest = os.path.join(out, cell, 'coadd_final', BS.FILE)
-    b = done_record(out, 'build', cell)
-    return bool(b) and any(os.path.abspath(o.get('path', '')) == os.path.abspath(dest) for o in b.get('outputs') or [])
+    lst, sc = cell.split('_', 1)
+    p = os.path.join(cell_src, BS.BUILD_NIGHTS)
+    nights = sorted({r['date'] for r in csv.DictReader(open(p, newline=''))}) if os.path.exists(p) else []
+    ex = exclusions.load()
+    return nights, [d for d in nights if ex.is_excluded(lst, sc, d)]
 
 
 def build_stats_stage(cell, args, run, out, ran_now):
-    """D-ADMIT (a), slice 1: the population record (lib/masters/build_stats.py) of a cell built without one - every cell
-    production built (it writes none: masters_build.WRITE_BUILD_STATS False) - computed from that cell's own build records,
-    read in place from --deep-installed-root (default paths.COADD_SB_ROOT), and written where a build writes it:
-    <out>/<cell>/coadd_final/build_stats.json (so a later stage-in of the cell under the same --out finds the cell
-    directory present and refuses, G-M25). Refuses when the cell fails membership.verify / verify_products (a population
-    that holds an excluded night is not one to judge a new night by) and when the done build under --out wrote the record
-    itself; no input when a build record is missing."""
-    from exopipe.phase3.lib.masters import build_stats as BS
+    """D-ADMIT (a), slice 1: the population record (lib/masters/build_stats.py, basis 'stage') of a cell built without one -
+    every cell production built (it writes none: masters_build.WRITE_BUILD_STATS False) - from that cell's own records, in
+    the cell tree given (--deep-installed-root, default paths.COADD_SB_ROOT), written beside them:
+    <cell>/coadd_final/build_stats.json (its sources are relative to the cell). A production root refuses while
+    paths.PRODUCTION_WRITES is False: until cutover the stage runs on a copy of the cell. --out holds the run records only.
+    Refuses when a night of the population is excluded now, when the cell fails membership.verify, and when the cell already
+    has a record - the build's own (basis 'build') always, the stage's own without --fresh; no input without the records.
+    The beam block says whether today's gate rule flags the nights the build flagged ('agree')."""
+    from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP, membership as MB
     lst, sc = cell.split('_', 1)
     src = args.deep_installed_root or _cfg().paths.COADD_SB_ROOT
     cell_src = os.path.join(src, cell)
+    dest = os.path.join(cell_src, 'coadd_final', BS.FILE)
     with run.unit(f'build-stats_{cell}', tier='deep', stage='build-stats', cell=cell) as u:
         not_here(cell_src, 'the cell whose build records are read', 'build-stats')
-        if _build_stats_built_here(out, cell):
-            u.refuse(f'{out}/{cell}/coadd_final/{BS.FILE} is the record the done build of {cell} under {out} wrote - '
-                     f'nothing to recompute')
+        IP.refuse_production_write(os.path.join(cell_src, 'coadd_final'), 'build-stats')
+        if os.path.exists(dest):
+            basis = (BS.read(cell_src) or {}).get('basis')
+            if basis == 'build':
+                u.refuse(f'{dest} is the record the cell\'s build wrote itself (basis build) - nothing to recompute')
+            if not args.fresh:
+                u.refuse(f'{dest} exists (basis {basis!r}) - --fresh recomputes it')
         recs = _build_stats_sources(cell_src)
         missing = [p for p in recs if not os.path.exists(p)]
         if missing:
             raise NoInput(f'build-stats: {cell} has no build record(s) {missing}')
+        nights, stale = build_stats_population(cell_src, cell)
+        u.set_admitted([d for d in nights if d not in stale])      # --resume compares it now (_resume_ok), as for a build
+        u.check('masters_build_stats.population_not_excluded', not stale, value=len(stale),
+                detail=(f'excluded now: {stale}' if stale else f'none of the {len(nights)} nights excluded'))
+        if stale:
+            u.refuse(f'{cell}: night(s) {stale} of the build population (residuals_provisional.csv) are excluded in '
+                     f'data_decisions.csv now - a population holding them is not one to judge an admitted night by; '
+                     f'rebuild the cell (exclusions are absolute, DESIGN 5 (d))')
         mods, _ = inplace(out)
-        viol = installed_cell_violations(src, cell)
+        with IP.capture_stdout(_log(out, cell, 'build-stats'), echo=False):   # the stage-2 rule's notes: in the stage's log
+            viol = list(MB.verify(cell_src))
+            st = None if viol else BS.compute(cell_src, lst, sc, mods['coadd'], _cfg(), 'stage')
         u.check('masters_build_stats.cell_membership', not viol, value=len(viol),
-                detail=('; '.join(viol[:3]) if viol else f'membership.verify + verify_products of {cell_src}: PASS'))
+                detail=('; '.join(viol[:3]) if viol else f'membership.verify of {cell_src}: PASS'))
         if viol:
-            u.refuse(f'{cell_src} fails membership.verify / verify_products ({len(viol)}: {viol[0][:300]}) - its build '
-                     f'population is not one to judge an admitted night by')
+            u.refuse(f'{cell_src} fails membership.verify ({len(viol)}: {viol[0][:300]}) - its build population is not one '
+                     f'to judge an admitted night by')
         for p in recs:
             u.add_input(p)
-        st = BS.compute(cell_src, lst, sc, mods['coadd'], _cfg())
         for x in st['beam_gate']['nights'].values():
             if x.get('image'):
                 u.add_input(x['image'])
-        os.makedirs(os.path.join(out, cell, 'coadd_final'), exist_ok=True)
-        p = BS.write(os.path.join(out, cell), st)
-        u.note(f'{cell}: build records of {cell_src}; stage 2 I n={st["stage2"]["I"]["n"]} V n={st["stage2"]["V"]["n"]}, '
-               f'beam gate n={st["beam_gate"]["n"]}, sanity n={st["sanity"]["n"]}, search tier I '
-               f'n={st["search_tier"]["I"]["n"]} V n={st["search_tier"]["V"]["n"]}')
-        u.add_output(p, 'build_stats', cell=cell, source=cell_src)
+        p = BS.write(cell_src, st)
+        bg = st['beam_gate']
+        u.note(f'{cell}: stage 2 I n={st["stage2"]["I"]["n"]} V n={st["stage2"]["V"]["n"]}, beam gate n={bg["n"]}, sanity '
+               f'n={st["sanity"]["n"]}, search tier I n={st["search_tier"]["I"]["n"]} V n={st["search_tier"]["V"]["n"]}; '
+               + ('the beam gate rule of today flags the nights the build flagged' if bg['agree'] else
+                  f'BEAM GATE DISAGREES with the build: today\'s rule flags {bg["outliers"]}, the build flagged '
+                  f'{bg["recorded_outliers"]} (recorded; the image rule changed 2026-10-13, D1)'))
+        u.meta['beam_gate_agree'] = bg['agree']
+        u.add_output(p, 'build_stats', cell=cell)
 
 
 STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vclean, 'fluxscale': fluxscale,
@@ -1173,20 +1195,30 @@ def _plan_simple(stage):
         elif stage == 'variants':
             lines.append(f'in place: coadd.rebuild_variants_from_record(variants={args.deep_variants or s.masters_build.VARIANTS_ONLY})')
         elif stage == 'build-stats':
-            from exopipe.phase3.lib.masters import build_stats as BS
+            from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP, membership as MB
             src = args.deep_installed_root or s.paths.COADD_SB_ROOT
-            recs = _build_stats_sources(os.path.join(src, cell))
-            lines.append(f'build records {", ".join(recs)}; output {out}/{cell}/coadd_final/{BS.FILE} [build_stats]')
+            cs = os.path.join(src, cell)
+            dest = os.path.join(cs, 'coadd_final', BS.FILE)
+            recs = _build_stats_sources(cs)
+            lines.append(f'build records {", ".join(recs)}; output {dest} [build_stats]')
+            r = IP.is_production_path(os.path.join(cs, 'coadd_final'))
+            if r and not s.paths.PRODUCTION_WRITES:
+                gates.append(f'{cs} is under the production root {r} (run on a copy of the cell: --deep-installed-root)')
+            if os.path.exists(dest):
+                basis = (BS.read(cs) or {}).get('basis')
+                if basis == 'build' or not args.fresh:
+                    gates.append(f'{dest} exists (basis {basis!r}: ' + ('the build\'s own)' if basis == 'build' else '--fresh recomputes it)'))
             missing = [p for p in recs if not os.path.exists(p)]
             if missing:
                 gates.append(f'build record(s) missing (no input): {missing}')
-            if _build_stats_built_here(out, cell):
-                gates.append(f'the done build under {out} wrote the record (nothing to recompute)')
-            if not missing:
+            else:
+                _n, stale = build_stats_population(cs, cell)
+                if stale:
+                    gates.append(f'night(s) {stale} of the build population are excluded now (rebuild the cell)')
                 inplace(out)
-                viol = installed_cell_violations(src, cell)
+                viol = list(MB.verify(cs))
                 if viol:
-                    gates.append(f'the cell fails membership.verify / verify_products ({len(viol)}): {viol[0][:200]}')
+                    gates.append(f'the cell fails membership.verify ({len(viol)}): {viol[0][:200]}')
         return lines, gates
     return f
 
@@ -1220,11 +1252,16 @@ def dry_run(cells, stages, args, out):
 # entry
 # =====================================================================================================================
 
-def _resume_ok(run, name, st, cell, out):
+def _resume_ok(run, name, st, cell, out, args=None):
     """--resume: (skip?, why). The record must pass record.resume_check; the build's with the admitted night set computed
-    NOW (data_decisions.csv is not a build input: its effect on the cell is the admitted set), and every stage derived from
-    the build only while no night that build admitted is excluded now."""
+    NOW (data_decisions.csv is not a build input: its effect on the cell is the admitted set), build-stats' with its
+    population's admitted nights computed now, and every stage derived from the build only while no night that build
+    admitted is excluded now."""
     admitted = None
+    if st == 'build-stats':
+        src = (getattr(args, 'deep_installed_root', None) if args is not None else None) or _cfg().paths.COADD_SB_ROOT
+        nights, stale = build_stats_population(os.path.join(src, cell), cell)
+        admitted = [d for d in nights if d not in stale]
     if st == 'build':
         if not done_record(out, 'build', cell):
             return False, 'no done record'
@@ -1258,7 +1295,7 @@ def run(args, run):
         for st in stages:
             name = f'{st}_{cell}'
             if args.resume and not args.fresh:
-                ok, why = _resume_ok(run, name, st, cell, out)
+                ok, why = _resume_ok(run, name, st, cell, out, args)
                 if ok:
                     u = run.unit(name, tier='deep', stage=st, cell=cell)
                     u.status, u.reason = 'skipped-valid', why

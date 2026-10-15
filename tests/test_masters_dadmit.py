@@ -1,18 +1,22 @@
-"""D-ADMIT (a), slice 1: the build's recorded statistics (lib/masters/build_stats.py, coadd_final/build_stats.json).
+"""D-ADMIT (a), slice 1: the build's recorded statistics (lib/masters/build_stats.py, <cell>/coadd_final/build_stats.json).
 
-Each statistic must be the number its gate computes: stage 2 as coadd.detect_outliers_mad (and equal to the threshold the
-build itself recorded), the beam gate's and the sanity gates' upper middle element, the search tier's numpy median with
-1.4826 x MAD; the content test re-derives every number and fails on an edited one. Real cells (read only): the
-re-derived stage-2 thresholds equal production's recorded ones; `masters --stages build-stats` writes the record of an
-installed cell.
+Each statistic must be the number its gate computes: stage 2 as coadd.detect_outliers_mad (and the thresholds the build
+applied, exactly), the beam gate's upper middle element over the images the co-add beam gate reads in the Science dirs the
+build used, the Stokes I sanity gate's upper middle element, the search tier's numpy median with 1.4826 x MAD; the record
+holds the settings it used and its content test re-derives everything with them and fails on every kind of edit (the
+2026-10-15 review's list). The co-add beam gate, refactored onto beam_gate_image / beam_area, gives the old loop's areas.
+The on-demand stage writes the record beside the records of the cell tree it is given (a copy here), refuses a production
+root, an existing record, a population holding a night excluded now and a membership violation.
 Run: python tests/test_masters_dadmit.py
 """
+import contextlib
+import csv
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 import numpy as np
 
@@ -29,6 +33,7 @@ from exopipe.phase3.lib.masters import coadd as co                  # noqa: E402
 
 FAILS, N = [], [0]
 T = '/tmp/exopipe3_tests_dadmit'
+ROOT = CFG.paths.COADD_SB_ROOT
 
 
 def check(name, ok, detail=''):
@@ -36,6 +41,17 @@ def check(name, ok, detail=''):
     print(('PASS  ' if ok else 'FAIL  ') + name + ('' if ok else f'  ({detail})'))
     if not ok:
         FAILS.append(name)
+
+
+def copy_records(cell, dst_root):
+    """A copy of a cell's small records (what build_stats and membership.verify read) under dst_root/<cell>/."""
+    src, dst = os.path.join(ROOT, cell), os.path.join(dst_root, cell)
+    os.makedirs(os.path.join(dst, 'coadd_final'), exist_ok=True)
+    for rel in ('residuals_provisional.csv', 'coadd_final/weights.csv', 'coadd_final/stage2_verdict.csv',
+                'coadd_final/night_image_gate.csv', 'coadd_final/epoch_gate.csv'):
+        if os.path.exists(os.path.join(src, rel)):
+            shutil.copy2(os.path.join(src, rel), os.path.join(dst, rel))
+    return dst
 
 
 def test_formulas():
@@ -49,13 +65,13 @@ def test_formulas():
           st['I']['gate'] and abs(st['I']['thr_hi'] - thr) < 1e-9 and st['I']['n'] == 10, (st['I'], thr))
     few = BS.stage2_stats(rows[:4], 3.0, 4.0)
     check('stage 2: fewer than 5 finite values - no gate', few['I'] == {'n': 4, 'gate': False})
-    areas = {'a': 1.0, 'b': 4.0, 'c': 2.0, 'd': 3.0, 'e': 5.0, 'f': 6.0}
+    areas = {'a': 1.0, 'b': 4.0, 'c': 2.0, 'd': 3.0, 'e': 9.0, 'f': 6.0}
     bs = BS.beam_stats(areas, 1.5, 5)
-    _bfin = sorted(areas.values())
-    check('beam gate: the upper middle element of the sorted areas, as coadd.coadd_beam_gate takes it',
-          bs['median_area'] == _bfin[len(_bfin) // 2] == 4.0 and BS.beam_stats(dict(list(areas.items())[:4]), 1.5, 5)['gate'] is False, bs)
+    check('beam gate: the upper middle element of the sorted areas and the nights above 1.5 x it',
+          bs['median_area'] == 4.0 and bs['outliers'] == ['e'] and BS.beam_stats(dict(list(areas.items())[:4]), 1.5, 5)['gate']
+          is False, bs)
     w = [dict(qa3_rms_mjy=x) for x in ('10', '20', '30', '40', '', 'nan', '-5', '50', '60')]
-    ss = BS.sanity_stats(w, 3.0, 5)
+    ss = BS.sanity_stats(w, 5)
     check('sanity: the upper middle element of the finite positive qa3 values', ss['qa3_median'] == 40.0 and ss['n'] == 6, ss)
     prov = [dict(i_rms_mjy=x, v_rms_mjy=x) for x in (1.0, 2.0, 3.0, 4.0, 10.0, 6.0)]
     tt = BS.search_tier_stats(prov, 5.0, 5)['I']
@@ -65,47 +81,130 @@ def test_formulas():
           abs(tt['median'] - med) < 1e-12 and abs(tt['thr'] - (med + 5.0 * mad)) < 1e-12 and med == 3.5, (tt, med, mad))
 
 
-def test_real():
+def test_drift():
+    src = open(os.path.join(REPO, 'exopipe/phase3/lib/search/deep_search.py')).read()
+    check('drift: the search\'s qa3 discard is build_stats.X_DISCARD x the cell median',
+          f'_wr.get(_kd(d), 0) > {BS.X_DISCARD} * _med' in src)
+    import inspect
+    check('drift: detect_outliers_mad\'s minimum count is build_stats.STAGE2_MIN',
+          f'if len(valid) < {BS.STAGE2_MIN}:' in inspect.getsource(co.detect_outliers_mad))
+
+
+def _old_beam_areas(lst, fl, dates_list):
+    """coadd_beam_gate's area loop as it was before beam_gate_image / beam_area (2026-10-13 D1 rule), pinned here."""
+    from astropy.io import fits
+    out = {}
+    for d in dates_list:
+        sci = co.find_latest_science_dir(lst, d)
+        img = None
+        if sci:
+            with contextlib.redirect_stdout(io.StringIO()):
+                img = (co.find_subband_alignment_image(sci, fl[:-3]) if fl.endswith('MHz')
+                       else co.find_wideband_alignment_image(sci, fl, lst, d))
+        if img:
+            try:
+                h = fits.getheader(img)
+                out[d] = float(h['BMAJ']) * float(h['BMIN'])
+            except Exception:
+                pass
+    return out
+
+
+def test_beam_gate_refactor():
+    for cell in ('23h_23MHz', '11h_Full', '01h_18MHz'):
+        lst, sc = cell.split('_')
+        nights = sorted({r['date'] for r in csv.DictReader(open(os.path.join(ROOT, cell, BS.BUILD_NIGHTS)))})
+        with contextlib.redirect_stdout(io.StringIO()):
+            _o, new = co.coadd_beam_gate(lst, sc, nights)
+        check(f'beam gate refactor ({cell}): beam_gate_image / beam_area give the old loop\'s areas', new == _old_beam_areas(lst, sc, nights),
+              (new, cell))
+
+
+def _edits(rec):
+    """(name, edit) pairs of the 2026-10-15 review: each must fail the content test."""
+    n0, n1 = sorted(rec['beam_gate']['nights'])[:2]
+
+    def e(f):
+        def g(s):
+            s = json.loads(json.dumps(s))
+            f(s)
+            return s
+        return g
+
+    def drop_night(s):
+        del s['beam_gate']['nights'][n0]
+        s['beam_gate']['n'] -= 1
+
+    def swap(s):
+        a, b = s['beam_gate']['nights'][n0], s['beam_gate']['nights'][n1]
+        s['beam_gate']['nights'][n0], s['beam_gate']['nights'][n1] = dict(b), dict(a)
+
+    def missing_img(s):
+        s['beam_gate']['nights'][n0]['image'] = '/nonexistent/x.fits'
+        s['beam_gate']['nights'][n0]['area'] *= 3
+    return [('drop a night from the beam nights', e(drop_night)),
+            ('a night\'s area set to null', e(lambda s: s['beam_gate']['nights'][n0].update(area=None))),
+            ('a night\'s image missing, its area tripled', e(missing_img)),
+            ('two nights\' images and areas swapped', e(swap)),
+            ('the sources pointed at another cell', e(lambda s: s['sources'].update(weights='../23h_27MHz/coadd_final/weights.csv'))),
+            ('the cell changed', e(lambda s: s.update(cell='23h_27MHz'))),
+            ('the version changed', e(lambda s: s.update(version=1))),
+            ('the applied threshold copy raised by 0.09 per cent', e(lambda s: s['stage2_recorded_thr'].update(I=[t * 1.0009 for t in s['stage2_recorded_thr']['I']]))),
+            ('the applied threshold copy emptied', e(lambda s: s['stage2_recorded_thr'].update(I=[]))),
+            ('a night renamed', e(lambda s: s.update(nights=['1999-01-01'] + s['nights'][1:]))),
+            ('the search tier block deleted', e(lambda s: s.pop('search_tier'))),
+            ('a setting removed', e(lambda s: s['settings'].pop('SEARCH_TIER_SIGMA'))),
+            ('the search tier threshold edited', e(lambda s: s['search_tier']['V'].update(thr=s['search_tier']['V']['thr'] * 1.01))),
+            ('a beam area doubled', e(lambda s: s['beam_gate']['nights'][n0].update(area=s['beam_gate']['nights'][n0]['area'] * 2)))]
+
+
+def test_record_and_recheck():
     for cell in ('23h_23MHz', '11h_Red'):
         lst, sc = cell.split('_')
-        st = BS.compute(f'/data07/gh/phase3/coadd_sb/{cell}', lst, sc, co, CFG)
-        rec = st['stage2_recorded_thr']
-        same = all(len(rec[s]) == 1 and abs(rec[s][0] - st['stage2'][s]['thr_hi']) < 1e-5 for s in ('I', 'V'))
-        check(f'real {cell}: the re-derived stage-2 thresholds equal the ones the build recorded', same, (rec, st['stage2']))
-        d = tempfile.mkdtemp(prefix='bs_')
-        try:
-            os.makedirs(os.path.join(d, 'coadd_final'))
-            p = BS.write(d, st)
-            from exopipe.phase3.core import validate
-            res = validate.run('build_stats', p)
-            ok = all(t['passed'] for t in res)
-            s2 = json.load(open(p))
-            s2['search_tier']['V']['thr'] *= 1.01
-            json.dump(s2, open(p, 'w'))
-            res2 = validate.run('build_stats', p)
-            s3 = json.load(open(p))
-            s3['search_tier']['V']['thr'] /= 1.01
-            k = next(iter(s3['beam_gate']['nights']))
-            s3['beam_gate']['nights'][k]['area'] *= 2
-            json.dump(s3, open(p, 'w'))
-            res3 = validate.run('build_stats', p)
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
-        check(f'real {cell}: the content test passes on the record and fails on an edited threshold or beam area',
-              ok and not all(t['passed'] for t in res2) and not all(t['passed'] for t in res3)
-              and 'search_tier.V.thr' in res2[0]['detail'] and 'area' in res3[0]['detail'], (res, res2, res3))
+        cd = copy_records(cell, os.path.join(T, 'copies'))
+        st = BS.compute(cd, lst, sc, co, CFG, 'stage')
+        rec_thr = st['stage2_recorded_thr']
+        check(f'real {cell}: the applied stage-2 thresholds equal the re-derived ones exactly',
+              all(rec_thr[s] == [st['stage2'][s]['thr_hi']] for s in ('I', 'V')), (rec_thr, st['stage2']))
+        check(f'real {cell}: sources relative to the cell, the nights of its record, the settings it used',
+              st['sources'] == {'stage2': 'coadd_final/stage2_verdict.csv', 'residuals_provisional': 'residuals_provisional.csv',
+                                'weights': 'coadd_final/weights.csv'} and st['nights'] == sorted(st['beam_gate']['nights'])
+              and set(st['settings']) == set(BS.SETTINGS), (st['sources'], st['settings']))
+        p = BS.write(cd, st)
+        good = BS.recheck(p, co)
+        check(f'real {cell}: the content test passes on the record', not good, good)
+        bad = []
+        for name, f in _edits(st):
+            json.dump(f(st), open(p, 'w'))
+            if not BS.recheck(p, co):
+                bad.append(name)
+        check(f'real {cell}: the content test fails on each of the review\'s {len(_edits(st))} edits', not bad, bad)
+        s2 = json.loads(json.dumps(st))
+        s2['settings']['SEARCH_TIER_SIGMA'] = 4.0
+        s2['search_tier'] = BS.search_tier_stats(list(csv.DictReader(open(os.path.join(cd, BS.BUILD_NIGHTS)))), 4.0,
+                                                 st['settings']['SEARCH_TIER_MIN'])
+        json.dump(s2, open(p, 'w'))
+        check(f'real {cell}: a record made with other settings passes - it is tested against its own settings, not today\'s',
+              not BS.recheck(p, co), BS.recheck(p, co))
+    cd = copy_records('01h_18MHz', os.path.join(T, 'copies'))
+    st = BS.compute(cd, '01h', '18MHz', co, CFG, 'stage')
+    check('real 01h_18MHz (built before the 2026-10-13 image rule): the beam block says today\'s rule disagrees with the build',
+          st['beam_gate']['agree'] is False and '2024-12-27' in st['beam_gate']['outliers']
+          and '2024-12-27' not in st['beam_gate']['recorded_outliers'], st['beam_gate'].get('outliers'))
 
 
 def test_wiring():
     from exopipe.phase3.lib.masters import deep_stages as DS
     import inspect
     src = inspect.getsource(DS.build)
-    check('the build writes the record only under masters_build.WRITE_BUILD_STATS, after the co-add, before the outputs '
-          'are tested', 0 < src.index('if _cfg().masters_build.WRITE_BUILD_STATS:') < src.index('for p, cls in _build_outputs(')
-          and 'coadd_final/build_stats.json' in DS.BUILD_PRODUCT_PATHS)
+    check('the build writes the record (basis build) only under masters_build.WRITE_BUILD_STATS, after the co-add, before the '
+          'outputs are tested', 0 < src.index('if _cfg().masters_build.WRITE_BUILD_STATS:') < src.index('for p, cls in _build_outputs(')
+          and "co, _cfg(), 'build')" in src and 'coadd_final/build_stats.json' in DS.BUILD_PRODUCT_PATHS)
     prod = open(os.path.join(REPO, 'exopipe/phase3/parity/production_20261013.cfg')).read()
     check('production values write no record (parity file)', 'masters_build.WRITE_BUILD_STATS = False' in prod
           and CFG.masters_build.WRITE_BUILD_STATS is True)
+    from exopipe.phase3.lib.install import steps_deep as ISD
+    check('install carries build_stats.json with the cell\'s records', ISD.BUILD_STATS in ISD.CARRIED_RECORDS)
 
 
 def cli(*args):
@@ -114,54 +213,91 @@ def cli(*args):
     return p.returncode, p.stdout + p.stderr
 
 
+def _rec(out, cell):
+    p = f'{out}/_records/masters/build-stats_{cell}.json'
+    return json.load(open(p)) if os.path.exists(p) else {}
+
+
 def test_stage():
-    """`masters --stages build-stats` on an installed cell (read only): the record equals build_stats.compute of that cell
-    and its content test passes; it refuses where the done build under --out wrote the record itself, and has no input
-    without the build records; the stage is the last of the deep order and in no default."""
+    """`masters --stages build-stats` on a copy of an installed cell: the record beside the copy's records, equal to
+    build_stats.compute; refusals and no input."""
     from exopipe.phase3.lib.masters import deep_stages as DS
     check('build-stats: the last deep stage, in no default; the module\'s order is the config\'s',
           DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep']) and DS.STAGE_ORDER[-1] == 'build-stats'
           and 'build-stats' not in CFG.masters.DEFAULT_STAGES['deep'], DS.STAGE_ORDER)
-    shutil.rmtree(T, ignore_errors=True)
-    cell = '23h_23MHz'
-    lst, sc = cell.split('_')
+    cell, lst, sc = '23h_23MHz', '23h', '23MHz'
+    wt = os.path.join(T, 'wt')
+    cd = copy_records(cell, wt)
     out = f'{T}/out'
-    dest = f'{out}/{cell}/coadd_final/{BS.FILE}'
-    common = ['--tier', 'deep', '--cells', cell, '--stages', 'build-stats', '--cores', 'none']
-    rc, txt = cli(*common, '--out', out, '--dry-run')
-    check('dry run: plans the record from the installed cell, no gate, writes nothing',
-          rc == 0 and dest in txt and 'GATE' not in txt and not os.path.exists(out), txt[-500:])
-    rc, txt = cli(*common, '--out', out)
-    rp = f'{out}/_records/masters/build-stats_{cell}.json'
-    rec = json.load(open(rp)) if os.path.exists(rp) else {}
+    dest = f'{cd}/coadd_final/{BS.FILE}'
+    common = ['--tier', 'deep', '--cells', cell, '--stages', 'build-stats', '--cores', 'none', '--out', out]
+    rc, txt = cli(*common, '--deep-installed-root', wt, '--dry-run')
+    check('dry run: plans the record beside the copy\'s records, no gate, writes nothing',
+          rc == 0 and dest in txt and 'GATE' not in txt and not os.path.exists(dest), txt[-500:])
+    rc, txt = cli(*common)
+    r0 = _rec(out, cell)
+    check('the default tree (production) is refused until cutover', rc == 2 and 'production' in (r0.get('reason') or ''),
+          (r0.get('reason'), txt[-300:]))
+    rc, txt = cli(*common, '--deep-installed-root', wt)
+    rec = _rec(out, cell)
     got = json.load(open(dest)) if os.path.exists(dest) else None
-    want = json.loads(json.dumps(BS.compute(f'{CFG.paths.COADD_SB_ROOT}/{cell}', lst, sc, co, CFG)))
-    check('the stage (exit 0) writes the record build_stats.compute gives for the installed cell',
+    want = json.loads(json.dumps(BS.compute(cd, lst, sc, co, CFG, 'stage')))
+    check('the stage (exit 0) writes the record beside the records, equal to build_stats.compute (basis stage)',
           rc == 0 and rec.get('status') == 'done' and got == want, (txt[-500:], rec.get('reason')))
     names = {t['name']: t['passed'] for t in rec.get('tests', [])}
-    check('its content test re-derives every number, and the cell passed membership.verify',
-          names.get('build_stats.build_stats_rederived') is True and names.get('masters_build_stats.cell_membership') is True,
-          names)
-    out2 = f'{T}/out_built'
-    os.makedirs(f'{out2}/_records/masters')
-    with open(f'{out2}/_records/masters/build_{cell}.json', 'w') as f:
-        json.dump(dict(status='done', outputs=[dict(path=f'{out2}/{cell}/coadd_final/{BS.FILE}', **{'class': 'build_stats'})]), f)
-    rc, txt = cli(*common, '--out', out2)
-    r2 = json.load(open(f'{out2}/_records/masters/build-stats_{cell}.json'))
-    check('refused (exit 2) where the done build under --out wrote the record', rc == 2 and r2['status'] == 'refused'
-          and 'nothing to recompute' in r2['reason'] and not os.path.exists(f'{out2}/{cell}'), r2.get('reason'))
+    check('its content test, the population check and membership.verify passed',
+          names.get('build_stats.build_stats_rederived') is True and names.get('masters_build_stats.cell_membership') is True
+          and names.get('masters_build_stats.population_not_excluded') is True, names)
+    rc, _ = cli(*common, '--deep-installed-root', wt)
+    r2 = _rec(out, cell)
+    rc3, _ = cli(*common, '--deep-installed-root', wt, '--fresh')
+    r3 = _rec(out, cell)
+    check('an existing record refuses without --fresh; --fresh recomputes it', rc == 2 and 'fresh' in r2.get('reason', '')
+          and rc3 == 0 and r3.get('status') == 'done', (r2.get('reason'), r3.get('reason')))
+    got['basis'] = 'build'
+    json.dump(got, open(dest, 'w'))
+    rc, _ = cli(*common, '--deep-installed-root', wt, '--fresh')
+    r4 = _rec(out, cell)
+    check('the build\'s own record (basis build) is never recomputed', rc == 2 and 'basis build' in r4.get('reason', ''),
+          r4.get('reason'))
+    cd7 = copy_records('07h_18MHz', wt)                    # 2025-10-14: excluded since its build, in the population
+    rc, _ = cli('--tier', 'deep', '--cells', '07h_18MHz', '--stages', 'build-stats', '--cores', 'none', '--out', out,
+                '--deep-installed-root', wt)
+    r5 = _rec(out, '07h_18MHz')
+    check('a population holding a night excluded now refuses (07h_18MHz 2025-10-14, a non-member)',
+          rc == 2 and '2025-10-14' in r5.get('reason', '') and not os.path.exists(f'{cd7}/coadd_final/{BS.FILE}'), r5.get('reason'))
+    cdm = copy_records('11h_Red', wt)
+    w = list(csv.DictReader(open(f'{cdm}/coadd_final/weights.csv')))
+    s2 = {r['date']: r for r in csv.DictReader(open(f'{cdm}/coadd_final/stage2_verdict.csv'))}
+    out_n = [r for r in w if r.get('in_master') == '0' and str(s2.get(r['date'], {}).get('outlier')) in ('True', '1')]
+    if out_n:
+        out_n[0]['in_master'] = '1'                          # a stage-2 outlier put in the master: a membership violation
+        with open(f'{cdm}/coadd_final/weights.csv', 'w', newline='') as f:
+            wr = csv.DictWriter(f, fieldnames=list(w[0].keys()))
+            wr.writeheader()
+            wr.writerows(w)
+        rc, _ = cli('--tier', 'deep', '--cells', '11h_Red', '--stages', 'build-stats', '--cores', 'none', '--out', out,
+                    '--deep-installed-root', wt)
+        r6 = _rec(out, '11h_Red')
+        check('a membership violation refuses', rc == 2 and 'membership.verify' in r6.get('reason', ''), r6.get('reason'))
+    else:
+        check('a membership violation refuses (no stage-2 outlier in 11h_Red to misplace: skipped)', True)
     os.makedirs(f'{T}/empty/{cell}')
-    rc, txt = cli(*common, '--out', f'{T}/out_empty', '--deep-installed-root', f'{T}/empty')
-    r3 = json.load(open(f'{T}/out_empty/_records/masters/build-stats_{cell}.json'))
-    check('no input (exit 3) without the build records', rc == 3 and r3['status'] == 'no-input'
-          and 'residuals_provisional.csv' in r3['reason'], r3.get('reason'))
+    rc, _ = cli(*common[:-1], f'{T}/out_empty', '--deep-installed-root', f'{T}/empty')
+    r7 = _rec(f'{T}/out_empty', cell)
+    check('no input (exit 3) without the build records', rc == 3 and r7.get('status') == 'no-input'
+          and 'residuals_provisional.csv' in r7.get('reason', ''), r7.get('reason'))
 
 
 def main():
-    test_formulas()
-    test_real()
-    test_wiring()
+    shutil.rmtree(T, ignore_errors=True)
+    os.makedirs(T)
     try:
+        test_formulas()
+        test_drift()
+        test_beam_gate_refactor()
+        test_record_and_recheck()
+        test_wiring()
         test_stage()
     finally:
         shutil.rmtree(T, ignore_errors=True)

@@ -135,7 +135,7 @@ class CellPlan:
             for f in C.CELL_FILES:
                 if os.path.exists(f'{cd}/coadd_final/{f}'):
                     out.append(('working-quarantine', f'{cd}/coadd_final/{f}', f'{wq}/{cell}/coadd_final/{f}'))
-            for f in C.CELL_TOP + (INPUT_REFUSALS,):      # B-03 (a): the input-refusal record moves with the cell's records
+            for f in C.CELL_TOP + CARRIED_RECORDS:        # B-03 (a), D-ADMIT: the branch's records move with the cell's
                 if os.path.exists(f'{cd}/{f}'):
                     out.append(('working-quarantine', f'{cd}/{f}', f'{wq}/{cell}/{f}'))
             for d in C.CELL_DIRS:
@@ -476,9 +476,9 @@ def install_cell(u, plan, gates, echo):
                                    f'--round {plan.round} --stages recover` reports its state (R1/R2; rebuilt cells: '
                                    f'manual repair, phase3_install.py:442-443)') from e
             text = buf.getvalue()
-            carried = carry_input_refusals(PI, plan)      # B-03 (a), inside the same round's quarantine settings
+            carried = carry_cell_records(PI, plan)        # B-03 (a), D-ADMIT: inside the same round's quarantine settings
             if carried:
-                u.note(f'B-03 same-state: input-refusal record carried into the working cell: {carried}')
+                u.note(f'cell records carried into the working cell (B-03 input refusals, D-ADMIT build statistics): {carried}')
         if text.strip():
             u.note('phase3_install output: ' + text.strip()[-3000:])
         rows = SC.action_rows(roots.record_csv, off, cell)
@@ -496,25 +496,39 @@ def install_cell(u, plan, gates, echo):
 
 
 INPUT_REFUSALS = 'refusals_input.csv'      # B-03 (a), lib/masters/input_resolver.REFUSALS_FILE (a cell-level record)
+BUILD_STATS = os.path.join('coadd_final', 'build_stats.json')   # D-ADMIT (a), lib/masters/build_stats.FILE
+CARRIED_RECORDS = (INPUT_REFUSALS, BUILD_STATS)    # cell records of the branch's builds (paths relative to the cell)
 
 
-def carry_input_refusals(PI, plan):
-    """B-03 (a), same-state: the rebuilt generation's input-refusal record goes into the working cell with it, as
-    phase3_install carries the cell's other records (CELL_TOP): the working cell's earlier record is quarantined first,
-    the rebuild root's copied and logged. Without it the installed cell keeps no trace of why a night has no V products
-    (the per-night product test, T6 and the search read it). No production rebuild writes the file: nothing happens under
-    production values. Returns the installed path or None."""
+def carry_record(PI, plan, rel):
+    """One cell record of the rebuilt generation (``rel``, relative to the cell) goes into the working cell with it, as
+    phase3_install carries the cell's other records (CELL_FILES, CELL_TOP): the working cell's earlier record is
+    quarantined first, the rebuild root's copied and logged. No production rebuild writes these files: nothing happens
+    under production values. Returns the installed path or None."""
     if not plan.rebuild_root:
         return None
-    src = os.path.join(plan.rebuild_root, INPUT_REFUSALS)
-    dst = os.path.join(plan.cdir, INPUT_REFUSALS)
+    src = os.path.join(plan.rebuild_root, rel)
+    dst = os.path.join(plan.cdir, rel)
     if os.path.exists(dst):
-        PI._move_to_wq(plan.cell, dst, INPUT_REFUSALS)
+        PI._move_to_wq(plan.cell, dst, rel)
     if not os.path.exists(src):
         return None
     shutil.copy2(src, dst)
     PI.rec(plan.cell, 'cell-file', src, dst, PI.md5(dst))
     return dst
+
+
+def carry_input_refusals(PI, plan):
+    """B-03 (a), same-state: the input-refusal record - without it the installed cell keeps no trace of why a night has
+    no V products (the per-night product test, T6 and the search read it)."""
+    return carry_record(PI, plan, INPUT_REFUSALS)
+
+
+def carry_cell_records(PI, plan):
+    """Every record of CARRIED_RECORDS: the B-03 input refusals and the D-ADMIT build statistics (build_stats.json -
+    sources relative to the cell, so the copy stays valid where it lands; the population a later admitted night is judged
+    by). Returns the installed paths."""
+    return [p for p in (carry_record(PI, plan, rel) for rel in CARRIED_RECORDS) if p]
 
 
 def record_install_io(u, plan, rows):

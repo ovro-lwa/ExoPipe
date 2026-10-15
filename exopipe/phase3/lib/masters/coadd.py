@@ -1147,32 +1147,46 @@ def compute_residual_rms(data, ref_data, horizon_mask, margin_frac=0.15):
 
 
 
+def beam_gate_image(lst, fl, date, sci=None):
+    """The image whose fitted beam the co-add beam gate reads for a night (D1, refactor chat; Gregg 2026-10-13 'Approved'):
+    the image the CO-ADD admits - the night's latest Science dir (or ``sci``), Taper (not NoTaper) R-0.75, dewarped else
+    the RAW failsafe image, by the co-add's own finders. Until 2026-10-13 a glob over EVERY Science dir that also matched
+    NoTaper and only dewarped files, read in filesystem order: 11h 2024-12-24 was refused on an older Science dir's beam
+    (4.1-4.4x the median; 0.97-0.99x in the image the co-add uses), and a RAW-only night failed open. None when there is no
+    image. No side effects (the finders' failsafe note belongs to the co-add, not the gate)."""
+    import contextlib, io
+    _sci = sci or find_latest_science_dir(lst, date)
+    if not _sci:
+        return None
+    with contextlib.redirect_stdout(io.StringIO()):
+        return (find_subband_alignment_image(_sci, fl[:-3]) if fl.endswith('MHz')
+                else find_wideband_alignment_image(_sci, fl, lst, date))
+
+
+def beam_area(img):
+    """The fitted-beam area BMAJ x BMIN of an image's header; None when unreadable (the gate fails open for that night)."""
+    try:
+        _h = fits.getheader(img)
+        return float(_h['BMAJ']) * float(_h['BMIN'])
+    except Exception:
+        return None
+
+
 def coadd_beam_gate(lst, fl, dates_list):
     """CO-ADD BEAM GATE (Gregg approved 2026-09-02; shipped in the wideband path
     2026-09-03; extended to the subband and 10-min paths 2026-09-05 after a census
     found 20 of 360 subband masters holding a constituent above 1.5x): refuse epochs
     whose Phase-2 survey Stokes I (Taper R-0.75) fitted-beam AREA exceeds 1.5x the
     median of the candidate set (long-baseline dropout). Keyed on I. Fails OPEN per
-    epoch when no survey product/beam header is found. Returns (refused_dates, areas)."""
-    import contextlib, io
+    epoch when no survey product/beam header is found. Returns (refused_dates, areas).
+    The image and its area: beam_gate_image / beam_area (shared with build_stats, D-ADMIT)."""
     _bareas = {}
     for _d in dates_list:
-        # D1 (refactor chat; Gregg 2026-10-13 'Approved'): the beam of the image the CO-ADD admits - the latest Science dir, Taper
-        # (not NoTaper) R-0.75, dewarped else the RAW failsafe image, by the co-add's own finders. Until 2026-10-13 a glob over EVERY
-        # Science dir that also matched NoTaper and only dewarped files, read in filesystem order: 11h 2024-12-24 was refused on an
-        # older Science dir's beam (4.1-4.4x the median; 0.97-0.99x in the image the co-add uses), and a RAW-only night failed open.
-        _sci = find_latest_science_dir(lst, _d)
-        _img = None
-        if _sci:
-            with contextlib.redirect_stdout(io.StringIO()):          # the finders' failsafe note belongs to the co-add, not the gate
-                _img = (find_subband_alignment_image(_sci, fl[:-3]) if fl.endswith('MHz')
-                        else find_wideband_alignment_image(_sci, fl, lst, _d))
+        _img = beam_gate_image(lst, fl, _d)
         if _img:
-            try:
-                _h = fits.getheader(_img)
-                _bareas[_d] = float(_h['BMAJ']) * float(_h['BMIN'])
-            except Exception:
-                pass
+            _a = beam_area(_img)
+            if _a is not None:
+                _bareas[_d] = _a
     _bfin = sorted(_bareas.values())
     beam_outliers = []
     if len(_bfin) >= 5:
