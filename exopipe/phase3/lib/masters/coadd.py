@@ -3494,6 +3494,262 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
     return results
 
 
+def final_night(date, sci_dir, align_img_path, ref, workdir, prep_dir, post_dates, lst, fl, ref_date):
+    """One night of run_final_lst_freq's Step 1 (D-ADMIT slice 4: the build's per-night alignment, also an admission's):
+    regridded when pre-cutover with post-cutover nights or off the template grid (B-03 a); the first flux scale against
+    the reference; the stage-3 flux-alignment window (R-THIRD-STAGE-QA-FLUXALIGN); the stored flow
+    {workdir}/flow/{date}_scaled_flow.npy (_require_flow); the blank-field refusal; the applied flat DC measured on the
+    flow-aligned night (_night_flux_dc; an unmeasurable scale refuses); the aligned I image {prep_dir}/{date}_I.fits
+    (two-tier: built for every night) and the night-image gate against the reference. ``ref``: dict(data, wcs, beam_pix,
+    horizon_mask, cd, tmpl_hdr, target_shape) of the reference the night is aligned to.
+    Returns None for a night skipped before it is measured (its shape or grid differs), else dict(qa3_in, params, gate,
+    ...): params None for a night refused after the window - a blank field (gate None) or an unmeasurable flux scale
+    (gate FAIL); else params (the build's date_params entry), gate (the night-image gate row), i_out, weight, mean_scale,
+    n_src, flow_offsets. The caller applies what the verdicts mean (the build: outside the window or a FAIL leaves the
+    co-add, products still built)."""
+    from exopipe.phase3.lib.masters import night_image_gate as _NG
+    tmpl_hdr, target_shape = ref['tmpl_hdr'], ref['target_shape']
+    ref_data, ref_wcs, beam_pix, horizon_mask, cd = ref['data'], ref['wcs'], ref['beam_pix'], ref['horizon_mask'], ref['cd']
+    needs_regrid = date < CUTOVER_DATE and bool(post_dates)
+    if not needs_regrid and _off_grid(date, align_img_path, target_shape):    # B-03 (a)
+        needs_regrid = True
+    if needs_regrid:
+        work_path = regrid_image(align_img_path, tmpl_hdr,
+                                  f'{prep_dir}/{date}_regrid.fits')
+    else:
+        work_path = align_img_path
+
+    tgt_data, tgt_hdr = load_image(work_path)
+    if tgt_data.shape != target_shape:
+        print(f"    {date}: shape mismatch, skipping")
+        return None
+
+    tgt_mask = ~np.isfinite(tgt_data) | (tgt_data == 0)
+    if tgt_mask.shape != horizon_mask.shape:
+        # wrong-grid epoch (e.g. 19h Full 2025-04-05 raw-failsafe built
+        # on the Green grid — Phase-2 anomaly, problem ledger) — skip
+        print(f"    {date}: WRONG GRID {tgt_mask.shape} vs "
+              f"{horizon_mask.shape}, skipping", flush=True)
+        return None
+    tgt_obs_time = get_midpoint_time(tgt_hdr, work_path)
+    tgt_rms = get_uniform_rms(tgt_data, tgt_mask)
+
+    scale_map, coeffs, n_src = measure_flux_scale(
+        tgt_data, ref_data, ref_wcs, beam_pix,
+        horizon_mask | tgt_mask, tgt_obs_time)
+
+    mean_scale = float(coeffs[0])
+    weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
+    # STAGE 3 - the flux-alignment window is a co-add MEMBERSHIP VETO (R-THIRD-STAGE-QA-FLUXALIGN 2026-08-25, "gate refuses,
+    # never warns"; R-QA3-BOUNDS-PROCESS-APPROVED 2026-08-26: 0.7-1.6, lower edge 0.35 at 18 MHz and 0.55 at 23/27 MHz). In this
+    # code since 2026-10-07: the August drops were side-script edits that the 2026-09-10 rebuild lost. The scale tested is this
+    # measurement (before flow alignment), the one the window was set on. The night keeps its per-night products (two-tier).
+    from exopipe.phase3.lib.masters import membership as _MB3
+    _qa3_in = _MB3.qa3_inside(fl, mean_scale)
+    if not _qa3_in:
+        print(f"    {date}: STAGE-3 WINDOW REFUSED - flux-alignment scale {mean_scale:.4g} outside "
+              f"{_MB3.qa3_window(fl)[0]:g}-{_MB3.qa3_window(fl)[1]:g}; leaves the co-add (products still built)", flush=True)
+    out = dict(qa3_in=_qa3_in, params=None, gate=None)
+
+    flow_path = f'{workdir}/flow/{date}_scaled_flow.npy'
+    flow_offsets = _require_flow(flow_path, date, ref_date, f'{lst} {fl}')
+
+    h, w = target_shape
+    yg, xg = np.indices((h, w), dtype=float)
+    scale_map_full = (coeffs[0] + coeffs[1] * (2.0 * xg / w - 1.0)
+                      + coeffs[2] * (2.0 * yg / h - 1.0))
+    # BLANK-FIELD REFUSAL (Gregg 2026-09-02: "QA should refuse blank
+    # fields and report them"). Previously a blank epoch satisfied the
+    # n_src<8 arm below and was handed a flat DC of 1.0, i.e. ACCEPTED.
+    # It then left the co-add only by accident: get_uniform_rms returns
+    # 0.0 for an all-zero frame, so the weight line zeroes it - and
+    # nothing recorded that the epoch had dropped out. That accident
+    # does NOT cover a frame that is finite with no positive pixel: it
+    # has a nonzero rms, hence a nonzero weight, and would enter the
+    # co-add. Refuse explicitly and say so.
+    _npos = int(np.count_nonzero(np.nan_to_num(tgt_data) > 0))
+    _finite = float(np.isfinite(tgt_data).mean())
+    if _npos == 0 or _finite == 0.0:
+        print(f"    {date}: BLANK FIELD REFUSED — {_npos} positive "
+              f"pixels, {100*_finite:.1f}% finite. Not scaled, not "
+              f"weighted, NOT added to the co-add (Gregg 2026-09-02).",
+              flush=True)
+        return out
+    # Flux-degeneracy guard (Gregg 2026-06-21): a degenerate affine fit
+    # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
+    # artifact. If out of physical range, drop the tilt, use robust median DC.
+    _mean = float(coeffs[0]); _tilt = float(np.hypot(coeffs[1], coeffs[2]))
+    # R-TILT-REMOVED-NEXTGEN (Gregg 2026-08-28, landed 2026-09-08): the x/y
+    # tilt is REMOVED from production - flat DC always. P3_FLUXSCALE_TILT=1
+    # restores the affine plane for comparison runs only, never production.
+    _mean_aligned = None
+    _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
+    if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
+        # EVERY ADMITTED NIGHT IS CORRECTED BY ITS MEASURED SCALE (Gregg 2026-10-02, "1. yes"); the applied scale is
+        # measured on the FLOW-ALIGNED night at the reference peak pixels (Gregg 2026-10-04, "1 approved":
+        # _night_flux_dc), and a night whose scale cannot be measured is REFUSED.
+        _dc, _mean_aligned = _night_flux_dc(_mean, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs,
+                                            beam_pix, horizon_mask | tgt_mask, tgt_obs_time,
+                                            f'{prep_dir}/{date}_scale_remeasure.fits')
+        if not (np.isfinite(_dc) and _dc > 0):
+            print(f"    {date}: FLUX SCALE NOT MEASURABLE (first {_mean:.4g}, on the flow-aligned image "
+                  f"{_mean_aligned}) - REFUSED, not added to the co-add (Gregg 2026-10-02)", flush=True)
+            # recorded in the night-image gate record, so the search refuses it under its true reason
+            out['gate'] = dict(verdict='FAIL', reason=f'flux scale not measurable (first {_mean:.4g}, '
+                                                      f'flow-aligned {_mean_aligned})')
+            return out
+        if _mean_aligned is not None:
+            weight = float(_dc ** 2 / tgt_rms ** 2) if tgt_rms > 0 else 0.0
+            print(f"    {date}: applied scale {_dc:.4f} (flow-aligned night at the reference peak pixels; "
+                  f"pre-alignment aperture maximum {_mean:.4g}, recorded only)", flush=True)
+        scale_map_full = np.full((h, w), _dc, dtype=float)
+        print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
+              f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
+              f"{'; degenerate' if _degen else ''})")
+
+    regrid_coords = (precompute_regrid_mapping(align_img_path, tmpl_hdr, target_shape)
+                     if needs_regrid else None)
+
+    params = {
+        'scale_map': scale_map_full, 'flow': flow_offsets, 'weight': weight,
+        'regrid': regrid_coords, 'sci_dir': sci_dir,
+        # third-stage QA record (R-THIRD-STAGE-QA-FLUXALIGN 2026-08-25; the window veto is applied above since 2026-10-07 -
+        # 'qa3_guard' is the 2026-06-21 affine-fit degeneracy label, NOT the stage-3 verdict; 'qa3_window' is)
+        'qa3_scale': _mean, 'qa3_tilt': _tilt, 'qa3_nsrc': n_src, 'qa3_window': 'inside' if _qa3_in else 'OUTSIDE',
+        'qa3_guard': ('degenerate-flatDC' if (n_src < 8 or not
+                      (0.7 <= _mean <= 1.4) or _tilt > 0.3) else 'pass'),
+        'qa3_rms': tgt_rms,
+        # the factor actually applied (Gregg 2026-10-02 flux ruling) and the flow-aligned re-measurement, if made
+        'flux_dc': (f'{float(np.ravel(scale_map_full)[0]):.5f}' if np.ptp(scale_map_full) == 0 else 'affine'),
+        'qa3_scale_aligned': ('' if _mean_aligned is None else f'{_mean_aligned:.5f}'),
+    }
+
+    # Two-tier policy (Gregg 2026-08-26): per-epoch products are built
+    # for EVERY non-data_decisions epoch; only co-add membership is
+    # gated by the QA verdict.
+    i_out = f'{prep_dir}/{date}_I.fits'
+    process_variant_image(align_img_path, flow_offsets, scale_map_full,
+                          tmpl_hdr, target_shape, i_out, regrid_coords)
+    # NIGHT-IMAGE GATE (Gregg 2026-10-02 "Approved"): ahead of co-add membership AND search admission; the aligned
+    # night against the reference it was aligned to; a FAIL leaves good_dates_deep, so the I and V masters, the
+    # variants, the leave-one-out masters and in_master all follow; the record is read by the search.
+    try:
+        gate = _NG.evaluate(load_image(i_out)[0], ref_data, cd, night_raw=tgt_data)
+    except Exception as _ge:
+        gate = dict(verdict='FAIL', reason=f'night-image gate could not be evaluated ({_ge})'[:200])
+    if gate['verdict'] == 'FAIL':
+        print(f"    {date}: NIGHT-IMAGE GATE REFUSED - {gate['reason']}", flush=True)
+    out.update(params=params, gate=gate, i_out=i_out, weight=weight, mean_scale=mean_scale, n_src=n_src,
+               flow_offsets=flow_offsets)
+    return out
+
+
+def measure_scale2(i_path, final_i_data, final_wcs, beam_pix, coadd_mask, ref_hdr):
+    """PASS 1 of run_final_lst_freq's per-date subtraction for one night (D-ADMIT slice 4): the flux scale of the
+    flow-aligned night {i_path} against the final master, read at the master's peak pixels - (coeffs2, n2). The night's
+    time is taken as the build takes it (get_midpoint_time(ref_hdr, i_path))."""
+    i_data, _ = load_image(i_path)
+    combined_mask = coadd_mask | (~np.isfinite(i_data)) | (i_data == 0)
+    obs_time = get_midpoint_time(ref_hdr, i_path)
+    # epoch (flow-aligned) against the final master, read at the master's peak pixels (Gregg 2026-10-04, "1 approved":
+    # the aperture maximum read high and left a negative imprint of the bright sources in the residuals)
+    _, coeffs2, n2 = measure_flux_scale(
+        i_data, final_i_data, final_wcs, beam_pix, combined_mask, obs_time, at_peak_pixel=True)
+    return coeffs2, n2
+
+
+def subtract_night(date, sci_dir, align_img_path, i_path, v_path, coeffs2, n2, med_dc, final_i_data, final_v_data,
+                   final_wcs, coadd_mask, beam_pix, tmpl_hdr, target_shape, sub_dir, fl, freq_str):
+    """PASS 2 of run_final_lst_freq's per-date subtraction for one night (D-ADMIT slice 4): the second-pass scale
+    (coeffs2, n2 from measure_scale2; DC only unless P3_FLUXSCALE_TILT=1) with the flux-degeneracy guard relative to the
+    cell's median second-pass DC ``med_dc``; the aligned flux-corrected epoch, its residual against the master and the
+    striation-cleaned residual (8 beams) for I ({i_path}) and, when the aligned V night {v_path} and the V master exist,
+    for V - written to {sub_dir}/<date>_{I,V}_{epoch,sub,clean}_<fl>.fits with the epoch's own time block
+    (save_epoch_residual)."""
+    i_data, _ = load_image(i_path)
+
+    # Per-epoch time block (from this date's Phase-2 source) stamped onto every
+    # residual below — keeps tmpl_hdr's WCS/grid, fixes the inherited-DATE-OBS bug.
+    # Beam+RESTFRQ are stamped per Stokes at each write via
+    # save_epoch_residual (R1 amendment #1) — never left as tmpl_hdr's.
+    epoch_hdr = epoch_time_header(tmpl_hdr, align_img_path)
+
+    h, w = target_shape
+    yg, xg = np.indices((h, w), dtype=float)
+    if os.environ.get('P3_FLUXSCALE_TILT') != '1':
+        coeffs2 = np.array([coeffs2[0], 0.0, 0.0])   # DC-only second pass (R-TILT-REMOVED-NEXTGEN)
+    scale2_full = (coeffs2[0] + coeffs2[1] * (2.0 * xg / w - 1.0)
+                   + coeffs2[2] * (2.0 * yg / h - 1.0))
+    # Flux-degeneracy guard, median-relative (see PASS 1 comment)
+    _dc = float(coeffs2[0]); _tilt = float(np.hypot(coeffs2[1], coeffs2[2]))
+    if (n2 < 8 or not (0.6 * med_dc <= _dc <= 1.6 * med_dc)
+            or _tilt > 0.3 * abs(med_dc)):
+        print(f"    {date}: scale2-degenerate (DC={_dc:.3f} tilt={_tilt:.3f} "
+              f"n={n2}; cell median DC={med_dc:.3f}) -> flat DC={med_dc:.3f}")
+        scale2_full = np.full((h, w), med_dc if med_dc > 0 else 1.0)
+        coeffs2 = np.array([med_dc, 0.0, 0.0])
+
+    # Apply flux correction and subtract
+    safe_scale = np.where(np.abs(scale2_full) > 0.1, scale2_full, 1.0)
+    i_corrected = i_data / safe_scale
+    # THE ALIGNED, FLUX-CORRECTED EPOCH IMAGE itself - contract 0.2 (1), the archived epoch product (2026-09-30:
+    # it was never written, and the archive published the striation-cleaned residual under its name)
+    save_epoch_residual(f'{sub_dir}/{date}_I_epoch_{fl}.fits', i_corrected, epoch_hdr,
+                        align_img_path, tmpl_hdr, 'I')
+    i_sub = i_corrected - final_i_data
+
+    sub_i_path = f'{sub_dir}/{date}_I_sub_{fl}.fits'
+    save_epoch_residual(sub_i_path, i_sub, epoch_hdr,
+                        align_img_path, tmpl_hdr, 'I')
+
+    # Striation removal on I
+    i_mask = coadd_mask | (~np.isfinite(i_sub)) | (i_sub == 0)
+    # window = 8 x beam (R-STRIATION-WINDOW-APPROVED-8BEAMS 2026-08-25;
+    # supersedes both the 20-beam default and the fixed 4.375 deg)
+    i_stri_model, _ = build_striation_model(
+        i_sub, final_wcs, i_mask, ra_window_beams=8.0, beam_pix=beam_pix)
+    i_clean = i_sub - i_stri_model
+    clean_i_path = f'{sub_dir}/{date}_I_clean_{fl}.fits'
+    save_epoch_residual(clean_i_path, i_clean, epoch_hdr,
+                        align_img_path, tmpl_hdr, 'I')
+
+    i_rms_before = get_uniform_rms(i_sub, i_mask)
+    i_rms_after = get_uniform_rms(i_clean, i_mask)
+
+    # V subtraction + striation removal
+    if os.path.exists(v_path) and final_v_data is not None:
+        # R1 amendment #1 / restamp finding F2: V residuals carry the V
+        # epoch image's OWN beam (Taper_R0 convention), never I-derived.
+        v_src = find_stokes_v_deep_image(sci_dir, freq_str)
+        v_data, _ = load_image(v_path)
+        v_corrected = v_data / safe_scale
+        save_epoch_residual(f'{sub_dir}/{date}_V_epoch_{fl}.fits', v_corrected, epoch_hdr,
+                            v_src, tmpl_hdr, 'V')          # the aligned, flux-corrected V epoch (2026-09-30)
+        v_sub = v_corrected - final_v_data
+
+        sub_v_path = f'{sub_dir}/{date}_V_sub_{fl}.fits'
+        save_epoch_residual(sub_v_path, v_sub, epoch_hdr,
+                            v_src, tmpl_hdr, 'V')
+
+        v_mask = coadd_mask | (~np.isfinite(v_sub)) | (v_sub == 0)
+        v_stri_model, _ = build_striation_model(
+            v_sub, final_wcs, v_mask, ra_window_beams=8.0, beam_pix=beam_pix)
+        v_clean = v_sub - v_stri_model
+
+        clean_v_path = f'{sub_dir}/{date}_V_clean_{fl}.fits'
+        save_epoch_residual(clean_v_path, v_clean, epoch_hdr,
+                            v_src, tmpl_hdr, 'V')
+
+        v_rms_before = get_uniform_rms(v_sub, v_mask)
+        v_rms_after = get_uniform_rms(v_clean, v_mask)
+        print(f"    {date}: scale2={coeffs2[0]:.4f} ({n2} src)  "
+              f"I {i_rms_before*1000:.1f}→{i_rms_after*1000:.1f}  "
+              f"V {v_rms_before*1000:.1f}→{v_rms_after*1000:.1f} mJy")
+    else:
+        print(f"    {date}: scale2={coeffs2[0]:.4f} ({n2} src)  "
+              f"I {i_rms_before*1000:.1f}→{i_rms_after*1000:.1f} mJy")
+
+
 def run_final_lst_freq(lst, freq_str, exclusions):
     """Final co-add + subtraction + striation removal for one (LST, freq).
 
@@ -3689,145 +3945,28 @@ def run_final_lst_freq(lst, freq_str, exclusions):
     if ref_date != 'MASTER':
         _gate_rows[ref_date] = dict(verdict='pass', reason='the reference night (identity)')
 
+    _fref = dict(data=ref_data, wcs=ref_wcs, beam_pix=beam_pix, horizon_mask=horizon_mask, cd=cd, tmpl_hdr=tmpl_hdr,
+                 target_shape=target_shape)
     for date, sci_dir, align_img_path in target_dates:
-        needs_regrid = date < CUTOVER_DATE and bool(post_dates)
-        if not needs_regrid and _off_grid(date, align_img_path, target_shape):    # B-03 (a)
-            needs_regrid = True
-        if needs_regrid:
-            work_path = regrid_image(align_img_path, tmpl_hdr,
-                                      f'{prep_dir}/{date}_regrid.fits')
-        else:
-            work_path = align_img_path
-
-        tgt_data, tgt_hdr = load_image(work_path)
-        if tgt_data.shape != target_shape:
-            print(f"    {date}: shape mismatch, skipping")
+        _nr = final_night(date, sci_dir, align_img_path, _fref, workdir, prep_dir, post_dates, lst, fl, ref_date)
+        if _nr is None:
             continue
-
-        tgt_mask = ~np.isfinite(tgt_data) | (tgt_data == 0)
-        if tgt_mask.shape != horizon_mask.shape:
-            # wrong-grid epoch (e.g. 19h Full 2025-04-05 raw-failsafe built
-            # on the Green grid — Phase-2 anomaly, problem ledger) — skip
-            print(f"    {date}: WRONG GRID {tgt_mask.shape} vs "
-                  f"{horizon_mask.shape}, skipping", flush=True)
-            continue
-        tgt_obs_time = get_midpoint_time(tgt_hdr, work_path)
-        tgt_rms = get_uniform_rms(tgt_data, tgt_mask)
-
-        scale_map, coeffs, n_src = measure_flux_scale(
-            tgt_data, ref_data, ref_wcs, beam_pix,
-            horizon_mask | tgt_mask, tgt_obs_time)
-
-        mean_scale = float(coeffs[0])
-        weight = float(mean_scale**2 / tgt_rms**2) if tgt_rms > 0 else 0.0
-        # STAGE 3 - the flux-alignment window is a co-add MEMBERSHIP VETO (R-THIRD-STAGE-QA-FLUXALIGN 2026-08-25, "gate refuses,
-        # never warns"; R-QA3-BOUNDS-PROCESS-APPROVED 2026-08-26: 0.7-1.6, lower edge 0.35 at 18 MHz and 0.55 at 23/27 MHz). In this
-        # code since 2026-10-07: the August drops were side-script edits that the 2026-09-10 rebuild lost. The scale tested is this
-        # measurement (before flow alignment), the one the window was set on. The night keeps its per-night products (two-tier).
-        from exopipe.phase3.lib.masters import membership as _MB3
-        _qa3_in = _MB3.qa3_inside(fl, mean_scale)
-        if not _qa3_in:
-            print(f"    {date}: STAGE-3 WINDOW REFUSED - flux-alignment scale {mean_scale:.4g} outside "
-                  f"{_MB3.qa3_window(fl)[0]:g}-{_MB3.qa3_window(fl)[1]:g}; leaves the co-add (products still built)", flush=True)
+        if not _nr['qa3_in']:
             good_dates_deep.discard(date)
-
-        flow_path = f'{workdir}/flow/{date}_scaled_flow.npy'
-        flow_offsets = _require_flow(flow_path, date, ref_date, f'{lst} {fl}')
-
-        h, w = target_shape
-        yg, xg = np.indices((h, w), dtype=float)
-        scale_map_full = (coeffs[0] + coeffs[1] * (2.0 * xg / w - 1.0)
-                          + coeffs[2] * (2.0 * yg / h - 1.0))
-        # BLANK-FIELD REFUSAL (Gregg 2026-09-02: "QA should refuse blank
-        # fields and report them"). Previously a blank epoch satisfied the
-        # n_src<8 arm below and was handed a flat DC of 1.0, i.e. ACCEPTED.
-        # It then left the co-add only by accident: get_uniform_rms returns
-        # 0.0 for an all-zero frame, so the weight line zeroes it - and
-        # nothing recorded that the epoch had dropped out. That accident
-        # does NOT cover a frame that is finite with no positive pixel: it
-        # has a nonzero rms, hence a nonzero weight, and would enter the
-        # co-add. Refuse explicitly and say so.
-        _npos = int(np.count_nonzero(np.nan_to_num(tgt_data) > 0))
-        _finite = float(np.isfinite(tgt_data).mean())
-        if _npos == 0 or _finite == 0.0:
-            print(f"    {date}: BLANK FIELD REFUSED — {_npos} positive "
-                  f"pixels, {100*_finite:.1f}% finite. Not scaled, not "
-                  f"weighted, NOT added to the co-add (Gregg 2026-09-02).",
-                  flush=True)
+        if _nr['gate'] is not None:
+            _gate_rows[date] = _nr['gate']
+        if _nr['params'] is None:
             continue
-        # Flux-degeneracy guard (Gregg 2026-06-21): a degenerate affine fit
-        # (few/clustered sources) ramps 2-8x across the field -> sharp-edge
-        # artifact. If out of physical range, drop the tilt, use robust median DC.
-        _mean = float(coeffs[0]); _tilt = float(np.hypot(coeffs[1], coeffs[2]))
-        # R-TILT-REMOVED-NEXTGEN (Gregg 2026-08-28, landed 2026-09-08): the x/y
-        # tilt is REMOVED from production - flat DC always. P3_FLUXSCALE_TILT=1
-        # restores the affine plane for comparison runs only, never production.
-        _mean_aligned = None
-        _degen = n_src < 8 or not (0.7 <= _mean <= 1.4) or _tilt > 0.3
-        if os.environ.get('P3_FLUXSCALE_TILT') != '1' or _degen:
-            # EVERY ADMITTED NIGHT IS CORRECTED BY ITS MEASURED SCALE (Gregg 2026-10-02, "1. yes"); the applied scale is
-            # measured on the FLOW-ALIGNED night at the reference peak pixels (Gregg 2026-10-04, "1 approved":
-            # _night_flux_dc), and a night whose scale cannot be measured is REFUSED.
-            _dc, _mean_aligned = _night_flux_dc(_mean, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs,
-                                                beam_pix, horizon_mask | tgt_mask, tgt_obs_time,
-                                                f'{prep_dir}/{date}_scale_remeasure.fits')
-            if not (np.isfinite(_dc) and _dc > 0):
-                print(f"    {date}: FLUX SCALE NOT MEASURABLE (first {_mean:.4g}, on the flow-aligned image "
-                      f"{_mean_aligned}) - REFUSED, not added to the co-add (Gregg 2026-10-02)", flush=True)
-                # recorded in the night-image gate record, so the search refuses it under its true reason
-                _gate_rows[date] = dict(verdict='FAIL', reason=f'flux scale not measurable (first {_mean:.4g}, '
-                                                               f'flow-aligned {_mean_aligned})')
-                continue
-            if _mean_aligned is not None:
-                weight = float(_dc ** 2 / tgt_rms ** 2) if tgt_rms > 0 else 0.0
-                print(f"    {date}: applied scale {_dc:.4f} (flow-aligned night at the reference peak pixels; "
-                      f"pre-alignment aperture maximum {_mean:.4g}, recorded only)", flush=True)
-            scale_map_full = np.full((h, w), _dc, dtype=float)
-            print(f"    {date}: flat DC={_dc:.3f} (measured tilt {_tilt:.3f} "
-                  f"dropped per R-TILT-REMOVED-NEXTGEN; n={n_src}"
-                  f"{'; degenerate' if _degen else ''})")
-
-        regrid_coords = (precompute_regrid_mapping(align_img_path, tmpl_hdr, target_shape)
-                         if needs_regrid else None)
-
-        date_params[date] = {
-            'scale_map': scale_map_full, 'flow': flow_offsets, 'weight': weight,
-            'regrid': regrid_coords, 'sci_dir': sci_dir,
-            # third-stage QA record (R-THIRD-STAGE-QA-FLUXALIGN 2026-08-25; the window veto is applied above since 2026-10-07 -
-            # 'qa3_guard' is the 2026-06-21 affine-fit degeneracy label, NOT the stage-3 verdict; 'qa3_window' is)
-            'qa3_scale': _mean, 'qa3_tilt': _tilt, 'qa3_nsrc': n_src, 'qa3_window': 'inside' if _qa3_in else 'OUTSIDE',
-            'qa3_guard': ('degenerate-flatDC' if (n_src < 8 or not
-                          (0.7 <= _mean <= 1.4) or _tilt > 0.3) else 'pass'),
-            'qa3_rms': tgt_rms,
-            # the factor actually applied (Gregg 2026-10-02 flux ruling) and the flow-aligned re-measurement, if made
-            'flux_dc': (f'{float(np.ravel(scale_map_full)[0]):.5f}' if np.ptp(scale_map_full) == 0 else 'affine'),
-            'qa3_scale_aligned': ('' if _mean_aligned is None else f'{_mean_aligned:.5f}'),
-        }
-
-        # Two-tier policy (Gregg 2026-08-26): per-epoch products are built
-        # for EVERY non-data_decisions epoch; only co-add membership is
-        # gated by the QA verdict.
-        i_out = f'{prep_dir}/{date}_I.fits'
-        process_variant_image(align_img_path, flow_offsets, scale_map_full,
-                              tmpl_hdr, target_shape, i_out, regrid_coords)
-        # NIGHT-IMAGE GATE (Gregg 2026-10-02 "Approved"): ahead of co-add membership AND search admission; the aligned
-        # night against the reference it was aligned to; a FAIL leaves good_dates_deep, so the I and V masters, the
-        # variants, the leave-one-out masters and in_master all follow; the record is read by the search.
-        try:
-            _gate_rows[date] = _NG.evaluate(load_image(i_out)[0], ref_data, cd, night_raw=tgt_data)
-        except Exception as _ge:
-            _gate_rows[date] = dict(verdict='FAIL', reason=f'night-image gate could not be evaluated ({_ge})'[:200])
-        if _gate_rows[date]['verdict'] == 'FAIL':
-            print(f"    {date}: NIGHT-IMAGE GATE REFUSED - {_gate_rows[date]['reason']}", flush=True)
+        date_params[date] = _nr['params']
+        if _nr['gate']['verdict'] == 'FAIL':
             good_dates_deep.discard(date)
         if date in good_dates_deep:
-            i_aligned.append((date, i_out, weight))
-            flow_str = 'flow' if flow_offsets is not None else 'no-flow'
-            print(f"    {date}: scale={mean_scale:.3f} ({n_src} src) "
-                  f"w={weight:.3f} {flow_str} ✓")
+            i_aligned.append((date, _nr['i_out'], _nr['weight']))
+            flow_str = 'flow' if _nr['flow_offsets'] is not None else 'no-flow'
+            print(f"    {date}: scale={_nr['mean_scale']:.3f} ({_nr['n_src']} src) "
+                  f"w={_nr['weight']:.3f} {flow_str} ✓")
         else:
             print(f"    {date}: coadd-omitted (QA); products still built")
-
     if len(i_aligned) < MIN_DATES_FOR_COADD:
         print(f"  Only {len(i_aligned)} aligned, need {MIN_DATES_FOR_COADD}")
         shutil.rmtree(prep_dir, ignore_errors=True)
@@ -4023,14 +4162,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         i_path = f'{prep_dir}/{date}_I.fits'
         if not os.path.exists(i_path):
             continue
-        i_data, _ = load_image(i_path)
-        combined_mask = coadd_mask | (~np.isfinite(i_data)) | (i_data == 0)
-        obs_time = get_midpoint_time(ref_hdr, i_path)
-        # epoch (flow-aligned) against the final master, read at the master's peak pixels (Gregg 2026-10-04, "1 approved":
-        # the aperture maximum read high and left a negative imprint of the bright sources in the residuals)
-        _, coeffs2, n2 = measure_flux_scale(
-            i_data, final_i_data, final_wcs, beam_pix, combined_mask, obs_time, at_peak_pixel=True)
-        scale2_meas[date] = (coeffs2, n2)
+        scale2_meas[date] = measure_scale2(i_path, final_i_data, final_wcs, beam_pix, coadd_mask, ref_hdr)
     _dcs = [float(c[0][0]) for c in scale2_meas.values() if c[1] >= 8]
     med_dc = float(np.median(_dcs)) if _dcs else 1.0
 
@@ -4038,92 +4170,9 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         if date not in scale2_meas:
             continue
         params = date_params[date]
-        i_path = f'{prep_dir}/{date}_I.fits'
-        i_data, _ = load_image(i_path)
-
-        # Per-epoch time block (from this date's Phase-2 source) stamped onto every
-        # residual below — keeps tmpl_hdr's WCS/grid, fixes the inherited-DATE-OBS bug.
-        # Beam+RESTFRQ are stamped per Stokes at each write via
-        # save_epoch_residual (R1 amendment #1) — never left as tmpl_hdr's.
-        epoch_hdr = epoch_time_header(tmpl_hdr, align_img_path)
-
-        coeffs2, n2 = scale2_meas[date]
-        h, w = target_shape
-        yg, xg = np.indices((h, w), dtype=float)
-        if os.environ.get('P3_FLUXSCALE_TILT') != '1':
-            coeffs2 = np.array([coeffs2[0], 0.0, 0.0])   # DC-only second pass (R-TILT-REMOVED-NEXTGEN)
-        scale2_full = (coeffs2[0] + coeffs2[1] * (2.0 * xg / w - 1.0)
-                       + coeffs2[2] * (2.0 * yg / h - 1.0))
-        # Flux-degeneracy guard, median-relative (see PASS 1 comment)
-        _dc = float(coeffs2[0]); _tilt = float(np.hypot(coeffs2[1], coeffs2[2]))
-        if (n2 < 8 or not (0.6 * med_dc <= _dc <= 1.6 * med_dc)
-                or _tilt > 0.3 * abs(med_dc)):
-            print(f"    {date}: scale2-degenerate (DC={_dc:.3f} tilt={_tilt:.3f} "
-                  f"n={n2}; cell median DC={med_dc:.3f}) -> flat DC={med_dc:.3f}")
-            scale2_full = np.full((h, w), med_dc if med_dc > 0 else 1.0)
-            coeffs2 = np.array([med_dc, 0.0, 0.0])
-
-        # Apply flux correction and subtract
-        safe_scale = np.where(np.abs(scale2_full) > 0.1, scale2_full, 1.0)
-        i_corrected = i_data / safe_scale
-        # THE ALIGNED, FLUX-CORRECTED EPOCH IMAGE itself - contract 0.2 (1), the archived epoch product (2026-09-30:
-        # it was never written, and the archive published the striation-cleaned residual under its name)
-        save_epoch_residual(f'{sub_dir}/{date}_I_epoch_{fl}.fits', i_corrected, epoch_hdr,
-                            align_img_path, tmpl_hdr, 'I')
-        i_sub = i_corrected - final_i_data
-
-        sub_i_path = f'{sub_dir}/{date}_I_sub_{fl}.fits'
-        save_epoch_residual(sub_i_path, i_sub, epoch_hdr,
-                            align_img_path, tmpl_hdr, 'I')
-
-        # Striation removal on I
-        i_mask = coadd_mask | (~np.isfinite(i_sub)) | (i_sub == 0)
-        # window = 8 x beam (R-STRIATION-WINDOW-APPROVED-8BEAMS 2026-08-25;
-        # supersedes both the 20-beam default and the fixed 4.375 deg)
-        i_stri_model, _ = build_striation_model(
-            i_sub, final_wcs, i_mask, ra_window_beams=8.0, beam_pix=beam_pix)
-        i_clean = i_sub - i_stri_model
-        clean_i_path = f'{sub_dir}/{date}_I_clean_{fl}.fits'
-        save_epoch_residual(clean_i_path, i_clean, epoch_hdr,
-                            align_img_path, tmpl_hdr, 'I')
-
-        i_rms_before = get_uniform_rms(i_sub, i_mask)
-        i_rms_after = get_uniform_rms(i_clean, i_mask)
-
-        # V subtraction + striation removal
-        v_path = f'{prep_dir}/{date}_V.fits'
-        if os.path.exists(v_path) and final_v_data is not None:
-            # R1 amendment #1 / restamp finding F2: V residuals carry the V
-            # epoch image's OWN beam (Taper_R0 convention), never I-derived.
-            v_src = find_stokes_v_deep_image(sci_dir, freq_str)
-            v_data, _ = load_image(v_path)
-            v_corrected = v_data / safe_scale
-            save_epoch_residual(f'{sub_dir}/{date}_V_epoch_{fl}.fits', v_corrected, epoch_hdr,
-                                v_src, tmpl_hdr, 'V')          # the aligned, flux-corrected V epoch (2026-09-30)
-            v_sub = v_corrected - final_v_data
-
-            sub_v_path = f'{sub_dir}/{date}_V_sub_{fl}.fits'
-            save_epoch_residual(sub_v_path, v_sub, epoch_hdr,
-                                v_src, tmpl_hdr, 'V')
-
-            v_mask = coadd_mask | (~np.isfinite(v_sub)) | (v_sub == 0)
-            v_stri_model, _ = build_striation_model(
-                v_sub, final_wcs, v_mask, ra_window_beams=8.0, beam_pix=beam_pix)
-            v_clean = v_sub - v_stri_model
-
-            clean_v_path = f'{sub_dir}/{date}_V_clean_{fl}.fits'
-            save_epoch_residual(clean_v_path, v_clean, epoch_hdr,
-                                v_src, tmpl_hdr, 'V')
-
-            v_rms_before = get_uniform_rms(v_sub, v_mask)
-            v_rms_after = get_uniform_rms(v_clean, v_mask)
-            print(f"    {date}: scale2={coeffs2[0]:.4f} ({n2} src)  "
-                  f"I {i_rms_before*1000:.1f}→{i_rms_after*1000:.1f}  "
-                  f"V {v_rms_before*1000:.1f}→{v_rms_after*1000:.1f} mJy")
-        else:
-            print(f"    {date}: scale2={coeffs2[0]:.4f} ({n2} src)  "
-                  f"I {i_rms_before*1000:.1f}→{i_rms_after*1000:.1f} mJy")
-
+        subtract_night(date, sci_dir, align_img_path, f'{prep_dir}/{date}_I.fits', f'{prep_dir}/{date}_V.fits',
+                       *scale2_meas[date], med_dc, final_i_data, final_v_data, final_wcs, coadd_mask, beam_pix, tmpl_hdr,
+                       target_shape, sub_dir, fl, freq_str)
     print(f"  Subtracted images → {sub_dir}/")
 
     # Cleanup prep aligned images (keep co-adds and subtracted) — UNLESS
