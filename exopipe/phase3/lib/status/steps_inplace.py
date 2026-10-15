@@ -135,6 +135,8 @@ def call_attr(module_name, attrs, fn_name='main', args=(), mapping=None, allowed
               unit=None, argv=None):
     """Import ``module_name`` (fresh: a cached copy is dropped first so its import-time env reads see ``env``), set
     ``attrs`` on it, call ``fn_name(*args)`` under ``redirect``. Returns (rc, text, module)."""
+    from exopipe.phase3.core.legacy import refuse_patch_path
+    refuse_patch_path(module_name, 'steps_inplace.call_attr')
     buf = io.StringIO()
     rc = 0
     mod = None
@@ -169,6 +171,8 @@ def import_quiet(module_name, env=None):
     """Import a legacy module by name with ``env`` set during the import (modules that read env at import time) and
     sys.path restored afterwards (some insert production roots at import)."""
     import importlib
+    from exopipe.phase3.core.legacy import refuse_patch_path
+    refuse_patch_path(module_name, 'steps_inplace.import_quiet')
     sys_path = list(sys.path)
     env_saved = {k: os.environ.get(k) for k in (env or {})}
     for k, v in (env or {}).items():
@@ -186,9 +190,28 @@ def import_quiet(module_name, env=None):
                 os.environ[k] = v
 
 
+def search_state_dir(label):
+    """The deep search's published-attempt register of run ``label`` (config catalog.DEEP_STATE_DIR - the folder the deep
+    catalogue harvest reads)."""
+    from exopipe.phase3.config import CFG
+    lab = label[4:] if label.startswith('Run_') else label
+    return CFG.catalog.DEEP_STATE_DIR.format(ops_root=CFG.paths.OPS_ROOT, label_lower=lab.lower())
+
+
+def search_sources(label, state=None):
+    """ops/p3s3_sources imported for run ``label`` with its register folder and collect roots PINNED from config, as the
+    deep catalogue harvest sets them (deep_chain.DeepRun.env): an inherited P3S3_STATE_DIR or P3S3_COLLECT_ROOTS would
+    otherwise change the attempt set silently (2026-10-15 review). ``state``: another register folder (a copy)."""
+    from exopipe.phase3.config import CFG
+    return import_quiet('p3s3_sources', env={'P3S_LABEL': label, 'P3S3_STATE_DIR': state or search_state_dir(label),
+                                             'P3S3_COLLECT_ROOTS': ':'.join(CFG.catalog.COLLECT_ROOTS)})
+
+
 def legacy_script(name):
     """Absolute path of an exopipe_ops script (site LEGACY_CODE_ROOTS)."""
     from exopipe.phase3.core import env as E
+    from exopipe.phase3.core.legacy import refuse_patch_path
+    refuse_patch_path(name, 'steps_inplace.legacy_script')
     p = os.path.join(E.legacy_root('exopipe_ops'), name)
     if not os.path.exists(p):
         from exopipe.phase3.core.record import Refusal

@@ -147,8 +147,8 @@ def stale_records(roots, ex, step_filter=None):
 
 def stale_search_attempts(label):
     from exopipe.phase3.lib.status import steps_inplace as IP
-    env = {'P3S_LABEL': label}
-    S = IP.import_quiet('p3s3_sources', env=env)
+    env = {'P3S_LABEL': label, 'P3S3_STATE_DIR': IP.search_state_dir(label)}
+    S = IP.search_sources(label)                          # register and collect roots pinned from config
     SE = IP.import_quiet('p3s3_stale_exclusions', env=env)
     dd = K.cfg().paths.DATA_DECISIONS
     dd_m = os.path.getmtime(dd)

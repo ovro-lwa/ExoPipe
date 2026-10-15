@@ -252,6 +252,8 @@ def import_inplace(name, env=None, reload=False):
     insert their own roots at import); ``env`` is set while the module executes (modules that read the environment at
     import); ``reload`` re-executes a module already imported (e.g. gate_inputs with another P3_PARENT_DIR)."""
     from exopipe.phase3.core import env as _env
+    from exopipe.phase3.core.legacy import refuse_patch_path
+    refuse_patch_path(name, 'calibrate.common.import_inplace')
     _env.legacy()
     saved = list(sys.path)
     try:

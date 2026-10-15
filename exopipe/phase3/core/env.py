@@ -22,14 +22,17 @@ def legacy():
     """Refactor window (DESIGN 11.1): let clv15 / exopipe_ops modules be called in place. Appends the site file's
     LEGACY_CODE_ROOTS to sys.path (after the package, so nothing in them shadows it) and installs the import finder that
     maps pre-refactor dotted names (exopipe.phase3.coadd_full_pipeline, ...) to their new modules without any file at
-    the old paths (core/_shim.py). Idempotent."""
+    the old paths (core/_shim.py), and the guard that refuses to import a Run_P3S4 -> Run_P3S5 patch module (B-01 b,
+    core/legacy.PATCH_NAME: a plain import or importlib.import_module of p3s5_patch_cell, p3s5_repatch_epochgate, ...).
+    Idempotent."""
     import sys
     from exopipe.phase3.config import CFG
-    from exopipe.phase3.core import _shim
+    from exopipe.phase3.core import _shim, legacy as _legacy
     for root in CFG.site.LEGACY_CODE_ROOTS:
         if root not in sys.path:
             sys.path.append(root)
     _shim.install_legacy_finder()
+    _legacy.install_patch_import_guard()
 
 
 def legacy_root(name):

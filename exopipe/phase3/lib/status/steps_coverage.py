@@ -128,7 +128,7 @@ def searched_dates(label, cells_wanted):
     and each attempt's v_deep_images.csv, as build_qa_table.py:156-162 reads them). In place; P3S_LABEL set from config
     for the import (p3s3_sources reads it at import)."""
     from exopipe.phase3.lib.status import steps_inplace as IP
-    S = IP.import_quiet('p3s3_sources', env={'P3S_LABEL': label})
+    S = IP.search_sources(label)                          # register and collect roots pinned from config
     atts = [a for a in S.published_attempts(['V', 'I']) if a['harvested'] and a['cell'] in cells_wanted]
 
     def one(a):

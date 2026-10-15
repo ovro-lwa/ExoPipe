@@ -24,9 +24,55 @@ The child's stdout and stderr go to ``log`` (and a tail is kept). ``refused`` is
 import glob
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
+
+# B-01 (b), Gregg 2026-10-13 ("no patch path in the new code; patched Run_P3S4 results stay in Run_P3S5 until the next full
+# re-search"): the production scripts that patch Run_P3S4 attempts into Run_P3S5 - p3s5_patch_cell.py, p3s5_patch_runner.sh,
+# p3s5_patch_untouched.sh, p3s5_repatch_epochgate.py and any later p3s5_*patch* - and the ops runners that call them are
+# never run or imported by the branch: every in-place entry point refuses them (refuse_patch_path).
+PATCH_NAME = re.compile(r'^p3s5_(re)?patch')
+PATCH_RUNNERS = ('mdewarp_rbf_20261004/install_runner.sh', 'mdewarp_rbf_20261004/lst_watch.sh',
+                 'mdewarp_rbf_20261004/chain_11h.sh', 'membership_rebuild_20261007/install_runner.sh')
+
+
+def patch_path(target):
+    """True when ``target`` - a script path, a module name ('p3s5_patch_cell', 'a.b.p3s5_repatch_epochgate') or a command
+    line ('bash -c "p3s5_patch_runner.sh cells.txt 4"': each word) - names one of the patch scripts or of the runners
+    that call them."""
+    for t in str(target or '').replace('"', ' ').replace("'", ' ').replace(';', ' ').split():
+        name = os.path.basename(t.rstrip('/'))
+        if '/' not in t and not t.endswith(('.py', '.sh')):
+            name = name.rsplit('.', 1)[-1]                    # a dotted module name: its last component
+        if PATCH_NAME.match(name) or any(os.path.normpath(t).endswith(r) for r in PATCH_RUNNERS):
+            return True
+    return False
+
+
+def refuse_patch_path(target, where):
+    """Raise Refusal when ``target`` is a patch path (B-01 b)."""
+    if patch_path(target):
+        from exopipe.phase3.core.record import Refusal
+        raise Refusal(f'{where}: {target} is a Run_P3S4 -> Run_P3S5 patch path - the new code has none (B-01 b, Gregg '
+                      f'2026-10-13: patched results stay in Run_P3S5 until the next full re-search)')
+
+
+class _PatchImportGuard:
+    """sys.meta_path finder (first): importing a patch module refuses - whatever spelling reached the import system."""
+
+    def find_spec(self, name, path=None, target=None):
+        if PATCH_NAME.match(name.rsplit('.', 1)[-1]):
+            refuse_patch_path(name, 'import')
+        return None
+
+
+def install_patch_import_guard():
+    """Put _PatchImportGuard first on sys.meta_path (idempotent; core/env.legacy installs it for every step)."""
+    import sys
+    if not any(isinstance(f, _PatchImportGuard) for f in sys.meta_path):
+        sys.meta_path.insert(0, _PatchImportGuard())
 
 
 class LegacyResult:
@@ -56,6 +102,9 @@ def interpreter(name='default'):
 def run(target, args=(), python='default', module=False, env=None, cwd=None, log=None, parity_root=None,
         timeout=None, refusal_codes=(2,), refusal_text=('REFUSED', 'REFUSING', 'REFUSE:'), unit=None, tail_lines=40):
     """Run ``target`` (a script path, or a module name with module=True) with ``args``. See the module docstring."""
+    refuse_patch_path(target, 'core.legacy.run')
+    for a in args:                                            # a patch script handed to an interpreter or shell as an argument
+        refuse_patch_path(a, 'core.legacy.run')
     cfg = _cfg()
     py = interpreter(python)
     argv = [py] + (['-m', target] if module else [target]) + [str(a) for a in args]

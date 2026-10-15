@@ -717,28 +717,45 @@ def _stage_rebuild_due(ctx):
                       f"{float(r['build_s'] or 0) / 3600:7.2f} h ({r['n_new']} new nights){'  ' + r['unmeasured'][:80] if r['unmeasured'] else ''}")
 
 
-def _stage_patched(ctx):
+def patched_rows(S, want):
+    """The rows of the patched-attempt table: every published attempt of the register S (ops/p3s3_sources) whose cell is in
+    ``want`` (None = every cell), with its patch state from the attempt's own PATCH_RECORD.json."""
     from exopipe.phase3.lib.catalog import deep_ported as DP
-    from exopipe.phase3.lib.status import steps_inplace as IPL
-    K, C, out = ctx.K, ctx.C, ctx.out
+    rows = []
+    for a in sorted(S.published_attempts(['V', 'I']), key=lambda a: (a['cell'], a['stokes'])):
+        if want is not None and a['cell'] not in want:
+            continue
+        src = DP.patched_from(a['dir'])
+        lst, scope = a['cell'].split('_', 1)
+        rows.append(dict(cell=a['cell'], lst=lst, scope=scope, stokes=a['stokes'], attempt=a['att'], dir=a['dir'],
+                         patched='1' if src is not None else '0', patched_from=src or ''))
+    return rows
+
+
+def _stage_patched(ctx):
+    from exopipe.phase3.lib.status import steps_coverage as COV, steps_inplace as IPL
+    K, C, out, a = ctx.K, ctx.C, ctx.out, ctx.args
     sel = ctx.items_selected()
     name = ctx.unit('report', 'patched', sel)
     with ctx.run.unit(name, tier='deep', stage='patched') as u:
+        if a.nights or a.epochs:
+            u.refuse('status --patched selects cells (--cells, --lsts): a published attempt holds every night of its cell, '
+                     'so --nights / --epochs select no attempt')
+        spec = ctx.deep_spec()
+        want = set(COV.deep_universe(spec)) if spec else None
         label = C.status.SEARCH_LABEL['deep']
-        S = IPL.import_quiet('p3s3_sources', env={'P3S_LABEL': label})
-        atts = [a for a in S.published_attempts(['V', 'I']) if not sel or a['cell'] in set(sel)]
-        rows = []
-        for a in sorted(atts, key=lambda a: (a['cell'], a['stokes'])):
-            src = DP.patched_from(a['dir'])
-            lst, scope = a['cell'].split('_', 1)
-            rows.append(dict(cell=a['cell'], lst=lst, scope=scope, stokes=a['stokes'], attempt=a['att'], dir=a['dir'],
-                             patched='1' if src is not None else '0', patched_from=src or ''))
+        S = IPL.search_sources(label)                     # register and collect roots pinned from config, as the harvest
+        for st in ('V', 'I'):
+            reg = os.path.join(S.STATE, f'published_{st}.csv')
+            if os.path.exists(reg):
+                u.add_input(reg)                          # status --stale and --resume see the register move on
+        rows = patched_rows(S, want)
         table = K.place(out, 'QA', 'patched_attempts_deep' + name[len('report_patched_deep'):] + '.csv')
         K.write_csv(table, PATCHED_COLUMNS, rows)
         n = {st: sum(1 for r in rows if r['stokes'] == st and r['patched'] == '1') for st in ('V', 'I')}
-        u.meta.update(search_state=S.STATE, published=len(rows), patched=n,
+        u.meta.update(search_state=S.STATE, label=label, cells_spec=spec, published=len(rows), patched=n,
                       ruling='B-01 (b), R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32')
-        u.add_output(table, 'patched_attempts')
+        u.add_output(table, 'patched_attempts', label=label, state=S.STATE, cells_spec=spec)
         cells = sorted({r['cell'] for r in rows if r['patched'] == '1'})
         ctx.emit(u, 'patched', 'cell', cells, table, 'patched=1')
         print(f'patched: {len(rows)} published attempts of Run_{label} ({S.STATE}); patched Run_P3S4 results: {n["V"]} V, '

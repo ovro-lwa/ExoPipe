@@ -182,6 +182,8 @@ def _write_json(path, obj):
 
 def _load_module_from(path, name):
     """Import a legacy module from its file IN PLACE (DESIGN 11.1). Re-uses sys.modules[name] when it is that file."""
+    from exopipe.phase3.core.legacy import refuse_patch_path
+    refuse_patch_path(path, 'catalog.incremental._load_module_from')
     m = sys.modules.get(name)
     if m is not None and os.path.realpath(getattr(m, '__file__', '') or '') == os.path.realpath(path):
         return m
