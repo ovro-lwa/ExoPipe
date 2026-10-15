@@ -37,7 +37,9 @@ class masters(_Section):
     # PB_deep_<scope>); stage-in BEFORE the `flow` step (the flows align to the reference stage-in writes; the flow step copies
     # the stored flows and computes the stale ones - crosscheck 1.1 group 1). Sub-LST 'wideband' is the frames step's
     # (crosscheck 1.1 group 3; decision 6), not a masters stage.
-    STAGES = {'deep': ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants'),
+    # deep 'build-stats' (D-ADMIT slice 1) is on demand, last so no slice of the build chain includes it: the population
+    # record of a cell built without one, read from the installed cell
+    STAGES = {'deep': ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats'),
               'sublst': ('prep', 'admit', 'stack', 'loo', 'sources'),
               'snapshot': ('verify-frozen', 'freeze', 'sources')}   # sources: snapshot parent catalogues (M21; review 2026-10-13)
     # deep default = the build part of the chain 'deep-build-cell' (masters --stages stage-in -> flow -> masters (default)):

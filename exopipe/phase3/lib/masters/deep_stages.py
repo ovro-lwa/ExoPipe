@@ -1,5 +1,6 @@
 """`exopipe3 masters --tier deep`: the deep tier (INTERMITTENT, DESIGN 12.2; never per hour) - stages stage-in, build, pbmaps,
-vclean, fluxscale, verify, and after `dewarp` + `install`: sources; optional variants. Unit of a run record: one cell per
+vclean, fluxscale, verify, and after `dewarp` + `install`: sources; optional variants; on demand build-stats (the population
+record of a cell built without one, D-ADMIT). Unit of a run record: one cell per
 stage, ``<stage>_<cell>`` (e.g. build_23h_23MHz); item kind: deep cell (core.cells.parse_cell). Interface of a masters tier
 module: add_arguments(p) (tier-unique flags, prefixed --deep-...), default_out(args) and run(args, run).
 
@@ -27,7 +28,7 @@ from exopipe.phase3.core import record
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.masters.pb_qa import pb_qa_gate, pb_qa_inputs, pb_qa_missing   # noqa: F401 (B-30; also the dewarp apply)
 
-STAGE_ORDER = ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants')
+STAGE_ORDER = ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats')
 # the stage whose done record a stage requires (spec 1.2); sources requires the install step's record instead
 REQUIRES = {'build': 'stage-in', 'pbmaps': 'build', 'vclean': 'pbmaps', 'fluxscale': 'vclean', 'verify': 'fluxscale',
             'variants': 'build'}
@@ -55,7 +56,8 @@ def add_arguments(p):
                    help='variants stage: which I variants rebuild_variants_from_record rebuilds (default '
                         'masters_build.VARIANTS_ONLY = Taper_R0,NoTaper_R0)')
     g.add_argument('--deep-installed-root', dest='deep_installed_root', metavar='DIR',
-                   help='sources: the installed working tree holding <cell>/coadd_final/ (default paths.COADD_SB_ROOT)')
+                   help='sources, build-stats: the installed working tree holding <cell>/coadd_final/ (default '
+                        'paths.COADD_SB_ROOT)')
     g.add_argument('--deep-install-records', dest='deep_install_records', metavar='OUT',
                    help="sources: product root whose _records/install/ holds the cell's install record (default --out)")
 
@@ -917,8 +919,71 @@ def variants(cell, args, run, out, ran_now):
                 u.note(f'{vk}: NOT WRITTEN ({n} constituents < MIN_DATES_FOR_VARIANT; {len(refused)} refused)')
 
 
+# =====================================================================================================================
+# stage: build-stats (on demand; D-ADMIT slice 1)
+# =====================================================================================================================
+
+def _build_stats_sources(cell_src):
+    """The build records build_stats.compute reads from a cell directory: (stage-2 record, residuals_provisional.csv,
+    weights.csv)."""
+    from exopipe.phase3.lib.masters import build_stats as BS
+    return (BS.stage2_source(cell_src)[0], os.path.join(cell_src, 'residuals_provisional.csv'),
+            os.path.join(cell_src, 'coadd_final', 'weights.csv'))
+
+
+def _build_stats_built_here(out, cell):
+    """True when the done build of the cell under --out lists <out>/<cell>/coadd_final/build_stats.json as an output (the
+    build wrote it: masters_build.WRITE_BUILD_STATS)."""
+    from exopipe.phase3.lib.masters import build_stats as BS
+    dest = os.path.join(out, cell, 'coadd_final', BS.FILE)
+    b = done_record(out, 'build', cell)
+    return bool(b) and any(os.path.abspath(o.get('path', '')) == os.path.abspath(dest) for o in b.get('outputs') or [])
+
+
+def build_stats_stage(cell, args, run, out, ran_now):
+    """D-ADMIT (a), slice 1: the population record (lib/masters/build_stats.py) of a cell built without one - every cell
+    production built (it writes none: masters_build.WRITE_BUILD_STATS False) - computed from that cell's own build records,
+    read in place from --deep-installed-root (default paths.COADD_SB_ROOT), and written where a build writes it:
+    <out>/<cell>/coadd_final/build_stats.json (so a later stage-in of the cell under the same --out finds the cell
+    directory present and refuses, G-M25). Refuses when the cell fails membership.verify / verify_products (a population
+    that holds an excluded night is not one to judge a new night by) and when the done build under --out wrote the record
+    itself; no input when a build record is missing."""
+    from exopipe.phase3.lib.masters import build_stats as BS
+    lst, sc = cell.split('_', 1)
+    src = args.deep_installed_root or _cfg().paths.COADD_SB_ROOT
+    cell_src = os.path.join(src, cell)
+    with run.unit(f'build-stats_{cell}', tier='deep', stage='build-stats', cell=cell) as u:
+        not_here(cell_src, 'the cell whose build records are read', 'build-stats')
+        if _build_stats_built_here(out, cell):
+            u.refuse(f'{out}/{cell}/coadd_final/{BS.FILE} is the record the done build of {cell} under {out} wrote - '
+                     f'nothing to recompute')
+        recs = _build_stats_sources(cell_src)
+        missing = [p for p in recs if not os.path.exists(p)]
+        if missing:
+            raise NoInput(f'build-stats: {cell} has no build record(s) {missing}')
+        mods, _ = inplace(out)
+        viol = installed_cell_violations(src, cell)
+        u.check('masters_build_stats.cell_membership', not viol, value=len(viol),
+                detail=('; '.join(viol[:3]) if viol else f'membership.verify + verify_products of {cell_src}: PASS'))
+        if viol:
+            u.refuse(f'{cell_src} fails membership.verify / verify_products ({len(viol)}: {viol[0][:300]}) - its build '
+                     f'population is not one to judge an admitted night by')
+        for p in recs:
+            u.add_input(p)
+        st = BS.compute(cell_src, lst, sc, mods['coadd'], _cfg())
+        for x in st['beam_gate']['nights'].values():
+            if x.get('image'):
+                u.add_input(x['image'])
+        os.makedirs(os.path.join(out, cell, 'coadd_final'), exist_ok=True)
+        p = BS.write(os.path.join(out, cell), st)
+        u.note(f'{cell}: build records of {cell_src}; stage 2 I n={st["stage2"]["I"]["n"]} V n={st["stage2"]["V"]["n"]}, '
+               f'beam gate n={st["beam_gate"]["n"]}, sanity n={st["sanity"]["n"]}, search tier I '
+               f'n={st["search_tier"]["I"]["n"]} V n={st["search_tier"]["V"]["n"]}')
+        u.add_output(p, 'build_stats', cell=cell, source=cell_src)
+
+
 STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vclean, 'fluxscale': fluxscale,
-          'verify': verify, 'sources': sources, 'variants': variants}
+          'verify': verify, 'sources': sources, 'variants': variants, 'build-stats': build_stats_stage}
 
 
 # =====================================================================================================================
@@ -1107,6 +1172,21 @@ def _plan_simple(stage):
                 gates.append(f'{dest} is under the production root {r} (pass --out)')
         elif stage == 'variants':
             lines.append(f'in place: coadd.rebuild_variants_from_record(variants={args.deep_variants or s.masters_build.VARIANTS_ONLY})')
+        elif stage == 'build-stats':
+            from exopipe.phase3.lib.masters import build_stats as BS
+            src = args.deep_installed_root or s.paths.COADD_SB_ROOT
+            recs = _build_stats_sources(os.path.join(src, cell))
+            lines.append(f'build records {", ".join(recs)}; output {out}/{cell}/coadd_final/{BS.FILE} [build_stats]')
+            missing = [p for p in recs if not os.path.exists(p)]
+            if missing:
+                gates.append(f'build record(s) missing (no input): {missing}')
+            if _build_stats_built_here(out, cell):
+                gates.append(f'the done build under {out} wrote the record (nothing to recompute)')
+            if not missing:
+                inplace(out)
+                viol = installed_cell_violations(src, cell)
+                if viol:
+                    gates.append(f'the cell fails membership.verify / verify_products ({len(viol)}): {viol[0][:200]}')
         return lines, gates
     return f
 

@@ -15,8 +15,9 @@ from the build's own records exactly as its gate computes it:
   search_tier  per Stokes, over the stage-1 rms of residuals_provisional.csv: numpy median, 1.4826 x MAD and the threshold
                median + SEARCH_TIER_SIGMA x that (deep_search; fewer than SEARCH_TIER_MIN: no gate).
 The masters build writes it when masters_build.WRITE_BUILD_STATS is True (ruled; production False writes nothing);
-`masters --stages build-stats` recomputes it for a cell already built (read only besides the file). Content test (class
-build_stats): every number re-derived from the files it names.
+`masters --tier deep --stages build-stats` computes it for a cell built without one (every cell production built) from
+that cell's records, read in place, into <out>/<cell>/coadd_final/. Content test (class build_stats): every number
+re-derived from the files it names.
 """
 import csv
 import json

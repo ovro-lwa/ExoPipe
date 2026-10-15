@@ -35,6 +35,10 @@ build,pbmaps,vclean,fluxscale,verify - stage-in runs alone, BEFORE the flow step
              (window: --waive masters.sources.install_record --ruling "...") and when the screen record says the dewarp was
              applied but the installed master carries no MDWARP.
   variants   optional: rebuild non-survey I variants from the generation record (coadd.rebuild_variants_from_record).
+  build-stats on demand (D-ADMIT): the population numbers of the cell-median gates of a cell built without them (every
+             cell production built) from the cell's own build records, read in place from --deep-installed-root
+             (default paths.COADD_SB_ROOT) -> <out>/<cell>/coadd_final/build_stats.json [build_stats]. Refuses when
+             the cell fails membership.verify / verify_products or the done build under --out wrote the record.
 
 Inputs (deep; read only, fingerprinted in the unit record): Phase-2 images /lustre/pipeline/exopipe/phase2/<LST>/<date>/
   Science_*/<scope>/..., their QA thermal-noise CSVs (PB weights); data_decisions.csv (core.exclusions AND the co-add's own

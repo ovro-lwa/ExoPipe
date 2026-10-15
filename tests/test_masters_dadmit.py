@@ -3,12 +3,14 @@
 Each statistic must be the number its gate computes: stage 2 as coadd.detect_outliers_mad (and equal to the threshold the
 build itself recorded), the beam gate's and the sanity gates' upper middle element, the search tier's numpy median with
 1.4826 x MAD; the content test re-derives every number and fails on an edited one. Real cells (read only): the
-re-derived stage-2 thresholds equal production's recorded ones.
+re-derived stage-2 thresholds equal production's recorded ones; `masters --stages build-stats` writes the record of an
+installed cell.
 Run: python tests/test_masters_dadmit.py
 """
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -26,6 +28,7 @@ from exopipe.phase3.lib.masters import build_stats as BS            # noqa: E402
 from exopipe.phase3.lib.masters import coadd as co                  # noqa: E402
 
 FAILS, N = [], [0]
+T = '/tmp/exopipe3_tests_dadmit'
 
 
 def check(name, ok, detail=''):
@@ -105,10 +108,63 @@ def test_wiring():
           and CFG.masters_build.WRITE_BUILD_STATS is True)
 
 
+def cli(*args):
+    p = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters'] + list(args), cwd=REPO, env=dict(os.environ),
+                       capture_output=True, text=True, timeout=900)
+    return p.returncode, p.stdout + p.stderr
+
+
+def test_stage():
+    """`masters --stages build-stats` on an installed cell (read only): the record equals build_stats.compute of that cell
+    and its content test passes; it refuses where the done build under --out wrote the record itself, and has no input
+    without the build records; the stage is the last of the deep order and in no default."""
+    from exopipe.phase3.lib.masters import deep_stages as DS
+    check('build-stats: the last deep stage, in no default; the module\'s order is the config\'s',
+          DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep']) and DS.STAGE_ORDER[-1] == 'build-stats'
+          and 'build-stats' not in CFG.masters.DEFAULT_STAGES['deep'], DS.STAGE_ORDER)
+    shutil.rmtree(T, ignore_errors=True)
+    cell = '23h_23MHz'
+    lst, sc = cell.split('_')
+    out = f'{T}/out'
+    dest = f'{out}/{cell}/coadd_final/{BS.FILE}'
+    common = ['--tier', 'deep', '--cells', cell, '--stages', 'build-stats', '--cores', 'none']
+    rc, txt = cli(*common, '--out', out, '--dry-run')
+    check('dry run: plans the record from the installed cell, no gate, writes nothing',
+          rc == 0 and dest in txt and 'GATE' not in txt and not os.path.exists(out), txt[-500:])
+    rc, txt = cli(*common, '--out', out)
+    rp = f'{out}/_records/masters/build-stats_{cell}.json'
+    rec = json.load(open(rp)) if os.path.exists(rp) else {}
+    got = json.load(open(dest)) if os.path.exists(dest) else None
+    want = json.loads(json.dumps(BS.compute(f'{CFG.paths.COADD_SB_ROOT}/{cell}', lst, sc, co, CFG)))
+    check('the stage (exit 0) writes the record build_stats.compute gives for the installed cell',
+          rc == 0 and rec.get('status') == 'done' and got == want, (txt[-500:], rec.get('reason')))
+    names = {t['name']: t['passed'] for t in rec.get('tests', [])}
+    check('its content test re-derives every number, and the cell passed membership.verify',
+          names.get('build_stats.build_stats_rederived') is True and names.get('masters_build_stats.cell_membership') is True,
+          names)
+    out2 = f'{T}/out_built'
+    os.makedirs(f'{out2}/_records/masters')
+    with open(f'{out2}/_records/masters/build_{cell}.json', 'w') as f:
+        json.dump(dict(status='done', outputs=[dict(path=f'{out2}/{cell}/coadd_final/{BS.FILE}', **{'class': 'build_stats'})]), f)
+    rc, txt = cli(*common, '--out', out2)
+    r2 = json.load(open(f'{out2}/_records/masters/build-stats_{cell}.json'))
+    check('refused (exit 2) where the done build under --out wrote the record', rc == 2 and r2['status'] == 'refused'
+          and 'nothing to recompute' in r2['reason'] and not os.path.exists(f'{out2}/{cell}'), r2.get('reason'))
+    os.makedirs(f'{T}/empty/{cell}')
+    rc, txt = cli(*common, '--out', f'{T}/out_empty', '--deep-installed-root', f'{T}/empty')
+    r3 = json.load(open(f'{T}/out_empty/_records/masters/build-stats_{cell}.json'))
+    check('no input (exit 3) without the build records', rc == 3 and r3['status'] == 'no-input'
+          and 'residuals_provisional.csv' in r3['reason'], r3.get('reason'))
+
+
 def main():
     test_formulas()
     test_real()
     test_wiring()
+    try:
+        test_stage()
+    finally:
+        shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')
     return 1 if FAILS else 0
 
