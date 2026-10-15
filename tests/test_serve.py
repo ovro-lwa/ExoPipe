@@ -1070,10 +1070,27 @@ def test_server_env_mirrors_launcher():
     ok(f'SERVER_ENV[snapshot] = snapshot_serve.sh launch environment ({len(lines)} launch lines, {len(want)} variables)')
 
 
+def _frozen_to_live(live, pid, ops):
+    """B-51 (spec serve.md section 9; not ruled): production serves a sub-LST page from the frozen code tree its 10-minute
+    run was launched from (sublst_code_root.sh: SUBLST_CODE_ROOT in the server's environment, $OPSC/classify_transients.py);
+    the branch serves from the live tree during the window. The live argv with the tree's prefix mapped to the live code
+    root, after checking the tree is a complete frozen tree and its server script IS the live one modulo the freeze's
+    code-location rewrite (a frozen server running older code than the live tree is a real difference). (argv, root|None)"""
+    root = (procs.environ(pid).get('SUBLST_CODE_ROOT') or '').rstrip('/')
+    if not root:
+        return live, None
+    base = os.path.dirname(ops)                            # the live code root (/lustre/gh/main), as sublst_code_root.sh's XC
+    assert os.path.isfile(os.path.join(root, 'FROZEN.ok')), f'{root}: no FROZEN.ok - not a complete frozen tree'
+    frozen = open(os.path.join(root, 'exopipe_ops', 'classify_transients.py')).read().replace(root, base)
+    assert frozen == open(os.path.join(ops, 'classify_transients.py')).read(), \
+        f'{root}: the frozen classify_transients.py differs from the live one beyond the code-root rewrite'
+    return [base + x[len(root):] if x.startswith(root + '/') else x for x in live], root
+
+
 def test_production_readonly():
     import argparse
     import re
-    n_cmp = 0
+    n_cmp, frozen = 0, set()
     for tier, run, extra in (('deep', 'P3S5', {}), ('sublst', None, {}), ('snapshot', 'Run_SNAPB1R_20261004', {}),
                              ('snapshot', None, {'family': 'forced', 'forced_tag': '20261007'}), ('jupiter', None, {})):
         a = argparse.Namespace(tier=tier, run_label=run, port_offset=0, pages=None, stokes=None, lsts=None, label=None,
@@ -1092,11 +1109,16 @@ def test_production_readonly():
             if tier == 'sublst':
                 p.lsts_text = re.search(r'LSTs ([0-9h ]+?) - ', t).group(1)
                 live = [live[0], f'{p.ops}/{live[1]}'] + live[2:] if not live[1].startswith('/') else live
+                live, root = _frozen_to_live(live, pids[0], p.ops)
+                if root:
+                    frozen.add(root)
             mine = p.argv(pg, m.group(1) if m else '')
             assert mine == live, (tier, pg.key, [x for x in zip(live, mine) if x[0] != x[1]][:3])
             n_cmp += 1
     ok(f'planned argv == the live production servers\' argv on {n_cmp} pages (sub-LST: the current launcher\'s absolute '
-       f'script path; served time and LST list taken from the live title)')
+       f'script path; served time and LST list taken from the live title'
+       + (f'; served from frozen tree(s) {sorted(os.path.basename(r) for r in frozen)} whose server script is the live one '
+          f'(B-51: the branch serves the live tree in the window)' if frozen else '') + ')')
     env = dict(os.environ, PYTHONPATH=ROOT)
     p = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--tier', 'deep', '--run', 'P3S5', '--dry-run', '--cores', 'none'],
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
