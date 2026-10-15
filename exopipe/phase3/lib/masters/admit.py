@@ -341,6 +341,21 @@ def admitted_policy(value=None):
     return value
 
 
+SCALE2_RECORDS = ('record', 'none')       # masters_build.SCALE2_RECORD: the final stage writes coadd_final/scale2.csv, or not
+
+
+def scale2_record_policy(value=None):
+    """masters_build.SCALE2_RECORD, or ``value`` checked; an unknown value refuses (ninth review: the co-add tests only for
+    'record', so any other spelling would silently build cells without the record, and their admissions would fall back on
+    the ruled guard median)."""
+    if value is None:
+        from exopipe.phase3.config import CFG
+        value = CFG.masters_build.SCALE2_RECORD
+    if value not in SCALE2_RECORDS:
+        raise Refusal(f'masters_build.SCALE2_RECORD = {value!r} is not one of {SCALE2_RECORDS}')
+    return value
+
+
 def master_path(cell_dir):
     sc = os.path.basename(cell_dir.rstrip('/')).split('_', 1)[1]
     return os.path.join(cell_dir, 'coadd_final', f'I_deep_Taper_R075_{sc}.fits')

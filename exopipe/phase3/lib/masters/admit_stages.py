@@ -206,8 +206,9 @@ def admit_prep(cell, args, run, out, ran_now):
         os.makedirs(os.path.join(W, 'flow'), exist_ok=True)
         stamp = f'{R.utcnow().replace(":", "")}_{os.getpid()}'
         pairs, rows = [], []
-        with IP.capture_stdout(DS._log(out, cell, 'admit-prep'), echo=False):
-            for d, sd, img in take:
+        decided = []         # the nights this run decided (ninth review): prepared, or refused by a verdict on the night's own
+        with IP.capture_stdout(DS._log(out, cell, 'admit-prep'), echo=False), ErrorWatch(co) as watch:   # image; an error
+            for d, sd, img in take:                                                                     # is retried
                 sp = u.plan(os.path.join(W, 'prep', f'{d}_scaled.fits'), 'flow_prep_scaled')
                 bad = off_grid(d, img, ref['target_shape'], co.CUTOVER_DATE)
                 if bad:
@@ -217,20 +218,29 @@ def admit_prep(cell, args, run, out, ran_now):
                                        f'{ref["target_shape"][0]}x{ref["target_shape"][1]} - a Phase-2 wrong-grid night, kept '
                                        f'out until data_decisions.csv excludes it (B-03 a; DECISIONS_PENDING item 3)'),
                                   gate='admit-prep.wrong_grid')
+                    if bad != 'unreadable':                  # the image's own grid (a verdict); unreadable: an error
+                        decided.append(d)
                     continue
                 moved = move_aside(W, d, stamp)
                 if moved:
                     u.note(f'{d}: earlier prep files moved aside to {A.ADMIT_DIR}/prep/_superseded/{stamp}/: {moved}')
+                watch.start()
                 one = co.prep_night(d, sd, img, ref, W, [True])
+                if watch.errors:
+                    u.refuse_item(sp, f'{d}: an error while it was prepared ({watch.errors[0]}) - not a verdict: retried at '
+                                      f'the next run', gate='admit-prep.error')
+                    continue
                 if one is None:
                     u.refuse_item(sp, f'{d}: shape differs from the master\'s grid after the regrid', gate='admit-prep.grid')
+                    decided.append(d)
                     continue
                 entry, row = one
                 pairs.append(entry)
                 rows.append(row)
+                decided.append(d)
                 inp = os.path.join(W, 'prep', f'{d}_regrid.fits') if row['needs_regrid'] else img
                 u.add_output(sp, 'flow_prep_scaled', input_image=inp)
-        u.set_admitted([r['date'] for r in rows])   # the nights prepared (eighth review): one refused as an item is retried
+        u.set_admitted(sorted(decided))
         u.meta['admit'] = dict(reference={e['stokes']: dict(path=refs.get(e['stokes']), source=e['path'], factor=e['factor'],
                                                             constdig=e['constdig'], mdwarp=e['mdwarp']) for e in ents},
                                pairs=pairs, dates=[dict(r, needs_regrid=bool(r['needs_regrid'])) for r in rows])
@@ -343,42 +353,31 @@ def cell_lock(W):
     return f
 
 
-# production's own words when one of its try/excepts turns an exception into a verdict: coadd._night_flux_dc's print (the scale
-# then NaN, the night refused at alignment) and final_night's night-image gate reason (FAIL) - pinned against coadd.py by
-# tests/test_masters_admit6.py, so a rewording fails a test, never a night
-ERROR_TEXTS = ('flux scale measurement on the flow-aligned image failed', 'night-image gate could not be evaluated')
-
-
 class ErrorWatch:
-    """An error is never a verdict (seventh and eighth reviews): an admission row is final (never admitted twice), and two
-    production try/excepts turn ANY exception into a verdict - so a disk-full or I/O error refused a night for good. The
-    block captures final_night's printed lines (passed on to the stage's log at its end) and ``errors`` lists those - and the
-    night-image gate's reason (gate()) - in production's own words for an exception turned verdict (ERROR_TEXTS): every
-    exception in the two blocks, whatever statement raised it (the eighth review found the first watch, on the functions
-    those blocks call, missed the blocks' own statements)."""
+    """An error is never a verdict (seventh, eighth and ninth reviews): an admission row is final (never admitted twice), and
+    production's code on a night's path turns some exceptions into a value - a skipped source, a fallback fit, NaN, False,
+    None, a FAIL - so an I/O, IERS or memory error could refuse a night for good (the ninth review: an elevation transform
+    failing for every source left the flux scale unmeasured, a verdict). Each such try/except of the co-add on the path
+    reports what it caught (coadd._caught, at every site of the inventory tests/test_masters_admit6.py pins); the night
+    loop runs inside the watch, start() opens a night's, ``errors`` lists what was caught since, the loop's exit closes it.
+    A night with an error is refused as an item (no row) and retried at the next run."""
 
-    def __init__(self):
-        import contextlib
-        import io
-        self.errors, self.buf = [], io.StringIO()
-        self._redirect = contextlib.redirect_stdout(self.buf)
+    def __init__(self, co):
+        self.co = co
 
     def __enter__(self):
-        self._redirect.__enter__()
         return self
 
     def __exit__(self, *exc):
-        self._redirect.__exit__(*exc)
-        text = self.buf.getvalue()
-        sys.stdout.write(text)                       # the night's lines into the stage's log, as before
-        self.errors += [ln.strip()[:300] for ln in text.splitlines() if ERROR_TEXTS[0] in ln]
+        self.co.CAUGHT = None                       # closed on every exit of the stage's night loop
         return False
 
-    def gate(self, nr):
-        """Record a night-image FAIL that is production's word for an exception."""
-        reason = str(((nr or {}).get('gate') or {}).get('reason') or '')
-        if reason.startswith(ERROR_TEXTS[1]):
-            self.errors.append(reason[:300])
+    def start(self):
+        self.co.CAUGHT = []
+
+    @property
+    def errors(self):
+        return list(self.co.CAUGHT or [])
 
 
 def prep_changed(prep):
@@ -561,7 +560,7 @@ def admit_stage(cell, args, run, out, ran_now):
             ref_md5 = A.master_identity(cd)[1]                         # the master's pixels (its CONSTDIG names its nights only)
             n_adm = n_ref = 0
             decided = []                                               # the nights given a row by this run (eighth review)
-            with IP.capture_stdout(DS._log(out, cell, 'admit'), echo=False):
+            with IP.capture_stdout(DS._log(out, cell, 'admit'), echo=False), ErrorWatch(co) as watch:
                 for d, sd, img in todo:
                     rowd = dict.fromkeys(ADMISSION_COLS, '')
                     rowd.update(date=d, image=img, image_sha1=_sha1(img), reference_constdig=ents[0]['constdig'] or '',
@@ -622,13 +621,11 @@ def admit_stage(cell, args, run, out, ran_now):
                     move_aside_files(prep_final, [f'{d}_regrid.fits', f'{d}_scale_remeasure.fits', f'{d}_I.fits',
                                                   f'{d}_V.fits'], stamp)
                     move_aside_files(native, [f'{d}_{st}_{kind}_{fl}.fits' for st, kind in PRODUCTS], stamp)
-                    with ErrorWatch() as watch:
-                        nr = co.final_night(d, sd, img, fref, W, prep_final, [True], lst, fl, 'MASTER')
-                    watch.gate(nr)
-                    refused_ = nr is None or nr['params'] is None or (nr['gate'] or {}).get('verdict') == 'FAIL'
-                    if refused_ and watch.errors:                      # an error, not a verdict: retried, no row
-                        refuse_night(f'an error during its alignment or night-image check ({watch.errors[0]}) - not a '
-                                     f'verdict: retried at the next run', 'admit.error')
+                    watch.start()                                      # the night's whole measurement (ninth review)
+                    nr = co.final_night(d, sd, img, fref, W, prep_final, [True], lst, fl, 'MASTER')
+                    if watch.errors:                                   # an error, not a verdict: retried, no row
+                        refuse_night(f'an error while it was aligned or checked ({watch.errors[0]}) - not a verdict: retried '
+                                     f'at the next run', 'admit.error')
                         continue
                     if nr is None or nr['params'] is None:
                         reason = ('its survey image is off the master\'s grid' if nr is None else
@@ -693,6 +690,10 @@ def admit_stage(cell, args, run, out, ran_now):
                     rowd['beam_gate'] = ('not measurable' if area is None else
                                          f'no gate (population of {bg.get("n", 0)})' if not bg.get('gate') else
                                          'outlier' if area > S['BEAM_GATE_RATIO'] * bg['median_area'] else 'pass')
+                    if watch.errors:                                   # caught after the alignment: the V image, the second-
+                        refuse_night(f'an error while it was measured ({watch.errors[0]}) - not a verdict: retried at the '
+                                     f'next run', 'admit.error')       # pass scale, the products, the beam area
+                        continue
                     if ng['verdict'] == 'FAIL' or not e_ok:
                         why = ('night-image check FAIL: ' + ng.get('reason', '') if ng['verdict'] == 'FAIL'
                                else 'epoch-image check FAIL: ' + e_why)

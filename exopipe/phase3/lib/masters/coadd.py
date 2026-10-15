@@ -936,6 +936,17 @@ def regrid_image(input_path, template_header, output_path):
 # Flux scale measurement
 # ═══════════════════════════════════════════════════════════════════
 
+CAUGHT = None                                              # WAVE2 D-ADMIT: a list while an admission measures a night
+
+
+def _caught(where, e):                                     # WAVE2 D-ADMIT (ninth review): a try/except below that turns an
+    """An exception production's code here turns into a value (a skipped source, a fallback fit, NaN, False, None, a FAIL):
+    listed for the admission's error watch (admit_stages.ErrorWatch) - an error is never an admission's verdict. Nothing
+    in production (CAUGHT None)."""
+    if CAUGHT is not None:
+        CAUGHT.append(f'{where}: {type(e).__name__}: {e}'[:300])
+
+
 def _night_flux_dc(mean_scale, work_path, flow_offsets, tmpl_hdr, target_shape, ref_data, ref_wcs, beam_pix, mask,
                    obs_time, tmp_path):
     """Flux correction of one night (Gregg 2026-10-02: every admitted night is corrected by its measured scale; the window
@@ -955,6 +966,7 @@ def _night_flux_dc(mean_scale, work_path, flow_offsets, tmpl_hdr, target_shape, 
                                       at_peak_pixel=True)
         m2 = float(c2[0])
     except Exception as e:
+        _caught('flux scale on the flow-aligned image', e)   # WAVE2 D-ADMIT
         print(f"    flux scale measurement on the flow-aligned image failed ({e})", flush=True)
         m2 = float('nan')
     finally:
@@ -992,7 +1004,8 @@ def measure_flux_scale(tgt_data, ref_data, wcs, beam_pix, horizon_mask, obs_time
             altaz = coord.transform_to(AltAz(obstime=obs_time, location=OVRO_LOC))
             if altaz.alt.deg < 45.0:
                 continue
-        except Exception:
+        except Exception as _ce:                           # WAVE2 D-ADMIT
+            _caught('flux scale: a source\'s elevation', _ce)   # WAVE2 D-ADMIT
             continue
 
         y1, y2 = max(0, sy - ap_r), min(h, sy + ap_r + 1)
@@ -1036,7 +1049,8 @@ def measure_flux_scale(tgt_data, ref_data, wcs, beam_pix, horizon_mask, obs_time
         vw = vals * weights
         try:
             coeffs, _, _, _ = np.linalg.lstsq(Aw, vw, rcond=None)
-        except Exception:
+        except Exception as _ce:                           # WAVE2 D-ADMIT
+            _caught('flux scale: the robust fit', _ce)     # WAVE2 D-ADMIT
             coeffs = np.array([np.median(vals), 0, 0])
             break
         residuals = vals - A @ coeffs
@@ -1104,6 +1118,7 @@ def process_variant_image(src_path, flow_offsets, scale_map, template_header,
             try:
                 regrid_coords = precompute_regrid_mapping(src_path, template_header, target_shape)
             except Exception as e:
+                _caught(f'regrid mapping of {os.path.basename(src_path)}', e)   # WAVE2 D-ADMIT
                 print(f"  GRID MISMATCH {os.path.basename(src_path)} {data.shape} vs {tuple(target_shape)}: "
                       f"regrid mapping failed ({e})")
                 return False
@@ -1173,7 +1188,8 @@ def beam_area(img):
     try:
         _h = fits.getheader(img)
         return float(_h['BMAJ']) * float(_h['BMIN'])
-    except Exception:
+    except Exception as _ce:                               # WAVE2 D-ADMIT
+        _caught(f'beam area of {os.path.basename(str(img))}', _ce)   # WAVE2 D-ADMIT
         return None
 
 
@@ -3651,6 +3667,7 @@ def final_night(date, sci_dir, align_img_path, ref, workdir, prep_dir, post_date
     try:
         gate = _NG.evaluate(load_image(i_out)[0], ref_data, cd, night_raw=tgt_data)
     except Exception as _ge:
+        _caught('night-image gate', _ge)                   # WAVE2 D-ADMIT
         gate = dict(verdict='FAIL', reason=f'night-image gate could not be evaluated ({_ge})'[:200])
     if gate['verdict'] == 'FAIL':
         print(f"    {date}: NIGHT-IMAGE GATE REFUSED - {gate['reason']}", flush=True)

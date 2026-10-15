@@ -294,6 +294,48 @@ def _run_admit(wt, out):
     return run.units[-1]
 
 
+# Broad try/excepts in the co-add functions an admission runs (the admit stage and admit-prep, traced 2026-10-15 with
+# sys.setprofile on this test's end-to-end copy), by function: what each does with the exception. 'caught': it turns the
+# exception into a value and reports it (coadd._caught - the watch makes the night an error); 'raise' re-raises;
+# 'fallback': fallback.site (the B-30 policy: refuse or count); 'problem': returns the problem for its caller to refuse on;
+# 'parse': tries the next header key (the last resort is a fallback site); 'cosmetic': a header comment or the derived
+# MJD-MID card (the products' header test compares every card with the member's).
+INVENTORY = {'_night_flux_dc': ['caught'], 'measure_flux_scale': ['caught', 'caught'], 'process_variant_image': ['caught'],
+             'beam_area': ['caught'], 'final_night': ['caught'], 'save_epoch_residual': ['raise'],
+             '_epoch_beam_source_values': ['problem'], '_grid_refused_dates': ['fallback'], '_off_grid': ['fallback'],
+             'build_striation_model': ['fallback'], 'epoch_time_header': ['fallback', 'cosmetic', 'cosmetic'],
+             'get_midpoint_time': ['parse'], 'prep_night': [], 'measure_scale2': [], 'subtract_night': [], 'regrid_image': [],
+             'get_uniform_rms': [], 'load_image': [], 'save_image': [], 'compute_residual_rms': [], '_epoch_content_arrays': [],
+             'epoch_standard_header': [], 'beam_gate_image': []}
+
+
+def inventory_problems(co):
+    """[problem] where coadd.py's broad excepts in the INVENTORY functions differ from it (a new or changed one)."""
+    import ast
+    src = inspect.getsource(co)
+    tree = ast.parse(src)
+    out = []
+    seen = set()
+    for fn in tree.body:
+        if not (isinstance(fn, ast.FunctionDef) and fn.name in INVENTORY):
+            continue
+        seen.add(fn.name)
+        got = []
+        for h in ast.walk(fn):
+            if isinstance(h, ast.ExceptHandler) and (h.type is None or ast.get_source_segment(src, h.type) in
+                                                      ('Exception', 'BaseException')):
+                body = '\n'.join(ast.get_source_segment(src, b) or '' for b in h.body)
+                got.append('caught' if '_caught(' in body else 'raise' if any(isinstance(b, ast.Raise) and b.exc is None
+                                                                              for b in h.body)
+                           else 'fallback' if 'fallback.site(' in body else 'problem' if body.lstrip().startswith('return {},')
+                           else 'parse' if body.strip() == 'continue' and fn.name == 'get_midpoint_time'
+                           else 'cosmetic' if fn.name == 'epoch_time_header' and body.strip() == 'pass' else body[:60])
+        if sorted(got) != sorted(INVENTORY[fn.name]):
+            out.append((fn.name, got, INVENTORY[fn.name]))
+    out += [(name, 'not found in coadd.py') for name in INVENTORY if name not in seen]
+    return out
+
+
 def test_failure_paths(nights):
     """The admit stage's failure paths in-process on the end-to-end copy (sixth review: only the all-pass path was tested):
     a night failing the epoch check, a night without a V image, a V image the same-state rule refuses, a failure in the
@@ -618,11 +660,13 @@ def test_failure_paths(nights):
                 os.replace(pp + '.held', pp)
             check(f'MAJOR (eighth review): without the provisional {st_} master the cell admits no night (its stage-2 {st_} '
                   f'value - the search-tier gate\'s - could not be measured)', why_ and f'provisional {st_} master' in why_, why_)
-        # (17) MINOR (eighth review): production's own words for an exception turned verdict are where the watch reads them
-        check('the error watch reads production\'s own words: coadd._night_flux_dc prints the first, final_night\'s gate '
-              'reason starts with the second (a rewording fails here, never a night)',
-              AS2.ERROR_TEXTS[0] in inspect.getsource(co._night_flux_dc)
-              and f"reason=f'{AS2.ERROR_TEXTS[1]}" in inspect.getsource(co.final_night))
+        # (17) MAJOR (ninth review): every broad try/except of the co-add on an admission's path is known - the inventory of
+        #      the functions the admit stage and admit-prep run (scratchpad trace, 2026-10-15) - and each one that turns an
+        #      exception into a value reports it (coadd._caught); a new one fails here until it is classified
+        inv = inventory_problems(co)
+        check('every broad try/except in the co-add functions on an admission\'s path re-raises, refuses through the fallback '
+              'policy (B-30), returns a problem for its caller, is header parsing or cosmetics, or reports to the error watch '
+              '(the six that turn an exception into a value)', not inv, inv)
         # (18) MINOR (eighth review): a record of admissions into another master counts for nothing and is moved aside
         adm_p = os.path.join(cd, 'coadd_final', A.ADMISSIONS)
         rr = list(csv.DictReader(open(adm_p, newline='')))
@@ -640,6 +684,80 @@ def test_failure_paths(nights):
               'moves that record aside (kept) and admits the nights into this master again',
               before == set() and u18.status == 'done' and sup and all(R18.get(d, {}).get('verdict') == 'admitted' for d in nights),
               (sorted(before), u18.status, u18.reason, sup, sorted(R18)))
+        # (19) MAJOR (ninth review): an elevation transform failing for every source (an IERS table that cannot be refreshed)
+        #      is swallowed per source inside measure_flux_scale - the scale then NaN, once a refusal row for good. Now an error:
+        #      no row, the night retried, and the next run admits it
+        _stash(cd, 'err_altaz')
+        ra_ = co.AltAz
+
+        class _NoAltAz:                              # astropy's own error when the IERS-A table is stale and cannot be fetched
+            def __init__(self, *a, **k):
+                raise ValueError('interpolating from IERS_Auto using predictive values that are more than 30.0 days old (test)')
+        co.AltAz = _NoAltAz
+        try:
+            u19 = _run_admit(wt, out)
+        finally:
+            co.AltAz = ra_
+        R19 = rows()
+        u19b = _run_admit(wt, out)
+        R19b = rows()
+        check('MAJOR (ninth review): an elevation transform failing for every source is an error, not "flux scale not '
+              'measurable": both nights refused as items (admit.error, the caught exception named), no row; the next run '
+              'admits them', u19.status in ('done', 'refused') and not R19 and set(gates(u19).values()) == {'admit.error'}
+              and any('IERS_Auto' in (r.get('reason') or '') for r in u19.refused_items)
+              and all(R19b.get(d, {}).get('verdict') == 'admitted' for d in nights),
+              (u19.status, u19.reason, gates(u19), sorted(R19), [r.get('reason', '')[:120] for r in u19.refused_items][:2],
+               u19b.status, sorted(R19b)))
+        # (20) the same swallowed only in the second-pass scale (after the alignment passed): an error at the second check
+        _stash(cd, 'err_scale2')
+        rms2 = co.measure_scale2
+
+        def scale2_no_altaz(*a, **k):
+            co.AltAz = _NoAltAz
+            try:
+                return rms2(*a, **k)
+            finally:
+                co.AltAz = ra_
+        co.measure_scale2 = scale2_no_altaz
+        try:
+            u20 = _run_admit(wt, out)
+        finally:
+            co.measure_scale2, co.AltAz = rms2, ra_
+        R20 = rows()
+        check('an exception swallowed in the second-pass scale (the night aligned and checked) is an error too: no row, no '
+              'product published, retried', not R20 and set(gates(u20).values()) == {'admit.error'}
+              and not any(prods(d) for d in nights), (u20.status, gates(u20), sorted(R20), [prods(d) for d in nights]))
+        u20b = _run_admit(wt, out)
+        check('... and the next run admits both nights', all(rows().get(d, {}).get('verdict') == 'admitted' for d in nights),
+              (u20b.status, u20b.reason, sorted(rows())))
+        # (21) admit-prep (ninth review, MINOR): an error while a night is prepared is retried (not in the unit's finished
+        #      nights); a night refused by a verdict on its own image (off the grid) is finished - --resume skips the unit
+        _stash(cd, 'prep')
+        co.AltAz = _NoAltAz
+        try:
+            u21 = _run_masters(wt, out, ['admit-prep'])
+        finally:
+            co.AltAz = ra_
+        r21 = json.load(open(os.path.join(out, '_records', 'masters', f'admit-prep_{CELL}.json')))
+        check('admit-prep: an error while a night is prepared (an elevation transform failing) refuses it as an item '
+              '(admit-prep.error) and leaves it out of the unit\'s finished nights (retried)',
+              set(gates(u21).values()) == {'admit-prep.error'} and not r21.get('admitted'),
+              (u21.status, u21.reason, gates(u21), r21.get('admitted')))
+        real_off = AS2.off_grid
+        AS2.off_grid = lambda d, img, ts, cut: (1, 1) if d == n2 else real_off(d, img, ts, cut)
+        try:
+            u21b = _run_masters(wt, out, ['admit-prep'])
+            r21b = json.load(open(os.path.join(out, '_records', 'masters', f'admit-prep_{CELL}.json')))
+            u21c = _run_masters(wt, out, ['admit-prep'], resume=True)
+            r21c = json.load(open(os.path.join(out, '_records', 'masters', f'admit-prep_{CELL}.json')))
+        finally:
+            AS2.off_grid = real_off
+        check('MINOR (ninth review): a night off the master\'s grid is a verdict on its own image - in the unit\'s finished '
+              'nights with the prepared one, so --resume skips the unit (its prep files and the flow record stay current)',
+              set(gates(u21b).values()) == {'admit-prep.wrong_grid'} and r21b.get('admitted') == sorted(nights)
+              and r21c.get('run_id') == r21b.get('run_id'),
+              (u21b.status, gates(u21b), r21b.get('admitted'), u21c.status, getattr(u21c, 'reason', ''),
+               r21c.get('run_id') == r21b.get('run_id')))
     finally:
         CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD = saved
 

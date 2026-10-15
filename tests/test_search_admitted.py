@@ -275,6 +275,12 @@ try:
     out = {'ok': True, 'n': n}
 except Exception as e:
     out = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+try:                             # the run's B-30 events (kind, key, n, detail): a gate's own record of its population
+    from exopipe.phase3.core import fallback as _FB
+    _FB._drain()
+    out['fallbacks'] = [[e[2], e[1], e[3], e[4]] for e in _FB.EVENTS]
+except Exception as e:
+    out['fallbacks_error'] = f'{type(e).__name__}: {e}'
 json.dump(out, open(sys.argv[5], 'w'))
 '''
 
@@ -421,6 +427,20 @@ def test_end_to_end():
           'night\'s stacks - the V epochs follow the I-filtered dates, as production\'s',
           res['ok'] and st1.get('I') == [d for d in want if d != fail_n] and st1.get('V') == [d for d in vwant if d != fail_n],
           (res, {k: len(v) for k, v in st1.items()}, fail_n in st1.get('V', []), log1[-600:]))
+    # ... and its production half (ninth review: the stacks above come out right with the population filter alone): with no
+    # admitted night searched, a night whose I residual failed gets no V residual, so no V search - production's dates
+    m1, m2 = want[1], want[0]
+    att5 = os.path.join(T, 'attempt_fail_members')
+    res5, log5 = engine(wt, work, att5, 'admitted', [m1, m2], fail_i=m2)
+    ip5 = os.path.join(att5, 'transients', 'Run_ADMITTEST', 'v_deep_images.csv')
+    img5 = [(r['stokes'], r['date']) for r in csv.DictReader(open(ip5))] if os.path.exists(ip5) else []
+    vgate = [ev[3] for ev in res5.get('fallbacks', []) if 'Stokes V sanity gate, nights with a V frame rms' in ev[3]]
+    check('the production path (ninth review): members searched, one night\'s I residual failing - its V epochs follow the '
+          'I-filtered dates: the V sanity gate\'s population is the other night\'s V frame alone (the gate\'s own record: 1 '
+          'night), that night searched in I and V, the failed night in neither',
+          res5['ok'] and len(vgate) == 1 and ': 1 (needs' in vgate[0] and ('I', m1) in img5 and ('V', m1) in img5
+          and not [x for x in img5 if x[1] == m2],
+          (res5.get('error'), vgate, res5.get('fallbacks_error'), img5, log5[-500:]))
     # MAJOR 2 (eighth review): an admitted night whose V the same-state rule refused - I searched, V skipped (not refused by E15)
     import io as _io
     aside = os.path.join(T, 'aside_v')

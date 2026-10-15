@@ -141,6 +141,19 @@ def test_switch():
           and "masters_build.SCALE2_RECORD = 'none'" in par, (CFG.masters_build.SCALE2_RECORD, ruled))
     check('install carries the record with the cell\'s other build records; a build in a cell already holding one is '
           'an earlier build', ISD.SCALE2 in ISD.CARRIED_RECORDS and 'coadd_final/scale2.csv' in DS.BUILD_PRODUCT_PATHS)
+    keep = CFG.masters_build.SCALE2_RECORD
+    for bad in ('Record', True, ''):
+        CFG.masters_build.SCALE2_RECORD = bad
+        try:
+            DS.inplace(out)
+            why = None
+        except Refusal as e:
+            why = str(e)
+        finally:
+            CFG.masters_build.SCALE2_RECORD = keep
+        check(f'MINOR (ninth review): masters_build.SCALE2_RECORD = {bad!r} refuses before any build (the co-add tests only '
+              f'for \'record\': a typo would build cells without the record)', why and 'SCALE2_RECORD' in why, why)
+    DS.inplace(out)                                  # the in-place co-add set back to the configured value
 
 
 def main():

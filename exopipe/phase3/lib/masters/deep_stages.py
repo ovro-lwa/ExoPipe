@@ -304,6 +304,7 @@ def inplace(out):
     from exopipe.phase3.lib.masters import input_resolver        # B-03 (a): the finders through core.inputs, same-state
     b = _cfg().masters_build
     input_resolver.check_grid_values(b)
+    _admit().scale2_record_policy(b.SCALE2_RECORD)               # D-ADMIT (ninth review): a typo never builds without it
     applied.append(('coadd finders', input_resolver.install(co, b.INPUT_RESOLVER, b.RAW_INPUT_FLOW_RULE)))
     return _SETUP['mods'], applied
 
