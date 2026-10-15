@@ -307,6 +307,8 @@ def run(args, run):
     if 'admit' in stages:
         if run.dry_run:
             return plan_admit(args, run, cells_)
+        if getattr(args, 'epochs', None):
+            cells_ = admit_cells(args, run.out_root, cells_)
         for cell in cells_:
             with run.unit(f'admit_{cell}', tier='deep', stage='admit', cell=cell) as u:
                 run_admit(u, args, run, cell)
@@ -540,6 +542,25 @@ def admit_pairs(out_root, cell):
                       f'{(rec or {}).get("status", "missing")}) - run `masters --tier deep --stages admit-prep` first')
     pairs = ((rec.get('meta') or {}).get('admit') or {}).get('pairs') or []
     return pairs, rec
+
+
+def admit_cells(args, out_root, cells_):
+    """With --epochs, the cells whose done admit-prep record prepared a named night (sixth review). A cell without a done
+    record prepared nothing a named night could concern: it is not selected and its records stay as they are (as masters
+    admit selects, deep_stages._admission_cells). Refuses when no cell is selected - no record changed."""
+    keep = []
+    for cell in cells_:
+        want = _admit_epochs(args, cell) or set()
+        try:
+            pairs, _rec = admit_pairs(out_root, cell)
+        except Refusal:
+            continue
+        if {_admit_date(p) for p in pairs} & want:
+            keep.append(cell)
+    if not keep:
+        raise Refusal('--epochs names no night that a selected cell\'s admit-prep record prepared: no cell selected, '
+                      'no record changed')
+    return keep
 
 
 def admit_signature(reference):

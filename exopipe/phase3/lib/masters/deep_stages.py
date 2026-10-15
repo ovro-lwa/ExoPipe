@@ -77,7 +77,31 @@ def default_out(args):
 # selection, records
 # =====================================================================================================================
 
-def select_cells(args):
+def _admission_cells(args, cells, out):
+    """With --epochs, the cells a named night concerns: for admit-prep a named night that qualifies now
+    (admit_stages.nights), for admit alone a named night that the cell's done admit-prep record prepared and admissions.csv
+    does not hold yet. A cell whose nights cannot be computed stays selected (its stage records the refusal)."""
+    AS = _admit_stages()
+    stages = set(getattr(args, 'stages_resolved', ()) or ())
+    keep = []
+    for c in cells:
+        want = set(AS.epochs_of(args, c.split('_', 1)[0]) or [])
+        try:
+            if 'admit-prep' in stages:
+                take, _why = AS.nights(c, args, inplace(out)[0]['coadd'])
+                hit = {d for d, _sd, _img in take} & want
+            else:
+                prep = done_record(out, 'admit-prep', c)
+                prepared = {r['date'] for r in ((prep or {}).get('meta') or {}).get('admit', {}).get('dates', [])}
+                hit = (prepared & want) - set(AS.admission_rows(AS.cell_tree(args, c)))
+        except (Refusal, NoInput):
+            hit = {None}
+        if hit:
+            keep.append(c)
+    return keep
+
+
+def select_cells(args, out=None):
     from exopipe.phase3.core import cells as C
     stages = set(getattr(args, 'stages_resolved', ()) or ())
     if getattr(args, 'epochs', None) and not (stages and stages <= set(ADMIT_STAGES)):
@@ -98,11 +122,13 @@ def select_cells(args):
     if getattr(args, 'exclude_cells', None):
         drop = set(C.expand_cells(args.exclude_cells))
         cells = [x for x in cells if x not in drop]
-    if getattr(args, 'epochs', None):                  # admission stages only (refused above otherwise): the named LSTs'
-        lsts = C.epoch_lsts(args.epochs)               # cells - another cell's record is never replaced by 'no input'
-        cells = [x for x in cells if x.split('_', 1)[0] in lsts]     # (fifth review)
+    if getattr(args, 'epochs', None):                  # admission stages only (refused above otherwise): the cells a
+        lsts = C.epoch_lsts(args.epochs)               # named night concerns - another cell's record is never replaced
+        cells = [x for x in cells if x.split('_', 1)[0] in lsts]     # by 'no input' (fifth, sixth review)
+        cells = _admission_cells(args, cells, out or default_out(args))
         if not cells:
-            raise Refusal(f'--epochs names no night of the selected cells\' LSTs (it names {sorted(lsts)})')
+            raise Refusal(f'--epochs names no night that a selected cell has to admit (it names {sorted(lsts)}): no cell '
+                          f'selected, no record changed')
     for x in cells:
         C.parse_cell(x)
     return cells
@@ -1346,7 +1372,7 @@ def run(args, run):
     IP.refuse_forbidden_overrides()
     out = args.out or default_out(args)
     stages = args.stages_resolved
-    cells = select_cells(args)
+    cells = select_cells(args, out)
     parse_reference(args.reference)             # a malformed --reference stops before any unit
     if args.dry_run:
         return dry_run(cells, stages, args, out)

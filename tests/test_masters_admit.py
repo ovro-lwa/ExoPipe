@@ -548,14 +548,18 @@ def test_admit_prep():
           'files moved aside, none deleted), the excluded one says why',
           rc == 0 and [d['date'] for d in meta.get('dates', [])] == [night] and f'{night}_scaled.fits' in moved
           and 'excluded' in (rec.get('meta') or {}).get('not_admitted', {}).get('2025-01-10', ''), (rc, rec.get('reason'), moved))
-    rc, rec, _ = cli('--deep-installed-root', wt, '--epochs', '13h_2025-01-10')
-    check('admit-prep --epochs: a named night that does not qualify -> no input, with its reason',
-          rc == 3 and 'no night to admit' in rec.get('reason', '') and 'excluded' in rec.get('reason', ''), rec.get('reason'))
+    before = json.load(open(rp))
+    rc, rec, txt = cli('--deep-installed-root', wt, '--epochs', '13h_2025-01-10')
+    check('admit-prep --epochs naming only a night that does not qualify (excluded) selects no cell: refused, the done '
+          'record unchanged', rc == 2 and 'names no night that a selected cell has to admit' in txt
+          and json.load(open(rp)) == before, (rc, txt[-300:]))
     before = json.load(open(rp))
     rc, rec, txt = cli('--deep-installed-root', wt, '--epochs', '14h_2025-01-01')
-    check('admit-prep --epochs of another LST selects no cell: refused (exit 2) - never every night, and the cell\'s '
-          'record is not replaced by "no input"', rc == 2 and 'names no night of the selected cells' in txt
-          and json.load(open(rp)) == before, (rc, txt[-300:]))
+    rc2, rec2, txt2 = cli('--deep-installed-root', wt, '--epochs', f'13h_{members[0]}')
+    check('admit-prep --epochs naming no night the cell has to admit (another LST; a member night of its own) selects no '
+          'cell: refused (exit 2) - never every night, and the cell\'s record is not replaced by "no input"',
+          rc == 2 and rc2 == 2 and 'names no night that a selected cell has to admit' in txt + txt2
+          and json.load(open(rp)) == before, (rc, rc2, txt[-200:], txt2[-200:]))
     bsp = os.path.join(cd, 'coadd_final', 'build_stats.json')
     good = open(bsp).read()
     st = json.loads(good)

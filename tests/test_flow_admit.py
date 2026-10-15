@@ -171,11 +171,37 @@ def test_epochs_select_cells():
     except Refusal as e:
         none = str(e)
     ma = argparse.Namespace(cells='13h_78MHz,14h_Red', epochs='14h_2025-01-01', nights=None, lsts=None, scopes=None,
-                            exclude_cells=None, stages_resolved=['admit-prep'])
-    mgot = DS.select_cells(ma)
-    check('--epochs selects only the cells of the LSTs it names (flow admit and masters admit-prep alike); none of them '
-          'refuses', got == ['14h_Red'] and mgot == ['14h_Red'] and 'names no night of the selected cells' in none,
-          (got, mgot, none))
+                            exclude_cells=None, stages_resolved=['admit-prep'], out=os.path.join(T, 'sel_out'))
+    try:
+        DS.select_cells(ma, ma.out)                     # the real installed 14h_Red: the named night is no night to admit
+        msel = 'no refusal'
+    except Refusal as e:
+        msel = str(e)
+    check('--epochs selects only the cells of the LSTs it names (the flow step), and of those only a cell a named night '
+          'concerns (masters admit-prep: a night that qualifies - none on the real tree: refused, no record changed)',
+          got == ['14h_Red'] and 'names no night of the selected cells' in none
+          and 'names no night that a selected cell has to admit' in msel, (got, none, msel))
+    sel_out = os.path.join(T, 'sel_flow')
+    os.makedirs(os.path.join(sel_out, '_records', 'masters'), exist_ok=True)
+    record.atomic_write_json(record.record_path(sel_out, 'masters', 'admit-prep_13h_78MHz'), dict(
+        status='done', run_id='test', meta=dict(admit=dict(pairs=[dict(
+            target=os.path.join(T, '13h_78MHz', 'admit', 'prep', '2025-01-10_scaled.fits'))]))))
+    a2 = args(cells='13h_78MHz,13h_Red', epochs='13h_2025-01-10')
+    sel = FD.admit_cells(a2, sel_out, ['13h_78MHz', '13h_Red'])
+    try:
+        FD.admit_cells(a2, sel_out, ['13h_Red'])
+        alone = 'no refusal'
+    except Refusal as e:
+        alone = str(e)
+    try:
+        FD.admit_cells(args(cells='13h_78MHz', epochs='13h_2025-01-11'), sel_out, ['13h_78MHz'])
+        other = 'no refusal'
+    except Refusal as e:
+        other = str(e)
+    check('the flow step\'s admit selects a cell whose done admit-prep record prepared a named night; a cell without a done '
+          'record is not selected (its records stay as they are, as masters admit selects); none selected refuses',
+          sel == ['13h_78MHz'] and 'no cell selected' in alone and 'no cell selected' in other
+          and not os.path.exists(record.record_path(sel_out, 'flow', 'admit_13h_Red')), (sel, alone, other))
 
 
 def main():

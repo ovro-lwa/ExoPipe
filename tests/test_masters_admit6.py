@@ -180,17 +180,239 @@ def test_admit_end_to_end():
           + '; '.join(f'{d}: median {v[0]:.6f}, median |r-1| {v[1]:.2e}, {v[2]} sources' for d, v in res.items()))
     check(f'admission_reproduces: each admitted epoch equals the member\'s at bright peaks within {REPRODUCE_TOL:g}',
           all(abs(v[0] - 1) <= REPRODUCE_TOL and v[2] >= 20 for v in res.values()), res)
+    skip = {'HISTORY', 'COMMENT', '', 'ADMITTED', 'ADMITREF', 'GITTAG'}     # GITTAG: the code commit that wrote it
+    hdiff = {}
+    for d in nights:
+        for st in ('I', 'V'):
+            for kind in ('epoch', 'sub', 'clean'):
+                a = fits.getheader(os.path.join(cd, 'subtracted', f'{d}_{st}_{kind}_{SC}.fits'))
+                b = fits.getheader(os.path.join(inst, 'subtracted', f'{d}_{st}_{kind}_{SC}.fits'))
+                dk = sorted(k for k in set(a) | set(b) if k not in skip and a.get(k) != b.get(k))
+                if dk:
+                    hdiff[f'{d}_{st}_{kind}'] = dk[:6]
+    check('every admitted product\'s header equals the member\'s card for card (the epochs stamped as the archive '
+          'publish stamps them) but ADMITTED / ADMITREF / HISTORY and the code commit (GITTAG)', not hdiff, hdiff)
     rc, txt = cli('masters', '--stages', 'admit', *common, '--set', 'masters_admit.DC2_MEDIAN_WITHOUT_RECORD=1.0')
     check('a second run admits nothing (a night is never admitted twice)', rc == 3, (rc, txt[-300:]))
     ok = validate.run('admissions', adm)
     check('admissions.csv content test, run on its own', ok and all(t['passed'] for t in ok), ok)
+    return nights
+
+
+
+def _stash(cd, tag):
+    """The test copy's admission outcome moved aside (inside the test's scratch) so its nights qualify again."""
+    dst = os.path.join(T, 'stash', tag)
+    os.makedirs(dst, exist_ok=True)
+    for p in glob.glob(os.path.join(cd, 'subtracted', '20*')) + glob.glob(os.path.join(cd, 'coadd_final', A.ADMISSIONS)):
+        os.replace(p, os.path.join(dst, os.path.basename(p)))
+
+
+def _run_admit(wt, out):
+    """The admit stage in-process (as the masters step calls it) - its unit record."""
+    import argparse
+    from exopipe.phase3.core import record as R
+    from exopipe.phase3.lib.masters import admit_stages as AS
+    CFG.authorize([], out=out)
+    run = R.Run('masters', ['test'], out, CFG, config_sections=())
+    run.commit = 'abc1234'
+    args = argparse.Namespace(deep_installed_root=wt, epochs=None, fresh=False, resume=False)
+    try:
+        AS.admit_stage(CELL, args, run, out, {})
+    except Exception as e:                           # noqa: BLE001 - the unit records it; the test reads the record
+        print(f'  (admit_stage raised {type(e).__name__}: {e})')
+    return run.units[-1]
+
+
+def test_failure_paths(nights):
+    """The admit stage's failure paths in-process on the end-to-end copy (sixth review: only the all-pass path was tested):
+    a night failing the epoch check, a night without a V image, a V image the same-state rule refuses, a failure in the
+    second night (the first night's row is already written) and the re-run, an interruption between the products and the
+    row (the re-run moves the orphans aside and admits the night again), a night re-imaged since admit-prep, a stale flow,
+    products of unknown origin, admit-prep's inputs changed - each outcome a recorded refusal or a done unit, never an
+    error but where one was forced, and never a product without a row."""
+    import sys as _sys
+    from astropy.io import fits
+    from exopipe.phase3.core import inputs as CI
+    from exopipe.phase3.lib.masters import admit_stages as AS, coadd as co
+    wt, out = os.path.join(T, 'wt'), os.path.join(T, 'out')
+    cd = os.path.join(wt, CELL)
+    n1, n2 = nights
+    saved = CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD
+    CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD = 1.0                   # the recommendation of item 10, test only
+
+    def rows():
+        return {r['date']: r for r in csv.DictReader(open(os.path.join(cd, 'coadd_final', A.ADMISSIONS)))} \
+            if os.path.exists(os.path.join(cd, 'coadd_final', A.ADMISSIONS)) else {}
+
+    def prods(d):
+        return sorted(os.path.basename(p) for p in glob.glob(os.path.join(cd, 'subtracted', f'{d}_*')))
+
+    def gates(u):
+        return {os.path.basename(r['path']): r['gate'] for r in u.refused_items}
+
+    def in_night(d):
+        f = _sys._getframe(2)
+        return f.f_code.co_name == 'admit_stage' and f.f_locals.get('d') == d
+    try:
+        # (1) the epoch check fails for night 2
+        _stash(cd, 'happy')
+        real = co._epoch_content_arrays
+        co._epoch_content_arrays = lambda e, m, r, st: ((False, 'forced FAIL (test)', 0.5, 30) if in_night(n2)
+                                                        else real(e, m, r, st))
+        try:
+            u = _run_admit(wt, out)
+        finally:
+            co._epoch_content_arrays = real
+        R_ = rows()
+        check('a night failing the epoch check: a "refused" row, every planned product refused by name, none published; '
+              'the other night admitted; the unit done (not an error)',
+              u.status == 'done' and R_[n2]['verdict'] == 'refused' and 'epoch-image' in R_[n2]['reason']
+              and R_[n1]['verdict'] == 'admitted' and not prods(n2) and set(gates(u).values()) == {'admit.epoch'}
+              and len(gates(u)) == 6, (u.status, u.reason, gates(u), prods(n2)))
+        # (2) no V image for night 2; (3) the same-state rule refuses night 2's V
+        for tag, patch_cand in (('nov', True), ('vsame', False)):
+            _stash(cd, tag)
+            rv, rc_, rm = co.find_stokes_v_deep_image, CI.stokes_v_image, CI.state_mismatch
+            n2dirs = [x[1] for x in co.discover_dates(LST, SC[:-3]) if x[0] == n2]
+            co.find_stokes_v_deep_image = lambda sd, f: None if sd in n2dirs else rv(sd, f)
+            if patch_cand:
+                CI.stokes_v_image = lambda sd, f: None if sd in n2dirs else rc_(sd, f)
+            else:
+                CI.state_mismatch = lambda sd, f, p_, prod: ('forced mismatch (test)' if sd in n2dirs and prod == 'V'
+                                                              else rm(sd, f, p_, prod))
+            try:
+                u = _run_admit(wt, out)
+            finally:
+                co.find_stokes_v_deep_image, CI.stokes_v_image, CI.state_mismatch = rv, rc_, rm
+            R_ = rows()
+            ok = (u.status == 'done' and R_[n2]['verdict'] == 'admitted' and not [p for p in prods(n2) if '_V_' in p]
+                  and len([p for p in prods(n2) if '_I_' in p]) == 3)
+            if patch_cand:
+                check('a night without a V image: admitted with its I products only (the build\'s rule), "no V image" '
+                      'recorded, the unit done', ok and R_[n2]['v_products'] == 'no V image' and not gates(u),
+                      (u.status, u.reason, R_[n2]['v_products'], prods(n2)))
+            else:
+                check('a V image the same-state rule refuses: its three V products refused by name with the reason, '
+                      'recorded on the row; I admitted; the unit done', ok and 'same-state' in R_[n2]['v_products']
+                      and set(gates(u).values()) == {'admit.v_same_state'} and len(gates(u)) == 3,
+                      (u.status, u.reason, R_[n2]['v_products'], gates(u)))
+        # (4) a failure in night 2: night 1's row is already written; the re-run admits night 2
+        _stash(cd, 'crash')
+        rb = co.beam_gate_image
+        co.beam_gate_image = lambda l, f, d, sci=None: ((_ for _ in ()).throw(RuntimeError('forced error (test)'))
+                                                        if d == n2 and in_night(n2) else rb(l, f, d, sci=sci))
+        try:
+            u = _run_admit(wt, out)
+        finally:
+            co.beam_gate_image = rb
+        R1 = rows()
+        u2 = _run_admit(wt, out)
+        R2 = rows()
+        check('a failure partway: the night already done has its row (written per night), the failed one none; the '
+              're-run admits the failed night and leaves the done one alone',
+              u.status == 'error' and set(R1) == {n1} and R1[n1]['verdict'] == 'admitted' and len(prods(n1)) == 6
+              and u2.status == 'done' and set(R2) == {n1, n2} and R2[n2]['verdict'] == 'admitted',
+              (u.status, sorted(R1), u2.status, u2.reason, sorted(R2)))
+        # (5) interrupted between the products and the row: orphans moved aside, the night admitted again
+        _stash(cd, 'orphan')
+        rw = AS.write_admissions
+        hits = []
+
+        def boom(cd_, rows_):
+            if not hits:
+                hits.append(1)
+                raise OSError('forced interruption before the row (test)')
+            return rw(cd_, rows_)
+        AS.write_admissions = boom
+        try:
+            u = _run_admit(wt, out)
+        finally:
+            AS.write_admissions = rw
+        orphans, R_mid = prods(n1), rows()
+        u2 = _run_admit(wt, out)
+        R2 = rows()
+        aside = glob.glob(os.path.join(cd, 'subtracted', '_superseded', '*', f'{n1}_I_epoch_{SC}.fits'))
+        check('an interruption between the products and the row leaves orphan products (ADMITTED, no row) - and the '
+              're-run moves them aside (never deleted), admits the night again and both nights get rows',
+              u.status == 'error' and len(orphans) == 6 and R_mid == {} and u2.status == 'done' and aside
+              and R2.get(n1, {}).get('verdict') == 'admitted' and R2.get(n2, {}).get('verdict') == 'admitted'
+              and len(prods(n1)) == 6, (u.status, len(orphans), sorted(R_mid), u2.status, u2.reason, aside, sorted(R2)))
+        # (6) night 2 re-imaged since admit-prep: refused by name; night 1 admitted
+        _stash(cd, 'reimage')
+        rd = co.discover_dates
+        newroot = os.path.join(T, 'reimaged', LST, n2, 'Science_20991231_000000')
+
+        def disc(l, f):
+            out_ = []
+            for d, sd, img in rd(l, f):
+                if d == n2:
+                    dst = os.path.join(newroot, os.path.relpath(img, sd))
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    if not os.path.exists(dst):
+                        shutil.copy2(img, dst)
+                    out_.append((d, newroot, dst))
+                else:
+                    out_.append((d, sd, img))
+            return out_
+        co.discover_dates = disc
+        try:
+            u = _run_admit(wt, out)
+        finally:
+            co.discover_dates = rd
+        R_ = rows()
+        check('a night re-imaged since admit-prep: its products refused by name ("re-imaged since"), none published, no row '
+              '(it is retried after admit-prep); the other night admitted; the unit done',
+              u.status == 'done' and n2 not in R_ and not prods(n2) and set(gates(u).values()) == {'admit.reimaged'}
+              and R_.get(n1, {}).get('verdict') == 'admitted', (u.status, u.reason, gates(u), sorted(R_)))
+        # (7) a stale flow (older than its survey image: the build's freshness gate)
+        _stash(cd, 'stale')
+        fp = os.path.join(cd, A.ADMIT_DIR, 'flow', f'{n2}_scaled_flow.npy')
+        t0 = os.path.getmtime(fp)
+        os.utime(fp, (1e9, 1e9))
+        try:
+            u = _run_admit(wt, out)
+        finally:
+            os.utime(fp, (t0, t0))
+        R_ = rows()
+        check('a flow older than its survey image (the build\'s freshness gate): the night refused by name, no row, the '
+              'unit done', u.status == 'done' and n2 not in R_ and set(gates(u).values()) == {'admit.flow'},
+              (u.status, u.reason, gates(u)))
+        # (8) products of unknown origin
+        _stash(cd, 'unknown')
+        junk = os.path.join(cd, 'subtracted', f'{n2}_I_sub_{SC}.fits')
+        fits.writeto(junk, np.zeros((2, 2), np.float32))
+        u = _run_admit(wt, out)
+        R_ = rows()
+        check('products no admission made: never replaced - the night refused by name, the file kept',
+              u.status == 'done' and n2 not in R_ and set(gates(u).values()) == {'admit.exists'} and os.path.exists(junk),
+              (u.status, u.reason, gates(u)))
+        os.remove(junk)
+        # (9) admit-prep's inputs changed since it ran
+        _stash(cd, 'changed')
+        rp_ = os.path.join(cd, A.BUILD_NIGHTS)
+        orig = open(rp_).read()
+        t0 = os.path.getmtime(rp_)
+        with open(rp_, 'a') as f:
+            f.write('\n')
+        try:
+            u = _run_admit(wt, out)
+        finally:
+            open(rp_, 'w').write(orig)
+            os.utime(rp_, (t0, t0))
+        check('admit-prep\'s inputs changed since it ran: the unit refused before any night, nothing written',
+              u.status == 'refused' and 'changed since it ran' in (u.reason or '') and not rows(),
+              (u.status, u.reason))
+    finally:
+        CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD = saved
 
 
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
     try:
-        test_admit_end_to_end()
+        nights = test_admit_end_to_end()
+        test_failure_paths(nights)
     finally:
         if not os.environ.get('EXOPIPE3_TEST_KEEP'):            # set to inspect the admission copy afterwards
             shutil.rmtree(T, ignore_errors=True)

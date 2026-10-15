@@ -3267,6 +3267,28 @@ def _epoch_content_arrays(e, m, r, stokes):
     return True, 'identity ok', None, 0
 
 
+
+def epoch_standard_header(src, fl, st, lst, sh=None, md=None):
+    """Stamp an aligned epoch product (<date>_<st>_epoch_<fl>.fits) with the Phase-3 standard header and its PRODNAME, in
+    place - the archive publish's restamp of a member's epoch (_archive_publish_cell), one definition (D-ADMIT stamps an
+    admitted night's epoch with it). ``sh`` / ``md``: the file name's _shflux / _mdewarp tokens. Returns the name."""
+    from exopipe.phase3.core.products import build_name, write_standard_header
+    h = fits.getheader(src)
+    taper = 'Taper'; robust = -0.75 if st == 'I' else 0.0
+    if not h.get('DATE-OBS'):
+        raise RuntimeError(f"{lst} {fl}: epoch product {os.path.basename(src)} has no time block; REFUSING to archive")
+    _eproc = (['dewarped', 'aligned'] + (['shflux'] if (sh or h.get('SHSCALE') is not None) else [])
+              + (['mdewarp'] if (md or h.get('MDWARP') is not None) else []))
+    name = build_name(fl, st, 'deep', taper, robust, proc=_eproc, lst=lst,
+                      epoch=str(h['DATE-OBS']))
+    beam = (float(h['BMAJ']), float(h['BMIN']), float(h.get('BPA', 0.0))) if h.get('BMAJ') else None
+    write_standard_header(src, scope=fl, stokes=st, start=h.get('DATE-OBS'), end=h.get('DATE-END'),
+                          inttime_s=h.get('INTTIME'), time_basis='epoch', beam=beam,
+                          dewarped=True, aligned=True, msub=False,
+                          extra={'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)')}, validate=True)
+    return name
+
+
 def _archive_publish_cell(final_dir, sub_dir, lst, fl):
     """Write the cell's products into the ratified archive tree (contract 0.1/0.4)."""
     if os.environ.get('P3_ARCHIVE_WRITE') == '0':
@@ -3341,20 +3363,8 @@ def _archive_publish_cell(final_dir, sub_dir, lst, fl):
                 continue
             src = f'{sub_dir}/{f}'
             h = fits.getheader(src)
-            st = e['st']; taper = 'Taper'; robust = -0.75 if st == 'I' else 0.0
-            name = h.get('PRODNAME')
-            if not name:
-                if not h.get('DATE-OBS'):
-                    raise RuntimeError(f"{lst} {fl}: epoch product {f} has no time block; REFUSING to archive")
-                _eproc = (['dewarped', 'aligned'] + (['shflux'] if (e.group('sh') or h.get('SHSCALE') is not None) else [])
-                          + (['mdewarp'] if (e.group('md') or h.get('MDWARP') is not None) else []))
-                name = build_name(fl, st, 'deep', taper, robust, proc=_eproc, lst=lst,
-                                  epoch=str(h['DATE-OBS']))
-                beam = (float(h['BMAJ']), float(h['BMIN']), float(h.get('BPA', 0.0))) if h.get('BMAJ') else None
-                write_standard_header(src, scope=fl, stokes=st, start=h.get('DATE-OBS'), end=h.get('DATE-END'),
-                                      inttime_s=h.get('INTTIME'), time_basis='epoch', beam=beam,
-                                      dewarped=True, aligned=True, msub=False,
-                                      extra={'PRODNAME': (name, 'Phase 3 product name (grammar; CONTINUE cards)')}, validate=True)
+            st = e['st']
+            name = h.get('PRODNAME') or epoch_standard_header(src, fl, st, lst, sh=e.group('sh'), md=e.group('md'))
             _ok, _why = _epoch_content_check(src, f'{final_dir}/' + ('I_deep_Taper_R075' if st == 'I' else 'V_deep_Taper_R0') + f'_{fl}.fits',
                                              src.replace('_epoch', '_sub'), st)
             if not _ok:

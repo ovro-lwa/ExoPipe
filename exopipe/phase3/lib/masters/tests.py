@@ -126,9 +126,42 @@ def admitted_identity(path, **ctx):
 
 
 @content_test('admitted_epoch')
-def admitted_header(path, **ctx):
-    """D-ADMIT: the members' own-beam header test (header_own_beam) on an admitted night's product."""
-    return header_own_beam(path, **ctx)
+def admitted_header(path, source=None, **ctx):
+    """D-ADMIT: the members' own-beam card checks (header_own_beam: BEAMSRC, finite beam and RESTFRQ, the HISTORY line
+    naming the per-epoch source) and - the night being in no weights.csv - its own source located through the admission
+    (``source`` recorded with the output, else coadd_final/admissions.csv: image for I, v_image for V): the named source
+    is that file and its BMAJ / BMIN / BPA / RESTFRQ equal the product's (sixth review: the members' test never located it)."""
+    ok, n, detail = header_own_beam(path, **ctx)
+    m = _EPOCH_RE.match(os.path.basename(path))
+    if not m:
+        return False, None, 'not an epoch/sub/clean file name'
+    st = m.group('st')
+    if not source:
+        loc = locate(path, **ctx)
+        ap = os.path.join(loc['final'], 'admissions.csv')
+        rows = {r['date']: r for r in csv.DictReader(open(ap, newline=''))} if os.path.exists(ap) else {}
+        r = rows.get(m.group('date')) or {}
+        source = r.get('image') if st == 'I' else r.get('v_image')
+    probs = [] if ok else [detail]
+    if not source or not os.path.exists(source):
+        probs.append(f'own source {source!r} not found through the admission')
+        return False, len(probs), '; '.join(probs)
+    h, sh = _hdr(path), _hdr(source)
+    hist = ''.join(str(x) for x in h.get('HISTORY', []))
+    mm = re.search(r'Beam\+RESTFRQ \(' + st + r'\) from per-epoch source (\S+?\.fits)', hist)
+    if not mm or mm.group(1) != os.path.basename(source):
+        probs.append(f'HISTORY names {mm.group(1) if mm else None}, the admission\'s source is {os.path.basename(source)}')
+    diff = []
+    for k in ('BMAJ', 'BMIN', 'BPA', 'RESTFRQ'):
+        try:
+            a, b = float(h[k]), float(sh[k])
+            if not abs(a - b) <= 1e-9 * max(abs(a), 1e-300):
+                diff.append(k)
+        except (KeyError, TypeError, ValueError):
+            diff.append(k)
+    if diff:
+        probs.append(f'{"/".join(diff)} differ from the own source {os.path.basename(source)}')
+    return not probs, len(probs), '; '.join(probs) or f'own beam, equal to its source {os.path.basename(source)}'
 
 
 @content_test('admitted_epoch')
@@ -145,20 +178,21 @@ def admitted_cards(path, **ctx):
 @content_test('admissions')
 def admissions_record(path, **ctx):
     """D-ADMIT: <cell>/coadd_final/admissions.csv - the columns (admit_stages.ADMISSION_COLS), each night once, a verdict
-    of 'admitted' or 'refused' with a reason for every refusal; an admitted night has its I epoch, sub and clean in the
-    cell's subtracted/ with ADMITTED True and ADMITREF its master's CONSTDIG, and its night-image and epoch checks passed;
-    a refused night has no product there; the survey image and flow sha1s are those of the files."""
-    import csv as _csv
+    of 'admitted' or 'refused' with a reason for every refusal; an admitted night has its I epoch, sub and clean - and its
+    V ones when v_products says 'admitted' - in the cell's subtracted/ with ADMITTED True and ADMITREF its master's
+    CONSTDIG, and its night-image and epoch checks passed; a refused night has no product there, and no ADMITTED product
+    in subtracted/ lacks an admitted row (an orphan of an interrupted run); the image, V image and flow sha1s are those of
+    the files."""
     from astropy.io import fits
     from exopipe.phase3.lib.masters import admit_stages as AS
-    rows = list(_csv.DictReader(open(path, newline='')))
+    rows = list(csv.DictReader(open(path, newline='')))
     cols = tuple(rows[0].keys()) if rows else ()
     probs = []
     if rows and cols != AS.ADMISSION_COLS:
         probs.append(f'columns {cols[:4]}... are not ADMISSION_COLS')
     cell = os.path.dirname(os.path.dirname(os.path.abspath(path)))
     sc = os.path.basename(cell).split('_', 1)[1]
-    seen = set()
+    seen, admitted = set(), set()
     for r in rows:
         d = r.get('date')
         if d in seen:
@@ -168,22 +202,34 @@ def admissions_record(path, **ctx):
             probs.append(f'{d}: verdict {r.get("verdict")!r}')
         if r.get('verdict') == 'refused' and not r.get('reason'):
             probs.append(f'{d}: refused without a reason')
-        prods = {k: os.path.join(cell, 'subtracted', f'{d}_I_{k}_{sc}.fits') for k in ('epoch', 'sub', 'clean')}
+        stokes = ('I', 'V') if r.get('v_products') == 'admitted' else ('I',)
+        prods = [os.path.join(cell, 'subtracted', f'{d}_{st}_{k}_{sc}.fits') for st in stokes for k in ('epoch', 'sub', 'clean')]
         if r.get('verdict') == 'admitted':
+            admitted.add(d)
             if r.get('night_image') == 'FAIL' or r.get('epoch_gate') != 'pass':
                 probs.append(f'{d}: admitted although a refusing check failed')
-            for k, p in prods.items():
+            for p in prods:
                 if not os.path.exists(p):
                     probs.append(f'{d}: admitted but {os.path.basename(p)} missing')
                     continue
                 h = fits.getheader(p)
                 if h.get('ADMITTED') is not True or not str(r.get('reference_constdig', '')).startswith(str(h.get('ADMITREF', '#'))):
                     probs.append(f'{d}: {os.path.basename(p)} lacks ADMITTED / ADMITREF {r.get("reference_constdig")}')
-        elif any(os.path.exists(p) for p in prods.values()):
+        elif any(os.path.exists(os.path.join(cell, 'subtracted', f'{d}_{st}_{k}_{sc}.fits'))
+                 for st in ('I', 'V') for k in ('epoch', 'sub', 'clean')):
             probs.append(f'{d}: refused but has products in subtracted/')
-        for f, col in (('image', 'image_sha1'), ('flow', 'flow_sha1')):
+        for f, col in (('image', 'image_sha1'), ('v_image', 'v_image_sha1'), ('flow', 'flow_sha1')):
             if r.get(f) and r.get(col) and os.path.exists(r[f]) and AS._sha1(r[f]) != r[col]:
                 probs.append(f'{d}: {f} {r[f]} changed since its admission (sha1)')
+    sd = os.path.join(cell, 'subtracted')
+    for f in sorted(os.listdir(sd)) if os.path.isdir(sd) else []:
+        m = _EPOCH_RE.match(f)
+        if m and m.group('date') not in admitted and m.group('date') not in seen:
+            try:
+                if fits.getheader(os.path.join(sd, f)).get('ADMITTED') is True:
+                    probs.append(f'{f}: an ADMITTED product with no admissions.csv row (an interrupted admission)')
+            except OSError:
+                pass
     return not probs, len(rows), '; '.join(probs[:4]) or f'{len(rows)} night(s): verdicts, products and sha1s consistent'
 
 
