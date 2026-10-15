@@ -299,24 +299,33 @@ def _run_admit(wt, out):
 # loops of admit_stage and admit_prep make (LOOP_CALLS, checked against the loops' own calls); each clause pinned by its
 # exception type, its first statement and a digest of its whole body, with what it does with the exception -
 #   caught    reports to the watch (coadd._caught)            fallback  a B-30 site: the watch reads its event
+#   unwatched a B-30 site reached before the night's watch opens (the flow freshness check): the stage's policy decides it
 #   raise     re-raises / raises a refusal                    problem   returned to the caller, which refuses on it
 #   error     returned to the caller as an error (admit-prep refuses the night as an item, retried)
 #   parse     a value that does not parse is not that value (a header key, a band name, a scale that is no number)
 #   cosmetic  a header comment / a message's text / a derived MJD-MID card (the products' header test compares cards)
 #   cleanup   removing a temporary file while an error propagates     infra  the fallback record's own spool file
 #   validation  a check of a product already written turns an unparsable WCS into a warning (no value, row or verdict)
+#   (problem also: a content test that raises is a failed test; a test module that does not import is named by the
+#   refusal that follows - validate.tests_for raises for a class without tests)
 LOOP_CALLS = {'coadd': ('prep_night', '_epoch_content_arrays', '_flow_freshness', '_product_mapping', 'beam_area',
                         'beam_gate_image', 'compute_residual_rms', 'epoch_standard_header', 'final_night', 'load_image',
                         'measure_scale2', 'process_variant_image', 'subtract_night'),
               'admit_stages': ('off_grid', 'move_aside', 'move_aside_files', 'stage2_verdict', 'v_status', 'write_admissions',
                                '_sha1'),
-              'shflux': ('bake',)}
+              'shflux': ('bake',),
+              'record': ('utcnow', 'UnitRecord.refuse_item', 'UnitRecord.plan', 'UnitRecord.add_output', 'UnitRecord.note')}
 LOOP_SKIP = ('validate.run',)   # the flow's content test: an exception there is a failed test, the night refused (no row)
+_PK = 'exopipe.phase3.'
+MODS = {'coadd': _PK + 'lib.masters.coadd', 'admit_stages': _PK + 'lib.masters.admit_stages', 'shflux': _PK + 'lib.masters.shflux',
+        'record': _PK + 'core.record'}
+# names the stage binds to objects rather than imports: the in-place co-add module it passes as `co`, its unit record `u`
+LOOP_OBJECTS = {'co': ('coadd', ''), 'u': ('record', 'UnitRecord.')}
 PATH_EXCEPTS = {
     'admit_stages.off_grid': [('Exception', "return 'unreadable'", 'b1af371c86', 'error')],
     'coadd._epoch_beam_source_values': [('Exception', "return {}, [f'unreadable source header ({e.__class__.__name__}: {e})']", 'f58c813344', 'problem'),
                                         ('(TypeError, ValueError)', "problems.append(f'{k} non-numeric in source header ({src[k]!r})')", '82bf21af48', 'problem')],
-    'coadd._grid_refused_dates': [('Exception', 'shapes[date] = None', '11b595869f', 'fallback')],
+    'coadd._grid_refused_dates': [('Exception', 'shapes[date] = None', '11b595869f', 'unwatched')],
     'coadd._night_flux_dc': [('Exception', "_caught('flux scale on the flow-aligned image', e)", '3574a96ab1', 'caught')],
     'coadd._off_grid': [('Exception', 'from exopipe.phase3.core import fallback', '348cc73630', 'fallback')],
     'coadd._r1_fmt_keys': [('(TypeError, ValueError)', "parts.append(f'{k}={v!r}')", 'd171d6fcdb', 'cosmetic')],
@@ -338,14 +347,20 @@ PATH_EXCEPTS = {
     'fallback.site': [('Refusal', "_record('refuse', key, 1, f'{detail} [{e}]')", 'bedd84c8b0', 'raise')],
     'inputs.is_subband': [('(ValueError, TypeError)', 'return False', 'd2287f88ed', 'parse')],
     'membership.qa3_inside': [('(TypeError, ValueError)', 'return False', '02ef154300', 'parse')],
+    'record._jsonable_ctx': [('(TypeError, ValueError)', 'out[k] = str(v)', '70b8f8b2b1', 'cosmetic')],
+    'validate._discover': [('Exception', "_DISCOVERY_ERRORS[name] = f'{type(e).__name__}: {e}'", '079815da75', 'problem')],
+    'validate.run': [('Exception', "passed, value, detail = False, None, f'test raised {type(e).__name__}: {e}'", '6455ebee51', 'problem')],
+    'validate.tests_for': [('ImportError', 'pass', '32e3821588', 'problem')],
     'validate_fits_headers.validate_header': [('Exception', 'report.errors.append(f"Cannot open FITS file: {e}")', 'a467083a71', 'problem'),
                                               ('Exception', 'report.warnings.append("WCS parsing failed")', 'a83113c883', 'validation')],
 }
 
 
 def path_functions():
-    """[(module, function)] reachable from LOOP_CALLS: calls of a module-level function of the same module, and of an
-    imported package module's function (module or function imports)."""
+    """[(module, function)] reachable from LOOP_CALLS: calls of a module-level function or of a class's own method (self.x)
+    in the same module, of an imported package module's function, of the co-add module the stage passes as `co`, and - the
+    eleventh review - of the object a module attribute holds at run time when it is another module's function (the finders
+    input_resolver installs on the co-add: the night path runs those)."""
     import ast
     import importlib.util
     trees = {}
@@ -359,10 +374,16 @@ def path_functions():
 
     def funcs(mod):
         t = tree(mod)[0]
-        return {n.name: n for n in t.body if isinstance(n, ast.FunctionDef)} if t else {}
+        out = {}
+        for n in (t.body if t else []):
+            if isinstance(n, ast.FunctionDef):
+                out[n.name] = n
+            elif isinstance(n, ast.ClassDef):
+                out.update({f'{n.name}.{m.name}': m for m in n.body if isinstance(m, ast.FunctionDef)})
+        return out
 
     def aliases(mod, fn):
-        out = {}
+        out = {'co': MODS['coadd']}                  # the in-place co-add module (admit_stages passes it as `co`)
         for n in list(tree(mod)[0].body) + list(ast.walk(fn)):
             if isinstance(n, ast.Import):
                 for a in n.names:
@@ -374,26 +395,38 @@ def path_functions():
                 for a in n.names:
                     out[a.asname or a.name] = f'{base}.{a.name}'
         return out
-    pk = 'exopipe.phase3.lib.'
-    full = {'coadd': pk + 'masters.coadd', 'admit_stages': pk + 'masters.admit_stages', 'shflux': pk + 'masters.shflux'}
-    seen, todo = set(), [(full[m], n) for m, ns in LOOP_CALLS.items() for n in ns]
+    seen, todo = set(), [(MODS[m], n) for m, ns in LOOP_CALLS.items() for n in ns]
     while todo:
         m, name = todo.pop()
         if (m, name) in seen or name not in funcs(m):
             continue
         seen.add((m, name))
-        fn, al, fs = funcs(m)[name], None, funcs(m)
-        al = aliases(m, fn)
+        live = getattr(sys.modules.get(m), name, None) if '.' not in name else None
+        if callable(live) and getattr(live, '__module__', m) != m and getattr(live, '__module__', '').startswith('exopipe'):
+            todo.append((live.__module__, live.__name__))     # an installed object: the one the night path calls
+        fs = funcs(m)
+        cls = name.split('.')[0] + '.' if '.' in name else None
+        fn, al = fs[name], aliases(m, fs[name])
         for c in ast.walk(fn):
             if isinstance(c, ast.Call):
                 f = c.func
                 if isinstance(f, ast.Name) and f.id in fs:
                     todo.append((m, f.id))
+                    lv = getattr(sys.modules.get(m), f.id, None)
+                    if callable(lv) and getattr(lv, '__module__', m) != m and getattr(lv, '__module__', '').startswith('exopipe'):
+                        todo.append((lv.__module__, lv.__name__))
                 elif isinstance(f, ast.Name) and f.id in al and '.' in al[f.id]:
                     todo.append(tuple(al[f.id].rsplit('.', 1)))
-                elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in al \
-                        and al[f.value.id].startswith('exopipe'):
-                    todo.append((al[f.value.id], f.attr))
+                elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+                    if f.value.id == 'self' and cls:
+                        todo.append((m, cls + f.attr))
+                    elif f.value.id in al and al[f.value.id].startswith('exopipe'):
+                        tm = al[f.value.id]
+                        todo.append((tm, f.attr))
+                        lv = getattr(sys.modules.get(tm), f.attr, None)
+                        if callable(lv) and getattr(lv, '__module__', tm) != tm \
+                                and getattr(lv, '__module__', '').startswith('exopipe'):
+                            todo.append((lv.__module__, lv.__name__))
     return seen, tree, funcs
 
 
@@ -419,27 +452,50 @@ def path_excepts():
 
 
 def loop_calls():
-    """The module functions the two night loops call ({'coadd': {...}, 'admit_stages': {...}, 'shflux': {...}})."""
+    """{module key: {called names}} of every call the two night loops make on a package module (through any alias, imported at
+    module or function level), on the objects LOOP_OBJECTS names (the co-add module `co`, the unit record `u`), or on
+    admit_stages' own functions; 'other' holds package calls outside MODS (each must be in LOOP_SKIP). Calls on non-package
+    modules (os, numpy, astropy, csv) are not the pin's."""
     import ast
     from exopipe.phase3.lib.masters import admit_stages as AS
     src = inspect.getsource(AS)
     t = ast.parse(src)
     mine = {n.name for n in t.body if isinstance(n, ast.FunctionDef)}
-    out = {'coadd': set(), 'admit_stages': set(), 'shflux': set(), 'other': set()}
+    inv = {v: k for k, v in MODS.items()}
+    out = {k: set() for k in MODS}
+    out['other'] = set()
     for fn in t.body:
         if isinstance(fn, ast.FunctionDef) and fn.name in ('admit_stage', 'admit_prep'):
+            al = {}
+            for n in list(t.body) + list(ast.walk(fn)):
+                if isinstance(n, ast.ImportFrom) and n.module and n.module.startswith('exopipe'):
+                    for a in n.names:
+                        al[a.asname or a.name] = f'{n.module}.{a.name}'
+                elif isinstance(n, ast.Import):
+                    for a in n.names:
+                        if a.name.startswith('exopipe'):
+                            al[a.asname or a.name.split('.')[0]] = a.name
             for node in ast.walk(fn):
                 if isinstance(node, ast.For) and isinstance(node.target, ast.Tuple) \
                         and [getattr(e, 'id', '') for e in node.target.elts] == ['d', 'sd', 'img']:
                     for c in ast.walk(node):
-                        if isinstance(c, ast.Call):
-                            f = c.func
-                            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in ('co', 'SH'):
-                                out['coadd' if f.value.id == 'co' else 'shflux'].add(f.attr)
-                            elif isinstance(f, ast.Name) and f.id in mine:
-                                out['admit_stages'].add(f.id)
-                            elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == 'validate':
-                                out['other'].add(f'validate.{f.attr}')
+                        if not isinstance(c, ast.Call):
+                            continue
+                        f = c.func
+                        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+                            v = f.value.id
+                            if v in LOOP_OBJECTS:
+                                k, pre = LOOP_OBJECTS[v]
+                                out[k].add(pre + f.attr)
+                            elif v in al:
+                                k = inv.get(al[v])
+                                (out[k] if k else out['other']).add(f.attr if k else f'{v}.{f.attr}')
+                        elif isinstance(f, ast.Name) and f.id in mine:
+                            out['admit_stages'].add(f.id)
+                        elif isinstance(f, ast.Name) and f.id in al:
+                            mod, nm = al[f.id].rsplit('.', 1)
+                            k = inv.get(mod)
+                            (out[k] if k else out['other']).add(nm if k else al[f.id])
     return out
 
 
@@ -448,9 +504,9 @@ def inventory_problems(co=None):
     classes from what the clauses do, or the loops' calls from LOOP_CALLS."""
     out = []
     lc = loop_calls()
-    for m in ('coadd', 'admit_stages', 'shflux'):
-        if lc[m] != set(LOOP_CALLS[m]):
-            out.append((f'the night loops call {m}', sorted(lc[m] ^ set(LOOP_CALLS[m]))))
+    for m in MODS:
+        if lc[m] != set(LOOP_CALLS.get(m, ())):
+            out.append((f'the night loops call {m}', sorted(lc[m] ^ set(LOOP_CALLS.get(m, ())))))
     if lc['other'] != set(LOOP_SKIP):
         out.append(('the night loops\' other calls', sorted(lc['other'])))
     got = path_excepts()
@@ -462,7 +518,8 @@ def inventory_problems(co=None):
             continue
         for (t, f, _h, whole), (_t, _f, _hh, cls) in zip(got[k], PATH_EXCEPTS[k]):
             body = whole.split(':', 1)[1] if ':' in whole else whole
-            ok = {'caught': '_caught(' in body, 'fallback': 'fallback.site(' in body, 'raise': 'raise' in body}.get(cls, True)
+            ok = {'caught': '_caught(' in body, 'fallback': 'fallback.site(' in body, 'unwatched': 'fallback.site(' in body,
+                  'raise': 'raise' in body}.get(cls, True)
             if not ok:
                 out.append((k, t, f, f'not {cls}'))
     return out
@@ -710,7 +767,8 @@ def test_failure_paths(nights):
                   (u.status, u.reason, gates(u), sorted(R1), rec1.get('admitted'), u2.status, u2.reason, sorted(R2)))
         # (12) a V image that cannot be aligned (tenth review: process_variant_image fails only through its except, which reports
         #      what it caught): an error of the night - every product of it refused as an item (admit.error), no row - and
-        #      the next run admits it with its V
+        #      the next run admits it with its V. A stub does what that except does (report, then False); the except clause
+        #      itself is pinned by (17)
         _stash(cd, 'valign')
         rpv = co.process_variant_image
 
@@ -895,6 +953,37 @@ def test_failure_paths(nights):
         u22b = _run_admit(wt, out)
         check('... and the next run admits night 2', rows().get(n2, {}).get('verdict') == 'admitted',
               (u22b.status, u22b.reason, sorted(rows())))
+        # (24) the fallback window starts at each night (eleventh review): the same fallback in night 1 - night 1 an error,
+        #      night 2 admitted in the same run
+        _stash(cd, 'fallback1')
+
+        def p2w1(self, *a, **k):
+            names, night = _stack_night()
+            if 'build_striation_model' in names and night == n1 and len(a) >= 2 and int(np.asarray(a[1]).flat[0]) == 512:
+                raise MemoryError('test')
+            return rp2w(self, *a, **k)
+        _W.all_pix2world = p2w1
+        try:
+            u24 = _run_admit(wt, out)
+        finally:
+            _W.all_pix2world = rp2w
+        R24 = rows()
+        check('the fallback window opens at each night (eleventh review): a fallback in night 1 makes night 1 an error and '
+              'night 2 - measured after it in the same run - is admitted', n1 not in R24
+              and R24.get(n2, {}).get('verdict') == 'admitted' and set(gates(u24).values()) == {'admit.error'},
+              (u24.status, gates(u24), sorted(R24)))
+        # the watch's other half: a refused fallback swallowed by a broad except is still an error of the night
+        from exopipe.phase3.core import fallback as _FB
+        w_ = AS2.ErrorWatch(co)
+        with w_:
+            w_.start()
+            _FB._record('refuse', 'fallbacks.TEST_SITE', 1, 'refused inside a broad except (test)')
+            e_refuse = w_.errors
+            w_.start()
+            e_next = w_.errors
+        check('a refused fallback recorded during a night is an error of that night (even when a broad except swallowed the '
+              'refusal); the next night\'s window starts empty', any('TEST_SITE' in x for x in e_refuse) and e_next == [],
+              (e_refuse, e_next))
         # (21) admit-prep (ninth review, MINOR): an error while a night is prepared is retried (not in the unit's finished
         #      nights); a night refused by a verdict on its own image (off the grid) is finished - --resume skips the unit
         _stash(cd, 'prep')
