@@ -199,6 +199,12 @@ if mode == 'run':
         d = f'{OUT}/source_catalogs_{S}_f{t}'
         build(k, d, min_n=2)
         wcsv(f'{d}/repeat_shuffle.csv', ['source_id', 'p_shuffle'], [])
+        # production's fork leaves its working catalogues in its work tree (fork_<S>/tmp_catalogs/f<t>/), which its record
+        # lists and no later stage reads (the replay of 2026-10-15)
+        os.makedirs(f'{w}/tmp_catalogs/f{t}', exist_ok=True)
+        for f_ in os.listdir(d):
+            if f_.endswith('_sources_survivors.csv'):
+                shutil.copy(f'{d}/{f_}', f'{w}/tmp_catalogs/f{t}/{f_}')
         open(f'{w}/build_{S}_{t}_final.log', 'w').write('sigma-stack singleton gate: off\n')
     json.dump(dict(kept=len(kept)), open(f'{w}/fork_stats_{S}.json', 'w'))
     print(f'FORK-DONE {S}: kept {len(kept)}')

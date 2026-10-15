@@ -938,7 +938,10 @@ class DeepRun:
         return u
 
     def _expected_survivors(self, tiers=None):
-        """The survivors files the associate and fork records list (optionally only those of ``tiers``)."""
+        """The survivors files of the catalogue directories (source_catalogs_<K>/) the associate and fork records list
+        (optionally only those of ``tiers``). The fork's record lists its own work tree too (fork_<S>/: its tmp_catalogs/ copies
+        of the survivors files) - read by no later stage (ops/p3s3_identity.py:22-23 reads source_catalogs_*/ and
+        source_catalogs/ only), so not expected (the deep catalogue replay, 2026-10-15: identity refused 19 of them)."""
         c = self.cfg
         exp = set()
         keys = [('associate', K) for K in c.catalog.DEEP_ASSOC_KEYS]
@@ -946,7 +949,10 @@ class DeepRun:
             keys += [('fork', S) for S in c.catalog_fork.STOKES]
         for stage, k in keys:
             for p in self.chain.outputs(self.u(stage, k), '_sources_survivors.csv'):
-                K = os.path.basename(os.path.dirname(p)).replace('source_catalogs_', '')
+                parent = os.path.basename(os.path.dirname(p))
+                if not parent.startswith('source_catalogs_'):
+                    continue
+                K = parent.replace('source_catalogs_', '')
                 if 'ALL_' in os.path.basename(p) or (tiers is not None and K not in tiers):
                     continue
                 exp.add(p)
