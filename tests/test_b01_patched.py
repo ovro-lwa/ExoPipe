@@ -74,6 +74,7 @@ def test_runtime_refusals():
     from exopipe.phase3.lib.status import steps_inplace as IPL
     from exopipe.phase3.lib.calibrate import common as CC
     from exopipe.phase3.lib.catalog import incremental as INC
+    from exopipe.phase3.lib.jupiter import common as JC
     ops = os.path.join(T, 'no_such_ops')     # the refusal is by name: never hand the real patch scripts to a runner here
     calls = [('core.legacy.run(script)', lambda: L.run(os.path.join(ops, 'p3s5_patch_cell.py'), ['05h_23MHz'])),
              ('core.legacy.run(bash -c ...)', lambda: L.run(os.path.join(T, 'no_such_bash'), ['-c', 'p3s5_patch_runner.sh cells.txt 4'])),
@@ -84,6 +85,9 @@ def test_runtime_refusals():
              ('steps_inplace.call_attr', lambda: IPL.call_attr('p3s5_repatch_epochgate', {})),
              ('calibrate.common.import_inplace', lambda: CC.import_inplace('p3s5_patch_cell')),
              ('catalog.incremental._load_module_from', lambda: INC._load_module_from(os.path.join(ops, 'p3s5_patch_cell.py'), 'x')),
+             ('steps_inplace.run_path (runpy by path)', lambda: IPL.run_path(os.path.join(ops, 'p3s5_patch_cell.py'))),
+             ('jupiter in_place --module (its child imports no exopipe: refused by core.legacy.run)',
+              lambda: JC.in_place(None, os.path.join(ops, 'p3s5_patch_cell.py'))),
              ('a plain import (the import guard)', lambda: __import__('p3s5_patch_cell')),
              ('importlib.import_module (the import guard)', lambda: __import__('importlib').import_module('p3s5_repatch_epochgate'))]
     bad = []
@@ -97,6 +101,15 @@ def test_runtime_refusals():
         except Exception as e:                   # noqa: BLE001
             bad.append(f'{name}: {type(e).__name__}: {e}')
     check(f'every in-place entry point refuses a patch path ({len(calls)} spellings)', not bad, bad)
+    from exopipe.phase3.lib.mosaic import steps_worker as MW
+    try:
+        MW._runpy(os.path.join(ops, 'p3s5_patch_cell.py'), [])
+        why = 'not refused'
+    except MW._Refused as e:                     # the worker's refusal: its task result says 'refused', not 'error'
+        why = str(e)
+    except Exception as e:                       # noqa: BLE001
+        why = f'{type(e).__name__}: {e}'
+    check('the mosaic worker refuses a patch script it would run by path, as its own refusal', 'patch path' in why, why)
     os.makedirs(T, exist_ok=True)
     child = os.path.join(T, 'imports_a_patch.py')
     with open(child, 'w') as f:
@@ -197,6 +210,9 @@ def test_status_cli():
     if tabs:
         from exopipe.phase3.core import validate
         ctx = [o.get('ctx') or {} for o in rec['outputs'] if o['path'] == tabs[0]][0]
+        check('the unit records the expanded selection its table was made from (cells, not the spec)',
+              ctx.get('cells') and all(c.startswith('05h_') for c in ctx['cells']) and ctx['cells'] == sorted(ctx['cells'])
+              and {r['cell'] for r in rows} <= set(ctx['cells']) and 'cells_spec' not in ctx, ctx)
         good = validate.run('patched_attempts', tabs[0], **ctx)
         with open(tabs[0]) as f:
             lines = f.readlines()

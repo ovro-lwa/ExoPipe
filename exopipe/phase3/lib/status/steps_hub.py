@@ -79,8 +79,9 @@ def run_nights(out, nights, unit, log, allowed):
     attrs = dict(HUB=hub.rstrip('/'), LEDGER=C.status.LEDGER, DD=C.paths.DATA_DECISIONS, ROOT=C.paths.COADD_SB_ROOT,
                  QA=C.status.QA_DIR)
     argv = ['build_qa_pages.py'] + (['--only'] + list(nights) if nights else [])
+    IP.search_sources(C.status.SEARCH_LABEL['deep'])      # the register the page imports, pinned (2026-10-15 review)
     rc, text, mod = IP.call_attr('build_qa_pages', attrs, 'main', allowed_roots=allowed, log=log, unit=unit,
-                                 env={'P3S_LABEL': C.status.SEARCH_LABEL['deep']}, argv=argv)
+                                 env=IP.search_env(C.status.SEARCH_LABEL['deep']), argv=argv)
     return rc, text, hub.rstrip('/')
 
 
@@ -93,9 +94,10 @@ def run_data_page(out, unit, log, allowed):
     frag_out = K.place(out, 'review_hub', P.FRAGMENT)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     attrs = dict(OUT=dest, LEDGER=C.status.LEDGER, DD=C.paths.DATA_DECISIONS, ROOT=C.paths.COADD_SB_ROOT, QA=C.status.QA_DIR)
+    IP.search_sources(C.status.SEARCH_LABEL['deep'])      # the register the page imports, pinned (2026-10-15 review)
     rc, text, mod = IP.call_attr('build_data_processing_page', attrs, 'main', mapping={frag_prod: frag_out},
                                  allowed_roots=allowed, log=log, unit=unit,
-                                 env={'P3S_LABEL': C.status.SEARCH_LABEL['deep']})
+                                 env=IP.search_env(C.status.SEARCH_LABEL['deep']))
     return rc, text, dest
 
 

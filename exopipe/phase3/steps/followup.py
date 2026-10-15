@@ -465,6 +465,8 @@ def _ep_module():
     """The in-place EP module (content_test, to_compact, read_compact, roundtrip_ok, LOG_COLS), imported once by path."""
     if 'm' not in _EP_MOD:
         import importlib.util
+        from exopipe.phase3.core.legacy import refuse_patch_path
+        refuse_patch_path(_script('ep_plan'), 'followup EP module')
         spec = importlib.util.spec_from_file_location('exopipe3_legacy_ep_wxt_plan_fetch', _script('ep_plan'))
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)

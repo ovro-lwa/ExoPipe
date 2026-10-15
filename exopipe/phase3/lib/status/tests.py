@@ -187,7 +187,7 @@ def coverage_rows(path, **ctx):
 
 
 @content_test('patched_attempts')
-def patched_from_own_record(path, label=None, state=None, cells_spec='', **ctx):
+def patched_from_own_record(path, label=None, state=None, cells=None, **ctx):
     """B-01 (b): one row per published (cell, Stokes); each row's patched / patched_from re-derived from the attempt
     folder's own PATCH_RECORD.json (lib/catalog/deep_ported.patched_from); and - given the register the table was made from
     (label, state, cells_spec of its unit) - the rows are exactly that register's published attempts of the selected cells,
@@ -200,8 +200,8 @@ def patched_from_own_record(path, label=None, state=None, cells_spec='', **ctx):
     rows = _rows(path)
     bad, seen = [], set()
     if label and state:
-        from exopipe.phase3.lib.status import steps_coverage as COV, steps_inplace as IPL
-        want = set(COV.deep_universe(cells_spec)) if cells_spec else None
+        from exopipe.phase3.lib.status import steps_inplace as IPL
+        want = set(cells) if cells is not None else None              # the expanded selection the unit recorded
         exp = {(a['cell'], a['stokes'], a['att'], a['dir']) for a in IPL.search_sources(label, state=state).published_attempts(['V', 'I'])
                if want is None or a['cell'] in want}
         got = {(r['cell'], r['stokes'], r['attempt'], r['dir']) for r in rows}
@@ -790,8 +790,9 @@ def pages_check(path, **ctx):
     hub = path if os.path.isdir(path) else os.path.dirname(os.path.dirname(path))
     attrs = dict(HUB=hub.rstrip('/'), LEDGER=ctx.get('ledger', C.status.LEDGER), DD=C.paths.DATA_DECISIONS,
                  ROOT=C.paths.COADD_SB_ROOT, QA=C.status.QA_DIR)
+    IP.search_sources(C.status.SEARCH_LABEL['deep'])      # the register the page imports, pinned (2026-10-15 review)
     rc, text, mod = IP.call_attr('build_qa_pages', attrs, 'check', allowed_roots=('/tmp',),
-                                 env={'P3S_LABEL': C.status.SEARCH_LABEL['deep']})
+                                 env=IP.search_env(C.status.SEARCH_LABEL['deep']))
     line = next((ln for ln in text.splitlines() if ln.startswith('CHECK:')), text.strip()[-300:])
     if mod is None or 'CHECK PASS' not in text:
         return False, rc, line[:400]

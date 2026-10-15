@@ -49,6 +49,12 @@ class _Refused(Exception):
 
 def _runpy(script, argv, env=None):
     import runpy
+    from exopipe.phase3.core.legacy import refuse_patch_path
+    from exopipe.phase3.core.record import Refusal
+    try:                                       # B-01 (b): no patch path, also for scripts run by path
+        refuse_patch_path(script, 'mosaic worker')
+    except Refusal as e:                       # the worker's own refusal (status 'refused'), not an error
+        raise _Refused(str(e))
     saved_argv, saved_path = list(sys.argv), list(sys.path)
     saved_env = {k: os.environ.get(k) for k in (env or {})}
     try:

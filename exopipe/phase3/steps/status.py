@@ -755,7 +755,8 @@ def _stage_patched(ctx):
         n = {st: sum(1 for r in rows if r['stokes'] == st and r['patched'] == '1') for st in ('V', 'I')}
         u.meta.update(search_state=S.STATE, label=label, cells_spec=spec, published=len(rows), patched=n,
                       ruling='B-01 (b), R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32')
-        u.add_output(table, 'patched_attempts', label=label, state=S.STATE, cells_spec=spec)
+        u.add_output(table, 'patched_attempts', label=label, state=S.STATE,
+                     cells=sorted(want) if want is not None else None)
         cells = sorted({r['cell'] for r in rows if r['patched'] == '1'})
         ctx.emit(u, 'patched', 'cell', cells, table, 'patched=1')
         print(f'patched: {len(rows)} published attempts of Run_{label} ({S.STATE}); patched Run_P3S4 results: {n["V"]} V, '

@@ -106,6 +106,8 @@ def redirect(mapping, allowed_roots, env=None):
 def run_path(script, argv=(), mapping=None, allowed_roots=(), env=None, log=None, unit=None):
     """Run a module-level script in-process (runpy, __main__) under ``redirect``; stdout/stderr captured (and appended
     to ``log``). Returns (rc, text): rc 0 on normal end, the SystemExit code otherwise, 1 on an exception."""
+    from exopipe.phase3.core.legacy import refuse_patch_path
+    refuse_patch_path(script, 'steps_inplace.run_path')
     if unit is not None:
         unit.add_input(script, extra={'kind': 'code'})
     buf = io.StringIO()
@@ -198,13 +200,18 @@ def search_state_dir(label):
     return CFG.catalog.DEEP_STATE_DIR.format(ops_root=CFG.paths.OPS_ROOT, label_lower=lab.lower())
 
 
+def search_env(label, state=None):
+    """The environment p3s3_sources reads at import, pinned from config (see search_sources)."""
+    from exopipe.phase3.config import CFG
+    return {'P3S_LABEL': label, 'P3S3_STATE_DIR': state or search_state_dir(label),
+            'P3S3_COLLECT_ROOTS': ':'.join(CFG.catalog.COLLECT_ROOTS)}
+
+
 def search_sources(label, state=None):
     """ops/p3s3_sources imported for run ``label`` with its register folder and collect roots PINNED from config, as the
     deep catalogue harvest sets them (deep_chain.DeepRun.env): an inherited P3S3_STATE_DIR or P3S3_COLLECT_ROOTS would
     otherwise change the attempt set silently (2026-10-15 review). ``state``: another register folder (a copy)."""
-    from exopipe.phase3.config import CFG
-    return import_quiet('p3s3_sources', env={'P3S_LABEL': label, 'P3S3_STATE_DIR': state or search_state_dir(label),
-                                             'P3S3_COLLECT_ROOTS': ':'.join(CFG.catalog.COLLECT_ROOTS)})
+    return import_quiet('p3s3_sources', env=search_env(label, state))
 
 
 def legacy_script(name):
