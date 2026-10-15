@@ -58,13 +58,15 @@ def default_out(args):
 # items
 # ---------------------------------------------------------------------------------------------------------------------
 
-def items(args):
+def items(args, admit=False):
+    """The deep cells selected. --epochs is accepted only by the admit stage (D-ADMIT: it then restricts the admitted
+    nights; the per-hour chain passes it), never by a build's flow stages."""
     from exopipe.phase3.core import cells
     if args.nights:
         raise Refusal('--nights is refused for tier deep: a deep flow set is every admitted night of the cell')
-    if getattr(args, 'epochs', None):
+    if getattr(args, 'epochs', None) and not admit:
         raise Refusal('--epochs is refused for tier deep: the per-night co-add flows belong to a masters build '
-                      '(intermittent, DESIGN 12.2), not to the per-hour chain')
+                      '(intermittent, DESIGN 12.2), not to the per-hour chain - except --stages admit')
     out = list(cells.expand_cells(args.cells)) if args.cells else []
     for lst in cells.expand(args.lsts, universe=cells.LSTS, kind='LST') if args.lsts else []:
         out += [f'{lst}_{s}' for s in cells.scopes()]
@@ -288,12 +290,22 @@ def _date_of_target(m):
 def run(args, run):
     from exopipe.phase3.core import record
     stages = args.flow_stages
+    if 'admit' in stages and len(stages) > 1:  # D-ADMIT slice 3: its own unit per cell, never with a build's flow stages
+        raise Refusal('flow --tier deep --stages admit runs alone: the flows of admitted nights are not part of a '
+                      "build's flow unit")
     try:
-        cells_ = items(args)
+        cells_ = items(args, admit='admit' in stages)
     except ValueError as e:
         raise Refusal(str(e))
     if not cells_:
         raise NoInput('no deep cell selected (give --cells or --lsts)')
+    if 'admit' in stages:
+        if run.dry_run:
+            return plan_admit(args, run, cells_)
+        for cell in cells_:
+            with run.unit(f'admit_{cell}', tier='deep', stage='admit', cell=cell) as u:
+                run_admit(u, args, run, cell)
+        return None
     if run.dry_run:
         return plan(args, run, cells_, stages)
     for cell in cells_:
@@ -506,6 +518,125 @@ def _run_stages(u, args, run, cell, lst, sc, W, stages, prev, done_before, CO, E
             u.add_output(dw, 'flow_dewarp_image')
         u.meta['reference_signature'] = sig_now
     u.meta['stages_done'] = [s for s in STAGES if s in set(done_before) | set(stages)]
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# admit (D-ADMIT slice 3): the flows of the nights an installed cell admits
+# ---------------------------------------------------------------------------------------------------------------------
+
+def admit_pairs(out_root, cell):
+    """(pairs, record) of the done `masters --tier deep --stages admit-prep` record of the cell: [{target, reference,
+    out_dir}] - the scaled flow inputs in <cell>/admit/prep/, the reference copy in <cell>/admit/ref/, <cell>/admit/flow/.
+    Refuses without a done record (G-D0 for admissions)."""
+    from exopipe.phase3.core import record
+    rec = record.load_record(out_root, 'masters', f'admit-prep_{cell}')
+    if not rec or rec.get('status') != 'done':
+        raise Refusal(f'G-D0 (admit): no done masters admit-prep record of {cell} under {out_root} (status '
+                      f'{(rec or {}).get("status", "missing")}) - run `masters --tier deep --stages admit-prep` first')
+    pairs = ((rec.get('meta') or {}).get('admit') or {}).get('pairs') or []
+    return pairs, rec
+
+
+def admit_signature(reference):
+    """The reference signature of an admission's flows (flow/.reference_resolved, as a build's): MASTER:<COADDOP>:<CONSTDIG>
+    of the reference copy - the installed master in native units."""
+    cards = C.header_cards(reference)
+    return f"MASTER:{C.card(cards, 'COADDOP')}:{C.card(cards, 'CONSTDIG', 'nodigest')}"
+
+
+def _admit_date(pair):
+    return os.path.basename(pair['target']).split('_scaled')[0]
+
+
+def _admit_epochs(args, cell):
+    """The nights --epochs names for the cell's LST (None: no --epochs)."""
+    from exopipe.phase3.core import cells
+    if not getattr(args, 'epochs', None):
+        return None
+    lst = cells.parse_cell(cell)[0]
+    return {d for l, d in (cells.parse_epoch(e) for e in cells.expand_epochs(args.epochs)) if l == lst}
+
+
+def admit_todo(pairs, flow_all=False):
+    """The pairs whose flow is missing or older than its scaled input (or every pair with --deep-flow-all)."""
+    out = []
+    for p in pairs:
+        fl = os.path.join(p['out_dir'], f'{_admit_date(p)}_scaled_flow.npy')
+        if flow_all or not os.path.exists(fl) or os.path.getmtime(fl) < os.path.getmtime(p['target']):
+            out.append(p)
+    return out
+
+
+def run_admit(u, args, run, cell):
+    """One cell's admission flows: the pairs of its admit-prep record, solved on the GPU where missing or stale (batch_flow:
+    the build's script, interpreter and locks), each checked as a build's flow is (coadd_flow, flow_dewarp_image). The
+    pairs share one reference and one flow directory; .reference_resolved there names the reference - a directory solved
+    against another reference refuses (the installed master changed: admit again from a fresh <cell>/admit/)."""
+    pairs, rec = admit_pairs(run.out_root, cell)
+    want = _admit_epochs(args, cell)
+    if want is not None:
+        pairs = [p for p in pairs if _admit_date(p) in want]
+    if not pairs:
+        raise NoInput(f'{cell}: the admit-prep record lists no pair' + (f' for --epochs {sorted(want)}' if want is not None
+                                                                        else ' (no night prepared)'))
+    refs, dirs = {p['reference'] for p in pairs}, {p['out_dir'] for p in pairs}
+    if len(refs) != 1 or len(dirs) != 1:
+        raise Refusal(f'{cell}: the admit-prep pairs name {len(refs)} references and {len(dirs)} flow directories (one each)')
+    ref, odir = refs.pop(), dirs.pop()
+    gone = [x for x in [ref] + [p['target'] for p in pairs] if not os.path.exists(x)]
+    if gone:
+        raise Refusal(f'{cell}: admit-prep outputs gone ({len(gone)}, e.g. {gone[0]}) - run admit-prep again')
+    sig = admit_signature(ref)
+    os.makedirs(odir, exist_ok=True)
+    mk = os.path.join(odir, '.reference_resolved')
+    old = open(mk).read().strip() if os.path.exists(mk) else None
+    if old is not None and old != sig:
+        raise Refusal(f'{odir} holds flows against {old}, the reference is now {sig} - admit again from a fresh admit/')
+    with open(mk, 'w') as f:
+        f.write(sig)
+    u.add_input(ref)
+    for p in pairs:
+        u.add_input(p['target'])
+    todo = admit_todo(pairs, args.deep_flow_all)
+    u.note(f'{cell}: {len(todo)} of {len(pairs)} admitted night(s) need a flow'
+           + (f' ({", ".join(_admit_date(p) for p in todo)})' if todo else ''))
+    if todo:
+        gpu_locks = solve_gpu(args)                     # G-D18: a GPU id and its site lock, before anything runs
+        CO = coadd_module(None, u.note)
+        script = CO.BATCH_FLOW_SCRIPT
+        u.add_input(script, extra={'role': 'code'})
+        batch_flow(u, args, f'admit_{cell}', todo, run.out_root, script, gpu_locks)
+    u.meta['admit'] = dict(pairs=pairs, recomputed=sorted(_admit_date(p) for p in todo), reference_signature=sig,
+                           admit_prep_record=rec.get('run_id'))
+    for p in pairs:
+        d = _admit_date(p)
+        fl = u.plan(os.path.join(odir, f'{d}_scaled_flow.npy'), 'coadd_flow')
+        dw = u.plan(os.path.join(odir, f'{d}_scaled_dewarp.fits'), 'flow_dewarp_image')
+        if os.path.exists(fl):
+            u.add_output(fl, 'coadd_flow', input_image=p['target'], reference_signature=sig)
+        if os.path.exists(dw):
+            u.add_output(dw, 'flow_dewarp_image')
+
+
+def plan_admit(args, run, cells_):
+    """Dry run of the admit stage: the pairs of each cell's admit-prep record, which need a flow, the GPU gate."""
+    rc = 0
+    for cell in cells_:
+        print(f'== admit_{cell}')
+        try:
+            pairs, _rec = admit_pairs(run.out_root, cell)
+            todo = admit_todo(pairs, args.deep_flow_all)
+            print(f'   {len(pairs)} pair(s) from the admit-prep record; {len(todo)} need a flow'
+                  + (f': {", ".join(_admit_date(p) for p in todo)}' if todo else ''))
+            for p in pairs:
+                print(f"   {_admit_date(p)}: {p['target']} -> {p['out_dir']} (reference {p['reference']})")
+            if todo:
+                solve_gpu(args)
+        except Refusal as e:
+            print(f'   GATE would refuse: {e}')
+            rc = 2
+    print(f'plan: {len(cells_)} cell(s) x stage admit; nothing written')
+    return rc
 
 
 def _digest_stale(prev, prep_meta, W):

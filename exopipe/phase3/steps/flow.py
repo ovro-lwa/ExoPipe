@@ -22,6 +22,8 @@ stay in `search`). Three tiers:
 Stages (--stages a,b / --from S / --until S; always in pipeline order; default config flow.DEFAULT_STAGES[tier]):
   deep      stage-in, prep, solve, check   (stage-in and prep are CPU only; solve needs the GPU; check is also the
                                             content verdict of flows already on disk)
+            admit (on demand, alone; GPU)  the flows of the nights an installed cell admits (D-ADMIT): the pairs the done
+                                            record of `masters --tier deep --stages admit-prep` lists, into <cell>/admit/flow/
   snapshot  flow, ship                     (the flow movies are `frames --tier snapshot --stages movies`)
   sublst    refine, check                  (check runs only when refine did not run in the same invocation)
 
@@ -94,7 +96,8 @@ TIERS = ('deep', 'snapshot', 'sublst')
 SELECTORS = ('tier', 'cells', 'lsts', 'nights', 'scopes', 'exclude_cells', 'epochs')
 CONFIG = ('flow', 'flow_prep', 'flow_snapshot', 'flow_refine', 'masters', 'masters_build', 'masters_stagein', 'runner')
 WRITES = True
-STAGES = {'deep': ('stage-in', 'prep', 'solve', 'check'), 'snapshot': ('flow', 'ship'), 'sublst': ('refine', 'check')}
+STAGES = {'deep': ('stage-in', 'prep', 'solve', 'check', 'admit'), 'snapshot': ('flow', 'ship'), 'sublst': ('refine', 'check')}
+# deep 'admit' (D-ADMIT slice 3) is in no default: the flows of the nights `masters --stages admit-prep` prepared, alone
 
 _TIER_MODULES = {t: f'exopipe.phase3.lib.flow.steps_{t}' for t in TIERS}
 
