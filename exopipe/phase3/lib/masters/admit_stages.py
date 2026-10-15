@@ -87,19 +87,24 @@ def population_problem(cd, cell, co):
 def off_grid(d, img, target_shape, cutover):
     """B-03 (a) at admission: a post-cutover night whose survey image is not on the installed master's grid (shape, the
     co-add's test) - a Phase-2 wrong-grid night, kept out of a build until data_decisions.csv excludes it
-    (input_resolver.wrong_grid_refusal), so never regridded into an admission. (shape) or None."""
+    (input_resolver.wrong_grid_refusal), so never regridded into an admission. (shape) or None; 'unreadable' when the
+    header cannot be read (the night is refused - nothing is assumed about its grid)."""
     from astropy.io import fits
     if d < cutover:
         return None
-    h = fits.getheader(img)
-    shape = (int(h['NAXIS2']), int(h['NAXIS1']))
+    try:
+        h = fits.getheader(img)
+        shape = (int(h['NAXIS2']), int(h['NAXIS1']))
+    except Exception:                               # noqa: BLE001 - any unreadable header refuses the night
+        return 'unreadable'
     return shape if shape != tuple(target_shape) else None
 
 
 def move_aside(W, d, stamp):
     """A night's earlier prep files (<cell>/admit/prep/<d>_regrid.fits, _scaled.fits, _scale.json) moved to
     admit/prep/_superseded/<stamp>/ before it is prepared again - coadd.regrid_image reuses an existing regrid, so a re-run
-    after a re-image would scale the old pixels (2026-10-15 review). Never deleted. Returns the names moved."""
+    after a re-image would scale the old pixels (2026-10-15 review). Never deleted; ``stamp`` is unique per run (UTC and
+    process id). Returns the names moved."""
     prep = os.path.join(W, 'prep')
     moved = []
     for f in (f'{d}_regrid.fits', f'{d}_scaled.fits', f'{d}_scale.json'):
@@ -123,15 +128,43 @@ def reference_dict(co, path, ent):
                 horizon_mask=~np.isfinite(data) | (data == 0), tmpl_hdr=tmpl_hdr, target_shape=target_shape)
 
 
+def reusable(prev, cd, d, img, ents, code_ok):
+    """The night's preparation in ``prev`` (the cell's previous done admit-prep record) when it can stand for a new one:
+    the same cell tree, the same code, the same reference (the installed masters' CONSTDIG), the night prepared there from
+    the same survey image (path and fingerprint), and its files still passing their content test - then the night is not
+    prepared again and its flow is not re-solved (fourth review). (pair entry, row) or None."""
+    from exopipe.phase3.core import record as R, validate
+    from exopipe.phase3.lib.masters import admit as A
+    if not prev or not code_ok or os.path.abspath(os.path.join(cd, A.BUILD_NIGHTS)) not in prev.get('inputs', {}):
+        return None
+    meta = (prev.get('meta') or {}).get('admit') or {}
+    if {k: v.get('constdig') for k, v in (meta.get('reference') or {}).items()} != {e['stokes']: e['constdig'] for e in ents}:
+        return None
+    fp = prev.get('inputs', {}).get(os.path.abspath(img))
+    if fp is None or not R.same_fingerprint(fp, R.fingerprint(img)):
+        return None
+    row = next((r for r in meta.get('dates', []) if r.get('date') == d), None)
+    entry = next((p for p in meta.get('pairs', []) if os.path.basename(p['target']) == f'{d}_scaled.fits'), None)
+    if row is None or entry is None or row.get('align_img') != img or not os.path.exists(entry['target']):
+        return None
+    inp = os.path.join(os.path.dirname(entry['target']), f'{d}_regrid.fits') if row.get('needs_regrid') else img
+    if not all(t['passed'] for t in validate.run('flow_prep_scaled', entry['target'], input_image=inp)):
+        return None
+    return entry, row
+
+
 def admit_prep(cell, args, run, out, ran_now):
     """Slice 2: the flow inputs of the nights the installed cell admits (module docstring). Refuses in a production tree
     before cutover, when the cell's population record (build_stats.json: the numbers the admitted night is judged by) is
     missing, fails its content test or holds a night excluded now (population_problem), and when the installed reference
     does not resolve; no input when no night qualifies (each night's reason recorded) or --epochs names none of this LST.
-    Per night: a post-cutover survey image off the installed master's grid is refused as an item (B-03 a: off_grid);
-    earlier prep files of the night are moved aside (move_aside); a pre-cutover night is regridded from its own WCS
-    (prep_night) and one whose shape still differs is refused as an item. --resume identity: the nights taken (the unit's
-    admitted set) and every input (prep_inputs)."""
+    Per night: a post-cutover survey image off the installed master's grid (or unreadable) is refused as an item (B-03 a:
+    off_grid); a night prepared before from the same inputs, reference and code keeps its files (reusable: its flow is
+    not re-solved); otherwise its earlier prep files are moved aside (move_aside) and it is prepared again - a pre-cutover
+    night regridded from its own WCS (prep_night), one whose shape still differs refused as an item. Outputs: each night's
+    scaled image and the reference copies (admit/ref/, content-tested). Each run's record holds the nights of that run:
+    --epochs prepares, and hands to the flow step, those nights only. --resume identity: the nights taken (the unit's
+    admitted set), every input (prep_inputs), and the population gate passing now (deep_stages._resume_ok)."""
     from exopipe.phase3.core import record as R
     from exopipe.phase3.lib.masters import admit as A, deep_inplace as IP, deep_stages as DS
     lst, sc = cell.split('_', 1)
@@ -156,27 +189,38 @@ def admit_prep(cell, args, run, out, ran_now):
         if not take:
             raise NoInput(f'{cell}: no night to admit ({len(why)} night(s) do not qualify'
                           + (f', e.g. {sorted(why.items())[0]}' if why else '') + ')')
+        prev = DS.done_record(out, 'admit-prep', cell)          # read before this unit's record replaces it
+        code_ok = bool(prev) and R.code_current(prev)[0]
         ents = A.installed_reference(cell, cd)
         refs = A.write_reference(cd, sc, ents)
+        for e in ents:
+            if refs.get(e['stokes']):
+                u.add_output(refs[e['stokes']], 'admit_reference', master=e['path'], factor=e['factor'])
         ref = reference_dict(co, refs['I'], ents[0])
         os.makedirs(os.path.join(W, 'prep'), exist_ok=True)
         os.makedirs(os.path.join(W, 'flow'), exist_ok=True)
-        stamp = R.utcnow().replace(':', '')
-        pairs, rows = [], []
+        stamp = f'{R.utcnow().replace(":", "")}_{os.getpid()}'
+        pairs, rows, kept = [], [], []
         with IP.capture_stdout(DS._log(out, cell, 'admit-prep'), echo=False):
             for d, sd, img in take:
                 sp = u.plan(os.path.join(W, 'prep', f'{d}_scaled.fits'), 'flow_prep_scaled')
                 bad = off_grid(d, img, ref['target_shape'], co.CUTOVER_DATE)
                 if bad:
-                    u.refuse_item(sp, f'{d}: survey image {bad[0]}x{bad[1]} is off the installed master\'s grid '
-                                      f'{ref["target_shape"][0]}x{ref["target_shape"][1]} - a Phase-2 wrong-grid night, kept out '
-                                      f'until data_decisions.csv excludes it (B-03 a; DECISIONS_PENDING item 3)',
+                    u.refuse_item(sp, (f'{d}: survey image header unreadable - its grid cannot be checked (B-03 a)'
+                                       if bad == 'unreadable' else
+                                       f'{d}: survey image {bad[0]}x{bad[1]} is off the installed master\'s grid '
+                                       f'{ref["target_shape"][0]}x{ref["target_shape"][1]} - a Phase-2 wrong-grid night, kept '
+                                       f'out until data_decisions.csv excludes it (B-03 a; DECISIONS_PENDING item 3)'),
                                   gate='admit-prep.wrong_grid')
                     continue
-                moved = move_aside(W, d, stamp)
-                if moved:
-                    u.note(f'{d}: earlier prep files moved aside to {A.ADMIT_DIR}/prep/_superseded/{stamp}/: {moved}')
-                one = co.prep_night(d, sd, img, ref, W, [True])
+                one = reusable(prev, cd, d, img, ents, code_ok)
+                if one is not None:
+                    kept.append(d)
+                else:
+                    moved = move_aside(W, d, stamp)
+                    if moved:
+                        u.note(f'{d}: earlier prep files moved aside to {A.ADMIT_DIR}/prep/_superseded/{stamp}/: {moved}')
+                    one = co.prep_night(d, sd, img, ref, W, [True])
                 if one is None:
                     u.refuse_item(sp, f'{d}: shape differs from the master\'s grid after the regrid', gate='admit-prep.grid')
                     continue
@@ -188,8 +232,10 @@ def admit_prep(cell, args, run, out, ran_now):
         u.meta['admit'] = dict(reference={e['stokes']: dict(path=refs.get(e['stokes']), source=e['path'], factor=e['factor'],
                                                             constdig=e['constdig'], mdwarp=e['mdwarp']) for e in ents},
                                pairs=pairs, dates=[dict(r, needs_regrid=bool(r['needs_regrid'])) for r in rows])
-        u.note(f'{cell}: {len(rows)} night(s) prepared for admission ({", ".join(r["date"] for r in rows)}) against the '
-               f'installed master / {ents[0]["factor"]:.6f} (MDWARP {ents[0]["mdwarp"]}); {len(why)} night(s) not admitted')
+        u.meta['admit']['kept'] = kept
+        u.note(f'{cell}: {len(rows)} night(s) prepared for admission ({", ".join(r["date"] for r in rows)}; kept from the '
+               f'previous run, inputs unchanged: {kept or "none"}) against the installed master / {ents[0]["factor"]:.6f} '
+               f'(MDWARP {ents[0]["mdwarp"]}); {len(why)} night(s) not admitted')
 
 
 def plan_admit_prep(cell, args, out, planned):
@@ -218,5 +264,6 @@ def plan_admit_prep(cell, args, out, planned):
     for d, _sd, img in take:
         bad = off_grid(d, img, shape, co.CUTOVER_DATE)
         lines.append(f'  {d}: {os.path.basename(img)} -> {A.ADMIT_DIR}/prep/{d}_scaled.fits [flow_prep_scaled]'
-                     + (f' - REFUSED as an item: survey image {bad[0]}x{bad[1]} off the master\'s grid (B-03 a)' if bad else ''))
+                     + ((' - REFUSED as an item: survey image header unreadable (B-03 a)' if bad == 'unreadable' else
+                         f' - REFUSED as an item: survey image {bad[0]}x{bad[1]} off the master\'s grid (B-03 a)') if bad else ''))
     return lines, gates

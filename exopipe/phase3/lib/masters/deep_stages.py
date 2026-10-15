@@ -1296,8 +1296,13 @@ def _resume_ok(run, name, st, cell, out, args=None):
     admitted = None
     inputs = None
     if st in ADMIT_STAGES:
+        AS = _admit_stages()
+        co_ = inplace(out)[0]['coadd']
         try:
-            take, _why, inputs = _admit_stages().prep_inputs(cell, args, inplace(out)[0]['coadd'])
+            why_pop = AS.population_problem(AS.cell_tree(args, cell), cell, co_)
+            if why_pop:                                   # the stage's own gate, applied now (fourth review: an exclusion
+                return False, f'the population record is not usable now: {why_pop[:240]}'    # changes no input file)
+            take, _why, inputs = AS.prep_inputs(cell, args, co_)
         except Refusal as e:
             return False, f'nights to admit not computable now ({e})'
         admitted = [d for d, _sd, _img in take]

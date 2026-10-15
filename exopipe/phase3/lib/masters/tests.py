@@ -117,6 +117,25 @@ def _finite_maxabs(d):
 # master
 # =====================================================================================================================
 
+@content_test('admit_reference')
+def admit_reference_copy(path, master=None, factor=None, **ctx):
+    """D-ADMIT: an admission reference copy (<cell>/admit/ref/<var>_<scope>.fits) is the installed master ``master``
+    divided by its pixel factor ``factor`` - float32, NaN equal (admit.installed_reference) - with the master's CONSTDIG
+    and MDWARP; recorded as an admit-prep output, so a copy moved away or changed is seen by --resume (fourth review)."""
+    from astropy.io import fits
+    if not (master and factor):
+        return False, None, 'no installed master / pixel factor recorded with the copy'
+    if not os.path.exists(master):
+        return False, None, f'the installed master {master} is gone'
+    with fits.open(path) as a, fits.open(master) as b:
+        want = (b[0].data.astype(np.float64) / float(factor)).astype(np.float32)
+        same = a[0].data.shape == want.shape and bool(np.array_equal(a[0].data, want, equal_nan=True))
+        cards = (a[0].header.get('CONSTDIG') == b[0].header.get('CONSTDIG')
+                 and bool(a[0].header.get('MDWARP')) == bool(b[0].header.get('MDWARP')))
+    return same and cards, None, ('the installed master / its pixel factor; CONSTDIG and MDWARP equal' if same and cards
+                                  else f'differs from {master} / {factor} (data equal {same}, cards equal {cards})')
+
+
 @content_test('master')
 def header_standard(path, **ctx):
     """The Phase-3 header standard (validate_fits_headers level 'standard') + PRODNAME, RESTFRQ, finite beam cards."""

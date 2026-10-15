@@ -38,6 +38,17 @@ def build_record(cell_dir):
     return p, os.path.getmtime(p), {r['date'] for r in _rows(p)}
 
 
+def build_time(cell_dir):
+    """(path, time) when the installed build fixed its night set: the write time of its final stage's record
+    coadd_final/weights.csv - the final stage discovers the cell's nights again and records every night it measures. Not
+    residuals_provisional.csv, which later passes rewrite (in 315 of 456 cells it is 32-60 h newer than weights.csv; fourth
+    review). Refuses without it."""
+    p = os.path.join(cell_dir, 'coadd_final', 'weights.csv')
+    if not os.path.exists(p):
+        raise Refusal(f'{p} missing: the installed build\'s final record (no time the build fixed its nights)')
+    return p, os.path.getmtime(p)
+
+
 def seen_nights(cell_dir):
     """{date: [records that name it]} over BUILD_RECORDS: the nights the installed build recorded. A record with a header
     is read by its date column - a header without that column refuses (a record this rule cannot read is never skipped);
@@ -109,15 +120,16 @@ def nights_to_admit(lst, scope, cell_dir, entries, ex, co, nights=None):
     entries: the cell's Phase-2 nights as the co-add discovers them, [(date, science dir, survey image)]; ex: the exclusions
     (core.exclusions); co: the co-add module (its finders). A night is admitted when data_decisions.csv does not exclude it,
     admissions.csv does not hold it, no record of the installed build names it (seen_nights: measured, refused before
-    measuring, refused as an input) and Phase 2 first had it after the build fixed its night set (the time of
-    residuals_provisional.csv): no Science dir of the night named before that time holds the cell's survey image
+    measuring, refused as an input) and Phase 2 first had it after the build fixed its night set (build_time: the
+    final stage's weights.csv): no Science dir of the night named before that time holds the cell's survey image
     (science_dirs_before) - so a night the build saw stays out however it was refused, recorded or not, and whatever was
     rewritten since (a rebuild decides). nights: when given (dates; the stage converts --epochs; [] = none), only those; a
     named night that does not qualify is reported with its reason.
     Returns ([(date, sci_dir, img)], {date: reason})."""
     import time as _time
     from exopipe.phase3.lib.masters import deep_stages as DS
-    _p, t_build, _built = build_record(cell_dir)
+    build_record(cell_dir)                                   # the night record must exist
+    t_path, t_build = build_time(cell_dir)
     seen = seen_nights(cell_dir)
     done = admitted_nights(cell_dir)
     want = set(nights) if nights is not None else None
@@ -138,7 +150,7 @@ def nights_to_admit(lst, scope, cell_dir, entries, ex, co, nights=None):
         else:
             before = science_dirs_before(sd, t_build, lst, freq_str, d, co)
             if before:
-                why[d] = (f'Phase 2 had it before the build fixed its night set ({BUILD_NIGHTS} written '
+                why[d] = (f'Phase 2 had it before the build fixed its night set (coadd_final/weights.csv written '
                           f'{_time.strftime("%Y-%m-%dT%H:%MZ", _time.gmtime(t_build))}; {", ".join(before)} hold its survey '
                           f'image): the build saw this night - a rebuild decides')
             else:
