@@ -29,8 +29,8 @@ from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.masters.pb_qa import pb_qa_gate, pb_qa_inputs, pb_qa_missing   # noqa: F401 (B-30; also the dewarp apply)
 
 STAGE_ORDER = ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats',
-               'admit-prep')
-ADMIT_STAGES = ('admit-prep',)            # D-ADMIT: on demand, per night (--epochs allowed); lib/masters/admit_stages.py
+               'admit-prep', 'admit')
+ADMIT_STAGES = ('admit-prep', 'admit')   # D-ADMIT: on demand, per night (--epochs allowed); lib/masters/admit_stages.py
 # the stage whose done record a stage requires (spec 1.2); sources requires the install step's record instead
 REQUIRES = {'build': 'stage-in', 'pbmaps': 'build', 'vclean': 'pbmaps', 'fluxscale': 'vclean', 'verify': 'fluxscale',
             'variants': 'build'}
@@ -1038,7 +1038,8 @@ def build_stats_stage(cell, args, run, out, ran_now):
 
 STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vclean, 'fluxscale': fluxscale,
           'verify': verify, 'sources': sources, 'variants': variants, 'build-stats': build_stats_stage,
-          'admit-prep': lambda cell, args, run, out, ran_now: _admit_stages().admit_prep(cell, args, run, out, ran_now)}
+          'admit-prep': lambda cell, args, run, out, ran_now: _admit_stages().admit_prep(cell, args, run, out, ran_now),
+          'admit': lambda cell, args, run, out, ran_now: _admit_stages().admit_stage(cell, args, run, out, ran_now)}
 
 
 def _admit_stages():
@@ -1262,7 +1263,8 @@ def _plan_simple(stage):
 
 
 PLANS = {'stage-in': _plan_stage_in, 'build': _plan_build,
-         'admit-prep': lambda cell, args, out, planned: _admit_stages().plan_admit_prep(cell, args, out, planned)}
+         'admit-prep': lambda cell, args, out, planned: _admit_stages().plan_admit_prep(cell, args, out, planned),
+         'admit': lambda cell, args, out, planned: _admit_stages().plan_admit(cell, args, out, planned)}
 
 
 def dry_run(cells, stages, args, out):
@@ -1307,7 +1309,10 @@ def _resume_ok(run, name, st, cell, out, args=None):
             why_pop = AS.population_problem(AS.cell_tree(args, cell), cell, co_)
             if why_pop:                                   # the stage's own gate, applied now (fourth review: an exclusion
                 return False, f'the population record is not usable now: {why_pop[:240]}'    # changes no input file)
-            take, _why, inputs = AS.prep_inputs(cell, args, co_)
+            if st == 'admit':
+                take, inputs, _prep, _frec = AS.admit_inputs(cell, args, co_, out)
+            else:
+                take, _why, inputs = AS.prep_inputs(cell, args, co_)
         except Refusal as e:
             return False, f'nights to admit not computable now ({e})'
         admitted = [d for d, _sd, _img in take]

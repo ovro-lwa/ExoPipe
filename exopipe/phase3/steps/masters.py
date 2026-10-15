@@ -47,6 +47,12 @@ build,pbmaps,vclean,fluxscale,verify - stage-in runs alone, BEFORE the flow step
              that takes it), the reference (the installed masters / their pixel factor -> <cell>/admit/ref/) and each
              night's flow input by the co-add's per-night prep (coadd.prep_night) -> <cell>/admit/prep/<date>_scaled.fits
              [flow_prep_scaled]; same cell-tree rule. Then `exopipe3 flow --tier deep --stages admit` flows them.
+  admit      on demand (D-ADMIT slice 4), after the flow step's admit stage: each prepared night aligned to the installed
+             master in native units with the build's own per-night functions (coadd.final_night, measure_scale2,
+             subtract_night), baked with shflux.bake, written to <cell>/subtracted/ with ADMITTED cards; the night-image
+             and epoch checks refuse, stage 2 / the stage-3 window / the beam gate are recorded; one row per night in
+             <cell>/coadd_final/admissions.csv. Refuses a master-dewarped cell (until the GPU test) and a cell whose guard
+             median is neither recorded nor ruled (masters_admit.DC2_MEDIAN_WITHOUT_RECORD).
 
 Inputs (deep; read only, fingerprinted in the unit record): Phase-2 images /lustre/pipeline/exopipe/phase2/<LST>/<date>/
   Science_*/<scope>/..., their QA thermal-noise CSVs (PB weights); data_decisions.csv (core.exclusions AND the co-add's own
@@ -111,7 +117,7 @@ WRITES = True
 TIER_MODULES = {'deep': 'exopipe.phase3.lib.masters.deep_stages', 'sublst': 'exopipe.phase3.lib.masters.tier_sublst',
                 'snapshot': 'exopipe.phase3.lib.masters.tier_snapshot'}
 CONFIG = ('masters', 'masters_stagein', 'masters_build', 'masters_pbmaps', 'masters_vclean', 'masters_fluxscale',
-          'masters_verify', 'masters_sources', 'masters_sublst', 'masters_snapshot', 'paths', 'exclusions',
+          'masters_verify', 'masters_admit', 'masters_sources', 'masters_sublst', 'masters_snapshot', 'paths', 'exclusions',
           'instrument', 'runner', 'site')
 _TIER_IMPORT_ERRORS = {}
 

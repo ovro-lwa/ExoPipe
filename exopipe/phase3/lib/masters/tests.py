@@ -117,6 +117,76 @@ def _finite_maxabs(d):
 # master
 # =====================================================================================================================
 
+@content_test('admitted_epoch')
+def admitted_identity(path, **ctx):
+    """D-ADMIT: an admitted night's epoch / sub / clean in <cell>/subtracted/ - the members' per-file test (identity_and_ratio:
+    epoch - residual - master against the installed master; a night outside weights.csv: identity only). The members'
+    cell-level completeness test (every_admitted_night_has_products) is theirs, not an admitted night's."""
+    return identity_and_ratio(path, **ctx)
+
+
+@content_test('admitted_epoch')
+def admitted_header(path, **ctx):
+    """D-ADMIT: the members' own-beam header test (header_own_beam) on an admitted night's product."""
+    return header_own_beam(path, **ctx)
+
+
+@content_test('admitted_epoch')
+def admitted_cards(path, **ctx):
+    """D-ADMIT: ADMITTED True and ADMITREF the CONSTDIG of the cell's installed I master (the master admitted into)."""
+    loc = locate(path, **ctx)
+    h = _hdr(path)
+    mp = os.path.join(loc['final'], f'I_deep_Taper_R075{loc["token"]}_{loc["scope"]}.fits')
+    want = str(_hdr(mp).get('CONSTDIG') or '')[:32] if os.path.exists(mp) else None
+    ok = h.get('ADMITTED') is True and want is not None and h.get('ADMITREF') == want
+    return ok, h.get('ADMITREF'), f"ADMITTED {h.get('ADMITTED')!r}, ADMITREF {h.get('ADMITREF')!r} (master CONSTDIG {want!r})"
+
+
+@content_test('admissions')
+def admissions_record(path, **ctx):
+    """D-ADMIT: <cell>/coadd_final/admissions.csv - the columns (admit_stages.ADMISSION_COLS), each night once, a verdict
+    of 'admitted' or 'refused' with a reason for every refusal; an admitted night has its I epoch, sub and clean in the
+    cell's subtracted/ with ADMITTED True and ADMITREF its master's CONSTDIG, and its night-image and epoch checks passed;
+    a refused night has no product there; the survey image and flow sha1s are those of the files."""
+    import csv as _csv
+    from astropy.io import fits
+    from exopipe.phase3.lib.masters import admit_stages as AS
+    rows = list(_csv.DictReader(open(path, newline='')))
+    cols = tuple(rows[0].keys()) if rows else ()
+    probs = []
+    if rows and cols != AS.ADMISSION_COLS:
+        probs.append(f'columns {cols[:4]}... are not ADMISSION_COLS')
+    cell = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    sc = os.path.basename(cell).split('_', 1)[1]
+    seen = set()
+    for r in rows:
+        d = r.get('date')
+        if d in seen:
+            probs.append(f'{d} twice')
+        seen.add(d)
+        if r.get('verdict') not in ('admitted', 'refused'):
+            probs.append(f'{d}: verdict {r.get("verdict")!r}')
+        if r.get('verdict') == 'refused' and not r.get('reason'):
+            probs.append(f'{d}: refused without a reason')
+        prods = {k: os.path.join(cell, 'subtracted', f'{d}_I_{k}_{sc}.fits') for k in ('epoch', 'sub', 'clean')}
+        if r.get('verdict') == 'admitted':
+            if r.get('night_image') == 'FAIL' or r.get('epoch_gate') != 'pass':
+                probs.append(f'{d}: admitted although a refusing check failed')
+            for k, p in prods.items():
+                if not os.path.exists(p):
+                    probs.append(f'{d}: admitted but {os.path.basename(p)} missing')
+                    continue
+                h = fits.getheader(p)
+                if h.get('ADMITTED') is not True or not str(r.get('reference_constdig', '')).startswith(str(h.get('ADMITREF', '#'))):
+                    probs.append(f'{d}: {os.path.basename(p)} lacks ADMITTED / ADMITREF {r.get("reference_constdig")}')
+        elif any(os.path.exists(p) for p in prods.values()):
+            probs.append(f'{d}: refused but has products in subtracted/')
+        for f, col in (('image', 'image_sha1'), ('flow', 'flow_sha1')):
+            if r.get(f) and r.get(col) and os.path.exists(r[f]) and AS._sha1(r[f]) != r[col]:
+                probs.append(f'{d}: {f} {r[f]} changed since its admission (sha1)')
+    return not probs, len(rows), '; '.join(probs[:4]) or f'{len(rows)} night(s): verdicts, products and sha1s consistent'
+
+
 @content_test('admit_reference')
 def admit_reference_copy(path, master=None, factor=None, **ctx):
     """D-ADMIT: an admission reference copy (<cell>/admit/ref/<var>_<scope>.fits) is the installed master ``master``

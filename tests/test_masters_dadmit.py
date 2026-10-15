@@ -225,9 +225,9 @@ def test_stage():
     """`masters --stages build-stats` on a copy of an installed cell: the record beside the copy's records, equal to
     build_stats.compute; refusals and no input."""
     from exopipe.phase3.lib.masters import deep_stages as DS
-    check('build-stats then admit-prep: the last deep stages, in no default; the module\'s order is the config\'s',
-          DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep']) and DS.STAGE_ORDER[-2:] == ('build-stats', 'admit-prep')
-          and not {'build-stats', 'admit-prep'} & set(CFG.masters.DEFAULT_STAGES['deep']), DS.STAGE_ORDER)
+    check('build-stats, admit-prep, admit: the last deep stages, in no default; the module\'s order is the config\'s',
+          DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep']) and DS.STAGE_ORDER[-3:] == ('build-stats', 'admit-prep', 'admit')
+          and not {'build-stats', 'admit-prep', 'admit'} & set(CFG.masters.DEFAULT_STAGES['deep']), DS.STAGE_ORDER)
     cell, lst, sc = '23h_23MHz', '23h', '23MHz'
     wt = os.path.join(T, 'wt')
     cd = copy_records(cell, wt)

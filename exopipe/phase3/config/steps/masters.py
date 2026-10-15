@@ -40,8 +40,9 @@ class masters(_Section):
     # deep 'build-stats' (D-ADMIT slice 1) is on demand, last so no slice of the build chain includes it: the population
     # record of a cell built without one, read from the installed cell
     # deep 'admit-prep' (D-ADMIT slice 2): on demand after build-stats - the flow inputs of the nights an installed cell admits
+    # deep 'admit' (D-ADMIT slice 4): on demand after the flow step's admit stage - the prepared nights into the installed master
     STAGES = {'deep': ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats',
-                       'admit-prep'),
+                       'admit-prep', 'admit'),
               'sublst': ('prep', 'admit', 'stack', 'loo', 'sources'),
               'snapshot': ('verify-frozen', 'freeze', 'sources')}   # sources: snapshot parent catalogues (M21; review 2026-10-13)
     # deep default = the build part of the chain 'deep-build-cell' (masters --stages stage-in -> flow -> masters (default)):
@@ -333,6 +334,14 @@ class masters_verify(_Section):
     RULED = {'DEWARP_SCREEN_RECORD': 'CORRECTION-11-ACCEPTED-CELLS-NOT-DEWARPED-WAS-WRONG',
              'DEWARP_INTERP': 'R-MDEWARP-CUBIC-REAPPLY',
              'INTEGRITY': 'LANDED-VERIFIER-ALL-VARIANTS-AND-VCLEAN'}
+
+
+class masters_admit(_Section):
+    """D-ADMIT (a) slice 4, the admit stage (lib/masters/admit_stages.admit_stage)."""
+    DC2_MEDIAN_WITHOUT_RECORD = None          # the cell median of the second-pass DC that coadd.subtract_night's degeneracy guard
+                                              # uses for a cell whose build did not record it (every cell built before builds kept it):
+                                              # None = the stage refuses (no silent substitute); DECISIONS_PENDING item 10 recommends 1.0
+                                              # (today's rule gives 0.995-1.004 in the 143 cells whose build log is kept)
 
 
 class masters_sources(_Section):
