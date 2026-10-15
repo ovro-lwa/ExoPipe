@@ -33,6 +33,19 @@ def epochs_of(args, lst):
     return sorted({d for l, d in (C.parse_epoch(e) for e in C.expand_epochs(args.epochs)) if l == lst})
 
 
+def nights(cell, args, co):
+    """(take, why) for the cell tree the stage is given: admit.nights_to_admit over the co-add's Phase-2 nights of the cell,
+    --epochs restricting - the stage's work list, its plan and its resume identity (the nights it admits now)."""
+    import contextlib
+    import io
+    from exopipe.phase3.core import exclusions
+    from exopipe.phase3.lib.masters import admit as A, deep_stages as DS
+    lst, sc = cell.split('_', 1)
+    with contextlib.redirect_stdout(io.StringIO()):          # the finders' failsafe notes: the build's, not ours
+        entries = co.discover_dates(lst, DS._freq(sc))
+    return A.nights_to_admit(lst, sc, cell_tree(args, cell), entries, exclusions.load(), nights=epochs_of(args, lst))
+
+
 def reference_dict(co, path, ent):
     """The reference as coadd.prep_night takes it, from the written copy and its entry (installed_reference): data, WCS,
     beam in pixels and horizon mask as process_lst_freq derives them from its reference, the template grid of the copy."""
@@ -50,12 +63,10 @@ def admit_prep(cell, args, run, out, ran_now):
     population record (build_stats.json: the numbers the admitted night is judged by), when the installed reference does not
     resolve, and in a production tree before cutover; no input when no night qualifies (each night's reason recorded).
     A night whose image is off the master's grid is regridded from its own WCS (prep_night); one whose shape still
-    differs is refused as an item."""
-    import contextlib
-    import io
-    from exopipe.phase3.core import exclusions
+    differs is refused as an item. The nights taken are the unit's admitted set (resume identity: --resume re-runs when
+    the nights that qualify now differ - a new night, an exclusion, another --epochs)."""
     from exopipe.phase3.lib.masters import admit as A, build_stats as BS, deep_inplace as IP, deep_stages as DS
-    lst, sc = cell.split('_', 1)
+    sc = cell.split('_', 1)[1]
     cd = cell_tree(args, cell)
     W = os.path.join(cd, A.ADMIT_DIR)
     with run.unit(f'admit-prep_{cell}', tier='deep', stage='admit-prep', cell=cell) as u:
@@ -66,9 +77,8 @@ def admit_prep(cell, args, run, out, ran_now):
                      f'run `masters --tier deep --stages build-stats` on the cell first')
         mods, _ = DS.inplace(out)
         co = mods['coadd']
-        with contextlib.redirect_stdout(io.StringIO()):          # the finders' failsafe notes: the build's, not ours
-            entries = co.discover_dates(lst, DS._freq(sc))
-        take, why = A.nights_to_admit(lst, sc, cd, entries, exclusions.load(), epochs=epochs_of(args, lst))
+        take, why = nights(cell, args, co)
+        u.set_admitted([d for d, _sd, _img in take])
         u.meta['not_admitted'] = why
         rec_p, _t, _built = A.build_record(cd)
         u.add_input(rec_p)
@@ -105,12 +115,8 @@ def admit_prep(cell, args, run, out, ran_now):
 
 def plan_admit_prep(cell, args, out, planned):
     """Dry-run plan of admit-prep: the nights, the reference, the outputs; gates as the stage applies them."""
-    import contextlib
-    import io
-    from exopipe.phase3.core import exclusions
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.masters import admit as A, build_stats as BS, deep_inplace as IP, deep_stages as DS
-    lst, sc = cell.split('_', 1)
     cd = cell_tree(args, cell)
     lines, gates = [], []
     r = IP.is_production_path(os.path.join(cd, A.ADMIT_DIR))
@@ -119,10 +125,7 @@ def plan_admit_prep(cell, args, out, planned):
     if BS.read(cd) is None:
         gates.append(f'no {BS.FILE} (run --stages build-stats on the cell first)')
     try:
-        mods, _ = DS.inplace(out)
-        with contextlib.redirect_stdout(io.StringIO()):
-            entries = mods['coadd'].discover_dates(lst, DS._freq(sc))
-        take, why = A.nights_to_admit(lst, sc, cd, entries, exclusions.load(), epochs=epochs_of(args, lst))
+        take, why = nights(cell, args, DS.inplace(out)[0]['coadd'])
         ents = A.installed_reference(cell, cd, read_data=False)
     except Refusal as e:
         return lines, gates + [str(e)]

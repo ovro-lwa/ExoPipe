@@ -39,7 +39,9 @@ class masters(_Section):
     # (crosscheck 1.1 group 3; decision 6), not a masters stage.
     # deep 'build-stats' (D-ADMIT slice 1) is on demand, last so no slice of the build chain includes it: the population
     # record of a cell built without one, read from the installed cell
-    STAGES = {'deep': ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats'),
+    # deep 'admit-prep' (D-ADMIT slice 2): on demand after build-stats - the flow inputs of the nights an installed cell admits
+    STAGES = {'deep': ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats',
+                       'admit-prep'),
               'sublst': ('prep', 'admit', 'stack', 'loo', 'sources'),
               'snapshot': ('verify-frozen', 'freeze', 'sources')}   # sources: snapshot parent catalogues (M21; review 2026-10-13)
     # deep default = the build part of the chain 'deep-build-cell' (masters --stages stage-in -> flow -> masters (default)):

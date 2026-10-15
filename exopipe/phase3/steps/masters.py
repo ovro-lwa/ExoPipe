@@ -39,8 +39,14 @@ build,pbmaps,vclean,fluxscale,verify - stage-in runs alone, BEFORE the flow step
              cell production built), from the cell's own records, in the cell tree given (--deep-installed-root, default
              paths.COADD_SB_ROOT; a production root refuses until cutover - run it on a copy of the cell) ->
              <cell>/coadd_final/build_stats.json [build_stats], beside the records. Refuses when a night of the build
-             population is excluded now, the cell fails membership.verify, or the cell has a record (the build's own;
-             the stage's without --fresh).
+             population is excluded now, the cell fails membership.verify, its records are not one generation or use
+             another stage-2 metric, or the cell has a record and no --fresh (--fresh moves the old record aside to
+             coadd_final/build_stats.superseded_<UTC>.json).
+  admit-prep on demand (D-ADMIT, after build-stats): the nights an installed cell admits (in no record of its build,
+             survey image newer than the build's night record, not excluded; --epochs restricts, the only deep stage
+             that takes it), the reference (the installed masters / their pixel factor -> <cell>/admit/ref/) and each
+             night's flow input by the co-add's per-night prep (coadd.prep_night) -> <cell>/admit/prep/<date>_scaled.fits
+             [flow_prep_scaled]; same cell-tree rule. Then `exopipe3 flow --tier deep --stages admit` flows them.
 
 Inputs (deep; read only, fingerprinted in the unit record): Phase-2 images /lustre/pipeline/exopipe/phase2/<LST>/<date>/
   Science_*/<scope>/..., their QA thermal-noise CSVs (PB weights); data_decisions.csv (core.exclusions AND the co-add's own
@@ -90,7 +96,8 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = no input; 1 =
   .. verify, variants) when a night the build admitted is excluded now. The working cell / installed master node-local to
   another host refuses (site NODE_LOCAL_ROOTS; chain_cell.sh:17).
   Window: --set on a key in a section's PROTECTED_KEYS (pinned inputs, ruling-fixed values, and every MIRROR of a literal
-  inside the in-place code) refuses (exit 2, config.py). --epochs / --nights refuse for the deep tier (exit 2).
+  inside the in-place code) refuses (exit 2, config.py). --nights refuses for the deep tier, --epochs too except
+  for admit-prep alone (exit 2).
   Inherited P3_* environment variables are removed before the in-place modules are imported (recorded in the build note).
 """
 import importlib

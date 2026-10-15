@@ -16,6 +16,12 @@ from exopipe.phase3.core.record import Refusal
 ADMIT_DIR = 'admit'                      # <cell>/admit/: reference copies, scaled flow inputs, flows, native products
 ADMISSIONS = 'admissions.csv'            # <cell>/coadd_final/admissions.csv: one row per admitted (or refused) night
 BUILD_NIGHTS = 'residuals_provisional.csv'   # every night the installed build measured (member or refused)
+# every record of the installed cell that names a night the build saw - measured, refused before measuring, or refused as an
+# input (2026-10-15 second review: of the 37 nights in no residuals_provisional.csv, 29 are in night_image_gate.csv, 3 in
+# refusals_grid.csv) - (path relative to the cell, date column)
+BUILD_RECORDS = ((BUILD_NIGHTS, 'date'), ('coadd_final/weights.csv', 'date'), ('coadd_final/night_image_gate.csv', 'date'),
+                 ('coadd_final/epoch_gate.csv', 'date'), ('sanity_excluded.csv', None), ('refusals_grid.csv', None),
+                 ('refusals_input.csv', 'date'))
 
 
 def _rows(p):
@@ -32,24 +38,50 @@ def build_record(cell_dir):
     return p, os.path.getmtime(p), {r['date'] for r in _rows(p)}
 
 
+def seen_nights(cell_dir):
+    """{date: [records that name it]} over BUILD_RECORDS: the nights the installed build saw. A record without a header
+    (refusals_grid.csv: lst,scope,date,...; sanity_excluded.csv: lst,scope,date,...) is read by its third column."""
+    import re
+    out = {}
+    for rel, col in BUILD_RECORDS:
+        p = os.path.join(cell_dir, rel)
+        if not os.path.exists(p):
+            continue
+        with open(p, newline='') as f:
+            rows = list(csv.reader(f))
+        if not rows:
+            continue
+        if col and col in rows[0]:
+            i, body = rows[0].index(col), rows[1:]
+        else:
+            i, body = 2, rows
+        for r in body:
+            if len(r) > i and re.match(r'^\d{4}-\d\d-\d\d$', r[i].strip()):
+                out.setdefault(r[i].strip(), []).append(rel)
+    return out
+
+
 def admitted_nights(cell_dir):
     """Nights coadd_final/admissions.csv holds (admitted or refused there): never admitted twice."""
     p = os.path.join(cell_dir, 'coadd_final', ADMISSIONS)
     return {r['date'] for r in _rows(p)} if os.path.exists(p) else set()
 
 
-def nights_to_admit(lst, scope, cell_dir, entries, ex, epochs=None):
+def nights_to_admit(lst, scope, cell_dir, entries, ex, nights=None):
     """The nights of an installed cell to admit, and why each other night is not admitted.
 
     entries: the cell's Phase-2 nights as the co-add discovers them, [(date, science dir, survey image)]; ex: the exclusions
-    (core.exclusions). A night is admitted when data_decisions.csv does not exclude it, admissions.csv does not hold it,
-    the build's record does not hold it, and its survey image was written after the build fixed its night set - the build
-    refuses some nights before it measures them (wrong grid, unmeasurable flux scale, blank field, a carried epoch-gate
-    FAIL), and those are in no record. epochs: when given, only those nights; a named night that does not qualify is
-    reported with its reason. Returns ([(date, sci_dir, img)], {date: reason})."""
-    _p, t_build, built = build_record(cell_dir)
+    (core.exclusions). A night is admitted when data_decisions.csv does not exclude it, admissions.csv does not hold it, no
+    record of the installed build names it (seen_nights: measured, refused before measuring, refused as an input - a
+    re-imaged night the build saw stays out: a rebuild decides), and its survey image was written after the build fixed its
+    night set (the time of residuals_provisional.csv) - for the nights a build refuses before any record (a wrong grid is
+    recorded only in production's refusals_grid.csv, and not in every cell). nights: when given (dates; the stage converts
+    --epochs), only those; a named night that does not qualify is reported with its reason.
+    Returns ([(date, sci_dir, img)], {date: reason})."""
+    _p, t_build, _built = build_record(cell_dir)
+    seen = seen_nights(cell_dir)
     done = admitted_nights(cell_dir)
-    want = set(epochs) if epochs else None
+    want = set(nights) if nights else None
     take, why = [], {}
     for d, sd, img in entries:
         if want is not None and d not in want:
@@ -58,13 +90,15 @@ def nights_to_admit(lst, scope, cell_dir, entries, ex, epochs=None):
             why[d] = 'excluded in data_decisions.csv'
         elif d in done:
             why[d] = f'already in coadd_final/{ADMISSIONS}'
-        elif d in built:
-            why[d] = f'in the installed build\'s record ({BUILD_NIGHTS}): a member or a night it refused - a rebuild decides'
+        elif d in seen:
+            why[d] = (f'the installed build recorded it ({", ".join(seen[d])}): a member or a night it refused - a rebuild '
+                      f'decides')
         elif not img or not os.path.exists(img):
             why[d] = 'no survey image'
         elif os.path.getmtime(img) <= t_build:
-            why[d] = ('survey image older than the installed build: the build saw this night and refused it before '
-                      'measuring it - a rebuild decides')
+            import time as _time
+            why[d] = (f'survey image older than the build\'s night record ({BUILD_NIGHTS} written '
+                      f'{_time.strftime("%Y-%m-%dT%H:%MZ", _time.gmtime(t_build))}): the build saw this night - a rebuild decides')
         else:
             take.append((d, sd, img))
     if want is not None:
@@ -93,7 +127,8 @@ def installed_reference(cell, cell_dir, read_data=True):
             raise Refusal(f'{cell}: installed master {p} missing - nothing to admit a night into')
         h = fits.getheader(p)
         f = FC.pixel_factor(h)
-        f = 1.0 if f is None else f
+        if f is None:                       # stage-in refuses an unscaled current master too (deep_stagein, pixel factor)
+            raise Refusal(f'{cell}: installed master {p} carries no flux scale (SHSCALE) - not an installed generation')
         if not DS._factor_ok(f):
             raise Refusal(f'{cell}: pixel factor {f} of {p} outside masters_stagein.REF_PIXEL_FACTOR_RANGE')
         e = dict(stokes=st, var=var, path=p, factor=f, constdig=h.get('CONSTDIG'), mdwarp=bool(h.get('MDWARP')),
@@ -112,7 +147,8 @@ def installed_reference(cell, cell_dir, read_data=True):
 
 def write_reference(cell_dir, scope, ents):
     """The reference copies under <cell>/admit/ref/<var>_<scope>.fits (the canonical names), each with its resolution in
-    HISTORY. Returns {stokes: path}; refuses to overwrite an existing copy with other content."""
+    HISTORY, written to a temporary name and renamed (never a partial copy). Returns {stokes: path}; refuses to overwrite
+    an existing copy whose data, CONSTDIG or MDWARP differ."""
     from astropy.io import fits
     import numpy as np
     d = os.path.join(cell_dir, ADMIT_DIR, 'ref')
@@ -125,11 +161,16 @@ def write_reference(cell_dir, scope, ents):
         hh = e['header'].copy()
         hh['HISTORY'] = e['history']
         if os.path.exists(p):
-            old = fits.getdata(p)
-            if old.shape != e['data'].shape or not np.array_equal(old, e['data'], equal_nan=True):
+            with fits.open(p) as h:
+                old, oh = h[0].data, h[0].header
+                same = (old.shape == e['data'].shape and np.array_equal(old, e['data'], equal_nan=True)
+                        and oh.get('CONSTDIG') == hh.get('CONSTDIG') and bool(oh.get('MDWARP')) == bool(hh.get('MDWARP')))
+            if not same:
                 raise Refusal(f'{p} exists with other content: the installed master changed since the admission reference '
                               f'was written - admit into the new master from a fresh <cell>/{ADMIT_DIR}/')
         else:
-            fits.writeto(p, e['data'], hh)
+            tmp = f'{p}.part{os.getpid()}'
+            fits.writeto(tmp, e['data'], hh)
+            os.replace(tmp, p)
         out[e['stokes']] = p
     return out

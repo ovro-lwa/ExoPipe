@@ -28,7 +28,9 @@ from exopipe.phase3.core import record
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.masters.pb_qa import pb_qa_gate, pb_qa_inputs, pb_qa_missing   # noqa: F401 (B-30; also the dewarp apply)
 
-STAGE_ORDER = ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats')
+STAGE_ORDER = ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats',
+               'admit-prep')
+ADMIT_STAGES = ('admit-prep',)            # D-ADMIT: on demand, per night (--epochs allowed); lib/masters/admit_stages.py
 # the stage whose done record a stage requires (spec 1.2); sources requires the install step's record instead
 REQUIRES = {'build': 'stage-in', 'pbmaps': 'build', 'vclean': 'pbmaps', 'fluxscale': 'vclean', 'verify': 'fluxscale',
             'variants': 'build'}
@@ -77,9 +79,11 @@ def default_out(args):
 
 def select_cells(args):
     from exopipe.phase3.core import cells as C
-    if getattr(args, 'epochs', None):
+    stages = set(getattr(args, 'stages_resolved', ()) or ())
+    if getattr(args, 'epochs', None) and not (stages and stages <= set(ADMIT_STAGES)):
         raise Refusal('--epochs is refused for --tier deep: masters are rebuilt intermittently (DESIGN 12.2); the per-hour '
-                      'chain reads the installed masters (frames, search, ...)')
+                      'chain reads the installed masters (frames, search, ...) - except the admission stages '
+                      f'({", ".join(ADMIT_STAGES)}), which admit those nights alone')
     if getattr(args, 'nights', None):
         raise Refusal('--nights is refused for --tier deep: a deep master is built from every admitted night of the cell '
                       '(exclusions are data_decisions.csv rows, never a command-line subset)')
@@ -950,9 +954,11 @@ def build_stats_stage(cell, args, run, out, ran_now):
     the cell tree given (--deep-installed-root, default paths.COADD_SB_ROOT), written beside them:
     <cell>/coadd_final/build_stats.json (its sources are relative to the cell). A production root refuses while
     paths.PRODUCTION_WRITES is False: until cutover the stage runs on a copy of the cell. --out holds the run records only.
-    Refuses when a night of the population is excluded now, when the cell fails membership.verify, and when the cell already
-    has a record - the build's own (basis 'build') always, the stage's own without --fresh; no input without the records.
-    The beam block says whether today's gate rule flags the nights the build flagged ('agree')."""
+    Refuses when a night of the population is excluded now, when the cell fails membership.verify, when its records give no
+    record (another stage-2 metric, or not one generation: build_stats.NoRecord) and when the cell already has a record -
+    --fresh replaces it, of either basis, the old one moved aside to coadd_final/build_stats.superseded_<UTC>.json. The
+    record is written to a temporary name, content-tested and only then renamed (a failing record never stays). No input
+    without the records. The beam block says whether today's gate rule flags the nights the build flagged ('agree')."""
     from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP, membership as MB
     lst, sc = cell.split('_', 1)
     src = args.deep_installed_root or _cfg().paths.COADD_SB_ROOT
@@ -961,12 +967,12 @@ def build_stats_stage(cell, args, run, out, ran_now):
     with run.unit(f'build-stats_{cell}', tier='deep', stage='build-stats', cell=cell) as u:
         not_here(cell_src, 'the cell whose build records are read', 'build-stats')
         IP.refuse_production_write(os.path.join(cell_src, 'coadd_final'), 'build-stats')
-        if os.path.exists(dest):
-            basis = (BS.read(cell_src) or {}).get('basis')
-            if basis == 'build':
-                u.refuse(f'{dest} is the record the cell\'s build wrote itself (basis build) - nothing to recompute')
-            if not args.fresh:
-                u.refuse(f'{dest} exists (basis {basis!r}) - --fresh recomputes it')
+        if os.path.exists(dest) and not args.fresh:
+            try:
+                basis = (BS.read(cell_src) or {}).get('basis')
+            except ValueError:
+                basis = 'unreadable'
+            u.refuse(f'{dest} exists (basis {basis!r}) - --fresh recomputes it (the old record is moved aside)')
         recs = _build_stats_sources(cell_src)
         missing = [p for p in recs if not os.path.exists(p)]
         if missing:
@@ -982,7 +988,10 @@ def build_stats_stage(cell, args, run, out, ran_now):
         mods, _ = inplace(out)
         with IP.capture_stdout(_log(out, cell, 'build-stats'), echo=False):   # the stage-2 rule's notes: in the stage's log
             viol = list(MB.verify(cell_src))
-            st = None if viol else BS.compute(cell_src, lst, sc, mods['coadd'], _cfg(), 'stage')
+            try:
+                st = None if viol else BS.compute(cell_src, lst, sc, mods['coadd'], _cfg(), 'stage')
+            except BS.NoRecord as e:
+                u.refuse(f'{cell}: no population record from {cell_src}: {e}')
         u.check('masters_build_stats.cell_membership', not viol, value=len(viol),
                 detail=('; '.join(viol[:3]) if viol else f'membership.verify of {cell_src}: PASS'))
         if viol:
@@ -993,7 +1002,19 @@ def build_stats_stage(cell, args, run, out, ran_now):
         for x in st['beam_gate']['nights'].values():
             if x.get('image'):
                 u.add_input(x['image'])
-        p = BS.write(cell_src, st)
+        from exopipe.phase3.core import record as _R, validate
+        tmp = os.path.join(cell_src, 'coadd_final', f'{BS.FILE}.part{os.getpid()}')
+        _R.atomic_write_json(tmp, st)
+        bad = [t for t in validate.run('build_stats', tmp) if not t['passed']]
+        if bad:
+            os.remove(tmp)
+            u.refuse(f'{cell}: the record fails its own content test before it is placed ({bad[0]["detail"][:300]})')
+        if os.path.exists(dest):
+            old = os.path.join(cell_src, 'coadd_final', f'build_stats.superseded_{_R.utcnow().replace(":", "")}.json')
+            os.replace(dest, old)
+            u.note(f'--fresh: the earlier record moved aside to {old}')
+        os.replace(tmp, dest)
+        p = dest
         bg = st['beam_gate']
         u.note(f'{cell}: stage 2 I n={st["stage2"]["I"]["n"]} V n={st["stage2"]["V"]["n"]}, beam gate n={bg["n"]}, sanity '
                f'n={st["sanity"]["n"]}, search tier I n={st["search_tier"]["I"]["n"]} V n={st["search_tier"]["V"]["n"]}; '
@@ -1005,7 +1026,13 @@ def build_stats_stage(cell, args, run, out, ran_now):
 
 
 STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vclean, 'fluxscale': fluxscale,
-          'verify': verify, 'sources': sources, 'variants': variants, 'build-stats': build_stats_stage}
+          'verify': verify, 'sources': sources, 'variants': variants, 'build-stats': build_stats_stage,
+          'admit-prep': lambda cell, args, run, out, ran_now: _admit_stages().admit_prep(cell, args, run, out, ran_now)}
+
+
+def _admit_stages():
+    from exopipe.phase3.lib.masters import admit_stages
+    return admit_stages
 
 
 # =====================================================================================================================
@@ -1223,7 +1250,8 @@ def _plan_simple(stage):
     return f
 
 
-PLANS = {'stage-in': _plan_stage_in, 'build': _plan_build}
+PLANS = {'stage-in': _plan_stage_in, 'build': _plan_build,
+         'admit-prep': lambda cell, args, out, planned: _admit_stages().plan_admit_prep(cell, args, out, planned)}
 
 
 def dry_run(cells, stages, args, out):
@@ -1255,13 +1283,22 @@ def dry_run(cells, stages, args, out):
 def _resume_ok(run, name, st, cell, out, args=None):
     """--resume: (skip?, why). The record must pass record.resume_check; the build's with the admitted night set computed
     NOW (data_decisions.csv is not a build input: its effect on the cell is the admitted set), build-stats' with its
-    population's admitted nights computed now, and every stage derived from the build only while no night that build
-    admitted is excluded now."""
+    population's admitted nights computed now, admit-prep's with the nights the cell admits now (a new night, an exclusion
+    or another --epochs re-runs it), and every stage derived from the build only while no night that build admitted is
+    excluded now."""
     admitted = None
+    inputs = None
+    if st in ADMIT_STAGES:
+        try:
+            take, _why = _admit_stages().nights(cell, args, inplace(out)[0]['coadd'])
+        except Refusal as e:
+            return False, f'nights to admit not computable now ({e})'
+        admitted = [d for d, _sd, _img in take]
     if st == 'build-stats':
         src = (getattr(args, 'deep_installed_root', None) if args is not None else None) or _cfg().paths.COADD_SB_ROOT
         nights, stale = build_stats_population(os.path.join(src, cell), cell)
         admitted = [d for d in nights if d not in stale]
+        inputs = _build_stats_sources(os.path.join(src, cell))     # the records of THIS cell tree (another copy re-runs)
     if st == 'build':
         if not done_record(out, 'build', cell):
             return False, 'no done record'
@@ -1271,7 +1308,7 @@ def _resume_ok(run, name, st, cell, out, args=None):
                 admitted = build_nights(cell, out)[4]
         except (Refusal, NoInput) as e:
             return False, f'admitted set not computable now ({e})'
-    ok, why = run.resume_check(name, inputs=None, admitted=admitted)
+    ok, why = run.resume_check(name, inputs=inputs, admitted=admitted)
     if ok and st in BUILD_DERIVED:
         stale = exclusion_stale(out, cell)
         if stale:

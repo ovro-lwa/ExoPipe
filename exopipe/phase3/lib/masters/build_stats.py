@@ -24,6 +24,10 @@ basis: 'build' - written by the masters build when masters_build.WRITE_BUILD_STA
 nothing); 'stage' - written later by `masters --tier deep --stages build-stats` from a built cell's records. Sources are
 relative to the cell directory, so the record stays valid where install copies it. Content test (class build_stats): the
 cell, sources and nights its folder gives, and every number re-derived with the recorded settings (recheck).
+Below a gate's minimum count the population is recorded all the same (n, median, MAD): a later ruling may lower a minimum.
+A cell whose records are not one generation (residuals_provisional.csv dates other than weights.csv's - the search's own
+check) or whose stage-2 record is another metric (membership.stage2_record's rule) has no record. A record made after the
+build (basis 'stage') carries the build's own OUTLIER_SIGMA, read back from the threshold it applied, not today's.
 """
 import csv
 import json
@@ -32,6 +36,8 @@ import os
 
 FILE = 'build_stats.json'
 VERSION = 2
+KEYS = ('version', 'cell', 'basis', 'sources', 'settings', 'nights', 'stage2', 'stage2_recorded_thr', 'beam_gate',
+        'sanity', 'search_tier')
 X_DISCARD = 10.0               # deep_search's qa3 discard, '_wr.get(_kd(d), 0) > 10.0 * _med' (drift test)
 STAGE2_MIN = 5                 # coadd.detect_outliers_mad: 'if len(valid) < 5'
 BUILD_NIGHTS = 'residuals_provisional.csv'
@@ -59,7 +65,8 @@ def _median(vals):
 
 
 def stage2_source(cell_dir):
-    """The record membership.stage2_record reads: (path, rows)."""
+    """The record membership.stage2_record reads: (path, rows); rows [] when it is unusable - another stage-2 metric
+    (membership's guard) or missing (stage2_problem says why)."""
     from exopipe.phase3.lib.masters import membership as MB
     fd = os.path.join(cell_dir, 'coadd_final')
     v = os.path.join(fd, MB.VERDICT_FILE)
@@ -68,7 +75,30 @@ def stage2_source(cell_dir):
         if rows and {r.get('metric') for r in rows} == {MB.STAGE2_METRIC}:
             return v, rows
     p = os.path.join(cell_dir, MB.BUILD_RECORD)
-    return p, (_rows(p) if os.path.exists(p) else [])
+    rows = _rows(p) if os.path.exists(p) else []
+    if {r.get('stage2_metric') for r in rows} - {None, '', MB.STAGE2_METRIC}:
+        return p, []
+    return p, rows
+
+
+def stage2_problem(cell_dir):
+    """Why the cell has no usable stage-2 record (membership.stage2_record's own words), else None."""
+    from exopipe.phase3.lib.masters import membership as MB
+    return MB.stage2_record(cell_dir)['problem']
+
+
+def generation_problem(cell_dir):
+    """The search's generation check (deep_search ~1327): residuals_provisional.csv must hold weights.csv's nights, else it
+    is a stale derivative of another build. None when consistent."""
+    a = os.path.join(cell_dir, BUILD_NIGHTS)
+    b = os.path.join(cell_dir, WEIGHTS)
+    if not (os.path.exists(a) and os.path.exists(b)):
+        return None
+    pa, pb = {r['date'] for r in _rows(a) if r.get('date')}, {r['date'] for r in _rows(b)}
+    if pa != pb:
+        return (f'{BUILD_NIGHTS} is not this generation\'s: its nights differ from weights.csv '
+                f'({sorted(pa ^ pb)[:4]}) - a stale derivative')
+    return None
 
 
 def cell_sources(cell_dir):
@@ -82,14 +112,15 @@ def stage2_stats(rows, outlier_sigma, low_sigma):
     out = {}
     for st, col in (('I', 'i_rms_mjy'), ('V', 'v_rms_mjy')):
         vals = [x for x in (_f(r.get(col)) for r in rows) if math.isfinite(x)]
-        if len(vals) < STAGE2_MIN:
-            out[st] = dict(n=len(vals), gate=False)
+        if not vals:
+            out[st] = dict(n=0, gate=False)
             continue
         med = _median(vals)
         mad = _median([abs(x - med) for x in vals])
         sig = mad * 1.4826
-        out[st] = dict(n=len(vals), gate=True, median=med, mad=mad, thr_hi=med + outlier_sigma * sig,
-                       thr_lo=med - low_sigma * sig)
+        out[st] = dict(n=len(vals), gate=len(vals) >= STAGE2_MIN, median=med, mad=mad)
+        if out[st]['gate']:
+            out[st].update(thr_hi=med + outlier_sigma * sig, thr_lo=med - low_sigma * sig)
     return out
 
 
@@ -103,11 +134,12 @@ def beam_stats(nights_areas, ratio, min_areas):
     """The co-add beam gate's median as it takes it (the upper middle element of the sorted areas) and the nights above
     ratio x it."""
     areas = sorted(a for a in nights_areas.values() if a is not None and math.isfinite(a))
-    if len(areas) < min_areas:
-        return dict(n=len(areas), gate=False, outliers=[])
+    if not areas:
+        return dict(n=0, gate=False, outliers=[])
     med = areas[len(areas) // 2]
-    return dict(n=len(areas), gate=True, median_area=med,
-                outliers=sorted(d for d, a in nights_areas.items() if a is not None and a > ratio * med))
+    gate = len(areas) >= min_areas
+    return dict(n=len(areas), gate=gate, median_area=med,
+                outliers=sorted(d for d, a in nights_areas.items() if a is not None and a > ratio * med) if gate else [])
 
 
 def beam_nights(lst, scope, nights, sci_dirs, co):
@@ -125,9 +157,9 @@ def sanity_stats(weights_rows, min_nights):
     """The search's Stokes I sanity population: the cell median qa3 rms of weights.csv (the upper middle element)."""
     vals = sorted(x for x in (_f(r.get('qa3_rms_mjy')) for r in weights_rows if r.get('qa3_rms_mjy') not in (None, '', 'nan'))
                   if math.isfinite(x) and x > 0)
-    if len(vals) < min_nights:
-        return dict(n=len(vals), gate=False)
-    return dict(n=len(vals), gate=True, qa3_median=vals[len(vals) // 2])
+    if not vals:
+        return dict(n=0, gate=False)
+    return dict(n=len(vals), gate=len(vals) >= min_nights, qa3_median=vals[len(vals) // 2])
 
 
 def search_tier_stats(prov_rows, sigma, min_n):
@@ -135,12 +167,14 @@ def search_tier_stats(prov_rows, sigma, min_n):
     for st, col in (('I', 'i_rms_mjy'), ('V', 'v_rms_mjy')):
         vals = sorted(x for x in (_f(r.get(col)) for r in prov_rows if r.get(col) not in (None, '', 'nan'))
                       if math.isfinite(x) and x > 0)
-        if len(vals) < min_n:
-            out[st] = dict(n=len(vals), gate=False)
+        if not vals:
+            out[st] = dict(n=0, gate=False)
             continue
         med = _median(vals)
         mad = _median([abs(x - med) for x in vals]) * 1.4826
-        out[st] = dict(n=len(vals), gate=True, median=med, mad=mad, thr=med + sigma * mad)
+        out[st] = dict(n=len(vals), gate=len(vals) >= min_n, median=med, mad=mad)
+        if out[st]['gate']:
+            out[st]['thr'] = med + sigma * mad
     return out
 
 
@@ -178,11 +212,31 @@ def settings_in_force(co, cfg):
                 SEARCH_TIER_SIGMA=float(d.SEARCH_TIER_SIGMA), SEARCH_TIER_MIN=int(d.SEARCH_TIER_MIN))
 
 
+def build_outlier_sigma(rows, in_force):
+    """The OUTLIER_SIGMA the build applied, read back from its record: (thr - median) / (1.4826 MAD) of Stokes I, rounded to
+    6 decimals (the settings are short decimals); the value in force when the record holds no applied threshold."""
+    st = stage2_stats(rows, 1.0, 1.0)['I']
+    thr = recorded_thresholds(rows)['I']
+    if not (st.get('gate') and thr and len(thr) == 1 and st['mad'] > 0):
+        return in_force
+    return round((thr[0] - st['median']) / (1.4826 * st['mad']), 6)
+
+
+class NoRecord(ValueError):
+    """The cell's records cannot give a population record (the reason)."""
+
+
 def compute(cell_dir, lst, scope, co, cfg, basis):
-    """The record of one built cell (co: the in-place co-add module - its thresholds and the beam gate's image rule)."""
+    """The record of one built cell (co: the in-place co-add module - its thresholds and the beam gate's image rule).
+    Raises NoRecord when the cell's stage-2 record is unusable or its records are not one generation."""
     if basis not in ('build', 'stage'):
         raise ValueError(f'basis {basis!r}')
+    why = stage2_problem(cell_dir) or generation_problem(cell_dir)
+    if why:
+        raise NoRecord(why)
     S = settings_in_force(co, cfg)
+    if basis == 'stage':                        # the build's sigma, not today's (a later ruling must not orphan old cells)
+        S['OUTLIER_SIGMA'] = build_outlier_sigma(stage2_source(cell_dir)[1], S['OUTLIER_SIGMA'])
     return dict(version=VERSION, cell=os.path.basename(os.path.normpath(cell_dir)), basis=basis,
                 sources=cell_sources(cell_dir), settings=S, **_derive(cell_dir, lst, scope, co, S))
 
@@ -215,6 +269,11 @@ def recheck(path, co):
     probs = []
     if s.get('version') != VERSION:
         return [f'version {s.get("version")!r}, not {VERSION}']
+    if set(s) != set(KEYS):
+        probs.append(f'keys {sorted(set(s) ^ set(KEYS))} not those of a version-{VERSION} record')
+    why = stage2_problem(cell_dir) or generation_problem(cell_dir)
+    if why:
+        return probs + [why]
     if s.get('cell') != cell:
         probs.append(f'cell {s.get("cell")!r}, but the record is in {cell}/')
     if s.get('basis') not in ('build', 'stage'):
@@ -235,11 +294,14 @@ def recheck(path, co):
                 return
             for k in sorted(set(a) | set(b_)):
                 close(a.get(k), b_.get(k), f'{what}.{k}')
-        elif isinstance(a, float) or isinstance(b_, float):
-            if not (isinstance(a, (int, float)) and isinstance(b_, (int, float)) and not isinstance(b_, bool)
-                    and abs(a - b_) <= 1e-9 * max(1.0, abs(a), abs(b_))):
+        elif isinstance(a, bool) or isinstance(b_, bool):
+            if type(a) is not type(b_) or a != b_:
                 probs.append(f'{what}: recorded {b_!r}, re-derived {a!r}')
-        elif a != b_:
+        elif isinstance(a, float) or isinstance(b_, float):
+            if not (isinstance(a, (int, float)) and isinstance(b_, (int, float))
+                    and ((math.isnan(a) and math.isnan(b_)) or abs(a - b_) <= 1e-9 * max(1.0, abs(a), abs(b_)))):
+                probs.append(f'{what}: recorded {b_!r}, re-derived {a!r}')
+        elif a != b_ or type(a) is not type(b_):
             probs.append(f'{what}: recorded {b_!r}, re-derived {a!r}')
     for k in ('nights', 'stage2', 'stage2_recorded_thr', 'beam_gate', 'sanity', 'search_tier'):
         close(d[k], s.get(k), k)
@@ -247,7 +309,4 @@ def recheck(path, co):
         g, thr = d['stage2'][st], d['stage2_recorded_thr'][st]
         if g.get('gate') and thr and thr != [g['thr_hi']]:
             probs.append(f'stage2.{st}: the build applied {thr}, the re-derived high threshold is {g["thr_hi"]!r}')
-    for n, x in (d['beam_gate'].get('nights') or {}).items():
-        if x.get('image') and x.get('area') is None:
-            probs.append(f'beam_gate.nights.{n}: {x["image"]} has no readable beam')
     return probs

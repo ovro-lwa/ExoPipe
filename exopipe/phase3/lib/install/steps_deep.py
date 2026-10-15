@@ -479,6 +479,7 @@ def install_cell(u, plan, gates, echo):
             carried = carry_cell_records(PI, plan)        # B-03 (a), D-ADMIT: inside the same round's quarantine settings
             if carried:
                 u.note(f'cell records carried into the working cell (B-03 input refusals, D-ADMIT build statistics): {carried}')
+            add_carried_outputs(u, carried)
         if text.strip():
             u.note('phase3_install output: ' + text.strip()[-3000:])
         rows = SC.action_rows(roots.record_csv, off, cell)
@@ -522,6 +523,14 @@ def carry_input_refusals(PI, plan):
     """B-03 (a), same-state: the input-refusal record - without it the installed cell keeps no trace of why a night has
     no V products (the per-night product test, T6 and the search read it)."""
     return carry_record(PI, plan, INPUT_REFUSALS)
+
+
+def add_carried_outputs(u, carried):
+    """The carried build statistics is an output of the install unit: its content test (the record re-derived from the
+    installed cell's own records) runs on the copy where it landed."""
+    for p in carried:
+        if os.path.basename(p) == os.path.basename(BUILD_STATS):
+            u.add_output(p, 'build_stats')
 
 
 def carry_cell_records(PI, plan):
@@ -587,7 +596,7 @@ def _round_for_recover(cell, args, roots, run_obj):
 
 def recover_cell(u, cell, args, roots, run_obj, echo):
     PI = SC.pi_module()
-    kind, gen, _ = resolve(cell, args)
+    kind, gen, rebuild_root = resolve(cell, args)
     rnd = _round_for_recover(cell, args, roots, run_obj)
     execute = bool(args.execute) and not run_obj.dry_run
     u.meta.update(kind=kind, gen=gen, round=rnd, execute=execute)
@@ -610,6 +619,12 @@ def recover_cell(u, cell, args, roots, run_obj, echo):
                 raise Refusal(f'recover: {e}')
             raise
         text = buf.getvalue()
+        carried = []
+        if res is not None:                    # as the normal path: the branch's cell records move with the cell's records
+            import types
+            carried = carry_cell_records(PI, types.SimpleNamespace(rebuild_root=rebuild_root, cdir=roots.cdir(cell), cell=cell))
+            if carried:
+                u.note(f'cell records carried into the working cell (recover): {carried}')
     echo(text.rstrip())
     u.note(text.strip()[-3000:])
     if res is None:
@@ -627,6 +642,7 @@ def recover_cell(u, cell, args, roots, run_obj, echo):
     if kind == 'mdewarp':
         add_screen_output(u, roots, cell, os.path.join(os.path.dirname(gen), _cfg().install.SCREEN_RECORD_JSON))
     u.add_output(roots.cdir(cell), 'installed_cell')
+    add_carried_outputs(u, carried)
 
 
 def epochs_repair_cell(u, cell, roots, run_obj, echo):

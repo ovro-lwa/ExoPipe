@@ -64,7 +64,10 @@ def test_formulas():
     check('stage 2: the high threshold is coadd.detect_outliers_mad\'s (finite values only)',
           st['I']['gate'] and abs(st['I']['thr_hi'] - thr) < 1e-9 and st['I']['n'] == 10, (st['I'], thr))
     few = BS.stage2_stats(rows[:4], 3.0, 4.0)
-    check('stage 2: fewer than 5 finite values - no gate', few['I'] == {'n': 4, 'gate': False})
+    v4 = np.array(vals[:4])
+    m4 = float(np.median(v4))
+    check('stage 2: fewer than 5 finite values - no gate, the population recorded (n, median, MAD), no threshold',
+          few['I'] == {'n': 4, 'gate': False, 'median': m4, 'mad': float(np.median(np.abs(v4 - m4)))}, few['I'])
     areas = {'a': 1.0, 'b': 4.0, 'c': 2.0, 'd': 3.0, 'e': 9.0, 'f': 6.0}
     bs = BS.beam_stats(areas, 1.5, 5)
     check('beam gate: the upper middle element of the sorted areas and the nights above 1.5 x it',
@@ -222,9 +225,9 @@ def test_stage():
     """`masters --stages build-stats` on a copy of an installed cell: the record beside the copy's records, equal to
     build_stats.compute; refusals and no input."""
     from exopipe.phase3.lib.masters import deep_stages as DS
-    check('build-stats: the last deep stage, in no default; the module\'s order is the config\'s',
-          DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep']) and DS.STAGE_ORDER[-1] == 'build-stats'
-          and 'build-stats' not in CFG.masters.DEFAULT_STAGES['deep'], DS.STAGE_ORDER)
+    check('build-stats then admit-prep: the last deep stages, in no default; the module\'s order is the config\'s',
+          DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep']) and DS.STAGE_ORDER[-2:] == ('build-stats', 'admit-prep')
+          and not {'build-stats', 'admit-prep'} & set(CFG.masters.DEFAULT_STAGES['deep']), DS.STAGE_ORDER)
     cell, lst, sc = '23h_23MHz', '23h', '23MHz'
     wt = os.path.join(T, 'wt')
     cd = copy_records(cell, wt)
@@ -256,10 +259,15 @@ def test_stage():
           and rc3 == 0 and r3.get('status') == 'done', (r2.get('reason'), r3.get('reason')))
     got['basis'] = 'build'
     json.dump(got, open(dest, 'w'))
-    rc, _ = cli(*common, '--deep-installed-root', wt, '--fresh')
+    rc, _ = cli(*common, '--deep-installed-root', wt)
     r4 = _rec(out, cell)
-    check('the build\'s own record (basis build) is never recomputed', rc == 2 and 'basis build' in r4.get('reason', ''),
-          r4.get('reason'))
+    rc4, _ = cli(*common, '--deep-installed-root', wt, '--fresh')
+    aside = sorted(f for f in os.listdir(f'{cd}/coadd_final') if f.startswith('build_stats.superseded_'))
+    old_basis = [json.load(open(f'{cd}/coadd_final/{f}')).get('basis') for f in aside]
+    left = [f for f in os.listdir(f'{cd}/coadd_final') if '.part' in f]
+    check('a record of either basis refuses without --fresh; --fresh replaces it and moves the old one aside, no partial file',
+          rc == 2 and "'build'" in r4.get('reason', '') and rc4 == 0 and json.load(open(dest))['basis'] == 'stage'
+          and 'build' in old_basis and not left, (r4.get('reason'), rc4, aside, old_basis, left))
     cd7 = copy_records('07h_18MHz', wt)                    # 2025-10-14: excluded since its build, in the population
     rc, _ = cli('--tier', 'deep', '--cells', '07h_18MHz', '--stages', 'build-stats', '--cores', 'none', '--out', out,
                 '--deep-installed-root', wt)
@@ -289,6 +297,68 @@ def test_stage():
           and 'residuals_provisional.csv' in r7.get('reason', ''), r7.get('reason'))
 
 
+def test_review2():
+    """The second review's cases (2026-10-15): an extra key or a boolean written as 1 fails the content test; a night
+    without a readable beam does not; a population below a gate's minimum is recorded (n, median, MAD); a record made
+    after the build carries the build's own OUTLIER_SIGMA, read back from the threshold it applied, so a later ruling of
+    the sigma does not orphan old cells; another stage-2 metric or records of two generations give no record."""
+    from exopipe.phase3.lib.masters import build_stats as BS2
+    cd = copy_records('23h_23MHz', os.path.join(T, 'review2'))
+    st = BS2.compute(cd, '23h', '23MHz', co, CFG, 'stage')
+    p = BS2.write(cd, st)
+    s = json.load(open(p))
+    s['extra'] = 1
+    json.dump(s, open(p, 'w'))
+    extra = BS2.recheck(p, co)
+    s.pop('extra')
+    s['beam_gate']['gate'] = 1
+    json.dump(s, open(p, 'w'))
+    gate1 = BS2.recheck(p, co)
+    check('review 2: an extra key and a boolean written as 1 fail the content test', extra and gate1, (extra, gate1))
+    real_area = co.beam_area
+    n0 = sorted(st['beam_gate']['nights'])[0]
+    img0 = st['beam_gate']['nights'][n0]['image']
+    co.beam_area = lambda img: None if img == img0 else real_area(img)
+    try:
+        st2 = BS2.compute(cd, '23h', '23MHz', co, CFG, 'stage')
+        p2 = BS2.write(cd, st2)
+        ok2 = BS2.recheck(p2, co)
+    finally:
+        co.beam_area = real_area
+    check('review 2: a night whose image has no readable beam is skipped, as the gate skips it (the record passes)',
+          st2['beam_gate']['nights'][n0]['area'] is None and not ok2, ok2)
+    few = BS2.stage2_stats([dict(i_rms_mjy=x, v_rms_mjy=x) for x in (1.0, 2.0, 4.0)], 3.0, 4.0)['I']
+    tier = BS2.search_tier_stats([dict(i_rms_mjy=x, v_rms_mjy=x) for x in (1.0, 2.0, 4.0)], 5.0, 5)['I']
+    check('review 2: below a gate\'s minimum the population is recorded all the same (n, median, MAD; no threshold)',
+          few == dict(n=3, gate=False, median=2.0, mad=1.0) and tier['gate'] is False and tier['median'] == 2.0
+          and 'thr' not in tier, (few, tier))
+    s2_rows = BS2.stage2_source(cd)[1]
+    check('review 2: the build\'s OUTLIER_SIGMA read back from the threshold it applied (3, as production)',
+          BS2.build_outlier_sigma(s2_rows, 9.9) == float(co.OUTLIER_SIGMA), BS2.build_outlier_sigma(s2_rows, 9.9))
+    old_sigma = co.OUTLIER_SIGMA
+    co.OUTLIER_SIGMA = 4.0                     # as if the sigma were ruled to 4 after the build
+    try:
+        st3 = BS2.compute(cd, '23h', '23MHz', co, CFG, 'stage')
+        p3 = BS2.write(cd, st3)
+        ok3 = BS2.recheck(p3, co)
+    finally:
+        co.OUTLIER_SIGMA = old_sigma
+    check('review 2: with a new sigma in force, a record made after the build carries the build\'s and passes',
+          st3['settings']['OUTLIER_SIGMA'] == 3.0 and not ok3, (st3['settings']['OUTLIER_SIGMA'], ok3))
+    w = list(csv.DictReader(open(os.path.join(cd, BS2.BUILD_NIGHTS))))
+    with open(os.path.join(cd, BS2.BUILD_NIGHTS), 'w', newline='') as f:
+        wr = csv.DictWriter(f, fieldnames=list(w[0].keys()))
+        wr.writeheader()
+        wr.writerows(w[:-1])
+    try:
+        BS2.compute(cd, '23h', '23MHz', co, CFG, 'stage')
+        gen = 'no refusal'
+    except BS2.NoRecord as e:
+        gen = str(e)
+    check('review 2: records of two generations (a night missing from residuals_provisional.csv) give no record',
+          'generation' in gen, gen)
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
@@ -299,6 +369,7 @@ def main():
         test_record_and_recheck()
         test_wiring()
         test_stage()
+        test_review2()
     finally:
         shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')
