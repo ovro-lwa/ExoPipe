@@ -114,6 +114,8 @@ class masters_build(_Section):
                                               # from its own WCS in the provisional and final stage (coadd._product_mapping); 'drop' = production: the provisional stage drops
                                               # such a V (coadd_full_pipeline.py:2339-2351; FIX-COADD-V-FRAME-ON-DIFFERENT-GRID-DROPPED-LOUDLY) and the final stage hands every
                                               # product its I image's regrid mapping (was masters_build.PROVISIONAL_V_GRID_MISMATCH, a mirror)
+    WRITE_BUILD_STATS = True                  # D-ADMIT (a) slice 1: the build records the population numbers of the cell-median gates (lib/masters/build_stats.py ->
+                                              # coadd_final/build_stats.json) so a night admitted later is judged against them; False = production (no file)
     OFF_GRID_SURVEY = 'regrid'                # B-03 (a): a post-cutover night whose survey image is off the cell's modal grid is regridded (coadd._off_grid at every regrid
                                               # decision, the build and the flow step) - and while such a night is ADMITTED the build and the flow run of its cell refuse
                                               # (input_resolver.wrong_grid_refusal, from the data: 8 nights today, the four ruled 'leave excluded' of
@@ -214,6 +216,7 @@ class masters_build(_Section):
                       'FORCE_REBUILD')   # FORCE_REBUILD: False would re-enable the in-place .done skip guard (CLAUDE.md 3; the wrapper refuses a skip)
     RULED = {'CUTOVER_DATE': 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED',
              'INPUT_RESOLVER': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'WRITE_BUILD_STATS': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'PRODUCT_GRID_MISMATCH': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'OFF_GRID_SURVEY': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED'),
 

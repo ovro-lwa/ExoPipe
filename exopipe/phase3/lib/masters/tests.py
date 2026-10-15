@@ -447,6 +447,21 @@ def _refused_v_nights(cell_dir):
 
 
 # =====================================================================================================================
+# build_stats (D-ADMIT slice 1)
+# =====================================================================================================================
+
+@content_test('build_stats')
+def build_stats_rederived(path, **ctx):
+    """<cell>/coadd_final/build_stats.json: every number re-derived from the files it names - the stage-2, search-tier and
+    sanity statistics from the build's records, the beam areas from the images it names (read again) - and the build
+    record's own stage-2 thresholds equal to the re-derived high thresholds."""
+    from exopipe.phase3.lib.masters import build_stats as BS
+    c = _cfg()
+    probs = BS.recheck(path, c, (float(c.masters_build.OUTLIER_SIGMA), float(c.masters_build.LOW_OUTLIER_SIGMA)))
+    return not probs, len(probs), '; '.join(probs[:4]) or 'every number re-derived from its sources'
+
+
+# =====================================================================================================================
 # input_refusals (B-03 same-state)
 # =====================================================================================================================
 
