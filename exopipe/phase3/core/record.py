@@ -161,17 +161,32 @@ def _legacy_roots():
         return ()
 
 
-def code_fingerprint():
+_CODE_SEEN = {}         # module name -> sha1[:12] of its source file when this process first fingerprinted it
+
+
+def code_fingerprint(changed=None):
     """sha1 of every source file the unit imported from exopipe AND from the legacy code roots (clv15, exopipe_ops)
-    called in place during the refactor window - the code that produced this unit (DESIGN 11.5)."""
+    called in place during the refactor window - the code that produced this unit (DESIGN 11.5). Each module's hash is
+    the one taken the first time this process saw it (Run() takes them for every module imported before the run starts;
+    a module imported later is hashed at the first record after its import), not the file when the record is written: a
+    file edited during a long run keeps the hash of what the run loaded, so --resume re-runs the unit. ``changed`` (a
+    dict), when given, receives {module: sha1 on disk now ('missing' when the file is gone)} for every such edited file
+    (2026-10-15: the deep catalogue replay's records hashed two config files edited 6 min after the run had loaded them)."""
     out = {}
     roots = _legacy_roots()
     for name, mod in list(sys.modules.items()):
         f = getattr(mod, '__file__', None)
         if not (name.startswith('exopipe') or (f and roots and os.path.abspath(f).startswith(roots))):
             continue
-        if f and f.endswith('.py') and os.path.exists(f):
-            out[name] = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12]
+        if not (f and f.endswith('.py')):
+            continue
+        now = hashlib.sha1(open(f, 'rb').read()).hexdigest()[:12] if os.path.exists(f) else None
+        first = _CODE_SEEN.setdefault(name, now) if now is not None else _CODE_SEEN.get(name)
+        if first is None:
+            continue
+        out[name] = first
+        if changed is not None and now != first:
+            changed[name] = now or 'missing'
     return out
 
 
@@ -249,6 +264,7 @@ class Run:
         self._fallback_mark = fallback.mark()
         # the sections the step declares (CONFIG) plus the shared ones; None = every section (no CONFIG declared)
         self.config_sections = tuple(config_sections) if config_sections is not None else None
+        code_fingerprint()          # the code hashes of every module imported so far, as loaded (not as at record time)
 
     @property
     def config_hash(self):
@@ -487,12 +503,16 @@ class UnitRecord:
         return etype is not None and issubclass(etype, (Refusal, NoInput))   # swallow gate outcomes, not errors
 
     def to_dict(self):
-        return dict(self.run.header(), unit=self.name, meta=self.meta, status=self.status, reason=self.reason,
-                    started=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.t0)), finished=utcnow(),
-                    wall_s=round(time.time() - self.t0, 1), inputs=self.inputs, admitted=self.admitted,
-                    outputs=self.outputs, tests=self.tests, notes=self.notes, code=code_fingerprint(),
-                    planned=[{'path': p, 'class': c} for p, c in sorted(self.planned.items())],
-                    refused_items=self.refused_items, **self._fallback_fields())
+        changed = {}
+        d = dict(self.run.header(), unit=self.name, meta=self.meta, status=self.status, reason=self.reason,
+                 started=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.t0)), finished=utcnow(),
+                 wall_s=round(time.time() - self.t0, 1), inputs=self.inputs, admitted=self.admitted,
+                 outputs=self.outputs, tests=self.tests, notes=self.notes, code=code_fingerprint(changed),
+                 planned=[{'path': p, 'class': c} for p, c in sorted(self.planned.items())],
+                 refused_items=self.refused_items, **self._fallback_fields())
+        if changed:            # source files edited on disk after this process loaded them: the record keeps the loaded hash
+            d['code_changed_on_disk'] = changed
+        return d
 
     def _fallback_fields(self):
         refs, counts = self._fallback_state()

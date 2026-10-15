@@ -436,6 +436,61 @@ def test_item3_dirty_tree_never_resumed():
                 assert 'dirty tree' in why and 'abc1234-dirty' in why
 
 
+def test_item3_code_hash_as_loaded():
+    """A record's code hashes are each module's source as this process first saw it (Run() takes them for every module
+    already imported), not the file when the record is written: a module edited on disk during a run keeps the hash of
+    what the run loaded, the record lists the edit (code_changed_on_disk) and --resume re-runs the unit; a run that saw
+    no edit lists none (2026-10-15: the deep catalogue replay's records hashed two config files edited 6 min after the
+    run had loaded them)."""
+    import hashlib
+    from exopipe.phase3.core import record
+    names = ('exopipe_fpseen_edit', 'exopipe_fpseen_same')
+
+    def h(p):
+        return hashlib.sha1(open(p, 'rb').read()).hexdigest()[:12]
+    with cfg_restored() as CFG, Scratch('fpseen') as d:
+        CFG.authorize([], out=d)
+        paths = {n: os.path.join(d, f'{n}.py') for n in names}
+        for p in paths.values():
+            open(p, 'w').write('X = 1\n')
+        sys.path.insert(0, d)
+        try:
+            for n in names:
+                __import__(n)
+            out = os.path.join(d, 'o.csv')
+            open(out, 'w').write('a\n1\n')
+            run = record.Run('t3h', ['x'], d, CFG, config_sections=())
+            run.commit = 'abc1234'
+            loaded = h(paths['exopipe_fpseen_edit'])
+            open(paths['exopipe_fpseen_edit'], 'w').write('X = 2\n')          # edited after the run loaded it
+            with run.unit('u') as u:
+                u.add_output(out, 'csv_table')
+            rec = record.load_record(d, 't3h', 'u')
+            assert rec['code']['exopipe_fpseen_edit'] == loaded != h(paths['exopipe_fpseen_edit']), rec['code']
+            assert rec['code']['exopipe_fpseen_same'] == h(paths['exopipe_fpseen_same'])
+            assert rec.get('code_changed_on_disk') == {'exopipe_fpseen_edit': h(paths['exopipe_fpseen_edit'])}, rec.get(
+                'code_changed_on_disk')
+            ok, why = run.resume_check('u', inputs=[], admitted=None)
+            assert not ok and why == 'code changed: exopipe_fpseen_edit', why
+            os.remove(paths['exopipe_fpseen_edit'])                              # a file gone since: listed as missing
+            with run.unit('u2') as u:
+                u.add_output(out, 'csv_table')
+            rec2 = record.load_record(d, 't3h', 'u2')
+            assert rec2['code']['exopipe_fpseen_edit'] == loaded and rec2['code_changed_on_disk'] == {
+                'exopipe_fpseen_edit': 'missing'}, rec2.get('code_changed_on_disk')
+            run3 = record.Run('t3i', ['x'], d, CFG, config_sections=())
+            run3.commit = 'abc1234'
+            sys.modules.pop('exopipe_fpseen_edit', None)                         # (not imported by this "run")
+            with run3.unit('u') as u:
+                u.add_output(out, 'csv_table')
+            assert 'code_changed_on_disk' not in record.load_record(d, 't3i', 'u')
+        finally:
+            sys.path.remove(d)
+            for n in names:
+                sys.modules.pop(n, None)
+                record._CODE_SEEN.pop(n, None)
+
+
 def test_item3_planned_outputs_item_refusals_exit_codes():
     from exopipe.phase3.core import record
     with cfg_restored() as CFG, Scratch('item3plan') as d:
