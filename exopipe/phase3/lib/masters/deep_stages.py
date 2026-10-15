@@ -98,6 +98,11 @@ def select_cells(args):
     if getattr(args, 'exclude_cells', None):
         drop = set(C.expand_cells(args.exclude_cells))
         cells = [x for x in cells if x not in drop]
+    if getattr(args, 'epochs', None):                  # admission stages only (refused above otherwise): the named LSTs'
+        lsts = C.epoch_lsts(args.epochs)               # cells - another cell's record is never replaced by 'no input'
+        cells = [x for x in cells if x.split('_', 1)[0] in lsts]     # (fifth review)
+        if not cells:
+            raise Refusal(f'--epochs names no night of the selected cells\' LSTs (it names {sorted(lsts)})')
     for x in cells:
         C.parse_cell(x)
     return cells
@@ -1297,8 +1302,8 @@ def _resume_ok(run, name, st, cell, out, args=None):
     inputs = None
     if st in ADMIT_STAGES:
         AS = _admit_stages()
-        co_ = inplace(out)[0]['coadd']
         try:
+            co_ = inplace(out)[0]['coadd']                # inside the try: a refusal of the setup is this unit's (fifth review)
             why_pop = AS.population_problem(AS.cell_tree(args, cell), cell, co_)
             if why_pop:                                   # the stage's own gate, applied now (fourth review: an exclusion
                 return False, f'the population record is not usable now: {why_pop[:240]}'    # changes no input file)
@@ -1310,7 +1315,10 @@ def _resume_ok(run, name, st, cell, out, args=None):
         src = (getattr(args, 'deep_installed_root', None) if args is not None else None) or _cfg().paths.COADD_SB_ROOT
         nights, stale = build_stats_population(os.path.join(src, cell), cell)
         admitted = [d for d in nights if d not in stale]
-        inputs = _build_stats_inputs(os.path.join(src, cell), cell, inplace(out)[0]['coadd'])   # THIS cell tree's
+        try:
+            inputs = _build_stats_inputs(os.path.join(src, cell), cell, inplace(out)[0]['coadd'])   # THIS cell tree's
+        except (Refusal, NoInput) as e:
+            return False, f'inputs not computable now ({e})'
     if st == 'build':
         if not done_record(out, 'build', cell):
             return False, 'no done record'

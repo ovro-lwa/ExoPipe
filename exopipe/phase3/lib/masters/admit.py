@@ -199,10 +199,19 @@ def installed_reference(cell, cell_dir, read_data=True):
     return out
 
 
+def header_differences(a, b):
+    """The keys whose value differs between headers ``a`` and ``b``: every card of either but HISTORY, COMMENT, blank
+    cards (the reference copy carries its own HISTORY line) and the structure cards the FITS writer sets (SIMPLE, BITPIX,
+    NAXIS*, EXTEND) - so a header-only change of the master (WCS, beam) is seen (fifth review)."""
+    skip = ('HISTORY', 'COMMENT', '', 'SIMPLE', 'BITPIX', 'EXTEND')
+    keys = {k for k in list(a.keys()) + list(b.keys()) if k not in skip and not k.startswith('NAXIS')}
+    return sorted(k for k in keys if a.get(k) != b.get(k))
+
+
 def write_reference(cell_dir, scope, ents):
     """The reference copies under <cell>/admit/ref/<var>_<scope>.fits (the canonical names), each with its resolution in
     HISTORY, written to a temporary name and renamed (never a partial copy). Returns {stokes: path}; refuses to overwrite
-    an existing copy whose data, CONSTDIG or MDWARP differ."""
+    an existing copy whose data or any header card differ (header_differences: CONSTDIG, MDWARP, the WCS, the beam ...)."""
     from astropy.io import fits
     import numpy as np
     d = os.path.join(cell_dir, ADMIT_DIR, 'ref')
@@ -218,7 +227,7 @@ def write_reference(cell_dir, scope, ents):
             with fits.open(p) as h:
                 old, oh = h[0].data, h[0].header
                 same = (old.shape == e['data'].shape and np.array_equal(old, e['data'], equal_nan=True)
-                        and oh.get('CONSTDIG') == hh.get('CONSTDIG') and bool(oh.get('MDWARP')) == bool(hh.get('MDWARP')))
+                        and not header_differences(oh, hh))
             if not same:
                 raise Refusal(f'{p} exists with other content: the installed master changed since the admission reference '
                               f'was written - admit into the new master from a fresh <cell>/{ADMIT_DIR}/')

@@ -167,3 +167,8 @@ def expand_epochs(spec):
     for it in items:
         parse_epoch(it)
     return items
+
+
+def epoch_lsts(spec):
+    """The LSTs the epochs of an --epochs value name (a cell of another LST is not selected by it)."""
+    return {parse_epoch(e)[0] for e in expand_epochs(spec)}

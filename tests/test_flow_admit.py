@@ -159,6 +159,25 @@ def test_record_and_stages(cd, out, d, pair):
     check('admit --epochs naming a night without a pair: no input', u.status == 'no-input' and '--epochs' in u.reason, u.reason)
 
 
+def test_epochs_select_cells():
+    """--epochs at the admit stage selects only the cells of the LSTs it names - another cell's record is never replaced
+    by a 'no input' one (fifth review); naming no LST of the selected cells refuses. The masters admission stages select
+    the same way (deep_stages.select_cells)."""
+    from exopipe.phase3.lib.masters import deep_stages as DS
+    got = FD.items(args(cells='13h_78MHz,14h_Red', epochs='14h_2025-01-01'), admit=True)
+    try:
+        FD.items(args(cells='13h_78MHz', epochs='14h_2025-01-01'), admit=True)
+        none = 'no refusal'
+    except Refusal as e:
+        none = str(e)
+    ma = argparse.Namespace(cells='13h_78MHz,14h_Red', epochs='14h_2025-01-01', nights=None, lsts=None, scopes=None,
+                            exclude_cells=None, stages_resolved=['admit-prep'])
+    mgot = DS.select_cells(ma)
+    check('--epochs selects only the cells of the LSTs it names (flow admit and masters admit-prep alike); none of them '
+          'refuses', got == ['14h_Red'] and mgot == ['14h_Red'] and 'names no night of the selected cells' in none,
+          (got, mgot, none))
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
@@ -167,6 +186,7 @@ def main():
         test_missing_flow_refuses_without_a_gpu(cd, out, d, pair)
         test_present_flow(cd, out, d, pair)
         test_record_and_stages(cd, out, d, pair)
+        test_epochs_select_cells()
     finally:
         shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

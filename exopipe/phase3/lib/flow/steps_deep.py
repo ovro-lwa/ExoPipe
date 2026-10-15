@@ -76,6 +76,11 @@ def items(args, admit=False):
     if args.exclude_cells:
         drop = set(cells.expand_cells(args.exclude_cells))
         out = [c for c in out if c not in drop]
+    if getattr(args, 'epochs', None):                  # --stages admit: the named LSTs' cells only (as masters admit-prep)
+        lsts = cells.epoch_lsts(args.epochs)
+        out = [c for c in out if cells.parse_cell(c)[0] in lsts]
+        if not out:
+            raise Refusal(f'--epochs names no night of the selected cells\' LSTs (it names {sorted(lsts)})')
     return list(dict.fromkeys(out))
 
 

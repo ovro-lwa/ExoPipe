@@ -120,9 +120,11 @@ def _finite_maxabs(d):
 @content_test('admit_reference')
 def admit_reference_copy(path, master=None, factor=None, **ctx):
     """D-ADMIT: an admission reference copy (<cell>/admit/ref/<var>_<scope>.fits) is the installed master ``master``
-    divided by its pixel factor ``factor`` - float32, NaN equal (admit.installed_reference) - with the master's CONSTDIG
-    and MDWARP; recorded as an admit-prep output, so a copy moved away or changed is seen by --resume (fourth review)."""
+    divided by its pixel factor ``factor`` - float32, NaN equal (admit.installed_reference) - with every card of the
+    master's header but the SH*/FLUX* ones stage-in strips (admit.header_differences: CONSTDIG, MDWARP, the WCS, the
+    beam); recorded as an admit-prep output, so a copy moved away or changed is seen by --resume (fourth, fifth review)."""
     from astropy.io import fits
+    from exopipe.phase3.lib.masters import admit as A, deep_stagein as DSI
     if not (master and factor):
         return False, None, 'no installed master / pixel factor recorded with the copy'
     if not os.path.exists(master):
@@ -130,10 +132,11 @@ def admit_reference_copy(path, master=None, factor=None, **ctx):
     with fits.open(path) as a, fits.open(master) as b:
         want = (b[0].data.astype(np.float64) / float(factor)).astype(np.float32)
         same = a[0].data.shape == want.shape and bool(np.array_equal(a[0].data, want, equal_nan=True))
-        cards = (a[0].header.get('CONSTDIG') == b[0].header.get('CONSTDIG')
-                 and bool(a[0].header.get('MDWARP')) == bool(b[0].header.get('MDWARP')))
-    return same and cards, None, ('the installed master / its pixel factor; CONSTDIG and MDWARP equal' if same and cards
-                                  else f'differs from {master} / {factor} (data equal {same}, cards equal {cards})')
+        mh = b[0].header.copy()
+        DSI._strip(mh)
+        diff = A.header_differences(a[0].header, mh)
+    return same and not diff, None, ('the installed master / its pixel factor; every card equal' if same and not diff
+                                     else f'differs from {master} / {factor} (data equal {same}; cards differing {diff[:6]})')
 
 
 @content_test('master')

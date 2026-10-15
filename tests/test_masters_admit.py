@@ -515,30 +515,47 @@ def test_admit_prep():
         os.rename(refI + '.aside', refI)
     check('admit-prep: the reference copies are recorded outputs - one moved away makes --resume re-run',
           gone[0] is False and 'output missing' in gone[1] and 'admit/ref' in gone[1], gone)
-    prev = json.load(open(rp))
-    ents = A.installed_reference(cell, cd, read_data=False)
-    img0 = meta['dates'][0]['align_img']
-    keep = AS.reusable(prev, cd, night, img0, ents, True)
-    other_img = AS.reusable(prev, cd, night, img_new, ents, True)
-    other_code = AS.reusable(prev, cd, night, img0, ents, False)
-    check('admit-prep: a night prepared from the same image, reference and code is reusable; another image or other code '
-          'is not', keep is not None and keep[1]['date'] == night and other_img is None and other_code is None,
-          (keep is not None, other_img, other_code))
-    t_scaled = os.path.getmtime(sp)
+    shutil.copy2(refI, refI + '.orig')
+    with fits.open(refI, mode='update') as h:              # the copy's beam changed (its data untouched)
+        h[0].header['BMAJ'] = float(h[0].header['BMAJ']) * 1.01
+    try:
+        tamper = DS._resume_ok(_Run(), name, 'admit-prep', cell, out, argparse.Namespace(deep_installed_root=wt, epochs=None))
+    finally:
+        os.replace(refI + '.orig', refI)
+    check('admit-prep: a reference copy whose header no longer matches its master fails its own content test, so '
+          '--resume re-runs (the inputs are unchanged - the content test is what sees it)',
+          tamper[0] is False and 'admit_reference' in tamper[1], tamper)
+    mI = os.path.join(cd, 'coadd_final', 'I_deep_Taper_R075_78MHz.fits')
+    shutil.copy2(mI, mI + '.orig')
+    with fits.open(mI, mode='update') as h:                # a header-only fix of the installed master (the beam)
+        h[0].header['BMAJ'] = float(h[0].header['BMAJ']) * 1.01
+    try:
+        try:
+            A.write_reference(cd, '78MHz', A.installed_reference(cell, cd))
+            w_ref = 'written'
+        except Refusal as e:
+            w_ref = str(e)
+    finally:
+        os.replace(mI + '.orig', mI)
+    check('admit-prep: a header-only change of the installed master is seen - write_reference refuses to replace the copy '
+          '(admit into the new master from a fresh admit/)', 'other content' in w_ref, w_ref)
     rc, rec, _ = cli('--deep-installed-root', wt, '--epochs', f'13h_{night},13h_2025-01-10')
     meta = (rec.get('meta') or {}).get('admit') or {}
-    aside = os.path.isdir(os.path.join(cd, A.ADMIT_DIR, 'prep', '_superseded'))
-    check('admit-prep --epochs: the named night that qualifies is kept from the previous run (same image, reference and '
-          'code: its files untouched, so its flow is not re-solved), the excluded one says why',
-          rc == 0 and [d['date'] for d in meta.get('dates', [])] == [night] and meta.get('kept') == [night]
-          and os.path.getmtime(sp) == t_scaled and not aside
-          and 'excluded' in (rec.get('meta') or {}).get('not_admitted', {}).get('2025-01-10', ''), (rc, rec.get('reason'), meta.get('kept'), aside))
+    sup = os.path.join(cd, A.ADMIT_DIR, 'prep', '_superseded')
+    aside = sorted(os.listdir(sup)) if os.path.isdir(sup) else []
+    moved = sorted(os.listdir(os.path.join(sup, aside[0]))) if aside else []
+    check('admit-prep --epochs: the named night that qualifies is prepared again (a re-run re-prepares; its earlier prep '
+          'files moved aside, none deleted), the excluded one says why',
+          rc == 0 and [d['date'] for d in meta.get('dates', [])] == [night] and f'{night}_scaled.fits' in moved
+          and 'excluded' in (rec.get('meta') or {}).get('not_admitted', {}).get('2025-01-10', ''), (rc, rec.get('reason'), moved))
     rc, rec, _ = cli('--deep-installed-root', wt, '--epochs', '13h_2025-01-10')
     check('admit-prep --epochs: a named night that does not qualify -> no input, with its reason',
           rc == 3 and 'no night to admit' in rec.get('reason', '') and 'excluded' in rec.get('reason', ''), rec.get('reason'))
-    rc, rec, _ = cli('--deep-installed-root', wt, '--epochs', '14h_2025-01-01')
-    check('admit-prep --epochs naming no night of the cell\'s LST -> no input (never every night)',
-          rc == 3 and 'names no night of 13h' in rec.get('reason', ''), rec.get('reason'))
+    before = json.load(open(rp))
+    rc, rec, txt = cli('--deep-installed-root', wt, '--epochs', '14h_2025-01-01')
+    check('admit-prep --epochs of another LST selects no cell: refused (exit 2) - never every night, and the cell\'s '
+          'record is not replaced by "no input"', rc == 2 and 'names no night of the selected cells' in txt
+          and json.load(open(rp)) == before, (rc, txt[-300:]))
     bsp = os.path.join(cd, 'coadd_final', 'build_stats.json')
     good = open(bsp).read()
     st = json.loads(good)
@@ -559,8 +576,12 @@ def test_admit_prep():
     mshape = (int(mh['NAXIS2']), int(mh['NAXIS1']))
     bad = AS.off_grid('2025-12-26', g[0][2], mshape, co.CUTOVER_DATE) if g else 'no image'
     okn = AS.off_grid(night, meta['dates'][0]['align_img'], fits.getdata(sp).shape[-2:], co.CUTOVER_DATE) if meta.get('dates') else 'x'
-    check('B-03 at admission: the real wrong-grid night 02h Green 2025-12-26 is off the master\'s grid; a member night is not',
-          isinstance(bad, tuple) and bad != mshape and okn is None, (bad, mshape, okn))
+    junk = os.path.join(T, 'not_a_fits.fits')
+    open(junk, 'w').write('not FITS')
+    unread = AS.off_grid('2025-06-01', junk, mshape, co.CUTOVER_DATE)
+    check('B-03 at admission: the real wrong-grid night 02h Green 2025-12-26 is off the master\'s grid; a member night is '
+          'not; an unreadable header is refused, never assumed on grid', isinstance(bad, tuple) and bad != mshape
+          and okn is None and unread == 'unreadable', (bad, mshape, okn, unread))
     wtg = os.path.join(T, 'admit_wtg')
     make_admission_copy('02h_Green', '2025-12-26', wtg)          # the wrong-grid night made new (out of every record)
     pg = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters', '--tier', 'deep', '--cells', '02h_Green',
