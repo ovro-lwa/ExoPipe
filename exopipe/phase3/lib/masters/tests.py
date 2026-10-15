@@ -143,14 +143,18 @@ def admitted_header(path, source=None, **ctx):
         r = rows.get(m.group('date')) or {}
         source = r.get('image') if st == 'I' else r.get('v_image')
     probs = [] if ok else [detail]
-    if not source or not os.path.exists(source):
-        probs.append(f'own source {source!r} not found through the admission')
+    if not source:
+        probs.append('no own source through the admission (admissions.csv names none)')
         return False, len(probs), '; '.join(probs)
-    h, sh = _hdr(path), _hdr(source)
+    h = _hdr(path)
     hist = ''.join(str(x) for x in h.get('HISTORY', []))
     mm = re.search(r'Beam\+RESTFRQ \(' + st + r'\) from per-epoch source (\S+?\.fits)', hist)
     if not mm or mm.group(1) != os.path.basename(source):
         probs.append(f'HISTORY names {mm.group(1) if mm else None}, the admission\'s source is {os.path.basename(source)}')
+    if not os.path.exists(source):              # the members' rule (header_own_beam): a source no longer on disk is checked
+        return not probs, len(probs), ('; '.join(probs) or            # by name only (seventh review)
+                                       f'own beam; its source {os.path.basename(source)} is no longer on disk (by name)')
+    sh = _hdr(source)
     diff = []
     for k in ('BMAJ', 'BMIN', 'BPA', 'RESTFRQ'):
         try:
@@ -182,8 +186,9 @@ def admissions_record(path, **ctx):
     V ones when v_products says 'admitted' - in the cell's subtracted/ with ADMITTED True and ADMITREF its master's
     CONSTDIG, its row the identity of the installed master (CONSTDIG and data md5: admit.master_identity - an admission
     into another master no longer describes the cell), and its night-image and epoch checks passed; a refused night has no
-    product there, and no ADMITTED product in subtracted/ lacks an admitted row (an orphan of an interrupted run); the image,
-    V image and flow sha1s are those of the files."""
+    product there, and no ADMITTED product in subtracted/ lacks an admitted row (an orphan of an interrupted run). The
+    image, V image and flow sha1s are the ones admitted: a file Phase 2 rewrote since is reported, not a failure (seventh
+    review: a re-imaged night is a rebuild's to decide, as for a member)."""
     from astropy.io import fits
     from exopipe.phase3.lib.masters import admit as A, admit_stages as AS
     rows = list(csv.DictReader(open(path, newline='')))
@@ -193,7 +198,7 @@ def admissions_record(path, **ctx):
         probs.append(f'columns {cols[:4]}... are not ADMISSION_COLS')
     cell = os.path.dirname(os.path.dirname(os.path.abspath(path)))
     sc = os.path.basename(cell).split('_', 1)[1]
-    seen, admitted = set(), set()
+    seen, admitted, drift = set(), set(), []
     ident = A.master_identity(cell) if any(r.get('verdict') == 'admitted' for r in rows) else None
     for r in rows:
         d = r.get('date')
@@ -225,7 +230,7 @@ def admissions_record(path, **ctx):
             probs.append(f'{d}: refused but has products in subtracted/')
         for f, col in (('image', 'image_sha1'), ('v_image', 'v_image_sha1'), ('flow', 'flow_sha1')):
             if r.get(f) and r.get(col) and os.path.exists(r[f]) and AS._sha1(r[f]) != r[col]:
-                probs.append(f'{d}: {f} {r[f]} changed since its admission (sha1)')
+                drift.append(f'{d} {f}')
     sd = os.path.join(cell, 'subtracted')
     for f in sorted(os.listdir(sd)) if os.path.isdir(sd) else []:
         m = _EPOCH_RE.match(f)
@@ -235,7 +240,9 @@ def admissions_record(path, **ctx):
                     probs.append(f'{f}: an ADMITTED product with no admissions.csv row (an interrupted admission)')
             except OSError:
                 pass
-    return not probs, len(rows), '; '.join(probs[:4]) or f'{len(rows)} night(s): verdicts, products and sha1s consistent'
+    note = f'; rewritten since their admission: {", ".join(drift[:4])}' if drift else ''
+    return not probs, len(rows), ('; '.join(probs[:4]) + note) if probs else (f'{len(rows)} night(s): verdicts and products '
+                                                                             f'consistent' + note)
 
 
 @content_test('admit_reference')

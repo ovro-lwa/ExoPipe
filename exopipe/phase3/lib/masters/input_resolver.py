@@ -12,8 +12,11 @@ masters_build.RAW_INPUT_FLOW_RULE
                       survey image - whose flow aligns every product of the night - is refused (core.inputs.state_mismatch):
                       the finder returns None, as for a night without that image, and the refusal is written once to
                       <cell workdir>/refusals_input.csv and printed. The survey image itself is never refused here.
+                      A caller that is not a build of the cell (the admission stages, their plans and --resume checks)
+                      runs inside read_only(): the refusal is printed, never recorded.
   'survey-image-flow' (production) every product takes the survey image's flow, whatever its state.
 """
+import contextlib
 import csv
 import os
 
@@ -26,7 +29,7 @@ RESOLVERS = ('core.inputs', 'coadd-finders')
 RULES = ('same-state', 'survey-image-flow')
 REFUSALS_FILE = 'refusals_input.csv'
 REFUSALS_HEADER = ['lst', 'scope', 'date', 'product', 'image', 'reason']
-_STATE = {'co': None, 'rule': None}
+_STATE = {'co': None, 'rule': None, 'record': True}
 _WRITTEN = set()          # (refusals file, date, scope, product) written or found in this process
 _LOADED = set()           # refusals files whose earlier rows were read
 _PRINTED = set()          # (lst, scope, date, product) refusals printed in this process (once each, not at every lookup)
@@ -71,6 +74,8 @@ def _record(sci_dir, freq, product, path, why):
     if (lst, fl, date, product) not in _PRINTED:
         _PRINTED.add((lst, fl, date, product))
         print(f'    INPUT REFUSED {lst} {fl} {date} {product}: {why} [{os.path.basename(path)}] (B-03 same-state)', flush=True)
+    if not _STATE['record']:                  # read_only(): a caller that is not a build of the cell - printed only
+        return
     cell_dir = os.path.join(_STATE['co']._workdir_base(), f'{lst}_{fl}')
     if not os.path.isdir(cell_dir):           # not inside a build of this cell (a read-only caller): printed only
         return
@@ -88,6 +93,20 @@ def _record(sci_dir, freq, product, path, why):
             w.writerow(REFUSALS_HEADER)
         w.writerow([lst, fl, date, product, os.path.basename(path), why])
     _WRITTEN.add(key)
+
+
+@contextlib.contextmanager
+def read_only():
+    """A block in which a refused input is printed, never recorded - every caller that is not a build of the cell. D-ADMIT
+    seventh review: the admission stages ran the finders with the co-add's work root at their --out; with the cell tree
+    there, a refusal went into that tree's build record (refusals_input.csv), the night rule then counted the night as
+    one the build saw and dropped it, for good - a dry run, a --resume check or a refused run did the same."""
+    old = _STATE['record']
+    _STATE['record'] = False
+    try:
+        yield
+    finally:
+        _STATE['record'] = old
 
 
 def _admit(sci_dir, freq, product, path):

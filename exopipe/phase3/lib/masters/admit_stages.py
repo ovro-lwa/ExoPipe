@@ -11,6 +11,7 @@ Each writes into the cell tree it is given (--deep-installed-root, default paths
 while paths.PRODUCTION_WRITES is False, so until cutover a stage runs on a copy of the cell. --out holds the run records.
 """
 import os
+import sys
 
 from exopipe.phase3.core.record import NoInput, Refusal
 
@@ -34,9 +35,10 @@ def epochs_of(args, lst):
     return sorted({d for l, d in (C.parse_epoch(e) for e in C.expand_epochs(args.epochs)) if l == lst})
 
 
-def nights(cell, args, co):
+def nights(cell, args, co, held=()):
     """(take, why) for the cell tree the stage is given: admit.nights_to_admit over the co-add's Phase-2 nights of the cell,
-    --epochs restricting - the stage's work list, its plan and its resume identity (the nights it admits now)."""
+    --epochs restricting - the stage's work list, its plan and its resume identity (the nights it admits now; ``held``: the
+    unit's own nights, for a --resume check)."""
     import contextlib
     import io
     from exopipe.phase3.core import exclusions
@@ -44,10 +46,11 @@ def nights(cell, args, co):
     lst, sc = cell.split('_', 1)
     with contextlib.redirect_stdout(io.StringIO()):          # the finders' failsafe notes: the build's, not ours
         entries = co.discover_dates(lst, DS._freq(sc))
-    return A.nights_to_admit(lst, sc, cell_tree(args, cell), entries, exclusions.load(), co, nights=epochs_of(args, lst))
+    return A.nights_to_admit(lst, sc, cell_tree(args, cell), entries, exclusions.load(), co, nights=epochs_of(args, lst),
+                             held=held)
 
 
-def prep_inputs(cell, args, co):
+def prep_inputs(cell, args, co, held=()):
     """(take, why, inputs): the nights admit-prep takes now and every input its record holds for them, as the stage records
     them - the build's night record, the population record, the installed I and V masters, each night's survey image. Also
     the stage's --resume identity: another cell tree, a re-imaged night or a replaced record re-runs it (2026-10-15 review:
@@ -55,7 +58,7 @@ def prep_inputs(cell, args, co):
     from exopipe.phase3.lib.masters import admit as A, build_stats as BS, deep_stagein as DSI
     cd = cell_tree(args, cell)
     sc = cell.split('_', 1)[1]
-    take, why = nights(cell, args, co)
+    take, why = nights(cell, args, co, held=held)
     masters = [os.path.join(cd, 'coadd_final', f'{var}_{sc}.fits') for _st, var, _rob in DSI.REF_VARS]
     inputs = ([os.path.join(cd, A.BUILD_NIGHTS), os.path.join(cd, 'coadd_final', BS.FILE)] + masters
               + [img for _d, _sd, img in take])
@@ -294,10 +297,50 @@ def cell_lock(W):
     f = open(p, 'a')
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except BlockingIOError:
         f.close()
         raise Refusal(f'another admit run holds {p} - one admission run per cell at a time')
+    except OSError as e:                         # any other flock error is said as it is (seventh review)
+        f.close()
+        raise Refusal(f'{p}: the admission lock cannot be taken ({type(e).__name__}: {e})')
     return f
+
+
+class ErrorWatch:
+    """An error is never a verdict (seventh review): two production try/excepts the admission runs turn an exception into
+    a verdict - coadd._night_flux_dc returns NaN ('not measurable', the night refused at alignment) and final_night's
+    night-image gate returns FAIL ('could not be evaluated') - and an admission row is final (never admitted twice), so a
+    disk-full or I/O error refused a night for good. Inside the block, the co-add functions those blocks call
+    (process_variant_image, load_image, measure_flux_scale; the night-image gate's evaluate) record an exception that
+    leaves them into one of those two functions (CALLERS - not one another function handles as part of its own logic)
+    before it goes on as before; ``errors`` lists them. The functions are restored on exit."""
+    NAMES = ('process_variant_image', 'load_image', 'measure_flux_scale')
+    CALLERS = ('_night_flux_dc', 'final_night')
+
+    def __init__(self, co):
+        from exopipe.phase3.lib.masters import night_image_gate as NG
+        self.targets = [(co, n) for n in self.NAMES] + [(NG, 'evaluate')]
+        self.errors, self.orig = [], []
+
+    def __enter__(self):
+        for mod, n in self.targets:
+            f = getattr(mod, n)
+            self.orig.append((mod, n, f))
+
+            def watched(*a, _f=f, _n=n, **k):
+                try:
+                    return _f(*a, **k)
+                except Exception as e:
+                    if sys._getframe(1).f_code.co_name in self.CALLERS:
+                        self.errors.append(f'{_n}: {type(e).__name__}: {e}'[:300])
+                    raise
+            setattr(mod, n, watched)
+        return self
+
+    def __exit__(self, *exc):
+        for mod, n, f in reversed(self.orig):
+            setattr(mod, n, f)
+        return False
 
 
 def prep_changed(prep):
@@ -321,12 +364,12 @@ def v_status(co, sd, freq_str):
     return None, f'refused (B-03 same-state): {CI.state_mismatch(sd, freq_str, cand, "V") or "the finder in force gives none"}'
 
 
-def admit_inputs(cell, args, co, out):
+def admit_inputs(cell, args, co, out, held=()):
     """(todo, inputs, admit-prep record, flow record) of the admit stage, as the stage records them - also its --resume
     identity: the nights admit-prep prepared that still qualify now, with every input (prep_inputs' records, masters and
     images; the admit-prep and flow records; each night's scaled input, flow, V image and beam-gate image; the reference
     copies; the provisional masters; the scale and correction tables). Refuses without a done admit-prep record or a done
-    flow admit record made from it."""
+    flow admit record made from it. ``held``: the unit's own nights, for a --resume check (prep_inputs)."""
     from exopipe.phase3.core import record as R
     from exopipe.phase3.lib.masters import admit as A, deep_stages as DS
     cd = cell_tree(args, cell)
@@ -342,7 +385,7 @@ def admit_inputs(cell, args, co, out):
         raise Refusal(f'no done flow admit record of {cell} made from admit-prep run {prep.get("run_id")} (found '
                       f'{(frec or {}).get("status", "none")}, from {fmeta.get("admit_prep_record")}) - run `flow --tier deep '
                       f'--stages admit` after admit-prep')
-    take, _why, inputs = prep_inputs(cell, args, co)
+    take, _why, inputs = prep_inputs(cell, args, co, held=held)
     prepared = {r['date'] for r in ((prep.get('meta') or {}).get('admit') or {}).get('dates', [])}
     todo = [x for x in take if x[0] in prepared]
     fs = _cfg().masters_fluxscale
@@ -419,7 +462,6 @@ def admit_stage(cell, args, run, out, ran_now):
     from astropy.io import fits
     from astropy.wcs import WCS
     from exopipe.phase3.core import record as R, validate
-    from exopipe.phase3.lib.flow import steps_deep as FSD
     from exopipe.phase3.lib.masters import (admit as A, build_stats as BS, deep_inplace as IP, deep_stages as DS,
                                             flux_correction as FC, shflux as SH)
     lst, sc = cell.split('_', 1)
@@ -442,30 +484,12 @@ def admit_stage(cell, args, run, out, ran_now):
             u.set_admitted([x[0] for x in todo])
             for p in inputs:
                 u.add_input(p)
-            changed = prep_changed(prep)
-            if changed:
-                u.refuse(f'admit-prep\'s inputs changed since it ran ({", ".join(os.path.basename(p) for p in changed[:4])}'
-                         f'{" ..." if len(changed) > 4 else ""}) - run admit-prep and the flow step again')
             ents = A.installed_reference(cell, cd)
-            if any(e['mdwarp'] for e in ents):
-                u.refuse(f'{cell} carries the master dewarp (MDWARP): its admitted night\'s flow must be made against the '
-                         f'dewarped master and its stage-2 number needs the provisional masters resampled with the archived '
-                         f'screen - not written until the GPU test (DECISIONS_PENDING item 7)')
-            refs = A.write_reference(cd, sc, ents)
-            sig = FSD.admit_signature(refs['I'])
-            if ((frec.get('meta') or {}).get('admit') or {}).get('reference_signature') != sig:
-                u.refuse(f'the admit flows were made against another reference than {sig} - run admit-prep and the flow again')
-            med, med_src = guard_median()
-            if med is None:
-                u.refuse(f'{cell}: no build records its median second-pass DC and masters_admit.DC2_MEDIAN_WITHOUT_RECORD is '
-                         f'unset - the degeneracy guard needs one (DECISIONS_PENDING item 10; nothing is substituted)')
-            factor, what = DS.bake_factor(lst, sc)                     # the pinned tables, as the fluxscale stage reads them
-            if factor is None:
-                u.refuse(f'{cell}: no flux scale to bake an admitted night with ({what})')
-            for e in ents:
-                if abs(factor - e['factor']) > 1e-9 * abs(e['factor']):
-                    u.refuse(f'the pinned scale row x correction {factor:.9f} is not the installed {e["var"]} master\'s pixel '
-                             f'factor {e["factor"]:.9f} - an admitted night would not be on its scale')
+
+            def fail(gate, why):
+                u.check(gate, False, detail=why[:400])
+                u.refuse(why)
+            refs, med, med_src, factor = admit_gates(cell, cd, prep, frec, ents, fail, write=True)
             row = DS.scale_row(lst, sc)
             corr_t = FC.load_table(_cfg().masters_fluxscale.FLUXCORR_TABLE)
             if not todo:
@@ -556,7 +580,13 @@ def admit_stage(cell, args, run, out, ran_now):
                     move_aside_files(prep_final, [f'{d}_regrid.fits', f'{d}_scale_remeasure.fits', f'{d}_I.fits',
                                                   f'{d}_V.fits'], stamp)
                     move_aside_files(native, [f'{d}_{st}_{kind}_{fl}.fits' for st, kind in PRODUCTS], stamp)
-                    nr = co.final_night(d, sd, img, fref, W, prep_final, [True], lst, fl, 'MASTER')
+                    with ErrorWatch(co) as watch:
+                        nr = co.final_night(d, sd, img, fref, W, prep_final, [True], lst, fl, 'MASTER')
+                    refused_ = nr is None or nr['params'] is None or (nr['gate'] or {}).get('verdict') == 'FAIL'
+                    if refused_ and watch.errors:                      # an error, not a verdict: retried, no row
+                        refuse_night(f'an error during its alignment or night-image check ({watch.errors[0]}) - not a '
+                                     f'verdict: retried at the next run', 'admit.error')
+                        continue
                     if nr is None or nr['params'] is None:
                         reason = ('its survey image is off the master\'s grid' if nr is None else
                                   (nr['gate'] or {}).get('reason') or 'blank field')
@@ -569,8 +599,16 @@ def admit_stage(cell, args, run, out, ran_now):
                     pa = nr['params']
                     v_out = os.path.join(prep_final, f'{d}_V.fits')
                     if v_img:
-                        co.process_variant_image(v_img, pa['flow'], pa['scale_map'], fref['tmpl_hdr'], fref['target_shape'],
-                                                 v_out, co._product_mapping(v_img, img, pa['regrid']))
+                        v_ok = co.process_variant_image(v_img, pa['flow'], pa['scale_map'], fref['tmpl_hdr'],
+                                                        fref['target_shape'], v_out, co._product_mapping(v_img, img, pa['regrid']))
+                        if not (v_ok and os.path.exists(v_out)):       # the build publishes I only then (coadd.py: `if ok`)
+                            v_what = 'refused (alignment: the V image cannot be aligned to the master\'s grid)'
+                            for k in want:
+                                if k[0] == 'V':
+                                    u.refuse_item(dests[k], f'{d}: V {v_what}', gate='admit.v_alignment')
+                            want = [k for k in want if k[0] == 'I']
+                            rowd['v_products'] = v_what
+                            v_img = None
                     coeffs2, n2 = co.measure_scale2(nr['i_out'], ref['data'], final_wcs, ref['beam_pix'], coadd_mask, ref_hdr)
                     co.subtract_night(d, sd, img, nr['i_out'], v_out, coeffs2, n2, med, ref['data'], fin_v, final_wcs,
                                       coadd_mask, ref['beam_pix'], fref['tmpl_hdr'], fref['target_shape'], native, fl, freq_str)
@@ -643,6 +681,54 @@ def admit_stage(cell, args, run, out, ran_now):
             lock.close()
 
 
+def admit_gates(cell, cd, prep, frec, ents, fail, write):
+    """The admit stage's gates before any night, in its order - one definition for the stage and its dry-run plan (seventh
+    review: the plan lacked three of them): admit-prep's inputs unchanged since it ran; no master dewarp (item 7); the
+    reference copies (write=True: written, or refused when an existing one differs; write=False: an existing copy compared,
+    nothing written); the admit flows made against this reference (its MASTER:<COADDOP>:<CONSTDIG> signature - the installed
+    master's cards, which the copy carries); a guard median (item 10); the pinned scale row x correction = each installed
+    master's pixel factor. ``fail(gate, why)``: the stage refuses at the first, the plan lists each. Returns (reference
+    copies or None, guard median, its source, bake factor)."""
+    from exopipe.phase3.lib.flow import steps_deep as FSD
+    from exopipe.phase3.lib.masters import admit as A, deep_stages as DS
+    lst, sc = cell.split('_', 1)
+    changed = prep_changed(prep)
+    if changed:
+        fail('admit.prep_inputs', f'admit-prep\'s inputs changed since it ran ({", ".join(os.path.basename(p) for p in changed[:4])}'
+                                  f'{" ..." if len(changed) > 4 else ""}) - run admit-prep and the flow step again')
+    if any(e['mdwarp'] for e in ents):
+        fail('admit.mdwarp', f'{cell} carries the master dewarp (MDWARP): its admitted night\'s flow must be made against the '
+                             f'dewarped master and its stage-2 number needs the provisional masters resampled with the '
+                             f'archived screen - not written until the GPU test (DECISIONS_PENDING item 7)')
+    refs = None
+    if write:
+        refs = A.write_reference(cd, sc, ents)
+    else:
+        bad = A.reference_problems(cd, sc, ents)
+        if bad:
+            fail('admit.reference', f'{bad[0]} exists with other content: the installed master changed since the admission '
+                                    f'reference was written - admit into the new master from a fresh <cell>/{A.ADMIT_DIR}/')
+    sig = FSD.admit_signature(ents[0]['path'])
+    if ((frec.get('meta') or {}).get('admit') or {}).get('reference_signature') != sig:
+        fail('admit.flow_reference', f'the admit flows were made against another reference than {sig} - run admit-prep and '
+                                     f'the flow again')
+    med, med_src = guard_median()
+    if med is None:
+        fail('admit.guard_median', f'{cell}: no build records its median second-pass DC and '
+                                   f'masters_admit.DC2_MEDIAN_WITHOUT_RECORD is unset - the degeneracy guard needs one '
+                                   f'(DECISIONS_PENDING item 10; nothing is substituted)')
+    factor, what = DS.bake_factor(lst, sc)                     # the pinned tables, as the fluxscale stage reads them
+    if factor is None:
+        fail('admit.bake_factor', f'{cell}: no flux scale to bake an admitted night with ({what})')
+    else:
+        for e in ents:
+            if abs(factor - e['factor']) > 1e-9 * abs(e['factor']):
+                fail('admit.bake_factor', f'the pinned scale row x correction {factor:.9f} is not the installed {e["var"]} '
+                                          f'master\'s pixel factor {e["factor"]:.9f} - an admitted night would not be on '
+                                          f'its scale')
+    return refs, med, med_src, factor
+
+
 def plan_admit(cell, args, out, planned):
     """Dry-run plan of the admit stage: the gates as the stage applies them, the nights and their products."""
     from exopipe.phase3.core.record import Refusal as _Ref
@@ -657,18 +743,18 @@ def plan_admit(cell, args, out, planned):
     if why_pop:
         return lines, gates + [why_pop]
     try:
-        todo, _inputs, _prep, _frec = admit_inputs(cell, args, co, out)
-        ents = A.installed_reference(cell, cd, read_data=False)
+        todo, _inputs, prep, frec = admit_inputs(cell, args, co, out)
+        ents = A.installed_reference(cell, cd)
     except _Ref as e:
         return lines, gates + [str(e)]
-    if any(e['mdwarp'] for e in ents):
-        gates.append(f'{cell} carries the master dewarp (MDWARP) - not admitted until the GPU test (item 7)')
-    med, med_src = guard_median()
-    if med is None:
-        gates.append(f'{cell}: no recorded median second-pass DC and masters_admit.DC2_MEDIAN_WITHOUT_RECORD unset (item 10)')
+    _refs, med, med_src, _factor = admit_gates(cell, cd, prep, frec, ents, lambda g, why: gates.append(why), write=False)
     lines.append(f'nights to admit: {[x[0] for x in todo] or "none (no input)"}; guard median {med} ({med_src})')
     sc = cell.split('_', 1)[1]
-    for d, _sd, _img in todo:
-        lines.append(f'  {d}: subtracted/{d}_{{I,V}}_{{epoch,sub,clean}}_{sc}.fits [admitted_epoch]; a row in '
-                     f'coadd_final/{A.ADMISSIONS}')
+    has_v = any(e['stokes'] == 'V' and e['data'] is not None for e in ents)
+    for d, sd, _img in todo:
+        v_img, v_what = v_status(co, sd, DS._freq(sc))
+        if v_img and not has_v:
+            v_img, v_what = None, 'no V master in the cell'
+        lines.append(f'  {d}: subtracted/{d}_{{{"I,V" if v_img else "I"}}}_{{epoch,sub,clean}}_{sc}.fits [admitted_epoch]'
+                     + ('' if v_img else f' (V: {v_what})') + f'; a row in coadd_final/{A.ADMISSIONS}')
     return lines, gates

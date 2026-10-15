@@ -305,13 +305,15 @@ def run(args, run):
     if not cells_:
         raise NoInput('no deep cell selected (give --cells or --lsts)')
     if 'admit' in stages:
+        if getattr(args, 'epochs', None):                # the plan selects as the stage does (seventh review)
+            cells_ = admit_cells(args, run.out_root, cells_)
         if run.dry_run:
             return plan_admit(args, run, cells_)
-        if getattr(args, 'epochs', None):
-            cells_ = admit_cells(args, run.out_root, cells_)
+        from exopipe.phase3.lib.masters import input_resolver as IR
         for cell in cells_:
             with run.unit(f'admit_{cell}', tier='deep', stage='admit', cell=cell) as u:
-                run_admit(u, args, run, cell)
+                with IR.read_only():                     # an admission is not a build: a refused input is never recorded
+                    run_admit(u, args, run, cell)
         return None
     if run.dry_run:
         return plan(args, run, cells_, stages)
@@ -651,6 +653,9 @@ def plan_admit(args, run, cells_):
         print(f'== admit_{cell}')
         try:
             pairs, _rec = admit_pairs(run.out_root, cell)
+            want = _admit_epochs(args, cell)              # --epochs restricts the pairs, as run_admit does
+            if want is not None:
+                pairs = [p for p in pairs if _admit_date(p) in want]
             todo = admit_todo(pairs, args.deep_flow_all)
             print(f'   {len(pairs)} pair(s) from the admit-prep record; {len(todo)} need a flow'
                   + (f': {", ".join(_admit_date(p) for p in todo)}' if todo else ''))

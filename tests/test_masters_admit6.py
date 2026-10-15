@@ -35,6 +35,7 @@ os.environ.setdefault('EXOPIPE3_SITE', '/lustre/gh/main/exopipe_ops/exopipe3_sit
 from exopipe.phase3.core import env as ENV                          # noqa: E402
 ENV.legacy()
 from exopipe.phase3.config import CFG                               # noqa: E402
+from exopipe.phase3.core.record import Refusal                      # noqa: E402
 from exopipe.phase3.lib.masters import admit as A                   # noqa: E402
 
 T = '/tmp/exopipe3_tests_admit6'
@@ -146,6 +147,8 @@ def test_admit_end_to_end():
     check('the flow step\'s admit stage takes the stored flows (nothing solved, no GPU) and is done',
           rc == 0 and fr.get('status') == 'done' and not (fr.get('meta') or {}).get('admit', {}).get('recomputed'),
           (rc, fr.get('reason'), txt[-400:]))
+    sel = _select('admit', nights[0], wt, out)
+    check('--epochs (admit): before the admission a prepared night selects its cell', sel == [CELL], sel)
     rc, txt = cli('masters', '--stages', 'admit', *common)
     r0 = rec(out, 'masters', f'admit_{CELL}')
     check('without a guard median (recorded or ruled) the stage refuses - nothing substituted (item 10)',
@@ -192,6 +195,19 @@ def test_admit_end_to_end():
                     hdiff[f'{d}_{st}_{kind}'] = dk[:6]
     check('every admitted product\'s header equals the member\'s card for card (the epochs stamped as the archive '
           'publish stamps them) but ADMITTED / ADMITREF / HISTORY and the code commit (GITTAG)', not hdiff, hdiff)
+    for stage, extra in (('admit', ['--set', 'masters_admit.DC2_MEDIAN_WITHOUT_RECORD=1.0']), ('admit-prep', [])):
+        rp = os.path.join(out, '_records', 'masters', f'{stage}_{CELL}.json')
+        r_ = json.load(open(rp))
+        r_['commit'] = 'abc1234'                     # as from a clean tree (a dirty-tree record is never resumed)
+        json.dump(r_, open(rp, 'w'))
+        rc, txt = cli('masters', '--stages', stage, *common, *extra, '--resume')
+        r2 = rec(out, 'masters', f'{stage}_{CELL}')
+        check(f'--resume after the admission: {stage} is skipped and its done record kept (seventh review: its own rows '
+              f'no longer change its identity)', rc == 0 and 'skipped' in txt and r2.get('status') == 'done'
+              and r2.get('run_id') == r_.get('run_id'), (rc, txt[-500:], r2.get('status'), r2.get('reason')))
+    sel = _select('admit', nights[0], wt, out)
+    check('--epochs (admit): an admitted night selects no cell, and the refusal says why for each named night',
+          isinstance(sel, str) and 'no cell selected' in sel and 'admitted or refused already' in sel, sel)
     rc, txt = cli('masters', '--stages', 'admit', *common, '--set', 'masters_admit.DC2_MEDIAN_WITHOUT_RECORD=1.0')
     check('a second run admits nothing (a night is never admitted twice)', rc == 3, (rc, txt[-300:]))
     ok = validate.run('admissions', adm)
@@ -200,12 +216,61 @@ def test_admit_end_to_end():
 
 
 
+def _select(stage, night, wt, out):
+    """deep_stages.select_cells for --epochs <LST>_<night> and one admission stage: the selected cells, or the refusal."""
+    import argparse
+    from exopipe.phase3.lib.masters import deep_stages as DS, input_resolver as IR
+    a = argparse.Namespace(cells=CELL, lsts=None, scopes=None, exclude_cells=None, epochs=f'{LST}_{night}',
+                           stages_resolved=[stage], deep_installed_root=wt, out=out)
+    try:
+        with IR.read_only():
+            return DS.select_cells(a, out)
+    except Refusal as e:
+        return str(e)
+
+
+def _stack_night():
+    """(the functions on the stack, the night admit_stage is on) - for patches that act inside one night only."""
+    import sys as _sys
+    f, names, night = _sys._getframe(1), [], None
+    while f:
+        names.append(f.f_code.co_name)
+        if f.f_code.co_name == 'admit_stage' and night is None:
+            night = f.f_locals.get('d')
+        f = f.f_back
+    return names, night
+
+
 def _stash(cd, tag):
     """The test copy's admission outcome moved aside (inside the test's scratch) so its nights qualify again."""
     dst = os.path.join(T, 'stash', tag)
     os.makedirs(dst, exist_ok=True)
     for p in glob.glob(os.path.join(cd, 'subtracted', '20*')) + glob.glob(os.path.join(cd, 'coadd_final', A.ADMISSIONS)):
         os.replace(p, os.path.join(dst, os.path.basename(p)))
+
+
+def _run_masters(wt, out, stages):
+    """The masters step's deep stages in-process through deep_stages.run (its read-only and resume rules), --out ``out``
+    - the unit record of the last stage run."""
+    import argparse
+    from exopipe.phase3.core import record as R
+    from exopipe.phase3.lib.masters import deep_stages as DS
+    CFG.authorize([], out=out)
+    run = R.Run('masters', ['test'], out, CFG, config_sections=())
+    run.commit = 'abc1234'
+    a = argparse.Namespace(cells=CELL, lsts=None, scopes=None, exclude_cells=None, epochs=None, stages_resolved=list(stages),
+                           out=out, deep_installed_root=wt, reference=None, dry_run=False, resume=False, fresh=False)
+    DS.run(a, run)
+    return run.units[-1]
+
+
+def _plan(wt, out):
+    """admit_stages.plan_admit (the dry-run plan): (lines, gates)."""
+    import argparse
+    from exopipe.phase3.lib.masters import admit_stages as AS, input_resolver as IR
+    a = argparse.Namespace(deep_installed_root=wt, epochs=None)
+    with IR.read_only():
+        return AS.plan_admit(CELL, a, out, set())
 
 
 def _run_admit(wt, out):
@@ -229,8 +294,11 @@ def test_failure_paths(nights):
     a night failing the epoch check, a night without a V image, a V image the same-state rule refuses, a failure in the
     second night (the first night's row is already written) and the re-run, an interruption between the products and the
     row (the re-run moves the orphans aside and admits the night again), a night re-imaged since admit-prep, a stale flow,
-    products of unknown origin, admit-prep's inputs changed - each outcome a recorded refusal or a done unit, never an
-    error but where one was forced, and never a product without a row."""
+    products of unknown origin, admit-prep's inputs changed (and the dry-run plan saying so) - and from the seventh review:
+    the same-state refusal not written into the cell's build record (--out = the cell tree), an error inside the flux
+    measurement or the night-image check retried (no row), a V image the build cannot align, a flow failing its own content
+    test, the cell lock, the content tests on a changed beam and an orphan - each outcome a recorded refusal or a done unit,
+    never an error but where one was forced, and never a product without a row."""
     import sys as _sys
     from astropy.io import fits
     from exopipe.phase3.core import inputs as CI
@@ -391,18 +459,146 @@ def test_failure_paths(nights):
         # (9) admit-prep's inputs changed since it ran
         _stash(cd, 'changed')
         rp_ = os.path.join(cd, A.BUILD_NIGHTS)
-        orig = open(rp_).read()
+        orig = open(rp_, 'rb').read()                 # restored byte for byte (seventh review: text mode lost the CRLFs)
         t0 = os.path.getmtime(rp_)
-        with open(rp_, 'a') as f:
-            f.write('\n')
+        with open(rp_, 'ab') as f:
+            f.write(b'\n')
+        try:
+            u = _run_admit(wt, out)
+            plan_lines, plan_gates = _plan(wt, out)
+        finally:
+            open(rp_, 'wb').write(orig)
+            os.utime(rp_, (t0, t0))
+        check('admit-prep\'s inputs changed since it ran: the unit refused before any night, nothing written; the dry-run '
+              'plan says the same (one definition of the gates)',
+              u.status == 'refused' and 'changed since it ran' in (u.reason or '') and not rows()
+              and any('changed since it ran' in g for g in plan_gates), (u.status, u.reason, plan_gates))
+        ok_lines, ok_gates = _plan(wt, out)
+        check('the dry-run plan of the restored copy: no gate, both nights with their I and V products',
+              not ok_gates and sum('{I,V}' in ln for ln in ok_lines) == 2, (ok_gates, ok_lines))
+        # (10) MAJOR (seventh review): with --out = the cell tree root, night 2's V refused by the same-state rule is NOT
+        #      written into the cell's build record (refusals_input.csv) - the admission's own row holds the refusal - and
+        #      the night is admitted with its I products, the stage run as the masters step runs it (deep_stages.run)
+        _stash(cd, 'readonly')
+        ri = os.path.join(cd, 'refusals_input.csv')
+        before = open(ri, 'rb').read() if os.path.exists(ri) else None
+        if not os.path.isdir(os.path.join(wt, '_records')):
+            shutil.copytree(os.path.join(out, '_records'), os.path.join(wt, '_records'))
+        rm = CI.state_mismatch
+        n2dirs = [x[1] for x in co.discover_dates(LST, SC[:-3]) if x[0] == n2]
+        CI.state_mismatch = lambda sd, f, p_, prod: ('forced mismatch (test)' if sd in n2dirs and prod == 'V'
+                                                      else rm(sd, f, p_, prod))
+        try:
+            u = _run_masters(wt, wt, ['admit'])
+        finally:
+            CI.state_mismatch = rm
+        R_ = rows()
+        after = open(ri, 'rb').read() if os.path.exists(ri) else None
+        check('MAJOR (seventh review): with --out = the cell tree root the same-state refusal is not written into the cell\'s '
+              'build record; the night is admitted with its I products, the refusal on its row',
+              after == before and u.status == 'done' and R_.get(n2, {}).get('verdict') == 'admitted'
+              and 'same-state' in R_.get(n2, {}).get('v_products', '') and not [p for p in prods(n2) if '_V_' in p],
+              (u.status, u.reason, after is None, R_.get(n2, {}).get('v_products')))
+        # (11) MAJOR (seventh review): an error inside the flux-scale measurement (disk full) is no verdict - the night is
+        #      refused as an item (retried), no row; the next run admits it
+        for tag, mod, name in (('err_flux', co, 'measure_flux_scale'), ('err_gate', None, 'evaluate')):
+            _stash(cd, tag)
+            from exopipe.phase3.lib.masters import night_image_gate as NG
+            mod = mod or NG
+            real_f = getattr(mod, name)
+            where = '_night_flux_dc' if name == 'measure_flux_scale' else 'final_night'
+
+            def failing(*a, _f=real_f, _w=where, **k):
+                names, night = _stack_night()
+                if _w in names and night == n2:
+                    raise OSError(28, 'No space left on device (test)')
+                return _f(*a, **k)
+            setattr(mod, name, failing)
+            try:
+                u = _run_admit(wt, out)
+            finally:
+                setattr(mod, name, real_f)
+            R1 = rows()
+            u2 = _run_admit(wt, out)
+            R2 = rows()
+            check(f'MAJOR (seventh review): an error inside {"the flux-scale measurement" if name != "evaluate" else "the night-image check"} '
+                  f'is no verdict: the night refused as an item (retried), no row; the next run admits it',
+                  u.status == 'done' and n2 not in R1 and set(gates(u).values()) == {'admit.error'}
+                  and R1.get(n1, {}).get('verdict') == 'admitted' and u2.status == 'done'
+                  and R2.get(n2, {}).get('verdict') == 'admitted', (u.status, u.reason, gates(u), sorted(R1), u2.status,
+                                                                     sorted(R2)))
+        # (12) a V image the build cannot align (process_variant_image returns False): I admitted, V refused by name
+        _stash(cd, 'valign')
+        rpv = co.process_variant_image
+
+        def no_v(*a, **k):
+            names, night = _stack_night()
+            if names[1:2] == ['admit_stage'] and night == n2 and a and '-V-' in os.path.basename(str(a[0])):
+                return False
+            return rpv(*a, **k)
+        co.process_variant_image = no_v
         try:
             u = _run_admit(wt, out)
         finally:
-            open(rp_, 'w').write(orig)
-            os.utime(rp_, (t0, t0))
-        check('admit-prep\'s inputs changed since it ran: the unit refused before any night, nothing written',
-              u.status == 'refused' and 'changed since it ran' in (u.reason or '') and not rows(),
-              (u.status, u.reason))
+            co.process_variant_image = rpv
+        R_ = rows()
+        check('a V image the build cannot align: the night admitted with its I products (the build\'s rule), its V products '
+              'refused by name, the reason on the row; the unit done (seventh review: it errored on every run)',
+              u.status == 'done' and R_.get(n2, {}).get('verdict') == 'admitted'
+              and R_[n2]['v_products'].startswith('refused (alignment') and set(gates(u).values()) == {'admit.v_alignment'}
+              and len(gates(u)) == 3 and len([p for p in prods(n2) if '_I_' in p]) == 3
+              and not [p for p in prods(n2) if '_V_' in p], (u.status, u.reason, gates(u), R_.get(n2, {}).get('v_products')))
+        # (13) the flow's own content test (admit-prep's inputs unchanged, the flow newer than its input)
+        _stash(cd, 'flowtest')
+        fp = os.path.join(cd, A.ADMIT_DIR, 'flow', f'{n2}_scaled_flow.npy')
+        keep = fp + '.keep'
+        shutil.copy2(fp, keep)
+        np.save(fp, np.zeros((4, 4, 2), np.float32))
+        try:
+            u = _run_admit(wt, out)
+        finally:
+            os.replace(keep, fp)
+            t = time.time()
+            os.utime(fp, (t, t))
+        R_ = rows()
+        check('a flow failing its own content test (admit-prep\'s inputs unchanged, newer than its input): the night '
+              'refused by name, no row; the other admitted', u.status == 'done' and n2 not in R_
+              and set(gates(u).values()) == {'admit.flow'} and R_.get(n1, {}).get('verdict') == 'admitted',
+              (u.status, u.reason, gates(u)))
+        # (14) the cell lock: a second admission run on the cell is refused, nothing written
+        _stash(cd, 'lock')
+        lk = AS.cell_lock(os.path.join(cd, A.ADMIT_DIR))
+        try:
+            u = _run_admit(wt, out)
+        finally:
+            lk.close()
+        check('the cell lock: another admit run holds it - this one refused before any night, nothing written',
+              u.status == 'refused' and 'holds' in (u.reason or '') and not rows(), (u.status, u.reason))
+        # (15) the content tests: an admitted product whose beam differs from its own source fails admitted_header; an
+        #      ADMITTED product without a row fails admissions_record (the orphan scan)
+        _stash(cd, 'content')
+        u = _run_admit(wt, out)
+        from exopipe.phase3.core import validate
+        pi = os.path.join(cd, 'subtracted', f'{n1}_I_sub_{SC}.fits')
+        keep = pi + '.keep'
+        shutil.copy2(pi, keep)
+        with fits.open(pi, mode='update') as h:
+            h[0].header['BMAJ'] = float(h[0].header['BMAJ']) * 1.5
+        try:
+            res = {t['name']: t['passed'] for t in validate.run('admitted_epoch', pi)}
+        finally:
+            os.replace(keep, pi)
+        orphan = os.path.join(cd, 'subtracted', f'2099-01-01_I_sub_{SC}.fits')
+        shutil.copy2(pi, orphan)
+        try:
+            res2 = validate.run('admissions', os.path.join(cd, 'coadd_final', A.ADMISSIONS))
+        finally:
+            os.remove(orphan)
+        check('content tests: a beam that differs from its own source fails admitted_header; an ADMITTED product with no '
+              'row fails the admissions record (the orphan scan)',
+              u.status == 'done' and res.get('admitted_epoch.admitted_header') is False
+              and not all(t['passed'] for t in res2) and any('2099-01-01' in str(t.get('detail')) for t in res2),
+              (u.status, res, [(t['name'], t['passed'], str(t.get('detail'))[:120]) for t in res2]))
     finally:
         CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD = saved
 

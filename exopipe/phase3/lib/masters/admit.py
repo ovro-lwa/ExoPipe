@@ -114,7 +114,7 @@ def admitted_nights(cell_dir):
     return {r['date'] for r in _rows(p)} if os.path.exists(p) else set()
 
 
-def nights_to_admit(lst, scope, cell_dir, entries, ex, co, nights=None):
+def nights_to_admit(lst, scope, cell_dir, entries, ex, co, nights=None, held=()):
     """The nights of an installed cell to admit, and why each other night is not admitted.
 
     entries: the cell's Phase-2 nights as the co-add discovers them, [(date, science dir, survey image)]; ex: the exclusions
@@ -124,14 +124,16 @@ def nights_to_admit(lst, scope, cell_dir, entries, ex, co, nights=None):
     final stage's weights.csv): no Science dir of the night named before that time holds the cell's survey image
     (science_dirs_before) - so a night the build saw stays out however it was refused, recorded or not, and whatever was
     rewritten since (a rebuild decides). nights: when given (dates; the stage converts --epochs; [] = none), only those; a
-    named night that does not qualify is reported with its reason.
+    named night that does not qualify is reported with its reason. held: nights whose admissions.csv rows do not count here
+    - a --resume check passes the unit's own nights, which its own rows would otherwise drop from its identity (seventh
+    review); a run passes none.
     Returns ([(date, sci_dir, img)], {date: reason})."""
     import time as _time
     from exopipe.phase3.lib.masters import deep_stages as DS
     build_record(cell_dir)                                   # the night record must exist
     t_path, t_build = build_time(cell_dir)
     seen = seen_nights(cell_dir)
-    done = admitted_nights(cell_dir)
+    done = admitted_nights(cell_dir) - set(held)
     want = set(nights) if nights is not None else None
     freq_str = DS._freq(scope)
     take, why = [], {}
@@ -208,6 +210,30 @@ def header_differences(a, b):
     return sorted(k for k in keys if a.get(k) != b.get(k))
 
 
+def _copy_differs(p, data, hh):
+    """True when the reference copy ``p`` differs from the master's data or any header card (header_differences)."""
+    from astropy.io import fits
+    import numpy as np
+    with fits.open(p) as h:
+        old, oh = h[0].data, h[0].header
+        return not (old.shape == data.shape and np.array_equal(old, data, equal_nan=True) and not header_differences(oh, hh))
+
+
+def reference_problems(cell_dir, scope, ents):
+    """The existing reference copies that write_reference would refuse to replace (read only; the dry-run plan's view of
+    it). ``ents`` with their data (installed_reference)."""
+    out = []
+    for e in ents:
+        if e['data'] is None:
+            continue
+        p = os.path.join(cell_dir, ADMIT_DIR, 'ref', f'{e["var"]}_{scope}.fits')
+        hh = e['header'].copy()
+        hh['HISTORY'] = e['history']
+        if os.path.exists(p) and _copy_differs(p, e['data'], hh):
+            out.append(p)
+    return out
+
+
 def write_reference(cell_dir, scope, ents):
     """The reference copies under <cell>/admit/ref/<var>_<scope>.fits (the canonical names), each with its resolution in
     HISTORY, written to a temporary name and renamed (never a partial copy). Returns {stokes: path}; refuses to overwrite
@@ -224,11 +250,7 @@ def write_reference(cell_dir, scope, ents):
         hh = e['header'].copy()
         hh['HISTORY'] = e['history']
         if os.path.exists(p):
-            with fits.open(p) as h:
-                old, oh = h[0].data, h[0].header
-                same = (old.shape == e['data'].shape and np.array_equal(old, e['data'], equal_nan=True)
-                        and not header_differences(oh, hh))
-            if not same:
+            if _copy_differs(p, e['data'], hh):
                 raise Refusal(f'{p} exists with other content: the installed master changed since the admission reference '
                               f'was written - admit into the new master from a fresh <cell>/{ADMIT_DIR}/')
         else:

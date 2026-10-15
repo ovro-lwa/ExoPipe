@@ -12,6 +12,7 @@ Run: python tests/test_flow_admit.py
 import argparse
 import contextlib
 import io
+import inspect
 import json
 import os
 import shutil
@@ -202,6 +203,83 @@ def test_epochs_select_cells():
           'record is not selected (its records stay as they are, as masters admit selects); none selected refuses',
           sel == ['13h_78MHz'] and 'no cell selected' in alone and 'no cell selected' in other
           and not os.path.exists(record.record_path(sel_out, 'flow', 'admit_13h_Red')), (sel, alone, other))
+    # the same through the step's run() - its wiring, the dry run included (seventh review: the plan ran before the
+    # selection; a test of admit_cells alone passed with run() not calling it)
+    seen, real_ra, real_pa = [], FD.run_admit, FD.plan_admit
+    FD.run_admit = lambda u, a, run_, cell: seen.append(('run', cell))
+    FD.plan_admit = lambda a, run_, cells: seen.append(('plan', tuple(cells))) or 0
+    try:
+        for dry in (False, True):
+            CFG.authorize([], out=sel_out)
+            run_ = record.Run('flow', ['test'], sel_out, CFG, config_sections=())
+            run_.dry_run = dry
+            a3 = args(cells='13h_78MHz,13h_Red', epochs='13h_2025-01-10', flow_stages=['admit'])
+            FD.run(a3, run_)
+        try:
+            FD.run(args(cells='13h_Red', epochs='13h_2025-01-10', flow_stages=['admit']),
+                   record.Run('flow', ['test'], sel_out, CFG, config_sections=()))
+            r_ = 'no refusal'
+        except Refusal as e:
+            r_ = str(e)
+    finally:
+        FD.run_admit, FD.plan_admit = real_ra, real_pa
+    check('the flow step\'s run() selects by --epochs before the stage and before its dry-run plan; none selected refuses',
+          seen == [('run', '13h_78MHz'), ('plan', ('13h_78MHz',))] and 'no cell selected' in r_, (seen, r_))
+
+
+def test_read_only():
+    """Seventh review, MAJOR: only a build records a refused input. input_resolver.read_only() prints and never writes;
+    the masters step runs its selection, dry run, --resume checks and admission stages inside it (deep_stages.run), and
+    the flow step its admit stage."""
+    import types
+    from exopipe.phase3.lib.masters import deep_stages as DS, input_resolver as IR
+    root = os.path.join(T, 'ro')
+    sd = os.path.join(root, 'phase2', '13h', '2025-01-10', 'Science_20250111_000000')
+    os.makedirs(os.path.join(root, 'work', '13h_78MHz'), exist_ok=True)
+    real = IR._STATE['co']
+    IR._STATE['co'] = types.SimpleNamespace(_workdir_base=lambda: os.path.join(root, 'work'))
+    p = os.path.join(root, 'work', '13h_78MHz', IR.REFUSALS_FILE)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            with IR.read_only():
+                IR._record(sd, 78, 'V', os.path.join(sd, 'x-V-image.fits'), 'test')
+            inside = os.path.exists(p)
+            IR._record(sd, 78, 'V', os.path.join(sd, 'x-V-image.fits'), 'test')
+        outside = os.path.exists(p)
+    finally:
+        IR._STATE['co'] = real
+    check('input_resolver: inside read_only() a refused input is printed only; outside (a build) it is recorded',
+          not inside and outside, (inside, outside))
+    states, real_st, real_ok = [], dict(DS.STAGES), DS._resume_ok
+    def stub(st):
+        def f(cell, args_, run_, out_, ran_now):
+            states.append((st, IR._STATE['record']))
+            run_.unit(f'{st}_{cell}', tier='deep', stage=st, cell=cell)
+        return f
+    DS.STAGES['admit'] = stub('admit')
+    DS.STAGES['build'] = stub('build')
+    DS._resume_ok = lambda *a, **k: states.append(('resume', IR._STATE['record'])) or (False, 'test')
+    try:
+        out = os.path.join(T, 'ro_out')
+        CFG.authorize([], out=out)
+        for st in ('admit', 'build'):
+            run_ = record.Run('masters', ['test'], out, CFG, config_sections=())
+            a = argparse.Namespace(cells=CELL, lsts=None, scopes=None, exclude_cells=None, epochs=None, stages_resolved=[st],
+                                   out=out, deep_installed_root=None, reference=None, dry_run=False, resume=True,
+                                   fresh=False)
+            try:
+                DS.run(a, run_)
+            except Exception as e:                   # noqa: BLE001 - a stub stage writes no unit; the states are the test
+                states.append(('raised', type(e).__name__))
+    finally:
+        DS.STAGES.clear()
+        DS.STAGES.update(real_st)
+        DS._resume_ok = real_ok
+    want = [('resume', False), ('admit', False), ('resume', False), ('build', True)]
+    check('deep_stages.run: --resume checks and admission stages run read-only, a build records',
+          [x for x in states if x[0] != 'raised'] == want, states)
+    src = inspect.getsource(FD.run)
+    check('the flow step runs its admit stage read-only', 'read_only()' in src and 'run_admit(u, args, run, cell)' in src)
 
 
 def main():
@@ -213,6 +291,7 @@ def main():
         test_present_flow(cd, out, d, pair)
         test_record_and_stages(cd, out, d, pair)
         test_epochs_select_cells()
+        test_read_only()
     finally:
         shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

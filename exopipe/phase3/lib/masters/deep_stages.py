@@ -78,27 +78,42 @@ def default_out(args):
 # =====================================================================================================================
 
 def _admission_cells(args, cells, out):
-    """With --epochs, the cells a named night concerns: for admit-prep a named night that qualifies now
-    (admit_stages.nights), for admit alone a named night that the cell's done admit-prep record prepared and admissions.csv
-    does not hold yet. A cell whose nights cannot be computed stays selected (its stage records the refusal)."""
+    """With --epochs, (the cells a named night concerns, {cell: why each named night does not}): for admit-prep a named
+    night that qualifies now (admit_stages.nights), for admit alone a named night of the stage's own work list
+    (admit_stages.admit_inputs: prepared by the done admit-prep record and still qualifying - seventh review: a night excluded
+    since admit-prep no longer selects the cell). A cell whose nights cannot be computed stays selected when a named night
+    concerns it (its stage records the refusal); a cell without a done admit-prep record prepared nothing (admit)."""
     AS = _admit_stages()
     stages = set(getattr(args, 'stages_resolved', ()) or ())
-    keep = []
+    keep, why = [], {}
     for c in cells:
         want = set(AS.epochs_of(args, c.split('_', 1)[0]) or [])
         try:
             if 'admit-prep' in stages:
-                take, _why = AS.nights(c, args, inplace(out)[0]['coadd'])
+                take, why_ = AS.nights(c, args, inplace(out)[0]['coadd'])
                 hit = {d for d, _sd, _img in take} & want
+                why[c] = {d: why_.get(d, '') for d in sorted(want - hit)}
             else:
                 prep = done_record(out, 'admit-prep', c)
                 prepared = {r['date'] for r in ((prep or {}).get('meta') or {}).get('admit', {}).get('dates', [])}
-                hit = (prepared & want) - set(AS.admission_rows(AS.cell_tree(args, c)))
-        except (Refusal, NoInput):
+                if not prepared & want:
+                    hit = set()
+                    why[c] = {d: 'not prepared by a done admit-prep record' for d in sorted(want)}
+                else:
+                    try:
+                        todo = AS.admit_inputs(c, args, inplace(out)[0]['coadd'], out)[0]
+                        hit = {d for d, _sd, _img in todo} & want
+                        why[c] = {d: ('not prepared by the done admit-prep record' if d not in prepared else
+                                      'admitted or refused already, or no longer qualifying') for d in sorted(want - hit)}
+                    except (Refusal, NoInput):
+                        hit = prepared & want                  # the named night concerns the cell: its unit records why
+                        why[c] = {}
+        except (Refusal, NoInput) as e:
             hit = {None}
+            why[c] = {'': str(e)[:200]}
         if hit:
             keep.append(c)
-    return keep
+    return keep, why
 
 
 def select_cells(args, out=None):
@@ -125,10 +140,11 @@ def select_cells(args, out=None):
     if getattr(args, 'epochs', None):                  # admission stages only (refused above otherwise): the cells a
         lsts = C.epoch_lsts(args.epochs)               # named night concerns - another cell's record is never replaced
         cells = [x for x in cells if x.split('_', 1)[0] in lsts]     # by 'no input' (fifth, sixth review)
-        cells = _admission_cells(args, cells, out or default_out(args))
+        cells, why = _admission_cells(args, cells, out or default_out(args))
         if not cells:
-            raise Refusal(f'--epochs names no night that a selected cell has to admit (it names {sorted(lsts)}): no cell '
-                          f'selected, no record changed')
+            told = '; '.join(f'{c} {d}: {w}' for c, ws in sorted(why.items()) for d, w in ws.items())
+            raise Refusal(f'--epochs names no night that a selected cell has to admit (it names {sorted(lsts)}'
+                          + (f'; {told[:600]}' if told else '') + '): no cell selected, no record changed')
     for x in cells:
         C.parse_cell(x)
     return cells
@@ -1336,15 +1352,16 @@ def _resume_ok(run, name, st, cell, out, args=None):
     inputs = None
     if st in ADMIT_STAGES:
         AS = _admit_stages()
-        try:
+        held = (record.load_record(out, 'masters', name) or {}).get('admitted') or []   # the unit's own nights (seventh review:
+        try:                                                # its rows made them 'admitted already' - its identity keeps them)
             co_ = inplace(out)[0]['coadd']                # inside the try: a refusal of the setup is this unit's (fifth review)
             why_pop = AS.population_problem(AS.cell_tree(args, cell), cell, co_)
             if why_pop:                                   # the stage's own gate, applied now (fourth review: an exclusion
                 return False, f'the population record is not usable now: {why_pop[:240]}'    # changes no input file)
             if st == 'admit':
-                take, inputs, _prep, _frec = AS.admit_inputs(cell, args, co_, out)
+                take, inputs, _prep, _frec = AS.admit_inputs(cell, args, co_, out, held=held)
             else:
-                take, _why, inputs = AS.prep_inputs(cell, args, co_)
+                take, _why, inputs = AS.prep_inputs(cell, args, co_, held=held)
         except Refusal as e:
             return False, f'nights to admit not computable now ({e})'
         admitted = [d for d, _sd, _img in take]
@@ -1376,12 +1393,16 @@ def _resume_ok(run, name, st, cell, out, args=None):
 def run(args, run):
     from exopipe.phase3.lib.masters import deep_inplace as IP
     IP.refuse_forbidden_overrides()
+    import contextlib
+    from exopipe.phase3.lib.masters import input_resolver as IR
     out = args.out or default_out(args)
     stages = args.stages_resolved
-    cells = select_cells(args, out)
+    with IR.read_only():                        # only a build records a refused input (seventh review)
+        cells = select_cells(args, out)
     parse_reference(args.reference)             # a malformed --reference stops before any unit
     if args.dry_run:
-        return dry_run(cells, stages, args, out)
+        with IR.read_only():                    # a dry run writes nothing
+            return dry_run(cells, stages, args, out)
     if not _cfg().paths.PRODUCTION_WRITES:
         IP.refuse_production_write(out, 'masters --tier deep')
     ran_now = {}
@@ -1389,7 +1410,8 @@ def run(args, run):
         for st in stages:
             name = f'{st}_{cell}'
             if args.resume and not args.fresh:
-                ok, why = _resume_ok(run, name, st, cell, out, args)
+                with IR.read_only():            # a check, not a build
+                    ok, why = _resume_ok(run, name, st, cell, out, args)
                 if ok:
                     u = run.unit(name, tier='deep', stage=st, cell=cell)
                     u.status, u.reason = 'skipped-valid', why
@@ -1398,7 +1420,8 @@ def run(args, run):
                     continue
             n0 = len(run.units)
             try:
-                STAGES[st](cell, args, run, out, ran_now)
+                with (IR.read_only() if st in ADMIT_STAGES else contextlib.nullcontext()):   # an admission is not a build
+                    STAGES[st](cell, args, run, out, ran_now)
             except Exception as e:             # the unit's record says error (UnitRecord.__exit__); the next cell goes on
                 if len(run.units) == n0:       # raised before its unit existed: record the outcome as that unit's
                     u = run.unit(name, tier='deep', stage=st, cell=cell)
