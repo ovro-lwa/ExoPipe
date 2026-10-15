@@ -186,6 +186,31 @@ def coverage_rows(path, **ctx):
     return False, None, 'not a coverage table (no census_class / windows / in_worklist column)'
 
 
+@content_test('patched_attempts')
+def patched_from_own_record(path, **ctx):
+    """B-01 (b): one row per published (cell, Stokes); each row's patched / patched_from re-derived from the attempt
+    folder's own PATCH_RECORD.json (lib/catalog/deep_ported.patched_from)."""
+    from exopipe.phase3.lib.catalog import deep_ported as DP
+    need = ('cell', 'lst', 'scope', 'stokes', 'attempt', 'dir', 'patched', 'patched_from')
+    miss = _missing(path, need)
+    if miss:
+        return False, None, f'missing columns {miss}'
+    rows = _rows(path)
+    bad, seen = [], set()
+    for r in rows:
+        k = (r['cell'], r['stokes'])
+        if k in seen:
+            bad.append(f'{k} twice')
+        seen.add(k)
+        if r['cell'] != f"{r['lst']}_{r['scope']}":
+            bad.append(f"{k}: cell is not lst_scope")
+        src = DP.patched_from(r['dir'])
+        if (r['patched'] == '1') != (src is not None) or (r['patched_from'] or None) != src:
+            bad.append(f"{k}: patched={r['patched']} from {r['patched_from']!r}, the attempt's record says {src!r}")
+    n = sum(1 for r in rows if r['patched'] == '1')
+    return not bad, n, (f'{len(rows)} published attempts, {n} patched' + (f'; {bad[:4]}' if bad else ' - every row as its record says'))
+
+
 @content_test('rebuild_due')
 def rebuild_due_rule(path, **ctx):
     """Each row's decision re-derived from its own columns (due iff new_s >= due_fraction x build_s); its new nights are

@@ -1329,6 +1329,26 @@ def test_real_summary_parity():
           (fp0 is None or (os.path.getmtime(fp), sha(fp)) == fp0), (txt[-600:], refused[:400]))
 
 
+def test_patched():
+    """status --patched (B-01 b): the table's content test passes on rows as the attempts' own PATCH_RECORD.json give them
+    and fails when one row's patch flag is flipped."""
+    import csv as _csv
+    import json as _json
+    d = os.path.join(TMP, 'patched_world')
+    for name, rec in (('plain', None), ('patched', {'source_attempt': '/x/Run_P3S4/att'})):
+        os.makedirs(os.path.join(d, name), exist_ok=True)
+        if rec:
+            with open(os.path.join(d, name, 'PATCH_RECORD.json'), 'w') as f:
+                _json.dump(rec, f)
+    tab = os.path.join(d, 'patched_attempts_deep.csv')
+    with open(tab, 'w', newline='') as f:
+        w = _csv.writer(f)
+        w.writerow(['cell', 'lst', 'scope', 'stokes', 'attempt', 'dir', 'patched', 'patched_from'])
+        w.writerow(['05h_23MHz', '05h', '23MHz', 'V', 'a1', os.path.join(d, 'plain'), '0', ''])
+        w.writerow(['05h_27MHz', '05h', '27MHz', 'V', 'a2', os.path.join(d, 'patched'), '1', '/x/Run_P3S4/att'])
+    neg('patched_flag', 'patched_attempts', tab, edit(',1,/x/Run_P3S4/att', ',0,/x/Run_P3S4/att'))
+
+
 def test_every_content_test_has_a_negative():
     """Every content test lib/status/tests.py registers was made to fail by at least one negative test above."""
     validate.classes()
@@ -1342,7 +1362,7 @@ def main():
     with world():
         for t in (test_config_and_help, test_summary, test_coverage_gaps, test_rebuild_due, test_exclusion_conformance,
                   test_violations_stale, test_served_diff_cell_load, test_qa, test_conformance_pages_ledger_register,
-                  test_snapshot, test_gates_and_dry_run_world):
+                  test_snapshot, test_gates_and_dry_run_world, test_patched):
             t0 = time.time()
             print(f'--- {t.__name__}')
             t()

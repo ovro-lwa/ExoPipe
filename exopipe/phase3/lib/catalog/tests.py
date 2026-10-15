@@ -210,7 +210,15 @@ def harvest_every_published_attempt(path, **ctx):
         led = os.path.join(r['dir'], 'transients', f"Run_{r['label']}", 'v_deep_ledger.csv')
         if r['harvested'] != '1' or not os.path.exists(led):
             msgs.append(f"{r['cell']}/{r['stokes']} {r['att']}: not harvested ({led})")
-    return _fail(msgs, len(rows), f'{len(rows)} published attempts, every one harvested')
+        if 'patched' in r:                     # B-01 (b): the patch flag re-derived from the attempt's own record
+            from exopipe.phase3.lib.catalog import deep_ported as DP
+            src = DP.patched_from(r['dir'])
+            if (r['patched'] == '1') != (src is not None) or (src is not None and r.get('patched_from') != src):
+                msgs.append(f"{r['cell']}/{r['stokes']} {r['att']}: patched={r['patched']} from {r.get('patched_from')!r}, "
+                            f"the attempt's PATCH_RECORD.json says {src!r}")
+    n_p = sum(1 for r in rows if r.get('patched') == '1')
+    return _fail(msgs, len(rows), f'{len(rows)} published attempts, every one harvested'
+                 + (f'; {n_p} patched Run_P3S4 results (B-01 b)' if 'patched' in cols else ''))
 
 
 def _merge_key(r):

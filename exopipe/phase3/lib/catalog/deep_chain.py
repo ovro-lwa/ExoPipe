@@ -591,15 +591,25 @@ class DeepRun:
             if not atts:
                 raise NoInput('no published attempt in the search state')
             man = os.path.join(d, 'harvest_manifest.csv')
+            n_patched = {'V': 0, 'I': 0}
             with open(man + '.tmp', 'w', newline='') as f:
-                w = csv.DictWriter(f, fieldnames=['cell', 'stokes', 'node', 'att', 'dir', 'harvested', 'label'])
+                w = csv.DictWriter(f, fieldnames=['cell', 'stokes', 'node', 'att', 'dir', 'harvested', 'label', 'patched',
+                                                  'patched_from'])
                 w.writeheader()
                 for a in sorted(atts, key=lambda a: (a['stokes'], a['cell'])):
+                    src = deep_ported.patched_from(a['dir'])      # B-01 (b): a patched Run_P3S4 result, kept until the re-search
+                    n_patched[a['stokes']] = n_patched.get(a['stokes'], 0) + (src is not None)
                     w.writerow(dict(cell=a['cell'], stokes=a['stokes'], node=a['node'], att=a['att'], dir=a['dir'],
-                                    harvested='1' if a['harvested'] else '0', label=self.label))
+                                    harvested='1' if a['harvested'] else '0', label=self.label,
+                                    patched='1' if src is not None else '0', patched_from=src or ''))
             os.replace(man + '.tmp', man)
             u.meta['state_dir'] = state
             u.meta['harvest_manifest'] = man
+            u.meta['patched_attempts'] = n_patched
+            if any(n_patched.values()):
+                u.note(f'B-01 (b): {n_patched["V"]} V and {n_patched["I"]} I published attempts are patched Run_P3S4 results '
+                       f'(PATCH_RECORD.json; p3s5_patch_cell.py) - kept until the next full re-search (Gregg 2026-10-13); '
+                       f'listed in the manifest, `exopipe3 status --patched` lists their cells')
             self.write_stage_json(d, state_dir=state, harvest_manifest=man, filtered=self.filtered,
                                   cells=sorted(self.cells) if self.cells else None)
             self.out(u, man, 'harvest_manifest')

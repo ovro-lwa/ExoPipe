@@ -82,12 +82,12 @@ WRITES = True
 
 ACTIONS = ('report', 'qa', 'conformance', 'pages', 'ledger', 'register', 'eligibility', 'batch-list')
 REPORT_STAGES = ('summary', 'coverage', 'gaps', 'exclusion-conformance', 'violations', 'stale', 'served-diff',
-                 'cell-load', 'rebuild-due')
+                 'cell-load', 'rebuild-due', 'patched')
 STAGES = {'report': REPORT_STAGES,
           'qa': ('bandpass', 'qa-table', 'solar', 'provenance', 'beam', 'noise', 'outliers'),
           'conformance': ('membership',), 'pages': ('nights', 'data-processing'), 'ledger': ('ledger',),
           'register': ('register',), 'eligibility': ('eligibility',), 'batch-list': ('batch-list',)}
-LISTING = ('coverage', 'gaps', 'exclusion-conformance', 'violations', 'stale', 'rebuild-due', 'summary')
+LISTING = ('coverage', 'gaps', 'exclusion-conformance', 'violations', 'stale', 'rebuild-due', 'patched', 'summary')
 # batch-list flags -> config keys (the values decide the list: config status_snapshot, snapshot_batch_lists.py:70-76)
 _BATCH_FLAGS = (('--max-new', 'MAX_NEW'), ('--max-gate-gb', 'MAX_GATE_GB'), ('--lc-cache', 'LC_CACHE'),
                 ('--base-detections', 'BASE_DETECTIONS'), ('--base-loaded', 'BASE_LOADED'),
@@ -120,6 +120,9 @@ def add_arguments(p):
                    help='REPORT of the deep cells whose admitted observing time grew by >= status_rebuild.DUE_FRACTION '
                         'since their master build (C-10). Never a trigger (D-ADMIT, Gregg 2026-10-13: the user invokes '
                         'the rebuild, e.g. `exopipe3 masters --cells @due.txt`)')
+    g.add_argument('--patched', action='store_true',
+                   help='deep: the published search attempts that are patched Run_P3S4 results (B-01 b, Gregg 2026-10-13: '
+                        'kept until the next full re-search) - their cells are the ones a full re-search must redo')
     g.add_argument('--emit', metavar='FILE', help='write the item list of the selected listing stage to FILE')
     g.add_argument('--emit-kind', choices=('cell', 'epoch', 'lst', 'night_cell', 'unit'),
                    help='item kind of the lists (default status.EMIT_KIND[tier]; stale lists keep their own kind)')
@@ -240,7 +243,7 @@ def _stage_list(args):
                                    ('exclusion-conformance', args.exclusion_conformance),
                                    ('violations', args.violations), ('stale', args.stale is not None),
                                    ('served-diff', bool(args.served_diff)), ('cell-load', args.cell_load),
-                                   ('rebuild-due', args.rebuild_due)) if on]
+                                   ('rebuild-due', args.rebuild_due), ('patched', args.patched)) if on]
         if args.stages:
             st = [s.strip() for s in args.stages.split(',') if s.strip()]
         else:
@@ -262,7 +265,7 @@ def _check_stages(args, stages):
     if bad:
         raise SystemExit(f'error: unknown stage(s) {bad} of `status {args.action}`; stages: {", ".join(STAGES[args.action])}')
     tier = args.tier or 'deep'
-    only_deep = {'violations', 'rebuild-due', 'membership', 'nights', 'data-processing'}
+    only_deep = {'violations', 'rebuild-due', 'patched', 'membership', 'nights', 'data-processing'}
     for s in stages:
         if s in only_deep and tier != 'deep':
             if s == 'rebuild-due' and tier == 'snapshot':
@@ -425,6 +428,14 @@ def _plan(ctx, s):
                            f't = {C.status_rebuild.TIME_CARD} of the Phase 2 deep image (config status_rebuild); new '
                            f'nights from {C.status_rebuild.NEW_SET_SOURCE} (D-ADMIT admission records: '
                            f'{C.status_rebuild.ADMISSION_RECORD or "none yet"}); a report, never a rebuild trigger'])
+    if s == 'patched':
+        u = ctx.unit('report', s, sel)
+        return dict(unit=u, inputs=[], need=[],
+                    outputs=[(K.place(out, 'QA', 'patched_attempts_deep' + u[len('report_patched_deep'):] + '.csv'),
+                              'patched_attempts'), (K.place(out, 'items', f'{u}.txt'), 'item_list')],
+                    notes=[f'the published attempts of Run_{C.status.SEARCH_LABEL["deep"]} (p3s3_sources.published_attempts) '
+                           f'whose folder holds a PATCH_RECORD.json (ops/p3s5_patch_cell.py): patched Run_P3S4 results, '
+                           f'kept until the next full re-search (B-01 b)'])
     if s == 'exclusion-conformance':
         u = ctx.unit('report', s, sel)
         runs = sorted(K.served_runs(tier))
@@ -704,6 +715,37 @@ def _stage_rebuild_due(ctx):
             if r['status'] in ('due', 'never-built', 'unmeasured'):
                 print(f"  {r['cell']:10s} {r['status']:11s} new {float(r['new_s'] or 0) / 3600:7.2f} h of build "
                       f"{float(r['build_s'] or 0) / 3600:7.2f} h ({r['n_new']} new nights){'  ' + r['unmeasured'][:80] if r['unmeasured'] else ''}")
+
+
+def _stage_patched(ctx):
+    from exopipe.phase3.lib.catalog import deep_ported as DP
+    from exopipe.phase3.lib.status import steps_inplace as IPL
+    K, C, out = ctx.K, ctx.C, ctx.out
+    sel = ctx.items_selected()
+    name = ctx.unit('report', 'patched', sel)
+    with ctx.run.unit(name, tier='deep', stage='patched') as u:
+        label = C.status.SEARCH_LABEL['deep']
+        S = IPL.import_quiet('p3s3_sources', env={'P3S_LABEL': label})
+        atts = [a for a in S.published_attempts(['V', 'I']) if not sel or a['cell'] in set(sel)]
+        rows = []
+        for a in sorted(atts, key=lambda a: (a['cell'], a['stokes'])):
+            src = DP.patched_from(a['dir'])
+            lst, scope = a['cell'].split('_', 1)
+            rows.append(dict(cell=a['cell'], lst=lst, scope=scope, stokes=a['stokes'], attempt=a['att'], dir=a['dir'],
+                             patched='1' if src is not None else '0', patched_from=src or ''))
+        table = K.place(out, 'QA', 'patched_attempts_deep' + name[len('report_patched_deep'):] + '.csv')
+        K.write_csv(table, PATCHED_COLUMNS, rows)
+        n = {st: sum(1 for r in rows if r['stokes'] == st and r['patched'] == '1') for st in ('V', 'I')}
+        u.meta.update(search_state=S.STATE, published=len(rows), patched=n,
+                      ruling='B-01 (b), R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32')
+        u.add_output(table, 'patched_attempts')
+        cells = sorted({r['cell'] for r in rows if r['patched'] == '1'})
+        ctx.emit(u, 'patched', 'cell', cells, table, 'patched=1')
+        print(f'patched: {len(rows)} published attempts of Run_{label} ({S.STATE}); patched Run_P3S4 results: {n["V"]} V, '
+              f'{n["I"]} I, in {len(cells)} cells -> {table}')
+
+
+PATCHED_COLUMNS = ('cell', 'lst', 'scope', 'stokes', 'attempt', 'dir', 'patched', 'patched_from')
 
 
 def _stage_exclusion_conformance(ctx):

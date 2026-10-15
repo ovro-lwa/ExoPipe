@@ -262,3 +262,21 @@ def parents_manifest(par, path):
                      'master': g.get('master', ''), 'master_md5_data': g.get('master_md5_data', '')})
     _atomic_dictwriter_rows(path, ['cell', 'catalogue', 'sha1', 'master', 'master_md5_data'], rows)
     return len(rows)
+
+
+PATCH_RECORD = 'PATCH_RECORD.json'     # written by ops/p3s5_patch_cell.py into each attempt it publishes (p3s5_patch_cell.py:362)
+
+
+def patched_from(attempt_dir):
+    """B-01 (b), Gregg 2026-10-13 ("no patch path in the new code; patched Run_P3S4 results stay in Run_P3S5 until the next
+    full re-search"): the Run_P3S4 source attempt of a published attempt that ops/p3s5_patch_cell.py patched (its
+    PATCH_RECORD.json 'source_attempt'), else None. A patch record without a readable source names itself 'unknown'."""
+    p = os.path.join(attempt_dir, PATCH_RECORD)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p) as f:
+            return str(json.load(f).get('source_attempt') or 'unknown')
+    except (OSError, ValueError):
+        return 'unknown'
+
