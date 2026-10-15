@@ -214,6 +214,11 @@ def test_status_cli():
               ctx.get('cells') and all(c.startswith('05h_') for c in ctx['cells']) and ctx['cells'] == sorted(ctx['cells'])
               and {r['cell'] for r in rows} <= set(ctx['cells']) and 'cells_spec' not in ctx, ctx)
         good = validate.run('patched_attempts', tabs[0], **ctx)
+        old_ctx = {k: v for k, v in ctx.items() if k != 'cells'}
+        old_ctx['cells_spec'] = (rec.get('meta') or {}).get('cells_spec')
+        prev = validate.run('patched_attempts', tabs[0], **old_ctx)
+        check('a table recorded before bcb341e (ctx cells_spec, no cells) is tested against its own selection, as then',
+              old_ctx['cells_spec'] and prev and all(t['passed'] for t in prev), (old_ctx.get('cells_spec'), prev))
         with open(tabs[0]) as f:
             lines = f.readlines()
         with open(tabs[0], 'w') as f:

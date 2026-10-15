@@ -251,6 +251,23 @@ def test_stage():
     check('its content test, the population check and membership.verify passed',
           names.get('build_stats.build_stats_rederived') is True and names.get('masters_build_stats.cell_membership') is True
           and names.get('masters_build_stats.population_not_excluded') is True, names)
+    import argparse
+    from exopipe.phase3.core import record as R
+
+    class _Run:                                   # the real resume_check (core.record), as Run.resume_check calls it
+        def resume_check(self, unit, inputs, admitted):
+            return R.resume_check(out, 'masters', unit, inputs=inputs, admitted=admitted)
+    rp = f'{out}/_records/masters/build-stats_{cell}.json'
+    rc_ = json.load(open(rp))
+    rc_['commit'] = str(rc_.get('commit')).replace('-dirty', '')      # this scratch record: as if from a clean tree
+    json.dump(rc_, open(rp, 'w'))
+    same = DS._resume_ok(_Run(), f'build-stats_{cell}', 'build-stats', cell, out, argparse.Namespace(deep_installed_root=wt))
+    wt2 = os.path.join(T, 'wt2')
+    shutil.copytree(wt, wt2)
+    other = DS._resume_ok(_Run(), f'build-stats_{cell}', 'build-stats', cell, out, argparse.Namespace(deep_installed_root=wt2))
+    check('build-stats --resume (real resume_check): the same tree skips - its inputs are the records and every beam image, '
+          'as recorded -; another cell tree re-runs', same[0] is True and other == (False, 'input set changed')
+          and len(rec.get('inputs', {})) > 3, (same, other, len(rec.get('inputs', {}))))
     rc, _ = cli(*common, '--deep-installed-root', wt)
     r2 = _rec(out, cell)
     rc3, _ = cli(*common, '--deep-installed-root', wt, '--fresh')

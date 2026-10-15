@@ -39,25 +39,61 @@ def build_record(cell_dir):
 
 
 def seen_nights(cell_dir):
-    """{date: [records that name it]} over BUILD_RECORDS: the nights the installed build saw. A record without a header
-    (refusals_grid.csv: lst,scope,date,...; sanity_excluded.csv: lst,scope,date,...) is read by its third column."""
+    """{date: [records that name it]} over BUILD_RECORDS: the nights the installed build recorded. A record with a header
+    is read by its date column - a header without that column refuses (a record this rule cannot read is never skipped);
+    one without a header (refusals_grid.csv, sanity_excluded.csv: lst,scope,date,...) by its third column."""
     import re
     out = {}
     for rel, col in BUILD_RECORDS:
         p = os.path.join(cell_dir, rel)
         if not os.path.exists(p):
             continue
-        with open(p, newline='') as f:
+        with open(p, newline='', encoding='utf-8-sig') as f:
             rows = list(csv.reader(f))
-        if not rows:
-            continue
-        if col and col in rows[0]:
+        if col:
+            if not rows or col not in rows[0]:
+                raise Refusal(f'{p}: no {col!r} column in its first row ({(rows or [[]])[0][:6]}) - the build record cannot '
+                              f'be read, so no night of the cell can be shown new')
             i, body = rows[0].index(col), rows[1:]
         else:
             i, body = 2, rows
         for r in body:
             if len(r) > i and re.match(r'^\d{4}-\d\d-\d\d$', r[i].strip()):
-                out.setdefault(r[i].strip(), []).append(rel)
+                names = out.setdefault(r[i].strip(), [])
+                if rel not in names:
+                    names.append(rel)
+    return out
+
+
+SCIENCE_DIR = r'^Science_(\d{8})_(\d{6})$'       # Phase 2's Science dir: the UTC time it was made, in its name
+
+
+def science_dirs_before(sci_dir, t, lst, freq_str, date, co):
+    """The night's Phase-2 Science dirs (the siblings of ``sci_dir``) named before ``t`` that hold the cell's survey image by
+    the co-add's own finder: where a build that fixed its night set at ``t`` could have seen the night. A Science dir whose
+    name carries no time counts as before (it cannot be dated). Re-dewarped or restored images keep their dir's name, so
+    file times play no part (2026-10-15 review: 6,463 of 11,191 survey images were rewritten more than a day after their
+    Science dir was made; every Science dir an installed build used is named before that build's night record)."""
+    import calendar
+    import contextlib
+    import io
+    import re
+    import time as _time
+    night = os.path.dirname(sci_dir)
+    out = []
+    for name in sorted(os.listdir(night)) if os.path.isdir(night) else []:
+        if not name.startswith('Science_'):
+            continue
+        m = re.match(SCIENCE_DIR, name)
+        when = calendar.timegm(_time.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S')) if m else None
+        if when is not None and when >= t:
+            continue
+        sd = os.path.join(night, name)
+        with contextlib.redirect_stdout(io.StringIO()):          # the finders' failsafe notes
+            img = (co.find_subband_alignment_image(sd, int(freq_str)) if co.is_subband(freq_str)
+                   else co.find_wideband_alignment_image(sd, freq_str, lst, date))
+        if img:
+            out.append(name)
     return out
 
 
@@ -67,21 +103,25 @@ def admitted_nights(cell_dir):
     return {r['date'] for r in _rows(p)} if os.path.exists(p) else set()
 
 
-def nights_to_admit(lst, scope, cell_dir, entries, ex, nights=None):
+def nights_to_admit(lst, scope, cell_dir, entries, ex, co, nights=None):
     """The nights of an installed cell to admit, and why each other night is not admitted.
 
     entries: the cell's Phase-2 nights as the co-add discovers them, [(date, science dir, survey image)]; ex: the exclusions
-    (core.exclusions). A night is admitted when data_decisions.csv does not exclude it, admissions.csv does not hold it, no
-    record of the installed build names it (seen_nights: measured, refused before measuring, refused as an input - a
-    re-imaged night the build saw stays out: a rebuild decides), and its survey image was written after the build fixed its
-    night set (the time of residuals_provisional.csv) - for the nights a build refuses before any record (a wrong grid is
-    recorded only in production's refusals_grid.csv, and not in every cell). nights: when given (dates; the stage converts
-    --epochs), only those; a named night that does not qualify is reported with its reason.
+    (core.exclusions); co: the co-add module (its finders). A night is admitted when data_decisions.csv does not exclude it,
+    admissions.csv does not hold it, no record of the installed build names it (seen_nights: measured, refused before
+    measuring, refused as an input) and Phase 2 first had it after the build fixed its night set (the time of
+    residuals_provisional.csv): no Science dir of the night named before that time holds the cell's survey image
+    (science_dirs_before) - so a night the build saw stays out however it was refused, recorded or not, and whatever was
+    rewritten since (a rebuild decides). nights: when given (dates; the stage converts --epochs; [] = none), only those; a
+    named night that does not qualify is reported with its reason.
     Returns ([(date, sci_dir, img)], {date: reason})."""
+    import time as _time
+    from exopipe.phase3.lib.masters import deep_stages as DS
     _p, t_build, _built = build_record(cell_dir)
     seen = seen_nights(cell_dir)
     done = admitted_nights(cell_dir)
-    want = set(nights) if nights else None
+    want = set(nights) if nights is not None else None
+    freq_str = DS._freq(scope)
     take, why = [], {}
     for d, sd, img in entries:
         if want is not None and d not in want:
@@ -95,12 +135,14 @@ def nights_to_admit(lst, scope, cell_dir, entries, ex, nights=None):
                       f'decides')
         elif not img or not os.path.exists(img):
             why[d] = 'no survey image'
-        elif os.path.getmtime(img) <= t_build:
-            import time as _time
-            why[d] = (f'survey image older than the build\'s night record ({BUILD_NIGHTS} written '
-                      f'{_time.strftime("%Y-%m-%dT%H:%MZ", _time.gmtime(t_build))}): the build saw this night - a rebuild decides')
         else:
-            take.append((d, sd, img))
+            before = science_dirs_before(sd, t_build, lst, freq_str, d, co)
+            if before:
+                why[d] = (f'Phase 2 had it before the build fixed its night set ({BUILD_NIGHTS} written '
+                          f'{_time.strftime("%Y-%m-%dT%H:%MZ", _time.gmtime(t_build))}; {", ".join(before)} hold its survey '
+                          f'image): the build saw this night - a rebuild decides')
+            else:
+                take.append((d, sd, img))
     if want is not None:
         for d in sorted(want - {x[0] for x in entries}):
             why[d] = 'no Phase-2 night of this cell'

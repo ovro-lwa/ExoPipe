@@ -49,7 +49,28 @@ class _Ex:
         return d in self.nights
 
 
+def _night(root, d, name, bands=('23MHz',), mtime=None):
+    """A synthetic Phase-2 night dir <root>/<d>/<name>/<band>/I/deep/ holding a survey image the co-add's finder takes."""
+    sd = os.path.join(root, d, name)
+    img = None
+    for b in bands:
+        dd = os.path.join(sd, b, 'I', 'deep')
+        os.makedirs(dd, exist_ok=True)
+        img = os.path.join(dd, f'{b}-I-Taper-3561s-Robust-0.75-{d.replace("-", "")}_000000-image_dewarped.fits')
+        open(img, 'w').write('x')
+        if mtime is not None:
+            os.utime(img, (mtime, mtime))
+    return sd, img
+
+
 def test_nights_rule():
+    """The night rule on a synthetic cell and Phase-2 tree: a night is taken only when no record of the build names it, it
+    is not excluded or already admitted, and Phase 2 first had it after the build fixed its night set - every Science dir
+    holding the cell's survey image named after that time. File times play no part (a re-dewarped image in an old Science
+    dir stays seen); a night re-imaged into a new Science dir after the build stays seen through its old one; an old
+    Science dir without this band's image does not count."""
+    import calendar
+    from exopipe.phase3.lib.masters import coadd as co
     cell = os.path.join(T, '23h_23MHz')
     os.makedirs(os.path.join(cell, 'coadd_final'))
     rec = os.path.join(cell, A.BUILD_NIGHTS)
@@ -59,30 +80,46 @@ def test_nights_rule():
         w.writerows([['23h', '23MHz', '2025-01-01', '1'], ['23h', '23MHz', '2025-01-02', '1']])
     with open(os.path.join(cell, 'coadd_final', A.ADMISSIONS), 'w', newline='') as f:
         csv.writer(f).writerows([['date', 'verdict'], ['2025-01-04', 'admitted']])
-    t = time.time() - 3600
+    t = calendar.timegm((2026, 1, 1, 0, 0, 0))                    # the build fixed its night set here
     os.utime(rec, (t, t))
+    p2 = os.path.join(T, 'phase2', '23h')
+    old, new = 'Science_20251201_000000', 'Science_20260201_000000'
     entries = []
-    for d, dt in (('2025-01-01', -100), ('2025-01-02', 100), ('2025-01-03', -100), ('2025-01-04', 100), ('2025-01-05', 100),
-                  ('2025-01-06', 100)):
-        img = os.path.join(T, f'{d}.fits')
-        open(img, 'w').write('x')
-        os.utime(img, (t + dt, t + dt))
-        entries.append((d, os.path.join(T, 'Science_x'), img))
-    entries.append(('2025-01-07', os.path.join(T, 'Science_x'), None))
-    take, why = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex({'2025-01-06'}))
-    check('nights: only the night in no record, not excluded, not admitted, with an image newer than the build is taken',
-          [x[0] for x in take] == ['2025-01-05'], (take, why))
-    want = {'2025-01-01': 'installed build', '2025-01-02': 'installed build', '2025-01-03': 'older than the build\'s night record',
-            '2025-01-04': A.ADMISSIONS, '2025-01-06': 'excluded', '2025-01-07': 'no survey image'}
-    check('nights: each other night says why (a recorded night stays out even with a newer image)',
-          set(why) == set(want) and all(want[d] in why[d] for d in want), why)
-    take, why = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()), nights=['2025-01-05', '2025-01-03', '2025-02-01'])
+    for d in ('2025-01-01', '2025-01-02', '2025-01-03', '2025-01-04', '2025-01-05', '2025-01-06'):
+        sd, img = _night(p2, d, old if d == '2025-01-03' else new)
+        entries.append((d, sd, img))
+    entries.append(('2025-01-07', os.path.join(p2, '2025-01-07', new), None))
+    _night(p2, '2025-01-08', old)                                   # seen by the build, then re-imaged into a new dir
+    entries.append(('2025-01-08',) + _night(p2, '2025-01-08', new))
+    _night(p2, '2025-01-09', old, bands=('27MHz',))                 # the old dir held another band only
+    entries.append(('2025-01-09',) + _night(p2, '2025-01-09', new))
+    entries.append(('2025-01-10',) + _night(p2, '2025-01-10', old, mtime=t + 86400 * 30))   # re-dewarped in place, later
+    take, why = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex({'2025-01-06'}), co)
+    check('nights: only nights Phase 2 first had after the build, in no record, not excluded, not admitted, are taken',
+          [x[0] for x in take] == ['2025-01-05', '2025-01-09'], (take, why))
+    want = {'2025-01-01': 'installed build', '2025-01-02': 'installed build', '2025-01-03': 'Phase 2 had it before',
+            '2025-01-04': A.ADMISSIONS, '2025-01-06': 'excluded', '2025-01-07': 'no survey image',
+            '2025-01-08': 'Phase 2 had it before', '2025-01-10': 'Phase 2 had it before'}
+    check('nights: each other night says why (re-imaged after the build: seen in its old dir; re-dewarped later: seen)',
+          set(why) == set(want) and all(want[d] in why[d] for d in want) and old in why['2025-01-08'], why)
+    take, why = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()), co, nights=['2025-01-05', '2025-01-03', '2025-02-01'])
     check('nights: --epochs restricts to the named nights; a named night that does not qualify or does not exist says why',
           [x[0] for x in take] == ['2025-01-05'] and set(why) == {'2025-01-03', '2025-02-01'}
           and 'no Phase-2 night' in why['2025-02-01'], (take, why))
+    take, why = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()), co, nights=[])
+    check('nights: --epochs naming no night of this LST takes none (never every night)', take == [] and why == {}, (take, why))
+    with open(os.path.join(cell, 'coadd_final', 'night_image_gate.csv'), 'w', newline='') as f:
+        f.write('\ndate,verdict\n2025-01-05,FAIL\n')                   # a leading blank line: the header is not read
+    try:
+        A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()), co)
+        check('nights: a build record whose header lacks its date column refuses (never silently skipped)', False)
+    except Refusal as e:
+        check('nights: a build record whose header lacks its date column refuses (never silently skipped)',
+              'night_image_gate.csv' in str(e) and "'date'" in str(e), str(e))
+    os.remove(os.path.join(cell, 'coadd_final', 'night_image_gate.csv'))
     os.remove(rec)
     try:
-        A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()))
+        A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()), co)
         check('nights: refused without the build\'s night record', False)
     except Refusal as e:
         check('nights: refused without the build\'s night record', A.BUILD_NIGHTS in str(e), str(e))
@@ -90,8 +127,8 @@ def test_nights_rule():
 
 def test_nights_real():
     """Read only: cells whose builds left nights out of residuals_provisional.csv - seen in another record of the build
-    (wrong grid: refusals_grid.csv; Stokes I sanity: sanity_excluded.csv) or, recorded nowhere in the cell, by the time
-    of their image (written before the build's night record)."""
+    (wrong grid: refusals_grid.csv; Stokes I sanity: sanity_excluded.csv) or, recorded nowhere in the cell, through
+    Phase 2: a Science dir holding its survey image was named before the build's night record."""
     import contextlib
     import io
     from exopipe.phase3.core import exclusions as EX
@@ -99,11 +136,11 @@ def test_nights_real():
     ex = EX.load()
     root = CFG.paths.COADD_SB_ROOT
     for cell, night, because in (('02h_Green', '2025-12-26', 'refusals_grid.csv'), ('23h_23MHz', '2025-10-29', 'sanity_excluded.csv'),
-                                  ('11h_Full', '2025-03-09', 'older than the build\'s night record')):
+                                  ('11h_Full', '2025-03-09', 'Phase 2 had it before the build')):
         lst, sc = cell.split('_')
         with contextlib.redirect_stdout(io.StringIO()):
             entries = co.discover_dates(lst, sc.replace('MHz', '') if sc.endswith('MHz') else sc)
-        take, why = A.nights_to_admit(lst, sc, os.path.join(root, cell), entries, ex)
+        take, why = A.nights_to_admit(lst, sc, os.path.join(root, cell), entries, ex, co)
         check(f'real {cell}: no night to admit; {night} (not in residuals_provisional.csv) was seen by the build ({because})',
               not take and because in why.get(night, ''), (take, why.get(night)))
 
@@ -215,7 +252,7 @@ def test_prep_night_equivalence():
 
 def test_review2_nights_and_reference():
     """Second review (2026-10-15): a night ANY record of the installed build names is seen (here night_image_gate.csv and
-    refusals_grid.csv, as in production), only the others fall to the image-time rule; a master without SHSCALE refuses;
+    refusals_grid.csv, as in production), only the others fall to the Phase-2 rule; a master without SHSCALE refuses;
     a reference copy with another CONSTDIG is never replaced."""
     from astropy.io import fits
     cell = os.path.join(T, 'r2', '23h_23MHz')
@@ -227,15 +264,14 @@ def test_review2_nights_and_reference():
         csv.writer(f).writerows([['date', 'verdict', 'reason'], ['2025-01-02', 'FAIL', 'flux scale not measurable']])
     with open(os.path.join(cell, 'refusals_grid.csv'), 'w') as f:
         f.write('23h,23MHz,2025-01-03,wrong grid (Phase-2 anomaly),prep\n')
-    t = time.time() - 3600
+    import calendar
+    from exopipe.phase3.lib.masters import coadd as co
+    t = calendar.timegm((2026, 1, 1, 0, 0, 0))
     os.utime(rec, (t, t))
     entries = []
-    for d in ('2025-01-01', '2025-01-02', '2025-01-03', '2025-01-04'):
-        img = os.path.join(T, 'r2', f'{d}.fits')
-        open(img, 'w').write('x')
-        os.utime(img, (t + 100, t + 100))               # every image newer than the build's night record
-        entries.append((d, os.path.join(T, 'r2', 'Science_x'), img))
-    take, why = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()))
+    for d in ('2025-01-01', '2025-01-02', '2025-01-03', '2025-01-04'):   # every night first in Phase 2 after the build
+        entries.append((d,) + _night(os.path.join(T, 'r2', 'phase2'), d, 'Science_20260201_000000'))
+    take, why = A.nights_to_admit('23h', '23MHz', cell, entries, _Ex(()), co)
     check('review 2: a night any build record names is seen (night-image record, grid refusals) - re-imaged or not',
           [x[0] for x in take] == ['2025-01-04'] and 'night_image_gate.csv' in why['2025-01-02']
           and 'refusals_grid.csv' in why['2025-01-03'], (take, why))
@@ -300,14 +336,18 @@ def test_prep_night_regrid_and_shape():
 
 def make_admission_copy(cell, night, root):
     """A copy of an installed cell's records and masters under root/<cell>/ in which ``night`` - a member - is taken out
-    of every record of the build (admit.BUILD_RECORDS, and stage2_verdict.csv) and the build's night record is dated
-    2000-01-01: the night then qualifies, as a night the build never saw would (no real night does today). The copy's
-    population record is recomputed without the night. Returns the copy's path."""
+    of every record of the build (admit.BUILD_RECORDS, and stage2_verdict.csv) and the build's night record is dated one
+    day before the night's earliest Science dir (by its name): the night then qualifies, as a night Phase 2 first had
+    after the build would (no real night does today). The copy is a consistent build without the night: the stage-2
+    record carries the thresholds that population gives, and the population record is recomputed (and passes its test).
+    Returns the copy's path."""
     import calendar
+    import glob
+    import re
     from exopipe.phase3.lib.masters import build_stats as BS, coadd as co
     src, dst = os.path.join(CFG.paths.COADD_SB_ROOT, cell), os.path.join(root, cell)
     os.makedirs(os.path.join(dst, 'coadd_final'), exist_ok=True)
-    sc = cell.split('_', 1)[1]
+    lst, sc = cell.split('_', 1)
     for rel in [r for r, _c in A.BUILD_RECORDS] + ['coadd_final/stage2_verdict.csv', f'coadd_final/I_deep_Taper_R075_{sc}.fits',
                                                    f'coadd_final/V_deep_Taper_R0_{sc}.fits']:
         if os.path.exists(os.path.join(src, rel)):
@@ -321,8 +361,21 @@ def make_admission_copy(cell, night, root):
         keep = [r for r in rows if not (len(r) > i and r[i].strip() == night)]
         with open(p, 'w', newline='') as f:
             csv.writer(f).writerows(keep)
-    BS.write(dst, BS.compute(dst, *cell.split('_', 1), co, CFG, 'stage'))   # the population without the night
-    t = calendar.timegm((2000, 1, 1, 0, 0, 0))
+    s2p, _rows = BS.stage2_source(dst)                          # the thresholds a build without the night applied
+    st2 = BS.stage2_stats(_rows, float(co.OUTLIER_SIGMA), float(co.LOW_OUTLIER_SIGMA))
+    rows = list(csv.DictReader(open(s2p, newline='')))
+    for r in rows:
+        r['i_thresh_mjy'], r['v_thresh_mjy'] = repr(st2['I']['thr_hi']), repr(st2['V']['thr_hi'])
+    with open(s2p, 'w', newline='') as f:
+        wr = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        wr.writeheader()
+        wr.writerows(rows)
+    BS.write(dst, BS.compute(dst, lst, sc, co, CFG, 'stage'))   # the population without the night
+    bad = BS.recheck(os.path.join(dst, 'coadd_final', BS.FILE), co)
+    assert not bad, bad                                          # the copy is one consistent build
+    names = [re.match(A.SCIENCE_DIR, os.path.basename(x)) for x in glob.glob(f'{co.PHASE2_ROOT}/{lst}/{night}/Science_*')]
+    first = min(calendar.timegm(time.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S')) for m in names if m)
+    t = first - 86400
     os.utime(os.path.join(dst, A.BUILD_NIGHTS), (t, t))
     return dst
 
@@ -330,12 +383,18 @@ def make_admission_copy(cell, night, root):
 def test_admit_prep():
     """`masters --stages admit-prep` on a copy of 13h_78MHz with one member night made 'new': only that night is prepared,
     against the installed masters in native units (admit/ref/), by prep_night; the flow pair in the record; the content
-    test of the scaled image passes; --epochs restricts; the resume identity is the nights that qualify now; refusals (no
-    population record, a production tree)."""
+    test of the scaled image passes; --epochs restricts, and naming no night of the LST takes none; a re-run moves the
+    earlier prep files aside; --resume (the real resume_check, the scratch record marked as from a clean tree) skips the
+    same tree and re-runs for another cell tree or a re-imaged night; refusals (a population record that fails its content
+    test or is missing, a production tree); B-03's wrong-grid test on a real wrong-grid night."""
     import argparse
+    import contextlib
+    import io
     import json
     import subprocess
-    from exopipe.phase3.lib.masters import deep_stages as DS
+    from astropy.io import fits
+    from exopipe.phase3.core import record as R
+    from exopipe.phase3.lib.masters import admit_stages as AS, coadd as co, deep_stages as DS
     cell = '13h_78MHz'
     w = list(csv.DictReader(open(os.path.join(CFG.paths.COADD_SB_ROOT, cell, 'coadd_final', 'weights.csv'))))
     members = sorted(r['date'] for r in w if r.get('in_master') == '1' and r.get('qa3_guard') != 'reference-identity')
@@ -343,12 +402,13 @@ def test_admit_prep():
     wt = os.path.join(T, 'admit_wt')
     cd = make_admission_copy(cell, night, wt)
     out = os.path.join(T, 'admit_out')
+    name = f'admit-prep_{cell}'
+    rp = os.path.join(out, '_records', 'masters', f'{name}.json')
 
     def cli(*a):
         p = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters', '--tier', 'deep', '--cells', cell,
                             '--stages', 'admit-prep', '--cores', 'none', '--out', out] + list(a), cwd=REPO,
                            env=dict(os.environ), capture_output=True, text=True, timeout=1800)
-        rp = os.path.join(out, '_records', 'masters', f'admit-prep_{cell}.json')
         return p.returncode, (json.load(open(rp)) if os.path.exists(rp) else {}), p.stdout + p.stderr
     rc, rec, txt = cli('--deep-installed-root', wt, '--dry-run')
     check('admit-prep dry run: plans the one new night, writes nothing', rc == 0 and night in txt and
@@ -362,36 +422,68 @@ def test_admit_prep():
           and os.path.exists(sp) and meta['pairs'][0]['reference'].endswith('/admit/ref/I_deep_Taper_R075_78MHz.fits')
           and meta['pairs'][0]['out_dir'].endswith('/admit/flow') and rec.get('admitted') == [night],
           (rc, rec.get('reason'), txt[-400:]))
-    check('admit-prep: the scaled image passes its content test (input / scale re-derived)', tests and all(tests.values()), tests)
+    check('admit-prep: the scaled image and the population record pass their content tests', tests and all(tests.values())
+          and tests.get('admit_prep.population_record') is True, tests)
 
-    class _Run:
-        def resume_check(self, name, inputs, admitted):
-            self.got = admitted
-            return True, ''
-    seen = {}
-    for label, ep in (('none', None), ('the new night', f'13h_{night}'), ('a member', f'13h_{members[0]}')):
-        r_ = _Run()
-        ok, why = DS._resume_ok(r_, f'admit-prep_{cell}', 'admit-prep', cell, out,
-                                argparse.Namespace(deep_installed_root=wt, epochs=ep))
-        seen[label] = r_.got
-    check('admit-prep --resume identity: the nights that qualify now ([new night] without --epochs or naming it; [] for a '
-          'member) - compared with the record\'s admitted set', seen == {'none': [night], 'the new night': [night],
-                                                                      'a member': []}, seen)
+    class _Run:                                   # the real resume_check (core.record), as Run.resume_check calls it
+        def resume_check(self, unit, inputs, admitted):
+            return R.resume_check(out, 'masters', unit, inputs=inputs, admitted=admitted)
+    rec_c = json.load(open(rp))
+    rec_c['commit'] = str(rec_c.get('commit')).replace('-dirty', '')    # this scratch record: as if from a clean tree
+    json.dump(rec_c, open(rp, 'w'))
+    same = DS._resume_ok(_Run(), name, 'admit-prep', cell, out, argparse.Namespace(deep_installed_root=wt, epochs=None))
+    wt2 = os.path.join(T, 'admit_wt2')
+    shutil.copytree(wt, wt2)
+    other = DS._resume_ok(_Run(), name, 'admit-prep', cell, out, argparse.Namespace(deep_installed_root=wt2, epochs=None))
+    sd_new, _img = _night(os.path.join(T, 'reimaged', '13h'), night, 'Science_20991231_000000', bands=('78MHz',))
+    img_new = os.path.join(sd_new, '78MHz', 'I', 'deep', os.path.basename(meta['dates'][0]['align_img']))
+    shutil.copy2(meta['dates'][0]['align_img'], img_new)
+    real_dd = co.discover_dates
+    co.discover_dates = lambda l, f: [(d, sd_new, img_new) if d == night else (d, sd, im) for d, sd, im in real_dd(l, f)]
+    try:
+        reim = DS._resume_ok(_Run(), name, 'admit-prep', cell, out, argparse.Namespace(deep_installed_root=wt, epochs=None))
+    finally:
+        co.discover_dates = real_dd
+    check('admit-prep --resume (real resume_check): the same tree skips; another cell tree and a re-imaged night re-run',
+          same[0] is True and other == (False, 'input set changed') and reim == (False, 'input set changed'),
+          (same, other, reim))
     rc, rec, _ = cli('--deep-installed-root', wt, '--epochs', f'13h_{night},13h_2025-01-10')
     meta = (rec.get('meta') or {}).get('admit') or {}
-    check('admit-prep --epochs: the named night that qualifies is prepared, the excluded one says why',
-          rc == 0 and [d['date'] for d in meta.get('dates', [])] == [night]
-          and 'excluded' in (rec.get('meta') or {}).get('not_admitted', {}).get('2025-01-10', ''), (rc, rec.get('reason')))
+    aside = [x for x in os.listdir(os.path.join(cd, A.ADMIT_DIR, 'prep', '_superseded'))] \
+        if os.path.isdir(os.path.join(cd, A.ADMIT_DIR, 'prep', '_superseded')) else []
+    moved = sorted(os.listdir(os.path.join(cd, A.ADMIT_DIR, 'prep', '_superseded', aside[0]))) if aside else []
+    check('admit-prep --epochs: the named night that qualifies is prepared again (its earlier prep files moved aside, '
+          'none deleted), the excluded one says why',
+          rc == 0 and [d['date'] for d in meta.get('dates', [])] == [night] and f'{night}_scaled.fits' in moved
+          and 'excluded' in (rec.get('meta') or {}).get('not_admitted', {}).get('2025-01-10', ''), (rc, rec.get('reason'), moved))
     rc, rec, _ = cli('--deep-installed-root', wt, '--epochs', '13h_2025-01-10')
     check('admit-prep --epochs: a named night that does not qualify -> no input, with its reason',
           rc == 3 and 'no night to admit' in rec.get('reason', '') and 'excluded' in rec.get('reason', ''), rec.get('reason'))
-    os.remove(os.path.join(cd, 'coadd_final', 'build_stats.json'))
+    rc, rec, _ = cli('--deep-installed-root', wt, '--epochs', '14h_2025-01-01')
+    check('admit-prep --epochs naming no night of the cell\'s LST -> no input (never every night)',
+          rc == 3 and 'names no night of 13h' in rec.get('reason', ''), rec.get('reason'))
+    bsp = os.path.join(cd, 'coadd_final', 'build_stats.json')
+    good = open(bsp).read()
+    st = json.loads(good)
+    st['stage2']['I']['median'] = st['stage2']['I']['median'] * 2
+    json.dump(st, open(bsp, 'w'))
+    rc, rec, _ = cli('--deep-installed-root', wt)
+    check('admit-prep refuses a population record that fails its content test', rc == 2 and 'fails its content test'
+          in rec.get('reason', ''), rec.get('reason'))
+    os.remove(bsp)
     rc, rec, _ = cli('--deep-installed-root', wt)
     check('admit-prep refuses without the population record (build_stats.json)', rc == 2 and 'build-stats' in rec.get('reason', ''),
           rec.get('reason'))
     rc, rec, _ = cli()
     check('admit-prep refuses the production tree until cutover', rc == 2 and 'production' in rec.get('reason', ''), rec.get('reason'))
-
+    with contextlib.redirect_stdout(io.StringIO()):
+        g = [x for x in co.discover_dates('02h', 'Green') if x[0] == '2025-12-26']
+    mh = fits.getheader(os.path.join(CFG.paths.COADD_SB_ROOT, '02h_Green', 'coadd_final', 'I_deep_Taper_R075_Green.fits'))
+    mshape = (int(mh['NAXIS2']), int(mh['NAXIS1']))
+    bad = AS.off_grid('2025-12-26', g[0][2], mshape, co.CUTOVER_DATE) if g else 'no image'
+    okn = AS.off_grid(night, meta['dates'][0]['align_img'], fits.getdata(sp).shape[-2:], co.CUTOVER_DATE) if meta.get('dates') else 'x'
+    check('B-03 at admission: the real wrong-grid night 02h Green 2025-12-26 is off the master\'s grid; a member night is not',
+          isinstance(bad, tuple) and bad != mshape and okn is None, (bad, mshape, okn))
 
 def main():
     shutil.rmtree(T, ignore_errors=True)

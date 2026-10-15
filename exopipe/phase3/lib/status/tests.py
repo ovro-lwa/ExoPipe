@@ -187,11 +187,12 @@ def coverage_rows(path, **ctx):
 
 
 @content_test('patched_attempts')
-def patched_from_own_record(path, label=None, state=None, cells=None, **ctx):
+def patched_from_own_record(path, label=None, state=None, cells=None, cells_spec=None, **ctx):
     """B-01 (b): one row per published (cell, Stokes); each row's patched / patched_from re-derived from the attempt
     folder's own PATCH_RECORD.json (lib/catalog/deep_ported.patched_from); and - given the register the table was made from
-    (label, state, cells_spec of its unit) - the rows are exactly that register's published attempts of the selected cells,
-    none missing, none extra."""
+    (label, state and the selection of its unit: ``cells``, the expanded list recorded since bcb341e; a record written
+    before it holds ``cells_spec``, expanded now as then) - the rows are exactly that register's published attempts of
+    the selected cells, none missing, none extra."""
     from exopipe.phase3.lib.catalog import deep_ported as DP
     need = ('cell', 'lst', 'scope', 'stokes', 'attempt', 'dir', 'patched', 'patched_from')
     miss = _missing(path, need)
@@ -201,7 +202,13 @@ def patched_from_own_record(path, label=None, state=None, cells=None, **ctx):
     bad, seen = [], set()
     if label and state:
         from exopipe.phase3.lib.status import steps_inplace as IPL
-        want = set(cells) if cells is not None else None              # the expanded selection the unit recorded
+        if cells is not None:                                          # the expanded selection the unit recorded
+            want = set(cells)
+        elif cells_spec:                                               # a record written before bcb341e (2026-10-15 review)
+            from exopipe.phase3.lib.status import steps_coverage as COV
+            want = set(COV.deep_universe(cells_spec))
+        else:
+            want = None
         exp = {(a['cell'], a['stokes'], a['att'], a['dir']) for a in IPL.search_sources(label, state=state).published_attempts(['V', 'I'])
                if want is None or a['cell'] in want}
         got = {(r['cell'], r['stokes'], r['attempt'], r['dir']) for r in rows}

@@ -23,7 +23,11 @@ population. Each number is derived from the cell's own records, in the cell dire
 basis: 'build' - written by the masters build when masters_build.WRITE_BUILD_STATS is True (ruled; production False writes
 nothing); 'stage' - written later by `masters --tier deep --stages build-stats` from a built cell's records. Sources are
 relative to the cell directory, so the record stays valid where install copies it. Content test (class build_stats): the
-cell, sources and nights its folder gives, and every number re-derived with the recorded settings (recheck).
+cell, sources and nights its folder gives, and every number re-derived with the recorded settings (recheck). What the test
+cannot see: a setting is checked only through the numbers derived with it (OUTLIER_SIGMA through the threshold the build
+applied, the other sigmas through their thresholds); a setting no recorded number depends on (X_DISCARD, SANITY_X), a
+sigma edited together with its threshold where the build applied none (LOW_OUTLIER_SIGMA), and 'basis' are informational.
+No gate reads them: every gate applies its own settings to the recorded population (2026-10-15 review).
 Below a gate's minimum count the population is recorded all the same (n, median, MAD): a later ruling may lower a minimum.
 A cell whose records are not one generation (residuals_provisional.csv dates other than weights.csv's - the search's own
 check) or whose stage-2 record is another metric (membership.stage2_record's rule) has no record. A record made after the
@@ -140,6 +144,21 @@ def beam_stats(nights_areas, ratio, min_areas):
     gate = len(areas) >= min_areas
     return dict(n=len(areas), gate=gate, median_area=med,
                 outliers=sorted(d for d, a in nights_areas.items() if a is not None and a > ratio * med) if gate else [])
+
+
+def beam_images(cell_dir, lst, scope, co):
+    """The image the co-add beam gate reads for each night of the record, in the Science dir the build used (as _derive
+    resolves them, no area read): with the records (sources) the inputs of a record of this cell directory."""
+    prov = os.path.join(cell_dir, BUILD_NIGHTS)
+    wp = os.path.join(cell_dir, WEIGHTS)
+    nights = sorted({r['date'] for r in _rows(prov)}) if os.path.exists(prov) else []
+    sci = {r['date']: r.get('sci_dir') for r in _rows(wp)} if os.path.exists(wp) else {}
+    out = []
+    for d in nights:
+        img = co.beam_gate_image(lst, scope, d, sci=sci[d]) if sci.get(d) else None
+        if img:
+            out.append(img)
+    return out
 
 
 def beam_nights(lst, scope, nights, sci_dirs, co):

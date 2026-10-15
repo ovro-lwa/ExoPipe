@@ -935,6 +935,15 @@ def _build_stats_sources(cell_src):
                                os.path.join(cell_src, BS.WEIGHTS))))
 
 
+def _build_stats_inputs(cell_src, cell, co):
+    """Every input a build-stats record of this cell tree holds, as the stage records them: the build records and each
+    population night's beam-gate image (build_stats.beam_images) - also the stage's --resume identity (2026-10-15 review:
+    the records alone never equalled the recorded set, so the stage never resumed)."""
+    from exopipe.phase3.lib.masters import build_stats as BS
+    lst, sc = cell.split('_', 1)
+    return list(dict.fromkeys(_build_stats_sources(cell_src) + BS.beam_images(cell_src, lst, sc, co)))
+
+
 def build_stats_population(cell_src, cell):
     """(nights of the cell's build population - every night of residuals_provisional.csv, member or not -, those of them
     data_decisions.csv excludes NOW). A population holding an excluded night is not one to judge an admitted night by:
@@ -997,11 +1006,8 @@ def build_stats_stage(cell, args, run, out, ran_now):
         if viol:
             u.refuse(f'{cell_src} fails membership.verify ({len(viol)}: {viol[0][:300]}) - its build population is not one '
                      f'to judge an admitted night by')
-        for p in recs:
+        for p in _build_stats_inputs(cell_src, cell, mods['coadd']):
             u.add_input(p)
-        for x in st['beam_gate']['nights'].values():
-            if x.get('image'):
-                u.add_input(x['image'])
         from exopipe.phase3.core import record as _R, validate
         tmp = os.path.join(cell_src, 'coadd_final', f'{BS.FILE}.part{os.getpid()}')
         _R.atomic_write_json(tmp, st)
@@ -1285,12 +1291,13 @@ def _resume_ok(run, name, st, cell, out, args=None):
     NOW (data_decisions.csv is not a build input: its effect on the cell is the admitted set), build-stats' with its
     population's admitted nights computed now, admit-prep's with the nights the cell admits now (a new night, an exclusion
     or another --epochs re-runs it), and every stage derived from the build only while no night that build admitted is
-    excluded now."""
+    excluded now. build-stats and admit-prep compare the input SET their stage would record now (_build_stats_inputs,
+    admit_stages.prep_inputs): another cell tree, a re-imaged night or another population record re-runs them."""
     admitted = None
     inputs = None
     if st in ADMIT_STAGES:
         try:
-            take, _why = _admit_stages().nights(cell, args, inplace(out)[0]['coadd'])
+            take, _why, inputs = _admit_stages().prep_inputs(cell, args, inplace(out)[0]['coadd'])
         except Refusal as e:
             return False, f'nights to admit not computable now ({e})'
         admitted = [d for d, _sd, _img in take]
@@ -1298,7 +1305,7 @@ def _resume_ok(run, name, st, cell, out, args=None):
         src = (getattr(args, 'deep_installed_root', None) if args is not None else None) or _cfg().paths.COADD_SB_ROOT
         nights, stale = build_stats_population(os.path.join(src, cell), cell)
         admitted = [d for d in nights if d not in stale]
-        inputs = _build_stats_sources(os.path.join(src, cell))     # the records of THIS cell tree (another copy re-runs)
+        inputs = _build_stats_inputs(os.path.join(src, cell), cell, inplace(out)[0]['coadd'])   # THIS cell tree's
     if st == 'build':
         if not done_record(out, 'build', cell):
             return False, 'no done record'
