@@ -294,45 +294,177 @@ def _run_admit(wt, out):
     return run.units[-1]
 
 
-# Broad try/excepts in the co-add functions an admission runs (the admit stage and admit-prep, traced 2026-10-15 with
-# sys.setprofile on this test's end-to-end copy), by function: what each does with the exception. 'caught': it turns the
-# exception into a value and reports it (coadd._caught - the watch makes the night an error); 'raise' re-raises;
-# 'fallback': fallback.site (the B-30 policy: refuse or count); 'problem': returns the problem for its caller to refuse on;
-# 'parse': tries the next header key (the last resort is a fallback site); 'cosmetic': a header comment or the derived
-# MJD-MID card (the products' header test compares every card with the member's).
-INVENTORY = {'_night_flux_dc': ['caught'], 'measure_flux_scale': ['caught', 'caught'], 'process_variant_image': ['caught'],
-             'beam_area': ['caught'], 'final_night': ['caught'], 'save_epoch_residual': ['raise'],
-             '_epoch_beam_source_values': ['problem'], '_grid_refused_dates': ['fallback'], '_off_grid': ['fallback'],
-             'build_striation_model': ['fallback'], 'epoch_time_header': ['fallback', 'cosmetic', 'cosmetic'],
-             'get_midpoint_time': ['parse'], 'prep_night': [], 'measure_scale2': [], 'subtract_night': [], 'regrid_image': [],
-             'get_uniform_rms': [], 'load_image': [], 'save_image': [], 'compute_residual_rms': [], '_epoch_content_arrays': [],
-             'epoch_standard_header': [], 'beam_gate_image': []}
+# Every except clause on an admission's night measurement (tenth review: the earlier pin read only the functions it named,
+# and only broad excepts). The functions: the static call graph, across the package's modules, of every call the night
+# loops of admit_stage and admit_prep make (LOOP_CALLS, checked against the loops' own calls); each clause pinned by its
+# exception type, its first statement and a digest of its whole body, with what it does with the exception -
+#   caught    reports to the watch (coadd._caught)            fallback  a B-30 site: the watch reads its event
+#   raise     re-raises / raises a refusal                    problem   returned to the caller, which refuses on it
+#   error     returned to the caller as an error (admit-prep refuses the night as an item, retried)
+#   parse     a value that does not parse is not that value (a header key, a band name, a scale that is no number)
+#   cosmetic  a header comment / a message's text / a derived MJD-MID card (the products' header test compares cards)
+#   cleanup   removing a temporary file while an error propagates     infra  the fallback record's own spool file
+#   validation  a check of a product already written turns an unparsable WCS into a warning (no value, row or verdict)
+LOOP_CALLS = {'coadd': ('prep_night', '_epoch_content_arrays', '_flow_freshness', '_product_mapping', 'beam_area',
+                        'beam_gate_image', 'compute_residual_rms', 'epoch_standard_header', 'final_night', 'load_image',
+                        'measure_scale2', 'process_variant_image', 'subtract_night'),
+              'admit_stages': ('off_grid', 'move_aside', 'move_aside_files', 'stage2_verdict', 'v_status', 'write_admissions',
+                               '_sha1'),
+              'shflux': ('bake',)}
+LOOP_SKIP = ('validate.run',)   # the flow's content test: an exception there is a failed test, the night refused (no row)
+PATH_EXCEPTS = {
+    'admit_stages.off_grid': [('Exception', "return 'unreadable'", 'b1af371c86', 'error')],
+    'coadd._epoch_beam_source_values': [('Exception', "return {}, [f'unreadable source header ({e.__class__.__name__}: {e})']", 'f58c813344', 'problem'),
+                                        ('(TypeError, ValueError)', "problems.append(f'{k} non-numeric in source header ({src[k]!r})')", '82bf21af48', 'problem')],
+    'coadd._grid_refused_dates': [('Exception', 'shapes[date] = None', '11b595869f', 'fallback')],
+    'coadd._night_flux_dc': [('Exception', "_caught('flux scale on the flow-aligned image', e)", '3574a96ab1', 'caught')],
+    'coadd._off_grid': [('Exception', 'from exopipe.phase3.core import fallback', '348cc73630', 'fallback')],
+    'coadd._r1_fmt_keys': [('(TypeError, ValueError)', "parts.append(f'{k}={v!r}')", 'd171d6fcdb', 'cosmetic')],
+    'coadd._r1_same': [('(TypeError, ValueError)', 'return False', '02ef154300', 'parse')],
+    'coadd.beam_area': [('Exception', "_caught(f'beam area of {os.path.basename(str(img))}', _ce)", 'e01726d1ed', 'caught')],
+    'coadd.build_striation_model': [('Exception', 'from exopipe.phase3.core import fallback', 'ce0a2a7ac2', 'fallback')],
+    'coadd.epoch_time_header': [('Exception', 'src = None', '21ebc4f6fe', 'fallback'),
+                                ('Exception', 'pass', '8be86bc4cf', 'cosmetic'),
+                                ('Exception', 'pass', '4fb07f899e', 'cosmetic')],
+    'coadd.final_night': [('Exception', "_caught('night-image gate', _ge)", 'db815910e9', 'caught')],
+    'coadd.get_midpoint_time': [('Exception', 'continue', '2986885bec', 'parse')],
+    'coadd.is_subband': [('(ValueError, TypeError)', 'return False', 'd2287f88ed', 'parse')],
+    'coadd.measure_flux_scale': [('Exception', "_caught('flux scale: a source\\'s elevation', _ce)", 'a2d06cfafc', 'caught'),
+                                 ('Exception', "_caught('flux scale: the robust fit', _ce)", 'a467abd024', 'caught')],
+    'coadd.process_variant_image': [('Exception', "_caught(f'regrid mapping of {os.path.basename(src_path)}', e)", '2f0dce6748', 'caught')],
+    'coadd.save_epoch_residual': [('BaseException', 'try:', '009ae275e3', 'raise'),
+                                  ('OSError', 'pass', '494e0399d8', 'cleanup')],
+    'fallback._record': [('OSError', 'pass', '494e0399d8', 'infra')],
+    'fallback.site': [('Refusal', "_record('refuse', key, 1, f'{detail} [{e}]')", 'bedd84c8b0', 'raise')],
+    'inputs.is_subband': [('(ValueError, TypeError)', 'return False', 'd2287f88ed', 'parse')],
+    'membership.qa3_inside': [('(TypeError, ValueError)', 'return False', '02ef154300', 'parse')],
+    'validate_fits_headers.validate_header': [('Exception', 'report.errors.append(f"Cannot open FITS file: {e}")', 'a467083a71', 'problem'),
+                                              ('Exception', 'report.warnings.append("WCS parsing failed")', 'a83113c883', 'validation')],
+}
 
 
-def inventory_problems(co):
-    """[problem] where coadd.py's broad excepts in the INVENTORY functions differ from it (a new or changed one)."""
+def path_functions():
+    """[(module, function)] reachable from LOOP_CALLS: calls of a module-level function of the same module, and of an
+    imported package module's function (module or function imports)."""
     import ast
-    src = inspect.getsource(co)
-    tree = ast.parse(src)
-    out = []
-    seen = set()
-    for fn in tree.body:
-        if not (isinstance(fn, ast.FunctionDef) and fn.name in INVENTORY):
+    import importlib.util
+    trees = {}
+
+    def tree(mod):
+        if mod not in trees:
+            spec = importlib.util.find_spec(mod)
+            f = spec.origin if spec and spec.origin and spec.origin.endswith('.py') and spec.origin.startswith(REPO) else None
+            trees[mod] = (ast.parse(open(f).read()), open(f).read()) if f else (None, None)
+        return trees[mod]
+
+    def funcs(mod):
+        t = tree(mod)[0]
+        return {n.name: n for n in t.body if isinstance(n, ast.FunctionDef)} if t else {}
+
+    def aliases(mod, fn):
+        out = {}
+        for n in list(tree(mod)[0].body) + list(ast.walk(fn)):
+            if isinstance(n, ast.Import):
+                for a in n.names:
+                    out[a.asname or a.name.split('.')[0]] = a.name
+            elif isinstance(n, ast.ImportFrom):
+                base = n.module or ''
+                if n.level:
+                    base = '.'.join(mod.split('.')[:-n.level] + ([n.module] if n.module else []))
+                for a in n.names:
+                    out[a.asname or a.name] = f'{base}.{a.name}'
+        return out
+    pk = 'exopipe.phase3.lib.'
+    full = {'coadd': pk + 'masters.coadd', 'admit_stages': pk + 'masters.admit_stages', 'shflux': pk + 'masters.shflux'}
+    seen, todo = set(), [(full[m], n) for m, ns in LOOP_CALLS.items() for n in ns]
+    while todo:
+        m, name = todo.pop()
+        if (m, name) in seen or name not in funcs(m):
             continue
-        seen.add(fn.name)
+        seen.add((m, name))
+        fn, al, fs = funcs(m)[name], None, funcs(m)
+        al = aliases(m, fn)
+        for c in ast.walk(fn):
+            if isinstance(c, ast.Call):
+                f = c.func
+                if isinstance(f, ast.Name) and f.id in fs:
+                    todo.append((m, f.id))
+                elif isinstance(f, ast.Name) and f.id in al and '.' in al[f.id]:
+                    todo.append(tuple(al[f.id].rsplit('.', 1)))
+                elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in al \
+                        and al[f.value.id].startswith('exopipe'):
+                    todo.append((al[f.value.id], f.attr))
+    return seen, tree, funcs
+
+
+def path_excepts():
+    """{'module.function': [(exception type, first statement, sha1 of the whole clause)]} over path_functions()."""
+    import ast
+    import hashlib
+    seen, tree, funcs = path_functions()
+    out = {}
+    for m, name in sorted(seen):
+        src = tree(m)[1]
+        fn = funcs(m)[name]
         got = []
         for h in ast.walk(fn):
-            if isinstance(h, ast.ExceptHandler) and (h.type is None or ast.get_source_segment(src, h.type) in
-                                                      ('Exception', 'BaseException')):
-                body = '\n'.join(ast.get_source_segment(src, b) or '' for b in h.body)
-                got.append('caught' if '_caught(' in body else 'raise' if any(isinstance(b, ast.Raise) and b.exc is None
-                                                                              for b in h.body)
-                           else 'fallback' if 'fallback.site(' in body else 'problem' if body.lstrip().startswith('return {},')
-                           else 'parse' if body.strip() == 'continue' and fn.name == 'get_midpoint_time'
-                           else 'cosmetic' if fn.name == 'epoch_time_header' and body.strip() == 'pass' else body[:60])
-        if sorted(got) != sorted(INVENTORY[fn.name]):
-            out.append((fn.name, got, INVENTORY[fn.name]))
-    out += [(name, 'not found in coadd.py') for name in INVENTORY if name not in seen]
+            if isinstance(h, ast.ExceptHandler):
+                typ = ast.get_source_segment(src, h.type) if h.type else 'bare'
+                first = (ast.get_source_segment(src, h.body[0]) or '').split('\n')[0]
+                whole = ast.get_source_segment(src, h) or ''
+                got.append((typ, first, hashlib.sha1(whole.encode()).hexdigest()[:10], whole))
+        if got:
+            out[f'{m.split(".")[-1]}.{name}'] = got
+    return out
+
+
+def loop_calls():
+    """The module functions the two night loops call ({'coadd': {...}, 'admit_stages': {...}, 'shflux': {...}})."""
+    import ast
+    from exopipe.phase3.lib.masters import admit_stages as AS
+    src = inspect.getsource(AS)
+    t = ast.parse(src)
+    mine = {n.name for n in t.body if isinstance(n, ast.FunctionDef)}
+    out = {'coadd': set(), 'admit_stages': set(), 'shflux': set(), 'other': set()}
+    for fn in t.body:
+        if isinstance(fn, ast.FunctionDef) and fn.name in ('admit_stage', 'admit_prep'):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.For) and isinstance(node.target, ast.Tuple) \
+                        and [getattr(e, 'id', '') for e in node.target.elts] == ['d', 'sd', 'img']:
+                    for c in ast.walk(node):
+                        if isinstance(c, ast.Call):
+                            f = c.func
+                            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in ('co', 'SH'):
+                                out['coadd' if f.value.id == 'co' else 'shflux'].add(f.attr)
+                            elif isinstance(f, ast.Name) and f.id in mine:
+                                out['admit_stages'].add(f.id)
+                            elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == 'validate':
+                                out['other'].add(f'validate.{f.attr}')
+    return out
+
+
+def inventory_problems(co=None):
+    """[problem] where the night measurement's except clauses differ from PATH_EXCEPTS (a new, changed or removed one), its
+    classes from what the clauses do, or the loops' calls from LOOP_CALLS."""
+    out = []
+    lc = loop_calls()
+    for m in ('coadd', 'admit_stages', 'shflux'):
+        if lc[m] != set(LOOP_CALLS[m]):
+            out.append((f'the night loops call {m}', sorted(lc[m] ^ set(LOOP_CALLS[m]))))
+    if lc['other'] != set(LOOP_SKIP):
+        out.append(('the night loops\' other calls', sorted(lc['other'])))
+    got = path_excepts()
+    for k in sorted(set(got) | set(PATH_EXCEPTS)):
+        g = [(t, f, h) for t, f, h, _w in got.get(k, [])]
+        want = [(t, f, h) for t, f, h, _c in PATH_EXCEPTS.get(k, [])]
+        if g != want:
+            out.append((k, g, want))
+            continue
+        for (t, f, _h, whole), (_t, _f, _hh, cls) in zip(got[k], PATH_EXCEPTS[k]):
+            body = whole.split(':', 1)[1] if ':' in whole else whole
+            ok = {'caught': '_caught(' in body, 'fallback': 'fallback.site(' in body, 'raise': 'raise' in body}.get(cls, True)
+            if not ok:
+                out.append((k, t, f, f'not {cls}'))
     return out
 
 
@@ -576,14 +708,17 @@ def test_failure_paths(nights):
                   and R1.get(n1, {}).get('verdict') == 'admitted' and rec1.get('admitted') == [n1]
                   and u2.status == 'done' and R2.get(n2, {}).get('verdict') == 'admitted',
                   (u.status, u.reason, gates(u), sorted(R1), rec1.get('admitted'), u2.status, u2.reason, sorted(R2)))
-        # (12) a V image the build cannot align (process_variant_image returns False): I admitted, V refused by name
+        # (12) a V image that cannot be aligned (tenth review: process_variant_image fails only through its except, which reports
+        #      what it caught): an error of the night - every product of it refused as an item (admit.error), no row - and
+        #      the next run admits it with its V
         _stash(cd, 'valign')
         rpv = co.process_variant_image
 
         def no_v(*a, **k):
             names, night = _stack_night()
             if names[1:2] == ['admit_stage'] and night == n2 and a and '-V-' in os.path.basename(str(a[0])):
-                return False
+                co._caught(f'regrid mapping of {os.path.basename(str(a[0]))}', RuntimeError('cannot map this WCS (test)'))
+                return False                                       # what its except does: report, print, return False
             return rpv(*a, **k)
         co.process_variant_image = no_v
         try:
@@ -591,12 +726,15 @@ def test_failure_paths(nights):
         finally:
             co.process_variant_image = rpv
         R_ = rows()
-        check('a V image the build cannot align: the night admitted with its I products (the build\'s rule), its V products '
-              'refused by name, the reason on the row; the unit done (seventh review: it errored on every run)',
-              u.status == 'done' and R_.get(n2, {}).get('verdict') == 'admitted'
-              and R_[n2]['v_products'].startswith('refused (alignment') and set(gates(u).values()) == {'admit.v_alignment'}
-              and len(gates(u)) == 3 and len([p for p in prods(n2) if '_I_' in p]) == 3
-              and not [p for p in prods(n2) if '_V_' in p], (u.status, u.reason, gates(u), R_.get(n2, {}).get('v_products')))
+        u_b = _run_admit(wt, out)
+        Rb = rows()
+        check('a V image that cannot be aligned is an error of the night, not a V verdict (tenth review): all its products '
+              'refused as items (admit.error), no row, night 1 admitted; the next run admits night 2 with its V products',
+              u.status == 'done' and n2 not in R_ and R_.get(n1, {}).get('verdict') == 'admitted'
+              and set(gates(u).values()) == {'admit.error'} and len(gates(u)) == 6
+              and Rb.get(n2, {}).get('verdict') == 'admitted' and Rb[n2]['v_products'] == 'admitted'
+              and len([p for p in prods(n2) if '_V_' in p]) == 3,
+              (u.status, u.reason, gates(u), sorted(R_), u_b.status, Rb.get(n2, {}).get('v_products')))
         # (13) the flow's own content test (admit-prep's inputs unchanged, the flow newer than its input)
         _stash(cd, 'flowtest')
         fp = os.path.join(cd, A.ADMIT_DIR, 'flow', f'{n2}_scaled_flow.npy')
@@ -664,9 +802,10 @@ def test_failure_paths(nights):
         #      the functions the admit stage and admit-prep run (scratchpad trace, 2026-10-15) - and each one that turns an
         #      exception into a value reports it (coadd._caught); a new one fails here until it is classified
         inv = inventory_problems(co)
-        check('every broad try/except in the co-add functions on an admission\'s path re-raises, refuses through the fallback '
-              'policy (B-30), returns a problem for its caller, is header parsing or cosmetics, or reports to the error watch '
-              '(the six that turn an exception into a value)', not inv, inv)
+        check('every except clause on an admission\'s night measurement - the call graph of the night loops\' calls, across the '
+              'package\'s modules - is pinned and classified: it reports to the watch, is a B-30 site the watch reads, '
+              're-raises, hands a problem or an error to its caller, or is parsing, cosmetics, cleanup or validation (tenth '
+              'review: the earlier pin read only the functions it named)', not inv, inv)
         # (18) MINOR (eighth review): a record of admissions into another master counts for nothing and is moved aside
         adm_p = os.path.join(cd, 'coadd_final', A.ADMISSIONS)
         rr = list(csv.DictReader(open(adm_p, newline='')))
@@ -730,6 +869,32 @@ def test_failure_paths(nights):
         u20b = _run_admit(wt, out)
         check('... and the next run admits both nights', all(rows().get(d, {}).get('verdict') == 'admitted' for d in nights),
               (u20b.status, u20b.reason, sorted(rows())))
+        # (22) MAJOR (tenth review): a counted B-30 fallback during the night - a block of the striation model whose world
+        #      coordinates fail (a memory error) is left out, counted, and the product would be published with it: an error
+        #      of the night, no row, retried
+        _stash(cd, 'fallback')
+        from astropy.wcs import WCS as _W
+        rp2w = _W.all_pix2world
+
+        def p2w(self, *a, **k):
+            names, night = _stack_night()
+            if 'build_striation_model' in names and night == n2 and len(a) >= 2 and int(np.asarray(a[1]).flat[0]) == 512:
+                raise MemoryError('test')
+            return rp2w(self, *a, **k)
+        _W.all_pix2world = p2w
+        try:
+            u22 = _run_admit(wt, out)
+        finally:
+            _W.all_pix2world = rp2w
+        R22 = rows()
+        check('MAJOR (tenth review): a counted fallback during a night (a striation-model block left out) is an error of the '
+              'night: its products refused as items (admit.error, the fallback named), no row, night 1 admitted',
+              n2 not in R22 and R22.get(n1, {}).get('verdict') == 'admitted' and set(gates(u22).values()) == {'admit.error'}
+              and any('STRIATION_WCS_BLOCK_FALLBACK' in (r.get('reason') or '') for r in u22.refused_items),
+              (u22.status, u22.reason, gates(u22), sorted(R22), [r.get('reason', '')[:140] for r in u22.refused_items][:1]))
+        u22b = _run_admit(wt, out)
+        check('... and the next run admits night 2', rows().get(n2, {}).get('verdict') == 'admitted',
+              (u22b.status, u22b.reason, sorted(rows())))
         # (21) admit-prep (ninth review, MINOR): an error while a night is prepared is retried (not in the unit's finished
         #      nights); a night refused by a verdict on its own image (off the grid) is finished - --resume skips the unit
         _stash(cd, 'prep')
@@ -758,6 +923,22 @@ def test_failure_paths(nights):
               and r21c.get('run_id') == r21b.get('run_id'),
               (u21b.status, gates(u21b), r21b.get('admitted'), u21c.status, getattr(u21c, 'reason', ''),
                r21c.get('run_id') == r21b.get('run_id')))
+        # (23) MINOR (tenth review): admit-prep with a survey image whose header cannot be read - an error with its own gate,
+        #      not in the unit's finished nights, so --resume prepares the cell again
+        _stash(cd, 'unreadable')
+        AS2.off_grid = lambda d, img, ts, cut: 'unreadable' if d == n2 else real_off(d, img, ts, cut)
+        try:
+            u23 = _run_masters(wt, out, ['admit-prep'])
+            r23 = json.load(open(os.path.join(out, '_records', 'masters', f'admit-prep_{CELL}.json')))
+            u23b = _run_masters(wt, out, ['admit-prep'], resume=True)
+            r23b = json.load(open(os.path.join(out, '_records', 'masters', f'admit-prep_{CELL}.json')))
+        finally:
+            AS2.off_grid = real_off
+        check('an unreadable survey header in admit-prep is an error (admit-prep.error), the night not in the finished nights '
+              '([night 1]); --resume does not skip the unit (a new run)',
+              set(gates(u23).values()) == {'admit-prep.error'} and r23.get('admitted') == [n1]
+              and r23b.get('run_id') != r23.get('run_id'),
+              (u23.status, gates(u23), r23.get('admitted'), r23b.get('run_id') == r23.get('run_id')))
     finally:
         CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD = saved
 

@@ -172,7 +172,10 @@ def admit_prep(cell, args, run, out, ran_now):
     flows older than their inputs - the price of a re-run, kept for correctness (fifth review: a reuse rule could not be
     made to see every way a prepared file goes stale). Outputs: each night's scaled image and the reference copies
     (admit/ref/, content-tested). Each run's record holds the nights of that run: --epochs prepares, and hands to the flow
-    step, those nights only. --resume identity: the nights taken (the unit's admitted set), every input (prep_inputs),
+    step, those nights only. --resume identity: the nights the run decided (the unit's admitted set: those prepared and those
+    refused by a verdict on their own image - off the grid, the shape after the regrid; a night refused by an error - an
+    unreadable header, an exception caught or a fallback taken while it was prepared - is not, so --resume retries it), every
+    input (prep_inputs),
     and the population gate passing now (deep_stages._resume_ok)."""
     from exopipe.phase3.core import record as R
     from exopipe.phase3.lib.masters import admit as A, deep_inplace as IP, deep_stages as DS
@@ -212,12 +215,13 @@ def admit_prep(cell, args, run, out, ran_now):
                 sp = u.plan(os.path.join(W, 'prep', f'{d}_scaled.fits'), 'flow_prep_scaled')
                 bad = off_grid(d, img, ref['target_shape'], co.CUTOVER_DATE)
                 if bad:
-                    u.refuse_item(sp, (f'{d}: survey image header unreadable - its grid cannot be checked (B-03 a)'
+                    u.refuse_item(sp, (f'{d}: survey image header unreadable - its grid cannot be checked (B-03 a); an error, '
+                                       f'not a verdict: retried at the next run (a --resume prepares the cell again)'
                                        if bad == 'unreadable' else
                                        f'{d}: survey image {bad[0]}x{bad[1]} is off the installed master\'s grid '
                                        f'{ref["target_shape"][0]}x{ref["target_shape"][1]} - a Phase-2 wrong-grid night, kept '
                                        f'out until data_decisions.csv excludes it (B-03 a; DECISIONS_PENDING item 3)'),
-                                  gate='admit-prep.wrong_grid')
+                                  gate='admit-prep.error' if bad == 'unreadable' else 'admit-prep.wrong_grid')
                     if bad != 'unreadable':                  # the image's own grid (a verdict); unreadable: an error
                         decided.append(d)
                     continue
@@ -354,30 +358,38 @@ def cell_lock(W):
 
 
 class ErrorWatch:
-    """An error is never a verdict (seventh, eighth and ninth reviews): an admission row is final (never admitted twice), and
+    """An admission never rests on an error (seventh to tenth reviews): its row is final (never admitted twice), and
     production's code on a night's path turns some exceptions into a value - a skipped source, a fallback fit, NaN, False,
-    None, a FAIL - so an I/O, IERS or memory error could refuse a night for good (the ninth review: an elevation transform
-    failing for every source left the flux scale unmeasured, a verdict). Each such try/except of the co-add on the path
-    reports what it caught (coadd._caught, at every site of the inventory tests/test_masters_admit6.py pins); the night
-    loop runs inside the watch, start() opens a night's, ``errors`` lists what was caught since, the loop's exit closes it.
-    A night with an error is refused as an item (no row) and retried at the next run."""
+    None, a FAIL - or into a counted B-30 fallback (the tenth review: a block of the striation model left out, the product
+    published with it). So an I/O, IERS or memory error could refuse a night for good or admit a wrong product. While the
+    night is measured, ``errors`` lists both: what the co-add's own try/excepts on the path caught (coadd._caught - every
+    except clause on the path is pinned by tests/test_masters_admit6.py) and every fallback event recorded since (counted or
+    refused - a refusal inside a broad except is still recorded). The night loop runs inside the watch, start() opens a
+    night's, the loop's exit closes it. A night with an error is refused as an item (no row) and retried at the next run."""
 
     def __init__(self, co):
-        self.co = co
+        self.co, self._fm = co, None
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
-        self.co.CAUGHT = None                       # closed on every exit of the stage's night loop
+        self.co.CAUGHT, self._fm = None, None       # closed on every exit of the stage's night loop
         return False
 
     def start(self):
+        from exopipe.phase3.core import fallback
         self.co.CAUGHT = []
+        self._fm = fallback.mark()
 
     @property
     def errors(self):
-        return list(self.co.CAUGHT or [])
+        from exopipe.phase3.core import fallback
+        out = list(self.co.CAUGHT or [])
+        if self._fm is not None:
+            refs, counts = fallback.since(self._fm)
+            out += [f'{k}: {d}' for k, d in refs] + [f'{k}: a fallback taken ({n})' for k, n in sorted(counts.items())]
+        return out
 
 
 def prep_changed(prep):
@@ -642,14 +654,11 @@ def admit_stage(cell, args, run, out, ran_now):
                     if v_img:
                         v_ok = co.process_variant_image(v_img, pa['flow'], pa['scale_map'], fref['tmpl_hdr'],
                                                         fref['target_shape'], v_out, co._product_mapping(v_img, img, pa['regrid']))
-                        if not (v_ok and os.path.exists(v_out)):       # the build publishes I only then (coadd.py: `if ok`)
-                            v_what = 'refused (alignment: the V image cannot be aligned to the master\'s grid)'
-                            for k in want:
-                                if k[0] == 'V':
-                                    u.refuse_item(dests[k], f'{d}: V {v_what}', gate='admit.v_alignment')
-                            want = [k for k in want if k[0] == 'I']
-                            rowd['v_products'] = v_what
-                            v_img = None
+                        if watch.errors or not (v_ok and os.path.exists(v_out)):   # tenth review: process_variant_image
+                            why = (watch.errors or ['no aligned V image written'])[0]   # fails only through its except - an
+                            refuse_night(f'an error while its V image was aligned ({why}) - not a verdict: retried at the '
+                                         f'next run', 'admit.error')            # error of the night, not a V verdict
+                            continue
                     coeffs2, n2 = co.measure_scale2(nr['i_out'], ref['data'], final_wcs, ref['beam_pix'], coadd_mask, ref_hdr)
                     co.subtract_night(d, sd, img, nr['i_out'], v_out, coeffs2, n2, med, ref['data'], fin_v, final_wcs,
                                       coadd_mask, ref['beam_pix'], fref['tmpl_hdr'], fref['target_shape'], native, fl, freq_str)
