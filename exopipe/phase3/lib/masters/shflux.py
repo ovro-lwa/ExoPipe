@@ -149,9 +149,7 @@ def apply(lst, scope, root, row, outgen, corr_t=None):
     if corr_t is None or scope not in corr_t:
         raise RuntimeError(f'{lst} {scope}: apply without the flux-correction table row for {scope} - the correction is baked '
                            f'into the pixels (Gregg 2026-10-01); REFUSING')
-    from exopipe.phase3.lib.masters import flux_correction as FC
     cell = f'{root}/{lst}_{scope}'; out = f'{cell}/{outgen}'; n = 0
-    scale = float(row['scale']); corr = float(corr_t[scope]['corr'])
     for sub in (('coadd_final',) if NO_RESIDUALS else SCALED_DIRS):
         src = f'{cell}/{sub}'
         if not os.path.isdir(src): continue
@@ -174,23 +172,33 @@ def apply(lst, scope, root, row, outgen, corr_t=None):
                 shutil.copy2(p, f'{dst_dir}/{base}'); continue
             with fits.open(p) as h:
                 d = h[0].data; hd = h[0].header.copy()
-            d = (np.asarray(d, dtype=np.float32) * np.float32(scale * corr))
-            for _c, _v, _com in FC.cards_for(scope, corr_t, baked=True):
-                hd[_c] = (_v, _com)
-            _vlssr = str(row['srcs']).startswith('VLSSr')
-            hd['SHSCALE'] = (scale, 'flux scale applied (VLSSr/RCB per LST, 2026-09-07)' if _vlssr
-                             else 'SH12 absolute flux scale applied (Gregg 2026-08-28)')
-            hd['SHERR'] = (float(row['err']), '1-sigma uncertainty of SHSCALE')
-            hd['SHNSRC'] = (int(row['nsrc']), 'VLSSr matches in the window' if _vlssr else 'SH calibrators used (el > 50 deg)')
-            hd['SHSRCS'] = (row['srcs'], 'scale reference (window)' if _vlssr else 'SH calibrators used')
-            hd['SHMETHOD'] = ('VLSSr-dec20-60' if _vlssr else 'SH12-calibrators', 'flux scale method')
-            hd['SHFREQ'] = (float(row['freq_hz']), f"model frequency Hz ({row['freq_src'][:40]})")
-            hd['SHDATE'] = (row['measured_at'], 'flux scale measured')
-            hd['HISTORY'] = (f"shflux: pixels x {scale:.5f} (VLSSr/RCB median ratio per LST, {row['srcs']}, N {row['nsrc']}; R-FLUX-SCALE-APPLY-VLSSR-HIGH-ELEVATION-APPROVED 2026-09-07)" if _vlssr else
-                             f"shflux: pixels x {scale:.5f} (SH12 calibrators {row['srcs']}; I Taper R-0.75 pbcorr master; stage A of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828)")
-            hd['HISTORY'] = f"fluxcorr: pixels also x FLUXCORR {corr:.5f} (k x g, {corr_t[scope]['version'][:24]})"
+            d, hd = bake(d, hd, scope, row, corr_t)
             fits.writeto(f'{dst_dir}/{_scaled_name(p, scope)}', d, hd, overwrite=True); n += 1
     return n
+
+
+def bake(d, hd, scope, row, corr_t):
+    """One product's pixels and header in the scaled generation (the body of apply's loop; D-ADMIT bakes an admitted night's
+    products with it): pixels x SHSCALE x FLUXCORR as float32, the FLUX* cards (flux_correction.cards_for, FLUXBAKE True),
+    the SH* cards of the scale-table row and the two HISTORY lines. ``hd`` is changed in place and returned."""
+    from exopipe.phase3.lib.masters import flux_correction as FC
+    scale = float(row['scale']); corr = float(corr_t[scope]['corr'])
+    d = (np.asarray(d, dtype=np.float32) * np.float32(scale * corr))
+    for _c, _v, _com in FC.cards_for(scope, corr_t, baked=True):
+        hd[_c] = (_v, _com)
+    _vlssr = str(row['srcs']).startswith('VLSSr')
+    hd['SHSCALE'] = (scale, 'flux scale applied (VLSSr/RCB per LST, 2026-09-07)' if _vlssr
+                     else 'SH12 absolute flux scale applied (Gregg 2026-08-28)')
+    hd['SHERR'] = (float(row['err']), '1-sigma uncertainty of SHSCALE')
+    hd['SHNSRC'] = (int(row['nsrc']), 'VLSSr matches in the window' if _vlssr else 'SH calibrators used (el > 50 deg)')
+    hd['SHSRCS'] = (row['srcs'], 'scale reference (window)' if _vlssr else 'SH calibrators used')
+    hd['SHMETHOD'] = ('VLSSr-dec20-60' if _vlssr else 'SH12-calibrators', 'flux scale method')
+    hd['SHFREQ'] = (float(row['freq_hz']), f"model frequency Hz ({row['freq_src'][:40]})")
+    hd['SHDATE'] = (row['measured_at'], 'flux scale measured')
+    hd['HISTORY'] = (f"shflux: pixels x {scale:.5f} (VLSSr/RCB median ratio per LST, {row['srcs']}, N {row['nsrc']}; R-FLUX-SCALE-APPLY-VLSSR-HIGH-ELEVATION-APPROVED 2026-09-07)" if _vlssr else
+                     f"shflux: pixels x {scale:.5f} (SH12 calibrators {row['srcs']}; I Taper R-0.75 pbcorr master; stage A of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828)")
+    hd['HISTORY'] = f"fluxcorr: pixels also x FLUXCORR {corr:.5f} (k x g, {corr_t[scope]['version'][:24]})"
+    return d, hd
 
 
 def _md5_bytes(b):
