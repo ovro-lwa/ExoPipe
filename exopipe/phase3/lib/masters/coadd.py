@@ -103,6 +103,11 @@ OFF_GRID_SURVEY = 'refuse'
 # input off the master's shape from its own WCS only when it gets no mapping); 'regrid' aligns such a product with no I mapping,
 # so it is regridded from its own WCS in both stages (_product_mapping). The step sets it from masters_build.PRODUCT_GRID_MISMATCH.
 PRODUCT_GRID_MISMATCH = 'drop'
+# THE SECOND-PASS DC RECORD (WAVE2 D-ADMIT, ruling R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32: "gates against the
+# build's recorded statistics"): 'none' (production) keeps neither PASS 1's per-night second-pass DCs nor the cell median the
+# degeneracy guard uses; 'record' writes coadd_final/scale2.csv (_write_scale2_record) - the guard median a night admitted into
+# this master is subtracted with (lib/masters/admit_stages.guard_median). The step sets it from masters_build.SCALE2_RECORD.
+SCALE2_RECORD = 'none'
 
 REFERENCE_DATES = {
     # 00h: mosaic-coverage cell (Gregg 2026-07-05) — deliberately SHALLOW,
@@ -3654,6 +3659,23 @@ def final_night(date, sci_dir, align_img_path, ref, workdir, prep_dir, post_date
     return out
 
 
+def _write_scale2_record(final_dir, scale2_meas, med_dc):
+    """WAVE2 D-ADMIT: <final_dir>/scale2.csv - each night's second-pass DC (PASS 1, against the new master) and source count,
+    whether it entered the cell median (n >= 8, as run_final_lst_freq takes it), and on the row dated 'median' the median
+    the degeneracy guard used (n = the nights it was taken over; 0: none qualified and the guard used 1.0). Written to a
+    temporary name and renamed."""
+    from exopipe.phase3.lib.masters import admit as _A
+    rows = [dict(date=d, dc2=repr(float(c[0][0])), n2=int(c[1]), in_median=int(c[1] >= 8)) for d, c in sorted(scale2_meas.items())]
+    rows.append(dict(date='median', dc2=repr(float(med_dc)), n2=sum(r['in_median'] for r in rows), in_median=''))
+    p = os.path.join(final_dir, _A.SCALE2)
+    with open(p + '.part', 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=list(_A.SCALE2_COLS))
+        w.writeheader()
+        w.writerows(rows)
+    os.replace(p + '.part', p)
+    return p
+
+
 def measure_scale2(i_path, final_i_data, final_wcs, beam_pix, coadd_mask, ref_hdr):
     """PASS 1 of run_final_lst_freq's per-date subtraction for one night (D-ADMIT slice 4): the flux scale of the
     flow-aligned night {i_path} against the final master, read at the master's peak pixels - (coeffs2, n2). The night's
@@ -4175,6 +4197,8 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         scale2_meas[date] = measure_scale2(i_path, final_i_data, final_wcs, beam_pix, coadd_mask, ref_hdr)
     _dcs = [float(c[0][0]) for c in scale2_meas.values() if c[1] >= 8]
     med_dc = float(np.median(_dcs)) if _dcs else 1.0
+    if SCALE2_RECORD == 'record':                     # WAVE2 D-ADMIT: the second-pass DCs and the guard's median, kept
+        _write_scale2_record(final_dir, scale2_meas, med_dc)
 
     for date, sci_dir, align_img_path in dates:
         if date not in scale2_meas:

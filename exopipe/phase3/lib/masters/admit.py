@@ -19,6 +19,8 @@ BUILD_NIGHTS = 'residuals_provisional.csv'   # every night the installed build m
 # every record of the installed cell that names a night the build saw - measured, refused before measuring, or refused as an
 # input (2026-10-15 second review: of the 37 nights in no residuals_provisional.csv, 29 are in night_image_gate.csv, 3 in
 # refusals_grid.csv) - (path relative to the cell, date column)
+SCALE2 = 'scale2.csv'                    # <cell>/coadd_final/scale2.csv: the build's second-pass DCs and its guard median
+SCALE2_COLS = ('date', 'dc2', 'n2', 'in_median')
 BUILD_RECORDS = ((BUILD_NIGHTS, 'date'), ('coadd_final/weights.csv', 'date'), ('coadd_final/night_image_gate.csv', 'date'),
                  ('coadd_final/epoch_gate.csv', 'date'), ('sanity_excluded.csv', None), ('refusals_grid.csv', None),
                  ('refusals_input.csv', 'date'))
@@ -112,6 +114,45 @@ def admitted_nights(cell_dir):
     """Nights coadd_final/admissions.csv holds (admitted or refused there): never admitted twice."""
     p = os.path.join(cell_dir, 'coadd_final', ADMISSIONS)
     return {r['date'] for r in _rows(p)} if os.path.exists(p) else set()
+
+
+def scale2_problems(cell_dir):
+    """([problems], record median or None, its count) of <cell>/coadd_final/scale2.csv (none: ([], None, None)): the
+    columns; each night once and a night of the build's weights.csv (a record of another generation is stale); the
+    median row equal to the median of the in-median nights' DCs (n >= 8) and its count to theirs, or 1.0 over none (the
+    co-add's guard)."""
+    import numpy as np
+    p = os.path.join(cell_dir, 'coadd_final', SCALE2)
+    if not os.path.exists(p):
+        return [], None, None
+    with open(p, newline='') as f:
+        rd = csv.DictReader(f)
+        cols, rows = tuple(rd.fieldnames or ()), list(rd)
+    if cols != SCALE2_COLS:
+        return [f'{p}: columns {cols}, not {SCALE2_COLS}'], None, None
+    med = [r for r in rows if r['date'] == 'median']
+    nights = [r for r in rows if r['date'] != 'median']
+    probs = []
+    if len(med) != 1:
+        return [f'{p}: {len(med)} median rows'], None, None
+    wp = os.path.join(cell_dir, 'coadd_final', 'weights.csv')
+    wd = {r['date'] for r in _rows(wp)} if os.path.exists(wp) else set()
+    seen = set()
+    for r in nights:
+        if r['date'] in seen:
+            probs.append(f'{r["date"]} twice')
+        seen.add(r['date'])
+        if r['date'] not in wd:
+            probs.append(f'{r["date"]} is not a night of coadd_final/weights.csv (a record of another build)')
+    try:
+        dcs = [float(r['dc2']) for r in nights if int(r['n2']) >= 8]
+        want = float(np.median(dcs)) if dcs else 1.0
+        got, n = float(med[0]['dc2']), int(med[0]['n2'])
+    except (TypeError, ValueError) as e:
+        return probs + [f'{p}: unreadable ({e})'], None, None
+    if got != want or n != len(dcs):
+        probs.append(f'{p}: median {got} over {n} night(s), but its in-median nights give {want} over {len(dcs)}')
+    return probs, got, n
 
 
 def nights_to_admit(lst, scope, cell_dir, entries, ex, co, nights=None, held=()):

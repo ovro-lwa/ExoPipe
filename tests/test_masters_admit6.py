@@ -242,11 +242,15 @@ def _stack_night():
 
 
 def _stash(cd, tag):
-    """The test copy's admission outcome moved aside (inside the test's scratch) so its nights qualify again."""
-    dst = os.path.join(T, 'stash', tag)
-    os.makedirs(dst, exist_ok=True)
+    """The test copy's admission outcome cleared so its nights qualify again: this test's own scratch only - the products
+    and admissions.csv of the scenario before, and the files the stage moved aside in its earlier runs (a scenario checks
+    its own before the next one starts) - removed, so the test's disk stays that of one scenario (2026-10-15: kept, they
+    took 29 GB of the node's root filesystem)."""
     for p in glob.glob(os.path.join(cd, 'subtracted', '20*')) + glob.glob(os.path.join(cd, 'coadd_final', A.ADMISSIONS)):
-        os.replace(p, os.path.join(dst, os.path.basename(p)))
+        os.remove(p)
+    for d in (os.path.join(cd, 'subtracted'), os.path.join(cd, A.ADMIT_DIR, 'prep_final'),
+              os.path.join(cd, A.ADMIT_DIR, 'sub_native'), os.path.join(cd, A.ADMIT_DIR, 'prep')):
+        shutil.rmtree(os.path.join(d, '_superseded'), ignore_errors=True)
 
 
 def _run_masters(wt, out, stages):

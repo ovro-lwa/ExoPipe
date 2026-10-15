@@ -503,7 +503,8 @@ def install_cell(u, plan, gates, echo):
 
 INPUT_REFUSALS = 'refusals_input.csv'      # B-03 (a), lib/masters/input_resolver.REFUSALS_FILE (a cell-level record)
 BUILD_STATS = os.path.join('coadd_final', 'build_stats.json')   # D-ADMIT (a), lib/masters/build_stats.FILE
-CARRIED_RECORDS = (INPUT_REFUSALS, BUILD_STATS)    # cell records of the branch's builds (paths relative to the cell)
+SCALE2 = os.path.join('coadd_final', 'scale2.csv')               # D-ADMIT, lib/masters/admit.SCALE2 (the second-pass DCs)
+CARRIED_RECORDS = (INPUT_REFUSALS, BUILD_STATS, SCALE2)    # cell records of the branch's builds (paths relative to the cell)
 
 
 def carry_record(PI, plan, rel):

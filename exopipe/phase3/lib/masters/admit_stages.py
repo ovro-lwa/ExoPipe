@@ -253,12 +253,19 @@ PROV = (('I', 'I_deep_Taper_R075'), ('V', 'V_deep_Taper_R0'))      # coadd_provi
 LOCK = '.admit.lock'
 
 
-def guard_median():
-    """(median, source) of the cell's second-pass DC for coadd.subtract_night's degeneracy guard. No build records it yet
-    (a build keeping its second-pass DCs is a pending item; build_stats.json has no such block), so it is the ruled value
-    masters_admit.DC2_MEDIAN_WITHOUT_RECORD (DECISIONS_PENDING item 10) - (None, None) while unset: the stage refuses, it
-    never substitutes on its own. (An admitted night's own second-pass DC is 1 by construction - it is measured against
-    the master its first step scaled it to - so the median matters only for a night whose measurement fails.)"""
+def guard_median(cd):
+    """(median, source) of the cell's second-pass DC for coadd.subtract_night's degeneracy guard: the build's own, recorded in
+    coadd_final/scale2.csv (a build under masters_build.SCALE2_RECORD 'record'); for a cell whose build kept none (every
+    cell built before), the ruled value masters_admit.DC2_MEDIAN_WITHOUT_RECORD (DECISIONS_PENDING item 10) - (None, None)
+    while unset: the stage refuses, it never substitutes on its own. A record that fails its own checks refuses (a stale
+    record is never read). (An admitted night's own second-pass DC is 1 by construction - it is measured against the master
+    its first step scaled it to - so the median matters only for a night whose measurement fails.)"""
+    from exopipe.phase3.lib.masters import admit as A
+    probs, med, n = A.scale2_problems(cd)
+    if probs:
+        raise Refusal(f'the build\'s second-pass DC record: {"; ".join(probs[:2])}')
+    if med is not None:
+        return med, f'recorded: coadd_final/{A.SCALE2} ({n} night(s))'
     v = _cfg().masters_admit.DC2_MEDIAN_WITHOUT_RECORD
     return (None, None) if v is None else (float(v), 'ruled: masters_admit.DC2_MEDIAN_WITHOUT_RECORD')
 
@@ -712,11 +719,16 @@ def admit_gates(cell, cd, prep, frec, ents, fail, write):
     if ((frec.get('meta') or {}).get('admit') or {}).get('reference_signature') != sig:
         fail('admit.flow_reference', f'the admit flows were made against another reference than {sig} - run admit-prep and '
                                      f'the flow again')
-    med, med_src = guard_median()
-    if med is None:
-        fail('admit.guard_median', f'{cell}: no build records its median second-pass DC and '
-                                   f'masters_admit.DC2_MEDIAN_WITHOUT_RECORD is unset - the degeneracy guard needs one '
-                                   f'(DECISIONS_PENDING item 10; nothing is substituted)')
+    try:
+        med, med_src = guard_median(cd)
+    except Refusal as e:                       # the build's record fails its own checks
+        med, med_src, why_med = None, None, str(e)
+    else:
+        why_med = None if med is not None else (f'{cell}: no build records its median second-pass DC and '
+                                                f'masters_admit.DC2_MEDIAN_WITHOUT_RECORD is unset - the degeneracy guard '
+                                                f'needs one (DECISIONS_PENDING item 10; nothing is substituted)')
+    if why_med:
+        fail('admit.guard_median', why_med)
     factor, what = DS.bake_factor(lst, sc)                     # the pinned tables, as the fluxscale stage reads them
     if factor is None:
         fail('admit.bake_factor', f'{cell}: no flux scale to bake an admitted night with ({what})')

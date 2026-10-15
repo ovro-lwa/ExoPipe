@@ -245,6 +245,16 @@ def admissions_record(path, **ctx):
                                                                              f'consistent' + note)
 
 
+@content_test('scale2_record')
+def scale2_record(path, **ctx):
+    """D-ADMIT: <cell>/coadd_final/scale2.csv, the build's second-pass DCs - its columns, each night once and of the build's
+    weights.csv, the median row equal to the median of its in-median nights (lib/masters/admit.scale2_problems)."""
+    from exopipe.phase3.lib.masters import admit as A
+    cell = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    probs, med, n = A.scale2_problems(cell)
+    return not probs, n, '; '.join(probs[:3]) or f'median second-pass DC {med} over {n} night(s)'
+
+
 @content_test('admit_reference')
 def admit_reference_copy(path, master=None, factor=None, **ctx):
     """D-ADMIT: an admission reference copy (<cell>/admit/ref/<var>_<scope>.fits) is the installed master ``master``

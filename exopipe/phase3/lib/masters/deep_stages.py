@@ -42,7 +42,8 @@ BUILD_DERIVED = ('pbmaps', 'vclean', 'fluxscale', 'verify', 'variants')
 BUILD_PRODUCT_PATHS = ('coadd_final/weights.csv', 'coadd_final/.done', 'coadd_final/loo', 'coadd_final/stage2_verdict.csv',
                        'coadd_final/night_image_gate.csv', 'coadd_provisional', 'residuals_provisional.csv', 'subtracted',
                        'prep_final', 'refusals_input.csv',   # refusals_input.csv: B-03 same-state, written only by a build
-                       'coadd_final/build_stats.json')       # D-ADMIT slice 1
+                       'coadd_final/build_stats.json',       # D-ADMIT slice 1
+                       'coadd_final/scale2.csv')             # D-ADMIT: the second-pass DC record (masters_build.SCALE2_RECORD)
 WAIVE_REFERENCE = 'masters.reference'                 # --waive masters.reference --ruling "..." for --reference path:/night:
 WAIVE_INSTALL_RECORD = 'masters.sources.install_record'   # window: installed cells have no install-step record yet
 
@@ -572,6 +573,9 @@ def build(cell, args, run, out, ran_now):
             from exopipe.phase3.lib.masters import build_stats as BS
             bs = BS.write(cell_dir, BS.compute(cell_dir, lst, sc, co, _cfg(), 'build'))
             u.add_output(bs, 'build_stats', cell=cell)
+        s2 = os.path.join(cell_dir, 'coadd_final', _admit().SCALE2)   # D-ADMIT: the second-pass DCs and the guard's median
+        if os.path.exists(s2):
+            u.add_output(s2, 'scale2_record', cell=cell)
         for p, cls in _build_outputs(cell_dir, sc):
             u.add_output(p, cls, cell=cell)
 
