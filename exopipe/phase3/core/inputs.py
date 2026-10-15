@@ -182,14 +182,26 @@ def source_block(text, name):
     return m.group(0) if m else None
 
 
+# every top-level find_* function of the co-add when the copy was made: a new one (a new finder at a new call site) is a
+# change the copy does not cover
+FINDER_SET = ('find_10min_images', 'find_all_dewarped_variants', 'find_latest_science_dir', 'find_stokes_v_deep_image',
+              'find_subband_alignment_image', 'find_subband_variant_image', 'find_wideband_alignment_image',
+              'find_wideband_deep_images')
+
+
 def pin_mismatches(module_text):
-    """[finder] whose source text in ``module_text`` differs from FINDER_PINS (absent = differs)."""
+    """What changed in ``module_text`` (the co-add module) since the copy was made: each pinned function whose source text
+    differs from FINDER_PINS (absent = differs) or that now carries a decorator, and a find_* function that was not there."""
     import hashlib
     out = []
     for name, want in FINDER_PINS.items():
         blk = source_block(module_text, name)
         if blk is None or hashlib.sha1(blk.encode()).hexdigest() != want:
             out.append(name)
+        elif re.search(r'^@[^\n]*\n(?=def ' + re.escape(name) + r'\()', module_text, re.M):   # a decorator line right above
+            out.append(f'{name} (decorated)')
+    now = sorted(set(re.findall(r'^def (find_\w+)\(', module_text, re.M)))
+    out += [f'{n} (a new finder)' for n in now if n not in FINDER_SET]
     return out
 
 

@@ -429,7 +429,15 @@ def every_admitted_night_has_products(path, **ctx):
                         miss.append(f'{d}_{st}_{kind}')
         return not miss, len(nights), (f'{len(nights)} admitted nights; missing {miss[:6]}'
                                        + (f'; V input refused (B-03 same-state) on {sorted(refused_v)}' if refused_v else ''))
-    return _cached(('nightprods',) + _dirstate(sd) + (loc['token'],) + _dirstate(loc['cell_dir']), f)
+    return _cached(('nightprods',) + _dirstate(sd) + (loc['token'],) + _filestate(os.path.join(loc['cell_dir'], 'refusals_input.csv')), f)
+
+
+def _filestate(p):
+    try:
+        st = os.stat(p)
+        return (os.path.abspath(p), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (os.path.abspath(p), None, None)
 
 
 def _refused_v_nights(cell_dir):

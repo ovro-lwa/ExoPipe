@@ -29,6 +29,17 @@ REFUSALS_HEADER = ['lst', 'scope', 'date', 'product', 'image', 'reason']
 _STATE = {'co': None, 'rule': None}
 _WRITTEN = set()          # (refusals file, date, scope, product) written or found in this process
 _LOADED = set()           # refusals files whose earlier rows were read
+_PRINTED = set()          # (lst, scope, date, product) refusals printed in this process (once each, not at every lookup)
+GRID_VALUES = {'PRODUCT_GRID_MISMATCH': ('regrid', 'drop'), 'OFF_GRID_SURVEY': ('regrid', 'refuse')}
+
+
+def check_grid_values(b):
+    """Refuse an unknown masters_build.PRODUCT_GRID_MISMATCH / OFF_GRID_SURVEY value (the co-add tests only for 'regrid':
+    any other spelling would silently mean production)."""
+    for key, ok in GRID_VALUES.items():
+        v = getattr(b, key)
+        if v not in ok:
+            raise Refusal(f'masters_build.{key} {v!r}: one of {ok}')
 
 
 def _night_of(sci_dir):
@@ -57,7 +68,9 @@ def read_refusals(cell_dir):
 def _record(sci_dir, freq, product, path, why):
     lst, date = _night_of(sci_dir)
     fl = _scope_label(freq)
-    print(f'    INPUT REFUSED {lst} {fl} {date} {product}: {why} [{os.path.basename(path)}] (B-03 same-state)', flush=True)
+    if (lst, fl, date, product) not in _PRINTED:
+        _PRINTED.add((lst, fl, date, product))
+        print(f'    INPUT REFUSED {lst} {fl} {date} {product}: {why} [{os.path.basename(path)}] (B-03 same-state)', flush=True)
     cell_dir = os.path.join(_STATE['co']._workdir_base(), f'{lst}_{fl}')
     if not os.path.isdir(cell_dir):           # not inside a build of this cell (a read-only caller): printed only
         return
@@ -139,6 +152,8 @@ def install(co, resolver, rule):
         _STATE['rule'] = None
         return resolver
     bad = I.pin_mismatches(open(co.__file__).read())
+    if sorted(co.SUBBANDS) != sorted(int(str(x).replace('MHz', '')) for x in __import__('exopipe.phase3.config', fromlist=['CFG']).CFG.instrument.ALL_SUBBANDS):
+        bad.append('SUBBANDS (the co-add\'s subband list differs from the config\'s, which core.inputs.is_subband reads)')
     if bad:
         raise Refusal(f'core.inputs copies the co-add finders {bad} as they were when it was written; their source in '
                       f'{co.__file__} has changed since - re-port core.inputs (and its FINDER_PINS) before using it (B-03)')
@@ -160,27 +175,72 @@ def preview(lst, scope, dates):
     return out
 
 
-def wrong_grid_unexcluded(lst, scope, nights):
-    """B-03 (a), masters_build.OFF_GRID_SURVEY 'regrid': the cell's masters_build.WRONG_GRID_NIGHTS among ``nights`` (its
-    Phase 2 nights) that data_decisions.csv does not exclude. With the grid refusal gone they would be regridded into the
-    master; the ruling keeps them out by exclusion rows (Gregg's to add). [] under 'refuse' (production refuses them by grid)."""
+def off_grid_nights(entries, cutover_date):
+    """[(night, shape, modal shape)] of the post-cutover nights among (date, sci_dir, survey image) whose survey image is off
+    the modal post-cutover grid - the test production's coadd._grid_refused_dates applies (shape; ties broken the same
+    way). An unreadable header is left to the co-add's own grid-header site."""
+    from astropy.io import fits
+    shapes = {}
+    for d, _sd, img in entries:
+        if d < cutover_date:
+            continue
+        try:
+            h = fits.getheader(img)
+            shapes[d] = (int(h['NAXIS2']), int(h['NAXIS1']))
+        except Exception:
+            shapes[d] = None
+    vals = [x for x in shapes.values() if x]
+    modal = max(set(vals), key=vals.count) if vals else None
+    return sorted((d, x, modal) for d, x in shapes.items() if x and modal and x != modal)
+
+
+def wrong_grid_refusal(lst, scope, admitted_entries, cutover_date):
+    """B-03 (a), masters_build.OFF_GRID_SURVEY 'regrid': the refusal text when an ADMITTED post-cutover night of the cell has
+    its survey image off the cell's modal grid, else None. Under 'regrid' such a night would be regridded into the master
+    with no record; the ruling keeps the wrong-grid nights out by data_decisions.csv rows (Gregg's), and the data hold more
+    of them than the four ruled 'leave excluded' (R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED; refactor review 2026-10-15: 02h 50MHz
+    2025-12-26, 11h Full 2025-03-09 / 04-07, 22h Full 2025-08-08), so the cell refuses until the night is excluded.
+    None under 'refuse' (production refuses such a night by grid)."""
     from exopipe.phase3.config import CFG
-    from exopipe.phase3.core import exclusions
-    b = CFG.masters_build
-    if b.OFF_GRID_SURVEY != 'regrid':
-        return []
-    ex = exclusions.load()
-    return sorted(d for lt, sc, d in b.WRONG_GRID_NIGHTS
-                  if (lt, sc) == (lst, scope) and d in set(nights) and not ex.is_excluded(lst, scope, d))
-
-
-def wrong_grid_refusal(lst, scope, nights):
-    """The refusal text for the cell, or None (see wrong_grid_unexcluded)."""
-    bad = wrong_grid_unexcluded(lst, scope, nights)
-    if not bad:
+    if CFG.masters_build.OFF_GRID_SURVEY != 'regrid':
         return None
-    return (f'B-03 (a): {lst} {scope} night(s) {bad} are Phase 2 images on a wrong pixel grid (R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED); '
-            f'with masters_build.OFF_GRID_SURVEY regrid the grid refusal that kept them out is gone, and the ruling keeps them out '
-            f'by data_decisions.csv rows that do not exist yet (Gregg\'s to add; DECISIONS_EXPLAINED_20261014.md section 3) - '
-            f'refusing the cell until they do')
+    off = off_grid_nights(admitted_entries, cutover_date)
+    if not off:
+        return None
+    return (f'B-03 (a): {lst} {scope} admitted night(s) ' + ', '.join(f'{d} ({x[0]}x{x[1]})' for d, x, _m in off)
+            + f' have a survey image off the cell\'s modal grid {off[0][2][0]}x{off[0][2][1]} - Phase 2 anomalies of the kind '
+            f'ruled "leave excluded"; with masters_build.OFF_GRID_SURVEY regrid they would be regridded into the master with no '
+            f'record, so the cell refuses until data_decisions.csv excludes them (Gregg\'s rows; DECISIONS_PENDING.md)')
+
+
+PRODUCT_MASTERS = {'V': 'V_deep_Taper_R0', 'I_Taper_R0': 'I_deep_Taper_R0', 'I_NoTaper_R0': 'I_deep_NoTaper_R0',
+                   'I_NoTaper_R075': 'I_deep_NoTaper_R075'}
+
+
+def masters_below_minimum(cell_dir, scope, refused, min_coadd, min_variant):
+    """After the co-add: the products whose master was not built although the same-state rule refused some of their nights
+    (``refused``: product -> [night]) - the nights left fell below the minimum (V: MIN_DATES_FOR_COADD; an I variant:
+    MIN_DATES_FOR_VARIANT). Returns one sentence per such product ([] when every refused product still has its master)."""
+    out = []
+    for prod, nights in sorted(refused.items()):
+        stem = PRODUCT_MASTERS.get(prod)
+        if stem and not os.path.exists(os.path.join(cell_dir, 'coadd_final', f'{stem}_{scope}.fits')):
+            need = min_coadd if prod == 'V' else min_variant
+            out.append(f'{stem}_{scope} not built: the {prod} image of {len(nights)} night(s) {sorted(nights)} was refused and '
+                       f'fewer than {need} master nights are left')
+    return out
+
+
+def nights_left(lst, scope, dates):
+    """Dry run, read only: {product: nights among (date, sci_dir, img) whose image the same-state rule keeps} for V and the
+    three I variants (an upper bound on the master's nights: the stage-2 and epoch checks come after)."""
+    fq = scope.replace('MHz', '') if scope.endswith('MHz') else scope
+    out = {}
+    for prod in ('V',) + tuple(v for v in I.VARIANTS if v != 'Taper_R075'):
+        n = 0
+        for _d, sci, _img in dates:
+            p = I.product_image(sci, fq, prod)
+            n += p is not None and not I.state_mismatch(sci, fq, p, prod)
+        out['V' if prod == 'V' else f'I_{prod}'] = n
+    return out
 

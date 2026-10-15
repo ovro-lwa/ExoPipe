@@ -135,7 +135,7 @@ class CellPlan:
             for f in C.CELL_FILES:
                 if os.path.exists(f'{cd}/coadd_final/{f}'):
                     out.append(('working-quarantine', f'{cd}/coadd_final/{f}', f'{wq}/{cell}/coadd_final/{f}'))
-            for f in C.CELL_TOP:
+            for f in C.CELL_TOP + (INPUT_REFUSALS,):      # B-03 (a): the input-refusal record moves with the cell's records
                 if os.path.exists(f'{cd}/{f}'):
                     out.append(('working-quarantine', f'{cd}/{f}', f'{wq}/{cell}/{f}'))
             for d in C.CELL_DIRS:
@@ -476,6 +476,9 @@ def install_cell(u, plan, gates, echo):
                                    f'--round {plan.round} --stages recover` reports its state (R1/R2; rebuilt cells: '
                                    f'manual repair, phase3_install.py:442-443)') from e
             text = buf.getvalue()
+            carried = carry_input_refusals(PI, plan)      # B-03 (a), inside the same round's quarantine settings
+            if carried:
+                u.note(f'B-03 same-state: input-refusal record carried into the working cell: {carried}')
         if text.strip():
             u.note('phase3_install output: ' + text.strip()[-3000:])
         rows = SC.action_rows(roots.record_csv, off, cell)
@@ -490,6 +493,28 @@ def install_cell(u, plan, gates, echo):
                        n_working=n_work, n_archive_quarantined=n_aq, n_published=n_pub))
     echo(f'  INSTALL-OK {cell}: {n_work} working files, {n_aq} archive files quarantined, {n_pub} published')
     return mpath, rows
+
+
+INPUT_REFUSALS = 'refusals_input.csv'      # B-03 (a), lib/masters/input_resolver.REFUSALS_FILE (a cell-level record)
+
+
+def carry_input_refusals(PI, plan):
+    """B-03 (a), same-state: the rebuilt generation's input-refusal record goes into the working cell with it, as
+    phase3_install carries the cell's other records (CELL_TOP): the working cell's earlier record is quarantined first,
+    the rebuild root's copied and logged. Without it the installed cell keeps no trace of why a night has no V products
+    (the per-night product test, T6 and the search read it). No production rebuild writes the file: nothing happens under
+    production values. Returns the installed path or None."""
+    if not plan.rebuild_root:
+        return None
+    src = os.path.join(plan.rebuild_root, INPUT_REFUSALS)
+    dst = os.path.join(plan.cdir, INPUT_REFUSALS)
+    if os.path.exists(dst):
+        PI._move_to_wq(plan.cell, dst, INPUT_REFUSALS)
+    if not os.path.exists(src):
+        return None
+    shutil.copy2(src, dst)
+    PI.rec(plan.cell, 'cell-file', src, dst, PI.md5(dst))
+    return dst
 
 
 def record_install_io(u, plan, rows):

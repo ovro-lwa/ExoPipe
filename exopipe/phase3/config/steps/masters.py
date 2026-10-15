@@ -115,10 +115,10 @@ class masters_build(_Section):
                                               # such a V (coadd_full_pipeline.py:2339-2351; FIX-COADD-V-FRAME-ON-DIFFERENT-GRID-DROPPED-LOUDLY) and the final stage hands every
                                               # product its I image's regrid mapping (was masters_build.PROVISIONAL_V_GRID_MISMATCH, a mirror)
     OFF_GRID_SURVEY = 'regrid'                # B-03 (a): a post-cutover night whose survey image is off the cell's modal grid is regridded (coadd._off_grid at every regrid
-                                              # decision, the build and the flow step); 'refuse' = production (coadd._grid_refused_dates, refusals_grid.csv)
-    WRONG_GRID_NIGHTS = (('02h', 'Green', '2025-12-26'), ('12h', 'Full', '2025-04-11'), ('14h', 'Full', '2025-05-07'),
-                         ('19h', 'Full', '2025-04-05'))   # the Phase 2 images on a wrong grid (R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED 'Leave excluded.'): under
-                                              # OFF_GRID_SURVEY 'regrid' a build or flow run of their cell refuses until data_decisions.csv excludes the night (Gregg's rows)
+                                              # decision, the build and the flow step) - and while such a night is ADMITTED the build and the flow run of its cell refuse
+                                              # (input_resolver.wrong_grid_refusal, from the data: 8 nights today, the four ruled 'leave excluded' of
+                                              # R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED and four more of the same kind) until data_decisions.csv excludes it; 'refuse' = production
+                                              # (coadd._grid_refused_dates refuses the night, refusals_grid.csv)
     # reference
     REF_MODE = 'master'                       # previous-generation I Taper R-0.75 master (coadd_full_pipeline.py:1607; R-ALIGNMENT-REFERENCE-IS-PREVIOUS-GENERATION-MASTER)
     REFERENCE_DATES = {'00h': '2025-08-09', '01h': '2024-12-21', '02h': '2024-12-21', '03h': '2024-12-21', '04h': '2024-12-21',
@@ -202,7 +202,7 @@ class masters_build(_Section):
     KEEP_PREP = False                         # P3_KEEP_PREP unset (coadd_full_pipeline.py:4029)
     PROTECTED_KEYS = ('ALLOW_STALE_FLOW', 'FLUXSCALE_TILT', 'SOLAR_AUDIT', 'SOLAR_AUDIT_SHA1', 'NAMED_OUT_OF_MASTER',
                       'NAMED_OUT_OF_MASTER_SHA1', 'ARCHIVE_WRITE', 'VARIANT_BAND_MEDIANS', 'VARIANT_BAND_MEDIANS_SHA1',
-                      'FLOW_MAX_NAN_FRACTION', 'WRONG_GRID_NIGHTS',
+                      'FLOW_MAX_NAN_FRACTION',
                       'REF_ASTROM_PIVOT_MHZ', 'REF_ASTROM_EXPONENT', 'REF_ASTROM_MIN_ANCHORS', 'REF_ASTROM_N_PEAKS',
                       'REF_ASTROM_MATCH_MAX_ARCMIN', 'FLUXSCALE_ESTIMATOR', 'FLUXSCALE_SNR_MIN', 'FLUXSCALE_PEAK_JY',
                       'FLUXSCALE_MIN_ELEV_DEG', 'FLUXSCALE_APERTURE_BEAMS', 'FLUXSCALE_MAXFILTER_BEAMS',
@@ -215,8 +215,8 @@ class masters_build(_Section):
     RULED = {'CUTOVER_DATE': 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED',
              'INPUT_RESOLVER': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'PRODUCT_GRID_MISMATCH': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
-             'OFF_GRID_SURVEY': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
-             'WRONG_GRID_NIGHTS': ('R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED', 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'),
+             'OFF_GRID_SURVEY': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-WRONG-GRID-NIGHTS-LEAVE-EXCLUDED'),
+
              'RAW_INPUT_FLOW_RULE': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),
              'EPOCH_GATE_SOURCE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'EPOCH_GATE_MAX_PASSES': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),

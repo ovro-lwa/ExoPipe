@@ -48,7 +48,7 @@ def census_class(r):
     """The census precedence over a coverage row's own columns (used by the writer AND the content test)."""
     if str(r['excluded']) == '1':
         return 'excluded'
-    if str(r['epoch_archived_I']) == '1' and str(r['frame_archived_I']) == '1' and str(r['frame_archived_V']) == '1':
+    if str(r['epoch_archived_I']) == '1' and str(r['frame_archived_I']) == '1' and str(r['frame_archived_V']) in ('1', 'refused'):
         c = 'ok'
     elif str(r['master_exists']) != '1':
         c = 'never-attempted'
@@ -157,7 +157,7 @@ def deep_coverage(cells_spec, ex, workers=None, archive=None, searched=None, not
     p2 = dict(K.thread_map(_p2_night, jobs, workers))
     note(f'coverage: Phase 2 walked {len(jobs)} (LST, night)s for {len(cells)} cells')
     root = C.paths.COADD_SB_ROOT
-    resid, build, inm, master = {}, {}, {}, {}
+    resid, build, inm, master, vref = {}, {}, {}, {}, {}
 
     def cell_state(c):
         l, s = c.split('_', 1)
@@ -167,9 +167,11 @@ def deep_coverage(cells_spec, ex, workers=None, archive=None, searched=None, not
         w = os.path.join(root, c, 'coadd_final', C.status_rebuild.BUILD_RECORD)
         rows = K.read_csv(w) if os.path.exists(w) else []
         m = os.path.exists(K.expand(CC.MASTER, lst=l, scope=s))
-        return c, res, {r['date'] for r in rows}, {r['date'] for r in rows if str(r.get('in_master')) == '1'}, m
-    for c, res, b, im, m in K.thread_map(cell_state, cells, workers):
-        resid[c], build[c], inm[c], master[c] = res, b, im, m
+        rp = os.path.join(root, c, 'refusals_input.csv')                  # B-03 same-state: V refused -> no V frame by rule
+        vr = {r['date'] for r in K.read_csv(rp) if r.get('product') == 'V'} if os.path.exists(rp) else set()
+        return c, res, {r['date'] for r in rows}, {r['date'] for r in rows if str(r.get('in_master')) == '1'}, m, vr
+    for c, res, b, im, m, vr in K.thread_map(cell_state, cells, workers):
+        resid[c], build[c], inm[c], master[c], vref[c] = res, b, im, m, vr
     arch = {}
     if archive:
         ajobs = [(l, d, by_lst[l]) for (l, d), v in p2.items() if v]
@@ -204,7 +206,7 @@ def deep_coverage(cells_spec, ex, workers=None, archive=None, searched=None, not
                      master_exists=int(master[c]),
                      epoch_archived_I=a.get((s, 'epoch_I'), 0) if archive else '',
                      frame_archived_I=a.get((s, 'frame_I'), 0) if archive else '',
-                     frame_archived_V=a.get((s, 'frame_V'), 0) if archive else '',
+                     frame_archived_V=('refused' if d in vref[c] else a.get((s, 'frame_V'), 0)) if archive else '',
                      searched_V=int(d in srch.get((c, 'V'), ())) if searched else '',
                      searched_I=int(d in srch.get((c, 'I'), ())) if searched else '',
                      p1_newer_than_p2=p1new.get((l, d), '') if CC.P1_NEWER_THAN_P2 else '')

@@ -38,7 +38,7 @@ BUILD_DERIVED = ('pbmaps', 'vclean', 'fluxscale', 'verify', 'variants')
 # flow/ and its prep-stage caches (coadd.process_lst_freq). Anything a build writes means an earlier build ran here.
 BUILD_PRODUCT_PATHS = ('coadd_final/weights.csv', 'coadd_final/.done', 'coadd_final/loo', 'coadd_final/stage2_verdict.csv',
                        'coadd_final/night_image_gate.csv', 'coadd_provisional', 'residuals_provisional.csv', 'subtracted',
-                       'prep_final')
+                       'prep_final', 'refusals_input.csv')   # refusals_input.csv: B-03 same-state, written only by a build
 WAIVE_REFERENCE = 'masters.reference'                 # --waive masters.reference --ruling "..." for --reference path:/night:
 WAIVE_INSTALL_RECORD = 'masters.sources.install_record'   # window: installed cells have no install-step record yet
 
@@ -248,6 +248,7 @@ def inplace(out):
     IP.check_mirrors(modules=('coadd',))
     from exopipe.phase3.lib.masters import input_resolver        # B-03 (a): the finders through core.inputs, same-state
     b = _cfg().masters_build
+    input_resolver.check_grid_values(b)
     applied.append(('coadd finders', input_resolver.install(co, b.INPUT_RESOLVER, b.RAW_INPUT_FLOW_RULE)))
     return _SETUP['mods'], applied
 
@@ -440,12 +441,17 @@ def build(cell, args, run, out, ran_now):
         if not admitted:
             raise NoInput(f'every Phase-2 night of {lst} {sc} is excluded in data_decisions.csv')
         from exopipe.phase3.lib.masters import input_resolver
-        why = input_resolver.wrong_grid_refusal(lst, sc, nights)       # B-03 (a): the four wrong-grid nights
-        if why:
+        why = input_resolver.wrong_grid_refusal(lst, sc, [x for x in dates if x[0] in set(admitted)], co.CUTOVER_DATE)
+        if why:                                                        # B-03 (a): an admitted night off the cell's grid
             u.refuse(why)
-        for d, _sd, img in dates:
+        from exopipe.phase3.core import inputs as I                     # B-03 (a): the night's V / I-variant images are inputs too
+        for d, _sd, img in dates:                                        # (a changed one changes the night's state: resume sees it)
             if d in admitted:
                 u.add_input(img)
+                for prod in ('V', 'Taper_R0', 'NoTaper_R0', 'NoTaper_R075'):
+                    pimg = I.product_image(_sd, freq, prod)
+                    if pimg:
+                        u.add_input(pimg)
         # identity of what stage-in and the flow step left: the flows, the reference COPIES (coadd_final/{I,V} are the same
         # bytes - build_clean_start - but the build overwrites them with the new masters) and the carried epoch-gate record
         for p in (sorted(glob.glob(os.path.join(cell_dir, 'flow', '*'))) + sorted(glob.glob(os.path.join(cell_dir, 'coadd_final_ref', '*')))
@@ -504,6 +510,10 @@ def build(cell, args, run, out, ran_now):
             u.note(f'input refusals (B-03 same-state, {input_resolver.REFUSALS_FILE}): '
                    + '; '.join(f'{k} {len(v)} night(s) {sorted(v)}' for k, v in sorted(by.items()))[:1500])
             u.add_output(input_resolver.refusals_path(cell_dir), 'input_refusals', cell=cell)
+            short = input_resolver.masters_below_minimum(cell_dir, sc, by, co.MIN_DATES_FOR_COADD, co.MIN_DATES_FOR_VARIANT)
+            if short:                          # the master is not built: say why before its absence fails the content tests
+                u.refuse('B-03 same-state: ' + '; '.join(short) + ' - the cell keeps its installed generation until it has '
+                         'enough nights in that state (what such a cell should do is Gregg\'s: DECISIONS_PENDING.md)')
         for p, cls in _build_outputs(cell_dir, sc):
             u.add_output(p, cls, cell=cell)
 
@@ -978,10 +988,6 @@ def _plan_build(cell, args, out, planned):
                                             if pv else 'every V / variant image in its night\'s survey-image state')
                      + ' (excluded nights included)')
     nights = [d for d, _, _ in dates]
-    from exopipe.phase3.lib.masters import input_resolver
-    why = input_resolver.wrong_grid_refusal(lst, sc, nights)           # B-03 (a): the four wrong-grid nights
-    if why:
-        gates.append(why)
     try:
         ex, _ = IP.exclusion_readers_agree(lst, sc, nights, co)
         adm = ex.admitted(lst, sc, nights)
@@ -989,6 +995,19 @@ def _plan_build(cell, args, out, planned):
                      f'{sorted(set(nights) - set(adm))}')
         if not adm:
             gates.append('no admitted night (NO-INPUT)')
+        if _cfg().masters_build.RAW_INPUT_FLOW_RULE == 'same-state':
+            from exopipe.phase3.lib.masters import input_resolver
+            left = input_resolver.nights_left(lst, sc, [x for x in dates if x[0] in set(adm)])
+            lines.append('B-03 same-state, admitted nights with an image in their survey image\'s state (the master needs '
+                         f'{co.MIN_DATES_FOR_COADD} for V, {co.MIN_DATES_FOR_VARIANT} for a variant, after the stage-2 '
+                         'and epoch checks): ' + ', '.join(f'{k} {v}' for k, v in sorted(left.items())))
+            low = [k for k, v in left.items() if v < (co.MIN_DATES_FOR_COADD if k == 'V' else co.MIN_DATES_FOR_VARIANT)]
+            if low:
+                gates.append(f'B-03 same-state leaves {low} below the minimum before any check: no master of it')
+        from exopipe.phase3.lib.masters import input_resolver
+        why = input_resolver.wrong_grid_refusal(lst, sc, [x for x in dates if x[0] in set(adm)], co.CUTOVER_DATE)
+        if why:                                                        # B-03 (a): an admitted night off the cell's grid
+            gates.append(why)
     except Refusal as e:
         gates.append(str(e))
     if 'stage-in' not in planned and not done_record(out, 'stage-in', cell):

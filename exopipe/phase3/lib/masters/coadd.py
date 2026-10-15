@@ -3401,6 +3401,8 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
                 refused.append((date, 'no Science dir in the record')); continue
             img = (find_subband_variant_image(sci_dir, freq_str, vk) if is_subband(freq_str)
                    else find_wideband_deep_images(sci_dir, freq_str, 'I', vk))
+            if not img and _same_state_refused(workdir, date, f'I_{vk}'):   # WAVE2 B-03: the input rule's refusal (recorded),
+                continue                                                       # not a variant-gate one - as the final stage
             if not img:
                 refused.append((date, f'no {vk} input')); continue
             why = _variant_input_divergent(img)
@@ -4210,6 +4212,8 @@ def _grid_refused_dates(target_dates, tag=''):
     flowed or stacked, so they are REFUSED as epochs (printed once per cell, logged in
     <workdir>/refusals_grid.csv by the caller) and excluded from every stage. Pre-cutover epochs
     are on their own grid by design and are REGRIDDED by the prep, never refused here."""
+    if OFF_GRID_SURVEY == 'regrid':          # B-03 (a): an off-grid post-cutover night is regridded (_off_grid), not refused
+        return set()
     post = [x for x in target_dates if x[0] >= CUTOVER_DATE]
     shapes = {}
     for date, _sd, img in post:
@@ -4223,8 +4227,6 @@ def _grid_refused_dates(target_dates, tag=''):
     vals = [s for s in shapes.values() if s]
     modal = max(set(vals), key=vals.count) if vals else None
     wrong = {d for d, s in shapes.items() if s and modal and s != modal}
-    if OFF_GRID_SURVEY == 'regrid':          # B-03 (a): an off-grid post-cutover night is regridded (_off_grid), not refused
-        return set()
     for d in sorted(wrong):
         key = (tag, d)
         if key not in _GRID_REFUSED_CACHE:
@@ -4251,18 +4253,42 @@ def _off_grid(date, img, target_shape):
         return False
 
 
-def _image_shape(path):
-    _h = fits.getheader(path)
-    return int(_h['NAXIS2']), int(_h['NAXIS1'])
+def _same_state_refused(workdir, date, product):
+    """B-03 (a): whether the same-state rule refused this night's ``product`` image ('V', 'I_<variant>') in this cell - its
+    record <workdir>/refusals_input.csv (lib/masters/input_resolver.py). False when the cell has no record (production)."""
+    p = f'{workdir}/refusals_input.csv'
+    if not os.path.exists(p):
+        return False
+    import csv as _csv
+    with open(p, newline='') as f:
+        return any(r.get('date') == date and r.get('product') == product for r in _csv.DictReader(f))
+
+
+def _same_grid(a, b, tol_px=0.01):
+    """B-03 (a): whether two images share one pixel grid - the same shape, and the corners, quarter points and centre of one
+    land on the same pixels of the other within tol_px through the two celestial WCSs. A shape test alone misses a product
+    with the I image's shape on another WCS; strict WCS equality flags numerical noise (2026-10-15 scan: 152 products differ
+    from their survey image in WCS parameters by less than 1e-12 px)."""
+    ha, hb = fits.getheader(a), fits.getheader(b)
+    if (int(ha['NAXIS2']), int(ha['NAXIS1'])) != (int(hb['NAXIS2']), int(hb['NAXIS1'])):
+        return False
+    n1, n2 = int(ha['NAXIS1']), int(ha['NAXIS2'])
+    xs = np.array([0, n1 - 1, 0, n1 - 1, n1 / 4, 3 * n1 / 4, n1 / 4, 3 * n1 / 4, (n1 - 1) / 2])
+    ys = np.array([0, 0, n2 - 1, n2 - 1, n2 / 4, n2 / 4, 3 * n2 / 4, 3 * n2 / 4, (n2 - 1) / 2])
+    ra, dec = WCS(ha).celestial.all_pix2world(xs, ys, 0)
+    ok = np.isfinite(ra) & np.isfinite(dec)
+    x2, y2 = WCS(hb).celestial.all_world2pix(ra[ok], dec[ok], 0)
+    return bool(ok.any()) and float(np.nanmax(np.hypot(x2 - xs[ok], y2 - ys[ok]))) <= tol_px
 
 
 def _product_mapping(src_path, i_img, i_mapping):
     """B-03 (a), PRODUCT_GRID_MISMATCH 'regrid': the regrid mapping to align a night's product (V, an I variant) with - its
-    I image's mapping when the product has the I image's shape (production's assumption: one grid per night), else None, so
-    process_variant_image regrids it from its own WCS when it is off the master's shape. Under 'drop' the I mapping, always."""
+    I image's mapping when the product is on the I image's grid (_same_grid; production's assumption: one grid per night),
+    else None, so process_variant_image regrids it from its own WCS when it is off the master's shape. Under 'drop' the I
+    mapping, always."""
     if PRODUCT_GRID_MISMATCH != 'regrid' or i_img is None:
         return i_mapping
-    return i_mapping if _image_shape(src_path) == _image_shape(i_img) else None
+    return i_mapping if _same_grid(src_path, i_img) else None
 
 
 def _flow_freshness(workdir, target_dates):

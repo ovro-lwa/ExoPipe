@@ -69,7 +69,7 @@ WIRING = {
         'CUTOVER_DATE': 'attr:coadd.CUTOVER_DATE', 'FLOW_MAX_NAN_FRACTION': 'mirror',
         'ALLOW_STALE_FLOW': 'env-call:P3_ALLOW_STALE_FLOW', 'INPUT_RESOLVER': 'step', 'RAW_INPUT_FLOW_RULE': 'step',
         'PRODUCT_GRID_MISMATCH': 'attr:coadd.PRODUCT_GRID_MISMATCH', 'OFF_GRID_SURVEY': 'attr:coadd.OFF_GRID_SURVEY',
-        'WRONG_GRID_NIGHTS': 'step', 'REF_MODE': 'attr:coadd.REF_MODE',
+        'REF_MODE': 'attr:coadd.REF_MODE',
         'REFERENCE_DATES': 'attr:coadd.REFERENCE_DATES', 'REF_ASTROM_MAX_ARCMIN': 'attr:coadd.REF_ASTROM_MAX_AMIN',
         'REF_ASTROM_PIVOT_MHZ': 'mirror', 'REF_ASTROM_EXPONENT': 'mirror', 'REF_ASTROM_MIN_ANCHORS': 'mirror',
         'REF_ASTROM_N_PEAKS': 'mirror', 'REF_ASTROM_MATCH_MAX_ARCMIN': 'mirror', 'VLSSR_PEAKS': 'attr:coadd.VLSSR_REF',

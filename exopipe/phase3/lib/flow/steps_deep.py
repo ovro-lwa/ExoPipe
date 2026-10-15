@@ -99,6 +99,7 @@ def coadd_module(out_root, note):
     # changes of the in-place module, so not drift-guarded
     from exopipe.phase3.lib.masters import input_resolver
     b = C.cfg().masters_build
+    input_resolver.check_grid_values(b)
     input_resolver.install(CO, b.INPUT_RESOLVER, b.RAW_INPUT_FLOW_RULE)
     CO.OFF_GRID_SURVEY = b.OFF_GRID_SURVEY
     if b.INPUT_RESOLVER != 'coadd-finders' or b.OFF_GRID_SURVEY != 'refuse':
@@ -386,7 +387,7 @@ def _run_stages(u, args, run, cell, lst, sc, W, stages, prev, done_before, CO, E
     if not found:
         raise NoInput(f'G-D2: no Phase-2 alignment image for {cell} under {CO.PHASE2_ROOT}/{lst}')
     from exopipe.phase3.lib.masters import input_resolver
-    why = input_resolver.wrong_grid_refusal(lst, sc, [d for d, _, _ in found])     # B-03 (a): the four wrong-grid nights
+    why = input_resolver.wrong_grid_refusal(lst, sc, entries, CO.CUTOVER_DATE)    # B-03 (a): an admitted night off the grid
     if why:
         raise Refusal(why)
     u.set_admitted([d for d, _, _ in entries])
@@ -560,7 +561,7 @@ def plan(args, run, cells_, stages):
             if not found:
                 refused.append('G-D2: no Phase-2 input')
             from exopipe.phase3.lib.masters import input_resolver
-            why = input_resolver.wrong_grid_refusal(lst, sc, [d for d, _, _ in found])
+            why = input_resolver.wrong_grid_refusal(lst, sc, entries, CO.CUTOVER_DATE)
             if why:
                 refused.append(why)
             if 'stage-in' in stages and c.flow_prep.STAGE_IN_FLOWS:

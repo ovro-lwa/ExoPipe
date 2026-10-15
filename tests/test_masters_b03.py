@@ -155,16 +155,32 @@ def test_same_state():
         wb, txt = quiet(co.find_wideband_deep_images, sd['2025-01-04'], 'Blue', 'I', 'Taper_R0')
         check('same-state: a raw wideband variant on a dewarped wideband survey refused, printed',
               wb is None and 'INPUT REFUSED 05h Blue 2025-01-04 I_Taper_R0' in txt, (wb, txt))
+        sd5 = night(root, '05h', '2025-01-05', [S_DEW, B_S_DEW, 'Blue/V/deep/Blue-V-Taper-3600s-Robust-0-image.fits',
+                                               '23MHz/I/deep/23MHz-I-NoTaper-3600s-Robust-0-image.fits',
+                                               '23MHz/I/deep/23MHz-I-NoTaper-3600s-Robust-0.75-image_dewarped.fits'])
+        r5 = (quiet(co.find_stokes_v_deep_image, sd5, 'Blue')[0], quiet(co.find_subband_variant_image, sd5, '23', 'NoTaper_R0')[0],
+              quiet(co.find_subband_variant_image, sd5, '23', 'NoTaper_R075')[0])
+        check('same-state: a raw wideband V and a raw NoTaper R0 refused on dewarped surveys; a dewarped NoTaper R0.75 kept',
+              r5 == (None, None, os.path.join(sd5, '23MHz/I/deep/23MHz-I-NoTaper-3600s-Robust-0.75-image_dewarped.fits')), r5)
+        lines = []
+        for _ in range(3):
+            lines.append(quiet(co.find_stokes_v_deep_image, sd5, 'Blue')[1])
+        check('a refusal is printed once per process, not at every lookup', sum(x.count('INPUT REFUSED') for x in lines) == 0
+              and r5[0] is None, lines)
         for _ in range(3):                                    # the co-add asks again (provisional, final, residuals)
             quiet(co.find_stokes_v_deep_image, sd['2025-01-01'], '23')
         rows = IR.read_refusals(cell)
         check('refusals_input.csv: one row per refused (night, product), never twice',
               sorted((r['date'], r['product']) for r in rows) == [('2025-01-01', 'I_Taper_R0'), ('2025-01-01', 'V'),
-                                                                   ('2025-01-03', 'I_Taper_R0'), ('2025-01-03', 'V')], rows)
+                                                                   ('2025-01-03', 'I_Taper_R0'), ('2025-01-03', 'V'),
+                                                                   ('2025-01-05', 'I_NoTaper_R0')], rows)
+        check('refusals_input.csv: the wideband cell\'s own record (05h_Blue) holds its refusals',
+              sorted((r['date'], r['product']) for r in IR.read_refusals(os.path.join(out, '05h_Blue')))
+              == [('2025-01-04', 'I_Taper_R0'), ('2025-01-05', 'V')], IR.read_refusals(os.path.join(out, '05h_Blue')))
         IR._WRITTEN.clear()
         IR._LOADED.clear()                                    # a new process: the file's rows are read, not repeated
         quiet(co.find_stokes_v_deep_image, sd['2025-01-01'], '23')
-        check('refusals_input.csv: a later process does not repeat a row', len(IR.read_refusals(cell)) == 4)
+        check('refusals_input.csv: a later process does not repeat a row', len(IR.read_refusals(cell)) == 5)
         # the content test of the record
         from exopipe.phase3.core import validate
         orig_root = CFG.paths.PHASE2_ROOT
@@ -350,6 +366,20 @@ def test_product_grid():
           res[('drop', 'V')][0] and res[('drop', 'V')][1] > 3, res)
     check('regrid: that V is regridded from its own WCS and lands on its sky position (within 1 px)',
           not res[('regrid', 'V')][0] and res[('regrid', 'V')][1] <= 1.0, res)
+    # the grid test: geometric, not strict WCS equality (152 real products differ from their survey image by < 1e-12 px)
+    wt2, _h = _wcs_image(os.path.join(d, 'I_noise.fits'), 48, 0.6)
+    hn = fits.getheader(os.path.join(d, 'I.fits'))
+    hn['CRVAL1'] += 1e-13
+    fits.writeto(os.path.join(d, 'I_noise.fits'), np.zeros((48, 48), np.float32), hn, overwrite=True)
+    hs = fits.getheader(os.path.join(d, 'I.fits'))
+    hs['CRPIX1'] += 1.0
+    fits.writeto(os.path.join(d, 'I_shift.fits'), np.zeros((48, 48), np.float32), hs, overwrite=True)
+    g = (co._same_grid(os.path.join(d, 'V_same.fits'), os.path.join(d, 'I.fits')),
+         co._same_grid(os.path.join(d, 'I_noise.fits'), os.path.join(d, 'I.fits')),
+         co._same_grid(os.path.join(d, 'I_shift.fits'), os.path.join(d, 'I.fits')),
+         co._same_grid(os.path.join(d, 'V.fits'), os.path.join(d, 'I.fits')))
+    check('grid test: same WCS, or WCS equal but for numerical noise -> one grid; the same shape one pixel off, or another '
+          'shape -> another grid', g == (True, True, False, False), g)
     check('regrid: a V on its I image\'s grid keeps the I mapping (production\'s case), on its position',
           res[('regrid', 'V_same')][0] and res[('regrid', 'V_same')][1] <= 1.0 and res[('drop', 'V_same')] == res[('regrid', 'V_same')], res)
     # the call sites: the provisional V is no longer dropped under 'regrid', and every final-stage product takes _product_mapping
@@ -424,36 +454,178 @@ def test_off_grid():
     prep_ref = '(ref_date < CUTOVER_DATE and post_dates) or _off_grid(ref_date, ref_img_path, target_shape)' in src
     check(f'every cutover regrid decision is followed by _off_grid ({len(ok_sites)} of {len(tests_)}; prep reference too)',
           len(tests_) == 8 and len(ok_sites) == 8 and prep_ref and src.count('CUTOVER_DATE and') == 9, (len(tests_), len(ok_sites)))
-    # the four wrong-grid nights
-    ex_path = os.path.join(d, 'decisions.csv')
-    with open(ex_path, 'w') as f:
-        f.write('lst,subband,date,verdict,reason,score_thermal_noise,score_flux_scale,score_ionosphere\n')
-        f.write('12h,Full,2025-04-11,exclude,wrong grid,,,\n')
-    orig_load = exclusions.load
+    # the wrong-grid gate, from the data: an ADMITTED post-cutover night off the cell's modal grid refuses the cell
+    imgs = {}
+    for k_, n_ in enumerate(['2025-03-01', '2025-03-02', '2025-03-03', '2025-03-04']):
+        p_ = os.path.join(d, f'g{k_}.fits')
+        fits.writeto(p_, np.zeros((6, 6) if k_ == 3 else (8, 8), np.float32), overwrite=True)
+        imgs[n_] = p_
+    pre_img = os.path.join(d, 'pre.fits')
+    fits.writeto(pre_img, np.zeros((5, 5), np.float32), overwrite=True)
+    entries = [(n_, '/x', p_) for n_, p_ in imgs.items()] + [('2024-12-20', '/x', pre_img)]
+    off = IR.off_grid_nights(entries, co.CUTOVER_DATE)
+    CFG.reset()
+    g_on = IR.wrong_grid_refusal('05h', '23MHz', entries, co.CUTOVER_DATE)
+    g_ex = IR.wrong_grid_refusal('05h', '23MHz', [x for x in entries if x[0] != '2025-03-04'], co.CUTOVER_DATE)
+    CFG.authorize([], out=T)
+    CFG.set('masters_build.OFF_GRID_SURVEY', 'refuse')
+    g_prod = IR.wrong_grid_refusal('05h', '23MHz', entries, co.CUTOVER_DATE)
+    CFG.reset()
+    keep = co.OFF_GRID_SURVEY
+    co.OFF_GRID_SURVEY = 'refuse'
     try:
-        exclusions.load = lambda path=None: exclusions.Exclusions(ex_path)
-        g = {c: IR.wrong_grid_refusal(*c.split('_'), nights) for c, nights in (
-            ('02h_Green', ['2025-12-25', '2025-12-26']), ('12h_Full', ['2025-04-11']), ('19h_Full', ['2025-04-06']),
-            ('02h_Blue', ['2025-12-26']))}
-        CFG.authorize([], out=T)
-        CFG.set('masters_build.OFF_GRID_SURVEY', 'refuse')
-        g_prod = IR.wrong_grid_refusal('02h', 'Green', ['2025-12-26'])
-        CFG.reset()
+        prod_set = quiet(co._grid_refused_dates, entries, 'test_c')[0]
     finally:
-        exclusions.load = orig_load
-    check('wrong-grid gate (regrid): 02h Green with 2025-12-26 and no row refuses, naming the night and the missing rows',
-          g['02h_Green'] is not None and '2025-12-26' in g['02h_Green'] and 'data_decisions' in g['02h_Green'], g)
-    check('wrong-grid gate: a cell whose night has its row passes; a cell without the night, or another band, passes',
-          g['12h_Full'] is None and g['19h_Full'] is None and g['02h_Blue'] is None, g)
-    check("wrong-grid gate: none under OFF_GRID_SURVEY 'refuse' (production: the grid refusal keeps them out)", g_prod is None)
-    # real data (read only): today none of the four has its row, so their cells refuse under the ruled value
-    real = {}
-    for lst, sc, night_ in CFG.masters_build.WRONG_GRID_NIGHTS:
+        co.OFF_GRID_SURVEY = keep
+    check('wrong-grid gate: the off-grid nights are exactly the ones production\'s grid test refuses (a pre-cutover night is '
+          'regridded by design, not counted)', off == [('2025-03-04', (6, 6), (8, 8))] and {x[0] for x in off} == prod_set,
+          (off, prod_set))
+    check('wrong-grid gate (regrid): the cell refuses while the off-grid night is admitted, naming it; once it is excluded '
+          '(not among the admitted nights) the cell passes', g_on is not None and '2025-03-04 (6x6)' in g_on
+          and 'data_decisions' in g_on and g_ex is None, (g_on, g_ex))
+    check("wrong-grid gate: none under OFF_GRID_SURVEY 'refuse' (production: the grid refusal keeps the night out)", g_prod is None)
+    # real data (read only): the admitted nights off their cell's grid today - the four ruled 'leave excluded' and four more
+    expected = {('02h', 'Green', '2025-12-26'), ('12h', 'Full', '2025-04-11'), ('14h', 'Full', '2025-05-07'),
+                ('19h', 'Full', '2025-04-05'), ('02h', '50MHz', '2025-12-26'), ('11h', 'Full', '2025-03-09'),
+                ('11h', 'Full', '2025-04-07'), ('22h', 'Full', '2025-08-08')}
+    found, ex = set(), exclusions.load()
+    for lst, sc in sorted({(l_, s_) for l_, s_, _n in expected} | {('23h', '23MHz')}):
         fq = sc[:-3] if sc.endswith('MHz') else sc
-        nights = [x[0] for x in quiet(co.discover_dates, lst, fq)[0]]
-        real[f'{lst}_{sc}'] = (night_ in nights, IR.wrong_grid_refusal(lst, sc, nights) is not None)
-    check('real: each of the four wrong-grid nights is a Phase 2 night of its cell, and the cell refuses until its row exists',
-          all(v == (True, True) for v in real.values()), real)
+        adm = [x for x in quiet(co.discover_dates, lst, fq)[0] if not ex.is_excluded(lst, sc, x[0])]
+        found |= {(lst, sc, n_) for n_, _x, _m in IR.off_grid_nights(adm, co.CUTOVER_DATE)}
+    check('real: the gate finds the eight admitted off-grid nights (the four ruled "leave excluded" and the four the review '
+          'found), and nothing in 23h 23MHz', found == expected, sorted(found ^ expected))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 7. the review fixes (2026-10-15)
+# ---------------------------------------------------------------------------------------------------------------------
+
+def test_review_fixes():
+    import ast
+    import re
+    from exopipe.phase3.lib.search import deep_search as DSR
+    d = os.path.join(T, 'review')
+    os.makedirs(d, exist_ok=True)
+    # a product below its minimum after the rule: the build says so (instead of failing the content tests unexplained)
+    cell = os.path.join(d, '23h_Green')
+    os.makedirs(os.path.join(cell, 'coadd_final'))
+    fits.writeto(os.path.join(cell, 'coadd_final', 'I_deep_Taper_R0_Green.fits'), np.zeros((2, 2), np.float32))
+    short = IR.masters_below_minimum(cell, 'Green', {'V': ['2025-08-09'], 'I_Taper_R0': ['2025-08-09']}, 3, 2)
+    check('a product master missing after same-state refusals is named (V), one still built is not (I Taper R0)',
+          len(short) == 1 and short[0].startswith('V_deep_Taper_R0_Green not built') and 'fewer than 3' in short[0], short)
+    # unknown grid-key values refuse
+    class B:
+        PRODUCT_GRID_MISMATCH, OFF_GRID_SURVEY = 'regird', 'refuse'
+    try:
+        IR.check_grid_values(B)
+        ok = False
+    except Refusal as e:
+        ok = 'PRODUCT_GRID_MISMATCH' in str(e)
+    B.PRODUCT_GRID_MISMATCH = 'drop'
+    IR.check_grid_values(B)
+    check('a misspelt PRODUCT_GRID_MISMATCH / OFF_GRID_SURVEY refuses (any other value would silently mean production)', ok)
+    # the pins on edited copies of the module: a body edit, a decorator, a new finder
+    t = open(co.__file__).read()
+    body = t.replace("    for f in files:                                  # failsafe: RAW -> flow dewarps\n        if base(f) and 'dewarped' not in f:\n            return os.path.join(d, f)\n    return None\n\n\ndef find_10min_images",
+                     "    for f in files:                                  # failsafe: RAW -> flow dewarps\n        if base(f):\n            return os.path.join(d, f)\n    return None\n\n\ndef find_10min_images", 1)
+    deco = t.replace('\ndef find_stokes_v_deep_image(', '\n@functools.lru_cache(None)\ndef find_stokes_v_deep_image(')
+    newf = t + '\n\ndef find_extra_image(sci_dir):\n    return None\n'
+    pins = (I.pin_mismatches(t), I.pin_mismatches(body), I.pin_mismatches(deco), I.pin_mismatches(newf))
+    check('pins: the module as is passes; an edited finder body, a decorator and a new finder each refuse, named',
+          pins[0] == [] and body != t and pins[1] == ['find_stokes_v_deep_image'] and pins[2] == ['find_stokes_v_deep_image (decorated)']
+          and pins[3] == ['find_extra_image (a new finder)'], pins)
+    # the search: a V-refused night keeps its I search (the provenance gate skips only the V product, by the record)
+    rec = os.path.join(d, 'srch')
+    os.makedirs(rec)
+    with open(os.path.join(rec, 'refusals_input.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(IR.REFUSALS_HEADER)
+        w.writerow(['11h', 'Red', '2024-12-18', 'V', 'x.fits', 'raw V on a dewarped survey image'])
+        w.writerow(['11h', 'Red', '2024-12-19', 'I_Taper_R0', 'y.fits', 'raw I_Taper_R0 on a dewarped survey image'])
+    src = open(DSR.__file__).read()
+    gate = src[src.index('_vref = _same_state_refused_v(base)'):src.index("print(f'  {lst} {scope}: INPUT-PROVENANCE GATE")]
+    skip = gate.index("if _st == 'V' and _kd(d) in _vref and not os.path.exists(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'):")
+    check('search: the record\'s V nights only (a variant refusal is not one), and none without a record',
+          DSR._same_state_refused_v(rec) == {'2024-12-18'} and DSR._same_state_refused_v(d) == set())
+    check('search provenance gate: a recorded V refusal with no V product skips the V check before the header read (the '
+          'night stays for I; the V search has no frame of it)', 0 < skip < gate.index('_h = fits.getheader('), skip)
+    # the variants stage does not stamp a same-state refusal as a variant-gate one
+    check('variants stage: the record answers per night and product', co._same_state_refused(rec, '2024-12-19', 'I_Taper_R0')
+          and not co._same_state_refused(rec, '2024-12-19', 'V') and not co._same_state_refused(d, '2024-12-18', 'V'))
+    csrc = open(co.__file__).read()
+    rv = csrc[csrc.index('def rebuild_variants_from_record('):csrc.index('def run_final_lst_freq(')]
+    check('variants stage: a same-state refusal is skipped before it could be appended to the variant-gate refusals',
+          0 < rv.index("if not img and _same_state_refused(workdir, date, f'I_{vk}'):") < rv.index("refused.append((date, f'no {vk} input'))"))
+    # call sites: each _product_mapping gets the product and its night's I image; each _off_grid the survey image
+    tree = ast.parse(csrc)
+    pm, og = [], []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == '_product_mapping':
+            pm.append(tuple(ast.get_source_segment(csrc, a_) for a_ in node.args))
+        if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == '_off_grid':
+            og.append(ast.get_source_segment(csrc, node.args[1]))
+    check('_product_mapping call sites: (the product, the night\'s I image, its mapping) - never the product twice',
+          sorted(pm) == sorted([('v_src', 'align_img_path', 'regrid_coords'), ('v_img', '_i_img', "params['regrid']"),
+                                ('i_r0_img', '_i_img', "params['regrid']"), ('_img', '_i_img', "params['regrid']")]), pm)
+    check('_off_grid call sites: the survey image (or the variant image in the variants stage), never a regridded work path',
+          sorted(set(og)) == sorted({'align_img_path', 'ref_date_entry[2]', 'ref_img_path', 'img'}) and len(og) == 9
+          and not any('work' in x or 'regrid' in x for x in og), og)
+    # install carries the record with its generation (quarantining the cell's earlier one)
+    from exopipe.phase3.lib.install import steps_deep as ISD
+    moved, recs = [], []
+
+    class FakePI:
+        @staticmethod
+        def _move_to_wq(cell_, path, rel):
+            moved.append((cell_, os.path.basename(path), rel))
+            os.remove(path)
+
+        @staticmethod
+        def rec(cell_, step, path='', dest='', m='', nbytes='', detail=''):
+            recs.append((step, os.path.basename(dest)))
+
+        @staticmethod
+        def md5(p_):
+            return 'md5'
+    rb, cd = os.path.join(d, 'rebuild', '11h_Red'), os.path.join(d, 'working', '11h_Red')
+    for x in (rb, cd):
+        os.makedirs(x)
+    open(os.path.join(cd, 'refusals_input.csv'), 'w').write('old\n')
+    shutil.copy(os.path.join(rec, 'refusals_input.csv'), os.path.join(rb, 'refusals_input.csv'))
+
+    class Plan:
+        rebuild_root, cdir, cell = rb, cd, '11h_Red'
+    got = ISD.carry_input_refusals(FakePI, Plan)
+    check('install: the rebuild\'s record replaces the working cell\'s (the old one quarantined, the copy logged)',
+          got == os.path.join(cd, 'refusals_input.csv') and moved == [('11h_Red', 'refusals_input.csv', 'refusals_input.csv')]
+          and recs == [('cell-file', 'refusals_input.csv')] and open(got).read() == open(os.path.join(rb, 'refusals_input.csv')).read(),
+          (got, moved, recs))
+    Plan.rebuild_root = None
+    check('install: nothing happens without a rebuild root (an install of the working tree\'s own generation)',
+          ISD.carry_input_refusals(FakePI, Plan) is None and len(moved) == 1)
+    # status: a night whose V input was refused is complete without a V frame
+    from exopipe.phase3.lib.status import steps_coverage as COV
+    row = dict(excluded=0, epoch_archived_I=1, frame_archived_I=1, frame_archived_V='refused', master_exists=1, residual=1,
+               partial_exclusion=0)
+    check("status: 'refused' V frame counts as complete (ok), a missing one does not",
+          COV.census_class(row) == 'ok' and COV.census_class(dict(row, frame_archived_V=0)) == 'recover-local')
+    # the flow step installs the resolver and the off-grid rule as the build does
+    from exopipe.phase3.lib.flow import steps_deep as FSD
+    CFG.reset()
+    notes = []
+    CO = FSD.coadd_module(None, notes.append)
+    flow_ok = (CO.find_stokes_v_deep_image is IR._WRAPPERS['find_stokes_v_deep_image'] and CO.OFF_GRID_SURVEY == 'regrid'
+               and any('B-03' in n for n in notes))
+    IR.install(co, 'coadd-finders', 'survey-image-flow')
+    co.OFF_GRID_SURVEY = 'refuse'
+    check('flow step: coadd_module installs the resolver and sets OFF_GRID_SURVEY under the ruled values, with a note', flow_ok, notes)
+    # the dry run's upper bound on 23h Green (read only): V keeps 3 admitted nights, exactly the minimum before any check
+    exr = __import__('exopipe.phase3.core.exclusions', fromlist=['load']).load()
+    adm = [x for x in quiet(co.discover_dates, '23h', 'Green')[0] if not exr.is_excluded('23h', 'Green', x[0])]
+    left = IR.nights_left('23h', 'Green', adm)
+    check('dry-run counts on 23h Green: each product keeps 3 of 5 admitted nights (the V master then needs all 3 in the master)',
+          len(adm) == 5 and left == {'V': 3, 'I_Taper_R0': 3, 'I_NoTaper_R0': 3, 'I_NoTaper_R075': 3}, (len(adm), left))
 
 
 def main():
@@ -466,6 +638,7 @@ def main():
         test_real_preview()
         test_product_grid()
         test_off_grid()
+        test_review_fixes()
     finally:
         shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

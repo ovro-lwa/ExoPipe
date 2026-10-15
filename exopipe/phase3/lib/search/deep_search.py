@@ -84,6 +84,17 @@ SEARCH_TIER_MIN = int(os.environ.get('P3_SEARCH_TIER_MIN', '5'))          # the 
 BEAM_GATE_MIN_NIGHTS = int(os.environ.get('P3_BEAM_GATE_MIN_NIGHTS', '5'))   # the search's beam gate
 
 
+def _same_state_refused_v(base):
+    """B-03 (a), same-state (WAVE2): the nights whose V input the masters build refused, from the cell's record
+    <base>/refusals_input.csv (lib/masters/input_resolver.py): such a night has no V epoch / residual by rule, so its I search
+    is not refused for the missing V product. Empty when the cell has no record (production: nothing is refused)."""
+    p = os.path.join(base, 'refusals_input.csv')
+    if not os.path.exists(p):
+        return set()
+    with open(p, newline='') as f:
+        return {r['date'] for r in csv.DictReader(f) if r.get('product') == 'V'}
+
+
 def _enough(n, need, what, count=True):
     """WAVE2 B-30: True when a cell-median gate has its minimum count ``need``; else the skip is counted (never refused) -
     ``count`` False: the gate guards no search of this unit (another Stokes' gate in a one-Stokes unit), nothing counted."""
@@ -1389,11 +1400,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _wcsv = f'{base}/coadd_final/weights.csv'
         _cur = {r['date'] for r in csv.DictReader(open(_wcsv))} if os.path.exists(_wcsv) else None
         _stale = []
+        _vref = _same_state_refused_v(base)       # WAVE2 B-03: nights whose V input the masters build refused (same-state)
         for d in dates:
             _why = ''
             if _cur is not None and _kd(d) not in _cons and _kd(d) not in _cur:
                 _why = 'not a constituent and absent from the final co-add record (weights.csv)'
             for _st in ('I', 'V'):
+                if _st == 'V' and _kd(d) in _vref and not os.path.exists(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'):   # WAVE2 B-03
+                    continue                      # WAVE2 B-03: no V frame by the build's rule - the V search skips it, I keeps it
                 try:
                     _h = fits.getheader(f'{ebase}/subtracted/{d}_{_st}_sub_{scope}.fits')
                     if not (float(_h.get('BMAJ') or 0) > 0 and float(_h.get('BMIN') or 0) > 0):
