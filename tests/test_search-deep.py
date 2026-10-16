@@ -129,9 +129,20 @@ def test_b02_rules_record():
     for txt in bad_recs:
         open(os.path.join(a_bad, RR.RULES_RECORD), 'w').write(txt)
         w_bad.append(DS.base_rules_refusal(a_bad, 'once-in-search') or '')
-    check("the record's version is compared (an append of a later version refuses, with no --set advice); an unreadable or "
-          "unknown record refuses", w_v and 'b02-test-next' in w_v and '--set' not in w_v
-          and all('not a search rules record' in x and 'REFUSING' in x for x in w_bad), (w_v, w_bad))
+    a_prod = os.path.join(TMP, 'b02_att_prod')
+    os.makedirs(a_prod)
+    RR.write_attempt_rules(a_prod, 'production')
+    try:
+        RR.RULES_VERSION = 'b02-test-next'
+        w_v2 = DS.base_rules_refusal(a_once, 'production')    # a 3a attempt, an append under 'production' with later code
+        w_v3 = DS.base_rules_refusal(a_prod, 'once-in-search')   # ... and the advice that can succeed: --set production
+    finally:
+        RR.RULES_VERSION = old_v
+    check("the record's version is compared (an append of a later version refuses, with no --set advice - nor when only "
+          "the rules differ but the base's version is not this code's; --set advice where it can succeed); an unreadable or "
+          "unknown record refuses", w_v and 'b02-test-next' in w_v and '--set' not in w_v and w_v2 and '--set' not in w_v2
+          and '--set search_detect.REMOVAL_RULES=production' in (w_v3 or '')
+          and all('not a search rules record' in x and 'REFUSING' in x for x in w_bad), (w_v, w_v2, w_v3, w_bad))
     w = {(b, r): DS.base_rules_refusal(b, r) for b in (a_once, a_none) for r in ('once-in-search', 'production')}
     check("an append runs under its base's rules: 'once-in-search' onto a production base (or the reverse) refuses, naming "
           "both and the way out", w[(a_once, 'once-in-search')] is None and w[(a_none, 'production')] is None

@@ -65,8 +65,9 @@ def write_attempt_rules(attempt_dir, rules):
 def attempt_rules(attempt_dir):
     """The record ({rules, version}) an attempt directory was searched under: its RULES_RECORD, else {'rules': 'production',
     'version': None} - every attempt without one was searched without the rules (made by a fleet, or by the step before
-    872e305 wrote the record - be86762, the only commit that applied them without it, made none outside the tests). An
-    unreadable or unknown record REFUSES (RuntimeError): its attempt's rules cannot be told."""
+    B-02 step 3a). Two commits applied the rules without a published record - be86762 (none written) and 872e305 (written
+    in the staged attempt only) - and neither made an attempt outside the tests. An unreadable or unknown record REFUSES
+    (RuntimeError): its attempt's rules cannot be told."""
     import json
     p = os.path.join(attempt_dir, RULES_RECORD)
     if not os.path.exists(p):
@@ -207,6 +208,14 @@ def daytime_verdicts(frame_times, quar):
 
 
 DAYTIME_UNREADABLE = 'daytime gate: frame DATE-OBS/DATE-END unreadable - cannot be judged, refused'
+
+
+def daytime_candidate_frames(lst, scope, ebase, dates, resid, skip):
+    """{(Stokes, lst, scope, date): Stage-1 product path} - the frames the search's daytime gate judges: each Stokes'
+    searched nights (``dates`` with a residual of that Stokes in ``resid[Stokes]`` - not the other nights an admitted
+    night's stack needs) that no other gate refused (``skip[Stokes]`` - a frame refused there is not searched anyway)."""
+    return {(st, lst, scope, d): f'{ebase}/subtracted/{d}_{st}_sub_{scope}.fits'
+            for st in ('I', 'V') for d in dates if d in resid[st] and d not in skip[st]}
 
 
 def product_times(path):

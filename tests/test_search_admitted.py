@@ -266,6 +266,17 @@ def test_b02_units():
                 and 'WAVE2 B-02' not in ln and not ln.strip().startswith('#') and not ln.strip().startswith('if _jtrack else')]
     check('every engine line of the search\'s removal rules is marked WAVE2 B-02 (a continuation excepted)', not unmarked,
           unmarked[:4])
+    D_ = '2024-12-1'
+    fr_ = RR.daytime_candidate_frames('05h', '78MHz', '/b', [D_ + '8', D_ + '9'],
+                                      {'I': {D_ + '8': 1, D_ + '9': 1, '2024-12-20': 1}, 'V': {D_ + '8': 1}},
+                                      {'I': {D_ + '9'}, 'V': set()})
+    check('the daytime gate judges each Stokes\' searched nights with a residual, none another gate refused, none of the '
+          'nights a stack only needs', sorted(fr_) == [('I', '05h', '78MHz', D_ + '8'), ('V', '05h', '78MHz', D_ + '8')]
+          and fr_[('I', '05h', '78MHz', D_ + '8')] == '/b/subtracted/2024-12-18_I_sub_78MHz.fits', fr_)
+    trk = [ln for ln in src if 'jupiter_track_hit(' in ln and 'WAVE2 B-02' in ln]
+    check('the engine tests the track at the catalogue row\'s 5-decimal position in both chains (as candidates.write_candidates '
+          'rounds; pinned in the source - the effect is under 1e-5 deg)', len(trk) == 2
+          and all(ln.count('round(float(') == 2 and ln.count(', 5)') == 2 for ln in trk), trk)
     srcj = inspect.getsource(DSE)
     ix_a = [m.start() for m in re.finditer(r"reason='ateam', pass_ms=1\)\)", srcj)]
     ix_t = [m.start() for m in re.finditer(r"reason=f'jupiter-track:\{_jth\}'", srcj)]

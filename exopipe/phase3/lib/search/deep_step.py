@@ -452,10 +452,12 @@ def base_rules_refusal(base_attempt, rules):
     want = RR.rules_record(rules)
     if have == want:
         return None
+    # the --set advice only when it can succeed: this code, under the base's rules, writes exactly the base's record
+    fits = have['rules'] != want['rules'] and have == RR.rules_record(have['rules'])
     return (f'{os.path.basename(base_attempt.rstrip("/"))} was searched under search_detect.REMOVAL_RULES {have["rules"]!r} '
             f'(version {have["version"]}); an append under {want["rules"]!r} (version {want["version"]}) would mix the rules in '
-            f'one attempt - ' + (f'run it with --set search_detect.REMOVAL_RULES={have["rules"]}, or ' if have['rules'] != want['rules']
-                                 else '') + 're-search the cell (--fresh)')
+            f'one attempt - ' + (f'run it with --set search_detect.REMOVAL_RULES={have["rules"]}, or ' if fits else '')
+            + 're-search the cell (--fresh)')
 
 
 def pinned_inputs(stokes):

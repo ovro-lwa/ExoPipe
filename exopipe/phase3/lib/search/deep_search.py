@@ -1756,9 +1756,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
         fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope}: the V sanity gate could not run ({_e})')
     if _b02:                                                           # WAVE2 B-02: the DAYTIME GATE per frame (step 3a) - the
-        _dfr = {(_st, lst, scope, d): f'{ebase}/subtracted/{d}_{_st}_sub_{scope}.fits'   # WAVE2 B-02: conformance's rule, on
-                for _st, _rs, _sk0 in (('I', resid_I, skip_I_dates), ('V', resid_V, skip_V_dates))   # WAVE2 B-02: the frames
-                for d in dates if d in _rs and d not in _sk0}          # WAVE2 B-02: searched - its Stokes, its nights, no other gate's
+        _dfr = _RR.daytime_candidate_frames(lst, scope, ebase, dates, {'I': resid_I, 'V': resid_V},   # WAVE2 B-02: the
+                                            {'I': skip_I_dates, 'V': skip_V_dates})   # WAVE2 B-02: conformance's rule, on the frames searched
         _day = _RR.daytime_frames(_dfr)                                # WAVE2 B-02: (Sun up, twilight in a quarantined band, no times)
         if _day:                                                       # WAVE2 B-02
             skip_I_dates |= {d for (_st, d) in _day if _st == 'I'}     # WAVE2 B-02: that Stokes' search skips the frame - still
