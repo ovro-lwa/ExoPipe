@@ -1634,6 +1634,15 @@ def run_incremental(args, run, epochs=None):
         raise NoInput('--incremental with the epoch phase needs --epochs <LST>_<date>[,...] (or --inc-phase associate|identity)')
     from exopipe.phase3.core import env as _env
     _env.legacy()
+    from exopipe.phase3.lib.catalog import conform_check as _CC       # B-02 steps 2 and 4: the replay runs production's
+    cc = _cfg().catalog_conform                                     # conform (p3s2_conform.py); per-hour updates before
+    if _CC.conform_mode() != 'remove' or cc.DEEP_ELEV_EPOCH != 'mid-hour':   # the full re-search run so (R-GREGG-20261014-
+        msg = (f"catalog --incremental replays production's ops/p3s2_conform.py: it runs only under catalog_conform.MODE="   # REFACTOR-
+               f"'remove' with DEEP_ELEV_EPOCH='mid-hour' (now {cc.MODE!r}, {cc.DEEP_ELEV_EPOCH!r}) - the check and the pulsar "   # DECISIONS-
+               f"stage of 'check' have no incremental path yet: run the full chain, or set both under the ruling ID")   # LIST item 6)
+        if not ctx.dry:
+            raise Refusal(msg)
+        ctx.say(f'GATE would refuse: {msg}')
     leaks = env_leaks()
     if leaks:
         msg = (f'the environment carries {", ".join(leaks)}: in-place stages would read them (core.legacy.run clears only '

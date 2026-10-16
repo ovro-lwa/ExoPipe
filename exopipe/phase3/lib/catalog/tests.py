@@ -327,9 +327,10 @@ def _mid_el(lst, ra, dec, lat):
 @content_test('conformant_catalog')
 def conformance_record(path, tier='deep', **ctx):
     """ops/p3s2_conform.py:471-559 on content: the as-run copy is the merge output; conformant + removed rows = as-run
-    rows + re-admitted VM_ rows (cand_ids); every removed row has a removal_reason; no conformant row on an excluded
-    epoch or (deep) below the floor at mid-hour (LST + 0.5 h, judged at the position conformance saw: peak_ra/peak_dec once
-    fitted); every conformant V row carries an fp_prediction."""
+    rows + re-admitted VM_ rows (cand_ids) + (B-02 'check') the PR_ rows the pulsar stage restored; every removed row has a
+    removal_reason; no conformant row on an excluded epoch or (deep) below the floor at catalog_conform.DEEP_ELEV_EPOCH -
+    mid-hour (LST + 0.5 h), or the frame's own mid-time from the run's frame_times.csv - judged at the position conformance
+    saw (peak_ra/peak_dec once fitted); every conformant V row carries an fp_prediction."""
     cfg = _cfg()
     cols, rows = _rows(path)
     msgs = []
@@ -348,7 +349,7 @@ def conformance_record(path, tier='deep', **ctx):
     a_ids = [r['cand_id'] for r in asrun]
     c_ids = [r['cand_id'] for r in rows]
     r_ids = [r['cand_id'] for r in removed]
-    vm = [c for c in c_ids if c.startswith('VM_') and c not in set(a_ids)]
+    vm = [c for c in c_ids if c.startswith(('VM_', 'PR_')) and c not in set(a_ids)]
     if sorted(c_ids + r_ids) != sorted(a_ids + vm):
         msgs.append(f'conformant {len(c_ids)} + removed {len(r_ids)} != as-run {len(a_ids)} + re-admitted {len(vm)}')
     nr = [r['cand_id'] for r in removed if not (r.get('removal_reason') or '').strip()]
@@ -357,20 +358,39 @@ def conformance_record(path, tier='deep', **ctx):
     ex = _excl()
     lat = cfg.catalog.SITE_LAT_DEG['conform']
     floor = cfg.catalog_conform.DEEP_ELEV_FLOOR_DEG
-    n_ex = n_el = n_fp = 0
+    epoch = cfg.catalog_conform.DEEP_ELEV_EPOCH
+    FT = {}
+    if tier == 'deep' and epoch == 'frame-mid':               # B-02 step 3b: judged at the frame's own mid-time
+        ftp = _sibling(path, 'frame_times.csv', ctx)
+        for x in (_rows(ftp)[1] if ftp else []):
+            FT[(x['stokes'], x['lst'], x['band'], x['date'])] = (x['date_obs'], x['date_end'])
+    n_ex = n_el = n_fp = n_nt = 0
     for r in rows:
         if ex.is_excluded(r['lst'], r['band'], r['date']):
             n_ex += 1
         if tier == 'deep' and not r['cand_id'].startswith('VM_'):
             ra, dec = (_f(r['peak_ra']), _f(r['peak_dec'])) if r.get('peak_ra') else (_f(r['ra']), _f(r['dec']))
-            if math.isfinite(ra) and _mid_el(r['lst'], ra, dec, lat) < floor - 1e-9:
+            if not math.isfinite(ra):
+                pass
+            elif epoch == 'frame-mid':
+                ft = FT.get((r['stokes'], r['lst'], r['band'], r['date']))
+                if ft is None:
+                    n_nt += 1
+                else:
+                    from exopipe.phase3.lib.search import removal_rules as RR
+                    if RR.deep_elevation(r['lst'], ra, dec, epoch='frame-mid', frame_time=ft)[0] < floor - 1e-9:
+                        n_el += 1
+            elif _mid_el(r['lst'], ra, dec, lat) < floor - 1e-9:
                 n_el += 1
         if r['stokes'] == 'V' and not (r.get('fp_prediction') or '').strip():
             n_fp += 1
     if n_ex:
         msgs.append(f'{n_ex} conformant rows on excluded epochs')
     if n_el:
-        msgs.append(f'{n_el} conformant rows below the deep floor {floor:g} deg at mid-hour')
+        msgs.append(f'{n_el} conformant rows below the deep floor {floor:g} deg at the {epoch} time')
+    if n_nt:
+        msgs.append(f'{n_nt} conformant rows without their frame\'s times in frame_times.csv (the floor is judged at the frame '
+                    f'mid-time)')
     if n_fp:
         msgs.append(f'{n_fp} conformant V rows without fp_prediction')
     return _fail(msgs, len(rows), f'{len(rows)} conformant, {len(removed)} removed of {len(asrun)} as-run '

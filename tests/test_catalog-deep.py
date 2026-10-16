@@ -364,7 +364,7 @@ def make_world():
 # ---------------------------------------------------------------------------------------------------------------------
 _SAVED = {}
 _PATCH = (('site', 'LEGACY_CODE_ROOTS'), ('site', 'PYTHON'), ('catalog', 'COLLECT_ROOTS'), ('catalog', 'BINDING_CHECK'),
-          ('paths', 'COADD_SB_ROOT'), ('paths', 'OPS_ROOT'))
+          ('paths', 'COADD_SB_ROOT'), ('paths', 'OPS_ROOT'), ('catalog_conform', 'MODE'), ('catalog_conform', 'DEEP_ELEV_EPOCH'))
 
 
 def patch_cfg():
@@ -378,6 +378,10 @@ def patch_cfg():
     CFG.catalog.BINDING_CHECK = False                   # the stubs carry no production literals (tested separately)
     CFG.paths.COADD_SB_ROOT = f'{T}/coadd_sb'
     CFG.paths.OPS_ROOT = f'{T}/ops_state'
+    # the chain's production path - production's conform (here its stub), as the parity file runs it; the check and the
+    # pulsar stage (catalog_conform.MODE 'check', B-02 steps 2 and 4) are tested in tests/test_conform_check.py and below
+    CFG.catalog_conform.MODE = getattr(sys.modules[__name__], '_MODE', 'remove')
+    CFG.catalog_conform.DEEP_ELEV_EPOCH = getattr(sys.modules[__name__], '_EPOCH', 'mid-hour')
     return CFG
 
 
@@ -451,6 +455,8 @@ def test_preflight_refuses_missing_parent():
 def test_chain_to_fork_then_union_to_list():
     make_world()
     rc, err = cli(expect=0)                                  # preflight..fork
+    r = rec(f'{LABEL}.pulsars')                              # B-02 step 4: production's conform judges the groups
+    assert r and r['status'] == 'no-input' and "MODE='remove'" in r['reason'], (r and r['status'], r and r['reason'])
     for unit in ('preflight', 'harvest', 'merge', 'conform', 'fitpos', 'select', 'associate.V_wb', 'associate.I_wb',
                  'associate.V_sb', 'associate.I_sb', 'fork.V', 'fork.I'):
         r = rec(f'{LABEL}.{unit}')
@@ -561,6 +567,29 @@ def test_b30_unharvested_merge():
     assert 'merged_record' in r['reason'] and r['meta'].get('unharvested_warning'), r['reason'][:300]
 
 
+def test_b02_check_mode_in_the_chain():
+    """B-02 steps 2 and 4 in the chain: under the ruled catalog_conform.MODE 'check' the pulsar stage runs between the merge
+    and the check and refuses a run whose attempts were not searched under the once-in-search rules (the synthetic run's
+    attempts are production-fleet ones: no rules record), naming them, before any conform; under 'remove' with the ruled
+    DEEP_ELEV_EPOCH 'frame-mid' the first unit refuses - production's conform judges at mid-hour, so the record would
+    claim a convention it never applied."""
+    mod = sys.modules[__name__]
+    make_world()
+    try:
+        mod._MODE, mod._EPOCH = 'check', 'frame-mid'
+        cli('--stages', 'preflight,harvest,merge,pulsars,conform', expect=2)
+        r = rec(f'{LABEL}.pulsars')
+        assert r['status'] == 'refused' and 'not searched under the once-in-search rules' in r['reason'] \
+            and "searched under 'production'" in r['reason'], r['reason'][:300]
+        assert rec(f'{LABEL}.conform') is None, 'conform ran after a refused pulsar stage'
+        mod._MODE, mod._EPOCH = 'remove', 'frame-mid'
+        cli('--stages', 'preflight', expect=2)
+        r = rec(f'{LABEL}.preflight')
+        assert r['status'] == 'refused' and "MODE='remove'" in r['reason'] and "'mid-hour'" in r['reason'], r['reason'][:300]
+    finally:
+        mod._MODE, mod._EPOCH = 'remove', 'mid-hour'
+
+
 def test_b30_identity_pre_check():
     """B-30 (a) pre-check of ops/p3s3_identity.py (deep_ported.identity_row_fallbacks, in its own parse order): a survivors
     row without a positive finite pos_err_arcsec refuses the identity stage under the ruled value (the module would take 60
@@ -614,12 +643,12 @@ def test_b30_ephem_pre_check():
         make_world()
     finally:
         WORLD_I_JUPITER_DEG = '50.0'
-    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select', expect=2)
+    cli('--stages', 'preflight,harvest,merge,pulsars,conform,fitpos,select', expect=2)
     r = rec(f'{LABEL}.select')
     assert r['status'] == 'refused' and k in r['reason'] and 'I row(s)' in r['reason'], r['reason'][:300]
     n = P.ephem_retro_rows(U)           # the refused select wrote selected_all.csv: the chain re-runs to it
     k2 = 'fallbacks.CATALOG_EPHEM_TIME_FALLBACK'      # the world's 2030 epochs have no Phase-2 image: the filter's LST guess
-    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select', '--set', f'{k}=fallback', '--set', f'{k2}=fallback',
+    cli('--stages', 'preflight,harvest,merge,pulsars,conform,fitpos,select', '--set', f'{k}=fallback', '--set', f'{k2}=fallback',
         expect=0)
     r = rec(f'{LABEL}.select')
     fb = r.get('fallbacks') or {}
@@ -776,7 +805,7 @@ def test_compileall():
 ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge', 'test_b30_identity_pre_check',
-         'test_b30_ephem_pre_check',
+         'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']
 

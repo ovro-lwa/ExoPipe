@@ -74,8 +74,9 @@ class catalog(_Section):
     BAND_CLASS = {'Red': ('18MHz', '23MHz', '27MHz', '32MHz', '36MHz'), 'Green': ('41MHz', '46MHz', '50MHz', '55MHz', '59MHz'),
                   'Blue': ('64MHz', '69MHz', '73MHz', '78MHz', '82MHz')}   # ops/p3s2_conform.py:25-26, select_v3.py:21-24, p3s2_ephem_filter.py:13-14 [lit] (Gregg 2026-10-07 Q14)
     # ---- deep chain orchestration (the step's own code; no product value)
-    DEEP_STAGES = ('preflight', 'harvest', 'merge', 'conform', 'fitpos', 'select', 'associate', 'fork', 'union', 'identity',
-                   'localize', 'list')                    # pipeline order (spec 1.2); ops/p3s3_pass.sh:38-136 + fork_serve_p3s5_20261008.sh:20-30 [step]
+    DEEP_STAGES = ('preflight', 'harvest', 'merge', 'pulsars', 'conform', 'fitpos', 'select', 'associate', 'fork', 'union',
+                   'identity', 'localize', 'list')        # pipeline order (spec 1.2); ops/p3s3_pass.sh:38-136 + fork_serve_p3s5_20261008.sh:20-30 [step];
+                                                          # 'pulsars' = B-02 step 4 (catalog_conform.MODE 'check' only; no-input under 'remove')
     DEEP_DEFAULT_UNTIL = 'fork'                           # a plain deep run stops after the fork: `exopipe3 forced` writes forced_* into the tier survivors in place (ops/p3s3_forced_phot.py:70-89) before union..list (`--from union`) [step]
     DEEP_ASSOC_KEYS = ('V_wb', 'I_wb', 'V_sb', 'I_sb')    # build order of the four primary catalogues; ops/p3s3_pass.sh:77 [step]
     DEEP_ASSOC_WORKERS = 1                                # associate keys built at a time (1 = today, serial: ops/p3s3_pass.sh:77-83); speed-up 11.1 (pure) allows 4 - memory of one build not measured [step]
@@ -124,6 +125,10 @@ class catalog_conform(_Section):
     ROWLINE_MIN = 5                                       # finals on one pixel row +/-1; ops/p3s2_conform.py:129 [lit] (Gregg 2026-09-05)
     ROWLINE_MATCH_DEG = 0.05                              # deg, row-line member match; ops/p3s2_conform.py:505
     DEEP_ELEV_FLOOR_DEG = 25.0                            # deg, at the time DEEP_ELEV_EPOCH names; ops/p3s2_conform.py:186, gate_inputs.py:95 [lit; env:P3_DEEP_MIN_ELEVATION unset in production] (Gregg 2026-10-06 "3. (c)"; R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV)
+    MODE = 'check'                                        # B-02 (a) steps 2 and 4: the publish conformance only CHECKS (lib/catalog/
+                                                          # conform_check.check: every removal rule re-evaluated both ways, any finding
+                                                          # refuses) after the pulsar stage (conform_check.pulsars); 'remove' = production's
+                                                          # ops/p3s2_conform.py (Run_P3S5 until its full re-search; the parity file)
     DEEP_ELEV_EPOCH = 'frame-mid'                         # the frame's own mid-time (B-02 step 3b: the search's floor and the check;
                                                           # R-REFACTOR-20261016-B02-CONVENTIONS (2)); production 'mid-hour' = LST + 0.5 h,
                                                           # ops/p3s2_conform.py:187-189 (the parity file)
@@ -146,7 +151,8 @@ class catalog_conform(_Section):
     PULSAR_STAT_COEFF = 0.42                              # x beam / max(|SNR|, PULSAR_SNR_FLOOR); ops/p3s2_conform.py:373 (Gregg 2026-09-28)
     PULSAR_SNR_FLOOR = 5.0                                # sigma; ops/p3s2_conform.py:373
     READMIT_V110_MARGINAL = {'deep': True, 'fork': False} # ops/p3s2_conform.py:68, :534-548 (R-V110-MARGINAL-RETAIN-AND-LABEL, Gregg 2026-09-04)
-    RULED = {'DEEP_ELEV_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
+    RULED = {'MODE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'DEEP_ELEV_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
              'JUPITER_TRACK_RADIUS_DEG': 'R-JUPITER-TRACK-VETO-IMPLEMENTED-IN-THE-CONFORMANCE-STAGE-BOTH-TIERS',
              'DAYTIME_SAMPLES': 'R-DAYTIME-GATE-DEEP-CONFORM', 'READMIT_V110_MARGINAL': 'R-V110-MARGINAL-RETAIN-AND-LABEL',
              'PULSAR_ASSOC_K': 'R-ASSOCIATION-RADIUS-QUADRATURE', 'TABLE_XM_EXEMPT': 'R-TABLE-EXEMPTION-PULSARS-ONLY',

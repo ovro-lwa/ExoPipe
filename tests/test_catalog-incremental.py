@@ -460,6 +460,19 @@ def test_real_engine_batches(ns):
        f'{len(rows)} detections in {len(epochs)} epochs added in 6 random batches ({time.time() - t0:.0f} s): {det}')
 
 
+class production_conform:
+    """catalog_conform.MODE 'remove' with DEEP_ELEV_EPOCH 'mid-hour' (as the parity file) for the block: the replay runs
+    production's p3s2_conform.py and refuses any other mode (B-02 steps 2 and 4 have no incremental path yet)."""
+    def __enter__(self):
+        from exopipe.phase3.config import CFG
+        self.c = CFG.catalog_conform
+        self.keep = (self.c.MODE, self.c.DEEP_ELEV_EPOCH)
+        self.c.MODE, self.c.DEEP_ELEV_EPOCH = 'remove', 'mid-hour'
+
+    def __exit__(self, *a):
+        self.c.MODE, self.c.DEEP_ELEV_EPOCH = self.keep
+
+
 def test_real_dry_run():
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import record
@@ -471,7 +484,8 @@ def test_real_dry_run():
                               inc_parents=os.path.join('/fast/gh/main/phase3', par[-1]) if par else None,
                               inc_rebuild=False, parents=None)
     run = record.Run('catalog', ['test'], out, CFG, dry_run=True)
-    rc = I.run_incremental(args, run)
+    with production_conform():
+        rc = I.run_incremental(args, run)
     wrote = os.path.exists(out) and any(files for _, _, files in os.walk(out))
     ok('real.dry_run', rc == 0 and not wrote and [u.status for u in run.units] == ['no-input', 'no-input'],
        f'units {[(u.name, u.status, u.reason) for u in run.units]}; nothing written: {not wrote}')
@@ -569,9 +583,18 @@ def test_epoch_phase_end_to_end():
     args = argparse.Namespace(tier='deep', run_label='P3S5', epochs=epoch, inc_phase='epoch', inc_source=f'run:{src}',
                               inc_parents=None, inc_rebuild=False, parents=None)
     sums = []
+    run = record.Run('catalog', ['test'], out, CFG)      # B-02: under the ruled catalog_conform.MODE 'check' the replay refuses
+    try:
+        I.run_incremental(args, run)
+        got = 'ran'
+    except record.Refusal as e:
+        got = str(e)
+    ok("B-02: the incremental replay refuses under the ruled catalog_conform.MODE 'check' (it replays production's conform)",
+       "MODE='remove'" in got and not os.path.exists(os.path.join(out, '_incremental')), got[:300])
     for attempt in range(2):
         run = record.Run('catalog', ['test'], out, CFG)
-        I.run_incremental(args, run)
+        with production_conform():
+            I.run_incremental(args, run)
         u = run.units[0]
         rec = json.load(open(record.record_path(out, 'catalog', u.name)))
         b = os.path.join(out, '_incremental', 'epochs', epoch)
