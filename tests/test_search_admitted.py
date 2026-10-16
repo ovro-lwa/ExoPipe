@@ -266,6 +266,13 @@ def test_b02_units():
                 and 'WAVE2 B-02' not in ln and not ln.strip().startswith('#') and not ln.strip().startswith('if _jtrack else')]
     check('every engine line of the search\'s removal rules is marked WAVE2 B-02 (a continuation excepted)', not unmarked,
           unmarked[:4])
+    srcj = inspect.getsource(DSE)
+    ix_a = [m.start() for m in re.finditer(r"reason='ateam', pass_ms=1\)\)", srcj)]
+    ix_t = [m.start() for m in re.finditer(r"reason=f'jupiter-track:\{_jth\}'", srcj)]
+    ix_c = [m.start() for m in re.finditer(r'\n\s+cut = False\n', srcj)]
+    check('the track sits right after the A-team veto in both chains (the V gating loop, the I finals) and before the I table',
+          len(ix_a) == 2 and len(ix_t) == 2 and len(ix_c) == 1 and ix_a[0] < ix_t[0] < ix_a[1] < ix_t[1] < ix_c[0],
+          (ix_a, ix_t, ix_c))
 
 
 def test_values():
@@ -367,6 +374,8 @@ if _b02 is not None:             # B-02 step 3a: the frames the daytime gate ref
         real = _real_day(frames, quar)
         _calls['daytime_frames'].append({'frames': sorted([list(k), p] for k, p in frames.items()),
                                          'real': sorted([list(k), v] for k, v in real.items())})
+        if _b02.get('real'):                     # record only: the real rule's verdicts
+            return real
         return {(st, d): 'daytime: Sun 5.0 to 10.0 deg over the frame (test)' for st, d in _b02.get('day', [])
                 if any(k[0] == st and k[3] == d for k in frames)}
 
@@ -374,6 +383,10 @@ if _b02 is not None:             # B-02 step 3a: the frames the daytime gate ref
         sk = []
         real = _real_jt(lst, weights_path, nights, skipped=sk)
         _calls['jupiter_track'].append({'lst': lst, 'weights': weights_path, 'n_real': len(real), 'skipped': sk})
+        if skipped is not None:                  # the nights the track cannot place, to the engine's B-30 site: the real ones,
+            skipped.extend(sk if _b02.get('real') else _b02.get('skip', []))   # or those given
+        if _b02.get('real'):
+            return real
         return [tuple(x) for x in _b02.get('track', [])]
     _RR.daytime_frames, _RR.jupiter_track = _day, _jt
 if os.environ.get('TEST_OPEN_JUPITER'):    # B-02 test device: the per-night Jupiter veto opened (both runs of a pair); I only -
@@ -496,8 +509,12 @@ def test_end_to_end():
     check("production's reading: the membership gate refuses the cell (the admitted nights are absent nights)",
           not res['ok'] and 'membership rulings' in res.get('error', '') and 'ABSENT' in res.get('error', ''),
           (res, log[-600:]))
-    res, log = engine(wt, work, att, 'admitted', [nights[0]])
+    res, log = engine(wt, work, att, 'admitted', [nights[0]], b02={'real': True})   # B-02 hooks record only
     check('ruled reading: the engine runs (incremental, one admitted night)', res['ok'], (res, log[-1500:]))
+    fr0 = ((res.get('b02_calls') or {}).get('daytime_frames') or [{}])[0].get('frames', [])
+    check("B-02: an admitted night's search judges its own frames only (I and V) - not the cell's other nights, whose "
+          "residuals it builds for its stack", res['ok'] and fr0 and {x[0][3] for x in fr0} == {nights[0]}
+          and {x[0][0] for x in fr0} == {'I', 'V'}, [x[0] for x in fr0][:6])
     pop = [r['date'] for r in w if r['date'] not in nights]
     m = re.search(r'(\d+) admitted night\(s\) \[([^\]]*)\]', log)
     check('it names both admitted nights (judged against the cell\'s own nights)', m and m.group(1) == '2', log[-800:])
@@ -657,9 +674,9 @@ def test_b02_end_to_end(wt, work, b3):
     cdir = os.path.join(wt, CELL)
     W = WCS(fits.getheader(os.path.join(cdir, 'coadd_final', f'I_deep_Taper_R075_{SC}.fits'))).celestial
 
-    def sky(r):                                      # the catalogue's position of a ledger row: its pixel's (as the engine)
+    def sky(r):                                      # the catalogue's position of a ledger row: its pixel's, 5 decimals
         s_ = W.pixel_to_world(int(float(r['pix_x'])), int(float(r['pix_y'])))
-        return float(s_.ra.deg), float(s_.dec.deg)
+        return round(float(s_.ra.deg), 5), round(float(s_.dec.deg), 5)
 
     def b02_run(name, st, rules, b02, open_jupiter):
         att_ = os.path.join(T, name)
@@ -692,10 +709,26 @@ def test_b02_end_to_end(wt, work, b3):
             check(f"B-02 setup ({st}): a detection of the nights past the A-team veto under production's rules{dev}", False,
                   (resp.get('error'), len(rp['v_deep_ledger.csv']), logp[-300:]))
             continue
-        tgt = cand[0]
+        # the track point: inside the band's radius at the target's catalogue position (its pixel's), outside it at the source
+        # finder's centroid (the ledger's ra/dec) - a track tested at the centroid misses it (the first review's MAJOR)
+        R_ = RR.jupiter_track_radius(SC)
+        tgt = ra0 = de0 = None
+        for r in cand:
+            (px, py), (cx, cy) = sky(r), (float(r['ra']), float(r['dec']))
+            ux, uy = ((px - cx + 180.0) % 360.0 - 180.0) * np.cos(np.radians(py)), py - cy
+            dl = float(np.hypot(ux, uy))
+            if dl < 2e-3:
+                continue
+            P = (px + ux / dl * (R_ - dl / 2) / np.cos(np.radians(py)), py + uy / dl * (R_ - dl / 2))
+            if RR.jupiter_track_hit(px, py, SC, [(*P, 'x')]) and not RR.jupiter_track_hit(cx, cy, SC, [(*P, 'x')]):
+                tgt, (ra0, de0) = r, (float(P[0]), float(P[1]))
+                break
+        if tgt is None:
+            check(f"B-02 setup ({st}): a detection past the A-team veto whose pixel and centroid are 0.002 deg apart or more{dev}",
+                  False, [(r['date'], r['ra'], r['dec'], sky(r)) for r in cand[:5]])
+            continue
         dn = next(d for d in b3 if d != tgt['date'])     # the daytime frame: another night's, of this Stokes
         # a second point on a row an earlier gate removed, far from the first: the row keeps its reason (the track's place)
-        ra0, de0 = sky(tgt)
         erow = next((r for r in rp['v_deep_ledger.csv'] if r['stokes'] == st and r['veto_reason'] == early[st]
                      and r['date'] != dn and RR.jupiter_track_hit(*sky(r), SC, [(ra0, de0, 'x')]) is None
                      and RR.jupiter_track_hit(ra0, de0, SC, [(*sky(r), 'x')]) is None), None)
@@ -722,8 +755,11 @@ def test_b02_end_to_end(wt, work, b3):
             lo[k]['veto_reason'] == f'jupiter-track:{hit[k]}' and lo[k]['final'] == '0' for k in got_v)
         ek = key(erow) if erow else None
         check(f"B-02 step 3a ({st}): a track point on a row an earlier gate removed ({early[st]}) leaves its reason - the track "
-              f"sits after the A-team veto{dev}", erow is not None and lo.get(ek, {}).get('veto_reason') == early[st],
+              f"sits after that gate{dev}", erow is not None and lo.get(ek, {}).get('veto_reason') == early[st],
               (ek, lo.get(ek, {}).get('veto_reason') if ek else None))
+        check(f"B-02 step 3a ({st}): the track point sits inside the radius at the target's catalogue position and outside it at "
+              f"its centroid, and the target is vetoed - the track is tested at the catalogue position{dev}",
+              key(tgt) in got_v, (key(tgt), lo.get(key(tgt), {}).get('veto_reason')))
         # the hooks: none under production; once each under once-in-search, on what the search reads
         cp, co = resp.get('b02_calls', {}), reso.get('b02_calls', {})
         want_fr = sorted([[st, LST, SC, d], os.path.join(cdir, 'subtracted', f'{d}_{st}_sub_{SC}.fits')] for d in b3)
@@ -780,6 +816,13 @@ def test_b02_end_to_end(wt, work, b3):
               (tgt['date'], tgt['veto_reason'] or 'final', sorted(want_v), sorted(got_v), diff[:3], extra[:3], idiff[:2]))
         check(f"B-02 ({st}): the search's log names the daytime refusal under 'once-in-search' only",
               'DAYTIME GATE (B-02)' in logo and 'DAYTIME GATE' not in logp, (logo[-300:], logp[-300:]))
+    # the B-30 site: a co-added night the track cannot place refuses the search under the ruled policy, naming the site
+    ress, logs, _rs = b02_run('attempt_b02_track_skip', 'I', 'once-in-search',
+                              {'day': [], 'track': [], 'skip': ['2024-12-25 (test: no position)']}, False)
+    check("B-02 step 3a: a co-added night the Jupiter track cannot place refuses the search (B-30, ruled 'refuse'), naming "
+          "fallbacks.SEARCH_JUPITER_TRACK_FALLBACK and the night", not ress['ok']
+          and 'SEARCH_JUPITER_TRACK_FALLBACK' in ress.get('error', '') and '2024-12-25' in ress.get('error', ''),
+          (ress.get('error'), logs[-300:]))
 
 def main(argv):
     shutil.rmtree(T, ignore_errors=True)

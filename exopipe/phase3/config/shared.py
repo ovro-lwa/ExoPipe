@@ -240,7 +240,8 @@ class fallbacks(_Section):
     # a body's position failing -> the candidate is not labelled with it (candidates.ephemeris_label, the `body` column)
     SEARCH_EPHEMERIS_LABEL_FALLBACK = 'refuse'
     # B-02 step 3a: a co-added night whose Jupiter position fails (or no weights.csv) -> the search's Jupiter track leaves it
-    # out (removal_rules.jupiter_track; production's conformance does so silently), n = nights
+    # out (removal_rules.jupiter_track; production's conformance does so silently), n = nights (1 for a missing weights.csv,
+    # which SEARCH_WEIGHTS_FALLBACK refuses first under the ruled values)
     SEARCH_JUPITER_TRACK_FALLBACK = 'refuse'
     # the V-clean engine (search_v.main --clean_only, run by masters V-clean): V and I masters without BMAJ and no --beam
     # -> 5 pixels (the template and striation sizes). Not sites: search_v.main's primary-beam correction (beam model,

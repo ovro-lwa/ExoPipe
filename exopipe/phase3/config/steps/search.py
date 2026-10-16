@@ -190,7 +190,7 @@ class search_tables(_Section):
     MID_HOUR_LAT_DEG = 37.2398                              # deg; _mid_hour_elev's own latitude (deep_search.py:461; B-42 keeps it)
     RULED = {'TABLE_ELEV': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV'}
     PROTECTED_KEYS = ('PARENT_TABLES_MD5', 'PULSAR_CSV', 'PULSAR_CSV_MD5', 'DEEP_V_FAINT_S', 'XM_EXEMPT_SAMPLES', 'XM_EXEMPT_MAX_S',
-                      'XM_SAMPLES_DIR', 'MID_HOUR_OFFSET_H', 'MID_HOUR_LAT_DEG')
+                      'XM_SAMPLES_DIR', 'MID_HOUR_OFFSET_H', 'MID_HOUR_LAT_DEG', 'SOLAR_AUDIT', 'SOLAR_AUDIT_MD5')
 
 
 class search_fpgate(_Section):

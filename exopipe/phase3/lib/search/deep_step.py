@@ -441,15 +441,21 @@ def md5_file(path):
 
 
 def base_rules_refusal(base_attempt, rules):
-    """B-02: one attempt, one set of removal rules - None when an append under ``rules`` may extend ``base_attempt``, else
-    the refusal's words (an attempt without the step's record counts as 'production': removal_rules.attempt_rules)."""
+    """B-02: one attempt, one set of removal rules, of one version - None when an append under ``rules`` may extend
+    ``base_attempt``, else the refusal's words (an attempt without the step's record counts as 'production', an unreadable
+    record refuses: removal_rules.attempt_rules)."""
     from exopipe.phase3.lib.search import removal_rules as RR
-    b_rules = RR.attempt_rules(base_attempt)
-    if b_rules == rules:
+    try:
+        have = RR.attempt_rules(base_attempt)
+    except RuntimeError as e:
+        return str(e)
+    want = RR.rules_record(rules)
+    if have == want:
         return None
-    return (f'{os.path.basename(base_attempt.rstrip("/"))} was searched under search_detect.REMOVAL_RULES {b_rules!r}; an append '
-            f'under {rules!r} would mix the rules in one attempt - run it with --set search_detect.REMOVAL_RULES={b_rules}, or '
-            f're-search the cell (--fresh)')
+    return (f'{os.path.basename(base_attempt.rstrip("/"))} was searched under search_detect.REMOVAL_RULES {have["rules"]!r} '
+            f'(version {have["version"]}); an append under {want["rules"]!r} (version {want["version"]}) would mix the rules in '
+            f'one attempt - ' + (f'run it with --set search_detect.REMOVAL_RULES={have["rules"]}, or ' if have['rules'] != want['rules']
+                                 else '') + 're-search the cell (--fresh)')
 
 
 def pinned_inputs(stokes):
@@ -1188,8 +1194,10 @@ def stage_publish(u, item, ctx, f):
     if os.path.exists(dest):
         raise RuntimeError(f'{dest} exists - an attempt is published once')
     os.makedirs(dest + '.part')
+    from exopipe.phase3.lib.search import removal_rules as RR
     names = [f'Run_{label}', 'transients', f'{item.cell}.log', f'{item.cell}.base.log', f'{item.cell}.inc.log',
-             'fit_positions.csv', 'fit_positions_summary.json', f'pbcorr_missing_{item.lst}_{item.scope}.csv']
+             'fit_positions.csv', 'fit_positions_summary.json', f'pbcorr_missing_{item.lst}_{item.scope}.csv',
+             RR.RULES_RECORD]                    # B-02: the rules the attempt was searched under (an append reads its base's)
     for n in names:
         if os.path.exists(os.path.join(att, n)):
             _copy_into(os.path.join(att, n), os.path.join(dest + '.part', n))

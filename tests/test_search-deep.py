@@ -96,10 +96,11 @@ def test_engine_truth():
     check('every veto_reason the engine can write is known to gate_ledger.complete (the f-string ones by their prefix)',
           not missing and 'jupiter-track:' in fpre, (missing, sorted(fpre)))
     kinds = set()
-    for k in re.findall(r"_\{scope\}_([a-z_]+(?:\{st\})?)_excluded\.csv", srcs):
+    for k in re.findall(r"_\{scope\}_([A-Za-z_]+(?:\{st\})?)_excluded\.csv", srcs):
         kinds |= {k.replace('{st}', s_) for s_ in ('I', 'V')} if '{st}' in k else {k}
-    check('every refusal kind the engine writes is known to refusal_record.parses', kinds and not (kinds - set(T.REFUSAL_KINDS)),
-          sorted(kinds - set(T.REFUSAL_KINDS)))
+    check('every refusal kind the engine writes is known to refusal_record.parses (upper-case kinds too: sanity_I, sanity_V)',
+          {'sanity_I', 'sanity_V', 'daytime', 'extraction_I', 'extraction_V'} <= kinds and not (kinds - set(T.REFUSAL_KINDS)),
+          (sorted(kinds), sorted(kinds - set(T.REFUSAL_KINDS))))
 
 
 def test_b02_rules_record():
@@ -112,9 +113,25 @@ def test_b02_rules_record():
     os.makedirs(a_once)
     os.makedirs(a_none)
     rec = RR.write_attempt_rules(a_once, 'once-in-search')
-    check("the attempt's rules record: written by the step, read back; an attempt without it is 'production'",
-          rec == {'rules': 'once-in-search', 'version': RR.RULES_VERSION} and RR.attempt_rules(a_once) == 'once-in-search'
-          and RR.attempt_rules(a_none) == 'production', (rec, RR.attempt_rules(a_once), RR.attempt_rules(a_none)))
+    check("the attempt's rules record: written by the step, read back; an attempt without it is 'production' (no version)",
+          rec == {'rules': 'once-in-search', 'version': RR.RULES_VERSION} and RR.attempt_rules(a_once) == rec
+          and RR.attempt_rules(a_none) == {'rules': 'production', 'version': None}, (rec, RR.attempt_rules(a_none)))
+    old_v = RR.RULES_VERSION
+    try:
+        RR.RULES_VERSION = 'b02-test-next'          # a later step's rules (3b): an append onto a 3a attempt refuses
+        w_v = DS.base_rules_refusal(a_once, 'once-in-search')
+    finally:
+        RR.RULES_VERSION = old_v
+    a_bad = os.path.join(TMP, 'b02_att_bad')
+    os.makedirs(a_bad)
+    bad_recs = ['{"rules": "once-in-search"', '{"rules": "Production", "version": null}', '{"rules": "production", "version": "x"}']
+    w_bad = []
+    for txt in bad_recs:
+        open(os.path.join(a_bad, RR.RULES_RECORD), 'w').write(txt)
+        w_bad.append(DS.base_rules_refusal(a_bad, 'once-in-search') or '')
+    check("the record's version is compared (an append of a later version refuses, with no --set advice); an unreadable or "
+          "unknown record refuses", w_v and 'b02-test-next' in w_v and '--set' not in w_v
+          and all('not a search rules record' in x and 'REFUSING' in x for x in w_bad), (w_v, w_bad))
     w = {(b, r): DS.base_rules_refusal(b, r) for b in (a_once, a_none) for r in ('once-in-search', 'production')}
     check("an append runs under its base's rules: 'once-in-search' onto a production base (or the reverse) refuses, naming "
           "both and the way out", w[(a_once, 'once-in-search')] is None and w[(a_none, 'production')] is None
@@ -432,10 +449,16 @@ def test_publish_path(att, rd):
                  admitted=[D1, D2], dates_i=[D1, D2], dates_v=[], cell_work=cw, t_detect=time.time())
         CFG.authorize(out=out)
         CFG.set('search_fit.NPROC', '2')
+        from exopipe.phase3.lib.search import removal_rules as RR
+        rrec = RR.write_attempt_rules(att, 'once-in-search')    # as stage_detect writes it before the engine child
         with run.unit(item.name, tier='deep') as u:
             DS.after_detect(u, item, ctx, f, ['fit', 'verify', 'publish'])
         CFG.reset()
         dest = os.path.join(out, 'attempts', os.path.basename(att))
+        check("publish: the attempt's rules record is published with it, and an append under the same rules may extend the "
+              "published copy (the base the per-hour search resolves)", RR.attempt_rules(dest) == rrec
+              and DS.base_rules_refusal(dest, 'once-in-search') is None
+              and 'would mix the rules' in (DS.base_rules_refusal(dest, 'production') or ''), RR.attempt_rules(dest))
         check('publish: attempt copied in the collect layout', os.path.exists(os.path.join(dest, 'transients', 'Run_P3S5',
                                                                                           'master_catalog.csv'))
               and os.path.exists(os.path.join(dest, 'fit_positions.csv')))

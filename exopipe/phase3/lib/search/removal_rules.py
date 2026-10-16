@@ -46,24 +46,40 @@ def search_rules(value=None):
     return value
 
 
+def rules_record(rules):
+    """The record of a search under ``rules``: {rules, version - RULES_VERSION under 'once-in-search', else None}."""
+    rules = search_rules(rules)
+    return dict(rules=rules, version=RULES_VERSION if rules == 'once-in-search' else None)
+
+
 def write_attempt_rules(attempt_dir, rules):
-    """Record in an attempt directory the rules it is searched under (the search step, before the engine child starts);
-    returns the record: {rules, version - RULES_VERSION under 'once-in-search', else None}."""
+    """Record in an attempt directory the rules it is searched under (the search step, before the engine child starts;
+    published with the attempt, deep_step.stage_publish); returns the record (rules_record)."""
     import json
-    rec = dict(rules=search_rules(rules), version=RULES_VERSION if rules == 'once-in-search' else None)
+    rec = rules_record(rules)
     with open(os.path.join(attempt_dir, RULES_RECORD), 'w') as fh:
         json.dump(rec, fh)
     return rec
 
 
 def attempt_rules(attempt_dir):
-    """The rules an attempt directory was searched under: its RULES_RECORD (written by the search step), else 'production'
-    - every attempt made before B-02 step 3a (be86762), by the step or by a fleet, searched without them."""
+    """The record ({rules, version}) an attempt directory was searched under: its RULES_RECORD, else {'rules': 'production',
+    'version': None} - every attempt without one was searched without the rules (made by a fleet, or by the step before
+    872e305 wrote the record - be86762, the only commit that applied them without it, made none outside the tests). An
+    unreadable or unknown record REFUSES (RuntimeError): its attempt's rules cannot be told."""
     import json
     p = os.path.join(attempt_dir, RULES_RECORD)
     if not os.path.exists(p):
-        return 'production'
-    return json.load(open(p))['rules']
+        return dict(rules='production', version=None)
+    try:
+        rec = json.load(open(p))
+    except (OSError, ValueError) as e:
+        rec = f'{type(e).__name__}: {e}'
+    ok = (isinstance(rec, dict) and set(rec) == {'rules', 'version'} and rec['rules'] in SEARCH_RULES   # 'production' has no
+          and (rec['version'] is None if rec['rules'] == 'production' else isinstance(rec['version'], str)))   # version
+    if not ok:
+        raise RuntimeError(f'{p}: not a search rules record ({str(rec)[:120]}) - REFUSING (the attempt\'s rules cannot be told)')
+    return rec
 
 
 def f(x):

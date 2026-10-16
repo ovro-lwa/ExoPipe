@@ -1757,8 +1757,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope}: the V sanity gate could not run ({_e})')
     if _b02:                                                           # WAVE2 B-02: the DAYTIME GATE per frame (step 3a) - the
         _dfr = {(_st, lst, scope, d): f'{ebase}/subtracted/{d}_{_st}_sub_{scope}.fits'   # WAVE2 B-02: conformance's rule, on
-                for _st, _rs in (('I', resid_I), ('V', resid_V))       # WAVE2 B-02: the frames this search searches - its
-                for d in dates if d in _rs}                            # WAVE2 B-02: Stokes, its nights (not a stack's others)
+                for _st, _rs, _sk0 in (('I', resid_I, skip_I_dates), ('V', resid_V, skip_V_dates))   # WAVE2 B-02: the frames
+                for d in dates if d in _rs and d not in _sk0}          # WAVE2 B-02: searched - its Stokes, its nights, no other gate's
         _day = _RR.daytime_frames(_dfr)                                # WAVE2 B-02: (Sun up, twilight in a quarantined band, no times)
         if _day:                                                       # WAVE2 B-02
             skip_I_dates |= {d for (_st, d) in _day if _st == 'I'}     # WAVE2 B-02: that Stokes' search skips the frame - still
@@ -2091,7 +2091,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     _jth = None                                        # WAVE2 B-02: the Jupiter track - on any co-added night's
                     if _jtrack:                                        # WAVE2 B-02: Jupiter, at the catalogue's position (the
                         _sk = wcs.pixel_to_world(xx, yy)               # WAVE2 B-02: pixel's, as the conformance and the vetoes
-                        _jth = _RR.jupiter_track_hit(float(_sk.ra.deg), float(_sk.dec.deg), scope, _jtrack)   # WAVE2 B-02: above)
+                        _jth = _RR.jupiter_track_hit(round(float(_sk.ra.deg), 5), round(float(_sk.dec.deg), 5), scope,   # WAVE2 B-02:
+                                                     _jtrack)          # WAVE2 B-02: above; to 5 decimals, as the catalogue row)
                     if _jth:                                           # WAVE2 B-02
                         c['veto_reason'] = f'jupiter-track:{_jth}'     # WAVE2 B-02
                         gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, reason=f'jupiter-track:{_jth}', pass_ms=1))   # WAVE2 B-02
@@ -2184,8 +2185,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
                                                reason='ateam', pass_ms=1))
                     continue
-                _jth = (_RR.jupiter_track_hit(float(_sky.ra.deg), float(_sky.dec.deg), scope, _jtrack)   # WAVE2 B-02: the Jupiter
-                        if _jtrack else None)                          # WAVE2 B-02: track, at the catalogue's position (the pixel's)
+                _jth = (_RR.jupiter_track_hit(round(float(_sky.ra.deg), 5), round(float(_sky.dec.deg), 5), scope, _jtrack)   # WAVE2 B-02:
+                        if _jtrack else None)                          # WAVE2 B-02: the track, at the catalogue row's position (the pixel's, 5 decimals)
                 if _jth:                                               # WAVE2 B-02
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1, reason=f'jupiter-track:{_jth}', pass_ms=1))   # WAVE2 B-02
                     continue                                           # WAVE2 B-02
