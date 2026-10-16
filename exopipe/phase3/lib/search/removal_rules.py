@@ -654,12 +654,13 @@ def _model_error(r, LOC):
     return math.hypot(stat, LOC.A.sys_arcmin(r['band'], el) * 60.0 * sc)
 
 
-def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos):
+def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None):
     """Groups of 2+ detections within 1 beam of a pulsar that a table decision named (kept as 'the pulsar is the parent',
     or cut because a triggering parent is not the pulsar), the daytime gate and the exclusions passed, linked by the
     association criterion (3.034 x quadrature errors) and combined with the served localization's estimator: the pulsar
     inside the combined 99 % radius keeps the group's table cuts; outside, the group's pulsar-exempted detections are cut.
-    Changes `cut` in place; returns (kept, removed, [(pulsar, n, sep arcsec, r99 arcsec)])."""
+    Changes `cut` in place; returns (kept, removed, [(pulsar, n, sep arcsec, r99 arcsec)]). ``groups_out`` (a list), when
+    given, receives each group's (pulsar, [member row indices]) in the same order (B-02 step 4's record)."""
     c = _cc()
     if LOC._SP.active():
         raise RuntimeError('removal_rules.pulsar_consistency: the 10-minute tie (P3_TENMIN_PERTIE) is set - this port is the '
@@ -738,6 +739,8 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos):
                                     f'2026-09-28; was: {nt})')
                     n_drop += 1
             log.append((pn, len(g), round(sep), round(r99)))
+            if groups_out is not None:
+                groups_out.append((pn, sorted(g)))
     return n_keep, n_drop, log, len(psr_rows)
 
 

@@ -327,10 +327,11 @@ def _mid_el(lst, ra, dec, lat):
 @content_test('conformant_catalog')
 def conformance_record(path, tier='deep', **ctx):
     """ops/p3s2_conform.py:471-559 on content: the as-run copy is the merge output; conformant + removed rows = as-run
-    rows + re-admitted VM_ rows (cand_ids) + (B-02 'check') the PR_ rows the pulsar stage restored; every removed row has a
-    removal_reason; no conformant row on an excluded epoch or (deep) below the floor at catalog_conform.DEEP_ELEV_EPOCH -
-    mid-hour (LST + 0.5 h), or the frame's own mid-time from the run's frame_times.csv - judged at the position conformance
-    saw (peak_ra/peak_dec once fitted); every conformant V row carries an fp_prediction."""
+    rows + re-admitted VM_ rows (cand_ids) + (B-02 'check') the rows the pulsar stage restored - each named as restored in
+    its pulsar_stage.csv; every removed row has a removal_reason; no conformant row on an excluded epoch or (deep) below the
+    floor at the stage's recorded convention (stage.json elev_epoch; else catalog_conform.DEEP_ELEV_EPOCH) - mid-hour (LST +
+    0.5 h), or the frame's own mid-time from the run's frame_times.csv - judged at the position conformance saw
+    (peak_ra/peak_dec once fitted); every conformant V row carries an fp_prediction."""
     cfg = _cfg()
     cols, rows = _rows(path)
     msgs = []
@@ -349,16 +350,24 @@ def conformance_record(path, tier='deep', **ctx):
     a_ids = [r['cand_id'] for r in asrun]
     c_ids = [r['cand_id'] for r in rows]
     r_ids = [r['cand_id'] for r in removed]
-    vm = [c for c in c_ids if c.startswith(('VM_', 'PR_')) and c not in set(a_ids)]
-    if sorted(c_ids + r_ids) != sorted(a_ids + vm):
-        msgs.append(f'conformant {len(c_ids)} + removed {len(r_ids)} != as-run {len(a_ids)} + re-admitted {len(vm)}')
+    from exopipe.phase3.lib.catalog import conform_check as CC
+    psp = _sibling(path, CC.PULSAR_RECORD, ctx)
+    restored = {x['cand_id'] for x in (_rows(psp)[1] if psp else []) if x.get('action') == 'restored'}
+    aset = set(a_ids)
+    vm = [c for c in c_ids if c.startswith('VM_') and c not in aset]
+    pr = [c for c in c_ids if CC.is_restored(c) and c not in aset]
+    if set(pr) - restored:
+        msgs.append(f'{len(set(pr) - restored)} restored rows not named in {CC.PULSAR_RECORD}, e.g. {sorted(set(pr) - restored)[:3]}')
+    if sorted(c_ids + r_ids) != sorted(a_ids + vm + pr):
+        msgs.append(f'conformant {len(c_ids)} + removed {len(r_ids)} != as-run {len(a_ids)} + re-admitted {len(vm)} + '
+                    f'restored {len(pr)}')
     nr = [r['cand_id'] for r in removed if not (r.get('removal_reason') or '').strip()]
     if nr:
         msgs.append(f'{len(nr)} removed rows without removal_reason')
     ex = _excl()
     lat = cfg.catalog.SITE_LAT_DEG['conform']
     floor = cfg.catalog_conform.DEEP_ELEV_FLOOR_DEG
-    epoch = cfg.catalog_conform.DEEP_ELEV_EPOCH
+    epoch = _stage_info(path).get('elev_epoch') or cfg.catalog_conform.DEEP_ELEV_EPOCH   # what the stage applied
     FT = {}
     if tier == 'deep' and epoch == 'frame-mid':               # B-02 step 3b: judged at the frame's own mid-time
         ftp = _sibling(path, 'frame_times.csv', ctx)
@@ -394,7 +403,7 @@ def conformance_record(path, tier='deep', **ctx):
     if n_fp:
         msgs.append(f'{n_fp} conformant V rows without fp_prediction')
     return _fail(msgs, len(rows), f'{len(rows)} conformant, {len(removed)} removed of {len(asrun)} as-run '
-                                  f'(+{len(vm)} re-admitted)')
+                                  f'(+{len(vm)} re-admitted, +{len(pr)} restored)')
 
 
 def _sha1(path):

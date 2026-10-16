@@ -586,6 +586,14 @@ def test_b02_check_mode_in_the_chain():
         cli('--stages', 'preflight', expect=2)
         r = rec(f'{LABEL}.preflight')
         assert r['status'] == 'refused' and "MODE='remove'" in r['reason'] and "'mid-hour'" in r['reason'], r['reason'][:300]
+        # a 'remove' pass (pulsars no-input), then conform alone under 'check': refused, naming the stage to run (not a crash)
+        mod._MODE, mod._EPOCH = 'remove', 'mid-hour'
+        cli('--stages', 'preflight,harvest,merge,pulsars', expect=0)
+        assert rec(f'{LABEL}.pulsars')['status'] == 'no-input'
+        mod._MODE, mod._EPOCH = 'check', 'frame-mid'
+        cli('--stages', 'conform', expect=2)
+        r = rec(f'{LABEL}.conform')
+        assert r['status'] == 'refused' and 'run the pulsars stage first' in r['reason'], (r['status'], r['reason'][:300])
     finally:
         mod._MODE, mod._EPOCH = 'remove', 'mid-hour'
 
@@ -643,12 +651,12 @@ def test_b30_ephem_pre_check():
         make_world()
     finally:
         WORLD_I_JUPITER_DEG = '50.0'
-    cli('--stages', 'preflight,harvest,merge,pulsars,conform,fitpos,select', expect=2)
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select', expect=2)
     r = rec(f'{LABEL}.select')
     assert r['status'] == 'refused' and k in r['reason'] and 'I row(s)' in r['reason'], r['reason'][:300]
     n = P.ephem_retro_rows(U)           # the refused select wrote selected_all.csv: the chain re-runs to it
     k2 = 'fallbacks.CATALOG_EPHEM_TIME_FALLBACK'      # the world's 2030 epochs have no Phase-2 image: the filter's LST guess
-    cli('--stages', 'preflight,harvest,merge,pulsars,conform,fitpos,select', '--set', f'{k}=fallback', '--set', f'{k2}=fallback',
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select', '--set', f'{k}=fallback', '--set', f'{k2}=fallback',
         expect=0)
     r = rec(f'{LABEL}.select')
     fb = r.get('fallbacks') or {}

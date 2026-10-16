@@ -182,9 +182,11 @@ class DeepRun:
         keys_all = list(c.catalog.DEEP_ASSOC_KEYS)
         self.sel_pred = u('fitpos') if self.deep_label else u('conform')
         forks = [u('fork', S) for S in c.catalog_fork.STOKES] if self.fork_on else []
+        check = c.catalog_conform.MODE == 'check'      # B-02 steps 2 and 4: the check reads the pulsar stage's catalogue
         self.preds = {u('preflight'): [], u('harvest'): [], u('merge'): [u('harvest')],
                       u('pulsars'): [u('merge'), u('preflight'), u('harvest')],
-                      u('conform'): [u('pulsars'), u('merge'), u('preflight'), u('harvest')], u('fitpos'): [u('conform')],
+                      u('conform'): ([u('pulsars'), u('merge'), u('preflight'), u('harvest')] if check
+                                     else [u('merge'), u('preflight')]), u('fitpos'): [u('conform')],
                       u('select'): [self.sel_pred],
                       u('union'): [u('associate', K) for K in c.catalog_identity.UNION_TIERS],
                       u('identity'): [u('union')] + [u('associate', K) for K in keys_all] + forks,
@@ -287,10 +289,12 @@ class DeepRun:
         if mode == 'w':
             open(log, 'w').close()
         off = os.path.getsize(log) if os.path.exists(log) else 0
+        if module:                      # the package on the child's path (as deep_step's engine child), and the run's config
+            from exopipe.phase3.lib.catalog import conform_check as CC   # overrides, which the child applies (its CFG
+            own = dict(own, PYTHONPATH=_PKG_ROOT + (os.pathsep + own['PYTHONPATH'] if own.get('PYTHONPATH') else ''),
+                       **{CC.OVERRIDES_ENV: CC.forward_overrides(self.cfg)})   # is built afresh in the child)
         entry = {'script': script, 'args': [str(a) for a in args], 'env': own, 'cwd': cwd or self.U, 'log': log,
                  'started': utcnow()}
-        if module:                      # the package on the child's path (as deep_step's engine child)
-            own = dict(own, PYTHONPATH=_PKG_ROOT + (os.pathsep + own['PYTHONPATH'] if own.get('PYTHONPATH') else ''))
         res = legacy.run(script if module else self.script(script), list(args), python=python or self.cfg.catalog.DEEP_PYTHON,
                          env=own, cwd=cwd or self.U, log=log, unit=u, module=module)
         with open(log, 'rb') as f:
@@ -694,26 +698,52 @@ class DeepRun:
             u.note(next((h for h in reversed(hits) if 'published attempts read' in h), tail[-1] if tail else ''))
         return u
 
-    def _b02_inputs(self, u):
-        """The inputs the pulsar stage and the check read (B-02 steps 2 and 4): the tables and lists, and every published
-        attempt's own records - its rules record, frame noise, pulsar-naming table decisions, gate ledger and refusals."""
+    def _b02_inputs(self, u, man):
+        """The inputs the pulsar stage and the check read (B-02 steps 2 and 4): the lists, the bright-source tables the check's
+        table module reads (lib/search/parent_curve_table.PATH - the search's, not production's catalog.TABLES_DEEP copy),
+        and every merged attempt's own records - its rules record, frame noise, pulsar-naming table decisions, gate ledger
+        and refusal files."""
         c = self.cfg
+        from exopipe.phase3.lib.catalog import conform_check as CC
+        from exopipe.phase3.lib.search import parent_curve_table as PCT, removal_rules as RR
         for p, gate in ((c.catalog.SOLAR_AUDIT, 'D-G14 solar audit'), (c.catalog.PULSARS_CSV, 'B-58 pulsar list'),
-                        (c.catalog.TABLES_DEEP, 'bright-parent tables'), (c.catalog.DEEP_ROOTS_CSV, 'roots.csv')):
+                        (PCT.PATH, 'bright-parent tables'), (c.catalog.DEEP_ROOTS_CSV, 'roots.csv')):
             if not os.path.exists(p):
                 u.refuse(f'{gate} missing: {p}')
             u.add_input(p)
-        man = self.chain.meta(self.u('harvest'), 'harvest_manifest')
         u.add_input(man)
-        from exopipe.phase3.lib.catalog import conform_check as CC
-        from exopipe.phase3.lib.search import removal_rules as RR
+        import glob as _glob
         for a in CC.attempts(man, self.label):
-            for p in [os.path.join(a['dir'], RR.RULES_RECORD)] + [os.path.join(a['rd'], n) for n in (
-                    RR.FRAME_NOISE, RR.TABLE_PULSAR, 'v_deep_ledger.csv')]:
+            for p in ([os.path.join(a['dir'], RR.RULES_RECORD)] + [os.path.join(a['rd'], n) for n in (
+                    RR.FRAME_NOISE, RR.TABLE_PULSAR, 'v_deep_ledger.csv')]
+                      + sorted(_glob.glob(os.path.join(a['rd'], 'refusals', '*_excluded.csv')))):
                 if os.path.exists(p):
                     u.add_input(p)
         u.add_input(c.paths.DATA_DECISIONS)
         return man
+
+    def _merged_attempts(self, u, d):
+        """The attempts the merge merged (B-02 steps 2 and 4 read only those): the harvest manifest less the attempts the
+        merge refused as stale (its record: stale_attempts). An attempt the merge skipped as unharvested (B-30 'warn') leaves
+        the merged set unknown - REFUSED. Written to <stage dir>/MERGED_ATTEMPTS; returns its path."""
+        from exopipe.phase3.lib.catalog import conform_check as CC
+        mv = self.u('merge')
+        if self.chain.meta(mv, 'unharvested_warning'):
+            u.refuse(f"the merge skipped unharvested attempt(s) ({self.chain.meta(mv, 'unharvested_warning')[:200]}): the set it "
+                     f"merged is not recorded, so neither the pulsar stage nor the check can read it - harvest them, re-run")
+        stale = {tuple(x) for x in (self.chain.meta(mv, 'stale_attempts') or [])}
+        man = self.chain.meta(self.u('harvest'), 'harvest_manifest')
+        with open(man, newline='') as f:
+            rd = csv.DictReader(f)
+            cols, keep = rd.fieldnames, [r for r in rd if (r['cell'], r['stokes']) not in stale]
+        out = os.path.join(d, CC.MERGED_ATTEMPTS)
+        with open(out + '.tmp', 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=cols)
+            w.writeheader()
+            w.writerows(keep)
+        os.replace(out + '.tmp', out)
+        u.meta['merged_attempts'] = {'n': len(keep), 'stale_left_out': sorted(map(list, stale))}
+        return out
 
     def st_pulsars(self):
         """B-02 step 4: the cross-cell pulsar groups as a stage of their own (lib/catalog/conform_check.pulsars), between the
@@ -729,10 +759,10 @@ class DeepRun:
             self.preds_current(u, u.name)
             merge_copy = self.chain.meta(self.u('merge'), 'copies')['master_catalog.csv']
             par = self.chain.meta(self.u('preflight'), 'parent_dir')
-            man = self._b02_inputs(u)
+            d = self.stage_dir(u, 'pulsars')
+            man = self._b02_inputs(u, self._merged_attempts(u, d))
             u.add_input(merge_copy)
             self.ensure_master(u, merge_copy, 'pulsars')
-            d = self.stage_dir(u, 'pulsars')
             rc, tail, hits = self.call(u, CHECK_MODULE, ['pulsars', self.U, man, self.label], self.env(parent_dir=par), self.log,
                                        keep=('pulsar stage:', 'REFUSED'), module=True)
             if rc != 0:
@@ -741,7 +771,9 @@ class DeepRun:
             for name in ('master_catalog.csv', CC.PULSAR_RECORD, CC.PULSAR_REMOVED, CC.PULSAR_GROUPS):
                 self.copy(u, os.path.join(self.U, name), d)
                 self.out(u, os.path.join(self.U, name))
-            self.write_stage_json(d, merge_copy=merge_copy, parent_dir=par, harvest_manifest=man)
+            u.meta.setdefault('copies', {})[CC.MERGED_ATTEMPTS] = man
+            self.out(u, man)
+            self.write_stage_json(d, merge_copy=merge_copy, parent_dir=par, merged_attempts=man)
             self.out(u, os.path.join(d, 'master_catalog.csv'), 'pulsar_catalog')
             u.note(next((h for h in reversed(hits) if h.startswith('pulsar stage:')), tail[-1] if tail else '')[:600])
         return u
@@ -756,11 +788,15 @@ class DeepRun:
             par = self.chain.meta(self.u('preflight'), 'parent_dir')
             from exopipe.phase3.lib.catalog import conform_check as CC
             mode = CC.conform_mode()
-            if mode == 'check':              # B-02 step 2: the check, on the pulsar stage's catalogue
-                man = self._b02_inputs(u)
-                pred = self.chain.meta(self.u('pulsars'), 'copies')['master_catalog.csv']
+            if mode == 'check':              # B-02 step 2: the check, on the pulsar stage's catalogue and merged set
+                pc = self.chain.meta(self.u('pulsars'), 'copies') or {}
+                if not pc.get('master_catalog.csv') or not pc.get(CC.MERGED_ATTEMPTS):
+                    u.refuse("catalog_conform.MODE='check' needs the pulsar stage's record under 'check' (the one on record has "
+                             "no catalogue: a 'remove' pass's no-input unit) - run the pulsars stage first")
+                man = self._b02_inputs(u, pc[CC.MERGED_ATTEMPTS])
+                pred = pc['master_catalog.csv']
                 for name in (CC.PULSAR_RECORD, CC.PULSAR_REMOVED):
-                    u.add_input(self.chain.meta(self.u('pulsars'), 'copies')[name])
+                    u.add_input(pc[name])
             else:
                 for p, gate in ((c.catalog.SOLAR_AUDIT, 'D-G14 solar audit'), (c.catalog.PULSARS_CSV, 'B-58 pulsar list'),
                                 (c.catalog.TABLES_DEEP, 'bright-parent tables'), (c.catalog.DEEP_ROOTS_CSV, 'roots.csv')):
@@ -794,7 +830,8 @@ class DeepRun:
                 self.copy(u, os.path.join(self.U, name), d)
             for name in ('master_catalog.csv', 'master_catalog_asrun.csv', 'master_catalog_removed.csv'):
                 self.out(u, os.path.join(self.U, name))
-            self.write_stage_json(d, merge_copy=merge_copy, parent_dir=par, mode=mode)
+            self.write_stage_json(d, merge_copy=merge_copy, parent_dir=par, mode=mode,
+                                  elev_epoch=c.catalog_conform.DEEP_ELEV_EPOCH if mode == 'check' else 'mid-hour')
             self.out(u, os.path.join(d, 'master_catalog.csv'), 'conformant_catalog', merge_copy=merge_copy)
             for name in ('frame_times.csv', 'frame_beam_ratio.csv', 'frame_beam_bmaj.csv'):   # bmaj: D8, ops 283a513
                 p = os.path.join(self.U, name)

@@ -1636,7 +1636,11 @@ def run_incremental(args, run, epochs=None):
     _env.legacy()
     from exopipe.phase3.lib.catalog import conform_check as _CC       # B-02 steps 2 and 4: the replay runs production's
     cc = _cfg().catalog_conform                                     # conform (p3s2_conform.py); per-hour updates before
-    if _CC.conform_mode() != 'remove' or cc.DEEP_ELEV_EPOCH != 'mid-hour':   # the full re-search run so (R-GREGG-20261014-
+    try:                                                            # the full re-search run so (R-GREGG-20261014-
+        _mode = _CC.conform_mode()
+    except RuntimeError as e:
+        raise Refusal(str(e))
+    if _mode != 'remove' or cc.DEEP_ELEV_EPOCH != 'mid-hour':
         msg = (f"catalog --incremental replays production's ops/p3s2_conform.py: it runs only under catalog_conform.MODE="   # REFACTOR-
                f"'remove' with DEEP_ELEV_EPOCH='mid-hour' (now {cc.MODE!r}, {cc.DEEP_ELEV_EPOCH!r}) - the check and the pulsar "   # DECISIONS-
                f"stage of 'check' have no incremental path yet: run the full chain, or set both under the ruling ID")   # LIST item 6)
