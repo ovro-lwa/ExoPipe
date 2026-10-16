@@ -615,10 +615,11 @@ if _b02 is not None:             # B-02 step 3a: the frames the daytime gate ref
         E._PCT.removals = _rm
 _nf = json.loads(os.environ.get('TEST_NOFLOW') or '[]')
 if _nf:                          # B-02 step 3c test device: the x2 flow batch gives these nights no flow (under
-    E._REFINE_OFF = False         # P3_REFINE_OFF every night has one); the others' flow is None, which leaves an image
-    E._batch_flows = lambda cw_, mup_, items_: {d_: None for d_, _p in items_ if d_ not in _nf}   # as it is
-    _real_aff = E.apply_flow_field
-    E.apply_flow_field = lambda img_, flow_, *a_, **k_: img_ if flow_ is None else _real_aff(img_, flow_, *a_, **k_)
+    def _bf(cw_, mup_, items_):  # P3_REFINE_OFF every night has one); every other night's flow is None and the
+        E._REFINE_OFF = True      # switch is back on before the residuals, so they are the plain P3_REFINE_OFF ones
+        return {d_: None for d_, _p in items_ if d_ not in _nf}
+    E._REFINE_OFF = False         # off only so that the engine asks the batch for its flows
+    E._batch_flows = _bf
 _xn = json.loads(os.environ.get('TEST_EXCLUDE') or '[]')
 if _xn:                          # B-02 step 3c test device: these nights excluded as a data_decisions row of the cell's own
     _real_le = E.load_exclusions     # subband excludes them (the real list plus them; the search's reading only)

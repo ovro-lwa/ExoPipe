@@ -478,6 +478,16 @@ def test_faults():
     fault('dd_appended', appended, None, 'a night the base left out as excluded and an append searched since (data_decisions '
                                          'admitting it): the inherited record row is no finding')
 
+    def appended_refused(r):                # ... and an append that built the lifted night's frame, which the V noise rule
+        a = r.att['V']                       # then refused (frame_noise admitted 0, its refusal row): still no finding -
+        a.ddrop.append([LST, SC, left, 'A0'])   # the attempt took the night up, whatever a per-Stokes gate decided
+        fn0 = dict(a.fnoise[0], date=left, admitted=0, population=0)
+        fn0['noise_jy'] = repr(float(fn0['vsanmed_jy']) * 4.0)
+        a.fnoise.append(fn0)
+        a.sanity_v.append([LST, SC, left, fn0['noise_jy'], fn0['vsanmed_jy'], 'A1'])
+    fault('dd_appended_refused', appended_refused, None, 'a lifted night an append built the frame of and the V noise rule '
+                                                         'refused: the inherited record row is no finding')
+
     def lifted(r):
         r.att['V'].ddrop.append([LST, SC, left, 'A1'])
     fault('b_excluded', lifted, ('b', 'excluded'), '(b) a night the search left out as excluded by data_decisions that '

@@ -372,7 +372,8 @@ def test_content_tests_synthetic():
     import types as _types
     un = DS.unaccounted_epochs(_types.SimpleNamespace(stokes='I', mode='bulk', dates=[]),
                                dict(attempt=att, label='P3S5', dates_i=[D1, D2, D4], dates_v=[], admitted=[D1, D2, D4]))
-    check('a night of that record admitted now (its exclusion lifted) is an unaccounted epoch of the attempt', un == [D4], un)
+    check('the record never accounts for an epoch: a night of it that the preflight admitted (data_decisions changed before '
+          'the engine read it) and with no image row is still an unaccounted epoch', un == [D4], un)
     open(p, 'w').write(f'{LST},{SCOPE},{D2},{ATT_TAG}\n')
     ok, det = results_of('refusal_record', p)
     check('refusal_record passes on that record naming a night with gate-ledger rows (an append that searched a night '

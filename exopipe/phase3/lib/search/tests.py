@@ -64,8 +64,10 @@ REFUSAL_KINDS = {'nightimage': (4, 'both'), 'epochgate': (4, 'both'), 'sanity': 
                  'extraction_I': (7, 'I'), 'extraction_V': (7, 'V'),
                  'daytime': (6, 'row'),     # B-02 step 3a: the daytime gate per frame (lst, scope, date, Stokes, reason, attempt)
                  'datadecisions': (4, 'both')}   # B-02 step 3c: the nights data_decisions excluded (lst, scope, date, attempt)
-# kinds that record, not refuse: a night data_decisions excluded when the search ran is judged by today's data_decisions
-# (the admitted nights), so a lifted exclusion stays an unaccounted epoch - refused_dates leaves these out
+# kinds that record, not refuse (the nights data_decisions excluded when the search ran): refused_dates leaves them out, so
+# the gate_ledger and image_ledger content tests do not fail an append that searched a night its base recorded, and the
+# search step's unaccounted_epochs judges its own preflight's admitted nights only by real refusals (it runs at search
+# time: a later lift is the conformance check's direction (b), conform_check)
 RECORD_ONLY_KINDS = ('datadecisions',)
 FIT_KINDS = ('gaussian', 'template', 'peak')
 FIT_EXTRA = ['frame', 'frame_sha1', 'fit_frac_px']
