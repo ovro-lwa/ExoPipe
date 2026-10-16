@@ -22,10 +22,23 @@ import numpy as np
 from exopipe.phase3.config import CFG
 
 ELEV_EPOCHS = ('mid-hour', 'frame-mid')
+SEARCH_RULES = ('once-in-search', 'production')   # search_detect.REMOVAL_RULES
+RULES_ENV = 'EXOPIPE3_REMOVAL_RULES'              # how the search step hands it to the engine child (deep_step.engine_env)
+RULES_VERSION = 'b02-3a'   # what a 'once-in-search' attempt applies: the daytime gate per frame, the Jupiter-track veto
 
 
 def _cc():
     return CFG.catalog_conform
+
+
+def search_rules(value=None):
+    """search_detect.REMOVAL_RULES - ``value`` checked, else as the search step passed it to the engine child
+    (EXOPIPE3_REMOVAL_RULES), else the config; an unknown value refuses (a typo never selects either)."""
+    if value is None:
+        value = os.environ.get(RULES_ENV) or CFG.search_detect.REMOVAL_RULES
+    if value not in SEARCH_RULES:
+        raise ValueError(f'search_detect.REMOVAL_RULES = {value!r} is not one of {SEARCH_RULES} - REFUSING')
+    return value
 
 
 def f(x):
@@ -155,6 +168,46 @@ def daytime_verdicts(frame_times, quar):
 DAYTIME_UNREADABLE = 'daytime gate: frame DATE-OBS/DATE-END unreadable - cannot be judged, refused'
 
 
+def product_times(path):
+    """(DATE-OBS, DATE-END) of an epoch's Stage-1 product - the time block its archived search frame carries
+    (deep_search._archive_frame_header: DATE-END, else DATE-OBS + DURATION) - or None when it cannot be read."""
+    from astropy.io import fits
+    from astropy.time import Time, TimeDelta
+    try:
+        h = fits.getheader(path)
+        t0, t1 = h.get('DATE-OBS'), h.get('DATE-END')
+        if t1 is None and t0 is not None and h.get('DURATION'):
+            t1 = (Time(t0) + TimeDelta(float(h['DURATION']), format='sec')).isot
+        if t0 is None or t1 is None:
+            return None
+        Time(str(t0)); Time(str(t1))
+        return str(t0), str(t1)
+    except Exception:
+        return None
+
+
+def daytime_frames(frames, quar=None):
+    """{(Stokes, date): the refusal} of the frames ({(Stokes, lst, band, date): Stage-1 product path}) the daytime gate refuses:
+    the Sun up at any of the frame's five samples, twilight in a quarantined band, or times that cannot be read - the
+    conformance's rule (daytime_verdicts), applied by the search to each frame before it is searched (B-02 step 3a)."""
+    if quar is None:
+        try:
+            quar = solar_quarantine(CFG.catalog.SOLAR_AUDIT)
+        except SystemExit as e:                   # the conformance's words; in the search a refusal of the cell
+            raise RuntimeError(str(e))
+    times, out = {}, {}
+    for k, p in frames.items():
+        t = product_times(p)
+        if t is None:
+            out[(k[0], k[3])] = DAYTIME_UNREADABLE
+        else:
+            times[k] = t
+    for k, why in daytime_verdicts(times, quar).items():
+        if why:
+            out[(k[0], k[3])] = why
+    return out
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # Jupiter track (p3s2_conform.py:279-307, :512-518; Gregg 2026-09-18)
 # ---------------------------------------------------------------------------------------------------------------------
@@ -192,13 +245,19 @@ def jupiter_track_radius(band):
     return _cc().JUPITER_TRACK_RADIUS_DEG.get(band_class(band), 0.5)
 
 
-def jupiter_track_reason(ra, dec, band, pts):
-    """The first co-added night whose Jupiter position lies within the band's radius (flat-sky separation), as words."""
+def jupiter_track_hit(ra, dec, band, pts):
+    """The first co-added night whose Jupiter position lies within the band's radius of (ra, dec) (flat-sky separation), or
+    None."""
     jr = jupiter_track_radius(band)
-    hit = next((d_ for (jra, jdec, d_) in pts
-                if np.hypot(((jra - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec)), jdec - dec) < jr), None)
+    return next((d_ for (jra, jdec, d_) in pts
+                 if np.hypot(((jra - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec)), jdec - dec) < jr), None)
+
+
+def jupiter_track_reason(ra, dec, band, pts):
+    """jupiter_track_hit as the conformance's words ('' when none)."""
+    hit = jupiter_track_hit(ra, dec, band, pts)
     if hit:
-        return f'jupiter-track: within {jr} deg of Jupiter on co-added night {hit} (Gregg 2026-09-18)'
+        return f'jupiter-track: within {jupiter_track_radius(band)} deg of Jupiter on co-added night {hit} (Gregg 2026-09-18)'
     return ''
 
 

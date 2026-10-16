@@ -18,6 +18,7 @@ beside the cell's map.
 Run: python tests/test_search_admitted.py [--quick]   (--quick: parts 1 and 2 only)
 """
 import ast
+import collections
 import csv
 import glob
 import inspect
@@ -171,6 +172,62 @@ def test_unit_outputs():
           got == [f'{CELL}_I_sigstack.fits', f'{CELL}_I_sigstack_2026-10-20.fits'], got)
 
 
+def test_b02_units():
+    """B-02 step 3a: removal_rules' search helpers - the switch, a product's time block, the daytime gate on frames whose times
+    put the Sun up or down or cannot be read, the track hit; every engine line of them marked WAVE2 B-02."""
+    from astropy.io import fits
+    from exopipe.phase3.lib.search import removal_rules as RR
+    old = os.environ.pop(RR.RULES_ENV, None)
+    try:
+        ok_cfg = RR.search_rules() == CFG.search_detect.REMOVAL_RULES == 'once-in-search'
+        os.environ[RR.RULES_ENV] = 'production'
+        ok_env = RR.search_rules() == 'production'
+        os.environ[RR.RULES_ENV] = 'Production'
+        try:
+            RR.search_rules()
+            ok_bad = False
+        except ValueError:
+            ok_bad = True
+    finally:
+        os.environ.pop(RR.RULES_ENV, None)
+        if old is not None:
+            os.environ[RR.RULES_ENV] = old
+    check("search_detect.REMOVAL_RULES: the ruled 'once-in-search' by default, the step's value through the engine env, an "
+          "unknown value refused", ok_cfg and ok_env and ok_bad, (ok_cfg, ok_env, ok_bad))
+    d = os.path.join(T, 'b02_units')
+    os.makedirs(d, exist_ok=True)
+
+    def prod(name, **cards):
+        h = fits.Header()
+        for k_, v_ in cards.items():
+            h[k_.replace('_', '-')] = v_
+        p_ = os.path.join(d, name)
+        fits.writeto(p_, np.zeros((4, 4), np.float32), h, overwrite=True)
+        return p_
+    night = prod('night.fits', DATE_OBS='2025-01-11T08:00:00.000', DATE_END='2025-01-11T09:00:00.000')   # local midnight (PST)
+    day = prod('day.fits', DATE_OBS='2025-06-21T20:00:00.000', DURATION=3600.0)                          # local 13:00 (PDT)
+    none_ = prod('none.fits')
+    check('product_times: DATE-END, else DATE-OBS + DURATION, else None', RR.product_times(night)[1].startswith('2025-01-11T09')
+          and RR.product_times(day)[1].startswith('2025-06-21T21:00') and RR.product_times(none_) is None,
+          (RR.product_times(night), RR.product_times(day), RR.product_times(none_)))
+    got = RR.daytime_frames({('I', '05h', '78MHz', '2025-01-11'): night, ('V', '05h', '78MHz', '2025-06-21'): day,
+                             ('I', '05h', '78MHz', '2025-02-02'): none_}, quar={})
+    check('daytime_frames: the night frame passes, the Sun-up frame is refused in its Stokes with the conformance\'s words, '
+          'a frame without times is refused', set(got) == {('V', '2025-06-21'), ('I', '2025-02-02')}
+          and got[('V', '2025-06-21')].startswith('daytime: Sun') and got[('I', '2025-02-02')] == RR.DAYTIME_UNREADABLE, got)
+    pts = [(80.0, 22.0, '2024-12-30'), (90.0, 23.0, '2025-01-20')]
+    check('jupiter_track_hit: the first co-added night within the band\'s radius (Blue 0.5 deg), none outside',
+          RR.jupiter_track_hit(80.3, 22.1, '78MHz', pts) == '2024-12-30' and RR.jupiter_track_hit(85.0, 22.0, '78MHz', pts) is None
+          and RR.jupiter_track_hit(84.0, 22.0, 'Red', pts) == '2024-12-30',
+          (RR.jupiter_track_hit(80.3, 22.1, '78MHz', pts), RR.jupiter_track_hit(84.0, 22.0, 'Red', pts)))
+    from exopipe.phase3.lib.search import deep_search as DSE
+    src = inspect.getsource(DSE).splitlines()
+    unmarked = [ln for ln in src if re.search(r'_RR\b|_b02\b|_jtrack\b|_jth\b|_dfr\b|_day\b', ln) and 'WAVE2 B-02' not in ln
+                and not ln.strip().startswith('#') and not ln.strip().startswith('if _jtrack else')]
+    check('every engine line of the search\'s removal rules is marked WAVE2 B-02 (a continuation excepted)', not unmarked,
+          unmarked[:4])
+
+
 def test_values():
     adm = {'a': dict(night_image='pass', epoch_gate='pass', qa3_rms_mjy='12.5', stage2_i_rms_mjy='3.25', stage2_v_rms_mjy=''),
            'b': dict(night_image='FAIL', epoch_gate='pass', qa3_rms_mjy='nan', stage2_i_rms_mjy='x', stage2_v_rms_mjy='4'),
@@ -260,6 +317,15 @@ sys.path.insert(0, sys.argv[1])
 from exopipe.phase3.core import env
 env.legacy()
 from exopipe.phase3.lib.search import deep_search as E
+from exopipe.phase3.lib.search import removal_rules as _RR
+_b02 = json.loads(os.environ.get('TEST_B02') or 'null')
+if _b02 is not None:             # B-02 step 3a: the frames the daytime gate refuses and the track points, given (deterministic)
+    _RR.daytime_frames = lambda frames, quar=None: {(st, d): 'daytime: Sun 5.0 to 10.0 deg over the frame (test)'
+                                                    for st, d in _b02.get('day', []) if any(k[0] == st and k[3] == d
+                                                                                         for k in frames)}
+    _RR.jupiter_track = lambda lst, weights_path, nights=None: [tuple(x) for x in _b02.get('track', [])]
+if os.environ.get('TEST_OPEN_JUPITER'):    # B-02 test device: the per-night Jupiter veto opened (both runs of a pair)
+    E.JUPITER_VETO_DEG = {k: 0.0 for k in E.JUPITER_VETO_DEG}
 fail = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
 if fail:                         # force this night's Stokes I residual to fail (the builder then drops it, B-30 counted)
     for _name in ('_resid_task', '_resid_task_spill'):
@@ -271,7 +337,8 @@ if fail:                         # force this night's Stokes I residual to fail 
         setattr(E, _name, _w)
 out = {'ok': False}
 try:
-    n = E.run_deep_cell(sys.argv[2], sys.argv[3], label='ADMITTEST', included_dates=json.loads(sys.argv[4]), stokes='IV')
+    n = E.run_deep_cell(sys.argv[2], sys.argv[3], label='ADMITTEST', included_dates=json.loads(sys.argv[4]),
+                        stokes=os.environ.get('TEST_STOKES') or 'IV')
     out = {'ok': True, 'n': n}
 except Exception as e:
     out = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
@@ -303,13 +370,21 @@ def strip_constituents(path, nights):
     return len(hist) - len(keep)
 
 
-def engine(root, work, label_root, policy, dates, fail_i=None):
+def engine(root, work, label_root, policy, dates, fail_i=None, rules=None, b02=None, stokes=None, open_jupiter=False):
     env = {k: v for k, v in os.environ.items() if not k.startswith('P3_')}
     env.update(PYTHONPATH=REPO, P3_COADD_ROOT=root, P3_FLOW_ROOT=work, P3_STAGING_ROOT=label_root,
                P3_IRESID_ROOT=os.path.join(label_root, 'iresid'), P3_VRESID_ROOT=os.path.join(label_root, 'vresid'),
                P3_REFINE_OFF='1', P3_ARCHIVE_WRITE='0', P3_V110_OFF='1', P3_MASTER_GEN='ivw-mean-v3',
                P3_FLOW_LOCK=os.path.join(work, '.flow.lock'))
     env[ADS.POLICY_ENV] = policy
+    if rules:                                        # B-02: the search's removal rules (else the config's, as the step passes)
+        env['EXOPIPE3_REMOVAL_RULES'] = rules
+    if b02 is not None:
+        env['TEST_B02'] = json.dumps(b02)
+    if stokes:                                       # one Stokes per run, as the search step runs the engine (else 'IV')
+        env['TEST_STOKES'] = stokes
+    if open_jupiter:
+        env['TEST_OPEN_JUPITER'] = '1'
     if fail_i:                                       # production's handling of a failed residual: dropped, counted
         env.update(DEEP_NPROC_RESID='1', EXOPIPE3_FALLBACK_POLICY=json.dumps({'fallbacks.SEARCH_RESIDUAL_FALLBACK': 'fallback'}))
     res = os.path.join(label_root, f'result_{policy}.json')
@@ -508,7 +583,103 @@ def test_end_to_end():
           'them taken out of the cell (no population of its gates or stack holds an admitted night)',
           res1['ok'] and res0['ok'] and r1 == r0 and r1['v_deep_images.csv'],
           (res1, res0, {k: (len(r1[k]), len(r0[k])) for k in r1}, logm1[-300:], logm0[-300:]))
+    test_b02_end_to_end(wt, work, want[:3])
 
+
+def test_b02_end_to_end(wt, work, b3):
+    """B-02 step 3a: production's rules against 'once-in-search' on three member nights (``b3``) of the copy ``wt``, one
+    Stokes per run as the search step runs the engine (the harness's 'IV' call skips a night's V search with its refused I
+    frame - production's per-date loop - which no step or fleet call meets). Each run is seeded with the served search's
+    cell sigma stack (the map an incremental search reads, so a search of a few nights gates as the full search did and
+    detections reach the end of each chain). Given: the daytime gate refuses one night's frame; the Jupiter track holds one
+    point, on a detection that reached the track's place in its chain (past the A-team veto) under production's rules. In
+    this cell no I detection of these nights gets that far but Jupiter's own, which the per-night Jupiter veto removes
+    first, so the I pair runs with that veto opened in both runs (a test device; the track then meets Jupiter itself)."""
+    from exopipe.phase3.lib.search import removal_rules as RR
+    ssrc = os.path.join(CFG.calibrate.SERVED_RUN['deep'], 'sigstack')
+
+    def b02_run(name, st, rules, b02, open_jupiter):
+        att_ = os.path.join(T, name)
+        shutil.rmtree(att_, ignore_errors=True)      # a fresh attempt (the engine appends to its ledgers)
+        sg = os.path.join(att_, 'transients', 'Run_ADMITTEST', 'sigstack')
+        os.makedirs(sg, exist_ok=True)
+        shutil.copy2(os.path.join(ssrc, f'{CELL}_{st}_sigstack.fits'), sg)
+        res_, log_ = engine(wt, work, att_, 'admitted', b3, rules=rules, b02=b02, stokes=st, open_jupiter=open_jupiter)
+        rd_ = os.path.join(att_, 'transients', 'Run_ADMITTEST')
+        out_ = {}
+        for name_ in ('v_deep_ledger.csv', 'v_deep_images.csv'):
+            p_ = os.path.join(rd_, name_)
+            out_[name_] = [r for r in csv.DictReader(open(p_)) if r.get('date') in b3] if os.path.exists(p_) else []
+        dayf = os.path.join(rd_, 'refusals', f'{CELL}_daytime_excluded.csv')
+        out_['day'] = open(dayf).read().splitlines() if os.path.exists(dayf) else []
+        return res_, log_, out_
+
+    def reach(r):                                    # past the A-team veto: v110 (V), the table, the row line or a final
+        return r['final'] == '1' or r['veto_reason'] in ('table', 'row-line') or r['veto_reason'].startswith('v110:')
+    key = lambda r: (r['date'], r['ra'], r['dec'])
+    cols = ('n_ident5', 'n_after_morph', 'n_after_mstruct', 'n_after_jupiter', 'n_final', 'n_raw_floor')
+    for st, night, oj in (('I', '2024-12-30', True), ('V', '2025-01-04', False)):
+        dev = ' (the per-night Jupiter veto opened in both runs)' if oj else ''
+        resp, logp, rp = b02_run(f'attempt_b02_{st}_production', st, 'production', {'day': [], 'track': []}, oj)
+        cand = sorted((r for r in rp['v_deep_ledger.csv'] if r['stokes'] == st and reach(r)),
+                      key=lambda r: (r['final'] != '1', r['date']))
+        if not (resp['ok'] and cand):
+            check(f"B-02 setup ({st}): a detection of the nights past the A-team veto under production's rules{dev}", False,
+                  (resp.get('error'), len(rp['v_deep_ledger.csv']), logp[-300:]))
+            continue
+        tgt = cand[0]
+        pts = [(float(tgt['ra']), float(tgt['dec']), night)]
+        dn = next(d for d in b3 if d != tgt['date'])     # the daytime frame: another night's, of this Stokes
+        reso, logo, ro = b02_run(f'attempt_b02_{st}_once', st, 'once-in-search',
+                                 {'day': [[st, dn]], 'track': [list(x) for x in pts]}, oj)
+        lp = {key(r): r for r in rp['v_deep_ledger.csv'] if r['stokes'] == st}
+        lo = {key(r): r for r in ro['v_deep_ledger.csv'] if r['stokes'] == st}
+        ip = {r['date']: r for r in rp['v_deep_images.csv'] if r['stokes'] == st}
+        io = {r['date']: r for r in ro['v_deep_images.csv'] if r['stokes'] == st}
+        zeros = ('0', '0', '', '', '0', '0') if st == 'I' else ('0',) * 6
+        check(f"B-02 step 3a ({st}): under 'once-in-search' the frame the daytime gate refuses is not searched (its image row "
+              f"of zeros, no ledger row, one row in refusals/<cell>_daytime_excluded.csv); under 'production' it is{dev}",
+              reso['ok'] and any(k[0] == dn for k in lp) and not any(k[0] == dn for k in lo) and dn in io
+              and tuple(io[dn][c] for c in cols) == zeros and len(ro['day']) == 1
+              and ro['day'][0].startswith(f'{LST},{SC},{dn},{st},') and not rp['day'],
+              (reso.get('error'), dn, io.get(dn), ro['day'], rp['day'], logo[-300:]))
+        # the track: every detection past the A-team veto within the band's radius of the point, of any night searched under
+        # both, vetoed
+        want_v = {k for k, r in lp.items() if k[0] != dn and reach(r)
+                  and RR.jupiter_track_hit(float(r['ra']), float(r['dec']), SC, pts)}
+        got_v = {k for k, r in lo.items() if r['veto_reason'].startswith('jupiter-track')}
+        ok_v = bool(want_v) and want_v == got_v and all(
+            lo[k]['veto_reason'] == f'jupiter-track:{night}' and lo[k]['final'] == '0' for k in got_v)
+        # every other ledger and image row of the nights searched under both is production's, but for the counts of the
+        # vetoed: a gated V row's n_v_epoch counts what its epoch's gates kept (an A-team veto's rule), the image row's
+        # n_final what the night kept to its end (V: after the gates - every vetoed row; I: the finals)
+        nv = collections.Counter(k[0] for k in got_v)
+        nf = collections.Counter(k[0] for k in got_v if st == 'V' or lp[k]['final'] == '1')
+        diff = []
+        for k, r in lp.items():
+            if k[0] == dn or k in got_v:
+                continue
+            exp = dict(r)
+            if st == 'V' and r['n_v_epoch'] not in ('', None):
+                exp['n_v_epoch'] = str(int(r['n_v_epoch']) - nv[k[0]])
+            if lo.get(k) != exp:
+                diff.append((k, {c: (exp[c], lo[k][c]) for c in exp if exp[c] != lo[k][c]} if k in lo else 'missing'))
+        extra = [k for k in lo if k not in lp]
+        idiff = []
+        for d, r in ip.items():
+            if d == dn:
+                continue
+            exp = dict(r)
+            if r['n_final'] not in ('', None):
+                exp['n_final'] = str(int(r['n_final']) - nf[d])
+            if io.get(d) != exp:
+                idiff.append((d, exp, io.get(d)))
+        check(f"B-02 step 3a ({st}): the track vetoes every detection past the A-team veto within the band's radius of its "
+              f"point, 'jupiter-track:<night>' (final 0), under 'once-in-search' only; every other ledger and image row is "
+              f"production's (their counts less the vetoed){dev}", ok_v and not diff and not extra and not idiff,
+              (tgt['date'], tgt['veto_reason'] or 'final', sorted(want_v), sorted(got_v), diff[:3], extra[:3], idiff[:2]))
+        check(f"B-02 ({st}): the search's log names the daytime refusal under 'once-in-search' only",
+              'DAYTIME GATE (B-02)' in logo and 'DAYTIME GATE' not in logp, (logo[-300:], logp[-300:]))
 
 def main(argv):
     shutil.rmtree(T, ignore_errors=True)
@@ -519,6 +690,7 @@ def main(argv):
         test_nights(cd)
         test_unreadable_and_same_state(cd)
         test_unit_outputs()
+        test_b02_units()
         test_values()
         test_residuals_and_stacks()
         test_engine_source()

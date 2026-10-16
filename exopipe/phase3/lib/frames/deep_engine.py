@@ -270,6 +270,11 @@ def child_env(spec, cfg=None):
     from exopipe.phase3.lib.masters import admit as _AD                 # D-ADMIT: how the engine reads admitted nights, as the
     from exopipe.phase3.lib.search import admitted as _ADS              # search step passes it (deep_step.engine_env)
     s[_ADS.POLICY_ENV] = _AD.admitted_policy(cfg.masters_admit.ADMITTED_NIGHTS)
+    from exopipe.phase3.lib.search import removal_rules as _RR          # B-02: the search's removal rules, as the search step
+    try:                                                                # passes them (deep_step.engine_env)
+        s[_RR.RULES_ENV] = _RR.search_rules(cfg.search_detect.REMOVAL_RULES)
+    except ValueError as e:
+        raise Refusal(str(e))
     s['DEEP_XLA_MEMFRAC'] = repr(v['flow_xla_mem_fraction'])
     if v['flow_lock']:
         s['P3_FLOW_LOCK'] = v['flow_lock']        # node-global lock shared with production searches (one GPU batch per node)

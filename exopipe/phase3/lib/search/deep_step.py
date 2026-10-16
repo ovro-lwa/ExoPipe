@@ -385,6 +385,12 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
     from exopipe.phase3.lib.masters import admit as _AD
     from exopipe.phase3.lib.search import admitted as _ADS
     env[_ADS.POLICY_ENV] = _AD.admitted_policy(c.masters_admit.ADMITTED_NIGHTS)    # D-ADMIT: how the engine reads admitted nights
+    from exopipe.phase3.lib.search import removal_rules as _RR
+    try:                                                                           # B-02: the search's removal rules (step 3a)
+        env[_RR.RULES_ENV] = _RR.search_rules(sd.REMOVAL_RULES)
+    except ValueError as e:
+        from exopipe.phase3.core.record import Refusal
+        raise Refusal(str(e))
     if not si.ARCHIVE_WRITE:
         env['P3_ARCHIVE_WRITE'] = '0'
     if not sd.REFINE_X2:
@@ -846,6 +852,9 @@ def stage_detect(u, item, ctx, f):
         json.dump(spec, fh, indent=1)
     t_detect = time.time()
     u.meta.update(attempt_staged=attempt, engine_env={k: v for k, v in env.items() if k.startswith(('P3_', 'DEEP_'))})
+    from exopipe.phase3.lib.search import removal_rules as _RR                    # B-02: the rules this attempt ran (step 3a)
+    u.meta['removal_rules'] = dict(rules=env[_RR.RULES_ENV],
+                                   version=_RR.RULES_VERSION if env[_RR.RULES_ENV] == 'once-in-search' else None)
     try:
         res = legacy.run(_CHILD_MODULE, ['--child', spec_path], python=c.search.ENGINE_PYTHON, module=True, env=env, cwd=attempt,
                          log=log, refusal_codes=(2,), refusal_text=(), unit=u)

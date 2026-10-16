@@ -138,7 +138,13 @@ class search_detect(_Section):
                                                             # candidates' body labels at the frame's own mid-time; 'date-obs' = production
                                                             # (its DATE-OBS, Card 7a) - the engine child reads EXOPIPE3_EPHEMERIS_TIME
                                                             # (deep_step.engine_env; the 10-minute tier: search_sublst.EPHEMERIS_TIME)
+    REMOVAL_RULES = 'once-in-search'                        # B-02 (a) every removal rule once, in the search (deep cadence only):
+                                                            # the daytime gate per frame and the Jupiter-track veto (lib/search/
+                                                            # removal_rules, plan/wave2/B02_DESIGN.md step 3a); 'production' = without
+                                                            # them (the publish conformance removes those rows); the engine child reads
+                                                            # EXOPIPE3_REMOVAL_RULES (deep_step.engine_env)
     RULED = {'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'REMOVAL_RULES': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'ELEVATION_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
              'MIN_EPOCHS': 'IMPL-REFERENCE-NIGHT-MUST-BE-MASTER-NIGHT-AND-14-REBUILD',
              'SIZE_FLOOR_BEAMS': ('R-SIZE-AXIS-GATE-1.5-RATIFIED', 'R-GATE-TIGHTENED-SIZE-1.5-AXIS-1.5-VALIDATED-ON-KNOWN-TRANSIENTS'),
