@@ -731,6 +731,11 @@ def _v110_cell_verdicts(lst, scope, base, cell_work, master_I, hdr0, em, cd,
     return verdicts
 
 
+# the residual's provenance a deep search frame carries (2026-10-16, conformant names): the flux scale (SH*), the flux
+# correction (FLUX*) and the final master dewarp (MDW*) - the cards bake / the dewarp write on the residual
+_PROV_CARD = re.compile(r'^(SH(SCALE|ERR|NSRC|SRCS|METHOD|FREQ|DATE)|FLUX(BND|ABS|CORR|VER|BAKE)|MDW[A-Z0-9]*)$')
+
+
 def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms,
                           master_file, loo_file, align_file, label, cell_tag, cadence='deep'):
     """Conformant-from-birth header for an ARCHIVED search frame
@@ -783,6 +788,16 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
     })
     if loo_used:
         extra['LOOEXCL'] = (d, 'Epoch excluded from the LOO master')
+    # Conformant names (Gregg 2026-10-16 "Please make all filesnames conformant"): a deep frame is its residual's pixels
+    # minus the striation model, so it carries the residual's flux-scale and master-dewarp provenance - the SH*, FLUX* and
+    # MDW* cards - and the name tokens they back as the epochs' names do (shflux: SHSCALE; mdewarp: MDWARP). The 10-minute
+    # cadence keeps its names until its own rename.
+    _ptok = []
+    if cadence == 'deep':
+        for _k in hs:
+            if _PROV_CARD.match(_k):
+                extra[_k] = (hs[_k], hs.comments[_k])
+        _ptok = (['shflux'] if hs.get('SHSCALE') is not None else []) + (['mdewarp'] if hs.get('MDWARP') is not None else [])
     basis = str(hs.get('TIMEFIX', 'v2-phase2')).replace('v2-', '', 1)
     prod.write_standard_header(
         h, scope=scope, stokes=stokes, start=start, end=end,
@@ -799,7 +814,7 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
         h['PRODNAME'] = (prod.build_name(
             scope, stokes, cadence, 'Taper',
             -0.75 if (stokes == 'I' and cadence == 'deep') else 0.0,
-            proc=['dewarped', 'aligned', 'msub'] + ([] if _STRIATION_OFF else ['ssub']),
+            proc=['dewarped', 'aligned', 'msub'] + ([] if _STRIATION_OFF else ['ssub']) + _ptok,
             lst=cell_tag.split()[0], epoch=start,
             lst_bin=(int(hs.get('LSTBIN')) if cadence == '10min' and hs.get('LSTBIN') is not None else None)),
             'Conformant product name')
