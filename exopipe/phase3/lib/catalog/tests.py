@@ -410,9 +410,12 @@ def conformance_record(path, tier='deep', **ctx):
 
 @content_test('pulsar_catalog')
 def pulsar_stage_record(path, **ctx):
-    """The pulsar stage's catalogue (B-02 step 4, lib/catalog/conform_check.pulsars): the merge's output (merge_copy) less the
-    rows its record removed plus the rows it restored, by cand_id, in the merged columns; every restored row (<S>R_...) named
-    'restored' in pulsar_stage.csv, every removed one in master_catalog_pulsar_removed.csv with its reason."""
+    """The pulsar stage's catalogue (B-02 step 4, lib/catalog/conform_check.pulsars), row by row: the merge's output
+    (merge_copy) less the rows its record removed plus the rows it restored, in the merged columns - every kept row equal to
+    its merged row and every removed row to a merged one (whole rows, as multisets: a duplicated merged row counts twice);
+    every restored row (<S>R_<lst>_<date>_<band>_<pixel>) named 'restored' in pulsar_stage.csv with its cell, Stokes, night,
+    position and pixel; every removed one in master_catalog_pulsar_removed.csv with its reason."""
+    import collections
     from exopipe.phase3.lib.catalog import conform_check as CC
     cols, rows = _rows(path)
     merged = ctx.get('merge_copy') or _stage_info(path).get('merge_copy')
@@ -424,21 +427,35 @@ def pulsar_stage_record(path, **ctx):
     msgs = []
     if cols != mcols:
         msgs.append('columns are not the merged catalogue\'s')
-    restored = {r['cand_id'] for r in rec if r.get('action') == 'restored'}
-    removed = {r['cand_id'] for r in rec if r.get('action') == 'removed'}
-    m_ids = [r['cand_id'] for r in mrows]
-    c_ids = [r['cand_id'] for r in rows]
-    if sorted(c_ids) != sorted([c for c in m_ids if c not in removed] + list(restored)):
-        msgs.append(f'{len(c_ids)} rows != {len(m_ids)} merged - {len(removed)} removed + {len(restored)} restored')
-    new = {c for c in c_ids if c not in set(m_ids)}
-    if new != restored or any(not CC.is_restored(c) for c in new):
-        msgs.append(f'rows not in the merged catalogue that the record does not name restored (or not <S>R_): '
-                    f'{sorted(new ^ restored)[:3]}')
-    if not removed <= set(m_ids):
-        msgs.append(f'removed rows that are not merged rows: {sorted(removed - set(m_ids))[:3]}')
-    if {r['cand_id'] for r in rem} != removed or any(not (r.get('removal_reason') or '').strip() for r in rem):
+    row = lambda r: tuple(r.get(c, '') for c in mcols)
+    restored = {r['cand_id']: r for r in rec if r.get('action') == 'restored'}
+    removed = [r for r in rec if r.get('action') == 'removed']
+    merged_ms = collections.Counter(row(r) for r in mrows)
+    removed_ms = collections.Counter(row(r) for r in rem)
+    kept = [r for r in rows if r['cand_id'] not in restored]
+    want = merged_ms - removed_ms
+    if collections.Counter(row(r) for r in kept) != want:
+        diff = (collections.Counter(row(r) for r in kept) - want) + (want - collections.Counter(row(r) for r in kept))
+        msgs.append(f'{sum(diff.values())} kept row(s) differ from the merged rows less the removed ones (whole rows), e.g. '
+                    f'{[x[0] for x in list(diff)[:3]]}')
+    if removed_ms - merged_ms:
+        msgs.append(f'removed rows that are not merged rows: {[x[0] for x in list(removed_ms - merged_ms)[:3]]}')
+    if len(rem) != len(removed) or sorted(r['cand_id'] for r in rem) != sorted(r['cand_id'] for r in removed) \
+            or any(not (r.get('removal_reason') or '').strip() for r in rem):
         msgs.append(f'{CC.PULSAR_REMOVED} is not the record\'s removed rows, each with its reason')
-    return _fail(msgs, len(rows), f'{len(rows)} rows = {len(m_ids)} merged - {len(removed)} removed + {len(restored)} restored')
+    got = {r['cand_id']: r for r in rows if r['cand_id'] in restored or CC.is_restored(r['cand_id'])}
+    if set(got) != set(restored):
+        msgs.append(f'restored rows and the record\'s restored names differ: {sorted(set(got) ^ set(restored))[:3]}')
+    for cid, r in got.items():
+        t = restored.get(cid)
+        if t is None:
+            continue
+        pix = f"{int(float(t['pix_x'])):04d}{int(float(t['pix_y'])):04d}" if t.get('pix_x') else ''
+        if not CC.is_restored(cid) or (r['lst'], r['band'], r['stokes'], r['date']) != (t['lst'], t['scope'], t['stokes'], t['date']) \
+                or _f(r['ra']) != _f(t['ra']) or _f(r['dec']) != _f(t['dec']) \
+                or cid != f"{t['stokes']}{CC.RESTORED_TAG}_{t['lst']}_{t['date']}_{t['scope']}_{pix}":
+            msgs.append(f'restored row {cid} is not its record (cell, Stokes, night, position, pixel)')
+    return _fail(msgs, len(rows), f'{len(rows)} rows = {len(mrows)} merged - {len(rem)} removed + {len(restored)} restored')
 
 
 def _sha1(path):

@@ -461,6 +461,14 @@ def test_faults():
         r.excluded = {d}
     fault('xref', xref_excluded, None, 'a frame whose source extraction was refused (not searched), on a night excluded since')
 
+    r = fresh('wcs_none')                    # a frame whose header reads but holds no sky axes: findings, no crash
+    for c_ in ('CTYPE1', 'CTYPE2'):
+        del r.att['V'].headers[NIGHTS[2]][c_]
+    r.write()
+    ok, f, res = run_check(r)
+    check("a search frame with no sky axes in its WCS - refused with 'frame' findings, no crash",
+          not ok and f and f <= {('a', 'frame'), ('b', 'frame'), ('record', 'frame')}, (ok, sorted(f), res))
+
     r = fresh('wcs_bad')                     # a frame whose WCS does not parse: one 'frame' finding per row, no crash
     r.att['V'].headers[NIGHTS[2]]['CTYPE1'] = 'RA---XYZ'
     r.write()
@@ -583,6 +591,13 @@ def test_pulsar_stage():
             pb = CT.pulsar_stage_record(bad, merge_copy=r.merged)
             check('the pulsar_catalog content test refuses a stage catalogue whose restored row the record does not name',
                   not pb[0], pb)
+            for what, edit in (('a kept row\'s peak changed', lambda x: dict(x, peak_jy='999') if not CC.is_restored(x['cand_id'])
+                                and x is rows_[0] else x),
+                               ('a restored row moved', lambda x: dict(x, ra=str(float(x['ra']) + 0.01)) if CC.is_restored(x['cand_id'])
+                                else x)):
+                wcsv(bad, ST.CAT_FIELDS, [edit(x) for x in rows_])
+                pe = CT.pulsar_stage_record(bad, merge_copy=r.merged)
+                check(f'the pulsar_catalog content test compares whole rows: {what} - refused', not pe[0], pe)
             restored_id = pr[0]['cand_id'] if pr else ''
             check('a restored ID numbers the detection by its pixel (stable from pass to pass)', restored_id ==
                   f'VR_{LST}_{NIGHTS[2]}_{SC}_{px[0]:04d}{px[1]:04d}', restored_id)
@@ -692,6 +707,16 @@ def test_chain_pieces():
           got == want and all(type(got[k]) is type(want[k]) for k in want), (want, got, p.stderr[-400:]))
 
 
+def test_literal():
+    import ast
+    vals = [float('inf'), -float('inf'), (1.0, float('inf')), {('V', 'Red'): 2.0}, ((25, 35), (35, 50)), '5', None, 1e-3, True,
+            [1, 2], (3,), {'deep': float('inf')}]
+    back = [ast.literal_eval(CC.literal(v)) for v in vals]
+    check('override text: every value type (infinities, tuples of tuples, tuple keys, a one-tuple, None, str) round-trips '
+          'exactly; a NaN refuses', back == vals and all(type(a) is type(b) for a, b in zip(back, vals))
+          and _raises(lambda: CC.literal(float('nan'))), (vals, back))
+
+
 def test_mode():
     check("catalog_conform.MODE is 'check' (ruled) and refuses an unknown value", CC.conform_mode() == 'check'
           and _raises(lambda: CC.conform_mode('chek')), CC.conform_mode())
@@ -722,6 +747,7 @@ def main():
     keep = (CC._deps, CC.cell_base, RR.pulsar_positions)
     try:
         test_mode()
+        test_literal()
         test_clean()
         test_faults()
         test_pulsar_stage()

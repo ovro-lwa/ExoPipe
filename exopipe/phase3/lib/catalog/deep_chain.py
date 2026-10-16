@@ -289,10 +289,8 @@ class DeepRun:
         if mode == 'w':
             open(log, 'w').close()
         off = os.path.getsize(log) if os.path.exists(log) else 0
-        if module:                      # the package on the child's path (as deep_step's engine child), and the run's config
-            from exopipe.phase3.lib.catalog import conform_check as CC   # overrides, which the child applies (its CFG
-            own = dict(own, PYTHONPATH=_PKG_ROOT + (os.pathsep + own['PYTHONPATH'] if own.get('PYTHONPATH') else ''),
-                       **{CC.OVERRIDES_ENV: CC.forward_overrides(self.cfg)})   # is built afresh in the child)
+        if module:
+            own = self.module_env(own)
         entry = {'script': script, 'args': [str(a) for a in args], 'env': own, 'cwd': cwd or self.U, 'log': log,
                  'started': utcnow()}
         res = legacy.run(script if module else self.script(script), list(args), python=python or self.cfg.catalog.DEEP_PYTHON,
@@ -304,6 +302,14 @@ class DeepRun:
         entry.update(rc=res.rc, finished=utcnow(), argv=res.argv, last=lines[-1] if lines else '', hits=hits[-40:])
         u.meta.setdefault('commands', []).append(entry)
         return res.rc, lines[-60:], hits
+
+    def module_env(self, own):
+        """The environment of a module child of this package (B-02's conform_check): the stage's, with the package on the
+        child's path (as deep_step's engine child) and the run's config overrides, which the child applies (its CFG is
+        built afresh) - one definition for the call and the dry-run plan."""
+        from exopipe.phase3.lib.catalog import conform_check as CC
+        return dict(own, PYTHONPATH=_PKG_ROOT + (os.pathsep + own['PYTHONPATH'] if own.get('PYTHONPATH') else ''),
+                    **{CC.OVERRIDES_ENV: CC.forward_overrides(self.cfg)})
 
     def shell(self, u, argv, env, log):
         """A non-Python child (rsync of the harvest): plain subprocess, output appended to ``log``."""
@@ -833,7 +839,8 @@ class DeepRun:
                 self.out(u, os.path.join(self.U, name))
             self.write_stage_json(d, merge_copy=merge_copy, parent_dir=par, mode=mode,
                                   elev_epoch=c.catalog_conform.DEEP_ELEV_EPOCH if mode == 'check' else 'mid-hour')
-            self.out(u, os.path.join(d, 'master_catalog.csv'), 'conformant_catalog', merge_copy=merge_copy)
+            self.out(u, os.path.join(d, 'master_catalog.csv'), 'conformant_catalog', merge_copy=merge_copy,
+                     **({CC.PULSAR_RECORD: pc[CC.PULSAR_RECORD]} if mode == 'check' else {}))   # the copy the check read
             for name in ('frame_times.csv', 'frame_beam_ratio.csv', 'frame_beam_bmaj.csv'):   # bmaj: D8, ops 283a513
                 p = os.path.join(self.U, name)
                 if os.path.exists(p):
@@ -1324,7 +1331,7 @@ class DeepRun:
                 preds(self.u('pulsars'))
                 par = self.chain.meta(self.u('preflight'), 'parent_dir') or '<parent dir from the preflight record>'
                 cmd([self.py, '-m', CHECK_MODULE, 'pulsars', self.U, '<stage dir>/merged_attempts.csv', self.label],
-                    self.env(parent_dir=par)[1], self.log)
+                    self.module_env(self.env(parent_dir=par)[1]), self.log)
                 p('    reads: master_catalog.csv (the merge record copy), every merged attempt\'s table_pulsar_decisions.csv, '
                   'v_deep_ledger.csv and search frames (merged_attempts.csv: the harvest manifest less the merge\'s stale '
                   'attempts), the pulsar list, the solar audit')
@@ -1336,7 +1343,7 @@ class DeepRun:
                 par = self.chain.meta(self.u('preflight'), 'parent_dir') or '<parent dir from the preflight record>'
                 cmd([self.py, '-m', CHECK_MODULE, 'check', self.U, '<pulsars stage>/merged_attempts.csv', self.label,
                      '<merge record copy>', '<pulsars stage>/pulsar_stage.csv', '<pulsars stage>/master_catalog_pulsar_removed.csv'],
-                    self.env(parent_dir=par)[1], self.log)
+                    self.module_env(self.env(parent_dir=par)[1]), self.log)
                 p('    reads: master_catalog.csv (the pulsar stage record copy), every merged attempt\'s rules record, '
                   'frame_noise.csv, gate ledger, refusals and search frames; the tables, parents, exclusions, solar audit, '
                   'weights.csv of every cell')

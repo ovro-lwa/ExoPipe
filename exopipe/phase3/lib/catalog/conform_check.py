@@ -41,6 +41,7 @@ The chain hands its config overrides to the child in OVERRIDES_ENV (applied as f
 import collections
 import csv
 import json
+import math
 import os
 import shutil
 import sys
@@ -97,12 +98,28 @@ def _deps():
     return dict(G=G, LOC=LOC, PCT=PCT, excluded=lambda l, b, d: is_excluded(l, b, d, EXCL))
 
 
+def literal(v):
+    """``v`` as Python literal text that ast.literal_eval gives back as the same value and type: repr, recursively, with an
+    infinity written 1e999 / -1e999 (repr's 'inf' is no literal). A NaN has no literal: refused."""
+    if isinstance(v, float) and not isinstance(v, bool):
+        if math.isnan(v):
+            raise RuntimeError('a NaN config value cannot be forwarded to the module child - REFUSING')
+        return ('1e999' if v > 0 else '-1e999') if math.isinf(v) else repr(v)
+    if isinstance(v, tuple):
+        return '(' + ', '.join(literal(x) for x in v) + (',)' if len(v) == 1 else ')')
+    if isinstance(v, list):
+        return '[' + ', '.join(literal(x) for x in v) + ']'
+    if isinstance(v, dict):
+        return '{' + ', '.join(f'{literal(k)}: {literal(x)}' for k, x in v.items()) + '}'
+    return repr(v)
+
+
 def forward_overrides(cfg):
-    """The run's config overrides - each key with the repr of its final value, which the child parses back as a --set value
-    is parsed (literal_eval: tuples, tuple keys and str types survive) - and its parity-replay flag, as the JSON the chain
-    hands the module child in OVERRIDES_ENV, so the child judges with the config the unit records."""
+    """The run's config overrides - each key with its final value as literal text (literal()), which the child parses back as
+    a --set value is parsed (tuples, tuple keys, str types and infinities survive) - and its parity-replay flag, as the JSON
+    the chain hands the module child in OVERRIDES_ENV, so the child judges with the config the unit records."""
     return json.dumps({'parity': bool(getattr(cfg, 'parity_replay', False)),
-                       'overrides': [[o[0], repr(o[2])] for o in cfg.overrides]})
+                       'overrides': [[o[0], literal(o[2])] for o in cfg.overrides]})
 
 
 def apply_forwarded(text):
@@ -221,10 +238,13 @@ class Frames:
             try:
                 if rec['cards'] not in self._w:
                     from astropy.wcs import WCS
-                    self._w[rec['cards']] = WCS(h).celestial
+                    w = WCS(h).celestial
+                    if w.naxis != 2:        # parses, but no sky axes (no CTYPE cards): no position can be read
+                        raise ValueError(f'the celestial WCS has {w.naxis} axes')
+                    self._w[rec['cards']] = w
                 rec['wcs'] = self._w[rec['cards']]
-            except Exception as e:          # a header that reads but whose WCS does not parse: the frame's error
-                rec = dict(path=rec['path'], error=f'WCS: {type(e).__name__}: {e}')
+            except Exception as e:          # a header that reads but whose WCS does not give a sky position: the frame's
+                rec = dict(path=rec['path'], error=f'WCS: {type(e).__name__}: {e}')   # error
         self._f[k] = rec
 
     def get(self, stokes, lst, scope, date):
