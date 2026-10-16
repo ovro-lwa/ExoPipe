@@ -593,7 +593,7 @@ def test_b02_detect_frame_noise():
                 if nw:
                     w.writerow(RR.FRAME_NOISE_COLS)
                 for i in range(mode['rows']):
-                    w.writerow([LST, SCOPE, spec['stokes'], f'2025-03-{10 + i}', '0.012', 1, 1, '0.012', '', 'fake'])
+                    w.writerow([LST, SCOPE, spec['stokes'], f'2025-03-{10 + i}', '0.012', 1, 1, '0.012', '', '', 'fake'])
         open(kw['log'], 'a').write('fake engine\n')
         json.dump({'status': 'done'}, open(spec['result'], 'w'))
         return LegacyResult(0, kw['log'], '', {}, False, '', 0.0, [])
@@ -616,7 +616,7 @@ def test_b02_detect_frame_noise():
                 with open(os.path.join(b, 'transients', 'Run_P3S5', RR.FRAME_NOISE), 'w', newline='') as fh:
                     w = csv.writer(fh)
                     w.writerow(RR.FRAME_NOISE_COLS)
-                    w.writerows([[LST, SCOPE, 'I', f'2025-01-1{i}', '0.012', 1, 1, '0.012', '', 'base'] for i in range(base_rows)])
+                    w.writerows([[LST, SCOPE, 'I', f'2025-01-1{i}', '0.012', 1, 1, '0.012', '', '', 'base'] for i in range(base_rows)])
                 f['base_attempt'] = b
             mode['rows'] = rows
             u = run.unit(f'b02fn_{len(out)}')

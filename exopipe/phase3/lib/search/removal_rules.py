@@ -32,7 +32,7 @@ RULES_RECORD = 'search_rules.json'                # in each attempt directory: t
 ELEV_EPOCH_ENV = 'EXOPIPE3_DEEP_ELEV_EPOCH'         # the elevation convention the step hands the engine (catalog_conform)
 FRAME_NOISE = 'frame_noise.csv'                   # in the search's run directory (step 3b): each frame's noise, the medians
 FRAME_NOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'admitted', 'population', 'tblnoise_jy', 'vsanmed_jy',
-                    'attempt']                    # it was judged by, and the cell's population (an append reads it)
+                    'vsanity_x', 'attempt']       # it was judged by, and the cell's population (an append reads it)
 TABLE_PULSAR = 'table_pulsar_decisions.csv'      # in the search's run directory (step 3b): every table decision that
 TABLE_PULSAR_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'cut', 'note']   # names a pulsar
 
@@ -140,10 +140,10 @@ def frame_mid_lst_deg(date_obs, date_end):
 
 
 def deep_elevation(lst, ra, dec, epoch=None, frame_time=None):
-    """(elevation deg, the words naming the time) under catalog_conform.DEEP_ELEV_EPOCH (or `epoch`; in the engine child the
-    step's value, ELEV_EPOCH_ENV). 'frame-mid' needs the frame's (DATE-OBS, DATE-END); without them it refuses - an
+    """(elevation deg, the words naming the time) under catalog_conform.DEEP_ELEV_EPOCH (or `epoch`: the engine passes the
+    step's value, engine_elev_epoch). 'frame-mid' needs the frame's (DATE-OBS, DATE-END); without them it refuses - an
     elevation it could not judge is never a pass."""
-    epoch = epoch or os.environ.get(ELEV_EPOCH_ENV) or _cc().DEEP_ELEV_EPOCH
+    epoch = epoch or _cc().DEEP_ELEV_EPOCH
     if epoch == 'mid-hour':
         return mid_hour_elevation(lst, ra, dec), 'at mid-hour'
     if epoch == 'frame-mid':
@@ -151,6 +151,16 @@ def deep_elevation(lst, ra, dec, epoch=None, frame_time=None):
             raise ValueError(f'{lst}: the frame-mid elevation needs the frame\'s DATE-OBS/DATE-END')
         return float(_elevation(frame_mid_lst_deg(*frame_time), ra, dec)), 'at the frame mid-time'
     raise ValueError(f'catalog_conform.DEEP_ELEV_EPOCH {epoch!r}: one of {ELEV_EPOCHS}')
+
+
+def engine_elev_epoch():
+    """The elevation convention in the engine child: the step's value (ELEV_EPOCH_ENV, set by the search and frames steps from
+    catalog_conform.DEEP_ELEV_EPOCH), else the config; an unknown value refuses (RuntimeError, as search_rules). Only the
+    engine reads the variable - every other caller of deep_elevation takes its own config."""
+    v = os.environ.get(ELEV_EPOCH_ENV) or _cc().DEEP_ELEV_EPOCH
+    if v not in ELEV_EPOCHS:
+        raise RuntimeError(f'{ELEV_EPOCH_ENV} / catalog_conform.DEEP_ELEV_EPOCH = {v!r} is not one of {ELEV_EPOCHS} - REFUSING')
+    return v
 
 
 def elevation_reason(el, words, floor=None):
@@ -506,6 +516,8 @@ def card_value(x):
     long fixed-notation value: below 1 mJy some 9-decimal values change in their last digits) - so a rule's number and the
     frame's card are the same number."""
     from astropy.io import fits
+    if not np.isfinite(float(x)):                # a FITS card cannot hold it (the header writer omits such a card)
+        return float(x)
     return float(fits.Card.fromstring(fits.Card('NOISE', round(float(x), 9)).image).value)
 
 
@@ -555,10 +567,23 @@ def base_population(run_dir):
     return out
 
 
-def frame_noise_rows(lst, scope, nights, noise, admitted, tbl, vsanmed, attempt, framed=None):
+def base_vsanmed(run_dir):
+    """The V noise rule's median (Jy) the attempt an append is copied from recorded on its population V rows (the cell's), or
+    None: no V population row carries one (its V noise rule did not run, or the base has no V frame)."""
+    p = os.path.join(run_dir, FRAME_NOISE)
+    if not os.path.exists(p):
+        return None
+    with open(p, newline='') as fh:
+        vs = {r['vsanmed_jy'] for r in csv.DictReader(fh) if r['stokes'] == 'V' and r['population'] == '1' and r['vsanmed_jy']}
+    if len(vs) > 1:
+        raise RuntimeError(f'{p}: {len(vs)} different V noise-rule medians on the population rows - REFUSING')
+    return float(vs.pop()) if vs else None
+
+
+def frame_noise_rows(lst, scope, nights, noise, admitted, tbl, vsanmed, attempt, framed=None, sanity_x=None):
     """FRAME_NOISE rows (FRAME_NOISE_COLS) of the frames of ``nights`` (this run's; with ``framed`` = {Stokes: nights}, only the
     frames the run processed): the frame's noise, whether every gate admitted it to its Stokes' search, whether it is in the
-    population, the table's noise it is judged with, the V noise rule's median (V)."""
+    population, the table's noise it is judged with, the V noise rule's median and its factor (V, when the rule ran)."""
     rows = []
     for st in ('I', 'V'):
         t = tbl.get(st)
@@ -568,9 +593,10 @@ def frame_noise_rows(lst, scope, nights, noise, admitted, tbl, vsanmed, attempt,
             if d not in noise.get(st, {}) or (framed is not None and d not in framed.get(st, ())):
                 continue
             v, tb = noise[st][d], t['night'].get(d)
+            vm = st == 'V' and vsanmed is not None
             rows.append([lst, scope, st, d, '' if v is None else repr(float(v)), int(d in admitted.get(st, ())),
-                         int(d in t['population']), '' if tb is None else repr(tb),
-                         '' if (st != 'V' or vsanmed is None) else repr(float(vsanmed)), attempt])
+                         int(d in t['population']), '' if tb is None else repr(tb), repr(float(vsanmed)) if vm else '',
+                         repr(float(sanity_x)) if vm and sanity_x is not None else '', attempt])
     return rows
 
 
@@ -585,10 +611,10 @@ def frame_noise_summary(path, stokes):
                 tblnoise_median_jy=median_noise(pop), vsanmed_jy=[float(x) for x in vs])
 
 
-def frame_elevation(lst, ra, dec, header):
-    """(elevation deg, the words naming its time) of (ra, dec) under catalog_conform.DEEP_ELEV_EPOCH, the time from the
-    archived frame's own header (DATE-OBS, DATE-END) - deep_elevation, the function the check re-evaluates a row with."""
-    return deep_elevation(lst, ra, dec, frame_time=(str(header['DATE-OBS']), str(header['DATE-END'])))
+def frame_elevation(lst, ra, dec, header, epoch=None):
+    """(elevation deg, the words naming its time) of (ra, dec) under ``epoch`` (else catalog_conform.DEEP_ELEV_EPOCH), the time
+    from the archived frame's own header (DATE-OBS, DATE-END) - deep_elevation, the function the check re-evaluates a row with."""
+    return deep_elevation(lst, ra, dec, epoch=epoch, frame_time=(str(header['DATE-OBS']), str(header['DATE-END'])))
 
 
 def names_pulsar(note):

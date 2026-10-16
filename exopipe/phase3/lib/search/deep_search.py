@@ -1741,9 +1741,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                               f'computed - the epoch would escape the V sanity gate')
                 pass
         _vf = sorted(v for _d, v in _vr.items() if np.isfinite(v) and v > 0 and _d not in _adm)   # WAVE2 D-ADMIT: the cell's nights
-        if _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms',   # WAVE2 B-30
-                   count=bool(resid_V)):         # an I-only unit (or no V epoch) has no V search for the gate to guard
-            _vmed = _vf[len(_vf) // 2]
+        if _b02 and included_dates:                                            # WAVE2 B-02 (step 3b): an append is judged with the
+            _vb = _RR.base_vsanmed(run_root)                                   # WAVE2 B-02: V median its base recorded - the cell's
+            _ok_v = _vb is not None or _enough(0, SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate of an append, its '   # WAVE2 B-02:
+                                                f'base recorded no V noise-rule median', count=bool(resid_V))   # WAVE2 B-02: (its own nights are not)
+        else:                                                                  # WAVE2 B-02
+            _vb = None                                                         # WAVE2 B-02
+            _ok_v = _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms',   # WAVE2 B-30
+                            count=bool(resid_V))         # an I-only unit (or no V epoch) has no V search for the gate to guard
+        if _ok_v:                                                              # WAVE2 B-02
+            _vmed = _vb if _vb is not None else _vf[len(_vf) // 2]             # WAVE2 B-02
             skip_V_dates = {d for d, v in _vr.items() if v > SANITY_I_X * _vmed and d in dates}   # WAVE2 D-ADMIT: searched nights
             if skip_V_dates:
                 with open(f'{_refdir}/{lst}_{scope}_sanity_V_excluded.csv', 'a') as _sf:
@@ -1791,6 +1798,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # Recorded in FRAME_NOISE, with the ledgers, for the frames this run processed; the frames carry production's cards.
     _fnz, _tbn, _tpd, _b02s = {'I': {}, 'V': {}}, {}, [], {}          # WAVE2 B-02
     if _b02:                                                           # WAVE2 B-02
+        _eep = _RR.engine_elev_epoch()                                 # WAVE2 B-02: the floor's time, as the step passed it
         _fnz['V'] = {d: (_vr[d] if d in _vr and np.isfinite(_vr[d]) else None) for d in resid_V}   # WAVE2 B-02
         _hm_ = {}                                                      # WAVE2 B-02
         for _d, _ri in resid_I.items():                                # WAVE2 B-02
@@ -2030,7 +2038,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 _ztV = (sv2.frame_mid_time(fits.getheader(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'))
                         if cadence == '10min' else None)
                 if _b02:                                               # WAVE2 B-02 (step 3b, decision (2)): the deep V mask from
-                    _ztV = sv2.frame_mid_time(_fhV[d])                 # WAVE2 B-02: the zenith at the frame's own mid-time
+                    _ztV = sv2.frame_mid_time(_fhV[d]) if _eep == 'frame-mid' else None   # WAVE2 B-02: the zenith at the floor's time
                 pV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0,
                                           refuse_on_extraction_failure=_xrefuse, zenith_time=_ztV)
             except sv2.SourceExtractionFailed as _xf:
@@ -2139,7 +2147,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     if _b02:                                           # WAVE2 B-02 (step 3b): the ELEVATION FLOOR at the frame's
                         _sk = wcs.pixel_to_world(xx, yy)               # WAVE2 B-02: own mid-time, at the catalogue position (the
                         c['_b02_pos'] = (round(float(_sk.ra.deg), 5), round(float(_sk.dec.deg), 5))   # WAVE2 B-02: pixel's, 5
-                        _elw = _RR.frame_elevation(lst, *c['_b02_pos'], _fhV[d])   # WAVE2 B-02: decimals) - the check's function
+                        _elw = _RR.frame_elevation(lst, *c['_b02_pos'], _fhV[d], epoch=_eep)   # WAVE2 B-02: decimals) - the check's function
                         c['_b02_el'] = _elw[0]                         # WAVE2 B-02: (the mask's geometry differs from it by up
                         if _RR.elevation_reason(*_elw):                # WAVE2 B-02: to 0.6 deg: tests/test_removal_rules.py)
                             c['veto_reason'] = 'elevation'             # WAVE2 B-02
@@ -2245,7 +2253,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     continue
                 if _b02:                                               # WAVE2 B-02 (step 3b): the ELEVATION FLOOR at the frame's
                     c['_b02_pos'] = (round(float(_sky.ra.deg), 5), round(float(_sky.dec.deg), 5))   # WAVE2 B-02: own mid-time, at
-                    _elw = _RR.frame_elevation(lst, *c['_b02_pos'], _fhI[d_])   # WAVE2 B-02: the catalogue position - the check's
+                    _elw = _RR.frame_elevation(lst, *c['_b02_pos'], _fhI[d_], epoch=_eep)   # WAVE2 B-02: the catalogue position - the check's
                     c['_b02_el'] = _elw[0]                             # WAVE2 B-02: function
                     if _RR.elevation_reason(*_elw):                    # WAVE2 B-02
                         gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1, reason='elevation', pass_ms=1))   # WAVE2 B-02
@@ -2395,7 +2403,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             nwr += len(finals)
     if _b02:                                                           # WAVE2 B-02 (step 3b): the frame noise record of the frames
         _append_locked(f'{run_root}/{_RR.FRAME_NOISE}', _RR.FRAME_NOISE_COLS, _RR.frame_noise_rows(   # WAVE2 B-02: this run
-            lst, scope, dates, _fnz, _b02s, _tbn, _vmed, _attempt, framed={'I': set(_fhI), 'V': set(_fhV)}))   # WAVE2 B-02: processed
+            lst, scope, dates, _fnz, _b02s, _tbn, _vmed, _attempt, framed={'I': set(_fhI), 'V': set(_fhV)},   # WAVE2 B-02: processed
+            sanity_x=SANITY_I_X))                                      # WAVE2 B-02
     _append_locked(f'{run_root}/{_RR.TABLE_PULSAR}', _RR.TABLE_PULSAR_COLS, _tpd)   # WAVE2 B-02 (step 3b): none written without one
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)

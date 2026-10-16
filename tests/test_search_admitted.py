@@ -321,8 +321,8 @@ def test_b02_3b_units():
     att = os.path.join(T, 'b02_3b_units', 'att')
     rd = os.path.join(att, 'transients', 'Run_T')
     os.makedirs(rd, exist_ok=True)
-    rows = RR.frame_noise_rows('05h', '78MHz', D, nz, adm, t, 0.006, 'A1')
-    rows_f = RR.frame_noise_rows('05h', '78MHz', D, nz, adm, t, 0.006, 'A1', framed={'I': {D[0]}, 'V': set()})
+    rows = RR.frame_noise_rows('05h', '78MHz', D, nz, adm, t, 0.006, 'A1', sanity_x=3.0)
+    rows_f = RR.frame_noise_rows('05h', '78MHz', D, nz, adm, t, 0.006, 'A1', framed={'I': {D[0]}, 'V': set()}, sanity_x=3.0)
     with open(os.path.join(rd, RR.FRAME_NOISE), 'w', newline='') as fh:
         w = csv.writer(fh)
         w.writerow(RR.FRAME_NOISE_COLS)
@@ -333,7 +333,9 @@ def test_b02_3b_units():
           'base_population reads the population back (an append\'s base); no FRAME_NOISE is no base (None); the unit '
           'record\'s summary', len(rows) == 7 and [r[3] for r in rows_f] == [D[0]]
           and base == {'I': [0.010, 0.012, 0.014], 'V': [0.005]} and RR.base_population(os.path.join(T, 'b02_3b_units')) is None
-          and summ == dict(rows=5, admitted=5, population=3, tblnoise_median_jy=0.012, vsanmed_jy=[]), (rows, base, summ))
+          and summ == dict(rows=5, admitted=5, population=3, tblnoise_median_jy=0.012, vsanmed_jy=[])
+          and RR.base_vsanmed(rd) == 0.006 and RR.base_vsanmed(os.path.join(T, 'b02_3b_units')) is None
+          and np.isnan(RR.card_value(float('nan'))), (rows, base, summ, RR.base_vsanmed(rd)))
 
     def frame(st, d, **cards):
         fp = ST.frame_path(att, 'T', '05h', '78MHz', d, st)
@@ -362,12 +364,13 @@ def test_b02_3b_units():
         finally:
             open(fnp, 'w').write(keep)
     lines = keep.splitlines(True)
-    f1 = faulty(lambda x: x.replace(',0.005,0.006,A1', ',0.0051,0.006,A1', 1))                     # a V row's table noise
+    f1 = faulty(lambda x: x.replace(',0.005,0.006,3.0,A1', ',0.0051,0.006,3.0,A1', 1))             # a V row's table noise
     f2 = faulty(lambda x: ''.join(lines[:2]) + lines[2].replace(',1,1,', ',0,1,', 1) + ''.join(lines[3:]))   # population, not admitted
-    f5 = faulty(lambda x: x.replace('0.005,1,1,0.005,0.006,A1', '0.019,1,1,0.005,0.006,A1', 1),    # V admitted above 3 x VSANMED
-                'the V noise rule refuses it')
-    f6 = faulty(lambda x: x.replace('0.007,0,0,0.005,0.006,A1', '0.007,0,0,0.005,0.0065,A1', 1),   # two medians in one run
+    f5 = faulty(lambda x: x.replace('0.005,1,1,0.005,0.006,3.0,A1', '0.019,1,1,0.005,0.006,3.0,A1', 1),   # V admitted above
+                'the V noise rule refuses it')                                                               # 3 x VSANMED
+    f6 = faulty(lambda x: x.replace('0.007,0,0,0.005,0.006,3.0,A1', '0.007,0,0,0.005,0.0065,3.0,A1', 1),  # two medians
                 'different V noise-rule medians')
+    f8 = faulty(lambda x: x.replace(',0.006,3.0,A1', ',0.006,,A1', 1), 'without its factor')   # a median without its factor
     frame('I', D[3], IMGRMS=0.0201)                                                               # a frame's IMGRMS off
     f3 = ST.medians_and_cards(fnp)[0]
     frame('I', D[3], IMGRMS=0.020)
@@ -384,7 +387,7 @@ def test_b02_3b_units():
     check('frame_noise content test: the synthetic record and its frames pass; a wrong table noise, a population night not '
           'admitted, an admitted V frame above 3 x its V noise median, two V medians in one run, a frame\'s IMGRMS off, a '
           'missing frame, an image-ledger row without its record are each refused', ok0[0] and ST.medians_and_cards(fnp)[0]
-          and not (f1 or f2 or f3 or f4 or f5 or f6 or f7), (ok0, f1, f2, f3, f4, f5, f6, f7))
+          and not (f1 or f2 or f3 or f4 or f5 or f6 or f7 or f8), (ok0, f1, f2, f3, f4, f5, f6, f7, f8))
     # the pulsar decisions: kept as the parent / cut not exempting, each against the gate ledger at its pixel
     led = os.path.join(rd, 'v_deep_ledger.csv')
     lrow = lambda st, d, x, y, v: dict(dict.fromkeys(ST.GLED_COLS, ''), lst='05h', scope='78MHz', stokes=st, date=d, pix_x=x,
@@ -424,15 +427,25 @@ def test_b02_3b_units():
     oldv = os.environ.pop(RR.ELEV_EPOCH_ENV, None)
     try:
         os.environ[RR.ELEV_EPOCH_ENV] = 'mid-hour'   # the step's value, handed to the engine (deep_step.engine_env)
-        em = RR.frame_elevation('05h', 80.0, 22.0, h1)
+        ee = RR.engine_elev_epoch()
+        em = RR.frame_elevation('05h', 80.0, 22.0, h1, epoch=ee)
+        e1b = RR.frame_elevation('05h', 80.0, 22.0, h1)           # any other caller: its own config, never the variable
+        os.environ[RR.ELEV_EPOCH_ENV] = 'noon'
+        try:
+            RR.engine_elev_epoch()
+            bad_e = None
+        except RuntimeError as e_:
+            bad_e = str(e_)
     finally:
         os.environ.pop(RR.ELEV_EPOCH_ENV, None)
         if oldv is not None:
             os.environ[RR.ELEV_EPOCH_ENV] = oldv
     check("frame_elevation: the check's function (deep_elevation under catalog_conform.DEEP_ELEV_EPOCH - ruled 'frame-mid' - "
-          "or the step's value in the engine) on the frame header's own times; another hour another elevation",
+          "or the step's value the engine reads, engine_elev_epoch) on the frame header's own times; another hour another "
+          "elevation; only the engine reads the variable; an unknown value refuses",
           CFG.catalog_conform.DEEP_ELEV_EPOCH == 'frame-mid' and e1 == want1 and abs(e1[0] - e2[0]) > 5.0
-          and e1[1] == 'at the frame mid-time' and em == (RR.mid_hour_elevation('05h', 80.0, 22.0), 'at mid-hour'), (e1, e2, em))
+          and e1[1] == 'at the frame mid-time' and ee == 'mid-hour' and em == (RR.mid_hour_elevation('05h', 80.0, 22.0), 'at mid-hour')
+          and e1b == e1 and bad_e is not None and 'REFUSING' in bad_e, (e1, e2, em, e1b, bad_e))
     src = inspect.getsource(DSE)
     calls = re.findall(r"_PCT\.removals\('([IV])', scope, _pa(?:_v)?, _b02_tnoise\('[IV]', d_?\), float\(_fh([IV])\[d_?\]\['BMAJ'\]\)", src)
     check("under 'once-in-search' each table call takes the frame's table noise, its own beam (the archived frame's BMAJ) - "
@@ -450,7 +463,8 @@ def test_b02_3b_units():
     iV = ps.index("        if d in resid_V:\n", iI)
     iVc = ps.index("            if frames_only:\n                _fo['V'].append(vr_path)\n                continue\n", iV)
     fo_path = ps[i0:iI] + ps[iV:iVc]
-    names = ['_fnz', '_tbn', '_tpd', '_b02s', '_nbase', '_ivskip', '_b02_tnoise', '_b02_psr', '_vmed', '_srch']
+    names = ['_fnz', '_tbn', '_tpd', '_b02s', '_nbase', '_ivskip', '_b02_tnoise', '_b02_psr', '_vmed', '_srch', '_vb', '_ok_v',
+             '_eep']
     hit = [n for n in names if re.search(rf'\b{n}\b', fo_path)]
     check('the proposed frames_only seam: no step-3b name on the path a frames_only run takes through the per-epoch loop (its '
           'block is skipped there; the record is written after the seam\'s frames_only return)', not hit
@@ -665,10 +679,13 @@ def seed_base_noise(label_root, exclude):
         w.writerow(RR.FRAME_NOISE_COLS)
         for st, nz in sorted(pop.items()):
             m = RR.median_noise([v for v, _f in nz.values()])
+            vv = sorted(v for v, _f in nz.values())
+            vm = repr(vv[len(vv) // 2]) if st == 'V' and len(vv) >= CFG.search_detect.SANITY_MIN_NIGHTS else ''   # the V gate's
+            vx = repr(float(CFG.search_detect.SANITY_X)) if vm else ''                                           # median, as run
             fd = os.path.join(label_root, 'iresid' if st == 'I' else 'vresid', CELL)
             os.makedirs(fd, exist_ok=True)
             for d, (v, f_) in sorted(nz.items()):
-                w.writerow([LST, SC, st, d, repr(v), 1, 1, repr(m), '', 'served-base'])
+                w.writerow([LST, SC, st, d, repr(v), 1, 1, repr(m), vm, vx, 'served-base'])
                 if not os.path.lexists(os.path.join(fd, os.path.basename(f_))):
                     os.symlink(f_, os.path.join(fd, os.path.basename(f_)))
     return {st: {d: v for d, (v, _f) in nz.items()} for st, nz in pop.items()}
@@ -836,7 +853,7 @@ def test_end_to_end():
     # admitted night searched, a night whose I residual failed gets no V residual, so no V search - production's dates
     m1, m2 = want[1], want[0]
     att5 = os.path.join(T, 'attempt_fail_members')
-    res5, log5 = engine(wt, work, att5, 'admitted', [m1, m2], fail_i=m2)
+    res5, log5 = engine(wt, work, att5, 'admitted', [m1, m2], fail_i=m2, rules='production')   # production's own path
     ip5 = os.path.join(att5, 'transients', 'Run_ADMITTEST', 'v_deep_images.csv')
     img5 = [(r['stokes'], r['date']) for r in csv.DictReader(open(ip5))] if os.path.exists(ip5) else []
     vgate = [ev[3] for ev in res5.get('fallbacks', []) if 'Stokes V sanity gate, nights with a V frame rms' in ev[3]]
@@ -1010,7 +1027,7 @@ def test_b02_end_to_end(wt, work, b3):
         # ---- the devices, from P's rows (what the new rules meet is close to them)
         past_p = [r for r in lpp.values() if reach(r)]
         els_p = sorted(RR.frame_elevation(LST, *sky(r), fhp[r['date']])[0] for r in past_p)
-        floor = (els_p[len(els_p) // 4] if len(els_p) >= 8 else els_p[0] + 1e-3 if len(els_p) >= 4 else None)
+        floor = (els_p[len(els_p) // 4] if len(els_p) >= 8 else els_p[0] + 1e-3 if len(els_p) >= 3 else None)
         nzb = [v for d, (v, _f) in served_noise().get(st, {}).items() if d not in b3 and d not in _SEED_EXCLUDE]
         tbn = {d: RR.median_noise(nzb + [RR.card_value(fhp[d]['IMGRMS'])]) for d in b3}
         trow = [r for r in lpp.values() if r['veto_reason'] in ('table', 'row-line', '')
@@ -1038,6 +1055,9 @@ def test_b02_end_to_end(wt, work, b3):
         devs = {'floor': floor, 'table_scale': scale}
         if psr_r is not None:
             devs['psr'] = [st, *sky(psr_r)]
+        elif st == 'V':
+            check("B-02 setup (V): a detection that reached the table well inside the masks and the floor, for the forced pulsar "
+                  "decision", False, (len(trow), floor))
         print(f'  (B-02 step 3b {st}: devices floor {floor}, table noise x {scale} (cut fraction on P {frac}), '
               f'forced pulsar decision {pkey(psr_r) if psr_r else None})')
         res0, log0, r0 = b02_run(f'attempt_b02_{st}_once0', st, 'once-in-search', {'day': [], 'track': [], **devs}, oj)
@@ -1109,7 +1129,7 @@ def test_b02_end_to_end(wt, work, b3):
         check(f"B-02 step 3b ({st}): every table verdict recomputed from the record - S over its TBLNOISE (x the device's "
               f"{k_:g}), the distance in the frame's BMAJ from the catalogue position, the band table of the frame-mid "
               f"elevation - is the search's, with cuts and keeps among them ({len(own)} rows, {ncut} cut){dev}",
-              own and not mism and (scale is None or 0 < ncut < len(own)), mism[:4])
+              own and not mism and (scale is None or len(own) < 6 or 0 < ncut < len(own)), mism[:4])
         # ---- step 3b: the pulsar decisions - exactly the forced one and any the recomputation names
         want_p = set(psr) | ({(*pkey(psr_r), 1)} if psr_r is not None else set())
         got_p = {(r['date'], r['pix_x'], r['pix_y'], int(r['cut'])) for r in r0[RR.TABLE_PULSAR] if r['stokes'] == st}
@@ -1118,7 +1138,7 @@ def test_b02_end_to_end(wt, work, b3):
         forced_ok = psr_r is None or any(pkey(r) == pkey(psr_r) and r['veto_reason'] == 'table' for r in led0)
         check(f"B-02 step 3b ({st}): the table's pulsar decisions recorded are exactly those the recomputation names plus the "
               f"forced one ({len(want_p)}), each ledgered at its pixel, and pass their content test{dev}",
-              got_p == want_p and tpt[0] and forced_ok and (st != 'V' or psr_r is not None),
+              got_p == want_p and tpt[0] and forced_ok,
               (sorted(want_p), sorted(got_p), tpt[2][:200], forced_ok))
         # ---- step 3b: against production's rules every changed row is a 3b rule's
         lo0 = {key(r): r for r in led0}

@@ -48,7 +48,8 @@ VETO_REASONS = frozenset({'', 'reject_local_snr', 'reject_merged', 'reject_sigma
 # ... and those with a value after the prefix: the Jupiter track's co-added night (B-02 step 3a, deep_search: 'jupiter-track:<night>')
 VETO_REASON_PREFIXES = {'jupiter-track:': re.compile(r'^\d{4}-\d\d-\d\d$')}
 # B-02 step 3b (removal_rules.FRAME_NOISE_COLS / TABLE_PULSAR_COLS)
-FNOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'admitted', 'population', 'tblnoise_jy', 'vsanmed_jy', 'attempt']
+FNOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'admitted', 'population', 'tblnoise_jy', 'vsanmed_jy', 'vsanity_x',
+               'attempt']
 TPD_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'cut', 'note']
 
 
@@ -476,8 +477,8 @@ def parses(path, **ctx):
 
 # ---- B-02 step 3b: the frame noise and the table's pulsar decisions ---------------------------------------------------------
 def _median9(v):
-    import statistics
-    return round(float(statistics.median(v)), 9)
+    from exopipe.phase3.lib.search import removal_rules as RR      # the engine's own median (as a FITS card gives it back)
+    return RR.median_noise(v)
 
 
 @content_test('frame_noise')
@@ -485,10 +486,9 @@ def medians_and_cards(path, **ctx):
     """frame_noise.csv (B-02 step 3b): FNOISE_COLS, one cell; one row per (Stokes, night); admitted and population 0/1, a
     population night admitted with a positive noise; per Stokes a population night carries the population's median, an
     admitted night outside it (an admitted or appended night) the median of the population and itself, any other the
-    population's median; no admitted V frame above SANITY_X x the V noise rule's median it was judged with (one median per
-    run); every row's archived search frame exists and carries IMGRMS = noise_jy (when measured); every image-ledger row
-    of the run has its frame's row."""
-    from exopipe.phase3.config import CFG
+    population's median; no admitted V frame above the recorded factor (vsanity_x) times the V noise rule's median it was
+    judged with, one median in the file (an append is judged with its base's); every row's archived search frame exists and
+    carries IMGRMS = noise_jy (when measured); every image-ledger row of the run has its frame's row."""
     cols, rows = _rows(path)
     if cols != FNOISE_COLS:
         return False, len(rows), f'header != FNOISE_COLS: {cols[:6]}...'
@@ -506,16 +506,16 @@ def medians_and_cards(path, **ctx):
             probs.append(f'{k[0]} {k[1]}: in the population, not admitted with a noise')
         if r['vsanmed_jy'] and r['stokes'] != 'V':
             probs.append(f'{k[0]} {k[1]}: a V noise-rule median on an I row')
-        if (r['stokes'] == 'V' and r['admitted'] == '1' and r['vsanmed_jy']
-                and _f(r['noise_jy']) > CFG.search_detect.SANITY_X * _f(r['vsanmed_jy'])):
-            probs.append(f'V {r["date"]}: admitted with noise {r["noise_jy"]} above {CFG.search_detect.SANITY_X:g} x its median '
+        if bool(r['vsanmed_jy']) != bool(r['vsanity_x']):
+            probs.append(f'{k[0]} {k[1]}: a V noise-rule median without its factor, or the reverse')
+        elif r['stokes'] == 'V' and r['admitted'] == '1' and r['vsanmed_jy'] and _f(r['noise_jy']) > _f(r['vsanity_x']) * _f(r['vsanmed_jy']):
+            probs.append(f'V {r["date"]}: admitted with noise {r["noise_jy"]} above {r["vsanity_x"]} x its median '
                          f'{r["vsanmed_jy"]} (the V noise rule refuses it)')
     if len({(r['lst'], r['scope']) for r in rows}) > 1:
         probs.append('rows of more than one cell')
-    for tag in {r['attempt'] for r in rows}:
-        vs = {r['vsanmed_jy'] for r in rows if r['attempt'] == tag and r['stokes'] == 'V'}
-        if len(vs) > 1:
-            probs.append(f'run {tag}: {len(vs)} different V noise-rule medians')
+    vs = {r['vsanmed_jy'] for r in rows if r['stokes'] == 'V' and r['vsanmed_jy']}
+    if len(vs) > 1:                              # the base's run measured it; every append is judged with the base's
+        probs.append(f'{len(vs)} different V noise-rule medians in one attempt')
     for st in ('I', 'V'):
         R = [r for r in rows if r['stokes'] == st]
         pop = [_f(r['noise_jy']) for r in R if r['population'] == '1']
