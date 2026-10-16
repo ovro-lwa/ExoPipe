@@ -180,7 +180,9 @@ def apply(lst, scope, root, row, outgen, corr_t=None):
 def bake(d, hd, scope, row, corr_t):
     """One product's pixels and header in the scaled generation (the body of apply's loop; D-ADMIT bakes an admitted night's
     products with it): pixels x SHSCALE x FLUXCORR as float32, the FLUX* cards (flux_correction.cards_for, FLUXBAKE True),
-    the SH* cards of the scale-table row and the two HISTORY lines. ``hd`` is changed in place and returned."""
+    the SH* cards of the scale-table row and the two HISTORY lines; under the output standard (coadd.HEADER_STANDARD 'full',
+    which the masters step sets from masters_build.HEADER_STANDARD) the noise cards THERMNOI and IMGRMS scaled with the
+    pixels, so they stay in the product's units. ``hd`` is changed in place and returned."""
     from exopipe.phase3.lib.masters import flux_correction as FC
     scale = float(row['scale']); corr = float(corr_t[scope]['corr'])
     d = (np.asarray(d, dtype=np.float32) * np.float32(scale * corr))
@@ -198,6 +200,13 @@ def bake(d, hd, scope, row, corr_t):
     hd['HISTORY'] = (f"shflux: pixels x {scale:.5f} (VLSSr/RCB median ratio per LST, {row['srcs']}, N {row['nsrc']}; R-FLUX-SCALE-APPLY-VLSSR-HIGH-ELEVATION-APPROVED 2026-09-07)" if _vlssr else
                      f"shflux: pixels x {scale:.5f} (SH12 calibrators {row['srcs']}; I Taper R-0.75 pbcorr master; stage A of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828)")
     hd['HISTORY'] = f"fluxcorr: pixels also x FLUXCORR {corr:.5f} (k x g, {corr_t[scope]['version'][:24]})"
+    from exopipe.phase3.lib.masters import coadd as _co     # WAVE2 OUTPUT (writers step 1): under the output standard a
+    if _co.HEADER_STANDARD == 'full':                        # noise card follows its pixels - THERMNOI and IMGRMS scaled by
+        _nk = [k for k in ('THERMNOI', 'IMGRMS') if hd.get(k) is not None]   # the factor the pixels were (production: kept)
+        for k in _nk:
+            hd[k] = (float(round(float(hd[k]) * scale * corr, 9)), hd.comments[k])
+        if _nk:
+            hd['HISTORY'] = f"noise cards {', '.join(_nk)} x {scale * corr:.6f} with the pixels (output standard)"
     return d, hd
 
 

@@ -305,6 +305,8 @@ def inplace(out):
     b = _cfg().masters_build
     input_resolver.check_grid_values(b)
     _admit().scale2_record_policy(b.SCALE2_RECORD)               # D-ADMIT (ninth review): a typo never builds without it
+    if b.HEADER_STANDARD not in co.HEADER_STANDARDS:             # WAVE2 OUTPUT: a typo never builds production's headers
+        raise Refusal(f'masters_build.HEADER_STANDARD = {b.HEADER_STANDARD!r} is not one of {co.HEADER_STANDARDS}')
     applied.append(('coadd finders', input_resolver.install(co, b.INPUT_RESOLVER, b.RAW_INPUT_FLOW_RULE)))
     return _SETUP['mods'], applied
 

@@ -70,6 +70,7 @@ WIRING = {
         'ALLOW_STALE_FLOW': 'env-call:P3_ALLOW_STALE_FLOW', 'INPUT_RESOLVER': 'step', 'RAW_INPUT_FLOW_RULE': 'step',
         'PRODUCT_GRID_MISMATCH': 'attr:coadd.PRODUCT_GRID_MISMATCH', 'OFF_GRID_SURVEY': 'attr:coadd.OFF_GRID_SURVEY',
         'WRITE_BUILD_STATS': 'step', 'SCALE2_RECORD': 'attr:coadd.SCALE2_RECORD',
+        'HEADER_STANDARD': 'attr:coadd.HEADER_STANDARD',
         'REF_MODE': 'attr:coadd.REF_MODE',
         'REFERENCE_DATES': 'attr:coadd.REFERENCE_DATES', 'REF_ASTROM_MAX_ARCMIN': 'attr:coadd.REF_ASTROM_MAX_AMIN',
         'REF_ASTROM_PIVOT_MHZ': 'mirror', 'REF_ASTROM_EXPONENT': 'mirror', 'REF_ASTROM_MIN_ANCHORS': 'mirror',

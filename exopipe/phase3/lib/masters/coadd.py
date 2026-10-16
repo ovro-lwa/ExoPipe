@@ -108,6 +108,12 @@ PRODUCT_GRID_MISMATCH = 'drop'
 # degeneracy guard uses; 'record' writes coadd_final/scale2.csv (_write_scale2_record) - the guard median a night admitted into
 # this master is subtracted with (lib/masters/admit_stages.guard_median). The step sets it from masters_build.SCALE2_RECORD.
 SCALE2_RECORD = 'none'
+# THE OUTPUT STANDARD AT WRITE (WAVE2 OUTPUT, plan/wave2/OUTPUT_WRITERS_DESIGN.md, writers step 1): 'production' writes the
+# per-night products with production's header; 'full' adds the night's output-standard cards every later product of the
+# night inherits - THERMNOI measured as Phase 2 stamps it, P2RUN (night_standard_cards). The step sets it from
+# masters_build.HEADER_STANDARD.
+HEADER_STANDARDS = ('full', 'production')
+HEADER_STANDARD = 'production'
 
 REFERENCE_DATES = {
     # 00h: mosaic-coverage cell (Gregg 2026-07-05) — deliberately SHALLOW,
@@ -263,6 +269,34 @@ def epoch_time_header(tmpl_hdr, src_path):
         except Exception:
             pass
     out.add_history(f'Time block from per-epoch source {os.path.basename(str(src_path))}')
+    return out
+
+
+def night_standard_cards(hdr, sci_dir, band, src_path=None):
+    """WAVE2 OUTPUT (writers step 1, plan/wave2/OUTPUT_WRITERS_DESIGN.md): ``hdr`` with the output-standard cards of the
+    night, which every product of the night inherits - THERMNOI, measured as Phase 2 stamps it on the night's V deep image
+    in ``sci_dir`` (lib/masters/thermnoi.measure), and P2RUN, the night's Phase 2 Science run (``sci_dir``'s name). A night
+    with no V deep image that measures gets no THERMNOI (a card the template carried is dropped) and a HISTORY line naming
+    why; a Phase 2 card on the night's I image (``src_path``) that differs from the measurement is named in HISTORY (its I
+    image re-made after Phase 2 stamped it)."""
+    from exopipe.phase3.lib.masters import thermnoi as _TN
+    out = hdr.copy()
+    val, vimg, why = _TN.measure(sci_dir, band)
+    if val is None:
+        if 'THERMNOI' in out:
+            del out['THERMNOI']
+        out.add_history(f'THERMNOI none: {why}')
+        print(f'    THERMNOI none for {os.path.basename(str(sci_dir))} {band}: {why}', flush=True)
+    else:
+        out['THERMNOI'] = (val, _TN.COMMENT)
+        try:
+            card = fits.getheader(src_path).get('THERMNOI') if src_path else None
+        except Exception:
+            card = None
+        if card is not None and float(card) != val:
+            out.add_history(f'THERMNOI measured on {os.path.basename(vimg)}; the Phase 2 card on '
+                            f'{os.path.basename(str(src_path))} is {card}')
+    out['P2RUN'] = (os.path.basename(str(sci_dir).rstrip('/'))[:68], 'Phase 2 run label')
     return out
 
 
@@ -3722,6 +3756,8 @@ def subtract_night(date, sci_dir, align_img_path, i_path, v_path, coeffs2, n2, m
     # Beam+RESTFRQ are stamped per Stokes at each write via
     # save_epoch_residual (R1 amendment #1) — never left as tmpl_hdr's.
     epoch_hdr = epoch_time_header(tmpl_hdr, align_img_path)
+    if HEADER_STANDARD == 'full':                      # WAVE2 OUTPUT (writers step 1): the night's THERMNOI and P2RUN,
+        epoch_hdr = night_standard_cards(epoch_hdr, sci_dir, fl, align_img_path)   # on every product of the night
 
     h, w = target_shape
     yg, xg = np.indices((h, w), dtype=float)

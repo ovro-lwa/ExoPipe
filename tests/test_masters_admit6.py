@@ -106,6 +106,14 @@ def rec(out, step, unit):
     return json.load(open(p)) if os.path.exists(p) else {}
 
 
+def _night_cards(cd, d):
+    """The output-standard cards the build stamps on an admitted night's products (writers step 1): THERMNOI measured on
+    its V deep image (lib/masters/thermnoi.measure), P2RUN its Phase 2 Science run (the build's finder)."""
+    from exopipe.phase3.lib.masters import coadd as co, thermnoi as TN
+    sci = co.find_latest_science_dir(LST, d)
+    return TN.measure(sci, SC)[0], os.path.basename(sci.rstrip('/'))
+
+
 def bright_ratio(e, m):
     """Median and count of e / m at the master's bright compact sources - the selection of coadd._epoch_content_arrays."""
     from scipy.ndimage import maximum_filter
@@ -184,7 +192,9 @@ def test_admit_end_to_end():
     check(f'admission_reproduces: each admitted epoch equals the member\'s at bright peaks within {REPRODUCE_TOL:g}',
           all(abs(v[0] - 1) <= REPRODUCE_TOL and v[2] >= 20 for v in res.values()), res)
     skip = {'HISTORY', 'COMMENT', '', 'ADMITTED', 'ADMITREF', 'GITTAG'}     # GITTAG: the code commit that wrote it
-    hdiff = {}
+    std = {'THERMNOI', 'P2RUN'} if CFG.masters_build.HEADER_STANDARD == 'full' else set()   # writers step 1: the night's
+    skip |= std                                     # output-standard cards (the members were built under production's headers)
+    hdiff, sdiff, night_cards = {}, {}, {}
     for d in nights:
         for st in ('I', 'V'):
             for kind in ('epoch', 'sub', 'clean'):
@@ -193,8 +203,19 @@ def test_admit_end_to_end():
                 dk = sorted(k for k in set(a) | set(b) if k not in skip and a.get(k) != b.get(k))
                 if dk:
                     hdiff[f'{d}_{st}_{kind}'] = dk[:6]
+                if std:                     # the night's cards: THERMNOI as Phase 2 stamps it, scaled with the pixels by
+                    raw, run_ = night_cards.setdefault(d, _night_cards(cd, d))   # the bake; P2RUN its Science run
+                    want = (None if raw is None else float(round(raw * float(a['SHSCALE']) * float(a['FLUXCORR']), 9)), run_)
+                    got = (a.get('THERMNOI'), a.get('P2RUN'))
+                    if got != want or raw is None:
+                        sdiff[f'{d}_{st}_{kind}'] = (got, want)
     check('every admitted product\'s header equals the member\'s card for card (the epochs stamped as the archive '
-          'publish stamps them) but ADMITTED / ADMITREF / HISTORY and the code commit (GITTAG)', not hdiff, hdiff)
+          'publish stamps them) but ADMITTED / ADMITREF / HISTORY and the code commit (GITTAG)'
+          + (', and the night\'s output-standard cards (THERMNOI, P2RUN)' if std else ''), not hdiff, hdiff)
+    if std:
+        check('writers step 1: every admitted product carries its night\'s THERMNOI (measured as Phase 2 stamps it on the '
+              'night\'s V deep image, then scaled with the pixels by the bake: SHSCALE x FLUXCORR) and P2RUN (its Phase 2 '
+              'Science run)', not sdiff and len(night_cards) == len(nights), (sdiff, night_cards))
     for stage, extra in (('admit', ['--set', 'masters_admit.DC2_MEDIAN_WITHOUT_RECORD=1.0']), ('admit-prep', [])):
         rp = os.path.join(out, '_records', 'masters', f'{stage}_{CELL}.json')
         r_ = json.load(open(rp))
@@ -339,6 +360,8 @@ PATH_EXCEPTS = {
     'coadd.is_subband': [('(ValueError, TypeError)', 'return False', 'd2287f88ed', 'parse')],
     'coadd.measure_flux_scale': [('Exception', "_caught('flux scale: a source\\'s elevation', _ce)", 'a2d06cfafc', 'caught'),
                                  ('Exception', "_caught('flux scale: the robust fit', _ce)", 'a467abd024', 'caught')],
+    'coadd.night_standard_cards': [('Exception', 'card = None', '56fe119d69', 'cosmetic')],   # writers step 1: the Phase 2 I card
+                                                                                          # read for a HISTORY line only
     'coadd.process_variant_image': [('Exception', "_caught(f'regrid mapping of {os.path.basename(src_path)}', e)", '2f0dce6748', 'caught')],
     'coadd.save_epoch_residual': [('BaseException', 'try:', '009ae275e3', 'raise'),
                                   ('OSError', 'pass', '494e0399d8', 'cleanup')],
