@@ -371,6 +371,8 @@ def test_b02_3b_units():
     f6 = faulty(lambda x: x.replace('0.007,0,0,0.005,0.006,3.0,A1', '0.007,0,0,0.005,0.0065,3.0,A1', 1),  # two medians
                 'different V noise-rule medians')
     f8 = faulty(lambda x: x.replace(',0.006,3.0,A1', ',0.006,,A1', 1), 'without its factor')   # a median without its factor
+    f9 = faulty(lambda x: x.replace(',0.005,0.006,3.0,A1', ',0.005,,,A1', 1),                   # an admitted V frame that
+                'without the V noise-rule median the attempt holds')                             # escaped the V noise rule
     frame('I', D[3], IMGRMS=0.0201)                                                               # a frame's IMGRMS off
     f3 = ST.medians_and_cards(fnp)[0]
     frame('I', D[3], IMGRMS=0.020)
@@ -386,8 +388,9 @@ def test_b02_3b_units():
         w.writerows([['05h', '78MHz', r[2], r[3], 0, 0, '', '', 0, 0, 25.0] for r in rows])
     check('frame_noise content test: the synthetic record and its frames pass; a wrong table noise, a population night not '
           'admitted, an admitted V frame above 3 x its V noise median, two V medians in one run, a frame\'s IMGRMS off, a '
-          'missing frame, an image-ledger row without its record are each refused', ok0[0] and ST.medians_and_cards(fnp)[0]
-          and not (f1 or f2 or f3 or f4 or f5 or f6 or f7 or f8), (ok0, f1, f2, f3, f4, f5, f6, f7, f8))
+          'missing frame, an image-ledger row without its record, an admitted V frame without the attempt\'s V median are each '
+          'refused', ok0[0] and ST.medians_and_cards(fnp)[0]
+          and not (f1 or f2 or f3 or f4 or f5 or f6 or f7 or f8 or f9), (ok0, f1, f2, f3, f4, f5, f6, f7, f8, f9))
     # the pulsar decisions: kept as the parent / cut not exempting, each against the gate ledger at its pixel
     led = os.path.join(rd, 'v_deep_ledger.csv')
     lrow = lambda st, d, x, y, v: dict(dict.fromkeys(ST.GLED_COLS, ''), lst='05h', scope='78MHz', stokes=st, date=d, pix_x=x,
@@ -787,8 +790,10 @@ def test_end_to_end():
         fp_ = os.path.join(att, 'iresid' if st == 'I' else 'vresid', CELL, f'{nights[0]}_{st}_redo_resid_{SC}.fits')
         h_ = fits.getheader(fp_) if os.path.exists(fp_) else {}
         want_ = RR.median_noise(base_[st] + [float(r['noise_jy'])])
+        vseed_ = {x['vsanmed_jy'] for x in fnr if x['stokes'] == 'V' and x['population'] == '1'}
         if not (r['admitted'] == '1' and r['population'] == '0' and float(r['tblnoise_jy']) == want_
-                and h_.get('IMGRMS') == float(r['noise_jy']) and 'TBLNOISE' not in h_ and 'VSANMED' not in h_):
+                and h_.get('IMGRMS') == float(r['noise_jy']) and 'TBLNOISE' not in h_ and 'VSANMED' not in h_
+                and (st != 'V' or (len(vseed_) == 1 and r['vsanmed_jy'] in vseed_ and r['vsanmed_jy'] != ''))):
             bad3.append((st, dict(r), want_, h_.get('IMGRMS')))
     check("B-02 step 3b: the admitted night's frames (I and V) are judged with the base's population plus themselves - "
           "recorded (admitted, not in the population; the medians in frame_noise.csv, not on the frames), each frame's "
@@ -1092,10 +1097,16 @@ def test_b02_end_to_end(wt, work, b3):
         bad = [(d, mine.get(d)) for d in b3 if not (d in mine and mine[d]['admitted'] == '1' and mine[d]['population'] == '0'
                                                        and float(mine[d]['tblnoise_jy']) == RR.median_noise(base_ + [float(mine[d]['noise_jy'])])
                                                        and float(fh[d]['IMGRMS']) == float(mine[d]['noise_jy']))]
+        vseed = {r['vsanmed_jy'] for r in r0[RR.FRAME_NOISE] if r['stokes'] == 'V' and r['population'] == '1'}
+        vx = repr(float(CFG.search_detect.SANITY_X))
+        vbad = [(d, mine[d].get('vsanmed_jy'), mine[d].get('vsanity_x')) for d in b3 if st == 'V' and d in mine
+                and not (len(vseed) == 1 and '' not in vseed and mine[d]['vsanmed_jy'] in vseed and mine[d]['vsanity_x'] == vx)]
+        vskip = [ev for ev in res0.get('fallbacks', []) if 'Stokes V sanity gate' in str(ev[3])]
+        bad += [('V noise rule', vbad, vskip)] if (vbad or (st == 'V' and vskip)) else []
         ct0 = ST.medians_and_cards(os.path.join(r0['rd'], RR.FRAME_NOISE))
         check(f"B-02 step 3b ({st}): each night's frame noise recorded (admitted; appended, so judged with the base's population "
-              f"plus itself; the frame's IMGRMS), and the frame_noise content test passes on the engine's output (the base's "
-              f"frames, the image ledger){dev}", not bad and len(base_) > 10 and ct0[0], (bad, len(base_), ct0[2][:300]))
+              f"plus itself; the frame's IMGRMS; V: the V noise rule's median and factor are the base's, the gate not skipped), and "
+              f"the frame_noise content test passes on the engine's output (the base's frames, the image ledger){dev}", not bad and len(base_) > 10 and ct0[0], (bad, len(base_), ct0[2][:300]))
         # ---- step 3b: the elevation floor at the frame's mid-time, at the catalogue position (the check's function)
         flo = floor if floor is not None else float(CFG.catalog_conform.DEEP_ELEV_FLOOR_DEG)
         el = {key(r): RR.frame_elevation(LST, *sky(r), fh[r['date']])[0] for r in led0

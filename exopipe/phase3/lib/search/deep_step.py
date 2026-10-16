@@ -393,6 +393,8 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
         raise Refusal(str(e))
     env[_RR.AUDIT_ENV] = c.search_tables.SOLAR_AUDIT                               # B-02: the daytime gate's solar audit (G2 pin)
     env[_RR.ELEV_EPOCH_ENV] = c.catalog_conform.DEEP_ELEV_EPOCH                    # B-02 step 3b: the floor's time, as the check's
+    if env[_RR.ELEV_EPOCH_ENV] not in _RR.ELEV_EPOCHS:                             # refused here, not after the child's residuals
+        raise Refusal(f'catalog_conform.DEEP_ELEV_EPOCH {env[_RR.ELEV_EPOCH_ENV]!r} is not one of {_RR.ELEV_EPOCHS} - REFUSING')
     if env[_RR.RULES_ENV] == 'once-in-search' and float(sd.ELEVATION_FLOOR_DEG) != float(c.catalog_conform.DEEP_ELEV_FLOOR_DEG):
         raise Refusal(f'search_detect.ELEVATION_FLOOR_DEG {sd.ELEVATION_FLOOR_DEG} (the detection masks) != catalog_conform.'   # B-02:
                       f'DEEP_ELEV_FLOOR_DEG {c.catalog_conform.DEEP_ELEV_FLOOR_DEG} (the search\'s floor per detection and the '   # one

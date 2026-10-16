@@ -516,6 +516,10 @@ def medians_and_cards(path, **ctx):
     vs = {r['vsanmed_jy'] for r in rows if r['stokes'] == 'V' and r['vsanmed_jy']}
     if len(vs) > 1:                              # the base's run measured it; every append is judged with the base's
         probs.append(f'{len(vs)} different V noise-rule medians in one attempt')
+    elif vs:                                     # ... so no admitted V frame of the attempt escapes it
+        miss = sorted(r['date'] for r in rows if r['stokes'] == 'V' and r['admitted'] == '1' and not r['vsanmed_jy'])
+        if miss:
+            probs.append(f'{len(miss)} admitted V frame(s) without the V noise-rule median the attempt holds, e.g. {miss[:3]}')
     for st in ('I', 'V'):
         R = [r for r in rows if r['stokes'] == st]
         pop = [_f(r['noise_jy']) for r in R if r['population'] == '1']

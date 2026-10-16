@@ -1743,8 +1743,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _vf = sorted(v for _d, v in _vr.items() if np.isfinite(v) and v > 0 and _d not in _adm)   # WAVE2 D-ADMIT: the cell's nights
         if _b02 and included_dates:                                            # WAVE2 B-02 (step 3b): an append is judged with the
             _vb = _RR.base_vsanmed(run_root)                                   # WAVE2 B-02: V median its base recorded - the cell's
-            _ok_v = _vb is not None or _enough(0, SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate of an append, its '   # WAVE2 B-02:
-                                                f'base recorded no V noise-rule median', count=bool(resid_V))   # WAVE2 B-02: (its own nights are not)
+            _ok_v = _vb is not None                                            # WAVE2 B-02: (its own nights are not); none
+            if not _ok_v and resid_V:                                          # WAVE2 B-02: recorded - the skip counted, as the
+                from exopipe.phase3.core import fallback                       # WAVE2 B-02: gate's minimum count skips it
+                fallback.site('fallbacks.SEARCH_GATE_SKIP_FALLBACK', f'{lst} {scope}: Stokes V sanity gate of an append: its base '   # WAVE2 B-02
+                              f'recorded no V noise-rule median - the gate is skipped', n=1)   # WAVE2 B-02
         else:                                                                  # WAVE2 B-02
             _vb = None                                                         # WAVE2 B-02
             _ok_v = _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms',   # WAVE2 B-30

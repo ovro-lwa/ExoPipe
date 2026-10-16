@@ -277,6 +277,8 @@ def child_env(spec, cfg=None):
         raise Refusal(str(e))
     s[_RR.AUDIT_ENV] = cfg.search_tables.SOLAR_AUDIT
     s[_RR.ELEV_EPOCH_ENV] = cfg.catalog_conform.DEEP_ELEV_EPOCH          # B-02 step 3b (deep_step.engine_env)
+    if s[_RR.ELEV_EPOCH_ENV] not in _RR.ELEV_EPOCHS:
+        raise Refusal(f'catalog_conform.DEEP_ELEV_EPOCH {s[_RR.ELEV_EPOCH_ENV]!r} is not one of {_RR.ELEV_EPOCHS} - REFUSING')
     s['DEEP_XLA_MEMFRAC'] = repr(v['flow_xla_mem_fraction'])
     if v['flow_lock']:
         s['P3_FLOW_LOCK'] = v['flow_lock']        # node-global lock shared with production searches (one GPU batch per node)

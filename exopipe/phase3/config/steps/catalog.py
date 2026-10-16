@@ -123,7 +123,7 @@ class catalog_conform(_Section):
     SANITY_MIN_NIGHTS = 5                                 # nights needed for the median; ops/p3s2_conform.py:139, :157
     ROWLINE_MIN = 5                                       # finals on one pixel row +/-1; ops/p3s2_conform.py:129 [lit] (Gregg 2026-09-05)
     ROWLINE_MATCH_DEG = 0.05                              # deg, row-line member match; ops/p3s2_conform.py:505
-    DEEP_ELEV_FLOOR_DEG = 25.0                            # deg at mid-hour (LST + 0.5 h); ops/p3s2_conform.py:186, gate_inputs.py:95 [lit; env:P3_DEEP_MIN_ELEVATION unset in production] (Gregg 2026-10-06 "3. (c)"; R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV)
+    DEEP_ELEV_FLOOR_DEG = 25.0                            # deg, at the time DEEP_ELEV_EPOCH names; ops/p3s2_conform.py:186, gate_inputs.py:95 [lit; env:P3_DEEP_MIN_ELEVATION unset in production] (Gregg 2026-10-06 "3. (c)"; R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV)
     DEEP_ELEV_EPOCH = 'frame-mid'                         # the frame's own mid-time (B-02 step 3b: the search's floor and the check;
                                                           # R-REFACTOR-20261016-B02-CONVENTIONS (2)); production 'mid-hour' = LST + 0.5 h,
                                                           # ops/p3s2_conform.py:187-189 (the parity file)
