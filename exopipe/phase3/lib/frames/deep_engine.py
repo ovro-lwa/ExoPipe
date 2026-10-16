@@ -63,9 +63,12 @@ FRAME_FIXED = tuple(k for _, k, kind in VALUE_KEYS if kind == 'mirror')
 FRAME_KEYS = tuple(k for _, k, _kind in VALUE_KEYS)
 
 # refusal files the frame build writes (the gates, phase3_deep.py:1088-1365) and the search's own admission files
-FRAME_REFUSAL_KINDS = ('nightimage', 'epochgate', 'sanity', 'sanity_I', 'searchtier', 'stale_input', 'beam')
+FRAME_REFUSAL_KINDS = ('nightimage', 'epochgate', 'sanity', 'sanity_I', 'searchtier', 'stale_input', 'beam',
+                       'datadecisions')   # B-02 step 3c: the nights data_decisions excluded, recorded ahead of the gates
 SEARCH_REFUSAL_KINDS = ('sanity_V', 'extraction_I', 'extraction_V', 'daytime')   # daytime: B-02 step 3a (the frame is built)
-WHOLE_EPOCH_KINDS = ('nightimage', 'epochgate', 'sanity', 'stale_input', 'beam')
+WHOLE_EPOCH_KINDS = ('nightimage', 'epochgate', 'sanity', 'stale_input', 'beam')   # not datadecisions: those nights are out of
+                                                                                   # the owed ones, and verify judges the
+                                                                                   # admitted nights by today's data_decisions
 _FRAME_RE = re.compile(r'^(?P<d>\d{4}-\d\d-\d\d(?:T\d\d)?)_(?P<s>[IV])_redo_resid(?P<pb>_pbcorr)?_(?P<scope>\w+?)\.fits$')
 
 

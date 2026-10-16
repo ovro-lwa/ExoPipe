@@ -1216,6 +1216,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if _ddrop:
         dates = [d for d in dates if d not in _ddrop]
         print(f'  {lst} {scope}: dropped {len(_ddrop)} data_decisions-excluded epoch(s): {_ddrop}')
+    if _b02:                                                           # WAVE2 B-02 (step 3c): every night of the cell that
+        _ddx = sorted(set(_ddrop) | {d for d in _noflow if is_excluded(lst, scope, _kd(d), _excl)})   # WAVE2 B-02: data_decisions
+        if _ddx:                                                       # WAVE2 B-02: excludes, with a flow or without, recorded -
+            with open(f'{_refdir}/{lst}_{scope}_datadecisions_excluded.csv', 'a') as _ddf:   # WAVE2 B-02: the conformance check
+                for d in _ddx:                                         # WAVE2 B-02: confirms each is excluded still (a lifted
+                    _ddf.write(f'{lst},{scope},{d},{_attempt}\n')      # WAVE2 B-02: exclusion: masters rebuilt, cell re-searched)
     # (0b) NIGHT-IMAGE GATE (Gregg 2026-10-02 "Approved"): one test per night-image, ahead of the search-admission QA
     # below (which keeps its own logic); a night-image the gate failed is refused from BOTH searches, logged per image;
     # a deep cell without the gate record REFUSES (a gate never skips). Deep cadence: the 10-minute tier is the

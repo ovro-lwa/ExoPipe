@@ -25,8 +25,9 @@ from exopipe.phase3.config import CFG
 ELEV_EPOCHS = ('mid-hour', 'frame-mid')
 SEARCH_RULES = ('once-in-search', 'production')   # search_detect.REMOVAL_RULES
 RULES_ENV = 'EXOPIPE3_REMOVAL_RULES'              # how the search step hands it to the engine child (deep_step.engine_env)
-RULES_VERSION = 'b02-3b'   # what a 'once-in-search' attempt applies: 3a - the daytime gate per frame, the Jupiter-track veto;
-                           # 3b - one noise per frame, the elevation floor at the frame's mid-time, the table's derivation inputs
+RULES_VERSION = 'b02-3c'   # what a 'once-in-search' attempt applies: 3a - the daytime gate per frame, the Jupiter-track veto;
+                           # 3b - one noise per frame, the elevation floor at the frame's mid-time, the table's derivation inputs;
+                           # 3c - the nights data_decisions excludes, recorded (refusals/<cell>_datadecisions_excluded.csv)
 AUDIT_ENV = 'EXOPIPE3_SOLAR_AUDIT'                # the solar audit the search's daytime gate reads (search_tables.SOLAR_AUDIT)
 RULES_RECORD = 'search_rules.json'                # in each attempt directory: the rules it was searched under (deep_step)
 ELEV_EPOCH_ENV = 'EXOPIPE3_DEEP_ELEV_EPOCH'         # the elevation convention the step hands the engine (catalog_conform)

@@ -62,7 +62,11 @@ def known_veto_reason(v):
 REFUSAL_KINDS = {'nightimage': (4, 'both'), 'epochgate': (4, 'both'), 'sanity': (6, 'both'), 'sanity_I': (6, 'I'),
                  'sanity_V': (6, 'V'), 'searchtier': (7, 'row'), 'stale_input': (5, 'both'), 'beam': (6, 'both'),
                  'extraction_I': (7, 'I'), 'extraction_V': (7, 'V'),
-                 'daytime': (6, 'row')}     # B-02 step 3a: the daytime gate per frame (lst, scope, date, Stokes, reason, attempt)
+                 'daytime': (6, 'row'),     # B-02 step 3a: the daytime gate per frame (lst, scope, date, Stokes, reason, attempt)
+                 'datadecisions': (4, 'both')}   # B-02 step 3c: the nights data_decisions excluded (lst, scope, date, attempt)
+# kinds that record, not refuse: a night data_decisions excluded when the search ran is judged by today's data_decisions
+# (the admitted nights), so a lifted exclusion stays an unaccounted epoch - refused_dates leaves these out
+RECORD_ONLY_KINDS = ('datadecisions',)
 FIT_KINDS = ('gaussian', 'template', 'peak')
 FIT_EXTRA = ['frame', 'frame_sha1', 'fit_frac_px']
 FP_VERDICTS = frozenset({'FP', 'not-FP', 'marginal', 'inconclusive'})
@@ -127,11 +131,11 @@ def refusal_files(run_dir):
 
 def refused_dates(run_dir, stokes):
     """(dates refused from the search of `stokes`, dates whose IMAGE was refused (extraction: frame kept, no image row),
-    dates refused from both searches) from the refusal ledgers."""
+    dates refused from both searches) from the refusal ledgers (not the RECORD_ONLY_KINDS records)."""
     both, mine, extraction = set(), set(), set()
     for kind, paths in refusal_files(run_dir).items():
         spec = REFUSAL_KINDS.get(kind)
-        if spec is None:
+        if spec is None or kind in RECORD_ONLY_KINDS:
             continue
         for p in paths:
             with open(p, newline='') as f:

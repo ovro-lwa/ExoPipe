@@ -613,6 +613,10 @@ if _b02 is not None:             # B-02 step 3a: the frames the daytime gate ref
             finally:
                 _depth[0] -= 1
         E._PCT.removals = _rm
+_xn = json.loads(os.environ.get('TEST_EXCLUDE') or '[]')
+if _xn:                          # B-02 step 3c test device: these nights excluded as a data_decisions row of the cell's own
+    _real_le = E.load_exclusions     # subband excludes them (the real list plus them; the search's reading only)
+    E.load_exclusions = lambda: _real_le() | {(sys.argv[2], sys.argv[3].replace('MHz', ''), d_) for d_ in _xn}
 if os.environ.get('TEST_OPEN_JUPITER'):    # B-02 test device: the per-night Jupiter veto opened (both runs of a pair); I only -
     if 'V' in (os.environ.get('TEST_STOKES') or 'IV'):   # the V chain takes a zero radius as 'no Jupiter' and fails on it
         raise SystemExit('TEST_OPEN_JUPITER is a device of the Stokes I pair only')
@@ -704,7 +708,7 @@ def seed_base_noise(label_root, exclude, stokes=None):
 
 
 def engine(root, work, label_root, policy, dates, fail_i=None, rules=None, b02=None, stokes=None, open_jupiter=False,
-           seed=True):
+           seed=True, exclude=None):
     if seed and dates and (rules or CFG.search_detect.REMOVAL_RULES) == 'once-in-search' and not os.path.exists(
             os.path.join(label_root, 'transients', 'Run_ADMITTEST', 'frame_noise.csv')):
         seed_base_noise(label_root, set(dates), stokes)   # B-02 step 3b: the base an incremental search appends to
@@ -722,6 +726,8 @@ def engine(root, work, label_root, policy, dates, fail_i=None, rules=None, b02=N
         env['TEST_STOKES'] = stokes
     if open_jupiter:
         env['TEST_OPEN_JUPITER'] = '1'
+    if exclude:                                      # B-02 step 3c: nights the search reads as excluded (a test device)
+        env['TEST_EXCLUDE'] = json.dumps(exclude)
     if fail_i:                                       # production's handling of a failed residual: dropped, counted
         env.update(DEEP_NPROC_RESID='1', EXOPIPE3_FALLBACK_POLICY=json.dumps({'fallbacks.SEARCH_RESIDUAL_FALLBACK': 'fallback'}))
     res = os.path.join(label_root, f'result_{policy}.json')
@@ -944,6 +950,37 @@ def test_end_to_end():
           'them taken out of the cell (no population of its gates or stack holds an admitted night)',
           res1['ok'] and res0['ok'] and r1 == r0 and r1['v_deep_images.csv'],
           (res1, res0, {k: (len(r1[k]), len(r0[k])) for k in r1}, logm1[-300:], logm0[-300:]))
+    # B-02 step 3c: the nights data_decisions excludes, recorded. The cell has no excluded night with a residual, so one
+    # member night (not the one searched) is excluded by a test device: under 'once-in-search' the record names exactly the
+    # cell's residual nights data_decisions excludes, with the attempt's tag, and passes its content test; the engine drops
+    # the night as before; under 'production' (the parity rules) no record
+    from exopipe.phase3.core import exclusions as EX
+    from exopipe.phase3.lib.search import tests as ST
+    resid = sorted(os.path.basename(q)[:10] for q in glob.glob(os.path.join(cd, 'subtracted', f'*_I_sub_{SC}.fits')))
+    xn = [d for d in resid if d in want and d != m][-1]   # a member night with its residual, not the one searched
+    ex_ = EX.load()
+    xwant = sorted({d for d in resid if ex_.is_excluded(LST, SC, d)} | {xn})
+    recs = {}
+    for rules_ in ('once-in-search', 'production'):
+        attx = os.path.join(T, f'attempt_excluded_{rules_}')
+        resx, logx = engine(wt, work, attx, 'admitted', [m], rules=rules_, exclude=[xn])
+        recp = os.path.join(attx, 'transients', 'Run_ADMITTEST', 'refusals', f'{CELL}_datadecisions_excluded.csv')
+        recs[rules_] = (resx, logx, recp, [ln.split(',') for ln in open(recp).read().splitlines()] if os.path.exists(recp)
+                        else None)
+    resx, logx, recp, rows_x = recs['once-in-search']
+    drop_line = f"dropped 1 data_decisions-excluded epoch(s): ['{xn}']"
+    check("B-02 step 3c, 'once-in-search': the record of the nights data_decisions excludes names exactly the cell's residual "
+          "nights it excludes (here the device's member night), each with the attempt's tag; the engine drops the night as "
+          "before", resx['ok'] and rows_x is not None and [r[2] for r in rows_x] == xwant
+          and all(len(r) == 4 and (r[0], r[1]) == (LST, SC) and re.match(r'^\d{8}T\d{6}$', r[3]) for r in rows_x)
+          and drop_line in logx, (resx.get('error'), rows_x, xwant, logx[-400:]))
+    if rows_x is not None:
+        okp = ST.parses(recp)
+        check('B-02 step 3c: the record passes its content test (refusal_record: the kind\'s columns, no gate-ledger row of '
+              'the night)', okp[0], okp)
+    resp_, logp_, recp_, rows_p = recs['production']
+    check("B-02 step 3c, 'production' (the parity rules): no record - the night dropped as before", resp_['ok']
+          and rows_p is None and drop_line in logp_, (resp_.get('error'), rows_p, logp_[-400:]))
     test_b02_end_to_end(wt, work, want[:3])
 
 

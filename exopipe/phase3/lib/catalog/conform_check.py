@@ -20,18 +20,18 @@ their reason) and PULSAR_GROUPS (every group: pulsar, members, separation, 99 % 
 check(U, manifest, label, merged): the check. It refuses, before reading a row, a run with an attempt not searched under
 'once-in-search' at the current RULES_VERSION. Then every removal rule is re-evaluated, from what the run recorded and
 today's inputs, in both directions: (a) every catalog row, final detection and searched frame passes every rule; (b) every
-detection or frame the search removed by one of them is still removed. A ledger row is evaluated where the search evaluated
-it: its pixel's sky position on its frame's grid (5 decimals - the catalog's position), the frame's own time block and BMAJ,
-the noise the search recorded for the frame (frame_noise.csv), the rules in the search's order (elevation floor, Jupiter
-track, bright-source table, row line). The search's own gates are not re-run (size above 8 sigma among them: the ledger
-holds its inputs rounded, and production's deep conformance runs no size step); the axis ratio is checked at the search's
-limit on the finals and production's own computation on the catalog rows. Any finding: CHECK_REPORT written, REFUSED
+detection or frame the search removed by one of them is still removed, and every night it left out as excluded by
+data_decisions (its record, refusals/<cell>_datadecisions_excluded.csv) is excluded still - a lifted exclusion is a night
+never searched. A ledger row is evaluated where the search evaluated it: its pixel's sky position on its frame's grid (5
+decimals - the catalog's position), the frame's own time block and BMAJ, the noise the search recorded for the frame
+(frame_noise.csv), the rules in the search's order (elevation floor, Jupiter track, bright-source table, row line). The
+search's own gates are not re-run (size above 8 sigma among them: the ledger holds its inputs rounded, and production's deep
+conformance runs no size step); the axis ratio is checked at the search's limit on the finals and production's own
+computation on the catalog rows. Any finding: CHECK_REPORT written, REFUSED
 (nothing published). Else production's outputs with nothing removed - master_catalog_asrun.csv (a copy of ``merged``, the
 merge's output), master_catalog.csv with the conform columns, master_catalog_removed.csv (the pulsar stage's removals) -
 and the frame caches, as p3s2_conform.py writes them; so conformant + removed = as-run + the restored rows, as production's
 conformant + removed = as-run + the re-admitted VM_ rows.
-Not seen by either direction: an exclusion lifted after the search (the engine records no night it drops as excluded; the
-merge's staleness gate catches a newly excluded night only) - B02_DESIGN.md "Steps 2 and 4, first review".
 
 python -m exopipe.phase3.lib.catalog.conform_check pulsars <U> <merged attempts> <label>
 python -m exopipe.phase3.lib.catalog.conform_check check <U> <merged attempts> <label> <merged catalogue> [<pulsar record>
@@ -597,6 +597,11 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
             if k in ft and not day.get(k):
                 finding('b', 'daytime', dict(lst=l, scope=b, stokes=st, date=d), f'refused as {why!r}; today the daytime gate '
                                                                                  f'admits the frame')
+        for d in sorted({r[2] for r in _headerless(os.path.join(ref, f'{l}_{b}_datadecisions_excluded.csv')) if len(r) > 2}):
+            if not excluded(l, b, d):       # left out as excluded, admitted now (the exclusion lifted): a night never searched
+                finding('b', 'excluded', dict(lst=l, scope=b, stokes=st, date=d),
+                        'left out by the search as excluded by data_decisions; data_decisions admits it now - rebuild the '
+                        "cell's masters (the master membership gate refuses a search without the night) and re-search the cell")
         for r in _headerless(os.path.join(ref, f'{l}_{b}_sanity_V_excluded.csv')) if st == 'V' else ():
             fnr = next((x for x in fn if x['date'] == r[2]), None)
             if fnr is None or not fnr['vsanmed_jy'] or not (float(fnr['noise_jy'] or 0) > float(fnr['vsanity_x']) * float(fnr['vsanmed_jy'])):

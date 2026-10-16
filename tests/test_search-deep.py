@@ -102,7 +102,8 @@ def test_engine_truth():
     for k in re.findall(r"_\{scope\}_([A-Za-z_]+(?:\{st\})?)_excluded\.csv", srcs):
         kinds |= {k.replace('{st}', s_) for s_ in ('I', 'V')} if '{st}' in k else {k}
     check('every refusal kind the engine writes is known to refusal_record.parses (upper-case kinds too: sanity_I, sanity_V)',
-          {'sanity_I', 'sanity_V', 'daytime', 'extraction_I', 'extraction_V'} <= kinds and not (kinds - set(T.REFUSAL_KINDS)),
+          {'sanity_I', 'sanity_V', 'daytime', 'datadecisions', 'extraction_I', 'extraction_V'} <= kinds
+          and not (kinds - set(T.REFUSAL_KINDS)),
           (sorted(kinds), sorted(kinds - set(T.REFUSAL_KINDS))))
 
 
@@ -358,6 +359,24 @@ def test_content_tests_synthetic():
     ok, det = results_of('refusal_record', p)
     check('refusal_record FAILS on a wrong column count', not ok and 'columns' in det, det)
     open(p, 'w').write(f'{LST},{SCOPE},{D3},1.62,1.5,{ATT_TAG}\n')
+    # B-02 step 3c: the record of the nights data_decisions excluded when the search ran - parsed as a refusal, but not
+    # counted as one: a night admitted now (an exclusion lifted) with no image row stays unaccounted
+    D4 = '2030-01-04'
+    p = os.path.join(rd, 'refusals', f'{CELL}_datadecisions_excluded.csv')
+    open(p, 'w').write(f'{LST},{SCOPE},{D4},{ATT_TAG}\n')
+    ok, det = results_of('refusal_record', p)
+    check('refusal_record passes on the record of the nights data_decisions excluded (lst, scope, date, attempt)', ok, det)
+    mine, _x, both = T.refused_dates(rd, 'I')
+    check('refused_dates leaves that record out (a record, not a refusal); the beam refusal still counts',
+          D4 not in mine | both and D3 in mine and D3 in both, (sorted(mine), sorted(both)))
+    import types as _types
+    un = DS.unaccounted_epochs(_types.SimpleNamespace(stokes='I', mode='bulk', dates=[]),
+                               dict(attempt=att, label='P3S5', dates_i=[D1, D2, D4], dates_v=[], admitted=[D1, D2, D4]))
+    check('a night of that record admitted now (its exclusion lifted) is an unaccounted epoch of the attempt', un == [D4], un)
+    open(p, 'w').write(f'{LST},{SCOPE},{D2},{ATT_TAG}\n')
+    ok, det = results_of('refusal_record', p)
+    check('refusal_record FAILS on that record naming a night with gate-ledger rows', not ok and 'gate-ledger rows' in det, det)
+    os.remove(p)
     # review 2026-10-13: verify_p3s3_stage conditions the tests now carry
     p = os.path.join(rd, 'master_catalog.csv')
     keep = open(p).read()
