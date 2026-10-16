@@ -99,6 +99,48 @@ def working_tree_audit(cells, ex, workers=None):
     return rows
 
 
+def coverage_gaps(cells, ex, workers=None):
+    """Rows of the masters' coverage - the other direction of working_tree_audit (B02_DESIGN.md "Step 3c, first review"):
+    per deep cell, every night with Phase 2 data for it (the build's own finder, coadd.discover_dates, under
+    paths.PHASE2_ROOT) that data_decisions admits now (``ex``) and that neither a record of the installed build names
+    (admit.seen_nights: the build's seven night records) nor its admissions hold (admit.admitted_rows). The remedy is the
+    admission rule's own (admit.nights_to_admit): a night Phase 2 first had after the build fixed its night set can be
+    admitted, or the cell rebuilt; one Phase 2 had before (a lifted exclusion; an admission refused) only a rebuild takes in.
+    A cell whose records cannot be read is reported unjudged. [(cell, date, cell dir, remedy, detail)]; remedy 'admit or
+    rebuild' | 'rebuild' | 'unjudged' (date '')."""
+    import contextlib
+    import io
+    C = K.cfg()
+    from exopipe.phase3.lib.masters import admit as A, coadd as co
+    root = C.paths.COADD_SB_ROOT
+    keep = co.PHASE2_ROOT
+    co.PHASE2_ROOT = C.paths.PHASE2_ROOT
+
+    def one(cell):
+        lst, scope = cell.split('_', 1)
+        cd = os.path.join(root, cell)
+        try:
+            A.build_time(cd)                        # no installed build: no coverage to judge
+            seen = set(A.seen_nights(cd)) | set(A.admitted_rows(cd))
+            entries = co.discover_dates(lst, scope.replace('MHz', ''))
+            gaps = sorted(d for d, _sci, _img in entries if not ex.is_excluded(lst, scope, d) and d not in seen)
+            if not gaps:
+                return []
+            can, why = A.nights_to_admit(lst, scope, cd, entries, ex, co)
+            can = {d for d, _sci, _img in can}
+        except Exception as e:                      # a record the rules cannot read (Refusal), an unreadable file
+            return [(cell, '', cd, 'unjudged', f'{type(e).__name__}: {str(e)[:200]}')]
+        return [(cell, d, cd, 'admit or rebuild' if d in can else 'rebuild', str(why.get(d, ''))[:200]) for d in gaps]
+    try:
+        rows = []
+        with contextlib.redirect_stdout(io.StringIO()):   # the finders' failsafe notes (admit.science_dirs_before does the same)
+            for r in K.thread_map(one, cells, workers):
+                rows.extend(r)
+    finally:
+        co.PHASE2_ROOT = keep
+    return rows
+
+
 def archive_audit(out_table, archive_root, unit=None, log=None):
     """coadd_exclusion_conformance.py in place (child). Returns (rc, rows); writes the empty table with its header
     when the script found nothing (it writes no file then, :82-85)."""

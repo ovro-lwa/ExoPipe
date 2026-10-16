@@ -107,8 +107,8 @@ def add_arguments(p):
     g.add_argument('--violations', action='store_true', help='deep cells failing the membership conformance (latest '
                                                                'table); listed for `masters`')
     g.add_argument('--stale', nargs='?', const='record', metavar='CLASS[,CLASS]',
-                   help='stale items of the classes: record (default), search_attempt, master, frame_time, prefit, '
-                        'sublst_generation, qa_night_pages, ledger')
+                   help='stale items of the classes: record (default), search_attempt, master, master_coverage, '
+                        'frame_time, prefit, sublst_generation, qa_night_pages, ledger')
     g.add_argument('--records', action='append', default=[], metavar='ROOT',
                    help='--stale record: also read ROOT/_records (repeatable)')
     g.add_argument('--stale-step', help='--stale record: only records of these steps (comma-separated)')
@@ -870,6 +870,22 @@ def _stage_stale(ctx):
                             step='masters', root=r['file'], detail=r['verdict'])
                        for r in XC.working_tree_audit(COV.deep_universe(ctx.deep_spec()), ex, workers=a.workers)
                        if r['verdict'] == 'STALE']
+            elif cls == 'master_coverage':
+                if tier != 'deep':
+                    raise Refusal('--stale master_coverage is deep-only')
+                K.need_inputs([C.paths.COADD_SB_ROOT, C.paths.PHASE2_ROOT], 'stale master_coverage')
+                got = []
+                for cell, d, cd, remedy, det in XC.coverage_gaps(COV.deep_universe(ctx.deep_spec()), ex, workers=a.workers):
+                    if remedy == 'unjudged':
+                        got.append(dict(item=cell, kind='cell', status='unjudged', step='masters', root=cd, detail='',
+                                        reason=f'the coverage of the cell\'s master cannot be judged: {det}'))
+                        continue
+                    how = ('Phase 2 first had it after the build: admit it (masters --stages admit-prep,admit) or rebuild '
+                           'the cell\'s masters' if remedy == 'admit or rebuild' else
+                           f'only a rebuild of the cell\'s masters takes it in (a lifted exclusion, or an admission refused: {det})')
+                    got.append(dict(item=cell, kind='cell', status='stale', step='masters', root=cd, detail=d,
+                                    reason=f'night {d} admissible now (Phase 2 data, not excluded) is in neither the '
+                                           f'master\'s record nor its admissions - {how}'))
             elif cls == 'frame_time':
                 got, src = ST.stale_frame_time(a.cells)
                 u.add_input(src, extra={'kind': 'code'})

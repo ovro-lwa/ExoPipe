@@ -988,6 +988,55 @@ def test_violations_stale():
     check('--stale search_attempt (fake stale_attempts in place, never refuse_and_unmark) and master (STALE masters)',
           rc == 0 and {(x['class'], x['item']) for x in t} == {('search_attempt', '05h_18MHz'), ('master', '05h_18MHz')}
           and 'data_decisions.csv' in [x for x in t if x['class'] == 'search_attempt'][0]['detail'], t)
+    # master_coverage (B-02 step 3c, first review): the other direction of 'master' - a night the cell admits now (Phase 2
+    # data, not excluded) that no record of its installed build names and its admissions do not hold: 05h 18MHz 2099-01-04
+    # (its records name 2099-01-01 and 01-05; 01-02 is excluded at 18 MHz, 01-03 everywhere); 05h Full holds every night it
+    # admits (18 MHz's exclusion is subband-only). The remedy is the admission rule's: the night's Science dir is named after
+    # the build, so it can be admitted.
+    def coverage(out_):
+        rc_, txt_ = step(['status', '--stale', 'master_coverage', '--cells', CELLS, '--out', out_, '--cores', 'none'])
+        u_ = [f[:-5] for f in os.listdir(os.path.join(out_, '_records', 'status'))
+              if f.startswith('report_stale_master_coverage')][0]
+        return rc_, txt_, rows([o['path'] for o in rec(out_, u_)['outputs'] if o['class'] == 'stale_table'][0])
+    rc, txt, t = coverage(f'{TMP}/o_cov')
+    check('--stale master_coverage: the night 05h 18MHz admits now but its master lacks (Phase 2 data, not excluded, in no '
+          'build record nor admission), with the admission rule\'s remedy; 05h Full complete', rc == 0
+          and [(x['item'], x['detail'], x['status']) for x in t] == [('05h_18MHz', '2099-01-04', 'stale')]
+          and 'admit it (masters --stages admit-prep,admit) or rebuild' in t[0]['reason'] and '[failsafe]' not in txt,
+          (rc, t, txt[-300:]))
+    from exopipe.phase3.lib.masters import admit as _A
+    from exopipe.phase3.core.record import Refusal as _Refusal
+    keep = (_A.admitted_rows, _A.nights_to_admit, _A.seen_nights)
+    try:
+        _A.admitted_rows = lambda cd: ({'2099-01-04': {}} if cd.rstrip('/').endswith('05h_18MHz') else {})
+        rc, txt, t = coverage(f'{TMP}/o_cov2')
+        check('--stale master_coverage: a night admitted into the master (admissions.csv) is no gap', rc == 0 and not t, (rc, t))
+        _A.admitted_rows = keep[0]
+        _A.nights_to_admit = lambda *a_, **k_: ([], {'2099-01-04': 'Phase 2 had it before the build fixed its night set (test)'})
+        rc, txt, t = coverage(f'{TMP}/o_cov3')
+        check('--stale master_coverage: a night Phase 2 had before the build (a lifted exclusion) - only a rebuild takes it in',
+              rc == 0 and len(t) == 1 and 'only a rebuild' in t[0]['reason'] and 'before the build' in t[0]['reason'], (rc, t))
+        _A.nights_to_admit = keep[1]
+
+        def _seen(cd):
+            if cd.rstrip('/').endswith('05h_Full'):
+                raise _Refusal('coadd_final/night_image_gate.csv: no \'date\' column (test)')
+            return keep[2](cd)
+        _A.seen_nights = _seen
+        rc, txt, t = coverage(f'{TMP}/o_cov4')
+        check('--stale master_coverage: a cell whose build records cannot be read is reported unjudged; the others are judged',
+              rc == 0 and sorted((x['item'], x['status']) for x in t) == [('05h_18MHz', 'stale'), ('05h_Full', 'unjudged')]
+              and 'cannot be judged' in [x for x in t if x['item'] == '05h_Full'][0]['reason'], (rc, t))
+    finally:
+        _A.admitted_rows, _A.nights_to_admit, _A.seen_nights = keep
+    nig = f'{W}/coadd_sb/05h_18MHz/coadd_final/night_image_gate.csv'
+    wcsv(nig, ['date', 'verdict'], [dict(date='2099-01-04', verdict='FAIL')])
+    try:
+        rc, txt, t = coverage(f'{TMP}/o_cov5')
+    finally:
+        os.remove(nig)
+    check('--stale master_coverage: a night the build\'s night-image gate record names is no gap (the build saw it)',
+          rc == 0 and not t, (rc, t))
     rc, txt = step(['status', '--stale', 'sublst_generation', '--tier', 'sublst', '--out', out, '--cores', 'none'])
     check('--stale sublst_generation: the LST run without pos_kind', rc == 0 and open(
         os.path.join(out, 'items', 'report_stale_sublst_generation_sublst.txt')).read().strip().endswith('05h'), txt[-400:])

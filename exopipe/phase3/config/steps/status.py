@@ -53,7 +53,7 @@ class status(_Section):
     # Exit 2 when a report finds a violation / breach / gap / stale item. Default = today's tools: conformance_check.py
     # exits 0 always (:10); coadd_exclusion_conformance.py:93 exits 1 on a breach (recorded, not inherited).
     STRICT = False
-    STALE_CLASSES = ('record', 'search_attempt', 'master', 'frame_time', 'prefit', 'sublst_generation',
+    STALE_CLASSES = ('record', 'search_attempt', 'master', 'master_coverage', 'frame_time', 'prefit', 'sublst_generation',
                      'qa_night_pages', 'ledger')
     # Roots whose _records/ trees `--stale record` reads, besides REPORT_ROOT, --records and the --out of every job in
     # runner.JOBS_ROOT (job.json step_argv / forward_argv). Production step roots hold no records in the window.

@@ -11,6 +11,9 @@ search_attempt    published deep search attempts that searched a night data_deci
                   attempt's age against data_decisions.csv (aad9c3c).
 master            installed (working tree) masters holding a constituent excluded AFTER the master was written (STALE rows
                   of the master exclusion audit, steps_exclconf.working_tree_audit).
+master_coverage   the other direction: deep cells whose master lacks a night the cell admits now - Phase 2 data,
+                  not excluded, in neither the master's record nor its admissions (a lifted exclusion, or data newer
+                  than the build; steps_exclconf.coverage_gaps).
 frame_time        shipped snapshot cells whose 1-minute / wideband products are pre-fix (snapshot_frametime_worklist.needs).
 prefit            snapshot cells whose PREFIT_DONE marker is older than their newest runinfo (eligibility PREFIT-STALE).
 sublst_generation published sub-LST LST runs without pertie_detections.csv or without pos_kind (B-73).
