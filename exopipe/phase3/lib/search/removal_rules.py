@@ -660,7 +660,7 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
     association criterion (3.034 x quadrature errors) and combined with the served localization's estimator: the pulsar
     inside the combined 99 % radius keeps the group's table cuts; outside, the group's pulsar-exempted detections are cut.
     Changes `cut` in place; returns (kept, removed, [(pulsar, n, sep arcsec, r99 arcsec)]). ``groups_out`` (a list), when
-    given, receives each group's (pulsar, [member row indices]) in the same order (B-02 step 4's record)."""
+    given, receives each group's (pulsar, [member row indices], consistent) in the same order (B-02 step 4's record)."""
     c = _cc()
     if LOC._SP.active():
         raise RuntimeError('removal_rules.pulsar_consistency: the 10-minute tie (P3_TENMIN_PERTIE) is set - this port is the '
@@ -740,7 +740,7 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
                     n_drop += 1
             log.append((pn, len(g), round(sep), round(r99)))
             if groups_out is not None:
-                groups_out.append((pn, sorted(g)))
+                groups_out.append((pn, sorted(g), sep <= r99))
     return n_keep, n_drop, log, len(psr_rows)
 
 

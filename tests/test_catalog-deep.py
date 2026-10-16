@@ -598,6 +598,32 @@ def test_b02_check_mode_in_the_chain():
         mod._MODE, mod._EPOCH = 'remove', 'mid-hour'
 
 
+def test_b02_check_chain_to_conform():
+    """B-02 steps 2 and 4 through the chain under the ruled 'check': the world's attempts given a once-in-search rules record,
+    the pulsar stage runs to done (its catalogue recorded as class pulsar_catalog, whose content test passes: the merged
+    rows, nothing restored or removed) and conform runs the check, which refuses cleanly - a 'refused' unit with its report
+    copied into the stage directory, not an error (the stub world's attempts hold no frame_noise.csv nor search frames)."""
+    import json as _json
+    from exopipe.phase3.lib.search import removal_rules as RR
+    mod = sys.modules[__name__]
+    make_world()
+    for d in sorted(glob.glob(f'{T}/collect/*/attempts/*')):
+        with open(os.path.join(d, RR.RULES_RECORD), 'w') as f:
+            _json.dump(RR.rules_record('once-in-search'), f)
+    try:
+        mod._MODE, mod._EPOCH = 'check', 'frame-mid'
+        cli('--stages', 'preflight,harvest,merge,pulsars,conform', expect=2)
+        r = rec(f'{LABEL}.pulsars')
+        assert r['status'] == 'done', (r['status'], r['reason'][:300])
+        t = [x for x in r['tests'] if x['name'].startswith('pulsar_catalog.')]
+        assert t and all(x['passed'] for x in t), t
+        c = rec(f'{LABEL}.conform')
+        assert c['status'] == 'refused' and 'conform check exit 2' in c['reason'] and c['meta'].get('check_report') \
+            and os.path.exists(c['meta']['check_report']), (c['status'], c['reason'][:300])
+    finally:
+        mod._MODE, mod._EPOCH = 'remove', 'mid-hour'
+
+
 def test_b30_identity_pre_check():
     """B-30 (a) pre-check of ops/p3s3_identity.py (deep_ported.identity_row_fallbacks, in its own parse order): a survivors
     row without a positive finite pos_err_arcsec refuses the identity stage under the ruled value (the module would take 60
@@ -813,7 +839,7 @@ def test_compileall():
 ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge', 'test_b30_identity_pre_check',
-         'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain',
+         'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain', 'test_b02_check_chain_to_conform',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']
 

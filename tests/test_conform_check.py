@@ -461,6 +461,14 @@ def test_faults():
         r.excluded = {d}
     fault('xref', xref_excluded, None, 'a frame whose source extraction was refused (not searched), on a night excluded since')
 
+    r = fresh('wcs_bad')                     # a frame whose WCS does not parse: one 'frame' finding per row, no crash
+    r.att['V'].headers[NIGHTS[2]]['CTYPE1'] = 'RA---XYZ'
+    r.write()
+    ok, f, res = run_check(r)
+    check("a search frame whose WCS does not parse - refused with ('a', 'frame') / ('b', 'frame') findings, no crash, and its "
+          "finals still back their catalog rows (no 'unbacked')", not ok and f and f <= {('a', 'frame'), ('b', 'frame'),
+                                                                                       ('record', 'frame')}, (ok, sorted(f), res))
+
     r = fresh('b_unpublished').write()      # (b) a final without its catalog row
     rows = CC._rows(os.path.join(r.U, 'master_catalog.csv'))
     wcsv(os.path.join(r.U, 'master_catalog.csv'), ST.CAT_FIELDS, rows[1:])
@@ -562,6 +570,22 @@ def test_pulsar_stage():
             ok = (res['restored'] == 0 and res['removed'] == 2 and not pr and len(grp) == 1 and grp[0]['consistent'] == '0'
                   and sorted(x['action'] for x in rec) == ['removed', 'removed']
                   and len(CC._rows(os.path.join(r.U, CC.PULSAR_REMOVED))) == 2)
+        from exopipe.phase3.lib.catalog import tests as CT
+        pt = CT.pulsar_stage_record(os.path.join(r.U, 'master_catalog.csv'), merge_copy=r.merged)
+        check(f"the pulsar_catalog content test passes on the stage's output ({want})", pt[0], pt)
+        if want == 'consistent':
+            bad = os.path.join(T, 'pulsar_catalog_corrupt.csv')
+            rows_ = CC._rows(os.path.join(r.U, 'master_catalog.csv'))
+            wcsv(bad, ST.CAT_FIELDS, [x for x in rows_ if not CC.is_restored(x['cand_id'])] +
+                 [dict(rows_[0], cand_id=f'VR_{LST}_{NIGHTS[0]}_{SC}_00010001')])
+            for nm in (CC.PULSAR_RECORD, CC.PULSAR_REMOVED):
+                shutil.copy2(os.path.join(r.U, nm), os.path.join(T, nm))
+            pb = CT.pulsar_stage_record(bad, merge_copy=r.merged)
+            check('the pulsar_catalog content test refuses a stage catalogue whose restored row the record does not name',
+                  not pb[0], pb)
+            restored_id = pr[0]['cand_id'] if pr else ''
+            check('a restored ID numbers the detection by its pixel (stable from pass to pass)', restored_id ==
+                  f'VR_{LST}_{NIGHTS[2]}_{SC}_{px[0]:04d}{px[1]:04d}', restored_id)
         check(f"pulsar stage with production's group rule, a group {want} with its pulsar: "
               + ('its cut detection restored as VR_<lst>_... (field 2 the LST), the group and its 3 members recorded'
                  if want == 'consistent' else 'its two exempted detections removed, recorded with their reason'),
@@ -634,6 +658,13 @@ def test_chain_pieces():
         CFG.authorize(out=os.path.join(T, 'out'))
         CFG.set('catalog_conform.DEEP_ELEV_EPOCH', 'mid-hour')
         js = CC.forward_overrides(CFG)
+        CFG.reset()
+        CFG.authorize(out=os.path.join(T, 'out'))
+        CFG.set('catalog_conform.DEEP_ELEV_EPOCH', 'mid-hour')
+        CFG.set('search_detect.SANITY_X', '3.5')
+        CFG.set('catalog_conform.TABLE_ELEV[deep]', 'False')
+        want = {o[0]: o[2] for o in CFG.overrides}
+        js2 = CC.forward_overrides(CFG)
     finally:
         CFG.reset()
     code = ('import sys; sys.path.insert(0, %r)\nfrom exopipe.phase3.core import env; env.legacy()\n'
@@ -645,6 +676,20 @@ def test_chain_pieces():
     check("the unit's config overrides reach the module child: catalog_conform.DEEP_ELEV_EPOCH='mid-hour' set in the parent "
           "is the child's value, as a forwarded override", p.stdout.strip().startswith('1 mid-hour forwarded'),
           (p.stdout[-300:], p.stderr[-600:]))
+    code2 = ('import sys; sys.path.insert(0, %r)\nfrom exopipe.phase3.core import env; env.legacy()\n'
+             'from exopipe.phase3.lib.catalog import conform_check as CC\nfrom exopipe.phase3.config import CFG\n'
+             'import os\nCC.apply_forwarded(os.environ[CC.OVERRIDES_ENV])\n'
+             'print(repr({o[0]: o[2] for o in CFG.overrides}))' % REPO)
+    p = subprocess.run([sys.executable, '-c', code2], capture_output=True, text=True,
+                       env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1', **{CC.OVERRIDES_ENV: js2}))
+    got = {}
+    try:
+        import ast as _ast
+        got = _ast.literal_eval(p.stdout.strip().splitlines()[-1])
+    except Exception:
+        pass
+    check('the forwarded overrides are exact: a str, a float and a dict entry arrive with the parent\'s values and types',
+          got == want and all(type(got[k]) is type(want[k]) for k in want), (want, got, p.stderr[-400:]))
 
 
 def test_mode():

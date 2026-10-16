@@ -11,7 +11,7 @@ pulsars(U, manifest, label): the pulsar stage. The merged catalog and, per merge
 name a pulsar (table_pulsar_decisions.csv: kept as the pulsar's parent, or cut although it lies within a beam) and the
 gate-ledger rows of the cut ones; the groups are production's (removal_rules.pulsar_consistency): a group consistent with
 its pulsar gets its cut detections back - rows built from their ledger rows, as the v110 re-admission builds one, the ID
-<S>R_<lst>_<date>_<band>_<n> in the catalog's shape (the VM_ rows' fields: downstream reads the LST from field 2) - and an
+<S>R_<lst>_<date>_<band>_<pixel> in the catalog's shape (the VM_ rows' fields: downstream reads the LST from field 2) - and an
 inconsistent one loses its pulsar-exempted detections. Writes <U>/master_catalog.csv (the merged rows, changed only so, in the
 merged columns - deep_chain.ensure_master gives every stage its predecessor's recorded catalog), PULSAR_RECORD (every row it
 changed, with its words - the check puts them in the restored rows' conform_note), PULSAR_REMOVED (the rows it removed, with
@@ -34,7 +34,8 @@ Not seen by either direction: an exclusion lifted after the search (the engine r
 merge's staleness gate catches a newly excluded night only) - B02_DESIGN.md "Steps 2 and 4, first review".
 
 python -m exopipe.phase3.lib.catalog.conform_check pulsars <U> <merged attempts> <label>
-python -m exopipe.phase3.lib.catalog.conform_check check <U> <merged attempts> <label> <merged catalogue>   (deep_chain)
+python -m exopipe.phase3.lib.catalog.conform_check check <U> <merged attempts> <label> <merged catalogue> [<pulsar record>
+    <pulsar removed>]   (deep_chain passes the pulsar stage's recorded copies)
 The chain hands its config overrides to the child in OVERRIDES_ENV (applied as forwarded overrides the step authorized).
 """
 import collections
@@ -97,11 +98,11 @@ def _deps():
 
 
 def forward_overrides(cfg):
-    """The run's config overrides (the final value of each overridden key) and its parity-replay flag, as the JSON the chain
-    hands the module child in OVERRIDES_ENV - so the child judges with the config the unit records."""
-    from exopipe.phase3.config import _jsonable
+    """The run's config overrides - each key with the repr of its final value, which the child parses back as a --set value
+    is parsed (literal_eval: tuples, tuple keys and str types survive) - and its parity-replay flag, as the JSON the chain
+    hands the module child in OVERRIDES_ENV, so the child judges with the config the unit records."""
     return json.dumps({'parity': bool(getattr(cfg, 'parity_replay', False)),
-                       'overrides': [[o[0], _jsonable(o[2])] for o in cfg.overrides]})
+                       'overrides': [[o[0], repr(o[2])] for o in cfg.overrides]})
 
 
 def apply_forwarded(text):
@@ -217,10 +218,13 @@ class Frames:
     def _store(self, k, rec):
         h = rec.pop('_h', None)
         if 'error' not in rec:
-            if rec['cards'] not in self._w:
-                from astropy.wcs import WCS
-                self._w[rec['cards']] = WCS(h).celestial
-            rec['wcs'] = self._w[rec['cards']]
+            try:
+                if rec['cards'] not in self._w:
+                    from astropy.wcs import WCS
+                    self._w[rec['cards']] = WCS(h).celestial
+                rec['wcs'] = self._w[rec['cards']]
+            except Exception as e:          # a header that reads but whose WCS does not parse: the frame's error
+                rec = dict(path=rec['path'], error=f'WCS: {type(e).__name__}: {e}')
         self._f[k] = rec
 
     def get(self, stokes, lst, scope, date):
@@ -362,12 +366,14 @@ def _ledger(a):
 # the pulsar stage (step 4)
 # ---------------------------------------------------------------------------------------------------------------------
 
-def restored_row(cols, led, tpd, j):
+def restored_row(cols, led, tpd):
     """A catalog row for a table-cut detection the pulsar stage gives back, in the merged catalogue's columns: those its ledger
     row holds (as the v110 re-admission builds one) and the position the search judged it at (the pixel's); its ID
-    <S>R_<lst>_<date>_<band>_<n> (field 2 the LST, as every catalog ID - downstream parses it)."""
+    <S>R_<lst>_<date>_<band>_<pix_x:04d><pix_y:04d> - field 2 the LST, as every catalog ID (downstream parses it), and the
+    pixel as its number, so a detection keeps its ID from pass to pass (one detection per pixel and frame)."""
     r = dict.fromkeys(cols, '')
-    r.update(cand_id=f"{tpd['stokes']}{RESTORED_TAG}_{tpd['lst']}_{tpd['date']}_{tpd['scope']}_{j:04d}", lst=tpd['lst'],
+    n = f"{int(float(tpd['pix_x'])):04d}{int(float(tpd['pix_y'])):04d}"
+    r.update(cand_id=f"{tpd['stokes']}{RESTORED_TAG}_{tpd['lst']}_{tpd['date']}_{tpd['scope']}_{n}", lst=tpd['lst'],
              date=tpd['date'], band=tpd['scope'], stokes=tpd['stokes'], cadence='deep', ra=tpd['ra'], dec=tpd['dec'])
     for k in ('peak_jy', 'snr', 'mstruct', 'mstruct_raw', 'sstack', 'jupiter_deg', 'n_v_epoch', 'global_snr', 'size_beams',
               'size_flag', 'nearest_ateam', 'moon_deg', 'axis_norm', 'fp_prediction'):
@@ -424,7 +430,7 @@ def pulsars(U, manifest, label, catalog_dir=None, out=print):
                     missing.append(f"cut {t['stokes']} {t['lst']}_{t['scope']} {t['date']} pixel ({t['pix_x']}, {t['pix_y']}): "
                                    f"no 'table' ledger row")
                     continue
-                rows.append(restored_row(cols, lr, t, len(rows)))
+                rows.append(restored_row(cols, lr, t))
                 i = len(rows) - 1
                 cut[i] = (True, t['note'])
                 cand[i] = (lr, t)
@@ -460,7 +466,7 @@ def pulsars(U, manifest, label, catalog_dir=None, out=print):
            [dict(rows[i], removal_reason=cut[i][1]) for i in sorted(removed)])
     _write(os.path.join(CD, PULSAR_GROUPS), PULSAR_GROUP_COLS,
            [dict(pulsar=pn, n=n, members='|'.join(rows[i]['cand_id'] for i in mem), sep_arcsec=sep, r99_arcsec=r99,
-                 consistent=int(sep <= r99)) for (pn, n, sep, r99), (_pn, mem) in zip(plog, members)])
+                 consistent=int(ok)) for (pn, n, sep, r99), (_pn, mem, ok) in zip(plog, members)])
     out(f'pulsar stage: {n_psr} pulsars in table decisions, {len(plog)} groups; restored {len(restored)} table-cut detections '
         f'of pulsar-consistent sources, removed {len(removed)} pulsar-exempted detections of inconsistent sources; '
         f'{len(raw)} merged rows -> {len(kept)}', flush=True)
@@ -471,8 +477,9 @@ def pulsars(U, manifest, label, catalog_dir=None, out=print):
 # the check (step 2)
 # ---------------------------------------------------------------------------------------------------------------------
 
-def check(U, manifest, label, merged=None, catalog_dir=None, out=print):
-    """The check (module docstring). Returns its counts; REFUSES (exit 2) on any finding."""
+def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_record=None, pulsar_removed=None):
+    """The check (module docstring). Returns its counts; REFUSES (exit 2) on any finding. ``pulsar_record`` /
+    ``pulsar_removed``: the pulsar stage's recorded copies (the chain passes them; default <catalog dir>/PULSAR_*)."""
     D = _deps()
     G, PCT, excluded = D['G'], D['PCT'], D['excluded']
     c, sd = CFG.catalog_conform, CFG.search_detect
@@ -490,9 +497,11 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print):
     if not raw:
         raise Refused(f'conform check: {src} has no rows')
     cols = list(raw[0].keys())
-    if not os.path.exists(os.path.join(CD, PULSAR_RECORD)):
-        raise Refused(f'conform check: no {PULSAR_RECORD} in {CD} - the pulsar stage runs before the check')
-    prec = _rows(os.path.join(CD, PULSAR_RECORD))
+    pulsar_record = pulsar_record or os.path.join(CD, PULSAR_RECORD)
+    pulsar_removed = pulsar_removed or os.path.join(CD, PULSAR_REMOVED)
+    if not os.path.exists(pulsar_record):
+        raise Refused(f'conform check: no {pulsar_record} - the pulsar stage runs before the check')
+    prec = _rows(pulsar_record)
     p_restored = {(p['lst'], p['scope'], p['stokes'], p['date'], round(RR.f(p['ra']), 5), round(RR.f(p['dec']), 5)): p['words']
                   for p in prec if p['action'] == 'restored'}
     p_removed = {(p['lst'], p['scope'], p['stokes'], p['date'], round(RR.f(p['ra']), 5), round(RR.f(p['dec']), 5)) for p in prec
@@ -586,6 +595,8 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print):
             fr = frames.get(st, l, b, r['date'])
             if 'error' in fr:
                 finding('a' if r['final'] == '1' else 'b', 'frame', r, f'search frame unreadable: {fr["error"]}')
+                if r['final'] == '1':           # its catalogue row is still backed by it (the ledger's position): one
+                    finals[(l, b, st, r['date'])].append((r, (RR.f(r['ra']), RR.f(r['dec']))))   # finding per defect
                 continue
             pos = P[id(r)] = sky(fr, r)
             el, words = elevation(l, *pos, fr, epoch)
@@ -693,9 +704,9 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print):
                       f'- {CHECK_REPORT} written, nothing published; re-search the cells')
 
     # ---- passed: production's outputs, nothing removed
-    removed = _rows(os.path.join(CD, PULSAR_REMOVED))
+    removed = _rows(pulsar_removed)
     if len(removed) != len(p_removed):
-        raise Refused(f'conform check: {PULSAR_REMOVED} holds {len(removed)} rows, the pulsar stage\'s record {len(p_removed)}')
+        raise Refused(f'conform check: {pulsar_removed} holds {len(removed)} rows, the pulsar stage\'s record {len(p_removed)}')
     shutil.copy(merged or src, os.path.join(CD, 'master_catalog_asrun.csv'))
     ocols = cols + ['fp_prediction', 'size_beams', 'size_flag', 'axis_norm', 'axis_flag', 'conform_note']
     _write(src, ocols, kept)
@@ -710,9 +721,9 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if not ((len(argv) == 4 and argv[0] == 'pulsars') or (len(argv) == 5 and argv[0] == 'check')):
+    if not ((len(argv) == 4 and argv[0] == 'pulsars') or (len(argv) in (5, 7) and argv[0] == 'check')):
         raise SystemExit('usage: conform_check pulsars <run dir> <merged attempts> <label> | '
-                         'check <run dir> <merged attempts> <label> <merged catalogue>')
+                         'check <run dir> <merged attempts> <label> <merged catalogue> [<pulsar record> <pulsar removed>]')
     from exopipe.phase3.core import env
     env.legacy()
     n = apply_forwarded(os.environ.get(OVERRIDES_ENV, ''))
@@ -721,7 +732,8 @@ def main(argv=None):
     if argv[0] == 'pulsars':
         pulsars(argv[1], argv[2], argv[3])
     else:
-        check(argv[1], argv[2], argv[3], merged=argv[4])
+        check(argv[1], argv[2], argv[3], merged=argv[4], pulsar_record=argv[5] if len(argv) == 7 else None,
+              pulsar_removed=argv[6] if len(argv) == 7 else None)
 
 
 if __name__ == '__main__':

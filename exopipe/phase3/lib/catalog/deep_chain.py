@@ -774,7 +774,7 @@ class DeepRun:
             u.meta.setdefault('copies', {})[CC.MERGED_ATTEMPTS] = man
             self.out(u, man)
             self.write_stage_json(d, merge_copy=merge_copy, parent_dir=par, merged_attempts=man)
-            self.out(u, os.path.join(d, 'master_catalog.csv'), 'pulsar_catalog')
+            self.out(u, os.path.join(d, 'master_catalog.csv'), 'pulsar_catalog', merge_copy=merge_copy)
             u.note(next((h for h in reversed(hits) if h.startswith('pulsar stage:')), tail[-1] if tail else '')[:600])
         return u
 
@@ -811,7 +811,8 @@ class DeepRun:
             self.ensure_master(u, pred, 'conform')
             d = self.stage_dir(u, 'conform')
             if mode == 'check':
-                rc, tail, hits = self.call(u, CHECK_MODULE, ['check', self.U, man, self.label, merge_copy],
+                rc, tail, hits = self.call(u, CHECK_MODULE, ['check', self.U, man, self.label, merge_copy, pc[CC.PULSAR_RECORD],
+                                                             pc[CC.PULSAR_REMOVED]],
                                            self.env(parent_dir=par), self.log, keep=('conform check:', 'REFUSED'), module=True)
                 rep = os.path.join(self.U, CC.CHECK_REPORT)
                 if rc != 0:
@@ -1322,19 +1323,21 @@ class DeepRun:
                     continue
                 preds(self.u('pulsars'))
                 par = self.chain.meta(self.u('preflight'), 'parent_dir') or '<parent dir from the preflight record>'
-                cmd([self.py, '-m', CHECK_MODULE, 'pulsars', self.U, '<harvest manifest>', self.label],
+                cmd([self.py, '-m', CHECK_MODULE, 'pulsars', self.U, '<stage dir>/merged_attempts.csv', self.label],
                     self.env(parent_dir=par)[1], self.log)
-                p('    reads: master_catalog.csv (the merge record copy), every published attempt\'s table_pulsar_decisions.csv, '
-                  'v_deep_ledger.csv and search frames, the pulsar list, the solar audit')
+                p('    reads: master_catalog.csv (the merge record copy), every merged attempt\'s table_pulsar_decisions.csv, '
+                  'v_deep_ledger.csv and search frames (merged_attempts.csv: the harvest manifest less the merge\'s stale '
+                  'attempts), the pulsar list, the solar audit')
                 p('    writes: master_catalog.csv (restored / removed rows), pulsar_stage.csv, master_catalog_pulsar_removed.csv, '
                   'pulsar_groups.csv; class pulsar_catalog')
                 p('    gates: every attempt searched under once-in-search at the current rules version')
             elif stage == 'conform' and c.catalog_conform.MODE == 'check':
                 preds(self.u('conform'))
                 par = self.chain.meta(self.u('preflight'), 'parent_dir') or '<parent dir from the preflight record>'
-                cmd([self.py, '-m', CHECK_MODULE, 'check', self.U, '<harvest manifest>', self.label, '<merge record copy>'],
+                cmd([self.py, '-m', CHECK_MODULE, 'check', self.U, '<pulsars stage>/merged_attempts.csv', self.label,
+                     '<merge record copy>', '<pulsars stage>/pulsar_stage.csv', '<pulsars stage>/master_catalog_pulsar_removed.csv'],
                     self.env(parent_dir=par)[1], self.log)
-                p('    reads: master_catalog.csv (the pulsar stage record copy), every published attempt\'s rules record, '
+                p('    reads: master_catalog.csv (the pulsar stage record copy), every merged attempt\'s rules record, '
                   'frame_noise.csv, gate ledger, refusals and search frames; the tables, parents, exclusions, solar audit, '
                   'weights.csv of every cell')
                 p('    writes (passed): master_catalog.csv (conformant, nothing removed), master_catalog_asrun.csv (the merge '

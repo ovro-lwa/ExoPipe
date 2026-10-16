@@ -329,9 +329,9 @@ def conformance_record(path, tier='deep', **ctx):
     """ops/p3s2_conform.py:471-559 on content: the as-run copy is the merge output; conformant + removed rows = as-run
     rows + re-admitted VM_ rows (cand_ids) + (B-02 'check') the rows the pulsar stage restored - each named as restored in
     its pulsar_stage.csv; every removed row has a removal_reason; no conformant row on an excluded epoch or (deep) below the
-    floor at the stage's recorded convention (stage.json elev_epoch; else catalog_conform.DEEP_ELEV_EPOCH) - mid-hour (LST +
-    0.5 h), or the frame's own mid-time from the run's frame_times.csv - judged at the position conformance saw
-    (peak_ra/peak_dec once fitted); every conformant V row carries an fp_prediction."""
+    floor at the stage's recorded convention (stage.json elev_epoch; a record without one is production's conformance's:
+    mid-hour) - mid-hour (LST + 0.5 h), or the frame's own mid-time from the run's frame_times.csv - judged at the position
+    conformance saw (peak_ra/peak_dec once fitted); every conformant V row carries an fp_prediction."""
     cfg = _cfg()
     cols, rows = _rows(path)
     msgs = []
@@ -367,7 +367,9 @@ def conformance_record(path, tier='deep', **ctx):
     ex = _excl()
     lat = cfg.catalog.SITE_LAT_DEG['conform']
     floor = cfg.catalog_conform.DEEP_ELEV_FLOOR_DEG
-    epoch = _stage_info(path).get('elev_epoch') or cfg.catalog_conform.DEEP_ELEV_EPOCH   # what the stage applied
+    epoch = _stage_info(path).get('elev_epoch') or 'mid-hour'   # what the stage applied: no record of it = production's
+                                                                # conformance (every record before B-02 step 2; the
+                                                                # incremental replay's), which judges at mid-hour
     FT = {}
     if tier == 'deep' and epoch == 'frame-mid':               # B-02 step 3b: judged at the frame's own mid-time
         ftp = _sibling(path, 'frame_times.csv', ctx)
@@ -404,6 +406,39 @@ def conformance_record(path, tier='deep', **ctx):
         msgs.append(f'{n_fp} conformant V rows without fp_prediction')
     return _fail(msgs, len(rows), f'{len(rows)} conformant, {len(removed)} removed of {len(asrun)} as-run '
                                   f'(+{len(vm)} re-admitted, +{len(pr)} restored)')
+
+
+@content_test('pulsar_catalog')
+def pulsar_stage_record(path, **ctx):
+    """The pulsar stage's catalogue (B-02 step 4, lib/catalog/conform_check.pulsars): the merge's output (merge_copy) less the
+    rows its record removed plus the rows it restored, by cand_id, in the merged columns; every restored row (<S>R_...) named
+    'restored' in pulsar_stage.csv, every removed one in master_catalog_pulsar_removed.csv with its reason."""
+    from exopipe.phase3.lib.catalog import conform_check as CC
+    cols, rows = _rows(path)
+    merged = ctx.get('merge_copy') or _stage_info(path).get('merge_copy')
+    recp, remp = _sibling(path, CC.PULSAR_RECORD, ctx), _sibling(path, CC.PULSAR_REMOVED, ctx)
+    if not (merged and os.path.exists(merged) and recp and remp):
+        return False, len(rows), f'merge copy, {CC.PULSAR_RECORD} or {CC.PULSAR_REMOVED} not found ({merged}, {recp}, {remp})'
+    mcols, mrows = _rows(merged)
+    rec, rem = _rows(recp)[1], _rows(remp)[1]
+    msgs = []
+    if cols != mcols:
+        msgs.append('columns are not the merged catalogue\'s')
+    restored = {r['cand_id'] for r in rec if r.get('action') == 'restored'}
+    removed = {r['cand_id'] for r in rec if r.get('action') == 'removed'}
+    m_ids = [r['cand_id'] for r in mrows]
+    c_ids = [r['cand_id'] for r in rows]
+    if sorted(c_ids) != sorted([c for c in m_ids if c not in removed] + list(restored)):
+        msgs.append(f'{len(c_ids)} rows != {len(m_ids)} merged - {len(removed)} removed + {len(restored)} restored')
+    new = {c for c in c_ids if c not in set(m_ids)}
+    if new != restored or any(not CC.is_restored(c) for c in new):
+        msgs.append(f'rows not in the merged catalogue that the record does not name restored (or not <S>R_): '
+                    f'{sorted(new ^ restored)[:3]}')
+    if not removed <= set(m_ids):
+        msgs.append(f'removed rows that are not merged rows: {sorted(removed - set(m_ids))[:3]}')
+    if {r['cand_id'] for r in rem} != removed or any(not (r.get('removal_reason') or '').strip() for r in rem):
+        msgs.append(f'{CC.PULSAR_REMOVED} is not the record\'s removed rows, each with its reason')
+    return _fail(msgs, len(rows), f'{len(rows)} rows = {len(m_ids)} merged - {len(removed)} removed + {len(restored)} restored')
 
 
 def _sha1(path):
