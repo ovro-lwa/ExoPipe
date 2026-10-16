@@ -510,6 +510,10 @@ def build(cell, args, run, out, ran_now):
                     pimg = I.product_image(_sd, freq, prod)
                     if pimg:
                         u.add_input(pimg)
+                if co.HEADER_STANDARD == 'full':                         # WAVE2 OUTPUT: the V images its THERMNOI may be
+                    from exopipe.phase3.lib.masters import thermnoi as TN   # measured on (writers step 1)
+                    for p in TN.candidates(_sd, sc):
+                        u.add_input(p)
         # identity of what stage-in and the flow step left: the flows, the reference COPIES (coadd_final/{I,V} are the same
         # bytes - build_clean_start - but the build overwrites them with the new masters) and the carried epoch-gate record
         for p in (sorted(glob.glob(os.path.join(cell_dir, 'flow', '*'))) + sorted(glob.glob(os.path.join(cell_dir, 'coadd_final_ref', '*')))
@@ -528,6 +532,7 @@ def build(cell, args, run, out, ran_now):
         if reference.startswith('night:'):
             co.REFERENCE_DATES = dict(co.REFERENCE_DATES, **{lst: reference.split(':', 1)[1]})
             u.note(f'reference night from stage-in: {reference}')
+        del co.THERMNOI_RECORD[:]
         with IP.call_env(['masters', 'masters_build'], extra=extra) as env, \
                 IP.capture_stdout(_log(out, cell, 'build')) as tee:
             u.note(f'call environment: {env}')
@@ -554,6 +559,7 @@ def build(cell, args, run, out, ran_now):
                                          lambda: _admit().verify(cell_dir, excl, mb=mods['membership'])[0], factor=factor)
             except RuntimeError as e:                 # every in-place gate that raises (G-M02/04/05/09/16/19)
                 u.refuse(str(e)[:1500])
+        _admit_stages().note_thermnoi(u, co, f'{cell} build')  # WAVE2 OUTPUT: the nights the build gave no THERMNOI
         u.note(f'co-add final: {fin.get("n_good")}/{fin.get("n_total")} nights in the master')
         grid = os.path.join(cell_dir, 'refusals_grid.csv')
         if os.path.exists(grid):

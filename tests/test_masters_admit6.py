@@ -195,6 +195,7 @@ def test_admit_end_to_end():
     std = {'THERMNOI', 'P2RUN'} if CFG.masters_build.HEADER_STANDARD == 'full' else set()   # writers step 1: the night's
     skip |= std                                     # output-standard cards (the members were built under production's headers)
     hdiff, sdiff, night_cards = {}, {}, {}
+    adm_rows = {r['date']: r for r in csv.DictReader(open(os.path.join(cd, 'coadd_final', 'admissions.csv')))} if std else {}
     for d in nights:
         for st in ('I', 'V'):
             for kind in ('epoch', 'sub', 'clean'):
@@ -203,19 +204,28 @@ def test_admit_end_to_end():
                 dk = sorted(k for k in set(a) | set(b) if k not in skip and a.get(k) != b.get(k))
                 if dk:
                     hdiff[f'{d}_{st}_{kind}'] = dk[:6]
-                if std:                     # the night's cards: THERMNOI as Phase 2 stamps it, scaled with the pixels by
-                    raw, run_ = night_cards.setdefault(d, _night_cards(cd, d))   # the bake; P2RUN its Science run
-                    want = (None if raw is None else float(round(raw * float(a['SHSCALE']) * float(a['FLUXCORR']), 9)), run_)
-                    got = (a.get('THERMNOI'), a.get('P2RUN'))
-                    if got != want or raw is None:
-                        sdiff[f'{d}_{st}_{kind}'] = (got, want)
+                if std:                     # the night's cards: THERMNOI as Phase 2 stamps it, in the product's units - divided
+                    raw, run_ = night_cards.setdefault(d, _night_cards(cd, d))   # by the factors the night's pixels were
+                    r_ = adm_rows.get(d) or {}                     # divided by (the recorded first-pass DC; the second-pass DC,
+                    dc2 = float(r_.get('dc2') or 'nan')            # or the guard median 1.0 where the guard took it), then
+                    if not (int(r_.get('dc2_nsrc') or 0) >= 8 and 0.6 <= dc2 <= 1.6):   # multiplied by the bake: SHSCALE x
+                        dc2 = 1.0                                  # FLUXCORR; P2RUN its Science run
+                    f = float(r_.get('dc1') or 'nan') * dc2
+                    want = (None if raw is None else raw / f * float(a['SHSCALE']) * float(a['FLUXCORR']))
+                    got = a.get('THERMNOI')
+                    hist = ' '.join(str(x) for x in a.get('HISTORY', []))
+                    ok_ = (raw is not None and got is not None and abs(got / want - 1) <= 2e-5 and a.get('P2RUN') == run_
+                           and f'measured on' in hist and 'flux scale' in hist)
+                    if not ok_:
+                        sdiff[f'{d}_{st}_{kind}'] = (got, want, a.get('P2RUN'), run_)
     check('every admitted product\'s header equals the member\'s card for card (the epochs stamped as the archive '
           'publish stamps them) but ADMITTED / ADMITREF / HISTORY and the code commit (GITTAG)'
           + (', and the night\'s output-standard cards (THERMNOI, P2RUN)' if std else ''), not hdiff, hdiff)
     if std:
-        check('writers step 1: every admitted product carries its night\'s THERMNOI (measured as Phase 2 stamps it on the '
-              'night\'s V deep image, then scaled with the pixels by the bake: SHSCALE x FLUXCORR) and P2RUN (its Phase 2 '
-              'Science run)', not sdiff and len(night_cards) == len(nights), (sdiff, night_cards))
+        check('writers step 1: every admitted product carries its night\'s THERMNOI in the product\'s units (measured as '
+              'Phase 2 stamps it on the night\'s V deep image, divided by the first- and second-pass DCs the pixels were divided '
+              'by - admissions.csv dc1, dc2 - then multiplied by the bake: SHSCALE x FLUXCORR; within 2e-5, the recorded DCs\' '
+              'rounding) and P2RUN (its Phase 2 Science run)', not sdiff and len(night_cards) == len(nights), (sdiff, night_cards))
     for stage, extra in (('admit', ['--set', 'masters_admit.DC2_MEDIAN_WITHOUT_RECORD=1.0']), ('admit-prep', [])):
         rp = os.path.join(out, '_records', 'masters', f'{stage}_{CELL}.json')
         r_ = json.load(open(rp))
@@ -331,7 +341,7 @@ def _run_admit(wt, out):
 LOOP_CALLS = {'coadd': ('prep_night', '_epoch_content_arrays', '_flow_freshness', '_product_mapping', 'beam_area',
                         'beam_gate_image', 'compute_residual_rms', 'epoch_standard_header', 'final_night', 'load_image',
                         'measure_scale2', 'process_variant_image', 'subtract_night'),
-              'admit_stages': ('off_grid', 'move_aside', 'move_aside_files', 'stage2_verdict', 'v_status', 'write_admissions',
+              'admit_stages': ('off_grid', 'move_aside', 'move_aside_files', 'note_thermnoi', 'stage2_verdict', 'v_status', 'write_admissions',
                                '_sha1'),
               'shflux': ('bake',),
               'record': ('utcnow', 'UnitRecord.refuse_item', 'UnitRecord.plan', 'UnitRecord.add_output', 'UnitRecord.note')}
@@ -369,6 +379,10 @@ PATH_EXCEPTS = {
     'fallback.site': [('Refusal', "_record('refuse', key, 1, f'{detail} [{e}]')", 'bedd84c8b0', 'raise')],
     'inputs.is_subband': [('(ValueError, TypeError)', 'return False', 'd2287f88ed', 'parse')],
     'membership.qa3_inside': [('(TypeError, ValueError)', 'return False', '02ef154300', 'parse')],
+    'phase2_science_agg.get_inner_rms': [('Exception', 'logger.warning(f"RMS failed for {os.path.basename(fits_path)}: {e}")', '776f4a0109',
+                                          'cosmetic')],  # writers step 1: Phase 2's own measurement; its NaN is thermnoi.measure's
+                                                         # 'does not measure' - a derived card left off (no pixel, value, row or
+                                                         # verdict), named in HISTORY and the unit's note
     'record._jsonable_ctx': [('(TypeError, ValueError)', 'out[k] = str(v)', '70b8f8b2b1', 'cosmetic')],
     'validate._discover': [('Exception', "_DISCOVERY_ERRORS[name] = f'{type(e).__name__}: {e}'", '079815da75', 'problem')],
     'validate.run': [('Exception', "passed, value, detail = False, None, f'test raised {type(e).__name__}: {e}'", '6455ebee51', 'problem')],

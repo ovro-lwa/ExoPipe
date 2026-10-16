@@ -272,23 +272,54 @@ def epoch_time_header(tmpl_hdr, src_path):
     return out
 
 
-def night_standard_cards(hdr, sci_dir, band, src_path=None):
+# WAVE2 OUTPUT (writers step 1): one row per night_standard_cards call - (sci_dir, band, THERMNOI or None, the V image
+# measured, why none) - which the build and admit stages register on their unit record (the V images as inputs, the
+# nights without THERMNOI in a note) and then clear.
+THERMNOI_RECORD = []
+
+
+def applied_flat_scale(*maps):
+    """The product of the flat factors a night's pixels were divided by - each scale map as process_variant_image and
+    subtract_night divide by it (a factor of |s| <= 0.1 divides by 1) - or None when a map is absent or not flat (an affine
+    scale has no single factor)."""
+    f = 1.0
+    for m in maps:
+        if m is None:
+            return None
+        a = np.asarray(m, dtype=float)
+        if a.size == 0 or not np.all(np.isfinite(a)) or float(np.ptp(a)) != 0.0:
+            return None
+        s = float(a.flat[0])
+        f *= s if abs(s) > 0.1 else 1.0
+    return f
+
+
+def night_standard_cards(hdr, sci_dir, band, src_path=None, flux_scale=None):
     """WAVE2 OUTPUT (writers step 1, plan/wave2/OUTPUT_WRITERS_DESIGN.md): ``hdr`` with the output-standard cards of the
-    night, which every product of the night inherits - THERMNOI, measured as Phase 2 stamps it on the night's V deep image
-    in ``sci_dir`` (lib/masters/thermnoi.measure), and P2RUN, the night's Phase 2 Science run (``sci_dir``'s name). A night
-    with no V deep image that measures gets no THERMNOI (a card the template carried is dropped) and a HISTORY line naming
-    why; a Phase 2 card on the night's I image (``src_path``) that differs from the measurement is named in HISTORY (its I
-    image re-made after Phase 2 stamped it)."""
+    night, which every product of the night inherits - THERMNOI and P2RUN, the night's Phase 2 Science run (``sci_dir``'s
+    name). THERMNOI is measured as Phase 2 stamps it on the night's V deep image in ``sci_dir`` (lib/masters/thermnoi.measure)
+    and stated in the product's units: divided by ``flux_scale``, the flat factor the night's pixels were divided by
+    (applied_flat_scale: the first-pass DC times the second-pass DC or the guard's median). A night with no V deep image that
+    measures, a band Phase 2 did not form, or pixels without a single flux factor (``flux_scale`` None) get no THERMNOI (a
+    card the template carried is dropped) and a HISTORY line naming why. A Phase 2 card on the night's I image (``src_path``)
+    that differs from the measurement is named in HISTORY (its I image re-made after Phase 2 stamped it)."""
     from exopipe.phase3.lib.masters import thermnoi as _TN
     out = hdr.copy()
     val, vimg, why = _TN.measure(sci_dir, band)
-    if val is None:
+    if val is not None and flux_scale is None:
+        why = (f'the pixels carry no single flux factor (an affine or unknown scale), so {val} Jy/beam measured on '
+               f'{os.path.basename(vimg)} cannot be stated in their units')
+    if val is None or flux_scale is None:
         if 'THERMNOI' in out:
             del out['THERMNOI']
         out.add_history(f'THERMNOI none: {why}')
         print(f'    THERMNOI none for {os.path.basename(str(sci_dir))} {band}: {why}', flush=True)
+        THERMNOI_RECORD.append((str(sci_dir), band, None, vimg, why))
     else:
-        out['THERMNOI'] = (val, _TN.COMMENT)
+        tn = float(round(val / flux_scale, 9))
+        out['THERMNOI'] = (tn, _TN.comment_for(band))
+        out.add_history(f'THERMNOI {val} Jy/beam measured on {os.path.basename(vimg)} / flux scale {flux_scale:.6f} '
+                        f'(the factor the pixels were divided by) = {tn}')
         try:
             card = fits.getheader(src_path).get('THERMNOI') if src_path else None
         except Exception:
@@ -296,6 +327,7 @@ def night_standard_cards(hdr, sci_dir, band, src_path=None):
         if card is not None and float(card) != val:
             out.add_history(f'THERMNOI measured on {os.path.basename(vimg)}; the Phase 2 card on '
                             f'{os.path.basename(str(src_path))} is {card}')
+        THERMNOI_RECORD.append((str(sci_dir), band, tn, vimg, ''))
     out['P2RUN'] = (os.path.basename(str(sci_dir).rstrip('/'))[:68], 'Phase 2 run label')
     return out
 
@@ -3742,13 +3774,14 @@ def measure_scale2(i_path, final_i_data, final_wcs, beam_pix, coadd_mask, ref_hd
 
 
 def subtract_night(date, sci_dir, align_img_path, i_path, v_path, coeffs2, n2, med_dc, final_i_data, final_v_data,
-                   final_wcs, coadd_mask, beam_pix, tmpl_hdr, target_shape, sub_dir, fl, freq_str):
+                   final_wcs, coadd_mask, beam_pix, tmpl_hdr, target_shape, sub_dir, fl, freq_str, first_scale=None):
     """PASS 2 of run_final_lst_freq's per-date subtraction for one night (D-ADMIT slice 4): the second-pass scale
     (coeffs2, n2 from measure_scale2; DC only unless P3_FLUXSCALE_TILT=1) with the flux-degeneracy guard relative to the
     cell's median second-pass DC ``med_dc``; the aligned flux-corrected epoch, its residual against the master and the
     striation-cleaned residual (8 beams) for I ({i_path}) and, when the aligned V night {v_path} and the V master exist,
     for V - written to {sub_dir}/<date>_{I,V}_{epoch,sub,clean}_<fl>.fits with the epoch's own time block
-    (save_epoch_residual)."""
+    (save_epoch_residual). ``first_scale``: the scale map final_night divided the night's aligned images by (its params'
+    scale_map); under HEADER_STANDARD 'full' the night's THERMNOI is stated in the units of these products with it."""
     i_data, _ = load_image(i_path)
 
     # Per-epoch time block (from this date's Phase-2 source) stamped onto every
@@ -3756,8 +3789,6 @@ def subtract_night(date, sci_dir, align_img_path, i_path, v_path, coeffs2, n2, m
     # Beam+RESTFRQ are stamped per Stokes at each write via
     # save_epoch_residual (R1 amendment #1) — never left as tmpl_hdr's.
     epoch_hdr = epoch_time_header(tmpl_hdr, align_img_path)
-    if HEADER_STANDARD == 'full':                      # WAVE2 OUTPUT (writers step 1): the night's THERMNOI and P2RUN,
-        epoch_hdr = night_standard_cards(epoch_hdr, sci_dir, fl, align_img_path)   # on every product of the night
 
     h, w = target_shape
     yg, xg = np.indices((h, w), dtype=float)
@@ -3773,6 +3804,10 @@ def subtract_night(date, sci_dir, align_img_path, i_path, v_path, coeffs2, n2, m
               f"n={n2}; cell median DC={med_dc:.3f}) -> flat DC={med_dc:.3f}")
         scale2_full = np.full((h, w), med_dc if med_dc > 0 else 1.0)
         coeffs2 = np.array([med_dc, 0.0, 0.0])
+
+    if HEADER_STANDARD == 'full':                      # WAVE2 OUTPUT (writers step 1): the night's THERMNOI (in the units of
+        epoch_hdr = night_standard_cards(epoch_hdr, sci_dir, fl, align_img_path,     # these products) and P2RUN, on every
+                                         flux_scale=applied_flat_scale(first_scale, scale2_full))   # product of the night
 
     # Apply flux correction and subtract
     safe_scale = np.where(np.abs(scale2_full) > 0.1, scale2_full, 1.0)
@@ -4259,7 +4294,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         params = date_params[date]
         subtract_night(date, sci_dir, align_img_path, f'{prep_dir}/{date}_I.fits', f'{prep_dir}/{date}_V.fits',
                        *scale2_meas[date], med_dc, final_i_data, final_v_data, final_wcs, coadd_mask, beam_pix, tmpl_hdr,
-                       target_shape, sub_dir, fl, freq_str)
+                       target_shape, sub_dir, fl, freq_str, first_scale=params['scale_map'])
     print(f"  Subtracted images → {sub_dir}/")
 
     # Cleanup prep aligned images (keep co-adds and subtracted) — UNLESS

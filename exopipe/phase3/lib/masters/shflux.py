@@ -200,14 +200,22 @@ def bake(d, hd, scope, row, corr_t):
     hd['HISTORY'] = (f"shflux: pixels x {scale:.5f} (VLSSr/RCB median ratio per LST, {row['srcs']}, N {row['nsrc']}; R-FLUX-SCALE-APPLY-VLSSR-HIGH-ELEVATION-APPROVED 2026-09-07)" if _vlssr else
                      f"shflux: pixels x {scale:.5f} (SH12 calibrators {row['srcs']}; I Taper R-0.75 pbcorr master; stage A of MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828)")
     hd['HISTORY'] = f"fluxcorr: pixels also x FLUXCORR {corr:.5f} (k x g, {corr_t[scope]['version'][:24]})"
-    from exopipe.phase3.lib.masters import coadd as _co     # WAVE2 OUTPUT (writers step 1): under the output standard a
-    if _co.HEADER_STANDARD == 'full':                        # noise card follows its pixels - THERMNOI and IMGRMS scaled by
-        _nk = [k for k in ('THERMNOI', 'IMGRMS') if hd.get(k) is not None]   # the factor the pixels were (production: kept)
-        for k in _nk:
-            hd[k] = (float(round(float(hd[k]) * scale * corr, 9)), hd.comments[k])
-        if _nk:
-            hd['HISTORY'] = f"noise cards {', '.join(_nk)} x {scale * corr:.6f} with the pixels (output standard)"
+    scale_noise_cards(hd, scale * corr)
     return d, hd
+
+
+def scale_noise_cards(hd, factor):
+    """WAVE2 OUTPUT (writers step 1): under the output standard (coadd.HEADER_STANDARD 'full') a noise card follows its
+    pixels - THERMNOI and IMGRMS are multiplied by the factor the pixels were (bake and rebake_file), with a HISTORY line;
+    under 'production' they are kept as production keeps them. ``hd`` is changed in place."""
+    from exopipe.phase3.lib.masters import coadd as _co
+    if _co.HEADER_STANDARD != 'full':
+        return
+    _nk = [k for k in ('THERMNOI', 'IMGRMS') if hd.get(k) is not None]
+    for k in _nk:
+        hd[k] = (float(round(float(hd[k]) * factor, 9)), hd.comments[k])
+    if _nk:
+        hd['HISTORY'] = f"noise cards {', '.join(_nk)} x {factor:.6f} with the pixels (output standard)"
 
 
 def _md5_bytes(b):
@@ -271,6 +279,7 @@ def rebake_file(src, dst, scope, s_old, srow, corr_t, write=False, tmp_dir=None,
     hd['HISTORY'] = (f"flux re-bake {time.strftime('%Y-%m-%d', time.gmtime())}: pixels x {f:.6f} = SHSCALE {s_old:.5f} -> "
                      f"{s_new:.5f} x FLUXCORR {corr:.5f} (k {float(corr_t[scope]['k']):.5f} x g {float(corr_t[scope]['g']):.5f}); "
                      f"Gregg 2026-10-01")
+    scale_noise_cards(hd, f)                     # WAVE2 OUTPUT: the noise cards follow the re-baked pixels too
     if not write:
         out.update(status='DRY-RUN OK', detail=f'{_note}x {f:.6f}'); return out
     part = f'{tmp_dir or os.path.dirname(dst)}/.{os.path.basename(dst)}.rebake.part'

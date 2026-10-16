@@ -448,6 +448,9 @@ def admit_inputs(cell, args, co, out, held=()):
         v_img, _w = v_status(co, sd, freq_str)
         bimg = co.beam_gate_image(lst, sc, d, sci=sd)
         inputs += [p for p in (v_img, bimg) if p]
+        if co.HEADER_STANDARD == 'full':                 # WAVE2 OUTPUT: the V images the night's THERMNOI may be measured on
+            from exopipe.phase3.lib.masters import thermnoi as TN
+            inputs += TN.candidates(sd, sc)
     return todo, list(dict.fromkeys(inputs)), prep, frec
 
 
@@ -470,6 +473,15 @@ def admission_rows(cd):
     from exopipe.phase3.lib.masters import admit as A
     p = os.path.join(cd, 'coadd_final', A.ADMISSIONS)
     return {r['date']: r for r in csv.DictReader(open(p, newline=''))} if os.path.exists(p) else {}
+
+
+def note_thermnoi(u, co, label):
+    """WAVE2 OUTPUT (writers step 1): each night coadd.night_standard_cards gave no THERMNOI since coadd.THERMNOI_RECORD was
+    last cleared is named in a note on the unit record, with why; the record is cleared. (The V images a THERMNOI may be
+    measured on are inputs already: thermnoi.candidates, in the stage's input set.)"""
+    for sd, band, why in dict.fromkeys((sd, band, why) for sd, band, val, _v, why in co.THERMNOI_RECORD if val is None):
+        u.note(f'{label}: no THERMNOI for {os.path.basename(sd)} {band}: {why}'[:600])   # once per night (B-05 passes repeat it)
+    del co.THERMNOI_RECORD[:]
 
 
 def write_admissions(cd, rows):
@@ -660,8 +672,11 @@ def admit_stage(cell, args, run, out, ran_now):
                                          f'next run', 'admit.error')            # error of the night, not a V verdict
                             continue
                     coeffs2, n2 = co.measure_scale2(nr['i_out'], ref['data'], final_wcs, ref['beam_pix'], coadd_mask, ref_hdr)
+                    del co.THERMNOI_RECORD[:]
                     co.subtract_night(d, sd, img, nr['i_out'], v_out, coeffs2, n2, med, ref['data'], fin_v, final_wcs,
-                                      coadd_mask, ref['beam_pix'], fref['tmpl_hdr'], fref['target_shape'], native, fl, freq_str)
+                                      coadd_mask, ref['beam_pix'], fref['tmpl_hdr'], fref['target_shape'], native, fl, freq_str,
+                                      first_scale=pa['scale_map'])
+                    note_thermnoi(u, co, d)                     # WAVE2 OUTPUT: a night without THERMNOI is named
                     baked = {}
                     for k in want:
                         src = os.path.join(native, f'{d}_{k[0]}_{k[1]}_{fl}.fits')
