@@ -663,12 +663,13 @@ _SERVED_NOISE = {}
 _SEED_EXCLUDE = set()   # the copy's admitted nights (test_end_to_end): never in a base's population
 
 
-def seed_base_noise(label_root, exclude):
+def seed_base_noise(label_root, exclude, stokes=None):
     """B-02 step 3b: an incremental search appends to an attempt that carries its FRAME_NOISE (the frame noise of the cell's
     admitted nights: the table's population) and its frames. A test attempt is fresh, so it is given the served search's frames
     of the cell (CFG.calibrate.SERVED_RUN) as that base: each night's archived IMGRMS (the same statistic: the 25 deg mask
     never reaches the central box on any deep grid; as a card gives it back) and the frame itself (a symlink, where the run
-    writes its frames), the nights of this run and the copy's admitted nights left out. Returns {Stokes: {night: noise}}."""
+    writes its frames) and its image-ledger rows (the run's Stokes), the nights of this run and the copy's admitted nights
+    left out. Returns {Stokes: {night: noise}}."""
     from astropy.io import fits
     from exopipe.phase3.lib.search import removal_rules as RR
     pop = {st: {d: v for d, v in nz.items() if d not in exclude and d not in _SEED_EXCLUDE} for st, nz in served_noise().items()}
@@ -688,6 +689,14 @@ def seed_base_noise(label_root, exclude):
                 w.writerow([LST, SC, st, d, repr(v), 1, 1, repr(m), vm, vx, 'served-base'])
                 if not os.path.lexists(os.path.join(fd, os.path.basename(f_))):
                     os.symlink(f_, os.path.join(fd, os.path.basename(f_)))
+    ip = os.path.join(rd, 'v_deep_images.csv')
+    if not os.path.exists(ip):                    # the base's image rows come with its frames (an append's base has them)
+        srv = os.path.join(CFG.calibrate.SERVED_RUN['deep'], 'v_deep_images.csv')
+        keep = [r for r in csv.DictReader(open(srv)) if r['lst'] == LST and r['scope'] == SC and r['stokes'] in (stokes or 'IV')
+                and r['date'] in pop.get(r['stokes'], {})]
+        with open(ip, 'w', newline='') as fh:
+            w = csv.DictWriter(fh, fieldnames=list(keep[0]) if keep else ['lst'])
+            w.writeheader(); w.writerows(keep)
     return {st: {d: v for d, (v, _f) in nz.items()} for st, nz in pop.items()}
 
 
@@ -695,7 +704,7 @@ def engine(root, work, label_root, policy, dates, fail_i=None, rules=None, b02=N
            seed=True):
     if seed and dates and (rules or CFG.search_detect.REMOVAL_RULES) == 'once-in-search' and not os.path.exists(
             os.path.join(label_root, 'transients', 'Run_ADMITTEST', 'frame_noise.csv')):
-        seed_base_noise(label_root, set(dates))      # B-02 step 3b: the base an incremental search appends to
+        seed_base_noise(label_root, set(dates), stokes)   # B-02 step 3b: the base an incremental search appends to
     env = {k: v for k, v in os.environ.items() if not k.startswith('P3_')}
     env.update(PYTHONPATH=REPO, P3_COADD_ROOT=root, P3_FLOW_ROOT=work, P3_STAGING_ROOT=label_root,
                P3_IRESID_ROOT=os.path.join(label_root, 'iresid'), P3_VRESID_ROOT=os.path.join(label_root, 'vresid'),
@@ -997,7 +1006,8 @@ def test_b02_end_to_end(wt, work, b3):
         out_ = {}
         for name_ in ('v_deep_ledger.csv', 'v_deep_images.csv', RR.FRAME_NOISE, RR.TABLE_PULSAR):
             p_ = os.path.join(rd_, name_)
-            out_[name_] = [r for r in csv.DictReader(open(p_)) if r.get('date') in b3] if os.path.exists(p_) else []
+            out_[name_] = ([r for r in csv.DictReader(open(p_)) if name_ == RR.FRAME_NOISE or r.get('date') in b3]
+                           if os.path.exists(p_) else [])   # the noise record whole: the base's population rows are its input
         dayf = os.path.join(rd_, 'refusals', f'{CELL}_daytime_excluded.csv')
         out_['day'] = open(dayf).read().splitlines() if os.path.exists(dayf) else []
         out_['att'], out_['rd'] = att_, rd_
