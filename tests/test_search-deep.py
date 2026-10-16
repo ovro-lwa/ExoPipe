@@ -91,7 +91,59 @@ def test_engine_truth():
         mm = __import__(f'exopipe.phase3.lib.search.{mod}', fromlist=['x'])
         reasons |= {s.lower() for s in re.findall(r"'(REJECT_[A-Z_]+)'", inspect.getsource(mm))}
     missing = sorted(reasons - T.VETO_REASONS)
-    check('every veto_reason the engine can write is known to gate_ledger.complete', not missing, missing)
+    fpre = set(re.findall(r"reason=f'([^'{]+)\{", srcs)) - {'v110:'}   # f-string reasons: a prefix and a value (v110: above)
+    missing += sorted(p for p in fpre if p not in T.VETO_REASON_PREFIXES)
+    check('every veto_reason the engine can write is known to gate_ledger.complete (the f-string ones by their prefix)',
+          not missing and 'jupiter-track:' in fpre, (missing, sorted(fpre)))
+    kinds = set()
+    for k in re.findall(r"_\{scope\}_([a-z_]+(?:\{st\})?)_excluded\.csv", srcs):
+        kinds |= {k.replace('{st}', s_) for s_ in ('I', 'V')} if '{st}' in k else {k}
+    check('every refusal kind the engine writes is known to refusal_record.parses', kinds and not (kinds - set(T.REFUSAL_KINDS)),
+          sorted(kinds - set(T.REFUSAL_KINDS)))
+
+
+def test_b02_rules_record():
+    """B-02 step 3a: the rules an attempt is searched under are recorded in it, and an append runs under its base's (an
+    attempt without the record - every attempt before be86762 - counts as 'production'); the solar audit is pinned at G2 and
+    fingerprinted under 'once-in-search' only; an unknown value refuses at the engine env."""
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.search import removal_rules as RR
+    a_once, a_none = os.path.join(TMP, 'b02_att_once'), os.path.join(TMP, 'b02_att_none')
+    os.makedirs(a_once)
+    os.makedirs(a_none)
+    rec = RR.write_attempt_rules(a_once, 'once-in-search')
+    check("the attempt's rules record: written by the step, read back; an attempt without it is 'production'",
+          rec == {'rules': 'once-in-search', 'version': RR.RULES_VERSION} and RR.attempt_rules(a_once) == 'once-in-search'
+          and RR.attempt_rules(a_none) == 'production', (rec, RR.attempt_rules(a_once), RR.attempt_rules(a_none)))
+    w = {(b, r): DS.base_rules_refusal(b, r) for b in (a_once, a_none) for r in ('once-in-search', 'production')}
+    check("an append runs under its base's rules: 'once-in-search' onto a production base (or the reverse) refuses, naming "
+          "both and the way out", w[(a_once, 'once-in-search')] is None and w[(a_none, 'production')] is None
+          and 'would mix the rules' in (w[(a_none, 'once-in-search')] or '') and '--set search_detect.REMOVAL_RULES=production'
+          in (w[(a_none, 'once-in-search')] or '') and 'would mix the rules' in (w[(a_once, 'production')] or ''), w)
+    src = inspect.getsource(DS.preflight) + inspect.getsource(DS.stage_detect)
+    check('preflight gates an incremental base with it; stage_detect writes the record before the engine child starts',
+          'base_rules_refusal(b, rules)' in src and src.index('write_attempt_rules(attempt') < src.index('legacy.run(_CHILD_MODULE'))
+    pins = [p[0] for p in DS.pinned_inputs('I')]
+    fake = dict(base=os.path.join(TMP, 'b02_nocell'), m_i=None)
+    small = DS.input_paths(DS.Item(CELL, 'I', 'bulk'), fake)[0]
+    CFG.authorize(out=TMP)
+    CFG.set('search_detect.REMOVAL_RULES', 'production')
+    pins_p = [p[0] for p in DS.pinned_inputs('I')]
+    small_p = DS.input_paths(DS.Item(CELL, 'I', 'bulk'), fake)[0]
+    CFG.set('search_detect.REMOVAL_RULES', 'Production')
+    try:
+        DS.engine_env('/x', '/x', '/x', 'P3S5', '/x', '/x')
+        bad = None
+    except Refusal as e:
+        bad = str(e)
+    CFG.reset()
+    pa = [p for p in pins if p.startswith('solar audit')]
+    check("the solar audit: pinned at G2 and an input of the unit under 'once-in-search' only; an unknown value refuses at the "
+          "engine env", pa and not [p for p in pins_p if p.startswith('solar audit')]
+          and CFG.search_tables.SOLAR_AUDIT in small and CFG.search_tables.SOLAR_AUDIT not in small_p
+          and bad is not None and 'REFUSING' in bad, (pins, pins_p, bad))
+    ok_pin = [p for p in DS.pinned_inputs('I') if p[0].startswith('solar audit')]
+    check('the solar audit md5 pinned is the file on disk (search_tables.SOLAR_AUDIT_MD5)', ok_pin and ok_pin[0][2], ok_pin)
 
 
 def test_env_and_items():
@@ -105,6 +157,10 @@ def test_env_and_items():
                                     'P3_SSTACK_REMOVES', 'P3_STRIATION_OFF', 'P3_GATE_LEDGER_ONLY', 'P3_STREAM_RESID',
                                     'P3_REFINE_OFF', 'P3_ARCHIVE_WRITE', 'P3_TABLE_PREFIX', 'P3_TABLE_RECORD_ONLY')]
     check('engine env: no comparison / sub-LST variable at production values', not comp, comp)
+    check("engine env: the search's removal rules (B-02, ruled 'once-in-search') and the solar audit its daytime gate reads",
+          (env.get('EXOPIPE3_REMOVAL_RULES'), env.get('EXOPIPE3_SOLAR_AUDIT')) == ('once-in-search', CFG.search_tables.SOLAR_AUDIT),
+          (env.get('EXOPIPE3_REMOVAL_RULES'), env.get('EXOPIPE3_SOLAR_AUDIT')))
+    test_b02_rules_record()
     CFG.authorize(out=TMP)
     CFG.set('search_detect.BEAM_GATE_ON', 'false')
     env2 = DS.engine_env('/x', '/x', '/x', 'P3S5', '/x', '/x')

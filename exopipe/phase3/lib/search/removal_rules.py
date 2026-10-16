@@ -25,6 +25,8 @@ ELEV_EPOCHS = ('mid-hour', 'frame-mid')
 SEARCH_RULES = ('once-in-search', 'production')   # search_detect.REMOVAL_RULES
 RULES_ENV = 'EXOPIPE3_REMOVAL_RULES'              # how the search step hands it to the engine child (deep_step.engine_env)
 RULES_VERSION = 'b02-3a'   # what a 'once-in-search' attempt applies: the daytime gate per frame, the Jupiter-track veto
+AUDIT_ENV = 'EXOPIPE3_SOLAR_AUDIT'                # the solar audit the search's daytime gate reads (search_tables.SOLAR_AUDIT)
+RULES_RECORD = 'search_rules.json'                # in each attempt directory: the rules it was searched under (deep_step)
 
 
 def _cc():
@@ -33,12 +35,35 @@ def _cc():
 
 def search_rules(value=None):
     """search_detect.REMOVAL_RULES - ``value`` checked, else as the search step passed it to the engine child
-    (EXOPIPE3_REMOVAL_RULES), else the config; an unknown value refuses (a typo never selects either)."""
+    (EXOPIPE3_REMOVAL_RULES), else (a process no step started) the config. An unknown or empty value REFUSES - a typo never
+    selects either (deep_search._eph_mode's reading); a RuntimeError, so the engine child maps it to a refusal."""
     if value is None:
-        value = os.environ.get(RULES_ENV) or CFG.search_detect.REMOVAL_RULES
+        value = os.environ.get(RULES_ENV)
+        if value is None:
+            value = CFG.search_detect.REMOVAL_RULES
     if value not in SEARCH_RULES:
-        raise ValueError(f'search_detect.REMOVAL_RULES = {value!r} is not one of {SEARCH_RULES} - REFUSING')
+        raise RuntimeError(f'search_detect.REMOVAL_RULES = {value!r} is not one of {SEARCH_RULES} - REFUSING')
     return value
+
+
+def write_attempt_rules(attempt_dir, rules):
+    """Record in an attempt directory the rules it is searched under (the search step, before the engine child starts);
+    returns the record: {rules, version - RULES_VERSION under 'once-in-search', else None}."""
+    import json
+    rec = dict(rules=search_rules(rules), version=RULES_VERSION if rules == 'once-in-search' else None)
+    with open(os.path.join(attempt_dir, RULES_RECORD), 'w') as fh:
+        json.dump(rec, fh)
+    return rec
+
+
+def attempt_rules(attempt_dir):
+    """The rules an attempt directory was searched under: its RULES_RECORD (written by the search step), else 'production'
+    - every attempt made before B-02 step 3a (be86762), by the step or by a fleet, searched without them."""
+    import json
+    p = os.path.join(attempt_dir, RULES_RECORD)
+    if not os.path.exists(p):
+        return 'production'
+    return json.load(open(p))['rules']
 
 
 def f(x):
@@ -189,10 +214,15 @@ def product_times(path):
 def daytime_frames(frames, quar=None):
     """{(Stokes, date): the refusal} of the frames ({(Stokes, lst, band, date): Stage-1 product path}) the daytime gate refuses:
     the Sun up at any of the frame's five samples, twilight in a quarantined band, or times that cannot be read - the
-    conformance's rule (daytime_verdicts), applied by the search to each frame before it is searched (B-02 step 3a)."""
+    conformance's rule (daytime_verdicts), applied by the search to each frame before it is searched (B-02 step 3a). The
+    quarantine bands from the solar audit the search step names (EXOPIPE3_SOLAR_AUDIT = search_tables.SOLAR_AUDIT, pinned by
+    md5 at the step's gate G2), else - a process no step started - the config's."""
     if quar is None:
+        audit = os.environ.get(AUDIT_ENV)
+        if audit is None:
+            audit = CFG.search_tables.SOLAR_AUDIT
         try:
-            quar = solar_quarantine(CFG.catalog.SOLAR_AUDIT)
+            quar = solar_quarantine(audit)
         except SystemExit as e:                   # the conformance's words; in the search a refusal of the cell
             raise RuntimeError(str(e))
     times, out = {}, {}
@@ -212,9 +242,11 @@ def daytime_frames(frames, quar=None):
 # Jupiter track (p3s2_conform.py:279-307, :512-518; Gregg 2026-09-18)
 # ---------------------------------------------------------------------------------------------------------------------
 
-def jupiter_track(lst, weights_path, nights=None):
+def jupiter_track(lst, weights_path, nights=None, skipped=None):
     """[(RA, Dec, night)] of Jupiter at the cell's mid-hour on every night its master co-adds (deep: in_master 1;
-    'all weighted': every row of weights.csv) when Jupiter is above JUPITER_TRACK_MIN_ALT_DEG then."""
+    'all weighted': every row of weights.csv) when Jupiter is above JUPITER_TRACK_MIN_ALT_DEG then. Production's conformance
+    leaves out, silently, a night whose position fails and every night when weights.csv is missing; a list given as
+    ``skipped`` receives them (the search names them: B-30 site fallbacks.SEARCH_JUPITER_TRACK_FALLBACK)."""
     from astropy.coordinates import get_body, SkyCoord, AltAz
     from astropy.time import Time
     import astropy.units as u
@@ -222,6 +254,8 @@ def jupiter_track(lst, weights_path, nights=None):
     nights = nights or c.JUPITER_TRACK_NIGHTS['deep']
     pts = []
     if not (weights_path and os.path.exists(weights_path)):
+        if skipped is not None:
+            skipped.append(f'every night (no {weights_path})')
         return pts
     ovro = _ovro()
     lh = int(lst.rstrip('h'))
@@ -236,7 +270,9 @@ def jupiter_track(lst, weights_path, nights=None):
             if j.transform_to(AltAz(obstime=tm, location=ovro)).alt.deg < c.JUPITER_TRACK_MIN_ALT_DEG:
                 continue
             pts.append((float(j.ra.deg), float(j.dec.deg), r_['date']))
-        except Exception:
+        except Exception as e:
+            if skipped is not None:
+                skipped.append(f"{r_.get('date')} ({type(e).__name__}: {e})")
             continue
     return pts
 

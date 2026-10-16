@@ -64,7 +64,7 @@ FRAME_KEYS = tuple(k for _, k, _kind in VALUE_KEYS)
 
 # refusal files the frame build writes (the gates, phase3_deep.py:1088-1365) and the search's own admission files
 FRAME_REFUSAL_KINDS = ('nightimage', 'epochgate', 'sanity', 'sanity_I', 'searchtier', 'stale_input', 'beam')
-SEARCH_REFUSAL_KINDS = ('sanity_V', 'extraction_I', 'extraction_V')
+SEARCH_REFUSAL_KINDS = ('sanity_V', 'extraction_I', 'extraction_V', 'daytime')   # daytime: B-02 step 3a (the frame is built)
 WHOLE_EPOCH_KINDS = ('nightimage', 'epochgate', 'sanity', 'stale_input', 'beam')
 _FRAME_RE = re.compile(r'^(?P<d>\d{4}-\d\d-\d\d(?:T\d\d)?)_(?P<s>[IV])_redo_resid(?P<pb>_pbcorr)?_(?P<scope>\w+?)\.fits$')
 
@@ -270,11 +270,12 @@ def child_env(spec, cfg=None):
     from exopipe.phase3.lib.masters import admit as _AD                 # D-ADMIT: how the engine reads admitted nights, as the
     from exopipe.phase3.lib.search import admitted as _ADS              # search step passes it (deep_step.engine_env)
     s[_ADS.POLICY_ENV] = _AD.admitted_policy(cfg.masters_admit.ADMITTED_NIGHTS)
-    from exopipe.phase3.lib.search import removal_rules as _RR          # B-02: the search's removal rules, as the search step
-    try:                                                                # passes them (deep_step.engine_env)
-        s[_RR.RULES_ENV] = _RR.search_rules(cfg.search_detect.REMOVAL_RULES)
-    except ValueError as e:
+    from exopipe.phase3.lib.search import removal_rules as _RR          # B-02: the search's removal rules and the solar audit
+    try:                                                                # its daytime gate reads, as the search step passes them
+        s[_RR.RULES_ENV] = _RR.search_rules(cfg.search_detect.REMOVAL_RULES)   # (deep_step.engine_env)
+    except RuntimeError as e:
         raise Refusal(str(e))
+    s[_RR.AUDIT_ENV] = cfg.search_tables.SOLAR_AUDIT
     s['DEEP_XLA_MEMFRAC'] = repr(v['flow_xla_mem_fraction'])
     if v['flow_lock']:
         s['P3_FLOW_LOCK'] = v['flow_lock']        # node-global lock shared with production searches (one GPU batch per node)

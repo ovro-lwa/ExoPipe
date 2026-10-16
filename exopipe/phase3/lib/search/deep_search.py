@@ -1756,18 +1756,24 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
         fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope}: the V sanity gate could not run ({_e})')
     if _b02:                                                           # WAVE2 B-02: the DAYTIME GATE per frame (step 3a) - the
-        _dfr = {('I', lst, scope, d): f'{ebase}/subtracted/{d}_I_sub_{scope}.fits'   # WAVE2 B-02: conformance's rule, on the
-                for d in dates if d in resid_I}                        # WAVE2 B-02: frames this search searches (its Stokes)
-        _dfr.update({('V', lst, scope, d): f'{ebase}/subtracted/{d}_V_sub_{scope}.fits' for d in resid_V})   # WAVE2 B-02
+        _dfr = {(_st, lst, scope, d): f'{ebase}/subtracted/{d}_{_st}_sub_{scope}.fits'   # WAVE2 B-02: conformance's rule, on
+                for _st, _rs in (('I', resid_I), ('V', resid_V))       # WAVE2 B-02: the frames this search searches - its
+                for d in dates if d in _rs}                            # WAVE2 B-02: Stokes, its nights (not a stack's others)
         _day = _RR.daytime_frames(_dfr)                                # WAVE2 B-02: (Sun up, twilight in a quarantined band, no times)
         if _day:                                                       # WAVE2 B-02
             skip_I_dates |= {d for (_st, d) in _day if _st == 'I'}     # WAVE2 B-02: that Stokes' search skips the frame - still
             skip_V_dates |= {d for (_st, d) in _day if _st == 'V'}     # WAVE2 B-02: archived, still in every population
-            with open(f'{_refdir}/{lst}_{scope}_daytime_excluded.csv', 'a') as _df:   # WAVE2 B-02
+            with open(f'{_refdir}/{lst}_{scope}_daytime_excluded.csv', 'a', newline='') as _df:   # WAVE2 B-02
+                _dw = csv.writer(_df, lineterminator='\n')              # WAVE2 B-02: lst, scope, date, Stokes, reason, attempt
                 for (_st, d), _why in sorted(_day.items()):            # WAVE2 B-02
-                    _df.write(f'{lst},{scope},{d},{_st},"{_why}",{_attempt}\n')   # WAVE2 B-02
+                    _dw.writerow([lst, scope, d, _st, _why, _attempt])  # WAVE2 B-02
             print(f'  {lst} {scope}: DAYTIME GATE (B-02) - {len(_day)} frame(s) REFUSED from their search: {sorted(_day)}')   # WAVE2 B-02
-    _jtrack = _RR.jupiter_track(lst, f'{base}/coadd_final/weights.csv') if _b02 else []   # WAVE2 B-02: the Jupiter track (step 3a)
+    _jskip = []                                                        # WAVE2 B-02: the Jupiter track (step 3a), the master's
+    _jtrack = _RR.jupiter_track(lst, f'{base}/coadd_final/weights.csv', skipped=_jskip) if _b02 else []   # WAVE2 B-02: nights
+    if _jskip:                                                         # WAVE2 B-02: a co-added night without its position
+        from exopipe.phase3.core import fallback                       # WAVE2 B-02
+        fallback.site('fallbacks.SEARCH_JUPITER_TRACK_FALLBACK', f'{lst} {scope}: the Jupiter track has no position for '   # WAVE2 B-02
+                      f'{len(_jskip)} co-added night(s): {"; ".join(_jskip[:3])} - the track would leave them out', n=len(_jskip))   # WAVE2 B-02
     # WAVE2 B-30: an epoch searched although the sanity / search-tier gates could not measure it - named here, where each
     # Stokes' search set is final (an epoch a gate refused, or without a frame, is not searched and never refuses the cell)
     for _st, _ds in _unmeasured_searched(dates, {'I': skip_I_dates, 'V': skip_V_dates}, {'I': resid_I, 'V': resid_V},
@@ -2082,8 +2088,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                                    reason='ateam', pass_ms=1))
                         vetoed_v.append(c)
                         continue
-                    _jth = (_RR.jupiter_track_hit(c['coord'].ra.deg, c['coord'].dec.deg, scope, _jtrack)   # WAVE2 B-02: the
-                            if _jtrack else None)                      # WAVE2 B-02: Jupiter track - on any co-added night's Jupiter
+                    _jth = None                                        # WAVE2 B-02: the Jupiter track - on any co-added night's
+                    if _jtrack:                                        # WAVE2 B-02: Jupiter, at the catalogue's position (the
+                        _sk = wcs.pixel_to_world(xx, yy)               # WAVE2 B-02: pixel's, as the conformance and the vetoes
+                        _jth = _RR.jupiter_track_hit(float(_sk.ra.deg), float(_sk.dec.deg), scope, _jtrack)   # WAVE2 B-02: above)
                     if _jth:                                           # WAVE2 B-02
                         c['veto_reason'] = f'jupiter-track:{_jth}'     # WAVE2 B-02
                         gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, reason=f'jupiter-track:{_jth}', pass_ms=1))   # WAVE2 B-02
@@ -2176,8 +2184,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
                                                reason='ateam', pass_ms=1))
                     continue
-                _jth = (_RR.jupiter_track_hit(c['coord'].ra.deg, c['coord'].dec.deg, scope, _jtrack)   # WAVE2 B-02: the Jupiter
-                        if _jtrack else None)                          # WAVE2 B-02: track - on any co-added night's Jupiter
+                _jth = (_RR.jupiter_track_hit(float(_sky.ra.deg), float(_sky.dec.deg), scope, _jtrack)   # WAVE2 B-02: the Jupiter
+                        if _jtrack else None)                          # WAVE2 B-02: track, at the catalogue's position (the pixel's)
                 if _jth:                                               # WAVE2 B-02
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1, reason=f'jupiter-track:{_jth}', pass_ms=1))   # WAVE2 B-02
                     continue                                           # WAVE2 B-02

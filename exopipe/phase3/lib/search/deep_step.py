@@ -388,9 +388,10 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
     from exopipe.phase3.lib.search import removal_rules as _RR
     try:                                                                           # B-02: the search's removal rules (step 3a)
         env[_RR.RULES_ENV] = _RR.search_rules(sd.REMOVAL_RULES)
-    except ValueError as e:
+    except RuntimeError as e:
         from exopipe.phase3.core.record import Refusal
         raise Refusal(str(e))
+    env[_RR.AUDIT_ENV] = c.search_tables.SOLAR_AUDIT                               # B-02: the daytime gate's solar audit (G2 pin)
     if not si.ARCHIVE_WRITE:
         env['P3_ARCHIVE_WRITE'] = '0'
     if not sd.REFINE_X2:
@@ -439,6 +440,18 @@ def md5_file(path):
     return h.hexdigest()
 
 
+def base_rules_refusal(base_attempt, rules):
+    """B-02: one attempt, one set of removal rules - None when an append under ``rules`` may extend ``base_attempt``, else
+    the refusal's words (an attempt without the step's record counts as 'production': removal_rules.attempt_rules)."""
+    from exopipe.phase3.lib.search import removal_rules as RR
+    b_rules = RR.attempt_rules(base_attempt)
+    if b_rules == rules:
+        return None
+    return (f'{os.path.basename(base_attempt.rstrip("/"))} was searched under search_detect.REMOVAL_RULES {b_rules!r}; an append '
+            f'under {rules!r} would mix the rules in one attempt - run it with --set search_detect.REMOVAL_RULES={b_rules}, or '
+            f're-search the cell (--fresh)')
+
+
 def pinned_inputs(stokes):
     """Gate G2 (spec 5.4): [(name, path, ok, detail, refuse)] for the md5-pinned inputs the engine reads."""
     from exopipe.phase3.lib.search import parent_curve_table as PCT
@@ -454,6 +467,8 @@ def pinned_inputs(stokes):
         out.append((name, path, got == md5, f'md5 {got}' + ('' if got == md5 else f' != pinned {md5}'), got != md5))
     pin('parent tables (the engine copy)', PCT.PATH, st.PARENT_TABLES_MD5, True)
     pin('pulsar list', st.PULSAR_CSV, st.PULSAR_CSV_MD5, False)
+    if c.search_detect.REMOVAL_RULES == 'once-in-search':                       # B-02: the daytime gate's quarantine bands
+        pin('solar audit (the daytime gate, B-02)', st.SOLAR_AUDIT, st.SOLAR_AUDIT_MD5, True)
     if stokes == 'V':
         pin('v110 null trials', sf.NULL_TRIALS, sf.NULL_TRIALS_MD5, True)
         pin('v110 PA null profile', sf.PA_NULL, sf.PA_NULL_MD5, bool(sf.PA_NULL_REQUIRED))
@@ -645,6 +660,18 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
                     + ([f'{", ".join(readm)} in the master\'s generation record: a re-admitted epoch is searched by a full '
                         f're-search of the cell (search --tier deep --cells {item.cell} --fresh), never appended '
                         f'(R-SIGMA-STACK-INCLUDES-THE-RE-ADMITTED-EPOCH-BACKFILL-BY-RE-SEARCH)'] if readm else [])))
+            # B-02: one attempt, one set of removal rules - an append runs under the rules its base was searched under (an
+            # attempt without the step's record: 'production'; Gregg 2026-10-14: per-hour updates on Run_P3S5 under
+            # REMOVAL_RULES=production until the full re-search)
+            from exopipe.phase3.lib.search import removal_rules as RR
+            try:
+                rules = RR.search_rules(c.search_detect.REMOVAL_RULES)
+            except RuntimeError as e:
+                raise Refusal(str(e))
+            why = base_rules_refusal(b, rules)
+            f['gates'].append(('B-02 removal rules of the base attempt', why is None, why or f'{rules}, as the base'))
+            if why:
+                raise Refusal(f'{item.cell} {item.stokes}: {why}')
     for name, path, ok, detail, refuse in pinned_inputs(item.stokes):
         f['gates'].append((f'G2 {name}', ok, detail))
         if not ok and refuse:
@@ -722,6 +749,8 @@ def input_paths(item, f):
              os.path.join(cf, 'admissions.csv'),                  # D-ADMIT: which nights the engine accepts as admitted
              PCT.PATH,
              c.search_tables.PULSAR_CSV, os.path.join(c.paths.OPS_ROOT, c.search_inputs.ROOTS_CSV)]
+    if c.search_detect.REMOVAL_RULES == 'once-in-search':                       # B-02: the daytime gate reads it
+        small.append(c.search_tables.SOLAR_AUDIT)
     small += sorted(glob.glob(os.path.join(cf, f'PB_deep*_{item.scope}.fits')))
     small = [p for p in small if p and os.path.exists(p)]
     if f.get('base_attempt'):
@@ -852,9 +881,9 @@ def stage_detect(u, item, ctx, f):
         json.dump(spec, fh, indent=1)
     t_detect = time.time()
     u.meta.update(attempt_staged=attempt, engine_env={k: v for k, v in env.items() if k.startswith(('P3_', 'DEEP_'))})
-    from exopipe.phase3.lib.search import removal_rules as _RR                    # B-02: the rules this attempt ran (step 3a)
-    u.meta['removal_rules'] = dict(rules=env[_RR.RULES_ENV],
-                                   version=_RR.RULES_VERSION if env[_RR.RULES_ENV] == 'once-in-search' else None)
+    from exopipe.phase3.lib.search import removal_rules as _RR                    # B-02: the rules this attempt ran (step 3a),
+    u.meta['removal_rules'] = _RR.write_attempt_rules(attempt, env[_RR.RULES_ENV])  # in the attempt and the unit record (an
+                                                                                   # append reads its base's: preflight)
     try:
         res = legacy.run(_CHILD_MODULE, ['--child', spec_path], python=c.search.ENGINE_PYTHON, module=True, env=env, cwd=attempt,
                          log=log, refusal_codes=(2,), refusal_text=(), unit=u)

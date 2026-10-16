@@ -174,6 +174,12 @@ class search_tables(_Section):
     PULSAR_CSV = '/lustre/gh/main/clv15/pulsars_atnf.csv'   # read by parent_curve_table (:312-321); a MISSING file silently disables the
                                                             # pulsar exemption today (B-58: kept, recorded); a DIFFERENT file refuses (G2)
     PULSAR_CSV_MD5 = '0806d9b47ef07f8ecbc3f81fcf0f3f3b'
+    SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # the quarantine bands of the daytime gate
+                                                            # (B-02 step 3a: removal_rules.daytime_frames, under search_detect.
+                                                            # REMOVAL_RULES 'once-in-search'); the file the conformance reads
+                                                            # (catalog.SOLAR_AUDIT); passed to the engine child as
+                                                            # EXOPIPE3_SOLAR_AUDIT; a different file refuses (G2)
+    SOLAR_AUDIT_MD5 = 'f5e4ef1124230351603fba34018a1f4a'   # md5 read 2026-10-16 (= search_snapshot.SOLAR_AUDIT_MD5 of 2026-10-13)
     # engine literals
     DEEP_V_FAINT_S = 20.0                                   # parent S at or below: deep V bins not applied (parent_curve_table.py:27;
                                                             # R-DEEP-V-FAINT-PARENT-TABLE-ENTRIES-DROPPED)

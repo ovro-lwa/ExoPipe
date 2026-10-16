@@ -43,10 +43,20 @@ VETO_REASONS = frozenset({'', 'reject_local_snr', 'reject_merged', 'reject_sigma
                           'reject_local_rms', 'reject_bilobe', 'reject_bright_proximity', 'reject_exclusion',
                           'reject_sidelobe_tier', 'mstruct', 'mstruct_I', 'gaussfit-size', 'axis-ratio', 'jupiter', 'moon', 'ateam',
                           'v110:FP', 'v110:marginal', 'table', 'row-line'})
+# ... and those with a value after the prefix: the Jupiter track's co-added night (B-02 step 3a, deep_search: 'jupiter-track:<night>')
+VETO_REASON_PREFIXES = {'jupiter-track:': re.compile(r'^\d{4}-\d\d-\d\d$')}
+
+
+def known_veto_reason(v):
+    """A veto_reason the engine writes: one of VETO_REASONS, or a VETO_REASON_PREFIXES prefix with its value."""
+    return v in VETO_REASONS or any(v.startswith(p) and rx.match(v[len(p):]) for p, rx in VETO_REASON_PREFIXES.items())
+
+
 # refusal kinds: (column count, which searches the refusal removes: 'both' | 'I' | 'V' | 'row' = the Stokes in column 4)
 REFUSAL_KINDS = {'nightimage': (4, 'both'), 'epochgate': (4, 'both'), 'sanity': (6, 'both'), 'sanity_I': (6, 'I'),
                  'sanity_V': (6, 'V'), 'searchtier': (7, 'row'), 'stale_input': (5, 'both'), 'beam': (6, 'both'),
-                 'extraction_I': (7, 'I'), 'extraction_V': (7, 'V')}
+                 'extraction_I': (7, 'I'), 'extraction_V': (7, 'V'),
+                 'daytime': (6, 'row')}     # B-02 step 3a: the daytime gate per frame (lst, scope, date, Stokes, reason, attempt)
 FIT_KINDS = ('gaussian', 'template', 'peak')
 FIT_EXTRA = ['frame', 'frame_sha1', 'fit_frac_px']
 FP_VERDICTS = frozenset({'FP', 'not-FP', 'marginal', 'inconclusive'})
@@ -299,7 +309,7 @@ def complete(path, stokes=None, cell=None, tier='deep', **ctx):
     for r in rows:
         v = r['veto_reason']
         reasons[v] = reasons.get(v, 0) + 1
-        if v not in VETO_REASONS:
+        if not known_veto_reason(v):
             probs.append(f'unknown veto_reason {v!r}')
         if (r['final'] == '1') != (v == ''):
             probs.append(f"{r['date']} {r['ra']},{r['dec']}: final={r['final']} with veto_reason {v!r}")
