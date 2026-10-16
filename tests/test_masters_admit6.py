@@ -11,7 +11,7 @@ epoch must equal the member's installed epoch (its installed residual + the inst
 compact sources: median |ratio - 1| <= REPRODUCE_TOL (1e-3, Gregg's tolerance), the measured values printed - where they
 differ by design (the first DC read on another image; the guard median) the test reports by how much. The admitted
 residual's identity (epoch - residual - master) holds; admissions.csv passes its content test; a second run admits
-nothing (never twice); without a guard median the stage refuses.
+nothing (never twice); the guard median is the build's recorded one, else the ruled 1.0.
 Run: python tests/test_masters_admit6.py
 """
 import calendar
@@ -150,16 +150,15 @@ def test_admit_end_to_end():
           (rc, fr.get('reason'), txt[-400:]))
     sel = _select('admit', nights[0], wt, out)
     check('--epochs (admit): before the admission a prepared night selects its cell', sel == [CELL], sel)
+    # (the stage's refusal when no guard median exists - none recorded, the ruled value unset - is now reachable only in
+    # process: the ruled value is 1.0 since R-REFACTOR-20261016-DC2-MEDIAN-1 and a --set cannot unset a float; its helper is
+    # tested in tests/test_masters_scale2.py test_guard_median)
     rc, txt = cli('masters', '--stages', 'admit', *common)
-    r0 = rec(out, 'masters', f'admit_{CELL}')
-    check('without a guard median (recorded or ruled) the stage refuses - nothing substituted (item 10)',
-          rc == 2 and 'item 10' in r0.get('reason', '') and not glob.glob(os.path.join(cd, 'subtracted', '*')),
-          (rc, r0.get('reason')))
-    rc, txt = cli('masters', '--stages', 'admit', *common, '--set', 'masters_admit.DC2_MEDIAN_WITHOUT_RECORD=1.0')
     r1 = rec(out, 'masters', f'admit_{CELL}')
     adm = os.path.join(cd, 'coadd_final', A.ADMISSIONS)
     rows = list(csv.DictReader(open(adm))) if os.path.exists(adm) else []
-    check('with the recommended guard median (1.0, test only) both nights are admitted, one admissions.csv row each',
+    check('with the ruled guard median (1.0, R-REFACTOR-20261016-DC2-MEDIAN-1) both nights are admitted, one admissions.csv '
+          'row each',
           rc == 0 and r1.get('status') == 'done' and sorted(r['date'] for r in rows) == nights
           and all(r['verdict'] == 'admitted' for r in rows), (rc, r1.get('reason'), [(r['date'], r['verdict'], r['reason'])
                                                                                        for r in rows], txt[-500:]))
@@ -543,7 +542,7 @@ def test_failure_paths(nights):
     cd = os.path.join(wt, CELL)
     n1, n2 = nights
     saved = CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD
-    CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD = 1.0                   # the recommendation of item 10, test only
+    CFG.masters_admit.DC2_MEDIAN_WITHOUT_RECORD = 1.0                   # the ruled value (R-REFACTOR-20261016-DC2-MEDIAN-1)
 
     def rows():
         return {r['date']: r for r in csv.DictReader(open(os.path.join(cd, 'coadd_final', A.ADMISSIONS)))} \
