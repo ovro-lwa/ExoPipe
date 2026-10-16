@@ -488,8 +488,9 @@ def g0_check():
     except ImportError as e:
         probs.append(f'verify_mosaic not importable ({e})')
     # values with exactly one implementation in the window
-    if C.mosaic_render.RENDER_DEC_CUT_DEG is not None:
-        probs.append('mosaic_render.RENDER_DEC_CUT_DEG: only None (no cut) is implemented (batch row B-46 pending)')
+    cut = C.mosaic_render.RENDER_DEC_CUT_DEG
+    if cut is not None and not (isinstance(cut, (int, float)) and not isinstance(cut, bool) and -90.0 <= float(cut) < 90.0):
+        probs.append(f'mosaic_render.RENDER_DEC_CUT_DEG {cut!r}: None (no cut) or a declination in [-90, 90) deg')
     if C.mosaic.WEIGHT_PB_SOURCE != 'derive':
         probs.append(f"mosaic.WEIGHT_PB_SOURCE {C.mosaic.WEIGHT_PB_SOURCE!r}: only 'derive' is implemented (archived maps "
                      f"wait for the parity check P-PB)")

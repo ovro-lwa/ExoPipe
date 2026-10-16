@@ -397,6 +397,7 @@ def run_render(args, run, jobs, ctx):
                           'domain': d, 'hpx_dir': ldir, 'out_tmp': tmp,
                           'moll_W': C.mosaic_render.MOLLWEIDE_WIDTH_PX,
                           'car_cdelt_deg': C.mosaic_render.CAR_CDELT_ARCMIN / 60.0,     # BP:375 car_arcmin / 60
+                          'dec_cut': C.mosaic_render.RENDER_DEC_CUT_DEG,                # R-GREGG-20261016-MOSAIC-DEC-MIN-30
                           'beams': dict(C.mosaic_render.BEAM_FALLBACK_ARCMIN),
                           'log': os.path.join(logs, f'render_{job.variant}_{job.scope}_{d}.log')})
     if tasks:
@@ -438,7 +439,7 @@ def run_render(args, run, jobs, ctx):
                     u.note(f'render beam: the July fallback table (no PSF map {os.path.basename(psf)}; B-45)')
                 for d, fname, kind in planned:
                     u.add_output(os.path.join(rnd_dir, fname), 'mosaic_render', source=need[d], psfmap=psf_used,
-                                 kind=kind, scope=job.scope)
+                                 kind=kind, scope=job.scope, dec_cut=C.mosaic_render.RENDER_DEC_CUT_DEG)
             state[job.name] = u.status
         except Exception as e:
             _say(f'mosaic render {job.name}: error {type(e).__name__}: {e}')

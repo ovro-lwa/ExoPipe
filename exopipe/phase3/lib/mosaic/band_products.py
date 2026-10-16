@@ -14,7 +14,7 @@ import astropy.coordinates as ac, astropy.units as u
 BEAMS = {'Red': 13.1, 'Green': 8.4, 'Blue': 6.0, 'Full': 7.4}
 
 
-def _sample(m, w, shape, frame):
+def _sample(m, w, shape, frame, dec_cut=None):
     ys, xs = np.mgrid[0:shape[0], 0:shape[1]]
     a, b = w.pixel_to_world_values(xs, ys)
     ok = np.isfinite(a)
@@ -27,6 +27,8 @@ def _sample(m, w, shape, frame):
     img = hp.get_interp_val(m, ra, dec, lonlat=True)
     img[~ok] = np.nan
     img[np.nan_to_num(img) == 0] = np.nan
+    if dec_cut is not None:          # the render's southern edge (mosaic_render.RENDER_DEC_CUT_DEG; R-GREGG-20261016-MOSAIC-DEC-MIN-30)
+        img[np.asarray(dec) < dec_cut - 1e-9] = np.nan
     return img.astype(np.float32)
 
 
@@ -57,7 +59,7 @@ def car_wcs(cdelt_deg, dec_lo=-45.0, dec_hi=90.0):
 
 
 def build(variant, hpx_dir, suffix, out, bands=('Red', 'Green', 'Blue', 'Full'),
-          moll_W=12000, car_cdelt=1.5/60):
+          moll_W=12000, car_cdelt=1.5/60, dec_cut=None):
     os.makedirs(out, exist_ok=True)
     for b in bands:
         src = f"{hpx_dir}/healpix_I_deep_{variant}_{b}{suffix}_nside2048.fits"
@@ -67,15 +69,19 @@ def build(variant, hpx_dir, suffix, out, bands=('Red', 'Green', 'Blue', 'Full'),
         pxbm = bm / (360./moll_W*60)
         # Mollweide (galactic)
         w, sh = moll_wcs(moll_W)
-        img = _sample(m, w, sh, 'galactic')
+        img = _sample(m, w, sh, 'galactic', dec_cut)
         h = w.to_header(); h['BUNIT'] = bunit; h['BAND'] = b; h['VARIANT'] = variant
         h['BMAJ'] = bm/60; h['PXPERBM'] = round(pxbm, 2)
+        if dec_cut is not None:
+            h['DECMIN'] = (float(dec_cut), '[deg] rendered declination >= DECMIN')
         fits.writeto(f"{out}/{b}_{variant}{suffix}_Mollweide.fits", img, h, overwrite=True)
         # RA/Dec (equatorial CAR)
         w2, sh2 = car_wcs(car_cdelt)
-        img2 = _sample(m, w2, sh2, 'equatorial')
+        img2 = _sample(m, w2, sh2, 'equatorial', dec_cut)
         h2 = w2.to_header(); h2['BUNIT'] = bunit; h2['BAND'] = b; h2['VARIANT'] = variant
         h2['BMAJ'] = bm/60; h2['PXPERBM'] = round(bm/(car_cdelt*60), 2)
+        if dec_cut is not None:
+            h2['DECMIN'] = (float(dec_cut), '[deg] rendered declination >= DECMIN')
         fits.writeto(f"{out}/{b}_{variant}{suffix}_RADec.fits", img2, h2, overwrite=True)
         print(f"wrote {b}: Mollweide {sh} ({pxbm:.1f}px/bm) + RADec {sh2} "
               f"({bm/(car_cdelt*60):.1f}px/bm)", flush=True)
@@ -90,6 +96,7 @@ if __name__ == "__main__":
     ap.add_argument('--moll-width', type=int, default=12000)
     ap.add_argument('--car-arcmin', type=float, default=1.5)
     ap.add_argument('--bands', default='Red,Green,Blue,Full', help='comma list; subband labels allowed (v2)')
+    ap.add_argument('--dec-cut', type=float, default=None, help='render declination >= this (default: no cut)')
     a = ap.parse_args()
     build(a.variant, a.hpx_dir, a.suffix, a.out, bands=a.bands.split(','), moll_W=a.moll_width,
-          car_cdelt=a.car_arcmin/60)
+          car_cdelt=a.car_arcmin/60, dec_cut=a.dec_cut)

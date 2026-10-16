@@ -153,7 +153,7 @@ def task_render(t):
     mbp.BEAMS = dict(t['beams'])
     os.makedirs(t['out_tmp'], exist_ok=True)
     mbp.build(t['variant'], t['hpx_dir'], '_' + t['domain'], t['out_tmp'], bands=[t['scope']], moll_W=int(t['moll_W']),
-              car_cdelt=float(t['car_cdelt_deg']))
+              car_cdelt=float(t['car_cdelt_deg']), dec_cut=t.get('dec_cut'))
     return {'status': 'ok', 'files': sorted(os.listdir(t['out_tmp']))}
 
 

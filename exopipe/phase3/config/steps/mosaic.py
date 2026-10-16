@@ -154,10 +154,14 @@ class mosaic_render(_Section):
     # ---- in-place literals (PROTECTED_KEYS) ----
     CAR_DEC_MIN_DEG = -45.0          # deg; car_wcs default, BP:50 (build calls car_wcs(car_cdelt), BP:75)
     CAR_DEC_MAX_DEG = 90.0           # deg; BP:50
-    RENDER_DEC_CUT_DEG = None
-    #   deg; None = no cut (today). -38.7 = the 2026-07-15 render convention (batch row B-46, pending); no code path cuts.
     OMEGA_PER_FWHM2 = 1.1331         # Omega = 1.1331 x FWHM^2 for the render's scalar beam; BP:40
-    PROTECTED_KEYS = ('CAR_DEC_MIN_DEG', 'CAR_DEC_MAX_DEG', 'RENDER_DEC_CUT_DEG', 'OMEGA_PER_FWHM2')
+    PROTECTED_KEYS = ('CAR_DEC_MIN_DEG', 'CAR_DEC_MAX_DEG', 'OMEGA_PER_FWHM2')
+    # ---- the render's southern edge (batch row B-46) ----
+    RENDER_DEC_CUT_DEG = -30.0
+    #   deg; a render shows declination >= this (Gregg 2026-10-16 "Use declination >= -30"; the July renders cut at -38.7, a
+    #   convention recorded nowhere): band_products blanks every rendered pixel south of it, in both projections, and stamps
+    #   DECMIN on the render. The HEALPix maps keep mosaic_coadd.DEC_FLOOR_DEG. None = no cut (production).
+    RULED = {'RENDER_DEC_CUT_DEG': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
 
 
 class mosaic_qa(_Section):

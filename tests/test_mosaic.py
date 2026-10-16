@@ -208,6 +208,12 @@ def test_config():
             except ConfigRefusal:
                 pass
     assert CFG.mosaic.LSTS is None and CFG.mosaic.REQUIRE_N_LSTS == 24
+    # the renders' southern edge (R-GREGG-20261016-MOSAIC-DEC-MIN-30): -30 deg on the renders only, the maps keep -40;
+    # production's no-cut in the parity file
+    assert CFG.mosaic_render.RENDER_DEC_CUT_DEG == -30.0 and CFG.mosaic_coadd.DEC_FLOOR_DEG == -40.0
+    assert CFG.ruled('mosaic_render.RENDER_DEC_CUT_DEG') == ('R-GREGG-20261016-MOSAIC-DEC-MIN-30',)
+    par = open(os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')).read()
+    assert '\nmosaic_render.RENDER_DEC_CUT_DEG = None\n' in par
     assert len(CFG.mosaic.SCOPES) == 19
     probs = SC.g0_check()
     assert probs == [], probs
@@ -304,6 +310,15 @@ def test_end2end():
         assert h0['NSTACK'] == 24 and h0['TIMEFIX'] == 'v2-mosaic-constituents' and h0['PBCORR'] is True
         assert abs(h0['BMAJ'] - np.median([0.1 + 0.001 * i for i in range(24)])) < 1e-12 and 'THERMNOI' not in h0
         assert len(os.listdir(os.path.join(out, 'archive_staging', 'mosaic', 'renders', 'wideband', 'mollweide'))) == 2
+        # the renders carry the cut (DECMIN -30) and hold nothing south of it; the maps keep their sky down to their floor
+        import healpy as hp
+        rnd = os.path.join(out, 'renders')
+        assert all(fits.getheader(os.path.join(rnd, f)).get('DECMIN') == -30.0 for f in os.listdir(rnd) if f.endswith('.fits'))
+        mp = [o['path'] for o in co['outputs'] if '_jysr_' in os.path.basename(o['path']) and 'PSF' not in o['path']][0]
+        sig = fits.getdata(mp, 1)['SIGNAL'].ravel()
+        th, _ = hp.pix2ang(hp.npix2nside(sig.size), np.arange(sig.size))
+        south = int((np.isfinite(sig) & (90 - np.degrees(th) < -30.0)).sum())
+        print(f'  end2end: the jysr map keeps {south} finite pixels south of -30 deg; its renders none')
         # --resume: every unit skipped
         rc, so, se = _main(['mosaic', '--jobs', 'Blue_Taper_R075', '--stages', 'inputs,coadd,render,conform',
                             '--out', out, '--work', work, '--resume'] + SMALL)
@@ -515,6 +530,39 @@ def test_negative(out):
             h[1].data['SIGNAL'][100] = np.float32(7.0)
         res = {r['name']: r['passed'] for r in validate.run('mosaic', bad2, source=src)}
         assert not res['mosaic.pixels_unchanged'], res
+        # the renders' southern edge: sky south of the cut made finite, the cut card missing, a card under no cut - each fails
+        rnd = os.path.join(out, 'renders')
+        for kind in ('_RADec.fits', '_Mollweide.fits'):
+            rf = [x for x in os.listdir(rnd) if x.endswith(kind)][0]
+            res = {r['name']: r['passed'] for r in validate.run('mosaic_render', os.path.join(rnd, rf), dec_cut=-30.0)}
+            assert res['mosaic_render.southern_edge'], (rf, res)
+            bad3 = os.path.join(neg, rf)
+            shutil.copy(os.path.join(rnd, rf), bad3)
+            with fits.open(bad3, mode='update') as h:
+                d = h[0].data
+                if kind == '_RADec.fits':
+                    d[0, :] = np.float32(1.0)                     # the southernmost row (-45 deg) made finite
+                else:
+                    from astropy.wcs import WCS
+                    import astropy.coordinates as ac
+                    import astropy.units as au
+                    w = WCS(h[0].header).celestial
+                    yy, xx = np.mgrid[0:d.shape[0], 0:d.shape[1]]
+                    gl, gb = w.pixel_to_world_values(xx, yy)
+                    ok = np.isfinite(gl)
+                    dec = np.full(d.shape, np.nan)
+                    dec[ok] = ac.SkyCoord(gl[ok] * au.deg, gb[ok] * au.deg, frame='galactic').icrs.dec.deg
+                    d[(dec < -35.0) & ok] = np.float32(1.0)        # the sky south of -35 deg made finite
+            res = {r['name']: r['passed'] for r in validate.run('mosaic_render', bad3, dec_cut=-30.0)}
+            assert not res['mosaic_render.southern_edge'], (rf, res)
+            bad4 = os.path.join(neg, 'nocard_' + rf)
+            shutil.copy(os.path.join(rnd, rf), bad4)
+            with fits.open(bad4, mode='update') as h:
+                del h[0].header['DECMIN']
+            res = {r['name']: r['passed'] for r in validate.run('mosaic_render', bad4, dec_cut=-30.0)}
+            assert not res['mosaic_render.southern_edge'], ('no DECMIN under a cut', rf, res)
+            res = {r['name']: r['passed'] for r in validate.run('mosaic_render', os.path.join(rnd, rf), dec_cut=None)}
+            assert not res['mosaic_render.southern_edge'], ('DECMIN under no cut', rf, res)
     finally:
         _restore()
 

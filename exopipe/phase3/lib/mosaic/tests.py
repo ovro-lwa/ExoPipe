@@ -339,6 +339,45 @@ def projection(path, **ctx):
 
 
 @content_test('mosaic_render')
+def southern_edge(path, **ctx):
+    """The render's southern edge (mosaic_render.RENDER_DEC_CUT_DEG; R-GREGG-20261016-MOSAIC-DEC-MIN-30, "Use declination >=
+    -30"): a render made under a cut carries it (DECMIN) and holds no finite pixel south of it - the RA/Dec render row by row
+    (its declination is a function of the row), the Mollweide render on 1000 finite pixels drawn at random. The render unit
+    passes the cut it rendered with (ctx dec_cut): DECMIN must equal it, and a render made without a cut carries none. A render
+    without DECMIN (production's, or archived before the ruling) is judged against its map's floor (mosaic_coadd.DEC_FLOOR_DEG)."""
+    import numpy as np
+    from astropy.wcs import WCS
+    img, h = _render(path)
+    card = h.get('DECMIN')
+    if 'dec_cut' in ctx:
+        want = ctx['dec_cut']
+        if want is None and card is not None:
+            return False, card, f'rendered without a cut but carries DECMIN {card}'
+        if want is not None and (card is None or abs(float(card) - float(want)) > 1e-9):
+            return False, card, f'rendered under the cut {want} deg but DECMIN is {card}'
+    floor = float(card) if card is not None else float(_cfg().mosaic_coadd.DEC_FLOOR_DEG)
+    w = WCS(h).celestial
+    if str(h.get('CTYPE1', '')).startswith('RA---CAR'):
+        ny, nx = img.shape
+        _ra, dec = w.pixel_to_world_values(np.full(ny, nx // 2), np.arange(ny))
+        rows = np.where(np.asarray(dec) < floor - 1e-9)[0]
+        n = int(np.isfinite(img[rows]).sum()) if rows.size else 0
+        return n == 0, n, (f'{n} finite pixels in the {rows.size} rows south of {floor} deg' if n else
+                           f'no finite pixel in the {rows.size} rows south of {floor} deg')
+    ys, xs = np.nonzero(np.isfinite(img))
+    if ys.size == 0:
+        return False, 0, 'no finite pixel'
+    pick = np.random.RandomState(4321).choice(ys.size, size=min(1000, ys.size), replace=False)
+    a, b = w.pixel_to_world_values(xs[pick], ys[pick])
+    import astropy.coordinates as ac
+    import astropy.units as u
+    dec = ac.SkyCoord(np.asarray(a) * u.deg, np.asarray(b) * u.deg, frame='galactic').icrs.dec.deg
+    n = int((dec < floor - 1e-9).sum())
+    return n == 0, n, (f'{n} of {pick.size} sampled finite pixels south of {floor} deg (southernmost {dec.min():.3f})' if n
+                       else f'{pick.size} sampled finite pixels, all at declination >= {floor} deg')
+
+
+@content_test('mosaic_render')
 def resample_agrees(path, **ctx):
     import numpy as np
     import healpy as hp

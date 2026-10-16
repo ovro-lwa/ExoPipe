@@ -1585,14 +1585,15 @@ def test_item7_parity_file_keys():
     """The production parity file (parity/production_20261013.cfg): every line names a config key; outside section fallbacks
     (where a count-only site's ruled default IS production's 'fallback') each line differs from the config default - a line
     equal to the default would mean the default is not the ruled value, or the line is dead; and each such key carries the
-    2026-10-13 ruling, or one of Gregg's 2026-10-14 refactor rulings, in RULED unless it is a PROPOSED value awaiting Gregg
+    2026-10-13 ruling, or one of Gregg's later rulings listed in LATER, in RULED unless it is a PROPOSED value awaiting Gregg
     (listed here; none today)."""
     import ast
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import fallback
     B = 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32'
     LATER = {'R-GREGG-20261014-REFACTOR-A2B-C8B-C8C', 'R-GREGG-20261014-REFACTOR-A2-C8D',
-             'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'}     # clv15 fix_ledger.csv
+             'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS',     # clv15 fix_ledger.csv
+             'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}                           # the renders' southern edge
     PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
                                                              # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
     path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
@@ -1615,7 +1616,7 @@ def test_item7_parity_file_keys():
         ids = CFG.ruled(k) or ()
         ids = (ids,) if isinstance(ids, str) else tuple(ids)
         if k not in PROPOSED and not ({B} | LATER) & set(ids):
-            bad.append(f'{k}: no {B} (or a 2026-10-14 refactor ruling) in RULED ({ids})')
+            bad.append(f'{k}: no {B} (or a later ruling of Gregg\'s listed in LATER) in RULED ({ids})')
     assert n and not bad, bad
 
 
