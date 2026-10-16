@@ -488,13 +488,20 @@ def test_off_grid():
     expected = {('02h', 'Green', '2025-12-26'), ('12h', 'Full', '2025-04-11'), ('14h', 'Full', '2025-05-07'),
                 ('19h', 'Full', '2025-04-05'), ('02h', '50MHz', '2025-12-26'), ('11h', 'Full', '2025-03-09'),
                 ('11h', 'Full', '2025-04-07'), ('22h', 'Full', '2025-08-08')}
-    found, ex = set(), exclusions.load()
-    for lst, sc in sorted({(l_, s_) for l_, s_, _n in expected} | {('23h', '23MHz')}):
+    found, admitted_off, ex = set(), set(), exclusions.load()
+    before = lambda l_, s_, d_: (l_, s_, d_) not in expected and ex.is_excluded(l_, s_, d_)   # data_decisions before the
+    for lst, sc in sorted({(l_, s_) for l_, s_, _n in expected} | {('23h', '23MHz')}):       # eight rows of 2026-10-16
         fq = sc[:-3] if sc.endswith('MHz') else sc
-        adm = [x for x in quiet(co.discover_dates, lst, fq)[0] if not ex.is_excluded(lst, sc, x[0])]
-        found |= {(lst, sc, n_) for n_, _x, _m in IR.off_grid_nights(adm, co.CUTOVER_DATE)}
-    check('real: the gate finds the eight admitted off-grid nights (the four ruled "leave excluded" and the four the review '
-          'found), and nothing in 23h 23MHz', found == expected, sorted(found ^ expected))
+        allk = quiet(co.discover_dates, lst, fq)[0]
+        found |= {(lst, sc, n_) for n_, _x, _m in IR.off_grid_nights([x for x in allk if not before(lst, sc, x[0])],
+                                                                      co.CUTOVER_DATE)}
+        adm = [x for x in allk if not ex.is_excluded(lst, sc, x[0])]
+        admitted_off |= {(lst, sc, n_) for n_, _x, _m in IR.off_grid_nights(adm, co.CUTOVER_DATE)}
+    check('real: with data_decisions as it stood before 2026-10-16 the gate finds the eight admitted off-grid nights (the four '
+          'ruled "leave excluded" and the four the review found), and nothing in 23h 23MHz', found == expected,
+          sorted(found ^ expected))
+    check('real: since 2026-10-16 all eight are excluded in data_decisions (clv15 df3242b, Gregg\'s permission) - no admitted '
+          'night is off its grid', not admitted_off and all(ex.is_excluded(*k) for k in expected), sorted(admitted_off))
 
 
 # ---------------------------------------------------------------------------------------------------------------------

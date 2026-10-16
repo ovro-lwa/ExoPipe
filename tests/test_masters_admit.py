@@ -49,6 +49,26 @@ class _Ex:
         return d in self.nights
 
 
+WRONG_GRID_ROWS_20261016 = 'written 2026-10-16 by the refactor chat'   # the eight wrong-grid exclusions (clv15 df3242b)
+
+
+class _ExBefore:
+    """data_decisions as it stood before the eight wrong-grid rows of 2026-10-16: every exclusion but the named night's."""
+    def __init__(self, ex, lst, scope, night):
+        self.ex, self.key = ex, (lst, scope, night)
+
+    def is_excluded(self, lst, scope, d):
+        return False if (lst, scope, d) == self.key else self.ex.is_excluded(lst, scope, d)
+
+
+def data_decisions_before(path):
+    """A copy of data_decisions.csv without the eight wrong-grid rows of 2026-10-16 (the state the B-03 checks were written
+    for: those nights were refused by the build's own grid record, not excluded)."""
+    rows = [l for l in open(CFG.paths.DATA_DECISIONS) if not ('wrong grid' in l and WRONG_GRID_ROWS_20261016 in l)]
+    open(path, 'w').writelines(rows)
+    return path
+
+
 def _night(root, d, name, bands=('23MHz',), mtime=None):
     """A synthetic Phase-2 night dir <root>/<d>/<name>/<band>/I/deep/ holding a survey image the co-add's finder takes."""
     sd = os.path.join(root, d, name)
@@ -174,9 +194,14 @@ def test_nights_real():
         lst, sc = cell.split('_')
         with contextlib.redirect_stdout(io.StringIO()):
             entries = co.discover_dates(lst, sc.replace('MHz', '') if sc.endswith('MHz') else sc)
-        take, why = A.nights_to_admit(lst, sc, os.path.join(root, cell), entries, ex, co)
+        before = _ExBefore(ex, lst, sc, night)    # 02h Green and 11h Full: excluded since 2026-10-16 (wrong grid) - the
+        take, why = A.nights_to_admit(lst, sc, os.path.join(root, cell), entries, before, co)   # build's own record, as before
         check(f'real {cell}: no night to admit; {night} (not in residuals_provisional.csv) was seen by the build ({because})',
               not take and because in why.get(night, ''), (take, why.get(night)))
+        if cell in ('02h_Green', '11h_Full'):
+            take, why = A.nights_to_admit(lst, sc, os.path.join(root, cell), entries, ex, co)
+            check(f'real {cell}: {night} is excluded in data_decisions since 2026-10-16 (a wrong-grid image, Gregg\'s '
+                  f'permission) - refused as excluded', not take and 'excluded' in why.get(night, ''), (take, why.get(night)))
 
 
 def test_reference():
@@ -611,8 +636,10 @@ def test_admit_prep():
         q_ = os.path.join(wtg, '02h_Green', 'coadd_provisional', f'{v_}_Green.fits')   # masters stand in, test only, so
         if not os.path.exists(q_):                                # the cell passes the provisional gate and reaches the night
             shutil.copy2(os.path.join(wtg, '02h_Green', 'coadd_final', f'{v_}_Green.fits'), q_)
-    pg = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters', '--tier', 'deep', '--cells', '02h_Green',
-                         '--stages', 'admit-prep', '--cores', 'none', '--out', out, '--deep-installed-root', wtg], cwd=REPO,
+    ddb = data_decisions_before(os.path.join(T, 'data_decisions_before_20261016.csv'))   # the night is excluded since
+    pg = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters', '--tier', 'deep', '--cells', '02h_Green',   # then:
+                         '--stages', 'admit-prep', '--cores', 'none', '--out', out, '--deep-installed-root', wtg,   # replay the
+                         '--parity', '--set', f'paths.DATA_DECISIONS={ddb}'], cwd=REPO,   # list before (a --parity run may)
                         env=dict(os.environ), capture_output=True, text=True, timeout=1800)
     rpg = os.path.join(out, '_records', 'masters', 'admit-prep_02h_Green.json')
     recg = json.load(open(rpg)) if os.path.exists(rpg) else {}
