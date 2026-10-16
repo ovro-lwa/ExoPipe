@@ -186,7 +186,7 @@ def test_b02_rules_record():
           "table_pulsar_decisions); detect refuses a 'once-in-search' attempt without its frame noise and records the medians "
           "in the unit record", outs3.get('frame_noise') == os.path.join(rd3, RR.FRAME_NOISE)
           and outs3.get('table_pulsar_decisions') == os.path.join(rd3, RR.TABLE_PULSAR)
-          and "u.meta['frame_noise'] = _RR.frame_noise_summary(fn, item.stokes)" in sd and 'engine wrote no' in sd, outs3)
+          and "u.meta['frame_noise'] = _RR.frame_noise_summary(fn, item.stokes)" in sd and 'recorded no frame' in sd, outs3)
 
 
 def test_env_and_items():
@@ -560,6 +560,106 @@ def test_engine_child():
           sorted(set(glob.glob(f'/tmp/e3_{CELL}_I_*')) - before))
 
 
+def test_b02_detect_frame_noise():
+    """B-02 step 3b, behavior of the detect stage around the engine child (the child replaced by a fake that writes a done
+    result and an image row, with or without frame-noise rows): under 'once-in-search' an attempt whose engine recorded no
+    frame refuses (bulk: no file; incremental: the base copy's rows only); recorded, the unit record carries the medians and
+    the conventions; under 'production' nothing is asked. The engine env carries the elevation convention, and under
+    'once-in-search' a masks' floor other than the check's refuses (one floor)."""
+    from exopipe.phase3.core import legacy
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.core.legacy import LegacyResult
+    from exopipe.phase3.lib.search import removal_rules as RR
+    real_run = legacy.run
+    mode = {'rows': 0}
+
+    def fake(target, args=(), **kw):
+        spec = json.load(open(args[1]))
+        att = kw['cwd']
+        rd = os.path.join(att, 'transients', f'Run_{spec["label"]}')
+        os.makedirs(rd, exist_ok=True)
+        ip = os.path.join(rd, 'v_deep_images.csv')
+        new = not os.path.exists(ip)
+        with open(ip, 'a', newline='') as fh:
+            w = csv.writer(fh)
+            if new:
+                w.writerow(T.GIMG_COLS)
+            w.writerow([LST, SCOPE, spec['stokes'], f'2025-02-0{1 + len(open(ip).read().splitlines())}', 1, 1, '', 1, 1, 1, 25.0])
+        if mode['rows']:
+            fp = os.path.join(rd, RR.FRAME_NOISE)
+            nw = not os.path.exists(fp)
+            with open(fp, 'a', newline='') as fh:
+                w = csv.writer(fh)
+                if nw:
+                    w.writerow(RR.FRAME_NOISE_COLS)
+                for i in range(mode['rows']):
+                    w.writerow([LST, SCOPE, spec['stokes'], f'2025-03-{10 + i}', '0.012', 1, 1, '0.012', '', 'fake'])
+        open(kw['log'], 'a').write('fake engine\n')
+        json.dump({'status': 'done'}, open(spec['result'], 'w'))
+        return LegacyResult(0, kw['log'], '', {}, False, '', 0.0, [])
+    run = record.Run('search', ['test'], os.path.join(TMP, 'out_b02fn'), CFG, dry_run=True)
+    ctx = dict(attempts=os.path.join(TMP, 'w_b02fn', 'attempts'), tmp=os.path.join(TMP, 'w_b02fn', 'tmp'),
+               flow_root=os.path.join(TMP, 'w_b02fn', 'flow'), archive_root=os.path.join(TMP, 'out_b02fn', 'archive_mirror'),
+               label='P3S5', out=os.path.join(TMP, 'out_b02fn'))
+    for d in (ctx['attempts'], ctx['tmp'], ctx['flow_root']):
+        os.makedirs(d, exist_ok=True)
+    out = {}
+    legacy.run = fake
+    try:
+        for name, rows, item, base_rows in (('bulk, no record', 0, DS.Item(CELL, 'I', 'bulk'), None),
+                                            ('bulk, recorded', 2, DS.Item(CELL, 'V', 'bulk'), None),
+                                            ('append, base rows only', 0, DS.Item(CELL, 'I', 'incremental', dates=['2025-02-09']), 3)):
+            f = dict(base=os.path.join(TMP, 'coadd', CELL))
+            if base_rows is not None:            # the published base the append is copied from, with its record
+                b = os.path.join(TMP, 'w_b02fn', f'base_{name[:6]}')
+                os.makedirs(os.path.join(b, 'transients', 'Run_P3S5'), exist_ok=True)
+                with open(os.path.join(b, 'transients', 'Run_P3S5', RR.FRAME_NOISE), 'w', newline='') as fh:
+                    w = csv.writer(fh)
+                    w.writerow(RR.FRAME_NOISE_COLS)
+                    w.writerows([[LST, SCOPE, 'I', f'2025-01-1{i}', '0.012', 1, 1, '0.012', '', 'base'] for i in range(base_rows)])
+                f['base_attempt'] = b
+            mode['rows'] = rows
+            u = run.unit(f'b02fn_{len(out)}')
+            try:
+                DS.stage_detect(u, item, ctx, f)
+                out[name] = ('ok', u.meta.get('frame_noise'), u.meta.get('b02_conventions'))
+            except Refusal as e:
+                out[name] = ('refused', str(e))
+            time.sleep(1.1)                      # attempt directories are named by the second
+        CFG.authorize(out=TMP)
+        CFG.set('search_detect.REMOVAL_RULES', 'production')
+        mode['rows'] = 0
+        u = run.unit('b02fn_prod')
+        try:
+            DS.stage_detect(u, DS.Item(CELL, 'I', 'bulk'), ctx, dict(base=os.path.join(TMP, 'coadd', CELL)))
+            out['production, no record'] = ('ok',)
+        except Refusal as e:
+            out['production, no record'] = ('refused', str(e))
+        env = DS.engine_env('/x', '/x', '/x', 'P3S5', '/x', '/x')
+        CFG.set('search_detect.REMOVAL_RULES', 'once-in-search')
+        CFG.set('search_detect.ELEVATION_FLOOR_DEG', 30.0)
+        try:
+            DS.engine_env('/x', '/x', '/x', 'P3S5', '/x', '/x')
+            two = None
+        except Refusal as e:
+            two = str(e)
+    finally:
+        legacy.run = real_run
+        CFG.reset()
+    rec = out.get('bulk, recorded', ())
+    check("B-02 step 3b, detect: under 'once-in-search' an engine that recorded no frame refuses - a bulk attempt without "
+          "frame_noise.csv, an append whose file holds only its base's rows; recorded, the unit record has the medians and "
+          "the conventions; under 'production' nothing is asked",
+          out.get('bulk, no record', ('',))[0] == 'refused' and 'recorded no frame' in out['bulk, no record'][1]
+          and out.get('append, base rows only', ('',))[0] == 'refused' and 'recorded no frame' in out['append, base rows only'][1]
+          and rec[:1] == ('ok',) and rec[1] == dict(rows=2, admitted=2, population=2, tblnoise_median_jy=0.012, vsanmed_jy=[])
+          and rec[2] == {'DEEP_ELEV_EPOCH': 'frame-mid', 'DEEP_ELEV_FLOOR_DEG': 25.0}
+          and out.get('production, no record') == ('ok',), out)
+    check("B-02 step 3b, engine env: the elevation convention travels to the engine child (EXOPIPE3_DEEP_ELEV_EPOCH); under "
+          "'once-in-search' a masks' floor other than the check's refuses (one floor)",
+          env.get(RR.ELEV_EPOCH_ENV) == 'frame-mid' and two is not None and 'one floor' in two, (env.get(RR.ELEV_EPOCH_ENV), two))
+
+
 def test_cli():
     rc, out = cli('--help')
     check('exopipe3 search --help', rc == 0 and '--deep-flow-from' in out and '--replay-attempt' in out)
@@ -684,6 +784,7 @@ def main():
         test_fit_stage(att, rd)
         test_publish_path(att, rd)
         test_engine_child()
+        test_b02_detect_frame_noise()
         test_cli()
         test_preflight_review()
         test_real_products()

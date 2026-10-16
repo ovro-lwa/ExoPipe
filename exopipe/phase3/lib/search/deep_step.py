@@ -392,6 +392,11 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
         from exopipe.phase3.core.record import Refusal
         raise Refusal(str(e))
     env[_RR.AUDIT_ENV] = c.search_tables.SOLAR_AUDIT                               # B-02: the daytime gate's solar audit (G2 pin)
+    env[_RR.ELEV_EPOCH_ENV] = c.catalog_conform.DEEP_ELEV_EPOCH                    # B-02 step 3b: the floor's time, as the check's
+    if env[_RR.RULES_ENV] == 'once-in-search' and float(sd.ELEVATION_FLOOR_DEG) != float(c.catalog_conform.DEEP_ELEV_FLOOR_DEG):
+        raise Refusal(f'search_detect.ELEVATION_FLOOR_DEG {sd.ELEVATION_FLOOR_DEG} (the detection masks) != catalog_conform.'   # B-02:
+                      f'DEEP_ELEV_FLOOR_DEG {c.catalog_conform.DEEP_ELEV_FLOOR_DEG} (the search\'s floor per detection and the '   # one
+                      f'check\'s): under the B-02 rules they are one floor - REFUSING')                                          # floor
     if not si.ARCHIVE_WRITE:
         env['P3_ARCHIVE_WRITE'] = '0'
     if not sd.REFINE_X2:
@@ -877,6 +882,9 @@ def stage_detect(u, item, ctx, f):
         os.makedirs(attempt)
         log = os.path.join(attempt, f'{item.cell}.log')
     before = len(_image_rows(attempt, label, item.stokes))
+    from exopipe.phase3.lib.search import removal_rules as _RR
+    fn = os.path.join(attempt, 'transients', f'Run_{label}', _RR.FRAME_NOISE)      # B-02 step 3b: an append's base has its rows
+    fn_before = sum(1 for _ in open(fn)) if os.path.exists(fn) else 0
     tmpd = os.path.join(ctx['tmp'], item.name + '_' + tag)
     os.makedirs(tmpd, exist_ok=True)
     etmp = engine_tmpdir(c.search_run.ENGINE_TMP_ROOT, f'{item.cell}_{item.stokes}')     # short: AF_UNIX socket paths
@@ -923,11 +931,14 @@ def stage_detect(u, item, ctx, f):
                 break
         raise NoInput(f'{item.cell} {item.stokes}: the engine searched nothing ({why or "no image row written"})')
     if u.meta['removal_rules']['rules'] == 'once-in-search':            # B-02 step 3b: the noise each frame was judged with
-        fn = os.path.join(attempt, 'transients', f'Run_{label}', _RR.FRAME_NOISE)
-        if not os.path.exists(fn):
+        fn_after = sum(1 for _ in open(fn)) if os.path.exists(fn) else 0
+        if fn_after <= fn_before:
             raise Refusal(f'{item.cell} {item.stokes}: searched under the B-02 rules ({u.meta["removal_rules"]["version"]}) and the '
-                          f'engine wrote no {_RR.FRAME_NOISE} - REFUSING (the frames\' table noise would be unrecorded)')
+                          f'engine recorded no frame in {_RR.FRAME_NOISE} ({fn_before} lines before, {fn_after} after) - REFUSING '
+                          f'(the frames\' table noise would be unrecorded)')
         u.meta['frame_noise'] = _RR.frame_noise_summary(fn, item.stokes)
+        u.meta['b02_conventions'] = {k: env.get(_RR.ELEV_EPOCH_ENV) if k == 'DEEP_ELEV_EPOCH' else c.catalog_conform.DEEP_ELEV_FLOOR_DEG
+                                     for k in ('DEEP_ELEV_EPOCH', 'DEEP_ELEV_FLOOR_DEG')}
 
 
 def _fit_frame(job):

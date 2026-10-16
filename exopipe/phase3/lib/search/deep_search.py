@@ -732,7 +732,7 @@ def _v110_cell_verdicts(lst, scope, base, cell_work, master_I, hdr0, em, cd,
 
 
 def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms,
-                          master_file, loo_file, align_file, label, cell_tag, cadence='deep', cards=None):
+                          master_file, loo_file, align_file, label, cell_tag, cadence='deep'):
     """Conformant-from-birth header for an ARCHIVED search frame
     (R-CONFORMANT-FROM-BIRTH-INCL-HEADERS, Gregg 2026-09-04; products audit
     rows B-01..B-05). Time block and beam come from the epoch's OWN Stage-1
@@ -783,8 +783,6 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
     })
     if loo_used:
         extra['LOOEXCL'] = (d, 'Epoch excluded from the LOO master')
-    if cards:                                  # WAVE2 B-02 (step 3b): the cell medians the frame's detections are judged by
-        extra.update(cards)                    # WAVE2 B-02
     basis = str(hs.get('TIMEFIX', 'v2-phase2')).replace('v2-', '', 1)
     prod.write_standard_header(
         h, scope=scope, stokes=stokes, start=start, end=end,
@@ -1736,7 +1734,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             try:
                 _vr[_d] = float(sv2.get_uniform_rms(np.nan_to_num(_rv, nan=0.0), sv2.make_masks(hdr0, _rv.shape)[0]))
                 if _b02:                                               # WAVE2 B-02 (step 3b): the frame's noise as its IMGRMS card
-                    _vr[_d] = round(_vr[_d], 9)                        # WAVE2 B-02: gives it back (Jy, 9 decimals)
+                    _vr[_d] = _RR.card_value(_vr[_d])                  # WAVE2 B-02: gives it back (removal_rules.card_value)
             except Exception:
                 from exopipe.phase3.core import fallback      # WAVE2 B-30
                 fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope} {_d}: the V frame rms could not be '
@@ -1788,42 +1786,36 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                           f'unmeasured (no qa3 rms in weights.csv / no stage-1 {_st} rms)', n=len(_ds))
     # WAVE2 B-02 (step 3b, R-REFACTOR-20261016-B02-CONVENTIONS (1), (3)): ONE noise per frame - the search frame's uniform rms
     # (search_v.get_uniform_rms: the central 1024^2, below 25 deg masked; V: the gate's number above; I: the same statistic, the
-    # deep mask being the phase centre's, one per grid) - stamped as the frame's IMGRMS, and the bright-source table's noise:
-    # the median over the cell's searched nights (an appended night: its base's, plus itself), recorded in FRAME_NOISE.
-    _fnz, _tbn, _tpd = {'I': {}, 'V': {}}, {}, []                      # WAVE2 B-02
+    # deep mask being the phase centre's, one per grid; the mask never reaches that box, so it is the frame's IMGRMS card) - and
+    # the bright-source table's noise: the median over the cell's admitted nights (an appended night: its base's, plus itself).
+    # Recorded in FRAME_NOISE, with the ledgers, for the frames this run processed; the frames carry production's cards.
+    _fnz, _tbn, _tpd, _b02s = {'I': {}, 'V': {}}, {}, [], {}          # WAVE2 B-02
     if _b02:                                                           # WAVE2 B-02
-        _fnz['V'] = {d: _vr.get(d) for d in resid_V}                   # WAVE2 B-02
+        _fnz['V'] = {d: (_vr[d] if d in _vr and np.isfinite(_vr[d]) else None) for d in resid_V}   # WAVE2 B-02
         _hm_ = {}                                                      # WAVE2 B-02
         for _d, _ri in resid_I.items():                                # WAVE2 B-02
             _sh = tuple(np.shape(_ri))                                 # WAVE2 B-02
             if _sh not in _hm_:                                        # WAVE2 B-02
                 _hm_[_sh] = sv2.make_masks(hdr0, _sh)[0]               # WAVE2 B-02
             _x = float(sv2.get_uniform_rms(np.nan_to_num(_ri, nan=0.0), _hm_[_sh]))   # WAVE2 B-02
-            _fnz['I'][_d] = round(_x, 9) if np.isfinite(_x) else None  # WAVE2 B-02
-        _srch = {'I': {d for d in dates if d in resid_I and d not in skip_I_dates},   # WAVE2 B-02: each Stokes' searched
-                 'V': {d for d in dates if d in resid_V and d not in skip_V_dates}}   # WAVE2 B-02: nights
+            _fnz['I'][_d] = _RR.card_value(_x) if np.isfinite(_x) else None   # WAVE2 B-02
+        _ivskip = {d for d in skip_I_dates if 'I' in stokes and d in resid_I}   # WAVE2 B-02: production's per-date loop skips
+        _b02s = {'I': {d for d in dates if d in resid_I and d not in skip_I_dates},   # WAVE2 B-02: the V of a night refused
+                 'V': {d for d in dates if d in resid_V and d not in skip_V_dates and d not in _ivskip}}   # WAVE2 B-02: from I ('IV')
         _nbase = None                                                  # WAVE2 B-02
         if included_dates:                                             # WAVE2 B-02: an append - its base's population
             _nbase = _RR.base_population(run_root)                     # WAVE2 B-02
-            if _nbase is None:                                         # WAVE2 B-02
-                raise RuntimeError(f'{lst} {scope}: INCREMENTAL under the B-02 rules and the attempt has no {_RR.FRAME_NOISE} '   # WAVE2 B-02
-                                   f'(its base was searched before step 3b) - the table noise of the cell\'s searched nights '   # WAVE2 B-02
-                                   f'is unknown - REFUSING')           # WAVE2 B-02
-        _tbn = _RR.table_noise(_fnz, _srch, {d for d in dates if d not in _adm}, base=_nbase)   # WAVE2 B-02, WAVE2 D-ADMIT: the cell's own nights
-        _append_locked(f'{run_root}/{_RR.FRAME_NOISE}', _RR.FRAME_NOISE_COLS,   # WAVE2 B-02
-                       _RR.frame_noise_rows(lst, scope, dates, _fnz, _srch, _tbn, _vmed, _attempt))   # WAVE2 B-02
+            _nb0 = [st for st in ('I', 'V') if _b02s[st] and not (_nbase or {}).get(st)]   # WAVE2 B-02
+            if _nb0:                                                   # WAVE2 B-02
+                raise RuntimeError(f'{lst} {scope}: INCREMENTAL under the B-02 rules and the attempt\'s {_RR.FRAME_NOISE} holds no '   # WAVE2 B-02
+                                   f'population of Stokes {"/".join(_nb0)} (' + ('none: its base was searched before step 3b'   # WAVE2 B-02
+                                   if _nbase is None else 'its base admitted no frame of it') + ') - the table noise of the '   # WAVE2 B-02
+                                   f'cell\'s admitted nights is unknown - REFUSING')   # WAVE2 B-02
+        _tbn = _RR.table_noise(_fnz, _b02s, {d for d in dates if d not in _adm}, base=_nbase)   # WAVE2 B-02, WAVE2 D-ADMIT: the cell's own nights
         for _st in ('I', 'V'):                                         # WAVE2 B-02
             if _fnz[_st] and _tbn[_st]['median'] is not None:          # WAVE2 B-02
                 print(f'  {lst} {scope}: TABLE NOISE (B-02) {_st} - cell median {_tbn[_st]["median"]*1e3:.1f} mJy over '   # WAVE2 B-02
-                      f'{_tbn[_st]["n"]} searched night(s)' + (' of the base' if _nbase is not None else ''))   # WAVE2 B-02
-
-    def _b02_cards(st, d):                                             # WAVE2 B-02: the medians a frame is judged by, as cards
-        out = {}                                                       # WAVE2 B-02
-        if _tbn.get(st, {}).get('night', {}).get(d) is not None:       # WAVE2 B-02
-            out['TBLNOISE'] = (_tbn[st]['night'][d], '[Jy/beam] table S noise: cell median IMGRMS')   # WAVE2 B-02
-        if st == 'V' and _vmed is not None:                            # WAVE2 B-02
-            out['VSANMED'] = (float(_vmed), '[Jy/beam] V noise rule: cell median IMGRMS')   # WAVE2 B-02
-        return out                                                     # WAVE2 B-02
+                      f'{_tbn[_st]["n"]} admitted night(s)' + (' of the base' if _nbase is not None else ''))   # WAVE2 B-02
 
     def _b02_tnoise(st, d):                                            # WAVE2 B-02: the table's noise for a searched frame
         x = _tbn.get(st, {}).get('night', {}).get(d)                   # WAVE2 B-02
@@ -1896,11 +1888,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 ignore_nan=True)), 9))
             _loo_i = f'{base}/coadd_final/loo/{d}_I_loo_Taper_R075_{scope}.fits'
             _hdr_I = _archive_frame_header(
-                hdr0, ebase, d, scope, 'I', em, cd, None,
-                (_fnz['I'].get(d) or _rmsI) if _b02 else _rmsI,       # WAVE2 B-02 (step 3b): IMGRMS = the frame's one noise
-                mI, _loo_i, mI,
-                label, f'{lst} {scope}', cadence=cadence,
-                cards=_b02_cards('I', d) if _b02 else None)          # WAVE2 B-02: + the table's noise (TBLNOISE)
+                hdr0, ebase, d, scope, 'I', em, cd, None, _rmsI, mI, _loo_i, mI,
+                label, f'{lst} {scope}', cadence=cadence)
             _fhI[d] = _hdr_I
             if not os.path.exists(ir_path):
                 _write_archive_frame(ir_path, rI, _hdr_I, f'{lst} {scope}', d)
@@ -2014,11 +2003,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # header copy that gave every frame its master's time block)
             _loo_v = f'{base}/coadd_final/loo/{d}_V_loo_Taper_R0_{scope}.fits'
             _hdr_out = _archive_frame_header(
-                hdr0, ebase, d, scope, 'V', em, cd, _tn,
-                (_fnz['V'].get(d) or _tn) if _b02 else _tn,           # WAVE2 B-02 (step 3b): IMGRMS = the frame's one noise
-                mVp, _loo_v, mI,
-                label, f'{lst} {scope}', cadence=cadence,
-                cards=_b02_cards('V', d) if _b02 else None)          # WAVE2 B-02: + TBLNOISE, VSANMED
+                hdr0, ebase, d, scope, 'V', em, cd, _tn, _tn, mVp, _loo_v, mI,
+                label, f'{lst} {scope}', cadence=cadence)
             _fhV[d] = _hdr_out
             if not os.path.exists(vr_path):
                 _write_archive_frame(vr_path, rV, _hdr_out, f'{lst} {scope}', d)
@@ -2407,6 +2393,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                 _te_v[d] if d in _te_v else _eph_time(ebase, d, scope, ot),   # WAVE2 B-30: labels at the
                                 frame_hdr=_fhV.get(d))                                        # vetoes' time
             nwr += len(finals)
+    if _b02:                                                           # WAVE2 B-02 (step 3b): the frame noise record of the frames
+        _append_locked(f'{run_root}/{_RR.FRAME_NOISE}', _RR.FRAME_NOISE_COLS, _RR.frame_noise_rows(   # WAVE2 B-02: this run
+            lst, scope, dates, _fnz, _b02s, _tbn, _vmed, _attempt, framed={'I': set(_fhI), 'V': set(_fhV)}))   # WAVE2 B-02: processed
     _append_locked(f'{run_root}/{_RR.TABLE_PULSAR}', _RR.TABLE_PULSAR_COLS, _tpd)   # WAVE2 B-02 (step 3b): none written without one
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)

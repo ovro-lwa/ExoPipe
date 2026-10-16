@@ -29,8 +29,9 @@ RULES_VERSION = 'b02-3b'   # what a 'once-in-search' attempt applies: 3a - the d
                            # 3b - one noise per frame, the elevation floor at the frame's mid-time, the table's derivation inputs
 AUDIT_ENV = 'EXOPIPE3_SOLAR_AUDIT'                # the solar audit the search's daytime gate reads (search_tables.SOLAR_AUDIT)
 RULES_RECORD = 'search_rules.json'                # in each attempt directory: the rules it was searched under (deep_step)
+ELEV_EPOCH_ENV = 'EXOPIPE3_DEEP_ELEV_EPOCH'         # the elevation convention the step hands the engine (catalog_conform)
 FRAME_NOISE = 'frame_noise.csv'                   # in the search's run directory (step 3b): each frame's noise, the medians
-FRAME_NOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'searched', 'population', 'tblnoise_jy', 'vsanmed_jy',
+FRAME_NOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'admitted', 'population', 'tblnoise_jy', 'vsanmed_jy',
                     'attempt']                    # it was judged by, and the cell's population (an append reads it)
 TABLE_PULSAR = 'table_pulsar_decisions.csv'      # in the search's run directory (step 3b): every table decision that
 TABLE_PULSAR_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'cut', 'note']   # names a pulsar
@@ -139,9 +140,10 @@ def frame_mid_lst_deg(date_obs, date_end):
 
 
 def deep_elevation(lst, ra, dec, epoch=None, frame_time=None):
-    """(elevation deg, the words naming the time) under catalog_conform.DEEP_ELEV_EPOCH (or `epoch`). 'frame-mid' needs the
-    frame's (DATE-OBS, DATE-END); without them it refuses - an elevation it could not judge is never a pass."""
-    epoch = epoch or _cc().DEEP_ELEV_EPOCH
+    """(elevation deg, the words naming the time) under catalog_conform.DEEP_ELEV_EPOCH (or `epoch`; in the engine child the
+    step's value, ELEV_EPOCH_ENV). 'frame-mid' needs the frame's (DATE-OBS, DATE-END); without them it refuses - an
+    elevation it could not judge is never a pass."""
+    epoch = epoch or os.environ.get(ELEV_EPOCH_ENV) or _cc().DEEP_ELEV_EPOCH
     if epoch == 'mid-hour':
         return mid_hour_elevation(lst, ra, dec), 'at mid-hour'
     if epoch == 'frame-mid':
@@ -499,31 +501,42 @@ def _pos(x):
     return x is not None and np.isfinite(float(x)) and float(x) > 0
 
 
+def card_value(x):
+    """x (Jy) as a FITS card gives it back: rounded to 9 decimals, then through astropy's card formatting (which shortens a
+    long fixed-notation value: below 1 mJy some 9-decimal values change in their last digits) - so a rule's number and the
+    frame's card are the same number."""
+    from astropy.io import fits
+    return float(fits.Card.fromstring(fits.Card('NOISE', round(float(x), 9)).image).value)
+
+
 def median_noise(values):
-    """The median (Jy, to 9 decimals - the value a FITS card gives back) of the finite positive values; None without one."""
+    """The median (Jy, as a card gives it back: card_value) of the finite positive values; None without one."""
     v = [float(x) for x in values if _pos(x)]
-    return round(float(np.median(v)), 9) if v else None
+    return card_value(np.median(v)) if v else None
 
 
-def table_noise(noise, searched, cell, base=None):
+def table_noise(noise, admitted, cell, base=None):
     """The noise S of the bright-source table divides by, per frame (the table's derivation inputs, decision (3)): {Stokes:
     {'population': [nights], 'n': count, 'median': Jy or None, 'night': {night: Jy or None}}}.
-    noise = {Stokes: {night: the frame's noise or None}} (every frame of the run); searched = {Stokes: the nights searched};
-    cell = the cell's own nights (an admitted night is not one). The population is the cell's searched nights with a noise -
-    or, for an append (``base`` = base_population of the attempt it appends to), the base's. A searched night outside the
-    population is judged with the population plus itself; every other frame carries the population's median."""
+    noise = {Stokes: {night: the frame's noise or None}} (every frame of the run); admitted = {Stokes: the nights every gate
+    before the search admitted to that Stokes' search - an image whose source extraction then fails stays in: the population
+    is fixed before any extraction runs}; cell = the cell's own nights (an admitted night is not one). The population is the
+    cell's admitted nights with a noise - or, for an append (``base`` = base_population of the attempt it appends to), the
+    base's. An admitted night outside the population is judged with the population plus itself; every other frame carries
+    the population's median. (The V noise rule's median, VSANMED, is the gate's own: the upper middle of the V frame noise
+    of the cell's nights, gate-refused frames included - deep_search's sanity gate.)"""
     out = {}
     for st, nz in noise.items():
-        srch = set(searched.get(st, ()))
+        adm = set(admitted.get(st, ()))
         if base is not None:
             pop_d, pop_v = [], [float(x) for x in base.get(st, []) if _pos(x)]
         else:
-            pop_d = sorted(d for d in srch if d in cell and _pos(nz.get(d)))
+            pop_d = sorted(d for d in adm if d in cell and _pos(nz.get(d)))
             pop_v = [float(nz[d]) for d in pop_d]
         m = median_noise(pop_v)
         night = {}
         for d in nz:
-            night[d] = median_noise(pop_v + [nz[d]]) if (d in srch and d not in pop_d and _pos(nz[d])) else m
+            night[d] = median_noise(pop_v + [nz[d]]) if (d in adm and d not in pop_d and _pos(nz[d])) else m
         out[st] = {'population': pop_d, 'n': len(pop_v), 'median': m, 'night': night}
     return out
 
@@ -542,32 +555,33 @@ def base_population(run_dir):
     return out
 
 
-def frame_noise_rows(lst, scope, nights, noise, searched, tbl, vsanmed, attempt):
-    """FRAME_NOISE rows (FRAME_NOISE_COLS) of the frames of ``nights`` (this run's): the frame's noise, whether its Stokes'
-    search ran on it, whether it is in the population, the table's noise it carries, the V noise rule's median (V)."""
+def frame_noise_rows(lst, scope, nights, noise, admitted, tbl, vsanmed, attempt, framed=None):
+    """FRAME_NOISE rows (FRAME_NOISE_COLS) of the frames of ``nights`` (this run's; with ``framed`` = {Stokes: nights}, only the
+    frames the run processed): the frame's noise, whether every gate admitted it to its Stokes' search, whether it is in the
+    population, the table's noise it is judged with, the V noise rule's median (V)."""
     rows = []
     for st in ('I', 'V'):
         t = tbl.get(st)
         if t is None:
             continue
         for d in nights:
-            if d not in noise.get(st, {}):
+            if d not in noise.get(st, {}) or (framed is not None and d not in framed.get(st, ())):
                 continue
             v, tb = noise[st][d], t['night'].get(d)
-            rows.append([lst, scope, st, d, '' if v is None else repr(float(v)), int(d in searched.get(st, ())),
+            rows.append([lst, scope, st, d, '' if v is None else repr(float(v)), int(d in admitted.get(st, ())),
                          int(d in t['population']), '' if tb is None else repr(tb),
                          '' if (st != 'V' or vsanmed is None) else repr(float(vsanmed)), attempt])
     return rows
 
 
 def frame_noise_summary(path, stokes):
-    """The unit record's summary of a FRAME_NOISE for one Stokes: rows, searched, population, the population's median (Jy) and
+    """The unit record's summary of a FRAME_NOISE for one Stokes: rows, admitted, population, the population's median (Jy) and
     the V noise rule's median (V)."""
     with open(path, newline='') as fh:
         R = [r for r in csv.DictReader(fh) if r['stokes'] == stokes]
     pop = [float(r['noise_jy']) for r in R if r['population'] == '1']
     vs = sorted({r['vsanmed_jy'] for r in R if r['vsanmed_jy']})
-    return dict(rows=len(R), searched=sum(r['searched'] == '1' for r in R), population=len(pop),
+    return dict(rows=len(R), admitted=sum(r['admitted'] == '1' for r in R), population=len(pop),
                 tblnoise_median_jy=median_noise(pop), vsanmed_jy=[float(x) for x in vs])
 
 

@@ -276,6 +276,7 @@ def child_env(spec, cfg=None):
     except RuntimeError as e:
         raise Refusal(str(e))
     s[_RR.AUDIT_ENV] = cfg.search_tables.SOLAR_AUDIT
+    s[_RR.ELEV_EPOCH_ENV] = cfg.catalog_conform.DEEP_ELEV_EPOCH          # B-02 step 3b (deep_step.engine_env)
     s['DEEP_XLA_MEMFRAC'] = repr(v['flow_xla_mem_fraction'])
     if v['flow_lock']:
         s['P3_FLOW_LOCK'] = v['flow_lock']        # node-global lock shared with production searches (one GPU batch per node)
