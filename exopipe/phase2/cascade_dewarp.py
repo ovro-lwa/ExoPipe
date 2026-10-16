@@ -1706,9 +1706,11 @@ def _run_cascade_arm_flow(work_dir, subband_list, start_subband,
                           warp_categories=None):
     """Run one arm of the cascade using optical flow (subprocess).
 
-    At band boundaries (where image sizes change post-cutover), falls
-    back to RBF/multiquadric dewarping for that step, then resumes
-    flow for subsequent within-band steps.
+    At band boundaries (where image sizes change post-cutover), the
+    dewarped reference is regridded onto the target's pixel grid and
+    the flow step runs against it; the cascade then continues with flow.
+    There is no RBF fallback: if the regrid fails, that subband is
+    skipped (ratified 2026-10-16, RATIFY-CASCADE-DEWARP-DOCSTRING-...).
     """
     ref_subband = start_subband
     consecutive_failures = 0
