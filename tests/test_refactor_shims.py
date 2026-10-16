@@ -221,9 +221,30 @@ def check_new_names(verbose=True):
     return fails
 
 
+# A launched module whose output changed after the move by a ruled change: (ruling, [(baseline text, the text that replaces
+# it)]) - the expected output is the baseline with exactly these replacements; everything else must equal it.
+RULED_CHANGES = {
+    'exopipe.phase3.make_band_products': ('R-GREGG-20261016-MOSAIC-DEC-MIN-30', [
+        ('[--bands BANDS]\n', '[--bands BANDS] [--dec-cut DEC_CUT]\n'),
+        ('  --bands BANDS         comma list; subband labels allowed (v2)\n',
+         '  --bands BANDS         comma list; subband labels allowed (v2)\n'
+         '  --dec-cut DEC_CUT     render declination >= this (default: no cut)\n')]),
+}
+
+
+def _expected(old, b):
+    """The baseline record ``b`` of runnable ``old`` with its ruled changes applied (each replacement must apply once)."""
+    out = b['out']
+    for a, z in RULED_CHANGES.get(old, ('', []))[1]:
+        if out.count(a) != 1:
+            return dict(b, out=out + f'\n[ruled change {RULED_CHANGES[old][0]}: {a!r} not found once in the baseline]')
+        out = out.replace(a, z)
+    return dict(b, out=out)
+
+
 def check_runnables(verbose=True):
     """Check 2. Returns a list of failure strings."""
-    base = _load_baseline()['runnables']
+    base = {k: _expected(k, v) for k, v in _load_baseline()['runnables'].items()}
     cur = run_runnables(REPO, pairs=_pairs())
     fails = []
     for old, b in sorted(base.items()):
