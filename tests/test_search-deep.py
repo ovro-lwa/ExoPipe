@@ -375,7 +375,8 @@ def test_content_tests_synthetic():
     check('a night of that record admitted now (its exclusion lifted) is an unaccounted epoch of the attempt', un == [D4], un)
     open(p, 'w').write(f'{LST},{SCOPE},{D2},{ATT_TAG}\n')
     ok, det = results_of('refusal_record', p)
-    check('refusal_record FAILS on that record naming a night with gate-ledger rows', not ok and 'gate-ledger rows' in det, det)
+    check('refusal_record passes on that record naming a night with gate-ledger rows (an append that searched a night '
+          'its base recorded, data_decisions admitting it since)', ok, det)
     os.remove(p)
     # review 2026-10-13: verify_p3s3_stage conditions the tests now carry
     p = os.path.join(rd, 'master_catalog.csv')
@@ -407,6 +408,37 @@ def test_content_tests_synthetic():
     finally:
         CFG.paths.DATA_DECISIONS = real_dd
     return att, rd
+
+
+def test_record_is_no_ledger(att, rd):
+    """B-02 step 3c (first review): the record of the nights data_decisions excluded is no refusal ledger - a log that reports
+    refusals with only the record beside it fails search.refusal_ledgers_present; with a real ledger it passes."""
+    import types as _types
+    beam = os.path.join(rd, 'refusals', f'{CELL}_beam_excluded.csv')
+    keep = open(beam).read()
+    rec = os.path.join(rd, 'refusals', f'{CELL}_datadecisions_excluded.csv')
+    open(rec, 'w').write(f'{LST},{SCOPE},2030-01-04,{ATT_TAG}\n')
+    lg = os.path.join(TMP, 'refusals_said.log')
+    open(lg, 'w').write(f'  {LST} {SCOPE}: BEAM GATE - 1 epoch(s) REFUSED from search\n')
+    item = _types.SimpleNamespace(mode='bulk', cell=CELL, stokes='I', dates=[], name=f'{CELL}_I')
+    f = dict(attempt=att, label='P3S5', log=lg, cell_work=os.path.join(TMP, 'no_cell_work'), admitted=[D1, D2],
+             dates_i=[D1, D2], dates_v=[])
+    got = {}
+    try:
+        for name, present in (('record only', False), ('record and the beam ledger', True)):
+            if present:
+                open(beam, 'w').write(keep)
+            elif os.path.exists(beam):
+                os.remove(beam)
+            run = record.Run('search', ['test'], os.path.join(TMP, f'out_ledger_{int(present)}'), CFG, dry_run=True)
+            u = run.unit(f'ledger_{int(present)}')
+            DS.stage_verify(u, item, {}, f, [], [], raise_on_fail=False)
+            got[name] = next((t['passed'] for t in u.tests if t['name'] == 'search.refusal_ledgers_present'), None)
+    finally:
+        open(beam, 'w').write(keep)
+        os.remove(rec)
+    check('search.refusal_ledgers_present: the record alone does not stand for the refusal ledgers a log reports (fails); '
+          'with the beam ledger beside it, passes', got == {'record only': False, 'record and the beam ledger': True}, got)
 
 
 def test_fit_stage(att, rd):
@@ -800,6 +832,7 @@ def main():
         test_engine_truth()
         test_env_and_items()
         att, rd = test_content_tests_synthetic()
+        test_record_is_no_ledger(att, rd)
         test_fit_stage(att, rd)
         test_publish_path(att, rd)
         test_engine_child()

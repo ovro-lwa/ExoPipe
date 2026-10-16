@@ -16,12 +16,13 @@ group rule with the served localization's estimator - are the real functions.
       (one frame each); a row line among the finals / a 'row-line' row alone; a searched frame in daytime / a daytime
       refusal at night; a searched V frame above the noise rule / a V noise refusal below it; the I noise rule both ways;
       a catalog row without its final / a final without its row; a duplicate; a searched night excluded now / a night
-      the search left out as excluded that data_decisions admits now (each attempt's own record: V and I); a v110
+      the search left out as excluded that data_decisions admits now and no search took up since (each attempt's own
+      record: V and I); a v110
       marginal removal; an axis ratio above the search's limit; attempts under 'production', at another version (b02-3b
       among them: no record of the nights left out as excluded), without a record refused before any row; and not
       refused: a frame whose source extraction was refused, on a night excluded since; a night left out as excluded and
-      excluded still; a final whose rounded size sits above the search's size floor (the search's own gate is not
-      re-run);
+      excluded still, or searched since by an append; a final whose rounded size sits above the search's size floor
+      (the search's own gate is not re-run);
   (3) restored rows carry an ID in the catalog's shape (field 2 the LST, as downstream parses it);
   (4) the pulsar stage with production's group rule: a group consistent with its pulsar gets its cut detection back, an
       inconsistent one loses its exempted detections; both recorded (members included) and accepted by the check, which
@@ -471,6 +472,11 @@ def test_faults():
         r.att['V'].ddrop.append([LST, SC, left, 'A1'])
         r.excluded = {left}
     fault('dd_kept', left_out, None, 'a night the search left out as excluded by data_decisions, excluded still')
+
+    def appended(r):                        # the reviewer's case: the base left the night out as excluded, an append
+        r.att['V'].ddrop.append([LST, SC, NIGHTS[3], 'A0'])   # searched it since (its frame and ledger rows), admitted now
+    fault('dd_appended', appended, None, 'a night the base left out as excluded and an append searched since (data_decisions '
+                                         'admitting it): the inherited record row is no finding')
 
     def lifted(r):
         r.att['V'].ddrop.append([LST, SC, left, 'A1'])

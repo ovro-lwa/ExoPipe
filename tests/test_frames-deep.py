@@ -402,8 +402,8 @@ def _syn_attempt(d):
     os.makedirs(os.path.dirname(spec.refusal_path('nightimage')))
     with open(spec.refusal_path('nightimage'), 'w') as f:
         f.write(f'07h,18MHz,{d3},20240101T000001\n')
-    with open(spec.refusal_path('datadecisions'), 'w') as f:   # B-02 step 3c: a night data_decisions excluded (never owed)
-        f.write('07h,18MHz,2023-12-31,20240101T000001\n')
+    with open(spec.refusal_path('datadecisions'), 'w') as f:   # B-02 step 3c: d4 left out as excluded, admitted since (a
+        f.write(f'07h,18MHz,{d4},20240101T000001\n')            # lifted exclusion) - owed now, no frame: unaccounted still
     os.makedirs(os.path.join(d, 'work', '07h_18MHz'))
     for dd in (d1, d2, d3):
         open(os.path.join(d, 'work', '07h_18MHz', f'ep_{dd}_up2_flow.npy'), 'w').close()   # d4: the flow batch dropped it
@@ -447,11 +447,11 @@ def test_register():
         assert n in names, n
     classes = sorted({o['class'] for o in u.outputs})
     assert classes == ['refusal_record', 'search_frame'], classes
-    # the record of the nights data_decisions excluded: a frame build's refusal record, registered and content-tested; it
-    # refuses no owed epoch and is no search product of a frames_only attempt
+    # the record of the nights data_decisions excluded: a frame build's refusal record, registered and content-tested, no
+    # search product of a frames_only attempt - and no whole-epoch gate: d4, recorded and owed now, is still an unaccounted
+    # epoch (the gates above; as a whole-epoch kind it would be refused as 'datadecisions')
     ddp = os.path.abspath(spec.refusal_path('datadecisions'))
     assert any(o['class'] == 'refusal_record' and o['path'] == ddp for o in u.outputs), ddp
-    assert not any('datadecisions' in r['path'] for r in u.refused_items)
     assert not any('unexpected search products' in n for n in u.notes), u.notes
     assert len([o for o in u.outputs if o['class'] == 'search_frame']) == 8          # 2 frames + 2 siblings + 4 copies
     rec = record.load_record(out, 'frames', plan.name)

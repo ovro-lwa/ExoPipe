@@ -1181,7 +1181,9 @@ def stage_verify(u, item, ctx, f, outs, sides, raise_on_fail=True):
         rdir = os.path.join(f['attempt'], 'transients', f'Run_{f["label"]}', 'refusals')
         if lg and os.path.exists(lg):
             said = 'REFUSED from search' in open(lg, errors='replace').read()
-            have = bool(glob.glob(os.path.join(rdir, f'{item.cell}_*excluded.csv')))
+            from exopipe.phase3.lib.search.tests import RECORD_ONLY_KINDS   # B-02 step 3c: a record, not a refusal ledger
+            have = any(not os.path.basename(p_).endswith(tuple(f'_{k}_excluded.csv' for k in RECORD_ONLY_KINDS))
+                       for p_ in glob.glob(os.path.join(rdir, f'{item.cell}_*excluded.csv')))
             sv.append(('search.refusal_ledgers_present', (not said) or have, int(said), 'log reports refusals' if said else ''))
         un = unaccounted_epochs(item, f)
         mode = c.search.UNACCOUNTED_EPOCHS

@@ -440,7 +440,8 @@ def one_row_per_searched_epoch(path, stokes=None, cell=None, tier='deep', **ctx)
 @content_test('refusal_record')
 def parses(path, **ctx):
     """refusals/<lst>_<scope>_<kind>_excluded.csv (no header): every row has its kind's column count, the file's lst/scope, a
-    date of the cell's epoch grammar; the refused dates have no gate-ledger row of the Stokes the refusal removes."""
+    date of the cell's epoch grammar; the refused dates have no gate-ledger row of the Stokes the refusal removes (not the
+    RECORD_ONLY_KINDS records: an append may search a night its base recorded, once data_decisions admits it)."""
     m = _REF.match(os.path.basename(path))
     if not m:
         return False, None, f'name is not <lst>_<scope>_<kind>_excluded.csv: {os.path.basename(path)}'
@@ -464,7 +465,7 @@ def parses(path, **ctx):
     if not rows:
         probs.append('empty refusal ledger (the engine opens one only to write a refusal)')
     rd = run_dir_of(path)
-    led = os.path.join(rd, 'v_deep_ledger.csv') if rd else None
+    led = os.path.join(rd, 'v_deep_ledger.csv') if rd and kind not in RECORD_ONLY_KINDS else None
     if led and os.path.exists(led):
         lrows = _rows(led)[1]
         for r in rows:
