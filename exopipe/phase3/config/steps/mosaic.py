@@ -162,6 +162,7 @@ class mosaic_render(_Section):
     #   convention recorded nowhere): band_products blanks every rendered pixel south of it, in both projections, and stamps
     #   DECMIN on the render. The HEALPix maps keep mosaic_coadd.DEC_FLOOR_DEG. None = no cut (production).
     RULED = {'RENDER_DEC_CUT_DEG': 'R-GREGG-20261016-MOSAIC-DEC-MIN-30'}
+    NULLABLE_KEYS = ('RENDER_DEC_CUT_DEG',)   # None = no cut (production's renders; the parity file sets it)
 
 
 class mosaic_qa(_Section):

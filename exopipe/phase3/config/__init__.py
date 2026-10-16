@@ -69,7 +69,9 @@ import os
 import re
 
 
-_META = ('RULED', 'PROTECTED_KEYS')      # UPPER_CASE section attributes that DESCRIBE tunables; never tunables themselves
+_META = ('RULED', 'PROTECTED_KEYS', 'NULLABLE_KEYS')   # UPPER_CASE section attributes that DESCRIBE tunables; never tunables
+# NULLABLE_KEYS: the keys whose None is a value with a meaning (e.g. 'no cut', production's behavior) - an override may set
+# them to None; every other key refuses an override of another type than its value's
 
 
 class _Section:
@@ -343,7 +345,11 @@ class _Config:
             new_top, old, new = _set_entry(top, path, value, dotted)
         else:
             old = top
-            new = _coerce(value, old) if isinstance(value, str) else _like(value, old)
+            if key in (getattr(s, 'NULLABLE_KEYS', ()) or ()) and (value is None or (isinstance(value, str)
+                                                                                    and value.strip() == 'None')):
+                new = None                                  # a nullable key's None (its section names it)
+            else:
+                new = _coerce(value, old) if isinstance(value, str) else _like(value, old)
             if isinstance(old, dict):
                 _refuse_omitted(old, new, dotted)
             new_top = new
