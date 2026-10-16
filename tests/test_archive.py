@@ -291,6 +291,29 @@ def test_deep(out, root, E, A):
                    '--since', since, '--out', out])
     ok(rc == 2 and 'G20' in rec(out, 'rollback_12h_27MHz_I')['reason'] and not os.path.exists(xp),
        'rollback of a frame of an excluded night: G20 refused, nothing restored')
+    # conformant names (Gregg 2026-10-16): a quarantined frame whose product is in the archive under its new name (the rename
+    # inserted shflux) is never restored beside it
+    from exopipe.phase3.core import products as P
+    op = archive_frame(root, a, '27MHz', 'I', frame_name('27MHz', 'I', a))          # restored by the rollback above
+    g = P.parse_name(os.path.basename(op))
+    np_ = os.path.join(os.path.dirname(op), P.build_name(**dict(g, proc=list(g['proc']) + ['shflux'])))
+    os.rename(op, np_)
+    rq = os.path.join(root, 'Run_SEARCH_QUARANTINE_T10', os.path.relpath(op, root))
+    write_fits(rq, 2.0)
+    rman = os.path.join(BASE, 'rman', '12h_27MHz_I.csv')
+    K.write_csv(rman, CFG.archive.QUARANTINE_COLUMNS, [dict(path=op, dest=rq, bytes=os.path.getsize(rq), md5=K.checksum(rq),
+                                                             cell='12h_27MHz', stokes='I',
+                                                             moved_at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))])
+    rc = main_cli(['rollback', '--archive-root', root, '--cells', '12h_27MHz', '--stokes', 'I', '--manifest', rman,
+                   '--since', since, '--out', out])
+    why = rec(out, 'rollback_12h_27MHz_I')['reason']
+    ok(rc == 2 and 'G15' in why and 'under another name' in why and not os.path.exists(op) and os.path.exists(np_),
+       'rollback of a frame whose product was renamed since (conformant names): G15 refused, never restored beside it')
+    ok(K.product_key(os.path.basename(np_)) == K.product_key(os.path.basename(op))
+       and K.product_key(os.path.basename(op).replace('_I_', '_V_')) != K.product_key(os.path.basename(op))
+       and K.occupant(op) == np_, 'product_key ignores only the rename tokens; occupant finds the renamed product')
+    os.rename(np_, op)                                  # the mirror as the later tests expect
+    os.remove(rq)
     return att
 
 

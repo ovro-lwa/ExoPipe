@@ -6,7 +6,9 @@ Per (cell, Stokes): every row of the manifest (default archive.FRAME_QUARANTINE_
 after --since (restore_refused_frames.py:33-35):
   - the quarantined copy must exist and its md5 must equal the manifest's (:45-49);
   - the original path must be empty, OR (--occupant-quarantine RUN given) hold a file written at or after --since, which is
-    first renamed to <root>/<RUN>/<same relative path> (the 4 Stokes V cells of 2026-10-08: :37-44, :61-65);
+    first renamed to <root>/<RUN>/<same relative path> (the 4 Stokes V cells of 2026-10-08: :37-44, :61-65); the product must
+    not be in its directory under another name either (common.occupant: the conformant-names rename of 2026-10-16 renames a
+    product after its quarantine manifest recorded the old path) - never restored beside it;
   - any problem refuses the whole unit before anything moves (gate G15; :52-58 'REFUSED: problems found - nothing moved');
   - then the copy is renamed back (same filesystem) and inode + size re-checked (:66-68).
 The plan (no --apply) checks everything and writes the rows it would restore (action 'would restore' / 'would swap'). The
@@ -50,7 +52,12 @@ def plan(ctx, manifest, cell, st, since, occupant_q, checksum=True, ex=None):
             bad.append(f'{p}: excluded {key} in data_decisions.csv - never restored (G20, exclusion absolute)')
             continue
         occ = ''
-        if os.path.lexists(p):
+        holder = K.occupant(p)                        # the product at p - under p's name or a later (conformant) one
+        if holder and holder != p:
+            bad.append(f'{p}: its product is in the archive under another name ({os.path.basename(holder)}; renamed after '
+                       f'the quarantine) - never restored beside it')
+            continue
+        if holder:
             if occupant_q and os.path.getmtime(p) >= since_s:
                 occ = os.path.join(ctx.archive_root, occupant_q, os.path.relpath(p, ctx.archive_root))
                 if os.path.lexists(occ):

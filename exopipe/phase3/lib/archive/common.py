@@ -401,6 +401,38 @@ def read_json(path):
 # archive tree helpers
 # ---------------------------------------------------------------------------------------------------------------------
 
+RENAME_TOKENS = ('shflux', 'mdewarp')      # the processing tokens the conformant-names rename adds (Gregg 2026-10-16)
+
+
+def product_key(name):
+    """A product's identity whatever processing tokens a rename gave its name (RENAME_TOKENS): its parsed name without them
+    (core.products grammar), or the name itself when it does not parse in the phase3 grammar."""
+    from exopipe.phase3.core import products as P
+    try:
+        g = P.parse_name(name)
+    except ValueError:
+        return ('name', name)
+    if g.get('grammar') != 'phase3':
+        return ('name', name)
+    g = dict(g, proc=tuple(t for t in g['proc'] if t not in RENAME_TOKENS))
+    return tuple(sorted((k, str(v)) for k, v in g.items()))
+
+
+def occupant(path):
+    """The file that holds ``path``'s product now: ``path`` itself, or a file of its directory with the same product_key under
+    another name (the product renamed after ``path`` was recorded), or None. A restore into an occupied product refuses."""
+    if os.path.lexists(path):
+        return path
+    d, n = os.path.split(path)
+    if not os.path.isdir(d):
+        return None
+    k = product_key(n)
+    for f in sorted(os.listdir(d)):
+        if f != n and product_key(f) == k:
+            return os.path.join(d, f)
+    return None
+
+
 def epoch_dir(root, run, lst, date, scope, stokes, cadence):
     return sec().EPOCH_TREE.format(root=root, run=run, lst=lst, date=date, scope=scope, stokes=stokes, cadence=cadence)
 
