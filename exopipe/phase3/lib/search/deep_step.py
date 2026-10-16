@@ -922,6 +922,12 @@ def stage_detect(u, item, ctx, f):
                 why = line.strip()
                 break
         raise NoInput(f'{item.cell} {item.stokes}: the engine searched nothing ({why or "no image row written"})')
+    if u.meta['removal_rules']['rules'] == 'once-in-search':            # B-02 step 3b: the noise each frame was judged with
+        fn = os.path.join(attempt, 'transients', f'Run_{label}', _RR.FRAME_NOISE)
+        if not os.path.exists(fn):
+            raise Refusal(f'{item.cell} {item.stokes}: searched under the B-02 rules ({u.meta["removal_rules"]["version"]}) and the '
+                          f'engine wrote no {_RR.FRAME_NOISE} - REFUSING (the frames\' table noise would be unrecorded)')
+        u.meta['frame_noise'] = _RR.frame_noise_summary(fn, item.stokes)
 
 
 def _fit_frame(job):
@@ -1066,6 +1072,11 @@ def outputs_of(item, ctx, f, fit_csv=None):
         p = os.path.join(rd, name)
         if os.path.exists(p):
             out.append((p, cls, base_ctx))
+    from exopipe.phase3.lib.search import removal_rules as RR
+    for name, cls in ((RR.FRAME_NOISE, 'frame_noise'), (RR.TABLE_PULSAR, 'table_pulsar_decisions')):   # B-02 step 3b
+        p = os.path.join(rd, name)
+        if os.path.exists(p):
+            out.append((p, cls, {}))
     for p in sorted(glob.glob(os.path.join(rd, 'refusals', f'{cell}_*_excluded.csv'))):
         out.append((p, 'refusal_record', {}))
     if os.path.isdir(os.path.join(rd, 'candidates')):

@@ -12,6 +12,7 @@ mid-time, B02_DESIGN question 2). The inputs a rule reads are passed in; nothing
 """
 import collections
 import csv
+import functools
 import glob
 import math
 import os
@@ -24,9 +25,15 @@ from exopipe.phase3.config import CFG
 ELEV_EPOCHS = ('mid-hour', 'frame-mid')
 SEARCH_RULES = ('once-in-search', 'production')   # search_detect.REMOVAL_RULES
 RULES_ENV = 'EXOPIPE3_REMOVAL_RULES'              # how the search step hands it to the engine child (deep_step.engine_env)
-RULES_VERSION = 'b02-3a'   # what a 'once-in-search' attempt applies: the daytime gate per frame, the Jupiter-track veto
+RULES_VERSION = 'b02-3b'   # what a 'once-in-search' attempt applies: 3a - the daytime gate per frame, the Jupiter-track veto;
+                           # 3b - one noise per frame, the elevation floor at the frame's mid-time, the table's derivation inputs
 AUDIT_ENV = 'EXOPIPE3_SOLAR_AUDIT'                # the solar audit the search's daytime gate reads (search_tables.SOLAR_AUDIT)
 RULES_RECORD = 'search_rules.json'                # in each attempt directory: the rules it was searched under (deep_step)
+FRAME_NOISE = 'frame_noise.csv'                   # in the search's run directory (step 3b): each frame's noise, the medians
+FRAME_NOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'searched', 'population', 'tblnoise_jy', 'vsanmed_jy',
+                    'attempt']                    # it was judged by, and the cell's population (an append reads it)
+TABLE_PULSAR = 'table_pulsar_decisions.csv'      # in the search's run directory (step 3b): every table decision that
+TABLE_PULSAR_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'cut', 'note']   # names a pulsar
 
 
 def _cc():
@@ -120,8 +127,10 @@ def mid_hour_elevations(lst, ra, dec):
     return _elevation(15.0 * (int(lst.rstrip('h')) + 0.5), np.asarray(ra), np.asarray(dec))
 
 
+@functools.lru_cache(maxsize=8192)
 def frame_mid_lst_deg(date_obs, date_end):
-    """Apparent local sidereal time (deg) at OVRO at the frame's mid-time."""
+    """Apparent local sidereal time (deg) at OVRO at the frame's mid-time (a pure function of the two times: memoized - the
+    search and the check ask it once per detection of a frame)."""
     from astropy.time import Time
     import astropy.units as u
     t0, t1 = Time(date_obs), Time(date_end)
@@ -480,6 +489,97 @@ def table_cuts(raw, G, PCT, noise, elev_bands=None):
 
 def table_reason(note):
     return f'per-band per-Stokes table: {note} (Gregg 2026-09-05/06)'
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# B-02 step 3b: what the search's rules read (R-REFACTOR-20261016-B02-CONVENTIONS; B02_DESIGN.md "Step 3b")
+# ---------------------------------------------------------------------------------------------------------------------
+
+def _pos(x):
+    return x is not None and np.isfinite(float(x)) and float(x) > 0
+
+
+def median_noise(values):
+    """The median (Jy, to 9 decimals - the value a FITS card gives back) of the finite positive values; None without one."""
+    v = [float(x) for x in values if _pos(x)]
+    return round(float(np.median(v)), 9) if v else None
+
+
+def table_noise(noise, searched, cell, base=None):
+    """The noise S of the bright-source table divides by, per frame (the table's derivation inputs, decision (3)): {Stokes:
+    {'population': [nights], 'n': count, 'median': Jy or None, 'night': {night: Jy or None}}}.
+    noise = {Stokes: {night: the frame's noise or None}} (every frame of the run); searched = {Stokes: the nights searched};
+    cell = the cell's own nights (an admitted night is not one). The population is the cell's searched nights with a noise -
+    or, for an append (``base`` = base_population of the attempt it appends to), the base's. A searched night outside the
+    population is judged with the population plus itself; every other frame carries the population's median."""
+    out = {}
+    for st, nz in noise.items():
+        srch = set(searched.get(st, ()))
+        if base is not None:
+            pop_d, pop_v = [], [float(x) for x in base.get(st, []) if _pos(x)]
+        else:
+            pop_d = sorted(d for d in srch if d in cell and _pos(nz.get(d)))
+            pop_v = [float(nz[d]) for d in pop_d]
+        m = median_noise(pop_v)
+        night = {}
+        for d in nz:
+            night[d] = median_noise(pop_v + [nz[d]]) if (d in srch and d not in pop_d and _pos(nz[d])) else m
+        out[st] = {'population': pop_d, 'n': len(pop_v), 'median': m, 'night': night}
+    return out
+
+
+def base_population(run_dir):
+    """{Stokes: [noise]} of the population rows of a run directory's FRAME_NOISE (the attempt an append is copied from), or
+    None when the run has no FRAME_NOISE (searched before step 3b: an append onto it refuses - deep_step.base_rules_refusal)."""
+    p = os.path.join(run_dir, FRAME_NOISE)
+    if not os.path.exists(p):
+        return None
+    out = {}
+    with open(p, newline='') as fh:
+        for r in csv.DictReader(fh):
+            if r.get('population') == '1':
+                out.setdefault(r['stokes'], []).append(float(r['noise_jy']))
+    return out
+
+
+def frame_noise_rows(lst, scope, nights, noise, searched, tbl, vsanmed, attempt):
+    """FRAME_NOISE rows (FRAME_NOISE_COLS) of the frames of ``nights`` (this run's): the frame's noise, whether its Stokes'
+    search ran on it, whether it is in the population, the table's noise it carries, the V noise rule's median (V)."""
+    rows = []
+    for st in ('I', 'V'):
+        t = tbl.get(st)
+        if t is None:
+            continue
+        for d in nights:
+            if d not in noise.get(st, {}):
+                continue
+            v, tb = noise[st][d], t['night'].get(d)
+            rows.append([lst, scope, st, d, '' if v is None else repr(float(v)), int(d in searched.get(st, ())),
+                         int(d in t['population']), '' if tb is None else repr(tb),
+                         '' if (st != 'V' or vsanmed is None) else repr(float(vsanmed)), attempt])
+    return rows
+
+
+def frame_noise_summary(path, stokes):
+    """The unit record's summary of a FRAME_NOISE for one Stokes: rows, searched, population, the population's median (Jy) and
+    the V noise rule's median (V)."""
+    with open(path, newline='') as fh:
+        R = [r for r in csv.DictReader(fh) if r['stokes'] == stokes]
+    pop = [float(r['noise_jy']) for r in R if r['population'] == '1']
+    vs = sorted({r['vsanmed_jy'] for r in R if r['vsanmed_jy']})
+    return dict(rows=len(R), searched=sum(r['searched'] == '1' for r in R), population=len(pop),
+                tblnoise_median_jy=median_noise(pop), vsanmed_jy=[float(x) for x in vs])
+
+
+def frame_elevation(lst, ra, dec, header):
+    """(elevation deg, the words naming its time) of (ra, dec) under catalog_conform.DEEP_ELEV_EPOCH, the time from the
+    archived frame's own header (DATE-OBS, DATE-END) - deep_elevation, the function the check re-evaluates a row with."""
+    return deep_elevation(lst, ra, dec, frame_time=(str(header['DATE-OBS']), str(header['DATE-END'])))
+
+
+def names_pulsar(note):
+    """True when a table note names an ATNF pulsar (kept as its parent, or cut although one lies within a beam)."""
+    return bool(_PSR_NOTE.search(note or ''))
 
 
 # ---------------------------------------------------------------------------------------------------------------------

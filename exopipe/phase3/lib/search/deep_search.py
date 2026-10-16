@@ -732,7 +732,7 @@ def _v110_cell_verdicts(lst, scope, base, cell_work, master_I, hdr0, em, cd,
 
 
 def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms,
-                          master_file, loo_file, align_file, label, cell_tag, cadence='deep'):
+                          master_file, loo_file, align_file, label, cell_tag, cadence='deep', cards=None):
     """Conformant-from-birth header for an ARCHIVED search frame
     (R-CONFORMANT-FROM-BIRTH-INCL-HEADERS, Gregg 2026-09-04; products audit
     rows B-01..B-05). Time block and beam come from the epoch's OWN Stage-1
@@ -783,6 +783,8 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
     })
     if loo_used:
         extra['LOOEXCL'] = (d, 'Epoch excluded from the LOO master')
+    if cards:                                  # WAVE2 B-02 (step 3b): the cell medians the frame's detections are judged by
+        extra.update(cards)                    # WAVE2 B-02
     basis = str(hs.get('TIMEFIX', 'v2-phase2')).replace('v2-', '', 1)
     prod.write_standard_header(
         h, scope=scope, stokes=stokes, start=start, end=end,
@@ -1727,11 +1729,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # independently'): V epochs whose uniform frame rms exceeds SANITY_I_X x the cell median of
     # the V frames are refused from the V search (I uses the flux-alignment QA rms above)
     skip_V_dates = set()
+    _vr, _vmed = {}, None                                              # WAVE2 B-02: read by step 3b below
     try:
         _vr = {}
         for _d, _rv in resid_V.items():
             try:
                 _vr[_d] = float(sv2.get_uniform_rms(np.nan_to_num(_rv, nan=0.0), sv2.make_masks(hdr0, _rv.shape)[0]))
+                if _b02:                                               # WAVE2 B-02 (step 3b): the frame's noise as its IMGRMS card
+                    _vr[_d] = round(_vr[_d], 9)                        # WAVE2 B-02: gives it back (Jy, 9 decimals)
             except Exception:
                 from exopipe.phase3.core import fallback      # WAVE2 B-30
                 fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope} {_d}: the V frame rms could not be '
@@ -1781,6 +1786,56 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             from exopipe.phase3.core import fallback      # WAVE2 B-30
             fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope} {_st}: epoch(s) {_ds} would be searched '
                           f'unmeasured (no qa3 rms in weights.csv / no stage-1 {_st} rms)', n=len(_ds))
+    # WAVE2 B-02 (step 3b, R-REFACTOR-20261016-B02-CONVENTIONS (1), (3)): ONE noise per frame - the search frame's uniform rms
+    # (search_v.get_uniform_rms: the central 1024^2, below 25 deg masked; V: the gate's number above; I: the same statistic, the
+    # deep mask being the phase centre's, one per grid) - stamped as the frame's IMGRMS, and the bright-source table's noise:
+    # the median over the cell's searched nights (an appended night: its base's, plus itself), recorded in FRAME_NOISE.
+    _fnz, _tbn, _tpd = {'I': {}, 'V': {}}, {}, []                      # WAVE2 B-02
+    if _b02:                                                           # WAVE2 B-02
+        _fnz['V'] = {d: _vr.get(d) for d in resid_V}                   # WAVE2 B-02
+        _hm_ = {}                                                      # WAVE2 B-02
+        for _d, _ri in resid_I.items():                                # WAVE2 B-02
+            _sh = tuple(np.shape(_ri))                                 # WAVE2 B-02
+            if _sh not in _hm_:                                        # WAVE2 B-02
+                _hm_[_sh] = sv2.make_masks(hdr0, _sh)[0]               # WAVE2 B-02
+            _x = float(sv2.get_uniform_rms(np.nan_to_num(_ri, nan=0.0), _hm_[_sh]))   # WAVE2 B-02
+            _fnz['I'][_d] = round(_x, 9) if np.isfinite(_x) else None  # WAVE2 B-02
+        _srch = {'I': {d for d in dates if d in resid_I and d not in skip_I_dates},   # WAVE2 B-02: each Stokes' searched
+                 'V': {d for d in dates if d in resid_V and d not in skip_V_dates}}   # WAVE2 B-02: nights
+        _nbase = None                                                  # WAVE2 B-02
+        if included_dates:                                             # WAVE2 B-02: an append - its base's population
+            _nbase = _RR.base_population(run_root)                     # WAVE2 B-02
+            if _nbase is None:                                         # WAVE2 B-02
+                raise RuntimeError(f'{lst} {scope}: INCREMENTAL under the B-02 rules and the attempt has no {_RR.FRAME_NOISE} '   # WAVE2 B-02
+                                   f'(its base was searched before step 3b) - the table noise of the cell\'s searched nights '   # WAVE2 B-02
+                                   f'is unknown - REFUSING')           # WAVE2 B-02
+        _tbn = _RR.table_noise(_fnz, _srch, {d for d in dates if d not in _adm}, base=_nbase)   # WAVE2 B-02, WAVE2 D-ADMIT: the cell's own nights
+        _append_locked(f'{run_root}/{_RR.FRAME_NOISE}', _RR.FRAME_NOISE_COLS,   # WAVE2 B-02
+                       _RR.frame_noise_rows(lst, scope, dates, _fnz, _srch, _tbn, _vmed, _attempt))   # WAVE2 B-02
+        for _st in ('I', 'V'):                                         # WAVE2 B-02
+            if _fnz[_st] and _tbn[_st]['median'] is not None:          # WAVE2 B-02
+                print(f'  {lst} {scope}: TABLE NOISE (B-02) {_st} - cell median {_tbn[_st]["median"]*1e3:.1f} mJy over '   # WAVE2 B-02
+                      f'{_tbn[_st]["n"]} searched night(s)' + (' of the base' if _nbase is not None else ''))   # WAVE2 B-02
+
+    def _b02_cards(st, d):                                             # WAVE2 B-02: the medians a frame is judged by, as cards
+        out = {}                                                       # WAVE2 B-02
+        if _tbn.get(st, {}).get('night', {}).get(d) is not None:       # WAVE2 B-02
+            out['TBLNOISE'] = (_tbn[st]['night'][d], '[Jy/beam] table S noise: cell median IMGRMS')   # WAVE2 B-02
+        if st == 'V' and _vmed is not None:                            # WAVE2 B-02
+            out['VSANMED'] = (float(_vmed), '[Jy/beam] V noise rule: cell median IMGRMS')   # WAVE2 B-02
+        return out                                                     # WAVE2 B-02
+
+    def _b02_tnoise(st, d):                                            # WAVE2 B-02: the table's noise for a searched frame
+        x = _tbn.get(st, {}).get('night', {}).get(d)                   # WAVE2 B-02
+        if x is None:                                                  # WAVE2 B-02
+            raise RuntimeError(f'{lst} {scope} {st} {d}: the bright-source table has no noise (no frame noise in the cell\'s '   # WAVE2 B-02
+                               f'searched nights, nor its own) - REFUSING')   # WAVE2 B-02
+        return x                                                       # WAVE2 B-02
+
+    def _b02_psr(st, d, cands, cuts, notes):                           # WAVE2 B-02: every table decision naming a pulsar
+        for c_, x_, n_ in zip(cands, cuts, notes):                     # WAVE2 B-02: (step 4's pulsar stage reads them)
+            if _RR.names_pulsar(n_):                                   # WAVE2 B-02
+                _tpd.append([lst, scope, st, d, *c_['_b02_pos'], int(c_['pix_x']), int(c_['pix_y']), int(bool(x_)), n_])   # WAVE2 B-02
     # (1f) SOURCE-EXTRACTION REFUSAL (Gregg 2026-10-11, 'Agreed': "a crashed image is recorded as refused, with the error,
     # and is not counted as searched. The rest of the cell is searched normally."; ledger
     # FINDING-SEARCH-SWALLOWS-PYBDSF-FAILURES-SILENT-ZERO-CANDIDATES). Deep cadence: PyBDSF failing on a search image raises
@@ -1841,8 +1896,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 ignore_nan=True)), 9))
             _loo_i = f'{base}/coadd_final/loo/{d}_I_loo_Taper_R075_{scope}.fits'
             _hdr_I = _archive_frame_header(
-                hdr0, ebase, d, scope, 'I', em, cd, None, _rmsI, mI, _loo_i, mI,
-                label, f'{lst} {scope}', cadence=cadence)
+                hdr0, ebase, d, scope, 'I', em, cd, None,
+                (_fnz['I'].get(d) or _rmsI) if _b02 else _rmsI,       # WAVE2 B-02 (step 3b): IMGRMS = the frame's one noise
+                mI, _loo_i, mI,
+                label, f'{lst} {scope}', cadence=cadence,
+                cards=_b02_cards('I', d) if _b02 else None)          # WAVE2 B-02: + the table's noise (TBLNOISE)
             _fhI[d] = _hdr_I
             if not os.path.exists(ir_path):
                 _write_archive_frame(ir_path, rI, _hdr_I, f'{lst} {scope}', d)
@@ -1932,8 +1990,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     continue
                 _fr2.append(c)
             front = _fr2
-            _drI = sv2.get_uniform_rms(rI, sv2.make_masks(
-                hdr, rI.shape)[0])
+            _drI = (_fnz['I'].get(d) or float('nan')) if _b02 else sv2.get_uniform_rms(rI, sv2.make_masks(   # WAVE2 B-02: the
+                hdr, rI.shape)[0])                                                        # frame's one noise, computed once (step 3b)
             i_pending.append((d, front, hdr, ot, float(_drI)))
             _gI = [lst, scope, 'I', d, len(passed), len(front), '', '', '', len(_allI), _elev_floor('I')]
             gimg_rows.append(_gI); _gimgI[d] = _gI
@@ -1956,8 +2014,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # header copy that gave every frame its master's time block)
             _loo_v = f'{base}/coadd_final/loo/{d}_V_loo_Taper_R0_{scope}.fits'
             _hdr_out = _archive_frame_header(
-                hdr0, ebase, d, scope, 'V', em, cd, _tn, _tn, mVp, _loo_v, mI,
-                label, f'{lst} {scope}', cadence=cadence)
+                hdr0, ebase, d, scope, 'V', em, cd, _tn,
+                (_fnz['V'].get(d) or _tn) if _b02 else _tn,           # WAVE2 B-02 (step 3b): IMGRMS = the frame's one noise
+                mVp, _loo_v, mI,
+                label, f'{lst} {scope}', cadence=cadence,
+                cards=_b02_cards('V', d) if _b02 else None)          # WAVE2 B-02: + TBLNOISE, VSANMED
             _fhV[d] = _hdr_out
             if not os.path.exists(vr_path):
                 _write_archive_frame(vr_path, rV, _hdr_out, f'{lst} {scope}', d)
@@ -1982,6 +2043,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 # (the V subtracted frame's time block); the deep cadence passes None and is unchanged
                 _ztV = (sv2.frame_mid_time(fits.getheader(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits'))
                         if cadence == '10min' else None)
+                if _b02:                                               # WAVE2 B-02 (step 3b, decision (2)): the deep V mask from
+                    _ztV = sv2.frame_mid_time(_fhV[d])                 # WAVE2 B-02: the zenith at the frame's own mid-time
                 pV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0,
                                           refuse_on_extraction_failure=_xrefuse, zenith_time=_ztV)
             except sv2.SourceExtractionFailed as _xf:
@@ -2087,6 +2150,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                                    reason='ateam', pass_ms=1))
                         vetoed_v.append(c)
                         continue
+                    if _b02:                                           # WAVE2 B-02 (step 3b): the ELEVATION FLOOR at the frame's
+                        _sk = wcs.pixel_to_world(xx, yy)               # WAVE2 B-02: own mid-time, at the catalogue position (the
+                        c['_b02_pos'] = (round(float(_sk.ra.deg), 5), round(float(_sk.dec.deg), 5))   # WAVE2 B-02: pixel's, 5
+                        _elw = _RR.frame_elevation(lst, *c['_b02_pos'], _fhV[d])   # WAVE2 B-02: decimals) - the check's function
+                        c['_b02_el'] = _elw[0]                         # WAVE2 B-02: (the mask's geometry differs from it by up
+                        if _RR.elevation_reason(*_elw):                # WAVE2 B-02: to 0.6 deg: tests/test_removal_rules.py)
+                            c['veto_reason'] = 'elevation'             # WAVE2 B-02
+                            gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, reason='elevation', pass_ms=1))   # WAVE2 B-02
+                            vetoed_v.append(c)                         # WAVE2 B-02
+                            continue                                   # WAVE2 B-02
                     _jth = None                                        # WAVE2 B-02: the Jupiter track - on any co-added night's
                     if _jtrack:                                        # WAVE2 B-02: Jupiter, at the catalogue's position (the
                         _sk = wcs.pixel_to_world(xx, yy)               # WAVE2 B-02: pixel's, as the conformance and the vetoes
@@ -2184,6 +2257,13 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
                                                reason='ateam', pass_ms=1))
                     continue
+                if _b02:                                               # WAVE2 B-02 (step 3b): the ELEVATION FLOOR at the frame's
+                    c['_b02_pos'] = (round(float(_sky.ra.deg), 5), round(float(_sky.dec.deg), 5))   # WAVE2 B-02: own mid-time, at
+                    _elw = _RR.frame_elevation(lst, *c['_b02_pos'], _fhI[d_])   # WAVE2 B-02: the catalogue position - the check's
+                    c['_b02_el'] = _elw[0]                             # WAVE2 B-02: function
+                    if _RR.elevation_reason(*_elw):                    # WAVE2 B-02
+                        gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1, reason='elevation', pass_ms=1))   # WAVE2 B-02
+                        continue                                       # WAVE2 B-02
                 _jth = (_RR.jupiter_track_hit(round(float(_sky.ra.deg), 5), round(float(_sky.dec.deg), 5), scope, _jtrack)   # WAVE2 B-02:
                         if _jtrack else None)                          # WAVE2 B-02: the track, at the catalogue row's position (the pixel's, 5 decimals)
                 if _jth:                                               # WAVE2 B-02
@@ -2206,10 +2286,16 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     # ELEVATION-BAND TABLES IN THE SEARCH (Gregg 2026-10-06 "2. yes"): deep, with P3_TABLE_ELEV=1, each candidate
                     # is judged by the band table of its mid-hour elevation, as the conformance judges it (removals ignores elev
                     # otherwise); other cadences unchanged
-                    _tc, _tn = _PCT.removals('I', scope, _pa, max(drI_, 1e-12), em * cd,
-                                             [c['coord'].ra.deg], [c['coord'].dec.deg],
-                                             elev=(_mid_hour_elev(lst, [c['coord'].ra.deg], [c['coord'].dec.deg]) if cadence == 'deep' else None),
-                                             phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
+                    if _b02:                                           # WAVE2 B-02 (step 3b, decision (3)): the inputs the table was
+                        _tc, _tn = _PCT.removals('I', scope, _pa, _b02_tnoise('I', d_), float(_fhI[d_]['BMAJ']),   # WAVE2 B-02:
+                                                 [c['_b02_pos'][0]], [c['_b02_pos'][1]], elev=[c['_b02_el']],   # WAVE2 B-02: derived
+                                                 phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
+                        _b02_psr('I', d_, [c], _tc, _tn)               # WAVE2 B-02: with - the cell's noise, the frame's beam, the
+                    else:                                              # WAVE2 B-02: catalogue position, its frame-mid elevation
+                        _tc, _tn = _PCT.removals('I', scope, _pa, max(drI_, 1e-12), em * cd,
+                                                 [c['coord'].ra.deg], [c['coord'].dec.deg],
+                                                 elev=(_mid_hour_elev(lst, [c['coord'].ra.deg], [c['coord'].dec.deg]) if cadence == 'deep' else None),
+                                                 phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
                     if bool(_tc[0]):
                         cut = True; c['table_note'] = _tn[0]
                 if cut:
@@ -2278,11 +2364,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _rmsV = float(np.nanmedian([abs(float(c.get('flux', 0))) / abs(float(c.get('global_snr', c.get('snr', 1)) or 1)) for c in finals])) if finals else 0.0
             # phase centre (2026-10-02, INCIDENT-DEEP-V-TABLE-CALL-WITHOUT-PHASE-CENTRE): the deep tables are in the
             # image-pixel metric since 2026-10-01 and refuse without it; the I call above already passed it
-            _tcv, _tnv = _PCT.removals('V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
-                                       [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals],
-                                       elev=(_mid_hour_elev(lst, [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
-                                             if cadence == 'deep' else None),   # elevation-band tables in the search (Gregg 2026-10-06)
-                                       phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
+            if _b02:                                                   # WAVE2 B-02 (step 3b, decision (3)): the table's
+                _tcv, _tnv = _PCT.removals('V', scope, _pa_v, _b02_tnoise('V', d), float(_fhV[d]['BMAJ']),   # WAVE2 B-02: derivation
+                                           [c['_b02_pos'][0] for c in finals], [c['_b02_pos'][1] for c in finals],   # WAVE2 B-02:
+                                           elev=[c['_b02_el'] for c in finals],   # WAVE2 B-02: inputs (the cell's noise, not the
+                                           phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
+                _b02_psr('V', d, finals, _tcv, _tnv)                   # WAVE2 B-02: median over this epoch's finals)
+            else:                                                      # WAVE2 B-02
+                _tcv, _tnv = _PCT.removals('V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
+                                           [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals],
+                                           elev=(_mid_hour_elev(lst, [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
+                                                 if cadence == 'deep' else None),   # elevation-band tables in the search (Gregg 2026-10-06)
+                                           phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
             _keepv = []
             for c, _x, _n in zip(finals, _tcv, _tnv):
                 if bool(_x):
@@ -2314,6 +2407,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                 _te_v[d] if d in _te_v else _eph_time(ebase, d, scope, ot),   # WAVE2 B-30: labels at the
                                 frame_hdr=_fhV.get(d))                                        # vetoes' time
             nwr += len(finals)
+    _append_locked(f'{run_root}/{_RR.TABLE_PULSAR}', _RR.TABLE_PULSAR_COLS, _tpd)   # WAVE2 B-02 (step 3b): none written without one
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)
     # ZERO-PRODUCT REFUSAL (2026-09-13, CLAUDE.md section 3: "a rebuild that silently no-ops is a bug"

@@ -51,6 +51,9 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from exopipe.phase3.core import env
 env.legacy()
+from exopipe.phase3.config import CFG
+CFG.authorize(out=sys.argv[2])                                  # production's conventions: the deep elevation at mid-hour
+CFG.set('catalog_conform.DEEP_ELEV_EPOCH', 'mid-hour')          # (the ruled 'frame-mid' since B-02 step 3b; the parity file)
 from exopipe.phase3.lib.search import removal_rules as R
 R.conform(sys.argv[2], size_step=sys.argv[3] == '1')
 '''

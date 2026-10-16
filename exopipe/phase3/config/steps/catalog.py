@@ -124,7 +124,9 @@ class catalog_conform(_Section):
     ROWLINE_MIN = 5                                       # finals on one pixel row +/-1; ops/p3s2_conform.py:129 [lit] (Gregg 2026-09-05)
     ROWLINE_MATCH_DEG = 0.05                              # deg, row-line member match; ops/p3s2_conform.py:505
     DEEP_ELEV_FLOOR_DEG = 25.0                            # deg at mid-hour (LST + 0.5 h); ops/p3s2_conform.py:186, gate_inputs.py:95 [lit; env:P3_DEEP_MIN_ELEVATION unset in production] (Gregg 2026-10-06 "3. (c)"; R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV)
-    DEEP_ELEV_EPOCH = 'mid-hour'                          # LST + 0.5 h, not the frame time (B-02 open); ops/p3s2_conform.py:187-189
+    DEEP_ELEV_EPOCH = 'frame-mid'                         # the frame's own mid-time (B-02 step 3b: the search's floor and the check;
+                                                          # R-REFACTOR-20261016-B02-CONVENTIONS (2)); production 'mid-hour' = LST + 0.5 h,
+                                                          # ops/p3s2_conform.py:187-189 (the parity file)
     TABLE_MODE = {'deep': 'singles', 'sublst': 'singles', 'fork_validity': 'off', 'fork_table': 'multi'}   # ops/p3s2_conform.py:42 [lit: module default = deep], multiples_fork.py:133 [env:P3_CONFORM_TABLE]
     TABLE_ELEV = {'deep': True, 'sublst': True}           # elevation-band tables; ops/p3s2_conform.py:268 (deep on since 2026-10-07), fork_serve_p3s5_20261008.sh:31 and sublst_catalogs.sh:81 [env:P3_TABLE_ELEV=1] (Gregg 2026-10-04 "Yes on 1"; 2026-09-27 "1. go")
     TABLE_ELEV_BANDS = '25-35,35-50,50-90'                # deg; parent_curve_table.py:117 [env:P3_TABLE_ELEV_BANDS]
@@ -147,7 +149,9 @@ class catalog_conform(_Section):
     RULED = {'DEEP_ELEV_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
              'JUPITER_TRACK_RADIUS_DEG': 'R-JUPITER-TRACK-VETO-IMPLEMENTED-IN-THE-CONFORMANCE-STAGE-BOTH-TIERS',
              'DAYTIME_SAMPLES': 'R-DAYTIME-GATE-DEEP-CONFORM', 'READMIT_V110_MARGINAL': 'R-V110-MARGINAL-RETAIN-AND-LABEL',
-             'PULSAR_ASSOC_K': 'R-ASSOCIATION-RADIUS-QUADRATURE', 'TABLE_XM_EXEMPT': 'R-TABLE-EXEMPTION-PULSARS-ONLY'}
+             'PULSAR_ASSOC_K': 'R-ASSOCIATION-RADIUS-QUADRATURE', 'TABLE_XM_EXEMPT': 'R-TABLE-EXEMPTION-PULSARS-ONLY',
+             'DEEP_ELEV_EPOCH': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',   # B-02 (a); the convention
+                                 'R-REFACTOR-20261016-B02-CONVENTIONS')}                        # under the 2026-10-16 delegation
 
 
 class catalog_fitpos(_Section):

@@ -2,7 +2,8 @@
 
 Classes (spec search.md section 6): detections (master_catalog.csv), gate_ledger (v_deep_ledger.csv), image_ledger
 (v_deep_images.csv), refusal_record (refusals/<cell>_<kind>_excluded.csv), candidate_stamps (the candidates/ directory),
-fp_gate_verdicts (V_top100_fp_gate_p3.csv), detection_positions (fit_positions.csv). search_frame and noise_map belong to frames,
+fp_gate_verdicts (V_top100_fp_gate_p3.csv), detection_positions (fit_positions.csv); under the B-02 rules (step 3b) frame_noise
+(frame_noise.csv) and table_pulsar_decisions (table_pulsar_decisions.csv). search_frame and noise_map belong to frames,
 master_catalog to masters; the search step runs their tests through the registry when they exist.
 
 Every test reads the file's CONTENT and works with no context: siblings are found from the path in the attempt layout
@@ -42,9 +43,13 @@ CAT_FIELDS = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'interval',
 VETO_REASONS = frozenset({'', 'reject_local_snr', 'reject_merged', 'reject_sigma_stack', 'reject_bright_prox', 'reject_i_leakage',
                           'reject_local_rms', 'reject_bilobe', 'reject_bright_proximity', 'reject_exclusion',
                           'reject_sidelobe_tier', 'mstruct', 'mstruct_I', 'gaussfit-size', 'axis-ratio', 'jupiter', 'moon', 'ateam',
-                          'v110:FP', 'v110:marginal', 'table', 'row-line'})
+                          'v110:FP', 'v110:marginal', 'table', 'row-line',
+                          'elevation'})   # B-02 step 3b: the deep floor at the frame's mid-time (removal_rules.frame_elevation)
 # ... and those with a value after the prefix: the Jupiter track's co-added night (B-02 step 3a, deep_search: 'jupiter-track:<night>')
 VETO_REASON_PREFIXES = {'jupiter-track:': re.compile(r'^\d{4}-\d\d-\d\d$')}
+# B-02 step 3b (removal_rules.FRAME_NOISE_COLS / TABLE_PULSAR_COLS)
+FNOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'searched', 'population', 'tblnoise_jy', 'vsanmed_jy', 'attempt']
+TPD_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'cut', 'note']
 
 
 def known_veto_reason(v):
@@ -467,6 +472,115 @@ def parses(path, **ctx):
     if probs:
         return _fail(probs, len(rows))
     return True, len(rows), f'{len(rows)} {kind} refusals'
+
+
+# ---- B-02 step 3b: the frame noise and the table's pulsar decisions ---------------------------------------------------------
+def _median9(v):
+    import statistics
+    return round(float(statistics.median(v)), 9)
+
+
+@content_test('frame_noise')
+def medians_and_cards(path, **ctx):
+    """frame_noise.csv (B-02 step 3b): FNOISE_COLS, one cell; one row per (Stokes, night); searched and population 0/1, a population
+    night searched with a positive noise; per Stokes a population night carries the population's median, a searched night
+    outside it (admitted or appended) the median of the population and itself, any other the population's median; each row's
+    archived search frame carries IMGRMS = noise_jy (when measured), TBLNOISE = tblnoise_jy and (V) VSANMED = vsanmed_jy (a card
+    absent where the column is empty)."""
+    cols, rows = _rows(path)
+    if cols != FNOISE_COLS:
+        return False, len(rows), f'header != FNOISE_COLS: {cols[:6]}...'
+    probs, seen = [], set()
+    for r in rows:
+        k = (r['stokes'], r['date'])
+        if k in seen:
+            probs.append(f'{k[0]} {k[1]}: two rows')
+        seen.add(k)
+        if r['stokes'] not in ('I', 'V') or not _DATE.match(r['date']):
+            probs.append(f'bad Stokes/date {r["stokes"]!r} {r["date"]!r}')
+        if r['searched'] not in ('0', '1') or r['population'] not in ('0', '1'):
+            probs.append(f'{k[0]} {k[1]}: searched/population {r["searched"]!r}/{r["population"]!r}')
+        if r['population'] == '1' and not (r['searched'] == '1' and _f(r['noise_jy']) > 0):
+            probs.append(f'{k[0]} {k[1]}: in the population, not searched with a noise')
+        if r['vsanmed_jy'] and r['stokes'] != 'V':
+            probs.append(f'{k[0]} {k[1]}: a V noise-rule median on an I row')
+    if len({(r['lst'], r['scope']) for r in rows}) > 1:
+        probs.append('rows of more than one cell')
+    for st in ('I', 'V'):
+        R = [r for r in rows if r['stokes'] == st]
+        pop = [_f(r['noise_jy']) for r in R if r['population'] == '1']
+        m = _median9(pop) if pop else None
+        for r in R:
+            own = r['population'] == '0' and r['searched'] == '1' and _f(r['noise_jy']) > 0
+            want = _median9(pop + [_f(r['noise_jy'])]) if own else m
+            got = _f(r['tblnoise_jy']) if r['tblnoise_jy'] != '' else None
+            if want != got:
+                probs.append(f'{st} {r["date"]}: tblnoise {got} != {want} (the population of {len(pop)}'
+                             + (' and the night)' if own else ')'))
+    att, lab = attempt_of(path), label_of(path)
+    nfr = 0
+    if att and rows:
+        from astropy.io import fits
+        for r in rows:
+            fp = frame_path(att, lab, r['lst'], r['scope'], r['date'], r['stokes'])
+            if not os.path.exists(fp):
+                probs.append(f'{r["stokes"]} {r["date"]}: no archived search frame {os.path.basename(fp)}')
+                continue
+            h = fits.getheader(fp)
+            nfr += 1
+            for card, col in (('IMGRMS', 'noise_jy'), ('TBLNOISE', 'tblnoise_jy'), ('VSANMED', 'vsanmed_jy')):
+                if card == 'VSANMED' and r['stokes'] != 'V':
+                    continue
+                if r[col] == '':
+                    if card != 'IMGRMS' and card in h:
+                        probs.append(f'{r["stokes"]} {r["date"]}: {card} {h[card]} on the frame, none recorded')
+                elif h.get(card) is None or float(h[card]) != _f(r[col]):
+                    probs.append(f'{r["stokes"]} {r["date"]}: frame {card} {h.get(card)} != {col} {r[col]}')
+    if probs:
+        return _fail(probs, len(rows))
+    return True, len(rows), f'{len(rows)} frames ({nfr} cards checked); population ' + ', '.join(
+        f'{st} {sum(1 for r in rows if r["stokes"] == st and r["population"] == "1")}' for st in ('I', 'V'))
+
+
+@content_test('table_pulsar_decisions')
+def named_and_ledgered(path, **ctx):
+    """table_pulsar_decisions.csv (B-02 step 3b): TPD_COLS; Stokes I/V, a night, cut 0/1 and a note naming an ATNF pulsar - 'is the
+    parent' on a kept detection, 'NOT exempting' on a cut one; each row's detection (Stokes, night, pixel) has a gate-ledger row,
+    veto 'table' exactly when cut."""
+    cols, rows = _rows(path)
+    if cols != TPD_COLS:
+        return False, len(rows), f'header != TPD_COLS: {cols[:6]}...'
+    probs = []
+    for r in rows:
+        k = f'{r["stokes"]} {r["date"]} ({r["pix_x"]},{r["pix_y"]})'
+        if r['stokes'] not in ('I', 'V') or not _DATE.match(r['date']) or r['cut'] not in ('0', '1'):
+            probs.append(f'{k}: bad Stokes/date/cut {r["cut"]!r}')
+            continue
+        if 'ATNF pulsar' not in r['note']:
+            probs.append(f'{k}: the note names no pulsar')
+        elif r['cut'] == '0' and 'is the parent' not in r['note']:
+            probs.append(f'{k}: kept without the pulsar-is-the-parent note')
+        elif r['cut'] == '1' and 'NOT exempting' not in r['note']:
+            probs.append(f'{k}: cut without the not-exempting note')
+    if not rows:
+        probs.append('empty (the engine writes the file only with a decision)')
+    rd = run_dir_of(path)
+    led = os.path.join(rd, 'v_deep_ledger.csv') if rd else None
+    if led and os.path.exists(led):
+        ix = {}
+        for x in _rows(led)[1]:
+            ix.setdefault((x['stokes'], x['date'], x['pix_x'], x['pix_y']), []).append(x['veto_reason'])
+        for r in rows:
+            vs = ix.get((r['stokes'], r['date'], r['pix_x'], r['pix_y']))
+            if not vs:
+                probs.append(f'{r["stokes"]} {r["date"]} ({r["pix_x"]},{r["pix_y"]}): no gate-ledger row')
+            elif r['cut'] == '1' and 'table' not in vs:
+                probs.append(f'{r["stokes"]} {r["date"]} ({r["pix_x"]},{r["pix_y"]}): cut, ledger {vs}')
+            elif r['cut'] == '0' and all(v == 'table' for v in vs):
+                probs.append(f'{r["stokes"]} {r["date"]} ({r["pix_x"]},{r["pix_y"]}): kept, ledger {vs}')
+    if probs:
+        return _fail(probs, len(rows))
+    return True, len(rows), f'{len(rows)} decisions, {sum(r["cut"] == "1" for r in rows)} cut'
 
 
 # ---- candidate stamps -------------------------------------------------------------------------------------------------------

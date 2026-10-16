@@ -279,11 +279,131 @@ def test_b02_units():
           and all(ln.count('round(float(') == 2 and ln.count(', 5)') == 2 for ln in trk), trk)
     srcj = inspect.getsource(DSE)
     ix_a = [m.start() for m in re.finditer(r"reason='ateam', pass_ms=1\)\)", srcj)]
+    ix_e = [m.start() for m in re.finditer(r"reason='elevation', pass_ms=1\)\)", srcj)]
     ix_t = [m.start() for m in re.finditer(r"reason=f'jupiter-track:\{_jth\}'", srcj)]
     ix_c = [m.start() for m in re.finditer(r'\n\s+cut = False\n', srcj)]
-    check('the track sits right after the A-team veto in both chains (the V gating loop, the I finals) and before the I table',
-          len(ix_a) == 2 and len(ix_t) == 2 and len(ix_c) == 1 and ix_a[0] < ix_t[0] < ix_a[1] < ix_t[1] < ix_c[0],
-          (ix_a, ix_t, ix_c))
+    check('after the A-team veto in both chains (the V gating loop, the I finals): the elevation floor (step 3b), then the '
+          'track; both before the I table', len(ix_a) == 2 and len(ix_e) == 2 and len(ix_t) == 2 and len(ix_c) == 1
+          and ix_a[0] < ix_e[0] < ix_t[0] < ix_a[1] < ix_e[1] < ix_t[1] < ix_c[0], (ix_a, ix_e, ix_t, ix_c))
+
+
+def test_b02_3b_units():
+    """B-02 step 3b: removal_rules' helpers - the table noise (the cell's searched nights; an admitted night with itself; an
+    append with its base's), the record rows read back as a base, the summary, the pulsar notes, the elevation from a frame's
+    own times; the search's table calls take those inputs; the content tests of frame_noise and table_pulsar_decisions on
+    synthetic files, each fault refused."""
+    from astropy.io import fits
+    from exopipe.phase3.lib.search import removal_rules as RR, tests as ST, deep_search as DSE
+    D = ['2024-12-18', '2024-12-19', '2024-12-20', '2024-12-21', '2024-12-22']
+    nz = {'I': {D[0]: 0.010, D[1]: 0.012, D[2]: 0.014, D[3]: 0.020, D[4]: None}, 'V': {D[0]: 0.005, D[1]: 0.007}}
+    srch = {'I': set(D), 'V': {D[0]}}
+    cell = {D[0], D[1], D[2], D[4]}                  # D[3] admitted
+    t = RR.table_noise(nz, srch, cell)
+    check('table_noise: the population is the cell\'s searched nights with a noise; they and every other frame carry its '
+          'median; an admitted searched night is judged with the population plus itself; a Stokes is its own population',
+          t['I']['population'] == D[:3] and t['I']['median'] == 0.012 and t['I']['night'][D[0]] == 0.012
+          and t['I']['night'][D[3]] == 0.013 and t['I']['night'][D[4]] == 0.012 and t['V']['population'] == [D[0]]
+          and t['V']['night'] == {D[0]: 0.005, D[1]: 0.005}, t)
+    tb = RR.table_noise({'I': {'2025-01-05': 0.030, '2025-01-06': 0.011}, 'V': {}}, {'I': {'2025-01-05'}}, set(),
+                        base={'I': [0.010, 0.012, 0.014]})
+    check('table_noise of an append: its base\'s population; the appended searched night with it plus itself, a frame not '
+          'searched with the base\'s median', tb['I']['population'] == [] and tb['I']['n'] == 3 and tb['I']['median'] == 0.012
+          and tb['I']['night'] == {'2025-01-05': 0.013, '2025-01-06': 0.012} and tb['V']['median'] is None, tb)
+    att = os.path.join(T, 'b02_3b_units', 'att')
+    rd = os.path.join(att, 'transients', 'Run_T')
+    os.makedirs(rd, exist_ok=True)
+    rows = RR.frame_noise_rows('05h', '78MHz', D, nz, srch, t, 0.006, 'A1')
+    with open(os.path.join(rd, RR.FRAME_NOISE), 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(RR.FRAME_NOISE_COLS)
+        w.writerows(rows)
+    base = RR.base_population(rd)
+    summ = RR.frame_noise_summary(os.path.join(rd, RR.FRAME_NOISE), 'I')
+    check('frame_noise_rows: one row per frame of the run\'s nights; base_population reads the population back (an append\'s '
+          'base); no FRAME_NOISE is no base (None); the unit record\'s summary', len(rows) == 7
+          and base == {'I': [0.010, 0.012, 0.014], 'V': [0.005]} and RR.base_population(os.path.join(T, 'b02_3b_units')) is None
+          and summ == dict(rows=5, searched=5, population=3, tblnoise_median_jy=0.012, vsanmed_jy=[]), (rows, base, summ))
+
+    def frame(st, d, **cards):
+        fp = ST.frame_path(att, 'T', '05h', '78MHz', d, st)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        h = fits.Header()
+        for k_, v_ in cards.items():
+            if v_ is not None:
+                h[k_] = v_
+        fits.writeto(fp, np.zeros((4, 4), np.float32), h, overwrite=True)
+    for r in rows:
+        st, d = r[2], r[3]
+        frame(st, d, IMGRMS=(float(r[4]) if r[4] else 0.0123), TBLNOISE=(float(r[7]) if r[7] else None),
+              VSANMED=(float(r[8]) if r[8] else None))
+    fnp = os.path.join(rd, RR.FRAME_NOISE)
+    ok0 = ST.medians_and_cards(fnp)
+    keep = open(fnp).read()
+
+    def faulty(mut):
+        open(fnp, 'w').write(mut(keep))
+        try:
+            return ST.medians_and_cards(fnp)[0]
+        finally:
+            open(fnp, 'w').write(keep)
+    lines = keep.splitlines(True)
+    f1 = faulty(lambda x: x.replace(',0.005,0.006,A1', ',0.0051,0.006,A1', 1))                     # a V row's table noise
+    f2 = faulty(lambda x: ''.join(lines[:2]) + lines[2].replace(',1,1,', ',0,1,', 1) + ''.join(lines[3:]))   # population, unsearched
+    frame('I', D[3], IMGRMS=0.020, TBLNOISE=0.0131)                                               # a frame's card
+    f3 = ST.medians_and_cards(fnp)[0]
+    frame('I', D[3], IMGRMS=0.020, TBLNOISE=0.013)
+    os.remove(ST.frame_path(att, 'T', '05h', '78MHz', D[1], 'V'))                                  # a frame missing
+    f4 = ST.medians_and_cards(fnp)[0]
+    frame('V', D[1], IMGRMS=0.007, TBLNOISE=0.005, VSANMED=0.006)
+    check('frame_noise content test: the synthetic record and its frames pass; a wrong table noise, a population night not '
+          'searched, a frame card off, a missing frame are each refused', ok0[0] and not (f1 or f2 or f3 or f4)
+          and ST.medians_and_cards(fnp)[0], (ok0, f1, f2, f3, f4))
+    # the pulsar decisions: kept as the parent / cut not exempting, each against the gate ledger at its pixel
+    led = os.path.join(rd, 'v_deep_ledger.csv')
+    lrow = lambda st, d, x, y, v: dict(dict.fromkeys(ST.GLED_COLS, ''), lst='05h', scope='78MHz', stokes=st, date=d, pix_x=x,
+                                       pix_y=y, veto_reason=v, final='1' if v == '' else '0', mstruct='1.0')
+    with open(led, 'w', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=ST.GLED_COLS)
+        w.writeheader()
+        w.writerows([lrow('V', D[0], 10, 20, 'table'), lrow('V', D[0], 30, 40, ''), lrow('I', D[1], 50, 60, 'row-line')])
+    tp = os.path.join(rd, RR.TABLE_PULSAR)
+    good = [['05h', '78MHz', 'V', D[0], 80.1, 22.0, 10, 20, 1, 'table: parent S=40 at 0.50 bw < 1.00 (bin 25-50); ATNF pulsar '
+             'B0531+21 within 1 beam NOT exempting: a triggering parent is not the pulsar (2.0 x the 3.034-sigma radius)'],
+            ['05h', '78MHz', 'V', D[0], 80.3, 22.1, 30, 40, 0, 'table-exempt: ATNF pulsar B0531+21 is the parent (every '
+             'triggering parent within 3.034 sigma of it; would remove: table: ...)'],
+            ['05h', '78MHz', 'I', D[1], 81.0, 22.5, 50, 60, 0, 'table-exempt: ATNF pulsar B0531+21 is the parent (...)']]
+
+    def tpd(rows_):
+        with open(tp, 'w', newline='') as fh:
+            w = csv.writer(fh)
+            w.writerow(RR.TABLE_PULSAR_COLS)
+            w.writerows(rows_)
+        return ST.named_and_ledgered(tp)[0]
+    g0 = tpd(good)
+    b1 = tpd([good[0][:8] + [0, good[0][9]]] + good[1:])                                      # cut note, kept
+    b2 = tpd(good[:1] + [good[1][:6] + [31, 40] + good[1][8:]] + good[2:])                     # no ledger row at the pixel
+    b3_ = tpd(good[:2] + [good[2][:9] + ['table-exempt: xm HWJ:x, parent S=10 < 20']])          # no pulsar named
+    check('table_pulsar_decisions content test: kept-as-parent and cut-not-exempting rows with their ledger rows pass; a cut '
+          'note on a kept row, a row with no ledger row at its pixel, a note naming no pulsar are each refused',
+          g0 and not (b1 or b2 or b3_), (g0, b1, b2, b3_))
+    check('names_pulsar: the two pulsar notes of parent_curve_table.removals, not a table or cross-match note',
+          RR.names_pulsar(good[0][9]) and RR.names_pulsar(good[1][9]) and not RR.names_pulsar('table: parent S=40 at 0.5 bw')
+          and not RR.names_pulsar('table-exempt: xm HWJ:x, parent S=10 < 20') and not RR.names_pulsar(''))
+    h1, h2 = fits.Header(), fits.Header()
+    h1['DATE-OBS'], h1['DATE-END'] = '2025-01-11T08:00:00.000', '2025-01-11T09:00:00.000'
+    h2['DATE-OBS'], h2['DATE-END'] = '2025-01-11T09:00:00.000', '2025-01-11T10:00:00.000'
+    e1, e2 = RR.frame_elevation('05h', 80.0, 22.0, h1), RR.frame_elevation('05h', 80.0, 22.0, h2)
+    want1 = RR.deep_elevation('05h', 80.0, 22.0, epoch='frame-mid', frame_time=(h1['DATE-OBS'], h1['DATE-END']))
+    check("frame_elevation: the check's function (deep_elevation, catalog_conform.DEEP_ELEV_EPOCH - ruled 'frame-mid') on the "
+          "frame header's own times; another hour another elevation", CFG.catalog_conform.DEEP_ELEV_EPOCH == 'frame-mid'
+          and e1 == want1 and abs(e1[0] - e2[0]) > 5.0 and e1[1] == 'at the frame mid-time', (e1, e2, want1))
+    src = inspect.getsource(DSE)
+    calls = re.findall(r"_PCT\.removals\('([IV])', scope, _pa(?:_v)?, _b02_tnoise\('[IV]', d_?\), float\(_fh([IV])\[d_?\]\['BMAJ'\]\)", src)
+    check("under 'once-in-search' each table call takes the frame's table noise (TBLNOISE), its own beam (the archived frame's "
+          "BMAJ) - and (by the lines after) the catalogue position and the frame-mid elevation; production's calls unchanged",
+          sorted(calls) == [('I', 'I'), ('V', 'V')] and src.count("[c['_b02_pos'][0]], [c['_b02_pos'][1]]") == 1
+          and src.count("[c['_b02_pos'][0] for c in finals]") == 1 and src.count("elev=[c['_b02_el']") == 2
+          and src.count('max(drI_, 1e-12), em * cd') == 1 and src.count('max(_rmsV, 1e-12), em * cd') == 1, calls)
 
 
 def test_values():
@@ -449,7 +569,41 @@ def strip_constituents(path, nights):
     return len(hist) - len(keep)
 
 
-def engine(root, work, label_root, policy, dates, fail_i=None, rules=None, b02=None, stokes=None, open_jupiter=False):
+_SERVED_NOISE = {}
+
+
+def seed_base_noise(label_root, exclude):
+    """B-02 step 3b: an incremental search appends to an attempt that carries its FRAME_NOISE (the frame noise of the cell's
+    searched nights: the table's population). A test attempt is fresh, so it is given the served search's frames of the cell
+    (CFG.calibrate.SERVED_RUN) as that base - each night's archived IMGRMS (the same statistic: the 25 deg mask never reaches
+    the central box on any deep grid), the nights of this run left out. Returns {Stokes: {night: noise}}."""
+    from astropy.io import fits
+    from exopipe.phase3.lib.search import removal_rules as RR
+    srv = CFG.calibrate.SERVED_RUN['deep']
+    if not _SERVED_NOISE:
+        for st, sub in (('I', 'iresid'), ('V', 'vresid')):
+            for f_ in sorted(glob.glob(os.path.join(srv, sub, CELL, f'*_{st}_redo_resid_{SC}.fits'))):
+                v_ = fits.getheader(f_).get('IMGRMS')
+                if v_:
+                    _SERVED_NOISE.setdefault(st, {})[os.path.basename(f_).split('_')[0]] = round(float(v_), 9)
+    pop = {st: {d: v for d, v in nz.items() if d not in exclude} for st, nz in _SERVED_NOISE.items()}
+    rd = os.path.join(label_root, 'transients', 'Run_ADMITTEST')
+    os.makedirs(rd, exist_ok=True)
+    with open(os.path.join(rd, RR.FRAME_NOISE), 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(RR.FRAME_NOISE_COLS)
+        for st, nz in sorted(pop.items()):
+            m = RR.median_noise(list(nz.values()))
+            for d, v in sorted(nz.items()):
+                w.writerow([LST, SC, st, d, repr(v), 1, 1, repr(m), '', 'served-base'])
+    return pop
+
+
+def engine(root, work, label_root, policy, dates, fail_i=None, rules=None, b02=None, stokes=None, open_jupiter=False,
+           seed=True):
+    if seed and dates and (rules or CFG.search_detect.REMOVAL_RULES) == 'once-in-search' and not os.path.exists(
+            os.path.join(label_root, 'transients', 'Run_ADMITTEST', 'frame_noise.csv')):
+        seed_base_noise(label_root, set(dates))      # B-02 step 3b: the base an incremental search appends to
     env = {k: v for k, v in os.environ.items() if not k.startswith('P3_')}
     env.update(PYTHONPATH=REPO, P3_COADD_ROOT=root, P3_FLOW_ROOT=work, P3_STAGING_ROOT=label_root,
                P3_IRESID_ROOT=os.path.join(label_root, 'iresid'), P3_VRESID_ROOT=os.path.join(label_root, 'vresid'),
@@ -522,6 +676,22 @@ def test_end_to_end():
           (res, log[-600:]))
     res, log = engine(wt, work, att, 'admitted', [nights[0]], b02={'real': True})   # B-02 hooks record only
     check('ruled reading: the engine runs (incremental, one admitted night)', res['ok'], (res, log[-1500:]))
+    from exopipe.phase3.lib.search import removal_rules as RR
+    fnr = list(csv.DictReader(open(os.path.join(att, 'transients', 'Run_ADMITTEST', RR.FRAME_NOISE))))
+    base_ = {st: [float(r['noise_jy']) for r in fnr if r['stokes'] == st and r['population'] == '1'] for st in ('I', 'V')}
+    mine = {r['stokes']: r for r in fnr if r['date'] == nights[0]}
+    bad3 = []
+    for st, r in sorted(mine.items()):
+        fp_ = os.path.join(att, 'iresid' if st == 'I' else 'vresid', CELL, f'{nights[0]}_{st}_redo_resid_{SC}.fits')
+        h_ = fits.getheader(fp_) if os.path.exists(fp_) else {}
+        want_ = RR.median_noise(base_[st] + [float(r['noise_jy'])])
+        if not (r['searched'] == '1' and r['population'] == '0' and float(r['tblnoise_jy']) == want_
+                and h_.get('TBLNOISE') == want_ and h_.get('IMGRMS') == float(r['noise_jy'])):
+            bad3.append((st, dict(r), want_, h_.get('TBLNOISE'), h_.get('IMGRMS')))
+    check("B-02 step 3b: the admitted night's frames (I and V) are judged with the base's population plus themselves - "
+          "recorded (searched, not in the population) and stamped (TBLNOISE; IMGRMS its own noise)",
+          res['ok'] and sorted(mine) == ['I', 'V'] and not bad3 and all(len(v) > 10 for v in base_.values()),
+          (bad3, {k: len(v) for k, v in base_.items()}))
     fr0 = ((res.get('b02_calls') or {}).get('daytime_frames') or [{}])[0].get('frames', [])
     check("B-02: an admitted night's search judges its own frames only (I and V) - not the cell's other nights, whose "
           "residuals it builds for its stack", res['ok'] and fr0 and {x[0][3] for x in fr0} == {nights[0]}
@@ -670,20 +840,27 @@ def test_end_to_end():
 
 
 def test_b02_end_to_end(wt, work, b3):
-    """B-02 step 3a: production's rules against 'once-in-search' on three member nights (``b3``) of the copy ``wt``, one
-    Stokes per run as the search step runs the engine (the harness's 'IV' call skips a night's V search with its refused I
-    frame - production's per-date loop - which no step or fleet call meets). Each run is seeded with the served search's
-    cell sigma stack (the map an incremental search reads, so a search of a few nights gates as the full search did and
-    detections reach the end of each chain). Given: the daytime gate refuses one night's frame; the Jupiter track holds one
-    point, on a detection that reached the track's place in its chain (past the A-team veto) under production's rules. In
-    this cell no I detection of these nights gets that far but Jupiter's own, which the per-night Jupiter veto removes
-    first, so the I pair runs with that veto opened in both runs (a test device; the track then meets Jupiter itself)."""
+    """B-02 steps 3a and 3b on three member nights (``b3``) of the copy ``wt``, one Stokes per run as the search step runs the
+    engine (the harness's 'IV' call skips a night's V search with its refused I frame - production's per-date loop - which no
+    step or fleet call meets). Each run is seeded with the served search's cell sigma stack (the map an incremental search
+    reads, so a search of a few nights gates as the full search did and detections reach the end of each chain) and, under
+    'once-in-search', with the served frames' noise as the base it appends to (seed_base_noise). Per Stokes three runs:
+    production's rules (P); 'once-in-search' with no daytime frame and no track point (O); 'once-in-search' with the daytime
+    gate refusing one night's frame and the Jupiter track holding one point, on a detection that reached the track's place in
+    its chain in O (O1). Step 3a: O1 against O. Step 3b on O: the noise record and the frame cards, the elevation floor, every
+    table verdict recomputed from what the frame records, the pulsar decisions; O against P: every changed row a 3b rule's.
+    In this cell no I detection of these nights gets past the A-team veto but Jupiter's own, which the per-night Jupiter veto
+    removes first, so the I runs run with that veto opened (a test device; the track then meets Jupiter itself)."""
     from astropy.io import fits
     from astropy.wcs import WCS
-    from exopipe.phase3.lib.search import removal_rules as RR, tests as ST
+    from exopipe.phase3.lib.search import removal_rules as RR, tests as ST, parent_curve_table as PCT
+    from exopipe.phase3.lib.search import deep_search as DSE
     ssrc = os.path.join(CFG.calibrate.SERVED_RUN['deep'], 'sigstack')
     cdir = os.path.join(wt, CELL)
-    W = WCS(fits.getheader(os.path.join(cdir, 'coadd_final', f'I_deep_Taper_R075_{SC}.fits'))).celestial
+    mh = fits.getheader(os.path.join(cdir, 'coadd_final', f'I_deep_Taper_R075_{SC}.fits'))
+    W = WCS(mh).celestial
+    pc0 = (float(mh['CRVAL1']) % 360.0, float(mh['CRVAL2']))
+    floor = CFG.catalog_conform.DEEP_ELEV_FLOOR_DEG
 
     def sky(r):                                      # the catalogue's position of a ledger row: its pixel's, 5 decimals
         s_ = W.pixel_to_world(int(float(r['pix_x'])), int(float(r['pix_y'])))
@@ -703,23 +880,107 @@ def test_b02_end_to_end(wt, work, b3):
             out_[name_] = [r for r in csv.DictReader(open(p_)) if r.get('date') in b3] if os.path.exists(p_) else []
         dayf = os.path.join(rd_, 'refusals', f'{CELL}_daytime_excluded.csv')
         out_['day'] = open(dayf).read().splitlines() if os.path.exists(dayf) else []
-        out_['att'] = att_
+        out_['att'], out_['rd'] = att_, rd_
         return res_, log_, out_
 
-    def reach(r):                                    # past the A-team veto: v110 (V), the table, the row line or a final
-        return r['final'] == '1' or r['veto_reason'] in ('table', 'row-line') or r['veto_reason'].startswith('v110:')
+    def frame_hdr(att_, st, d):
+        p_ = os.path.join(att_, 'iresid' if st == 'I' else 'vresid', CELL, f'{d}_{st}_redo_resid_{SC}.fits')
+        return fits.getheader(p_) if os.path.exists(p_) else None
+
+    def reach(r):                                    # past the A-team veto and the elevation floor: v110 (V), the table, the
+        return r['final'] == '1' or r['veto_reason'] in ('table', 'row-line') or r['veto_reason'].startswith('v110:')   # row line, a final
     key = lambda r: (r['date'], r['ra'], r['dec'])
     cols = ('n_ident5', 'n_after_morph', 'n_after_mstruct', 'n_after_jupiter', 'n_final', 'n_raw_floor')
     early = {'I': 'mstruct_I', 'V': 'mstruct'}       # a gate before the A-team veto in each chain
+    p3 = {k: os.environ.pop(k) for k in [k for k in os.environ if k.startswith('P3_')]}   # the table read as the child reads it
+    par = None
     for st, night, night2, oj in (('I', '2024-12-30', '2024-12-31', True), ('V', '2025-01-04', '2025-01-05', False)):
-        dev = ' (the per-night Jupiter veto opened in both runs)' if oj else ''
+        dev = ' (the per-night Jupiter veto opened in all three runs)' if oj else ''
         resp, logp, rp = b02_run(f'attempt_b02_{st}_production', st, 'production', {'day': [], 'track': []}, oj)
-        cand = sorted((r for r in rp['v_deep_ledger.csv'] if r['stokes'] == st and reach(r)),
-                      key=lambda r: (r['final'] != '1', r['date']))
-        if not (resp['ok'] and cand):
-            check(f"B-02 setup ({st}): a detection of the nights past the A-team veto under production's rules{dev}", False,
-                  (resp.get('error'), len(rp['v_deep_ledger.csv']), logp[-300:]))
+        res0, log0, r0 = b02_run(f'attempt_b02_{st}_once0', st, 'once-in-search', {'day': [], 'track': []}, oj)
+        if not (resp['ok'] and res0['ok']):
+            check(f"B-02 setup ({st}): the cell's nights searched under production's rules and under 'once-in-search'{dev}",
+                  False, (resp.get('error'), res0.get('error'), logp[-300:], log0[-300:]))
             continue
+        led0 = [r for r in r0['v_deep_ledger.csv'] if r['stokes'] == st]
+        fh = {d: frame_hdr(r0['att'], st, d) for d in b3}
+        fhp = {d: frame_hdr(rp['att'], st, d) for d in b3}
+        # ---- step 3b: the noise record and the cards
+        fnr = list(csv.DictReader(open(os.path.join(r0['rd'], RR.FRAME_NOISE))))
+        base_ = [float(r['noise_jy']) for r in fnr if r['stokes'] == st and r['population'] == '1']
+        mine = {r['date']: r for r in fnr if r['stokes'] == st and r['attempt'] != 'served-base'}
+        bad = []
+        for d in b3:
+            r, h, hp = mine.get(d), fh[d], fhp[d]
+            want = RR.median_noise(base_ + [float(r['noise_jy'])]) if r else None
+            if not (r and h is not None and hp is not None and r['searched'] == '1' and r['population'] == '0'
+                    and float(r['tblnoise_jy']) == want and h.get('TBLNOISE') == want
+                    and h.get('IMGRMS') == float(r['noise_jy']) == hp.get('IMGRMS') and h.get('THERMNOI') == hp.get('THERMNOI')
+                    and 'TBLNOISE' not in hp and 'VSANMED' not in h):
+                bad.append((d, r, want, h and h.get('TBLNOISE'), h and h.get('IMGRMS'), hp and hp.get('IMGRMS')))
+        check(f"B-02 step 3b ({st}): each night's frame noise recorded (searched; appended, so judged with the base's "
+              f"population plus itself) and stamped - TBLNOISE that median, IMGRMS and THERMNOI production's own numbers (one "
+              f"statistic: the mask never reaches the central box), no VSANMED (the V noise rule needs five nights){dev}",
+              not bad and len(base_) > 10, (bad, len(base_)))
+        # ---- step 3b: the elevation floor at the frame's mid-time, at the catalogue position (the check's function)
+        el = {key(r): RR.frame_elevation(LST, *sky(r), fh[r['date']]) for r in led0
+              if r['veto_reason'] == 'elevation' or reach(r)}
+        low = [k for k, r in ((key(r), r) for r in led0) if r['veto_reason'] == 'elevation']
+        past = [key(r) for r in led0 if reach(r)]
+        check(f"B-02 step 3b ({st}): every 'elevation' row lies below the deep floor at its frame's mid-time, every row past "
+              f"the floor above it ({len(low)} below, {len(past)} past){dev}",
+              past and all(RR.elevation_reason(*el[k]) for k in low) and not any(RR.elevation_reason(*el[k]) for k in past),
+              ([(k, el[k]) for k in low if not RR.elevation_reason(*el[k])][:3],
+               [(k, el[k]) for k in past if RR.elevation_reason(*el[k])][:3]))
+        # ---- step 3b: every table verdict recomputed from what the frame records
+        if par is None:
+            par = np.array(DSE._read_gaul_parents(os.path.join(work, CELL, 'catdir', f'master_R075_{CELL}.gaul.csv')))
+        tab = [r for r in led0 if r['veto_reason'] in ('table', 'row-line', '')]
+        mism, psr = [], set()
+        for r in tab:
+            h = fh[r['date']]
+            ra5, de5 = sky(r)
+            cut_, note_ = PCT.removals(st, SC, par, float(h['TBLNOISE']), float(h['BMAJ']), [ra5], [de5],
+                                       elev=[el[key(r)][0]], phase_centre=pc0)
+            if bool(cut_[0]) != (r['veto_reason'] == 'table'):
+                mism.append((key(r), r['veto_reason'], note_[0][:120]))
+            if RR.names_pulsar(note_[0]):
+                psr.add((r['date'], r['pix_x'], r['pix_y'], int(bool(cut_[0]))))
+        ncut = sum(r['veto_reason'] == 'table' for r in tab)
+        check(f"B-02 step 3b ({st}): every table verdict recomputed from what its frame records - S over its TBLNOISE, the "
+              f"distance in its BMAJ from the catalogue position, the band table of its frame-mid elevation - is the "
+              f"search's ({len(tab)} rows reached the table, {ncut} cut){dev}", tab and not mism, mism[:4])
+        tpp = os.path.join(r0['rd'], RR.TABLE_PULSAR)
+        got_psr = ({(r['date'], r['pix_x'], r['pix_y'], int(r['cut'])) for r in csv.DictReader(open(tpp)) if r['stokes'] == st}
+                   if os.path.exists(tpp) else set())
+        tpt = ST.named_and_ledgered(tpp) if os.path.exists(tpp) else (True, 0, 'none')
+        check(f"B-02 step 3b ({st}): the table's pulsar decisions recorded are exactly those the recomputation names "
+              f"({len(psr)}), and pass their content test{dev}", got_psr == psr and tpt[0], (sorted(psr), sorted(got_psr), tpt))
+        # ---- step 3b: against production's rules every changed row is a 3b rule's
+        lpp = {key(r): r for r in rp['v_deep_ledger.csv'] if r['stokes'] == st}
+        lo0 = {key(r): r for r in led0}
+        cls_, odd = collections.Counter(), []
+        for k in sorted(set(lpp) | set(lo0)):
+            a, b = lpp.get(k), lo0.get(k)
+            va, vb = (a or {}).get('veto_reason'), (b or {}).get('veto_reason')
+            if a and b and va == vb:
+                continue
+            r = b or a
+            near = st == 'V' and abs(RR.frame_elevation(LST, *sky(r), fh[r['date']])[0] - floor) < 10.0
+            if a and b and vb == 'elevation':
+                cls_['elevation floor'] += 1
+            elif a and b and ('table' in (va, vb) or 'row-line' in (va, vb)):
+                cls_['table verdict (or the row line it moves)'] += 1
+            elif near:
+                cls_['V near the floor (the mask at the frame\'s zenith)'] += 1
+            else:
+                odd.append((k, va, vb))
+        print(f'  (B-02 step 3b {st}: rows changed against production: {dict(cls_)}; unexplained {len(odd)})')
+        check(f"B-02 step 3b ({st}): against production's rules every changed ledger row is a 3b rule's - the elevation floor, "
+              f"a table verdict (and a row line it moves), a V detection near the floor (its mask now at the frame's zenith)"
+              f"{dev}", not odd, odd[:5])
+        # ---- step 3a (O1 against O): the target - a detection past the A-team veto and the elevation floor in O
+        cand = sorted((r for r in led0 if reach(r)), key=lambda r: (r['final'] != '1', r['date']))
         # the track point: inside the band's radius at the target's catalogue position (its pixel's), outside it at the source
         # finder's centroid (the ledger's ra/dec) - a track tested at the centroid misses it (the first review's MAJOR)
         R_ = RR.jupiter_track_radius(SC)
@@ -740,25 +1001,25 @@ def test_b02_end_to_end(wt, work, b3):
             continue
         dn = next(d for d in b3 if d != tgt['date'])     # the daytime frame: another night's, of this Stokes
         # a second point on a row an earlier gate removed, far from the first: the row keeps its reason (the track's place)
-        erow = next((r for r in rp['v_deep_ledger.csv'] if r['stokes'] == st and r['veto_reason'] == early[st]
+        erow = next((r for r in led0 if r['veto_reason'] == early[st]
                      and r['date'] != dn and RR.jupiter_track_hit(*sky(r), SC, [(ra0, de0, 'x')]) is None
                      and RR.jupiter_track_hit(ra0, de0, SC, [(*sky(r), 'x')]) is None), None)
         pts = [(ra0, de0, night)] + ([(*sky(erow), night2)] if erow else [])
         reso, logo, ro = b02_run(f'attempt_b02_{st}_once', st, 'once-in-search',
                                  {'day': [[st, dn]], 'track': [list(x) for x in pts]}, oj)
-        lp = {key(r): r for r in rp['v_deep_ledger.csv'] if r['stokes'] == st}
+        lp = {key(r): r for r in led0}
         lo = {key(r): r for r in ro['v_deep_ledger.csv'] if r['stokes'] == st}
-        ip = {r['date']: r for r in rp['v_deep_images.csv'] if r['stokes'] == st}
+        ip = {r['date']: r for r in r0['v_deep_images.csv'] if r['stokes'] == st}
         io = {r['date']: r for r in ro['v_deep_images.csv'] if r['stokes'] == st}
         zeros = ('0', '0', '', '', '0', '0') if st == 'I' else ('0',) * 6
-        check(f"B-02 step 3a ({st}): under 'once-in-search' the frame the daytime gate refuses is not searched (its image row "
-              f"of zeros, no ledger row, one row in refusals/<cell>_daytime_excluded.csv); under 'production' it is{dev}",
+        check(f"B-02 step 3a ({st}): the frame the daytime gate refuses is not searched (its image row of zeros, no ledger row, "
+              f"one row in refusals/<cell>_daytime_excluded.csv); without the refusal it is{dev}",
               reso['ok'] and any(k[0] == dn for k in lp) and not any(k[0] == dn for k in lo) and dn in io
               and tuple(io[dn][c] for c in cols) == zeros and len(ro['day']) == 1
-              and ro['day'][0].startswith(f'{LST},{SC},{dn},{st},') and not rp['day'],
-              (reso.get('error'), dn, io.get(dn), ro['day'], rp['day'], logo[-300:]))
-        # the track: every detection past the A-team veto within the band's radius of a point (at its catalogue position), of
-        # any night searched under both, vetoed, naming the first point's night; the row an earlier gate removed keeps it
+              and ro['day'][0].startswith(f'{LST},{SC},{dn},{st},') and not r0['day'] and not rp['day'],
+              (reso.get('error'), dn, io.get(dn), ro['day'], r0['day'], logo[-300:]))
+        # the track: every detection past the A-team veto and the floor within the band's radius of a point (at its catalogue
+        # position), of any night searched in both, vetoed, naming the first point's night; the row an earlier gate removed keeps it
         hit = {k: RR.jupiter_track_hit(*sky(r), SC, pts) for k, r in lp.items()}
         want_v = {k for k, r in lp.items() if k[0] != dn and reach(r) and hit[k]}
         got_v = {k for k, r in lo.items() if r['veto_reason'].startswith('jupiter-track')}
@@ -786,7 +1047,7 @@ def test_b02_end_to_end(wt, work, b3):
               and jcall.get('skipped') == [], (cp, dcall, jcall))
         # the refused frame still archived; the search step's content tests on the once-in-search outputs (its verify)
         arch = os.path.join(ro['att'], 'iresid' if st == 'I' else 'vresid', f'{LST}_{SC}', f'{dn}_{st}_redo_resid_{SC}.fits')
-        rdo = os.path.join(ro['att'], 'transients', 'Run_ADMITTEST')
+        rdo = ro['rd']
         for sub in ('iresid', 'vresid'):                 # the step's layout: <attempt>/Run_<label>/<sub> (harness: <attempt>/<sub>)
             if os.path.isdir(os.path.join(ro['att'], sub)):
                 os.makedirs(os.path.join(ro['att'], 'Run_ADMITTEST'), exist_ok=True)
@@ -797,9 +1058,9 @@ def test_b02_end_to_end(wt, work, b3):
         check(f"B-02 step 3a ({st}): the refused frame is still archived, and the search step's content tests pass on the "
               f"'once-in-search' outputs (gate ledger, the daytime refusal record, image ledger){dev}",
               os.path.exists(arch) and all(t_[0] for t_ in ct), (os.path.exists(arch), [t_[2][:300] for t_ in ct]))
-        # every other ledger and image row of the nights searched under both is production's, but for the counts of the
-        # vetoed: a gated V row's n_v_epoch counts what its epoch's gates kept (an A-team veto's rule), the image row's
-        # n_final what the night kept to its end (V: after the gates - every vetoed row; I: the finals)
+        # every other ledger and image row of the nights searched in both is O's, but for the counts of the vetoed: a gated V
+        # row's n_v_epoch counts what its epoch's gates kept (an A-team veto's rule), the image row's n_final what the night
+        # kept to its end (V: after the gates - every vetoed row; I: the finals)
         nv = collections.Counter(k[0] for k in got_v)
         nf = collections.Counter(k[0] for k in got_v if st == 'V' or lp[k]['final'] == '1')
         diff = []
@@ -821,12 +1082,14 @@ def test_b02_end_to_end(wt, work, b3):
                 exp['n_final'] = str(int(r['n_final']) - nf[d])
             if io.get(d) != exp:
                 idiff.append((d, exp, io.get(d)))
-        check(f"B-02 step 3a ({st}): the track vetoes every detection past the A-team veto within the band's radius of its "
-              f"point, 'jupiter-track:<night>' (final 0), under 'once-in-search' only; every other ledger and image row is "
-              f"production's (their counts less the vetoed){dev}", ok_v and not diff and not extra and not idiff,
+        check(f"B-02 step 3a ({st}): the track vetoes every detection past the A-team veto and the floor within the band's "
+              f"radius of its point, 'jupiter-track:<night>' (final 0); every other ledger and image row is the run's without "
+              f"the 3a inputs (their counts less the vetoed){dev}", ok_v and not diff and not extra and not idiff,
               (tgt['date'], tgt['veto_reason'] or 'final', sorted(want_v), sorted(got_v), diff[:3], extra[:3], idiff[:2]))
-        check(f"B-02 ({st}): the search's log names the daytime refusal under 'once-in-search' only",
-              'DAYTIME GATE (B-02)' in logo and 'DAYTIME GATE' not in logp, (logo[-300:], logp[-300:]))
+        check(f"B-02 ({st}): the search's log names the daytime refusal in the run given one only",
+              'DAYTIME GATE (B-02)' in logo and 'DAYTIME GATE' not in logp and 'DAYTIME GATE' not in log0,
+              (logo[-300:], logp[-300:]))
+    os.environ.update(p3)
     # the B-30 site: a co-added night the track cannot place refuses the search under the ruled policy, naming the site
     ress, logs, _rs = b02_run('attempt_b02_track_skip', 'I', 'once-in-search',
                               {'day': [], 'track': [], 'skip': ['2024-12-25 (test: no position)']}, False)
@@ -834,6 +1097,7 @@ def test_b02_end_to_end(wt, work, b3):
           "fallbacks.SEARCH_JUPITER_TRACK_FALLBACK and the night", not ress['ok']
           and 'SEARCH_JUPITER_TRACK_FALLBACK' in ress.get('error', '') and '2024-12-25' in ress.get('error', ''),
           (ress.get('error'), logs[-300:]))
+
 
 def main(argv):
     shutil.rmtree(T, ignore_errors=True)
@@ -845,6 +1109,7 @@ def main(argv):
         test_unreadable_and_same_state(cd)
         test_unit_outputs()
         test_b02_units()
+        test_b02_3b_units()
         test_values()
         test_residuals_and_stacks()
         test_engine_source()

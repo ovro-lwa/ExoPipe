@@ -81,6 +81,9 @@ def test_engine_truth():
     from exopipe.phase3.lib.search import deep_search as E, candidates as CA
     check('GLED_COLS of the tests = the engine', T.GLED_COLS == E.GLED_COLS)
     check('GIMG_COLS of the tests = the engine', T.GIMG_COLS == E.GIMG_COLS)
+    from exopipe.phase3.lib.search import removal_rules as RR
+    check('the B-02 step 3b schemas of the tests = removal_rules (FRAME_NOISE_COLS, TABLE_PULSAR_COLS)',
+          T.FNOISE_COLS == RR.FRAME_NOISE_COLS and T.TPD_COLS == RR.TABLE_PULSAR_COLS)
     src = inspect.getsource(CA.write_candidates)
     m = re.search(r'fields = (\[.*?\])', re.sub(r'#[^\n]*', '', src), re.S)
     fields = ast.literal_eval(m.group(1))
@@ -172,6 +175,18 @@ def test_b02_rules_record():
           and bad is not None and 'REFUSING' in bad, (pins, pins_p, bad))
     ok_pin = [p for p in DS.pinned_inputs('I') if p[0].startswith('solar audit')]
     check('the solar audit md5 pinned is the file on disk (search_tables.SOLAR_AUDIT_MD5)', ok_pin and ok_pin[0][2], ok_pin)
+    a3 = os.path.join(TMP, 'b02_att_3b')
+    rd3 = os.path.join(a3, 'transients', 'Run_P3S5')
+    os.makedirs(rd3)
+    for n_ in (RR.FRAME_NOISE, RR.TABLE_PULSAR):
+        open(os.path.join(rd3, n_), 'w').write('x\n')
+    outs3 = {cls: p for p, cls, _c in DS.outputs_of(DS.Item(CELL, 'I', 'bulk'), {}, dict(attempt=a3, label='P3S5'))}
+    sd = inspect.getsource(DS.stage_detect)
+    check("B-02 step 3b: the attempt's frame noise and pulsar decisions are outputs with their content tests (frame_noise, "
+          "table_pulsar_decisions); detect refuses a 'once-in-search' attempt without its frame noise and records the medians "
+          "in the unit record", outs3.get('frame_noise') == os.path.join(rd3, RR.FRAME_NOISE)
+          and outs3.get('table_pulsar_decisions') == os.path.join(rd3, RR.TABLE_PULSAR)
+          and "u.meta['frame_noise'] = _RR.frame_noise_summary(fn, item.stokes)" in sd and 'engine wrote no' in sd, outs3)
 
 
 def test_env_and_items():
