@@ -575,7 +575,7 @@ def test_real():
     files = [(os.path.join(REAL_ATT_V, 'Run_P3S5/vresid/07h_18MHz/2025-01-02_V_redo_resid_18MHz.fits'), 'search_frame'),
              (os.path.join(REAL_ATT_V, 'Run_P3S5/vresid/07h_18MHz/2024-12-27_V_redo_resid_pbcorr_18MHz.fits'), 'search_frame'),
              (os.path.join(REAL_ATT_I, 'Run_P3S5/iresid/07h_18MHz/2025-01-03_I_redo_resid_18MHz.fits'), 'search_frame'),
-             (os.path.join(REAL_ARCH, '18MHz_V_deep_Taper_Robust+0.0_pbcorr_dewarped_aligned_msub_ssub_LST07h_20250102T080414.fits'),
+             (os.path.join(REAL_ARCH, '18MHz_V_deep_Taper_Robust+0.0_shflux_mdewarp_pbcorr_dewarped_aligned_msub_ssub_LST07h_20250102T080414.fits'),
               'search_frame'),
              (os.path.join(REAL_ATT_V, 'transients/Run_P3S5/sigstack/07h_18MHz_V_sigstack.fits'), 'noise_map'),
              (os.path.join(REAL_ATT_I, 'transients/Run_P3S5/sigstack/07h_18MHz_I_sigstack.fits'), 'noise_map'),
