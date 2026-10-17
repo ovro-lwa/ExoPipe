@@ -30,9 +30,13 @@ import re
 from exopipe.phase3.core.validate import content_test
 
 # ---- schemas of the in-place writers ---------------------------------------------------------------------------------------
-GLED_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'snr', 'peak_jy', 'morph_pass', 'veto_reason',
-             'mstruct', 'mstruct_raw', 'pass_mstruct', 'sstack', 'jupiter_deg', 'jupiter_veto', 'final', 'n_v_epoch', 'moon_deg',
-             'global_snr', 'size_beams', 'size_flag', 'nearest_ateam', 'fp_prediction', 'axis_norm', 'size_err_beams']
+GLED_COLS_V1 = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'snr', 'peak_jy', 'morph_pass', 'veto_reason',
+                'mstruct', 'mstruct_raw', 'pass_mstruct', 'sstack', 'jupiter_deg', 'jupiter_veto', 'final', 'n_v_epoch', 'moon_deg',
+                'global_snr', 'size_beams', 'size_flag', 'nearest_ateam', 'fp_prediction', 'axis_norm', 'size_err_beams']
+# 2026-10-17: the bright-parent table's inputs appended (deep_search.GLED_COLS_TABLE); every ledger written before has GLED_COLS_V1
+GLED_COLS_TABLE = ['parent_jy', 'parent_off_beams', 'table_note', 'table_key', 'table_margin', 'table_parent_S',
+                   'table_parent_sep_bw', 'table_R', 'table_bin', 'table_frame_rms_jy']
+GLED_COLS = GLED_COLS_V1 + GLED_COLS_TABLE
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph', 'n_after_mstruct', 'n_after_jupiter', 'n_final',
              'n_raw_floor', 'elev_min_deg']
 CAT_FIELDS = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'interval', 'ra', 'dec', 'peak_jy', 'int_jy', 'snr',
@@ -314,13 +318,18 @@ def complete(path, stokes=None, cell=None, tier='deep', **ctx):
     rows equal the catalogue rows; finals and every I row past identification carry mstruct (GAP-I-CHAIN-GATE-VALUES ledger
     595); no row on a date refused from that Stokes' search; sub-LST: no 'table' row (sublst_search_pass.sh:49-50)."""
     cols, rows = _rows(path)
-    if cols != GLED_COLS:
-        return False, len(rows), f'header != GLED_COLS (28, deep_search.py:116-125): {cols[:6]}...'
+    if cols not in (GLED_COLS, GLED_COLS_V1):
+        return False, len(rows), (f'header is neither GLED_COLS ({len(GLED_COLS)}) nor the pre-2026-10-17 GLED_COLS_V1 '
+                                  f'({len(GLED_COLS_V1)}): {cols[:6]}...')
     probs = []
     reasons = {}
     for r in rows:
         v = r['veto_reason']
         reasons[v] = reasons.get(v, 0) + 1
+        # the table's recorded inputs agree with its verdict: a 'table' row is one whose margin is < 1 (removals cuts exactly
+        # there, before its exemptions; an exempted candidate passes with a margin < 1 and its note says so)
+        if v == 'table' and r.get('table_margin') not in (None, '') and not float(r['table_margin']) < 1.0:
+            probs.append(f"{r['date']} {r['ra']},{r['dec']}: 'table' row with table_margin {r['table_margin']} >= 1")
         if not known_veto_reason(v):
             probs.append(f'unknown veto_reason {v!r}')
         if (r['final'] == '1') != (v == ''):

@@ -153,6 +153,17 @@ GLED_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y',
              # 2026-09-08: the axis gate's own quantity and the size fit's 1-sigma, so a
              # removal can be re-adjudicated from the ledger without re-searching the cell
              'axis_norm', 'size_err_beams']
+GLED_COLS_V1 = list(GLED_COLS)   # the 28 columns of every ledger written before 2026-10-17 (Run_P3S5 and earlier)
+# 2026-10-17 (Gregg: "It would obviously be most expedient if all the information to do any additional removal/filtering was
+# fully available to you *without* any redo of the search!"; "I may ask for the parameters of the bright source table to be
+# applied as a tunable filter"): the bright-parent table's inputs on every row the table judged - the nearest parent
+# (parent_jy, parent_off_beams, sky angle), the note of a cut, and parent_curve_table.table_inputs (the table applied, the
+# binding bin's parent S and separation, its radius and S range, the margin = min over bins of separation / radius, which is
+# < 1 exactly where the table cuts before its exemptions, and the frame rms S is relative to). Appended, so a reader by
+# column position is unaffected; _append_locked refuses to append rows to a ledger written with another header.
+GLED_COLS_TABLE = ['parent_jy', 'parent_off_beams', 'table_note', 'table_key', 'table_margin', 'table_parent_S',
+                   'table_parent_sep_bw', 'table_R', 'table_bin', 'table_frame_rms_jy']
+GLED_COLS = GLED_COLS_V1 + GLED_COLS_TABLE
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph',
              'n_after_mstruct', 'n_after_jupiter', 'n_final',
              'n_raw_floor', 'elev_min_deg']   # 2026-09-04: raw >=floor count; elevation gate
@@ -180,6 +191,14 @@ def _append_locked(path, cols, rows):
     fcntl.flock(lk, fcntl.LOCK_EX)
     try:
         new = not os.path.exists(path)
+        if not new:
+            # 2026-10-17: rows are appended only under their own header - a ledger written with another column set (an
+            # older run resumed by newer code) is REFUSED, never extended with rows its header does not describe
+            with open(path, newline='') as fh0:
+                have = next(csv.reader(fh0), None)
+            if have is not None and have != list(cols):
+                raise RuntimeError(f'{path}: header has {len(have)} columns, these rows {len(cols)} ({cols[-1]!r} last) - '
+                                   f'REFUSING to append rows the header does not describe')
         with open(path, 'a', newline='') as fh:
             w = csv.writer(fh)
             if new:
@@ -188,6 +207,47 @@ def _append_locked(path, cols, rows):
     finally:
         fcntl.flock(lk, fcntl.LOCK_UN)
         lk.close()
+
+
+# THE REFUSAL FILES' COLUMNS (2026-10-17, the deep chat's removal inventory: refusals/*.csv carry no header row). The files stay
+# header-less - lib/catalog/conform_check and the ops readers index them by position - and refusals/COLUMNS.csv names each
+# file's columns, in the order deep_search writes them (units as written: rms in mJy).
+REFUSAL_COLUMNS = (
+    ('_datadecisions_excluded.csv', 'lst,scope,date,attempt'),
+    ('_nightimage_excluded.csv', 'lst,scope,date,attempt'),
+    ('_epochgate_excluded.csv', 'lst,scope,date,attempt'),
+    ('_sanity_I_excluded.csv', 'lst,scope,date,qa3_rms_mjy,cell_median_qa3_rms_mjy,attempt'),
+    ('_sanity_excluded.csv', 'lst,scope,date,qa3_rms_mjy,cell_median_qa3_rms_mjy,attempt'),
+    ('_searchtier_excluded.csv', 'lst,scope,date,stokes,stage1_rms,threshold,attempt'),
+    ('_stale_input_excluded.csv', 'lst,scope,date,why,attempt'),
+    ('_beam_excluded.csv', 'lst,scope,date,beam_area_over_cell_median,threshold,attempt'),
+    ('_sanity_V_excluded.csv', 'lst,scope,date,v_rms_mjy,cell_median_v_rms_mjy,attempt'),
+    ('_daytime_excluded.csv', 'lst,scope,date,stokes,reason,attempt'),
+    ('_extraction_I_excluded.csv', 'lst,scope,date,stokes,reason,attempt,utc'),
+    ('_extraction_V_excluded.csv', 'lst,scope,date,stokes,reason,attempt,utc'),
+)
+
+
+def _refusal_columns(refdir):
+    """Write <refdir>/COLUMNS.csv (file name suffix, its columns) once; an existing one is left as it is."""
+    p = os.path.join(refdir, 'COLUMNS.csv')
+    if os.path.exists(p):
+        return
+    tmp = f'{p}.part{os.getpid()}'
+    with open(tmp, 'w', newline='') as fh:
+        w = csv.writer(fh, lineterminator='\n')
+        w.writerow(['file_suffix', 'columns'])
+        w.writerows(REFUSAL_COLUMNS)
+    os.replace(tmp, p)
+
+
+def _table_and_inputs(cands, stokes, band, *args, **kw):
+    """parent_curve_table.removals(stokes, band, *args, **kw), unchanged, and its inputs at each candidate
+    (parent_curve_table.table_inputs, the same arguments) set on the candidate dicts for the gate ledger (2026-10-17)."""
+    cut, note = _PCT.removals(stokes, band, *args, **kw)
+    for c_, ti in zip(cands, _PCT.table_inputs(stokes, band, *args, **kw)):
+        c_.update(ti)
+    return cut, note
 
 
 def _gled_row(lst, scope, stokes, d, c, morph_pass, reason='', pass_ms='',
@@ -210,7 +270,8 @@ def _gled_row(lst, scope, stokes, d, c, morph_pass, reason='', pass_ms='',
             (round(float(c['global_snr']), 2) if c.get('global_snr') not in (None, '') else ''),
             c.get('size_beams', ''), c.get('size_flag', ''),
             c.get('nearest_ateam', ''), c.get('fp_prediction', ''),
-            c.get('axis_norm', ''), c.get('size_err_beams', '')]
+            c.get('axis_norm', ''), c.get('size_err_beams', '')] + \
+        ['' if c.get(k) is None else c.get(k) for k in GLED_COLS_TABLE]
 
 
 def _master_structure_map(vm, bpix, win_beams=4.0, valid=None, report=None):
@@ -1146,6 +1207,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # fleet ships them (audit R-15: under the input root they were lost on
     # remote nodes and multiplied on lwacalim07); one tag per attempt
     _refdir = f'{run_root}/refusals'; os.makedirs(_refdir, exist_ok=True)
+    _refusal_columns(_refdir)
     from exopipe.phase3.lib.search import removal_rules as _RR         # WAVE2 B-02: every removal rule once, in the search
     _b02 = cadence == 'deep' and _RR.search_rules() == 'once-in-search'   # WAVE2 B-02 (step 3a; 'production': none of it)
     _attempt = time.strftime('%Y%m%dT%H%M%S', time.gmtime())
@@ -2063,10 +2125,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                         if cadence == '10min' else None)
                 if _b02:                                               # WAVE2 B-02 (step 3b, decision (2)): the deep V mask from
                     _ztV = sv2.frame_mid_time(_fhV[d]) if _eep == 'frame-mid' else None   # WAVE2 B-02: the zenith at the floor's time
-                pV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0,
-                                          refuse_on_extraction_failure=_xrefuse, zenith_time=_ztV)
+                _allV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0,
+                                             refuse_on_extraction_failure=_xrefuse, zenith_time=_ztV, return_all=True)
             except sv2.SourceExtractionFailed as _xf:
                 _refuse_extraction('V', d, _xf); continue
+            pV = [c for c in _allV if c['status'] == 'PASS']
+            # 2026-10-17 (the deep chat's removal inventory; Gregg: "all the information to do any additional removal/filtering
+            # ... *without* any redo of the search"): every V identification-stage rejection is a gate-ledger row, as the I
+            # chain's (audit R-09). search_v names the local-SNR floor REJECT_LOCAL_RMS; the ledger gives it the I chain's name
+            for c in _allV:
+                if c['status'] != 'PASS':
+                    gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
+                                               reason=('reject_local_snr' if c['status'] == 'REJECT_LOCAL_RMS'
+                                                       else str(c['status']).lower()), pass_ms=''))
             # 'outlier QA' tag (Gregg 2026-08-26): candidates from coadd-omitted
             # epochs carry the flag through catalogs to transient review
             if _kd(d) in qa_out:
@@ -2305,17 +2376,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     # is judged by the band table of its mid-hour elevation, as the conformance judges it (removals ignores elev
                     # otherwise); other cadences unchanged
                     if _b02:                                           # WAVE2 B-02 (step 3b, decision (3)): the inputs the table was
-                        _tc, _tn = _PCT.removals('I', scope, _pa, _b02_tnoise('I', d_), float(_fhI[d_]['BMAJ']),   # WAVE2 B-02:
-                                                 [c['_b02_pos'][0]], [c['_b02_pos'][1]], elev=[c['_b02_el']],   # WAVE2 B-02: derived
-                                                 phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
+                        _tc, _tn = _table_and_inputs([c], 'I', scope, _pa, _b02_tnoise('I', d_), float(_fhI[d_]['BMAJ']),   # WAVE2 B-02:
+                                                     [c['_b02_pos'][0]], [c['_b02_pos'][1]], elev=[c['_b02_el']],   # WAVE2 B-02: derived
+                                                     phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
                         _b02_psr('I', d_, [c], _tc, _tn)               # WAVE2 B-02: with - the cell's noise, the frame's beam, the
                     else:                                              # WAVE2 B-02: catalogue position, its frame-mid elevation
-                        _tc, _tn = _PCT.removals('I', scope, _pa, max(drI_, 1e-12), em * cd,
-                                                 [c['coord'].ra.deg], [c['coord'].dec.deg],
-                                                 elev=(_mid_hour_elev(lst, [c['coord'].ra.deg], [c['coord'].dec.deg]) if cadence == 'deep' else None),
-                                                 phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
+                        _tc, _tn = _table_and_inputs([c], 'I', scope, _pa, max(drI_, 1e-12), em * cd,
+                                                     [c['coord'].ra.deg], [c['coord'].dec.deg],
+                                                     elev=(_mid_hour_elev(lst, [c['coord'].ra.deg], [c['coord'].dec.deg]) if cadence == 'deep' else None),
+                                                     phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
                     if bool(_tc[0]):
                         cut = True; c['table_note'] = _tn[0]
+                    elif _tn[0]:                                       # 2026-10-17: an exemption's note ('table-exempt: ...')
+                        c['table_note'] = _tn[0]                       # kept for the gate ledger
                 if cut:
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
                                                reason='table', pass_ms=1))
@@ -2383,23 +2456,25 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # phase centre (2026-10-02, INCIDENT-DEEP-V-TABLE-CALL-WITHOUT-PHASE-CENTRE): the deep tables are in the
             # image-pixel metric since 2026-10-01 and refuse without it; the I call above already passed it
             if _b02:                                                   # WAVE2 B-02 (step 3b, decision (3)): the table's
-                _tcv, _tnv = _PCT.removals('V', scope, _pa_v, _b02_tnoise('V', d), float(_fhV[d]['BMAJ']),   # WAVE2 B-02: derivation
-                                           [c['_b02_pos'][0] for c in finals], [c['_b02_pos'][1] for c in finals],   # WAVE2 B-02:
-                                           elev=[c['_b02_el'] for c in finals],   # WAVE2 B-02: inputs (the cell's noise, not the
-                                           phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
+                _tcv, _tnv = _table_and_inputs(finals, 'V', scope, _pa_v, _b02_tnoise('V', d), float(_fhV[d]['BMAJ']),   # WAVE2 B-02: derivation
+                                               [c['_b02_pos'][0] for c in finals], [c['_b02_pos'][1] for c in finals],   # WAVE2 B-02:
+                                               elev=[c['_b02_el'] for c in finals],   # WAVE2 B-02: inputs (the cell's noise, not the
+                                               phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
                 _b02_psr('V', d, finals, _tcv, _tnv)                   # WAVE2 B-02: median over this epoch's finals)
             else:                                                      # WAVE2 B-02
-                _tcv, _tnv = _PCT.removals('V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
-                                           [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals],
-                                           elev=(_mid_hour_elev(lst, [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
-                                                 if cadence == 'deep' else None),   # elevation-band tables in the search (Gregg 2026-10-06)
-                                           phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
+                _tcv, _tnv = _table_and_inputs(finals, 'V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
+                                               [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals],
+                                               elev=(_mid_hour_elev(lst, [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
+                                                     if cadence == 'deep' else None),   # elevation-band tables in the search (Gregg 2026-10-06)
+                                               phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
             _keepv = []
             for c, _x, _n in zip(finals, _tcv, _tnv):
                 if bool(_x):
                     c['table_note'] = _n
                     gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, reason='table', pass_ms=c.get('_pm', ''), jup_veto=0))
                 else:
+                    if _n:                                             # 2026-10-17: an exemption's note kept for the ledger
+                        c['table_note'] = _n
                     _keepv.append(c)
             finals = _keepv
         if len(finals) >= ROWLINE_MIN:   # ROW-LINE veto, V (Gregg 2026-09-05, independent of I)

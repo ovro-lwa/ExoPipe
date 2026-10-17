@@ -302,11 +302,43 @@ def sandbox(name, cols, rows, lcols, lrows, mut):
     return U
 
 
+ARCHIVE = '/lustre/pipeline/exopipe/phase3'
+# 2026-10-17: the I-noise mutation's night (08h 55MHz 2024-12-27, an epoch the search refused) kept its searched I frame in the
+# archive until the leftover frames of refused nights were retired (Gregg 2026-10-17, Option 1; ledger clv15 8bb419a)
+RETIRED = (f'{ARCHIVE}/Run_REFUSED_FRAME_QUARANTINE_20261017', '08h/2024-12-27/Run_20260909_000000/55MHz/I/deep')
+
+
+def archive_overlay():
+    """A read-only view of the deep archive in which the retired frame of the I-noise night is where the conform's target-beam
+    lookup (gate_inputs.deep_target_beam, under P3_ARCHIVE_ROOT) found it before the retirement: every entry a symlink to the
+    archive's own, except the directories on the retired frame's path, rebuilt with symlinks to their entries plus the frame."""
+    O = os.path.join(T, 'archive_overlay')
+    if os.path.isdir(O):
+        return O
+    qroot, rel = RETIRED
+    parts = rel.split('/')
+    src, dst = ARCHIVE, O
+    for i in range(len(parts) + 1):
+        os.makedirs(dst, exist_ok=True)
+        nxt = parts[i] if i < len(parts) else None
+        for e in (sorted(os.listdir(src)) if os.path.isdir(src) else []):
+            if e != nxt:
+                os.symlink(os.path.join(src, e), os.path.join(dst, e))
+        if nxt is None:
+            break
+        src, dst = os.path.join(src, nxt), os.path.join(dst, nxt)
+    for f in os.listdir(os.path.join(qroot, rel)):                  # the retired frames of that night, at their archive path
+        if not os.path.lexists(os.path.join(dst, f)):
+            os.symlink(os.path.join(qroot, rel, f), os.path.join(dst, f))
+    return O
+
+
 def pass_env(size):
-    """The 2026-10-14 pass's environment for its conform call (fork_serve_p3s5_20261008.sh:31, p3s3_pass.sh:42)."""
+    """The 2026-10-14 pass's environment for its conform call (fork_serve_p3s5_20261008.sh:31, p3s3_pass.sh:42), with the
+    archive seen through archive_overlay (the I-noise night's retired frame in place)."""
     e = {k: v for k, v in os.environ.items() if not k.startswith(('P3_', 'P3S'))}
     e.update(P3S_LABEL='P3S5', P3_CADENCE='deep', P3_TABLE_ELEV='1', P3_PARENT_DIR=PAR, NUMPY_MADVISE_HUGEPAGE='0',
-             P3_CONFORM_SIZE='1' if size else '0')
+             P3_CONFORM_SIZE='1' if size else '0', P3_ARCHIVE_ROOT=archive_overlay())
     return e
 
 

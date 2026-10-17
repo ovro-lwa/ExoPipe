@@ -266,6 +266,82 @@ def removals(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, 
 K_PSR = 3.034          # the association operating point (99th percentile of the Rayleigh distribution)
 
 
+def table_inputs(stokes, band, parents_radec_flux, frame_rms_jy, beam_deg, ra, dec, elev=None, phase_centre=None):
+    """What the table measured at each candidate, for the gate ledger (2026-10-17; Gregg: "I may ask for the parameters of the
+    bright source table to be applied as a tunable filter"; "It would obviously be most expedient if all the information to
+    do any additional removal/filtering was fully available to you *without* any redo of the search!"). One dict per
+    candidate, the table chosen exactly as removals chooses it (the candidate's elevation-band table when installed, else the
+    all-elevation one; the same metric, flux bins and deep-V faint-parent drop):
+      table_key          the table applied;
+      table_margin       min over the table's flux bins of (separation to that bin's nearest parent) / (the bin's radius), in
+                         the table's own metric. removals cuts exactly when it is < 1, before the cross-match and pulsar
+                         exemptions (which its note records); a filter that scales every radius by k removes when < k;
+      table_parent_S, table_parent_sep_bw, table_R, table_bin   the binding bin: its nearest parent's S (peak / frame rms) and
+                         separation (beam widths), the bin's radius and its S range;
+      table_frame_rms_jy the frame rms the S values are relative to.
+    Values are None where removals evaluates nothing (no table, no finite parent, no rms or beam, a non-finite position)."""
+    ra = np.atleast_1d(np.asarray(ra, float)); dec = np.atleast_1d(np.asarray(dec, float))
+    n = len(ra)
+    rms = float(frame_rms_jy) if frame_rms_jy and frame_rms_jy > 0 else None
+    out = [dict(table_key='', table_margin=None, table_parent_S=None, table_parent_sep_bw=None, table_R=None, table_bin='',
+                table_frame_rms_jy=rms) for _ in range(n)]
+    pre = os.environ.get('P3_TABLE_PREFIX') or os.environ.get('P3_CADENCE', 'deep')
+    base_key = f'{pre}_{stokes}_{band}'
+    groups = [(np.arange(n), base_key, None)]                  # (candidate indices, key, installed band-table record or None)
+    if elev is not None and os.environ.get('P3_TABLE_ELEV', '1') == '1':
+        el = np.atleast_1d(np.asarray(elev, float))
+        lab = np.array(['all'] * n, dtype=object)
+        for lo, hi in ELEV_BANDS:
+            lab[(el >= lo) & (el < hi)] = 'el%g-%g' % (lo, hi)
+        groups = []
+        for L in sorted(set(lab)):
+            rec = tables().get(f'{base_key}_{L}') if L != 'all' else None
+            groups.append((np.where(lab == L)[0], f'{base_key}_{L}' if rec else base_key, rec))
+    par = np.asarray(parents_radec_flux, float).reshape(-1, 3)
+    par = par[np.isfinite(par).all(axis=1)]
+    if not len(par) or rms is None or not (beam_deg and beam_deg > 0):
+        return out
+    S = par[:, 2] / rms
+    for idx, key, rec in groups:
+        if not len(idx):
+            continue
+        if rec:
+            tab = [tuple(t) for t in rec['table']]
+            if f'{pre}_{stokes}'.startswith('deep_V'):        # as removals: the 2026-09-28 deep V faint-parent drop
+                tab = [t for t in tab if t[1] > DEEP_V_FAINT_S]
+            metric = rec.get('metric', 'sky')
+        else:
+            tab, metric = table_for(stokes, band), table_metric(base_key)
+        for j in idx:
+            out[j]['table_key'] = key
+        if not tab:
+            continue
+        _to, _ang = _metric_fns(metric, phase_centre)
+        r_, d_ = ra[idx], dec[idx]
+        okc = np.isfinite(r_) & np.isfinite(d_)
+        posm = _to(np.where(okc, r_, 0.0), np.where(okc, d_, 0.0))
+        s_top = max(t[1] for t in tab)
+        best = np.full(len(idx), np.inf)
+        bS, bsep, bR = (np.full(len(idx), np.nan) for _ in range(3))
+        bbin = [''] * len(idx)
+        for s_lo, s_hi, R in tab:
+            m = (S >= s_lo) & ((S < s_hi) if s_hi < s_top else np.ones(len(S), bool))
+            if not m.any():
+                continue
+            dd, ii = cKDTree(_to(par[m, 0], par[m, 1])).query(posm, k=1)
+            sep_bw = _ang(dd) / beam_deg
+            ratio = sep_bw / R
+            upd = okc & (ratio < best)
+            best[upd], bS[upd], bsep[upd], bR[upd] = ratio[upd], S[m][ii[upd]], sep_bw[upd], R
+            for k in np.where(upd)[0]:
+                bbin[k] = f'{s_lo:g}-{s_hi:g}'
+        for k, j in enumerate(idx):
+            if np.isfinite(best[k]):
+                out[j].update(table_margin=round(float(best[k]), 4), table_parent_S=round(float(bS[k]), 1),
+                              table_parent_sep_bw=round(float(bsep[k]), 3), table_R=round(float(bR[k]), 3), table_bin=bbin[k])
+    return out
+
+
 def _sys_arcmin(band, el):
     import sys as _sys
     if '/lustre/gh/main/exopipe_ops' not in _sys.path:
