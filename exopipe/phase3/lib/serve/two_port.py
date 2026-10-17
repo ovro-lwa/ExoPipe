@@ -369,14 +369,17 @@ class Store:
         self.reload()
 
     def reload(self):
+        """Re-read the registry when it changed. Every built page is dropped and rebuilt on its next request: a page builds its
+        cross-tier and sibling links from the other runs' catalogues when it starts, so a run published or replaced must reach
+        the pages already built (the 2026-10-17 parity found live pages days old without the 10-minute LSTs published since)."""
         m = os.path.getmtime(self.registry_path)
         if m == self.reg_mtime:
             return
         reg = load_registry(self.registry_path)
         with self.lock:
             for key, pg in list(self.pages.items()):
-                if reg.get(key[0]) != pg.entry:
-                    del self.pages[key]
+                del self.pages[key]
+                sys.modules.pop(pg.mod.__name__, None)
             self.reg, self.reg_mtime = reg, m
 
     def port_map(self):
