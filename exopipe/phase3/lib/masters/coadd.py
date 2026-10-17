@@ -688,6 +688,151 @@ def is_excluded(lst, freq_str, date, exclusions):
     return (lst, fs, date) in exclusions
 
 
+_RX_SUB_CONSTITUENT = re.compile(r'constituent:\s*(\d+)MHz/')
+_RX_BAND_CONSTITUENT = re.compile(r'constituent:\s*((Red|Green|Blue)/\S*)')
+_STACKED_CACHE = {}
+
+
+def wideband_stacked_subbands(path):
+    """The subbands ({'23', '27', ...}) a night's Phase 2 wideband deep image was stacked from, read from headers only; None
+    when the headers cannot show it (unreadable, no NSTACK, or constituent lines that do not account for NSTACK).
+
+    - Red / Green / Blue: NSTACK equal to the full set (5) means every subband; otherwise the HISTORY lines
+      'constituent: <sb>MHz/...' name them and must number NSTACK.
+    - Full: when the header names band constituents ('constituent: Red/...'), the set is the union of those bands' own
+      images of the night (the same file name with the band swapped, in the same science directory, matching the
+      constituent line). A Full header can also carry one band's subband lines inherited from that band's image - 00h
+      2025-09-02: Blue's five lines, then "Full band: inverse-variance weighted stack of Red+Blue (10 subbands)" - so those
+      lines are not read as the Full's set. A Full without band constituents is read like a band image (NSTACK 15, or
+      subband lines numbering NSTACK)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key not in _STACKED_CACHE:
+        _STACKED_CACHE[key] = _read_stacked_subbands(path)
+    got = _STACKED_CACHE[key]
+    return None if got is None else set(got)
+
+
+def _read_stacked_subbands(path):
+    try:
+        h = fits.getheader(path)
+    except Exception:
+        return None
+    name = os.path.basename(path)
+    band = name.split('_', 1)[0]
+    if band not in _WB_SUBS:
+        return None
+    hist = [str(x) for x in h.get('HISTORY', [])]
+    if band == 'Full':
+        parts = {}
+        for m in map(_RX_BAND_CONSTITUENT.search, hist):
+            if m:
+                parts.setdefault(m.group(2), m.group(1))
+        if parts:
+            sdir = os.path.dirname(os.path.dirname(path))                  # <sci>/Full/<S>
+            sci, stokes = os.path.dirname(os.path.dirname(sdir)), os.path.basename(sdir)
+            out = set()
+            for b, rel in sorted(parts.items()):
+                bdir = os.path.join(sci, b, stokes, 'deep')
+                same = os.path.join(bdir, b + name[len('Full'):])
+                if os.path.isfile(same) and os.path.relpath(same, sci).startswith(rel):
+                    bp = same
+                else:
+                    try:
+                        hits = [os.path.join(bdir, f) for f in sorted(os.listdir(bdir))
+                                if os.path.join(b, stokes, 'deep', f).startswith(rel)]
+                    except OSError:
+                        return None
+                    if len(hits) != 1:
+                        return None
+                    bp = hits[0]
+                sub = wideband_stacked_subbands(bp)
+                if sub is None:
+                    return None
+                out |= sub
+            return frozenset(out)
+    try:
+        ns = int(h['NSTACK'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if ns == len(_WB_SUBS[band]):
+        return frozenset(_WB_SUBS[band])
+    subs = {m.group(1) for m in map(_RX_SUB_CONSTITUENT.search, hist) if m} & _WB_SUBS[band]
+    return frozenset(subs) if len(subs) == ns else None
+
+
+def _wideband_admission_images(sci_dir, fs, lst, date):
+    """The night's images a co-add takes for a wideband scope: the I alignment image and the V Taper Robust-0 image."""
+    return [p for p in (find_wideband_alignment_image(sci_dir, fs, lst, date), find_stokes_v_deep_image(sci_dir, fs))
+            if p is not None]
+
+
+def wideband_admission_findings(lst, freq_str, sci_dir, date, exclusions):
+    """Why a night's wideband images keep it out of a co-add, without log lines: [(kind, image name, text)] in image order
+    (_wideband_admission_images), kind 'excluded-18' or 'incomplete'. Empty for a subband scope or an admissible night.
+
+    'excluded-18' (Gregg 2026-10-17: "The 18 MHz data are excluded and not readmitted. What the rule allows is that Red
+    can be built without 18 MHz"; "Henceforth, Full can also exist if 18 MHz is excluded"; "Agreed, enforce going forward,
+    no rebuild now"): (lst, date)'s 18 MHz is excluded and a Red / Full image holds it, or cannot show its set.
+    'incomplete' (2026-08-21: "No wideband product is ever made if any required sub-band is missing"; 2026-10-17, Option
+    1: "Enforce the rule upstream in the pipeline and maintain it going forward"): an image lacks a subband other than 18
+    MHz (SUBBAND_ONLY_EXCL, the one allowance: 2026-06-29, and 2026-10-17 "18 MHz data fails QA regularly, and we have the
+    rule that Red can still be formed if 18 MHz data are missing"), or cannot show its set. The census of 2026-10-16 and
+    the admission check of 2026-10-17 (refactor plan/wave2/incomplete_wideband_20261016.csv, extra_incomplete_nights.csv)
+    found 96 + 38 such nights; the masters drop them at their next rebuild and the deep search then refuses them through
+    its input-provenance gate (not a constituent, absent from weights.csv)."""
+    fs = str(freq_str).replace('MHz', '')
+    if fs not in _WB_SUBS:
+        return []
+    ex18 = fs in ('Red', 'Full') and (lst, '18', date) in exclusions
+    out = []
+    for p in _wideband_admission_images(sci_dir, fs, lst, date):
+        name, subs = os.path.basename(p), wideband_stacked_subbands(p)
+        if subs is None:
+            if ex18:
+                out.append(('excluded-18', name, 'cannot show its subbands'))
+            out.append(('incomplete', name, 'cannot show its subbands'))
+            continue
+        if ex18 and '18' in subs:
+            out.append(('excluded-18', name, 'holds it'))
+        miss = sorted(_WB_SUBS[fs] - subs - SUBBAND_ONLY_EXCL, key=int)
+        if miss:
+            out.append(('incomplete', name, 'was stacked from an incomplete subband set (missing '
+                        + ', '.join(m + 'MHz' for m in miss) + ')'))
+    return out
+
+
+def wideband_contains_excluded_18(lst, freq_str, sci_dir, date, exclusions):
+    """True when (lst, date)'s 18 MHz is excluded but the night's Red or Full image holds it, or cannot show its set
+    (wideband_admission_findings); logs the refusal."""
+    for kind, name, text in wideband_admission_findings(lst, freq_str, sci_dir, date, exclusions):
+        if kind == 'excluded-18':
+            print(f"    {lst} {str(freq_str).replace('MHz', '')} {date}: night REFUSED - 18 MHz is excluded but {name} {text}")
+            return True
+    return False
+
+
+def wideband_incomplete(lst, freq_str, sci_dir, date):
+    """True when the night's Red / Green / Blue / Full image was stacked from an incomplete subband set, or its headers cannot
+    show the set (wideband_admission_findings); logs the refusal."""
+    for kind, name, text in wideband_admission_findings(lst, freq_str, sci_dir, date, set()):
+        if kind == 'incomplete':
+            print(f"    {lst} {str(freq_str).replace('MHz', '')} {date}: night REFUSED - {name} {text}")
+            return True
+    return False
+
+
+def admit_night(lst, freq_str, date, sci_dir, exclusions):
+    """A night enters a co-add only if it is not excluded, its Red / Full image holds no excluded 18 MHz, and its wideband
+    image was stacked from a complete subband set (18 MHz the one allowance)."""
+    return not (is_excluded(lst, freq_str, date, exclusions)
+                or wideband_contains_excluded_18(lst, freq_str, sci_dir, date, exclusions)
+                or wideband_incomplete(lst, freq_str, sci_dir, date))
+
+
 def excluded_constituents(lst, freq_str, dates, exclusions):
     """VALIDATION GATE (Gregg 2026-06-29). Return the subset of `dates` that are
     currently excluded for (lst, freq_str). A non-empty result means a co-add
@@ -1832,7 +1977,7 @@ def process_lst_freq(lst, freq_str, exclusions, args):
 
     # Filter exclusions
     dates = [(d, sd, img) for d, sd, img in all_dates
-             if not is_excluded(lst, freq_str, d, exclusions)]
+             if admit_night(lst, freq_str, d, sd, exclusions)]
     # wrong-grid epochs are refused BEFORE the template is chosen (19h Full: the first post-cutover
     # night, 2025-04-05 on the Green grid, was the template and every 3122-grid night then
     # 'skipped' with no flow) - the template comes from the MODAL grid, as in the other stages
@@ -2313,7 +2458,7 @@ def run_provisional_lst_freq(lst, freq_str, exclusions):
         return None
 
     dates = [(d, sd, img) for d, sd, img in all_dates
-             if not is_excluded(lst, freq_str, d, exclusions)]
+             if admit_night(lst, freq_str, d, sd, exclusions)]
 
     ref_date_entry = _select_reference(lst, fl, workdir, dates)
     if ref_date_entry is None:
@@ -2657,7 +2802,7 @@ def run_provisional_10min_lst_freq(lst, freq_str, exclusions):
         return None
 
     dates = [(d, sd, img) for d, sd, img in all_dates
-             if not is_excluded(lst, freq_str, d, exclusions)]
+             if admit_night(lst, freq_str, d, sd, exclusions)]
 
     ref_date_entry = _select_reference(lst, fl, workdir, dates)
     if ref_date_entry is None:
@@ -3938,7 +4083,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
         return None
 
     dates = [(d, sd, img) for d, sd, img in all_dates
-             if not is_excluded(lst, freq_str, d, exclusions)]
+             if admit_night(lst, freq_str, d, sd, exclusions)]
 
     good_dates_deep = get_good_dates_for_interval(workdir, interval=None)
     if good_dates_deep is None:

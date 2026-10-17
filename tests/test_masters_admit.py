@@ -631,23 +631,33 @@ def test_admit_prep():
           'not; an unreadable header is refused, never assumed on grid', isinstance(bad, tuple) and bad != mshape
           and okn is None and unread == 'unreadable', (bad, mshape, okn, unread))
     wtg = os.path.join(T, 'admit_wtg')
+    # THE WIDEBAND ADMISSION RULE FIRST (coadd.admit_night, 2026-10-17): the real wrong-grid Green night, made new, never
+    # reaches the grid test - its Green image stacks 50 MHz alone (four of five subbands missing), so the night is refused
+    # when the nights are chosen, with the rule's reason, and nothing of it is regridded in
+    from exopipe.phase3.core import exclusions as EX
     make_admission_copy('02h_Green', '2025-12-26', wtg)          # the wrong-grid night made new (out of every record)
-    for v_ in ('I_deep_Taper_R075', 'V_deep_Taper_R0'):          # 02h_Green keeps no coadd_provisional/ (41 cells): its final
-        q_ = os.path.join(wtg, '02h_Green', 'coadd_provisional', f'{v_}_Green.fits')   # masters stand in, test only, so
-        if not os.path.exists(q_):                                # the cell passes the provisional gate and reaches the night
-            shutil.copy2(os.path.join(wtg, '02h_Green', 'coadd_final', f'{v_}_Green.fits'), q_)
+    with contextlib.redirect_stdout(io.StringIO()):
+        g_entries = co.discover_dates('02h', 'Green')
+        g_take, g_why = A.nights_to_admit('02h', 'Green', os.path.join(wtg, '02h_Green'), g_entries,
+                                          _ExBefore(EX.load(), '02h', 'Green', '2025-12-26'), co, nights=['2025-12-26'])
+    check('admission: the wrong-grid Green night, made new, is refused by the wideband admission rule (only 50 MHz stacked)',
+          not g_take and 'wideband admission rule' in g_why.get('2025-12-26', '')
+          and 'missing 41MHz, 46MHz, 55MHz, 59MHz' in g_why.get('2025-12-26', ''), (g_take, g_why.get('2025-12-26')))
+    # B-03 (a) ON THE ITEM PATH: the same night's 50 MHz image is on 4096^2 too (the same Phase 2 fault; a subband, so no
+    # wideband rule applies) - made new, it reaches the grid test and is refused as an item, never regridded in
+    make_admission_copy('02h_50MHz', '2025-12-26', wtg)
     ddb = data_decisions_before(os.path.join(T, 'data_decisions_before_20261016.csv'))   # the night is excluded since
-    pg = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters', '--tier', 'deep', '--cells', '02h_Green',   # then:
+    pg = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'masters', '--tier', 'deep', '--cells', '02h_50MHz',   # then:
                          '--stages', 'admit-prep', '--cores', 'none', '--out', out, '--deep-installed-root', wtg,   # replay the
                          '--parity', '--set', f'paths.DATA_DECISIONS={ddb}'], cwd=REPO,   # list before (a --parity run may)
                         env=dict(os.environ), capture_output=True, text=True, timeout=1800)
-    rpg = os.path.join(out, '_records', 'masters', 'admit-prep_02h_Green.json')
+    rpg = os.path.join(out, '_records', 'masters', 'admit-prep_02h_50MHz.json')
     recg = json.load(open(rpg)) if os.path.exists(rpg) else {}
     items = recg.get('refused_items') or []
     check('admit-prep (CLI): the wrong-grid night, made new, is refused as an item (B-03 a) - never regridded in',
           pg.returncode == 2 and items and items[0].get('gate') == 'admit-prep.wrong_grid'
           and 'off the installed master' in items[0].get('reason', '')
-          and not os.path.exists(os.path.join(wtg, '02h_Green', A.ADMIT_DIR, 'prep', '2025-12-26_scaled.fits')),
+          and not os.path.exists(os.path.join(wtg, '02h_50MHz', A.ADMIT_DIR, 'prep', '2025-12-26_scaled.fits')),
           (pg.returncode, recg.get('reason'), items[:1], (pg.stdout + pg.stderr)[-300:]))
 
 def main():

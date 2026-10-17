@@ -203,7 +203,7 @@ def verify(cell_dir, exclusions=None):
     if exclusions is None:
         from exopipe.phase3.lib.masters.coadd import load_exclusions
         exclusions = load_exclusions()
-    from exopipe.phase3.lib.masters.coadd import is_excluded
+    from exopipe.phase3.lib.masters.coadd import is_excluded, wideband_admission_findings
     out = []
     for r in W:
         d = r['date']
@@ -212,6 +212,10 @@ def verify(cell_dir, exclusions=None):
         why = []
         if is_excluded(lst, band, d, exclusions):   # is_excluded strips 'MHz' itself
             why.append('excluded in data_decisions')
+        # the wideband admission rules (coadd.admit_night, 2026-10-17): incomplete subband set; an excluded 18 MHz held
+        for kind, name, text in wideband_admission_findings(lst, band, r.get('sci_dir') or '', d, exclusions):
+            why.append(f'wideband admission: {name} {text}' if kind == 'incomplete'
+                       else f'wideband admission: 18 MHz excluded but {name} {text}')
         if d not in S2:
             why.append('no stage-2 value in the build record')
         elif S2[d]:
@@ -237,11 +241,18 @@ def verify(cell_dir, exclusions=None):
     _sd = os.path.join(cell_dir, 'subtracted')
     if os.path.isdir(_sd):
         import re
-        from exopipe.phase3.lib.masters.coadd import is_excluded as _isx
+        from exopipe.phase3.lib.masters.coadd import is_excluded as _isx, discover_dates, wideband_admission_findings
         _pat = re.compile(r'^(\d{4}-\d\d-\d\d)_I_sub(?:_\w+?)?_' + re.escape(band) + r'\.fits$')
         _wd = {r['date'] for r in W}
+        _sci = None
         for d in sorted({m.group(1) for f in os.listdir(_sd) for m in [_pat.match(f)] if m} - _wd):
             if not _isx(lst, band, d, exclusions):
+                if band.replace('MHz', '') in ('Red', 'Green', 'Blue', 'Full'):
+                    # a night the wideband admission rules refuse never enters a rebuilt record; its old residual may remain
+                    if _sci is None:
+                        _sci = {d_: sd_ for d_, sd_, _ in discover_dates(lst, band.replace('MHz', ''))}
+                    if wideband_admission_findings(lst, band, _sci.get(d, ''), d, exclusions):
+                        continue
                 out.append(f'{lst} {band} {d}: has a Stokes I residual in the cell but is ABSENT from the co-add record (weights.csv) '
                            f'- never tested against the membership rulings; the master must be rebuilt')
     return out
@@ -299,7 +310,7 @@ def unprocessed_nights(cell_dir, exclusions=None):
     its gate records (night_image_gate.csv, refusals_grid.csv): candidates for a night the co-add never saw - a re-admitted night,
     or Phase-2 data that arrived after the build (FINDING-495). A REPORT for the dry run, not a gate: a night the build refused as a
     blank field leaves no record file and shows here too."""
-    from exopipe.phase3.lib.masters.coadd import discover_dates, is_excluded, load_exclusions
+    from exopipe.phase3.lib.masters.coadd import discover_dates, is_excluded, load_exclusions, wideband_admission_findings
     lst, band = cell_band(cell_dir)
     fs = band.replace('MHz', '')
     if exclusions is None:
@@ -310,7 +321,8 @@ def unprocessed_nights(cell_dir, exclusions=None):
     rg = os.path.join(cell_dir, 'refusals_grid.csv')
     if os.path.exists(rg):
         seen |= {ln.split(',')[2] for ln in open(rg) if ln.count(',') >= 3}
-    avail = {d for d, _, _ in discover_dates(lst, fs) if not is_excluded(lst, fs, d, exclusions)}
+    avail = {d for d, sd, _ in discover_dates(lst, fs)
+             if not is_excluded(lst, fs, d, exclusions) and not wideband_admission_findings(lst, fs, sd, d, exclusions)}
     return sorted(avail - seen)
 
 

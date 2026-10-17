@@ -215,10 +215,17 @@ def nights_to_admit(lst, scope, cell_dir, entries, ex, co, nights=None, held=())
             why[d] = 'no survey image'
         else:
             before = science_dirs_before(sd, t_build, lst, freq_str, d, co)
+            # the wideband admission rules (coadd.admit_night, 2026-10-17), last: they decide only nights every rule above
+            # admits; [] for a subband scope. Only the night's own 18 MHz exclusion matters to them, asked of ex itself
+            found = [] if before else co.wideband_admission_findings(
+                lst, scope, sd, d, {(lst, '18', d)} if ex.is_excluded(lst, '18MHz', d) else set())
             if before:
                 why[d] = (f'Phase 2 had it before the build fixed its night set (coadd_final/weights.csv written '
                           f'{_time.strftime("%Y-%m-%dT%H:%MZ", _time.gmtime(t_build))}; {", ".join(before)} hold its survey '
                           f'image): the build saw this night - a rebuild decides')
+            elif found:
+                why[d] = 'wideband admission rule (coadd.admit_night): ' + '; '.join(
+                    f'{name} {text}' if kind == 'incomplete' else f'18 MHz excluded but {name} {text}' for kind, name, text in found)
             else:
                 take.append((d, sd, img))
     if want is not None:
