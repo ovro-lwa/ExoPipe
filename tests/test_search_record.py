@@ -99,6 +99,7 @@ def test_table_inputs():
 
 
 def test_append_refuses_other_header():
+    os.makedirs(TMP, exist_ok=True)              # a test function run alone (pytest) has no main() to make it
     from exopipe.phase3.lib.search import deep_search as E
     p = os.path.join(TMP, 'v_deep_ledger.csv')
     with open(p, 'w', newline='') as f:
@@ -151,6 +152,7 @@ def test_v_return_all():
 
 
 def test_content_test_headers():
+    os.makedirs(TMP, exist_ok=True)              # a test function run alone (pytest) has no main() to make it
     from exopipe.phase3.lib.search import tests as T
     for cols, name in ((T.GLED_COLS_V1, 'v1'), (T.GLED_COLS, 'v2')):
         d = os.path.join(TMP, f'ledger_{name}')
@@ -174,6 +176,7 @@ def test_content_test_headers():
 
 
 def test_refusal_columns():
+    os.makedirs(TMP, exist_ok=True)              # a test function run alone (pytest) has no main() to make it
     import re
     from exopipe.phase3.lib.search import deep_search as E
     src = open(E.__file__).read()
@@ -184,6 +187,7 @@ def test_refusal_columns():
     check('refusals/COLUMNS.csv names every refusal file deep_search writes', written <= named and len(written) >= 11,
           sorted(written - named))
     d = os.path.join(TMP, 'refusals')
+    shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
     E._refusal_columns(d)
     rows = list(csv.reader(open(os.path.join(d, 'COLUMNS.csv'))))
