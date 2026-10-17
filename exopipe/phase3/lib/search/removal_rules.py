@@ -336,6 +336,23 @@ def jupiter_track_hit(ra, dec, band, pts):
                  if np.hypot(((jra - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec)), jdec - dec) < jr), None)
 
 
+REMOVED_INPUT_COLS = ('jupiter_track_sep_deg', 'jupiter_track_night', 'jupiter_track_radius_deg', 'frame_noise',
+                      'cell_median_noise', 'noise_ratio')
+
+
+def jupiter_track_record(ra, dec, band, pts):
+    """The inputs a Jupiter-track removal records (p3s2_conform.py 5d29e25, 2026-10-17: re-filter without re-search):
+    {jupiter_track_sep_deg: the flat-sky separation to Jupiter on the night named (min over that night's track points, 4
+    places), jupiter_track_night, jupiter_track_radius_deg}; {} when no night hits."""
+    hit = jupiter_track_hit(ra, dec, band, pts)
+    if not hit:
+        return {}
+    js = min(np.hypot(((jra - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec)), jdec - dec) for (jra, jdec, d_) in pts
+             if d_ == hit)
+    return {'jupiter_track_sep_deg': round(float(js), 4), 'jupiter_track_night': hit,
+            'jupiter_track_radius_deg': jupiter_track_radius(band)}
+
+
 def jupiter_track_reason(ra, dec, band, pts):
     """jupiter_track_hit as the conformance's words ('' when none)."""
     hit = jupiter_track_hit(ra, dec, band, pts)
@@ -853,23 +870,32 @@ def frame_bmaj(U):
     return BM
 
 
-def i_noise_epochs(roots_csv=None):
-    """{(lst, band, date)} whose I flux-alignment QA rms (weights.csv qa3_rms_mjy) exceeds SANITY_X x its cell's median, over
-    every cell of the search fleet's roots map."""
+def _noise_values(values, min_n=None):
+    """{date: (value, the cell median)} of a cell with at least min_n values; {} with fewer (the 3x test does not run)."""
+    c = _cc()
+    min_n = c.SANITY_MIN_NIGHTS if min_n is None else min_n
+    if len(values) < min_n:
+        return {}
+    med = float(np.median(list(values.values())))
+    return {d: (v, med) for d, v in values.items()}
+
+
+def i_noise_values(roots_csv=None):
+    """{(lst, band, date): (I flux-alignment QA rms = weights.csv qa3_rms_mjy, its cell's median)} over every cell of the search
+    fleet's roots map - the 3x test's inputs, recorded on its removals (p3s2_conform.py 5d29e25, 2026-10-17)."""
     roots = {l.split(',')[0]: l.strip().split(',')[2] for l in open(roots_csv or CFG.catalog.DEEP_ROOTS_CSV) if l.strip()}
-    bad = set()
+    out = {}
     for cell, root in roots.items():
         wp = f'{root}/{cell}/coadd_final/weights.csv'
         if not os.path.exists(wp):
             continue
         l, b = cell.split('_')
-        bad |= {(l, b, d) for d in noise_outliers(weights_qa3(wp))}
-    return bad
+        out.update({(l, b, d): vm for d, vm in _noise_values(weights_qa3(wp)).items()})
+    return out
 
 
-def v_noise_epochs(U):
-    """{(lst, band, date)} whose archived V search frame's THERMNOI exceeds SANITY_X x its cell's median (frames with a
-    positive THERMNOI)."""
+def v_noise_values(U):
+    """{(lst, band, date): (the archived V search frame's THERMNOI, its cell's median)} over frames with a positive THERMNOI."""
     from astropy.io import fits
     vn = {}
     for p, k in _resid_frames(U, 'V'):
@@ -877,10 +903,35 @@ def v_noise_epochs(U):
             vn[k[1:]] = float(fits.getheader(p).get('THERMNOI') or 0)
         except Exception:
             pass
-    bad = set()
+    out = {}
     for (l, b) in {(k[0], k[1]) for k in vn}:
-        bad |= {(l, b, d) for d in noise_outliers({k[2]: v for k, v in vn.items() if k[0] == l and k[1] == b and v > 0})}
-    return bad
+        vals = {k[2]: v for k, v in vn.items() if k[0] == l and k[1] == b and v > 0}
+        out.update({(l, b, d): vm for d, vm in _noise_values(vals).items()})
+    return out
+
+
+def noise_epochs(values, x=None):
+    """The keys of values ({key: (value, median)}) whose value exceeds x times the median (SANITY_X)."""
+    x = _cc().SANITY_X if x is None else x
+    return {k for k, (v, med) in values.items() if v > x * med}
+
+
+def i_noise_epochs(roots_csv=None):
+    """{(lst, band, date)} whose I flux-alignment QA rms (weights.csv qa3_rms_mjy) exceeds SANITY_X x its cell's median, over
+    every cell of the search fleet's roots map."""
+    return noise_epochs(i_noise_values(roots_csv))
+
+
+def v_noise_epochs(U):
+    """{(lst, band, date)} whose archived V search frame's THERMNOI exceeds SANITY_X x its cell's median (frames with a
+    positive THERMNOI)."""
+    return noise_epochs(v_noise_values(U))
+
+
+def noise_record(values, key):
+    """The inputs a 3x-noise removal records: frame_noise, cell_median_noise, noise_ratio (4 places; '' without a median)."""
+    nv, nm = values.get(key, (float('nan'), float('nan')))
+    return {'frame_noise': nv, 'cell_median_noise': nm, 'noise_ratio': round(nv / nm, 4) if nm and nm == nm else ''}
 
 
 def frame_times(U, keys):
@@ -965,8 +1016,8 @@ def conform(U, catalog_dir=None, size_step=None, out=print):
     backed = backed_rows(groups, finals)
     BR = frame_beam_ratios(U)
     BMAJ = frame_bmaj(U)
-    bad_i = i_noise_epochs()
-    bad_v = v_noise_epochs(U)
+    noise_i, noise_v = i_noise_values(), v_noise_values(U)
+    bad_i, bad_v = noise_epochs(noise_i), noise_epochs(noise_v)
     rowline = {}
     for k, pts in rows_by.items():
         m = rowline_members(pts)
@@ -1012,26 +1063,32 @@ def conform(U, catalog_dir=None, size_step=None, out=print):
                 why, kind = DAYTIME_UNREADABLE, 'dayx'
             elif day[fk]:
                 why, kind = day[fk], ('day' if day[fk].startswith('daytime') else 'dayq')
+        extra = {}
         if not why:
-            why, kind = jupiter_track_reason(ra, dec, r['band'], track(r['lst'], r['band'])), 'jup'
+            pts = track(r['lst'], r['band'])
+            why, kind = jupiter_track_reason(ra, dec, r['band'], pts), 'jup'
+            if why:                                     # its inputs recorded (5d29e25, 2026-10-17)
+                extra = jupiter_track_record(ra, dec, r['band'], pts)
         note = ''
         if not why:
             x, note = cut.get(i, (False, ''))
             if x:
                 why, kind = table_reason(note), 'par'
         if why:
-            n[kind] += 1; removed.append({**r, 'removal_reason': why})
+            n[kind] += 1; removed.append({**r, 'removal_reason': why, **extra})
             continue
         seen.add(dk)
+        extra = {}
         if (r['stokes'] == 'I' and (r['lst'], r['band'], r['date']) in bad_i) or \
                 (r['stokes'] == 'V' and (r['lst'], r['band'], r['date']) in bad_v):
             why, kind = noise_reason(r['stokes']), 'san'
+            extra = noise_record(noise_i if r['stokes'] == 'I' else noise_v, (r['lst'], r['band'], r['date']))
         else:
             why, kind = rowline_reason(ra, dec, rowline.get(fk)), 'row'
         if not why and i not in backed:
             why, kind = UNBACKED, 'noled'
         if why:
-            n[kind] += 1; removed.append({**r, 'removal_reason': why})
+            n[kind] += 1; removed.append({**r, 'removal_reason': why, **extra})
             continue
         r = dict(r)
         r['fp_prediction'] = (r.get('fp_prediction') or (v110_label(r) if r['stokes'] == 'V' else ''))
@@ -1064,7 +1121,9 @@ def conform(U, catalog_dir=None, size_step=None, out=print):
     with open(f'{CD}/master_catalog.csv', 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=ocols, extrasaction='ignore'); w.writeheader(); w.writerows(kept)
     with open(f'{CD}/master_catalog_removed.csv', 'w', newline='') as fh:
-        w = csv.DictWriter(fh, fieldnames=ocols + ['removal_reason'], extrasaction='ignore'); w.writeheader(); w.writerows(removed)
+        # appended (5d29e25, 2026-10-17, Gregg: re-filter without re-search): the inputs of the Jupiter-track and noise removals
+        w = csv.DictWriter(fh, fieldnames=ocols + ['removal_reason'] + list(REMOVED_INPUT_COLS), extrasaction='ignore')
+        w.writeheader(); w.writerows(removed)
     out(f'conform: {len(raw)} raw -> {len(kept)} conformant | removed: {n["excl"]} on excluded epochs, {n["elf"]} below the deep '
         f'elevation floor {c.DEEP_ELEV_FLOOR_DEG:g} deg, {n["day"]} daytime (Sun above the horizon in the frame), {n["dayq"]} '
         f'twilight in a solar-audit quarantine band, {n["dayx"]} frame times unreadable, {n["jup"]} jupiter-track (Gregg '
