@@ -690,6 +690,7 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
             psr_rows[m.group(1).strip()].append(i)
     n_keep = n_drop = 0
     log = []
+    verdicts = collections.defaultdict(list)    # detection -> [(consistent, pulsar, sep, r99, n, note)] (2026-10-18)
     RA_ = np.array([f(r['ra']) for r in raw]); DE_ = np.array([f(r['dec']) for r in raw])
     RAWU = np.nan_to_num(np.stack([np.cos(np.radians(DE_)) * np.cos(np.radians(RA_)),
                                    np.cos(np.radians(DE_)) * np.sin(np.radians(RA_)), np.sin(np.radians(DE_))], -1))
@@ -724,6 +725,11 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
             for b_ in near:
                 if a_ < b_:
                     da, db = dets[a_], dets[b_]
+                    # PER EPOCH (Gregg 2026-10-18: "All frames should pass through vetoes independently ... Vetoing across
+                    # frequency for a single frame is probably okay, but not across time"; exopipe_ops 8cda7d8): detections are
+                    # grouped only within one epoch (LST, night); a single-detection epoch keeps the per-detection rule.
+                    if da['epoch'] != db['epoch']:
+                        continue
                     sep_as = math.hypot((da['ra'] - db['ra']) * math.cos(math.radians(da['dec'])), da['dec'] - db['dec']) * 3600
                     if sep_as < c.PULSAR_ASSOC_K * math.hypot(da['sig'], db['sig']):
                         par[_fd(b_)] = _fd(a_)
@@ -746,19 +752,28 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
                 _c, nt = cut[i]
                 if 'ATNF pulsar' not in (nt or ''):
                     continue
-                if sep <= r99 and _c:
-                    cut[i] = (False, f'table-exempt: pulsar-consistent multi-detection source - {pn} {sep:.0f} arcsec from its '
-                                     f'combined position, inside the 99% radius {r99:.0f} arcsec (n={len(g)}; Gregg 2026-09-28; '
-                                     f'would remove: {nt})')
-                    n_keep += 1
-                elif sep > r99 and not _c:
-                    cut[i] = (True, f'table: multi-detection source inconsistent with {pn} - {sep:.0f} arcsec from its combined '
-                                    f'position, outside the 99% radius {r99:.0f} arcsec (n={len(g)}): background (Gregg '
-                                    f'2026-09-28; was: {nt})')
-                    n_drop += 1
+                # DECIDED AGAINST ALL PULSARS TOGETHER (2026-10-18, exopipe_ops 8cda7d8): each pulsar's group verdict is collected
+                # and applied after the loop against the table state before this step - consistent with ANY pulsar keeps it,
+                # else inconsistent with one removes it (the note names the nearest pulsar)
+                verdicts[i].append((sep <= r99, pn, sep, r99, len(g), nt))
             log.append((pn, len(g), round(sep), round(r99)))
             if groups_out is not None:
                 groups_out.append((pn, sorted(g), sep <= r99))
+    for i, vs in verdicts.items():
+        _c, nt = cut[i]
+        ok = [v for v in vs if v[0]]
+        if ok and _c:
+            _, pn_, sep_, r99_, n_, _nt0 = min(ok, key=lambda v: v[2])
+            cut[i] = (False, f'table-exempt: pulsar-consistent multi-detection source - {pn_} {sep_:.0f} arcsec from its '
+                             f'combined position, inside the 99% radius {r99_:.0f} arcsec (n={n_}; Gregg 2026-09-28; '
+                             f'would remove: {nt})')
+            n_keep += 1
+        elif not ok and not _c:
+            _, pn_, sep_, r99_, n_, _nt0 = min(vs, key=lambda v: v[2])
+            cut[i] = (True, f'table: multi-detection source inconsistent with {pn_} - {sep_:.0f} arcsec from its combined '
+                            f'position, outside the 99% radius {r99_:.0f} arcsec (n={n_}): background (Gregg '
+                            f'2026-09-28; was: {nt})')
+            n_drop += 1
     return n_keep, n_drop, log, len(psr_rows)
 
 
