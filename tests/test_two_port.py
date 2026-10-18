@@ -14,6 +14,11 @@
    page's journal and its redirect is rewritten; the inspection listener renders the read-only page, refuses every POST and
    hides pages that are not greenlit; static sites are served with their port links rewritten; a page that fails to build
    gets an error page and the other pages keep serving.
+5. Code trees (the 2026-10-18 defect: one process shared helper modules by name across trees): two trees whose page code and
+   helper module share their names but not their content, served by the front and one backend process per tree - each page
+   renders its own tree's helper whichever tree is built first; /_status reports each backend's tree and the md5 of the code
+   and helper each page imported; a POST is forwarded and written; the inspection listener refuses writes in the front; a
+   dead backend is restarted on the next request; a tree that leaves the registry has its backend stopped.
 """
 import json
 import os
@@ -287,6 +292,89 @@ def test_pages():
     check('a registry change reloads the helper modules beside the page code (a deploy)', b'helper=2' in b, b[:160])
 
 
+def test_trees():
+    trees = {}
+    for t in ('treeA', 'treeB'):
+        d = os.path.join(TMP, t)
+        os.makedirs(d)
+        page = PAGE.replace("FLAG_AT_IMPORT = os.environ.get('P3_TEST_FLAG', 'unset')",
+                            "FLAG_AT_IMPORT = os.environ.get('P3_TEST_FLAG', 'unset')\nimport helper_mod")
+        page = page.replace("f'flag-at-import={FLAG_AT_IMPORT} ", "f'helper={helper_mod.V} flag-at-import={FLAG_AT_IMPORT} ")
+        open(os.path.join(d, 'page.py'), 'w').write(page)
+        open(os.path.join(d, 'helper_mod.py'), 'w').write(f"V = '{t[-1]}'\n")
+        trees[t] = d
+    run = os.path.join(TMP, 'run_t')
+    os.makedirs(run)
+    reg = os.path.join(TMP, 'registry_trees.json')
+    pages = [
+        {'id': 'ta1', 'kind': 'review', 'code': os.path.join(trees['treeA'], 'page.py'), 'argv': ['--run', run, '--title', 'A1'],
+         'legacy_port': 9911, 'greenlit': True},
+        {'id': 'ta2', 'kind': 'review', 'code': os.path.join(trees['treeA'], 'page.py'), 'argv': ['--run', run, '--title', 'A2'],
+         'legacy_port': 9912, 'greenlit': False},
+        {'id': 'tb1', 'kind': 'review', 'code': os.path.join(trees['treeB'], 'page.py'), 'argv': ['--run', run, '--title', 'B1'],
+         'legacy_port': 9913, 'greenlit': True},
+    ]
+    write_registry(reg, pages)
+    st = TP.Store(reg, builds=False)
+    be = TP.Backends(reg, sock_dir=os.path.join(TMP, 'socks'), python=sys.executable)
+    try:
+        def go(pid, path='/', inspect=False, method='GET', body=b'', headers=None):
+            return TP.front_request(st, be, inspect, method, f'/p/{pid}{path}', headers or {}, body)
+        sb, _, bb = go('tb1')                    # tree B first: its helper must not reach tree A's pages
+        sa, _, ba = go('ta1')
+        s2, _, b2 = go('ta2')
+        check('trees: tree B renders its own helper', sb == 200 and b'helper=B' in bb and b'B1' in bb, (sb, bb[:160]))
+        check('trees: tree A renders its own helper although tree B was built first', sa == 200 and b'helper=A' in ba, (sa, ba[:160]))
+        check('trees: a second page of tree A shares tree A\'s backend and helper', s2 == 200 and b'helper=A' in b2)
+        check('trees: one backend process per tree', len(be.procs) == 2 and len({p.pid for p, _ in be.procs.values()}) == 2,
+              list(be.procs))
+        check('trees: responses are rewritten under /p/<id> as before', b'href="/p/ta1/source/J1"' in ba, ba[:300])
+        s, _, b = TP.front_request(st, be, False, 'GET', '/_status', {})
+        rep = json.loads(b)
+        bytree = {x['tree']: x for x in rep['backends']}
+        a = bytree.get(os.path.realpath(trees['treeA']), {})
+        pa = (a.get('pages') or {}).get('ta1') or {}
+        hm = (pa.get('helpers') or {}).get('helper_mod')
+        check('status: each backend reports its tree', set(bytree) == {os.path.realpath(trees[t]) for t in trees}, list(bytree))
+        check('status: a page reports the md5 of the code and of the helper it imported',
+              pa.get('code', [None, None])[1] == TP.md5_file(os.path.join(trees['treeA'], 'page.py'))
+              and hm and hm[1] == TP.md5_file(os.path.join(trees['treeA'], 'helper_mod.py')), pa)
+        s, h, b = go('ta1', '/label', method='POST', body=b'source_id=J9&confidence=real',
+                     headers={'Content-Type': 'application/x-www-form-urlencoded'})
+        jr = os.path.join(run, 'judgements', 'judgements.jsonl')
+        check('trees: a POST is forwarded, written and its redirect rewritten',
+              s == 303 and dict(h).get('Location') == '/p/ta1/source/J9' and os.path.exists(jr) and 'J9' in open(jr).read(),
+              (s, h))
+        s, _, b = go('ta1', '/source/J1', inspect=True)
+        check('trees: the inspection listener gets the read-only page', s == 200 and b'<form' not in b and b'J1' in b, b[:200])
+        s, _, b = go('ta1', '/label', inspect=True, method='POST', body=b'source_id=J1')
+        check('trees: the inspection listener refuses a POST in the front', s == 403, s)
+        s, _, b = go('ta2', '/', inspect=True)
+        check('trees: a page not greenlit is not served on the inspection listener', s == 404, s)
+        s, _, b = TP.front_request(st, be, False, 'GET', '/p/ta1/', {TP.LISTENER_HEADER: 'review'})
+        check('trees: a browser cannot choose the listener (the front sets the header)', s == 200, s)
+        s, _, b = TP.front_request(st, be, True, 'GET', '/p/ta1/source/J1', {TP.LISTENER_HEADER: 'review'})
+        check('trees: ... and a forged header on the inspection listener still gets the read-only page',
+              s == 200 and b'<form' not in b, b[:200])
+        old_pid = be.procs[os.path.realpath(trees['treeA'])][0].pid
+        be.procs[os.path.realpath(trees['treeA'])][0].kill()
+        be.procs[os.path.realpath(trees['treeA'])][0].wait()
+        s, _, b = go('ta1')
+        new_pid = be.procs[os.path.realpath(trees['treeA'])][0].pid
+        check('trees: a dead backend is restarted on the next request', s == 200 and b'helper=A' in b and new_pid != old_pid,
+              (s, old_pid, new_pid))
+        write_registry(reg, pages[:2])
+        os.utime(reg, (os.path.getmtime(reg) + 5,) * 2)
+        bproc = be.procs[os.path.realpath(trees['treeB'])][0]
+        s, _, b = go('ta1')
+        check('trees: a tree that leaves the registry has its backend stopped',
+              os.path.realpath(trees['treeB']) not in be.procs and bproc.poll() is not None, list(be.procs))
+    finally:
+        procs = [p for p, _ in be.procs.values()]
+        be.stop_all()
+        check('trees: every backend stops with the front', all(p.poll() is not None for p in procs))
+
+
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
@@ -295,6 +383,7 @@ def main():
         test_rewrite()
         test_registry()
         test_pages()
+        test_trees()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

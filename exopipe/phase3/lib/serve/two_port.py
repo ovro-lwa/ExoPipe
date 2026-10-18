@@ -1,9 +1,18 @@
 """The two-port review server (Gregg 2026-10-17, INTERFACE_REQUIREMENTS section 1 "TWO PORTS FOR EVERYTHING"; design:
 refactor_20261012/plan/serve/TWO_PORT_SERVER_DESIGN.md, "Implementation approach").
 
-One process, two listeners: REVIEW (every page, with the classification interface; Gregg only) and INSPECTION (the same pages
-without it, greenlit entries only, every write refused). A page is published by adding it to the registry (registry.json);
-the server re-reads the registry when it changes - no new port, no restart.
+Two listeners: REVIEW (every page, with the classification interface; Gregg only) and INSPECTION (the same pages without it,
+greenlit entries only, every write refused). A page is published by adding it to the registry (registry.json); the server
+re-reads the registry when it changes - no new port, no restart.
+
+One backend process per CODE TREE (the directory of a page's classify_transients.py: the live exopipe_ops, each frozen
+10-minute tree): pages of different trees import helper modules of the same name (review_filters, source_localization ...)
+that differ, and one process shares sys.modules by name - the first tree to import a helper served it to every page (found
+2026-10-18: a frozen 19h tree's review_filters served the deep pages without that morning's filters). The listeners' process
+(the front) builds no page: it serves the hub, the static sites and the refusals, and forwards every review-page request to
+its tree's backend over a Unix socket; a backend is started on first use, restarted when it died and stopped when its tree
+leaves the registry. GET /_status reports every backend's tree and, per built page, the md5 of its code and of every helper
+module of its tree it imported.
 
 The review-page code is NOT forked. Each page is today's classify_transients.py, unchanged, hosted as:
 - its own module instance (a private module name per page and listener), built by the module's own main() with the page's
@@ -19,17 +28,30 @@ Writes (POST) are serialized per labels directory, since pages share journals.
 import collections
 import contextlib
 import email.message
+import fcntl
+import hashlib
 import html
+import http.client
 import importlib.util
 import io
 import json
 import os
 import re
+import socket
+import socketserver
+import subprocess
 import sys
 import threading
 import time
 import urllib.parse
 from collections.abc import MutableMapping
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+_RUNTIME = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
+SOCK_DIR = os.path.join(_RUNTIME, 'two_port')          # backends' sockets and logs (default)
+LOCK_DIR = os.path.join(_RUNTIME, 'two_port_locks')    # one lock file per labels directory, never inside it
+STATUS_PATH = '/_twoport_status'                        # a backend's own report
+LISTENER_HEADER = 'X-Two-Port-Listener'                 # set by the front: 'review' or 'inspection'
 
 # ---------------------------------------------------------------------------------------------------------------------------
 # the per-thread environment
@@ -347,6 +369,57 @@ def run_request(page, method, path, headers, body=b''):
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
+# code trees
+# ---------------------------------------------------------------------------------------------------------------------------
+
+
+def tree_of(entry):
+    """A review page's code tree: the directory of its code, symlinks resolved."""
+    return os.path.dirname(os.path.realpath(entry['code']))
+
+
+def md5_file(path):
+    h = hashlib.md5()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
+_PY_ROOTS = tuple(sorted({os.path.realpath(x) + os.sep for x in (sys.prefix, sys.base_prefix, sys.exec_prefix)}))
+
+
+def project_modules():
+    """{name: realpath} of every module in sys.modules loaded from a .py file outside the Python installation - the project
+    code a page imported (its tree's helpers, clv15, the exopipe package) - the page modules themselves excluded."""
+    out = {}
+    for name, mod in list(sys.modules.items()):
+        f = getattr(mod, '__file__', None) or ''
+        if not f or name.startswith('_twoport_') or name == '__main__':
+            continue
+        rf = os.path.realpath(f)
+        if rf.startswith(_PY_ROOTS) or not rf.endswith('.py'):
+            continue
+        out[name] = rf
+    return out
+
+
+@contextlib.contextmanager
+def post_lock(thread_lock, labels_dir):
+    """POSTs to one labels directory, one at a time across every backend: the in-process lock, then a file lock named by the
+    directory in LOCK_DIR."""
+    os.makedirs(LOCK_DIR, exist_ok=True)
+    p = os.path.join(LOCK_DIR, hashlib.md5(labels_dir.encode()).hexdigest() + '.lock')
+    with thread_lock:
+        with open(p, 'a') as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------
 # the page store
 # ---------------------------------------------------------------------------------------------------------------------------
 
@@ -355,8 +428,12 @@ class Store:
     """Pages built on first request and kept while used. A page requested within keep_s is never evicted; past max_pages the
     least recently used page goes. A page whose registry entry changed is rebuilt on its next request."""
 
-    def __init__(self, registry_path, base_env=None, max_pages=80, keep_s=1800):
+    def __init__(self, registry_path, base_env=None, max_pages=80, keep_s=1800, tree=None, builds=True):
         install_env()
+        self.tree = os.path.realpath(tree) if tree else None   # a backend builds the pages of this code tree only
+        self.builds = builds                                   # the front builds none
+        self.code_report = {}                 # (page_id, inspect) -> {'code': [path, md5], 'helpers': {name: [path, md5]}}
+        self._mod_md5 = {}                    # id(module) -> (path, md5) when first seen: the bytes it was imported from
         self.registry_path = registry_path
         self.base_env = dict(base_env if base_env is not None else _ENV._base)
         self.max_pages, self.keep_s = max_pages, keep_s
@@ -388,6 +465,8 @@ class Store:
                 if f and any(os.path.realpath(f).startswith(d) for d in dirs) and not name.startswith('exopipe.'):
                     sys.modules.pop(name, None)
             importlib.invalidate_caches()
+            self._mod_md5.clear()
+            self.code_report.clear()
             self.reg, self.reg_mtime = reg, m
 
     def port_map(self):
@@ -413,6 +492,10 @@ class Store:
         e = self.reg.get(pid)
         if e is None or e['kind'] != 'review':
             return None
+        if not self.builds:
+            raise RuntimeError(f'{pid}: the front builds no page (a backend per code tree does)')
+        if self.tree is not None and tree_of(e) != self.tree:
+            raise RuntimeError(f'{pid}: code tree {tree_of(e)} is not this backend\'s ({self.tree})')
         while True:
             with self.lock:
                 pg = self.pages.get(key)
@@ -432,8 +515,10 @@ class Store:
                 continue
             try:
                 pg = build_page(e, inspect, self.base_env, self.write_locks[self.labels_dir(e)])
+                report = self._report(e)
                 with self.lock:
                     self.pages[key] = pg
+                    self.code_report[key] = report
                     self.errors.pop(key, None)
                     self._evict()
                 return pg
@@ -445,6 +530,20 @@ class Store:
                 with self.lock:
                     self.building.pop(key, None)
                 ev.set()
+
+    def _report(self, e):
+        """The code a page was built from: its own file and every project module in this process (project_modules), each with
+        the md5 of the bytes it was imported from (recorded when the module is first seen)."""
+        helpers = {}
+        with _BUILD_LOCK:
+            for name, path in sorted(project_modules().items()):
+                mod = sys.modules.get(name)
+                if mod is None:
+                    continue
+                if id(mod) not in self._mod_md5:
+                    self._mod_md5[id(mod)] = (path, md5_file(path))
+                helpers[name] = list(self._mod_md5[id(mod)])
+        return {'code': [os.path.realpath(e['code']), md5_file(e['code'])], 'helpers': helpers}
 
     def _evict(self):
         now = time.time()
@@ -483,13 +582,15 @@ def serve_request(store, inspect, method, path, headers, body=b''):
         return 403, [('Content-Type', 'text/plain; charset=utf-8')], b'inspection mode: this view is read-only and records nothing'
     query = path[len(f'/{kind}/{pid}') + len(rest):] if '?' in path else ''
     if kind == 's':
-        return static_file(e, rest, store.port_map())
+        return static_file(e, rest, store.port_map()) if e['kind'] == 'static' else (404, [('Content-Type', 'text/plain')], b'unknown page')
+    if e['kind'] != 'review':
+        return 404, [('Content-Type', 'text/plain')], b'unknown page'
     try:
         pg = store.get(pid, inspect)
     except Exception as exc:                                    # the page's error page, the process carries on
         return 500, [('Content-Type', 'text/plain; charset=utf-8')], f'page {pid} could not be built: {exc}'.encode()
     sub = rest + (('?' + path.split('?', 1)[1]) if '?' in path else '')
-    lock = pg.write_lock if method == 'POST' else contextlib.nullcontext()
+    lock = post_lock(pg.write_lock, store.labels_dir(e)) if method == 'POST' else contextlib.nullcontext()
     with lock:
         status, hdrs, payload = run_request(pg, method, sub, headers, body)
     pm = store.port_map()
@@ -537,7 +638,8 @@ def hub_page(store, inspect):
     return f'<!doctype html><html><head><title>{title}</title></head><body><h1>{title}</h1><ul>{"".join(rows)}</ul></body></html>'
 
 
-def make_handler(store, inspect):
+def make_handler(fn):
+    """A request handler class answering every GET and POST with fn(method, path, headers, body) -> (status, headers, body)."""
     from http.server import BaseHTTPRequestHandler
 
     class Router(BaseHTTPRequestHandler):
@@ -545,7 +647,7 @@ def make_handler(store, inspect):
             n = int(self.headers.get('Content-Length') or 0)
             body = self.rfile.read(n) if n else b''
             hdrs = {k: v for k, v in self.headers.items()}
-            status, out, payload = serve_request(store, inspect, method, self.path, hdrs, body)
+            status, out, payload = fn(method, self.path, hdrs, body)
             self.send_response(status)
             for k, v in out:
                 self.send_header(k, v)
@@ -559,28 +661,226 @@ def make_handler(store, inspect):
         def do_POST(self):
             self._go('POST')
 
+        def address_string(self):           # a Unix-socket client has no address
+            return 'local'
+
         def log_message(self, fmt, *args):
             pass
     return Router
 
 
-def serve(registry_path, review_port, inspection_port, host='127.0.0.1'):
-    """Run both listeners until interrupted."""
+# ---------------------------------------------------------------------------------------------------------------------------
+# a backend: the pages of one code tree, on a Unix socket
+# ---------------------------------------------------------------------------------------------------------------------------
+
+
+def backend_status(store):
+    with store.lock:
+        pages = {f'{pid}{":inspection" if insp else ""}': store.code_report.get((pid, insp)) for (pid, insp) in store.pages}
+    return {'tree': store.tree, 'pid': os.getpid(), 'registry_mtime': store.reg_mtime, 'pages': pages}
+
+
+def backend_request(store, method, path, headers, body=b''):
+    """One forwarded request: the listener it came to is in LISTENER_HEADER (set by the front, never by a browser)."""
+    if path == STATUS_PATH:
+        return 200, [('Content-Type', 'application/json')], json.dumps(backend_status(store), indent=1).encode()
+    who = next((v for k, v in headers.items() if k.lower() == LISTENER_HEADER.lower()), None)
+    inspect = who != 'review'                                     # anything but the front's 'review' is the read-only listener
+    hdrs = {k: v for k, v in headers.items() if k.lower() != LISTENER_HEADER.lower()}
+    return serve_request(store, inspect, method, path, hdrs, body)
+
+
+class _UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+def serve_backend(registry_path, tree, socket_path):
+    """Serve the pages of one code tree on a Unix socket until killed."""
+    # the page code imports production's exopipe package (classify_transients: from exopipe.common import phase2_config); this
+    # process was started from the refactor's tree, whose package is also named exopipe - unbound here, so the page code
+    # resolves the name exactly as its own process does today
+    for name in [n for n in sys.modules if n == 'exopipe' or n.startswith('exopipe.')]:
+        sys.modules.pop(name, None)
+    sys.path[:] = [x for x in sys.path if os.path.realpath(x or '.') != os.path.realpath(REPO_ROOT)]
+    importlib.invalidate_caches()
+    store = Store(registry_path, tree=tree)
+    try:
+        os.unlink(socket_path)
+    except FileNotFoundError:
+        pass
+    srv = _UnixHTTPServer(socket_path, make_handler(lambda m, p, h, b: backend_request(store, m, p, h, b)))
+    os.chmod(socket_path, 0o600)
+    print(f'two-port backend {os.getpid()}: code tree {store.tree} on {socket_path}', flush=True)
+    srv.serve_forever()
+
+
+class _UDSConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout=900):
+        super().__init__('localhost', timeout=timeout)
+        self._path = path
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        s.connect(self._path)
+        self.sock = s
+
+
+def _uds_get(path, url, timeout=30):
+    c = _UDSConnection(path, timeout=timeout)
+    try:
+        c.request('GET', url)
+        r = c.getresponse()
+        return r.status, r.read()
+    finally:
+        c.close()
+
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# the front: the two listeners, one backend per code tree
+# ---------------------------------------------------------------------------------------------------------------------------
+
+
+class Backends:
+    """One backend process per code tree: started on first use, restarted when it died, stopped when its tree leaves the
+    registry. Each inherits the front's environment, CPU affinity and niceness."""
+
+    def __init__(self, registry_path, sock_dir=None, python=None, start_timeout=120):
+        self.registry_path = os.path.abspath(registry_path)
+        self.sock_dir = sock_dir or SOCK_DIR
+        os.makedirs(self.sock_dir, exist_ok=True)
+        self.python = python or sys.executable
+        self.start_timeout = start_timeout
+        self.procs = {}                                   # tree -> (Popen, socket path)
+        self.locks = collections.defaultdict(threading.Lock)
+
+    def sock_for(self, tree):
+        return os.path.join(self.sock_dir, 'tp_' + hashlib.md5(tree.encode()).hexdigest()[:16] + '.sock')
+
+    def get(self, tree):
+        """The socket of the tree's running backend, starting it when needed."""
+        with self.locks[tree]:
+            cur = self.procs.get(tree)
+            if cur is not None and cur[0].poll() is None:
+                return cur[1]
+            path = self.sock_for(tree)
+            logp = path[:-5] + '.log'
+            env = dict(_ENV._base) if _ENV is not None else dict(os.environ)
+            with open(logp, 'a') as log:
+                proc = subprocess.Popen([self.python, '-m', 'exopipe.phase3.lib.serve.two_port', 'backend', self.registry_path,
+                                         '--tree', tree, '--socket', path], cwd=REPO_ROOT, env=env, stdout=log,
+                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            t0 = time.time()
+            while True:
+                if proc.poll() is not None:
+                    raise RuntimeError(f'the backend of {tree} exited with {proc.returncode} (log {logp})')
+                if os.path.exists(path):
+                    try:
+                        st, _ = _uds_get(path, STATUS_PATH, timeout=5)
+                        if st == 200:
+                            break
+                    except OSError:
+                        pass
+                if time.time() - t0 > self.start_timeout:
+                    proc.kill()
+                    raise RuntimeError(f'the backend of {tree} did not answer within {self.start_timeout} s (log {logp})')
+                time.sleep(0.1)
+            self.procs[tree] = (proc, path)
+            return path
+
+    def stop(self, tree):
+        with self.locks[tree]:
+            cur = self.procs.pop(tree, None)
+            if cur is None:
+                return
+            cur[0].terminate()
+            try:
+                cur[0].wait(10)
+            except subprocess.TimeoutExpired:
+                cur[0].kill()
+                cur[0].wait()
+
+    def sync(self, trees):
+        """Stop the backends of trees that left the registry."""
+        for tree in [t for t in list(self.procs) if t not in trees]:
+            self.stop(tree)
+
+    def stop_all(self):
+        for tree in list(self.procs):
+            self.stop(tree)
+
+    def forward(self, tree, inspect, method, path, headers, body=b''):
+        sock = self.get(tree)
+        hdrs = {k: v for k, v in headers.items()
+                if k.lower() not in (LISTENER_HEADER.lower(), 'content-length', 'connection', 'host', 'transfer-encoding')}
+        hdrs[LISTENER_HEADER] = 'inspection' if inspect else 'review'
+        c = _UDSConnection(sock)
+        try:
+            c.request(method, path, body=body or None, headers=hdrs)
+            r = c.getresponse()
+            payload = r.read()
+            out = [(k, v) for k, v in r.getheaders() if k.lower() not in ('content-length', 'connection', 'date', 'server')]
+            return r.status, out, payload
+        finally:
+            c.close()
+
+    def status(self):
+        out = []
+        for tree, (proc, path) in sorted(self.procs.items()):
+            try:
+                st, b = _uds_get(path, STATUS_PATH)
+                out.append(json.loads(b) if st == 200 else {'tree': tree, 'error': f'HTTP {st}'})
+            except Exception as exc:                           # noqa: BLE001 - a report, never a failure of the front
+                out.append({'tree': tree, 'pid': proc.pid, 'error': str(exc)})
+        return out
+
+
+def front_request(store, backends, inspect, method, path, headers, body=b''):
+    """One request to a listener: review pages go to their tree's backend; the hub, static sites, unknown pages and the
+    inspection listener's refusals are answered here; GET /_status reports the registry and every backend."""
+    store.reload()
+    backends.sync({tree_of(e) for e in store.reg.values() if e['kind'] == 'review'})
+    if path.split('?', 1)[0] == '/_status':
+        rep = {'registry': store.registry_path, 'registry_mtime': store.reg_mtime, 'backends': backends.status()}
+        return 200, [('Content-Type', 'application/json')], json.dumps(rep, indent=1).encode()
+    m = re.match(r'^/p/([A-Za-z0-9_.-]+)(/.*)?$', path.split('?', 1)[0])
+    if m:
+        e = store.entry(m.group(1))
+        if e is not None and e['kind'] == 'review' and not (inspect and (not e.get('greenlit') or method != 'GET')):
+            try:
+                return backends.forward(tree_of(e), inspect, method, path, headers, body)
+            except Exception as exc:                           # noqa: BLE001 - one tree's failure never takes down the front
+                return 502, [('Content-Type', 'text/plain; charset=utf-8')], f'page {e["id"]}: its backend failed: {exc}'.encode()
+    return serve_request(store, inspect, method, path, headers, body)
+
+
+def serve(registry_path, review_port, inspection_port, host='127.0.0.1', sock_dir=None):
+    """Run both listeners until interrupted; the backends stop with the front."""
     from http.server import ThreadingHTTPServer
-    store = Store(registry_path)
-    srv = [ThreadingHTTPServer((host, review_port), make_handler(store, False)),
-           ThreadingHTTPServer((host, inspection_port), make_handler(store, True))]
+    store = Store(registry_path, builds=False)
+    backends = Backends(registry_path, sock_dir)
+    srv = [ThreadingHTTPServer((host, review_port),
+                               make_handler(lambda m, p, h, b: front_request(store, backends, False, m, p, h, b))),
+           ThreadingHTTPServer((host, inspection_port),
+                               make_handler(lambda m, p, h, b: front_request(store, backends, True, m, p, h, b)))]
     ts = [threading.Thread(target=s.serve_forever, daemon=True) for s in srv]
     for t in ts:
         t.start()
     print(f'two-port server: review http://{host}:{review_port}/  inspection http://{host}:{inspection_port}/  '
-          f'({len(store.reg)} registry entries)', flush=True)
+          f'({len(store.reg)} registry entries; one backend per code tree, sockets in {backends.sock_dir})', flush=True)
+    import signal
+
+    def _term(*_a):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _term)
     try:
         for t in ts:
             t.join()
     except KeyboardInterrupt:
         for s in srv:
             s.shutdown()
+    finally:
+        backends.stop_all()
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -666,7 +966,15 @@ def main(argv=None):
     s2.add_argument('registry')
     s2.add_argument('--review-port', type=int, required=True)
     s2.add_argument('--inspection-port', type=int, required=True)
+    s2.add_argument('--sock-dir', help=f'the backends\' sockets and logs (default {SOCK_DIR})')
+    s3 = sub.add_parser('backend', help='serve the pages of one code tree on a Unix socket (started by serve)')
+    s3.add_argument('registry')
+    s3.add_argument('--tree', required=True)
+    s3.add_argument('--socket', required=True)
     a = ap.parse_args(argv)
+    if a.cmd == 'backend':
+        serve_backend(a.registry, a.tree, a.socket)
+        return 0
     if a.cmd == 'seed':
         pages = seed_from_proc()
         if a.hub:
@@ -675,7 +983,7 @@ def main(argv=None):
             pages.append(dict(id='hub_inspection', kind='static', root=a.inspection_hub, greenlit=True))
         print(json.dumps({'pages': pages}, indent=1))
         return 0
-    serve(a.registry, a.review_port, a.inspection_port)
+    serve(a.registry, a.review_port, a.inspection_port, sock_dir=a.sock_dir)
     return 0
 
 
