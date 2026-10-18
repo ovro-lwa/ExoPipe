@@ -677,8 +677,9 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
     or cut because a triggering parent is not the pulsar), the daytime gate and the exclusions passed, linked by the
     association criterion (3.034 x quadrature errors) and combined with the served localization's estimator: the pulsar
     inside the combined 99 % radius keeps the group's table cuts; outside, the group's pulsar-exempted detections are cut.
-    Changes `cut` in place; returns (kept, removed, [(pulsar, n, sep arcsec, r99 arcsec)]). ``groups_out`` (a list), when
-    given, receives each group's (pulsar, [member row indices], consistent) in the same order (B-02 step 4's record)."""
+    Changes `cut` in place; returns (kept, removed, [(pulsar, n, sep arcsec, r99 arcsec, grouping)]). ``groups_out`` (a list),
+    when given, receives each group's (pulsar, [member row indices], consistent, grouping) in the same order (B-02 step 4's
+    record). grouping 'all' = across epochs (may rescue), 'epoch' = within one (LST, night) (alone may remove; a2d37b9)."""
     c = _cc()
     if LOC._SP.active():
         raise RuntimeError('removal_rules.pulsar_consistency: the 10-minute tie (P3_TENMIN_PERTIE) is set - this port is the '
@@ -690,7 +691,7 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
             psr_rows[m.group(1).strip()].append(i)
     n_keep = n_drop = 0
     log = []
-    verdicts = collections.defaultdict(list)    # detection -> [(consistent, pulsar, sep, r99, n, note)] (2026-10-18)
+    verdicts = collections.defaultdict(list)    # detection -> [(consistent, pulsar, sep, r99, n, note, grouping)] (2026-10-18)
     RA_ = np.array([f(r['ra']) for r in raw]); DE_ = np.array([f(r['dec']) for r in raw])
     RAWU = np.nan_to_num(np.stack([np.cos(np.radians(DE_)) * np.cos(np.radians(RA_)),
                                    np.cos(np.radians(DE_)) * np.sin(np.radians(RA_)), np.sin(np.radians(DE_))], -1))
@@ -715,9 +716,15 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
             continue
         dets = {i: dict(ra=f(raw[i]['ra']), dec=f(raw[i]['dec']), sig=_model_error(raw[i], LOC),
                         epoch=(raw[i]['lst'], raw[i]['date'][:10]), band=raw[i]['band'], snr=f(raw[i]['snr'])) for i in near}
-        par = {i: i for i in near}
+        # TWO PARTITIONS FROM ONE PAIR TEST (exopipe_ops a2d37b9, amending 8cda7d8; Gregg 2026-10-18: "Vetoing across frequency
+        # for a single frame is probably okay, but not across time" forbids REMOVAL across time, not evidence from other nights
+        # KEEPING a detection): par_all links any consistent pair (the grouping before 8cda7d8), par_ep only pairs of one epoch
+        # (LST, night). RESCUE of a table-cut detection may use either partition's group; REMOVAL of a pulsar-exempted one only
+        # its per-epoch group (applied after the loop).
+        par_all = {i: i for i in near}
+        par_ep = {i: i for i in near}
 
-        def _fd(i):
+        def _fd(i, par):
             while par[i] != i:
                 par[i] = par[par[i]]; i = par[i]
             return i
@@ -725,18 +732,19 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
             for b_ in near:
                 if a_ < b_:
                     da, db = dets[a_], dets[b_]
-                    # PER EPOCH (Gregg 2026-10-18: "All frames should pass through vetoes independently ... Vetoing across
-                    # frequency for a single frame is probably okay, but not across time"; exopipe_ops 8cda7d8): detections are
-                    # grouped only within one epoch (LST, night); a single-detection epoch keeps the per-detection rule.
-                    if da['epoch'] != db['epoch']:
-                        continue
+                    same = da['epoch'] == db['epoch']
                     sep_as = math.hypot((da['ra'] - db['ra']) * math.cos(math.radians(da['dec'])), da['dec'] - db['dec']) * 3600
                     if sep_as < c.PULSAR_ASSOC_K * math.hypot(da['sig'], db['sig']):
-                        par[_fd(b_)] = _fd(a_)
-        groups = collections.defaultdict(list)
-        for i in near:
-            groups[_fd(i)].append(i)
-        for g in groups.values():
+                        par_all[_fd(b_, par_all)] = _fd(a_, par_all)
+                        if same:
+                            par_ep[_fd(b_, par_ep)] = _fd(a_, par_ep)
+        parts = []
+        for kind, par in (('all', par_all), ('epoch', par_ep)):
+            groups = collections.defaultdict(list)
+            for i in near:
+                groups[_fd(i, par)].append(i)
+            parts += [(kind, g) for g in groups.values()]
+        for kind, g in parts:
             if len(g) < 2:
                 continue
             dl = [dets[i] for i in g]
@@ -755,21 +763,22 @@ def pulsar_consistency(raw, cut, day, excluded, G, LOC, psr_pos, groups_out=None
                 # DECIDED AGAINST ALL PULSARS TOGETHER (2026-10-18, exopipe_ops 8cda7d8): each pulsar's group verdict is collected
                 # and applied after the loop against the table state before this step - consistent with ANY pulsar keeps it,
                 # else inconsistent with one removes it (the note names the nearest pulsar)
-                verdicts[i].append((sep <= r99, pn, sep, r99, len(g), nt))
-            log.append((pn, len(g), round(sep), round(r99)))
+                verdicts[i].append((sep <= r99, pn, sep, r99, len(g), nt, kind))
+            log.append((pn, len(g), round(sep), round(r99), kind))
             if groups_out is not None:
-                groups_out.append((pn, sorted(g), sep <= r99))
+                groups_out.append((pn, sorted(g), sep <= r99, kind))
     for i, vs in verdicts.items():
         _c, nt = cut[i]
-        ok = [v for v in vs if v[0]]
+        ok = [v for v in vs if v[0]]                      # RESCUE: any group (across-epoch or per-epoch) consistent
+        ve = [v for v in vs if v[6] == 'epoch']           # REMOVAL: per-epoch groups only, none consistent
         if ok and _c:
-            _, pn_, sep_, r99_, n_, _nt0 = min(ok, key=lambda v: v[2])
+            _, pn_, sep_, r99_, n_, _nt0, _k0 = min(ok, key=lambda v: v[2])
             cut[i] = (False, f'table-exempt: pulsar-consistent multi-detection source - {pn_} {sep_:.0f} arcsec from its '
                              f'combined position, inside the 99% radius {r99_:.0f} arcsec (n={n_}; Gregg 2026-09-28; '
                              f'would remove: {nt})')
             n_keep += 1
-        elif not ok and not _c:
-            _, pn_, sep_, r99_, n_, _nt0 = min(vs, key=lambda v: v[2])
+        elif ve and not any(v[0] for v in ve) and not _c:
+            _, pn_, sep_, r99_, n_, _nt0, _k0 = min(ve, key=lambda v: v[2])
             cut[i] = (True, f'table: multi-detection source inconsistent with {pn_} - {sep_:.0f} arcsec from its combined '
                             f'position, outside the 99% radius {r99_:.0f} arcsec (n={n_}): background (Gregg '
                             f'2026-09-28; was: {nt})')
@@ -1057,7 +1066,8 @@ def conform(U, catalog_dir=None, size_step=None, out=print):
     out(f'conform: pulsar-source consistency - {n_psr} pulsars in table decisions; kept {n_keep} table-cut detections of '
         f'pulsar-consistent sources, removed {n_drop} pulsar-exempted detections of inconsistent sources', flush=True)
     for x in plog:
-        out(f'conform: pulsar group {x[0]}: n={x[1]} combined position {x[2]} arcsec from the pulsar, 99% radius {x[3]} arcsec '
+        out(f'conform: pulsar group {x[0]}{" (across epochs)" if x[4] == "all" else ""}: n={x[1]} combined position {x[2]} arcsec '
+            f'from the pulsar, 99% radius {x[3]} arcsec '
             f'-> {"consistent" if x[2] <= x[3] else "inconsistent"}', flush=True)
     n = collections.Counter()
     removed, kept, seen = [], [], set()

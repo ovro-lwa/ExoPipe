@@ -588,6 +588,23 @@ def psr_run(name, offset_deg):
     return r, (x, y)
 
 
+def psr_run_epoch(name, offset_deg):
+    """A per-epoch pulsar group (exopipe_ops a2d37b9): on night 2, one pixel detected in Stokes V and in Stokes I - both finals
+    kept as the pulsar's parent, so one epoch (LST, night) holds two exempted detections - the pulsar ``offset_deg`` north."""
+    r = fresh(name, stokes=('V', 'I'))
+    x, y = r.pixels(NIGHTS[1], 55, 90, 1, avoid=r.used())[0]
+    ra, dec = r.sky(x, y)
+    note = f'[el50-90] table-exempt: ATNF pulsar {PSR} is the parent'
+    for st in ('V', 'I'):
+        a = r.att[st]
+        a.led(NIGHTS[1], x, y, final=1, snr=20.0)
+        a.tpd.append(dict(lst=LST, scope=SC, stokes=st, date=NIGHTS[1], ra=ra, dec=dec, pix_x=x, pix_y=y, cut=0, note=note))
+    r.notes = {(ra, dec): note}
+    r.psr = {PSR: (ra, dec + offset_deg)}
+    r.write()
+    return r, (x, y)
+
+
 def _stage(r, LOC):
     CC._deps = deps(r, beam=2.0, LOC=LOC)   # production's group rule; the pulsar within its search beam (the grid's
     CC.cell_base = lambda cell, roots_csv=None, _b=r.base: _b   # 2-degree pixels place the detections)
@@ -597,6 +614,29 @@ def _stage(r, LOC):
         return CC.pulsars(r.U, r.man, LABEL, **QUIET)
     finally:
         RR.pulsar_positions = real
+
+
+def test_pulsar_stage_per_epoch():
+    """a2d37b9: a per-epoch group inconsistent with the pulsar removes its exempted detections; consistent, it keeps them."""
+    import source_localization as LOC
+    for name, off, want in (('psr_ep_cons', 0.0, 'consistent'), ('psr_ep_incons', 1.0, 'inconsistent')):
+        r, px = psr_run_epoch(name, off)
+        res = _stage(r, LOC)
+        grp = CC._rows(os.path.join(r.U, CC.PULSAR_GROUPS))
+        rec = CC._rows(os.path.join(r.U, CC.PULSAR_RECORD))
+        kinds = sorted(g['grouping'] for g in grp)
+        if want == 'consistent':
+            ok = res['removed'] == 0 and res['restored'] == 0 and kinds == ['across-epoch', 'per-epoch'] and rec == []
+        else:
+            ok = (res['removed'] == 2 and res['restored'] == 0 and kinds == ['across-epoch', 'per-epoch']
+                  and all(g['consistent'] == '0' for g in grp) and sorted(x['action'] for x in rec) == ['removed', 'removed'])
+        check(f'pulsar stage, two exempted detections in one epoch ({want}): '
+              f'{"kept" if want == "consistent" else "both removed by their per-epoch group"}', ok, (res, grp, rec))
+        okc, f, _res = _check(r)
+        n_rem = len(CC._rows(os.path.join(r.U, 'master_catalog_removed.csv'))) if okc else -1
+        check(f"the check accepts the stage's decisions, one epoch ({want}): "
+              f"{'nothing removed' if want == 'consistent' else 'the two removed rows in master_catalog_removed.csv'}",
+              okc and n_rem == (0 if want == 'consistent' else 2), (okc, f, n_rem))
 
 
 def test_pulsar_stage():
@@ -618,11 +658,13 @@ def test_pulsar_stage():
         if want == 'consistent':
             ok = (res['restored'] == 1 and res['removed'] == 0 and len(pr) == 1 and pr[0]['cand_id'].startswith('VR_')
                   and pr[0]['cand_id'].split('_')[1] == LST and len(grp) == 1 and grp[0]['consistent'] == '1'
+                  and grp[0]['grouping'] == 'across-epoch'
                   and len(grp[0]['members'].split('|')) == 3 and [x['action'] for x in rec] == ['restored'])
         else:
-            ok = (res['restored'] == 0 and res['removed'] == 2 and not pr and len(grp) == 1 and grp[0]['consistent'] == '0'
-                  and sorted(x['action'] for x in rec) == ['removed', 'removed']
-                  and len(CC._rows(os.path.join(r.U, CC.PULSAR_REMOVED))) == 2)
+            # a2d37b9: one detection per night, so no per-epoch group of two - an across-epoch group alone removes nothing
+            ok = (res['restored'] == 0 and res['removed'] == 0 and not pr and len(grp) == 1 and grp[0]['consistent'] == '0'
+                  and grp[0]['grouping'] == 'across-epoch' and rec == []
+                  and len(CC._rows(os.path.join(r.U, CC.PULSAR_REMOVED))) == 0)
         from exopipe.phase3.lib.catalog import tests as CT
         pt = CT.pulsar_stage_record(os.path.join(r.U, 'master_catalog.csv'), merge_copy=r.merged)
         check(f"the pulsar_catalog content test passes on the stage's output ({want})", pt[0], pt)
@@ -648,14 +690,14 @@ def test_pulsar_stage():
                   f'VR_{LST}_{NIGHTS[2]}_{SC}_{px[0]:04d}{px[1]:04d}', restored_id)
         check(f"pulsar stage with production's group rule, a group {want} with its pulsar: "
               + ('its cut detection restored as VR_<lst>_... (field 2 the LST), the group and its 3 members recorded'
-                 if want == 'consistent' else 'its two exempted detections removed, recorded with their reason'),
+                 if want == 'consistent' else 'one detection per night: the across-epoch group alone removes nothing (a2d37b9)'),
               ok, (res, rec, grp, [x['cand_id'] for x in pr]))
         okc, f, _res = _check(r)
         out = CC._rows(os.path.join(r.U, 'master_catalog.csv')) if okc else []
         check(f"the check accepts the stage's decisions ({want}): " + ("the restored row published with the stage's words in "
-              "conform_note" if want == 'consistent' else 'the removed rows in master_catalog_removed.csv'),
+              "conform_note" if want == 'consistent' else 'nothing removed (a2d37b9: no per-epoch group)'),
               okc and ((want == 'consistent' and any(CC.is_restored(x['cand_id']) and x['conform_note'] for x in out))
-                       or (want == 'inconsistent' and len(CC._rows(os.path.join(r.U, 'master_catalog_removed.csv'))) == 2)),
+                       or (want == 'inconsistent' and len(CC._rows(os.path.join(r.U, 'master_catalog_removed.csv'))) == 0)),
               (okc, sorted(f)))
         if want == 'consistent':            # the restored row's table cut lifted: the stage's decision no longer holds
             from exopipe.phase3.lib.catalog import tests as CT
@@ -796,6 +838,7 @@ def main():
         test_clean()
         test_faults()
         test_pulsar_stage()
+        test_pulsar_stage_per_epoch()
         test_chain_pieces()
     finally:
         CC._deps, CC.cell_base, RR.pulsar_positions = keep

@@ -64,7 +64,7 @@ CHECK_COLS = ['direction', 'rule', 'lst', 'scope', 'stokes', 'date', 'pix_x', 'p
 PULSAR_RECORD = 'pulsar_stage.csv'                # every catalog row the pulsar stage restored or removed
 PULSAR_RECORD_COLS = ['action', 'lst', 'scope', 'stokes', 'date', 'pix_x', 'pix_y', 'ra', 'dec', 'cand_id', 'words']
 PULSAR_GROUPS = 'pulsar_groups.csv'               # every group the stage judged
-PULSAR_GROUP_COLS = ['pulsar', 'n', 'members', 'sep_arcsec', 'r99_arcsec', 'consistent']
+PULSAR_GROUP_COLS = ['pulsar', 'n', 'members', 'sep_arcsec', 'r99_arcsec', 'consistent', 'grouping']   # grouping: across-epoch (may rescue) / per-epoch (alone may remove)
 PULSAR_REMOVED = 'master_catalog_pulsar_removed.csv'   # the rows the pulsar stage removed, each with its removal_reason
 MERGED_ATTEMPTS = 'merged_attempts.csv'           # the attempts the merge merged (deep_chain writes it in the pulsars stage)
 RESTORED_TAG = 'R'                                # <S>R_<lst>_<date>_<band>_<n>: a restored row (VM_: a v110 re-admission)
@@ -492,7 +492,8 @@ def pulsars(U, manifest, label, catalog_dir=None, out=print):
            [dict(rows[i], removal_reason=cut[i][1]) for i in sorted(removed)])
     _write(os.path.join(CD, PULSAR_GROUPS), PULSAR_GROUP_COLS,
            [dict(pulsar=pn, n=n, members='|'.join(rows[i]['cand_id'] for i in mem), sep_arcsec=sep, r99_arcsec=r99,
-                 consistent=int(ok)) for (pn, n, sep, r99), (_pn, mem, ok) in zip(plog, members)])
+                 consistent=int(ok), grouping='across-epoch' if kind == 'all' else 'per-epoch')
+            for (pn, n, sep, r99, kind), (_pn, mem, ok, _k) in zip(plog, members)])
     out(f'pulsar stage: {n_psr} pulsars in table decisions, {len(plog)} groups; restored {len(restored)} table-cut detections '
         f'of pulsar-consistent sources, removed {len(removed)} pulsar-exempted detections of inconsistent sources; '
         f'{len(raw)} merged rows -> {len(kept)}', flush=True)
