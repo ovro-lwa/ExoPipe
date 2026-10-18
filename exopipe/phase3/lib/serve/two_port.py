@@ -380,6 +380,14 @@ class Store:
             for key, pg in list(self.pages.items()):
                 del self.pages[key]
                 sys.modules.pop(pg.mod.__name__, None)
+            # the page code's helper modules (review_filters and the like, imported once and shared by every page) are reloaded
+            # too, so new page code reaches the rebuilt pages: a deploy is a registry change (touch registry.json)
+            dirs = {os.path.dirname(os.path.realpath(e['code'])) + os.sep for e in reg.values() if e['kind'] == 'review'}
+            for name, mod in list(sys.modules.items()):
+                f = getattr(mod, '__file__', None) or ''
+                if f and any(os.path.realpath(f).startswith(d) for d in dirs) and not name.startswith('exopipe.'):
+                    sys.modules.pop(name, None)
+            importlib.invalidate_caches()
             self.reg, self.reg_mtime = reg, m
 
     def port_map(self):

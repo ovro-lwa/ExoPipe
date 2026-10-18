@@ -272,6 +272,19 @@ def test_pages():
     os.utime(reg, (os.path.getmtime(reg) + 5,) * 2)
     s, h, b = get('pa', '/')
     check('a changed registry entry is rebuilt on its next request', b'Page A2' in b, b[:120])
+    # a helper module beside the page code (as review_filters is) is reloaded at a registry change: new page code is deployed
+    open(os.path.join(TMP, 'helper_mod.py'), 'w').write('V = 1\n')
+    code_now = open(code).read().replace("FLAG_AT_IMPORT = os.environ.get('P3_TEST_FLAG', 'unset')",
+                                         "FLAG_AT_IMPORT = os.environ.get('P3_TEST_FLAG', 'unset')\nimport helper_mod")
+    code_now = code_now.replace("f'flag-at-import={FLAG_AT_IMPORT} ", "f'helper={helper_mod.V} flag-at-import={FLAG_AT_IMPORT} ")
+    open(code, 'w').write(code_now)
+    os.utime(reg, (os.path.getmtime(reg) + 10,) * 2)
+    s, h, b = get('pa', '/')
+    check('helper module loaded', b'helper=1' in b, b[:160])
+    open(os.path.join(TMP, 'helper_mod.py'), 'w').write('V = 2  # a real edit changes the file\n')
+    os.utime(reg, (os.path.getmtime(reg) + 10,) * 2)
+    s, h, b = get('pa', '/')
+    check('a registry change reloads the helper modules beside the page code (a deploy)', b'helper=2' in b, b[:160])
 
 
 def main():
