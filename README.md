@@ -1,16 +1,8 @@
 # ExoPipe
 
-Search pipeline for low-frequency radio emission from exoplanets and other
-transient sources in OVRO-LWA all-sky imaging data.
-
-ExoPipe processes continuous all-sky snapshot imaging from the Owens Valley
-Radio Observatory Long Wavelength Array (OVRO-LWA) into deep sidereally
-co-added images and multi-cadence transient searches in Stokes I and
-Stokes V, with a follow-up harness for candidate validation.
-
-**This repository is pre-release.** The v2 tree is undergoing golden-cell
-validation against the production outputs of the v1 codebase; interfaces
-and layout may change until that validation is signed off.
+Pipeline for coadded, per-epoch and mosaiced image products from the continuous all-sky snapshot imaging of the Owens Valley
+Radio Observatory Long Wavelength Array (OVRO-LWA), together with untargeted transient searches and forced photometry on populations of interest (exoplanets, stars, Long Period Transients (LPTs), solar system planets, etc.). ExoPipe processes data into sidereally co-added images and multi-cadence transient searches in Stokes I and
+Stokes V, with a follow-up harness for candidate validation. This repository is pre-release. The v2 tree is undergoing golden-cell validation against the production outputs of the v1 codebase; interfaces and layout may change until that validation is signed off.
 
 ## Pipeline overview
 
@@ -27,22 +19,21 @@ Processing is organized into three phases:
   FITS headers and time semantics.
 - **Phase 3 — co-addition and transient search.** Quality assessment and
   exclusion gating; two-pass inverse-variance co-addition into per-LST
-  master images; master subtraction and striation removal; source
+  averaged images and combined all-sky mosaics; coadd subtraction and striation removal; source
   detection in the residuals with a gated veto chain; catalog, cutout, and
   dossier products; astrometric association; and follow-up capabilities
   (forced photometry, snapshot re-imaging, periodicity analysis).
 
 Searches run at four tiers, each in both Stokes I and Stokes V:
 
-| Tier | Bandwidth | Cadence |
+| Tier | Integration | Images searched |
 |---|---|---|
-| Wideband deep | full band | full co-add per LST cell |
-| Subband deep | per subband | full co-add per LST cell |
-| Wideband 10-min | full band | 10-minute intervals |
-| Subband 10-min | per subband | 10-minute intervals |
+| Deep | 1 hour (one image per LST hour per night) | wideband and subband |
+| 10-minute | 10 minutes (six per hour) | wideband and subband |
+| 1-minute | 1 minute | wideband and subband |
+| 10-second (snapshot) | one 10-second integration | wideband and subband |
 
-Ten-second snapshot photometry is available as a gated follow-up stage for
-candidates, not as a blind search tier.
+Every tier is an untargeted transient search. Forced photometry on populations of interest runs alongside as follow-up.
 
 ## Repository layout
 
@@ -100,14 +91,9 @@ end-to-end validation harnesses accompany the v1→v2 migration.
 ExoPipe is developed for the OVRO-LWA project at the Owens Valley Radio
 Observatory, California Institute of Technology.
 
-Principal Investigator: Gregg Hallinan (Caltech).
-
-OVRO-LWA is supported by the National Science Foundation and by the OVRO-LWA
-partner institutions. See the [ovro-lwa](https://github.com/ovro-lwa)
+Principal Investigator: Gregg Hallinan (Caltech); co-PIs: Andrea Isella (Rice), Bin Chen (NJIT), Judd Bowman (ASU) and Andres Romero-Wolf (JPL). Project Scientist: Marin Anderson (JPL). OVRO-LWA has been supported by the National Science Foundation (NSF), NASA, by OVRO-LWA partner institutions (NJIT, Caltech, Rice, ASU, JPL) and through funding from the Mt. Cuba Astronomical Foundation and the Wilf Family Discovery Fund in Space and Planetary Science. The OVRO-LWA is a pathfinder for radio camera technology developed as part of the DSA project. See the [ovro-lwa](https://github.com/ovro-lwa)
 organization for related software.
 
 ## License
 
-ExoPipe is licensed under the GNU General Public License v3 (GPLv3) —
-ruled R-PUB2 (Gregg 2026-08-15), superseding the earlier pending-selection
-note. The GPLv3 full text ships as `LICENSE` in the published package.
+ExoPipe is licensed under the GNU General Public License v3 (GPLv3); the full text is in `LICENSE`.
