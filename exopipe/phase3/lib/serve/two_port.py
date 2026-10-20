@@ -573,6 +573,11 @@ def serve_request(store, inspect, method, path, headers, body=b''):
         return 200, [('Content-Type', 'text/html; charset=utf-8')], hub_page(store, inspect).encode()
     m = re.match(r'^/(p|s)/([A-Za-z0-9_.-]+)(/.*)?$', path.split('?', 1)[0])
     if not m:
+        # every other path is a file of the listener's hub site (the pages, reports and folders the plain server on the hub
+        # port served beside index.html: data_processing.html, nights/, periodicity_*/ ...), its port links rewritten
+        hub = store.entry('hub_inspection' if inspect else 'hub')
+        if hub is not None and hub['kind'] == 'static':
+            return static_file(hub, path, store.port_map())
         return 404, [('Content-Type', 'text/plain')], b'not found'
     kind, pid, rest = m.group(1), m.group(2), m.group(3) or '/'
     e = store.entry(pid)
@@ -611,9 +616,17 @@ def static_file(entry, rest, port_map=None):
     root = os.path.realpath(entry['root'])
     rel = urllib.parse.unquote(rest.split('?', 1)[0]).lstrip('/') or 'index.html'
     full = os.path.realpath(os.path.join(root, rel))
+    if not (full == root or full.startswith(root + os.sep)):
+        return 404, [('Content-Type', 'text/plain')], b'not found'
     if os.path.isdir(full):
+        if not os.path.isfile(os.path.join(full, 'index.html')):    # a folder without an index: listed, as the plain server did
+            names = sorted(os.listdir(full))
+            rows = ''.join(f'<li><a href="{urllib.parse.quote(n)}{"/" if os.path.isdir(os.path.join(full, n)) else ""}">'
+                           f'{html.escape(n)}</a></li>' for n in names)
+            body = f'<!doctype html><html><body><h1>{html.escape(rel)}</h1><ul>{rows}</ul></body></html>'
+            return 200, [('Content-Type', 'text/html; charset=utf-8')], body.encode()
         full = os.path.join(full, 'index.html')
-    if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
+    if not os.path.isfile(full):
         return 404, [('Content-Type', 'text/plain')], b'not found'
     ext = os.path.splitext(full)[1].lower()
     ctype = {'.html': 'text/html; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.css': 'text/css',
