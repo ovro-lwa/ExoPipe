@@ -614,7 +614,7 @@ def serve_request(store, inspect, method, path, headers, body=b''):
 
 def static_file(entry, rest, port_map=None):
     root = os.path.realpath(entry['root'])
-    rel = urllib.parse.unquote(rest.split('?', 1)[0]).lstrip('/') or 'index.html'
+    rel = urllib.parse.unquote(rest.split('?', 1)[0]).lstrip('/') or '.'      # the root: its index.html, else its listing
     full = os.path.realpath(os.path.join(root, rel))
     if not (full == root or full.startswith(root + os.sep)):
         return 404, [('Content-Type', 'text/plain')], b'not found'
