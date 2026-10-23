@@ -77,6 +77,9 @@ class search_detect(_Section):
     SANITY_X = 3.0                                          # x cell median, I (qa3) and V (frame rms); P3_SANITY_I_X (deep_search.py:77;
                                                             # R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT)
     SEARCH_TIER_SIGMA = 5.0                                 # x 1.4826 MAD above the median, per Stokes; P3_SEARCH_TIER_SIGMA (deep_search.py:455)
+    WIDEBAND_MEMBER_ADMISSION = True                        # a Red/Green/Blue/Full epoch is searched in a Stokes only when every member
+                                                            # subband epoch passes this search's admission in that Stokes;
+                                                            # P3_WIDEBAND_MEMBER_ADMISSION (lib/search/wideband_admission.py)
     BEAM_GATE_RATIO = 1.5                                   # x median fitted-beam area; P3_BEAM_GATE_RATIO (deep_search.py:1353; R-BEAM-REFUSALS-STAND-1P5)
     # the cell-median gates' minimum counts (Gregg 2026-10-14: production's 5 each, kept; a skip is counted -
     # fallbacks.SEARCH_GATE_SKIP_FALLBACK - never refused): P3_SANITY_MIN_NIGHTS, P3_SEARCH_TIER_MIN, P3_BEAM_GATE_MIN_NIGHTS
@@ -151,6 +154,7 @@ class search_detect(_Section):
              'AXIS_REMOVE': ('R-SIZE-AXIS-GATE-1.5-RATIFIED', 'R-GATE-TIGHTENED-SIZE-1.5-AXIS-1.5-VALIDATED-ON-KNOWN-TRANSIENTS'),
              'SANITY_X': 'R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT',
              'SEARCH_TIER_SIGMA': 'R-SEARCH-TIER-THRESHOLD-5-SIGMA-MAD-LANDED-RESEARCH-WORKLIST-493',
+             'WIDEBAND_MEMBER_ADMISSION': 'R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION',
              'BEAM_GATE_RATIO': 'R-BEAM-REFUSALS-STAND-1P5',
              'SANITY_MIN_NIGHTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'SEARCH_TIER_MIN': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'BEAM_GATE_MIN_NIGHTS': ('R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'R-BEAM-GATE-FIVE-NIGHT-FLOOR-WAIVED-THIN-CELLS-SEARCHED')}
     PROTECTED_KEYS = ('I_MASK_FLOOR_DEG', 'DETECTION_FLOOR_SIGMA', 'V_BDSF_THRESH_PIX', 'I_BDSF_THRESH_PIX', 'I_BDSF_THRESH_ISL',

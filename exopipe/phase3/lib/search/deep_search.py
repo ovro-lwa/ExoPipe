@@ -20,6 +20,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from exopipe.phase3.lib.masters.coadd import apply_flow_field, build_striation_model
 from exopipe.phase3.lib.search import parent_curve_table as _PCT
+from exopipe.phase3.lib.search import wideband_admission as _WBA
 from exopipe.phase3.lib.search.identification import (build_sigma_stack, run_identification_i,
                              run_identification_v, STRIATION_WINDOW_DEG)
 from exopipe.phase3.core.residuals import fft_upsample2, fft_decimate2, write_up_fits
@@ -219,6 +220,7 @@ REFUSAL_COLUMNS = (
     ('_sanity_I_excluded.csv', 'lst,scope,date,qa3_rms_mjy,cell_median_qa3_rms_mjy,attempt'),
     ('_sanity_excluded.csv', 'lst,scope,date,qa3_rms_mjy,cell_median_qa3_rms_mjy,attempt'),
     ('_searchtier_excluded.csv', 'lst,scope,date,stokes,stage1_rms,threshold,attempt'),
+    ('_wbmember_excluded.csv', 'lst,scope,date,stokes,member,reason,attempt'),   # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION: one row per (member or image, reason)
     ('_stale_input_excluded.csv', 'lst,scope,date,why,attempt'),
     ('_beam_excluded.csv', 'lst,scope,date,beam_area_over_cell_median,threshold,attempt'),
     ('_sanity_V_excluded.csv', 'lst,scope,date,v_rms_mjy,cell_median_v_rms_mjy,attempt'),
@@ -603,6 +605,7 @@ _atexit.register(_cleanup_spills)
 
 _STRIATION_OFF = os.environ.get('P3_STRIATION_OFF') == '1'   # battery variable (Gregg 2026-09-08); production default ON
 _REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'
+WIDEBAND_MEMBER_ADMISSION = os.environ.get('P3_WIDEBAND_MEMBER_ADMISSION', '1') == '1'   # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION
 SEARCH_TIER_SIGMA = float(os.environ.get('P3_SEARCH_TIER_SIGMA', '5.0'))   # R-GC10 Layer-2 search tier: 4.0 (Gregg 2026-09-09) -> 5.0 (Gregg 2026-09-13 "Change to MAD 5 for exclusion from transient search")         # battery variable: no per-frame x2 flow refinement (night flow only)
 
 
@@ -1483,6 +1486,43 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     except FileNotFoundError as _e:
         raise RuntimeError(f'{lst} {scope}: search-tier gate input missing ({_e}); REFUSING')
     skip_I_dates.update({d for d in _skipI_tier if d in dates})      # per-Stokes search-tier refusals, I side (Gregg 2026-09-13)
+    # (1c-bis) WIDEBAND MEMBER ADMISSION (R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION, Gregg 2026-10-23: "Perhaps use the same QA
+    # criteria used for assessing if an image is included in the transient search" ... "If a subband is missing the wideband does not
+    # get created"): a Red / Green / Blue / Full epoch is searched in a Stokes only when every member subband epoch of the same night
+    # passes this search's own admission in that Stokes - present, not excluded, night-image and epoch gates (both Stokes), search tier
+    # (that Stokes) - computed on the member cells' records (lib/search/wideband_admission.py). Never a restack with a subset.
+    _skipV_wb = set()
+    if cadence == 'deep' and WIDEBAND_MEMBER_ADMISSION and scope in _WBA.GROUPS:
+        from exopipe.common.phase2_config import SUBBAND_BANDS as _SBB
+        from exopipe.phase3.lib.masters import night_image_gate as _NGm, epoch_gate as _EGm
+        _wbp = dict(sigma=SEARCH_TIER_SIGMA, tier_min=SEARCH_TIER_MIN, sanity_x_both=10.0, sanity_x_i=SANITY_I_X,
+                    sanity_min=SANITY_MIN_NIGHTS, beam_ratio=float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')),
+                    beam_min=(10 ** 9 if os.environ.get('P3_BEAM_GATE_OFF') == '1' else BEAM_GATE_MIN_NIGHTS))
+        _wbrd = dict(night_failed=_NGm.failed_dates, epoch_failed=_EGm.failed_dates, same_state_v=_same_state_refused_v,
+                     excluded=lambda _l, _m, _n: is_excluded(_l, _m, _n, _excl), beam_area=_WBA.beam_area)
+        _recs = {_m: _WBA.member_record(f'{coadd_root()}/{lst}_{_m}', _m, lst, _wbp, _wbrd,
+                                        admitted=_ADS.nights(f'{coadd_root()}/{lst}_{_m}', _m, cadence))   # WAVE2 D-ADMIT: as the member's own search
+                 for _m in _WBA.members(scope, _SBB)}
+        _sci = {}
+        try:
+            _sci = {r['date']: r.get('sci_dir') or '' for r in csv.DictReader(open(f'{base}/coadd_final/weights.csv'))}
+        except FileNotFoundError:
+            raise RuntimeError(f'{lst} {scope}: coadd_final/weights.csv missing - the wideband member admission cannot find the '
+                               f'nights\' images; REFUSING')
+        _ex18 = lambda _n: scope in ('Red', 'Full') and (lst, '18', _n) in _excl
+        _imgs = {_kd(d): _WBA.image_findings(lst, scope, _sci.get(_kd(d), ''), _kd(d), _ex18(_kd(d))) for d in dates}
+        _wbr = _WBA.refusals(lst, scope, [_kd(d) for d in dates], _recs, _imgs)
+        _wbI = {d for d in dates if (_kd(d), 'I') in _wbr}
+        _skipV_wb = {d for d in dates if (_kd(d), 'V') in _wbr}
+        if _wbr:
+            with open(f'{_refdir}/{lst}_{scope}_wbmember_excluded.csv', 'a') as _wf:
+                for (_n, _st), _why in sorted(_wbr.items()):
+                    for _m, _r in _why:
+                        _wf.write(f'{lst},{scope},{_n},{_st},{_m},{_r.replace(",", ";")},{_attempt}\n')
+            print(f'  {lst} {scope}: WIDEBAND MEMBER ADMISSION - I search refuses {len(_wbI)} epoch(s) {sorted(_wbI)}; V search '
+                  f'refuses {len(_skipV_wb)} epoch(s) {sorted(_skipV_wb)} (the image or a member subband in it fails the search '
+                  f'admission in that Stokes; refusals/{lst}_{scope}_wbmember_excluded.csv)')
+        skip_I_dates.update(_wbI)
     # (1d) INPUT-PROVENANCE GATE (2026-09-05, after 02h 36MHz was parked six times on
     # a stale 2025-01-02 product from 2026-08-13 with BMAJ=0 that the 2026-09-02 rebuild
     # never regenerated - the night has no Phase-2 product): an epoch is searched only
@@ -1851,6 +1891,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             raise
         print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
         fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope}: the V sanity gate could not run ({_e})')
+    skip_V_dates |= {d for d in _skipV_wb if d in resid_V}          # wideband member admission, V side - outside the V sanity try,
+                                                                    # so a sanity failure can never drop it (R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION)
     if _b02:                                                           # WAVE2 B-02: the DAYTIME GATE per frame (step 3a) - the
         _dfr = _RR.daytime_candidate_frames(lst, scope, ebase, dates, {'I': resid_I, 'V': resid_V},   # WAVE2 B-02: the
                                             {'I': skip_I_dates, 'V': skip_V_dates})   # WAVE2 B-02: conformance's rule, on the frames searched

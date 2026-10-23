@@ -67,6 +67,9 @@ REFUSAL_KINDS = {'nightimage': (4, 'both'), 'epochgate': (4, 'both'), 'sanity': 
                  'sanity_V': (6, 'V'), 'searchtier': (7, 'row'), 'stale_input': (5, 'both'), 'beam': (6, 'both'),
                  'extraction_I': (7, 'I'), 'extraction_V': (7, 'V'),
                  'daytime': (6, 'row'),     # B-02 step 3a: the daytime gate per frame (lst, scope, date, Stokes, reason, attempt)
+                 'wbmember': (7, 'row'),    # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION: a wideband epoch whose member
+                                            # subband fails the admission in that Stokes (lst, scope, date, Stokes, member, reason, attempt;
+                                            # one row per failing member)
                  'datadecisions': (4, 'both')}   # B-02 step 3c: the nights data_decisions excluded (lst, scope, date, attempt)
 # kinds that record, not refuse (the nights data_decisions excluded when the search ran): refused_dates leaves them out, so
 # the gate_ledger and image_ledger content tests do not fail an append that searched a night its base recorded, and the
