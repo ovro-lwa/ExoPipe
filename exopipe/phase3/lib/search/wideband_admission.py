@@ -10,8 +10,8 @@ allowance 18 MHz (SUBBAND_ONLY_EXCL; 2026-10-17 "Red can be built without 18 MHz
 A wideband epoch (Red / Green / Blue / Full) is searched in a Stokes only when (lib/masters/coadd helpers, headers only):
   IMAGE   that Stokes' Phase 2 image of the night (I: the alignment image, V: the Taper Robust-0 deep image, from the night's sci_dir
           in the wideband cell's weights.csv) shows its stacked subband set (coadd.wideband_stacked_subbands); the set holds every
-          required subband (the group minus 18 MHz); an excluded 18 MHz is not in it;
-  MEMBERS every subband IN THAT SET passes, in that Stokes, the deep search's own per-epoch admission, mirrored from the member cell's
+          required subband (the group minus 18 MHz);
+  MEMBERS every subband IN THAT SET except 18 MHz passes, in that Stokes, the deep search's own per-epoch admission, mirrored from the member cell's
           records in the search's order (lib/search/deep_search.run_deep_cell):
             present      the night has an I product in the member's subtracted/ (the search's epoch list) or is an admitted night;
             data_decisions  not excluded;                                                         (both Stokes)
@@ -27,6 +27,11 @@ A wideband epoch (Red / Green / Blue / Full) is searched in a Stokes only when (
                          BEAM_MIN nights: skipped); a night without a readable beam REFUSES the member, as the engine refuses the cell.
   NOT mirrored (they need the member's search products): alignment flows (a night without a flow), the V sanity gate (the V
   residual frame's rms), extraction failures. A member cell without its records REFUSES (RuntimeError naming the member).
+THE ONE EXCEPTION, 18 MHz (Gregg 2026-10-23: "No! The one exception to the exclusion rule is 18 MHz"): an 18 MHz member that is
+excluded or fails admission never refuses Red / Full; going forward Red / Full are built without it, and an existing image holding it
+is kept (as the masters: 2026-10-17 "enforce going forward, no rebuild now"; 18 MHz is always downweighted - 0.5% median, 2% max of
+a Red master's weight). Until 2026-10-23 this module refused an image holding an excluded 18 MHz and judged an 18 MHz member like
+the others (CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023).
 A failing member refuses the wideband epoch in that Stokes - never a restack from a subset. Refusals are written one row per (night,
 Stokes, member or image, reason) by the caller (refusals/<LST>_<band>_wbmember_excluded.csv).
 """
@@ -37,6 +42,7 @@ import os
 import re
 
 GROUPS = ('Red', 'Green', 'Blue', 'Full')
+EXCEPTION = '18MHz'          # the one member whose exclusion or failure never refuses a wideband (Gregg; module docstring)
 
 
 def members(scope, subband_bands):
@@ -218,10 +224,11 @@ def member_record(cell_dir, member, lst, p, readers, admitted=({}, {})):
     return dict(present=present, both=both, i_only=i_only, v_only=v_only, tier=tier)
 
 
-def image_findings(lst, scope, sci_dir, night, ex18):
+def image_findings(lst, scope, sci_dir, night, ex18=None):
     """{stokes: (stacked subband names {'23MHz', ...} or None, [reasons])} of the wideband's own Phase 2 images of the night (I: the
     alignment image, V: the Taper Robust-0 deep image), with lib/masters/coadd's helpers: a missing image, a set the headers cannot
-    show, a required subband missing (the group minus 18 MHz), or an excluded 18 MHz held (ex18: (LST, 18 MHz, night) excluded)."""
+    show, or a required subband missing (the group minus 18 MHz). An excluded 18 MHz the image holds is NOT a reason (the 18 MHz
+    exception, module docstring); ex18 is accepted and ignored."""
     from exopipe.phase3.lib.masters import coadd as C
     req = C._WB_SUBS[scope] - C.SUBBAND_ONLY_EXCL
     out = {}
@@ -238,16 +245,14 @@ def image_findings(lst, scope, sci_dir, night, ex18):
         miss = sorted(req - subs, key=int)
         if miss:
             why.append('stacked from an incomplete subband set (missing %s)' % ' '.join(m + 'MHz' for m in miss))
-        if ex18 and '18' in subs:
-            why.append('holds the excluded 18 MHz')
         out[st] = ({s + 'MHz' for s in subs}, why)
     return out
 
 
 def refusals(lst, scope, nights, records, images):
     """{(night, stokes): [(who, reason), ...]}. records: {member: member_record(...)}; images: {night: image_findings(...)}. A night
-    is refused in a Stokes when its image of that Stokes fails, or any member IN THAT IMAGE'S SET fails in that Stokes (a member the
-    image does not hold - the allowed 18 MHz - is not judged)."""
+    is refused in a Stokes when its image of that Stokes fails, or any member IN THAT IMAGE'S SET other than 18 MHz fails in that
+    Stokes (a member the image does not hold is not judged; 18 MHz is the one exception, module docstring)."""
     out = {}
     for night in nights:
         img = images.get(night) or {}
@@ -256,7 +261,7 @@ def refusals(lst, scope, nights, records, images):
             for w in why:
                 out.setdefault((night, st), []).append((scope, w))
             for m, rec in records.items():
-                if subs is not None and m not in subs:
+                if (subs is not None and m not in subs) or m == EXCEPTION:
                     continue
                 rs = []
                 if night not in rec['present']:

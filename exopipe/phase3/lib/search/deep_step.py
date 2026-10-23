@@ -623,7 +623,8 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
             raise Refusal(f'{item.cell}: {name} missing - gate {gate} cannot run; refused (never skipped)')
     if not si.ALLOW_OLD_MASTERS:
         from exopipe.phase3.lib.masters import admit as AD, membership as MB
-        viol, rep = AD.verify(base)                    # D-ADMIT: an admitted night is 'admitted, rebuild pending', not absent
+        viol, rep = AD.verify(base, keep_18=True)      # D-ADMIT: an admitted night is 'admitted, rebuild pending', not absent; a night
+        #                                                holding its excluded 18 MHz is kept until the next rebuild (18 MHz exception)
         viol = viol + MB.verify_products(base)
         f['gates'].append(('E3 membership rulings', not viol, f'{len(viol)} violation(s)'
                            + (f'; {len(rep)} admitted night(s), rebuild pending' if rep else '')))

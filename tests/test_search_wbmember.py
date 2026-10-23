@@ -154,7 +154,11 @@ def main():
                        'V': (None, ['x.fits cannot show its subbands'])}}
         ref = W.refusals('06h', 'Red', ['n1', 'n2'], recs, imgs)
         check('refusals: a failing member the image does not hold (18 MHz allowance) is not judged', ('n1', 'I') not in ref, ref)
-        check('refusals: the same member in the V image refuses V', ('n1', 'V') in ref and ref[('n1', 'V')] == [('18MHz', 'epoch gate')], ref)
+        check('refusals: a failing 18 MHz member the image DOES hold never refuses (the one exception, Gregg 2026-10-23)',
+              ('n1', 'V') not in ref, ref)
+        bad23 = dict(present={'n1'}, both={'n1': ['epoch gate']}, i_only={}, v_only={}, tier={'I': {}, 'V': {}})
+        ref2 = W.refusals('12h', 'Red', ['n1'], dict(recs, **{'23MHz': bad23}), imgs)
+        check('refusals: a failing 23 MHz member refuses both Stokes', ('n1', 'I') in ref2 and ('n1', 'V') in ref2, ref2)
         check('refusals: the image\'s own reasons refuse that Stokes', ref.get(('n2', 'I'), [])[:1] == [('Red', 'stacked from an incomplete '
               'subband set (missing 36MHz)')] and ('n2', 'V') in ref, ref)
         check('refusals: no reason holds a comma', all(',' not in r for v in ref.values() for _, r in v))
@@ -215,9 +219,14 @@ def main():
                   not any(m == '18MHz' for k, v in ref.items() for m, _ in v if k[0] == '2024-12-24'), ref)
             if os.path.exists(CENSUS):
                 for lst, scope in (('11h', 'Green'), ('16h', 'Red'), ('13h', 'Red')):
-                    cen = {(r['date'], r['stokes']) for r in csv.DictReader(open(CENSUS)) if r['lst'] == lst and r['group'] == scope}
-                    ref = cell_refusals(lst, scope, sorted({d for d, _ in cen}))
-                    check('real %s %s: every census refusal is refused' % (lst, scope), cen <= set(ref), sorted(cen - set(ref)))
+                    rows_ = [r for r in csv.DictReader(open(CENSUS)) if r['lst'] == lst and r['group'] == scope]
+                    # the census (2026-10-23 morning) judged 18 MHz like the other members; the 18 MHz exception keeps a night whose
+                    # ONLY failing member is 18 MHz (Gregg 2026-10-23 "No! The one exception to the exclusion rule is 18 MHz")
+                    cen = {(r['date'], r['stokes']) for r in rows_ if r['failing_members'] != '18MHz'}
+                    only18 = {(r['date'], r['stokes']) for r in rows_ if r['failing_members'] == '18MHz'}
+                    ref = cell_refusals(lst, scope, sorted({r['date'] for r in rows_}))
+                    check('real %s %s: every census refusal is refused (18 MHz-only failures excepted)' % (lst, scope), cen <= set(ref), sorted(cen - set(ref)))
+                    check('real %s %s: no night whose only failing member is 18 MHz is refused' % (lst, scope), not (only18 & set(ref)), sorted(only18 & set(ref)))
         else:
             print('SKIP real-data checks (no %s)' % PROD_COADD)
     finally:

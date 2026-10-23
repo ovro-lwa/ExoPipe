@@ -427,10 +427,40 @@ def membership(cell_dir, violations, policy=None):
     return keep, reports
 
 
-def verify(cell_dir, exclusions=None, policy=None, mb=None):
+HELD_18 = 'wideband admission: 18 MHz excluded but '      # membership.verify's text for a Red / Full night holding its excluded 18 MHz
+IN_MASTER = ': IN the master but '
+
+
+def keep_held_18(violations):
+    """(violations, reports): a master night whose ONLY finding is that its Red / Full image holds the night's excluded 18 MHz is kept
+    until the master's next rebuild - reported, not a violation (Gregg 2026-10-17 "enforce going forward, no rebuild now",
+    IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD; 2026-10-23 "No! The one exception to the exclusion rule is 18 MHz"). With other
+    findings the violation stays, without the 18 MHz one. Only for masters built before the enforcement: every co-add since refuses
+    such a night (coadd.admit_night), so a master the branch builds and installs is verified without this (verify keep_18=False)."""
+    keep, reports = [], []
+    for v in violations:
+        if IN_MASTER not in v or HELD_18 not in v:
+            keep.append(v)
+            continue
+        head, why = v.split(IN_MASTER, 1)
+        rest = [w for w in why.split('; ') if not w.startswith(HELD_18)]
+        reports.append(head + ': holds its excluded 18 MHz in the Red / Full image - kept until the master\'s next rebuild '
+                       '(18 MHz exception; "enforce going forward, no rebuild now")')
+        if rest:
+            keep.append(head + IN_MASTER + '; '.join(rest))
+    return keep, reports
+
+
+def verify(cell_dir, exclusions=None, policy=None, mb=None, keep_18=False):
     """membership.verify of the cell read with its admitted nights - (violations, reports), see membership(). The one entry
     point of every branch step that verifies a cell (``mb``: the membership module a caller loaded, default the branch's);
-    membership.py stays production's text (S-G6)."""
+    membership.py stays production's text (S-G6). keep_18: an EXISTING master's nights holding their excluded 18 MHz are reported,
+    not violations (keep_held_18) - the search of the installed masters; installs of new builds verify strictly."""
     if mb is None:
         from exopipe.phase3.lib.masters import membership as mb
-    return membership(cell_dir, mb.verify(cell_dir, exclusions), policy)
+    viol = mb.verify(cell_dir, exclusions)
+    rep18 = []
+    if keep_18:
+        viol, rep18 = keep_held_18(viol)
+    viol, rep = membership(cell_dir, viol, policy)
+    return viol, rep18 + rep
