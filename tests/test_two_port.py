@@ -287,6 +287,21 @@ def test_pages():
     check('a static site whose root has no index is listed at its root', s == 200 and b'n1.html' in b, (s, b[:120]))
     s, h, b = TP.serve_request(sth, False, 'GET', '/../registry.json', {})
     check('the hub site never serves outside its root', s == 404, s)
+    outside = os.path.join(TMP, 'outside_assets')            # a site's own symlink to a tree elsewhere (review_hub/qa_assets/*)
+    os.makedirs(os.path.join(outside, 'qa'))
+    open(os.path.join(outside, 'qa', 'img.png'), 'wb').write(b'PNGDATA')
+    os.symlink(outside, os.path.join(hubdir, 'qa_assets'))
+    s, h, b = TP.serve_request(sth, False, 'GET', '/qa_assets/qa/img.png', {})
+    check('a symlink the site holds is followed (the data-processing QA images)', s == 200 and b == b'PNGDATA', (s, b[:40]))
+    reg_b = os.path.join(TMP, 'registry_hub_both.json')     # production since 2026-10-27: both listeners serve the review hub
+    write_registry(reg_b, json.load(open(reg_h))['pages'] + [{'id': 'hub_inspection', 'kind': 'static', 'root': hubdir,
+                                                               'greenlit': True}])
+    s, h, b = TP.serve_request(TP.Store(reg_b), True, 'GET', '/qa_assets/qa/img.png', {})
+    check('... on the inspection listener as well (one hub site for both)', s == 200 and b == b'PNGDATA', (s, b[:40]))
+    s, h, b = TP.serve_request(sth, False, 'GET', '/qa_assets/../../registry_hub.json', {})
+    check('... but a path written to leave the site through it is refused', s == 404, s)
+    s, h, b = TP.serve_request(sth, False, 'GET', '/qa_assets/qa/../../../registry_hub.json', {})
+    check('... at any depth', s == 404, s)
     s, h, b = TP.serve_request(st, True, 'GET', '/', {})
     check('the inspection hub lists greenlit entries only', b'/p/pa/' in b and b'/p/pb/' not in b, b[:200])
     # a registry edit rebuilds the page on its next request

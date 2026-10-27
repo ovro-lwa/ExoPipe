@@ -615,9 +615,13 @@ def serve_request(store, inspect, method, path, headers, body=b''):
 def static_file(entry, rest, port_map=None):
     root = os.path.realpath(entry['root'])
     rel = urllib.parse.unquote(rest.split('?', 1)[0]).lstrip('/') or '.'      # the root: its index.html, else its listing
-    full = os.path.realpath(os.path.join(root, rel))
-    if not (full == root or full.startswith(root + os.sep)):
+    # The path as written must stay inside the site ('..' never leaves it); a symlink the site itself holds is then followed, as
+    # the plain hub server (python -m http.server) did. The data-processing page's QA images and movies are such links into Lustre
+    # (review_hub/qa_assets/*) and answered 404 from the move to two ports until 2026-10-27 (Gregg: that page on both listeners).
+    lexical = os.path.normpath(os.path.join(root, rel))
+    if not (lexical == root or lexical.startswith(root + os.sep)):
         return 404, [('Content-Type', 'text/plain')], b'not found'
+    full = os.path.realpath(lexical)
     if os.path.isdir(full):
         if not os.path.isfile(os.path.join(full, 'index.html')):    # a folder without an index: listed, as the plain server did
             names = sorted(os.listdir(full))
