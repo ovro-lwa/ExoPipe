@@ -255,7 +255,20 @@ def test_pages():
     s, h, b = get('pa', '/source/J1')
     check('review: the page with its form, action rewritten', b'action="/p/pa/label"' in b, b)
     s, h, b = TP.serve_request(st, True, 'POST', '/p/pa/label', {}, b'source_id=J1')
-    check('inspection: every POST refused', s == 403, s)
+    check('inspection: a judging POST refused', s == 403, s)
+    # Gregg 2026-10-27: the per-person review lists are written from the inspection listener as well - POST /list, /list/user only
+    for path, ok in (('/p/pa/list', True), ('/p/pa/list/user', True), ('/p/pa/list?x=1', True), ('/p/pa/listx', False),
+                     ('/p/pa/list/user/x', False), ('/p/pa/label', False), ('/list', False)):
+        check('inspection_write_ok POST %s -> %s' % (path, ok), TP.inspection_write_ok('POST', path) is ok)
+    check('inspection_write_ok: a GET is not a write', TP.inspection_write_ok('GET', '/p/pa/list') is False)
+    refusal = b'inspection mode: this view is read-only and records nothing'      # the server's own refusal
+    s, h, b = TP.serve_request(st, True, 'POST', '/p/pa/list', {}, b'source_id=J1')
+    check('inspection: a list POST reaches the page (the server does not refuse it; this test page then does)',
+          b != refusal and b == b'read-only', (s, b[:80]))
+    s, h, b = TP.serve_request(st, True, 'POST', '/p/pa/list/user', {}, b'name=Alice')
+    check('inspection: a new-user POST reaches the page', b != refusal and b == b'read-only', (s, b[:80]))
+    s, h, b = TP.serve_request(st, True, 'POST', '/p/pa/label', {}, b'source_id=J1')
+    check('inspection: ... while a judging POST gets the server refusal', s == 403 and b == refusal, (s, b[:80]))
     s, h, b = get('pb', '/', inspect=True)
     check('inspection: a page not greenlit is not served', s == 404, s)
     s, h, b = get('broken', '/')

@@ -2,7 +2,7 @@
 refactor_20261012/plan/serve/TWO_PORT_SERVER_DESIGN.md, "Implementation approach").
 
 Two listeners: REVIEW (every page, with the classification interface; Gregg only) and INSPECTION (the same pages without it,
-greenlit entries only, every write refused). A page is published by adding it to the registry (registry.json); the server
+greenlit entries only, every write refused but a page's per-person review lists - INSPECTION_WRITES, Gregg 2026-10-27). A page is published by adding it to the registry (registry.json); the server
 re-reads the registry when it changes - no new port, no restart.
 
 One backend process per CODE TREE (the directory of a page's classify_transients.py: the live exopipe_ops, each frozen
@@ -189,6 +189,14 @@ def load_registry(path):
 
 ROUTES = ('source/', 'band/', 'img', 'metrics.json', 'label', 'list')
 HUB_URLS = ('http://localhost:8765/', 'http://localhost:8795/')
+# Gregg 2026-10-27: the per-person review lists ("Add to Prioritized transient", "Add to Visibility Data Required") are written from
+# the inspection listener as well - a page's POST /list and POST /list/user; every other write stays refused there
+INSPECTION_WRITES = ('/list', '/list/user')
+
+
+def inspection_write_ok(method, path):
+    m = re.match(r'^/p/[A-Za-z0-9_.-]+(/[^?]*)$', path.split('?', 1)[0])
+    return method == 'POST' and m is not None and m.group(1) in INSPECTION_WRITES
 
 
 def _route_re():
@@ -583,7 +591,7 @@ def serve_request(store, inspect, method, path, headers, body=b''):
     e = store.entry(pid)
     if e is None or (inspect and not e.get('greenlit')):
         return 404, [('Content-Type', 'text/plain')], b'unknown page'
-    if inspect and method != 'GET':
+    if inspect and method != 'GET' and not inspection_write_ok(method, path):
         return 403, [('Content-Type', 'text/plain; charset=utf-8')], b'inspection mode: this view is read-only and records nothing'
     query = path[len(f'/{kind}/{pid}') + len(rest):] if '?' in path else ''
     if kind == 's':
@@ -863,7 +871,8 @@ def front_request(store, backends, inspect, method, path, headers, body=b''):
     m = re.match(r'^/p/([A-Za-z0-9_.-]+)(/.*)?$', path.split('?', 1)[0])
     if m:
         e = store.entry(m.group(1))
-        if e is not None and e['kind'] == 'review' and not (inspect and (not e.get('greenlit') or method != 'GET')):
+        if e is not None and e['kind'] == 'review' and not (inspect and (not e.get('greenlit') or
+                                                                         (method != 'GET' and not inspection_write_ok(method, path)))):
             try:
                 return backends.forward(tree_of(e), inspect, method, path, headers, body)
             except Exception as exc:                           # noqa: BLE001 - one tree's failure never takes down the front
