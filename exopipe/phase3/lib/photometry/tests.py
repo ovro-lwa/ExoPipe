@@ -26,6 +26,7 @@ says so in its detail and does not fail; every other missing input fails. Option
 shard, nshards, refused_cells, cutout_root, stage1, max_cells (limits the Z1 / S cells - real-product spot checks only).
 """
 import csv
+import datetime
 import glob
 import gzip
 import json
@@ -1341,26 +1342,74 @@ def n1(path, **ctx):
     return True, T, '%d targets x %d positions x %d frames, %d 1-minute blocks' % (T, nc, F, B)
 
 
+MINUTE_BASIS_INTEGRATION = 'integration-midpoint-dateobs-v1'     # the npz minute_basis of snapshot_forced_phot.py since 40611cc
+
+
 @content_test('photometry_snapshot_npz', 'N2_blocks')
-def n2(path, **ctx):
+def n2(path, cutout_root=None, **ctx):
+    """The npz's 1-minute blocks (bts, bn) recomputed from the admitted frames under config MINUTE_KEY:
+    'integration-midpoint' (since 2026-10-28, R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES item 3): the npz must say minute_basis
+    'integration-midpoint-dateobs-v1'; each admitted frame's block is the UTC minute of its integration midpoint, from the
+    DATE-OBS of the first target's cutout TIMES table (the npz records no DATE-OBS) + search_snapshot.INTEGRATION_S / 2, whose frame list
+    must equal the npz's; blocks sorted by minute. 'file-name': the minute of the file-name ts (ts[:13]), in frame order."""
     d = _npz(path)
     m = _cfg().photometry_measure
-    if m.MINUTE_KEY['snapshot'] != 'file-name':
-        return False, None, 'MINUTE_KEY %r not implemented by this test' % m.MINUTE_KEY['snapshot']
+    basis = m.MINUTE_KEY['snapshot']
     ts = [str(t) for t in d['ts']]
     adm = [bool(a) for a in d['admitted']]
+    if basis == 'file-name':
+        keys, what = [t[:13] for t in ts], 'file-name minutes'
+    elif basis == 'integration-midpoint':
+        mb = str(d['minute_basis']) if 'minute_basis' in d else ''
+        if mb != MINUTE_BASIS_INTEGRATION:
+            return False, None, ('npz minute_basis %r: not built on the integration-midpoint minute (stage-1 products made before '
+                                 'exopipe_ops 40611cc, 2026-10-28, keyed the file-name minute)' % (mb or None))
+        mt = _NPZ_RE.match(os.path.basename(path))
+        if not mt:
+            return False, None, 'file name is not forced_<sample>_<band>_<S>.npz'
+        from astropy.io import fits
+        c = _cfg()
+        half = c.search_snapshot.INTEGRATION_S / 2.0     # 10.03102041 s (SS:133), not instrument.INTEGRATION_S (Phase 2's 10.0310)
+
+        def minute_of(date_obs):
+            # phase3_snapshot_search.integration_minute_key, the same arithmetic in the same order (dateobs_unix :139-143,
+            # integration_mid_unix :146-148, floor to the second, then the minute)
+            st_ = str(date_obs).strip()
+            base = datetime.datetime.strptime(st_[:19], '%Y-%m-%dT%H:%M:%S')
+            u = (base - datetime.datetime(1970, 1, 1)).total_seconds() + (float('0' + st_[19:]) if len(st_) > 19 else 0.0)
+            return (datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=int(math.floor(u + half)))).strftime('%Y%m%d_%H%M')
+        cell = os.path.basename(os.path.dirname(os.path.abspath(path)))
+        root = cutout_root or os.path.join(c.paths.PHASE3_ARCHIVE_ROOT, m.CUTOUT_SUBDIR)
+        names = [str(n) for n in d['names']]
+        cp = _cutout_for(root, mt['smp'], mt['band'], names[0], cell, mt['st']) if names else []
+        if len(cp) != 1:
+            return False, None, 'the first target\'s cutout (its DATE-OBS) not found once: %d files' % len(cp)
+        with fits.open(cp[0], memmap=True) as h:
+            T = h['TIMES'].data
+            tsc = [t if isinstance(t, str) else t.decode() for t in T['ts']]
+            dob = [t if isinstance(t, str) else t.decode() for t in T['date_obs']]
+        if tsc != ts:
+            return False, None, 'the cutout\'s frame list differs from the npz (cutout rewritten since)'
+        try:
+            keys = [minute_of(dob[i]) if adm[i] else None for i in range(len(ts))]
+        except ValueError as e:
+            return False, None, 'an admitted frame has no readable DATE-OBS: %s' % str(e)[:80]
+        what = 'integration-midpoint minutes'
+    else:
+        return False, None, 'MINUTE_KEY %r not implemented by this test' % basis
     mins = {}
-    for t, a in zip(ts, adm):
+    for k, a in zip(keys, adm):
         if a:
-            mins.setdefault(t[:13], 0)
-            mins[t[:13]] += 1
+            mins[k] = mins.get(k, 0) + 1
     want = [(k + '00', n) for k, n in mins.items() if n >= m.BLOCK_MIN_FRAMES['snapshot']]
+    if basis == 'integration-midpoint':
+        want.sort()
     got = list(zip([str(b) for b in d['bts']], [int(n) for n in d['bn']]))
     if got != want:
         return False, len(got), '1-minute blocks %d (first %s) != recomputed %d (first %s)' % (
             len(got), got[:2], len(want), want[:2])
-    return True, len(got), '%d blocks = the file-name minutes of admitted frames with >= %d members' % (
-        len(got), m.BLOCK_MIN_FRAMES['snapshot'])
+    return True, len(got), '%d blocks = the %s of admitted frames with >= %d members' % (
+        len(got), what, m.BLOCK_MIN_FRAMES['snapshot'])
 
 
 @content_test('photometry_snapshot_npz', 'N3_ring')

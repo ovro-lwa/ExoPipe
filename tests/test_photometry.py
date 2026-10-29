@@ -589,13 +589,24 @@ def test_mirrors():
             'AVOID_BEAMS': m.AVOID_BEAMS, 'AVOID_JY': m.AVOID_JY, 'MIN_STAMP_FRAC': m.MIN_STAMP_FRAC['snapshot'],
             'EDGE_PX': m.EDGE_PX['snapshot']}
     got = {k: L.get(k) for k in want}
+    # ROOT and SAMPLES are environment switches since 2026-10-25 / 10-28 (43eaf17 P3_PHOT_ROOT, c4fa0e3 P3_SNAP_CUTOUT_SAMPLES;
+    # the step forbids both in its environment): their DEFAULTS are the mirror
+    if "ROOT = os.environ.get('P3_PHOT_ROOT', %r)" % want['ROOT'] in sps:
+        got['ROOT'] = want['ROOT']
+    if "if os.environ.get('P3_SNAP_CUTOUT_SAMPLES') else %r)" % (want['SAMPLES'],) in sps:
+        got['SAMPLES'] = want['SAMPLES']
     c2 = m.STAMP_CORE_PX // 2
+    from exopipe.phase3.lib.photometry.tests import MINUTE_BASIS_INTEGRATION
     miss = [t for t in ('(np.abs(dy) <= %d) & (np.abs(dx) <= %d)' % (c2, c2), 'len(ix) >= %d]' % m.BLOCK_MIN_FRAMES['snapshot'],
-                        '%s * np.nanmedian' % m.RMS_MAD_FACTOR, 'AST.beam_fwhm_arcmin(band)', 'SS.ts_minute_key(ts)')
+                        '%s * np.nanmedian' % m.RMS_MAD_FACTOR, 'AST.beam_fwhm_arcmin(band)',
+                        'SS.integration_minute_key(date_obs)', 'minute_key(dobs[i])', "minute_basis=np.array('%s')" % MINUTE_BASIS_INTEGRATION)
             if t not in sps]
+    ss_lit = mod_literals(os.path.join(CLV, 'phase3_snapshot_search.py')).get('INTEGRATION_S')
     check('mirror snapshot_forced_phot.py (roots, samples, stamp, ring, avoidance, partial stamps, blocks, beam source, '
-          'minute key)', got == want and not miss and m.BEAM_SOURCE['snapshot'] == 'chain-table'
-          and m.MINUTE_KEY['snapshot'] == 'file-name', ({k: (got[k], want[k]) for k in want if got[k] != want[k]}, miss))
+          'minute key = the integration-midpoint minute since exopipe_ops 40611cc, npz minute_basis, the integration time the '
+          'block test uses = phase3_snapshot_search.INTEGRATION_S)', got == want and not miss and m.BEAM_SOURCE['snapshot'] == 'chain-table'
+          and m.MINUTE_KEY['snapshot'] == 'integration-midpoint' and ss_lit == CFG.search_snapshot.INTEGRATION_S,
+          ({k: (got[k], want[k]) for k in want if got[k] != want[k]}, miss, ss_lit))
     se = open(os.path.join(OPS, 'snapshot_forced_eval.py')).read()
     L = mod_literals(os.path.join(OPS, 'snapshot_forced_eval.py'))
     lo_, hi_, st_ = ev.THRESHOLD_GRID['snapshot']
@@ -1235,8 +1246,15 @@ def test_real():
         print('skip  real products: %s not readable here' % s1)
         return
     for name in ('forced_HWJ_18MHz_I.npz', 'forced_10pc_Red_V.npz'):
-        ok, bad = all_pass('photometry_snapshot_npz', os.path.join(s1, name))
-        check('real %s/%s passes N1-N5 (N4 re-measured from the archive cutouts)' % (REAL_SNAP_CELL, name), ok, bad)
+        # built before exopipe_ops 40611cc (2026-10-28): 1-minute blocks on the FILE-NAME minute, so N2 must fail on them for that
+        # reason until the stage-1 re-run (Gregg's call); every other test passes
+        res = run_tests('photometry_snapshot_npz', os.path.join(s1, name))
+        n2r = res.get('N2_blocks', {})
+        check('real %s/%s passes N1, N3-N5 (N4 re-measured from the archive cutouts); N2 fails as a pre-2026-10-28 product on the '
+              'file-name minute' % (REAL_SNAP_CELL, name),
+              all(r['passed'] for k, r in res.items() if k != 'N2_blocks') and not n2r.get('passed', True)
+              and 'minute_basis' in str(n2r.get('detail', '')),
+              {k: (r['passed'], str(r['detail'])[:160]) for k, r in res.items()})
     ok, bad = all_pass('photometry_manifest', os.path.join(s1, 'forced_manifest.csv'))
     check('real %s/forced_manifest.csv passes M1-M3' % REAL_SNAP_CELL, ok, bad)
     ev = '/lustre/gh/main/phase3/snapshot_forced/eval_wb_20261007'

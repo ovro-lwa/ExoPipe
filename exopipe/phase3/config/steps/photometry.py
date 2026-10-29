@@ -73,7 +73,10 @@ class photometry(_Section):
            'deep_evaluate': {}, 'snapshot_measure': {}, 'snapshot_evaluate': {'OMP_NUM_THREADS': '1'}}
     # caller-environment prefixes refused before any engine starts (gate PHOT-ENV): switches the in-place modules or their
     # launchers read (spec 7.2) that core/legacy.run does not clear (it clears P3_* only)
-    ENV_FORBIDDEN_PREFIXES = ('P3S', 'DEEP_FORCED_', 'SF_', 'FORCED_TEST_', 'SUBLST_')
+    ENV_FORBIDDEN_PREFIXES = ('P3S', 'DEEP_FORCED_', 'SF_', 'FORCED_TEST_', 'SUBLST_', 'P3_PHOT_ROOT', 'P3_SNAP_CUTOUT_')
+                                    # P3_PHOT_ROOT (snapshot_forced_phot.py ROOT, 2026-10-25, 43eaf17) and P3_SNAP_CUTOUT_SAMPLES /
+                                    # _PLANETS (the measured samples, 2026-10-28, c4fa0e3) are the in-place engine's switches: the
+                                    # step passes --root itself and measures SAMPLES_MEASURED only
     LOG_TAIL_LINES = 40             # engine log lines kept in a refused unit's reason / record (orchestration only)
     PROTECTED_KEYS = ('SAMPLE_FILES', 'SAMPLE_SHA1', 'SAMPLE_COLUMNS', 'SAMPLE_ENCODING', 'SAMPLES_MEASURED',
                       'SAMPLES_NOT_MEASURED', 'CURRENT_LIST_ONLY', 'OUT_ROOT', 'ENGINE', 'ENV_FORBIDDEN_PREFIXES',
@@ -186,9 +189,13 @@ class photometry_measure(_Section):
                                                    # phase3_snapshot_cutouts.py:32; search_snapshot.CUTOUT_SUBDIR); --cutout-root overrides
     BLOCK_MIN_FRAMES = {'snapshot': 3}             # admitted frames per wall-clock minute for a 1-minute block (IMPLEMENTED-SNAPSHOT-
                                                    # FORCED-PHOTOMETRY-STAGES-1-2-HWJ-10PC); MIRROR snapshot_forced_phot.py:187
-    MINUTE_KEY = {'snapshot': 'file-name'}         # 1-minute blocks keyed by the file-name minute ts[:13] (phase3_snapshot_search.py
-                                                   # :114-116); frame-time error accepted (IMPLEMENTED-FRAME-TIME-MINIMAL-PHASE3-AND-
-                                                   # Q29-INSTALLED-20261007 'NOT installed: minute_key'; B-16 unanswered); MIRROR :60-62
+    MINUTE_KEY = {'snapshot': 'integration-midpoint'}   # 1-minute blocks keyed by the UTC minute of each admitted frame's
+                                                   # INTEGRATION MIDPOINT (TIMES date_obs + instrument.INTEGRATION_S / 2 =
+                                                   # phase3_snapshot_search.integration_minute_key); a cutout without date_obs, or an
+                                                   # admitted frame without a readable one, is refused; the npz records minute_basis
+                                                   # 'integration-midpoint-dateobs-v1'. R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES item
+                                                   # (3), installed 2026-10-28 (exopipe_ops 40611cc; ledger clv15 17922dc) - the
+                                                   # file-name minute ts[:13] until then. MIRROR snapshot_forced_phot.minute_key
     BEAM_SOURCE = {'snapshot': 'chain-table'}      # beam = phase3_snapshot_astro.beam_fwhm_arcmin, not the cutout header (finding
                                                    # 2026-09-28; B-29 unanswered); MIRROR snapshot_forced_phot.py:159-163
     BAND_PROCS = {'snapshot': 8}                   # band processes at once inside a cell (snapshot_forced_fleet.sh:12 PAR default;
@@ -218,7 +225,7 @@ class photometry_measure(_Section):
              'DAY_SAMPLES': 'R-DAYTIME-GATE-DEEP-CONFORM',
              'TWILIGHT_SUN_DEG': 'R-NIGHT-RULE-HORIZON-PLUS-SOLAR-AUDIT',
              'BLOCK_MIN_FRAMES': 'IMPLEMENTED-SNAPSHOT-FORCED-PHOTOMETRY-STAGES-1-2-HWJ-10PC',
-             'MINUTE_KEY': 'IMPLEMENTED-FRAME-TIME-MINIMAL-PHASE3-AND-Q29-INSTALLED-20261007'}
+             'MINUTE_KEY': 'R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES'}
 
 
 class photometry_evaluate(_Section):
