@@ -24,6 +24,10 @@ The review-page code is NOT forked. Each page is today's classify_transients.py,
 - with its responses rewritten (rewrite_body / rewrite_location): the page's absolute routes gain /p/<page_id>, the URL of
   every registered legacy port becomes that page's path, the two hub URLs become the listener's own '/'.
 Writes (POST) are serialized per labels directory, since pages share journals.
+At a registry change every built page is rebuilt, one at a time, in its backend's rebuild thread; until its rebuild is done the
+page built before answers requests (STALE_HEADER says so), and only a GET carrying FRESH_HEADER waits for the rebuilt page. A page
+whose own entry changed is dropped at once and built on its next request, as before. A build also builds the page's indices (its
+App.prime), so its first source page is as fast as the next (WEB SPEED step 2, 2026-10-30).
 """
 import collections
 import contextlib
@@ -52,6 +56,8 @@ SOCK_DIR = os.path.join(_RUNTIME, 'two_port')          # backends' sockets and l
 LOCK_DIR = os.path.join(_RUNTIME, 'two_port_locks')    # one lock file per labels directory, never inside it
 STATUS_PATH = '/_twoport_status'                        # a backend's own report
 LISTENER_HEADER = 'X-Two-Port-Listener'                 # set by the front: 'review' or 'inspection'
+FRESH_HEADER = 'X-Two-Port-Fresh'                       # '1': wait for the page rebuilt since the last registry change
+STALE_HEADER = 'X-Two-Port-Stale'                       # a response from a page older than the registry: its build time
 
 # ---------------------------------------------------------------------------------------------------------------------------
 # the per-thread environment
@@ -287,6 +293,12 @@ def _argv_for(entry, inspect):
     return a
 
 
+def build_key(entry):
+    """What of a registry entry its build depends on: all of it but the hub's title and the inspection listener's greenlight
+    (the server's own business)."""
+    return json.dumps({k: v for k, v in (entry or {}).items() if k not in ('title', 'greenlit')}, sort_keys=True)
+
+
 class Page:
     """A built page: its module instance, its App, its environment and the lock of its labels directory."""
 
@@ -297,13 +309,18 @@ class Page:
         self.legacy_port = _port_for(entry, inspect)
         self.built = time.time()
         self.last_used = self.built
+        self.build_s = self.prime_s = None
+        self.gen = None                       # the registry generation its build started at (Store._build)
+
+
+_BUILDS = iter(range(1, 1 << 62))            # every build's module name is its own: a rebuilt page and the one it replaces coexist
 
 
 def build_page(entry, inspect, base_env, write_lock):
     """Build one page exactly as its process starts today: module instance, the page's environment, main() with its argv."""
     env = page_env(base_env, entry.get('env'))
     code = entry['code']
-    name = f'_twoport_{entry["id"].replace("-", "_").replace(".", "_")}_{"i" if inspect else "r"}'
+    name = f'_twoport_{entry["id"].replace("-", "_").replace(".", "_")}_{"i" if inspect else "r"}_{next(_BUILDS)}'
     with _BUILD_LOCK, _ENV.use(env):
         spec = importlib.util.spec_from_file_location(name, code)
         mod = importlib.util.module_from_spec(spec)
@@ -313,8 +330,12 @@ def build_page(entry, inspect, base_env, write_lock):
         if added:
             sys.path.insert(0, cdir)
         saved = sys.argv
+        ok = False
         try:
-            spec.loader.exec_module(mod)
+            try:
+                spec.loader.exec_module(mod)
+            except SystemExit as exc:            # ... nor one that refuses on import: a build failure, never the end of a thread
+                raise RuntimeError(f'{entry["id"]}: the page refused to load: {exc}') from None
             mod.ThreadingHTTPServer = _NoServer
             sys.argv = [os.path.basename(code)] + _argv_for(entry, inspect) + (['--inspect'] if inspect else []) + \
                 ['--port', str(_port_for(entry, inspect) or 1)]
@@ -325,6 +346,9 @@ def build_page(entry, inspect, base_env, write_lock):
                 pass
             except SystemExit as exc:            # a page that refuses to start (sys.exit('REFUSING: ...')) never exits the server
                 raise RuntimeError(f'{entry["id"]}: the page refused to start: {exc}') from None
+            if getattr(getattr(mod, 'Handler', None), 'app', None) is None:
+                raise RuntimeError(f'{entry["id"]}: built, but its Handler has no app')
+            ok = True
         finally:
             sys.argv = saved
             if added:
@@ -332,9 +356,26 @@ def build_page(entry, inspect, base_env, write_lock):
                     sys.path.remove(cdir)
                 except ValueError:
                     pass
-    if getattr(mod.Handler, 'app', None) is None:
-        raise RuntimeError(f'{entry["id"]}: built, but its Handler has no app')
+            if not ok:                           # a failed build leaves no module behind (every build's name is its own)
+                sys.modules.pop(name, None)
     return Page(entry, inspect, mod, env, write_lock)
+
+
+def prime_page(pg):
+    """The indices a page builds on its first source request, built now (the page's App.prime, when its code has one), under the
+    page's environment as a request runs (WEB SPEED step 2, 2026-10-30: the 10-s combined Stokes V view spent 40 s of its first
+    source page in the sibling and rejected-source indices). A failure is reported and the page still serves: the index is then
+    built on first use, as before."""
+    fn = getattr(getattr(pg.mod.Handler, 'app', None), 'prime', None)
+    if fn is None:
+        return
+    t = time.time()
+    try:
+        with _ENV.use(pg.env):
+            fn()
+    except (Exception, SystemExit) as exc:                 # noqa: BLE001 - the page serves without its indices built
+        print(f'two-port: {pg.id}: prime failed ({type(exc).__name__}: {exc}); its indices build on first use', flush=True)
+    pg.prime_s = round(time.time() - t, 1)
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -434,7 +475,11 @@ def post_lock(thread_lock, labels_dir):
 
 class Store:
     """Pages built on first request and kept while used. A page requested within keep_s is never evicted; past max_pages the
-    least recently used page goes. A page whose registry entry changed is rebuilt on its next request."""
+    least recently used page goes. At a registry change every built page is rebuilt; until its rebuild is done, the page built
+    before answers its requests, unless its own entry changed (reload)."""
+
+    REBUILD_GRACE_S = 30.0                    # the rebuild thread starts this long after a registry change (see _rebuild_loop)
+    REBUILD_QUIET_S = 10.0                    # ... and this long after the last build a request waited for
 
     def __init__(self, registry_path, base_env=None, max_pages=80, keep_s=1800, tree=None, builds=True):
         install_env()
@@ -450,23 +495,46 @@ class Store:
         self.building = {}                    # (page_id, inspect) -> threading.Event
         self.write_locks = collections.defaultdict(threading.Lock)
         self.errors = {}                      # (page_id, inspect) -> text of the last build failure
+        self.gen = 0                          # the registry generation: one more at every registry change
+        self.stale = set()                    # built pages older than the registry: they answer requests until rebuilt
+        self.rebuild_q = collections.deque()  # stale pages, rebuilt one at a time by the rebuild thread, most recently used first
+        self._rebuilder = None
+        self.reload_t = 0.0                   # when the registry last changed
+        self.fg_pending = 0                   # builds a request is waiting for (get): the rebuild thread lets them go first
+        self.fg_last_t = 0.0                  # when the last of them ended
         self.reg, self.reg_mtime = collections.OrderedDict(), None
         self.reload()
 
     def reload(self):
-        """Re-read the registry when it changed. Every built page is dropped and rebuilt on its next request: a page builds its
-        cross-tier and sibling links from the other runs' catalogues when it starts, so a run published or replaced must reach
-        the pages already built (the 2026-10-17 parity found live pages days old without the 10-minute LSTs published since)."""
+        """Re-read the registry when it changed. Every built page is rebuilt: a page builds its cross-tier and sibling links from
+        the other runs' catalogues when it starts, so a run published or replaced must reach the pages already built (the
+        2026-10-17 parity found live pages days old without the 10-minute LSTs published since).
+        Until its rebuild is done, the page built before answers requests - a POST too: it goes to the page that showed its form,
+        so labels are written in the order they are sent - and only a GET carrying FRESH_HEADER waits for the rebuilt page (WEB
+        SPEED step 2, Gregg 2026-10-30 "proceed on all steps": a registry change dropped every page, and the large ones then took
+        minutes on their next request - the 10-s combined Stokes I view 394 s). The rebuilds run one at a time in this process's
+        rebuild thread, the most recently used page first, after the pages requests are waiting for (_rebuild_loop). A page
+        whose OWN entry changed (build_key: a new run, title, code or environment), left the registry or no longer belongs to
+        this tree is dropped now: its next request builds it, as before, so nobody is shown the page an entry replaced (a
+        serve's identity check after it registers a page reads the new page)."""
         m = os.path.getmtime(self.registry_path)
         if m == self.reg_mtime:
             return
         reg = load_registry(self.registry_path)
         with self.lock:
-            for key, pg in list(self.pages.items()):
-                del self.pages[key]
-                sys.modules.pop(pg.mod.__name__, None)
+            self.gen += 1
+            self.reload_t = time.time()
+            for key in sorted(self.pages, key=lambda k: -self.pages[k].last_used):
+                e = reg.get(key[0])
+                if e is None or e['kind'] != 'review' or (self.tree is not None and tree_of(e) != self.tree) \
+                        or build_key(e) != build_key(self.pages[key].entry):
+                    self._drop(key)
+                else:
+                    self.stale.add(key)
+                    self._queue(key)
             # the page code's helper modules (review_filters and the like, imported once and shared by every page) are reloaded
-            # too, so new page code reaches the rebuilt pages: a deploy is a registry change (touch registry.json)
+            # too, so new page code reaches the rebuilt pages: a deploy is a registry change (touch registry.json). A page built
+            # before keeps the helper objects it imported until it is replaced.
             dirs = {os.path.dirname(os.path.realpath(e['code'])) + os.sep for e in reg.values() if e['kind'] == 'review'}
             for name, mod in list(sys.modules.items()):
                 f = getattr(mod, '__file__', None) or ''
@@ -474,8 +542,51 @@ class Store:
                     sys.modules.pop(name, None)
             importlib.invalidate_caches()
             self._mod_md5.clear()
-            self.code_report.clear()
             self.reg, self.reg_mtime = reg, m
+
+    def _drop(self, key):
+        """Forget a built page (under self.lock)."""
+        pg = self.pages.pop(key, None)
+        if pg is not None:
+            sys.modules.pop(pg.mod.__name__, None)
+        self.stale.discard(key)
+        self.code_report.pop(key, None)
+
+    def _queue(self, key):
+        """Queue a stale page for the rebuild thread and start the thread when none runs (under self.lock)."""
+        if key not in self.rebuild_q:
+            self.rebuild_q.append(key)
+        if self._rebuilder is None or not self._rebuilder.is_alive():
+            self._rebuilder = threading.Thread(target=self._rebuild_loop, name='two-port-rebuild', daemon=True)
+            self._rebuilder.start()
+
+    def _rebuild_loop(self):
+        """Rebuild the queued stale pages one at a time. A build holds the process's build lock, so the pages requests are waiting
+        for go first: the thread starts REBUILD_GRACE_S after a registry change (a registration's new or changed pages - dropped,
+        not stale - are requested by its warm-up meanwhile, one after the other) and REBUILD_QUIET_S after the last build a
+        request waited for, and never starts a rebuild while one is pending. A request that comes while a rebuild runs waits for
+        the rest of that one build."""
+        while True:
+            while True:
+                with self.lock:
+                    now = time.time()
+                    wait = max(self.reload_t + self.REBUILD_GRACE_S - now, self.fg_last_t + self.REBUILD_QUIET_S - now,
+                               0.2 if self.fg_pending else 0.0)
+                if wait <= 0:
+                    break
+                time.sleep(min(wait, 1.0))
+            with self.lock:
+                if not self.rebuild_q:
+                    self._rebuilder = None
+                    return
+                key = self.rebuild_q.popleft()
+                if key not in self.stale or key not in self.pages or key in self.building:
+                    continue                  # rebuilt meanwhile (a request that waited for it), dropped, or being built now
+                ev = self.building[key] = threading.Event()
+            try:
+                self._build(key, ev)
+            except (Exception, SystemExit) as exc:             # noqa: BLE001 - recorded in self.errors; the next request retries
+                print(f'two-port: rebuild of {key[0]}{":inspection" if key[1] else ""} failed: {exc}', flush=True)
 
     def port_map(self):
         out = {}
@@ -495,7 +606,9 @@ class Store:
         run = a[a.index('--run') + 1] if '--run' in a else ''
         return os.path.realpath(os.path.join(run, 'judgements'))
 
-    def get(self, pid, inspect):
+    def get(self, pid, inspect, fresh=False):
+        """The page to answer a request: its current build; a page built before the last registry change answers too unless
+        fresh (a GET carrying FRESH_HEADER), which waits for the rebuilt page."""
         key = (pid, bool(inspect))
         e = self.reg.get(pid)
         if e is None or e['kind'] != 'review':
@@ -507,13 +620,16 @@ class Store:
         while True:
             with self.lock:
                 pg = self.pages.get(key)
-                if pg is not None:
+                if pg is not None and not (fresh and key in self.stale):
                     pg.last_used = time.time()
+                    if key in self.stale and key not in self.building and key not in self.rebuild_q:
+                        self._queue(key)                       # never left stale: its rebuild is queued
                     return pg
                 ev = self.building.get(key)
                 if ev is None:
                     ev = self.building[key] = threading.Event()
                     mine = True
+                    self.fg_pending += 1
                 else:
                     mine = False
             if not mine:
@@ -522,22 +638,62 @@ class Store:
                     raise RuntimeError(self.errors[key])
                 continue
             try:
-                pg = build_page(e, inspect, self.base_env, self.write_locks[self.labels_dir(e)])
-                report = self._report(e)
-                with self.lock:
-                    self.pages[key] = pg
-                    self.code_report[key] = report
-                    self.errors.pop(key, None)
-                    self._evict()
-                return pg
-            except Exception as exc:                           # one page's failure never takes down the process
-                with self.lock:
-                    self.errors[key] = f'{pid}: {type(exc).__name__}: {exc}'
-                raise
+                pg = self._build(key, ev)
             finally:
                 with self.lock:
-                    self.building.pop(key, None)
-                ev.set()
+                    self.fg_pending -= 1
+                    self.fg_last_t = time.time()
+            pg.last_used = time.time()
+            return pg
+
+    def _build(self, key, ev):
+        """Build the page of key - its building event ev is this thread's - with its indices (prime_page), from the registry
+        entry of now; it then replaces the page built before, if any. A failed build drops the page built before, so the next
+        request builds it again and shows the failure, as a first build does. A build whose entry changed while it ran is given
+        to the request that asked for it and to nobody else."""
+        pid, inspect = key
+        pg = None
+        try:
+            with self.lock:
+                e, gen = self.reg.get(pid), self.gen
+            if e is None or e['kind'] != 'review' or (self.tree is not None and tree_of(e) != self.tree):
+                raise RuntimeError(f'{pid}: no longer a review page of this tree in the registry')
+            t = time.time()
+            pg = build_page(e, inspect, self.base_env, self.write_locks[self.labels_dir(e)])
+            pg.build_s, pg.gen = round(time.time() - t, 1), gen
+            prime_page(pg)
+            report = self._report(e)
+            with self.lock:
+                cur = self.reg.get(pid)
+                if cur is None or cur['kind'] != 'review' or build_key(cur) != build_key(e):
+                    self.errors.pop(key, None)                 # its waiters build the new entry; no failure of an older one
+                    sys.modules.pop(pg.mod.__name__, None)     # the asking request holds the page; nothing else keeps it
+                    return pg
+                old = self.pages.get(key)
+                if old is not None:                            # a rebuild keeps the page's own last use (eviction, rebuild order)
+                    sys.modules.pop(old.mod.__name__, None)
+                    pg.last_used = old.last_used
+                self.pages[key] = pg
+                self.code_report[key] = report
+                self.errors.pop(key, None)
+                if gen == self.gen:
+                    self.stale.discard(key)
+                else:                                          # the registry changed again while this page was built
+                    self.stale.add(key)
+                    self._queue(key)
+                self._evict()
+            return pg
+        except Exception as exc:                               # one page's failure never takes down the process
+            with self.lock:
+                self.errors[key] = f'{pid}: {type(exc).__name__}: {exc}'
+                self._drop(key)
+                if pg is not None and self.pages.get(key) is not pg:
+                    sys.modules.pop(pg.mod.__name__, None)
+            raise
+        finally:
+            with self.lock:
+                self.building.pop(key, None)
+            ev.set()
 
     def _report(self, e):
         """The code a page was built from: its own file and every project module in this process (project_modules), each with
@@ -561,8 +717,7 @@ class Store:
             if len(self.pages) <= self.max_pages:
                 break
             if now - pg.last_used > self.keep_s:
-                del self.pages[key]
-                sys.modules.pop(pg.mod.__name__, None)
+                self._drop(key)
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -598,12 +753,14 @@ def serve_request(store, inspect, method, path, headers, body=b''):
         return static_file(e, rest, store.port_map()) if e['kind'] == 'static' else (404, [('Content-Type', 'text/plain')], b'unknown page')
     if e['kind'] != 'review':
         return 404, [('Content-Type', 'text/plain')], b'unknown page'
+    fresh = method == 'GET' and any(k.lower() == FRESH_HEADER.lower() and v.strip() == '1' for k, v in (headers or {}).items())
     try:
-        pg = store.get(pid, inspect)
+        pg = store.get(pid, inspect, fresh=fresh)
     except Exception as exc:                                    # the page's error page, the process carries on
         return 500, [('Content-Type', 'text/plain; charset=utf-8')], f'page {pid} could not be built: {exc}'.encode()
     sub = rest + (('?' + path.split('?', 1)[1]) if '?' in path else '')
-    lock = post_lock(pg.write_lock, store.labels_dir(e)) if method == 'POST' else contextlib.nullcontext()
+    stale_built = pg.built if pg.gen is not None and pg.gen != store.gen else None    # a page older than the registry
+    lock = post_lock(pg.write_lock, store.labels_dir(pg.entry)) if method == 'POST' else contextlib.nullcontext()
     with lock:
         status, hdrs, payload = run_request(pg, method, sub, headers, body)
     pm = store.port_map()
@@ -614,6 +771,8 @@ def serve_request(store, inspect, method, path, headers, body=b''):
         if k.lower() == 'content-length':
             continue
         out.append((k, v))
+    if stale_built is not None:
+        out.append((STALE_HEADER, time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stale_built))))
     ctype = dict((k.lower(), v) for k, v in hdrs).get('content-type', '')
     if ctype.startswith('text/html'):
         payload = rewrite_body(payload.decode('utf-8'), pg.base, pm, legacy_port=pg.legacy_port).encode('utf-8')
@@ -700,9 +859,18 @@ def make_handler(fn):
 
 
 def backend_status(store):
+    """The backend's report: per built page the code it was built from ('pages'); per built page its build and index times and
+    whether it is older than the registry ('built': stale pages answer requests until their rebuild, queued in 'rebuild_queue')."""
+    def _k(pid, insp):
+        return f'{pid}{":inspection" if insp else ""}'
     with store.lock:
-        pages = {f'{pid}{":inspection" if insp else ""}': store.code_report.get((pid, insp)) for (pid, insp) in store.pages}
-    return {'tree': store.tree, 'pid': os.getpid(), 'registry_mtime': store.reg_mtime, 'pages': pages}
+        pages = {_k(*key): store.code_report.get(key) for key in store.pages}
+        built = {_k(*key): {'built': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(pg.built)), 'build_s': pg.build_s,
+                            'prime_s': pg.prime_s, 'stale': key in store.stale} for key, pg in store.pages.items()}
+        queue = [_k(*key) for key in store.rebuild_q]
+        building = sorted(_k(*key) for key in store.building)
+    return {'tree': store.tree, 'pid': os.getpid(), 'registry_mtime': store.reg_mtime, 'pages': pages, 'built': built,
+            'rebuild_queue': queue, 'building': building}
 
 
 def backend_request(store, method, path, headers, body=b''):
