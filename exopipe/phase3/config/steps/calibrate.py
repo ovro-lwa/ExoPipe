@@ -46,8 +46,10 @@ class tables(_Section):
     BRIGHT_PARENT_DEEP_SHA256 = 'b6341ca5dd0ef2ff1433a177df011271c63f3e4076932f95aa80123a44dc18c6'   # sha256 (re-read 2026-10-13); last install exopipe 2a5f7d5 (2026-10-08 16:53 UTC, ledger 2101)
     # derivations the installed deep keys were built from (verify recomputes post_process key by key; all read-only):
     BRIGHT_PARENT_DEEP_DERIVATIONS = {
-        'all-elevation': ('/data07/gh/phase3/transients/Run_P3S4/deep_tables_pix_20261001T0510.json',        # ratio 3 (33 keys); deep_tables_pixel_20261001.py:23-25
-                          '/data07/gh/phase3/transients/Run_P3S4/deep_tables_pix_r2V_20261001T0510.json'),   # ratio 2, V 18-36 MHz (5 keys); installed 2026-10-01 (ledger 1684)
+        'all-elevation': ('/lustre/gh/main/phase3/deep_tables_pix_20261001/deep_tables_pix_20261001T0510.json',        # ratio 3 (33 keys); deep_tables_pixel_20261001.py:23-25
+                          '/lustre/gh/main/phase3/deep_tables_pix_20261001/deep_tables_pix_r2V_20261001T0510.json'),   # ratio 2, V 18-36 MHz (5 keys); installed 2026-10-01 (ledger 1684)
+                          # written in /data07/gh/phase3/transients/Run_P3S4/ (the installed file's meta_deep 'source'); restored byte for byte
+                          # 2026-10-30 from the summaries kept when Run_P3S4 was released 10-17 (legacy_data07_20261017; PROVENANCE.txt beside them)
         'elevation-bands': ('/fast/gh/main/phase3/deep_tables_elev_20261006/deep_elev_r3.json',               # 114 band keys; deep_tables_elev_20261006.py:27-28
                             '/fast/gh/main/phase3/deep_tables_elev_20261006/deep_elev_r2V.json'),             # installed 2026-10-07 (ledger 1821); lwacalim07 node-local
         'multiples': ('/fast/gh/main/phase3/multiples_tables_20261008/multi_r3_I.json',                       # 89 -multi_ keys; multiples_fork.py:586
