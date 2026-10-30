@@ -567,6 +567,48 @@ def test_b30_unharvested_merge():
     assert 'merged_record' in r['reason'] and r['meta'].get('unharvested_warning'), r['reason'][:300]
 
 
+def test_merge_refresh_replaces_a_changed_attempt():
+    """The merge refresh (production exopipe_ops e668670, the deep chat 2026-10-30): the first merge records each (cell, Stokes)'s
+    attempt in merge_provenance.csv; when one pair's published attempt changes, the next merge replaces that pair's merged candidate
+    directories with the new attempt's (the superseded ones moved to .superseded_<UTC>/), leaves the other pairs alone, passes its
+    own content test and records the new attempt; the stage records both provenance files and the script's refresh lines.
+    Production attributes a merged candidate directory to its (cell, Stokes) by the deep search's naming (VD_/ID_<lst>_<date>_<band>_<n>),
+    so the stamps here carry that name."""
+    make_world()
+    att_dir = lambda cell, st, att: (f'{T}/collect/{LABEL.lower()}_collect_nodeA/attempts/{cell}_{st}_{att}/transients/Run_{LABEL}'
+                                     f'/candidates')
+    stamps = {('05h_Full', 'V'): 'VD_05h_2030-01-01_Full_0001', ('05h_Full', 'I'): 'ID_05h_2030-01-01_Full_0001'}
+    for (cell, st), name in stamps.items():
+        os.makedirs(f'{att_dir(cell, st, "20300104T000000")}/{name}')
+        open(f'{att_dir(cell, st, "20300104T000000")}/{name}/info.txt', 'w').write('first search')
+    cli('--stages', 'preflight,harvest,merge', expect=0)
+    prov = {(r['cell'], r['stokes']): r for r in rows(f'{U}/merge_provenance.csv')}
+    assert set(prov) == {(c, s_) for c in ('05h_Full', '05h_23MHz') for s_ in ('V', 'I')}, sorted(prov)
+    r = rec(f'{LABEL}.merge')
+    assert any('content test PASS' in h for h in r['meta'].get('merge_refresh', [])), r['meta'].get('merge_refresh')
+    assert os.path.abspath(f'{U}/merge_provenance.csv') in r['meta'].get('out_fp', {}), sorted(r['meta'].get('out_fp', {}))[:6]
+    assert os.path.exists(f'{U}/refusals_provenance.csv')
+    assert all(open(f'{U}/candidates/{n}/info.txt').read() == 'first search' for n in stamps.values())
+    # a re-search of 05h_Full Stokes V: a newer attempt, published in place of the first, whose stamp differs
+    node, att, _ = make_attempt('05h_Full', 'V', att='20300105T000000')
+    name = stamps[('05h_Full', 'V')]
+    os.makedirs(f'{att_dir("05h_Full", "V", att)}/{name}')
+    open(f'{att_dir("05h_Full", "V", att)}/{name}/info.txt', 'w').write('re-searched')
+    pub = f'{T}/ops_state/{LABEL.lower()}_state/published_V.csv'
+    lines = [ln if not ln.startswith('05h_Full,') else f'05h_Full,{node},{att}\n' for ln in open(pub)]
+    open(pub, 'w').writelines(lines)
+    cli('--stages', 'preflight,harvest,merge', expect=0)       # preflight copies the search state the merge reads (non-production --out)
+    assert open(f'{U}/candidates/{name}/info.txt').read() == 're-searched', 'the changed pair kept the earlier stamp'
+    sup = glob.glob(f'{U}/.superseded_*/**/{name}/info.txt', recursive=True)
+    assert sup and open(sup[0]).read() == 'first search', sup
+    assert open(f'{U}/candidates/{stamps[("05h_Full", "I")]}/info.txt').read() == 'first search', 'an unchanged pair was replaced'
+    prov2 = {(r['cell'], r['stokes']): r for r in rows(f'{U}/merge_provenance.csv')}
+    assert prov2[('05h_Full', 'V')]['attempt_dir'].endswith(f'05h_Full_V_{att}'), prov2[('05h_Full', 'V')]
+    assert all(prov2[k]['attempt_dir'] == prov[k]['attempt_dir'] for k in prov if k != ('05h_Full', 'V')), 'an unchanged pair moved'
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'done' and any('content test PASS' in h for h in r['meta'].get('merge_refresh', [])), r['meta']
+    assert any('1 of 4 (cell, Stokes) replaced' in h for h in r['meta'].get('merge_refresh', [])), r['meta'].get('merge_refresh')
+
 def test_b02_check_mode_in_the_chain():
     """B-02 steps 2 and 4 in the chain: under the ruled catalog_conform.MODE 'check' the pulsar stage runs between the merge
     and the check and refuses a run whose attempts were not searched under the once-in-search rules (the synthetic run's
@@ -838,7 +880,8 @@ def test_compileall():
 
 ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
-         'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge', 'test_b30_identity_pre_check',
+         'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
+         'test_merge_refresh_replaces_a_changed_attempt', 'test_b30_identity_pre_check',
          'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain', 'test_b02_check_chain_to_conform',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']

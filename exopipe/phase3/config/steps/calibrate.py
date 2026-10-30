@@ -186,7 +186,7 @@ class calibrate_bright_parent(_Section):
     PARENTS_DIR = {'deep': None, 'sublst': 'parent_catalogs_{lst}'}   # deep None = a fresh current-master union (ops/p3s5_parent_union.py, chain.sh:16); sub-LST: under paths.SUBLST_ROOT (sublst_catalogs.sh:29)
     PARENT_UNION_SOURCES = ('/lustre/gh/main/phase3_collect/p3s5_collect_lwacalim07/parent_catalogs',
                             '/lustre/gh/main/phase3_collect/p3s5_collect_lwacalim09/parent_catalogs',
-                            '/data07/gh/phase3/transients/Run_P3S4/parent_catalogs')   # p3s5_parent_union.py:12-13 (LOCK: the literal list of the in-place script)
+                            '/lustre/gh/main/phase3/deep_parent_catalogs_union_20261014T0203')   # p3s5_parent_union.py:13-14 (LOCK: the literal list of the in-place script; production 8176bc3)
     EXCLUDED_ROWS = 'report'   # harvest rows on (LST, scope, date) excluded by data_decisions.csv: 'report' = kept and counted (today: not filtered, p3s3_curve_derive.py:83-104); 'refuse' = the derivation refuses while any exist (spec Q2 default = today's)
     PROTECTED_KEYS = ('EXCESS_GUARD_CANDIDATES', 'MONOTONE_CAP', 'PARENT_UNION_SOURCES')
     RULED = {'FLOOR_SIGMA': 'R-2D-TABLES-APPROVED-WITH-VALIDATION-CONDITION',

@@ -672,7 +672,7 @@ class DeepRun:
                 u.refuse(f'the published attempts changed since the harvest ({len(now ^ rec)} differ, e.g. '
                          f'{sorted(now ^ rec)[:3]}): re-run from harvest')
             rc, tail, hits = self.call(u, 'p3s3_merge.py', [self.U], env, self.log,
-                                       keep=('merge gate:', 'merge: WARNING'))
+                                       keep=('merge gate:', 'merge: WARNING', 'merge refresh:', 'merge (test/plan run)'))
             if rc != 0:
                 self.say('merge gate REFUSED - pass aborted')
                 u.refuse(f'merge gate exit {rc}: {tail[-1] if tail else ""}')
@@ -692,6 +692,14 @@ class DeepRun:
             for name in ('master_catalog.csv', 'master_catalog_refused.csv', 'selected_all.csv', 'v_deep_ledger.csv',
                          'v_deep_images.csv'):
                 self.out(u, os.path.join(self.U, name))
+            # MERGE REFRESH (production exopipe_ops e668670, the deep chat 2026-10-30): a (cell, Stokes) whose published attempt
+            # changed has all its merged entries replaced (candidates, sigma-stack and residual-frame links; the superseded ones in
+            # .superseded_<UTC>/) and the refusal record is rebuilt per Stokes - checked by the script's own content test before it
+            # writes merge_provenance.csv; the stage records both provenance files and the script's refresh lines
+            for name in ('merge_provenance.csv', 'refusals_provenance.csv'):
+                if os.path.exists(os.path.join(self.U, name)):
+                    self.out(u, os.path.join(self.U, name))
+            u.meta['merge_refresh'] = [h for h in hits if h.startswith('merge refresh:')][-8:]
             if os.path.exists(os.path.join(self.U, 'stale_attempts.csv')):
                 self.out(u, os.path.join(self.U, 'stale_attempts.csv'), cache=True)
             u.meta['stale_attempts'] = stale

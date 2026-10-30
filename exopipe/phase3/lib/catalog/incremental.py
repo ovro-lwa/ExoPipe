@@ -1433,7 +1433,7 @@ def _associate_unit(ctx):
                 raise NoInput(f'no epoch blocks under {ctx.state_dir}/epochs - run the epoch phase first')
         if not ctx.parents or not os.path.isdir(ctx.parents):
             msg = (f'P3_PARENT_DIR is required and is {ctx.parents or "unset"}: pass --inc-parents DIR (the parent-catalogue '
-                   f'snapshot of the current masters; B-59 - gate_inputs.py:19 would otherwise read Run_P3S4/parent_catalogs)')
+                   f'snapshot of the current masters; B-59 - gate_inputs.py:20 would otherwise read its module default, the 10-14 union)')
             if ctx.dry:
                 ctx.say(f'  GATE would refuse: {msg}')
             else:

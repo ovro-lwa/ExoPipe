@@ -8,7 +8,9 @@ clv15 phase3_snapshot_anchor.py and sublst_pertie.py all get the same estimator.
 the production package (source_localization.py puts /lustre/gh/main/exopipe first on sys.path), so this file imports nothing
 from the branch; core/fallback.py arrives as an argument (loaded by path by the finder).
 
-Pin: the sha1 of the whole production FILE (its bytes) at exopipe_ops 43db654 (source_localization.py, 2026-10-13 01:32) -
+Pin: the sha1 of the whole production FILE (its bytes) at exopipe_ops 940bc26 (source_localization.py, 2026-10-17 21:37; re-ported
+2026-10-30 from 43db654 - production's detections() reads the catalogs through survivor_paths / ident_rows / member_rows, a row index
+that is off unless a caller enables it, the same rows in the same order) -
 any edit refuses at import, so no decorator, second definition or module-level rebinding of a replaced function can slip
 past (review MINOR 2); the per-function text pins below only name what changed in the refusal. A mismatch: production
 changed - re-port this file (even a comment edit asks for that). Design: exopipe_ops/refactor_20261012/plan/wave2/B32_DESIGN.md.
@@ -16,9 +18,9 @@ changed - re-port this file (even a comment edit asks for that). Design: exopipe
 import hashlib
 import math
 
-FILE_SHA1 = 'd7428c9413d860e8ada5e6da73704ffa0bb3e241'               # source_localization.py at exopipe_ops 43db654
+FILE_SHA1 = 'ccdbc4d70d3dc57206fbcbd7e83c7028f7082d4d'               # source_localization.py at exopipe_ops 940bc26
 PINS = {'combine': 'b18c57212fb748fa484df807b6ee853c83352fba',       # source_localization.py:221-258
-        'detections': '99ce029f955ca17e88f5ca9fa61448ee43b2d5d7',    # :108-176
+        'detections': '55e147a0bfb38a5a9206c3b2302b39a3747f3804',    # :159-227 (940bc26: survivor_paths / ident_rows / member_rows)
         'beam_as': 'c3ba730f3a5a4bd898a2e2a6361b50df81956b35',       # :76-88
         'locate': '660bce96398d6bc97e835ee0bcfbe73ff528ef49'}        # :348-397
 
@@ -82,28 +84,25 @@ def fitted_detections(mod, fallback):
     in multiples-fork tiers (_fsb / _fwb) it is left out of the combined position, counted once per identity
     (fallbacks.LOC_FORK_ONLY_FALLBACK; Gregg 2026-10-14, C.8b (b): until the fork builder fits its detections); with a
     singles-tier row it REFUSES (a missing fitted error). Otherwise production's code (pinned), step for step."""
-    import csv
-    import glob
     import os
     import re
     fork_dir = re.compile(r'_f(sb|wb)$')
 
     def detections(ident, U):
         srcs = []
-        for p in sorted(glob.glob(f"{U}/{os.environ.get('P3_LOC_CATS', 'source_catalogs_[IV]_*')}/*_sources_survivors.csv")):
+        for p in mod.survivor_paths(U):              # production's own catalog readers (940bc26): its row index when enabled
             st = 'I' if '_I_' in os.path.basename(os.path.dirname(p)) + '_' else 'V'
-            for r in csv.DictReader(open(p)):
-                if (r.get('identity_id') or r['source_id']) == ident:
-                    r['_st'] = st
-                    r['_dir'] = os.path.dirname(p)
-                    srcs.append(r)
+            for r in mod.ident_rows(p, ident):
+                r['_st'] = st
+                r['_dir'] = os.path.dirname(p)
+                srcs.append(r)
         rows = {}                                   # cand_id -> [(src, member row)] in production's order
         for s in srcs:
             mp = f"{s['_dir']}/{s['band']}_source_members.csv"
             if not os.path.exists(mp):
                 continue
-            for m in csv.DictReader(open(mp)):
-                if m['source_id'] != s['source_id'] or m['band'] != s['band']:
+            for m in mod.member_rows(mp, s['source_id']):
+                if m['band'] != s['band']:
                     continue
                 rows.setdefault(m['cand_id'], []).append((s, m))
 
