@@ -363,7 +363,7 @@ def build_page(entry, inspect, base_env, write_lock):
 
 def prime_page(pg):
     """The indices a page builds on its first source request, built now (the page's App.prime, when its code has one), under the
-    page's environment as a request runs (WEB SPEED step 2, 2026-10-30: the 10-s combined Stokes V view spent 40 s of its first
+    page's environment as a request runs (WEB SPEED step 2, 2026-10-30: the 1-minute combined Stokes V view spent 40 s of its first
     source page in the sibling and rejected-source indices). A failure is reported and the page still serves: the index is then
     built on first use, as before."""
     fn = getattr(getattr(pg.mod.Handler, 'app', None), 'prime', None)
