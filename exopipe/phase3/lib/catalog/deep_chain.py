@@ -450,6 +450,21 @@ class DeepRun:
             if not ok:
                 u.refuse(f'predecessor record not current: {why} - re-run from stage {pu.split(".")[1]}')
             u.note(f'predecessor current: {why}')
+        self.parents_unchanged(u)
+
+    def parents_unchanged(self, u):
+        """Every unit after the preflight hands the parent snapshot to production (P3_PARENT_DIR): it must still be what the
+        preflight checked - the same files, the same sizes (parents_manifest.csv). The snapshot's directory fingerprint does
+        not see a file truncated in place."""
+        par, sd = self.chain.meta(self.u('preflight'), 'parent_dir'), self.chain.meta(self.u('preflight'), 'stage_dir')
+        man = os.path.join(sd, 'parents_manifest.csv') if sd else None
+        if not par or not man or not os.path.exists(man):
+            return
+        bad = deep_ported.parents_changed(par, man)
+        if bad:
+            u.refuse(f'the parent snapshot {par} changed since the preflight: '
+                     + '; '.join(f'{os.path.basename(f)}: {why}' for f, why in bad[:12]) + (' ...' if len(bad) > 12 else '')
+                     + ' - re-run from stage preflight')
 
     def ensure_master(self, u, want, stage):
         """<run>/master_catalog.csv must be the predecessor's recorded output ``want`` (its stage copy). When this stage
@@ -567,6 +582,15 @@ class DeepRun:
                 u.refuse(f'D-G1: {len(miss)} installed cell(s) without a parent catalogue on the current master in {par}: '
                          f'{miss[:12]}{" ..." if len(miss) > 12 else ""} - build them with '
                          f'`{c.PARENTS_COMMAND.format(cells=",".join(miss))}` and re-run')
+            bad = deep_ported.parents_unusable(par)
+            if bad:
+                # production 2026-10-31 (deep chat, exopipe_ops 9d6a331): 0-byte copies of intact Lustre sources in the pass's
+                # snapshot stopped its conformance on a JSONDecodeError; here the preflight names each file and refuses
+                u.meta['parents_unusable'] = {f: why for f, why in bad}
+                u.refuse(f'{len(bad)} unusable file(s) in the parent snapshot {par}: '
+                         + '; '.join(f'{os.path.basename(f)}: {why}' for f, why in bad[:12]) + (' ...' if len(bad) > 12 else '')
+                         + (' - repair the given --parents directory' if given else
+                            ' - re-run the preflight (a fresh union copies them again)'))
             man = os.path.join(d, 'parents_manifest.csv')
             n = deep_ported.parents_manifest(par, man)
             u.meta['parent_dir'] = par

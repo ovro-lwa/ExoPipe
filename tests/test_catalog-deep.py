@@ -452,6 +452,38 @@ def test_preflight_refuses_missing_parent():
     assert res and all(x['passed'] for x in res), res
 
 
+def test_preflight_fails_on_an_empty_parent_copy():
+    """Production 2026-10-31 (deep chat, exopipe_ops 9d6a331): 7 of 912 files of the deep pass's parent snapshot were 0-byte
+    copies of intact Lustre sources (six catalogues, one .gen.json); the pass failed at conformance with a JSONDecodeError in
+    gate_inputs.parents, and production's union now re-copies with a size check. The sidecar records no catalogue size or
+    checksum, so a reader trusting it would take an empty catalogue for a cell without parent sources. The port refuses at
+    the preflight, naming each file (before this test it crashed there on the same JSONDecodeError), and every later unit
+    refuses when a snapshot file changed size since the preflight's manifest (a truncation in place leaves the directory's
+    fingerprint unchanged)."""
+    make_world()
+    cats = sorted(glob.glob(f'{T}/cands/master_R075_*.gaul.csv'))
+    assert len(cats) >= 2, cats
+    keep = {p: open(p, 'rb').read() for p in (cats[0], cats[1] + '.gen.json')}
+    open(cats[0], 'w').close()                               # the union's copies of these are empty, as on 10-31
+    open(cats[1] + '.gen.json', 'w').close()
+    rc, err = cli('--stages', 'preflight', expect=2)
+    r = rec(f'{LABEL}.preflight')
+    assert r['status'] == 'refused', (r['status'], r.get('reason', '')[:600])
+    assert f'{os.path.basename(cats[0])}: empty catalogue (0 bytes)' in r['reason'], r['reason'][:600]
+    assert f'{os.path.basename(cats[1])}.gen.json: sidecar unreadable' in r['reason'], r['reason'][:600]
+    for p, b in keep.items():
+        open(p, 'wb').write(b)
+    cli('--stages', 'preflight', expect=0)                   # repaired: the preflight passes and records the sizes
+    par = rec(f'{LABEL}.preflight')['meta']['parent_dir']
+    snap = sorted(glob.glob(f'{par}/master_R075_*.gaul.csv'))[0]
+    with open(snap, 'r+') as f:                              # truncated in place after the preflight
+        f.truncate(10)
+    rc, err = cli('--stages', 'harvest,merge', expect=2)     # harvest needs no snapshot; every unit after it checks it
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and 'changed since the preflight' in r['reason'] \
+        and os.path.basename(snap) in r['reason'], (r['status'], r.get('reason', '')[:600])
+
+
 def test_chain_to_fork_then_union_to_list():
     make_world()
     rc, err = cli(expect=0)                                  # preflight..fork
@@ -903,7 +935,8 @@ def test_compileall():
     assert r.returncode == 0, r.stderr
 
 
-ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_chain_to_fork_then_union_to_list',
+ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_preflight_fails_on_an_empty_parent_copy',
+         'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
          'test_merge_refresh_replaces_a_changed_attempt', 'test_merge_refusal_record_keeps_extraction_rows',

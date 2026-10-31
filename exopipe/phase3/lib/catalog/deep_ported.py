@@ -10,6 +10,7 @@ records list (no glob, DESIGN 11.5 / D9), and every file is written atomically (
 import csv
 import glob
 import json
+import math
 import os
 
 
@@ -249,18 +250,68 @@ def parents_missing(par, coadd_root, reasons=None):
     return cells, miss
 
 
+def parents_unusable(par):
+    """The snapshot's catalogues and sidecars no reader can use, as [(file, why)]: an empty catalogue, one whose first data
+    row is not a finite RA / Dec / peak (columns 4, 6, 10 as ops/gate_inputs._read_gaul), a sidecar that is empty, not JSON
+    or names no master. Production 2026-10-31 (deep chat; exopipe_ops 9d6a331): 7 of 912 files of a pass's snapshot were
+    0-byte copies of intact Lustre sources and the pass stopped at conformance on a JSONDecodeError; the union now re-copies
+    with a size check. The sidecar records no catalogue size or checksum, so a reader that trusts it would take an empty
+    catalogue for a cell without parent sources: the preflight names every such file and refuses."""
+    bad = []
+    for c in sorted(glob.glob(f'{par}/master_R075_*.gaul.csv')):
+        if os.path.getsize(c) == 0:
+            bad.append((c, 'empty catalogue (0 bytes)'))
+        else:
+            row = None
+            with open(c) as f:
+                for ln in f:
+                    if ln.startswith('#') or not ln.strip():
+                        continue
+                    row = ln.split(',')
+                    break
+            try:
+                ok = row is not None and all(math.isfinite(float(row[i])) for i in (4, 6, 10))
+            except (ValueError, IndexError):
+                ok = False
+            if not ok:
+                bad.append((c, 'no finite first row (truncated or not a Gaussian list)'))
+        side = c + '.gen.json'
+        if os.path.exists(side):
+            try:
+                g = json.load(open(side))
+            except ValueError:
+                bad.append((side, 'sidecar unreadable (empty or not JSON)'))
+                continue
+            if not isinstance(g, dict) or not g.get('master'):
+                bad.append((side, 'sidecar names no master'))
+    return bad
+
+
+def parents_changed(par, manifest):
+    """Catalogues of the snapshot that differ in size from the preflight's manifest (or are gone), as [(file, why)]: the
+    stages that hand the snapshot to production (P3_PARENT_DIR) check it is still what the preflight recorded."""
+    bad = []
+    for r in csv.DictReader(open(manifest)):
+        c, want = r['catalogue'], r.get('bytes', '')
+        if not os.path.exists(c):
+            bad.append((c, 'gone since the preflight'))
+        elif want != '' and os.path.getsize(c) != int(want):
+            bad.append((c, f'{os.path.getsize(c)} bytes, {want} at the preflight'))
+    return bad
+
+
 def parents_manifest(par, path):
-    """Write the snapshot's manifest (cell, catalogue, sha1, master, master_md5_data): the record of what conformance and
-    the fork read through P3_PARENT_DIR."""
+    """Write the snapshot's manifest (cell, catalogue, bytes, sha1, master, master_md5_data): the record of what conformance
+    and the fork read through P3_PARENT_DIR (bytes: parents_changed checks the snapshot before each of them)."""
     import hashlib
     rows = []
     for c in sorted(glob.glob(f'{par}/master_R075_*.gaul.csv')):
         cell = os.path.basename(c)[len('master_R075_'):-len('.gaul.csv')]
         side = c + '.gen.json'
         g = json.load(open(side)) if os.path.exists(side) else {}
-        rows.append({'cell': cell, 'catalogue': c, 'sha1': hashlib.sha1(open(c, 'rb').read()).hexdigest(),
+        rows.append({'cell': cell, 'catalogue': c, 'bytes': os.path.getsize(c), 'sha1': hashlib.sha1(open(c, 'rb').read()).hexdigest(),
                      'master': g.get('master', ''), 'master_md5_data': g.get('master_md5_data', '')})
-    _atomic_dictwriter_rows(path, ['cell', 'catalogue', 'sha1', 'master', 'master_md5_data'], rows)
+    _atomic_dictwriter_rows(path, ['cell', 'catalogue', 'bytes', 'sha1', 'master', 'master_md5_data'], rows)
     return len(rows)
 
 
