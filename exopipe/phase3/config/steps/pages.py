@@ -237,7 +237,7 @@ class pages_snapshot(_Section):
     FIT_NO_SOURCE_SNR = 8.0      # sigma, fit_no_source flag; snap_pages:560-561 (mirror)
     SCALE_MODE = 'residual'      # display limits from each card's own residual cutouts; snap_pages:363 (SNAP_SCALE_MODE default)
     KEEP_PANELS = False          # --resume of phase3_snapshot_pages.py; off in every launcher (snapshot_rechain_batch.sh:362-363)
-    IMAP_CHUNK = 4               # panels per worker task; snap_pages:670 (mirror)
+    IMAP_CHUNK = 4               # panels per worker task; snap_pages:749 _pass chunks (mirror; clv15 385e843 executor pool)
     PYTHON_KEY = 'py36'          # site PYTHON key of the snapshot scripts (crosscheck decision 2)
     RULED = {'FLOW_FRAMES': 'R-FORCED-PANEL-FITTED-POSITION-AND-RETICLE',
              'SCALE_MODE': 'R-SNAP-PANEL-SCALES-TIED-TO-THE-RESIDUALS',

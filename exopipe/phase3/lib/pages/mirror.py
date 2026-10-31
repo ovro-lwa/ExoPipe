@@ -85,7 +85,9 @@ ANCHORS = (
      lambda v: ', '.join(repr(x) for x in v[1:])),
     ('pages_snapshot', 'PANELS_TOP_N', None, 'clv15', SNAP, 're', r'chosen = uniq\[:(\d+)\]', None),
     ('pages_snapshot', 'FIT_NO_SOURCE_SNR', None, 'clv15', SNAP, 're', r'abs\(float\(id_fit\.get\("snr"\) or 0\)\) >= ([\d.]+)', None),
-    ('pages_snapshot', 'IMAP_CHUNK', None, 'clv15', SNAP, 're', r'imap_unordered\(_safe_render, todo, chunksize=(\d+)\)', None),
+    # clv15 385e843 (2026-10-17): the render pool is a ProcessPoolExecutor of 4-panel chunks (a lost worker's chunks are resubmitted
+    # once, then the pass refuses) - the chunk size is now the slice width of _pass (it was imap_unordered's chunksize)
+    ('pages_snapshot', 'IMAP_CHUNK', None, 'clv15', SNAP, 're', r'chunks = \[batch\[i:i \+ (\d+)\] for i in range\(0, len\(batch\), \d+\)\]', None),
     ('paths', 'COADD_SB_ROOT', None, 'ops', 'snapshot_filter_catalog.py', 're',
      r'"coadd_root\.txt"\), "w"\)\.write\("([^"\\]+)\\n"\)', None),
     ('pages_deep', 'STRAT_EL_BINS_DEG', None, 'ops', 'deep_stratified_queue.py', 're',
