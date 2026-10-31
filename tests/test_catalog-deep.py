@@ -609,6 +609,31 @@ def test_merge_refresh_replaces_a_changed_attempt():
     assert r['status'] == 'done' and any('content test PASS' in h for h in r['meta'].get('merge_refresh', [])), r['meta']
     assert any('1 of 4 (cell, Stokes) replaced' in h for h in r['meta'].get('merge_refresh', [])), r['meta'].get('merge_refresh')
 
+def test_merge_refusal_record_keeps_extraction_rows():
+    """The merge's refusal record (production exopipe_ops 2309a0e, the deep chat 2026-10-31): a source-extraction refusal row
+    (phase3_deep._refuse_extraction: lst, scope, date, Stokes, reason, ATTEMPT TAG, UTC time) carries its attempt tag in the sixth
+    field, not the last. An attempt holding an extraction_<S> file beside another gate's file keeps its extraction rows in the
+    merged record - read by the last field, the UTC time sorts below the search tag and the rows were dropped - and every merged
+    row ends in the cell's newest tag, as the record's readers (the newest tag per band) expect."""
+    make_world()
+    att = '20300104T000000'
+    d = f'{T}/collect/{LABEL.lower()}_collect_nodeA/attempts/05h_Full_V_{att}/transients/Run_{LABEL}/refusals'
+    os.makedirs(d, exist_ok=True)
+    tier = [['05h', 'Full', DATES[0], 'V', '0.210', '0.180', '2.33', att]]
+    extr = [['05h', 'Full', DATES[1], 'V', 'source extraction failed', att, '2030-01-04T00:10:00Z']]
+    for g, rr in (('searchtier', tier), ('extraction_V', extr)):
+        with open(f'{d}/05h_Full_{g}_excluded.csv', 'w', newline='') as f:
+            csv.writer(f, lineterminator='\n').writerows(rr)
+    cli('--stages', 'preflight,harvest,merge', expect=0)
+    got = {g: [r for r in csv.reader(open(f'{U}/refusals/05h_Full_{g}_excluded.csv')) if r]
+           for g in ('searchtier', 'extraction_V') if os.path.exists(f'{U}/refusals/05h_Full_{g}_excluded.csv')}
+    assert set(got) == {'searchtier', 'extraction_V'}, ('the extraction rows were dropped from the merged record', sorted(got))
+    assert got['extraction_V'] == [extr[0][:-1] + [att]], got['extraction_V']
+    assert got['searchtier'] == tier, got['searchtier']
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'done' and any('content test PASS' in h for h in r['meta'].get('merge_refresh', [])), r['meta']
+
+
 def test_b02_check_mode_in_the_chain():
     """B-02 steps 2 and 4 in the chain: under the ruled catalog_conform.MODE 'check' the pulsar stage runs between the merge
     and the check and refuses a run whose attempts were not searched under the once-in-search rules (the synthetic run's
@@ -881,7 +906,8 @@ def test_compileall():
 ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test_chain_to_fork_then_union_to_list',
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
-         'test_merge_refresh_replaces_a_changed_attempt', 'test_b30_identity_pre_check',
+         'test_merge_refresh_replaces_a_changed_attempt', 'test_merge_refusal_record_keeps_extraction_rows',
+         'test_b30_identity_pre_check',
          'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain', 'test_b02_check_chain_to_conform',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']
