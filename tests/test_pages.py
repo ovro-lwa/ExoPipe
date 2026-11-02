@@ -11,8 +11,9 @@ incremental re-run (0 rendered), one changed row (1 rendered), --full (all rende
 protected-key refusals, the environment scrub, M14 per-set layout + keyed merge, the singles pages-input port byte-identical to
 the production heredoc extracted from p3s3_pass.sh, the fork rows recomputation equal to the real p3s3_tier_pages_input.py,
 mirror drift detection, negative content tests.
-Read-only part: the content tests on existing production products (Run_P3S5, Run_SLST14B, Run_SNAPB1R_20261004) - results are
-PRINTED (production products may be mid-pass or older than their catalogues), asserted only to run without raising.
+Read-only part: the content tests on existing production products (Run_P3S5, Run_SLST14B, and the snapshot combined view the
+review hub serves with one of its batches) - results are PRINTED (production products may be mid-pass or older than their
+catalogues), asserted only to run without raising.
 """
 import csv
 import glob
@@ -514,6 +515,37 @@ def test_negative_content_tests():
     print('PASS negative content tests (wrong panel size, missing sidecar, queue without header, survivors column changed)')
 
 
+SNAP_REVIEW = '/data07/gh/phase3/snapshot_search/review'
+
+
+def current_snapshot_runs():
+    """(combined view, batch run) the review hub serves now for the snapshot tier, read only; None where there is none. The
+    run is the hub registry's Stokes V 10-sec entry (status.REGISTRY_FILE under serve.HUB_DIR, status.REGISTRY_KEYS); when
+    it is a combined view (combined_view_summary.json), the batch is the one of its 'batches' with the smallest master
+    catalogue (the cheapest to read whole - a batch tree is read whole); a served run that is no combined view is the batch."""
+    from exopipe.phase3.config import CFG
+    try:
+        with open(CFG.status.REGISTRY_FILE.format(hub=CFG.serve.HUB_DIR)) as fh:
+            run = json.load(fh)['V'][CFG.status.REGISTRY_KEYS['snapshot'][-1]]['run']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None
+    view = os.path.join(SNAP_REVIEW, run)
+    if not os.path.isdir(view):
+        return None, None
+    summ = os.path.join(view, 'combined_view_summary.json')
+    if not os.path.isfile(summ):
+        return None, view
+    runs = []
+    for tag in json.load(open(summ)).get('batches', []):
+        hit = [d for d in glob.glob(os.path.join(SNAP_REVIEW, f'Run_SNAP{tag}_*'))
+               if re.fullmatch(rf'Run_SNAP{re.escape(tag)}_\d{{8}}', os.path.basename(d))
+               and os.path.isfile(os.path.join(d, 'master_catalog.csv'))]
+        if len(hit) == 1:                      # the view names a batch by its tag (Run_SNAP<tag>_<date>); two dates: not sampled
+            runs.append(hit[0])
+    batch = min(runs, key=lambda d: (os.path.getsize(os.path.join(d, 'master_catalog.csv')), d)) if runs else None
+    return view, batch
+
+
 def test_real_products_read_only():
     """The content tests on existing production products (read only). Results printed; assert only that no test raised."""
     from exopipe.phase3.core import validate
@@ -539,10 +571,22 @@ def test_real_products_read_only():
                   ('review_queue', f'{S14}/judgements/queue_p3s3_V_sb.txt')]
         items += [('review_page', p) for p in sorted(glob.glob(f'{S14}/candidates/I/*/rank*.png'))[:1]]
         items += [('page_index', p) for p in sorted(glob.glob(f'{S14}/source_catalogs/*_pages_index_V.csv'))[:1]]
-    SN = '/data07/gh/phase3/snapshot_search/review/Run_SNAPB1R_20261004'
-    if os.path.isdir(SN):
+    # the snapshot products served NOW (2026-11-02: the fixed sample Run_SNAPB1R_20261004, built 2026-10-06 before the own-error
+    # columns and the RA wrap, failed R2 and R7 as an old product): the combined view (queue and a page; its tree is too big to
+    # read whole) and one of its batches (every test)
+    comb, SN = current_snapshot_runs()
+    if comb:
+        items += [('review_queue', f'{comb}/queue_V_10s.txt')]
+        row = None
+        for p in sorted(glob.glob(f'{comb}/source_catalogs_V_10s/*_sources_survivors.csv'), key=os.path.getsize)[:1]:
+            with open(p, newline='') as fh:
+                row = next(csv.DictReader(fh), None)          # the page directory as the server reads it (review_dir)
+        if row and row.get('review_dir'):
+            items += [('review_page', p) for p in sorted(glob.glob(f'{comb}/{glob.escape(row["review_dir"])}/rank*.png'))[:1]]
+    if SN:
         items += [('snapshot_page_run', SN), ('filter_catalog', f'{SN}/master_catalog.csv'), ('review_queue', f'{SN}/queue_V_10s.txt')]
         items += [('review_page', p) for p in sorted(glob.glob(f'{SN}/candidates/V/*/rank*.png'))[:1]]
+    print(f'  snapshot products sampled: combined view {comb and os.path.basename(comb)}, batch {SN and os.path.basename(SN)}')
     raised = []
     for cls, p in items:
         if not os.path.exists(p):
