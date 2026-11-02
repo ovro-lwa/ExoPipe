@@ -528,7 +528,7 @@ def test_engine_source():
     check('every engine line that reads the admitted nights is marked WAVE2 D-ADMIT (a lambda continues a marked call)',
           len(lines) >= 25 and not unmarked, (len(lines), unmarked))
     want = {
-        'the membership gate reads admitted nights': "_ADV.verify(base, policy=_ADS.policy())",
+        'the membership gate reads admitted nights': "_ADS.verify_master(base, policy=_ADS.policy())",   # (and the 18 MHz carve-out)
         'E10 night-image verdicts of admitted nights': "_ngf = set(_ngf) | _ADS.gate_failures(_adm)[0]",
         'E11 epoch verdicts of admitted nights': "_egf = set(_egf) | _ADS.gate_failures(_adm)[1]",
         'the I sanity gate: own value after the median': "_wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}",

@@ -1191,9 +1191,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # snapshot / sub-LST chat's (cross-tier note in the ledger). P3_ALLOW_OLD_MASTERS=1 bypasses it for archaeology, never production.
     if cadence == 'deep' and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
         from exopipe.phase3.lib.masters import membership as _MB
-        from exopipe.phase3.lib.masters import admit as _ADV               # WAVE2 D-ADMIT: membership read with the admitted nights
-        from exopipe.phase3.lib.search import admitted as _ADS             # WAVE2 D-ADMIT
-        _mv, _mrep = _ADV.verify(base, policy=_ADS.policy())               # WAVE2 D-ADMIT (production: _MB.verify(base))
+        from exopipe.phase3.lib.search import admitted as _ADS             # WAVE2 D-ADMIT: membership read with the admitted nights
+        _mv, _mrep = _ADS.verify_master(base, policy=_ADS.policy())        # WAVE2 D-ADMIT, WAVE2 18-MHZ: one verification with the
+        #                                                                    step's gate E3 (production: _MB.verify(base))
         _mv = _mv + _MB.verify_products(base)   # membership + what the master must carry (flux scale, PB, dewarp)
         for _x in _mrep:                                                   # WAVE2 D-ADMIT: 'admitted, rebuild pending'
             print(f'  {_x}', flush=True)

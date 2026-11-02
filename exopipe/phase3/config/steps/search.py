@@ -150,7 +150,16 @@ class search_detect(_Section):
                                                             # removal_rules, plan/wave2/B02_DESIGN.md step 3a); 'production' = without
                                                             # them (the publish conformance removes those rows); the engine child reads
                                                             # EXOPIPE3_REMOVAL_RULES (deep_step.engine_env)
+    MASTER_HELD_18MHZ = 'keep'                              # an EXISTING Red / Full master night whose only membership finding is that it
+                                                            # holds its excluded 18 MHz: 'keep' = reported, kept until the master's next
+                                                            # rebuild - never a violation, never a refusal (the 18 MHz carve-out); 'refuse'
+                                                            # = production (phase3_deep's membership gate: a violation, the cell refused).
+                                                            # One verification for the preflight's gate E3 and the engine's membership gate
+                                                            # (lib/search/admitted.verify_master); the engine child reads
+                                                            # EXOPIPE3_MASTER_HELD_18MHZ (deep_step.engine_env, frames deep_engine.child_env)
     RULED = {'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'MASTER_HELD_18MHZ': ('R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4', 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD',
+                                   'CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023'),
              'REMOVAL_RULES': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'ELEVATION_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
              'MIN_EPOCHS': 'IMPL-REFERENCE-NIGHT-MUST-BE-MASTER-NIGHT-AND-14-REBUILD',

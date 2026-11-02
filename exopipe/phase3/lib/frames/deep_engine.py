@@ -273,6 +273,10 @@ def child_env(spec, cfg=None):
     from exopipe.phase3.lib.masters import admit as _AD                 # D-ADMIT: how the engine reads admitted nights, as the
     from exopipe.phase3.lib.search import admitted as _ADS              # search step passes it (deep_step.engine_env)
     s[_ADS.POLICY_ENV] = _AD.admitted_policy(cfg.masters_admit.ADMITTED_NIGHTS)
+    try:                                                                # the 18 MHz carve-out of the engine's membership gate,
+        s[_ADS.MASTER_18_ENV] = _ADS.master_held_18(cfg.search_detect.MASTER_HELD_18MHZ)   # as the search step passes it
+    except RuntimeError as e:
+        raise Refusal(str(e))
     from exopipe.phase3.lib.search import removal_rules as _RR          # B-02: the search's removal rules and the solar audit
     try:                                                                # its daytime gate reads, as the search step passes them
         s[_RR.RULES_ENV] = _RR.search_rules(cfg.search_detect.REMOVAL_RULES)   # (deep_step.engine_env)

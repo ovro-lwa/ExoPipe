@@ -398,6 +398,10 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
     from exopipe.phase3.lib.masters import admit as _AD
     from exopipe.phase3.lib.search import admitted as _ADS
     env[_ADS.POLICY_ENV] = _AD.admitted_policy(c.masters_admit.ADMITTED_NIGHTS)    # D-ADMIT: how the engine reads admitted nights
+    try:                                                                           # the 18 MHz carve-out of the engine's membership
+        env[_ADS.MASTER_18_ENV] = _ADS.master_held_18(sd.MASTER_HELD_18MHZ)      # gate, as the preflight's (admitted.verify_master)
+    except RuntimeError as e:
+        raise Refusal(str(e))
     from exopipe.phase3.lib.search import removal_rules as _RR
     try:                                                                           # B-02: the search's removal rules (step 3a)
         env[_RR.RULES_ENV] = _RR.search_rules(sd.REMOVAL_RULES)
@@ -634,9 +638,11 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
         if not os.path.exists(p):
             raise Refusal(f'{item.cell}: {name} missing - gate {gate} cannot run; refused (never skipped)')
     if not si.ALLOW_OLD_MASTERS:
-        from exopipe.phase3.lib.masters import admit as AD, membership as MB
-        viol, rep = AD.verify(base, keep_18=True)      # D-ADMIT: an admitted night is 'admitted, rebuild pending', not absent; a night
-        #                                                holding its excluded 18 MHz is kept until the next rebuild (18 MHz exception)
+        from exopipe.phase3.lib.masters import membership as MB
+        from exopipe.phase3.lib.search import admitted as ADS
+        viol, rep = ADS.verify_master(base)            # D-ADMIT: an admitted night is 'admitted, rebuild pending', not absent; a night
+        #                                                holding its excluded 18 MHz is kept until the next rebuild under the ruled
+        #                                                search_detect.MASTER_HELD_18MHZ 'keep' - the engine's own gate calls the same
         viol = viol + MB.verify_products(base)
         f['gates'].append(('E3 membership rulings', not viol, f'{len(viol)} violation(s)'
                            + (f'; {len(rep)} admitted night(s), rebuild pending' if rep else '')))
