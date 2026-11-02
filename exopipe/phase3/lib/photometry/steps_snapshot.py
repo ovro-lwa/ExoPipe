@@ -1,23 +1,26 @@
-"""`exopipe3 photometry --tier snapshot`: target photometry of the HWJ and 10 pc samples on the search's photometry cutouts
-(10-s frames and 1-minute blocks), then the evaluation of every measured cell.
+"""`exopipe3 photometry --tier snapshot`: target photometry of the HWJ and 10 pc samples on the photometry cutouts of the
+served generation (photometry.CUTOUT_ROOT; 10-s frames and 1-minute blocks), then the evaluation of every measured cell.
 
-Stages (photometry.STAGES['snapshot']): measure (one unit per night cell) -> evaluate (one unit per band kind, then the zone
-flags). Engines in place (core/legacy.run, site PYTHON['py36']): snapshot_forced_phot.py (one child per band) and
-snapshot_forced_eval.py. Shell logic ported here from snapshot_forced_fleet.sh (claims -> exopipe3 run; pinning -> --cores;
-band list :19-21; one process per band, PAR at once, node-local work dir :15, :33-34; 'no HWJ/10pc cutouts' is not a failure
-:36-37, decided BEFORE launching with the engine's own glob; manifest merge in band order :38-40; completion rule :41-42;
-copy to the product root :43 -> atomic per-file writes; done/failed markers -> run records; failed work kept) and from
-snapshot_forced_reserve_20261007.sh / snapshot_forced_run_20260928.sh (per-kind refused-cell lists :138-147; the cells to
-evaluate = measured minus refused; two evaluations :151-162 with OMP_NUM_THREADS=1; the 8-row check :161; the grid, zone and
-stage-1 content tests :164, :169-173).
+Stages (photometry.STAGES['snapshot']): cutouts (only when named: the 10-s cutouts regenerated from the consolidated flow
+cubes into a generation root, lib/photometry/steps_cutouts.py) -> measure (one unit per night cell; stage 1 written to
+<out>/photometry.STAGE1_DIR) -> evaluate (one unit per band kind, then the zone flags). An ad-hoc target set (--targets
+TAG=CSV) is cut and measured, never evaluated. Engines in place (core/legacy.run, site PYTHON['py36']):
+snapshot_forced_phot.py (one child per band) and snapshot_forced_eval.py. Shell logic ported here from
+snapshot_forced_fleet.sh (claims -> exopipe3 run; pinning -> --cores; band list :19-21; one process per band, PAR at once,
+node-local work dir :15, :33-34; 'no HWJ/10pc cutouts' is not a failure :36-37, decided BEFORE launching with the engine's own
+glob; manifest merge in band order :38-40; completion rule :41-42; copy to the product root :43 -> atomic per-file writes;
+done/failed markers -> run records; failed work kept) and from snapshot_forced_reserve_20261007.sh /
+snapshot_forced_run_20260928.sh (per-kind refused-cell lists :138-147; the cells to evaluate = measured minus refused; two
+evaluations :151-162 with OMP_NUM_THREADS=1; the 8-row check :161; the grid, zone and stage-1 content tests :164, :169-173).
 
-Units (records <out>/_records/photometry/): measure.<cell> (measure.<cell>.<band+band> for a band subset),
-evaluate.<kind>.<tag>, evaluate.zones.<tag>. --out is the snapshot forced root (production /lustre/gh/main/phase3/snapshot_forced).
+Units (records <out>/_records/photometry/): cutouts.<cell>.<band>[.<tags>] (steps_cutouts), measure.<cell>
+(measure.<cell>.<band+band> for a band subset), evaluate.<kind>.<tag>, evaluate.zones.<tag>. --out is the snapshot forced root (production /lustre/gh/main/phase3/snapshot_forced).
 """
 import glob
 import hashlib
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -27,9 +30,14 @@ from exopipe.phase3.lib.photometry import steps_common as K
 
 
 def cutout_root(args):
-    c = K.cfg()
-    return os.path.abspath(args.cutout_root) if args.cutout_root else os.path.join(c.paths.PHASE3_ARCHIVE_ROOT,
-                                                                                    c.photometry_measure.CUTOUT_SUBDIR)
+    """--cutout-root, else the served generation's cutouts (photometry.CUTOUT_ROOT; generation 4's PHASE3_ARCHIVE_ROOT/
+    photometry is retired)."""
+    return K.cutout_root(args)
+
+
+def stage1_root(run):
+    """Stage 1 of this run: <out>/photometry.STAGE1_DIR (production <OUT_ROOT[snapshot]>/stage1_gen5 since generation 5)."""
+    return os.path.join(run.out_root, K.cfg().photometry.STAGE1_DIR)
 
 
 def kind_bands(kind):
@@ -91,13 +99,13 @@ def gate_full(args):
         raise ValueError('--scopes %s not in photometry.SNAPSHOT_BANDS' % bad)
 
 
-def cell_files(cell, root, index, band):
-    """The engine's own selection (snapshot_forced_phot.cell_files, :107-114) for one band: the cutouts of the measured
-    samples for this cell-hour."""
+def cell_files(cell, root, index, band, samples=None):
+    """The engine's own selection (snapshot_forced_phot.cell_files, :218-225) for one band: the cutouts of the measured
+    samples (or an ad-hoc target set's tags) for this cell-hour."""
     c = K.cfg()
     lst, date = cell.split('_', 1)
     pat = '_%s_%sT' % (lst, date.replace('-', ''))
-    smp = tuple(c.photometry.SAMPLES_MEASURED)
+    smp = tuple(samples or c.photometry.SAMPLES_MEASURED)
     if index and os.path.exists(index):
         out = [os.path.join(root, l.strip()) for l in open(index) if pat in l and l.split('/')[0] in smp]
         out = [p for p in out if os.path.relpath(p, root).split('/')[1] == band]
@@ -151,19 +159,29 @@ def stage_measure(run, args):
     c = K.cfg()
     m = c.photometry_measure
     root = cutout_root(args)
+    targets = K.adhoc_targets(args)
+    samples = [t for t, _ in targets] or list(c.photometry.SAMPLES_MEASURED)
     items, _ = select_cells(args, c.paths.SNAPSHOT_FLEET_OUT)
-    stage1 = os.path.join(run.out_root, 'stage1')
+    stage1 = stage1_root(run)
     man_name = args.manifest_name or m.MANIFEST_NAME
-    K.plan(run, '[measure] %d night cells; cutouts %s%s; -> %s/<cell>/forced_<sample>_<band>_<S>.npz + %s; band processes '
-                'at once %d (snapshot_forced_phot.py in place, site PYTHON[%s])'
-           % (len(items), root, ' (index %s)' % args.index if args.index else '', stage1, man_name,
+    K.plan(run, '[measure] %d night cells; cutouts %s%s; samples %s%s; -> %s/<cell>/forced_<sample>_<band>_<S>.npz + %s; band '
+                'processes at once %d (snapshot_forced_phot.py in place, site PYTHON[%s])'
+           % (len(items), root, ' (index %s)' % args.index if args.index else '', ','.join(samples),
+              ' (ad hoc: %s)' % ', '.join('%s=%s' % t for t in targets) if targets else '', stage1, man_name,
               args.band_procs or m.BAND_PROCS['snapshot'], K.python_key('snapshot')))
+    try:
+        K.gate_adhoc_roots(targets, {'stage-1 root': stage1})
+    except Refusal as e:
+        if run.dry_run:
+            K.would_refuse(run, 'measure', str(e))
+            return []
+        raise
     if not items:
         raise NoInput('no snapshot cell selected (--cells / --epochs; universe = cells under %s)' % c.paths.SNAPSHOT_FLEET_OUT)
     units = []
     for cell, sb in items:
         bands = bands_for(args, sb)
-        files = {b: cell_files(cell, root, args.index, b) for b in bands}
+        files = {b: cell_files(cell, root, args.index, b, samples) for b in bands}
         withc = [b for b in bands if files[b]]
         name = unit_name(cell, bands)
         if run.dry_run:
@@ -174,11 +192,11 @@ def stage_measure(run, args):
             if list(bands) != list(c.photometry.SNAPSHOT_BANDS) and man_name == m.MANIFEST_NAME and os.path.exists(mp):
                 K.would_refuse(run, 'measure', 'SM-SUBSET: %s exists (full-band manifest); give --manifest-name' % mp)
             continue
-        units += measure_cell(run, args, cell, bands, files, root, stage1, man_name)
+        units += measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets)
     return units
 
 
-def measure_cell(run, args, cell, bands, files, root, stage1, man_name):
+def measure_cell(run, args, cell, bands, files, root, stage1, man_name, targets=()):
     from exopipe.phase3.core import fitsio
     from exopipe.phase3.lib.photometry import tests as T
     c = K.cfg()
@@ -191,17 +209,19 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name):
     if K.run_resume_ok(run, name, admitted, {'cutout_listing_sha1': lsha}):
         return run.units[-1:]
     dst = os.path.join(stage1, cell)
+    tspec = ['%s=%s' % t for t in targets]
     with run.unit(name, tier='snapshot', stage='measure', cell=cell, bands=bands, cutout_root=root,
-                  manifest=man_name, cutout_listing_sha1=lsha, n_cutouts=len(allf)) as u:
+                  manifest=man_name, cutout_listing_sha1=lsha, n_cutouts=len(allf), targets=tspec) as u:
         withc = [b for b in bands if files[b]]
         u.meta['bands_no_cutout'] = [b for b in bands if not files[b]]
         if not withc:
-            raise NoInput('SM-NOCUT: no HWJ/10pc cutout for %s in %d bands under %s' % (cell, len(bands), root))
+            raise NoInput('SM-NOCUT: no %s cutout for %s in %d bands under %s' % (
+                '/'.join(t for t, _ in targets) or 'HWJ/10pc', cell, len(bands), root))
         full = list(bands) == list(c.photometry.SNAPSHOT_BANDS)
         mpath = os.path.join(dst, man_name)
         if not full and man_name == m.MANIFEST_NAME and os.path.exists(mpath):
             u.refuse('SM-SUBSET: a band subset would overwrite the full-band manifest %s; give --manifest-name' % mpath)
-        for p in K.sample_paths().values():
+        for p in ([p for _, p in targets] or K.sample_paths().values()):
             u.add_input(p)
         for b in withc:
             gp = os.path.join(c.catalog_snapshot.MASTER_CATALOGS, 'master_R075_%s_%s.gaul.csv' % (lst, b))
@@ -220,10 +240,13 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name):
         out = {}
 
         def one(b):
+            # an ad-hoc target set: the engine reads it from P3_SNAP_CUTOUT_SAMPLES and measures its tags (--samples TAG,
+            # forced_adhoc_20261028/stage1_when_done_20261028.sh:10-11)
             argv = [cell, os.path.join(work, 'b_%s' % b), '--bands', b, '--root', root] + (
-                ['--index', os.path.abspath(args.index)] if args.index else [])
+                ['--index', os.path.abspath(args.index)] if args.index else []) + (
+                ['--samples', ','.join(t for t, _ in targets)] if targets else [])
             res, text = K.call(u, 'measure_snapshot', argv, 'snapshot', 'snapshot_measure', run,
-                               'measure_%s_%s.log' % (cell, b), threads=args.threads)
+                               'measure_%s_%s.log' % (cell, b), env_extra=K.adhoc_env(targets), threads=args.threads)
             out[b] = (res, text)
         with ThreadPoolExecutor(max_workers=max(1, procs)) as ex:
             list(ex.map(one, withc))
@@ -232,7 +255,7 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name):
             res, text = out[b]
             if res.rc == 0:
                 continue
-            if 'REFUSING: no HWJ/10pc cutouts' in text:          # the fleet's 'not a failure' (:36-37)
+            if re.search(r'REFUSING: no \S+ cutouts for ', text):   # the fleet's 'not a failure' (:36-37)
                 continue
             (bad if res.refused else crashed).append('%s: %s' % (b, res.reason))
         # merge the band manifests in band order, byte for byte as the fleet does (:38-40)
@@ -276,7 +299,8 @@ def measure_cell(run, args, cell, bands, files, root, stage1, man_name):
             K.atomic_copy(p, os.path.join(dst, os.path.basename(p)))
         K.atomic_copy(os.path.join(work, 'cell', man_name), mpath)
         for p in npz:
-            u.add_output(os.path.join(dst, os.path.basename(p)), 'photometry_snapshot_npz', cutout_root=root)
+            u.add_output(os.path.join(dst, os.path.basename(p)), 'photometry_snapshot_npz', cutout_root=root,
+                         **({'targets': tspec} if tspec else {}))
         u.add_output(mpath, 'photometry_manifest')
         u.meta['bands_done'] = sorted(set(bands))
         if not u.failed_tests():
@@ -393,7 +417,10 @@ def done_evidence(stage1, cell, kind):
 def stage_evaluate(run, args):
     c = K.cfg()
     ev = c.photometry_evaluate
-    stage1 = os.path.abspath(args.stage1) if args.stage1 else os.path.join(run.out_root, 'stage1')
+    if getattr(args, 'targets', None):
+        raise Refusal('PHOT-ADHOC: the evaluation is defined on the HWJ / 10 pc samples (thresholds from their controls, '
+                      'survey size); an ad-hoc target set is measured, not evaluated (production: adhoc_report_20261028.py)')
+    stage1 = os.path.abspath(args.stage1) if args.stage1 else stage1_root(run)
     kinds = [k.strip() for k in (args.kinds or ','.join(ev.KINDS['snapshot'])).split(',') if k.strip()]
     badk = [k for k in kinds if k not in ev.KINDS['snapshot']]
     if badk:
@@ -403,7 +430,7 @@ def stage_evaluate(run, args):
     cells = sorted({cl for cl, _ in items})
     pending = set()      # dry run: cells whose stage 1 the measure stage of THIS invocation writes (nothing on disk yet)
     if run.dry_run and K.earlier_in_this_run(args, 'measure', 'evaluate') \
-            and os.path.abspath(stage1) == os.path.abspath(os.path.join(run.out_root, 'stage1')):
+            and os.path.abspath(stage1) == os.path.abspath(stage1_root(run)):
         mitems, _ = select_cells(args, c.paths.SNAPSHOT_FLEET_OUT)
         pending = {cl for cl, _ in mitems}
         if not explicit:
@@ -556,7 +583,12 @@ def zone_flags(run, args, stage1, tag, done_kinds):
     return run.units[-1:]
 
 
-STAGE_FUNCS = {'measure': stage_measure, 'evaluate': stage_evaluate}
+def _stage_cutouts(run, args):
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC
+    return SC.stage_snapshot_cutouts(run, args)
+
+
+STAGE_FUNCS = {'cutouts': _stage_cutouts, 'measure': stage_measure, 'evaluate': stage_evaluate}
 
 
 def run_tier(run, args, stages):

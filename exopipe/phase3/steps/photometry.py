@@ -5,6 +5,10 @@
     exopipe3 photometry --tier deep --run P3S5 --parent-dir DIR --epochs 04h_2025-10-14 --out ...                (one hour)
     exopipe3 photometry --tier snapshot --stages measure --cells 18h_2025-04-11 --out ... --work /fast/...      (one cell)
     exopipe3 photometry --tier snapshot --stages evaluate --stage1 ROOT --eval-tag 20261013 --out ...          (campaign)
+    exopipe3 photometry --tier snapshot --stages cutouts --cells '18h_*' --out ...                               (regeneration)
+    exopipe3 photometry --tier deep --stages cutouts,cutmeasure --cells '08h_*' --out ...                         (tier cutouts)
+    exopipe3 photometry --tier sublst --cells 08h_46MHz --out ...                         (10-minute cutouts + cutmeasure)
+    exopipe3 photometry --tier snapshot --stages cutouts,measure --targets ADHOC=list.csv --cutout-root R --out O (ad hoc)
 
 Per hour vs intermittent (DESIGN 12): per hour, --epochs <LST>_<date> measures ONE night of one LST hour - deep: the
 frames, stage and measure stages over every band of that LST, restricted to that night (the Stokes V 3x noise gate still
@@ -29,17 +33,26 @@ Stages:  frames (deep_forced_frames.py in place, on the host that reads the cell
          one BLAS thread each), evaluate (deep_forced_eval.py). Units: frames, stage, measure.shard_NN, evaluate.
 
 Snapshot tier (lib/photometry/steps_snapshot.py). --out = the snapshot forced root (default photometry.OUT_ROOT[snapshot]).
-Inputs:  the search's photometry cutouts <cutout root>/<sample>/<band>/<object>/<object>_<LST>_<UTC>_<S>.fits (default
-         paths.PHASE3_ARCHIVE_ROOT/photometry; class photometry_cutout, its content test reported per band); the gen-4 Master
-         catalogues; evaluate: the stage-1 files (--stage1, default <out>/stage1), the search's noise medians and runinfo
-         (paths.SNAPSHOT_FLEET_OUT), the curve constants, the tier-3 pin, data_decisions.csv, the refused-cell list.
-Outputs: stage1/<cell>/forced_<sample>_<band>_<S>.npz (photometry_snapshot_npz) + forced_manifest.csv (photometry_manifest);
+Inputs:  the photometry cutouts of the SERVED GENERATION <cutout root>/<sample>/<band>/<object>/<object>_<LST>_<UTC>_<S>.fits
+         (default photometry.CUTOUT_ROOT = photometry_gen5; class photometry_cutout, its content test reported per band); the
+         gen-4 Master catalogues; evaluate: the stage-1 files (--stage1, default <out>/photometry.STAGE1_DIR = stage1_gen5),
+         the search's noise medians and runinfo (paths.SNAPSHOT_FLEET_OUT), the curve constants, the tier-3 pin,
+         data_decisions.csv, the refused-cell list.
+Outputs: <STAGE1_DIR>/<cell>/forced_<sample>_<band>_<S>.npz (photometry_snapshot_npz) + forced_manifest.csv (photometry_manifest);
          eval_<tag>/ and eval_wb_<tag>/ (photometry_eval: exceedance, thresholds, thresholds_grid, completeness, targets_ge4,
          refused_cells, cells, drops), refused_cells_<kind>_<tag>.csv, zones_recomputed_<tag>.csv (photometry_zone_flags).
 Stages:  measure (snapshot_forced_phot.py per band, --band-procs at once, node-local work dir: --work or the site
          SCRATCH_ROOT), evaluate (snapshot_forced_eval.py --kind sb and wb, then the zone flags). Units: measure.<cell>
          (measure.<cell>.<band+band> for a band subset), evaluate.<kind>.<tag>, evaluate.zones.<tag>.
 
+Cutouts, every tier (lib/photometry/steps_cutouts.py; named in --stages, never a default): snapshot cutouts per (night cell,
+band) = the 10-s cubes cut from the consolidated flow cubes by the search's own path (in place, --cutouts-from-cubes); deep /
+sublst cutouts per <LST>_<band> = photometry_tier_cutouts_20261025.py, cutmeasure per LST = photometry_tier_forced_20261026.py
+(in place). Written into the cutout generation (--cutout-root, default photometry.CUTOUT_ROOT; cutmeasure: --tier-out, default
+photometry.TIER_FORCED_ROOTS) through a staging directory: identity with the source checked first, then ONE FILE PER (sample,
+band, object, LST, date, Stokes) (C-STALE; --fresh quarantines superseded files), then a per-unit manifest
+<root>/_manifest/<10s|deep|10min>/... (photometry_cutout_manifest). --targets TAG=CSV[,TAG=CSV] (+ --planets): an ad-hoc target
+set for cutouts and measure (P3_SNAP_CUTOUT_SAMPLES), into its own roots only (PHOT-ADHOC).
 Records: <out>/_records/photometry/<unit>.json; engine logs <out>/_records/photometry/logs/. No marker files.
 --dry-run: prints the plan and writes nothing; exit 2 when a gate would refuse (the plan names it), else 0. A stage whose
   inputs an EARLIER stage of the same invocation writes (stage/measure after frames, evaluate after measure) is planned from
@@ -58,6 +71,9 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   to <out>/quarantine_superseded_photometry_<run id>/<cell>/ with a sha256 manifest - never deleted), SE-LISTED, SE-NONE,
   SE-DONE (a cell without a complete stage 1), the evaluation's own refusals, Z (no targets_ge4 rows, or a recomputed
   zone screen differs: the zone-flag file is not written).
+  cutouts: C-CELLS (no --cells), C-ROOT (a retired generation; a production root in the window), C-RUN (--src-run other than
+  the tier tool's deep run), C-NOCUBE / C-EXCLUDED / C-NOCUT (exit 3 per unit), C-NAMES, C-IDENTITY, C-STALE (--fresh),
+  PHOT-ADHOC (an ad-hoc set into a served root, or with frames / stage / deep measure / evaluate).
   Any failing content test refuses its unit.
 """
 import importlib
@@ -69,12 +85,14 @@ SELECTORS = ('tier', 'cells', 'scopes', 'stokes', 'run_label', 'exclude_cells', 
 CONFIG = ('photometry', 'photometry_frames', 'photometry_measure', 'photometry_evaluate', 'photometry_cutouts',
           'photometry_phase2', 'catalog_snapshot', 'runner')
 WRITES = True
-_TIER_MODULES = {'deep': 'exopipe.phase3.lib.photometry.steps_deep', 'snapshot': 'exopipe.phase3.lib.photometry.steps_snapshot'}
+_TIER_MODULES = {'deep': 'exopipe.phase3.lib.photometry.steps_deep', 'snapshot': 'exopipe.phase3.lib.photometry.steps_snapshot',
+                 'sublst': 'exopipe.phase3.lib.photometry.steps_cutouts'}
 
 
 def add_arguments(p):
-    g = p.add_argument_group('stages (deep: frames,stage,measure,evaluate; snapshot: measure,evaluate; '
-                             'with --epochs the per-hour set photometry.EPOCH_STAGES)')
+    g = p.add_argument_group('stages (deep: cutouts,cutmeasure,frames,stage,measure,evaluate; snapshot: cutouts,measure,'
+                             'evaluate; sublst: cutouts,cutmeasure; default photometry.DEFAULT_STAGES - cutouts and cutmeasure '
+                             'of deep / snapshot only when named; with --epochs the per-hour set photometry.EPOCH_STAGES)')
     g.add_argument('--stages', metavar='LIST', help='stages to run, in tier order whatever the order given')
     g.add_argument('--from', dest='stage_from', metavar='STAGE', help='first stage of the selected list')
     g.add_argument('--until', dest='stage_until', metavar='STAGE', help='last stage of the selected list')
@@ -88,15 +106,23 @@ def add_arguments(p):
                                               'changes the blank-sky rows and is recorded as a config override)')
     d.add_argument('--stage-root', metavar='DIR', help='stage: node-local root of the copies (default --work or the site '
                                                        'SCRATCH_ROOT + photometry_frames.STAGE_SUBDIR)')
+    cu = p.add_argument_group('cutouts (every tier)')
+    cu.add_argument('--cutout-root', metavar='DIR', help='the cutout generation measured (snapshot measure, cutmeasure) and '
+                                                         'written (cutouts): default photometry.CUTOUT_ROOT, the served one')
+    cu.add_argument('--tier-out', metavar='DIR', help='cutmeasure: the tier forced root of every sample (default '
+                                                      'photometry.TIER_FORCED_ROOTS, per sample as served)')
+    cu.add_argument('--targets', metavar='TAG=CSV[,TAG=CSV]',
+                    help='an AD-HOC target set replacing the HWJ / 10 pc lists for cutouts and snapshot measure (passed to '
+                         'the engines as P3_SNAP_CUTOUT_SAMPLES; columns common_name|name, ra_current|ra, dec_current|dec); '
+                         'never into a served root (give --cutout-root / --out / --tier-out); not evaluated')
+    cu.add_argument('--planets', action='store_true', help='with --targets: cut the planets too (P3_SNAP_CUTOUT_PLANETS=1)')
     s = p.add_argument_group('snapshot tier')
-    s.add_argument('--cutout-root', metavar='DIR', help='measure: the photometry cutouts (default '
-                                                        'paths.PHASE3_ARCHIVE_ROOT/photometry_measure.CUTOUT_SUBDIR)')
     s.add_argument('--index', metavar='FILE', help='measure: listing of cutout paths relative to --cutout-root')
     s.add_argument('--band-procs', type=int, help='measure: band processes at once in a cell (default '
                                                   'photometry_measure.BAND_PROCS[snapshot] = 8)')
     s.add_argument('--manifest-name', help='measure: name of the merged manifest (default forced_manifest.csv; a band '
                                            'subset needs another name when a full-band manifest exists)')
-    s.add_argument('--stage1', metavar='DIR', help='evaluate: the stage-1 root (default <out>/stage1)')
+    s.add_argument('--stage1', metavar='DIR', help='evaluate: the stage-1 root (default <out>/photometry.STAGE1_DIR)')
     s.add_argument('--kinds', help='evaluate: sb, wb or sb,wb (default photometry_evaluate.KINDS[snapshot])')
     s.add_argument('--survey-cells', type=int, help='evaluate: survey size for the survey thresholds (default '
                                                     'photometry_evaluate.SURVEY_CELLS[snapshot] = 402; a RULED key: another '
@@ -116,7 +142,7 @@ def default_out(args):
     tier = getattr(args, 'tier', 'deep')
     if tier == 'deep':
         return importlib.import_module(_TIER_MODULES['deep']).default_out(args)
-    if tier == 'snapshot':
+    if tier in ('snapshot', 'sublst'):         # sublst: the tier cutout / cutmeasure records beside the snapshot ones
         return CFG.photometry.OUT_ROOT['snapshot']
     return '/tmp/exopipe3_photometry_%s' % tier
 
@@ -124,7 +150,7 @@ def default_out(args):
 def run(args, run):
     from exopipe.phase3.core import record
     from exopipe.phase3.lib.photometry import steps_common as K
-    K.gate_tier(args.tier)
+    K.gate_tier(args.tier, args.stages)
     K.gate_env()
     K.gate_samples()
     c = K.cfg()
@@ -132,6 +158,8 @@ def run(args, run):
     if args.tier == 'deep':
         K.gate_pinned_inputs([c.photometry_frames.ROOTS_CSV, m.PARENT_TABLES['deep'], m.SOLAR_AUDIT['deep'],
                               c.paths.DATA_DECISIONS])
+    elif args.tier == 'sublst':
+        K.gate_pinned_inputs([c.photometry_frames.ROOTS_CSV, c.paths.DATA_DECISIONS])
     else:
         e = c.photometry_evaluate
         K.gate_pinned_inputs([e.REFUSED_CELLS['snapshot'], e.DEEP_SEARCH_PIN['snapshot'], c.paths.DATA_DECISIONS,
@@ -139,6 +167,7 @@ def run(args, run):
     try:
         flag_overrides(args, c)
         stages = K.resolve_stages(args, args.tier)
+        gate_adhoc_stages(args, stages)
         K.plan(run, 'photometry --tier %s: stages %s; out %s%s' % (args.tier, ','.join(stages), run.out_root,
                                                                    ' (dry run: nothing written)' if run.dry_run else ''))
         rc = importlib.import_module(_TIER_MODULES[args.tier]).run_tier(run, args, stages)
@@ -152,6 +181,25 @@ def run(args, run):
             return record.EXIT_REFUSED
         return record.EXIT_DONE
     return rc
+
+
+ADHOC_STAGES = {'snapshot': ('cutouts', 'measure'), 'deep': ('cutouts', 'cutmeasure'), 'sublst': ('cutouts', 'cutmeasure')}
+
+
+def gate_adhoc_stages(args, stages):
+    """PHOT-ADHOC: an ad-hoc target set (--targets, --planets) applies to the cutouts and the measurement on them (the engines
+    read P3_SNAP_CUTOUT_SAMPLES); the deep frame-table chain reads the pinned lists by literal path and the evaluation is
+    defined on the HWJ / 10 pc samples - selecting one of those with --targets refuses."""
+    from exopipe.phase3.core import record
+    if not (getattr(args, 'targets', None) or getattr(args, 'planets', False)):
+        return
+    if getattr(args, 'planets', False) and not getattr(args, 'targets', None):
+        raise record.Refusal('PHOT-ADHOC: --planets adds the planets to an ad-hoc target set (--targets); without one the '
+                             'planets are cut anyway')
+    bad = [s for s in stages if s not in ADHOC_STAGES.get(args.tier, ())]
+    if bad:
+        raise record.Refusal('PHOT-ADHOC: --targets applies to the stages %s of tier %s, not %s'
+                             % (','.join(ADHOC_STAGES.get(args.tier, ())), args.tier, ','.join(bad)))
 
 
 def flag_overrides(args, c):

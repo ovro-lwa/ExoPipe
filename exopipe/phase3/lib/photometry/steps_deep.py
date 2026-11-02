@@ -1,10 +1,13 @@
 """`exopipe3 photometry --tier deep`: target photometry of the HWJ and 10 pc samples on the SEARCHED deep frames of a run.
 
 Stages (photometry.STAGES['deep']): frames -> stage -> measure -> evaluate. Each stage reads ONLY the files the previous
-stage's record lists (DESIGN 11.5). Engines in place (core/legacy.run): deep_forced_frames.py, deep_forced_phot.py (one
-child per shard), deep_forced_eval.py. Shell logic of run_deep_forced_20260928.sh ported here: frame-list presence (M-CHAIN),
-the /data07 path rewrite + stage list (:14-26), the copy (:27-29), the staging completeness check (:30-31, now per file),
-32 shards one BLAS thread each (:33), success by exit code + content tests instead of grepping logs (:34), evaluation (:36).
+stage's record lists (DESIGN 11.5). The deep TIER cutouts and their forced measurement (cutouts, cutmeasure: one cube per
+object over every night of an LST hour, photometry_tier_cutouts_20261025.py / photometry_tier_forced_20261026.py in place) run
+only when named; lib/photometry/steps_cutouts.py. Engines in place (core/legacy.run): deep_forced_frames.py,
+deep_forced_phot.py (one child per shard), deep_forced_eval.py. Shell logic of run_deep_forced_20260928.sh ported here:
+frame-list presence (M-CHAIN), the /data07 path rewrite + stage list (:14-26), the copy (:27-29), the staging completeness
+check (:30-31, now per file), 32 shards one BLAS thread each (:33), success by exit code + content tests instead of grepping
+logs (:34), evaluation (:36).
 
 Units (records <out>/_records/photometry/): frames, stage, measure.shard_NN, evaluate. --out is the RUN directory
 (production /fast/gh/main/phase3/deep_forced/run1..run3).
@@ -617,7 +620,18 @@ def stage_evaluate(run, args):
     return run.units[-1:]
 
 
-STAGE_FUNCS = {'frames': stage_frames, 'stage': stage_stage, 'measure': stage_measure, 'evaluate': stage_evaluate}
+def _stage_cutouts(run, args):
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC
+    return SC.stage_tier_cutouts(run, args)
+
+
+def _stage_cutmeasure(run, args):
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC
+    return SC.stage_tier_cutmeasure(run, args)
+
+
+STAGE_FUNCS = {'cutouts': _stage_cutouts, 'cutmeasure': _stage_cutmeasure, 'frames': stage_frames, 'stage': stage_stage,
+               'measure': stage_measure, 'evaluate': stage_evaluate}
 
 
 def run_tier(run, args, stages):
