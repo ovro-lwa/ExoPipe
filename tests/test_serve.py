@@ -989,7 +989,7 @@ def test_views_stage():
     assert os.path.islink(f'{plan.U}/candidates') and not os.path.islink(f'{plan.U}/judgements')
     hp = register.hold_file(plan.U)
     txt = open(hp).read()
-    assert not os.path.islink(hp) and 'exopipe3 serve rewrites its run' in txt and any('publish hold' in n for n in u.notes), txt
+    assert not os.path.islink(hp) and 'exopipe3 serve rewrites its run' in txt and any('publish marker' in n for n in u.notes), txt
     src_hold = register.hold_file(plan.U_src)        # a hold that stands - the production publish's, which the parity
     with open(src_hold, 'w') as f:                   # mirror links - is kept with its own text, never written through
         f.write('the publish\'s own text\n')
@@ -1001,9 +1001,19 @@ def test_views_stage():
         assert os.path.islink(lifted) and open(src_hold).read() == 'the publish\'s own text\n' and not os.path.lexists(hp)
     finally:
         os.remove(src_hold)
+    stale = f'{T}/stage_stale_src/Run_TEST'          # the pages merge stale: refused BEFORE the marker is written
+    shutil.copytree(plan.U_src, stale)
+    t_ = time.time() + 10
+    os.utime(f'{stale}/source_catalogs/Red_pages_index_V.csv', (t_, t_))
+    plan3 = planmod.make(a, f'{T}/stage_out_stale')
+    plan3.U_src = stale
+    run3 = Run('serve', ['test'], plan3.out, CFG, config_sections=None)
+    deep.views_stage(run3, plan3, flow.new_state())
+    assert run3.units[-1].status == 'refused' and not os.path.lexists(register.hold_file(plan3.U)), run3.units[-1].reason
     ok(f'deep views stage through record.Run: done, {len(rec["outputs"])} outputs tested on write, I-multi refused (G3), '
-       f'parity mirror (candidates linked, judgements copied); THE PUBLISH HOLD set on the run it rewrites (a standing hold '
-       f'- the production run\'s, linked by the mirror - kept with its own text and lifted by renaming the link only)')
+       f'parity mirror (candidates linked, judgements copied); THE PUBLISH MARKER written once the pages merge is current (a '
+       f'standing marker - the production run\'s, linked by the mirror - kept with its own text and removed by renaming the '
+       f'link only; a stale merge refuses before any marker is written)')
 
 
 def test_mchain():
@@ -1246,11 +1256,8 @@ def test_exclusion_gate_per_page_stage():
                     state['expected'].setdefault(pg_.key, {'n': queue_identities(pg_.at('queue', plan.U)),
                                                            'kind': 'stand-in index'})
                 plan.ops = standin_dir()
-                srv = TwoPortServer(register.registry_dir(plan), *register.listeners(plan))
-                try:
-                    flow.start_stage(run, plan, state)
-                finally:
-                    srv.stop()
+                srv = TwoPortServer(register.registry_dir(plan), *register.listeners(plan))   # stopped after run3 (else main)
+                flow.start_stage(run, plan, state)
                 su = {x.meta.get('page'): x for x in run.units if x.meta.get('stage') == 'start' and x.meta.get('page')}
                 started = {k for k, x in su.items() if x.status == 'done'}
                 reg_ids = {e['id'] for e in json.load(open(f'{register.registry_dir(plan)}/registry.json'))['pages']}
@@ -1289,6 +1296,7 @@ def test_exclusion_gate_per_page_stage():
                     register.write = orig_w
                     plan.pages = all_pages
                     wcsv(mem, list(orows[0].keys()), orows)
+                    srv.stop()
                 ui = next(x for x in run3.units if x.meta.get('page') == 'I')
                 assert ui.status == 'refused' and 'G17 serve-time exclusion gate at start' in ui.reason, (ui.status, ui.reason)
             else:
@@ -1505,10 +1513,12 @@ def main():
         ap.add_argument(a)
     ap.add_argument('--port', type=int); ap.add_argument('--sibling', action='append'); ap.add_argument('--inspect', action='store_true')
     ap.add_argument('--loc-offsets', action='store_true'); ap.add_argument('--slow', type=float, default=0)
-    ap.add_argument('--fail', action='store_true')
+    ap.add_argument('--fail', action='store_true'); ap.add_argument('--die', action='store_true')
     a = ap.parse_args()
     if a.fail:
         raise SystemExit('REFUSING: this stand-in page refuses to start')
+    if a.die:
+        os._exit(3)                       # a build that kills the process hosting it (the two-port backend)
     time.sleep(a.slow)
     INSPECT = a.inspect
     App.TITLE = a.title or ''
@@ -1533,12 +1543,16 @@ def queue_identities(q):
         return len({l.split()[0].split('_')[0] for l in f if l.startswith('J')})
 
 
-class TwoPortServer:
-    """An isolated two-port server - this tree's lib/serve/two_port.py, as run_two_port.sh runs production's frozen copy - on
-    free test ports (>= 19000; never 8765 / 8795) serving the scratch registry <d>/registry.json; stopped by exact pid with
-    every backend of its socket directory."""
+LIVE_SERVERS = []          # every TwoPortServer running now: main() stops what a failed test left running
 
-    def __init__(self, d, review, inspection):
+
+class TwoPortServer:
+    """An isolated two-port server - this tree's lib/serve/two_port.py as run_two_port.sh runs production's frozen copy (its
+    environment; ``tree``: another tree's, e.g. production's frozen two_port_d07fa79, run read only) - on free test ports
+    (>= 19000; never 8765 / 8795) serving the scratch registry <d>/registry.json, its sockets in a short directory under the
+    scratch root; stopped by exact pid with every backend of its socket directory."""
+
+    def __init__(self, d, review, inspection, publish_hold=False, tree=None):
         assert min(review, inspection) >= 19000, (review, inspection)
         self.d, self.ports = d, (review, inspection)
         self.reg = os.path.join(d, 'registry.json')
@@ -1548,10 +1562,12 @@ class TwoPortServer:
                 json.dump({'pages': []}, f)
         for p in self.ports:
             assert not procs.port_in_use(p), f'port {p} is in use: the test needs it free'
-        self.socks = os.path.join(d, 'socks')
+        self.socks = f'{T}/s{review}'
         self.log = os.path.join(d, 'two_port.log')
-        argv = register.server_argv(self.reg, review, inspection, self.socks, python=PY)
-        self.proc = procs.start(argv, ROOT, dict(os.environ, NUMPY_MADVISE_HUGEPAGE='0'), self.log)
+        argv = register.server_argv(self.reg, review, inspection, self.socks, python=PY, publish_hold=publish_hold)
+        env = register.server_env(dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+        self.proc = procs.start(argv, tree or ROOT, env, self.log)
+        LIVE_SERVERS.append(self)
         t0 = time.time()
         while register.server_status(review, timeout=5) is None:
             assert self.proc.poll() is None, open(self.log).read()[-800:]
@@ -1576,6 +1592,8 @@ class TwoPortServer:
         return (st.get('backends') or [{}])[0] if st else {}
 
     def stop(self):
+        if self in LIVE_SERVERS:
+            LIVE_SERVERS.remove(self)
         info = procs.proc_info(self.proc.pid)
         if info and info['state'] != 'Z':
             procs.stop_exact(info, timeout=20, poll=0.2)
@@ -1684,14 +1702,15 @@ def _rules_entry(d, pid_, title='Page', run=None, extra=()):
 
 
 def test_two_port_rules(srv):
-    """The server (an isolated instance of this tree's two_port.py): (1) a REGISTRY CHANGE is a change of the file's inode,
-    size OR modification time (two_port.registry_state) - a new file of the same size and the same time (the mtime alone, the
-    rule before, saw nothing: B6A p9024), a rewrite in place of another size and the same time, the time alone - and nothing
-    else reloads; (2) THE PUBLISH HOLD: while <run>/PUBLISH_IN_PROGRESS.txt exists the run's built page is not rebuilt at a
-    registry change - it answers from its build, a fresh GET too, with X-Two-Port-Held and X-Two-Port-Stale, and /_status
-    reports it held and not queued; lifted, its next request queues its rebuild and a fresh GET gets the rebuilt page; a page
-    whose own entry changed while held is built at once (the page code shows the marker's text)."""
+    """The server (an isolated instance of this tree's two_port.py, default options): (1) a REGISTRY CHANGE is a change of the
+    file's inode, size OR modification time (two_port.registry_state) - a new file of the same size and the same time (the
+    mtime alone, the rule before, saw nothing: B6A p9024), a rewrite in place of another size and the same time, the time
+    alone - and nothing else reloads; (2) NO PUBLISH HOLD by default (production, exopipe_ops 4a39c6b): a page of a run that
+    holds PUBLISH_IN_PROGRESS.txt is rebuilt at a registry change like any other - the build before answers meanwhile (stale,
+    queued, never held) - and the rebuilt page shows the marker's text as a banner."""
     d = srv.d
+    st0 = register.server_status(srv.ports[0])
+    assert st0['build_state'] == two_port.BUILD_STATE and st0['publish_hold'] is False, st0
     e = _rules_entry(d, 'pcd', 'Title A')
     register.register([e], d)
     st_, h, b = srv.get('pcd')
@@ -1724,42 +1743,111 @@ def test_two_port_rules(srv):
     assert g1 == g0 + 1 and g2 == g1, (g0, g1, g2)
     ok('two-port server: a registry change = a new inode, another size or another time (a new file of the same size and time '
        'reloads - the time alone missed it), and nothing else reloads')
+    RH = f'{d}/runs/pmark'
+    eh = _rules_entry(d, 'pmark', 'Marked page', run=RH)
+    register.register([eh], d)
+    st_, h, b = srv.get('pmark', fresh=True)
+    s_1 = _stamp(b)
+    assert st_ == 200 and s_1 and 'class="banner"' not in b, b[:200]
+    register.set_hold(RH, 'publish in progress (test)')
+    os.utime(srv.reg, ns=(time.time_ns(), os.stat(srv.reg).st_mtime_ns + 10 ** 9))      # any registry change
+    st_, h, b = srv.get('pmark')
+    be = srv.backend()
+    assert _stamp(b) == s_1 and two_port.STALE_HEADER.lower() in h and two_port.HELD_HEADER.lower() not in h, (h, b[:200])
+    assert not be['held'] and not be['built']['pmark']['held'] and 'pmark' in be['rebuild_queue'], be
+    st_, h, b = srv.get('pmark', fresh=True)
+    assert _stamp(b) not in (None, s_1) and 'publish in progress (test)' in b, b[:300]
+    register.lift_hold(RH)
+    ok('two-port server, default (production): no publish hold - a page of a marked run is rebuilt at a registry change (the '
+       'build before answers meanwhile, stale, queued, never held) and the rebuilt page shows the marker\'s text')
+
+
+def test_publish_hold_option(srvh):
+    """THE PUBLISH HOLD, an amendment option (two_port serve --publish-hold; serve.TWO_PORT_PUBLISH_HOLD, default False =
+    production): with it, while <run>/PUBLISH_IN_PROGRESS.txt exists the run's built page is not rebuilt at a registry change -
+    it answers from its build, a fresh GET too, with X-Two-Port-Held and X-Two-Port-Stale, and /_status reports it held and
+    not queued; the build wait refuses it (G16); lifted, its next request queues its rebuild and a fresh GET gets the rebuilt
+    page; a page whose own entry changed while held is built at once (with the banner). serve refuses a server whose hold mode
+    differs from the configuration (G13)."""
+    d = srvh.d
+    assert register.server_status(srvh.ports[0])['publish_hold'] is True
+    try:
+        register.check_server(srvh.ports, d)
+        raise AssertionError('a server with the hold passed under serve.TWO_PORT_PUBLISH_HOLD False')
+    except Refusal as e:
+        assert 'G13' in str(e) and 'publish hold on' in str(e), e
+    CFG.set('serve.TWO_PORT_PUBLISH_HOLD', True)
+    try:
+        register.check_server(srvh.ports, d)
+    finally:
+        CFG.set('serve.TWO_PORT_PUBLISH_HOLD', False)
     RH = f'{d}/runs/phold'
     eh = _rules_entry(d, 'phold', 'Held page', run=RH)
     res = register.register([eh], d)
-    st_, h, b = srv.get('phold', fresh=True)
+    st_, h, b = srvh.get('phold', fresh=True)
     s_1 = _stamp(b)
     assert st_ == 200 and s_1 and 'class="banner"' not in b, b[:200]
     hp, now = register.set_hold(RH, 'publish in progress (test)')
     assert now and open(hp).read() == 'publish in progress (test)\n'
-    os.utime(srv.reg, ns=(time.time_ns(), os.stat(srv.reg).st_mtime_ns + 10 ** 9))      # any registry change
-    st_, h, b = srv.get('phold')
+    os.utime(srvh.reg, ns=(time.time_ns(), os.stat(srvh.reg).st_mtime_ns + 10 ** 9))      # any registry change
+    st_, h, b = srvh.get('phold')
     assert _stamp(b) == s_1 and h.get(two_port.HELD_HEADER.lower()) == hp and two_port.STALE_HEADER.lower() in h, (h, b[:200])
     t = time.time()
-    st_, h, b = srv.get('phold', fresh=True)
+    st_, h, b = srvh.get('phold', fresh=True)
     assert _stamp(b) == s_1 and time.time() - t < 5 and 'class="banner"' not in b, b[:200]
-    be = srv.backend()
+    be = srvh.backend()
     assert be['built']['phold']['held'] and 'phold' in be['held'] and 'phold' not in be['rebuild_queue'], be
     try:
-        register.wait_built(srv.ports[0], res['entries'][0], time.time(), d=d, poll=0.2, stall_s=10)
+        register.wait_built(srvh.ports[0], res['entries'][0], time.time(), d=d, poll=0.2, stall_s=10)
         raise AssertionError('a held page passed the build wait')
     except Refusal as x:
         assert 'G16' in str(x) and 'publish hold' in str(x), x
     lifted = register.lift_hold(RH)
     assert lifted and os.path.exists(lifted) and not os.path.exists(hp) and '.removed_' in lifted
-    st_, h, b = srv.get('phold')
-    be = srv.backend()
+    st_, h, b = srvh.get('phold')
+    be = srvh.backend()
     assert _stamp(b) == s_1 and ('phold' in be['rebuild_queue'] or 'phold' in be['building']) and not be['held'], be
-    st_, h, b = srv.get('phold', fresh=True)
+    st_, h, b = srvh.get('phold', fresh=True)
     assert _stamp(b) not in (None, s_1) and 'class="banner"' not in b and two_port.HELD_HEADER.lower() not in h, b[:200]
     register.set_hold(RH, 'publish in progress (test 2)')
     register.register([dict(eh, argv=eh['argv'][:-1] + ['Held page 2'], title='Held page 2')], d)
-    st_, h, b = srv.get('phold')
+    st_, h, b = srvh.get('phold')
     assert 'Held page 2' in b and 'publish in progress (test 2)' in b and two_port.HELD_HEADER.lower() not in h, b[:300]
     register.lift_hold(RH)
-    ok('two-port server publish hold: a held page keeps its build at a registry change (a fresh GET too; held and stale '
-       'headers; /_status held, not queued; the build wait refuses it, G16); lifted (renamed .removed_<UTC>), its rebuild is '
-       'queued and a fresh GET gets the rebuilt page; a page whose entry changed while held is built at once, with the banner')
+    ok('publish hold OPTION (--publish-hold): a held page keeps its build at a registry change (a fresh GET too; held and stale '
+       'headers; /_status held, not queued; the build wait refuses it, G16); lifted, its rebuild is queued and a fresh GET '
+       'gets the rebuilt page; a page whose entry changed while held is built at once, with the banner; serve refuses a '
+       'server whose hold mode differs from serve.TWO_PORT_PUBLISH_HOLD (G13)')
+
+
+def test_old_server_refused():
+    """A two-port server older than this tree's two_port.py - production's frozen two_port_d07fa79, the live server's code, run
+    here read only as an isolated instance on test ports - reports no build state: serve refuses AT ONCE, before anything is
+    written (G16: it must be redeployed with this two_port.py first), and a build wait against it refuses at once instead of
+    waiting for the stall limit (the review of 2026-11-02 reproduced 'states seen: waiting' while the page answered 200)."""
+    frozen = '/lustre/gh/main/phase3/serve/two_port_d07fa79'
+    d = f'{T}/old_server'
+    old = TwoPortServer(d, 29945, 29946, tree=frozen)
+    try:
+        st = register.server_status(29945)
+        assert st is not None and 'build_state' not in st and register.old_server(st), st
+        reg0 = open(old.reg, 'rb').read()
+        t = time.time()
+        try:
+            register.check_server(old.ports, d)
+            raise AssertionError('an old two-port server passed the server check')
+        except Refusal as e:
+            assert 'G16' in str(e) and 'redeployed with this two_port.py first' in str(e) and time.time() - t < 30, e
+        try:
+            register.wait_built(29945, _rules_entry(d, 'pold'), time.time(), d=None, poll=0.2, stall_s=600)
+            raise AssertionError('a build wait against an old server passed')
+        except Refusal as e:
+            assert 'G16' in str(e) and 'redeployed' in str(e) and time.time() - t < 30, e
+        assert open(old.reg, 'rb').read() == reg0
+    finally:
+        old.stop()
+    ok(f'an older two-port server (production\'s frozen two_port_d07fa79: /_status without the build state) is refused at once '
+       f'(G16, redeploy first; {time.time() - t:.1f} s), nothing registered; a build wait against it refuses at once too')
 
 
 def test_build_state_wait(srv):
@@ -1814,6 +1902,38 @@ def test_build_state_wait(srv):
         assert 'G16' in str(x) and '404' in str(x), x
     ok('build wait: an entry replaced meanwhile is refused (G13); a page the server does not know is refused (G16, 404)')
     time.sleep(2.5)                                  # the replaced page's build ends: nothing builds on the server now
+    # the registration's time is taken BEFORE the registry write: a build that starts as soon as the server sees the new
+    # registry (here a request in that very window) is the registered page's build
+    ee = _rules_entry(d, 'pearly')
+    orig_w = register.atomic_write
+
+    def write_then_build(path, obj):
+        orig_w(path, obj)
+        if os.path.basename(path) == 'registry.json':
+            got['early'] = srv.get('pearly', fresh=True)
+    register.atomic_write = write_then_build
+    try:
+        res = register.register([ee], d)
+    finally:
+        register.atomic_write = orig_w
+    t_after = time.time()
+    b = register.wait_built(port, res['entries'][0], res['t'], d=d, poll=0.2, stall_s=3)
+    assert got['early'][0] == 200 and b['state'] == 'built' and res['t'] <= b['build_start'] < t_after \
+        and b['waited_s'] < 3, (got['early'][0], b, res['t'], t_after)
+    ok('build wait: the registration time is taken before the registry write - a build started in the window between the write '
+       'and the end of the registration is the page\'s build (accepted at once, not waited for until the stall limit)')
+    # a page whose build kills its backend (each request restarts the backend, so builds "progress"): refused after
+    # TWO_PORT_MAX_FAILED_REQUESTS requests in a row without a 200
+    ed = _rules_entry(d, 'pdie', extra=('--die',))
+    res = register.register([ed], d)
+    t = time.time()
+    try:
+        register.wait_built(port, res['entries'][0], res['t'], d=d, poll=0.2, stall_s=60)
+        raise AssertionError('a page whose build kills its backend passed')
+    except Refusal as x:
+        assert 'G24' in str(x) and f'{CFG.serve.TWO_PORT_MAX_FAILED_REQUESTS} requests in a row got no 200' in str(x), x
+    ok(f'build wait: a page whose build kills its backend is refused after {CFG.serve.TWO_PORT_MAX_FAILED_REQUESTS} requests '
+       f'in a row without a 200 (G24, {time.time() - t:.1f} s; the stall limit was 60 s)')
     es = _rules_entry(d, 'pstall', extra=('--slow', '8'))
     res = register.register([es], d)
     t = time.time()
@@ -1830,13 +1950,17 @@ def test_build_state_wait(srv):
 def test_start_registers():
     """THE START STAGE REGISTERS (production since 2026-10-22, deep_reregister_after_publish_20261031.py, sublst_register_pages.py,
     snapshot_register_page.py): through record.Run, the deep pages of a parity plan (offset 21000; the stand-in page code)
-    - with no two-port server answering: refused (G16), nothing written, the publish hold standing;
-    - with one: ONE registration (registry.json and registered_pages.json written once each for both pages), the hold lifted
-      (renamed) right before it, no server on any page port, entries as production's (p<port>, argv without --port, the P3_*
-      environment, legacy and inspection ports, greenlit by the layer only), each page's build waited on and its served_page
-      record passing its content tests (the page at /p/<id>/, the registry entry and the server's build of it, the sources);
-    - a second serve with a page refused at start: the other page registered, the hold KEPT and the refused page held on its
-      previous build (a held response), until the hold is lifted.
+    - with no two-port server answering: refused (G16) before anything is written, the publish marker standing; the command it
+      prints is run_two_port.sh's (its environment, nice, a short socket directory); a server whose socket directory is too
+      long for a Unix socket refuses to start (instead of answering 502 for every page);
+    - with one: ONE registration (registry.json and registered_pages.json written once each for both pages), the publish
+      marker removed right before it, no server on any page port, entries as production's (p<port>, argv without --port, the
+      P3_* environment, legacy and inspection ports, greenlit by the layer only), each page's build waited on and its
+      served_page record passing its content tests (the page at /p/<id>/, the registry entry and the server's build of it, the
+      sources); no inspection page built before: the warm-up has nothing to do;
+    - a second serve with a page refused at start: the other page registered, the marker removed all the same (production:
+      unconditionally, right before the registration), the refused page rebuilt by the server like any other (no hold), the
+      registered page's previously built INSPECTION page requested once (the warm-up) and built from the new entry.
     A review page is never given a server of its own (servers.replace refuses it)."""
     from exopipe.phase3.core.record import Run
     from exopipe.phase3.lib.serve import flow
@@ -1872,15 +1996,27 @@ def test_start_registers():
     os.makedirs(d)
     with open(f'{d}/registry.json', 'w') as f:
         json.dump({'pages': []}, f)
+    with open(f'{d}/greenlit_pages.json', 'w') as f:                 # Gregg's list: p29766 on the inspection listener
+        json.dump({'pages': {'p29766': {'since': 'test', 'by': 'test'}}}, f)
     reg0 = open(f'{d}/registry.json', 'rb').read()
     run0 = Run('serve', ['test'], out, CFG, config_sections=None)
     flow.start_stage(run0, plan, state_for({}))
     u = {x.name: x for x in run0.units}
     ru = u['deep_Run_TEST_register']
     assert ru.status == 'refused' and 'G16 two-port server: nothing answers' in ru.reason, (ru.status, ru.reason)
+    sk = register.sock_dir(29765)
+    assert all(x in ru.reason for x in ('NUMPY_MADVISE_HUGEPAGE=0', 'OMP_NUM_THREADS=1', 'nice -n10', f'--sock-dir {sk}',
+                                        f'--review-port 29765 --inspection-port 29795')), ru.reason
+    assert len(os.path.join(sk, 'tp_0123456789abcdef.sock')) <= two_port.SOCK_PATH_MAX and len(sk) < len(d)
     assert u[V.unit].status == 'refused' and 'not registered' in u[V.unit].reason, (u[V.unit].status, u[V.unit].reason)
     assert open(f'{d}/registry.json', 'rb').read() == reg0 and os.path.exists(hp) and run0.exit_code() == 2
-    ok('start stage: no two-port server answering - refused (G16) before anything is written, the publish hold standing')
+    longsk = f'{T}/' + 'x' * 90
+    p_ = subprocess.run(register.server_argv(f'{d}/registry.json', 29765, 29795, longsk, python=PY), cwd=ROOT,
+                        env=register.server_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert p_.returncode != 0 and b'too long' in p_.stdout and not procs.port_in_use(29765), p_.stdout[-300:]
+    ok('start stage: no two-port server answering - refused (G16) before anything is written, the publish marker standing; '
+       'the command it prints is run_two_port.sh\'s (environment, nice, a short socket directory); a server whose socket '
+       'directory is too long refuses to start')
     srv = TwoPortServer(d, *ports)
     writes = {}
     orig_w = register.atomic_write
@@ -1897,6 +2033,7 @@ def test_start_registers():
         assert u['deep_Run_TEST_register'].status == 'done', (u['deep_Run_TEST_register'].status, u['deep_Run_TEST_register'].reason)
         assert all(u[pg_.unit].status == 'done' for pg_ in (V, I_)), {n: (x.status, x.reason) for n, x in u.items()}
         assert {u[p_.unit].status for p_ in plan.pages if p_.multi} == {'no-input'}
+        assert u['deep_Run_TEST_register_warm'].status == 'no-input', u['deep_Run_TEST_register_warm'].status
         assert writes == {'registered_pages.json': 1, 'registry.json': 1}, writes
         assert not os.path.exists(hp) and glob.glob(hp + '.removed_*'), os.listdir(U)
         assert not any(procs.port_in_use(p_.port) for p_ in plan.pages) and run1.exit_code() == 0
@@ -1907,7 +2044,8 @@ def test_start_registers():
         del want[want.index('--port'):want.index('--port') + 2]
         assert '--port' not in e['argv'] and e['argv'] == want, (e['argv'], want)
         assert e['env'] == {k: v for k, v in sorted(plan.server_env_extra().items()) if k.startswith('P3_')}
-        assert (e['legacy_port'], e['inspection_legacy_port'], e['greenlit'], e['inspection_title']) == (29766, 29796, False, None)
+        assert (e['legacy_port'], e['inspection_legacy_port'], e['greenlit'], 'inspection_title' in e) == (29766, 29796, True, False)
+        assert reg['p29768']['greenlit'] is False and reg['p29768']['inspection_title'] is None
         assert e['title'] == e['argv'][e['argv'].index('--title') + 1] and 'served 2026-11-02 06:00 UT' in e['title']
         rec = json.load(open(V.record_path()))
         assert rec['registered'] and rec['url'] == 'http://127.0.0.1:29765/p/p29766/' and rec['build']['state'] == 'built'
@@ -1916,9 +2054,13 @@ def test_start_registers():
         rr = {x['name']: x for x in validate.run('page_registration', rec['registration'])}
         assert all(x['passed'] for x in rr.values()), rr
         ok('start stage: ONE registration of both pages (registry.json and registered_pages.json written once each), the '
-           'publish hold lifted right before it, no server on any page port; entries in production\'s form; each page\'s '
-           'build waited on; served_page (/p/<id>/, the registry entry and its build, the sources) and page_registration '
-           'tests pass')
+           'publish marker removed right before it, no server on any page port; entries in production\'s form (the greenlit '
+           'layer from the list); each page\'s build waited on; served_page (/p/<id>/, the registry entry and its build, the '
+           'sources) and page_registration tests pass; nothing to warm')
+        import urllib.request
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:29795/p/p29766/',
+                                                                               timeout=60) as r_:
+            assert r_.status == 200                          # a team member opens p29766 on the inspection listener
         st_, h, b = srv.get('p29768')
         s_old = _stamp(b)
         hp2, _ = register.set_hold(U, 'publish 2 (test)')
@@ -1928,21 +2070,52 @@ def test_start_registers():
                          utc='2026-11-02 07:00 UT')
         u = {x.name: x for x in run2.units}
         ru = u['deep_Run_TEST_register']
-        assert ru.status == 'done' and any('KEPT' in n for n in ru.notes) and os.path.exists(hp2), (ru.status, ru.notes)
+        assert ru.status == 'done' and not os.path.exists(hp2) and len(glob.glob(hp + '.removed_*')) == 2, (ru.status, ru.notes)
         assert u[V.unit].status == 'done' and u[I_.unit].status == 'refused' and run2.exit_code() == 2
         assert writes == {'registered_pages.json': 1, 'registry.json': 1}, writes
-        st_, h, b = srv.get('p29768')
-        assert _stamp(b) == s_old and two_port.HELD_HEADER.lower() in h, (h, b[:200])
         st_, h, b = srv.get('p29766')
-        assert 'served 2026-11-02 07:00 UT' in b and 'publish 2 (test)' in b, b[:300]
-        register.lift_hold(U)
-        st_, h, b = srv.get('p29768', fresh=True)
-        assert _stamp(b) != s_old and two_port.HELD_HEADER.lower() not in h, b[:200]
-        ok('start stage, a page refused at start: the other page registered (one change), the run\'s publish hold KEPT and the '
-           'refused page held on its previous build until the hold is lifted')
+        assert 'served 2026-11-02 07:00 UT' in b and 'publish 2 (test)' not in b, b[:300]
+        st_, h, b = srv.get('p29768')
+        be = srv.backend()
+        assert _stamp(b) == s_old and two_port.HELD_HEADER.lower() not in h and not be['held'], (h, be['held'])
+        assert 'p29768' in be['rebuild_queue'] or 'p29768' in be['building'] or _stamp(srv.get('p29768', fresh=True)[2]) != s_old
+        wu = u['deep_Run_TEST_register_warm']
+        assert wu.status == 'done', (wu.status, wu.reason)
+        rows = list(csv.DictReader(open(wu.outputs[0]['path'])))
+        assert [(x['page'], x['status'], x['registered_now']) for x in rows] == [('p29766', '200', '1')], rows
+        x = srv.backend()['built'].get('p29766:inspection') or {}
+        assert x.get('entry') == two_port.entry_md5(next(e_ for e_ in json.load(open(f'{d}/registry.json'))['pages']
+                                                         if e_['id'] == 'p29766')), x
+        ok('start stage, a page refused at start: the other page registered (one change), the publish marker removed all the '
+           'same (as production), the refused page rebuilt like any other (no hold), and the registered page\'s previously '
+           'built inspection page requested once and built from the new entry (the warm-up)')
     finally:
         register.atomic_write = orig_w
         srv.stop()
+
+
+def test_forced_checks_server_first():
+    """forced switch: the two-port server is checked BEFORE any page is checked or any judgement carried - with none answering
+    the registration unit refuses (G16) and nothing is carried (the review of 2026-11-02)."""
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow, forced
+    a = _ns(tier='snapshot', family='forced', forced_tag='TEST', pages='forced-V-10s', port_offset=21200)
+    out = f'{T}/forced_out_server'
+    plan = planmod.make(a, out)
+    assert not procs.port_in_use(register.listeners(plan)[0])
+    touched = []
+    saved = (forced.check_page, journals.snapshot_carry)
+    forced.check_page = lambda *x, **k: touched.append('check') or (_ for _ in ()).throw(AssertionError('checked'))
+    journals.snapshot_carry = lambda *x, **k: touched.append('carry') or (_ for _ in ()).throw(AssertionError('carried'))
+    try:
+        run = Run('serve', ['test'], out, CFG, config_sections=None)
+        forced.switch(run, plan, flow.new_state(), 'UTC')
+    finally:
+        forced.check_page, journals.snapshot_carry = saved
+    ru = {x.name: x for x in run.units}['snapshot_forced_TEST_register']
+    assert ru.status == 'refused' and 'G16' in ru.reason and not touched, (ru.status, ru.reason, touched)
+    ok('forced switch: the two-port server is checked before any page check or judgement carry (none answering: refused, '
+       'nothing carried)')
 
 
 # ---- read-only checks on production -----------------------------------------------------------------------------------------
@@ -2046,7 +2219,7 @@ def test_production_readonly():
     # the ENTRY each page would be registered as (register.page_entry with Gregg's greenlit layer, both read only) = the live
     # entry, every key: deep and 10-minute (the 10-minute pages' code is the frozen tree their run was published from, B-51:
     # same file name, the live tree in the window) and the forced pages (their siblings from the live registry, as the gen5
-    # serve's AFTER; the title's wording is config FORCED_TITLE's, older than the gen5 serve's - the title value only differs)
+    # serve's AFTER; the title in the gen5 serve's words, served time from the live title)
     green = register.greenlit(os.path.join(CFG.serve.TWO_PORT_DIR, CFG.serve.TWO_PORT_GREENLIT))
     n_entries = 0
     for tier, run, extra in (('deep', 'P3S5', {}), ('sublst', None, {}),
@@ -2068,16 +2241,22 @@ def test_production_readonly():
             if tier == 'sublst':
                 assert os.path.basename(live['code']) == os.path.basename(mine['code']), (live['code'], mine['code'])
                 live['code'] = mine['code']
-            if pg.family == 'forced':
-                i = live['argv'].index('--title') + 1
-                live['argv'] = live['argv'][:i] + [mine['argv'][i]] + live['argv'][i + 1:]
-                live['title'] = mine['title']
             assert mine == live, (tier, pg.key, {k: (mine.get(k), live.get(k)) for k in set(mine) | set(live)
                                                  if mine.get(k) != live.get(k)})
             n_entries += 1
     assert n_entries == 12, n_entries
     ok(f'planned registry ENTRIES == the live two-port registry entries on {n_entries} pages (deep, 10-minute, forced: id, '
-       f'kind, code, argv without --port, env, legacy and inspection ports, the greenlit layer, title), read only')
+       f'kind, code, argv without --port, env, legacy and inspection ports, the greenlit layer, title - the forced pages\' '
+       f'in the gen5 words), read only')
+    hubreg = json.load(open(f'{CFG.serve.HUB_DIR}/registry.json'))
+    a = argparse.Namespace(tier='snapshot', run_label=None, port_offset=0, pages=None, stokes=None, lsts=None, label=None,
+                           source=None, family='forced', forced_tag='gen5', restart=None, stop=None)
+    p = planmod.make(a, CFG.paths.SNAPSHOT_REVIEW_ROOT)
+    for pg in p.pages:
+        S_, tier_, kvs = p.hub_entry(pg, 'UTC')
+        e = hubreg[S_][tier_]
+        assert dict(kv.split('=', 1) for kv in kvs)['generation'] == e['generation'], (pg.key, e['generation'])
+    ok('forced hub entries: the planned generation text == the live hub registry\'s (gen5 words), read only')
     env = dict(os.environ, PYTHONPATH=ROOT)
     p = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--tier', 'deep', '--run', 'P3S5', '--dry-run', '--cores', 'none'],
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
@@ -2128,10 +2307,22 @@ def main():
             test_build_state_wait(srv)
         finally:
             srv.stop()
+        srvh = TwoPortServer(f'{T}/tp_hold', 29875, 29885, publish_hold=True)
+        try:
+            test_publish_hold_option(srvh)
+        finally:
+            srvh.stop()
+        test_old_server_refused()
         test_start_registers()
+        test_forced_checks_server_first()
         test_server_env_mirrors_launcher()
         test_production_readonly()
     finally:
+        for srv_ in list(LIVE_SERVERS):              # never leave a test two-port server behind
+            try:
+                srv_.stop()
+            except Exception:
+                pass
         for port in (28766, 28796, 28801):           # never leave a stand-in server behind
             for pid in procs.listeners(port):
                 info = procs.proc_info(pid)

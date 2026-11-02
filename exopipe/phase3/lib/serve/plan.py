@@ -135,7 +135,7 @@ class Plan:
     def title(self, page, utc):
         S = _CFG().serve
         if page.family == 'forced':
-            return S.FORCED_TITLE.format(S=page.stokes, what=S.SNAPSHOT_WHAT.get(page.kind, ''), utc=utc)
+            return S.FORCED_TITLE.format(S=page.stokes, what=S.SNAPSHOT_WHAT.get(page.kind, ''), run_name=page.run_name, utc=utc)
         t = S.TITLE.get((self.tier, page.title_kind()))
         if t is None:
             return None

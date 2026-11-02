@@ -45,8 +45,9 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
                  (lib/serve/register.py, the port of /lustre/gh/main/phase3/serve/register_page.py 'register --entry', byte
                  for byte): every page that passed, in one call - registered_pages.json and registry.json written atomically,
                  the server's loader checking the result first, the modification time strictly later - one registry change;
-                 the publish hold of each registered run (<run>/PUBLISH_IN_PROGRESS.txt) lifted right before it (kept for a
-                 run with a refused page); tests: the entries stand as recorded, a change the server sees
+                 the publish marker of each registered run (<run>/PUBLISH_IN_PROGRESS.txt) removed right before it, whatever
+                 was refused (as deep_reregister_after_publish_20261031.py); tests: the entries stand as recorded, a change
+                 the server sees. Then <unit>_warm.csv (csv_table): the inspection pages built before, requested once
   served_page    <out>/_records/serve/pages/<tier>_<port>.json per served page (its registry entry, the registry and
                  listener, the build state serve waited on, run, queue sha1, view digest, the multiples chain's queue sha1
                  and view digest, expected sources): its tests read the registry and the LIVE two-port server (HTTP 200 at
@@ -64,26 +65,32 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
   command line, when none answers); the hub registry and page are written under --out (lib/serve/hub renders the page
   build_review_hub.py writes, exopipe_ops 4c42f91). While paths.PRODUCTION_WRITES is False only parity runs are possible:
   the production registry and a production run's publish hold are never written (G23).
-REGISTRATION and BUILD STATE (lib/serve/register.py): after the one registration each page is requested once and serve waits
-  on its build state from the server's /_status - done when a build of the registered entry that started after the
-  registration is reported; refused at once when that build failed (G24), the page is held by a publish hold or unknown to
-  the server (G16), or another registration replaced its entry (G13); waiting as long as builds start or finish on the
-  server, refused (G16) after serve.TWO_PORT_STALL_S without any (not a fixed number of tries).
-THE PUBLISH HOLD: the deep views stage sets <run>/PUBLISH_IN_PROGRESS.txt (production's deep publish marker) on the run it
-  rewrites in place; the two-port server keeps that run's pages on their builds until the run's registration lifts the hold
-  (renamed .removed_<UTC>); a refused stage leaves it standing (the pages keep their previous builds).
-Failure modes (exit 2 = refused, the gate named in the record; a refused page keeps its registry entry - and, while its
-run's publish hold stands, its previous build):
+REGISTRATION and BUILD STATE (lib/serve/register.py): the two-port server is checked before anything changes - it must answer,
+  report this tree's build state (a server older than this lib/serve/two_port.py reports none and is refused at once, G16: it
+  must be redeployed first), read the registry and run with serve.TWO_PORT_PUBLISH_HOLD's mode. After the one registration
+  each page is requested once and serve waits on its build state from the server's /_status - done when a build of the
+  registered entry that started after the registration began (the time is taken before the registry write) is reported;
+  refused at once when that build failed or TWO_PORT_MAX_FAILED_REQUESTS requests in a row got no 200 (G24), the page is held
+  or unknown to the server (G16), or another registration replaced its entry (G13); waiting as long as builds start or
+  finish on the server, refused (G16) after serve.TWO_PORT_STALL_S without any (not a fixed number of tries). Then every
+  inspection page the server had built before the registration is requested once (production's warm-up).
+THE PUBLISH MARKER: once the pages merge is current, the deep views stage writes <run>/PUBLISH_IN_PROGRESS.txt (production's deep
+  publish marker; a page built meanwhile shows its text) on the run it rewrites in place; the run's registration removes it
+  (renamed .removed_<UTC>) whatever was refused; a refused stage leaves it standing. serve.TWO_PORT_PUBLISH_HOLD (an amendment
+  option, off = production) runs the server with --publish-hold: it then keeps a marked run's pages on their builds.
+Failure modes (exit 2 = refused, the gate named in the record; a refused page keeps its registry entry):
   G1 empty queue; G2 deep union without stokes; G3 deep multiples without the fork; G4 multiples queue != fork catalogues;
   G5-G7 sub-LST Stokes keys / review_dir merge; G8 sub-LST generation mix; G9 localizations / figures; G10 page index;
   G11 nothing swapped in on a refused build; G12 one build at a time (lock); G13 port ownership (a server of its own), the
   two-port server reads another registry, a page's entry replaced while its build was awaited; G14 exact-pid stop failed;
-  G16 no HTTP 200 in time (a server of its own), no two-port server answering, a page unknown to it, held by a publish hold
-  or without build progress for TWO_PORT_STALL_S; G17 serve-time exclusion gate (refuses for
+  G16 no HTTP 200 in time (a server of its own), no two-port server answering, one older than this two_port.py (no build
+  state), a page unknown to it, held by a publish hold or without build progress for TWO_PORT_STALL_S; G17 serve-time
+  exclusion gate (refuses for
   serve.EXCLUSION_GATE_TIERS: a snapshot run; a deep / sub-LST page holding, in what its server reads, a row on an
   excluded night; a snapshot forced page - reports for the keys not listed); G18 carry preconditions; G19 HOLD rule; G20 review
   disk space; G21 snapshot localization; G22 snapshot copy; G23 parity guard (offset, production servers, the production
-  registry in the refactor window); G24 the server refused to start / the page's build failed on the two-port server;
+  registry in the refactor window); G24 the server refused to start / the page's build failed on the two-port server or
+  its requests got no 200 TWO_PORT_MAX_FAILED_REQUESTS times in a row;
   G25 not the review host; G26 run label required; G28 an earlier stage's record missing or stale;
   the pages merge absent or stale (deep). Exit 3: nothing to do (no page selected, nothing to carry). Exit 1: error.
   A refused (or errored) run-level stage stops every later stage of the invocation (views/test/carry; build/views/test/

@@ -189,11 +189,26 @@ class serve(_Section):
                                                     # makes no progress (G16). Not a budget for the page: it waits as long as
                                                     # builds progress (CUTOVER_READINESS: the snapshot check's 240 x 5 s)
     TWO_PORT_STATUS_TIMEOUT_S = 60.0                # s, one GET /_status (warm_pages.py:21)
-    # the publish hold (two_port.HOLD_FILE in the run directory) the deep views stage sets while it rewrites the served run in
-    # place: the server keeps the run's pages on their builds until the run's registration lifts it; a page built anyway
-    # shows this text (classify_transients.py:1242, as production's deep publish marker, exopipe_ops 4a39c6b)
-    PUBLISH_HOLD_TEXT = ('This page was built while exopipe3 serve rewrites its run (started {utc}); until the serve registers '
-                         'its pages, the list, its panels and filter values may mix the previous serve with the new one.')
+    TWO_PORT_MAX_FAILED_REQUESTS = 3                # a page's requests in a row without a 200 (a build that kills its backend,
+                                                    # which the next request restarts): its build does not complete (G24)
+    TWO_PORT_WARM_TIMEOUT_S = 900.0                 # s, one warm-up request of a page built before the registration
+                                                    # (warm_pages.py:69)
+    # the two-port server as run_two_port.sh starts it (:5, :7): its environment and niceness - the command serve prints when no
+    # server answers (a short socket directory: register.sock_dir)
+    TWO_PORT_SERVER_ENV = {'NUMPY_MADVISE_HUGEPAGE': '0', 'OMP_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
+                           'MKL_NUM_THREADS': '1', 'NUMEXPR_NUM_THREADS': '1'}
+    TWO_PORT_NICE = 10
+    # THE PUBLISH MARKER (two_port.HOLD_FILE in the run directory; production's deep publish marker, exopipe_ops 4a39c6b): the
+    # deep views stage writes it while it rewrites the served run in place, the run's registration removes it (renamed
+    # .removed_<UTC>, deep_reregister_after_publish_20261031.py:79-81); a page built meanwhile shows this text as a banner
+    # (classify_transients.py:1242)
+    PUBLISH_MARKER_TEXT = ('This page was built while exopipe3 serve rewrites its run (started {utc}); until the serve registers '
+                           'its pages, the list, its panels and filter values may mix the previous serve with the new one.')
+    # THE PUBLISH HOLD (an AMENDMENT OPTION, not ruled; FOLD_IN row 10-30 23:3x): True = the two-port server runs with
+    # --publish-hold and keeps a marked run's built pages on their previous builds (stale but consistent) instead of rebuilding
+    # them with the banner (mixed, labelled). False = production (no hold, the banner only). serve refuses a server whose mode
+    # differs (register.check_server)
+    TWO_PORT_PUBLISH_HOLD = False
 
     # ---- server process ---------------------------------------------------------------------------------------------
     # process identity per program: (comm, an argv element it must END with); classify: restart_inspection_twin.sh:26,
@@ -351,8 +366,8 @@ class serve(_Section):
     HOLD_JOURNAL_READER = 'driver'
     SNAPSHOT_LOCALIZE = True                # per-tier positions + figures before the servers (snapshot_serve.sh:44-46, ledger 1831)
 
-    # ---- snapshot forced photometry pages (port of snapshot_forced_serve_20261007.sh, the 'switch' and 'refresh-siblings'
-    # modes; ruled 2026-10-03 / 2026-10-07 Q5/Q7/Q8, ledger 1765) ------------------------------------------------------
+    # ---- snapshot forced photometry pages (port of snapshot_forced_gen5_serve_20261026.sh and the 'refresh-siblings' mode of
+    # snapshot_forced_serve_20261007.sh; ruled 2026-10-03 / 2026-10-07 Q5/Q7/Q8, ledger 1765) -------------------------------
     FORCED_RUN_NAME = 'Run_SNAPFORCED_{S}{T}_{tag}'          # T = 10s | 1min; snapshot_forced_serve_20261007.sh:30
     FORCED_READY_LOG = 'snapshot_forced_pages_run_{name}.log'   # under paths.OPS_ROOT; its LAST line must hold FORCED_READY_MARK (:63-65)
     FORCED_READY_MARK = 'FT-READY'
@@ -361,12 +376,12 @@ class serve(_Section):
     FORCED_ADLEO_CHECK = ('test_snapshot_forced_reserve.py', ('adleo', '--absent-ok'))   # ops script + args, site PYTHON 'py36' (:68;
                                             # Gregg 2026-10-08 "don't label AD Leo unless you have a metric defined and measured")
     FORCED_TITLE = ('Snapshot FORCED photometry (HWJ + 10 pc), Stokes {S}, {what} - pixel-distance screen, fitted, reference-tied, '
-                    'localized, associated (target / background source / ambiguous) - served {utc}')   # :51
+                    'localized, associated (target / background source / ambiguous) - generation-5 cutouts from the current cubes '
+                    '({run_name}) - served {utc}')   # snapshot_forced_gen5_serve_20261026.sh:57 (the live entries p8775/p8776/p8785/p8786)
     FORCED_SIBLING_LABEL = 'forced Stokes {S} {T} page'      # T = 10-s | 1-min; :34
-    FORCED_HUB_GENERATION = ('forced photometry at HWJ + 10 pc targets, Stokes {S} {kind} events: pixel-distance screen, fitted, '
-                             'reference-tied, localized, associated')   # kind = 10s | 1min; :97
-    FORCED_STOP_TIMEOUT_S = 30.0            # s (30 x 1 s, :57)
-    FORCED_RESTORE_LOG = 'classify_{port}_restored.log'   # the old server restarted after a refused switch (:80, 90)
+    FORCED_HUB_GENERATION = ('forced photometry at HWJ + 10 pc targets, generation-5 cutouts from the current cubes, Stokes {S} '
+                             '{kind} events: pixel-distance screen, fitted, reference-tied, localized, associated')   # kind = 10s |
+                                            # 1min; snapshot_forced_gen5_serve_20261026.sh:72-74 (the live hub entries)
 
     # ---- in-place calls ---------------------------------------------------------------------------------------------
     LEGACY_TIMEOUT_S = 7200                 # s, any in-place script (sublst_publish_lst.sh:44 ran the cumulative under 7200 s)

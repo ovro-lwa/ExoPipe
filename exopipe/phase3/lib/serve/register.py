@@ -24,11 +24,12 @@ register(entries, d)   register_page.py 'register --entry' (the TWO_PORT_DIR san
   ONE REGISTRATION PER SERVE: every page a serve passes goes into one register() call - one registry change (every change makes
   each backend rebuild every page it built; two registrations seconds apart lost the second, B6A; snapshot_serve.sh and the
   forced serve register in one call, the deep re-registration its four pages in one).
-  Not carried: register_page.py's warm-up outside its sandbox (warm_pages.py): serve requests ITS pages itself, one at a time in
-  registration order, and waits on their builds (wait_built) - the warm-up's own first keys; every other page the server rebuilds
-  by itself since WEB SPEED step 2 (d07fa79), where the warm-up's request returns at once. Nor snapshot_register_page.py's
-  'unchanged is no write' (--flush): a serve that rewrote a run's files in place must reach the pages even when their entries
-  are unchanged.
+  THE WARM-UP (register_page.py:76-87 -> warm_pages.py: the pages built before the change, requested once each after it, this
+  call's pages first): serve requests ITS pages itself, one at a time in registration order, and waits on their builds
+  (wait_built); then every INSPECTION page built before the registration is requested once (built_inspection / warm) - the
+  review pages of other entries the server rebuilds by itself since WEB SPEED step 2 (d07fa79). Not carried:
+  snapshot_register_page.py's 'unchanged is no write' (--flush): a serve that rewrote a run's files in place must reach the
+  pages even when their entries are unchanged.
 
 page_entry(plan, page, utc)   the entry: the server a per-page serve would have started, in snapshot_register_page.py's form - id
   p<port>, kind 'review', code (the page code's absolute path), argv (the server's arguments without --port), env (the P3_*
@@ -36,29 +37,39 @@ page_entry(plan, page, utc)   the entry: the server a per-page serve would have 
   cookie), greenlit False (the greenlit layer decides), inspection_legacy_port (its former inspection twin's port, else None),
   inspection_title None, title (its --title).
 
-THE PUBLISH HOLD (set_hold / lift_hold): <run>/PUBLISH_IN_PROGRESS.txt (two_port.HOLD_FILE) - the marker production's deep publish
-  writes (a page built while it exists shows its text, exopipe_ops 4a39c6b). The two-port server keeps a held run's pages on
-  their build at a registry change. serve sets it on the run it rewrites in place (deep views stage) and lifts it - renamed to
-  <file>.removed_<UTC>, as deep_reregister_after_publish_20261031.py:79-81 - right before that run's one registration, unless a
-  page of the run is refused (its build stays held: the refused page keeps its previous page). Written through a temporary file
-  and os.replace, renamed by its own directory entry: a parity mirror's link to the production run's file is never followed.
+THE PUBLISH MARKER (set_hold / lift_hold): <run>/PUBLISH_IN_PROGRESS.txt (two_port.HOLD_FILE) - the marker production's deep
+  publish writes: a page built while it exists shows its text as a banner (classify_transients.py:1242, exopipe_ops 4a39c6b).
+  serve sets it on the run it rewrites in place (the deep views stage, once the pages merge is current) and lifts it - renamed
+  to <file>.removed_<UTC> - right before the registration of the run's pages is written, whatever was refused, as
+  deep_reregister_after_publish_20261031.py:79-81. A two-port server started with --publish-hold (serve.TWO_PORT_PUBLISH_HOLD,
+  an amendment option, off = production) also keeps a marked run's pages on their builds meanwhile. Written through a temporary
+  file and os.replace, renamed by its own directory entry: a parity mirror's link to the production run's file is never
+  followed.
 
+check_server(...)  before anything is written: the two-port server answers /_status, reports the build-state protocol
+  (two_port.BUILD_STATE: a server older than this tree's two_port.py reports no build state, so no page could ever be seen built
+  - REFUSED at once, G16: the server must be redeployed with this two_port.py first), reads this registry (G13) and runs with
+  the publish-hold option serve.TWO_PORT_PUBLISH_HOLD says (G13). Its refusal prints the server's command line in
+  run_two_port.sh's form (its environment, nice, a short socket directory).
 wait_built(...)   after the registration, each page's BUILD STATE from the server's GET /_status (two_port.backend_status) - not
   a fixed number of tries (CUTOVER_READINESS: the snapshot identity check went from 60 to 240 tries of 5 s because a registered
   page builds behind earlier ones): the page is requested once (X-Two-Port-Fresh: 1), then it is DONE when the server reports a
-  build of the registered entry (two_port.entry_md5) that started after the registration; REFUSED at once when such a build
-  failed (its own error, G24), when the page is held by a publish hold (G16), when another registration replaced the entry
-  (G13), when the server does not know the page (G16); it WAITS while builds progress on the server, and is refused (G16) only
-  after serve.TWO_PORT_STALL_S in which no build started or finished there.
+  build of the registered entry (two_port.entry_md5) that started after the registration began (taken before the registry is
+  written); REFUSED at once when such a build failed (its own error, G24), when serve.TWO_PORT_MAX_FAILED_REQUESTS requests in a
+  row got no 200 (a page whose build kills its backend, G24), when the page is held by a publish hold (G16), when another
+  registration replaced the entry (G13), when the server does not know the page (G16) or reports no build state (G16); it
+  WAITS while builds progress on the server, and is refused (G16) only after serve.TWO_PORT_STALL_S in which no build started
+  or finished there.
 
 paths.PRODUCTION_WRITES False (the refactor window): nothing is written under a production root (the live registry, a production
-run's hold) - G23. A parity serve registers in <out>/two_port/ and needs a two-port server of its own on the parity listeners
-(serve.HUB_PORT / INSPECTION_HUB_PORT + --port-offset; server_argv prints its command line); serve never starts or stops a
+run's marker) - G23. A parity serve registers in <out>/two_port/ and needs a two-port server of its own on the parity listeners
+(serve.HUB_PORT / INSPECTION_HUB_PORT + --port-offset; server_command prints its command line); serve never starts or stops a
 two-port server.
 """
 import hashlib
 import json
 import os
+import shlex
 import tempfile
 import threading
 import time
@@ -99,10 +110,33 @@ def listeners(plan):
     return S.HUB_PORT + plan.offset, S.INSPECTION_HUB_PORT + plan.offset
 
 
-def server_argv(registry, review_port, inspection_port, sock_dir, python=None):
-    """The command line of a two-port server on ``registry`` (run_two_port.sh:7-8), run from the repository root."""
-    return [python or 'python3', '-m', 'exopipe.phase3.lib.serve.two_port', 'serve', registry, '--review-port',
-            str(review_port), '--inspection-port', str(inspection_port), '--sock-dir', sock_dir]
+def sock_dir(review_port):
+    """A short socket directory for a two-port server on ``review_port`` (run_two_port.sh: /run/user/<uid>/two_port_main): a
+    Unix socket path holds at most two_port.SOCK_PATH_MAX bytes, so never under a long --out."""
+    return os.path.join(os.environ.get('XDG_RUNTIME_DIR') or '/tmp', f'two_port_{int(review_port)}')
+
+
+def server_argv(registry, review_port, inspection_port, sockets=None, python=None, publish_hold=None):
+    """The argv of a two-port server on ``registry`` (run_two_port.sh:7-8), run from the repository root with server_env()."""
+    from exopipe.phase3.lib.serve import scripts
+    hold = _S().TWO_PORT_PUBLISH_HOLD if publish_hold is None else publish_hold
+    return [python or scripts.interpreter('default'), '-m', 'exopipe.phase3.lib.serve.two_port', 'serve', registry,
+            '--review-port', str(review_port), '--inspection-port', str(inspection_port), '--sock-dir',
+            sockets or sock_dir(review_port)] + (['--publish-hold'] if hold else [])
+
+
+def server_env(base=None):
+    """run_two_port.sh:5's environment over ``base`` (default os.environ)."""
+    return dict(base if base is not None else os.environ, **_S().TWO_PORT_SERVER_ENV)
+
+
+def server_command(registry, review_port, inspection_port, sockets=None):
+    """The shell command that starts a two-port server as run_two_port.sh does: from the repository root, its environment,
+    nice, the site interpreter, a short socket directory."""
+    S = _S()
+    env = ' '.join(f'{k}={shlex.quote(str(v))}' for k, v in S.TWO_PORT_SERVER_ENV.items())
+    argv = ' '.join(shlex.quote(a) for a in server_argv(registry, review_port, inspection_port, sockets))
+    return f'cd {shlex.quote(TP.REPO_ROOT)} && env {env} nice -n{int(S.TWO_PORT_NICE)} {argv}'
 
 
 def guard(path, what):
@@ -214,13 +248,14 @@ def prepare(entries, d):
 def write(prep):
     """Write a prepared registration (_apply, :75-89 without the warm-up): registered_pages.json, then registry.json - the
     server's one registry change. Returns {'registry', 'registered', 'given', 'entries' (as merged into the registry),
-    'state' (of registry.json after the write), 'previous_state', 't' (epoch s, after the write)}."""
+    'state' (of registry.json after the write), 'previous_state', 't' (epoch s, taken just before registry.json is written:
+    the earliest a build of the registered entries can start)}."""
     REG, REGD = prep['registry'], prep['registered']
     guard(REG, 'the two-port registry')
     before = state_of(REG)
     atomic_write(REGD, prep['registered_pages'])
+    t = time.time()                     # BEFORE the registry write: a build that starts as the server sees it counts
     atomic_write(REG, prep['merged'])
-    t = time.time()
     m = {e['id']: e for e in prep['merged']['pages']}
     return {'registry': REG, 'registered': REGD, 'given': prep['given'], 'entries': [m[i] for i in prep['ids']],
             'state': state_of(REG), 'previous_state': before, 't': t}
@@ -313,18 +348,56 @@ def server_status(port, timeout=None):
         return None
 
 
+def old_server(status):
+    """None when ``status`` (a front /_status) and every backend that answered in it report this tree's build-state protocol
+    (two_port.BUILD_STATE), else what lacks it."""
+    if not status or status.get('build_state') != TP.BUILD_STATE:
+        return f'the server\'s /_status reports no build state {TP.BUILD_STATE} (it has {(status or {}).get("build_state")})'
+    for b in status.get('backends') or []:
+        if 'error' not in b and b.get('build_state') != TP.BUILD_STATE:
+            return f'its backend of {b.get("tree")} reports no build state {TP.BUILD_STATE}'
+    return None
+
+
 def check_server(ports, d):
-    """Before a registration: the two-port server on the review listener of ``ports`` (review, inspection) answers /_status
-    and reads the registry of ``d`` (G16 / G13). Returns its report."""
+    """Before anything is written (a registration, a judgement carry): the two-port server on the review listener of ``ports``
+    (review, inspection) answers /_status (G16), reports this tree's build state (G16: an older server reports no build state -
+    no page could ever be seen built - so it must be redeployed with this two_port.py first), reads the registry of ``d`` (G13)
+    and runs with the publish-hold option serve.TWO_PORT_PUBLISH_HOLD says (G13). Returns its report."""
+    S = _S()
     REG = files(d)[0]
     st = server_status(ports[0])
     if st is None:
         raise Refusal(f'G16 two-port server: nothing answers http://127.0.0.1:{ports[0]}/_status - pages are registered in '
-                      f'{REG} and served by a two-port server reading it (serve never starts one; from the repository root: '
-                      f'{" ".join(server_argv(REG, ports[0], ports[1], os.path.join(d, "socks")))}) - nothing registered')
+                      f'{REG} and served by a two-port server reading it (serve never starts one; as run_two_port.sh: '
+                      f'{server_command(REG, ports[0], ports[1])}) - nothing registered')
+    why = old_server(st)
+    if why:
+        raise Refusal(f'G16 two-port server on {ports[0]}: {why} - a server older than this tree\'s lib/serve/two_port.py, '
+                      f'whose pages serve would wait on forever: the two-port server must be redeployed with this two_port.py '
+                      f'first - nothing registered')
     if os.path.realpath(st.get('registry') or '') != os.path.realpath(REG):
         raise Refusal(f'G13 two-port server on {ports[0]} reads {st.get("registry")}, not {REG} - nothing registered')
+    if bool(st.get('publish_hold')) != bool(S.TWO_PORT_PUBLISH_HOLD):
+        raise Refusal(f'G13 two-port server on {ports[0]} runs with the publish hold {"on" if st.get("publish_hold") else "off"}'
+                      f', serve.TWO_PORT_PUBLISH_HOLD is {S.TWO_PORT_PUBLISH_HOLD} - nothing registered')
     return st
+
+
+def built_inspection(status):
+    """The page ids whose INSPECTION build a front /_status reports (warm_pages.py snapshot's ':inspection' keys)."""
+    out = set()
+    for b in (status or {}).get('backends') or []:
+        out.update(k[:-len(':inspection')] for k in (b.get('built') or {}) if k.endswith(':inspection'))
+    return sorted(out)
+
+
+def warm(port, pid, timeout=None):
+    """GET http://127.0.0.1:<port>/p/<pid>/ once (warm_pages.py warm: the inspection listener's port for an inspection page).
+    Returns (status, seconds)."""
+    t = time.time()
+    st, _ = http(port, f'/p/{pid}/', timeout=timeout or _S().TWO_PORT_WARM_TIMEOUT_S)
+    return st, round(time.time() - t, 1)
 
 
 def page_state(status, key, want, t0):
@@ -376,6 +449,7 @@ class _Request(threading.Thread):
         super().__init__(daemon=True)
         self.port, self.pid, self.timeout = port, pid, timeout
         self.status = self.body = None
+        self.counted = False                  # its answer counted in wait_built's requests in a row
 
     def run(self):
         self.status, self.body = http(self.port, f'/p/{self.pid}/', {TP.FRESH_HEADER: '1'}, timeout=self.timeout)
@@ -389,14 +463,19 @@ def wait_built(port, entry, t0, d=None, poll=None, stall_s=None, log=None):
     poll = S.TWO_PORT_POLL_S if poll is None else poll
     stall_s = S.TWO_PORT_STALL_S if stall_s is None else stall_s
     pid, want = entry['id'], TP.entry_md5(entry)
+    max_failed = int(S.TWO_PORT_MAX_FAILED_REQUESTS)
     t_start = time.time()
     req = _Request(port, pid, stall_s)
     req.start()
-    requests, seen = 1, []
+    requests, failed, seen = 1, 0, []
     last_sig, last_change = object(), time.time()
     while True:
         st = server_status(port)
         now = time.time()
+        why = old_server(st) if st is not None else None
+        if why:
+            raise Refusal(f'G16 page {pid}: the two-port server on {port}: {why} - it must be redeployed with this tree\'s '
+                          f'two_port.py first')
         sig = progress(st)
         if sig is not None and sig != last_sig:
             last_sig, last_change = sig, now
@@ -418,13 +497,19 @@ def wait_built(port, entry, t0, d=None, poll=None, stall_s=None, log=None):
             if cur is None or TP.entry_md5(cur) != want:
                 raise Refusal(f'G13 page {pid}: its registry entry was ' + ('removed' if cur is None else
                               'replaced by another registration') + ' while its build was awaited')
+        if not req.is_alive() and not req.counted:
+            req.counted = True
+            failed = 0 if req.status == 200 else failed + 1
         if not req.is_alive() and state != 'building':
             if req.status == 404:
                 raise Refusal(f'G16 page {pid}: the two-port server on {port} does not serve it (404: '
                               f'{(req.body or b"")[:120].decode("utf-8", "replace")})')
             if req.status == 500:
                 raise Refusal(f'G24 page {pid}: {(req.body or b"")[:400].decode("utf-8", "replace")}')
-            if req.status != 200:                   # no answer, a reset, a forward that timed out (502): ask again
+            if req.status != 200:                   # no answer, a reset, a forward that timed out (502): ask again ...
+                if failed >= max_failed:            # ... but not forever (a build that kills its backend restarts it)
+                    raise Refusal(f'G24 page {pid}: {failed} requests in a row got no 200 (last {req.status}: '
+                                  f'{(req.body or b"")[:200].decode("utf-8", "replace")}) - its build does not complete')
                 req = _Request(port, pid, stall_s)
                 req.start()
                 requests += 1

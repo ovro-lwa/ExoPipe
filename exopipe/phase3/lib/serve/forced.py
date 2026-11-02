@@ -3,8 +3,9 @@ own run Run_SNAPFORCED_<S><T>_<TAG>, REGISTERED on the two-port server (serve ow
 2026-10-13). Port of snapshot_forced_gen5_serve_20261026.sh - the 2026-10-07 serve step (snapshot_forced_serve_20261007.sh) on
 the two-port server, whose per-page servers were retired 2026-10-22 - and of the 10-07 step's 'refresh-siblings' mode.
 
-switch: unit snapshot_forced_<TAG>_register (flow.register_pages), per requested page (gen5:31-45; a page that fails a check
-  keeps the run its entry serves):
+switch: unit snapshot_forced_<TAG>_register (flow.register_pages): the two-port server is checked first (nothing is carried
+  for a registration that cannot happen), then per requested page (gen5:31-45; a page that fails a check keeps the run its
+  entry serves):
   1. the run ended FT-READY (last line of <OPS_ROOT>/snapshot_forced_pages_run_<run>.log);
   2. it holds its queue, catalogue view, localization offsets and association table;
   3. the AD Leo check (test_snapshot_forced_reserve.py adleo --absent-ok <run>, site PYTHON 'py36'; Gregg 2026-10-08 "don't
@@ -20,7 +21,8 @@ switch: unit snapshot_forced_<TAG>_register (flow.register_pages), per requested
   Then ALL pages that passed are registered in ONE registration (one registry change), each with --sibling links to what every
   other forced page serves AFTER the switch - its new run where it passed, else the run its entry serves now (gen5:47-56;
   plan.forced_siblings) - and one unit per page waits on its build state (gen5:66-69 waited up to 60 min for the run name in
-  the title) and records it (class served_page); the hub buttons (<S> <10-sec|1-min>-forced) in the hub unit.
+  the title) and records it (class served_page); the title and hub generation in gen5's words (generation-5 cutouts); the
+  inspection pages built before requested once; the hub buttons (<S> <10-sec|1-min>-forced) in the hub unit.
 refresh-siblings: the pages of a <TAG> run whose --sibling links differ from what the other pages serve now are registered
   again in one registration, with the current links and a new served time; judgements stay (journal on disk).
 Parity: each run is byte-copied (minus judgements/ and server logs) to <out>/snapshot/<run> and registered in <out>/two_port
@@ -134,7 +136,7 @@ def switch(run, plan, state, utc):
         items = [(pg, D, register.page_entry(plan, pg, utc, D), exp, []) for pg, D, exp in passed]
         for pg, D, e, _, _ in items:
             u.note(f'FORCED-SWITCH {e["id"]} {pg.stokes}/{pg.kind} {pg.run_name} siblings {e["argv"].count("--sibling")}')
-        return items, refused, set()
+        return items, refused
     state['served'].update(flow.register_pages(run, plan, prepare, _unit_name(plan), stage='switch', inc_log=False))
 
 
@@ -165,7 +167,7 @@ def refresh_siblings(run, plan, state, utc):
                 continue
             u.note(f'FORCED-SIBLINGS-REFRESHED p{pg.port} ({D}): {want}')
             items.append((pg, D, register.page_entry(plan, pg, utc, D), exp, []))
-        return items, refused, set()
+        return items, refused
     state['served'].update(flow.register_pages(run, plan, prepare, _unit_name(plan) + '_siblings', stage='refresh-siblings',
                                                inc_log=False))
 

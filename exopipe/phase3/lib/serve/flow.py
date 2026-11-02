@@ -1,6 +1,7 @@
-"""Stage implementations shared by the three tiers: test (G1, G17, App probe), start (the ONE registration of the pages on
-the two-port server, then one unit per page: its build state and its served_page record), hub, verify; the record chain between
-stages run in separate invocations; the dry-run plan printer.
+"""Stage implementations shared by the three tiers: test (G1, G17, App probe), start (the server check, the ONE registration of
+the pages on the two-port server, then one unit per page: its build state and its served_page record, then the warm-up of the
+inspection pages built before), hub, verify; the record chain between stages run in separate invocations; the dry-run plan
+printer.
 
 State passed between stages of one invocation (``state`` dict):
   state['refused'][page.key]  reason a page cannot be served (an earlier stage refused its queue or view)
@@ -206,8 +207,7 @@ def start_checks(plan, pg, state, U):
 def start_stage(run, plan, state, root=None, utc=None):
     """REGISTER the selected pages on the two-port server (production since 2026-10-22: no review page has a server of its
     own): each page's checks (start_checks), then ONE registration of every page that passed and each page's build
-    (register_pages). A page refused here keeps its registry entry; a page refused for anything but NO-INPUT keeps its run's
-    publish hold standing (its previous build stays held)."""
+    (register_pages). A page refused here keeps its registry entry."""
     from exopipe.phase3.lib.serve import register
     utc = utc or common.utc_text()
     U = root or plan.U
@@ -222,42 +222,41 @@ def start_stage(run, plan, state, root=None, utc=None):
                 continue
             inputs = [x for x in (pg.at('queue', U), pg.at('mchain_queue', U)) if x]
             items.append((pg, U, register.page_entry(plan, pg, utc, root), exp, inputs))
-        keep = {U} if any(not str(w).startswith('NO-INPUT: ') for w in refused.values()) else set()
-        return items, refused, keep
+        return items, refused
     state['served'].update(register_pages(run, plan, prepare, f'{plan.tier}_{plan.run_name}_register'))
 
 
 def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
     """THE ONE REGISTRATION of a serve (lib/serve/register.py) and each registered page's build.
-    Unit ``unit_name`` (class page_registration): ``prepare(u)`` -> (items, refused, keep_holds) - items [(page, run dir,
-    entry, expected, inputs)] of the pages that passed their checks, refused {page key: reason}, keep_holds the run dirs whose
-    publish hold stays - then the server check (G16 / G13), the registration checked by the server's loader (nothing written
-    on a refusal), the publish hold of each other run lifted (register.lift_hold), and ONE register.write: one registry change.
-    Then one unit per page (page.unit): a refused page refuses (or ends no-input) with its reason; a registered page waits on
-    its build state (register.wait_built) and writes its served_page record. Returns {page key: (record path, record)}."""
+    Unit ``unit_name`` (class page_registration): the two-port server first (register.check_server, G16 / G13: it answers,
+    reports the build state, reads this registry, runs with the configured publish-hold option) - before ``prepare(u)`` ->
+    (items, refused) does anything (a judgement carry): items [(page, run dir, entry, expected, inputs)] of the pages that
+    passed their checks, refused {page key: reason}; then the registration checked by the server's loader (nothing written on a
+    refusal), the publish marker of every registered run removed (register.lift_hold, whatever was refused: production removes
+    it right before its one registration, deep_reregister_after_publish_20261031.py:79-81), and ONE register.write: one registry
+    change. Then one unit per page (page.unit): a refused page refuses (or ends no-input) with its reason; a registered page
+    waits on its build state (register.wait_built) and writes its served_page record. Then unit <unit_name>_warm: every
+    inspection page the server had built before the registration is requested once, the registered pages' first (the warm-up
+    of register_page.py:76-87 / warm_pages.py; record class csv_table). Returns {page key: (record path, record)}."""
     from exopipe.phase3.lib.serve import register
     d, ports = register.registry_dir(plan), register.listeners(plan)
-    got = {'items': [], 'refused': {}, 'res': None}
+    got = {'items': [], 'refused': {}, 'res': None, 'inspection': [], 'prepared': False}
     with run.unit(unit_name, stage=stage, tier=plan.tier, family=plan.family, registry=d, listeners=list(ports),
                   parity=plan.parity) as u:
-        items, refused, keep = prepare(u)
-        got['items'], got['refused'] = items, refused
+        register.check_server(ports, d)                 # before anything changes (a carry, a marker, the registry)
+        items, refused = prepare(u)
+        got['items'], got['refused'], got['prepared'] = items, refused, True
         if not items:
             raise recmod.NoInput('no page passed its checks - nothing registered (the registry is unchanged)')
-        register.check_server(ports, d)
         prep = register.prepare([it[2] for it in items], d)
+        st = register.check_server(ports, d)            # again, right before the write: and what it has built now
+        got['inspection'] = register.built_inspection(st)
         holds = []
         for r in dict.fromkeys(it[1] for it in items):
-            hf = register.hold_file(r)
-            if r in keep:
-                holds.append({'run': r, 'kept': hf if os.path.lexists(hf) else None})
-                if os.path.lexists(hf):
-                    u.note(f'publish hold {hf} KEPT: a page of the run was refused - its previous build stays held')
-            else:
-                lifted = register.lift_hold(r)
-                holds.append({'run': r, 'lifted': lifted})
-                if lifted:
-                    u.note(f'publish hold of {r} lifted right before the registration ({lifted})')
+            lifted = register.lift_hold(r)
+            holds.append({'run': r, 'lifted': lifted})
+            if lifted:
+                u.note(f'publish marker of {r} removed right before the registration ({lifted})')
         res = register.write(prep)
         res['record'] = register.registration_record(plan.out, unit_name, res, holds)
         got['res'] = res
@@ -267,6 +266,10 @@ def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
     why = None if u.status == 'done' else f'not registered: {u.name} ended {u.status} ({(u.reason or "")[:300]})'
     served = {}
     for pg in plan.pages:
+        if not got['prepared']:                          # refused before the pages were checked (the server check)
+            with run.unit(pg.unit, stage=stage, tier=plan.tier, page=pg.key, port=pg.port, parity=plan.parity) as pu:
+                pu.refuse(why or 'not registered')
+            continue
         if pg.key in got['refused']:
             w = str(got['refused'][pg.key])
             with run.unit(pg.unit, stage=stage, tier=plan.tier, page=pg.key, port=pg.port, parity=plan.parity) as pu:
@@ -297,7 +300,38 @@ def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
                 q = pg.at('queue', root)
                 common.inc_log(root, f'registered {merged["id"]} (page {pg.key}) on the two-port server: '
                                      f'{len(common.queue_ids(q)) if q and os.path.exists(q) else 0} ids (exopipe3 serve)')
+    if got['res'] is not None:
+        warm_inspection(run, plan, got['res'], got['inspection'], f'{unit_name}_warm', stage)
     return served
+
+
+def warm_inspection(run, plan, res, built, unit_name, stage):
+    """The warm-up of the INSPECTION pages (register_page.py:76-87 -> warm_pages.py, which requested every page built before a
+    registry change once after it, the registration's own pages first): each inspection page the server had built before the
+    registration, requested once on the inspection listener, the registered pages' first, then the others; their answers in
+    <out>/_records/serve/registrations/<unit>.csv (class csv_table). A registered page's inspection build was dropped with
+    its entry and is built by this request; another page's answers at once and is rebuilt by the server."""
+    from exopipe.phase3.lib.serve import register
+    ours = [e['id'] for e in res['entries']]
+    order = [p for p in ours if p in built] + [p for p in built if p not in ours]
+    with run.unit(unit_name, stage=stage, tier=plan.tier, pages=order) as u:
+        if not order:
+            raise recmod.NoInput('no inspection page was built before the registration - nothing to warm')
+        port = register.listeners(plan)[1]
+        rows = []
+        for pid in order:
+            st, sec = register.warm(port, pid)
+            rows.append({'page': pid, 'listener': port, 'status': st if st is not None else 'no answer', 'seconds': sec,
+                         'registered_now': int(pid in ours)})
+            u.note(f'{pid}:inspection requested once: {rows[-1]["status"]} in {sec} s')
+        path = os.path.join(os.path.dirname(res['record']), os.path.basename(res['record'])[:-len('.json')] + '_warm.csv')
+        import csv
+        with open(path + '.part', 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=['page', 'listener', 'status', 'seconds', 'registered_now'])
+            w.writeheader()
+            w.writerows(rows)
+        os.replace(path + '.part', path)
+        u.add_output(path, 'csv_table', required_columns=('page', 'listener', 'status', 'seconds'), min_rows=1)
 
 
 # ---- hub --------------------------------------------------------------------------------------------------------------
