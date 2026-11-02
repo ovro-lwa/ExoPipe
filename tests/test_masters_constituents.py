@@ -127,8 +127,13 @@ def test_rule():
     cd = cell('no_image', skips={D[2]: ('NoTaper_R0',)})
     masters_all(cd, M, override={'I_deep_NoTaper_R0': [d for d in M if d != D[2]]})
     v, info = CN.check(fp(cd, 'I_deep_NoTaper_R0'), cd)
-    check('a member night without a Phase 2 image of the variant, left out: passes, the night named as no image', not v and
-          info['no_image'] == [D[2]] and 'no Phase 2 NoTaper_R0 image' in info['refused'][D[2]], (v, info.get('refused')))
+    check('a member night without a Phase 2 image of the variant, left out: passes, the night named as no image - and as '
+          'holding only a PB-corrected one', not v and info['no_image'] == [D[2]]
+          and 'no Phase 2 NoTaper_R0 image (only PB-corrected: 64MHz-I-NoTaper-3600s-Robust-0-image.pbcorr.fits)'
+          in info['refused'][D[2]], (v, info.get('refused')))
+    v, info = CN.check(fp(cd, 'I_deep_NoTaper_R075'), cd)
+    check('... the other variants of that night are untouched (no pbcorr confusion between robust weightings)', not v
+          and info['no_image'] == [], (v, info.get('refused')))
     check('... with the build\'s record naming it: passes', not violations(fp(cd, 'I_deep_NoTaper_R0'), cd, [D[2]]))
     v = violations(fp(cd, 'I_deep_NoTaper_R0'), cd, [])
     check('... with a build record that names no such night: REFUSED (a silent drop)', len(v) == 1 and 'silent drop' in v[0]
@@ -253,6 +258,97 @@ def test_content_test_and_layouts():
           (u.reason[:120], r['detail'][:120]))
 
 
+def test_regrid_failures():
+    """A member dropped because its image could not be regridded (coadd.process_variant_image returned False; the final stage
+    then leaves it out as production does): the build records it (deep_stages.regrid_watch / record_regrid_failures) and the
+    membership check accepts the recorded night; unrecorded, the same master refuses."""
+    import textwrap
+    import types
+    M = D[:4]
+    # regrid_watch on a stand-in co-add module: the wrapped functions are found as module globals, as in coadd.py
+    fake = types.ModuleType('fake_coadd')
+    exec(textwrap.dedent("""
+        def process_variant_image(src_path, flow_offsets, scale_map, template_header, target_shape, out_path,
+                                  regrid_coords=None):
+            return not src_path.endswith('offgrid.fits')
+
+        def run_final_lst_freq(prep, items):
+            kept = []
+            for date, kind, src in items:
+                if process_variant_image(src, None, None, None, None, f'{prep}/{date}_{kind}.fits', None):
+                    kept.append((date, kind))
+            return kept
+    """), fake.__dict__)
+    orig = (fake.process_variant_image, fake.run_final_lst_freq)
+    prep = os.path.join(T, CELL, 'prep_final')
+    items = [(M[0], 'V', 'a.fits'), (M[1], 'I_R0', 'b_offgrid.fits'), (M[2], 'NoTaper_R075', 'c_offgrid.fits'),
+             (M[3], 'I', 'd_offgrid.fits')]
+    with DS.regrid_watch(fake) as w:
+        first = fake.run_final_lst_freq(prep, items)
+        second = fake.run_final_lst_freq(prep, items[:2])            # a B-05 pass: the last pass decides
+        other = fake.process_variant_image('e_offgrid.fits', None, None, None, None, os.path.join(T, 'prep', f'{M[0]}_V.fits'))
+    check('regrid_watch: the wrapped co-add returns exactly what the original returns (kept nights unchanged)',
+          first == [(M[0], 'V')] and second == [(M[0], 'V')] and other is False, (first, second, other))
+    check('regrid_watch: the last pass\'s failed final-stage products are recorded (survey I and other stages not)',
+          w['passes'] == 2 and w['failed'] == {'I_deep_Taper_R0': {M[1]: 'b_offgrid.fits'}}, w)
+    check('regrid_watch: the originals are restored on exit',
+          (fake.process_variant_image, fake.run_final_lst_freq) == orig)
+    # drift: the in-place final stage still writes its product files where the watch looks, and the watch wraps the real
+    # module's functions and restores them
+    import inspect
+    from exopipe.phase3.lib.masters import coadd as co
+    src = inspect.getsource(co.run_final_lst_freq)
+    want = ("prep_dir = f'{workdir}/prep_final'", "v_out = f'{prep_dir}/{date}_V.fits'",
+            "i_r0_out = f'{prep_dir}/{date}_I_R0.fits'", "_out = f'{prep_dir}/{date}_{_vk}.fits'",
+            "for _vk, _out_name in (('NoTaper_R0',", "('NoTaper_R075',", 'ok = process_variant_image(v_img',
+            'ok = process_variant_image(i_r0_img', 'ok = process_variant_image(_img')
+    real = (co.process_variant_image, co.run_final_lst_freq)
+    with DS.regrid_watch(co):
+        wrapped = (co.process_variant_image, co.run_final_lst_freq) != real
+    check('regrid_watch: coadd.run_final_lst_freq still names its product files as the watch matches them (drift), and the '
+          'real module is wrapped inside the block and restored after it',
+          all(x in src for x in want) and wrapped and (co.process_variant_image, co.run_final_lst_freq) == real,
+          [x for x in want if x not in src])
+    # the build's record and the membership check
+    cd = cell('regrid')
+    masters_all(cd, M, override={'I_deep_Taper_R0': [d for d in M if d != M[1]]})
+    run = record.Run('masters', ['test'], os.path.join(T, 'run_regrid'), CFG, dry_run=True)
+    with run.unit(f'build_{CELL}_regrid') as u:
+        DS.register_build_outputs(u, CELL, cd, SC_, regrid_failed={'I_deep_Taper_R0': {M[1]: 'b_offgrid.fits'}})
+    t = {os.path.basename(x['path']): x for x in u.tests if x['name'] == 'master.members_equal_constituents'}
+    ctxs = {os.path.basename(o['path']): o.get('ctx') or {} for o in u.outputs if o['class'] == 'master'}
+    r0 = f'I_deep_Taper_R0_{SC_}.fits'
+    check('build: a night dropped on a failed regrid is a recorded refusal (meta + note + the master\'s context) and every '
+          'master passes the membership check', u.meta.get('regrid_failed') == {'I_deep_Taper_R0': [M[1]]}
+          and any('REGRID FAILED (recorded refusal)' in n for n in u.notes) and len(t) == 5
+          and all(x['passed'] for x in t.values())
+          and 'regrid failed' in (ctxs[r0].get('build_refused') or {}).get(M[1], '') and 'regrid failed' in t[r0]['detail'],
+          (u.meta.get('regrid_failed'), {k: x['detail'][:100] for k, x in t.items() if not x['passed']}))
+    with run.unit(f'build_{CELL}_regrid_unrecorded') as u:
+        DS.register_build_outputs(u, CELL, cd, SC_)
+    failed = {os.path.basename(x['path']) for x in u.failed_tests() if x['name'] == 'master.members_equal_constituents'}
+    check('build: the same drop unrecorded fails that master\'s membership check, which refuses the build unit',
+          u.status == 'refused' and failed == {r0}, (u.status, sorted(failed)))
+    v = CN.check(fp(cd, 'I_deep_Taper_R0'), cd, no_image=[], build_refused={M[1]: 'regrid failed: b_offgrid.fits'})[0]
+    check('check: the recorded regrid failure is accepted, a different night is not', not v
+          and CN.check(fp(cd, 'I_deep_Taper_R0'), cd, no_image=[], build_refused={M[2]: 'regrid failed: x'})[0], v)
+
+
+def test_variant_names():
+    """The variants stage rebuilds only the non-survey I variants: an unknown name (Taper_R075 would be rebuilt from the survey
+    image and checked as the survey master) refuses the unit before anything runs; the default names pass."""
+    import types
+    check('variant names: the stage\'s set is the three non-survey I variants',
+          DS.VARIANT_NAMES == ('Taper_R0', 'NoTaper_R0', 'NoTaper_R075'), DS.VARIANT_NAMES)
+    check('variant names: the default (masters_build.VARIANTS_ONLY) is accepted',
+          DS.variant_names(types.SimpleNamespace(deep_variants=None))[1] == [])
+    run = record.Run('masters', ['test'], os.path.join(T, 'run_var'), CFG, dry_run=True)
+    DS.variants(CELL, types.SimpleNamespace(deep_variants='Taper_R0,Taper_R075'), run, os.path.join(T, 'var_out'), {})
+    u = run.units[-1]
+    check('variants stage: --deep-variants Taper_R075 refuses the unit, naming it', u.status == 'refused'
+          and "['Taper_R075']" in u.reason and 'not a variant this stage rebuilds' in u.reason, u.reason[:160])
+
+
 def test_real_cells():
     """Read only: the installed 23h_23MHz cell (the masters parity cell P1; installed 2026-10-13 from the rebuild P1 compared
     with) passes in every mode; 08h_18MHz's silent drop (2025-01-01, NoTaper R0) is identified as a missing image."""
@@ -271,10 +367,11 @@ def test_real_cells():
                   and all(i['constituents'] == i['members'] == 11 for i in infos.values()), (v1, v2, noimg))
         else:
             v3, _ = CN.check_cell(cd, no_image={})
-            check('real (read-only) 08h_18MHz: the finding\'s dropped night is a missing NoTaper R0 image (passes once '
-                  'recorded); unrecorded it is refused', not v1 and not v2
+            why = infos[f'I_deep_NoTaper_R0_{sc}.fits']['refused'].get('2025-01-01', '')
+            check('real (read-only) 08h_18MHz: the finding\'s dropped night is a missing NoTaper R0 image - only a '
+                  'PB-corrected one exists (passes once recorded); unrecorded it is refused', not v1 and not v2
                   and {k: x for k, x in noimg.items() if x} == {'I_deep_NoTaper_R0': ['2025-01-01']}
-                  and len(v3) == 1 and 'silent drop' in v3[0], (v1, v2, noimg, v3))
+                  and 'only PB-corrected' in why and len(v3) == 1 and 'silent drop' in v3[0], (v1, v2, noimg, why, v3))
 
 
 def main():
@@ -283,6 +380,8 @@ def main():
     try:
         test_rule()
         test_content_test_and_layouts()
+        test_regrid_failures()
+        test_variant_names()
         test_real_cells()
     finally:
         shutil.rmtree(T, ignore_errors=True)

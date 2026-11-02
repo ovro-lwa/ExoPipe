@@ -16,10 +16,12 @@ done / refused / no-input, and registers every product it wrote with its product
 Products keep production's names and layout (DESIGN 11.1): <out>/<cell>/{coadd_final,coadd_final_ref,coadd_provisional,
 subtracted,flow,gen_shflux}/..., <out>/shflux_table.csv, <out>/parent_catalogs/.
 """
+import contextlib
 import csv
 import glob
 import json
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -535,7 +537,7 @@ def build(cell, args, run, out, ran_now):
             u.note(f'reference night from stage-in: {reference}')
         del co.THERMNOI_RECORD[:]
         with IP.call_env(['masters', 'masters_build'], extra=extra) as env, \
-                IP.capture_stdout(_log(out, cell, 'build')) as tee:
+                IP.capture_stdout(_log(out, cell, 'build')) as tee, regrid_watch(co) as watched:
             u.note(f'call environment: {env}')
             try:
                 prov = co.run_provisional_lst_freq(lst, freq, excl)
@@ -586,18 +588,26 @@ def build(cell, args, run, out, ran_now):
         s2 = os.path.join(cell_dir, 'coadd_final', _admit().SCALE2)   # D-ADMIT: the second-pass DCs and the guard's median
         if os.path.exists(s2):
             u.add_output(s2, 'scale2_record', cell=cell)
-        register_build_outputs(u, cell, cell_dir, sc)
+        register_build_outputs(u, cell, cell_dir, sc, regrid_failed=watched['failed'])
 
 
-def register_build_outputs(u, cell, cell_dir, sc):
+def register_build_outputs(u, cell, cell_dir, sc, regrid_failed=None):
     """Every product the build wrote, with its class (its content tests run now). The master outputs carry the build's record
-    of member nights without a Phase 2 image (record_missing_images): their content test master.members_equal_constituents
-    compares each master's constituents with the recorded members, kept with the output for --resume and verify."""
+    of the member nights it left out without another record - no Phase 2 image of the product (record_missing_images) and an
+    image that could not be regridded (``regrid_failed``, {stem: {night: source image}} from regrid_watch;
+    record_regrid_failures) - as the context of their content test master.members_equal_constituents, which compares each
+    master's constituents with the recorded members. The context is kept with the output and passed again by --resume
+    (resume_check); `exopipe3 verify` passes none (the test then re-derives the no-image nights: constituents.py, KNOWN
+    LIMITS)."""
     noimg = record_missing_images(u, cell_dir, sc)
+    failed = record_regrid_failures(u, sc, regrid_failed or {})
     for p, cls in _build_outputs(cell_dir, sc):
         ctx = {'cell': cell}
         if cls == 'master':
-            ctx['no_image'] = noimg.get(constituents.stem_of(p)[0], [])
+            stem = constituents.stem_of(p)[0]
+            ctx['no_image'] = noimg.get(stem, [])
+            if failed.get(stem):
+                ctx['build_refused'] = failed[stem]
         u.add_output(p, cls, **ctx)
 
 
@@ -606,9 +616,8 @@ def record_missing_images(u, cell_dir, sc):
     deep chat's 'SILENT DROP' findings): the in-place final stage leaves such a night out of the V master or an I variant with
     no record (coadd.run_final_lst_freq: `if not img: continue`). After the co-add the build looks the member nights' images up
     again with the co-add's finder choice (core.inputs.product_image; lib/masters/constituents.py) and records the nights
-    without one in its unit record (meta 'no_image' and one note per master); the master outputs carry the list to the content
-    test master.members_equal_constituents, which compares every master's constituents with the recorded members. A member
-    night without a readable Science directory cannot be judged: refused (so is a stale finder copy). Returns {stem: [nights]}."""
+    without one in its unit record (meta 'no_image' and one note per master, naming PB-corrected-only images). A member night
+    without a readable Science directory cannot be judged: refused (so is a stale finder copy). Returns {stem: [nights]}."""
     try:
         noimg, unjudged = constituents.missing_images_cell(cell_dir, sc)
     except RuntimeError as e:
@@ -618,11 +627,68 @@ def record_missing_images(u, cell_dir, sc):
         u.refuse(f'member night(s) without a readable Science directory in weights.csv, so their V / I-variant images cannot '
                  f'be looked up: {bad}')
     u.meta['no_image'] = {k: v for k, v in sorted(noimg.items()) if v}
+    mem = constituents.members(cell_dir) or {}
     for stem in constituents.NON_SURVEY:
         if noimg.get(stem):
-            u.note(f'NO IMAGE (recorded refusal): {stem}_{sc} leaves out member night(s) {noimg[stem]} - no Phase 2 '
-                   f'{constituents.PRODUCT_OF[stem]} image (the co-add finds none; lib/masters/constituents.py)')
+            why = '; '.join(f'{d}: {constituents.no_image_reason(mem.get(d), sc, constituents.PRODUCT_OF[stem])}'
+                            for d in noimg[stem])
+            u.note(f'NO IMAGE (recorded refusal): {stem}_{sc} leaves out member night(s) {noimg[stem]} ({why}; the co-add '
+                   f'finds none; lib/masters/constituents.py)')
     return noimg
+
+
+# The final stage's per-night product files (coadd.run_final_lst_freq: <cell>/prep_final/<night>_<kind>.fits) and their masters
+_PREP_PRODUCT = re.compile(r'^(\d{4}-\d\d-\d\d)_(V|I_R0|NoTaper_R0|NoTaper_R075)\.fits$')
+_PREP_STEM = {'V': 'V_deep_Taper_R0', 'I_R0': 'I_deep_Taper_R0', 'NoTaper_R0': 'I_deep_NoTaper_R0',
+              'NoTaper_R075': 'I_deep_NoTaper_R075'}
+
+
+@contextlib.contextmanager
+def regrid_watch(co):
+    """WHICH NIGHTS THE FINAL STAGE DROPS ON A FAILED REGRID (the 2026-11-02 masters review): coadd.process_variant_image returns
+    False when an input on another grid cannot be regridded (coadd.py:1335), and run_final_lst_freq then leaves the night out
+    of the V master or the I variant with no record (`if ok and os.path.exists(out)`). Production does the same; the build
+    keeps that behavior and records the nights instead. Inside this block the in-place module's process_variant_image and
+    run_final_lst_freq are wrappers that call the originals with the same arguments and return their values unchanged (no
+    product can differ): every False return for a final-stage product file is noted, and each final-stage pass (B-05 reruns
+    the stage) starts the list afresh - the last pass decides. Yields {'passes': n, 'failed': {stem: {night: source image}}};
+    the originals are restored on exit."""
+    state = {'passes': 0, 'failed': {}}
+    orig_pvi, orig_final = co.process_variant_image, co.run_final_lst_freq
+
+    def process_variant_image(*a, **k):
+        ok = orig_pvi(*a, **k)
+        out = a[5] if len(a) > 5 else k.get('out_path')
+        m = _PREP_PRODUCT.match(os.path.basename(str(out)))
+        if not ok and m and os.path.basename(os.path.dirname(str(out))) == 'prep_final':
+            src = a[0] if a else k.get('src_path')
+            state['failed'].setdefault(_PREP_STEM[m.group(2)], {})[m.group(1)] = os.path.basename(str(src))
+        return ok
+
+    def run_final_lst_freq(*a, **k):
+        state['passes'] += 1
+        state['failed'] = {}
+        return orig_final(*a, **k)
+
+    co.process_variant_image, co.run_final_lst_freq = process_variant_image, run_final_lst_freq
+    try:
+        yield state
+    finally:
+        co.process_variant_image, co.run_final_lst_freq = orig_pvi, orig_final
+
+
+def record_regrid_failures(u, sc, failed):
+    """A NIGHT DROPPED BECAUSE ITS IMAGE COULD NOT BE REGRIDDED IS A RECORDED REFUSAL (regrid_watch): meta 'regrid_failed' and
+    one note per master; the night stays out of the master, as production leaves it. Returns {stem: {night: reason}}."""
+    out = {}
+    for stem, nights in sorted(failed.items()):
+        out[stem] = {d: f'regrid failed: {src} could not be regridded onto the master grid (process_variant_image returned '
+                        f'False; dropped as production drops it)' for d, src in sorted(nights.items())}
+        u.note(f'REGRID FAILED (recorded refusal): {stem}_{sc} leaves out night(s) {sorted(nights)} - their image could not '
+               f'be regridded onto the master grid (coadd.process_variant_image returned False; production drops them '
+               f'silently)')
+    u.meta['regrid_failed'] = {stem: sorted(n) for stem, n in sorted(failed.items())}
+    return out
 
 
 def flow_record_path(out, cell):
@@ -994,12 +1060,26 @@ def sources(cell, args, run, out, ran_now):
 # stage: variants (optional)
 # =====================================================================================================================
 
+# the I variants the variants stage rebuilds (coadd.rebuild_variants_from_record: the non-survey Stokes I variants); the survey
+# variant Taper_R075 is the build's, and an unknown name would be rebuilt from whatever the finder matches
+VARIANT_NAMES = tuple(p for p in constituents.PRODUCT_OF.values() if p not in (None, 'V'))
+
+
+def variant_names(args):
+    """(--deep-variants or masters_build.VARIANTS_ONLY, the names among them that are not VARIANT_NAMES)."""
+    vks = tuple(v for v in (args.deep_variants.split(',') if args.deep_variants else _cfg().masters_build.VARIANTS_ONLY) if v)
+    return vks, [v for v in vks if v not in VARIANT_NAMES]
+
+
 def variants(cell, args, run, out, ran_now):
     from exopipe.phase3.lib.masters import deep_inplace as IP
     lst, sc = cell.split('_', 1)
     freq = _freq(sc)
-    vks = tuple(v for v in (args.deep_variants.split(',') if args.deep_variants else _cfg().masters_build.VARIANTS_ONLY) if v)
+    vks, unknown = variant_names(args)
     with run.unit(f'variants_{cell}', tier='deep', stage='variants', cell=cell, variants=list(vks)) as u:
+        if unknown:
+            u.refuse(f'--deep-variants {unknown}: not a variant this stage rebuilds (one of {VARIANT_NAMES}; the survey '
+                     f'variant Taper_R075 is built by the build stage)')
         require_stage(out, 'variants', cell, ran_now)
         mods, _ = inplace(out)
         co = mods['coadd']
@@ -1333,7 +1413,10 @@ def _plan_simple(stage):
             if r and not s.paths.PRODUCTION_WRITES:
                 gates.append(f'{dest} is under the production root {r} (pass --out)')
         elif stage == 'variants':
-            lines.append(f'in place: coadd.rebuild_variants_from_record(variants={args.deep_variants or s.masters_build.VARIANTS_ONLY})')
+            vks, unknown = variant_names(args)
+            if unknown:
+                gates.append(f'--deep-variants {unknown}: not a variant this stage rebuilds (one of {VARIANT_NAMES})')
+            lines.append(f'in place: coadd.rebuild_variants_from_record(variants={vks})')
         elif stage == 'build-stats':
             from exopipe.phase3.lib.masters import build_stats as BS, deep_inplace as IP
             src = args.deep_installed_root or s.paths.COADD_SB_ROOT

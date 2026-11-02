@@ -360,15 +360,17 @@ def all_variants_present(path, **ctx):
 
 
 @content_test('master')
-def members_equal_constituents(path, no_image=None, **ctx):
+def members_equal_constituents(path, no_image=None, build_refused=None, **ctx):
     """THE MEMBERSHIP CHECK AGAINST THE CONSTITUENT LIST (FOLD_IN 2026-10-26 'SILENT DROP', lib/masters/constituents.py): the
     master's COADD constituents (and NCOADD) equal the cell's recorded members for its product - weights.csv in_master 1, minus
-    (V, I variants) the nights recorded as refused: B-03 refusals, VARIANT-GATE HISTORY lines, and the member nights with no
-    Phase 2 image of the product (``no_image``: the build's record, kept with the output; without it they are found again in
-    the Phase 2 tree). A night held although refused or not a member, and a member left out with no recorded reason, fail."""
+    (V, I variants) the nights recorded as refused: B-03 refusals, VARIANT-GATE HISTORY lines, the nights the build recorded as
+    not regridded (``build_refused``) and the member nights with no Phase 2 image of the product (``no_image``). Both come from
+    the build's record, kept with the output for --resume; without them (`exopipe3 verify` passes no context) the no-image
+    nights are found again in today's Phase 2 tree (constituents.py: KNOWN LIMITS). A night held although refused or not a
+    member, and a member left out with no recorded reason, fail."""
     from exopipe.phase3.lib.masters import constituents as CN
     loc = locate(path, **ctx)
-    viol, info = CN.check(path, loc['cell_dir'], no_image=no_image)
+    viol, info = CN.check(path, loc['cell_dir'], no_image=no_image, build_refused=build_refused)
     if viol:
         return False, len(viol), ' | '.join(viol[:3])[:600]
     ref = info.get('refused') or {}

@@ -15,14 +15,27 @@ must equal the cell's RECORDED members for that product:
     survey I Taper R-0.75     the members (weights.csv in_master 1)
     V Taper R0, I variants    the members minus the nights RECORDED as refused for that product:
                               B-03 same-state refusals (refusals_input.csv), the variant gate (HISTORY; I variants only),
-                              and the nights with no Phase 2 image of the product - the build records those in its unit
-                              record (deep_stages.build: meta 'no_image', one note per product, and the content test's
-                              context); without that record (a cell built by production, `exopipe3 verify`) they are found
-                              again in the Phase 2 tree by the co-add's finder choice (core.inputs.product_image), as
-                              production's NoTaper large-scale reconstruction does (notaper_largescale.members_of)
+                              the nights whose image could not be regridded (process_variant_image returned False: dropped
+                              as production drops them, recorded by the build - deep_stages.regrid_watch; meta
+                              'regrid_failed' and the content test's context 'build_refused'), and the nights with no Phase
+                              2 image of the product - the build records those too (meta 'no_image', one note per product,
+                              the content test's context 'no_image'); without that record (a cell built by production, or
+                              `exopipe3 verify`, which passes no context) they are found again in the Phase 2 tree by the
+                              co-add's finder choice (core.inputs.product_image), as production's NoTaper large-scale
+                              reconstruction does (notaper_largescale.members_of)
 A night in a master that is not a recorded member, a night in a master although recorded as refused, and a member missing
-from a master with no recorded reason (a silent drop: e.g. an alignment failure) are violations; the master REFUSES (the
-content test 'master.members_equal_constituents' fails, so the unit that wrote or re-tests it is refused).
+from a master with no recorded reason (a silent drop) are violations; the master REFUSES (the content test
+'master.members_equal_constituents' fails, so the unit that wrote or re-tests it is refused).
+
+KNOWN LIMITS (documented, not handled - the 2026-11-02 masters review):
+  - Without the build's record the no-image nights are re-derived from TODAY's Phase 2 tree, not the tree the master was built
+    from. A later Phase 2 change - a variant image quarantined or renamed, a Science directory retired, a night re-imaged - can
+    then make a correct installed master read as violating the rule (or hide a drop). On 2026-11-02, 0 of the 2,280 installed
+    masters violate it and 34 of them pass only through this re-derivation (their left-out nights have no Phase 2 image).
+  - Without the build's record a member dropped because its image could not be regridded reads as a silent drop (none among
+    the installed masters on 2026-11-02).
+  Both go once the build's refusals are kept beside the cell's records and carried by the install (a record file, no product
+  byte changed) and read here before any re-derivation.
 
 Read only. Light at import (stdlib + astropy inside the functions).
 """
@@ -136,11 +149,41 @@ def missing_images_cell(cell_dir, scope):
     return out, unjudged
 
 
-def check(master, cell_dir, no_image=None):
+def pbcorr_only(sci_dir, scope, product):
+    """MESSAGE ONLY: the PB-corrected files in the night's Phase 2 directory of ``product`` that match its taper and robust
+    weighting - the finders never take a PB-corrected image, so a night holding only those has 'no image' (the 08h and 09h
+    18 MHz NoTaper Robust 0 nights of the finding). The finders' own name rules decide membership, never this."""
+    fq = _finder_scope(scope)
+    st = 'V' if product == 'V' else 'I'
+    d = os.path.join(sci_dir or '', f'{fq}MHz' if fq.isdigit() else fq, st, 'deep')
+    taper, rob = ('Taper', 'R0') if product == 'V' else product.split('_')
+    try:
+        files = sorted(os.listdir(d))
+    except OSError:
+        return []
+    out = []
+    for f in files:
+        if 'pbcorr' not in f or not f.endswith('.fits') or ('NoTaper' in f) != (taper == 'NoTaper') or 'Taper' not in f:
+            continue
+        if (rob == 'R075') != ('Robust-0.75' in f) or 'Robust-0' not in f:
+            continue
+        out.append(f)
+    return out
+
+
+def no_image_reason(sci_dir, scope, product):
+    """'no Phase 2 <product> image', naming the PB-corrected files of the product when only those exist (pbcorr_only)."""
+    pc = pbcorr_only(sci_dir, scope, product)
+    return f'no Phase 2 {product} image' + (f' (only PB-corrected: {", ".join(pc[:2])})' if pc else '')
+
+
+def check(master, cell_dir, no_image=None, build_refused=None):
     """THE CHECK of one master file. ``cell_dir`` holds coadd_final/weights.csv and refusals_input.csv (the cell the master was
     built for; its scaled or dewarped generation keeps the cell's records). ``no_image``: the build's RECORDED list of member
     nights with no Phase 2 image of this master's product (None = not recorded: found again in the Phase 2 tree).
-    Returns (violations, info): violations is [] when the master's constituents equal its recorded members."""
+    ``build_refused``: {night: reason} the build RECORDED as left out of this master for another reason (a regrid failure:
+    deep_stages.regrid_watch). Returns (violations, info): violations is [] when the master's constituents equal its recorded
+    members."""
     from astropy.io import fits
     stem, scope = stem_of(master)
     if stem is None:
@@ -165,6 +208,8 @@ def check(master, cell_dir, no_image=None):
         if product != 'V':
             for d in gate_refused_dates(h):
                 refused.setdefault(d, []).append('VARIANT-GATE (HISTORY)')
+        for d, why in sorted((build_refused or {}).items()):
+            refused.setdefault(d, []).append(f'{why} (recorded by the build)')
         if no_image is None:
             todo = {d: s for d, s in mem.items() if d not in refused}
             noimg, unjudged = missing_images(todo, scope, product)
@@ -175,7 +220,7 @@ def check(master, cell_dir, no_image=None):
         else:
             noimg, how = sorted(no_image), 'recorded by the build'
         for d in noimg:
-            refused.setdefault(d, []).append(f'no Phase 2 {product} image ({how})')
+            refused.setdefault(d, []).append(f'{no_image_reason(mem.get(d), scope, product)} ({how})')
         info.update(refused={d: '; '.join(w) for d, w in sorted(refused.items())}, no_image=sorted(noimg), no_image_source=how)
     expected = sorted(d for d in mem if d not in refused)
     extra = sorted(set(const) - set(mem))
@@ -187,8 +232,8 @@ def check(master, cell_dir, no_image=None):
                     + '; '.join(f'{d} ({refused[d][0]})' for d in held))
     silent = sorted(set(expected) - set(const))
     if silent:
-        why = ('no VARIANT-GATE line, no B-03 refusal, ' if product not in (None, 'V') else
-               'no B-03 refusal, ' if product == 'V' else '')
+        why = ('no VARIANT-GATE line, no B-03 refusal, no recorded regrid failure, ' if product not in (None, 'V') else
+               'no B-03 refusal, no recorded regrid failure, ' if product == 'V' else '')
         why += (('and its Phase 2 image exists' if no_image is None else 'not recorded as without a Phase 2 image')
                 if product is not None else 'the survey master holds every member by construction')
         viol.append(f'member night(s) {silent} missing from the master with no recorded reason (a silent drop: {why})')
@@ -196,16 +241,18 @@ def check(master, cell_dir, no_image=None):
     return [f'{stem}_{scope}: {v}' for v in viol], info
 
 
-def check_cell(cell_dir, final_dir=None, no_image=None):
+def check_cell(cell_dir, final_dir=None, no_image=None, build_refused=None):
     """check() of every master present in ``final_dir`` (default <cell_dir>/coadd_final). ``no_image``: {stem: [nights]} as
-    the build recorded it (None = found again). Returns (violations, {file name: info})."""
+    the build recorded it (None = found again); ``build_refused``: {stem: {night: reason}}. Returns (violations,
+    {file name: info})."""
     fd = final_dir or os.path.join(cell_dir, 'coadd_final')
     viol, infos = [], {}
     for f in sorted(os.listdir(fd)) if os.path.isdir(fd) else []:
         stem, _ = stem_of(f)
         if stem is None:
             continue
-        v, info = check(os.path.join(fd, f), cell_dir, None if no_image is None else no_image.get(stem, []))
+        v, info = check(os.path.join(fd, f), cell_dir, None if no_image is None else no_image.get(stem, []),
+                        (build_refused or {}).get(stem))
         viol += v
         infos[f] = info
     return viol, infos
