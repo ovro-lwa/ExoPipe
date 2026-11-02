@@ -14,12 +14,15 @@ the product (it writes its verdict into the product directory, so it cannot be a
   jupiter_refcheck          integrate/inputs/ref_offsets_<cell>.csv            window_summary tie columns recomputed from ref_offsets
   jupiter_metrics           integrate/<cell>/CONTENT_TEST_metrics.txt          verdict, metrics_<label>.json per root, freshness
   jupiter_site_render       site/<cell>/renders/<label>.r<UTC>/MANIFEST.sha256 members re-hashed; RENDER_TEST.txt ALL-PASS
-  jupiter_site_summary      site/<cell>/site.json                              every live render's RENDER_TEST.txt ALL-PASS, T8
-                                                                               freshness PASS, recorded in site.json; the stated
-                                                                               occurrence failures = the accepted set (production's
-                                                                               convention since 2026-10-25/28); or the 2026-10-06
-                                                                               flow's site/<cell>/CONTENT_TEST.txt: ALL-PASS (except
-                                                                               exactly the accepted failures)
+  jupiter_site_summary      site/<cell>/site.json                              the live site (production's convention since
+                                                                               2026-10-25/28): roots SITE_ROOTS of SITE_GENERATION,
+                                                                               SITE_VERSION; each live render's RENDER_TEST.txt
+                                                                               ALL-PASS (T8 PASS) recorded in site.json; products
+                                                                               and metric file unchanged since the render; stated
+                                                                               occurrence failures = the accepted set. Or the
+                                                                               2026-10-06 flow's site/<cell>/CONTENT_TEST.txt:
+                                                                               ALL-PASS (except exactly the accepted failures),
+                                                                               not older than a site.json beside it, no v3 site
   jupiter_render_quarantine site/<cell>/<qdir>/MANIFEST.sha256                 moved files re-hashed (recorded deletions excepted)
   jupiter_occurrence        occurrence/validation/content_test_results.json    failing gating set = the accepted waiver, exactly
   jupiter_disclosure        integrate/occurrence_disclosed_failures.json       the waiver record = the live results
@@ -290,26 +293,43 @@ def render_manifest(path, **ctx):
     return ok, n, f'{n} members; missing {_short(missing) or 0}; differ {_short(differ) or 0}; verdict {last}'
 
 
+def _site_version(S):
+    """The highest site_version a site record carries (site.json and its roots; 0 when none: the 2026-10-06 flow writes 2 per
+    root and none for the site), or None when one does not parse."""
+    try:
+        return max([int(S.get('site_version') or 0)] + [int(v.get('site_version') or 0) for v in S.get('variants') or []])
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def _site_record(path):
-    """site/<cell>/site.json: the live render of every root and its RENDER_TEST.txt (summary_valid, first convention)."""
-    V, O = _C().jupiter_v2, _C().jupiter_occurrence
+    """site/<cell>/site.json: the live site of the cell, its roots and their live renders (summary_valid, first convention)."""
+    J, V, O = _C().jupiter, _C().jupiter_v2, _C().jupiter_occurrence
     sc = os.path.dirname(os.path.abspath(path))
     try:
         S = json.load(open(path))
     except (OSError, ValueError) as e:
         return False, None, f'site.json unreadable ({type(e).__name__}: {e})'
+    cell = S.get('cell') or os.path.basename(sc)
     roots = S.get('variants') or []
     labels = [v.get('label') for v in roots]
     acc = sorted(O.ACCEPTED_FAILURES)
-    probs, live, occ_states = [], [], set()
-    if not roots:
-        probs.append('site.json lists no root')
+    probs, live, occ_states, n_prod, n_hash = [], [], set(), 0, 0
+    if labels != list(V.SITE_ROOTS):
+        probs.append(f'roots {labels}, the live site shows {list(V.SITE_ROOTS)} (jupiter_v2.SITE_ROOTS: V2 only, Gregg 2026-10-25)')
     if S.get('default') != V.RULED_ROOT or labels[:1] != [V.RULED_ROOT]:
         probs.append(f'default root {S.get("default")}, order {labels}: the ruled root {V.RULED_ROOT} must be the default and first')
+    if S.get('site_version') != V.SITE_VERSION:
+        probs.append(f'site_version {S.get("site_version")}, the live site\'s is {V.SITE_VERSION} (jupiter_v2.SITE_VERSION)')
     if S.get('preview_failed'):
         probs.append(f'published around its content tests: {S["preview_failed"]}')
     for v in roots:
         lab = v.get('label') or '?'
+        if v.get('site_version') != V.SITE_VERSION:
+            probs.append(f'{lab}: rendered with site_version {v.get("site_version")}, the live site\'s is {V.SITE_VERSION}')
+        want = os.path.join(J.ROOT, V.SITE_GENERATION, 'derived', lab)
+        if not v.get('root') or os.path.realpath(str(v['root'])) != os.path.realpath(want):
+            probs.append(f'{lab}: renders the product root {v.get("root")}, the live generation\'s is {want} (jupiter_v2.SITE_GENERATION)')
         rd = os.path.join(sc, 'renders', f'{lab}.r{v.get("render_id")}')
         link = os.path.join(sc, lab)
         if not os.path.islink(link) or not os.path.isdir(rd) or os.path.realpath(link) != os.path.realpath(rd):
@@ -346,10 +366,41 @@ def _site_record(path):
                  and os.path.getmtime(os.path.join(rd, e)) > t + 2]
         if newer:
             probs.append(f'{lab}: newer than its RENDER_TEST.txt: {_short(newer)}')
+        # freshness re-checked here, not only read from T8: the product files the render recorded (render_info.json 'products':
+        # file -> mtime, jsite_lib.product_files) against the root now, and the metric file it shows against its sha256
+        try:
+            ri = json.load(open(os.path.join(rd, 'render_info.json')))
+        except (OSError, ValueError) as e:
+            probs.append(f'{lab}: render_info.json unreadable ({type(e).__name__})')
+            continue
+        if (os.path.realpath(str(ri.get('root'))) != os.path.realpath(str(v.get('root'))) or ri.get('render_id') != v.get('render_id')
+                or ri.get('site_version') != v.get('site_version')):
+            probs.append(f'{lab}: render_info.json (root {ri.get("root")}, render {ri.get("render_id")}, site_version '
+                         f'{ri.get("site_version")}) differs from site.json')
+        rec = ri.get('products') if isinstance(ri.get('products'), dict) else {}
+        cdir = os.path.join(str(ri.get('root')), cell)
+        now = {os.path.basename(p): os.path.getmtime(p) for p in glob.glob(os.path.join(cdir, '*')) if os.path.isfile(p)}
+        changed = sorted(f for f, m in rec.items() if now.get(f) != m)
+        added = sorted(set(now) - set(rec))
+        n_prod += len(rec)
+        if not rec or changed or added:
+            probs.append(f'{lab}: product files of {cdir} since the render: {len(rec)} recorded, changed or gone '
+                         f'{_short(changed) or 0}, new {_short(added) or 0}')
+        for k in ('reflect', 'metrics'):
+            m = ri.get(k)
+            if not isinstance(m, dict) or not m.get('path'):
+                if k == 'reflect' and (v.get('site_version') or 0) >= 3:
+                    probs.append(f'{lab}: a site v3 render without its reflection-metric record')
+                continue
+            n_hash += 1
+            if not os.path.isfile(m['path']) or _sha256_file(m['path']) != m.get('sha256'):
+                probs.append(f'{lab}: the {k} file {m["path"]} is not the one rendered (sha256 {str(m.get("sha256"))[:12]} recorded)')
     if probs:
         return False, len(roots), '; '.join(probs[:5]) + (f' (+{len(probs) - 5})' if len(probs) > 5 else '')
-    return True, len(roots), (f'{len(roots)} root(s) {labels}: live render(s) {", ".join(live)} - RENDER_TEST ALL-PASS, T8 '
-                              f'PASS, recorded in site.json; occurrence {"; ".join(sorted(occ_states))} (accepted set {acc})')
+    return True, len(roots), (f'{len(roots)} root(s) {labels} of {V.SITE_GENERATION}, site_version {V.SITE_VERSION}: live '
+                              f'render(s) {", ".join(live)} - RENDER_TEST ALL-PASS, T8 PASS, recorded in site.json; {n_prod} product '
+                              f'files unchanged since the render, {n_hash} metric file(s) = their recorded sha256; occurrence '
+                              f'{"; ".join(sorted(occ_states))} (accepted set {acc})')
 
 
 @content_test('jupiter_site_summary')
@@ -359,17 +410,21 @@ def summary_valid(path, **ctx):
     site/<cell>/site.json - production since 2026-10-25 ('V2 only': the cell summary file was quarantined with the comparison
     roots) and the 2026-10-28 site rebuild: no cell summary is written; each published render carries its own RENDER_TEST.txt
     (jsite_test.py, T1-T10; the renderer publishes only on ALL-PASS) and site.json names the live render of every root.
-    Checked: site.json's default root = jupiter_v2.RULED_ROOT and listed first; per root, the <label> link resolves to
-    renders/<label>.r<render_id>; its RENDER_TEST.txt ends ALL-PASS with no line ending -> FAIL, and its T8 line (the products
-    unchanged since the render - the freshness of this convention) ends -> PASS; site.json's 'test' = that last line; nothing
+    Checked: the roots are jupiter_v2.SITE_ROOTS (V2 only) with the ruled root the default and first, site_version
+    jupiter_v2.SITE_VERSION for the site and every root, each root rendering <jupiter.ROOT>/<SITE_GENERATION>/derived/<label>;
+    per root, the <label> link resolves to renders/<label>.r<render_id>; its RENDER_TEST.txt ends ALL-PASS with no line ending
+    -> FAIL, and its T8 line (the products unchanged since the render) ends -> PASS; site.json's 'test' = that last line; nothing
     published around the tests (preview_failed empty: jsite_publish_preview.py states failures instead of refusing); the
     occurrence failures the root states (limit occ_failures) = exactly jupiter_occurrence.ACCEPTED_FAILURES; no entry of the
     render's top level (tier directories included, MANIFEST.sha256 excepted: written after the test) newer than its
-    RENDER_TEST.txt. The render's files themselves are re-hashed by jupiter_site_render.
+    RENDER_TEST.txt; render_info.json agrees with site.json, every product file it recorded has its recorded mtime and none
+    was added (T8 re-checked, not trusted), and the metric file it shows (reflect, or metrics in the 2026-10-06 flow) has its
+    recorded sha256. The render's own files are re-hashed by jupiter_site_render.
 
     site/<cell>/CONTENT_TEST.txt - jint_content_summary.py, the 2026-10-06 flow's summary that `v2 --stages summary` still runs
     in place: FRESHNESS -> PASS and the last line ALL-PASS, or 'ALL-PASS EXCEPT THE ACCEPTED OCCURRENCE FAILURES' with exactly
-    the accepted set (jupiter_occurrence.ACCEPTED_FAILURES) named."""
+    the accepted set (jupiter_occurrence.ACCEPTED_FAILURES) named; and it must describe the site beside it: a site.json there
+    that is a site v3 record (site_version above 2) or newer than the summary fails it."""
     if os.path.basename(path) == 'site.json':
         return _site_record(path)
     ok, last, lines = _verdict(path, accept_prefix=True)
@@ -381,6 +436,17 @@ def summary_valid(path, **ctx):
         named = tuple(x.strip() for x in m.group(1).split(',')) if m else ()
         if sorted(named) != sorted(acc):
             return False, None, f'summary names {named}, accepted {acc}'
+    sj = os.path.join(os.path.dirname(os.path.abspath(path)), 'site.json')
+    if os.path.exists(sj):
+        try:
+            sv = _site_version(json.load(open(sj)))
+        except (OSError, ValueError):
+            sv = None
+        if sv is None or sv > 2:
+            return False, None, (f'the site.json beside it is {"unreadable" if sv is None else f"a site_version {sv} record"} - '
+                                 f'the live convention since 2026-10-25/28 (no cell summary): this summary does not describe it')
+        if os.path.getmtime(sj) > os.path.getmtime(path) + 2:
+            return False, None, 'the site.json beside it is newer: the site changed after this summary'
     return ok and fresh, None, f'{last[:120]}; freshness {"PASS" if fresh else "MISSING/FAIL"}'
 
 

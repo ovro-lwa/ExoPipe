@@ -29,7 +29,8 @@ from exopipe.phase3.config import _Section
 # 2026-11-02 at its HEAD e24cc9a (2026-10-28): a git repository since 2026-10-25 (baseline f6a514c = the files the 2026-10-13
 # values were read from); every V2 file:line below is at e24cc9a, and each run still records the sha256 of every loaded file.
 # The V2 changes of 2026-10-25..28 carried here: jupiter.DEEP_WEIGHTS (a87b30c, the frozen deep records with the membership
-# vetoes), JUPV2_GEN in jupiter.ENV_FORBIDDEN (564e114, jsite_lib.py:22), the line citations. Not carried: the
+# vetoes), JUPV2_GEN in jupiter.ENV_FORBIDDEN (564e114, jsite_lib.py:22), jupiter_v2.PAIR_TOL_S (f2df314), the line citations.
+# The live site's state: jupiter_v2.SITE_* (checked by jupiter_site_summary; gate J28 keeps the v2 action out of it). Not carried: the
 # generation rebuild (rebuild/run_cell_v2.sh, 24 nights in v2/gen_20261025) and site v3 (rebuild/run_site_v3.sh; the live
 # site is V2 only, published with jsite_publish_preview.py --live) - `exopipe3 jupiter v2` still runs the 2026-10-06 flow.
 # =====================================================================================================================
@@ -134,6 +135,9 @@ class jupiter_v2(_Section):
     V3_BEAMS = 2.0                                               # x BMAJ_I, no mask inside this disk (comparison root); MIRROR jupv2_masters.py:96
     ARTEFACT_ANNULI_DEG = ((0.2, 1.0), (1.0, 3.0))               # deg around Jupiter, master metrics; MIRROR jupv2_masters.py:101-102 (ANN_IN, ANN_OUT)
     INTEGRATION_S = 10.03102041                                  # s, one 10-s integration (pairing by DATE-OBS + half); IMPLEMENTED-Q1-V2-STACKS-PAIRED-BY-INTEGRATION-1229 (2012); MIRROR jupv2_masters.py:758, jblue_build.py:99, jsite_lib.py:383
+    PAIR_TOL_S = 1.0                                             # s: the frames of ONE integration = DATE-OBS within 1 s (wideband 10-s rows and the Blue product
+    #   group member frames by their own integration since V2 f2df314; production phase3_snapshot_group_search.py:68); MIRROR
+    #   jupv2_masters.py:759 and jblue_build.py:100 (both compared)
     MASTERS_STAGES = ('select', 'raw', 'masters', 'resid', 'fit', 'red10', 'metrics', 'mastersum', 'test', 'figs', 'bright', 'imprints')   # masters/run_all.sh:12 (+ bright_ratio.py, imprint_contrast.py, run by hand)
     MASTERS_NPROC = {'raw': 10, 'resid': 14, 'fit': 20, 'red10': 10, 'masters': 12}   # masters/run_all.sh:21-24; jupv2_masters.py:2211 default 12
     MASTERS_TEST_FAILURE_CONTINUES = True                        # run_all.sh:19 runs figs after a failed test; the unit is still REFUSED (B-30 default)
@@ -161,10 +165,17 @@ class jupiter_v2(_Section):
         'V2': "V2 = the RULED subtraction Master (Gregg 2026-10-06: 'Go with V2, the 4-beam Master'): nights whose Jupiter lies > 4 BMAJ from tonight's, no masks; its nights per band in the limits; 10 min = arm A without x2 and the one-night 18-32 MHz Master (2025-10-14) - both RULED 2026-10-07 (decision 1, 'Your rec accepted').",
         'V2b': 'V2b = nights with Jupiter > 3 BMAJ, no masks (admits 2025-01-11 at 27 MHz); 10 min = arm A (no x2, the ruled 10-min definition). Comparison root: V2 is the ruled Master (Gregg 2026-10-06).',
         'V3': "V3 = V0's nights and masks, no mask within 2 BMAJ of tonight's Jupiter (= V1 there); 10 min = arm A (no x2, the ruled 10-min definition). Comparison root: V2 is the ruled Master (Gregg 2026-10-06)."}
+    # ---- the LIVE site (production since 2026-10-25/28; class jupiter_site_summary on site/<cell>/site.json, gate J28)
+    SITE_ROOTS = ('V2',)                                         # the live site's roots, site.json order: V2 only - Gregg 2026-10-25 'yes, remove the
+    #   alternates and show only V2' (JOVIAN_TASK_BRIEF_20261025.md section 1; the alternates moved to v2/quarantine_superseded_20261025)
+    SITE_VERSION = 3                                             # the live renders' mode: jsite_render.py --site-v3 (V2 code 564e114; site.json site_version)
+    SITE_GENERATION = 'v2/gen_20261025'                          # under jupiter.ROOT: the generation whose <gen>/derived/<label> roots the live renders show
+    #   (rebuild/run_cell_v2.sh 2026-10-25/26, 24 nights); a new generation changes it by a commit
     SCRATCH_ROOT = '/fast/gh/main/scratch'                       # production node-local V2 scratch on lwacalim08 (jupv2_masters.py:87, jblue_build.py:46, jsite_render.py:73, jint_content_summary.py:41, jsite_crop_archive.py:104, build_maps.py:39); --work replaces it
     SCRATCH = {'masters': 'jupv2_masters', 'anchor': 'jupv2_anchor', 'site': 'jupv2_site', 'integrate': 'jupv2_integrate',
                'provenance': 'jupv2_provenance', 'occurrence': 'jupv2_occurrence', 'refcheck': 'jupref_20241229'}   # sub-directories of the scratch root
-    PROTECTED_KEYS = ('CELLS_SUPPORTED', 'ROOT_LABELS', 'MASTERS_STAGES', 'REF_INPUTS', 'REFCHECK_SCRIPT', 'ROOT_NOTES', 'SCRATCH')
+    PROTECTED_KEYS = ('CELLS_SUPPORTED', 'ROOT_LABELS', 'MASTERS_STAGES', 'REF_INPUTS', 'REFCHECK_SCRIPT', 'ROOT_NOTES', 'SCRATCH',
+                      'SITE_ROOTS', 'SITE_VERSION', 'SITE_GENERATION')
     RULED = {'RULED_ROOT': ('RULING-JUPITER-MASTER-V2-4BEAM', 'IMPLEMENTED-RULING-JUPITER-MASTER-V2-4BEAM-SITE-DEFAULT'),
              'ROOT_ORDER': 'IMPLEMENTED-RULING-JUPITER-MASTER-V2-4BEAM-SITE-DEFAULT',
              'FAR_BEAMS': 'RULING-JUPITER-MASTER-V2-4BEAM',
