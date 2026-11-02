@@ -26,6 +26,7 @@ import traceback
 
 from exopipe.phase3.core import record
 from exopipe.phase3.core.record import NoInput, Refusal
+from exopipe.phase3.lib.masters import constituents
 from exopipe.phase3.lib.masters.pb_qa import pb_qa_gate, pb_qa_inputs, pb_qa_missing   # noqa: F401 (B-30; also the dewarp apply)
 
 STAGE_ORDER = ('stage-in', 'build', 'pbmaps', 'vclean', 'fluxscale', 'verify', 'sources', 'variants', 'build-stats',
@@ -585,8 +586,43 @@ def build(cell, args, run, out, ran_now):
         s2 = os.path.join(cell_dir, 'coadd_final', _admit().SCALE2)   # D-ADMIT: the second-pass DCs and the guard's median
         if os.path.exists(s2):
             u.add_output(s2, 'scale2_record', cell=cell)
-        for p, cls in _build_outputs(cell_dir, sc):
-            u.add_output(p, cls, cell=cell)
+        register_build_outputs(u, cell, cell_dir, sc)
+
+
+def register_build_outputs(u, cell, cell_dir, sc):
+    """Every product the build wrote, with its class (its content tests run now). The master outputs carry the build's record
+    of member nights without a Phase 2 image (record_missing_images): their content test master.members_equal_constituents
+    compares each master's constituents with the recorded members, kept with the output for --resume and verify."""
+    noimg = record_missing_images(u, cell_dir, sc)
+    for p, cls in _build_outputs(cell_dir, sc):
+        ctx = {'cell': cell}
+        if cls == 'master':
+            ctx['no_image'] = noimg.get(constituents.stem_of(p)[0], [])
+        u.add_output(p, cls, **ctx)
+
+
+def record_missing_images(u, cell_dir, sc):
+    """A MEMBER NIGHT WITH NO PHASE 2 IMAGE OF A PRODUCT IS A RECORDED REFUSAL, never a silent drop (FOLD_IN 2026-10-26, the
+    deep chat's 'SILENT DROP' findings): the in-place final stage leaves such a night out of the V master or an I variant with
+    no record (coadd.run_final_lst_freq: `if not img: continue`). After the co-add the build looks the member nights' images up
+    again with the co-add's finder choice (core.inputs.product_image; lib/masters/constituents.py) and records the nights
+    without one in its unit record (meta 'no_image' and one note per master); the master outputs carry the list to the content
+    test master.members_equal_constituents, which compares every master's constituents with the recorded members. A member
+    night without a readable Science directory cannot be judged: refused (so is a stale finder copy). Returns {stem: [nights]}."""
+    try:
+        noimg, unjudged = constituents.missing_images_cell(cell_dir, sc)
+    except RuntimeError as e:
+        u.refuse(str(e))
+    bad = {k: v for k, v in unjudged.items() if v}
+    if bad:
+        u.refuse(f'member night(s) without a readable Science directory in weights.csv, so their V / I-variant images cannot '
+                 f'be looked up: {bad}')
+    u.meta['no_image'] = {k: v for k, v in sorted(noimg.items()) if v}
+    for stem in constituents.NON_SURVEY:
+        if noimg.get(stem):
+            u.note(f'NO IMAGE (recorded refusal): {stem}_{sc} leaves out member night(s) {noimg[stem]} - no Phase 2 '
+                   f'{constituents.PRODUCT_OF[stem]} image (the co-add finds none; lib/masters/constituents.py)')
+    return noimg
 
 
 def flow_record_path(out, cell):
@@ -977,9 +1013,13 @@ def variants(cell, args, run, out, ran_now):
                 res = co.rebuild_variants_from_record(lst, freq, variants=vks)
             except RuntimeError as e:
                 u.refuse(str(e)[:1500])
+        # every member night the variant-only rebuild left out, with its reason (core/record); the rebuild also stamps each
+        # in the variant's HISTORY ('VARIANT-GATE refused <date>: ... (no <variant> input)'), B-03 refusals excepted
+        # (refusals_input.csv) - so no further no-image night is recorded for its outputs (no_image=[])
+        u.meta['variant_refused'] = {vk: [[d, why] for d, why in refused] for vk, (_p, _n, refused) in sorted(res.items())}
         for vk, (p, n, refused) in sorted(res.items()):
             if p:
-                u.add_output(p, 'master', cell=cell)
+                u.add_output(p, 'master', cell=cell, no_image=[])
             else:
                 u.note(f'{vk}: NOT WRITTEN ({n} constituents < MIN_DATES_FOR_VARIANT; {len(refused)} refused)')
 

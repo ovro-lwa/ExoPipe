@@ -4,7 +4,8 @@ tests_snapshot.py (tier agents). Every test checks CONTENT (pixels, rows, header
 sibling products), never only presence. A test returns (passed, value, detail).
 
 Classes (path = the file the step wrote; ctx from UnitRecord.add_output may add cell=, lst=, scope=):
-  master             a co-add master/variant (coadd_final/<S>_deep_<taper>_<rob>[_shflux]_<scope>.fits)
+  master             a co-add master/variant (coadd_final/<S>_deep_<taper>_<rob>[_shflux]_<scope>.fits); its constituents equal
+                     the cell's recorded members for its product (members_equal_constituents; ctx no_image= the build's record)
   reference_master   stage-in's native un-warped reference (coadd_final_ref/{I_deep_Taper_R075,V_deep_Taper_R0}_<scope>.fits)
   loo_master         coadd_final/loo/<date>_<S>_loo_<taper>_<rob>[_shflux]_<scope>.fits
   coadd_epoch        subtracted/<date>_<S>_{epoch,sub,clean}[_shflux]_<scope>.fits
@@ -356,6 +357,25 @@ def all_variants_present(path, **ctx):
                 wrong.append(v)
         return (not miss and not wrong), 5 - len(miss), f'missing {miss}; other COADDOP {wrong}'
     return _cached(('variants',) + _dirstate(loc['final']) + (loc['token'],), f)
+
+
+@content_test('master')
+def members_equal_constituents(path, no_image=None, **ctx):
+    """THE MEMBERSHIP CHECK AGAINST THE CONSTITUENT LIST (FOLD_IN 2026-10-26 'SILENT DROP', lib/masters/constituents.py): the
+    master's COADD constituents (and NCOADD) equal the cell's recorded members for its product - weights.csv in_master 1, minus
+    (V, I variants) the nights recorded as refused: B-03 refusals, VARIANT-GATE HISTORY lines, and the member nights with no
+    Phase 2 image of the product (``no_image``: the build's record, kept with the output; without it they are found again in
+    the Phase 2 tree). A night held although refused or not a member, and a member left out with no recorded reason, fail."""
+    from exopipe.phase3.lib.masters import constituents as CN
+    loc = locate(path, **ctx)
+    viol, info = CN.check(path, loc['cell_dir'], no_image=no_image)
+    if viol:
+        return False, len(viol), ' | '.join(viol[:3])[:600]
+    ref = info.get('refused') or {}
+    return True, info.get('constituents'), (f"{info.get('constituents')} constituents = the {info.get('expected')} recorded "
+                                           f"members ({info.get('members')} in weights.csv"
+                                           + (f"; refused {ref}" if ref else '') + ')'
+                                           + (f"; no-image nights {info.get('no_image_source')}" if 'no_image' in info else ''))
 
 
 # =====================================================================================================================
