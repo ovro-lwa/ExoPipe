@@ -3,7 +3,7 @@ the in-place call context of the production install module, the action log, the 
 
 During the refactor window the install itself is the production module phase3_install.py, moved by pure git mv to
 exopipe/phase3/lib/install/install.py ("PI") and called IN PLACE (DESIGN 11.1). PI reads module globals (ROOT,
-INSTALL_ROUND, WQ, QROOT_NAME, RECORD, FREEZE_MARKER, CELL_FILES, CELL_TOP, CELL_DIRS) and environment variables
+INSTALL_ROUND, WQ, QROOT_NAME, RECORD, FREEZE_MARKER, CELL_FILES, CELL_TOP, CELL_DIRS, MASTER_HELD_18MHZ) and environment variables
 (P3_ARCHIVE_RUN, P3_ARCHIVE_ROOT, P3_INSTALL_FREE_FLOOR_GB, P3_COADD_ROOT, read at call time by PI and
 coadd_full_pipeline); ``pi_context`` sets them from config for one call and restores them afterwards. These are the
 only environment writes of the step; each call's settings are recorded in the unit's notes.
@@ -273,13 +273,27 @@ def pi_module():
     return PI
 
 
+MASTER_HELD_18 = ('keep', 'refuse')     # the values of install.MASTER_HELD_18MHZ (as search_detect.MASTER_HELD_18MHZ's)
+
+
+def master_held_18():
+    """install.MASTER_HELD_18MHZ, checked: 'keep' (ruled) keeps a master night held only for its excluded 18 MHz in every
+    membership check of the install (G-MEM inside PI, gate V, installed_cell.membership - lib/masters/admit.verify keep_18);
+    'refuse' = production (strict). Any other value REFUSES: a misspelt value never silently picks one."""
+    v = cfg().install.MASTER_HELD_18MHZ
+    if v not in MASTER_HELD_18:
+        raise Refusal(f'install.MASTER_HELD_18MHZ = {v!r} is not one of {MASTER_HELD_18}')
+    return v
+
+
 @contextlib.contextmanager
 def pi_context(PI, roots, rnd=None):
     """Set PI's module globals and the environment it and coadd_full_pipeline read, for one call; restore afterwards.
     Yields the settings (recorded by the caller)."""
     C = cfg().install
     g = {'ROOT': roots.working, 'RECORD': roots.record_csv, 'FREEZE_MARKER': C.FREEZE_MARKER,
-         'CELL_FILES': tuple(C.CELL_FILES), 'CELL_TOP': tuple(C.CELL_TOP), 'CELL_DIRS': tuple(C.CELL_DIRS)}
+         'CELL_FILES': tuple(C.CELL_FILES), 'CELL_TOP': tuple(C.CELL_TOP), 'CELL_DIRS': tuple(C.CELL_DIRS),
+         'MASTER_HELD_18MHZ': master_held_18()}             # WAVE2 18 MHz exception at G-MEM (PI's text: production's 'refuse')
     if rnd:
         g.update(INSTALL_ROUND=rnd, WQ=roots.wq(rnd), QROOT_NAME=roots.aq_name(rnd))
     env = {'P3_ARCHIVE_RUN': roots.run, 'P3_ARCHIVE_ROOT': roots.archive, 'P3_INSTALL_FREE_FLOOR_GB': repr(float(C.FREE_FLOOR_GB)),

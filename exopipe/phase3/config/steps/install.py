@@ -49,6 +49,16 @@ class install(_Section):
     # ---- gates
     FREEZE_MARKER = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261004/SNAPSHOT_FREEZE_CONFIRMED'  # PROTECTED; G-1, phase3_install.py:68, :199-200; R-INSTALL-GATE-AND-SEARCH-PATCH-PATH (1789), GATE-SNAPSHOT-FREEZE-CONFIRMED-WRITTEN (1798)
     REQUIRE_FREEZE_MARKER = True                          # B-14: True = today (marker AND link scan); False = B-14 option (a), effective only after absorption (PI checks the marker unconditionally) and Gregg's answer
+    # THE 18 MHz EXCEPTION in every membership check of the install (G-MEM before staging, V after the install, the content test
+    # installed_cell.membership): 'keep' (ruled) - a master night whose ONLY finding is that its Red / Full image holds the night's
+    # excluded 18 MHz is reported and kept until the master's next rebuild, never a violation: lib/masters/admit.verify(keep_18=True),
+    # the helper of the deep search's gate E3 (refactor f5bfaf0; search_detect.MASTER_HELD_18MHZ is the search's same choice).
+    # Gregg 2026-10-23: "No! The one exception to the exclusion rule is 18 MHz"; 2026-10-17: "Red can be built without 18 MHz ... the
+    # only allowed case where wideband data can be built without a full 5-subband set" (Full likewise), "enforce going forward, no
+    # rebuild now" - the co-add refuses such a night in every new build (coadd.admit_night), so only masters built before 2026-10-17
+    # hold one (e.g. 12h Red 2025-01-08). 'refuse' = production: phase3_install.py:231 (_MB.verify) and install_cell.sh:23
+    # (membership verify) are strict. Set on PI for the call (PI's module text keeps 'refuse'); any other value refuses the step
+    MASTER_HELD_18MHZ = 'keep'
     SNAPSHOT_MASTERS_LINK_TREE = '/lustre/pipeline/exopipe/phase3/snapshot_masters'  # PROTECTED pinned input; PI literal; G-1b, phase3_install.py:203-207; FREEZE-SNAPSHOT-MASTERS-GEN4 (1786)
     FREE_FLOOR_GB = 40.0                                  # GB (1e9 bytes) left free on the working-tree filesystem after staging; install_cell.sh:11 (P3_INSTALL_FREE_FLOOR_GB=40; code default 0, phase3_install.py:280); APPROVED-RESUME-SPACE-D6-REVISION (1848)
     STAGING_SPACE_FACTOR = 1.05                           # PI literal; x the generation's bytes needed on the working-tree filesystem; phase3_install.py:279
@@ -81,7 +91,10 @@ class install(_Section):
              'LANES': 'APPROVED-RESUME-SPACE-D6-REVISION',
              'REQUIRE_FREEZE_MARKER': ('GATE-SNAPSHOT-FREEZE-CONFIRMED-WRITTEN', 'R-INSTALL-GATE-AND-SEARCH-PATCH-PATH'),
              'OMIT_VCLEAN_PATTERN': 'R-VCLEAN-REPAIR-DEFERRED',
-             'CELL_DIRS': 'FINDING-GEN4-FLEET-DID-NOT-SHIP-FLOWS-BACK-RECOVERY-PLANNED'}
+             'CELL_DIRS': 'FINDING-GEN4-FLEET-DID-NOT-SHIP-FLOWS-BACK-RECOVERY-PLANNED',
+             'MASTER_HELD_18MHZ': ('CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023',
+                                'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4', 'R-GREGG-20261017-FULL-ALLOWED-WITHOUT-18MHZ',
+                                'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD')}
 
 
 class install_enqueue(_Section):

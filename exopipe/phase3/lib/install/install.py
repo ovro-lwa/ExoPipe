@@ -66,6 +66,8 @@ SCREEN_COLS = ['lst', 'scope', 'applied', 'status', 'n_anchors', 'vlssr_med_befo
 # 2026-09-27..10-01 archive replacements). No install until the other chat's frozen copy is in place and its checks passed,
 # as relayed by Gregg: this file holds his words and the time (written by the deep session, CLAUDE.md 3).
 FREEZE_MARKER = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261004/SNAPSHOT_FREEZE_CONFIRMED'
+MASTER_HELD_18MHZ = 'refuse'   # WAVE2 18 MHz exception: 'keep' keeps a night held only for its excluded 18 MHz at G-MEM (admit.verify
+#                                keep_18); production's G-MEM is strict (this text); exopipe3 install sets install.MASTER_HELD_18MHZ for the call
 
 
 def md5(p):
@@ -229,7 +231,7 @@ def _gates(cell, gen, kind, rebuild_root=None):
     from exopipe.phase3.lib.masters import membership as _MB
     from exopipe.phase3.lib.masters import admit as _ADV     # WAVE2 D-ADMIT: a night admitted into the master is not a violation
     _mcell = rebuild_root.rstrip('/') if (kind == 'rebuild' or rebuild_root) else f'{ROOT}/{cell}'   # --rebuild-root IS the cell's rebuild dir
-    _mv = _ADV.verify(_mcell)[0]                              # WAVE2 D-ADMIT (production: _MB.verify(_mcell))
+    _mv = _ADV.verify(_mcell, keep_18=MASTER_HELD_18MHZ == 'keep')[0]   # WAVE2 D-ADMIT, 18 MHz exception (production: _MB.verify(_mcell))
     if _mv:
         raise RuntimeError(f'{cell}: master membership violates the rulings ({len(_mv)}): ' + ' | '.join(_mv[:5]) + ' - REFUSING')
     # G-PRODUCTS (2026-10-07): what a master must carry - the ruled flux scale in the pixels, both PB maps, the cubic RBF dewarp on an

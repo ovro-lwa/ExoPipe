@@ -605,7 +605,8 @@ def verify_cell(u, cdir, gates, echo):
     """Stage verify: the installed cell against every membership and product ruling (install_cell.sh:23-24 =
     `python -m exopipe.phase3.membership verify <cell>`, membership.py:317-329)."""
     from exopipe.phase3.lib.masters import admit as AD, membership as MB
-    v, rep = AD.verify(cdir)                           # D-ADMIT: an admitted night is reported, not a violation
+    v, rep = AD.verify(cdir, keep_18=SC.master_held_18() == 'keep')   # D-ADMIT: an admitted night is reported, not a violation;
+    #                                                 the 18 MHz exception (install.MASTER_HELD_18MHZ): so is a night held only for its excluded 18 MHz
     v = v + MB.verify_products(cdir)
     text = (f'MEMBERSHIP+PRODUCTS {"PASS" if not v else "FAIL"} {os.path.basename(cdir)}' + ''.join('\n  ' + x for x in v)
             + ''.join('\n  ' + x for x in rep))

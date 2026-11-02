@@ -19,6 +19,9 @@ out-of-master table and the archived screen record are read by the in-place memb
   e2e E  enqueue into a mirror of a synthetic live search state: markers/parks retired, both Stokes assigned, flow-holder
          row, ready.txt, request + re-run items pass their tests; a second enqueue adds nothing; recover on a finished
          install refuses
+  e2e P  the 18 MHz exception (install.MASTER_HELD_18MHZ): the real 12h_Red records hold a master night whose only membership
+         finding is that its Red image holds the night's excluded 18 MHz (2025-01-08). A-F run under the ruled default (the
+         night is kept and reported); under production's value (the parity file's) the install is refused at G-MEM
 
 The two snapshot_masters link scans (912 links, ~40 s each on Lustre) are stubbed in the e2e runs; the scan itself is
 tested on a synthetic tree (unit). Run: python tests/test_install.py   (about a minute)
@@ -41,6 +44,7 @@ os.environ.setdefault('EXOPIPE3_SITE', '/lustre/gh/main/exopipe_ops/exopipe3_sit
 ROOT = f'/tmp/exopipe3_tests_install/{os.getpid()}'
 REAL_GEN = '/lustre/gh/main/phase3/mdewarp_rbf_gen_20261007/12h_Red/gen_mdewarp_rbf'
 REAL_CELL = '/data07/gh/phase3/coadd_sb/12h_Red'
+PARITY = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
 CELL, LST, SCOPE = '12h_Red', '12h', 'Red'
 N = 128
 RESULTS = []
@@ -385,6 +389,53 @@ def test_review_fixes():
     ok('verify rule: a verify after the failed attempt passes', SE._verify_passed(rr, '12h_Red') == (True, '12h_Red.verify'))
     put('12h_Red.recover', 'done', '2026-10-13T05:00:00Z', v=None)
     ok('verify rule: a recover after the last verify needs a new verify', SE._verify_passed(rr, '12h_Red')[0] is False)
+    test_18mhz_exception_units()
+
+
+def test_18mhz_exception_units():
+    """The 18 MHz exception (Gregg 2026-10-23 "No! The one exception to the exclusion rule is 18 MHz"; 2026-10-17 "enforce
+    going forward, no rebuild now"): install.MASTER_HELD_18MHZ ruled 'keep'; the parity file holds production's 'refuse';
+    PI's module text keeps 'refuse' and pi_context sets the config value for one call only; another value refuses; the helper
+    is the deep search's (lib/masters/admit.verify keep_18): only a night whose ONE finding is its held excluded 18 MHz is kept."""
+    import re
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.install import steps_common as SC
+    from exopipe.phase3.lib.masters import admit as AD
+    CFG.reset()
+    ok('18 MHz exception: install.MASTER_HELD_18MHZ defaults to the ruled \'keep\' and names its rulings',
+       CFG.install.MASTER_HELD_18MHZ == 'keep' and 'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4'
+       in CFG.ruled('install.MASTER_HELD_18MHZ'), repr(CFG.ruled('install.MASTER_HELD_18MHZ')))
+    m = re.search(r'^install\.MASTER_HELD_18MHZ = (\S+)\s*$', open(PARITY).read(), re.M)
+    ok('18 MHz exception: the parity file sets production\'s strict value (install.MASTER_HELD_18MHZ = \'refuse\')',
+       m and m.group(1) == "'refuse'", m and m.group(0))
+    PI = SC.pi_module()
+    old = CFG.install.MASTER_HELD_18MHZ
+    for val in ('keep', 'refuse', 'maybe'):
+        CFG.install.MASTER_HELD_18MHZ = val
+        inside, st, err = None, {}, None
+        try:
+            with SC.pi_context(PI, SC.Roots(f'{ROOT}/unit/pic', True)) as st:
+                inside = PI.MASTER_HELD_18MHZ
+        except Refusal as e:
+            err = str(e)
+        finally:
+            CFG.install.MASTER_HELD_18MHZ = old
+        if val == 'maybe':
+            ok('18 MHz exception: another value of install.MASTER_HELD_18MHZ refuses (PI untouched)',
+               err and 'MASTER_HELD_18MHZ' in err and inside is None and PI.MASTER_HELD_18MHZ == 'refuse', err)
+        else:
+            ok(f'18 MHz exception: pi_context sets PI.MASTER_HELD_18MHZ = {val!r} for the call (recorded) and restores '
+               f'production\'s \'refuse\'', inside == val and st['globals']['MASTER_HELD_18MHZ'] == val
+               and PI.MASTER_HELD_18MHZ == 'refuse', (inside, err))
+    head = '12h Red 2025-01-08'
+    held = (f'{head}{AD.IN_MASTER}{AD.HELD_18}Red_I_x.fits holds it; {AD.HELD_18}Red_V_x.fits holds it')
+    other = f'{head}{AD.IN_MASTER}{AD.HELD_18}Red_I_x.fits holds it; night-image check FAIL'
+    v1, r1 = AD.keep_held_18([held])
+    v2, r2 = AD.keep_held_18([other])
+    ok('18 MHz exception: a night held only for its excluded 18 MHz is reported, not a violation; with another finding it '
+       'stays a violation without the 18 MHz one', not v1 and len(r1) == 1 and r1[0].startswith(head)
+       and v2 == [f'{head}{AD.IN_MASTER}night-image check FAIL'] and len(r2) == 1, (v1, r1, v2, r2))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -413,6 +464,7 @@ def test_e2e():
     try:
         _e2e(run, nights, hdrs)
         _e2e_rebuild(run, nights, hdrs)
+        _e2e_parity(run, nights, hdrs)
     finally:
         SD.snapshot_link_scan, PI.glob = real_scan, real_glob
         CFG.install_enqueue.SEARCH_STATE_ROOT = old_state
@@ -494,6 +546,11 @@ def _e2e(run, nights, hdrs):
                  'installed_cell.epochs', 'installed_cell.T4_pb_siblings', 'installed_cell.exclusion_conformance',
                  'install.V', 'install.G-DEST', 'install.INSTALL-OK'):
         ok(f'B: test/gate {want} recorded', want in names)
+    mem = [t for t in rec['tests'] if t['name'] in ('install.V', 'installed_cell.membership')]
+    ok('B: the 18 MHz exception (ruled default): the master night holding its excluded 18 MHz is reported by gate V and by '
+       'installed_cell.membership, not a violation', {t['name'] for t in mem if t['passed'] and 'holds its excluded 18 MHz'
+                                                      in str(t.get('detail'))} == {'install.V', 'installed_cell.membership'},
+       ' | '.join(f"{t['name']}: {str(t.get('detail'))[:200]}" for t in mem))
     wq = f'{out}/working_quarantine_{rnd}/{CELL}'
     moved_ok = all(os.path.exists(f'{wq}/{r}') and md5(f'{wq}/{r}') == m for r, m in old_cur.items())
     ok('B: every replaced working FITS (incl. the orphan) in the working quarantine with its md5', moved_ok,
@@ -647,6 +704,33 @@ def _e2e_rebuild(run, nights, hdrs):
     res = validate.run('install_manifest', f'{out}/_records/install/{CELL}.manifest.csv')
     ok('F: install_manifest content test passes', all(r['passed'] for r in res), '; '.join(r['detail'][:150] for r in res))
     ok('F: the rebuild verdict recorded', 'T1-T8 passed' in (rec['meta'].get('rebuild_verdict') or ''))
+
+
+def _e2e_parity(run, nights, hdrs):
+    """P: the 18 MHz exception under production's value. The real 12h_Red records hold a master night whose only membership
+    finding is that its Red image holds the night's excluded 18 MHz (strict: a violation; ruled: kept and reported - A-F
+    ran under the ruled default). With the parity file's install.MASTER_HELD_18MHZ the same install is refused at G-MEM,
+    before staging: the cell and the archive untouched."""
+    import re
+    from exopipe.phase3.lib.masters import admit as AD
+    out = f'{ROOT}/outP'
+    cdir = build_current(out, hdrs, nights, run)
+    strict = AD.verify(cdir, keep_18=False)[0]
+    ruled, rep = AD.verify(cdir, keep_18=True)
+    ok('P: the real 12h_Red records hold a master night kept by the 18 MHz exception (strict: violations of that finding '
+       'only; ruled: none, the night reported)', strict and all(AD.HELD_18 in v for v in strict) and not ruled
+       and any('holds its excluded 18 MHz' in r for r in rep), f'strict {strict}; ruled {ruled}; reports {rep}')
+    val = re.search(r'^install\.MASTER_HELD_18MHZ = (\S+)\s*$', open(PARITY).read(), re.M)
+    gen = build_generation(f'{ROOT}/genP/{CELL}/gen_mdewarp_rbf', hdrs, nights, seed=4)
+    before_cell, before_arch = tree_md5(cdir), tree_md5(f'{out}/archive')
+    rc = cli('install', '--cells', CELL, '--gen', gen, '--out', out, '--cores', 'none', '--set', 'install.FREE_FLOOR_GB=0.0',
+             '--kind', 'mdewarp', '--not-rebuilt', '--set', f'install.MASTER_HELD_18MHZ={val.group(1) if val else "missing"}')
+    rec = record(out, CELL)
+    ok('P: under production\'s value (the parity file\'s install.MASTER_HELD_18MHZ) refused at G-MEM, naming the held 18 MHz '
+       '-> exit 2', rc == 2 and rec and rec['status'] == 'refused' and rec['reason'].startswith('G-MEM')
+       and AD.HELD_18 in rec['reason'], f'rc {rc}, {rec and rec["reason"][:300]}')
+    ok('P: nothing staged, the cell and the archive untouched', tree_md5(cdir) == before_cell
+       and tree_md5(f'{out}/archive') == before_arch and not os.path.exists(f'{cdir}/.install_staging'))
 
 
 def test_b30_audit_epoch_gate():

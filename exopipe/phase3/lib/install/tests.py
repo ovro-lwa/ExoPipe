@@ -174,10 +174,11 @@ def rows_match_files(path, **ctx):
 @content_test('installed_cell', name='membership')
 def ic_membership(path, **ctx):
     """membership.verify (T8, part 1): every master night obeys the membership rulings; a night admitted into the master
-    is reported, not a violation (D-ADMIT, masters_admit.ADMITTED_NIGHTS: lib/masters/admit.verify)."""
+    is reported, not a violation (D-ADMIT, masters_admit.ADMITTED_NIGHTS: lib/masters/admit.verify), and so is a night held
+    only for its excluded 18 MHz (the 18 MHz exception, install.MASTER_HELD_18MHZ 'keep'; admit.verify keep_18)."""
     from exopipe.phase3.lib.masters import admit as AD
-    v, rep = AD.verify(os.path.abspath(path).rstrip('/'))
-    return not v, len(v), (('membership rulings hold' + (f' ({len(rep)} admitted, rebuild pending)' if rep else ''))
+    v, rep = AD.verify(os.path.abspath(path).rstrip('/'), keep_18=_SC().master_held_18() == 'keep')
+    return not v, len(v), (('membership rulings hold' + (f'; reported, not violations: {_short(rep, 3)}' if rep else ''))
                            if not v else _short(v, 3))
 
 
