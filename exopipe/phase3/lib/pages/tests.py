@@ -483,7 +483,12 @@ def sublst_run(path, **ctx):
 def snapshot_run(path, **ctx):
     """R6 missing_panels.csv lists no panel; R2 every detections.csv carries finite positive pos_err_stat_arcsec and
     pos_err_arcsec; R7 every RA column of source_catalogs*/*.csv and detections.csv in [0, 360)
-    (snapshot_rechain_content_test.py:56, 74-101); per-(Stokes, tier) views: n_det = n_det_tier."""
+    (snapshot_rechain_content_test.py:56, 74-101); the per-(Stokes, tier) views, as the pages builder writes them (clv15
+    phase3_snapshot_pages.py:604, :614, :722): n_det = every detection of the identity in that Stokes and tier, n_det_tier
+    = its PANELLED ones (select_members: the top 10 by |SNR| plus the best of every other band) - so n_det >= n_det_tier on
+    every row, and n_det_tier = the rows of the detections.csv of the identity's page directories in that view. (Until
+    2026-11-02 this test required n_det = n_det_tier and failed every real batch with an identity of more than 10 detections
+    in a tier - 86 of 871 view rows of Run_SNAPB6L_20261025; the builder's comment at :703-704 still says 'the same count'.)"""
     mp = os.path.join(path, 'missing_panels.csv')
     if not os.path.exists(mp):
         return False, None, 'R6: no missing_panels.csv'
@@ -493,6 +498,7 @@ def snapshot_run(path, **ctx):
     if not dfiles:
         bad.append('no detections.csv')
     n_err = n_ra = n_out = 0
+    det_rows = {}                                   # page directory (relative to the run) -> its detections.csv rows
     for p in sorted(glob.glob(os.path.join(path, 'source_catalogs*', '*.csv'))) + dfiles:
         with open(p, newline='') as f:
             rd = csv.DictReader(f)
@@ -501,7 +507,9 @@ def snapshot_run(path, **ctx):
             isdet = p.endswith('detections.csv')
             if isdet and not ('pos_err_stat_arcsec' in cols and 'pos_err_arcsec' in cols):
                 n_err += 1
+            n_rows = 0
             for r in rd:
+                n_rows += 1
                 if isdet:
                     a, b = _f(r.get('pos_err_stat_arcsec')), _f(r.get('pos_err_arcsec'))
                     if a is None or b is None or a <= 0 or b <= 0:
@@ -514,19 +522,37 @@ def snapshot_run(path, **ctx):
                     x = _f(v)
                     if x is None or not 0 <= x < 360:
                         n_out += 1
+            if isdet:
+                det_rows[os.path.relpath(os.path.dirname(p), path)] = n_rows
     if n_err:
         bad.append(f'R2: {n_err} detections without a finite positive own error')
     if n_out or not n_ra:
         bad.append(f'R7: {n_out} of {n_ra} RA values outside [0, 360)')
-    n_view = 0
-    for p in glob.glob(os.path.join(path, 'source_catalogs_[IV]_10s', '*_sources_survivors.csv')) + glob.glob(
-            os.path.join(path, 'source_catalogs_[IV]_1min', '*_sources_survivors.csv')):   # the per-(Stokes, tier) views
-        for r in common.read_csv(p)[1]:
-            if r.get('n_det_tier') not in (None, '') and r.get('n_det') not in (None, '') and r['n_det'] != r['n_det_tier']:
-                n_view += 1
-    if n_view:
-        bad.append(f'views: {n_view} rows with n_det != n_det_tier')
-    return not bad, len(dfiles), '; '.join(bad) or f'{len(dfiles)} page directories; R2 R6 R7 pass'
+    n_less = n_count = 0
+    for vd in sorted(glob.glob(os.path.join(path, 'source_catalogs_[IV]_10s'))
+                     + glob.glob(os.path.join(path, 'source_catalogs_[IV]_1min'))):    # the per-(Stokes, tier) views
+        ident = {}
+        for p in glob.glob(os.path.join(vd, '*_sources_survivors.csv')):
+            for r in common.read_csv(p)[1]:
+                a, b = _f(r.get('n_det')), _f(r.get('n_det_tier'))
+                if a is None or b is None:
+                    continue
+                if a < b:
+                    n_less += 1
+                if r.get('identity_id'):
+                    e = ident.setdefault(r['identity_id'], (set(), set()))
+                    e[0].add(b)
+                    e[1].add((r.get('review_dir') or '').strip().strip('/'))
+        for tiers, dirs in ident.values():
+            if (len(tiers) != 1 or any(d not in det_rows for d in dirs)
+                    or next(iter(tiers)) != sum(det_rows[d] for d in dirs)):
+                n_count += 1
+    if n_less:
+        bad.append(f'views: {n_less} rows with n_det < n_det_tier')
+    if n_count:
+        bad.append(f'views: {n_count} identities whose n_det_tier differs from the detections.csv rows of their page '
+                   f'directories')
+    return not bad, len(dfiles), '; '.join(bad) or f'{len(dfiles)} page directories; R2 R6 R7 and the views pass'
 
 
 FILTER_COLUMNS = ('cand_id', 'stokes', 'lst', 'band', 'date', 'snr', 'ra', 'dec', 'size_beams', 'axis_ratio',
