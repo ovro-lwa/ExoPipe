@@ -18,7 +18,8 @@ A wideband epoch (Red / Green / Blue / Full) is searched in a Stokes only when (
             night-image and epoch gates  passed (incl. D-ADMIT verdicts of admitted nights);       (both Stokes)
             sanity       qa3 rms <= 10 x the cell median (both Stokes) and, I only, <= SANITY_I_X x it (weights.csv; median =
                          the upper middle of the sorted finite values, as the engine takes it; fewer than SANITY_MIN nights: skipped);
-            search tier  stage-1 rms <= median + SIGMA x 1.4826 MAD of the cell's nights, PER STOKES (residuals_provisional.csv,
+            search tier  stage-1 rms <= RATIO x the median of the cell's nights, PER STOKES (Gregg 2026-10-30, production
+                         exopipe 702dd68; median + 5 x 1.4826 MAD before) (residuals_provisional.csv,
                          which must be this generation's - its dates equal weights.csv's - or the member REFUSES; an rms of inf is
                          tested and refused, as the engine does; fewer than TIER_MIN nights: skipped; admitted nights tested, never
                          in the population);
@@ -66,9 +67,10 @@ def _median(v):
     return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
 
 
-def tier_failures(rows, sigma, min_n, extra=None):
+def tier_failures(rows, ratio, min_n, extra=None):
     """{stokes: {date: (rms, threshold)}} of the search-tier gate on one cell's residuals_provisional rows, per Stokes, as the engine:
-    the population = the positive finite values (np.median and its MAD); every value with a date is TESTED (inf refused); a Stokes
+    the population = the positive finite values; the threshold = ratio x their median (np.median: the mean of the two middle values
+    of an even count; deep_search SEARCH_TIER_RATIO, Gregg 2026-10-30); every value with a date is TESTED (inf refused); a Stokes
     with fewer than min_n population values: {} (the engine skips the gate). extra = {stokes: {date: rms}}: nights tested WITHOUT
     joining the population (D-ADMIT's admitted nights, admissions.csv stage2_<s>_rms_mjy)."""
     out = {'I': {}, 'V': {}}
@@ -84,7 +86,7 @@ def tier_failures(rows, sigma, min_n, extra=None):
         if len(pop) < min_n:
             continue
         med = _median(pop)
-        thr = med + sigma * 1.4826 * _median([abs(x - med) for x in pop])
+        thr = ratio * med                   # the engine's _thr = SEARCH_TIER_RATIO * _med (was med + SIGMA x 1.4826 MAD)
         tested = dict(vals)
         tested.update((d, x) for d, x in ((extra or {}).get(st) or {}).items() if x is not None)
         out[st] = {d: (x, thr) for d, x in tested.items() if x > thr}
@@ -145,7 +147,7 @@ def _beam_ok(path):
 
 
 def member_record(cell_dir, member, lst, p, readers, admitted=({}, {})):
-    """The deep search's admission of every night of one member cell, mirrored from its records (module docstring). p = dict(sigma,
+    """The deep search's admission of every night of one member cell, mirrored from its records (module docstring). p = dict(ratio,
     tier_min, sanity_x_both, sanity_x_i, sanity_min, beam_ratio, beam_min); readers = dict(night_failed(final_dir), epoch_failed(
     final_dir, band), excluded(lst, band, date) -> bool, same_state_v(cell_dir) -> set, beam_area(cell_dir, member, lst, date)).
     admitted = (accepted, refused) of lib/search/admitted.nights(cell_dir, member). Returns dict(present, both={night: [reasons]},
@@ -205,7 +207,7 @@ def member_record(cell_dir, member, lst, p, readers, admitted=({}, {})):
             if d in prod and not _beam_ok(fp):
                 both.setdefault(d, []).append('%s product without a positive beam' % st)
     extra = {st: {d: _num(r.get('stage2_%s_rms_mjy' % st.lower())) for d, r in adm.items()} for st in ('I', 'V')}
-    tier = tier_failures(prows, p['sigma'], p['tier_min'], extra=extra)
+    tier = tier_failures(prows, p['ratio'], p['tier_min'], extra=extra)
     # the beam gate, over the nights the gates before it leave (the engine's order: products, data_decisions, night-image, epoch,
     # the 10x sanity, the input-provenance gate; the 3x I sanity and the search tier do not remove a night from that list)
     left = [d for d in sorted(present) if d not in both]

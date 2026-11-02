@@ -20,7 +20,7 @@ from exopipe.phase3.config import _Section
 #   is never chained before search. Every engine value that search's config carries is read from search's sections - the
 #   effective keys - and NOT duplicated here (lib/frames/deep_engine.engine_values looks each up by key name in search,
 #   search_inputs, search_detect: MASTER_GEN, ALLOW_OLD_MASTERS, ARCHIVE_WRITE, ROOTS_CSV, STRIATION_OFF_BATTERY, STREAMING,
-#   NPROC_RESID, MIN_EPOCHS, SIGMA_STACK_MIN_EPOCHS, SIGMA_STACK_BUILD_MIN, SANITY_X, SEARCH_TIER_SIGMA, BEAM_GATE_RATIO,
+#   NPROC_RESID, MIN_EPOCHS, SIGMA_STACK_MIN_EPOCHS, SIGMA_STACK_BUILD_MIN, SANITY_X, SEARCH_TIER_RATIO, BEAM_GATE_RATIO,
 #   BEAM_GATE_ON, FLOW_XLA_MEM_FRACTION, FLOW_PYTHON, FLOW_LOCK, STRIATION_WINDOW_BEAMS, RUN_LABEL, STOKES_ORDER,
 #   ENGINE_PYTHON, UNACCOUNTED_EPOCHS). The engine literals that decide a frame and that search does NOT carry are mirrored
 #   below (frames_residuals, PROTECTED); if search ever carries the same key, engine_values refuses unless both agree.

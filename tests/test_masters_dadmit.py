@@ -2,7 +2,8 @@
 
 Each statistic must be the number its gate computes: stage 2 as coadd.detect_outliers_mad (and the thresholds the build
 applied, exactly), the beam gate's upper middle element over the images the co-add beam gate reads in the Science dirs the
-build used, the Stokes I sanity gate's upper middle element, the search tier's numpy median with 1.4826 x MAD; the record
+build used, the Stokes I sanity gate's upper middle element, the search tier's numpy median with 1.4826 x MAD and its
+threshold SEARCH_TIER_RATIO x the median (production exopipe 702dd68; a version-2 record of the MAD threshold fails); the record
 holds the settings it used and its content test re-derives everything with them and fails on every kind of edit (the
 2026-10-15 review's list). The co-add beam gate, refactored onto beam_gate_image / beam_area, gives the old loop's areas.
 The on-demand stage writes the record beside the records of the cell tree it is given (a copy here), refuses a production
@@ -77,17 +78,21 @@ def test_formulas():
     ss = BS.sanity_stats(w, 5)
     check('sanity: the upper middle element of the finite positive qa3 values', ss['qa3_median'] == 40.0 and ss['n'] == 6, ss)
     prov = [dict(i_rms_mjy=x, v_rms_mjy=x) for x in (1.0, 2.0, 3.0, 4.0, 10.0, 6.0)]
-    tt = BS.search_tier_stats(prov, 5.0, 5)['I']
+    tt = BS.search_tier_stats(prov, 2.0, 5)['I']
     v = np.array([1.0, 2.0, 3.0, 4.0, 6.0, 10.0])
     med, mad = float(np.median(v)), float(np.median(np.abs(v - np.median(v)))) * 1.4826
-    check('search tier: numpy median and 1.4826 x MAD (not the upper middle element)',
-          abs(tt['median'] - med) < 1e-12 and abs(tt['thr'] - (med + 5.0 * mad)) < 1e-12 and med == 3.5, (tt, med, mad))
+    check('search tier: numpy median (not the upper middle element), 1.4826 x MAD, and the threshold 2.0 x the median '
+          '(deep_search\'s SEARCH_TIER_RATIO, production exopipe 702dd68)',
+          abs(tt['median'] - med) < 1e-12 and abs(tt['mad'] - mad) < 1e-12 and tt['thr'] == 2.0 * med and med == 3.5,
+          (tt, med, mad))
 
 
 def test_drift():
     src = open(os.path.join(REPO, 'exopipe/phase3/lib/search/deep_search.py')).read()
     check('drift: the search\'s qa3 discard is build_stats.X_DISCARD x the cell median',
           f'_wr.get(_kd(d), 0) > {BS.X_DISCARD} * _med' in src)
+    check('drift: the search tier\'s threshold is the ratio x the cell median, as build_stats records it (SEARCH_TIER_RATIO)',
+          '_thr = SEARCH_TIER_RATIO * _med' in src and 'SEARCH_TIER_RATIO' in BS.SETTINGS and 'SEARCH_TIER_SIGMA' not in BS.SETTINGS)
     import inspect
     check('drift: detect_outliers_mad\'s minimum count is build_stats.STAGE2_MIN',
           f'if len(valid) < {BS.STAGE2_MIN}:' in inspect.getsource(co.detect_outliers_mad))
@@ -142,6 +147,14 @@ def _edits(rec):
         a, b = s['beam_gate']['nights'][n0], s['beam_gate']['nights'][n1]
         s['beam_gate']['nights'][n0], s['beam_gate']['nights'][n1] = dict(b), dict(a)
 
+    def version2(s):                     # the record's form before 2026-11-02: SEARCH_TIER_SIGMA and median + SIGMA x MAD
+        s['version'] = 2
+        s['settings']['SEARCH_TIER_SIGMA'] = 5.0
+        del s['settings']['SEARCH_TIER_RATIO']
+        for st_ in ('I', 'V'):
+            if 'thr' in s['search_tier'][st_]:
+                s['search_tier'][st_]['thr'] = s['search_tier'][st_]['median'] + 5.0 * s['search_tier'][st_]['mad']
+
     def missing_img(s):
         s['beam_gate']['nights'][n0]['image'] = '/nonexistent/x.fits'
         s['beam_gate']['nights'][n0]['area'] *= 3
@@ -156,8 +169,9 @@ def _edits(rec):
             ('the applied threshold copy emptied', e(lambda s: s['stage2_recorded_thr'].update(I=[]))),
             ('a night renamed', e(lambda s: s.update(nights=['1999-01-01'] + s['nights'][1:]))),
             ('the search tier block deleted', e(lambda s: s.pop('search_tier'))),
-            ('a setting removed', e(lambda s: s['settings'].pop('SEARCH_TIER_SIGMA'))),
+            ('a setting removed', e(lambda s: s['settings'].pop('SEARCH_TIER_RATIO'))),
             ('the search tier threshold edited', e(lambda s: s['search_tier']['V'].update(thr=s['search_tier']['V']['thr'] * 1.01))),
+            ('a version-2 record (SEARCH_TIER_SIGMA, the MAD threshold)', e(version2)),
             ('a beam area doubled', e(lambda s: s['beam_gate']['nights'][n0].update(area=s['beam_gate']['nights'][n0]['area'] * 2)))]
 
 
@@ -183,8 +197,8 @@ def test_record_and_recheck():
                 bad.append(name)
         check(f'real {cell}: the content test fails on each of the review\'s {len(_edits(st))} edits', not bad, bad)
         s2 = json.loads(json.dumps(st))
-        s2['settings']['SEARCH_TIER_SIGMA'] = 4.0
-        s2['search_tier'] = BS.search_tier_stats(list(csv.DictReader(open(os.path.join(cd, BS.BUILD_NIGHTS)))), 4.0,
+        s2['settings']['SEARCH_TIER_RATIO'] = 2.5
+        s2['search_tier'] = BS.search_tier_stats(list(csv.DictReader(open(os.path.join(cd, BS.BUILD_NIGHTS)))), 2.5,
                                                  st['settings']['SEARCH_TIER_MIN'])
         json.dump(s2, open(p, 'w'))
         check(f'real {cell}: a record made with other settings passes - it is tested against its own settings, not today\'s',
@@ -346,7 +360,7 @@ def test_review2():
     check('review 2: a night whose image has no readable beam is skipped, as the gate skips it (the record passes)',
           st2['beam_gate']['nights'][n0]['area'] is None and not ok2, ok2)
     few = BS2.stage2_stats([dict(i_rms_mjy=x, v_rms_mjy=x) for x in (1.0, 2.0, 4.0)], 3.0, 4.0)['I']
-    tier = BS2.search_tier_stats([dict(i_rms_mjy=x, v_rms_mjy=x) for x in (1.0, 2.0, 4.0)], 5.0, 5)['I']
+    tier = BS2.search_tier_stats([dict(i_rms_mjy=x, v_rms_mjy=x) for x in (1.0, 2.0, 4.0)], 2.0, 5)['I']
     check('review 2: below a gate\'s minimum the population is recorded all the same (n, median, MAD; no threshold)',
           few == dict(n=3, gate=False, median=2.0, mad=1.0) and tier['gate'] is False and tier['median'] == 2.0
           and 'thr' not in tier, (few, tier))

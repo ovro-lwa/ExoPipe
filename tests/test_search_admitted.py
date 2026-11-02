@@ -450,7 +450,8 @@ def test_b02_3b_units():
           and e1[1] == 'at the frame mid-time' and ee == 'mid-hour' and em == (RR.mid_hour_elevation('05h', 80.0, 22.0), 'at mid-hour')
           and e1b == e1 and bad_e is not None and 'REFUSING' in bad_e, (e1, e2, em, e1b, bad_e))
     src = inspect.getsource(DSE)
-    calls = re.findall(r"_PCT\.removals\('([IV])', scope, _pa(?:_v)?, _b02_tnoise\('[IV]', d_?\), float\(_fh([IV])\[d_?\]\['BMAJ'\]\)", src)
+    calls = re.findall(r"_table_and_inputs\((?:\[c\]|finals), '([IV])', scope, _pa(?:_v)?, _b02_tnoise\('[IV]', d_?\), "   # the call
+                       r"float\(_fh([IV])\[d_?\]\['BMAJ'\]\)", src)        # since 249c323 (2026-10-17: the table's inputs recorded)
     check("under 'once-in-search' each table call takes the frame's table noise, its own beam (the archived frame's BMAJ) - "
           "and (by the lines after) the catalogue position and the frame-mid elevation; production's calls unchanged; the "
           "frames keep production's cards (no step-3b argument to the frame header)", sorted(calls) == [('I', 'I'), ('V', 'V')]
@@ -521,12 +522,13 @@ def test_residuals_and_stacks():
 def test_engine_source():
     from exopipe.phase3.lib.search import deep_search as E
     src = inspect.getsource(E.run_deep_cell)
-    lines = [ln for ln in src.splitlines() if '_adm' in ln or '_ADS' in ln or '_rdates' in ln or '_ssA_' in ln]
+    lines = [ln for ln in src.splitlines() if ('_adm' in ln or '_ADS' in ln or '_rdates' in ln or '_ssA_' in ln)
+             and not ln.strip().startswith('#')]   # a comment reads nothing (its 'wideband_admission' holds '_adm', dc2e530)
     unmarked = [ln.strip() for ln in lines if 'WAVE2 D-ADMIT' not in ln and not ln.strip().startswith('lambda')]
     check('every engine line that reads the admitted nights is marked WAVE2 D-ADMIT (a lambda continues a marked call)',
           len(lines) >= 25 and not unmarked, (len(lines), unmarked))
     want = {
-        'the membership gate reads admitted nights': "_ADV.verify(base, policy=_ADS.policy())",
+        'the membership gate reads admitted nights': "_ADS.verify_master(base, policy=_ADS.policy())",   # (and the 18 MHz carve-out)
         'E10 night-image verdicts of admitted nights': "_ngf = set(_ngf) | _ADS.gate_failures(_adm)[0]",
         'E11 epoch verdicts of admitted nights': "_egf = set(_egf) | _ADS.gate_failures(_adm)[1]",
         'the I sanity gate: own value after the median': "_wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}",
@@ -542,7 +544,7 @@ def test_engine_source():
     check('the engine applies each rule at its gate', not miss, miss)
     # order: the median / threshold is taken BEFORE the admitted night's value joins the lookup
     i_med, i_wr = src.find('_med = _fin[len(_fin) // 2]'), src.find("_wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}")
-    i_thr, i_rm = src.find('_thr = _med + SEARCH_TIER_SIGMA * _mad'), src.find("_rm = {**_rm, **_ADS.values(")
+    i_thr, i_rm = src.find('_thr = SEARCH_TIER_RATIO * _med'), src.find("_rm = {**_rm, **_ADS.values(")   # 2.0 x the median (702dd68)
     check('an admitted night\'s value joins the lookup after the population\'s median / threshold is taken (it never moves '
           'them)', 0 < i_med < i_wr and 0 < i_thr < i_rm, (i_med, i_wr, i_thr, i_rm))
     from exopipe.phase3.lib.frames import deep_seam
@@ -613,6 +615,19 @@ if _b02 is not None:             # B-02 step 3a: the frames the daytime gate ref
             finally:
                 _depth[0] -= 1
         E._PCT.removals = _rm
+        _real_ti = E._PCT.table_inputs                             # the same devices on the table's recorded inputs (the gate
+
+        def _ti(stokes, band, par, rms, *a, **k):                   # ledger's table_* columns, deep_search._table_and_inputs):
+            out = _real_ti(stokes, band, par, rms * (_b02.get('table_scale') or 1.0), *a, **k)   # the scaled noise (table_inputs
+            if _psr and stokes == _psr[0]:                          # never calls itself), and the forced decision's own inputs -
+                import numpy as _np                                 # so each recorded margin agrees with its verdict (< 1
+                ra_, de_ = _np.atleast_1d(a[1]), _np.atleast_1d(a[2])   # exactly where it cuts: gate_ledger.complete)
+                for i_ in range(len(ra_)):
+                    if abs(float(ra_[i_]) - _psr[1]) < 1e-6 and abs(float(de_[i_]) - _psr[2]) < 1e-6:
+                        out[i_] = dict(out[i_], table_margin=0.1, table_parent_S=99.0, table_parent_sep_bw=0.1, table_R=1.0,
+                                       table_bin='test')
+            return out
+        E._PCT.table_inputs = _ti
 _nf = json.loads(os.environ.get('TEST_NOFLOW') or '[]')
 if _nf:                          # B-02 step 3c test device: the x2 flow batch gives these nights no flow (under
     def _bf(cw_, mup_, items_):  # P3_REFINE_OFF every night has one); every other night's flow is None and the
