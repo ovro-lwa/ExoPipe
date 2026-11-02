@@ -59,15 +59,6 @@ class frames_residuals(_Section):
     WORK_SUBDIR = 's2work_frames'
     UNIT_WORKERS = 1                   # units (engine children) at once in one invocation (default --workers); production
                                        # lanes V 6 / I 4 per node are `run submit --nodes host:k` (p3s5_launch.sh:23-24)
-    # THE 18 MHz CARVE-OUT at pre-gate D-G3 (the master's membership; read through deep_engine.engine_values, so a key of
-    # this name in search's sections - the engine's own switch, once the search config carries it - is the effective one and
-    # this stand-in goes): 'keep' (ruled) = an EXISTING Red / Full master night whose only finding is that its image holds the
-    # night's excluded 18 MHz is reported, kept until the master's next rebuild - never a violation, never a refusal (Gregg
-    # 2026-10-23 "The one exception to the exclusion rule is 18 MHz"; 2026-10-17 "Red can be built without 18 MHz", "enforce
-    # going forward, no rebuild now"), by the search preflight's helper lib/masters/admit.verify(keep_18=True); every other
-    # finding of such a night still refuses (a Red night stacked without 23 / 36 MHz). 'refuse' = production (membership
-    # strict, such a master refuses; parity/production_20261013.cfg).
-    MASTER_HELD_18MHZ = 'keep'
     # ---- mirrors of engine literals that decide a frame and that search's config does not carry. No environment variable
     # reaches them, so they are PROTECTED until the engine is absorbed; the content tests and the dry-run preview read them.
     PB_FLOOR = 0.05                    # PB fraction; search-frame sibling pixels at or below are NaN; carried in no card
@@ -88,10 +79,7 @@ class frames_residuals(_Section):
     RULED = {'PB_FLOOR': 'LANDED-P3S3-PRODUCTS-667a56e',
              'SANITY_ALIGN_X': ('R-SEARCH-SANITY-GATE-10X', 'R-BEAM-AND-10X-REFUSED-EPOCHS-STAY-OUT-NO-FRAMES-OWED'),
              'LOO_NCOADD_RANGE': ('R-LOO-MASTERS-AND-REDO-SEQUENCE', 'R-LOO-PER-STOKES-RATIFIED'),
-             'SIGSTACK_FLOOR': 'LANDED-P3S3-PRODUCTS-667a56e',
-             'MASTER_HELD_18MHZ': ('R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4',
-                                   'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD',
-                                   'CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023')}
+             'SIGSTACK_FLOOR': 'LANDED-P3S3-PRODUCTS-667a56e'}
 
 
 # =====================================================================================================================
