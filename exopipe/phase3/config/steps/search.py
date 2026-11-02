@@ -76,7 +76,11 @@ class search_detect(_Section):
     AXIS_REMOVE = 1.5                                       # normalised axis ratio; P3_AXIS_REMOVE (deep_search.py:79)
     SANITY_X = 3.0                                          # x cell median, I (qa3) and V (frame rms); P3_SANITY_I_X (deep_search.py:77;
                                                             # R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT)
-    SEARCH_TIER_SIGMA = 5.0                                 # x 1.4826 MAD above the median, per Stokes; P3_SEARCH_TIER_SIGMA (deep_search.py:455)
+    SEARCH_TIER_RATIO = 2.0                                 # x the cell median of the stage-1 rms, per Stokes: above it the epoch is
+                                                            # refused from that Stokes' search; P3_SEARCH_TIER_RATIO (deep_search.py
+                                                            # SEARCH_TIER_RATIO; production exopipe 702dd68, Gregg 2026-10-30 - replaced
+                                                            # SEARCH_TIER_SIGMA, median + 5 x 1.4826 MAD, ruled 2026-09-13). The member
+                                                            # admission of a wideband epoch applies the same rule (wideband_admission)
     WIDEBAND_MEMBER_ADMISSION = True                        # a Red/Green/Blue/Full epoch is searched in a Stokes only when every member
                                                             # subband epoch passes this search's admission in that Stokes;
                                                             # P3_WIDEBAND_MEMBER_ADMISSION (lib/search/wideband_admission.py)
@@ -146,14 +150,23 @@ class search_detect(_Section):
                                                             # removal_rules, plan/wave2/B02_DESIGN.md step 3a); 'production' = without
                                                             # them (the publish conformance removes those rows); the engine child reads
                                                             # EXOPIPE3_REMOVAL_RULES (deep_step.engine_env)
+    MASTER_HELD_18MHZ = 'keep'                              # an EXISTING Red / Full master night whose only membership finding is that it
+                                                            # holds its excluded 18 MHz: 'keep' = reported, kept until the master's next
+                                                            # rebuild - never a violation, never a refusal (the 18 MHz carve-out); 'refuse'
+                                                            # = production (phase3_deep's membership gate: a violation, the cell refused).
+                                                            # One verification for the preflight's gate E3 and the engine's membership gate
+                                                            # (lib/search/admitted.verify_master); the engine child reads
+                                                            # EXOPIPE3_MASTER_HELD_18MHZ (deep_step.engine_env, frames deep_engine.child_env)
     RULED = {'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'MASTER_HELD_18MHZ': ('R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4', 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD',
+                                   'CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023'),
              'REMOVAL_RULES': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'ELEVATION_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
              'MIN_EPOCHS': 'IMPL-REFERENCE-NIGHT-MUST-BE-MASTER-NIGHT-AND-14-REBUILD',
              'SIZE_FLOOR_BEAMS': ('R-SIZE-AXIS-GATE-1.5-RATIFIED', 'R-GATE-TIGHTENED-SIZE-1.5-AXIS-1.5-VALIDATED-ON-KNOWN-TRANSIENTS'),
              'AXIS_REMOVE': ('R-SIZE-AXIS-GATE-1.5-RATIFIED', 'R-GATE-TIGHTENED-SIZE-1.5-AXIS-1.5-VALIDATED-ON-KNOWN-TRANSIENTS'),
              'SANITY_X': 'R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT',
-             'SEARCH_TIER_SIGMA': 'R-SEARCH-TIER-THRESHOLD-5-SIGMA-MAD-LANDED-RESEARCH-WORKLIST-493',
+             'SEARCH_TIER_RATIO': 'R-GREGG-20261030-SEARCH-TIER-GATE-2X-CELL-MEDIAN-FASTER-OPTION',
              'WIDEBAND_MEMBER_ADMISSION': 'R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION',
              'BEAM_GATE_RATIO': 'R-BEAM-REFUSALS-STAND-1P5',
              'SANITY_MIN_NIGHTS': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'SEARCH_TIER_MIN': 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'BEAM_GATE_MIN_NIGHTS': ('R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS', 'R-BEAM-GATE-FIVE-NIGHT-FLOOR-WAIVED-THIN-CELLS-SEARCHED')}
@@ -347,7 +360,9 @@ class search_sublst(_Section):
     SIZE_FLOOR_BEAMS = 1.5                  # (Maj - 1 sigma)/BMAJ above 8 sigma; P3_SIZE_FLOOR_BEAMS; DS:75
     AXIS_REMOVE = 1.5                       # normalised axis ratio; P3_AXIS_REMOVE; DS:79
     SANITY_I_X = 3.0                        # x cell median qa3; P3_SANITY_I_X; DS:77
-    SEARCH_TIER_SIGMA = 5.0                 # x 1.4826 MAD; P3_SEARCH_TIER_SIGMA; DS:455
+    SEARCH_TIER_RATIO = 2.0                 # x the cell median of the FRAMES' stage-1 rms, per Stokes; P3_SEARCH_TIER_RATIO; DS
+                                            # SEARCH_TIER_RATIO (production exopipe 702dd68, Gregg 2026-10-30, both cadences; the
+                                            # 10-minute lanes running then kept the old MAD-5 rule until their next launch)
     BEAM_GATE_RATIO = 1.5                   # x median beam area; P3_BEAM_GATE_RATIO; DS:1353
     SANITY_MIN_NIGHTS = 5                   # the sanity gates' minimum count; P3_SANITY_MIN_NIGHTS (Gregg 2026-10-14: 5 kept, skips counted)
     SEARCH_TIER_MIN = 5                     # FRAMES with a stage-1 rms per Stokes at 10 minutes; P3_SEARCH_TIER_MIN (5 kept, skips counted)
@@ -409,7 +424,7 @@ class search_sublst(_Section):
              'TABLE_RECORD_ONLY': 'CORRECTION-SUBLST-SEARCH-APPLIED-OLD-10MIN-TABLE-IN-SEARCH',
              'SIZE_FLOOR_BEAMS': 'R-SIZE-AXIS-GATE-1.5-RATIFIED', 'AXIS_REMOVE': 'R-SIZE-AXIS-GATE-1.5-RATIFIED',
              'SANITY_I_X': 'R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT',
-             'SEARCH_TIER_SIGMA': 'R-SEARCH-TIER-THRESHOLD-5-SIGMA-MAD-LANDED-RESEARCH-WORKLIST-493',
+             'SEARCH_TIER_RATIO': 'R-GREGG-20261030-SEARCH-TIER-GATE-2X-CELL-MEDIAN-FASTER-OPTION',
              'BEAM_GATE_RATIO': 'R-BEAM-REFUSALS-STAND-1P5',
              'REFINE_X2': 'R-SUBLST-19H-CARD-SECTION-9-ALL-YES',
              'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',

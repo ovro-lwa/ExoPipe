@@ -175,7 +175,8 @@ class Roots:
 
 # ---- step-level gates -----------------------------------------------------------------------------------------------
 def check_environment():
-    """J12: parameters that used to come from the environment must not be set in the caller's environment."""
+    """J12: parameters that used to come from the environment, and the production switches that would silently change an
+    in-place module's inputs (JUPV2_GEN: the V2 site modules' generation root), must not be set in the caller's environment."""
     bad = []
     for name in C().jupiter.ENV_FORBIDDEN:
         if name.endswith('_'):
@@ -183,7 +184,8 @@ def check_environment():
         elif name in os.environ:
             bad.append(name)
     if bad:
-        raise Refusal(f'J12 caller environment: {", ".join(bad)} set - these are config keys or flags now (B-50); unset them')
+        raise Refusal(f'J12 caller environment: {", ".join(bad)} set - config keys or flags now (B-50), or a production switch '
+                      f'that would change an in-place module\'s inputs (jupiter.ENV_FORBIDDEN); unset them')
 
 
 def check_pinned_overrides(roots):

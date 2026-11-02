@@ -3,11 +3,12 @@ the in-place call context of the production install module, the action log, the 
 
 During the refactor window the install itself is the production module phase3_install.py, moved by pure git mv to
 exopipe/phase3/lib/install/install.py ("PI") and called IN PLACE (DESIGN 11.1). PI reads module globals (ROOT,
-INSTALL_ROUND, WQ, QROOT_NAME, RECORD, FREEZE_MARKER, CELL_FILES, CELL_TOP, CELL_DIRS) and environment variables
+INSTALL_ROUND, WQ, QROOT_NAME, RECORD, FREEZE_MARKER, CELL_FILES, CELL_TOP, CELL_DIRS, MASTER_HELD_18MHZ) and environment variables
 (P3_ARCHIVE_RUN, P3_ARCHIVE_ROOT, P3_INSTALL_FREE_FLOOR_GB, P3_COADD_ROOT, read at call time by PI and
 coadd_full_pipeline); ``pi_context`` sets them from config for one call and restores them afterwards. These are the
 only environment writes of the step; each call's settings are recorded in the unit's notes.
 """
+import calendar
 import contextlib
 import csv
 import hashlib
@@ -273,13 +274,61 @@ def pi_module():
     return PI
 
 
+MASTER_HELD_18 = ('keep', 'refuse')     # the values of install.MASTER_HELD_18MHZ (as search_detect.MASTER_HELD_18MHZ's)
+
+
+def master_held_18(value=None):
+    """install.MASTER_HELD_18MHZ - or ``value`` (the setting recorded with an installed_cell output) - checked: 'keep' (ruled)
+    keeps, in a master built before the enforcement, a night held only for its excluded 18 MHz in every membership check of the
+    install (G-MEM inside PI, gate V, installed_cell.membership; keep_held_18); 'refuse' = production (strict). Any other value
+    REFUSES: a misspelt value never silently picks one."""
+    v = cfg().install.MASTER_HELD_18MHZ if value is None else value
+    if v not in MASTER_HELD_18:
+        raise Refusal(f'install.MASTER_HELD_18MHZ = {v!r} is not one of {MASTER_HELD_18}')
+    return v
+
+
+def held_18_cutoff(value=None):
+    """(text, UNIX time) of install.MASTER_HELD_18MHZ_BUILT_BEFORE - or ``value`` (as recorded with an output): when the co-add
+    began refusing a Red / Full night that holds its excluded 18 MHz."""
+    v = cfg().install.MASTER_HELD_18MHZ_BUILT_BEFORE if value is None else value
+    try:
+        return v, calendar.timegm(time.strptime(v, '%Y-%m-%dT%H:%M:%SZ'))
+    except (TypeError, ValueError):
+        raise Refusal(f'install.MASTER_HELD_18MHZ_BUILT_BEFORE = {v!r} is not a UTC time YYYY-MM-DDTHH:MM:SSZ')
+
+
+def keep_held_18(cell_dir, value, built_before=None):
+    """(keep, why) for the membership check of the master in ``cell_dir`` (a cell, or a rebuild root): keep (admit.verify
+    keep_18) only under 'keep' AND for a master built before the enforcement - its coadd_final/weights.csv (lib/masters/
+    admit.build_time: the record of the night set the build fixed; installs copy it with its time) older than
+    install.MASTER_HELD_18MHZ_BUILT_BEFORE. An EXISTING master keeps such a night until its next rebuild; a build after the
+    enforcement - a rebuild - verifies strictly (Gregg 2026-10-17 "enforce going forward, no rebuild now",
+    IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD). Without the record: strict (the membership check reports the record)."""
+    v = master_held_18(value)
+    if v != 'keep':
+        return False, f"install.MASTER_HELD_18MHZ {v!r}: strict"
+    from exopipe.phase3.lib.masters import admit as AD
+    cut_text, cut = held_18_cutoff(built_before)
+    try:
+        _p, t = AD.build_time(cell_dir)
+    except Refusal:
+        return False, f'no coadd_final/weights.csv in {cell_dir}: strict'
+    when = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
+    if t < cut:
+        return True, (f'master built {when} (coadd_final/weights.csv), before the 18 MHz enforcement {cut_text}: a night held only '
+                      f'for its excluded 18 MHz is kept until the next rebuild')
+    return False, f'master built {when}, not before the 18 MHz enforcement {cut_text}: strict'
+
+
 @contextlib.contextmanager
 def pi_context(PI, roots, rnd=None):
     """Set PI's module globals and the environment it and coadd_full_pipeline read, for one call; restore afterwards.
     Yields the settings (recorded by the caller)."""
     C = cfg().install
     g = {'ROOT': roots.working, 'RECORD': roots.record_csv, 'FREEZE_MARKER': C.FREEZE_MARKER,
-         'CELL_FILES': tuple(C.CELL_FILES), 'CELL_TOP': tuple(C.CELL_TOP), 'CELL_DIRS': tuple(C.CELL_DIRS)}
+         'CELL_FILES': tuple(C.CELL_FILES), 'CELL_TOP': tuple(C.CELL_TOP), 'CELL_DIRS': tuple(C.CELL_DIRS),
+         'MASTER_HELD_18MHZ': master_held_18()}             # WAVE2 18 MHz exception at G-MEM (PI's text: production's 'refuse')
     if rnd:
         g.update(INSTALL_ROUND=rnd, WQ=roots.wq(rnd), QROOT_NAME=roots.aq_name(rnd))
     env = {'P3_ARCHIVE_RUN': roots.run, 'P3_ARCHIVE_ROOT': roots.archive, 'P3_INSTALL_FREE_FLOOR_GB': repr(float(C.FREE_FLOOR_GB)),

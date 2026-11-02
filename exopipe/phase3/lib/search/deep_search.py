@@ -183,6 +183,24 @@ def _elev_floor(stokes):
     return float(sv2.CONFIG['MIN_ELEVATION'])
 
 
+# SEARCH-TIME TABLE RECORD-ONLY IN DEEP (2026-10-18, the refactor chat under Gregg's delegation R-GREGG-20261016-REFACTOR-
+# DECIDES-BY-GOALS; deep chat ledger FINDING-DEEP-TABLE-APPLIED-TWICE-WITH-DIFFERENT-INPUTS-PULSAR-EXEMPTION-PUBLISH-ONLY): the
+# table was derived with the cell-median frame rms and the night's target beam, which the publish pass (p3s2_conform) applies,
+# with the pulsar exemption; the search applied it a second time with other inputs (this epoch's rms, the master's empirical
+# beam) and no exemption. In deep the search's verdict is RECORDED (search_table_record.csv: verdict, note, inputs) and removes
+# nothing; conform applies the table once. Other cadences unchanged.
+STR_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'snr', 'verdict', 'note', 'frame_rms_jy', 'beam_deg',
+            'applied']
+# WAVE2 B-02 (step 3b, search_detect.REMOVAL_RULES 'once-in-search'): there the search IS the table's one application, with the
+# inputs it was derived with (the table noise of the cell's admitted nights, the frame's BMAJ; the pulsar decisions in
+# table_pulsar_decisions.csv) and no publish step applies it - each verdict is recorded with those inputs and applied = 1
+
+
+def _str_row(lst, scope, stokes, d, c, verdict, note, rms, beam, applied):
+    g = _gled_row(lst, scope, stokes, d, c, 1)
+    return g[:9] + [int(bool(verdict)), note or '', rms, beam, int(bool(applied))]
+
+
 def _append_locked(path, cols, rows):
     """Lock-serialized CSV append (same pattern as phase3_i_deep)."""
     if not rows:
@@ -219,7 +237,9 @@ REFUSAL_COLUMNS = (
     ('_epochgate_excluded.csv', 'lst,scope,date,attempt'),
     ('_sanity_I_excluded.csv', 'lst,scope,date,qa3_rms_mjy,cell_median_qa3_rms_mjy,attempt'),
     ('_sanity_excluded.csv', 'lst,scope,date,qa3_rms_mjy,cell_median_qa3_rms_mjy,attempt'),
-    ('_searchtier_excluded.csv', 'lst,scope,date,stokes,stage1_rms,threshold,attempt'),
+    ('_searchtier_excluded.csv', 'lst,scope,date,stokes,stage1_rms,threshold,rule,attempt'),   # rule 'ratio2xmedian' since 2026-10-30
+                                                                             # (production 702dd68); rows written before have no rule
+                                                                             # column (7) - the attempt tag is the last column in both
     ('_wbmember_excluded.csv', 'lst,scope,date,stokes,member,reason,attempt'),   # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION: one row per (member or image, reason)
     ('_stale_input_excluded.csv', 'lst,scope,date,why,attempt'),
     ('_beam_excluded.csv', 'lst,scope,date,beam_area_over_cell_median,threshold,attempt'),
@@ -606,6 +626,7 @@ _atexit.register(_cleanup_spills)
 _STRIATION_OFF = os.environ.get('P3_STRIATION_OFF') == '1'   # battery variable (Gregg 2026-09-08); production default ON
 _REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'
 WIDEBAND_MEMBER_ADMISSION = os.environ.get('P3_WIDEBAND_MEMBER_ADMISSION', '1') == '1'   # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION
+SEARCH_TIER_RATIO = float(os.environ.get('P3_SEARCH_TIER_RATIO', '2.0'))   # GREGG 2026-10-30 ("Apply the best correct statistical tool that keeps EQ Peg's burst"; "Do the faster option"): an epoch is refused from the S search when its stage-1 S rms > RATIO x the cell's median (replaces median + SEARCH_TIER_SIGMA x MAD: that threshold followed the other nights' scatter - 21h 2025-08-01 64 MHz searched at 106.5 mJy, 69 MHz refused at 108.2 mJy, EQ Peg's -8.4 sigma burst)
 SEARCH_TIER_SIGMA = float(os.environ.get('P3_SEARCH_TIER_SIGMA', '5.0'))   # R-GC10 Layer-2 search tier: 4.0 (Gregg 2026-09-09) -> 5.0 (Gregg 2026-09-13 "Change to MAD 5 for exclusion from transient search")         # battery variable: no per-frame x2 flow refinement (night flow only)
 
 
@@ -1170,9 +1191,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # snapshot / sub-LST chat's (cross-tier note in the ledger). P3_ALLOW_OLD_MASTERS=1 bypasses it for archaeology, never production.
     if cadence == 'deep' and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':
         from exopipe.phase3.lib.masters import membership as _MB
-        from exopipe.phase3.lib.masters import admit as _ADV               # WAVE2 D-ADMIT: membership read with the admitted nights
-        from exopipe.phase3.lib.search import admitted as _ADS             # WAVE2 D-ADMIT
-        _mv, _mrep = _ADV.verify(base, policy=_ADS.policy())               # WAVE2 D-ADMIT (production: _MB.verify(base))
+        from exopipe.phase3.lib.search import admitted as _ADS             # WAVE2 D-ADMIT: membership read with the admitted nights
+        _mv, _mrep = _ADS.verify_master(base, policy=_ADS.policy())        # WAVE2 D-ADMIT, WAVE2 18-MHZ: one verification with the
+        #                                                                    step's gate E3 (production: _MB.verify(base))
         _mv = _mv + _MB.verify_products(base)   # membership + what the master must carry (flux scale, PB, dewarp)
         for _x in _mrep:                                                   # WAVE2 D-ADMIT: 'admitted, rebuild pending'
             print(f'  {_x}', flush=True)
@@ -1462,7 +1483,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                       f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms (needs {SEARCH_TIER_MIN})')
                 continue
             _med = float(np.median(_v)); _mad = float(np.median(np.abs(_v - _med))) * 1.4826
-            _thr = _med + SEARCH_TIER_SIGMA * _mad
+            _thr = SEARCH_TIER_RATIO * _med                # Gregg 2026-10-30 (was _med + SEARCH_TIER_SIGMA * _mad)
             _rm = {**_rm, **_ADS.values(_adm, f'stage2_{_st.lower()}_rms_mjy')}   # WAVE2 D-ADMIT: an admitted night's own value, after
                                                                            # the threshold (the same provisional-stage metric)
             for d in dates:
@@ -1478,10 +1499,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _tier:
             with open(f'{_refdir}/{lst}_{scope}_searchtier_excluded.csv', 'a') as _sf:
                 for d, _st, _r, _thr in _tier:
-                    _sf.write(f'{lst},{scope},{d},{_st},{_r:.1f},{_thr:.1f},{_attempt}\n')
+                    # the rule before the attempt tag: readers take the LAST column as the tag (sublst_deep_omission.py, photometry_tier_
+                    # cutouts), others read columns 0-5 (tier_rule3_*, build_qa_table, verify_tenmin_generation) - 2026-10-30
+                    _sf.write(f'{lst},{scope},{d},{_st},{_r:.1f},{_thr:.1f},ratio{SEARCH_TIER_RATIO:g}xmedian,{_attempt}\n')
             print(f'  {lst} {scope}: SEARCH-TIER GATE (per Stokes) - I search refuses {len(_skipI_tier)} epoch(s) {sorted(_skipI_tier)}; '
                   f'V search refuses {len(_skipV_tier)} epoch(s) {sorted(_skipV_tier)} '
-                  f'(stage-1 rms > median + {SEARCH_TIER_SIGMA:.0f} x MAD of that Stokes)')
+                  f'(stage-1 rms > {SEARCH_TIER_RATIO:g} x the cell median of that Stokes)')
             # (an epoch refused by both Stokes stays in dates: its frames are still made; only its search is skipped)
     except FileNotFoundError as _e:
         raise RuntimeError(f'{lst} {scope}: search-tier gate input missing ({_e}); REFUSING')
@@ -1495,7 +1518,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if cadence == 'deep' and WIDEBAND_MEMBER_ADMISSION and scope in _WBA.GROUPS:
         from exopipe.common.phase2_config import SUBBAND_BANDS as _SBB
         from exopipe.phase3.lib.masters import night_image_gate as _NGm, epoch_gate as _EGm
-        _wbp = dict(sigma=SEARCH_TIER_SIGMA, tier_min=SEARCH_TIER_MIN, sanity_x_both=10.0, sanity_x_i=SANITY_I_X,
+        _wbp = dict(ratio=SEARCH_TIER_RATIO, tier_min=SEARCH_TIER_MIN, sanity_x_both=10.0, sanity_x_i=SANITY_I_X,
                     sanity_min=SANITY_MIN_NIGHTS, beam_ratio=float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')),
                     beam_min=(10 ** 9 if os.environ.get('P3_BEAM_GATE_OFF') == '1' else BEAM_GATE_MIN_NIGHTS))
         _wbrd = dict(night_failed=_NGm.failed_dates, epoch_failed=_EGm.failed_dates, same_state_v=_same_state_refused_v,
@@ -1775,7 +1798,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _ssA_V = _ADS.stacks(dates, _pop, _adm, resid_V, lambda _r: _sigma_stack(_r, cell_work, hdr0, 'V'),   # WAVE2 D-ADMIT
                          lambda _s, _d: _write_sigstack(_s, hdr0, run_root, lst, scope, 'V', night=_d), f'{lst} {scope} V')
 
-    gled_rows, gimg_rows = [], []
+    gled_rows, gimg_rows, str_rows = [], [], []
     v_pending, i_pending = [], []
     _te_v = {}    # WAVE2 B-30: each V epoch's ephemeris time (its vetoes; its candidates' body labels)
     _gimgI = {}   # I image rows by date, completed after the post-loop curve stage
@@ -2422,15 +2445,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                                      [c['_b02_pos'][0]], [c['_b02_pos'][1]], elev=[c['_b02_el']],   # WAVE2 B-02: derived
                                                      phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
                         _b02_psr('I', d_, [c], _tc, _tn)               # WAVE2 B-02: with - the cell's noise, the frame's beam, the
-                    else:                                              # WAVE2 B-02: catalogue position, its frame-mid elevation
+                        _str_in = (_b02_tnoise('I', d_), float(_fhI[d_]['BMAJ']), True)   # WAVE2 B-02: catalogue position, its frame-mid
+                    else:                                              # WAVE2 B-02: elevation; recorded with them, applied (above STR_COLS)
                         _tc, _tn = _table_and_inputs([c], 'I', scope, _pa, max(drI_, 1e-12), em * cd,
                                                      [c['coord'].ra.deg], [c['coord'].dec.deg],
                                                      elev=(_mid_hour_elev(lst, [c['coord'].ra.deg], [c['coord'].dec.deg]) if cadence == 'deep' else None),
                                                      phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
-                    if bool(_tc[0]):
+                        _str_in = (drI_, em * cd, cadence != 'deep')   # deep: record-only (2026-10-18, above STR_COLS)
+                    str_rows.append(_str_row(lst, scope, 'I', d_, c, _tc[0], _tn[0], *_str_in))
+                    if bool(_tc[0]) and _str_in[2]:
                         cut = True; c['table_note'] = _tn[0]
-                    elif _tn[0]:                                       # 2026-10-17: an exemption's note ('table-exempt: ...')
-                        c['table_note'] = _tn[0]                       # kept for the gate ledger
+                    elif _tn[0] and not bool(_tc[0]):                  # 2026-10-17: an exemption's note ('table-exempt: ...')
+                        c['table_note'] = _tn[0]                       # kept for the gate ledger (a record-only verdict's note is
+                                                                       # in search_table_record.csv, as production's)
                 if cut:
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
                                                reason='table', pass_ms=1))
@@ -2503,20 +2530,23 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                                elev=[c['_b02_el'] for c in finals],   # WAVE2 B-02: inputs (the cell's noise, not the
                                                phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
                 _b02_psr('V', d, finals, _tcv, _tnv)                   # WAVE2 B-02: median over this epoch's finals)
+                _str_in = (_b02_tnoise('V', d), float(_fhV[d]['BMAJ']), True)   # WAVE2 B-02: recorded with them, applied (above STR_COLS)
             else:                                                      # WAVE2 B-02
                 _tcv, _tnv = _table_and_inputs(finals, 'V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
                                                [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals],
                                                elev=(_mid_hour_elev(lst, [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
                                                      if cadence == 'deep' else None),   # elevation-band tables in the search (Gregg 2026-10-06)
                                                phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
+                _str_in = (_rmsV, em * cd, cadence != 'deep')          # deep: record-only (2026-10-18, above STR_COLS)
             _keepv = []
             for c, _x, _n in zip(finals, _tcv, _tnv):
-                if bool(_x):
+                str_rows.append(_str_row(lst, scope, 'V', d, c, _x, _n, *_str_in))
+                if bool(_x) and _str_in[2]:
                     c['table_note'] = _n
                     gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, reason='table', pass_ms=c.get('_pm', ''), jup_veto=0))
                 else:
-                    if _n:                                             # 2026-10-17: an exemption's note kept for the ledger
-                        c['table_note'] = _n
+                    if _n and not bool(_x):                            # 2026-10-17: an exemption's note kept for the ledger (a
+                        c['table_note'] = _n                           # record-only verdict's note: search_table_record.csv)
                     _keepv.append(c)
             finals = _keepv
         if len(finals) >= ROWLINE_MIN:   # ROW-LINE veto, V (Gregg 2026-09-05, independent of I)
@@ -2548,6 +2578,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             sanity_x=SANITY_I_X))                                      # WAVE2 B-02
     _append_locked(f'{run_root}/{_RR.TABLE_PULSAR}', _RR.TABLE_PULSAR_COLS, _tpd)   # WAVE2 B-02 (step 3b): none written without one
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
+    _append_locked(f'{run_root}/search_table_record.csv', STR_COLS, str_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)
     # ZERO-PRODUCT REFUSAL (2026-09-13, CLAUDE.md section 3: "a rebuild that silently no-ops is a bug"
     # and "wrote 0 candidates never produces a done marker"). A run that searched epochs but wrote no

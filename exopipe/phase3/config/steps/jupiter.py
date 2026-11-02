@@ -25,8 +25,14 @@ from exopipe.phase3.config import _Section
 #   literal at step start (refuses when they differ) and refuses an override of a MIRROR key unless the in-place driver can
 #   set that module global (the redirectable roots); production runs set nothing.
 # Values re-read 2026-10-13 at clv15 HEAD (phase3_jupiter_measure.py last changed 91f5b87), exopipe_ops HEAD (jupiter_server.py
-# 6b8a23a), exopipe 7965688 Phase-1 files (sha256 pinned below), V2 code files on disk (/lustre/gh/main/phase3/jupiter/v2/code,
-# not a git repository: identified per run by sha256 in the run record).
+# 6b8a23a), exopipe 7965688 Phase-1 files (sha256 pinned below). V2 code (/lustre/gh/main/phase3/jupiter/v2/code) re-read
+# 2026-11-02 at its HEAD e24cc9a (2026-10-28): a git repository since 2026-10-25 (baseline f6a514c = the files the 2026-10-13
+# values were read from); every V2 file:line below is at e24cc9a, and each run still records the sha256 of every loaded file.
+# The V2 changes of 2026-10-25..28 carried here: jupiter.DEEP_WEIGHTS (a87b30c, the frozen deep records with the membership
+# vetoes), JUPV2_GEN in jupiter.ENV_FORBIDDEN (564e114, jsite_lib.py:22), jupiter_v2.PAIR_TOL_S (f2df314), the line citations.
+# The live site's state: jupiter_v2.SITE_* (checked by jupiter_site_summary; gate J28 keeps the v2 action out of it). Not carried: the
+# generation rebuild (rebuild/run_cell_v2.sh, 24 nights in v2/gen_20261025) and site v3 (rebuild/run_site_v3.sh; the live
+# site is V2 only, published with jsite_publish_preview.py --live) - `exopipe3 jupiter v2` still runs the 2026-10-06 flow.
 # =====================================================================================================================
 
 class jupiter(_Section):
@@ -35,7 +41,7 @@ class jupiter(_Section):
     ROOT = '/lustre/gh/main/phase3/jupiter'                      # program root
     PRODUCTS = 'products'                                        # Phase-1 cells <ROOT>/products/<cell>/; MIRROR phase3_jupiter_measure.py:33 (OUT_DEFAULT)
     PRODUCT_LOGS = 'products/logs'                               # per-stage logs + run.log; jupiter_phase1_run.sh:9 (L)
-    V2 = 'v2'                                                    # V2 tree <ROOT>/v2; jupv2_masters.py:48, jint_metrics.py:124, jsite_render.py:65
+    V2 = 'v2'                                                    # V2 tree <ROOT>/v2; jupv2_masters.py:86, jint_metrics.py:124, jsite_render.py:72
     FLAGGED = 'phase1_flagged'                                   # Q12 copies; jupiter_flag_qa.py:56 (JOVIAN_ROOT), launcher :32 (JFQ_DEST)
     EPHEM_SUBDIR = 'ephem'                                       # where `ephem` writes: <out>/ephem/jupiter_ephem_<date>.csv (jup_ephem_fetch.py:25 D + 'ephem')
     # ---- pinned inputs
@@ -43,12 +49,16 @@ class jupiter(_Section):
     EPHEM_NAME = 'jupiter_ephem_{date}.csv'                      # phase3_jupiter_measure.py:50
     WINDOW_CSV = '/lustre/gh/main/phase3/jupiter/phase0/nights.csv'   # the Jupiter window (224 cells >= 30 deg); jup_nights.py; --cells pattern universe
     MIN_EL_DEG = 30.0                                            # deg, Jupiter at mid-hour; Gregg 2026-10-04 (IR:1230); JUPITER-PROGRAM-PHASE0-GO (ledger 1772)
-    SUBLST_ROOT = '/lustre/gh/main/phase3/sublst'                # PINNED-INPUT; MIRROR phase3_jupiter_measure.py:30 (SL), build_cell.py:38, jblue_build.py:35, jblue_test.py:24, jint_metrics.py:130, jsite_lib.py:24, jsite_test.py:72
-    CUBES_ROOT = '/lustre/pipeline/exopipe/phase3/snapshot_cubes'   # PINNED-INPUT; MIRROR phase3_jupiter_measure.py:31 (CUBES), jsite_lib.py:380, jblue_build.py:92
-    DEEP_WEIGHTS = '/lustre/pipeline/exopipe/phase3/Coadd/Run_20260909_000000/{lst}/{sb}/weights.csv'   # PINNED-INPUT; V2 night weights; MIRROR jupv2_masters.py:53 (WEIGHTS_CSV)
+    SUBLST_ROOT = '/lustre/gh/main/phase3/sublst'                # PINNED-INPUT; MIRROR phase3_jupiter_measure.py:30 (SL), build_cell.py:53, jblue_build.py:43, jblue_test.py:32, jint_metrics.py:130, jsite_lib.py:25, jsite_test.py:72
+    CUBES_ROOT = '/lustre/pipeline/exopipe/phase3/snapshot_cubes'   # PINNED-INPUT; MIRROR phase3_jupiter_measure.py:31 (CUBES), jsite_lib.py:384, jblue_build.py:150
+    DEEP_WEIGHTS = '/lustre/gh/main/phase3/sublst/deep_coadd_records_frozen_20261008/{lst}/{sb}/weights.csv'   # PINNED-INPUT; V2 night
+    #   weights (masters select): the FROZEN deep co-add records since the 2026-10-25 generation (V2 code a87b30c; was the live
+    #   Coadd/Run_20260909_000000 record); a night with in_master 0 or a membership veto of the deep co-add
+    #   (phase3_tier_rules.membership_vetoed) weighs 0 - tier rule 2 as phase3_sublst_loo applies it since ruling B 2026-10-08
+    #   (IMPLEMENTED-RULINGS-A-B-20261008-SUBLST-FLOWREF-AND-MEMBERSHIP-VETOES; = flow.WEIGHTS_CSV); MIRROR jupv2_masters.py:93 (WEIGHTS_CSV)
     # ---- code roots of the in-place engines (refactor window; the clv15 / exopipe_ops roots come from the site file)
     PRODUCTION_EXOPIPE_ROOT = '/lustre/gh/main/exopipe'          # the production package the in-place children import (phase3_jupiter_measure.py:307; launcher :81, :90)
-    V2_CODE_ROOT = '/lustre/gh/main/phase3/jupiter/v2/code'      # V2 code tree (outside git, B-87 default (b))
+    V2_CODE_ROOT = '/lustre/gh/main/phase3/jupiter/v2/code'      # V2 code tree (B-87 default (b): identified per file by sha256; a git repository since 2026-10-25, baseline f6a514c)
     PHASE0_CODE_ROOT = '/lustre/gh/main/phase3/jupiter/phase0'   # jup_ephem_fetch.py, jup_nights.py
     MEASURE_MODULE = 'phase3_jupiter_measure.py'                 # under the site's clv15 legacy root
     SERVER_MODULE = 'jupiter_server.py'                          # under the site's exopipe_ops legacy root
@@ -58,12 +68,14 @@ class jupiter(_Section):
     WIDEBANDS = ('Red', 'Green', 'Blue')                         # 10-min tier only (x2 residuals); MIRROR phase3_jupiter_measure.py:37 (WIDE); Full not measured
     ANCHOR_SUBBANDS = ('41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz')   # decimetric reference; phase3_jupiter_measure.py:38 (BANDS[5:])
     BODIES = ('jupiter', 'io', 'europa', 'ganymede', 'callisto')   # MIRROR phase3_jupiter_measure.py:39
-    CADENCES = ('10s', '1min', '10min')                          # jupiter_server.py:23 (TIERS); jsite_lib.py:34
+    CADENCES = ('10s', '1min', '10min')                          # jupiter_server.py:23 (TIERS); jsite_lib.py:35
     WINDOWS_PER_HOUR = 6                                         # 10-min windows; phase3_jupiter_measure.py:165, :173 (range(6))
     # ---- process environment of the in-place engines
     ENV = {'NUMPY_MADVISE_HUGEPAGE': '0'}                        # jupiter_phase1_run.sh:8; masters/run_all.sh:5; occurrence/run_all.sh:7; run_integration.sh:18
     ENV_V2_EXTRA = {'PYTHONDONTWRITEBYTECODE': '1'}              # run_integration.sh:18
-    ENV_FORBIDDEN = ('P3_COADD_RUN', 'P3_DEEP_SEARCH_STATE', 'EXOPIPE_JUPITER_FLAG_QA', 'JFQ_')   # gate J12 (names ending '_' are prefixes): phase3_tier_rules.py:36, :46; jupiter_flag_qa.py:340, :522; launcher :32-37
+    ENV_FORBIDDEN = ('P3_COADD_RUN', 'P3_DEEP_SEARCH_STATE', 'EXOPIPE_JUPITER_FLAG_QA', 'JFQ_', 'JUPV2_GEN')   # gate J12 (names ending '_' are prefixes): phase3_tier_rules.py:36, :46; jupiter_flag_qa.py:340, :522; launcher :32-37;
+    #   JUPV2_GEN (V2 code 564e114, jsite_lib.py:22-23, :412): set, it re-roots the site modules' nightgeom and anchor inputs to a rebuild
+    #   generation (rebuild/run_site_v3.sh and run_cells_v2.sh export it) - the v2 action's 2026-10-06 flow reads <ROOT>/v2/nightgeom, v2/anchor
     # interpreter per stage: names of site PYTHON keys ('default' = py38_orca_nkosogor = the launchers' P8; 'flow' = py310_orca = P10)
     INTERPRETER = {'measure.extract': 'flow', 'measure.fit': 'default', 'measure.assign': 'default', 'measure.test': 'flow',   # jupiter_phase1_run.sh:12-14
                    'v2.masters.select': 'default', 'v2.masters.test': 'default', 'v2.masters': 'flow',                     # masters/run_all.sh:7-8, :19-25
@@ -111,46 +123,59 @@ class jupiter_measure(_Section):
 
 class jupiter_v2(_Section):
     """Jupiter V2 (the V2 code tree in place; one cell built). Master variants, geometry, Blue anchor, metrics, site."""
-    CELLS_SUPPORTED = ('05h_2024-12-29',)                        # gate J20: decision 8 (rebuild the other nights) not started (RULINGS-JUPITER-DECISIONS-2-12, ledger 1883/1970)
+    CELLS_SUPPORTED = ('05h_2024-12-29',)                        # gate J20: the 2026-10-06 flow this step runs still hard-codes 05h_2024-12-29 (jint_metrics.py:128,
+    #   jsite_lib.py:26, jsite_test.py:73, occurrence/cell_lookup.py:23-24, the refcheck script :12; jupv2_masters.py builds any --cell since
+    #   a87b30c). Decision 8 (rebuild the other nights; RULINGS-JUPITER-DECISIONS-2-12, ledger 1883/1970) was carried out by production's
+    #   generation rebuild of 2026-10-25/26 (rebuild/run_cell_v2.sh: 24 nights, V2 only, into v2/gen_20261025) - not carried here yet
     ROOT_LABELS = ('prod', 'V0', 'V1', 'V2', 'V2b', 'V3')        # run_integration.sh:28-30
-    VARIANTS = ('V0', 'V1', 'V2', 'V2b', 'V3')                   # MIRROR jupv2_masters.py:54
-    RULED_ROOT = 'V2'                                            # RULING-JUPITER-MASTER-V2-4BEAM (1882), site default (1899); MIRROR jsite_render.py:74 (DEFAULT_ROOT)
-    ROOT_ORDER = ('V2', 'prod', 'V0', 'V1', 'V2b', 'V3')         # site.json order; MIRROR jsite_render.py:75
-    FAR_BEAMS = {'V2': 4.0, 'V2b': 3.0}                          # x tonight's median Stokes-I BMAJ; RULED V2 4.0 (1882); MIRROR jupv2_masters.py:55
-    V3_BEAMS = 2.0                                               # x BMAJ_I, no mask inside this disk (comparison root); MIRROR :56
-    ARTEFACT_ANNULI_DEG = ((0.2, 1.0), (1.0, 3.0))               # deg around Jupiter, master metrics; MIRROR jupv2_masters.py:61-62 (ANN_IN, ANN_OUT)
-    INTEGRATION_S = 10.03102041                                  # s, one 10-s integration (pairing by DATE-OBS + half); IMPLEMENTED-Q1-V2-STACKS-PAIRED-BY-INTEGRATION-1229 (2012); MIRROR jupv2_masters.py:510, jblue_build.py:91, jsite_lib.py:379
+    VARIANTS = ('V0', 'V1', 'V2', 'V2b', 'V3')                   # MIRROR jupv2_masters.py:94
+    RULED_ROOT = 'V2'                                            # RULING-JUPITER-MASTER-V2-4BEAM (1882), site default (1899); MIRROR jsite_render.py:81 (DEFAULT_ROOT)
+    ROOT_ORDER = ('V2', 'prod', 'V0', 'V1', 'V2b', 'V3')         # site.json order; MIRROR jsite_render.py:82
+    FAR_BEAMS = {'V2': 4.0, 'V2b': 3.0}                          # x tonight's median Stokes-I BMAJ; RULED V2 4.0 (1882); MIRROR jupv2_masters.py:95
+    V3_BEAMS = 2.0                                               # x BMAJ_I, no mask inside this disk (comparison root); MIRROR jupv2_masters.py:96
+    ARTEFACT_ANNULI_DEG = ((0.2, 1.0), (1.0, 3.0))               # deg around Jupiter, master metrics; MIRROR jupv2_masters.py:101-102 (ANN_IN, ANN_OUT)
+    INTEGRATION_S = 10.03102041                                  # s, one 10-s integration (pairing by DATE-OBS + half); IMPLEMENTED-Q1-V2-STACKS-PAIRED-BY-INTEGRATION-1229 (2012); MIRROR jupv2_masters.py:758, jblue_build.py:99, jsite_lib.py:383
+    PAIR_TOL_S = 1.0                                             # s: the frames of ONE integration = DATE-OBS within 1 s (wideband 10-s rows and the Blue product
+    #   group member frames by their own integration since V2 f2df314; production phase3_snapshot_group_search.py:68); MIRROR
+    #   jupv2_masters.py:759 and jblue_build.py:100 (both compared)
     MASTERS_STAGES = ('select', 'raw', 'masters', 'resid', 'fit', 'red10', 'metrics', 'mastersum', 'test', 'figs', 'bright', 'imprints')   # masters/run_all.sh:12 (+ bright_ratio.py, imprint_contrast.py, run by hand)
-    MASTERS_NPROC = {'raw': 10, 'resid': 14, 'fit': 20, 'red10': 10, 'masters': 12}   # masters/run_all.sh:21-24; jupv2_masters.py:1511 default 12
+    MASTERS_NPROC = {'raw': 10, 'resid': 14, 'fit': 20, 'red10': 10, 'masters': 12}   # masters/run_all.sh:21-24; jupv2_masters.py:2211 default 12
     MASTERS_TEST_FAILURE_CONTINUES = True                        # run_all.sh:19 runs figs after a failed test; the unit is still REFUSED (B-30 default)
-    ANCHOR_MEMBERS = ('64MHz', '69MHz', '73MHz', '78MHz', '82MHz')   # Blue product members; IMPLEMENTED-RULING7-BLUE-ANCHOR-PRODUCT-1229 (1902); MIRROR jblue_build.py:36 (BLUE)
+    ANCHOR_MEMBERS = ('64MHz', '69MHz', '73MHz', '78MHz', '82MHz')   # Blue product members; IMPLEMENTED-RULING7-BLUE-ANCHOR-PRODUCT-1229 (1902); MIRROR jblue_build.py:44 (BLUE)
     ANCHOR_NPROC = 16                                            # run_integration.sh:57
-    ANCHOR_TEST = {'nrefit': 12, 'seed': 20261006}               # jblue_test.py:80-81 (defaults)
+    ANCHOR_TEST = {'nrefit': 12, 'seed': 20261006}               # jblue_test.py:89-90 (defaults)
     GATE = (3, 15.0, 95.0)                                       # (min references, radius deg, percentile); decision 5 / Q4 (2010); MIRROR jint_metrics.py:131 (GATE_MIN_REFS, GATE_RADIUS_DEG, GATE_PCT)
     WANDER_MIN_PAIRS = 3                                         # same-frame I/V pairs for a wander term; MIRROR jint_metrics.py:133
     PROVISIONAL_K_MAD = 3.0                                      # T_scat, T_blue = median + 3 x 1.4826 MAD; PROVISIONAL, not ruled (2010 notes); MIRROR jint_metrics.py:134 (K_MAD)
     REF_INPUTS = {'05h_2024-12-29': ('integrate/inputs/ref_offsets_05h_2024-12-29.csv',
-                                     'integrate/inputs/window_summary_05h_2024-12-29.csv')}   # per-cell reference-tie inputs under <ROOT>/v2; jint_metrics.py:128, jsite_lib.py:25, jsite_test.py:73
+                                     'integrate/inputs/window_summary_05h_2024-12-29.csv')}   # per-cell reference-tie inputs under <ROOT>/v2; jint_metrics.py:128, jsite_lib.py:26, jsite_test.py:73
     REFCHECK_SCRIPT = 'integrate/inputs/jup_refcheck_20241229.py'   # under <ROOT>/v2: the scratch analysis that made REF_INPUTS (cell hard-coded at its line 12)
-    HZ_API = 'https://ssd.jpl.nasa.gov/api/horizons.api'         # MIRROR hzfetch.py:31 (API)
-    HZ_SITE = '-118.2817,37.2398,1.222'                          # lon deg E, lat deg, height km; B-42 default (c) keep copies; MIRROR hzfetch.py:32 (SITE)
+    HZ_API = 'https://ssd.jpl.nasa.gov/api/horizons.api'         # MIRROR hzfetch.py:44 (API)
+    HZ_SITE = '-118.2817,37.2398,1.222'                          # lon deg E, lat deg, height km; B-42 default (c) keep copies; MIRROR hzfetch.py:45 (SITE)
     HZ_GRID = {'2024-12-29': ('01:20', '10:40', '06:15', '07:25')}   # UTC: 1-min grid G0..G1, 10-s check C0..C1 (hzfetch.py:22 usage); one entry per built night
-    RENDER_TIERS = ('10s', '1min', '10min')                      # jsite_render.py:2235
-    RENDER_NPROC = 12                                            # run_integration.sh:79 (jsite_render.py:2234 default 8)
-    STRETCH_SIGMA = {'I': (-5.0, 8.0), 'V': (-5.0, 5.0)}         # x local rms, panel grey scale; MIRROR jsite_render.py:82 (STRETCH)
-    R95_OVER_SIGMA = 2.448                                       # zoom circle radius = 2.448 x sigma (95 %); MIRROR jsite_lib.py:36
-    ZOOM_FRAME = (20.0, (0.5, 0.06), 6.0)                        # (cap arcmin, margin (arcmin, fraction), min side arcmin); IMPLEMENTED-JUPITER-ZOOM-FRAME-PER-INTEGRATION-1229 (2007); MIRROR jsite_render.py:954-956
-    REGION_LEVELS = (0.10, 0.25)                                 # CML-Io moon-region contours DRAWN for display; MIRROR jsite_render.py:1326
-    ROOT_NOTES = {   # verbatim page notes per root (run_integration.sh:36-40); the prod note is jsite_render.py:68 (PROD_NOTE)
+    RENDER_TIERS = ('10s', '1min', '10min')                      # jsite_render.py:2378 (--tiers default)
+    RENDER_NPROC = 12                                            # run_integration.sh:79 (jsite_render.py:2377 default 8)
+    STRETCH_SIGMA = {'I': (-5.0, 8.0), 'V': (-5.0, 5.0)}         # x local rms, panel grey scale; MIRROR jsite_render.py:89 (STRETCH)
+    R95_OVER_SIGMA = 2.448                                       # zoom circle radius = 2.448 x sigma (95 %); MIRROR jsite_lib.py:37
+    ZOOM_FRAME = (20.0, (0.5, 0.06), 6.0)                        # (cap arcmin, margin (arcmin, fraction), min side arcmin); IMPLEMENTED-JUPITER-ZOOM-FRAME-PER-INTEGRATION-1229 (2007); MIRROR jsite_render.py:967-969 (ZOOM_CAP, ZOOM_MARGIN, ZOOM_MIN_SIDE)
+    REGION_LEVELS = (0.10, 0.25)                                 # CML-Io moon-region contours DRAWN for display; MIRROR jsite_render.py:1390
+    ROOT_NOTES = {   # verbatim page notes per root (run_integration.sh:36-40); the prod note is jsite_render.py:75 (PROD_NOTE)
         'V0': 'V0 = production masked leave-one-out Master rebuilt (10 s/1 min identical to prod); 10 min = arm A (no x2, the ruled 10-min definition). Comparison root, non-conformant: V2 is the ruled Master (Gregg 2026-10-06).',
         'V1': "V1 = every other 05h night, no Jupiter masks (literal 'not adjacent'); 10 min = arm A (no x2, the ruled 10-min definition). Comparison root: V2 is the ruled Master (Gregg 2026-10-06).",
         'V2': "V2 = the RULED subtraction Master (Gregg 2026-10-06: 'Go with V2, the 4-beam Master'): nights whose Jupiter lies > 4 BMAJ from tonight's, no masks; its nights per band in the limits; 10 min = arm A without x2 and the one-night 18-32 MHz Master (2025-10-14) - both RULED 2026-10-07 (decision 1, 'Your rec accepted').",
         'V2b': 'V2b = nights with Jupiter > 3 BMAJ, no masks (admits 2025-01-11 at 27 MHz); 10 min = arm A (no x2, the ruled 10-min definition). Comparison root: V2 is the ruled Master (Gregg 2026-10-06).',
         'V3': "V3 = V0's nights and masks, no mask within 2 BMAJ of tonight's Jupiter (= V1 there); 10 min = arm A (no x2, the ruled 10-min definition). Comparison root: V2 is the ruled Master (Gregg 2026-10-06)."}
-    SCRATCH_ROOT = '/fast/gh/main/scratch'                       # production node-local V2 scratch on lwacalim08 (jupv2_masters.py:49, jblue_build.py:38, jsite_render.py:66, jint_content_summary.py:41, jsite_crop_archive.py:104, build_maps.py:39); --work replaces it
+    # ---- the LIVE site (production since 2026-10-25/28; class jupiter_site_summary on site/<cell>/site.json, gate J28)
+    SITE_ROOTS = ('V2',)                                         # the live site's roots, site.json order: V2 only - Gregg 2026-10-25 'yes, remove the
+    #   alternates and show only V2' (JOVIAN_TASK_BRIEF_20261025.md section 1; the alternates moved to v2/quarantine_superseded_20261025)
+    SITE_VERSION = 3                                             # the live renders' mode: jsite_render.py --site-v3 (V2 code 564e114; site.json site_version)
+    SITE_GENERATION = 'v2/gen_20261025'                          # under jupiter.ROOT: the generation whose <gen>/derived/<label> roots the live renders show
+    #   (rebuild/run_cell_v2.sh 2026-10-25/26, 24 nights); a new generation changes it by a commit
+    SCRATCH_ROOT = '/fast/gh/main/scratch'                       # production node-local V2 scratch on lwacalim08 (jupv2_masters.py:87, jblue_build.py:46, jsite_render.py:73, jint_content_summary.py:41, jsite_crop_archive.py:104, build_maps.py:39); --work replaces it
     SCRATCH = {'masters': 'jupv2_masters', 'anchor': 'jupv2_anchor', 'site': 'jupv2_site', 'integrate': 'jupv2_integrate',
                'provenance': 'jupv2_provenance', 'occurrence': 'jupv2_occurrence', 'refcheck': 'jupref_20241229'}   # sub-directories of the scratch root
-    PROTECTED_KEYS = ('CELLS_SUPPORTED', 'ROOT_LABELS', 'MASTERS_STAGES', 'REF_INPUTS', 'REFCHECK_SCRIPT', 'ROOT_NOTES', 'SCRATCH')
+    PROTECTED_KEYS = ('CELLS_SUPPORTED', 'ROOT_LABELS', 'MASTERS_STAGES', 'REF_INPUTS', 'REFCHECK_SCRIPT', 'ROOT_NOTES', 'SCRATCH',
+                      'SITE_ROOTS', 'SITE_VERSION', 'SITE_GENERATION')
     RULED = {'RULED_ROOT': ('RULING-JUPITER-MASTER-V2-4BEAM', 'IMPLEMENTED-RULING-JUPITER-MASTER-V2-4BEAM-SITE-DEFAULT'),
              'ROOT_ORDER': 'IMPLEMENTED-RULING-JUPITER-MASTER-V2-4BEAM-SITE-DEFAULT',
              'FAR_BEAMS': 'RULING-JUPITER-MASTER-V2-4BEAM',
@@ -219,9 +244,11 @@ class jupiter_serve(_Section):
     BIND = '127.0.0.1'                                           # reached by ssh tunnel (IF-SRV-05); jupiter_server.py:313; live 8801 argv '--bind 127.0.0.1'
     PHASE1_CWD = '/lustre/gh/main/exopipe_ops'                   # cwd of the live 8800 process (pid 100589, started 2026-10-05 09:29:52)
     PHASE1_LOG = 'products/logs/server_8800.log'                 # under the out root (the live 8800 has no log file)
-    V2_SITE_DIR = 'v2/site'                                      # under the out root; jsite_render.py:65; live 8801 argv '--directory /lustre/gh/main/phase3/jupiter/v2/site'
+    V2_SITE_DIR = 'v2/site'                                      # under the out root; jsite_render.py:72; live 8801 argv '--directory /lustre/gh/main/phase3/jupiter/v2/site'
     V2_SERVER_LOG = 'v2/site/server_8801.log'                    # the live 8801 log (stdout+stderr)
-    PHASE1_RETIRED = False                                       # decision 8 ("Recommendation accepted"): retire 8800 after the other 23 nights are rebuilt (RULINGS-JUPITER-DECISIONS-2-12; not started)
+    PHASE1_RETIRED = False                                       # decision 8 ("Recommendation accepted"): retire 8800 after the other 23 nights are rebuilt (RULINGS-JUPITER-DECISIONS-2-12);
+    #   production rebuilt them 2026-10-25/26 (v2/gen_20261025; the live V2 site holds 24 nights) but 8800 still serves (2026-11-02): its
+    #   retirement is the Jovian chat's call - this key follows it, it does not make it
     PARITY_PORT_OFFSET_MIN = 1000                                # --port-offset is 0 or >= this (parity servers never take a live port)
     TOL_S = {'10s': 5.0, '1min': 1e-3, '10min': 1e-3}            # s, integration grouping; MIRROR jupiter_server.py:40 (TOL; M33 fix 6b8a23a keeps it)
     STOP_WAIT_S = (10.0, 0.5)                                    # s: wait for the old pid after SIGTERM, poll interval (never SIGKILL; still alive = refused, gate J40)

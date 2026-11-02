@@ -43,8 +43,10 @@ import shutil
 import sys
 import time
 
+from exopipe.phase3.lib.search import attempts as _ATTS
+
 TIER = 'deep'
-_ATT_RE = re.compile(r'^(?P<cell>\d\dh_(?:\d+MHz|Red|Green|Blue|Full))_(?P<s>[IV])_(?P<att>\d{8}T\d{6})$')
+_ATT_RE = _ATTS.NAME          # <cell>_<S>_<UTC>, and production's drop patches <cell>_<S>_<UTC>stdrop (lib/search/attempts.py)
 _CHILD_MODULE = 'exopipe.phase3.lib.search.deep_step'
 _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 # WAVE2 B-30: the values of search_detect / search_sublst.EPHEMERIS_TIME (deep_search._eph_time reads them in the engine)
@@ -178,7 +180,8 @@ def plan_items(args, stages):
     if replay and args.replay_attempt != 'published':
         m = _ATT_RE.match(os.path.basename(args.replay_attempt.rstrip('/')))
         if not m:
-            raise ValueError(f'--replay-attempt {args.replay_attempt}: the directory name must be <cell>_<S>_<YYYYmmddTHHMMSS>')
+            raise ValueError(f'--replay-attempt {args.replay_attempt}: the directory name must be <cell>_<S>_<YYYYmmddTHHMMSS> '
+                             f'(or production\'s drop patch <cell>_<S>_<YYYYmmddTHHMMSS>stdrop)')
         if cellset and cellset != [m['cell']]:
             raise ValueError(f'--replay-attempt is an attempt of {m["cell"]}; --cells {args.cells} names other cells')
         return [Item(m['cell'], m['s'], 'replay', base=os.path.abspath(args.replay_attempt))]
@@ -215,15 +218,8 @@ def plan_items(args, stages):
 
 
 def _last_register_row(path, cell):
-    if not os.path.exists(path):
-        return None
-    hit = None
-    with open(path) as f:
-        for line in f:
-            parts = line.strip().split(',')
-            if len(parts) >= 3 and parts[0] == cell:
-                hit = (parts[1], parts[2])
-    return hit
+    rows = _ATTS.register_rows(path, cell)        # the last row is current: production's rule (lib/search/attempts.py)
+    return rows[-1] if rows else None
 
 
 def resolve_published(cell, stokes, out):
@@ -245,6 +241,22 @@ def resolve_published(cell, stokes, out):
             if os.path.isdir(d):
                 return d
     return None
+
+
+def superseded_by(att, cell, stokes, out):
+    """The current attempt of (cell, Stokes) when the attempt ``att`` is a published one a later register row superseded, else None.
+    Production's rule (lib/search/attempts.py): the last register row is current - a drop patch <UTC>stdrop is registered after the
+    attempt it patched, a re-search after the patch - so a register listing ``att`` with the current attempt another one means
+    ``att`` is superseded. An attempt no register lists (never published: a test's, a scratch one) is not judged."""
+    m = _ATT_RE.match(os.path.basename(att.rstrip('/')))
+    cur = resolve_published(cell, stokes, out)
+    mc = _ATT_RE.match(os.path.basename(cur.rstrip('/'))) if cur else None
+    if not m or not cur or os.path.realpath(cur) == os.path.realpath(att) or (mc and mc['att'] == m['att']):
+        return None                                   # (the current attempt itself, or a copy of it: the same tag)
+    c = _cfg()
+    regs = (os.path.join(out, f'published_{stokes}.csv'),
+            os.path.join(c.paths.OPS_ROOT, c.search_run.REGISTER.format(stokes=stokes)))
+    return cur if any(t == m['att'] for p in regs for _h, t in _ATTS.register_rows(p, cell)) else None
 
 
 # =====================================================================================================================
@@ -374,7 +386,7 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
            'P3_DEEP_MIN_ELEVATION': repr(float(sd.ELEVATION_FLOOR_DEG)), 'P3_DEEP_MIN_EPOCHS': str(int(sd.MIN_EPOCHS)),
            'P3_MIN_EPOCHS': str(int(sd.SIGMA_STACK_MIN_EPOCHS)), 'P3_SIZE_FLOOR_BEAMS': repr(float(sd.SIZE_FLOOR_BEAMS)),
            'P3_AXIS_REMOVE': repr(float(sd.AXIS_REMOVE)), 'P3_SANITY_I_X': repr(float(sd.SANITY_X)),
-           'P3_SEARCH_TIER_SIGMA': repr(float(sd.SEARCH_TIER_SIGMA)), 'P3_WIDEBAND_MEMBER_ADMISSION': '1' if sd.WIDEBAND_MEMBER_ADMISSION else '0',
+           'P3_SEARCH_TIER_RATIO': repr(float(sd.SEARCH_TIER_RATIO)), 'P3_WIDEBAND_MEMBER_ADMISSION': '1' if sd.WIDEBAND_MEMBER_ADMISSION else '0',
            'P3_BEAM_GATE_RATIO': repr(float(sd.BEAM_GATE_RATIO)),
            'P3_SANITY_MIN_NIGHTS': str(int(sd.SANITY_MIN_NIGHTS)), 'P3_SEARCH_TIER_MIN': str(int(sd.SEARCH_TIER_MIN)),
            'P3_BEAM_GATE_MIN_NIGHTS': str(int(sd.BEAM_GATE_MIN_NIGHTS)),
@@ -386,6 +398,10 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
     from exopipe.phase3.lib.masters import admit as _AD
     from exopipe.phase3.lib.search import admitted as _ADS
     env[_ADS.POLICY_ENV] = _AD.admitted_policy(c.masters_admit.ADMITTED_NIGHTS)    # D-ADMIT: how the engine reads admitted nights
+    try:                                                                           # the 18 MHz carve-out of the engine's membership
+        env[_ADS.MASTER_18_ENV] = _ADS.step_held_18(sd.MASTER_HELD_18MHZ)        # gate: the step's config value, as its preflight's
+    except RuntimeError as e:                                                      # (an inherited variable that differs refuses)
+        raise Refusal(str(e))
     from exopipe.phase3.lib.search import removal_rules as _RR
     try:                                                                           # B-02: the search's removal rules (step 3a)
         env[_RR.RULES_ENV] = _RR.search_rules(sd.REMOVAL_RULES)
@@ -622,9 +638,15 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
         if not os.path.exists(p):
             raise Refusal(f'{item.cell}: {name} missing - gate {gate} cannot run; refused (never skipped)')
     if not si.ALLOW_OLD_MASTERS:
-        from exopipe.phase3.lib.masters import admit as AD, membership as MB
-        viol, rep = AD.verify(base, keep_18=True)      # D-ADMIT: an admitted night is 'admitted, rebuild pending', not absent; a night
-        #                                                holding its excluded 18 MHz is kept until the next rebuild (18 MHz exception)
+        from exopipe.phase3.lib.masters import membership as MB
+        from exopipe.phase3.lib.search import admitted as ADS
+        try:                                           # the step's own config value (engine_env hands the child the same; an
+            h18 = ADS.step_held_18(c.search_detect.MASTER_HELD_18MHZ)   # inherited variable that differs refuses)
+        except RuntimeError as e:
+            raise Refusal(f'{item.cell}: {e}')
+        viol, rep = ADS.verify_master(base, held_18=h18)   # D-ADMIT: an admitted night is 'admitted, rebuild pending', not absent; a
+        #                                                night holding its excluded 18 MHz is kept until the next rebuild under the
+        #                                                ruled search_detect.MASTER_HELD_18MHZ 'keep' - the engine's own gate calls the same
         viol = viol + MB.verify_products(base)
         f['gates'].append(('E3 membership rulings', not viol, f'{len(viol)} violation(s)'
                            + (f'; {len(rep)} admitted night(s), rebuild pending' if rep else '')))
@@ -662,6 +684,11 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
         if b:
             if not glob.glob(os.path.join(b, 'transients', f'Run_{ctx["label"]}')):
                 raise Refusal(f'{b}: no transients/Run_{ctx["label"]}/ to append to (label mismatch: --run {ctx["label"]})')
+            sup = superseded_by(b, item.cell, item.stokes, ctx['out']) if item.base != 'published' else None
+            if sup:                                   # the register's current attempt is another one: an append to this one
+                raise Refusal(f'{b} is superseded: the current published attempt of {item.cell} {item.stokes} is {sup} (the last '
+                              f'register row, production\'s rule - a drop patch <UTC>stdrop is registered after the attempt it '
+                              f'patched) - extending it would bring back what the later attempt removed; extend the current one')
             f['base_attempt'] = b
             # A night already searched in the base attempt would be appended twice; a night of the master's generation record
             # (weights.csv / HISTORY constituent: the nights the engine's input-provenance gate E15 admits) that the base did not
@@ -1092,6 +1119,9 @@ def outputs_of(item, ctx, f, fit_csv=None):
         p = os.path.join(rd, name)
         if os.path.exists(p):
             out.append((p, cls, {}))
+    p = os.path.join(rd, 'search_table_record.csv')       # every verdict of the search's table (production exopipe 55b0263)
+    if os.path.exists(p):
+        out.append((p, 'search_table_record', dict(tier=TIER)))
     for p in sorted(glob.glob(os.path.join(rd, 'refusals', f'{cell}_*_excluded.csv'))):
         out.append((p, 'refusal_record', {}))
     if os.path.isdir(os.path.join(rd, 'candidates')):

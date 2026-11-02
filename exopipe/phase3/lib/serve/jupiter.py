@@ -5,7 +5,8 @@ servers' (2026-10-13, recorded in serve.PAGES / JUPITER_ROOTS). Stages start -> 
 
 start  (one unit per page)  G13 the port holds nothing or a server of the page's program (serve.SERVER_IDENTITY); exact-pid
        stop; start; HTTP 200 (G16); record class served_page (tests live, same_process; sources_listed n/a).
-hub    the ports in the registry's tunnel_extra (build_review_hub.py --tunnel-extra; no button, as today).
+hub    the ports in the registry's tunnel_extra (build_review_hub.py --tunnel-extra; no button, as today - the hub page
+       prints no tunnel line since exopipe_ops 4c42f91 and links the Jovian site by its static path, /s/jupiter/).
 verify the served_page tests now.
 Parity: the offset ports serve the production directories read-only.
 """

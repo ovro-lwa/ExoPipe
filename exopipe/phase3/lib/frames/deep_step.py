@@ -18,12 +18,18 @@ the residuals record - never a glob - or, with ``--deep-adopt``, registers and t
 """
 import hashlib
 import os
+import re
 import sys
 import time
 
 from exopipe.phase3.core.record import NoInput, Refusal
+from exopipe.phase3.lib.search import attempts as _ATTS
 
 STAGES = ('residuals', 'verify')
+# --deep-adopt: a production attempt <cell>_<S>_<UTC>, or production's drop patch <cell>_<S>_<UTC>stdrop (lib/search/attempts.py); '_<n>'
+# is this step's own collision suffix (_new_attempt)
+ADOPT_NAME = re.compile(r'^(?P<cell>\d\dh_(?:\d+MHz|Red|Green|Blue|Full))_(?P<s>[IV])_(?P<tag>' + _ATTS.UTC_RX + r'(?:'
+                        + '|'.join(_ATTS.SUFFIXES) + r'|_\d+)?)$')
 
 
 def _cfg():
@@ -653,17 +659,17 @@ def _verify_unit(ctx, plan):
 
 
 def _adopt_unit(ctx, d):
-    """--deep-adopt: a production attempt <cell>_<S>_<UTC> registered in a record and content-tested (read only)."""
-    import re
+    """--deep-adopt: a production attempt <cell>_<S>_<UTC> (or production's drop patch <cell>_<S>_<UTC>stdrop: a hard-linked copy of
+    a published attempt, lib/search/attempts.py) registered in a record and content-tested (read only)."""
     from exopipe.phase3.core import exclusions
     from exopipe.phase3.lib.frames import deep_engine
     b = os.path.basename(d)
-    m = re.match(r'^(?P<cell>\d\dh_(?:\d+MHz|Red|Green|Blue|Full))_(?P<s>[IV])_(?P<tag>\d{8}T\d{6}(?:_\d+)?)$', b)
+    m = ADOPT_NAME.match(b)
     name = f'{b}_adopt_verify' if not m else f"{m['cell']}_{m['s']}_adopt_{m['tag']}_verify"
     u = ctx.run.unit(name, tier='deep', stage='verify', adopted=d)
     with u:
         if not m:
-            raise Refusal(f'{d}: not an attempt directory name <cell>_<S>_<YYYYMMDDTHHMMSS>')
+            raise Refusal(f'{d}: not an attempt directory name <cell>_<S>_<YYYYMMDDTHHMMSS>[stdrop]')
         labels = [x for x in os.listdir(d) if x.startswith('Run_') and os.path.isdir(os.path.join(d, x))]
         if len(labels) != 1:
             raise Refusal(f'{d}: expected one Run_<label> directory, found {labels}')
@@ -700,9 +706,11 @@ def _adopt_unit(ctx, d):
                 detail=('frames of nights excluded now: ' + ', '.join(bad)) if bad else 'no frame of an excluded night')
         if c is not None:
             # the fleet's adoption rule (p3s5_search_fleet.sh:176-181, D6 grouping 09995b5): an attempt whose cell log is
-            # not newer than EITHER current master of the cell was made against a previous master and is never adopted
-            log = os.path.join(d, f'{cell}.log')
-            lt = os.stat(log).st_mtime_ns if os.path.exists(log) else None
+            # not newer than EITHER current master of the cell was made against a previous master and is never adopted. A drop
+            # patch is judged by the log of the search that wrote its rows (its source's: its own log was appended at the patch)
+            sa = _ATTS.searched_attempt(d) if m['tag'].endswith(_ATTS.SUFFIXES) else d
+            log = os.path.join(sa, f'{cell}.log') if sa else None
+            lt = os.stat(log).st_mtime_ns if log and os.path.exists(log) else None
             older = [os.path.basename(mp) for mp in (c.master('I'), c.master('V'))
                      if os.path.exists(mp) and (lt is None or not lt > os.stat(mp).st_mtime_ns)]
             u.check('attempt_after_current_masters', not older, value=len(older),

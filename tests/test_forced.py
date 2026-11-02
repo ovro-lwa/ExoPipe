@@ -12,6 +12,7 @@ Run with: NUMPY_MADVISE_HUGEPAGE=0 EXOPIPE3_SITE=/lustre/gh/main/exopipe_ops/exo
 import ast
 import contextlib
 import csv
+import glob
 import io
 import json
 import math
@@ -108,6 +109,16 @@ def test_config():
         ok = False
     CFG.reset()
     check('G37: override of a steering key (forced_snapshot.NPROC[fit]) allowed', ok)
+    for k in ('forced_snapshot.PHOT_ROOT', 'forced_snapshot.STAGE1_ROOT'):
+        CFG.authorize([], out=TMP)
+        CFG.set(k, "'/x'")
+        try:
+            K.check_overrides()
+            ok = True
+        except record.Refusal:
+            ok = False
+        CFG.reset()
+        check('G37: override of %s allowed (the step passes it to the child)' % k, ok)
     import importlib
     mod = importlib.import_module('exopipe.phase3.steps.forced')
     from exopipe.phase3 import config
@@ -119,6 +130,7 @@ def test_config():
 # ---------------------------------------------------------------------------------------------------------------------
 
 def _assigns(path):
+    """{NAME: value} of a production file's module-level NAME = <literal> assignments; an environment read is no literal."""
     out = {}
     for node in ast.parse(open(path).read(), path).body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
@@ -129,20 +141,56 @@ def _assigns(path):
     return out
 
 
+def _switch_reads(path):
+    """{NAME: VAR} of a production file's module-level NAME = os.environ.get('VAR', ...) / os.getenv('VAR', ...) reads."""
+    out = {}
+    for node in ast.parse(open(path).read(), path).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            v = node.value
+            if (isinstance(v, ast.Call) and v.args and isinstance(v.args[0], ast.Constant) and isinstance(v.args[0].value, str)
+                    and isinstance(v.func, ast.Attribute)
+                    and ((v.func.attr == 'get' and isinstance(v.func.value, ast.Attribute) and v.func.value.attr == 'environ')
+                         or v.func.attr == 'getenv')):
+                out[node.targets[0].id] = v.args[0].value
+    return out
+
+
 def _src(path):
     return open(path).read()
 
 
 def test_inplace_truth():
     s, a, pc, cf, f = CFG.forced_snapshot, CFG.forced_assoc, CFG.forced_panels, CFG.forced_catflux, CFG.forced
+    probe = os.path.join(TMP, 'assigns_probe.py')
+    with open(probe, 'w') as fh:
+        fh.write('import os\nA = os.environ.get("P3_PROBE", "/a")\nB = os.getenv("P3_PROBE", "/b")\n'
+                 'C = os.environ.get("HOME", "/c")\nD = os.environ.get("P3_PROBE")\nE = "/e"\n')
+    got, sw = _assigns(probe), _switch_reads(probe)
+    check('truth parse: an environment read is no literal - with or without a default, a cleared or an inherited variable',
+          got == {'E': '/e'} and sw == {'A': 'P3_PROBE', 'B': 'P3_PROBE', 'C': 'HOME', 'D': 'P3_PROBE'}, repr((got, sw)))
     P = _assigns(os.path.join(OPS, 'snapshot_forced_panels.py'))
     PS = _src(os.path.join(OPS, 'snapshot_forced_panels.py'))
     for key, name in (('MERGE_ARCMIN', 'MERGE_ARCMIN'), ('ASTROM_SNR', 'ASTROM_SNR'), ('VI_NOTE_SIGMA', 'VI_NOTE_SIGMA'),
                       ('TIE_LARGE_X_SYS', 'TIE_LARGE_X_SYS'), ('FROZEN_MASTERS', 'FROZEN_MASTERS'),
-                      ('MASTER_CATS', 'MASTER_CATS'), ('PHOT_ROOT', 'PHOT'), ('STAGE1_ROOT', 'STAGE1')):
+                      ('MASTER_CATS', 'MASTER_CATS')):
         check('truth forced_snapshot.%s = snapshot_forced_panels.%s' % (key, name), getattr(s, key) == P.get(name),
               '%r vs %r' % (getattr(s, key), P.get(name)))
     check('truth forced_snapshot.SKIP_FIELDS', tuple(s.SKIP_FIELDS) == tuple(P.get('SKIP_FIELDS') or ()))
+    # the generation's roots are NOT literals: the scripts read them from switches the step passes (tier_snapshot.roots_env);
+    # their values are checked against the served runs' records (test_served_generation)
+    from exopipe.phase3.lib.forced import tier_snapshot as TS
+    PSW = _switch_reads(os.path.join(OPS, 'snapshot_forced_panels.py'))
+    RSW = _switch_reads(os.path.join(OPS, 'test_snapshot_forced_reserve.py'))
+    check('truth: the step passes the roots on the switches the in-place scripts read (snapshot_forced_panels PHOT <- '
+          'P3_PHOT_ROOT, STAGE1 <- P3_FORCED_STAGE1; test_snapshot_forced_reserve STAGE1 <- P3_FORCED_STAGE1)',
+          dict(TS.ROOT_SWITCHES) == {'P3_PHOT_ROOT': 'PHOT_ROOT', 'P3_FORCED_STAGE1': 'STAGE1_ROOT'}
+          and PSW.get('PHOT') == 'P3_PHOT_ROOT' and PSW.get('STAGE1') == 'P3_FORCED_STAGE1'
+          and RSW.get('STAGE1') == 'P3_FORCED_STAGE1', repr((PSW, RSW)))
+    import types
+    e = TS.Ctx.env(types.SimpleNamespace(cfg=CFG))
+    check('the step passes the served generation\'s roots and the flow switch to every in-place child (Ctx.env)',
+          e == dict(s.FLOW_ENV, P3_PHOT_ROOT=s.PHOT_ROOT, P3_FORCED_STAGE1=s.STAGE1_ROOT), repr(e))
+
     check('truth paths.SNAPSHOT_FLEET_OUT = snapshot_forced_panels.PROTO', CFG.paths.SNAPSHOT_FLEET_OUT == P.get('PROTO'))
     check('truth paths.COADD_SB_ROOT = snapshot_forced_panels.COADD_ROOT', CFG.paths.COADD_SB_ROOT == P.get('COADD_ROOT'))
     for txt, want in (('std7_panel.EL_MIN = %s' % s.PANEL_EL_MIN_DEG, True),
@@ -213,6 +261,69 @@ def test_inplace_truth():
     for k in set(f.PYTHON_KEY.values()):
         check('site PYTHON[%r] defined (decision 2 vocabulary)' % k, k in CFG.site.PYTHON and
               k in ('default', 'flow', 'py36', 'casa', 'tess'))
+
+
+def _served_forced_runs():
+    """{(S, cadence): run} of the snapshot forced pages the review hub serves now (registry <S> 10-sec-forced / 1-min-forced,
+    status.REGISTRY_FILE under serve.HUB_DIR), or the reason it cannot be read."""
+    p = CFG.status.REGISTRY_FILE.format(hub=CFG.serve.HUB_DIR)
+    try:
+        with open(p) as fh:
+            reg = json.load(fh)
+        return {(S, cad): reg[S][key]['run'] for S in ('V', 'I') for key, cad in (('10-sec-forced', '10s'),
+                                                                                 ('1-min-forced', '1min'))}, None
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return None, '%s: %s' % (p, e)
+
+
+def test_served_generation():
+    """The snapshot forced config names the generation production SERVES (the 2026-10-26 switch to generation 5 had left it
+    on the 2026-10-07 evaluations and generation 4's roots). For each snapshot forced page of the review hub, its run's own
+    record - the FT-START line production's page run writes (snapshot_forced_pages_run_20261007.sh:28, log
+    <paths.OPS_ROOT>/snapshot_forced_pages_run_<run>.log: eval=<sb> + <wb>, P3_PHOT_ROOT=, P3_FORCED_STAGE1=) - must equal
+    forced_snapshot.EVAL_SB, EVAL_WB, PHOT_ROOT and STAGE1_ROOT, and every served event of the run (its review copy's
+    candidates/[IV]/*/detections.csv) must be in forced_snapshot.ZONE_FLAGS and clean there (production's served-zones test Z2,
+    test_snapshot_forced_reserve.py:140-148, mirrored). A generation switch fails these checks until the config follows it.
+    Read only; a registry without these pages FAILS, never skipped."""
+    s = CFG.forced_snapshot
+    runs, why = _served_forced_runs()
+    check('served generation: the review hub registry names the four snapshot forced pages', runs, str(why))
+    if not runs:
+        return
+    flags = {}
+    check('served generation: forced_snapshot.ZONE_FLAGS exists', os.path.isfile(s.ZONE_FLAGS), s.ZONE_FLAGS)
+    if os.path.isfile(s.ZONE_FLAGS):
+        with open(s.ZONE_FLAGS, newline='') as fh:
+            for r in csv.DictReader(fh):
+                flags[(r['cell'], r['target'], r['band'], r['stokes'], r['tier'], r['ts'])] = (r['screen_file'],
+                                                                                               r['screen_recomputed'])
+    for (S, cad), run in sorted(runs.items()):
+        log = os.path.join(CFG.paths.OPS_ROOT, 'snapshot_forced_pages_run_%s.log' % run)
+        lines = [l for l in open(log, errors='replace')] if os.path.exists(log) else []
+        start = [l for l in lines if ('FT-START %s ' % run) in l]
+        got = {}
+        if start:
+            m = re.search(r' eval=(\S+) \+ (\S+)', start[-1])
+            got = dict(EVAL_SB=m and m.group(1), EVAL_WB=m and m.group(2))
+            for var, key in (('P3_PHOT_ROOT', 'PHOT_ROOT'), ('P3_FORCED_STAGE1', 'STAGE1_ROOT')):
+                m = re.search(r' %s=(\S+)' % var, start[-1])
+                got[key] = m and m.group(1)
+        want = {k: getattr(s, k) for k in ('EVAL_SB', 'EVAL_WB', 'PHOT_ROOT', 'STAGE1_ROOT')}
+        check('served generation: %s (Stokes %s %s) was built from forced_snapshot.EVAL_SB, EVAL_WB, PHOT_ROOT, STAGE1_ROOT '
+              '(its FT-START record)' % (run, S, cad), start and got == want,
+              'no FT-START line in %s' % log if not start else
+              'recorded vs config: %r' % {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v})
+        n, bad = 0, []
+        for dp in sorted(glob.glob(os.path.join(CFG.paths.SNAPSHOT_REVIEW_ROOT, run, 'candidates', '[IV]', '*',
+                                                'detections.csv'))):
+            with open(dp, newline='') as fh:
+                for r in csv.DictReader(fh):
+                    n += 1
+                    k = (r['lst'] + '_' + r['date'], r['target'], r['subband'], r['stokes'], r['tier'], r['ts'])
+                    if flags.get(k) != ('clean', 'clean'):
+                        bad.append('%s %s' % (r.get('cand_id'), flags.get(k, 'no row')))
+        check('served generation: every served event of %s is clean in forced_snapshot.ZONE_FLAGS (Z2)' % run,
+              n and not bad, '%d of %d events: %s' % (len(bad), n, bad[:3]) if n else 'no served event rows')
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -592,6 +703,7 @@ def main():
     try:
         test_config()
         test_inplace_truth()
+        test_served_generation()
         test_stages()
         test_catflux()
         W, R, ev_sb, ev_wb = test_snapshot_tests()

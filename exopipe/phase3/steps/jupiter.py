@@ -34,7 +34,8 @@ Inputs
             own stack, JUPMASK only), x2 residuals (15 subbands + Red/Green/Blue) under jupiter.SUBLST_ROOT; the flowed cubes
             under jupiter.CUBES_ROOT; the Horizons cache jupiter.EPHEM_DIR; for assign the frozen deep co-add records of tier
             rule 4 (phase3_tier_rules); data_decisions.csv (gate J2).
-  v2        the cell's measure products, the V2 tree (<ROOT>/v2), deep weights (jupiter.DEEP_WEIGHTS), the occurrence results
+  v2        the cell's measure products, the V2 tree (<ROOT>/v2), deep weights (jupiter.DEEP_WEIGHTS: the frozen deep records since
+            V2 a87b30c), the occurrence results
             and the disclosure record. flag-backfill: the Phase-1 archive (paths.PHASE1_ROOT). serve: the products / site.
 Outputs (production layout under --out = jupiter.ROOT; records <out>/_records/jupiter/<unit>.json; product classes [..])
   measure   <out>/products/<cell>/: meas_<tier>.csv [jupiter_meas; the node-local crops <work>/<cell>/crops/ it names:
@@ -44,7 +45,8 @@ Outputs (production layout under --out = jupiter.ROOT; records <out>/_records/ju
   v2        <out>/v2/nightgeom [jupiter_geom_raw, jupiter_geom], masters [jupiter_v2_masters], masters/derived [jupiter_v2_root],
             provenance [jupiter_crop_archive], anchor [jupiter_blue_anchor], integrate/inputs [jupiter_refcheck],
             integrate/<cell> [jupiter_metrics], site/<cell>/renders [jupiter_site_render], site/<cell>/CONTENT_TEST.txt
-            [jupiter_site_summary]. occurrence: <out>/v2/occurrence [jupiter_occurrence]. quarantine: site/<cell>/<qdir>
+            (the 2026-10-06 flow's summary) [jupiter_site_summary; the live cells' record since 2026-10-25/28 is site/<cell>/site.json,
+            same class]. occurrence: <out>/v2/occurrence [jupiter_occurrence]. quarantine: site/<cell>/<qdir>
             [jupiter_render_quarantine]. ephem: <out>/ephem/jupiter_ephem_<date>.csv [jupiter_ephem].
   flag      STATE (jupiter_flag.STATE_DIR, or <out>/jupiter_flag_backfill_state) window.csv [jupiter_window], shard_<node>.csv,
             summary_<node>.csv [csv_table], run_<node>.log, VERIFY_<UTC>.txt [jupiter_flag_verify]; copies under
@@ -55,9 +57,10 @@ Failure modes (exit 2 = refused, the gate in the record; 3 = nothing to do; 1 = 
   (exit 3); J4 a residual without JUPMASK; J7 a baked input (FLUXBAKE: the measure divides by FLUXDC - every current stack is
   baked, so no new night can be measured until the owner fixes it); J8 CASA not importable; J9 a frozen deep record missing;
   J10 stale fits (--fresh --supersede TAG); fit on another node than the crops; J12 JFQ_* / P3_COADD_RUN / P3_DEEP_SEARCH_STATE /
-  EXOPIPE_JUPITER_FLAG_QA set; J13 --scopes into production; J14 a production --out while paths.PRODUCTION_WRITES is False; a
+  EXOPIPE_JUPITER_FLAG_QA / JUPV2_GEN set; J13 --scopes into production; J14 a production --out while paths.PRODUCTION_WRITES is False; a
   config key that disagrees with the in-place module literal, or an override the engine would ignore; J20 a v2 cell other than
-  05h_2024-12-29; J22-J27 V2 refusals; a v2 stage that cannot be redirected into a non-production --out (masters, metrics,
+  05h_2024-12-29; J22-J27 V2 refusals; J28 every v2 stage into a production --out while the cell's live site is not
+  the 2026-10-06 flow's (site_version 3, or a root this action does not render), until the 10-25..10-28 generation flow is ported; a v2 stage that cannot be redirected into a non-production --out (masters, metrics,
   summary); J30 untested backfill code; J31 no APPROVED file for a copying shard; J32 a shard log without its exit line; J33 the
   copy budget; J34 the shard time limit; J35 verify failed; J40 a port held by another process / old pid alive after SIGTERM.
 """

@@ -71,6 +71,28 @@ def require_done(run, unit, what):
 
 
 # ---- test -----------------------------------------------------------------------------------------------------------
+def mchain_check(pg, U):
+    """(refusal or None, notes) for the MULTIPLES CHAIN of page ``pg`` (serve.PAGES mchain_queue / mchain_catalog: the
+    server's --mchain-queue / --mchain-catalog-dir, exopipe_ops 4c42f91, Gregg 2026-10-27), as production serves it:
+      - the --mchain-queue FILE is absent: refused - the server reads it at start and dies (classify_transients.read_queue,
+        :871), after its old server was stopped;
+      - the --mchain-catalog-dir is absent: served, with a note - the server's loader skips it (load_sources :719-729);
+      - whatever the tier's multiples page became in this serve, the page is served with the chain on disk: production
+        starts the singles server and sets its hub entry before p3s3_serve_multiples.sh runs (p3s3_serve_stokes.sh:85, :91,
+        :94; p3s3_pass.sh:222 ignores its exit status), and the two-port backend rebuilds every page from disk - no fork:
+        the previous chain; the fork content test failed: the chain it refused (written at p3s3_serve_multiples.sh:83-86,
+        before the test at :136-137); an empty queue: an empty chain."""
+    mq, mc = pg.at('mchain_queue', U), pg.at('mchain_catalog', U)
+    if mq and not os.path.isfile(mq):
+        return (f'multiples chain: --mchain-queue {mq} is absent - page {pg.key} not served (its server dies reading it at '
+                f'start, classify_transients.read_queue)'), []
+    notes = []
+    if mc and not os.path.isdir(mc):
+        notes.append(f'multiples chain: --mchain-catalog-dir {mc} is absent - page {pg.key} served without the chain\'s '
+                     f'own view (the server\'s loader skips it)')
+    return None, notes
+
+
 def test_stage(run, plan, state, unit_name, root=None, probe=True):
     """G1 (non-empty queue per page), G17 (serve-time exclusion gate), the content tests of each page's queue and view
     again, and the App probe (expected index sources, 0 unexplained drops) of every selected page."""
@@ -87,10 +109,20 @@ def test_stage(run, plan, state, unit_name, root=None, probe=True):
                 u.check('G1_nonempty_queue', True, value=0, detail=f'page {pg.key}: refused (empty queue)', path=q)
                 u.note(state['refused'][pg.key])
                 continue
+            why, notes = mchain_check(pg, U)
+            for n in notes:
+                u.note(n)
+            if why:
+                state['refused'][pg.key] = why
+                u.note(why)
+                continue
             u.add_input(q)
-            for f in sorted(os.listdir(cat)) if os.path.isdir(cat) else []:
-                if f.endswith('.csv'):
-                    u.add_input(os.path.join(cat, f))
+            for d in (cat, pg.at('mchain_catalog', U)):
+                for f in sorted(os.listdir(d)) if d and os.path.isdir(d) else []:
+                    if f.endswith('.csv'):
+                        u.add_input(os.path.join(d, f))
+            if pg.at('mchain_queue', U):
+                u.add_input(pg.at('mchain_queue', U))
             gated.append(pg)
             if plan.tier != 'snapshot':
                 u.add_output(q, 'served_queue', tier=plan.tier)
@@ -176,6 +208,8 @@ def start_stage(run, plan, state, root=None, utc=None):
             notes = []
             q = pg.at('queue', root or plan.U)
             u.add_input(q)
+            if pg.at('mchain_queue', root or plan.U):
+                u.add_input(pg.at('mchain_queue', root or plan.U))
             path, rec = servers.replace(plan, pg, utc, root=root, expected=exp, notes=notes)
             for n in notes:
                 u.note(n)
@@ -209,7 +243,7 @@ def hub_stage(run, plan, state, remove=(), utc=None):
     with run.unit(f'{plan.tier}_{plan.run_name}_hub', stage='hub', tier=plan.tier, parity=plan.parity) as u:
         entries, tunnel = [], []
         for pg in plan.pages:
-            if pg.key in state['served'] or _served_record_done(run, pg):
+            if pg.key in state['served'] or _served_record_done(run, pg) or _hub_entry_unserved(run, plan, pg, state):
                 e = plan.hub_entry(pg, utc)
                 if e is None:
                     tunnel.append(pg.port)
@@ -222,16 +256,28 @@ def hub_stage(run, plan, state, remove=(), utc=None):
         expected = [(s, t, dict(kv.split('=', 1) for kv in kvs)) for s, t, kvs in entries]
         u.add_output(index or reg, 'hub_page', expected=expected)
         if plan.parity:
-            u.note('parity: the hub page is planned (registry.json written under --out; build_review_hub.py hard-codes '
-                   'its directory, spec 12.5)')
-        u.add_output(hub.inspection_hub(plan, log_path=plan.log_path, unit=u), 'hub_page')
-        for n in hub.ensure_http_servers(plan):
-            u.note(n)
+            u.note('parity: the hub registry and page are written under --out by lib/serve/hub (build_review_hub.py '
+                   'hard-codes its directory; hub.render is its page, exopipe_ops 4c42f91)')
+        u.note(hub.SERVED_NOTE)
 
 
 def _served_record_done(run, pg):
     rec = recmod.load_record(run.out_root, 'serve', pg.unit)
     return bool(rec and rec.get('status') == 'done')
+
+
+def _hub_entry_unserved(run, plan, pg, state):
+    """True for a sub-LST page not served for NO-INPUT only (a multiples page with no multi-integration source): its hub
+    entry is set all the same, as production's 10-minute two-port path sets all four entries after the registration, the
+    multiples ones whether or not their page was registered (sublst_cumulative.sh:298-299; sublst_register_pages.py skips
+    such a page). Registry only: the hub page shows no multiples button (exopipe_ops 4c42f91)."""
+    if plan.tier != 'sublst' or pg.family != 'review':
+        return False
+    why = state['refused'].get(pg.key)
+    if why is not None:
+        return str(why).startswith('NO-INPUT: ')
+    rec = recmod.load_record(run.out_root, 'serve', pg.unit)      # served in an earlier invocation of this serve
+    return bool(rec and rec.get('status') == 'no-input')
 
 
 # ---- verify -----------------------------------------------------------------------------------------------------------
@@ -271,7 +317,7 @@ def print_plan_header(plan, stages):
     if plan.U_src:
         print(f'  served run (read): {plan.U_src}' + ('' if os.path.isdir(plan.U_src) else '   [ABSENT]'))
         print(f'  writes under:      {plan.U}')
-    print(f'  hub:               {plan.hub_dir}   inspection hub: {plan.inspection_hub_dir}')
+    print(f'  hub:               {plan.hub_dir} (served by the two-port server on both listeners)')
     if plan.tier == 'sublst':
         print(f'  LSTs:              {plan.lsts_text or "(none found)"}')
     if plan.tier == 'snapshot' and plan.family == 'review':

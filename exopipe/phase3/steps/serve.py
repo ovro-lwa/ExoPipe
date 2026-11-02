@@ -37,13 +37,20 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
   judgement_journal  judgements*/judgements.jsonl after a carry (+ carry_report.csv, carry_missed.csv)
   sublst_cumulative  the Run_SLSTB build (merged CSVs, localizations, figures, page index)
   review_copy    the snapshot review copy;  exclusion_check  the serve-time exclusion gate's pass file
-  hub_page       review hub registry.json / index.html, inspection hub index.html
+  hub_page       review hub registry.json / index.html (served on both listeners of the two-port server; the separate
+                 inspection hub page and the hub HTTP servers were retired by production on 2026-10-27)
   served_page    <out>/_records/serve/pages/<tier>_<port>.json per served page (port, pid, argv, cwd, env, run, queue sha1,
-                 view digest, expected sources): its tests probe the LIVE port (HTTP 200, the recorded process, the index
-                 lists the expected sources);  stopped_page  after --stop
+                 view digest, the multiples chain's queue sha1 and view digest, expected sources): its tests probe the LIVE
+                 port (HTTP 200, the recorded process, the index lists the expected sources);  stopped_page  after --stop
+  The deep and 10-minute singles pages carry their MULTIPLES CHAIN (Gregg 2026-10-27; serve.PAGES mchain_queue /
+  mchain_catalog -> --mchain-queue / --mchain-catalog-dir): the tier's multiples page queue (deep: and its view), as on disk
+  - whatever the multiples page became in the same serve (production's rule: a refused or empty multiples page leaves the
+  previous, the refused or an empty chain) - is an input of the page; a page whose chain queue FILE is absent is not served
+  (its server would die at start); an absent chain view is noted (the server skips it).
   A parity run (--out outside paths.PRODUCTION_ROOTS) writes everything under --out (deep: a mirror of the served run;
-  sub-LST: the build and swap; snapshot / forced: a byte copy) and binds port + --port-offset (>= 1000); the hub is planned
-  (registry.json under --out). While paths.PRODUCTION_WRITES is False only parity runs are possible.
+  sub-LST: the build and swap; snapshot / forced: a byte copy) and binds port + --port-offset (>= 1000); the hub registry
+  and page are written under --out (lib/serve/hub renders the page build_review_hub.py writes, exopipe_ops 4c42f91). While
+  paths.PRODUCTION_WRITES is False only parity runs are possible.
 Failure modes (exit 2 = refused, the gate named in the record; the refused page keeps its old server):
   G1 empty queue; G2 deep union without stokes; G3 deep multiples without the fork; G4 multiples queue != fork catalogues;
   G5-G7 sub-LST Stokes keys / review_dir merge; G8 sub-LST generation mix; G9 localizations / figures; G10 page index;

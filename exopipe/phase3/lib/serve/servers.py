@@ -93,11 +93,15 @@ def _record(plan, page, popen_pid, argv, cwd, env_extra, root, expected, log, tw
     U = root or page.root
     q = page.at('queue', U)
     cat = page.at('catalog', U)
+    mq, mcat = page.at('mchain_queue', U), page.at('mchain_catalog', U)
     return {'tier': plan.tier, 'family': page.family, 'program': page.program, 'page': page.key,
             'port': page.twin if twin_of else page.port, 'pid': popen_pid, 'argv': argv, 'cwd': cwd, 'env': env_extra,
             'run': U if page.program == 'classify' else None, 'run_name': page.run_name,
             'queue': q, 'queue_sha1': common.sha1_file(q) if q and os.path.exists(q) else None,
             'catalog': cat, 'view_digest': common.dir_digest(cat) if cat and os.path.isdir(cat) else None,
+            'mchain_queue': mq, 'mchain_queue_sha1': common.sha1_file(mq) if mq and os.path.exists(mq) else None,
+            'mchain_catalog': mcat,
+            'mchain_view_digest': common.dir_digest(mcat) if mcat and os.path.isdir(mcat) else None,
             'expected_sources': (expected or {}).get('n'), 'expected_kind': (expected or {}).get('kind'),
             'log': log, 'started': utcnow(), 'inspect': bool(twin_of), 'judging_port': twin_of, 'parity': plan.parity}
 
@@ -273,11 +277,15 @@ def restart_port(port, out, notes, offset=0):
         notes.append(f'{port} restarted: pid {info["pid"]} -> {p.pid} ({detail})')
         q = procs.argv_value(argv, '--queue')
         cat = procs.argv_value(argv, '--catalog-dir')
+        mq, mcat = procs.argv_value(argv, '--mchain-queue'), procs.argv_value(argv, '--mchain-catalog-dir')
         rec = {'tier': tier, 'family': None, 'program': program, 'page': key, 'port': int(port), 'pid': p.pid,
                'argv': argv, 'cwd': cwd, 'env': {k: env[k] for k in sorted(env) if k.startswith('P3_')},
                'run': procs.argv_value(argv, '--run'), 'queue': q,
                'queue_sha1': common.sha1_file(q) if q and os.path.exists(q) else None, 'catalog': cat,
                'view_digest': common.dir_digest(cat) if cat and os.path.isdir(cat) else None,
+               'mchain_queue': mq, 'mchain_queue_sha1': common.sha1_file(mq) if mq and os.path.exists(mq) else None,
+               'mchain_catalog': mcat,
+               'mchain_view_digest': common.dir_digest(mcat) if mcat and os.path.isdir(mcat) else None,
                'expected_sources': None, 'expected_kind': 'restart (same argv, files unchanged)', 'log': log,
                'started': utcnow(), 'inspect': '--inspect' in argv, 'judging_port': None, 'restarted_from_pid': info['pid']}
         path = os.path.join(out, '_records', 'serve', 'pages', f'restart_{port}.json')
@@ -309,9 +317,13 @@ def app_probe(plan, page, root=None, unit=None):
     S = _S()
     U = root or page.root
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_probe.py')
-    res = legacy.run(script, [plan.ops, scripts.clv15_root(), U, page.at('catalog', U), page.at('queue', U)],
-                     python='default', env=plan.server_env_extra(), cwd=plan.ops, timeout=S.APP_PROBE_TIMEOUT_S,
-                     unit=unit, refusal_codes=())
+    args = [plan.ops, scripts.clv15_root(), U, page.at('catalog', U), page.at('queue', U)]
+    if page.c.get('mchain_queue'):           # the page's multiples chain, as its server reads it (plan.argv)
+        args += ['--mchain-queue', page.at('mchain_queue', U)]
+    if page.c.get('mchain_catalog'):
+        args += ['--mchain-catalog-dir', page.at('mchain_catalog', U)]
+    res = legacy.run(script, args, python='default', env=plan.server_env_extra(), cwd=plan.ops,
+                     timeout=S.APP_PROBE_TIMEOUT_S, unit=unit, refusal_codes=())
     if res.rc != 0:
         raise Refusal(f'App probe of page {page.key} failed (rc {res.rc}): {scripts.last_line(res.tail)}')
     line = next((l for l in reversed(res.tail.splitlines()) if l.startswith('{')), None)

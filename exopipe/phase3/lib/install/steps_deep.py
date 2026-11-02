@@ -592,6 +592,14 @@ def add_install_outputs(u, plan, mpath):
         add_screen_output(u, roots, plan.cell, plan.screen_json)
 
 
+def add_installed_cell_output(u, cdir):
+    """The installed cell (class installed_cell) with the 18 MHz setting its membership test used - install.MASTER_HELD_18MHZ and
+    install.MASTER_HELD_18MHZ_BUILT_BEFORE - kept on the output entry: --resume and a later verify of the record re-test it under
+    the recorded setting, never silently under another (the test's detail names the setting either way)."""
+    return u.add_output(cdir, 'installed_cell', master_held_18mhz=SC.master_held_18(),
+                        master_held_18mhz_built_before=SC.held_18_cutoff()[0])
+
+
 def add_screen_output(u, roots, cell, applied_json):
     """Step e's product: the archived screen record (class screen_table, owned by install - crosscheck 4.2; dewarp writes its applied=0 rows as the same class) with
     the context of this cell (install_cell, applied_json: the cell's applied=1 row and its published screen = the
@@ -605,10 +613,12 @@ def verify_cell(u, cdir, gates, echo):
     """Stage verify: the installed cell against every membership and product ruling (install_cell.sh:23-24 =
     `python -m exopipe.phase3.membership verify <cell>`, membership.py:317-329)."""
     from exopipe.phase3.lib.masters import admit as AD, membership as MB
-    v, rep = AD.verify(cdir)                           # D-ADMIT: an admitted night is reported, not a violation
+    held = SC.master_held_18()
+    keep, why18 = SC.keep_held_18(cdir, held)            # the 18 MHz exception: an existing master only (built before the enforcement)
+    v, rep = AD.verify(cdir, keep_18=keep)               # D-ADMIT: an admitted night is reported, not a violation; so is a kept one
     v = v + MB.verify_products(cdir)
     text = (f'MEMBERSHIP+PRODUCTS {"PASS" if not v else "FAIL"} {os.path.basename(cdir)}' + ''.join('\n  ' + x for x in v)
-            + ''.join('\n  ' + x for x in rep))
+            + ''.join('\n  ' + x for x in rep) + f'\n  install.MASTER_HELD_18MHZ {held!r}: {why18}')
     echo('  ' + text.replace('\n', '\n  '))
     gates.check('V', not v, text, value=len(v))
 
@@ -679,7 +689,7 @@ def recover_cell(u, cell, args, roots, run_obj, echo):
     u.add_output(roots.masters_dir(lst, scope), 'archive_cell')
     if kind == 'mdewarp':
         add_screen_output(u, roots, cell, os.path.join(os.path.dirname(gen), _cfg().install.SCREEN_RECORD_JSON))
-    u.add_output(roots.cdir(cell), 'installed_cell')
+    add_installed_cell_output(u, roots.cdir(cell))
     add_carried_outputs(u, carried)
 
 
@@ -721,7 +731,7 @@ def epochs_repair_cell(u, cell, roots, run_obj, echo):
     echo(f'  EPOCHS-OK {cell}: {res[0]} epochs derived, {res[1]} products published and audited')
     u.add_output(mpath, 'install_manifest')
     u.add_output(roots.masters_dir(lst, scope), 'archive_cell')
-    u.add_output(cdir, 'installed_cell')
+    add_installed_cell_output(u, cdir)
 
 
 def screen_unapplied(u, args, roots, run_obj, echo):
@@ -887,7 +897,7 @@ def _main_unit(u, cell, args, roots, run_obj, stages, echo):
             u.set_admitted(SC.admitted_in_master(os.path.join(cdir, 'coadd_final', 'weights.csv'), lst, scope))
         verify_cell(u, cdir, gates, echo)
     if 'install' in stages or 'verify' in stages:
-        u.add_output(cdir, 'installed_cell')
+        add_installed_cell_output(u, cdir)
 
 
 def _dry_rc(run_obj):

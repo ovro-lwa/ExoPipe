@@ -15,7 +15,8 @@ import os
 
 from exopipe.phase3.core.record import Refusal
 
-# config key -> (module key, module constant name or tuple of names)
+# config key -> (module key, module constant name or tuple of names), or a LIST of them when several in-place modules hold the
+# same literal (each is compared; the first is the one literal_of / redirect_globals use)
 MIRRORS = {
     # measure (clv15/phase3_jupiter_measure.py)
     'jupiter.SUBLST_ROOT': ('measure', 'SL'),
@@ -37,6 +38,7 @@ MIRRORS = {
     'jupiter_v2.V3_BEAMS': ('v2:masters/jupv2_masters.py', 'V3_BEAMS'),
     'jupiter_v2.ARTEFACT_ANNULI_DEG': ('v2:masters/jupv2_masters.py', ('ANN_IN', 'ANN_OUT')),
     'jupiter_v2.INTEGRATION_S': ('v2:masters/jupv2_masters.py', 'INT_S'),
+    'jupiter_v2.PAIR_TOL_S': [('v2:masters/jupv2_masters.py', 'PAIR_TOL_S'), ('v2:anchor/jblue_build.py', 'PAIR_TOL_S')],
     'jupiter_v2.ANCHOR_MEMBERS': ('v2:anchor/jblue_build.py', 'BLUE'),
     'jupiter_v2.GATE': ('v2:integrate/jint_metrics.py', ('GATE_MIN_REFS', 'GATE_RADIUS_DEG', 'GATE_PCT')),
     'jupiter_v2.WANDER_MIN_PAIRS': ('v2:integrate/jint_metrics.py', 'WANDER_MIN_PAIRS'),
@@ -151,9 +153,16 @@ def _norm(v):
     return v
 
 
-def literal_of(key):
-    """(module path, value, line) of the module literal a MIRROR key mirrors (value a tuple for multi-name mirrors)."""
-    mkey, names = MIRRORS[key]
+def entries(key):
+    """[(module key, names)] a MIRROR key is compared with (one, or every module holding the literal)."""
+    v = MIRRORS[key]
+    return list(v) if isinstance(v, list) else [v]
+
+
+def literal_of(key, entry=None):
+    """(module path, value, line) of the module literal a MIRROR key mirrors (value a tuple for multi-name mirrors); the
+    key's first module unless ``entry`` (one of entries(key)) names another."""
+    mkey, names = entry or entries(key)[0]
     path = module_path(mkey)
     lits = module_literals(path)
     if isinstance(names, tuple):
@@ -177,19 +186,20 @@ def production_value(key):
 
 def check_literals(module_keys):
     """Refuse when a MIRROR key of these modules differs from the module literal (before overrides). Returns the number
-    of keys compared."""
+    of (key, module) literals compared."""
     bad, n = [], 0
-    for key, (mkey, _) in MIRRORS.items():
-        if mkey not in module_keys:
-            continue
-        try:
-            path, lit, line = literal_of(key)
-        except (OSError, KeyError, SyntaxError) as e:
-            bad.append(f'{key}: cannot read the in-place literal ({e})')
-            continue
-        n += 1
-        if _norm(production_value(key)) != _norm(lit):
-            bad.append(f'{key} = {production_value(key)!r} but {os.path.basename(path)}:{line} has {lit!r}')
+    for key in MIRRORS:
+        for entry in entries(key):
+            if entry[0] not in module_keys:
+                continue
+            try:
+                path, lit, line = literal_of(key, entry)
+            except (OSError, KeyError, SyntaxError) as e:
+                bad.append(f'{key}: cannot read the in-place literal ({e})')
+                continue
+            n += 1
+            if _norm(production_value(key)) != _norm(lit):
+                bad.append(f'{key} = {production_value(key)!r} but {os.path.basename(path)}:{line} has {lit!r}')
     if bad:
         raise Refusal('config and the in-place module disagree (MIRROR keys; fix config.py or the module by a commit): '
                       + '; '.join(bad[:6]) + (' ...' if len(bad) > 6 else ''))
@@ -210,7 +220,7 @@ def redirect_globals(module_key, extra=None):
     from exopipe.phase3.config import CFG
     out = {}
     for key in REDIRECTABLE:
-        mkey, name = MIRRORS[key]
+        mkey, name = entries(key)[0]
         if mkey != module_key:
             continue
         _, lit, _ = literal_of(key)

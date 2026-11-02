@@ -10,10 +10,15 @@ changes because a night was admitted, and nights admitted together or one after 
 The engine (lib/search/deep_search.run_deep_cell, a moved production module) calls these helpers from marked WAVE2 D-ADMIT
 lines; under production's reading ('absent', the parity values) nights() is empty and every helper returns today's values.
 Deep cadence only: the 10-minute tier admits through the deep record once agreed with the snapshot / sub-LST chat.
+
+verify_master is the ONE membership verification of a cell's master for the deep search - the search step's preflight (gate E3)
+and the engine's membership gate call it - read with the admitted nights and with the 18 MHz carve-out (master_held_18).
 """
 import os
 
 POLICY_ENV = 'EXOPIPE3_ADMITTED_NIGHTS'
+MASTER_18_ENV = 'EXOPIPE3_MASTER_HELD_18MHZ'   # search_detect.MASTER_HELD_18MHZ as the step hands it to an engine child
+MASTER_18 = ('keep', 'refuse')
 
 
 def policy():
@@ -22,6 +27,56 @@ def policy():
     from exopipe.phase3.lib.masters import admit as A
     v = os.environ.get(POLICY_ENV)
     return A.admitted_policy(v)
+
+
+def master_held_18(value=None):
+    """search_detect.MASTER_HELD_18MHZ - ``value`` checked, else, in an engine child, as its step passed it (EXOPIPE3_MASTER_HELD_18MHZ:
+    deep_step.engine_env, lib/frames/deep_engine.child_env), else (a process no step started) the config. A step reads its own config
+    value through step_held_18, never the variable. 'keep' (the default,
+    ruled: Gregg 2026-10-17 R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4 "Red can be built without 18 MHz ... This is the only
+    allowed case where wideband data can be built without a full 5-subband set", IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD
+    "enforce going forward, no rebuild now", 2026-10-23 "The one exception to the exclusion rule is 18 MHz"): an EXISTING Red /
+    Full master night whose only finding is that it holds its excluded 18 MHz is reported and kept until the master's next rebuild -
+    never a violation, never a refusal. 'refuse' (production, the parity value): it is a membership violation and the search refuses
+    the cell. An unknown value REFUSES (RuntimeError: an engine child maps it to a refusal)."""
+    if value is None:
+        value = os.environ.get(MASTER_18_ENV)
+        if value is None:
+            from exopipe.phase3.config import CFG
+            value = CFG.search_detect.MASTER_HELD_18MHZ
+    if value not in MASTER_18:
+        raise RuntimeError(f'search_detect.MASTER_HELD_18MHZ = {value!r} is not one of {MASTER_18} - REFUSING')
+    return value
+
+
+def step_held_18(cfg_value):
+    """The value a STEP judges with and hands to its engine children: its own config value ``cfg_value`` (search_detect.
+    MASTER_HELD_18MHZ, checked). The variable EXOPIPE3_MASTER_HELD_18MHZ only ever carries that value to a child; one INHERITED by
+    the step that differs REFUSES (RuntimeError) - the step's preflight and its engine would judge one master by two rules."""
+    v = master_held_18(cfg_value)
+    inh = os.environ.get(MASTER_18_ENV)
+    if inh is not None and inh != v:
+        raise RuntimeError(f'{MASTER_18_ENV}={inh!r} is inherited, but search_detect.MASTER_HELD_18MHZ is {v!r}: the variable only '
+                           f'carries the step\'s own config value to an engine child - unset it or --set the key - REFUSING')
+    return v
+
+
+def verify_master(base, policy=None, held_18=None):
+    """(violations, reports) of the membership rulings for the master of the cell ``base`` as the deep search judges it - the ONE
+    call of the search step's preflight (gate E3, ``held_18`` = its config value, step_held_18) and of the engine's membership gate
+    (``held_18`` None: master_held_18(), the value its step passed): lib/masters/admit.verify (membership.verify read with the
+    admitted nights, ``policy`` as admit.membership takes it) with, under 'keep', an existing master's nights holding their
+    excluded 18 MHz kept until the next rebuild (admit.keep_held_18).
+    Why the search keeps such a night for ANY installed master, whatever its build date, while install verifies new builds
+    strictly (install.MASTER_HELD_18MHZ_BUILT_BEFORE = 2026-10-17T19:58:24Z, production exopipe 3ee1918): Gregg's rulings keep it in
+    an EXISTING master until that master's next rebuild ("enforce going forward, no rebuild now", IMPL-R-GREGG-20261017-18MHZ-
+    ENFORCE-GOING-FORWARD; 2026-10-23 "The one exception to the exclusion rule is 18 MHz"). The enforcement acts at build time:
+    since 3ee1918 the co-add's night admission refuses a Red / Full night whose image holds its excluded 18 MHz, and install
+    verifies a post-enforcement build strictly. An installed master built after the enforcement can therefore hold such a night
+    only when the night's 18 MHz exclusion was added after its build - an existing master, which is kept. One rule: verification
+    of an existing master keeps; the admission of a new build is strict."""
+    from exopipe.phase3.lib.masters import admit as A
+    return A.verify(base, policy=policy, keep_18=master_held_18(held_18) == 'keep')
 
 
 def nights(base, scope, cadence='deep'):

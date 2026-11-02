@@ -12,21 +12,33 @@ Synthetic data in a fresh directory under /tmp/exopipe3_tests_jupiter/ (removed 
   of extract refuses the stale fits (J10) unless --fresh --supersede TAG; corrupted products fail their class tests (meas,
   fits, cutouts, assign, crop, cell); the 8800 page server (jupiter_server.py in place) on a parity port passes its served
   test (slider = the M33 integrations, PNGs decode) and fails it when the table on disk changes; exact-pid stop.
-- gates: J1, J7 (FLUXBAKE), J4 (no JUPMASK), J12, J13, pinned-input override into production, MIRROR override refused,
-  stage selection.
+- gates: J1, J7 (FLUXBAKE), J4 (no JUPMASK), J12 (incl. JUPV2_GEN), J13, pinned-input override into production, MIRROR
+  override refused, stage selection.
 - flag-backfill: J30 code gate, explicit window, shard assignment = the launcher's awk, budget integer division, J31, J32,
   verify of an empty copy tree through the real tool.
 - serve: the v2 static server started on a parity port, its served content test, exact-pid stop.
 - dry runs of every action on the real cell 05h_2024-12-29 (read only).
-Read-only checks of real production products (content tests on 05h_2024-12-29 Phase-1 and V2 products, the window, the
-ephemeris, the 2026-10-07 VERIFY file, the occurrence results); class_negatives: every class test fails on a corrupted copy
-(real products copied to the scratch directory, minimal synthetic layouts for the large V2 products).
+Read-only checks of real production products (content tests on 05h_2024-12-29 Phase-1 and V2 products - the site summary in
+production's convention since 2026-10-25/28: site.json + the live render's RENDER_TEST.txt -, the window, the ephemeris, the
+2026-10-07 VERIFY file, the occurrence results); class_negatives: every class test fails on a corrupted copy (real products
+copied to the scratch directory, minimal synthetic layouts for the large V2 products).
+- production guard J28: the v2 action refuses every stage into a production --out while the cell's live site is the
+  2026-10-25..28 generation flow's (real production dry run; a real render in production mode against a synthetic live site,
+  every stage a sentinel; parity runs not gated).
+Exit: 0 every check passed; 1 a failed check (it stops the run: plain assert); 3 only KNOWN live-data failures
+(check(..., known=WHY): a state of the production data that is not the code's to change - printed KNOWN-FAIL, the run goes
+on, named again at the end). Today one, pinned to its renders (KNOWN_SUPERSEDED; any other superseded render is a real
+failure): the live site cell 05h_2024-12-29 keeps 4 superseded V2 renders - the live render until the 2026-10-28 rebuild
+(V2.r20261014T062422Z) and three renders of that rebuild replaced within hours (V2.r20261028T013229Z and V2.r20261028T031032Z
+FAILED with T8 -> FAIL, published with jsite_publish_preview.py --live; V2.r20261028T032928Z) - so the quarantine dry run does
+not list 0; quarantining them is the Jovian chat's call.
 """
 import csv
 import io
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import sys
@@ -54,6 +66,16 @@ REAL_CELL = '05h_2024-12-29'
 REAL = '/lustre/gh/main/phase3/jupiter/products/' + REAL_CELL
 T0 = time.time()
 RESULTS = []
+KNOWN = []          # (name, why, detail): failed checks that are KNOWN states of the live production data (see check)
+# The one KNOWN live-data item, pinned: the superseded V2 renders the live site cell 05h_2024-12-29 keeps (2026-11-02). Any other
+# superseded render there is a real failure.
+KNOWN_SUPERSEDED = ('V2.r20261014T062422Z', 'V2.r20261028T013229Z', 'V2.r20261028T031032Z', 'V2.r20261028T032928Z')
+KNOWN_SUPERSEDED_WHY = (
+    'the live site cell 05h_2024-12-29 keeps 4 superseded V2 renders: V2.r20261014T062422Z, the live render until the '
+    '2026-10-28 rebuild, and three renders of that rebuild, each replaced within hours - V2.r20261028T013229Z (metric 4.6; '
+    'RENDER_TEST FAILED, T8 and T9) and V2.r20261028T031032Z (metric 4.7; FAILED, T8), both published with '
+    'jsite_publish_preview.py --live, and V2.r20261028T032928Z (metric 4.7, ALL-PASS); the live render is '
+    'V2.r20261028T045056Z (metric 4.8). Quarantining them (exopipe3 jupiter quarantine) is the Jovian chat\'s call')
 
 
 def step(argv, quiet=True):
@@ -73,8 +95,15 @@ def records(out):
     return {f[:-5]: json.load(open(os.path.join(d, f))) for f in os.listdir(d) if f.endswith('.json')} if os.path.isdir(d) else {}
 
 
-def check(name, cond, detail=''):
+def check(name, cond, detail='', known=None):
+    """A failed check stops the run (plain assert: exit 1) - except one given known=WHY: a KNOWN state of the live production
+    data, not a code defect. That failure is printed as KNOWN-FAIL with its reason, the run goes on, main() names it again at
+    the end and exits 3 (only known live-data failures; a runner tells it from a regression)."""
     RESULTS.append((name, bool(cond)))
+    if not cond and known:
+        KNOWN.append((name, known, detail))
+        print(f'KNOWN-FAIL {name}  [{detail}]  (known live-data item: {known})')
+        return
     print(f"{'ok  ' if cond else 'FAIL'} {name}" + (f'  [{detail}]' if detail and not cond else ''))
     assert cond, f'{name}: {detail}'
 
@@ -388,6 +417,14 @@ def test_gates():
         finally:
             del os.environ['JFQ_DEST']
         check('J12 a JFQ_ variable in the environment refused', rc == 2 and 'J12' in txt, txt[-300:])
+    # JUPV2_GEN (V2 code 564e114, jsite_lib.py:22): production's site v3 drivers export it to re-root the site modules' nightgeom
+    # and anchor inputs to a rebuild generation; the v2 action's 2026-10-06 flow must not inherit it
+    os.environ['JUPV2_GEN'] = '/lustre/gh/main/phase3/jupiter/v2/gen_20261025'
+    try:
+        rc, txt = step(['jupiter', 'v2', '--cells', REAL_CELL, '--dry-run'])
+    finally:
+        del os.environ['JUPV2_GEN']
+    check('J12 JUPV2_GEN in the environment refused', rc == 2 and 'J12' in txt and 'JUPV2_GEN' in txt, txt[-300:])
     rc, txt = step(['jupiter', 'measure', '--cells', REAL_CELL, '--dry-run', '--scopes', '41MHz'])
     check('J13 --scopes into production refused', rc == 2 and 'J13' in txt, txt[-300:])
     rc, txt = step(['jupiter', 'measure', '--cells', REAL_CELL, '--dry-run', '--sublst-root', '/tmp/x'])
@@ -484,11 +521,25 @@ def test_serve():
 
 def test_dry_runs_real():
     rc, txt = step(['jupiter', 'v2', '--cells', REAL_CELL, '--dry-run'])
-    check('v2 dry-run on the production root plans every default stage', rc == 0 and 'J24 disclosure pass' in txt
-          and 'derived roots existing' in txt, txt[-1500:])
+    from exopipe.phase3.lib.jupiter import common as K
+
+    class A:
+        stages, stage_from, stage_until = None, None, None
+    n_default = len(K.select_stages('v2', A))          # every v2 stage but refcheck
+    check('J28 v2 dry-run on the production root: every default stage refused (the live site is the generation flow\'s), the '
+          'plan still shown', rc == 2 and 'REFUSE every stage - J28 production guard' in txt
+          and 'until the 10-25..10-28 generation flow is ported' in txt
+          and txt.count('REFUSE (J28 production guard; would run)') == n_default
+          and 'J24 disclosure pass' in txt and 'derived roots existing' in txt, txt[-2500:])
+    check('v2 dry-run names the V2 code tree\'s git HEAD (a git repository since 2026-10-25)',
+          re.search(r'code tree \S+ \(git HEAD [0-9a-f]{7,};', txt), txt[:600])
     rc, txt = step(['jupiter', 'v2', '--cells', REAL_CELL, '--dry-run', '--out', os.path.join(TMP, 'v2'), '--work', TMP])
-    check('v2 into a non-production --out: masters, metrics, summary refused', rc == 2 and txt.count('REFUSE into a non-production') == 3,
-          txt[-1500:])
+    check('v2 into a non-production --out: masters, metrics, summary refused; J28 does not gate a parity run',
+          rc == 2 and txt.count('REFUSE into a non-production') == 3 and 'J28' not in txt, txt[-1500:])
+    rc, txt = step(['jupiter', 'v2', '--cells', REAL_CELL, '--dry-run', '--stages', 'render', '--out', os.path.join(TMP, 'v2'),
+                    '--work', TMP])
+    check('J28: a parity render into a non-production --out is planned (exit 0)', rc == 0 and 'J28' not in txt
+          and 'jsite_render.py per root' in txt, txt[-1500:])
     rc, txt = step(['jupiter', 'v2', '--cells', '05h_2024-12-27', '--dry-run'])
     check('J20 a second V2 cell refused', rc == 2 and 'J20' in txt, txt[-300:])
     rc, txt = step(['jupiter', 'occurrence', '--dry-run', '--out', os.path.join(TMP, 'occ')])
@@ -498,9 +549,97 @@ def test_dry_runs_real():
     rc, txt = step(['jupiter', 'ephem', '--dates', '2024-12-29', '--out', os.path.join(TMP, 'eph')])
     check('ephem refuses without a network host', rc == 2 and 'NETWORK_HOSTS' in txt, txt[-300:])
     rc, txt = step(['jupiter', 'quarantine', '--cells', REAL_CELL, '--dry-run'])
-    check('quarantine dry-run lists no superseded render left', rc == 0 and '0 superseded render dir' in txt, txt[-500:])
+    # the superseded renders, defined independently of quarantine.superseded() (which reads the cell's links): renders/ minus
+    # the live render of every root site.json names
+    sc = os.path.join(V2, 'site', REAL_CELL)
+    live = {f"{v['label']}.r{v['render_id']}" for v in json.load(open(os.path.join(sc, 'site.json')))['variants']}
+    sup = sorted(set(os.listdir(os.path.join(sc, 'renders'))) - live)
+    check('quarantine dry-run lists exactly the superseded render dirs (renders/ minus the live renders site.json names)',
+          rc == 0 and f' - {len(sup)} superseded render dir(s): {", ".join(sup[:6]) or "none"}' in txt, txt[-800:])
+    # KNOWN live-data item (expectation kept: a quarantined cell has no superseded render left), pinned to the four renders it
+    # is about (any other superseded render is a real failure): see KNOWN_SUPERSEDED. A test never changes products.
+    line = next((l.strip() for l in txt.splitlines() if 'superseded render dir' in l), txt[-500:])
+    check('quarantine dry-run lists no superseded render left', rc == 0 and re.search(r' - 0 superseded render dir\(s\)', txt), line,
+          known=KNOWN_SUPERSEDED_WHY if sup and set(sup) <= set(KNOWN_SUPERSEDED) else None)
     rc, txt = step(['jupiter', 'serve', '--dry-run'])
     check('serve dry-run names the live 8800 / 8801 processes', rc == 0 and 'port 8800' in txt and 'port 8801' in txt, txt[-800:])
+
+
+class production_patch:
+    """paths.PRODUCTION_WRITES on and jupiter.ROOT moved to a scratch tree that is added to paths.PRODUCTION_ROOTS (the real roots
+    stay production roots): the v2 action runs in PRODUCTION mode against a synthetic live site - never against the real one."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def __enter__(self):
+        P, J = CFG.paths, CFG.jupiter
+        self.old = (P.PRODUCTION_WRITES, P.PRODUCTION_ROOTS, J.ROOT)
+        P.PRODUCTION_WRITES, P.PRODUCTION_ROOTS, J.ROOT = True, tuple(P.PRODUCTION_ROOTS) + (self.root,), self.root
+
+    def __exit__(self, *a):
+        CFG.paths.PRODUCTION_WRITES, CFG.paths.PRODUCTION_ROOTS, CFG.jupiter.ROOT = self.old
+
+
+def test_production_guard():
+    """J28: into a production --out every v2 stage refuses while the cell's live site is not the 2026-10-06 flow's (the real
+    production dry run is in test_dry_runs_real; parity runs are not gated, also there)."""
+    from exopipe.phase3.lib.jupiter import v2 as V2M
+    gen = '/lustre/gh/main/phase3/jupiter/v2/gen_20261025/derived/V2'
+    r = os.path.join(TMP, 'guard')
+
+    def site(root, record):
+        sc = os.path.join(root, 'v2', 'site', REAL_CELL)
+        os.makedirs(sc, exist_ok=True)
+        if record is not None:
+            json.dump(record, open(os.path.join(sc, 'site.json'), 'w'))
+        return sc
+
+    def flow_roots(root):
+        """The roots the 2026-10-06 flow renders under a production root (Ctx.root_of)."""
+        return lambda lab: os.path.join(root, 'products') if lab == 'prod' else os.path.join(root, 'v2', 'masters', 'derived', lab)
+
+    def old_site(root):
+        return {'cell': REAL_CELL, 'default': 'V2', 'variants': [{'label': lab, 'root': flow_roots(root)(lab), 'site_version': 2,
+                                                                  'render_id': '20261014T062422Z'} for lab in CFG.jupiter_v2.ROOT_ORDER]}
+    v3 = {'cell': REAL_CELL, 'site_version': 3, 'default': 'V2',
+          'variants': [{'label': 'V2', 'root': gen, 'site_version': 3, 'render_id': '20261028T045056Z'}]}
+    a, b, c_, d = (os.path.join(r, x) for x in 'abcd')
+    check('J28: a cell without a published site is not foreign', V2M.live_site_foreign(site(a, None), flow_roots(a)) is None)
+    check('J28: the 2026-10-06 flow\'s own site (six roots: v2/masters/derived, products; site_version 2) is not foreign',
+          V2M.live_site_foreign(site(b, old_site(b)), flow_roots(b)) is None)
+    why = V2M.live_site_foreign(site(c_, v3), flow_roots(c_))
+    check('J28: the generation flow\'s site (site_version 3, V2 of gen_20261025) is foreign', why and 'site_version 3' in why
+          and gen in why, why)
+    o = old_site(d)
+    o['variants'][0]['root'] = gen
+    why = V2M.live_site_foreign(site(d, o), flow_roots(d))
+    check('J28: a live root the action does not render is foreign (site_version 2)', why and 'site_version 2' in why and gen in why,
+          why)
+    # run level in PRODUCTION mode against a synthetic live site (production_patch): a real (not dry) render refuses before any
+    # unit; every stage function is a sentinel meanwhile, so even a failed guard could not write
+    proot = os.path.join(r, 'prod')
+    sc = site(proot, v3)
+    before = open(os.path.join(sc, 'site.json')).read()
+    ran, saved = [], dict(V2M.STAGES)
+
+    def sentinel(name):
+        def f(u, c, t0):
+            ran.append(name)
+            raise RuntimeError(f'v2 stage {name} ran')
+        return f
+    for name in saved:
+        V2M.STAGES[name] = sentinel(name)
+    try:
+        with production_patch(proot):
+            rc, txt = step(['jupiter', 'v2', '--cells', REAL_CELL, '--stages', 'render', '--cores', 'none'])
+    finally:
+        V2M.STAGES.update(saved)
+    check('J28: a production render refused before any unit while the live site is the generation flow\'s',
+          rc == 2 and 'J28 production guard' in txt and 'until the 10-25..10-28 generation flow is ported' in txt and not ran
+          and not os.path.exists(os.path.join(proot, '_records', 'jupiter', f'v2.render.{REAL_CELL}.json')), txt[-800:])
+    check('J28: the synthetic live site is untouched', open(os.path.join(sc, 'site.json')).read() == before
+          and os.listdir(sc) == ['site.json'], os.listdir(sc))
 
 
 def test_config_and_mirrors():
@@ -511,8 +650,20 @@ def test_config_and_mirrors():
             for lid in (v if isinstance(v, tuple) else (v,)):
                 check(f'ruling {s}.{k} = a ledger row', ledger.has_id(lid, CFG.paths.FIX_LEDGER), lid)
     n = sum(mirrors.check_literals(m) for m in mirrors.ACTION_MODULES.values())
-    check(f'every MIRROR key equals its in-place module literal ({n} keys)', n >= 50)
-    import re
+    check(f'every MIRROR key equals its in-place module literal ({n} literals)', n >= 50)
+    check('jupiter_v2.PAIR_TOL_S mirrors both modules that hold it (V2 f2df314)',
+          [e[0] for e in mirrors.entries('jupiter_v2.PAIR_TOL_S')] == ['v2:masters/jupv2_masters.py', 'v2:anchor/jblue_build.py'])
+    keep = CFG.jupiter_v2.PAIR_TOL_S
+    CFG.jupiter_v2.PAIR_TOL_S = 2.0
+    try:
+        mirrors.check_literals(mirrors.ACTION_MODULES['v2'])
+        msg = 'not refused'
+    except Exception as e:                       # noqa: BLE001
+        msg = str(e)
+    finally:
+        CFG.jupiter_v2.PAIR_TOL_S = keep
+    check('a PAIR_TOL_S other than the modules\' refuses, naming both modules', 'jupv2_masters.py' in msg and 'jblue_build.py' in msg
+          and 'jupiter_v2.PAIR_TOL_S' in msg, msg[:400])
     txt = open(os.path.join(CFG.jupiter.V2_CODE_ROOT, 'integrate', 'run_integration.sh')).read()
     notes = dict(re.findall(r'^NOTE\[(\w+)\]="(.*)"$', txt, re.M))
     check('jupiter_v2.ROOT_NOTES = run_integration.sh NOTE[...] verbatim (ledger 1973)', notes == dict(CFG.jupiter_v2.ROOT_NOTES),
@@ -563,7 +714,8 @@ def test_real_products_readonly():
                      ('jupiter_blue_anchor', f'anchor/{REAL_CELL}/V2/MANIFEST.sha256'),
                      ('jupiter_refcheck', f'integrate/inputs/ref_offsets_{REAL_CELL}.csv'),
                      ('jupiter_metrics', f'integrate/{REAL_CELL}/CONTENT_TEST_metrics.txt'),
-                     ('jupiter_site_summary', f'site/{REAL_CELL}/CONTENT_TEST.txt'),
+                     ('jupiter_site_summary', f'site/{REAL_CELL}/site.json'),
+                     ('jupiter_site_summary', f'quarantine_superseded_20261025/{REAL_CELL}/CONTENT_TEST.txt'),
                      ('jupiter_disclosure', 'integrate/occurrence_disclosed_failures.json')):
         r = validate.run(cls, os.path.join(V2, rel))
         check(f'real {cls} ({rel})', all(x['passed'] for x in r), [x['detail'] for x in r])
@@ -661,15 +813,141 @@ def test_class_negatives():
     pos('jupiter_metrics', os.path.join(md, 'CONTENT_TEST_metrics.txt'), 'copied metrics')
     _rewrite(os.path.join(md, 'metrics_V2.json'), lambda s: s[:len(s) // 2])
     neg('jupiter_metrics', os.path.join(md, 'CONTENT_TEST_metrics.txt'), 'a truncated metrics_V2.json')
-    # site summary: freshness line failed / a failure outside the accepted set named
+    # site summary, production's convention since 2026-10-25/28 (no cell summary file; every published render carries its
+    # RENDER_TEST.txt, site.json names the live render of each root): a minimal copy of the real cell - site.json, the label
+    # link, the live render's RENDER_TEST.txt and render_info.json, its tier directories (empty; their files are
+    # jupiter_site_render's) - with the mtime order of the real render (everything older than RENDER_TEST.txt)
+    real_sc = os.path.join(V2, 'site', REAL_CELL)
+    S = json.load(open(os.path.join(real_sc, 'site.json')))
+    sc = os.path.join(base, 'site', REAL_CELL)
+
+    def site_copy():
+        shutil.rmtree(sc, ignore_errors=True)
+        os.makedirs(os.path.join(sc, 'renders'))
+        shutil.copy(os.path.join(real_sc, 'site.json'), os.path.join(sc, 'site.json'))
+        for v in S['variants']:
+            src = os.path.realpath(os.path.join(real_sc, v['label']))
+            rd = os.path.join(sc, 'renders', os.path.basename(src))
+            os.makedirs(rd)
+            for e in sorted(os.listdir(src)):
+                if os.path.isdir(os.path.join(src, e)):
+                    os.makedirs(os.path.join(rd, e))
+            for f in ('RENDER_TEST.txt', 'render_info.json'):
+                shutil.copy2(os.path.join(src, f), os.path.join(rd, f))
+            t = os.path.getmtime(os.path.join(rd, 'RENDER_TEST.txt'))
+            for e in os.listdir(rd):
+                if e != 'RENDER_TEST.txt':
+                    os.utime(os.path.join(rd, e), (t - 60, t - 60))
+            os.symlink(os.path.join('renders', os.path.basename(src)), os.path.join(sc, v['label']))
+        return os.path.join(sc, 'site.json')
+
+    def site_json(fn):
+        d = json.load(open(os.path.join(sc, 'site.json')))
+        fn(d)
+        json.dump(d, open(os.path.join(sc, 'site.json'), 'w'), indent=1)
+
+    live_rt = os.path.join(sc, S['default'], 'RENDER_TEST.txt')
+    sj = site_copy()
+    pos('jupiter_site_summary', sj, 'a copy of the live site record (site.json, label link, live RENDER_TEST.txt)')
+    _rewrite(live_rt, lambda s: re.sub(r'^(T8 .*)-> PASS$', r'\1-> FAIL', s, count=1, flags=re.M))
+    neg('jupiter_site_summary', sj, 'a live render whose T8 freshness (products unchanged since the render) failed')
+    site_copy()
+    site_json(lambda d: [f.update(test='L1.IoX') for v in d['variants'] for x in v['limits'] if x['id'] == 'occ_failures'
+                         for f in x['data']['failures'] if f['test'] == 'L1.IoD'])
+    neg('jupiter_site_summary', sj, 'a site record stating an occurrence failure outside the accepted set')
+    site_copy()
+    site_json(lambda d: d['variants'][0].update(preview_failed=['T8']))
+    neg('jupiter_site_summary', sj, 'a live render published around its content tests (preview_failed)')
+    site_copy()
+    site_json(lambda d: d['variants'][0].update(render_id='20990101T000000Z'))
+    neg('jupiter_site_summary', sj, 'a site record naming a render the label link does not point to')
+    site_copy()
+    os.utime(os.path.join(sc, S['default'], 'render_info.json'))
+    neg('jupiter_site_summary', sj, 'a live render entry newer than its RENDER_TEST.txt')
+    site_copy()
+    site_json(lambda d: d.update(default='prod'))
+    neg('jupiter_site_summary', sj, 'a site record whose default root is not the ruled one')
+    site_copy()
+    site_json(lambda d: d['variants'][0].update(test='FAILED'))
+    neg('jupiter_site_summary', sj, 'a site record whose recorded test differs from the live RENDER_TEST.txt')
+    # T8 on its own (the verdict file otherwise ALL-PASS): the line gone / ending in a state that is neither PASS nor FAIL
+    site_copy()
+    _rewrite(live_rt, lambda s: re.sub(r'^T8 .*\n', '', s, count=1, flags=re.M))
+    neg('jupiter_site_summary', sj, 'a live RENDER_TEST.txt without its T8 line')
+    site_copy()
+    _rewrite(live_rt, lambda s: re.sub(r'^(T8 .*)-> PASS$', r'\1-> INFO', s, count=1, flags=re.M))
+    neg('jupiter_site_summary', sj, 'a live RENDER_TEST.txt whose T8 ends -> INFO (neither PASS nor FAIL)')
+    # the live site's roots, renderer mode and product roots (jupiter_v2.SITE_*): what the v2 action's 2026-10-06 flow would
+    # publish there (J28 refuses it) fails
+    site_copy()
+    site_json(lambda d: d['variants'].append(dict(d['variants'][0], label='prod')))
+    neg('jupiter_site_summary', sj, 'a site record with a root besides V2 (Gregg 2026-10-25: V2 only)')
+    site_copy()
+    site_json(lambda d: d.update(site_version=2))
+    neg('jupiter_site_summary', sj, 'a site record of site_version 2')
+    site_copy()
+    site_json(lambda d: d['variants'][0].update(root=os.path.join(CFG.jupiter.ROOT, 'v2', 'masters', 'derived', 'V2')))
+    neg('jupiter_site_summary', sj, 'a root rendering the 2026-10-06 derived root instead of the live generation\'s')
+    site_copy()
+    site_json(lambda d: (d.pop('site_version'), d.update(variants=[
+        dict(d['variants'][0], label=lab, site_version=2, root=(os.path.join(CFG.jupiter.ROOT, 'products') if lab == 'prod' else
+                                                               os.path.join(CFG.jupiter.ROOT, 'v2', 'masters', 'derived', lab)))
+        for lab in CFG.jupiter_v2.ROOT_ORDER])))
+    neg('jupiter_site_summary', sj, 'the site the 2026-10-06 flow would publish (six roots of v2/masters/derived and products, '
+        'site_version 2)')
+    # freshness re-checked from render_info.json (not read from T8): a product file's recorded mtime, a product file the render
+    # did not record, the reflection-metric file's recorded sha256 (render_info.json keeps its older mtime)
+    def ri_edit(fn):
+        p = os.path.join(sc, S['default'], 'render_info.json')
+        t = os.path.getmtime(p)
+        d = json.load(open(p))
+        fn(d)
+        json.dump(d, open(p, 'w'))
+        os.utime(p, (t, t))
+    first = sorted(json.load(open(os.path.join(real_sc, S['default'], 'render_info.json')))['products'])[0]
+    site_copy()
+    ri_edit(lambda d: d['products'].update({first: d['products'][first] + 1.0}))
+    neg('jupiter_site_summary', sj, f'a product file ({first}) whose mtime is not the one the render recorded')
+    site_copy()
+    ri_edit(lambda d: d['products'].pop(first))
+    neg('jupiter_site_summary', sj, 'a product file the render did not record')
+    site_copy()
+    ri_edit(lambda d: d['reflect'].update(sha256='0' * 64))
+    neg('jupiter_site_summary', sj, 'a reflection-metric file whose sha256 is not the one rendered')
+    site_copy()
+    ri_edit(lambda d: d.update(root='/lustre/gh/main/phase3/jupiter/v2/masters/derived/V2'))
+    neg('jupiter_site_summary', sj, 'a render_info.json whose root differs from site.json')
+    # site summary, the 2026-10-06 flow's convention (site/<cell>/CONTENT_TEST.txt of jint_content_summary.py, which
+    # `v2 --stages summary` still runs in place; the real file was quarantined 2026-10-25): its closing lines, as the program
+    # writes them - freshness failed / a failure outside the accepted set named
+    acc = ', '.join(CFG.jupiter_occurrence.ACCEPTED_FAILURES)
+    old = ('==================== FRESHNESS ====================\nFRESHNESS -> PASS\n\n'
+           f'SUMMARY: 5 of 6 components ALL-PASS (nightgeom, masters, anchor (Blue product), integrate (metric columns), site); '
+           f'occurrence: FAILED - 3 of 92 gating checks fail ({acc}); exactly the set Gregg Hallinan (PI) ACCEPTED on 2026-10-06\n'
+           'ALL-PASS EXCEPT THE ACCEPTED OCCURRENCE FAILURES (3 of 92 gating checks; accepted by Gregg Hallinan (PI) on 2026-10-06)\n')
     ss = os.path.join(base, 'site_CONTENT_TEST.txt')
-    shutil.copy(os.path.join(V2, 'site', REAL_CELL, 'CONTENT_TEST.txt'), ss)
-    pos('jupiter_site_summary', ss, 'copied site summary')
+    open(ss, 'w').write(old)
+    pos('jupiter_site_summary', ss, 'a summary in the 2026-10-06 format')
     _rewrite(ss, lambda s: s.replace('FRESHNESS -> PASS', 'FRESHNESS -> FAIL'))
-    neg('jupiter_site_summary', ss, 'a summary whose freshness failed')
-    shutil.copy(os.path.join(V2, 'site', REAL_CELL, 'CONTENT_TEST.txt'), ss)
+    neg('jupiter_site_summary', ss, 'a summary (2026-10-06 format) whose freshness failed')
+    open(ss, 'w').write(old)
     _rewrite(ss, lambda s: s.replace('L1.IoD', 'L1.IoX'))
-    neg('jupiter_site_summary', ss, 'a summary naming a failure outside the accepted set')
+    neg('jupiter_site_summary', ss, 'a summary (2026-10-06 format) naming a failure outside the accepted set')
+    # ... and it must describe the site beside it: not a site v3 record, not a newer one
+    od = os.path.join(base, 'oldsite', REAL_CELL)
+    os.makedirs(od)
+    oc = os.path.join(od, 'CONTENT_TEST.txt')
+    open(oc, 'w').write(old)
+    t = os.path.getmtime(oc)
+    shutil.copy(os.path.join(real_sc, 'site.json'), os.path.join(od, 'site.json'))
+    os.utime(os.path.join(od, 'site.json'), (t - 60, t - 60))
+    neg('jupiter_site_summary', oc, 'a summary (2026-10-06 format) beside a site v3 record')
+    json.dump({'cell': REAL_CELL, 'default': 'V2', 'variants': [{'label': 'V2', 'site_version': 2}]},
+              open(os.path.join(od, 'site.json'), 'w'))
+    os.utime(os.path.join(od, 'site.json'), (t - 60, t - 60))
+    pos('jupiter_site_summary', oc, 'a summary (2026-10-06 format) beside its own older site record (site_version 2)')
+    os.utime(os.path.join(od, 'site.json'), (t + 60, t + 60))
+    neg('jupiter_site_summary', oc, 'a summary (2026-10-06 format) older than the site record beside it')
     # occurrence results + disclosure record: a failing value changed in the live results
     occ = os.path.join(base, 'v2', 'occurrence', 'validation', 'content_test_results.json')
     dis = os.path.join(base, 'v2', CFG.jupiter_occurrence.DISCLOSURE)
@@ -767,14 +1045,20 @@ def test_class_negatives():
 
 def main():
     try:
-        for t in (test_config_and_mirrors, test_gates, test_flag, test_serve, test_dry_runs_real, test_real_products_readonly,
-                  test_class_negatives, test_end2end):
+        for t in (test_config_and_mirrors, test_gates, test_flag, test_serve, test_dry_runs_real, test_production_guard,
+                  test_real_products_readonly, test_class_negatives, test_end2end):
             print(f'--- {t.__name__}')
             t()
     finally:
         CFG.reset()
         shutil.rmtree(TMP, ignore_errors=True)
     print(f'\n{sum(ok for _, ok in RESULTS)} of {len(RESULTS)} checks passed in {time.time() - T0:.0f} s')
+    if KNOWN:
+        print(f'NOT ALL-PASS (exit 3): every other check passed; {len(KNOWN)} KNOWN live-data failure(s) (production state, '
+              f'not code):')
+        for name, why, detail in KNOWN:
+            print(f'  KNOWN-FAIL {name}: {why} [{str(detail)[:400]}]')
+        sys.exit(3)
 
 
 if __name__ == '__main__':

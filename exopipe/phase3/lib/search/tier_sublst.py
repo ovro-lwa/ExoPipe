@@ -86,8 +86,10 @@ ENGINE_SOURCES = ('lib/search/deep_search.py', 'lib/search/identification.py', '
                   'lib/search/search_v.py', 'lib/search/veto.py', 'lib/search/candidates.py',
                   'lib/search/parent_curve_table.py', 'lib/search/c50.py', 'tenmin_frames.py', 'phase3_tenmin.py',
                   'core/fitting.py', 'core/residuals.py')
-REFUSAL_COLUMNS = {'nightimage': 4, 'epochgate': 4, 'sanity': 6, 'sanity_I': 6, 'sanity_V': 6, 'searchtier': 7,
+REFUSAL_COLUMNS = {'nightimage': 4, 'epochgate': 4, 'sanity': 6, 'sanity_I': 6, 'sanity_V': 6, 'searchtier': 8,
                    'stale_input': 5, 'beam': 6, 'extraction_I': 7, 'extraction_V': 7}     # deep_search.py:1109-1585
+# (searchtier: the rule column before the attempt tag since 2026-10-30, production exopipe 702dd68 - 7 before; the content test
+# lib/search/tests.refusal_record accepts both forms)
 
 
 # =====================================================================================================================
@@ -825,7 +827,7 @@ def engine_env(plan, attempt, tmpdir=None):
         'P3_SIZE_FLOOR_BEAMS': repr(float(s.SIZE_FLOOR_BEAMS)),
         'P3_AXIS_REMOVE': repr(float(s.AXIS_REMOVE)),
         'P3_SANITY_I_X': repr(float(s.SANITY_I_X)),
-        'P3_SEARCH_TIER_SIGMA': repr(float(s.SEARCH_TIER_SIGMA)),
+        'P3_SEARCH_TIER_RATIO': repr(float(s.SEARCH_TIER_RATIO)),
         'P3_BEAM_GATE_RATIO': repr(float(s.BEAM_GATE_RATIO)),
         'P3_SANITY_MIN_NIGHTS': str(int(s.SANITY_MIN_NIGHTS)),
         'P3_SEARCH_TIER_MIN': str(int(s.SEARCH_TIER_MIN)),
@@ -1187,8 +1189,8 @@ def products(root, plan):
     rr = _run_root(root, label)
     out = []
     for name, cls in (('master_catalog.csv', 'detections'), ('v_deep_ledger.csv', 'gate_ledger'),
-                      ('v_deep_images.csv', 'image_ledger')):
-        p = os.path.join(rr, name)
+                      ('v_deep_images.csv', 'image_ledger'), ('search_table_record.csv', 'search_table_record')):   # the table's
+        p = os.path.join(rr, name)                                                                                # record: 55b0263
         if os.path.exists(p):
             out.append((p, cls, unit))
     for p in sorted(glob.glob(os.path.join(rr, 'refusals', '*_excluded.csv'))):

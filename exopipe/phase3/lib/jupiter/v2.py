@@ -1,6 +1,8 @@
 """`exopipe3 jupiter v2` - the Jupiter V2 build of a cell (the V2 code tree /lustre/gh/main/phase3/jupiter/v2/code, in place;
-B-87 default (b): outside git, identified per file by sha256 in the run record). One cell is supported (gate J20: the code
-hard-codes 05h_2024-12-29; decision 8 - rebuild the other nights - is not started).
+identified per file by sha256 in the run record - B-87 default (b); the tree is its own git repository since 2026-10-25). One
+cell is supported (gate J20: the 2026-10-06 flow below hard-codes 05h_2024-12-29). Production carried out decision 8 (rebuild
+the other nights) on 2026-10-25/26 with another flow this action does not run yet: rebuild/run_cell_v2.sh (24 nights, V2 only,
+into v2/gen_20261025) and the site v3 drivers (rebuild/run_site_v3.sh; the live site shows V2 only since 2026-10-25).
 
 Stages and the production command lines they reproduce (masters/run_all.sh, integrate/run_integration.sh, the hand steps):
   geometry    nightgeom/hzfetch.py DATE G0 G1 C0 C1 (skipped when horizons_<date>/manifest.json exists - a fetch is immutable;
@@ -19,7 +21,10 @@ Stages and the production command lines they reproduce (masters/run_all.sh, inte
   summary     integrate/jint_content_summary.py (J26 freshness)
 Units v2.<stage>.<cell>; the first stage not done stops the cell.
 
-A production --out runs exactly those command lines. A non-production --out (parity) redirects every WRITE root (arguments,
+A production --out runs exactly those command lines - unless gate J28 refuses them all: every stage writes over the live
+products, so while a cell's live site is not this flow's (since 2026-10-25 the generation flow publishes it: site_version 3,
+roots under v2/gen_20261025) the action refuses into a production --out until that flow is ported; the dry run says so.
+A non-production --out (parity) redirects every WRITE root (arguments,
 or module globals set by the in-place driver) into --out / --work and reads the products this run did not make from the
 production tree; every child runs under the write guard, so a missed redirect raises PermissionError instead of writing
 production. masters, metrics and summary cannot be redirected in place (bright_ratio / imprint_contrast have no entry function;
@@ -119,6 +124,50 @@ def _fresh_output(u, path, cls, t0):
         u.check(f'jupiter.v2.fresh[{os.path.basename(path)}]', False, None, f'{path} predates this stage')
         return
     u.add_output(path, cls)
+
+
+FLOW_SITE_VERSION = 2   # the site_version jsite_render.py records for a render of THIS action's flow (no --site-v3; jsite_render.py:2438)
+
+
+def live_site_foreign(site_cell, root_of):
+    """J28: why the published site cell is NOT the 2026-10-06 flow's this action runs, or None (also when nothing is published
+    there). Foreign: a site_version above FLOW_SITE_VERSION (site.json or any root: jsite_render.py --site-v3, the
+    2026-10-25..28 generation flow), or a live root other than the one this action renders for that label (root_of(label):
+    v2/masters/derived/<label>, the products root for prod) or a label this action does not render."""
+    import json
+    sj = os.path.join(site_cell, 'site.json')
+    if not os.path.exists(sj):
+        return None
+    try:
+        S = json.load(open(sj))
+    except (OSError, ValueError) as e:
+        return f'its site record {sj} is unreadable ({type(e).__name__}) - the live state is unknown'
+    roots = S.get('variants') or []
+    labels = _C().jupiter_v2.ROOT_LABELS
+    try:
+        sv = max([int(S.get('site_version') or 0)] + [int(v.get('site_version') or 0) for v in roots])
+    except (TypeError, ValueError):
+        sv = None
+    foreign = [f'{v.get("label")} -> {v.get("root")}' for v in roots
+               if v.get('label') not in labels or not v.get('root')
+               or os.path.realpath(str(v['root'])) != os.path.realpath(root_of(v['label']))]
+    if sv is not None and sv <= FLOW_SITE_VERSION and not foreign:
+        return None
+    return (f'the live site cell {site_cell} is not the 2026-10-06 flow\'s: site_version {sv} (this flow publishes '
+            f'{FLOW_SITE_VERSION}); roots it shows that this action does not render: {"; ".join(foreign) or "none"} (since '
+            f'2026-10-25 the generation flow publishes the live site: rebuild/run_cell_v2.sh, rebuild/run_site_v3.sh)')
+
+
+def production_guard(c):
+    """J28: into a PRODUCTION --out every v2 stage writes over the live products (render: all six roots merged into the live
+    site.json and its pages, the live links re-pointed at v2/masters/derived; geometry, masters, prepare, anchor, metrics,
+    summary: the archived 2026-10-06 trees in place), so all refuse while the cell's live site is not this flow's. None, or the
+    refusal text. A parity run (another --out) never reads or writes the live site and is not gated."""
+    why = live_site_foreign(os.path.join(c.R, 'site', c.cell), c.root_of)
+    if why is None:
+        return None
+    return (f'J28 production guard: {why}; every v2 stage would overwrite it - refused into a production --out until the '
+            f'10-25..10-28 generation flow is ported (a parity run into another --out is allowed)')
 
 
 def disclosure_gate(c):
@@ -352,12 +401,22 @@ def run(args, run_, roots, stages):
     unsupported = [c for c in cells if c not in V.CELLS_SUPPORTED]
     if unsupported:
         raise Refusal(f'J20 V2 single cell: {", ".join(unsupported)} not in jupiter_v2.CELLS_SUPPORTED {V.CELLS_SUPPORTED} - the '
-                      f'V2 code hard-codes 05h_2024-12-29 (jupv2_masters.py:47, cell_lookup.py:23-24, jint_metrics.py:128, '
-                      f'jsite_lib.py:25, jsite_test.py:73, jup_refcheck_20241229.py:12); decision 8 is not started')
+                      f'2026-10-06 V2 flow this action runs hard-codes 05h_2024-12-29 (cell_lookup.py:23-24, jint_metrics.py:128, '
+                      f'jsite_lib.py:26, jsite_test.py:73, jup_refcheck_20241229.py:12); production rebuilt the other nights '
+                      f'2026-10-25/26 with rebuild/run_cell_v2.sh + rebuild/run_site_v3.sh, not carried by this action yet')
     mirrors.check_literals(mirrors.ACTION_MODULES['v2'])
     blocked = [s for s in stages if s in NOT_REDIRECTABLE and not roots.production]
+    # J28: every stage writes, so into a production --out the whole action refuses while a cell's live site is not this flow's
+    guarded = {}
+    if roots.production:
+        for cell in cells:
+            why = production_guard(Ctx(args, run_, roots, cell))
+            if why:
+                guarded[cell] = why
     if run_.dry_run:
-        return dry_run(args, run_, roots, stages, cells, blocked)
+        return dry_run(args, run_, roots, stages, cells, blocked, guarded)
+    if guarded:
+        raise Refusal('; '.join(f'{cell}: {why}' for cell, why in guarded.items()))
     if blocked:
         raise Refusal('into a non-production --out these v2 stages cannot run in place: '
                       + '; '.join(f'{s} ({NOT_REDIRECTABLE[s]})' for s in blocked))
@@ -385,16 +444,32 @@ def run(args, run_, roots, stages):
     return None
 
 
-def dry_run(args, run_, roots, stages, cells, blocked):
+def _v2_head():
+    """The V2 code tree's git HEAD (short hash) for the dry run, or why it is unknown. Read only: rev-parse takes no lock and
+    writes nothing (no status / describe --dirty: those refresh the production repository's index)."""
+    import subprocess
+    try:
+        p = subprocess.run(['git', '-C', _C().jupiter.V2_CODE_ROOT, 'rev-parse', '--short', 'HEAD'], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, universal_newlines=True, timeout=60,
+                           env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
+    except (OSError, subprocess.SubprocessError) as e:
+        return f'unknown ({type(e).__name__})'
+    return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else 'unknown (not a git repository)'
+
+
+def dry_run(args, run_, roots, stages, cells, blocked, guarded=None):
     V = _C().jupiter_v2
     print(f'jupiter v2: {len(cells)} cell(s), stages {",".join(stages)}; {roots.describe()}')
-    print(f'  code tree {_C().jupiter.V2_CODE_ROOT} (outside git; sha256 per loaded file goes into each unit record)')
+    print(f'  code tree {_C().jupiter.V2_CODE_ROOT} (git HEAD {_v2_head()}; sha256 per loaded file goes into each unit record)')
     for cell in cells:
         c = Ctx(args, run_, roots, cell)
         print(f'\n  cell {cell} (J20 supported); products read from {c.products()}')
+        why = (guarded or {}).get(cell)
+        if why:
+            print(f'    REFUSE every stage - {why}')
         ok, detail = disclosure_gate(c)
         for st in stages:
-            line = f'    {st}: '
+            line = f'    {st}: ' + ('REFUSE (J28 production guard; would run) ' if why else '')
             if st in blocked:
                 line += f'REFUSE into a non-production --out ({NOT_REDIRECTABLE[st]})'
             elif st == 'geometry':
@@ -421,6 +496,8 @@ def dry_run(args, run_, roots, stages, cells, blocked):
                 line += ('jint_disclose, jint_metrics, jint_compare, jint_test_metrics' if st == 'metrics' else
                          f'jsite_render.py per root ({args.labels or ",".join(V.ROOT_LABELS)}) -> {c.R}/site/{cell}')
             elif st == 'summary':
-                line += f'jint_content_summary.py --cell {cell} -> {c.R}/site/{cell}/CONTENT_TEST.txt'
+                line += (f'jint_content_summary.py --cell {cell} -> {c.R}/site/{cell}/CONTENT_TEST.txt (the 2026-10-06 flow\'s '
+                         f'summary; production\'s site cells carry none since 2026-10-25 - their record is site.json + each live '
+                         f'render\'s RENDER_TEST.txt, class jupiter_site_summary)')
             print(line)
-    return 2 if blocked else 0
+    return 2 if blocked or guarded else 0

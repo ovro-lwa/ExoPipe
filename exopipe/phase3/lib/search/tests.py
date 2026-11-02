@@ -3,7 +3,9 @@
 Classes (spec search.md section 6): detections (master_catalog.csv), gate_ledger (v_deep_ledger.csv), image_ledger
 (v_deep_images.csv), refusal_record (refusals/<cell>_<kind>_excluded.csv), candidate_stamps (the candidates/ directory),
 fp_gate_verdicts (V_top100_fp_gate_p3.csv), detection_positions (fit_positions.csv); under the B-02 rules (step 3b) frame_noise
-(frame_noise.csv: each frame's noise and the medians it was judged by) and table_pulsar_decisions (table_pulsar_decisions.csv). search_frame and noise_map belong to frames,
+(frame_noise.csv: each frame's noise and the medians it was judged by) and table_pulsar_decisions (table_pulsar_decisions.csv);
+search_table_record (search_table_record.csv: every verdict of the search's bright-source table, its inputs and whether it was
+applied; production exopipe 55b0263). search_frame and noise_map belong to frames,
 master_catalog to masters; the search step runs their tests through the registry when they exist.
 
 Every test reads the file's CONTENT and works with no context: siblings are found from the path in the attempt layout
@@ -28,6 +30,7 @@ import os
 import re
 
 from exopipe.phase3.core.validate import content_test
+from exopipe.phase3.lib.search import attempts as _ATTS
 
 # ---- schemas of the in-place writers ---------------------------------------------------------------------------------------
 GLED_COLS_V1 = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'snr', 'peak_jy', 'morph_pass', 'veto_reason',
@@ -55,6 +58,9 @@ VETO_REASON_PREFIXES = {'jupiter-track:': re.compile(r'^\d{4}-\d\d-\d\d$')}
 FNOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'admitted', 'population', 'tblnoise_jy', 'vsanmed_jy', 'vsanity_x',
                'attempt']
 TPD_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'cut', 'note']
+# the search-time bright-source table's record (deep_search.STR_COLS; production exopipe 55b0263, 2026-10-18)
+STR_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'snr', 'verdict', 'note', 'frame_rms_jy', 'beam_deg',
+            'applied']
 
 
 def known_veto_reason(v):
@@ -64,13 +70,21 @@ def known_veto_reason(v):
 
 # refusal kinds: (column count, which searches the refusal removes: 'both' | 'I' | 'V' | 'row' = the Stokes in column 4)
 REFUSAL_KINDS = {'nightimage': (4, 'both'), 'epochgate': (4, 'both'), 'sanity': (6, 'both'), 'sanity_I': (6, 'I'),
-                 'sanity_V': (6, 'V'), 'searchtier': (7, 'row'), 'stale_input': (5, 'both'), 'beam': (6, 'both'),
+                 'sanity_V': (6, 'V'),
+                 'searchtier': (8, 'row'),  # lst, scope, date, Stokes, stage-1 rms, threshold, rule, attempt (the rule since
+                                            # 2026-10-30, production exopipe 702dd68: 'ratio2xmedian'; REFUSAL_EARLIER_NCOL)
+                 'stale_input': (5, 'both'), 'beam': (6, 'both'),
                  'extraction_I': (7, 'I'), 'extraction_V': (7, 'V'),
                  'daytime': (6, 'row'),     # B-02 step 3a: the daytime gate per frame (lst, scope, date, Stokes, reason, attempt)
                  'wbmember': (7, 'row'),    # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION: a wideband epoch whose member
                                             # subband fails the admission in that Stokes (lst, scope, date, Stokes, member, reason, attempt;
                                             # one row per failing member)
                  'datadecisions': (4, 'both')}   # B-02 step 3c: the nights data_decisions excluded (lst, scope, date, attempt)
+# kinds whose rows written before a format change have another column count (valid still: the attempt tag stays the last
+# column): searchtier rows before 2026-10-30 have no rule column (7). A file may hold both forms - a later search appends to
+# its attempt's file, and production's drop-patched attempts of 2026-10-30 ('...stdrop') carry the old rows with the new ones
+REFUSAL_EARLIER_NCOL = {'searchtier': 7}
+_SEARCHTIER_RULE = re.compile(r'^ratio[0-9.eE+-]+xmedian$')   # deep_search: f'ratio{SEARCH_TIER_RATIO:g}xmedian'
 # kinds that record, not refuse (the nights data_decisions excluded when the search ran): refused_dates leaves them out, so
 # the gate_ledger and image_ledger content tests do not fail an append that searched a night its base recorded, and the
 # search step's unaccounted_epochs judges its own preflight's admitted nights only by real refusals (it runs at search
@@ -191,14 +205,20 @@ ELEV_RECORD_FIX_UTC = '20261007T083010'   # exopipe d8beb0d: v_deep_images elev_
 ELEV_RECORD_LITERAL = 20.0                # 20.0 whatever the floor was - deep_search._elev_floor docstring)
 FRAME_EVERY_EPOCH_UTC = '20260913T054452' # code floor: a frame + an image row for every epoch not beam/exclusion-refused; before
                                           # it a sanity-refused epoch had an image row but no frame (verify_p3s3_stage.py:110-120)
-_ATT_TAG = re.compile(r'_(\d{8}T\d{6})$')
+_ATT_TAG = re.compile(r'_(' + _ATTS.TAG_RX + r')$')   # the tag ending an attempt directory's name (lib/search/attempts.py)
 
 
 def attempt_tag(path):
-    """YYYYmmddTHHMMSS of the attempt holding `path` (its directory name), or None."""
+    """YYYYmmddTHHMMSS of the search whose rows the attempt holding `path` holds: its directory name's UTC; for production's drop
+    patch '<UTC>stdrop' its source's (attempts.rows_utc - the patch carries its source's rows; 58 of the 142 patch sources of
+    2026-10-30 were searched before ELEV_RECORD_FIX_UTC), None when the logs name no source. None outside an attempt."""
     att = attempt_of(path)
     m = _ATT_TAG.search(os.path.basename(att.rstrip('/'))) if att else None
-    return m.group(1) if m else None
+    if not m:
+        return None
+    if m.group(1) == _ATTS.utc(m.group(1)):          # a search attempt: its own UTC
+        return m.group(1)
+    return _ATTS.rows_utc(att)                         # a drop patch: its source's
 
 
 def _elev_floor(tier, stokes, tag=None):
@@ -237,9 +257,15 @@ def _fail(problems, value):
 def schema_and_backing(path, stokes=None, cell=None, tier='deep', **ctx):
     """master_catalog.csv: the 31 fields; cand_id unique, of the writer's form and numbered in file order (candidates.py:
     n0 + i); one unit (lst, band, Stokes); |snr| at the Stokes floor; every row backed ONE-TO-ONE by a final gate-ledger row
-    of its date (cap 0.5 deg, verify_p3s3 condition 3); no row on a night data_decisions excludes now."""
+    of its date (cap 0.5 deg, verify_p3s3 condition 3); no row on a night data_decisions excludes now. Production's drop patch
+    (<UTC>stdrop, lib/search/attempts.py) keeps its source's numbers: they increase in file order, and its rows are exactly its
+    source's less those of the nights it dropped (the drop tool's own test D1; when the source's catalogue can be read)."""
     from exopipe.phase3.config import CFG
     cols, rows = _rows(path)
+    att = attempt_of(path)
+    am = _ATTS.parse(att) if att else None
+    patch = bool(am and am['suffix'])
+    prev_n = -1
     probs = []
     base = cols[:len(CAT_FIELDS)]
     if base != CAT_FIELDS:
@@ -265,7 +291,11 @@ def schema_and_backing(path, stokes=None, cell=None, tier='deep', **ctx):
             probs.append(f'{cid}: id disagrees with its row (stokes/lst/date/band)')
         if m['c'] != (r['cadence'][:1].upper() if r['cadence'] else '?'):
             probs.append(f'{cid}: cadence letter != cadence {r["cadence"]!r}')
-        if int(m['n']) != i:
+        if patch:                                  # a drop patch: its source's numbers, gaps where it dropped nights
+            if int(m['n']) <= prev_n:
+                probs.append(f'{cid}: number {int(m["n"])} not above the row before ({prev_n}): a drop patch keeps its source\'s order')
+            prev_n = int(m['n'])
+        elif int(m['n']) != i:
             probs.append(f'{cid}: number {int(m["n"])} != its row index {i} (the writer numbers rows n0 + i)')
         s = abs(_f(r['snr']))
         fl = floor.get(r['stokes'])
@@ -309,9 +339,36 @@ def schema_and_backing(path, stokes=None, cell=None, tier='deep', **ctx):
         bad = _excluded_now(lst, band, {r['date'][:10] for r in rows})
         if bad:
             probs.append(f'rows on nights data_decisions excludes now: {bad[:5]}')
+    if patch:
+        probs += _patch_rows(path, att, am, rows)
     if probs:
         return _fail(probs, len(rows))
-    return True, len(rows), f'{len(rows)} rows, ids sequential, every row backed by one final ledger row'
+    return True, len(rows), (f'{len(rows)} rows, ids ' + ('in its source\'s order (a drop patch)' if patch else 'sequential')
+                             + ', every row backed by one final ledger row')
+
+
+def _patch_dropped(att, am):
+    """The nights a drop patch dropped: the nights of its refusal rows tagged with its own tag (the drop tool's test D4)."""
+    out = set()
+    for p in glob.glob(os.path.join(att, 'transients', 'Run_*', 'refusals', '*_excluded.csv')):
+        with open(p, newline='') as fh:
+            out |= {r[2] for r in csv.reader(fh) if len(r) > 3 and r[-1] == am['att']}
+    return out
+
+
+def _patch_rows(path, att, am, rows):
+    """[problems] of a drop patch's table against its source's (production's drop test D1): exactly the source's rows less those
+    of the dropped nights in its Stokes. [] when the source's table cannot be read (the patch is then judged by its own rows)."""
+    src = _ATTS.stdrop_source(att)
+    sp = os.path.join(src, os.path.relpath(path, att)) if src else None
+    if not sp or not os.path.exists(sp):
+        return []
+    dropped = _patch_dropped(att, am)
+    want = [r for r in _rows(sp)[1] if not (r['date'] in dropped and r['stokes'] == am['s'])]
+    if rows != want:
+        return [f'the rows are not its source\'s less those of its {len(dropped)} dropped night(s) in Stokes {am["s"]} '
+                f'({len(rows)} rows, {len(want)} expected; production\'s drop test D1)']
+    return []
 
 
 # ---- gate ledger ------------------------------------------------------------------------------------------------------------
@@ -453,9 +510,12 @@ def one_row_per_searched_epoch(path, stokes=None, cell=None, tier='deep', **ctx)
 # ---- refusal record ---------------------------------------------------------------------------------------------------------
 @content_test('refusal_record')
 def parses(path, **ctx):
-    """refusals/<lst>_<scope>_<kind>_excluded.csv (no header): every row has its kind's column count, the file's lst/scope, a
-    date of the cell's epoch grammar; the refused dates have no gate-ledger row of the Stokes the refusal removes (not the
-    RECORD_ONLY_KINDS records: an append may search a night its base recorded, once data_decisions admits it)."""
+    """refusals/<lst>_<scope>_<kind>_excluded.csv (no header): every row has its kind's column count (or, for a kind in
+    REFUSAL_EARLIER_NCOL, the count of its rows written before the format change), the file's lst/scope, a date of the cell's
+    epoch grammar; a searchtier row's stage-1 rms is above its threshold (as written, 0.1 mJy) and its rule, when it has one,
+    is 'ratio<x>xmedian' (production exopipe 702dd68); the refused dates have no gate-ledger row of the Stokes the refusal
+    removes (not the RECORD_ONLY_KINDS records: an append may search a night its base recorded, once data_decisions admits
+    it)."""
     m = _REF.match(os.path.basename(path))
     if not m:
         return False, None, f'name is not <lst>_<scope>_<kind>_excluded.csv: {os.path.basename(path)}'
@@ -463,12 +523,14 @@ def parses(path, **ctx):
     if kind not in REFUSAL_KINDS:
         return False, None, f'unknown refusal kind {kind!r} (known: {", ".join(sorted(REFUSAL_KINDS))})'
     ncol, which = REFUSAL_KINDS[kind]
+    ncols = {ncol} | ({REFUSAL_EARLIER_NCOL[kind]} if kind in REFUSAL_EARLIER_NCOL else set())
     with open(path, newline='') as f:
         rows = [r for r in csv.reader(f) if r]
     probs = []
     for i, r in enumerate(rows):
-        if len(r) != ncol:
-            probs.append(f'row {i + 1}: {len(r)} columns, kind {kind} has {ncol}')
+        if len(r) not in ncols:
+            probs.append(f'row {i + 1}: {len(r)} columns, kind {kind} has {ncol}'
+                         + (f' ({REFUSAL_EARLIER_NCOL[kind]} in its earlier rows)' if kind in REFUSAL_EARLIER_NCOL else ''))
             continue
         if (r[0], r[1]) != (m['lst'], m['scope']):
             probs.append(f'row {i + 1}: lst/scope {r[0]}/{r[1]} != file {m["lst"]}/{m["scope"]}')
@@ -476,6 +538,11 @@ def parses(path, **ctx):
             probs.append(f'row {i + 1}: bad date {r[2]!r}')
         if which == 'row' and r[3] not in ('I', 'V'):
             probs.append(f'row {i + 1}: Stokes {r[3]!r}')
+        if kind == 'searchtier':
+            if not _f(r[4]) >= _f(r[5]):
+                probs.append(f'row {i + 1}: stage-1 rms {r[4]!r} is not above its threshold {r[5]!r}')
+            if len(r) == ncol and not _SEARCHTIER_RULE.match(r[6]):
+                probs.append(f'row {i + 1}: rule {r[6]!r} is not ratio<x>xmedian')
     if not rows:
         probs.append('empty refusal ledger (the engine opens one only to write a refusal)')
     rd = run_dir_of(path)
@@ -483,7 +550,7 @@ def parses(path, **ctx):
     if led and os.path.exists(led):
         lrows = _rows(led)[1]
         for r in rows:
-            if len(r) != ncol:
+            if len(r) not in ncols:
                 continue
             sts = ('I', 'V') if which == 'both' else ((r[3],) if which == 'row' else (which,))
             n = sum(1 for x in lrows if x['date'] == r[2] and x['stokes'] in sts)
@@ -614,6 +681,76 @@ def named_and_ledgered(path, **ctx):
     if probs:
         return _fail(probs, len(rows))
     return True, len(rows), f'{len(rows)} decisions, {sum(r["cut"] == "1" for r in rows)} cut'
+
+
+# ---- the search-time bright-source table's record (production exopipe 55b0263) ----------------------------------------------
+@content_test('search_table_record')
+def verdicts_applied_as_ruled(path, tier='deep', **ctx):
+    """search_table_record.csv (deep_search.STR_COLS; production exopipe 55b0263, the refactor chat's 2026-10-18 decision):
+    every verdict of the search's bright-source table with the inputs it was given. STR_COLS; one cell; Stokes I/V, a night of
+    the epoch grammar, verdict and applied 0/1; a cut verdict carries the table's cut note ('table: parent S=...', not an
+    exemption) and positive inputs, a kept one no note or an exemption's; applied as the attempt was searched - deep under
+    production's rules 0 (record-only: the publish conformance applies the table once, with its derivation inputs), deep under
+    the B-02 rules ('once-in-search', the attempt's search_rules.json) 1 (the search is the table's one application), the
+    10-minute tier (tier 'sublst') 1; every row has its detection's gate-ledger row, and on the nights the record holds the
+    ledger's 'table' rows are exactly its applied cut verdicts (Stokes, night, pixel; an append's base searched before the
+    record existed has ledger rows the record cannot hold)."""
+    import collections
+    cols, rows = _rows(path)
+    if cols != STR_COLS:
+        return False, len(rows), f'header != STR_COLS: {cols[:6]}...'
+    probs = []
+    cells = sorted({(r['lst'], r['scope']) for r in rows})
+    if len(cells) > 1:
+        probs.append(f'{len(cells)} cells in one record: {cells[:3]}')
+    want = '1' if tier == 'sublst' else None
+    att = attempt_of(path)
+    if want is None and att:
+        from exopipe.phase3.lib.search import removal_rules as RR
+        try:
+            want = '1' if RR.attempt_rules(att)['rules'] == 'once-in-search' else '0'
+        except RuntimeError as e:
+            probs.append(str(e))
+    applied_cuts, nights = collections.Counter(), set()
+    for r in rows:
+        k = f'{r["stokes"]} {r["date"]} ({r["pix_x"]},{r["pix_y"]})'
+        if (r['stokes'] not in ('I', 'V') or not _DATE.match(r['date']) or r['verdict'] not in ('0', '1')
+                or r['applied'] not in ('0', '1')):
+            probs.append(f'{k}: bad Stokes / night / verdict / applied ({r["verdict"]!r}, {r["applied"]!r})')
+            continue
+        nights.add((r['stokes'], r['date']))
+        cut_note = 'table: parent S=' in r['note'] and 'table-exempt' not in r['note']
+        if r['verdict'] == '1' and not (cut_note and _f(r['frame_rms_jy']) > 0 and _f(r['beam_deg']) > 0):
+            probs.append(f'{k}: a cut verdict without the table\'s cut note or with non-positive inputs ({r["note"][:60]!r}, '
+                         f'rms {r["frame_rms_jy"]!r}, beam {r["beam_deg"]!r})')
+        if r['verdict'] == '0' and r['note'] and 'table-exempt' not in r['note']:
+            probs.append(f'{k}: kept with a note that is not an exemption ({r["note"][:60]!r})')
+        if want is not None and r['applied'] != want:
+            probs.append(f'{k}: applied {r["applied"]}, the attempt\'s rules apply {want}')
+        if r['verdict'] == '1' and r['applied'] == '1':
+            applied_cuts[(r['stokes'], r['date'], r['pix_x'], r['pix_y'])] += 1
+    if not rows:
+        probs.append('empty (the engine writes the file only with a verdict)')
+    rd = run_dir_of(path)
+    led = os.path.join(rd, 'v_deep_ledger.csv') if rd else None
+    if led and os.path.exists(led):
+        keys, table = set(), collections.Counter()
+        for x in _rows(led)[1]:
+            kx = (x['stokes'], x['date'], x['pix_x'], x['pix_y'])
+            keys.add(kx)
+            if x['veto_reason'] == 'table' and (x['stokes'], x['date']) in nights:
+                table[kx] += 1
+        miss = [r for r in rows if (r['stokes'], r['date'], r['pix_x'], r['pix_y']) not in keys]
+        if miss:
+            probs.append(f'{len(miss)} verdicts without their detection\'s gate-ledger row, e.g. '
+                         f'{[(r["stokes"], r["date"], r["pix_x"], r["pix_y"]) for r in miss[:3]]}')
+        if table != applied_cuts:
+            probs.append(f'the ledger\'s \'table\' rows ({sum(table.values())}) are not the record\'s applied cuts '
+                         f'({sum(applied_cuts.values())}): e.g. {sorted((table - applied_cuts) + (applied_cuts - table))[:3]}')
+    if probs:
+        return _fail(probs, len(rows))
+    return True, len(rows), (f'{len(rows)} verdicts, {sum(r["verdict"] == "1" for r in rows)} cut, '
+                             f'{sum(r["applied"] == "1" for r in rows)} applied')
 
 
 # ---- candidate stamps -------------------------------------------------------------------------------------------------------

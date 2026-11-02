@@ -108,7 +108,7 @@ def test_config():
     ds = os.path.join(BR, 'lib/search/deep_search.py')
     for env, key in (('P3_MIN_EPOCHS', 'MIN_EPOCHS'), ('P3_SIZE_FLOOR_BEAMS', 'SIZE_FLOOR_BEAMS'),
                      ('P3_AXIS_REMOVE', 'AXIS_REMOVE'), ('P3_SANITY_I_X', 'SANITY_I_X'),
-                     ('P3_SEARCH_TIER_SIGMA', 'SEARCH_TIER_SIGMA'), ('P3_BEAM_GATE_RATIO', 'BEAM_GATE_RATIO'),
+                     ('P3_SEARCH_TIER_RATIO', 'SEARCH_TIER_RATIO'), ('P3_BEAM_GATE_RATIO', 'BEAM_GATE_RATIO'),
                      ('P3_V110_TIMEOUT', 'V110_TIMEOUT_S'), ('P3_TENMIN_MIN_ELEVATION', 'MIN_ELEVATION_DEG'),
                      ('P3_MASTER_GEN', 'MASTER_GEN'), ('P3_SANITY_MIN_NIGHTS', 'SANITY_MIN_NIGHTS'),
                      ('P3_SEARCH_TIER_MIN', 'SEARCH_TIER_MIN'), ('P3_BEAM_GATE_MIN_NIGHTS', 'BEAM_GATE_MIN_NIGHTS')):
