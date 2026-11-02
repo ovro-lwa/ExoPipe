@@ -85,7 +85,7 @@ _SUMMARY_RE = re.compile(r'^\s*(\d\dh) (\S+): (\d+) epochs -> (\d+) candidates',
 ENGINE_SOURCES = ('lib/search/deep_search.py', 'lib/search/identification.py', 'lib/search/search_i.py',
                   'lib/search/search_v.py', 'lib/search/veto.py', 'lib/search/candidates.py',
                   'lib/search/parent_curve_table.py', 'lib/search/c50.py', 'tenmin_frames.py', 'phase3_tenmin.py',
-                  'core/fitting.py', 'core/residuals.py')
+                  'core/fitting.py', 'core/residuals.py', 'lib/search/size_rule.py')
 REFUSAL_COLUMNS = {'nightimage': 4, 'epochgate': 4, 'sanity': 6, 'sanity_I': 6, 'sanity_V': 6, 'searchtier': 8,
                    'stale_input': 5, 'beam': 6, 'extraction_I': 7, 'extraction_V': 7}     # deep_search.py:1109-1585
 # (searchtier: the rule column before the attempt tag since 2026-10-30, production exopipe 702dd68 - 7 before; the content test
@@ -767,6 +767,16 @@ def preflight(args, run, cell, lst, band, stokes, date):
             if s.PA_NULL_REQUIRED:
                 plan['refuse'] = f'G2: {pa} missing and search_sublst.PA_NULL_REQUIRED is True'
                 return plan
+    if s.SIZE_RULE == 'envelope':         # the size / axis rule's 10-minute calibration product (R-GREGG-20261022-ALL-APPROVED-...)
+        from exopipe.phase3.lib.search import size_rule as SZ
+        try:
+            SZ.step_env(s.SIZE_RULE, s.SIZE_ENVELOPE, s.SIZE_ENVELOPE_MD5, 'search_sublst.SIZE_RULE')
+            ok_, why_ = True, f'{SZ.resolve(s.SIZE_ENVELOPE)} md5 {s.SIZE_ENVELOPE_MD5}'
+        except RuntimeError as e:
+            ok_, why_ = False, str(e)
+        if not gate('G2.size_envelope', ok_, why_):
+            plan['refuse'] = f'G2: the size / axis rule cannot be applied: {why_}'
+            return plan
     if date:                              # per-hour (incremental) mode
         inc = [k for k in keys if k[:10] == date]
         plan['included_dates'] = inc
@@ -785,6 +795,11 @@ def preflight(args, run, cell, lst, band, stokes, date):
             plan['refuse'] = (f'windows {dup} of {date} are already in the published attempt {pub}: a re-search of a night '
                               f'is a full run of the cell (--fresh), never a second append')
             return plan
+        from exopipe.phase3.lib.search.deep_step import base_size_refusal     # one attempt, one size / axis rule
+        why = base_size_refusal(pub, label, cadence='10min')
+        if not gate('epoch.size_rule_of_the_base', why is None, why or f'{s.SIZE_RULE}, as the published attempt'):
+            plan['refuse'] = why
+            return plan
     # inputs (fingerprinted at run time; listed here for the plan)
     ins = [p for p in sorted(glob.glob(os.path.join(tree, 'subtracted', f'*_{stokes}_sub_{band}.fits')))]
     if stokes == 'V':
@@ -797,6 +812,9 @@ def preflight(args, run, cell, lst, band, stokes, date):
             os.path.join(phase3_dir(), '..', 'common', 'parent_curve_tables.json')]
     if stokes == 'V':
         ins += [s.V110_NULL_TRIALS, s.V110_PA_NULL]
+    if s.SIZE_RULE == 'envelope':
+        from exopipe.phase3.lib.search import size_rule as SZ
+        ins += [SZ.resolve(s.SIZE_ENVELOPE)]
     ins += [os.path.join(phase3_dir(), x) for x in ENGINE_SOURCES]
     plan['inputs'] = [os.path.normpath(p) for p in ins if os.path.exists(p)]
     return plan
@@ -806,9 +824,15 @@ def engine_env(plan, attempt, tmpdir=None):
     """search.md 7.3 (sub-LST rows): the engine environment, built from config only. ``tmpdir``: the child's TMPDIR (detect
     passes a short one, deep_step.engine_tmpdir: AF_UNIX socket paths); default <attempt>/tmp."""
     from exopipe.phase3.lib.search.deep_step import ephemeris_time
+    from exopipe.phase3.lib.search import size_rule as SZ
+    from exopipe.phase3.core.record import Refusal
     s = cfg().search_sublst
     label = plan['label']
-    return {
+    try:                                    # the size / axis rule and its 10-minute calibration product, checked
+        size_env = SZ.step_env(s.SIZE_RULE, s.SIZE_ENVELOPE, s.SIZE_ENVELOPE_MD5, 'search_sublst.SIZE_RULE')
+    except RuntimeError as e:
+        raise Refusal(str(e))
+    return dict({
         'XLA_PYTHON_CLIENT_PREALLOCATE': 'true' if s.XLA_PREALLOCATE else 'false',
         'EXOPIPE3_EPHEMERIS_TIME': ephemeris_time(s.EPHEMERIS_TIME, 'search_sublst.EPHEMERIS_TIME'),   # WAVE2 B-30
         'P3_TENMIN_ROOT': tree_root(plan['arm']),
@@ -837,7 +861,7 @@ def engine_env(plan, attempt, tmpdir=None):
         'P3_TABLE_ELEV_BANDS': s.TABLE_ELEV_BANDS,
         'P3_TABLE_XM_EXEMPT': '1' if s.TABLE_XM_EXEMPT else '0',
         'TMPDIR': tmpdir or os.path.join(attempt, 'tmp'),
-    }
+    }, **size_env)
 
 
 # The child process (core.legacy.run, module mode: `python -m exopipe.phase3.lib.search.tier_sublst --engine-child SPEC`):

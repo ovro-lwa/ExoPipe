@@ -74,6 +74,19 @@ class search_detect(_Section):
     SIZE_FLOOR_BEAMS = 1.5                                  # (Maj - 1 sigma)/epoch BMAJ above 8 sigma; P3_SIZE_FLOOR_BEAMS (deep_search.py:75;
                                                             # R-SIZE-AXIS-GATE-1.5-RATIFIED)
     AXIS_REMOVE = 1.5                                       # normalised axis ratio; P3_AXIS_REMOVE (deep_search.py:79)
+    SIZE_RULE = 'envelope'                                  # the size / axis-ratio gate (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-
+                                                            # SUBAGENTS): 'envelope' = ONE rule at every S/N, both Stokes (lib/search/size_rule:
+                                                            # one Gaussian on the epoch beam's stamp, removed when (major - 1 sigma) or the axis
+                                                            # ratio exceeds max(1.5, the 99th percentile of point sources injected into this tier's
+                                                            # frames at its S/N)); it replaces the fixed thresholds above 8 sigma (SIZE_FLOOR_BEAMS,
+                                                            # AXIS_REMOVE, SIZE_SNR_GATE; V on the PyBDSF component) and the catalogue's 1.7 at 7-8
+                                                            # sigma (catalog_associate.SIZE_GATE_7_8). 'production' = the fixed thresholds. The
+                                                            # engine child reads EXOPIPE3_SIZE_RULE (deep_step.engine_env); every attempt records
+                                                            # its rule (transients/Run_<label>/size_rule.json) and the catalogue follows it
+    SIZE_ENVELOPE = 'exopipe/common/size_envelope_deep.json'   # the rule's calibration product (relative paths: the package root): 25,920 point
+                                                            # sources injected on the sky into 240 Run_P3S5 residual frames, 2026-10-22
+                                                            # (refactor_analysis/bright_source_contamination_20261020/deep/size_cal_v2.json)
+    SIZE_ENVELOPE_MD5 = 'e184ac13f6eb2606ac966311cf3394a2'  # md5 of SIZE_ENVELOPE; gate G2 refuses another file
     SANITY_X = 3.0                                          # x cell median, I (qa3) and V (frame rms); P3_SANITY_I_X (deep_search.py:77;
                                                             # R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT)
     SEARCH_TIER_RATIO = 2.0                                 # x the cell median of the stage-1 rms, per Stokes: above it the epoch is
@@ -158,6 +171,7 @@ class search_detect(_Section):
                                                             # (lib/search/admitted.verify_master); the engine child reads
                                                             # EXOPIPE3_MASTER_HELD_18MHZ (deep_step.engine_env, frames deep_engine.child_env)
     RULED = {'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'SIZE_RULE': 'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS',
              'MASTER_HELD_18MHZ': ('R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4', 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD',
                                    'CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023'),
              'REMOVAL_RULES': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
@@ -176,7 +190,7 @@ class search_detect(_Section):
                       'VETO_ATEAM_RADIUS_DEG', 'VETO_BILOBE', 'SIZE_FLAG_BEAMS', 'AXIS_FLAG', 'SIZE_SNR_GATE', 'JUPITER_VETO_DEG',
                       'MOON_VETO_DEG', 'ATEAM_VETO_DEG', 'ROWLINE_MIN', 'MAX_V_PER_EPOCH', 'REPEAT_MATCH_ARCMIN', 'C50_TABLE',
                       'MSTRUCT_WINDOW_BEAMS', 'GARBAGE_PIXEL_JY', 'EMPIRICAL_BEAM_FALLBACK_PX', 'DURATION_FALLBACK_S',
-                      'CENTRAL_RMS_HALF_PX', 'PB_FLOOR')
+                      'CENTRAL_RMS_HALF_PX', 'PB_FLOOR', 'SIZE_ENVELOPE', 'SIZE_ENVELOPE_MD5')
 
 
 class search_tables(_Section):
@@ -359,6 +373,15 @@ class search_sublst(_Section):
     MIN_EPOCHS = 3                          # windows; P3_MIN_EPOCHS; DS:296 (B-75); fewer = P3-POLICY-SKIP = unit no-input
     SIZE_FLOOR_BEAMS = 1.5                  # (Maj - 1 sigma)/BMAJ above 8 sigma; P3_SIZE_FLOOR_BEAMS; DS:75
     AXIS_REMOVE = 1.5                       # normalised axis ratio; P3_AXIS_REMOVE; DS:79
+    SIZE_RULE = 'envelope'                  # the size / axis-ratio gate, as search_detect.SIZE_RULE (R-GREGG-20261022-ALL-APPROVED-SIZE-
+                                            # GATE-READMISSION-SUBAGENTS): 'envelope' = one rule at every S/N with THIS tier's
+                                            # calibration; 'production' = the fixed thresholds above 8 sigma (EXOPIPE3_SIZE_RULE;
+                                            # tier_sublst.engine_env)
+    SIZE_ENVELOPE = 'exopipe/common/size_envelope_sublst.json'   # the 10-minute calibration product: 25,920 point sources injected on the
+                                            # sky into 240 window frames of Run_SLSTB (set B, frames.csv sub_path - the search's
+                                            # own residual pixel for pixel: no bin master in set B), 2026-10-22
+                                            # (refactor_analysis/bright_source_contamination_20261020/tenmin/size_cal_v2.json)
+    SIZE_ENVELOPE_MD5 = '7e7da6dfcda065d8379e104d74d064fb'   # gate G2 refuses another file
     SANITY_I_X = 3.0                        # x cell median qa3; P3_SANITY_I_X; DS:77
     SEARCH_TIER_RATIO = 2.0                 # x the cell median of the FRAMES' stage-1 rms, per Stokes; P3_SEARCH_TIER_RATIO; DS
                                             # SEARCH_TIER_RATIO (production exopipe 702dd68, Gregg 2026-10-30, both cadences; the
@@ -423,6 +446,7 @@ class search_sublst(_Section):
              'TABLE_PREFIX': 'CORRECTION-SUBLST-SEARCH-APPLIED-OLD-10MIN-TABLE-IN-SEARCH',
              'TABLE_RECORD_ONLY': 'CORRECTION-SUBLST-SEARCH-APPLIED-OLD-10MIN-TABLE-IN-SEARCH',
              'SIZE_FLOOR_BEAMS': 'R-SIZE-AXIS-GATE-1.5-RATIFIED', 'AXIS_REMOVE': 'R-SIZE-AXIS-GATE-1.5-RATIFIED',
+             'SIZE_RULE': 'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS',
              'SANITY_I_X': 'R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT',
              'SEARCH_TIER_RATIO': 'R-GREGG-20261030-SEARCH-TIER-GATE-2X-CELL-MEDIAN-FASTER-OPTION',
              'BEAM_GATE_RATIO': 'R-BEAM-REFUSALS-STAND-1P5',
@@ -432,7 +456,7 @@ class search_sublst(_Section):
     # engine-hard-coded (CADENCE: the tier IS the 10-minute cadence; I_MASK_FLOOR_DEG: search_i's module constant) and pinned
     # (MASTER_GEN: R-TILT-REMOVED-NEXTGEN; the trees; the v110 null tables and their md5s)
     PROTECTED_KEYS = ('CADENCE', 'I_MASK_FLOOR_DEG', 'MASTER_GEN', 'TREE_SUBDIRS', 'V110_NULL_TRIALS', 'V110_NULL_TRIALS_MD5',
-                      'V110_PA_NULL', 'V110_PA_NULL_MD5')
+                      'V110_PA_NULL', 'V110_PA_NULL_MD5', 'SIZE_ENVELOPE', 'SIZE_ENVELOPE_MD5')
 
 
 class search_snapshot(_Section):

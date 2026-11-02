@@ -40,6 +40,10 @@ GLED_COLS_V1 = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y',
 GLED_COLS_TABLE = ['parent_jy', 'parent_off_beams', 'table_note', 'table_key', 'table_margin', 'table_parent_S',
                    'table_parent_sep_bw', 'table_R', 'table_bin', 'table_frame_rms_jy']
 GLED_COLS = GLED_COLS_V1 + GLED_COLS_TABLE
+# the size / axis rule at every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS; deep_search GLED_COLS_SIZE =
+# lib/search/size_rule.GLED_COLS_SIZE): appended after GLED_COLS by a search under SIZE_RULE 'envelope' (its run directory holds
+# size_rule.json); production's ledger is GLED_COLS
+GLED_COLS_SIZE = ['size_rule', 'size_snr', 'size_thr', 'axis_thr', 'size_excess', 'axis_excess', 'size_verdict']
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph', 'n_after_mstruct', 'n_after_jupiter', 'n_final',
              'n_raw_floor', 'elev_min_deg']
 CAT_FIELDS = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'interval', 'ra', 'dec', 'peak_jy', 'int_jy', 'snr',
@@ -372,17 +376,55 @@ def _patch_rows(path, att, am, rows):
 
 
 # ---- gate ledger ------------------------------------------------------------------------------------------------------------
+def size_rule_rows(path, cols, rows):
+    """The size / axis rule in a gate ledger: [problem]. The header and the run's record agree (GLED_COLS_SIZE exactly when
+    size_rule.json says 'envelope'); under the rule a 'gaussfit-size' / 'axis-ratio' row is the rule's own verdict and vice
+    versa, every final was judged (point-like, fit-failed or no-snr) with excesses <= 1, and every judged row names the product
+    the record names."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    probs = []
+    with_cols = cols == GLED_COLS + GLED_COLS_SIZE
+    try:
+        rec = SZ.read_run_record(os.path.dirname(os.path.abspath(path)))
+    except RuntimeError as e:
+        return [str(e)]
+    if (rec['rule'] == 'envelope') != with_cols:
+        return [f"the ledger {'carries' if with_cols else 'lacks'} the size rule's columns while its run's record "
+                f"({SZ.RUN_RECORD}) says {rec['rule']!r}"]
+    if not with_cols:
+        return []
+    label = f"envelope:{rec['envelope']}:{rec['md5'][:12]}"
+    for r in rows:
+        v, sv, where = r['veto_reason'], r.get('size_verdict') or '', f"{r['stokes']} {r['date']} {r['ra']},{r['dec']}"
+        if sv and sv not in SZ.VERDICTS:
+            probs.append(f'{where}: size_verdict {sv!r} is not one of {SZ.VERDICTS}')
+            continue
+        if sv and r.get('size_rule') != label:
+            probs.append(f"{where}: judged under {r.get('size_rule')!r}, the run's record names {label!r}")
+        if v in ('gaussfit-size', 'axis-ratio') and sv != v:
+            probs.append(f'{where}: removed as {v!r} with size_verdict {sv!r}')
+        if sv in ('gaussfit-size', 'axis-ratio') and v != sv:
+            probs.append(f'{where}: the rule removes it ({sv}) but its veto_reason is {v!r}')
+    for r, _rule, words in SZ.final_findings(rows):
+        probs.append(f"{r['stokes']} {r['date']} {r['ra']},{r['dec']}: {words}")
+    return probs
+
+
 @content_test('gate_ledger')
 def complete(path, stokes=None, cell=None, tier='deep', **ctx):
     """v_deep_ledger.csv: GLED_COLS; veto_reason known; final=1 exactly when veto_reason is ''; per (Stokes, date) the final
     rows equal the catalogue rows; finals and every I row past identification carry mstruct (GAP-I-CHAIN-GATE-VALUES ledger
-    595); no row on a date refused from that Stokes' search; sub-LST: no 'table' row (sublst_search_pass.sh:49-50)."""
+    595); no row on a date refused from that Stokes' search; sub-LST: no 'table' row (sublst_search_pass.sh:49-50). A run
+    searched under the size / axis rule (size_rule.json beside) carries GLED_COLS_SIZE: its removals are the rule's own
+    verdicts, every final was judged and passes by its recorded excesses, every judged row names the product."""
     cols, rows = _rows(path)
-    if cols not in (GLED_COLS, GLED_COLS_V1):
-        return False, len(rows), (f'header is neither GLED_COLS ({len(GLED_COLS)}) nor the pre-2026-10-17 GLED_COLS_V1 '
+    if cols not in (GLED_COLS, GLED_COLS_V1, GLED_COLS + GLED_COLS_SIZE):
+        return False, len(rows), (f'header is neither GLED_COLS ({len(GLED_COLS)}), GLED_COLS + the size rule\'s columns '
+                                  f'({len(GLED_COLS) + len(GLED_COLS_SIZE)}) nor the pre-2026-10-17 GLED_COLS_V1 '
                                   f'({len(GLED_COLS_V1)}): {cols[:6]}...')
     probs = []
     reasons = {}
+    probs += size_rule_rows(path, cols, rows)
     for r in rows:
         v = r['veto_reason']
         reasons[v] = reasons.get(v, 0) + 1

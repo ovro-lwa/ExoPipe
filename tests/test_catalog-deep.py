@@ -709,9 +709,14 @@ def test_b02_check_chain_to_conform():
     from exopipe.phase3.lib.search import removal_rules as RR
     mod = sys.modules[__name__]
     make_world()
+    from exopipe.phase3.lib.search import size_rule as SZ
     for d in sorted(glob.glob(f'{T}/collect/*/attempts/*')):
         with open(os.path.join(d, RR.RULES_RECORD), 'w') as f:
             _json.dump(RR.rules_record('once-in-search'), f)
+        rd = os.path.join(d, 'transients', f'Run_{LABEL}')       # ... and searched under the configured size / axis rule
+        if os.path.isdir(rd) and SZ.configured_record('deep')['rule'] == 'envelope':
+            with open(os.path.join(rd, SZ.RUN_RECORD), 'w') as f:
+                _json.dump(SZ.configured_record('deep'), f)
     try:
         mod._MODE, mod._EPOCH = 'check', 'frame-mid'
         cli('--stages', 'preflight,harvest,merge,pulsars,conform', expect=2)
@@ -724,6 +729,38 @@ def test_b02_check_chain_to_conform():
             and os.path.exists(c['meta']['check_report']), (c['status'], c['reason'][:300])
     finally:
         mod._MODE, mod._EPOCH = 'remove', 'mid-hour'
+
+
+def test_size_rule_in_the_chain():
+    """The size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) in the chain: attempts of two rules
+    are refused at the merge, before their ledgers are joined; attempts searched under the rule give the builder (and the
+    fork) P3_SIZE_GATE_7_8=inf - its 7-8 sigma gate replaced - and production's do not."""
+    import json as _json
+    from exopipe.phase3.lib.search import size_rule as SZ
+    rec_ = SZ.configured_record('deep')
+    make_world()
+    rds = sorted(glob.glob(f'{T}/collect/*/attempts/*/transients/Run_{LABEL}'))
+    assert len(rds) >= 2, rds
+    with open(os.path.join(rds[0], SZ.RUN_RECORD), 'w') as f:
+        _json.dump(rec_, f)
+    cli('--stages', 'preflight,harvest,merge', expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and 'size rules' in r['reason'] and 'REFUSING' in r['reason'], (r['status'], r['reason'][:300])
+    for rd in rds[1:]:
+        with open(os.path.join(rd, SZ.RUN_RECORD), 'w') as f:
+            _json.dump(rec_, f)
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate,fork', expect=0)
+    assert rec(f'{LABEL}.merge')['meta']['size_rule'] == rec_, rec(f'{LABEL}.merge')['meta'].get('size_rule')
+    for K in ('V_wb', 'I_wb'):
+        a = rec(f'{LABEL}.associate.{K}')
+        assert a['meta']['size_rule'] == 'envelope' and a['meta']['commands'][0]['env'].get('P3_SIZE_GATE_7_8') == 'inf', \
+            (K, a['meta'].get('size_rule'), a['meta']['commands'][0]['env'])
+    fk = rec(f'{LABEL}.fork.V')
+    assert fk['status'] == 'done' and fk['meta']['commands'][0]['env'].get('P3_SIZE_GATE_7_8') == 'inf', fk['status']
+    make_world()                                          # production's attempts: the builder keeps its own 1.7
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate', expect=0)
+    a = rec(f'{LABEL}.associate.I_wb')
+    assert a['meta']['size_rule'] == 'production' and 'P3_SIZE_GATE_7_8' not in a['meta']['commands'][0]['env'], a['meta']
 
 
 def test_b30_identity_pre_check():
@@ -943,7 +980,7 @@ ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
          'test_merge_refresh_replaces_a_changed_attempt', 'test_merge_refusal_record_keeps_extraction_rows',
-         'test_b30_identity_pre_check',
+         'test_size_rule_in_the_chain', 'test_b30_identity_pre_check',
          'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain', 'test_b02_check_chain_to_conform',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']

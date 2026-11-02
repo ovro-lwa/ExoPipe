@@ -695,6 +695,15 @@ class DeepRun:
             if now != rec:
                 u.refuse(f'the published attempts changed since the harvest ({len(now ^ rec)} differ, e.g. '
                          f'{sorted(now ^ rec)[:3]}): re-run from harvest')
+            # the size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS): one rule per catalogue, read
+            # from each attempt's record before the merge joins their ledgers (a mix would also join two ledger headers)
+            from exopipe.phase3.lib.search import size_rule as SZ
+            with open(man, newline='') as f:
+                rds = [os.path.join(r['dir'], 'transients', f'Run_{self.label}') for r in csv.DictReader(f)]
+            try:
+                u.meta['size_rule'] = SZ.one_rule(rds)
+            except RuntimeError as e:
+                u.refuse(str(e))
             rc, tail, hits = self.call(u, 'p3s3_merge.py', [self.U], env, self.log,
                                        keep=('merge gate:', 'merge: WARNING', 'merge refresh:', 'merge (test/plan run)'))
             if rc != 0:
@@ -735,6 +744,19 @@ class DeepRun:
             self.out(u, os.path.join(d, 'master_catalog.csv'), 'merged_record')
             u.note(next((h for h in reversed(hits) if 'published attempts read' in h), tail[-1] if tail else ''))
         return u
+
+    def size_rule(self):
+        """The one size / axis rule of the merged attempts (the merge stage's record; production's when it holds none)."""
+        from exopipe.phase3.lib.search import size_rule as SZ
+        return self.chain.meta(self.u('merge'), 'size_rule') or SZ.run_record(None)
+
+    def fixed_size_refusal(self, u, paths, what):
+        """Under the size / axis rule: a removal record holding production's FIXED size / axis removals (p3s2_conform: size
+        above 2.5, axis ratio above 2.0 beyond 8 sigma) contradicts the search's one rule - REFUSED, naming the rows."""
+        from exopipe.phase3.lib.search import size_rule as SZ
+        why = SZ.fixed_removals_in(paths, what) if self.size_rule()['rule'] == 'envelope' else None
+        if why:
+            u.refuse(why)
 
     def _b02_inputs(self, u, man):
         """The inputs the pulsar stage and the check read (B-02 steps 2 and 4): the lists, the bright-source tables the check's
@@ -865,6 +887,8 @@ class DeepRun:
             if rc != 0:
                 self.say('conform REFUSED - pass aborted')
                 u.refuse(f'conform exit {rc}: {tail[-1] if tail else ""}')
+            if mode != 'check':
+                self.fixed_size_refusal(u, [os.path.join(self.U, 'master_catalog_removed.csv')], 'conform')
             for name in ('master_catalog.csv', 'master_catalog_removed.csv'):
                 self.copy(u, os.path.join(self.U, name), d)
             for name in ('master_catalog.csv', 'master_catalog_asrun.csv', 'master_catalog_removed.csv'):
@@ -977,8 +1001,11 @@ class DeepRun:
             if st == 'I':          # WAVE2 B-30 pre-check (M4): the builder's sigma-stack threshold (:613-617) falls back to 7.0
                 from exopipe.phase3.lib.catalog import incremental as _inc      # silently when its source cannot be read
                 u.meta['sstack_threshold'] = list(_inc.sstack_threshold())
+            from exopipe.phase3.lib.search import size_rule as SZ    # under the size / axis rule the builder's 7-8 sigma gate
+            szr = self.size_rule()                                      # for unpromoted singles never acts (replaced by the rule)
+            u.meta['size_rule'] = szr['rule']
             rc, tail, _ = self.call(u, 'build_source_catalogs_v3.py', [f'selected_{st}_{tier}.csv', f'source_catalogs_{K}',
-                                                                      'v_deep_images.csv'], self.env(),
+                                                                      'v_deep_images.csv'], self.env(SZ.catalog_env(szr)),
                                     os.path.join(self.U, f'catalogs_inc_{K}.log'), mode='w')
             if rc != 0:
                 self.say(f'catalogue build {K} FAILED - pass aborted (D10)')
@@ -1019,7 +1046,8 @@ class DeepRun:
             self.stage_dir(u, 'fork', S)
             for name in (f'fork_{S}', f'source_catalogs_{S}_fwb', f'source_catalogs_{S}_fsb'):
                 self.move_aside(os.path.join(self.U, name), u)
-            env = self.env(parent_dir=par)
+            from exopipe.phase3.lib.search import size_rule as SZ
+            env = self.env(SZ.catalog_env(self.size_rule()), parent_dir=par)   # its builds: the rule replaces the 7-8 sigma gate
             flog = os.path.join(self.U, f'fork_{S}.log')
             rc, tail, _ = self.call(u, 'multiples_fork.py', ['run', S], env, flog, mode='w')
             if rc != 0:
@@ -1039,6 +1067,9 @@ class DeepRun:
                 u.refuse(f'D-G20 FORK CONTENT TEST {S} exit {rc}: {line or (tail[-1] if tail else "")}')
             self.say(f'multiples fork {S}: {line}')
             u.check(f'fork.content_test_{S}', True, value=line, detail='ops/multiples_fork.py check (in place)')
+            import glob as _glob
+            self.fixed_size_refusal(u, sorted(_glob.glob(os.path.join(self.U, f'fork_{S}', '**', 'master_catalog_removed*.csv'),
+                                                         recursive=True)), f'multiples fork {S}')
             for p in deep_records.files_under(os.path.join(self.U, f'fork_{S}')):
                 self.out(u, p)
             dirs = [os.path.join(self.U, f'source_catalogs_{S}_f{t}') for t in ('wb', 'sb')]

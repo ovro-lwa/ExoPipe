@@ -165,6 +165,8 @@ GLED_COLS_V1 = list(GLED_COLS)   # the 28 columns of every ledger written before
 GLED_COLS_TABLE = ['parent_jy', 'parent_off_beams', 'table_note', 'table_key', 'table_margin', 'table_parent_S',
                    'table_parent_sep_bw', 'table_R', 'table_bin', 'table_frame_rms_jy']
 GLED_COLS = GLED_COLS_V1 + GLED_COLS_TABLE
+from exopipe.phase3.lib.search.size_rule import GLED_COLS_SIZE   # WAVE2 SIZE-RULE: the size / axis rule's columns, written after GLED_COLS
+_GLED_EXTRA = ()                                                # WAVE2 SIZE-RULE: by run_deep_cell - GLED_COLS_SIZE under 'envelope'
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph',
              'n_after_mstruct', 'n_after_jupiter', 'n_final',
              'n_raw_floor', 'elev_min_deg']   # 2026-09-04: raw >=floor count; elevation gate
@@ -293,7 +295,8 @@ def _gled_row(lst, scope, stokes, d, c, morph_pass, reason='', pass_ms='',
             c.get('size_beams', ''), c.get('size_flag', ''),
             c.get('nearest_ateam', ''), c.get('fp_prediction', ''),
             c.get('axis_norm', ''), c.get('size_err_beams', '')] + \
-        ['' if c.get(k) is None else c.get(k) for k in GLED_COLS_TABLE]
+        ['' if c.get(k) is None else c.get(k) for k in GLED_COLS_TABLE] + \
+        [c.get(k, '') for k in _GLED_EXTRA]                         # WAVE2 SIZE-RULE: the rule's columns ('production': none)
 
 
 def _master_structure_map(vm, bpix, win_beams=4.0, valid=None, report=None):
@@ -913,14 +916,21 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
     return h
 
 
-def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix, epoch_bmin_deg=None):
+def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix, epoch_bmin_deg=None, rule=None, band=None):
     """Gaussian-fit SIZE test (Gregg 2026-09-04): for |local SNR| > 8, remove
     when (fitted FWHM major - its 1-sigma uncertainty) exceeds SIZE_FLOOR_BEAMS x
     the epoch's own beam major axis; flag between SIZE_FLAG_BEAMS and the floor.
     V uses the BDSF-fitted shape recorded at extraction (bmaj_fit_deg, err);
     I uses the catalog photometry fit (Gaussian on the residual stamp) because
     the I extractor records no shape. Failed/missing fit => keep (never veto on
-    the fitter's own failure). Returns (size_beams or '', 'remove'|'flag'|'')."""
+    the fitter's own failure). Returns (size_beams or '', 'remove'|'flag'|'').
+    WAVE2 SIZE-RULE (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS): with ``rule`` (the tier's calibration
+    product, lib/search/size_rule.Envelope) the ruled rule instead, at EVERY S/N - one Gaussian on the epoch beam's stamp in
+    both Stokes, removed above max(1.5, the injected point sources' 99th percentile at the fit's own S/N), ``band`` its class."""
+    if rule is not None:                                                                         # WAVE2 SIZE-RULE
+        from exopipe.phase3.lib.search import size_rule as _SZ                                  # WAVE2 SIZE-RULE
+        return _SZ.engine_test(c, stokes, band, resid, epoch_bmaj_deg, epoch_bmin_deg, cd, rule,   # WAVE2 SIZE-RULE
+                               SIZE_SNR_GATE, SIZE_FLAG_BEAMS, AXIS_FLAG)                        # WAVE2 SIZE-RULE
     if not epoch_bmaj_deg or not np.isfinite(epoch_bmaj_deg) or epoch_bmaj_deg <= 0:
         return '', ''
     mj = err = None
@@ -1234,6 +1244,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _refusal_columns(_refdir)
     from exopipe.phase3.lib.search import removal_rules as _RR         # WAVE2 B-02: every removal rule once, in the search
     _b02 = cadence == 'deep' and _RR.search_rules() == 'once-in-search'   # WAVE2 B-02 (step 3a; 'production': none of it)
+    from exopipe.phase3.lib.search import size_rule as _SZ              # WAVE2 SIZE-RULE (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-...):
+    _szr = _SZ.engine_rule(cadence)                                     # WAVE2 SIZE-RULE: None = production's fixed rule; else the checked
+    _SZ.write_run_record(run_root, _szr)                                # WAVE2 SIZE-RULE: calibration product, recorded (one rule per run)
+    global _GLED_EXTRA                                                  # WAVE2 SIZE-RULE: the ledger carries the rule's columns
+    _GLED_EXTRA = tuple(GLED_COLS_SIZE) if _szr is not None else ()     # WAVE2 SIZE-RULE: under 'envelope' only
     _attempt = time.strftime('%Y%m%dT%H%M%S', time.gmtime())
 
     dates = []
@@ -2127,7 +2142,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _fr2 = []
             for c in front:
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
-                _sb, _sv = _size_test(c, _s, _ebI, cd, 'I', rI, beam, _ebI_min)
+                _sb, _sv = _size_test(c, _s, _ebI, cd, 'I', rI, beam, _ebI_min, rule=_szr, band=scope)   # WAVE2 SIZE-RULE
                 if _sv == 'remove-axis':
                     gled_rows.append(_gled_row(lst, scope, 'I', d, c, 0,
                                                reason='axis-ratio', pass_ms=1))
@@ -2238,7 +2253,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             keptv, vetoed_v = [], []
             for c in pV:
                 _s = abs(float(c.get('local_snr', c.get('snr', 0))))
-                _sb, _sv = _size_test(c, _s, _ebV, cd, 'V', rV, beam, _ebV_min)
+                _sb, _sv = _size_test(c, _s, _ebV, cd, 'V', rV, beam, _ebV_min, rule=_szr, band=scope)   # WAVE2 SIZE-RULE
                 if _sv == 'remove-axis':
                     gled_rows.append(_gled_row(lst, scope, 'V', d, c, 0,
                                                reason='axis-ratio', pass_ms=1))
@@ -2577,7 +2592,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             lst, scope, dates, _fnz, _b02s, _tbn, _vmed, _attempt, framed={'I': set(_fhI), 'V': set(_fhV)},   # WAVE2 B-02: processed
             sanity_x=SANITY_I_X))                                      # WAVE2 B-02
     _append_locked(f'{run_root}/{_RR.TABLE_PULSAR}', _RR.TABLE_PULSAR_COLS, _tpd)   # WAVE2 B-02 (step 3b): none written without one
-    _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
+    if _GLED_EXTRA:                                                     # WAVE2 SIZE-RULE: the ledger with the rule's columns
+        _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS + list(_GLED_EXTRA), gled_rows)   # WAVE2 SIZE-RULE
+    else:                                                               # WAVE2 SIZE-RULE
+        _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
     _append_locked(f'{run_root}/search_table_record.csv', STR_COLS, str_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)
     # ZERO-PRODUCT REFUSAL (2026-09-13, CLAUDE.md section 3: "a rebuild that silently no-ops is a bug"

@@ -409,6 +409,11 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
         from exopipe.phase3.core.record import Refusal
         raise Refusal(str(e))
     env[_RR.AUDIT_ENV] = c.search_tables.SOLAR_AUDIT                               # B-02: the daytime gate's solar audit (G2 pin)
+    from exopipe.phase3.lib.search import size_rule as _SZ
+    try:                                                                           # the size / axis rule and its calibration product,
+        env.update(_SZ.step_env(sd.SIZE_RULE, sd.SIZE_ENVELOPE, sd.SIZE_ENVELOPE_MD5, 'search_detect.SIZE_RULE'))   # checked here
+    except RuntimeError as e:                                                      # (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-...)
+        raise Refusal(str(e))
     env[_RR.ELEV_EPOCH_ENV] = c.catalog_conform.DEEP_ELEV_EPOCH                    # B-02 step 3b: the floor's time, as the check's
     if env[_RR.ELEV_EPOCH_ENV] not in _RR.ELEV_EPOCHS:                             # refused here, not after the child's residuals
         raise Refusal(f'catalog_conform.DEEP_ELEV_EPOCH {env[_RR.ELEV_EPOCH_ENV]!r} is not one of {_RR.ELEV_EPOCHS} - REFUSING')
@@ -484,6 +489,25 @@ def base_rules_refusal(base_attempt, rules):
             + 're-search the cell (--fresh)')
 
 
+def base_size_refusal(base_attempt, label, cadence='deep'):
+    """The size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS): one attempt, one rule - None when an
+    append under the configured rule may extend ``base_attempt``, else the refusal's words (an attempt without the engine's
+    record, transients/Run_<label>/size_rule.json, was searched under 'production'; an unreadable record refuses)."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    try:
+        have = SZ.read_run_record(os.path.join(base_attempt, 'transients', f'Run_{label}'))
+        want = SZ.configured_record(cadence)
+    except RuntimeError as e:
+        return str(e)
+    if SZ.same_rule(have, want):
+        return None
+    sec = 'search_detect' if cadence == 'deep' else 'search_sublst'
+    return (f'{os.path.basename(base_attempt.rstrip("/"))} was searched under the size rule {have["rule"]} {have["md5"][:12]}; an '
+            f'append under {want["rule"]} {want["md5"][:12]} would mix two rules in one attempt - '
+            + (f'run it with --set {sec}.SIZE_RULE=production, or ' if have['rule'] == 'production' else '')
+            + 're-search the cell (--fresh)')
+
+
 def pinned_inputs(stokes):
     """Gate G2 (spec 5.4): [(name, path, ok, detail, refuse)] for the md5-pinned inputs the engine reads."""
     from exopipe.phase3.lib.search import parent_curve_table as PCT
@@ -504,6 +528,10 @@ def pinned_inputs(stokes):
     if stokes == 'V':
         pin('v110 null trials', sf.NULL_TRIALS, sf.NULL_TRIALS_MD5, True)
         pin('v110 PA null profile', sf.PA_NULL, sf.PA_NULL_MD5, bool(sf.PA_NULL_REQUIRED))
+    if c.search_detect.SIZE_RULE == 'envelope':                                   # the size / axis rule's calibration product
+        from exopipe.phase3.lib.search import size_rule as SZ
+        pin('size envelope (the size / axis rule)', SZ.resolve(c.search_detect.SIZE_ENVELOPE), c.search_detect.SIZE_ENVELOPE_MD5,
+            True)
     return out
 
 
@@ -716,6 +744,10 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
             f['gates'].append(('B-02 removal rules of the base attempt', why is None, why or f'{rules}, as the base'))
             if why:
                 raise Refusal(f'{item.cell} {item.stokes}: {why}')
+            why = base_size_refusal(b, ctx['label'])                             # the size / axis rule of the base attempt
+            f['gates'].append(('size rule of the base attempt', why is None, why or f'{c.search_detect.SIZE_RULE}, as the base'))
+            if why:
+                raise Refusal(f'{item.cell} {item.stokes}: {why}')
     for name, path, ok, detail, refuse in pinned_inputs(item.stokes):
         f['gates'].append((f'G2 {name}', ok, detail))
         if not ok and refuse:
@@ -795,6 +827,9 @@ def input_paths(item, f):
              c.search_tables.PULSAR_CSV, os.path.join(c.paths.OPS_ROOT, c.search_inputs.ROOTS_CSV)]
     if c.search_detect.REMOVAL_RULES == 'once-in-search':                       # B-02: the daytime gate reads it
         small.append(c.search_tables.SOLAR_AUDIT)
+    if c.search_detect.SIZE_RULE == 'envelope':                                   # the size / axis rule's calibration product
+        from exopipe.phase3.lib.search import size_rule as SZ
+        small.append(SZ.resolve(c.search_detect.SIZE_ENVELOPE))
     small += sorted(glob.glob(os.path.join(cf, f'PB_deep*_{item.scope}.fits')))
     small = [p for p in small if p and os.path.exists(p)]
     if f.get('base_attempt'):

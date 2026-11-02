@@ -449,11 +449,16 @@ EXCLUDED = 'excluded epoch (data_decisions at publish time; CLAUDE.md S2)'
 # size and axis ratio above 8 sigma (p3s2_conform.py:536-566; Gregg 2026-09-04/05, D8 2026-10-13)
 # ---------------------------------------------------------------------------------------------------------------------
 
-def size_axis(r, bmaj_deg=None, beam_ratio=None, size_step=None):
+def size_axis(r, bmaj_deg=None, beam_ratio=None, size_step=None, rule='production'):
     """(the row's conformed size/axis columns, the removal words or ''): keeps the search's own size_beams / axis_norm
-    (D8); a row without them gets FWHM / its searched frame's BMAJ and axis ratio / the frame beam's BMAJ/BMIN."""
+    (D8); a row without them gets FWHM / its searched frame's BMAJ and axis ratio / the frame beam's BMAJ/BMIN.
+    ``rule`` the size / axis rule the row's attempt was searched under (lib/search/size_rule.read_run_record): under
+    'envelope' the search's rule at every S/N decided (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) and the
+    fixed thresholds here remove nothing - the columns are the same, and a size or axis ratio above them is flagged as kept."""
     c = _cc()
     size_step = c.SIZE_STEP['deep'] if size_step is None else size_step
+    if rule not in ('production', 'envelope'):
+        raise RuntimeError(f'size_axis: size rule {rule!r} is not production or envelope - REFUSING')
     cols = {}
     ratio = f(r.get('size_beams'))
     if np.isnan(ratio):
@@ -462,19 +467,23 @@ def size_axis(r, bmaj_deg=None, beam_ratio=None, size_step=None):
     cols['size_beams'] = '' if np.isnan(ratio) else round(ratio, 2)
     cols['size_flag'] = ''
     if size_step and abs(f(r['snr'])) > c.SIZE_SNR and not np.isnan(ratio):
-        if ratio > c.SIZE_REMOVE_BEAMS:
+        if ratio > c.SIZE_REMOVE_BEAMS and rule == 'envelope':
+            cols['size_flag'] = f'size > {c.SIZE_REMOVE_BEAMS} beams (kept: point-like at its S/N by the size / axis rule)'
+        elif ratio > c.SIZE_REMOVE_BEAMS:
             return cols, (f'gaussfit size {ratio:.2f} beams > {c.SIZE_REMOVE_BEAMS} above {c.SIZE_SNR} sigma '
                           f'(Gregg 2026-09-04)')
-        if ratio > c.SIZE_FLAG_BEAMS:
+        elif ratio > c.SIZE_FLAG_BEAMS:
             cols['size_flag'] = f'size {c.SIZE_FLAG_BEAMS}-{c.SIZE_REMOVE_BEAMS} beams'
     ar = f(r.get('axis_ratio'))
     an = f(r.get('axis_norm'))
     cols['axis_norm'] = round(an, 2) if not np.isnan(an) else ('' if (not beam_ratio or np.isnan(ar)) else round(ar / beam_ratio, 2))
     cols['axis_flag'] = ''
     if cols['axis_norm'] != '' and abs(f(r['snr'])) > c.SIZE_SNR:
-        if cols['axis_norm'] > c.AXIS_REMOVE:
+        if cols['axis_norm'] > c.AXIS_REMOVE and rule == 'envelope':
+            cols['axis_flag'] = f'axis > {c.AXIS_REMOVE} x beam (kept: point-like at its S/N by the size / axis rule)'
+        elif cols['axis_norm'] > c.AXIS_REMOVE:
             return cols, f'axis ratio {cols["axis_norm"]} x beam > {c.AXIS_REMOVE} above {c.SIZE_SNR} sigma (Gregg 2026-09-05)'
-        if cols['axis_norm'] > c.AXIS_FLAG:
+        elif cols['axis_norm'] > c.AXIS_FLAG:
             cols['axis_flag'] = f'axis {c.AXIS_FLAG}-{c.AXIS_REMOVE} x beam'
     return cols, ''
 

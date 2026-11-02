@@ -831,8 +831,22 @@ def stage_env(ctx, stage, extra=None):
     if stage == 'select':
         if not _deep('catalog_select', 'PARENT_EXCLUSION'):
             env['P3_NO_PARENT_EXCL'] = '1'
+    if stage in ('build', 'fork'):            # the size / axis rule replaces the builder's 7-8 sigma gate (the merged ledger's
+        from exopipe.phase3.lib.search import size_rule as SZ                  # header tells the attempts' rule)
+        env.update(SZ.catalog_env(SZ.ledger_rule(os.path.join(ctx.out, 'v_deep_ledger.csv'))))
     env.update(extra or {})
     return env
+
+
+def _fixed_size_refusal(U, paths, what):
+    """Under the size / axis rule (the merged ledger's header): a removal record holding production's FIXED size / axis
+    removals contradicts the search's one rule - REFUSED."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    if SZ.ledger_rule(os.path.join(U, 'v_deep_ledger.csv'))['rule'] != 'envelope':
+        return
+    why = SZ.fixed_removals_in(paths, what)
+    if why:
+        raise Refusal(why)
 
 
 def _fit_nproc():
@@ -1334,6 +1348,8 @@ def _replay_associate(ctx, u):
         if stage == 'conform':
             ctx.run_stage(u, 'conform', [c.STAGE_SCRIPTS['conform'], U], stage_env(ctx, 'conform'), 'incremental.log',
                           append=True)
+            if not ctx.dry:      # under the size / axis rule production's fixed size / axis removals contradict it: refused
+                _fixed_size_refusal(U, [os.path.join(U, 'master_catalog_removed.csv')], 'conform')
             if not ctx.dry:      # the conformant record before fitpos rewrites master_catalog.csv in place (its content test)
                 sd = os.path.join(ctx.state_dir, 'stage_conform')
                 os.makedirs(sd, exist_ok=True)
@@ -1371,6 +1387,10 @@ def _replay_associate(ctx, u):
                 ctx.run_stage(u, f'fork {st}', [c.STAGE_SCRIPTS['fork'], 'run', st], env, f'fork_{st}.log', cwd=U)
                 ctx.run_stage(u, f'fork check {st}', [c.STAGE_SCRIPTS['fork'], 'check', st], env, f'fork_{st}.log', cwd=U,
                               append=True)
+                if not ctx.dry:
+                    import glob as _glob
+                    _fixed_size_refusal(U, sorted(_glob.glob(os.path.join(U, f'fork_{st}', '**', 'master_catalog_removed*.csv'),
+                                                             recursive=True)), f'multiples fork {st}')
         else:
             raise Refusal(f'catalog_incremental.REPLAY_STAGES_ASSOCIATE names an unknown stage {stage!r}')
     return built

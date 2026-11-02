@@ -656,6 +656,26 @@ class Ctx:
         self.tables = (os.path.join(self.xc, tables[len(live) + 1:]) if tables.startswith(live + '/') and self.xc != live
                        else tables)
         self.flux = self.flux_bake()
+        self._size = None
+
+    # ---- the size / axis rule of the search jobs (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) --------
+    def search_jobs(self):
+        """The LST's completed search jobs (a gate ledger in transients/Run_<label>), as the merge reads them."""
+        return [d for d in sorted(glob.glob(f'{self.src}/{self.lst}_*_[IV]'))
+                if os.path.isfile(f'{d}/transients/Run_{self.label}/v_deep_ledger.csv')]
+
+    def size_rule(self):
+        """The one size / axis rule the search jobs were searched under (each job's transients/Run_<label>/size_rule.json;
+        none = production): under 'envelope' the builder's 7-8 sigma gate is replaced (P3_SIZE_GATE_7_8 = inf) and
+        production's conformance must remove nothing by its fixed size / axis thresholds. Two rules among the jobs REFUSE."""
+        if self._size is None:
+            from exopipe.phase3.lib.search import size_rule as SZ
+            try:
+                self._size = SZ.one_rule([f'{d}/transients/Run_{self.label}' for d in self.search_jobs()],
+                                         what=f'the {self.lst} 10-minute search jobs in {self.src}')
+            except RuntimeError as e:
+                refuse(f'S-G7: {e}')
+        return self._size
 
     # ---- flux bake (sublst_catalogs.sh:58-70, the PYB heredoc) -----------------------------------------------------
     def flux_bake(self):
@@ -692,6 +712,8 @@ class Ctx:
         ft = self.flux_table() if not self.dry else (None if self.flux == 'baked' else self.c.FLUX_V1_TABLE)
         if ft:
             e['P3_FLUX_CORR_TABLE'] = ft
+        from exopipe.phase3.lib.search import size_rule as SZ      # the size / axis rule replaces the builder's 7-8 sigma gate
+        e.update(SZ.catalog_env(self.size_rule()))
         e.update({k: str(v) for k, v in extra.items()})
         return e
 
@@ -1128,6 +1150,7 @@ def st_merge(ctx, s, plan):
     if ctx.dry:
         return
     os.makedirs(U, exist_ok=True)
+    s.u.meta['size_rule'] = ctx.size_rule()                 # one size / axis rule among the jobs, before their ledgers are joined
     s.code(script, ctx.opsc('p3s3_sources.py'), ctx.opsc('p3s3_stale_exclusions.py'))
     # `rm -rf "$COLL" "$STATE" "$PT"` (sublst_catalogs.sh:96): the previous copies are moved aside, never deleted
     stamp = utc('%Y%m%dT%H%M%SZ')
@@ -1268,6 +1291,12 @@ def st_conform(ctx, s, plan):
     s.inp(f'{U}/master_catalog.csv', ctx.tables, ctx.roots_csv)
     res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)
     need_ok(res, 'S-G13 conformance (p3s2_conform.py)', r'REFUS', say=lambda: ctx.log.say('CONFORM REFUSED - stopping'))
+    if ctx.size_rule()['rule'] == 'envelope':               # the size / axis rule: no removal by the fixed thresholds
+        from exopipe.phase3.lib.search import size_rule as SZ
+        why = SZ.fixed_removals_in([f'{U}/master_catalog_removed.csv'], 'S-G13 conformance')
+        if why:
+            ctx.log.say(f'REFUSING: {why[:300]}')
+            refuse(why)
     line, n, bad = table_notes(f'{U}/master_catalog_removed.csv')
     ctx.log.raw(line)
     s.u.check('S-G13.table-notes', bad == 0, value=bad, detail=line, cls='conformant_catalog',

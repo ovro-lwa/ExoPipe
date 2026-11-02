@@ -23,6 +23,11 @@ group rule with the served localization's estimator - are the real functions.
       refused: a frame whose source extraction was refused, on a night excluded since; a night left out as excluded and
       excluded still, or searched since by an append; a final whose rounded size sits above the search's size floor
       (the search's own gate is not re-run);
+      the size / axis rule at every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS): the attempts are
+      searched under it (their size_rule.json, the ledger's GLED_COLS_SIZE); a final the rule removes by its recorded excess
+      is refused (size, axis), a final it never judged too; production's fixed axis check stays for attempts under
+      'production' (configured so); a final at 9 sigma with an axis ratio of 2.4 is kept under the rule; attempts of two
+      rules, of another product, or not of the configured rule are refused before any row;
   (3) restored rows carry an ID in the catalog's shape (field 2 the LST, as downstream parses it);
   (4) the pulsar stage with production's group rule: a group consistent with its pulsar gets its cut detection back, an
       inconsistent one loses its exempted detections; both recorded (members included) and accepted by the check, which
@@ -58,6 +63,7 @@ from exopipe.phase3.config import CFG                               # noqa: E402
 from exopipe.phase3.lib.catalog import conform_check as CC          # noqa: E402
 from exopipe.phase3.lib.search import removal_rules as RR           # noqa: E402
 from exopipe.phase3.lib.search import tests as ST                   # noqa: E402
+from exopipe.phase3.lib.search import size_rule as SZ               # noqa: E402
 
 T = '/tmp/exopipe3_tests_conform_check'
 LST, SC, LABEL, CELL = '05h', '23MHz', 'CHKTEST', '05h_23MHz'
@@ -110,13 +116,17 @@ class Attempt:
         self.ledger, self.fnoise, self.tpd = [], [], []
         self.day_ref, self.sanity_v, self.sanity_i, self.xref, self.ddrop = [], [], [], [], []
         self.rules = RR.rules_record('once-in-search')
+        self.size = SZ.configured_record('deep')        # the size / axis rule the attempt was searched under (the config's)
 
     def led(self, night, x, y, veto='', final=0, **kw):
-        r = dict.fromkeys(ST.GLED_COLS, '')
+        r = dict.fromkeys(ST.GLED_COLS + ST.GLED_COLS_SIZE, '')
         ra, dec = self.run.sky(x, y)
         r.update(lst=LST, scope=SC, stokes=self.st, date=night, ra=ra + 0.001, dec=dec - 0.001, pix_x=x, pix_y=y, snr=7.5,
                  peak_jy=0.5, morph_pass=1, veto_reason=veto, final=final, pass_mstruct=1,
                  fp_prediction='inconclusive' if self.st == 'V' else '')
+        if self.size['rule'] == 'envelope':         # judged point-like by the rule at its S/N
+            r.update(size_rule=f"envelope:{self.size['envelope']}:{self.size['md5'][:12]}", size_snr=7.5, size_thr=2.99,
+                     axis_thr=4.11, size_excess=0.4, axis_excess=0.3, size_verdict='point-like')
         r.update(kw)
         self.ledger.append(r)
         return r
@@ -156,13 +166,20 @@ class Attempt:
         run = self.run
         with open(os.path.join(self.A, RR.RULES_RECORD), 'w') as fh:
             json.dump(self.rules, fh)
+        sp = os.path.join(self.rd, SZ.RUN_RECORD)
+        if self.size['rule'] == 'envelope':
+            with open(sp, 'w') as fh:
+                json.dump(self.size, fh)
+        elif os.path.exists(sp):
+            os.remove(sp)
         sub = 'vresid' if self.st == 'V' else 'iresid'
         fdir = os.path.join(self.A, f'Run_{LABEL}', sub, CELL)
         os.makedirs(fdir, exist_ok=True)
         for d, h in self.headers.items():
             fits.PrimaryHDU(np.zeros((N0, N0), np.float32), h).writeto(os.path.join(fdir, f'{d}_{self.st}_redo_resid_{SC}.fits'),
                                                                        overwrite=True)
-        wcsv(os.path.join(self.rd, 'v_deep_ledger.csv'), ST.GLED_COLS, self.ledger)
+        wcsv(os.path.join(self.rd, 'v_deep_ledger.csv'),
+             ST.GLED_COLS + (ST.GLED_COLS_SIZE if self.size['rule'] == 'envelope' else []), self.ledger)
         wcsv(os.path.join(self.rd, RR.FRAME_NOISE), RR.FRAME_NOISE_COLS, self.fnoise)
         wcsv(os.path.join(self.rd, RR.TABLE_PULSAR), RR.TABLE_PULSAR_COLS, self.tpd)
         ref = os.path.join(self.rd, 'refusals')
@@ -449,8 +466,25 @@ def test_faults():
 
     def axis_wide(r):
         z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
-        z.update(snr=9.0, axis_norm=1.52)
-    fault('a_axis', axis_wide, ('a', 'axis'), "(a) a final above 8 sigma whose axis ratio exceeds the search's 1.5 x beam")
+        z.update(snr=9.0, axis_norm=4.6, axis_excess=1.12)
+    fault('a_axis', axis_wide, ('a', 'axis'), "(a) a final whose recorded axis ratio exceeds the size / axis rule's limit at its "
+                                              "S/N (axis excess 1.12)")
+
+    def size_wide(r):
+        z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
+        z.update(snr=6.0, size_beams=3.9, size_excess=1.05)
+    fault('a_size', size_wide, ('a', 'size'), "(a) a final whose recorded size exceeds the size / axis rule's limit at its S/N")
+
+    def unjudged(r):
+        z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
+        z.update(size_verdict='', size_excess='', axis_excess='')
+    fault('a_unjudged', unjudged, ('a', 'size'), '(a) a final the size / axis rule never judged (no verdict)')
+
+    def kept_wide(r):                       # 8-12 sigma: the rule keeps axis ratios production's fixed 1.5 / 2.0 would remove
+        z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
+        z.update(snr=9.0, axis_norm=2.4, axis_excess=0.8)
+    fault('kept_wide', kept_wide, None, "a final at 9 sigma with axis ratio 2.4 x beam that the size / axis rule keeps (above "
+                                        "production's 1.5 in the search and 2.0 in the conformance)")
 
     def size_rounded(r):                    # Run_P3S5's 04h 69MHz I 2024-12-22 final: 1.6 - 0.099, kept by the search
         z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
@@ -556,6 +590,48 @@ def test_faults():
             json.dump(rules, open(p, 'w'))
         ok, f, res = run_check(r)
         check(f'an attempt {desc} is refused before any row is read (no report)', not ok and not f, (ok, f, res))
+    test_size_rule_records()
+
+
+def test_size_rule_records():
+    """The size / axis rule's records: attempts of two rules, of another product, or not of the configured rule are refused
+    before any row; production's fixed axis check for attempts under 'production' (configured so)."""
+    r = fresh('size_mix', stokes=('V', 'I'))
+    r.att['I'].size = SZ.run_record(None)            # the I attempt searched under production, the V attempt under the rule
+    r.att['I'].ledger = [dict((k, v) for k, v in x.items() if k not in ST.GLED_COLS_SIZE) for x in r.att['I'].ledger]
+    r.write()
+    ok, f, res = run_check(r)
+    check('attempts of two size rules (V under the rule, I under production) are refused before any row (no report)',
+          not ok and not f, (ok, f, res))
+    r = fresh('size_other')
+    r.att['V'].size = dict(r.att['V'].size, md5='0' * 32)
+    r.write()
+    ok, f, res = run_check(r)
+    check('an attempt searched with another calibration product (md5) than the configured one is refused before any row',
+          not ok and not f, (ok, f, res))
+    r = fresh('size_prod_cfg')
+    r.write()
+    keep = CFG.search_detect.SIZE_RULE
+    try:
+        CFG.search_detect.SIZE_RULE = 'production'
+        ok, f, res = run_check(r)
+        check('attempts under the rule while the configuration applies production are refused before any row',
+              not ok and not f, (ok, f, res))
+
+        def to_production(r_):
+            for a in r_.att.values():
+                a.size = SZ.run_record(None)
+                a.ledger = [dict((k, v) for k, v in x.items() if k not in ST.GLED_COLS_SIZE) for x in a.ledger]
+
+        def prod_axis(r_):
+            to_production(r_)
+            z = first(r_.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
+            z.update(snr=9.0, axis_norm=1.52)
+        fault('a_axis_production', prod_axis, ('a', 'axis'), "(a) production's rule (attempts and configuration): a final above "
+                                                              "8 sigma whose axis ratio exceeds the search's 1.5 x beam")
+        fault('clean_production', to_production, None, 'attempts and configuration under production: the clean run passes')
+    finally:
+        CFG.search_detect.SIZE_RULE = keep
 
 
 # ---------------------------------------------------------------------------------------------------------------------

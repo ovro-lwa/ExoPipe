@@ -27,8 +27,11 @@ evaluated it: its pixel's sky position on its frame's grid (5 decimals - the cat
 block and BMAJ, the noise the search recorded for the frame (frame_noise.csv), the rules in the search's order (elevation
 floor, Jupiter track, bright-source table, row line). The search's own gates are not re-run (size above 8 sigma among
 them: the ledger holds its inputs rounded, and production's deep conformance runs no size step); the axis ratio is checked
-at the search's limit on the finals and production's own computation on the catalog rows. Any finding: CHECK_REPORT
-written, REFUSED
+at the search's limit on the finals and production's own computation on the catalog rows. Under the size / axis rule at
+every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS; lib/search/size_rule) the attempts must share the
+configured rule (their size_rule.json; refused before any row otherwise), a final must carry the rule's own passing
+verdict (its recorded excesses, size_rule.final_findings), and production's fixed limits on the catalog rows only flag.
+Any finding: CHECK_REPORT written, REFUSED
 (nothing published). Else production's outputs with nothing removed - master_catalog_asrun.csv (a copy of ``merged``, the
 merge's output), master_catalog.csv with the conform columns, master_catalog_removed.csv (the pulsar stage's removals) -
 and the frame caches, as p3s2_conform.py writes them; so conformant + removed = as-run + the restored rows, as production's
@@ -57,6 +60,7 @@ import numpy as np
 
 from exopipe.phase3.config import CFG
 from exopipe.phase3.lib.search import removal_rules as RR
+from exopipe.phase3.lib.search import size_rule as SZ
 
 MODES = ('check', 'remove')                       # catalog_conform.MODE
 CHECK_REPORT = 'conform_check.csv'                # every finding of a refused check
@@ -519,6 +523,10 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
     if bad:
         raise Refused(f'conform check: {len(bad)} attempt(s) not searched under the once-in-search rules (re-search those '
                       f'cells, or publish with catalog_conform.MODE=remove under the ruling ID): {bad[:3]}')
+    try:                                    # the size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS):
+        szr = SZ.one_rule([a['rd'] for a in atts], want=SZ.configured_record('deep'))   # one rule, the configured one
+    except RuntimeError as e:
+        raise Refused(f'conform check: {e}')
     src = os.path.join(CD, 'master_catalog.csv')
     raw = _rows(src)
     if not raw:
@@ -676,6 +684,10 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
                     finding('a', rule, r, words, pos)
                     continue
                 notes[key6 + pos] = tab.get(id(r), (False, ''))[1]
+                if szr['rule'] == 'envelope':   # the size / axis rule: the final passes by its own recorded verdict
+                    for _r, rule_, words in SZ.final_findings([r]):
+                        finding('a', rule_, r, words, pos)
+                    continue
                 an = RR.f(r.get('axis_norm'))   # the search's axis limit (rounded recorded values cannot exceed it when kept)
                 if abs(RR.f(r['snr'])) > sd.SIZE_SNR_GATE and np.isfinite(an) and an > sd.AXIS_REMOVE:
                     finding('a', 'axis', r, f'axis ratio {an} x beam > {sd.AXIS_REMOVE} above {sd.SIZE_SNR_GATE:g} sigma', pos)
@@ -725,9 +737,9 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
         r['fp_prediction'] = r.get('fp_prediction') or ((v if v else 'in-chain pass (verdict file not found)')
                                                         if r['stokes'] == 'V' else '')
         r['conform_note'] = p_restored[k6] if k6 in p_restored else (notes.get(k6, '') or '')
-        cols_, why = RR.size_axis(r, BM.get(fk), BR.get(fk))      # production's columns and flags; a removal it would make
-        r.update(cols_)                                           # (a row the search left without its own axis measure) is
-        if why:                                                   # a finding, not a silent keep
+        cols_, why = RR.size_axis(r, BM.get(fk), BR.get(fk), rule=szr['rule'])   # production's columns and flags; a removal
+        r.update(cols_)                                           # it would make (a row the search left without its own axis
+        if why:                                                   # measure) is a finding, not a silent keep
             finding('a', 'size' if why.startswith('gaussfit') else 'axis', r, why)
         kept.append(r)
 
