@@ -23,7 +23,8 @@ STEERING = {
     'forced_catflux.CATALOG_GLOB', 'forced_catflux.SURVIVORS_GLOB', 'forced_catflux.DONE_RE',
     'forced_catflux.RECHECK_ROWS', 'forced_catflux.RECHECK_SEED', 'forced_catflux.RECHECK_TOL_JY',
     'forced_snapshot.WORK_ROOT', 'forced_snapshot.REVIEW_SUBDIR_UNDER_OUT', 'forced_snapshot.EVAL_SB',
-    'forced_snapshot.EVAL_WB', 'forced_snapshot.ZONE_FLAGS', 'forced_snapshot.EPOCH_NAME', 'forced_snapshot.NPROC',
+    'forced_snapshot.EVAL_WB', 'forced_snapshot.ZONE_FLAGS', 'forced_snapshot.PHOT_ROOT', 'forced_snapshot.STAGE1_ROOT',
+    'forced_snapshot.EPOCH_NAME', 'forced_snapshot.NPROC',
     'forced_snapshot.OK_LINES', 'forced_snapshot.REFASTRO_SCRATCH_PRODUCTION', 'forced_snapshot.LOC_COPY_BACK',
     'forced_snapshot.FLOW_ENV',
 }

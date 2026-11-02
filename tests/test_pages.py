@@ -11,8 +11,9 @@ incremental re-run (0 rendered), one changed row (1 rendered), --full (all rende
 protected-key refusals, the environment scrub, M14 per-set layout + keyed merge, the singles pages-input port byte-identical to
 the production heredoc extracted from p3s3_pass.sh, the fork rows recomputation equal to the real p3s3_tier_pages_input.py,
 mirror drift detection, negative content tests.
-Read-only part: the content tests on existing production products (Run_P3S5, Run_SLST14B, Run_SNAPB1R_20261004) - results are
-PRINTED (production products may be mid-pass or older than their catalogues), asserted only to run without raising.
+Read-only part: the content tests on existing production products (Run_P3S5 with a served page of each view, Run_SLST14B, and
+the snapshot combined view the review hub serves with one of its batches) - results are PRINTED, and every FAIL must be a known
+defect of EXPECTED_FAILURES, keyed by its defect id (any other FAIL fails the test).
 """
 import csv
 import glob
@@ -514,8 +515,129 @@ def test_negative_content_tests():
     print('PASS negative content tests (wrong panel size, missing sidecar, queue without header, survivors column changed)')
 
 
+def test_snapshot_views_rule():
+    """snapshot_page_run's per-(Stokes, tier) views rule on a synthetic batch: production writes n_det = every detection of the
+    identity in that Stokes and tier and n_det_tier = its panelled ones (clv15 phase3_snapshot_pages.py:604, :614, :722), so a
+    view row with n_det > n_det_tier passes (the old rule n_det = n_det_tier refused it); n_det < n_det_tier, or an n_det_tier
+    other than the identity's detections.csv rows in its page directories of the view, fails."""
+    from exopipe.phase3.core import validate
+    R = os.path.join(T, 'views', 'Run_SNAPBTEST_20261102')
+    os.makedirs(R)
+    open(os.path.join(R, 'missing_panels.csv'), 'w').close()
+    dcols = ['lst', 'date', 'cand_id', 'ra', 'dec', 'pos_err_stat_arcsec', 'pos_err_arcsec']
+    for band, n in (('23MHz', 3), ('27MHz', 2)):                    # 5 panelled detections of J0001+0001 in the V 10-s view
+        write_csv(os.path.join(R, 'candidates', 'V', f'J0001+0001_{band}', 'detections.csv'),
+                  [dict(lst='04h', date='2025-01-01', cand_id=f'c{band}{i}', ra='10.0', dec='1.0', pos_err_stat_arcsec='30',
+                        pos_err_arcsec='60') for i in range(n)], dcols)
+    view = os.path.join(R, 'source_catalogs_V_10s')
+
+    def views(n_det, n_det_tier):
+        for band in ('23MHz', '27MHz'):
+            write_csv(os.path.join(view, f'{band}_sources_survivors.csv'),
+                      [dict(identity_id='J0001+0001', review_dir=f'candidates/V/J0001+0001_{band}', ra='10.0',
+                            n_det=str(n_det), n_det_tier=str(n_det_tier))])
+        return validate.run('snapshot_page_run', R)[0]
+    r = views(12, 5)
+    assert r['passed'], r
+    r = views(4, 5)
+    assert not r['passed'] and 'n_det < n_det_tier' in r['detail'], r
+    r = views(12, 6)
+    assert not r['passed'] and 'differs from the detections.csv rows' in r['detail'], r
+    print('PASS snapshot_page_run views: n_det >= n_det_tier and n_det_tier = the panelled detections (12 >= 5 passes; '
+          '4 < 5 and 6 != 5 panelled fail)')
+
+
+SNAP_REVIEW = '/data07/gh/phase3/snapshot_search/review'
+
+
+def current_snapshot_runs():
+    """(combined view, batch run, a page of the view) the review hub serves now for the snapshot tier (read only): the hub
+    registry's Stokes V 10-sec run (status.REGISTRY_FILE under serve.HUB_DIR, status.REGISTRY_KEYS) and, when it is a combined
+    view (combined_view_summary.json), the one of its 'batches' with the smallest master catalogue (the cheapest to read whole -
+    a batch tree is read whole); a served run that is no combined view is the batch, with no view. A registry without that run,
+    or a view naming no batch here, FAILS (AssertionError, never skipped); a file removed or rewritten while it is read is
+    tried once more, then fails clearly."""
+    last = None
+    for attempt in (1, 2):
+        try:
+            return _snapshot_runs_now()
+        except (OSError, ValueError) as e:
+            last = e
+            time.sleep(1)
+    raise AssertionError(f'the served snapshot products could not be resolved, twice (a file removed or rewritten while read?): '
+                         f'{type(last).__name__}: {last}')
+
+
+def _snapshot_runs_now():
+    from exopipe.phase3.config import CFG
+    reg_p = CFG.status.REGISTRY_FILE.format(hub=CFG.serve.HUB_DIR)
+    with open(reg_p) as fh:
+        reg = json.load(fh)
+    key = CFG.status.REGISTRY_KEYS['snapshot'][-1]
+    try:
+        run = reg['V'][key]['run']
+    except (KeyError, TypeError):
+        raise AssertionError(f'{reg_p} names no Stokes V {key!r} run: the served snapshot products cannot be sampled')
+    view = os.path.join(SNAP_REVIEW, run)
+    if not os.path.isdir(view):
+        raise AssertionError(f'the registry\'s Stokes V {key} run {view} does not exist')
+    summ = os.path.join(view, 'combined_view_summary.json')
+    if not os.path.isfile(summ):
+        return None, view, None
+    with open(summ) as fh:
+        tags = json.load(fh).get('batches', [])
+    runs = []
+    for tag in tags:
+        hit = [d for d in glob.glob(os.path.join(SNAP_REVIEW, f'Run_SNAP{tag}_*'))
+               if re.fullmatch(rf'Run_SNAP{re.escape(tag)}_\d{{8}}', os.path.basename(d))
+               and os.path.isfile(os.path.join(d, 'master_catalog.csv'))]
+        if len(hit) == 1:                      # the view names a batch by its tag (Run_SNAP<tag>_<date>); two dates: not sampled
+            runs.append(hit[0])
+    if not runs:
+        raise AssertionError(f'{summ} names no batch run under {SNAP_REVIEW} ({len(tags)} tags)')
+    batch = min(runs, key=lambda d: (os.path.getsize(os.path.join(d, 'master_catalog.csv')), d))
+    page = None                                # one page of the view, from its own catalogue (review_dir, as the server reads it)
+    for p in sorted(glob.glob(os.path.join(view, 'source_catalogs_V_10s', '*_sources_survivors.csv')), key=os.path.getsize)[:1]:
+        with open(p, newline='') as fh:
+            row = next(csv.DictReader(fh), None)
+        if row and row.get('review_dir'):
+            page = (sorted(glob.glob(os.path.join(view, glob.escape(row['review_dir']), 'rank*.png'))) or [None])[0]
+    return view, batch, page
+
+
+# Known conditions of the production products sampled below: a FAIL is expected only when its (content test, product path
+# relative to /data07/gh/phase3 - a prefix, detail pattern) is listed here with its defect id; any other FAIL fails the
+# test. A listed entry that no longer fails is printed (XPASS) for removal. Ids without a ledger row are marked.
+EXPECTED_FAILURES = (
+    # the combined view built 2026-10-26: page directories hold both tiers (the 1-min pass wrote into the 10-s directories);
+    # fixed in the builder for the next view (5b8b8ff); clv15 fix_ledger.csv
+    ('DEFECT-SNAPCOMB-PAGE-DIRS-HOLD-BOTH-TIERS-20261031', 'review_page.name_parses',
+     'snapshot_search/review/Run_SNAPCOMB_20261026/', r'panel token \S+1min vs directory band'),
+    # NO LEDGER ROW (proposed id): page folders of the 2026-10-14 pass that no current catalogue of Run_P3S5 references (the
+    # identity J0832+2918 is J0832+2920 now) keep their panels of page code aa88d1b8ab021b15 - the stale-panel stage cleans
+    # only folders a build wrote; the served pages (sampled below from the page indexes) carry the current code
+    ('FINDING-P3S5-UNREFERENCED-PAGE-FOLDERS-OF-20261014-KEPT', 'review_page.sidecar',
+     'transients/Run_P3S5/candidates/I/J2215+5136_00h_2025-09-06_Full/', r'\(stale page\)'),
+    ('FINDING-P3S5-UNREFERENCED-PAGE-FOLDERS-OF-20261014-KEPT', 'review_page.sidecar',
+     'transients/Run_P3S5/candidates/I/J0832+2918_08h_2025-01-10_Full/', r'\(stale page\)'),
+    # NO LEDGER ROW (proposed id): p8791 / p8792 still serve the stratified judging queues of 2026-10-08; the deep views
+    # were rebuilt since (2026-10-31), and 53 of the 66 Stokes V queue ids are no page of the current view
+    ('FINDING-P3S5-STRAT-QUEUES-OF-20261008-PREDATE-THE-VIEWS', 'strat_queue.strat_rows',
+     'transients/Run_P3S5/judgements/queue_strat_V.txt', r'ids not pages of the Stokes V view'),
+)
+
+
+def _expected_failure(name, rel, detail):
+    """The index of the EXPECTED_FAILURES entry that covers this FAIL, or None."""
+    for i, (_id, test, prefix, pat) in enumerate(EXPECTED_FAILURES):
+        if name == test and rel.startswith(prefix) and re.search(pat, detail):
+            return i
+    return None
+
+
 def test_real_products_read_only():
-    """The content tests on existing production products (read only). Results printed; assert only that no test raised."""
+    """The content tests on existing production products (read only). Results printed; every FAIL must be a known defect
+    listed in EXPECTED_FAILURES (keyed by its defect id) - any other FAIL, or a test that raised, fails."""
     from exopipe.phase3.core import validate
     P5 = '/data07/gh/phase3/transients/Run_P3S5'
     items = []
@@ -533,29 +655,53 @@ def test_real_products_read_only():
                   ('tess_coverage', f'{P5}/tess_coverage.csv'),
                   ('strat_queue', f'{P5}/judgements/queue_strat_V.txt')]
         items += [('astrometry_figure', p) for p in sorted(glob.glob(f'{P5}/localization_figs/*.png'))[:1]]
+        for idx in ('Full_pages_index_I.csv', 'Full_pages_index_V.csv'):       # a SERVED page of each view (its index's review_dir)
+            if os.path.exists(f'{P5}/source_catalogs/{idx}'):
+                with open(f'{P5}/source_catalogs/{idx}', newline='') as fh:
+                    row = next(csv.DictReader(fh), None)
+                if row and row.get('review_dir'):
+                    items += [('review_page', p) for p in sorted(glob.glob(f'{P5}/{glob.escape(row["review_dir"])}/rank*.png'))[:1]]
     S14 = '/data07/gh/phase3/transients/Run_SLST14B'
     if os.path.isdir(S14):
         items += [('sublst_page_run', S14),
                   ('review_queue', f'{S14}/judgements/queue_p3s3_V_sb.txt')]
         items += [('review_page', p) for p in sorted(glob.glob(f'{S14}/candidates/I/*/rank*.png'))[:1]]
         items += [('page_index', p) for p in sorted(glob.glob(f'{S14}/source_catalogs/*_pages_index_V.csv'))[:1]]
-    SN = '/data07/gh/phase3/snapshot_search/review/Run_SNAPB1R_20261004'
-    if os.path.isdir(SN):
+    # the snapshot products served NOW (2026-11-02: the fixed sample Run_SNAPB1R_20261004, built 2026-10-06 before the own-error
+    # columns and the RA wrap, failed R2 and R7 as an old product): the combined view (queue and a page; its tree is too big to
+    # read whole) and one of its batches (every test)
+    comb, SN, comb_page = current_snapshot_runs()
+    if comb:
+        items += [('review_queue', f'{comb}/queue_V_10s.txt')] + ([('review_page', comb_page)] if comb_page else [])
+    if SN:
         items += [('snapshot_page_run', SN), ('filter_catalog', f'{SN}/master_catalog.csv'), ('review_queue', f'{SN}/queue_V_10s.txt')]
         items += [('review_page', p) for p in sorted(glob.glob(f'{SN}/candidates/V/*/rank*.png'))[:1]]
-    raised = []
+    print(f'  snapshot products sampled: combined view {comb and os.path.basename(comb)}, batch {SN and os.path.basename(SN)}')
+    raised, unexpected, seen = [], [], set()
     for cls, p in items:
         if not os.path.exists(p):
             print(f'  SKIP {cls} {p} (absent)')
             continue
         t = time.time()
+        rel = os.path.relpath(p, '/data07/gh/phase3')
         for r in validate.run(cls, p):
-            print(f"  {'PASS' if r['passed'] else 'FAIL'} {r['name']:36s} {str(r['value'])[:14]:>14} "
-                  f"{os.path.relpath(p, '/data07/gh/phase3')}  {str(r['detail'])[:150]}  ({time.time() - t:.1f}s)")
+            k = None if r['passed'] else _expected_failure(r['name'], rel, str(r['detail']))
+            print(f"  {'PASS' if r['passed'] else ('XFAIL' if k is not None else 'FAIL')} {r['name']:36s} "
+                  f"{str(r['value'])[:14]:>14} {rel}  {str(r['detail'])[:150]}  ({time.time() - t:.1f}s)"
+                  + (f'  [known: {EXPECTED_FAILURES[k][0]}]' if k is not None else ''))
             if 'test raised' in str(r['detail']):
                 raised.append((cls, p, r['detail']))
+            elif k is not None:
+                seen.add(k)
+            elif not r['passed']:
+                unexpected.append((r['name'], rel, str(r['detail'])[:200]))
+    for i, e in enumerate(EXPECTED_FAILURES):
+        if i not in seen:
+            print(f'  XPASS {e[0]}: {e[1]} on {e[2]} did not fail (fixed, or no longer sampled) - remove the entry once fixed')
     assert not raised, raised
-    print(f'PASS content tests ran on {len(items)} production products (results above)')
+    assert not unexpected, f'{len(unexpected)} content-test FAIL(s) not listed in EXPECTED_FAILURES: {unexpected}'
+    print(f'PASS content tests ran on {len(items)} production products; every FAIL is a listed known defect '
+          f'({len(seen)} of {len(EXPECTED_FAILURES)} listed entries failed as expected)')
 
 
 def test_stale_panels(out):
@@ -677,6 +823,7 @@ def main():
         test_m14_per_set()
         test_mirror_drift()
         test_negative_content_tests()
+        test_snapshot_views_rule()
         test_real_products_read_only()
         test_stale_panels(out)
         test_b30_page_failures()

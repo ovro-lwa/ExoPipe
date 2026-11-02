@@ -455,7 +455,8 @@ def verify(cell_dir, exclusions=None, policy=None, mb=None, keep_18=False):
     """membership.verify of the cell read with its admitted nights - (violations, reports), see membership(). The one entry
     point of every branch step that verifies a cell (``mb``: the membership module a caller loaded, default the branch's);
     membership.py stays production's text (S-G6). keep_18: an EXISTING master's nights holding their excluded 18 MHz are reported,
-    not violations (keep_held_18) - the search of the installed masters; installs of new builds verify strictly."""
+    not violations (keep_held_18) - the search of the installed masters, and the install of a master built before the 18 MHz
+    enforcement (build_time; lib/install/steps_common.keep_held_18); installs of new builds verify strictly."""
     if mb is None:
         from exopipe.phase3.lib.masters import membership as mb
     viol = mb.verify(cell_dir, exclusions)

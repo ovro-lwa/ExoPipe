@@ -1,9 +1,9 @@
 """B-02 step 1: lib/search/removal_rules.py against production's conformance (exopipe_ops/p3s2_conform.py).
 
 Each comparison gives production's script and the port their own sandbox copy of a run directory - the merged rows, the
-gate ledger, the run's three frame caches (copies), the archived search frames and v110 verdicts (read through symlinks)
-- with the environment of Run_P3S5's 2026-10-14 pass, and compares every file both write, byte for byte, and their
-printed conform lines:
+gate ledger, the run's three frame caches (copies), the archived search frames and v110 verdicts (read through symlinks;
+the V noise epoch's frame a stand-in with a raised THERMNOI) - with the environment of Run_P3S5's 2026-10-14 pass, and
+compares every file both write, byte for byte, and their printed conform lines:
   (1) eight Run_P3S5 cells, their as-run rows and ledger rows, changed so that every rule removes or flags at least one row
       (a duplicate, an excluded night, a frame whose times cannot be read, I and V noise epochs, a row-line, an unbacked
       row, axis ratios, sizes and v110 labels to compute, a v110 marginal to re-admit) - daytime, twilight, the Jupiter
@@ -20,6 +20,7 @@ import filecmp
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -159,7 +160,7 @@ def mutate(rows, lrows, kept_ids):
     frame-time and frame changes, expectations [(what, cand_id, the reason it must get - or 'kept:<column>' for a
     conformant row whose column must be set)])."""
     import numpy as np
-    out = dict(times_add={}, times_drop=set(), omit=set())
+    out = dict(times_add={}, times_drop=set(), omit=set(), noisy={})
     f = R.f
     kept = [r for r in rows if r['cand_id'] in kept_ids]
     used, expect = set(), []
@@ -233,7 +234,52 @@ def mutate(rows, lrows, kept_ids):
     m.update(final='0', veto_reason='v110:marginal', dec=repr(f(m['dec']) + 0.3))
     lrows.append(m)
     expect.append(('a v110 marginal', f'VM_{m["lst"]}_{m["date"]}_{m["scope"]}_', 'kept:marginal'))
+    # V noise: a conformant V epoch (not the marginal's) of a cell with enough V frames for the median; in the sandbox its
+    # search frame is a stand-in with THERMNOI 4x the largest of the cell (noisy_frame), so every V row of the epoch is
+    # removed by the 3x per-Stokes noise gate. No real row exercises the gate: Run_P3S5, rebuilt 2026-10-30/31 after the
+    # search-tier drop, has no V epoch above 3x its cell's median (no 'epoch refused: V' row in the run).
+    vm = (m['lst'], m['scope'], 'V', m['date'])
+    noise = {}
+    for kk, v in sorted(per.items()):
+        if kk[2] != 'V' or kk == vm or any(x['cand_id'] in used for x in v):
+            continue
+        if kk[:2] not in noise:
+            noise[kk[:2]] = {d: t for d, t in v_frame_noise(*kk[:2]).items() if ('V', kk[0], kk[1], d) not in out['omit']}
+        nv = noise[kk[:2]]
+        if len(nv) >= CFG.catalog_conform.SANITY_MIN_NIGHTS and kk[3] in nv:
+            out['noisy'][('V', kk[0], kk[1], kk[3])] = 4.0 * max(nv.values())
+            for x in v:
+                used.add(x['cand_id'])
+                expect.append(('a V noise epoch', x['cand_id'], 'epoch refused: V'))
+            break
+    else:
+        raise AssertionError('no V epoch for the noise mutation')
     return rows, lrows, out, expect
+
+
+def v_frame_noise(lst, band):
+    """{date: THERMNOI} of the run's V search frames of one cell with a positive THERMNOI (headers only) - the values the 3x
+    noise gate takes its cell median from (p3s2_conform.py:170-184)."""
+    from astropy.io import fits
+    rx = re.compile(r'^(\d{4}-\d\d-\d\d)_V_redo_resid_' + re.escape(band) + r'\.fits$')
+    out = {}
+    for p in sorted(glob.glob(os.path.join(RUN, 'vresid', f'{lst}_{band}', '*.fits'))):
+        mm = rx.match(os.path.basename(p))
+        if mm:
+            t = float(fits.getheader(p).get('THERMNOI') or 0)
+            if t > 0:
+                out[mm.group(1)] = t
+    return out
+
+
+def noisy_frame(src, dst, thermnoi):
+    """A stand-in for the search frame src: its header with THERMNOI set (every card the conformance reads from a frame:
+    BMAJ, BMIN, DATE-OBS, DATE-END, THERMNOI) over a 1x1 image."""
+    import numpy as np
+    from astropy.io import fits
+    h = fits.getheader(src)
+    h['THERMNOI'] = thermnoi
+    fits.PrimaryHDU(np.zeros((1, 1), np.float32), header=h).writeto(dst)
 
 
 def fates(U, expect, size):
@@ -291,13 +337,17 @@ def sandbox(name, cols, rows, lcols, lrows, mut):
             os.symlink(os.path.join(RUN, fr), os.path.join(U, fr))
         return U
     omit = {f'{st}/{l}_{b}/{d}_{st}_redo_resid_{b}.fits' for (st, l, b, d) in mut['omit']}
+    noisy = {f'{st}/{l}_{b}/{d}_{st}_redo_resid_{b}.fits': t for (st, l, b, d), t in mut.get('noisy', {}).items()}
     for st, fr in (('I', 'iresid'), ('V', 'vresid')):
         for l, b in CELLS:
             src = os.path.join(RUN, fr, f'{l}_{b}')
             dst = os.path.join(U, fr, f'{l}_{b}')
             os.makedirs(dst)
             for p in sorted(glob.glob(os.path.join(src, '*.fits'))):
-                if f'{st}/{l}_{b}/{os.path.basename(p)}' not in omit:
+                k = f'{st}/{l}_{b}/{os.path.basename(p)}'
+                if k in noisy:
+                    noisy_frame(p, os.path.join(dst, os.path.basename(p)), noisy[k])
+                elif k not in omit:
                     os.symlink(p, os.path.join(dst, os.path.basename(p)))
     return U
 
@@ -398,8 +448,7 @@ def test_subset():
         check(f'{tag}: every changed row meets its rule ({len(expect)} expectations); the rules that fired: '
               + json.dumps(k, sort_keys=True), not bad, bad[:6])
         if not size:
-            want = ('elevation', 'daytime', 'twilight', 'jupiter-track', 'table', 'pulsar group', 'noise V',
-                    'pulsar-consistent kept')
+            want = ('elevation', 'daytime', 'twilight', 'jupiter-track', 'table', 'pulsar group', 'pulsar-consistent kept')
             check('the real rows exercise the rest: ' + ', '.join(want), all(k.get(w) for w in want),
                   [w for w in want if not k.get(w)])
 

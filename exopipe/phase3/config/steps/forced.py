@@ -117,13 +117,18 @@ class forced_snapshot(_Section):
     snapshot_forced_pages_run_20261007.sh, driven by snapshot_forced_reserve_20261007.sh R3)."""
     WORK_ROOT = '/fast/gh/main/phase3/snapshot_forced_pages'           # work runs RUN = <root>/<NAME> (pages_run:20, compute node /fast)
     REVIEW_SUBDIR_UNDER_OUT = 'review'           # review copies under a non-production --out: <out>/review/<NAME>
-    # the evaluations the last served generation used (snapshot_forced_reserve_20261007.sh:35 EV/EVW, TAG 20261007); the
-    # module defaults are .../eval and .../eval_wb (snapshot_forced_panels.py:41-42); the step always passes them explicitly
-    EVAL_SB = '/lustre/gh/main/phase3/snapshot_forced/eval_20261007'
-    EVAL_WB = '/lustre/gh/main/phase3/snapshot_forced/eval_wb_20261007'
-    ZONE_FLAGS = '/lustre/gh/main/phase3/snapshot_forced/zones_recomputed_20261007.csv'   # reserve:58 FLAGS (test Z2)
-    STAGE1_ROOT = '/lustre/gh/main/phase3/snapshot_forced/stage1'      # photometry step output (snapshot_forced_panels.py:40)
-    PHOT_ROOT = '/lustre/pipeline/exopipe/phase3/photometry'           # the search's photometry cutouts (:240)
+    # THE GENERATION THE SNAPSHOT FORCED PAGES SERVE: generation 5 (served 2026-10-26 19:54-20:16 UT, hub registry
+    # <S> 10-sec-forced / 1-min-forced = Run_SNAPFORCED_{I,V}{10s,1min}_gen5; driver snapshot_forced_gen5_stages_20261026.sh:41-44,
+    # TAG gen5; the four runs' FT-START lines in snapshot_forced_pages_run_<run>.log record eval, P3_PHOT_ROOT and
+    # P3_FORCED_STAGE1). The step passes every one to the child explicitly - the evaluations (build/verify --eval-sb/--eval-wb)
+    # and the zone flags (served --flags) as arguments, the two roots as P3_PHOT_ROOT / P3_FORCED_STAGE1 (tier_snapshot.roots_env;
+    # core.legacy.run clears P3_*, and the module defaults are generation 4's: snapshot_forced_panels.py:40-42, :246). A new
+    # generation changes these five values; tests/test_forced checks them against the served runs' records.
+    EVAL_SB = '/lustre/gh/main/phase3/snapshot_forced/eval_gen5'       # gen5 driver :42 EV
+    EVAL_WB = '/lustre/gh/main/phase3/snapshot_forced/eval_wb_gen5'    # :42 EVW
+    ZONE_FLAGS = '/lustre/gh/main/phase3/snapshot_forced/zones_recomputed_gen5.csv'   # :42 FLAGS - the served-zones test Z2
+    STAGE1_ROOT = '/lustre/gh/main/phase3/snapshot_forced/stage1_gen5'   # :41 IN - stage 1 (P3_FORCED_STAGE1)
+    PHOT_ROOT = '/lustre/pipeline/exopipe/phase3/photometry_gen5'        # :41 PHOT - the cutout generation (P3_PHOT_ROOT)
     MASTER_CATS = '/lustre/gh/main/exopipe_ops/snapshot_master_catalogs'   # pinned tie references (:888)
     FROZEN_MASTERS = '/lustre/pipeline/exopipe/phase3/snapshot_masters_gen4'  # pinned; FREEZE-SNAPSHOT-MASTERS-GEN4 (:1264)
     HOURS_SEARCHED_DIR = '/lustre/gh/main/exopipe_ops/snapshot_forced_state/done'   # photometry fleet markers read as data (:1206); Q12
