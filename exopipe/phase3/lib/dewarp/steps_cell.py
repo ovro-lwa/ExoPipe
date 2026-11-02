@@ -5,7 +5,8 @@ Ports dewarp_lst.sh:36-94 for ONE routed cell, after its LST's measurement:
   apply       accepted: phase3_master_dewarp.apply_saved IN PLACE (the saved screen, cubic spline) into
               <GEN_ROOT>/<cell>/gen_mdewarp_rbf (dewarp_lst.sh:56-60; G-A2..G-A5); an exception is a refusal (G-R2: an
               accepted cell whose apply refused is refused, never sent to the not-accepted path as dewarp_lst.sh:63 does).
-              G-A12 before and after: the screen and the master it dewarps are the bytes the measurement keyed (md5)
+              G-A12 before and after: the screen and the master it dewarps are the bytes the measurement keyed (md5); a
+              measurement without keys is noted and applied (dewarp.SCREEN_KEY_REQUIRED True refuses it)
   verify      content test D1-D6 (D7 with --prior-gen-root) = check_mdewarp_gen.py IN PLACE, on the generation itself so its
               INSTALL_CONTENT_OK / APPLIED_SCREEN.json land where the install reads them, plus the install's cubic,
               applied-screen and product gates and the tested-pixel count (G-A6..G-A10); pass -> meta.install
@@ -53,23 +54,24 @@ def pb_weights_gate(u, cell, groot):
 
 
 def screen_key_gate(u, run, meas, cell, groot):
-    """G-A12 - A SCREEN IS APPLIED ONLY TO THE EXACT MASTER IT WAS MEASURED ON (FOLD_IN 2026-10-26 'STALE SCREENS'; keyed by
-    content, steps_common.SCREEN_KEYS): the measurement's key row of the scope must exist, and the saved screen and the
-    generation's two measured files (I Taper R-0.75 plain + pbcorr sibling, the ones MD resamples and recomputes from) must
-    have the md5 the key recorded. A mismatch refuses and is never waived. A measurement that keyed no screen (made before the
-    keys existed, or by production's dewarp_lst.sh) refuses unless --waive dewarp.screen_key_missing names Gregg's ruling.
-    Returns (key or None, plain, pbcorr)."""
+    """G-A12 - A KEYED SCREEN IS APPLIED ONLY TO THE EXACT MASTER IT WAS MEASURED ON (FOLD_IN 2026-10-26 'STALE SCREENS'; keyed
+    by content, steps_common.SCREEN_KEYS): when the measurement keyed its screens, the scope's key row must exist and the saved
+    screen and the generation's two measured files (I Taper R-0.75 plain + pbcorr sibling, the ones MD resamples and
+    recomputes from) must have the md5 the key recorded - a mismatch always refuses (no setting, no waiver). A measurement that
+    keyed no screen (made before the keys existed: every production measurement) is applied as production applies it, with the
+    note NO_KEY_NOTE recorded (G-A11's time check still applies to a --measurement), unless dewarp.SCREEN_KEY_REQUIRED, which
+    refuses it. Returns (key or None, plain, pbcorr)."""
     lst, scope = cell.split('_', 1)
     scr = meas.screen(scope)
     plain, pbcorr = SC.measured_files(os.path.join(groot, 'coadd_final'), scope)
     key = meas.screen_key(scope)
     if key is None:
-        why = (f'G-A12: the measurement {meas.dir} keys none of its screens to the masters they were measured on (no '
-               f'{os.path.basename(meas.keys())}: made before the keys existed, or by production), so {scr} cannot be shown '
-               f'to belong to {plain}')
-        if not run.waived(SC.WAIVE_SCREEN_KEY_MISSING):
-            u.refuse(why + f' - REFUSED (--waive {SC.WAIVE_SCREEN_KEY_MISSING} --ruling "<Gregg\'s words, UTC, ledger ID>")')
-        u.check(SC.WAIVE_SCREEN_KEY_MISSING, False, value='no key', detail=why, path=scr)
+        why = (f'{SC.NO_KEY_NOTE} ({meas.dir} has no {os.path.basename(meas.keys())}), so {os.path.basename(scr)} cannot be '
+               f'shown to belong to {plain}')
+        if SC.C().SCREEN_KEY_REQUIRED:
+            u.refuse(f'G-A12: {why} - REFUSED (dewarp.SCREEN_KEY_REQUIRED True)')
+        u.meta['screen_key'] = {'status': SC.NO_KEY_NOTE}
+        u.note(f'G-A12: {why}; applied without a content check, as production applies it (dewarp.SCREEN_KEY_REQUIRED False)')
         return None, plain, pbcorr
     if not key:
         u.refuse(f'G-A12: {meas.keys()} keys other screens of {lst} but not {scope}: {scr} is not a screen that measurement '

@@ -151,6 +151,14 @@ class dewarp(_Section):
     #                                  phase3_install.py:89-90
     PB_FLOOR = 0.1                   # PB value at or below which a recomputed sibling is NaN when its header has no PBFLOOR
     #                                  card; pb_apply.py:139; phase3_master_dewarp.py:319
+    SCREEN_KEY_REQUIRED = False      # bool; NOT in-place: the step's own (gate G-A12, screens keyed by content; FOLD_IN
+    #                                  2026-10-26 'STALE SCREENS'). A measurement WITHOUT screen keys (no tables/
+    #                                  screen_keys_<LST>.csv: made before the keys existed - every production measurement, e.g.
+    #                                  the parity plan's P12b mode A and the reapply_cubic.sh port) is applied as production
+    #                                  applies it, with a recorded note 'no screen key: measurement predates keying' (G-A11's
+    #                                  time check still applies to a --measurement); True refuses it. A key that EXISTS and does
+    #                                  not match the screen or the master always refuses, whatever this says. No ruling (the
+    #                                  finding asks only that a mismatch refuses); production = False
 
     # ---- content test D1-D7 [in-place: check_mdewarp_gen.py] ----
     CONTENT_CHECK_SCRIPT = 'membership_rebuild_20261007/check_mdewarp_gen.py'   # path relative to

@@ -36,8 +36,8 @@ Stages (--stages, pipeline order; default all):
            paths.COADD_SB_ROOT holding the plain file, per file) to node-local scratch (--work or the site SCRATCH_ROOT),
            md5-verified; part of measure
   measure  phase3_master_dewarp.run_lst in place on the staged copies, into a fresh <measure root>/<run_id>/
-  apply    accepted routed cell: phase3_master_dewarp.apply_saved in place -> <GEN_ROOT>/<cell>/gen_mdewarp_rbf, only when
-           the screen and the master it dewarps are the bytes the measurement keyed (G-A12)
+  apply    accepted routed cell: phase3_master_dewarp.apply_saved in place -> <GEN_ROOT>/<cell>/gen_mdewarp_rbf; a keyed
+           screen only when it and the master it dewarps are the bytes the measurement keyed (G-A12)
   verify   accepted routed cell: content test D1-D6 (check_mdewarp_gen.py in place through core.legacy.run; D7 with
            --prior-gen-root) + the install's cubic, applied-screen and product gates; pass = the cell record's
            meta.install {kind mdewarp, gen}
@@ -83,9 +83,10 @@ Failure modes (exit 2 = refused, with the gate named; 3 = no routed promoted cel
   G-A6..A10 content tests dewarped_master.D1_D6 / cubic / applied_screen / products / D4_tested_pixels fail
   G-A11 (--measurement only) the cell's final row predates its rebuild's T1-T8 stamp, or says ALREADY DEWARPED while the
         rebuilt input carries no MDWARP (the measurement is not of this input)
-  G-A12 the screen or the master it would dewarp is not the content the measurement keyed (md5; also re-checked after the
-        apply): never waived. A measurement with no keys (older, or production's) refuses unless --waive
-        dewarp.screen_key_missing --ruling "<words, UTC, ledger ID>"
+  G-A12 the measurement keyed its screens and the screen or the master it would dewarp is not the content keyed (md5; also
+        re-checked after the apply): always refused, never waived. A measurement without keys (made before them: every
+        production measurement) is applied with the note 'no screen key: measurement predates keying' - refused only under
+        dewarp.SCREEN_KEY_REQUIRED True
   G-R1  archive record directory not writable or paths.ARCHIVE_RUN empty.  A refusal of the LST unit refuses its cells ('measurement unit <LST> not done').
   Per-scope measurement outcomes (REFUSED ..., REFERENCE ONLY, NOT ATTEMPTED) are table rows, not refusals.
 Waivers: --waive dewarped_master.D6_product:<file> --ruling "<words, UTC, ledger ID>" (forwarded to check_mdewarp_gen as a
@@ -278,14 +279,15 @@ def _dry_run(args, run, roots, stages, gate_bad, gw, staging, plan, refused, rou
                 if why:
                     pr(f'      WOULD REFUSE - {why}')
                     would.append(why)
-                if acc and groot:                  # G-A12: the screen and the master it would dewarp, by content
+                if acc and groot and 'apply' in stages:    # G-A12 (the apply's gate): the screen and the master, by content
                     key = meas.screen_key(scope)
                     plain, pbc = SC.measured_files(os.path.join(groot, 'coadd_final'), scope)
-                    if key is None and run.waived(SC.WAIVE_SCREEN_KEY_MISSING):
-                        pr(f'      G-A12: the measurement keys no screen - waived ({SC.WAIVE_SCREEN_KEY_MISSING})')
+                    if key is None and not c.SCREEN_KEY_REQUIRED:
+                        pr(f'      G-A12: {SC.NO_KEY_NOTE} - applied without a content check, as production applies it '
+                           f'(dewarp.SCREEN_KEY_REQUIRED False)')
                     else:
-                        probs = (['the measurement keys no screen (' + os.path.basename(meas.keys()) + ' absent)']
-                                 if key is None else ['no key row for ' + scope] if not key else
+                        probs = ([f'{SC.NO_KEY_NOTE} (dewarp.SCREEN_KEY_REQUIRED True)'] if key is None else
+                                 ['no key row for ' + scope] if not key else
                                  SC.screen_key_problems(key, meas.screen(scope), plain, pbc))
                         if probs:
                             pr(f'      WOULD REFUSE - G-A12: {"; ".join(probs[:2])}')

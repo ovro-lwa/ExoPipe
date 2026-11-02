@@ -207,25 +207,23 @@ def run_measure(run, args, roots, lst, cells_, stages):
             if not c.STAGE_INPUTS and in_place_sums(srcs) != measured:
                 u.refuse('G-D6: a measured file changed while it was measured in place (STAGE_INPUTS False): the screens '
                          'cannot be keyed to one content - re-measure')
-        except BaseException:
-            if staging:                         # node-local scratch never outlives a refused or failed measurement
-                shutil.rmtree(staging, ignore_errors=True)
-            raise
-        meas = SC.Measurement(roots.measure_dir, lst)
-        e = u.add_output(table, 'dewarp_table', lst=lst)
-        e['ctx'] = {'lst': lst}
-        key_screens(u, meas, measured)
-        masters = {s: files[0] for s, d, files in srcs if d}
-        for scr in meas.screens():
-            scope = os.path.basename(scr)[:-len('_warp_screen.fits')]
-            ctx = {'table': table, 'master': masters.get(scope)}
-            e = u.add_output(scr, 'dewarp_screen', **ctx)
-            e['ctx'] = SC.jsonable(ctx)
-        diag = sorted(os.path.relpath(os.path.join(dp, f), roots.measure_dir)
-                      for dp, _, fs in os.walk(os.path.join(roots.measure_dir, lst)) for f in fs
-                      if not f.endswith('_warp_screen.fits'))
-        u.meta['diagnostics'] = diag            # analysis output (MD:123 'not a product'): listed, not outputs (spec Q9)
+            meas = SC.Measurement(roots.measure_dir, lst)
+            e = u.add_output(table, 'dewarp_table', lst=lst)
+            e['ctx'] = {'lst': lst}
+            key_screens(u, meas, measured)
+            masters = {s: files[0] for s, d, files in srcs if d}
+            for scr in meas.screens():
+                scope = os.path.basename(scr)[:-len('_warp_screen.fits')]
+                ctx = {'table': table, 'master': masters.get(scope)}
+                e = u.add_output(scr, 'dewarp_screen', **ctx)
+                e['ctx'] = SC.jsonable(ctx)
+            diag = sorted(os.path.relpath(os.path.join(dp, f), roots.measure_dir)
+                          for dp, _, fs in os.walk(os.path.join(roots.measure_dir, lst)) for f in fs
+                          if not f.endswith('_warp_screen.fits'))
+            u.meta['diagnostics'] = diag        # analysis output (MD:123 'not a product'): listed, not outputs (spec Q9)
+        finally:
+            if staging:                         # node-local scratch never outlives the unit: refused, failed (the keying
+                shutil.rmtree(staging, ignore_errors=True)       # included) or done
         if staging:
-            shutil.rmtree(staging, ignore_errors=True)
             u.note(f'stage: scratch {staging} removed')
     return meas if u.status == 'done' else None

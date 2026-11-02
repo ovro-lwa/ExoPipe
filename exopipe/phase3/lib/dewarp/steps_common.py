@@ -45,15 +45,15 @@ REBUILD_OK = 'REBUILD_CONTENT_OK'        # <REBUILD_CHECK_ROOT>/<cell>/ (chain_c
 # SCREENS KEYED BY CONTENT (FOLD_IN 2026-10-26, the deep chat's 'STALE SCREENS' finding: screen files exist for 04h 18 MHz and
 # 21h 41 MHz, whose masters were rebuilt without the master dewarp): the measure stage writes, beside the LST's table, the md5
 # of every screen it saved and of the two files that screen was measured on (dewarp.MEASURE_FILES of the scope, as staged -
-# the staged copy is md5-verified against its source). The apply stage applies a screen only to those exact bytes (gate
+# the staged copy is md5-verified against its source). The apply stage applies a keyed screen only to those exact bytes (gate
 # G-A12): a screen whose content changed since it was measured, or a master that is not the one it was measured on, REFUSES
-# and is never applied; nothing is matched by name or time. Class 'dewarp_screen_key' (lib/dewarp/tests.py).
+# and is never applied; nothing is matched by name or time. Class 'dewarp_screen_key' (lib/dewarp/tests.py). A measurement
+# without keys (made before they existed: every production measurement) is applied as production applies it, with the note
+# NO_KEY_NOTE - unless dewarp.SCREEN_KEY_REQUIRED, which refuses it.
 SCREEN_KEYS = 'screen_keys_{lst}.csv'    # <measure dir>/tables/
 KEY_COLUMNS = ['lst', 'scope', 'screen', 'screen_md5', 'n_anchors', 'master', 'master_md5', 'pbcorr', 'pbcorr_md5',
                'measured_at', 'keyed_utc']
-# a measurement without keys (made before they existed, or by production's dewarp_lst.sh - a parity replay of its measurement)
-# is applied only under this named waiver with Gregg's ruling; a key that does not match is never waivable
-WAIVE_SCREEN_KEY_MISSING = 'dewarp.screen_key_missing'
+NO_KEY_NOTE = 'no screen key: measurement predates keying'
 
 
 def cfg():
