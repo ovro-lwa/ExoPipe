@@ -1,6 +1,8 @@
 """`exopipe3 jupiter v2` - the Jupiter V2 build of a cell (the V2 code tree /lustre/gh/main/phase3/jupiter/v2/code, in place;
-B-87 default (b): outside git, identified per file by sha256 in the run record). One cell is supported (gate J20: the code
-hard-codes 05h_2024-12-29; decision 8 - rebuild the other nights - is not started).
+identified per file by sha256 in the run record - B-87 default (b); the tree is its own git repository since 2026-10-25). One
+cell is supported (gate J20: the 2026-10-06 flow below hard-codes 05h_2024-12-29). Production carried out decision 8 (rebuild
+the other nights) on 2026-10-25/26 with another flow this action does not run yet: rebuild/run_cell_v2.sh (24 nights, V2 only,
+into v2/gen_20261025) and the site v3 drivers (rebuild/run_site_v3.sh; the live site shows V2 only since 2026-10-25).
 
 Stages and the production command lines they reproduce (masters/run_all.sh, integrate/run_integration.sh, the hand steps):
   geometry    nightgeom/hzfetch.py DATE G0 G1 C0 C1 (skipped when horizons_<date>/manifest.json exists - a fetch is immutable;
@@ -352,8 +354,9 @@ def run(args, run_, roots, stages):
     unsupported = [c for c in cells if c not in V.CELLS_SUPPORTED]
     if unsupported:
         raise Refusal(f'J20 V2 single cell: {", ".join(unsupported)} not in jupiter_v2.CELLS_SUPPORTED {V.CELLS_SUPPORTED} - the '
-                      f'V2 code hard-codes 05h_2024-12-29 (jupv2_masters.py:47, cell_lookup.py:23-24, jint_metrics.py:128, '
-                      f'jsite_lib.py:25, jsite_test.py:73, jup_refcheck_20241229.py:12); decision 8 is not started')
+                      f'2026-10-06 V2 flow this action runs hard-codes 05h_2024-12-29 (cell_lookup.py:23-24, jint_metrics.py:128, '
+                      f'jsite_lib.py:26, jsite_test.py:73, jup_refcheck_20241229.py:12); production rebuilt the other nights '
+                      f'2026-10-25/26 with rebuild/run_cell_v2.sh + rebuild/run_site_v3.sh, not carried by this action yet')
     mirrors.check_literals(mirrors.ACTION_MODULES['v2'])
     blocked = [s for s in stages if s in NOT_REDIRECTABLE and not roots.production]
     if run_.dry_run:
@@ -385,10 +388,23 @@ def run(args, run_, roots, stages):
     return None
 
 
+def _v2_head():
+    """The V2 code tree's git HEAD (short hash) for the dry run, or why it is unknown. Read only: rev-parse takes no lock and
+    writes nothing (no status / describe --dirty: those refresh the production repository's index)."""
+    import subprocess
+    try:
+        p = subprocess.run(['git', '-C', _C().jupiter.V2_CODE_ROOT, 'rev-parse', '--short', 'HEAD'], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, universal_newlines=True, timeout=60,
+                           env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
+    except (OSError, subprocess.SubprocessError) as e:
+        return f'unknown ({type(e).__name__})'
+    return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else 'unknown (not a git repository)'
+
+
 def dry_run(args, run_, roots, stages, cells, blocked):
     V = _C().jupiter_v2
     print(f'jupiter v2: {len(cells)} cell(s), stages {",".join(stages)}; {roots.describe()}')
-    print(f'  code tree {_C().jupiter.V2_CODE_ROOT} (outside git; sha256 per loaded file goes into each unit record)')
+    print(f'  code tree {_C().jupiter.V2_CODE_ROOT} (git HEAD {_v2_head()}; sha256 per loaded file goes into each unit record)')
     for cell in cells:
         c = Ctx(args, run_, roots, cell)
         print(f'\n  cell {cell} (J20 supported); products read from {c.products()}')
@@ -421,6 +437,8 @@ def dry_run(args, run_, roots, stages, cells, blocked):
                 line += ('jint_disclose, jint_metrics, jint_compare, jint_test_metrics' if st == 'metrics' else
                          f'jsite_render.py per root ({args.labels or ",".join(V.ROOT_LABELS)}) -> {c.R}/site/{cell}')
             elif st == 'summary':
-                line += f'jint_content_summary.py --cell {cell} -> {c.R}/site/{cell}/CONTENT_TEST.txt'
+                line += (f'jint_content_summary.py --cell {cell} -> {c.R}/site/{cell}/CONTENT_TEST.txt (the 2026-10-06 flow\'s '
+                         f'summary; production\'s site cells carry none since 2026-10-25 - their record is site.json + each live '
+                         f'render\'s RENDER_TEST.txt, class jupiter_site_summary)')
             print(line)
     return 2 if blocked else 0

@@ -14,7 +14,12 @@ the product (it writes its verdict into the product directory, so it cannot be a
   jupiter_refcheck          integrate/inputs/ref_offsets_<cell>.csv            window_summary tie columns recomputed from ref_offsets
   jupiter_metrics           integrate/<cell>/CONTENT_TEST_metrics.txt          verdict, metrics_<label>.json per root, freshness
   jupiter_site_render       site/<cell>/renders/<label>.r<UTC>/MANIFEST.sha256 members re-hashed; RENDER_TEST.txt ALL-PASS
-  jupiter_site_summary      site/<cell>/CONTENT_TEST.txt                       ALL-PASS (except exactly the accepted failures)
+  jupiter_site_summary      site/<cell>/site.json                              every live render's RENDER_TEST.txt ALL-PASS, T8
+                                                                               freshness PASS, recorded in site.json; the stated
+                                                                               occurrence failures = the accepted set (production's
+                                                                               convention since 2026-10-25/28); or the 2026-10-06
+                                                                               flow's site/<cell>/CONTENT_TEST.txt: ALL-PASS (except
+                                                                               exactly the accepted failures)
   jupiter_render_quarantine site/<cell>/<qdir>/MANIFEST.sha256                 moved files re-hashed (recorded deletions excepted)
   jupiter_occurrence        occurrence/validation/content_test_results.json    failing gating set = the accepted waiver, exactly
   jupiter_disclosure        integrate/occurrence_disclosed_failures.json       the waiver record = the live results
@@ -285,10 +290,88 @@ def render_manifest(path, **ctx):
     return ok, n, f'{n} members; missing {_short(missing) or 0}; differ {_short(differ) or 0}; verdict {last}'
 
 
+def _site_record(path):
+    """site/<cell>/site.json: the live render of every root and its RENDER_TEST.txt (summary_valid, first convention)."""
+    V, O = _C().jupiter_v2, _C().jupiter_occurrence
+    sc = os.path.dirname(os.path.abspath(path))
+    try:
+        S = json.load(open(path))
+    except (OSError, ValueError) as e:
+        return False, None, f'site.json unreadable ({type(e).__name__}: {e})'
+    roots = S.get('variants') or []
+    labels = [v.get('label') for v in roots]
+    acc = sorted(O.ACCEPTED_FAILURES)
+    probs, live, occ_states = [], [], set()
+    if not roots:
+        probs.append('site.json lists no root')
+    if S.get('default') != V.RULED_ROOT or labels[:1] != [V.RULED_ROOT]:
+        probs.append(f'default root {S.get("default")}, order {labels}: the ruled root {V.RULED_ROOT} must be the default and first')
+    if S.get('preview_failed'):
+        probs.append(f'published around its content tests: {S["preview_failed"]}')
+    for v in roots:
+        lab = v.get('label') or '?'
+        rd = os.path.join(sc, 'renders', f'{lab}.r{v.get("render_id")}')
+        link = os.path.join(sc, lab)
+        if not os.path.islink(link) or not os.path.isdir(rd) or os.path.realpath(link) != os.path.realpath(rd):
+            probs.append(f'{lab}: link {"-> " + os.readlink(link) if os.path.islink(link) else "missing"}, but site.json names '
+                         f'renders/{os.path.basename(rd)}{"" if os.path.isdir(rd) else " (absent)"}')
+            continue
+        rt = os.path.join(rd, 'RENDER_TEST.txt')
+        if not os.path.exists(rt):
+            probs.append(f'{lab}: renders/{os.path.basename(rd)} has no RENDER_TEST.txt')
+            continue
+        live.append(os.path.basename(rd))
+        vok, last, lines = _verdict(rt)
+        if not vok:
+            probs.append(f'{lab}: RENDER_TEST.txt {last}')
+        t8 = [l for l in lines if l.startswith('T8 ')]
+        if len(t8) != 1 or not re.search(r'->\s*PASS\s*$', t8[0]):
+            probs.append(f'{lab}: T8 (products unchanged since the render) {"absent" if not t8 else "not PASS"}')
+        if v.get('test') != (lines[-1] if lines else None):
+            probs.append(f'{lab}: site.json records the test {v.get("test")!r}, RENDER_TEST.txt ends {last!r}')
+        if v.get('preview_failed'):
+            probs.append(f'{lab}: published around its content tests: {v["preview_failed"]}')
+        st = v.get('occurrence_status')
+        occ = next((x for x in v.get('limits') or [] if x.get('id') == 'occ_failures'), None) or {}
+        named = sorted(str(f.get('test')) for f in ((occ.get('data') or {}).get('failures') or []))
+        occ_states.add(f'{st} {named}' if named else str(st))
+        if st == 'used-accepted':
+            if named != acc:
+                probs.append(f'{lab}: occurrence failures stated {named}, accepted {acc}')
+        elif st != 'used' or named:
+            probs.append(f'{lab}: occurrence status {st!r} with failures {named} (the maps must pass their own test, or fail exactly '
+                         f'the accepted set {acc})')
+        t = os.path.getmtime(rt)
+        newer = [e for e in sorted(os.listdir(rd)) if e not in ('RENDER_TEST.txt', 'MANIFEST.sha256')
+                 and os.path.getmtime(os.path.join(rd, e)) > t + 2]
+        if newer:
+            probs.append(f'{lab}: newer than its RENDER_TEST.txt: {_short(newer)}')
+    if probs:
+        return False, len(roots), '; '.join(probs[:5]) + (f' (+{len(probs) - 5})' if len(probs) > 5 else '')
+    return True, len(roots), (f'{len(roots)} root(s) {labels}: live render(s) {", ".join(live)} - RENDER_TEST ALL-PASS, T8 '
+                              f'PASS, recorded in site.json; occurrence {"; ".join(sorted(occ_states))} (accepted set {acc})')
+
+
 @content_test('jupiter_site_summary')
 def summary_valid(path, **ctx):
-    """site/<cell>/CONTENT_TEST.txt (jint_content_summary.py): FRESHNESS -> PASS and the last line ALL-PASS, or 'ALL-PASS
-    EXCEPT THE ACCEPTED OCCURRENCE FAILURES' with exactly the accepted set (jupiter_occurrence.ACCEPTED_FAILURES) named."""
+    """The content-test record of a site cell, in either convention production has used:
+
+    site/<cell>/site.json - production since 2026-10-25 ('V2 only': the cell summary file was quarantined with the comparison
+    roots) and the 2026-10-28 site rebuild: no cell summary is written; each published render carries its own RENDER_TEST.txt
+    (jsite_test.py, T1-T10; the renderer publishes only on ALL-PASS) and site.json names the live render of every root.
+    Checked: site.json's default root = jupiter_v2.RULED_ROOT and listed first; per root, the <label> link resolves to
+    renders/<label>.r<render_id>; its RENDER_TEST.txt ends ALL-PASS with no line ending -> FAIL, and its T8 line (the products
+    unchanged since the render - the freshness of this convention) ends -> PASS; site.json's 'test' = that last line; nothing
+    published around the tests (preview_failed empty: jsite_publish_preview.py states failures instead of refusing); the
+    occurrence failures the root states (limit occ_failures) = exactly jupiter_occurrence.ACCEPTED_FAILURES; no entry of the
+    render's top level (tier directories included, MANIFEST.sha256 excepted: written after the test) newer than its
+    RENDER_TEST.txt. The render's files themselves are re-hashed by jupiter_site_render.
+
+    site/<cell>/CONTENT_TEST.txt - jint_content_summary.py, the 2026-10-06 flow's summary that `v2 --stages summary` still runs
+    in place: FRESHNESS -> PASS and the last line ALL-PASS, or 'ALL-PASS EXCEPT THE ACCEPTED OCCURRENCE FAILURES' with exactly
+    the accepted set (jupiter_occurrence.ACCEPTED_FAILURES) named."""
+    if os.path.basename(path) == 'site.json':
+        return _site_record(path)
     ok, last, lines = _verdict(path, accept_prefix=True)
     fresh = any(l.strip() == 'FRESHNESS -> PASS' for l in lines)
     acc = _C().jupiter_occurrence.ACCEPTED_FAILURES
