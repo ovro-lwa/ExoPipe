@@ -17,6 +17,8 @@ What the child gets:
   module in the child that reaches a fallback site counts or refuses there, and its counts and refusals come back in
   ``res.fallbacks`` / ``res.fallback_refusals`` and into this process's fallback state, so the running unit records
   them (a refusal makes ``refused`` True even at exit 0, and the unit refuses - core/fallback.py);
+- in an INJECTED run (core/injected.py) EXOPIPE3_INJECTED and the engines' own switch P3_SNAP_INJECTED=1, set after ``env``
+  so no caller drops them (the write guard reaches the child through EXOPIPE3_PARITY_ROOT, as for a parity run);
 - the script's own sys.path handling is left alone: it runs exactly as production runs it.
 The child's stdout and stderr go to ``log`` (and a tail is kept). ``refused`` is True when the exit code is in
 ``refusal_codes`` or the output contains one of ``refusal_text``; ``ok`` only when rc == 0 and not refused.
@@ -130,6 +132,8 @@ def run(target, args=(), python='default', module=False, env=None, cwd=None, log
     child = {k: v for k, v in os.environ.items() if not k.startswith(clear)}
     child.update({k: str(v) for k, v in (env or {}).items()})
     child.update(cfg.runner.ENV_DEFAULTS)
+    from exopipe.phase3.core import injected
+    child.update(injected.child_env())         # an injected run's children are injected (after env: never dropped)
     if os.environ.get('EXOPIPE3_SITE'):
         child['EXOPIPE3_SITE'] = os.environ['EXOPIPE3_SITE']
     here = os.path.dirname(os.path.abspath(__file__))

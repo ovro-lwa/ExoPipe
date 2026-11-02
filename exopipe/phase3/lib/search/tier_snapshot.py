@@ -43,6 +43,8 @@ tree: auto writes the SNR-drawn manifest from the cell's shipped baseline noise 
 --snr-from-cell, N per Stokes, default 1000 or --snap-inject-n); then the subband search with --inject into
 <out>/inject/<tag>/<cell>/ and the recovery table (phase3_snapshot_recover.py --simple). Wideband groups cannot be injected
 (FIX-INJECTION-PATH-FOR-THE-1-MINUTE-TIER): the groups part is not run and the record says so. Unit <item>.inject.<tag>.
+Through `exopipe3 search --inject` the run is an INJECTED run (core/injected.py): an explicit scratch --out, the write guard
+in every engine, P3_SNAP_INJECTED=1 and P3_SNAP_CUTOUTS=0 in the engines' environment, the photometry root refused.
 
 Inputs:  the staged/flowed frames and their .filelist; the Masters (search_snapshot.MASTERS); data_decisions.csv (read by the
          engines and core.exclusions); the solar audit (pinned); the PB library (engine); the clv15 engine sources.
@@ -347,26 +349,31 @@ def _set_digest(stage, sb, v):
 
 def cutout_root(run):
     """P3_SNAP_CUTOUT_ROOT: paths.PHASE3_ARCHIVE_ROOT/<CUTOUT_SUBDIR> (production) or <out>/<CUTOUT_SUBDIR> while
-    paths.PRODUCTION_WRITES is False."""
+    paths.PRODUCTION_WRITES is False - always in an INJECTED run, whose root is checked: the photometry root is a production
+    product an injected run never writes (core/injected.check; ledger INCIDENT-INJECTED-SEARCH-WROTE-PRODUCTION-PHOTOMETRY-
+    CUTOUTS-HS-PSC-EVENT-UNREPRODUCIBLE-20261024)."""
+    from exopipe.phase3.core import injected
     c = cfg()
-    return os.path.join(c.paths.PHASE3_ARCHIVE_ROOT if c.paths.PRODUCTION_WRITES else run.out_root,
-                        c.search_snapshot.CUTOUT_SUBDIR)
+    return injected.check(os.path.join(c.paths.PHASE3_ARCHIVE_ROOT if c.paths.PRODUCTION_WRITES else run.out_root,
+                                       c.search_snapshot.CUTOUT_SUBDIR), 'snapshot photometry cutouts (P3_SNAP_CUTOUT_ROOT)')
 
 
 def engine_env(run, args):
     """search.md 7.3 (snapshot rows): the engines' environment from config (core.legacy.run clears inherited P3_*).
-    PYTHONUNBUFFERED=1 stands for v9's `python -u`."""
+    PYTHONUNBUFFERED=1 stands for v9's `python -u`. In an INJECTED run (core/injected.py) no photometry cutout is cut
+    (P3_SNAP_CUTOUTS=0: the cube carries synthetic sources) and the engine gets its own switch P3_SNAP_INJECTED=1."""
+    from exopipe.phase3.core import injected
     s = cfg().search_snapshot
     pause = bool(getattr(args, 'snap_pause_1min', False) or s.PAUSE_1MIN)
-    return {
+    return dict({
         'P3_SNAP_FLOW': '1' if s.FLOW_REQUIRED else None,
         'P3_SNAP_FLOW_MAX_MHZ': f'{s.FLOW_MAX_MHZ:g}',
         'P3_SNAP_PAUSE_1MIN': '1' if pause else None,
-        'P3_SNAP_CUTOUTS': '1' if s.CUTOUTS_ON else '0',
+        'P3_SNAP_CUTOUTS': '1' if s.CUTOUTS_ON and not injected.active() else '0',
         'P3_SNAP_CUTOUT_ROOT': cutout_root(run),
         'P3_SOLAR_AUDIT': s.SOLAR_AUDIT,
         'PYTHONUNBUFFERED': '1',
-    }, pause
+    }, **injected.engine_env()), pause
 
 
 def search_subbands(u, plan, out, env, inject=None):

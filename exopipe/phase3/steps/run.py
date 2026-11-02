@@ -12,9 +12,10 @@
 Inputs:  a step command line after '--', or --chain NAME (runner.CHAINS: step command templates run in order per
          item); items from --cells/--items (any item grammar: list, @file, JOB:STATUS, record:STATUS:STEP@OUT). Use
          {item} in the step command where the item goes; otherwise --cells <item> is appended.
-         --set / --config / --ruling-for / --parity given to `run submit` BEFORE '--' are forwarded into every step
-         command (and recorded in job.json); protected keys and unknown ledger IDs are refused at submit, ruled keys are
-         checked by each step against its own --out.
+         --set / --config / --ruling-for / --parity / --injected given to `run submit` BEFORE '--' are forwarded into
+         every step command (and recorded in job.json; --injected also when `run submit` runs inside an injected run,
+         core/injected.py); protected keys and unknown ledger IDs are refused at submit, ruled keys are checked by each
+         step against its own --out.
          --code COMMIT: every step process runs from a read-only git worktree of that commit (one per commit, reused,
          under runner.CODE_WORKTREES_ROOT); the commit is recorded in job.json and in every item record.
 Outputs: a job record under runner.JOBS_ROOT (job.json, items.txt, items/<item>.json, logs/<item>.log).
@@ -63,7 +64,7 @@ def default_out(args):
 
 def forward_argv(args):
     """The arguments of `run submit` forwarded into every step command: --set, --config (absolute), --ruling-for,
-    --parity."""
+    --parity, --injected (also when `run submit` itself runs inside an injected run: core/injected.py)."""
     fwd = []
     for s in args.set or ():
         fwd += ['--set', s]
@@ -73,6 +74,8 @@ def forward_argv(args):
         fwd += ['--ruling-for', r]
     if getattr(args, 'parity', False):
         fwd += ['--parity']
+    if getattr(args, 'injected', False):
+        fwd += ['--injected']
     return fwd
 
 

@@ -5,7 +5,7 @@ Every step invocation is a ``Run``; every unit of work inside it (a cell, an LST
 the command line, code fingerprint (sha1 of every exopipe source file the step imported), config hash and overrides,
 host and cores, inputs with fingerprints, the admitted night set (exclusion state), outputs with their product class,
 every content test with its value, refusals and waivers; each night's Phase-1 code version behind its Phase-1 / Phase-2
-inputs ('phase1_code', core/inputs.phase1_code_of).
+inputs ('phase1_code', core/inputs.phase1_code_of); and 'injected' when the run carries synthetic sources (core/injected.py).
 
 Rules (CLAUDE.md 3, 4b; architecture 11.1; DESIGN 11.5):
 - A unit is ``done`` only when it wrote at least one output and EVERY output passed its content test.
@@ -298,6 +298,12 @@ def unruled_overrides(rec):
     return [o for o in (rec.get('ruled_overrides') or []) if not str(o.get('authority') or '').startswith('ruling:')]
 
 
+def injected(rec):
+    """Why the run that wrote record ``rec`` was an injected run (core/injected.py), or '' - a consumer refuses such a
+    product: its data carry synthetic sources."""
+    return str((rec or {}).get('injected') or '')
+
+
 def atomic_write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f'{path}.tmp.{os.getpid()}'
@@ -350,6 +356,8 @@ class Run:
         pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         self.commit = git_commit(pkg)
         self.units = []
+        from exopipe.phase3.core import injected as _inj   # an injected run (EXOPIPE3_INJECTED): every record says why
+        self.injected = _inj.reason()
         from exopipe.phase3.core import fallback   # B-30: fallback events of this run that no unit took (outside units)
         self._fallback_mark = fallback.mark()
         # the sections the step declares (CONFIG) plus the shared ones; None = every section (no CONFIG declared)
@@ -367,17 +375,20 @@ class Run:
                             retest=retest)
 
     def header(self):
-        return {'record_version': RECORD_VERSION, 'step': self.step, 'run_id': self.run_id, 'argv': self.argv,
-                'host': self.host, 'pid': self.pid, 'user': getpass.getuser(), 'commit': self.commit,
-                'config_hash': self.config_hash, 'config_hash_all': self.cfg.hash(),
-                'config_sections': sorted(self.config_sections) if self.config_sections is not None else None,
-                'site_sha1': getattr(self.cfg, 'site_sha1', None),
-                # [key, repr(old), repr(new), source, authority]; authority: None (unruled key), 'ruling:<ledger ID>',
-                # 'non-production out:<dir>' - install and serve refuse products whose ruled override has no ruling
-                'config_overrides': [[o[0], repr(o[1]), repr(o[2]), o[3], o[4] if len(o) > 4 else None]
-                                     for o in self.cfg.overrides],
-                'ruled_overrides': self.cfg.ruled_overrides() if hasattr(self.cfg, 'ruled_overrides') else [],
-                'waivers': [{'test': t, 'ruling': r} for t, r in self.waivers], 'dry_run': self.dry_run}
+        h = {'record_version': RECORD_VERSION, 'step': self.step, 'run_id': self.run_id, 'argv': self.argv,
+             'host': self.host, 'pid': self.pid, 'user': getpass.getuser(), 'commit': self.commit,
+             'config_hash': self.config_hash, 'config_hash_all': self.cfg.hash(),
+             'config_sections': sorted(self.config_sections) if self.config_sections is not None else None,
+             'site_sha1': getattr(self.cfg, 'site_sha1', None),
+             # [key, repr(old), repr(new), source, authority]; authority: None (unruled key), 'ruling:<ledger ID>',
+             # 'non-production out:<dir>' - install and serve refuse products whose ruled override has no ruling
+             'config_overrides': [[o[0], repr(o[1]), repr(o[2]), o[3], o[4] if len(o) > 4 else None]
+                                  for o in self.cfg.overrides],
+             'ruled_overrides': self.cfg.ruled_overrides() if hasattr(self.cfg, 'ruled_overrides') else [],
+             'waivers': [{'test': t, 'ruling': r} for t, r in self.waivers], 'dry_run': self.dry_run}
+        if getattr(self, 'injected', ''):
+            h['injected'] = self.injected         # core/injected.py: why this run carries synthetic sources (record.injected)
+        return h
 
     def unit(self, name, **meta):
         u = UnitRecord(self, name, meta)
