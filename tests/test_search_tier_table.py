@@ -579,7 +579,7 @@ def test_drop_patches():
           fr == dict(names, **{'12h_Red_I_20261030T103027_2': True}), fr)
     tags = ['20261030T103027stdrop', '20261013T004458', '20261101T000000', '20261008T030041']
     check('order: by the UTC (production\'s att[:15]) - a drop patch after the attempt it patched, before a later search',
-          sorted(tags, key=A.order_key) == ['20261008T030041', '20261013T004458', '20261030T103027stdrop', '20261101T000000']
+          sorted(tags, key=A.utc) == ['20261008T030041', '20261013T004458', '20261030T103027stdrop', '20261101T000000']
           and A.utc('20261030T103027stdrop') == '20261030T103027' and A.utc('20261030T103027stdropx') is None)
     # ---- current: production's rule, the last register row (a synthetic --out register; the step reads it first)
     out = os.path.join(T, 'stdrop_out')

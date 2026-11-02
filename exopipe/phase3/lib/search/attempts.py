@@ -8,7 +8,12 @@ Production writes an attempt as <collect root>/<label>_collect_<host>/attempts/<
                cell's published attempt in which the epochs the 2.0 x median gate newly refuses are dropped - their catalogue, ledger
                and candidate rows removed, their image rows in the search's refused form, refusal rows tagged <UTC>stdrop - and
                every other row is its source's; each of its logs names the source ('P3S5-STDROP <tag>: ...; source attempt <dir>;').
-               142 attempts (108 I + 34 V), each the last register row of its (cell, Stokes) (census 2026-11-02).
+               142 attempts (108 I + 34 V), each the last register row of its (cell, Stokes) (census 2026-11-02). The tool
+               rewrites only the catalogue, the two ledgers, the searchtier refusal file, the candidates and the logs; every other
+               file is a hard link to its source's. A future patch made from a source holding search_table_record.csv (written
+               since production exopipe 55b0263, 2026-10-18) would carry the source's verdicts of the dropped nights, whose
+               gate-ledger rows it removed, and the search_table_record content test (lib/search/tests.py) would refuse it; none of
+               the 142 holds one (their sources were searched 2026-10-04 to 10-13).
 A '<...>.part' directory is a copy in progress (11 on disk) and never an attempt. No other form exists among the 3,446 attempt
 directories of p3s4, p3s5 and p3t4 (census 2026-11-02). (The frames step's own attempts add '_<n>' when two start in one second:
 lib/frames/deep_step._new_attempt.)
@@ -38,11 +43,6 @@ def utc(tag):
     """The UTC (YYYYmmddTHHMMSS) of an attempt tag, or None when the tag is not of the grammar."""
     m = re.match('^(' + UTC_RX + ')(?:' + '|'.join(SUFFIXES) + ')?$', tag or '')
     return m.group(1) if m else None
-
-
-def order_key(tag):
-    """The sort key of attempt tags: their UTC (production's att[:15]), then the tag."""
-    return (utc(tag) or '', tag or '')
 
 
 def stdrop_source(attempt_dir):

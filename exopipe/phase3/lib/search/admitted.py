@@ -30,8 +30,9 @@ def policy():
 
 
 def master_held_18(value=None):
-    """search_detect.MASTER_HELD_18MHZ - ``value`` checked, else as the search step passed it (EXOPIPE3_MASTER_HELD_18MHZ:
-    deep_step.engine_env, lib/frames/deep_engine.child_env), else (a process no step started) the config. 'keep' (the default,
+    """search_detect.MASTER_HELD_18MHZ - ``value`` checked, else, in an engine child, as its step passed it (EXOPIPE3_MASTER_HELD_18MHZ:
+    deep_step.engine_env, lib/frames/deep_engine.child_env), else (a process no step started) the config. A step reads its own config
+    value through step_held_18, never the variable. 'keep' (the default,
     ruled: Gregg 2026-10-17 R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4 "Red can be built without 18 MHz ... This is the only
     allowed case where wideband data can be built without a full 5-subband set", IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD
     "enforce going forward, no rebuild now", 2026-10-23 "The one exception to the exclusion rule is 18 MHz"): an EXISTING Red /
@@ -48,13 +49,34 @@ def master_held_18(value=None):
     return value
 
 
-def verify_master(base, policy=None):
+def step_held_18(cfg_value):
+    """The value a STEP judges with and hands to its engine children: its own config value ``cfg_value`` (search_detect.
+    MASTER_HELD_18MHZ, checked). The variable EXOPIPE3_MASTER_HELD_18MHZ only ever carries that value to a child; one INHERITED by
+    the step that differs REFUSES (RuntimeError) - the step's preflight and its engine would judge one master by two rules."""
+    v = master_held_18(cfg_value)
+    inh = os.environ.get(MASTER_18_ENV)
+    if inh is not None and inh != v:
+        raise RuntimeError(f'{MASTER_18_ENV}={inh!r} is inherited, but search_detect.MASTER_HELD_18MHZ is {v!r}: the variable only '
+                           f'carries the step\'s own config value to an engine child - unset it or --set the key - REFUSING')
+    return v
+
+
+def verify_master(base, policy=None, held_18=None):
     """(violations, reports) of the membership rulings for the master of the cell ``base`` as the deep search judges it - the ONE
-    call of the search step's preflight (gate E3) and of the engine's membership gate: lib/masters/admit.verify (membership.verify
-    read with the admitted nights, ``policy`` as admit.membership takes it) with, under master_held_18() 'keep', an existing
-    master's nights holding their excluded 18 MHz kept until the next rebuild (admit.keep_held_18)."""
+    call of the search step's preflight (gate E3, ``held_18`` = its config value, step_held_18) and of the engine's membership gate
+    (``held_18`` None: master_held_18(), the value its step passed): lib/masters/admit.verify (membership.verify read with the
+    admitted nights, ``policy`` as admit.membership takes it) with, under 'keep', an existing master's nights holding their
+    excluded 18 MHz kept until the next rebuild (admit.keep_held_18).
+    Why the search keeps such a night for ANY installed master, whatever its build date, while install verifies new builds
+    strictly (install.MASTER_HELD_18MHZ_BUILT_BEFORE = 2026-10-17T19:58:24Z, production exopipe 3ee1918): Gregg's rulings keep it in
+    an EXISTING master until that master's next rebuild ("enforce going forward, no rebuild now", IMPL-R-GREGG-20261017-18MHZ-
+    ENFORCE-GOING-FORWARD; 2026-10-23 "The one exception to the exclusion rule is 18 MHz"). The enforcement acts at build time:
+    since 3ee1918 the co-add's night admission refuses a Red / Full night whose image holds its excluded 18 MHz, and install
+    verifies a post-enforcement build strictly. An installed master built after the enforcement can therefore hold such a night
+    only when the night's 18 MHz exclusion was added after its build - an existing master, which is kept. One rule: verification
+    of an existing master keeps; the admission of a new build is strict."""
     from exopipe.phase3.lib.masters import admit as A
-    return A.verify(base, policy=policy, keep_18=master_held_18() == 'keep')
+    return A.verify(base, policy=policy, keep_18=master_held_18(held_18) == 'keep')
 
 
 def nights(base, scope, cadence='deep'):
