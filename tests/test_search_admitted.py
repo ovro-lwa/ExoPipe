@@ -615,6 +615,19 @@ if _b02 is not None:             # B-02 step 3a: the frames the daytime gate ref
             finally:
                 _depth[0] -= 1
         E._PCT.removals = _rm
+        _real_ti = E._PCT.table_inputs                             # the same devices on the table's recorded inputs (the gate
+
+        def _ti(stokes, band, par, rms, *a, **k):                   # ledger's table_* columns, deep_search._table_and_inputs):
+            out = _real_ti(stokes, band, par, rms * (_b02.get('table_scale') or 1.0), *a, **k)   # the scaled noise (table_inputs
+            if _psr and stokes == _psr[0]:                          # never calls itself), and the forced decision's own inputs -
+                import numpy as _np                                 # so each recorded margin agrees with its verdict (< 1
+                ra_, de_ = _np.atleast_1d(a[1]), _np.atleast_1d(a[2])   # exactly where it cuts: gate_ledger.complete)
+                for i_ in range(len(ra_)):
+                    if abs(float(ra_[i_]) - _psr[1]) < 1e-6 and abs(float(de_[i_]) - _psr[2]) < 1e-6:
+                        out[i_] = dict(out[i_], table_margin=0.1, table_parent_S=99.0, table_parent_sep_bw=0.1, table_R=1.0,
+                                       table_bin='test')
+            return out
+        E._PCT.table_inputs = _ti
 _nf = json.loads(os.environ.get('TEST_NOFLOW') or '[]')
 if _nf:                          # B-02 step 3c test device: the x2 flow batch gives these nights no flow (under
     def _bf(cw_, mup_, items_):  # P3_REFINE_OFF every night has one); every other night's flow is None and the
