@@ -25,6 +25,10 @@ import shutil
 from exopipe.phase3.core.record import Refusal, NoInput
 from exopipe.phase3.lib.forced import common as K
 
+# the generation's two roots as the in-place scripts read them - (environment switch, forced_snapshot key):
+# snapshot_forced_panels.py:40 STAGE1 <- P3_FORCED_STAGE1, :246 PHOT <- P3_PHOT_ROOT; test_snapshot_forced_reserve.py:60 STAGE1
+ROOT_SWITCHES = (('P3_PHOT_ROOT', 'PHOT_ROOT'), ('P3_FORCED_STAGE1', 'STAGE1_ROOT'))
+
 
 def add_arguments(p):
     g = p.add_argument_group('snapshot tier (family C: forced event panels of one Stokes and one cadence per run)')
@@ -34,7 +38,7 @@ def add_arguments(p):
                    help='run name Run_SNAPFORCED_<S><cadence>_<TAG>; required without --epochs; the build refuses a name '
                         'whose work run or review copy exists')
     g.add_argument('--snap-eval-sb', metavar='DIR', help='subband evaluation of the photometry step (default '
-                                                          'forced_snapshot.EVAL_SB, the served generation eval_20261007)')
+                                                          'forced_snapshot.EVAL_SB, the served generation\'s)')
     g.add_argument('--snap-eval-wb', metavar='DIR', help='wideband evaluation (default forced_snapshot.EVAL_WB)')
     g.add_argument('--snap-zone-flags', metavar='FILE',
                    help='independent zone recomputation (test_snapshot_forced_reserve.py zones --write) read by the '
@@ -50,6 +54,15 @@ def add_arguments(p):
 
 def default_out(args):
     return K.cfg().forced_snapshot.WORK_ROOT
+
+
+def roots_env(s=None):
+    """{switch: root} of the generation the step serves (forced_snapshot.PHOT_ROOT, STAGE1_ROOT) for every child: the in-place
+    scripts read the cutouts and stage 1 from these switches (ROOT_SWITCHES), core.legacy.run clears P3_* from a child, and the
+    module defaults are generation 4's trees - so the step passes them explicitly, as production's page runs export them
+    (snapshot_forced_pages_run_20261007.sh:25-26, local and on the review host's ssh line)."""
+    s = s or K.cfg().forced_snapshot
+    return {var: getattr(s, key) for var, key in ROOT_SWITCHES}
 
 
 def combos(args):
@@ -120,6 +133,7 @@ class Ctx:
 
     def env(self, **extra):
         e = dict(self.cfg.forced_snapshot.FLOW_ENV)
+        e.update(roots_env(self.cfg.forced_snapshot))      # the served generation's cutouts and stage 1 (ROOT_SWITCHES)
         e.update(extra)
         return e
 
@@ -154,8 +168,9 @@ def run(args, run):
     for S, cad, name in combos(args):
         c = Ctx(args, run, S, cad, name)
         K.plan('tier snapshot, Stokes %s, cadence %s, run %s: stages %s; work %s, review %s (review host %s); evaluations '
-               '%s + %s%s' % (S, cad, name, ','.join(stages), c.RUN, c.D, c.review_host or 'shared', c.ev_sb, c.ev_wb,
-                              ('; RESTRICTED to %s (partial, not servable)' % c.items) if c.items else ''))
+               '%s + %s; %s%s' % (S, cad, name, ','.join(stages), c.RUN, c.D, c.review_host or 'shared', c.ev_sb, c.ev_wb,
+                                  ' '.join('%s=%s' % kv for kv in sorted(roots_env(c.cfg.forced_snapshot).items())),
+                                  ('; RESTRICTED to %s (partial, not servable)' % c.items) if c.items else ''))
         if c.items and 'build' in stages and not _has_events(c):
             K.plan('  no Stokes %s %s event in the restricted evaluations: no-input' % (S, cad))
             if not c.dry:
@@ -264,7 +279,8 @@ def stage_build(c):
     if K.resumed(c.run, name, None, tier='snapshot', stage='build'):
         return
     with c.run.unit(name, tier='snapshot', stage='build', family='C', stokes=c.S, cadence=c.cad, run=c.RUN, review=c.D,
-                    partial=bool(c.items), servable=c.servable, eval_sb=c.ev_used[0], eval_wb=c.ev_used[1]) as u:
+                    partial=bool(c.items), servable=c.servable, eval_sb=c.ev_used[0], eval_wb=c.ev_used[1],
+                    zone_flags=c.flags, **{k.lower(): v for k, v in roots_env(s).items()}) as u:
         if os.path.lexists(c.RUN):
             u.refuse('G35 %s exists: a run name is used once (pages_run:25)' % c.RUN)
         if K.path_exists_on(c.D, c.d_host):
