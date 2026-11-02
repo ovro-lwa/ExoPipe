@@ -14,6 +14,8 @@ R-GREGG-20261024-DEEP-OMISSION-DESIGN-APPROVED-AND-10MIN-HOLD-RELEASED).
   tenmin     a synthetic window tree, searched lists, window-rms table, published LST runs and wideband windows (WBMEMB):
              production's sublst_deep_omission.decide (its roots patched) and the port byte for byte; the detections the merge's
              drop removes = production's sublst_deep_omission_drop.filter_rows on the member tables
+  serve      `serve --tier sublst` build: the stage's table written outside the build, recorded, passed to the in-place merge
+             as SUBLST_DEEP_OMISSION (the merge itself stubbed)
   gates      G1 no record / no file / a foreign row, G2 a run without catalogue, G3 an identity without detections, G4 a source of
              no served identity, G6 served detections in an ABSENT key ('refuse'; 'production' keeps and counts)
   content    omission_decisions and omission_record refuse a changed verdict, a member row without its member, a removal whose
@@ -519,6 +521,39 @@ def test_tenmin():
             assert t['passed'], t
 
 
+def test_serve_build():
+    """`serve --tier sublst` build: the decision table (this stage's) is written outside the build, recorded (class
+    omission_decisions) and passed to the in-place merge as SUBLST_DEEP_OMISSION (sublst_cumulative.sh:98-100)."""
+    import types
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.serve import sublst_build
+    DO, C = _DO(), _cfg()
+    root, rdir, sl, tr, frms = tenmin_world('serve_build', seed=13)
+    calls = []
+
+    def fake_run(name, args=(), env=None, **kw):              # the merge is not run: its call is the test
+        calls.append((name, list(args), dict(env or {})))
+        return types.SimpleNamespace(ok=False, rc=1, tail='stopped by the test', reason='stopped by the test', refused=False)
+    out = os.path.join(root, 'out')
+    U = os.path.join(out, 'sublst', 'Run_SLSTB')
+    plan = types.SimpleNamespace(run_name='Run_SLSTB', lsts=['05h', '06h'], parity=True, U=U, U_src=U, out=out)
+    run = record.Run('serve', ['test_serve_build'], out, C)
+    with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.catalog_omission, 'REFUSALS', rdir),
+               (C.catalog_omission, 'TENMIN_FRAME_RMS', frms), (C.catalog_omission, 'TENMIN_RMS_CACHE_SEED', ''),
+               (sublst_build.scripts, 'run', fake_run), (sublst_build, 'generation_mix', lambda lsts: []),
+               (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B'))):
+        u = sublst_build.build_stage(run, plan)
+        DO.run_tenmin(plan.lsts, os.path.join(root, 'stage'), seed_dir='')
+    assert u.status == 'refused' and 'merge failed' in u.reason, (u.status, u.reason)
+    assert len(calls) == 1 and calls[0][0] == 'sublst_cumulative' and calls[0][1][1:] == plan.lsts, calls
+    table = calls[0][2].get('SUBLST_DEEP_OMISSION', '')
+    assert table.startswith(os.path.join(out, 'sublst', 'deep_omission', 'deep_omission_')) and table.endswith('Z.csv'), table
+    assert filecmp.cmp(table, os.path.join(root, 'stage', 'deep_omission.csv'), shallow=False), 'the build table is the stage\'s'
+    outs = {o['class']: o['path'] for o in u.outputs}
+    assert outs.get('omission_decisions') == table and all(t['passed'] for t in u.tests), (outs, u.tests)
+    assert os.path.exists(os.path.join(out, 'sublst', 'deep_omission', 'cache', 'window_rms_05h.csv'))
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 
 def test_gates():
@@ -682,7 +717,7 @@ def test_real_one_lst():
     print(f'    07h on B6H ({n} served detections): {len(port)} decisions identical to production ({time.time() - t0:.0f} s)')
 
 
-TESTS = [test_drift, test_snapshot, test_tenmin, test_gates, test_content, test_stage, test_real_one_lst]
+TESTS = [test_drift, test_snapshot, test_tenmin, test_serve_build, test_gates, test_content, test_stage, test_real_one_lst]
 
 
 def main(argv):

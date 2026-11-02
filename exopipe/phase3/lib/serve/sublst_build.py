@@ -6,7 +6,12 @@ lines written on the old servers between the copy and the swap are appended at t
 build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 flock, servers never inherit it); the
        generation-mix gate G8 (every LST run has candidates/, pertie_detections.csv and a pos_kind column - else exit 2;
        today the caller skipped the cumulative and exited 0, sublst_catalog_publish.sh:96-100, batch row B-73);
-       rm -rf B; sublst_cumulative.py B LSTs; build_localizations.py with the per-case tie and the common frame (G9);
+       the DEEP-OMISSION decision table of the LSTs (lib/catalog/deep_omission.tenmin_table; Gregg 2026-10-24,
+       sublst_cumulative.sh:37-46, 98-100) written OUTSIDE B, <runs root>/deep_omission/deep_omission_<UTC>.csv (class
+       omission_decisions; window-rms cache beside it, production's cache read as a seed in a parity run);
+       rm -rf B; SUBLST_DEEP_OMISSION=<table> sublst_cumulative.py B LSTs (the merge drops the OMIT rows per LST in place,
+       sublst_deep_omission_drop.py, and records them: B/deep_omission_dropped.csv, class omission_record, with its
+       per-instant test); build_localizations.py with the per-case tie and the common frame (G9);
        the localization figures (md5-keyed reuse from the served run, else drawn, 4 at a time, 600 s each; refuse a
        missing one - port of the PYF heredoc :36-61); p3t_pages_index.py per tier (G10). Output class sublst_cumulative.
 views  (unit sublst_<run>_views)  on B: the union with the Stokes key (G5), the review_dir merge with
@@ -129,6 +134,27 @@ def figures(B, served, unit=None, log=None):
     return len(multi), linked, len(todo) - len(bad), bad
 
 
+def omission_table(plan, u):
+    """The deep-omission decision table of the build's LSTs (sublst_cumulative.sh:37-46: written outside the build, which the
+    merge wipes; the window rms cached beside it - in a parity run production's cache is read as a seed, never written).
+    Recorded as an input and as an output of class omission_decisions; G6 of the stage applies. Returns its path."""
+    from exopipe.phase3.lib.catalog import deep_omission
+    dod = os.path.join(os.path.dirname(plan.U), 'deep_omission')
+    os.makedirs(dod, exist_ok=True)
+    table = os.path.join(dod, f'deep_omission_{common.stamp()}Z.csv')
+    cache = os.path.join(dod, 'cache')
+    seed = _CFG().catalog_omission.TENMIN_RMS_CACHE_SEED
+    seed = None if (not seed or os.path.realpath(seed) == os.path.realpath(cache)) else seed
+    rows, recs = deep_omission.tenmin_table(list(plan.lsts), table, cache_dir=cache, seed_dir=seed)
+    deep_omission.absent_gate(rows, deep_omission.tenmin_served_of(recs))
+    u.add_input(table)
+    u.add_output(table, 'omission_decisions', tier='sublst')
+    om = deep_omission.omitted_keys(rows)
+    u.note(f'deep-omission decision table {table}: {len(rows)} decisions, {len(om)} (LST, band, night, Stokes) omitted; '
+           f'window rms {dict(recs.n)}')
+    return table
+
+
 def build_stage(run, plan):
     S = _CFG().serve
     B = build_dir(plan)
@@ -145,11 +171,18 @@ def build_stage(run, plan):
                 u.add_input(os.path.join(lst_run(l), f))
         log = os.path.join(scripts.ops_root(), 'sublst_cumulative.log') if not plan.parity else \
             os.path.join(plan.out, 'sublst', 'sublst_cumulative.log')
+        table = omission_table(plan, u)
         if os.path.isdir(B):
             shutil.rmtree(B)
-        res = scripts.run('sublst_cumulative', [B] + list(plan.lsts), log=log, unit=u)
+        res = scripts.run('sublst_cumulative', [B] + list(plan.lsts), env={'SUBLST_DEEP_OMISSION': table}, log=log, unit=u)
         if not res.ok:
             u.refuse(f'merge failed: {res.reason or scripts.last_line(res.tail)}')
+        for f in ('deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_summary.txt'):
+            if not os.path.exists(os.path.join(B, f)):
+                u.refuse(f'the merge applied no deep omission: {B}/{f} not written (sublst_deep_omission_drop.finish)')
+        u.note('deep omission: ' + open(os.path.join(B, 'deep_omission_summary.txt')).readline().strip())
+        u.add_output(os.path.join(B, 'deep_omission_dropped.csv'), 'omission_record', tier='sublst',
+                     decisions=os.path.join(B, 'deep_omission.csv'))
         env = dict(S.SUBLST_LOC_ENV, P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv', P3_LOC_OUT=f'{B}/source_catalogs')
         res = scripts.run('build_localizations', [B], env=env, log=log, unit=u)
         if not res.ok:

@@ -75,7 +75,7 @@ import sys
 SUMMARY = 'review servers and the hub; served-queue and exclusion content tests; exact-pid restart'
 TIERS = ('deep', 'sublst', 'snapshot', 'jupiter')
 SELECTORS = ('tier', 'run_label', 'stokes', 'lsts', 'epochs')
-CONFIG = ('serve', 'pages', 'exclusions', 'paths', 'runner', 'site')
+CONFIG = ('serve', 'pages', 'catalog_omission', 'catalog_sublst', 'exclusions', 'paths', 'runner', 'site')
 WRITES = True
 FAMILIES = ('review', 'forced', 'strat', 'deep-forced', 'jupiter')
 
