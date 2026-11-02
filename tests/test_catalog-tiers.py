@@ -440,8 +440,13 @@ os.makedirs(os.path.join(out, "candidates/Red/rank0001_Red_J0000+0000"))
 json.dump({"cells": cells, "prefit": {"n_without_fit": 0, "n_at_per_frame_fit_step": 3}, "n_served_with_unfitted_frames": 0,
            "n_unfitted_frames_under_served": 0, "domain_dropped": {"ghost": 0}, "tie_cache": {"from_cache": 3, "tied_now": 0},
            "gate3d_match_percentile": 95.0, "member_order": "time, subband, Stokes", "ghost_gate": {"dates": ["2024-12-28"]},
-           "n_served": 1}, open(os.path.join(out, "chain_summary.json"), "w"))
+           "n_served": 1, "per_instant_vetoes": {"rule": "per instant (stub)"}}, open(os.path.join(out, "chain_summary.json"), "w"))
 open(os.path.join(out, "ghost_removed.csv"), "w").write("cand_id\n")
+# the veto records the chain writes since clv15 99fe3ea (content test snapshot_run.per_instant): none removed here
+open(os.path.join(out, "vetoed_sources.csv"), "w").write("veto,cell,subband,stokes,tier,ts,ra_deg,dec_deg,snr,n_members,"
+                                                          "n_instants,bands,routes,pos_err_arcsec,detail\n")
+open(os.path.join(out, "vetoed_detections.csv"), "w").write("removed_by,cell,subband,stokes,tier,ts,ra_deg,dec_deg,snr,instant,"
+                                                             "instant_kind,neg_member,asym_member\n")
 open(os.path.join(out, "candidates/Red/rank0001_Red_J0000+0000/detections.csv"), "w").write(
     "cand_id,ra,pos_err_stat_arcsec,pos_err_arcsec\nc1,10.0,30,60\n")
 os.makedirs(os.path.join(out, "source_catalogs")); os.makedirs(os.path.join(out, "source_catalogs_V"))

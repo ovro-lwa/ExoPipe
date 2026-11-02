@@ -10,13 +10,18 @@
               seam points discover_frames at a synthetic Phase-1 tree); tables published and tested; V carries the I scale;
               G6 item refusals; --resume skips; re-run conflicts (G12); --supersede moves the old tables
   negative    each content test fails on a corrupted copy of a synthetic table, incl. the regeneration gates T1-T4 in the
-              step's context (first-frame completeness, MCATSHA required, admission flags, same_as_previous)
+              step's context (first-frame completeness, MCATSHA required, admission flags, same_as_previous - also across
+              a changed frame list), search_frames only where claimed, integrations (a second run's frame, too many frames)
   archive     curves.FRAME_SOURCE 'archive' (default): the real extractor reads synthetic archive frames (no --stage);
               --supersede reproduces the published values (same_as_previous); G17 off-grid archive frames refused
+  searchframes curves.SEARCH_FRAMES (the opt-in of clv15 55469ba; default = production's plain call): default every
+              discovered frame; --supersede with the opt-in holds the search's list (counts recorded); night-refused pairs
+              keep the plain call (B-70); G18 before extraction (no list) and from the extractor (a listed frame not
+              discovered); the dry run shows the run's own plan (G6 before G18)
   real        READ-ONLY: production tables on the pre-contract parents fail rows exactly (+ flux_scale for V written before
               clv15 98595b3); tables on the contract parents (exopipe_ops 3035b47 regeneration) pass everything, also with
-              the step's context against the table they replaced; G17 on the pilot-era cell 01h_2024-12-24; --dry-run on
-              the real cell 18h_2025-04-11
+              the step's context against the table they replaced; the 55469ba tables of 12h 2024-12-28 27 MHz pass
+              search_frames; G17 on the pilot-era cell 01h_2024-12-24; --dry-run on the real cell 18h_2025-04-11
 
 Scratch: /tmp/exopipe3_tests_curves/ (removed at the end). Nothing outside it is written; production trees are only read.
 Needs: EXOPIPE3_SITE (the site file; its LEGACY_CODE_ROOTS name clv15), the production interpreter
@@ -59,6 +64,11 @@ LST, DATE = '18h', '2030-01-01'
 SB = '36MHz'
 NX = 128
 TS = [f'20300101_12{m:02d}{s:02d}' for m in range(0, 2) for s in range(0, 60, 10)]      # 12 frames, 10 s apart
+# the search's own frame list (noise_<sb>_<S>_median.csv) leaves out one discovered frame - as the re-flowed search of
+# 12h 2024-12-28 dropped the frames that did not flow (clv15 55469ba): the plain call (default) samples it, --search-frames
+# (curves.SEARCH_FRAMES, the opt-in) does not
+SEARCH_DROPPED = TS[4]
+SEARCH_TS = [t for t in TS if t != SEARCH_DROPPED]
 
 
 def _fresh(name):
@@ -93,10 +103,12 @@ def _wcs_header(ra0=270.0, dec0=40.0):
 
 
 def make_cell(root, subbands=(SB,), staged=(SB,), catalog_for=(SB,), flow_registered_false=(), with_claim=True,
-              nan_target=False, archive_fits=False):
+              nan_target=False, archive_fits=False, night_refused=(), search_ts=None):
     """A synthetic searched cell under ``root``: Phase-1 placeholders (real frames with ``archive_fits``: the archive the
-    extractor reads with curves.FRAME_SOURCE 'archive'), staged frames, search outputs, Master catalogue, samples, flow
-    fields. Returns the dict of roots."""
+    extractor reads with curves.FRAME_SOURCE 'archive'), staged frames, search outputs - admission table, runinfo and the
+    search's own frame list noise_<sb>_<S>_median.csv (``search_ts``, default SEARCH_TS),
+    or for a subband in ``night_refused`` the engine's night-refusal records, no frame list and an admission table that
+    admits no frame - Master catalogue, samples, flow fields. Returns the dict of roots."""
     import numpy as np
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -114,11 +126,24 @@ def make_cell(root, subbands=(SB,), staged=(SB,), catalog_for=(SB,), flow_regist
         os.makedirs(os.path.join(R['search'], CELL), exist_ok=True)
         with open(os.path.join(R['search'], CELL, f'admission_{sb}.csv'), 'w') as f:
             f.write('idx,ts,date_obs,v_central_rms_jy,rms_outlier,beam_refused,sun_elev_deg,night_refused,admitted\n')
-            for j, ts in enumerate(TS[:-1]):                      # the last frame is absent: counted fallback
-                f.write(f'{j},{ts},,1.0,0,0,-20,,{0 if j == 3 else 1}\n')
+            if sb in night_refused:                               # the night rule refuses every frame (SS:1024-1026)
+                for j, ts in enumerate(TS):
+                    f.write(f'{j},{ts},,1.0,0,0,2.0,sun-up,0\n')
+            else:
+                for j, ts in enumerate(TS[:-1]):                  # the last frame is absent: counted fallback
+                    f.write(f'{j},{ts},,1.0,0,0,-20,,{0 if j == 3 else 1}\n')
         for st in ('I', 'V'):
+            if sb in night_refused:                               # the engine's record; no runinfo, no frame list
+                with open(os.path.join(R['search'], CELL, f'nightrefused_{sb}_{st}_median.json'), 'w') as f:
+                    json.dump({'rule': 'synthetic night rule', 'first_ts': TS[0], 'last_ts': TS[-1]}, f)
+                continue
             with open(os.path.join(R['search'], CELL, f'runinfo_{sb}_{st}_median.json'), 'w') as f:
                 json.dump({'n_frames': len(TS), 'flow_registered': sb not in flow_registered_false}, f)
+            with open(os.path.join(R['search'], CELL, f'noise_{sb}_{st}_median.csv'), 'w') as f:   # production's columns
+                f.write('idx,ts,date_obs,elev_bin,n_subbands,wsum,admitted,global_rms_jyb,n_components,flood_refused,'
+                        'refuse_reason\n')
+                for j, ts in enumerate(SEARCH_TS if search_ts is None else search_ts):
+                    f.write(f'{j},{ts},,0,,,{0 if ts == TS[3] else 1},0.2,3,0,\n')
         if sb in catalog_for:
             with open(os.path.join(R['mcat'], f'master_R075_{LST}_{sb}.gaul.csv'), 'w') as f:
                 f.write('# Gaussian list (synthetic)\n# Gaus_id, Isl_id, RA, DEC, Peak_flux, Isl_rms, S_Code\n')
@@ -371,10 +396,41 @@ def test_plan():
         os.remove(os.path.join(R['stage'], '36MHz', f'36MHz-Pilot-Snapshot-{TS[0]}-I-image.fits'))
         assert 'listed' in P.stage_problems(R['stage'], pl)['36MHz']
         assert 'no staged directory' in P.stage_problems(os.path.join(root, 'nostage'), pl)['36MHz']
-        # inputs: catalogue, admission, samples, PB library, flow dir, code files
+        # inputs: catalogue, admission, samples, PB library, flow dir, code files; the search's frame lists only with
+        # curves.SEARCH_FRAMES (the opt-in: production's plain call reads none)
         ins = dict(P.inputs(pl, C, R['phase1'], ['/x/code.py']))
         assert os.path.join(R['mcat'], 'master_R075_18h_36MHz.gaul.csv') in ins and C.PB_LIBRARY in ins
         assert os.path.join(R['flow'], CELL) in ins and '/x/code.py' in ins
+        assert not C.SEARCH_FRAMES and not any('noise_' in k for k in ins), sorted(ins)       # default: production's call
+        assert P.pair_plan(pl, C, ('I', 'V'), ['36MHz']) == {('36MHz', 'I'): ('extract', False),
+                                                             ('36MHz', 'V'): ('extract', False)}
+        CFG.set('curves.SEARCH_FRAMES', 'True')
+        C = CFG.curves
+        ins = dict(P.inputs(pl, C, R['phase1'], ['/x/code.py']))
+        assert all(os.path.join(R['search'], CELL, f'noise_36MHz_{st}_median.csv') in ins for st in ('I', 'V')), sorted(ins)
+        assert P.pair_plan(pl, C, ('I', 'V'), ['36MHz']) == {('36MHz', 'I'): ('extract', True),
+                                                             ('36MHz', 'V'): ('extract', True)}
+        # a runinfo without its frame list: G18 before extraction, its V G10; the absence fingerprinted by the directory
+        lI = os.path.join(R['search'], CELL, 'noise_36MHz_I_median.csv')
+        saved = open(lI).read()
+        os.remove(lI)
+        pl3 = P.plan_cell(CELL, None, ('I', 'V'), ex, C, CFG.instrument.ALL_SUBBANDS)
+        pp = P.pair_plan(pl3, C, ('I', 'V'), ['36MHz'])
+        assert pp[('36MHz', 'I')][:2] == ('refused', 'G18') and pp[('36MHz', 'V')][:2] == ('refused', 'G10'), pp
+        assert dict(P.inputs(pl3, C, R['phase1'], []))[os.path.join(R['search'], CELL)] == \
+            {'absent': 'noise_36MHz_I_median.csv'}
+        assert P.pair_plan(pl3, C, ('I',), ['36MHz']).keys() == {('36MHz', 'I')}
+        # a night-refused pair (record, no list): the plain call, as today (B-70) - never refused; no directory fingerprint
+        with open(os.path.join(R['search'], CELL, 'nightrefused_36MHz_I_median.json'), 'w') as f:
+            f.write('{}')
+        pl3 = P.plan_cell(CELL, None, ('I', 'V'), ex, C, CFG.instrument.ALL_SUBBANDS)
+        pp = P.pair_plan(pl3, C, ('I', 'V'), ['36MHz'])
+        assert pp == {('36MHz', 'I'): ('extract', False), ('36MHz', 'V'): ('extract', True)}, pp
+        assert os.path.join(R['search'], CELL) not in dict(P.inputs(pl3, C, R['phase1'], []))
+        CFG.set('curves.SEARCH_FRAMES', 'False')
+        C = CFG.curves
+        os.remove(os.path.join(R['search'], CELL, 'nightrefused_36MHz_I_median.json'))
+        open(lI, 'w').write(saved)
         # LC8
         os.makedirs(os.path.join(R['out'], CELL))
         open(os.path.join(R['out'], CELL, f'{CELL}_41MHz_I_lightcurves.fits'), 'w').close()
@@ -429,12 +485,34 @@ def test_lock_and_classify():
     ok, probs, _ = lock.check(root, CFG.curves, CFG.paths)
     assert not ok and any('STAMP = 43' in p for p in probs) and any('P3_SNAP_FLOWTREE' in p for p in probs) \
         and any('P3_LC_WAIT_I_S' in p for p in probs), probs
+    assert not any('--search-frames' in p for p in probs), probs
+    # SS.INTEGRATION_S (content test light_curve.integrations) is a locked literal too
+    ss = os.path.join(root, 'phase3_snapshot_search.py')
+    sst = open(ss).read()
+    assert '\nINTEGRATION_S = 10.03102041' in sst
+    open(ss, 'w').write(sst.replace('\nINTEGRATION_S = 10.03102041', '\nINTEGRATION_S = 10.0'))
+    ok, probs, _ = lock.check(root, CFG.curves, CFG.paths)
+    assert not ok and any('INTEGRATION_S = 10.0 ' in p for p in probs), probs
+    open(ss, 'w').write(sst)
+    # --search-frames (clv15 55469ba) joins the lock only with the opt-in curves.SEARCH_FRAMES: a module without the option,
+    # the frame-list literal or the G18 refusal then refuses before extraction; production's plain call (the default)
+    # needs none of them
+    open(lc, 'w').write(src.replace('"--search-frames"', '"--search-framez"').replace('noise_%s_%s_median.csv', 'noise.csv'))
+    ok, probs, _ = lock.check(root, CFG.curves, CFG.paths)
+    assert not CFG.curves.SEARCH_FRAMES and not any('--search-frames' in p for p in probs), probs
+    CFG.authorize([], out=os.path.join(SCRATCH, 'out'))
+    CFG.set('curves.SEARCH_FRAMES', 'True')
+    ok, probs, _ = lock.check(root, CFG.curves, CFG.paths)
+    assert not ok and sum('--search-frames' in p for p in probs) == 2, probs
+    CFG.reset()
     # gate mapping and classification
     assert W.gate_of('18h x 36MHz I: no rows inside the frame') == 'G7'
     assert W.gate_of('frame 1 WCS differs from the first frame - refusing') == 'G8'
     assert W.gate_of('no flow field at all for 2030') == 'G9'
     assert W.gate_of('V: FLUXSCAL -1 / NREFSCAL 0 is not the Stokes I scale 0.4 / 60 - refusing') == 'G10'
     assert W.gate_of('no Master catalogue /x') == 'G6' and W.gate_of('something else') is None
+    assert W.gate_of("12h_2024-12-28 27MHz I: 3 frames of the search's list are not discovered (e.g. 20241228_120001) - "
+                     "refusing") == 'G18'                                    # clv15 55469ba
     tab = os.path.join(root, 't.fits')
 
     def res(rc, tail):
@@ -450,7 +528,7 @@ def test_lock_and_classify():
     o = W.classify(res(1, 'RuntimeError: x V: FLUXSCAL -1 / NREFSCAL 0 is not the Stokes I scale 0.4 / 60 - refusing'),
                    tab, CELL, SB, 'V')
     assert o['gate'] == 'G10' and o['unpublished_table'] == tab, o
-    # the production argument list (v9:366-370): no --run-dir, no --samples-dir by default
+    # the production argument list (v9:366-370): no --run-dir, no --samples-dir, no --search-frames by default
     a = W.argv(CFG.curves, CFG.paths, os.path.join(clv, W.SCRIPT), CELL, SB, 'I', '/st/36MHz', '/o')
     assert a == ['extract', '--cell', CELL, '--subband', SB, '--stage', '/st/36MHz', '--proto-root',
                  CFG.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs', CFG.curves.MASTER_CATALOG_DIR, '--out', '/o',
@@ -459,6 +537,14 @@ def test_lock_and_classify():
     a = W.argv(CFG.curves, CFG.paths, os.path.join(clv, W.SCRIPT), CELL, SB, 'I', None, '/o')
     assert a == ['extract', '--cell', CELL, '--subband', SB, '--proto-root', CFG.paths.SNAPSHOT_FLEET_OUT,
                  '--master-catalogs', CFG.curves.MASTER_CATALOG_DIR, '--out', '/o', '--stokes', 'I'], a
+    # a pair plan.pair_plan extracts with the search's own frame list (curves.SEARCH_FRAMES, clv15 55469ba)
+    a = W.argv(CFG.curves, CFG.paths, os.path.join(clv, W.SCRIPT), CELL, SB, 'V', None, '/o', search_frames=True)
+    assert a[-1] == '--search-frames' and a[:-1] == ['extract', '--cell', CELL, '--subband', SB, '--proto-root',
+                                                      CFG.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs',
+                                                      CFG.curves.MASTER_CATALOG_DIR, '--out', '/o', '--stokes', 'V'], a
+    sp = W.make_spec(CFG.curves, CFG.paths, os.path.join(clv, W.SCRIPT), 'py36', CELL, SB, ['I', 'V'], None,
+                     os.path.join(root, 'spec'), search_frames={'I': False, 'V': True})
+    assert '--search-frames' not in sp['argv']['I'] and sp['argv']['V'][-1] == '--search-frames', sp['argv']
 
 
 def test_end2end():
@@ -480,7 +566,7 @@ def test_end2end():
     assert sorted(o['path'] for o in rec['outputs']) == [pI, pV], rec['outputs']
     assert all(t['passed'] for t in rec['tests']), [t for t in rec['tests'] if not t['passed']]
     names = {t['name'] for t in rec['tests']}
-    for n in ('structure', 'frames', 'values', 'flux_scale', 'rows', 'provenance'):
+    for n in ('structure', 'frames', 'values', 'flux_scale', 'rows', 'provenance', 'search_frames', 'integrations'):
         assert f'light_curve.{n}' in names, names
     assert 'curves.complete' in names and 'curves.no_excluded_products' in names
     # G6: 41MHz has no Master catalogue -> both pairs refused by the named gate, the unit completes
@@ -489,7 +575,13 @@ def test_end2end():
     hI, hV = fits.getheader(pI), fits.getheader(pV)
     assert hI['NREFSCAL'] == 6 and 0.3 < hI['FLUXSCAL'] < 0.7, (hI['NREFSCAL'], hI['FLUXSCAL'])
     assert hV['FLUXSCAL'] == hI['FLUXSCAL'] and hV['NREFSCAL'] == hI['NREFSCAL']        # ledger 2311 (M30)
-    assert hI['NFRAMES'] == len(TS) and hI['NADMIT'] == len(TS) - 1                       # frame 3 not admitted
+    # production's call (curves.SEARCH_FRAMES False): every discovered frame, the one the search's list dropped too; frame 3
+    # is not admitted
+    assert hI['NFRAMES'] == len(TS) and hI['NADMIT'] == len(TS) - 1, (hI['NFRAMES'], hI['NADMIT'])
+    for p in (pI, pV):
+        with fits.open(p) as h:
+            got = [str(x).strip() for x in h['FRAMES'].data['ts']]
+        assert got == TS and SEARCH_DROPPED in got, (p, got)
     with fits.open(pI) as h:
         kinds = [k.strip() for k in h['SOURCES'].data['kind']]
         assert kinds.count('master:S') == 6 and kinds.count('master:M') == 1 and kinds.count('target:10pc') == 2, kinds
@@ -498,6 +590,12 @@ def test_end2end():
         assert (~fr['flow_exact'].astype(bool)).sum() == len(TS) // 2         # nearest valid flow instant (ledger 1243)
     pair = rec['meta']['pairs']['36MHz_I']
     assert pair['status'] == 'published' and pair['fallbacks']['frames_absent_from_admission'] == 1, pair
+    assert pair['discovered_not_sampled'] == 0 and pair['search_frames'] is False, pair
+    sf = [t for t in rec['tests'] if t['name'] == 'light_curve.search_frames']
+    assert len(sf) == 2 and all(t['passed'] and t['value'] == 'n/a' for t in sf), sf          # the plain call: not compared
+    ig = [t for t in rec['tests'] if t['name'] == 'light_curve.integrations']
+    assert len(ig) == 2 and all(t['passed'] and t['value'] == len(TS) for t in ig), ig
+    assert not any('--search-frames' in c['argv'] for c in rec['meta']['legacy_calls']), rec['meta']['legacy_calls']
     assert len(pair['fallbacks']['missing_sample_files']) == 6, pair['fallbacks']
     assert rec['meta']['pairs']['36MHz_V']['fallbacks']['zero_vis_frames_kept'] == 1
     assert any(p.endswith('/phase3_snapshot_lightcurves.py') for p in rec['inputs']), 'extractor code not recorded'
@@ -508,8 +606,9 @@ def test_end2end():
                                    for c in calls), calls
     assert rec['admitted'] == ['2030-01-01/36MHz', '2030-01-01/41MHz'], rec['admitted']    # planned (G6 = item refusal)
     assert not os.path.exists(rec['meta']['scratch']), 'scratch kept after a clean unit'
-    # verify alone (only the synthetic catalogue and flow root as context): the published tables pass
-    ctx = {'master_catalog': os.path.join(R['mcat'], f'master_R075_{LST}_36MHz.gaul.csv'), 'flowtree': R['flow']}
+    # verify alone (only the synthetic catalogue, flow root and search outputs as context): the published tables pass
+    ctx = {'master_catalog': os.path.join(R['mcat'], f'master_R075_{LST}_36MHz.gaul.csv'), 'flowtree': R['flow'],
+           'search_dir': os.path.join(R['search'], CELL)}
     for p in (pI, pV):
         res = validate.run('light_curve', p, **ctx)
         assert all(r['passed'] for r in res), [r for r in res if not r['passed']]
@@ -559,7 +658,8 @@ def test_negative():
     assert rec['meta']['stage_root'] == os.path.join(R['work'], _cfg().frames_snapshot.STAGE_SUBDIR, CELL), rec['meta']
     pI = os.path.join(R['out'], CELL, f'{CELL}_{SB}_I_lightcurves.fits')
     pV = os.path.join(R['out'], CELL, f'{CELL}_{SB}_V_lightcurves.fits')
-    ctx = {'master_catalog': os.path.join(R['mcat'], f'master_R075_{LST}_{SB}.gaul.csv'), 'flowtree': R['flow']}
+    ctx = {'master_catalog': os.path.join(R['mcat'], f'master_R075_{LST}_{SB}.gaul.csv'), 'flowtree': R['flow'],
+           'search_dir': os.path.join(R['search'], CELL)}
     assert all(r['passed'] for r in validate.run('light_curve', pI, **ctx))
     bad_dir = os.path.join(root, 'bad', CELL)
     os.makedirs(bad_dir)
@@ -618,6 +718,94 @@ def test_negative():
     def neg_rms(h):
         h['RMS'].data[0, 0] = -1.0
     assert failed(corrupt(pI, neg_rms)) == ['values']
+
+    # search_frames (clv15 55469ba; LC-REGEN-TEST (b)) applies only to a table extracted with --search-frames (ctx
+    # search_frames; default curves.SEARCH_FRAMES False): this table is production's plain call - all 12 frames, also the one
+    # the search's list dropped - so it is not compared by default, and fails where it is claimed to be the list's
+    def search_dir_with(name, ts_list, night_refused=False):
+        d = os.path.join(root, name, CELL)
+        os.makedirs(d, exist_ok=True)
+        for st in ('I', 'V'):
+            if night_refused:
+                open(os.path.join(d, f'nightrefused_{SB}_{st}_median.json'), 'w').write('{}')
+                continue
+            with open(os.path.join(d, f'noise_{SB}_{st}_median.csv'), 'w') as f:
+                f.write('idx,ts,admitted\n' + ''.join(f'{j},{t},1\n' for j, t in enumerate(ts_list)))
+        return d
+
+    def run_sf(p, **kw):
+        return {r['name'].split('.', 1)[1]: r for r in validate.run('light_curve', p, **dict(ctx, **kw))}
+    res = run_sf(pI)
+    assert failed(res) == [] and res['search_frames']['value'] == 'n/a', res['search_frames']
+    res = run_sf(pI, search_frames=True)                       # the cell's own list dropped one of the table's frames
+    assert failed(res) == ['search_frames'] and '1 not in the search' in res['search_frames']['detail'], res['search_frames']
+    for name, lst_, why in (('same', TS, None), ('more', TS + ['20300101_120200'], '1 of the list missing'),
+                            ('reordered', TS[::-1], None)):
+        res = run_sf(pI, search_frames=True, search_dir=search_dir_with(name, lst_))
+        assert failed(res) == ([] if why is None else ['search_frames']), (name, res['search_frames'])
+        assert why is None or why in res['search_frames']['detail'], (name, res['search_frames'])
+    res = run_sf(pI, search_frames=True, search_dir=os.path.join(root, 'nolist'))
+    assert failed(res) == ['search_frames'] and 'no search frame list' in res['search_frames']['detail'], res
+    res = run_sf(pI, search_frames=True, search_dir=search_dir_with('nightref', None, night_refused=True))
+    assert failed(res) == [] and 'refused the night' in res['search_frames']['detail'], res['search_frames']   # B-70
+
+    def dup_frame(h):                            # a frame twice in FRAMES fails search_frames (and the frames test)
+        h['FRAMES'].data['ts'][1] = h['FRAMES'].data['ts'][0]
+    dup = os.path.join(bad_dir, os.path.basename(pI))
+    corrupt(pI, dup_frame)
+    res = run_sf(dup, search_frames=True, search_dir=search_dir_with('same', TS))
+    assert 'search_frames' in failed(res) and '1 repeated' in res['search_frames']['detail'], res['search_frames']
+    # integrations (the reviewer's gap check), on the frames' recorded DATE-OBS (the admission table): distinct integrations
+    # pass even with stamps 5 s apart (two runs' naming: start / midpoint, as 12h 2024-12-28 27 MHz); two frames of ONE
+    # integration fail; without a recorded DATE-OBS a stamp 1 s from another fails; more frames than one LST hour fails
+    import datetime as _dt
+
+    def iso(t, dt=0.0):
+        return (_dt.datetime.strptime(t, '%Y%m%d_%H%M%S') + _dt.timedelta(seconds=dt)).strftime('%Y-%m-%dT%H:%M:%S.%f')[:21]
+
+    def admission_with(name, dates):
+        p_ = os.path.join(root, f'admission_{name}.csv')
+        with open(p_, 'w') as f:
+            f.write('idx,ts,date_obs,admitted\n' + ''.join(f'{j},{t},{d},1\n' for j, (t, d) in enumerate(dates)))
+        return p_
+    # (these admission tables admit every frame, so light_curve.frames differs from them: only integrations is read here)
+    res = run_sf(pI, admission=admission_with('ok', [(t, iso(t, -4.9)) for t in TS]))
+    assert res['integrations']['passed'] and f'{len(TS)} by recorded DATE-OBS' in res['integrations']['detail'], \
+        res['integrations']
+    res = run_sf(pI, admission=admission_with('twice', [(t, iso(TS[4] if j == 5 else t, -4.9)) for j, t in enumerate(TS)]))
+    assert not res['integrations']['passed'] and '1 integrations held by more than one frame' in \
+        res['integrations']['detail'] and f'{TS[4]} and {TS[5]}' in res['integrations']['detail'], res['integrations']
+
+    def stamp_5s(h):                            # frame 1 stamped 5 s after frame 0 (another run's naming), a distinct integration
+        t1 = (_dt.datetime.strptime(TS[0], '%Y%m%d_%H%M%S') + _dt.timedelta(seconds=5)).strftime('%Y%m%d_%H%M%S')
+        h['FRAMES'].data['ts'][1] = t1
+        h['FRAMES'].data['epoch_s'][1] = h['FRAMES'].data['epoch_s'][0] + 5.0
+    corrupt(pI, stamp_5s)
+    s5 = os.path.join(bad_dir, os.path.basename(pI))
+    t1 = (_dt.datetime.strptime(TS[0], '%Y%m%d_%H%M%S') + _dt.timedelta(seconds=5)).strftime('%Y%m%d_%H%M%S')
+    dates = [(t, iso(t, -4.9)) for t in TS]
+    dates[1] = (t1, iso(TS[1], -4.9))                                # its DATE-OBS: the second integration
+    res = run_sf(s5, admission=admission_with('stamp5', dates))
+    assert 'integrations' not in failed(res), res['integrations']
+    dates[1] = (t1, iso(TS[0], -4.9))                                # the same stamps, but one integration recorded twice
+    res = run_sf(s5, admission=admission_with('stamp5twice', dates))
+    assert 'integrations' in failed(res) and 'held by more than one frame' in res['integrations']['detail'], res
+
+    def second_run_frame(h):
+        t1 = (_dt.datetime.strptime(TS[0], '%Y%m%d_%H%M%S') + _dt.timedelta(seconds=1)).strftime('%Y%m%d_%H%M%S')
+        h['FRAMES'].data['ts'][1] = t1
+        h['FRAMES'].data['epoch_s'][1] = h['FRAMES'].data['epoch_s'][0] + 1.0
+    res = corrupt(pI, second_run_frame)                                # the synthetic admission table records no DATE-OBS
+    assert failed(res) == ['integrations'] and 'stamped less than 4.0 s away' in res['integrations']['detail'], \
+        res['integrations']
+    CFG_ = _cfg()
+    CFG_.authorize([], out=os.path.join(root, 'out'))
+    CFG_.set('curves.MAX_FRAMES_PER_CELL', '10')
+    try:
+        res = run_sf(pI)
+        assert failed(res) == ['integrations'] and '12 frames > 10' in res['integrations']['detail'], res['integrations']
+    finally:
+        CFG_.reset()
     # V: the pre-98595b3 header (-1.0 / 0) fails flux_scale only; a V table without its I sibling fails
     shutil.copy(pI, os.path.join(bad_dir, os.path.basename(pI)))
     res = corrupt(pV, lambda h: (h[0].header.__setitem__('FLUXSCAL', -1.0), h[0].header.__setitem__('NREFSCAL', 0)))
@@ -660,7 +848,8 @@ def test_negative():
         g.write(f.read().replace(f',{TS[3]},,1.0,0,0,-20,,0', f',{TS[3]},,1.0,0,0,-20,,1'))
     res = run_ctx(pI, admission=adm2)
     assert failed(res) == ['frames'] and 'admission table' in res['frames']['detail'], res['frames']
-    # T3/T4: against the table it replaces - itself passes; a value changed at an identical position fails; a frame flag fails
+    # T3/T4: against the table it replaces - itself passes; a value changed at an identical position fails; an admitted
+    # flag changed at a frame both hold fails
     assert failed(run_ctx(pI, previous=pI)) == []
     prev = os.path.join(root, 'previous_I.fits')
     with fits.open(pI) as h:
@@ -673,7 +862,31 @@ def test_negative():
     h2['FRAMES'].data['admitted'][0] = not h2['FRAMES'].data['admitted'][0]
     h2.writeto(prev, overwrite=True)
     res = run_ctx(pI, previous=prev)
-    assert failed(res) == ['same_as_previous'] and 'frame list' in res['same_as_previous']['detail'], res
+    assert failed(res) == ['same_as_previous'] and 'admitted flag differs at 1 of the 12 frames both hold' in \
+        res['same_as_previous']['detail'], res['same_as_previous']
+    # the frame list may change under --supersede (2026-11-02 review): a previous table without frame 4 (here: the new one
+    # adds it) passes, the values compared at the 11 frames both hold - and a changed value there still fails; a previous
+    # table sharing no frame fails
+    import numpy as np
+    keep = [j for j in range(len(TS)) if j != 4]
+    with fits.open(pI) as h:
+        h3 = fits.HDUList([x.copy() for x in h])
+    h3['FLUX'].data = np.ascontiguousarray(h3['FLUX'].data[:, keep])
+    h3['RMS'].data = np.ascontiguousarray(h3['RMS'].data[:, keep])
+    h3['FRAMES'].data = h3['FRAMES'].data[keep]
+    h3[0].header['NFRAMES'] = len(keep)
+    h3.writeto(prev, overwrite=True)
+    res = run_ctx(pI, previous=prev)
+    assert failed(res) == [] and 'frames previous 11, new 12, both 11 (dropped 0, added 1)' in \
+        res['same_as_previous']['detail'], res['same_as_previous']
+    h3['FLUX'].data[0, 4] += 0.001                             # the previous table's frame 4 is the new table's frame 5
+    h3.writeto(prev, overwrite=True)
+    res = run_ctx(pI, previous=prev)
+    assert failed(res) == ['same_as_previous'] and 'FLUX differs' in res['same_as_previous']['detail'], res
+    h3['FRAMES'].data['ts'] = ['20300101_130000'] * len(keep)
+    h3.writeto(prev, overwrite=True)
+    res = run_ctx(pI, previous=prev)
+    assert failed(res) == ['same_as_previous'] and 'no frame in common' in res['same_as_previous']['detail'], res
 
 
 @contextlib.contextmanager
@@ -806,6 +1019,16 @@ def test_real_products():
                 assert not p or res['light_curve.same_as_previous']['value'] > 0, res['light_curve.same_as_previous']
                 report.append((f'{name} (contract parents)', []))
     assert n_old and n_new, (n_old, n_new)
+    # the tables the 2026-11-01 regeneration extracted with --search-frames (clv15 55469ba): 12h 2024-12-28 27 MHz - the
+    # re-flowed search dropped 14 Stokes I frames that did not flow; with ctx search_frames they equal the search's list
+    for st, n in (('I', 207), ('V', 221)):
+        p = os.path.join(REAL_LC, '12h_2024-12-28', f'12h_2024-12-28_27MHz_{st}_lightcurves.fits')
+        if not os.path.exists(p):
+            continue
+        res = {r['name']: r for r in validate.run('light_curve', p, search_frames=True)}
+        assert all(r['passed'] for r in res.values()), [(r['name'], r['detail']) for r in res.values() if not r['passed']]
+        assert res['light_curve.search_frames']['value'] == n and res['light_curve.integrations']['value'] == n, res
+        report.append((f'{os.path.basename(p)} (--search-frames, 55469ba)', []))
     print('    real tables: ' + '; '.join(f'{n}: {"all pass" if not f else "fails " + ",".join(f)}' for n, f in report))
     # G17: a pilot-era cell's archive frames are 4096 px, its Masters 1508/2358/3122 px - the fleet regrids them in the staging
     why = W.archive_grid_problem('01h_2024-12-24', '18MHz')
@@ -866,8 +1089,95 @@ def test_failures():
     assert rec['meta']['pairs']['36MHz_V']['gate'] == 'G10', rec['meta']['pairs']        # V not attempted without I
 
 
+def test_search_frames():
+    """curves.SEARCH_FRAMES (the opt-in of clv15 55469ba, the 2026-11-01 regeneration; default False = production's fleet
+    call): the REAL extractor in place. Default: every discovered frame, light_curve.search_frames not applied. --supersede
+    with the opt-in: the table now holds the search's own list (one frame fewer) - same_as_previous compares the frames both
+    hold and the pair records the counts (2026-11-02 review item 4). A night-refused pair under the opt-in is extracted with
+    the plain call (B-70: all frames, none admitted; not compared); a runinfo without a list is refused before extraction
+    (G18, its V G10); a listed frame that discovery does not give is the extractor's own refusal (G18), never an error; the
+    dry run shows the same plan as the run."""
+    from astropy.io import fits
+    root = _fresh('searchframes')
+    R = make_cell(root, subbands=('36MHz', '41MHz'), staged=('36MHz', '41MHz'), catalog_for=('36MHz', '41MHz'),
+                  night_refused=('41MHz',))
+    base = ['curves', '--cells', CELL, '--stage-root', R['stage'], '--out', R['out'], '--work', R['work'],
+            '--cores', 'none'] + _sets(R)
+    recp = os.path.join(R['out'], '_records', 'curves', f'{CELL}.json')
+
+    def ts_of(p):
+        with fits.open(p) as h:
+            return [str(x).strip() for x in h['FRAMES'].data['ts']], int(h[0].header['NADMIT'])
+    # (1) default: production's plain call everywhere - all 12 frames; the night-refused subband admits none (B-70)
+    with _step_env(R):
+        rc, out, err = _cli(base)
+    rec = json.load(open(recp))
+    assert rc == 0 and rec['status'] == 'done' and not rec['refused_items'], (rc, rec['reason'], rec['refused_items'])
+    assert not any('--search-frames' in c['argv'] for c in rec['meta']['legacy_calls'])
+    for sb, nadm in (('36MHz', len(TS) - 1), ('41MHz', 0)):
+        got, n = ts_of(os.path.join(R['out'], CELL, f'{CELL}_{sb}_I_lightcurves.fits'))
+        assert got == TS and n == nadm, (sb, len(got), n)
+    # (2) --supersede with the opt-in: 36 MHz now holds the search's 11 frames (the dropped one is not sampled) and passes
+    # search_frames; the pair records the frame counts; 41 MHz (night-refused, no list) keeps the plain call: unchanged
+    time.sleep(1.1)
+    with _step_env(R):
+        rc, out, err = _cli(base + ['--supersede', 'sf1', '--set', 'curves.SEARCH_FRAMES=True'])
+    rec = json.load(open(recp))
+    assert rc == 0 and rec['status'] == 'done', (rc, rec['reason'], err[-2000:])
+    calls = {(c['argv'][c['argv'].index('--subband') + 1], c['argv'][c['argv'].index('--stokes') + 1]):
+             '--search-frames' in c['argv'] for c in rec['meta']['legacy_calls']}
+    assert calls == {('36MHz', 'I'): True, ('36MHz', 'V'): True, ('41MHz', 'I'): False, ('41MHz', 'V'): False}, calls
+    for st in ('I', 'V'):
+        got, _n = ts_of(os.path.join(R['out'], CELL, f'{CELL}_36MHz_{st}_lightcurves.fits'))
+        assert got == SEARCH_TS and SEARCH_DROPPED not in got, (st, got)
+        assert ts_of(os.path.join(R['out'], CELL, f'{CELL}_41MHz_{st}_lightcurves.fits'))[0] == TS
+    p36 = rec['meta']['pairs']['36MHz_I']
+    assert p36['search_frames'] is True and p36['discovered_not_sampled'] == 1 and p36['superseded_frames'] == {
+        'previous': 12, 'new': 11, 'common': 11, 'dropped': 1, 'added': 0}, p36
+    assert rec['meta']['pairs']['41MHz_I']['search_frames'] is False, rec['meta']['pairs']['41MHz_I']
+    sap = {t['path'].split('_')[-3]: t for t in rec['tests'] if t['name'] == 'light_curve.same_as_previous'
+           and t['path'].endswith('_I_lightcurves.fits')}
+    assert sap['36MHz']['passed'] and 'frames previous 12, new 11, both 11 (dropped 1, added 0)' in sap['36MHz']['detail'], sap
+    sf = {t['path']: t for t in rec['tests'] if t['name'] == 'light_curve.search_frames'}
+    assert all(t['passed'] for t in sf.values()), sf
+    assert {p_.split('_')[-3]: t['value'] for p_, t in sf.items() if p_.endswith('_I_lightcurves.fits')} == {
+        '36MHz': len(SEARCH_TS), '41MHz': 'n/a'}, sf
+    # (3) the opt-in, a runinfo without its frame list: refused before extraction (G18; V G10); the dry run shows the same
+    root2 = _fresh('searchframes_nolist')
+    R2 = make_cell(root2, subbands=('36MHz', '41MHz'), staged=('36MHz', '41MHz'), catalog_for=('36MHz',))
+    os.remove(os.path.join(R2['search'], CELL, 'noise_36MHz_I_median.csv'))      # the I list only: I G18, its V G10
+    base2 = ['curves', '--cells', CELL, '--stage-root', R2['stage'], '--out', R2['out'], '--work', R2['work'], '--cores',
+             'none', '--set', 'curves.SEARCH_FRAMES=True'] + _sets(R2)
+    with _step_env(R2):
+        rc, out, err = _cli(base2 + ['--dry-run'])
+    # 41MHz has no Master catalogue (G6, before the frame list): only G6 for it - as the run records - never G18
+    assert rc == 2 and '36MHz I pair refused - G18' in out and '36MHz V pair refused - G10' in out and '41MHz I pair' not in \
+        out and 'MISSING (G6' in out, (rc, out[-2500:])
+    # the dry run still checks the stage with the opt-in (the plan notes never replace the stage check)
+    with _step_env(R2):
+        rc, out, err = _cli([a if a != R2['stage'] else os.path.join(root2, 'nostage') for a in base2] + ['--dry-run'])
+    assert rc == 2 and 'REFUSE G4: staged cell' in out and 'does not exist' in out, (rc, out[-1500:])
+    with _step_env(R2):
+        rc, out, err = _cli(base2)
+    rec = json.load(open(os.path.join(R2['out'], '_records', 'curves', f'{CELL}.json')))
+    assert rc == 2 and rec['status'] == 'refused' and not rec['meta'].get('legacy_calls'), (rc, rec['status'])
+    assert sorted((os.path.basename(r['path']).split('_')[2], os.path.basename(r['path']).split('_')[3], r['gate'])
+                  for r in rec['refused_items']) == [('36MHz', 'I', 'G18'), ('36MHz', 'V', 'G10'), ('41MHz', 'I', 'G6'),
+                                                     ('41MHz', 'V', 'G6')], rec['refused_items']
+    # (4) the opt-in, a listed frame that discovery does not give: the extractor refuses (clv15 55469ba) - G18, its V G10
+    root3 = _fresh('searchframes_g18')
+    R3 = make_cell(root3, search_ts=SEARCH_TS + ['20300101_120200'])
+    with _step_env(R3):
+        rc, out, err = _cli(['curves', '--cells', CELL, '--stage-root', R3['stage'], '--out', R3['out'], '--work',
+                             R3['work'], '--cores', 'none', '--set', 'curves.SEARCH_FRAMES=True'] + _sets(R3))
+    rec = json.load(open(os.path.join(R3['out'], '_records', 'curves', f'{CELL}.json')))
+    assert rc == 2 and rec['status'] == 'refused', (rc, rec['status'], rec['reason'])
+    assert {r['gate'] for r in rec['refused_items']} == {'G18', 'G10'}
+    assert "not discovered" in rec['meta']['pairs'][f'{SB}_I']['reason'], rec['meta']['pairs']
+
+
 TESTS = [test_items, test_config, test_stages, test_plan, test_publish, test_lock_and_classify, test_end2end,
-         test_failures, test_negative, test_archive, test_real_products]
+         test_failures, test_negative, test_archive, test_search_frames, test_real_products]
 
 
 def main(argv):
