@@ -988,9 +988,10 @@ def test_mchain():
     """THE MULTIPLES CHAIN (Gregg 2026-10-27, exopipe_ops 4c42f91): the deep and 10-minute singles pages are served with
     --mchain-queue (deep: and --mchain-catalog-dir) right after their title, as their two-port registry entries carry
     them, and no other page is; the review server defines both options; the App probe counts the chain identities that
-    join the page; a page whose chain page was refused in the same serve, or whose chain file is absent, is not served
-    (an empty chain - no multi-integration source - is); the sub-LST views write the multi-integration queue for every
-    Stokes they build, as sublst_cumulative.sh:79 does."""
+    join the page; as production, a page is served with the chain on disk whatever its multiples page became in the same
+    serve (an empty multiples queue, refused G1, leaves an empty chain: the review of 2026-11-02), refused only when its
+    --mchain-queue FILE is absent (the server dies reading it), an absent chain view noted; the sub-LST views write the
+    multi-integration queue for every Stokes they build, as sublst_cumulative.sh:79 does."""
     import ast
     from exopipe.phase3.core.record import Run
     from exopipe.phase3.lib.serve import common, deep, flow
@@ -1021,40 +1022,68 @@ def test_mchain():
     assert {'--mchain-queue', '--mchain-catalog-dir'} <= opts, sorted(o for o in opts if 'mchain' in o)
     ok('multiples chain: deep V/I pages carry --mchain-queue + --mchain-catalog-dir, sub-LST V/I --mchain-queue, after the '
        'title (before a parity --lists-dir); no multiples, snapshot or forced page does; classify_transients.py defines both')
-    # the App probe (the server's own loader) on a synthetic deep run: V's fork has J0001 (a page source) and J0009 (fork only)
-    plan.U_src = f'{T}/deep_base/Run_TEST'
-    run = Run('serve', ['test'], out, CFG, config_sections=None)
-    state = flow.new_state()
-    deep.views_stage(run, plan, state)
-    assert run.units[-1].status == 'done' and 'G3' in state['refused'].get('I-multi', ''), state['refused']
-    V = next(p for p in plan.pages if p.key == 'V')
-    r = servers.app_probe(plan, V, U)
-    c = V.c
-    V.c = {k: v for k, v in c.items() if not k.startswith('mchain')}
+    # the stages below read an exclusion list with no row (the gate is not what they test)
+    from exopipe.phase3.core.exclusions import Exclusions
+    dd = f'{T}/mchain_dd/data_decisions.csv'
+    wcsv(dd, ['lst', 'subband', 'date', 'verdict', 'reason'], [])
+    ex0, orig_fx = Exclusions(dd), exclusion_gate.fresh_exclusions
+    exclusion_gate.fresh_exclusions = lambda: ex0
     try:
-        r0 = servers.app_probe(plan, V, U)
-    finally:
-        V.c = c
-    assert (r['n'], r['mchain_ids'], r['n_unexplained']) == (r0['n'] + 1, 2, 0) and r0['mchain_ids'] is None, (r, r0)
-    ok(f'multiples chain: the App probe loads the page as its server does - {r["n"]} index sources with the chain (2 chain '
-       f'identities, the fork-only one joins), {r0["n"]} without')
-    # the test stage: I's chain page (I-multi, no fork: G3) was refused -> I is not served; V's chain files are its inputs
-    u = flow.test_stage(run, plan, state, 'deep_Run_TEST_test', probe=False)
-    assert u.status == 'done', (u.status, u.reason)
-    why = state['refused'].get('I', '')
-    assert why.startswith('multiples chain: page I-multi') and 'G3' in why, why
-    assert f'{U}/judgements/queue_p3s3_V_multi.txt' in u.inputs and \
-        f'{U}/views/source_catalogs_V_multi/Red_sources_survivors.csv' in u.inputs, sorted(u.inputs)[:6]
-    assert flow.mchain_refusal(plan, V, U, {'refused': {'V-multi': 'NO-INPUT: V: no multi-integration sources'}}) is None
-    assert 'G4' in flow.mchain_refusal(plan, V, U, {'refused': {'V-multi': 'G4 served-queue content test FAILED'}})
-    for k, rel in (('mchain_queue', 'judgements/none.txt'), ('mchain_catalog', 'views/none')):
-        V.c = dict(c, **{k: rel})
+        # the App probe (the server's own loader, the deep pages' environment) on a synthetic deep run: V's fork has J0001
+        # (a page source) and J0009 (fork only); I has no fork (I-multi refused, G3: no chain written)
+        plan.U_src = f'{T}/deep_base/Run_TEST'
+        run = Run('serve', ['test'], out, CFG, config_sections=None)
+        state = flow.new_state()
+        deep.views_stage(run, plan, state)
+        assert run.units[-1].status == 'done' and 'G3' in state['refused'].get('I-multi', ''), state['refused']
+        V = next(p for p in plan.pages if p.key == 'V')
+        r = servers.app_probe(plan, V, U)
+        c = V.c
+        V.c = {k: v for k, v in c.items() if not k.startswith('mchain')}
         try:
-            assert 'is absent' in (flow.mchain_refusal(plan, V, U, {'refused': {}}) or ''), k
+            r0 = servers.app_probe(plan, V, U)
         finally:
             V.c = c
-    ok('multiples chain: a page whose chain page was refused in this serve (I: I-multi G3, or G4) is not served, nor one '
-       'whose chain file is absent; NO-INPUT (an empty chain) is served; the chain queue and view are test-stage inputs')
+        assert (r['n'], r['mchain_ids'], r['n_unexplained']) == (r0['n'] + 1, 2, 0) and r0['mchain_ids'] is None, (r, r0)
+        ok(f'multiples chain: the App probe loads the page as its server does - {r["n"]} index sources with the chain (2 '
+           f'chain identities, the fork-only one joins), {r0["n"]} without')
+        # the test stage: V is served with its chain (inputs of the stage); I's chain queue was never written (I-multi G3) -
+        # its server would die reading it, so I is not served; an absent chain VIEW is only noted (the server skips it)
+        u = flow.test_stage(run, plan, state, 'deep_Run_TEST_test', probe=False)
+        assert u.status == 'done', (u.status, u.reason)
+        why = state['refused'].get('I', '')
+        assert why.startswith('multiples chain: --mchain-queue') and 'is absent' in why, why
+        assert 'V' not in state['refused'], state['refused']
+        assert f'{U}/judgements/queue_p3s3_V_multi.txt' in u.inputs and \
+            f'{U}/views/source_catalogs_V_multi/Red_sources_survivors.csv' in u.inputs, sorted(u.inputs)[:6]
+        V.c = dict(c, mchain_catalog='views/none')
+        try:
+            why_v, notes_v = flow.mchain_check(V, U)
+        finally:
+            V.c = c
+        assert why_v is None and len(notes_v) == 1 and 'is absent' in notes_v[0], (why_v, notes_v)
+        ok('multiples chain: a page whose --mchain-queue file is absent is not served (I: I-multi refused G3 wrote no chain - '
+           'its server would die reading it); an absent --mchain-catalog-dir is noted and the page served; the chain queue '
+           'and view are test-stage inputs')
+        # the review's scenario (2026-11-02): the fork lists nothing - an empty deep multiples queue, V-multi refused (G1) -
+        # and the V page is served all the same, with an empty chain, as production serves it
+        src2 = f'{T}/mchain_empty_src/Run_TEST'
+        shutil.copytree(f'{T}/deep_base/Run_TEST', src2)
+        open(f'{src2}/judgements/queue_p3s3_V_fwb_raw.txt', 'w').write('# queue_name: i14_posthoc_std7\n')
+        pe = planmod.make(_ns(tier='deep', run_label='TEST', pages='V,V-multi'), f'{T}/mchain_empty_out')
+        pe.U_src = src2
+        rune = Run('serve', ['test'], pe.out, CFG, config_sections=None)
+        ste = flow.new_state()
+        deep.views_stage(rune, pe, ste)
+        assert ste['refused'].get('V-multi', '').startswith('G1 empty queue'), ste['refused']
+        ue = flow.test_stage(rune, pe, ste, 'deep_Run_TEST_test')
+        assert ue.status == 'done' and 'V' not in ste['refused'], (ue.status, ue.reason, ste['refused'])
+        xv = ste['expected']['V']
+        assert (xv['n'], xv['mchain_ids'], xv['n_unexplained']) == (r0['n'], 0, 0), xv
+    finally:
+        exclusion_gate.fresh_exclusions = orig_fx
+    ok(f'multiples chain: an empty deep multiples queue (V-multi refused, G1) leaves the V page served with an empty chain '
+       f'({xv["n"]} index sources, 0 chain identities - App probe), as production serves it')
     # sub-LST: the multi-integration queue is written whenever the Stokes is built (here the V singles page alone)
     p5 = planmod.make(_ns(tier='sublst', lsts='04h,05h,06h', pages='V'), f'{T}/mchain_sublst_views')
     B5 = sublst_build.build_dir(p5)
@@ -1067,6 +1096,40 @@ def test_mchain():
     assert not os.path.exists(f'{B5}/judgements/queue_p3s3_I_multi.txt')
     ok('multiples chain, sub-LST: the views stage writes the multi-integration queue of every Stokes it builds (the singles '
        'page reads it after the swap), the multiples view only for a served multiples page')
+
+
+def test_hub_stage():
+    """The hub stage as production's serves set the hub today: the entries of the pages served and - production's
+    10-minute two-port path (sublst_cumulative.sh:298-299) - the multiples entry of a sub-LST page not served for NO-INPUT
+    only; a page refused for any other reason gets none; no separate inspection hub page and no hub HTTP server (both
+    retired by production on 2026-10-27: the review hub is served on both listeners of the two-port server)."""
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow
+    D = f'{T}/hubstage_prod'
+    hub._dump(_hub_registry(), f'{D}/registry.json')
+    plan = planmod.make(_ns(tier='sublst', lsts='04h,05h,06h'), f'{T}/hubstage_out')
+    run = Run('serve', ['test'], plan.out, CFG, config_sections=None)
+    state = flow.new_state()
+    state['served'].update({'V': ('stub', {}), 'I': ('stub', {})})
+    state['refused'].update({'V-multi': 'NO-INPUT: V: no multi-integration sources - multiples page not served',
+                             'I-multi': 'G17 serve-time exclusion gate: 1 rows ... - NOT served'})
+    orig = CFG.serve.HUB_DIR
+    CFG.serve.HUB_DIR = D                          # the parity hub starts from this scratch 'production' registry
+    try:
+        flow.hub_stage(run, plan, state, remove=CFG.serve.HUB_REMOVE_TIERS['sublst'], utc='2026-11-02 05:00 UT')
+    finally:
+        CFG.serve.HUB_DIR = orig
+    u = run.units[-1]
+    assert u.status == 'done', (u.status, u.reason, u.failed_tests()[:2])
+    reg = json.load(open(f'{plan.out}/review_hub/registry.json'))
+    for S_, t, port in (('V', '10-min', 28787), ('I', '10-min', 28788), ('V', '10-min-multiples', 28789)):
+        e = reg[S_].get(t) or {}
+        assert (e.get('port'), e.get('served'), e.get('run')) == (port, '2026-11-02 05:00 UT', 'Run_SLSTB'), (S_, t, e)
+    assert '10-min-multiples' not in reg['I'], reg['I'].get('10-min-multiples')
+    assert hub.SERVED_NOTE in u.notes and not os.path.exists(f'{plan.out}/inspection_hub'), u.notes
+    assert not [c for c in u.meta.get('legacy_calls', []) if 'build_inspection_hub' in ' '.join(map(str, c.get('argv', [])))]
+    ok('hub stage: the served pages\' entries, and the 10-minute multiples entry of a page not served for NO-INPUT only (as '
+       'production\'s two-port path); a page refused otherwise gets none; no inspection hub page, no hub HTTP server')
 
 
 def test_exclusion_gate_mchain():
@@ -1435,13 +1498,13 @@ def test_production_readonly():
        f'script path; served time and LST list taken from the live title'
        + (f'; served from frozen tree(s) {sorted(os.path.basename(r) for r in frozen)} whose server script is the live one '
           f'(B-51: the branch serves the live tree in the window)' if frozen else '') + ')')
-    # the multiples chain (exopipe_ops 4c42f91): since 2026-10-22 the review pages are entries of the two-port server's
-    # registry (no per-port server, so the loop above compares none of them); the planned argv after the title - the chain
-    # options - equals each entry's, and the chain options themselves are the entry's, on every deep and sub-LST page
+    # the pages as production serves them: since 2026-10-22 the review pages are entries of the two-port server's registry
+    # (no per-port server, so the loop above compares none of them). The planned argv after the script, without --port (the
+    # two-port server routes by path; the title's served time and LST list taken from the entry), and the environment
+    # (but NUMPY_MADVISE_HUGEPAGE, which the two-port server sets for every page, run_two_port.sh:5) equal each deep and
+    # sub-LST entry's - the multiples chain (4c42f91), the deep pages' environment (2026-10-30) and the deep multiples
+    # pages' title (2026-10-31) included. Read only.
     entries = {e.get('legacy_port'): e for e in json.load(open(TWO_PORT_REGISTRY))['pages'] if e.get('kind') == 'review'}
-
-    def chain(argv):
-        return [(f, argv[argv.index(f) + 1]) for f in ('--mchain-queue', '--mchain-catalog-dir') if f in argv]
     n_pages, n_chain = 0, 0
     for tier, run in (('deep', 'P3S5'), ('sublst', None)):
         a = argparse.Namespace(tier=tier, run_label=run, port_offset=0, pages=None, stokes=None, lsts=None, label=None,
@@ -1451,15 +1514,22 @@ def test_production_readonly():
             e = entries.get(pg.port)
             if e is None:
                 continue
-            mine, theirs = p.argv(pg, ''), e['argv']
-            assert chain(mine) == chain(theirs), (tier, pg.key, chain(mine), chain(theirs))
-            if '--title' in mine and '--title' in theirs:
-                assert mine[mine.index('--title') + 2:] == theirs[theirs.index('--title') + 2:], (tier, pg.key)
+            t = procs.argv_value(e['argv'], '--title') or ''
+            m = re.search(r'served (\d{4}-\d\d-\d\d \d\d:\d\d UT)', t)
+            if tier == 'sublst':
+                p.lsts_text = re.search(r'LSTs ([0-9h ]+?) - ', t).group(1)
+            mine = p.argv(pg, m.group(1) if m else '')
+            i = mine.index('--port')
+            mine = mine[2:i] + mine[i + 2:]
+            assert mine == e['argv'], (tier, pg.key, [x for x in zip(mine, e['argv']) if x[0] != x[1]][:3])
+            env = {k: v for k, v in p.server_env_extra().items() if k != 'NUMPY_MADVISE_HUGEPAGE'}
+            assert env == e['env'], (tier, pg.key, env, e['env'])
             n_pages += 1
-            n_chain += bool(chain(mine))
-    assert n_chain == 4, (n_pages, n_chain)
-    ok(f'multiples chain: the planned --mchain-* arguments equal the live two-port registry entries\' on {n_pages} deep and '
-       f'sub-LST pages ({n_chain} carry a chain: p8766/p8768 queue + view, p8787/p8788 queue), read only')
+            n_chain += '--mchain-queue' in mine
+    assert n_pages == 8 and n_chain == 4, (n_pages, n_chain)
+    ok(f'planned argv and environment == the live two-port registry entries on {n_pages} deep and sub-LST pages (multiples '
+       f'chain on {n_chain}: p8766/p8768 queue + view, p8787/p8788 queue; the deep pages\' P3_LOC_COMMON_LINKS / '
+       f'P3_XTIER_FRAME; the deep multiples pages\' title), read only')
     env = dict(os.environ, PYTHONPATH=ROOT)
     p = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--tier', 'deep', '--run', 'P3S5', '--dry-run', '--cores', 'none'],
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
@@ -1492,6 +1562,7 @@ def main():
         test_exclusion_gate_server_mirrors()
         test_hub()
         test_hub_page()
+        test_hub_stage()
         test_exclusion_gate_mchain()
         test_processes()
         test_views_stage()

@@ -71,29 +71,26 @@ def require_done(run, unit, what):
 
 
 # ---- test -----------------------------------------------------------------------------------------------------------
-def mchain_refusal(plan, pg, U, state):
-    """Why page ``pg`` cannot be served with its MULTIPLES CHAIN (serve.PAGES mchain_queue / mchain_catalog: the server's
-    --mchain-queue / --mchain-catalog-dir, exopipe_ops 4c42f91, Gregg 2026-10-27), or None:
-      - the page whose queue IS the chain (the tier's multiples page of the Stokes) was refused in this serve for any reason
-        but NO-INPUT (no multi-integration source: its queue is written, empty - an empty chain is served). Production's
-        deep serve fails there (p3s3_serve_multiples.sh exits 1: no fork :14, empty queue :134, fork content test :137;
-        p3s3_serve_stokes.sh ends with it), and a page re-served now would show the chain this serve refused - so the page
-        keeps its current server;
-      - a chain file is absent: the server reads both at start (classify_transients.read_queue / load_sources) and would
-        not start after its old server was stopped."""
+def mchain_check(pg, U):
+    """(refusal or None, notes) for the MULTIPLES CHAIN of page ``pg`` (serve.PAGES mchain_queue / mchain_catalog: the
+    server's --mchain-queue / --mchain-catalog-dir, exopipe_ops 4c42f91, Gregg 2026-10-27), as production serves it:
+      - the --mchain-queue FILE is absent: refused - the server reads it at start and dies (classify_transients.read_queue,
+        :871), after its old server was stopped;
+      - the --mchain-catalog-dir is absent: served, with a note - the server's loader skips it (load_sources :719-729);
+      - whatever the tier's multiples page became in this serve, the page is served with the chain on disk: production
+        starts the singles server and sets its hub entry before p3s3_serve_multiples.sh runs (p3s3_serve_stokes.sh:85, :91,
+        :94; p3s3_pass.sh:222 ignores its exit status), and the two-port backend rebuilds every page from disk - no fork:
+        the previous chain; the fork content test failed: the chain it refused (written at p3s3_serve_multiples.sh:83-86,
+        before the test at :136-137); an empty queue: an empty chain."""
     mq, mc = pg.at('mchain_queue', U), pg.at('mchain_catalog', U)
-    if not mq and not mc:
-        return None
-    src = next((o for o in plan.all_pages if o.key != pg.key and o.c.get('queue') == pg.c['mchain_queue']), None) \
-        if pg.c.get('mchain_queue') else None
-    why = state['refused'].get(src.key) if src is not None else None
-    if why and not str(why).startswith('NO-INPUT: '):
-        return (f'multiples chain: page {src.key}, whose queue is this page\'s --mchain-queue, was refused in this serve '
-                f'({str(why)[:300]}) - page {pg.key} not served (its current server keeps running)')
-    for flag, p, ok in (('--mchain-queue', mq, os.path.isfile), ('--mchain-catalog-dir', mc, os.path.isdir)):
-        if p and not ok(p):
-            return f'multiples chain: {flag} {p} is absent - page {pg.key} not served (its server reads it at start)'
-    return None
+    if mq and not os.path.isfile(mq):
+        return (f'multiples chain: --mchain-queue {mq} is absent - page {pg.key} not served (its server dies reading it at '
+                f'start, classify_transients.read_queue)'), []
+    notes = []
+    if mc and not os.path.isdir(mc):
+        notes.append(f'multiples chain: --mchain-catalog-dir {mc} is absent - page {pg.key} served without the chain\'s '
+                     f'own view (the server\'s loader skips it)')
+    return None, notes
 
 
 def test_stage(run, plan, state, unit_name, root=None, probe=True):
@@ -106,16 +103,15 @@ def test_stage(run, plan, state, unit_name, root=None, probe=True):
         for pg in plan.pages:
             if pg.key in state['refused']:
                 continue
-            q = pg.at('queue', U)
+            q, cat = pg.at('queue', U), pg.at('catalog', U)
             if not os.path.exists(q) or not common.has_j_line(q):
                 state['refused'][pg.key] = f'G1 empty queue: {q} has no line starting J - not served'
                 u.check('G1_nonempty_queue', True, value=0, detail=f'page {pg.key}: refused (empty queue)', path=q)
                 u.note(state['refused'][pg.key])
-        for pg in plan.pages:              # after every G1: a page's multiples chain is the queue of another page
-            if pg.key in state['refused']:
                 continue
-            q, cat = pg.at('queue', U), pg.at('catalog', U)
-            why = mchain_refusal(plan, pg, U, state)
+            why, notes = mchain_check(pg, U)
+            for n in notes:
+                u.note(n)
             if why:
                 state['refused'][pg.key] = why
                 u.note(why)
@@ -247,7 +243,7 @@ def hub_stage(run, plan, state, remove=(), utc=None):
     with run.unit(f'{plan.tier}_{plan.run_name}_hub', stage='hub', tier=plan.tier, parity=plan.parity) as u:
         entries, tunnel = [], []
         for pg in plan.pages:
-            if pg.key in state['served'] or _served_record_done(run, pg):
+            if pg.key in state['served'] or _served_record_done(run, pg) or _hub_entry_unserved(run, plan, pg, state):
                 e = plan.hub_entry(pg, utc)
                 if e is None:
                     tunnel.append(pg.port)
@@ -262,14 +258,26 @@ def hub_stage(run, plan, state, remove=(), utc=None):
         if plan.parity:
             u.note('parity: the hub registry and page are written under --out by lib/serve/hub (build_review_hub.py '
                    'hard-codes its directory; hub.render is its page, exopipe_ops 4c42f91)')
-        u.add_output(hub.inspection_hub(plan, log_path=plan.log_path, unit=u), 'hub_page')
-        for n in hub.ensure_http_servers(plan):
-            u.note(n)
+        u.note(hub.SERVED_NOTE)
 
 
 def _served_record_done(run, pg):
     rec = recmod.load_record(run.out_root, 'serve', pg.unit)
     return bool(rec and rec.get('status') == 'done')
+
+
+def _hub_entry_unserved(run, plan, pg, state):
+    """True for a sub-LST page not served for NO-INPUT only (a multiples page with no multi-integration source): its hub
+    entry is set all the same, as production's 10-minute two-port path sets all four entries after the registration, the
+    multiples ones whether or not their page was registered (sublst_cumulative.sh:298-299; sublst_register_pages.py skips
+    such a page). Registry only: the hub page shows no multiples button (exopipe_ops 4c42f91)."""
+    if plan.tier != 'sublst' or pg.family != 'review':
+        return False
+    why = state['refused'].get(pg.key)
+    if why is not None:
+        return str(why).startswith('NO-INPUT: ')
+    rec = recmod.load_record(run.out_root, 'serve', pg.unit)      # served in an earlier invocation of this serve
+    return bool(rec and rec.get('status') == 'no-input')
 
 
 # ---- verify -----------------------------------------------------------------------------------------------------------
@@ -309,7 +317,7 @@ def print_plan_header(plan, stages):
     if plan.U_src:
         print(f'  served run (read): {plan.U_src}' + ('' if os.path.isdir(plan.U_src) else '   [ABSENT]'))
         print(f'  writes under:      {plan.U}')
-    print(f'  hub:               {plan.hub_dir}   inspection hub: {plan.inspection_hub_dir}')
+    print(f'  hub:               {plan.hub_dir} (served by the two-port server on both listeners)')
     if plan.tier == 'sublst':
         print(f'  LSTs:              {plan.lsts_text or "(none found)"}')
     if plan.tier == 'snapshot' and plan.family == 'review':

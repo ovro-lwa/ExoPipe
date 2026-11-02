@@ -26,7 +26,7 @@ class serve(_Section):
     hub, for every tier. Ports, run roots, titles and the per-tier server environment decide what Gregg and the team see.
     Host names live in the site file (REVIEW_HOST, CHAIN_HOST; the hub page prints no tunnel line since exopipe_ops 4c42f91)."""
     # keys no --set / --config can change (DESIGN 11.4; honoured by config/__init__.py)
-    PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'INSPECTION_HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
+    PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
                       'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS')
 
     # ---- served runs (production product roots, from config.paths; PROTECTED) ----------------------------------------
@@ -46,15 +46,17 @@ class serve(_Section):
     SNAPSHOT_COPY_EXCLUDE = ('tmp_panels', 'tmp_panel_queue')      # snapshot_serve.sh:28
     SNAPSHOT_COPY_MIN_FREE_FACTOR = 1.0     # x source size; free bytes on the review disk before the copy (owed refusal,
                                             # INCIDENT-REVIEW-HOST-DATA07-FULL-SERVE-FAILED-HUB-PAGE-TRUNCATED-RESTORED, ledger 1208)
-    HUB_DIR = '/data07/gh/phase3/transients/review_hub'                # build_review_hub.py:12
-    INSPECTION_HUB_DIR = '/data07/gh/phase3/transients/inspection_hub' # run_inspection_hub.sh:3; build_inspection_hub.py:15
-    INSPECTION_GREENLIT = '/lustre/gh/main/exopipe_ops/inspection_greenlit.csv'   # build_inspection_hub.py:14 (Gregg's list, read only)
+    HUB_DIR = '/data07/gh/phase3/transients/review_hub'                # build_review_hub.py:24; served at / on both listeners
+                                            # of the two-port server (the per-port inspection hub page, run_inspection_hub.sh,
+                                            # was retired 2026-10-27: IMPL-HUB-SAME-ON-BOTH-LISTENERS-LAYOUT-20261027)
+    INSPECTION_GREENLIT = '/lustre/gh/main/exopipe_ops/inspection_greenlit.csv'   # build_inspection_hub.py:14 (Gregg's list, read
+                                            # only; the inspection twins' title label, servers.greenlit_label)
     LISTS_DIR = '/data07/gh/phase3/transients/review_lists'            # classify_transients.py:2445 (one pair of lists for every
                                                                         # tier, Gregg 2026-09-20); parity servers get <out>/review_lists
 
     # ---- ports (ruled: R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS, ledger 1079) -------------------------------------------
-    HUB_PORT = 8765                         # classify_transients.py:423; build_review_hub.py:27
-    INSPECTION_HUB_PORT = 8795              # classify_transients.py:424; run_inspection_hub.sh:7 (Gregg 2026-09-26)
+    HUB_PORT = 8765                         # classify_transients.py:423; the two-port server's review listener (run_two_port.sh)
+    INSPECTION_HUB_PORT = 8795              # classify_transients.py:424 (Gregg 2026-09-26); its inspection listener
     # (tier, page) -> port and what is served on it. serve OWNS every port below and the hub (refactor-chat decision
     # 2026-10-13: "serve owns all ports incl. forced pages 8775/8776/8785/8786 and jupiter 8800/8801 (one owner of ports
     # and the hub)"). Fields:
@@ -187,7 +189,13 @@ class serve(_Section):
     TENMIN_XTIER = 'Run_SLSTB:V:8787,Run_SLSTB:I:8788'   # p3s3_serve_stokes.sh:78; sublst_serve.sh:140; snapshot_serve.sh:72 (ledger 1995)
     # environment of each tier's servers (read by classify_transients.py:331,338,354,381,1018 and sublst_xtier.py:42-45, in place)
     SERVER_ENV = {
-        'deep': {'P3_DEEP_XTIER': '{deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}'},        # p3s3_serve_stokes.sh:78; p3s3_serve_multiples.sh:151
+        'deep': {'P3_DEEP_XTIER': '{deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}',        # p3s3_serve_stokes.sh:78; p3s3_serve_multiples.sh:151
+                 'P3_LOC_COMMON_LINKS': '1', 'P3_XTIER_FRAME': 'dewarped'},
+                 # + the two the deep pages are served with since 2026-10-30 (two-port registry p8766/p8768: "env = the 10-minute
+                 # pages'", Gregg 2026-10-30 'yes, pause and fix the deep V page now', IMPL-DEEP-PAGES-CONFORMANCE-SERVED-MEMBERS-
+                 # CURRENT-RUN-LINKS-PSR-CREDIBLE-GREY-10S-FRAMES-20261030; p8772/p8773 the same env on 2026-10-31,
+                 # OPS-P3S5-DEEP-PUBLISH-REREGISTERED-AND-VERIFIED-20261031): the SIMBAD bar and cross-tier links on the
+                 # common-frame columns (Gregg 2026-10-09 item 4) and the cross-tier links in the dewarped frame (Q17)
         'sublst': {'P3_QUEUE_BAND_ALIAS': '1', 'P3_DEEP_XTIER': '{other_deep_xtier}', 'P3_TENMIN_XTIER': '{tenmin_xtier}',
                    'P3_XTIER_FRAME': 'dewarped', 'P3_LOC_COMMON_LINKS': '1', 'NUMPY_MADVISE_HUGEPAGE': '0'},
                    # sublst_serve.sh:140 (singles); sublst_cumulative.sh:139 (multiples, M22 6b8a23a); ledgers 1983, 1995, 2110
@@ -228,7 +236,11 @@ class serve(_Section):
     # ---- titles and hub text ----------------------------------------------------------------------------------------
     UTC_FMT = '%Y-%m-%d %H:%M UT'           # p3s3_serve_stokes.sh:74,84; snapshot_serve.sh:101
     TITLE = {('deep', 'single'): '{tier_text} Stokes {S} transients, wideband + subband, Run_{label} (generation Run_20260909_000000) - served {utc}',
-             ('deep', 'multi'): None,       # no --title today (p3s3_serve_multiples.sh:152; interface divergence D2, open)
+             ('deep', 'multi'): '{tier_text} Stokes {S} MULTI-EPOCH transients (multiples chain), Run_{label} (generation Run_20260909_000000) - served {utc}',
+                                            # the deep multiples pages' title since 2026-10-31 (two-port registry p8772/p8773;
+                                            # deep_reregister_after_publish_20261031.py:70, OPS-P3S5-DEEP-PUBLISH-REREGISTERED-AND-
+                                            # VERIFIED-20261031); p3s3_serve_multiples.sh:152 starts its per-port server without
+                                            # one (interface divergence D2, closed by the served pages)
              ('sublst', 'single'): ('10-minute transients, new chain, LSTs {lsts} - Stokes {S}: 10-minute sidereal windows stacked from the '
                                     'snapshot cubes (new chain: frames flowed to the deep Master, x2-aligned to the leave-one-out window '
                                     'Master that is subtracted), subbands and wideband groups (Red/Green/Blue), nights after the night rule '
@@ -350,7 +362,8 @@ class serve(_Section):
         'TENMIN_XTIER': 'IMPLEMENTED-Q17-10MIN-CROSS-TIER-LINKS-ONE-FRAME',
         'SERVER_ENV': ('IMPLEMENTED-Q17-10MIN-CROSS-TIER-LINKS-ONE-FRAME', 'IMPLEMENTED-Q17-CROSS-TIER-LINKS-ON-THE-SNAPSHOT-PAGES',
                        'RULINGS-GREGG-20261009-ASTROMETRY-FOLLOWUPS-1-8', 'FIX-REFACTOR-MEDIUM-DEFECTS-M1-M19-DEEP-20261013',
-                       'FIX-REFACTOR-M20-M22-M30-M31-M33-20261013'),
+                       'FIX-REFACTOR-M20-M22-M30-M31-M33-20261013',
+                       'IMPL-DEEP-PAGES-CONFORMANCE-SERVED-MEMBERS-CURRENT-RUN-LINKS-PSR-CREDIBLE-GREY-10S-FRAMES-20261030'),
         'PORT_OWNERSHIP': 'PRODUCTION-STATUS-PM-PORT-GUARD-PREP-01H-CUBE-PACE',
         'FORCED_ADLEO_CHECK': 'RULINGS-GREGG-20261008-A-D-STACK-FLOWREF-MEMBERSHIP-GEN4-FORCED-I1MIN',
         'MULTI_MIN_NDET': 'CORRECTION-MULTI-EPOCH-SECTION-WAS-MULTIBAND',

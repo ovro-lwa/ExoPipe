@@ -5,7 +5,7 @@ the plan serves the production run directory itself (only once paths.PRODUCTION_
 approved); otherwise it is a PARITY plan: every file serve writes goes under ``<out>/<tier>/<run name>`` (deep: a mirror of
 the served run, lib/serve/mirror.py; sub-LST: the cumulative build and swap; snapshot and forced pages: a byte copy), the
 hub registry and page under ``<out>/review_hub`` (written by lib/serve/hub: build_review_hub.py hard-codes its directory),
-the inspection hub under ``<out>/inspection_hub``, the shared lists under ``<out>/review_lists``, and every port is bound at
+the shared lists under ``<out>/review_lists``, and every port is bound at
 port + ``--port-offset`` (>= serve.PARITY_PORT_OFFSET_MIN; the cross-tier link strings keep the production ports so pages
 compare). The Jupiter pages read their production directories directly (read-only servers) in both modes.
 
@@ -13,7 +13,8 @@ Argv per page family reproduces the launchers exactly (orders included):
   deep review single  p3s3_serve_stokes.sh:79      --run --queue --labels-dir --catalog-dir --port --title
                       --mchain-queue --mchain-catalog-dir (the multiples chain, Gregg 2026-10-27: exopipe_ops 4c42f91;
                       the two-port registry entries p8766/p8768 - no launcher passes them)
-  deep review multi   p3s3_serve_multiples.sh:152  --run --queue --labels-dir --catalog-dir --port (no title, divergence D2)
+  deep review multi   p3s3_serve_multiples.sh:152  --run --queue --labels-dir --catalog-dir --port --title (the title of the
+                      served entries p8772/p8773 since 2026-10-31; the launcher's per-port server has none, divergence D2)
   sub-LST review      sublst_serve.sh:140 / sublst_cumulative.sh:139-140  ... --port [--loc-offsets] --title
                       [--mchain-queue] (singles: the two-port registry entries p8787/p8788, which sublst_register_pages.py
                       re-registers as they are)
@@ -304,7 +305,6 @@ def make(args, out):
     p.U_src = os.path.join(rr, p.run_name) if rr else None
     p.U = (os.path.join(p.out, p.tier, p.run_name) if p.parity else p.U_src) if rr else None
     p.hub_dir = os.path.join(p.out, 'review_hub') if p.parity else S.HUB_DIR
-    p.inspection_hub_dir = os.path.join(p.out, 'inspection_hub') if p.parity else S.INSPECTION_HUB_DIR
     p.lists_dir = os.path.join(p.out, 'review_lists') if p.parity else None
     p.log_path = os.path.join(p.U, 'incremental.log') if p.U and p.family == 'review' else None
 

@@ -1,5 +1,5 @@
-"""Review hub (registry + page; since 2026-10-27 the page served at '/' on BOTH listeners of the two-port server, 8765 review
-and 8795 inspection) and the inspection hub (page from inspection_greenlit.csv, port 8795 before 2026-10-27).
+"""Review hub: registry + page, the page served at '/' on BOTH listeners of the two-port server (8765 review, 8795 inspection;
+Gregg 2026-10-27, IMPL-HUB-SAME-ON-BOTH-LISTENERS-LAYOUT-20261027).
 
 Production (paths.PRODUCTION_WRITES and a production --out): build_review_hub.py --set ... in place for every served page,
 then the removal of retired hub tiers (port of sublst_cumulative.sh:145-150, the hand edit of registry.json) and one
@@ -26,9 +26,9 @@ page's own 'Page generated' time) and is drift-tested against the in-place scrip
 The registry's 'tunnel_extra' (ports served without a button: the Jupiter pages) is still kept up to date with
 --tunnel-extra (build_review_hub.py:36-40 keeps the option and the key "for the serve scripts that still set it"); the page
 no longer prints it.
-Inspection hub: build_inspection_hub.py <dir> in place (it takes its output directory), production or parity.
-Hub HTTP servers: started only when the port does not answer (production only; run_inspection_hub.sh:7; the 8765 hub has
-no launcher, interface divergence D21).
+Retired with the per-port pages (production, 2026-10-27): the separate inspection hub page (build_inspection_hub.py,
+run_inspection_hub.sh - no production serve runs them since both listeners serve this page) and the hub's own HTTP servers
+(8765 / 8795 are the two-port server's listeners, run_two_port.sh): serve builds and starts neither (SERVED_NOTE).
 """
 import contextlib
 import fcntl
@@ -38,7 +38,7 @@ import os
 import re
 
 from exopipe.phase3.core.record import Refusal
-from exopipe.phase3.lib.serve import common, procs, scripts
+from exopipe.phase3.lib.serve import common, scripts
 
 # registry tier-key suffixes the page reads (build_review_hub.py:54, :63) and the tier of the generation line (:71)
 COMB_SUFFIX = '-comb'           # the tier's combined view (every served snapshot batch in one page)
@@ -46,6 +46,9 @@ FORCED_SUFFIX = '-forced'       # the forced photometry at the HWJ + 10 pc targe
 FORCED_TEXT = 'forced HWJ + 10 pc'
 GEN_TIER = '1-hour'
 PAGE_NOTE = 'from registry.json (build_review_hub.py)'      # the page's provenance note (:88)
+SERVED_NOTE = ('hub: the page is served at / on both listeners of the two-port server (8765 review, 8795 inspection; '
+               'Gregg 2026-10-27, IMPL-HUB-SAME-ON-BOTH-LISTENERS-LAYOUT-20261027) - serve builds no separate inspection hub '
+               'and starts no hub HTTP server (both retired by production on 2026-10-27)')
 
 
 def _S():
@@ -221,34 +224,3 @@ def update(plan, entries, remove=(), tunnel=(), log_path=None, unit=None):
         if not res.ok:
             raise Refusal(f'hub: build_review_hub.py rebuild failed (rc {res.rc}): {scripts.last_line(res.tail)}')
     return os.path.join(plan.hub_dir, 'registry.json'), os.path.join(plan.hub_dir, 'index.html'), planned
-
-
-def inspection_hub(plan, log_path=None, unit=None):
-    """build_inspection_hub.py <dir> (run_inspection_hub.sh:5). Returns the index.html path."""
-    res = scripts.run('build_inspection_hub', [plan.inspection_hub_dir], log=log_path, unit=unit)
-    if not res.ok:
-        raise Refusal(f'inspection hub: build_inspection_hub.py failed (rc {res.rc}): {scripts.last_line(res.tail)}')
-    return os.path.join(plan.inspection_hub_dir, 'index.html')
-
-
-def ensure_http_servers(plan):
-    """Production only: start `python -m http.server PORT --bind 127.0.0.1` in the hub directories whose port does not
-    answer (run_inspection_hub.sh:7). Returns notes."""
-    S = _S()
-    notes = []
-    if plan.parity:
-        return ['hub HTTP servers: not started in a parity run (production 8765 / 8795 serve the production hubs)']
-    for port, d in ((S.HUB_PORT, plan.hub_dir), (S.INSPECTION_HUB_PORT, plan.inspection_hub_dir)):
-        st, _ = procs.http_get(port, timeout=5.0)
-        if st == 200:
-            notes.append(f'hub HTTP {port}: answering (left as is)')
-            continue
-        if procs.port_in_use(port):
-            raise Refusal(f'G13 hub port {port} is held but does not answer 200 - not replaced')
-        p = procs.start([scripts.interpreter('default'), '-m', 'http.server', str(port), '--bind', '127.0.0.1'], d,
-                        scripts.server_env({}), os.path.join(d, 'server.log'), append=True)
-        ok, detail = procs.wait_ready(port, p, timeout=60, poll=2)
-        if not ok:
-            raise Refusal(f'G16 hub HTTP {port}: {detail}')
-        notes.append(f'hub HTTP {port}: started pid {p.pid} in {d}')
-    return notes

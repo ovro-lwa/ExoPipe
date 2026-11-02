@@ -10,7 +10,7 @@ Modules (each ports named production launcher logic; the production file:line is
   views.py          the per-Stokes catalogue views and unions (ports of the launchers' heredocs; D9 residual option)
   exclusion_gate.py the serve-time exclusion gate for every tier (tier row keyers + core.exclusions; in-place snapshot gate)
   journals.py       judgement carry (in place), HOLD rule (in process), sub-LST journal copy / swap / append
-  hub.py            review hub registry (locked; in place) and inspection hub
+  hub.py            review hub registry (locked; in place) and its page (render: the port of build_review_hub.py)
   servers.py        replace / twin / restart / stop of review servers and the served_page records
   flow.py           the stages shared by the tiers (test, start, twins, hub, verify), the record chain, the dry-run header
   deep.py, sublst_build.py, snapshot_copy.py   the review pages' stage sequences per tier
