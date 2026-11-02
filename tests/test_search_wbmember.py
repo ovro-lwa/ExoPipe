@@ -1,14 +1,16 @@
 """Wideband member admission (R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION; lib/search/wideband_admission.py and its call in
 lib/search/deep_search.run_deep_cell).
 
-Synthetic: the group membership; the per-Stokes search tier (median + sigma x 1.4826 MAD, inf tested and refused, fewer than min_n
-nights = no refusal, admitted nights tested outside the population); the sanity gates (10x both Stokes, 3x I only, the engine's
+Synthetic: the group membership; the per-Stokes search tier (2.0 x the cell median since 2026-10-30, production exopipe 702dd68 -
+median + 5 x 1.4826 MAD before; inf tested and refused, fewer than min_n nights = no refusal, admitted nights tested outside the
+population); the sanity gates (10x both Stokes, 3x I only, the engine's
 upper-middle median); member_record on a temporary cell (presence from subtracted/, a stale residuals table refuses, gates through
 injected readers, D-ADMIT, B-03 same-state V, products without a beam, the beam gate over the nights the earlier gates leave);
 refusals() judging only the members the image holds (the 18 MHz allowance) and the image's own reasons.
 Engine: the switch, the config key, its environment mapping and parity value, the refusal kind, the V side outside the sanity try.
 Real data (read only, skipped without the production co-add root): 11h Green 2024-12-23 refused in I and V by 59 MHz; 11h Green, 16h
-Red and 13h Red refuse every census night; the review's image cases (04h Red 2024-12-20 incomplete - no 36 MHz; 06h Red 2024-12-24
+Red and 13h Red refuse every census night that stands under today's search tier (the census of 2026-10-23 judged the tier by the
+MAD rule: a night refused only by it stands when the member's rms is above 2 x its cell median); the review's image cases (04h Red 2024-12-20 incomplete - no 36 MHz; 06h Red 2024-12-24
 not refused for its excluded 18 MHz, which the image does not hold; 11h Green 2025-01-23 incomplete - no 46 MHz).
 Run: python tests/test_search_wbmember.py
 """
@@ -29,7 +31,7 @@ T = '/tmp/exopipe3_tests_search_wbmember_%d' % os.getpid()
 PROD_COADD = '/data07/gh/phase3/coadd_sb'
 CENSUS = ('/lustre/gh/main/phase3/refactor_analysis/bright_source_contamination_20261020/wideband_member_qa_20261023/'
           'member_admission.csv')
-P = dict(sigma=5.0, tier_min=5, sanity_x_both=10.0, sanity_x_i=3.0, sanity_min=5, beam_ratio=1.5, beam_min=5)
+P = dict(ratio=2.0, tier_min=5, sanity_x_both=10.0, sanity_x_i=3.0, sanity_min=5, beam_ratio=1.5, beam_min=5)
 FAILS, N = [], [0]
 
 
@@ -70,14 +72,18 @@ def main():
         rows = [dict(date='2025-01-%02d' % i, i_rms_mjy=str(100 + i), v_rms_mjy=str(50 + (i % 3))) for i in range(1, 11)]
         rows.append(dict(date='2025-01-20', i_rms_mjy='900', v_rms_mjy='51'))
         rows.append(dict(date='2025-01-21', i_rms_mjy='inf', v_rms_mjy='nan'))
-        tf = W.tier_failures(rows, 5.0, 5)
+        tf = W.tier_failures(rows, 2.0, 5)
         check('tier: the outlier and inf are refused in I only; nan never', set(tf['I']) == {'2025-01-20', '2025-01-21'} and tf['V'] == {}, tf)
         import numpy as np
         v = np.array([float(r['i_rms_mjy']) for r in rows[:11]])
-        thr = float(np.median(v) + 5.0 * 1.4826 * np.median(np.abs(v - np.median(v))))
-        check('tier: threshold = np.median + 5 x 1.4826 MAD (the engine\'s)', abs(tf['I']['2025-01-20'][1] - thr) < 1e-9)
-        check('tier: fewer than min_n finite nights refuses nothing', W.tier_failures(rows[:3] + rows[10:12], 5.0, 5) == {'I': {}, 'V': {}})
-        tfa = W.tier_failures(rows[:11], 5.0, 5, extra={'I': {'adm': 950.0}})
+        thr = float(2.0 * np.median(v))
+        check('tier: threshold = 2.0 x np.median (the engine\'s SEARCH_TIER_RATIO x _med, production exopipe 702dd68)',
+              tf['I']['2025-01-20'][1] == thr)
+        ev = [dict(date='e%d' % i, i_rms_mjy=str(x), v_rms_mjy='1') for i, x in enumerate((10, 20, 30, 40, 50, 1000))]
+        check('tier: an even count\'s median is the mean of the middle two, as np.median (threshold 70, not 80)',
+              W.tier_failures(ev, 2.0, 5)['I'] == {'e5': (1000.0, 70.0)}, W.tier_failures(ev, 2.0, 5))
+        check('tier: fewer than min_n finite nights refuses nothing', W.tier_failures(rows[:3] + rows[10:12], 2.0, 5) == {'I': {}, 'V': {}})
+        tfa = W.tier_failures(rows[:11], 2.0, 5, extra={'I': {'adm': 950.0}})
         check('tier: an admitted night is tested against the record\'s threshold, not in it', 'adm' in tfa['I'] and tfa['I']['adm'][1] == thr)
         # ---- sanity
         wr = [dict(date='d%02d' % i, qa3_rms_mjy=str(100 + i)) for i in range(9)] + [dict(date='big', qa3_rms_mjy='2000'),
@@ -218,14 +224,44 @@ def main():
             check('real 06h Red 2024-12-24: the excluded 18 MHz is not in the image - not refused for it',
                   not any(m == '18MHz' for k, v in ref.items() for m, _ in v if k[0] == '2024-12-24'), ref)
             if os.path.exists(CENSUS):
+                import re
+                import numpy as np
+
+                def tier_fails(lst, m, st, night):
+                    # today's search tier on the member's own table, independently of the module: the night's stage-1 rms of that
+                    # Stokes above 2.0 x numpy's median of the cell's positive finite values (at least 5; production 702dd68)
+                    rows_m = list(csv.DictReader(open(os.path.join(PROD_COADD, '%s_%s' % (lst, m), 'residuals_provisional.csv'))))
+                    col = 'i_rms_mjy' if st == 'I' else 'v_rms_mjy'
+                    vals = {r['date']: float(r[col]) for r in rows_m if r.get(col) not in (None, '', 'nan')}
+                    pop = [x for x in vals.values() if np.isfinite(x) and x > 0]
+                    return len(pop) >= 5 and vals.get(night, 0) > 2.0 * float(np.median(pop))
+
+                def stands(r):
+                    # a census refusal stands when a failing member other than 18 MHz fails a gate other than the search tier, or
+                    # still fails the search tier under today's rule (the census of 2026-10-23 judged it by the MAD rule)
+                    for seg in r['reasons'].split(' | '):
+                        m, _, rs = seg.partition(': ')
+                        kinds = {x.strip() for x in re.sub(r'\([^)]*\)', '', rs).split(',')}
+                        if m != '18MHz' and (kinds - {'search tier'} or tier_fails(r['lst'], m, r['stokes'], r['date'])):
+                            return True
+                    return False
                 for lst, scope in (('11h', 'Green'), ('16h', 'Red'), ('13h', 'Red')):
                     rows_ = [r for r in csv.DictReader(open(CENSUS)) if r['lst'] == lst and r['group'] == scope]
                     # the census (2026-10-23 morning) judged 18 MHz like the other members; the 18 MHz exception keeps a night whose
                     # ONLY failing member is 18 MHz (Gregg 2026-10-23 "No! The one exception to the exclusion rule is 18 MHz")
-                    cen = {(r['date'], r['stokes']) for r in rows_ if r['failing_members'] != '18MHz'}
+                    cen = {(r['date'], r['stokes']) for r in rows_ if r['failing_members'] != '18MHz' and stands(r)}
+                    freed = {(r['date'], r['stokes']): set(r['failing_members'].split(';')) for r in rows_
+                             if r['failing_members'] != '18MHz' and not stands(r)}
                     only18 = {(r['date'], r['stokes']) for r in rows_ if r['failing_members'] == '18MHz'}
                     ref = cell_refusals(lst, scope, sorted({r['date'] for r in rows_}))
-                    check('real %s %s: every census refusal is refused (18 MHz-only failures excepted)' % (lst, scope), cen <= set(ref), sorted(cen - set(ref)))
+                    print('      real %s %s: census refusals %d, standing under the 2 x median search tier %d, freed by it %s'
+                          % (lst, scope, len(cen) + len(freed), len(cen), sorted(freed)))
+                    check('real %s %s: every census refusal that stands under the 2 x median search tier is refused (18 MHz-only '
+                          'failures excepted)' % (lst, scope), cen <= set(ref), sorted(cen - set(ref)))
+                    check('real %s %s: a census night the 2 x median search tier frees is not refused for the tier by its census '
+                          'members' % (lst, scope),
+                          not any(m_ in ms and r_.startswith('search tier') for k, ms in freed.items() for m_, r_ in ref.get(k, [])),
+                          {k: ref.get(k) for k in freed if k in ref})
                     check('real %s %s: no night whose only failing member is 18 MHz is refused' % (lst, scope), not (only18 & set(ref)), sorted(only18 & set(ref)))
         else:
             print('SKIP real-data checks (no %s)' % PROD_COADD)

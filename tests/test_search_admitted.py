@@ -542,7 +542,7 @@ def test_engine_source():
     check('the engine applies each rule at its gate', not miss, miss)
     # order: the median / threshold is taken BEFORE the admitted night's value joins the lookup
     i_med, i_wr = src.find('_med = _fin[len(_fin) // 2]'), src.find("_wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}")
-    i_thr, i_rm = src.find('_thr = _med + SEARCH_TIER_SIGMA * _mad'), src.find("_rm = {**_rm, **_ADS.values(")
+    i_thr, i_rm = src.find('_thr = SEARCH_TIER_RATIO * _med'), src.find("_rm = {**_rm, **_ADS.values(")   # 2.0 x the median (702dd68)
     check('an admitted night\'s value joins the lookup after the population\'s median / threshold is taken (it never moves '
           'them)', 0 < i_med < i_wr and 0 < i_thr < i_rm, (i_med, i_wr, i_thr, i_rm))
     from exopipe.phase3.lib.frames import deep_seam

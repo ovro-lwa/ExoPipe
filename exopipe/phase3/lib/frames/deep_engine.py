@@ -7,7 +7,7 @@ which the search owner adds as one reviewed commit, byte-neutral for the default
 proposed edit and the proof). While the keyword is absent every residuals unit REFUSES with gate 'engine-seam'.
 
 Process model (required, spec 7.2): the engine reads its environment at import (MIN_EPOCHS, NPROC_RESID, _STREAM,
-_STRIATION_OFF, _REFINE_OFF, SEARCH_TIER_SIGMA, WORKROOT) and mutates globals and os.environ at call time, so every unit
+_STRIATION_OFF, _REFINE_OFF, SEARCH_TIER_RATIO, WORKROOT) and mutates globals and os.environ at call time, so every unit
 runs in its own child, started with ``core.legacy.run`` (the one child runner: site interpreter, inherited P3_* cleared,
 parity guard, child code fingerprint into the unit record): ``python -u -m exopipe.phase3.lib.frames.deep_child SPEC.json``
 with cwd = this worktree and the environment built here from config (``child_env``). The child's output is the
@@ -43,7 +43,7 @@ VALUE_KEYS = (
     ('striation_off_battery', 'STRIATION_OFF_BATTERY', 'env'), ('streaming', 'STREAMING', 'env'),
     ('nproc_resid', 'NPROC_RESID', 'env'), ('min_epochs', 'MIN_EPOCHS', 'env'),
     ('sigstack_min_epochs', 'SIGMA_STACK_MIN_EPOCHS', 'env'), ('sanity_i_x', 'SANITY_X', 'env'),
-    ('search_tier_sigma', 'SEARCH_TIER_SIGMA', 'env'), ('beam_gate_ratio', 'BEAM_GATE_RATIO', 'env'),
+    ('search_tier_ratio', 'SEARCH_TIER_RATIO', 'env'), ('beam_gate_ratio', 'BEAM_GATE_RATIO', 'env'),
     ('sanity_min_nights', 'SANITY_MIN_NIGHTS', 'env'), ('search_tier_min', 'SEARCH_TIER_MIN', 'env'),
     ('beam_gate_min_nights', 'BEAM_GATE_MIN_NIGHTS', 'env'),
     ('beam_gate_on', 'BEAM_GATE_ON', 'env'), ('flow_xla_mem_fraction', 'FLOW_XLA_MEM_FRACTION', 'env'),
@@ -264,7 +264,7 @@ def child_env(spec, cfg=None):
     if not v['beam_gate_on']:
         s['P3_BEAM_GATE_OFF'] = '1'
     s['P3_SANITY_I_X'] = repr(v['sanity_i_x'])
-    s['P3_SEARCH_TIER_SIGMA'] = repr(v['search_tier_sigma'])
+    s['P3_SEARCH_TIER_RATIO'] = repr(v['search_tier_ratio'])     # 2.0 x the cell median (production exopipe 702dd68, 2026-10-30)
     # the cell-median gates' minimum counts (Gregg 2026-10-14: 5 kept, a skip counted; deep_search.py:82-84), as the search
     # step passes them (deep_step.engine_env, tier_sublst.engine_env)
     s['P3_SANITY_MIN_NIGHTS'] = str(int(v['sanity_min_nights']))

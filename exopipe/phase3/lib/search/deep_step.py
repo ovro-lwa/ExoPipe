@@ -374,7 +374,7 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
            'P3_DEEP_MIN_ELEVATION': repr(float(sd.ELEVATION_FLOOR_DEG)), 'P3_DEEP_MIN_EPOCHS': str(int(sd.MIN_EPOCHS)),
            'P3_MIN_EPOCHS': str(int(sd.SIGMA_STACK_MIN_EPOCHS)), 'P3_SIZE_FLOOR_BEAMS': repr(float(sd.SIZE_FLOOR_BEAMS)),
            'P3_AXIS_REMOVE': repr(float(sd.AXIS_REMOVE)), 'P3_SANITY_I_X': repr(float(sd.SANITY_X)),
-           'P3_SEARCH_TIER_SIGMA': repr(float(sd.SEARCH_TIER_SIGMA)), 'P3_WIDEBAND_MEMBER_ADMISSION': '1' if sd.WIDEBAND_MEMBER_ADMISSION else '0',
+           'P3_SEARCH_TIER_RATIO': repr(float(sd.SEARCH_TIER_RATIO)), 'P3_WIDEBAND_MEMBER_ADMISSION': '1' if sd.WIDEBAND_MEMBER_ADMISSION else '0',
            'P3_BEAM_GATE_RATIO': repr(float(sd.BEAM_GATE_RATIO)),
            'P3_SANITY_MIN_NIGHTS': str(int(sd.SANITY_MIN_NIGHTS)), 'P3_SEARCH_TIER_MIN': str(int(sd.SEARCH_TIER_MIN)),
            'P3_BEAM_GATE_MIN_NIGHTS': str(int(sd.BEAM_GATE_MIN_NIGHTS)),

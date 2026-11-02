@@ -18,8 +18,9 @@ population. Each number is derived from the cell's own records, in the cell dire
                (both Stokes) and the SANITY_X cut (Stokes I). Not recorded: the search's Stokes V sanity population (the V
                frame rms of its searched frames) and its own beam gate - both come from the search frames, so the search
                computes them (slice 6).
-  search_tier  per Stokes, over the stage-1 rms of residuals_provisional.csv: numpy median, 1.4826 x MAD and the threshold at
-               the recorded SEARCH_TIER_SIGMA (deep_search; fewer than SEARCH_TIER_MIN: no gate).
+  search_tier  per Stokes, over the stage-1 rms of residuals_provisional.csv: numpy median, 1.4826 x MAD and the threshold =
+               the recorded SEARCH_TIER_RATIO x the median (deep_search; Gregg 2026-10-30, production exopipe 702dd68 - version
+               2 records held SEARCH_TIER_SIGMA and median + SIGMA x MAD; fewer than SEARCH_TIER_MIN: no gate).
 basis: 'build' - written by the masters build when masters_build.WRITE_BUILD_STATS is True (ruled; production False writes
 nothing); 'stage' - written later by `masters --tier deep --stages build-stats` from a built cell's records. Sources are
 relative to the cell directory, so the record stays valid where install copies it. Content test (class build_stats): the
@@ -39,7 +40,8 @@ import math
 import os
 
 FILE = 'build_stats.json'
-VERSION = 2
+VERSION = 3                    # 3 (2026-11-02): the search tier's setting is SEARCH_TIER_RATIO (its threshold ratio x median);
+                               # version 2 had SEARCH_TIER_SIGMA - no version-2 record exists on disk (checked 2026-11-02)
 KEYS = ('version', 'cell', 'basis', 'sources', 'settings', 'nights', 'stage2', 'stage2_recorded_thr', 'beam_gate',
         'sanity', 'search_tier')
 X_DISCARD = 10.0               # deep_search's qa3 discard, '_wr.get(_kd(d), 0) > 10.0 * _med' (drift test)
@@ -47,7 +49,7 @@ STAGE2_MIN = 5                 # coadd.detect_outliers_mad: 'if len(valid) < 5'
 BUILD_NIGHTS = 'residuals_provisional.csv'
 WEIGHTS = os.path.join('coadd_final', 'weights.csv')
 SETTINGS = ('OUTLIER_SIGMA', 'LOW_OUTLIER_SIGMA', 'BEAM_GATE_RATIO', 'BEAM_GATE_MIN_AREAS', 'SANITY_X', 'SANITY_MIN_NIGHTS',
-            'X_DISCARD', 'SEARCH_TIER_SIGMA', 'SEARCH_TIER_MIN')
+            'X_DISCARD', 'SEARCH_TIER_RATIO', 'SEARCH_TIER_MIN')
 
 
 def _f(x):
@@ -181,7 +183,9 @@ def sanity_stats(weights_rows, min_nights):
     return dict(n=len(vals), gate=len(vals) >= min_nights, qa3_median=vals[len(vals) // 2])
 
 
-def search_tier_stats(prov_rows, sigma, min_n):
+def search_tier_stats(prov_rows, ratio, min_n):
+    """The search tier's population per Stokes (n, numpy median, 1.4826 x MAD) and, with at least min_n values, the threshold
+    ratio x the median - deep_search's '_thr = SEARCH_TIER_RATIO * _med' (Gregg 2026-10-30)."""
     out = {}
     for st, col in (('I', 'i_rms_mjy'), ('V', 'v_rms_mjy')):
         vals = sorted(x for x in (_f(r.get(col)) for r in prov_rows if r.get(col) not in (None, '', 'nan'))
@@ -193,7 +197,7 @@ def search_tier_stats(prov_rows, sigma, min_n):
         mad = _median([abs(x - med) for x in vals]) * 1.4826
         out[st] = dict(n=len(vals), gate=len(vals) >= min_n, median=med, mad=mad)
         if out[st]['gate']:
-            out[st]['thr'] = med + sigma * mad
+            out[st]['thr'] = ratio * med
     return out
 
 
@@ -219,7 +223,7 @@ def _derive(cell_dir, lst, scope, co, S):
                 stage2_recorded_thr=recorded_thresholds(s2_rows),
                 beam_gate=dict(bs, nights=bn, recorded_outliers=rec_out, agree=(bs['outliers'] == rec_out)),
                 sanity=sanity_stats(w_rows, S['SANITY_MIN_NIGHTS']),
-                search_tier=search_tier_stats(prov_rows, S['SEARCH_TIER_SIGMA'], S['SEARCH_TIER_MIN']))
+                search_tier=search_tier_stats(prov_rows, S['SEARCH_TIER_RATIO'], S['SEARCH_TIER_MIN']))
 
 
 def settings_in_force(co, cfg):
@@ -228,7 +232,7 @@ def settings_in_force(co, cfg):
     return dict(OUTLIER_SIGMA=float(co.OUTLIER_SIGMA), LOW_OUTLIER_SIGMA=float(co.LOW_OUTLIER_SIGMA),
                 BEAM_GATE_RATIO=float(b.BEAM_GATE_RATIO), BEAM_GATE_MIN_AREAS=int(b.BEAM_GATE_MIN_AREAS),
                 SANITY_X=float(d.SANITY_X), SANITY_MIN_NIGHTS=int(d.SANITY_MIN_NIGHTS), X_DISCARD=X_DISCARD,
-                SEARCH_TIER_SIGMA=float(d.SEARCH_TIER_SIGMA), SEARCH_TIER_MIN=int(d.SEARCH_TIER_MIN))
+                SEARCH_TIER_RATIO=float(d.SEARCH_TIER_RATIO), SEARCH_TIER_MIN=int(d.SEARCH_TIER_MIN))
 
 
 def build_outlier_sigma(rows, in_force):

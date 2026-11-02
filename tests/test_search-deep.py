@@ -64,10 +64,10 @@ def test_config():
     except ConfigRefusal:
         check('engine literal search_detect.MSTRUCT_K refuses --set (PROTECTED_KEYS)', True)
     CFG.authorize(out=TMP)
-    CFG.set('search_detect.SEARCH_TIER_SIGMA', '4.0')          # RULED: allowed into a non-production --out
-    check('ruled key overridden into a non-production out', CFG.search_detect.SEARCH_TIER_SIGMA == 4.0)
+    CFG.set('search_detect.SEARCH_TIER_RATIO', '2.5')          # RULED: allowed into a non-production --out
+    check('ruled key overridden into a non-production out', CFG.search_detect.SEARCH_TIER_RATIO == 2.5)
     CFG.reset()
-    check('override reset', CFG.search_detect.SEARCH_TIER_SIGMA == 5.0)
+    check('override reset', CFG.search_detect.SEARCH_TIER_RATIO == 2.0)
     for sec in ('search', 'search_inputs', 'search_detect', 'search_tables', 'search_fpgate', 'search_fit', 'search_run'):
         bad = [k for k in getattr(getattr(CFG, sec), 'PROTECTED_KEYS', ()) if not hasattr(getattr(CFG, sec), k)]
         check(f'{sec}.PROTECTED_KEYS name existing keys', not bad, bad)

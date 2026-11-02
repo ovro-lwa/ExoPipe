@@ -64,13 +64,21 @@ def known_veto_reason(v):
 
 # refusal kinds: (column count, which searches the refusal removes: 'both' | 'I' | 'V' | 'row' = the Stokes in column 4)
 REFUSAL_KINDS = {'nightimage': (4, 'both'), 'epochgate': (4, 'both'), 'sanity': (6, 'both'), 'sanity_I': (6, 'I'),
-                 'sanity_V': (6, 'V'), 'searchtier': (7, 'row'), 'stale_input': (5, 'both'), 'beam': (6, 'both'),
+                 'sanity_V': (6, 'V'),
+                 'searchtier': (8, 'row'),  # lst, scope, date, Stokes, stage-1 rms, threshold, rule, attempt (the rule since
+                                            # 2026-10-30, production exopipe 702dd68: 'ratio2xmedian'; REFUSAL_EARLIER_NCOL)
+                 'stale_input': (5, 'both'), 'beam': (6, 'both'),
                  'extraction_I': (7, 'I'), 'extraction_V': (7, 'V'),
                  'daytime': (6, 'row'),     # B-02 step 3a: the daytime gate per frame (lst, scope, date, Stokes, reason, attempt)
                  'wbmember': (7, 'row'),    # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION: a wideband epoch whose member
                                             # subband fails the admission in that Stokes (lst, scope, date, Stokes, member, reason, attempt;
                                             # one row per failing member)
                  'datadecisions': (4, 'both')}   # B-02 step 3c: the nights data_decisions excluded (lst, scope, date, attempt)
+# kinds whose rows written before a format change have another column count (valid still: the attempt tag stays the last
+# column): searchtier rows before 2026-10-30 have no rule column (7). A file may hold both forms - a later search appends to
+# its attempt's file, and production's drop-patched attempts of 2026-10-30 ('...stdrop') carry the old rows with the new ones
+REFUSAL_EARLIER_NCOL = {'searchtier': 7}
+_SEARCHTIER_RULE = re.compile(r'^ratio[0-9.eE+-]+xmedian$')   # deep_search: f'ratio{SEARCH_TIER_RATIO:g}xmedian'
 # kinds that record, not refuse (the nights data_decisions excluded when the search ran): refused_dates leaves them out, so
 # the gate_ledger and image_ledger content tests do not fail an append that searched a night its base recorded, and the
 # search step's unaccounted_epochs judges its own preflight's admitted nights only by real refusals (it runs at search
@@ -453,9 +461,12 @@ def one_row_per_searched_epoch(path, stokes=None, cell=None, tier='deep', **ctx)
 # ---- refusal record ---------------------------------------------------------------------------------------------------------
 @content_test('refusal_record')
 def parses(path, **ctx):
-    """refusals/<lst>_<scope>_<kind>_excluded.csv (no header): every row has its kind's column count, the file's lst/scope, a
-    date of the cell's epoch grammar; the refused dates have no gate-ledger row of the Stokes the refusal removes (not the
-    RECORD_ONLY_KINDS records: an append may search a night its base recorded, once data_decisions admits it)."""
+    """refusals/<lst>_<scope>_<kind>_excluded.csv (no header): every row has its kind's column count (or, for a kind in
+    REFUSAL_EARLIER_NCOL, the count of its rows written before the format change), the file's lst/scope, a date of the cell's
+    epoch grammar; a searchtier row's stage-1 rms is above its threshold (as written, 0.1 mJy) and its rule, when it has one,
+    is 'ratio<x>xmedian' (production exopipe 702dd68); the refused dates have no gate-ledger row of the Stokes the refusal
+    removes (not the RECORD_ONLY_KINDS records: an append may search a night its base recorded, once data_decisions admits
+    it)."""
     m = _REF.match(os.path.basename(path))
     if not m:
         return False, None, f'name is not <lst>_<scope>_<kind>_excluded.csv: {os.path.basename(path)}'
@@ -463,12 +474,14 @@ def parses(path, **ctx):
     if kind not in REFUSAL_KINDS:
         return False, None, f'unknown refusal kind {kind!r} (known: {", ".join(sorted(REFUSAL_KINDS))})'
     ncol, which = REFUSAL_KINDS[kind]
+    ncols = {ncol} | ({REFUSAL_EARLIER_NCOL[kind]} if kind in REFUSAL_EARLIER_NCOL else set())
     with open(path, newline='') as f:
         rows = [r for r in csv.reader(f) if r]
     probs = []
     for i, r in enumerate(rows):
-        if len(r) != ncol:
-            probs.append(f'row {i + 1}: {len(r)} columns, kind {kind} has {ncol}')
+        if len(r) not in ncols:
+            probs.append(f'row {i + 1}: {len(r)} columns, kind {kind} has {ncol}'
+                         + (f' ({REFUSAL_EARLIER_NCOL[kind]} in its earlier rows)' if kind in REFUSAL_EARLIER_NCOL else ''))
             continue
         if (r[0], r[1]) != (m['lst'], m['scope']):
             probs.append(f'row {i + 1}: lst/scope {r[0]}/{r[1]} != file {m["lst"]}/{m["scope"]}')
@@ -476,6 +489,11 @@ def parses(path, **ctx):
             probs.append(f'row {i + 1}: bad date {r[2]!r}')
         if which == 'row' and r[3] not in ('I', 'V'):
             probs.append(f'row {i + 1}: Stokes {r[3]!r}')
+        if kind == 'searchtier':
+            if not _f(r[4]) >= _f(r[5]):
+                probs.append(f'row {i + 1}: stage-1 rms {r[4]!r} is not above its threshold {r[5]!r}')
+            if len(r) == ncol and not _SEARCHTIER_RULE.match(r[6]):
+                probs.append(f'row {i + 1}: rule {r[6]!r} is not ratio<x>xmedian')
     if not rows:
         probs.append('empty refusal ledger (the engine opens one only to write a refusal)')
     rd = run_dir_of(path)
@@ -483,7 +501,7 @@ def parses(path, **ctx):
     if led and os.path.exists(led):
         lrows = _rows(led)[1]
         for r in rows:
-            if len(r) != ncol:
+            if len(r) not in ncols:
                 continue
             sts = ('I', 'V') if which == 'both' else ((r[3],) if which == 'row' else (which,))
             n = sum(1 for x in lrows if x['date'] == r[2] and x['stokes'] in sts)

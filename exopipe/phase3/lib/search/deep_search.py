@@ -219,7 +219,9 @@ REFUSAL_COLUMNS = (
     ('_epochgate_excluded.csv', 'lst,scope,date,attempt'),
     ('_sanity_I_excluded.csv', 'lst,scope,date,qa3_rms_mjy,cell_median_qa3_rms_mjy,attempt'),
     ('_sanity_excluded.csv', 'lst,scope,date,qa3_rms_mjy,cell_median_qa3_rms_mjy,attempt'),
-    ('_searchtier_excluded.csv', 'lst,scope,date,stokes,stage1_rms,threshold,attempt'),
+    ('_searchtier_excluded.csv', 'lst,scope,date,stokes,stage1_rms,threshold,rule,attempt'),   # rule 'ratio2xmedian' since 2026-10-30
+                                                                             # (production 702dd68); rows written before have no rule
+                                                                             # column (7) - the attempt tag is the last column in both
     ('_wbmember_excluded.csv', 'lst,scope,date,stokes,member,reason,attempt'),   # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION: one row per (member or image, reason)
     ('_stale_input_excluded.csv', 'lst,scope,date,why,attempt'),
     ('_beam_excluded.csv', 'lst,scope,date,beam_area_over_cell_median,threshold,attempt'),
@@ -606,6 +608,7 @@ _atexit.register(_cleanup_spills)
 _STRIATION_OFF = os.environ.get('P3_STRIATION_OFF') == '1'   # battery variable (Gregg 2026-09-08); production default ON
 _REFINE_OFF = os.environ.get('P3_REFINE_OFF') == '1'
 WIDEBAND_MEMBER_ADMISSION = os.environ.get('P3_WIDEBAND_MEMBER_ADMISSION', '1') == '1'   # R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION
+SEARCH_TIER_RATIO = float(os.environ.get('P3_SEARCH_TIER_RATIO', '2.0'))   # GREGG 2026-10-30 ("Apply the best correct statistical tool that keeps EQ Peg's burst"; "Do the faster option"): an epoch is refused from the S search when its stage-1 S rms > RATIO x the cell's median (replaces median + SEARCH_TIER_SIGMA x MAD: that threshold followed the other nights' scatter - 21h 2025-08-01 64 MHz searched at 106.5 mJy, 69 MHz refused at 108.2 mJy, EQ Peg's -8.4 sigma burst)
 SEARCH_TIER_SIGMA = float(os.environ.get('P3_SEARCH_TIER_SIGMA', '5.0'))   # R-GC10 Layer-2 search tier: 4.0 (Gregg 2026-09-09) -> 5.0 (Gregg 2026-09-13 "Change to MAD 5 for exclusion from transient search")         # battery variable: no per-frame x2 flow refinement (night flow only)
 
 
@@ -1462,7 +1465,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                       f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms (needs {SEARCH_TIER_MIN})')
                 continue
             _med = float(np.median(_v)); _mad = float(np.median(np.abs(_v - _med))) * 1.4826
-            _thr = _med + SEARCH_TIER_SIGMA * _mad
+            _thr = SEARCH_TIER_RATIO * _med                # Gregg 2026-10-30 (was _med + SEARCH_TIER_SIGMA * _mad)
             _rm = {**_rm, **_ADS.values(_adm, f'stage2_{_st.lower()}_rms_mjy')}   # WAVE2 D-ADMIT: an admitted night's own value, after
                                                                            # the threshold (the same provisional-stage metric)
             for d in dates:
@@ -1478,10 +1481,12 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _tier:
             with open(f'{_refdir}/{lst}_{scope}_searchtier_excluded.csv', 'a') as _sf:
                 for d, _st, _r, _thr in _tier:
-                    _sf.write(f'{lst},{scope},{d},{_st},{_r:.1f},{_thr:.1f},{_attempt}\n')
+                    # the rule before the attempt tag: readers take the LAST column as the tag (sublst_deep_omission.py, photometry_tier_
+                    # cutouts), others read columns 0-5 (tier_rule3_*, build_qa_table, verify_tenmin_generation) - 2026-10-30
+                    _sf.write(f'{lst},{scope},{d},{_st},{_r:.1f},{_thr:.1f},ratio{SEARCH_TIER_RATIO:g}xmedian,{_attempt}\n')
             print(f'  {lst} {scope}: SEARCH-TIER GATE (per Stokes) - I search refuses {len(_skipI_tier)} epoch(s) {sorted(_skipI_tier)}; '
                   f'V search refuses {len(_skipV_tier)} epoch(s) {sorted(_skipV_tier)} '
-                  f'(stage-1 rms > median + {SEARCH_TIER_SIGMA:.0f} x MAD of that Stokes)')
+                  f'(stage-1 rms > {SEARCH_TIER_RATIO:g} x the cell median of that Stokes)')
             # (an epoch refused by both Stokes stays in dates: its frames are still made; only its search is skipped)
     except FileNotFoundError as _e:
         raise RuntimeError(f'{lst} {scope}: search-tier gate input missing ({_e}); REFUSING')
@@ -1495,7 +1500,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if cadence == 'deep' and WIDEBAND_MEMBER_ADMISSION and scope in _WBA.GROUPS:
         from exopipe.common.phase2_config import SUBBAND_BANDS as _SBB
         from exopipe.phase3.lib.masters import night_image_gate as _NGm, epoch_gate as _EGm
-        _wbp = dict(sigma=SEARCH_TIER_SIGMA, tier_min=SEARCH_TIER_MIN, sanity_x_both=10.0, sanity_x_i=SANITY_I_X,
+        _wbp = dict(ratio=SEARCH_TIER_RATIO, tier_min=SEARCH_TIER_MIN, sanity_x_both=10.0, sanity_x_i=SANITY_I_X,
                     sanity_min=SANITY_MIN_NIGHTS, beam_ratio=float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')),
                     beam_min=(10 ** 9 if os.environ.get('P3_BEAM_GATE_OFF') == '1' else BEAM_GATE_MIN_NIGHTS))
         _wbrd = dict(night_failed=_NGm.failed_dates, epoch_failed=_EGm.failed_dates, same_state_v=_same_state_refused_v,
