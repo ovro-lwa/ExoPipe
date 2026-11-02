@@ -201,7 +201,8 @@ def test_wiring():
     import inspect
     src = inspect.getsource(DS.build)
     check('the build writes the record (basis build) only under masters_build.WRITE_BUILD_STATS, after the co-add, before the '
-          'outputs are tested', 0 < src.index('if _cfg().masters_build.WRITE_BUILD_STATS:') < src.index('for p, cls in _build_outputs(')
+          'outputs are tested', 0 < src.index('if _cfg().masters_build.WRITE_BUILD_STATS:') < src.index('register_build_outputs(')
+          and 'for p, cls in _build_outputs(' in inspect.getsource(DS.register_build_outputs)
           and "co, _cfg(), 'build')" in src and 'coadd_final/build_stats.json' in DS.BUILD_PRODUCT_PATHS)
     prod = open(os.path.join(REPO, 'exopipe/phase3/parity/production_20261013.cfg')).read()
     check('production values write no record (parity file)', 'masters_build.WRITE_BUILD_STATS = False' in prod
