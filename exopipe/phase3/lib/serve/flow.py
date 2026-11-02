@@ -71,6 +71,31 @@ def require_done(run, unit, what):
 
 
 # ---- test -----------------------------------------------------------------------------------------------------------
+def mchain_refusal(plan, pg, U, state):
+    """Why page ``pg`` cannot be served with its MULTIPLES CHAIN (serve.PAGES mchain_queue / mchain_catalog: the server's
+    --mchain-queue / --mchain-catalog-dir, exopipe_ops 4c42f91, Gregg 2026-10-27), or None:
+      - the page whose queue IS the chain (the tier's multiples page of the Stokes) was refused in this serve for any reason
+        but NO-INPUT (no multi-integration source: its queue is written, empty - an empty chain is served). Production's
+        deep serve fails there (p3s3_serve_multiples.sh exits 1: no fork :14, empty queue :134, fork content test :137;
+        p3s3_serve_stokes.sh ends with it), and a page re-served now would show the chain this serve refused - so the page
+        keeps its current server;
+      - a chain file is absent: the server reads both at start (classify_transients.read_queue / load_sources) and would
+        not start after its old server was stopped."""
+    mq, mc = pg.at('mchain_queue', U), pg.at('mchain_catalog', U)
+    if not mq and not mc:
+        return None
+    src = next((o for o in plan.all_pages if o.key != pg.key and o.c.get('queue') == pg.c['mchain_queue']), None) \
+        if pg.c.get('mchain_queue') else None
+    why = state['refused'].get(src.key) if src is not None else None
+    if why and not str(why).startswith('NO-INPUT: '):
+        return (f'multiples chain: page {src.key}, whose queue is this page\'s --mchain-queue, was refused in this serve '
+                f'({str(why)[:300]}) - page {pg.key} not served (its current server keeps running)')
+    for flag, p, ok in (('--mchain-queue', mq, os.path.isfile), ('--mchain-catalog-dir', mc, os.path.isdir)):
+        if p and not ok(p):
+            return f'multiples chain: {flag} {p} is absent - page {pg.key} not served (its server reads it at start)'
+    return None
+
+
 def test_stage(run, plan, state, unit_name, root=None, probe=True):
     """G1 (non-empty queue per page), G17 (serve-time exclusion gate), the content tests of each page's queue and view
     again, and the App probe (expected index sources, 0 unexplained drops) of every selected page."""
@@ -81,16 +106,27 @@ def test_stage(run, plan, state, unit_name, root=None, probe=True):
         for pg in plan.pages:
             if pg.key in state['refused']:
                 continue
-            q, cat = pg.at('queue', U), pg.at('catalog', U)
+            q = pg.at('queue', U)
             if not os.path.exists(q) or not common.has_j_line(q):
                 state['refused'][pg.key] = f'G1 empty queue: {q} has no line starting J - not served'
                 u.check('G1_nonempty_queue', True, value=0, detail=f'page {pg.key}: refused (empty queue)', path=q)
                 u.note(state['refused'][pg.key])
+        for pg in plan.pages:              # after every G1: a page's multiples chain is the queue of another page
+            if pg.key in state['refused']:
+                continue
+            q, cat = pg.at('queue', U), pg.at('catalog', U)
+            why = mchain_refusal(plan, pg, U, state)
+            if why:
+                state['refused'][pg.key] = why
+                u.note(why)
                 continue
             u.add_input(q)
-            for f in sorted(os.listdir(cat)) if os.path.isdir(cat) else []:
-                if f.endswith('.csv'):
-                    u.add_input(os.path.join(cat, f))
+            for d in (cat, pg.at('mchain_catalog', U)):
+                for f in sorted(os.listdir(d)) if d and os.path.isdir(d) else []:
+                    if f.endswith('.csv'):
+                        u.add_input(os.path.join(d, f))
+            if pg.at('mchain_queue', U):
+                u.add_input(pg.at('mchain_queue', U))
             gated.append(pg)
             if plan.tier != 'snapshot':
                 u.add_output(q, 'served_queue', tier=plan.tier)
@@ -176,6 +212,8 @@ def start_stage(run, plan, state, root=None, utc=None):
             notes = []
             q = pg.at('queue', root or plan.U)
             u.add_input(q)
+            if pg.at('mchain_queue', root or plan.U):
+                u.add_input(pg.at('mchain_queue', root or plan.U))
             path, rec = servers.replace(plan, pg, utc, root=root, expected=exp, notes=notes)
             for n in notes:
                 u.note(n)
@@ -222,8 +260,8 @@ def hub_stage(run, plan, state, remove=(), utc=None):
         expected = [(s, t, dict(kv.split('=', 1) for kv in kvs)) for s, t, kvs in entries]
         u.add_output(index or reg, 'hub_page', expected=expected)
         if plan.parity:
-            u.note('parity: the hub page is planned (registry.json written under --out; build_review_hub.py hard-codes '
-                   'its directory, spec 12.5)')
+            u.note('parity: the hub registry and page are written under --out by lib/serve/hub (build_review_hub.py '
+                   'hard-codes its directory; hub.render is its page, exopipe_ops 4c42f91)')
         u.add_output(hub.inspection_hub(plan, log_path=plan.log_path, unit=u), 'hub_page')
         for n in hub.ensure_http_servers(plan):
             u.note(n)

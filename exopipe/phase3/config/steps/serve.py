@@ -24,10 +24,10 @@ from exopipe.phase3.config import _Section
 class serve(_Section):
     """exopipe3 serve: review servers (classify_transients.py, run in place), inspection twins, review hub and inspection
     hub, for every tier. Ports, run roots, titles and the per-tier server environment decide what Gregg and the team see.
-    Host names live in the site file (REVIEW_HOST, CHAIN_HOST; the hub tunnel host stays in build_review_hub.py:29 in place)."""
+    Host names live in the site file (REVIEW_HOST, CHAIN_HOST; the hub page prints no tunnel line since exopipe_ops 4c42f91)."""
     # keys no --set / --config can change (DESIGN 11.4; honoured by config/__init__.py)
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'INSPECTION_HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
-                      'OTHER_SERVED_PORTS', 'JUPITER_ROOTS')
+                      'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS')
 
     # ---- served runs (production product roots, from config.paths; PROTECTED) ----------------------------------------
     RUN_ROOT_KEY = {'deep': 'TRANSIENTS_ROOT',        # /data07/gh/phase3/transients; p3s3_serve_stokes.sh:9
@@ -65,14 +65,26 @@ class serve(_Section):
     #            (python -m http.server PORT --bind 127.0.0.1 --directory DIR)
     #   start    'stages' (serve builds and starts it) or 'restart-only' (serve restarts / stops it with its exact argv)
     #   queue, catalog, labels, loc_dir, log: paths relative to the run directory; hub: (Stokes row, hub tier) of the
-    #   registry button (None: tunnel only, registry 'tunnel_extra'); twin: inspection twin port
+    #   registry entry (None: no entry, the ports recorded in the registry's 'tunnel_extra' - which the hub page no longer
+    #   prints, 4c42f91); twin: inspection twin port
+    #   mchain_queue, mchain_catalog: the page's MULTIPLES CHAIN (Gregg 2026-10-27, ledger R-GREGG-20261027-HUB-BOTH-LISTENERS-
+    #   MULTIPLES-CHAIN-FORCED-EVERY-TIER: "the multi-integration sample within each page should be relabeled as 'multiples
+    #   chain' and include the full list of multiples that went through the second chain (no sigma-stack)"), paths relative to
+    #   the run directory: classify_transients.py --mchain-queue (the tier's multiples page queue, in full: the 'multiples
+    #   chain' sample is exactly its identities, those the page's queue does not list join after its own entries) and
+    #   --mchain-catalog-dir (deep only: the multiples fork's own view; identities the page's catalogue does not hold are
+    #   loaded from it, the page's rows win for the others) - exopipe_ops 4c42f91; production passes them on the deep and
+    #   10-minute singles pages (two-port registry p8766/p8768: both, p8787/p8788: the queue;
+    #   IMPL-MULTIPLES-CHAIN-SAMPLE-20261027)
     PAGES = {
         ('deep', 'V'): dict(port=8766, family='review', program='classify', start='stages', stokes='V', kind='single',
                             queue='judgements/queue_p3s3_V.txt', catalog='source_catalogs_V', labels='judgements_V',
+                            mchain_queue='judgements/queue_p3s3_V_multi.txt', mchain_catalog='views/source_catalogs_V_multi',
                             hub=('V', '1-hour'), twin=8796, log='server_V.log'),
                             # p3s3_pass.sh:15-16; p3s3_serve_stokes.sh:79,84; restart_inspection_twin.sh:11
         ('deep', 'I'): dict(port=8768, family='review', program='classify', start='stages', stokes='I', kind='single',
                             queue='judgements/queue_p3s3_I.txt', catalog='source_catalogs_I', labels='judgements_I',
+                            mchain_queue='judgements/queue_p3s3_I_multi.txt', mchain_catalog='views/source_catalogs_I_multi',
                             hub=('I', '1-hour'), twin=8797, log='server_I.log'),
         ('deep', 'V-multi'): dict(port=8772, family='review', program='classify', start='stages', stokes='V', kind='multi',
                                   queue='judgements/queue_p3s3_V_multi.txt', catalog='views/source_catalogs_V_multi',
@@ -92,10 +104,12 @@ class serve(_Section):
                                       kind='single', hub=None, twin=None),   # Run_P3S4_forced
         ('sublst', 'V'): dict(port=8787, family='review', program='classify', start='stages', stokes='V', kind='single',
                               queue='judgements/queue_p3s3_V.txt', catalog='source_catalogs_V', labels='judgements_V',
+                              mchain_queue='judgements/queue_p3s3_V_multi.txt',
                               hub=('V', '10-min'), twin=None, loc_offsets=True, log='server_V.log'),
                               # sublst_cumulative.sh:121-123; sublst_serve.sh:140; ledger 1047
         ('sublst', 'I'): dict(port=8788, family='review', program='classify', start='stages', stokes='I', kind='single',
                               queue='judgements/queue_p3s3_I.txt', catalog='source_catalogs_I', labels='judgements_I',
+                              mchain_queue='judgements/queue_p3s3_I_multi.txt',
                               hub=('I', '10-min'), twin=None, loc_offsets=True, log='server_I.log'),
         ('sublst', 'V-multi'): dict(port=8789, family='review', program='classify', start='stages', stokes='V', kind='multi',
                                     queue='judgements/queue_p3s3_V_multi.txt', catalog='source_catalogs_V_multi',
@@ -228,6 +242,15 @@ class serve(_Section):
                       'sublst': 'new cube-based chain (sub-LST), LSTs: {lsts}',   # sublst_cumulative.sh:70
                       'snapshot': '{label}'}           # snapshot_serve.sh:101
     HUB_REMOVE_TIERS = {'sublst': ('10-min-sublst',)}  # sublst_cumulative.sh:145-150 (the 19h sub-LST buttons, retired)
+    # THE HUB PAGE (Gregg 2026-10-27, R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER; build_review_hub.py,
+    # exopipe_ops 4c42f91, rendered by lib/serve/hub.render): per Stokes row (V on top, I below) one column per tier, left to
+    # right, holding the tier's page (its combined view '<tier>-comb' when live) and its HWJ + 10 pc forced button; below both
+    # rows these links and no other (no multiples / preview / batch buttons, no Round-2 link, no tunnel line). PROTECTED: a
+    # mirror of the in-place page (production hub writes are build_review_hub.py's; the content test compares the page with it)
+    HUB_TIERS = ('1-hour', '10-min', '1-min', '10-sec')   # build_review_hub.py:25 (TIERS)
+    HUB_LINKS = (('Jovian bursts', '/s/jupiter/'), ('Solar system', '/s/planets/'),
+                 ('Data processed: Phase 1 &rarr; 2 &rarr; 3', 'data_processing.html'))   # build_review_hub.py:26-27 (LINKS;
+                                            # the text is HTML: the page prints it as is)
 
     # ---- queues and views -------------------------------------------------------------------------------------------
     DEEP_SINGLES_TIERS = ('wb', 'sb')       # p3s3_serve_stokes.sh:20; p3s3_stokes_queue.py:21
@@ -314,7 +337,9 @@ class serve(_Section):
 
     RULED = {
         'PAGES': ('R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS', 'R-MULTIPLES-OWN-PAGES-8772-8773', 'R-TENMIN-PORTS-8787-V-8788-I',
-                  'R-SNAP-1MIN-OWN-PAGES-PER-STOKES'),
+                  'R-SNAP-1MIN-OWN-PAGES-PER-STOKES', 'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER'),
+        'HUB_TIERS': 'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',
+        'HUB_LINKS': 'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',
         'HUB_PORT': 'R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS',
         'INSPECTION_HUB_PORT': 'R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS',
         'OTHER_SERVED_PORTS': ('R-PORTS-RECLAIMED-CANONICAL-SET-13-PORTS', 'R-GREGG-20261011-KEEP-8767-THRESHOLDS-AT-RERUN'),

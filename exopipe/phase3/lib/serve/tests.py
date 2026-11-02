@@ -521,17 +521,14 @@ def hold_rule(path, **ctx):
 # =====================================================================================================================
 # hub_page
 # =====================================================================================================================
-def _hub_ports(reg):
-    return sorted({reg['round2']['port'], _S().HUB_PORT} | {e['port'] for S_ in 'VI' for e in reg[S_].values()}
-                  | set(reg.get('tunnel_extra', [])))
-
-
 @content_test('hub_page')
 def registry_matches(path, expected=None, **ctx):
-    """Review hub: registry.json well formed (V and I rows, every entry an int port); each served page's entry (ctx
-    expected=[(S, tier, {k: v})]) holds its run, port, generation, served, live=1; index.html (when tested) carries a
-    button for every registry port and the tunnel line of every port (build_review_hub.py:27-70) and says it was
-    generated from registry.json."""
+    """Review hub: registry.json well formed (V and I rows; every entry an int port, or no port and an 'href' - a static
+    site, build_review_hub.py:47); each served page's entry (ctx expected=[(S, tier, {k: v})]) holds its run, port,
+    generation, served, live=1; index.html (when tested) IS the page build_review_hub.py renders from registry.json at
+    its own 'Page generated' time, byte for byte (lib/serve/hub.render, the port of exopipe_ops 4c42f91: per Stokes row
+    and tier the tier's page - the live combined view first - and its forced button, the three links, no tunnel line;
+    Gregg 2026-10-27)."""
     d = os.path.dirname(os.path.abspath(path))
     reg_p = os.path.join(d, 'registry.json')
     if not os.path.exists(reg_p):
@@ -542,9 +539,15 @@ def registry_matches(path, expected=None, **ctx):
         return False, None, f'registry.json unreadable ({e})'
     bad = []
     for S_ in 'VI':
-        for t, e in (reg.get(S_) or {}).items():
-            if not isinstance(e.get('port'), int):
-                bad.append(f'{S_} {t}: port {e.get("port")!r} is not an int')
+        if not isinstance(reg.get(S_), dict):
+            bad.append(f'no Stokes {S_} row')
+            continue
+        for t, e in reg[S_].items():
+            if not isinstance(e, dict):
+                bad.append(f'{S_} {t}: not an entry ({e!r})')
+            elif 'port' in e or not e.get('href'):
+                if not isinstance(e.get('port'), int):
+                    bad.append(f'{S_} {t}: port {e.get("port")!r} is not an int' + ('' if 'port' in e else ' (and no href)'))
     for S_, t, want in expected or ():
         e = (reg.get(S_) or {}).get(t)
         if e is None:
@@ -555,16 +558,21 @@ def registry_matches(path, expected=None, **ctx):
             if e.get(k) != v2:
                 bad.append(f'{S_} {t}: {k}={e.get(k)!r}, expected {v2!r}')
     if os.path.basename(path) == 'index.html':
-        html = open(path).read()
-        for p in _hub_ports(reg):
-            if f'-L {p}:127.0.0.1:{p}' not in html:
-                bad.append(f'tunnel line lacks port {p}')
-        for S_ in 'VI':
-            for t, e in reg[S_].items():
-                if f'href="http://localhost:{e["port"]}/"' not in html:
-                    bad.append(f'no button for {S_} {t} port {e["port"]}')
-        if 'from registry.json (build_review_hub.py)' not in html:
-            bad.append('index.html was not generated from registry.json')
+        from exopipe.phase3.core.record import Refusal
+        from exopipe.phase3.lib.serve import hub
+        page = open(path).read()
+        when = hub.page_generated(page)
+        if when is None:
+            bad.append('index.html was not generated from registry.json (no "Page generated ... from registry.json" note)')
+        else:
+            try:
+                want = hub.render(reg, when)
+            except (Refusal, KeyError, TypeError, AttributeError) as e:
+                want = None
+                bad.append(f'the registry cannot be rendered ({e})')
+            if want is not None and page != want:
+                bad.append('index.html is not the page build_review_hub.py renders from registry.json '
+                           f'(generated {when}): {hub.first_difference(page, want)}')
     return not bad, len(bad), '; '.join(bad[:4]) if bad else 'registry and page consistent'
 
 

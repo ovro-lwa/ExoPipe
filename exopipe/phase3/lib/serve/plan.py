@@ -4,15 +4,19 @@ Production vs parity (DESIGN 11.1; spec serve.md 10): when ``--out`` lies under 
 the plan serves the production run directory itself (only once paths.PRODUCTION_WRITES is True and the cutover is
 approved); otherwise it is a PARITY plan: every file serve writes goes under ``<out>/<tier>/<run name>`` (deep: a mirror of
 the served run, lib/serve/mirror.py; sub-LST: the cumulative build and swap; snapshot and forced pages: a byte copy), the
-hub registry under ``<out>/review_hub`` (planned, not rendered: build_review_hub.py hard-codes its directory, spec 12.5),
+hub registry and page under ``<out>/review_hub`` (written by lib/serve/hub: build_review_hub.py hard-codes its directory),
 the inspection hub under ``<out>/inspection_hub``, the shared lists under ``<out>/review_lists``, and every port is bound at
 port + ``--port-offset`` (>= serve.PARITY_PORT_OFFSET_MIN; the cross-tier link strings keep the production ports so pages
 compare). The Jupiter pages read their production directories directly (read-only servers) in both modes.
 
 Argv per page family reproduces the launchers exactly (orders included):
   deep review single  p3s3_serve_stokes.sh:79      --run --queue --labels-dir --catalog-dir --port --title
+                      --mchain-queue --mchain-catalog-dir (the multiples chain, Gregg 2026-10-27: exopipe_ops 4c42f91;
+                      the two-port registry entries p8766/p8768 - no launcher passes them)
   deep review multi   p3s3_serve_multiples.sh:152  --run --queue --labels-dir --catalog-dir --port (no title, divergence D2)
   sub-LST review      sublst_serve.sh:140 / sublst_cumulative.sh:139-140  ... --port [--loc-offsets] --title
+                      [--mchain-queue] (singles: the two-port registry entries p8787/p8788, which sublst_register_pages.py
+                      re-registers as they are)
   snapshot review     snapshot_serve.sh:72-76      --run --queue --catalog-dir --port --default-fp-reason --loc-dir
                       --loc-offsets --title --sibling x3
   snapshot forced     snapshot_forced_serve_20261007.sh:49-51  --run --queue --catalog-dir --port --loc-offsets
@@ -188,6 +192,12 @@ class Plan:
                     continue
                 lab = S.SNAPSHOT_SIBLING_LABEL.format(S=o.stokes, T='10-s' if o.kind == '10s' else '1-min')
                 argv += ['--sibling', f'{o.port}:{o.at("catalog", U)}:{lab}']
+        # the page's MULTIPLES CHAIN (Gregg 2026-10-27; exopipe_ops 4c42f91): after the title, as the two-port registry
+        # entries of the deep and 10-minute singles pages carry them (p8766/p8768 both, p8787/p8788 the queue)
+        if page.c.get('mchain_queue'):
+            argv += ['--mchain-queue', page.at('mchain_queue', U)]
+        if page.c.get('mchain_catalog'):
+            argv += ['--mchain-catalog-dir', page.at('mchain_catalog', U)]
         if self.parity:
             argv += ['--lists-dir', self.lists_dir]
         return argv
