@@ -629,3 +629,97 @@ class catalog_snapshot(_Section):
              'GATE3D': 'RULINGS-GREGG-20261007-STATUS-ANSWERS',
              'CHECKSOURCES': 'R-SNAP-CHECKSOURCE-GATE-LPT-AND-PULSAR-IMPLEMENTED',
              'REJECT_UNCONSTRAINED_FIT': 'RATIFIED-AND-IMPLEMENTED-EVERY-UNCONSTRAINED-FRAME-REMOVED-SNAPSHOT-TIER'}
+
+
+# =====================================================================================================================
+# unit catalog-grouping (NEW, refactor item F, 2026-11-02): source grouping design B (lib/catalog/grouping.py,
+# lib/catalog/grouping_inputs.py), the ONE grouping of every detection of a tier and Stokes that runs before the fork and
+# before every multiplicity-dependent gate.
+#
+# Ruling: Gregg 2026-10-26, R-GREGG-20261026-GROUPING-DESIGN-B-APPROVED-IDENTITY-097-MULTIPLES-085-DEEPV-IDENTITY-ONLY-PREVIEW-
+# THEN-REFACTOR ("All three grouping decisions are recommended according to your recommendations."): design B for the
+# 10-minute and deep tiers, both Stokes; identities at P >= 0.97 with the 4-sigma cap everywhere; a nested, merge-only
+# multiples level at P >= 0.85 for 10-minute I and V and deep I; deep V at the identity level only until the acceptance of
+# 3+ groups is calibrated on scrambled skies. Gregg 2026-10-27 (R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-
+# EVERY-TIER): "Which ever approach is taken (e.g. dropping <7-sigma is fine), let's be consistent" - ONE multiples-chain
+# rule on every tier (this section's multiples level).
+# Source of every value: the research code of that ruling, /lustre/gh/main/phase3/refactor_analysis/grouping_20261026
+# ('B' = agent_B/group_B.py round 4, md5 c0b652978ed7b7427946062858e4e8ad; 'geom' = geom.py; 'H' = harness.py v2b;
+# 'HD' = harness_deep.py), file:line. The error-model constants were MEASURED there (FINDINGS_20261026.md items 1-13) and the
+# operating points RULED, so every key of the section is RULED: a production run changes one only with a ruling.
+# [step] every key is read by lib/catalog/grouping*.py at call time (no in-place module holds a copy).
+# =====================================================================================================================
+
+_GROUPING_RULING = 'R-GREGG-20261026-GROUPING-DESIGN-B-APPROVED-IDENTITY-097-MULTIPLES-085-DEEPV-IDENTITY-ONLY-PREVIEW-THEN-REFACTOR'
+
+
+class catalog_grouping(_Section):
+    """source grouping design B: identities, the nested multiples level, stable identity IDs (lib/catalog/grouping.py)."""
+    # ---- operating points (ruled 2026-10-26)
+    P_IDENTITY = 0.97                                     # posterior an assignment / merge needs at the identity level; B:506, :611
+    U_CAP = 4.0                                           # sigma, uniform Mahalanobis cap against the leave-one-out mean (both levels); B:506
+    P_MULTIPLES = {('10min', 'I'): 0.85, ('10min', 'V'): 0.85, ('deep', 'I'): 0.85,
+                   ('deep', 'V'): None}                   # merge-only multiples level per (tier, Stokes); None = identity level only
+                                                          # (deep V until the 3+ group acceptance is calibrated on scrambled skies); B:619
+    MULTIPLE_MIN = {'10min': ('windows', 2), 'deep': ('nights', 2)}   # a multiples-level group is a MULTIPLE with >= 2 distinct
+                                                          # 10-minute windows (Gregg 2026-09-12 "two or more distinct frames") or, deep,
+                                                          # >= 2 nights (brief task B item 3)
+    # ---- the algorithm (design B round 4; measured constants)
+    STAGE_A_PRIOR_N0 = 1.0                                # Laplace weight n_k + N0 of a component in stage A (one window); B:506 n0
+    STAGE_A_RADIUS_DEG = 2.0                              # deg, same-window candidate radius (performance only); B:46 RNB_A
+    STAGE_B_RADIUS_DEG = 1.5                              # deg, cross-window candidate radius (performance only); B:506 rnb
+    STAGE_B_FLOOR_ARCSEC = 31.0                           # arcsec, error floor added in stage B (window-sources); B:506 floor
+    PASSES = 3                                            # re-assignment + merge passes per stage; B:506
+    HYSTERESIS = 2.0                                      # a unit moves only to a component this many times more likely; B:45 HYST
+    PROFILE_CO = (0.767, 0.252, 0.618, 9.02)              # (t, s1, s2, nu) co-temporal offset profile (stage A), fitted on the CLEAN truth; B:41
+    PROFILE_WS = (0.791, 0.756, 0.794, 4.189)             # (t, s1, s2, nu) window-source profile (stage B); B:42
+    CHROMATIC_SIGMA_ARCSEC = 75.0                         # arcsec per unit of kappa = (NU0 / nu)^2, stage A (ionospheric refraction ~ nu^-2); B:43 SIGMA_R
+    CHROMATIC_NU0_MHZ = 36.0                              # MHz; B:115
+    WIDEBAND_NU_MHZ = {'Red': 32.0, 'Green': 50.0, 'Blue': 72.0, 'Full': 45.0}   # MHz, the chromatic term's frequency of a wideband image; B:44
+    PROBES_PX = (50.0, -50.0, 80.0, -80.0)                # px along the frame x axis (signed: toward / away from the meridian) of the
+                                                          # background probes (Gregg 2026-10-26 "specify offsets/shifts in pixels"); B:47
+    PROBE_RADIUS_PX = {'window': 35.0, 'same_lst': 40.0, 'other_lst': 25.0}   # px probe disc radii: stage A same-window density (mean
+                                                          # of the probes), stage B same-LST-hour (mean) and other-LST-hour (median) density; B:517, :181, :185
+    PROBE_FLOOR_COUNT = 0.5                               # count per probe disc (density floor); B:118, :175
+    SEED_PRIOR_CLASSES = ((1, 1), (2, 2), (3, 4), (5, 10 ** 6))   # band-count classes of the measured seed prior; B:202
+    SEED_PRIOR_UMAX = 1.0                                 # pairs within u < this make the measured recurrence fraction; B:202
+    SEED_PRIOR_NMIN = 100                                 # a class with fewer units pools into the class below; B:202
+    SEED_PRIOR_PAIR_DEG = 0.5                             # deg, pair search radius of the seed-prior measurement; B:213
+    SEED_PRIOR_R_CLIP = (0.002, 0.99)                     # the measured real fraction r is clipped to this range; B:237
+    OUTLIER_TAIL = True                                   # the S/N-dependent outlier component in stage B (FINDINGS item 5); B:506 tail
+    TAIL_SNR = (7.5, 9.0, 12.2, 20.0)                     # S/N bin centers of the measured excess beyond u = 3; B:52
+    TAIL_BEYOND3 = (0.106, 0.071, 0.042, 0.028)           # its fractions (calib_excess_snr.py; upper bounds: leakage clouds); B:52
+    TAIL_SCALE = 2.5                                      # the outlier component N(0, (TAIL_SCALE)^2 S); B:53 S_OUT
+    TAIL_PROFILE_BEYOND3 = 0.0355                         # the window-source profile's own mass beyond u = 3; B:53 P_WS_3
+    POOLED_PRIOR = True                                   # stage B evidence pooled across pair categories (the other members only); B:506 pooled
+    GROUP_SEEDING = True                                  # round 4: seed groups of 3+ by a sequential odds product (both levels); B:506 groups
+    GROUP_U_LINK = 3.0                                    # sigma, a group member's offset from the group mean while it grows; B:397
+    GROUP_MAX_K = 64                                      # largest seeded group; B:397
+    MERGE_RADIUS_DEG = 1.0                                # deg, candidate pairs of components for the merge test; B:461
+    MULTIPLES_MAX_ROUNDS = 30                             # merge-only rounds of the multiples level (stops at the first round with no merge); B:619
+    # ---- geometry and the error model (positions in the COMMON frame: astrom_frame.to_common_many, the 10-08 ruling item 4)
+    FRAME_DEC_DEG = 37.2158492                            # deg, reference declination of every 10-minute and deep frame (header CRVAL2
+                                                          # 37.2158491666667) and the latitude of the elevation term (as the research ran it;
+                                                          # the site is 37.2398: 1.4 arcmin, negligible in the term); geom:24 LAT
+    CDELT_DEG = {'Red': 0.0767, 'Green': 0.049, 'Blue': 0.037, 'Full': 0.037}   # deg per pixel by band class, 10-minute and deep frames
+                                                          # (corrected 2026-10-26: 1508 / 2358 / 3122 px); subbands take their class from
+                                                          # catalog.BAND_CLASS; geom:38-48
+    ELEVATION_GAMMA = 1.0                                 # sigma along the local vertical = sigma / sin(el)^GAMMA (SIN foreshortening; FINDINGS 2); geom cov, H:167
+    ELEVATION_FLOOR_DEG = 10.0                            # deg, the elevation used in the term is at least this; geom:84
+    DEEP_STAT_SCALE = 1.6                                 # deep sigma = hypot(A x stat, K x pos_sys): A (night-to-night jitter, FINDINGS 10); HD:44 DEEP_A
+    DEEP_SYS_SCALE = 0.0                                  # K: the deep table systematic is the scatter against the SKY, ~3x too large for
+                                                          # night-to-night pairs (FINDINGS 10); HD:45 DEEP_K
+    # (10-minute sigma = hypot(pos_stat_maj_arcsec, the window tie's per-case sys_arcmin x 60): the VALIDATED core, NOT
+    #  sublst_pertie.sys_arcsec, which adds the window-position term and is 2.3x too large (FINDINGS 6); H:120-125)
+    # ---- stable identity IDs (fixed at creation, never reused) and display names
+    ID_FORMAT = '{level}{tier}{stokes}-{seq:07d}'         # e.g. GTI-0000001 (identity, 10-minute I), MDI-0000042 (multiples group, deep I)
+    ID_LEVEL_CODE = {'identity': 'G', 'multiples': 'M'}
+    ID_TIER_CODE = {'10min': 'T', 'deep': 'D'}
+    RULED = {k: _GROUPING_RULING for k in (
+        'P_IDENTITY', 'U_CAP', 'P_MULTIPLES', 'STAGE_A_PRIOR_N0', 'STAGE_A_RADIUS_DEG', 'STAGE_B_RADIUS_DEG', 'STAGE_B_FLOOR_ARCSEC',
+        'PASSES', 'HYSTERESIS', 'PROFILE_CO', 'PROFILE_WS', 'CHROMATIC_SIGMA_ARCSEC', 'CHROMATIC_NU0_MHZ', 'WIDEBAND_NU_MHZ',
+        'PROBES_PX', 'PROBE_RADIUS_PX', 'PROBE_FLOOR_COUNT', 'SEED_PRIOR_CLASSES', 'SEED_PRIOR_UMAX', 'SEED_PRIOR_NMIN',
+        'SEED_PRIOR_PAIR_DEG', 'SEED_PRIOR_R_CLIP', 'OUTLIER_TAIL', 'TAIL_SNR', 'TAIL_BEYOND3', 'TAIL_SCALE', 'TAIL_PROFILE_BEYOND3',
+        'POOLED_PRIOR', 'GROUP_SEEDING', 'GROUP_U_LINK', 'GROUP_MAX_K', 'MERGE_RADIUS_DEG', 'MULTIPLES_MAX_ROUNDS', 'FRAME_DEC_DEG',
+        'CDELT_DEG', 'ELEVATION_GAMMA', 'ELEVATION_FLOOR_DEG', 'DEEP_STAT_SCALE', 'DEEP_SYS_SCALE')}
+    RULED['MULTIPLE_MIN'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING)
