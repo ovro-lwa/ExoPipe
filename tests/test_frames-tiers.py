@@ -208,13 +208,82 @@ def test_items():
 
 
 # =====================================================================================================================
-# 2. sub-LST: synthetic LST, the real wideband and tree engines, content tests (b)
+# 2. sub-LST: the wideband engine's lines, a synthetic LST through the real wideband and tree engines, content tests (b)
 # =====================================================================================================================
 
+def test_wideband_lines():
+    """clv15 582c92e (the per-Stokes required-member rule): the lines the stage reads are the in-place engine's (drift check
+    on its source), and wideband_outcome reconciles a call's lines with its count line - real production lines (12h logs,
+    2026-10-23), a window built in one Stokes, and the refusals of a log it cannot trust."""
+    src = open(os.path.join(CFG.paths.CLV15_ROOT, 'phase3_sublst_wideband.py')).read()
+    frags = ('req = [b for b in subs if b != "18MHz"]',
+             'print("REFUSED-INCOMPLETE %s %s %s %s w%d: required member(s) %s lack a product',
+             'print("WIDEBAND %s %s %s w%d members=%s weights=%s%s%s"', '" (Stokes %s only)" % build[0]',
+             '("; left out: " + "; ".join(why)) if why else ""',
+             'print("SUBLST-WIDEBAND %s groups=%s windows=%d skipped=%d refused_band_rule=%d refused_incomplete=%d"')
+    check('the wideband engine prints the lines the stage parses (required members but 18 MHz; REFUSED-INCOMPLETE; '
+          '(Stokes X only); the count line)', all(f in src for f in frags), [f for f in frags if f not in src])
+    inc = ' lack a product - not built (no wideband from a partial set; 18 MHz the one exception)'
+    red = ['===== 2026-10-23T22:40:01Z python phase3_sublst_wideband.py ...'] + [
+        f'WIDEBAND 12h 2024-12-29 Red w{k} members=18MHz,23MHz,27MHz,32MHz,36MHz weights=0.027,0.075,0.178,0.313,0.407'
+        for k in range(4)] + [f'REFUSED-INCOMPLETE 12h 2024-12-29 Red {S} w4: required member(s) 36MHz' + inc
+                              for S in ('I', 'V')] + [
+        'SUBLST-WIDEBAND 12h groups=Red windows=4 skipped=0 refused_band_rule=0 refused_incomplete=2']
+    o = TS.wideband_outcome(red, '12h', '2024-12-29', 'Red')
+    check('real 12h Red 2024-12-29: 4 windows in both Stokes, w4 refused in both (36 MHz)',
+          [(k, b) for k, b, _, _ in o['windows']] == [(k, ('I', 'V')) for k in range(4)]
+          and [(S, k, m) for S, k, m, _ in o['incomplete']] == [('I', 4, ['36MHz']), ('V', 4, ['36MHz'])]
+          and o['counts'] == {'windows': 4, 'skipped': 0, 'band_rule': 0, 'incomplete': 2}, str(o)[:400])
+    ex18 = ['WIDEBAND 12h 2025-04-05 Red w0 members=23MHz,27MHz,32MHz,36MHz weights=0.044,0.116,0.284,0.555; left out: '
+            '18MHz (no I:stack,I:pb,I:nf); 18MHz (no V:stack,V:pb,V:nf)',
+            'SUBLST-WIDEBAND 12h groups=Red windows=1 skipped=0 refused_band_rule=0 refused_incomplete=0']
+    o = TS.wideband_outcome(ex18, '12h', '2025-04-05', 'Red')
+    check('real 12h Red 2025-04-05: a window without 18 MHz is built (the one exception), its left-out list parsed',
+          o['windows'][0][:3] == (0, ('I', 'V'), ['23MHz', '27MHz', '32MHz', '36MHz']), str(o)[:300])
+    blue = ['WIDEBAND 12h 2025-01-03 Blue w1 members=64MHz,69MHz,73MHz,78MHz,82MHz weights=0.250,0.230,0.210,0.200,0.110 '
+            '(Stokes V only); left out: 73MHz (no I:rB)',
+            'REFUSED-INCOMPLETE 12h 2025-01-03 Blue I w1: required member(s) 73MHz' + inc,
+            'SUBLST-WIDEBAND 12h groups=Blue windows=1 skipped=0 refused_band_rule=0 refused_incomplete=1']
+    o = TS.wideband_outcome(blue, '12h', '2025-01-03', 'Blue')
+    check('a window built in Stokes V only: V products expected, the I refusal an item', o['windows'][0][:2] == (1, ('V',))
+          and o['incomplete'][0][:3] == ('I', 1, ['73MHz']), str(o)[:300])
+    bad = {'no count line (a call that did not finish)': red[:-1],
+           'a count line without refused_incomplete= (an engine before clv15 582c92e)':
+               red[:-1] + ['SUBLST-WIDEBAND 12h groups=Red windows=4 skipped=0 refused_band_rule=0'],
+           'counts that disagree with the lines': red[:-1] + [red[-1].replace('windows=4', 'windows=5')],
+           'a one-Stokes window without the other Stokes\' refusal': [blue[0], blue[2].replace('incomplete=1', 'incomplete=0')],
+           'a Stokes both built and refused': [red[1], red[5].replace('w4', 'w0'),
+                                               red[-1].replace('windows=4', 'windows=1').replace('incomplete=2', 'incomplete=1')],
+           'a line of another night': [red[1].replace('2024-12-29', '2024-12-30'), red[-1]],
+           'a WIDEBAND line in another format': ['WIDEBAND 12h 2024-12-29 Red w0 members=18MHz weights=1.0 extra', red[-1]]}
+    for what, lines in bad.items():
+        try:
+            TS.wideband_outcome(lines, '12h', '2024-12-29' if 'Blue' not in lines[0] else '2025-01-03',
+                                'Blue' if 'Blue' in lines[0] else 'Red')
+            check(f'wideband_outcome refuses {what}', False)
+        except ValueError as e:
+            check(f'wideband_outcome refuses {what}', True, str(e))
+    # an engine that crashes after its item lines is an error, not a refusal: only its own 'REFUSED: ...' exit refuses
+    os.makedirs(os.path.join(T, 'wbcrash'), exist_ok=True)
+    sc = os.path.join(T, 'wbcrash', 'crash.py')
+    with open(sc, 'w') as f:
+        f.write('print("REFUSED-INCOMPLETE 09h 2025-01-01 Red V w2: required member(s) 27MHz' + inc + '", flush=True)\n'
+                'raise OSError("disk gone")\n')
+    res, lines = TS.engine(sc, [], 'default', os.path.join(T, 'wbcrash', 'crash.log'), refusal_text=('REFUSED:',))
+    res0, _ = TS.engine(sc, [], 'default', os.path.join(T, 'wbcrash', 'crash0.log'))
+    check('a wideband call that crashes after a REFUSED-INCOMPLETE line is an error (the default reading calls it refused)',
+          res.rc != 0 and not res.refused and res0.refused, (res.rc, res.refused, res0.refused))
+
+RED = ('18MHz', '23MHz', '27MHz', '32MHz', '36MHz')     # the Red members (cells.band_members('Red'), asserted)
+WINDOWS = (0, 1, 2)
+
+
 def usable_nights(n=3):
+    """Real 09h nights every Red member and Red itself weight in the frozen deep records (content test (b) and the tree
+    engine read those records), none membership-vetoed or excluded."""
     from phase3_tier_rules import membership_vetoed
     ok = None
-    for sb in ('18MHz', '23MHz', 'Red'):
+    for sb in RED + ('Red',):
         rows = list(csv.DictReader(open(XS._frozen_weights(LST, sb))))
         good = {r['date'] for r in rows if str(r.get('in_master', '1')).strip() != '0' and float(r.get('weight') or 0) > 0
                 and not membership_vetoed(LST, sb, r['date']) and not exclusions.is_excluded(LST, sb, r['date'])}
@@ -222,49 +291,81 @@ def usable_nights(n=3):
     return sorted(ok)[:n]
 
 
+def fixture_has(sb, k, ni, S, kind):
+    """Which member products the synthetic sub-LST root holds (kind 'stack' = the stack with its _pb and _nframes; 'resid' =
+    the arm-A and arm-B residuals). Every member, three nights, windows w0-w2, both Stokes, except:
+      w1  no 18 MHz product at all: the window is built in both Stokes from 23-36 MHz (18 MHz the one exception);
+      w2  27 MHz has Stokes V stacks on nights 0 and 1 only, so the per-night rule leaves it no V residual (one weighted
+          night in each leave-one-out Master): nights 0 and 1 are built in Stokes I only (V REFUSED-INCOMPLETE); night 2
+          lacks the 27 MHz V stack the I weight comes from, so both Stokes are REFUSED-INCOMPLETE (clv15 582c92e)."""
+    if k == 1 and sb == '18MHz':
+        return False
+    if k == 2 and sb == '27MHz' and S == 'V':
+        return kind == 'stack' and ni < 2
+    return True
+
+
 def build_sublst(root, nights):
-    """Window 0 of two Red members (18MHz, 23MHz), three nights, both Stokes: stack, _pb, _nframes, arm-A and arm-B
-    residuals with the cards the engines write; loo and refine logs for every Red member (production evidence)."""
+    """The fixture of fixture_has: stack, _pb, _nframes, arm-A and arm-B residuals with the cards the engines write; loo and
+    refine logs for every Red member (production evidence; 27 MHz with its per-night rule refusals, as production logs them)."""
     rng = np.random.default_rng(7)
     n = 64
     yy, xx = np.mgrid[0:n, 0:n]
     pb = np.clip(1.0 - ((xx - 32) ** 2 + (yy - 32) ** 2) / 2500.0, 0.0, 1.0).astype(np.float32)
-    for sb, fc in (('18MHz', 1.05), ('23MHz', 1.06)):
-        for ni, night in enumerate(nights):
-            for S in ('I', 'V'):
-                base = f'sublst_{LST}_{night}_{sb}_{S}_w0'
-                d = os.path.join(root, LST, f'{LST}_{night}', sb, S)
-                h = {'CTYPE1': 'RA---SIN', 'CTYPE2': 'DEC--SIN', 'CRVAL1': 135.0, 'CRVAL2': 37.2, 'CRPIX1': 33, 'CRPIX2': 33,
-                     'CDELT1': -1.0, 'CDELT2': 1.0, 'BUNIT': 'JY/BEAM', 'DATE-OBS': f'{night}T15:00:00.0',
-                     'DATE-END': f'{night}T15:09:50.0', 'LSTHOUR': LST, 'LSTWIN': 0, 'NFRAMES': 58, 'BMAJ': 0.3 + 0.01 * ni,
-                     'BMIN': 0.2, 'BPA': 10.0 + ni, 'SHSCALE': 0.98528, 'FLUXABS': 1.034, 'FLUXCORR': fc, 'FLUXVER': 'v2',
-                     'FLUXBAKE': True, 'FLUXDC': 0.93, 'PRODUCT': 'sublst-v0-test'}
-                img = rng.normal(0, 1.0 + 0.5 * (sb == '23MHz'), (n, n))
-                fits_write(os.path.join(d, base + '.fits'), img, h)
-                fits_write(os.path.join(d, base + '_pb.fits'), pb, dict(h, BUNIT=''))
-                fits_write(os.path.join(d, base + '_nframes.fits'), np.full((n, n), 58.0), h)
-                rh = dict(h, SUBTRACT='leave-one-out window Master', LOONCOAD=2,
-                          LOOMSTR=f'sublst_master_{LST}_{sb}_{S}_w0.fits', JUPMASK=25.0, LSTBIN=0, DURATION=590.0)
-                fits_write(os.path.join(d, base + '_resid_loo.fits'), img * 0.1, rh)
-                dx = os.path.join(root, f'{LST}_x2', f'{LST}_{night}', sb, S)
-                fits_write(os.path.join(dx, base + '_resid_loo.fits'), img * 0.1 + 0.01,
-                           dict(rh, REFINE='x2 flow to the subtracted LOO window Master'))
+    for i, sb in enumerate(RED):
+        fc = 1.05 - 0.01 * i
+        for k in WINDOWS:
+            for ni, night in enumerate(nights):
+                for S in ('I', 'V'):
+                    if not fixture_has(sb, k, ni, S, 'stack'):
+                        continue
+                    base = f'sublst_{LST}_{night}_{sb}_{S}_w{k}'
+                    d = os.path.join(root, LST, f'{LST}_{night}', sb, S)
+                    h = {'CTYPE1': 'RA---SIN', 'CTYPE2': 'DEC--SIN', 'CRVAL1': 135.0 + 2.5 * k, 'CRVAL2': 37.2, 'CRPIX1': 33,
+                         'CRPIX2': 33, 'CDELT1': -1.0, 'CDELT2': 1.0, 'BUNIT': 'JY/BEAM',
+                         'DATE-OBS': f'{night}T15:{10 * k:02d}:00.0', 'DATE-END': f'{night}T15:{10 * k + 9:02d}:50.0',
+                         'LSTHOUR': LST, 'LSTWIN': k, 'NFRAMES': 58, 'BMAJ': 0.3 + 0.01 * ni, 'BMIN': 0.2, 'BPA': 10.0 + ni,
+                         'SHSCALE': 0.98528, 'FLUXABS': 1.034, 'FLUXCORR': fc, 'FLUXVER': 'v2', 'FLUXBAKE': True,
+                         'FLUXDC': 0.93, 'PRODUCT': 'sublst-v0-test'}
+                    img = rng.normal(0, 2.0 - 0.25 * i, (n, n))       # 18 MHz the noisiest (down-weighted), as on the sky
+                    fits_write(os.path.join(d, base + '.fits'), img, h)
+                    fits_write(os.path.join(d, base + '_pb.fits'), pb, dict(h, BUNIT=''))
+                    fits_write(os.path.join(d, base + '_nframes.fits'), np.full((n, n), 58.0), h)
+                    if not fixture_has(sb, k, ni, S, 'resid'):
+                        continue
+                    rh = dict(h, SUBTRACT='leave-one-out window Master', LOONCOAD=2,
+                              LOOMSTR=f'sublst_master_{LST}_{sb}_{S}_w{k}.fits', JUPMASK=25.0, LSTBIN=k, DURATION=590.0)
+                    fits_write(os.path.join(d, base + '_resid_loo.fits'), img * 0.1, rh)
+                    dx = os.path.join(root, f'{LST}_x2', f'{LST}_{night}', sb, S)
+                    fits_write(os.path.join(dx, base + '_resid_loo.fits'), img * 0.1 + 0.01,
+                               dict(rh, REFINE='x2 flow to the subtracted LOO window Master'))
     time.sleep(1.1)
-    for sb in cells.band_members('Red'):
-        lg = os.path.join(root, LST, 'logs')
-        os.makedirs(lg, exist_ok=True)
+    lg, xl = os.path.join(root, LST, 'logs'), os.path.join(root, f'{LST}_x2', 'logs')
+    os.makedirs(lg, exist_ok=True)
+    os.makedirs(xl, exist_ok=True)
+    for sb in RED:
+        night_rule = {S: [f'REFUSED-RESIDUAL {sb} {S} w{k} {night}: 1 weighted night(s) in its leave-one-out Master (< 2; '
+                          f'per-night rule, Gregg 2026-10-07)' for k in WINDOWS for ni, night in enumerate(nights)
+                          if fixture_has(sb, k, ni, S, 'stack') and not fixture_has(sb, k, ni, S, 'resid')]
+                      for S in ('I', 'V')}
         for S in ('I', 'V'):
+            nwin = sum(1 for k in WINDOWS if fixture_has(sb, k, 0, S, 'stack'))
+            nres = sum(1 for k in WINDOWS for ni in range(len(nights)) if fixture_has(sb, k, ni, S, 'resid'))
             with open(os.path.join(lg, f'loo_{LST}_{sb}_{S}.log'), 'w') as f:
-                f.write(f'SUBLST-LOO {LST} {sb} {S} windows=1 residuals=3 refused_night=0\n')
-        xl = os.path.join(root, f'{LST}_x2', 'logs')
-        os.makedirs(xl, exist_ok=True)
+                f.write(''.join(x + '\n' for x in night_rule[S])
+                        + f'SUBLST-LOO {LST} {sb} {S} windows={nwin} residuals={nres} refused_night={len(night_rule[S])}\n')
+        nal = sum(1 for k in WINDOWS for ni in range(len(nights)) for S in ('I', 'V') if fixture_has(sb, k, ni, S, 'resid'))
+        nnr = len(night_rule['I']) + len(night_rule['V'])
         with open(os.path.join(xl, f'{LST}_{sb}.log'), 'w') as f:
-            f.write(f'SUBLST-REFINE {LST} {sb} aligned=3 refused=0 refused_rule=0 refused_night=0\n')
+            f.write(''.join(x + '\n' for x in night_rule['I'] + night_rule['V'])
+                    + f'SUBLST-REFINE {LST} {sb} aligned={nal} refused=0 refused_rule=0 refused_night={nnr}\n')
 
 
 def test_sublst_engines():
+    check('the fixture\'s Red members are the configured ones', tuple(cells.band_members('Red')) == RED,
+          str(cells.band_members('Red')))
     nights = usable_nights()
-    check('three real 09h nights usable in the frozen records (18MHz, 23MHz, Red)', len(nights) == 3, str(nights))
+    check('three real 09h nights usable in the frozen records (the five Red members and Red)', len(nights) == 3, str(nights))
     if len(nights) < 3:
         return
     root = os.path.join(T, 'sublst')
@@ -291,24 +392,73 @@ def test_sublst_engines():
     check('verify (content test (b)) done', st.get(f'{LST}_verify') == 'done', str(recs.get(f'{LST}_verify', {}).get('reason')))
     wb = recs.get(f'{LST}_wideband_Red', {})
     outs = [o['path'] for o in wb.get('outputs', [])]
-    check('wideband wrote 3 nights x 2 Stokes x 5 products', len(outs) == 30, str(len(outs)))
-    check('wideband outputs all passed sublst_wideband', all(t['passed'] for t in wb.get('tests', [])) and wb.get('tests'))
+    check('wideband wrote w0 and w1 in both Stokes (3 nights x 2 Stokes x 5 products each) and w2 in Stokes I only on '
+          'nights 0 and 1 (2 x 5)', len(outs) == 70 and not [p for p in outs if '_Red_V_w2' in p], str(len(outs)))
+    check('no Stokes V product of the one-Stokes windows on disk', not glob.glob(os.path.join(
+        root, f'{LST}*', f'{LST}_*', 'Red', 'V', '*_w2*')))
+    check('wideband outputs all passed sublst_wideband (the one-Stokes windows included)',
+          all(t['passed'] for t in wb.get('tests', [])) and wb.get('tests'),
+          str([t for t in wb.get('tests', []) if not t['passed']])[:400])
     check('every engine call recorded with its argv (core.legacy.run)', len(wb.get('meta', {}).get('legacy_calls', [])) == 3)
-    rp = os.path.join(root, LST, f'{LST}_{nights[0]}', 'Red', 'I', f'sublst_{LST}_{nights[0]}_Red_I_w0.fits')
+    ref = wb.get('refused_items', [])
+    got = sorted((os.path.basename(r['path']).split('_')[2], os.path.basename(r['path']).split('_')[4]) for r in ref
+                 if r.get('gate') == 'S-G9' and r['path'].endswith('_w2.fits'))
+    check('REFUSED-INCOMPLETE lines recorded as item refusals (gate S-G9, 27 MHz named): w2 V on nights 0 and 1, I and V '
+          'on night 2', len(ref) == 4 and got == sorted([(nights[0], 'V'), (nights[1], 'V'), (nights[2], 'I'),
+                                                         (nights[2], 'V')])
+          and all(r['reason'].startswith('REFUSED-INCOMPLETE') and '27MHz' in r['reason'] for r in ref), str(ref)[:600])
+    one = {'windows': 3, 'skipped': 0, 'band_rule': 0, 'incomplete': 1}
+    cnt = wb.get('meta', {}).get('wideband_counts', {})
+    check('each night\'s count line parsed and reconciled (windows, refused_incomplete)',
+          cnt == {nights[0]: one, nights[1]: one, nights[2]: dict(one, windows=2, incomplete=2)}, str(cnt))
+    check('the unit note counts the one-Stokes windows and the incomplete refusals',
+          any('8 wideband Red window(s) over 3 night(s), 2 built in one Stokes only; 4 (night, window, Stokes) refused as '
+              'incomplete' in x for x in wb.get('notes', [])), str(wb.get('notes'))[:400])
     from astropy.io import fits
+
+    def wb_path(k, S='I', ni=0, sfx='.fits', arm=''):
+        return os.path.join(root, LST + arm, f'{LST}_{nights[ni]}', 'Red', S, f'sublst_{LST}_{nights[ni]}_Red_{S}_w{k}{sfx}')
+    rp = wb_path(0)
     h = fits.getheader(rp)
-    check('wideband members and weights from the engine', h.get('WBMEMB') == '18MHz,23MHz' and h.get('WIDEBAND') == 'Red')
+    check('w0: every Red member, weights from the engine', h.get('WBMEMB') == ','.join(RED) and h.get('WIDEBAND') == 'Red'
+          and len(h.get('WBWGTS', '').split(',')) == 5, str((h.get('WBMEMB'), h.get('WBWGTS'))))
+    check('w1: built in both Stokes from 23-36 MHz without 18 MHz (the one exception)',
+          all(fits.getheader(wb_path(1, S, ni)).get('WBMEMB') == ','.join(RED[1:]) for S in ('I', 'V') for ni in (0, 1, 2)))
+    check('w2: Stokes I only on nights 0 and 1, every member in it', all(
+        fits.getheader(wb_path(2, 'I', ni)).get('WBMEMB') == ','.join(RED) for ni in (0, 1))
+        and not os.path.exists(wb_path(2, 'I', 2)))
     fc = os.path.join(root, CFG.frames_sublst.TREE_SUBDIR, f'{LST}_Red', 'frames.csv')
     rows = list(csv.DictReader(open(fc))) if os.path.exists(fc) else []
-    check('tree Red frames.csv: 3 nights x 2 Stokes', len(rows) == 6, str(len(rows)))
+    check('tree Red frames.csv: w0 and w1, 3 nights x 2 Stokes (the tree engine skips the one-Stokes w2 windows)',
+          len(rows) == 12 and sorted({r['bin'] for r in rows}) == ['0', '1'], str(len(rows)))
     print(f'    (sub-LST engine runs: {time.time() - t0:.1f} s)')
-    # negative content tests on the products just made
+    # content tests on the products just made, and negative copies
     r = validate.run('sublst_wideband', rp)
     check('sublst_wideband passes on the engine output', all(x['passed'] for x in r), str(r))
+    r = validate.run('sublst_wideband', wb_path(2, 'I', 1, '_resid_loo.fits', '_x2'))
+    check('sublst_wideband passes on a one-Stokes window\'s set-B residual (its members\' Stokes I products)',
+          all(x['passed'] for x in r), str(r))
+    hid = os.path.join(root, f'{LST}_x2', f'{LST}_{nights[1]}', '32MHz', 'I', f'sublst_{LST}_{nights[1]}_32MHz_I_w2_resid_loo.fits')
+    os.rename(hid, hid + '.hidden')
+    r = validate.run('sublst_wideband', wb_path(2, 'I', 1))
+    os.rename(hid + '.hidden', hid)
+    check('sublst_wideband fails on a one-Stokes window whose member lacks a product of that Stokes',
+          not all(x['passed'] for x in r) and 'member product(s) missing' in str(r), str(r)[:300])
     with fits.open(rp, mode='update') as hl:
         hl[0].data[30:34, 30:34] += 5.0
     r = validate.run('sublst_wideband', rp)
     check('sublst_wideband fails on altered pixels', not all(x['passed'] for x in r))
+    # S-G12: a product of an earlier run left in a (window, Stokes) this run refuses as incomplete would be paired by the tree
+    # with this run's other Stokes - the unit refuses rather than leave it
+    stale = wb_path(2, 'V', 0)
+    os.makedirs(os.path.dirname(stale), exist_ok=True)
+    shutil.copy(wb_path(2, 'I', 0), stale)
+    rc, out = exopipe3(*common, '--stages', 'wideband', '--fresh')
+    rec = records(root).get(f'{LST}_wideband_Red', {})
+    check('S-G12: an earlier run\'s product in a (window, Stokes) refused as incomplete refuses the unit',
+          rc == 2 and rec.get('status') == 'refused' and 'S-G12' in rec.get('reason', '') and stale in rec.get('reason', ''),
+          f'{rc} {rec.get("status")} {rec.get("reason")} {out[-400:]}')
+    os.remove(stale)
     victim = glob.glob(os.path.join(root, LST, f'{LST}_{nights[1]}', '23MHz', 'V', '*_resid_loo.fits'))[0]
     os.remove(victim)
     ok, n, det = XS.residual_set(os.path.join(root, LST))
@@ -518,6 +668,7 @@ def main():
         test_engine_flags()
         test_stage_grammar()
         test_items()
+        test_wideband_lines()
         test_sublst_engines()
         test_snapshot_engines()
         if REAL:

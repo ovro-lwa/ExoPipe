@@ -17,6 +17,12 @@ Stages (always run in the order of frames_sublst.ORDER; defaults per operating m
             <root>/<LST>_x2/.../..._resid_loo.fits [sublst_wideband]; logs <root>/<LST>/logs/wideband_<LST>_<G>_<night>.log.
             Per hour: the epoch's night; intermittent: every night (or --nights), and a group with no window over the LST
             refuses (S-G10). A (LST, group, night) excluded under core.exclusions is not passed to the engine.
+            REQUIRED MEMBERS (the engine since clv15 582c92e, 2026-10-23; Gregg 2026-10-23 "If a subband is missing the
+            wideband does not get created", 18 MHz the one exception): per Stokes a window is built only when every member
+            but 18 MHz has that Stokes' five products and its V stack; a refused (window, Stokes) is the engine's
+            REFUSED-INCOMPLETE line, recorded as an item refusal (gate S-G9), and a window built in one Stokes only
+            ('(Stokes X only)') records that Stokes' products. Every engine log is reconciled with its final count line
+            (SUBLST-WIDEBAND ... refused_incomplete=; wideband_outcome).
   tree      tree B for the 10-minute search: clv15/phase3_sublst_tenmin_tree.py in place (site PYTHON['py36']), one process
             per band (15 subbands + Red/Green/Blue). Outputs <root>/tenmin_root_x2/<LST>_<band>/{frames.csv, subtracted/
             links, bin_masters/PB_bin<k>_<band>.fits} or NO_WINDOWS.txt [tenmin_tree].
@@ -43,8 +49,9 @@ Failure modes (exit 2 = refused, the gate named): a site PYTHON key missing; an 
 root while paths.PRODUCTION_WRITES is False; exclusion list missing (C-09); masters wrapper refusals (G-S01..G-S09);
 arm A incomplete (no masters loo record / log line); S-G8 x2 refine incomplete or older than the stacks; wideband engine
 REFUSED (S-G9: mixed or disagreeing flux scales, shapes); S-G10 no window of a group over the LST; tree engine REFUSED
-(S-G11); S-G12 products of an earlier run where a unit writes, no record of this unit lists them and no --fresh;
-searchframes requested; any content test failed (R1-R3 included). Exit 3: every unit had nothing to do.
+(S-G11); S-G12 products of an earlier run where a unit writes, no record of this unit lists them and no --fresh, or left
+in a (window, Stokes) the wideband engine refused as incomplete; searchframes requested; any content test failed (R1-R3
+included). Exit 1 also when a wideband log disagrees with its count line. Exit 3: every unit had nothing to do.
 """
 import glob
 import os
@@ -175,13 +182,16 @@ def check_interpreter(key):
     return os.access(py, os.X_OK), py
 
 
-def engine(script, args_, python, log, unit=None, env=None, refusal_codes=(2,)):
+def engine(script, args_, python, log, unit=None, env=None, refusal_codes=(2,), refusal_text=None):
     """One in-place engine run through core.legacy.run (the one child runner). Returns (res, lines) where lines are the
-    lines THIS call appended to ``log`` (legacy.run appends, with a header line)."""
+    lines THIS call appended to ``log`` (legacy.run appends, with a header line). refusal_text: what in the output marks a
+    failed call as a refusal (default legacy.run's)."""
     from exopipe.phase3.core import legacy
     os.makedirs(os.path.dirname(log), exist_ok=True)
     off = os.path.getsize(log) if os.path.exists(log) else 0
-    res = legacy.run(script, list(args_), python=python, env=env or {}, log=log, unit=unit, refusal_codes=refusal_codes)
+    kw = {} if refusal_text is None else {'refusal_text': tuple(refusal_text)}
+    res = legacy.run(script, list(args_), python=python, env=env or {}, log=log, unit=unit, refusal_codes=refusal_codes,
+                     **kw)
     with open(log, errors='replace') as f:
         f.seek(off)
         lines = f.read().splitlines()
@@ -597,6 +607,93 @@ def group_members(G):
     return list(cells.band_members(G))
 
 
+# The wideband engine's lines (clv15/phase3_sublst_wideband.py since clv15 582c92e, 2026-10-23). Per (night, window k, group)
+# and Stokes, a window is built only when every member but 18 MHz has every product of that window for that Stokes and the V
+# stack its weight comes from; else one REFUSED-INCOMPLETE line per Stokes. A window built in one Stokes says
+# '(Stokes X only)'. The call ends with one count line, SUBLST-WIDEBAND ... refused_incomplete=<n>.
+_WB_WINDOW = re.compile(r'^WIDEBAND (?P<lst>\S+) (?P<night>\S+) (?P<g>\S+) w(?P<k>\d+) members=(?P<members>[^\s;]+) '
+                        r'weights=(?P<weights>[^\s;]+)(?: \(Stokes (?P<only>[IV]) only\))?(?:; left out: (?P<left>.*))?$')
+_WB_INCOMPLETE = re.compile(r'^REFUSED-INCOMPLETE (?P<lst>\S+) (?P<night>\S+) (?P<g>\S+) (?P<S>[IV]) w(?P<k>\d+): '
+                            r'required member\(s\) (?P<missing>\S*) lack a product\b')
+_WB_SKIP = re.compile(r'^SKIP (?P<lst>\S+) (?P<night>\S+) (?P<g>\S+) w(?P<k>\d+): ')
+_WB_BAND_RULE = re.compile(r'^REFUSED-BAND-RULE (?P<lst>\S+) (?P<night>\S+) (?P<g>\S+): ')
+_WB_COUNTS = re.compile(r'^SUBLST-WIDEBAND (?P<lst>\S+) groups=(?P<groups>\S+) windows=(?P<windows>\d+) '
+                        r'skipped=(?P<skipped>\d+) refused_band_rule=(?P<band_rule>\d+) '
+                        r'refused_incomplete=(?P<incomplete>\d+)$')
+_WB_ITEM_LINES = ('REFUSED-INCOMPLETE ', 'REFUSED-BAND-RULE ')    # item outcomes: never the reason an engine call refused
+
+
+def wideband_outcome(lines, lst, night, G):
+    """What one wideband engine call (--lst <lst> --groups <G> --nights <night>) reported, reconciled with its count line.
+    Returns {'windows': [(k, built Stokes tuple, members, line)], 'incomplete': [(S, k, missing members, line)],
+    'skipped': [line], 'band_rule': [line], 'counts': {windows, skipped, band_rule, incomplete}, 'count_line': line}.
+    ValueError when a line names another LST / night / group, a WIDEBAND or REFUSED-INCOMPLETE line does not parse, a window
+    or a (Stokes, window) is reported twice, a Stokes is both built and refused, a window built in one Stokes has no
+    REFUSED-INCOMPLETE line for the other, or the count line is missing (an engine older than clv15 582c92e has no
+    refused_incomplete=; or the call did not finish) or disagrees with the lines."""
+    out = {'windows': [], 'incomplete': [], 'skipped': [], 'band_rule': [], 'counts': None, 'count_line': None}
+    built_at, refused_at = {}, set()
+    for raw in lines:
+        line = raw.strip()
+        q = _WB_COUNTS.match(line)
+        if q:
+            if out['counts'] is not None:
+                raise ValueError(f'two count lines: {line[:160]}')
+            if (q['lst'], q['groups']) != (lst, G):
+                raise ValueError(f'count line of another LST / group: {line[:160]}')
+            out['counts'] = {k: int(q[k]) for k in ('windows', 'skipped', 'band_rule', 'incomplete')}
+            out['count_line'] = line
+            continue
+        for kind, rx in (('windows', _WB_WINDOW), ('incomplete', _WB_INCOMPLETE), ('skipped', _WB_SKIP),
+                         ('band_rule', _WB_BAND_RULE)):
+            q = rx.match(line)
+            if q:
+                break
+        else:
+            if line.startswith(('WIDEBAND ', 'REFUSED-INCOMPLETE ')):
+                raise ValueError(f'engine line not understood: {line[:160]}')
+            continue
+        if (q['lst'], q['night'], q['g']) != (lst, night, G):
+            raise ValueError(f'a line of another LST / night / group: {line[:160]}')
+        if kind == 'windows':
+            k = int(q['k'])
+            if k in built_at:
+                raise ValueError(f'window w{k} reported twice')
+            built_at[k] = (q['only'],) if q['only'] else ('I', 'V')
+            out['windows'].append((k, built_at[k], q['members'].split(','), line))
+        elif kind == 'incomplete':
+            key = (q['S'], int(q['k']))
+            if key in refused_at:
+                raise ValueError(f'Stokes {key[0]} w{key[1]} refused twice')
+            refused_at.add(key)
+            out['incomplete'].append((key[0], key[1], [x for x in q['missing'].split(',') if x], line))
+        else:
+            out[kind].append(line)
+    if out['counts'] is None:
+        raise ValueError('no count line "SUBLST-WIDEBAND ... refused_incomplete=<n>" (the call did not finish, or the engine '
+                         'predates the required-member rule, clv15 582c92e)')
+    seen = {'windows': len(out['windows']), 'skipped': len(out['skipped']), 'band_rule': len(out['band_rule']),
+            'incomplete': len(out['incomplete'])}
+    if seen != out['counts']:
+        raise ValueError(f'the count line "{out["count_line"][:200]}" disagrees with the lines: {seen}')
+    for k, built in built_at.items():
+        for S in ('I', 'V'):
+            if S in built and (S, k) in refused_at:
+                raise ValueError(f'w{k} Stokes {S} both built and refused as incomplete')
+            if S not in built and (S, k) not in refused_at:
+                raise ValueError(f'w{k} built in Stokes {built[0]} only, with no REFUSED-INCOMPLETE line for Stokes {S}')
+    return out
+
+
+def wideband_products(root, x2, lst, night, G, S, k):
+    """The five products of one wideband (night, window, Stokes): stack, _pb, _nframes, set-A residual (<root>), set-B
+    residual (<x2>) - the engine's names (wideband:181-185, clv15 582c92e)."""
+    b = f'sublst_{lst}_{night}_{G}_{S}_w{k}'
+    d, dx = os.path.join(root, f'{lst}_{night}', G, S), os.path.join(x2, f'{lst}_{night}', G, S)
+    return [os.path.join(d, b + '.fits'), os.path.join(d, b + '_pb.fits'), os.path.join(d, b + '_nframes.fits'),
+            os.path.join(d, b + '_resid_loo.fits'), os.path.join(dx, b + '_resid_loo.fits')]
+
+
 def stage_wideband(ctx, lst, nights, per_hour):
     from exopipe.phase3.core.record import NoInput
     S = ctx.S
@@ -668,42 +765,63 @@ def stage_wideband(ctx, lst, nights, per_hour):
 
             def night(n):
                 log = os.path.join(root, 'logs', f'wideband_{lst}_{G}_{n}.log')
+                # a call refuses only by the engine's own 'REFUSED: ...' exit; its REFUSED-INCOMPLETE / REFUSED-BAND-RULE
+                # lines are item outcomes, so a crash after them stays an error
                 results[n] = (log,) + engine(script, ['--root', root, '--x2-root', x2, '--lst', lst, '--groups', G,
-                                                      '--nights', n], py, log, unit=u)
+                                                      '--nights', n], py, log, unit=u, refusal_text=('REFUSED:',))
             parallel(night, run_n, ctx.workers or S.WIDEBAND_PARALLEL)
-            nwin = 0
+            nwin = n_one = 0
+            tally = {'windows': 0, 'skipped': 0, 'band_rule': 0, 'incomplete': 0}
+            u.meta['wideband_counts'] = {}
             for n in run_n:
                 if n not in results:
                     raise RuntimeError(f'wideband {G} {n}: the engine call did not complete (see the run log)')
                 log, res, lines = results[n]
                 if not res.ok:
-                    why = refusal_line(lines, res)
+                    why = refusal_line([l for l in lines if not l.strip().startswith(_WB_ITEM_LINES)], res)
                     if res.refused:
                         u.refuse(f'wideband {G} {n}: {why} (log {log})')
                     raise RuntimeError(f'wideband {G} {n} failed: {why} (log {log})')
-                for l in lines:
-                    q = re.match(r'^WIDEBAND (\S+) (\S+) (\S+) w(\d) members=', l)
-                    if q:
-                        k = int(q.group(4))
-                        nwin += 1
-                        for St in ('I', 'V'):
-                            b = f'sublst_{lst}_{n}_{G}_{St}_w{k}'
-                            for d, sfx in ((root, '.fits'), (root, '_pb.fits'), (root, '_nframes.fits'),
-                                           (root, '_resid_loo.fits'), (x2, '_resid_loo.fits')):
-                                p = os.path.join(d, f'{lst}_{n}', G, St, b + sfx)
-                                if not (os.path.exists(p) and mtime(p) >= t0 - 2):
-                                    raise RuntimeError(f'wideband reported "{l.strip()[:120]}" but did not write {p}')
-                                u.add_output(p, 'sublst_wideband')
-                    elif l.startswith('SKIP '):
-                        u.note(l.strip()[:300])
-                    elif l.startswith('REFUSED-BAND-RULE '):        # the engine's own band-rule refusal (clv15 6f5fb31)
-                        u.refuse_item(os.path.join(root, f'{lst}_{n}', G), l.strip()[:300], gate='exclusions')
-            u.note(f'{nwin} wideband {G} window(s) over {len(run_n)} night(s)')
+                try:
+                    o = wideband_outcome(lines, lst, n, G)
+                except ValueError as e:
+                    raise RuntimeError(f'wideband {G} {n}: the engine log is not understood - {e} (log {log})')
+                u.meta['wideband_counts'][n] = o['counts']
+                for kk in tally:
+                    tally[kk] += o['counts'][kk]
+                for k, built, _members, l in o['windows']:
+                    nwin += 1
+                    n_one += len(built) == 1
+                    for St in built:                 # a window built in one Stokes only has that Stokes' products only
+                        for p in wideband_products(root, x2, lst, n, G, St, k):
+                            if not (os.path.exists(p) and mtime(p) >= t0 - 2):
+                                raise RuntimeError(f'wideband reported "{l[:120]}" but did not write {p}')
+                            u.add_output(p, 'sublst_wideband')
+                for St, k, _missing, l in o['incomplete']:
+                    # S-G9 required members (clv15 582c92e): no wideband from a partial set, 18 MHz the one exception. A
+                    # product of an earlier run left in that (window, Stokes) is stale - the tree would pair it with this run's
+                    # other Stokes - so it refuses (S-G12), never left beside this run's products
+                    ps = wideband_products(root, x2, lst, n, G, St, k)
+                    stale = [p for p in ps if os.path.lexists(p)]
+                    if stale:
+                        u.refuse(f'S-G12 {len(stale)} product(s) of an earlier run in a (window, Stokes) this run refused as '
+                                 f'incomplete, e.g. {stale[0]} ({l[:160]}): move them aside and re-run')
+                    u.refuse_item(ps[0], l[:300], gate='S-G9')
+                for l in o['skipped']:
+                    u.note(l[:300])
+                for l in o['band_rule']:                        # the engine's own band-rule refusal (clv15 6f5fb31)
+                    u.refuse_item(os.path.join(root, f'{lst}_{n}', G), l[:300], gate='exclusions')
+            u.note(f'{nwin} wideband {G} window(s) over {len(run_n)} night(s)'
+                   + (f', {n_one} built in one Stokes only' if n_one else '')
+                   + (f'; {tally["incomplete"]} (night, window, Stokes) refused as incomplete (S-G9: a required member lacks '
+                      f'a product; 18 MHz the one exception)' if tally['incomplete'] else ''))
+            why0 = (f'{tally["incomplete"]} (night, window, Stokes) refused as incomplete (a required member lacks a product), '
+                    f'{tally["skipped"]} window(s) skipped (fewer than {S.WIDEBAND_MIN_MEMBERS} members), '
+                    f'{tally["band_rule"]} night(s) refused under the band rule; REFUSED-INCOMPLETE / SKIP lines in the logs')
             if nwin == 0 and not per_hour:
-                u.refuse(f'S-G10 no wideband {G} windows over {lst} (nocat:261)')
+                u.refuse(f'S-G10 no wideband {G} windows over {lst} (nocat:261): {why0}')
             if nwin == 0:
-                raise NoInput(f'no wideband {G} window for {",".join(run_n)} (fewer than {S.WIDEBAND_MIN_MEMBERS} members '
-                              f'with every product in each window; SKIP lines in the logs)')
+                raise NoInput(f'no wideband {G} window for {",".join(run_n)}: {why0}')
         report(u)
 
     for G in groups:              # one group at a time; its nights run WIDEBAND_PARALLEL at a time (nocat:258)
