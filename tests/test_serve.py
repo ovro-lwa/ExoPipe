@@ -10,7 +10,11 @@ Synthetic data under /tmp/exopipe3_tests_serve/ (removed at the end):
      on a second copy; the two trees must be byte-identical (queues, views, unions). The HOLD-rule and journal-append ports
      likewise against their heredocs.
   2. the D9 residual (own-Stokes review_dir), the pages-merge check, the exclusion gate keyers and verdicts, hub registry
-     edits, the generation-mix gate, every content test (positive and negative).
+     edits, the generation-mix gate, every content test (positive and negative). THE HUB PAGE (exopipe_ops 4c42f91, Gregg
+     2026-10-27): production's build_review_hub.py (read at run time, its hub directory replaced) and lib/serve/hub.render
+     write the same page and registry, byte for byte; the content test rejects a tunnel line, the earlier layout, a stale
+     page. THE MULTIPLES CHAIN (same commit): the singles pages' --mchain-* arguments, the App probe (the server's own
+     loader) with the chain, the chain refusals, the exclusion gate over the chain.
   3. process control on high ports (>= 28700, never a production port): a stand-in review server (a script named
      classify_transients.py in the scratch tree), listeners, readiness, exact-pid stop, replace, inspection twin,
      --restart through the CLI, served_page / stopped_page tests.
@@ -18,9 +22,11 @@ Synthetic data under /tmp/exopipe3_tests_serve/ (removed at the end):
   5. (review 2026-10-13) a refused stage stops the later ones (deep G2, sub-LST G8 / G11, snapshot G17), the in-place
      exclusion gate and core.exclusions agree, the forced switch probes before it stops the old server.
 READ-ONLY checks on production: the planned argv of every page against the live servers (titles' served time taken from
-the live argv), `serve --tier deep --run P3S5 --dry-run`, content tests on real queues and views.
+the live argv), the planned multiples-chain arguments against the live two-port registry entries, `serve --tier deep --run
+P3S5 --dry-run`, content tests on real queues and views and on the review hub.
 """
 import csv
+import glob
 import json
 import os
 import shutil
@@ -34,6 +40,7 @@ os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 os.environ.setdefault('EXOPIPE3_SITE', '/lustre/gh/main/exopipe_ops/exopipe3_site.py')
 T = '/tmp/exopipe3_tests_serve'
 OPS = '/lustre/gh/main/exopipe_ops'
+TWO_PORT_REGISTRY = '/lustre/gh/main/phase3/serve/registry.json'   # the live review server's pages (read only)
 PY = '/opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3'
 BASE_PORT = 28700            # the stand-in servers bind 28700-28899 (production 8765-8801, parity offset >= 1000 -> 9765+)
 
@@ -202,6 +209,32 @@ def make_deep(U):
     t = time.time()
     for f in os.listdir(f'{U}/source_catalogs'):
         os.utime(f'{U}/source_catalogs/{f}', (t - 100, t - 100) if '_pages_index_' in f else (t, t))
+
+
+def add_fork(U, ST, rows):
+    """Add a deep multiples fork for Stokes ST to the synthetic run U (make_deep gives V one; I has none, the G3 case):
+    the wideband fork tier <ST>_fwb with rows [(J-name, lst, date, n_det)] in Red, as make_deep writes V's. The new page
+    index keeps the oldest index mtime, so the pages merge stays current."""
+    fsurv = [dict(rank=f'rank{n:04d}', source_id=j, identity_id=j, band='Red', n_det=nd,
+                  best_cand_id=f'{ST}D_{lst}_{date}_Red_{n:04d}', best_date=date, best_snr=10.0 - n, review_dir='',
+                  snr_rep=6.0 - n) for n, (j, lst, date, nd) in enumerate(rows, 1)]
+    wcsv(f'{U}/source_catalogs_{ST}_fwb/Red_sources_survivors.csv', SURV, fsurv)
+    wcsv(f'{U}/source_catalogs_{ST}_fwb/Red_source_members.csv', MEM,
+         [dict(source_id=r['source_id'], band='Red', cand_id=r['best_cand_id'], det_date=r['best_date']) for r in fsurv])
+    wcsv(f'{U}/source_catalogs_{ST}_fwb/Red_sources_master.csv', MASTER,
+         [dict(source_id=r['source_id'], band='Red', ra=1) for r in fsurv])
+    fp = [pid(j, lst, date, 'Red') for j, lst, date, nd in rows]
+    t_idx = min(os.path.getmtime(p) for p in glob.glob(f'{U}/source_catalogs/*_pages_index_*.csv'))
+    wcsv(f'{U}/source_catalogs/pages_input_{ST}_fwb.csv', PIN,
+         [dict(_sid=j, lst=lst, date=date, band='Red', n_det=nd, snr=10.0 - n) for n, (j, lst, date, nd) in enumerate(rows, 1)])
+    with open(f'{U}/judgements/queue_p3s3_{ST}_fwb_raw.txt', 'w') as f:
+        f.write('# queue_name: i14_posthoc_std7\n' + '\n'.join(fp) + '\n')
+    for p_ in fp:
+        touch_png(U, f'candidates/I/{p_}')
+    ix = f'{U}/source_catalogs/Red_pages_index_{ST}_fwb.csv'
+    wcsv(ix, IDX, [dict(source_id=p_, band='Red', rank=n, review_dir=f'candidates/I/{p_}') for n, p_ in enumerate(fp, 1)])
+    os.utime(ix, (t_idx, t_idx))
+    return fp
 
 
 def test_deep_ports():
@@ -654,7 +687,152 @@ def test_hub():
     hub.remove_tiers(reg, ('10-min-sublst',))
     assert '10-min-sublst' not in reg['V']
     assert hub.tunnel_extra_with(reg, [8800]) is None and hub.tunnel_extra_with(reg, [8801, 18766]) == [8800, 8801]
-    ok('hub registry: --set rule, retired tier removal, tunnel_extra union (button ports not duplicated)')
+    reg['V']['10-min-forced'] = {'href': '/s/forced_tiers/10min_V.html', 'live': True}     # a static site: no port
+    assert hub.tunnel_extra_with(reg, [8802]) == [8800, 8802]
+    ok('hub registry: --set rule, retired tier removal, tunnel_extra union (button ports not duplicated; an href entry '
+       'has no port)')
+
+
+def _hub_registry():
+    """A registry with every case the 2026-10-27 page distinguishes (build_review_hub.py, exopipe_ops 4c42f91)."""
+    def e(port, run, generation='gen', served='2026-10-31 10:27 UT', live=True):
+        return dict(port=port, run=run, generation=generation, served=served, live=live)
+    return {'round2': {'port': 8767, 'label': 'Round-2 (v1 masters, frozen)'},
+            'V': {'1-hour': e(8766, 'Run_X', generation='generation 4 (Run_20260909_000000)'),
+                  '1-hour-multiples': e(8772, 'Run_X'),                                  # no button (Gregg 2026-10-27)
+                  '1-hour-forced': e(9122, 'Run_F', generation='forced <deep> & "quoted" HWJ'),   # title escaped
+                  '10-min': e(8787, 'Run_SLSTB', generation='LSTs: 00h 01h'),
+                  '10-min-forced': {'href': '/s/forced_tiers/10min_V.html?x=1&y=2', 'run': 'Run_G', 'live': False,
+                                    'note': 'awaiting the tier evaluations'},          # a static site, not yet served
+                  '10-min-groupB-preview': e(9301, 'Run_P'),                            # no button
+                  '1-min': e(8781, 'Run_SNAPB'),
+                  '1-min-comb': e(8988, 'Run_SNAPCOMB', generation='COMBINED VIEW', served='2026-10-28 02:21 UT'),  # wins
+                  '10-sec': e(8779, 'Run_SNAPB'),
+                  '10-sec-comb': e(8986, 'Run_SNAPCOMB', live=False),                   # not live: the tier's own entry
+                  '10-sec-B6X': e(9070, 'Run_SNAPB6X')},                                # a batch: no button
+            'I': {'1-hour': e(8768, 'Run_X', served='', live=False),                    # "served not yet", greyed
+                  '10-sec': e(8780, 'Run_SNAPB'),
+                  '10-sec-forced': e(8785, 'Run_F')},                                   # I 10-min, 1-min: placeholders
+            'tunnel_extra': [8800, 8801]}
+
+
+def _registry_matches(path, **ctx):
+    return {x['name']: x for x in validate.run('hub_page', path, **ctx)}['hub_page.registry_matches']
+
+
+def _prod_hub(D, args=(), script=None):
+    """Production's build_review_hub.py (read at run time) with its hard-coded hub directory replaced by D; returns rc,
+    output. ``script``: another version's text (e.g. the layout before 4c42f91)."""
+    code = script if script is not None else open(f'{OPS}/build_review_hub.py').read()
+    needle = "D = '/data07/gh/phase3/transients/review_hub'"
+    assert code.count(needle) == 1, 'build_review_hub.py changed its hub directory line: update the test'
+    return run_heredoc(code.replace(needle, f'D = {D!r}'), list(args))
+
+
+def test_hub_page():
+    """THE HUB PAGE (Gregg 2026-10-27; exopipe_ops 4c42f91): lib/serve/hub.render IS the page production's
+    build_review_hub.py writes (run here on scratch registries), its --set and --tunnel-extra registry writes equal
+    hub.apply_set / tunnel_extra_with; the content test passes on such a page and fails on a page with a tunnel line, the
+    previous layout, a stale page or a malformed entry; a parity serve writes the registry and the page under --out."""
+    from types import SimpleNamespace
+    D = f'{T}/hub_prod'
+    os.makedirs(D)
+    reg = _hub_registry()
+    with open(f'{D}/registry.json', 'w') as f:
+        json.dump(reg, f, indent=1)
+    rc, out = _prod_hub(D)
+    assert rc == 0, out
+    page = open(f'{D}/index.html').read()
+    when = hub.page_generated(page)
+    assert when and hub.render(json.load(open(f'{D}/registry.json')), when) == page, \
+        hub.first_difference(hub.render(reg, when or ''), page)
+    for must in ('>1-hour</a>', 'href="http://localhost:8988/"', 'href="http://localhost:8779/"',
+                 'href="/s/forced_tiers/10min_V.html?x=1&amp;y=2"', '&lt;deep&gt; &amp; &quot;quoted&quot;',
+                 '<span class="b off" title="not yet served">1-min</span>', 'served not yet', '/s/jupiter/', '/s/planets/'):
+        assert must in page, must
+    for never in ('8772', '9301', '9070', '8986', 'Tunnel', 'ssh ', '8767', 'multiples'):
+        assert never not in page, never
+    # --set and --tunnel-extra: the registry production writes = the refactor's rule (byte for byte), the page = render()
+    ref = json.load(open(f'{D}/registry.json'))
+    kvs = ['run=Run_SLSTB', 'generation=new chain, LSTs: 00h 01h 02h', 'served=2026-11-02 01:00 UT', 'live=1', 'port=8787']
+    rc, out = _prod_hub(D, ['--set', 'I', '10-min'] + kvs)
+    assert rc == 0, out
+    hub.apply_set(ref, 'I', '10-min', kvs)
+    hub._dump(ref, f'{T}/hub_ref/registry.json')
+    assert open(f'{D}/registry.json').read() == open(f'{T}/hub_ref/registry.json').read()
+    te = hub.tunnel_extra_with(ref, [18800])
+    rc, out = _prod_hub(D, ['--tunnel-extra', ','.join(map(str, te))])
+    assert rc == 0, out
+    ref['tunnel_extra'] = te
+    hub._dump(ref, f'{T}/hub_ref/registry.json')
+    assert open(f'{D}/registry.json').read() == open(f'{T}/hub_ref/registry.json').read()
+    page = open(f'{D}/index.html').read()
+    assert page == hub.render(ref, hub.page_generated(page)) and '18800' not in page
+    ok('hub page: lib/serve/hub.render == the page production\'s build_review_hub.py writes (V over I; per tier its page - '
+       'the live combined view first - and its forced button, placeholders while unserved; three links; no multiples / '
+       'preview / batch button, no Round-2, no tunnel line), and its --set / --tunnel-extra registry writes, byte for byte')
+    # the content test on the production-written hub
+    exp = [('I', '10-min', dict(kv.split('=', 1) for kv in kvs))]
+    r = {x['name']: x for x in validate.run('hub_page', f'{D}/index.html', expected=exp)}
+    assert r['hub_page.registry_matches']['passed'], r
+    assert _registry_matches(f'{D}/registry.json', expected=exp)['passed']
+    exp_bad = [('I', '10-min', dict(exp[0][2], served='2026-11-02 02:00 UT'))]
+    assert not _registry_matches(f'{D}/index.html', expected=exp_bad)['passed']
+
+    def failing(label, why, edit_reg=None, script=None, edit_page=None):
+        """The content test on a copy of the hub: the registry edited, then (script) the page written by another version
+        of build_review_hub.py, then the page edited; it must fail, saying ``why``."""
+        d2 = f'{T}/hub_neg_{label}'
+        shutil.copytree(D, d2)
+        if edit_reg:
+            g = json.load(open(f'{d2}/registry.json'))
+            edit_reg(g)
+            hub._dump(g, f'{d2}/registry.json')
+        if script is not None:
+            rc_, out_ = _prod_hub(d2, script=script)
+            assert rc_ == 0, out_
+        if edit_page:
+            p_ = f'{d2}/index.html'
+            text = edit_page(open(p_).read())
+            open(p_, 'w').write(text)
+        res = _registry_matches(f'{d2}/index.html')
+        assert not res['passed'] and why in res['detail'], (label, res)
+        return res['detail']
+    failing('tunnel', 'is not the page', edit_page=lambda s: s.replace(
+        '</body>', '<div class="note">Tunnel: ssh -YA calim7 -L 8765:127.0.0.1:8765</div>\n</body>'))
+    old = subprocess.run(['git', '-C', OPS, 'show', '4c42f91^:build_review_hub.py'], stdout=subprocess.PIPE, check=True)
+    # the layout before 4c42f91 (a static-site entry has no port there: left out)
+    det = failing('old_layout', 'is not the page', edit_reg=lambda g: g['V'].pop('10-min-forced'),
+                  script=old.stdout.decode())
+    failing('stale', 'is not the page', edit_reg=lambda g: g['V']['1-hour'].update(served='2026-11-02 03:00 UT'))
+    failing('handmade', 'not generated from registry.json',
+            edit_page=lambda s: s.replace(f'Page generated {hub.page_generated(s)} from registry.json', 'Edited'))
+    failing('no_port', 'not an int (and no href)', edit_reg=lambda g: g['I'].update({'1-min': {'run': 'Run_Q', 'live': True}}))
+    ok(f'hub_page.registry_matches: passes on the page production writes (and its expected entries), fails on a tunnel line, '
+       f'the layout before 4c42f91 ({det[:70]}...), a registry changed after the page, a page not generated from the '
+       f'registry and an entry with neither port nor href')
+    # parity: the registry and the page are written under --out, from the production registry (here: the scratch hub)
+    orig = CFG.serve.HUB_DIR
+    CFG.serve.HUB_DIR = D
+    try:
+        plan = SimpleNamespace(parity=True, hub_dir=f'{T}/hub_parity/review_hub')
+        entries = [('V', '1-hour', ['run=Run_TEST', 'generation=generation 4 (Run_20260909_000000)',
+                                    'served=2026-11-02 04:00 UT', 'live=1', 'port=18766'])]
+        R, index, planned = hub.update(plan, entries, remove=('10-sec-B6X',), tunnel=[18800, 18801])
+    finally:
+        CFG.serve.HUB_DIR = orig
+    assert index == f'{plan.hub_dir}/index.html' and R == f'{plan.hub_dir}/registry.json', (R, index)
+    want = json.load(open(f'{D}/registry.json'))
+    hub.apply_set(want, *entries[0])
+    hub.remove_tiers(want, ('10-sec-B6X',))
+    want['tunnel_extra'] = [8800, 8801, 18800, 18801]
+    assert json.load(open(R)) == want and planned[-1] == ['--tunnel-extra', '8800,8801,18800,18801'], planned
+    pp = open(index).read()
+    assert pp == hub.render(want, hub.page_generated(pp)) and 'href="http://localhost:18766/"' in pp
+    r = validate.run('hub_page', index, expected=[(s, t, dict(kv.split('=', 1) for kv in k)) for s, t, k in entries])
+    assert all(x['passed'] for x in r), r
+    ok('hub, parity: registry.json (production\'s + this run\'s --set, the retired tier removed, tunnel_extra) and '
+       'index.html (the page build_review_hub.py would write from it) under --out; hub_page tests pass')
 
 
 # ---- 3. process control with stand-in servers ---------------------------------------------------------------------------
@@ -806,6 +984,199 @@ def test_views_stage():
        f'parity mirror (candidates linked, judgements copied)')
 
 
+def test_mchain():
+    """THE MULTIPLES CHAIN (Gregg 2026-10-27, exopipe_ops 4c42f91): the deep and 10-minute singles pages are served with
+    --mchain-queue (deep: and --mchain-catalog-dir) right after their title, as their two-port registry entries carry
+    them, and no other page is; the review server defines both options; the App probe counts the chain identities that
+    join the page; as production, a page is served with the chain on disk whatever its multiples page became in the same
+    serve (an empty multiples queue, refused G1, leaves an empty chain: the review of 2026-11-02), refused only when its
+    --mchain-queue FILE is absent (the server dies reading it), an absent chain view noted; the sub-LST views write the
+    multi-integration queue for every Stokes they build, as sublst_cumulative.sh:79 does."""
+    import ast
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import common, deep, flow
+    out = f'{T}/mchain_out'
+    plan = planmod.make(_ns(tier='deep', run_label='TEST'), out)
+    assert plan.parity and not plan.gates, plan.gates
+    U = plan.U
+    for pg in plan.pages:
+        a = plan.argv(pg, 'UTC')
+        if pg.kind == 'single':
+            tail = a[a.index('--title') + 2:]
+            assert tail == ['--mchain-queue', f'{U}/judgements/queue_p3s3_{pg.stokes}_multi.txt', '--mchain-catalog-dir',
+                            f'{U}/views/source_catalogs_{pg.stokes}_multi', '--lists-dir', plan.lists_dir], (pg.key, tail)
+        else:
+            assert not [x for x in a if x.startswith('--mchain')], (pg.key, a)
+    p2 = planmod.make(_ns(tier='sublst', lsts='05h'), f'{T}/mchain_sublst_out')
+    B = sublst_build.build_dir(p2)
+    for pg in p2.pages:
+        a = p2.argv(pg, 'UTC', root=B)
+        want = ['--mchain-queue', f'{B}/judgements/queue_p3s3_{pg.stokes}_multi.txt'] if pg.kind == 'single' else []
+        assert a[a.index('--title') + 2:] == want + ['--lists-dir', p2.lists_dir], (pg.key, a[-6:])
+    others = [planmod.make(_ns(tier='snapshot', run_label='Run_SNAPTEST', source='/nowhere', label='t'), f'{T}/mchain_s'),
+              planmod.make(_ns(tier='snapshot', family='forced', forced_tag='20261007'), f'{T}/mchain_f')]
+    assert not [x for p_ in others for pg in p_.pages for x in p_.argv(pg, 'UTC') if x.startswith('--mchain')]
+    tree = ast.parse(open(f'{OPS}/classify_transients.py').read())
+    opts = {n.args[0].value for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, 'attr', '') == 'add_argument'
+            and n.args and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)}
+    assert {'--mchain-queue', '--mchain-catalog-dir'} <= opts, sorted(o for o in opts if 'mchain' in o)
+    ok('multiples chain: deep V/I pages carry --mchain-queue + --mchain-catalog-dir, sub-LST V/I --mchain-queue, after the '
+       'title (before a parity --lists-dir); no multiples, snapshot or forced page does; classify_transients.py defines both')
+    # the stages below read an exclusion list with no row (the gate is not what they test)
+    from exopipe.phase3.core.exclusions import Exclusions
+    dd = f'{T}/mchain_dd/data_decisions.csv'
+    wcsv(dd, ['lst', 'subband', 'date', 'verdict', 'reason'], [])
+    ex0, orig_fx = Exclusions(dd), exclusion_gate.fresh_exclusions
+    exclusion_gate.fresh_exclusions = lambda: ex0
+    try:
+        # the App probe (the server's own loader, the deep pages' environment) on a synthetic deep run: V's fork has J0001
+        # (a page source) and J0009 (fork only); I has no fork (I-multi refused, G3: no chain written)
+        plan.U_src = f'{T}/deep_base/Run_TEST'
+        run = Run('serve', ['test'], out, CFG, config_sections=None)
+        state = flow.new_state()
+        deep.views_stage(run, plan, state)
+        assert run.units[-1].status == 'done' and 'G3' in state['refused'].get('I-multi', ''), state['refused']
+        V = next(p for p in plan.pages if p.key == 'V')
+        r = servers.app_probe(plan, V, U)
+        c = V.c
+        V.c = {k: v for k, v in c.items() if not k.startswith('mchain')}
+        try:
+            r0 = servers.app_probe(plan, V, U)
+        finally:
+            V.c = c
+        assert (r['n'], r['mchain_ids'], r['n_unexplained']) == (r0['n'] + 1, 2, 0) and r0['mchain_ids'] is None, (r, r0)
+        ok(f'multiples chain: the App probe loads the page as its server does - {r["n"]} index sources with the chain (2 '
+           f'chain identities, the fork-only one joins), {r0["n"]} without')
+        # the test stage: V is served with its chain (inputs of the stage); I's chain queue was never written (I-multi G3) -
+        # its server would die reading it, so I is not served; an absent chain VIEW is only noted (the server skips it)
+        u = flow.test_stage(run, plan, state, 'deep_Run_TEST_test', probe=False)
+        assert u.status == 'done', (u.status, u.reason)
+        why = state['refused'].get('I', '')
+        assert why.startswith('multiples chain: --mchain-queue') and 'is absent' in why, why
+        assert 'V' not in state['refused'], state['refused']
+        assert f'{U}/judgements/queue_p3s3_V_multi.txt' in u.inputs and \
+            f'{U}/views/source_catalogs_V_multi/Red_sources_survivors.csv' in u.inputs, sorted(u.inputs)[:6]
+        V.c = dict(c, mchain_catalog='views/none')
+        try:
+            why_v, notes_v = flow.mchain_check(V, U)
+        finally:
+            V.c = c
+        assert why_v is None and len(notes_v) == 1 and 'is absent' in notes_v[0], (why_v, notes_v)
+        ok('multiples chain: a page whose --mchain-queue file is absent is not served (I: I-multi refused G3 wrote no chain - '
+           'its server would die reading it); an absent --mchain-catalog-dir is noted and the page served; the chain queue '
+           'and view are test-stage inputs')
+        # the review's scenario (2026-11-02): the fork lists nothing - an empty deep multiples queue, V-multi refused (G1) -
+        # and the V page is served all the same, with an empty chain, as production serves it
+        src2 = f'{T}/mchain_empty_src/Run_TEST'
+        shutil.copytree(f'{T}/deep_base/Run_TEST', src2)
+        open(f'{src2}/judgements/queue_p3s3_V_fwb_raw.txt', 'w').write('# queue_name: i14_posthoc_std7\n')
+        pe = planmod.make(_ns(tier='deep', run_label='TEST', pages='V,V-multi'), f'{T}/mchain_empty_out')
+        pe.U_src = src2
+        rune = Run('serve', ['test'], pe.out, CFG, config_sections=None)
+        ste = flow.new_state()
+        deep.views_stage(rune, pe, ste)
+        assert ste['refused'].get('V-multi', '').startswith('G1 empty queue'), ste['refused']
+        ue = flow.test_stage(rune, pe, ste, 'deep_Run_TEST_test')
+        assert ue.status == 'done' and 'V' not in ste['refused'], (ue.status, ue.reason, ste['refused'])
+        xv = ste['expected']['V']
+        assert (xv['n'], xv['mchain_ids'], xv['n_unexplained']) == (r0['n'], 0, 0), xv
+    finally:
+        exclusion_gate.fresh_exclusions = orig_fx
+    ok(f'multiples chain: an empty deep multiples queue (V-multi refused, G1) leaves the V page served with an empty chain '
+       f'({xv["n"]} index sources, 0 chain identities - App probe), as production serves it')
+    # sub-LST: the multi-integration queue is written whenever the Stokes is built (here the V singles page alone)
+    p5 = planmod.make(_ns(tier='sublst', lsts='04h,05h,06h', pages='V'), f'{T}/mchain_sublst_views')
+    B5 = sublst_build.build_dir(p5)
+    shutil.copytree(f'{T}/sub_base/Run_SLSTB.build', B5)
+    run5 = Run('serve', ['test'], p5.out, CFG, config_sections=None)
+    st5 = flow.new_state()
+    u5 = sublst_build.views_stage(run5, p5, st5)
+    assert u5.status == 'done' and not st5['refused'], (u5.status, u5.reason, st5)
+    assert common.has_j_line(f'{B5}/judgements/queue_p3s3_V_multi.txt') and not os.path.exists(f'{B5}/source_catalogs_V_multi')
+    assert not os.path.exists(f'{B5}/judgements/queue_p3s3_I_multi.txt')
+    ok('multiples chain, sub-LST: the views stage writes the multi-integration queue of every Stokes it builds (the singles '
+       'page reads it after the swap), the multiples view only for a served multiples page')
+
+
+def test_hub_stage():
+    """The hub stage as production's serves set the hub today: the entries of the pages served and - production's
+    10-minute two-port path (sublst_cumulative.sh:298-299) - the multiples entry of a sub-LST page not served for NO-INPUT
+    only; a page refused for any other reason gets none; no separate inspection hub page and no hub HTTP server (both
+    retired by production on 2026-10-27: the review hub is served on both listeners of the two-port server)."""
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow
+    D = f'{T}/hubstage_prod'
+    hub._dump(_hub_registry(), f'{D}/registry.json')
+    plan = planmod.make(_ns(tier='sublst', lsts='04h,05h,06h'), f'{T}/hubstage_out')
+    run = Run('serve', ['test'], plan.out, CFG, config_sections=None)
+    state = flow.new_state()
+    state['served'].update({'V': ('stub', {}), 'I': ('stub', {})})
+    state['refused'].update({'V-multi': 'NO-INPUT: V: no multi-integration sources - multiples page not served',
+                             'I-multi': 'G17 serve-time exclusion gate: 1 rows ... - NOT served'})
+    orig = CFG.serve.HUB_DIR
+    CFG.serve.HUB_DIR = D                          # the parity hub starts from this scratch 'production' registry
+    try:
+        flow.hub_stage(run, plan, state, remove=CFG.serve.HUB_REMOVE_TIERS['sublst'], utc='2026-11-02 05:00 UT')
+    finally:
+        CFG.serve.HUB_DIR = orig
+    u = run.units[-1]
+    assert u.status == 'done', (u.status, u.reason, u.failed_tests()[:2])
+    reg = json.load(open(f'{plan.out}/review_hub/registry.json'))
+    for S_, t, port in (('V', '10-min', 28787), ('I', '10-min', 28788), ('V', '10-min-multiples', 28789)):
+        e = reg[S_].get(t) or {}
+        assert (e.get('port'), e.get('served'), e.get('run')) == (port, '2026-11-02 05:00 UT', 'Run_SLSTB'), (S_, t, e)
+    assert '10-min-multiples' not in reg['I'], reg['I'].get('10-min-multiples')
+    assert hub.SERVED_NOTE in u.notes and not os.path.exists(f'{plan.out}/inspection_hub'), u.notes
+    assert not [c for c in u.meta.get('legacy_calls', []) if 'build_inspection_hub' in ' '.join(map(str, c.get('argv', [])))]
+    ok('hub stage: the served pages\' entries, and the 10-minute multiples entry of a page not served for NO-INPUT only (as '
+       'production\'s two-port path); a page refused otherwise gets none; no inspection hub page, no hub HTTP server')
+
+
+def test_exclusion_gate_mchain():
+    """The serve-time exclusion gate reads a page's multiples chain as its server does (classify_transients.load_sources
+    extra_dir, exopipe_ops 4c42f91): the chain queue's page ids and, from the chain's view, only the identities the page's
+    own catalogue does not hold - their rows, page folders and members; a held identity's chain rows are never read."""
+    from exopipe.phase3.core.exclusions import Exclusions
+    U = f'{T}/scan_chain/Run_X'
+    C, M = f'{U}/source_catalogs_V', f'{U}/views/source_catalogs_V_multi'
+    row = dict(rank=1, identity_id='', n_det=2, best_date='', best_snr=9, snr_rep=4, band='64MHz')
+    wcsv(f'{C}/64MHz_sources_survivors.csv', SURV, [dict(row, source_id='JA', best_cand_id='VD_04h_2025-01-01_64MHz_0001',
+                                                         review_dir='candidates/V/pa')])
+    wcsv(f'{M}/64MHz_sources_survivors.csv', SURV, [
+        dict(row, source_id='JA', best_cand_id='VD_06h_2025-01-03_64MHz_0001', review_dir='candidates/V/pa2'),   # held
+        dict(row, source_id='JB', best_cand_id='VD_07h_2025-01-04_64MHz_0002', review_dir='candidates/V/pb')])   # chain only
+    wcsv(f'{M}/64MHz_source_members.csv', MEM, [dict(source_id='JA', band='64MHz', cand_id='VD_06h_2025-01-03_64MHz_0003'),
+                                               dict(source_id='JB', band='64MHz', cand_id='VD_07h_2025-01-04_64MHz_0004')])
+    for d, png in (('pa', '04h_2025-01-01'), ('pa2', '06h_2025-01-03'), ('pb', '07h_2025-01-04')):
+        os.makedirs(f'{U}/candidates/V/{d}')
+        open(f'{U}/candidates/V/{d}/rank00001_{png}_64MHz.png', 'w').close()
+    os.makedirs(f'{U}/judgements')
+    q, mq = f'{U}/judgements/queue_p3s3_V.txt', f'{U}/judgements/queue_p3s3_V_multi.txt'
+    open(q, 'w').write('JA_04h_2025-01-01_64MHz\n')
+    open(mq, 'w').write('JA_04h_2025-01-01_64MHz\nJB_07h_2025-01-04_64MHz\n')
+
+    def excluding(lst, date):
+        dd = f'{T}/scan_chain/dd_{lst}.csv'
+        wcsv(dd, ['lst', 'subband', 'date', 'verdict', 'reason'],
+             [dict(lst=lst, subband='64MHz', date=date, verdict='exclude', reason='x')])
+        return Exclusions(dd)
+    s_held = exclusion_gate.scan_page(U, C, q, ex=excluding('06h', '2025-01-03'), mchain_queue=mq, mchain_catalog=M)
+    assert not s_held.hits, s_held.summary()
+    ex3 = excluding('07h', '2025-01-04')
+    s_b = exclusion_gate.scan_page(U, C, q, ex=ex3, mchain_queue=mq, mchain_catalog=M)
+    assert sorted(h[0] for h in s_b.hits) == ['candidates/V/pb/rank00001_07h_2025-01-04_64MHz.png',
+                                              'judgements/queue_p3s3_V_multi.txt',
+                                              'views/source_catalogs_V_multi/64MHz_source_members.csv',
+                                              'views/source_catalogs_V_multi/64MHz_sources_survivors.csv'], s_b.summary()
+    assert not exclusion_gate.scan_page(U, C, q, ex=ex3).hits
+    argv = [PY, 'classify_transients.py', '--run', U, '--queue', q, '--catalog-dir', C, '--port', '1', '--title', 't',
+            '--mchain-queue', mq, '--mchain-catalog-dir', M]
+    assert sorted(exclusion_gate.scan_server_argv(argv, ex=ex3).hits) == sorted(s_b.hits)
+    ok('exclusion gate per page, multiples chain: the chain-only identity\'s survivor row, panel and member and the chain '
+       'queue line are found (4 hits); the held identity\'s chain rows are never read (0 hits on their night); a running '
+       'server\'s argv is scanned the same way')
+
+
 def test_exclusion_gate_per_page_stage():
     """The test stage gates PER PAGE (Gregg 2026-10-14): a page whose server reads a row on an excluded night is refused
     (its start unit refuses; its current server keeps running), the other pages are not; a stale file the server never
@@ -817,6 +1188,11 @@ def test_exclusion_gate_per_page_stage():
     wcsv(dd, ['lst', 'subband', 'date', 'verdict', 'reason'],          # the V pages' J0002 (Red) and J0006 (23MHz)
          [dict(lst='05h', subband='23MHz', date='2025-01-02', verdict='exclude', reason='x')])
     ex = Exclusions(dd)
+    # a run with both multiples forks, as production's (each singles page serves its Stokes' chain, 4c42f91): make_deep's
+    # (V only) plus an I fork - J0007 (an I page source) and J0010 (fork only), on nights the exclusion leaves alone
+    src = f'{T}/perpage_src/Run_TEST'
+    shutil.copytree(f'{T}/deep_base/Run_TEST', src)
+    add_fork(src, 'I', [('J0007+0007', '08h', '2025-01-05', 2), ('J0010+0010', '09h', '2025-01-06', 1)])
     orig, ruled = exclusion_gate.fresh_exclusions, CFG.serve.EXCLUSION_GATE_TIERS
     exclusion_gate.fresh_exclusions = lambda: ex
     try:
@@ -825,11 +1201,12 @@ def test_exclusion_gate_per_page_stage():
             a = _ns(tier='deep', run_label='TEST')
             out = f'{T}/perpage_out_{label}'
             plan = planmod.make(a, out)
-            plan.U_src = f'{T}/deep_base/Run_TEST'
+            plan.U_src = src
             run = Run('serve', ['test'], out, CFG, config_sections=None)
             state = flow.new_state()
             deep.views_stage(run, plan, state)
             pre = dict(state['refused'])
+            assert not pre, pre                             # both forks: every page's queue and view built
             # a stale file in the I page's folder that its server never reads, holding a row on the excluded night
             wcsv(f'{plan.U}/source_catalogs_I/Red_pages_index_I.csv', IDX,
                  [dict(source_id='J0002+0002_05h_2025-01-02_Red', band='Red', rank=1, review_dir='')])
@@ -879,10 +1256,12 @@ def test_exclusion_gate_per_page_stage():
                           'served': {}}
                 run3 = Run('serve', ['test'], out, CFG, config_sections=None)
                 servers.replace = lambda *a_, **k_: (_ for _ in ()).throw(AssertionError('I was replaced'))
+                all_pages, plan.pages = plan.pages, [p_ for p_ in plan.pages if p_.key == 'I']
                 try:
                     flow.start_stage(run3, plan, state3)
                 finally:
                     servers.replace = orig_rep
+                    plan.pages = all_pages
                     wcsv(mem, list(orows[0].keys()), orows)
                 ui = next(x for x in run3.units if x.meta.get('page') == 'I')
                 assert ui.status == 'refused' and 'G17 serve-time exclusion gate at start' in ui.reason, (ui.status, ui.reason)
@@ -1119,6 +1498,38 @@ def test_production_readonly():
        f'script path; served time and LST list taken from the live title'
        + (f'; served from frozen tree(s) {sorted(os.path.basename(r) for r in frozen)} whose server script is the live one '
           f'(B-51: the branch serves the live tree in the window)' if frozen else '') + ')')
+    # the pages as production serves them: since 2026-10-22 the review pages are entries of the two-port server's registry
+    # (no per-port server, so the loop above compares none of them). The planned argv after the script, without --port (the
+    # two-port server routes by path; the title's served time and LST list taken from the entry), and the environment
+    # (but NUMPY_MADVISE_HUGEPAGE, which the two-port server sets for every page, run_two_port.sh:5) equal each deep and
+    # sub-LST entry's - the multiples chain (4c42f91), the deep pages' environment (2026-10-30) and the deep multiples
+    # pages' title (2026-10-31) included. Read only.
+    entries = {e.get('legacy_port'): e for e in json.load(open(TWO_PORT_REGISTRY))['pages'] if e.get('kind') == 'review'}
+    n_pages, n_chain = 0, 0
+    for tier, run in (('deep', 'P3S5'), ('sublst', None)):
+        a = argparse.Namespace(tier=tier, run_label=run, port_offset=0, pages=None, stokes=None, lsts=None, label=None,
+                               source=None, family=None, forced_tag=None, restart=None, stop=None)
+        p = planmod.make(a, CFG.paths.TRANSIENTS_ROOT)
+        for pg in p.pages:
+            e = entries.get(pg.port)
+            if e is None:
+                continue
+            t = procs.argv_value(e['argv'], '--title') or ''
+            m = re.search(r'served (\d{4}-\d\d-\d\d \d\d:\d\d UT)', t)
+            if tier == 'sublst':
+                p.lsts_text = re.search(r'LSTs ([0-9h ]+?) - ', t).group(1)
+            mine = p.argv(pg, m.group(1) if m else '')
+            i = mine.index('--port')
+            mine = mine[2:i] + mine[i + 2:]
+            assert mine == e['argv'], (tier, pg.key, [x for x in zip(mine, e['argv']) if x[0] != x[1]][:3])
+            env = {k: v for k, v in p.server_env_extra().items() if k != 'NUMPY_MADVISE_HUGEPAGE'}
+            assert env == e['env'], (tier, pg.key, env, e['env'])
+            n_pages += 1
+            n_chain += '--mchain-queue' in mine
+    assert n_pages == 8 and n_chain == 4, (n_pages, n_chain)
+    ok(f'planned argv and environment == the live two-port registry entries on {n_pages} deep and sub-LST pages (multiples '
+       f'chain on {n_chain}: p8766/p8768 queue + view, p8787/p8788 queue; the deep pages\' P3_LOC_COMMON_LINKS / '
+       f'P3_XTIER_FRAME; the deep multiples pages\' title), read only')
     env = dict(os.environ, PYTHONPATH=ROOT)
     p = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--tier', 'deep', '--run', 'P3S5', '--dry-run', '--cores', 'none'],
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
@@ -1129,8 +1540,10 @@ def test_production_readonly():
     for path in (f'{D}/Run_P3S5/judgements/queue_p3s3_V_multi.txt', f'{D}/Run_SLSTB/judgements/queue_p3s3_V.txt'):
         assert all(r['passed'] for r in validate.run('served_queue', path)), path
     assert all(r['passed'] for r in validate.run('served_view', f'{D}/Run_SLSTB/source_catalogs_V'))
-    assert all(r['passed'] for r in validate.run('hub_page', f'{D}/review_hub/index.html'))
-    ok('content tests on real products (read-only): Run_P3S5 V multiples queue, Run_SLSTB V queue and view, the review hub')
+    hr = validate.run('hub_page', f'{D}/review_hub/index.html')
+    assert all(r['passed'] for r in hr), hr
+    ok('content tests on real products (read-only): Run_P3S5 V multiples queue, Run_SLSTB V queue and view, the review hub '
+       '(index.html is the page lib/serve/hub.render makes from registry.json, byte for byte)')
 
 
 def main():
@@ -1148,8 +1561,12 @@ def main():
         test_exclusion_gate_scan_page()
         test_exclusion_gate_server_mirrors()
         test_hub()
+        test_hub_page()
+        test_hub_stage()
+        test_exclusion_gate_mchain()
         test_processes()
         test_views_stage()
+        test_mchain()
         test_exclusion_gate_per_page_stage()
         test_stage_halting()
         test_inplace_gate_agrees()

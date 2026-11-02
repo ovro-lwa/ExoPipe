@@ -25,7 +25,6 @@ SCRIPTS = {
     'merge_review_dir': ('p3s3_merge_review_dir.py', 'sublst_serve.sh:52 (sub-LST cumulative build; deep: pages owns it)'),
     'multiples_fork': ('multiples_fork.py', 'p3s3_serve_multiples.sh:136 (served <S>)'),
     'build_review_hub': ('build_review_hub.py', 'p3s3_serve_stokes.sh:84 and every serve launcher'),
-    'build_inspection_hub': ('build_inspection_hub.py', 'run_inspection_hub.sh:5'),
     'deep_carry': ('deep_carry_judgements.py', 'deep_carry_judgements.py docstring (by hand, 2026-10-06)'),
     'snapshot_carry': ('snapshot_carry_judgements.py', 'snapshot_serve.sh:37; snapshot_rechain_batch.sh:374; '
                                                        'snapshot_forced_serve_20261007.sh:77'),

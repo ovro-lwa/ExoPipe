@@ -206,17 +206,21 @@ def views_stage(run, plan, state):
                 u.refuse(f'G1 empty queue: {Q} - not served (sublst_serve.sh:112)')
             u.add_output(Q, 'served_queue')
             u.add_output(v['dir'], 'served_view', tier='sublst')
+            # the multi-integration queue, for every Stokes built (sublst_cumulative.sh:79 writes both): the multiples page's
+            # queue and the singles page's multiples chain (--mchain-queue, Gregg 2026-10-27), read after the swap
+            QM = f'{B}/judgements/queue_p3s3_{ST}_multi.txt'
+            has_multi = queues.sublst_multi_queue(Q, QM)
+            if has_multi:
+                u.add_output(QM, 'served_queue')
             mp = next((pg for pg in plan.pages if pg.stokes == ST and pg.multi), None)
             if mp is None:
                 continue
-            QM = f'{B}/judgements/queue_p3s3_{ST}_multi.txt'
-            if not queues.sublst_multi_queue(Q, QM):
+            if not has_multi:
                 state['refused'][mp.key] = f'NO-INPUT: {ST}: no multi-integration sources - multiples page not served'
                 u.note(state['refused'][mp.key])
                 continue
             mv = views.sublst_multi_view(B, ST, QM)
             u.note(f'{ST} multi view: {mv["sources"]} sources')
-            u.add_output(QM, 'served_queue')
             u.add_output(mv['dir'], 'served_view', tier='sublst')
         u.meta['refused_pages'] = dict(state['refused'])
     return u
