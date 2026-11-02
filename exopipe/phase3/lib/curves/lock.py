@@ -13,6 +13,9 @@ Checked (module: constant -> config key):
   phase3_snapshot_refastro     LOWRES -> curves.FLOW_LOWRES_PX; FLOWTREE = os.environ.get('P3_SNAP_FLOWTREE', ...) (the step
                                exports paths.SNAPSHOT_FLOW_ROOT under that name)
   phase3_snapshot_chain        SAMPLES -> curves.SAMPLES
+With curves.SEARCH_FRAMES (clv15 55469ba) the extractor's SOURCE TEXT must also hold the option '--search-frames', the
+search's frame-list name curves.SEARCH_FRAME_LIST as its '%s' literal ('noise_%s_%s_median.csv') and the refusal the step
+maps to gate G18 (workers._GATES) - a module without them would fail every pair at its argument parser.
 Not checkable as constants (inline literals in extract(), LC:115-171): the stamp core (|d| <= 2), 1.4826, the in-field
 margin (STAMP // 2 + 2), the 1e-3 deg WCS tolerance, the flow cell size 8.0, the 3-reference minimum, 'master:S'. Their
 mirrors are protected keys; the content tests (lib/curves/tests.py) check the written tables against them.
@@ -92,4 +95,22 @@ def check(clv15_root, C, paths_cfg):
                         f"paths.SNAPSHOT_FLOW_ROOT under that name)")
     if 'P3_LC_WAIT_I_S' not in lit['lc']['__environ_names__']:
         problems.append(f"{MODULES['lc']} no longer reads P3_LC_WAIT_I_S (curves.WAIT_I_TABLE_S is exported under it)")
+    if getattr(C, 'SEARCH_FRAMES', False):
+        problems += search_frames_problems(files['lc'], C.SEARCH_FRAME_LIST)
     return not problems, problems, sorted(files.values())
+
+
+def search_frames_problems(lc_path, list_name):
+    """The extractor's --search-frames contract (clv15 55469ba) in its source text: the option, the frame-list file name
+    (``list_name`` with {sb} / {st} as the module's '%s'), and the refusal message gate G18 is keyed on."""
+    from exopipe.phase3.lib.curves.workers import _GATES
+    try:
+        with open(lc_path) as f:
+            src = f.read()
+    except OSError as e:
+        return [f'{os.path.basename(lc_path)} unreadable ({type(e).__name__}: {e})']
+    need = {"'--search-frames' / \"--search-frames\" option": ('"--search-frames"' in src or "'--search-frames'" in src),
+            f'frame-list literal {list_name.format(sb="%s", st="%s")!r}': list_name.format(sb='%s', st='%s') in src,
+            'the G18 refusal text': any(gate == 'G18' and key in src for key, gate in _GATES)}
+    return [f'{os.path.basename(lc_path)} lacks the {what} of --search-frames (clv15 55469ba) while curves.SEARCH_FRAMES '
+            f'is True' for what, ok in need.items() if not ok]

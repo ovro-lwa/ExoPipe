@@ -7,8 +7,10 @@ Production (snapshot_fleet_node_v9.sh:362-371, snapshot_lightcurve_backfill.sh:6
 Here: the same script and arguments under the site interpreter 'py36' (the production interpreter, Python 3.6.13); PROCS
 subbands at a time, each subband in one thread that runs the Stokes I process and then the Stokes V process (the V pass reads
 FLUXSCAL / NREFSCAL from the I table in the same output directory, LC:180-192; P3_LC_WAIT_I_S = WAIT_I_TABLE_S = 0 because
-the I table exists before V starts). --run-dir is passed only when curves.CHAIN_RUN_DIR is set (production passes none);
---samples-dir only when paths.CLV15_ROOT differs from the script's own directory (its default, LC:257). The core affinity is
+the I table exists before V starts). --search-frames (clv15 55469ba, the 2026-11-01 regeneration) when curves.SEARCH_FRAMES:
+the table holds exactly the search's own frame list (<proto-root>/<cell>/noise_<sb>_<S>_median.csv) - the fleet's and the
+backfill's plain call sample every discovered frame. --run-dir is passed only when curves.CHAIN_RUN_DIR is set (production
+passes none); --samples-dir only when paths.CLV15_ROOT differs from the script's own directory (its default, LC:257). The core affinity is
 inherited from `exopipe3 --cores`. core.legacy.run clears inherited P3_* variables, applies runner.ENV_DEFAULTS
 (NUMPY_MADVISE_HUGEPAGE=0, which the backfill lacked), installs the parity guard in the child under --parity, and records the
 sha1 of every legacy module the child imported (res.fingerprint; added to the unit record as meta 'legacy_code').
@@ -17,8 +19,9 @@ Outcome of one (subband, Stokes) process (``classify``):
   done      exit 0 and the table <out>/<cell>_<sb>_<S>_lightcurves.fits exists
   refused   exit 0 and no table: the module logged '<cell> <sb> <S>: no frames' (LC:106-108) -> G11;
             exit != 0 with the interpreter's final exception line 'RuntimeError: <message>' naming a gate of the module
-            (LC:60 G6, :121 G7, :140 G8, :147 G9, :186 and :240 G10) -> that gate. A V table the module wrote before its
-            inline test raised (LC:235 then :240) is NOT published (production's `cp -n` would ship it).
+            (LC:60 G6, :121 G7, :140 G8, :147 G9, :186 and :240 G10; 55469ba G18: a frame of the search's list that discovery
+            does not give) -> that gate. A V table the module wrote before its inline test raised (LC:235 then :240) is NOT
+            published (production's `cp -n` would ship it).
   error     anything else (traceback tail kept).
 """
 import os
@@ -29,7 +32,8 @@ from concurrent.futures import ThreadPoolExecutor
 SCRIPT = 'phase3_snapshot_lightcurves.py'
 # RuntimeError messages of the extractor -> the gate they are (spec curves.md section 5)
 _GATES = (('no Master catalogue', 'G6'), ('no rows inside the frame', 'G7'), ('WCS differs from the first frame', 'G8'),
-          ('no flow field at all', 'G9'), ('no Stokes I light-curve table', 'G10'), ('is not the Stokes I scale', 'G10'))
+          ('no flow field at all', 'G9'), ('no Stokes I light-curve table', 'G10'), ('is not the Stokes I scale', 'G10'),
+          ("frames of the search's list are not discovered", 'G18'))
 _EXC_LINE = re.compile(r'^(?P<type>[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt)): ?(?P<msg>.*)$')
 _LOCK = threading.Lock()
 
@@ -46,10 +50,13 @@ def table_path(out_dir, cell, sb, st):
 
 
 def argv(C, paths_cfg, script, cell, sb, st, stage_sb, out_dir):
-    """The production argument list (v9:366-370) for one (subband, Stokes)."""
+    """The production argument list (v9:366-370) for one (subband, Stokes), with the 2026-11-01 regeneration's
+    --search-frames (clv15 55469ba) when curves.SEARCH_FRAMES."""
     a = (['extract', '--cell', cell, '--subband', sb] + (['--stage', stage_sb] if stage_sb else [])   # none: archive frames
          + ['--proto-root', paths_cfg.SNAPSHOT_FLEET_OUT, '--master-catalogs', C.MASTER_CATALOG_DIR, '--out', out_dir,
             '--stokes', st])
+    if C.SEARCH_FRAMES:          # R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE: the search's own frame list
+        a += ['--search-frames']
     if C.CHAIN_RUN_DIR:
         a += ['--run-dir', C.CHAIN_RUN_DIR]
     if os.path.realpath(paths_cfg.CLV15_ROOT) != os.path.realpath(os.path.dirname(script)):
@@ -272,9 +279,10 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=N
     archive copy; G4), naxis of the first frame (None when unreadable), frame_header (the first frame's header cards as
     JSON: the WCS the extractor selected its rows with, LC:118-127 - content test light_curve.rows completeness),
     mixed_grid_frames (frames whose NAXIS1 differs from the first frame's: reported - where the fleet does not regrid,
-    v9:126-139, the staged frames are the archive frames). stage_sb None = archive
-    frames (curves.FRAME_SOURCE 'archive'; give cell and sb): every frame is read from the archive by design,
-    unstaged_frames is 0."""
+    v9:126-139, the staged frames are the archive frames), discovered_not_sampled (staged / archive frames of this Stokes
+    the table does not hold: with --search-frames, the frames the search's own list dropped - 14 on 12h 2024-12-28 27 MHz
+    I; reported). stage_sb None = archive frames (curves.FRAME_SOURCE 'archive'; give cell and sb): every frame is read
+    from the archive by design, unstaged_frames is 0."""
     import csv
     from astropy.io import fits
     with fits.open(table, memmap=True) as h:
@@ -313,4 +321,4 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=N
             'zero_vis_frames_kept': zero,
             'missing_sample_files': [fn for _tag, fn in samples if not os.path.exists(os.path.join(samples_dir, fn))],
             'unstaged_frames': sum(1 for t in ts if t not in staged), 'naxis': naxis, 'frame_header': header,
-            'mixed_grid_frames': mixed}
+            'mixed_grid_frames': mixed, 'discovered_not_sampled': len(set(staged) - set(ts))}

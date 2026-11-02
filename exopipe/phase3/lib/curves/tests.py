@@ -37,11 +37,19 @@ its content against the writer, clv15/phase3_snapshot_lightcurves.py (LC), and t
   frames also checks FRAMES.admitted against the search's admission table (a ts absent from it is admitted, LC:105-109,
                     :163) when that table exists (ctx admission; default paths.SNAPSHOT_FLEET_OUT/<cell>/admission_<sb>.csv;
                     regeneration test T3 without an old table, :103-107)
+  search_frames     FRAMES.ts is EXACTLY the search's own frame list of (subband, Stokes) - curves.SEARCH_FRAME_LIST under
+                    the cell's search outputs, its 'ts' column - no frame twice, none added, none missing (clv15
+                    55469ba --search-frames; the 2026-11-01 regeneration test LC-REGEN-TEST (b), exopipe_ops
+                    snapshot_lc_regen_20261101.py). A frame the search dropped (12h 2024-12-28: 14 / 26 frames of 27 / 69 MHz
+                    I that did not flow) or a second Phase-1 run's frame (FINDING-SNAPSHOT-LIGHTCURVE-TABLES-HOLD-DUPLICATE-
+                    RUN-FRAMES-20261028) fails; so does a table whose search list cannot be read (nothing to show it is the
+                    search's)
 
 Context keys (all optional): naxis=(NAXIS1, NAXIS2) of the frames; frame_header={card: value} of the first frame;
 sibling_i=path of the Stokes I table (default: the _I_ file beside a _V_ file); master_catalog=path (default from
 curves.MASTER_CATALOG_DIR); flowtree=path (default paths.SNAPSHOT_FLOW_ROOT); chain_rows=bool (default:
-curves.CHAIN_RUN_DIR set); admission=path ('' = not compared); require_mcatsha=bool; previous=path.
+curves.CHAIN_RUN_DIR set); admission=path ('' = not compared); require_mcatsha=bool; previous=path; search_dir=the cell's
+search output directory holding SEARCH_FRAME_LIST (default paths.SNAPSHOT_FLEET_OUT/<cell>).
 The unit checks of the step (LC7 curves.complete, LC8 curves.no_excluded_products) live in steps/curves.py.
 """
 import datetime
@@ -220,6 +228,41 @@ def frames(path, admission=None, **ctx):
     if bad:
         return False, len(ts), '; '.join(bad) + ' | ' + rep
     return True, len(ts), rep
+
+
+def search_frame_list(search_dir, sb, st):
+    """(path, [ts in order]) of the search's own 10-s frame list of (subband, Stokes) - curves.SEARCH_FRAME_LIST under the
+    cell's search output directory, read as the extractor reads it with --search-frames (clv15 55469ba: its 'ts' column);
+    the list is None when the file cannot be read."""
+    import csv
+    p = os.path.join(search_dir, _C().SEARCH_FRAME_LIST.format(sb=sb, st=st))
+    try:
+        with open(p, newline='') as fh:
+            return p, [(r.get('ts') or '').strip() for r in csv.DictReader(fh)]
+    except OSError:
+        return p, None
+
+
+@content_test(CLS, 'search_frames')
+def search_frames(path, search_dir=None, **ctx):
+    """FRAMES.ts holds exactly the frames of the search's own list, each once (module docstring; LC-REGEN-TEST (b) compares
+    the sets and counts repeats; the order is the frames test's: increasing ts, as the extractor sorts them)."""
+    t = _load(path)
+    tok = _tokens(t)
+    if not search_dir:
+        from exopipe.phase3.config import CFG
+        search_dir = os.path.join(CFG.paths.SNAPSHOT_FLEET_OUT, f"{tok['lst']}_{tok['date']}")
+    lp, want = search_frame_list(search_dir, tok['sb'], tok['st'])
+    ts = [_s(x).strip() for x in t['FRAMES']['cols']['ts']]
+    if want is None:
+        return False, len(ts), f'no search frame list {lp} to compare with: the frames cannot be shown to be the search\'s'
+    extra, missing = sorted(set(ts) - set(want)), sorted(set(want) - set(ts))
+    dup = len(ts) - len(set(ts))
+    if not (extra or missing or dup):
+        return True, len(ts), f'{len(ts)} frames = the search\'s own list {os.path.basename(lp)} ({len(want)} rows)'
+    return False, len(ts), (f'{len(ts)} frames != the search\'s {len(set(want))} ({os.path.basename(lp)}): {len(extra)} not in '
+                            f'the search\'s list{" e.g. " + extra[0] if extra else ""}, {len(missing)} of the list missing'
+                            f'{" e.g. " + missing[0] if missing else ""}, {dup} repeated')
 
 
 @content_test(CLS, 'values')

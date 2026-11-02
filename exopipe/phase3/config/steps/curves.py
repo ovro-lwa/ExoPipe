@@ -37,7 +37,8 @@ class curves(_Section):
     PROTECTED_KEYS = ('TIERS', 'STAMP_PX', 'STAMP_CORE_PX', 'RMS_MAD_FACTOR', 'NBINS', 'PB_TIME_MODEL', 'REF_SNR',
                       'MIN_SCALE_REFS', 'SCALE_REF_KIND', 'V_TAKES_I_SCALE', 'V_SCALE_TOL', 'WCS_TOL_DEG', 'FLOW_LOWRES_PX',
                       'INFIELD_MARGIN_PX', 'ROW_KINDS', 'SAMPLES', 'ADMISSION_MISSING', 'NO_ADMITTED_SCALE',
-                      'MISSING_SAMPLE_FILE', 'FRAME_LISTER', 'FRAME_TIME', 'PB_LIBRARY', 'STOKES_PER_PROCESS')
+                      'MISSING_SAMPLE_FILE', 'FRAME_LISTER', 'FRAME_TIME', 'PB_LIBRARY', 'STOKES_PER_PROCESS',
+                      'SEARCH_FRAME_LIST')
 
     # ---- tiers ------------------------------------------------------------------------------------------------------
     TIERS = ('snapshot',)                    # tiers with a light-curve product (contract S-3 only; critique_coverage.md:273-275; spec Q1)
@@ -69,6 +70,19 @@ class curves(_Section):
     MISSING_SAMPLE_FILE = 'skip'             # 'skip' | 'refuse': a missing sample file contributes no rows; CH:1643-1645; B-58 (counted per pair)
     FRAME_LISTER = 'legacy-discover-frames'  # 'legacy-discover-frames' (SS:206-300, flow_select=False: latest Run_* per file-name stamp) | 'core-inputs' (core/inputs.phase1_frames); B-15
     FRAME_TIME = 'file-name'                 # 'file-name' | 'date-obs': FRAMES.ts / epoch_s / bin from the file-name stamp; LC:129-131; R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES (ledger 1752) not applied here; B-16
+
+    # ---- the frames of a table: the search's own frame list [R] (clv15 55469ba, 2026-11-01) ----------------------------
+    SEARCH_FRAMES = True                     # True: the extractor runs with --search-frames - the table holds EXACTLY the frames of the search's own
+                                             # list (SEARCH_FRAME_LIST), a discovered frame the search dropped is not sampled, and a listed frame that
+                                             # is not discovered REFUSES the pair (gate G18). The 2026-11-01 production regeneration
+                                             # (SNAPSHOT-LIGHTCURVE-TABLES-REGENERATED-20261101; its LC-REGEN-TEST (b) 'FRAMES list = the search's own
+                                             # list' on all 284 tables) under Gregg's 2026-10-31 'yes to all three' (FINDING-SNAPSHOT-LIGHTCURVE-TABLES-
+                                             # HOLD-DUPLICATE-RUN-FRAMES-20261028: 're-generate ... on the search's frame lists'); every installed table
+                                             # equals its search's list. False: every discovered frame (the fleet's and the backfill's plain call,
+                                             # v9:366-370, BF:68-72), which sampled 14 / 26 frames of 12h 2024-12-28 27 / 69 MHz Stokes I the re-flowed
+                                             # search had dropped; content test light_curve.search_frames refuses such a table either way
+    SEARCH_FRAME_LIST = 'noise_{sb}_{st}_median.csv'   # the search's own 10-s frame list of (subband, Stokes) under paths.SNAPSHOT_FLEET_OUT/<cell>/,
+                                             # its 'ts' column; the literal the extractor reads (LC 55469ba 'noise_%s_%s_median.csv'; G13)
 
     # ---- inputs and outputs [P] (production paths today; no renames, DESIGN 11.1) -------------------------------------
     PRODUCT_ROOT = '/lustre/gh/main/exopipe_ops/snapshot_lightcurves'          # <root>/<cell>/<cell>_<sb>_<S>_lightcurves.fits; v9:359, BF:28; chain --lightcurves-root (snapshot_rechain_batch.sh:280)
@@ -121,4 +135,6 @@ class curves(_Section):
         'FLEET_CLAIMS_ROOT': 'R-SNAP-LIGHTCURVE-BACKFILL',
         'MASTER_CATALOG_DIR': 'IMPLEMENTED-SNAPSHOT-LIGHT-CURVE-PRODUCT-EXTRACTOR-SIX-CELL-TEST',
         'SKIP_FLOW_UNREGISTERED': 'FINDING-SNAP-LIGHTCURVES-ABSENT-FOR-NO-MASTER-SUBBANDS',
+        'SEARCH_FRAMES': ('R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE',
+                          'SNAPSHOT-LIGHTCURVE-TABLES-REGENERATED-20261101'),
     }

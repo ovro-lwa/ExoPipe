@@ -5,7 +5,9 @@
   outside the search universe, never planned (G15 when no subband of the cell has one);
 - excluded: ``core.exclusions.is_excluded(lst, sb, date)`` (G2; CLAUDE.md 2) - recorded, never extracted or published;
 - flow-unregistered: ``runinfo_<sb>_I_median.json`` says ``flow_registered`` False (G3; ledger 1421, open) - recorded;
-- planned otherwise (a night-refused subband keeps its admission table and is extracted as today, ledger 2302 / B-70).
+- planned otherwise (a night-refused subband keeps its admission table and is extracted as today, ledger 2302 / B-70 -
+  except under curves.SEARCH_FRAMES, where its night-refused pairs have no frame list and are refused G11 before
+  extraction: ``search_list_refusals``).
 ``search_done`` is gate G1, ``stage_problems`` gate G4 on a given stage root, ``catalog_path`` the Master catalogue of
 gate G6. ``inputs`` lists what the unit fingerprints (run record; --resume identity).
 """
@@ -128,6 +130,34 @@ def search_done(plan, C):
     return False, f'unknown curves.SEARCH_DONE_EVIDENCE {C.SEARCH_DONE_EVIDENCE!r}'
 
 
+def search_list_refusals(plan, C, stokes):
+    """{(subband, Stokes): (gate, reason)} of the planned pairs refused BEFORE extraction under curves.SEARCH_FRAMES (the
+    extractor's --search-frames, clv15 55469ba, opens the search's frame list and raises on a missing one):
+    - G11 the search refused the night for that Stokes (nightrefused_<sb>_<S>_median.json; the engine writes no frame list
+      then, 38 such pairs of 19 subbands in production's search outputs on 2026-11-02): its list is empty, nothing to
+      sample - the extractor's own outcome for a Stokes without frames (production's plain call writes a table with no
+      admitted frame instead; spec curves.md Q8 asks whether such tables are wanted);
+    - G18 a searched pair without its frame list (never seen: every runinfo of production's search outputs has one);
+    - G10 a Stokes V pair whose Stokes I pair is refused here (V carries the I scale).
+    Empty when curves.SEARCH_FRAMES is False (the plain call samples every discovered frame)."""
+    out = {}
+    if not C.SEARCH_FRAMES:
+        return out
+    for sb in plan['planned']:
+        for st in stokes:
+            lp = os.path.join(plan['search_dir'], C.SEARCH_FRAME_LIST.format(sb=sb, st=st))
+            if os.path.exists(lp):
+                continue
+            nr = plan['subbands'][sb]['nightrefused'].get(st)
+            out[(sb, st)] = (('G11', f'the search refused the night ({os.path.basename(nr)}): its frame list is empty, '
+                                     f'nothing to sample (curves.SEARCH_FRAMES)') if nr else
+                             ('G18', f'the search\'s frame list {lp} is missing (curves.SEARCH_FRAMES)'))
+        if (sb, 'I') in out and 'V' in stokes and (sb, 'V') not in out:
+            out[(sb, 'V')] = ('G10', f'the Stokes I pair is refused before extraction ({out[(sb, "I")][0]}): V carries '
+                                     f'the I scale')
+    return out
+
+
 def stage_problems(stage_root, plan):
     """Gate G4 on a staged cell: {subband: problem} for planned subbands whose staging is not complete: no directory, no
     decompressed frame, compressed or temporary leftovers (.fs/.fz/.tmp), or a staging list (.filelist, as the fleet and
@@ -169,7 +199,8 @@ def phase1_dirs(C, plan, sb, phase1_root):
 
 def inputs(plan, C, phase1_root, code_files):
     """[(path, extra or None)] the unit fingerprints: per searched subband its admission table and search records; per
-    planned subband its Master catalogue, flow-field directory and Phase-1 frame directories; the target samples, the PB
+    planned subband its Master catalogue, the search's frame lists of the planned Stokes (curves.SEARCH_FRAMES), flow-field
+    directory and Phase-1 frame directories; the target samples, the PB
     library directory (its 90 files are a pinned 2026-07-04 product, identified by the directory), the fleet claim, and
     the worker code (the in-place clv15 modules and the shim, by sha1). An absent Master catalogue or sample file is
     identified by its directory (size + mtime: a file added later invalidates --resume); a missing input recorded as
@@ -187,6 +218,10 @@ def inputs(plan, C, phase1_root, code_files):
             out.append((i['catalog'], None))
         else:                                   # G6: the directory identifies the absence (its mtime changes on a new file)
             out.append((C.MASTER_CATALOG_DIR, {'absent': os.path.basename(i['catalog'])}))
+        if C.SEARCH_FRAMES:                     # the search's own frame list the extractor samples (clv15 55469ba)
+            for st in plan['stokes']:
+                lp = os.path.join(plan['search_dir'], C.SEARCH_FRAME_LIST.format(sb=sb, st=st))
+                out.append((lp, None) if os.path.exists(lp) else (plan['search_dir'], {'absent': os.path.basename(lp)}))
         for d in phase1_dirs(C, plan, sb, phase1_root):
             try:
                 n = len(os.listdir(d))

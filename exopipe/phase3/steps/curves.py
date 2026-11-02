@@ -27,7 +27,8 @@ Inputs (production paths; shared roots from config.paths, the rest in `exopipe3 
   frames             the Phase-1 archive (FRAME_SOURCE archive), or --stage-root DIR / frames' staging: <DIR>/<sb>/
                      decompressed frames as the fleet / `frames --tier snapshot` stage them; the extractor lists them itself
   search outputs     paths.SNAPSHOT_FLEET_OUT/<cell>/admission_<sb>.csv, runinfo_<sb>_<S>_median.json,
-                     nightrefused_<sb>_<S>_median.json
+                     nightrefused_<sb>_<S>_median.json, and the search's own frame list curves.SEARCH_FRAME_LIST
+                     (noise_<sb>_<S>_median.csv): with curves.SEARCH_FRAMES the table holds exactly its frames (clv15 55469ba)
   search finished    curves.FLEET_CLAIMS_ROOT/<cell>/done (window; curves.SEARCH_DONE_EVIDENCE)
   Master catalogues  curves.MASTER_CATALOG_DIR/master_R075_<LST>_<sb>.gaul.csv
   target samples     paths.CLV15_ROOT/{Hot_Warm_Jupiters,10pc,25pc,LPTs,flare_ucd,sydney_stars,pulsars_atnf}.csv
@@ -54,20 +55,28 @@ Failure modes (exit 2 = refused, with the gate named; item refusals are recorded
                  paths.PRODUCTION_WRITES is False; site PYTHON['py36'] or the clv15 legacy root missing.
   pair refused   G4 (staged frames only) a frame of the table was not staged (archive copy read); G6 no Master catalogue; G7 no row inside the
                  frame; G8 frames do not share one WCS; G9 no flow field; G10 V without its Stokes I table / V scale
-                 differs from I; G11 no frames of that Stokes; G12 conflict; G17 (archive frames only) the subband's
+                 differs from I; G11 no frames of that Stokes (curves.SEARCH_FRAMES: also a search that refused the night
+                 - no frame list, nothing to sample - refused before extraction; production's plain call writes a table
+                 with no admitted frame there, spec Q8); G12 conflict; G18 (curves.SEARCH_FRAMES) a frame of the
+                 search's own list is not discovered (a search never re-run after the duplicate-run fix lists both
+                 Phase-1 runs' frames: 11h 2024-12-24 46 MHz I lists 672, discovery gives 358, one per integration -
+                 314 refused; the search is re-run, the list never widened); G17 (archive frames only) the subband's
                  archive frames are off its own Master's grid - the fleet regrids them in the staging (pilot era,
                  v9:126-139), so only the fleet recipe (--stage-root) extracts them; a content test failed before
                  publishing (LC1-LC6 incl. the regeneration recipe's T1-T5, exopipe_ops 3035b47: MCATSHA present and
                  equal to the catalogue's sha256, Master rows = the catalogue's Gaussians inside the first frame, admitted
-                 flags = the admission table, V scale = I; with --supersede also the replaced table's frame list and its
-                 values at identical positions - light_curve.same_as_previous).
+                 flags = the admission table, V scale = I; the frames = the search's own list, light_curve.search_frames
+                 (the 2026-11-01 regeneration's LC-REGEN-TEST (b)); with --supersede also the replaced table's frame list
+                 and its values at identical positions - light_curve.same_as_previous).
   not planned    (recorded) subbands not searched (no admission table), excluded (G2), flow-unregistered (G3).
   exit 3         no admission table in the cell (G15), or no planned subband. exit 1: an extractor error (log tail kept).
 Fallbacks kept as today until Gregg rules (B-23, B-30, B-58), counted per pair: frames absent from the admission table are
 admitted; no admitted frame -> scale from every frame; a missing sample file adds no rows; zero-visibility frames kept.
 
 Refactor window (DESIGN 11.1; refactor decisions 1-2): clv15/phase3_snapshot_lightcurves.py runs IN PLACE with production's
-arguments (v9:366-370; without --stage = exopipe_ops snapshot_lightcurves_regen_20261013.sh:35-36) through core.legacy.run
+arguments (v9:366-370; without --stage = exopipe_ops snapshot_lightcurves_regen_20261013.sh:35-36; with --search-frames when
+curves.SEARCH_FRAMES = the 2026-11-01 regeneration, clv15 55469ba, ledger SNAPSHOT-LIGHTCURVE-TABLES-REGENERATED-20261101 -
+the fleet and the backfill still call it without, sampling every discovered frame) through core.legacy.run
 under the site interpreter 'py36'; curves.PROCS subbands at a time, each the Stokes I process then the Stokes V process (the
 regeneration runs --stokes I,V in one process: its V pass takes the I scale from memory, here from the I table's header
 written just before - the same FLUXSCAL / NREFSCAL, LC:187-200).
@@ -363,6 +372,8 @@ def run(args, run):
             issues, notes, g17 = {}, [], {}
             sroot = (_stage_root(args, cell, E['scratch_root'], len(units))
                      if 'stage' not in stages and not _archive(args) else None)
+            nolist = P.search_list_refusals(pl, C, stokes)       # G11 / G18 / G10 before extraction (curves.SEARCH_FRAMES)
+            notes += [f'{sb} {st} pair refused - {gate}: {why}' for (sb, st), (gate, why) in sorted(nolist.items())]
             if _archive(args):
                 g17 = _archive_grid(cell, [sb for sb in pl["planned"] if pl["subbands"][sb]["catalog_exists"]])
                 notes.append('frames: the Phase-1 archive, read by the extractor (curves.FRAME_SOURCE archive; no staging)')
@@ -381,7 +392,8 @@ def run(args, run):
                 continue
             any_input = True
             if (not g1[0] or issues or any(n.startswith('REFUSE') for n in notes)
-                    or (g17 and all(sb in g17 for sb in pl['planned']))):       # every planned pair G17: unit refused
+                    or all(sb in g17 or all((sb, st) in nolist for st in stokes)      # every planned pair refused
+                           for sb in pl['planned'])):                               # (G17 / G11 / G18): unit refused
                 rc = record.EXIT_REFUSED
         return rc if any_input or rc == record.EXIT_REFUSED else record.EXIT_NO_INPUT
 
@@ -451,6 +463,14 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
                 u.refuse_item(dst[(sb, st)], why, gate='G17')
                 pairs[f'{sb}_{st}'] = {'status': 'refused', 'gate': 'G17', 'reason': why}
         run_sbs = [sb for sb in run_sbs if sb not in g17]
+    # the search's own frame list (curves.SEARCH_FRAMES, clv15 55469ba): a pair without one is refused before extraction -
+    # G11 a night-refused search (its list is empty), G18 a missing list, G10 V of such an I (plan.search_list_refusals)
+    run_st = {sb: list(stokes) for sb in run_sbs}
+    for (sb, st), (gate, why) in sorted(P.search_list_refusals(dict(pl, planned=run_sbs), C, stokes).items()):
+        u.refuse_item(dst[(sb, st)], f'{gate}: {why}', gate=gate)
+        pairs[f'{sb}_{st}'] = {'status': 'refused', 'gate': gate, 'reason': why}
+        run_st[sb].remove(st)
+    run_sbs = [sb for sb in run_sbs if run_st[sb]]
     if not run_sbs:
         return
     # ---- stage ------------------------------------------------------------------------------------------------------
@@ -468,7 +488,7 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
     # ---- extract: the in-place extractor, PROCS subbands at a time (I then V each) ------------------------------------
     scratch = fitsio.scratch_dir('curves_extract', args.work)
     u.meta['scratch'] = scratch
-    specs = [W.make_spec(C, CFG.paths, E['script'], PYTHON, cell, sb, stokes,
+    specs = [W.make_spec(C, CFG.paths, E['script'], PYTHON, cell, sb, run_st[sb],
                          os.path.join(stage_root, sb) if stage_root else None, os.path.join(scratch, sb)) for sb in run_sbs]
 
     def progress(sb, res):
@@ -496,7 +516,7 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
     published_i = {}
     for sb in run_sbs:
         res = results.get(sb, {})
-        for st in stokes:
+        for st in run_st[sb]:                                   # the pairs refused before extraction are recorded above
             key = f'{sb}_{st}'
             r = res.get(st) or {'status': 'error', 'reason': f'no outcome for Stokes {st}'}
             ent = {k: r.get(k) for k in ('status', 'gate', 'reason', 'rc', 'wall_s', 'log', 'unpublished_table')
@@ -527,6 +547,7 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
                 ent.update(status='refused', gate='G4', reason=why)
                 continue
             ent['mixed_grid_frames'] = facts['mixed_grid_frames']    # reported (frames whose NAXIS1 != the first's)
+            ent['discovered_not_sampled'] = facts['discovered_not_sampled']   # reported: frames the search's list dropped
             if st == 'V' and 'I' in stokes and sb not in published_i:
                 why = (f'G10: the Stokes I table of this subband was not published ({pairs.get(sb + "_I", {}).get("status")}'
                        f'); V carries its scale and is not published alone')
@@ -536,9 +557,10 @@ def _run_unit(u, args, run, pl, stokes, stages, ex, E, stage_root):
             # content-test context: the regeneration recipe's gates T1-T5 (exopipe_ops snapshot_lightcurves_regen_test.py)
             # on every table - MCATSHA required (T1), Master rows = the catalogue's Gaussians in the first frame (T2), admitted
             # flags = the admission table (T3); with --supersede the replaced table (T3/T4); V scale = I (T5, flux_scale)
+            # + the search's own frame list (light_curve.search_frames: clv15 55469ba, LC-REGEN-TEST (b) of 2026-11-01)
             ctx = {'naxis': facts['naxis'], 'flowtree': CFG.paths.SNAPSHOT_FLOW_ROOT, 'frame_header': facts['frame_header'],
                    'require_mcatsha': True, 'admission': os.path.join(pl['search_dir'], f'admission_{sb}.csv'),
-                   'master_catalog': pl['subbands'][sb]['catalog']}
+                   'master_catalog': pl['subbands'][sb]['catalog'], 'search_dir': pl['search_dir']}
             if args.supersede and os.path.exists(d) and not PUB.same_bytes(r['path'], d):
                 ctx['previous'] = d
             if st == 'V':
