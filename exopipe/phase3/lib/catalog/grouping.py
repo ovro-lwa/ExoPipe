@@ -37,8 +37,26 @@ WHAT IT DOES (one rule at two levels). A unit j against a component k, in k's ta
   MULTIPLES LEVEL: from the identities, merge-only passes at the looser P (group seeding among single-unit identities, then the
   merge test) - it only coarsens the identities, never re-partitions them.
   INCREMENTAL: frozen labels (the earlier nights) keep their components; only new units are assigned; components may still
-  merge, so no identity seen before is ever split. A window holding both frozen and new detections would be re-grouped in stage
-  A, so group_catalog refuses that case (a re-search of an old night is a regroup, mode='regroup').
+  merge, so no identity seen before is ever split (group_catalog checks it and refuses). A window holding both frozen and new
+  detections would be re-grouped in stage A, so group_catalog refuses that case (mode='regroup' instead).
+
+KNOWN LIMITS (review 2026-11-02)
+  - The incremental mode is for PURE APPENDS - whole new windows (new nights). A re-search re-numbers and re-measures the
+    detections of old windows, so windows then hold both unchanged and new detections, the incremental mode refuses, and the run
+    must regroup. Run_SLSTB 2026-10-25 vs 2026-10-31 (fingerprints below, per Stokes x window): 846 of 3,488 windows changed;
+    365 of the 3,486 windows of the new build hold both kinds (refused); 466 were wholly re-measured (I 6, V 460 - treated as new
+    windows, their old detections absent). The deep tier re-searches per LST x band across all nights: a deep re-search is a
+    regroup.
+  - In the incremental mode the MULTIPLES level can split an earlier multiples group: two of its identities that gain detections
+    in one new window cannot be joined again (one window-source per window per group; research group_B.py:639-645). The ruling
+    protects identities, which never split (checked); a multiples-level split is recorded ('split' event, a 'move' per detection).
+  - cand_ids are not stable across re-searches (production re-numbers them: exopipe_ops p3s3_merge.py:77-81; 10-25 vs 10-31:
+    1,562 of 67,317 shared cand_ids name a detection more than 1 deg away). The state keeps each detection's fingerprint (window
+    key, band, catalog ra, dec, S/N at full precision); a cand_id whose fingerprint changed is a NEW detection plus an ABSENT old
+    one ('reused' event) and never carries the old IDs. A detection re-numbered with an identical fingerprint is also new.
+  - grouping_inputs maps positions through astrom_frame under a process-wide environment flag (P3_TENMIN_PERTIE): SINGLE-THREAD
+    use - its mappings are serialized by a lock, but another thread calling astrom_frame meanwhile could see the flag.
+  - Fewer than 1000 nights per tier and Stokes (the (LST hour, night) code L x 1000 + N); more refuses.
 
 GROUPING ERRORS ARE NOT LOCALIZATION ERRORS. The inverse-covariance mean of a component's members (independent errors) is used
 here only to NAME it (display J-names). Combined positions and their errors stay the catalog's localization step (the preview:
@@ -49,18 +67,21 @@ API
   group_fork(det, ...)              (identity labels, multiples labels); the multiples level nests the identities
   group_catalog(det, tier, stokes, state=None, run_label='', mode=None)   the catalog step's entry point: the operating point
                                     from config, batch / incremental / regroup grouping, stable IDs, display names, multiplicity
-                                    and the record of every merge (a GroupingResult; its .state is the next run's state)
-  GroupingState                     every ID issued so far (never reused), the assignments; save() / load()
+                                    and the record of every change - merge, split, move (every detection whose ID changes),
+                                    reused cand_id, retirement (a GroupingResult; its .state is the next run's state)
+  GroupingState                     every ID issued so far (never reused), the assignments with each detection's fingerprint;
+                                    save(dir) - one file, atomic; load(dir, tier, stokes, new=False) - no state REFUSES unless new
+  fingerprints(det)                 (window key, band, catalog ra, dec, S/N) per detection
   multiplicity(det, labels, tier)   distinct windows (10-minute) or nights (deep) of each detection's group
   geometry and error model          frame_center, cdelt, lm, radec, shift_pixels, elevation_pa, detection_sigma, covariance,
                                     offset_en, mahalanobis
 det is a dict of equal-length numpy arrays (lib/catalog/grouping_inputs.py builds it from a run's tables): ra, dec (deg, the
 COMMON frame), C (n x 2 x 2 sky covariance, arcsec^2, east/north), snr, band, lst ('04h'), key (the window: lst|date; a 10-minute
-date ends in 'T<bin>'), night, beam (FWHM, arcmin) and, for the IDs, cand_id. The algorithm reads nothing else.
+date ends in 'T<bin>'), night, beam (FWHM, arcmin) and, for the IDs, cand_id (+ ra_raw, dec_raw for the fingerprints, and the
+frame_generation string, recorded in the run summary). The algorithm reads nothing else.
 """
 import collections
 import copy
-import csv
 import json
 import math
 import os
@@ -356,9 +377,21 @@ def _offset1(ra1, de1, ra2, de2):
     return (math.degrees(cd2 * math.sin(a2 - a1) / cosc) * 3600, math.degrees((cd1 * sd2 - sd1 * cd2 * c12) / cosc) * 3600)
 
 
+def _nu_of(b, P):
+    """frequency (MHz) of a band: a wideband image at its WIDEBAND_NU_MHZ, a subband '<nu>MHz' at nu; anything else REFUSES"""
+    if b in P.nu_wide:
+        return P.nu_wide[b]
+    try:
+        if not str(b).endswith('MHz'):
+            raise ValueError(b)
+        return float(str(b)[:-3])
+    except ValueError:
+        raise GroupingRefused(f'grouping: band {b!r} is neither a wideband ({", ".join(P.nu_wide)}) nor <nu>MHz - REFUSING') from None
+
+
 def _kappa_of(band, P):
     """the chromatic lever (NU0 / nu)^2 of each detection (a wideband image at its WIDEBAND_NU_MHZ)"""
-    nu = np.array([P.nu_wide[b] if b in P.nu_wide else float(b.replace('MHz', '')) for b in band])
+    nu = np.array([_nu_of(b, P) for b in band])
     return (P.nu0 / nu) ** 2
 
 
@@ -427,7 +460,8 @@ def _category_density(ra, de, lst, band, L, N, w, P):
         cl = np.nanmean(CL, 0); co = np.nanmedian(CO, 0)
     cl = np.maximum(np.where(np.isfinite(cl), cl, floor), floor) / (math.pi * rL ** 2) / DEG2
     co = np.maximum(np.where(np.isfinite(co), co, floor), floor) / (math.pi * rO ** 2) / DEG2
-    # the night's share of its LST hour's units (other windows)
+    # the night's share of its LST hour's units (other windows); the (LST hour, night) code L x 1000 + N assumes fewer than 1000
+    # nights per tier and Stokes (_run refuses more)
     nl = np.bincount(L, minlength=24).astype(float); ln_ = L * 1000 + N
     u_ln, inv_ln, c_ln = np.unique(ln_, return_inverse=True, return_counts=True); nw = np.bincount(w).astype(float)
     share = (c_ln[inv_ln] - nw[w]) / np.maximum(nl[L] - nw[w], 1.0)
@@ -771,8 +805,10 @@ def _run(det, P, frozen=None):
     snr = np.abs(det['snr'])
     ukey, wkey = np.unique(det['key'], return_inverse=True)
     _, bnd = np.unique(det['band'], return_inverse=True)
-    img = wkey * 1000 + bnd
+    img = wkey * 1000 + bnd                                # an image = (window, band): fewer than 1000 bands
     kap = _kappa_of(det['band'], P)
+    if len(np.unique(det['night'])) >= 1000:              # the (LST hour, night) code of _category_density holds < 1000 nights
+        raise GroupingRefused(f'grouping: {len(np.unique(det["night"]))} nights - the night code supports fewer than 1000 - REFUSING')
     fro = None if frozen is None else np.asarray(frozen)
     # ---------------- stage A: within each window, across bands ----------------
     rhoA = _probe_density(ra, de, det['lst'], det['band'], wkey, True, P.probe_r['window'], 'mean', P) * P.rho_scale
@@ -968,15 +1004,20 @@ def same_partition(a, b):
 
 
 # =====================================================================================================================
-# stable identities: IDs fixed at creation, display names, incremental assignment, the record of every merge
+# stable identities: IDs fixed at creation, display names, incremental assignment, the record of every change
 # =====================================================================================================================
 # An identity (and a multiples-level group) gets an ID when it is first created - '{level}{tier}{stokes}-{seq}' (config
 # ID_FORMAT; GTI-0000001 = the first 10-minute Stokes I identity) - and keeps it for good: IDs are never reused, never renumbered.
-# When later data merge identities that had IDs, the merged identity keeps the OLDEST ID (the lowest sequence number) and the
-# others are recorded as merged into it (status 'merged', 'into'); labels attached to an absorbed ID follow 'into'. An identity
-# whose detections are all gone is 'retired'. A regroup (mode 'regroup': the whole partition recomputed) may split an identity:
-# the piece holding most of its detections keeps the ID, the others get new IDs, recorded as 'split'. The incremental mode never
-# splits an identity (by construction; checked, a violation refuses). The display NAME is production's J-name
+# A DETECTION is its cand_id AND its fingerprint (window key, band, catalog ra, dec and S/N at full precision: fingerprints()).
+# Production re-numbers candidates when a cell is re-searched (exopipe_ops p3s3_merge.py:77-81; Run_SLSTB 2026-10-25 vs 10-31:
+# 1,562 of 67,317 shared cand_ids name a detection more than 1 deg away), so a cand_id whose fingerprint changed is a NEW
+# detection plus an ABSENT old one ('reused' event) and never carries the old detection's IDs.
+# Carrying IDs to a new partition (_carry, at each level): the HOME of a previous ID is the new group holding most of its
+# detections; a group that is the home of several previous IDs keeps the OLDEST (lowest sequence number) and the others are
+# recorded as merged into it (status 'merged', 'into' - labels attached to an absorbed ID follow 'into'); a group that is the
+# home of none gets a new ID; a previous ID whose detections now lie in several groups is SPLIT ('split' event; refused at the
+# identity level of an incremental run). EVERY detection whose ID changes gets a 'move' event (from, to, reason 'merge' |
+# 'split' | 'moved'); an ID left without detections is 'retired'. The display NAME is production's J-name
 # (build_source_catalogs_v3.jname) of the identity's mean position (inverse-covariance mean of its members, common frame),
 # made unique within the catalog as production does (JHHMMSS+DDMMSS for a shared name; a letter suffix where even that is
 # shared); names may change between runs - IDs do not.
@@ -1046,14 +1087,31 @@ def _seq_of(i):
     return int(str(i).rsplit('-', 1)[-1])
 
 
+FP_FIELDS = ('key', 'band', 'ra', 'dec', 'snr')
+STATE_FORMAT = 'exopipe3-grouping-state-1'
+
+
+def fingerprints(det):
+    """each detection's fingerprint - what identifies it beyond its cand_id, which production re-numbers on a re-search: (window
+    key, band, catalog ra, catalog dec, S/N), the floats as their shortest exact repr (ra_raw / dec_raw, the catalog's own
+    positions, when det has them - grouping_inputs keeps them - else ra / dec)"""
+    ra = det['ra_raw'] if 'ra_raw' in det else det['ra']
+    de = det['dec_raw'] if 'dec_raw' in det else det['dec']
+    return [(str(k), str(b), repr(float(a)), repr(float(d)), repr(float(s)))
+            for k, b, a, d, s in zip(det['key'], det['band'], ra, de, det['snr'])]
+
+
 class GroupingState:
     """Everything a grouping run hands to the next one for a (tier, Stokes): every ID ever issued (never reused) with its status,
-    and each detection's identity and multiples IDs.
+    and each detection's identity and multiples IDs with its fingerprint.
       ids[ID] = {'level', 'created' (run label), 'status' ('live' | 'merged' | 'retired'), 'into' (merged: the surviving ID),
                  'last_run', 'n_det', 'name' (identity) / 'multiple' (multiples level)}
-      assign[cand_id] = (identity ID, multiples ID)
+      assign[cand_id] = (identity ID, multiples ID, fingerprint)    fingerprint = (key, band, ra, dec, snr) strings (fingerprints())
       next_seq[level] = the next sequence number of that level
-    Persisted by save(dir) / load(dir, tier, stokes): grouping_<tier>_<S>_ids.json and grouping_<tier>_<S>_assign.csv (atomic)."""
+      runs = the summary of every run
+    Persisted in ONE file, grouping_<tier>_<S>_state.json, replaced atomically (temporary file, fsync, rename): save(dir).
+    load(dir, tier, stokes) refuses a directory without that file unless new=True (the first run), and new=True where one
+    exists: IDs never restart at 1 silently."""
 
     def __init__(self, tier, stokes, ids=None, assign=None, next_seq=None, runs=None):
         if tier not in TIERS or stokes not in ('I', 'V'):
@@ -1081,60 +1139,72 @@ class GroupingState:
             seen.add(i); i = self.ids[i]['into']
         return i
 
-    def paths(self, directory):
-        b = os.path.join(directory, f'grouping_{self.tier}_{self.stokes}')
-        return b + '_ids.json', b + '_assign.csv'
+    def path(self, directory):
+        return os.path.join(directory, f'grouping_{self.tier}_{self.stokes}_state.json')
 
     def save(self, directory):
+        """write the state as ONE file, atomically (a reader sees the old state or the new one, never a mix); returns its path"""
         os.makedirs(directory, exist_ok=True)
-        pj, pc = self.paths(directory)
-        tmp = f'{pc}.tmp.{os.getpid()}'
-        with open(tmp, 'w', newline='') as f:
-            w = csv.writer(f)
-            w.writerow(['cand_id', 'identity_id', 'multiples_id'])
-            for c in sorted(self.assign):
-                w.writerow([c, self.assign[c][0], self.assign[c][1]])
-        os.replace(tmp, pc)
-        from exopipe.phase3.core.record import atomic_write_json
-        atomic_write_json(pj, dict(tier=self.tier, stokes=self.stokes, next_seq=self.next_seq, runs=self.runs, ids=self.ids))
-        return pj, pc
+        p = self.path(directory)
+        doc = dict(format=STATE_FORMAT, tier=self.tier, stokes=self.stokes, next_seq=self.next_seq, runs=self.runs, ids=self.ids,
+                   fingerprint_fields=list(FP_FIELDS),
+                   assign={c: [i, m] + list(fp) for c, (i, m, fp) in self.assign.items()})
+        tmp = f'{p}.tmp.{os.getpid()}'
+        with open(tmp, 'w') as f:
+            json.dump(doc, f, sort_keys=True, separators=(',', ':'), default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+        return p
 
     @classmethod
-    def load(cls, directory, tier, stokes):
-        """the saved state, or an empty one when none was saved; a damaged state REFUSES"""
+    def load(cls, directory, tier, stokes, new=False):
+        """the saved state of (tier, stokes) in directory. No state there: REFUSES unless new=True (then an empty state - the
+        first run); new=True where a state exists REFUSES too. A damaged or foreign state REFUSES."""
         st = cls(tier, stokes)
-        pj, pc = st.paths(directory)
-        if not os.path.exists(pj) and not os.path.exists(pc):
-            return st
-        if not (os.path.exists(pj) and os.path.exists(pc)):
-            raise GroupingRefused(f'grouping: state in {directory} is incomplete (need both {os.path.basename(pj)} and '
-                                  f'{os.path.basename(pc)}) - REFUSING')
-        d = json.load(open(pj))
-        if d.get('tier') != tier or d.get('stokes') != stokes:
-            raise GroupingRefused(f'grouping: {pj} holds tier {d.get("tier")} Stokes {d.get("stokes")}, not {tier} {stokes} - REFUSING')
+        p = st.path(directory)
+        if not os.path.exists(p):
+            if new:
+                return st
+            raise GroupingRefused(f'grouping: no grouping state {p} - the first run of {tier} {stokes} must say new=True (IDs never '
+                                  f'restart at 1 silently) - REFUSING')
+        if new:
+            raise GroupingRefused(f'grouping: new=True but {p} exists - a new state would restart the IDs at 1 - REFUSING')
+        with open(p) as f:
+            d = json.load(f)
+        if d.get('format') != STATE_FORMAT or d.get('tier') != tier or d.get('stokes') != stokes:
+            raise GroupingRefused(f'grouping: {p} is not a {STATE_FORMAT} state of {tier} {stokes} (format {d.get("format")!r}, '
+                                  f'{d.get("tier")} {d.get("stokes")}) - REFUSING')
+        if tuple(d.get('fingerprint_fields') or ()) != FP_FIELDS:
+            raise GroupingRefused(f'grouping: {p} fingerprints {d.get("fingerprint_fields")}, not {list(FP_FIELDS)} - REFUSING')
         assign = {}
-        with open(pc, newline='') as f:
-            for r in csv.DictReader(f):
-                assign[r['cand_id']] = (r['identity_id'], r['multiples_id'])
+        for c, v in d['assign'].items():
+            if not (isinstance(v, list) and len(v) == 2 + len(FP_FIELDS) and all(isinstance(x, str) for x in v)):
+                raise GroupingRefused(f'grouping: {p}: the assignment of {c} is malformed ({v!r}) - REFUSING')
+            assign[c] = (v[0], v[1], tuple(v[2:]))
         st = cls(tier, stokes, ids=d['ids'], assign=assign, next_seq=d['next_seq'], runs=d.get('runs', []))
-        for c, (i, m) in assign.items():
+        for c, (i, m, _) in assign.items():
             for x, lv in ((i, 'identity'), (m, 'multiples')):
                 e = st.ids.get(x)
                 if e is None or e.get('level') != lv or e.get('status') != 'live':
-                    raise GroupingRefused(f'grouping: {pc}: {c} is assigned to {x}, not a live {lv} ID of {pj} - REFUSING')
+                    raise GroupingRefused(f'grouping: {p}: {c} is assigned to {x}, not a live {lv} ID - REFUSING')
+        for lv in LEVELS:
+            top = max((_seq_of(i) for i, e in st.ids.items() if e.get('level') == lv), default=0)
+            if int(st.next_seq.get(lv, 0)) <= top:
+                raise GroupingRefused(f'grouping: {p}: next_seq[{lv}] {st.next_seq.get(lv)} would re-issue ID {top} - REFUSING')
         return st
 
 
 class GroupingResult:
     """The outcome of group_catalog for one (tier, Stokes): per detection the identity and multiples-level labels and IDs, the
-    multiplicity, the display names, the record of this run and the next state."""
+    multiplicity, the display names, the record of this run (events, summary) and the next state."""
 
     def __init__(self, **kw):
         self.__dict__.update(kw)
 
     def rows(self):
-        """one dict per detection (det order): cand_id, identity_id, identity_name, multiples_id, multiples_name, n_windows (or
-        n_nights, deep) of the multiples group, multiple (0/1)"""
+        """one dict per detection (det order): cand_id, identity_id, identity_name, multiples_id, multiples_name, multiplicity (the
+        multiples group's windows; deep: nights), multiple (0/1)"""
         out = []
         for j in range(len(self.cand_id)):
             out.append(dict(cand_id=self.cand_id[j], identity_id=self.identity_id[j], identity_name=self.names[self.identity_id[j]],
@@ -1144,18 +1214,22 @@ class GroupingResult:
 
 
 def _carry(level, labels, prev_ids, cand_id, snr, state, run_label, allow_split):
-    """IDs for the components of `labels` at one level, carried from the detections' previous IDs (prev_ids, '' = none).
-    Returns ({label: ID}, events). Each previous ID's HOME is the new component holding most of its detections (ties: the one
-    holding its smallest cand_id); a component that is the home of no previous ID gets a new ID (in the order brightest
-    member |S/N| first, then smallest cand_id); one that is the home of several keeps the oldest (lowest sequence) and records
-    the others as merged into it; a component holding a previous ID's detections without being its home is a split-off piece
-    (refused unless allow_split)."""
+    """IDs for the groups of `labels` at one level, carried from the detections' previous IDs (prev_ids: each detection's ID in
+    the state, '' = none - a new detection, or a cand_id the state knew with another fingerprint). Returns ({label: ID}, events).
+    HOME of a previous ID: the new group holding most of its detections (a tie: the one holding its smallest cand_id - content
+    only, never the internal label values). A group that is the home of no previous ID gets a new ID (brightest member |S/N|
+    first, then the smallest cand_id); one that is the home of several keeps the OLDEST (lowest sequence) and the others are
+    recorded as merged into it ('merge' event; state 'merged', 'into'). A previous ID whose detections lie in several groups is
+    SPLIT: refused unless allow_split (the identity level of an incremental run), else a 'split' event (the ID, its home's ID,
+    the pieces). EVERY detection whose ID changes gets a 'move' event: reason 'merge' (its ID was absorbed into the new one),
+    'split' (it lies in a piece split off its ID that got a new ID), 'moved' (it joined another existing ID while its own ID
+    lives on in its home)."""
     labels = np.asarray(labels)
     comps = collections.defaultdict(list)
     for j, c in enumerate(labels.tolist()):
         comps[c].append(j)
-    pieces = collections.defaultdict(collections.Counter)      # previous ID -> {component: detections}
-    first = collections.defaultdict(dict)                      # previous ID -> {component: its smallest cand_id there}
+    pieces = collections.defaultdict(collections.Counter)      # previous ID -> {group: detections}
+    first = collections.defaultdict(dict)                      # previous ID -> {group: its smallest cand_id there}
     for j, p in enumerate(prev_ids):
         if p:
             if state.ids.get(p, {}).get('status') != 'live' or state.ids[p].get('level') != level:
@@ -1164,21 +1238,19 @@ def _carry(level, labels, prev_ids, cand_id, snr, state, run_label, allow_split)
             pieces[p][c] += 1
             if c not in first[p] or cand_id[j] < first[p][c]:
                 first[p][c] = cand_id[j]
+    split = sorted((p for p, cnt in pieces.items() if len(cnt) > 1), key=_seq_of)
+    if split and not allow_split:
+        p = split[0]
+        raise GroupingRefused(f'grouping: {len(split)} {level} ID(s) would be SPLIT by an incremental run (e.g. {p} into '
+                              f'{len(pieces[p])} pieces) - the incremental mode never splits an identity; REFUSING')
     home = {}
-    events = []
     for p, cnt in pieces.items():
-        # the piece holding most of p's detections; a tie goes to the piece holding p's smallest cand_id among the tied
-        # pieces (content only: never the internal label values)
         mx = max(cnt.values())
         home[p] = min((c for c, v in cnt.items() if v == mx), key=lambda c: first[p][c])
-        if len(cnt) > 1:
-            if not allow_split:
-                raise GroupingRefused(f'grouping: the {level} {p} would be SPLIT into {len(cnt)} pieces ({dict(cnt)}) by an incremental '
-                                      f'run - the incremental mode never splits; REFUSING')
     claims = collections.defaultdict(list)
     for p, c in home.items():
         claims[c].append(p)
-    out = {}
+    out, issued, events = {}, set(), []
     key = {c: (-float(np.max(np.abs(snr[js]))), min(cand_id[j] for j in js)) for c, js in comps.items()}
     for c in sorted(comps, key=lambda c: key[c]):
         ps = sorted(claims.get(c, []), key=_seq_of)
@@ -1192,24 +1264,36 @@ def _carry(level, labels, prev_ids, cand_id, snr, state, run_label, allow_split)
                                    n_det_new=int(sum(1 for j in comps[c] if not prev_ids[j]))))
         else:
             out[c] = state.issue(level, run_label)
-            olds = sorted({prev_ids[j] for j in comps[c] if prev_ids[j]}, key=_seq_of)
-            if olds:                                    # a split-off piece of previous IDs (regroup only)
-                events.append(dict(run=run_label, level=level, event='split', id=out[c], split_from=olds, n_det=len(comps[c]),
-                                   n_det_previous={q: int(pieces[q][c]) for q in olds}))
+            issued.add(out[c])
+    for p in split:
+        events.append(dict(run=run_label, level=level, event='split', id=p, home_id=out[home[p]],
+                           pieces={out[c]: int(v) for c, v in sorted(pieces[p].items(), key=lambda cv: out[cv[0]])}))
+    for j, p in enumerate(prev_ids):
+        if not p:
+            continue
+        c = labels[j]; to = out[c]
+        if to == p:
+            continue
+        reason = 'merge' if home[p] == c else ('split' if to in issued else 'moved')
+        events.append(dict(run=run_label, level=level, event='move', cand_id=str(cand_id[j]), from_id=p, to_id=to, reason=reason))
     return out, events
 
 
 def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None):
     """The catalog step's entry point for one tier and Stokes: group every detection of det (all bands, nights, LSTs) at the
     ruled operating point, give each identity and multiples-level group its stable ID, name it, count its windows (nights) and
-    record every merge. det needs cand_id (unique) besides the fields group() reads, and holds EVERY detection of the tier and
-    Stokes - the state's and the new ones (a state detection absent from det is dropped from the assignments, counted in the
-    summary as n_det_state_absent; an ID left without detections retires).
+    record every change of an ID (events: 'merge', 'split', 'move' - every detection whose ID changes, 'reused' - a cand_id
+    of the state that names another detection now, 'retired'). det needs cand_id (unique) besides the fields group() reads,
+    and holds EVERY detection of the tier and Stokes - the state's and the new ones. A detection of the state is its cand_id
+    WITH its fingerprint (fingerprints()): a cand_id whose fingerprint changed is a new detection and the old one is absent; a
+    state detection absent from det is dropped from the assignments (n_det_state_absent); an ID left without detections retires.
     state: a GroupingState (the IDs of earlier runs) or None (the first run: every ID new).
-    mode: 'batch' (no state, or ignore the state's partition and issue all IDs anew - refused when the state holds IDs),
-          'incremental' (default with a non-empty state: the state's detections keep their identities - frozen - and only the
-          new ones are assigned; a window holding both kinds REFUSES, the never-split guarantee needs whole windows),
-          'regroup' (the whole partition recomputed, IDs carried by member detections; splits and merges recorded).
+    mode: 'batch' (no state: every ID new - refused when the state holds IDs),
+          'incremental' (default with a non-empty state; PURE APPENDS: the state's detections keep their identities - frozen -
+          and only the new ones are assigned; a window holding both kinds REFUSES - a re-search forces 'regroup' - and an
+          identity split refuses; the multiples level may split an earlier group, recorded),
+          'regroup' (the whole partition recomputed, IDs carried by member detections - cand_id AND fingerprint; every merge,
+          split and move recorded).
     Returns a GroupingResult (its .state is the next run's state; the state passed in is not modified)."""
     p_thr, p_fork, u_cap = operating_point(tier, stokes)
     P = _resolve(P, p_thr, u_cap)
@@ -1220,6 +1304,7 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
     if len(set(cand_id.tolist())) != n:
         raise GroupingRefused('grouping: cand_id is not unique - REFUSING')
     snr = np.asarray(det['snr'], float)
+    fp = fingerprints(det)
     old = state if state is not None else GroupingState(tier, stokes)
     if (old.tier, old.stokes) != (tier, stokes):
         raise GroupingRefused(f'grouping: state of {old.tier} {old.stokes} given for {tier} {stokes} - REFUSING')
@@ -1232,20 +1317,27 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
     if mode == 'batch' and old.ids:
         raise GroupingRefused('grouping: a batch run would re-issue every ID although the state holds IDs - use mode '
                               "'incremental' or 'regroup' (IDs are never reused) - REFUSING")
-    prev_i = [''] * n; prev_m = [''] * n
+    prev_i = [''] * n; prev_m = [''] * n; reused = []
     if mode in ('incremental', 'regroup'):
         for j, c in enumerate(cand_id.tolist()):
             a = old.assign.get(c)
             if a:
-                prev_i[j], prev_m[j] = a
+                if tuple(a[2]) == fp[j]:
+                    prev_i[j], prev_m[j] = a[0], a[1]
+                else:                                       # the cand_id names another detection now: NEW here, the old one ABSENT
+                    reused.append((j, a))
     frozen = frozen_fork = None
     if mode == 'incremental':
-        is_old = np.array([bool(x) for x in prev_i])
+        is_old = np.array([bool(x) for x in prev_i], bool)
         keys = np.asarray(det['key'])
         mixed = sorted(set(keys[is_old].tolist()) & set(keys[~is_old].tolist()))
         if mixed:
-            raise GroupingRefused(f'grouping: {len(mixed)} window(s) hold both detections of the state and new ones (e.g. {mixed[0]}): '
-                                  "the incremental mode assigns new WINDOWS only - run mode 'regroup' - REFUSING")
+            ms = set(mixed)
+            nre = sum(1 for j, _ in reused if keys[j] in ms)
+            raise GroupingRefused(f'grouping: {len(mixed)} window(s) hold both detections of the state and new ones (e.g. {mixed[0]}'
+                                  + (f'; {nre} of the new ones reuse a cand_id of the state for another detection - a re-search' if nre
+                                     else '') + "): the incremental mode is for pure appends (new windows) - run mode 'regroup' - "
+                                  'REFUSING')
         codes_i = {x: k for k, x in enumerate(sorted({x for x in prev_i if x}))}
         codes_m = {x: k for k, x in enumerate(sorted({x for x in prev_m if x}))}
         frozen = np.array([codes_i[x] if x else -1 for x in prev_i], int)
@@ -1259,12 +1351,15 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
     events = []
     id_of, ev = _carry('identity', ident, prev_i, cand_id, snr, st, run_label, allow_split=(mode != 'incremental'))
     events += ev
-    # the multiples level: in an incremental run an earlier multiples group can only split where two of its identities now
-    # share a window (the one-window-source-per-window rule wins): allowed and recorded as 'split'
+    # the multiples level: in an incremental run an earlier multiples group can split where two of its identities now share a
+    # window (one window-source per window per group wins; research group_B.py:639-645): allowed, recorded ('split', 'move')
     mid_of, ev = _carry('multiples', fork, prev_m, cand_id, snr, st, run_label, allow_split=True)
     events += ev
     identity_id = np.array([id_of[c] for c in ident.tolist()], dtype=object)
     multiples_id = np.array([mid_of[c] for c in fork.tolist()], dtype=object)
+    for j, a in reused:
+        events.append(dict(run=run_label, event='reused', cand_id=str(cand_id[j]), fingerprint_old=list(a[2]), fingerprint_new=list(fp[j]),
+                           from_identity=a[0], from_multiples=a[1], to_identity=identity_id[j], to_multiples=multiples_id[j]))
     # retired: previous live IDs with no detection now
     present = set(identity_id.tolist()) | set(multiples_id.tolist())
     for i, e in st.ids.items():
@@ -1288,7 +1383,7 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
     for m, ids_ in mmembers.items():
         names[m] = names[max(ids_, key=lambda i: (best[i], -_seq_of(i)))]
     for j, c in enumerate(cand_id.tolist()):
-        st.assign[c] = (identity_id[j], multiples_id[j])
+        st.assign[c] = (identity_id[j], multiples_id[j], fp[j])
     ndet = collections.Counter(identity_id.tolist()); ndet.update(multiples_id.tolist())
     for i in present:
         st.ids[i].update(last_run=run_label, n_det=int(ndet[i]))
@@ -1298,24 +1393,28 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
         st.ids[m]['multiple'] = bool(is_mult[j])
     n_new = {lv: sum(1 for i in present if st.ids[i]['level'] == lv and st.ids[i]['created'] == run_label and i not in old.ids)
              for lv in LEVELS}
-    in_det = set(cand_id.tolist())
+    here = dict(zip(cand_id.tolist(), fp))
+    absent = sum(1 for c, a in old.assign.items() if here.get(c) != tuple(a[2])) if mode != 'batch' else 0
+    gen = det.get('frame_generation')
+    gen_prev = next((r.get('frame_generation') for r in reversed(old.runs) if r.get('frame_generation') is not None), None)
+    cnt = collections.Counter((e.get('level'), e['event']) for e in events)
     summary = dict(run=run_label, tier=tier, stokes=stokes, mode=mode, p_identity=p_thr, p_multiples=p_fork, u_cap=u_cap,
-                   n_det=n, n_det_previous=int(sum(1 for x in prev_i if x)),
-                   n_det_state_absent=int(sum(1 for c in old.assign if c not in in_det)) if mode != 'batch' else 0,
-                   identities=len(members), multiples_groups=len(mmembers),
-                   multiples=int(len({m for m, f in zip(multiples_id.tolist(), is_mult.tolist()) if f})),
-                   new_ids=n_new, merges={lv: sum(1 for e in events if e['event'] == 'merge' and e['level'] == lv) for lv in LEVELS},
-                   splits={lv: sum(1 for e in events if e['event'] == 'split' and e['level'] == lv) for lv in LEVELS},
-                   retired={lv: sum(1 for e in events if e['event'] == 'retired' and e['level'] == lv) for lv in LEVELS},
+                   n_det=n, n_det_previous=int(sum(1 for x in prev_i if x)), n_det_state_absent=int(absent),
+                   n_cand_id_reused=len(reused), identities=len(members), multiples_groups=len(mmembers),
+                   multiples=int(len({m for m, f in zip(multiples_id.tolist(), is_mult.tolist()) if f})), new_ids=n_new,
+                   merges={lv: cnt[(lv, 'merge')] for lv in LEVELS}, splits={lv: cnt[(lv, 'split')] for lv in LEVELS},
+                   moves={lv: cnt[(lv, 'move')] for lv in LEVELS}, retired={lv: cnt[(lv, 'retired')] for lv in LEVELS},
                    name_suffixes=clash, window_sources=int(info['n_windowsources']), groups_seeded=int(info['groups_seeded']),
-                   forced_joins=int(info['forced_joins']), research_md5=RESEARCH_MD5)
+                   forced_joins=int(info['forced_joins']), frame_generation=gen,
+                   frame_generation_changed=(None if gen is None or gen_prev is None else gen != gen_prev), research_md5=RESEARCH_MD5)
     st.runs.append(summary)
     return GroupingResult(cand_id=cand_id, identity=ident, multiples=fork, identity_id=identity_id, multiples_id=multiples_id,
                           names=names, multiplicity=mult, multiple=is_mult, events=events, summary=summary, state=st, info=info)
 
 
 def append_events(path, result):
-    """append this run's summary and every event (merges, splits, retirements) to a JSON-lines record (one object per line)"""
+    """append this run's summary and every event (merge, split, move, reused, retired) to a JSON-lines record (one object per
+    line)"""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'a') as f:
         f.write(json.dumps(dict(result.summary, event='run'), sort_keys=True, default=str) + '\n')

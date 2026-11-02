@@ -15,19 +15,29 @@ BOTH: positions mapped to the COMMON frame (Gregg 2026-10-08, RULING-GREGG-20261
   members=None and no tier scale - and fsig = term(...).sigma_arcsec; then the elevation term (grouping.covariance).
   A detection without its fitted statistical error, its window-tie systematic (10-minute), its beam, or with a blank S/N
   REFUSES, naming it (the research loaders filled such values with medians; none of the approved inputs needed it).
-The det keeps ra_raw / dec_raw (the catalog positions), frame_shift (arcsec; NaN where the screen did not converge) and the
-astrom_frame generation tag (frame_generation) of the mapping.
+The det keeps ra_raw / dec_raw (the catalog positions: the detections' fingerprints, grouping.fingerprints), frame_shift
+(arcsec; NaN where the screen did not converge) and the astrom_frame generation tag (frame_generation) of the mapping, which
+grouping.group_catalog records in its run summary.
+SINGLE-THREAD USE: the mapping switches a process-wide environment flag for astrom_frame (P3_TENMIN_PERTIE); this module's
+mappings are serialized (_FRAME_LOCK) and hold astrom_frame's lock, but another thread calling astrom_frame meanwhile could
+see the flag.
 """
 import collections
 import contextlib
 import csv
 import os
+import threading
 
 import numpy as np
 
 from exopipe.phase3.lib.catalog import grouping as G
 
 csv.field_size_limit(10 ** 9)
+# The common-frame mapping switches astrom_frame's 10-minute tier through a PROCESS-WIDE environment flag (P3_TENMIN_PERTIE), which
+# astrom_frame reads outside its own lock (tier_scale_active). The mappings of this module are therefore serialized by this lock
+# and hold astrom_frame's lock while the flag is switched; a FOREIGN thread calling astrom_frame meanwhile could still read the
+# flag between its locked calls, so the loaders are for single-thread use (the catalog step loads one tier and Stokes at a time).
+_FRAME_LOCK = threading.Lock()
 
 
 def _rows(path, stokes):
@@ -128,7 +138,7 @@ def _finish(det, tier, common, pertie=None):
 @contextlib.contextmanager
 def _tier_env(tier, pertie):
     """the 10-minute tier's process flag for astrom_frame (P3_TENMIN_PERTIE = its window-tie table: the measured frame scale
-    applies), set for the 10-minute mapping and unset for deep, restored afterwards"""
+    applies), set for the 10-minute mapping and unset for deep, restored afterwards. Process-wide: callers hold _FRAME_LOCK."""
     old = os.environ.get('P3_TENMIN_PERTIE')
     if tier == '10min':
         if not pertie:
@@ -148,7 +158,7 @@ def _tier_env(tier, pertie):
 def common_frame(det, tier, pertie=None):
     """(ra, dec, shift arcsec, per-axis Master-frame sigma arcsec, generation tag) of every detection in the COMMON frame:
     astrom_frame.to_common_many per (LST, band) and term(...).sigma_arcsec (10-minute: members='auto' and the tier's measured
-    frame scale; deep: members=None, no tier scale)"""
+    frame scale; deep: members=None, no tier scale). Single-thread use: see _FRAME_LOCK."""
     from exopipe.phase3.core import env
     env.legacy()
     import astrom_frame as AF
@@ -156,7 +166,8 @@ def common_frame(det, tier, pertie=None):
     keys = collections.defaultdict(list)
     for i, (l, b) in enumerate(zip(det['lst'], det['band'])):
         keys[(l[:3], b)].append(i)
-    with _tier_env(tier, pertie):
+    af_lock = getattr(AF, '_LOCK', None) or contextlib.nullcontext()     # astrom_frame's own (re-entrant) lock, when it has one
+    with _FRAME_LOCK, af_lock, _tier_env(tier, pertie):
         for (l, b), idx in keys.items():
             idx = np.array(idx)
             if tier == '10min':

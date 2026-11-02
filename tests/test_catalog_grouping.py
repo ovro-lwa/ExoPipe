@@ -23,9 +23,15 @@ CHECKS, per tier x Stokes (10-minute I and V, deep I and V):
   faint        harness_extra.faint_repeat_recovery (n = 2/3/5; partner modes): labels = research; recovery at the multiples level
                >= identity level (nesting)
   incremental  a first run on the early 75% of the nights, then the rest added: partitions = the research frozen run; no early
-               identity split; IDs carried, merges recorded; state save/load; refusals (mixed windows, batch over a state);
-               regroup mode
-  IDs, names   IDs fixed at creation (format, deterministic, order independent), the record logic on synthetic cases, names unique
+               identity split; IDs carried; EVERY changed assignment has its event (merge / split / move); state save/load;
+               refusals (mixed windows, batch over a state); regroup mode (every change recorded; a split event for exactly
+               the IDs now in several groups)
+  reused       a cand_id that names another detection (production re-numbers on a re-search; the review's
+               V1_04h_2025-01-02T01_18MHz_0017 moved 20 deg): the incremental mode refuses its mixed window; regroup never
+               carries it by cand_id ('reused' event); a window re-measured whole is a new window (10-minute V)
+  IDs, names   IDs fixed at creation (format, deterministic, order independent), the record logic on synthetic cases (the
+               review's [P,P,P,Q,Q,Q,Q,Q] case), the state file (one file; no state refuses unless new=True), names unique, the
+               frame generation in the run summary
 The metric functions below are ports of harness.py v2b / harness_extra.py (same RNG draws); make_golden.py checked them against the
 research harness's own functions on these inputs (golden/<tier>_<S>.json 'harness_crosscheck').
 Run: NUMPY_MADVISE_HUGEPAGE=0 taskset -c $(bash /lustre/gh/main/exopipe_ops/node_free_cores.sh) python3 tests/test_catalog_grouping.py
@@ -424,6 +430,31 @@ def run_dataset(tier, S, quick=False):
     return det, ident, fork, z, meta
 
 
+def unrecorded_changes(old_state, res):
+    """the changes of res (a GroupingResult) against old_state that have no event, and events that match no change: a cand_id
+    with the same fingerprint whose identity or multiples ID changed needs exactly one 'move' event at that level (from, to);
+    a cand_id whose fingerprint changed needs a 'reused' event. Returns (missing, spurious, n_changed)."""
+    moves = collections.Counter((e['level'], e['cand_id'], e['from_id'], e['to_id']) for e in res.events if e['event'] == 'move')
+    reused = {e['cand_id'] for e in res.events if e['event'] == 'reused'}
+    want = collections.Counter(); missing = []; n = 0
+    for c, (i, m, fp) in res.state.assign.items():
+        a = old_state.assign.get(c)
+        if not a:
+            continue
+        if tuple(a[2]) != tuple(fp):
+            n += 1
+            if c not in reused:
+                missing.append(('reused', c))
+            continue
+        for lv, x, y in (('identity', a[0], i), ('multiples', a[1], m)):
+            if x != y:
+                n += 1; want[(lv, c, x, y)] += 1
+                if moves[(lv, c, x, y)] != 1:
+                    missing.append((lv, c, x, y))
+    spurious = [k for k in moves if k not in want] + [c for c in reused if c not in old_state.assign]
+    return missing, spurious, n
+
+
 def run_incremental(tier, S, det, z, meta):
     """the incremental API on real data: a first run on the early nights, then every detection"""
     tag = f'{tier} {S}'
@@ -449,6 +480,11 @@ def run_incremental(tier, S, det, z, meta):
     ev = [e for e in r2.events if e['event'] == 'merge']
     check(f'{tag}: incremental - every merge is recorded ({len(merged)} absorbed IDs, {len(ev)} merge events)',
           sorted(merged) == sorted(x for e in ev for x in e['absorbed']) and all(st.ids[x]['into'] == e['id'] for e in ev for x in e['absorbed']))
+    missing, spurious, nch = unrecorded_changes(r1.state, r2)
+    check(f'{tag}: incremental - EVERY changed assignment has its event ({nch} changes; {r2.summary["moves"]} moves)',
+          not missing and not spurious, (missing[:5], spurious[:5]))
+    check(f'{tag}: incremental - identities only merge: every identity-level move is a merge',
+          all(e['reason'] == 'merge' for e in r2.events if e['event'] == 'move' and e['level'] == 'identity'))
     new_seq = {lv: sorted(G._seq_of(i) for i in st.ids if i not in r1.state.ids and st.ids[i]['level'] == lv) for lv in LV}
     check(f'{tag}: incremental - new IDs continue each level\'s sequence without gaps or reuse '
           f'({len(new_seq["identity"])} identity, {len(new_seq["multiples"])} multiples)',
@@ -457,10 +493,10 @@ def run_incremental(tier, S, det, z, meta):
           r2.summary['mode'] == 'incremental' and r2.summary['n_det_previous'] == int(em.sum()))
     # save / load
     d = os.path.join(T, f'state_{tier}_{S}')
-    st.save(d)
+    pth = st.save(d)
     st2 = G.GroupingState.load(d, tier, S)
-    check(f'{tag}: state save/load round trip', st2.ids == json.loads(json.dumps(st.ids)) and st2.assign == st.assign
-          and st2.next_seq == st.next_seq)
+    check(f'{tag}: state save/load round trip (one file, fingerprints kept)', st2.ids == json.loads(json.dumps(st.ids))
+          and st2.assign == st.assign and st2.next_seq == st.next_seq and os.listdir(d) == [os.path.basename(pth)])
     # refusals: a window with both kinds; a batch over a state
     keys = det['key']; w = keys[~em][0]
     half = np.nonzero(keys == w)[0]
@@ -483,9 +519,75 @@ def run_incremental(tier, S, det, z, meta):
     live3 = set(r3.identity_id.tolist())
     ok = all(r3.state.resolve(i) in live3 or r3.state.ids[i]['status'] == 'retired'
              for i in r1.state.ids if r1.state.ids[i]['level'] == 'identity')
-    nsp = r3.summary['splits']['identity']
-    check(f'{tag}: regroup - every first-run identity ID carried, merged or recorded ({nsp} split-off pieces recorded)', ok
-          and nsp == sum(1 for e in r3.events if e['event'] == 'split' and e['level'] == 'identity'))
+    check(f'{tag}: regroup - every first-run identity ID is live, merged into a live ID, or retired', ok)
+    missing, spurious, nch = unrecorded_changes(r1.state, r3)
+    check(f'{tag}: regroup - EVERY changed assignment has its event ({nch} changes; moves {r3.summary["moves"]}, splits '
+          f'{r3.summary["splits"]}, merges {r3.summary["merges"]})', not missing and not spurious, (missing[:5], spurious[:5]))
+    sp = [e for e in r3.events if e['event'] == 'split']
+    pos3 = collections.defaultdict(collections.Counter)
+    for c, (i, m, _) in r3.state.assign.items():
+        a = r1.state.assign.get(c)
+        if a:
+            pos3[('identity', a[0])][i] += 1; pos3[('multiples', a[1])][m] += 1
+    truly = {k for k, v in pos3.items() if len(v) > 1}
+    check(f'{tag}: regroup - a split event for exactly the IDs whose detections now lie in several groups ({len(truly)})',
+          {(e['level'], e['id']) for e in sp} == truly and all(dict(pos3[(e['level'], e['id'])]) == e['pieces'] for e in sp))
+
+
+def moved_copy(det, tier, rows, ddec=20.0, dsnr=0.0):
+    """det with the detections `rows` changed under the SAME cand_ids: moved by ddec degrees in Dec (catalog and common-frame
+    positions) and/or their S/N changed - what production's re-numbering on a re-search produces"""
+    d = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in det.items()}
+    for k in ('dec', 'dec_raw'):
+        d[k][rows] = np.where(d[k][rows] > 0, d[k][rows] - ddec, d[k][rows] + ddec)
+    d['snr'][rows] = d['snr'][rows] + dsnr
+    d['el'], d['q'] = G.elevation_pa(d, tier); d['C'] = G.covariance(d, tier)
+    return d
+
+
+def run_reused(tier, S, det):
+    """a cand_id the state knows that names ANOTHER detection now (production re-numbers on a re-search) is never carried by
+    cand_id alone. The review's case: V1_04h_2025-01-02T01_18MHz_0017 moved by 20 deg kept its identity with no refusal or event."""
+    tag = f'{tier} {S}'
+    r0 = G.group_catalog(det, tier, S, run_label='all')
+    cid = det['cand_id'].tolist()
+    keys = det['key']
+    j = cid.index('V1_04h_2025-01-02T01_18MHz_0017') if 'V1_04h_2025-01-02T01_18MHz_0017' in cid else \
+        next(k for k in range(len(cid)) if (keys == keys[k]).sum() >= 2)
+    nwin = int((keys == keys[j]).sum())
+    old_i, old_m = r0.identity_id[j], r0.multiples_id[j]
+    d2 = moved_copy(det, tier, np.array([j]))
+    try:
+        G.group_catalog(d2, tier, S, state=r0.state, run_label='moved', mode='incremental'); refused, msg = False, ''
+    except G.GroupingRefused as e:
+        refused, msg = True, str(e)
+    check(f'{tag}: reused cand_id {cid[j]} (moved 20 deg; its window holds {nwin}): the incremental mode REFUSES (mixed window, '
+          f'names the reuse)', refused and 'reuse a cand_id' in msg and 'regroup' in msg, msg[:300])
+    r = G.group_catalog(d2, tier, S, state=r0.state, run_label='moved', mode='regroup')
+    ev = [e for e in r.events if e['event'] == 'reused']
+    check(f'{tag}: regroup - the moved detection does not keep its old IDs ({old_i} -> {r.identity_id[j]}, {old_m} -> '
+          f'{r.multiples_id[j]})', r.identity_id[j] != old_i and r.multiples_id[j] != old_m)
+    check(f'{tag}: regroup - a reused event names the cand_id, both fingerprints and both assignments',
+          len(ev) == 1 and ev[0]['cand_id'] == cid[j] and ev[0]['from_identity'] == old_i and ev[0]['to_identity'] == r.identity_id[j]
+          and ev[0]['fingerprint_old'] != ev[0]['fingerprint_new'] and r.summary['n_cand_id_reused'] == 1
+          and r.summary['n_det_state_absent'] == 1, (ev, r.summary.get('n_cand_id_reused')))
+    missing, spurious, nch = unrecorded_changes(r0.state, r)
+    check(f'{tag}: regroup with a reused cand_id - every changed assignment has its event ({nch} changes)', not missing and not spurious,
+          (missing[:5], spurious[:5]))
+    a, b = G.group_fork(d2, p_fork='config', tier=tier, stokes=S)
+    check(f'{tag}: regroup with a reused cand_id - partitions = the batch partitions of the changed input',
+          G.same_partition(r.identity_id, a) and G.same_partition(r.multiples_id, b))
+    # a window re-measured WHOLE (every detection's fingerprint changed): a new window for the incremental mode, the old ones absent
+    rows = np.nonzero(keys == keys[j])[0]
+    d3 = moved_copy(det, tier, rows, ddec=0.0, dsnr=0.01)
+    r3 = G.group_catalog(d3, tier, S, state=r0.state, run_label='remeasured', mode='incremental')
+    ev3 = {e['cand_id'] for e in r3.events if e['event'] == 'reused'}
+    check(f'{tag}: a window re-measured whole is a new window in the incremental mode ({len(rows)} reused cand_ids recorded, the '
+          f'old detections absent)', ev3 == set(det['cand_id'][rows].tolist()) and r3.summary['n_det_state_absent'] == len(rows)
+          and r3.summary['n_det_previous'] == len(cid) - len(rows))
+    missing, spurious, nch = unrecorded_changes(r0.state, r3)
+    check(f'{tag}: incremental with a re-measured window - every changed assignment has its event ({nch} changes)',
+          not missing and not spurious, (missing[:5], spurious[:5]))
 
 
 def check_ids(tier, S, det, ident, fork):
@@ -504,6 +606,8 @@ def check_ids(tier, S, det, ident, fork):
           m1 == m2 and n1 == n2)
     nm = [r.names[i] for i in ids]
     check(f'{tag}: names - unique within the catalog ({r.summary["name_suffixes"]} letter suffixes)', len(set(nm)) == len(nm))
+    check(f'{tag}: the run summary records the astrom_frame generation ({r.summary["frame_generation"]})',
+          r.summary['frame_generation'] == det['frame_generation'] and r.summary['frame_generation'])
     check(f'{tag}: names - J-names (JHHMM+DDMM or JHHMMSS+DDMMSS)', all(x[0] == 'J' and ('+' in x or '-' in x) for x in nm))
     return r
 
@@ -530,8 +634,11 @@ def check_record_logic():
     prev = [b, a, '', '', '']
     labels = np.array([0, 0, 1, 1, 2])   # {c1, c2}: B + A merge; {c3, c4}, {c5}: new
     out, ev = G._carry('identity', labels, prev, cid, snr, st, 'r1', allow_split=False)
-    check('record: a merge keeps the OLDEST ID and records the other as merged into it', out[0] == a and st.ids[b]['status'] == 'merged'
-          and st.ids[b]['into'] == a and ev and ev[0]['event'] == 'merge' and ev[0]['id'] == a and ev[0]['absorbed'] == [b], (out, ev))
+    mv = [e for e in ev if e['event'] == 'move']
+    check('record: a merge keeps the OLDEST ID and records the other as merged into it (+ a merge move for its detection)',
+          out[0] == a and st.ids[b]['status'] == 'merged' and st.ids[b]['into'] == a and ev and ev[0]['event'] == 'merge'
+          and ev[0]['id'] == a and ev[0]['absorbed'] == [b]
+          and [(e['cand_id'], e['from_id'], e['to_id'], e['reason']) for e in mv] == [('c1', b, a, 'merge')], (out, ev))
     check('record: new identities get the next IDs, brightest first', out[2] == G.format_id('identity', '10min', 'I', 4)
           and out[1] == G.format_id('identity', '10min', 'I', 5), out)
     st = G.GroupingState('10min', 'I')
@@ -541,8 +648,28 @@ def check_record_logic():
     labels = np.array([0, 0, 1, 2, 2])   # A split 2 + 1 (regroup); B's detection joins a new one
     out, ev = G._carry('identity', labels, prev, cid, snr, st, 'r1', allow_split=True)
     sp = [e for e in ev if e['event'] == 'split']
-    check('record: a regroup split - the piece holding most detections keeps the ID, the other gets a new one, recorded',
-          out[0] == a and out[1] not in (a, b) and out[2] == b and len(sp) == 1 and sp[0]['split_from'] == [a], (out, ev))
+    mv = [e for e in ev if e['event'] == 'move']
+    check('record: a regroup split - the piece holding most detections keeps the ID, the other gets a new one, recorded (split + move)',
+          out[0] == a and out[1] not in (a, b) and out[2] == b and len(sp) == 1 and sp[0]['id'] == a
+          and sp[0]['pieces'] == {a: 2, out[1]: 1} and [(e['cand_id'], e['from_id'], e['to_id'], e['reason']) for e in mv]
+          == [('c3', a, out[1], 'split')], (out, ev))
+    # the review's case: previous [P,P,P,Q,Q,Q,Q,Q] regrouped [0,0,1,1,1,1,1,1] - P's third detection lands in Q's group
+    st = G.GroupingState('10min', 'I')
+    p_, q_ = st.issue('identity', 'r0'), st.issue('identity', 'r0')
+    cid8 = np.array(['d%d' % k for k in range(8)]); snr8 = np.linspace(8.0, 9.0, 8)
+    lab8 = np.array([0, 0, 1, 1, 1, 1, 1, 1]); prev8 = [p_] * 3 + [q_] * 5
+    out, ev = G._carry('identity', lab8, prev8, cid8, snr8, st, 'r1', allow_split=True)
+    mv = [(e['cand_id'], e['from_id'], e['to_id'], e['reason']) for e in ev if e['event'] == 'move']
+    sp = [e for e in ev if e['event'] == 'split']
+    check('record: the review case [P,P,P,Q,Q,Q,Q,Q] -> [0,0,1,1,1,1,1,1] records P\'s detection that took Q (move "moved" + P split)',
+          out == {0: p_, 1: q_} and mv == [('d2', p_, q_, 'moved')] and len(sp) == 1 and sp[0]['id'] == p_
+          and sp[0]['pieces'] == {p_: 2, q_: 1}, (out, ev))
+    try:
+        G._carry('identity', lab8, prev8, cid8, snr8, G.GroupingState('10min', 'I', ids=st.ids, next_seq=st.next_seq), 'r2',
+                 allow_split=False); refused = False
+    except G.GroupingRefused:
+        refused = True
+    check('record: ... and the incremental mode (identity level) REFUSES that split', refused)
     try:
         G._carry('identity', labels, ['GTI-0000099', '', '', '', ''], cid, snr, st, 'r2', allow_split=True); refused = False
     except G.GroupingRefused:
@@ -555,6 +682,38 @@ def check_record_logic():
     except G.GroupingRefused:
         refused = True
     check('record: an ID is never issued twice (a damaged sequence REFUSES)', refused and i1 == a)
+    # the state file: one file, replaced atomically; no state REFUSES unless new=True; new=True over a state REFUSES
+    d = os.path.join(T, 'state_files')
+    try:
+        G.GroupingState.load(d, '10min', 'I'); refused = False
+    except G.GroupingRefused as e:
+        refused = 'new=True' in str(e)
+    empty = G.GroupingState.load(d, '10min', 'I', new=True)
+    check('state: a directory without a state REFUSES unless new=True (IDs never restart at 1 silently)', refused and not empty.ids)
+    s3 = G.GroupingState('10min', 'I'); i3 = s3.issue('identity', 'r0'); m3 = s3.issue('multiples', 'r0')
+    s3.assign['c1'] = (i3, m3, ('04h|2025-01-02T01', '18MHz', '1.5', '2.5', '7.25'))
+    pth = s3.save(d)
+    try:
+        G.GroupingState.load(d, '10min', 'I', new=True); refused = False
+    except G.GroupingRefused:
+        refused = True
+    back = G.GroupingState.load(d, '10min', 'I')
+    check('state: saved as ONE file; new=True over it REFUSES; load returns it (fingerprints included)', refused
+          and os.listdir(d) == [os.path.basename(pth)] and back.assign == s3.assign and back.ids == s3.ids)
+    doc = json.load(open(pth)); doc['assign']['c1'] = doc['assign']['c1'][:4]
+    json.dump(doc, open(pth, 'w'))
+    try:
+        G.GroupingState.load(d, '10min', 'I'); refused = False
+    except G.GroupingRefused:
+        refused = True
+    doc = json.load(open(pth)); doc['assign']['c1'] = [i3, m3, '04h|2025-01-02T01', '18MHz', '1.5', '2.5', '7.25']
+    doc['next_seq']['identity'] = 1
+    json.dump(doc, open(pth, 'w'))
+    try:
+        G.GroupingState.load(d, '10min', 'I'); refused2 = False
+    except G.GroupingRefused:
+        refused2 = True
+    check('state: a malformed assignment or a next_seq that would re-issue an ID REFUSES', refused and refused2)
 
 
 def check_config_and_refusals(det10):
@@ -575,6 +734,20 @@ def check_config_and_refusals(det10):
     except G.GroupingRefused:
         refused = True
     check('a non-finite covariance REFUSES', refused)
+    d = dict(det10); d['band'] = det10['band'].copy(); d['band'][0] = 'Foo'
+    try:
+        G.group(d); refused = 'GroupingRefused'
+    except G.GroupingRefused:
+        refused = True
+    except Exception as e:                       # noqa: BLE001 - the failure this check is about
+        refused = type(e).__name__
+    check('a band that is neither a wideband nor <nu>MHz REFUSES (GroupingRefused, not ValueError)', refused is True, refused)
+    d = dict(det10); d['night'] = np.array(['n%05d' % k for k in range(len(det10['night']))])
+    try:
+        G.group(d); refused = False
+    except G.GroupingRefused as e:
+        refused = '1000' in str(e)
+    check('1000 or more nights REFUSE (the (LST hour, night) code holds fewer)', refused)
     p = os.path.join(T, 'bad_master.csv')
     with open(f'{FROZEN}/tenmin/master_catalog.csv') as f, open(p, 'w') as g:
         lines = f.read().splitlines()
@@ -611,6 +784,8 @@ def main(argv):
             check_ids(tier, S, det, ident, fork)
             if PLAN[(tier, S)]['incremental']:
                 run_incremental(tier, S, det, z, meta)
+            if (tier, S) == ('10min', 'V'):
+                run_reused(tier, S, det)
         if det10 is not None:
             check_config_and_refusals(det10)
     finally:
