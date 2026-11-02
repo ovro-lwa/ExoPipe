@@ -118,12 +118,34 @@ def test_config():
 # 2. config truth: the in-place literals (read-only parse of the production files)
 # ---------------------------------------------------------------------------------------------------------------------
 
+def _cleared_switch_default(node):
+    """The literal default of a module-level read of a production switch, NAME = os.environ.get('VAR', <literal>) (or
+    os.getenv), when VAR belongs to a family core.legacy.run clears from every child's environment
+    (runner.CHILD_ENV_CLEAR_PREFIXES): the in-place script the step runs then reads that default. None for any other value
+    (a variable the child may inherit is not a fixed value)."""
+    if not (isinstance(node, ast.Call) and len(node.args) == 2 and not node.keywords
+            and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+        return None
+    fn = node.func
+    environ_get = (isinstance(fn, ast.Attribute) and fn.attr == 'get' and isinstance(fn.value, ast.Attribute)
+                   and fn.value.attr == 'environ' and isinstance(fn.value.value, ast.Name) and fn.value.value.id == 'os')
+    getenv = isinstance(fn, ast.Attribute) and fn.attr == 'getenv' and isinstance(fn.value, ast.Name) and fn.value.id == 'os'
+    if not (environ_get or getenv) or not node.args[0].value.startswith(tuple(CFG.runner.CHILD_ENV_CLEAR_PREFIXES)):
+        return None
+    return node.args[1]
+
+
 def _assigns(path):
+    """{NAME: value} of a production file's module-level NAME = <literal> assignments. A read of a cleared production switch
+    with a literal default counts as that default (_cleared_switch_default): snapshot_forced_panels.py reads STAGE1 from
+    P3_FORCED_STAGE1 (exopipe_ops 57b1ae9) and PHOT from P3_PHOT_ROOT (43eaf17) since 2026-10-25, defaults unchanged, and the
+    step's child gets every P3_* cleared, so it reads the defaults."""
     out = {}
     for node in ast.parse(open(path).read(), path).body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            dflt = _cleared_switch_default(node.value)
             try:
-                out[node.targets[0].id] = ast.literal_eval(node.value)
+                out[node.targets[0].id] = ast.literal_eval(node.value if dflt is None else dflt)
             except Exception:
                 pass
     return out
@@ -135,6 +157,13 @@ def _src(path):
 
 def test_inplace_truth():
     s, a, pc, cf, f = CFG.forced_snapshot, CFG.forced_assoc, CFG.forced_panels, CFG.forced_catflux, CFG.forced
+    probe = os.path.join(TMP, 'assigns_probe.py')
+    with open(probe, 'w') as fh:
+        fh.write('import os\nA = os.environ.get("P3_PROBE", "/a")\nB = os.getenv("P3_PROBE", "/b")\n'
+                 'C = os.environ.get("HOME", "/c")\nD = os.environ.get("P3_PROBE")\nE = "/e"\n')
+    got = _assigns(probe)
+    check('truth parse: a cleared switch read counts as its default; an inherited variable or no default is no value',
+          got == {'A': '/a', 'B': '/b', 'E': '/e'}, repr(got))
     P = _assigns(os.path.join(OPS, 'snapshot_forced_panels.py'))
     PS = _src(os.path.join(OPS, 'snapshot_forced_panels.py'))
     for key, name in (('MERGE_ARCMIN', 'MERGE_ARCMIN'), ('ASTROM_SNR', 'ASTROM_SNR'), ('VI_NOTE_SIGMA', 'VI_NOTE_SIGMA'),
