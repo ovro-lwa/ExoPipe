@@ -415,10 +415,68 @@ def test_real():
           [(sb, 'Run_20260603_010316', '70d5f1c') for sb in ('41MHz', '46MHz', '50MHz', '55MHz', '59MHz')], g)
 
 
+def test_run_pins_env_override():
+    """P3_SNAP_RUN_PINS: production's discover_frames reads its pin file from that variable at the module's import (clv15
+    facb3e8), so a stale shell variable would override the protected paths.PHASE1_RUN_PINS - the frames step's default
+    (legacy) discovery refuses it, as it refuses P3_SNAP_FLOW; the curves lock binds RUN_PINS too."""
+    from types import SimpleNamespace
+    from exopipe.phase3.core import env as E
+    E.legacy()
+    import phase3_snapshot_search as SS
+    from exopipe.phase3.lib.frames import tier_snapshot as FT
+    from exopipe.phase3.lib.curves import lock
+    ctx = SimpleNamespace(discovery='legacy')
+    saved = SS.RUN_PINS
+    try:
+        SS.RUN_PINS = os.path.join(T, 'stale_pins.csv')
+        e = raises(Refusal, FT.discover, ctx, '18h', '2025-05-05', '41MHz')
+        check('frames (legacy discovery): a P3_SNAP_RUN_PINS naming another file refuses before discovery', e is not None
+              and 'P3_SNAP_RUN_PINS' in str(e) and 'PHASE1_RUN_PINS' in str(e), e)
+    finally:
+        SS.RUN_PINS = saved
+    if '--no-real' not in sys.argv:
+        paths, _rep = FT.discover(ctx, '18h', '2025-05-05', '41MHz')
+        check('frames (legacy discovery) with the protected pin file: the pinned cell gives 356 + 356 frames of the June run',
+              len(paths) == 712 and all('/Run_20260603_010316/' in p for p in paths), len(paths))
+    out = os.path.join(T, 'pins_cli')
+    env = dict(os.environ, P3_SNAP_RUN_PINS=os.path.join(T, 'stale_pins.csv'), PYTHONPATH=REPO)
+    r = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'frames', '--tier', 'snapshot', '--cells',
+                        '18h_2025-05-05_41MHz', '--stages', 'stage', '--dry-run', '--out', out, '--work',
+                        os.path.join(T, 'pins_work'), '--cores', 'none'], cwd=REPO, env=env, capture_output=True, text=True,
+                       timeout=600)
+    check('CLI: `P3_SNAP_RUN_PINS=<other file> exopipe3 frames --tier snapshot ... --dry-run` refuses (exit 2)',
+          r.returncode == 2 and 'P3_SNAP_RUN_PINS' in r.stdout + r.stderr, (r.returncode, (r.stdout + r.stderr)[-500:]))
+    clv = E.legacy_root('clv15')
+    ok, probs, files = lock.check(clv, CFG.curves, CFG.paths)
+    check('curves lock: the real clv15 RUN_PINS default = paths.PHASE1_RUN_PINS', not [p for p in probs if 'RUN_PINS' in p],
+          probs)
+    old = os.environ.get('P3_SNAP_RUN_PINS')
+    os.environ['P3_SNAP_RUN_PINS'] = os.path.join(T, 'stale_pins.csv')
+    try:
+        ok, probs, _ = lock.check(clv, CFG.curves, CFG.paths)
+    finally:
+        if old is None:
+            os.environ.pop('P3_SNAP_RUN_PINS', None)
+        else:
+            os.environ['P3_SNAP_RUN_PINS'] = old
+    check('curves lock: a P3_SNAP_RUN_PINS naming another file in the environment refuses (G13)', not ok
+          and any('P3_SNAP_RUN_PINS=' in p for p in probs), probs)
+    root = os.path.join(T, 'lockcopy')
+    os.makedirs(root, exist_ok=True)
+    for f in files:
+        shutil.copy(f, root)
+    ssp = os.path.join(root, 'phase3_snapshot_search.py')
+    src = open(ssp).read()
+    assert CFG.paths.PHASE1_RUN_PINS in src
+    open(ssp, 'w').write(src.replace(CFG.paths.PHASE1_RUN_PINS, '/somewhere/else/pins.csv'))
+    ok, probs, _ = lock.check(root, CFG.curves, CFG.paths)
+    check('curves lock: an extractor whose RUN_PINS default moved refuses (G13)', not ok
+          and any('RUN_PINS' in p and '/somewhere/else' in p for p in probs), probs)
+
 def main(argv):
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
-    tests = [test_frame_time_constant, test_run_pin_and_identity, test_phase1_code_recorded]
+    tests = [test_frame_time_constant, test_run_pin_and_identity, test_phase1_code_recorded, test_run_pins_env_override]
     if '--no-real' not in argv:
         tests.append(test_real)
     for t in tests:
