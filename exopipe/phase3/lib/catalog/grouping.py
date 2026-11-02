@@ -42,18 +42,26 @@ WHAT IT DOES (one rule at two levels). A unit j against a component k, in k's ta
 
 KNOWN LIMITS (review 2026-11-02)
   - The incremental mode is for PURE APPENDS - whole new windows (new nights). A re-search re-numbers and re-measures the
-    detections of old windows, so windows then hold both unchanged and new detections, the incremental mode refuses, and the run
-    must regroup. Run_SLSTB 2026-10-25 vs 2026-10-31 (fingerprints below, per Stokes x window): 846 of 3,488 windows changed;
-    365 of the 3,486 windows of the new build hold both kinds (refused); 466 were wholly re-measured (I 6, V 460 - treated as new
-    windows, their old detections absent). The deep tier re-searches per LST x band across all nights: a deep re-search is a
-    regroup.
+    detections of old windows, so windows then hold both matched and new detections, the incremental mode refuses, and the run
+    must regroup. Run_SLSTB 2026-10-25 vs 2026-10-31 (per Stokes x window): 846 of 3,488 windows changed. With exact fingerprints
+    only, 365 windows of the new build mix both kinds (I 350, V 15) and 466 were re-measured whole (new windows under exact
+    matching); with the tolerance match I 102 and V 424 windows mix both kinds (re-measured windows are now recognized in part).
+    The deep tier re-searches per LST x band across all nights: a deep re-search is a regroup.
   - In the incremental mode the MULTIPLES level can split an earlier multiples group: two of its identities that gain detections
     in one new window cannot be joined again (one window-source per window per group; research group_B.py:639-645). The ruling
     protects identities, which never split (checked); a multiples-level split is recorded ('split' event, a 'move' per detection).
+    Nor is the incremental mode idempotent at the multiples level: its merge passes restart from the frozen identities and can
+    merge further groups even on an unchanged input (10-minute V subset: 1 merge; identities unchanged; recorded). Regroup on an
+    unchanged input changes nothing.
   - cand_ids are not stable across re-searches (production re-numbers them: exopipe_ops p3s3_merge.py:77-81; 10-25 vs 10-31:
     1,562 of 67,317 shared cand_ids name a detection more than 1 deg away). The state keeps each detection's fingerprint (window
-    key, band, catalog ra, dec, S/N at full precision); a cand_id whose fingerprint changed is a NEW detection plus an ABSENT old
-    one ('reused' event) and never carries the old IDs. A detection re-numbered with an identical fingerprint is also new.
+    key, band, catalog ra, dec, S/N at full precision) and match errors; a detection is matched exactly or within tolerance
+    (re-measured, possibly re-numbered: the IDs follow it), else it is NEW and the state's ABSENT; a cand_id beyond tolerance of
+    its own record is 'reused'; candidates that are ambiguous within tolerance match none ('ambiguous'). The tolerance decides
+    only the ID carry - and, in the incremental mode, which detections are frozen (a re-measured window is then not new).
+    Regroup 2026-10-25 -> 10-31, exact only vs tolerance: tolerance matches I 7,382, V 4,632 (ambiguous: I 0, V 3 groups);
+    retired identity IDs I 3,186 -> 149, V 5,964 -> 1,596; new identity IDs I 3,149 -> 126, V 8,334 -> 3,968; the identity
+    labels of the grouping-B preview carry by ID either way (I 97/97, V 63/63).
   - grouping_inputs maps positions through astrom_frame under a process-wide environment flag (P3_TENMIN_PERTIE): SINGLE-THREAD
     use - its mappings are serialized by a lock, but another thread calling astrom_frame meanwhile could see the flag.
   - Fewer than 1000 nights per tier and Stokes (the (LST hour, night) code L x 1000 + N); more refuses.
@@ -68,7 +76,9 @@ API
   group_catalog(det, tier, stokes, state=None, run_label='', mode=None)   the catalog step's entry point: the operating point
                                     from config, batch / incremental / regroup grouping, stable IDs, display names, multiplicity
                                     and the record of every change - merge, split, move (every detection whose ID changes),
-                                    reused cand_id, retirement (a GroupingResult; its .state is the next run's state)
+                                    remeasured / reused / ambiguous detections, retirement (a GroupingResult; its .state is
+                                    the next run's state, .matched the detection matching)
+  match_state(det, state)           which detections ARE the state's: exact (cand_id + fingerprint), else within tolerance
   GroupingState                     every ID issued so far (never reused), the assignments with each detection's fingerprint;
                                     save(dir) - one file, atomic; load(dir, tier, stokes, new=False) - no state REFUSES unless new
   fingerprints(det)                 (window key, band, catalog ra, dec, S/N) per detection
@@ -1008,10 +1018,14 @@ def same_partition(a, b):
 # =====================================================================================================================
 # An identity (and a multiples-level group) gets an ID when it is first created - '{level}{tier}{stokes}-{seq}' (config
 # ID_FORMAT; GTI-0000001 = the first 10-minute Stokes I identity) - and keeps it for good: IDs are never reused, never renumbered.
-# A DETECTION is its cand_id AND its fingerprint (window key, band, catalog ra, dec and S/N at full precision: fingerprints()).
-# Production re-numbers candidates when a cell is re-searched (exopipe_ops p3s3_merge.py:77-81; Run_SLSTB 2026-10-25 vs 10-31:
-# 1,562 of 67,317 shared cand_ids name a detection more than 1 deg away), so a cand_id whose fingerprint changed is a NEW
-# detection plus an ABSENT old one ('reused' event) and never carries the old detection's IDs.
+# WHICH DETECTION IS WHICH (match_state): production re-numbers candidates when a cell is re-searched (exopipe_ops
+# p3s3_merge.py:77-81; Run_SLSTB 2026-10-25 vs 10-31: 1,562 of 67,317 shared cand_ids name a detection more than 1 deg away) and
+# re-measures the detections it finds again. A new detection IS a state detection when it has the same cand_id and fingerprint
+# (window key, band, catalog ra, dec, S/N at full precision: fingerprints()) - the fast path - or, failing that, the same window
+# and band with the positions within max(0.5 x the larger fitted position error, 0.05 x the larger FWHM) and the S/N of one
+# sign within a factor 1.3 (config ID_MATCH_*), mutually and uniquely ('remeasured'; it may carry another cand_id). Two or more
+# candidates within tolerance on either side match none ('ambiguous'). Anything else is a NEW detection and the state's is
+# ABSENT; a cand_id of the state beyond tolerance of its own record is 'reused' and never carries the old detection's IDs.
 # Carrying IDs to a new partition (_carry, at each level): the HOME of a previous ID is the new group holding most of its
 # detections; a group that is the home of several previous IDs keeps the OLDEST (lowest sequence number) and the others are
 # recorded as merged into it (status 'merged', 'into' - labels attached to an absorbed ID follow 'into'); a group that is the
@@ -1088,7 +1102,8 @@ def _seq_of(i):
 
 
 FP_FIELDS = ('key', 'band', 'ra', 'dec', 'snr')
-STATE_FORMAT = 'exopipe3-grouping-state-1'
+MATCH_FIELDS = ('err_arcsec', 'fwhm_arcmin')          # stored with each assignment for the tolerance match
+STATE_FORMAT = 'exopipe3-grouping-state-2'
 
 
 def fingerprints(det):
@@ -1101,12 +1116,21 @@ def fingerprints(det):
             for k, b, a, d, s in zip(det['key'], det['band'], ra, de, det['snr'])]
 
 
+def match_errors(det):
+    """per detection, (its own fitted position error, arcsec - det['stat'] = pos_stat_maj_arcsec, NaN when det has none; the
+    frame's FWHM, arcmin - det['beam']), as stored for the tolerance match"""
+    n = len(det['ra'])
+    err = np.asarray(det['stat'], float) if 'stat' in det else np.full(n, np.nan)
+    return err, np.asarray(det['beam'], float)
+
+
 class GroupingState:
     """Everything a grouping run hands to the next one for a (tier, Stokes): every ID ever issued (never reused) with its status,
-    and each detection's identity and multiples IDs with its fingerprint.
+    and each detection's identity and multiples IDs with its fingerprint and its match errors.
       ids[ID] = {'level', 'created' (run label), 'status' ('live' | 'merged' | 'retired'), 'into' (merged: the surviving ID),
                  'last_run', 'n_det', 'name' (identity) / 'multiple' (multiples level)}
-      assign[cand_id] = (identity ID, multiples ID, fingerprint)    fingerprint = (key, band, ra, dec, snr) strings (fingerprints())
+      assign[cand_id] = (identity ID, multiples ID, fingerprint, err, fwhm)   fingerprint = (key, band, ra, dec, snr) strings
+                 (fingerprints()); err (arcsec) and fwhm (arcmin) as strings (match_errors()) for the tolerance match
       next_seq[level] = the next sequence number of that level
       runs = the summary of every run
     Persisted in ONE file, grouping_<tier>_<S>_state.json, replaced atomically (temporary file, fsync, rename): save(dir).
@@ -1147,8 +1171,8 @@ class GroupingState:
         os.makedirs(directory, exist_ok=True)
         p = self.path(directory)
         doc = dict(format=STATE_FORMAT, tier=self.tier, stokes=self.stokes, next_seq=self.next_seq, runs=self.runs, ids=self.ids,
-                   fingerprint_fields=list(FP_FIELDS),
-                   assign={c: [i, m] + list(fp) for c, (i, m, fp) in self.assign.items()})
+                   fingerprint_fields=list(FP_FIELDS), match_fields=list(MATCH_FIELDS),
+                   assign={c: [i, m] + list(fp) + [e, w] for c, (i, m, fp, e, w) in self.assign.items()})
         tmp = f'{p}.tmp.{os.getpid()}'
         with open(tmp, 'w') as f:
             json.dump(doc, f, sort_keys=True, separators=(',', ':'), default=str)
@@ -1175,15 +1199,16 @@ class GroupingState:
         if d.get('format') != STATE_FORMAT or d.get('tier') != tier or d.get('stokes') != stokes:
             raise GroupingRefused(f'grouping: {p} is not a {STATE_FORMAT} state of {tier} {stokes} (format {d.get("format")!r}, '
                                   f'{d.get("tier")} {d.get("stokes")}) - REFUSING')
-        if tuple(d.get('fingerprint_fields') or ()) != FP_FIELDS:
-            raise GroupingRefused(f'grouping: {p} fingerprints {d.get("fingerprint_fields")}, not {list(FP_FIELDS)} - REFUSING')
-        assign = {}
+        if tuple(d.get('fingerprint_fields') or ()) != FP_FIELDS or tuple(d.get('match_fields') or ()) != MATCH_FIELDS:
+            raise GroupingRefused(f'grouping: {p} fields {d.get("fingerprint_fields")} + {d.get("match_fields")}, not '
+                                  f'{list(FP_FIELDS)} + {list(MATCH_FIELDS)} - REFUSING')
+        assign, nf = {}, len(FP_FIELDS)
         for c, v in d['assign'].items():
-            if not (isinstance(v, list) and len(v) == 2 + len(FP_FIELDS) and all(isinstance(x, str) for x in v)):
+            if not (isinstance(v, list) and len(v) == 2 + nf + len(MATCH_FIELDS) and all(isinstance(x, str) for x in v)):
                 raise GroupingRefused(f'grouping: {p}: the assignment of {c} is malformed ({v!r}) - REFUSING')
-            assign[c] = (v[0], v[1], tuple(v[2:]))
+            assign[c] = (v[0], v[1], tuple(v[2:2 + nf]), v[2 + nf], v[3 + nf])
         st = cls(tier, stokes, ids=d['ids'], assign=assign, next_seq=d['next_seq'], runs=d.get('runs', []))
-        for c, (i, m, _) in assign.items():
+        for c, (i, m, *_) in assign.items():
             for x, lv in ((i, 'identity'), (m, 'multiples')):
                 e = st.ids.get(x)
                 if e is None or e.get('level') != lv or e.get('status') != 'live':
@@ -1211,6 +1236,106 @@ class GroupingResult:
                             multiples_id=self.multiples_id[j], multiples_name=self.names[self.multiples_id[j]],
                             multiplicity=int(self.multiplicity[j]), multiple=int(self.multiple[j])))
         return out
+
+
+def _sep_arcsec(ra1, de1, ra2, de2):
+    a1, d1, a2, d2 = map(np.radians, (ra1, de1, ra2, de2))
+    c = np.sin(d1) * np.sin(d2) + np.cos(d1) * np.cos(d2) * np.cos(a1 - a2)
+    return np.degrees(np.arccos(np.clip(c, -1.0, 1.0))) * 3600.0
+
+
+def _within(old_rec, fp_new, err_new, fwhm_new, g):
+    """(within tolerance, separation arcsec, tolerance arcsec, |S/N| ratio) of a state record against a new detection: the same
+    window key and band, separation <= max(POS_ERR_FRACTION x the larger fitted error, POS_FWHM_FRACTION x the larger FWHM),
+    S/N of one sign within SNR_FACTOR"""
+    fo = old_rec[2]
+    if fo[0] != fp_new[0] or fo[1] != fp_new[1]:
+        return False, float('nan'), float('nan'), float('nan')
+    sep = float(_sep_arcsec(float(fo[2]), float(fo[3]), float(fp_new[2]), float(fp_new[3])))
+    err = np.fmax(float(old_rec[3]), err_new); fw = np.fmax(float(old_rec[4]), fwhm_new)
+    tol = float(np.fmax(g.ID_MATCH_POS_ERR_FRACTION * err, g.ID_MATCH_POS_FWHM_FRACTION * fw * 60.0))
+    so, sn = float(fo[4]), float(fp_new[4])
+    ratio = max(abs(so), abs(sn)) / min(abs(so), abs(sn)) if so * sn > 0 else float('inf')
+    return bool(sep <= tol and ratio <= g.ID_MATCH_SNR_FACTOR), sep, tol, ratio
+
+
+class Matching:
+    """which detections of det ARE detections of the state (match_state): prev[j] = (identity ID, multiples ID) or None;
+    matched {new cand_id: (state cand_id, 'exact' | 'tolerance')}; remeasured [(j, state cand_id, sep, tol, ratio)];
+    reused [(j, state record)] - a cand_id of the state beyond tolerance of its own record; ambiguous [{'new', 'old', 'pairs'}];
+    absent [state cand_ids matched by no detection]"""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def match_state(det, state, tolerance=None):
+    """Match the detections of det to the state's: EXACT (the same cand_id with the same fingerprint) first; then, when tolerance
+    (default config catalog_grouping.ID_MATCH_TOLERANCE), the leftovers of each window key and band by TOLERANCE (_within: a
+    re-search re-measures, and may re-number, the same detection). A tolerance match must be MUTUAL AND UNIQUE: a new detection
+    with one candidate whose only candidate it is. Every connected group of candidates with a second candidate on either side
+    matches none and is recorded ('ambiguous'). A new detection whose cand_id the state holds with another fingerprint and
+    beyond tolerance of that record is 'reused' (the cand_id names another detection now). Only the ID carry depends on this,
+    never the partition (except which windows the incremental mode freezes)."""
+    g = _cfg().catalog_grouping
+    tolerance = bool(g.ID_MATCH_TOLERANCE) if tolerance is None else bool(tolerance)
+    cand_id = np.asarray(det['cand_id']).astype(str); n = len(cand_id)
+    fp = fingerprints(det); err, fwhm = match_errors(det)
+    old = state.assign
+    prev = [None] * n; matched = {}; used = set()
+    for j, c in enumerate(cand_id.tolist()):
+        a = old.get(c)
+        if a is not None and tuple(a[2]) == fp[j]:
+            prev[j] = (a[0], a[1]); matched[c] = (c, 'exact'); used.add(c)
+    remeasured, ambiguous = [], []
+    if tolerance:
+        new_left, old_left = collections.defaultdict(list), collections.defaultdict(list)
+        for j, c in enumerate(cand_id.tolist()):
+            if c not in matched:
+                new_left[(fp[j][0], fp[j][1])].append(j)
+        for c, a in old.items():
+            if c not in used:
+                old_left[(a[2][0], a[2][1])].append(c)
+        for kb in sorted(set(new_left) & set(old_left)):
+            edges = []
+            for j in new_left[kb]:
+                for c in old_left[kb]:
+                    ok, sep, tol, ratio = _within(old[c], fp[j], err[j], fwhm[j], g)
+                    if ok:
+                        edges.append((j, c, sep, tol, ratio))
+            if not edges:
+                continue
+            dn = collections.Counter(e[0] for e in edges); do = collections.Counter(e[1] for e in edges)
+            parent = {}
+
+            def find(x):
+                while parent.setdefault(x, x) != x:
+                    parent[x] = parent[parent[x]]; x = parent[x]
+                return x
+            for j, c, *_ in edges:
+                parent[find(('n', j))] = find(('o', c))
+            comp = collections.defaultdict(list)
+            for e in edges:
+                comp[find(('n', e[0]))].append(e)
+            for es in comp.values():
+                if all(dn[j] == 1 and do[c] == 1 for j, c, *_ in es):          # one edge: a unique mutual match
+                    j, c, sep, tol, ratio = es[0]
+                    a = old[c]; prev[j] = (a[0], a[1]); matched[cand_id[j]] = (c, 'tolerance'); used.add(c)
+                    remeasured.append((j, c, sep, tol, ratio))
+                else:
+                    ambiguous.append(dict(new=sorted({str(cand_id[j]) for j, *_ in es}), old=sorted({c for _, c, *_ in es}),
+                                          pairs=[[str(cand_id[j]), c, round(sep, 2), round(tol, 2), round(ratio, 4)]
+                                                 for j, c, sep, tol, ratio in sorted(es, key=lambda e: (e[0], e[1]))]))
+    reused = []
+    for j, c in enumerate(cand_id.tolist()):
+        a = old.get(c)
+        if a is None or matched.get(c) == (c, 'exact') or matched.get(c) == (c, 'tolerance'):
+            continue
+        if not (tolerance and _within(a, fp[j], err[j], fwhm[j], g)[0]):     # within tolerance but unmatched = ambiguous
+            reused.append((j, a))
+    absent = sorted(c for c in old if c not in used)
+    return Matching(prev=prev, matched=matched, remeasured=remeasured, reused=reused, ambiguous=ambiguous, absent=absent,
+                    tolerance=tolerance, fp=fp, err=err, fwhm=fwhm)
 
 
 def _carry(level, labels, prev_ids, cand_id, snr, state, run_label, allow_split):
@@ -1279,20 +1404,23 @@ def _carry(level, labels, prev_ids, cand_id, snr, state, run_label, allow_split)
     return out, events
 
 
-def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None):
+def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None, match_tolerance=None):
     """The catalog step's entry point for one tier and Stokes: group every detection of det (all bands, nights, LSTs) at the
     ruled operating point, give each identity and multiples-level group its stable ID, name it, count its windows (nights) and
-    record every change of an ID (events: 'merge', 'split', 'move' - every detection whose ID changes, 'reused' - a cand_id
-    of the state that names another detection now, 'retired'). det needs cand_id (unique) besides the fields group() reads,
-    and holds EVERY detection of the tier and Stokes - the state's and the new ones. A detection of the state is its cand_id
-    WITH its fingerprint (fingerprints()): a cand_id whose fingerprint changed is a new detection and the old one is absent; a
-    state detection absent from det is dropped from the assignments (n_det_state_absent); an ID left without detections retires.
+    record every change of an ID (events: 'merge', 'split', 'move' - every detection whose ID changes, 'remeasured' - a
+    detection matched to the state's by tolerance, 'reused' - a cand_id of the state that names another detection now,
+    'ambiguous' - candidates within tolerance that match none, 'retired'). det needs cand_id (unique) besides the fields group()
+    reads, and holds EVERY detection of the tier and Stokes - the state's and the new ones. Which detections ARE the state's is
+    match_state(): the same cand_id with the same fingerprint, else (match_tolerance, default config ID_MATCH_TOLERANCE) the same
+    window and band within the position and S/N tolerance, mutual and unique; anything else is a new detection, and a state
+    detection matched by none is absent (dropped from the assignments, n_det_state_absent); an ID left without detections
+    retires. The partition never depends on the matching (batch, regroup); the incremental mode freezes the matched detections.
     state: a GroupingState (the IDs of earlier runs) or None (the first run: every ID new).
     mode: 'batch' (no state: every ID new - refused when the state holds IDs),
           'incremental' (default with a non-empty state; PURE APPENDS: the state's detections keep their identities - frozen -
           and only the new ones are assigned; a window holding both kinds REFUSES - a re-search forces 'regroup' - and an
           identity split refuses; the multiples level may split an earlier group, recorded),
-          'regroup' (the whole partition recomputed, IDs carried by member detections - cand_id AND fingerprint; every merge,
+          'regroup' (the whole partition recomputed, IDs carried by member detections - matched as above; every merge,
           split and move recorded).
     Returns a GroupingResult (its .state is the next run's state; the state passed in is not modified)."""
     p_thr, p_fork, u_cap = operating_point(tier, stokes)
@@ -1304,7 +1432,6 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
     if len(set(cand_id.tolist())) != n:
         raise GroupingRefused('grouping: cand_id is not unique - REFUSING')
     snr = np.asarray(det['snr'], float)
-    fp = fingerprints(det)
     old = state if state is not None else GroupingState(tier, stokes)
     if (old.tier, old.stokes) != (tier, stokes):
         raise GroupingRefused(f'grouping: state of {old.tier} {old.stokes} given for {tier} {stokes} - REFUSING')
@@ -1317,15 +1444,10 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
     if mode == 'batch' and old.ids:
         raise GroupingRefused('grouping: a batch run would re-issue every ID although the state holds IDs - use mode '
                               "'incremental' or 'regroup' (IDs are never reused) - REFUSING")
-    prev_i = [''] * n; prev_m = [''] * n; reused = []
-    if mode in ('incremental', 'regroup'):
-        for j, c in enumerate(cand_id.tolist()):
-            a = old.assign.get(c)
-            if a:
-                if tuple(a[2]) == fp[j]:
-                    prev_i[j], prev_m[j] = a[0], a[1]
-                else:                                       # the cand_id names another detection now: NEW here, the old one ABSENT
-                    reused.append((j, a))
+    mt = match_state(det, GroupingState(tier, stokes) if mode == 'batch' else old, match_tolerance)
+    fp = mt.fp
+    prev_i = [x[0] if x else '' for x in mt.prev]; prev_m = [x[1] if x else '' for x in mt.prev]
+    reused = mt.reused
     frozen = frozen_fork = None
     if mode == 'incremental':
         is_old = np.array([bool(x) for x in prev_i], bool)
@@ -1334,10 +1456,12 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
         if mixed:
             ms = set(mixed)
             nre = sum(1 for j, _ in reused if keys[j] in ms)
+            pos_of = {c: j for j, c in enumerate(cand_id.tolist())}
+            nam = sum(1 for a in mt.ambiguous for c in a['new'] if keys[pos_of[c]] in ms)
             raise GroupingRefused(f'grouping: {len(mixed)} window(s) hold both detections of the state and new ones (e.g. {mixed[0]}'
                                   + (f'; {nre} of the new ones reuse a cand_id of the state for another detection - a re-search' if nre
-                                     else '') + "): the incremental mode is for pure appends (new windows) - run mode 'regroup' - "
-                                  'REFUSING')
+                                     else '') + (f'; {nam} are ambiguous within tolerance' if nam else '')
+                                  + "): the incremental mode is for pure appends (new windows) - run mode 'regroup' - REFUSING")
         codes_i = {x: k for k, x in enumerate(sorted({x for x in prev_i if x}))}
         codes_m = {x: k for k, x in enumerate(sorted({x for x in prev_m if x}))}
         frozen = np.array([codes_i[x] if x else -1 for x in prev_i], int)
@@ -1357,9 +1481,21 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
     events += ev
     identity_id = np.array([id_of[c] for c in ident.tolist()], dtype=object)
     multiples_id = np.array([mid_of[c] for c in fork.tolist()], dtype=object)
+    for j, c, sep, tol, ratio in mt.remeasured:
+        a = old.assign[c]
+        events.append(dict(run=run_label, event='remeasured', cand_id=str(cand_id[j]), cand_id_old=c, fingerprint_old=list(a[2]),
+                           fingerprint_new=list(fp[j]), sep_arcsec=round(sep, 3), tol_arcsec=round(tol, 3), snr_ratio=round(ratio, 4),
+                           identity=identity_id[j], multiples=multiples_id[j]))
     for j, a in reused:
+        m = mt.matched.get(str(cand_id[j]))
         events.append(dict(run=run_label, event='reused', cand_id=str(cand_id[j]), fingerprint_old=list(a[2]), fingerprint_new=list(fp[j]),
-                           from_identity=a[0], from_multiples=a[1], to_identity=identity_id[j], to_multiples=multiples_id[j]))
+                           from_identity=a[0], from_multiples=a[1], to_identity=identity_id[j], to_multiples=multiples_id[j],
+                           matched_to=m[0] if m else ''))
+    pos_of = {c: j for j, c in enumerate(cand_id.tolist())}
+    for a in mt.ambiguous:
+        events.append(dict(run=run_label, event='ambiguous', new=a['new'], old=a['old'], pairs=a['pairs'],
+                           old_identity=sorted({old.assign[c][0] for c in a['old']}),
+                           new_identity=sorted({identity_id[pos_of[c]] for c in a['new']})))
     # retired: previous live IDs with no detection now
     present = set(identity_id.tolist()) | set(multiples_id.tolist())
     for i, e in st.ids.items():
@@ -1383,7 +1519,7 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
     for m, ids_ in mmembers.items():
         names[m] = names[max(ids_, key=lambda i: (best[i], -_seq_of(i)))]
     for j, c in enumerate(cand_id.tolist()):
-        st.assign[c] = (identity_id[j], multiples_id[j], fp[j])
+        st.assign[c] = (identity_id[j], multiples_id[j], fp[j], repr(float(mt.err[j])), repr(float(mt.fwhm[j])))
     ndet = collections.Counter(identity_id.tolist()); ndet.update(multiples_id.tolist())
     for i in present:
         st.ids[i].update(last_run=run_label, n_det=int(ndet[i]))
@@ -1393,14 +1529,20 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
         st.ids[m]['multiple'] = bool(is_mult[j])
     n_new = {lv: sum(1 for i in present if st.ids[i]['level'] == lv and st.ids[i]['created'] == run_label and i not in old.ids)
              for lv in LEVELS}
-    here = dict(zip(cand_id.tolist(), fp))
-    absent = sum(1 for c, a in old.assign.items() if here.get(c) != tuple(a[2])) if mode != 'batch' else 0
+    absent = len(mt.absent) if mode != 'batch' else 0
     gen = det.get('frame_generation')
     gen_prev = next((r.get('frame_generation') for r in reversed(old.runs) if r.get('frame_generation') is not None), None)
     cnt = collections.Counter((e.get('level'), e['event']) for e in events)
     summary = dict(run=run_label, tier=tier, stokes=stokes, mode=mode, p_identity=p_thr, p_multiples=p_fork, u_cap=u_cap,
                    n_det=n, n_det_previous=int(sum(1 for x in prev_i if x)), n_det_state_absent=int(absent),
-                   n_cand_id_reused=len(reused), identities=len(members), multiples_groups=len(mmembers),
+                   n_matched_exact=int(sum(1 for v in mt.matched.values() if v[1] == 'exact')),
+                   n_matched_tolerance=len(mt.remeasured), n_cand_id_reused=len(reused),
+                   n_ambiguous=dict(groups=len(mt.ambiguous), new=int(sum(len(a['new']) for a in mt.ambiguous)),
+                                    old=int(sum(len(a['old']) for a in mt.ambiguous))),
+                   match_tolerance=(dict(pos_err_fraction=_cfg().catalog_grouping.ID_MATCH_POS_ERR_FRACTION,
+                                         pos_fwhm_fraction=_cfg().catalog_grouping.ID_MATCH_POS_FWHM_FRACTION,
+                                         snr_factor=_cfg().catalog_grouping.ID_MATCH_SNR_FACTOR) if mt.tolerance else None),
+                   identities=len(members), multiples_groups=len(mmembers),
                    multiples=int(len({m for m, f in zip(multiples_id.tolist(), is_mult.tolist()) if f})), new_ids=n_new,
                    merges={lv: cnt[(lv, 'merge')] for lv in LEVELS}, splits={lv: cnt[(lv, 'split')] for lv in LEVELS},
                    moves={lv: cnt[(lv, 'move')] for lv in LEVELS}, retired={lv: cnt[(lv, 'retired')] for lv in LEVELS},
@@ -1409,12 +1551,13 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
                    frame_generation_changed=(None if gen is None or gen_prev is None else gen != gen_prev), research_md5=RESEARCH_MD5)
     st.runs.append(summary)
     return GroupingResult(cand_id=cand_id, identity=ident, multiples=fork, identity_id=identity_id, multiples_id=multiples_id,
-                          names=names, multiplicity=mult, multiple=is_mult, events=events, summary=summary, state=st, info=info)
+                          names=names, multiplicity=mult, multiple=is_mult, events=events, summary=summary, state=st, info=info,
+                          matched=dict(mt.matched))
 
 
 def append_events(path, result):
-    """append this run's summary and every event (merge, split, move, reused, retired) to a JSON-lines record (one object per
-    line)"""
+    """append this run's summary and every event (merge, split, move, remeasured, reused, ambiguous, retired) to a JSON-lines
+    record (one object per line)"""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'a') as f:
         f.write(json.dumps(dict(result.summary, event='run'), sort_keys=True, default=str) + '\n')

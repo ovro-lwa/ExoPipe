@@ -28,7 +28,11 @@ CHECKS, per tier x Stokes (10-minute I and V, deep I and V):
                the IDs now in several groups)
   reused       a cand_id that names another detection (production re-numbers on a re-search; the review's
                V1_04h_2025-01-02T01_18MHz_0017 moved 20 deg): the incremental mode refuses its mixed window; regroup never
-               carries it by cand_id ('reused' event); a window re-measured whole is a new window (10-minute V)
+               carries it by cand_id ('reused' event); a window re-measured whole is matched within tolerance (a new window with
+               exact fingerprints only) (10-minute V)
+  tolerance    a re-measured detection (0.6 x tolerance, S/N x 1.2; also re-numbered) keeps its IDs - with exact fingerprints
+               only it would retire; 1.6 x tolerance, or S/N x 1.4, is not the same detection; two candidates within tolerance
+               match none ('ambiguous', refused by the incremental mode); the partitions never change (10-minute V)
   IDs, names   IDs fixed at creation (format, deterministic, order independent), the record logic on synthetic cases (the
                review's [P,P,P,Q,Q,Q,Q,Q] case), the state file (one file; no state refuses unless new=True), names unique, the
                frame generation in the run summary
@@ -431,27 +435,43 @@ def run_dataset(tier, S, quick=False):
 
 
 def unrecorded_changes(old_state, res):
-    """the changes of res (a GroupingResult) against old_state that have no event, and events that match no change: a cand_id
-    with the same fingerprint whose identity or multiples ID changed needs exactly one 'move' event at that level (from, to);
-    a cand_id whose fingerprint changed needs a 'reused' event. Returns (missing, spurious, n_changed)."""
+    """the changes of res (a GroupingResult) against old_state that have no event, and events that match no change. Through
+    res.matched (new cand_id -> (state cand_id, 'exact' | 'tolerance')): a matched detection whose identity or multiples ID
+    changed needs exactly one 'move' event at that level (from the matched record's ID); a tolerance match needs its
+    'remeasured' event; a cand_id of the state that is not matched to its own record needs a 'reused' event (beyond tolerance)
+    or an 'ambiguous' one. Returns (missing, spurious, n_changed)."""
     moves = collections.Counter((e['level'], e['cand_id'], e['from_id'], e['to_id']) for e in res.events if e['event'] == 'move')
     reused = {e['cand_id'] for e in res.events if e['event'] == 'reused'}
+    remeas = {e['cand_id']: e['cand_id_old'] for e in res.events if e['event'] == 'remeasured'}
+    amb_new = {c for e in res.events if e['event'] == 'ambiguous' for c in e['new']}
     want = collections.Counter(); missing = []; n = 0
-    for c, (i, m, fp) in res.state.assign.items():
-        a = old_state.assign.get(c)
-        if not a:
-            continue
-        if tuple(a[2]) != tuple(fp):
+    for c, rec in res.state.assign.items():
+        i, m = rec[0], rec[1]
+        mm = res.matched.get(c)
+        own = old_state.assign.get(c)
+        if mm is not None:
+            oc, kind = mm
+            a = old_state.assign[oc]
+            if kind == 'tolerance':
+                n += 1
+                if remeas.get(c) != oc:
+                    missing.append(('remeasured', c, oc))
+            for lv, x, y in (('identity', a[0], i), ('multiples', a[1], m)):
+                if x != y:
+                    n += 1; want[(lv, c, x, y)] += 1
+                    if moves[(lv, c, x, y)] != 1:
+                        missing.append((lv, c, x, y))
+            if own is not None and oc != c:          # matched another record: its own cand_id moved beyond tolerance
+                n += 1
+                if c not in reused:
+                    missing.append(('reused', c))
+        elif own is not None:                        # a cand_id of the state matched by nothing: reused or ambiguous
             n += 1
-            if c not in reused:
-                missing.append(('reused', c))
-            continue
-        for lv, x, y in (('identity', a[0], i), ('multiples', a[1], m)):
-            if x != y:
-                n += 1; want[(lv, c, x, y)] += 1
-                if moves[(lv, c, x, y)] != 1:
-                    missing.append((lv, c, x, y))
-    spurious = [k for k in moves if k not in want] + [c for c in reused if c not in old_state.assign]
+            if c not in reused and c not in amb_new:
+                missing.append(('reused/ambiguous', c))
+    spurious = ([k for k in moves if k not in want] + [c for c in reused if c not in old_state.assign]
+                + [c for c in reused if (res.matched.get(c) or ('',))[0] == c]
+                + [c for c in remeas if (res.matched.get(c) or ('', ''))[1] != 'tolerance'])
     return missing, spurious, n
 
 
@@ -525,7 +545,7 @@ def run_incremental(tier, S, det, z, meta):
           f'{r3.summary["splits"]}, merges {r3.summary["merges"]})', not missing and not spurious, (missing[:5], spurious[:5]))
     sp = [e for e in r3.events if e['event'] == 'split']
     pos3 = collections.defaultdict(collections.Counter)
-    for c, (i, m, _) in r3.state.assign.items():
+    for c, (i, m, *_) in r3.state.assign.items():
         a = r1.state.assign.get(c)
         if a:
             pos3[('identity', a[0])][i] += 1; pos3[('multiples', a[1])][m] += 1
@@ -534,15 +554,24 @@ def run_incremental(tier, S, det, z, meta):
           {(e['level'], e['id']) for e in sp} == truly and all(dict(pos3[(e['level'], e['id'])]) == e['pieces'] for e in sp))
 
 
-def moved_copy(det, tier, rows, ddec=20.0, dsnr=0.0):
-    """det with the detections `rows` changed under the SAME cand_ids: moved by ddec degrees in Dec (catalog and common-frame
-    positions) and/or their S/N changed - what production's re-numbering on a re-search produces"""
+def moved_copy(det, tier, rows, ddec=20.0, dsnr=0.0, snr_factor=1.0, dra_arcsec=0.0):
+    """det with the detections `rows` changed under the SAME cand_ids: moved by ddec degrees in Dec and/or dra_arcsec east
+    (catalog and common-frame positions), their S/N changed (+dsnr, x snr_factor) - what a re-search produces"""
     d = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in det.items()}
     for k in ('dec', 'dec_raw'):
         d[k][rows] = np.where(d[k][rows] > 0, d[k][rows] - ddec, d[k][rows] + ddec)
-    d['snr'][rows] = d['snr'][rows] + dsnr
+    for k, kd in (('ra', 'dec'), ('ra_raw', 'dec_raw')):
+        d[k][rows] = (d[k][rows] + dra_arcsec / 3600.0 / np.cos(np.radians(d[kd][rows]))) % 360.0
+    d['snr'][rows] = (d['snr'][rows] + dsnr) * snr_factor
     d['el'], d['q'] = G.elevation_pa(d, tier); d['C'] = G.covariance(d, tier)
     return d
+
+
+def tolerance_arcsec(det, j):
+    """the match tolerance of detection j against itself (config ID_MATCH_*): max(err fraction x its fitted error, FWHM
+    fraction x its beam)"""
+    g = G._cfg().catalog_grouping
+    return max(g.ID_MATCH_POS_ERR_FRACTION * float(det['stat'][j]), g.ID_MATCH_POS_FWHM_FRACTION * float(det['beam'][j]) * 60.0)
 
 
 def run_reused(tier, S, det):
@@ -577,17 +606,104 @@ def run_reused(tier, S, det):
     a, b = G.group_fork(d2, p_fork='config', tier=tier, stokes=S)
     check(f'{tag}: regroup with a reused cand_id - partitions = the batch partitions of the changed input',
           G.same_partition(r.identity_id, a) and G.same_partition(r.multiples_id, b))
-    # a window re-measured WHOLE (every detection's fingerprint changed): a new window for the incremental mode, the old ones absent
+    # a window re-measured WHOLE (every detection's S/N changed slightly, positions kept): with the tolerance (default) the same
+    # detections - matched, IDs carried, the window frozen in the incremental mode; with exact fingerprints only, a new window
     rows = np.nonzero(keys == keys[j])[0]
     d3 = moved_copy(det, tier, rows, ddec=0.0, dsnr=0.01)
     r3 = G.group_catalog(d3, tier, S, state=r0.state, run_label='remeasured', mode='incremental')
-    ev3 = {e['cand_id'] for e in r3.events if e['event'] == 'reused'}
-    check(f'{tag}: a window re-measured whole is a new window in the incremental mode ({len(rows)} reused cand_ids recorded, the '
-          f'old detections absent)', ev3 == set(det['cand_id'][rows].tolist()) and r3.summary['n_det_state_absent'] == len(rows)
-          and r3.summary['n_det_previous'] == len(cid) - len(rows))
-    missing, spurious, nch = unrecorded_changes(r0.state, r3)
-    check(f'{tag}: incremental with a re-measured window - every changed assignment has its event ({nch} changes)',
-          not missing and not spurious, (missing[:5], spurious[:5]))
+    rem = {e['cand_id'] for e in r3.events if e['event'] == 'remeasured'}
+    mchg = [(e['reason'], e['level']) for e in r3.events if e['event'] == 'move']
+    check(f'{tag}: a window re-measured whole is matched within tolerance ({len(rows)} remeasured, every identity ID kept, nothing '
+          f'absent; the multiples level changes only by recorded merges: {len(mchg)})',
+          rem == set(det['cand_id'][rows].tolist()) and r3.summary['n_det_state_absent'] == 0
+          and r3.summary['n_det_previous'] == len(cid) and list(r3.identity_id) == list(r0.identity_id)
+          and all(x == ('merge', 'multiples') for x in mchg), r3.summary)
+    r3x = G.group_catalog(d3, tier, S, state=r0.state, run_label='remeasured', mode='incremental', match_tolerance=False)
+    ev3 = {e['cand_id'] for e in r3x.events if e['event'] == 'reused'}
+    check(f'{tag}: ... with exact fingerprints only it is a new window ({len(rows)} reused cand_ids, the old detections absent)',
+          ev3 == set(det['cand_id'][rows].tolist()) and r3x.summary['n_det_state_absent'] == len(rows)
+          and r3x.summary['n_det_previous'] == len(cid) - len(rows) and r3x.summary['match_tolerance'] is None)
+    for rr, what in ((r3, 'tolerance'), (r3x, 'exact')):
+        missing, spurious, nch = unrecorded_changes(r0.state, rr)
+        check(f'{tag}: incremental with a re-measured window ({what}) - every changed assignment has its event ({nch} changes)',
+              not missing and not spurious, (missing[:5], spurious[:5]))
+
+
+def run_tolerance(tier, S, det):
+    """the tolerance match (coordinator 2026-11-02: a re-search of the same frames re-measures the same detection, and its stable
+    IDs survive): a re-measured detection keeps its ID (same cand_id, or re-numbered); one beyond tolerance does not; an
+    ambiguous match matches none and is recorded"""
+    tag = f'{tier} {S}'
+    r0 = G.group_catalog(det, tier, S, run_label='all')
+    cid = det['cand_id'].tolist()
+    cnt = collections.Counter(r0.identity_id.tolist())
+    keys = det['key']
+    # a detection alone in its identity (its ID lives or dies with it), in a window of >= 2 detections, positive S/N
+    j = next(k for k in range(len(cid)) if cnt[r0.identity_id[k]] == 1 and (keys == keys[k]).sum() >= 2 and det['snr'][k] > 0)
+    tol = tolerance_arcsec(det, j)
+    old_i, old_m = r0.identity_id[j], r0.multiples_id[j]
+    # (1) re-measured within tolerance (0.6 x tol east, S/N x 1.2), same cand_id: keeps its IDs
+    d1 = moved_copy(det, tier, np.array([j]), ddec=0.0, dra_arcsec=0.6 * tol, snr_factor=1.2)
+    r1 = G.group_catalog(d1, tier, S, state=r0.state, run_label='remeasure', mode='regroup')
+    ev = [e for e in r1.events if e['event'] == 'remeasured']
+    check(f'{tag}: tolerance - {cid[j]} re-measured 0.6 x tolerance ({0.6 * tol:.1f}") away with S/N x 1.2 keeps its IDs '
+          f'({old_i} -> {r1.identity_id[j]})', r1.identity_id[j] == old_i and r1.multiples_id[j] == old_m and len(ev) == 1
+          and ev[0]['cand_id'] == cid[j] and ev[0]['cand_id_old'] == cid[j] and not any(e['event'] == 'reused' for e in r1.events)
+          and r1.matched[cid[j]] == (cid[j], 'tolerance'), (ev, r1.summary['n_matched_tolerance']))
+    r1x = G.group_catalog(d1, tier, S, state=r0.state, run_label='remeasure', mode='regroup', match_tolerance=False)
+    check(f'{tag}: ... with exact fingerprints only it would lose them ({old_i} retired, {r1x.identity_id[j]} new: the churn)',
+          r1x.identity_id[j] != old_i and r1x.state.ids[old_i]['status'] == 'retired')
+    try:
+        ri = G.group_catalog(d1, tier, S, state=r0.state, run_label='remeasure', mode='incremental'); ok_inc = True
+    except G.GroupingRefused as e:
+        ok_inc, ri = str(e), None
+    check(f'{tag}: ... and its window is not mixed for the incremental mode (no refusal; IDs kept)', ok_inc is True
+          and ri.identity_id[j] == old_i, ok_inc)
+    # (2) the same detection RE-NUMBERED (a new cand_id), re-measured within tolerance: keeps the IDs too
+    d2 = moved_copy(det, tier, np.array([j]), ddec=0.0, dra_arcsec=0.6 * tol, snr_factor=1.2)
+    d2['cand_id'] = d2['cand_id'].astype(object); d2['cand_id'][j] = cid[j] + '_renumbered'; d2['cand_id'] = d2['cand_id'].astype(str)
+    r2 = G.group_catalog(d2, tier, S, state=r0.state, run_label='renumber', mode='regroup')
+    ev = [e for e in r2.events if e['event'] == 'remeasured']
+    check(f'{tag}: tolerance - the same detection re-numbered ({cid[j]}_renumbered) keeps the IDs ({r2.identity_id[j]})',
+          r2.identity_id[j] == old_i and len(ev) == 1 and ev[0]['cand_id_old'] == cid[j]
+          and r2.summary['n_det_state_absent'] == 0, (ev, r2.summary['n_det_state_absent']))
+    # (3) beyond tolerance (1.6 x tol): not the same detection - 'reused', its old ID (it was alone) retires
+    d3 = moved_copy(det, tier, np.array([j]), ddec=0.0, dra_arcsec=1.6 * tol)
+    r3 = G.group_catalog(d3, tier, S, state=r0.state, run_label='beyond', mode='regroup')
+    ev = [e for e in r3.events if e['event'] == 'reused']
+    check(f'{tag}: tolerance - 1.6 x tolerance away it is NOT the same detection (reused event, not matched; {old_i} retired, '
+          f'{r3.identity_id[j]})', len(ev) == 1 and ev[0]['cand_id'] == cid[j] and cid[j] not in r3.matched
+          and r3.state.ids[old_i]['status'] == 'retired' and r3.identity_id[j] != old_i, (ev, r3.matched.get(cid[j])))
+    d4 = moved_copy(det, tier, np.array([j]), ddec=0.0, snr_factor=1.4)
+    r4 = G.group_catalog(d4, tier, S, state=r0.state, run_label='snr', mode='regroup')
+    check(f'{tag}: tolerance - the same position with S/N x 1.4 (> 1.3) is NOT the same detection (reused)',
+          any(e['event'] == 'reused' and e['cand_id'] == cid[j] for e in r4.events) and cid[j] not in r4.matched)
+    # (4) AMBIGUOUS: the detection re-measured (0.3 x tol) AND a second new detection within tolerance of the same record
+    #     (0.3 x tol the other way): none matched, recorded; the record is absent; neither is 'reused'
+    dA = moved_copy(det, tier, np.array([j]), ddec=0.0, dra_arcsec=0.3 * tol)
+    dB = moved_copy(det, tier, np.array([j]), ddec=0.0, dra_arcsec=-0.3 * tol)
+    d5 = {k: (np.concatenate([v, v[[j]]]) if isinstance(v, np.ndarray) and len(v) == len(cid) else v) for k, v in dA.items()}
+    for k in ('ra', 'dec', 'ra_raw', 'dec_raw', 'el', 'q', 'C', 'snr'):
+        d5[k][-1] = dB[k][j]
+    d5['cand_id'] = np.array(cid + [cid[j] + '_dup'])
+    r5 = G.group_catalog(d5, tier, S, state=r0.state, run_label='ambiguous', mode='regroup')
+    amb = [e for e in r5.events if e['event'] == 'ambiguous']
+    check(f'{tag}: ambiguous - two new detections within tolerance of one record match NONE and are recorded ({amb[:1]})',
+          len(amb) == 1 and amb[0]['new'] == sorted([cid[j], cid[j] + '_dup']) and amb[0]['old'] == [cid[j]]
+          and cid[j] not in r5.matched and cid[j] + '_dup' not in r5.matched and r5.summary['n_ambiguous'] == dict(groups=1, new=2, old=1)
+          and not any(e['event'] == 'reused' for e in r5.events) and r5.summary['n_det_state_absent'] == 1)
+    try:
+        G.group_catalog(d5, tier, S, state=r0.state, run_label='ambiguous', mode='incremental'); refused, msg = False, ''
+    except G.GroupingRefused as e:
+        refused, msg = True, str(e)
+    check(f'{tag}: ambiguous - the incremental mode refuses the window and names the ambiguity', refused and 'ambiguous' in msg, msg[:300])
+    for rr, dd, what in ((r1, d1, 're-measured'), (r2, d2, 're-numbered'), (r3, d3, 'beyond'), (r4, d4, 'S/N beyond'),
+                         (r5, d5, 'ambiguous')):
+        missing, spurious, nch = unrecorded_changes(r0.state, rr)
+        a, b = G.group_fork(dd, p_fork='config', tier=tier, stokes=S)
+        check(f'{tag}: {what} - every changed assignment has its event ({nch}); the partition = the batch partition (the match '
+              f'decides only the IDs)', not missing and not spurious and G.same_partition(rr.identity_id, a)
+              and G.same_partition(rr.multiples_id, b), (missing[:3], spurious[:3]))
 
 
 def check_ids(tier, S, det, ident, fork):
@@ -691,7 +807,7 @@ def check_record_logic():
     empty = G.GroupingState.load(d, '10min', 'I', new=True)
     check('state: a directory without a state REFUSES unless new=True (IDs never restart at 1 silently)', refused and not empty.ids)
     s3 = G.GroupingState('10min', 'I'); i3 = s3.issue('identity', 'r0'); m3 = s3.issue('multiples', 'r0')
-    s3.assign['c1'] = (i3, m3, ('04h|2025-01-02T01', '18MHz', '1.5', '2.5', '7.25'))
+    s3.assign['c1'] = (i3, m3, ('04h|2025-01-02T01', '18MHz', '1.5', '2.5', '7.25'), '80.7', '30.0')
     pth = s3.save(d)
     try:
         G.GroupingState.load(d, '10min', 'I', new=True); refused = False
@@ -706,7 +822,7 @@ def check_record_logic():
         G.GroupingState.load(d, '10min', 'I'); refused = False
     except G.GroupingRefused:
         refused = True
-    doc = json.load(open(pth)); doc['assign']['c1'] = [i3, m3, '04h|2025-01-02T01', '18MHz', '1.5', '2.5', '7.25']
+    doc = json.load(open(pth)); doc['assign']['c1'] = [i3, m3, '04h|2025-01-02T01', '18MHz', '1.5', '2.5', '7.25', '80.7', '30.0']
     doc['next_seq']['identity'] = 1
     json.dump(doc, open(pth, 'w'))
     try:
@@ -786,6 +902,7 @@ def main(argv):
                 run_incremental(tier, S, det, z, meta)
             if (tier, S) == ('10min', 'V'):
                 run_reused(tier, S, det)
+                run_tolerance(tier, S, det)
         if det10 is not None:
             check_config_and_refusals(det10)
     finally:

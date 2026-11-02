@@ -715,6 +715,17 @@ class catalog_grouping(_Section):
     ID_FORMAT = '{level}{tier}{stokes}-{seq:07d}'         # e.g. GTI-0000001 (identity, 10-minute I), MDI-0000042 (multiples group, deep I)
     ID_LEVEL_CODE = {'identity': 'G', 'multiples': 'M'}
     ID_TIER_CODE = {'10min': 'T', 'deep': 'D'}
+    # ---- which detection of a new run IS a detection of the state (the IDs follow it; the partition never depends on this).
+    # Exact: the same cand_id with the same fingerprint (window key, band, catalog ra, dec, S/N at full precision). TOLERANCE (a
+    # re-search re-measures, and may re-number, the same detection - coordinator 2026-11-02): the same window key and band, the
+    # catalog positions within max(ID_MATCH_POS_ERR_FRACTION x the detections' own fitted position error (pos_stat_maj_arcsec,
+    # the larger of the two measurements), ID_MATCH_POS_FWHM_FRACTION x the band's FWHM (the frame beam, the larger of the two)),
+    # and the S/N of the same sign within a factor ID_MATCH_SNR_FACTOR. A detection with two or more candidates within
+    # tolerance (or a state detection with two) matches none: an 'ambiguous' event. Not part of the ruled design: no ruling.
+    ID_MATCH_TOLERANCE = True                             # False = exact fingerprints only
+    ID_MATCH_POS_ERR_FRACTION = 0.5                       # x the fitted position error (arcsec)
+    ID_MATCH_POS_FWHM_FRACTION = 0.05                     # x the band's FWHM (arcmin -> arcsec)
+    ID_MATCH_SNR_FACTOR = 1.3                             # max |S/N| ratio, same sign
     RULED = {k: _GROUPING_RULING for k in (
         'P_IDENTITY', 'U_CAP', 'P_MULTIPLES', 'STAGE_A_PRIOR_N0', 'STAGE_A_RADIUS_DEG', 'STAGE_B_RADIUS_DEG', 'STAGE_B_FLOOR_ARCSEC',
         'PASSES', 'HYSTERESIS', 'PROFILE_CO', 'PROFILE_WS', 'CHROMATIC_SIGMA_ARCSEC', 'CHROMATIC_NU0_MHZ', 'WIDEBAND_NU_MHZ',
