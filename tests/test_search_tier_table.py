@@ -26,6 +26,13 @@ candidate, an exemption's note kept); at 10 minutes and under the B-02 rules ('o
 with the inputs the table was given (B-02: the table noise and the frame's BMAJ); the branch's blocks = production 702dd68's
 under production's rules; the record appended after the ledger; the content test (class search_table_record) passes on the
 engine's output and fails on each of its edits; production's records of 2026-10-30 pass it (read only).
+Part 5, production's drop patches of 2026-10-30 (attempts <cell>_<S>_<UTC>stdrop, exopipe_ops p3s5_searchtier_drop_20261030.py;
+lib/search/attempts.py): the name read by the search step, the content tests and frames --deep-adopt (a copy in progress or
+another suffix refused); ordered by the UTC; current by production's rule (the last register row): a patch supersedes the attempt
+it patched and a later search supersedes the patch, never two at once, and extending a superseded attempt refuses; dated for the
+content tests by its source's search (58 of the 142 sources predate ELEV_RECORD_FIX_UTC); real data (read only): for every
+(cell, Stokes) the step's published attempt is the one production's own p3s3_sources picks, every patch's source is superseded,
+the content tests read the patches, and the per-hour append on 12h Red extends the patch, never its superseded source.
 Run: python tests/test_search_tier_table.py
 """
 import csv
@@ -534,11 +541,153 @@ def test_table_record():
         print(f'SKIP production\'s records (none under {COLLECT})')
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# part 5: production's drop patches of 2026-10-30 (attempts <cell>_<S>_<UTC>stdrop)
+# ---------------------------------------------------------------------------------------------------------------------
+def _att(root, cell, S, tag, src=None):
+    """A synthetic attempt <root>/attempts/<cell>_<S>_<tag>; a drop patch's log names its source as production's drop tool writes it
+    (p3s5_searchtier_drop_20261030.py:94-95)."""
+    d = os.path.join(root, 'attempts', f'{cell}_{S}_{tag}')
+    os.makedirs(os.path.join(d, 'transients', 'Run_P3S5', 'refusals'), exist_ok=True)
+    with open(os.path.join(d, f'{cell}.log'), 'w') as f:
+        f.write('the search log\n')
+        if src:
+            f.write(f"P3S5-STDROP {tag}: {S} epochs ['2025-10-15'] refused by the search-tier gate (stage-1 rms > 2.0 x the cell "
+                    f"median; Gregg 2026-10-30); source attempt {src}; candidates removed 2\n")
+    return d
+
+
+def _cli_search(*args):
+    env = dict(os.environ, PYTHONPATH=REPO)
+    p = subprocess.run([sys.executable, '-m', 'exopipe.phase3', 'search'] + list(args), stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, universal_newlines=True, env=env, timeout=600, cwd=REPO)
+    return p.returncode, p.stdout
+
+
+def test_drop_patches():
+    from exopipe.phase3.lib.search import attempts as A, deep_step as DST, tests as ST
+    from exopipe.phase3.lib.frames import deep_step as FDS
+    from exopipe.phase3.core import validate
+    names = {'12h_Red_I_20261013T004458': True, '12h_Red_I_20261030T103027stdrop': True, '12h_Red_I_20261005T043202.part': False,
+             '12h_Red_I_20261030T103027stdropx': False, '12h_Red_I_20261030T103027stdrop.part': False,
+             '12h_Red_I_20261030T103027_2': False, '12h_Red_X_20261030T103027stdrop': False}
+    got = {n: (bool(DST._ATT_RE.match(n)), bool(A.parse(n))) for n in names}
+    check('names: <cell>_<S>_<UTC> and the drop patch <cell>_<S>_<UTC>stdrop are attempts (the search step, attempts.parse); a '
+          'copy in progress (.part), another suffix or Stokes is not', all(v == (names[n], names[n]) for n, v in got.items()), got)
+    fr = {n: bool(FDS.ADOPT_NAME.match(n)) for n in names}
+    check('names: frames --deep-adopt reads the same, plus its own collision suffix <UTC>_<n>',
+          fr == dict(names, **{'12h_Red_I_20261030T103027_2': True}), fr)
+    tags = ['20261030T103027stdrop', '20261013T004458', '20261101T000000', '20261008T030041']
+    check('order: by the UTC (production\'s att[:15]) - a drop patch after the attempt it patched, before a later search',
+          sorted(tags, key=A.order_key) == ['20261008T030041', '20261013T004458', '20261030T103027stdrop', '20261101T000000']
+          and A.utc('20261030T103027stdrop') == '20261030T103027' and A.utc('20261030T103027stdropx') is None)
+    # ---- current: production's rule, the last register row (a synthetic --out register; the step reads it first)
+    out = os.path.join(T, 'stdrop_out')
+    src = _att(out, '12h_Red', 'I', '20261013T004458')
+    dp = _att(out, '12h_Red', 'I', '20261030T103027stdrop', src=src)
+    reg = os.path.join(out, 'published_I.csv')
+    with open(reg, 'w') as f:
+        f.write('12h_Red,lwacalim07,20261013T004458\n12h_Red,lwacalim07,20261030T103027stdrop\n')
+    cur1 = DST.resolve_published('12h_Red', 'I', out)
+    sup1 = (DST.superseded_by(src, '12h_Red', 'I', out), DST.superseded_by(dp, '12h_Red', 'I', out))
+    check('current: the drop patch, registered after its source, is the published attempt; the source is superseded by it, the '
+          'patch by nothing - never both current', cur1 == dp and sup1 == (dp, None), (cur1, sup1))
+    new = _att(out, '12h_Red', 'I', '20261101T000000')
+    with open(reg, 'a') as f:
+        f.write('12h_Red,lwacalim07,20261101T000000\n')
+    cur2 = DST.resolve_published('12h_Red', 'I', out)
+    check('current: a later search registered after the patch supersedes it (and its source)', cur2 == new
+          and DST.superseded_by(dp, '12h_Red', 'I', out) == new and DST.superseded_by(src, '12h_Red', 'I', out) == new, cur2)
+    loose = _att(os.path.join(T, 'stdrop_loose'), '12h_Red', 'I', '20261020T000000')
+    copy_ = _att(os.path.join(T, 'stdrop_copy'), '12h_Red', 'I', '20261101T000000')
+    check('current: an attempt no register lists is not judged (a scratch attempt), nor a copy of the current one (same tag)',
+          DST.superseded_by(loose, '12h_Red', 'I', out) is None and DST.superseded_by(copy_, '12h_Red', 'I', out) is None)
+    # ---- the content tests date a patch by its source's search
+    old = _att(out, '05h_78MHz', 'V', '20261006T042022')
+    p1 = _att(out, '05h_78MHz', 'V', '20261030T090509stdrop', src=old)
+    p2 = _att(out, '05h_78MHz', 'V', '20261031T000000stdrop', src=p1)
+    p0 = _att(out, '05h_78MHz', 'V', '20261030T090600stdrop')
+    tg = {os.path.basename(d): ST.attempt_tag(os.path.join(d, 'transients', 'Run_P3S5', 'v_deep_images.csv')) for d in (old, p1, p2, p0)}
+    check('content tests: a drop patch is dated by the search that wrote its rows - its source\'s (through a patch of a patch); '
+          'one whose logs name no source cannot be dated (None: judged by today\'s generation)',
+          list(tg.values()) == ['20261006T042022', '20261006T042022', '20261006T042022', None]
+          and ST._elev_floor('deep', 'V', tg['05h_78MHz_V_20261030T090509stdrop']) == ST.ELEV_RECORD_LITERAL, tg)
+    dsrc = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_step.py')).read()
+    fsrc = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'frames', 'deep_step.py')).read()
+    check('frames --deep-adopt judges a patch\'s "made after the current masters" by its source\'s log (searched_attempt); the '
+          'search step refuses to extend a superseded attempt', "_ATTS.searched_attempt(d) if m['tag'].endswith(_ATTS.SUFFIXES)"
+          in fsrc and "sup = superseded_by(b, item.cell, item.stokes, ctx['out']) if item.base != 'published' else None" in dsrc
+          and A.searched_attempt(p2) == old and A.searched_attempt(p0) is None)
+    # ---- real data (read only): production's registers and attempts
+    reg_v = '/lustre/gh/main/exopipe_ops/p3s5_state/published_V.csv'
+    if not os.path.exists(reg_v):
+        print('SKIP the production drop patches (no p3s5_state register)')
+        return
+    code = ("import json, sys; sys.path.insert(0, '/lustre/gh/main/exopipe_ops'); import p3s3_sources as P; "
+            "print(json.dumps([[a['cell'], a['stokes'], a['att'], a['dir']] for a in P.published_attempts(['V', 'I'])]))")
+    pr = subprocess.run([sys.executable, '-c', code], env=dict(os.environ, P3S_LABEL='P3S5'), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, universal_newlines=True, timeout=600)
+    prod = json.loads(pr.stdout.strip().splitlines()[-1])
+    empty = os.path.join(T, 'stdrop_empty_out')
+    os.makedirs(empty, exist_ok=True)
+    diff, n_patch, sup_bad, n = [], 0, [], 0
+    for cell, S, att, d in prod:
+        if not os.path.isdir(d):
+            continue
+        n += 1
+        mine = DST.resolve_published(cell, S, empty)
+        if mine is None or os.path.realpath(mine) != os.path.realpath(d):
+            diff.append((cell, S, att, mine))
+        if att.endswith('stdrop'):
+            n_patch += 1
+            s0 = A.stdrop_source(d)
+            if not s0 or DST.superseded_by(s0, cell, S, empty) != mine:
+                sup_bad.append((cell, S, s0))
+    print(f'      production registers: {n} published (cell, Stokes) on disk, {n_patch} of them drop patches')
+    check(f'real: for every published (cell, Stokes) the search step\'s published attempt is the one production\'s own '
+          f'p3s3_sources picks ({n}; {n_patch} drop patches current)', n > 0 and not diff, diff[:4])
+    check('real: every current drop patch\'s source is superseded by it (an append to the source would refuse)',
+          n_patch > 0 and not sup_bad, sup_bad[:4])
+    patches = sorted(glob.glob(os.path.join(COLLECT, 'p3s5_collect_*', 'attempts', '*stdrop')))
+    old_all = [d for d in patches if (A.rows_utc(d) or '9') < ST.ELEV_RECORD_FIX_UTC]
+    new_all = [d for d in patches if d not in old_all]
+    old_src = old_all[::max(1, len(old_all) // 8)]      # a sample (all 142 pass, checked 2026-11-02): sources before and after
+    sample = old_src + new_all[::max(1, len(new_all) // 4)]
+    bad = []
+    for d in sample:
+        m = A.parse(d)
+        rd = os.path.join(d, 'transients', 'Run_P3S5')
+        for cls, p in (('detections', f'{rd}/master_catalog.csv'), ('image_ledger', f'{rd}/v_deep_images.csv')):
+            if os.path.exists(p):
+                r = validate.run(cls, p, tier='deep', stokes=m['s'], cell=m['cell'])
+                if not all(x['passed'] for x in r):
+                    bad.append((os.path.basename(d), cls, [x['detail'][:120] for x in r if not x['passed']]))
+    lit = 0
+    for d in old_src:
+        rows = list(csv.DictReader(open(os.path.join(d, 'transients', 'Run_P3S5', 'v_deep_images.csv'))))
+        lit += sum(1 for r in rows if abs(float(r['elev_min_deg']) - ST.ELEV_RECORD_LITERAL) < 1e-6)
+    check(f'real: the content tests read production\'s drop patches ({len(sample)} of {len(patches)}) - detections (its source\'s '
+          f'rows less the dropped nights: the drop test D1) and image_ledger dated by the source ({len(old_src)} sampled of the '
+          f'{len(old_all)} sources before {ST.ELEV_RECORD_FIX_UTC}: {lit} rows of the old literal the patch\'s own date would refuse)',
+          sample and not bad and len(old_src) > 0 and lit > 0, bad[:3])
+    # the per-hour append on 12h Red I: the published base is the drop patch; its superseded source refuses as a base
+    big = os.path.join(COLLECT, 'p3s5_collect_lwacalim07', 'attempts', '12h_Red_I_20261013T004458')
+    cur = DST.resolve_published('12h_Red', 'I', empty)
+    if os.path.isdir(big) and cur and cur.endswith('stdrop') and A.stdrop_source(cur) == big:
+        rc, o = _cli_search('--tier', 'deep', '--epochs', '12h_2025-05-10', '--scopes', 'Red', '--stokes', 'I', '--dry-run',
+                            '--replay-attempt', big, '--out', os.path.join(T, 'dry'), '--work', os.path.join(T, 'w'), '--cores', 'none')
+        check('real: a per-hour append on 12h Red I given the superseded source as its base refuses, naming the drop patch',
+              rc == 2 and 'is superseded' in o and os.path.basename(cur) in o and not os.path.exists(os.path.join(T, 'dry')),
+              o.strip()[-300:])
+    else:
+        print(f'SKIP the 12h Red I append check (the register\'s current attempt is {cur})')
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
     try:
-        for fn in (test_gate_synthetic, test_gate_replay, test_readers_and_wiring, test_table_record):
+        for fn in (test_gate_synthetic, test_gate_replay, test_readers_and_wiring, test_table_record, test_drop_patches):
             try:
                 fn()
             except Exception as e:

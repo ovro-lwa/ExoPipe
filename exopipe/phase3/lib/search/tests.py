@@ -30,6 +30,7 @@ import os
 import re
 
 from exopipe.phase3.core.validate import content_test
+from exopipe.phase3.lib.search import attempts as _ATTS
 
 # ---- schemas of the in-place writers ---------------------------------------------------------------------------------------
 GLED_COLS_V1 = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'snr', 'peak_jy', 'morph_pass', 'veto_reason',
@@ -204,14 +205,20 @@ ELEV_RECORD_FIX_UTC = '20261007T083010'   # exopipe d8beb0d: v_deep_images elev_
 ELEV_RECORD_LITERAL = 20.0                # 20.0 whatever the floor was - deep_search._elev_floor docstring)
 FRAME_EVERY_EPOCH_UTC = '20260913T054452' # code floor: a frame + an image row for every epoch not beam/exclusion-refused; before
                                           # it a sanity-refused epoch had an image row but no frame (verify_p3s3_stage.py:110-120)
-_ATT_TAG = re.compile(r'_(\d{8}T\d{6})$')
+_ATT_TAG = re.compile(r'_(' + _ATTS.TAG_RX + r')$')   # the tag ending an attempt directory's name (lib/search/attempts.py)
 
 
 def attempt_tag(path):
-    """YYYYmmddTHHMMSS of the attempt holding `path` (its directory name), or None."""
+    """YYYYmmddTHHMMSS of the search whose rows the attempt holding `path` holds: its directory name's UTC; for production's drop
+    patch '<UTC>stdrop' its source's (attempts.rows_utc - the patch carries its source's rows; 58 of the 142 patch sources of
+    2026-10-30 were searched before ELEV_RECORD_FIX_UTC), None when the logs name no source. None outside an attempt."""
     att = attempt_of(path)
     m = _ATT_TAG.search(os.path.basename(att.rstrip('/'))) if att else None
-    return m.group(1) if m else None
+    if not m:
+        return None
+    if m.group(1) == _ATTS.utc(m.group(1)):          # a search attempt: its own UTC
+        return m.group(1)
+    return _ATTS.rows_utc(att)                         # a drop patch: its source's
 
 
 def _elev_floor(tier, stokes, tag=None):
@@ -250,9 +257,15 @@ def _fail(problems, value):
 def schema_and_backing(path, stokes=None, cell=None, tier='deep', **ctx):
     """master_catalog.csv: the 31 fields; cand_id unique, of the writer's form and numbered in file order (candidates.py:
     n0 + i); one unit (lst, band, Stokes); |snr| at the Stokes floor; every row backed ONE-TO-ONE by a final gate-ledger row
-    of its date (cap 0.5 deg, verify_p3s3 condition 3); no row on a night data_decisions excludes now."""
+    of its date (cap 0.5 deg, verify_p3s3 condition 3); no row on a night data_decisions excludes now. Production's drop patch
+    (<UTC>stdrop, lib/search/attempts.py) keeps its source's numbers: they increase in file order, and its rows are exactly its
+    source's less those of the nights it dropped (the drop tool's own test D1; when the source's catalogue can be read)."""
     from exopipe.phase3.config import CFG
     cols, rows = _rows(path)
+    att = attempt_of(path)
+    am = _ATTS.parse(att) if att else None
+    patch = bool(am and am['suffix'])
+    prev_n = -1
     probs = []
     base = cols[:len(CAT_FIELDS)]
     if base != CAT_FIELDS:
@@ -278,7 +291,11 @@ def schema_and_backing(path, stokes=None, cell=None, tier='deep', **ctx):
             probs.append(f'{cid}: id disagrees with its row (stokes/lst/date/band)')
         if m['c'] != (r['cadence'][:1].upper() if r['cadence'] else '?'):
             probs.append(f'{cid}: cadence letter != cadence {r["cadence"]!r}')
-        if int(m['n']) != i:
+        if patch:                                  # a drop patch: its source's numbers, gaps where it dropped nights
+            if int(m['n']) <= prev_n:
+                probs.append(f'{cid}: number {int(m["n"])} not above the row before ({prev_n}): a drop patch keeps its source\'s order')
+            prev_n = int(m['n'])
+        elif int(m['n']) != i:
             probs.append(f'{cid}: number {int(m["n"])} != its row index {i} (the writer numbers rows n0 + i)')
         s = abs(_f(r['snr']))
         fl = floor.get(r['stokes'])
@@ -322,9 +339,36 @@ def schema_and_backing(path, stokes=None, cell=None, tier='deep', **ctx):
         bad = _excluded_now(lst, band, {r['date'][:10] for r in rows})
         if bad:
             probs.append(f'rows on nights data_decisions excludes now: {bad[:5]}')
+    if patch:
+        probs += _patch_rows(path, att, am, rows)
     if probs:
         return _fail(probs, len(rows))
-    return True, len(rows), f'{len(rows)} rows, ids sequential, every row backed by one final ledger row'
+    return True, len(rows), (f'{len(rows)} rows, ids ' + ('in its source\'s order (a drop patch)' if patch else 'sequential')
+                             + ', every row backed by one final ledger row')
+
+
+def _patch_dropped(att, am):
+    """The nights a drop patch dropped: the nights of its refusal rows tagged with its own tag (the drop tool's test D4)."""
+    out = set()
+    for p in glob.glob(os.path.join(att, 'transients', 'Run_*', 'refusals', '*_excluded.csv')):
+        with open(p, newline='') as fh:
+            out |= {r[2] for r in csv.reader(fh) if len(r) > 3 and r[-1] == am['att']}
+    return out
+
+
+def _patch_rows(path, att, am, rows):
+    """[problems] of a drop patch's table against its source's (production's drop test D1): exactly the source's rows less those
+    of the dropped nights in its Stokes. [] when the source's table cannot be read (the patch is then judged by its own rows)."""
+    src = _ATTS.stdrop_source(att)
+    sp = os.path.join(src, os.path.relpath(path, att)) if src else None
+    if not sp or not os.path.exists(sp):
+        return []
+    dropped = _patch_dropped(att, am)
+    want = [r for r in _rows(sp)[1] if not (r['date'] in dropped and r['stokes'] == am['s'])]
+    if rows != want:
+        return [f'the rows are not its source\'s less those of its {len(dropped)} dropped night(s) in Stokes {am["s"]} '
+                f'({len(rows)} rows, {len(want)} expected; production\'s drop test D1)']
+    return []
 
 
 # ---- gate ledger ------------------------------------------------------------------------------------------------------------

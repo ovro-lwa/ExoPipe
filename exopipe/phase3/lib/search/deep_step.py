@@ -43,8 +43,10 @@ import shutil
 import sys
 import time
 
+from exopipe.phase3.lib.search import attempts as _ATTS
+
 TIER = 'deep'
-_ATT_RE = re.compile(r'^(?P<cell>\d\dh_(?:\d+MHz|Red|Green|Blue|Full))_(?P<s>[IV])_(?P<att>\d{8}T\d{6})$')
+_ATT_RE = _ATTS.NAME          # <cell>_<S>_<UTC>, and production's drop patches <cell>_<S>_<UTC>stdrop (lib/search/attempts.py)
 _CHILD_MODULE = 'exopipe.phase3.lib.search.deep_step'
 _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 # WAVE2 B-30: the values of search_detect / search_sublst.EPHEMERIS_TIME (deep_search._eph_time reads them in the engine)
@@ -178,7 +180,8 @@ def plan_items(args, stages):
     if replay and args.replay_attempt != 'published':
         m = _ATT_RE.match(os.path.basename(args.replay_attempt.rstrip('/')))
         if not m:
-            raise ValueError(f'--replay-attempt {args.replay_attempt}: the directory name must be <cell>_<S>_<YYYYmmddTHHMMSS>')
+            raise ValueError(f'--replay-attempt {args.replay_attempt}: the directory name must be <cell>_<S>_<YYYYmmddTHHMMSS> '
+                             f'(or production\'s drop patch <cell>_<S>_<YYYYmmddTHHMMSS>stdrop)')
         if cellset and cellset != [m['cell']]:
             raise ValueError(f'--replay-attempt is an attempt of {m["cell"]}; --cells {args.cells} names other cells')
         return [Item(m['cell'], m['s'], 'replay', base=os.path.abspath(args.replay_attempt))]
@@ -215,15 +218,8 @@ def plan_items(args, stages):
 
 
 def _last_register_row(path, cell):
-    if not os.path.exists(path):
-        return None
-    hit = None
-    with open(path) as f:
-        for line in f:
-            parts = line.strip().split(',')
-            if len(parts) >= 3 and parts[0] == cell:
-                hit = (parts[1], parts[2])
-    return hit
+    rows = _ATTS.register_rows(path, cell)        # the last row is current: production's rule (lib/search/attempts.py)
+    return rows[-1] if rows else None
 
 
 def resolve_published(cell, stokes, out):
@@ -245,6 +241,22 @@ def resolve_published(cell, stokes, out):
             if os.path.isdir(d):
                 return d
     return None
+
+
+def superseded_by(att, cell, stokes, out):
+    """The current attempt of (cell, Stokes) when the attempt ``att`` is a published one a later register row superseded, else None.
+    Production's rule (lib/search/attempts.py): the last register row is current - a drop patch <UTC>stdrop is registered after the
+    attempt it patched, a re-search after the patch - so a register listing ``att`` with the current attempt another one means
+    ``att`` is superseded. An attempt no register lists (never published: a test's, a scratch one) is not judged."""
+    m = _ATT_RE.match(os.path.basename(att.rstrip('/')))
+    cur = resolve_published(cell, stokes, out)
+    mc = _ATT_RE.match(os.path.basename(cur.rstrip('/'))) if cur else None
+    if not m or not cur or os.path.realpath(cur) == os.path.realpath(att) or (mc and mc['att'] == m['att']):
+        return None                                   # (the current attempt itself, or a copy of it: the same tag)
+    c = _cfg()
+    regs = (os.path.join(out, f'published_{stokes}.csv'),
+            os.path.join(c.paths.OPS_ROOT, c.search_run.REGISTER.format(stokes=stokes)))
+    return cur if any(t == m['att'] for p in regs for _h, t in _ATTS.register_rows(p, cell)) else None
 
 
 # =====================================================================================================================
@@ -662,6 +674,11 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
         if b:
             if not glob.glob(os.path.join(b, 'transients', f'Run_{ctx["label"]}')):
                 raise Refusal(f'{b}: no transients/Run_{ctx["label"]}/ to append to (label mismatch: --run {ctx["label"]})')
+            sup = superseded_by(b, item.cell, item.stokes, ctx['out']) if item.base != 'published' else None
+            if sup:                                   # the register's current attempt is another one: an append to this one
+                raise Refusal(f'{b} is superseded: the current published attempt of {item.cell} {item.stokes} is {sup} (the last '
+                              f'register row, production\'s rule - a drop patch <UTC>stdrop is registered after the attempt it '
+                              f'patched) - extending it would bring back what the later attempt removed; extend the current one')
             f['base_attempt'] = b
             # A night already searched in the base attempt would be appended twice; a night of the master's generation record
             # (weights.csv / HISTORY constituent: the nights the engine's input-provenance gate E15 admits) that the base did not
