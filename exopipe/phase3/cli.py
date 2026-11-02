@@ -303,21 +303,23 @@ def main(argv=None):
         return record.EXIT_ERROR
     pinned = _pin(args.cores)
     from exopipe.phase3.core import injected as _inj
-    inj = _inj.requested(args)
-    if inj and name == 'run':                  # `run submit` forwards --injected to every step command (on every node)
-        args.injected = True
-    elif inj:                                  # an INJECTED run writes no production product (core/injected.py)
-        try:
-            default = mod.default_out(args)
-        except Exception:                      # noqa: BLE001 - the --out given is still checked against every refused root
-            default = None
-        try:
+    # `exopipe3 run` is never an injected run itself: `run submit --injected` forwards the flag to every step command it
+    # launches, on every node (steps/run.py; an inherited flag alone is refused there)
+    inj = '' if name == 'run' else _inj.requested(args)
+    try:
+        if inj:                                # an INJECTED run writes no production product (core/injected.py)
+            try:
+                default = mod.default_out(args)
+            except Exception:                  # noqa: BLE001 - the --out given is still checked against every refused root
+                default = None
             roots = _inj.begin(inj, out, explicit_out=bool(args.out), work=args.work, default_out=default,
                                writes=getattr(mod, 'WRITES', True))
-        except record.Refusal as e:
-            print(f'REFUSED: {e}', file=sys.stderr)
-            return record.EXIT_REFUSED
-        print(f'{_inj.LABEL} ({inj}): writes allowed only under {", ".join(roots)}', file=sys.stderr)
+            print(f'{_inj.LABEL} ({inj}): writes allowed only under {", ".join(roots)}', file=sys.stderr)
+        if name != 'run':                      # destination flags (injected) / an injected --out and sources (ordinary)
+            _inj.check_flags(name, args, out, writes=getattr(mod, 'WRITES', True))
+    except record.Refusal as e:
+        print(f'REFUSED: {e}', file=sys.stderr)
+        return record.EXIT_REFUSED
     if getattr(mod, 'WRITES', True) and not args.dry_run:
         why = _guard_out(out)
         if why:
@@ -336,6 +338,7 @@ def main(argv=None):
                      config_sections=sections)
     run.cores = pinned
     run.no_records = not getattr(mod, 'WRITES', True)
+    record.mark_injected(run)                  # an injected run's start record, before the step writes anything
     try:
         rc = mod.run(args, run)
     except record.Refusal as e:

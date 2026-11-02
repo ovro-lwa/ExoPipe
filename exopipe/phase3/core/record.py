@@ -304,6 +304,53 @@ def injected(rec):
     return str((rec or {}).get('injected') or '')
 
 
+INJECTED_DIR = '_injected'      # <out>/_records/_injected/<run_id>.json: an injected run's START record (core/injected.py)
+
+
+def mark_injected(run):
+    """Write the injected run's start record <out>/_records/_injected/<run_id>.json before the step writes anything (cli): the
+    products under --out carry synthetic sources, so an ordinary run refuses this --out and every source under it
+    (injected_runs; core/injected.check_flags) and never resumes its units (resume_check). One directory listing finds it -
+    never a scan of the run summaries. Nothing for an ordinary run, a dry run or a step that keeps no records."""
+    if not getattr(run, 'injected', '') or run.dry_run or getattr(run, 'no_records', False):
+        return None
+    p = os.path.join(run.out_root, '_records', INJECTED_DIR, f'{run.run_id}.json')
+    atomic_write_json(p, {'run_id': run.run_id, 'step': run.step, 'argv': run.argv, 'injected': run.injected,
+                          'host': run.host, 'pid': run.pid, 'user': getpass.getuser(), 'started': run.started,
+                          'out': os.path.abspath(run.out_root)})
+    return p
+
+
+def injected_runs(path):
+    """[(root, start record, reason)] for each directory - ``path`` itself (as given and resolved) and every ancestor - whose
+    _records/_injected/ holds an injected run's start record (mark_injected): the products under ``path`` may carry synthetic
+    sources. One listing per directory; a local path (core/injected.check_flags checks a remote source over ssh)."""
+    out, seen = [], set()
+    for start in (os.path.abspath(str(path)), os.path.realpath(str(path))):
+        p = start
+        while True:
+            if p not in seen:
+                seen.add(p)
+                d = os.path.join(p, '_records', INJECTED_DIR)
+                try:
+                    names = sorted(n for n in os.listdir(d) if n.endswith('.json'))
+                except OSError:
+                    names = []
+                if names:
+                    f = os.path.join(d, names[0])
+                    try:
+                        with open(f) as fh:
+                            why = str(json.load(fh).get('injected') or 'injected')
+                    except (OSError, ValueError, AttributeError):
+                        why = 'injected (start record unreadable)'
+                    out.append((p, f, why))
+            parent = os.path.dirname(p)
+            if parent == p:
+                break
+            p = parent
+    return out
+
+
 def atomic_write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f'{path}.tmp.{os.getpid()}'
@@ -659,10 +706,11 @@ def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None
     """(True, reason) when the unit may be skipped under --resume; (False, reason) otherwise.
 
     Skip only when: a record exists with status done and was written from a clean tree (a commit ending '-dirty' is
-    never resumed: its code is not identified by the commit); every recorded input still has the same fingerprint
-    (and ``inputs``, when given, equals the recorded input set); the admitted night set is unchanged; the code that
-    produced it is unchanged (sha1 of each recorded exopipe module); the config hash is unchanged; and every output
-    passes its content test now."""
+    never resumed: its code is not identified by the commit) by a run of the same kind, injected or ordinary
+    (core/injected.py: an ordinary run never adopts an injected run's unit, nor the reverse); every recorded input still
+    has the same fingerprint (and ``inputs``, when given, equals the recorded input set); the admitted night set is
+    unchanged; the code that produced it is unchanged (sha1 of each recorded exopipe module); the config hash is
+    unchanged; and every output passes its content test now."""
     rec = load_record(out_root, step, unit)
     if rec is None:
         return False, 'no record'
@@ -670,6 +718,10 @@ def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None
         return False, f"record status {rec.get('status')}"
     if str(rec.get('commit') or '').endswith('-dirty'):
         return False, f"record written from a dirty tree (commit {rec.get('commit')}): never resumed"
+    from exopipe.phase3.core import injected as _inj
+    if bool(injected(rec)) != _inj.active():         # never across the injected / ordinary line (core/injected.py)
+        return False, (f"record written by an injected run ({injected(rec)}): an ordinary run never adopts its units"
+                       if injected(rec) else f"record written by an ordinary run: this run is injected ({_inj.reason()})")
     for p, fp in rec.get('inputs', {}).items():
         if not same_fingerprint(fp, fingerprint(p)):
             return False, f'input changed: {p}'

@@ -428,15 +428,228 @@ def test_cli_inject_and_inherit():
           and 'INJECTED-RUN GUARD (battery 2026-11-02 (parent))' in r.stderr, (r.returncode, r.stderr[-400:]))
     r = cli('verify', 'csv_table', good, '--cores', 'none', '--out', vout, '--emit-failing',
             os.path.join(OUTSIDE, 'failing.txt'), env={injected.ENV: 'battery (parent)'})
-    check('... whose write outside scratch is refused by the guard (InjectedWriteRefused)', r.returncode == 1
-          and 'InjectedWriteRefused' in r.stderr and not os.path.exists(OUTSIDE), (r.returncode, r.stderr[-400:]))
+    check('... whose destination flag outside scratch is refused before the step runs (exit 2, verify --emit-failing)',
+          r.returncode == 2 and 'verify --emit-failing' in r.stderr and injected.LABEL in r.stderr
+          and not os.path.exists(OUTSIDE), (r.returncode, r.stderr[-400:]))
+    sc = child_script('emit_child.py', f'attempt("emit", lambda: open({os.path.join(OUTSIDE, "failing.txt")!r}, "w"))\n')
+    r = subprocess.run([PY, sc], capture_output=True, text=True, timeout=120,
+                       env=dict({k: v for k, v in os.environ.items() if k not in SAVED_ENV[:4]},
+                                **guard.export_env([vout], env={}), **{injected.ENV: 'battery (parent)'}))
+    res = json.loads(([x for x in r.stdout.splitlines() if x.startswith('RES')] or ['RES{}'])[-1][3:])
+    check('... and a child\'s write there is still refused by the guard itself (InjectedWriteRefused)',
+          res.get('emit') == 'InjectedWriteRefused' and not os.path.exists(OUTSIDE), (res, r.stderr[-300:]))
+
+
+# ---- review fixes 2026-11-02: jupiter serve, consumers of injected products, destination flags, run submit ---------------
+
+def make_injected_out(name):
+    """An injected run's --out with its start record (core/record.mark_injected), written the way cli writes it."""
+    out = os.path.join(T, name)
+    with Clean():
+        injected.mark(f'test: {name}')
+        rr = record.Run('search', ['exopipe3', 'search', '--inject', 'm.csv'], out, CFG)
+        rec = record.mark_injected(rr)
+    return out, rec
+
+
+def test_jupiter_serve_refused():
+    from exopipe.phase3.steps import jupiter as JS
+    with Clean():
+        injected.begin('test: jupiter serve', os.path.join(T, 'jserve'))
+        # arguments that can do nothing: were the refusal missing, the step would stop at its first missing argument
+        e = raises(Refusal, JS.run, SimpleNamespace(action='serve'), SimpleNamespace(out_root=T, dry_run=True))
+        check('JUPITER SERVE: refused in an injected run before anything (8800 / 8801, parity ports)', e is not None
+              and 'never served' in str(e) and 'jupiter serve' in str(e), e)
+    jout = os.path.join(T, 'jserve_cli')
+    r = cli('jupiter', 'serve', '--injected', '--out', jout, '--port-offset', '1000', '--dry-run', '--cores', 'none')
+    check('JUPITER SERVE (CLI): `jupiter serve --injected --out <scratch> --port-offset 1000` exits 2, nothing written',
+          r.returncode == 2 and 'never served' in r.stderr and not files_under(jout), (r.returncode, r.stderr[-500:]))
+
+
+def test_injected_records_and_resume():
+    out, rec = make_injected_out('inj_records')
+    check('mark_injected writes <out>/_records/_injected/<run_id>.json naming the reason',
+          rec and os.path.dirname(rec) == os.path.join(out, '_records', record.INJECTED_DIR)
+          and json.load(open(rec)).get('injected') == 'test: inj_records', rec)
+    hits = record.injected_runs(os.path.join(out, 'attempts', '04h_Red_V_x', 'f.fits'))
+    check('injected_runs finds the start record from any path below the --out (the path need not exist)',
+          len(hits) == 1 and hits[0][0] == out and hits[0][2] == 'test: inj_records', hits)
+    check('... and nothing for an ordinary tree', record.injected_runs(os.path.join(T, 'plain', 'x')) == [])
+    plain = record.Run('search', ['x'], out, CFG)
+    plain.dry_run = True
+    check('an ordinary run, a dry run and a step without records write no start record',
+          record.mark_injected(plain) is None)
+    # resume never crosses the injected / ordinary line
+    rdir = os.path.join(T, 'resume')
+    good = os.path.join(rdir, 'x.csv')
+    os.makedirs(rdir, exist_ok=True)
+    open(good, 'w').write('a\n1\n')
+
+    def unit(name, inj):
+        with Clean():
+            if inj:
+                injected.mark('test: resume')
+            rr = record.Run('t', ['x'], rdir, CFG)
+            rr.commit = 'abc1234'
+            with rr.unit(name) as u:
+                u.add_output(good, 'csv_table')
+    unit('u_inj', True)
+    unit('u_plain', False)
+    ok1, why1 = record.resume_check(rdir, 't', 'u_inj')
+    ok2, why2 = record.resume_check(rdir, 't', 'u_plain')
+    with Clean():
+        injected.mark('test: resume')
+        ok3, why3 = record.resume_check(rdir, 't', 'u_inj')
+        ok4, why4 = record.resume_check(rdir, 't', 'u_plain')
+    check('resume_check: an ordinary run never adopts an injected run\'s unit, an injected run never an ordinary one; the same '
+          'kind resumes', not ok1 and 'injected run' in why1 and ok2 and ok3 and not ok4 and 'ordinary run' in why4,
+          (why1, why2, why3, why4))
+    # an ordinary run into an injected --out is refused before the step runs (no resume, no reading, no writing)
+    e = raises(Refusal, injected.check_flags, 'catalog', SimpleNamespace(), out, writes=True)
+    check('check_flags: an ordinary run whose --out holds an injected run\'s start record is refused', e is not None
+          and 'holds an injected run' in str(e), e)
+    check('... a step that writes nothing (verify) is not', raises(Refusal, injected.check_flags, 'verify', SimpleNamespace(),
+                                                                    out, writes=False) is None)
+    r = cli('pages', '--tier', 'deep', '--out', out, '--dry-run', '--cores', 'none')
+    check('CLI: an ordinary `pages --out <injected run\'s --out>` exits 2', r.returncode == 2
+          and 'holds an injected run' in r.stderr, (r.returncode, r.stderr[-400:]))
+    r = cli('pages', '--tier', 'deep', '--out', os.path.join(out, 'sub'), '--resume', '--dry-run', '--cores', 'none')
+    check('CLI: ... and an ordinary --resume into a directory below it', r.returncode == 2 and 'holds an injected run' in
+          r.stderr, (r.returncode, r.stderr[-400:]))
+    with Clean():
+        injected.mark('test: again')
+        e = raises(Refusal, injected.check_flags, 'catalog', SimpleNamespace(), out, writes=True)
+    check('an injected run may use an injected run\'s --out again', e is None, e)
+
+
+def test_source_flags():
+    out, _rec = make_injected_out('inj_source')
+    src = os.path.join(out, 'Run_P3S9')
+    plain = os.path.join(T, 'plain_src', 'Run_P3S9')
+    os.makedirs(plain, exist_ok=True)
+    tmpl = os.path.join(out, 'gen', '{cell}')
+    import socket
+    me = socket.gethostname().split('.')[0]
+    for step, flags in sorted(injected.SOURCE_FLAGS.items()):
+        for flag in flags:
+            val = [src] if flag == 'attempt' else (f'run:{src}' if flag == 'inc_source' else src)
+            e = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: val}), None, writes=False)
+            ok_plain = raises(Refusal, injected.check_flags, step, SimpleNamespace(
+                **{flag: [plain] if flag == 'attempt' else plain}), None, writes=False) is None
+            check(f'SOURCE {step} --{flag.replace("_", "-")}: an injected run\'s products refused, an ordinary run\'s read',
+                  e is not None and 'holds an injected run' in str(e) and ok_plain, (e, ok_plain))
+    kw = [('search', 'replay_attempt', 'published'), ('serve', 'carry_from', 'served'), ('serve', 'carry_from', 'none'),
+          ('archive', 'staging_root', 'none'), ('catalog', 'inc_source', 'search')]
+    check('keyword values (published, served, none, search) name no path', all(
+        raises(Refusal, injected.check_flags, st, SimpleNamespace(**{f: v}), None, writes=False) is None for st, f, v in kw))
+    e = raises(Refusal, injected.check_flags, 'install', SimpleNamespace(gen=tmpl), None, writes=False)
+    check('a {cell} template is checked at its fixed part (install --gen <injected out>/gen/{cell})', e is not None, e)
+    e = raises(Refusal, injected.check_flags, 'serve', SimpleNamespace(source=f'{me}:{src}'), None, writes=False)
+    check('serve --source HOST:PATH on this host is checked locally', e is not None and 'holds an injected run' in str(e), e)
+    e = raises(Refusal, injected.check_flags, 'serve', SimpleNamespace(source=f'nohost-exopipe3-test.invalid:{src}'), None,
+               writes=False)
+    check('serve --source on a host that cannot be reached is refused (the source cannot be shown ordinary)', e is not None
+          and 'cannot tell' in str(e), e)
+    with Clean():
+        injected.mark('test: injected consumer')
+        check('an injected run may read an injected run\'s products', raises(
+            Refusal, injected.check_flags, 'pages', SimpleNamespace(from_run=src), None, writes=False) is None)
+    # the four consumers of the review, end to end (each refuses before the step runs; dry runs)
+    for argv, what in ((['serve', '--tier', 'snapshot', '--run', 'Run_SNAPINJ', '--source', src, '--port-offset', '1000'],
+                        'serve --source'),
+                       (['archive', 'sync', '--attempt', os.path.join(out, 'attempts', '04h_Red_V_20261102T000000Z')],
+                        'archive --attempt'),
+                       (['install', '--gen', tmpl], 'install --gen'),
+                       (['pages', '--tier', 'deep', '--from-run', src], 'pages --from-run')):
+        r = cli(*argv, '--out', os.path.join(T, 'consumer_out'), '--dry-run', '--cores', 'none')
+        check(f'CLI: an ordinary `{what} <injected run\'s products>` exits 2', r.returncode == 2 and what in r.stderr
+              and 'holds an injected run' in r.stderr, (r.returncode, r.stderr[-400:]))
+
+
+def test_dest_flags():
+    out = os.path.join(T, 'dest_out')
+    inside = os.path.join(out, 'inside')
+    outside_existing = os.path.dirname(REPO)          # an existing directory outside every scratch root: never written here
+    with Clean():
+        injected.begin('test: destinations', out)
+        for step, flags in sorted(injected.DEST_FLAGS.items()):
+            for flag in flags:
+                bad = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: outside_existing}), out)
+                good = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: inside}), out)
+                remote = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: 'lwacalim07:/data07/x'}), out)
+                in_cell = (step, flag) in injected._IN_CELL          # a relative value names a directory inside the cell
+                check(f'DEST {step} --{flag.replace("_", "-")}: an existing directory outside scratch refused, '
+                      + ('a relative one stays inside the cell' if in_cell else 'a remote one refused')
+                      + ', one under --out accepted', bad is not None and (remote is None if in_cell else remote is not None)
+                      and good is None and f'{step} --{flag.replace("_", "-")}' in str(bad), (bad, remote, good))
+        check('jupiter --qdir: a name inside the site cell (relative) is no free destination',
+              raises(Refusal, injected.check_flags, 'jupiter', SimpleNamespace(qdir='quarantine_superseded_x'), out) is None)
+        e = raises(Refusal, injected.check_flags, 'forced', SimpleNamespace(deep_panels_run='Run_P3S5_forced9'), out)
+        check('forced --deep-panels-run NAME resolves under paths.TRANSIENTS_ROOT and is refused', e is not None
+              and CFG.paths.TRANSIENTS_ROOT.rstrip('/') in str(e), e)
+        e = raises(Refusal, injected.check_flags, 'archive', SimpleNamespace(stores=f'{inside}/a.csv,{OUTSIDE}/b.csv'), out)
+        check('archive --stores: every file of the comma list is checked', e is not None and OUTSIDE in str(e), e)
+        e = raises(Refusal, injected.check_flags, 'photometry', SimpleNamespace(stage_root=os.path.join(outside_existing,
+                                                                                                       '{cell}')), out)
+        check('a {cell} destination template is checked at its fixed part', e is not None, e)
+    check('an ordinary run\'s destination flags are not checked here (production writes are gated by PRODUCTION_WRITES)',
+          raises(Refusal, injected.check_flags, 'photometry', SimpleNamespace(stage_root=outside_existing), None) is None)
+    # the three flags the review named, end to end: refused before the step runs, nothing written there
+    for argv, what in ((['photometry', '--tier', 'deep', '--stage-root', outside_existing], 'photometry --stage-root'),
+                       (['forced', '--tier', 'snapshot', '--snap-review-root', outside_existing], 'forced --snap-review-root'),
+                       (['pages', '--tier', 'sublst', '--sublst-place-target', outside_existing], 'pages --sublst-place-target')):
+        before = sorted(os.listdir(outside_existing))
+        r = cli(*argv, '--injected', '--out', os.path.join(T, 'dest_cli'), '--dry-run', '--cores', 'none')
+        check(f'CLI: `{what} <an existing directory outside scratch> --injected` exits 2, nothing written there',
+              r.returncode == 2 and what in r.stderr and injected.LABEL in r.stderr
+              and sorted(os.listdir(outside_existing)) == before, (r.returncode, r.stderr[-400:]))
+    with Clean():
+        e = raises(Refusal, injected.begin, 'test', '/tmp')
+        e2 = raises(Refusal, injected.begin, 'test', '/dev/shm')
+        check('an injected run\'s --out is never a shared scratch root itself (/tmp, /dev/shm): its start record would mark '
+              'every run below as injected', e is not None and e2 is not None and 'shared scratch root' in str(e), (e, e2))
+
+
+def test_flag_tables_name_real_flags():
+    """Every flag of DEST_FLAGS / SOURCE_FLAGS is a destination of that step's real parser (as cli builds it): a renamed flag
+    must never drop out of its check silently."""
+    import argparse
+    import importlib
+    from exopipe.phase3 import cli as CLI
+    bad = []
+    for table in (injected.DEST_FLAGS, injected.SOURCE_FLAGS):
+        for step, flags in table.items():
+            mod = importlib.import_module(f'exopipe.phase3.steps.{step}')
+            sp = argparse.ArgumentParser(prog=f'exopipe3 {step}')
+            mod.add_arguments(sp)
+            CLI._common(sp, mod)
+            dests = {a.dest for a in sp._actions}
+            bad += [f'{step} {f}' for f in flags if f not in dests]
+    check('every flag the checks name is a real flag of its step (no silent drop-out after a rename)', not bad, bad)
+
+def test_run_submit_gate():
+    from exopipe.phase3.steps import run as srun
+    with Clean():
+        injected.mark('test: inherited')
+        e = raises(Refusal, srun.submit_injected_gate, SimpleNamespace(injected=False))
+        ok = raises(Refusal, srun.submit_injected_gate, SimpleNamespace(injected=True)) is None
+        check('run submit: an inherited EXOPIPE3_INJECTED without --injected is refused; with --injected it is forwarded',
+              e is not None and 'pass --injected' in str(e) and ok, (e, ok))
+        guard.install([os.path.join(T, 'nested')], log=None, label=injected.LABEL)
+        e = raises(Refusal, srun.submit_injected_gate, SimpleNamespace(injected=True))
+        check('run submit inside an injected run\'s processes (the guard inherited) is refused: its job records live under '
+              'runner.JOBS_ROOT', e is not None and 'JOBS_ROOT' in str(e), e)
+    check('an ordinary shell: the gate passes', raises(Refusal, srun.submit_injected_gate, SimpleNamespace(injected=False))
+          is None)
 
 
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
     for t in (test_flag_runner_records, test_refused_roots, test_begin_out_gate_and_guard, test_writer_archive_tree,
-              test_writer_photometry_root, test_writer_served_run, test_writer_data_decisions, test_cli_inject_and_inherit):
+              test_writer_photometry_root, test_writer_served_run, test_writer_data_decisions, test_cli_inject_and_inherit,
+              test_jupiter_serve_refused, test_injected_records_and_resume, test_source_flags, test_dest_flags,
+              test_flag_tables_name_real_flags, test_run_submit_gate):
         try:
             t()
         except Exception as e:                     # noqa: BLE001 - a crashing test is a failure, the rest still run

@@ -13,9 +13,11 @@ Inputs:  a step command line after '--', or --chain NAME (runner.CHAINS: step co
          item); items from --cells/--items (any item grammar: list, @file, JOB:STATUS, record:STATUS:STEP@OUT). Use
          {item} in the step command where the item goes; otherwise --cells <item> is appended.
          --set / --config / --ruling-for / --parity / --injected given to `run submit` BEFORE '--' are forwarded into
-         every step command (and recorded in job.json; --injected also when `run submit` runs inside an injected run,
-         core/injected.py); protected keys and unknown ledger IDs are refused at submit, ruled keys are checked by each
-         step against its own --out.
+         every step command (and recorded in job.json); protected keys and unknown ledger IDs are refused at submit, ruled
+         keys are checked by each step against its own --out. An injected run (core/injected.py) is submitted from an
+         ordinary shell with `run submit --injected`: `run submit` refuses an EXOPIPE3_INJECTED it only inherits (the steps
+         it launches on other nodes would not get it), and inside an injected run's processes it cannot run at all (its job
+         records live under runner.JOBS_ROOT, which the injected-run guard refuses).
          --code COMMIT: every step process runs from a read-only git worktree of that commit (one per commit, reused,
          under runner.CODE_WORKTREES_ROOT); the commit is recorded in job.json and in every item record.
 Outputs: a job record under runner.JOBS_ROOT (job.json, items.txt, items/<item>.json, logs/<item>.log).
@@ -64,7 +66,7 @@ def default_out(args):
 
 def forward_argv(args):
     """The arguments of `run submit` forwarded into every step command: --set, --config (absolute), --ruling-for,
-    --parity, --injected (also when `run submit` itself runs inside an injected run: core/injected.py)."""
+    --parity, --injected (core/injected.py)."""
     fwd = []
     for s in args.set or ():
         fwd += ['--set', s]
@@ -77,6 +79,23 @@ def forward_argv(args):
     if getattr(args, 'injected', False):
         fwd += ['--injected']
     return fwd
+
+
+def submit_injected_gate(args):
+    """An injected run's jobs (core/injected.py): `run submit --injected` from an ordinary shell forwards the flag to every step
+    command. Refused: submitting inside an injected run's processes (the write guard they inherit refuses the job records
+    under runner.JOBS_ROOT), and an EXOPIPE3_INJECTED this process only inherits (the steps launched on other nodes over ssh
+    would run as ordinary runs)."""
+    from exopipe.phase3.core import guard, injected
+    from exopipe.phase3.core.record import Refusal
+    if injected.active() and guard.active():
+        raise Refusal(f'run submit inside an injected run\'s processes ({injected.reason()}): the job records live under '
+                      f'runner.JOBS_ROOT, outside the run\'s scratch roots - submit from an ordinary shell with `run submit '
+                      f'--injected`')
+    if injected.active() and not getattr(args, 'injected', False):
+        raise Refusal(f'this environment carries EXOPIPE3_INJECTED ({injected.reason()}) but `run submit` has no --injected: '
+                      f'the steps it launches on other nodes would run as ordinary runs - pass --injected (forwarded to every '
+                      f'step command), or unset EXOPIPE3_INJECTED')
 
 
 def _status_line(j, it, s):
@@ -99,6 +118,7 @@ def run(args, run):
         argv = list(args.step_argv)
         if not argv and not args.chain:
             raise SystemExit('submit needs the step command after --, or --chain NAME')
+        submit_injected_gate(args)
         spec = args.items
         if spec is None and '--cells' in argv:
             i = argv.index('--cells')

@@ -126,8 +126,11 @@ def _check_ruled_budget(args, roots):
 
 def run(args, run):
     from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import injected
     from exopipe.phase3.lib.jupiter import common as K
     from exopipe.phase3.lib.jupiter import mirrors
+    if args.action == 'serve':        # an injected run is never served, parity ports included (core/injected.py)
+        injected.refuse('jupiter serve', 'an injected run is never served (8800 / 8801, parity ports, restarts, stops)')
     if args.sublst_root:
         CFG.set('jupiter.SUBLST_ROOT', args.sublst_root, source='--sublst-root')
     K.check_environment()
