@@ -1,5 +1,6 @@
 """The deep search's search-tier gate at 2.0 x the cell median (production exopipe 702dd68; ledger
-R-GREGG-20261030-SEARCH-TIER-GATE-2X-CELL-MEDIAN-FASTER-OPTION).
+R-GREGG-20261030-SEARCH-TIER-GATE-2X-CELL-MEDIAN-FASTER-OPTION) and the record-only search-time bright-source table (production
+exopipe 55b0263; the refactor chat's decision of 2026-10-18 under R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS).
 
 The engine's own code is executed: each block of lib/search/deep_search.run_deep_cell under test is cut from the source and run
 in a namespace of inputs (as tests/test_search_b30.py does for the DURATION block), and production's block (git show of
@@ -19,11 +20,18 @@ Part 3, the refusal-file readers and the wiring: the content test accepts the 8 
 and an rms not above its threshold; COLUMNS.csv names the 8 columns; config search_detect / search_sublst SEARCH_TIER_RATIO 2.0,
 ruled, SEARCH_TIER_SIGMA no longer a key; the deep step, the 10-minute tier and the frames engine pass P3_SEARCH_TIER_RATIO; no
 parity-file line (production's value is the ruled one); production's own attempts of 2026-10-30 pass (read only).
+Part 4, the table record: _str_row is production's; the engine's I and V table blocks with a stubbed table - under production's
+rules at deep every verdict recorded with applied 0 and nothing removed (no 'table' ledger row, no cut note on the kept
+candidate, an exemption's note kept); at 10 minutes and under the B-02 rules ('once-in-search') applied 1 and the cut removed,
+with the inputs the table was given (B-02: the table noise and the frame's BMAJ); the branch's blocks = production 702dd68's
+under production's rules; the record appended after the ledger; the content test (class search_table_record) passes on the
+engine's output and fails on each of its edits; production's records of 2026-10-30 pass it (read only).
 Run: python tests/test_search_tier_table.py
 """
 import csv
 import glob
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -320,11 +328,217 @@ def test_readers_and_wiring():
         print(f'SKIP production\'s attempts of 2026-10-30 (none under {COLLECT})')
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# part 4: the record-only search-time table
+# ---------------------------------------------------------------------------------------------------------------------
+class _Deg:
+    def __init__(self, v):
+        self.deg = v
+
+
+class _Coord:
+    def __init__(self, ra, dec):
+        self.ra, self.dec = _Deg(ra), _Deg(dec)
+
+
+class _Tree:
+    @staticmethod
+    def query(xyz, k=1):
+        return np.array([1e-3]), np.array([0])
+
+
+def _cands(stokes):
+    """Three detections: one the table cuts, one it exempts, one far from every parent (no note)."""
+    out = []
+    for i, (ra, x, snr) in enumerate(((10.0, 101, 9.0), (10.5, 202, 8.0), (11.0, 303, 7.0))):
+        out.append(dict(coord=_Coord(ra, 20.0), ra=None, pix_x=x, pix_y=400 + i, local_snr=snr, flux=0.5 + i,
+                        global_snr=10.0, _pm=1, _b02_pos=(ra + 1e-5, 20.0), _b02_el=40.0))
+    return out
+
+
+VERDICT = {10.0: (True, 'table: parent S=812 at 0.31 bw < 1.20 (bin 300-1000)'),
+           10.5: (False, 'table-exempt: ATNF pulsar J0000+0000 is the parent (test; would remove: table: parent S=90 ...)'),
+           11.0: (False, '')}
+
+
+def _table_ns(stokes, cadence, b02, calls):
+    def removals(st, band, par, rms, beam, ra, dec, elev=None, phase_centre=None, **k):
+        calls.append(dict(stokes=st, rms=rms, beam=beam, ra=[round(float(x), 4) for x in np.atleast_1d(ra)]))
+        v = [VERDICT[round(float(x), 1)] for x in np.atleast_1d(ra)]
+        return np.array([a for a, _b in v], bool), [b for _a, b in v]
+
+    class _PCT:
+        pass
+    _PCT.removals = staticmethod(removals)
+    from exopipe.phase3.lib.search import deep_search as D
+    return dict(np=np, lst='05h', scope='78MHz', cadence=cadence, _b02=b02, _ptree=_Tree, _uv=lambda ra, dec: np.zeros((len(ra), 3)),
+                em=1.5, cd=0.1, _pa=np.array([[10.0, 20.0, 50.0]]), _parents=[[10.0, 20.0, 50.0]], hdr0={'CRVAL1': 10.0, 'CRVAL2': 20.0},
+                _PCT=_PCT, _table_and_inputs=lambda cands, st, band, *a, **k: removals(st, band, *a, **k),
+                _b02_tnoise=lambda st, d: 0.2, _b02_psr=lambda *a: None, _fhI={'2025-01-02': {'BMAJ': 0.12}},
+                _fhV={'2025-01-02': {'BMAJ': 0.13}}, _mid_hour_elev=lambda lst, ra, dec: np.full(len(ra), 45.0), drI_=0.25,
+                d_='2025-01-02', d='2025-01-02', str_rows=[], gled_rows=[], _str_row=D._str_row, _gled_row=D._gled_row)
+
+
+def run_table(src, stokes, cadence, b02):
+    """Execute the engine's I (per detection) or V (per epoch) table block on _cands(): (finals, ledger rows, record rows,
+    the detections after it, the table calls)."""
+    calls, cands = [], _cands(stokes)
+    ns = _table_ns(stokes, cadence, b02, calls)
+    if stokes == 'I':
+        blk = cut(src, 'cut = False', 'finals.append(c)   # the final=1 ledger row is written after the row-line veto')
+        code = 'for c in _cands:\n' + textwrap.indent(blk, '    ')
+        ns.update(_cands=cands, finals=[])
+    else:
+        code = cut(src, 'if finals and _parents:', 'finals = _keepv')
+        ns.update(finals=list(cands))
+    exec(code, ns)
+    return ns['finals'], ns['gled_rows'], ns['str_rows'], cands, calls
+
+
+def test_table_record():
+    from exopipe.phase3.lib.search import deep_search as D, tests as ST
+    from exopipe.phase3.core import validate
+    g = D._gled_row('05h', '78MHz', 'V', '2025-01-02', _cands('V')[0], 1)
+    r = D._str_row('05h', '78MHz', 'V', '2025-01-02', _cands('V')[0], np.bool_(True), None, 0.2, 0.13, False)
+    check('_str_row is production\'s row: the ledger row\'s first nine fields, verdict / applied as 0/1, a missing note blank',
+          D.STR_COLS == ST.STR_COLS and len(r) == len(D.STR_COLS) and r[:9] == g[:9] and r[9:] == [1, '', 0.2, 0.13, 0]
+          and D.STR_COLS[:9] == D.GLED_COLS[:9], r)
+    src, psrc = branch_src(), prod_src('702dd68')
+    for st in ('I', 'V'):
+        fin, led, rec, cands, calls = run_table(src, st, 'deep', False)
+        rms_used = calls[0]['rms']
+        check(f'{st}, deep under production\'s rules: every verdict recorded with applied 0 and nothing removed - all three '
+              f'kept, no \'table\' ledger row', len(fin) == 3 and not any(x[11] == 'table' for x in led) and len(rec) == 3
+              and [x[9] for x in rec] == [1, 0, 0] and all(x[13] == 0 for x in rec), (len(fin), [x[11] for x in led], rec))
+        check(f'{st}, deep under production\'s rules: the record carries the note and the inputs the table was given (the '
+              f'epoch\'s noise, the master beam em x cd)', [x[10] for x in rec] == [VERDICT[k][1] for k in (10.0, 10.5, 11.0)]
+              and all(abs(x[11] - (0.25 if st == 'I' else rms_used)) < 1e-12 and abs(x[12] - 0.15) < 1e-12 for x in rec), rec)
+        check(f'{st}, deep under production\'s rules: no cut note on the kept detection (the record holds it); the exemption\'s '
+              f'note kept for the ledger (2026-10-17)', 'table_note' not in cands[0] and cands[1].get('table_note') == VERDICT[10.5][1]
+              and 'table_note' not in cands[2], [c.get('table_note') for c in cands])
+        fp, lp, rp, cp, _c = run_table(psrc, st, 'deep', False)
+        check(f'{st}, deep under production\'s rules: the branch block = production 702dd68\'s (the record rows, the detections '
+              f'kept, every ledger row\'s production columns)', rp == rec and [c['pix_x'] for c in fp] == [c['pix_x'] for c in fin]
+              and [x[:28] for x in lp] == [x[:28] for x in led], (rp, rec))
+        f10, l10, r10, c10, _c = run_table(src, st, '10min', False)
+        fp10, lp10, rp10, _cp, _c = run_table(psrc, st, '10min', False)
+        check(f'{st}, 10 minutes: applied 1 and the cut removed (a \'table\' ledger row with its note), as production 702dd68',
+              len(f10) == 2 and [x[11] for x in l10 if x[11] == 'table'] == ['table'] and all(x[13] == 1 for x in r10)
+              and c10[0].get('table_note') == VERDICT[10.0][1] and rp10 == r10 and [x[:28] for x in lp10] == [x[:28] for x in l10],
+              (len(f10), r10, rp10))
+        fb, lb, rb, cb, callsb = run_table(src, st, 'deep', True)
+        beam = 0.12 if st == 'I' else 0.13
+        check(f'{st}, deep under the B-02 rules: applied 1 and the cut removed, recorded with the inputs the table was given - '
+              f'the table noise and the frame\'s BMAJ', len(fb) == 2 and sum(x[11] == 'table' for x in lb) == 1
+              and all(x[13] == 1 and x[11] == 0.2 and x[12] == beam for x in rb) and [x[9] for x in rb] == [1, 0, 0]
+              and all(cl['rms'] == 0.2 and cl['beam'] == beam for cl in callsb), (rb, callsb))
+    # the record is appended after the ledger, in the run directory, under its own header
+    i_led = src.index("_append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)")
+    i_str = src.index("_append_locked(f'{run_root}/search_table_record.csv', STR_COLS, str_rows)")
+    check('engine: search_table_record.csv appended after the gate ledger, as production 702dd68',
+          i_led < i_str < src.index("_append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)")
+          and "_append_locked(f'{run_root}/search_table_record.csv', STR_COLS, str_rows)" in psrc)
+    # ---- the content test on the engine's output, in an attempt's layout
+    def attempt(name, cadence, b02, rules=None, edit=None):
+        att = os.path.join(T, 'att_' + name)
+        shutil.rmtree(att, ignore_errors=True)
+        rd = os.path.join(att, 'transients', 'Run_TEST')
+        os.makedirs(rd)
+        led, rec = [], []
+        for st in ('I', 'V'):
+            _f, l_, r_, _c, _x = run_table(src, st, cadence, b02)
+            led += l_ + [D._gled_row('05h', '78MHz', st, '2025-01-02', c, 1, final=1) for c in _f]
+            rec += r_
+        if edit:
+            led, rec = edit(led, rec)
+        for nm_, cols_, rows_ in (('v_deep_ledger.csv', D.GLED_COLS, led), ('search_table_record.csv', D.STR_COLS, rec)):
+            with open(os.path.join(rd, nm_), 'w', newline='') as f:
+                w = csv.writer(f)
+                w.writerow(cols_)
+                w.writerows(rows_)
+        if rules:
+            json.dump(dict(rules=rules, version='b02-3c' if rules == 'once-in-search' else None),
+                      open(os.path.join(att, 'search_rules.json'), 'w'))
+        return os.path.join(rd, 'search_table_record.csv')
+    ok = {'deep, production\'s rules': ST.verdicts_applied_as_ruled(attempt('p', 'deep', False)),
+          'deep, the B-02 rules': ST.verdicts_applied_as_ruled(attempt('o', 'deep', True, rules='once-in-search')),
+          '10 minutes': ST.verdicts_applied_as_ruled(attempt('t', '10min', False), tier='sublst')}
+    check('search_table_record: the content test passes on the engine\'s output - deep under production\'s rules (applied 0), '
+          'under the B-02 rules (applied 1, the ledger\'s table row = the applied cut), 10 minutes (applied 1)',
+          all(r_[0] for r_ in ok.values()), {k: r_[2] for k, r_ in ok.items()})
+    rr = validate.run('search_table_record', attempt('p2', 'deep', False))
+    check('search_table_record through the registry (core/validate discovers the class)', rr and all(x['passed'] for x in rr), rr)
+
+    def flip(i, col, v):
+        def e(led, rec):
+            rec = [list(x) for x in rec]
+            rec[i][col] = v
+            return led, rec
+        return e
+
+    def drop_table_row(led, rec):
+        return [x for x in led if x[11] != 'table'], rec
+
+    def add_ledger_table(led, rec):
+        led = [list(x) for x in led]
+        k = next(i for i, x in enumerate(led) if x[18] == 1)
+        led[k][11], led[k][18] = 'table', 0
+        return led, rec
+
+    def no_ledger_row(led, rec):
+        return [x for x in led if not (x[2] == 'I' and x[6] == 303)], rec
+    edits = [('deep production\'s rules: a verdict marked applied', 'p', False, None, flip(0, 13, 1), 'deep'),
+             ('the B-02 rules: an applied verdict marked record-only', 'o', True, 'once-in-search', flip(0, 13, 0), 'deep'),
+             ('a cut verdict without the table\'s cut note', 'p', False, None, flip(0, 10, ''), 'deep'),
+             ('a cut verdict whose note is an exemption', 'p', False, None, flip(0, 10, VERDICT[10.5][1]), 'deep'),
+             ('a kept verdict with a cut note', 'p', False, None, flip(2, 10, VERDICT[10.0][1]), 'deep'),
+             ('a cut verdict with a non-positive rms', 'p', False, None, flip(0, 11, 0.0), 'deep'),
+             ('a verdict not 0/1', 'p', False, None, flip(1, 9, 2), 'deep'),
+             ('a second cell', 'p', False, None, flip(1, 1, '82MHz'), 'deep'),
+             ('the B-02 rules: the applied cut\'s ledger row not \'table\'', 'o', True, 'once-in-search', drop_table_row, 'deep'),
+             ('a \'table\' ledger row the record does not cut', 'p', False, None, add_ledger_table, 'deep'),
+             ('a verdict without its detection\'s ledger row', 'p', False, None, no_ledger_row, 'deep'),
+             ('10 minutes: an applied verdict marked record-only', 't', False, None, flip(0, 13, 0), 'sublst')]
+    missed = []
+    for name, base, b02, rules, ed, tier in edits:
+        cad = '10min' if tier == 'sublst' else 'deep'
+        r_ = ST.verdicts_applied_as_ruled(attempt('e_' + base, cad, b02, rules=rules, edit=ed), tier=tier)
+        if r_[0]:
+            missed.append(name)
+    check(f'search_table_record: the content test FAILS on each of {len(edits)} edits', not missed, missed)
+    hdr = attempt('h', 'deep', False)
+    with open(hdr) as f:
+        body = f.read().split('\n', 1)[1]
+    with open(hdr, 'w') as f:
+        f.write(','.join(D.STR_COLS[:-1]) + '\n' + body)
+    check('search_table_record: another header FAILS', not ST.verdicts_applied_as_ruled(hdr)[0])
+    # ---- the step lists the record for its content test (both tiers)
+    dsrc = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_step.py')).read()
+    tsrc = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'tier_sublst.py')).read()
+    check('the deep step and the 10-minute tier test the record (class search_table_record, the tier in the context)',
+          "out.append((p, 'search_table_record', dict(tier=TIER)))" in dsrc and "('search_table_record.csv', 'search_table_record')" in tsrc)
+    # ---- production's records of 2026-10-30 (read only)
+    recs = sorted(glob.glob(os.path.join(COLLECT, 'p3s5_collect_*', 'attempts', '*', 'transients', 'Run_P3S5',
+                                         'search_table_record.csv')))
+    if recs:
+        bad, n, ncut = [], 0, 0
+        for p in recs:
+            ok_, v, det = ST.verdicts_applied_as_ruled(p)
+            n += v or 0
+            ncut += sum(1 for x in csv.DictReader(open(p)) if x['verdict'] == '1')
+            if not ok_:
+                bad.append((p, det))
+        check(f'production\'s records ({len(recs)} attempts, {n} verdicts, {ncut} cut and none applied) pass search_table_record',
+              not bad and ncut > 0, bad[:3])
+    else:
+        print(f'SKIP production\'s records (none under {COLLECT})')
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
     try:
-        for fn in (test_gate_synthetic, test_gate_replay, test_readers_and_wiring):
+        for fn in (test_gate_synthetic, test_gate_replay, test_readers_and_wiring, test_table_record):
             try:
                 fn()
             except Exception as e:

@@ -84,6 +84,7 @@ def test_engine_truth():
     from exopipe.phase3.lib.search import removal_rules as RR
     check('the B-02 step 3b schemas of the tests = removal_rules (FRAME_NOISE_COLS, TABLE_PULSAR_COLS)',
           T.FNOISE_COLS == RR.FRAME_NOISE_COLS and T.TPD_COLS == RR.TABLE_PULSAR_COLS)
+    check('STR_COLS of the tests = the engine (search_table_record.csv, production exopipe 55b0263)', T.STR_COLS == E.STR_COLS)
     src = inspect.getsource(CA.write_candidates)
     m = re.search(r'fields = (\[.*?\])', re.sub(r'#[^\n]*', '', src), re.S)
     fields = ast.literal_eval(m.group(1))

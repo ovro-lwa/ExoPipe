@@ -183,6 +183,24 @@ def _elev_floor(stokes):
     return float(sv2.CONFIG['MIN_ELEVATION'])
 
 
+# SEARCH-TIME TABLE RECORD-ONLY IN DEEP (2026-10-18, the refactor chat under Gregg's delegation R-GREGG-20261016-REFACTOR-
+# DECIDES-BY-GOALS; deep chat ledger FINDING-DEEP-TABLE-APPLIED-TWICE-WITH-DIFFERENT-INPUTS-PULSAR-EXEMPTION-PUBLISH-ONLY): the
+# table was derived with the cell-median frame rms and the night's target beam, which the publish pass (p3s2_conform) applies,
+# with the pulsar exemption; the search applied it a second time with other inputs (this epoch's rms, the master's empirical
+# beam) and no exemption. In deep the search's verdict is RECORDED (search_table_record.csv: verdict, note, inputs) and removes
+# nothing; conform applies the table once. Other cadences unchanged.
+STR_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'snr', 'verdict', 'note', 'frame_rms_jy', 'beam_deg',
+            'applied']
+# WAVE2 B-02 (step 3b, search_detect.REMOVAL_RULES 'once-in-search'): there the search IS the table's one application, with the
+# inputs it was derived with (the table noise of the cell's admitted nights, the frame's BMAJ; the pulsar decisions in
+# table_pulsar_decisions.csv) and no publish step applies it - each verdict is recorded with those inputs and applied = 1
+
+
+def _str_row(lst, scope, stokes, d, c, verdict, note, rms, beam, applied):
+    g = _gled_row(lst, scope, stokes, d, c, 1)
+    return g[:9] + [int(bool(verdict)), note or '', rms, beam, int(bool(applied))]
+
+
 def _append_locked(path, cols, rows):
     """Lock-serialized CSV append (same pattern as phase3_i_deep)."""
     if not rows:
@@ -1780,7 +1798,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _ssA_V = _ADS.stacks(dates, _pop, _adm, resid_V, lambda _r: _sigma_stack(_r, cell_work, hdr0, 'V'),   # WAVE2 D-ADMIT
                          lambda _s, _d: _write_sigstack(_s, hdr0, run_root, lst, scope, 'V', night=_d), f'{lst} {scope} V')
 
-    gled_rows, gimg_rows = [], []
+    gled_rows, gimg_rows, str_rows = [], [], []
     v_pending, i_pending = [], []
     _te_v = {}    # WAVE2 B-30: each V epoch's ephemeris time (its vetoes; its candidates' body labels)
     _gimgI = {}   # I image rows by date, completed after the post-loop curve stage
@@ -2427,15 +2445,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                                      [c['_b02_pos'][0]], [c['_b02_pos'][1]], elev=[c['_b02_el']],   # WAVE2 B-02: derived
                                                      phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
                         _b02_psr('I', d_, [c], _tc, _tn)               # WAVE2 B-02: with - the cell's noise, the frame's beam, the
-                    else:                                              # WAVE2 B-02: catalogue position, its frame-mid elevation
+                        _str_in = (_b02_tnoise('I', d_), float(_fhI[d_]['BMAJ']), True)   # WAVE2 B-02: catalogue position, its frame-mid
+                    else:                                              # WAVE2 B-02: elevation; recorded with them, applied (above STR_COLS)
                         _tc, _tn = _table_and_inputs([c], 'I', scope, _pa, max(drI_, 1e-12), em * cd,
                                                      [c['coord'].ra.deg], [c['coord'].dec.deg],
                                                      elev=(_mid_hour_elev(lst, [c['coord'].ra.deg], [c['coord'].dec.deg]) if cadence == 'deep' else None),
                                                      phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
-                    if bool(_tc[0]):
+                        _str_in = (drI_, em * cd, cadence != 'deep')   # deep: record-only (2026-10-18, above STR_COLS)
+                    str_rows.append(_str_row(lst, scope, 'I', d_, c, _tc[0], _tn[0], *_str_in))
+                    if bool(_tc[0]) and _str_in[2]:
                         cut = True; c['table_note'] = _tn[0]
-                    elif _tn[0]:                                       # 2026-10-17: an exemption's note ('table-exempt: ...')
-                        c['table_note'] = _tn[0]                       # kept for the gate ledger
+                    elif _tn[0] and not bool(_tc[0]):                  # 2026-10-17: an exemption's note ('table-exempt: ...')
+                        c['table_note'] = _tn[0]                       # kept for the gate ledger (a record-only verdict's note is
+                                                                       # in search_table_record.csv, as production's)
                 if cut:
                     gled_rows.append(_gled_row(lst, scope, 'I', d_, c, 1,
                                                reason='table', pass_ms=1))
@@ -2508,20 +2530,23 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                                                elev=[c['_b02_el'] for c in finals],   # WAVE2 B-02: inputs (the cell's noise, not the
                                                phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))   # WAVE2 B-02:
                 _b02_psr('V', d, finals, _tcv, _tnv)                   # WAVE2 B-02: median over this epoch's finals)
+                _str_in = (_b02_tnoise('V', d), float(_fhV[d]['BMAJ']), True)   # WAVE2 B-02: recorded with them, applied (above STR_COLS)
             else:                                                      # WAVE2 B-02
                 _tcv, _tnv = _table_and_inputs(finals, 'V', scope, _pa_v, max(_rmsV, 1e-12), em * cd,
                                                [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals],
                                                elev=(_mid_hour_elev(lst, [c['coord'].ra.deg for c in finals], [c['coord'].dec.deg for c in finals])
                                                      if cadence == 'deep' else None),   # elevation-band tables in the search (Gregg 2026-10-06)
                                                phase_centre=(float(hdr0['CRVAL1']) % 360.0, float(hdr0['CRVAL2'])))
+                _str_in = (_rmsV, em * cd, cadence != 'deep')          # deep: record-only (2026-10-18, above STR_COLS)
             _keepv = []
             for c, _x, _n in zip(finals, _tcv, _tnv):
-                if bool(_x):
+                str_rows.append(_str_row(lst, scope, 'V', d, c, _x, _n, *_str_in))
+                if bool(_x) and _str_in[2]:
                     c['table_note'] = _n
                     gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1, reason='table', pass_ms=c.get('_pm', ''), jup_veto=0))
                 else:
-                    if _n:                                             # 2026-10-17: an exemption's note kept for the ledger
-                        c['table_note'] = _n
+                    if _n and not bool(_x):                            # 2026-10-17: an exemption's note kept for the ledger (a
+                        c['table_note'] = _n                           # record-only verdict's note: search_table_record.csv)
                     _keepv.append(c)
             finals = _keepv
         if len(finals) >= ROWLINE_MIN:   # ROW-LINE veto, V (Gregg 2026-09-05, independent of I)
@@ -2553,6 +2578,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             sanity_x=SANITY_I_X))                                      # WAVE2 B-02
     _append_locked(f'{run_root}/{_RR.TABLE_PULSAR}', _RR.TABLE_PULSAR_COLS, _tpd)   # WAVE2 B-02 (step 3b): none written without one
     _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
+    _append_locked(f'{run_root}/search_table_record.csv', STR_COLS, str_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)
     # ZERO-PRODUCT REFUSAL (2026-09-13, CLAUDE.md section 3: "a rebuild that silently no-ops is a bug"
     # and "wrote 0 candidates never produces a done marker"). A run that searched epochs but wrote no

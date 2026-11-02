@@ -3,7 +3,9 @@
 Classes (spec search.md section 6): detections (master_catalog.csv), gate_ledger (v_deep_ledger.csv), image_ledger
 (v_deep_images.csv), refusal_record (refusals/<cell>_<kind>_excluded.csv), candidate_stamps (the candidates/ directory),
 fp_gate_verdicts (V_top100_fp_gate_p3.csv), detection_positions (fit_positions.csv); under the B-02 rules (step 3b) frame_noise
-(frame_noise.csv: each frame's noise and the medians it was judged by) and table_pulsar_decisions (table_pulsar_decisions.csv). search_frame and noise_map belong to frames,
+(frame_noise.csv: each frame's noise and the medians it was judged by) and table_pulsar_decisions (table_pulsar_decisions.csv);
+search_table_record (search_table_record.csv: every verdict of the search's bright-source table, its inputs and whether it was
+applied; production exopipe 55b0263). search_frame and noise_map belong to frames,
 master_catalog to masters; the search step runs their tests through the registry when they exist.
 
 Every test reads the file's CONTENT and works with no context: siblings are found from the path in the attempt layout
@@ -55,6 +57,9 @@ VETO_REASON_PREFIXES = {'jupiter-track:': re.compile(r'^\d{4}-\d\d-\d\d$')}
 FNOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'admitted', 'population', 'tblnoise_jy', 'vsanmed_jy', 'vsanity_x',
                'attempt']
 TPD_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'cut', 'note']
+# the search-time bright-source table's record (deep_search.STR_COLS; production exopipe 55b0263, 2026-10-18)
+STR_COLS = ['lst', 'scope', 'stokes', 'date', 'ra', 'dec', 'pix_x', 'pix_y', 'snr', 'verdict', 'note', 'frame_rms_jy', 'beam_deg',
+            'applied']
 
 
 def known_veto_reason(v):
@@ -632,6 +637,76 @@ def named_and_ledgered(path, **ctx):
     if probs:
         return _fail(probs, len(rows))
     return True, len(rows), f'{len(rows)} decisions, {sum(r["cut"] == "1" for r in rows)} cut'
+
+
+# ---- the search-time bright-source table's record (production exopipe 55b0263) ----------------------------------------------
+@content_test('search_table_record')
+def verdicts_applied_as_ruled(path, tier='deep', **ctx):
+    """search_table_record.csv (deep_search.STR_COLS; production exopipe 55b0263, the refactor chat's 2026-10-18 decision):
+    every verdict of the search's bright-source table with the inputs it was given. STR_COLS; one cell; Stokes I/V, a night of
+    the epoch grammar, verdict and applied 0/1; a cut verdict carries the table's cut note ('table: parent S=...', not an
+    exemption) and positive inputs, a kept one no note or an exemption's; applied as the attempt was searched - deep under
+    production's rules 0 (record-only: the publish conformance applies the table once, with its derivation inputs), deep under
+    the B-02 rules ('once-in-search', the attempt's search_rules.json) 1 (the search is the table's one application), the
+    10-minute tier (tier 'sublst') 1; every row has its detection's gate-ledger row, and on the nights the record holds the
+    ledger's 'table' rows are exactly its applied cut verdicts (Stokes, night, pixel; an append's base searched before the
+    record existed has ledger rows the record cannot hold)."""
+    import collections
+    cols, rows = _rows(path)
+    if cols != STR_COLS:
+        return False, len(rows), f'header != STR_COLS: {cols[:6]}...'
+    probs = []
+    cells = sorted({(r['lst'], r['scope']) for r in rows})
+    if len(cells) > 1:
+        probs.append(f'{len(cells)} cells in one record: {cells[:3]}')
+    want = '1' if tier == 'sublst' else None
+    att = attempt_of(path)
+    if want is None and att:
+        from exopipe.phase3.lib.search import removal_rules as RR
+        try:
+            want = '1' if RR.attempt_rules(att)['rules'] == 'once-in-search' else '0'
+        except RuntimeError as e:
+            probs.append(str(e))
+    applied_cuts, nights = collections.Counter(), set()
+    for r in rows:
+        k = f'{r["stokes"]} {r["date"]} ({r["pix_x"]},{r["pix_y"]})'
+        if (r['stokes'] not in ('I', 'V') or not _DATE.match(r['date']) or r['verdict'] not in ('0', '1')
+                or r['applied'] not in ('0', '1')):
+            probs.append(f'{k}: bad Stokes / night / verdict / applied ({r["verdict"]!r}, {r["applied"]!r})')
+            continue
+        nights.add((r['stokes'], r['date']))
+        cut_note = 'table: parent S=' in r['note'] and 'table-exempt' not in r['note']
+        if r['verdict'] == '1' and not (cut_note and _f(r['frame_rms_jy']) > 0 and _f(r['beam_deg']) > 0):
+            probs.append(f'{k}: a cut verdict without the table\'s cut note or with non-positive inputs ({r["note"][:60]!r}, '
+                         f'rms {r["frame_rms_jy"]!r}, beam {r["beam_deg"]!r})')
+        if r['verdict'] == '0' and r['note'] and 'table-exempt' not in r['note']:
+            probs.append(f'{k}: kept with a note that is not an exemption ({r["note"][:60]!r})')
+        if want is not None and r['applied'] != want:
+            probs.append(f'{k}: applied {r["applied"]}, the attempt\'s rules apply {want}')
+        if r['verdict'] == '1' and r['applied'] == '1':
+            applied_cuts[(r['stokes'], r['date'], r['pix_x'], r['pix_y'])] += 1
+    if not rows:
+        probs.append('empty (the engine writes the file only with a verdict)')
+    rd = run_dir_of(path)
+    led = os.path.join(rd, 'v_deep_ledger.csv') if rd else None
+    if led and os.path.exists(led):
+        keys, table = set(), collections.Counter()
+        for x in _rows(led)[1]:
+            kx = (x['stokes'], x['date'], x['pix_x'], x['pix_y'])
+            keys.add(kx)
+            if x['veto_reason'] == 'table' and (x['stokes'], x['date']) in nights:
+                table[kx] += 1
+        miss = [r for r in rows if (r['stokes'], r['date'], r['pix_x'], r['pix_y']) not in keys]
+        if miss:
+            probs.append(f'{len(miss)} verdicts without their detection\'s gate-ledger row, e.g. '
+                         f'{[(r["stokes"], r["date"], r["pix_x"], r["pix_y"]) for r in miss[:3]]}')
+        if table != applied_cuts:
+            probs.append(f'the ledger\'s \'table\' rows ({sum(table.values())}) are not the record\'s applied cuts '
+                         f'({sum(applied_cuts.values())}): e.g. {sorted((table - applied_cuts) + (applied_cuts - table))[:3]}')
+    if probs:
+        return _fail(probs, len(rows))
+    return True, len(rows), (f'{len(rows)} verdicts, {sum(r["verdict"] == "1" for r in rows)} cut, '
+                             f'{sum(r["applied"] == "1" for r in rows)} applied')
 
 
 # ---- candidate stamps -------------------------------------------------------------------------------------------------------

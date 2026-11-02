@@ -1189,8 +1189,8 @@ def products(root, plan):
     rr = _run_root(root, label)
     out = []
     for name, cls in (('master_catalog.csv', 'detections'), ('v_deep_ledger.csv', 'gate_ledger'),
-                      ('v_deep_images.csv', 'image_ledger')):
-        p = os.path.join(rr, name)
+                      ('v_deep_images.csv', 'image_ledger'), ('search_table_record.csv', 'search_table_record')):   # the table's
+        p = os.path.join(rr, name)                                                                                # record: 55b0263
         if os.path.exists(p):
             out.append((p, cls, unit))
     for p in sorted(glob.glob(os.path.join(rr, 'refusals', '*_excluded.csv'))):

@@ -1092,6 +1092,9 @@ def outputs_of(item, ctx, f, fit_csv=None):
         p = os.path.join(rd, name)
         if os.path.exists(p):
             out.append((p, cls, {}))
+    p = os.path.join(rd, 'search_table_record.csv')       # every verdict of the search's table (production exopipe 55b0263)
+    if os.path.exists(p):
+        out.append((p, 'search_table_record', dict(tier=TIER)))
     for p in sorted(glob.glob(os.path.join(rd, 'refusals', f'{cell}_*_excluded.csv'))):
         out.append((p, 'refusal_record', {}))
     if os.path.isdir(os.path.join(rd, 'candidates')):
