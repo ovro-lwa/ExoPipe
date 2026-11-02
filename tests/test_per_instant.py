@@ -3,18 +3,28 @@
 R-GREGG-20261018-VETOES-PER-FRAME-INDEPENDENTLY / -REFINED-FREQUENCY-YES-TIME-NO: a veto measured at one instant removes that
 instant's detections in any band and Stokes, never another instant's, never another tier's).
 
-  kinds       every removal reason production writes has a declared kind and instant; an undeclared one has none
+  kinds       the reason grammar READ from the writers (lib/search/removal_rules.py, parent_curve_table.py): the reasons
+              removal_rules' own functions write classify to their kinds, every template rendered classifies to its kind,
+              a reason that adds words to a template ('... of night 2025-01-03') matches none - whole or cut at 160
+              characters; the module's mirrors of emit_rejected_record.py (the 160-character cut) and p3s2_frames.py (the
+              deep masters) are drift-checked against production
   deep        a synthetic deep conformance record: T1 tier, T2 undeclared reason, T3 the Jupiter track naming another night
-              (the master's imprint while the deep masters hold Jupiter; refused when they carry the mask), T4 a pulsar group
-              bounded by its instant's detections (refused when its n exceeds them), and exactly through a group record
-  sublst      the 10-minute record: a track removal naming another night refused, a window that is not a window refused
-  rejected    rejected.csv (reason cut at 160 characters): a pulsar group needs a second detection of its own window
+              decided by the master's own header (unmasked: the imprint; JUPMASK or a jupmask COADDOP: refused; a master
+              newer than the record or none: the tier rule, said so), T4 a pulsar group bounded by its instant's detections
+              (refused when its n exceeds them), and exactly through a group record
+  sublst      the 10-minute record: a track removal naming another night decided by the searched frame's JUPMASK (masked:
+              refused; unmasked: the imprint; no frame record: the tier rule, masked - refused), a window that is not a
+              window refused, the night-keyed noise test refused
+  rejected    rejected.csv (reason cut at 160 characters): a cut template matches, a cut probe does not; a pulsar group
+              needs a second detection of its own window
+  fork        the deep multiples fork: EVERY record (master_catalog_removed.csv, each run's _<tag>.csv, subdirectories,
+              rowline_removed.csv) judged - an undeclared reason in the validity run's _A record refuses (the review probe)
   snapshot    a synthetic chain run: per-instant record passes; a detection removed although its own instant passed, a member
               of another instant / tier, a count mismatch, a missing record, and source-level vetoes (before clv15 99fe3ea)
               each refuse; the tests are registered on their classes (conformant_catalog, rejected_record, snapshot_run)
-  real        READ-ONLY on served products of every tier: deep Run_P3S5 (and its multiples fork), 10-minute Run_SLST07B
-              rejected.csv and the 14h compare copy, snapshot Run_SNAPB6H_20261023 (10-s and 1-minute) pass; the source-level
-              batch Run_SNAPB2A_20261014 refuses
+  real        READ-ONLY on served products of every tier: deep Run_P3S5 (and every record of its multiples fork), 10-minute
+              Run_SLST07B rejected.csv and the 14h compare copy, snapshot Run_SNAPB6H_20261023 (10-s and 1-minute) pass; the
+              source-level batch Run_SNAPB2A_20261014 refuses
 
 Scratch: /tmp/exopipe3_tests_per_instant/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_per_instant.py [test_name ...]
@@ -23,6 +33,7 @@ import csv
 import gzip
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -33,6 +44,7 @@ os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 os.environ.setdefault('EXOPIPE3_SITE', '/lustre/gh/main/exopipe_ops/exopipe3_site.py')
 SCRATCH = '/tmp/exopipe3_tests_per_instant'
 PSR = 'PSR J0218+4232'                      # a pulsar of catalog.PULSARS_CSV (its position is read from the file)
+PROBE = ' of night 2025-01-03'              # words naming another instant, added to a template (the review's probe)
 
 
 def _fresh(name):
@@ -55,23 +67,64 @@ def _PI():
     return PI
 
 
+def _RR():
+    from exopipe.phase3.lib.search import removal_rules as RR
+    return RR
+
+
 def _psr_pos():
     return _PI().pulsar_positions()[PSR]
 
 
-# production's words (ops/p3s2_conform.py; lib/search/removal_rules.pulsar_consistency)
-R_TABLE = 'per-band per-Stokes table: [el50-90] table: parent S=86 at 0.54 bw (image-pixel) < 1.25 (bin 60-100) (Gregg 2026-09-05/06)'
-R_ELEV = 'elevation 24.4 deg at mid-hour < the deep floor 25 deg (Gregg 2026-10-06)'
-R_DAY = 'daytime: Sun -7.7 to 4.0 deg over the frame (solar gate 2026-09-26/27)'
+# ---- reasons from the writers' own templates (never hand-written) ---------------------------------------------------
+_SAMPLES = ('el50-90', '2025-01-02', PSR, 'flare_ucd:CV Com [GCVS:UV]', 'V', '5', '1.0', '1.00', '1.000', '1.25')
+
+
+def render(node, vals=None, opt=True):
+    """A reason of a template tree (tests_per_instant.reason_templates): named fields from ``vals``, the others the first
+    sample their pattern takes; optional parts in (``opt``) or out; the first alternative."""
+    vals = vals or {}
+    k = node[0]
+    if k == 'lit':
+        return node[1]
+    if k == 'pat':
+        if node[3] and node[3] in vals:
+            return vals[node[3]]
+        for c in _SAMPLES:
+            if re.fullmatch(node[1], c):
+                return c
+        raise AssertionError(f'no sample for the field pattern {node[1]}')
+    if k == 'seq':
+        return ''.join(render(x, vals, opt) for x in node[1])
+    if k == 'opt':
+        return render(node[1], vals, opt) if opt else ''
+    return render(node[1][0], vals, opt)
+
+
+def templates():
+    return {kind: node for kind, _i, _t, node in _PI().reason_templates()}
+
+
+def r_table():
+    return render(templates()['table'])
+
+
+def r_psr(n, bare=False):
+    """A pulsar-group removal of PSR with n members (production's conformance wraps the group's words in the table reason;
+    the B-02 pulsar stage writes them bare)."""
+    return render(templates()['pulsar-group'][1][1 if bare else 0], {'pulsar': PSR, 'n': str(n), 'sep': '730', 'r99': '365'})
 
 
 def r_jup(night):
-    return f'jupiter-track: within 5.0 deg of Jupiter on co-added night {night} (Gregg 2026-09-18)'
+    return _RR().jupiter_track_reason(10.0, 20.0, 'Red', [(10.0, 20.0, night)])
 
 
-def r_psr(n, prefix='per-band per-Stokes table: '):
-    return (f'{prefix}table: multi-detection source inconsistent with {PSR} - 730 arcsec from its combined position, outside the '
-            f'99% radius 365 arcsec (n={n}): background (Gregg 2026-09-28; was: [el50-90] table: parent S=86 at 0.54 bw)')
+def r_elev():
+    return _RR().elevation_reason(24.4, 'at mid-hour', floor=25.0)
+
+
+def r_day():
+    return render(templates()['daytime'])
 
 
 CAT = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'ra', 'dec', 'snr']
@@ -99,30 +152,92 @@ def near(cand_id, date, k=0, cadence='deep'):
                 dec=f'{pdec:.5f}', snr='6')
 
 
+def fits_file(path, **cards):
+    """A tiny FITS image whose primary header carries ``cards`` (a master or a searched frame)."""
+    import numpy as np
+    from astropy.io import fits
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    h = fits.Header()
+    for k, v in cards.items():
+        h[k] = v
+    fits.writeto(path, np.zeros((4, 4), 'float32'), h, overwrite=True)
+    return path
+
+
+def age(path, seconds):
+    """Set a file's modification time ``seconds`` before now (a master older than the record)."""
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 
 def test_kinds():
-    PI = _PI()
-    for reason, kind in ((R_TABLE, 'table'), (R_ELEV, 'elevation floor'), (R_DAY, 'daytime'), (r_jup('2024-12-18'), 'jupiter-track'),
-                         (r_psr(2), 'pulsar-group'), (r_psr(2, prefix=''), 'pulsar-group'), (r_psr(2)[:160], 'pulsar-group'),
-                         ('twilight in a solar-audit QUARANTINE band: Sun to -5.9 deg (solar gate 2026-09-26/27)', 'twilight'),
-                         ('excluded epoch (data_decisions at publish time; CLAUDE.md S2)', 'excluded epoch'),
-                         ('duplicate (cell executed twice, audit R-07)', 'duplicate'),
-                         ('epoch refused: V frame noise > 3x cell median (Gregg 2026-09-05)', 'noise sanity'),
-                         ('row-line: >= 5 finals of this epoch on one pixel row (Gregg 2026-09-05)', 'row-line'),
-                         ('no final gate-ledger verdict (crashed attempt, audit R-08)', 'no ledger verdict'),
-                         ('gaussfit size 2.61 beams > 2.5 above 8.0 sigma (Gregg 2026-09-04)', 'size'),
-                         ('axis ratio 2.3 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)', 'axis ratio')):
-        assert PI.reason_kind(reason)[0] == kind, (reason, PI.reason_kind(reason))
-    assert PI.reason_kind('lobe of another night removed it') == (None, None)
-    noise = 'epoch refused: V frame noise > 3x cell median (Gregg 2026-09-05)'     # keyed by night: the deep instant only
-    assert PI.reason_kind(noise, 'deep') == ('noise sanity', 'own') and PI.reason_kind(noise, 'sublst') == ('noise sanity', None)
-    assert PI.own_instant('deep', '05h', '2025-01-02') == ('05h', '2025-01-02') and PI.own_instant('deep', '05h', '2025-01-02T00') is None
-    assert PI.own_instant('sublst', '05h', '2025-01-02T03') == ('05h', '2025-01-02T03') and PI.own_instant('sublst', '05h', '2025-01-02') is None
-    assert PI._parse_member('c 55MHz 20241228_132443') == ('c', '55MHz', '10s', '20241228_132443')
-    assert PI._parse_member('c 64MHz 1min 20241228_132700') == ('c', '64MHz', '1min', '20241228_132700')
-    assert PI._parse_member('c 64MHz I 1min 20241228_132700') == ('c', '64MHz', '1min', '20241228_132700')
-    assert PI._parse_member('') is None
+    """The grammar is the writers' own (ast of removal_rules.py / parent_curve_table.py): their functions' reasons classify,
+    every template renders to its kind, added words match nothing (whole or cut); the mirrors are drift-checked."""
+    PI, RR = _PI(), _RR()
+    T = templates()
+    assert set(T) == {'pulsar-group', 'table', 'duplicate', 'excluded epoch', 'elevation floor', 'daytime', 'twilight',
+                      'daytime unreadable', 'jupiter-track', 'noise sanity', 'row-line', 'no ledger verdict', 'size',
+                      'axis ratio'}, sorted(T)
+    # the reasons removal_rules' own functions and constants write
+    _cols, size = RR.size_axis({'size_beams': '3.0', 'snr': '9', 'axis_ratio': '', 'axis_norm': ''}, size_step=True)
+    _cols, axis = RR.size_axis({'size_beams': '1.0', 'snr': '9', 'axis_ratio': '', 'axis_norm': '2.5'}, size_step=True)
+    written = {'elevation floor': [RR.elevation_reason(24.4, 'at mid-hour', floor=25.0),
+                                   RR.elevation_reason(20.0, 'at the frame mid-time', floor=25.0)],
+               'jupiter-track': [r_jup('2024-12-18')], 'noise sanity': [RR.noise_reason('V'), RR.noise_reason('I')],
+               'row-line': [RR.rowline_reason(10.0, 20.0, [(10.0, 20.0)])], 'size': [size], 'axis ratio': [axis],
+               'duplicate': [RR.DUPLICATE], 'excluded epoch': [RR.EXCLUDED], 'no ledger verdict': [RR.UNBACKED],
+               'daytime unreadable': [RR.DAYTIME_UNREADABLE]}
+    for kind, reasons in written.items():
+        for r in reasons:
+            assert r and PI.reason_kind(r)[0] == kind, (kind, r, PI.reason_kind(r))
+            for probe in (r[:-1] + PROBE + r[-1:], r + PROBE, PROBE.strip() + ': ' + r):
+                assert PI.reason_kind(probe) == (None, None), (kind, probe)
+    # every template, rendered with and without its optional parts, classifies to its kind; with the probe to nothing
+    for kind, node in T.items():
+        for opt in (True, False):
+            r = render(node, opt=opt)
+            assert PI.reason_kind(r)[0] == kind, (kind, opt, r)
+            assert PI.reason_kind(r[:-1] + PROBE + r[-1:]) == (None, None), (kind, r)
+    # production's own reasons: the noise test is declared for the deep instant only; the bare B-02 pulsar-group words
+    assert PI.reason_kind(RR.noise_reason('V'), 'deep') == ('noise sanity', 'own')
+    assert PI.reason_kind(RR.noise_reason('V'), 'sublst') == ('noise sanity', None)
+    assert PI.reason_kind(r_psr(3, bare=True)) == ('pulsar-group', 'pulsar-group') == PI.reason_kind(r_psr(3))
+    assert PI.reason_kind(RR.table_reason(render(T['table'][1][1]))) == ('table', 'own')     # table_reason(note), as written
+    # a reason cut at 160 characters (rejected.csv) matches a template's prefix; a cut probe does not
+    long = r_psr(2)
+    assert len(long) > PI.REJECTED_REASON_CHARS
+    cut = long[:PI.REJECTED_REASON_CHARS]
+    assert PI.reason_kind(cut) == (None, None) and PI.reason_kind(cut, truncated=True) == ('pulsar-group', 'pulsar-group')
+    probe = (long[:40] + PROBE + long[40:])[:PI.REJECTED_REASON_CHARS]
+    assert PI.reason_kind(probe, truncated=True) == (None, None), probe
+    # the mirrors of production text: emit_rejected_record.py's cut, p3s2_frames.master_path's masters
+    from exopipe.phase3.core import env
+    ops = env.legacy_root('exopipe_ops')
+    m = re.search(r"veto=\(r\.get\('removal_reason'\) or 'removed'\)\[:(\d+)\]", open(os.path.join(ops, 'emit_rejected_record.py')).read())
+    assert m and int(m.group(1)) == PI.REJECTED_REASON_CHARS, m
+    fr = open(os.path.join(ops, 'p3s2_frames.py')).read()
+    assert (f"f'{PI.DEEP_MASTERS['I']}' if stokes == 'I'" in fr and f"else f'{PI.DEEP_MASTERS['V']}'" in fr), 'p3s2_frames drift'
+    # a writer whose template changed (a field without a declared pattern) refuses - it never classifies by guess
+    tree = PI._tree('removal_rules')
+    old = PI._TREES['removal_rules']
+    try:
+        import ast
+        src = open(PI.WRITERS['removal_rules']).read().replace("{_cc().ROWLINE_MIN} finals", "{_cc().ROWLINE_NEW} finals")
+        PI._TREES['removal_rules'] = (old[0], ast.parse(src))
+        PI._GRAMMAR.clear()
+        try:
+            PI.reason_templates()
+            raise AssertionError('a template field without a pattern was accepted')
+        except PI.TemplateError as e:
+            assert 'ROWLINE_NEW' in str(e), e
+        ok, val, det = PI.check_removals('deep', [dict(id='x', lst='05h', date='2025-01-02', cadence='deep', reason=r_elev())])
+        assert not ok and 'cannot be read from the writers' in det, det
+    finally:
+        PI._TREES['removal_rules'] = old
+        PI._GRAMMAR.clear()
+    assert tree is PI._tree('removal_rules')
 
 
 def test_deep():
@@ -130,53 +245,61 @@ def test_deep():
     PI = _PI()
     root = _fresh('deep')
     own = '2025-01-02'
-    removed = [dict(cand_id='VD_05h_2025-01-02_Red_0002', date=own, reason=R_TABLE),
-               dict(cand_id='VD_05h_2025-01-02_Red_0003', date=own, reason=R_ELEV),
+    # the deep masters of the record's cell: the co-add root of 05h_Red -> coadd_final/<DEEP_MASTERS>
+    roots = os.path.join(root, 'roots.csv')
+    with open(roots, 'w') as f:
+        f.write(f"05h_Red,,{os.path.join(root, 'coadd')}\n")
+    mV = fits_file(os.path.join(root, 'coadd', '05h_Red', 'coadd_final', PI.DEEP_MASTERS['V'].format(band='Red')),
+                   COADDOP='ivw-mean-v3')
+    age(mV, 3600)
+    removed = [dict(cand_id='VD_05h_2025-01-02_Red_0002', date=own, reason=r_table()),
+               dict(cand_id='VD_05h_2025-01-02_Red_0003', date=own, reason=r_elev()),
                dict(cand_id='VD_05h_2025-01-02_Red_0004', date=own, reason=r_jup('2024-12-18'), jupiter_track_night='2024-12-18'),
                dict(cand_id='VD_05h_2025-01-02_Red_0005', date=own, reason=r_jup(own))]
     p = make_conform(root, 'deep', removed)
-    ok, val, det = PI.conform_per_instant(p)
-    assert ok and val == 4 and '1 as the master\'s imprint' in det, (ok, det)
-    names = {r['name']: r for r in validate.run('conformant_catalog', p)}
+    ok, val, det = PI.conform_per_instant(p, deep_roots_csv=roots)
+    assert ok and val == 4 and "1 as the master's imprint (unmasked by the product's own files 1, by the tier rule 0)" in det, det
+    names = {r['name']: r for r in validate.run('conformant_catalog', p, deep_roots_csv=roots)}
     assert names['conformant_catalog.per_instant']['passed'], names['conformant_catalog.per_instant']
-    # T3: with masters that carry the moving Jupiter mask, the other night's Jupiter is a veto across time
-    rows = [dict(id=x['cand_id'], lst='05h', date=x['date'], cadence='deep', reason=x['reason'],
-                 jupiter_night=x.get('jupiter_track_night', '')) for x in removed]
-    ok, val, det = PI.check_removals('deep', rows, imprint=False)
-    assert not ok and 'T3 VD_05h_2025-01-02_Red_0004' in det and 'night 2024-12-18' in det and 'Red_0005' not in det, det
+    # T3 keyed on the master's own header: a master carrying the moving mask (JUPMASK, or a jupmask COADDOP) refuses
+    for cards in ({'COADDOP': 'ivw-mean-v3', 'JUPMASK': 120.0}, {'COADDOP': 'ivw-mean-v3-jupmask'}):
+        fits_file(mV, **cards)
+        age(mV, 3600)
+        ok, val, det = PI.conform_per_instant(p, deep_roots_csv=roots)
+        assert not ok and 'T3 VD_05h_2025-01-02_Red_0004' in det and 'night 2024-12-18' in det and 'Red_0005' not in det, det
+    # a master NEWER than the record is not the product's own (a later rebuild): the tier rule decides, and says so
+    fits_file(mV, COADDOP='ivw-mean-v3', JUPMASK=120.0)
+    age(mV, -3600)
+    ok, val, det = PI.conform_per_instant(p, deep_roots_csv=roots)
+    assert ok and 'by the tier rule 1' in det, det
+    # no master at all: the tier rule (deep: unmasked); the configuration is never read (a flip cannot change a retest)
+    os.remove(mV)
+    ok, val, det = PI.conform_per_instant(p, deep_roots_csv=roots)
+    assert ok and 'by the tier rule 1' in det, det
+    import inspect
+    assert 'JUPITER_MASK_DEEP' not in inspect.getsource(PI), 'the per-instant test reads the masters configuration'
     # T2 undeclared reason, T1 a 10-minute row in the deep record and a deep row without a night
-    ok, val, det = PI.conform_per_instant(make_conform(_fresh('deep_t12'), 'deep', removed + [
-        dict(cand_id='VD_05h_2025-01-02_Red_0006', date=own, reason='negative lobe measured on 2025-01-03'),
-        dict(cand_id='V1_05h_2025-01-02T00_Red_0007', date='2025-01-02T00', reason=R_TABLE, cadence='10min'),
-        dict(cand_id='VD_05h_x_Red_0008', date='', reason=R_TABLE)]))
-    assert not ok and val == 3 and 'T2 VD_05h_2025-01-02_Red_0006' in det and 'T1 V1_05h_2025-01-02T00_Red_0007' in det \
-        and 'T1 VD_05h_x_Red_0008' in det, det
+    ok, val, det = PI.conform_per_instant(make_conform(_fresh('deep_t12'), 'deep', removed[:3] + [
+        dict(cand_id='VD_05h_2025-01-02_Red_0006', date=own, reason='negative lobe measured on night 2025-01-03'),
+        dict(cand_id='VD_05h_2025-01-02_Red_0016', date=own, reason=r_table()[:-1] + PROBE + ')'),
+        dict(cand_id='V1_05h_2025-01-02T00_Red_0007', date='2025-01-02T00', reason=r_table(), cadence='10min'),
+        dict(cand_id='VD_05h_x_Red_0008', date='', reason=r_table())]), deep_roots_csv=roots)
+    assert not ok and val == 4 and 'T2 VD_05h_2025-01-02_Red_0006' in det and 'T2 VD_05h_2025-01-02_Red_0016' in det \
+        and 'T1 V1_05h_2025-01-02T00_Red_0007' in det and 'T1 VD_05h_x_Red_0008' in det, det
     # T4 as-run bound: the removed row and one more detection of ITS night near the pulsar (n=2) pass; n=4 with the two
     # other members on other nights refuses (a group across nights decided the removal)
     pg = dict(near('VD_05h_2025-01-02_Red_0009', own), reason=r_psr(2))
     extra = [near('VD_05h_2025-01-02_Red_0010', own, 1), near('VD_05h_2025-01-03_Red_0001', '2025-01-03', 2),
              near('VD_05h_2025-01-04_Red_0001', '2025-01-04', 3),
              dict(near('VD_05h_2025-01-02_Red_0011', own, 4), cand_id='VD_05h_2025-01-02_Red_0011')]
-    day = dict(near('VD_05h_2025-01-02_Red_0011', own, 4), reason=R_DAY)      # in the as-run, never in a group
+    day = dict(near('VD_05h_2025-01-02_Red_0011', own, 4), reason=r_day())      # in the as-run, never in a group
     ok, val, det = PI.conform_per_instant(make_conform(_fresh('deep_t4'), 'deep', [pg, day], extra[:4]))
     assert ok and '1 (as-run bound)' in det, det
     ok, val, det = PI.conform_per_instant(make_conform(_fresh('deep_t4x'), 'deep', [dict(pg, reason=r_psr(4)), day], extra[:4]))
     assert not ok and 'T4 VD_05h_2025-01-02_Red_0009' in det and 'has 4 members' in det and 'holds 2 detection(s)' in det, det
     ok, val, det = PI.conform_per_instant(make_conform(_fresh('deep_t4y'), 'deep', [dict(pg, reason=r_psr(3)), day], extra[:4]))
     assert not ok and 'holds 2 detection(s)' in det, det                           # the daytime row does not count
-    # the multiples fork's own conformance record (<run>/fork_<S>/), judged for its catalogue directory (fork_catalog)
-    run = _fresh('deep_fork')
-    os.makedirs(os.path.join(run, 'fork_V'))
-    os.makedirs(os.path.join(run, 'source_catalogs_V_fsb'))
-    make_conform(os.path.join(run, 'fork_V'), 'deep', removed)
-    ok, val, det = PI.fork_per_instant(os.path.join(run, 'source_catalogs_V_fsb'))
-    assert ok and val == 4, det
-    make_conform(os.path.join(run, 'fork_V'), 'deep', removed + [dict(cand_id='VD_05h_2025-01-02_Red_0012', date=own,
-                                                                      reason='repeat class vetoed by another night')])
-    ok, val, det = PI.fork_per_instant(os.path.join(run, 'source_catalogs_V_fsb'))
-    assert not ok and 'T2 VD_05h_2025-01-02_Red_0012' in det, det
-    assert not PI.fork_per_instant(os.path.join(run, 'fork_V'))[0]          # not a fork catalogue directory
-    # T4 exactly, through the pulsar stage's group record (B-02 check: pulsar_groups.csv)
+    # T4 exactly, through the pulsar stage's group record (B-02 check: pulsar_groups.csv; the stage writes the words bare)
     from exopipe.phase3.lib.catalog import conform_check as CC
     gcols = CC.PULSAR_GROUP_COLS
     for name, groups, want in (
@@ -189,33 +312,52 @@ def test_deep():
                                                               'VD_05h_2025-01-03_Red_0001', sep_arcsec=730, r99_arcsec=365,
                                                               consistent=0, grouping='per-epoch')], False)):
         d = _fresh('deep_groups')
-        p = make_conform(d, 'deep', [dict(pg, reason=r_psr(2, prefix=''))], extra[:2])
+        p = make_conform(d, 'deep', [dict(pg, reason=r_psr(2, bare=True))], extra[:2])
         _wcsv(os.path.join(d, CC.PULSAR_GROUPS), gcols, groups)
         ok, val, det = PI.conform_per_instant(p)
         assert ok == want and ('(group record)' in det), (name, det)
 
 
 def test_sublst():
+    """10-minute: T3 reads the searched frame's JUPMASK through the window tree's frames.csv (as the conformance does)."""
     PI = _PI()
     w = '2025-01-02T03'
-    removed = [dict(cand_id=f'V1_05h_{w}_Red_0001', date=w, reason=R_TABLE),
+    root = _fresh('sublst')
+    tree = os.path.join(root, 'tenmin_root_x2')
+    frame = fits_file(os.path.join(tree, '05h_Red', 'subtracted', f'{w}_V_sub_Red.fits'), JUPMASK=68.98)
+    age(frame, 3600)
+    _wcsv(os.path.join(tree, '05h_Red', 'frames.csv'), ['key', 'date', 'bin', 'stokes', 'src', 'sub_path'],
+          [dict(key=w, date=w[:10], bin='3', stokes='V', src='', sub_path=frame)])
+    removed = [dict(cand_id=f'V1_05h_{w}_Red_0001', date=w, reason=r_table()),
                dict(cand_id=f'V1_05h_{w}_Red_0002', date=w, reason=r_jup('2025-01-02')),       # its own night: own instant
                dict(cand_id=f'V1_05h_{w}_Red_0003', date=w, reason=r_jup('2025-01-05'))]
-    p = make_conform(_fresh('sublst'), 'sublst', removed)
-    ok, val, det = PI.conform_per_instant(p, tier='sublst')
-    assert not ok and val == 1 and f'T3 V1_05h_{w}_Red_0003' in det and 'moving Jupiter mask' in det, det
-    ok, val, det = PI.conform_per_instant(make_conform(_fresh('sublst2'), 'sublst', removed[:2]))
-    assert ok and 'of the sublst record' in det, det                               # the tier from the cadence column
+    p = make_conform(_fresh('sublst_rec'), 'sublst', removed)
+    ok, val, det = PI.conform_per_instant(p, tier='sublst', tenmin_tree=tree)
+    assert not ok and val == 1 and f'T3 V1_05h_{w}_Red_0003' in det and 'JUPMASK 68.98' in det, det
+    # a searched frame without the mask (production keeps the track there): the master's imprint
+    fits_file(frame, COADDOP='sublst-ivw-window-mean-v1')
+    age(frame, 3600)
+    ok, val, det = PI.conform_per_instant(p, tenmin_tree=tree)
+    assert ok and 'unmasked by the product\'s own files 1' in det and 'of the sublst record' in det, det
+    # no record of the frame: the tier rule (the window masters carry the moving mask) refuses, and says so
+    ok, val, det = PI.conform_per_instant(p, tenmin_tree=os.path.join(root, 'nowhere'))
+    assert not ok and 'the tier rule: RULING-MOVING-JUPITER-MASK-IN-MASTERS' in det, det
+    # the window tree from the record's own run name (Run_SLST<hh><arm>) - here no such name: unknown, the tier rule
+    ok, val, det = PI.conform_per_instant(p)
+    assert not ok and 'names no 10-minute arm' in det, det
+    run = os.path.join(_fresh('sublst_run'), 'Run_SLST05B')
+    os.makedirs(run)
+    assert PI._tenmin_tree(os.path.join(run, 'rejected.csv')).endswith('/tenmin_root_x2')
     ok, val, det = PI.conform_per_instant(make_conform(_fresh('sublst3'), 'sublst', [dict(removed[0], date='2025-01-02')]))
     assert not ok and 'is not a sublst instant' in det, det
     ok, val, det = PI.conform_per_instant(make_conform(_fresh('sublst4'), 'sublst', [dict(
-        removed[0], reason='epoch refused: V frame noise > 3x cell median (Gregg 2026-09-05)')]))
+        removed[0], reason=_RR().noise_reason('V'))]))
     assert not ok and 'not declared for the sublst tier' in det, det        # the night-keyed noise test: across windows
 
 
 def test_rejected():
-    """rejected.csv cuts the reason at 160 characters (emit_rejected_record.py): the pulsar is read, n is not - a group needs a
-    second detection of the row's own window."""
+    """rejected.csv cuts the reason at 160 characters (emit_rejected_record.py): a cut template matches, a cut probe does
+    not; the pulsar is read, n is not - a group needs a second detection of the row's own window."""
     PI = _PI()
     w = '2025-01-02T03'
     root = _fresh('rejected')
@@ -223,11 +365,11 @@ def test_rejected():
     cols = ['veto', 'cell', 'subband', 'stokes', 'tier', 'ts', 'ra_deg', 'dec_deg', 'snr', 'pos_err_arcsec', 'cand_id', 'detail']
 
     def rej(cid, reason, date=w, ra=pra + 0.2):
-        return dict(veto=reason[:160], cell='05h_Red', subband='Red', stokes='V', tier='10min', ts='20250102_051000',
-                    ra_deg=f'{ra:.6f}', dec_deg=f'{pdec:.6f}', snr='7', pos_err_arcsec='60', cand_id=cid,
-                    detail=f'{cid} {date} peak 1.0 Jy')
-    rows = [rej(f'V1_05h_{w}_Red_0001', R_TABLE, ra=pra + 5.0), rej(f'V1_05h_{w}_Red_0002', r_psr(5))]   # the table row: far
-    assert '(n=' not in rows[1]['veto']
+        return dict(veto=reason[:PI.REJECTED_REASON_CHARS], cell='05h_Red', subband='Red', stokes='V', tier='10min',
+                    ts='20250102_051000', ra_deg=f'{ra:.6f}', dec_deg=f'{pdec:.6f}', snr='7', pos_err_arcsec='60',
+                    cand_id=cid, detail=f'{cid} {date} peak 1.0 Jy')
+    rows = [rej(f'V1_05h_{w}_Red_0001', r_table(), ra=pra + 5.0), rej(f'V1_05h_{w}_Red_0002', r_psr(5))]   # table row: far
+    assert '(n=' not in rows[1]['veto'] and len(rows[1]['veto']) == PI.REJECTED_REASON_CHARS
     _wcsv(os.path.join(root, 'rejected.csv'), cols, rows)
     _wcsv(os.path.join(root, 'master_catalog.csv'), CAT, [near(f'V1_05h_{w}_Red_0009', w, 1, '10min'),
                                                           near('V1_05h_2025-01-03T03_Red_0001', '2025-01-03T03', 2, '10min')])
@@ -236,10 +378,57 @@ def test_rejected():
     _wcsv(os.path.join(root, 'master_catalog.csv'), CAT, [near('V1_05h_2025-01-03T03_Red_0001', '2025-01-03T03', 2, '10min')])
     ok, val, det = PI.rejected_per_instant(os.path.join(root, 'rejected.csv'))
     assert not ok and 'at least (n cut from the record)' in det and 'holds 1 detection(s)' in det, det
+    # a cut reason that adds words before the cut is undeclared
+    long = r_psr(2)
+    _wcsv(os.path.join(root, 'rejected.csv'), cols, [rej(f'V1_05h_{w}_Red_0002', long[:30] + PROBE + long[30:])])
+    ok, val, det = PI.rejected_per_instant(os.path.join(root, 'rejected.csv'))
+    assert not ok and 'T2 V1_05h_' in det, det
     from exopipe.phase3.core import validate
     assert 'rejected_record.per_instant' in {r['name'] for r in validate.run('rejected_record', os.path.join(root, 'rejected.csv'))}
 
 
+def test_fork():
+    """The deep multiples fork: every record of fork_<S>/ is judged (the review's probe: an undeclared reason in the validity
+    run's master_catalog_removed_A.csv, which the next conformance run's master_catalog_removed.csv no longer shows)."""
+    PI = _PI()
+    run = _fresh('fork')
+    fd = os.path.join(run, 'fork_V')
+    os.makedirs(os.path.join(fd, 'members'))
+    os.makedirs(os.path.join(run, 'source_catalogs_V_fsb'))
+    own = '2025-01-02'
+    rem_b = [dict(cand_id='VD_05h_2025-01-02_Red_0002', date=own, reason=r_table())]
+    make_conform(fd, 'deep', rem_b)                                    # the table run B: its removed file is the last one
+    shutil.copy(os.path.join(fd, 'master_catalog_removed.csv'), os.path.join(fd, 'master_catalog_removed_B.csv'))
+    cols = CAT + ['removal_reason', 'jupiter_track_night']
+
+    def rec(cid, reason, date=own, cadence='deep'):
+        return dict(cand_id=cid, lst='05h', date=date, band='Red', stokes='V', cadence=cadence, ra='11.0', dec='21.0', snr='7',
+                    removal_reason=reason)
+    _wcsv(os.path.join(fd, 'master_catalog_removed_A.csv'), cols, [rec('VD_05h_2025-01-02_Red_0003', r_elev()),
+                                                                   rec('VD_05h_2025-01-02_Red_0004', r_day())])
+    _wcsv(os.path.join(fd, 'members', 'master_catalog_removed_A_members.csv'), cols, [rec('VD_05h_2025-01-02_Red_0005', r_day())])
+    _wcsv(os.path.join(fd, 'rowline_removed.csv'), CAT + ['rowline_pass'], [dict(rec('VD_05h_2025-01-02_Red_0006', ''),
+                                                                                  rowline_pass='pass1')])
+    cat = os.path.join(run, 'source_catalogs_V_fsb')
+    ok, val, det = PI.fork_per_instant(cat)
+    assert ok and val == 6 and '5 fork records judged' in det and 'rowline_removed.csv 1' in det, det
+    # the review's probe: an undeclared reason in the validity run's record (the last record does not show it) refuses
+    _wcsv(os.path.join(fd, 'master_catalog_removed_A.csv'), cols, [rec('VD_05h_2025-01-02_Red_0003', r_elev()),
+                                                                   rec('VD_05h_2025-01-02_Red_0007',
+                                                                       'negative lobe measured on night 2025-01-03')])
+    ok, val, det = PI.fork_per_instant(cat)
+    assert not ok and 'master_catalog_removed_A.csv: T2 VD_05h_2025-01-02_Red_0007' in det, det
+    # a 10-minute row in a fork record refuses (T1); a Jupiter track there is judged on the deep master (T3)
+    _wcsv(os.path.join(fd, 'master_catalog_removed_A.csv'), cols, [rec('V1_05h_2025-01-02T00_Red_0008', r_elev(),
+                                                                       date='2025-01-02T00', cadence='10min')])
+    ok, val, det = PI.fork_per_instant(cat)
+    assert not ok and 'T1 V1_05h_2025-01-02T00_Red_0008' in det, det
+    from exopipe.phase3.core import validate
+    assert 'fork_catalog.per_instant' in {r['name'] for r in validate.run('fork_catalog', cat)}
+    assert not PI.fork_per_instant(fd)[0]                                  # not a fork catalogue directory
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # ---------------------------------------------------------------------------------------------------------------------
 # snapshot runs
 # ---------------------------------------------------------------------------------------------------------------------
@@ -374,7 +563,7 @@ def test_real_products():
     print('    ' + '\n    '.join(report))
 
 
-TESTS = [test_kinds, test_deep, test_sublst, test_rejected, test_snapshot, test_real_products]
+TESTS = [test_kinds, test_deep, test_sublst, test_rejected, test_fork, test_snapshot, test_real_products]
 
 
 def main(argv):

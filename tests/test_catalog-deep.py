@@ -130,7 +130,9 @@ shutil.copy(f'{CD}/master_catalog.csv', f'{CD}/master_catalog_asrun.csv')
 out, rem = [], []
 for r in raw:
     if 'RMV' in r['cand_id']:
-        rem.append(dict(r, removal_reason='row-line: stub removal')); continue
+        # production's words for a row-line removal (ops/p3s2_conform.py; removal_rules.rowline_reason): the per-instant
+        # content test matches every removal reason whole against the writers' templates
+        rem.append(dict(r, removal_reason='row-line: >= 5 finals of this epoch on one pixel row (Gregg 2026-09-05)')); continue
     r = dict(r); r['fp_prediction'] = 'not-FP' if r['stokes'] == 'V' else ''; out.append(r)
 oc = cols + ['fp_prediction']
 wcsv(f'{CD}/master_catalog.csv', oc, out); wcsv(f'{CD}/master_catalog_removed.csv', oc + ['removal_reason'], rem)
