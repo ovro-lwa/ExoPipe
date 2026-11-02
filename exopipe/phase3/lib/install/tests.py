@@ -174,12 +174,20 @@ def rows_match_files(path, **ctx):
 @content_test('installed_cell', name='membership')
 def ic_membership(path, **ctx):
     """membership.verify (T8, part 1): every master night obeys the membership rulings; a night admitted into the master
-    is reported, not a violation (D-ADMIT, masters_admit.ADMITTED_NIGHTS: lib/masters/admit.verify), and so is a night held
-    only for its excluded 18 MHz (the 18 MHz exception, install.MASTER_HELD_18MHZ 'keep'; admit.verify keep_18)."""
+    is reported, not a violation (D-ADMIT, masters_admit.ADMITTED_NIGHTS: lib/masters/admit.verify), and so is, in a master
+    built before the 18 MHz enforcement, a night held only for its excluded 18 MHz (install.MASTER_HELD_18MHZ 'keep';
+    steps_common.keep_held_18). The setting is the one recorded with the output (ctx master_held_18mhz,
+    master_held_18mhz_built_before - --resume and verify re-test under it), else the config; the detail names it."""
     from exopipe.phase3.lib.masters import admit as AD
-    v, rep = AD.verify(os.path.abspath(path).rstrip('/'), keep_18=_SC().master_held_18() == 'keep')
+    SC = _SC()
+    p = os.path.abspath(path).rstrip('/')
+    rec = ctx.get('master_held_18mhz')
+    held = SC.master_held_18(rec)
+    keep, why = SC.keep_held_18(p, held, ctx.get('master_held_18mhz_built_before'))
+    v, rep = AD.verify(p, keep_18=keep)
+    how = f" [install.MASTER_HELD_18MHZ {held!r} ({'recorded' if rec else 'config'}): {why}]"
     return not v, len(v), (('membership rulings hold' + (f'; reported, not violations: {_short(rep, 3)}' if rep else ''))
-                           if not v else _short(v, 3))
+                           if not v else _short(v, 3)) + how
 
 
 @content_test('installed_cell', name='products')

@@ -33,7 +33,7 @@ class install(_Section):
     paths.PHASE3_ARCHIVE_ROOT, paths.ARCHIVE_RUN. With --out every write destination is re-rooted under --out (parity,
     scratch): <out>/coadd_sb, <out>/archive, <out>/working_quarantine_<round>, <out>/install_record.csv."""
     PROTECTED_KEYS = ('WORKING_QUARANTINE_FMT', 'ARCHIVE_QUARANTINE_FMT', 'RECORD_CSV', 'FREEZE_MARKER',
-                      'SNAPSHOT_MASTERS_LINK_TREE', 'PRODUCTION_LOCK')
+                      'SNAPSHOT_MASTERS_LINK_TREE', 'PRODUCTION_LOCK', 'MASTER_HELD_18MHZ_BUILT_BEFORE')
     # ---- archive layout (under paths.PHASE3_ARCHIVE_ROOT / paths.ARCHIVE_RUN)
     ARCHIVE_MASTERS_FMT = '{archive}/Coadd/{run}/{lst}/{scope}'          # PI literal (phase3_install.py:375); R-MASTERS-TOP-LEVEL-LIKE-MOSAICS (ledger 507), R-MASTERS-BESIDE-MOSAICS (549)
     ARCHIVE_NIGHT_GLOB = '{archive}/{lst}/*/{run}/{scope}/[IV]/deep/*.fits'  # PI literal; per-night deep files; phase3_install.py:393, :515
@@ -50,15 +50,20 @@ class install(_Section):
     FREEZE_MARKER = '/lustre/gh/main/exopipe_ops/mdewarp_rbf_20261004/SNAPSHOT_FREEZE_CONFIRMED'  # PROTECTED; G-1, phase3_install.py:68, :199-200; R-INSTALL-GATE-AND-SEARCH-PATCH-PATH (1789), GATE-SNAPSHOT-FREEZE-CONFIRMED-WRITTEN (1798)
     REQUIRE_FREEZE_MARKER = True                          # B-14: True = today (marker AND link scan); False = B-14 option (a), effective only after absorption (PI checks the marker unconditionally) and Gregg's answer
     # THE 18 MHz EXCEPTION in every membership check of the install (G-MEM before staging, V after the install, the content test
-    # installed_cell.membership): 'keep' (ruled) - a master night whose ONLY finding is that its Red / Full image holds the night's
-    # excluded 18 MHz is reported and kept until the master's next rebuild, never a violation: lib/masters/admit.verify(keep_18=True),
-    # the helper of the deep search's gate E3 (refactor f5bfaf0; search_detect.MASTER_HELD_18MHZ is the search's same choice).
-    # Gregg 2026-10-23: "No! The one exception to the exclusion rule is 18 MHz"; 2026-10-17: "Red can be built without 18 MHz ... the
-    # only allowed case where wideband data can be built without a full 5-subband set" (Full likewise), "enforce going forward, no
-    # rebuild now" - the co-add refuses such a night in every new build (coadd.admit_night), so only masters built before 2026-10-17
-    # hold one (e.g. 12h Red 2025-01-08). 'refuse' = production: phase3_install.py:231 (_MB.verify) and install_cell.sh:23
-    # (membership verify) are strict. Set on PI for the call (PI's module text keeps 'refuse'); any other value refuses the step
+    # installed_cell.membership): 'keep' (ruled) - in a master BUILT BEFORE THE ENFORCEMENT (below), a night whose ONLY finding is
+    # that its Red / Full image holds the night's excluded 18 MHz is reported and kept until the master's next rebuild, never a
+    # violation: lib/masters/admit.verify(keep_18=True), the helper of the deep search's gate E3 (refactor f5bfaf0;
+    # search_detect.MASTER_HELD_18MHZ is the search's same choice). Gregg 2026-10-23: "No! The one exception to the exclusion
+    # rule is 18 MHz"; 2026-10-17: "Red can be built without 18 MHz ... the only allowed case where wideband data can be built
+    # without a full 5-subband set" (Full likewise), "enforce going forward, no rebuild now": a master built after the
+    # enforcement - a rebuild - verifies strictly (the co-add refuses such a night, coadd.admit_night). 'refuse' = production:
+    # phase3_install.py:231 (_MB.verify) and install_cell.sh:23 (membership verify) are strict. Set on PI for the call (PI's
+    # module text keeps 'refuse'); recorded with the installed_cell output; any other value refuses the step
     MASTER_HELD_18MHZ = 'keep'
+    # when the co-add began refusing a Red / Full night that holds its excluded 18 MHz: production exopipe 3ee1918 (coadd_full_pipeline
+    # admit_night), committed 2026-10-17T19:58:24Z (IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD). A master is built before it
+    # when its coadd_final/weights.csv - the record of the night set its build fixed, lib/masters/admit.build_time - is older
+    MASTER_HELD_18MHZ_BUILT_BEFORE = '2026-10-17T19:58:24Z'
     SNAPSHOT_MASTERS_LINK_TREE = '/lustre/pipeline/exopipe/phase3/snapshot_masters'  # PROTECTED pinned input; PI literal; G-1b, phase3_install.py:203-207; FREEZE-SNAPSHOT-MASTERS-GEN4 (1786)
     FREE_FLOOR_GB = 40.0                                  # GB (1e9 bytes) left free on the working-tree filesystem after staging; install_cell.sh:11 (P3_INSTALL_FREE_FLOOR_GB=40; code default 0, phase3_install.py:280); APPROVED-RESUME-SPACE-D6-REVISION (1848)
     STAGING_SPACE_FACTOR = 1.05                           # PI literal; x the generation's bytes needed on the working-tree filesystem; phase3_install.py:279
@@ -94,7 +99,8 @@ class install(_Section):
              'CELL_DIRS': 'FINDING-GEN4-FLEET-DID-NOT-SHIP-FLOWS-BACK-RECOVERY-PLANNED',
              'MASTER_HELD_18MHZ': ('CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023',
                                 'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4', 'R-GREGG-20261017-FULL-ALLOWED-WITHOUT-18MHZ',
-                                'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD')}
+                                'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD'),
+             'MASTER_HELD_18MHZ_BUILT_BEFORE': 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD'}
 
 
 class install_enqueue(_Section):
