@@ -4,7 +4,9 @@ Ports dewarp_lst.sh:36-94 for ONE routed cell, after its LST's measurement:
   acceptance  steps_common.accepted on the cell's FINAL table row (dewarp_lst.sh:37-52; G-A1)
   apply       accepted: phase3_master_dewarp.apply_saved IN PLACE (the saved screen, cubic spline) into
               <GEN_ROOT>/<cell>/gen_mdewarp_rbf (dewarp_lst.sh:56-60; G-A2..G-A5); an exception is a refusal (G-R2: an
-              accepted cell whose apply refused is refused, never sent to the not-accepted path as dewarp_lst.sh:63 does)
+              accepted cell whose apply refused is refused, never sent to the not-accepted path as dewarp_lst.sh:63 does).
+              G-A12 before and after: the screen and the master it dewarps are the bytes the measurement keyed (md5); a
+              measurement without keys is noted and applied (dewarp.SCREEN_KEY_REQUIRED True refuses it)
   verify      content test D1-D6 (D7 with --prior-gen-root) = check_mdewarp_gen.py IN PLACE, on the generation itself so its
               INSTALL_CONTENT_OK / APPLIED_SCREEN.json land where the install reads them, plus the install's cubic,
               applied-screen and product gates and the tested-pixel count (G-A6..G-A10); pass -> meta.install
@@ -51,8 +53,43 @@ def pb_weights_gate(u, cell, groot):
     pb_qa.pb_qa_gate(u, cell, scope, pb_qa.pb_qa_missing(fd, scope, plains), pm.PB_QA_MISSING_MAX_FRAC)
 
 
+def screen_key_gate(u, run, meas, cell, groot):
+    """G-A12 - A KEYED SCREEN IS APPLIED ONLY TO THE EXACT MASTER IT WAS MEASURED ON (FOLD_IN 2026-10-26 'STALE SCREENS'; keyed
+    by content, steps_common.SCREEN_KEYS): when the measurement keyed its screens, the scope's key row must exist and the saved
+    screen and the generation's two measured files (I Taper R-0.75 plain + pbcorr sibling, the ones MD resamples and
+    recomputes from) must have the md5 the key recorded - a mismatch always refuses (no setting, no waiver). A measurement that
+    keyed no screen (made before the keys existed: every production measurement) is applied as production applies it, with the
+    note NO_KEY_NOTE recorded (G-A11's time check still applies to a --measurement), unless dewarp.SCREEN_KEY_REQUIRED, which
+    refuses it. Returns (key or None, plain, pbcorr)."""
+    lst, scope = cell.split('_', 1)
+    scr = meas.screen(scope)
+    plain, pbcorr = SC.measured_files(os.path.join(groot, 'coadd_final'), scope)
+    key = meas.screen_key(scope)
+    if key is None:
+        why = (f'{SC.NO_KEY_NOTE} ({meas.dir} has no {os.path.basename(meas.keys())}), so {os.path.basename(scr)} cannot be '
+               f'shown to belong to {plain}')
+        if SC.C().SCREEN_KEY_REQUIRED:
+            u.refuse(f'G-A12: {why} - REFUSED (dewarp.SCREEN_KEY_REQUIRED True)')
+        u.meta['screen_key'] = {'status': SC.NO_KEY_NOTE}
+        u.note(f'G-A12: {why}; applied without a content check, as production applies it (dewarp.SCREEN_KEY_REQUIRED False)')
+        return None, plain, pbcorr
+    if not key:
+        u.refuse(f'G-A12: {meas.keys()} keys other screens of {lst} but not {scope}: {scr} is not a screen that measurement '
+                 f'wrote - REFUSED')
+    probs = SC.screen_key_problems(key, scr, plain, pbcorr)
+    if probs:
+        u.refuse('G-A12: the screen is not keyed to the master it would dewarp, or changed since it was measured ('
+                 + '; '.join(probs[:3]) + ') - a mismatch REFUSES, never applies')
+    u.meta['screen_key'] = {k: key.get(k) for k in ('screen', 'screen_md5', 'master', 'master_md5', 'pbcorr', 'pbcorr_md5',
+                                                     'measured_at')}
+    u.note(f'G-A12: screen {os.path.basename(scr)} md5 {key["screen_md5"]} keyed to the master it dewarps ({plain} md5 '
+           f'{key["master_md5"]}, pbcorr md5 {key["pbcorr_md5"]})')
+    return key, plain, pbcorr
+
+
 def apply(u, run, roots, cell, meas, row):
-    """G-A2, G-A3 (+ --fresh removal, recorded), then phase3_master_dewarp.apply_saved in place. Returns the generation."""
+    """G-A2, G-A3, G-A12 (+ --fresh removal, recorded), then phase3_master_dewarp.apply_saved in place, then G-A12 again (the
+    screen and the master unchanged during the apply). Returns the generation."""
     from exopipe.phase3.lib.dewarp import master_dewarp as MD
     c = SC.C()
     lst, scope = cell.split('_', 1)
@@ -77,6 +114,7 @@ def apply(u, run, roots, cell, meas, row):
     groot = MD._gen_root(roots.working, roots.rebuild, lst, scope)
     if groot is None:
         u.refuse(f'G-A2: {cell} has no generation root under {roots.rebuild} or {roots.working}')
+    key, plain, pbcorr = screen_key_gate(u, run, meas, cell, groot)
     pb_weights_gate(u, cell, groot)
     if run.fresh and os.path.isdir(celldir):
         if os.path.abspath(celldir) != os.path.abspath(os.path.join(roots.gen, cell)):
@@ -107,6 +145,14 @@ def apply(u, run, roots, cell, meas, row):
             os.environ.pop('MDEWARP_OUT_ROOT', None)
         else:
             os.environ['MDEWARP_OUT_ROOT'] = old_env
+    if key:                                              # G-A12 again: what the apply read is still what the key names
+        probs = SC.screen_key_problems(key, scr, plain, pbcorr)
+        if probs:
+            u.refuse('G-A12: the screen or the master changed while the apply ran (' + '; '.join(probs[:3]) + ') - the '
+                     'generation written is not installable')
+        u.check('dewarp.screen_key', True, value=key['master_md5'],
+                detail=f'screen md5 {key["screen_md5"]} measured on master md5 {key["master_md5"]} / pbcorr md5 '
+                       f'{key["pbcorr_md5"]}; both unchanged through the apply')
     u.meta['n_written'] = n
     u.note(f'apply: {n} files written into {gen} ({c.RESAMPLE_METHOD}; from {groot})')
     print(f'{lst} {scope}: APPLIED - {n} files written', flush=True)
@@ -253,6 +299,8 @@ def run_cell(run, args, roots, lst, cell, meas, stages, route_src=None, resume_o
         if not meas.exists():
             u.refuse(f'no measurement table {meas.table}')
         u.add_input(meas.table)
+        if os.path.isfile(meas.keys()):                  # the screens' content keys (G-A12)
+            u.add_input(meas.keys())
         u.meta['route_source'] = c.ROUTE_SOURCE
         if c.ROUTE_SOURCE == 'accepted_list' and route_src and os.path.isfile(route_src):
             u.add_input(route_src)                       # a hand list: its fingerprint is the routing evidence

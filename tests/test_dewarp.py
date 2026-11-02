@@ -196,6 +196,18 @@ def save_screen(mdir, scope, nanch, master):
     return os.path.join(mdir, LST, 'maps', f'{scope}_warp_screen.fits')
 
 
+def key_measurement(mdir, cells_dir):
+    """The measurement's screen keys as the measure stage writes them (steps_common.screen_key_rows / write_screen_keys): every
+    saved screen keyed to the md5 of the master and pbcorr sibling of its cell under ``cells_dir``."""
+    meas = SC.Measurement(mdir, LST)
+    measured = {}
+    for scr in meas.screens():
+        s = os.path.basename(scr)[:-len('_warp_screen.fits')]
+        files = SC.measured_files(os.path.join(cells_dir, f'{LST}_{s}', 'coadd_final'), s)
+        measured[s] = tuple((f, SC.md5(f)) for f in files)
+    return SC.write_screen_keys(meas, SC.screen_key_rows(meas, measured, '2026-11-02T00:00:00Z'))
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # unit-level tests
 # ---------------------------------------------------------------------------------------------------------------------
@@ -421,6 +433,7 @@ def build_round(tmp):
         else:
             rows.append(table_row(s, 'REFUSED no generation root'))
     write_table(os.path.join(mdir, 'tables', f'table_{LST}.csv'), rows)
+    key_measurement(mdir, promoted)        # every screen keyed to the promoted master it was measured on (G-A12)
     return dict(promoted=promoted, check=check_root, working=working, ops=ops, meas=mdir, n1=n1)
 
 
@@ -467,6 +480,11 @@ def test_end_to_end(tmp):
         check('measure: admitted night set and exclusion fingerprint recorded',
               ra['admitted'] and ra['meta'].get('exclusions', {}).get('sha1'))
         check('measure: node-local staging removed', not glob.glob(os.path.join(work, 'dewarp_stage_*')))
+        k = [o for o in ra['outputs'] if o['class'] == 'dewarp_screen_key']
+        kt = [t for t in ra['tests'] if t['name'] == 'dewarp_screen_key.rows']
+        check('measure: the screen keys are written beside the table and pass their content test (no screen saved here: '
+              'a header-only key file)', len(k) == 1 and k[0]['path'].endswith(f'/tables/screen_keys_{LST}.csv')
+              and len(SC.read_table(k[0]['path'])) == 0 and len(kt) == 1 and kt[0]['passed'], str(kt)[:200])
     # --- B: apply, verify, record on five cells (parity guard on)
     outB = os.path.join(tmp, 'outB')
     seed_record(outB, ('27MHz', '32MHz', '36MHz', '46MHz'))       # routing (default 'screen_record'): 41 MHz not routed
@@ -486,6 +504,11 @@ def test_end_to_end(tmp):
                   'dewarped_master.D3', 'dewarped_master.D5', 'dewarped_master.D6', 'dewarp.G-D0b_child_code'):
             check(f'accepted cell: {n} passed', n in names and names[n]['passed'], str(names.get(n, {}).get('detail'))[:160])
         check('accepted cell: the child code fingerprint is in the record', len(c27['meta'].get('legacy_code') or {}) >= 6)
+        m27 = os.path.join(r['promoted'], f'{LST}_27MHz', 'coadd_final', 'I_deep_Taper_R075_27MHz.fits')
+        check('accepted cell: G-A12 passed - the screen applied is keyed to the md5 of the master it dewarped',
+              'dewarp.screen_key' in names and names['dewarp.screen_key']['passed']
+              and (c27['meta'].get('screen_key') or {}).get('master_md5') == SC.md5(m27),
+              str(c27['meta'].get('screen_key'))[:200])
         src = sum(len(glob.glob(os.path.join(r['promoted'], f'{LST}_27MHz', d, '**', '*.fits'), recursive=True))
                   for d in ('coadd_final', 'subtracted'))
         have = glob.glob(os.path.join(gen, '**', '*.fits'), recursive=True)
@@ -584,6 +607,162 @@ def test_stale_measurement(tmp):
           f'rc {rc}, {s} s; ' + (c['reason'][:100] if c else txt[-200:]))
 
 
+def test_screen_keys(tmp):
+    """G-A12 (FOLD_IN 2026-10-26 'STALE SCREENS'): a KEYED screen is applied only to the exact master it was measured on, by
+    content (md5) - never by name or time. steps_cell.apply on the synthetic round's accepted cell 05h_27MHz (apply_saved
+    stubbed), the generation copied byte for byte into another root: the keyed screen and master pass; a measurement without
+    keys (every production measurement) is applied with a recorded note under dewarp.SCREEN_KEY_REQUIRED False (the default,
+    production's behavior) and refused under True; a changed master, a changed screen, a key file without the scope's row and
+    a master changed during the apply refuse under either setting. The key file's content test passes on the round's keys and
+    fails on a changed or unkeyed screen; a failed keying leaves no staging copy; the dry run reports G-A12 only for an apply."""
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.dewarp import master_dewarp as MD
+    from exopipe.phase3.lib.dewarp import steps_cell as SCL
+    cell, s = f'{LST}_27MHz', '27MHz'
+    src_gen, src_meas = os.path.join(tmp, 'promoted', cell), os.path.join(tmp, 'meas')
+    if not (os.path.isdir(src_gen) and os.path.isfile(SC.Measurement(src_meas, LST).keys())):
+        check('G-A12: synthetic round present', False)
+        return
+    row = SC.Measurement(src_meas, LST).final_row(s)
+    calls, orig = [], MD.apply_saved
+    check('G-A12: dewarp.SCREEN_KEY_REQUIRED defaults to production\'s behavior (False: a key-less measurement is applied)',
+          CFG.dewarp.SCREEN_KEY_REQUIRED is False)
+
+    def case(name, edit=None, during=None, required=False):
+        base = os.path.join(tmp, f'gak_{name}')
+        mdir, rb = os.path.join(base, 'meas'), os.path.join(base, 'promoted')
+        shutil.copytree(src_meas, mdir)
+        shutil.copytree(src_gen, os.path.join(rb, cell))
+        meas = SC.Measurement(mdir, LST)
+        master, _pbc = SC.measured_files(os.path.join(rb, cell, 'coadd_final'), s)
+        if edit:
+            edit(meas, master)
+        gen_root = os.path.join(base, 'gen')
+        roots = types.SimpleNamespace(gen=gen_root, working=os.path.join(base, 'working'), rebuild=rb,
+                                      gen_of=lambda c: os.path.join(gen_root, c, SC.C().GEN_DIR))
+        run = record.Run('dewarp', ['test'], base, CFG, dry_run=True)
+
+        def stub(*a, **k):
+            calls.append(a)
+            if during:
+                during(master)
+            return 0
+        del calls[:]
+        MD.apply_saved = stub
+        try:
+            if required:
+                CFG.set('dewarp.SCREEN_KEY_REQUIRED', 'True')
+            with run.unit(cell) as u:
+                SCL.apply(u, run, roots, cell, meas, row)
+        finally:
+            MD.apply_saved = orig
+            CFG.reset()
+        return u, len(calls), {t['name']: t for t in u.tests}
+
+    def touch_master(meas, master):
+        with fits.open(master, mode='update') as h:
+            h[0].header['HISTORY'] = 'rebuilt after the measurement (synthetic)'
+
+    def touch_screen(meas, master):
+        with fits.open(meas.screen(s), mode='update') as h:
+            h['SCREEN_X'].data[0, 0] += 0.5
+
+    def drop_keys(meas, master):
+        os.remove(meas.keys())
+
+    def drop_row(meas, master):
+        rows = [r for r in SC.read_table(meas.keys()) if r['scope'] != s]
+        os.remove(meas.keys())
+        SC.write_screen_keys(meas, rows)
+
+    for required in (False, True):
+        tag = f'SCREEN_KEY_REQUIRED {required}'
+        u, n, t = case(f'match_{required}', required=required)
+        check(f'G-A12 ({tag}): the keyed screen on a byte-identical copy of its master (another root) is applied, check '
+              f'recorded', u.status != 'refused' and n == 1 and t.get('dewarp.screen_key', {}).get('passed')
+              and u.meta['screen_key']['master_md5'] == SC.md5(SC.measured_files(os.path.join(src_gen, 'coadd_final'), s)[0]),
+              f'{u.status} {u.reason[:160]}')
+        u, n, t = case(f'master_changed_{required}', touch_master, required=required)
+        check(f'G-A12 ({tag}): a master changed since the measurement refuses before anything is written',
+              u.status == 'refused' and 'G-A12' in u.reason and 'master' in u.reason and 'md5' in u.reason and n == 0,
+              u.reason[:200])
+        u, n, t = case(f'screen_changed_{required}', touch_screen, required=required)
+        check(f'G-A12 ({tag}): a screen changed since the measurement refuses', u.status == 'refused' and 'screen' in u.reason
+              and 'md5' in u.reason and n == 0, u.reason[:200])
+        u, n, t = case(f'row_missing_{required}', drop_row, required=required)
+        check(f"G-A12 ({tag}): a key file without the scope's row refuses", u.status == 'refused'
+              and 'keys other screens' in u.reason and n == 0, u.reason[:200])
+    u, n, t = case('nokeys', drop_keys)
+    check('G-A12 (SCREEN_KEY_REQUIRED False): a measurement without keys is applied, with the recorded note '
+          '"no screen key: measurement predates keying"', u.status != 'refused' and n == 1
+          and u.meta.get('screen_key') == {'status': SC.NO_KEY_NOTE} and any(SC.NO_KEY_NOTE in x for x in u.notes)
+          and 'dewarp.screen_key' not in t, f'{u.status} {u.reason[:160]} {u.notes[-1:]}')
+    u, n, t = case('nokeys_required', drop_keys, required=True)
+    check('G-A12 (SCREEN_KEY_REQUIRED True): a measurement without keys refuses before anything is written',
+          u.status == 'refused' and 'G-A12' in u.reason and SC.NO_KEY_NOTE in u.reason and n == 0, u.reason[:200])
+    u, n, t = case('during', during=lambda m: touch_master(None, m))
+    check('G-A12: a master changed while the apply ran refuses after it (the generation is not installable)',
+          u.status == 'refused' and 'changed while the apply ran' in u.reason and n == 1, u.reason[:200])
+    # the key file's content test
+    kp = SC.Measurement(src_meas, LST).keys()
+    ok, v, d = T.screen_key_rows(kp)
+    check('dewarp_screen_key: the round\'s keys (27 MHz, 36 MHz) pass', ok and v == '2 screen(s) keyed', f'{v}; {d}')
+    m2 = SC.Measurement(os.path.join(tmp, 'gak_screen_changed_False', 'meas'), LST)
+    ok, v, d = T.screen_key_rows(m2.keys())
+    check('dewarp_screen_key: a screen whose md5 differs from its key fails', not ok and 'md5' in d, d)
+    m3 = SC.Measurement(os.path.join(tmp, 'gak_row_missing_False', 'meas'), LST)
+    ok, v, d = T.screen_key_rows(m3.keys())
+    check('dewarp_screen_key: a screen without a key fails', not ok and 'without a key' in d, d)
+    r = dict(promoted=os.path.join(tmp, 'promoted'), check=os.path.join(tmp, 'rebuild'), working=os.path.join(tmp, 'working'),
+             ops=os.path.join(tmp, 'ops'))
+    # a measurement in place (dewarp.STAGE_INPUTS False) keys from the files it read, checked unchanged after it
+    outI = os.path.join(tmp, 'outInPlace')
+    rc, txt, _s = cli_in_process('dewarp', '--lsts', LST, '--stages', 'stage,measure', '--threads', '1', '--out', outI,
+                                 '--set', 'dewarp.STAGE_INPUTS=False', *common_sets(r))
+    ri = rec(outI, LST)
+    check('measure in place: done, its (empty: no screen saved) key file written and content-tested',
+          rc == 0 and ri and ri['status'] == 'done' and ri['meta'].get('stage_inputs') is False
+          and any(o['class'] == 'dewarp_screen_key' for o in ri['outputs']), f'rc {rc}; ' + (ri['reason'] if ri else txt[-300:]))
+    # a failure while keying the screens (here: the key file cannot be written) leaves no node-local staging copy behind
+    workF, outF = os.path.join(tmp, 'workKeyFail'), os.path.join(tmp, 'outKeyFail')
+    orig_w = SC.write_screen_keys
+
+    def no_write(meas, rows):
+        raise OSError('synthetic: the key file cannot be written')
+    SC.write_screen_keys = no_write
+    try:
+        rc, txt, _s = cli_in_process('dewarp', '--lsts', LST, '--stages', 'stage,measure', '--threads', '1', '--out', outF,
+                                     '--work', workF, *common_sets(r))
+    finally:
+        SC.write_screen_keys = orig_w
+    rf = rec(outF, LST)
+    staged = [x for x in (rf or {}).get('notes', []) if x.startswith('stage: ') and 'md5-verified' in x]
+    check('a failed keying: the unit errs and the node-local staging copy is removed (no scratch left)',
+          rc == 1 and rf and rf['status'] == 'error' and 'cannot be written' in rf['reason'] and staged
+          and not glob.glob(os.path.join(workF, 'dewarp_stage_*')),
+          f'rc {rc}; ' + (str((rf['status'], rf['reason'][:100], staged[:1])) if rf else txt[-300:]))
+    # the dry run reports G-A12 when the apply runs (routed by the round's hand list, as test_stale_measurement)
+    dry = ('dewarp', '--cells', cell, '--dry-run', '--set', 'dewarp.ROUTE_SOURCE=accepted_list', *common_sets(r))
+    app = ('--stages', 'apply,verify,record')
+    rc, txt, _s = cli(*dry, *app, '--measurement', src_meas, '--out', os.path.join(tmp, 'outDry'))
+    check('dry run: G-A12 reports the keyed screen and master (exit 0)',
+          rc == 0 and 'G-A12: screen and master md5 equal the key' in txt, f'rc {rc}; ' + txt[-300:])
+    nok = os.path.join(tmp, 'gak_nokeys', 'meas')
+    rc, txt, _s = cli(*dry, *app, '--measurement', nok, '--out', os.path.join(tmp, 'outDry'))
+    check('dry run: a measurement without keys is applied with the note (default, exit 0)',
+          rc == 0 and f'G-A12: {SC.NO_KEY_NOTE} - applied without a content check' in txt, f'rc {rc}; ' + txt[-300:])
+    rc, txt, _s = cli(*dry, *app, '--measurement', nok, '--out', os.path.join(tmp, 'outDry'), '--set',
+                      'dewarp.SCREEN_KEY_REQUIRED=True')
+    check('dry run: ... WOULD REFUSE under dewarp.SCREEN_KEY_REQUIRED True (exit 2)',
+          rc == 2 and 'WOULD REFUSE - G-A12' in txt, f'rc {rc}; ' + txt[-300:])
+    mch = os.path.join(tmp, 'gak_screen_changed_False', 'meas')
+    rc, txt, _s = cli(*dry, *app, '--measurement', mch, '--out', os.path.join(tmp, 'outDry'))
+    check('dry run: a keyed screen that changed WOULD REFUSE under the default (exit 2)',
+          rc == 2 and 'WOULD REFUSE - G-A12' in txt, f'rc {rc}; ' + txt[-300:])
+    rc, txt, _s = cli(*dry, '--stages', 'verify,record', '--measurement', mch, '--out', os.path.join(tmp, 'outDry'))
+    check('dry run: without the apply stage no G-A12 line', 'G-A12' not in txt, f'rc {rc}; ' + txt[-300:])
+
+
 def test_pb_weights(tmp):
     """B-30 (review 2026-10-14 m3): the apply checks the PB weights it installs - the cards of the source generation's
     siblings, which the recomputed siblings keep - before --fresh removes the previous generation: a wideband missing the
@@ -614,7 +793,12 @@ def test_pb_weights(tmp):
             open(os.path.join(prev, 'old.fits'), 'w').write('previous generation')
             roots = types.SimpleNamespace(gen=gen_root, working=os.path.join(base, 'working'), rebuild=None,
                                           gen_of=lambda c, _g=gen_root: os.path.join(_g, c, SC.C().GEN_DIR))
-            meas = types.SimpleNamespace(screen=lambda sc, _s=scr: _s, table=os.path.join(base, 'table.csv'), dir=base)
+            plain, pbc = SC.measured_files(fd, 'Blue')          # the screen keyed to this generation's master (G-A12)
+            key = dict(screen='screen.fits', screen_md5=SC.md5(scr), master=plain, master_md5=SC.md5(plain), pbcorr=pbc,
+                       pbcorr_md5=SC.md5(pbc), measured_at='')
+            meas = types.SimpleNamespace(screen=lambda sc, _s=scr: _s, table=os.path.join(base, 'table.csv'), dir=base,
+                                         keys=lambda _b=base: os.path.join(_b, 'keys.csv'),
+                                         screen_key=lambda sc, _k=key: _k)
             run = record.Run('dewarp', ['test'], base, CFG, dry_run=True)
             del calls[:]
             m = fallback.mark()
@@ -669,6 +853,7 @@ def main():
         test_table_and_screen(SCRATCH)
         test_end_to_end(SCRATCH)
         test_stale_measurement(SCRATCH)
+        test_screen_keys(SCRATCH)
         test_pb_weights(SCRATCH)
         test_real_products()
     finally:

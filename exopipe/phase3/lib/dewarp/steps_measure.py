@@ -4,9 +4,11 @@ Ports dewarp_lst.sh:18-35 and measure_on_09.sh: stage the two measured files of 
 its pbcorr sibling, from the first of REBUILD_ROOT / paths.COADD_SB_ROOT holding the plain file, per FILE) to node-local scratch,
 md5-verified (G-D6); then phase3_master_dewarp.run_lst IN PLACE on the staged copies, measurement only, into a fresh
 <measure root>/<run_id>/ (tables/table_<LST>.csv + <LST>/maps/<scope>_warp_screen.fits + diagnostics). The collection copy
-(dewarp_lst.sh:33-35) is dropped: the cell units read the measurement directory it was written to.
+(dewarp_lst.sh:33-35) is dropped: the cell units read the measurement directory it was written to. Then every saved screen
+is KEYED BY CONTENT: tables/screen_keys_<LST>.csv holds its md5 and the md5 of the two files it was measured on
+(steps_common.SCREEN_KEYS; the apply's gate G-A12).
 Gates here: G-D3 pinned VLSSr files, G-D8 single-thread BLAS, G-D5 excluded constituents, G-D0 in-place values, G-D4 VLSSr
-catalogue loads, G-D6 staged copies verified.
+catalog loads, G-D6 staged copies verified (and, measured in place, unchanged by the end of the measurement).
 """
 import logging
 import os
@@ -52,9 +54,10 @@ def admitted(lst, srcs):
     return sorted(adm), bad, by, ex.fingerprint()
 
 
-def stage(u, lst, srcs, work):
+def stage(u, lst, srcs, work, measured=None):
     """Copy the measured files to node-local scratch, md5-verified (G-D6; dewarp_lst.sh:24-30 checked only rsync's exit
-    status). Returns the staging root (<root>/<LST>_<scope>/coadd_final/...)."""
+    status). Returns the staging root (<root>/<LST>_<scope>/coadd_final/...). ``measured`` (a dict) receives
+    {scope: ((plain source, md5), (pbcorr source, md5))} - the content key of what each screen is measured on."""
     root = SC.scratch_root(work)
     os.makedirs(root, exist_ok=True)
     sdir = tempfile.mkdtemp(prefix=f'dewarp_stage_{lst}_', dir=root)
@@ -70,18 +73,40 @@ def stage(u, lst, srcs, work):
                 raise SC.refusal(f'G-D6: staging {lst}_{s}: {miss[0]} missing (dewarp_lst.sh:28-29 stops the LST)')
             dst = os.path.join(sdir, f'{lst}_{s}', 'coadd_final')
             os.makedirs(dst)
+            sums = []
             for f in files:
                 m0 = SC.md5(f)
                 t = os.path.join(dst, os.path.basename(f))
                 shutil.copy2(f, t)
                 if SC.md5(t) != m0:
                     raise SC.refusal(f'G-D6: the staged copy of {f} differs from its source (md5)')
+                sums.append((f, m0))
                 n += 1
+            if measured is not None:
+                measured[s] = tuple(sums)
     except BaseException:
         shutil.rmtree(sdir, ignore_errors=True)       # a refused staging leaves no scratch behind
         raise
     u.note(f'stage: {n} files copied to {sdir}, md5-verified')
     return sdir
+
+
+def in_place_sums(srcs):
+    """{scope: ((plain, md5), (pbcorr, md5))} of the files a measurement in place (STAGE_INPUTS False) reads."""
+    return {s: tuple((f, SC.md5(f)) for f in files) for s, d, files in srcs if d and all(os.path.isfile(f) for f in files)}
+
+
+def key_screens(u, meas, measured):
+    """SCREEN_KEYS: one row per screen of the LST - its md5 and the md5 of the two files it was measured on - written once
+    into the measurement directory and registered as class 'dewarp_screen_key' (G-A12 reads it at the apply)."""
+    from exopipe.phase3.core.record import utcnow
+    rows = SC.screen_key_rows(meas, measured, utcnow())
+    keys = SC.write_screen_keys(meas, rows)
+    u.meta['screen_keys'] = {r['scope']: {'screen_md5': r['screen_md5'], 'master_md5': r['master_md5'],
+                                          'pbcorr_md5': r['pbcorr_md5']} for r in rows}
+    u.note(f'screen keys: {len(rows)} screen(s) keyed to the md5 of the masters they were measured on -> {keys}')
+    u.add_output(keys, 'dewarp_screen_key', lst=meas.lst)
+    return keys
 
 
 def _measure_in_place(u, lst, root, input_root, mdir, vl):
@@ -170,31 +195,35 @@ def run_measure(run, args, roots, lst, cells_, stages):
         if vl is None:
             u.refuse(f'G-D4: the VLSSr catalogue {c.VLSSR_CATALOG} failed to load (phase3_master_dewarp.py:452-454)')
         staging = None
+        measured = {}                           # scope -> ((plain, md5), (pbcorr, md5)): the screens' content keys
         try:
             if c.STAGE_INPUTS:
-                staging = stage(u, lst, srcs, roots.work)
+                staging = stage(u, lst, srcs, roots.work, measured)
                 root, input_root = staging, None
             else:
                 root, input_root = roots.working, roots.rebuild
+                measured = in_place_sums(srcs)
             table = _measure_in_place(u, lst, root, input_root, roots.measure_dir, vl)
-        except BaseException:
-            if staging:                         # node-local scratch never outlives a refused or failed measurement
-                shutil.rmtree(staging, ignore_errors=True)
-            raise
-        meas = SC.Measurement(roots.measure_dir, lst)
-        e = u.add_output(table, 'dewarp_table', lst=lst)
-        e['ctx'] = {'lst': lst}
-        masters = {s: files[0] for s, d, files in srcs if d}
-        for scr in meas.screens():
-            scope = os.path.basename(scr)[:-len('_warp_screen.fits')]
-            ctx = {'table': table, 'master': masters.get(scope)}
-            e = u.add_output(scr, 'dewarp_screen', **ctx)
-            e['ctx'] = SC.jsonable(ctx)
-        diag = sorted(os.path.relpath(os.path.join(dp, f), roots.measure_dir)
-                      for dp, _, fs in os.walk(os.path.join(roots.measure_dir, lst)) for f in fs
-                      if not f.endswith('_warp_screen.fits'))
-        u.meta['diagnostics'] = diag            # analysis output (MD:123 'not a product'): listed, not outputs (spec Q9)
+            if not c.STAGE_INPUTS and in_place_sums(srcs) != measured:
+                u.refuse('G-D6: a measured file changed while it was measured in place (STAGE_INPUTS False): the screens '
+                         'cannot be keyed to one content - re-measure')
+            meas = SC.Measurement(roots.measure_dir, lst)
+            e = u.add_output(table, 'dewarp_table', lst=lst)
+            e['ctx'] = {'lst': lst}
+            key_screens(u, meas, measured)
+            masters = {s: files[0] for s, d, files in srcs if d}
+            for scr in meas.screens():
+                scope = os.path.basename(scr)[:-len('_warp_screen.fits')]
+                ctx = {'table': table, 'master': masters.get(scope)}
+                e = u.add_output(scr, 'dewarp_screen', **ctx)
+                e['ctx'] = SC.jsonable(ctx)
+            diag = sorted(os.path.relpath(os.path.join(dp, f), roots.measure_dir)
+                          for dp, _, fs in os.walk(os.path.join(roots.measure_dir, lst)) for f in fs
+                          if not f.endswith('_warp_screen.fits'))
+            u.meta['diagnostics'] = diag        # analysis output (MD:123 'not a product'): listed, not outputs (spec Q9)
+        finally:
+            if staging:                         # node-local scratch never outlives the unit: refused, failed (the keying
+                shutil.rmtree(staging, ignore_errors=True)       # included) or done
         if staging:
-            shutil.rmtree(staging, ignore_errors=True)
             u.note(f'stage: scratch {staging} removed')
     return meas if u.status == 'done' else None

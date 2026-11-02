@@ -42,6 +42,18 @@ THREAD_VARS = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')
 CONTENT_OK = 'INSTALL_CONTENT_OK'        # sidecars written by check_mdewarp_gen beside the generation (CMG:166, :177)
 APPLIED_SCREEN = 'APPLIED_SCREEN.json'
 REBUILD_OK = 'REBUILD_CONTENT_OK'        # <REBUILD_CHECK_ROOT>/<cell>/ (chain_cell.sh:23; phase3_install.py:224)
+# SCREENS KEYED BY CONTENT (FOLD_IN 2026-10-26, the deep chat's 'STALE SCREENS' finding: screen files exist for 04h 18 MHz and
+# 21h 41 MHz, whose masters were rebuilt without the master dewarp): the measure stage writes, beside the LST's table, the md5
+# of every screen it saved and of the two files that screen was measured on (dewarp.MEASURE_FILES of the scope, as staged -
+# the staged copy is md5-verified against its source). The apply stage applies a keyed screen only to those exact bytes (gate
+# G-A12): a screen whose content changed since it was measured, or a master that is not the one it was measured on, REFUSES
+# and is never applied; nothing is matched by name or time. Class 'dewarp_screen_key' (lib/dewarp/tests.py). A measurement
+# without keys (made before they existed: every production measurement) is applied as production applies it, with the note
+# NO_KEY_NOTE - unless dewarp.SCREEN_KEY_REQUIRED, which refuses it.
+SCREEN_KEYS = 'screen_keys_{lst}.csv'    # <measure dir>/tables/
+KEY_COLUMNS = ['lst', 'scope', 'screen', 'screen_md5', 'n_anchors', 'master', 'master_md5', 'pbcorr', 'pbcorr_md5',
+               'measured_at', 'keyed_utc']
+NO_KEY_NOTE = 'no screen key: measurement predates keying'
 
 
 def cfg():
@@ -137,6 +149,18 @@ class Measurement:
     def final_row(self, scope):
         return final_rows(self.table, self.lst).get((self.lst, scope))
 
+    def keys(self):
+        """<dir>/tables/screen_keys_<LST>.csv: the content key of every screen of the LST (SCREEN_KEYS)."""
+        return os.path.join(self.dir, 'tables', SCREEN_KEYS.format(lst=self.lst))
+
+    def screen_key(self, scope):
+        """The content key of the scope's screen (its row of keys()); {} when the measurement keyed its screens but not this
+        one; None when it keyed none (no keys file: a measurement made before the keys existed, or by production)."""
+        if not os.path.isfile(self.keys()):
+            return None
+        rows = [r for r in read_table(self.keys()) if (r.get('lst'), r.get('scope')) == (self.lst, scope)]
+        return rows[-1] if rows else {}
+
 
 def md5(path):
     h = hashlib.md5()
@@ -152,6 +176,64 @@ def sha1(path):
         for b in iter(lambda: f.read(1 << 22), b''):
             h.update(b)
     return h.hexdigest()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# screens keyed by content (SCREEN_KEYS; gate G-A12)
+# ---------------------------------------------------------------------------------------------------------------------
+
+def measured_files(cell_dir_final, scope):
+    """(plain, pbcorr): the two files a scope's screen is measured on (dewarp.MEASURE_FILES) in a coadd_final directory."""
+    return tuple(os.path.join(cell_dir_final, n.format(scope=scope)) for n in C().MEASURE_FILES)
+
+
+def screen_key_rows(meas, measured, keyed_utc):
+    """One SCREEN_KEYS row per screen the measurement saved for its LST. ``measured``: {scope: ((plain path, md5), (pbcorr
+    path, md5))} of the files the screen was measured on (the staged copies' sources and their md5, verified equal at
+    staging). A screen of a scope that was not measured refuses."""
+    from astropy.io import fits
+    finals = final_rows(meas.table, meas.lst) if meas.exists() else {}
+    rows = []
+    for scr in meas.screens():
+        scope = os.path.basename(scr)[:-len('_warp_screen.fits')]
+        if scope not in measured:
+            raise refusal(f'G-D6: {scr} is a screen of {meas.lst} {scope}, which this measurement did not measure')
+        (plain, pmd5), (pbc, bmd5) = measured[scope]
+        row = finals.get((meas.lst, scope)) or {}
+        rows.append(dict(lst=meas.lst, scope=scope, screen=os.path.relpath(scr, meas.dir), screen_md5=md5(scr),
+                         n_anchors=fits.getheader(scr, 'SCREEN_X').get('NANCHOR', ''), master=plain, master_md5=pmd5,
+                         pbcorr=pbc, pbcorr_md5=bmd5, measured_at=row.get('measured_at', ''), keyed_utc=keyed_utc))
+    return rows
+
+
+def write_screen_keys(meas, rows):
+    """Write <measure dir>/tables/screen_keys_<LST>.csv once (a key file is never appended to or overwritten). Returns it."""
+    p = meas.keys()
+    if os.path.exists(p):
+        raise refusal(f'{p} already exists - a measurement keys its screens once')
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p + '.part', 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=KEY_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+    os.replace(p + '.part', p)
+    return p
+
+
+def screen_key_problems(key, screen, plain, pbcorr):
+    """[] when the screen and the two files a dewarp would start from are, byte for byte (md5), the ones the key was made
+    for; else one line per difference (gate G-A12; never matched by name or time)."""
+    out = []
+    for what, path, want, was in (('screen', screen, key.get('screen_md5'), os.path.join('<measurement>', key.get('screen') or '')),
+                                  ('master', plain, key.get('master_md5'), key.get('master')),
+                                  ('pbcorr sibling', pbcorr, key.get('pbcorr_md5'), key.get('pbcorr'))):
+        if not os.path.isfile(path):
+            out.append(f'{what} {path} missing')
+            continue
+        got = md5(path)
+        if got != want:
+            out.append(f'{what} {path} md5 {got} != the key {want} (measured: {was})')
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------------
