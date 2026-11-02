@@ -5,11 +5,13 @@ the plan serves the production run directory itself (only once paths.PRODUCTION_
 approved); otherwise it is a PARITY plan: every file serve writes goes under ``<out>/<tier>/<run name>`` (deep: a mirror of
 the served run, lib/serve/mirror.py; sub-LST: the cumulative build and swap; snapshot and forced pages: a byte copy), the
 hub registry and page under ``<out>/review_hub`` (written by lib/serve/hub: build_review_hub.py hard-codes its directory),
-the shared lists under ``<out>/review_lists``, and every port is bound at
-port + ``--port-offset`` (>= serve.PARITY_PORT_OFFSET_MIN; the cross-tier link strings keep the production ports so pages
-compare). The Jupiter pages read their production directories directly (read-only servers) in both modes.
+the shared lists under ``<out>/review_lists``, and every port is shifted by ``--port-offset`` (>= serve.PARITY_PORT_OFFSET_MIN;
+the cross-tier link strings keep the production ports so pages compare): a review page is registered as p<port + offset> in
+``<out>/two_port`` (lib/serve/register.py), served by a parity two-port server on serve.HUB_PORT / INSPECTION_HUB_PORT +
+offset; the Jupiter pages bind port + offset and read their production directories directly (read-only servers).
 
-Argv per page family reproduces the launchers exactly (orders included):
+Argv per page family reproduces the launchers exactly (orders included); a review page's registry entry carries it without
+'--port' (register.page_entry), as the production entries do:
   deep review single  p3s3_serve_stokes.sh:79      --run --queue --labels-dir --catalog-dir --port --title
                       --mchain-queue --mchain-catalog-dir (the multiples chain, Gregg 2026-10-27: exopipe_ops 4c42f91;
                       the two-port registry entries p8766/p8768 - no launcher passes them)
@@ -21,7 +23,8 @@ Argv per page family reproduces the launchers exactly (orders included):
   snapshot review     snapshot_serve.sh:72-76      --run --queue --catalog-dir --port --default-fp-reason --loc-dir
                       --loc-offsets --title --sibling x3
   snapshot forced     snapshot_forced_serve_20261007.sh:49-51  --run --queue --catalog-dir --port --loc-offsets
-                      --default-fp-reason --sibling (what each other forced port serves NOW) --title
+                      --default-fp-reason --sibling (what each other forced page serves AFTER this serve: its registry
+                      entry's run or the run this serve registers for it, snapshot_forced_gen5_serve_20261026.sh:47-56) --title
   jupiter             jupiter_server.py ROOT PORT (cwd ops); python -m http.server PORT --bind 127.0.0.1 --directory DIR
 plus, in a parity plan only, --lists-dir <out>/review_lists on classify pages (spec 7.2).
 """
@@ -30,7 +33,7 @@ import os
 import re
 
 from exopipe.phase3.core.record import Refusal
-from exopipe.phase3.lib.serve import procs, scripts
+from exopipe.phase3.lib.serve import scripts
 
 SERVER_DEFAULT_FP_REASON = 'bilobe'      # classify_transients.py:2438 (the in-place server's own default)
 # the order of the key=value arguments each launcher passes to build_review_hub.py --set (the registry entry's key order)
@@ -108,6 +111,7 @@ class Plan:
     def __init__(self):
         self.gates = []          # [(gate, message)] refusals found while planning (raised by the caller unless dry-run)
         self.notes = []
+        self.forced_after = {}   # forced page key -> the run this serve registers for it (forced_siblings)
 
     def refuse_later(self, gate, msg):
         self.gates.append((gate, msg))
@@ -138,22 +142,28 @@ class Plan:
         return t.format(tier_text=S.DEEP_TIER_TEXT, S=page.stokes, label=self.label or '', utc=utc, lsts=self.lsts_text,
                         what=S.SNAPSHOT_WHAT.get(page.kind, ''))
 
+    def registered_run(self, page):
+        """The --run of the page's entry p<port> in this plan's two-port registry (register.registry_dir), or None."""
+        from exopipe.phase3.lib.serve import register
+        e = register.registered_entry(register.registry_dir(self), f'p{page.port}')
+        a = (e or {}).get('argv') or []
+        i = a.index('--run') + 1 if '--run' in a else len(a)
+        return a[i] if i < len(a) else None
+
     def forced_siblings(self, page):
-        """--sibling args of a forced page: each OTHER forced port's catalogue directory as served NOW (its server's
-        --catalog-dir from /proc); a port with no review server gives no link (snapshot_forced_serve_20261007.sh:35-41)."""
+        """--sibling args of a forced page: each OTHER forced page's catalogue view as served AFTER this serve - the run this
+        serve registers for it (self.forced_after) or else the run its registry entry serves now - in the forced pages'
+        order (snapshot_forced_gen5_serve_20261026.sh:47-56, '<port>:<run>/source_catalogs_<S>:<label>'); a page with
+        neither gives no link."""
         S = _CFG().serve
         out = []
         for o in self.all_pages:
             if o.family != 'forced' or o.key == page.key:
                 continue
-            for pid in procs.listeners(o.port):
-                info = procs.proc_info(pid)
-                if procs.is_review_server(info) and procs.argv_value(info['argv'], '--port') == str(o.port):
-                    cd = procs.argv_value(info['argv'], '--catalog-dir')
-                    if cd:
-                        T = '10-s' if o.kind == '10s' else '1-min'
-                        out += ['--sibling', f'{o.port}:{cd}:{S.FORCED_SIBLING_LABEL.format(S=o.stokes, T=T)}']
-                    break
+            run = self.forced_after.get(o.key) or self.registered_run(o)
+            if run:
+                T = '10-s' if o.kind == '10s' else '1-min'
+                out += ['--sibling', f'{o.port}:{o.at("catalog", run)}:{S.FORCED_SIBLING_LABEL.format(S=o.stokes, T=T)}']
         return out
 
     def argv(self, page, utc, root=None):

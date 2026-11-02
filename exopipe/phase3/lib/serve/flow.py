@@ -1,10 +1,11 @@
-"""Stage implementations shared by the three tiers: test (G1, G17, App probe), start (one unit per page), twins, hub,
-verify; the record chain between stages run in separate invocations; the dry-run plan printer.
+"""Stage implementations shared by the three tiers: test (G1, G17, App probe), start (the ONE registration of the pages on
+the two-port server, then one unit per page: its build state and its served_page record), hub, verify; the record chain between
+stages run in separate invocations; the dry-run plan printer.
 
 State passed between stages of one invocation (``state`` dict):
   state['refused'][page.key]  reason a page cannot be served (an earlier stage refused its queue or view)
   state['expected'][page.key] {'n', 'kind', ...} expected index sources (test stage)
-  state['served'][page.key]   (record path, record) of the page served in this invocation
+  state['served'][page.key]   (record path, record) of the page registered and built in this invocation
 """
 import json
 import os
@@ -183,58 +184,120 @@ def expected_from_record(run, unit_name, what):
     return (rec.get('meta') or {}).get('expected') or {}, (rec.get('meta') or {}).get('refused_pages') or {}
 
 
-# ---- start / twins ----------------------------------------------------------------------------------------------------
+# ---- start: the ONE registration and each page's build ------------------------------------------------------------------
+def start_checks(plan, pg, state, U):
+    """(refusal or None, expected sources) of a page before the registration: an earlier stage's refusal, the expected
+    sources of the test stage, and for deep G17 again (review 2026-10-14 M1: the exclusions or the page folders may have
+    changed since the test stage; sub-LST decides before its swap, sublst_build.carry_swap_stage)."""
+    if pg.key in state['refused']:
+        return state['refused'][pg.key], None
+    exp = state['expected'].get(pg.key)
+    if exp is None:
+        return f'page {pg.key}: no expected source count (the test stage did not pass for it)', None
+    if (plan.tier == 'deep' and pg.program == 'classify' and pg.family == 'review'
+            and exclusion_gate.refuses(plan.tier, plan.family)):
+        scan = exclusion_gate.scan_server_page(pg, U)
+        if scan.hits:
+            return (f'G17 serve-time exclusion gate at start: {scan.summary()} - NOT registered (the page\'s registry entry '
+                    f'and its build stay as they are)'), None
+    return None, exp
+
+
 def start_stage(run, plan, state, root=None, utc=None):
-    """One unit per selected page: replace its server and record it (class served_page)."""
+    """REGISTER the selected pages on the two-port server (production since 2026-10-22: no review page has a server of its
+    own): each page's checks (start_checks), then ONE registration of every page that passed and each page's build
+    (register_pages). A page refused here keeps its registry entry; a page refused for anything but NO-INPUT keeps its run's
+    publish hold standing (its previous build stays held)."""
+    from exopipe.phase3.lib.serve import register
     utc = utc or common.utc_text()
-    for pg in plan.pages:
-        with run.unit(pg.unit, stage='start', tier=plan.tier, page=pg.key, port=pg.port, parity=plan.parity) as u:
-            if pg.key in state['refused']:
-                why = state['refused'][pg.key]
-                if why.startswith('NO-INPUT: '):          # e.g. no multi-integration source: the page is not served
-                    raise recmod.NoInput(why[len('NO-INPUT: '):])     # (sublst_cumulative.sh:80, 'continue', not a refusal)
-                u.refuse(why)
-            exp = state['expected'].get(pg.key)
-            if exp is None:
-                u.refuse(f'page {pg.key}: no expected source count (the test stage did not pass for it)')
-            # G17 again just before the server is replaced (review 2026-10-14 M1): the exclusions or the page folders may
-            # have changed since the test stage. Deep only: sub-LST decides before its swap (sublst_build.carry_swap_stage)
-            if (plan.tier == 'deep' and pg.program == 'classify' and pg.family == 'review'
-                    and exclusion_gate.refuses(plan.tier, plan.family)):
-                scan = exclusion_gate.scan_server_page(pg, root or plan.U)
-                if scan.hits:
-                    u.refuse(f'G17 serve-time exclusion gate at start: {scan.summary()} - NOT served (the page\'s current '
-                             f'server keeps running)')
-            notes = []
-            q = pg.at('queue', root or plan.U)
-            u.add_input(q)
-            if pg.at('mchain_queue', root or plan.U):
-                u.add_input(pg.at('mchain_queue', root or plan.U))
-            path, rec = servers.replace(plan, pg, utc, root=root, expected=exp, notes=notes)
-            for n in notes:
-                u.note(n)
-            u.add_output(path, 'served_page')
-            state['served'][pg.key] = (path, rec)
-            common.inc_log(root or plan.U, f'serving {pg.key} on {pg.port}: {len(common.queue_ids(q))} ids (exopipe3 serve)')
+    U = root or plan.U
+
+    def prepare(u):
+        items, refused = [], {}
+        for pg in plan.pages:
+            why, exp = start_checks(plan, pg, state, U)
+            if why is not None:
+                refused[pg.key] = why
+                u.note(f'page {pg.key} not registered: {why}')
+                continue
+            inputs = [x for x in (pg.at('queue', U), pg.at('mchain_queue', U)) if x]
+            items.append((pg, U, register.page_entry(plan, pg, utc, root), exp, inputs))
+        keep = {U} if any(not str(w).startswith('NO-INPUT: ') for w in refused.values()) else set()
+        return items, refused, keep
+    state['served'].update(register_pages(run, plan, prepare, f'{plan.tier}_{plan.run_name}_register'))
 
 
-def twins_stage(run, plan, state, root=None):
+def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
+    """THE ONE REGISTRATION of a serve (lib/serve/register.py) and each registered page's build.
+    Unit ``unit_name`` (class page_registration): ``prepare(u)`` -> (items, refused, keep_holds) - items [(page, run dir,
+    entry, expected, inputs)] of the pages that passed their checks, refused {page key: reason}, keep_holds the run dirs whose
+    publish hold stays - then the server check (G16 / G13), the registration checked by the server's loader (nothing written
+    on a refusal), the publish hold of each other run lifted (register.lift_hold), and ONE register.write: one registry change.
+    Then one unit per page (page.unit): a refused page refuses (or ends no-input) with its reason; a registered page waits on
+    its build state (register.wait_built) and writes its served_page record. Returns {page key: (record path, record)}."""
+    from exopipe.phase3.lib.serve import register
+    d, ports = register.registry_dir(plan), register.listeners(plan)
+    got = {'items': [], 'refused': {}, 'res': None}
+    with run.unit(unit_name, stage=stage, tier=plan.tier, family=plan.family, registry=d, listeners=list(ports),
+                  parity=plan.parity) as u:
+        items, refused, keep = prepare(u)
+        got['items'], got['refused'] = items, refused
+        if not items:
+            raise recmod.NoInput('no page passed its checks - nothing registered (the registry is unchanged)')
+        register.check_server(ports, d)
+        prep = register.prepare([it[2] for it in items], d)
+        holds = []
+        for r in dict.fromkeys(it[1] for it in items):
+            hf = register.hold_file(r)
+            if r in keep:
+                holds.append({'run': r, 'kept': hf if os.path.lexists(hf) else None})
+                if os.path.lexists(hf):
+                    u.note(f'publish hold {hf} KEPT: a page of the run was refused - its previous build stays held')
+            else:
+                lifted = register.lift_hold(r)
+                holds.append({'run': r, 'lifted': lifted})
+                if lifted:
+                    u.note(f'publish hold of {r} lifted right before the registration ({lifted})')
+        res = register.write(prep)
+        res['record'] = register.registration_record(plan.out, unit_name, res, holds)
+        got['res'] = res
+        u.add_output(res['record'], 'page_registration')
+        u.note(f'ONE registration of {len(items)} page(s) in {res["registry"]}: {", ".join(e["id"] for e in res["entries"])} '
+               f'(registry state {res["previous_state"]} -> {res["state"]})')
+    why = None if u.status == 'done' else f'not registered: {u.name} ended {u.status} ({(u.reason or "")[:300]})'
+    served = {}
     for pg in plan.pages:
-        if not pg.twin:
+        if pg.key in got['refused']:
+            w = str(got['refused'][pg.key])
+            with run.unit(pg.unit, stage=stage, tier=plan.tier, page=pg.key, port=pg.port, parity=plan.parity) as pu:
+                if w.startswith('NO-INPUT: '):          # e.g. no multi-integration source: the page is not served
+                    raise recmod.NoInput(w[len('NO-INPUT: '):])     # (sublst_cumulative.sh:80, 'continue', not a refusal)
+                pu.refuse(w)
             continue
-        with run.unit(f'{pg.unit}_twin', stage='twins', tier=plan.tier, page=pg.key, port=pg.twin) as u:
-            if pg.key not in state['served']:
-                rec = recmod.load_record(run.out_root, 'serve', pg.unit)
-                if not rec or rec.get('status') != 'done':
-                    u.refuse(f'twin of {pg.key}: its judging page was not served (G15)')
-            notes = []
-            judge_rec = state['served'].get(pg.key, (None, {}))[1]
-            exp = {'n': judge_rec.get('expected_sources'), 'kind': judge_rec.get('expected_kind')} if judge_rec else \
-                state['expected'].get(pg.key)
-            path, rec = servers.start_twin(plan, pg, root=root, notes=notes, expected=exp)
-            for n in notes:
-                u.note(n)
-            u.add_output(path, 'served_page')
+        it = next((x for x in got['items'] if x[0].key == pg.key), None)
+        if it is None:
+            continue
+        _, root, entry, exp, inputs = it
+        with run.unit(pg.unit, stage=stage, tier=plan.tier, page=pg.key, port=pg.port, id=entry['id'],
+                      parity=plan.parity) as pu:
+            for x in inputs:
+                pu.add_input(x)
+            if why or got['res'] is None:
+                pu.refuse(why or 'not registered')
+            res = got['res']
+            merged = res['entries'][[e['id'] for e in res['entries']].index(entry['id'])]
+            build = register.wait_built(ports[0], merged, res['t'], d=d, log=pu.note)
+            rec = servers.registered_record(plan, pg, merged, res, build, root, exp)
+            path = servers.write_record(pg.record_path(), rec)
+            pu.add_output(path, 'served_page')
+            pu.note(f'page {pg.key} registered as {merged["id"]} and built from it ({build.get("build_s")} s; waited '
+                    f'{build["waited_s"]} s: {" -> ".join(build["states"])}): {rec["url"]}')
+            served[pg.key] = (path, rec)
+            if inc_log:
+                q = pg.at('queue', root)
+                common.inc_log(root, f'registered {merged["id"]} (page {pg.key}) on the two-port server: '
+                                     f'{len(common.queue_ids(q)) if q and os.path.exists(q) else 0} ids (exopipe3 serve)')
+    return served
 
 
 # ---- hub --------------------------------------------------------------------------------------------------------------
@@ -282,17 +345,16 @@ def _hub_entry_unserved(run, plan, pg, state):
 
 # ---- verify -----------------------------------------------------------------------------------------------------------
 def verify_stage(run, plan):
-    """Re-test every selected page's served_page record (and its twin's) now: live, same_process, sources_listed."""
+    """Re-test every selected page's served_page record now: live, same_process, sources_listed."""
     with run.unit(f'{plan.tier}_{plan.run_name}_verify', stage='verify', tier=plan.tier) as u:
         n = 0
         for pg in plan.pages:
-            for port in [pg.port] + ([pg.twin] if pg.twin else []):
-                p = pg.record_path(port)
-                if os.path.exists(p):
-                    u.add_output(p, 'served_page')
-                    n += 1
-                else:
-                    u.note(f'no served_page record for {pg.key} on {port}')
+            p = pg.record_path()
+            if os.path.exists(p):
+                u.add_output(p, 'served_page')
+                n += 1
+            else:
+                u.note(f'no served_page record for {pg.key} ({pg.port})')
         if not n:
             raise recmod.NoInput('verify: no served_page record of the selected pages under --out')
 
@@ -311,12 +373,32 @@ def describe_port(port):
     return '; '.join(out)
 
 
+def describe_page(plan, pg):
+    """What the plan's two-port registry holds for the page now (read only)."""
+    from exopipe.phase3.lib.serve import register
+    e = register.registered_entry(register.registry_dir(plan), f'p{pg.port}')
+    if e is None:
+        return 'not registered'
+    a = e.get('argv') or []
+    run = a[a.index('--run') + 1] if '--run' in a and a.index('--run') + 1 < len(a) else '?'
+    return f'registered, --run {run}' + ('; greenlit (inspection listener)' if e.get('greenlit') else '')
+
+
 def print_plan_header(plan, stages):
+    from exopipe.phase3.lib.serve import register
     print(f'PLAN exopipe3 serve --tier {plan.tier}: run {plan.run_name} '
           f'({"PARITY into " + plan.out if plan.parity else "PRODUCTION"}); stages {", ".join(stages)}')
     if plan.U_src:
         print(f'  served run (read): {plan.U_src}' + ('' if os.path.isdir(plan.U_src) else '   [ABSENT]'))
         print(f'  writes under:      {plan.U}')
+        hf = register.hold_file(plan.U_src)
+        if os.path.lexists(hf):
+            print(f'  publish hold:      {hf} stands (lifted right before the run\'s registration)')
+    d, ports = register.registry_dir(plan), register.listeners(plan)
+    st = register.server_status(ports[0], timeout=10)
+    print(f'  pages registered in {register.files(d)[0]} (one registration); two-port server on {ports[0]} / {ports[1]}: '
+          + ('not answering - nothing would be registered (serve never starts one)' if st is None else
+             f'answering, reads {st.get("registry")}'))
     print(f'  hub:               {plan.hub_dir} (served by the two-port server on both listeners)')
     if plan.tier == 'sublst':
         print(f'  LSTs:              {plan.lsts_text or "(none found)"}')

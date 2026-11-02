@@ -1,20 +1,21 @@
-"""Replace, twin, restart and stop the servers of serve's ports; the served_page records.
+"""The served_page records of registered review pages; the servers of their own (the Jupiter pages) and --restart / --stop.
 
-replace(plan, page, ...)   G13 port ownership -> G14 exact-pid stop of every server of the page's program on the port and
-                           of the port's listener -> start (argv/env/cwd/log from the plan) -> G16/G24 readiness -> record.
-                           Ports: p3s3_serve_stokes.sh:63-79, p3s3_serve_multiples.sh:139-152, sublst_serve.sh:118-140,
-                           sublst_cumulative.sh:129-141, snapshot_serve.sh:52-76, snapshot_forced_serve_20261007.sh:42-58.
-start_twin(plan, page)     restart_inspection_twin.sh (whole script): exactly one judging server on the port (G15); its
-                           argv cloned with --inspect after the script, the twin port and the read-only title; the old twin
-                           stopped by exact pid; started with the JUDGING server's cwd and environment (M11); readiness.
+registered_record(...)     the served_page record of a page REGISTERED on the two-port server (lib/serve/register.py; production
+                           since 2026-10-22): its entry (as merged into the registry), the registry, the listener and URL, its
+                           build state when serve saw it built, run, queue sha1, view digest, expected sources. Its content
+                           tests read the registry and the LIVE listener (the page, the server's build state).
+replace(plan, page, ...)   a page with a server OF ITS OWN (the Jupiter pages 8800 / 8801: jupiter_server.py, http.server): G13
+                           port ownership -> G14 exact-pid stop of every server of the page's program on the port and of the
+                           port's listener -> start (argv/env/cwd/log from the plan) -> G16/G24 readiness -> record. A review
+                           page (program classify) is never given a server of its own: it is registered (the per-port review
+                           servers and their inspection twins were retired by production on 2026-10-22).
 restart_port / stop_port   restart_server_same_argv.sh, for every port serve owns (serve.PAGES, their twins; refactor-chat
                            decision: one owner of ports and the hub): identity, argv / cwd / stdout log AND environment from
                            /proc, exact-pid stop, relaunch appending to the same log (the environment was the caller's in
-                           production; copying it from /proc is the M11 rule the twins already follow).
-A served page's record <out>/_records/serve/pages/<tier>_<port>.json (class served_page) holds port, pid, argv, cwd, the
-SERVER_ENV values, run, queue sha1, view digest, expected_sources and log; its content tests probe the live port.
+                           production; copying it from /proc is the M11 rule). A registered page has no process to restart:
+                           serve it again (one registration) or touch the registry.
+A served page's record <out>/_records/serve/pages/<tier>_<port>.json (class served_page).
 """
-import csv
 import fnmatch
 import json
 import os
@@ -118,8 +119,12 @@ def start_page(plan, page, utc, root=None):
 
 
 def replace(plan, page, utc, root=None, expected=None, notes=None, stop_timeout=None):
-    """Replace the server of ``page``; returns (record path, record). Raises Refusal on a gate."""
+    """Replace the server of ``page`` (a page with a server of its own); returns (record path, record). Raises Refusal on a
+    gate, and for a review page: it is registered on the two-port server (lib/serve/register.py), never started on a port."""
     S = _S()
+    if page.program == 'classify':
+        raise Refusal(f'page {page.key}: a review page is registered on the two-port server (lib/serve/register.py), never '
+                      f'given a server of its own on {page.port} (the per-port review servers were retired 2026-10-22)')
     notes = notes if notes is not None else []
     stops = to_stop(plan, page.port, page.program)
     _stop_all(stops, notes, stop_timeout)
@@ -138,51 +143,27 @@ def replace(plan, page, utc, root=None, expected=None, notes=None, stop_timeout=
     return write_record(page.record_path(), rec), rec
 
 
-def greenlit_label(port):
-    try:
-        with open(_S().INSPECTION_GREENLIT) as f:
-            return next((r['label'] for r in csv.DictReader(f) if r['port'] == str(port)), '')
-    except OSError:
-        return ''
-
-
-def start_twin(plan, page, root=None, notes=None, expected=None):
-    """Restart the read-only inspection twin of ``page`` from the judging server's own argv/cwd/environ."""
-    S = _S()
-    notes = notes if notes is not None else []
-    jp, ip = page.port, page.twin
-    judges = [s for s in procs.review_servers() if s['port'] == str(jp) and not s['inspect']]
-    if len(judges) != 1:
-        raise Refusal(f'G15 twin source: {len(judges)} judging servers on {jp} - inspection twin {ip} NOT restarted '
-                      f'(restart_inspection_twin.sh:30-33)')
-    j = judges[0]
-    cwd = j['cwd']
-    run = procs.argv_value(j['argv'], '--run')
-    new = list(j['argv'])
-    new[new.index('--port') + 1] = str(ip)
-    si = next(i for i, x in enumerate(new) if x.endswith(S.SERVER_IDENTITY['classify'][1]))
-    new.insert(si + 1, '--inspect')
-    if '--title' in new:
-        t = new.index('--title') + 1
-        new[t] = new[t] + S.TWIN_TITLE_SUFFIX
-    else:
-        lab = greenlit_label(page.twin_cfg)
-        new += ['--title', S.TWIN_TITLE_NO_TITLE.format(label_dash=f'{lab} - ' if lab else '',
-                                                        run_name=os.path.basename(os.path.normpath(run)))]
-    stops = to_stop(plan, ip, 'classify', inspect=True)
-    _stop_all(stops, notes)
-    if procs.port_in_use(ip):
-        raise Refusal(f'G13 twin port {ip} is still held after the exact-pid stops - not started')
-    env = procs.environ(j['pid'])
-    log = os.path.join(run, S.TWIN_LOG.format(port=page.twin_cfg))
-    p = procs.start(new, cwd, env, log, append=True)
-    ok, detail = procs.wait_ready(ip, p, S.READY_TIMEOUT_S[plan.tier], S.READY_POLL_S, log)
-    if not ok:
-        raise Refusal(f'G16 readiness: inspection twin {ip} (twin of {jp}): {detail}')
-    notes.append(f'inspection twin {ip} serving (twin of {jp}, {run}) pid {p.pid}')
-    env_extra = {k: env.get(k) for k in plan.server_env_extra()}
-    rec = _record(plan, page, p.pid, new, cwd, env_extra, root, expected, log, twin_of=jp)
-    return write_record(page.record_path(port=ip), rec), rec
+def registered_record(plan, page, entry, reg, build, root=None, expected=None):
+    """The served_page record of ``page`` registered as ``entry`` (merged form) by the registration ``reg`` (register.register's
+    result plus 'record', the registration record's path) and seen built as ``build`` (register.wait_built)."""
+    from exopipe.phase3.lib.serve import register
+    U = root or page.root
+    q, cat = page.at('queue', U), page.at('catalog', U)
+    mq, mcat = page.at('mchain_queue', U), page.at('mchain_catalog', U)
+    review, inspection = register.listeners(plan)
+    return {'tier': plan.tier, 'family': page.family, 'program': page.program, 'page': page.key, 'registered': True,
+            'id': entry['id'], 'port': page.port, 'entry': entry, 'entry_md5': build.get('entry'),
+            'registry': reg['registry'], 'registered_file': reg['registered'], 'registration': reg.get('record'),
+            'registry_state': reg['state'], 'listener': review, 'inspection_listener': inspection,
+            'url': f'http://127.0.0.1:{review}/p/{entry["id"]}/', 'greenlit': bool(entry.get('greenlit')),
+            'run': U, 'run_name': page.run_name, 'argv': entry['argv'], 'env': entry.get('env'),
+            'queue': q, 'queue_sha1': common.sha1_file(q) if q and os.path.exists(q) else None,
+            'catalog': cat, 'view_digest': common.dir_digest(cat) if cat and os.path.isdir(cat) else None,
+            'mchain_queue': mq, 'mchain_queue_sha1': common.sha1_file(mq) if mq and os.path.exists(mq) else None,
+            'mchain_catalog': mcat,
+            'mchain_view_digest': common.dir_digest(mcat) if mcat and os.path.isdir(mcat) else None,
+            'expected_sources': (expected or {}).get('n'), 'expected_kind': (expected or {}).get('kind'),
+            'build': build, 'started': utcnow(), 'parity': plan.parity}
 
 
 # ---- --restart / --stop ---------------------------------------------------------------------------------------------
@@ -251,7 +232,9 @@ def restart_port(port, out, notes, offset=0):
     tier, key, program = _owned(port, offset)
     infos = _servers_on(port, program)
     if not infos:
-        raise Refusal(f'--restart {port}: no {program} server on the port')
+        raise Refusal(f'--restart {port}: no {program} server on the port' + (
+            ' (a review page is registered on the two-port server since 2026-10-22: serve it again - one registration - to '
+            'rebuild it)' if program == 'classify' else ''))
     recs = []
     for info in infos:
         _window_guard(info, out, program)

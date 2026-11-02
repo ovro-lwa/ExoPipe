@@ -1,7 +1,11 @@
-"""serve --tier deep (review pages 8766/8768/8772/8773 + twins 8796/8797/8793/8794): views -> test -> carry -> start ->
-twins -> hub -> verify.
+"""serve --tier deep (review pages p8766/p8768/p8772/p8773 on the two-port server; inspection: the greenlit entries on its
+inspection listener, the former twins' ports 8796/8797/8793/8794 their inspection_legacy_port): views -> test -> carry ->
+start -> hub -> verify.
 
-views  (unit deep_<run>_views)  the parity mirror (parity only); the pages merge must be current (views.deep_merge_current:
+views  (unit deep_<run>_views)  the parity mirror (parity only); THE PUBLISH HOLD set on the served run (register.set_hold,
+       <run>/PUBLISH_IN_PROGRESS.txt; a hold that stands is kept): the two-port server keeps the run's pages on their builds
+       while this serve rewrites the run in place, until the run's registration lifts it (a refused stage leaves it standing,
+       so the pages keep their previous builds); the pages merge must be current (views.deep_merge_current:
        pages owns the review_dir merge, decision 6 group 12); per selected singles Stokes: section the wb/sb tier queues
        (p3s3_serve_tier.sh:13-32), p3s3_stokes_queue.py in place (p3s3_serve_stokes.sh:11), the per-Stokes view
        (p3s3_serve_stokes.sh:15-55, review_dir per serve.DEEP_VIEW_REVIEW_DIR); per selected multiples Stokes: the fork
@@ -10,17 +14,19 @@ views  (unit deep_<run>_views)  the parity mirror (parity only); the pages merge
 test   (unit deep_<run>_test)   G1, G17 per page (serve.EXCLUSION_GATE_TIERS), the content tests again, the
        App probe of every page (expected index sources; an unexplained 404 refuses the page).
 carry  (unit deep_<run>_carry, only with --carry-from)  deep_carry_judgements.py OLD U in place (G18).
-start  (one unit per page)       G13 / G14 / G16 / G24 in servers.replace; record class served_page.
-twins  (one unit per twin)       restart_inspection_twin.sh port (G15, M11 environment).
-hub    (unit deep_<run>_hub)     build_review_hub.py --set per served page (locked; parity: planned) + inspection hub.
+start  (unit deep_<run>_register, then one unit per page)  the ONE registration of the pages that passed (flow.register_pages:
+       G16 / G13 server check, the hold lifted, register.write - class page_registration), then each page's build state
+       (G24 build failed, G16 no progress / held, G13 replaced) and its served_page record (deep_reregister_after_publish_20261031.py,
+       p3s3_serve_stokes.sh with P3S3_NO_SERVER=1: no server of its own).
+hub    (unit deep_<run>_hub)     build_review_hub.py --set per served page (locked; parity: planned).
 verify (unit deep_<run>_verify)  the served_page tests now.
 """
 import os
 
 from exopipe.phase3.core.record import Refusal
-from exopipe.phase3.lib.serve import common, exclusion_gate, flow, journals, mirror, queues, scripts, views
+from exopipe.phase3.lib.serve import common, exclusion_gate, flow, journals, mirror, queues, register, scripts, views
 
-STAGES = ('views', 'test', 'carry', 'start', 'twins', 'hub', 'verify')
+STAGES = ('views', 'test', 'carry', 'start', 'hub', 'verify')
 
 
 def _S():
@@ -44,6 +50,9 @@ def views_stage(run, plan, state):
         if plan.parity:
             m = mirror.build(plan.U_src, U)
             u.note(f'parity mirror of {plan.U_src}: copied {", ".join(m["copied"])}; {m["linked"]} entries linked')
+        hp, now = register.set_hold(U, S.PUBLISH_HOLD_TEXT.format(utc=common.utc_text()))
+        u.note(f'publish hold {hp} ' + ('set: the run\'s pages keep their builds until its registration lifts it' if now else
+                                        'stands (kept with its own text; lifted at the run\'s registration)'))
         ok, detail = views.deep_merge_current(U)
         u.check('pages_merge_current', ok, detail=detail)
         if not ok:
@@ -144,8 +153,6 @@ def run(args, run, plan, stages):
             return
     if 'start' in stages:
         flow.start_stage(run, plan, state)
-    if 'twins' in stages and not getattr(args, 'no_twins', False):
-        flow.twins_stage(run, plan, state)
     if 'hub' in stages and not getattr(args, 'no_hub', False):
         flow.hub_stage(run, plan, state)
     if 'verify' in stages:
