@@ -7,10 +7,11 @@ Production (snapshot_fleet_node_v9.sh:362-371, snapshot_lightcurve_backfill.sh:6
 Here: the same script and arguments under the site interpreter 'py36' (the production interpreter, Python 3.6.13); PROCS
 subbands at a time, each subband in one thread that runs the Stokes I process and then the Stokes V process (the V pass reads
 FLUXSCAL / NREFSCAL from the I table in the same output directory, LC:180-192; P3_LC_WAIT_I_S = WAIT_I_TABLE_S = 0 because
-the I table exists before V starts). --search-frames (clv15 55469ba, the 2026-11-01 regeneration) when curves.SEARCH_FRAMES:
-the table holds exactly the search's own frame list (<proto-root>/<cell>/noise_<sb>_<S>_median.csv) - the fleet's and the
-backfill's plain call sample every discovered frame. --run-dir is passed only when curves.CHAIN_RUN_DIR is set (production
-passes none); --samples-dir only when paths.CLV15_ROOT differs from the script's own directory (its default, LC:257). The core affinity is
+the I table exists before V starts). --search-frames (clv15 55469ba: the 2026-11-01 regeneration's opt-in) only for a pair
+plan.pair_plan gives it - curves.SEARCH_FRAMES and the search wrote the pair's frame list: the table holds exactly that list
+(<proto-root>/<cell>/noise_<sb>_<S>_median.csv); production's fleet and backfill call (the default) samples every discovered
+frame. --run-dir is passed only when curves.CHAIN_RUN_DIR is set (production passes none); --samples-dir only when
+paths.CLV15_ROOT differs from the script's own directory (its default, LC:257). The core affinity is
 inherited from `exopipe3 --cores`. core.legacy.run clears inherited P3_* variables, applies runner.ENV_DEFAULTS
 (NUMPY_MADVISE_HUGEPAGE=0, which the backfill lacked), installs the parity guard in the child under --parity, and records the
 sha1 of every legacy module the child imported (res.fingerprint; added to the unit record as meta 'legacy_code').
@@ -49,13 +50,13 @@ def table_path(out_dir, cell, sb, st):
     return os.path.join(out_dir, f'{cell}_{sb}_{st}_lightcurves.fits')
 
 
-def argv(C, paths_cfg, script, cell, sb, st, stage_sb, out_dir):
-    """The production argument list (v9:366-370) for one (subband, Stokes), with the 2026-11-01 regeneration's
-    --search-frames (clv15 55469ba) when curves.SEARCH_FRAMES."""
+def argv(C, paths_cfg, script, cell, sb, st, stage_sb, out_dir, search_frames=False):
+    """The production argument list (v9:366-370) for one (subband, Stokes); with ``search_frames`` (plan.pair_plan) the
+    2026-11-01 regeneration's --search-frames (clv15 55469ba): the search's own frame list."""
     a = (['extract', '--cell', cell, '--subband', sb] + (['--stage', stage_sb] if stage_sb else [])   # none: archive frames
          + ['--proto-root', paths_cfg.SNAPSHOT_FLEET_OUT, '--master-catalogs', C.MASTER_CATALOG_DIR, '--out', out_dir,
             '--stokes', st])
-    if C.SEARCH_FRAMES:          # R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE: the search's own frame list
+    if search_frames:
         a += ['--search-frames']
     if C.CHAIN_RUN_DIR:
         a += ['--run-dir', C.CHAIN_RUN_DIR]
@@ -125,12 +126,14 @@ def extract_subband(spec):
     return out
 
 
-def make_spec(C, paths_cfg, script, python, cell, sb, stokes, stage_sb, out_dir):
+def make_spec(C, paths_cfg, script, python, cell, sb, stokes, stage_sb, out_dir, search_frames=None):
+    """One subband's extraction: ``search_frames`` {Stokes: bool} (plan.pair_plan; default none with the option)."""
     os.makedirs(out_dir, exist_ok=True)
+    sf = search_frames or {}
     return {'cell': cell, 'subband': sb, 'stokes': list(stokes), 'out_dir': out_dir, 'script': script,
             'python': python, 'env': child_env(C, paths_cfg), 'skip_v_without_i': bool(C.SKIP_V_WITHOUT_I),
             'tail_lines': int(C.LOG_TAIL_LINES),
-            'argv': {st: argv(C, paths_cfg, script, cell, sb, st, stage_sb, out_dir) for st in stokes}}
+            'argv': {st: argv(C, paths_cfg, script, cell, sb, st, stage_sb, out_dir, bool(sf.get(st))) for st in stokes}}
 
 
 def run_all(specs, procs, unit=None, on_done=None):
@@ -322,3 +325,17 @@ def table_facts(table, st, stage_sb, admission_csv, samples_dir, samples, cell=N
             'missing_sample_files': [fn for _tag, fn in samples if not os.path.exists(os.path.join(samples_dir, fn))],
             'unstaged_frames': sum(1 for t in ts if t not in staged), 'naxis': naxis, 'frame_header': header,
             'mixed_grid_frames': mixed, 'discovered_not_sampled': len(set(staged) - set(ts))}
+
+
+def frame_list(table):
+    """FRAMES.ts of a light-curve table, in order."""
+    from astropy.io import fits
+    with fits.open(table, memmap=True) as h:
+        return [x.decode().strip() if isinstance(x, bytes) else str(x).strip() for x in h['FRAMES'].data['ts']]
+
+
+def frame_list_change(previous, new):
+    """The frame counts of a --supersede (run record): {'previous', 'new', 'common', 'dropped', 'added'} - frames of the
+    replaced table, of the new one, shared, only in the replaced one, only in the new one."""
+    a, b = set(frame_list(previous)), set(frame_list(new))
+    return {'previous': len(a), 'new': len(b), 'common': len(a & b), 'dropped': len(a - b), 'added': len(b - a)}

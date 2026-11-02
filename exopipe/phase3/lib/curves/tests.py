@@ -28,28 +28,35 @@ its content against the writer, clv15/phase3_snapshot_lightcurves.py (LC), and t
   parent_catalogue  MCATSHA (clv15 e0785b7) = sha256 of the Master catalogue of the rows (regeneration test T1, :57-58); a
                     table without the card passes on its rows alone, unless ctx require_mcatsha (the step: the current
                     extractor always writes it)
-  same_as_previous  only with ctx previous (the table a --supersede replaces): the frame list (ts, admitted) equals the
-                    previous table's, and FLUX and RMS are bit-identical (NaN-aware) at every row whose (ra, dec) is
+  same_as_previous  only with ctx previous (the table a --supersede replaces): at the frames both tables hold, the admitted
+                    flags are equal and FLUX and RMS are bit-identical (NaN-aware) at every row whose (ra, dec) is
                     bit-identical in it (regeneration tests T3 and T4, :78-99): a re-extraction from the same frames and
-                    flow fields reproduces the published values; a legitimate change needs --waive with Gregg's ruling
+                    flow fields reproduces the published values; a legitimate change needs --waive with Gregg's ruling.
+                    The frame list itself may change (e.g. a table of every discovered frame re-extracted with
+                    --search-frames): dropped / added frames are reported, no frame in common fails
+  integrations      at most one frame per integration - by each frame's DATE-OBS as the search recorded it (the admission
+                    table; ctx admission), its stamp only where no DATE-OBS is recorded - and at most MAX_FRAMES_PER_CELL
+                    frames (a table holding two Phase-1 runs' frames of one integration fails)
   provenance  (LC6) PRODUCT, BUNIT, PBCORR False, PBMODEL 'model beam only', STAMP, NBINS, PBLIB, FLOWTREE, RUNDIR as
                     configured; MASTCAT, CODEVER, EXTRACT present                                    (LC:197-210; ledger 1231)
   frames also checks FRAMES.admitted against the search's admission table (a ts absent from it is admitted, LC:105-109,
                     :163) when that table exists (ctx admission; default paths.SNAPSHOT_FLEET_OUT/<cell>/admission_<sb>.csv;
                     regeneration test T3 without an old table, :103-107)
-  search_frames     FRAMES.ts is EXACTLY the search's own frame list of (subband, Stokes) - curves.SEARCH_FRAME_LIST under
-                    the cell's search outputs, its 'ts' column - no frame twice, none added, none missing (clv15
-                    55469ba --search-frames; the 2026-11-01 regeneration test LC-REGEN-TEST (b), exopipe_ops
-                    snapshot_lc_regen_20261101.py). A frame the search dropped (12h 2024-12-28: 14 / 26 frames of 27 / 69 MHz
-                    I that did not flow) or a second Phase-1 run's frame (FINDING-SNAPSHOT-LIGHTCURVE-TABLES-HOLD-DUPLICATE-
-                    RUN-FRAMES-20261028) fails; so does a table whose search list cannot be read (nothing to show it is the
-                    search's)
+  search_frames     only for a table extracted with --search-frames (ctx search_frames, the step's per-pair truth; default
+                    curves.SEARCH_FRAMES, False = production's plain call, every discovered frame): FRAMES.ts is EXACTLY
+                    the search's own frame list of (subband, Stokes) - curves.SEARCH_FRAME_LIST under the cell's search
+                    outputs, its 'ts' column - no frame twice, none added, none missing (clv15 55469ba --search-frames; the
+                    2026-11-01 regeneration test LC-REGEN-TEST (b), exopipe_ops snapshot_lc_regen_20261101.py). A frame the
+                    search dropped (12h 2024-12-28: 14 / 26 frames of 27 / 69 MHz I that did not flow) fails; so does a
+                    table whose search list cannot be read (nothing to show it is the search's) - except a night-refused
+                    pair (night-refusal record, no list), extracted with the plain call (B-70) and not compared
 
 Context keys (all optional): naxis=(NAXIS1, NAXIS2) of the frames; frame_header={card: value} of the first frame;
 sibling_i=path of the Stokes I table (default: the _I_ file beside a _V_ file); master_catalog=path (default from
 curves.MASTER_CATALOG_DIR); flowtree=path (default paths.SNAPSHOT_FLOW_ROOT); chain_rows=bool (default:
 curves.CHAIN_RUN_DIR set); admission=path ('' = not compared); require_mcatsha=bool; previous=path; search_dir=the cell's
-search output directory holding SEARCH_FRAME_LIST (default paths.SNAPSHOT_FLEET_OUT/<cell>).
+search output directory holding SEARCH_FRAME_LIST (default paths.SNAPSHOT_FLEET_OUT/<cell>); search_frames=bool (the table
+was extracted with --search-frames; default curves.SEARCH_FRAMES).
 The unit checks of the step (LC7 curves.complete, LC8 curves.no_excluded_products) live in steps/curves.py.
 """
 import datetime
@@ -244,17 +251,29 @@ def search_frame_list(search_dir, sb, st):
 
 
 @content_test(CLS, 'search_frames')
-def search_frames(path, search_dir=None, **ctx):
-    """FRAMES.ts holds exactly the frames of the search's own list, each once (module docstring; LC-REGEN-TEST (b) compares
-    the sets and counts repeats; the order is the frames test's: increasing ts, as the extractor sorts them)."""
+def search_frames(path, search_dir=None, search_frames=None, **ctx):
+    """Only for a table extracted with --search-frames (ctx search_frames, the step's per-pair truth; without it
+    curves.SEARCH_FRAMES): FRAMES.ts holds exactly the frames of the search's own list, each once (module docstring;
+    LC-REGEN-TEST (b) compares the sets and counts repeats; the order is the frames test's: increasing ts, as the extractor
+    sorts them). A table of the plain call (production's fleet and backfill, the default) is not compared: it holds every
+    discovered frame, also those the search dropped. A night-refused pair (night-refusal record, no list) is extracted with
+    the plain call under curves.SEARCH_FRAMES too (B-70) and is not compared either."""
     t = _load(path)
     tok = _tokens(t)
+    applies = bool(_C().SEARCH_FRAMES if search_frames is None else search_frames)
+    ts = [_s(x).strip() for x in t['FRAMES']['cols']['ts']]
+    if not applies:
+        return True, 'n/a', ('not compared: extracted with the plain call (every discovered frame; curves.SEARCH_FRAMES / '
+                             'ctx search_frames False)')
     if not search_dir:
         from exopipe.phase3.config import CFG
         search_dir = os.path.join(CFG.paths.SNAPSHOT_FLEET_OUT, f"{tok['lst']}_{tok['date']}")
     lp, want = search_frame_list(search_dir, tok['sb'], tok['st'])
-    ts = [_s(x).strip() for x in t['FRAMES']['cols']['ts']]
     if want is None:
+        nr = os.path.join(search_dir, f"nightrefused_{tok['sb']}_{tok['st']}_median.json")
+        if os.path.exists(nr):
+            return True, 'n/a', (f'not compared: the search refused the night ({os.path.basename(nr)}, no frame list) - the '
+                                 f'plain call, as today (B-70)')
         return False, len(ts), f'no search frame list {lp} to compare with: the frames cannot be shown to be the search\'s'
     extra, missing = sorted(set(ts) - set(want)), sorted(set(want) - set(ts))
     dup = len(ts) - len(set(ts))
@@ -263,6 +282,74 @@ def search_frames(path, search_dir=None, **ctx):
     return False, len(ts), (f'{len(ts)} frames != the search\'s {len(set(want))} ({os.path.basename(lp)}): {len(extra)} not in '
                             f'the search\'s list{" e.g. " + extra[0] if extra else ""}, {len(missing)} of the list missing'
                             f'{" e.g. " + missing[0] if missing else ""}, {dup} repeated')
+
+
+def _dateobs_unix(do):
+    """Unix seconds of an ISO DATE-OBS ('2024-12-28T13:44:42.9'); None when it does not parse."""
+    try:
+        whole, _, frac = (do or '').strip().partition('.')
+        t = datetime.datetime.strptime(whole, '%Y-%m-%dT%H:%M:%S')
+        return (t - _EPOCH).total_seconds() + (float('0.' + frac) if frac.isdigit() else 0.0)
+    except ValueError:
+        return None
+
+
+@content_test(CLS, 'integrations')
+def integrations(path, admission=None, **ctx):
+    """At most one frame per integration (the reviewer's gap check, 2026-11-02), on the frames' OBSERVATION times: each frame's
+    DATE-OBS as the search recorded it (the admission table: ctx admission, default paths.SNAPSHOT_FLEET_OUT/<cell>/
+    admission_<sb>.csv) gives its integration - the second of its midpoint, DATE-OBS + curves.INTEGRATION_S / 2 (clv15
+    phase3_snapshot_search.integration_label) - and no two frames may share one. The file-name stamps alone cannot decide it:
+    two Phase-1 runs name frames by the integration's start or its midpoint, so adjacent integrations of a cell holding both
+    runs' frames can be stamped 5 s apart (12h 2024-12-28 27 MHz I: DATE-OBS 13:44:42.9 / 13:44:52.9, stamps 134447 / 134452)
+    while one integration's two copies are 0-5 s apart (11h 2024-12-24 46 MHz I: 314 integrations twice). A frame with no
+    recorded DATE-OBS (absent from the admission table, or blank) is placed by its stamp only where that cannot be wrong:
+    two stamps less than INTEGRATION_S / 2 - 1 s apart are one integration. And at most curves.MAX_FRAMES_PER_CELL frames
+    (one LST hour)."""
+    import csv
+    import numpy as np
+    t = _load(path)
+    C = _C()
+    ts = [_s(x).strip() for x in t['FRAMES']['cols']['ts']]
+    n = len(ts)
+    if admission is None:
+        from exopipe.phase3.config import CFG
+        tok = _tokens(t)
+        admission = os.path.join(CFG.paths.SNAPSHOT_FLEET_OUT, f"{tok['lst']}_{tok['date']}", f"admission_{tok['sb']}.csv")
+    obs = {}
+    if admission and os.path.exists(admission):
+        with open(admission, newline='') as fh:
+            for r in csv.DictReader(fh):
+                u = _dateobs_unix(r.get('date_obs'))
+                if u is not None:
+                    obs[(r.get('ts') or '').strip()] = u
+    half = float(C.INTEGRATION_S) / 2.0
+    bad, by_int, unplaced = [], {}, []
+    for x in ts:
+        if x in obs:
+            by_int.setdefault(int(np.floor(obs[x] + half)), []).append(x)
+        else:
+            unplaced.append(x)
+    twice = {k: v for k, v in by_int.items() if len(v) > 1}
+    if twice:
+        k, v = next(iter(sorted(twice.items())))
+        bad.append(f'{len(twice)} integrations held by more than one frame (by their recorded DATE-OBS; e.g. '
+                   f'{" and ".join(v)} are one integration)')
+    if unplaced:                       # stamps only: closer than any two integrations' stamps can come
+        sec = {x: (datetime.datetime.strptime(x[:15], '%Y%m%d_%H%M%S') - _EPOCH).total_seconds() for x in ts}
+        lim = half - 1.0
+        allsec = np.sort(np.array([sec[x] for x in ts]))
+        close = sum(1 for x in unplaced if np.sum(np.abs(allsec - sec[x]) < lim) > 1)
+        if close:
+            bad.append(f'{close} frames without a recorded DATE-OBS have another frame stamped less than {lim:.1f} s away '
+                       f'(one integration)')
+    if n > int(C.MAX_FRAMES_PER_CELL):
+        bad.append(f'{n} frames > {C.MAX_FRAMES_PER_CELL}, more than one LST hour holds')
+    rep = (f'{n} frames in {len(by_int) + len(unplaced)} integrations ({len(by_int)} by recorded DATE-OBS, {len(unplaced)} by '
+           f'stamp; integration {C.INTEGRATION_S:.2f} s)')
+    if bad:
+        return False, n, '; '.join(bad) + ' | ' + rep
+    return True, n, rep
 
 
 @content_test(CLS, 'values')
@@ -524,10 +611,13 @@ def parent_catalogue(path, master_catalog=None, require_mcatsha=False, **ctx):
 
 @content_test(CLS, 'same_as_previous')
 def same_as_previous(path, previous=None, **ctx):
-    """Only with ``previous`` (the published table a --supersede replaces; the step passes it): T3 the frame list (ts,
-    admitted) equals the previous table's; T4 at every row whose (ra, dec) is bit-identical in the previous table, FLUX and
+    """Only with ``previous`` (the published table a --supersede replaces; the step passes it), at the frames both tables
+    hold: T3 the admitted flags are equal; T4 at every row whose (ra, dec) is bit-identical in the previous table, FLUX and
     RMS are equal exactly, NaN where NaN (exopipe_ops snapshot_lightcurves_regen_test.py:78-99, the regeneration recipe's
-    install gate: a re-extraction - from the archive or a stage - reproduces the published values)."""
+    install gate: a re-extraction - from the archive or a stage - reproduces the published values). The frame list may
+    change under --supersede (2026-11-02 review: a table of every discovered frame re-extracted with --search-frames drops
+    the frames the search dropped): the frames dropped and added are reported (the step records the counts per pair);
+    no frame in common fails."""
     import numpy as np
     from astropy.io import fits
     if not previous:
@@ -536,26 +626,34 @@ def same_as_previous(path, previous=None, **ctx):
         return False, None, f'previous table {previous} absent'
     with fits.open(path, memmap=False) as h, fits.open(previous, memmap=False) as o:
         fr, fo = h['FRAMES'].data, o['FRAMES'].data
-        if ([_s(x).strip() for x in fo['ts']] != [_s(x).strip() for x in fr['ts']]
-                or list(fo['admitted'].astype(bool)) != list(fr['admitted'].astype(bool))):
-            return False, None, f'frame list or admission differs from the previous table {os.path.basename(previous)}'
+        ts_n, ts_o = [_s(x).strip() for x in fr['ts']], [_s(x).strip() for x in fo['ts']]
+        i_o, i_n = {t: i for i, t in enumerate(ts_o)}, {t: j for j, t in enumerate(ts_n)}
+        common = [t for t in ts_n if t in i_o]
+        frames = (f'frames previous {len(ts_o)}, new {len(ts_n)}, both {len(common)} (dropped {len(set(ts_o) - set(ts_n))}, '
+                  f'added {len(set(ts_n) - set(ts_o))})')
+        if not common:
+            return False, 0, f'no frame in common with the previous table {os.path.basename(previous)} ({frames})'
+        co, cn = np.array([i_o[t] for t in common]), np.array([i_n[t] for t in common])
+        bad = []
+        n_adm = int(np.sum(fo['admitted'].astype(bool)[co] != fr['admitted'].astype(bool)[cn]))
+        if n_adm:
+            bad.append(f'admitted flag differs at {n_adm} of the {len(common)} frames both hold')
         so, src = o['SOURCES'].data, h['SOURCES'].data
         key_old = {(float(a), float(b)): i for i, (a, b) in enumerate(zip(so['ra'], so['dec']))}
         pairs = [(key_old[(float(a), float(b))], j) for j, (a, b) in enumerate(zip(src['ra'], src['dec']))
                  if (float(a), float(b)) in key_old]
-        bad = []
         if pairs:
             I = np.array([p[0] for p in pairs])
             J = np.array([p[1] for p in pairs])
             for ext in ('FLUX', 'RMS'):
-                a, b = o[ext].data[I], h[ext].data[J]
+                a, b = o[ext].data[I][:, co], h[ext].data[J][:, cn]
                 fa, fb = np.isfinite(a), np.isfinite(b)
                 if not ((fa == fb).all() and (a[fa] == b[fb]).all()):
                     bad.append(f'{ext} differs from the previous table at {len(pairs)} identical positions')
     if bad:
-        return False, len(pairs), '; '.join(bad) + f' ({os.path.basename(previous)})'
-    return True, len(pairs), (f'{len(pairs)} identical-position rows equal to the previous table; frame list and admission '
-                              f'equal')
+        return False, len(pairs), '; '.join(bad) + f' ({os.path.basename(previous)}; {frames})'
+    return True, len(pairs), (f'{len(pairs)} identical-position rows equal to the previous table at the frames both hold; '
+                              f'admitted flags equal; {frames}')
 
 
 @content_test(CLS, 'provenance')

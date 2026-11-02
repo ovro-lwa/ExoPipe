@@ -9,7 +9,8 @@ check can read (fail closed: the production chat changed the code, the mirror mu
 Checked (module: constant -> config key):
   phase3_snapshot_lightcurves  STAMP -> curves.STAMP_PX; NBINS -> curves.NBINS; REF_SNR -> curves.REF_SNR;
                                os.environ.get('P3_LC_WAIT_I_S', ...) is read (curves.WAIT_I_TABLE_S is exported under it)
-  phase3_snapshot_search       PB_LIBRARY -> curves.PB_LIBRARY; PHASE1_ROOT -> paths.PHASE1_ROOT (discover_frames default)
+  phase3_snapshot_search       PB_LIBRARY -> curves.PB_LIBRARY; PHASE1_ROOT -> paths.PHASE1_ROOT (discover_frames default);
+                               INTEGRATION_S -> curves.INTEGRATION_S (content test light_curve.integrations)
   phase3_snapshot_refastro     LOWRES -> curves.FLOW_LOWRES_PX; FLOWTREE = os.environ.get('P3_SNAP_FLOWTREE', ...) (the step
                                exports paths.SNAPSHOT_FLOW_ROOT under that name)
   phase3_snapshot_chain        SAMPLES -> curves.SAMPLES
@@ -87,6 +88,7 @@ def check(clv15_root, C, paths_cfg):
     want('lc', 'REF_SNR', C.REF_SNR, 'curves.REF_SNR')
     want('ss', 'PB_LIBRARY', C.PB_LIBRARY, 'curves.PB_LIBRARY')
     want('ss', 'PHASE1_ROOT', paths_cfg.PHASE1_ROOT, 'paths.PHASE1_ROOT')
+    want('ss', 'INTEGRATION_S', C.INTEGRATION_S, 'curves.INTEGRATION_S')
     want('ra', 'LOWRES', C.FLOW_LOWRES_PX, 'curves.FLOW_LOWRES_PX')
     want('ch', 'SAMPLES', tuple(C.SAMPLES), 'curves.SAMPLES')
     ft = lit['ra'].get('FLOWTREE')
