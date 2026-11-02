@@ -49,7 +49,7 @@ VALUE_KEYS = (
     ('beam_gate_on', 'BEAM_GATE_ON', 'env'), ('flow_xla_mem_fraction', 'FLOW_XLA_MEM_FRACTION', 'env'),
     ('flow_python', 'FLOW_PYTHON', 'env'), ('flow_lock', 'FLOW_LOCK', 'env'),
     ('run_label', 'RUN_LABEL', 'step'), ('stokes_order', 'STOKES_ORDER', 'step'), ('python', 'ENGINE_PYTHON', 'step'),
-    ('unaccounted', 'UNACCOUNTED_EPOCHS', 'step'),
+    ('unaccounted', 'UNACCOUNTED_EPOCHS', 'step'), ('master_held_18', 'MASTER_HELD_18MHZ', 'step'),   # D-G3's 18 MHz carve-out
     ('striation_window_beams', 'STRIATION_WINDOW_BEAMS', 'mirror'), ('sigstack_build_min', 'SIGMA_STACK_BUILD_MIN', 'mirror'),
     ('pb_floor', 'PB_FLOOR', 'mirror'), ('rms_box_half_px', 'CENTRAL_RMS_HALF_PX', 'mirror'),
     ('sanity_align_x', 'SANITY_ALIGN_X', 'mirror'),

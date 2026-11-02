@@ -4,7 +4,9 @@ Nothing here writes. The authoritative gates run inside the engine (deep_search.
 cell-level ones here FIRST so a unit refuses before an engine process starts and so --dry-run can print what the engine
 will do. Every pre-gate names the production gate it mirrors (spec plan/specs/frames.md section 5.1, D-G<n>) and the
 production line it reads; none of them is new behaviour except D-G22 (x2 flows on a host that cannot compute them),
-which refuses before the engine would crash its GPU call.
+which refuses before the engine would crash its GPU call, and D-G3's 18 MHz carve-out (MASTER_HELD_18MHZ 'keep', ruled,
+read through deep_engine.engine_values; production's membership check is strict): an existing Red / Full master night that
+holds its excluded 18 MHz is reported and kept until the master's next rebuild, as the search preflight keeps it (gate E3).
 
 Inputs of a deep cell C = <co-add root>/<lst>_<scope> (spec 4.1):
   C/coadd_final/I_deep_Taper_R075_<scope>.fits, V_deep_Taper_R0_<scope>.fits    masters (phase3_deep.py:945, 997)
@@ -160,6 +162,11 @@ def _gate(gid, ok, detail, kind='refuse'):
     return {'gate': gid, 'ok': bool(ok), 'detail': detail, 'kind': kind}
 
 
+def _some(items, n=3):
+    """The first n of a gate's findings joined, with the count of the rest."""
+    return ' | '.join(items[:n]) + (f' (+{len(items) - n} more)' if len(items) > n else '')
+
+
 def pregates(c, stokes, tier='deep', date=None, work_cell=None, x2_mode='compute', host=None, excl=None):
     """Cell-level gates of the engine, evaluated before it runs, in the engine's order. Returns [gate dict]; a failing gate
     of kind 'refuse' refuses the unit (exit 2), of kind 'noinput' ends it with nothing to do (exit 3). Every gate is
@@ -192,12 +199,16 @@ def pregates(c, stokes, tier='deep', date=None, work_cell=None, x2_mode='compute
     elif tier == 'deep':
         try:
             from exopipe.phase3.lib.masters import admit as ad, membership as mb
-            viol, rep = ad.verify(c.base)                 # D-ADMIT: an admitted night is 'admitted, rebuild pending'
+            held18 = v['master_held_18']
+            if held18 not in ('keep', 'refuse'):
+                raise ValueError(f"{v['_sources']['master_held_18']} = {held18!r} is not 'keep' or 'refuse'")
+            # D-ADMIT: an admitted night is 'admitted, rebuild pending'. The 18 MHz carve-out ('keep'): an existing Red / Full
+            # night holding its excluded 18 MHz is kept until the master's next rebuild - the search preflight's helper (gate E3)
+            viol, rep = ad.verify(c.base, keep_18=held18 == 'keep')   # WAVE2 18-MHZ (production: 'refuse', keep_18=False)
             viol = viol + mb.verify_products(c.base)
             out.append(_gate('D-G3', not viol, 'membership.verify + verify_products: '
-                             + ('pass' if not viol else ' | '.join(viol[:3]) + (f' (+{len(viol) - 3} more)' if len(viol) > 3
-                                                                                  else ''))
-                             + (f' ({len(rep)} admitted, rebuild pending)' if rep else '')))
+                             + ('pass' if not viol else _some(viol))
+                             + (f'; reported, not violations: {_some(rep)}' if rep else '')))
         except Exception as e:
             out.append(_gate('D-G3', False, f'membership check could not run: {type(e).__name__}: {e}'))
     dates = c.epoch_dates()

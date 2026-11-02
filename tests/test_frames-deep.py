@@ -16,8 +16,9 @@ read-only real products.
   cli        refusals of a real-cell run that would write: no --out (production window), no --deep-rebuild
              (deep-producer), no frames_only keyword (engine-seam) - each exit 2 before any product is written
   real       READ-ONLY: content tests on production frames, siblings, archive copies, sigma stacks and epoch images;
-             --deep-adopt of a published attempt (records under the scratch dir); --dry-run on the real cell 07h_18MHz
-             and the per-hour item 07h_2025-10-15
+             --deep-adopt of a published attempt (records under the scratch dir); --dry-run on the real cell 07h_18MHz,
+             the per-hour item 07h_2025-10-15 Red (D-G3: the 18 MHz exception, ruled and production) and 07h_2025-10-14
+             Blue (a night outside the master: central master)
 
 Scratch: /tmp/exopipe3_tests_frames-deep/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_frames-deep.py [test_name ...]
@@ -102,7 +103,14 @@ def test_config():
     assert v['archive_root'] == CFG.paths.PHASE3_ARCHIVE_ROOT and v['archive_run'] == CFG.paths.ARCHIVE_RUN
     assert v['roots_csv'].startswith(CFG.paths.OPS_ROOT) and os.path.exists(v['roots_csv'])
     assert v['refine_x2'] and v['striation'] and v['loo']
-    print('config: sections load, protected keys refuse, ruling IDs exist, engine values from search sections')
+    # D-G3's 18 MHz carve-out: the effective MASTER_HELD_18MHZ (search's once it carries one, else frames_residuals' stand-in)
+    # keeps by default (ruled); the parity file sets production's strict reading on that same key
+    src = v['_sources']['master_held_18']
+    assert v['master_held_18'] == 'keep' and src in ('search_detect.MASTER_HELD_18MHZ', 'frames_residuals.MASTER_HELD_18MHZ'), src
+    par = open(os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')).read()
+    assert f"\n{src} = 'refuse'\n" in par, src
+    print('config: sections load, protected keys refuse, ruling IDs exist, engine values from search sections; D-G3 keeps '
+          f'an existing master\'s held 18 MHz ({src} \'keep\', ruled; \'refuse\' in the parity file)')
 
 
 def test_preview_sanity_minimum():
@@ -617,12 +625,34 @@ def test_real():
                      '--out', os.path.join(d, 'dry'), '--work', os.path.join(d, 'work')])
     assert rc == 2 and 'owed frames' in o and 'PASS D-G3' in o and 'REFUSE deep-producer' in o, (rc, o[-800:], e[-300:])
     assert '18 against their LOO V master, 1 against the central master' in o, o
-    rc, o, e = _cli(['frames', '--tier', 'deep', '--epochs', '07h_2025-10-15', '--scopes', 'Red', '--stokes', 'V',
+    # D-G3 on 07h_Red (rebuild pending, exopipe_ops/rebuild_pending/wideband_admission_20261017.csv): its master holds
+    # 2024-12-23, stacked without 23 and 36 MHz - a violation, the gate refuses - and 2025-10-14 with its 18 MHz excluded
+    # - the 18 MHz exception keeps that night until the master's next rebuild (reported, not a violation). Production's
+    # strict reading (parity/production_20261013.cfg) counts it as a violation too.
+    per_hour_red = ['frames', '--tier', 'deep', '--epochs', '07h_2025-10-15', '--scopes', 'Red', '--stokes', 'V',
+                    '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
+                    os.path.join(d, 'work')]
+    for parity in (False, True):
+        rc, o, e = _cli(per_hour_red + (['--parity', '--config', os.path.join(REPO, 'exopipe', 'phase3', 'parity',
+                                                                              'production_20261013.cfg')] if parity else []))
+        g3 = next((x for x in o.splitlines() if ' D-G3 ' in x), '')
+        viol, _, rep = g3.partition('reported, not violations:')
+        assert rc == 2 and 'REFUSE D-G3' in g3 and '07h Red 2024-12-23: IN the master' in viol \
+            and 'missing 23MHz, 36MHz' in viol, (parity, rc, g3, o[-600:], e[-300:])
+        if parity:
+            assert '07h Red 2025-10-14: IN the master' in viol and '18 MHz excluded but' in viol, g3
+        else:
+            assert '2025-10-14' not in viol and '07h Red 2025-10-14: holds its excluded 18 MHz' in rep \
+                and "kept until the master's next rebuild" in rep, g3
+    lines.append('per-hour 07h_2025-10-15 Red: D-G3 refuses 2024-12-23 (no 23/36 MHz) and keeps 2025-10-14 (18 MHz '
+                 'exception; production strict refuses both)')
+    # a night outside the master subtracts the central master: 07h_Blue (no rebuild pending), 2025-10-14 in_master 0
+    rc, o, e = _cli(['frames', '--tier', 'deep', '--epochs', '07h_2025-10-14', '--scopes', 'Blue', '--stokes', 'V',
                      '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
                      os.path.join(d, 'work')])
-    assert "nights outside the master ['2025-10-15']" in o, o[-800:]
+    assert 'PASS D-G3' in o and "nights outside the master ['2025-10-14']" in o, o[-800:]
     assert not os.path.exists(os.path.join(d, 'dry')), 'the dry run wrote something'
-    lines.append('dry-run 07h_18MHz V: 19 owed frames (18 LOO, 1 central); per-hour 07h_2025-10-15 Red: central master')
+    lines.append('dry-run 07h_18MHz V: 19 owed frames (18 LOO, 1 central); per-hour 07h_2025-10-14 Blue: central master')
     print('real:\n  ' + '\n  '.join(lines))
 
 
