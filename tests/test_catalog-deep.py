@@ -190,6 +190,7 @@ if mode == 'run':
         r['fork_repeat'] = '1' if len(g[(r['band'], round(float(r['ra']), 1), round(float(r['dec']), 1))]) >= 2 else '0'
     wcsv(f'{w}/master_catalog.csv', cols + ['fork_repeat'], rows)
     shutil.copy(f'{w}/master_catalog.csv', f'{w}/master_catalog_asrun.csv')
+    wcsv(f'{w}/master_catalog_removed.csv', cols + ['fork_repeat', 'removal_reason'], [])   # its conform calls: none removed
     kept = [r for r in rows if r['fork_repeat'] == '1']
     wcsv(f'{w}/fork_kept_{S}.csv', cols + ['fork_repeat'], kept)
     for t in ('wb', 'sb'):
