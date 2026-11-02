@@ -450,7 +450,8 @@ def test_b02_3b_units():
           and e1[1] == 'at the frame mid-time' and ee == 'mid-hour' and em == (RR.mid_hour_elevation('05h', 80.0, 22.0), 'at mid-hour')
           and e1b == e1 and bad_e is not None and 'REFUSING' in bad_e, (e1, e2, em, e1b, bad_e))
     src = inspect.getsource(DSE)
-    calls = re.findall(r"_PCT\.removals\('([IV])', scope, _pa(?:_v)?, _b02_tnoise\('[IV]', d_?\), float\(_fh([IV])\[d_?\]\['BMAJ'\]\)", src)
+    calls = re.findall(r"_table_and_inputs\((?:\[c\]|finals), '([IV])', scope, _pa(?:_v)?, _b02_tnoise\('[IV]', d_?\), "   # the call
+                       r"float\(_fh([IV])\[d_?\]\['BMAJ'\]\)", src)        # since 249c323 (2026-10-17: the table's inputs recorded)
     check("under 'once-in-search' each table call takes the frame's table noise, its own beam (the archived frame's BMAJ) - "
           "and (by the lines after) the catalogue position and the frame-mid elevation; production's calls unchanged; the "
           "frames keep production's cards (no step-3b argument to the frame header)", sorted(calls) == [('I', 'I'), ('V', 'V')]
@@ -521,7 +522,8 @@ def test_residuals_and_stacks():
 def test_engine_source():
     from exopipe.phase3.lib.search import deep_search as E
     src = inspect.getsource(E.run_deep_cell)
-    lines = [ln for ln in src.splitlines() if '_adm' in ln or '_ADS' in ln or '_rdates' in ln or '_ssA_' in ln]
+    lines = [ln for ln in src.splitlines() if ('_adm' in ln or '_ADS' in ln or '_rdates' in ln or '_ssA_' in ln)
+             and not ln.strip().startswith('#')]   # a comment reads nothing (its 'wideband_admission' holds '_adm', dc2e530)
     unmarked = [ln.strip() for ln in lines if 'WAVE2 D-ADMIT' not in ln and not ln.strip().startswith('lambda')]
     check('every engine line that reads the admitted nights is marked WAVE2 D-ADMIT (a lambda continues a marked call)',
           len(lines) >= 25 and not unmarked, (len(lines), unmarked))
