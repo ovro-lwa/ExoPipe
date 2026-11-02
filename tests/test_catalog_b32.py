@@ -103,6 +103,25 @@ def main():
         sp.active, sp.tenmin_rho, sp.rho_between = saved
         check('the wrapped estimator = production\'s 10-minute branch (same V)', np.allclose(prod10, mine, rtol=0, atol=1e-12),
               (prod10, mine))
+        # RA ACROSS 0h (production 70654c1, 2026-10-31): members straddling 0h are placed within 180 deg of the first, the result put
+        # in [0, 360) - the linear mean of 359.99x and 0.00x was ~180
+        zdets = [dict(d, ra=r) for d, r in zip(dets, (359.9962, 0.0031, 0.0007))]
+        sp.active, sp.tenmin_rho, sp.rho_between = (lambda: True), (lambda: {'x': 1}), (lambda a, b, R: 0.2)
+        prodz, minez = SL.combine(zdets), W.ivw_combine(SL)(zdets)
+        sp.active, sp.tenmin_rho, sp.rho_between = saved
+        check('across 0h: the wrapped estimator = production\'s 10-minute branch', np.allclose(prodz, minez, rtol=0, atol=1e-12),
+              (prodz, minez))
+        dz = min(minez[0], 360.0 - minez[0])
+        check('across 0h: the combined RA lies between the members, in [0, 360)', 0.0 <= minez[0] < 360.0 and dz < 0.004, minez[0])
+        adets = [dict(d, ra=r) for d, r in zip(dets, (10.0031, 10.0007, 9.9962))]
+        nz = W.ivw_combine(SL)(adets)
+        saved_ras = SL._ras
+        SL._ras = lambda dl, frame: ([SL._pos(d, frame)[0] for d in dl], False)      # the pre-70654c1 path: no placement
+        try:
+            old_path = W.ivw_combine(SL)(adets)
+        finally:
+            SL._ras = saved_ras
+        check('away from 0h the result is bit-identical to the pre-0h code path', tuple(nz) == tuple(old_path), (nz, old_path))
         w = (1 / np.array([20.0, 35.0, 50.0]) ** 2)
         mine_deep = W.ivw_combine(SL)(dets)
         V = SL._cov(dets, SL.RHO_EPOCH, SL.RHO_FAR, False)

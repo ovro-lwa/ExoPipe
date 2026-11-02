@@ -8,9 +8,12 @@ clv15 phase3_snapshot_anchor.py and sublst_pertie.py all get the same estimator.
 the production package (source_localization.py puts /lustre/gh/main/exopipe first on sys.path), so this file imports nothing
 from the branch; core/fallback.py arrives as an argument (loaded by path by the finder).
 
-Pin: the sha1 of the whole production FILE (its bytes) at exopipe_ops 940bc26 (source_localization.py, 2026-10-17 21:37; re-ported
-2026-10-30 from 43db654 - production's detections() reads the catalogs through survivor_paths / ident_rows / member_rows, a row index
-that is off unless a caller enables it, the same rows in the same order) -
+Pin: the sha1 of the whole production FILE (its bytes) at exopipe_ops 70654c1 (source_localization.py, 2026-10-31 20:02; re-ported
+2026-11-02 from 940bc26: RA ACROSS 0h - combine() places members that straddle 0h within 180 deg of the first and returns the RA in
+[0, 360) only then; consistency / crossmatch / master_context / locate take every RA difference across 0h (_dra); crossmatch strips
+the '(7.8 arcmin, ...)' statistics after the name.  The wrapped estimator below takes the same placement; locate is production's,
+wrapped.  Before: re-ported 2026-10-30 from 43db654 - production's detections() reads the catalogs through survivor_paths /
+ident_rows / member_rows, a row index that is off unless a caller enables it, the same rows in the same order) -
 any edit refuses at import, so no decorator, second definition or module-level rebinding of a replaced function can slip
 past (review MINOR 2); the per-function text pins below only name what changed in the refusal. A mismatch: production
 changed - re-port this file (even a comment edit asks for that). Design: exopipe_ops/refactor_20261012/plan/wave2/B32_DESIGN.md.
@@ -18,11 +21,11 @@ changed - re-port this file (even a comment edit asks for that). Design: exopipe
 import hashlib
 import math
 
-FILE_SHA1 = 'ccdbc4d70d3dc57206fbcbd7e83c7028f7082d4d'               # source_localization.py at exopipe_ops 940bc26
-PINS = {'combine': 'b18c57212fb748fa484df807b6ee853c83352fba',       # source_localization.py:221-258
-        'detections': '55e147a0bfb38a5a9206c3b2302b39a3747f3804',    # :159-227 (940bc26: survivor_paths / ident_rows / member_rows)
+FILE_SHA1 = 'c975d68c9f510e74f9bf3db3aafb34562b720773'               # source_localization.py at exopipe_ops 70654c1
+PINS = {'combine': '93f9d36c5ee582b86f2dc0b9cdf5cbd0b56e570e',       # source_localization.py:291-329 (70654c1: across 0h)
+        'detections': '55e147a0bfb38a5a9206c3b2302b39a3747f3804',    # :160-227 (940bc26: survivor_paths / ident_rows / member_rows)
         'beam_as': 'c3ba730f3a5a4bd898a2e2a6361b50df81956b35',       # :76-88
-        'locate': '660bce96398d6bc97e835ee0bcfbe73ff528ef49'}        # :348-397
+        'locate': '7479aeb7580b7ed222d7a3bf8e385f5ebff2a0ad'}        # :427-476 (70654c1: across 0h)
 
 
 def fn_text(src, name):
@@ -59,10 +62,11 @@ def ivw_combine(mod):
     np = mod.np
 
     def combine(dets, rho_epoch=mod.RHO_EPOCH, rho_far=mod.RHO_FAR, frame=False):
-        ra0 = float(np.mean([mod._pos(d, frame)[0] for d in dets]))
+        ras, moved = mod._ras(dets, frame)           # across 0h (production 70654c1): straddling members within 180 deg of the first
+        ra0 = float(np.mean(ras))
         dec0 = float(np.mean([mod._pos(d, frame)[1] for d in dets]))
         cosd = math.cos(math.radians(dec0))
-        x = np.array([(mod._pos(d, frame)[0] - ra0) * cosd * 3600.0 for d in dets])
+        x = np.array([(r - ra0) * cosd * 3600.0 for r in ras])
         y = np.array([(mod._pos(d, frame)[1] - dec0) * 3600.0 for d in dets])
         sig = np.array([d['sig'] for d in dets])
         V = mod._cov(dets, rho_epoch, rho_far, frame)
@@ -71,7 +75,7 @@ def ivw_combine(mod):
         var = float(w @ V @ w)
         if not (math.isfinite(var) and var > 0):
             raise RuntimeError(f'combined position: w^T V w = {var} is not a positive variance - REFUSING (B-32)')
-        return (ra0 + float(w @ x) / (cosd * 3600.0), dec0 + float(w @ y) / 3600.0, math.sqrt(var),
+        return (mod._ra360(ra0 + float(w @ x) / (cosd * 3600.0), moved), dec0 + float(w @ y) / 3600.0, math.sqrt(var),
                 float((np.median(sig) ** 2) / var))
     combine.__doc__ = 'B-32 (a): the inverse-variance mean with the sandwich error in every tier (wrapped).'
     return combine
