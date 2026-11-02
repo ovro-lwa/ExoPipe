@@ -5,6 +5,9 @@ module). Each test checks the file's CONTENT; a test that needs context and has 
                                            REFERENCE ONLY rows re-derived from the written values ((a), N >= 10, (b'))
   dewarp_screen         record             SCREEN_X/SCREEN_Y equal shape = the measured master's; METHOD rbf, KERNEL, SUBBAND;
                                            NANCHOR = the scope's final table row; finite offsets
+  dewarp_screen_key     rows               tables/screen_keys_<LST>.csv: the key columns; one row per screen of the LST and no
+                                           other; each screen's md5 and NANCHOR as keyed; md5s of the two measured files
+                                           (dewarp.MEASURE_FILES of the scope) - the keys gate G-A12 applies screens by
   dewarped_master       D1_D6              check_mdewarp_gen.py (CMG) run IN PLACE through core.legacy.run (site interpreter
                                            'default'; its child imports the production phase3_master_dewarp, pb_apply and
                                            cascade_dewarp, which gate G-D0b proves equal to the branch's and the child's
@@ -231,6 +234,63 @@ def screen_record(path, table=None, master=None, **ctx):
     if problems:
         return False, value, '; '.join(problems[:5]) + f' (table {how})'
     return True, value, f'{scope} vs final row {row["status"][:20]!r}; {shape_note}; table {how}'
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# dewarp_screen_key (steps_common.SCREEN_KEYS: every screen keyed by content to the files it was measured on; gate G-A12)
+# ---------------------------------------------------------------------------------------------------------------------
+
+_HEX32 = re.compile(r'^[0-9a-f]{32}$')
+
+
+@content_test('dewarp_screen_key', name='rows')
+def screen_key_rows(path, lst=None, **ctx):
+    from astropy.io import fits
+    if lst is None:
+        m = re.match(r'^screen_keys_(\d\dh)\.csv$', os.path.basename(path))
+        lst = m.group(1) if m else None
+    if not lst:
+        return False, None, 'no context: the LST (pass lst= or name the file screen_keys_<LST>.csv)'
+    with open(path, newline='') as f:
+        rd = csv.DictReader(f)
+        cols, rows = list(rd.fieldnames or []), list(rd)
+    if cols != SC.KEY_COLUMNS:
+        return False, len(rows), f'header {cols[:4]}... is not the {len(SC.KEY_COLUMNS)} key columns'
+    mdir = os.path.dirname(os.path.dirname(os.path.abspath(path)))        # <measure dir>/tables/screen_keys_<LST>.csv
+    screens = {os.path.basename(p)[:-len('_warp_screen.fits')]: p
+               for p in glob.glob(os.path.join(mdir, lst, 'maps', '*_warp_screen.fits'))}
+    mine = [r for r in rows if r['lst'] == lst]
+    scopes = [r['scope'] for r in mine]
+    problems = []
+    if len(mine) != len(rows):
+        problems.append(f'{len(rows) - len(mine)} row(s) of another LST')
+    dup = sorted({s for s in scopes if scopes.count(s) > 1})
+    if dup:
+        problems.append(f'scopes keyed twice {dup}')
+    if sorted(set(screens) - set(scopes)):
+        problems.append(f'screens without a key {sorted(set(screens) - set(scopes))}')
+    if sorted(set(scopes) - set(screens)):
+        problems.append(f'keys without a screen {sorted(set(scopes) - set(screens))}')
+    for r in mine:
+        s = r['scope']
+        p = os.path.join(mdir, r['screen'])
+        if s not in screens or os.path.abspath(p) != os.path.abspath(screens[s]):
+            continue                                   # reported above
+        if SC.md5(p) != r['screen_md5']:
+            problems.append(f'{s}: screen md5 {SC.md5(p)} != key {r["screen_md5"]}')
+        if str(fits.getheader(p, 'SCREEN_X').get('NANCHOR')) != str(r['n_anchors']):
+            problems.append(f'{s}: screen NANCHOR {fits.getheader(p, "SCREEN_X").get("NANCHOR")} != key {r["n_anchors"]}')
+        for col in ('master_md5', 'pbcorr_md5'):
+            if not _HEX32.match(r[col] or ''):
+                problems.append(f'{s}: {col} {r[col]!r} is not an md5')
+        want = SC.measured_files('', s)
+        if (os.path.basename(r['master']), os.path.basename(r['pbcorr'])) != tuple(os.path.basename(x) for x in want):
+            problems.append(f'{s}: keyed to {os.path.basename(r["master"])} / {os.path.basename(r["pbcorr"])}, not the '
+                            f'measured files {[os.path.basename(x) for x in want]}')
+    value = f'{len(mine)} screen(s) keyed'
+    if problems:
+        return False, value, '; '.join(problems[:5])
+    return True, value, f'every screen of {lst} keyed by md5 to the master and pbcorr sibling it was measured on'
 
 
 # ---------------------------------------------------------------------------------------------------------------------
