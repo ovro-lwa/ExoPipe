@@ -4,7 +4,10 @@ Nothing here writes. The authoritative gates run inside the engine (deep_search.
 cell-level ones here FIRST so a unit refuses before an engine process starts and so --dry-run can print what the engine
 will do. Every pre-gate names the production gate it mirrors (spec plan/specs/frames.md section 5.1, D-G<n>) and the
 production line it reads; none of them is new behaviour except D-G22 (x2 flows on a host that cannot compute them),
-which refuses before the engine would crash its GPU call.
+which refuses before the engine would crash its GPU call, and D-G3's 18 MHz carve-out (search_detect.MASTER_HELD_18MHZ
+'keep', ruled; production's membership check is strict): D-G3 verifies the master with the search's own verification,
+lib/search/admitted.verify_master - the one call of the search's gate E3 and of the engine's membership gate - so an
+existing Red / Full master night that holds its excluded 18 MHz is reported and kept until the master's next rebuild.
 
 Inputs of a deep cell C = <co-add root>/<lst>_<scope> (spec 4.1):
   C/coadd_final/I_deep_Taper_R075_<scope>.fits, V_deep_Taper_R0_<scope>.fits    masters (phase3_deep.py:945, 997)
@@ -160,6 +163,11 @@ def _gate(gid, ok, detail, kind='refuse'):
     return {'gate': gid, 'ok': bool(ok), 'detail': detail, 'kind': kind}
 
 
+def _some(items, n=3):
+    """The first n of a gate's findings joined, with the count of the rest."""
+    return ' | '.join(items[:n]) + (f' (+{len(items) - n} more)' if len(items) > n else '')
+
+
 def pregates(c, stokes, tier='deep', date=None, work_cell=None, x2_mode='compute', host=None, excl=None):
     """Cell-level gates of the engine, evaluated before it runs, in the engine's order. Returns [gate dict]; a failing gate
     of kind 'refuse' refuses the unit (exit 2), of kind 'noinput' ends it with nothing to do (exit 3). Every gate is
@@ -190,16 +198,27 @@ def pregates(c, stokes, tier='deep', date=None, work_cell=None, x2_mode='compute
     if tier == 'deep' and old_ok:
         out.append(_gate('D-G3', True, 'membership gate bypassed: ALLOW_OLD_MASTERS (phase3_deep.py:984)'))
     elif tier == 'deep':
+        from exopipe.phase3.lib.search import admitted as ADS
         try:
-            from exopipe.phase3.lib.masters import admit as ad, membership as mb
-            viol, rep = ad.verify(c.base)                 # D-ADMIT: an admitted night is 'admitted, rebuild pending'
-            viol = viol + mb.verify_products(c.base)
-            out.append(_gate('D-G3', not viol, 'membership.verify + verify_products: '
-                             + ('pass' if not viol else ' | '.join(viol[:3]) + (f' (+{len(viol) - 3} more)' if len(viol) > 3
-                                                                                  else ''))
-                             + (f' ({len(rep)} admitted, rebuild pending)' if rep else '')))
-        except Exception as e:
-            out.append(_gate('D-G3', False, f'membership check could not run: {type(e).__name__}: {e}'))
+            # the step's own value (search_detect.MASTER_HELD_18MHZ, the key the engine child gets through child_env): an
+            # inherited EXOPIPE3_MASTER_HELD_18MHZ that differs, or an unknown value, refuses - as the search step's gate E3
+            h18 = ADS.step_held_18(v['master_held_18'])
+        except RuntimeError as e:
+            h18 = None
+            out.append(_gate('D-G3', False, f'the 18 MHz carve-out cannot be judged: {e}'))
+        if h18 is not None:
+            try:
+                from exopipe.phase3.lib.masters import membership as mb
+                # the search's ONE verification of a master (gate E3 and the engine's membership gate): an admitted night is
+                # 'admitted, rebuild pending'; under 'keep' an existing Red / Full night holding its excluded 18 MHz is kept
+                # until the master's next rebuild (production: mb.verify(c.base), strict)
+                viol, rep = ADS.verify_master(c.base, held_18=h18)   # WAVE2 D-ADMIT, WAVE2 18-MHZ
+                viol = viol + mb.verify_products(c.base)
+                out.append(_gate('D-G3', not viol, f'membership (search_detect.MASTER_HELD_18MHZ {h18!r}) + verify_products: '
+                                 + ('pass' if not viol else _some(viol))
+                                 + (f'; reported, not violations: {_some(rep)}' if rep else '')))
+            except Exception as e:
+                out.append(_gate('D-G3', False, f'membership check could not run: {type(e).__name__}: {e}'))
     dates = c.epoch_dates()
     out.append(_gate('D-G4', bool(dates), f'{len(dates)} epochs (subtracted/*_I_sub_{c.scope}.fits)'))
     if dates:

@@ -15,9 +15,13 @@ read-only real products.
              the recorded outputs; negative copies fail their content tests
   cli        refusals of a real-cell run that would write: no --out (production window), no --deep-rebuild
              (deep-producer), no frames_only keyword (engine-seam) - each exit 2 before any product is written
+  agree      D-G3 and the engine's own membership gate judge the real 12h Red master alike (admitted.verify_master):
+             search_detect.MASTER_HELD_18MHZ 'keep' passes both, 'refuse' refuses both; an inherited
+             EXOPIPE3_MASTER_HELD_18MHZ that differs from the config refuses D-G3
   real       READ-ONLY: content tests on production frames, siblings, archive copies, sigma stacks and epoch images;
-             --deep-adopt of a published attempt (records under the scratch dir); --dry-run on the real cell 07h_18MHz
-             and the per-hour item 07h_2025-10-15
+             --deep-adopt of a published attempt (records under the scratch dir); --dry-run on the real cell 07h_18MHz,
+             the per-hour item 07h_2025-10-15 Red (D-G3: the 18 MHz exception, ruled and production) and 07h_2025-10-14
+             Blue (a night outside the master: central master)
 
 Scratch: /tmp/exopipe3_tests_frames-deep/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_frames-deep.py [test_name ...]
@@ -102,7 +106,14 @@ def test_config():
     assert v['archive_root'] == CFG.paths.PHASE3_ARCHIVE_ROOT and v['archive_run'] == CFG.paths.ARCHIVE_RUN
     assert v['roots_csv'].startswith(CFG.paths.OPS_ROOT) and os.path.exists(v['roots_csv'])
     assert v['refine_x2'] and v['striation'] and v['loo']
-    print('config: sections load, protected keys refuse, ruling IDs exist, engine values from search sections')
+    # D-G3's 18 MHz carve-out is the search's own key - search_detect.MASTER_HELD_18MHZ, 'keep' (ruled), 'refuse' in the parity
+    # file - with no frames copy of it (a shadowed key would make --set of it silently ignored)
+    assert v['master_held_18'] == 'keep' and v['_sources']['master_held_18'] == 'search_detect.MASTER_HELD_18MHZ', v['_sources']
+    assert not hasattr(CFG.frames_residuals, 'MASTER_HELD_18MHZ') and not hasattr(CFG.frames, 'MASTER_HELD_18MHZ')
+    par = open(os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')).read()
+    assert "\nsearch_detect.MASTER_HELD_18MHZ = 'refuse'\n" in par and 'frames_residuals.MASTER_HELD_18MHZ' not in par
+    print('config: sections load, protected keys refuse, ruling IDs exist, engine values from search sections; D-G3 keeps '
+          'an existing master\'s held 18 MHz by search_detect.MASTER_HELD_18MHZ (\'keep\', ruled; \'refuse\' in the parity file)')
 
 
 def test_preview_sanity_minimum():
@@ -569,6 +580,76 @@ def test_cli():
     print('cli: no --out, no --deep-rebuild, no frames_only keyword, protected literal: each exit 2, nothing written')
 
 
+def test_d_g3_engine_agree():
+    """D-G3 and the engine judge a master by ONE rule (lib/search/admitted.verify_master): the real 12h Red master, whose
+    2025-01-08 night holds its excluded 18 MHz, passes both under search_detect.MASTER_HELD_18MHZ 'keep' and is refused by both
+    under 'refuse' - D-G3 (deep_cells.pregates) with the step's config value, the engine's own membership gate (cut from
+    deep_search.run_deep_cell and executed) in the environment the frames step hands its engine child (deep_engine.child_env).
+    An inherited EXOPIPE3_MASTER_HELD_18MHZ that differs from the config refuses D-G3, as it refuses the search's gate E3."""
+    import textwrap
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.frames import deep_cells, deep_engine as DE
+    from exopipe.phase3.lib.search import admitted as ADS
+    root = deep_cells.coadd_root_of('12h_Red')
+    if not root or not os.path.isdir(os.path.join(root, '12h_Red')):
+        print('d_g3_engine_agree: SKIPPED (no 12h_Red co-add cell on this node)')
+        return
+    c = deep_cells.Cell('12h_Red', root)
+    src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read().split('\n')
+    i = [k for k, x in enumerate(src) if x.strip() == "if cadence == 'deep' and os.environ.get('P3_ALLOW_OLD_MASTERS') != '1':"]
+    assert len(i) == 1, len(i)
+    j = next(k for k in range(i[0], len(src)) if 'master membership verified against the rulings' in src[k])
+    gate = textwrap.dedent('\n'.join(src[i[0]:j + 1]))
+    assert '_ADS.verify_master(base, policy=_ADS.policy())' in gate, gate[:400]
+    d = _fresh('agree')
+    keys = (ADS.MASTER_18_ENV, ADS.POLICY_ENV)
+    saved = {k: os.environ.pop(k, None) for k in keys}
+    got = {}
+    try:
+        for val in ('keep', 'refuse'):
+            CFG.reset()
+            if val != 'keep':
+                CFG.authorize([], out=d)
+                CFG.set('search_detect.MASTER_HELD_18MHZ', val)
+            g3 = next(g for g in deep_cells.pregates(c, 'I', 'deep') if g['gate'] == 'D-G3')
+            spec = DE.UnitSpec(tier='deep', lst='12h', scope='Red', stokes='I', label='X', attempt=os.path.join(d, 'att'),
+                               coadd_root=root, archive_root=os.path.join(d, 'archive'), archive_run='Run_TEST',
+                               archive_copy=True, work_root=os.path.join(d, 'work'))
+            env = DE.child_env(spec)
+            os.environ.update({k: env[k] for k in keys})          # the engine child's view: what the frames step hands it
+            said = []
+            try:
+                exec(gate, dict(os=os, cadence='deep', base=c.base, lst='12h', scope='Red',
+                                print=lambda *a, **k: said.append(' '.join(map(str, a)))))
+                eng = ('searched', said)
+            except RuntimeError as e:
+                eng = ('refused', str(e))
+            finally:
+                for k in keys:
+                    os.environ.pop(k, None)
+            got[val] = (g3, env[ADS.MASTER_18_ENV], eng)
+        CFG.reset()
+        os.environ[ADS.MASTER_18_ENV] = 'refuse'                 # inherited, while the config says 'keep'
+        try:
+            g3i = next(g for g in deep_cells.pregates(c, 'I', 'deep') if g['gate'] == 'D-G3')
+        finally:
+            os.environ.pop(ADS.MASTER_18_ENV, None)
+    finally:
+        CFG.reset()
+        for k, x in saved.items():
+            if x is not None:
+                os.environ[k] = x
+    (gk, ek, engk), (gr, er, engr) = got['keep'], got['refuse']
+    assert (ek, er) == ('keep', 'refuse'), (ek, er)
+    assert gk['ok'] and '2025-01-08: holds its excluded 18 MHz' in gk['detail'], gk
+    assert engk[0] == 'searched' and any('2025-01-08' in x and '18 MHz' in x for x in engk[1]), engk
+    assert not gr['ok'] and '12h Red 2025-01-08: IN the master' in gr['detail'] and '18 MHz excluded but' in gr['detail'], gr
+    assert engr[0] == 'refused' and 'REFUSING to search' in engr[1] and '18 MHz excluded but' in engr[1], engr
+    assert not g3i['ok'] and 'is inherited' in g3i['detail'] and 'REFUSING' in g3i['detail'], g3i
+    print("d_g3_engine_agree: real 12h Red - 'keep': D-G3 passes and the engine's gate searches (2025-01-08 kept, reported); "
+          "'refuse': both refuse on 2025-01-08; an inherited EXOPIPE3_MASTER_HELD_18MHZ that differs refuses D-G3")
+
+
 def test_real():
     from exopipe.phase3.core import validate
     from exopipe.phase3.lib.frames import deep_cells
@@ -617,16 +698,39 @@ def test_real():
                      '--out', os.path.join(d, 'dry'), '--work', os.path.join(d, 'work')])
     assert rc == 2 and 'owed frames' in o and 'PASS D-G3' in o and 'REFUSE deep-producer' in o, (rc, o[-800:], e[-300:])
     assert '18 against their LOO V master, 1 against the central master' in o, o
-    rc, o, e = _cli(['frames', '--tier', 'deep', '--epochs', '07h_2025-10-15', '--scopes', 'Red', '--stokes', 'V',
+    # D-G3 on 07h_Red (rebuild pending, exopipe_ops/rebuild_pending/wideband_admission_20261017.csv): its master holds
+    # 2024-12-23, stacked without 23 and 36 MHz - a violation, the gate refuses - and 2025-10-14 with its 18 MHz excluded
+    # - the 18 MHz exception keeps that night until the master's next rebuild (reported, not a violation). Production's
+    # strict reading (parity/production_20261013.cfg) counts it as a violation too.
+    per_hour_red = ['frames', '--tier', 'deep', '--epochs', '07h_2025-10-15', '--scopes', 'Red', '--stokes', 'V',
+                    '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
+                    os.path.join(d, 'work')]
+    for parity in (False, True):
+        rc, o, e = _cli(per_hour_red + (['--parity', '--config', os.path.join(REPO, 'exopipe', 'phase3', 'parity',
+                                                                              'production_20261013.cfg')] if parity else []))
+        g3 = next((x for x in o.splitlines() if ' D-G3 ' in x), '')
+        viol, _, rep = g3.partition('reported, not violations:')
+        assert rc == 2 and 'REFUSE D-G3' in g3 and '07h Red 2024-12-23: IN the master' in viol \
+            and 'missing 23MHz, 36MHz' in viol, (parity, rc, g3, o[-600:], e[-300:])
+        if parity:
+            assert '07h Red 2025-10-14: IN the master' in viol and '18 MHz excluded but' in viol, g3
+        else:
+            assert '2025-10-14' not in viol and '07h Red 2025-10-14: holds its excluded 18 MHz' in rep \
+                and "kept until the master's next rebuild" in rep, g3
+    lines.append('per-hour 07h_2025-10-15 Red: D-G3 refuses 2024-12-23 (no 23/36 MHz) and keeps 2025-10-14 (18 MHz '
+                 'exception; production strict refuses both)')
+    # a night outside the master subtracts the central master: 07h_Blue (no rebuild pending), 2025-10-14 in_master 0
+    rc, o, e = _cli(['frames', '--tier', 'deep', '--epochs', '07h_2025-10-14', '--scopes', 'Blue', '--stokes', 'V',
                      '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
                      os.path.join(d, 'work')])
-    assert "nights outside the master ['2025-10-15']" in o, o[-800:]
+    assert 'PASS D-G3' in o and "nights outside the master ['2025-10-14']" in o, o[-800:]
     assert not os.path.exists(os.path.join(d, 'dry')), 'the dry run wrote something'
-    lines.append('dry-run 07h_18MHz V: 19 owed frames (18 LOO, 1 central); per-hour 07h_2025-10-15 Red: central master')
+    lines.append('dry-run 07h_18MHz V: 19 owed frames (18 LOO, 1 central); per-hour 07h_2025-10-14 Blue: central master')
     print('real:\n  ' + '\n  '.join(lines))
 
 
-TESTS = ['test_config', 'test_seam', 'test_items', 'test_overrides', 'test_preview_sanity_minimum', 'test_child', 'test_register', 'test_cli', 'test_real']
+TESTS = ['test_config', 'test_seam', 'test_items', 'test_overrides', 'test_preview_sanity_minimum', 'test_child', 'test_register',
+         'test_cli', 'test_d_g3_engine_agree', 'test_real']
 
 
 def main(argv):

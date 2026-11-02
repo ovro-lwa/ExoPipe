@@ -125,10 +125,13 @@ def resid_card_problems(path, h, m, master_root=None):
 @content_test('sublst_wideband')
 def wideband_content(path, **ctx):
     """WIDEBAND = the group of the name; WBMEMB >= frames_sublst.WIDEBAND_MIN_MEMBERS members of the group; WBWGTS one per member,
-    summing to 1 (1e-3); every member has its five products for both Stokes (stack, _pb, _nframes, set-A residual beside
-    the stacks, set-B residual under <LST>_x2); the central 64x64 patch = the WBWGTS-weighted mean of the members' patches
+    summing to 1 (1e-3); every member has its five products (stack, _pb, _nframes, set-A residual beside the stacks, set-B
+    residual under <LST>_x2) for each Stokes the window was built in - the Stokes whose wideband stack of the window exists,
+    the file's own always (since clv15 582c92e a window is built per Stokes: it may exist in one Stokes only) - and its
+    Stokes V stack (the weight); the central 64x64 patch = the WBWGTS-weighted mean of the members' patches
     (minimum for _nframes; NaN propagates) within 1e-3 of the patch scale (WBWGTS carry 4 significant digits); baked flux:
-    SHSCALE x FLUXCORR = the weighted mean of the members' SHSCALE x FLUXCORR (1e-3); not excluded under the band rule."""
+    SHSCALE x FLUXCORR = the weighted mean of the members' SHSCALE x FLUXCORR (1e-3), read from their stacks of the first
+    Stokes built (I, else V: as the engine); not excluded under the band rule."""
     from exopipe.phase3.core import cells
     b = os.path.basename(path)
     m = _STACK_RE.match(b)
@@ -162,8 +165,10 @@ def wideband_content(path, **ctx):
         d = os.path.join(x2_root if kd == 'rB' else stack_root, f'{lst}_{night}', sb, St)
         return os.path.join(d, base + {'stack': '.fits', 'pb': '_pb.fits', 'nf': '_nframes.fits',
                                         'rA': '_resid_loo.fits', 'rB': '_resid_loo.fits'}[kd])
-    missing = [prod(sb, St, kd) for sb in memb for St in ('I', 'V') for kd in ('stack', 'pb', 'nf', 'rA', 'rB')
-               if not os.path.exists(prod(sb, St, kd))]
+    built = [St for St in ('I', 'V') if St == S or os.path.exists(prod(G, St, 'stack'))]
+    need = [prod(sb, St, kd) for sb in memb for St in built for kd in ('stack', 'pb', 'nf', 'rA', 'rB')]
+    need += [prod(sb, 'V', 'stack') for sb in memb if 'V' not in built]
+    missing = [p for p in need if not os.path.exists(p)]
     if missing:
         msgs.append(f'{len(missing)} member product(s) missing, e.g. {missing[0]}')
         return _fail(msgs)
@@ -179,7 +184,7 @@ def wideband_content(path, **ctx):
         if dev > 1e-3 * scale + 1e-6:
             msgs.append(f'central patch deviates from the weighted member mean by {dev:.3g} (scale {scale:.3g})')
     if kind in ('stack', 'rA', 'rB') and h.get('FLUXBAKE'):
-        mh = [_hdr(prod(sb, 'I', 'stack')) for sb in memb]
+        mh = [_hdr(prod(sb, built[0], 'stack')) for sb in memb]
         bm = np.array([float(x.get('SHSCALE', np.nan)) * float(x.get('FLUXCORR', np.nan)) for x in mh])
         beff = float(np.sum(w * bm) / w.sum())
         got = float(h.get('SHSCALE', np.nan)) * float(h.get('FLUXCORR', np.nan))
