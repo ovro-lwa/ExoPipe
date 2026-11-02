@@ -4,7 +4,8 @@ Every step invocation is a ``Run``; every unit of work inside it (a cell, an LST
 ``UnitRecord`` written atomically to ``<out>/_records/<step>/<unit>.json`` when the unit ends. A record holds:
 the command line, code fingerprint (sha1 of every exopipe source file the step imported), config hash and overrides,
 host and cores, inputs with fingerprints, the admitted night set (exclusion state), outputs with their product class,
-every content test with its value, refusals and waivers.
+every content test with its value, refusals and waivers; each night's Phase-1 code version behind its Phase-1 / Phase-2
+inputs ('phase1_code', core/inputs.phase1_code_of).
 
 Rules (CLAUDE.md 3, 4b; architecture 11.1; DESIGN 11.5):
 - A unit is ``done`` only when it wrote at least one output and EVERY output passed its content test.
@@ -460,6 +461,11 @@ class UnitRecord:
         self.notes = []
         self.planned = {}            # abs path -> product class: the outputs this unit owes
         self.refused_items = []      # [{'path', 'reason', 'gate'}]: planned items refused by a named gate
+        # each night's Phase-1 code version (CUTOVER_READINESS 'Phase-1 provenance'): {'<LST>_<date>': {subband: {run: code}}}
+        # of every input that is a Phase-1 file or a Phase-2 product (core/inputs.phase1_code_of)
+        self.phase1_code = {}
+        self._phase1_seen = {}       # inputs.phase1_source key -> [(night, subband, code)]: one lookup per run subband /
+                                     # Science directory and scope
         self.t0 = time.time()
         from exopipe.phase3.core import fallback   # B-30: the fallback sites reached while this unit runs (children
         self._fallback_mark = fallback.mark()       # included: core.legacy.run absorbs theirs into this process)
@@ -469,7 +475,25 @@ class UnitRecord:
         fp = fingerprint(path)
         if extra:
             fp.update(extra)
+        codes = self._phase1_codes(path)
+        if codes:                    # a Phase-1 file or a Phase-2 product: the Phase-1 run(s) and code version behind it
+            fp['phase1_code'] = {sb: {'run': c.get('run'), 'pipeline_version': c.get('pipeline_version')}
+                                 for _night, sb, c in codes}
+            for night, sb, c in codes:
+                self.phase1_code.setdefault(night, {}).setdefault(sb, {})[c.get('run') or 'unknown'] = {
+                    k: v for k, v in c.items() if k not in ('run', 'subband')}
         self.inputs[os.path.abspath(path)] = fp
+
+    def _phase1_codes(self, path):
+        """core/inputs.phase1_code_of(path), looked up once per Phase-1 run subband / Phase-2 Science directory and scope in
+        this unit (a staging adds ~700 frames of one run and subband)."""
+        from exopipe.phase3.core import inputs
+        key = inputs.phase1_source(path)
+        if key is None:
+            return []
+        if key not in self._phase1_seen:
+            self._phase1_seen[key] = inputs.phase1_code_of(path)
+        return self._phase1_seen[key]
 
     def set_admitted(self, nights):
         """The admitted night set this unit used (sorted list of 'YYYY-MM-DD'); part of the resume identity, so an
@@ -601,6 +625,8 @@ class UnitRecord:
                  refused_items=self.refused_items, **self._fallback_fields())
         if changed:            # source files edited on disk after this process executed them: the record keeps the run's hash
             d['code_changed_on_disk'] = changed
+        if self.phase1_code:   # each night's Phase-1 code version (Orca commit) behind the unit's Phase-1 / Phase-2 inputs
+            d['phase1_code'] = self.phase1_code
         return d
 
     def _fallback_fields(self):

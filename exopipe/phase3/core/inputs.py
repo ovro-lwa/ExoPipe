@@ -7,20 +7,49 @@ runs of the same hour carry file-name timestamps 1-9 s apart, so it kept BOTH: 8
 (12h 2025-01-10 55 MHz: 681 Stokes I frames for one hour; ledger IMPLEMENTED-DATA-DECISIONS-VIS50-20261012, FINDING;
 handed to the refactor by Gregg 2026-10-13 ~00:35 UTC, "Hand it to refactor").
 
-The rule here: frames are keyed by their INTEGRATION (the integration midpoint from the header DATE-OBS, truncated to the
+The rule here: frames are matched by their INTEGRATION (the integration midpoint from the header DATE-OBS, truncated to the
 second - the label Phase 1 names frames by since exopipe 192c81c), and the LATEST run wins per integration; an older run
 contributes only integrations the later runs lack (a patch run fills its gap and nothing else). Measured on 12h 2025-01-10
 55 MHz: the three runs share 357-358 integration labels exactly (DATE-OBS agrees across runs); the union is 358, not 681.
 Headers are read only where more than one run holds frames of the subband (elsewhere a file-name timestamp is already one
-integration). ``phase1_frames`` refuses a result with more frames than integrations in the hour (content test).
+integration). ``phase1_frames`` refuses a result with more frames than integrations in the hour (content test). A kept
+frame's KEY is its own file-name timestamp - the frame identity (R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES; the refactor chat
+2026-10-18, production's port of this rule, clv15 4fe1121 _one_frame_per_integration): two integrations of different runs
+under one file-name second keep the later run's frame, and the lost one is counted and listed in the report (ts_collisions,
+lost). The keys, paths and order equal production's discover_frames (18h 2025-05-05 41 MHz, pinned and unpinned).
+
+PHASE-1 RUN PIN (Gregg 2026-11-01, 18h 2025-05-05: "Pin to June run (Recommended)"; production clv15 facb3e8, pin file
+exopipe_ops c6ddafc): a cell listed in the pin file (paths.PHASE1_RUN_PINS; columns cell, run, ruling, reason) resolves to its
+pinned run ONLY - the run its served snapshot search used - while a later Phase-1 run of the hour that the snapshot tier did not
+adopt exists (the pipeline account's Run_20261020_205211 of 18h 2025-05-05, made 2026-10-20/21: discovery preferred it and the
+re-chain B4K2 refused). A pinned run that is not in the archive refuses; a cell without a pin is unchanged. 18h 2025-05-05
+41 MHz Stokes I: 356 frames pinned (Run_20260603_010316, the search's own list), 358 unpinned (the October run).
+
+The frame-time constant of the integration label is search_snapshot.INTEGRATION_S (10.03102041 s, the MS INTERVAL;
+R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES), with production's own arithmetic (phase3_snapshot_search.dateobs_unix /
+integration_label). instrument.INTEGRATION_S (Phase 2's LWA_DT, 10.0310 s) is 2.0e-5 s shorter: a midpoint within ~1e-5 s of a
+second boundary got another label (FOLD_IN 10-28 finding).
+
+PHASE-1 CODE VERSION (CUTOVER_READINESS 'Phase-1 provenance'; ledger FINDING-PHASE1-MNC-ANTENNA-FLAGS-FROM-WRONG-DATE-BEFORE-
+ORCA-ACD5038-20261026: Phase 1 runs on Orca code older than acd5038 (2026-07-24) took the antenna flags of the LATEST MNC health
+record, not the observation night's). Every Phase-1 run writes <run>/<subband>/provenance.json; its pipeline_version is the Orca
+commit the run used. ``phase1_code`` reads it, and ``phase1_code_of(path)`` names the Phase-1 run(s) behind an input file: a
+Phase-1 frame comes from its own run; a Phase-2 product comes from the run Phase 2 took each member subband from (the Science
+directory's log). core/record writes it into the input record of every unit (the input's entry and the unit's per-night
+'phase1_code'), so the nights an affected Phase-1 version made can be listed (and re-flagged if Gregg rules so).
 
 Frame file names (Phase 1): old era '<sb>-Pilot-Snapshot-<ts>-<I|V>-image.fits[.fs|.fz]' in snapshots/; new era
 '<sb>-Pilot-Snapshot-<ts>-image.fits' = Stokes V in snapshots/, '<sb>-Clean-Snapshot-<ts>-image.fits' = Stokes I in
 snapshots_clean/. CLEAN files named by interval index (t0000...) come from CLEAN runs that stopped partway and are not
 frames (refactor finding D12): they are counted and reported, never used.
 """
+import csv
 import datetime
 import glob
+import hashlib
+import io
+import json
+import math
 import os
 import re
 
@@ -59,13 +88,31 @@ def read_dateobs(path, nblk=8):
     return ''
 
 
+def frame_integration_s():
+    """The frame-time constant, s: search_snapshot.INTEGRATION_S (= production phase3_snapshot_search.INTEGRATION_S, the MS
+    INTERVAL of one integration; a protected mirror of the engine literal, tests/test_search-tiers.py)."""
+    return float(_cfg().search_snapshot.INTEGRATION_S)
+
+
+def dateobs_unix(date_obs):
+    """FITS DATE-OBS 'YYYY-MM-DDTHH:MM:SS[.fff]' (UTC) -> unix seconds; ValueError when it is not one
+    (= production phase3_snapshot_search.dateobs_unix, the same arithmetic)."""
+    s = str(date_obs).strip()
+    base = datetime.datetime.strptime(s[:19], '%Y-%m-%dT%H:%M:%S')
+    return (base - _EPOCH).total_seconds() + (float('0' + s[19:]) if len(s) > 19 else 0.0)
+
+
 def integration_label(date_obs):
-    """'YYYYMMDD_HHMMSS' of the integration MIDPOINT (DATE-OBS = integration start) truncated to the second."""
-    s = date_obs.strip().replace('T', ' ')
-    fmt = '%Y-%m-%d %H:%M:%S.%f' if '.' in s else '%Y-%m-%d %H:%M:%S'
-    t0 = datetime.datetime.strptime(s, fmt)
-    mid = (t0 - _EPOCH).total_seconds() + _cfg().instrument.INTEGRATION_S / 2.0
-    return (_EPOCH + datetime.timedelta(seconds=int(mid // 1))).strftime('%Y%m%d_%H%M%S')
+    """'YYYYMMDD_HHMMSS' of the integration MIDPOINT (DATE-OBS = the integration start, + half the frame-time constant)
+    truncated to the second (= production phase3_snapshot_search.integration_label); ValueError on an unreadable DATE-OBS."""
+    mid = dateobs_unix(date_obs) + frame_integration_s() / 2.0
+    return (_EPOCH + datetime.timedelta(seconds=int(math.floor(mid)))).strftime('%Y%m%d_%H%M%S')
+
+
+def max_frames_per_hour():
+    """Integrations in one hour + 2 (= production MAX_FRAMES_PER_HOUR): the most frames phase1_frames may return per
+    Stokes (+2: frames straddling the hour's boundaries)."""
+    return int(3600.0 / frame_integration_s()) + 2
 
 
 def _dateobs_many(paths, nthreads=16):
@@ -102,16 +149,191 @@ def _scan_run(rd, subband):
     return out, n_index
 
 
-def phase1_frames(lst, date, subband, phase1_root=None, report=None):
+# ---- Phase-1 run pins --------------------------------------------------------------------------------------------------
+_PIN_CACHE = {}          # pin file -> ((size, mtime_ns), {cell: run}, sha1 of the file)
+
+
+def phase1_run_pins(path=None):
+    """({cell '<LST>_<date>': pinned run}, sha1 of the file) of the Phase-1 run-pin file (default paths.PHASE1_RUN_PINS).
+    The file production's phase3_snapshot_search.phase1_run_pin reads: columns cell, run, ruling, reason; a later row of a
+    cell wins; an empty run is no pin. No file: ({}, None). Read again whenever the file changes (size, mtime; production
+    reads it once per process). A file without the cell and run columns refuses."""
+    p = path or _cfg().paths.PHASE1_RUN_PINS
+    try:
+        st = os.stat(p)
+    except FileNotFoundError:
+        return {}, None
+    key = (st.st_size, st.st_mtime_ns)
+    hit = _PIN_CACHE.get(p)
+    if hit and hit[0] == key:
+        return dict(hit[1]), hit[2]
+    with open(p, 'rb') as f:
+        raw = f.read()
+    rd = csv.DictReader(io.StringIO(raw.decode('utf-8'), newline=''))
+    if not {'cell', 'run'} <= set(rd.fieldnames or ()):
+        raise Refusal(f'Phase-1 run-pin file {p}: columns {rd.fieldnames} - no cell / run column (production '
+                      f'phase3_snapshot_search.phase1_run_pin reads cell, run)')
+    pins = {}
+    for r in rd:
+        pins[(r.get('cell') or '').strip()] = (r.get('run') or '').strip()
+    _PIN_CACHE[p] = (key, pins, hashlib.sha1(raw).hexdigest())
+    return dict(pins), _PIN_CACHE[p][2]
+
+
+def phase1_run_pin(lst, date, path=None):
+    """The pinned Phase-1 run (directory name) of the cell <lst>_<date>, or None (no pin)."""
+    return phase1_run_pins(path)[0].get(f'{lst}_{date}') or None
+
+
+# ---- Phase-1 code version ---------------------------------------------------------------------------------------------
+PROVENANCE_NAME = 'provenance.json'          # Phase 1 writes one per run and subband: <run>/<subband>/provenance.json
+PHASE1_CODE_KEYS = ('pipeline_version', 'pipeline_branch', 'package_version', 'started_at')   # pipeline_version = the Orca commit
+_CODE_CACHE = {}         # provenance file -> ((size, mtime_ns), code)
+_SB_DIR = re.compile(r'^\d+MHz$')
+
+
+def phase1_code(run_dir, subband):
+    """The Phase-1 code of one run's subband: {'run', 'subband', 'pipeline_version' (the Orca commit the run used),
+    'pipeline_branch', 'package_version', 'started_at', 'provenance' (the file)} from <run_dir>/<subband>/provenance.json.
+    An absent or unreadable file gives 'pipeline_version' None and 'missing' (why): recorded as such, never guessed.
+    Cached per file (size, mtime)."""
+    p = os.path.join(run_dir, subband, PROVENANCE_NAME)
+    base = {'run': os.path.basename(run_dir.rstrip('/')), 'subband': subband, 'provenance': p}
+    try:
+        st = os.stat(p)
+    except OSError as e:
+        return dict(base, pipeline_version=None, missing=f'no {PROVENANCE_NAME} ({e.strerror})')
+    key = (st.st_size, st.st_mtime_ns)
+    hit = _CODE_CACHE.get(p)
+    if hit and hit[0] == key:
+        return dict(hit[1])
+    try:
+        with open(p) as f:
+            prov = json.load(f)
+        code = dict(base, **{k: prov.get(k) for k in PHASE1_CODE_KEYS})
+        if not code['pipeline_version']:
+            code['missing'] = f'{PROVENANCE_NAME} names no pipeline_version'
+    except (OSError, ValueError, AttributeError) as e:
+        code = dict(base, pipeline_version=None, missing=f'{PROVENANCE_NAME} unreadable ({type(e).__name__}: {e})')
+    _CODE_CACHE[p] = (key, code)
+    return dict(code)
+
+
+_P2_RUN_LINE = re.compile(r'\s(?P<sb>\d+MHz)\s+(?P<run>Run_\d{8}_\d{6})\s+\(\d+ FITS files\)\s*$')
+_P2_RUNS_CACHE = {}      # Science directory -> ((log, size, mtime_ns), {subband: Phase-1 run})
+
+
+def phase2_phase1_runs(sci_dir):
+    """{subband: Phase-1 run} Phase 2 made the Science directory's images from: the '<sb>  Run_* (<n> FITS files)' lines of
+    its log phase2_<LST>_<date>_<Science_*>.log (exopipe phase2_controller.discover_subbands - the latest Phase-1 run holding
+    the subband when Phase 2 ran; a later line of a subband wins). {} when the directory has no such log."""
+    hit = _P2_RUNS_CACHE.get(sci_dir)
+    if hit:
+        try:
+            st = os.stat(hit[0][0])
+            if (st.st_size, st.st_mtime_ns) == hit[0][1:]:
+                return dict(hit[1])
+        except OSError:
+            pass
+    logs = sorted(glob.glob(os.path.join(sci_dir, f'phase2_*_{os.path.basename(sci_dir.rstrip("/"))}.log')))
+    if not logs:
+        return {}
+    log = logs[-1]
+    st = os.stat(log)
+    key = (log, st.st_size, st.st_mtime_ns)
+    runs = {}
+    with open(log, errors='replace') as f:
+        for line in f:
+            m = _P2_RUN_LINE.search(line)
+            if m:
+                runs[m['sb']] = m['run']
+    _P2_RUNS_CACHE[sci_dir] = (key, runs)
+    return dict(runs)
+
+
+def _scope_subbands(scope):
+    C = _cfg()
+    if _SB_DIR.match(scope or ''):
+        return [scope]
+    if scope == 'Full':
+        return list(C.instrument.ALL_SUBBANDS)
+    return list(C.instrument.SUBBAND_BANDS.get(scope, ()))
+
+
+def phase1_source(path):
+    """('phase1' | 'phase2', LST, date, run or Science directory name, subband or scope) of a file under paths.PHASE1_ROOT
+    (<LST>/<date>/Run_*/<subband>/...) or paths.PHASE2_ROOT (<LST>/<date>/Science_*/<scope>/...), else None. The path is
+    compared as given (os.path.abspath, no file-system call), so a staged copy never passes for its source."""
+    C = _cfg()
+    a = os.path.abspath(str(path))
+    for root, kind in ((C.paths.PHASE1_ROOT, 'phase1'), (C.paths.PHASE2_ROOT, 'phase2')):
+        r = os.path.abspath(root).rstrip('/') + '/'
+        if not a.startswith(r):
+            continue
+        parts = a[len(r):].split('/')
+        if len(parts) < 5:                      # <LST>/<date>/<run>/<scope>/<file ...>
+            return None
+        lst, date, run, scope = parts[:4]
+        if kind == 'phase1' and run.startswith('Run_') and _SB_DIR.match(scope):
+            return kind, lst, date, run, scope
+        if kind == 'phase2' and run.startswith('Science_') and _scope_subbands(scope):
+            return kind, lst, date, run, scope
+        return None
+    return None
+
+
+def phase1_code_of(path):
+    """[(night '<LST>_<date>', subband, code)] of the Phase-1 run(s) behind the input file ``path`` (code = phase1_code):
+    - under paths.PHASE1_ROOT, <LST>/<date>/Run_*/<subband>/...: that run's subband;
+    - under paths.PHASE2_ROOT, <LST>/<date>/Science_*/<scope>/...: every member subband of the scope (the subband itself, a
+      band's subbands, all for Full), each with the Phase-1 run the Science directory's log names for it
+      (phase2_phase1_runs); a subband the log does not name: {'run': None, 'pipeline_version': None, 'missing': why};
+    - anything else (a staged copy, a Phase 3 product): [] (phase1_source)."""
+    src = phase1_source(path)
+    if src is None:
+        return []
+    C = _cfg()
+    kind, lst, date, run, scope = src
+    night = f'{lst}_{date}'
+    if kind == 'phase1':
+        return [(night, scope, phase1_code(os.path.join(C.paths.PHASE1_ROOT, lst, date, run), scope))]
+    try:
+        runs, why = phase2_phase1_runs(os.path.join(C.paths.PHASE2_ROOT, lst, date, run)), 'names no Phase-1 run for'
+    except OSError as e:               # recorded, never a reason to fail the unit that reads the image
+        runs, why = {}, f'could not be read ({e.strerror}) for'
+    out = []
+    for sb in _scope_subbands(scope):
+        if runs.get(sb):
+            out.append((night, sb, phase1_code(os.path.join(C.paths.PHASE1_ROOT, lst, date, runs[sb]), sb)))
+        else:
+            out.append((night, sb, {'run': None, 'subband': sb, 'pipeline_version': None,
+                                    'missing': f'the Phase-2 log of {run} {why} {sb}'}))
+    return out
+
+
+def phase1_frames(lst, date, subband, phase1_root=None, report=None, run_pins=None):
     """One frame per integration per Stokes for (LST, date, subband): {'I': [(key, path)], 'V': [(key, path)]}, sorted.
 
-    key = the file-name timestamp when only one run holds frames of this subband, else the integration label from the
-    header. ``report`` (a dict, optional) receives: runs (run -> frame counts), mixed (bool), dropped (frames of older
-    runs superseded per integration), index_named (CLEAN files named by interval index, not used)."""
+    key = the frame's file-name timestamp (its identity; see the module docstring). A cell listed in the Phase-1 run-pin
+    file (``run_pins``, default paths.PHASE1_RUN_PINS) resolves to its pinned run only and refuses when that run is absent.
+    ``report`` (a dict, optional) receives: runs (run -> frame counts, of the runs considered), mixed (bool), dropped (frames
+    of older runs superseded per integration), integrations, disagree (the runs' integration sets differ), ts_collisions and
+    lost (integrations lost to a file-name second another run's frame holds), shadowed, rule, index_named (CLEAN files named
+    by interval index, not used), pin ({'run', 'file', 'sha1'} of the cell's pin, or None), phase1_code ({run: phase1_code}
+    of every run a returned frame comes from)."""
     root = phase1_root or _cfg().paths.PHASE1_ROOT
     rundirs = sorted(glob.glob(os.path.join(root, lst, date, 'Run_*')))
     if not rundirs:
         raise Refusal(f'no Phase 1 runs for {lst} {date} under {root}')
+    pin_file = run_pins or _cfg().paths.PHASE1_RUN_PINS
+    pins, pin_sha1 = phase1_run_pins(pin_file)
+    pin = pins.get(f'{lst}_{date}') or None
+    if pin:
+        rundirs = [r for r in rundirs if os.path.basename(r) == pin]
+        if not rundirs:
+            raise Refusal(f'{lst} {date} is pinned to Phase-1 run {pin} ({pin_file}), which is not under '
+                          f'{os.path.join(root, lst, date)} - REFUSED (the run pin, Gregg 2026-11-01; production clv15 '
+                          f'facb3e8)')
     per_run = []
     n_index = 0
     for rd in rundirs:
@@ -120,35 +342,64 @@ def phase1_frames(lst, date, subband, phase1_root=None, report=None):
         if fr['I'] or fr['V']:
             per_run.append((os.path.basename(rd), fr))
     rep = {'runs': {r: {'I': len(f['I']), 'V': len(f['V'])} for r, f in per_run}, 'index_named': n_index,
-           'mixed': False, 'dropped': {'I': 0, 'V': 0}}
+           'mixed': False, 'dropped': {'I': 0, 'V': 0}, 'integrations': {'I': 0, 'V': 0},
+           'disagree': {'I': False, 'V': False}, 'ts_collisions': {'I': 0, 'V': 0}, 'lost': {'I': [], 'V': []},
+           'shadowed': {'I': 0, 'V': 0}, 'rule': 'one frame per integration (header DATE-OBS), latest Phase-1 run wins',
+           'pin': {'run': pin, 'file': pin_file, 'sha1': pin_sha1} if pin else None}
+    run_of = {p: r for r, f in per_run for st in f for p in f[st].values()}
     out = {}
     for st in ('I', 'V'):
         contributing = [(r, f[st]) for r, f in per_run if f[st]]
         if len(contributing) <= 1:
-            items = sorted(contributing[0][1].items()) if contributing else []
-        else:
-            rep['mixed'] = True
-            chosen = {}
-            # later runs first: the latest run wins per integration; older runs only fill integrations still missing
-            for r, frames in reversed(contributing):
-                dob = _dateobs_many(list(frames.values()))
-                for ts, p in frames.items():
-                    d = dob.get(p, '')
-                    if not d:
-                        raise Refusal(f'{p}: no DATE-OBS - cannot assign the frame to an integration')
+            out[st] = dict(contributing[0][1]) if contributing else {}
+            continue
+        rep['mixed'] = True
+        dob = _dateobs_many([p for _, f in contributing for p in f.values()])
+        chosen, sets = {}, []          # integration label -> (ts, path); per run the set of its integrations
+        # later runs first: the latest run wins per integration; older runs only fill integrations still missing. Frames of
+        # one run in file-name order, so two files of one integration in one run keep the earlier name.
+        for r, frames in reversed(contributing):
+            own = set()
+            for ts, p in sorted(frames.items()):
+                d = dob.get(p, '')
+                try:
                     key = integration_label(d)
-                    if key in chosen:
-                        rep['dropped'][st] += 1
-                    else:
-                        chosen[key] = p
-            items = sorted(chosen.items())
-        out[st] = items
-    # content test: never more frames than integrations in the hour (+1 for a frame straddling the boundary)
-    max_frames = int(3600.0 / _cfg().instrument.INTEGRATION_S) + 2
+                except (ValueError, TypeError):
+                    raise Refusal(f'{p}: no readable DATE-OBS ({d!r}) - cannot assign the frame to an integration, and '
+                                  f'{lst} {date} {subband} holds several Phase-1 runs')
+                own.add(key)
+                if key in chosen:
+                    rep['dropped'][st] += 1
+                else:
+                    chosen[key] = (ts, p)
+            sets.append(own)
+        rep['integrations'][st] = len(chosen)
+        rep['disagree'][st] = any(x != sets[0] for x in sets[1:])
+        kept = {}
+        for key, (ts, p) in chosen.items():            # insertion order: the latest run's frames first
+            if ts in kept:      # two integrations under one file-name second: the later run's frame is kept, the lost one
+                rep['ts_collisions'][st] += 1           # counted and listed (frame identity = the file-name second)
+                rep['lost'][st].append({'label': key, 'date_obs': dob.get(p, ''), 'file_ts': ts, 'run': run_of[p]})
+                continue
+            kept[ts] = p
+        # a kept older-run frame whose FILE NAME a later run also uses (for another integration): a staging keyed by file
+        # name may hold the later run's file under that name - counted for review
+        later = set()
+        for r, frames in reversed(contributing):
+            for ts, p in frames.items():
+                if kept.get(ts) == p and os.path.basename(p) in later:
+                    rep['shadowed'][st] += 1
+            later.update(os.path.basename(p) for p in frames.values())
+        out[st] = kept
+    out = {st: sorted(out[st].items()) for st in ('I', 'V')}
+    # content test: never more frames than integrations in the hour (+2 for frames straddling the boundaries)
+    max_frames = max_frames_per_hour()
     for st in ('I', 'V'):
         if len(out[st]) > max_frames:
             raise Refusal(f'{lst} {date} {subband} Stokes {st}: {len(out[st])} frames for one hour > {max_frames} '
                           f'integrations - frames from several runs are still mixed')
+    used = sorted({run_of[p] for st in ('I', 'V') for _, p in out[st]})
+    rep['phase1_code'] = {r: phase1_code(os.path.join(root, lst, date, r), subband) for r in used}
     if report is not None:
         report.update(rep)
     return out

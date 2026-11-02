@@ -25,6 +25,11 @@ class paths(_Section):
     """Roots of inputs and products. A step's --out / --work flags override the product and scratch roots
     for one run (parity and scratch runs never write into these)."""
     PHASE1_ROOT = '/lustre/pipeline/exopipe/phase1'
+    # Per-cell Phase-1 RUN PINS (Gregg 2026-11-01, 18h 2025-05-05: "Pin to June run (Recommended)"; production clv15 facb3e8
+    # phase3_snapshot_search.RUN_PINS, the file exopipe_ops c6ddafc): columns cell (<LST>_<date>), run (Run_<UTC>), ruling,
+    # reason. A pinned cell resolves to its pinned Phase-1 run only and refuses when that run is absent; no file = no pins
+    # (core/inputs.phase1_frames). Gregg's rulings fill it, like data_decisions.csv: read only, protected.
+    PHASE1_RUN_PINS = '/lustre/gh/main/exopipe_ops/snapshot_phase1_run_pins.csv'
     PHASE2_ROOT = '/lustre/pipeline/exopipe/phase2'
     PHASE3_ARCHIVE_ROOT = '/lustre/pipeline/exopipe/phase3'
     DATA_DECISIONS = '/lustre/gh/main/clv15/data_decisions.csv'    # Gregg's exclusions (read only; core/exclusions)
@@ -60,10 +65,10 @@ class paths(_Section):
 
 
 # Keys no --set / --config can change (DESIGN 11.4; critique_rulings 4.1): the exclusion file and every exclusion rule
-# parameter, the ruling ledger, the production-root guard and the list of pinned inputs (and, through it, each pinned
-# input). 'section.*' protects a whole section. Change them in this file, by a commit.
+# parameter, the ruling ledger, the production-root guard, the list of pinned inputs (and, through it, each pinned
+# input) and the Phase-1 run-pin file. 'section.*' protects a whole section. Change them in this file, by a commit.
 PROTECTED = ('paths.DATA_DECISIONS', 'paths.FIX_LEDGER', 'paths.PRODUCTION_WRITES', 'paths.PRODUCTION_ROOTS',
-             'paths.PINNED_INPUTS', 'exclusions.*')
+             'paths.PINNED_INPUTS', 'paths.PHASE1_RUN_PINS', 'exclusions.*')
 
 
 class exclusions(_Section):
