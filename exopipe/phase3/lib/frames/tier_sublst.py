@@ -49,9 +49,10 @@ Failure modes (exit 2 = refused, the gate named): a site PYTHON key missing; an 
 root while paths.PRODUCTION_WRITES is False; exclusion list missing (C-09); masters wrapper refusals (G-S01..G-S09);
 arm A incomplete (no masters loo record / log line); S-G8 x2 refine incomplete or older than the stacks; wideband engine
 REFUSED (S-G9: mixed or disagreeing flux scales, shapes); S-G10 no window of a group over the LST; tree engine REFUSED
-(S-G11); S-G12 products of an earlier run where a unit writes, no record of this unit lists them and no --fresh, or left
-in a (window, Stokes) the wideband engine refused as incomplete; searchframes requested; any content test failed (R1-R3
-included). Exit 1 also when a wideband log disagrees with its count line. Exit 3: every unit had nothing to do.
+(S-G11); S-G12 (production's run-starts-clean rule) products of an earlier run where a unit writes, no record of this unit
+lists them and no --fresh, or - after the wideband engine - any file in the unit's write directories this run did not write;
+searchframes requested; any content test failed (R1-R3 included). Exit 1 also when a wideband log disagrees with its count
+line. Exit 3: every unit had nothing to do.
 """
 import glob
 import os
@@ -185,7 +186,7 @@ def check_interpreter(key):
 def engine(script, args_, python, log, unit=None, env=None, refusal_codes=(2,), refusal_text=None):
     """One in-place engine run through core.legacy.run (the one child runner). Returns (res, lines) where lines are the
     lines THIS call appended to ``log`` (legacy.run appends, with a header line). refusal_text: what in the output marks a
-    failed call as a refusal (default legacy.run's)."""
+    failed call as a refusal (default legacy.run's). A failed call is judged by its OWN last lines (judge_own_lines)."""
     from exopipe.phase3.core import legacy
     os.makedirs(os.path.dirname(log), exist_ok=True)
     off = os.path.getsize(log) if os.path.exists(log) else 0
@@ -195,7 +196,35 @@ def engine(script, args_, python, log, unit=None, env=None, refusal_codes=(2,), 
     with open(log, errors='replace') as f:
         f.seek(off)
         lines = f.read().splitlines()
+    judge_own_lines(res, lines, script, refusal_codes, refusal_text)
     return res, lines
+
+
+def judge_own_lines(res, lines, script, refusal_codes, refusal_text=None):
+    """legacy.run judges a call that failed outside its refusal codes (refused or error) by the last lines of the WHOLE log,
+    and these logs are appended across calls: an earlier call's refusal line would make this call's crash a refusal. Re-judge
+    it by THIS call's own last lines - legacy.run's rule, texts and window (its refusal_text and tail_lines defaults, read from
+    its signature) - and the reason as legacy.run words it. Exit 0, an exit in refusal_codes and a B-30 fallback refusal
+    (sticky) are left as legacy.run judged them. (The fix in core would be legacy.run reading its tail from after its own
+    header line; then this is a no-op.)"""
+    import inspect
+    from exopipe.phase3.core import legacy
+    if res.rc == 0 or res.rc in tuple(refusal_codes) or res.fallback_refusals:
+        return
+    par = inspect.signature(legacy.run).parameters
+    texts = tuple(refusal_text) if refusal_text is not None else tuple(par['refusal_text'].default)
+    own = lines
+    for i, l in enumerate(lines[:3]):                 # this call's text starts with legacy.run's '===== <UTC> <argv>' line
+        if l.startswith('===== '):
+            own = lines[i + 1:]
+            break
+    tail = own[-int(par['tail_lines'].default):]
+    hit = next((t for t in texts if any(t in l for l in tail)), None)
+    if (hit is not None) == bool(res.refused):
+        return
+    res.refused = hit is not None
+    line = next((l.strip()[:200] for l in reversed(tail) if hit and hit in l), '')
+    res.reason = f'{os.path.basename(script)} exit {res.rc}' + (f' ({hit}: {line})' if hit else ' - error')
 
 
 def refusal_line(lines, res):
@@ -621,16 +650,21 @@ _WB_COUNTS = re.compile(r'^SUBLST-WIDEBAND (?P<lst>\S+) groups=(?P<groups>\S+) w
                         r'skipped=(?P<skipped>\d+) refused_band_rule=(?P<band_rule>\d+) '
                         r'refused_incomplete=(?P<incomplete>\d+)$')
 _WB_ITEM_LINES = ('REFUSED-INCOMPLETE ', 'REFUSED-BAND-RULE ')    # item outcomes: never the reason an engine call refused
+# what marks a failed call as the engine's refusal: its sys.exit('REFUSED: ...'), and production modules it calls refuse with
+# RuntimeError('... REFUSING ...') (exopipe flux_correction.pixel_factor: FLUXBAKE without FLUXCORR; coadd_full_pipeline
+# .load_exclusions: no exclusion list, C-09) - legacy.run's texts with 'REFUSED' narrowed to 'REFUSED:', so the item lines
+# above never make a crash a refusal
+_WB_REFUSAL_TEXT = ('REFUSED:', 'REFUSING', 'REFUSE:')
 
 
 def wideband_outcome(lines, lst, night, G):
     """What one wideband engine call (--lst <lst> --groups <G> --nights <night>) reported, reconciled with its count line.
     Returns {'windows': [(k, built Stokes tuple, members, line)], 'incomplete': [(S, k, missing members, line)],
     'skipped': [line], 'band_rule': [line], 'counts': {windows, skipped, band_rule, incomplete}, 'count_line': line}.
-    ValueError when a line names another LST / night / group, a WIDEBAND or REFUSED-INCOMPLETE line does not parse, a window
-    or a (Stokes, window) is reported twice, a Stokes is both built and refused, a window built in one Stokes has no
-    REFUSED-INCOMPLETE line for the other, or the count line is missing (an engine older than clv15 582c92e has no
-    refused_incomplete=; or the call did not finish) or disagrees with the lines."""
+    ValueError when a line names another LST / night / group, a WIDEBAND, REFUSED-INCOMPLETE or count line does not parse (an
+    engine older than clv15 582c92e prints no refused_incomplete=), a window or a (Stokes, window) is reported twice, a Stokes
+    is both built and refused, a window built in one Stokes has no REFUSED-INCOMPLETE line for the other, or the count line is
+    missing (the call did not finish) or disagrees with the lines."""
     out = {'windows': [], 'incomplete': [], 'skipped': [], 'band_rule': [], 'counts': None, 'count_line': None}
     built_at, refused_at = {}, set()
     for raw in lines:
@@ -650,6 +684,9 @@ def wideband_outcome(lines, lst, night, G):
             if q:
                 break
         else:
+            if line.startswith('SUBLST-WIDEBAND '):
+                raise ValueError(f'count line not understood (an engine before clv15 582c92e prints no refused_incomplete=): '
+                                 f'{line[:160]}')
             if line.startswith(('WIDEBAND ', 'REFUSED-INCOMPLETE ')):
                 raise ValueError(f'engine line not understood: {line[:160]}')
             continue
@@ -670,8 +707,7 @@ def wideband_outcome(lines, lst, night, G):
         else:
             out[kind].append(line)
     if out['counts'] is None:
-        raise ValueError('no count line "SUBLST-WIDEBAND ... refused_incomplete=<n>" (the call did not finish, or the engine '
-                         'predates the required-member rule, clv15 582c92e)')
+        raise ValueError('no count line "SUBLST-WIDEBAND ... refused_incomplete=<n>" (the call did not finish)')
     seen = {'windows': len(out['windows']), 'skipped': len(out['skipped']), 'band_rule': len(out['band_rule']),
             'incomplete': len(out['incomplete'])}
     if seen != out['counts']:
@@ -765,10 +801,10 @@ def stage_wideband(ctx, lst, nights, per_hour):
 
             def night(n):
                 log = os.path.join(root, 'logs', f'wideband_{lst}_{G}_{n}.log')
-                # a call refuses only by the engine's own 'REFUSED: ...' exit; its REFUSED-INCOMPLETE / REFUSED-BAND-RULE
-                # lines are item outcomes, so a crash after them stays an error
+                # a call refuses by the engine's REFUSED: / REFUSING exits only; its REFUSED-INCOMPLETE / REFUSED-BAND-RULE
+                # lines are item outcomes, so a crash after them stays an error (_WB_REFUSAL_TEXT)
                 results[n] = (log,) + engine(script, ['--root', root, '--x2-root', x2, '--lst', lst, '--groups', G,
-                                                      '--nights', n], py, log, unit=u, refusal_text=('REFUSED:',))
+                                                      '--nights', n], py, log, unit=u, refusal_text=_WB_REFUSAL_TEXT)
             parallel(night, run_n, ctx.workers or S.WIDEBAND_PARALLEL)
             nwin = n_one = 0
             tally = {'windows': 0, 'skipped': 0, 'band_rule': 0, 'incomplete': 0}
@@ -798,19 +834,23 @@ def stage_wideband(ctx, lst, nights, per_hour):
                                 raise RuntimeError(f'wideband reported "{l[:120]}" but did not write {p}')
                             u.add_output(p, 'sublst_wideband')
                 for St, k, _missing, l in o['incomplete']:
-                    # S-G9 required members (clv15 582c92e): no wideband from a partial set, 18 MHz the one exception. A
-                    # product of an earlier run left in that (window, Stokes) is stale - the tree would pair it with this run's
-                    # other Stokes - so it refuses (S-G12), never left beside this run's products
-                    ps = wideband_products(root, x2, lst, n, G, St, k)
-                    stale = [p for p in ps if os.path.lexists(p)]
-                    if stale:
-                        u.refuse(f'S-G12 {len(stale)} product(s) of an earlier run in a (window, Stokes) this run refused as '
-                                 f'incomplete, e.g. {stale[0]} ({l[:160]}): move them aside and re-run')
-                    u.refuse_item(ps[0], l[:300], gate='S-G9')
+                    # S-G9 required members (clv15 582c92e): no wideband from a partial set, 18 MHz the one exception
+                    u.refuse_item(wideband_products(root, x2, lst, n, G, St, k)[0], l[:300], gate='S-G9')
                 for l in o['skipped']:
                     u.note(l[:300])
                 for l in o['band_rule']:                        # the engine's own band-rule refusal (clv15 6f5fb31)
                     u.refuse_item(os.path.join(root, f'{lst}_{n}', G), l[:300], gate='exclusions')
+            # S-G12, production's RUN-STARTS-CLEAN rule (nocat:76-82: an earlier run's products refuse the whole LST at its
+            # start). Here --fresh (or this unit's own earlier record) lets the engine overwrite them, so what it did NOT write is
+            # caught after it: any file or link in this unit's write directories that is not a product of this run's WIDEBAND
+            # lines - a window the engine no longer builds, a (window, Stokes) it now refuses as incomplete, a .part leftover -
+            # would be paired by the tree with this run's products
+            mine = {os.path.abspath(o['path']) for o in u.outputs}
+            stale = sorted(p for d in outdirs for p in glob.glob(os.path.join(d, '*')) if os.path.abspath(p) not in mine)
+            if stale:
+                u.refuse(f'S-G12 {len(stale)} file(s) in this unit\'s write directories that this run did not write, e.g. '
+                         f'{stale[0]} - an earlier run\'s, which the tree would pair with this run\'s products (production '
+                         f'refuses such an LST at its start, nocat:76-82): move them aside and re-run with --fresh')
             u.note(f'{nwin} wideband {G} window(s) over {len(run_n)} night(s)'
                    + (f', {n_one} built in one Stokes only' if n_one else '')
                    + (f'; {tally["incomplete"]} (night, window, Stokes) refused as incomplete (S-G9: a required member lacks '

@@ -214,7 +214,9 @@ def test_items():
 def test_wideband_lines():
     """clv15 582c92e (the per-Stokes required-member rule): the lines the stage reads are the in-place engine's (drift check
     on its source), and wideband_outcome reconciles a call's lines with its count line - real production lines (12h logs,
-    2026-10-23), a window built in one Stokes, and the refusals of a log it cannot trust."""
+    2026-10-23), a window built in one Stokes (SYNTHETIC lines in the engine's format: no production log holds one yet), and
+    seven logs it cannot trust, each refused with its own reason. How a call that fails is judged: by the engine's REFUSED: /
+    REFUSING exits, never by its item lines, and by this call's own lines in an appended log."""
     src = open(os.path.join(CFG.paths.CLV15_ROOT, 'phase3_sublst_wideband.py')).read()
     frags = ('req = [b for b in subs if b != "18MHz"]',
              'print("REFUSED-INCOMPLETE %s %s %s %s w%d: required member(s) %s lack a product',
@@ -247,32 +249,58 @@ def test_wideband_lines():
     o = TS.wideband_outcome(blue, '12h', '2025-01-03', 'Blue')
     check('a window built in Stokes V only: V products expected, the I refusal an item', o['windows'][0][:2] == (1, ('V',))
           and o['incomplete'][0][:3] == ('I', 1, ['73MHz']), str(o)[:300])
-    bad = {'no count line (a call that did not finish)': red[:-1],
-           'a count line without refused_incomplete= (an engine before clv15 582c92e)':
-               red[:-1] + ['SUBLST-WIDEBAND 12h groups=Red windows=4 skipped=0 refused_band_rule=0'],
-           'counts that disagree with the lines': red[:-1] + [red[-1].replace('windows=4', 'windows=5')],
-           'a one-Stokes window without the other Stokes\' refusal': [blue[0], blue[2].replace('incomplete=1', 'incomplete=0')],
-           'a Stokes both built and refused': [red[1], red[5].replace('w4', 'w0'),
-                                               red[-1].replace('windows=4', 'windows=1').replace('incomplete=2', 'incomplete=1')],
-           'a line of another night': [red[1].replace('2024-12-29', '2024-12-30'), red[-1]],
-           'a WIDEBAND line in another format': ['WIDEBAND 12h 2024-12-29 Red w0 members=18MHz weights=1.0 extra', red[-1]]}
-    for what, lines in bad.items():
+    bad = [('no count line (a call that did not finish)', red[:-1], 'no count line'),
+           ('a count line without refused_incomplete= (an engine before clv15 582c92e)',
+            red[:-1] + ['SUBLST-WIDEBAND 12h groups=Red windows=4 skipped=0 refused_band_rule=0'], 'count line not understood'),
+           ('counts that disagree with the lines', red[:-1] + [red[-1].replace('windows=4', 'windows=5')],
+            'disagrees with the lines'),
+           ('a one-Stokes window without the other Stokes\' refusal', [blue[0], blue[2].replace('incomplete=1', 'incomplete=0')],
+            'w1 built in Stokes V only, with no REFUSED-INCOMPLETE line for Stokes I'),
+           ('a Stokes both built and refused', [red[1], red[5].replace('w4', 'w0'),
+                                                red[-1].replace('windows=4', 'windows=1').replace('incomplete=2', 'incomplete=1')],
+            'w0 Stokes I both built and refused as incomplete'),
+           ('a line of another night', [red[1].replace('2024-12-29', '2024-12-30'), red[-1]],
+            'a line of another LST / night / group'),
+           ('a WIDEBAND line in another format', ['WIDEBAND 12h 2024-12-29 Red w0 members=18MHz weights=1.0 extra', red[-1]],
+            'engine line not understood')]
+    for what, lines, why in bad:
+        blue_ = 'Blue' in lines[0]
         try:
-            TS.wideband_outcome(lines, '12h', '2024-12-29' if 'Blue' not in lines[0] else '2025-01-03',
-                                'Blue' if 'Blue' in lines[0] else 'Red')
-            check(f'wideband_outcome refuses {what}', False)
+            TS.wideband_outcome(lines, '12h', '2025-01-03' if blue_ else '2024-12-29', 'Blue' if blue_ else 'Red')
+            check(f'wideband_outcome refuses {what}', False, 'no refusal')
         except ValueError as e:
-            check(f'wideband_outcome refuses {what}', True, str(e))
-    # an engine that crashes after its item lines is an error, not a refusal: only its own 'REFUSED: ...' exit refuses
-    os.makedirs(os.path.join(T, 'wbcrash'), exist_ok=True)
-    sc = os.path.join(T, 'wbcrash', 'crash.py')
-    with open(sc, 'w') as f:
-        f.write('print("REFUSED-INCOMPLETE 09h 2025-01-01 Red V w2: required member(s) 27MHz' + inc + '", flush=True)\n'
-                'raise OSError("disk gone")\n')
-    res, lines = TS.engine(sc, [], 'default', os.path.join(T, 'wbcrash', 'crash.log'), refusal_text=('REFUSED:',))
-    res0, _ = TS.engine(sc, [], 'default', os.path.join(T, 'wbcrash', 'crash0.log'))
-    check('a wideband call that crashes after a REFUSED-INCOMPLETE line is an error (the default reading calls it refused)',
+            check(f'wideband_outcome refuses {what}: "{why}"', why in str(e), str(e))
+    # how a failed call is judged (tier_sublst.engine, judge_own_lines): the engine's REFUSED: exit and the REFUSING of the
+    # production modules it calls refuse; a crash after its item lines is an error; in a log appended across calls only THIS
+    # call's lines count
+    d = os.path.join(T, 'wbcrash')
+    os.makedirs(d, exist_ok=True)
+
+    def child(name, body):
+        p = os.path.join(d, name + '.py')
+        with open(p, 'w') as f:
+            f.write('import sys\nprint("REFUSED-INCOMPLETE 09h 2025-01-01 Red V w2: required member(s) 27MHz' + inc
+                    + '", flush=True)\n' + body + '\n')
+        return p
+    crash = child('crash', 'raise OSError("disk gone")')
+    refusing = child('refusing', 'raise RuntimeError("FLUXBAKE set without FLUXCORR - header inconsistent; REFUSING")')
+    refused = child('refused', 'sys.exit("REFUSED: 09h 2025-01-01 Red w0 members mix baked and un-baked flux scales")')
+    wbt = TS._WB_REFUSAL_TEXT
+    res, _ = TS.engine(crash, [], 'default', os.path.join(d, 'a.log'), refusal_text=wbt)
+    res0, _ = TS.engine(crash, [], 'default', os.path.join(d, 'b.log'))
+    check('a wideband call that crashes after a REFUSED-INCOMPLETE line is an error (the default texts call it refused)',
           res.rc != 0 and not res.refused and res0.refused, (res.rc, res.refused, res0.refused))
+    res, _ = TS.engine(refusing, [], 'default', os.path.join(d, 'c.log'), refusal_text=wbt)
+    check('a production module\'s REFUSING exit (flux_correction.pixel_factor) refuses the call',
+          res.rc != 0 and res.refused and 'REFUSING' in res.reason, (res.rc, res.refused, res.reason))
+    log = os.path.join(d, 'appended.log')
+    r1, _ = TS.engine(refused, [], 'default', log, refusal_text=wbt)
+    r2, _ = TS.engine(crash, [], 'default', log, refusal_text=wbt)
+    r3, _ = TS.engine(refusing, [], 'default', log, refusal_text=wbt)
+    check('one appended log: a refusal, then a crash judged by its own lines (an error, not the earlier call\'s refusal), '
+          'then a REFUSING exit (refused)', r1.refused and not r2.refused and r2.rc != 0 and 'error' in r2.reason
+          and r3.refused, (r1.refused, r2.refused, r2.reason, r3.refused))
+
 
 RED = ('18MHz', '23MHz', '27MHz', '32MHz', '36MHz')     # the Red members (cells.band_members('Red'), asserted)
 WINDOWS = (0, 1, 2)
@@ -448,17 +476,29 @@ def test_sublst_engines():
         hl[0].data[30:34, 30:34] += 5.0
     r = validate.run('sublst_wideband', rp)
     check('sublst_wideband fails on altered pixels', not all(x['passed'] for x in r))
-    # S-G12: a product of an earlier run left in a (window, Stokes) this run refuses as incomplete would be paired by the tree
-    # with this run's other Stokes - the unit refuses rather than leave it
-    stale = wb_path(2, 'V', 0)
-    os.makedirs(os.path.dirname(stale), exist_ok=True)
-    shutil.copy(wb_path(2, 'I', 0), stale)
+    # S-G12, production's run-starts-clean rule: after the engine, any file in the unit's write directories this run did not
+    # write refuses the unit - the reviewer's probe (an earlier run's w5, a window the engine no longer reports, survived
+    # --fresh and the tree paired it) and an earlier run's product in a (window, Stokes) this run refuses as incomplete
+    w5 = [(wb_path(0, S, 0, sfx, arm), wb_path(5, S, 0, sfx, arm)) for S in ('I', 'V')
+          for sfx, arm in (('.fits', ''), ('_pb.fits', ''), ('_nframes.fits', ''), ('_resid_loo.fits', ''),
+                           ('_resid_loo.fits', '_x2'))]
+    for probe, pairs in (('an earlier run\'s w5 (a window the engine no longer reports)', w5),
+                         ('an earlier run\'s Stokes V w2 (refused as incomplete now)', [(wb_path(2, 'I', 0), wb_path(2, 'V', 0))])):
+        planted = [b for _, b in pairs]
+        for a, b in pairs:
+            shutil.copy(a, b)
+        rc, out = exopipe3(*common, '--stages', 'wideband', '--fresh')
+        rec = records(root).get(f'{LST}_wideband_Red', {})
+        why = rec.get('reason', '')
+        check(f'S-G12 after the engine: {probe} in the write directories refuses the unit, re-run advice --fresh',
+              rc == 2 and rec.get('status') == 'refused' and why.startswith(f'S-G12 {len(planted)} file(s)')
+              and any(x in why for x in planted) and 'with --fresh' in why and all(os.path.exists(x) for x in planted),
+              f'{rc} {rec.get("status")} {why} {out[-300:]}')
+        for x in planted:
+            os.remove(x)
     rc, out = exopipe3(*common, '--stages', 'wideband', '--fresh')
-    rec = records(root).get(f'{LST}_wideband_Red', {})
-    check('S-G12: an earlier run\'s product in a (window, Stokes) refused as incomplete refuses the unit',
-          rc == 2 and rec.get('status') == 'refused' and 'S-G12' in rec.get('reason', '') and stale in rec.get('reason', ''),
-          f'{rc} {rec.get("status")} {rec.get("reason")} {out[-400:]}')
-    os.remove(stale)
+    check('S-G12: the write directories clean again, the unit is done', rc == 0 and records(root).get(
+        f'{LST}_wideband_Red', {}).get('status') == 'done', out[-300:])
     victim = glob.glob(os.path.join(root, LST, f'{LST}_{nights[1]}', '23MHz', 'V', '*_resid_loo.fits'))[0]
     os.remove(victim)
     ok, n, det = XS.residual_set(os.path.join(root, LST))
