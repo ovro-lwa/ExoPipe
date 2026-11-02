@@ -95,6 +95,16 @@ def check(clv15_root, C, paths_cfg):
     if not (isinstance(ft, tuple) and len(ft) >= 2 and ft[0] == 'environ' and ft[1] == 'P3_SNAP_FLOWTREE'):
         problems.append(f"{MODULES['ra']} FLOWTREE = {ft!r} is no longer read from P3_SNAP_FLOWTREE (the step exports "
                         f"paths.SNAPSHOT_FLOW_ROOT under that name)")
+    # the Phase-1 run-pin file discover_frames reads (clv15 facb3e8, RUN_PINS from P3_SNAP_RUN_PINS at import) = the protected
+    # paths.PHASE1_RUN_PINS: its default, and no other file named in this environment (archive_frames runs it in process)
+    rp = lit['ss'].get('RUN_PINS')
+    if rp != ('environ', 'P3_SNAP_RUN_PINS', paths_cfg.PHASE1_RUN_PINS):
+        problems.append(f"{MODULES['ss']} RUN_PINS = {rp!r} != os.environ.get('P3_SNAP_RUN_PINS', paths.PHASE1_RUN_PINS "
+                        f"{paths_cfg.PHASE1_RUN_PINS!r})")
+    env_pins = os.environ.get('P3_SNAP_RUN_PINS')
+    if env_pins and os.path.realpath(env_pins) != os.path.realpath(paths_cfg.PHASE1_RUN_PINS):
+        problems.append(f'P3_SNAP_RUN_PINS={env_pins} in this environment: discover_frames would read another Phase-1 run-pin '
+                        f'file than paths.PHASE1_RUN_PINS ({paths_cfg.PHASE1_RUN_PINS}, protected) - unset it')
     if 'P3_LC_WAIT_I_S' not in lit['lc']['__environ_names__']:
         problems.append(f"{MODULES['lc']} no longer reads P3_LC_WAIT_I_S (curves.WAIT_I_TABLE_S is exported under it)")
     if getattr(C, 'SEARCH_FRAMES', False):

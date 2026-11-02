@@ -4,7 +4,8 @@ Every step invocation is a ``Run``; every unit of work inside it (a cell, an LST
 ``UnitRecord`` written atomically to ``<out>/_records/<step>/<unit>.json`` when the unit ends. A record holds:
 the command line, code fingerprint (sha1 of every exopipe source file the step imported), config hash and overrides,
 host and cores, inputs with fingerprints, the admitted night set (exclusion state), outputs with their product class,
-every content test with its value, refusals and waivers.
+every content test with its value, refusals and waivers; each night's Phase-1 code version behind its Phase-1 / Phase-2
+inputs ('phase1_code', core/inputs.phase1_code_of); and 'injected' when the run carries synthetic sources (core/injected.py).
 
 Rules (CLAUDE.md 3, 4b; architecture 11.1; DESIGN 11.5):
 - A unit is ``done`` only when it wrote at least one output and EVERY output passed its content test.
@@ -297,6 +298,59 @@ def unruled_overrides(rec):
     return [o for o in (rec.get('ruled_overrides') or []) if not str(o.get('authority') or '').startswith('ruling:')]
 
 
+def injected(rec):
+    """Why the run that wrote record ``rec`` was an injected run (core/injected.py), or '' - a consumer refuses such a
+    product: its data carry synthetic sources."""
+    return str((rec or {}).get('injected') or '')
+
+
+INJECTED_DIR = '_injected'      # <out>/_records/_injected/<run_id>.json: an injected run's START record (core/injected.py)
+
+
+def mark_injected(run):
+    """Write the injected run's start record <out>/_records/_injected/<run_id>.json before the step writes anything (cli): the
+    products under --out carry synthetic sources, so an ordinary run refuses this --out and every source under it
+    (injected_runs; core/injected.check_flags) and never resumes its units (resume_check). One directory listing finds it -
+    never a scan of the run summaries. Nothing for an ordinary run, a dry run or a step that keeps no records."""
+    if not getattr(run, 'injected', '') or run.dry_run or getattr(run, 'no_records', False):
+        return None
+    p = os.path.join(run.out_root, '_records', INJECTED_DIR, f'{run.run_id}.json')
+    atomic_write_json(p, {'run_id': run.run_id, 'step': run.step, 'argv': run.argv, 'injected': run.injected,
+                          'host': run.host, 'pid': run.pid, 'user': getpass.getuser(), 'started': run.started,
+                          'out': os.path.abspath(run.out_root)})
+    return p
+
+
+def injected_runs(path):
+    """[(root, start record, reason)] for each directory - ``path`` itself (as given and resolved) and every ancestor - whose
+    _records/_injected/ holds an injected run's start record (mark_injected): the products under ``path`` may carry synthetic
+    sources. One listing per directory; a local path (core/injected.check_flags checks a remote source over ssh)."""
+    out, seen = [], set()
+    for start in (os.path.abspath(str(path)), os.path.realpath(str(path))):
+        p = start
+        while True:
+            if p not in seen:
+                seen.add(p)
+                d = os.path.join(p, '_records', INJECTED_DIR)
+                try:
+                    names = sorted(n for n in os.listdir(d) if n.endswith('.json'))
+                except OSError:
+                    names = []
+                if names:
+                    f = os.path.join(d, names[0])
+                    try:
+                        with open(f) as fh:
+                            why = str(json.load(fh).get('injected') or 'injected')
+                    except (OSError, ValueError, AttributeError):
+                        why = 'injected (start record unreadable)'
+                    out.append((p, f, why))
+            parent = os.path.dirname(p)
+            if parent == p:
+                break
+            p = parent
+    return out
+
+
 def atomic_write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f'{path}.tmp.{os.getpid()}'
@@ -349,6 +403,8 @@ class Run:
         pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         self.commit = git_commit(pkg)
         self.units = []
+        from exopipe.phase3.core import injected as _inj   # an injected run (EXOPIPE3_INJECTED): every record says why
+        self.injected = _inj.reason()
         from exopipe.phase3.core import fallback   # B-30: fallback events of this run that no unit took (outside units)
         self._fallback_mark = fallback.mark()
         # the sections the step declares (CONFIG) plus the shared ones; None = every section (no CONFIG declared)
@@ -366,17 +422,20 @@ class Run:
                             retest=retest)
 
     def header(self):
-        return {'record_version': RECORD_VERSION, 'step': self.step, 'run_id': self.run_id, 'argv': self.argv,
-                'host': self.host, 'pid': self.pid, 'user': getpass.getuser(), 'commit': self.commit,
-                'config_hash': self.config_hash, 'config_hash_all': self.cfg.hash(),
-                'config_sections': sorted(self.config_sections) if self.config_sections is not None else None,
-                'site_sha1': getattr(self.cfg, 'site_sha1', None),
-                # [key, repr(old), repr(new), source, authority]; authority: None (unruled key), 'ruling:<ledger ID>',
-                # 'non-production out:<dir>' - install and serve refuse products whose ruled override has no ruling
-                'config_overrides': [[o[0], repr(o[1]), repr(o[2]), o[3], o[4] if len(o) > 4 else None]
-                                     for o in self.cfg.overrides],
-                'ruled_overrides': self.cfg.ruled_overrides() if hasattr(self.cfg, 'ruled_overrides') else [],
-                'waivers': [{'test': t, 'ruling': r} for t, r in self.waivers], 'dry_run': self.dry_run}
+        h = {'record_version': RECORD_VERSION, 'step': self.step, 'run_id': self.run_id, 'argv': self.argv,
+             'host': self.host, 'pid': self.pid, 'user': getpass.getuser(), 'commit': self.commit,
+             'config_hash': self.config_hash, 'config_hash_all': self.cfg.hash(),
+             'config_sections': sorted(self.config_sections) if self.config_sections is not None else None,
+             'site_sha1': getattr(self.cfg, 'site_sha1', None),
+             # [key, repr(old), repr(new), source, authority]; authority: None (unruled key), 'ruling:<ledger ID>',
+             # 'non-production out:<dir>' - install and serve refuse products whose ruled override has no ruling
+             'config_overrides': [[o[0], repr(o[1]), repr(o[2]), o[3], o[4] if len(o) > 4 else None]
+                                  for o in self.cfg.overrides],
+             'ruled_overrides': self.cfg.ruled_overrides() if hasattr(self.cfg, 'ruled_overrides') else [],
+             'waivers': [{'test': t, 'ruling': r} for t, r in self.waivers], 'dry_run': self.dry_run}
+        if getattr(self, 'injected', ''):
+            h['injected'] = self.injected         # core/injected.py: why this run carries synthetic sources (record.injected)
+        return h
 
     def unit(self, name, **meta):
         u = UnitRecord(self, name, meta)
@@ -460,6 +519,11 @@ class UnitRecord:
         self.notes = []
         self.planned = {}            # abs path -> product class: the outputs this unit owes
         self.refused_items = []      # [{'path', 'reason', 'gate'}]: planned items refused by a named gate
+        # each night's Phase-1 code version (CUTOVER_READINESS 'Phase-1 provenance'): {'<LST>_<date>': {subband: {run: code}}}
+        # of every input that is a Phase-1 file or a Phase-2 product (core/inputs.phase1_code_of)
+        self.phase1_code = {}
+        self._phase1_seen = {}       # inputs.phase1_source key -> [(night, subband, code)]: one lookup per run subband /
+                                     # Science directory and scope
         self.t0 = time.time()
         from exopipe.phase3.core import fallback   # B-30: the fallback sites reached while this unit runs (children
         self._fallback_mark = fallback.mark()       # included: core.legacy.run absorbs theirs into this process)
@@ -469,7 +533,25 @@ class UnitRecord:
         fp = fingerprint(path)
         if extra:
             fp.update(extra)
+        codes = self._phase1_codes(path)
+        if codes:                    # a Phase-1 file or a Phase-2 product: the Phase-1 run(s) and code version behind it
+            fp['phase1_code'] = {sb: {'run': c.get('run'), 'pipeline_version': c.get('pipeline_version')}
+                                 for _night, sb, c in codes}
+            for night, sb, c in codes:
+                self.phase1_code.setdefault(night, {}).setdefault(sb, {})[c.get('run') or 'unknown'] = {
+                    k: v for k, v in c.items() if k not in ('run', 'subband')}
         self.inputs[os.path.abspath(path)] = fp
+
+    def _phase1_codes(self, path):
+        """core/inputs.phase1_code_of(path), looked up once per Phase-1 run subband / Phase-2 Science directory and scope in
+        this unit (a staging adds ~700 frames of one run and subband)."""
+        from exopipe.phase3.core import inputs
+        key = inputs.phase1_source(path)
+        if key is None:
+            return []
+        if key not in self._phase1_seen:
+            self._phase1_seen[key] = inputs.phase1_code_of(path)
+        return self._phase1_seen[key]
 
     def set_admitted(self, nights):
         """The admitted night set this unit used (sorted list of 'YYYY-MM-DD'); part of the resume identity, so an
@@ -601,6 +683,8 @@ class UnitRecord:
                  refused_items=self.refused_items, **self._fallback_fields())
         if changed:            # source files edited on disk after this process executed them: the record keeps the run's hash
             d['code_changed_on_disk'] = changed
+        if self.phase1_code:   # each night's Phase-1 code version (Orca commit) behind the unit's Phase-1 / Phase-2 inputs
+            d['phase1_code'] = self.phase1_code
         return d
 
     def _fallback_fields(self):
@@ -622,10 +706,11 @@ def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None
     """(True, reason) when the unit may be skipped under --resume; (False, reason) otherwise.
 
     Skip only when: a record exists with status done and was written from a clean tree (a commit ending '-dirty' is
-    never resumed: its code is not identified by the commit); every recorded input still has the same fingerprint
-    (and ``inputs``, when given, equals the recorded input set); the admitted night set is unchanged; the code that
-    produced it is unchanged (sha1 of each recorded exopipe module); the config hash is unchanged; and every output
-    passes its content test now."""
+    never resumed: its code is not identified by the commit) by a run of the same kind, injected or ordinary
+    (core/injected.py: an ordinary run never adopts an injected run's unit, nor the reverse); every recorded input still
+    has the same fingerprint (and ``inputs``, when given, equals the recorded input set); the admitted night set is
+    unchanged; the code that produced it is unchanged (sha1 of each recorded exopipe module); the config hash is
+    unchanged; and every output passes its content test now."""
     rec = load_record(out_root, step, unit)
     if rec is None:
         return False, 'no record'
@@ -633,6 +718,10 @@ def resume_check(out_root, step, unit, inputs=None, admitted=None, cfg_hash=None
         return False, f"record status {rec.get('status')}"
     if str(rec.get('commit') or '').endswith('-dirty'):
         return False, f"record written from a dirty tree (commit {rec.get('commit')}): never resumed"
+    from exopipe.phase3.core import injected as _inj
+    if bool(injected(rec)) != _inj.active():         # never across the injected / ordinary line (core/injected.py)
+        return False, (f"record written by an injected run ({injected(rec)}): an ordinary run never adopts its units"
+                       if injected(rec) else f"record written by an ordinary run: this run is injected ({_inj.reason()})")
     for p, fp in rec.get('inputs', {}).items():
         if not same_fingerprint(fp, fingerprint(p)):
             return False, f'input changed: {p}'

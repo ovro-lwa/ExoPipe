@@ -192,8 +192,12 @@ def dry_run(plan, mod, stages, args):
 
 
 def run(args, run):
+    from exopipe.phase3.core import injected
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.serve import plan as planmod
+    # an INJECTED run is never served (core/injected.py; DESIGN 11.2 'search --inject: recorded, never served'): its pages
+    # carry synthetic sources - no server, registry, hub, journal or restart, parity ports included
+    injected.refuse('serve', 'an injected run is never served (served run, serve registry, hub, judgement journals, restarts)')
     if args.restart or args.stop:
         if args.restart and args.stop:
             raise Refusal('give --restart or --stop, not both')

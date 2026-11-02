@@ -128,7 +128,10 @@ class Ctx:
     # ---- G2 -------------------------------------------------------------------------------------------------------
     def guard_writes(self, paths, what):
         """G2: refuse an apply that would write or move anything under a production tree while paths.PRODUCTION_WRITES is
-        False (refactor window; INCIDENT-DRY-TEST-WROTE-FOUR-FILES-INTO-THE-REAL-ARCHIVE-REMOVED, ledger 897)."""
+        False (refactor window; INCIDENT-DRY-TEST-WROTE-FOUR-FILES-INTO-THE-REAL-ARCHIVE-REMOVED, ledger 897). An INJECTED
+        run (core/injected.py) never writes the archive tree, whatever PRODUCTION_WRITES says: refused first, by name."""
+        from exopipe.phase3.core import injected
+        injected.check_all(paths, f'archive {what}')
         if cfg().paths.PRODUCTION_WRITES:
             return
         for p in paths:

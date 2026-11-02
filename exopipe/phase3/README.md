@@ -40,7 +40,9 @@ exopipe3 config --step <step>       # every section the step declares (CONFIG), 
 `core/` holds what every step shares and nothing else: `exclusions` (the only reader of data_decisions.csv),
 `products` (names and standard headers), `astrometry` (position errors), `fitting` (Gaussian / template fits, fitted
 positions), `fitsio` (atomic writes, node-local scratch), `validate` (content-test registry), `record` (run records and
-resume), `cells` (cell / item-list grammar), `runner` (multi-node jobs), `env` (process environment).
+resume), `cells` (cell / item-list grammar), `runner` (multi-node jobs), `env` (process environment), `inputs` (the one
+resolver of Phase-1 frames - run pins, one frame per integration - and of Phase-2 images; each night's Phase-1 code
+version), `injected` (the injected-run guard).
 
 ## Rules every step follows
 
@@ -72,6 +74,15 @@ resume), `cells` (cell / item-list grammar), `runner` (multi-node jobs), `env` (
 11. **American English** in new text - comments, docstrings, `--help`, messages, docs (catalog, color, center, gray,
     meter, analyze; CLAUDE.md 8b, Gregg 2026-10-14). Existing text is converted only where it is edited for another
     reason, and never inside a string that matches production output (log lines, engine messages a gate greps).
+12. **An injected run writes no production product** (`core/injected.py`): `search --inject`, the common flag
+    `--injected` (any step run on synthetic data) or an inherited `EXOPIPE3_INJECTED` makes the run injected - it needs
+    an explicit scratch `--out` of its own, runs with `paths.PRODUCTION_WRITES` False, under the INJECTED-RUN GUARD (writes
+    only under `--out`, `--work`, scratch, /tmp) in every Python process; every destination flag of the step must be
+    scratch; the production writers (archive tree, photometry root, served run, data_decisions.csv) refuse it by name, and
+    `serve` / `jupiter serve` refuse it outright. Its records carry `injected` and a start record
+    (`<out>/_records/_injected/`): an ordinary run refuses that `--out` (no resume across the line) and every source flag
+    naming its products. `exopipe3 run` is never injected itself: `run submit --injected`, from an ordinary shell, forwards
+    the flag to every step command.
 
 ## Writing a step (for maintainers)
 
