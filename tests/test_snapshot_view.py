@@ -17,7 +17,9 @@ and its driver snapshot_batch/comb_build_20261102.sh.
   kept       G-K / G-V4: the build refuses (nothing moved into place) on a kept detection moved to another identity, a per-tier
              row removed from the kept product, a served run changed after the omit stage, an omit product of other runs
   gates      G-V1 (no name, no runs, a run twice, a run without catalogues), G-V2 (the view exists), G-V5 (another file system,
-             simulated), G-V6 (an injected run's products), --view-omit with --stages omit
+             simulated, a production view), G-V6 (an injected run's products), --view-omit with --stages omit
+  copy       G-V5 in the child (batch runs on /dev/shm): a production view refuses; a scratch / parity view copies every panel
+             (as under the parity guard) and equals the hard-linked view byte for byte
   content    snapshot_view refuses a queue that lost a name, a page holding an omitted detection, a page directory of two tiers,
              an identity detection the kept product does not keep, a record off the omit stage's; snapshot_card2_union a changed
              line; filter_catalog (per detection) a missing row
@@ -549,14 +551,15 @@ def _mutated_omit(W, name, fix):
     return d
 
 
-def _build_job(W, omit_dir, out, runs=None):
+def _build_job(W, omit_dir, out, runs=None, copy_fallback=False):
     """The build child directly (what the build stage runs), under production's interpreter: (rc, log)."""
     from exopipe.phase3.lib.catalog import deep_omission
     SV = _SV()
     S = _cfg().serve
     job = dict(out=out, runs=runs or W['runs'], kept_dir=omit_dir, tiers=list(S.SNAPVIEW_TIERS), stokes=list(S.SNAPVIEW_STOKES),
                suffix=dict(S.SNAPVIEW_PAGE_SUFFIX), clv15='/lustre/gh/main/clv15', ops=OPS,
-               deep_omission_py=os.path.abspath(deep_omission.__file__), result=out + '.result.json')
+               deep_omission_py=os.path.abspath(deep_omission.__file__), result=out + '.result.json',
+               copy_fallback=copy_fallback)
     jp = out + '.job.json'
     os.makedirs(os.path.dirname(out), exist_ok=True)
     json.dump(job, open(jp, 'w'))
@@ -651,6 +654,7 @@ def test_gates():
     plan = SV.ViewPlan(types.SimpleNamespace(run_label='Run_SNAPCOMB_GV5', view_runs=','.join(runs), view_omit=None),
                        os.path.join(root, 'gv5_out'))
     plan.omit_dir = os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW)
+    plan.parity = False                  # as a production view (a scratch / parity view copies instead: test_copy_fallback)
     real_dev = SV._dev
     SV._dev = lambda p: real_dev(p) + (1 if os.path.abspath(p) in runs else 0)
     try:
@@ -662,6 +666,38 @@ def test_gates():
         CFG.authorize()
     assert u.status == 'refused' and 'G-V5' in u.reason, (u.status, u.reason)
     assert not os.path.exists(plan.U) and flow.halts(u, 'build')
+
+
+def test_copy_fallback():
+    """G-V5 in the child: batch runs on another file system (/dev/shm) - a production view (copy_fallback off) refuses at the
+    first panel; a scratch / parity view copies every panel (the parity guard refuses a hard link of a file outside the parity
+    roots, core/guard.py) and equals the hard-linked view byte for byte, its copies counted."""
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    W = shared_world()
+    shm = '/dev/shm/exopipe3_tests_snapshot_view_shm'
+    shutil.rmtree(shm, ignore_errors=True)
+    try:
+        runs = [shutil.copytree(r, os.path.join(shm, os.path.basename(r))) for r in W['runs']]
+        if os.stat(shm).st_dev == os.stat(W['root']).st_dev:
+            raise AssertionError('/dev/shm is on the scratch file system here: the test cannot cross file systems')
+        od = os.path.join(W['root'], 'shm_omit')
+        DO.run_snapshot(runs, od, rdir=W['rdir'], proto=W['proto'])
+        rc, log = _build_job(W, od, os.path.join(W['root'], 'shm_prod', VIEW), runs=runs, copy_fallback=False)
+        assert rc == 2 and 'G-V5 a panel could not be hard-linked' in log, log[-800:]
+        assert not os.path.exists(os.path.join(W['root'], 'shm_prod', VIEW))
+        out = os.path.join(W['root'], 'shm_scratch', VIEW)
+        rc, log = _build_job(W, od, out, runs=runs, copy_fallback=True)
+        assert rc == 0 and 'COMBINED-VIEW-OK' in log, log[-1500:]
+        st = json.load(open(out + '.result.json'))
+        n = json.load(open(os.path.join(out, 'combined_view_summary.json')))['panels_linked']
+        assert st['panels_copied'] == n > 0, (st['panels_copied'], n)
+        ta, tb = tree(W['port']), tree(out)
+        skip = {'combined_view_summary.json', 'master_catalog.csv', 'card2_filter.csv', 'coadd_root.txt'}   # filtercat's
+        assert set(ta) - skip == set(tb) - {'combined_view_summary.json'}, sorted(set(ta) ^ set(tb))[:5]
+        bad = [rel for rel in tb if rel not in skip and not filecmp.cmp(ta[rel], tb[rel], shallow=False)]
+        assert not bad, bad[:5]
+    finally:
+        shutil.rmtree(shm, ignore_errors=True)
 
 
 def test_content():
@@ -752,7 +788,8 @@ def test_ready():
     assert any(n.startswith('VIEW-READY-FOR-HIDES') for n in u.notes), u.notes
 
 
-TESTS = [test_drift, test_py36, test_parity, test_repoint_pinned, test_kept_refusals, test_gates, test_content, test_ready]
+TESTS = [test_drift, test_py36, test_parity, test_repoint_pinned, test_kept_refusals, test_gates, test_copy_fallback,
+         test_content, test_ready]
 
 
 def main(argv):

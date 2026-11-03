@@ -59,9 +59,11 @@ Stages (--stages / --from / --until; default all, in this order); each runs only
 Gates (refuse, exit 2): G-V1 view name (--run, the snapshot prefix) and runs (--view-runs: none, a run twice, a run without
 source_catalogs); G-V2 the view or its .part exists (never overwritten); G-V3 the omit product: its files, its content tests now,
 its runs = the view's runs in order; G-V4 the served set changed since the omit stage (the served digest of the runs as read now
-!= the omit summary's, Q fix verification N2); G-V5 a batch run on another file system than the view (panels are hard links);
-G-V6 a run or the omit product under an injected run's start record (an ordinary run); G-K the kept product does not apply
-exactly (a kept row of no served detection, a served detection neither kept nor on an OMIT key, a per-tier row the rule does not
+!= the omit summary's, Q fix verification N2); G-V5 a batch run on another file system than a production view, or a panel
+that cannot be hard-linked there (a scratch or parity view copies such a panel, recorded: the parity guard refuses a hard link of
+a file outside the parity roots); G-V6 a run or the omit product under an injected run's start record (an ordinary run); G-K the
+kept product does not apply exactly (a kept row of no served detection, a served detection neither kept nor on an OMIT key, a
+per-tier row the rule does not
 drop or a drop it does not list, a row left unapplied); T1-T6 (production's); F-G1 a member batch without its fit store, F-G2 a
 card2_filter.csv missing or of another header, the filter catalogue script failing; G21 localization; G17 at ready.
 Production details carried for parity, not ruled (spec 'Pending Gregg'): the name-clash rule, the queue order, the survivors
@@ -549,7 +551,19 @@ def build(job):
                         dst = os.path.join(PART, pd, fn)
                         if os.path.exists(dst):
                             dst = os.path.join(PART, pd, '%s_%s' % (TAG[r], fn))
-                        os.link(os.path.join(src, fn), dst)
+                        try:
+                            os.link(os.path.join(src, fn), dst)
+                        except OSError as e:
+                            # production hard-links every panel (one file system: its view and batches on /data07). A view
+                            # under a production root refuses a link that fails (G-V5: a copy of ~3 million panels would fill
+                            # the review disk); a scratch / parity view COPIES the panel - same bytes - where the link fails
+                            # (another file system, or the parity guard, which refuses a hard link of a file outside the
+                            # parity roots: core/guard.py), counted in the stats as panels_copied
+                            if not job.get('copy_fallback'):
+                                raise ViewRefusal('G-V5 a panel could not be hard-linked (%s: %s) - the view and its batch runs '
+                                                  'must share one file system' % (os.path.join(src, fn), e))
+                            shutil.copy2(os.path.join(src, fn), dst)
+                            xstat['panels_copied'] += 1
                         n_links += 1
                         PANELS_PD[pd].append(fn)
                     for d in (dcache[src] if src in dcache else rows(os.path.join(src, 'detections.csv'))):
@@ -680,7 +694,8 @@ def build(job):
     stats = dict(summary=summ, kept_dir=K.dir, kept_applied=dict(kept=n_in, omitted=n_om, decisions=K.n_dec, omit_keys=len(OM)),
                  record=dict(omc), page_directories=len(PDETS), stale_best=xstat['stale_best'],
                  page_detections=xstat['page_detections'],
-                 page_detections_not_of_identity=xstat['page_detections_not_of_identity'], seconds=round(time.time() - T0, 1))
+                 page_detections_not_of_identity=xstat['page_detections_not_of_identity'], panels_copied=xstat['panels_copied'],
+                 seconds=round(time.time() - T0, 1))
     log('COMBINED-VIEW-OK %s' % json.dumps({k: v for k, v in summ.items() if k != 'merge'}, default=str))
     return stats
 
@@ -847,9 +862,11 @@ def build_stage(run, plan):
         os.makedirs(os.path.dirname(plan.U), exist_ok=True)
         dev = _dev(os.path.dirname(plan.U))
         other = [r for r in plan.runs if _dev(r) != dev]
-        if other:
+        if other and not plan.parity:
             u.refuse(f'G-V5 the panels are HARD LINKS: {len(other)} batch run(s) on another file system than the view '
                      f'{os.path.dirname(plan.U)}, e.g. {other[:2]}')
+        if other:
+            u.note(f'{len(other)} batch run(s) on another file system than this scratch view: their panels are copied')
         for r in plan.runs:
             u.add_input(os.path.join(r, 'source_catalogs'))
         recs = os.path.join(plan.out, '_records', 'serve', 'snapshot_view')
@@ -857,7 +874,8 @@ def build_stage(run, plan):
         job = dict(out=plan.U, runs=plan.runs, kept_dir=plan.omit_dir, tiers=list(S.SNAPVIEW_TIERS),
                    stokes=list(S.SNAPVIEW_STOKES), suffix=dict(S.SNAPVIEW_PAGE_SUFFIX),
                    clv15=_legacy_root('clv15'), ops=_legacy_root('exopipe_ops'), deep_omission_py=_deep_omission_py(),
-                   result=os.path.join(recs, f'{plan.run_name}_build_result.json'))
+                   result=os.path.join(recs, f'{plan.run_name}_build_result.json'),
+                   copy_fallback=plan.parity)        # a scratch / parity view copies a panel whose hard link fails (G-V5)
         jp = os.path.join(recs, f'{plan.run_name}_build_job.json')
         with open(jp, 'w') as f:
             json.dump(job, f, indent=1)
@@ -880,6 +898,10 @@ def build_stage(run, plan):
                                                      st['summary']['multi_batch_identities'], st['summary']['renamed'],
                                                      st['summary']['batch_identities'], st['summary']['detections'],
                                                      st['summary']['deep_omission']['omitted'], st['summary']['queues']))
+        if st.get('panels_copied'):
+            u.note(f'{st["panels_copied"]} panels COPIED, not hard-linked (a scratch / parity view: the link failed - another '
+                   f'file system or the parity guard, which refuses a hard link of a file outside the parity roots; production '
+                   f'links them; same bytes)')
         u.note(f'partial sources whose best detection was omitted and that keep its best fields (PRODUCTION BUG RP): '
                f'{st["stale_best"]}; per-tier page detections not among their identity\'s kept detections: '
                f'{st["page_detections_not_of_identity"]} of {st["page_detections"]}')
