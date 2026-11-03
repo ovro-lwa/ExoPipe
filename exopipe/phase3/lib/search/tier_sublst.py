@@ -767,11 +767,11 @@ def preflight(args, run, cell, lst, band, stokes, date):
             if s.PA_NULL_REQUIRED:
                 plan['refuse'] = f'G2: {pa} missing and search_sublst.PA_NULL_REQUIRED is True'
                 return plan
-    if s.SIZE_RULE == 'envelope':         # the size / axis rule's 10-minute calibration product (R-GREGG-20261022-ALL-APPROVED-...)
-        from exopipe.phase3.lib.search import size_rule as SZ
+    if s.SIZE_RULE == 'envelope':         # the size / axis rule's 10-minute calibration product (R-GREGG-20261022-ALL-APPROVED-...),
+        from exopipe.phase3.lib.search import size_rule as SZ     # its floors and the imaging configuration it was calibrated on
         try:
-            SZ.step_env(s.SIZE_RULE, s.SIZE_ENVELOPE, s.SIZE_ENVELOPE_MD5, 'search_sublst.SIZE_RULE')
-            ok_, why_ = True, f'{SZ.resolve(s.SIZE_ENVELOPE)} md5 {s.SIZE_ENVELOPE_MD5}'
+            SZ.step_env_for('10min', size_rule_frames(arm))
+            ok_, why_ = True, f'{SZ.resolve(s.SIZE_ENVELOPE)} md5 {s.SIZE_ENVELOPE_MD5}, frames {size_rule_frames(arm)}'
         except RuntimeError as e:
             ok_, why_ = False, str(e)
         if not gate('G2.size_envelope', ok_, why_):
@@ -820,6 +820,13 @@ def preflight(args, run, cell, lst, band, stokes, date):
     return plan
 
 
+def size_rule_frames(arm):
+    """This 10-minute search's imaging configuration, in the keys of search_sublst.SIZE_ENVELOPE_FRAMES (size_rule.check_frames):
+    the arm searched, the per-window x2 refinement, the master generation."""
+    s = cfg().search_sublst
+    return {'ARM': arm, 'REFINE_X2': bool(s.REFINE_X2), 'MASTER_GEN': s.MASTER_GEN}
+
+
 def engine_env(plan, attempt, tmpdir=None):
     """search.md 7.3 (sub-LST rows): the engine environment, built from config only. ``tmpdir``: the child's TMPDIR (detect
     passes a short one, deep_step.engine_tmpdir: AF_UNIX socket paths); default <attempt>/tmp."""
@@ -828,8 +835,8 @@ def engine_env(plan, attempt, tmpdir=None):
     from exopipe.phase3.core.record import Refusal
     s = cfg().search_sublst
     label = plan['label']
-    try:                                    # the size / axis rule and its 10-minute calibration product, checked
-        size_env = SZ.step_env(s.SIZE_RULE, s.SIZE_ENVELOPE, s.SIZE_ENVELOPE_MD5, 'search_sublst.SIZE_RULE')
+    try:                                    # the size / axis rule and its 10-minute calibration product, checked (floors, frames)
+        size_env = SZ.step_env_for('10min', size_rule_frames(plan['arm']))
     except RuntimeError as e:
         raise Refusal(str(e))
     return dict({

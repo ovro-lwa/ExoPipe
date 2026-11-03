@@ -409,11 +409,7 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
         from exopipe.phase3.core.record import Refusal
         raise Refusal(str(e))
     env[_RR.AUDIT_ENV] = c.search_tables.SOLAR_AUDIT                               # B-02: the daytime gate's solar audit (G2 pin)
-    from exopipe.phase3.lib.search import size_rule as _SZ
-    try:                                                                           # the size / axis rule and its calibration product,
-        env.update(_SZ.step_env(sd.SIZE_RULE, sd.SIZE_ENVELOPE, sd.SIZE_ENVELOPE_MD5, 'search_detect.SIZE_RULE'))   # checked here
-    except RuntimeError as e:                                                      # (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-...)
-        raise Refusal(str(e))
+    env.update(size_rule_env())                                                    # the size / axis rule, checked (R-GREGG-20261022-...)
     env[_RR.ELEV_EPOCH_ENV] = c.catalog_conform.DEEP_ELEV_EPOCH                    # B-02 step 3b: the floor's time, as the check's
     if env[_RR.ELEV_EPOCH_ENV] not in _RR.ELEV_EPOCHS:                             # refused here, not after the child's residuals
         raise Refusal(f'catalog_conform.DEEP_ELEV_EPOCH {env[_RR.ELEV_EPOCH_ENV]!r} is not one of {_RR.ELEV_EPOCHS} - REFUSING')
@@ -489,6 +485,25 @@ def base_rules_refusal(base_attempt, rules):
             + 're-search the cell (--fresh)')
 
 
+def size_rule_frames():
+    """This deep search's imaging configuration, in the keys of search_detect.SIZE_ENVELOPE_FRAMES (size_rule.check_frames)."""
+    c = _cfg()
+    return {'MASTER_GEN': c.search_inputs.MASTER_GEN, 'REFINE_X2': bool(c.search_detect.REFINE_X2)}
+
+
+def size_rule_env():
+    """The engine child's environment for the size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS):
+    search_detect.SIZE_RULE with, under 'envelope', its product checked (pinned md5, every Stokes and band class), the floors
+    (SIZE_FLOOR_BEAMS, AXIS_REMOVE: the rule's 1.5 / 1.5) and the imaging configuration the product was calibrated on
+    (SIZE_ENVELOPE_FRAMES) - a Refusal otherwise (the preflight's gate and engine_env call it)."""
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.search import size_rule as SZ
+    try:
+        return SZ.step_env_for('deep', size_rule_frames())
+    except RuntimeError as e:
+        raise Refusal(str(e))
+
+
 def base_size_refusal(base_attempt, label, cadence='deep'):
     """The size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS): one attempt, one rule - None when an
     append under the configured rule may extend ``base_attempt``, else the refusal's words (an attempt without the engine's
@@ -502,8 +517,8 @@ def base_size_refusal(base_attempt, label, cadence='deep'):
     if SZ.same_rule(have, want):
         return None
     sec = 'search_detect' if cadence == 'deep' else 'search_sublst'
-    return (f'{os.path.basename(base_attempt.rstrip("/"))} was searched under the size rule {have["rule"]} {have["md5"][:12]}; an '
-            f'append under {want["rule"]} {want["md5"][:12]} would mix two rules in one attempt - '
+    return (f'{os.path.basename(base_attempt.rstrip("/"))} was searched under the size rule {SZ._words(have)}; an append under '
+            f'{SZ._words(want)} would mix two rules in one attempt - '
             + (f'run it with --set {sec}.SIZE_RULE=production, or ' if have['rule'] == 'production' else '')
             + 're-search the cell (--fresh)')
 
@@ -754,6 +769,10 @@ def preflight(item, ctx, u=None, fix=False, resume_probe=False):
             raise Refusal(f'{name} {path}: {detail} - pinned input (gate G2)')
         if not ok:
             f['notes'].append(f'{name} {path} {detail}: the engine proceeds as production does (recorded)')
+    if c.search_detect.SIZE_RULE == 'envelope':                                   # the size / axis rule: its floors and the imaging
+        size_rule_env()                                                            # configuration of its product (a Refusal here,
+        f['gates'].append(('size rule: product, floors, imaging configuration', True,   # before the flows)
+                           f'{c.search_detect.SIZE_ENVELOPE} {size_rule_frames()}'))
     if not os.path.exists(c.search_detect.C50_TABLE):
         f['notes'].append(f'C50 table {c.search_detect.C50_TABLE} not on this node: c50_mjy written blank (B-44, as production)')
     # disk (a node condition, not a cell's fault: error, retried by the runner)

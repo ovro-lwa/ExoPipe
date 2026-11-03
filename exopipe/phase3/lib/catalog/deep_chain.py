@@ -58,9 +58,10 @@ LIVE_KEYS = {
                 'DEEP_PARENT_TEST_SAMPLE', 'INSTALL_LOCK', 'DEEP_STAGES', 'DEEP_DEFAULT_UNTIL', 'DEEP_ASSOC_KEYS',
                 'DEEP_ASSOC_WORKERS', 'DEEP_LOG', 'DEEP_PYTHON', 'PARENTS_COMMAND', 'BINDING_CHECK', 'FORCED_STEP'),
     'catalog_merge': ('HARVEST_STOKES', 'HARVEST_SSH_SLEEP_S', 'HARVEST_DEST_ROOT', 'UNHARVESTED', 'TEST_BACKING_KEYS'),
-    'catalog_conform': ('SIZE_STEP', 'TABLE_ELEV', 'MODE', 'DEEP_ELEV_EPOCH'),   # the last two: B-02 steps 2 and 4 (the
-                                                                                # check judges with the epoch; 'remove' must name
-                                                                                # production's, first_unit_gates)
+    'catalog_conform': ('SIZE_STEP', 'TABLE_ELEV', 'MODE', 'DEEP_ELEV_EPOCH',   # MODE, DEEP_ELEV_EPOCH: B-02 steps 2 and 4 (the
+                        'CONFORM_AXIS_UNDER_RULE'),                             # check judges with the epoch; 'remove' must name
+                                                                                # production's, first_unit_gates); the axis step on
+                                                                                # attempts under the size / axis rule (size_rule)
     'catalog_fitpos': ('NPROC', 'ZERO_STAT_ERROR'),       # ZERO_STAT_ERROR: read by the fitted_catalog content test of the fitpos stage
     'catalog_select': ('PARENT_EXCLUSION', 'VERDICT_INPUT'),
     'catalog_associate': (),
@@ -702,8 +703,16 @@ class DeepRun:
                 rds = [os.path.join(r['dir'], 'transients', f'Run_{self.label}') for r in csv.DictReader(f)]
             try:
                 u.meta['size_rule'] = SZ.one_rule(rds)
+                u.meta['conform_axis'] = ('production\'s step' if u.meta['size_rule']['rule'] == 'production'
+                                          else SZ.conform_axis_mode())
             except RuntimeError as e:
                 u.refuse(str(e))
+            from exopipe.phase3.lib.catalog import conform_check as _CC     # the attempts' rule known: a pass whose later stages
+            if _CC.conform_mode() == 'remove' or self.fork_on:               # run production's p3s2_conform.py (deep 'remove',
+                why = SZ.conform_axis_refusal(u.meta['size_rule'], self.script('p3s2_conform.py'),   # the multiples fork) with
+                                              'the deep pass (its conformance and multiples fork)')   # its axis step switched
+                if why:                                                                              # off needs the switch:
+                    u.refuse(why)                                                                    # refused here, early
             rc, tail, hits = self.call(u, 'p3s3_merge.py', [self.U], env, self.log,
                                        keep=('merge gate:', 'merge: WARNING', 'merge refresh:', 'merge (test/plan run)'))
             if rc != 0:
@@ -750,13 +759,49 @@ class DeepRun:
         from exopipe.phase3.lib.search import size_rule as SZ
         return self.chain.meta(self.u('merge'), 'size_rule') or SZ.run_record(None)
 
-    def fixed_size_refusal(self, u, paths, what):
-        """Under the size / axis rule: a removal record holding production's FIXED size / axis removals (p3s2_conform: size
-        above 2.5, axis ratio above 2.0 beyond 8 sigma) contradicts the search's one rule - REFUSED, naming the rows."""
+    def axis_plan(self):
+        """The dry run's words for the conformance's axis step on attempts searched under the size / axis rule (the attempts'
+        rule is the merge's record; catalog_conform.CONFORM_AXIS_UNDER_RULE, PENDING GREGG)."""
         from exopipe.phase3.lib.search import size_rule as SZ
-        why = SZ.fixed_removals_in(paths, what) if self.size_rule()['rule'] == 'envelope' else None
+        mode = SZ.conform_axis_mode()
+        if mode == 'second_gate':
+            return ('size / axis rule attempts: the conformance\'s axis step (2.0 x beam above 8 sigma) stands as the second '
+                    'gate (CONFORM_AXIS_UNDER_RULE=second_gate), its removals recorded')
+        sw = SZ.conform_switch(self.script('p3s2_conform.py')) if os.path.exists(self.script('p3s2_conform.py')) else False
+        return (f'size / axis rule attempts: P3_CONFORM_AXIS=0 (CONFORM_AXIS_UNDER_RULE=replace); production\'s '
+                f'p3s2_conform.py {"carries" if sw else "LACKS"} the switch' + ('' if sw else f' - the pass would refuse at the '
+                                                                                   f'merge ({SZ.CONFORM_AXIS_PATCH})'))
+
+    def size_conform_env(self, u, what):
+        """Before a stage runs production's p3s2_conform.py (deep 'remove', the multiples fork) on attempts searched under the
+        size / axis rule: its environment for the conformance's axis step - P3_CONFORM_AXIS=0 under catalog_conform.
+        CONFORM_AXIS_UNDER_RULE 'replace' (size_rule.conform_env), nothing else; under 'replace' the script must carry the
+        switch (size_rule.conform_axis_refusal) - REFUSED before the stage runs, never after it."""
+        from exopipe.phase3.lib.search import size_rule as SZ
+        rec = self.size_rule()
+        why = SZ.conform_axis_refusal(rec, self.script('p3s2_conform.py'), what)
         if why:
             u.refuse(why)
+        env = SZ.conform_env(rec)
+        if env:
+            u.meta['conform_axis_env'] = env
+        return env
+
+    def fixed_size_refusal(self, u, paths, what):
+        """After a conformance on attempts searched under the size / axis rule (size_rule.conform_removals over its removal
+        records, each row once): a removal by production's fixed SIZE step contradicts the rule - REFUSED, naming the rows; its
+        fixed AXIS step (2.0 x beam above 8 sigma) is the second gate under catalog_conform.CONFORM_AXIS_UNDER_RULE
+        'second_gate' - its removals recorded in the unit (meta size_rule_second_gate, a note), never refused - and under
+        'replace' (P3_CONFORM_AXIS=0 passed) any such removal refuses."""
+        from exopipe.phase3.lib.search import size_rule as SZ
+        why, sg = SZ.conform_removals(paths, self.size_rule(), what)
+        if why:
+            u.refuse(why)
+        if sg is not None:
+            u.meta.setdefault('size_rule_second_gate', {})[what] = sg
+            if sg['mode'] == 'second_gate':
+                u.note(f'{what}: the conformance\'s axis step ({sg["ruling"]}) as the second gate on the size / axis rule\'s '
+                       f'attempts removed {sg["rows"]} row(s)' + (f', e.g. {sg["examples"][0]}' if sg['examples'] else ''))
 
     def _b02_inputs(self, u, man):
         """The inputs the pulsar stage and the check read (B-02 steps 2 and 4): the lists, the bright-source tables the check's
@@ -881,14 +926,15 @@ class DeepRun:
                     self.say('conform check REFUSED - pass aborted')
                     u.refuse(f'conform check exit {rc}: {(hits or tail or [""])[-1]}')
             else:
-                env = self.env({'P3_CONFORM_SIZE': '1' if c.catalog_conform.SIZE_STEP['deep'] else '0'}, parent_dir=par)
+                env = self.env(dict({'P3_CONFORM_SIZE': '1' if c.catalog_conform.SIZE_STEP['deep'] else '0'},
+                                    **self.size_conform_env(u, 'conform')), parent_dir=par)   # P3_CONFORM_AXIS=0 under 'replace'
                 rc, tail, hits = self.call(u, 'p3s2_conform.py', [self.U], env, self.log,
                                            keep=('conform:',))
             if rc != 0:
                 self.say('conform REFUSED - pass aborted')
                 u.refuse(f'conform exit {rc}: {tail[-1] if tail else ""}')
-            if mode != 'check':
-                self.fixed_size_refusal(u, [os.path.join(self.U, 'master_catalog_removed.csv')], 'conform')
+            self.fixed_size_refusal(u, [os.path.join(self.U, 'master_catalog_removed.csv')],   # both modes: the check removes
+                                    'conform' if mode != 'check' else 'conform check')        # the second gate's rows itself
             for name in ('master_catalog.csv', 'master_catalog_removed.csv'):
                 self.copy(u, os.path.join(self.U, name), d)
             for name in ('master_catalog.csv', 'master_catalog_asrun.csv', 'master_catalog_removed.csv'):
@@ -1047,7 +1093,9 @@ class DeepRun:
             for name in (f'fork_{S}', f'source_catalogs_{S}_fwb', f'source_catalogs_{S}_fsb'):
                 self.move_aside(os.path.join(self.U, name), u)
             from exopipe.phase3.lib.search import size_rule as SZ
-            env = self.env(SZ.catalog_env(self.size_rule()), parent_dir=par)   # its builds: the rule replaces the 7-8 sigma gate
+            env = self.env(dict(SZ.catalog_env(self.size_rule()),                # its builds: the rule replaces the 7-8 sigma gate;
+                                **self.size_conform_env(u, f'multiples fork {S}')),   # its conformance runs (validity, table):
+                           parent_dir=par)                                        # P3_CONFORM_AXIS=0 under 'replace', checked first
             flog = os.path.join(self.U, f'fork_{S}.log')
             rc, tail, _ = self.call(u, 'multiples_fork.py', ['run', S], env, flog, mode='w')
             if rc != 0:
@@ -1415,6 +1463,7 @@ class DeepRun:
                   'conform_check.csv, nothing published')
                 p('    gates: B-02 (a) - every removal rule re-evaluated both ways (a: a published row a rule removes; b: a '
                   'removal no rule makes today); any finding refuses')
+                p(f'    {self.axis_plan()}')
             elif stage == 'conform':
                 preds(self.u('conform'))
                 par = self.chain.meta(self.u('preflight'), 'parent_dir') or '<parent dir from the preflight record>'
@@ -1425,6 +1474,7 @@ class DeepRun:
                 p('    writes: master_catalog.csv (conformant), master_catalog_asrun.csv, master_catalog_removed.csv, '
                   'frame_beam_ratio.csv + frame_beam_bmaj.csv + frame_times.csv (caches); classes conformant_catalog, frame_table')
                 p('    gates: master_catalog.csv = the merge record copy (restored when conform starts the run); D-G9..D-G16')
+                p(f'    {self.axis_plan()}')
             elif stage == 'fitpos':
                 if not self.deep_label:
                     p(f'    label {self.label} is not a deep run: no fitted-position stage (no-input)')
@@ -1467,6 +1517,7 @@ class DeepRun:
                     preds(self.u('fork', self.fork_stokes[0]))
                 p('    writes: fork_<S>/, source_catalogs_<S>_f{wb,sb}/ (previous moved aside); class fork_catalog; '
                   'gates D-G20' + (', D-G23 (associate records current)' if self.first_stage == 'fork' else ''))
+                p(f'    {self.axis_plan()} (its validity runs of ops/p3s2_conform.py, in place)')
             elif stage in ('union', 'identity', 'localize', 'list'):
                 if self.partial_stokes:
                     p(f'    REFUSED: {stage} needs both Stokes (--stokes {",".join(self.stokes)})')

@@ -42,8 +42,11 @@ GLED_COLS_TABLE = ['parent_jy', 'parent_off_beams', 'table_note', 'table_key', '
 GLED_COLS = GLED_COLS_V1 + GLED_COLS_TABLE
 # the size / axis rule at every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS; deep_search GLED_COLS_SIZE =
 # lib/search/size_rule.GLED_COLS_SIZE): appended after GLED_COLS by a search under SIZE_RULE 'envelope' (its run directory holds
-# size_rule.json); production's ledger is GLED_COLS
-GLED_COLS_SIZE = ['size_rule', 'size_snr', 'size_thr', 'axis_thr', 'size_excess', 'axis_excess', 'size_verdict']
+# size_rule.json); production's ledger is GLED_COLS. size_role since size-rule-2 (2026-11-03): every candidate row carries the
+# rule's columns ('gate': the rule decided it; 'record': measured after an earlier gate removed it); a size-rule-1 search
+# (8957c42) wrote the first seven only (GLED_COLS_SIZE_V1)
+GLED_COLS_SIZE = ['size_rule', 'size_snr', 'size_thr', 'axis_thr', 'size_excess', 'axis_excess', 'size_verdict', 'size_role']
+GLED_COLS_SIZE_V1 = GLED_COLS_SIZE[:7]
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph', 'n_after_mstruct', 'n_after_jupiter', 'n_final',
              'n_raw_floor', 'elev_min_deg']
 CAT_FIELDS = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'interval', 'ra', 'dec', 'peak_jy', 'int_jy', 'snr',
@@ -57,7 +60,10 @@ VETO_REASONS = frozenset({'', 'reject_local_snr', 'reject_merged', 'reject_sigma
                           'v110:FP', 'v110:marginal', 'table', 'row-line',
                           'elevation'})   # B-02 step 3b: the deep floor at the frame's mid-time (removal_rules.frame_elevation)
 # ... and those with a value after the prefix: the Jupiter track's co-added night (B-02 step 3a, deep_search: 'jupiter-track:<night>')
-VETO_REASON_PREFIXES = {'jupiter-track:': re.compile(r'^\d{4}-\d\d-\d\d$')}
+VETO_REASON_PREFIXES = {'jupiter-track:': re.compile(r'^\d{4}-\d\d-\d\d$'),
+                        # the size / axis rule (size-rule-2): a Stokes I row below the local-SNR floor the rule removes - out of
+                        # the multiples fork's 5-7 sigma member pool (lib/search/size_rule.engine_early, MEMBER_REASON)
+                        'reject_local_snr:': re.compile(r'^(gaussfit-size|axis-ratio)$')}
 # B-02 step 3b (removal_rules.FRAME_NOISE_COLS / TABLE_PULSAR_COLS)
 FNOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'admitted', 'population', 'tblnoise_jy', 'vsanmed_jy', 'vsanity_x',
                'attempt']
@@ -378,33 +384,55 @@ def _patch_rows(path, att, am, rows):
 # ---- gate ledger ------------------------------------------------------------------------------------------------------------
 def size_rule_rows(path, cols, rows):
     """The size / axis rule in a gate ledger: [problem]. The header and the run's record agree (GLED_COLS_SIZE exactly when
-    size_rule.json says 'envelope'); under the rule a 'gaussfit-size' / 'axis-ratio' row is the rule's own verdict and vice
-    versa, every final was judged (point-like, fit-failed or no-snr) with excesses <= 1, and every judged row names the product
-    the record names."""
+    size_rule.json says 'envelope', of its version); under the rule EVERY row carries a verdict and its role, under the product
+    the record names (spec fp_gates_v2.md section 4: every candidate row); a 'gate' row's removal is the rule's own verdict and
+    vice versa ('gaussfit-size' / 'axis-ratio'; a Stokes I row below the local-SNR floor 'reject_local_snr:<verdict>'); a
+    'record' row was removed by an earlier gate (its veto_reason, never the rule's); every final was judged (point-like,
+    fit-failed or no-snr) with excesses <= 1. A size-rule-1 ledger (the first seven columns, judged rows only) is read by that
+    version's checks."""
     from exopipe.phase3.lib.search import size_rule as SZ
     probs = []
-    with_cols = cols == GLED_COLS + GLED_COLS_SIZE
+    v2, v1 = cols == GLED_COLS + GLED_COLS_SIZE, cols == GLED_COLS + GLED_COLS_SIZE_V1
     try:
         rec = SZ.read_run_record(os.path.dirname(os.path.abspath(path)))
     except RuntimeError as e:
         return [str(e)]
-    if (rec['rule'] == 'envelope') != with_cols:
-        return [f"the ledger {'carries' if with_cols else 'lacks'} the size rule's columns while its run's record "
+    if (rec['rule'] == 'envelope') != (v2 or v1):
+        return [f"the ledger {'carries' if (v2 or v1) else 'lacks'} the size rule's columns while its run's record "
                 f"({SZ.RUN_RECORD}) says {rec['rule']!r}"]
-    if not with_cols:
+    if not (v2 or v1):
         return []
+    want_v = SZ.RECORD_VERSION if v2 else 'size-rule-1'
+    if rec['version'] != want_v:
+        return [f"the ledger carries the columns of {want_v}, its run's record ({SZ.RUN_RECORD}) says {rec['version']!r}"]
     label = f"envelope:{rec['envelope']}:{rec['md5'][:12]}"
     for r in rows:
         v, sv, where = r['veto_reason'], r.get('size_verdict') or '', f"{r['stokes']} {r['date']} {r['ra']},{r['dec']}"
-        if sv and sv not in SZ.VERDICTS:
-            probs.append(f'{where}: size_verdict {sv!r} is not one of {SZ.VERDICTS}')
+        if (sv or v2) and sv not in SZ.VERDICTS:
+            probs.append(f'{where}: size_verdict {sv!r} is not one of {SZ.VERDICTS}' + (' (every candidate row is judged or '
+                                                                                         'recorded)' if v2 and not sv else ''))
             continue
         if sv and r.get('size_rule') != label:
             probs.append(f"{where}: judged under {r.get('size_rule')!r}, the run's record names {label!r}")
-        if v in ('gaussfit-size', 'axis-ratio') and sv != v:
-            probs.append(f'{where}: removed as {v!r} with size_verdict {sv!r}')
-        if sv in ('gaussfit-size', 'axis-ratio') and v != sv:
-            probs.append(f'{where}: the rule removes it ({sv}) but its veto_reason is {v!r}')
+        if v1:
+            if v in SZ.REMOVING and sv != v:
+                probs.append(f'{where}: removed as {v!r} with size_verdict {sv!r}')
+            if sv in SZ.REMOVING and v != sv:
+                probs.append(f'{where}: the rule removes it ({sv}) but its veto_reason is {v!r}')
+            continue
+        role = r.get('size_role') or ''
+        member = v.startswith(SZ.MEMBER_REASON)
+        if role not in SZ.ROLES:
+            probs.append(f'{where}: size_role {role!r} is not one of {SZ.ROLES}')
+        elif role == 'gate':
+            if (v in SZ.REMOVING or member) and sv != (v[len(SZ.MEMBER_REASON):] if member else v):
+                probs.append(f'{where}: removed as {v!r} with size_verdict {sv!r}')
+            if sv in SZ.REMOVING and v not in (sv, SZ.MEMBER_REASON + sv):
+                probs.append(f'{where}: the rule removes it ({sv}) but its veto_reason is {v!r}')
+            if member and r['stokes'] != 'I':
+                probs.append(f"{where}: {v!r} on a Stokes {r['stokes']} row (only the Stokes I local-SNR rows are judged so)")
+        elif not v or v in SZ.REMOVING or member:
+            probs.append(f"{where}: a 'record' row (measured after an earlier gate removed it) with veto_reason {v!r}")
     for r, _rule, words in SZ.final_findings(rows):
         probs.append(f"{r['stokes']} {r['date']} {r['ra']},{r['dec']}: {words}")
     return probs
@@ -415,13 +443,14 @@ def complete(path, stokes=None, cell=None, tier='deep', **ctx):
     """v_deep_ledger.csv: GLED_COLS; veto_reason known; final=1 exactly when veto_reason is ''; per (Stokes, date) the final
     rows equal the catalogue rows; finals and every I row past identification carry mstruct (GAP-I-CHAIN-GATE-VALUES ledger
     595); no row on a date refused from that Stokes' search; sub-LST: no 'table' row (sublst_search_pass.sh:49-50). A run
-    searched under the size / axis rule (size_rule.json beside) carries GLED_COLS_SIZE: its removals are the rule's own
-    verdicts, every final was judged and passes by its recorded excesses, every judged row names the product."""
+    searched under the size / axis rule (size_rule.json beside) carries GLED_COLS_SIZE on every row: its removals are the
+    rule's own verdicts ('gate' rows), every other row measured ('record'), every final judged and passing by its recorded
+    excesses, every row naming the product (size_rule_rows)."""
     cols, rows = _rows(path)
-    if cols not in (GLED_COLS, GLED_COLS_V1, GLED_COLS + GLED_COLS_SIZE):
+    if cols not in (GLED_COLS, GLED_COLS_V1, GLED_COLS + GLED_COLS_SIZE, GLED_COLS + GLED_COLS_SIZE_V1):
         return False, len(rows), (f'header is neither GLED_COLS ({len(GLED_COLS)}), GLED_COLS + the size rule\'s columns '
-                                  f'({len(GLED_COLS) + len(GLED_COLS_SIZE)}) nor the pre-2026-10-17 GLED_COLS_V1 '
-                                  f'({len(GLED_COLS_V1)}): {cols[:6]}...')
+                                  f'({len(GLED_COLS) + len(GLED_COLS_SIZE)}; size-rule-1: {len(GLED_COLS) + len(GLED_COLS_SIZE_V1)}) '
+                                  f'nor the pre-2026-10-17 GLED_COLS_V1 ({len(GLED_COLS_V1)}): {cols[:6]}...')
     probs = []
     reasons = {}
     probs += size_rule_rows(path, cols, rows)

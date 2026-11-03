@@ -828,6 +828,9 @@ def stage_env(ctx, stage, extra=None):
         env['P3_PARENT_DIR'] = ctx.parents
     if stage == 'conform':
         env['P3_CONFORM_SIZE'] = '1' if _deep('catalog_conform', 'SIZE_STEP', 'deep') else '0'
+    if stage in ('conform', 'fork'):          # the conformance's axis step on the size / axis rule's attempts: P3_CONFORM_AXIS=0
+        from exopipe.phase3.lib.search import size_rule as SZ                  # under catalog_conform.CONFORM_AXIS_UNDER_RULE
+        env.update(SZ.conform_env(SZ.ledger_rule(os.path.join(ctx.out, 'v_deep_ledger.csv'))))   # 'replace' (check: _axis_switch)
     if stage == 'select':
         if not _deep('catalog_select', 'PARENT_EXCLUSION'):
             env['P3_NO_PARENT_EXCL'] = '1'
@@ -838,15 +841,29 @@ def stage_env(ctx, stage, extra=None):
     return env
 
 
-def _fixed_size_refusal(U, paths, what):
-    """Under the size / axis rule (the merged ledger's header): a removal record holding production's FIXED size / axis
-    removals contradicts the search's one rule - REFUSED."""
+def _axis_switch(U, what):
+    """Before a replayed stage runs production's p3s2_conform.py (conform, the multiples fork) on the size / axis rule's
+    attempts (the merged ledger's header) under catalog_conform.CONFORM_AXIS_UNDER_RULE 'replace': the script must carry the
+    P3_CONFORM_AXIS switch (size_rule.conform_axis_refusal) - REFUSED before the stage runs."""
     from exopipe.phase3.lib.search import size_rule as SZ
-    if SZ.ledger_rule(os.path.join(U, 'v_deep_ledger.csv'))['rule'] != 'envelope':
-        return
-    why = SZ.fixed_removals_in(paths, what)
+    why = SZ.conform_axis_refusal(SZ.ledger_rule(os.path.join(U, 'v_deep_ledger.csv')), _ops(C().STAGE_SCRIPTS['conform']), what)
     if why:
         raise Refusal(why)
+
+
+def _fixed_size_refusal(U, paths, what, u=None):
+    """After a replayed conformance on the size / axis rule's attempts (the merged ledger's header; size_rule.conform_removals,
+    each row once): a removal by production's fixed SIZE step contradicts the rule - REFUSED; its fixed AXIS step is the
+    second gate under 'second_gate' (recorded in the unit ``u``) and refuses under 'replace'."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    why, sg = SZ.conform_removals(paths, SZ.ledger_rule(os.path.join(U, 'v_deep_ledger.csv')), what)
+    if why:
+        raise Refusal(why)
+    if sg is not None and u is not None:
+        u.meta.setdefault('size_rule_second_gate', {})[what] = sg
+        if sg['mode'] == 'second_gate':
+            u.note(f'{what}: the conformance\'s axis step ({sg["ruling"]}) as the second gate on the size / axis rule\'s '
+                   f'attempts removed {sg["rows"]} row(s)')
 
 
 def _fit_nproc():
@@ -1346,10 +1363,12 @@ def _replay_associate(ctx, u):
     built = []
     for stage in stages:
         if stage == 'conform':
+            if not ctx.dry:      # under the size / axis rule and 'replace': the script's axis switch, before it runs
+                _axis_switch(U, 'conform')
             ctx.run_stage(u, 'conform', [c.STAGE_SCRIPTS['conform'], U], stage_env(ctx, 'conform'), 'incremental.log',
                           append=True)
-            if not ctx.dry:      # under the size / axis rule production's fixed size / axis removals contradict it: refused
-                _fixed_size_refusal(U, [os.path.join(U, 'master_catalog_removed.csv')], 'conform')
+            if not ctx.dry:      # under the size / axis rule: its fixed size removals refused, its axis step's recorded
+                _fixed_size_refusal(U, [os.path.join(U, 'master_catalog_removed.csv')], 'conform', u)
             if not ctx.dry:      # the conformant record before fitpos rewrites master_catalog.csv in place (its content test)
                 sd = os.path.join(ctx.state_dir, 'stage_conform')
                 os.makedirs(sd, exist_ok=True)
@@ -1382,6 +1401,8 @@ def _replay_associate(ctx, u):
             built = _build_stage(ctx, u, c.CATALOG_KEYS)
         elif stage == 'fork':
             for st in _deep('catalog_fork', 'STOKES'):
+                if not ctx.dry:  # under the size / axis rule and 'replace': the script's axis switch, before the fork runs
+                    _axis_switch(U, f'multiples fork {st}')
                 env = stage_env(ctx, 'fork', {'FORK_RUN_DIR': U, 'FORK_OUT_DIR': U,
                                               'FORK_NPROC': str(_deep('catalog_fork', 'NPROC'))})
                 ctx.run_stage(u, f'fork {st}', [c.STAGE_SCRIPTS['fork'], 'run', st], env, f'fork_{st}.log', cwd=U)
@@ -1390,7 +1411,7 @@ def _replay_associate(ctx, u):
                 if not ctx.dry:
                     import glob as _glob
                     _fixed_size_refusal(U, sorted(_glob.glob(os.path.join(U, f'fork_{st}', '**', 'master_catalog_removed*.csv'),
-                                                             recursive=True)), f'multiples fork {st}')
+                                                             recursive=True)), f'multiples fork {st}', u)
         else:
             raise Refusal(f'catalog_incremental.REPLAY_STAGES_ASSOCIATE names an unknown stage {stage!r}')
     return built

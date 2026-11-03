@@ -666,12 +666,16 @@ class Ctx:
 
     def size_rule(self):
         """The one size / axis rule the search jobs were searched under (each job's transients/Run_<label>/size_rule.json;
-        none = production): under 'envelope' the builder's 7-8 sigma gate is replaced (P3_SIZE_GATE_7_8 = inf) and
-        production's conformance must remove nothing by its fixed size / axis thresholds. Two rules among the jobs REFUSE."""
+        none = production), which must be the CONFIGURED one (search_sublst.SIZE_RULE and its product: size_rule.
+        configured_record('10min'), as the deep check's): under 'envelope' the builder's 7-8 sigma gate is replaced
+        (P3_SIZE_GATE_7_8 = inf), production's conformance must remove nothing by its fixed size step, and its fixed axis step
+        follows catalog_conform.CONFORM_AXIS_UNDER_RULE (second gate / replaced). Two rules among the jobs, or jobs of another
+        rule than configured, REFUSE (S-G7)."""
         if self._size is None:
             from exopipe.phase3.lib.search import size_rule as SZ
             try:
                 self._size = SZ.one_rule([f'{d}/transients/Run_{self.label}' for d in self.search_jobs()],
+                                         want=SZ.configured_record('10min'),
                                          what=f'the {self.lst} 10-minute search jobs in {self.src}')
             except RuntimeError as e:
                 refuse(f'S-G7: {e}')
@@ -1125,6 +1129,20 @@ def st_preflight(ctx, s, plan):
                    f'them with `exopipe3 masters --tier sublst --lsts {ctx.lst} --stages sources` (catalog never builds them)')
         plan.append(f'S-G2 {line}')
         s.code(ctx.opsc('gate_inputs.py'))
+    from exopipe.phase3.lib.search import size_rule as SZ
+    if ctx.dry:
+        plan.append(f'S-G7 size / axis rule: the search jobs\' size_rule.json must be the configured '
+                    f'search_sublst.SIZE_RULE={ctx.cfg.search_sublst.SIZE_RULE!r}; the conformance\'s axis step on its attempts: '
+                    f'catalog_conform.CONFORM_AXIS_UNDER_RULE={SZ.conform_axis_mode()!r}')
+    else:
+        szr = ctx.size_rule()                                      # S-G7: the jobs' one rule, the configured one (refuses)
+        why = SZ.conform_axis_refusal(szr, ctx.opsc('p3s2_conform.py'), 'S-G13 conformance')
+        u.check('S-G7.size-rule', why is None, value=szr['rule'],
+                detail=why or f"{SZ._words(szr)}; conformance axis step: "
+                              f"{'production' if szr['rule'] == 'production' else SZ.conform_axis_mode()}")
+        if why:
+            refuse(why)
+        plan.append(f'S-G7 size / axis rule of the search jobs: {SZ._words(szr)}')
     plan.append(f'S-G3 memory: {c.CHAIN_MEM_GB} GB free in /user.slice within {c.CHAIN_MEM_WAIT_S} s (node_mem_gate.sh, under '
                 f'the heavy lock {ctx.lock}) before the first heavy stage')
     plan.append(f'S-G4 code: in-place modules of {ctx.ops} and {ctx.clv} (site LEGACY_CODE_ROOTS); child code sha1 recorded')
@@ -1274,12 +1292,21 @@ def st_tie(ctx, s, plan):
 def st_conform(ctx, s, plan):
     U, c = ctx.U, ctx.c
     script = ctx.opsc('p3s2_conform.py')
+    from exopipe.phase3.lib.search import size_rule as SZ
     env_x = dict(P3_TABLE_RECORD_ONLY='1' if shared('catalog_conform', 'TABLE_RECORD_ONLY') else '0',
                  P3_CONFORM_SIZE='1' if shared('catalog_conform', 'SIZE_STEP', 'sublst') else '0')
     plan.append(f'conform: {" ".join(f"{k}={v}" for k, v in env_x.items())} {ctx.py["default"]} {script} {U}   >> '
-                f'catalogs.log; then TABLE-NOTES on master_catalog_removed.csv (S-G13)')
+                f'catalogs.log; then TABLE-NOTES on master_catalog_removed.csv (S-G13); on the size / axis rule\'s attempts '
+                f'+ P3_CONFORM_AXIS=0 under catalog_conform.CONFORM_AXIS_UNDER_RULE=\'replace\' (now '
+                f'{SZ.conform_axis_mode()!r}: its axis step\'s removals recorded as the second gate under \'second_gate\')')
     if ctx.dry:
         return
+    szr = ctx.size_rule()                                   # the conformance's axis step on the size / axis rule's attempts:
+    why = SZ.conform_axis_refusal(szr, script, 'S-G13 conformance')   # P3_CONFORM_AXIS=0 under 'replace', the switch checked
+    if why:                                                 # before the script runs
+        ctx.log.say(f'REFUSING: {why[:300]}')
+        refuse(why)
+    env_x.update(SZ.conform_env(szr))
     tp, nk = tables_present(ctx.tables, c.TABLES_REQUIRED_METRIC)
     if not tp:
         refuse(f'S-G12: no installed sub-LST bright-parent tables with elevation bands and the {c.TABLES_REQUIRED_METRIC} '
@@ -1291,12 +1318,15 @@ def st_conform(ctx, s, plan):
     s.inp(f'{U}/master_catalog.csv', ctx.tables, ctx.roots_csv)
     res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)
     need_ok(res, 'S-G13 conformance (p3s2_conform.py)', r'REFUS', say=lambda: ctx.log.say('CONFORM REFUSED - stopping'))
-    if ctx.size_rule()['rule'] == 'envelope':               # the size / axis rule: no removal by the fixed thresholds
-        from exopipe.phase3.lib.search import size_rule as SZ
-        why = SZ.fixed_removals_in([f'{U}/master_catalog_removed.csv'], 'S-G13 conformance')
-        if why:
-            ctx.log.say(f'REFUSING: {why[:300]}')
-            refuse(why)
+    why, sg = SZ.conform_removals([f'{U}/master_catalog_removed.csv'], szr, 'S-G13 conformance')   # the size / axis rule:
+    if why:                                                 # its fixed size step's removals refused, its axis step's the
+        ctx.log.say(f'REFUSING: {why[:300]}')               # second gate (recorded) or, under 'replace', refused
+        refuse(why)
+    if sg is not None:
+        s.u.check('S-G13.size-rule-axis-step', True, value=sg['rows'], cls='conformant_catalog',
+                  detail=(f"the conformance's axis step ({sg['ruling']}) on the size / axis rule's attempts: "
+                          + (f"the second gate, {sg['rows']} row(s) removed" + (f", e.g. {sg['examples'][0]}" if sg['examples'] else '')
+                             if sg['mode'] == 'second_gate' else 'replaced (P3_CONFORM_AXIS=0), none removed')))
     line, n, bad = table_notes(f'{U}/master_catalog_removed.csv')
     ctx.log.raw(line)
     s.u.check('S-G13.table-notes', bad == 0, value=bad, detail=line, cls='conformant_catalog',

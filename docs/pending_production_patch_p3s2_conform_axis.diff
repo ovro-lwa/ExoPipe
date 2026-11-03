@@ -1,0 +1,85 @@
+PENDING PRODUCTION PATCH - exopipe_ops/p3s2_conform.py: a switch for the conformance's axis-ratio step (P3_CONFORM_AXIS)
+=========================================================================================================================
+Not applied. exopipe_ops belongs to its owning chat: apply it there, by its commit, when Gregg rules that the size / axis rule
+at every S/N replaces the conformance's axis step (the refactor's catalog_conform.CONFORM_AXIS_UNDER_RULE = 'replace').
+Apply from /lustre/gh/main/exopipe_ops:   git apply <this file>      (patch(1) is not installed on the nodes; git apply
+reads the plain file, this preamble skipped)
+Base: p3s2_conform.py at exopipe_ops 074f96c (md5 7504f11a78f445a097d0c57c5fad193d); patched md5 08c01366a32def8e415e6cac59996b19.
+
+THE QUESTION FOR GREGG. Production's conformance removes a row whose catalog |S/N| > 8 and normalized axis ratio > 2.0 x the
+epoch beam's (R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA, Gregg 2026-09-05: "Approved - remove above 8 sigma local SNR when the
+normalized axis ratio exceeds 2.0; flag 1.5 to 2.0; no action below 8 sigma"). R-SIZE-AXIS-GATE-1.5-RATIFIED (2026-09-09)
+tightened the SEARCH's limit to 1.5 ("Supersedes ... the 2.0 axis value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA") and the
+conformance kept its 2.0 step; R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS: the rule at every S/N "replaces the
+fixed thresholds (1.5 / 1.5 above 8 sigma; 1.7 at 7-8 sigma for unpromoted singles)" - it does not name the conformance's step.
+Under the rule the search keeps axis ratios up to max(1.5, the 99th percentile of injected point sources): 3.92 for deep I low
+bands at S/N 8, 3.05 at 9, 2.27 at 10; 3.34 for 10-minute I low bands at 8. So the 2.0 step acts again on the rule's attempts.
+  - keep it (refactor default 'second_gate'): ~0.2% more real Stokes I point sources lost above 8 sigma (9 of 4,165 deep high,
+    8 of 4,125 deep low, 13 of 4,066 10-minute low in the injections), ~0% in V;
+  - switch it off ('replace', this patch): up to ~4,900 deep and ~5,400 10-minute Stokes I detections above 8 sigma that today's
+    search and conformance both remove are admitted to the later gates (an upper bound from the Run_P3S5 / Run_SLSTB ledgers).
+  (refactor_reviews_20261103/S_size_review.md finding 1.)
+
+WHERE THE REFACTOR RUNS THIS SCRIPT ON ATTEMPTS SEARCHED UNDER THE RULE (each gets P3_CONFORM_AXIS=0 under 'replace'):
+  - 10-minute S-G13 conformance (lib/catalog/tier_sublst.st_conform) - every LST;
+  - the deep multiples fork, a mandatory stage of every deep pass but P3T* (exopipe_ops/multiples_fork.py: its validity
+    conformance runs this script in place - fork mode, table off - on the chain's finals plus its table-cut rows at |S/N| >= 7
+    (I) / 5 (V); its conform() builds the child's environment from os.environ, so the switch reaches every run: validity A, table
+    B / B2, the members' and calibration runs). The deep catalog therefore depends on this switch as much as the 10-minute
+    one, although the deep main conformance itself is the refactor's check (lib/catalog/conform_check, MODE 'check');
+  - deep MODE 'remove' and the incremental replay (production paths; the parity file).
+Until this patch is in exopipe_ops, 'replace' REFUSES before any of those stages runs (lib/search/size_rule.conform_axis_refusal:
+the script must read os.environ.get('P3_CONFORM_AXIS', '1')); 'second_gate' needs no patch.
+
+WHAT IT CHANGES. Unset or any value but '0' (every production pass): nothing - the same statements run in the same order
+(AXIS_STEP is True: the new first branch never fires and the old second 'if' becomes an 'elif' after a 'continue'); byte-identical
+outputs and printed lines (tests/test_removal_rules.py test_pending_patch, eight Run_P3S5 cells with axis ratios that fire).
+P3_CONFORM_AXIS=0: a row above the 2.0 step is KEPT with axis_flag 'axis > 2.0 x beam (kept: point-like at its S/N by the size /
+axis rule)' (counted n_akept, one extra printed line 'conform: axis-ratio step OFF ...' before the summary); the 1.5-2.0 flag and
+every other step unchanged. The refactor's port (lib/search/removal_rules.conform) does the same under 'replace', word for word.
+
+--- a/p3s2_conform.py
++++ b/p3s2_conform.py
+@@ -21,6 +21,10 @@
+ U = sys.argv[1] if len(sys.argv) > 1 else '/data07/gh/phase3/transients/Run_P3S2_20260903'
+ SIZE_REMOVE, SIZE_FLAG, SNR_SIZE = 2.5, 2.0, 8.0   # Gregg 2026-09-04 ~20:00 UT: 2.5 beams
+ SIZE_STEP = os.environ.get('P3_CONFORM_SIZE', '1') != '0'   # P3S3: the chain applies the ruled size removal (epoch beam, fit sigma); this stopgap step is off
++# the axis-ratio step below (Gregg 2026-09-05, R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA): on unless P3_CONFORM_AXIS=0 - the refactor passes 0 only for attempts
++# searched under the size / axis rule at every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) when Gregg rules that it replaces this
++# step (catalog_conform.CONFORM_AXIS_UNDER_RULE='replace'); off, a row above it is kept and flagged. Unset (every production pass): unchanged
++AXIS_STEP = os.environ.get('P3_CONFORM_AXIS', '1') != '0'
+ BEAM = {'Red': 787.0, 'Green': 518.0, 'Blue': 374.0, 'Full': 528.0}
+ SUB = {'18': 'Red', '23': 'Red', '27': 'Red', '32': 'Red', '36': 'Red', '41': 'Green', '46': 'Green',
+        '50': 'Green', '55': 'Green', '59': 'Green', '64': 'Blue', '69': 'Blue', '73': 'Blue', '78': 'Blue', '82': 'Blue'}
+@@ -553,7 +557,7 @@
+ n_day = n_dayq = n_dayx = 0
+ n_jup = 0; n_jupkeep = 0
+ n_par = 0
+-n_axis = n_aflag = 0
++n_axis = n_aflag = n_akept = 0
+ n_san = n_row = 0
+ for _i, r in enumerate(raw):
+     key = (r['lst'], r['band'], r['stokes'], r['date'])
+@@ -633,9 +637,11 @@
+     r['axis_norm'] = round(_an, 2) if not np.isnan(_an) else ('' if (not _br or np.isnan(_ar)) else round(_ar / _br, 2))
+     r['axis_flag'] = ''
+     if r['axis_norm'] != '' and abs(f(r['snr'])) > SNR_SIZE:
+-        if r['axis_norm'] > AXIS_REMOVE:
++        if r['axis_norm'] > AXIS_REMOVE and not AXIS_STEP:
++            n_akept += 1; r['axis_flag'] = f'axis > {AXIS_REMOVE} x beam (kept: point-like at its S/N by the size / axis rule)'
++        elif r['axis_norm'] > AXIS_REMOVE:
+             n_axis += 1; removed.append({**r, 'removal_reason': f'axis ratio {r["axis_norm"]} x beam > {AXIS_REMOVE} above {SNR_SIZE} sigma (Gregg 2026-09-05)'}); continue
+-        if r['axis_norm'] > AXIS_FLAG:
++        elif r['axis_norm'] > AXIS_FLAG:
+             n_aflag += 1; r['axis_flag'] = f'axis {AXIS_FLAG}-{AXIS_REMOVE} x beam'
+     # 2026-09-28: the unconditional reset that stood here (since c2007bf, 2026-09-05) erased the table-exempt note set
+     # above, so no exemption note ever reached a catalogue or page.
+@@ -665,6 +671,8 @@
+     # (noise: I = weights.csv qa3_rms_mjy, V = the V frame THERMNOI; cell median over the cell's nights, as the test uses)
+     w = csv.DictWriter(fh, fieldnames=ocols + ['removal_reason', 'jupiter_track_sep_deg', 'jupiter_track_night', 'jupiter_track_radius_deg',
+                                                'frame_noise', 'cell_median_noise', 'noise_ratio'], extrasaction='ignore'); w.writeheader(); w.writerows(removed)
++if not AXIS_STEP:
++    print(f'conform: axis-ratio step OFF (P3_CONFORM_AXIS=0: the size / axis rule at every S/N replaces it) - {n_akept} rows above {AXIS_REMOVE} x beam above {SNR_SIZE} sigma kept and flagged', flush=True)
+ print(f'conform: {len(raw)} raw -> {len(out)} conformant | removed: {n_excl} on excluded epochs, {n_elf} below the deep elevation floor {DEEP_ELEV_FLOOR_DEG:g} deg, '
+       f'{n_day} daytime (Sun above the horizon in the frame), {n_dayq} twilight in a solar-audit quarantine band, {n_dayx} frame times unreadable, {n_jup} jupiter-track (Gregg 2026-09-18), {n_par} per-band table (both Stokes), {n_dup} duplicates, {n_noled} without ledger verdict, '
+       f'{n_size} gaussfit size >{SIZE_REMOVE} beams above {SNR_SIZE} sigma | flagged {n_flag} at {SIZE_FLAG}-{SIZE_REMOVE} beams | {n_axis} axis ratio >{AXIS_REMOVE} x beam above {SNR_SIZE} sigma | flagged {n_aflag} at {AXIS_FLAG}-{AXIS_REMOVE} | {n_san} on epochs refused by the 3x per-Stokes noise gate | {n_row} row-line | '

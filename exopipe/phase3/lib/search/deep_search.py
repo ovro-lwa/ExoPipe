@@ -295,8 +295,8 @@ def _gled_row(lst, scope, stokes, d, c, morph_pass, reason='', pass_ms='',
             c.get('size_beams', ''), c.get('size_flag', ''),
             c.get('nearest_ateam', ''), c.get('fp_prediction', ''),
             c.get('axis_norm', ''), c.get('size_err_beams', '')] + \
-        ['' if c.get(k) is None else c.get(k) for k in GLED_COLS_TABLE] + \
-        [c.get(k, '') for k in _GLED_EXTRA]                         # WAVE2 SIZE-RULE: the rule's columns ('production': none)
+        ['' if c.get(k) is None else c.get(k) for k in GLED_COLS_TABLE] + (   # WAVE2 SIZE-RULE: + the rule's columns
+            [c.get(k, '') for k in _GLED_EXTRA])                                # WAVE2 SIZE-RULE: ('production': none)
 
 
 def _master_structure_map(vm, bpix, win_beams=4.0, valid=None, report=None):
@@ -916,7 +916,7 @@ def _archive_frame_header(hdr0, base, d, scope, stokes, em, cd, thermnoi, imgrms
     return h
 
 
-def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix, epoch_bmin_deg=None, rule=None, band=None):
+def _size_test(c, snr, epoch_bmaj_deg, cd, stokes, resid, bpix, epoch_bmin_deg=None, rule=None, band=None):   # WAVE2 SIZE-RULE: rule, band
     """Gaussian-fit SIZE test (Gregg 2026-09-04): for |local SNR| > 8, remove
     when (fitted FWHM major - its 1-sigma uncertainty) exceeds SIZE_FLOOR_BEAMS x
     the epoch's own beam major axis; flag between SIZE_FLAG_BEAMS and the floor.
@@ -1246,6 +1246,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _b02 = cadence == 'deep' and _RR.search_rules() == 'once-in-search'   # WAVE2 B-02 (step 3a; 'production': none of it)
     from exopipe.phase3.lib.search import size_rule as _SZ              # WAVE2 SIZE-RULE (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-...):
     _szr = _SZ.engine_rule(cadence)                                     # WAVE2 SIZE-RULE: None = production's fixed rule; else the checked
+    if _szr is not None:                                                # WAVE2 SIZE-RULE: the rule's floors are its 1.5 / 1.5 - another
+        _SZ.check_floors(SIZE_FLOOR_BEAMS, AXIS_REMOVE, 'the engine (P3_SIZE_FLOOR_BEAMS, P3_AXIS_REMOVE)')   # WAVE2 SIZE-RULE: value refuses
     _SZ.write_run_record(run_root, _szr)                                # WAVE2 SIZE-RULE: calibration product, recorded (one rule per run)
     global _GLED_EXTRA                                                  # WAVE2 SIZE-RULE: the ledger carries the rule's columns
     _GLED_EXTRA = tuple(GLED_COLS_SIZE) if _szr is not None else ()     # WAVE2 SIZE-RULE: under 'envelope' only
@@ -2092,12 +2094,17 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         # header is split, not a 'continue', so the V search of the same epoch still runs in a stokes='IV' search
         if 'I' in stokes and d in resid_I and _xfI is None:
             passed = [c for c in _allI if c['status'] == 'PASS']
+            _szb = ((_epoch_bmaj(ebase, d, scope, 'I'), _epoch_bmin(ebase, d, scope, 'I'))   # WAVE2 SIZE-RULE: the epoch beam for
+                    if _szr is not None else None)                                        # WAVE2 SIZE-RULE: the rows before the size test
             # 2026-09-04 (audit R-09): every identification-stage rejection is
             # a gate-ledger row (local-SNR floor, sigma_stack, merge)
             for c in _allI:
                 if c['status'] != 'PASS':
-                    gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,
-                                               reason=str(c['status']).lower(),
+                    _rsn = str(c['status']).lower()                                       # WAVE2 SIZE-RULE: the reason, named first
+                    if _szr is not None:                                                  # WAVE2 SIZE-RULE: judged (the local-SNR
+                        _rsn = _SZ.engine_early(c, _rsn, 'I', scope, rI, *_szb, cd, _szr)   # WAVE2 SIZE-RULE: rows - the fork's
+                    gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,                  # WAVE2 SIZE-RULE: member pool) or recorded
+                                               reason=_rsn,                               # WAVE2 SIZE-RULE
                                                pass_ms=''))
             if _kd(d) in qa_out:                  # two-tier tag, I as well as V (audit R-12)
                 for c in passed:
@@ -2117,6 +2124,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 except Exception:
                     pass
                 if _s < SIGMA_MSTRUCT * max(_mi, 1.0):
+                    if _szr is not None:                                                  # WAVE2 SIZE-RULE: measured, recorded
+                        _SZ.engine_record(c, 'I', scope, rI, *_szb, cd, _szr)            # WAVE2 SIZE-RULE: (mstruct_I decided)
                     gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,
                                                reason='mstruct_I',
                                                pass_ms=0))
@@ -2210,14 +2219,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             except sv2.SourceExtractionFailed as _xf:
                 _refuse_extraction('V', d, _xf); continue
             pV = [c for c in _allV if c['status'] == 'PASS']
+            _szb = ((_epoch_bmaj(ebase, d, scope, 'V'), _epoch_bmin(ebase, d, scope, 'V'))   # WAVE2 SIZE-RULE: the epoch beam for
+                    if _szr is not None else None)                                        # WAVE2 SIZE-RULE: the rows before the size test
             # 2026-10-17 (the deep chat's removal inventory; Gregg: "all the information to do any additional removal/filtering
             # ... *without* any redo of the search"): every V identification-stage rejection is a gate-ledger row, as the I
             # chain's (audit R-09). search_v names the local-SNR floor REJECT_LOCAL_RMS; the ledger gives it the I chain's name
             for c in _allV:
                 if c['status'] != 'PASS':
+                    _rsn = ('reject_local_snr' if c['status'] == 'REJECT_LOCAL_RMS'       # WAVE2 SIZE-RULE: the reason, named first
+                            else str(c['status']).lower())                                # WAVE2 SIZE-RULE
+                    if _szr is not None:                                                  # WAVE2 SIZE-RULE: measured, recorded
+                        _rsn = _SZ.engine_early(c, _rsn, 'V', scope, rV, *_szb, cd, _szr)   # WAVE2 SIZE-RULE: (V: no fork members)
                     gled_rows.append(_gled_row(lst, scope, 'V', d, c, 1,
-                                               reason=('reject_local_snr' if c['status'] == 'REJECT_LOCAL_RMS'
-                                                       else str(c['status']).lower()), pass_ms=''))
+                                               reason=_rsn, pass_ms=''))                  # WAVE2 SIZE-RULE
             # 'outlier QA' tag (Gregg 2026-08-26): candidates from coadd-omitted
             # epochs carry the flag through catalogs to transient review
             if _kd(d) in qa_out:
@@ -2595,7 +2609,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if _GLED_EXTRA:                                                     # WAVE2 SIZE-RULE: the ledger with the rule's columns
         _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS + list(_GLED_EXTRA), gled_rows)   # WAVE2 SIZE-RULE
     else:                                                               # WAVE2 SIZE-RULE
-        _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)
+        _append_locked(f'{run_root}/v_deep_ledger.csv', GLED_COLS, gled_rows)   # WAVE2 SIZE-RULE: production's line, indented
     _append_locked(f'{run_root}/search_table_record.csv', STR_COLS, str_rows)
     _append_locked(f'{run_root}/v_deep_images.csv', GIMG_COLS, gimg_rows)
     # ZERO-PRODUCT REFUSAL (2026-09-13, CLAUDE.md section 3: "a rebuild that silently no-ops is a bug"

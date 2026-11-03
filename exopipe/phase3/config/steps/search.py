@@ -87,6 +87,13 @@ class search_detect(_Section):
                                                             # sources injected on the sky into 240 Run_P3S5 residual frames, 2026-10-22
                                                             # (refactor_analysis/bright_source_contamination_20261020/deep/size_cal_v2.json)
     SIZE_ENVELOPE_MD5 = 'e184ac13f6eb2606ac966311cf3394a2'  # md5 of SIZE_ENVELOPE; gate G2 refuses another file
+    SIZE_ENVELOPE_FRAMES = {'MASTER_GEN': 'ivw-mean-v3', 'REFINE_X2': True}   # the imaging configuration of the frames SIZE_ENVELOPE was
+                                                            # calibrated on (Run_P3S5: masters COADDOP ivw-mean-v3, per-epoch x2 flow
+                                                            # refinement on); a search of another (search_inputs.MASTER_GEN,
+                                                            # REFINE_X2) refuses under 'envelope' (size_rule.check_frames; spec
+                                                            # fp_gates_v2.md section 3: a new configuration needs new products).
+                                                            # SIZE_FLOOR_BEAMS / AXIS_REMOVE must stay 1.5 under 'envelope' (the
+                                                            # rule's own floors: size_rule.check_floors)
     SANITY_X = 3.0                                          # x cell median, I (qa3) and V (frame rms); P3_SANITY_I_X (deep_search.py:77;
                                                             # R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT)
     SEARCH_TIER_RATIO = 2.0                                 # x the cell median of the stage-1 rms, per Stokes: above it the epoch is
@@ -190,7 +197,7 @@ class search_detect(_Section):
                       'VETO_ATEAM_RADIUS_DEG', 'VETO_BILOBE', 'SIZE_FLAG_BEAMS', 'AXIS_FLAG', 'SIZE_SNR_GATE', 'JUPITER_VETO_DEG',
                       'MOON_VETO_DEG', 'ATEAM_VETO_DEG', 'ROWLINE_MIN', 'MAX_V_PER_EPOCH', 'REPEAT_MATCH_ARCMIN', 'C50_TABLE',
                       'MSTRUCT_WINDOW_BEAMS', 'GARBAGE_PIXEL_JY', 'EMPIRICAL_BEAM_FALLBACK_PX', 'DURATION_FALLBACK_S',
-                      'CENTRAL_RMS_HALF_PX', 'PB_FLOOR', 'SIZE_ENVELOPE', 'SIZE_ENVELOPE_MD5')
+                      'CENTRAL_RMS_HALF_PX', 'PB_FLOOR', 'SIZE_ENVELOPE', 'SIZE_ENVELOPE_MD5', 'SIZE_ENVELOPE_FRAMES')
 
 
 class search_tables(_Section):
@@ -382,6 +389,11 @@ class search_sublst(_Section):
                                             # own residual pixel for pixel: no bin master in set B), 2026-10-22
                                             # (refactor_analysis/bright_source_contamination_20261020/tenmin/size_cal_v2.json)
     SIZE_ENVELOPE_MD5 = '7e7da6dfcda065d8379e104d74d064fb'   # gate G2 refuses another file
+    SIZE_ENVELOPE_FRAMES = {'ARM': ('B', 'BI'), 'REFINE_X2': False, 'MASTER_GEN': 'ivw-mean-v3'}   # the imaging configuration of
+                                            # the product's frames (set B: no bin master, no per-window x2 refinement - the
+                                            # residual is frames.csv sub_path; BI = set B with injected sources, the same frames);
+                                            # a search on arm A (bin masters) or with REFINE_X2 on refuses under 'envelope'
+                                            # (size_rule.check_frames); SIZE_FLOOR_BEAMS / AXIS_REMOVE stay 1.5 (check_floors)
     SANITY_I_X = 3.0                        # x cell median qa3; P3_SANITY_I_X; DS:77
     SEARCH_TIER_RATIO = 2.0                 # x the cell median of the FRAMES' stage-1 rms, per Stokes; P3_SEARCH_TIER_RATIO; DS
                                             # SEARCH_TIER_RATIO (production exopipe 702dd68, Gregg 2026-10-30, both cadences; the
@@ -456,7 +468,7 @@ class search_sublst(_Section):
     # engine-hard-coded (CADENCE: the tier IS the 10-minute cadence; I_MASK_FLOOR_DEG: search_i's module constant) and pinned
     # (MASTER_GEN: R-TILT-REMOVED-NEXTGEN; the trees; the v110 null tables and their md5s)
     PROTECTED_KEYS = ('CADENCE', 'I_MASK_FLOOR_DEG', 'MASTER_GEN', 'TREE_SUBDIRS', 'V110_NULL_TRIALS', 'V110_NULL_TRIALS_MD5',
-                      'V110_PA_NULL', 'V110_PA_NULL_MD5', 'SIZE_ENVELOPE', 'SIZE_ENVELOPE_MD5')
+                      'V110_PA_NULL', 'V110_PA_NULL_MD5', 'SIZE_ENVELOPE', 'SIZE_ENVELOPE_MD5', 'SIZE_ENVELOPE_FRAMES')
 
 
 class search_snapshot(_Section):

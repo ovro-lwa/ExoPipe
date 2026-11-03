@@ -29,15 +29,33 @@ never-merged branch fp-gates-v2, 8a52fa6 / 1851b13, lib/search/fp_gates_v2.py).
 
 Engine wiring (lib/search/deep_search._size_test, both cadences): the step hands the rule and the product to the engine child
 (RULE_ENV, ENVELOPE_ENV, ENVELOPE_MD5_ENV; search_detect / search_sublst SIZE_RULE, SIZE_ENVELOPE, SIZE_ENVELOPE_MD5);
-'production' keeps the fixed rule above 8 sigma unchanged (the parity file). Under 'envelope' the engine writes RUN_RECORD into
-its run directory (one rule per run) and the gate ledger carries GLED_COLS_SIZE (filled on every row the rule judged); the
-catalogue reads the attempts' records (one rule per catalogue): its builder's 7-8 sigma gate is replaced (catalog_env), and a
-conformance that removes by production's fixed size / axis thresholds contradicts the rule and is refused (fixed_removals_in,
-final_findings). Otherwise pure functions; the record helpers write only the file they name.
+'production' keeps the fixed rule above 8 sigma unchanged (the parity file). Under 'envelope' the step first checks the
+product (pinned md5, every Stokes and band class), the floors (SIZE_FLOOR_BEAMS / AXIS_REMOVE must be the rule's 1.5:
+``check_floors``) and the imaging configuration the product was calibrated on (SIZE_ENVELOPE_FRAMES: ``check_frames``); the
+engine writes RUN_RECORD into its run directory (one rule per run) and the gate ledger carries GLED_COLS_SIZE on EVERY
+candidate row (spec section 4): size_role 'gate' where the rule decided the row (the detections reaching the size test, and
+the Stokes I rows below the local-SNR floor - the multiples fork's 5-7 sigma member pool, ``engine_early``: one the rule
+removes is 'reject_local_snr:<verdict>' and never a fork member), 'record' where an earlier gate had removed it (measured,
+deciding nothing). The catalog reads the attempts' records (one rule per catalog): its builder's 7-8 sigma gate is replaced
+(catalog_env); the conformance's own fixed size step contradicts the rule (refused: ``conform_removals``), and its fixed AXIS
+step (axis ratio > 2.0 x beam above 8 sigma, Gregg 2026-09-05, R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA) follows
+catalog_conform.CONFORM_AXIS_UNDER_RULE - PENDING GREGG'S RULING on whether the 2026-10-22 rule replaces it:
+    'second_gate' (default until he rules): the step stands as a SECOND, fixed gate above 8 sigma on the rule's attempts, in
+                  every conformance - production's p3s2_conform.py (deep 'remove', the multiples fork's validity runs, the
+                  incremental path, 10-minute S-G13) and the deep check (lib/catalog/conform_check, which removes those rows
+                  itself) - its removals recorded per unit (``conform_removals``), never refused;
+    'replace':    the rule replaces the step: production's p3s2_conform.py gets P3_CONFORM_AXIS=0 (``conform_env``) - a switch
+                  production does not have yet: the patch, default on and byte-identical, is CONFORM_AXIS_PATCH; until it is
+                  applied every stage that would run the script REFUSES (``conform_axis_refusal``), and the deep check keeps
+                  and flags the rows. The deep chain's multiples fork runs p3s2_conform.py in place for its validity step
+                  (exopipe_ops/multiples_fork.py: conform, table off, on the chain's finals plus its table-cut rows), so the
+                  deep catalog depends on the switch as much as the 10-minute S-G13 does.
+Otherwise pure functions; the record helpers write only the file they name.
 
 Not wired here: the per-instant carry across bands (``carry_instant``; spec section 1 places it at publish, by position within
-the association radius) and the snapshot tiers (their size gate is clv15 phase3_snapshot_fit.fit_verdict, in place, and no
-calibration of the 10-s / 1-minute frames exists).
+the association radius - what it needs and the choices it leaves open are in its docstring; a known deviation until then), the
+snapshot tiers (their size gate is clv15 phase3_snapshot_fit.fit_verdict, in place, and no calibration of the 10-s / 1-minute
+frames exists) and the forced-photometry flag thresholds.
 """
 import hashlib
 import json
@@ -51,6 +69,7 @@ from exopipe.phase3.core.fitting import gaussian_photometry
 RULING = 'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS'
 HIGH_BANDS = frozenset({'41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz',
                         'Green', 'Blue', 'Full'})
+LOW_BANDS = frozenset({'18MHz', '23MHz', '27MHz', '32MHz', '36MHz', 'Red'})   # every other name refuses (band_class)
 STOKES = ('I', 'V')
 CLASSES = ('low', 'high')
 SIZE_FLOOR = 1.5          # (fitted major - 1 sigma) / epoch BMAJ; R-SIZE-AXIS-GATE-1.5-RATIFIED
@@ -71,11 +90,21 @@ RULE_ENV = 'EXOPIPE3_SIZE_RULE'           # how the step hands the rule to the e
 ENVELOPE_ENV = 'EXOPIPE3_SIZE_ENVELOPE'   # ... the calibration product's path
 ENVELOPE_MD5_ENV = 'EXOPIPE3_SIZE_ENVELOPE_MD5'   # ... and its pinned md5
 RUN_RECORD = 'size_rule.json'             # in the engine's run directory (beside v_deep_ledger.csv): the rule it searched under
-RECORD_VERSION = 'size-rule-1'
+RECORD_VERSION = 'size-rule-2'            # 2 (2026-11-03): every candidate row judged or recorded (size_role); the Stokes I rows
+                                          # below the local-SNR floor judged as the fork's member pool. One version per run.
 # the gate ledger's columns of the rule (appended to deep_search.GLED_COLS under 'envelope' only; production's ledger is unchanged)
-GLED_COLS_SIZE = ['size_rule', 'size_snr', 'size_thr', 'axis_thr', 'size_excess', 'axis_excess', 'size_verdict']
+GLED_COLS_SIZE = ['size_rule', 'size_snr', 'size_thr', 'axis_thr', 'size_excess', 'axis_excess', 'size_verdict', 'size_role']
 VERDICTS = ('gaussfit-size', 'axis-ratio', 'point-like', 'fit-failed', 'no-snr')   # size_verdict; the first two remove
+REMOVING = ('gaussfit-size', 'axis-ratio')
+ROLES = ('gate', 'record')                # size_role: the rule decided the row / measured it after an earlier gate removed it
+MEMBER_REASON = 'reject_local_snr:'       # + a removing verdict: a Stokes I row below the local-SNR floor the rule removes - not
+                                          # in the multiples fork's 5-7 sigma member pool (its veto_reason 'reject_local_snr')
 GATE_7_8_OFF = 'inf'                      # P3_SIZE_GATE_7_8 for the catalogue builder under 'envelope': its 7-8 sigma gate never acts
+# the conformance's fixed axis step under the rule (catalog_conform.CONFORM_AXIS_UNDER_RULE; module docstring) - PENDING GREGG
+CONFORM_AXIS_MODES = ('second_gate', 'replace')
+CONFORM_AXIS_ENV = 'P3_CONFORM_AXIS'      # production's switch of p3s2_conform.py's axis step ('0' = off), once the patch is applied
+CONFORM_AXIS_PATCH = 'docs/pending_production_patch_p3s2_conform_axis.diff'   # in this repository: the patch, default on
+AXIS_STEP_RULING = 'R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA'   # Gregg 2026-09-05: the conformance's axis-ratio step (2.0 x beam, > 8 sigma)
 
 
 class RuleRefusal(RuntimeError):
@@ -88,8 +117,46 @@ def _refuse(msg):
 
 
 def band_class(band):
-    """'high' (41-82 MHz, Green, Blue, Full) or 'low' (18-36 MHz, Red)."""
-    return 'high' if band in HIGH_BANDS else 'low'
+    """'high' (41-82 MHz, Green, Blue, Full) or 'low' (18-36 MHz, Red); any other name REFUSES (a typo or a new band would
+    otherwise take the low-band calibration silently)."""
+    if band in HIGH_BANDS:
+        return 'high'
+    if band in LOW_BANDS:
+        return 'low'
+    _refuse(f'size rule: band {band!r} is in neither calibrated band class (low {sorted(LOW_BANDS)}, high {sorted(HIGH_BANDS)})')
+
+
+def check_floors(size_floor, axis_floor, what='the size / axis rule'):
+    """The rule's floors are the ratified 1.5 and 1.5 (R-SIZE-AXIS-GATE-1.5-RATIFIED; SIZE_FLOOR, AXIS_FLOOR), part of the rule
+    and of no run record: a configured SIZE_FLOOR_BEAMS / AXIS_REMOVE of another value would be silently ignored under
+    'envelope' - REFUSED (a new floor is a new rule: change SIZE_FLOOR / AXIS_FLOOR here and the record's version)."""
+    try:
+        sf, af = float(size_floor), float(axis_floor)
+    except (TypeError, ValueError):
+        sf = af = float('nan')
+    if sf != SIZE_FLOOR or af != AXIS_FLOOR:
+        _refuse(f'{what}: SIZE_FLOOR_BEAMS = {size_floor!r}, AXIS_REMOVE = {axis_floor!r}; under the rule its floors are the '
+                f'ratified {SIZE_FLOOR:g} / {AXIS_FLOOR:g} (max(1.5, the envelope)) and another value would not be applied')
+
+
+def check_frames(product_frames, run_frames, path=''):
+    """The imaging configuration the product was calibrated on (config SIZE_ENVELOPE_FRAMES: {key: value, or a tuple of the
+    values allowed}) against this search's (``run_frames``, the same keys): a key missing from either side, or another value,
+    REFUSES - spec section 3: "a new imaging configuration needs new products before its gates are trusted"."""
+    if not isinstance(product_frames, dict) or not product_frames:
+        _refuse(f'size envelope {path}: no imaging configuration recorded for it (SIZE_ENVELOPE_FRAMES)')
+    bad = []
+    for k, want in sorted(product_frames.items()):
+        if k not in run_frames:
+            bad.append(f'{k}: this search names none')
+            continue
+        ok = run_frames[k] in want if isinstance(want, (tuple, list, frozenset, set)) else run_frames[k] == want
+        if not ok:
+            bad.append(f'{k} = {run_frames[k]!r}, calibrated on {want!r}')
+    if bad:
+        _refuse(f'size envelope {path} was calibrated on frames of another imaging configuration ({"; ".join(bad)}) - a new '
+                f'imaging configuration needs a new calibration product before the rule is trusted on it (fp_gates_v2.md '
+                f'section 3)')
 
 
 def rule_value(value, what='SIZE_RULE'):
@@ -355,7 +422,22 @@ def envelope_from_injections(rows, min_n=30):
 def carry_instant(records):
     """Per-instant carry across frequency (R-GREGG-20261018-VETOES-PER-FRAME-REFINED-FREQUENCY-YES-TIME-NO): records =
     iterable of (identity, instant, removed_by_the_rule); returns the (identity, instant) pairs whose detections in EVERY band
-    go, because one of them is removed. Never across instants."""
+    go, because one of them is removed. Never across instants.
+
+    NOT WIRED (a known deviation from the spec's section 1 and 4 until it is; 2026-10-22 reference: 17 of 7,122 served deep
+    detections, 2 I and 15 V, removed by the carry alone). What wiring it at publish needs, and the choices it leaves open:
+      - the removals: the merged gate ledger's 'gaussfit-size' / 'axis-ratio' rows (the rule's own; whether the fork member
+        pool's 'reject_local_snr:<verdict>' rows - not detections - carry too is open);
+      - the match: the same instant (deep: LST and night; 10-minute: the window), another band, within "the tier's association
+        radius" - the ledger rows carry no position error, so the radius needs a definition (the builder's K_ASSOC x the
+        combined error from the fit's template error model, or a beam); the reference matched by identity (the served sources'
+        identity_id), which a removed row has none of; the same Stokes only (the reference) or any (the per-instant ruling's
+        "any band, subband, wideband and Stokes") is open;
+      - where: every path that serves a detection - the deep check (or 'remove' conformance), the incremental path, 10-minute
+        S-G13, AND the multiples fork, which re-reads the raw as-run rows and the ledger in production's code
+        (exopipe_ops/multiples_fork.py): a carried detection would still be served by the fork without a production change
+        (a list of removals its validity conformance reads) - a second production patch;
+      - a reason of its own ('size-carry: ...') declared to the per-instant content test (lib/catalog/tests_per_instant)."""
     out = set()
     for ident, inst, removed in records:
         if removed:
@@ -373,22 +455,9 @@ def engine_test(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, flag_snr=
     GLED_COLS_SIZE, and the record-only flags of production above ``flag_snr`` (the candidate's own S/N; size above
     ``size_flag`` beams, axis above ``axis_flag`` - kept by the rule at its S/N). Returns what deep_search._size_test returns:
     (size_beams or '', 'remove' | 'remove-axis' | 'flag' | ''). An epoch without a beam REFUSES (its frame cannot be judged)."""
-    try:
-        bmaj, bmin = float(bmaj_deg), float(bmin_deg)
-    except (TypeError, ValueError):
-        bmaj = bmin = float('nan')
-    if not (np.isfinite(bmaj) and np.isfinite(bmin) and bmaj > 0 and bmin > 0):
-        _refuse(f'size rule: the epoch of {c.get("pix_x")},{c.get("pix_y")} has no beam (BMAJ {bmaj_deg!r}, BMIN {bmin_deg!r})')
-    rec = measure_at(img, int(c['pix_x']), int(c['pix_y']), bmaj, bmin, cd_deg)
-    j = judge(env, stokes, band, rec)
-    c.update(j)
-    c['size_rule'] = env.label()
+    rec, j = _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, 'gate')
     if rec is None:
         return '', ''
-    c['size_beams'] = round(rec['size'], 2)
-    if np.isfinite(rec['err']):
-        c['size_err_beams'] = round(rec['err'], 3)
-    c['axis_norm'] = round(rec['axis'], 2)
     if j['size_verdict'] == 'gaussfit-size':
         return c['size_beams'], 'remove'
     if j['size_verdict'] == 'axis-ratio':
@@ -408,6 +477,49 @@ def engine_test(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, flag_snr=
     return c['size_beams'], verdict
 
 
+def _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, role):
+    """(measure_detection record or None, judge's dict) of one candidate, recorded on ``c``: GLED_COLS_SIZE (size_role
+    ``role``) and production's size_beams / size_err_beams / axis_norm. An epoch without a beam REFUSES."""
+    try:
+        bmaj, bmin = float(bmaj_deg), float(bmin_deg)
+    except (TypeError, ValueError):
+        bmaj = bmin = float('nan')
+    if not (np.isfinite(bmaj) and np.isfinite(bmin) and bmaj > 0 and bmin > 0):
+        _refuse(f'size rule: the epoch of {c.get("pix_x")},{c.get("pix_y")} has no beam (BMAJ {bmaj_deg!r}, BMIN {bmin_deg!r})')
+    rec = measure_at(img, int(c['pix_x']), int(c['pix_y']), bmaj, bmin, cd_deg)
+    j = judge(env, stokes, band, rec)
+    c.update(j)
+    c['size_rule'] = env.label()
+    c['size_role'] = role
+    if rec is not None:
+        c['size_beams'] = round(rec['size'], 2)
+        if np.isfinite(rec['err']):
+            c['size_err_beams'] = round(rec['err'], 3)
+        c['axis_norm'] = round(rec['axis'], 2)
+    return rec, j
+
+
+def engine_record(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env):
+    """The rule's measurement on a candidate an EARLIER gate of the search removed (identification, Stokes I's master-structure
+    gate): recorded on ``c`` with size_role 'record' - its verdict decides nothing (spec section 4: size, its error, axis,
+    S/N, both thresholds and the verdict on every candidate row; Gregg's post-run filtering plan: every filter input kept per
+    detection). Returns its size_verdict."""
+    return _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, 'record')[1]['size_verdict']
+
+
+def engine_early(c, reason, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env):
+    """The rule on a candidate the identification removed (``reason``, its veto_reason): a Stokes I row below the local-SNR
+    floor only ('reject_local_snr') is the multiples fork's 5-7 sigma member pool (exopipe_ops/multiples_fork.py reads exactly
+    those rows), so the rule JUDGES it (size_role 'gate'): removed, it is MEMBER_REASON + the verdict ('reject_local_snr:
+    gaussfit-size' / 'reject_local_snr:axis-ratio') and no fork member nor calibration row - "removed at EVERY S/N"; any other
+    is recorded only (engine_record). Returns the row's veto_reason."""
+    if stokes == 'I' and reason == 'reject_local_snr':
+        _rec, j = _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, 'gate')
+        return MEMBER_REASON + j['size_verdict'] if j['size_verdict'] in REMOVING else reason
+    engine_record(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env)
+    return reason
+
+
 def configured(cadence):
     """(rule, envelope path, md5) in the config section of a cadence: search_detect (deep), search_sublst (10min)."""
     from exopipe.phase3.config import CFG
@@ -415,9 +527,11 @@ def configured(cadence):
     return sec.SIZE_RULE, resolve(sec.SIZE_ENVELOPE), sec.SIZE_ENVELOPE_MD5
 
 
-def step_env(rule, path, md5, what='SIZE_RULE'):
+def step_env(rule, path, md5, what='SIZE_RULE', floors=None, frames=None):
     """The engine child's environment for the rule, from the step's config values ({RULE_ENV[, ENVELOPE_ENV, ENVELOPE_MD5_ENV]});
-    under 'envelope' the product is checked first: present, the pinned md5, every Stokes and band class - REFUSED otherwise."""
+    under 'envelope' it is checked first - the product present, the pinned md5, every Stokes and band class; ``floors`` (the
+    section's SIZE_FLOOR_BEAMS, AXIS_REMOVE) the rule's 1.5 / 1.5 (check_floors); ``frames`` ((the product's recorded imaging
+    configuration, this search's)) the same (check_frames) - REFUSED otherwise."""
     rule_value(rule, what)
     if rule == 'production':
         return {RULE_ENV: 'production'}
@@ -425,7 +539,21 @@ def step_env(rule, path, md5, what='SIZE_RULE'):
         _refuse(f'{what} = {rule!r}: no md5 pinned for the envelope {path!r}')
     path = resolve(path)
     Envelope.load(path, md5).require()
+    if floors is not None:
+        check_floors(*floors, what=what)
+    if frames is not None:
+        check_frames(frames[0], frames[1], path)
     return {RULE_ENV: rule, ENVELOPE_ENV: path, ENVELOPE_MD5_ENV: md5}
+
+
+def step_env_for(cadence, run_frames, what=None):
+    """step_env with every check, from the cadence's config section: search_detect (deep) or search_sublst (10min);
+    ``run_frames`` this search's imaging configuration (the keys of the section's SIZE_ENVELOPE_FRAMES)."""
+    from exopipe.phase3.config import CFG
+    sec = CFG.search_detect if cadence == 'deep' else CFG.search_sublst
+    what = what or ('search_detect.SIZE_RULE' if cadence == 'deep' else 'search_sublst.SIZE_RULE')
+    return step_env(sec.SIZE_RULE, sec.SIZE_ENVELOPE, sec.SIZE_ENVELOPE_MD5, what,
+                    floors=(sec.SIZE_FLOOR_BEAMS, sec.AXIS_REMOVE), frames=(sec.SIZE_ENVELOPE_FRAMES, run_frames))
 
 
 def engine_rule(cadence):
@@ -471,8 +599,14 @@ def read_run_record(run_dir):
     return rec
 
 
+def _rule_key(r):
+    """What makes two records one rule: the rule, the product's md5 and, under 'envelope', the record's version (what the
+    engine wrote per row: RECORD_VERSION). A production record has no version of its own."""
+    return (r['rule'], r['md5'], r['version'] if r['rule'] == 'envelope' else '')
+
+
 def same_rule(a, b):
-    return (a['rule'], a['md5']) == (b['rule'], b['md5'])
+    return _rule_key(a) == _rule_key(b)
 
 
 def write_run_record(run_dir, env, ledger='v_deep_ledger.csv'):
@@ -484,8 +618,8 @@ def write_run_record(run_dir, env, ledger='v_deep_ledger.csv'):
     p = os.path.join(run_dir, RUN_RECORD)
     have = read_run_record(run_dir)
     if (os.path.exists(p) or os.path.exists(os.path.join(run_dir, ledger))) and not same_rule(have, want):
-        _refuse(f'{run_dir} was searched under the size rule {have["rule"]} {have["md5"][:12]}; this search applies '
-                f'{want["rule"]} {want["md5"][:12]} - one rule per run: search the cell afresh')
+        _refuse(f'{run_dir} was searched under the size rule {_words(have)}; this search applies {_words(want)} - one rule per '
+                f'run: search the cell afresh')
     if env is not None and not os.path.exists(p):
         os.makedirs(run_dir, exist_ok=True)
         tmp = f'{p}.part{os.getpid()}'
@@ -501,16 +635,21 @@ def one_rule(run_dirs, want=None, what='the merged attempts'):
     by = {}
     for d in run_dirs:
         r = read_run_record(d)
-        by.setdefault((r['rule'], r['md5']), (r, []))[1].append(d)
+        by.setdefault(_rule_key(r), (r, []))[1].append(d)
     if len(by) > 1:
-        parts = [f'{k[0]} {k[1][:12]} ({len(v[1])}, e.g. {v[1][0]})' for k, v in sorted(by.items())]
+        parts = [f'{_words(v[0])} ({len(v[1])}, e.g. {v[1][0]})' for k, v in sorted(by.items())]
         _refuse(f'{what} were searched under {len(by)} size rules: ' + '; '.join(parts) + ' - one rule per catalogue: '
                 f're-search the cells')
     rec = next(iter(by.values()))[0] if by else (want or run_record(None))
     if want is not None and by and not same_rule(rec, want):
-        _refuse(f'{what} were searched under the size rule {rec["rule"]} {rec["md5"][:12]}, the configuration applies '
-                f'{want["rule"]} {want["md5"][:12]} - re-search the cells (or set the rule the attempts were searched under)')
+        _refuse(f'{what} were searched under the size rule {_words(rec)}, the configuration applies {_words(want)} - '
+                f're-search the cells (or set the rule the attempts were searched under)')
     return rec
+
+
+def _words(r):
+    """A record in a refusal's words: 'envelope e184ac13f6eb (size-rule-2)' / 'production'."""
+    return f'{r["rule"]} {r["md5"][:12]} ({r["version"]})' if r['rule'] == 'envelope' else 'production'
 
 
 def configured_record(cadence):
@@ -531,9 +670,13 @@ def ledger_rule(path):
     if path and os.path.exists(path):
         with open(path, newline='') as f:
             head = next(csv.reader(f), None) or []
-        if head[-len(GLED_COLS_SIZE):] == GLED_COLS_SIZE:
-            return dict(run_record(None), rule='envelope', md5='', envelope='(from the ledger header)')
+        for cols, version in ((GLED_COLS_SIZE, RECORD_VERSION), (GLED_COLS_SIZE_V1, 'size-rule-1')):
+            if head[-len(cols):] == cols:
+                return dict(run_record(None), rule='envelope', md5='', envelope='(from the ledger header)', version=version)
     return run_record(None)
+
+
+GLED_COLS_SIZE_V1 = GLED_COLS_SIZE[:7]    # the columns of a size-rule-1 search (8957c42: no size_role)
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -546,31 +689,119 @@ def catalog_env(rec):
     return {'P3_SIZE_GATE_7_8': GATE_7_8_OFF} if rec['rule'] == 'envelope' else {}
 
 
-FIXED_REASONS = ('gaussfit size ', 'axis ratio ')   # production's conformance (p3s2_conform.py / removal_rules.size_axis)
+SIZE_STEP_REASON = 'gaussfit size '       # production's conformance (p3s2_conform.py / removal_rules.size_axis): its fixed size
+AXIS_STEP_REASON = 'axis ratio '          # step (2.5 beams above 8 sigma) and its fixed axis step (2.0 x beam above 8 sigma)
+FIXED_REASONS = (SIZE_STEP_REASON, AXIS_STEP_REASON)
 
 
-def fixed_rule_removals(removed_rows):
-    """The rows a conformance removed by the FIXED size / axis thresholds above 8 sigma (production's p3s2_conform: 'gaussfit
-    size ... beams > 2.5 above 8.0 sigma', 'axis ratio ... x beam > 2.0 above 8.0 sigma'). Under 'envelope' the search's rule is
-    the one rule: any such removal contradicts it (the caller refuses)."""
-    return [r for r in removed_rows if str(r.get('removal_reason') or '').startswith(FIXED_REASONS)]
+def conform_axis_mode(value=None):
+    """catalog_conform.CONFORM_AXIS_UNDER_RULE (``value`` checked): 'second_gate' or 'replace' (module docstring); an unknown or
+    empty value REFUSES - a typo never selects either."""
+    if value is None:
+        from exopipe.phase3.config import CFG
+        value = CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE
+    if value not in CONFORM_AXIS_MODES:
+        _refuse(f'catalog_conform.CONFORM_AXIS_UNDER_RULE = {value!r} is not one of {CONFORM_AXIS_MODES}')
+    return value
 
 
-def fixed_removals_in(paths, what='the conformance'):
-    """The words of a refusal when any of the removal records ``paths`` (master_catalog_removed*.csv) holds a removal by the
-    FIXED size / axis thresholds (fixed_rule_removals), else None - for a catalogue of attempts searched under 'envelope'."""
+def conform_axis_step(rule):
+    """True when the conformance's fixed axis step (axis ratio > 2.0 x beam above 8 sigma, R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA)
+    acts on a catalog of attempts searched under ``rule`` (a record, or its 'rule'): always under 'production'; under
+    'envelope' as catalog_conform.CONFORM_AXIS_UNDER_RULE says ('second_gate': it stands; 'replace': the rule replaced it)."""
+    rule = rule_value(rule['rule'] if isinstance(rule, dict) else rule)
+    return rule == 'production' or conform_axis_mode() == 'second_gate'
+
+
+def conform_env(rule):
+    """The environment production's p3s2_conform.py gets for a catalog of attempts searched under ``rule``: nothing, unless
+    the axis step is off ('envelope' under 'replace'): {P3_CONFORM_AXIS: '0'} - the switch of the pending patch
+    (CONFORM_AXIS_PATCH; check it first: conform_axis_refusal)."""
+    return {} if conform_axis_step(rule) else {CONFORM_AXIS_ENV: '0'}
+
+
+def conform_switch(script):
+    """True when production's conformance at ``script`` reads the axis switch exactly as the pending patch writes it - the
+    first os.environ.get('P3_CONFORM_AXIS', <default>) of its source (ast, never imported), default '1' (on: byte-identical
+    production); False when it reads none (production today)."""
+    from exopipe.phase3.lib.catalog import deep_binding as _DB
+    try:
+        return _DB.envdefault(CONFORM_AXIS_ENV)(_DB._tree(script)) == '1'
+    except LookupError:
+        return False
+
+
+def conform_axis_refusal(rule, script, what='the conformance'):
+    """The words of a refusal when attempts searched under ``rule`` need the conformance's axis step switched off ('envelope'
+    under 'replace') and production's p3s2_conform.py at ``script`` has no such switch (or another default); else None. The
+    caller refuses BEFORE it runs the script (the multiples fork would otherwise run to the end first)."""
+    if conform_axis_step(rule):
+        return None
+    if os.path.exists(script) and conform_switch(script):
+        return None
+    return (f'{what}: catalog_conform.CONFORM_AXIS_UNDER_RULE = \'replace\' (the size / axis rule replaces the conformance\'s '
+            f'axis-ratio step, {AXIS_STEP_RULING}) needs production\'s {script} to switch that step off ({CONFORM_AXIS_ENV}=0); it '
+            f'has no {CONFORM_AXIS_ENV} switch (os.environ.get({CONFORM_AXIS_ENV!r}, \'1\')) - apply {CONFORM_AXIS_PATCH} of the '
+            f'refactor repository in exopipe_ops (its owner\'s commit; default on, byte-identical), or set '
+            f'catalog_conform.CONFORM_AXIS_UNDER_RULE=second_gate - REFUSING')
+
+
+def removed_rows(paths):
+    """[(file name, row)] of the removal records ``paths`` (master_catalog_removed*.csv), EACH ROW ONCE: the multiples fork
+    keeps every conformance run's removals under its own tag (master_catalog_removed_<tag>.csv) beside the last run's
+    master_catalog_removed.csv, the same rows twice - a row is its cand_id (else its whole content)."""
     import csv
-    bad = []
+    seen, out = set(), []
     for p in paths:
-        if os.path.exists(p):
-            with open(p, newline='') as f:
-                bad += [(os.path.basename(p), r) for r in fixed_rule_removals(csv.DictReader(f))]
+        if not os.path.exists(p):
+            continue
+        with open(p, newline='') as f:
+            for r in csv.DictReader(f):
+                k = r.get('cand_id') or tuple(sorted(r.items()))
+                if k not in seen:
+                    seen.add(k)
+                    out.append((os.path.basename(p), r))
+    return out
+
+
+def fixed_rule_removals(removed, axis_step=False):
+    """The rows a conformance removed by FIXED size / axis thresholds that contradict the rule: every removal by its size step
+    ('gaussfit size ... beams > 2.5 above 8.0 sigma'), and by its axis step ('axis ratio ... x beam > 2.0 above 8.0 sigma')
+    unless that step stands as the second gate (``axis_step``: conform_axis_step)."""
+    kinds = (SIZE_STEP_REASON,) if axis_step else FIXED_REASONS
+    return [r for r in removed if str(r.get('removal_reason') or '').startswith(kinds)]
+
+
+def fixed_removals_in(paths, what='the conformance', axis_step=False):
+    """The words of a refusal when the removal records ``paths`` hold a removal that contradicts the rule (fixed_rule_removals;
+    each row counted once), else None - for a catalog of attempts searched under 'envelope'."""
+    bad = [(f, r) for f, r in removed_rows(paths) if fixed_rule_removals([r], axis_step)]
     if not bad:
         return None
     f0, r0 = bad[0]
     return (f'{what}: {len(bad)} row(s) removed by the fixed size / axis thresholds of production\'s conformance while the '
             f'attempts were searched under the size / axis rule at every S/N (one rule: {RULING}) - e.g. {f0} '
             f'{r0.get("cand_id", "")}: {str(r0.get("removal_reason", ""))[:120]} - REFUSING')
+
+
+def conform_removals(paths, rule, what='the conformance'):
+    """(refusal words or None, record or None) for the removal records ``paths`` a conformance wrote for attempts searched under
+    ``rule`` (a record or its 'rule'). Production's attempts: (None, None) - its removals stand. Under 'envelope': a removal by
+    the fixed size step refuses (the step is off in every pass, catalog_conform.SIZE_STEP; acting, it contradicts the rule);
+    the fixed axis step's removals are the SECOND GATE under 'second_gate' - recorded: {mode, ruling, rows, examples}, rows
+    counted once each - and refuse under 'replace' (P3_CONFORM_AXIS=0 was passed: the script did not switch the step off)."""
+    if rule_value(rule['rule'] if isinstance(rule, dict) else rule) == 'production':
+        return None, None
+    axis_on = conform_axis_step(rule)
+    why = fixed_removals_in(paths, what, axis_step=axis_on)
+    if why:
+        if not axis_on:
+            why = (f'{why[:-len(" - REFUSING")]} (catalog_conform.CONFORM_AXIS_UNDER_RULE = \'replace\' passed '
+                   f'{CONFORM_AXIS_ENV}=0: the script did not switch its axis step off) - REFUSING')
+        return why, None
+    axis = [(f, r) for f, r in removed_rows(paths) if str(r.get('removal_reason') or '').startswith(AXIS_STEP_REASON)]
+    return None, dict(mode=conform_axis_mode(), ruling=AXIS_STEP_RULING, rows=len(axis),
+                      examples=[f'{f} {r.get("cand_id", "")}: {str(r.get("removal_reason", ""))[:100]}' for f, r in axis[:3]])
 
 
 def final_findings(rows):
@@ -582,8 +813,9 @@ def final_findings(rows):
         if str(r.get('final')) != '1':
             continue
         v = r.get('size_verdict') or ''
-        if v not in VERDICTS:
-            out.append((r, 'size', f'size rule: a final row without a size verdict ({v!r}): the rule never judged it'))
+        if v not in VERDICTS or r.get('size_role') == 'record':
+            out.append((r, 'size', f'size rule: a final row without a size verdict ({v!r}, size_role '
+                                   f'{r.get("size_role")!r}): the rule never judged it'))
             continue
         try:
             sx = float(r['size_excess']) if r.get('size_excess') not in (None, '') else float('nan')

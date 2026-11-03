@@ -26,8 +26,11 @@ group rule with the served localization's estimator - are the real functions.
       the size / axis rule at every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS): the attempts are
       searched under it (their size_rule.json, the ledger's GLED_COLS_SIZE); a final the rule removes by its recorded excess
       is refused (size, axis), a final it never judged too; production's fixed axis check stays for attempts under
-      'production' (configured so); a final at 9 sigma with an axis ratio of 2.4 is kept under the rule; attempts of two
-      rules, of another product, or not of the configured rule are refused before any row;
+      'production' (configured so); a final at 9 sigma with an axis ratio of 2.4 passes the rule - and the conformance's
+      fixed axis step (2.0 x beam above 8 sigma) follows catalog_conform.CONFORM_AXIS_UNDER_RULE (PENDING GREGG):
+      'second_gate' removes its catalog row in production's words (the check passes, the removal recorded, the content
+      tests pass), 'replace' keeps it flagged; attempts of two rules, of another product or record version, or not of the
+      configured rule are refused before any row;
   (3) restored rows carry an ID in the catalog's shape (field 2 the LST, as downstream parses it);
   (4) the pulsar stage with production's group rule: a group consistent with its pulsar gets its cut detection back, an
       inconsistent one loses its exempted detections; both recorded (members included) and accepted by the check, which
@@ -126,7 +129,7 @@ class Attempt:
                  fp_prediction='inconclusive' if self.st == 'V' else '')
         if self.size['rule'] == 'envelope':         # judged point-like by the rule at its S/N
             r.update(size_rule=f"envelope:{self.size['envelope']}:{self.size['md5'][:12]}", size_snr=7.5, size_thr=2.99,
-                     axis_thr=4.11, size_excess=0.4, axis_excess=0.3, size_verdict='point-like')
+                     axis_thr=4.11, size_excess=0.4, axis_excess=0.3, size_verdict='point-like', size_role='gate')
         r.update(kw)
         self.ledger.append(r)
         return r
@@ -484,7 +487,13 @@ def test_faults():
         z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
         z.update(snr=9.0, axis_norm=2.4, axis_excess=0.8)
     fault('kept_wide', kept_wide, None, "a final at 9 sigma with axis ratio 2.4 x beam that the size / axis rule keeps (above "
-                                        "production's 1.5 in the search and 2.0 in the conformance)")
+                                        "production's 1.5 in the search and 2.0 in the conformance; its catalog row the "
+                                        "second gate's - test_axis_second_gate)")
+
+    def recorded_final(r):                  # a final whose rule columns say 'record' (measured after an earlier gate): unjudged
+        z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
+        z.update(size_role='record')
+    fault('a_recorded', recorded_final, ('a', 'size'), "(a) a final the size / axis rule only recorded (size_role 'record')")
 
     def size_rounded(r):                    # Run_P3S5's 04h 69MHz I 2024-12-22 final: 1.6 - 0.099, kept by the search
         z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
@@ -609,6 +618,12 @@ def test_size_rule_records():
     ok, f, res = run_check(r)
     check('an attempt searched with another calibration product (md5) than the configured one is refused before any row',
           not ok and not f, (ok, f, res))
+    r = fresh('size_v1')
+    r.att['V'].size = dict(r.att['V'].size, version='size-rule-1')
+    r.write()
+    ok, f, res = run_check(r)
+    check('an attempt searched by size-rule-1 (8957c42: judged rows only) where the configuration applies size-rule-2 is refused '
+          'before any row', not ok and not f, (ok, f, res))
     r = fresh('size_prod_cfg')
     r.write()
     keep = CFG.search_detect.SIZE_RULE
@@ -632,6 +647,67 @@ def test_size_rule_records():
         fault('clean_production', to_production, None, 'attempts and configuration under production: the clean run passes')
     finally:
         CFG.search_detect.SIZE_RULE = keep
+
+
+def test_axis_second_gate():
+    """The conformance's fixed axis step (axis ratio > 2.0 x beam above 8 sigma, R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA) on the size /
+    axis rule's attempts, per catalog_conform.CONFORM_AXIS_UNDER_RULE (PENDING GREGG): under 'second_gate' (the default until
+    he rules) the check passes and removes the catalog row of a final at 9 sigma with axis 2.4 (the rule keeps it: limit 3.05
+    there) in production's words - as the multiples fork's and 10-minute S-G13's p3s2_conform.py remove it - recorded in
+    master_catalog_removed.csv and the printed line, the conformant_catalog and per-instant content tests passing; a final
+    at 1.8 is kept, flagged 1.5-2.0; under 'replace' nothing is removed: the row kept, flagged as kept by the rule."""
+    from exopipe.phase3.lib.catalog import tests as CT, tests_per_instant as TPI
+    AXW = 'axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'
+
+    def build(name):
+        r = fresh(name)
+        z = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
+        z.update(snr=9.0, axis_norm=2.4, axis_excess=0.8)
+        y = first(r.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[2])
+        y.update(snr=9.5, axis_norm=1.8, axis_excess=0.6)
+        return r.write()
+
+    def outputs(r):
+        rows = CC._rows(os.path.join(r.U, 'master_catalog.csv'))
+        rem = CC._rows(os.path.join(r.U, 'master_catalog_removed.csv'))
+        return rows, rem, {x['axis_norm']: x for x in rows}          # the two edited rows: axis 2.4 and 1.8
+    lines = []
+    r = build('axis_second_gate')
+    assert CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE == 'second_gate'
+    CC._deps = deps(r)
+    CC.cell_base = lambda cell, roots_csv=None: r.base
+    stage_record(r)
+    try:
+        res = CC.check(r.U, r.man, LABEL, merged=r.merged, out=lambda *a, **k: lines.append(a[0]))
+        ok = True
+    except SystemExit as e:
+        ok, res = False, f'exit {e.code}'
+    rows, rem, by = outputs(r) if ok else ([], [], {})
+    check("'second_gate' (default): the check passes and removes the 9-sigma axis-2.4 row in production's words (the second gate), "
+          "keeps the axis-1.8 row flagged 1.5-2.0, says so in its line", ok and res['second_gate'] == 1
+          and [x['removal_reason'] for x in rem] == [AXW] and len(rows) == len(r.cat) - 1
+          and by.get('1.8', {}).get('axis_flag') == 'axis 1.5-2.0 x beam' and '2.4' not in by
+          and 'as the second gate removed 1' in (lines[-1] if lines else '')
+          and 'nothing removed but by the second gate' in (lines[-1] if lines else ''), (ok, res, [x.get('removal_reason') for x in rem],
+                                                                             lines[-1:] if lines else None))
+    if ok:
+        cr = CT.conformance_record(os.path.join(r.U, 'master_catalog.csv'), merge_copy=r.merged)
+        pi = TPI.conform_per_instant(os.path.join(r.U, 'master_catalog.csv'), merge_copy=r.merged, tier='deep')
+        check("'second_gate': the conformant_catalog content test (conformant + removed = as-run) and the per-instant test (its "
+              "removal judged at its own instant) pass on the check's output", cr[0] and pi[0], (cr, pi))
+    keep = CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE
+    try:
+        CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE = 'replace'
+        r = build('axis_replace')
+        ok, f, res = run_check(r)
+        rows, rem, by = outputs(r) if ok else ([], [], {})
+        check("'replace': the check passes and removes nothing - the axis-2.4 row kept, flagged as kept by the rule",
+              ok and res['second_gate'] == 0 and not rem and len(rows) == len(r.cat)
+              and by.get('2.4', {}).get('axis_flag') == 'axis > 2.0 x beam (kept: point-like at its S/N by the size / axis rule)'
+              and by.get('1.8', {}).get('axis_flag') == 'axis 1.5-2.0 x beam',
+              (ok, f, res, len(rem)))
+    finally:
+        CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE = keep
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -913,6 +989,7 @@ def main():
         test_literal()
         test_clean()
         test_faults()
+        test_axis_second_gate()
         test_pulsar_stage()
         test_pulsar_stage_per_epoch()
         test_chain_pieces()

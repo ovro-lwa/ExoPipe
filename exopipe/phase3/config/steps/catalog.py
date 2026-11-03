@@ -120,6 +120,18 @@ class catalog_conform(_Section):
     NOMINAL_BEAM_ARCSEC = {'Red': 787.0, 'Green': 518.0, 'Blue': 374.0, 'Full': 528.0}   # arcsec; ops/p3s2_conform.py:24 [lit] - UNUSED since D8 (Gregg 2026-10-13 'Approved', ops 283a513): conformance keeps the search's own epoch-beam size_beams/axis_norm; a row without them gets FWHM / its searched frame's BMAJ (frame_beam_bmaj.csv); c50_mjy blanked on every conformed row (M6)
     AXIS_REMOVE = 2.0                                     # x epoch-beam axis ratio, above SIZE_SNR; ops/p3s2_conform.py:105 [lit] (Gregg 2026-09-05)
     AXIS_FLAG = 1.5                                       # ops/p3s2_conform.py:105 [lit]
+    CONFORM_AXIS_UNDER_RULE = 'second_gate'               # the axis step above (AXIS_REMOVE above SIZE_SNR) on attempts searched under the size /
+                                                          # axis rule at every S/N (search_detect / search_sublst SIZE_RULE 'envelope';
+                                                          # lib/search/size_rule): PENDING GREGG - does the 2026-10-22 rule replace this
+                                                          # 2026-09-05 step? 'second_gate' (until he rules: the 09-05 ruling stands) = the
+                                                          # step stays a second, fixed gate above 8 sigma in every conformance - production's
+                                                          # p3s2_conform.py (deep remove, the multiples fork, incremental, 10-minute S-G13)
+                                                          # and the deep check, which removes those rows itself - its removals recorded per
+                                                          # unit, never refused; 'replace' = the rule replaces it: P3_CONFORM_AXIS=0 to
+                                                          # p3s2_conform.py (a switch production lacks: docs/pending_production_patch_
+                                                          # p3s2_conform_axis.diff; every stage running the script refuses until it is
+                                                          # applied), the deep check keeps and flags. Production's attempts: the step always
+                                                          # acts (production; no parity line). size_rule.conform_axis_mode
     SANITY_X = 3.0                                        # x cell median frame noise (I qa3_rms_mjy, V THERMNOI); ops/p3s2_conform.py:129 [lit] (Gregg 2026-09-05 ratified)
     SANITY_MIN_NIGHTS = 5                                 # nights needed for the median; ops/p3s2_conform.py:139, :157
     ROWLINE_MIN = 5                                       # finals on one pixel row +/-1; ops/p3s2_conform.py:129 [lit] (Gregg 2026-09-05)
@@ -152,6 +164,7 @@ class catalog_conform(_Section):
     PULSAR_SNR_FLOOR = 5.0                                # sigma; ops/p3s2_conform.py:373
     READMIT_V110_MARGINAL = {'deep': True, 'fork': False} # ops/p3s2_conform.py:68, :534-548 (R-V110-MARGINAL-RETAIN-AND-LABEL, Gregg 2026-09-04)
     RULED = {'MODE': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
+             'CONFORM_AXIS_UNDER_RULE': 'R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA',   # the standing 09-05 step; Gregg's answer replaces this ID
              'DEEP_ELEV_FLOOR_DEG': 'R-DEEP-SERVE-ELEVGATE-FLOOR25-INSEARCH-ELEV',
              'JUPITER_TRACK_RADIUS_DEG': 'R-JUPITER-TRACK-VETO-IMPLEMENTED-IN-THE-CONFORMANCE-STAGE-BOTH-TIERS',
              'DAYTIME_SAMPLES': 'R-DAYTIME-GATE-DEEP-CONFORM', 'READMIT_V110_MARGINAL': 'R-V110-MARGINAL-RETAIN-AND-LABEL',

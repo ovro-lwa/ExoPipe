@@ -9,24 +9,38 @@ Synthetic frames and the repo's two calibration products; no production file is 
   snr          the S/N dependence: linear in log S/N between the calibrated S/N, clamped below 5 and above 30; thresholds fall
                with S/N (deep I low: 2.99 at 7 sigma, the 1.5 floor from ~15); a missing Stokes / class refuses
   floor        max(1.5, q99): never below the ratified 1.5 floors, at every S/N, Stokes, band class, in both tiers
-  verdict      the rule at high S/N (the floors) and at low S/N (the envelope); |S/N|; no fit / no S/N keeps
+  verdict      the rule at high S/N (the floors) and at low S/N (the envelope); |S/N|; no fit / no S/N keeps; an unknown band
+               name refuses (no silent low-band calibration)
   injection    end to end on beam-correlated noise: the fixed 1.5 / 1.5 rule loses 7-sigma point sources, the envelope rule
                built from the same injections keeps >= 97.5% at every S/N
   domain       injections only inside the search's domain; isolated zeros allowed, > 10% refused
   annulus      the S/N's noise is measured outside the fitted source (an extended source keeps its S/N)
   stamp        the frame stamp and its edge fallback (6 beams), off the frame: no measurement
-  engine       engine_test (deep_search._size_test's rule branch): columns recorded; a 4-beam source at S/N 7.6 removed that
-               the fixed rule (above 8 sigma only) keeps; Stokes V fitted whole (production: the PyBDSF component); a point
-               source kept; production's record-only flags above 8 sigma; an epoch without a beam refuses
-  plumbing     the rule's values and environment (unknown rule, missing md5 refuse; production sets only the rule), the config
+  engine       engine_test (deep_search._size_test's rule branch): columns recorded (size_role 'gate'); a 4-beam source at S/N
+               7.6 removed that the fixed rule (above 8 sigma only) keeps; Stokes V fitted whole (production: the PyBDSF
+               component); a point source kept; production's record-only flags above 8 sigma; an epoch without a beam refuses
+  early        every candidate row (spec section 4): a Stokes I row below the local-SNR floor judged as the fork's member pool
+               ('reject_local_snr:<verdict>' when removed - never a fork member), every other early removal recorded only
+               (size_role 'record', its reason kept); the engine's source calls them on every early path
+  plumbing     the rule's values and environment (unknown rule, missing md5 refuse; production sets only the rule), the floors
+               (a SIZE_FLOOR_BEAMS / AXIS_REMOVE other than 1.5 refuses under the rule, in the step and the engine), the
+               product's imaging configuration (10-minute arm A, REFINE_X2 on, another master generation refuse), the config
                keys and pins, the parity file's production values, the steps' environments
-  records      the run's size_rule.json: written under the rule only, one rule per run (an append under another refuses),
-               one rule per catalogue (a mix refuses; another than configured refuses), read from a ledger header
-  downstream   the catalogue builder's 7-8 sigma gate replaced (P3_SIZE_GATE_7_8 = inf), production's fixed conformance
-               removals flagged as contradictions, the conformance's size_axis keeps under the rule, final rows' findings
-  ledger       the gate-ledger content test: GLED_COLS_SIZE accepted with the run's record, the rule's verdicts and reasons agree
-  catalog      the 10-minute catalogue's search jobs (one rule, a mix refuses), the incremental deep path's ledger header: the
-               builder's 7-8 sigma gate replaced under the rule, production's fixed removals refused
+  records      the run's size_rule.json: written under the rule only, one rule per run (an append under another or of another
+               version refuses), one rule per catalog (a mix refuses; another than configured refuses), read from a ledger
+               header (size-rule-1's too)
+  downstream   the catalog builder's 7-8 sigma gate replaced (P3_SIZE_GATE_7_8 = inf); the conformance's fixed SIZE step
+               contradicts the rule (refused); its fixed AXIS step under catalog_conform.CONFORM_AXIS_UNDER_RULE: 'second_gate'
+               (default, pending Gregg) - removed in production's words and recorded, never refused; 'replace' -
+               P3_CONFORM_AXIS=0, the production script's switch required (refused without it), any axis removal refused;
+               each removed row counted once (the fork's tag copies); size_axis under both; final rows' findings
+  ledger       the gate-ledger content test: GLED_COLS_SIZE (size_role) on every row with the run's record, 'gate' rows' removals
+               the rule's own verdicts, 'record' rows an earlier gate's, the member pool's reasons; a size-rule-1 ledger read
+               by its own checks
+  catalog      the 10-minute catalog's search jobs (one rule, the configured one: another refuses at S-G7), the incremental
+               deep path's ledger header: the builder's 7-8 sigma gate replaced under the rule, the axis step per the key
+  patch        the pending production patch (docs/pending_production_patch_p3s2_conform_axis.diff) applied to a scratch copy of
+               production's p3s2_conform.py: it applies cleanly, carries the switch (size_rule.conform_switch), default on
   carry        the per-instant carry stays within its instant
 Run standalone:  python tests/test_size_rule.py [test_name ...]
 """
@@ -176,6 +190,10 @@ def test_verdict():
     assert SZ.size_verdict(env, 'I', '18MHz', dict(rec, snr=float('nan')))[0] == '', 'no S/N keeps'
     assert SZ.band_class('Red') == 'low' and SZ.band_class('Green') == 'high' and SZ.band_class('41MHz') == 'high'
     assert SZ.band_class('36MHz') == 'low' and SZ.band_class('Full') == 'high'
+    for bad in ('37MHz', 'red', '', None, 'Blue2'):          # a typo or an uncalibrated band never takes the low-band envelope
+        _refuses(lambda: SZ.band_class(bad), f'band {bad!r}')
+        _refuses(lambda: SZ.judge(env, 'I', bad, rec), f'judging in band {bad!r}')
+    assert {SZ.band_class(b) for b in ('18MHz', '23MHz', '27MHz', '32MHz', '36MHz', 'Red')} == {'low'}
     j = SZ.judge(env, 'I', '18MHz', rec)
     assert j['size_verdict'] == 'gaussfit-size' and j['size_excess'] > 1 and j['size_thr'] == 1.5, j
     assert SZ.judge(env, 'I', '18MHz', None)['size_verdict'] == 'fit-failed'
@@ -271,7 +289,7 @@ def test_engine():
     img = frame(7.5, 4.0)
     c = dict(pix_x=200, pix_y=200, local_snr=7.5)
     sb, v = SZ.engine_test(c, 'I', '36MHz', img, BMAJ, BMIN, CD, env)
-    assert v == 'remove' and c['size_verdict'] == 'gaussfit-size' and c['size_excess'] > 1, c
+    assert v == 'remove' and c['size_verdict'] == 'gaussfit-size' and c['size_excess'] > 1 and c['size_role'] == 'gate', c
     assert c['size_rule'] == env.label() and set(SZ.GLED_COLS_SIZE) <= set(c), c
     assert abs(c['size_beams'] - 4.0) < 0.5 and abs(c['size_snr'] - 7.6) < 0.2 and abs(c['size_thr'] - 2.985) < 0.01, c
     c0 = dict(pix_x=200, pix_y=200, local_snr=7.5)
@@ -307,6 +325,51 @@ def test_engine():
     c = dict(pix_x=2, pix_y=200, local_snr=12.0)
     assert SZ.engine_test(c, 'I', 'Red', img, BMAJ, BMIN, CD, env) == ('', '') and c['size_verdict'] == 'fit-failed', c
     _refuses(lambda: SZ.engine_test(dict(pix_x=200, pix_y=200), 'I', 'Red', img, None, BMIN, CD, env), 'no epoch beam')
+
+
+def test_early():
+    """Every candidate row (spec section 4): a Stokes I row below the local-SNR floor - the multiples fork's 5-7 sigma member
+    pool (exopipe_ops/multiples_fork.py takes exactly veto_reason 'reject_local_snr') - is JUDGED: removed by the rule it is
+    'reject_local_snr:<verdict>' (never a member nor a calibration row), kept it stays 'reject_local_snr'; every other early
+    removal (Stokes I identification and master structure, Stokes V identification) is RECORDED with its own reason."""
+    env = SZ.Envelope.load(DEEP).require()
+    big = _frame(np.random.default_rng(11), sources=((200, 200, 7.5, 4.0),))      # the 4-beam source test_engine removes
+    pt = _frame(np.random.default_rng(11), sources=((200, 200, 7.5, 1.0),))       # a point source at the same S/N
+    c = dict(pix_x=200, pix_y=200, local_snr=6.5)
+    r = SZ.engine_early(c, 'reject_local_snr', 'I', '36MHz', big, BMAJ, BMIN, CD, env)
+    assert r == 'reject_local_snr:gaussfit-size' and c['size_role'] == 'gate' and c['size_verdict'] == 'gaussfit-size', (r, c)
+    assert c['size_excess'] > 1 and 'size_flag' not in c and abs(c['size_beams'] - 4.0) < 0.5, c
+    c = dict(pix_x=200, pix_y=200, local_snr=6.5)
+    r = SZ.engine_early(c, 'reject_local_snr', 'I', '36MHz', pt, BMAJ, BMIN, CD, env)
+    assert r == 'reject_local_snr' and c['size_role'] == 'gate' and c['size_verdict'] == 'point-like', (r, c)
+    for st, reason in (('I', 'reject_merged'), ('I', 'reject_sigma_stack'), ('I', 'reject_bright_prox'), ('V', 'reject_local_snr'),
+                       ('V', 'reject_bilobe'), ('V', 'reject_merged')):
+        c = dict(pix_x=200, pix_y=200, local_snr=6.5)
+        r = SZ.engine_early(c, reason, st, '36MHz', big, BMAJ, BMIN, CD, env)
+        assert r == reason and c['size_role'] == 'record' and c['size_verdict'] == 'gaussfit-size', (st, reason, r, c)
+        assert c['size_rule'] == env.label() and set(SZ.GLED_COLS_SIZE) <= set(c) and abs(c['size_beams'] - 4.0) < 0.5, c
+    c = dict(pix_x=200, pix_y=200, local_snr=9.0)                 # the master-structure gate's rows: recorded, no flags
+    assert SZ.engine_record(c, 'I', 'Red', big, BMAJ, BMIN, CD, env) == 'gaussfit-size' and c['size_role'] == 'record' \
+        and 'size_flag' not in c, c
+    c = dict(pix_x=2, pix_y=200, local_snr=6.5)                   # off the frame: recorded as not measured, the reason kept
+    assert SZ.engine_early(c, 'reject_local_snr', 'I', 'Red', big, BMAJ, BMIN, CD, env) == 'reject_local_snr' \
+        and c['size_verdict'] == 'fit-failed' and c['size_role'] == 'gate' and 'size_beams' not in c, c
+    _refuses(lambda: SZ.engine_early(dict(pix_x=200, pix_y=200), 'reject_merged', 'I', 'Red', big, None, BMIN, CD, env),
+             'an early row of an epoch without a beam')
+    _refuses(lambda: SZ.engine_early(dict(pix_x=200, pix_y=200), 'reject_local_snr', 'I', 'Red2', big, BMAJ, BMIN, CD, env),
+             'an unknown band')
+    # the engine: every early path calls the rule, only under it; the floors checked before anything is written
+    src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read()
+    for call in ("_SZ.engine_early(c, _rsn, 'I', scope, rI, *_szb, cd, _szr)", "_SZ.engine_early(c, _rsn, 'V', scope, rV, *_szb, cd, _szr)",
+                 "_SZ.engine_record(c, 'I', scope, rI, *_szb, cd, _szr)"):
+        assert src.count(call) == 1, call
+        i = src.index(call)
+        assert 'if _szr is not None:' in src[i - 200:i], call
+    assert src.index("_SZ.check_floors(SIZE_FLOOR_BEAMS, AXIS_REMOVE") < src.index('_SZ.write_run_record(run_root, _szr)')
+    # the gate-ledger content test knows the member pool's reasons, and they keep the identification stage's exemption
+    from exopipe.phase3.lib.search import tests as ST
+    assert all(ST.known_veto_reason(SZ.MEMBER_REASON + v) for v in SZ.REMOVING)
+    assert not ST.known_veto_reason(SZ.MEMBER_REASON + 'point-like') and (SZ.MEMBER_REASON + 'x').startswith('reject_')
 
 
 def test_plumbing():
@@ -352,6 +415,54 @@ def test_plumbing():
     assert 'lib/search/size_rule.py' in tier_sublst.ENGINE_SOURCES
     pins = {n: (ok, d) for n, p, ok, d, r in deep_step.pinned_inputs('I')}
     assert pins['size envelope (the size / axis rule)'][0], pins
+    # the floors (finding 6): under the rule SIZE_FLOOR_BEAMS / AXIS_REMOVE must be its 1.5 / 1.5 - a changed value refuses
+    # (it would be ignored); production keeps its own fixed rule with them
+    dp, dm = C.search_detect.SIZE_ENVELOPE, C.search_detect.SIZE_ENVELOPE_MD5
+    assert SZ.step_env('envelope', dp, dm, floors=(1.5, 1.5)) == e
+    for fl in ((1.6, 1.5), (1.5, 1.4), ('x', 1.5), (None, 1.5)):
+        _refuses(lambda: SZ.step_env('envelope', dp, dm, floors=fl), f'the floors {fl} under the rule')
+    assert SZ.step_env('production', '', '', floors=(1.6, 1.4)) == {SZ.RULE_ENV: 'production'}
+    # the product's imaging configuration (finding 7b): the 10-minute product is set B's (B and its injection copy BI), no
+    # x2 refinement, the ivw-mean-v3 masters; the deep product Run_P3S5's
+    fr10, frd = C.search_sublst.SIZE_ENVELOPE_FRAMES, C.search_detect.SIZE_ENVELOPE_FRAMES
+    SZ.check_frames(fr10, tier_sublst.size_rule_frames('B'))
+    SZ.check_frames(fr10, tier_sublst.size_rule_frames('BI'))
+    SZ.check_frames(frd, deep_step.size_rule_frames())
+    _refuses(lambda: SZ.check_frames(fr10, tier_sublst.size_rule_frames('A')), 'the 10-minute product on arm A (bin masters)')
+    _refuses(lambda: SZ.check_frames(fr10, dict(tier_sublst.size_rule_frames('B'), REFINE_X2=True)), 'with REFINE_X2 on')
+    _refuses(lambda: SZ.check_frames(fr10, dict(tier_sublst.size_rule_frames('B'), MASTER_GEN='ivw-mean-v2')),
+             'another master generation')
+    _refuses(lambda: SZ.check_frames(fr10, {'ARM': 'B'}), 'a search naming no REFINE_X2 / MASTER_GEN')
+    _refuses(lambda: SZ.check_frames({}, {'ARM': 'B'}), 'a product without its recorded configuration')
+    _refuses(lambda: SZ.check_frames(frd, dict(deep_step.size_rule_frames(), REFINE_X2=False)), 'deep without refinement')
+    assert {'SIZE_ENVELOPE_FRAMES'} <= set(C.search_detect.PROTECTED_KEYS) & set(C.search_sublst.PROTECTED_KEYS)
+    # ... in the steps: the deep preflight's gate / engine_env and the 10-minute preflight / engine_env refuse
+    from exopipe.phase3.core.record import Refusal
+    saved = [(C.search_detect, 'SIZE_FLOOR_BEAMS'), (C.search_detect, 'REFINE_X2'), (C.search_sublst, 'AXIS_REMOVE')]
+    saved = [(sec, k, getattr(sec, k)) for sec, k in saved]
+    try:
+        for sec, k, v in ((C.search_detect, 'SIZE_FLOOR_BEAMS', 1.6), (C.search_detect, 'REFINE_X2', False)):
+            setattr(sec, k, v)
+            try:
+                deep_step.engine_env(T, T, T, 'X', T, T)
+                raise AssertionError(f'deep engine_env with {k}={v!r} under the rule must refuse')
+            except Refusal as e_:
+                assert 'REFUSING' in str(e_), str(e_)
+            setattr(sec, k, dict((x[1], x[2]) for x in saved)[k])
+        try:
+            tier_sublst.engine_env(dict(label='SLST10A', arm='A', lst='10h'), T, T)
+            raise AssertionError('the 10-minute engine_env on arm A under the rule must refuse')
+        except Refusal as e_:
+            assert 'imaging configuration' in str(e_) and "ARM = 'A'" in str(e_), str(e_)
+        C.search_sublst.AXIS_REMOVE = 1.4
+        try:
+            tier_sublst.engine_env(dict(label='SLST10B', arm='B', lst='10h'), T, T)
+            raise AssertionError('the 10-minute engine_env with AXIS_REMOVE 1.4 under the rule must refuse')
+        except Refusal as e_:
+            assert 'AXIS_REMOVE' in str(e_), str(e_)
+    finally:
+        for sec, k, v in saved:
+            setattr(sec, k, v)
     src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read()
     assert src.count('rule=_szr, band=scope)   # WAVE2 SIZE-RULE') == 2, 'both Stokes call the rule'
     assert '_szr = _SZ.engine_rule(cadence)' in src and '_SZ.write_run_record(run_root, _szr)' in src
@@ -389,6 +500,19 @@ def test_records():
     with open(lp, 'w', newline='') as f:
         csv.writer(f).writerow(DS.GLED_COLS + DS.GLED_COLS_SIZE)
     assert SZ.ledger_rule(lp)['rule'] == 'envelope' and SZ.ledger_rule(os.path.join(T, 'none.csv'))['rule'] == 'production'
+    assert SZ.ledger_rule(lp)['version'] == SZ.RECORD_VERSION == 'size-rule-2'
+    with open(lp, 'w', newline='') as f:                    # a size-rule-1 search's ledger (8957c42: no size_role)
+        csv.writer(f).writerow(DS.GLED_COLS + SZ.GLED_COLS_SIZE_V1)
+    assert SZ.ledger_rule(lp)['rule'] == 'envelope' and SZ.ledger_rule(lp)['version'] == 'size-rule-1'
+    # one rule per run and per catalog includes the record's version (what the engine wrote on each row)
+    rd4 = os.path.join(T, 'att4', 'transients', 'Run_X')
+    os.makedirs(rd4)
+    json.dump(dict(rec, version='size-rule-1'), open(os.path.join(rd4, SZ.RUN_RECORD), 'w'))
+    _refuses(lambda: SZ.write_run_record(rd4, env), 'an append of size-rule-2 onto a size-rule-1 run')
+    w = _refuses(lambda: SZ.one_rule([rd, rd4]), 'two versions of the rule in one catalog')
+    assert 'size-rule-1' in w and 'size-rule-2' in w, w
+    _refuses(lambda: SZ.one_rule([rd4], want=rec), 'a size-rule-1 run where the configuration applies size-rule-2')
+    assert SZ.same_rule(SZ.run_record(None), dict(SZ.run_record(None), version='size-rule-1')), 'production has no version'
     # the append check of the search step (one attempt, one rule)
     from exopipe.phase3.lib.search import deep_step
     assert deep_step.base_size_refusal(os.path.join(T, 'att1'), 'X') is None
@@ -396,50 +520,156 @@ def test_records():
     assert why and 'search_detect.SIZE_RULE=production' in why and '--fresh' in why, why
 
 
+def _axis_mode(mode):
+    """Set catalog_conform.CONFORM_AXIS_UNDER_RULE for a test; returns the previous value (restore with it)."""
+    C = _cfg()
+    old = C.catalog_conform.CONFORM_AXIS_UNDER_RULE
+    C.catalog_conform.CONFORM_AXIS_UNDER_RULE = mode
+    return old
+
+
+def _removed_csv(path, rows):
+    with open(path, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=['cand_id', 'removal_reason']); w.writeheader(); w.writerows(rows)
+    return path
+
+
+SWITCH_LINE = "AXIS_STEP = os.environ.get('P3_CONFORM_AXIS', '1') != '0'\n"
+
+
 def test_downstream():
     from exopipe.phase3.lib.search import removal_rules as RR
+    C = _cfg()
     assert SZ.catalog_env(dict(SZ.run_record(None), rule='envelope')) == {'P3_SIZE_GATE_7_8': 'inf'}
     assert SZ.catalog_env(SZ.run_record(None)) == {}
     assert float(SZ.GATE_7_8_OFF) == float('inf') and not (5.0 > float(SZ.GATE_7_8_OFF)), 'the builder\'s gate never acts'
-    rows = [dict(cand_id='a', removal_reason='axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'),
-            dict(cand_id='b', removal_reason='gaussfit size 2.70 beams > 2.5 above 8.0 sigma (Gregg 2026-09-04)'),
-            dict(cand_id='c', removal_reason='row-line: >= 5 finals of this epoch on one pixel row (Gregg 2026-09-05)')]
+    AX = dict(cand_id='a', removal_reason='axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)')
+    SZR = dict(cand_id='b', removal_reason='gaussfit size 2.70 beams > 2.5 above 8.0 sigma (Gregg 2026-09-04)')
+    RL = dict(cand_id='c', removal_reason='row-line: >= 5 finals of this epoch on one pixel row (Gregg 2026-09-05)')
+    rows = [AX, SZR, RL]
     assert [r['cand_id'] for r in SZ.fixed_rule_removals(rows)] == ['a', 'b']
+    assert [r['cand_id'] for r in SZ.fixed_rule_removals(rows, axis_step=True)] == ['b'], 'the axis step as the second gate'
     os.makedirs(T, exist_ok=True)
-    p = os.path.join(T, 'master_catalog_removed.csv')
-    with open(p, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=['cand_id', 'removal_reason']); w.writeheader(); w.writerows(rows)
+    p = _removed_csv(os.path.join(T, 'master_catalog_removed.csv'), rows)
     why = SZ.fixed_removals_in([p], 'conform')
     assert why and why.startswith('conform: 2 row(s)') and 'REFUSING' in why, why
     assert SZ.fixed_removals_in([os.path.join(T, 'none.csv')]) is None
+    # each row once (finding 9): the multiples fork keeps every conformance run's removals under its tag beside the last
+    # run's master_catalog_removed.csv - the same rows in two or three files
+    tags = [_removed_csv(os.path.join(T, f'master_catalog_removed_{t}.csv'), rows) for t in ('A', 'B')]
+    why = SZ.fixed_removals_in([p] + tags, 'multiples fork V')
+    assert why.startswith('multiples fork V: 2 row(s)'), why
+    assert len(SZ.removed_rows([p] + tags)) == 3 and [f for f, _r in SZ.removed_rows([p] + tags)] == ['master_catalog_removed.csv'] * 3
+    # the conformance's AXIS step under the rule (catalog_conform.CONFORM_AXIS_UNDER_RULE, PENDING GREGG)
+    env_rec, prod_rec = dict(SZ.run_record(None), rule='envelope'), SZ.run_record(None)
+    assert C.catalog_conform.CONFORM_AXIS_UNDER_RULE == 'second_gate' == SZ.conform_axis_mode(), 'the default until Gregg rules'
+    assert C.ruled('catalog_conform.CONFORM_AXIS_UNDER_RULE') == (SZ.AXIS_STEP_RULING,), 'the standing 09-05 step, ruled'
+    _refuses(lambda: SZ.conform_axis_mode('second gate'), 'an unknown CONFORM_AXIS_UNDER_RULE')
+    pax = _removed_csv(os.path.join(T, 'axis_only.csv'), [AX, RL])
+    assert SZ.conform_removals([p], prod_rec) == (None, None), "production's attempts: its removals stand"
+    assert SZ.conform_env(prod_rec) == {} and SZ.conform_axis_step(prod_rec) and SZ.conform_axis_step('production')
+    # 'second_gate' (default): the axis step stands, its removals recorded, never refused; the size step still contradicts
+    pax_a = _removed_csv(os.path.join(T, 'axis_only_A.csv'), [AX, RL])          # its tag copy: the row counted once
+    why, sg = SZ.conform_removals([pax, pax_a], env_rec, 'multiples fork I')
+    assert why is None and sg['mode'] == 'second_gate' and sg['ruling'] == SZ.AXIS_STEP_RULING and sg['rows'] == 1, (why, sg)
+    assert SZ.conform_env(env_rec) == {} and SZ.conform_axis_step(env_rec)
+    why, sg = SZ.conform_removals([p], env_rec, 'conform')
+    assert why and 'conform: 1 row(s)' in why and 'gaussfit size' in why and sg is None, why
+    old = _axis_mode('replace')
+    try:                    # 'replace': P3_CONFORM_AXIS=0 to production's script; an axis removal means the switch did not act
+        assert SZ.conform_env(env_rec) == {SZ.CONFORM_AXIS_ENV: '0'} and not SZ.conform_axis_step(env_rec)
+        assert SZ.conform_env(prod_rec) == {}, "production's attempts keep the step"
+        why, sg = SZ.conform_removals([pax], env_rec, 'S-G13 conformance')
+        assert why and 'S-G13 conformance: 1 row(s)' in why and 'P3_CONFORM_AXIS=0' in why and why.endswith('REFUSING'), why
+        assert SZ.conform_removals([_removed_csv(os.path.join(T, 'rl.csv'), [RL])], env_rec)[0] is None
+        _axis_mode('bogus')
+        _refuses(lambda: SZ.conform_env(env_rec), 'a configured CONFORM_AXIS_UNDER_RULE outside the two values')
+    finally:
+        _axis_mode(old)
+    # the production switch (CONFORM_AXIS_PATCH): read from the script's source, default on; 'replace' refuses without it
+    no_sw = os.path.join(T, 'p3s2_conform_today.py')
+    open(no_sw, 'w').write("import os\nSIZE_STEP = os.environ.get('P3_CONFORM_SIZE', '1') != '0'\nAXIS_REMOVE = 2.0\n")
+    sw = os.path.join(T, 'p3s2_conform_patched.py')
+    open(sw, 'w').write("import os\nSIZE_STEP = os.environ.get('P3_CONFORM_SIZE', '1') != '0'\n" + SWITCH_LINE)
+    off = os.path.join(T, 'p3s2_conform_default_off.py')
+    open(off, 'w').write("import os\nAXIS_STEP = os.environ.get('P3_CONFORM_AXIS', '0') != '0'\n")
+    assert SZ.conform_switch(sw) and not SZ.conform_switch(no_sw) and not SZ.conform_switch(off)
+    assert SZ.conform_axis_refusal(env_rec, no_sw) is None, "'second_gate' needs no switch"
+    old = _axis_mode('replace')
+    try:
+        w = SZ.conform_axis_refusal(env_rec, no_sw, 'multiples fork V')
+        assert w and w.startswith('multiples fork V:') and SZ.CONFORM_AXIS_PATCH in w and w.endswith('REFUSING'), w
+        assert SZ.conform_axis_refusal(env_rec, off) and SZ.conform_axis_refusal(env_rec, os.path.join(T, 'absent.py'))
+        assert SZ.conform_axis_refusal(env_rec, sw) is None and SZ.conform_axis_refusal(prod_rec, no_sw) is None
+    finally:
+        _axis_mode(old)
     fin = [dict(final='1', size_verdict='point-like', size_excess='0.9', axis_excess='0.5'),
            dict(final='1', size_verdict='point-like', size_excess='0.9', axis_excess='1.01'),
            dict(final='1', size_verdict='gaussfit-size', size_excess='1.2', axis_excess='0.5'),
            dict(final='1', size_verdict='', size_excess='', axis_excess=''),
            dict(final='1', size_verdict='fit-failed', size_excess='', axis_excess=''),
-           dict(final='0', size_verdict='axis-ratio', size_excess='0.5', axis_excess='1.3')]
+           dict(final='0', size_verdict='axis-ratio', size_excess='0.5', axis_excess='1.3'),
+           dict(final='1', size_verdict='point-like', size_excess='0.2', axis_excess='0.2', size_role='record')]
     got = [(fin.index(r), rule) for r, rule, _w in SZ.final_findings(fin)]
-    assert got == [(1, 'axis'), (2, 'size'), (3, 'size')], got
-    # the conformance's size_axis: production removes above its fixed limits; under the rule it keeps (and flags)
+    assert got == [(1, 'axis'), (2, 'size'), (3, 'size'), (6, 'size')], got
+    # the conformance's size_axis (the deep check, the port): production removes above its fixed limits; under the rule the
+    # size step flags, the axis step removes as the second gate ('second_gate') or flags ('replace')
     r = dict(snr='9.0', size_beams='2.7', axis_norm='2.4', axis_ratio='', fwhm_maj_arcmin='')
+    AXW = 'axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'
     keep = RR._cc().SIZE_STEP
     try:
         RR._cc().SIZE_STEP = dict(keep, deep=True)
         cols, why = RR.size_axis(r)
         assert why.startswith('gaussfit size 2.70 beams > 2.5'), why
         cols, why = RR.size_axis(r, rule='envelope')
-        assert why == '' and cols['size_flag'].startswith('size > 2.5') and cols['axis_flag'].startswith('axis > 2.0'), cols
+        assert why == AXW and cols['size_flag'].startswith('size > 2.5 beams (kept'), (cols, why)
+        old = _axis_mode('replace')
+        try:
+            cols, why = RR.size_axis(r, rule='envelope')
+            assert why == '' and cols['size_flag'].startswith('size > 2.5') and cols['axis_flag'].startswith('axis > 2.0'), cols
+        finally:
+            _axis_mode(old)
     finally:
         RR._cc().SIZE_STEP = keep
     cols, why = RR.size_axis(r)
-    assert why.startswith('axis ratio 2.4 x beam > 2.0 above 8.0 sigma'), why
+    assert why == AXW, why
     cols, why = RR.size_axis(r, rule='envelope')
-    assert why == '' and cols['axis_norm'] == 2.4, (cols, why)
+    assert why == AXW and cols['axis_norm'] == 2.4, (cols, why)
+    old = _axis_mode('replace')
+    try:
+        cols, why = RR.size_axis(r, rule='envelope')
+        assert why == '' and cols['axis_norm'] == 2.4 and cols['axis_flag'] == ('axis > 2.0 x beam (kept: point-like at its '
+                                                                               'S/N by the size / axis rule)'), (cols, why)
+        cols, why = RR.size_axis(r)
+        assert why == AXW, "production's attempts keep the step under 'replace'"
+        cols, why = RR.size_axis(dict(r, axis_norm='1.7'), rule='envelope')
+        assert why == '' and cols['axis_flag'] == 'axis 1.5-2.0 x beam', cols
+    finally:
+        _axis_mode(old)
     try:
         RR.size_axis(r, rule='fixed')
         raise AssertionError('an unknown rule must refuse')
     except RuntimeError:
         pass
+    # the port's environment check (finding 8): P3_CONFORM_AXIS must be what the axis step asked for
+    saved = {k: os.environ.get(k) for k in ('P3_CONFORM_AXIS',)}
+    try:
+        os.environ.pop('P3_CONFORM_AXIS', None)
+        RR._refuse_other_modes(False, True)
+        RR._refuse_other_modes(False, False)
+        os.environ['P3_CONFORM_AXIS'] = '0'
+        RR._refuse_other_modes(False, False)
+        try:
+            RR._refuse_other_modes(False, True)
+            raise AssertionError("P3_CONFORM_AXIS=0 with the axis step on must refuse")
+        except SystemExit as e_:
+            assert 'P3_CONFORM_AXIS' in str(e_), str(e_)
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'removal_rules.py')).read()
+    assert "rule = _SZ.ledger_rule(f'{U}/v_deep_ledger.csv')['rule']" in src and 'size_step=size_step, rule=rule)' in src, \
+        "the port judges by the merged attempts' rule"
     # the per-instant content test still reads its two size templates whole from size_axis (one f-string each)
     from exopipe.phase3.lib.catalog import tests_per_instant as TPI
     assert TPI.reason_kind('axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)') == ('axis ratio', 'own')
@@ -449,6 +679,7 @@ def test_downstream():
 def test_ledger():
     from exopipe.phase3.lib.search import deep_search as DS, tests as ST
     assert ST.GLED_COLS_SIZE == SZ.GLED_COLS_SIZE == DS.GLED_COLS_SIZE, 'one column list'
+    assert ST.GLED_COLS_SIZE_V1 == SZ.GLED_COLS_SIZE_V1 == SZ.GLED_COLS_SIZE[:7] and SZ.GLED_COLS_SIZE[-1] == 'size_role'
     env = SZ.Envelope.load(DEEP).require()
     shutil.rmtree(T, ignore_errors=True)
     rd = os.path.join(T, 'att', 'transients', 'Run_X')
@@ -460,7 +691,7 @@ def test_ledger():
         r = dict.fromkeys(cols, '')
         r.update(lst='05h', scope='23MHz', stokes='V', date='2025-01-01', ra='10.0', dec='20.0', snr='7.5', mstruct='1.0',
                  final='0', size_rule=env.label(), size_snr='7.5', size_thr='2.99', axis_thr='4.11', size_excess='0.4',
-                 axis_excess='0.3', size_verdict='point-like')
+                 axis_excess='0.3', size_verdict='point-like', size_role='gate')
         r.update(kw)
         return r
 
@@ -469,25 +700,49 @@ def test_ledger():
         with open(p, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=header, extrasaction='ignore'); w.writeheader(); w.writerows(rows)
         return ST.size_rule_rows(p, header, [dict((k, r.get(k, '')) for k in header) for r in rows])
+    unmeasured = dict(size_snr='', size_thr='', axis_thr='', size_excess='', axis_excess='', size_verdict='fit-failed')
     ok = [row(final='1'), row(veto_reason='mstruct'), row(veto_reason='gaussfit-size', size_verdict='gaussfit-size',
                                                          size_excess='1.3'),
-          row(veto_reason='axis-ratio', size_verdict='axis-ratio', axis_excess='1.1'), row(veto_reason='reject_local_snr',
-                                                                                          size_verdict='', size_rule='')]
+          row(veto_reason='axis-ratio', size_verdict='axis-ratio', axis_excess='1.1'),
+          row(stokes='I', veto_reason='reject_local_snr'),                                 # the fork's member pool, kept
+          row(stokes='I', veto_reason='reject_local_snr:gaussfit-size', size_verdict='gaussfit-size', size_excess='1.4'),
+          row(stokes='I', veto_reason='reject_local_snr:axis-ratio', size_verdict='axis-ratio', axis_excess='1.2'),
+          row(stokes='I', veto_reason='mstruct_I', size_role='record', size_verdict='gaussfit-size', size_excess='1.3'),
+          row(veto_reason='reject_merged', size_role='record', **unmeasured)]
     assert write(ok) == [], write(ok)
-    assert write([row(veto_reason='gaussfit-size')]), "a 'gaussfit-size' row the rule did not remove"
-    assert write([row(veto_reason='mstruct', size_verdict='axis-ratio')]), 'the rule removed it, the ledger says mstruct'
-    assert write([row(final='1', axis_excess='1.2')]), 'a final the rule removes'
-    assert write([row(final='1', size_verdict='')]), 'a final the rule never judged'
-    assert write([row(final='1', size_rule='envelope:other.json:0123')]), 'another product than the record names'
+    bad = [([row(veto_reason='gaussfit-size')], "a 'gaussfit-size' row the rule did not remove"),
+           ([row(veto_reason='mstruct', size_verdict='axis-ratio')], 'the rule removed it, the ledger says mstruct'),
+           ([row(final='1', axis_excess='1.2')], 'a final the rule removes'),
+           ([row(final='1', size_verdict='')], 'a final the rule never judged'),
+           ([row(final='1', size_rule='envelope:other.json:0123')], 'another product than the record names'),
+           ([row(veto_reason='reject_merged', size_role='record', size_verdict='')], 'a candidate row neither judged nor recorded'),
+           ([row(veto_reason='mstruct', size_role='')], 'a row without its role'),
+           ([row(final='1', size_role='record')], "a final only 'recorded'"),
+           ([row(veto_reason='gaussfit-size', size_verdict='gaussfit-size', size_role='record')], "a 'record' row the rule removed"),
+           ([row(veto_reason='', final='1', size_role='record')], "a 'record' row without an earlier gate"),
+           ([row(stokes='I', veto_reason='reject_local_snr:gaussfit-size')], 'a member-pool removal the rule did not make'),
+           ([row(stokes='V', veto_reason='reject_local_snr:gaussfit-size', size_verdict='gaussfit-size')],
+            'a member-pool reason on a Stokes V row'),
+           ([row(stokes='I', veto_reason='reject_local_snr', size_verdict='gaussfit-size')],
+            "the rule removes a member-pool row whose reason stays 'reject_local_snr'")]
+    for rows_, what in bad:
+        assert write(rows_), what
     assert write([row(final='1')], header=DS.GLED_COLS), "the record says envelope, the header lacks the rule's columns"
+    json.dump(dict(SZ.read_run_record(rd), version='size-rule-1'), open(os.path.join(rd, SZ.RUN_RECORD), 'w'))
+    assert write([row(final='1')]), "size-rule-2 columns, the record says size-rule-1"
+    v1 = DS.GLED_COLS + SZ.GLED_COLS_SIZE_V1                  # a size-rule-1 ledger is read by its own checks (judged rows only)
+    assert write([row(final='1'), row(veto_reason='reject_local_snr', size_verdict='', size_rule='')], header=v1) == []
+    assert write([row(veto_reason='gaussfit-size')], header=v1), 'size-rule-1: a removal the rule did not make'
+    assert ST.complete.__doc__ and 'every row' in ST.complete.__doc__
     os.remove(os.path.join(rd, SZ.RUN_RECORD))
     assert write([row(final='1')]), "the header carries the rule's columns, no record"
     assert write([row(final='1')], header=DS.GLED_COLS) == [], 'production: nothing to check'
 
 
 def test_catalog_paths():
-    """The 10-minute catalogue reads its search jobs' records (one rule; a mix refuses); the incremental deep path reads the
-    merged ledger's header; both give the builder P3_SIZE_GATE_7_8=inf under the rule and refuse production's fixed removals."""
+    """The 10-minute catalog reads its search jobs' records (one rule, the configured one: a mix or another refuses, S-G7);
+    the incremental deep path reads the merged ledger's header; both give the builder P3_SIZE_GATE_7_8=inf under the rule,
+    refuse production's fixed size removals and treat its axis step per catalog_conform.CONFORM_AXIS_UNDER_RULE."""
     import types
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.catalog import tier_sublst as CS, incremental as INC
@@ -515,6 +770,20 @@ def test_catalog_paths():
         raise AssertionError('jobs of two rules must refuse')
     except Refusal as e:
         assert 'S-G7' in str(e) and 'size rules' in str(e), str(e)
+    for job in ('14h_18MHz_I', '14h_18MHz_V'):                # every job production's, the configuration the rule's (finding 5:
+        os.remove(os.path.join(src, job, 'transients', 'Run_SLST14B', SZ.RUN_RECORD))   # as the deep check, never silently)
+    try:
+        CS.Ctx.size_rule(ctx())
+        raise AssertionError("production's jobs under the configured rule must refuse")
+    except Refusal as e:
+        assert 'S-G7' in str(e) and 'the configuration applies envelope' in str(e), str(e)
+    C = _cfg()
+    keep = C.search_sublst.SIZE_RULE
+    try:                                                      # ... configured as production (the parity file): theirs
+        C.search_sublst.SIZE_RULE = 'production'
+        assert CS.Ctx.size_rule(ctx())['rule'] == 'production' and SZ.catalog_env(CS.Ctx.size_rule(ctx())) == {}
+    finally:
+        C.search_sublst.SIZE_RULE = keep
     U = os.path.join(T, 'U')
     os.makedirs(U)
     ic = types.SimpleNamespace(out=U, label='P3S5', parents='')
@@ -523,17 +792,80 @@ def test_catalog_paths():
     open(os.path.join(U, 'v_deep_ledger.csv'), 'w').write(','.join(DS.GLED_COLS + DS.GLED_COLS_SIZE) + '\n')
     assert INC.stage_env(ic, 'build')['P3_SIZE_GATE_7_8'] == 'inf' and INC.stage_env(ic, 'fork')['P3_SIZE_GATE_7_8'] == 'inf'
     assert 'P3_SIZE_GATE_7_8' not in INC.stage_env(ic, 'conform')
-    rm = os.path.join(U, 'master_catalog_removed.csv')
-    with open(rm, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=['cand_id', 'removal_reason']); w.writeheader()
-        w.writerow(dict(cand_id='I1', removal_reason='axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'))
+    rm = _removed_csv(os.path.join(U, 'master_catalog_removed.csv'),
+                      [dict(cand_id='I1', removal_reason='axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)')])
+    rs = _removed_csv(os.path.join(U, 'size_removed.csv'),
+                      [dict(cand_id='I2', removal_reason='gaussfit size 2.70 beams > 2.5 above 8.0 sigma (Gregg 2026-09-04)')])
+    unit = types.SimpleNamespace(meta={}, notes=[])
+    unit.note = unit.notes.append
+    INC._fixed_size_refusal(U, [rm], 'conform', unit)      # 'second_gate': the axis step's removal recorded, not refused
+    assert unit.meta['size_rule_second_gate']['conform']['rows'] == 1 and 'second gate' in unit.notes[0], (unit.meta, unit.notes)
     try:
-        INC._fixed_size_refusal(U, [rm], 'conform')
-        raise AssertionError("production's fixed axis removal under the rule must refuse")
+        INC._fixed_size_refusal(U, [rs], 'conform')
+        raise AssertionError("production's fixed size removal under the rule must refuse")
     except Refusal as e:
         assert 'conform: 1 row(s)' in str(e), str(e)
+    assert INC.stage_env(ic, 'conform').get('P3_CONFORM_AXIS') is None and INC._axis_switch(U, 'conform') is None
+    real = INC._ops(INC.C().STAGE_SCRIPTS['conform'])
+    old = _axis_mode('replace')
+    try:                                                    # 'replace': P3_CONFORM_AXIS=0 to the conform and fork stages; the
+        assert INC.stage_env(ic, 'conform')['P3_CONFORM_AXIS'] == '0' == INC.stage_env(ic, 'fork')['P3_CONFORM_AXIS']
+        assert 'P3_CONFORM_AXIS' not in INC.stage_env(ic, 'build')
+        try:                                                # production script's switch required before the stage runs
+            INC._axis_switch(U, 'conform')
+            assert SZ.conform_switch(real), 'without the switch the replayed conform must refuse'
+        except Refusal as e:
+            assert not SZ.conform_switch(real) and SZ.CONFORM_AXIS_PATCH in str(e), str(e)
+        try:
+            INC._fixed_size_refusal(U, [rm], 'conform')
+            raise AssertionError("under 'replace' an axis-step removal must refuse")
+        except Refusal as e:
+            assert 'P3_CONFORM_AXIS=0' in str(e), str(e)
+    finally:
+        _axis_mode(old)
     open(os.path.join(U, 'v_deep_ledger.csv'), 'w').write(','.join(DS.GLED_COLS) + '\n')
-    INC._fixed_size_refusal(U, [rm], 'conform')            # production's attempts: its own removal stands
+    INC._fixed_size_refusal(U, [rm, rs], 'conform')        # production's attempts: its own removals stand
+    old = _axis_mode('replace')
+    try:
+        assert 'P3_CONFORM_AXIS' not in INC.stage_env(ic, 'conform') and INC._axis_switch(U, 'conform') is None
+    finally:
+        _axis_mode(old)
+
+
+PROD_CONFORM = '/lustre/gh/main/exopipe_ops/p3s2_conform.py'        # read only
+
+
+def test_patch():
+    """The pending production patch (size_rule.CONFORM_AXIS_PATCH): it applies cleanly to a scratch copy of production's
+    p3s2_conform.py as it is today (git apply; production itself never written), the result carries the switch the 'replace'
+    stages require (size_rule.conform_switch, default on) and differs from production in the patch's lines only; the switch's
+    reading is production's own idiom (P3_CONFORM_SIZE). Byte-identity of the outputs with the switch unset, and the rows it
+    keeps when off: tests/test_removal_rules.py test_pending_patch (Run_P3S5 cells, lwacalim07). Once production carries it,
+    the check is that it does."""
+    import subprocess
+    patch = os.path.join(REPO, SZ.CONFORM_AXIS_PATCH)
+    text = open(patch).read()
+    assert 'R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA' in text and 'multiples_fork.py' in text and 'git apply' in text, 'its preamble'
+    if SZ.conform_switch(PROD_CONFORM):
+        print('  (production p3s2_conform.py already carries the switch: nothing to apply)')
+        return
+    d = os.path.join(T, 'patch')
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    shutil.copy(PROD_CONFORM, os.path.join(d, 'p3s2_conform.py'))
+    r = subprocess.run(['git', 'apply', '--check', patch], cwd=d, capture_output=True, text=True)
+    assert r.returncode == 0, f'the pending patch no longer applies to production\'s p3s2_conform.py (re-base it): {r.stderr}'
+    subprocess.run(['git', 'apply', patch], cwd=d, check=True, capture_output=True)
+    new = os.path.join(d, 'p3s2_conform.py')
+    assert SZ.conform_switch(new) and not SZ.conform_switch(PROD_CONFORM), 'the patched copy carries the switch, default on'
+    a, b = open(PROD_CONFORM).read().splitlines(), open(new).read().splitlines()
+    import difflib
+    gone = [x[1:] for x in difflib.unified_diff(a, b, lineterm='', n=0) if x.startswith('-') and not x.startswith('---')]
+    added = [x[1:] for x in difflib.unified_diff(a, b, lineterm='', n=0) if x.startswith('+') and not x.startswith('+++')]
+    assert gone == ['n_axis = n_aflag = 0', '        if r[\'axis_norm\'] > AXIS_REMOVE:', '        if r[\'axis_norm\'] > AXIS_FLAG:'], gone
+    assert SWITCH_LINE.strip() in added and len(added) == 11, added
+    import ast as _ast
+    _ast.parse(open(new).read(), new)                       # it compiles
 
 
 def test_carry():
@@ -542,7 +874,8 @@ def test_carry():
 
 
 TESTS = [test_measure, test_products, test_snr, test_floor, test_verdict, test_injection, test_domain, test_annulus, test_stamp,
-         test_engine, test_plumbing, test_records, test_downstream, test_ledger, test_catalog_paths, test_carry]
+         test_engine, test_early, test_plumbing, test_records, test_downstream, test_ledger, test_catalog_paths, test_patch,
+         test_carry]
 
 
 def main(argv):
