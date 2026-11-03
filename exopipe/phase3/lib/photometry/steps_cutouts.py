@@ -31,9 +31,10 @@ engine's output root), then:
      structure + sha256 sample, CM2 one file per key): a failure refuses before anything reaches the root (C-CONTENT);
   4. placement, one transaction: every file of the root the unit replaces (same name) - and with --fresh every stale /
      orphan file - moves to the quarantine directory first (sha256 manifest), then the staged files are renamed in (os.replace,
-     the manifest last) and the class tests run again on the placed manifest. Any failure from the first move on moves the
-     placed files back to the staging directory and the quarantined ones back in place: a refused unit leaves the root's
-     files as they were (review F2, 2026-11-03).
+     the manifest last) and the class tests run again on the placed manifest. Any failure from the first move on - an
+     exception, a failed test, Ctrl-C or SIGTERM (cli.Terminated) - moves the placed files back to the staging directory and
+     the quarantined ones back in place: a refused or interrupted unit leaves the root's files as they were (review F2 and
+     fix verification N2, 2026-11-03).
 cutmeasure stages the tool's --out (the root's existing forced_manifest.csv copied in first, so a sample subset merges as the
 tool merges it), runs TN1 / TN2 (photometry_tier_npz) and TM1 / TM2 (photometry_tier_manifest) on the staged npz and manifest,
 then places them the same way (the npz and manifest it replaces quarantined under <root>/quarantine_superseded_tier_forced_
@@ -224,8 +225,9 @@ def placement(u, run, root, pairs, outputs, reason, prefix=None, aside=(), aside
     """Step 4 of the module docstring, one transaction: ``aside`` (relative paths: stale / orphan files, --fresh) and every
     file of ``pairs`` (staged path, relative path) that exists in the root move to the quarantine, the staged files are renamed
     in, then ``outputs`` (a callable) records the outputs and runs their class tests on the placed files. A failure from the
-    first move on - an exception, or a failed test - undoes every move (unplace, restore), so the root's files are as they
-    were, and the unit is refused (C-PLACE; an exception is re-raised). Returns the moves to the quarantine."""
+    first move on - an exception, a failed test, Ctrl-C or SIGTERM (cli.Terminated, a KeyboardInterrupt) - undoes every move
+    (unplace, restore), so the root's files are as they were, and the unit is refused (C-PLACE; an exception or interrupt is
+    re-raised). A SIGKILL cannot be undone. Returns the moves to the quarantine."""
     moved, placed, created = [], [], []
     n_out = len(u.outputs)
     try:

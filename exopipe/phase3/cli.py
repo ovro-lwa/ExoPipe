@@ -7,7 +7,10 @@
 Every step is independently runnable by a person or by Claude, documents its inputs, outputs and failure modes in
 --help, refuses (exit 2) instead of warning, has --dry-run, and writes a machine-readable record of what it did under
 <out>/_records/<step>/. Exit codes: 0 done (every content test passed), 1 error, 2 refused by a gate, 3 nothing to do.
+While a step runs, SIGTERM interrupts it as Ctrl-C does (Terminated, a KeyboardInterrupt: every rollback runs, the unit is
+recorded 'interrupted'); a second SIGTERM terminates at once.
 """
+import contextlib
 import os
 import sys
 
@@ -234,6 +237,39 @@ def _describe_step(name, CFG, hash_only=False):
     return 0
 
 
+class Terminated(KeyboardInterrupt):
+    """The step process received SIGTERM (an operator's kill, a node shutdown, a scheduler's stop). Raised in its main
+    thread while the step runs (_sigterm_interrupts), so everything written for Ctrl-C runs for it too: a placement in
+    progress is undone (lib/photometry/steps_cutouts.placement), the unit is recorded 'interrupted' (core/record), the run
+    summary is written - and the process then ends as after Ctrl-C (fix verification N2, 2026-11-03)."""
+
+
+@contextlib.contextmanager
+def _sigterm_interrupts(name):
+    """While the step ``name`` runs: SIGTERM raises Terminated in the main thread, once - the first SIGTERM restores the
+    default action, so a second one terminates at once (as before). Installed only over the default disposition, in the main
+    thread, and never for `exopipe3 run` (its supervisor and worker loops keep the default; each step they launch is a
+    process of its own and gets it); the previous disposition is restored when the step returns."""
+    import signal
+    import threading
+    if name == 'run' or threading.current_thread() is not threading.main_thread() \
+            or signal.getsignal(signal.SIGTERM) != signal.SIG_DFL:
+        yield
+        return
+
+    def _on_sigterm(signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        print(f'SIGTERM: exopipe3 {name} interrupted as for Ctrl-C (a placement in progress is undone); a second SIGTERM '
+              f'terminates at once', file=sys.stderr, flush=True)
+        raise Terminated('SIGTERM')
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog='exopipe3', description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -339,18 +375,22 @@ def main(argv=None):
     run.cores = pinned
     run.no_records = not getattr(mod, 'WRITES', True)
     record.mark_injected(run)                  # an injected run's start record, before the step writes anything
-    try:
-        rc = mod.run(args, run)
-    except record.Refusal as e:
-        print(f'REFUSED: {e}', file=sys.stderr)
-        run.run_reason = f'refused: {e}'           # a run-level refusal before any unit: kept in the run summary
-        rc = record.EXIT_REFUSED
-    except record.NoInput as e:
-        print(f'NO-INPUT: {e}', file=sys.stderr)
-        run.run_reason = f'no-input: {e}'
-        rc = record.EXIT_NO_INPUT
-    finally:
-        summ = run.write_summary()
+    with _sigterm_interrupts(name):            # SIGTERM unwinds the step as Ctrl-C does (Terminated)
+        try:
+            rc = mod.run(args, run)
+        except record.Refusal as e:
+            print(f'REFUSED: {e}', file=sys.stderr)
+            run.run_reason = f'refused: {e}'           # a run-level refusal before any unit: kept in the run summary
+            rc = record.EXIT_REFUSED
+        except record.NoInput as e:
+            print(f'NO-INPUT: {e}', file=sys.stderr)
+            run.run_reason = f'no-input: {e}'
+            rc = record.EXIT_NO_INPUT
+        except KeyboardInterrupt as e:             # Ctrl-C or SIGTERM: the run summary says so, then it propagates
+            run.run_reason = f'interrupted: {type(e).__name__} {e}'.strip()
+            raise
+        finally:
+            summ = run.write_summary()
     if rc is None:
         rc = run.exit_code()
     by = run.summary()

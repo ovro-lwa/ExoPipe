@@ -85,7 +85,8 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   unit), C-NAMES, C-IDENTITY, C-CONTENT / CM-CONTENT (the staged products' content tests), C-STALE (--fresh), C-PLACE (a
   failure while placing: every move undone), PHOT-ADHOC (an ad-hoc set into or under a served root, or with frames / stage /
   deep measure / evaluate), INJECTED-RUN GUARD (an injected run writing a root outside scratch). A unit that errors is
-  recorded and the stage goes on with the next unit (exit 1 at the end).
+  recorded and the stage goes on with the next unit (exit 1 at the end). Ctrl-C or SIGTERM (cli.Terminated) during a
+  placement undoes it (the unit recorded 'interrupted'); the run then stops.
   Any failing content test refuses its unit.
 """
 import importlib

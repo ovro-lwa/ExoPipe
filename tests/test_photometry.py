@@ -56,9 +56,10 @@ products are only READ.
   roots only --in-place with the measurement chained, sub-LST stages named; F5 C-HOST / C-CELLS; F7 the served-generation
   check where /data07 is not mounted; F8 a unit that writes nothing and the root's leftovers; F9 one ad-hoc gate entry per
   root; F10 / F11 the ad-hoc gates (a root inside a served one, a row without a name).
-- the fix verification's finding N1 (P_photometry_fix_verification.md): an --in-place snapshot regeneration covers whole cells
+- the fix verification's findings (P_photometry_fix_verification.md): N1 an --in-place snapshot regeneration covers whole cells
   (the verifier's band-subset reproduction refused before anything is placed; a whole cell placed and its served stage 1
-  re-measured in one run).
+  re-measured in one run); N2 a SIGTERM sent to a step mid-placement is undone as Ctrl-C is (a child process, signalled from
+  this one: the root byte-identical).
 """
 import ast
 import contextlib
@@ -2325,10 +2326,8 @@ def make_tier_inputs():
     return deep, troot, sbr
 
 
-def test_cutouts_tiers():
-    """The deep and 10-minute tier cutouts through the step (the REAL tool's cell_job on synthetic residuals) and the REAL
-    tier forced tool on them (cutmeasure, in place): an ad-hoc HWJ subset, never into the served roots."""
-    deep, troot, sbr = make_tier_inputs()
+def tier_hwj_list():
+    """An ad-hoc HWJ list of the two targets in the synthetic tier image (HD 163607, HIP 91258: the pinned list's rows)."""
     adhoc = os.path.join(TMP, 'tier_hwj.csv')
     src = [r for r in csv.DictReader(open(os.path.join(CFG.paths.CLV15_ROOT, CFG.photometry.SAMPLE_FILES['HWJ']),
                                           encoding='utf-8-sig')) if r['common_name'] in ('HD 163607', 'HIP 91258')]
@@ -2336,6 +2335,14 @@ def test_cutouts_tiers():
         w = csv.DictWriter(f, fieldnames=list(src[0]))
         w.writeheader()
         w.writerows(src)
+    return adhoc
+
+
+def test_cutouts_tiers():
+    """The deep and 10-minute tier cutouts through the step (the REAL tool's cell_job on synthetic residuals) and the REAL
+    tier forced tool on them (cutmeasure, in place): an ad-hoc HWJ subset, never into the served roots."""
+    deep, troot, sbr = make_tier_inputs()
+    adhoc = tier_hwj_list()
     out, root, tout = os.path.join(TMP, 'tier_out'), os.path.join(TMP, 'tier_out', 'photometry_genT'), \
         os.path.join(TMP, 'tier_out', 'forced_tiers_genT')
     cc = CFG.photometry_cutouts
@@ -2534,6 +2541,99 @@ def tier_review_fixes(adhoc, root, tout, out):
           'key - and refuses the served root', seen and len(seen[-1]) == 2 and rc == 2 and 'PHOT-ADHOC' in txt, (seen, txt[-400:]))
 
 
+def sigterm_child(base):
+    """The child process of test_sigterm_rollback (`python <this file> --sigterm-child BASE`, with a TMP of its own): a deep
+    tier cutouts unit (the REAL tool's cell_job on the synthetic residuals: 4 cutouts and the unit manifest) is placed cleanly,
+    then re-run with steps_cutouts.place pausing after 2 of its 5 files are renamed in - BASE/placed_2 tells the parent, which
+    sends SIGTERM. What the interrupted step raised and the SIGTERM disposition after cli.main returned go to BASE/child.json."""
+    import signal
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC_
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)      # the default disposition, whatever the caller's
+    deep, troot, sbr = make_tier_inputs()
+    adhoc = tier_hwj_list()
+    out, root = os.path.join(base, 'out'), os.path.join(base, 'photometry_genT')
+    argv = ['photometry', '--tier', 'deep', '--stages', 'cutouts', '--cells', TIER_CELL, '--targets', 'HWJ=%s' % adhoc,
+            '--cutout-root', root, '--out', out, '--cores', 'none']
+    res = {}
+    real_place = SC_.place
+
+    def paused_place(root_, pairs, placed, created):
+        for i, pr in enumerate(pairs):
+            real_place(root_, [pr], placed, created)
+            if i == 1:
+                with open(os.path.join(base, 'placed_2'), 'w') as f:
+                    json.dump([r for _, r in placed], f)
+                time.sleep(600)                       # the parent's SIGTERM ends this
+    with patched(CFG.photometry_cutouts, TIER_DEEP_RUN=deep, TIER_TENMIN_ROOT=troot, TIER_TENMIN_SEARCH=sbr):
+        res['clean_rc'] = step(argv)[0]
+        res['clean_state'] = root_state(root)
+        SC_.place = paused_place
+        try:
+            res['rc'] = step(argv)[0]
+        except KeyboardInterrupt as e:
+            res['interrupted'] = '%s: %s' % (type(e).__name__, e)
+        finally:
+            SC_.place = real_place
+    res['sigterm_after'] = str(signal.getsignal(signal.SIGTERM))
+    with open(os.path.join(base, 'child.json'), 'w') as f:
+        json.dump(res, f)
+
+
+def test_sigterm_rollback():
+    """Fix verification N2 (2026-11-03): a SIGTERM to a step process in the middle of a placement (an operator's kill, a node
+    shutdown, a scheduler's stop) is undone as Ctrl-C is - cli.main maps SIGTERM to Terminated (a KeyboardInterrupt) while a
+    step runs. The verifier's reproduction (kill_mid_placement_vrP.py: a deep tier unit's 5 files, SIGTERM after 2 were renamed
+    in; before the fix 2 new cutouts stayed placed, 3 files were missing and the old ones stayed in the quarantine), the signal
+    sent here by THIS process to the step's process (sigterm_child): the root ends byte-identical."""
+    import signal
+    import subprocess
+    base = os.path.join(TMP, 'sigterm')
+    os.makedirs(base)
+    marker, resp, logp = (os.path.join(base, x) for x in ('placed_2', 'child.json', 'child.log'))
+    with open(logp, 'w') as log:
+        p = subprocess.Popen([sys.executable, os.path.join(HERE, os.path.basename(__file__)), '--sigterm-child', base],
+                             stdout=log, stderr=subprocess.STDOUT)
+        t0 = time.time()
+        while p.poll() is None and not os.path.exists(marker) and time.time() - t0 < 900:
+            time.sleep(0.2)
+        sent = p.poll() is None and os.path.exists(marker)
+        if sent:
+            os.kill(p.pid, signal.SIGTERM)
+        try:
+            rc = p.wait(timeout=900)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            rc = 'timeout'
+    res = json.load(open(resp)) if os.path.exists(resp) else {}
+    tail = open(logp, errors='replace').read()[-1500:]
+    root, out = os.path.join(base, 'photometry_genT'), os.path.join(base, 'out')
+    intr = str(res.get('interrupted', ''))
+    check('SIGTERM from another process to a step mid-placement (2 of a deep tier unit\'s 5 files renamed in): the step unwinds '
+          'as for Ctrl-C (Terminated, a KeyboardInterrupt), its process carries on (exit 0 of the harness) and SIGTERM is back '
+          'to the default action once cli.main returned', sent and rc == 0 and res.get('clean_rc') == 0
+          and intr.startswith('Terminated') and 'SIGTERM' in intr and res.get('sigterm_after') == str(signal.SIG_DFL),
+          (sent, rc, res.get('clean_rc'), intr, res.get('sigterm_after'), tail))
+    before, now = res.get('clean_state') or {}, root_state(root)
+    check('SIGTERM mid-placement: the root ends byte-identical to before (the 2 placed files back in the staging directory, the '
+          '3 others never placed, the 5 replaced ones back from the quarantine)', len(before) == 5 and now == before,
+          (sorted(before), sorted(now)))
+    qr = new_rows({}, quarantine_rows(root))
+    staged = [os.path.join(dp, f) for dp, _, fs in os.walk(os.path.join(root, CFG.photometry_cutouts.STAGING_SUBDIR)) for f in fs]
+    rec = records(out).get('cutouts.deep.%s.HWJ' % TIER_CELL, {})
+    runs = sorted(glob.glob(os.path.join(out, '_records', 'photometry', '_runs', '*.json')))
+    last = json.load(open(runs[-1])) if runs else {}
+    check('SIGTERM mid-placement: each move and its restore recorded in the quarantine manifest (5 replaced, 5 restored, naming '
+          'the SIGTERM), the 5 new files kept in the staging directory, the unit recorded interrupted with its placement undone '
+          '(2 placed, 5 restored, no problem) and the run summary written (interrupted)',
+          sum(r['reason'].startswith('replaced by') for r in qr) == 5
+          and sum(r['reason'].startswith('restored:') and 'Terminated: SIGTERM' in r['reason'] for r in qr) == 5
+          and len(staged) == 5 and rec.get('status') == 'error' and rec.get('reason') == 'interrupted'
+          and (rec.get('meta') or {}).get('placement_undone') == {'placed': 2, 'restored': 5, 'problems': []}
+          and str(last.get('reason', '')).startswith('interrupted: Terminated'),
+          ([r['reason'][:80] for r in qr], len(staged), rec.get('status'), rec.get('reason'),
+           (rec.get('meta') or {}).get('placement_undone'), last.get('reason')))
+
+
 def test_adhoc_and_selection(objs):
     """Ad-hoc target lists (the snapshot measure through the REAL snapshot_forced_phot.py with P3_SNAP_CUTOUT_SAMPLES, as
     stage1_when_done_20261028.sh) and the gates; stage selection (cutouts only when named; sub-LST)."""
@@ -2680,14 +2780,19 @@ def main():
     test_engine_refusal_carry_on()
     test_in_place_whole_cells()
     test_cutouts_tiers()
+    test_sigterm_rollback()
     test_adhoc_and_selection(objs)
     test_real()
     test_dry_real()
 
 
 if __name__ == '__main__':
+    CHILD = sys.argv[1:2] == ['--sigterm-child']       # test_sigterm_rollback's child process (its own TMP)
     try:
-        main()
+        if CHILD:
+            sigterm_child(sys.argv[2])
+        else:
+            main()
     finally:
         K.engine = REAL_ENGINE
         KD.roots_cells = REAL_ROOTS
@@ -2696,5 +2801,6 @@ if __name__ == '__main__':
             os.rmdir(BASE)
         except OSError:
             pass
-    n = len(RESULTS)
-    print('\n%d of %d checks passed in %.0f s' % (sum(ok for _, ok in RESULTS), n, time.time() - T0))
+    if not CHILD:
+        n = len(RESULTS)
+        print('\n%d of %d checks passed in %.0f s' % (sum(ok for _, ok in RESULTS), n, time.time() - T0))
