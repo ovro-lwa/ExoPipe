@@ -147,6 +147,9 @@ def omission_table(plan, u):
     seed = _CFG().catalog_omission.TENMIN_RMS_CACHE_SEED
     seed = None if (not seed or os.path.realpath(seed) == os.path.realpath(cache)) else seed
     rows, recs = deep_omission.tenmin_table(list(plan.lsts), table, cache_dir=cache, seed_dir=seed)
+    # WAVE2 G6: catalog_omission.ABSENT_WITH_SERVED 'refuse' (the refactor's PROPOSED gate, pending Gregg) refuses the whole
+    # build on a served detection in an ABSENT key; production proceeds - a parity build passes parity/production_20261013.cfg
+    # ('production': kept and counted). 0 on the 24 served LSTs (Q review F5).
     deep_omission.absent_gate(rows, deep_omission.tenmin_served_of(recs))
     u.add_input(table)
     u.add_output(table, 'omission_decisions', tier='sublst')

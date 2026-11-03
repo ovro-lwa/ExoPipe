@@ -763,8 +763,23 @@ class catalog_omission(_Section):
     #      -> I, sanity_V -> V, the others both)
     SIGMA = 5.0                                           # a night passes at <= median + SIGMA x 1.4826 MAD of the cell's nights (noise)
                                                           # and of their served rates (rate); sublst_deep_omission.py:35
+    # PRODUCTION'S VALUE, PENDING GREGG (not ruled, not locked - an override tries the alternative): production's implementation
+    # details that the approved card does not state - clv15 fix_ledger IMPLEMENTED-DEEP-OMISSION-DROP-IN-THE-10-MINUTE-CUMULATIVE-
+    # 20261025, verbatim: "FOR GREGG (implementation details, not in the approved card): the rate floor (spread floored at one
+    # detection per night) and the ABSENT propagation to widebands"; no later row ratifies either (Q review F3). The card's rate
+    # rule is "above median + 5 x 1.4826 MAD" with no floor. Pending decision: DECISIONS_PENDING entry "Deep omission: two
+    # implementation details of production's, pending you" (named in refactor_reviews_20261103/Q_deepomit_fixes.md).
     RATE_FLOOR_PER_NIGHT = 1.0                            # detections: the rate spread is floored at this many detections per night
-                                                          # (1 / the median admitted rows or windows per night); sublst_deep_omission.py:171
+                                                          # (/ the median admitted rows or windows per night); production's value,
+                                                          # pending Gregg; 0.0 = the card's rule (no floor). sublst_deep_omission.py:167-171
+                                                          # ("RATE FLOOR (2026-10-25, for review)"), snapshot_deep_omission.py:97
+    WIDEBAND_MEMBER_VERDICTS = ('OMIT', 'ABSENT')         # the verdicts of a deep-refused member subband night that also omit that
+                                                          # night's detections of its band group (the subband a member of the group's
+                                                          # wideband frames / windows); production's value, pending Gregg: ABSENT (the
+                                                          # tier searched no data of the subband that night) propagates too; ('OMIT',) =
+                                                          # only a subband the tier's own test omitted (the card: "a subband omitted
+                                                          # drops the night's wideband detections that include it").
+                                                          # sublst_deep_omission.py:198, snapshot_deep_omission.py:110
     WIDEBAND_EXCEPT = ('18MHz',)                          # subbands whose omission never omits their band group's detections (the
                                                           # 18 MHz carve-out); sublst_deep_omission.py:198, snapshot_deep_omission.py:110
     # (the band groups are instrument.SUBBAND_BANDS = sublst_deep_omission.py:33 GROUPS; drift-tested)
@@ -791,10 +806,17 @@ class catalog_omission(_Section):
                                                           # (verdict ABSENT) while the served product holds detections of it: the
                                                           # exception test cannot be evaluated. 'refuse' (G6; the rule is never applied
                                                           # as 'nothing to drop') | 'production' (kept and counted, as production does;
-                                                          # 0 on B4X+B6H)
-    PROTECTED_KEYS = ('PROPAGATE', 'SIGMA', 'RATE_FLOOR_PER_NIGHT', 'WIDEBAND_EXCEPT', 'SNAPSHOT_TIERS', 'SNAPSHOT_NOISE',
-                      'SNAPSHOT_MEMBERS', 'TENMIN_RUN')   # the ruled rule and the production layout it reads (mirrors, drift-tested)
-    RULED = {'PROPAGATE': _OMISSION_RULING, 'SIGMA': _OMISSION_RULING, 'RATE_FLOOR_PER_NIGHT': _OMISSION_RULING,
+                                                          # 0 on B4X+B6H). PROPOSED, PENDING GREGG (Q review F5): 'refuse' is the
+                                                          # refactor's proposal (gates refuse rather than warn), neither production's
+                                                          # behavior nor a ruling; production's 'production' is in the parity file
+                                                          # (parity/production_20261013.cfg; the code site is marked WAVE2 G6).
+                                                          # DECISIONS_PENDING FYI named in refactor_reviews_20261103/Q_deepomit_fixes.md
+    PROTECTED_KEYS = ('PROPAGATE', 'SIGMA', 'WIDEBAND_EXCEPT', 'SNAPSHOT_TIERS', 'SNAPSHOT_NOISE', 'SNAPSHOT_MEMBERS',
+                      'TENMIN_RUN')                       # the ruled rule and the production layout it reads (mirrors, drift-tested);
+                                                          # NOT the two pending values above (RATE_FLOOR_PER_NIGHT,
+                                                          # WIDEBAND_MEMBER_VERDICTS): an override tries the alternative
+    RULED = {'PROPAGATE': _OMISSION_RULING, 'SIGMA': _OMISSION_RULING,
              'WIDEBAND_EXCEPT': (_OMISSION_RULING, 'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4'),
              'REFUSALS': ('R-GREGG-20261024-DEEP-OMISSION-APPLIES-TO-SHORT-TIERS-WITH-FRAME-EXCEPTION',
-                          'R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE')}
+                          'R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE')}   # REFUSALS: the deep record the rulings name;
+                                                          # --omit-refusals is an override of it (--ruling-for or a non-production --out)

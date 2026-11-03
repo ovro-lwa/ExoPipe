@@ -16,13 +16,30 @@ R-GREGG-20261024-DEEP-OMISSION-DESIGN-APPROVED-AND-10MIN-HOLD-RELEASED).
              drop removes = production's sublst_deep_omission_drop.filter_rows on the member tables
   serve      `serve --tier sublst` build: the stage's table written outside the build, recorded, passed to the in-place merge
              as SUBLST_DEEP_OMISSION (the merge itself stubbed)
+  serve_merge the same build with the REAL in-place merge (production's sublst_cumulative.py + sublst_deep_omission_drop.py,
+             copied with their two data roots pointed at the fixture, run through core.legacy.run - its SUBLST_* clearing
+             included): the merge drops what the stage predicts (its record = the stage's), the build's record registered and
+             passing its content and per-instant tests; no /data07 needed (Q review F9)
   gates      G1 no record / no file / a foreign row, G2 a run without catalogue, G3 an identity without detections, G4 a source of
              no served identity, G6 served detections in an ABSENT key ('refuse'; 'production' keeps and counts)
   content    omission_decisions and omission_record refuse a changed verdict, a member row without its member, a removal whose
              key is not OMIT, a why of another key; omission_record.per_instant refuses O1 (another night's cand_id), O2 (an
              undeclared reason), O3 (a member of another tier); the templates are the writer's own
-  stage      `exopipe3 catalog --tier snapshot --stages omit` and `--tier sublst --stages omit` through the step's run()
-  real       READ ONLY: the port's decisions = production's decide for one LST of the served batch B6H (served counts of B6H)
+  kept       the kept product deep_omission_kept.csv (Q review F2): its kept detections = production's step 0 clusters (the
+             merge's input) exactly; omission_kept refuses a kept detection of an OMIT key, one the record omits, a missing or an
+             extra per-tier row, a re-pointed source whose new best is not a kept detection of its identity, a count off the summary
+  stage      `exopipe3 catalog --tier snapshot --stages omit` and `--tier sublst --stages omit` through the step's run();
+             --omit-refusals is an override of the RULED catalog_omission.REFUSALS (refused into a production root without
+             --ruling-for, allowed and recorded with one or into a non-production --out; Q review F8)
+  pending    the two values production chose that Gregg has not ruled (RATE_FLOOR_PER_NIGHT, WIDEBAND_MEMBER_VERDICTS) are neither
+             RULED nor PROTECTED and their alternatives work (0 = the card's rule without a floor; ('OMIT',) = no ABSENT
+             propagation); ABSENT_WITH_SERVED is PROPOSED with production's value in the parity file and the WAVE2 G6 marks
+             (Q review F3, F5)
+  prodbugs   production's bugs carried for parity, pinned as they are today (Q review F1: a wideband detection dropped for a member
+             its own frame / window lacks; F4: deep_value / deep_threshold in the record's listing order, gates sorted, the
+             meaning from the first sorted gate; F10: 'tier rms above threshold' without a threshold) - a fix shows here
+  real       READ ONLY: the port's decisions = production's decide for one LST of the served batch B6H (served counts of B6H);
+             SKIP (reported as SKIP, not PASS) on a host without the served batch
 
 Scratch: /tmp/exopipe3_tests_deep_omission/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_deep_omission.py [test_name ...]
@@ -281,7 +298,9 @@ def prod_snapshot(runs, rdir, proto, outdir):
         SDO._WM.clear()
     assert not os.path.exists(os.path.join(outdir, 'NEVER_WRITTEN'))
     SDO.write(os.path.join(outdir, 'prod_deep_omission.csv'), g['DEC'])
-    return g['DEC'], g['REC'], g['n_all']
+    kept = collections.Counter((g['TAG'][r], J) + tuple(g['dkey'](m['_row'])) for (r, J, _grs), c in zip(g['cinfo'], g['clusters'])
+                               for m in c)         # step 0's kept identities and detections: the merge's input
+    return g['DEC'], g['REC'], g['n_all'], kept
 
 
 def _dec_by_key(rows):
@@ -346,6 +365,8 @@ def test_drift():
     assert DO.MEMBER_SOURCE.pattern in src_v
     assert 'RATE FLOOR' in src_t and '1.0 / max(nwm, 1.0)' in src_t and c.RATE_FLOOR_PER_NIGHT == 1.0
     assert "x['band'] != '18MHz'" in src_t and "r['band'] != '18MHz'" in src_s and tuple(c.WIDEBAND_EXCEPT) == ('18MHz',)
+    assert "x['verdict'] in ('OMIT', 'ABSENT')" in src_t and "r['verdict'] in ('OMIT', 'ABSENT')" in src_s
+    assert tuple(c.WIDEBAND_MEMBER_VERDICTS) == ('OMIT', 'ABSENT')     # production's value (pending Gregg; Q review F3)
 
 
 def test_snapshot():
@@ -354,7 +375,7 @@ def test_snapshot():
     root, rdir, proto, runs = snapshot_world()
     out = os.path.join(root, 'port')
     summ = DO.run_snapshot(runs, out, rdir=rdir, proto=proto)
-    DEC, REC, n_all = prod_snapshot(runs, rdir, proto, root)
+    DEC, REC, n_all, prod_kept = prod_snapshot(runs, rdir, proto, root)
     assert filecmp.cmp(os.path.join(out, 'deep_omission.csv'), os.path.join(root, 'prod_deep_omission.csv'), shallow=False), \
         'decision tables differ'
     rec = _rows(os.path.join(out, 'deep_omission_dropped.csv'))
@@ -406,6 +427,15 @@ def test_snapshot():
             assert t['passed'], t
     pi = [t for t in validate.run('omission_record', os.path.join(out, 'deep_omission_dropped.csv')) if t['name'].endswith('per_instant')]
     assert pi and pi[0]['passed'] and pi[0]['value'] > 0, pi
+    # the kept product (Q review F2): its kept detections ARE production's step 0 clusters, and its content test passes
+    kp = _rows(os.path.join(out, 'deep_omission_kept.csv'))
+    port_kept = collections.Counter((r['batch'], r['identity'], r['cand_id'], r['ra_peak'], r['dec_peak']) for r in kp
+                                    if r['kind'] == 'detection kept')
+    assert port_kept == prod_kept and sum(port_kept.values()) == summ['kept'] > 0, (sum(port_kept.values()), sum(prod_kept.values()))
+    for t in validate.run('omission_kept', os.path.join(out, 'deep_omission_kept.csv'), tier='snapshot'):
+        assert t['passed'] and t['value'] == summ['kept'], t
+    rp = [r for r in kp if r['kind'] == 'source re-pointed' and r['identity'] == 'J0000+0002']
+    assert rp and json.loads(rp[0]['fields'])['best_cand_id'] == rp[0]['cand_id'] == part[0]['note'].split('re-pointed to ')[1].split(' ')[0], rp
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -554,6 +584,121 @@ def test_serve_build():
     assert os.path.exists(os.path.join(out, 'sublst', 'deep_omission', 'cache', 'window_rms_05h.csv'))
 
 
+def merge_ready(tr, lsts):
+    """What production's cumulative merge needs of each published LST run beyond tenmin_world's tables: master_catalog.csv
+    with pos_kind, pertie_detections.csv (one row per detection), a survivors table per members table (one row per
+    (source_id, band), identity_id, best = its first member), candidates/<S>/<page>/ with one block per member detection
+    (rank0001_<lst>_<night>_bin<k>_<band>.png, the drop's BLOCK pattern)."""
+    DO = _DO()
+    for L in lsts:
+        R = os.path.join(tr, f'Run_SLST{L[:2]}B')
+        mc = _rows(os.path.join(R, 'master_catalog.csv'))
+        _wcsv(os.path.join(R, 'master_catalog.csv'), ['cand_id', 'band', 'date', 'stokes', 'pos_kind', 'peak_jy'],
+              [dict(r, pos_kind='fitted', peak_jy='1.0') for r in mc])
+        _wcsv(os.path.join(R, 'pertie_detections.csv'), ['cand_id', 'tie_sys_arcsec'],
+              [dict(cand_id=r['cand_id'], tie_sys_arcsec='30') for r in mc])
+        for S in ('I', 'V'):
+            os.makedirs(os.path.join(R, 'candidates', S), exist_ok=True)
+            for T in ('sb', 'wb'):
+                d = os.path.join(R, f'source_catalogs_{S}_{T}')
+                for nm in sorted(os.listdir(d)):
+                    if not nm.endswith('_source_members.csv'):
+                        continue
+                    band, mem = nm[:-len('_source_members.csv')], _rows(os.path.join(d, nm))
+                    first = collections.OrderedDict()
+                    for m in mem:
+                        first.setdefault(m['source_id'], m)
+                    _wcsv(os.path.join(d, f'{band}_sources_survivors.csv'),
+                          ['source_id', 'band', 'identity_id', 'n_det', 'best_cand_id', 'best_snr'],
+                          [dict(source_id=sid, band=band, identity_id=sid.split('_')[0], best_cand_id=m['cand_id'], best_snr='7',
+                                n_det=sum(1 for x in mem if x['source_id'] == sid)) for sid, m in first.items()])
+                    for m in mem:
+                        c = DO.TENMIN_CID.match(m['cand_id'])
+                        page = os.path.join(R, 'candidates', S, f"{m['source_id']}_{L}_{c.group(3)}_{band}")
+                        os.makedirs(page, exist_ok=True)
+                        b = int(m['cand_id'].split('T')[1][:2])
+                        open(os.path.join(page, f'rank0001_{L}_{c.group(3)}_bin{b}_{band}.png'), 'w').close()
+
+
+def prod_merge_copy(ops_dir, tr, sl):
+    """production's sublst_cumulative.py with its two data roots (T, SL) pointed at the fixture - the one line rewritten,
+    refused if production changed it - and sublst_deep_omission_drop.py verbatim, into ``ops_dir`` (the merge imports the drop
+    from its own directory)."""
+    os.makedirs(ops_dir, exist_ok=True)
+    src = open(os.path.join(OPS, 'sublst_cumulative.py')).read()
+    line = "T = '/data07/gh/phase3/transients'; SL = '/lustre/gh/main/phase3/sublst'"
+    assert src.count(line) == 1, 'production changed the merge\'s root line: update the fixture rewrite'
+    open(os.path.join(ops_dir, 'sublst_cumulative.py'), 'w').write(src.replace(line, f'T = {tr!r}; SL = {sl!r}'))
+    shutil.copy(os.path.join(OPS, 'sublst_deep_omission_drop.py'), ops_dir)
+
+
+def test_serve_build_merge():
+    """Q review F9: `serve --tier sublst` build with the REAL in-place merge (production's code, its roots pointed at a tiny
+    fixture, run through scripts.run / core.legacy.run - SUBLST_DEEP_OMISSION survives its SUBLST_* clearing): the merge drops
+    exactly the detections the stage predicts, the build's record is registered (class omission_record) and passes its
+    content and per-instant tests, no omitted row is left in the build, the LST runs keep their files. The build is stopped
+    after the merge (build_localizations stubbed)."""
+    import types
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.serve import sublst_build
+    DO, C = _DO(), _cfg()
+    root, rdir, sl, tr, frms = tenmin_world('serve_merge', seed=13)
+    lsts = ['05h', '06h']
+    merge_ready(tr, lsts)
+    ops_dir = os.path.join(root, 'ops')
+    prod_merge_copy(ops_dir, tr, sl)
+    real_run, calls = sublst_build.scripts.run, []
+
+    def run_(name, args=(), **kw):
+        calls.append(name)
+        if name == 'sublst_cumulative':
+            return real_run(name, args, **kw)
+        return types.SimpleNamespace(ok=False, rc=1, tail='stopped by the test', reason='stopped by the test', refused=False)
+    out = os.path.join(root, 'out')
+    U = os.path.join(out, 'sublst', 'Run_SLSTB')
+    plan = types.SimpleNamespace(run_name='Run_SLSTB', lsts=lsts, parity=True, U=U, U_src=U, out=out)
+    run = record.Run('serve', ['test_serve_build_merge'], out, C)
+    os.environ['SUBLST_DEEP_OMISSION'] = '/nonexistent/an_inherited_table.csv'     # cleared by core.legacy.run, then set
+    try:
+        with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.catalog_omission, 'REFUSALS', rdir),
+                   (C.catalog_omission, 'TENMIN_FRAME_RMS', frms), (C.catalog_omission, 'TENMIN_RMS_CACHE_SEED', ''),
+                   (sublst_build.scripts, 'run', run_), (sublst_build.scripts, 'ops_root', lambda: ops_dir),
+                   (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B'))):
+            u = sublst_build.build_stage(run, plan)
+            summ = DO.run_tenmin(lsts, os.path.join(root, 'stage'), seed_dir='')
+    finally:
+        os.environ.pop('SUBLST_DEEP_OMISSION', None)
+    B = sublst_build.build_dir(plan)
+    assert calls == ['sublst_cumulative', 'build_localizations'], calls
+    assert u.status == 'refused' and 'G9 localizations failed' in u.reason, (u.status, u.reason)
+    table = [o['path'] for o in u.outputs if o['class'] == 'omission_decisions'][0]
+    assert filecmp.cmp(table, os.path.join(B, 'deep_omission.csv'), shallow=False), 'the merge copied another table'
+    K = lambda r: (r['lst'], r['stokes'], r['view'], r['source_id'], r['band'], r['cand_id'], r['night'], r['why'])
+    merged = collections.Counter(K(r) for r in _rows(os.path.join(B, 'deep_omission_dropped.csv')) if r['kind'] == 'detection')
+    stage = collections.Counter(K(r) for r in _rows(os.path.join(root, 'stage', 'deep_omission_dropped.csv')))
+    assert merged == stage and sum(stage.values()) == summ['omitted'] > 0, (sum(merged.values()), sum(stage.values()))
+    outs = {o['class']: o for o in u.outputs}
+    assert outs['omission_record']['path'] == os.path.join(B, 'deep_omission_dropped.csv')
+    names = {t['name'] for t in u.tests}
+    assert {'omission_record.removals_follow_decisions', 'omission_record.per_instant'} <= names, names
+    assert all(t['passed'] for t in u.tests), [t for t in u.tests if not t['passed']]
+    OM4 = {k[:4] for k in DO.omitted_keys(_rows(table))}
+    left = [r['cand_id'] for r in _rows(os.path.join(B, 'master_catalog.csv'))
+            if (lambda m: m and (m.group(2), m.group(4), m.group(3), r['stokes']) in OM4)(DO.TENMIN_CID.match(r['cand_id']))]
+    assert not left, f'omitted rows left in the build master_catalog: {left[:3]}'
+    gone, kept_in_run = 0, 0
+    for S in ('I', 'V'):
+        for page in os.listdir(os.path.join(tr, 'Run_SLST05B', 'candidates', S)) + os.listdir(os.path.join(tr, 'Run_SLST06B', 'candidates', S)):
+            for L in lsts:
+                d = os.path.join(tr, f'Run_SLST{L[:2]}B', 'candidates', S, page)
+                for fn in (os.listdir(d) if os.path.isdir(d) else []):
+                    parts = fn[:-4].split('_')          # rank0001 <lst> <night> bin<k> <band>
+                    if (parts[1], parts[4], parts[2], S) in OM4:
+                        kept_in_run += 1
+                        gone += not os.path.exists(os.path.join(B, 'candidates', S, page, fn))
+    assert kept_in_run and gone == kept_in_run, (gone, kept_in_run)    # every omitted block left the build, none left a run
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 
 def test_gates():
@@ -662,6 +807,236 @@ def test_content():
     mutated(rec, rr0, other_tier, PI.check_omission, 'O1')
 
 
+def test_kept_product():
+    """Q review F2: the kept product's content test (class omission_kept, K1-K4) refuses what the cumulative step must never
+    apply: a kept detection of an OMIT key, a kept detection the record omits, a per-tier row missing or added against the
+    record, a re-pointed source whose new best is not a kept detection of its identity, kept detections off the summary."""
+    DO = _DO()
+    from exopipe.phase3.lib.catalog import tests_deep_omission as TD
+    root, rdir, proto, runs = snapshot_world('kept', seed=7)
+    out = os.path.join(root, 'port')
+    summ = DO.run_snapshot(runs, out, rdir=rdir, proto=proto)
+    kp = os.path.join(out, 'deep_omission_kept.csv')
+    ok, val, det = TD.check_kept(kp)
+    assert ok and val == summ['kept'], det
+    rows = _rows(kp)
+    kinds = collections.Counter(r['kind'] for r in rows)
+    assert set(kinds) == set(DO.KEPT_KINDS), kinds                   # every kind present in the synthetic world
+    rec = _rows(os.path.join(out, 'deep_omission_dropped.csv'))
+    OM = DO.omitted_keys(_rows(os.path.join(out, 'deep_omission.csv')))
+
+    def mutated(fix, want):
+        d = os.path.join(root, 'mut_kept')
+        shutil.rmtree(d, ignore_errors=True)
+        shutil.copytree(out, d)
+        rr = [dict(r) for r in rows]
+        fix(rr)
+        _wcsv(os.path.join(d, 'deep_omission_kept.csv'), DO.KEPT_COLS, rr)
+        ok_, _v, det_ = TD.check_kept(os.path.join(d, 'deep_omission_kept.csv'))
+        assert not ok_ and want in det_, (want, det_)
+
+    def omit_key(rr):                                   # a kept detection moved onto an OMIT key
+        k = sorted(OM)[0]
+        r = next(r for r in rr if r['kind'] == 'detection kept')
+        r.update(lst=k[0], band=k[1], night=k[2], stokes=k[3], tier=k[4])
+    mutated(omit_key, 'is an OMIT key')
+    det0 = next(r for r in rec if r['kind'] == 'detection')
+
+    def resurrect(rr):                                  # an omitted detection listed as kept (its own key unchanged)
+        r = next(r for r in rr if r['kind'] == 'detection kept' and r['batch'] == det0['batch'])
+        r.update(identity=det0['identity'], cand_id=det0['cand_id'])
+    mutated(resurrect, 'the record omits it')
+    mutated(lambda rr: rr.remove(next(r for r in rr if r['kind'] == 'member row dropped')), 'member row dropped: 0 rows not in')
+    mutated(lambda rr: rr.append(dict(next(r for r in rr if r['kind'] == 'panel dropped'))), 'panel dropped: 1 rows not in')
+
+    def bad_best(rr):                                   # a re-pointed source pointing at a detection its identity does not keep
+        r = next(r for r in rr if r['kind'] == 'source re-pointed')
+        f = json.loads(r['fields'])
+        f['best_cand_id'] = r['cand_id'] = r['cand_id'][:-1] + ('1' if r['cand_id'][-1] != '1' else '2')
+        r['fields'] = json.dumps(f, sort_keys=True)
+    mutated(bad_best, 'is no kept detection of its identity')
+    mutated(lambda rr: rr.remove(next(r for r in rr if r['kind'] == 'detection kept')), 'K2 ')
+    mutated(lambda rr: next(r for r in rr if r['kind'] == 'source dropped').update(catalog='source_catalogs_I_10s/x_source_members.csv'),
+            'is not its tier')
+
+
+def test_pending_values():
+    """Q review F3 / F5. The rate floor and the ABSENT propagation to band groups are production's values, pending Gregg:
+    neither RULED nor PROTECTED, their alternatives work through the config (also into a production root - no ruling needed)
+    and change the decisions as stated (floor 0 = the card's median + 5 x 1.4826 MAD; ('OMIT',) = no ABSENT member). G6's
+    'refuse' is the refactor's PROPOSED value: not ruled, production's 'production' in the parity file, the code sites marked
+    WAVE2 G6."""
+    from exopipe.phase3.config import CFG
+    DO = _DO()
+    c = CFG.catalog_omission
+    for k in ('RATE_FLOOR_PER_NIGHT', 'WIDEBAND_MEMBER_VERDICTS', 'ABSENT_WITH_SERVED'):
+        assert not CFG.ruled(f'catalog_omission.{k}') and not CFG.protected(f'catalog_omission.{k}'), k
+    for k in ('PROPAGATE', 'SIGMA', 'WIDEBAND_EXCEPT'):
+        assert CFG.ruled(f'catalog_omission.{k}') and CFG.protected(f'catalog_omission.{k}'), k
+    assert (c.RATE_FLOOR_PER_NIGHT, tuple(c.WIDEBAND_MEMBER_VERDICTS), c.ABSENT_WITH_SERVED) == (1.0, ('OMIT', 'ABSENT'), 'refuse')
+    src_s = open(os.path.join(OPS, 'snapshot_deep_omission.py')).read()
+    src_t = open(os.path.join(OPS, 'sublst_deep_omission.py')).read()
+    assert "r['verdict'] in ('OMIT', 'ABSENT')" in src_s and "x['verdict'] in ('OMIT', 'ABSENT')" in src_t   # production's values
+    root, rdir, proto, runs = snapshot_world('pending', seed=7)
+    DO.run_snapshot(runs, os.path.join(root, 'base'), rdir=rdir, proto=proto)
+    try:
+        CFG.authorize(out=DO.default_out(type('A', (), {'tier': 'sublst'})()))   # a production root: still allowed (not ruled)
+        CFG.set('catalog_omission.RATE_FLOOR_PER_NIGHT', '0')
+        CFG.set('catalog_omission.WIDEBAND_MEMBER_VERDICTS', "('OMIT',)")
+        assert [o[4] for o in CFG.overrides] == [None, None] and not CFG.ruled_overrides(), CFG.overrides
+        DO.run_snapshot(runs, os.path.join(root, 'alt'), rdir=rdir, proto=proto)
+        from exopipe.phase3.core import validate
+        for cls, f in (('omission_decisions', 'deep_omission.csv'), ('omission_record', 'deep_omission_dropped.csv'),
+                       ('omission_kept', 'deep_omission_kept.csv')):
+            for t in validate.run(cls, os.path.join(root, 'alt', f), tier='snapshot'):
+                assert t['passed'], t
+        for bad_k, bad_v in (('WIDEBAND_MEMBER_VERDICTS', "('ABSENT',)"), ('RATE_FLOOR_PER_NIGHT', '-1.0')):
+            CFG.set(f'catalog_omission.{bad_k}', bad_v)
+            try:
+                DO.member_verdicts() if bad_k == 'WIDEBAND_MEMBER_VERDICTS' else DO.rate_floor()
+                raise AssertionError(f'{bad_k}={bad_v} accepted')
+            except ValueError as e:
+                assert bad_k in str(e), e
+    finally:
+        CFG.reset()
+        CFG.authorize()
+    B, A = (_dec_by_key(_rows(os.path.join(root, x, 'deep_omission.csv'))) for x in ('base', 'alt'))
+    member = lambda D, k: [r for r in D[k] if r['gates'].startswith('member ')]
+    g8 = ('05h', 'Green', NIGHTS[7], 'I', '10s')
+    assert member(B, g8) and '55MHz ABSENT' in member(B, g8)[0]['gates'] and not member(A, g8)    # ABSENT no longer propagates
+    assert all('ABSENT' not in r['gates'] for k in A for r in member(A, k)) and any(member(A, k) for k in A)   # OMIT still does
+    lower = strict = 0
+    for k in B:
+        for rb, ra in zip([r for r in B[k] if not r['gates'].startswith('member ')], [r for r in A[k] if not r['gates'].startswith('member ')]):
+            fb, fa = DO_float(rb['rate_threshold']), DO_float(ra['rate_threshold'])
+            if fb is not None and fa is not None:
+                assert fa <= fb * (1 + 1e-3), (k, rb['rate_threshold'], ra['rate_threshold'])     # the floor only raises it
+                lower += 1
+                strict += fa < fb * (1 - 1e-3)
+    assert lower and strict, (lower, strict)
+    # F5: production's G6 value in the parity file, the code sites marked
+    par = open(os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')).read().splitlines()
+    i = par.index("catalog_omission.ABSENT_WITH_SERVED = 'production'")
+    assert any(ln.startswith('# WAVE2 G6') for ln in par[max(0, i - 3):i]), par[max(0, i - 3):i + 1]
+    do_src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'catalog', 'deep_omission.py')).read()
+    sb_src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'serve', 'sublst_build.py')).read()
+    assert "if bad and mode == 'refuse':    # WAVE2 G6" in do_src and '# WAVE2 G6' in sb_src
+
+
+def DO_float(x):
+    try:
+        v = float(x)
+        return v if v == v else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _pin_world():
+    """A fleet (fleet()), a refusal record with two-gate keys, and one served batch run whose fixed identities hold Green I
+    10-s detections of 05h night 1 on two frames: frame A of 46 + 55 MHz, frame B of 55 MHz only (wideband_members_I.csv of
+    the cell, by ts)."""
+    root = _fresh('pins')
+    rng = random.Random(23)
+    proto = fleet(os.path.join(root, 'fleet'), rng)
+    rdir = os.path.join(root, 'refusals')
+    os.makedirs(rdir)
+    files = {'05h_46MHz_searchtier': [['05h', '46MHz', NIGHTS[0], 'I', '9.1', '4.5', TAG]],      # 10-s: OMIT (the noisy night)
+             '05h_27MHz_searchtier': [['05h', '27MHz', NIGHTS[1], 'I', '2895.8', '166.5', TAG]],  # F4: two gates of one key
+             '05h_27MHz_beam': [['05h', '27MHz', NIGHTS[1], '3.96', '1.5', TAG]],
+             '05h_23MHz_sanity': [['05h', '23MHz', NIGHTS[2], '40.1', '3.3', TAG]],               # F4: 'beam;sanity'
+             '05h_23MHz_beam': [['05h', '23MHz', NIGHTS[2], '3.73', '1.5', TAG]],
+             '06h_27MHz_searchtier': [['06h', '27MHz', NIGHTS[1], 'I', '5.5', '2.0', TAG]]}       # F10: two nights only
+    for name, rows in files.items():
+        with open(os.path.join(rdir, name + '_excluded.csv'), 'w', newline='') as f:
+            csv.writer(f).writerows(rows)
+    ts = lambda k: detection('05h', NIGHTS[0], 'Green', 'I', '10s', k, 9.0, random.Random(0))['ts']
+    _wcsv(os.path.join(proto, f'05h_{NIGHTS[0]}', 'wideband_members_I.csv'), ['group', 'ts', 'subband'],
+          [dict(group='Green', ts=ts(1), subband='46MHz'), dict(group='Green', ts=ts(1), subband='55MHz'),
+           dict(group='Green', ts=ts(2), subband='55MHz')])
+    fixed = [('J0000+0101', [('05h', NIGHTS[0], 'Green', 'I', '10s', 1, 11.0)]),          # frame A (46 + 55 MHz)
+             ('J0000+0102', [('05h', NIGHTS[0], 'Green', 'I', '10s', 2, 12.0)]),          # frame B (55 MHz only)
+             ('J0000+0103', [('06h', NIGHTS[0], '46MHz', 'I', '10s', 3, 8.0)])]           # 06h served: its LST is decided
+    runs = [batch_run(os.path.join(root, 'review'), 'Run_SNAPP1A_20261101', [('05h', n) for n in NIGHTS[1:4]], rng, fixed)]
+    return root, rdir, proto, runs, ts
+
+
+def test_production_bugs_pinned():
+    """Production's bugs the port carries for parity (Q review F1, F4, F10), pinned AS THEY ARE TODAY - production's own code
+    agrees on every pinned case; when production's owner fixes them and the port follows, these asserts change on purpose."""
+    DO = _DO()
+    SDO, PDO, PDROP = _prod()
+    root, rdir, proto, runs, ts = _pin_world()
+    out = os.path.join(root, 'port')
+    DO.run_snapshot(runs, out, rdir=rdir, proto=proto)
+    DEC, REC, _n, _k = prod_snapshot(runs, rdir, proto, root)
+    assert filecmp.cmp(os.path.join(out, 'deep_omission.csv'), os.path.join(root, 'prod_deep_omission.csv'), shallow=False)
+    D = _dec_by_key(_rows(os.path.join(out, 'deep_omission.csv')))
+    rec = _rows(os.path.join(out, 'deep_omission_dropped.csv'))
+    # F1 (10-s / 1-minute): 46 MHz night 1 is OMIT at 10 s; the Green detection of frame B (55 MHz only) is omitted all the same
+    assert D[('05h', '46MHz', NIGHTS[0], 'I', '10s')][0]['verdict'] == 'OMIT'
+    m = [r for r in D[('05h', 'Green', NIGHTS[0], 'I', '10s')] if r['gates'].startswith('member ')]
+    assert m and m[0]['gates'] == 'member 46MHz OMIT', m
+    om = {(r['identity'], r['cand_id']) for r in rec if r['kind'] == 'detection'}
+    frame_b = f'05h_{NIGHTS[0]}_Green_I_10s_{ts(2)}'
+    assert ('J0000+0102', frame_b) in om and ('J0000+0101', f'05h_{NIGHTS[0]}_Green_I_10s_{ts(1)}') in om, sorted(om)[:4]
+    assert ('J0000+0102', frame_b) in {(r['identity'], r['cand_id']) for r in REC if r['kind'] == 'detection'}   # production too
+    # F4: deep_value / deep_threshold follow the record's LISTING order, the gates are sorted; the meaning, the first sorted gate
+    r27 = [r for r in D[('05h', '27MHz', NIGHTS[1], 'I', '10s')] if not r['gates'].startswith('member ')][0]
+    order = [os.path.basename(f) for f in DO.refusal_files(rdir, '05h') if '_27MHz_' in f]
+    want_v = ';'.join({'05h_27MHz_searchtier_excluded.csv': '2895.8', '05h_27MHz_beam_excluded.csv': '3.96'}[f] for f in order)
+    assert r27['gates'] == 'beam;searchtier' and r27['deep_value'] == want_v, (r27['gates'], r27['deep_value'], order)
+    for listing, want in ((lambda d, l: sorted(glob_(d, l), reverse=True), ('2895.8;3.96', '166.5;1.5')),   # misaligned
+                          (lambda d, l: sorted(glob_(d, l)), ('3.96;2895.8', '1.5;166.5'))):              # aligned by chance
+        with Patch((DO, 'refusal_files', listing)):
+            g = DO.load_refusals(rdir, '05h')[('27MHz', NIGHTS[1], 'I')]
+            b = DO._base('05h', '27MHz', NIGHTS[1], 'I', g)
+        assert (b['gates'], b['deep_value'], b['deep_threshold']) == ('beam;searchtier',) + want, b
+    r23 = [r for r in D[('05h', '23MHz', NIGHTS[2], 'I', '10s')] if not r['gates'].startswith('member ')][0]
+    assert r23['gates'] == 'beam;sanity' and r23['deep_threshold_meaning'] == DO.GATE_MEANING, r23   # sanity's median, read
+    # F10: fewer than 3 nights - no threshold, never passed, and the reason still 'tier rms above threshold'      # as a threshold
+    r06 = [r for r in D[('06h', '27MHz', NIGHTS[1], 'I', '10s')] if not r['gates'].startswith('member ')][0]
+    assert (r06['verdict'], r06['tier_rms_threshold'], r06['rms_pass'], r06['reason']) == ('OMIT', 'nan', '0', DO.RMS_ABOVE), r06
+    # F1 (10-minute): ONE window of the night whose WBMEMB holds the omitted subband omits the group's whole night - the Green
+    # detection of a window stacked without 46 MHz is dropped too (production's merge drop agrees)
+    from astropy.io import fits
+    import numpy as np
+    root2, rdir2, sl, tr, frms = tenmin_world('pins_tenmin', seed=11)
+    w1 = os.path.join(sl, 'tenmin_root_x2', '05h_Green', 'subtracted', f'{NIGHTS[0]}T01_I_sub_Green.fits')
+    h = fits.Header()
+    h['WBMEMB'] = '55MHz'
+    fits.writeto(w1, np.zeros((2, 2), 'float32'), h, overwrite=True)
+    st = os.stat(w1)
+    fr = _rows(frms)
+    for r in fr:
+        if r['path'] == w1:
+            r.update(size=st.st_size, mtime=int(st.st_mtime))
+    _wcsv(frms, ['path', 'size', 'mtime', 'rms'], fr)
+    R = os.path.join(tr, 'Run_SLST05B')
+    cid = f'I1_05h_{NIGHTS[0]}T01_Green_9001'
+    mc = _rows(os.path.join(R, 'master_catalog.csv'))
+    _wcsv(os.path.join(R, 'master_catalog.csv'), ['cand_id', 'band', 'date', 'stokes'],
+          mc + [dict(cand_id=cid, band='Green', date=f'{NIGHTS[0]}T01', stokes='I')])
+    mp = os.path.join(R, 'source_catalogs_I_wb', 'Green_source_members.csv')
+    _wcsv(mp, ['source_id', 'cand_id', 'band', 'det_snr'], _rows(mp) + [dict(source_id='J9001_Green', cand_id=cid, band='Green',
+                                                                            det_snr='9')])
+    C = _cfg()
+    with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr)):
+        DO.run_tenmin(['05h'], os.path.join(root2, 'port'), rdir=rdir2, seed_dir='', frame_rms=frms)
+    T = _dec_by_key([dict(r, tier='10min') for r in _rows(os.path.join(root2, 'port', 'deep_omission.csv'))])
+    g = [r for r in T[('05h', 'Green', NIGHTS[0], 'I', '10min')] if r['gates'].startswith('member ')]
+    assert g and '46MHz OMIT' in g[0]['gates'], g
+    assert cid in {r['cand_id'] for r in _rows(os.path.join(root2, 'port', 'deep_omission_dropped.csv'))}
+    PDROP.OM.clear()
+    PDROP.WHY.clear()
+    PDROP.load(os.path.join(root2, 'port', 'deep_omission.csv'))
+    assert PDROP.omitted(cid, 'I'), 'production\'s merge drop keeps it'
+
+
+def glob_(rdir, lst):
+    import glob as _g
+    return _g.glob(os.path.join(rdir, '%s_*_excluded.csv' % lst))
+
+
 def test_stage():
     """`exopipe3 catalog --tier snapshot|sublst --stages omit` through the step: records, classes, refusal on a missing record."""
     import argparse
@@ -682,19 +1057,71 @@ def test_stage():
         a = p.parse_args(argv)
         assert DO.wants(a)
         out = _fresh('stage_out')
+        CFG.authorize(out=out)                  # as the CLI: --omit-refusals overrides a RULED key into a non-production --out
         run = record.Run('catalog', argv, out, CFG)
-        with Patch((CFG.paths, 'SNAPSHOT_FLEET_OUT', proto)):
-            step.run(a, run)
+        try:
+            with Patch((CFG.paths, 'SNAPSHOT_FLEET_OUT', proto)):
+                step.run(a, run)
+            hdr = run.header()
+        finally:
+            CFG.reset()
+            CFG.authorize()
         st = [u.status for u in run.units]
         assert st == [want], (st, [u.reason for u in run.units])
         recp = os.path.join(out, '_records', 'catalog', 'Run_SNAPOMIT_T1A_T1B.omit.json')
         r = json.load(open(recp))
         assert r['status'] == want
+        ro = [o for o in hdr['ruled_overrides'] if o['key'] == 'catalog_omission.REFUSALS']
+        assert ro and ro[0]['authority'].startswith('non-production out:'), hdr['ruled_overrides']   # Q review F8: recorded
         if want == 'done':
-            assert {o['class'] for o in r['outputs']} == {'omission_decisions', 'omission_record'}
+            assert {o['class'] for o in r['outputs']} == {'omission_decisions', 'omission_record', 'omission_kept'}
             assert all(t['passed'] for t in r['tests']) and any(t['name'] == 'omission_record.per_instant' for t in r['tests'])
+            assert any(t['name'].startswith('omission_kept.') for t in r['tests'])
             assert any(p_.startswith(rdir) for p_ in r['inputs']), 'the refusal files are inputs'
     assert DO.wants(p.parse_args(['--tier', 'sublst', '--stages', 'omit'])) and not DO.wants(p.parse_args(['--tier', 'sublst']))
+    assert CFG.catalog_omission.REFUSALS == DO._cfg().catalog_omission.REFUSALS and not CFG.overrides
+
+
+def test_refusals_override():
+    """Q review F8: --omit-refusals is an override of the RULED catalog_omission.REFUSALS through the config - refused into a
+    production root without --ruling-for (a run-level refusal, the config unchanged), allowed with --ruling-for (authority
+    'ruling:<ID>') or into a non-production --out (authority 'non-production out:'), recorded as an override of a ruled key."""
+    import argparse
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core.record import Refusal
+    DO = _DO()
+    assert CFG.ruled('catalog_omission.REFUSALS') and not CFG.protected('catalog_omission.REFUSALS')
+    default = CFG.catalog_omission.REFUSALS
+    other = _fresh('override_refusals')
+    a = argparse.Namespace(omit_refusals=other)
+    prod_out = DO.default_out(argparse.Namespace(tier='sublst'))         # <TRANSIENTS_ROOT>/deep_omission: never written here
+    assert CFG.production_root_of(prod_out), prod_out
+    lid = 'R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE'
+    try:
+        CFG.authorize(out=prod_out)
+        try:
+            DO.refusals_arg(a)
+            raise AssertionError('--omit-refusals into a production root without --ruling-for was not refused')
+        except Refusal as e:
+            assert '--omit-refusals' in str(e) and 'carries a ruling' in str(e), str(e)
+        assert CFG.catalog_omission.REFUSALS == default and not CFG.overrides
+        assert DO.refusals_arg(argparse.Namespace(omit_refusals=None)) == default      # no flag: the ruled record
+        CFG.authorize(rulings=[f'catalog_omission.REFUSALS={lid}'], out=prod_out)
+        assert DO.refusals_arg(a) == os.path.abspath(other) == CFG.catalog_omission.REFUSALS
+        assert CFG.ruled_overrides() == [{'key': 'catalog_omission.REFUSALS', 'ruled_by': list(CFG.ruled('catalog_omission.REFUSALS')),
+                                          'authority': f'ruling:{lid}'}], CFG.ruled_overrides()
+        CFG.reset()
+        CFG.authorize(out=os.path.join(other, 'out'))
+        assert DO.refusals_arg(a) == os.path.abspath(other)
+        assert CFG.ruled_overrides()[0]['authority'].startswith('non-production out:'), CFG.ruled_overrides()
+    finally:
+        CFG.reset()
+        CFG.authorize()
+    assert CFG.catalog_omission.REFUSALS == default
+
+
+class Skip(Exception):
+    """A test that cannot run on this host (its read-only production inputs are absent): reported as SKIP, never PASS."""
 
 
 def test_real_one_lst():
@@ -703,8 +1130,7 @@ def test_real_one_lst():
     SDO, PDO, _d = _prod()
     run = '/data07/gh/phase3/snapshot_search/review/Run_SNAPB6H_20261023'
     if not (os.path.isdir(run) and os.path.isdir(PDO.REFUSALS)):
-        print('    SKIP: no served B6H or no refusal record on this host')
-        return
+        raise Skip('no served B6H or no refusal record on this host (lwacalim07 only)')
     reader = DO.Reader()
     pending = DO.served_identities([run], reader)
     served, n = DO.served_counts(pending)
@@ -717,13 +1143,15 @@ def test_real_one_lst():
     print(f'    07h on B6H ({n} served detections): {len(port)} decisions identical to production ({time.time() - t0:.0f} s)')
 
 
-TESTS = [test_drift, test_snapshot, test_tenmin, test_serve_build, test_gates, test_content, test_stage, test_real_one_lst]
+TESTS = [test_drift, test_snapshot, test_tenmin, test_serve_build, test_serve_build_merge, test_gates, test_content,
+         test_kept_product, test_stage, test_refusals_override, test_pending_values, test_production_bugs_pinned,
+         test_real_one_lst]
 
 
 def main(argv):
     want = set(argv[1:])
     t0 = time.time()
-    failed = []
+    failed, skipped = [], []
     os.makedirs(SCRATCH, exist_ok=True)
     try:
         for t in TESTS:
@@ -733,6 +1161,9 @@ def main(argv):
             try:
                 t()
                 print(f'PASS {t.__name__} ({time.time() - t1:.1f} s)')
+            except Skip as e:
+                skipped.append(t.__name__)
+                print(f'SKIP {t.__name__}: {e}')
             except Exception:
                 import traceback
                 failed.append(t.__name__)
@@ -740,7 +1171,9 @@ def main(argv):
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)
     n = len([t for t in TESTS if not want or t.__name__ in want])
-    print(f'{len(failed)} failed: {failed}' if failed else f'{n} of {n} passed ({time.time() - t0:.1f} s)')
+    passed = n - len(failed) - len(skipped)
+    print((f'{len(failed)} failed: {failed}; ' if failed else '') + f'{passed} of {n} passed'
+          + (f', {len(skipped)} skipped: {skipped}' if skipped else '') + f' ({time.time() - t0:.1f} s)')
     return 1 if failed else 0
 
 

@@ -1586,7 +1586,7 @@ def test_item7_parity_file_keys():
     (where a count-only site's ruled default IS production's 'fallback') each line differs from the config default - a line
     equal to the default would mean the default is not the ruled value, or the line is dead; and each such key carries the
     2026-10-13 ruling, or one of Gregg's later rulings listed in LATER, in RULED unless it is a PROPOSED value awaiting Gregg
-    (listed here; none today)."""
+    (listed here)."""
     import ast
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import fallback
@@ -1599,6 +1599,9 @@ def test_item7_parity_file_keys():
              'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4'}             # the 18 MHz carve-out of the search's master check
     PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
                                                              # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
+    PROPOSED |= {'catalog_omission.ABSENT_WITH_SERVED'}    # 2026-11-03 (Q review F5): G6 'refuse' proposed, pending Gregg; production's
+                                                             # 'production' in the parity file (DECISIONS_PENDING FYI named in
+                                                             # refactor_reviews_20261103/Q_deepomit_fixes.md)
     path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     bad, n = [], 0
     for ln in open(path):

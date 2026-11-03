@@ -6,18 +6,29 @@ Classes:
                       rms_pass and rate_pass, each recomputed from the row's numbers (4 significant digits as written; a nan
                       threshold never passes the noise test and always passes the rate test); the reason is the verdict's; a
                       wideband-member row is OMIT, of a band group, and every member it names is a decision row of the same
-                      LST, night, Stokes and tier with that verdict, a member of the group and not WIDEBAND_EXCEPT; one row per
-                      (key, tier) and kind.
+                      LST, night, Stokes and tier with that verdict (one of WIDEBAND_MEMBER_VERDICTS), a member of the group
+                      and not WIDEBAND_EXCEPT; one row per (key, tier) and kind.
   omission_record     deep_omission_dropped.csv (with the decisions beside, or ctx decisions=): production's columns for the
                       tier; every removed detection, member row and panel has an OMIT key and the 'why' of exactly that key's
                       decisions; every dropped identity (10-s / 1-minute) has a recorded detection; the summary's page line and
                       json count the record's detections. The per-instant test of this class is in tests_per_instant.py.
+  omission_kept       deep_omission_kept.csv (10-s / 1-minute; the record, decisions and summary beside, or ctx decisions=):
+                      the drop the snapshot tier's cumulative step applies (Q review F2). K1 the writer's columns and kinds,
+                      every row of a served run of the summary (its batch tag); K2 every 'detection kept' row has no OMIT key, is
+                      no detection the record omits, of no identity it drops; their number = the summary's kept = served -
+                      omitted, their identities = identities_kept, kept + dropped identities = identities; K3 the per-tier rows
+                      are the record's one to one ('source dropped' / 'source re-pointed' = 'source partial' / 'member row
+                      dropped' = 'member row' / 'panel dropped' = 'panel'), each on its tier's catalogue file; K4 a re-pointed
+                      source's fields name its new best, a kept detection of its own identity, with production's note; a row
+                      with a key has an OMIT key, one without names its identity's drop. Streamed (two passes over the file).
 Every test reads content and returns (passed, value, detail).
 """
+import collections
 import csv
 import json
 import math
 import os
+import re
 
 from exopipe.phase3.core.validate import content_test
 
@@ -120,8 +131,9 @@ def check_decisions(path, tier=None):
             for word in m.split(', '):
                 sb, _, mv = word.rpartition(' ')
                 src = by_key.get((r['lst'], sb, r['night'], r['stokes'], r.get('tier') if tier == 'snapshot' else '10min'))
-                if sb not in G.get(r['band'], ()) or sb in c.WIDEBAND_EXCEPT or mv not in ('OMIT', 'ABSENT'):
-                    msgs.append(f'{where}: member {word!r} is not a non-excepted member of {r["band"]} omitted or absent')
+                if sb not in G.get(r['band'], ()) or sb in c.WIDEBAND_EXCEPT or mv not in DO.member_verdicts():
+                    msgs.append(f'{where}: member {word!r} is not a non-excepted member of {r["band"]} with a verdict of '
+                                f'catalog_omission.WIDEBAND_MEMBER_VERDICTS {DO.member_verdicts()}')
                 elif src is None or src['verdict'] != mv:
                     msgs.append(f'{where}: member {word!r} has no decision row of its own night with that verdict '
                                 f'({"none" if src is None else src["verdict"]})')
@@ -226,3 +238,121 @@ def check_record(path, tier=None, decisions=None):
 def removals_follow_decisions(path, tier=None, decisions=None, **ctx):
     """deep_omission_dropped.csv: every removal traced to its own OMIT key and decision text; counts."""
     return check_record(path, tier if tier in ('snapshot', 'sublst') else None, decisions)
+
+
+def check_kept(path, decisions=None):
+    """(passed, value, detail) of the 10-s / 1-minute kept product (module docstring, K1-K4)."""
+    DO = _DO()
+    d = os.path.dirname(os.path.abspath(path))
+    dp = decisions or os.path.join(d, 'deep_omission.csv')
+    rp, sp = os.path.join(d, 'deep_omission_dropped.csv'), os.path.join(d, 'deep_omission_summary.json')
+    for p in (dp, rp, sp):
+        if not os.path.exists(p):
+            return False, None, f'no {p} beside: the kept product cannot be traced to its decisions, record and summary'
+    with open(path, newline='') as f:
+        cols = next(csv.reader(f), [])
+    if cols != DO.KEPT_COLS:
+        return False, None, f'columns {cols} are not the kept product\'s {DO.KEPT_COLS}'
+    OM = DO.omitted_keys(_rows(dp)[1])
+    _rc, rec = _rows(rp)
+    summ = json.load(open(sp))
+    runs = {os.path.abspath(r) for r in summ.get('runs') or []}
+    om_det = {(r['batch'], r['identity'], r['cand_id']) for r in rec if r['kind'] == 'detection'}
+    dropped_ids = {(r['batch'], r['identity']) for r in rec if r['kind'] == 'identity dropped'}
+    cat_rx = {'sources': re.compile(r'^source_catalogs_([IV])_(10s|1min)/.+_sources_survivors\.csv$'),
+              'members': re.compile(r'^source_catalogs_([IV])_(10s|1min)/.+_source_members\.csv$')}
+    msgs, n = [], collections.Counter()
+    # pass 1: the per-tier rows (few), checked against the record; the re-pointed sources' new bests to find in pass 2
+    per_tier = collections.defaultdict(collections.Counter)
+    targets = {}
+    with open(path, newline='') as f:
+        for i, r in enumerate(csv.DictReader(f)):
+            kd = r['kind']
+            n[kd] += 1
+            where = f'row {i + 2} {kd} {r.get("source_id") or r.get("cand_id") or ""}'
+            if kd not in DO.KEPT_KINDS:
+                msgs.append(f'K1 {where}: kind {kd!r} is not one of {DO.KEPT_KINDS}')
+                continue
+            if r['run'] not in runs or DO.batch_tag(r['run']) != r['batch']:
+                msgs.append(f'K1 {where}: run {r["run"]} / batch {r["batch"]} is not a served run of the summary')
+            if kd == 'detection kept':
+                continue
+            if kd in ('source dropped', 'source re-pointed', 'member row dropped'):
+                m = cat_rx['members' if kd == 'member row dropped' else 'sources'].match(r['catalog'])
+                if not m or (m.group(1), m.group(2)) != (r['stokes'], r['tier']):
+                    msgs.append(f'K3 {where}: catalogue {r["catalog"]!r} is not its tier\'s ({r["stokes"]} {r["tier"]})')
+            key = (r['lst'], r['band'], r['night'], r['stokes'], r['tier']) if r['lst'] else None
+            if kd in ('member row dropped', 'panel dropped'):
+                if key is not None and key not in OM:
+                    msgs.append(f'K4 {where}: its key {key} is not an OMIT key')
+                elif key is None and not (r['note'] == 'identity left with no detection'
+                                          and (r['batch'], r['identity']) in dropped_ids):
+                    msgs.append(f'K4 {where}: neither an OMIT key nor its dropped identity')
+            if kd == 'source dropped':
+                ok = ((r['batch'], r['identity']) in dropped_ids if r['note'] == 'identity left with no detection'
+                      else r['note'] == 'every detection omitted' and (r['batch'], r['identity']) not in dropped_ids)
+                if not ok:
+                    msgs.append(f'K4 {where}: note {r["note"]!r} does not follow its identity\'s drop')
+            if kd == 'source re-pointed':
+                try:
+                    fl = json.loads(r['fields'])
+                except ValueError:
+                    fl = {}
+                if (fl.get('best_cand_id'), fl.get('best_snr'), fl.get('deep_omission')) != (r['cand_id'], r['snr'],
+                                                                                           DO.SNAPSHOT_PARTIAL_NOTE):
+                    msgs.append(f'K4 {where}: fields {r["fields"][:120]!r} do not name its new best {r["cand_id"]}')
+                targets[(r['batch'], r['identity'], r['cand_id'])] = where
+            src = r['source_id']
+            kk = {'source dropped': (r['batch'], r['identity'], src, r['stokes'], r['tier'], r['note']),
+                  'source re-pointed': (r['batch'], r['identity'], src, r['stokes'], r['tier'], r['note']),
+                  'member row dropped': (r['batch'], src, r['cand_id'], r['stokes'], r['tier']),
+                  'panel dropped': (r['batch'], src, r['stokes'], r['tier'], r['note'])}[kd]
+            per_tier[kd][kk] += 1
+    want = {'source dropped': ('source dropped', lambda x: (x['batch'], x['identity'], x['source'], x['stokes'], x['tier'],
+                                                            x['note'])),
+            'source re-pointed': ('source partial', lambda x: (x['batch'], x['identity'], x['source'], x['stokes'], x['tier'],
+                                                               x['note'])),
+            'member row dropped': ('member row', lambda x: (x['batch'], x['source'], x['cand_id'], x['stokes'], x['tier'])),
+            'panel dropped': ('panel', lambda x: (x['batch'], x['source'], x['stokes'], x['tier'], x['note']))}
+    for kd, (rk, kf) in want.items():
+        exp = collections.Counter(kf(x) for x in rec if x['kind'] == rk)
+        if per_tier[kd] != exp:
+            extra, miss = per_tier[kd] - exp, exp - per_tier[kd]
+            msgs.append(f'K3 {kd}: {sum(extra.values())} rows not in the record\'s {rk!r} rows (e.g. {list(extra)[:1]}), '
+                        f'{sum(miss.values())} of the record\'s missing (e.g. {list(miss)[:1]})')
+    # pass 2: the kept detections, streamed
+    kept_ids, found = set(), set()
+    with open(path, newline='') as f:
+        for i, r in enumerate(csv.DictReader(f)):
+            if r['kind'] != 'detection kept':
+                continue
+            idk = (r['batch'], r['identity'])
+            k = (r['lst'], r['band'], r['night'], r['stokes'], r['tier'])
+            if k in OM:
+                msgs.append(f'K2 row {i + 2} detection kept {r["cand_id"]}: its key {k} is an OMIT key')
+            if (r['batch'], r['identity'], r['cand_id']) in om_det:
+                msgs.append(f'K2 row {i + 2} detection kept {r["cand_id"]}: the record omits it')
+            if idk in dropped_ids:
+                msgs.append(f'K2 row {i + 2} detection kept {r["cand_id"]}: its identity {idk} is dropped in the record')
+            kept_ids.add(idk)
+            t = (r['batch'], r['identity'], r['cand_id'])
+            if t in targets:
+                found.add(t)
+    for t, where in targets.items():
+        if t not in found:
+            msgs.append(f'K4 {where}: its new best {t[2]} is no kept detection of its identity {t[0]} {t[1]}')
+    nk = n['detection kept']
+    if not (nk == summ.get('kept') == summ.get('served', -1) - summ.get('omitted', 0)):
+        msgs.append(f'K2 {nk} kept detections != the summary\'s kept {summ.get("kept")} (served {summ.get("served")} - omitted '
+                    f'{summ.get("omitted")})')
+    if len(kept_ids) != summ.get('identities_kept') or len(kept_ids) + len(dropped_ids) != summ.get('identities'):
+        msgs.append(f'K2 identities: {len(kept_ids)} kept + {len(dropped_ids)} dropped vs the summary\'s '
+                    f'{summ.get("identities_kept")} kept of {summ.get("identities")}')
+    return _fail(msgs, nk, f'kept product: ' + ', '.join(f'{k} {v}' for k, v in sorted(n.items()))
+                 + '; traced to the decisions, the record and the summary beside')
+
+
+@content_test('omission_kept')
+def kept_product_follows_the_drop(path, tier=None, decisions=None, **ctx):
+    """deep_omission_kept.csv: what the snapshot tier's cumulative step applies, traced to the decisions, record and summary."""
+    return check_kept(path, decisions)

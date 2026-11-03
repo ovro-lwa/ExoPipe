@@ -22,15 +22,23 @@ sanity_V -> V, the others both) and each tier T of the short tier:
   (2) rate: the night's served detections per admitted row / window <= median + SIGMA x max(1.4826 MAD, RATE_FLOOR_PER_NIGHT /
       the median rows or windows per night) over those nights (fewer than 3 nights: passed);
   KEEP when both pass, else OMIT; no record of the night in the tier: ABSENT (nothing searched, nothing to drop).
-  WIDEBAND: a deep-refused band group night is decided the same way on its own record; a subband OMIT or ABSENT for a night
-  (WIDEBAND_EXCEPT excepted) also omits that night's detections of the band group it is a MEMBER of - 10-s / 1-minute: by the
-  cell's wideband_members_<S>.csv, both tiers; 10-minute: by each wideband window's own WBMEMB card.
+  WIDEBAND: a deep-refused band group night is decided the same way on its own record; a subband whose verdict is one of
+  catalog_omission.WIDEBAND_MEMBER_VERDICTS for a night (production's OMIT or ABSENT - the ABSENT part pending Gregg, as the rate
+  floor RATE_FLOOR_PER_NIGHT; WIDEBAND_EXCEPT excepted) also omits that night's detections of the band group it is a MEMBER of
+  - 10-s / 1-minute: by the cell's wideband_members_<S>.csv, both tiers; 10-minute: by each wideband window's own WBMEMB card.
+  (A deep refusal of the Full band never omits anything here: the short tiers have no Full band, so its decisions are ABSENT,
+  and Full is a member of no group - production's reading, Q review F11.)
 DROP (the data level, before the cumulative catalogs, identities and pages):
-  10-s / 1-minute (the combined view's step 0): every served batch identity's detections (the identity's review_dir
-      detections.csv rows; a detection = cand_id + peak position) whose (LST, subband or band, night, Stokes, tier) is OMIT are
-      omitted; an identity left with none is dropped; per tier, a batch source left with none is dropped, a partial one whose
-      best detection went is re-pointed to its remaining detection of largest |S/N| (its survivor gates NOT re-run - recorded),
-      member rows and panels of omitted keys are dropped.
+  10-s / 1-minute (the combined view's step 0 and its per-tier omission parts): every served batch identity's detections (the
+      identity's review_dir detections.csv rows; a detection = cand_id + peak position) whose (LST, subband or band, night,
+      Stokes, tier) is OMIT are omitted; an identity left with none is dropped; per tier, a batch source left with none is
+      dropped, a partial one whose best detection went is re-pointed to its remaining detection of largest |S/N| (its survivor
+      gates NOT re-run - recorded; see OWED below), member rows and panels of omitted keys are dropped. This stage COMPUTES the
+      drop and WRITES it as the kept product deep_omission_kept.csv; the drop is APPLIED where the combined view is assembled -
+      the snapshot tier's cumulative step, the port of snapshot_combined_view.py (refactor chat 2026-11-03: the combined view is
+      ported as the snapshot tier's cumulative step; not yet written), which reads the kept product instead of recomputing it.
+      Until that step exists the refactor serves no combined view: the 10-s / 1-minute drop is computed, recorded and written,
+      and applied nowhere (Q review F2).
   10-minute: the cumulative merge drops the OMIT rows per LST before concatenation (sublst_deep_omission_drop.py IN PLACE,
       reading the decision table this stage writes; `serve --tier sublst` build passes it as SUBLST_DEEP_OMISSION). This stage
       records the detections that drop removes (the member rows of every LST run whose key is OMIT).
@@ -40,20 +48,26 @@ pages (the served detections the rate condition counts exist only then) and befo
 pages: the combined snapshot view (snapshot_combined_view.py step 0) and the cumulative 10-minute merge (sublst_cumulative.sh).
 Here: `exopipe3 catalog --tier snapshot --stages omit --omit-runs RUN,RUN..` (the served batch runs of the view) and
 `exopipe3 catalog --tier sublst --stages omit --lsts ...` (the LST runs of the cumulative); the 10-minute cumulative build calls
-tenmin_table() before its merge. The combined snapshot view itself is not ported (it consumes apply_snapshot()).
+tenmin_table() before its merge; the snapshot tier's cumulative step (to come) applies deep_omission_kept.csv.
 
 Products (in the stage's output directory --out; production names): deep_omission.csv (class omission_decisions: one row per
 decision, production's columns and formats - byte for byte), deep_omission_dropped.csv (class omission_record: every omitted
 detection and every consequence, with the decision text of its own key, column 'why'; 10-s / 1-minute: the combined view's
-record columns + why; 10-minute: the merge drop's), deep_omission_summary.txt (line 1 = the page line) and .json (counts).
+record columns + why; 10-minute: the merge drop's), deep_omission_summary.txt (line 1 = the page line) and .json (counts);
+10-s / 1-minute also deep_omission_kept.csv (class omission_kept, KEPT_COLS: what the cumulative step applies, every row with
+the served run and the catalogue file it acts on - 'detection kept' (each kept detection of each kept identity: the merge's
+input), 'source dropped', 'source re-pointed' (fields: the survivors row's new values, JSON), 'member row dropped', 'panel
+dropped'; its content test traces every row to the decisions, the record and the summary).
 Records: <out>/_records/catalog/<label>.omit.json - every refusal file read (and the larger groups - noise tables, member lists,
-window tables, served tables - as content digests in meta input_digests).
+window tables, served tables - as content digests in meta input_digests). --omit-refusals DIR is an override of the RULED
+catalog_omission.REFUSALS through the config (as --set: --ruling-for or a non-production --out; recorded), Q review F8.
 
 Gates (refuse, exit 2): G1 the refusal record missing, empty or holding a row not of its file's LST; G2 a served run without its
 catalogue (or a 10-minute LST run without its master_catalog.csv); G3 a served identity without detections, or a detection in
 two identities; G4 a per-tier source or member row of no served identity; G5 kept + omitted != served; G6 served detections in
-an ABSENT key (catalog_omission.ABSENT_WITH_SERVED = 'refuse': the exception test cannot be evaluated - never 'nothing to
-drop'; 'production' keeps them and counts them, as production does).
+an ABSENT key (catalog_omission.ABSENT_WITH_SERVED = 'refuse', the refactor's PROPOSED value pending Gregg: the exception test
+cannot be evaluated - never 'nothing to drop'; 'production' keeps them and counts them, as production does - the parity file's
+value; the site is marked WAVE2 G6).
 
 Per instant (Gregg 2026-10-18: a veto removes that instant's detections across frequency only, never other times or tiers;
 2026-10-24: the omission is assessed "on a per hour, per band basis"): every removal names its OWN key - the (LST, night) hour
@@ -62,14 +76,47 @@ night), its own Stokes and its own tier (a 10-s decision never removes a 1-minut
 of that key (column 'why', from why_part / member_gates / *_member_reason below, the templates the per-instant content test
 reads: tests_per_instant.omission_per_instant, O1-O3, registered on omission_record).
 
-Not ported: the re-run of a partial source's survivor gates (the port note in plan/CUTOVER_READINESS.md) - production re-points
-and records it; the re-run needs the chain's gates and is a change of the served product (an amendment).
+OWED, NOT DONE - the re-run of a partial source's survivor gates (Q review F6). plan/CUTOVER_READINESS.md, "DEEP OMISSION CARRIES
+TO THE SHORTER TIERS", Port: "Partial sources re-run their survivor gates, which today's drops do not" - the reading of Gregg's
+2026-10-24 ruling (R-GREGG-20261024-DEEP-OMISSION-APPLIES-TO-SHORT-TIERS-WITH-FRAME-EXCEPTION, verbatim: "Omission from the deep
+transient search is sufficient for omission from the 10s/1-min/10-min search") that an omitted detection was never searched, so
+a source must stand on its remaining detections. Production does not: it re-points and records (clv15 fix_ledger
+IMPLEMENTED-DEEP-OMISSION-DROP-IN-THE-10-MINUTE-CUMULATIVE-20261025: "its survivor gates are NOT re-run (recorded) - it stays
+visible, so no real source is lost"; IMPLEMENTED-DEEP-OMISSION-10S-1MIN-IN-THE-COMBINED-SNAPSHOT-VIEW-20261025 the same). What is
+owed, per partial source (some detections omitted, at least one kept - re-pointed or not), on its KEPT detections only, by each
+tier's own rule for a source that lost instants:
+  10-s / 1-minute: the snapshot chain's re-build of a source after a per-instant veto (clv15 phase3_snapshot_chain.py 9465ae6,
+      :3888-3935 "SOME INSTANTS SURVIVE: the source is re-built on them": route_repeats, the reflection-band floor
+      reflection_band_source_gate, the seed rule (best |S/N| >= the seed floor), the anchor anchor_on_members, then the route
+      pass - a source that qualifies for no route is removed), on the identity and each of its per-tier sources;
+  10-minute: the per-tier catalogue's survivor gates (ops/build_source_catalogs_v3.py, config catalog_associate): |best S/N| >=
+      SURVIVOR_SNR (7.0) or promoted (E recomputed on the kept members < E_PROMOTE), and the 7-8 sigma size gate of an
+      unpromoted single (SIZE_GATE_7_8), inside the merge's drop (sublst_deep_omission_drop.py, in place).
+A source that fails is dropped (recorded 'source dropped', note 'survivor gates failed on its kept detections'), its page,
+panels and member rows with it; one that passes keeps its re-pointed fields. It changes the served product against production,
+so it is an amendment and needs Gregg's ruling first (DECISIONS_PENDING entry "Deep omission: the survivor-gate re-run of a
+partial source", named in refactor_reviews_20261103/Q_deepomit_fixes.md); not implemented in this port for that reason and
+because it needs the chain's source re-build ported. Where it would act: every identity with both an omitted and a kept
+detection (a 'detection' row in the record and 'detection kept' rows in the kept product), the 'source re-pointed' rows among
+them (B4X+B6H: none on the 10-25 or today's inputs - no partial source lost its best detection).
+
+PRODUCTION BUGS CARRIED FOR PARITY (Q review F1, F4; production's owner fixes them first, then this port follows - the decision
+table stays byte-identical to production until then; each site is marked '# PRODUCTION BUG F1/F4, pending the production fix'
+and a test pins today's behavior, so the later change is visible):
+  F1 the wideband consequence is keyed on the night's union of members, not on the detection's own frame / block / window: a
+     wideband detection whose own frame was stacked without the omitted subband is dropped too (decide_snapshot, decide_tenmin);
+  F4 deep_value / deep_threshold are written in the order the refusal files were listed (glob, unsorted), the gates sorted, so
+     value i need not belong to gate i, and deep_threshold_meaning follows the first sorted gate (_base, refusal_files, _meaning).
+  F10 (text, production's): with fewer than 3 nights there is no noise threshold (nan, never passed) and the reason still reads
+     RMS_ABOVE ('tier rms above threshold') - production's byte-identical table text and the 10-minute merge's 'why', so it is
+     not changed here (_verdict).
 """
 import collections
 import csv
 import glob
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -130,6 +177,19 @@ EMPTY_TENMIN_HEADER = 'lst,band,night,stokes,verdict,reason\n'             # sub
 # the combined view's record columns (snapshot_combined_view.py, its header when a detection is omitted) + 'why'
 RECORD_COLS = ['kind', 'batch', 'identity', 'cand_id', 'lst', 'band', 'night', 'stokes', 'tier', 'snr', 'source', 'note', 'why']
 TENMIN_RECORD_COLS = ['kind', 'lst', 'stokes', 'view', 'source_id', 'band', 'cand_id', 'night', 'why', 'detail']
+# the KEPT PRODUCT of the 10-s / 1-minute drop (deep_omission_kept.csv, class omission_kept; Q review F2): what the snapshot
+# tier's cumulative step (the combined view's port) applies. Every row names the served run and the file it acts on:
+#   'detection kept'      run, batch, identity, cand_id, ra_peak / dec_peak (the detection's key dkey), lst, band (subband or
+#                         band), night, stokes, tier, snr - each kept detection of each kept identity (the merge's input)
+#   'source dropped'      run, batch, identity, catalog (<cdir>/<band>_sources_survivors.csv), source_id, stokes, tier, note
+#   'source re-pointed'   ... source_id, cand_id / snr = its new best; fields = JSON of the survivors row's new values
+#                         (best_cand_id, best_snr, ts, subband, peak_jy_best, deep_omission); note = the record's
+#   'member row dropped'  run, batch, catalog (<cdir>/<band>_source_members.csv), source_id, cand_id, stokes, tier, the key
+#                         (lst, band, night) when its own key is OMIT, else note 'identity left with no detection'
+#   'panel dropped'       run, batch, catalog (the source's review_dir), source_id, stokes, tier, the key, note = the file
+KEPT_COLS = ['kind', 'run', 'batch', 'identity', 'catalog', 'source_id', 'cand_id', 'ra_peak', 'dec_peak', 'lst', 'band', 'night',
+             'stokes', 'tier', 'snr', 'note', 'fields']
+KEPT_KINDS = ('detection kept', 'source dropped', 'source re-pointed', 'member row dropped', 'panel dropped')
 # a snapshot detection's key from its cand_id (snapshot_combined_view.py CIDK) and a panel's (PANEL); a 10-minute detection's
 # (sublst_deep_omission_drop.CID)
 SNAP_CID = re.compile(r'^(\d\dh)_(\d{4}-\d\d-\d\d)_([A-Za-z0-9]+)_([IV])_(10s|1min)_')
@@ -247,6 +307,25 @@ def mad_thr(vals, sigma=None):
     return m + sigma * 1.4826 * np.median(np.abs(v - m))
 
 
+def rate_floor():
+    """catalog_omission.RATE_FLOOR_PER_NIGHT (production's value, pending Gregg; 0 = the card's rule without a floor)."""
+    import math
+    v = _c().RATE_FLOOR_PER_NIGHT
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
+        raise ValueError(f'catalog_omission.RATE_FLOOR_PER_NIGHT must be a finite number >= 0 (detections per night), not {v!r}')
+    return float(v)
+
+
+def member_verdicts():
+    """catalog_omission.WIDEBAND_MEMBER_VERDICTS (production's ('OMIT', 'ABSENT'), the ABSENT part pending Gregg): the verdicts
+    of a member subband night that omit its band group's detections. 'OMIT' is always one (the card's rule)."""
+    v = tuple(_c().WIDEBAND_MEMBER_VERDICTS)
+    if 'OMIT' not in v or not set(v) <= {'OMIT', 'ABSENT'}:
+        raise ValueError("catalog_omission.WIDEBAND_MEMBER_VERDICTS must be ('OMIT',) or ('OMIT', 'ABSENT') (the card: a subband "
+                         f"omitted drops the night's wideband detections that include it), not {v!r}")
+    return v
+
+
 def rate_thr(rates, rows_per_night):
     """median + SIGMA x max(1.4826 MAD, RATE_FLOOR_PER_NIGHT / max(median rows per night, 1)); nan with fewer than 3 rates."""
     import numpy as np
@@ -255,12 +334,13 @@ def rate_thr(rates, rows_per_night):
     if rv.size < 3:
         return np.nan
     nwm = float(np.median(list(rows_per_night)))
-    return np.median(rv) + c.SIGMA * max(1.4826 * np.median(np.abs(rv - np.median(rv))),
-                                         c.RATE_FLOOR_PER_NIGHT / max(nwm, 1.0))
+    return np.median(rv) + c.SIGMA * max(1.4826 * np.median(np.abs(rv - np.median(rv))), rate_floor() / max(nwm, 1.0))
 
 
 def refusal_files(rdir, lst):
-    """The record's files of one LST, in the order production reads them (glob)."""
+    """The record's files of one LST, in the order production reads them (glob - the directory's listing order, unsorted)."""
+    # PRODUCTION BUG F4, pending the production fix (sublst_deep_omission.load_refusals reads glob order; Q review F4): this order
+    # becomes the order of deep_value / deep_threshold in _base, while the gates are written sorted - kept for byte parity
     return glob.glob(os.path.join(rdir, '%s_*_excluded.csv' % lst))
 
 
@@ -307,17 +387,26 @@ def load_refusals(rdir, lst, reader=None):
 
 
 def _base(lst, band, night, S, gates):
+    # PRODUCTION BUG F4, pending the production fix (sublst_deep_omission.py:155-156, snapshot_deep_omission.decide): gates are
+    # written sorted, deep_value / deep_threshold in the record's read order (refusal_files), so value i need not belong to gate
+    # i (00h 27 MHz 2025-10-15 I: gates 'beam;searchtier', deep_value '2895.8;3.96' - beam is 3.96). Kept for byte parity;
+    # pinned by tests/test_deep_omission.py test_production_bugs_pinned.
     return dict(lst=lst, band=band, night=night, stokes=S, gates=';'.join(sorted({g[0] for g in gates})),
                 deep_value=';'.join(g[1] for g in gates), deep_threshold=';'.join(g[2] for g in gates),
                 deep_attempt=gates[0][3])
 
 
 def _meaning(r):
+    # PRODUCTION BUG F4, pending the production fix: the meaning follows the FIRST SORTED gate, which may be another gate than
+    # the threshold it describes (e.g. 'beam;sanity' reads GATE_MEANING for the sanity gate's cell median too)
     g0 = r['gates'].split(';')[0] if r['gates'] else ''
     return '' if not r['deep_threshold'] else SANITY_MEANING if g0.startswith('sanity') else GATE_MEANING
 
 
 def _verdict(rp, ap):
+    # PRODUCTION TEXT F10 (Q review, information only): with fewer than 3 nights the noise threshold is nan, rp is False and the
+    # reason reads RMS_ABOVE although there was no threshold - production's byte-identical table text (and the 10-minute merge's
+    # 'why'), so it changes only with production's (pinned by test_production_bugs_pinned)
     return ('KEEP' if (rp and ap) else 'OMIT',
             PASSES if (rp and ap) else (RMS_ABOVE if not rp else RATE_HIGH))
 
@@ -410,11 +499,16 @@ def decide_snapshot(lsts, served, rdir=None, proto=None, reader=None):
                 lrows.append(dict(base, tier=T, n_admitted=n, tier_median_rms='%.4g' % med, tier_rms_threshold='%.4g' % thr,
                                   rms_pass=int(rp), rate='%.4g' % rate[night], rate_threshold='%.4g' % rthr, rate_pass=int(ap),
                                   verdict=verdict, reason=reason))
-        # wideband consequences (WIDEBAND_EXCEPT excepted): a subband night not KEPT in a tier omits that night's band-group
-        # detections when the subband is a member of the cell's wideband frames of that group (both tiers share the frames)
+        # wideband consequences (WIDEBAND_EXCEPT excepted): a subband night not KEPT in a tier (its verdict one of
+        # WIDEBAND_MEMBER_VERDICTS - production's OMIT or ABSENT, pending Gregg) omits that night's band-group detections when
+        # the subband is a member of the cell's wideband frames of that group (both tiers share the frames)
+        # PRODUCTION BUG F1, pending the production fix (snapshot_deep_omission.py:106-119; Q review F1): the members are the
+        # cell's UNION over every frame (wideband_members_<S>.csv by group, its ts ignored), so a group detection whose own frame
+        # was stacked without the omitted subband is omitted too; kept for parity, pinned by test_production_bugs_pinned
+        mv = member_verdicts()
         wb = collections.defaultdict(set)
         for r in lrows:
-            if r['verdict'] in ('OMIT', 'ABSENT') and r['band'] not in G and r['band'] not in c.WIDEBAND_EXCEPT:
+            if r['verdict'] in mv and r['band'] not in G and r['band'] not in c.WIDEBAND_EXCEPT:
                 mem = recs.members(lst, r['night'], r['stokes'])
                 for g, sbs in G.items():
                     if r['band'] in sbs and r['band'] in mem.get(g, ()):
@@ -619,11 +713,16 @@ def decide_tenmin(lst, rdir=None, recs=None, reader=None):
                          tier_rms_threshold='%.4g' % thr, rms_pass=int(rp), rate='%.4g' % rate[night],
                          rate_threshold='%.4g' % rthr, rate_pass=int(ap), verdict=verdict, reason=reason))
     recs.write_cache(lst, cache)
-    # wideband consequences (WIDEBAND_EXCEPT excepted): a deep-refused subband night the tier does not KEEP - OMIT, or ABSENT -
-    # omits that night's wideband detections of a group WHEN the subband is a member of that night's wideband windows by their
-    # own WBMEMB card; a night with no wideband window has nothing to drop. One row per (group, night, Stokes).
+    # wideband consequences (WIDEBAND_EXCEPT excepted): a deep-refused subband night the tier does not KEEP - its verdict one of
+    # WIDEBAND_MEMBER_VERDICTS (production's OMIT or ABSENT, pending Gregg) - omits that night's wideband detections of a group
+    # WHEN the subband is a member of that night's wideband windows by their own WBMEMB card; a night with no wideband window has
+    # nothing to drop. One row per (group, night, Stokes).
+    # PRODUCTION BUG F1, pending the production fix (sublst_deep_omission.py:192-211; Q review F1): ONE window of the night whose
+    # WBMEMB holds the subband omits the group's whole night - every window's detections, also those of a window stacked without
+    # it (each window's own WBMEMB is read, but only to decide the night); kept for parity, pinned by test_production_bugs_pinned
+    mv = member_verdicts()
     wb = collections.defaultdict(set)
-    for r in [x for x in rows if x['verdict'] in ('OMIT', 'ABSENT') and x['band'] not in G and x['band'] not in c.WIDEBAND_EXCEPT]:
+    for r in [x for x in rows if x['verdict'] in mv and x['band'] not in G and x['band'] not in c.WIDEBAND_EXCEPT]:
         for g, mem in G.items():
             if r['band'] not in mem:
                 continue
@@ -761,7 +860,8 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
     dropped identity is dropped; a source left with no detection is dropped; a partial one whose best detection went is
     re-pointed (its survivor gates not re-run); a member row of a dropped identity or an omitted key is dropped; a panel of an
     omitted key is not linked (every kept source's directory is listed, as the view does). Returns (record rows,
-    {(run, cdir, source_id): re-pointed fields}). G4 a source or member row of no served identity."""
+    {(run, cdir, source_id): re-pointed fields}, the kept product's per-tier rows - KEPT_COLS, each naming the served run and the
+    catalogue file or page directory it acts on). G4 a source or member row of no served identity."""
     ids = collections.defaultdict(set)
     for r, J, _g, _d in pending:
         ids[r].add(J)
@@ -777,14 +877,18 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
     srcs = [os.path.join(r, row['review_dir']) for S, T, cdir, r, kind, band, rows in cats if kind == 'sources'
             for row in rows if (r, row['identity_id']) not in dropped]
     reader.prefetch(os.path.join(d, 'detections.csv') for d in srcs)
-    rec, repoint, listing = [], {}, None
+    rec, repoint, drops, listing = [], {}, [], None
     for S, T, cdir, r, kind, band, rows in cats:
         tag = batch_tag(r)
+        run = os.path.abspath(r)
         if kind == 'sources':
+            catalog = f'{cdir}/{band}_sources_survivors.csv'
             for row in rows:
                 if (r, row['identity_id']) in dropped:
                     rec.append(dict(kind='source dropped', batch=tag, identity=row['identity_id'], source=row['source_id'],
                                     stokes=S, tier=T, band=band, note='identity left with no detection'))
+                    drops.append(dict(kind='source dropped', run=run, batch=tag, identity=row['identity_id'], catalog=catalog,
+                                      source_id=row['source_id'], stokes=S, tier=T, note='identity left with no detection'))
                     continue
                 if row['identity_id'] not in ids[r]:
                     refuse(f'G4: {tag} {cdir} source {row["source_id"]} of identity {row["identity_id"]} is in no served identity')
@@ -794,15 +898,21 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
                 if not kd:
                     rec.append(dict(kind='source dropped', batch=tag, identity=row['identity_id'], source=row['source_id'],
                                     stokes=S, tier=T, band=band, note='every detection omitted'))
+                    drops.append(dict(kind='source dropped', run=run, batch=tag, identity=row['identity_id'], catalog=catalog,
+                                      source_id=row['source_id'], stokes=S, tier=T, note='every detection omitted'))
                     continue
                 if len(kd) < len(ad) and row.get('best_cand_id') in {d['cand_id'] for d in ad} - {d['cand_id'] for d in kd}:
                     top = max(kd, key=lambda d: abs(float(d['snr'])))
+                    note = 'best %s (%s) omitted; re-pointed to %s (%s)' % (row.get('best_cand_id'), row.get('best_snr'),
+                                                                          top['cand_id'], top['snr'])
                     rec.append(dict(kind='source partial', batch=tag, identity=row['identity_id'], source=row['source_id'],
-                                    stokes=S, tier=T, band=band, note='best %s (%s) omitted; re-pointed to %s (%s)' % (
-                                        row.get('best_cand_id'), row.get('best_snr'), top['cand_id'], top['snr'])))
-                    repoint[(r, cdir, row['source_id'])] = dict(best_cand_id=top['cand_id'], best_snr=top['snr'], ts=top['ts'],
-                                                                subband=top['subband'], peak_jy_best='',
-                                                                deep_omission=SNAPSHOT_PARTIAL_NOTE)
+                                    stokes=S, tier=T, band=band, note=note))
+                    fields = dict(best_cand_id=top['cand_id'], best_snr=top['snr'], ts=top['ts'], subband=top['subband'],
+                                  peak_jy_best='', deep_omission=SNAPSHOT_PARTIAL_NOTE)
+                    repoint[(r, cdir, row['source_id'])] = fields
+                    drops.append(dict(kind='source re-pointed', run=run, batch=tag, identity=row['identity_id'], catalog=catalog,
+                                      source_id=row['source_id'], cand_id=top['cand_id'], snr=top['snr'], stokes=S, tier=T,
+                                      note=note, fields=json.dumps(fields, sort_keys=True)))
                 if listing is None:                   # every kept source's directory, listed ahead (once)
                     listing = reader.listdirs(srcs)
                 names = listing.get(src)
@@ -815,7 +925,11 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
                         if k in OM:
                             rec.append(dict(kind='panel', batch=tag, source=row['source_id'], lst=k[0], band=k[1], night=k[2],
                                             stokes=S, tier=T, note=fn, why=why[k]))
+                            drops.append(dict(kind='panel dropped', run=run, batch=tag, identity=row['identity_id'],
+                                              catalog=row['review_dir'], source_id=row['source_id'], lst=k[0], band=k[1],
+                                              night=k[2], stokes=S, tier=T, note=fn))
             continue
+        catalog = f'{cdir}/{band}_source_members.csv'
         for row in rows:
             mm = MEMBER_SOURCE.match(row['source_id'])
             ck = SNAP_CID.match(row.get('cand_id', ''))
@@ -823,14 +937,32 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
             if k in OM:                       # its own key omitted
                 rec.append(dict(kind='member row', batch=tag, source=row['source_id'], cand_id=row.get('cand_id', ''),
                                 lst=k[0], band=k[1], night=k[2], stokes=S, tier=T, why=why[k]))
+                drops.append(dict(kind='member row dropped', run=run, batch=tag, identity=mm.group(1) if mm else '',
+                                  catalog=catalog, source_id=row['source_id'], cand_id=row.get('cand_id', ''), lst=k[0],
+                                  band=k[1], night=k[2], stokes=S, tier=T))
                 continue
             if mm and (r, mm.group(1)) in dropped:     # a consequence: its identity has no detection left
                 rec.append(dict(kind='member row', batch=tag, source=row['source_id'], cand_id=row.get('cand_id', ''),
                                 band=band, stokes=S, tier=T, note='identity left with no detection'))
+                drops.append(dict(kind='member row dropped', run=run, batch=tag, identity=mm.group(1), catalog=catalog,
+                                  source_id=row['source_id'], cand_id=row.get('cand_id', ''), stokes=S, tier=T,
+                                  note='identity left with no detection'))
                 continue
             if mm is None or mm.group(1) not in ids[r]:
                 refuse(f'G4: {tag} {cdir} member source {row["source_id"]} is in no served identity')
-    return rec, repoint
+    return rec, repoint, drops
+
+
+def kept_rows(kept):
+    """The kept product's 'detection kept' rows (KEPT_COLS) of apply_snapshot's kept identities, generated (a full view keeps
+    millions): every kept detection of every kept identity - the identities and detections the cumulative step merges (its key
+    dkey: cand_id + ra_peak / dec_peak)."""
+    for r, J, _grs, dets in kept:
+        run, tag = os.path.abspath(r), batch_tag(r)
+        for d in dets:
+            c, ra, dec = dkey(d)
+            yield dict(kind='detection kept', run=run, batch=tag, identity=J, cand_id=c, ra_peak=ra, dec_peak=dec,
+                       lst=d['lst'], band=okey(d)[1], night=d['date'], stokes=d['stokes'], tier=d['tier'], snr=d['snr'])
 
 
 # =====================================================================================================================
@@ -890,15 +1022,15 @@ def absent_gate(rows, served_of):
     mode = _c().ABSENT_WITH_SERVED
     if mode not in ('refuse', 'production'):
         raise ValueError(f"catalog_omission.ABSENT_WITH_SERVED must be 'refuse' or 'production', not {mode!r}")
-    if bad and mode == 'refuse':
+    if bad and mode == 'refuse':    # WAVE2 G6: the refactor's PROPOSED gate, pending Gregg (production keeps; parity file 'production')
         refuse(f'G6: {len(bad)} deep-refused keys the tier has no record of hold served detections (e.g. {bad[:3]}) - the '
                f'exception test cannot be evaluated')
     return bad
 
 
 def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
-    """The 10-s / 1-minute stage on the served batch runs ``runs``: decisions, the drop and its record into ``out``.
-    Returns the summary dict. Gates refuse (core.record.Refusal)."""
+    """The 10-s / 1-minute stage on the served batch runs ``runs``: decisions, the drop, its record and the kept product (what
+    the snapshot tier's cumulative step applies) into ``out``. Returns the summary dict. Gates refuse (core.record.Refusal)."""
     c = _c()
     rdir = rdir or c.REFUSALS
     proto = proto or _cfg().paths.SNAPSHOT_FLEET_OUT
@@ -912,11 +1044,18 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
     absent = absent_gate(dec, lambda k: served.get((k[0], k[2], k[1], k[3], k[4]), 0))
     OM, why = omitted_keys(dec), why_of(dec)
     kept, dropped, rec = apply_snapshot(pending, OM, why)
-    prec, _repoint = per_tier_snapshot(runs, pending, dropped, OM, why, reader)
+    prec, _repoint, drops = per_tier_snapshot(runs, pending, dropped, OM, why, reader)
     rec += prec
     os.makedirs(out, exist_ok=True)
     write_decisions(os.path.join(out, 'deep_omission.csv'), dec, TIER_SNAPSHOT)
     write_record(os.path.join(out, 'deep_omission_dropped.csv'), rec, RECORD_COLS)
+    kept_kinds = collections.Counter()              # Q review F2: the drop, written for the cumulative step that applies it
+
+    def counted(rows):
+        for x in rows:
+            kept_kinds[x['kind']] += 1
+            yield x
+    write_record(os.path.join(out, 'deep_omission_kept.csv'), counted(itertools.chain(kept_rows(kept), drops)), KEPT_COLS)
     kinds = collections.Counter(x['kind'] for x in rec)
     n_om = kinds.get('detection', 0)
     summ = dict(tier=TIER_SNAPSHOT, label=label, runs=[os.path.abspath(r) for r in runs], batches=[batch_tag(r) for r in runs],
@@ -924,6 +1063,7 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
                 kept=n_all - n_om, decisions=len(dec), omit_keys=len(OM),
                 omit_keys_by_tier={t: sum(1 for k in OM if k[4] == t) for t in c.SNAPSHOT_TIERS},
                 verdicts=dict(collections.Counter(r['verdict'] for r in dec)), record=dict(sorted(kinds.items())),
+                kept_product=dict(sorted(kept_kinds.items())),
                 identities=len(pending), identities_kept=len(kept), absent_with_served=len(absent),
                 seconds=round(time.time() - t0, 1))
     _write_summary(out, summ, n_om, 'served detections %d, kept %d; decisions %d (%d OMIT keys); %s' % (
@@ -1018,7 +1158,9 @@ def add_arguments(p):
                    help='--stages omit, tier snapshot: the served batch runs of the view (directories, comma list or @file); '
                         'tier sublst takes --lsts (the published Run_SLST<hh>B runs)')
     p.add_argument('--omit-refusals', metavar='DIR',
-                   help='--stages omit: the deep refusal record (default catalog_omission.REFUSALS)')
+                   help='--stages omit: the deep refusal record - an override of the RULED catalog_omission.REFUSALS (as --set '
+                        'catalog_omission.REFUSALS=DIR: needs --ruling-for catalog_omission.REFUSALS=<ledger ID> or a --out '
+                        'outside every production root; recorded in the run record)')
 
 
 def default_out(args):
@@ -1048,13 +1190,29 @@ def _runs_arg(args):
     return [x if os.path.isabs(x) else os.path.join(root, x) for x in items if x]
 
 
+def refusals_arg(args):
+    """The deep refusal record of the stage: catalog_omission.REFUSALS, a RULED key (the record Gregg's rulings name). --omit-
+    refusals DIR is an override of it THROUGH THE CONFIG (CFG.set, as --set catalog_omission.REFUSALS=DIR): allowed with
+    --ruling-for catalog_omission.REFUSALS=<ledger ID> or into a --out outside every production root (the CLI's authorize), and
+    written into the run record (config_overrides, ruled_overrides) - never a bypass of the ruling (Q review F8). A refused
+    override refuses the run (exit 2) before any unit."""
+    v = getattr(args, 'omit_refusals', None)
+    if v:
+        from exopipe.phase3.config import ConfigRefusal
+        try:
+            _cfg().set('catalog_omission.REFUSALS', os.path.abspath(v), source='--omit-refusals')
+        except ConfigRefusal as e:
+            refuse(f'--omit-refusals {v}: {e}')
+    return _c().REFUSALS
+
+
 def run(args, run):
     """`exopipe3 catalog --tier snapshot|sublst --stages omit` - one unit '<label>.omit' (label = --run, else from the batch
     tags / 'Run_SLSTOMIT'). A gate refuses the unit (exit 2)."""
     tier = args.tier
     if tier not in (TIER_SNAPSHOT, TIER_TENMIN):
         raise SystemExit(f'error: --stages omit is a stage of the short tiers (snapshot, sublst), not {tier}')
-    rdir = getattr(args, 'omit_refusals', None) or _c().REFUSALS
+    rdir = refusals_arg(args)
     out = os.path.abspath(run.out_root)
     if tier == TIER_SNAPSHOT:
         runs = _runs_arg(args)
@@ -1082,4 +1240,6 @@ def run(args, run):
         dec = os.path.join(out, 'deep_omission.csv')
         u.add_output(dec, 'omission_decisions', tier=tier)
         u.add_output(os.path.join(out, 'deep_omission_dropped.csv'), 'omission_record', tier=tier, decisions=dec)
+        if tier == TIER_SNAPSHOT:          # the drop the snapshot tier's cumulative step applies (Q review F2)
+            u.add_output(os.path.join(out, 'deep_omission_kept.csv'), 'omission_kept', tier=tier, decisions=dec)
     return None

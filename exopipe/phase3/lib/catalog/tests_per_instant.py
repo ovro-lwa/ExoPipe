@@ -952,15 +952,17 @@ OMISSION_TIERS = ('10s', '1min', '10min')
 def omission_templates():
     """[(kind, instant, tiers, template tree)] of the omission record's 'why' parts, from the writer's own f-strings
     (deep_omission.why_part, member_gates, member_word, snapshot_member_reason, tenmin_member_reason) and constants (RMS_ABOVE,
-    RATE_HIGH); the gate names are catalog_omission.PROPAGATE, the band groups instrument.SUBBAND_BANDS."""
+    RATE_HIGH); the gate names are catalog_omission.PROPAGATE, the band groups instrument.SUBBAND_BANDS, a member's verdicts
+    catalog_omission.WIDEBAND_MEMBER_VERDICTS."""
     DO = 'deep_omission'
     C = _cfg()
     gate = '(?:%s)' % '|'.join(re.escape(g) for g in C.catalog_omission.PROPAGATE)
     gates = _named(_pat(r'%s(?:;%s)*' % (gate, gate), r'.*'), 'gates')
     grp = _alt(*[_lit(g) for g in C.instrument.SUBBAND_BANDS])
     subband = _pat('(?:%s)' % '|'.join(re.escape(b) for v in C.instrument.SUBBAND_BANDS.values() for b in v), r'.*')
-    word = _node(_joined(DO, 'member_word', lambda v: True, 'the member word'),
-                 {'band': subband, 'verdict': _alt(_lit('OMIT'), _lit('ABSENT'))}, 'the member word')
+    from exopipe.phase3.lib.catalog import deep_omission as DOM
+    word = _node(_joined(DO, 'member_word', lambda v: True, 'the member word'),       # a member's verdict: one that propagates
+                 {'band': subband, 'verdict': _alt(*[_lit(v) for v in DOM.member_verdicts()])}, 'the member word')
     members = _named(_pat('%s(?:, %s)*' % (_full(word), _full(word)), r'.*'), 'members')
     mfields = {'members': members, 'group': grp}
     mgates = _node(_joined(DO, 'member_gates', lambda v: True, 'the member gates'), mfields, 'the member gates')
@@ -981,7 +983,9 @@ _OGRAMMAR = {}
 
 def omission_kind(part):
     """The declared omission kind a 'why' part matches WHOLE, or None. Raises TemplateError when the writer cannot be read."""
-    key = (os.stat(WRITERS['deep_omission']).st_mtime_ns, os.stat(WRITERS['deep_omission']).st_size)
+    from exopipe.phase3.lib.catalog import deep_omission as DOM
+    key = (os.stat(WRITERS['deep_omission']).st_mtime_ns, os.stat(WRITERS['deep_omission']).st_size, DOM.member_verdicts(),
+           tuple(_cfg().catalog_omission.PROPAGATE))
     if _OGRAMMAR.get('key') != key:
         _OGRAMMAR.clear()
         _OGRAMMAR['kinds'] = [(k, re.compile(_full(n))) for k, _i, _t, n in omission_templates()]
