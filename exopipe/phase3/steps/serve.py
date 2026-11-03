@@ -107,7 +107,7 @@ import sys
 SUMMARY = 'review pages registered on the two-port server and the hub; served-queue and exclusion content tests'
 TIERS = ('deep', 'sublst', 'snapshot', 'jupiter')
 SELECTORS = ('tier', 'run_label', 'stokes', 'lsts', 'epochs')
-CONFIG = ('serve', 'pages', 'exclusions', 'paths', 'runner', 'site')
+CONFIG = ('serve', 'pages', 'catalog_omission', 'catalog_sublst', 'exclusions', 'paths', 'runner', 'site')
 WRITES = True
 FAMILIES = ('review', 'forced', 'strat', 'deep-forced', 'jupiter')
 

@@ -48,7 +48,9 @@ What the flag does (cli calls begin() before the step runs):
      resume_check never adopts across the injected / ordinary line - and every SOURCE flag naming another run's products
      under one (SOURCE_FLAGS: serve --source / --carry-from, archive --attempt / --staging-root / --workdir, install --gen /
      --rebuild-root, pages --from-run, search --replay-attempt, photometry --src-run / --cutout-root / --stage1, forced
-     --deep-eval-run, catalog --inc-source run:, calibrate --served-run; a source on another host is checked over ssh).
+     --deep-eval-run, catalog --inc-source run: / --omit-runs (each run of its comma list or @FILE, a bare name under
+     paths.SNAPSHOT_REVIEW_ROOT, as the deep-omission stage reads it) / --omit-refusals, calibrate --served-run; a source on
+     another host is checked over ssh).
 
 Python 3.6+; imports nothing from exopipe at module level.
 """
@@ -260,18 +262,35 @@ SOURCE_FLAGS = {
     'search': ('replay_attempt',),
     'photometry': ('src_run', 'cutout_root', 'stage1'),
     'forced': ('deep_eval_run',),
-    'catalog': ('inc_source',),
+    'catalog': ('inc_source', 'omit_runs', 'omit_refusals'),   # omit_*: the deep-omission stage (lib/catalog/deep_omission.py) -
+                                                               # the served batch runs it counts and the refusal record it reads
     'calibrate': ('served_run',),
 }
 _KEYWORDS = ('published', 'served', 'none', 'snapshot', 'search')     # flag values that name no path
-_RUN_NAME_FLAGS = {'deep_panels_run': 'TRANSIENTS_ROOT'}             # a bare name resolves under this paths root
+_RUN_NAME_FLAGS = {'deep_panels_run': 'TRANSIENTS_ROOT',             # a bare name resolves under this paths root (as the step
+                   'omit_runs': 'SNAPSHOT_REVIEW_ROOT'}              # resolves it: deep_omission._runs_arg)
+_LIST_FLAGS = ('stores', 'omit_runs')            # a comma list of paths (archive --stores: files; catalog --omit-runs: runs)
+_AT_FILE_FLAGS = ('omit_runs',)                  # '@FILE': the paths FILE lists, one per line ('#' starts a comment)
+
+
+def _at_file(flag, v):
+    """The paths an '@FILE' value lists (deep_omission._runs_arg's reading); an unreadable file refuses - its runs cannot be
+    shown not to be an injected run's."""
+    try:
+        with open(v[1:]) as f:
+            return [ln.split('#', 1)[0].strip() for ln in f]
+    except OSError as e:
+        raise _refusal(f'{LABEL}: --{flag.replace("_", "-")} {v}: the list cannot be read ({e}) - its runs cannot be shown not '
+                       f'to be an injected run\'s')
 
 
 def _values(flag, v):
     if v is None:
         return []
     vals = [str(x) for x in v] if isinstance(v, (list, tuple)) else [str(v)]
-    if flag == 'stores':                           # archive --stores: a comma list of files
+    if flag in _AT_FILE_FLAGS and any(x.strip().startswith('@') for x in vals):
+        vals = [y for x in vals for y in (_at_file(flag, x.strip()) if x.strip().startswith('@') else [x])]
+    elif flag in _LIST_FLAGS:
         vals = [x for y in vals for x in y.split(',')]
     return [x.strip() for x in vals if x.strip() and x.strip() not in _KEYWORDS]
 
@@ -357,6 +376,8 @@ def check_flags(step, args, out, writes=True):
             if v.startswith('run:'):
                 v = v[4:]
             host, path = split_host(v)
+            if not host and flag in _RUN_NAME_FLAGS and not os.path.isabs(path):
+                path = os.path.join(getattr(_cfg().paths, _RUN_NAME_FLAGS[flag]), path)
             path = _fixed(path)
             if host and not _this_host(host):
                 hit = [(h, f, 'injected') for h, f in _remote_injected(host, path)]

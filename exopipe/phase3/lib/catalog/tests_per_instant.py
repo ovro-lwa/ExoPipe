@@ -58,8 +58,23 @@ each tier's removal record, and refuses the product on any finding:
     The 3-D bright-source gate, the seed and floor rules and the routes are SOURCE-level selection rules (the source stands or
     falls on its remaining detections, the ruling's own words), not vetoes measured at an instant: not judged here (their
     across-instant reading is DECISIONS_PENDING "the snapshot bright-source gate's offset rule").
+  omission_record (the deep omission of the 10-s, 1-minute and 10-minute tiers: deep_omission_dropped.csv with the decision
+  table deep_omission.csv beside; lib/catalog/deep_omission.py, and the 10-minute cumulative merge's own record). Gregg
+  2026-10-24 (R-GREGG-20261024-DEEP-OMISSION-APPLIES-TO-SHORT-TIERS-WITH-FRAME-EXCEPTION): omission "assessed on a per hour, per
+  band basis" - the instant of an omission is the deep instant (LST, night) holding the detection, in its own band (or, across
+  frequency, the band group of an omitted member subband of the same night), its own Stokes and tier. The declared kinds
+  (omission_templates(), read from the writer's own f-strings and constants, as T2's): 'deep omission' (the night's own deep refusal
+  the tier's noise and rate tests did not clear) and 'deep omission (wideband member)'. Consequence rows (an identity, source or
+  page left with nothing) carry no key and are not judged here (omission_record's own test traces them).
+    O1 every removed row (detection, member row, panel) carries its own instant: the key in its columns is the key of its own
+       cand_id (or panel name) - LST, night, band, Stokes and, 10-s / 1-minute, tier;
+    O2 every part of its 'why' matches WHOLE a declared omission template;
+    O3 the decision that removed it is its own: its key is OMIT in the decision table and its 'why' is exactly that key's
+       decision texts (so it names no other night, tier or Stokes); a wideband-member part names members that are decision
+       rows of the same LST, night, Stokes and tier with the verdict it states (across frequency only).
 Context keys (all optional): tier ('deep' / 'sublst'); deep_roots_csv (default catalog.DEEP_ROOTS_CSV) and tenmin_tree (the
-10-minute window tree; default from the record's run name) for T3.
+10-minute window tree; default from the record's run name) for T3; omission_record: tier ('snapshot' / 'sublst') and decisions
+(the decision table; default deep_omission.csv beside the record).
 Every test reads the files' content and returns (passed, value, detail); imports are inside the tests.
 """
 import ast
@@ -140,7 +155,9 @@ def _fail(msgs, value, what):
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 WRITERS = {'removal_rules': os.path.normpath(os.path.join(_HERE, '..', 'search', 'removal_rules.py')),
-           'parent_curve_table': os.path.normpath(os.path.join(_HERE, '..', 'search', 'parent_curve_table.py'))}
+           'parent_curve_table': os.path.normpath(os.path.join(_HERE, '..', 'search', 'parent_curve_table.py')),
+           'deep_omission': os.path.normpath(os.path.join(_HERE, 'deep_omission.py'))}
+CONFORM_WRITERS = ('removal_rules', 'parent_curve_table')   # the conformance grammar's writers (reason_templates)
 
 
 class TemplateError(Exception):
@@ -388,7 +405,7 @@ _GRAMMAR = {}
 
 
 def _grammar():
-    key = tuple((os.stat(p).st_mtime_ns, os.stat(p).st_size) for p in WRITERS.values())
+    key = tuple((os.stat(WRITERS[n]).st_mtime_ns, os.stat(WRITERS[n]).st_size) for n in CONFORM_WRITERS)
     if _GRAMMAR.get('key') != key:
         _GRAMMAR.clear()
         _GRAMMAR['kinds'] = [(k, i, t, re.compile(_full(n)), re.compile(_prefix(n))) for k, i, t, n in reason_templates()]
@@ -923,3 +940,157 @@ def check_snapshot_run(run):
 def snapshot_per_instant(path, **ctx):
     """S1-S3 on a snapshot chain run directory (module docstring)."""
     return check_snapshot_run(path)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the deep omission (10-s, 1-minute, 10-minute): omission_record (module docstring, O1-O3)
+# ---------------------------------------------------------------------------------------------------------------------
+
+OMISSION_TIERS = ('10s', '1min', '10min')
+
+
+def omission_templates():
+    """[(kind, instant, tiers, template tree)] of the omission record's 'why' parts, from the writer's own f-strings
+    (deep_omission.why_part, member_gates, member_word, snapshot_member_reason, tenmin_member_reason) and constants (RMS_ABOVE,
+    RATE_HIGH); the gate names are catalog_omission.PROPAGATE, the band groups instrument.SUBBAND_BANDS, a member's verdicts
+    catalog_omission.WIDEBAND_MEMBER_VERDICTS."""
+    DO = 'deep_omission'
+    C = _cfg()
+    gate = '(?:%s)' % '|'.join(re.escape(g) for g in C.catalog_omission.PROPAGATE)
+    gates = _named(_pat(r'%s(?:;%s)*' % (gate, gate), r'.*'), 'gates')
+    grp = _alt(*[_lit(g) for g in C.instrument.SUBBAND_BANDS])
+    subband = _pat('(?:%s)' % '|'.join(re.escape(b) for v in C.instrument.SUBBAND_BANDS.values() for b in v), r'.*')
+    from exopipe.phase3.lib.catalog import deep_omission as DOM
+    word = _node(_joined(DO, 'member_word', lambda v: True, 'the member word'),       # a member's verdict: one that propagates
+                 {'band': subband, 'verdict': _alt(*[_lit(v) for v in DOM.member_verdicts()])}, 'the member word')
+    members = _named(_pat('%s(?:, %s)*' % (_full(word), _full(word)), r'.*'), 'members')
+    mfields = {'members': members, 'group': grp}
+    mgates = _node(_joined(DO, 'member_gates', lambda v: True, 'the member gates'), mfields, 'the member gates')
+    snap = _node(_joined(DO, 'snapshot_member_reason', lambda v: True, 'the 10-s / 1-minute member reason'), mfields,
+                 'the 10-s / 1-minute member reason')
+    tenmin = _node(_joined(DO, 'tenmin_member_reason', lambda v: True, 'the 10-minute member reason'), mfields,
+                   'the 10-minute member reason')
+    part = _joined(DO, 'why_part', lambda v: True, 'the why part')
+    deep = _node(part, {'gates': gates, 'reason': _alt(_lit(_const(DO, 'RMS_ABOVE')), _lit(_const(DO, 'RATE_HIGH')))},
+                 'the why part')
+    wide = _node(part, {'gates': mgates, 'reason': _alt(snap, tenmin)}, 'the why part')
+    return [('deep omission', 'own-hour', OMISSION_TIERS, deep),
+            ('deep omission (wideband member)', 'own-hour', OMISSION_TIERS, wide)]
+
+
+_OGRAMMAR = {}
+
+
+def omission_kind(part):
+    """The declared omission kind a 'why' part matches WHOLE, or None. Raises TemplateError when the writer cannot be read."""
+    from exopipe.phase3.lib.catalog import deep_omission as DOM
+    key = (os.stat(WRITERS['deep_omission']).st_mtime_ns, os.stat(WRITERS['deep_omission']).st_size, DOM.member_verdicts(),
+           tuple(_cfg().catalog_omission.PROPAGATE))
+    if _OGRAMMAR.get('key') != key:
+        _OGRAMMAR.clear()
+        _OGRAMMAR['kinds'] = [(k, re.compile(_full(n))) for k, _i, _t, n in omission_templates()]
+        _OGRAMMAR['key'] = key
+    return next((k for k, rx in _OGRAMMAR['kinds'] if rx.fullmatch(part or '')), None)
+
+
+def _omission_own_key(r, tier):
+    """The key a removed row's own identity names (O1): 10-s / 1-minute from its cand_id (or panel name) and its tier,
+    10-minute from its cand_id; None when unreadable."""
+    from exopipe.phase3.lib.catalog import deep_omission as DOM
+    if tier == 'snapshot':
+        if r['kind'] == 'panel':
+            m = DOM.SNAP_PANEL.match(r.get('note') or '')
+            return (m.group(1), m.group(3), m.group(2), r['stokes'], r['tier']) if m else None
+        m = DOM.SNAP_CID.match(r.get('cand_id') or '')
+        return (m.group(1), m.group(3), m.group(2), m.group(4), m.group(5)) if m else None
+    m = DOM.TENMIN_CID.match(r.get('cand_id') or '')
+    return (m.group(2), m.group(4), m.group(3), r['stokes'], '10min') if m else None
+
+
+def _omission_rec_key(r, tier, has_why, why):
+    """(key, the row's why) of a removed row, or (None, None) for a consequence row (an identity, source or page left with
+    nothing). A record without a 'why' column is production's combined-view record (kind, batch, identity, cand_id, lst,
+    band, night, stokes, tier, snr, source, note): its member rows and panels name their key only by cand_id / panel name,
+    and its why is the decisions' of that key (a member row whose own key is no OMIT key is a consequence there)."""
+    from exopipe.phase3.lib.catalog import deep_omission as DOM
+    from exopipe.phase3.lib.catalog import tests_deep_omission as TD
+    if has_why:
+        k = TD.removed_key(r, tier)
+        return (k, r.get('why') or '') if k else (None, None)
+    if r['kind'] == 'detection':
+        k = (r['lst'], r['band'], r['night'], r['stokes'], r['tier'] if tier == 'snapshot' else '10min')
+    elif tier == 'snapshot' and r['kind'] in ('member row', 'panel'):
+        k = _omission_own_key(r, tier)
+        if r['kind'] == 'member row' and (k is None or k not in why):
+            return None, None
+    else:
+        return None, None
+    return k, why.get(k, '')
+
+
+def check_omission(path, tier=None, decisions=None):
+    """O1-O3 on an omission record (module docstring): (passed, value, detail). The stage's records carry each removal's
+    'why'; production's combined-view record has none - there the why is its key's decisions (O2 and O3 then read the
+    decisions of the key the row names)."""
+    from exopipe.phase3.lib.catalog import deep_omission as DOM
+    cols, rows = _rows(path)
+    tier = tier or ('snapshot' if 'batch' in cols else 'sublst')
+    has_why = 'why' in cols
+    dp = decisions or os.path.join(os.path.dirname(os.path.abspath(path)), 'deep_omission.csv')
+    if not os.path.exists(dp):
+        return False, None, f'no decision table {dp}: the removals cannot be placed at their instants'
+    try:
+        omission_kind('')
+    except (TemplateError, SyntaxError, OSError) as e:
+        return False, None, f'O2: the omission templates cannot be read from the writer ({e}) - refusing'
+    dec = _rows(dp)[1]
+    why = DOM.why_of(dec)
+    verdict = {}
+    for d in dec:
+        if not d['gates'].startswith('member '):
+            verdict[(d['lst'], d['band'], d['night'], d['stokes'], d.get('tier') or '10min')] = d['verdict']
+    msgs, kinds, n = [], {}, 0
+    for i, r in enumerate(rows):
+        k, w = _omission_rec_key(r, tier, has_why, why)
+        if k is None:
+            continue
+        n += 1
+        rid = f"row {i + 2} {r['kind']} {r.get('cand_id') or r.get('note') or ''}"
+        own = _omission_own_key(r, tier)
+        cols_ = [(c, r[c], k[j]) for j, c in enumerate(('lst', 'band', 'night', 'stokes', 'tier')) if r.get(c)]
+        if own != k or any(v != kv for _c, v, kv in cols_):
+            msgs.append(f'O1 {rid}: removed as {k}, its own instant is {own} (another night, band, Stokes or tier)')
+            continue
+        if k[4] not in OMISSION_TIERS or (tier == 'snapshot') == (k[4] == '10min'):
+            msgs.append(f'O1 {rid}: tier {k[4]!r} is not of the {tier} record')
+            continue
+        parts = w.split(DOM.WHY_SEP)
+        bad = [p for p in parts if omission_kind(p) is None]
+        if bad:
+            msgs.append(f'O2 {rid}: undeclared omission reason {bad[0][:90]!r} (no template matches it whole)')
+            continue
+        if why.get(k) != w:
+            msgs.append(f'O3 {rid}: its why is not the decisions of its own key {k} ({why.get(k, "no OMIT decision")!r:.90})')
+            continue
+        for p in parts:
+            kd = omission_kind(p)
+            kinds[kd] = kinds.get(kd, 0) + 1
+            if kd != 'deep omission (wideband member)':
+                continue
+            mem = p.split(': ', 1)[0][len('member '):]
+            for word in mem.split(', '):
+                sb, _, v = word.rpartition(' ')
+                if verdict.get((k[0], sb, k[2], k[3], k[4])) != v:
+                    msgs.append(f'O3 {rid}: wideband member {word!r} is not a decision of the same night, Stokes and tier '
+                                f'({verdict.get((k[0], sb, k[2], k[3], k[4]), "none")})')
+    what = (f'{n} removals of the {tier} omission record judged at their own instant (LST, night, band, Stokes, tier)'
+            + ('' if has_why else ", why from the key's decisions (production's record has none)") + ': '
+            + ', '.join(f'{k} {v}' for k, v in sorted(kinds.items())))
+    return _fail(msgs, n, what)
+
+
+@content_test('omission_record', name='per_instant')
+def omission_per_instant(path, tier=None, decisions=None, **ctx):
+    """O1-O3 on the deep omission's record (module docstring)."""
+    return check_omission(path, tier if tier in ('snapshot', 'sublst') else None, decisions)
+

@@ -22,9 +22,15 @@ instant's detections in any band and Stokes, never another instant's, never anot
   snapshot    a synthetic chain run: per-instant record passes; a detection removed although its own instant passed, a member
               of another instant / tier, a count mismatch, a missing record, and source-level vetoes (before clv15 99fe3ea)
               each refuse; the tests are registered on their classes (conformant_catalog, rejected_record, snapshot_run)
+  omission    the deep omission's record (lib/catalog/deep_omission.py; omission_record.per_instant): its kinds are the
+              writer's own templates (its texts classify, added words do not, a changed writer refuses); a 10-s / 1-minute
+              and a 10-minute record pass, and production's combined-view record (no 'why' column) too; O1 (a cand_id of
+              another night, another tier), O2 (an undeclared reason), O3 (a key that is no OMIT key, a wideband member of
+              another verdict) each refuse
   real        READ-ONLY on served products of every tier: deep Run_P3S5 (and every record of its multiples fork), 10-minute
               Run_SLST07B rejected.csv and the 14h compare copy, snapshot Run_SNAPB6H_20261023 (10-s and 1-minute) pass; the
-              source-level batch Run_SNAPB2A_20261014 refuses
+              source-level batch Run_SNAPB2A_20261014 refuses; the deep omission's served records (10-minute Run_SLSTB,
+              the combined view Run_SNAPCOMB_20261026) pass
 
 Scratch: /tmp/exopipe3_tests_per_instant/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_per_instant.py [test_name ...]
@@ -526,6 +532,117 @@ def test_snapshot():
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# the deep omission's record
+# ---------------------------------------------------------------------------------------------------------------------
+
+SNAP_DEC_COLS = ['lst', 'band', 'night', 'stokes', 'gates', 'deep_value', 'deep_threshold', 'deep_attempt', 'tier', 'n_admitted',
+                 'tier_median_rms', 'tier_rms_threshold', 'rms_pass', 'rate', 'rate_threshold', 'rate_pass', 'verdict', 'reason']
+
+
+def omission_record(root, mutate=None, tier='snapshot', production_form=False):
+    """A decision table and its record, the texts from the writer's own functions: 05h 46 MHz V night 2 refused and OMIT in
+    the 10-s tier (KEEP in the 1-minute tier), its Green member row in the 10-s tier; removed: a 46 MHz detection, a Green
+    detection, a member row and a panel. ``mutate(dec, rec)`` edits the rows before writing."""
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    n2 = '2025-01-02'
+    m = DO.member_word('46MHz', 'OMIT')
+    dec = [dict(lst='05h', band='46MHz', night=n2, stokes='V', gates='searchtier', deep_attempt='20261006T000000', tier='10s',
+                rms_pass='0', rate_pass='1', verdict='OMIT', reason=DO.RMS_ABOVE),
+           dict(lst='05h', band='46MHz', night=n2, stokes='V', gates='searchtier', deep_attempt='20261006T000000', tier='1min',
+                rms_pass='1', rate_pass='1', verdict='KEEP', reason=DO.PASSES),
+           dict(lst='05h', band='Green', night=n2, stokes='V', gates=DO.member_gates(m), tier='10s', verdict='OMIT',
+                reason=DO.snapshot_member_reason(m, 'Green'))]
+    w46, wg = DO.why_part(dec[0]['gates'], dec[0]['reason']), DO.why_part(dec[2]['gates'], dec[2]['reason'])
+    cid = lambda b, t, ts: f'05h_{n2}_{b}_V_{t}_{ts}'
+    rec = [dict(kind='detection', batch='T1A', identity='J1', cand_id=cid('46MHz', '10s', '20250102_051234'), lst='05h',
+                band='46MHz', night=n2, stokes='V', tier='10s', snr='-8.1', why=w46),
+           dict(kind='detection', batch='T1A', identity='J1', cand_id=cid('Green', '10s', '20250102_051234'), lst='05h',
+                band='Green', night=n2, stokes='V', tier='10s', snr='-9.1', why=wg),
+           dict(kind='identity dropped', batch='T1A', identity='J1'),
+           dict(kind='member row', batch='T1A', source='J1_05h_2025-01-02_46MHz', cand_id=cid('46MHz', '10s', '20250102_051234'),
+                lst='05h', band='46MHz', night=n2, stokes='V', tier='10s', why=w46),
+           dict(kind='panel', batch='T1A', source='J1_46MHz', lst='05h', band='46MHz', night=n2, stokes='V', tier='10s',
+                note='rank0001_05h_2025-01-02_46MHz20250102051234.png', why=w46)]
+    if tier == 'sublst':
+        for d in dec:
+            d.pop('tier')
+        dec = [d for d in dec if d.get('rms_pass') != '1']
+        dec[-1]['reason'] = DO.tenmin_member_reason(m)
+        wg = DO.why_part(dec[-1]['gates'], dec[-1]['reason'])
+        rec = [dict(kind='detection', lst='05h', stokes='V', view='sb', source_id='J1_46MHz', band='46MHz',
+                    cand_id=f'V1_05h_{n2}T03_46MHz_0001', night=n2, why=w46),
+               dict(kind='detection', lst='05h', stokes='V', view='wb', source_id='J1_Green', band='Green',
+                    cand_id=f'V1_05h_{n2}T04_Green_0002', night=n2, why=wg),
+               dict(kind='page dropped', lst='05h', stokes='V', view='sb', source_id='J1', band='46MHz', why='its source dropped')]
+    if mutate:
+        mutate(dec, rec)
+    _wcsv(os.path.join(root, 'deep_omission.csv'), SNAP_DEC_COLS if tier == 'snapshot' else [c for c in SNAP_DEC_COLS if c != 'tier'],
+          dec)
+    cols = (DO.RECORD_COLS if tier == 'snapshot' else DO.TENMIN_RECORD_COLS)
+    if production_form:                  # the combined view's record: no 'why'; member rows and panels without lst / night
+        cols = ['kind', 'batch', 'identity', 'cand_id', 'lst', 'band', 'night', 'stokes', 'tier', 'snr', 'source', 'note']
+        for r in rec:
+            if r['kind'] in ('member row', 'panel'):
+                r.pop('lst', None), r.pop('night', None)
+    _wcsv(os.path.join(root, 'deep_omission_dropped.csv'), cols, rec)
+    return os.path.join(root, 'deep_omission_dropped.csv')
+
+
+def test_omission():
+    from exopipe.phase3.core import validate
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    PI = _PI()
+    T = {k: n for k, _i, _t, n in PI.omission_templates()}
+    assert set(T) == {'deep omission', 'deep omission (wideband member)'}, sorted(T)
+    m = DO.member_word('46MHz', 'OMIT') + ', ' + DO.member_word('55MHz', 'ABSENT')
+    for txt, kind in ((DO.why_part('beam;searchtier', DO.RMS_ABOVE), 'deep omission'),
+                      (DO.why_part('sanity_V', DO.RATE_HIGH), 'deep omission'),
+                      (DO.why_part(DO.member_gates(m), DO.snapshot_member_reason(m, 'Green')), 'deep omission (wideband member)'),
+                      (DO.why_part(DO.member_gates(m), DO.tenmin_member_reason(m)), 'deep omission (wideband member)')):
+        assert PI.omission_kind(txt) == kind, (txt, PI.omission_kind(txt))
+        for probe in (txt + PROBE, txt[:-1] + PROBE + txt[-1:], PROBE.strip() + ': ' + txt):
+            assert PI.omission_kind(probe) is None, probe
+    assert PI.omission_kind(DO.why_part('stale_input', DO.RMS_ABOVE)) is None          # not a propagating gate
+    assert PI.omission_kind(DO.why_part('beam', DO.PASSES)) is None                    # a KEEP never removes
+    ok, val, det = PI.check_omission(omission_record(_fresh('omit_ok')))
+    assert ok and val == 4 and 'deep omission 3, deep omission (wideband member) 1' in det, det
+    names = {r['name']: r for r in validate.run('omission_record', omission_record(_fresh('omit_ok2')))}
+    assert names['omission_record.per_instant']['passed'], names
+    ok, val, det = PI.check_omission(omission_record(_fresh('omit_prod'), production_form=True))
+    assert ok and val == 4 and "production's record has none" in det, det
+    ok, val, det = PI.check_omission(omission_record(_fresh('omit_tenmin'), tier='sublst'), 'sublst')
+    assert ok and val == 2, det
+
+    def bad(name, mutate, want, **kw):
+        ok, val, det = PI.check_omission(omission_record(_fresh('omit_' + name), mutate, **kw), kw.get('tier'))
+        assert not ok and want in det, (name, det)
+    bad('night', lambda d, r: r[0].update(cand_id=r[0]['cand_id'].replace('2025-01-02', '2025-01-03')), 'O1 row 2 detection')
+    bad('tier', lambda d, r: r[0].update(cand_id=r[0]['cand_id'].replace('_10s_', '_1min_')), 'O1 row 2 detection')
+    bad('reason', lambda d, r: r[0].update(why=r[0]['why'] + PROBE), 'O2 row 2 detection')
+    bad('keep', lambda d, r: [x.update(tier='1min', cand_id=x['cand_id'].replace('_10s_', '_1min_')) for x in r[:1]],
+        'O3 row 2 detection')                                   # removed under the KEEP decision of the 1-minute tier
+    bad('member', lambda d, r: d[0].update(verdict='KEEP', reason=DO.PASSES, rms_pass='1'), "wideband member '46MHz OMIT'")
+    bad('tenmin_night', lambda d, r: r[0].update(cand_id=r[0]['cand_id'].replace('2025-01-02T03', '2025-01-03T03')),
+        'O1 row 2 detection', tier='sublst')
+    # a writer whose template changed refuses (never classifies by guess)
+    old = PI._TREES.get('deep_omission')
+    try:
+        import ast
+        src = open(PI.WRITERS['deep_omission']).read().replace("return f'{gates}: {reason}'", "return f'{gates}: {reason} {night}'")
+        PI._OGRAMMAR.clear()
+        st = os.stat(PI.WRITERS['deep_omission'])
+        PI._TREES['deep_omission'] = ((st.st_mtime_ns, st.st_size), ast.parse(src))
+        ok, val, det = PI.check_omission(omission_record(_fresh('omit_writer')))
+        assert not ok and 'cannot be read from the writer' in det and 'night' in det, det
+    finally:
+        if old is None:
+            PI._TREES.pop('deep_omission', None)
+        else:
+            PI._TREES['deep_omission'] = old
+        PI._OGRAMMAR.clear()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # real served products, read only
 # ---------------------------------------------------------------------------------------------------------------------
 
@@ -535,6 +652,8 @@ TENMIN = '/data07/gh/phase3/transients/Run_SLST07B/rejected.csv'
 TENMIN_CONFORM = '/lustre/gh/main/phase3/sublst/compare_14h/new_B/catalog/master_catalog.csv'
 SNAP = '/data07/gh/phase3/snapshot_search/review/Run_SNAPB6H_20261023'
 SNAP_SOURCE_LEVEL = '/data07/gh/phase3/snapshot_search/review/Run_SNAPB2A_20261014'
+OMIT_TENMIN = '/data07/gh/phase3/transients/Run_SLSTB/deep_omission_dropped.csv'
+OMIT_SNAP = '/data07/gh/phase3/snapshot_search/review/Run_SNAPCOMB_20261026/deep_omission_dropped.csv'
 
 
 def test_real_products():
@@ -555,6 +674,13 @@ def test_real_products():
         if p == SNAP:                            # both snapshot tiers carry veto removals
             assert ' 10s ' in det and ' 1min ' in det, det
         report.append(f'{tier} {cls} {p}: PASS ({det[:160]})')
+    for tier, p in (('sublst', OMIT_TENMIN), ('snapshot', OMIT_SNAP)):     # production's own omission records
+        if not os.path.exists(p):
+            print(f'    SKIP omission {p}: absent')
+            continue
+        ok, val, det = PI.check_omission(p, tier)
+        assert ok and val > 0, (p, det)
+        report.append(f'deep omission {tier} omission_record {p}: PASS ({det[:160]})')
     if os.path.exists(SNAP_SOURCE_LEVEL):        # chained under the source-level rule (before clv15 99fe3ea): refused
         ok, val, det = PI.check_snapshot_run(SNAP_SOURCE_LEVEL)
         assert not ok and det.startswith('S1:'), det
@@ -563,7 +689,7 @@ def test_real_products():
     print('    ' + '\n    '.join(report))
 
 
-TESTS = [test_kinds, test_deep, test_sublst, test_rejected, test_fork, test_snapshot, test_real_products]
+TESTS = [test_kinds, test_deep, test_sublst, test_rejected, test_fork, test_snapshot, test_omission, test_real_products]
 
 
 def main(argv):

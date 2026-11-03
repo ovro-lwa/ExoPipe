@@ -734,3 +734,89 @@ class catalog_grouping(_Section):
         'POOLED_PRIOR', 'GROUP_SEEDING', 'GROUP_U_LINK', 'GROUP_MAX_K', 'MERGE_RADIUS_DEG', 'MULTIPLES_MAX_ROUNDS', 'FRAME_DEC_DEG',
         'CDELT_DEG', 'ELEVATION_GAMMA', 'ELEVATION_FLOOR_DEG', 'DEEP_STAT_SCALE', 'DEEP_SYS_SCALE')}
     RULED['MULTIPLE_MIN'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING)
+
+
+# =====================================================================================================================
+# unit deep-omission (item Q, 2026-11-02): the deep omission of the short tiers (lib/catalog/deep_omission.py).
+# Gregg 2026-10-24 ~20:30 UTC, verbatim: "Omission from the deep transient search is sufficient for omission from the
+# 10s/1-min/10-min search, assessed on a per hour, per band basis" (R-GREGG-20261024-DEEP-OMISSION-APPLIES-TO-SHORT-TIERS-WITH-
+# FRAME-EXCEPTION); the design "All approved. Release." ~23:45 UTC (R-GREGG-20261024-DEEP-OMISSION-DESIGN-APPROVED-AND-10MIN-
+# HOLD-RELEASED). Production: exopipe_ops sublst_deep_omission.py (c6d2c9e, 0d4f1a9), snapshot_deep_omission.py (37546f6); each
+# key names its production line. [step] every key is read by the ported stage (no in-place module holds a copy, except the
+# 10-minute drop, which reads only the decision table this stage writes).
+# =====================================================================================================================
+
+_OMISSION_RULING = 'R-GREGG-20261024-DEEP-OMISSION-DESIGN-APPROVED-AND-10MIN-HOLD-RELEASED'
+
+
+class catalog_omission(_Section):
+    """deep omission for the 10-s, 1-minute and 10-minute tiers: decisions per (LST, band, night, Stokes[, tier]) from the deep
+    search's refusal record and the tier's own data, and the drop of the omitted detections (lib/catalog/deep_omission.py)."""
+    # ---- the deep search's record (read only)
+    REFUSALS = '/fast/gh/main/phase3/Run_P3S5/refusals'   # the merged refusal record of the deep run, one file per cell and gate,
+                                                          # each cell's rows under its newest tag (exopipe_ops p3s3_merge.py, 10-30);
+                                                          # sublst_deep_omission.py:28 (canonical; /data07/.../Run_P3S5 links here)
+    PROPAGATE = ('nightimage', 'epochgate', 'sanity', 'sanity_I', 'sanity_V', 'searchtier', 'beam')   # the gates that propagate;
+                                                          # NOT stale_input, extraction (the deep's own processing failures, Gregg
+                                                          # 'Agreed'); sublst_deep_omission.py:32
+    # ---- the exception test (one rule for every gate, each in its own Stokes scope: searchtier by its Stokes column, sanity_I
+    #      -> I, sanity_V -> V, the others both)
+    SIGMA = 5.0                                           # a night passes at <= median + SIGMA x 1.4826 MAD of the cell's nights (noise)
+                                                          # and of their served rates (rate); sublst_deep_omission.py:35
+    # PRODUCTION'S VALUE, PENDING GREGG (not ruled, not locked - an override tries the alternative): production's implementation
+    # details that the approved card does not state - clv15 fix_ledger IMPLEMENTED-DEEP-OMISSION-DROP-IN-THE-10-MINUTE-CUMULATIVE-
+    # 20261025, verbatim: "FOR GREGG (implementation details, not in the approved card): the rate floor (spread floored at one
+    # detection per night) and the ABSENT propagation to widebands"; no later row ratifies either (Q review F3). The card's rate
+    # rule is "above median + 5 x 1.4826 MAD" with no floor. Pending decision: DECISIONS_PENDING entry "Deep omission: two
+    # implementation details of production's, pending you" (named in refactor_reviews_20261103/Q_deepomit_fixes.md).
+    RATE_FLOOR_PER_NIGHT = 1.0                            # detections: the rate spread is floored at this many detections per night
+                                                          # (/ the median admitted rows or windows per night); production's value,
+                                                          # pending Gregg; 0.0 = the card's rule (no floor). sublst_deep_omission.py:167-171
+                                                          # ("RATE FLOOR (2026-10-25, for review)"), snapshot_deep_omission.py:97
+    WIDEBAND_MEMBER_VERDICTS = ('OMIT', 'ABSENT')         # the verdicts of a deep-refused member subband night that also omit that
+                                                          # night's detections of its band group (the subband a member of the group's
+                                                          # wideband frames / windows); production's value, pending Gregg: ABSENT (the
+                                                          # tier searched no data of the subband that night) propagates too; ('OMIT',) =
+                                                          # only a subband the tier's own test omitted (the card: "a subband omitted
+                                                          # drops the night's wideband detections that include it").
+                                                          # sublst_deep_omission.py:198, snapshot_deep_omission.py:110
+    WIDEBAND_EXCEPT = ('18MHz',)                          # subbands whose omission never omits their band group's detections (the
+                                                          # 18 MHz carve-out); sublst_deep_omission.py:198, snapshot_deep_omission.py:110
+    # (the band groups are instrument.SUBBAND_BANDS = sublst_deep_omission.py:33 GROUPS; drift-tested)
+    # ---- the 10-s and 1-minute tiers (the snapshot search's records under paths.SNAPSHOT_FLEET_OUT/<LST>_<night>/)
+    SNAPSHOT_TIERS = ('10s', '1min')                      # snapshot_deep_omission.py:29
+    SNAPSHOT_NOISE = {'10s': 'noise_{band}_{stokes}_median.csv', '1min': 'noise_{band}_{stokes}_median_1min.csv'}   # the
+                                                          # search's noise table (admitted rows, global_rms_jyb); snapshot_deep_omission.py:48
+    SNAPSHOT_MEMBERS = 'wideband_members_{stokes}.csv'    # the cell's wideband frames' member subbands; snapshot_deep_omission.py:70
+    # ---- the 10-minute tier (paths.SUBLST_ROOT; the arm catalog_sublst.ARM, its tree catalog_sublst.ARM_TREES and search dir
+    #      catalog_sublst.SEARCH_DIR)
+    TENMIN_RUN = 'Run_SLST{hh}{arm}'                      # the published per-LST run under paths.TRANSIENTS_ROOT: served counts from its
+                                                          # master_catalog.csv; sublst_deep_omission.py:88, :126
+    TENMIN_FRAME_RMS = '/data07/gh/phase3/transients/Run_SLSTB/page_context_frames.csv'   # path,size,mtime,rms of the searched
+                                                          # windows (the stack noise gate's own quantity), used while size and mtime
+                                                          # match, else recomputed (page_context_tenmin.central_rms_file, in place);
+                                                          # sublst_deep_omission.py:30
+    TENMIN_RMS_CACHE_SEED = '/data07/gh/phase3/transients/deep_omission/cache'   # production's window-rms cache, READ ONLY as a seed
+                                                          # (an entry is used only while its window's size and mtime match); the
+                                                          # stage writes its own cache under its output; sublst_cumulative.sh:42-44
+    READ_WORKERS = 6                                      # threads reading the served product and listing its page directories
+                                                          # (the review host's disk; the Lustre rule: at most 6 readers)
+    # ---- gates
+    ABSENT_WITH_SERVED = 'refuse'                         # a deep-refused (night, band, Stokes, tier) the tier has no record of
+                                                          # (verdict ABSENT) while the served product holds detections of it: the
+                                                          # exception test cannot be evaluated. 'refuse' (G6; the rule is never applied
+                                                          # as 'nothing to drop') | 'production' (kept and counted, as production does;
+                                                          # 0 on B4X+B6H). PROPOSED, PENDING GREGG (Q review F5): 'refuse' is the
+                                                          # refactor's proposal (gates refuse rather than warn), neither production's
+                                                          # behavior nor a ruling; production's 'production' is in the parity file
+                                                          # (parity/production_20261013.cfg; the code site is marked WAVE2 G6).
+                                                          # DECISIONS_PENDING FYI named in refactor_reviews_20261103/Q_deepomit_fixes.md
+    PROTECTED_KEYS = ('PROPAGATE', 'SIGMA', 'WIDEBAND_EXCEPT', 'SNAPSHOT_TIERS', 'SNAPSHOT_NOISE', 'SNAPSHOT_MEMBERS',
+                      'TENMIN_RUN')                       # the ruled rule and the production layout it reads (mirrors, drift-tested);
+                                                          # NOT the two pending values above (RATE_FLOOR_PER_NIGHT,
+                                                          # WIDEBAND_MEMBER_VERDICTS): an override tries the alternative
+    RULED = {'PROPAGATE': _OMISSION_RULING, 'SIGMA': _OMISSION_RULING,
+             'WIDEBAND_EXCEPT': (_OMISSION_RULING, 'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4'),
+             'REFUSALS': ('R-GREGG-20261024-DEEP-OMISSION-APPLIES-TO-SHORT-TIERS-WITH-FRAME-EXCEPTION',
+                          'R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE')}   # REFUSALS: the deep record the rulings name;
+                                                          # --omit-refusals is an override of it (--ruling-for or a non-production --out)

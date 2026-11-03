@@ -54,6 +54,17 @@ Writes outside --out: none when --out is outside the production roots (the searc
 Other tiers: sub-LST and snapshot run lib/catalog/tier_sublst.py / tier_snapshot.py (their flags are prefixed --sublst-,
   --snap-). In the refactor window the snapshot per-tier localization belongs to `serve`, the fit-store row quarantine to
   `archive`, the sub-LST and deep parent catalogues to `masters --stages sources` (refactor decisions 2026-10-13).
+Deep omission of the short tiers (lib/catalog/deep_omission.py; Gregg 2026-10-24, R-GREGG-20261024-DEEP-OMISSION-DESIGN-
+  APPROVED-AND-10MIN-HOLD-RELEASED): `--tier snapshot --stages omit --omit-runs RUN,RUN` (the served batch runs a combined view
+  assembles) and `--tier sublst --stages omit --lsts ...` (the published LST runs of the cumulative) - the decisions from the
+  deep refusal record and the tier's own data, the drop and its record (deep_omission.csv, deep_omission_dropped.csv,
+  deep_omission_summary.txt; classes omission_decisions, omission_record); unit '<--run or tier label>.omit'. It sits where the
+  cumulative product is assembled: after each unit's chain and pages, before the cumulative catalogues, identities and pages
+  (the 10-minute cumulative build of `serve --tier sublst` writes the same table and passes it to the merge, which applies
+  the drop). 10-s / 1-minute: the drop is written as the kept product deep_omission_kept.csv (class omission_kept) and is
+  APPLIED by the snapshot tier's cumulative step - the port of the combined snapshot view, not yet written; until then it is
+  computed and recorded, and applied nowhere. --omit-refusals is an override of the RULED catalog_omission.REFUSALS
+  (--ruling-for or a non-production --out).
 """
 import importlib
 import sys
@@ -65,8 +76,8 @@ SELECTORS = ('tier', 'run_label', 'lsts', 'cells', 'stokes', 'exclude_cells', 'e
 WRITES = True
 CONFIG = ('catalog', 'catalog_merge', 'catalog_conform', 'catalog_fitpos', 'catalog_select', 'catalog_associate',
           'catalog_fork', 'catalog_identity', 'catalog_localize', 'catalog_sublst', 'catalog_sublst_tie',
-          'catalog_sublst_veto', 'catalog_snapshot', 'catalog_incremental', 'astrometry', 'fitting', 'exclusions',
-          'paths', 'instrument', 'runner', 'site')
+          'catalog_sublst_veto', 'catalog_snapshot', 'catalog_incremental', 'catalog_omission', 'astrometry', 'fitting',
+          'exclusions', 'paths', 'instrument', 'runner', 'site')
 
 _TIER_ERRORS = {}     # tier -> why its module could not be loaded (reported by run and --help)
 
@@ -141,6 +152,8 @@ def add_arguments(p):
             mod.add_arguments(tg)
         except Exception as e:
             _TIER_ERRORS[tier] = f'add_arguments: {type(e).__name__}: {e}'
+    from exopipe.phase3.lib.catalog import deep_omission
+    deep_omission.add_arguments(p.add_argument_group('--stages omit, tiers snapshot and sublst (lib/catalog/deep_omission.py)'))
     inc = _incremental_module()
     if inc is not None and hasattr(inc, 'add_arguments'):
         try:
@@ -159,6 +172,9 @@ def default_out(args):
             return inc.default_out(args)
     if args.tier == 'deep' or getattr(args, 'incremental', False):
         return f'{CFG.paths.TRANSIENTS_ROOT}/Run_{args.run_label or CFG.catalog.DEEP_RUN_LABEL}'
+    from exopipe.phase3.lib.catalog import deep_omission
+    if deep_omission.wants(args):
+        return deep_omission.default_out(args)
     mod = _tier_module(args.tier)
     if mod is not None and hasattr(mod, 'default_out'):
         return mod.default_out(args)
@@ -195,6 +211,9 @@ def run(args, run):
         except ValueError as e:
             print(f'error: {e}', file=sys.stderr)
             return record.EXIT_ERROR
+    from exopipe.phase3.lib.catalog import deep_omission
+    if deep_omission.wants(args):
+        return deep_omission.run(args, run)
     mod = _tier_module(args.tier)
     if mod is None or not hasattr(mod, 'run'):
         print(f'catalog --tier {args.tier}: lib/catalog/tier_{args.tier}.py not available '
