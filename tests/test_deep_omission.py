@@ -27,17 +27,22 @@ R-GREGG-20261024-DEEP-OMISSION-DESIGN-APPROVED-AND-10MIN-HOLD-RELEASED).
              undeclared reason), O3 (a member of another tier); the templates are the writer's own
   kept       the kept product deep_omission_kept.csv (Q review F2): its kept detections = production's step 0 clusters (the
              merge's input) exactly; omission_kept refuses a kept detection of an OMIT key, one the record omits, a missing or an
-             extra per-tier row, a re-pointed source whose new best is not a kept detection of its identity, a count off the summary
+             extra per-tier row, a re-pointed source whose new best is not a kept detection of its identity, a count off the summary;
+             and (Q fix verification N2) a detection key kept twice, a kept detection the served product never had or moved to
+             another identity (the served-set digests of the summary), a summary without digests, a record detection row lost
   stage      `exopipe3 catalog --tier snapshot --stages omit` and `--tier sublst --stages omit` through the step's run();
              --omit-refusals is an override of the RULED catalog_omission.REFUSALS (refused into a production root without
              --ruling-for, allowed and recorded with one or into a non-production --out; Q review F8)
   pending    the two values production chose that Gregg has not ruled (RATE_FLOOR_PER_NIGHT, WIDEBAND_MEMBER_VERDICTS) are neither
              RULED nor PROTECTED and their alternatives work (0 = the card's rule without a floor; ('OMIT',) = no ABSENT
              propagation); ABSENT_WITH_SERVED is PROPOSED with production's value in the parity file and the WAVE2 G6 marks
-             (Q review F3, F5)
+             (Q review F3, F5); an invalid value refuses at --set through the real CLI, before the run (N3)
   prodbugs   production's bugs carried for parity, pinned as they are today (Q review F1: a wideband detection dropped for a member
              its own frame / window lacks; F4: deep_value / deep_threshold in the record's listing order, gates sorted, the
-             meaning from the first sorted gate; F10: 'tier rms above threshold' without a threshold) - a fix shows here
+             meaning from the first sorted gate; F10: 'tier rms above threshold' without a threshold) - a fix shows here; the
+             10-minute F1 world is also decided by PRODUCTION's sublst_deep_omission.decide, its table = the port's (N5)
+  injrecord  an ordinary run refuses an injected run's refusal record however it is named (N1): run_snapshot, tenmin_table,
+             the real CLI with --set catalog_omission.REFUSALS= and --omit-refusals, dry run included
   real       READ ONLY: the port's decisions = production's decide for one LST of the served batch B6H (served counts of B6H);
              SKIP (reported as SKIP, not PASS) on a host without the served batch
 
@@ -858,6 +863,43 @@ def test_kept_product():
     mutated(lambda rr: rr.remove(next(r for r in rr if r['kind'] == 'detection kept')), 'K2 ')
     mutated(lambda rr: next(r for r in rr if r['kind'] == 'source dropped').update(catalog='source_catalogs_I_10s/x_source_members.csv'),
             'is not its tier')
+    # Q fix verification N2: the three corruptions the test could not see (vrq_kept_gap.py) refuse now - a kept detection listed
+    # twice in place of another (counts unchanged), one the served product never had, one moved to another kept identity
+    kept_i = [i for i, r in enumerate(rows) if r['kind'] == 'detection kept']
+
+    def swap_dup(rr):
+        rr[kept_i[1]] = dict(rr[kept_i[0]])
+    mutated(swap_dup, 'this detection key is kept twice')
+
+    def swap_foreign(rr):
+        r = rr[kept_i[0]]
+        r['cand_id'] = r['cand_id'][:-2] + '99'
+        r['ra_peak'] = '0.00001'
+    mutated(swap_foreign, "is not the summary's kept digest")
+
+    def swap_identity(rr):
+        nid = collections.Counter((rr[i]['batch'], rr[i]['identity']) for i in kept_i)
+        a = rr[next(i for i in kept_i if nid[(rr[i]['batch'], rr[i]['identity'])] >= 2)]
+        a['identity'] = next(rr[i] for i in kept_i if rr[i]['batch'] == a['batch'] and rr[i]['identity'] != a['identity'])['identity']
+    mutated(swap_identity, "is not the summary's kept digest")
+    # the summary's digests: present, additive (kept + omitted = served), and required
+    sj = json.load(open(os.path.join(out, 'deep_omission_summary.json')))
+    dg = {k: DO.MultisetDigest(v) for k, v in sj['digests'].items()}
+    assert dg['kept'] + dg['omitted'] == dg['served'] and dg['kept'].n == summ['kept'] and dg['omitted'].n == summ['omitted'], sj
+    d = os.path.join(root, 'mut_kept_nodigest')
+    shutil.rmtree(d, ignore_errors=True)
+    shutil.copytree(out, d)
+    json.dump(dict(sj, digests={}), open(os.path.join(d, 'deep_omission_summary.json'), 'w'))
+    ok_, _v, det_ = TD.check_kept(os.path.join(d, 'deep_omission_kept.csv'))
+    assert not ok_ and 'has no served / kept / omitted digests' in det_, det_
+    # the record's detection rows are the omitted detections of the digest: one removed refuses
+    shutil.copy(os.path.join(out, 'deep_omission_summary.json'), os.path.join(d, 'deep_omission_summary.json'))
+    rp_ = os.path.join(d, 'deep_omission_dropped.csv')
+    rr_ = _rows(rp_)
+    rr_.remove(next(r for r in rr_ if r['kind'] == 'detection'))
+    _wcsv(rp_, DO.RECORD_COLS, rr_)
+    ok_, _v, det_ = TD.check_kept(os.path.join(d, 'deep_omission_kept.csv'))
+    assert not ok_ and "record's detection rows are not the omitted detections" in det_, det_
 
 
 def test_pending_values():
@@ -897,9 +939,19 @@ def test_pending_values():
                 raise AssertionError(f'{bad_k}={bad_v} accepted')
             except ValueError as e:
                 assert bad_k in str(e), e
+            assert any(bad_k in p for p in DO.check_values()), DO.check_values()      # N3: named before any run
     finally:
         CFG.reset()
         CFG.authorize()
+    assert DO.check_values() == [], DO.check_values()
+    # Q fix verification N3: through the real CLI an invalid value REFUSES at --set (exit 2, 'invalid value', before the run) -
+    # it no longer starts a run that stops late with an error; the floor is refused without any cell of 3 nights
+    for bad_k, bad_v in (('WIDEBAND_MEMBER_VERDICTS', "('ABSENT',)"), ('RATE_FLOOR_PER_NIGHT', '-1.0'),
+                         ('ABSENT_WITH_SERVED', 'keep')):
+        r = _cli('catalog', '--tier', 'snapshot', '--stages', 'omit', '--omit-runs', ','.join(runs), '--omit-refusals', rdir,
+                 '--set', f'catalog_omission.{bad_k}={bad_v}', '--out', os.path.join(root, 'n3_out'), '--cores', 'none')
+        assert r.returncode == 2 and 'invalid value' in r.stderr and bad_k in r.stderr, (bad_k, r.returncode, r.stderr[-500:])
+        assert not os.path.exists(os.path.join(root, 'n3_out', 'deep_omission.csv')), 'a run started'
     B, A = (_dec_by_key(_rows(os.path.join(root, x, 'deep_omission.csv'))) for x in ('base', 'alt'))
     member = lambda D, k: [r for r in D[k] if r['gates'].startswith('member ')]
     g8 = ('05h', 'Green', NIGHTS[7], 'I', '10s')
@@ -1026,6 +1078,26 @@ def test_production_bugs_pinned():
     g = [r for r in T[('05h', 'Green', NIGHTS[0], 'I', '10min')] if r['gates'].startswith('member ')]
     assert g and '46MHz OMIT' in g[0]['gates'], g
     assert cid in {r['cand_id'] for r in _rows(os.path.join(root2, 'port', 'deep_omission_dropped.csv'))}
+    # Q fix verification N5: PRODUCTION'S OWN decide on this pinned world (its roots patched, as test_tenmin) - its table equals
+    # the port's byte for byte and holds the same Green member row, and production's merge drop on PRODUCTION's table omits the
+    # window-without-46-MHz detection; a production fix of F1 inside sublst_deep_omission.decide fails here
+    os.makedirs(os.path.join(root2, 'prodcache'))
+    with Patch((PDO, 'SL', sl), (PDO, 'RUNS', tr), (PDO, 'FRAME_RMS', frms), (PDO, '_FR', None), (PDO, '_WBW', {}), (PDO, '_WBM', {})):
+        prows = PDO.decide('05h', rdir2, os.path.join(root2, 'prodcache'))
+    for r in prows:
+        r['rate_definition'] = DO.TENMIN_RATE_DEF
+    with open(os.path.join(root2, 'prod.csv'), 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=list(prows[0]))
+        w.writeheader()
+        w.writerows(prows)
+    assert filecmp.cmp(os.path.join(root2, 'prod.csv'), os.path.join(root2, 'port', 'deep_omission.csv'), shallow=False), \
+        'the pinned 10-minute world: production\'s decide table differs from the port\'s'
+    gp = [r for r in prows if (r['band'], r['night'], r['stokes']) == ('Green', NIGHTS[0], 'I') and r['gates'].startswith('member ')]
+    assert gp and '46MHz OMIT' in gp[0]['gates'] and gp[0]['verdict'] == 'OMIT', gp
+    PDROP.OM.clear()
+    PDROP.WHY.clear()
+    PDROP.load(os.path.join(root2, 'prod.csv'))
+    assert PDROP.omitted(cid, 'I'), 'production\'s merge drop on production\'s own table keeps it'
     PDROP.OM.clear()
     PDROP.WHY.clear()
     PDROP.load(os.path.join(root2, 'port', 'deep_omission.csv'))
@@ -1035,6 +1107,65 @@ def test_production_bugs_pinned():
 def glob_(rdir, lst):
     import glob as _g
     return _g.glob(os.path.join(rdir, '%s_*_excluded.csv' % lst))
+
+
+def _cli(*args, timeout=900):
+    """The real CLI (python -m exopipe.phase3) of this tree, an ordinary run (no inherited injected flag)."""
+    import subprocess
+    e = {k: v for k, v in os.environ.items() if k not in ('EXOPIPE3_INJECTED', 'P3_SNAP_INJECTED', 'EXOPIPE3_PARITY_ROOT')}
+    e['PYTHONPATH'] = REPO + (os.pathsep + e['PYTHONPATH'] if e.get('PYTHONPATH') else '')
+    return subprocess.run([sys.executable, '-m', 'exopipe.phase3'] + [str(a) for a in args], cwd=REPO, env=e,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+
+
+def _inject_mark(root):
+    """An injected run's start record under ``root`` (core/record.INJECTED_DIR, as cli writes it): the products under ``root``
+    carry synthetic sources."""
+    from exopipe.phase3.core import record
+    p = os.path.join(root, '_records', record.INJECTED_DIR, 'search_20261103T000000Z_test_1.json')
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, 'w') as f:
+        json.dump({'run_id': 'search_20261103T000000Z_test_1', 'step': 'search', 'injected': 'test: an injected run'}, f)
+    return p
+
+
+def test_injected_record():
+    """Q fix verification N1: an ordinary run never takes its decisions from an injected run's refusal record, however the record
+    is named - run_snapshot and tenmin_table (every caller: the omit stage, the 10-minute cumulative build) refuse it, and the
+    real CLI refuses `--set catalog_omission.REFUSALS=<it>` (the config route the flag check could not see) as it refuses
+    `--omit-refusals <it>`, dry run included; an injected run may read it."""
+    from exopipe.phase3.core import injected
+    from exopipe.phase3.core.record import Refusal
+    DO = _DO()
+    root, rdir, proto, runs = snapshot_world('inj_record', seed=7)
+    inj = os.path.join(root, 'injout')
+    _inject_mark(inj)
+    irdir = os.path.join(inj, 'refusals')
+    shutil.copytree(rdir, irdir)
+    for what, fn in (('run_snapshot', lambda: DO.run_snapshot(runs, os.path.join(root, 'o1'), rdir=irdir, proto=proto)),
+                     ('tenmin_table', lambda: DO.tenmin_table(['05h'], os.path.join(root, 'o2.csv'), rdir=irdir))):
+        try:
+            fn()
+            raise AssertionError(f'{what}: an injected run\'s refusal record was read')
+        except Refusal as e:
+            assert 'G1 INJECTED-RUN GUARD' in str(e) and irdir in str(e), (what, str(e))
+    assert not os.path.exists(os.path.join(root, 'o1')) and not os.path.exists(os.path.join(root, 'o2.csv'))
+    saved = os.environ.get(injected.ENV)
+    os.environ[injected.ENV] = 'test: an injected consumer'
+    try:
+        DO.injected_record_gate(irdir)            # an injected run may read an injected run's record
+    finally:
+        if saved is None:
+            os.environ.pop(injected.ENV, None)
+        else:
+            os.environ[injected.ENV] = saved
+    DO.injected_record_gate(rdir)                 # an ordinary record, an ordinary run
+    for extra in (['--set', f'catalog_omission.REFUSALS={irdir}'], ['--omit-refusals', irdir]):
+        for dry in (['--dry-run'], []):
+            r = _cli('catalog', '--tier', 'snapshot', '--stages', 'omit', '--omit-runs', ','.join(runs), *extra,
+                     '--out', os.path.join(root, 'cli_out'), '--cores', 'none', *dry)
+            assert r.returncode == 2 and 'INJECTED-RUN GUARD' in r.stderr, (extra, dry, r.returncode, r.stderr[-500:])
+    assert not os.path.exists(os.path.join(root, 'cli_out', 'deep_omission.csv'))
 
 
 def test_stage():
@@ -1145,7 +1276,7 @@ def test_real_one_lst():
 
 TESTS = [test_drift, test_snapshot, test_tenmin, test_serve_build, test_serve_build_merge, test_gates, test_content,
          test_kept_product, test_stage, test_refusals_override, test_pending_values, test_production_bugs_pinned,
-         test_real_one_lst]
+         test_injected_record, test_real_one_lst]
 
 
 def main(argv):

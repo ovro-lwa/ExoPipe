@@ -292,7 +292,10 @@ def main(argv=None):
         out = args.out or mod.default_out(args)
         CFG.check_out(out)
         from exopipe.phase3.core import fallback as _fb, wrap as _wr
-        _bad = _fb.check_values() + _wr.check_values()      # B-30 / B-32: a misspelt policy or wrap value refuses here
+        from exopipe.phase3.lib.catalog import deep_omission as _do
+        # B-30 / B-32: a misspelt policy or wrap value refuses here; the deep omission's pending values too (Q fix
+        # verification N3: an invalid --set catalog_omission.* value refuses before the run, never as a late error)
+        _bad = _fb.check_values() + _wr.check_values() + _do.check_values()
         if _bad:
             raise ConfigRefusal('invalid value(s): ' + '; '.join(_bad))
     except ConfigRefusal as e:
