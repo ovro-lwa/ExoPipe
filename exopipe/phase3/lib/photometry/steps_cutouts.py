@@ -43,9 +43,9 @@ An engine REFUSAL refuses its unit (C-ENGINE) and an error is recorded as that u
 
 Gates: C-ROOT (gate_write_root: a retired generation never; a production root while paths.PRODUCTION_WRITES is False), the
 INJECTED-RUN GUARD on every root a stage writes (core/injected.check), C-INPLACE (the served roots only with --in-place, the
-measurement chained; gate_in_place), C-CELLS (a regeneration names its items; a named tier cell the tool does not know),
-C-HOST (the tier tool's inputs not readable on this host), C-RUN (the tier tool reads one deep run), PHOT-ADHOC (an ad-hoc
-target set into or under a served root, or for cutmeasure / evaluate), PHOT-FULL (snapshot Full).
+measurement chained, snapshot over whole cells; gate_in_place), C-CELLS (a regeneration names its items; a named tier cell
+the tool does not know), C-HOST (the tier tool's inputs not readable on this host), C-RUN (the tier tool reads one deep run),
+PHOT-ADHOC (an ad-hoc target set into or under a served root, or for cutmeasure / evaluate), PHOT-FULL (snapshot Full).
 """
 import csv
 import glob
@@ -416,7 +416,7 @@ def stage_snapshot_cutouts(run, args):
               ','.join(samples), ' (ad hoc: %s)' % ', '.join('%s=%s' % t for t in targets) if targets else '',
               K.python_key('snapshot', 'cutouts_subband')))
     try:
-        gate_write_roots(run, args, 'cutouts', [root], targets, {'cutout root': root})
+        gate_write_roots(run, args, 'cutouts', [root], targets, {'cutout root': root}, cells=sorted({cl for cl, _ in items}))
     except Refusal as e:
         if run.dry_run:
             K.would_refuse(run, 'cutouts', str(e))
@@ -435,11 +435,12 @@ def stage_snapshot_cutouts(run, args):
     return units
 
 
-def gate_write_roots(run, args, stage, roots, targets, adhoc_roots):
+def gate_write_roots(run, args, stage, roots, targets, adhoc_roots, cells=None):
     """Every gate on the roots a cutouts / cutmeasure stage writes, before its first unit: the INJECTED-RUN GUARD (core/
     injected.check: an injected run writes scratch only - review F6, whatever flag or default named the root), C-ROOT (a
     retired generation; a production root in the refactor window), PHOT-ADHOC (an ad-hoc set into or under a served root) and
-    C-INPLACE (the served roots only with --in-place; gate_in_place)."""
+    C-INPLACE (the served roots only with --in-place; gate_in_place). ``cells``: the night cells a snapshot cutouts stage
+    writes (gate_in_place_whole_cells)."""
     from exopipe.phase3.core import injected
     what = {'cutouts': 'the cutout root (--cutout-root)', 'cutmeasure': 'the tier forced root (--tier-out)'}[stage]
     for r in roots:
@@ -447,17 +448,18 @@ def gate_write_roots(run, args, stage, roots, targets, adhoc_roots):
     for r in roots:
         K.gate_write_root(r, what)
     K.gate_adhoc_roots(targets, adhoc_roots)
-    gate_in_place(run, args, stage, roots)
+    gate_in_place(run, args, stage, roots, cells)
 
 
-def gate_in_place(run, args, stage, roots):
+def gate_in_place(run, args, stage, roots, cells=None):
     """C-INPLACE (review F4; production's rule, phase3_snapshot_search.regen_cutouts: P3_SNAP_CUTOUT_ROOT is 'a new root -
     never over the existing product'; generation 5 was built beside generation 4 and the pages switched after). A cutouts /
     cutmeasure stage writes a SERVED root (photometry.CUTOUT_ROOT; photometry.TIER_FORCED_ROOTS) only with --in-place, and then
     the measurement of the new cutouts runs in the same invocation: snapshot cutouts -> the measure stage into the served
-    stage 1 (--out = photometry.OUT_ROOT[snapshot]); deep / sublst cutouts -> cutmeasure into the served tier forced roots (no
-    --tier-out); cutmeasure into the served tier forced roots measures the served cutouts (no other --cutout-root). A root
-    INSIDE a served root is no generation root at all (refused); --in-place with no served root to write refuses."""
+    stage 1 (--out = photometry.OUT_ROOT[snapshot]), over whole cells (gate_in_place_whole_cells); deep / sublst cutouts ->
+    cutmeasure into the served tier forced roots (no --tier-out; it re-measures every band of each LST found in the root);
+    cutmeasure into the served tier forced roots measures the served cutouts (no other --cutout-root). A root INSIDE a served
+    root is no generation root at all (refused); --in-place with no served root to write refuses."""
     ph = K.cfg().photometry
     in_place = bool(getattr(args, 'in_place', False))
     stages = list(getattr(args, 'photometry_stages', ()) or ())
@@ -492,6 +494,7 @@ def gate_in_place(run, args, stage, roots):
                 raise Refusal('C-INPLACE: --in-place cutouts replace the cutouts the served stage 1 measured: the measure stage '
                               'must run in this invocation (--stages cutouts,measure; selected %s) into the served stage 1 '
                               '(--out %s; given %s)' % (','.join(stages), ph.OUT_ROOT['snapshot'], run.out_root))
+            gate_in_place_whole_cells(args, cells or [])
         elif 'cutmeasure' not in stages or getattr(args, 'tier_out', None):
             raise Refusal('C-INPLACE: --in-place tier cutouts replace the cutouts the served tier forced roots measured: '
                           'cutmeasure must run in this invocation (--stages cutouts,cutmeasure; selected %s) into the served '
@@ -504,6 +507,45 @@ def gate_in_place(run, args, stage, roots):
         if real(K.cutout_root(args)) != real(ph.CUTOUT_ROOT):
             raise Refusal('C-INPLACE: the served tier forced roots measure the served cutouts (photometry.CUTOUT_ROOT %s); '
                           '--cutout-root %s is another generation' % (ph.CUTOUT_ROOT, K.cutout_root(args)))
+
+
+def gate_in_place_whole_cells(args, cells):
+    """C-INPLACE, snapshot (fix verification N1, 2026-11-03): an --in-place regeneration re-measures what it places in the
+    same invocation, and the chained measure rewrites a cell's served stage 1 only as a whole - its full-band manifest
+    (photometry_measure.MANIFEST_NAME, rewritten when the measured bands are every band of photometry.SNAPSHOT_BANDS;
+    steps_snapshot.measure_cell). So --in-place regenerates WHOLE cells: the measure's own selection (steps_snapshot.
+    select_cells / bands_for, what measure_cell will measure) must hold every cell the cutouts stage writes (``cells``; a
+    --cells pattern is expanded over the cube store for the cutouts and over the search outputs for the measure), each item
+    over every band. A band subset (<cell>_<band>, --scopes) - which the measure would refuse (SM-SUBSET) only AFTER the
+    cutouts were placed in the served root - another --manifest-name, or an --index listing (the measure would read a listing,
+    not the root as placed) refuses here, before anything is placed."""
+    from exopipe.phase3.lib.photometry import steps_snapshot as KS
+    c = K.cfg()
+    full = list(c.photometry.SNAPSHOT_BANDS)
+    man = c.photometry_measure.MANIFEST_NAME
+    if getattr(args, 'manifest_name', None) and args.manifest_name != man:
+        raise Refusal('C-INPLACE: --in-place re-measures the served stage 1 into its full-band manifest %s; --manifest-name %s '
+                      'would leave that manifest naming the replaced cutouts' % (man, args.manifest_name))
+    if getattr(args, 'index', None):
+        raise Refusal('C-INPLACE: --in-place re-measures the cutouts as placed in the served root; --index %s would measure a '
+                      'listing made before them' % args.index)
+    try:
+        sel, _ = KS.select_cells(args, c.paths.SNAPSHOT_FLEET_OUT)
+    except ValueError as e:
+        raise Refusal('C-INPLACE: the chained measure cannot select the cells of this regeneration (%s)' % e)
+    subset = sorted('%s_%s' % (cl, sb) if sb else cl for cl, sb in sel if list(KS.bands_for(args, sb)) != full)
+    if subset:
+        raise Refusal('C-INPLACE: --in-place regenerates whole cells - the chained measure rewrites a cell\'s served stage 1 '
+                      'only over every band (%d, photometry.SNAPSHOT_BANDS) and refuses a band subset (SM-SUBSET) after the '
+                      'cutouts are placed; %s select%s a band subset (%s) - name whole cells, without --scopes'
+                      % (len(full), ', '.join(subset[:5]), 's' if len(subset) == 1 else '',
+                         '--scopes %s' % args.scopes if args.scopes else 'a <cell>_<band> item'))
+    missing = sorted(set(cells) - {cl for cl, _ in sel})
+    if missing:
+        raise Refusal('C-INPLACE: the cutouts stage would place %d cell(s) the chained measure does not select (%s; it '
+                      'expands --cells over the search outputs %s, the cutouts over the cube store) - their served stage 1 '
+                      'would not be re-measured; name the cells' % (len(missing), ', '.join(missing[:5]),
+                                                                    c.paths.SNAPSHOT_FLEET_OUT))
 
 
 def cutout_admitted(cell, band):

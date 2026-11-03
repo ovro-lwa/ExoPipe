@@ -56,6 +56,9 @@ products are only READ.
   roots only --in-place with the measurement chained, sub-LST stages named; F5 C-HOST / C-CELLS; F7 the served-generation
   check where /data07 is not mounted; F8 a unit that writes nothing and the root's leftovers; F9 one ad-hoc gate entry per
   root; F10 / F11 the ad-hoc gates (a root inside a served one, a row without a name).
+- the fix verification's finding N1 (P_photometry_fix_verification.md): an --in-place snapshot regeneration covers whole cells
+  (the verifier's band-subset reproduction refused before anything is placed; a whole cell placed and its served stage 1
+  re-measured in one run).
 """
 import ast
 import contextlib
@@ -2179,6 +2182,73 @@ def test_engine_refusal_carry_on():
                                              for s, why in st.values()), (rc, st, txt[-600:]))
 
 
+def test_in_place_whole_cells():
+    """Fix verification N1 (2026-11-03): an --in-place snapshot regeneration re-measures what it places in the same run, and
+    the chained measure rewrites a cell's served stage 1 only as a whole (its full-band manifest) - so --in-place regenerates
+    WHOLE cells. The verifier's reproduction (inplace_band_subset_vrP.py: one band of a cell whose served stage 1 holds the
+    full-band manifest; the cutouts were placed, then the measure refused SM-SUBSET) and every other way to a band subset or to
+    a cell the measure does not select are refused BEFORE anything is placed; a whole cell is cut, placed and re-measured into
+    the served stage 1 in one run (the REAL snapshot_forced_phot.py). Served roots patched to scratch; the FAKE regeneration
+    engine with the REAL writer on the synthetic cube."""
+    setup_fake_regen()
+    base = os.path.join(TMP, 'n1')
+    served_cut, served_out, fleet = (os.path.join(base, x) for x in ('photometry_genS', 'served_out', 'fleet_out'))
+    s1 = os.path.join(served_out, S1, CUT_CELL)
+    os.makedirs(s1)
+    man = os.path.join(s1, CFG.photometry_measure.MANIFEST_NAME)
+    with open(man, 'w') as f:                       # the cell's served full-band manifest, as in the reproduction
+        f.write(CFG.photometry_measure.MANIFEST_HEADER + '\n')
+    s1_before = {f: TC.sha256_file(os.path.join(s1, f)) for f in os.listdir(s1)}
+    os.makedirs(os.path.join(fleet, '18h_2025-04-14'))      # the measure's universe (search outputs) for the pattern case
+    index = os.path.join(base, 'index.txt')
+    open(index, 'w').close()
+    argv = ['photometry', '--tier', 'snapshot', '--stages', 'cutouts,measure', '--in-place', '--out', served_out, '--work',
+            WORK, '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES]
+
+    def placed():
+        return sorted(glob.glob(os.path.join(served_cut, '*', '*', '*', '*.fits')))
+
+    def s1_now():
+        return {f: TC.sha256_file(os.path.join(s1, f)) for f in os.listdir(s1)}
+    with patched(CFG.photometry, CUTOUT_ROOT=served_cut, OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
+        rc, txt = step(argv + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--dry-run'])
+        check('N1 dry run of the verifier\'s reproduction (--in-place, one band of the cell): the cutouts stage would refuse '
+              'C-INPLACE (whole cells), exit 2', rc == 2 and 'WOULD REFUSE C-INPLACE' in txt and 'whole cells' in txt,
+              txt[-800:])
+        with patched(CFG.paths, SNAPSHOT_FLEET_OUT=fleet):
+            for sel, what, why in ((['--cells', '%s_%s' % (CUT_CELL, CUT_SB)], 'one band of the cell (the verifier\'s '
+                                    'reproduction)', 'whole cells'),
+                                   (['--cells', CUT_CELL, '--scopes', CUT_SB], 'a whole cell narrowed by --scopes',
+                                    'whole cells'),
+                                   (['--cells', CUT_CELL, '--manifest-name', 'forced_manifest_64.csv'],
+                                    'another --manifest-name', '--manifest-name'),
+                                   (['--cells', CUT_CELL, '--index', index], 'an --index listing', '--index'),
+                                   (['--cells', '18h_2025-04-1[34]'], 'a --cells pattern whose cell %s the measure does not '
+                                    'select (it expands patterns over the search outputs)' % CUT_CELL, 'does not select')):
+                rc, txt = step(argv + sel)
+                check('C-INPLACE (verification N1): --in-place with %s refuses before anything is placed (exit 2) - no cutout '
+                      'in the served cutout root, the served stage 1 unchanged' % what, rc == 2 and 'C-INPLACE' in txt
+                      and why in txt and not placed() and s1_now() == s1_before, (rc, txt[-700:], placed()[:3]))
+        # a whole cell; its widebands left to the cutouts stage by a band-level --exclude-cells (the synthetic store holds no
+        # group-search fake), which the measure does not narrow: it still re-measures every band of the cell
+        wbs = ('Red', 'Green', 'Blue')
+        rc, txt = step(argv + ['--cells', CUT_CELL, '--exclude-cells', ','.join('%s_%s' % (CUT_CELL, b) for b in wbs)])
+    recs = records(served_out)
+    cu = {n: r.get('status') for n, r in recs.items() if n.startswith('cutouts.%s.' % CUT_CELL)}
+    me = recs.get('measure.%s' % CUT_CELL, {})
+    rows = T.read_csv(man)[1] if os.path.exists(man) else []
+    npz = sorted(f for f in os.listdir(s1) if f.endswith('.npz'))
+    check('--in-place of a WHOLE cell: its cutouts placed in the served cutout root (%s done; %d other subbands without a cube '
+          'no input) and its served stage 1 re-measured over every band in the same run - the full-band manifest rewritten, '
+          'its rows naming the placed cutouts, %d npz (exit 0)' % (CUT_SB, sum(v == 'no-input' for v in cu.values()), len(npz)),
+          rc == 0 and cu.get('cutouts.%s.%s' % (CUT_CELL, CUT_SB)) == 'done'
+          and len(cu) == len(CFG.photometry.SNAPSHOT_BANDS) - len(wbs) and me.get('status') == 'done'
+          and list(me.get('meta', {}).get('bands') or []) == list(CFG.photometry.SNAPSHOT_BANDS) and placed()
+          and s1_now().get(os.path.basename(man)) != s1_before[os.path.basename(man)]
+          and rows and all(r['file'].startswith(served_cut + '/') for r in rows) and npz
+          and all('_%s_' % CUT_SB in f for f in npz), (rc, cu, me.get('status'), me.get('reason'), len(rows), npz, txt[-900:]))
+
+
 FAKE_TIER = r'''#!/usr/bin/env python3
 """FAKE photometry_tier_cutouts_20261025.py for tests/test_photometry.py: the REAL tool's code (imported from its file) with its
 input roots DEEP / TROOT / SB pointed at the test's synthetic tree and p3s2_frames.master_path at the synthetic master
@@ -2529,7 +2599,7 @@ def test_adhoc_and_selection(objs):
     # stage 1 (the served roots patched to scratch here)
     served_out = os.path.join(TMP, 'served_snap_out')
     snap = ['photometry', '--tier', 'snapshot', '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES, '--cells',
-            '%s_%s' % (CUT_CELL, CUT_SB), '--work', WORK, '--dry-run']
+            CUT_CELL, '--work', WORK, '--dry-run']        # a whole cell: --in-place regenerates whole cells (N1)
     with patched(CFG.photometry, CUTOUT_ROOT=served_tmp, OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
         for extra, what in ((['--stages', 'cutouts', '--out', served_out], 'into the served cutout root without --in-place'),
                             (['--stages', 'cutouts', '--in-place', '--out', served_out],
@@ -2542,8 +2612,8 @@ def test_adhoc_and_selection(objs):
             check('C-INPLACE (review F4, snapshot): %s refuses (dry run, exit 2)' % what, rc == 2 and 'C-INPLACE' in txt,
                   txt[-600:])
         rc, txt = step(snap + ['--stages', 'cutouts,measure', '--in-place', '--out', served_out])
-        check('C-INPLACE: --in-place --stages cutouts,measure into the served stage 1 is planned (dry run, exit 0)', rc == 0
-              and 'WOULD REFUSE' not in txt and '[measure]' in txt and '[cutouts]' in txt, txt[-800:])
+        check('C-INPLACE: --in-place --stages cutouts,measure of a whole cell into the served stage 1 is planned (dry run, '
+              'exit 0)', rc == 0 and 'WOULD REFUSE' not in txt and '[measure]' in txt and '[cutouts]' in txt, txt[-800:])
     rc, txt = step(base + ['--stages', 'measure', '--targets', 'ADHOC=%s' % adhoc, '--cutout-root', ah_root, '--out',
                            CFG.photometry.OUT_ROOT['snapshot'], '--dry-run'])
     check('PHOT-ADHOC: an ad-hoc measure into the served stage 1 refuses (dry run, exit 2)', rc == 2 and 'PHOT-ADHOC' in txt,
@@ -2608,6 +2678,7 @@ def main():
     test_one_file_per_key()
     test_cutouts_snapshot()
     test_engine_refusal_carry_on()
+    test_in_place_whole_cells()
     test_cutouts_tiers()
     test_adhoc_and_selection(objs)
     test_real()

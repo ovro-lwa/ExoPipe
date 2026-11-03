@@ -56,8 +56,9 @@ files), then a per-unit manifest <root>/_manifest/<10s|deep|10min>/... (photomet
 the staged files before anything is placed; the files a placement replaces move to a quarantine directory first, and a
 refusal after that puts everything back. The SERVED roots (the defaults photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS) only with
 --in-place, the measurement on the new cutouts chained in the same invocation (C-INPLACE; production's rule: a regeneration
-writes a new root, never over the served product). --targets TAG=CSV[,TAG=CSV] (+ --planets): an ad-hoc target set for cutouts
-and measure (P3_SNAP_CUTOUT_SAMPLES), into its own roots only (PHOT-ADHOC).
+writes a new root, never over the served product); a snapshot regeneration in place covers whole cells, since the chained
+measure rewrites a cell's served stage 1 (its full-band manifest) only as a whole. --targets TAG=CSV[,TAG=CSV] (+ --planets):
+an ad-hoc target set for cutouts and measure (P3_SNAP_CUTOUT_SAMPLES), into its own roots only (PHOT-ADHOC).
 Records: <out>/_records/photometry/<unit>.json; engine logs <out>/_records/photometry/logs/. No marker files.
 --dry-run: prints the plan and writes nothing; exit 2 when a gate would refuse (the plan names it), else 0. A stage whose
   inputs an EARLIER stage of the same invocation writes (stage/measure after frames, evaluate after measure) is planned from
@@ -77,8 +78,9 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   SE-DONE (a cell without a complete stage 1), the evaluation's own refusals, Z (no targets_ge4 rows, or a recomputed
   zone screen differs: the zone-flag file is not written).
   cutouts: C-CELLS (no --cells; a tier cell the tool does not know), C-HOST (the tier tool's inputs not readable on this
-  host), C-ROOT (a retired generation; a production root in the window), C-INPLACE (a served root without --in-place, or
-  --in-place without its measurement chained), C-RUN (--src-run other than the tier tool's deep run), C-NOCUBE / C-EXCLUDED /
+  host), C-ROOT (a retired generation; a production root in the window), C-INPLACE (a served root without --in-place;
+  --in-place without its measurement chained, or - snapshot - over a band subset, another manifest name, an --index, or a
+  cell the chained measure does not select), C-RUN (--src-run other than the tier tool's deep run), C-NOCUBE / C-EXCLUDED /
   C-NOCUT (exit 3 per unit; C-STALE when the root still holds that (cell, band)'s files), C-ENGINE (the engine refused the
   unit), C-NAMES, C-IDENTITY, C-CONTENT / CM-CONTENT (the staged products' content tests), C-STALE (--fresh), C-PLACE (a
   failure while placing: every move undone), PHOT-ADHOC (an ad-hoc set into or under a served root, or with frames / stage /
@@ -129,8 +131,9 @@ def add_arguments(p):
     cu.add_argument('--in-place', action='store_true',
                     help='cutouts / cutmeasure: regenerate the SERVED generation itself (photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS '
                          '- refused without this flag: a regeneration writes a new root), its measurement chained in this '
-                         'invocation (snapshot: --stages cutouts,measure into the served stage 1; deep / sublst: '
-                         '--stages cutouts,cutmeasure without --tier-out)')
+                         'invocation (snapshot: --stages cutouts,measure into the served stage 1, whole cells only - no '
+                         '<cell>_<band>, --scopes, --manifest-name or --index; deep / sublst: --stages cutouts,cutmeasure '
+                         'without --tier-out)')
     s = p.add_argument_group('snapshot tier')
     s.add_argument('--index', metavar='FILE', help='measure: listing of cutout paths relative to --cutout-root')
     s.add_argument('--band-procs', type=int, help='measure: band processes at once in a cell (default '
