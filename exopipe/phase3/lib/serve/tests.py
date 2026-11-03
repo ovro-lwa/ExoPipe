@@ -5,7 +5,9 @@ is read-only (verify may run it on production files). Registered with @content_t
   served_view        stokes_equals_catalogue, unique_keys, complete, review_dir_page, tier_rules
   judgement_journal  parses_append_only, carry_consistent, hold_rule
   hub_page           registry_matches (review hub registry.json / index.html), greenlit_only (inspection hub index.html)
-  served_page        live, same_process, sources_listed      (record <out>/_records/serve/pages/<tier>_<port>.json)
+  served_page        live, same_process, sources_listed      (record <out>/_records/serve/pages/<tier>_<port>.json; a page
+                     registered on the two-port server or one with a server of its own)
+  page_registration  entries_registered, one_change          (record of the ONE registration of a serve)
   stopped_page       not_listening                           (record of `serve --stop`)
   sublst_cumulative  merge_invariants, figures, served_tests_c_d
   review_copy        byte_copy, no_excluded_rows
@@ -604,21 +606,63 @@ def _rec(path):
         return json.load(f)
 
 
+def _where(rec):
+    """(port, path) of a served page's index: a registered page at /p/<id>/ on the two-port server's review listener, a page
+    with a server of its own at / on its port."""
+    if rec.get('registered'):
+        return rec['listener'], f'/p/{rec["id"]}/'
+    return rec['port'], '/'
+
+
 @content_test('served_page')
 def live(path, **ctx):
-    """GET http://127.0.0.1:<port>/ answers 200 within INDEX_READ_TIMEOUT_S."""
+    """GET of the page's index answers 200 within INDEX_READ_TIMEOUT_S (registered: http://127.0.0.1:<review listener>/p/<id>/;
+    a server of its own: http://127.0.0.1:<port>/)."""
     from exopipe.phase3.lib.serve import procs
     rec = _rec(path)
-    st, body = procs.http_get(rec['port'], timeout=_S().INDEX_READ_TIMEOUT_S)
-    return st == 200, st, f'port {rec["port"]} answers {st}' + ('' if st == 200 else f' ({body[:80]})')
+    port, p = _where(rec)
+    st, body = procs.http_get(port, p, timeout=_S().INDEX_READ_TIMEOUT_S)
+    return st == 200, st, f'{port}{p} answers {st}' + ('' if st == 200 else f' ({body[:80]})')
+
+
+def _registered_now(rec):
+    """[failures] of a registered page now: its registry entry is the recorded one (two_port.entry_md5: what the page is
+    built from), the server on the listener reads that registry, and the page it built (when built) is of that entry."""
+    from exopipe.phase3.lib.serve import register, two_port
+    bad = []
+    try:
+        with open(rec['registry']) as f:
+            cur = next((e for e in json.load(f).get('pages', []) if e.get('id') == rec['id']), None)
+    except (OSError, ValueError) as e:
+        return [f'registry {rec["registry"]} unreadable ({e})']
+    want = two_port.entry_md5(rec['entry'])
+    if cur is None:
+        bad.append(f'{rec["id"]} is not in {rec["registry"]}')
+    elif two_port.entry_md5(cur) != want:
+        bad.append(f'the registry entry {rec["id"]} is not the recorded one (registered again since)')
+    st = register.server_status(rec['listener'])
+    if st is None:
+        bad.append(f'the two-port server on {rec["listener"]} does not answer /_status')
+    elif os.path.realpath(st.get('registry') or '') != os.path.realpath(rec['registry']):
+        bad.append(f'the two-port server on {rec["listener"]} reads {st.get("registry")}, not {rec["registry"]}')
+    else:
+        for b in st.get('backends') or []:
+            x = (b.get('built') or {}).get(rec['id'])
+            if x and x.get('entry') != want:
+                bad.append(f'the server\'s build of {rec["id"]} is of another entry ({x.get("entry")})')
+    return bad
 
 
 @content_test('served_page')
 def same_process(path, **ctx):
-    """The pid listening on the port is the recorded pid, its argv is the recorded argv (so its --run is this run), its
-    environment carries the recorded SERVER_ENV values; a twin's argv has --inspect."""
+    """Registered: the registry holds the recorded entry, the two-port server on the listener reads that registry and its build
+    of the page is of that entry. A server of its own: the pid listening on the port is the recorded pid, its argv is the
+    recorded argv (so its --run is this run), its environment carries the recorded SERVER_ENV values."""
     from exopipe.phase3.lib.serve import procs
     rec = _rec(path)
+    if rec.get('registered'):
+        bad = _registered_now(rec)
+        return not bad, rec['id'], '; '.join(bad[:4]) if bad else f'{rec["id"]} registered as recorded, serves {rec.get("run")}'
     pids = procs.listeners(rec['port'])
     if pids != [rec['pid']]:
         return False, pids, f'port {rec["port"]} listened by {pids}, recorded pid {rec["pid"]}'
@@ -653,12 +697,56 @@ def sources_listed(path, **ctx):
         return True, None, 'n/a: a restart with the same argv over unchanged files (restart_server_same_argv.sh)'
     if rec.get('expected_sources') is None:
         return False, None, 'no expected_sources recorded'
-    st, body = procs.http_get(rec['port'], timeout=_S().INDEX_READ_TIMEOUT_S)
+    port, p = _where(rec)
+    st, body = procs.http_get(port, p, timeout=_S().INDEX_READ_TIMEOUT_S)
     if st != 200:
         return False, st, f'index answers {st}'
     n = len(procs.index_source_ids(body))
     ok = n == rec['expected_sources']
     return ok, n, f'{n} sources listed, expected {rec["expected_sources"]} ({rec.get("expected_kind")})'
+
+
+# =====================================================================================================================
+# page_registration
+# =====================================================================================================================
+@content_test('page_registration')
+def entries_registered(path, **ctx):
+    """Every entry of the registration stands in registry.json as merged (its build identity, two_port.entry_md5) and in
+    registered_pages.json as given; registry.json passes the server's own loader (two_port.load_registry)."""
+    from exopipe.phase3.lib.serve import two_port
+    rec = _rec(path)
+    bad = []
+    try:
+        two_port.load_registry(rec['registry'])
+    except Exception as e:                       # noqa: BLE001 - reported
+        bad.append(f'registry.json refused by the server\'s loader: {e}')
+    try:
+        reg = {e['id']: e for e in json.load(open(rec['registry'])).get('pages', [])}
+        regd = {e['id']: e for e in json.load(open(rec['registered'])).get('pages', [])}
+    except (OSError, ValueError, KeyError) as e:
+        return False, None, f'unreadable: {e}'
+    for e in rec['entries']:
+        if e['id'] not in reg or two_port.entry_md5(reg[e['id']]) != two_port.entry_md5(e):
+            bad.append(f'{e["id"]}: not in registry.json as merged')
+    for e in rec['given']:
+        if regd.get(e['id']) != e:
+            bad.append(f'{e["id"]}: not in registered_pages.json as given')
+    return not bad, len(rec['entries']), '; '.join(bad[:4]) if bad else f'{len(rec["entries"])} entries registered as recorded'
+
+
+@content_test('page_registration')
+def one_change(path, **ctx):
+    """The registration changed registry.json in a way the server sees: a new inode (an atomic replace) and a modification
+    time strictly later, in whole seconds, than before (register_page.py:48-53; Lustre keeps whole seconds)."""
+    rec = _rec(path)
+    a, b = rec.get('previous_state'), rec.get('state')
+    if not b:
+        return False, None, 'no state recorded'
+    if not a:
+        return True, None, 'the registry was created by this registration'
+    ok = a[0] != b[0] and int(b[2] // 10 ** 9) > int(a[2] // 10 ** 9)
+    return ok, None, (f'registry state {a} -> {b}' + ('' if ok else ': NOT a change the server sees by inode and whole-second '
+                                                                    'modification time'))
 
 
 @content_test('stopped_page')

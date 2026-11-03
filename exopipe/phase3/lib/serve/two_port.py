@@ -28,6 +28,19 @@ At a registry change every built page is rebuilt, one at a time, in its backend'
 page built before answers requests (STALE_HEADER says so), and only a GET carrying FRESH_HEADER waits for the rebuilt page. A page
 whose own entry changed is dropped at once and built on its next request, as before. A build also builds the page's indices (its
 App.prime), so its first source page is as fast as the next (WEB SPEED step 2, 2026-10-30).
+A registry change is a change of the file's inode, size OR modification time (registry_state): Lustre keeps whole seconds, so by
+the time alone a second write within the same second looked unchanged and its page answered 404 (B6A p9024, 2026-10-22; FOLD_IN
+row 10-22 22:0x: production's register_page.py leaves the time strictly later, this server no longer depends on it).
+THE PUBLISH HOLD - an OPTION (serve --publish-hold; off by default = production: a page rebuilt while its run holds the marker
+shows the marker's text as a banner, exopipe_ops 4a39c6b, and nothing else changes; not ruled, an amendment option; FOLD_IN row
+10-30 23:3x): with it, while <run>/HOLD_FILE (PUBLISH_IN_PROGRESS.txt, the marker production's deep publish writes and its
+re-registration removes) exists, the built pages of that run are not rebuilt at a registry change: the page built before keeps
+answering (STALE_HEADER and HELD_HEADER say so), a fresh GET included, until the hold is lifted - then its next request or the
+next registry change queues its rebuild. A page whose own entry changed is dropped and built as before.
+GET /_status reports the BUILD STATE protocol (BUILD_STATE) and the hold option, and per built page what it was built from
+(entry: the md5 of its build_key), when its build started, whether it is stale or held, the builds under way, the rebuild
+queue, the builds finished and the last build failure per page - what exopipe3 serve waits on after it registers a page
+(lib/serve/register.wait_built; a server whose /_status lacks BUILD_STATE is refused before anything is registered).
 """
 import collections
 import contextlib
@@ -58,6 +71,10 @@ STATUS_PATH = '/_twoport_status'                        # a backend's own report
 LISTENER_HEADER = 'X-Two-Port-Listener'                 # set by the front: 'review' or 'inspection'
 FRESH_HEADER = 'X-Two-Port-Fresh'                       # '1': wait for the page rebuilt since the last registry change
 STALE_HEADER = 'X-Two-Port-Stale'                       # a response from a page older than the registry: its build time
+HELD_HEADER = 'X-Two-Port-Held'                         # ... kept on that build by its run's publish hold: the hold file
+HOLD_FILE = 'PUBLISH_IN_PROGRESS.txt'                   # a run's publish hold (the publish marker, classify_transients.py:1242)
+BUILD_STATE = 1                                         # the /_status build-state protocol (entry, build_start, errors, ...)
+SOCK_PATH_MAX = 107                                     # bytes of a Unix socket path (sun_path 108 with its NUL)
 
 # ---------------------------------------------------------------------------------------------------------------------------
 # the per-thread environment
@@ -161,6 +178,26 @@ def load_registry(path):
     directory) and greenlit. Refuses a malformed registry rather than serving part of it."""
     with open(path) as f:
         reg = json.load(f)
+    return check_registry(reg, path)
+
+
+def registry_state(st):
+    """(inode, size, modification time in ns) of a registry file's os.stat result. Any of them changed = the registry
+    changed: the time alone misses a second write within the same second on Lustre (whole seconds); every writer replaces
+    the file (a new inode: register_page.py, registry_merge.py + mv, lib/serve/register.py)."""
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def read_registry(path):
+    """(registry_state, {page_id: entry}) of one open of the file: the state is the state of the bytes read."""
+    with open(path) as f:
+        state = registry_state(os.fstat(f.fileno()))
+        reg = json.load(f)
+    return state, check_registry(reg, path)
+
+
+def check_registry(reg, path):
+    """load_registry's checks on a parsed registry ({'pages': [...]}); ``path`` names it in the refusals."""
     out = collections.OrderedDict()
     for e in reg.get('pages', []):
         missing = [k for k in REQUIRED if not e.get(k)]
@@ -299,6 +336,24 @@ def build_key(entry):
     return json.dumps({k: v for k, v in (entry or {}).items() if k not in ('title', 'greenlit')}, sort_keys=True)
 
 
+def entry_md5(entry):
+    """The identity of what a page is built from: the md5 of its build_key (reported per page by /_status)."""
+    return hashlib.md5(build_key(entry).encode()).hexdigest()
+
+
+def hold_path(entry):
+    """<run>/HOLD_FILE of a review page's entry (its --run), or None for an entry without --run."""
+    a = (entry or {}).get('argv') or []
+    i = a.index('--run') + 1 if '--run' in a else len(a)
+    return os.path.join(a[i], HOLD_FILE) if i < len(a) else None
+
+
+def hold_of(entry):
+    """The page's publish hold: hold_path when the file exists (followed: a link to a lifted hold is no hold), else None."""
+    p = hold_path(entry)
+    return p if p and os.path.exists(p) else None
+
+
 class Page:
     """A built page: its module instance, its App, its environment and the lock of its labels directory."""
 
@@ -310,6 +365,7 @@ class Page:
         self.built = time.time()
         self.last_used = self.built
         self.build_s = self.prime_s = None
+        self.build_start = None               # when its build started (Store._build): the build read the files after it
         self.gen = None                       # the registry generation its build started at (Store._build)
 
 
@@ -481,8 +537,9 @@ class Store:
     REBUILD_GRACE_S = 30.0                    # the rebuild thread starts this long after a registry change (see _rebuild_loop)
     REBUILD_QUIET_S = 10.0                    # ... and this long after the last build a request waited for
 
-    def __init__(self, registry_path, base_env=None, max_pages=80, keep_s=1800, tree=None, builds=True):
+    def __init__(self, registry_path, base_env=None, max_pages=80, keep_s=1800, tree=None, builds=True, publish_hold=False):
         install_env()
+        self.publish_hold = bool(publish_hold)                 # the publish hold option (off: production, a banner only)
         self.tree = os.path.realpath(tree) if tree else None   # a backend builds the pages of this code tree only
         self.builds = builds                                   # the front builds none
         self.code_report = {}                 # (page_id, inspect) -> {'code': [path, md5], 'helpers': {name: [path, md5]}}
@@ -495,14 +552,17 @@ class Store:
         self.building = {}                    # (page_id, inspect) -> threading.Event
         self.write_locks = collections.defaultdict(threading.Lock)
         self.errors = {}                      # (page_id, inspect) -> text of the last build failure
+        self.error_info = {}                  # (page_id, inspect) -> {'t', 'entry'}: when, and the entry_md5 it was built from
         self.gen = 0                          # the registry generation: one more at every registry change
         self.stale = set()                    # built pages older than the registry: they answer requests until rebuilt
+        self.held = set()                     # stale pages kept on their build by their run's publish hold (hold_of)
+        self.builds_done = 0                  # build_page calls finished (built or failed): the builds' progress
         self.rebuild_q = collections.deque()  # stale pages, rebuilt one at a time by the rebuild thread, most recently used first
         self._rebuilder = None
         self.reload_t = 0.0                   # when the registry last changed
         self.fg_pending = 0                   # builds a request is waiting for (get): the rebuild thread lets them go first
         self.fg_last_t = 0.0                  # when the last of them ended
-        self.reg, self.reg_mtime = collections.OrderedDict(), None
+        self.reg, self.reg_mtime, self.reg_state = collections.OrderedDict(), None, None
         self.reload()
 
     def reload(self):
@@ -516,11 +576,13 @@ class Store:
         rebuild thread, the most recently used page first, after the pages requests are waiting for (_rebuild_loop). A page
         whose OWN entry changed (build_key: a new run, title, code or environment), left the registry or no longer belongs to
         this tree is dropped now: its next request builds it, as before, so nobody is shown the page an entry replaced (a
-        serve's identity check after it registers a page reads the new page)."""
-        m = os.path.getmtime(self.registry_path)
-        if m == self.reg_mtime:
+        serve's identity check after it registers a page reads the new page).
+        A change is a change of the file's inode, size or modification time (registry_state; one stat per request, the file
+        read only when it changed). A stale page whose run holds the publish hold (hold_of) is not queued: it keeps its build
+        while the hold stands (self.held)."""
+        if registry_state(os.stat(self.registry_path)) == self.reg_state:
             return
-        reg = load_registry(self.registry_path)
+        state, reg = read_registry(self.registry_path)
         with self.lock:
             self.gen += 1
             self.reload_t = time.time()
@@ -531,7 +593,8 @@ class Store:
                     self._drop(key)
                 else:
                     self.stale.add(key)
-                    self._queue(key)
+                    if not self._held(key, e):
+                        self._queue(key)
             # the page code's helper modules (review_filters and the like, imported once and shared by every page) are reloaded
             # too, so new page code reaches the rebuilt pages: a deploy is a registry change (touch registry.json). A page built
             # before keeps the helper objects it imported until it is replaced.
@@ -542,7 +605,16 @@ class Store:
                     sys.modules.pop(name, None)
             importlib.invalidate_caches()
             self._mod_md5.clear()
-            self.reg, self.reg_mtime = reg, m
+            self.reg, self.reg_mtime, self.reg_state = reg, state[2] / 1e9, state
+
+    def _held(self, key, entry):
+        """True when the stale page ``key`` is held now by its run's publish hold (the option on and the file there: it is
+        looked at now); keeps self.held current (under self.lock)."""
+        if self.publish_hold and hold_of(entry):
+            self.held.add(key)
+            return True
+        self.held.discard(key)
+        return False
 
     def _drop(self, key):
         """Forget a built page (under self.lock)."""
@@ -550,6 +622,7 @@ class Store:
         if pg is not None:
             sys.modules.pop(pg.mod.__name__, None)
         self.stale.discard(key)
+        self.held.discard(key)
         self.code_report.pop(key, None)
 
     def _queue(self, key):
@@ -582,6 +655,8 @@ class Store:
                 key = self.rebuild_q.popleft()
                 if key not in self.stale or key not in self.pages or key in self.building:
                     continue                  # rebuilt meanwhile (a request that waited for it), dropped, or being built now
+                if self._held(key, self.pages[key].entry):
+                    continue                  # its run's publish hold was set after it was queued: it keeps its build
                 ev = self.building[key] = threading.Event()
             try:
                 self._build(key, ev)
@@ -608,7 +683,8 @@ class Store:
 
     def get(self, pid, inspect, fresh=False):
         """The page to answer a request: its current build; a page built before the last registry change answers too unless
-        fresh (a GET carrying FRESH_HEADER), which waits for the rebuilt page."""
+        fresh (a GET carrying FRESH_HEADER), which waits for the rebuilt page. A page held by its run's publish hold answers
+        from its build, fresh or not; once the hold is lifted its rebuild is queued here."""
         key = (pid, bool(inspect))
         e = self.reg.get(pid)
         if e is None or e['kind'] != 'review':
@@ -620,9 +696,10 @@ class Store:
         while True:
             with self.lock:
                 pg = self.pages.get(key)
-                if pg is not None and not (fresh and key in self.stale):
+                held = pg is not None and key in self.stale and self._held(key, pg.entry)
+                if pg is not None and (held or not (fresh and key in self.stale)):
                     pg.last_used = time.time()
-                    if key in self.stale and key not in self.building and key not in self.rebuild_q:
+                    if key in self.stale and not held and key not in self.building and key not in self.rebuild_q:
                         self._queue(key)                       # never left stale: its rebuild is queued
                     return pg
                 ev = self.building.get(key)
@@ -652,21 +729,27 @@ class Store:
         request builds it again and shows the failure, as a first build does. A build whose entry changed while it ran is given
         to the request that asked for it and to nobody else."""
         pid, inspect = key
-        pg = None
+        pg = e = None
+        t = time.time()
         try:
             with self.lock:
                 e, gen = self.reg.get(pid), self.gen
             if e is None or e['kind'] != 'review' or (self.tree is not None and tree_of(e) != self.tree):
                 raise RuntimeError(f'{pid}: no longer a review page of this tree in the registry')
             t = time.time()
-            pg = build_page(e, inspect, self.base_env, self.write_locks[self.labels_dir(e)])
-            pg.build_s, pg.gen = round(time.time() - t, 1), gen
+            try:
+                pg = build_page(e, inspect, self.base_env, self.write_locks[self.labels_dir(e)])
+            finally:
+                with self.lock:
+                    self.builds_done += 1             # a build of the process finished (its page's report may wait)
+            pg.build_s, pg.gen, pg.build_start = round(time.time() - t, 1), gen, t
             prime_page(pg)
             report = self._report(e)
             with self.lock:
                 cur = self.reg.get(pid)
                 if cur is None or cur['kind'] != 'review' or build_key(cur) != build_key(e):
                     self.errors.pop(key, None)                 # its waiters build the new entry; no failure of an older one
+                    self.error_info.pop(key, None)
                     sys.modules.pop(pg.mod.__name__, None)     # the asking request holds the page; nothing else keeps it
                     return pg
                 old = self.pages.get(key)
@@ -676,8 +759,10 @@ class Store:
                 self.pages[key] = pg
                 self.code_report[key] = report
                 self.errors.pop(key, None)
+                self.error_info.pop(key, None)
                 if gen == self.gen:
                     self.stale.discard(key)
+                    self.held.discard(key)
                 else:                                          # the registry changed again while this page was built
                     self.stale.add(key)
                     self._queue(key)
@@ -686,6 +771,7 @@ class Store:
         except Exception as exc:                               # one page's failure never takes down the process
             with self.lock:
                 self.errors[key] = f'{pid}: {type(exc).__name__}: {exc}'
+                self.error_info[key] = {'t': t, 'entry': entry_md5(e) if e else None}
                 self._drop(key)
                 if pg is not None and self.pages.get(key) is not pg:
                     sys.modules.pop(pg.mod.__name__, None)
@@ -760,6 +846,7 @@ def serve_request(store, inspect, method, path, headers, body=b''):
         return 500, [('Content-Type', 'text/plain; charset=utf-8')], f'page {pid} could not be built: {exc}'.encode()
     sub = rest + (('?' + path.split('?', 1)[1]) if '?' in path else '')
     stale_built = pg.built if pg.gen is not None and pg.gen != store.gen else None    # a page older than the registry
+    held = hold_path(pg.entry) if stale_built is not None and (pid, bool(inspect)) in store.held else None
     lock = post_lock(pg.write_lock, store.labels_dir(pg.entry)) if method == 'POST' else contextlib.nullcontext()
     with lock:
         status, hdrs, payload = run_request(pg, method, sub, headers, body)
@@ -773,6 +860,8 @@ def serve_request(store, inspect, method, path, headers, body=b''):
         out.append((k, v))
     if stale_built is not None:
         out.append((STALE_HEADER, time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stale_built))))
+    if held:
+        out.append((HELD_HEADER, held))
     ctype = dict((k.lower(), v) for k, v in hdrs).get('content-type', '')
     if ctype.startswith('text/html'):
         payload = rewrite_body(payload.decode('utf-8'), pg.base, pm, legacy_port=pg.legacy_port).encode('utf-8')
@@ -860,22 +949,37 @@ def make_handler(fn):
 
 def backend_status(store):
     """The backend's report: per built page the code it was built from ('pages'); per built page its build and index times and
-    whether it is older than the registry ('built': stale pages answer requests until their rebuild, queued in 'rebuild_queue')."""
+    whether it is older than the registry ('built': stale pages answer requests until their rebuild, queued in 'rebuild_queue')
+    or held by its run's publish hold ('held'). The BUILD STATE of a page (lib/serve/register.wait_built): 'built' also names
+    what the page was built from ('entry': entry_md5) and when its build started ('build_start', epoch s); 'building' = the
+    builds under way or waiting for the build lock; 'errors' = the last failed build per page (its text, the entry it was
+    built from, when it started); 'builds_done' = the builds finished so far (a page's own completion can wait behind the
+    next build: its report takes the build lock)."""
     def _k(pid, insp):
         return f'{pid}{":inspection" if insp else ""}'
     with store.lock:
         pages = {_k(*key): store.code_report.get(key) for key in store.pages}
         built = {_k(*key): {'built': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(pg.built)), 'build_s': pg.build_s,
-                            'prime_s': pg.prime_s, 'stale': key in store.stale} for key, pg in store.pages.items()}
+                            'prime_s': pg.prime_s, 'stale': key in store.stale, 'held': key in store.held,
+                            'entry': entry_md5(pg.entry), 'build_start': pg.build_start} for key, pg in store.pages.items()}
         queue = [_k(*key) for key in store.rebuild_q]
         building = sorted(_k(*key) for key in store.building)
-    return {'tree': store.tree, 'pid': os.getpid(), 'registry_mtime': store.reg_mtime, 'pages': pages, 'built': built,
-            'rebuild_queue': queue, 'building': building}
+        errors = {_k(*key): dict(store.error_info.get(key) or {}, error=text) for key, text in store.errors.items()}
+        held = sorted(_k(*key) for key in store.held)
+        state = list(store.reg_state) if store.reg_state else None
+        done = store.builds_done
+    return {'tree': store.tree, 'pid': os.getpid(), 'build_state': BUILD_STATE, 'publish_hold': store.publish_hold,
+            'registry_mtime': store.reg_mtime, 'registry_state': state, 'gen': store.gen, 'pages': pages, 'built': built,
+            'rebuild_queue': queue, 'building': building, 'held': held, 'errors': errors, 'builds_done': done}
 
 
 def backend_request(store, method, path, headers, body=b''):
     """One forwarded request: the listener it came to is in LISTENER_HEADER (set by the front, never by a browser)."""
     if path == STATUS_PATH:
+        try:
+            store.reload()                       # the report is of the registry of now (a request would load it as well)
+        except Exception:                        # noqa: BLE001 - an unreadable registry fails the page requests, not the report
+            pass
         return 200, [('Content-Type', 'application/json')], json.dumps(backend_status(store), indent=1).encode()
     who = next((v for k, v in headers.items() if k.lower() == LISTENER_HEADER.lower()), None)
     inspect = who != 'review'                                     # anything but the front's 'review' is the read-only listener
@@ -887,7 +991,7 @@ class _UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer
     daemon_threads = True
 
 
-def serve_backend(registry_path, tree, socket_path):
+def serve_backend(registry_path, tree, socket_path, publish_hold=False):
     """Serve the pages of one code tree on a Unix socket until killed."""
     # the page code imports production's exopipe package (classify_transients: from exopipe.common import phase2_config); this
     # process was started from the refactor's tree, whose package is also named exopipe - unbound here, so the page code
@@ -896,7 +1000,7 @@ def serve_backend(registry_path, tree, socket_path):
         sys.modules.pop(name, None)
     sys.path[:] = [x for x in sys.path if os.path.realpath(x or '.') != os.path.realpath(REPO_ROOT)]
     importlib.invalidate_caches()
-    store = Store(registry_path, tree=tree)
+    store = Store(registry_path, tree=tree, publish_hold=publish_hold)
     try:
         os.unlink(socket_path)
     except FileNotFoundError:
@@ -938,9 +1042,14 @@ class Backends:
     """One backend process per code tree: started on first use, restarted when it died, stopped when its tree leaves the
     registry. Each inherits the front's environment, CPU affinity and niceness."""
 
-    def __init__(self, registry_path, sock_dir=None, python=None, start_timeout=120):
+    def __init__(self, registry_path, sock_dir=None, python=None, start_timeout=120, publish_hold=False):
         self.registry_path = os.path.abspath(registry_path)
         self.sock_dir = sock_dir or SOCK_DIR
+        self.publish_hold = bool(publish_hold)
+        longest = self.sock_for('')
+        if len(longest.encode()) > SOCK_PATH_MAX:      # a backend could never bind it: every page would answer 502
+            raise ValueError(f'socket directory {self.sock_dir} is too long: {longest} has {len(longest.encode())} bytes, a Unix '
+                             f'socket path at most {SOCK_PATH_MAX} - give a shorter --sock-dir')
         os.makedirs(self.sock_dir, exist_ok=True)
         self.python = python or sys.executable
         self.start_timeout = start_timeout
@@ -961,8 +1070,8 @@ class Backends:
             env = dict(_ENV._base) if _ENV is not None else dict(os.environ)
             with open(logp, 'a') as log:
                 proc = subprocess.Popen([self.python, '-m', 'exopipe.phase3.lib.serve.two_port', 'backend', self.registry_path,
-                                         '--tree', tree, '--socket', path], cwd=REPO_ROOT, env=env, stdout=log,
-                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                                         '--tree', tree, '--socket', path] + (['--publish-hold'] if self.publish_hold else []),
+                                        cwd=REPO_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
             t0 = time.time()
             while True:
                 if proc.poll() is not None:
@@ -1034,7 +1143,9 @@ def front_request(store, backends, inspect, method, path, headers, body=b''):
     store.reload()
     backends.sync({tree_of(e) for e in store.reg.values() if e['kind'] == 'review'})
     if path.split('?', 1)[0] == '/_status':
-        rep = {'registry': store.registry_path, 'registry_mtime': store.reg_mtime, 'backends': backends.status()}
+        rep = {'registry': store.registry_path, 'build_state': BUILD_STATE, 'publish_hold': backends.publish_hold,
+               'registry_mtime': store.reg_mtime, 'registry_state': list(store.reg_state) if store.reg_state else None,
+               'backends': backends.status()}
         return 200, [('Content-Type', 'application/json')], json.dumps(rep, indent=1).encode()
     m = re.match(r'^/p/([A-Za-z0-9_.-]+)(/.*)?$', path.split('?', 1)[0])
     if m:
@@ -1048,11 +1159,11 @@ def front_request(store, backends, inspect, method, path, headers, body=b''):
     return serve_request(store, inspect, method, path, headers, body)
 
 
-def serve(registry_path, review_port, inspection_port, host='127.0.0.1', sock_dir=None):
+def serve(registry_path, review_port, inspection_port, host='127.0.0.1', sock_dir=None, publish_hold=False):
     """Run both listeners until interrupted; the backends stop with the front."""
     from http.server import ThreadingHTTPServer
+    backends = Backends(registry_path, sock_dir, publish_hold=publish_hold)     # refuses a socket directory too long first
     store = Store(registry_path, builds=False)
-    backends = Backends(registry_path, sock_dir)
     srv = [ThreadingHTTPServer((host, review_port),
                                make_handler(lambda m, p, h, b: front_request(store, backends, False, m, p, h, b))),
            ThreadingHTTPServer((host, inspection_port),
@@ -1061,7 +1172,8 @@ def serve(registry_path, review_port, inspection_port, host='127.0.0.1', sock_di
     for t in ts:
         t.start()
     print(f'two-port server: review http://{host}:{review_port}/  inspection http://{host}:{inspection_port}/  '
-          f'({len(store.reg)} registry entries; one backend per code tree, sockets in {backends.sock_dir})', flush=True)
+          f'({len(store.reg)} registry entries; one backend per code tree, sockets in {backends.sock_dir}'
+          + ('; the publish hold ON' if publish_hold else '') + ')', flush=True)
     import signal
 
     def _term(*_a):
@@ -1161,13 +1273,17 @@ def main(argv=None):
     s2.add_argument('--review-port', type=int, required=True)
     s2.add_argument('--inspection-port', type=int, required=True)
     s2.add_argument('--sock-dir', help=f'the backends\' sockets and logs (default {SOCK_DIR})')
+    s2.add_argument('--publish-hold', action='store_true',
+                    help='keep a run\'s built pages on their builds while <run>/' + HOLD_FILE + ' exists (an amendment option; '
+                         'off = production: a page rebuilt meanwhile shows the marker\'s text)')
     s3 = sub.add_parser('backend', help='serve the pages of one code tree on a Unix socket (started by serve)')
     s3.add_argument('registry')
     s3.add_argument('--tree', required=True)
     s3.add_argument('--socket', required=True)
+    s3.add_argument('--publish-hold', action='store_true')
     a = ap.parse_args(argv)
     if a.cmd == 'backend':
-        serve_backend(a.registry, a.tree, a.socket)
+        serve_backend(a.registry, a.tree, a.socket, publish_hold=a.publish_hold)
         return 0
     if a.cmd == 'seed':
         pages = seed_from_proc()
@@ -1177,7 +1293,10 @@ def main(argv=None):
             pages.append(dict(id='hub_inspection', kind='static', root=a.inspection_hub, greenlit=True))
         print(json.dumps({'pages': pages}, indent=1))
         return 0
-    serve(a.registry, a.review_port, a.inspection_port, sock_dir=a.sock_dir)
+    try:
+        serve(a.registry, a.review_port, a.inspection_port, sock_dir=a.sock_dir, publish_hold=a.publish_hold)
+    except ValueError as e:                  # a socket directory too long: refused before anything listens
+        sys.exit(f'two-port server REFUSED: {e}')
     return 0
 
 

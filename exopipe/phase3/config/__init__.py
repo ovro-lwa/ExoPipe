@@ -589,6 +589,11 @@ def _collect():
 _load_step_configs()
 CFG = _Config(_collect())
 SITE_FILE = _load_site(CFG)
+# INJECTED RUNS (core/injected.py): a process started by an injected run (EXOPIPE3_INJECTED inherited) never writes production
+# products - paths.PRODUCTION_WRITES is False in it, whatever config/shared.py says (core/injected.begin does the same in the
+# step process itself)
+from exopipe.phase3.core import injected as _injected      # noqa: E402 - imports nothing from exopipe at module level
+_injected.force_no_production_writes(CFG)
 
 # Sections every step reads, whatever it declares: they are always part of a step's resume hash (critique_rulings 6.5:
 # a per-section hash must not miss the shared sections).

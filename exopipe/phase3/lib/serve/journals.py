@@ -53,8 +53,17 @@ def latest_driver(journal):
     return J
 
 
-def served_run_of_port(port):
-    """The --run of the review server listening on ``port`` (exact pid; snapshot_rechain_batch.sh:369), or None."""
+def served_run_of_port(port, d=None):
+    """The run served as ``port``: the --run of the two-port registry's entry p<port> (registry directory ``d``, default the
+    production one serve.TWO_PORT_DIR, read only; snapshot_forced_gen5_serve_20261026.sh:28-29 cur_run - the review pages are
+    registered since 2026-10-22), else of the review server listening on the port (exact pid; snapshot_rechain_batch.sh:369),
+    or None."""
+    from exopipe.phase3.lib.serve import register
+    e = register.registered_entry(d or _S().TWO_PORT_DIR, f'p{port}')
+    a = (e or {}).get('argv') or []
+    i = a.index('--run') + 1 if '--run' in a else len(a)
+    if i < len(a):
+        return a[i]
     for pid in procs.listeners(port):
         info = procs.proc_info(pid)
         if procs.is_review_server(info):
@@ -169,9 +178,9 @@ def append_between(P, U):
 
 def resolve_carry_from(plan, spec):
     """The run to carry judgements from. A path is taken as given. 'served' = the run the tier's first page serves: in a
-    production plan the last served_page record of that page, else the --run of the review server on its port (exact pid,
-    snapshot_rechain_batch.sh:369); in a parity plan the production server on the page's PRODUCTION port (the parity
-    records describe parity runs). Refuses (G18) when nothing is served or the source is the run itself."""
+    production plan the last served_page record of that page, else the run of its production registry entry (or of a review
+    server on its port; served_run_of_port); in a parity plan the page's PRODUCTION entry, read only (the parity records
+    describe parity runs). Refuses (G18) when nothing is served or the source is the run itself."""
     if spec != 'served':
         old = os.path.abspath(spec)
     else:

@@ -22,12 +22,14 @@ from exopipe.phase3.config import _Section
 # =====================================================================================================================
 
 class serve(_Section):
-    """exopipe3 serve: review servers (classify_transients.py, run in place), inspection twins, review hub and inspection
-    hub, for every tier. Ports, run roots, titles and the per-tier server environment decide what Gregg and the team see.
+    """exopipe3 serve: review pages (classify_transients.py, run in place) REGISTERED on the two-port server, the review hub,
+    and the Jupiter pages' own servers, for every tier. Ports (the pages' identities), run roots, titles and the per-tier
+    page environment decide what Gregg and the team see.
     Host names live in the site file (REVIEW_HOST, CHAIN_HOST; the hub page prints no tunnel line since exopipe_ops 4c42f91)."""
     # keys no --set / --config can change (DESIGN 11.4; honoured by config/__init__.py)
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
-                      'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS')
+                      'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS', 'TWO_PORT_DIR', 'TWO_PORT_REGISTRY',
+                      'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT')
 
     # ---- served runs (production product roots, from config.paths; PROTECTED) ----------------------------------------
     RUN_ROOT_KEY = {'deep': 'TRANSIENTS_ROOT',        # /data07/gh/phase3/transients; p3s3_serve_stokes.sh:9
@@ -49,8 +51,8 @@ class serve(_Section):
     HUB_DIR = '/data07/gh/phase3/transients/review_hub'                # build_review_hub.py:24; served at / on both listeners
                                             # of the two-port server (the per-port inspection hub page, run_inspection_hub.sh,
                                             # was retired 2026-10-27: IMPL-HUB-SAME-ON-BOTH-LISTENERS-LAYOUT-20261027)
-    INSPECTION_GREENLIT = '/lustre/gh/main/exopipe_ops/inspection_greenlit.csv'   # build_inspection_hub.py:14 (Gregg's list, read
-                                            # only; the inspection twins' title label, servers.greenlit_label)
+    INSPECTION_GREENLIT = '/lustre/gh/main/exopipe_ops/inspection_greenlit.csv'   # build_inspection_hub.py:14 (Gregg's list of
+                                            # the retired inspection hub page, read only; tests.greenlit_only)
     LISTS_DIR = '/data07/gh/phase3/transients/review_lists'            # classify_transients.py:2445 (one pair of lists for every
                                                                         # tier, Gregg 2026-09-20); parity servers get <out>/review_lists
 
@@ -68,7 +70,8 @@ class serve(_Section):
     #   start    'stages' (serve builds and starts it) or 'restart-only' (serve restarts / stops it with its exact argv)
     #   queue, catalog, labels, loc_dir, log: paths relative to the run directory; hub: (Stokes row, hub tier) of the
     #   registry entry (None: no entry, the ports recorded in the registry's 'tunnel_extra' - which the hub page no longer
-    #   prints, 4c42f91); twin: inspection twin port
+    #   prints, 4c42f91); twin: the page's former inspection twin port (its entry's inspection_legacy_port: the
+    #   inspection listener's filter cookie and link key; the twins themselves are retired)
     #   mchain_queue, mchain_catalog: the page's MULTIPLES CHAIN (Gregg 2026-10-27, ledger R-GREGG-20261027-HUB-BOTH-LISTENERS-
     #   MULTIPLES-CHAIN-FORCED-EVERY-TIER: "the multi-integration sample within each page should be relabeled as 'multiples
     #   chain' and include the full list of multiples that went through the second chain (no sigma-stack)"), paths relative to
@@ -163,10 +166,49 @@ class serve(_Section):
     JUPITER_ROOTS = {'p1': '/lustre/gh/main/phase3/jupiter/products',     # argv of the live 8800 server (2026-10-13)
                      'v2-site': '/lustre/gh/main/phase3/jupiter/v2/site'}  # --directory of the live 8801 server
     JUPITER_LOG_DIR = '{out}/_records/serve/logs'   # the Jupiter servers' stdout (no log in production: they ran detached)
-    TWIN_LOG = 'server_inspect_{port}.log'  # restart_inspection_twin.sh:59 (appended)
     # served by something else: serve never binds, stops or re-points these (the registry rows stay as they are)
     OTHER_SERVED_PORTS = {8767: 'Round-2 reference, frozen (R-GREGG-20261011-KEEP-8767-THRESHOLDS-AT-RERUN, ledger 2199)'}
     PARITY_PORT_OFFSET_MIN = 1000           # a parity --port-offset below this is refused (ports 8765-8801 are production)
+
+    # ---- the two-port server: review pages are REGISTERED, never given a server of their own (production since 2026-10-22,
+    # R-GREGG-20261017-TWO-PORT-SERVING, "Retire once all pages are transferred and live"; lib/serve/register.py, the port of
+    # /lustre/gh/main/phase3/serve/register_page.py). A page keeps its port as its identity: entry id p<port>, legacy_port
+    # <port> (the --sibling / cross-tier link key, the filter cookie); a parity serve shifts both by --port-offset and
+    # registers in <out>/TWO_PORT_PARITY_DIR, served by its own two-port server on HUB_PORT / INSPECTION_HUB_PORT + offset.
+    # The inspection twins are retired: the inspection listener serves a page when Gregg's greenlit list names it.
+    TWO_PORT_DIR = '/lustre/gh/main/phase3/serve'   # register_page.py:24 (D); the live server's registry (run_two_port.sh:8)
+    TWO_PORT_REGISTRY = 'registry.json'             # register_page.py:25 (REG): what the server reads
+    TWO_PORT_REGISTERED = 'registered_pages.json'   # register_page.py:25 (REGD): the registered entries (the re-seed keeps them)
+    TWO_PORT_GREENLIT = 'greenlit_pages.json'       # greenlit_overlay.py:16: Gregg's list (read only; applied to every write)
+    TWO_PORT_PARITY_DIR = 'two_port'                # a parity serve's registry directory under --out
+    TWO_PORT_ENV_PREFIXES = ('P3_',)                # an entry's env: these variables of the page's server environment
+                                                    # (snapshot_register_page.py:50, SNAP_REGISTER_ENV default)
+    TWO_PORT_POLL_S = 5.0                           # s between two reads of the server's build state (/_status); the 5 s
+                                                    # of snapshot_serve.sh:199's identity check
+    TWO_PORT_STALL_S = 3600.0                       # s with no build started or finished on the server: the page's build
+                                                    # makes no progress (G16). Not a budget for the page: it waits as long as
+                                                    # builds progress (CUTOVER_READINESS: the snapshot check's 240 x 5 s)
+    TWO_PORT_STATUS_TIMEOUT_S = 60.0                # s, one GET /_status (warm_pages.py:21)
+    TWO_PORT_MAX_FAILED_REQUESTS = 3                # a page's requests in a row without a 200 (a build that kills its backend,
+                                                    # which the next request restarts): its build does not complete (G24)
+    TWO_PORT_WARM_TIMEOUT_S = 900.0                 # s, one warm-up request of a page built before the registration
+                                                    # (warm_pages.py:69)
+    # the two-port server as run_two_port.sh starts it (:5, :7): its environment and niceness - the command serve prints when no
+    # server answers (a short socket directory: register.sock_dir)
+    TWO_PORT_SERVER_ENV = {'NUMPY_MADVISE_HUGEPAGE': '0', 'OMP_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
+                           'MKL_NUM_THREADS': '1', 'NUMEXPR_NUM_THREADS': '1'}
+    TWO_PORT_NICE = 10
+    # THE PUBLISH MARKER (two_port.HOLD_FILE in the run directory; production's deep publish marker, exopipe_ops 4a39c6b): the
+    # deep views stage writes it while it rewrites the served run in place, the run's registration removes it (renamed
+    # .removed_<UTC>, deep_reregister_after_publish_20261031.py:79-81); a page built meanwhile shows this text as a banner
+    # (classify_transients.py:1242)
+    PUBLISH_MARKER_TEXT = ('This page was built while exopipe3 serve rewrites its run (started {utc}); until the serve registers '
+                           'its pages, the list, its panels and filter values may mix the previous serve with the new one.')
+    # THE PUBLISH HOLD (an AMENDMENT OPTION, not ruled; FOLD_IN row 10-30 23:3x): True = the two-port server runs with
+    # --publish-hold and keeps a marked run's built pages on their previous builds (stale but consistent) instead of rebuilding
+    # them with the banner (mixed, labelled). False = production (no hold, the banner only). serve refuses a server whose mode
+    # differs (register.check_server)
+    TWO_PORT_PUBLISH_HOLD = False
 
     # ---- server process ---------------------------------------------------------------------------------------------
     # process identity per program: (comm, an argv element it must END with); classify: restart_inspection_twin.sh:26,
@@ -215,13 +257,14 @@ class serve(_Section):
     STOP_POLL_S = 0.25                      # s; restart_inspection_twin.sh:56
     START_SETTLE_S = 2.0                    # s between stop and start; p3s3_serve_stokes.sh:71; sublst_serve.sh:131; snapshot_serve.sh:56
     READY_POLL_S = 5.0                      # s; restart_inspection_twin.sh:69
-    READY_TIMEOUT_S = {'deep': 300.0, 'sublst': 300.0, 'snapshot': 400.0, 'jupiter': 300.0}   # s; twins 60 x 5 s
-                                            # (restart_inspection_twin.sh:63); snapshot and forced 40 x 10 s
-                                            # (snapshot_rechain_batch.sh:416; snapshot_forced_serve_20261007.sh:53);
-                                            # jupiter: no production launcher - the deep value
+    READY_TIMEOUT_S = {'deep': 300.0, 'sublst': 300.0, 'snapshot': 400.0, 'jupiter': 300.0}   # s, a server of its own (the
+                                            # Jupiter pages, --restart): twins 60 x 5 s (restart_inspection_twin.sh:63);
+                                            # snapshot and forced 40 x 10 s (snapshot_rechain_batch.sh:416;
+                                            # snapshot_forced_serve_20261007.sh:53); jupiter: no production launcher - the
+                                            # deep value. A registered page waits on its build state instead (TWO_PORT_*)
     INDEX_READ_TIMEOUT_S = 120.0            # s, GET of an index page; snapshot_rechain_batch.sh:419
-    TWIN_DELAY_S = 3.0                      # s after the judging server starts; p3s3_serve_multiples.sh:155
-    # who may be replaced on a page's port: 'port' = any review server on it (the port is the identity); a tuple = only a
+    # (servers of their own: the Jupiter pages; the per-port review servers before 2026-10-22, which --restart / --stop
+    # still handle) who may be replaced on a page's port: 'port' = any review server on it (the port is the identity); a tuple = only a
     # server whose argv '--run' is <paths root of the tier (RUN_ROOT_KEY)>/<name> with <name> matching one of these shell patterns (else REFUSE).
     # sub-LST: 'Run_SLST*' = sublst_serve.sh:121 grep of '--run .../Run_SLST'; 'Run_P3T4' = SUBLST_TAKEOVER=Run_P3T4
     # (sublst_cumulative.sh:122,132, the archived old-chain pages; exact name, as the trailing space of the grep)
@@ -229,9 +272,6 @@ class serve(_Section):
                       'sublst': ('Run_SLST*', 'Run_P3T4'),   # sublst_serve.sh:121-122; sublst_cumulative.sh:122,132; ledger 1623
                       'snapshot': 'port',   # snapshot_serve.sh:52-55; forced pages: snapshot_forced_serve_20261007.sh:71
                       'jupiter': 'port'}    # (no launcher) the port is the identity, the program must match SERVER_IDENTITY
-    TWIN_TITLE_SUFFIX = ' - INSPECTION (read-only)'   # restart_inspection_twin.sh:43
-    TWIN_TITLE_NO_TITLE = '{label_dash}INSPECTION (read-only), {run_name}'   # restart_inspection_twin.sh:49 (judging page
-                                            # without --title: the greenlit list's label for the twin port, then this text)
 
     # ---- titles and hub text ----------------------------------------------------------------------------------------
     UTC_FMT = '%Y-%m-%d %H:%M UT'           # p3s3_serve_stokes.sh:74,84; snapshot_serve.sh:101
@@ -326,8 +366,8 @@ class serve(_Section):
     HOLD_JOURNAL_READER = 'driver'
     SNAPSHOT_LOCALIZE = True                # per-tier positions + figures before the servers (snapshot_serve.sh:44-46, ledger 1831)
 
-    # ---- snapshot forced photometry pages (port of snapshot_forced_serve_20261007.sh, the 'switch' and 'refresh-siblings'
-    # modes; ruled 2026-10-03 / 2026-10-07 Q5/Q7/Q8, ledger 1765) ------------------------------------------------------
+    # ---- snapshot forced photometry pages (port of snapshot_forced_gen5_serve_20261026.sh and the 'refresh-siblings' mode of
+    # snapshot_forced_serve_20261007.sh; ruled 2026-10-03 / 2026-10-07 Q5/Q7/Q8, ledger 1765) -------------------------------
     FORCED_RUN_NAME = 'Run_SNAPFORCED_{S}{T}_{tag}'          # T = 10s | 1min; snapshot_forced_serve_20261007.sh:30
     FORCED_READY_LOG = 'snapshot_forced_pages_run_{name}.log'   # under paths.OPS_ROOT; its LAST line must hold FORCED_READY_MARK (:63-65)
     FORCED_READY_MARK = 'FT-READY'
@@ -336,12 +376,12 @@ class serve(_Section):
     FORCED_ADLEO_CHECK = ('test_snapshot_forced_reserve.py', ('adleo', '--absent-ok'))   # ops script + args, site PYTHON 'py36' (:68;
                                             # Gregg 2026-10-08 "don't label AD Leo unless you have a metric defined and measured")
     FORCED_TITLE = ('Snapshot FORCED photometry (HWJ + 10 pc), Stokes {S}, {what} - pixel-distance screen, fitted, reference-tied, '
-                    'localized, associated (target / background source / ambiguous) - served {utc}')   # :51
+                    'localized, associated (target / background source / ambiguous) - generation-5 cutouts from the current cubes '
+                    '({run_name}) - served {utc}')   # snapshot_forced_gen5_serve_20261026.sh:57 (the live entries p8775/p8776/p8785/p8786)
     FORCED_SIBLING_LABEL = 'forced Stokes {S} {T} page'      # T = 10-s | 1-min; :34
-    FORCED_HUB_GENERATION = ('forced photometry at HWJ + 10 pc targets, Stokes {S} {kind} events: pixel-distance screen, fitted, '
-                             'reference-tied, localized, associated')   # kind = 10s | 1min; :97
-    FORCED_STOP_TIMEOUT_S = 30.0            # s (30 x 1 s, :57)
-    FORCED_RESTORE_LOG = 'classify_{port}_restored.log'   # the old server restarted after a refused switch (:80, 90)
+    FORCED_HUB_GENERATION = ('forced photometry at HWJ + 10 pc targets, generation-5 cutouts from the current cubes, Stokes {S} '
+                             '{kind} events: pixel-distance screen, fitted, reference-tied, localized, associated')   # kind = 10s |
+                                            # 1min; snapshot_forced_gen5_serve_20261026.sh:72-74 (the live hub entries)
 
     # ---- in-place calls ---------------------------------------------------------------------------------------------
     LEGACY_TIMEOUT_S = 7200                 # s, any in-place script (sublst_publish_lst.sh:44 ran the cumulative under 7200 s)

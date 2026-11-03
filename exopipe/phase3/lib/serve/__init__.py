@@ -11,8 +11,12 @@ Modules (each ports named production launcher logic; the production file:line is
   exclusion_gate.py the serve-time exclusion gate for every tier (tier row keyers + core.exclusions; in-place snapshot gate)
   journals.py       judgement carry (in place), HOLD rule (in process), sub-LST journal copy / swap / append
   hub.py            review hub registry (locked; in place) and its page (render: the port of build_review_hub.py)
-  servers.py        replace / twin / restart / stop of review servers and the served_page records
-  flow.py           the stages shared by the tiers (test, start, twins, hub, verify), the record chain, the dry-run header
+  register.py       the pages' registration on the two-port server (port of register_page.py), the build-state wait, the
+                    publish hold
+  two_port.py       the two-port server itself (8765 review / 8795 inspection; frozen copies serve production)
+  servers.py        the served_page records; replace / restart / stop of the servers of their own (the Jupiter pages)
+  flow.py           the stages shared by the tiers (test, start = the one registration, hub, verify), the record chain, the
+                    dry-run header
   deep.py, sublst_build.py, snapshot_copy.py   the review pages' stage sequences per tier
   forced.py         the snapshot forced-photometry pages (port of snapshot_forced_serve_20261007.sh)
   jupiter.py        the Jupiter program's pages 8800 / 8801

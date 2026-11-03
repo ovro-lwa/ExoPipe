@@ -4,8 +4,8 @@ A JOB runs one step (or a CHAIN of steps) over a list of ITEMS (cells, LSTs, fra
 record lives in ``CFG.runner.JOBS_ROOT/<job>/`` (a handful of files per item, on Lustre):
 
     job.json              id, step argv template, nodes and lanes, --after, --retry, state, created, launch host;
-                          forward_argv / overrides (the --set, --config, --ruling-for, --parity given to `run submit`,
-                          forwarded into every step command); chain + chain_steps (a chain job); code_commit +
+                          forward_argv / overrides (the --set, --config, --ruling-for, --parity, --injected given to
+                          `run submit`, forwarded into every step command); chain + chain_steps (a chain job); code_commit +
                           code_root (a --code job)
     items.txt             the items in run order (rewritten by `run reorder`)
     items/<item>.json     per item: status (queued|running|done|refused|no-input|error|failed), host, pid, rc,
@@ -224,7 +224,7 @@ def chain_steps(name):
 
 
 def _overrides_of(forward):
-    out = {'set': [], 'config': None, 'ruling_for': [], 'parity': False}
+    out = {'set': [], 'config': None, 'ruling_for': [], 'parity': False, 'injected': False}
     i = 0
     while i < len(forward):
         a = forward[i]
@@ -243,6 +243,8 @@ def _overrides_of(forward):
             continue
         if a == '--parity':
             out['parity'] = True
+        if a == '--injected':
+            out['injected'] = True
         i += 1
     return out
 
@@ -252,7 +254,7 @@ def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, py
     """Create a job record and (unless start=False) launch its supervisor in the background.
 
     chain:   a runner.CHAINS name: every item runs through its steps in order (step_argv must then be empty).
-    forward: argv tokens added to every step command (`run submit --set/--config/--ruling-for/--parity`).
+    forward: argv tokens added to every step command (`run submit --set/--config/--ruling-for/--parity/--injected`).
     code:    a commit: step processes run from its read-only worktree (``ensure_code_worktree``)."""
     cfg = _cfg()
     if chain and step_argv:
