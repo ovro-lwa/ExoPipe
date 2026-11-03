@@ -13,7 +13,7 @@ same nights, removal rules and inputs:
               'gate' row's removal the rule's own verdict, a 'record' row an earlier gate's, every final within its limits -
               and image_ledger); Stokes I: the local-SNR rows judged as the fork's member pool ('gate'), the identification
               and master-structure removals recorded ('record');
-  production  no record, the 35-column ledger; the SAME candidate rows (night, Stokes, pixel) as under 'envelope', and
+  production  no record, the 38-column ledger; the SAME candidate rows (night, Stokes, pixel) as under 'envelope', and
               every row whose fate differs differs by a size verdict (the rule's, production's fixed one, or the member
               pool's) or by the one population-coupled gate after it, the row line (>= 5 finals of an epoch on one pixel row:
               a detection the rule keeps can complete a row, one it removes can break one) - the rule changes nothing but its
