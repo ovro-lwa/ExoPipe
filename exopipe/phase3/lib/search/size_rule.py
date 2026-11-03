@@ -33,14 +33,18 @@ Engine wiring (lib/search/deep_search._size_test, both cadences): the step hands
 product (pinned md5, every Stokes and band class), the floors (SIZE_FLOOR_BEAMS / AXIS_REMOVE must be the rule's 1.5:
 ``check_floors``) and the imaging configuration the product was calibrated on (SIZE_ENVELOPE_FRAMES: ``check_frames``); the
 engine writes RUN_RECORD into its run directory (one rule per run) and the gate ledger carries GLED_COLS_SIZE on EVERY
-candidate row (spec section 4): size_role 'gate' where the rule decided the row (the detections reaching the size test, and
-the Stokes I rows below the local-SNR floor - the multiples fork's 5-7 sigma member pool, ``engine_early``: one the rule
-removes is 'reject_local_snr:<verdict>' and never a fork member), 'record' where an earlier gate had removed it (measured,
-deciding nothing). The catalog reads the attempts' records (one rule per catalog): its builder's 7-8 sigma gate is replaced
+candidate row (spec section 4): size_role 'gate' where the rule decided the row (the detections reaching the size test, and,
+deep only, the Stokes I rows below the local-SNR floor whose ledger S/N lies in catalog_fork.MEMBER_SNR, 5 <= |S/N| < 7 - the
+multiples fork's member pool, ``engine_early`` / ``member_window``: one the rule removes is 'reject_local_snr:<verdict>' and
+never a fork member), 'record' where an earlier gate had removed it (measured, deciding nothing: every other identification
+removal, the local-SNR rows outside the window and every one at 10 minutes, where no fork reads the ledger). The catalog reads the attempts' records (one rule per catalog): its builder's 7-8 sigma gate is replaced
 (catalog_env); the conformance's own fixed size step contradicts the rule (refused: ``conform_removals``), and its fixed AXIS
-step (axis ratio > 2.0 x beam above 8 sigma, Gregg 2026-09-05, R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA) follows
-catalog_conform.CONFORM_AXIS_UNDER_RULE - PENDING GREGG'S RULING on whether the 2026-10-22 rule replaces it:
-    'second_gate' (default until he rules): the step stands as a SECOND, fixed gate above 8 sigma on the rule's attempts, in
+step (axis ratio > 2.0 x beam above 8 sigma) follows catalog_conform.CONFORM_AXIS_UNDER_RULE - UNRULED, PENDING GREGG. The step
+came from R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA (2026-09-05); R-SIZE-AXIS-GATE-1.5-RATIFIED (2026-09-09) superseded its 2.0 value
+("Supersedes ... the 2.0 axis value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA") and the 2026-10-22 rule replaced the 1.5 thresholds,
+so it stands only in production's code - inert behind the search's 1.5 until the rule. Does the rule replace it?
+    'second_gate' (default until he answers; production's current behavior - the 2.0 axis step of the superseded 09-05
+                  ruling, no live ruling): the step stands as a SECOND, fixed gate above 8 sigma on the rule's attempts, in
                   every conformance - production's p3s2_conform.py (deep 'remove', the multiples fork's validity runs, the
                   incremental path, 10-minute S-G13) and the deep check (lib/catalog/conform_check, which removes those rows
                   itself) - its removals recorded per unit (``conform_removals``), never refused;
@@ -97,14 +101,23 @@ GLED_COLS_SIZE = ['size_rule', 'size_snr', 'size_thr', 'axis_thr', 'size_excess'
 VERDICTS = ('gaussfit-size', 'axis-ratio', 'point-like', 'fit-failed', 'no-snr')   # size_verdict; the first two remove
 REMOVING = ('gaussfit-size', 'axis-ratio')
 ROLES = ('gate', 'record')                # size_role: the rule decided the row / measured it after an earlier gate removed it
-MEMBER_REASON = 'reject_local_snr:'       # + a removing verdict: a Stokes I row below the local-SNR floor the rule removes - not
-                                          # in the multiples fork's 5-7 sigma member pool (its veto_reason 'reject_local_snr')
+MEMBER_REASON = 'reject_local_snr:'       # + a removing verdict: a Stokes I row of the multiples fork's member pool (deep; below the
+                                          # local-SNR floor, its ledger S/N inside catalog_fork.MEMBER_SNR) the rule removes - out
+                                          # of the pool, which multiples_fork.py takes by veto_reason 'reject_local_snr'
+MEMBER_ENV = 'EXOPIPE3_SIZE_MEMBER_SNR'   # the pool's S/N window the deep step hands its engine child ('5.0,7.0': member_window)
 GATE_7_8_OFF = 'inf'                      # P3_SIZE_GATE_7_8 for the catalogue builder under 'envelope': its 7-8 sigma gate never acts
 # the conformance's fixed axis step under the rule (catalog_conform.CONFORM_AXIS_UNDER_RULE; module docstring) - PENDING GREGG
 CONFORM_AXIS_MODES = ('second_gate', 'replace')
 CONFORM_AXIS_ENV = 'P3_CONFORM_AXIS'      # production's switch of p3s2_conform.py's axis step ('0' = off), once the patch is applied
 CONFORM_AXIS_PATCH = 'docs/pending_production_patch_p3s2_conform_axis.diff'   # in this repository: the patch, default on
-AXIS_STEP_RULING = 'R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA'   # Gregg 2026-09-05: the conformance's axis-ratio step (2.0 x beam, > 8 sigma)
+AXIS_STEP_ORIGIN = 'R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA'   # 2026-09-05: the axis-ratio step (2.0 x beam above 8 sigma) the conformance
+AXIS_STEP_SUPERSEDED_BY = 'R-SIZE-AXIS-GATE-1.5-RATIFIED'   # still applies; 2026-09-09: "Supersedes ... the 2.0 axis value of" it
+# what each value of CONFORM_AXIS_UNDER_RULE rests on (the record's 'basis'): neither is a ruling of Gregg's yet
+AXIS_STEP_BASIS = {
+    'second_gate': (f"production's current behavior: the 2.0 axis step of the superseded 2026-09-05 ruling ({AXIS_STEP_ORIGIN}; "
+                    f"superseded by {AXIS_STEP_SUPERSEDED_BY}), pending Gregg"),
+    'replace': "the size / axis rule at every S/N replaces production's 2.0 axis step (unruled until Gregg answers)",
+}
 
 
 class RuleRefusal(RuntimeError):
@@ -507,13 +520,54 @@ def engine_record(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env):
     return _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, 'record')[1]['size_verdict']
 
 
-def engine_early(c, reason, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env):
-    """The rule on a candidate the identification removed (``reason``, its veto_reason): a Stokes I row below the local-SNR
-    floor only ('reject_local_snr') is the multiples fork's 5-7 sigma member pool (exopipe_ops/multiples_fork.py reads exactly
-    those rows), so the rule JUDGES it (size_role 'gate'): removed, it is MEMBER_REASON + the verdict ('reject_local_snr:
-    gaussfit-size' / 'reject_local_snr:axis-ratio') and no fork member nor calibration row - "removed at EVERY S/N"; any other
-    is recorded only (engine_record). Returns the row's veto_reason."""
-    if stokes == 'I' and reason == 'reject_local_snr':
+def member_window(cadence, from_env=True):
+    """(lo, hi): the S/N window of the multiples fork's 5-7 sigma member pool - catalog_fork.MEMBER_SNR, bound to
+    exopipe_ops/multiples_fork.py MEMBER_SNR, which takes members (and its random-disc calibration rows) from the ledger's
+    'reject_local_snr' Stokes I rows with lo <= |snr| < hi - for the DEEP cadence; None at 10 minutes (no fork reads a 10-minute
+    ledger: nothing there is the pool). In the engine child, as the step hands it (MEMBER_ENV; ``from_env``), else the config
+    (a process no step started; the content test). A malformed window REFUSES."""
+    if cadence != 'deep':
+        return None
+    v = os.environ.get(MEMBER_ENV) if from_env else None
+    try:
+        if v is None:
+            from exopipe.phase3.config import CFG
+            lo, hi = (float(x) for x in CFG.catalog_fork.MEMBER_SNR)
+        else:
+            lo, hi = (float(x) for x in v.split(','))
+    except (TypeError, ValueError) as e:
+        _refuse(f'size rule: the member window {v!r} is not two numbers ({type(e).__name__}: {e})')
+    if not (np.isfinite(lo) and np.isfinite(hi) and 0 < lo < hi):
+        _refuse(f'size rule: the member window ({lo}, {hi}) is not 0 < lo < hi')
+    return lo, hi
+
+
+def ledger_snr(c):
+    """The candidate's S/N as its gate-ledger row records it - deep_search._gled_row: round(local_snr (else snr), 2) - the value
+    multiples_fork.py reads; None when absent or not a number."""
+    s = c.get('local_snr', c.get('snr', ''))
+    try:
+        v = round(float(s), 2)
+    except (TypeError, ValueError):
+        return None
+    return v if np.isfinite(v) else None
+
+
+def in_member_pool(snr, window):
+    """True when a ledger S/N (ledger_snr; the row's 'snr' column) lies in the member window: lo <= |S/N| < hi."""
+    return window is not None and snr is not None and window[0] <= abs(snr) < window[1]
+
+
+def engine_early(c, reason, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, member=None):
+    """The rule on a candidate the identification removed (``reason``, its veto_reason). A Stokes I row below the local-SNR
+    floor ('reject_local_snr') whose ledger S/N lies in ``member`` (member_window: the deep cadence's multiples-fork pool, 5 <=
+    |S/N| < 7; None at 10 minutes) IS the fork's 5-7 sigma member pool - exopipe_ops/multiples_fork.py takes members and its
+    calibration rows from exactly those rows - so the rule JUDGES it (size_role 'gate'): removed, it is MEMBER_REASON + the
+    verdict ('reject_local_snr:gaussfit-size' / 'reject_local_snr:axis-ratio') and no fork member nor calibration row -
+    "removed at EVERY S/N". Every other row - the local-SNR rows outside the window (never members: the floor removed them), the
+    other identification removals, Stokes V, the 10-minute cadence - is recorded only (engine_record), its reason kept. Returns
+    the row's veto_reason."""
+    if stokes == 'I' and reason == 'reject_local_snr' and in_member_pool(ledger_snr(c), member):
         _rec, j = _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, 'gate')
         return MEMBER_REASON + j['size_verdict'] if j['size_verdict'] in REMOVING else reason
     engine_record(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env)
@@ -552,8 +606,12 @@ def step_env_for(cadence, run_frames, what=None):
     from exopipe.phase3.config import CFG
     sec = CFG.search_detect if cadence == 'deep' else CFG.search_sublst
     what = what or ('search_detect.SIZE_RULE' if cadence == 'deep' else 'search_sublst.SIZE_RULE')
-    return step_env(sec.SIZE_RULE, sec.SIZE_ENVELOPE, sec.SIZE_ENVELOPE_MD5, what,
-                    floors=(sec.SIZE_FLOOR_BEAMS, sec.AXIS_REMOVE), frames=(sec.SIZE_ENVELOPE_FRAMES, run_frames))
+    env = step_env(sec.SIZE_RULE, sec.SIZE_ENVELOPE, sec.SIZE_ENVELOPE_MD5, what,
+                   floors=(sec.SIZE_FLOOR_BEAMS, sec.AXIS_REMOVE), frames=(sec.SIZE_ENVELOPE_FRAMES, run_frames))
+    if env[RULE_ENV] == 'envelope' and cadence == 'deep':      # the fork's member window, for engine_early (deep only)
+        lo, hi = member_window('deep', from_env=False)
+        env[MEMBER_ENV] = f'{lo!r},{hi!r}'
+    return env
 
 
 def engine_rule(cadence):
@@ -739,8 +797,9 @@ def conform_axis_refusal(rule, script, what='the conformance'):
         return None
     if os.path.exists(script) and conform_switch(script):
         return None
-    return (f'{what}: catalog_conform.CONFORM_AXIS_UNDER_RULE = \'replace\' (the size / axis rule replaces the conformance\'s '
-            f'axis-ratio step, {AXIS_STEP_RULING}) needs production\'s {script} to switch that step off ({CONFORM_AXIS_ENV}=0); it '
+    return (f'{what}: catalog_conform.CONFORM_AXIS_UNDER_RULE = \'replace\' (the size / axis rule replaces production\'s '
+            f'axis-ratio step - 2.0 x beam above 8 sigma, a leftover of {AXIS_STEP_ORIGIN}, superseded by {AXIS_STEP_SUPERSEDED_BY}) '
+            f'needs production\'s {script} to switch that step off ({CONFORM_AXIS_ENV}=0); it '
             f'has no {CONFORM_AXIS_ENV} switch (os.environ.get({CONFORM_AXIS_ENV!r}, \'1\')) - apply {CONFORM_AXIS_PATCH} of the '
             f'refactor repository in exopipe_ops (its owner\'s commit; default on, byte-identical), or set '
             f'catalog_conform.CONFORM_AXIS_UNDER_RULE=second_gate - REFUSING')
@@ -788,8 +847,9 @@ def conform_removals(paths, rule, what='the conformance'):
     """(refusal words or None, record or None) for the removal records ``paths`` a conformance wrote for attempts searched under
     ``rule`` (a record or its 'rule'). Production's attempts: (None, None) - its removals stand. Under 'envelope': a removal by
     the fixed size step refuses (the step is off in every pass, catalog_conform.SIZE_STEP; acting, it contradicts the rule);
-    the fixed axis step's removals are the SECOND GATE under 'second_gate' - recorded: {mode, ruling, rows, examples}, rows
-    counted once each - and refuse under 'replace' (P3_CONFORM_AXIS=0 was passed: the script did not switch the step off)."""
+    the fixed axis step's removals are the SECOND GATE under 'second_gate' (production's current behavior, pending Gregg) -
+    recorded: {mode, basis (AXIS_STEP_BASIS), rows, examples}, rows counted once each - and refuse under 'replace'
+    (P3_CONFORM_AXIS=0 was passed: the script did not switch the step off)."""
     if rule_value(rule['rule'] if isinstance(rule, dict) else rule) == 'production':
         return None, None
     axis_on = conform_axis_step(rule)
@@ -800,7 +860,7 @@ def conform_removals(paths, rule, what='the conformance'):
                    f'{CONFORM_AXIS_ENV}=0: the script did not switch its axis step off) - REFUSING')
         return why, None
     axis = [(f, r) for f, r in removed_rows(paths) if str(r.get('removal_reason') or '').startswith(AXIS_STEP_REASON)]
-    return None, dict(mode=conform_axis_mode(), ruling=AXIS_STEP_RULING, rows=len(axis),
+    return None, dict(mode=conform_axis_mode(), basis=AXIS_STEP_BASIS[conform_axis_mode()], rows=len(axis),
                       examples=[f'{f} {r.get("cand_id", "")}: {str(r.get("removal_reason", ""))[:100]}' for f, r in axis[:3]])
 
 

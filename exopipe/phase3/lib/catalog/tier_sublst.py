@@ -1324,9 +1324,10 @@ def st_conform(ctx, s, plan):
         refuse(why)
     if sg is not None:
         s.u.check('S-G13.size-rule-axis-step', True, value=sg['rows'], cls='conformant_catalog',
-                  detail=(f"the conformance's axis step ({sg['ruling']}) on the size / axis rule's attempts: "
+                  detail=(f"production's axis step (2.0 x beam above 8 sigma) on the size / axis rule's attempts: "
                           + (f"the second gate, {sg['rows']} row(s) removed" + (f", e.g. {sg['examples'][0]}" if sg['examples'] else '')
-                             if sg['mode'] == 'second_gate' else 'replaced (P3_CONFORM_AXIS=0), none removed')))
+                             if sg['mode'] == 'second_gate' else 'replaced (P3_CONFORM_AXIS=0), none removed')
+                          + f" ({sg['basis']})"))
     line, n, bad = table_notes(f'{U}/master_catalog_removed.csv')
     ctx.log.raw(line)
     s.u.check('S-G13.table-notes', bad == 0, value=bad, detail=line, cls='conformant_catalog',

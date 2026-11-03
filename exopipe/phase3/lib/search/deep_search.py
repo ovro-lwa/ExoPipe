@@ -1248,6 +1248,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _szr = _SZ.engine_rule(cadence)                                     # WAVE2 SIZE-RULE: None = production's fixed rule; else the checked
     if _szr is not None:                                                # WAVE2 SIZE-RULE: the rule's floors are its 1.5 / 1.5 - another
         _SZ.check_floors(SIZE_FLOOR_BEAMS, AXIS_REMOVE, 'the engine (P3_SIZE_FLOOR_BEAMS, P3_AXIS_REMOVE)')   # WAVE2 SIZE-RULE: value refuses
+    _szm = _SZ.member_window(cadence) if _szr is not None else None     # WAVE2 SIZE-RULE: the fork's member window (deep; 10min: none)
     _SZ.write_run_record(run_root, _szr)                                # WAVE2 SIZE-RULE: calibration product, recorded (one rule per run)
     global _GLED_EXTRA                                                  # WAVE2 SIZE-RULE: the ledger carries the rule's columns
     _GLED_EXTRA = tuple(GLED_COLS_SIZE) if _szr is not None else ()     # WAVE2 SIZE-RULE: under 'envelope' only
@@ -2102,8 +2103,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 if c['status'] != 'PASS':
                     _rsn = str(c['status']).lower()                                       # WAVE2 SIZE-RULE: the reason, named first
                     if _szr is not None:                                                  # WAVE2 SIZE-RULE: judged (the local-SNR
-                        _rsn = _SZ.engine_early(c, _rsn, 'I', scope, rI, *_szb, cd, _szr)   # WAVE2 SIZE-RULE: rows - the fork's
-                    gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,                  # WAVE2 SIZE-RULE: member pool) or recorded
+                        _rsn = _SZ.engine_early(c, _rsn, 'I', scope, rI, *_szb, cd, _szr, _szm)   # WAVE2 SIZE-RULE: rows in the fork's
+                    gled_rows.append(_gled_row(lst, scope, 'I', d, c, 1,                  # WAVE2 SIZE-RULE: 5-7 sigma pool) or recorded
                                                reason=_rsn,                               # WAVE2 SIZE-RULE
                                                pass_ms=''))
             if _kd(d) in qa_out:                  # two-tier tag, I as well as V (audit R-12)

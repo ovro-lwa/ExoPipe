@@ -862,8 +862,8 @@ def _fixed_size_refusal(U, paths, what, u=None):
     if sg is not None and u is not None:
         u.meta.setdefault('size_rule_second_gate', {})[what] = sg
         if sg['mode'] == 'second_gate':
-            u.note(f'{what}: the conformance\'s axis step ({sg["ruling"]}) as the second gate on the size / axis rule\'s '
-                   f'attempts removed {sg["rows"]} row(s)')
+            u.note(f'{what}: production\'s axis step (2.0 x beam above 8 sigma) as the second gate on the size / axis rule\'s '
+                   f'attempts removed {sg["rows"]} row(s) - {sg["basis"]}')
 
 
 def _fit_nproc():

@@ -11,8 +11,9 @@ same nights, removal rules and inputs:
   envelope    size_rule.json (size-rule-2, the product's md5) beside a ledger of GLED_COLS + GLED_COLS_SIZE; the search
               step's content tests pass on the outputs (gate_ledger - with size_rule_rows: EVERY row judged or recorded, a
               'gate' row's removal the rule's own verdict, a 'record' row an earlier gate's, every final within its limits -
-              and image_ledger); Stokes I: the local-SNR rows judged as the fork's member pool ('gate'), the identification
-              and master-structure removals recorded ('record');
+              and image_ledger); Stokes I: the local-SNR rows inside the multiples fork's member window (catalog_fork.
+              MEMBER_SNR, 5 <= |S/N| < 7 on the ledger's S/N) judged as its pool ('gate'), those outside it - the floor's own
+              removals, never members - and the identification and master-structure removals recorded ('record');
   production  no record, the 38-column ledger; the SAME candidate rows (night, Stokes, pixel) as under 'envelope', and
               every row whose fate differs differs by a size verdict (the rule's, production's fixed one, or the member
               pool's) or by the one population-coupled gate after it, the row line (>= 5 finals of an epoch on one pixel row:
@@ -234,10 +235,16 @@ def main():
                 roles.setdefault((r['size_role'], r['veto_reason'].split(':')[0] if r['veto_reason'] else 'final'), 0)
                 roles[(r['size_role'], r['veto_reason'].split(':')[0] if r['veto_reason'] else 'final')] += 1
             print(f'  {st}: roles x reasons under the rule: ' + json.dumps({f'{a} {b}': n for (a, b), n in sorted(roles.items())}))
-            gate_snr = [r for r in re if r['veto_reason'].startswith('reject_local_snr')]
+            win = SZ.member_window('deep', from_env=False)
+            lsnr = [r for r in re if r['veto_reason'].startswith('reject_local_snr')]
+            pool = [r for r in lsnr if SZ.in_member_pool(round(float(r['snr']), 2), win)]
+            outside = [r for r in lsnr if not SZ.in_member_pool(round(float(r['snr']), 2), win)]
+            cut = sum(1 for r in pool if r['veto_reason'].startswith(SZ.MEMBER_REASON))
             if st == 'I':
-                check('I: every local-SNR row judged as the fork\'s member pool (gate), every identification / master-structure '
-                      'removal recorded', gate_snr and all(r['size_role'] == 'gate' for r in gate_snr)
+                check(f"I: the {len(pool)} local-SNR rows in the fork's member window {win} judged as its pool ('gate'; the rule "
+                      f"removed {cut}), the {len(outside)} outside it recorded with their reason ('record'), every identification "
+                      f"/ master-structure removal recorded", pool and all(r['size_role'] == 'gate' for r in pool)
+                      and all(r['size_role'] == 'record' and r['veto_reason'] == 'reject_local_snr' for r in outside)
                       and all(r['size_role'] == 'record' for r in re if r['veto_reason'] in ('mstruct_I', 'reject_merged',
                                                                                               'reject_sigma_stack')),
                       roles)

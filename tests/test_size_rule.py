@@ -328,43 +328,81 @@ def test_engine():
 
 
 def test_early():
-    """Every candidate row (spec section 4): a Stokes I row below the local-SNR floor - the multiples fork's 5-7 sigma member
-    pool (exopipe_ops/multiples_fork.py takes exactly veto_reason 'reject_local_snr') - is JUDGED: removed by the rule it is
-    'reject_local_snr:<verdict>' (never a member nor a calibration row), kept it stays 'reject_local_snr'; every other early
-    removal (Stokes I identification and master structure, Stokes V identification) is RECORDED with its own reason."""
+    """Every candidate row (spec section 4). The multiples fork's member pool - the deep tier's Stokes I rows below the
+    local-SNR floor ('reject_local_snr') whose LEDGER S/N (round(local_snr, 2), as deep_search._gled_row writes it and
+    exopipe_ops/multiples_fork.py reads it) lies in catalog_fork.MEMBER_SNR, 5 <= |S/N| < 7 - is JUDGED: removed by the rule a
+    row is 'reject_local_snr:<verdict>' (never a member nor a calibration row), kept it stays 'reject_local_snr'. Every other
+    early removal is RECORDED with its own reason: the local-SNR rows outside the window (the floor removed them; never
+    members - the verification of 2026-11-03: 962 of the 1,192 rows of the engine test's nights), every 10-minute row (no fork
+    reads a 10-minute ledger), the other identification removals, the master-structure gate, Stokes V."""
     env = SZ.Envelope.load(DEEP).require()
     big = _frame(np.random.default_rng(11), sources=((200, 200, 7.5, 4.0),))      # the 4-beam source test_engine removes
     pt = _frame(np.random.default_rng(11), sources=((200, 200, 7.5, 1.0),))       # a point source at the same S/N
+    C = _cfg()
+    win = SZ.member_window('deep', from_env=False)
+    assert win == tuple(float(x) for x in C.catalog_fork.MEMBER_SNR) == (5.0, 7.0), win
+    assert SZ.member_window('10min') is None and SZ.member_window('10min', from_env=False) is None, 'no pool at 10 minutes'
     c = dict(pix_x=200, pix_y=200, local_snr=6.5)
-    r = SZ.engine_early(c, 'reject_local_snr', 'I', '36MHz', big, BMAJ, BMIN, CD, env)
+    r = SZ.engine_early(c, 'reject_local_snr', 'I', '36MHz', big, BMAJ, BMIN, CD, env, win)
     assert r == 'reject_local_snr:gaussfit-size' and c['size_role'] == 'gate' and c['size_verdict'] == 'gaussfit-size', (r, c)
     assert c['size_excess'] > 1 and 'size_flag' not in c and abs(c['size_beams'] - 4.0) < 0.5, c
     c = dict(pix_x=200, pix_y=200, local_snr=6.5)
-    r = SZ.engine_early(c, 'reject_local_snr', 'I', '36MHz', pt, BMAJ, BMIN, CD, env)
+    r = SZ.engine_early(c, 'reject_local_snr', 'I', '36MHz', pt, BMAJ, BMIN, CD, env, win)
     assert r == 'reject_local_snr' and c['size_role'] == 'gate' and c['size_verdict'] == 'point-like', (r, c)
+    # the window, on the ledger's rounded S/N: 4.996 is the ledger's 5.0 (in), 4.994 its 4.99 (out), 6.996 its 7.0 (out), the
+    # sign ignored; outside it, or with no window (10 minutes), the same source is recorded and its reason kept
+    for snr, pool in ((4.996, True), (4.994, False), (5.0, True), (6.994, True), (6.996, False), (7.0, False), (-5.5, True),
+                      (-4.2, False), (3.1, False), ('', False), (None, False)):
+        for w in ((win, None) if pool else (win,)):
+            c = dict(pix_x=200, pix_y=200, local_snr=snr)
+            r = SZ.engine_early(c, 'reject_local_snr', 'I', '36MHz', big, BMAJ, BMIN, CD, env, w)
+            want_gate = pool and w is not None
+            assert (r, c['size_role']) == (('reject_local_snr:gaussfit-size', 'gate') if want_gate
+                                           else ('reject_local_snr', 'record')), (snr, w, r, c['size_role'])
+            assert c['size_verdict'] == 'gaussfit-size' and set(SZ.GLED_COLS_SIZE) <= set(c), c   # measured either way
+    assert SZ.ledger_snr(dict(local_snr=4.996, snr=9.9)) == 5.0 and SZ.ledger_snr(dict(snr='6.123')) == 6.12
+    assert SZ.ledger_snr(dict(local_snr='x')) is None and not SZ.in_member_pool(None, win)
     for st, reason in (('I', 'reject_merged'), ('I', 'reject_sigma_stack'), ('I', 'reject_bright_prox'), ('V', 'reject_local_snr'),
                        ('V', 'reject_bilobe'), ('V', 'reject_merged')):
         c = dict(pix_x=200, pix_y=200, local_snr=6.5)
-        r = SZ.engine_early(c, reason, st, '36MHz', big, BMAJ, BMIN, CD, env)
+        r = SZ.engine_early(c, reason, st, '36MHz', big, BMAJ, BMIN, CD, env, win)
         assert r == reason and c['size_role'] == 'record' and c['size_verdict'] == 'gaussfit-size', (st, reason, r, c)
         assert c['size_rule'] == env.label() and set(SZ.GLED_COLS_SIZE) <= set(c) and abs(c['size_beams'] - 4.0) < 0.5, c
     c = dict(pix_x=200, pix_y=200, local_snr=9.0)                 # the master-structure gate's rows: recorded, no flags
     assert SZ.engine_record(c, 'I', 'Red', big, BMAJ, BMIN, CD, env) == 'gaussfit-size' and c['size_role'] == 'record' \
         and 'size_flag' not in c, c
-    c = dict(pix_x=2, pix_y=200, local_snr=6.5)                   # off the frame: recorded as not measured, the reason kept
-    assert SZ.engine_early(c, 'reject_local_snr', 'I', 'Red', big, BMAJ, BMIN, CD, env) == 'reject_local_snr' \
+    c = dict(pix_x=2, pix_y=200, local_snr=6.5)                   # off the frame: judged as not measured, the reason kept
+    assert SZ.engine_early(c, 'reject_local_snr', 'I', 'Red', big, BMAJ, BMIN, CD, env, win) == 'reject_local_snr' \
         and c['size_verdict'] == 'fit-failed' and c['size_role'] == 'gate' and 'size_beams' not in c, c
-    _refuses(lambda: SZ.engine_early(dict(pix_x=200, pix_y=200), 'reject_merged', 'I', 'Red', big, None, BMIN, CD, env),
+    _refuses(lambda: SZ.engine_early(dict(pix_x=200, pix_y=200), 'reject_merged', 'I', 'Red', big, None, BMIN, CD, env, win),
              'an early row of an epoch without a beam')
-    _refuses(lambda: SZ.engine_early(dict(pix_x=200, pix_y=200), 'reject_local_snr', 'I', 'Red2', big, BMAJ, BMIN, CD, env),
-             'an unknown band')
-    # the engine: every early path calls the rule, only under it; the floors checked before anything is written
+    _refuses(lambda: SZ.engine_early(dict(pix_x=200, pix_y=200, local_snr=6.0), 'reject_local_snr', 'I', 'Red2', big, BMAJ, BMIN,
+                                     CD, env, win), 'an unknown band')
+    # the window the step hands the deep engine child (MEMBER_ENV), read back there; a malformed one refuses
+    from exopipe.phase3.lib.search import deep_step, tier_sublst
+    keep = os.environ.pop(SZ.MEMBER_ENV, None)
+    try:
+        e = deep_step.size_rule_env()
+        assert e[SZ.MEMBER_ENV] == '5.0,7.0', e
+        assert SZ.MEMBER_ENV not in tier_sublst.engine_env(dict(label='SLST10B', arm='B', lst='10h'), T, T), '10 minutes: none'
+        os.environ[SZ.MEMBER_ENV] = '5.0,7.0'
+        assert SZ.member_window('deep') == (5.0, 7.0) and SZ.member_window('10min') is None
+        for bad in ('7.0,5.0', '5.0', 'x,y', '0,7'):
+            os.environ[SZ.MEMBER_ENV] = bad
+            _refuses(lambda: SZ.member_window('deep'), f'the member window {bad!r}')
+    finally:
+        os.environ.pop(SZ.MEMBER_ENV, None)
+        if keep is not None:
+            os.environ[SZ.MEMBER_ENV] = keep
+    # the engine: every early path calls the rule, only under it; the window read once (none at 10 minutes); the floors
+    # checked before anything is written
     src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read()
-    for call in ("_SZ.engine_early(c, _rsn, 'I', scope, rI, *_szb, cd, _szr)", "_SZ.engine_early(c, _rsn, 'V', scope, rV, *_szb, cd, _szr)",
-                 "_SZ.engine_record(c, 'I', scope, rI, *_szb, cd, _szr)"):
+    for call in ("_SZ.engine_early(c, _rsn, 'I', scope, rI, *_szb, cd, _szr, _szm)",
+                 "_SZ.engine_early(c, _rsn, 'V', scope, rV, *_szb, cd, _szr)", "_SZ.engine_record(c, 'I', scope, rI, *_szb, cd, _szr)"):
         assert src.count(call) == 1, call
         i = src.index(call)
         assert 'if _szr is not None:' in src[i - 200:i], call
+    assert src.count('_szm = _SZ.member_window(cadence) if _szr is not None else None') == 1
     assert src.index("_SZ.check_floors(SIZE_FLOOR_BEAMS, AXIS_REMOVE") < src.index('_SZ.write_run_record(run_root, _szr)')
     # the gate-ledger content test knows the member pool's reasons, and they keep the identification stage's exemption
     from exopipe.phase3.lib.search import tests as ST
@@ -562,8 +600,32 @@ def test_downstream():
     assert len(SZ.removed_rows([p] + tags)) == 3 and [f for f, _r in SZ.removed_rows([p] + tags)] == ['master_catalog_removed.csv'] * 3
     # the conformance's AXIS step under the rule (catalog_conform.CONFORM_AXIS_UNDER_RULE, PENDING GREGG)
     env_rec, prod_rec = dict(SZ.run_record(None), rule='envelope'), SZ.run_record(None)
-    assert C.catalog_conform.CONFORM_AXIS_UNDER_RULE == 'second_gate' == SZ.conform_axis_mode(), 'the default until Gregg rules'
-    assert C.ruled('catalog_conform.CONFORM_AXIS_UNDER_RULE') == (SZ.AXIS_STEP_RULING,), 'the standing 09-05 step, ruled'
+    assert C.catalog_conform.CONFORM_AXIS_UNDER_RULE == 'second_gate' == SZ.conform_axis_mode(), 'the default until Gregg answers'
+    # UNRULED (the 2026-11-03 verification): the 2.0 step is production's code behavior - its 09-05 value superseded by
+    # R-SIZE-AXIS-GATE-1.5-RATIFIED - not a live ruling: no RULED entry, not protected; an override into a PRODUCTION --out needs
+    # no --ruling-for and is recorded as unruled (authority None), while a ruled key there still refuses
+    assert C.ruled('catalog_conform.CONFORM_AXIS_UNDER_RULE') is None and not C.protected('catalog_conform.CONFORM_AXIS_UNDER_RULE')
+    assert SZ.AXIS_STEP_ORIGIN in SZ.AXIS_STEP_BASIS['second_gate'] and SZ.AXIS_STEP_SUPERSEDED_BY in SZ.AXIS_STEP_BASIS['second_gate']
+    assert "production's current behavior" in SZ.AXIS_STEP_BASIS['second_gate'] and 'pending Gregg' in SZ.AXIS_STEP_BASIS['second_gate']
+    src_cfg = open(os.path.join(REPO, 'exopipe', 'phase3', 'config', 'steps', 'catalog.py')).read()
+    assert 'Supersedes ... the 2.0 axis value of' in src_cfg and 'Approved - remove above 8' in src_cfg, 'both rulings quoted'
+    from exopipe.phase3.config import ConfigRefusal
+    auth, prod = dict(C._auth), os.path.join(C.paths.PRODUCTION_ROOTS[0], 'size_rule_test_run')
+    try:
+        C.authorize([], out=prod)
+        C.set('catalog_conform.CONFORM_AXIS_UNDER_RULE', "'replace'")
+        assert C.catalog_conform.CONFORM_AXIS_UNDER_RULE == 'replace' and C.overrides[-1][0] == 'catalog_conform.CONFORM_AXIS_UNDER_RULE' \
+            and C.overrides[-1][4] is None, C.overrides[-1:]
+        assert not [o for o in C.ruled_overrides() if o['key'] == 'catalog_conform.CONFORM_AXIS_UNDER_RULE']
+        try:
+            C.set('catalog_conform.MODE', "'remove'")
+            raise AssertionError('a ruled key into a production --out must refuse without --ruling-for')
+        except ConfigRefusal:
+            pass
+    finally:
+        C.reset()
+        C._auth = auth
+    assert C.catalog_conform.CONFORM_AXIS_UNDER_RULE == 'second_gate'
     _refuses(lambda: SZ.conform_axis_mode('second gate'), 'an unknown CONFORM_AXIS_UNDER_RULE')
     pax = _removed_csv(os.path.join(T, 'axis_only.csv'), [AX, RL])
     assert SZ.conform_removals([p], prod_rec) == (None, None), "production's attempts: its removals stand"
@@ -571,7 +633,8 @@ def test_downstream():
     # 'second_gate' (default): the axis step stands, its removals recorded, never refused; the size step still contradicts
     pax_a = _removed_csv(os.path.join(T, 'axis_only_A.csv'), [AX, RL])          # its tag copy: the row counted once
     why, sg = SZ.conform_removals([pax, pax_a], env_rec, 'multiples fork I')
-    assert why is None and sg['mode'] == 'second_gate' and sg['ruling'] == SZ.AXIS_STEP_RULING and sg['rows'] == 1, (why, sg)
+    assert why is None and sg['mode'] == 'second_gate' and sg['basis'] == SZ.AXIS_STEP_BASIS['second_gate'] and sg['rows'] == 1, \
+        (why, sg)
     assert SZ.conform_env(env_rec) == {} and SZ.conform_axis_step(env_rec)
     why, sg = SZ.conform_removals([p], env_rec, 'conform')
     assert why and 'conform: 1 row(s)' in why and 'gaussfit size' in why and sg is None, why
@@ -695,18 +758,21 @@ def test_ledger():
         r.update(kw)
         return r
 
-    def write(rows, header=cols):
+    def write(rows, header=cols, tier='deep'):
         p = os.path.join(rd, 'v_deep_ledger.csv')
         with open(p, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=header, extrasaction='ignore'); w.writeheader(); w.writerows(rows)
-        return ST.size_rule_rows(p, header, [dict((k, r.get(k, '')) for k in header) for r in rows])
+        return ST.size_rule_rows(p, header, [dict((k, r.get(k, '')) for k in header) for r in rows], tier=tier)
     unmeasured = dict(size_snr='', size_thr='', axis_thr='', size_excess='', axis_excess='', size_verdict='fit-failed')
     ok = [row(final='1'), row(veto_reason='mstruct'), row(veto_reason='gaussfit-size', size_verdict='gaussfit-size',
                                                          size_excess='1.3'),
           row(veto_reason='axis-ratio', size_verdict='axis-ratio', axis_excess='1.1'),
-          row(stokes='I', veto_reason='reject_local_snr'),                                 # the fork's member pool, kept
-          row(stokes='I', veto_reason='reject_local_snr:gaussfit-size', size_verdict='gaussfit-size', size_excess='1.4'),
-          row(stokes='I', veto_reason='reject_local_snr:axis-ratio', size_verdict='axis-ratio', axis_excess='1.2'),
+          row(stokes='I', veto_reason='reject_local_snr', snr='6.0'),                      # the fork's member pool, kept
+          row(stokes='I', veto_reason='reject_local_snr:gaussfit-size', snr='5.0', size_verdict='gaussfit-size', size_excess='1.4'),
+          row(stokes='I', veto_reason='reject_local_snr:axis-ratio', snr='-6.99', size_verdict='axis-ratio', axis_excess='1.2'),
+          row(stokes='I', veto_reason='reject_local_snr', snr='4.99', size_role='record', size_verdict='gaussfit-size',
+              size_excess='1.6'),                                                          # below the pool: recorded only
+          row(stokes='V', veto_reason='reject_local_snr', snr='6.0', size_role='record'),     # Stokes V: no member pool
           row(stokes='I', veto_reason='mstruct_I', size_role='record', size_verdict='gaussfit-size', size_excess='1.3'),
           row(veto_reason='reject_merged', size_role='record', **unmeasured)]
     assert write(ok) == [], write(ok)
@@ -717,6 +783,11 @@ def test_ledger():
            ([row(final='1', size_rule='envelope:other.json:0123')], 'another product than the record names'),
            ([row(veto_reason='reject_merged', size_role='record', size_verdict='')], 'a candidate row neither judged nor recorded'),
            ([row(veto_reason='mstruct', size_role='')], 'a row without its role'),
+           ([row(stokes='I', veto_reason='reject_local_snr', snr='4.2')], 'a local-SNR row below the pool judged as the pool'),
+           ([row(stokes='I', veto_reason='reject_local_snr:gaussfit-size', snr='4.2', size_verdict='gaussfit-size',
+                 size_excess='1.4')], 'a floor removal attributed to the size rule (below the member window)'),
+           ([row(stokes='I', veto_reason='reject_local_snr', snr='6.0', size_role='record')], 'a pool row only recorded'),
+           ([row(stokes='I', veto_reason='reject_local_snr', snr='7.0')], 'the window is lo <= |S/N| < hi: 7.0 is outside'),
            ([row(final='1', size_role='record')], "a final only 'recorded'"),
            ([row(veto_reason='gaussfit-size', size_verdict='gaussfit-size', size_role='record')], "a 'record' row the rule removed"),
            ([row(veto_reason='', final='1', size_role='record')], "a 'record' row without an earlier gate"),
@@ -727,6 +798,11 @@ def test_ledger():
             "the rule removes a member-pool row whose reason stays 'reject_local_snr'")]
     for rows_, what in bad:
         assert write(rows_), what
+    # the 10-minute tier has no member pool: every local-SNR row is recorded; one judged as the pool refuses
+    assert write([row(stokes='I', veto_reason='reject_local_snr', snr='6.0', size_role='record')], tier='sublst') == []
+    assert write([row(stokes='I', veto_reason='reject_local_snr', snr='6.0')], tier='sublst'), '10 minutes: no member pool'
+    assert write([row(stokes='I', veto_reason='reject_local_snr:axis-ratio', snr='6.0', size_verdict='axis-ratio',
+                      axis_excess='1.2')], tier='sublst'), '10 minutes: no member-pool removal'
     assert write([row(final='1')], header=DS.GLED_COLS), "the record says envelope, the header lacks the rule's columns"
     json.dump(dict(SZ.read_run_record(rd), version='size-rule-1'), open(os.path.join(rd, SZ.RUN_RECORD), 'w'))
     assert write([row(final='1')]), "size-rule-2 columns, the record says size-rule-1"

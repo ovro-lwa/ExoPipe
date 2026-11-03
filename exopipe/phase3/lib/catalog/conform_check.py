@@ -31,8 +31,9 @@ at the search's limit on the finals and production's own computation on the cata
 every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS; lib/search/size_rule) the attempts must share the
 configured rule (their size_rule.json; refused before any row otherwise), a final must carry the rule's own passing
 verdict (its recorded excesses, size_rule.final_findings), production's fixed size limit on the catalog rows only flags, and
-production's fixed AXIS step (axis ratio > 2.0 x beam above 8 sigma, R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA) follows
-catalog_conform.CONFORM_AXIS_UNDER_RULE (PENDING GREGG): 'second_gate' - the step stands as a second gate, as in every
+production's fixed AXIS step (axis ratio > 2.0 x beam above 8 sigma: the 2.0 value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA,
+superseded by R-SIZE-AXIS-GATE-1.5-RATIFIED, kept in production's code) follows catalog_conform.CONFORM_AXIS_UNDER_RULE
+(UNRULED, PENDING GREGG): 'second_gate' - production's current behavior: the step stands as a second gate, as in every
 production conformance of the tier (the multiples fork, 10-minute S-G13): this check REMOVES the catalog rows it removes, in
 its words, into master_catalog_removed.csv (counted in the printed line); 'replace' - kept and flagged.
 Any finding: CHECK_REPORT written, REFUSED
@@ -767,8 +768,9 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
     _write(os.path.join(CD, 'master_catalog_removed.csv'), ocols + ['removal_reason'], removed + second)
     if os.path.exists(os.path.join(CD, CHECK_REPORT)):
         os.remove(os.path.join(CD, CHECK_REPORT))       # a passing check leaves no report of an earlier refusal
-    sg = (f'; the size / axis rule\'s attempts: the conformance\'s axis step ({SZ.AXIS_STEP_RULING}) as the second gate '
-          f'removed {len(second)}' if szr['rule'] == 'envelope' and SZ.conform_axis_step(szr) else '')
+    sg = (f'; the size / axis rule\'s attempts: production\'s axis step (2.0 x beam above 8 sigma; its current behavior, '
+          f'pending Gregg) as the second gate removed {len(second)}' if szr['rule'] == 'envelope' and SZ.conform_axis_step(szr)
+          else '')
     out(f'conform check: {len(raw)} rows, every removal rule re-evaluated in both directions ({n_ledger} ledger rows, '
         f'{len(atts)} attempts): ' + ('nothing removed, nothing missed' if not second else 'nothing missed, nothing removed but '
                                       'by the second gate') + f' -> {len(kept)} conformant (the pulsar stage restored '

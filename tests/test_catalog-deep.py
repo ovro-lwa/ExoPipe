@@ -826,7 +826,7 @@ def test_size_rule_in_the_chain():
     AXW = 'axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'
     c_ = rec(f'{LABEL}.conform')
     sg = c_['meta']['size_rule_second_gate']['conform']
-    assert sg['mode'] == 'second_gate' and sg['rows'] == 1 and sg['ruling'] == SZ.AXIS_STEP_RULING, sg
+    assert sg['mode'] == 'second_gate' and sg['rows'] == 1 and sg['basis'] == SZ.AXIS_STEP_BASIS['second_gate'], sg
     assert any('as the second gate' in n for n in c_['notes']), c_['notes']
     assert 'P3_CONFORM_AXIS' not in c_['meta']['commands'][0]['env']
     assert [(x['cand_id'], x['removal_reason']) for x in rows(f'{U}/master_catalog_removed.csv') if x['cand_id'] == wide] == \
@@ -851,7 +851,7 @@ def test_size_rule_in_the_chain():
     cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate,fork', *REPL, expect=0)
     c_ = rec(f'{LABEL}.conform')
     assert c_['meta']['commands'][0]['env'].get('P3_CONFORM_AXIS') == '0', c_['meta']['commands'][0]['env']
-    assert c_['meta']['size_rule_second_gate']['conform'] == dict(mode='replace', ruling=SZ.AXIS_STEP_RULING, rows=0,
+    assert c_['meta']['size_rule_second_gate']['conform'] == dict(mode='replace', basis=SZ.AXIS_STEP_BASIS['replace'], rows=0,
                                                                   examples=[]), c_['meta']['size_rule_second_gate']
     kept = [x for x in rows(os.path.join(c_['meta']['copies']['master_catalog.csv'])) if x['cand_id'] == wide]
     assert len(kept) == 1 and kept[0]['axis_flag'].startswith('axis > 2.0 x beam (kept'), kept

@@ -765,8 +765,8 @@ class DeepRun:
         from exopipe.phase3.lib.search import size_rule as SZ
         mode = SZ.conform_axis_mode()
         if mode == 'second_gate':
-            return ('size / axis rule attempts: the conformance\'s axis step (2.0 x beam above 8 sigma) stands as the second '
-                    'gate (CONFORM_AXIS_UNDER_RULE=second_gate), its removals recorded')
+            return ('size / axis rule attempts: production\'s axis step (2.0 x beam above 8 sigma) stands as the second gate '
+                    '(CONFORM_AXIS_UNDER_RULE=second_gate: production\'s current behavior, pending Gregg), its removals recorded')
         sw = SZ.conform_switch(self.script('p3s2_conform.py')) if os.path.exists(self.script('p3s2_conform.py')) else False
         return (f'size / axis rule attempts: P3_CONFORM_AXIS=0 (CONFORM_AXIS_UNDER_RULE=replace); production\'s '
                 f'p3s2_conform.py {"carries" if sw else "LACKS"} the switch' + ('' if sw else f' - the pass would refuse at the '
@@ -791,8 +791,9 @@ class DeepRun:
         """After a conformance on attempts searched under the size / axis rule (size_rule.conform_removals over its removal
         records, each row once): a removal by production's fixed SIZE step contradicts the rule - REFUSED, naming the rows; its
         fixed AXIS step (2.0 x beam above 8 sigma) is the second gate under catalog_conform.CONFORM_AXIS_UNDER_RULE
-        'second_gate' - its removals recorded in the unit (meta size_rule_second_gate, a note), never refused - and under
-        'replace' (P3_CONFORM_AXIS=0 passed) any such removal refuses."""
+        'second_gate' (production's current behavior, pending Gregg) - its removals recorded in the unit (meta
+        size_rule_second_gate, a note), never refused - and under 'replace' (P3_CONFORM_AXIS=0 passed) any such removal
+        refuses."""
         from exopipe.phase3.lib.search import size_rule as SZ
         why, sg = SZ.conform_removals(paths, self.size_rule(), what)
         if why:
@@ -800,8 +801,9 @@ class DeepRun:
         if sg is not None:
             u.meta.setdefault('size_rule_second_gate', {})[what] = sg
             if sg['mode'] == 'second_gate':
-                u.note(f'{what}: the conformance\'s axis step ({sg["ruling"]}) as the second gate on the size / axis rule\'s '
-                       f'attempts removed {sg["rows"]} row(s)' + (f', e.g. {sg["examples"][0]}' if sg['examples'] else ''))
+                u.note(f'{what}: production\'s axis step (2.0 x beam above 8 sigma) as the second gate on the size / axis '
+                       f'rule\'s attempts removed {sg["rows"]} row(s) - {sg["basis"]}'
+                       + (f'; e.g. {sg["examples"][0]}' if sg['examples'] else ''))
 
     def _b02_inputs(self, u, man):
         """The inputs the pulsar stage and the check read (B-02 steps 2 and 4): the lists, the bright-source tables the check's

@@ -61,8 +61,8 @@ VETO_REASONS = frozenset({'', 'reject_local_snr', 'reject_merged', 'reject_sigma
                           'elevation'})   # B-02 step 3b: the deep floor at the frame's mid-time (removal_rules.frame_elevation)
 # ... and those with a value after the prefix: the Jupiter track's co-added night (B-02 step 3a, deep_search: 'jupiter-track:<night>')
 VETO_REASON_PREFIXES = {'jupiter-track:': re.compile(r'^\d{4}-\d\d-\d\d$'),
-                        # the size / axis rule (size-rule-2): a Stokes I row below the local-SNR floor the rule removes - out of
-                        # the multiples fork's 5-7 sigma member pool (lib/search/size_rule.engine_early, MEMBER_REASON)
+                        # the size / axis rule (size-rule-2): a Stokes I row of the multiples fork's member pool (deep, below the
+                        # local-SNR floor, 5 <= |snr| < 7) the rule removes - out of the pool (size_rule.engine_early, MEMBER_REASON)
                         'reject_local_snr:': re.compile(r'^(gaussfit-size|axis-ratio)$')}
 # B-02 step 3b (removal_rules.FRAME_NOISE_COLS / TABLE_PULSAR_COLS)
 FNOISE_COLS = ['lst', 'scope', 'stokes', 'date', 'noise_jy', 'admitted', 'population', 'tblnoise_jy', 'vsanmed_jy', 'vsanity_x',
@@ -382,12 +382,14 @@ def _patch_rows(path, att, am, rows):
 
 
 # ---- gate ledger ------------------------------------------------------------------------------------------------------------
-def size_rule_rows(path, cols, rows):
+def size_rule_rows(path, cols, rows, tier='deep'):
     """The size / axis rule in a gate ledger: [problem]. The header and the run's record agree (GLED_COLS_SIZE exactly when
     size_rule.json says 'envelope', of its version); under the rule EVERY row carries a verdict and its role, under the product
     the record names (spec fp_gates_v2.md section 4: every candidate row); a 'gate' row's removal is the rule's own verdict and
-    vice versa ('gaussfit-size' / 'axis-ratio'; a Stokes I row below the local-SNR floor 'reject_local_snr:<verdict>'); a
-    'record' row was removed by an earlier gate (its veto_reason, never the rule's); every final was judged (point-like,
+    vice versa ('gaussfit-size' / 'axis-ratio'; a row of the multiples fork's member pool 'reject_local_snr:<verdict>'); a
+    'record' row was removed by an earlier gate (its veto_reason, never the rule's); the member pool is exactly the deep tier's
+    Stokes I 'reject_local_snr' rows whose ledger S/N lies in catalog_fork.MEMBER_SNR (5 <= |snr| < 7: size_rule.member_window)
+    - each of them 'gate', every other local-SNR row 'record', none in the 10-minute tier; every final was judged (point-like,
     fit-failed or no-snr) with excesses <= 1. A size-rule-1 ledger (the first seven columns, judged rows only) is read by that
     version's checks."""
     from exopipe.phase3.lib.search import size_rule as SZ
@@ -406,6 +408,7 @@ def size_rule_rows(path, cols, rows):
     if rec['version'] != want_v:
         return [f"the ledger carries the columns of {want_v}, its run's record ({SZ.RUN_RECORD}) says {rec['version']!r}"]
     label = f"envelope:{rec['envelope']}:{rec['md5'][:12]}"
+    window = SZ.member_window('deep' if tier == 'deep' else '10min', from_env=False)
     for r in rows:
         v, sv, where = r['veto_reason'], r.get('size_verdict') or '', f"{r['stokes']} {r['date']} {r['ra']},{r['dec']}"
         if (sv or v2) and sv not in SZ.VERDICTS:
@@ -422,6 +425,17 @@ def size_rule_rows(path, cols, rows):
             continue
         role = r.get('size_role') or ''
         member = v.startswith(SZ.MEMBER_REASON)
+        if (v == 'reject_local_snr' or member) and r['stokes'] == 'I':     # the fork's member pool: judged exactly inside it
+            try:
+                snr_ = round(float(r['snr']), 2)
+            except (TypeError, ValueError):
+                snr_ = None
+            pool = SZ.in_member_pool(snr_, window)
+            if pool != (role == 'gate'):
+                probs.append(f"{where}: {v!r} at |S/N| {r['snr']} with size_role {role!r} - the member pool ("
+                             + (f'{window[0]:g} <= |S/N| < {window[1]:g}' if window else 'none in the 10-minute tier')
+                             + ") is judged ('gate'), every other local-SNR row recorded ('record')")
+                continue
         if role not in SZ.ROLES:
             probs.append(f'{where}: size_role {role!r} is not one of {SZ.ROLES}')
         elif role == 'gate':
@@ -453,7 +467,7 @@ def complete(path, stokes=None, cell=None, tier='deep', **ctx):
                                   f'nor the pre-2026-10-17 GLED_COLS_V1 ({len(GLED_COLS_V1)}): {cols[:6]}...')
     probs = []
     reasons = {}
-    probs += size_rule_rows(path, cols, rows)
+    probs += size_rule_rows(path, cols, rows, tier=tier)
     for r in rows:
         v = r['veto_reason']
         reasons[v] = reasons.get(v, 0) + 1
