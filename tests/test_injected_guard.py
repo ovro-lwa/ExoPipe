@@ -542,6 +542,34 @@ def test_source_flags():
           ('archive', 'staging_root', 'none'), ('catalog', 'inc_source', 'search')]
     check('keyword values (published, served, none, search) name no path', all(
         raises(Refusal, injected.check_flags, st, SimpleNamespace(**{f: v}), None, writes=False) is None for st, f, v in kw))
+    # the deep-omission stage's sources (Q review F7): every run of --omit-runs as the stage reads it - a comma list, an @FILE
+    # list, a bare name under paths.SNAPSHOT_REVIEW_ROOT - and the refusal record --omit-refusals
+    omit = lambda **a: raises(Refusal, injected.check_flags, 'catalog', SimpleNamespace(**a), None, writes=False)
+    e = omit(omit_runs=f'{plain},{src}')
+    check('SOURCE catalog --omit-runs RUN,RUN: an injected run anywhere in the comma list refused', e is not None
+          and 'holds an injected run' in str(e) and 'catalog --omit-runs' in str(e), e)
+    lst_plain, lst_mixed = os.path.join(T, 'omit_runs_plain.txt'), os.path.join(T, 'omit_runs_mixed.txt')
+    open(lst_plain, 'w').write(f'# the view\n{plain}\n\n')
+    open(lst_mixed, 'w').write(f'{plain}   # first\n{src}\n')
+    e, ok = omit(omit_runs='@' + lst_mixed), omit(omit_runs='@' + lst_plain) is None
+    check('SOURCE catalog --omit-runs @FILE: each run the file lists is checked (an injected one refused, ordinary ones read)',
+          e is not None and 'holds an injected run' in str(e) and ok, (e, ok))
+    e = omit(omit_runs='@' + os.path.join(T, 'no_such_list.txt'))
+    check('SOURCE catalog --omit-runs @FILE: an unreadable list refuses (its runs cannot be shown ordinary)', e is not None
+          and 'cannot be read' in str(e), e)
+    saved_rr = CFG.paths.SNAPSHOT_REVIEW_ROOT
+    try:
+        CFG.paths.SNAPSHOT_REVIEW_ROOT = out
+        e = omit(omit_runs='Run_P3S9')
+        CFG.paths.SNAPSHOT_REVIEW_ROOT = os.path.dirname(plain)
+        ok = omit(omit_runs='Run_P3S9') is None
+    finally:
+        CFG.paths.SNAPSHOT_REVIEW_ROOT = saved_rr
+    check('SOURCE catalog --omit-runs NAME: a bare name resolves under paths.SNAPSHOT_REVIEW_ROOT (as the stage reads it)',
+          e is not None and 'holds an injected run' in str(e) and ok, (e, ok))
+    e = omit(omit_refusals=os.path.join(out, 'refusals'))
+    check('SOURCE catalog --omit-refusals: a refusal record under an injected run refused', e is not None
+          and 'catalog --omit-refusals' in str(e), e)
     e = raises(Refusal, injected.check_flags, 'install', SimpleNamespace(gen=tmpl), None, writes=False)
     check('a {cell} template is checked at its fixed part (install --gen <injected out>/gen/{cell})', e is not None, e)
     e = raises(Refusal, injected.check_flags, 'serve', SimpleNamespace(source=f'{me}:{src}'), None, writes=False)
@@ -560,7 +588,9 @@ def test_source_flags():
                        (['archive', 'sync', '--attempt', os.path.join(out, 'attempts', '04h_Red_V_20261102T000000Z')],
                         'archive --attempt'),
                        (['install', '--gen', tmpl], 'install --gen'),
-                       (['pages', '--tier', 'deep', '--from-run', src], 'pages --from-run')):
+                       (['pages', '--tier', 'deep', '--from-run', src], 'pages --from-run'),
+                       (['catalog', '--tier', 'snapshot', '--stages', 'omit', '--omit-runs', f'{plain},{src}'],
+                        'catalog --omit-runs')):
         r = cli(*argv, '--out', os.path.join(T, 'consumer_out'), '--dry-run', '--cores', 'none')
         check(f'CLI: an ordinary `{what} <injected run\'s products>` exits 2', r.returncode == 2 and what in r.stderr
               and 'holds an injected run' in r.stderr, (r.returncode, r.stderr[-400:]))
