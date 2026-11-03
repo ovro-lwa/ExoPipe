@@ -428,6 +428,7 @@ def build(job):
     qrows = collections.defaultdict(dict)
     src_seen = collections.Counter()
     xstat = collections.Counter()           # the per-tier page detections that are no kept detection of their identity
+    copy_runs = set()                       # batch runs whose panels a scratch / parity view copies (a hard link failed)
 
     def agree(kind, prod, kept, what):
         if prod != kept:
@@ -551,19 +552,26 @@ def build(job):
                         dst = os.path.join(PART, pd, fn)
                         if os.path.exists(dst):
                             dst = os.path.join(PART, pd, '%s_%s' % (TAG[r], fn))
-                        try:
-                            os.link(os.path.join(src, fn), dst)
-                        except OSError as e:
-                            # production hard-links every panel (one file system: its view and batches on /data07). A view
-                            # under a production root refuses a link that fails (G-V5: a copy of ~3 million panels would fill
-                            # the review disk); a scratch / parity view COPIES the panel - same bytes - where the link fails
-                            # (another file system, or the parity guard, which refuses a hard link of a file outside the
-                            # parity roots: core/guard.py), counted in the stats as panels_copied
-                            if not job.get('copy_fallback'):
-                                raise ViewRefusal('G-V5 a panel could not be hard-linked (%s: %s) - the view and its batch runs '
-                                                  'must share one file system' % (os.path.join(src, fn), e))
+                        # production hard-links every panel (one file system: its view and batches on /data07). A view
+                        # under a production root refuses a link that fails (G-V5: a copy of ~3 million panels would fill
+                        # the review disk); a scratch / parity view COPIES the panel - same bytes - where the link fails
+                        # (another file system, or the parity guard, which refuses a hard link of a file outside the parity
+                        # roots: core/guard.py), and the rest of that batch run's panels without trying again; counted in
+                        # the stats as panels_copied
+                        if r in copy_runs:
                             shutil.copy2(os.path.join(src, fn), dst)
                             xstat['panels_copied'] += 1
+                        else:
+                            try:
+                                os.link(os.path.join(src, fn), dst)
+                            except OSError as e:
+                                if not job.get('copy_fallback'):
+                                    raise ViewRefusal('G-V5 a panel could not be hard-linked (%s: %s) - the view and its batch '
+                                                      'runs must share one file system' % (os.path.join(src, fn), e))
+                                log('%s: a panel cannot be hard-linked here (%s) - this scratch view copies its panels' % (TAG[r], e))
+                                copy_runs.add(r)
+                                shutil.copy2(os.path.join(src, fn), dst)
+                                xstat['panels_copied'] += 1
                         n_links += 1
                         PANELS_PD[pd].append(fn)
                     for d in (dcache[src] if src in dcache else rows(os.path.join(src, 'detections.csv'))):

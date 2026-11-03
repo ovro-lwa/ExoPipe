@@ -123,7 +123,10 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
 - G-V2: the view or its `.part` exists (a view is never overwritten).
 - G-V3: the omit product misses a file, fails its content tests now, or was made for other runs or another order.
 - G-V4: the served batch runs changed since the omit stage (served digest).
-- G-V5: a batch run on another file system than the view (the panels are hard links; production failed there with an error).
+- G-V5: a batch run on another file system than a PRODUCTION view, or a panel that cannot be hard-linked into it (the panels are
+  hard links; production failed there with an error, and a copy of ~3 million panels would fill the review disk). A scratch or
+  parity view copies such a panel instead - same bytes, counted (`panels_copied`) - because the parity guard (core/guard.py)
+  refuses a hard link of a file outside the parity roots, as it does for every caller that links to save a copy.
 - G-V6: an ordinary run reading a run or an omit product under an injected run's start record (also the CLI's source-flag guard
   for `--view-runs` / `--view-omit`).
 - G-K: the kept product does not apply exactly (see the build).
@@ -177,7 +180,8 @@ same fleet records, run under its interpreter, against this stage, into scratch:
   `detections.csv`, the queues, `deep_omission.csv`, `deep_omission_dropped.csv`, `deep_omission_summary.txt`,
   `detection_ts.csv`, `master_catalog.csv`, `coadd_root.txt`, `card2_filter.csv`, the localizations;
 - `combined_view_summary.json` equal but for `seconds` (the run time);
-- panels: the same names hard-linked to the same inodes (both views link the same input copy);
+- panels: the same names, each the same inode (both views link the same input copy) or, in a `--parity` run of the stage
+  (copies under the parity guard), the same bytes;
 - production is deterministic given the directory listings it globs (the per-tier catalogues are read in `glob` order, unsorted:
   the record's row order and the ties of equal |S/N| follow it - kept, marked PRODUCTION ORDER). A parity run therefore reads one
   input copy for both builds.
