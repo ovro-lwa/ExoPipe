@@ -32,7 +32,10 @@ class forced(_Section):
     panels of photometry's evaluation), family C (snapshot forced event panels). Spec forced.md 1-2; decisions 5-6."""
     # stages per tier, pipeline order
     STAGES = {'deep': ('catflux', 'panels'),                                  # catflux: p3s3_pass.sh:100-101; panels: deep_forced_panels.py
-              'snapshot': ('build', 'fit', 'tie', 'loc', 'assoc', 'render', 'verify')}   # snapshot_forced_pages_run_20261007.sh:29-62
+              'snapshot': ('build', 'fit', 'tie', 'loc', 'assoc', 'render', 'verify',   # snapshot_forced_pages_run_20261007.sh:29-62
+                           # family W, the wide-area burst test of the forced runs, and family N, the night-activity table (the
+                           # astrometry figure v2's inputs; lib/forced/wide_stages.py): named only, one family per invocation
+                           'wide_jobs', 'wide_search', 'wide_test', 'wide_publish', 'activity')}
     # default without --stages: catflux is what the publish pass (between catalog fork and union) and the per-hour chain run;
     # deep panels run only when named (intermittent, after a photometry evaluation)
     DEFAULT_STAGES = {'deep': ('catflux',), 'snapshot': ('build', 'fit', 'tie', 'loc', 'assoc', 'render', 'verify')}
@@ -192,3 +195,264 @@ class forced_assoc(_Section):
     PROTECTED_KEYS = ('RADIO_CATDIR',)
     RULED = {'NO_LABEL': 'IMPLEMENTED-RULING-D-20261008-FORCED-I-PAGES-SERVED-ADLEO-NOT-LABELLED',
              'CEIL_PCT': 'IMPLEMENTED-FORCED-ASSOCIATION-TARGET-VS-BACKGROUND-Q8A'}
+
+
+# =====================================================================================================================
+# FAMILY W - THE FORCED TARGETS' WIDE-AREA BURST TEST (v3), and FAMILY N - THE NIGHT-ACTIVITY TABLE: the two inputs of the
+# astrometry figure v2 (exopipe_ops source_astrometry_panel_v2.py, astrometry_assoc.py; live 2026-11-03 for the forced runs of
+# every tier and the deep tier) that analysis scripts made (phase3/refactor_analysis/review_items_20261031/forced_wide/ and
+# figure_v2/night_activity_build.py). Ported, not run in place: the analysis directory is not a production tree. The in-place
+# production modules the method calls (the forced evaluation's gates snapshot_forced_eval, the snapshot search's time and
+# night rules phase3_snapshot_search, tier rule 3 phase3_tier_rules, the radio catalogues snapshot_forced_assoc, the beam table
+# phase3_snapshot_astro) are imported in the step process (core/env.legacy), so the search stays gate-exact with stage 2.
+# THE APPROVAL (Gregg 2026-11-03, on the v3 page: "v3 is not perfect, but it is approved. Proceed."): the method of the
+# forced_wide_v3.py docstring - its values are the defaults below. No fix_ledger row names that approval yet, so no key is
+# RULED (tests/test_core_v2.py requires every RULED ID to be a ledger row); mark them RULED when one exists.
+# Spec: docs/specs/forced_wide.md.
+# =====================================================================================================================
+
+class forced_wide(_Section):
+    """Family W: the forced targets' WIDE-AREA BURST TEST - which cataloged source, if any, makes a forced target's events.
+    Stages wide_jobs (the targets and their bands; the forced events), wide_search (every >= 7-sigma burst in the target's
+    gen5 cutouts on exactly the frames the forced photometry used), wide_test (the v3 analysis) and wide_publish
+    (<run>/forced_wide_v3.csv, read by the astrometry figure v2: astrometry_assoc.V3_MAP). Inputs, outputs, method: spec
+    docs/specs/forced_wide.md."""
+    # ---- inputs: the forced runs (generation 5, served 2026-10-26: hub p8785 I 10 s, p8786 V 10 s, p8776 I 1 min, p8775 V 1 min)
+    #      under paths.SNAPSHOT_REVIEW_ROOT (lwacalim07's /data07); --wide-runs DIR reads a copy holding the same run names
+    RUN_NAME = 'Run_SNAPFORCED_{S}{cadence}_gen5'
+    # (Stokes, cadence) of the runs, in the order the job list reads them (forced_ambiguous.py: I10s, V10s, I1min, V1min; a
+    # target's first row wins, so the order is part of the result). The 10-minute and 1-hour forced runs have no wide test:
+    # their events are not single-frame bursts (forced_wide_jobs.py:72, jobs_ext.py:12)
+    RUNS = (('I', '10s'), ('V', '10s'), ('I', '1min'), ('V', '1min'))
+    # the cutouts searched: photometry.CUTOUT_ROOT (the served generation - one source of truth); --wide-cutout-root overrides
+    CUTOUT_GLOB = '*_??h_????????T??????_{S}.fits'   # the per-cell 10-s cutouts of an object (not _10min_ / _deep_);
+                                                 # forced_wide_search.py:251
+    WORK_ROOT = '/lustre/gh/main/phase3/snapshot_forced/forced_wide_gen5'   # the family's production --out (jobs, bursts,
+                                                 # results); beside stage1_gen5 / eval_gen5 (photometry.OUT_ROOT[snapshot])
+    JOBS = 'jobs.json'                           # wide_jobs: the job list (base + extension jobs)
+    EVENTS = 'events.csv'                        # wide_jobs: the forced events of the four runs (v3 load_events)
+    BURSTS_DIR = 'bursts'                        # wide_search: <BURSTS_DIR>/<S>_<identity>_<band>.npz
+    RESULTS = 'results_v3.csv'                   # wide_test: one row per Stokes x tier x target (forced_wide_v3.py:60)
+    CANDIDATES = 'candidates_v3.csv'             # wide_test: one row per tested candidate
+    # the file each forced run carries and the figure reads (source_astrometry_panel_v2.load:118, its literal)
+    PUBLISHED = 'forced_wide_v3.csv'
+    # ---- THE JOBS (forced_ambiguous.py 2026-11-01, forced_wide_jobs.py, v3/jobs_ext.py)
+    # AMBIGUOUS: the nearest cataloged background source (VLSSr / TGSS / GLEAM entry, S74 >= AMB_MIN_S74_JY) within
+    # AMB_SEARCH_BEAMS Master beams of the target, the beam at the median frequency of the target's forced events
+    AMB_MIN_S74_JY = 0.5                         # Jy at 74 MHz (forced_ambiguous.py:21)
+    AMB_SEARCH_BEAMS = 3                         # Master beams (forced_ambiguous.py:44)
+    # the Master beam (arcmin) at each subband frequency (MHz), the nearest key taken - ties to the first (forced_ambiguous.py:10)
+    MASTER_BEAM_ARCMIN = {18: 20.7, 23: 17.0, 27: 14.5, 32: 12.7, 36: 11.2, 41: 9.9, 46: 9.0, 50: 8.3, 55: 7.6, 59: 7.1,
+                          64: 6.6, 69: 6.2, 73: 5.9, 78: 5.5, 82: 5.3}
+    WIDEBAND_MHZ = {'Red': 27, 'Green': 50, 'Blue': 78, 'Full': 46}   # a wideband event's frequency (forced_ambiguous.py:11)
+    DEFAULT_MHZ = 46.0                           # no events / an unknown label (forced_ambiguous.py:13, :41)
+    # BASE JOBS: ambiguous targets whose background lies within BASE_MAX_BEAMS beams; their background S = the nearest physical
+    # source >= BASE_BG_MIN_S74_JY within BASE_BG_RADIUS_BEAMS beams (forced_wide_jobs.py:69, :86)
+    BASE_MAX_BEAMS = 1.0
+    BASE_BG_MIN_S74_JY = 0.5
+    BASE_BG_RADIUS_BEAMS = 1.01
+    # EXTENSION JOBS (v3, after Gregg's KELT-24 note 2026-11-02): targets with events that the base list left out but with a
+    # physical source >= EXT_MIN_S74_JY within EXT_RADIUS_FWHM x the snapshot beam FWHM of their LOWEST event band (jobs_ext.py)
+    EXT_MIN_S74_JY = 3.0
+    EXT_RADIUS_FWHM = 2.0
+    GROUP_ARCMIN = 1.5                           # catalog entries within this are one physical source (forced_wide_jobs.py:30)
+    # A MERGED identity (several list targets within forced_snapshot.MERGE_ARCMIN; 26 in the four gen5 runs) takes the list
+    # position of ONE member: 'identity' = the member the identity is named after, else the first in (sample, target) order -
+    # the same on any copy of the runs; 'first' = production (forced_ambiguous.py:40 next(iter(...))): the first member in
+    # snapshot_forced_assoc.build_targets' order, the glob order of the run tree on its file system (/data07 for the served
+    # runs; a Lustre copy lists in another order). PROPOSED (refactor 2026-11-03): production's value is in the parity config
+    TARGET_MEMBER = 'identity'
+    # the order the forced events are read in, which is the order the analysis meets - and so LISTS and SUMS - a target's bands
+    # (a candidate's bands_far / bands_near, the taper sums): 'sorted' = by directory name (frequency order), the same on any
+    # copy; 'directory' = production: os.listdir order (forced_wide_v3.load_events on its Lustre copy v3/events_copy/ - Lustre
+    # lists a directory in a fixed hash order of its names, so a Lustre copy lists as that one did; /data07 lists otherwise).
+    # PROPOSED (refactor 2026-11-03): production's value is in the parity config
+    EVENT_ORDER = 'sorted'
+    # ---- run level
+    # the caller environment: switches the in-place modules read at import or call time (the radio catalogues, tier rule 3's
+    # state, the run pins, the solar audit, the curve tables) and the analysis scripts' own (P3_PHOT_ROOT, FW_RUNS,
+    # FW_MINUTE_RULE). Any of them set refuses the run (W-ENV): the stage passes its roots as arguments
+    ENV_FORBIDDEN = ('P3_RADIO_CATDIR', 'P3_DEEP_SEARCH_STATE', 'P3_COADD_RUN', 'P3_SNAP_RUN_PINS', 'P3_SOLAR_AUDIT',
+                     'P3_SNAP_FIT_RAW', 'P3_TABLE_PREFIX', 'P3_TABLE_ELEV', 'P3_PHOT_ROOT', 'FW_RUNS', 'FW_MINUTE_RULE')
+    PROTECTED_KEYS = ('PUBLISHED',)
+
+
+class forced_wide_search(_Section):
+    """Family W, stage wide_search: every peak of |S/N| >= SNR_MIN, either sign, in each job's gen5 cutouts, on EXACTLY the
+    frames the forced photometry used (forced_wide_search.py docstring; gate-exact with stage 2, snapshot_forced_eval)."""
+    # FRAMES: 10 s = admitted and the evaluation's domain gate at the target (snapshot_forced_eval.gate_mask, in place); 1 min =
+    # gen5's blocks: admitted frames of one minute, >= BLOCK_MIN_FRAMES, averaged. MINUTE_RULE: the minute key of gen5's stage 1,
+    # which ran 2026-10-26 before the integration-midpoint rule entered stage 1 (exopipe_ops 40611cc, 2026-10-28): 'filename' =
+    # the file-name minute ts[:13] (forced_wide_search.py:31); 'midpoint' = phase3_snapshot_search.integration_minute_key. A
+    # generation measured with the midpoint rule changes this with photometry.CUTOUT_ROOT
+    MINUTE_RULE = 'filename'
+    BLOCK_MIN_FRAMES = 3                         # admitted frames per 1-minute block (forced_wide_search.py:190; stage 1's rule)
+    # PEAKS: local extrema of |value| over 3 x 3 pixels, either sign (in a frame-minus-median cube a wandering source is a
+    # dipole), more than EDGE_PX inside the cutout; candidates at >= PRE_SIGMA x the plane's robust rms, then S/N = value / the
+    # forced definition's local rms (1.4826 x MAD of the STAMP_PX x STAMP_PX stamp, the central (2 STAMP_CORE_PX + 1)^2
+    # excluded, >= STAMP_MIN_FRAC of the stamp inside the cutout); kept at |S/N| >= SNR_MIN (forced_wide_search.py:33)
+    SNR_MIN = 7.0
+    PRE_SIGMA = 4.0
+    STAMP_PX = 41
+    STAMP_CORE_PX = 2
+    STAMP_MIN_FRAC = 0.5
+    EDGE_PX = 2
+    MIN_FINITE_PX = 100                          # a plane with fewer finite pixels is not searched (forced_wide_search.py:171)
+    # POSITION: a 2-D quadratic in log|value| over the 3 x 3 (exact for a rotated elliptical Gaussian), accepted within
+    # INTERP2D_CLIP_PX; else separate 1-D fits clipped to INTERP1D_CLIP_PX (forced_wide_search.py:131, :153)
+    INTERP2D_CLIP_PX = 0.75
+    INTERP1D_CLIP_PX = 0.5
+    # PROCESSES: Lustre reads yield to the recorders (CLAUDE.md; forced_wide_search.py:281 refused more than 6)
+    WORKERS = 6
+    MAX_WORKERS = 6
+    # the recorders' I/O guard (exopipe_ops io_guard_20261023.sh): before each cutout read a worker waits while the latest
+    # guard round has a node above IO_GUARD_MAX_S, until the last two rounds are both at or below it (the rule of
+    # forced_wide/yield_forced_wide.sh, cooperative: no signals, no process matching); polled every IO_GUARD_POLL_S. None = no
+    # yield (a missing log = no yield, noted)
+    IO_GUARD_LOG = '/lustre/gh/main/exopipe_ops/io_guard_20261023.log'
+    IO_GUARD_MAX_S = 4.0
+    IO_GUARD_POLL_S = 20
+    # a cutout file whose read or search raised: 'refuse' = that band's npz is refused (item refusal W-FILE; the test then
+    # refuses W-POOL until it is resolved); 'drop' = production: the file's peaks are dropped and its error is recorded in the
+    # npz file table (forced_wide_search.py:238-240, 'all or nothing per file'). No gen5 file raised (565 npz, 2026-11-02)
+    FILE_ERRORS = 'refuse'
+    # MIRROR (protected): the site phase3_snapshot_search.sun_state computes the Sun at (lat deg, lon deg, height m) - its literal
+    # (clv15 phase3_snapshot_search.py:651); the vectorized time cache must hold what sun_state computes (tests compare)
+    SUN_SITE = (37.2398, -118.2817, 1222)
+    NULLABLE_KEYS = ('IO_GUARD_LOG',)
+    PROTECTED_KEYS = ('SUN_SITE',)
+
+
+class forced_wide_test(_Section):
+    """Family W, stage wide_test: the v3 analysis (forced_wide_v3.py; Gregg 2026-11-03 "v3 is not perfect, but it is approved.
+    Proceed.") - candidates by flux, the taper test calibrated on control lines, v2's centering test, the centroid, the verdict.
+    Lengths in FWHM of the band (phase3_snapshot_astro.beam_fwhm_arcmin, in place) unless named in arcmin."""
+    # AMPLITUDE: a source makes an event of value v only if v <= MU x F, F = S74 (REF_MHZ / nu)^SPECTRAL_INDEX; MU = the largest
+    # burst / band-flux ratio measured around cataloged sources (v3/mag_bound.py, mag_bound_V.py): Stokes I 10 s p99.9 3.3-4.3
+    # -> 4.0, 1 min p99.9 2.0-2.2 -> 2.5; Stokes V |V| / F_I within 0.6 FWHM of >= 5 Jy sources, 10 s max 2.4 -> 2.5, 1 min max
+    # 1.8 -> 2.0 (forced_wide_v3.py:15-19, :80)
+    MU = {('I', '10s'): 4.0, ('I', '1min'): 2.5, ('V', '10s'): 2.5, ('V', '1min'): 2.0}
+    REF_MHZ = 74.0
+    SPECTRAL_INDEX = 0.7
+    CAPABLE_FRACTION = 0.5                       # CAPABLE in a band: able to make at least this fraction of its events there
+    S_MIN_JY = 0.25                              # candidates: physical sources >= this at 74 MHz (forced_wide_v3.py:83)
+    R_CAND = 2.0                                 # candidates within this x FWHM of the target in a band with events
+    NEAR = 0.6                                   # the taper test from this distance, the centering test inside it
+    CUT_HALF_ARCMIN = 148.0                      # the cutout half-width (arcmin): 300' cutouts with a 2' margin (v2, v3)
+    CUT_EDGE_ARCMIN = 4.0                        # the taper test's bins, disc and control sources stay this far inside it
+    # TAPER TEST: bursts in a strip +-STRIP about the line candidate -> target, binned every BIN; the near and far windows at
+    # SIDE from the target, joined log-linearly and integrated over the target's disc (radius DISC; DISC_GRID x DISC_GRID
+    # samples); bins nearer than MIN_BIN to the candidate are never used (forced_wide_v3.py:20-26, :82)
+    DISC = 0.35
+    STRIP = 0.35
+    BIN = 0.1
+    SIDE = (0.35, 0.65)
+    MIN_BIN = 0.05
+    DISC_GRID = 41
+    # CONTROL LINES: cataloged sources of CTL_FLUX x the candidate's flux (>= CTL_MIN_JY) in every job of the same Stokes, one
+    # per cell of 1 / CTL_KEY_PER_DEG deg (round(ra x 20) / 20), imaginary targets at the candidate's distance in CTL_DIRS directions (a random rotation), clear of
+    # sources >= CTL_BRIGHT_JY by NEAR x the smallest FWHM and >= CTL_TARGET_FWHM x the largest from that cutout's own target,
+    # in bands the cutout searched (>= half), up to CTL_CAP lines (forced_wide_v3.py:27-30, :267-308)
+    CTL_FLUX = (0.5, 2.0)
+    CTL_MIN_JY = 3.0
+    CTL_DIRS = 8
+    CTL_CAP = 900
+    CTL_KEY_PER_DEG = 20
+    CTL_BRIGHT_JY = 1.0
+    CTL_TARGET_FWHM = 1.0
+    # matched lines: a prediction within 1/MATCH_FACTORS[0]-MATCH_FACTORS[0] x the target's (floors MATCH_FLOORS bursts), widened
+    # to MATCH_FACTORS[1] when fewer than MATCH_MIN; calibrated only with >= MATCH_MIN lines (forced_wide_v3.py:311-330)
+    MATCH_FACTORS = (3.0, 10.0)
+    MATCH_FLOORS = (1.0, 3.0)
+    MATCH_MIN = 15
+    # the taper ACCOUNTS for the target's count when p >= P_CONSISTENT and ratio <= RATIO_CONSISTENT; it FALLS SHORT when
+    # p <= P_EXCESS and ratio >= R_EXCESS; night by night: Spearman rho > 0 and p < P_NIGHT (forced_wide_v3.py:35, :430)
+    P_CONSISTENT = 0.05
+    RATIO_CONSISTENT = 2.0
+    P_EXCESS = 0.05
+    R_EXCESS = 3.0
+    P_NIGHT = 0.01
+    MIN_NOBS = 3                                 # bursts at the target below this: UNDECIDED (fewer than 3 ...)
+    # PER NIGHT: the target's bursts (disc) against the candidate's spread - bursts at NIGHT_FAR from it (and beyond
+    # NIGHT_CLEAR of the target) over those within NIGHT_CORE - over nights with >= NIGHT_MIN_CORE at it, >= NIGHT_MIN_NIGHTS
+    # such nights (forced_wide_v3.py:353-375)
+    NIGHT_CORE = 0.35
+    NIGHT_FAR = (0.8, 2.0)
+    NIGHT_CLEAR = 0.5
+    NIGHT_MIN_CORE = 20
+    NIGHT_MIN_NIGHTS = 5
+    # CENTROID of the bursts in the target's disc: error = sqrt(stat^2 + max(CEN_FLOOR, CEN_NIGHT / sqrt(nights))^2), stat from a
+    # bootstrap over nights (BOOTSTRAP resamples, >= BOOT_MIN_NIGHTS nights; else CEN_DET / sqrt(n)): per detection 0.2 Master
+    # beam = 0.11 frame FWHM, correlated within a night; the pulsar-measured combined floor 0.05 Master beam = 0.028 frame FWHM
+    # (pulsar systematics 2026-11-01; forced_wide_v3.py:38-41, :469-499)
+    CEN_DET = 0.12
+    CEN_FLOOR = 0.028
+    CEN_NIGHT = 0.11
+    BOOTSTRAP = 1000
+    BOOT_MIN_NIGHTS = 5
+    # VERDICT: centroid z >= Z_OFF not centered on the target, < Z_ON centered; a candidate the centroid lies within Z_C_ON of
+    # (and within CENTER_WITHIN FWHM of the target) is direct evidence; near candidates v2 cannot separate count when z_c <
+    # Z_C_NEAR; NOT EXPLAINED / CONSISTENT need tests covering >= COVER of the bursts (forced_wide_v3.py:42-57, :513)
+    Z_OFF = 3.0
+    Z_ON = 2.0
+    Z_C_ON = 2.0
+    Z_C_NEAR = 3.0
+    CENTER_WITHIN = 1.0
+    COVER = 2.0 / 3.0
+    SEED = 20261102                              # numpy default_rng seed, one generator per job (control lines, bootstrap)
+    # v2's CENTERING TEST (forced_wide_analyze.py, the near candidates): the region sep/2 + V2_K x FWHM about the pair's
+    # midpoint (controls placed with V2_K_MAX); per-detection weights 1 / sigma^2, sigma = V2_SYS_ARCSEC (nu / V2_SYS_REF_MHZ)^V2_SYS_INDEX (+)
+    # V2_STAT_FWHM x FWHM; pooled controls of V2_CTL_FLUX x S (>= V2_CTL_MIN_JY), their region inside their cutout
+    # (V2_CUT_MARGIN_ARCMIN), clear of the target's region, no source above V2_CTL_BRIGHTER x C in it, none within
+    # V2_VERY_BRIGHT_DEG of a >= V2_VERY_BRIGHT_JY source, one per cell of 1 / V2_KEY_PER_DEG deg, at most V2_CTL_MAX (seed SEED); a verdict
+    # needs >= V2_MIN_NIGHTS nights and >= V2_CTL_MIN_N controls of >= V2_CTL_MIN_CELLS nights; power >= V2_POWER_MIN, then
+    # z < V2_Z_BG and power - z >= V2_D_TG -> BACKGROUND SOURCE, z >= V2_Z_NOT -> NOT THE BACKGROUND SOURCE
+    V2_K = 0.35
+    V2_K_MAX = 0.5
+    V2_SYS_ARCSEC = 130.0                        # the pulsar-measured 10-s systematic at V2_SYS_REF_MHZ (forced_wide_analyze.py:11)
+    V2_SYS_REF_MHZ = 50.0
+    V2_SYS_INDEX = -0.78
+    V2_STAT_FWHM = 0.06
+    V2_CTL_FLUX = (0.33, 3.0)
+    V2_CTL_MIN_JY = 0.5
+    V2_CUT_MARGIN_ARCMIN = 10.0
+    V2_CTL_BRIGHTER = 2.0
+    V2_VERY_BRIGHT_JY = 20.0
+    V2_VERY_BRIGHT_DEG = 1.0
+    V2_VERY_BRIGHT_SELF_ARCMIN = 1.5             # the control source's own entries are not 'very bright neighbors'
+    V2_SRC_PAD_ARCMIN = 2.0                      # a job's sources: within CUT_HALF_ARCMIN + this (>= 0.25 Jy)
+    V2_VERY_BRIGHT_PAD_ARCMIN = 62.0             # and its very bright ones within CUT_HALF_ARCMIN + this
+    V2_KEY_PER_DEG = 40
+    V2_CTL_MAX = 300
+    V2_CTL_MIN_CELLS = 3
+    V2_CTL_MIN_N = 10
+    V2_MIN_NIGHTS = 5
+    V2_POWER_MIN = 3.0
+    V2_Z_BG = 2.0
+    V2_D_TG = 3.0
+    V2_Z_NOT = 3.0
+    WORKERS = 6                                  # processes (fork; outputs identical for any number: one generator per job)
+    # wide_publish: each named source's position, the source of that name among the physical sources (>= S_MIN_JY) within
+    # this of the target (publish_v3_to_runs.py:16-27); a name not found refuses the publication (W-NAMED)
+    NAMED_RADIUS_ARCMIN = 200.0
+
+
+class night_activity(_Section):
+    """Family N, stage activity: EACH NIGHT'S IONOSPHERIC ACTIVITY at an LST - per (LST, night, band) the night's snapshot 10-s
+    Stokes I detections over the median of that band's other searched nights; per (LST, night) the median over its searched
+    bands and its rank (figure_v2/night_activity_build.py, 2026-10-31; Gregg 2026-10-31 "Perhaps it is just necessary to see if
+    the detections are clustered by night?"). Read by the astrometry figure v2 of every tier (astrometry_assoc.night_act)."""
+    # the input: one row per detection of every LISTED source of the served snapshot 10-s Stokes I view - the flood rule's input
+    # (flood_nights_20261031/flood_collect.py: the page built as the two-port server builds it; Run_SNAPCOMB_20261026, page
+    # p8987). Rebuild from each new combined view (--na-detections <its table>)
+    DETECTIONS = '/lustre/gh/main/phase3/refactor_analysis/flood_nights_20261031/flood_dets_p8987.csv'
+    STOKES = 'I'                                 # every input row must be Stokes I, tier 10 s (N-INPUT)
+    TIER = '10s'
+    # de-duplication key: the frame id and the position's first DEDUP_CHARS characters (night_activity_build.py:16)
+    DEDUP_CHARS = 9
+    RATIO_FORMAT = '%.3g'                        # the ratio and activity columns (night_activity_build.py:36, :49)
+    # where the figure reads it: astrometry_assoc.NIGHT_ACT (default /lustre/gh/main/phase3/night_activity/night_activity_I10s.csv)
+    # and its nights table beside it (NIGHT_ACT_NIGHTS: the file name replaced) - the production --out and the two names
+    OUT_ROOT = '/lustre/gh/main/phase3/night_activity'
+    FILES = ('night_activity_I10s.csv', 'night_activity_nights_I10s.csv')
+    PROTECTED_KEYS = ('FILES',)
