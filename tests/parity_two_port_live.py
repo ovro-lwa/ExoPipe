@@ -12,6 +12,11 @@ server's on the page's legacy port:
   - for a greenlit page, the same through the inspection listener against the live inspection twin.
 Equal means: the new response is byte-identical to two_port.rewrite_body(live response) for HTML, to the live bytes for
 JSON and images. No request writes anything (GET only). Results per page, with the first difference, go to OUT_JSON.
+REF=<review port>,<inspection port>: the reference is a RUNNING TWO-PORT SERVER instead (since 2026-10-22 production's pages
+have no server on their legacy port, so without REF every live request fails and nothing is compared): its /p/<id>/...
+responses, byte for byte (both sides are two-port responses, already rewritten), the links followed from its own index; a
+greenlit page through both listeners. A reference answer carrying X-Two-Port-Stale (a page older than its registry) is
+reported as such. Never send FRESH to a production reference: GETs of pages it has built rebuild nothing.
 With FRONT, also: GET /_status after the run - every built page's code and its review_filters module must have the md5 of the
 file its own server runs: for /lustre/gh/main/exopipe_ops, that repository's HEAD; for a frozen tree, the file in the tree.
 """
@@ -39,6 +44,16 @@ def live_get(port, path):
 
 
 FRONT = tuple(int(x) for x in os.environ.get('FRONT', '').split(',') if x)
+REF = tuple(int(x) for x in os.environ.get('REF', '').split(',') if x)
+
+
+def ref_get(pid, inspect, path):
+    """(status, content type, body, stale header) of the reference two-port server's /p/<pid><path> (REF)."""
+    try:
+        with urllib.request.urlopen(f'http://127.0.0.1:{REF[1 if inspect else 0]}/p/{pid}{path}', timeout=TIMEOUT) as r:
+            return r.status, r.headers.get('Content-Type', ''), r.read(), r.headers.get(TP.STALE_HEADER)
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get('Content-Type', ''), e.read(), e.headers.get(TP.STALE_HEADER)
 
 
 def new_get(store, inspect, path):
@@ -61,7 +76,7 @@ def first_diff(a, b, ctx=80):
 
 def compare_page(store, e, inspect):
     pid = e['id']
-    port = int(e.get('inspection_legacy_port') if inspect else e['legacy_port'])
+    port = int((e.get('inspection_legacy_port') if inspect else e['legacy_port']) or 0)
     base, pm = f'/p/{pid}', store.port_map()
     res = {'page': pid, 'inspect': inspect, 'port': port, 'paths': 0, 'equal': 0, 'diffs': []}
     t0 = time.time()
@@ -75,13 +90,18 @@ def compare_page(store, e, inspect):
 
     def one(path, kind):
         try:
-            ls, lct, lb = live_get(port, path)
+            if REF:
+                ls, lct, lb, stale = ref_get(pid, inspect, path)
+                if stale:
+                    res.setdefault('ref_stale', []).append(path)
+            else:
+                ls, lct, lb = live_get(port, path)
         except Exception as exc:
             res['diffs'].append({'path': path, 'live_error': str(exc)})
             return None
         ns, nb = new_get(store, inspect, base + path)
         res['paths'] += 1
-        if kind == 'html':
+        if kind == 'html' and not REF:
             want = TP.rewrite_body(lb.decode('utf-8'), base, pm, legacy_port=port).encode('utf-8')
         else:
             want = lb
@@ -96,13 +116,14 @@ def compare_page(store, e, inspect):
     if idx is None:
         return res
     text = idx.decode('utf-8', 'replace')
-    srcs = list(dict.fromkeys(re.findall(r'href="(/source/[^"]+)"', text)))[:SRC]
-    bands = list(dict.fromkeys(re.findall(r'href="(/band/[^"]+)"', text)))[:BANDS]
+    pre = re.escape(base) if REF else ''           # a two-port reference's links carry /p/<id>
+    srcs = list(dict.fromkeys(re.findall(r'href="' + pre + r'(/source/[^"]+)"', text)))[:SRC]
+    bands = list(dict.fromkeys(re.findall(r'href="' + pre + r'(/band/[^"]+)"', text)))[:BANDS]
     img = None
     for p in srcs:
         b = one(html_unescape(p), 'html')
         if b is not None and img is None:
-            m = re.search(r'src="(/img\?f=[^"]+)"', b.decode('utf-8', 'replace'))
+            m = re.search(r'src="' + pre + r'(/img\?f=[^"]+)"', b.decode('utf-8', 'replace'))
             img = m and html_unescape(m.group(1))
     for p in bands:
         one(html_unescape(p), 'html')
@@ -153,7 +174,7 @@ def main():
     results = []
     for pid in ids:
         e = store.entry(pid)
-        for inspect in ((False, True) if e.get('greenlit') and e.get('inspection_legacy_port') else (False,)):
+        for inspect in ((False, True) if e.get('greenlit') and (REF or e.get('inspection_legacy_port')) else (False,)):
             r = compare_page(store, e, inspect)
             results.append(r)
             print(f"{pid}{' (inspection)' if inspect else ''}: {r['equal']}/{r['paths']} equal"

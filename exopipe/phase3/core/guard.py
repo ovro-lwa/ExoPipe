@@ -28,6 +28,10 @@ Subprocesses: ``export_env(roots)`` sets EXOPIPE3_PARITY_ROOT (os.pathsep-joined
 ``parity_sitecustomize/`` first on PYTHONPATH; its sitecustomize.py installs this guard in every Python process
 started with that environment (legacy scripts included).
 
+INJECTED RUNS (core/injected.py) install the same guard over their --out, --work and node-local scratch: labelled
+'INJECTED-RUN GUARD' (the label follows EXOPIPE3_INJECTED, in the parent and in every child), raising InjectedWriteRefused (a
+ParityWriteRefused) and logging to <out>/_records/_injected_guard_refusals.log.
+
 This file imports nothing from exopipe and runs on Python 3.6+: the sitecustomize loads it by path.
 """
 import builtins
@@ -47,10 +51,17 @@ _WFLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 # another): kept on builtins.
 _STATE = builtins.__dict__.setdefault('__exopipe3_parity_guard__', {'roots': None, 'orig': {}, 'log': None,
                                                                      'refused': 0})
+LABEL_PARITY = 'PARITY GUARD'
+LABEL_INJECTED = 'INJECTED-RUN GUARD'     # = core/injected.LABEL
+ENV_INJECTED = 'EXOPIPE3_INJECTED'        # = core/injected.ENV (this file imports nothing from exopipe)
 
 
 class ParityWriteRefused(PermissionError):
     """A write outside the parity roots (the path is the exception's filename)."""
+
+
+class InjectedWriteRefused(ParityWriteRefused):
+    """A write outside an injected run's scratch roots (core/injected.py; the path is the exception's filename)."""
 
 
 def active():
@@ -104,7 +115,10 @@ def is_allowed(path, entry=False):
 
 def _refuse(path, what):
     _STATE['refused'] += 1
-    msg = 'PARITY GUARD: %s refused - %s is outside the parity roots (%s)' % (what, path, ', '.join(_STATE['roots']))
+    label = _STATE.get('label') or LABEL_PARITY
+    inj = label == LABEL_INJECTED
+    msg = '%s: %s refused - %s is outside the %s (%s)' % (
+        label, what, path, "injected run's scratch roots" if inj else 'parity roots', ', '.join(_STATE['roots']))
     try:
         sys.stderr.write(msg + '\n')
         sys.stderr.flush()
@@ -119,6 +133,8 @@ def _refuse(path, what):
                 f.write(msg + '\n')
         except Exception:
             pass
+    if inj:
+        raise InjectedWriteRefused(errno.EACCES, 'injected-run guard: write outside the scratch roots refused (%s)' % what, path)
     raise ParityWriteRefused(errno.EACCES, 'parity guard: write outside the parity roots refused (%s)' % what, path)
 
 
@@ -294,12 +310,15 @@ class _AstropyHook(object):
         return None
 
 
-def install(allowed_roots, defaults=DEFAULT_ALLOWED, log=None):
+def install(allowed_roots, defaults=DEFAULT_ALLOWED, log=None, label=None):
     """Install the guard (idempotent: a second call replaces the allowed roots). ``allowed_roots`` are directories
-    under which writes are allowed; ``defaults`` (/tmp, /dev/null, ...) and $TMPDIR are added. Returns the roots."""
+    under which writes are allowed; ``defaults`` (/tmp, /dev/null, ...) and $TMPDIR are added. ``label``: the refusal's
+    name, default 'INJECTED-RUN GUARD' in a process of an injected run (EXOPIPE3_INJECTED set), else 'PARITY GUARD'.
+    Returns the roots."""
     roots = [r for r in list(allowed_roots) + list(defaults or ()) + [os.environ.get('TMPDIR') or ''] if r]
     _STATE['roots'] = tuple(dict.fromkeys(_real(r) for r in roots))
     _STATE['log'] = log
+    _STATE['label'] = label or (LABEL_INJECTED if (os.environ.get(ENV_INJECTED) or '').strip() else LABEL_PARITY)
     if _STATE.get('installed'):
         return _STATE['roots']
     _patch(builtins, 'open', 'open', _w_open)
@@ -365,7 +384,7 @@ def uninstall():
     hook = _STATE.pop('hook', None)
     if hook is not None and hook in sys.meta_path:
         sys.meta_path.remove(hook)
-    _STATE.update(roots=None, log=None, patched=[], installed=False, orig={})
+    _STATE.update(roots=None, log=None, patched=[], installed=False, orig={}, label=None)
 
 
 def export_env(roots, log=None, env=None):

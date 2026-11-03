@@ -2,8 +2,10 @@
 # guard, exopipe_ops/sublst_frozen_guard/sitecustomize.py). `exopipe3 <step> --parity` puts this directory first on
 # PYTHONPATH and sets EXOPIPE3_PARITY_ROOT (the allowed roots, os.pathsep-separated), so every Python subprocess it starts -
 # legacy scripts included - imports this file at start-up and installs core/guard.py: a write outside the parity roots
-# raises a PermissionError naming the path instead of touching a production tree. With EXOPIPE3_PARITY_ROOT unset this
-# file does nothing but chain to the next sitecustomize on the path. Python 3.6+.
+# raises a PermissionError naming the path instead of touching a production tree. An INJECTED run (core/injected.py) exports
+# the same variable over its scratch roots; with EXOPIPE3_INJECTED set the guard is labelled INJECTED-RUN GUARD and raises
+# InjectedWriteRefused. With EXOPIPE3_PARITY_ROOT unset this file does nothing but chain to the next sitecustomize on the
+# path. Python 3.6+.
 import os
 import sys
 

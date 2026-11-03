@@ -106,7 +106,8 @@ def add_arguments(p):
     g.add_argument('--until', dest='until_stage', metavar='STAGE', help='last stage to run (of the default list)')
     g.add_argument('--inject', metavar='MANIFEST',
                    help='recorded injection search, never published or served (deep: REFUSED - no production injection-'
-                        'through-search path exists, spec Q9; sub-LST / snapshot: see their tier flags)')
+                        'through-search path exists, spec Q9; sub-LST / snapshot: see their tier flags). The run is an '
+                        'INJECTED run (core/injected.py, as --injected): an explicit scratch --out, no production write')
     g.add_argument('--inject-tag', metavar='TAG', help='sub-root name of the injected outputs (default: sha1 of the manifest, 12)')
     g.add_argument('--replay-attempt', metavar='DIR|published',
                    help="an existing attempt directory: deep bulk = run fit/verify on it read-only (outputs to --out); deep per "

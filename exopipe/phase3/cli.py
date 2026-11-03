@@ -76,6 +76,12 @@ def _common(p, step_mod):
     g.add_argument('--parity', action='store_true',
                    help='parity run: refuse (PermissionError) every write outside --out, --work, /tmp and /dev/null, in '
                         'this process and in every Python subprocess it starts (core/guard.py); needs --out')
+    g.add_argument('--injected', action='store_true',
+                   help='an INJECTED run: its data carry synthetic sources (a completeness battery, or a step run on an '
+                        'injected run\'s products). It writes no production product (core/injected.py): --out is required '
+                        'and must be scratch, paths.PRODUCTION_WRITES is False, every write outside --out, --work and scratch '
+                        'refuses in this process and its children, and its records say so. Implied by search --inject; '
+                        'inherited from an injected parent (EXOPIPE3_INJECTED); `run submit --injected` forwards it')
     g.add_argument('--resume', action='store_true',
                    help='skip units whose record is done and whose inputs, admitted nights, code, config are '
                         'unchanged and whose outputs pass their content tests now')
@@ -296,13 +302,31 @@ def main(argv=None):
         print(f'error: {_msg(e)}', file=sys.stderr)
         return record.EXIT_ERROR
     pinned = _pin(args.cores)
+    from exopipe.phase3.core import injected as _inj
+    # `exopipe3 run` is never an injected run itself: `run submit --injected` forwards the flag to every step command it
+    # launches, on every node (steps/run.py; an inherited flag alone is refused there)
+    inj = '' if name == 'run' else _inj.requested(args)
+    try:
+        if inj:                                # an INJECTED run writes no production product (core/injected.py)
+            try:
+                default = mod.default_out(args)
+            except Exception:                  # noqa: BLE001 - the --out given is still checked against every refused root
+                default = None
+            roots = _inj.begin(inj, out, explicit_out=bool(args.out), work=args.work, default_out=default,
+                               writes=getattr(mod, 'WRITES', True))
+            print(f'{_inj.LABEL} ({inj}): writes allowed only under {", ".join(roots)}', file=sys.stderr)
+        if name != 'run':                      # destination flags (injected) / an injected --out and sources (ordinary)
+            _inj.check_flags(name, args, out, writes=getattr(mod, 'WRITES', True))
+    except record.Refusal as e:
+        print(f'REFUSED: {e}', file=sys.stderr)
+        return record.EXIT_REFUSED
     if getattr(mod, 'WRITES', True) and not args.dry_run:
         why = _guard_out(out)
         if why:
             print(f'REFUSED: {why}', file=sys.stderr)
             return record.EXIT_REFUSED
-    if args.parity and name != 'run':          # `run submit --parity` forwards it to every step command instead
-        if not args.out:
+    if args.parity and name != 'run' and not inj:   # `run submit --parity` forwards it to every step command instead;
+        if not args.out:                            # an injected run's guard (above) already confines every write
             print('REFUSED: --parity needs --out (the parity root)', file=sys.stderr)
             return record.EXIT_REFUSED
         _parity(args, out)
@@ -314,6 +338,7 @@ def main(argv=None):
                      config_sections=sections)
     run.cores = pinned
     run.no_records = not getattr(mod, 'WRITES', True)
+    record.mark_injected(run)                  # an injected run's start record, before the step writes anything
     try:
         rc = mod.run(args, run)
     except record.Refusal as e:

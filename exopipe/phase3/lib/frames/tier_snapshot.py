@@ -350,6 +350,10 @@ def discover(ctx, lst, date, sb):
     if SS.FLOW_MODE:
         raise Refusal('P3_SNAP_FLOW=1 in this environment: discover_frames would substitute flowed frames; the fleet\'s '
                       'staging heredoc runs without it (v9:106-111) - unset it')
+    pins = getattr(SS, 'RUN_PINS', None)                # clv15 facb3e8: read from P3_SNAP_RUN_PINS at the module's import
+    if pins is not None and os.path.realpath(pins) != os.path.realpath(cfg().paths.PHASE1_RUN_PINS):
+        raise Refusal(f'P3_SNAP_RUN_PINS={pins} in this environment: discover_frames would read another Phase-1 run-pin file '
+                      f'than paths.PHASE1_RUN_PINS ({cfg().paths.PHASE1_RUN_PINS}, protected) - unset it')
     try:
         fr = SS.discover_frames(lst, date, sb)
     except RuntimeError as e:

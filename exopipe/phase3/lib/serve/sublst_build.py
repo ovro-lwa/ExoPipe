@@ -21,7 +21,8 @@ views  (unit sublst_<run>_views)  on B: the union with the Stokes key (G5), the 
        served product and its servers untouched.
 test   App probes and content tests on B (expected index sources), G17 report.
 carry/swap/start  journals copied into B, B swapped in (U -> U.prev_<utc>), the between lines appended, the four pages
-       started from U (G13 PORT_OWNERSHIP sub-LST: Run_SLST* or Run_P3T4 servers only).
+       registered in ONE registration and each one's build waited on (flow.start_stage; sublst_cumulative.sh:291-300 ->
+       sublst_register_pages.py: no server of its own since 2026-10-22).
 hub    10-min / 10-min-multiples set; '10-min-sublst' removed (sublst_cumulative.sh:145-150).
 verify served_page tests + sublst_cumulative (with tests (c)+(d), sublst_catalog_publish.sh:101-108) on the served run.
 Parity: U, B and the lock live under <out>/sublst/; the build hard-links the LST runs' candidates (cp -al), so a parity
