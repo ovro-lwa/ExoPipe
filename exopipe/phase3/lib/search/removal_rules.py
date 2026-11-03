@@ -449,11 +449,20 @@ EXCLUDED = 'excluded epoch (data_decisions at publish time; CLAUDE.md S2)'
 # size and axis ratio above 8 sigma (p3s2_conform.py:536-566; Gregg 2026-09-04/05, D8 2026-10-13)
 # ---------------------------------------------------------------------------------------------------------------------
 
-def size_axis(r, bmaj_deg=None, beam_ratio=None, size_step=None):
+def size_axis(r, bmaj_deg=None, beam_ratio=None, size_step=None, rule='production'):
     """(the row's conformed size/axis columns, the removal words or ''): keeps the search's own size_beams / axis_norm
-    (D8); a row without them gets FWHM / its searched frame's BMAJ and axis ratio / the frame beam's BMAJ/BMIN."""
+    (D8); a row without them gets FWHM / its searched frame's BMAJ and axis ratio / the frame beam's BMAJ/BMIN.
+    ``rule`` the size / axis rule the row's attempt was searched under (lib/search/size_rule.read_run_record): under
+    'envelope' the search's rule at every S/N decided (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) and the
+    fixed size threshold here removes nothing (a size above it is flagged as kept); the fixed AXIS step follows
+    catalog_conform.CONFORM_AXIS_UNDER_RULE (size_rule.conform_axis_step, PENDING GREGG): 'second_gate' - it stands, a second
+    gate above 8 sigma, removing in production's words; 'replace' - flagged as kept. The columns are the same either way."""
     c = _cc()
     size_step = c.SIZE_STEP['deep'] if size_step is None else size_step
+    if rule not in ('production', 'envelope'):
+        raise RuntimeError(f'size_axis: size rule {rule!r} is not production or envelope - REFUSING')
+    from exopipe.phase3.lib.search import size_rule as _SZ
+    axis_off = not _SZ.conform_axis_step(rule)          # 'envelope' under 'replace' only
     cols = {}
     ratio = f(r.get('size_beams'))
     if np.isnan(ratio):
@@ -462,19 +471,23 @@ def size_axis(r, bmaj_deg=None, beam_ratio=None, size_step=None):
     cols['size_beams'] = '' if np.isnan(ratio) else round(ratio, 2)
     cols['size_flag'] = ''
     if size_step and abs(f(r['snr'])) > c.SIZE_SNR and not np.isnan(ratio):
-        if ratio > c.SIZE_REMOVE_BEAMS:
+        if ratio > c.SIZE_REMOVE_BEAMS and rule == 'envelope':
+            cols['size_flag'] = f'size > {c.SIZE_REMOVE_BEAMS} beams (kept: point-like at its S/N by the size / axis rule)'
+        elif ratio > c.SIZE_REMOVE_BEAMS:
             return cols, (f'gaussfit size {ratio:.2f} beams > {c.SIZE_REMOVE_BEAMS} above {c.SIZE_SNR} sigma '
                           f'(Gregg 2026-09-04)')
-        if ratio > c.SIZE_FLAG_BEAMS:
+        elif ratio > c.SIZE_FLAG_BEAMS:
             cols['size_flag'] = f'size {c.SIZE_FLAG_BEAMS}-{c.SIZE_REMOVE_BEAMS} beams'
     ar = f(r.get('axis_ratio'))
     an = f(r.get('axis_norm'))
     cols['axis_norm'] = round(an, 2) if not np.isnan(an) else ('' if (not beam_ratio or np.isnan(ar)) else round(ar / beam_ratio, 2))
     cols['axis_flag'] = ''
     if cols['axis_norm'] != '' and abs(f(r['snr'])) > c.SIZE_SNR:
-        if cols['axis_norm'] > c.AXIS_REMOVE:
+        if cols['axis_norm'] > c.AXIS_REMOVE and axis_off:
+            cols['axis_flag'] = f'axis > {c.AXIS_REMOVE} x beam (kept: point-like at its S/N by the size / axis rule)'
+        elif cols['axis_norm'] > c.AXIS_REMOVE:
             return cols, f'axis ratio {cols["axis_norm"]} x beam > {c.AXIS_REMOVE} above {c.SIZE_SNR} sigma (Gregg 2026-09-05)'
-        if cols['axis_norm'] > c.AXIS_FLAG:
+        elif cols['axis_norm'] > c.AXIS_FLAG:
             cols['axis_flag'] = f'axis {c.AXIS_FLAG}-{c.AXIS_REMOVE} x beam'
     return cols, ''
 
@@ -986,15 +999,16 @@ def frame_times(U, keys):
 # the conformance of a run, composed in production's order (p3s2_conform.py, deep tier, main chain)
 # ---------------------------------------------------------------------------------------------------------------------
 
-def _refuse_other_modes(size_step):
+def _refuse_other_modes(size_step, axis_step=True):
     """The port is the deep tier's main chain (B-02: deep tier only); the fork's, the 10-minute tier's and the comparison
     modes stay production's script. Each environment switch p3s2_conform.py and parent_curve_table read must be the deep
-    main chain's (they are what the chain passes), and a P3_CONFORM_SIZE that is set must be the size step asked for -
-    else REFUSING, never another mode silently."""
+    main chain's (they are what the chain passes), and a P3_CONFORM_SIZE / P3_CONFORM_AXIS that is set must be the size step
+    / axis step asked for (axis: size_rule.conform_axis_step of the merged attempts' rule) - else REFUSING, never another mode
+    silently."""
     c = _cc()
     bad = []
     want = {'P3_CONFORM_FORK': ('', '0'), 'P3_CONFORM_TABLE': ('', c.TABLE_MODE['deep']), 'P3_CADENCE': ('', 'deep'),
-            'P3_CONFORM_SIZE': ('', '1' if size_step else '0'),
+            'P3_CONFORM_SIZE': ('', '1' if size_step else '0'), 'P3_CONFORM_AXIS': ('', '1' if axis_step else '0'),
             'P3_GATE_TARGET_BEAM': ('', '1') if c.TABLE_TARGET_BEAM else ('0',),
             'P3_TABLE_ELEV': ('', '1') if c.TABLE_ELEV['deep'] else ('0',), 'P3_TABLE_PREFIX': ('', c.TABLE_PREFIX['deep']),
             'P3_TABLE_RECORD_ONLY': ('', '0'), 'P3_TABLE_XM_EXEMPT': ('', '1') if c.TABLE_XM_EXEMPT else ('0',),
@@ -1021,7 +1035,10 @@ def conform(U, catalog_dir=None, size_step=None, out=print):
     from exopipe.phase3.lib.search import parent_curve_table as PCT
     c = _cc()
     size_step = c.SIZE_STEP['deep'] if size_step is None else size_step
-    _refuse_other_modes(size_step)
+    from exopipe.phase3.lib.search import size_rule as _SZ          # the size / axis rule of the merged attempts (the merged
+    rule = _SZ.ledger_rule(f'{U}/v_deep_ledger.csv')['rule']       # ledger's header; production's when it carries none)
+    axis_step = _SZ.conform_axis_step(rule)
+    _refuse_other_modes(size_step, axis_step)
     CD = catalog_dir or U
     raw = list(csv.DictReader(open(f'{CD}/master_catalog.csv')))
     if not raw:
@@ -1118,15 +1135,15 @@ def conform(U, catalog_dir=None, size_step=None, out=print):
         r = dict(r)
         r['fp_prediction'] = (r.get('fp_prediction') or (v110_label(r) if r['stokes'] == 'V' else ''))
         r['conform_note'] = note or ''
-        cols_, why = size_axis(r, BMAJ.get(fk), BR.get(fk), size_step=size_step)
+        cols_, why = size_axis(r, BMAJ.get(fk), BR.get(fk), size_step=size_step, rule=rule)
         r.update(cols_)
         if why:
             n['size' if why.startswith('gaussfit') else 'axis'] += 1; removed.append({**r, 'removal_reason': why})
             continue
         if r['size_flag']:
             n['flag'] += 1
-        if r['axis_flag']:
-            n['aflag'] += 1
+        if r['axis_flag']:              # 'axis > 2.0 x beam (kept: ...)': above the axis step, kept with the step off (the rule)
+            n['akept' if r['axis_flag'].startswith('axis > ') else 'aflag'] += 1
         kept.append(r)
     for key, rows in marg.items():
         lst, band, stokes, date = key
@@ -1149,6 +1166,9 @@ def conform(U, catalog_dir=None, size_step=None, out=print):
         # appended (5d29e25, 2026-10-17, Gregg: re-filter without re-search): the inputs of the Jupiter-track and noise removals
         w = csv.DictWriter(fh, fieldnames=ocols + ['removal_reason'] + list(REMOVED_INPUT_COLS), extrasaction='ignore')
         w.writeheader(); w.writerows(removed)
+    if not axis_step:                   # the pending patch's line, word for word (docs/pending_production_patch_p3s2_conform_axis.diff)
+        out(f'conform: axis-ratio step OFF ({_SZ.CONFORM_AXIS_ENV}=0: the size / axis rule at every S/N replaces it) - '
+            f'{n["akept"]} rows above {c.AXIS_REMOVE} x beam above {c.SIZE_SNR} sigma kept and flagged', flush=True)
     out(f'conform: {len(raw)} raw -> {len(kept)} conformant | removed: {n["excl"]} on excluded epochs, {n["elf"]} below the deep '
         f'elevation floor {c.DEEP_ELEV_FLOOR_DEG:g} deg, {n["day"]} daytime (Sun above the horizon in the frame), {n["dayq"]} '
         f'twilight in a solar-audit quarantine band, {n["dayx"]} frame times unreadable, {n["jup"]} jupiter-track (Gregg '

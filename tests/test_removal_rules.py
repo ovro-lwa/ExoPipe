@@ -9,6 +9,11 @@ compares every file both write, byte for byte, and their printed conform lines:
       row, axis ratios, sizes and v110 labels to compute, a v110 marginal to re-admit) - daytime, twilight, the Jupiter
       track, the tables and the pulsar groups fire on the real rows;
   (2) the same with the size step on (production's module default);
+  (3) the pending production patch (docs/pending_production_patch_p3s2_conform_axis.diff: P3_CONFORM_AXIS, the refactor's
+      catalog_conform.CONFORM_AXIS_UNDER_RULE 'replace'), applied to a scratch copy of production's script: unset, every output
+      and printed line is production's byte for byte; P3_CONFORM_AXIS=0, only the row production's axis step removed differs
+      (kept, flagged), plus one printed line; and the port on the same rows under the size / axis rule (a merged ledger with
+      the rule's columns) equals the patched script - 'replace' with P3_CONFORM_AXIS=0, 'second_gate' with it unset;
   (--full) every row of Run_P3S5 (about an hour each; by hand, not in the suite).
 Unit checks: production's own small functions (taken from its source) against the port's; the frame-mid elevation; the
 refusal of every mode the port is not (the fork's, the 10-minute tier's).
@@ -56,6 +61,8 @@ from exopipe.phase3.config import CFG
 CFG.authorize(out=sys.argv[2])                                  # production's conventions: the deep elevation at mid-hour
 CFG.set('catalog_conform.DEEP_ELEV_EPOCH', 'mid-hour')          # (the ruled 'frame-mid' since B-02 step 3b; the parity file)
 from exopipe.phase3.lib.search import removal_rules as R
+if len(sys.argv) > 4:                                           # the axis step on the size / axis rule's attempts (the pending
+    CFG.set('catalog_conform.CONFORM_AXIS_UNDER_RULE', sys.argv[4])   # patch's comparison; RULED, a non-production out)
 R.conform(sys.argv[2], size_step=sys.argv[3] == '1')
 '''
 
@@ -431,6 +438,8 @@ def kinds(U):
 
 
 def test_subset():
+    """(1) and (2) of the module docstring; returns the mutated subset (catalogue columns, rows, ledger columns, ledger rows,
+    the frame mutations) for (3)."""
     cols, rows, lcols, lrows = subset()
     nomut = dict(times_add={}, times_drop=set(), omit=set())
     Ub = sandbox('baseline', cols, [dict(r) for r in rows], lcols, lrows, nomut)
@@ -451,6 +460,84 @@ def test_subset():
             want = ('elevation', 'daytime', 'twilight', 'jupiter-track', 'table', 'pulsar group', 'pulsar-consistent kept')
             check('the real rows exercise the rest: ' + ', '.join(want), all(k.get(w) for w in want),
                   [w for w in want if not k.get(w)])
+    return cols, rows, lcols, lrows, mut
+
+
+PATCH = os.path.join(REPO, 'docs', 'pending_production_patch_p3s2_conform_axis.diff')
+OPS = os.path.dirname(PROD)
+
+
+def patched_script():
+    """Production's p3s2_conform.py with the pending patch applied - a scratch copy (git apply; production never written), or
+    production's own file once it carries the switch."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    if SZ.conform_switch(PROD):
+        return PROD
+    d = os.path.join(T, 'patched_script')
+    os.makedirs(d, exist_ok=True)
+    shutil.copy(PROD, os.path.join(d, 'p3s2_conform.py'))
+    subprocess.run(['git', 'apply', PATCH], cwd=d, check=True, capture_output=True)
+    return os.path.join(d, 'p3s2_conform.py')
+
+
+def test_pending_patch(cols, rows, lcols, lrows, mut):
+    """(3) of the module docstring, on the mutated subset (one row production's axis step removes, 2.6 x beam; one flagged)."""
+    from exopipe.phase3.lib.search import size_rule as SZ, tests as ST
+    new = patched_script()
+    e = pass_env(False)
+    e['PYTHONPATH'] = OPS + (os.pathsep + e['PYTHONPATH'] if e.get('PYTHONPATH') else '')   # the copy's modules: production's
+
+    def script(tag, path, extra=None, lcols_=None):
+        U = sandbox(tag, cols, [dict(r) for r in rows], lcols_ or lcols, [dict(r) for r in lrows], mut)
+        p = subprocess.run(['nice', PY, path, U], env=dict(e, **(extra or {})), cwd=U, capture_output=True, text=True,
+                           timeout=7200)
+        return U, p, [x for x in p.stdout.splitlines() if x.startswith('conform:')]
+
+    def port(tag, mode, extra=None):
+        U = sandbox(tag, cols, [dict(r) for r in rows], lcols + ST.GLED_COLS_SIZE, [dict(r) for r in lrows], mut)
+        p = subprocess.run(['nice', PY, '-c', _PORT, REPO, U, '0', mode], env=dict(e, **(extra or {})), cwd=U,
+                           capture_output=True, text=True, timeout=7200)
+        return U, p, [x for x in p.stdout.splitlines() if x.startswith('conform:')]
+
+    def same(Ua, Ub):
+        return {n: filecmp.cmp(os.path.join(Ua, n), os.path.join(Ub, n), shallow=False)
+                if os.path.exists(os.path.join(Ua, n)) and os.path.exists(os.path.join(Ub, n)) else None for n in OUTPUTS}
+    U0, p0, l0 = script('patch_production', PROD)
+    U1, p1, l1 = script('patch_default', new)
+    U2, p2, l2 = script('patch_off', new, {SZ.CONFORM_AXIS_ENV: '0'})
+    check('pending patch: production and the patched copy finish (unset and P3_CONFORM_AXIS=0)',
+          p0.returncode == p1.returncode == p2.returncode == 0, (p0.stderr[-300:], p1.stderr[-300:], p2.stderr[-500:]))
+    s1 = same(U0, U1)
+    check(f'pending patch, P3_CONFORM_AXIS unset: every output byte-identical to production\'s ({", ".join(OUTPUTS)}) and the '
+          f'same printed lines ({len(l0)})', all(s1.values()) and l0 == l1 and l0, (s1, [(a, b) for a, b in zip(l0, l1) if a != b][:2]))
+    _, k0 = _rows(os.path.join(U0, 'master_catalog.csv'))
+    _, r0 = _rows(os.path.join(U0, 'master_catalog_removed.csv'))
+    _, k2 = _rows(os.path.join(U2, 'master_catalog.csv'))
+    _, r2 = _rows(os.path.join(U2, 'master_catalog_removed.csv'))
+    ax = [r for r in r0 if r['removal_reason'].startswith(SZ.AXIS_STEP_REASON)]
+    axid = {r['cand_id'] for r in ax}
+    back = [r for r in k2 if r['cand_id'] in axid]
+    strip = lambda r: {k: v for k, v in r.items() if k not in ('axis_flag', 'removal_reason') and k in k0[0]}
+    ok2 = (ax and len(back) == len(ax) and all(r['axis_flag'] == 'axis > 2.0 x beam (kept: point-like at its S/N by the size / '
+                                                                 'axis rule)' for r in back)
+           and [r for r in r2] == [r for r in r0 if r['cand_id'] not in axid]
+           and [strip(r) for r in k2 if r['cand_id'] not in axid] == [strip(r) for r in k0]
+           and sorted(strip(r) == strip(x) for r in back for x in ax if x['cand_id'] == r['cand_id']) == [True] * len(ax))
+    check(f'pending patch, P3_CONFORM_AXIS=0: only the {len(ax)} row(s) production\'s axis step removed differ - kept and '
+          f'flagged as kept by the rule; every other row and removal production\'s', ok2,
+          (len(ax), len(back), len(r0), len(r2), len(k0), len(k2)))
+    off = [x for x in l2 if 'axis-ratio step OFF' in x]
+    check('pending patch, P3_CONFORM_AXIS=0: one more printed line, before the summary, counting the kept rows',
+          len(l2) == len(l0) + 1 and len(off) == 1 and l2.index(off[0]) == len(l2) - 2 and f'- {len(ax)} rows above' in off[0],
+          l2[-2:])
+    U3, p3, l3 = port('patch_port_replace', 'replace', {SZ.CONFORM_AXIS_ENV: '0'})
+    U4, p4, l4 = port('patch_port_second_gate', 'second_gate')
+    s3, s4 = same(U2, U3), same(U0, U4)
+    check("the port on the size / axis rule's rows under 'replace' (P3_CONFORM_AXIS=0) = the patched script switched off, byte "
+          "for byte and line for line; under 'second_gate' = production", p3.returncode == p4.returncode == 0
+          and all(s3.values()) and all(s4.values()) and l3 == l2 and l4 == l0,
+          (p3.stderr[-400:], p4.stderr[-400:], s3, s4, [(a, b) for a, b in zip(l3, l2) if a != b][:2],
+           [(a, b) for a, b in zip(l4, l0) if a != b][:2]))
 
 
 def test_full():
@@ -469,7 +556,7 @@ def main():
         if '--full' in sys.argv:
             test_full()
         else:
-            test_subset()
+            test_pending_patch(*test_subset())
     finally:
         if os.environ.get('KEEP_T') != '1':                 # KEEP_T=1 keeps the sandboxes for a look
             shutil.rmtree(T, ignore_errors=True)
