@@ -24,16 +24,28 @@ engine's output root), then:
   2. ONE FILE PER (sample, band, object, LST, date, Stokes) (CUTOVER_READINESS 'Photometry cutout writer, snapshot tier'): a
      file of the unit's cell and samples in the root that the unit did not write - another time stamp of a written key
      (stale) or an object / Stokes not written now (orphan) - refuses the unit (C-STALE); with --fresh they are MOVED to
-     <root>/quarantine_superseded_cutouts_<run id>/ with a sha256 manifest, never deleted;
-  3. placement by os.replace (atomic; a tier file of the same name is replaced in place), then the unit's manifest
-     <root>/_manifest/<10s|deep|10min>/<key>_<band>[.<tags>].csv (file, sha256, bytes, sample, object, stokes): output class
-     photometry_cutout_manifest (CM1 files + structure + sha256 sample, CM2 one file per key).
+     <root>/quarantine_superseded_cutouts_<run id>/ with a sha256 manifest, never deleted. A unit that writes nothing for its
+     (cell, band) (C-EXCLUDED, C-NOCUT) treats every such file of the root the same way before it ends with no input;
+  3. the unit's manifest _manifest/<10s|deep|10min>/<key>_<band>[.<tags>].csv (file, sha256, bytes, sample, object, stokes)
+     is written in the staging directory and its class tests run on the STAGED files (photometry_cutout_manifest CM1 files +
+     structure + sha256 sample, CM2 one file per key): a failure refuses before anything reaches the root (C-CONTENT);
+  4. placement, one transaction: every file of the root the unit replaces (same name) - and with --fresh every stale /
+     orphan file - moves to the quarantine directory first (sha256 manifest), then the staged files are renamed in (os.replace,
+     the manifest last) and the class tests run again on the placed manifest. Any failure from the first move on moves the
+     placed files back to the staging directory and the quarantined ones back in place: a refused unit leaves the root's
+     files as they were (review F2, 2026-11-03).
 cutmeasure stages the tool's --out (the root's existing forced_manifest.csv copied in first, so a sample subset merges as the
-tool merges it), places the npz and the manifest (classes photometry_tier_npz, photometry_tier_manifest).
+tool merges it), runs TN1 / TN2 (photometry_tier_npz) and TM1 / TM2 (photometry_tier_manifest) on the staged npz and manifest,
+then places them the same way (the npz and manifest it replaces quarantined under <root>/quarantine_superseded_tier_forced_
+<run id>/).
+An engine REFUSAL refuses its unit (C-ENGINE) and an error is recorded as that unit's: the stage goes on with the next unit
+(review F3; production's drivers marked the job FAILED and went on).
 
-Gates: C-ROOT (gate_write_root: a retired generation never; a production root while paths.PRODUCTION_WRITES is False), C-CELLS
-(a regeneration names its items), C-RUN (the tier tool reads one deep run), PHOT-ADHOC (an ad-hoc target set into a served
-root, or for cutmeasure / evaluate), PHOT-FULL (snapshot Full).
+Gates: C-ROOT (gate_write_root: a retired generation never; a production root while paths.PRODUCTION_WRITES is False), the
+INJECTED-RUN GUARD on every root a stage writes (core/injected.check), C-INPLACE (the served roots only with --in-place, the
+measurement chained; gate_in_place), C-CELLS (a regeneration names its items; a named tier cell the tool does not know),
+C-HOST (the tier tool's inputs not readable on this host), C-RUN (the tier tool reads one deep run), PHOT-ADHOC (an ad-hoc
+target set into or under a served root, or for cutmeasure / evaluate), PHOT-FULL (snapshot Full).
 """
 import csv
 import glob
@@ -114,16 +126,20 @@ def remove_staging(stage):
             break
 
 
-def quarantine(run, root, rels, reason):
-    """Move superseded cutouts out of the generation, never delete them (CLAUDE.md 7): to
-    <root>/<QUARANTINE_PREFIX><run id>/<relative path>, each with a row of MANIFEST_sha256.csv (sha256,bytes,moved_from,
-    moved_to,reason), its checksum verified after the move. Returns the moved paths."""
+def quarantine(run, root, rels, reason, prefix=None, moved=None):
+    """Move files out of the root, never delete them (CLAUDE.md 7): to <root>/<prefix><run id>/<relative path> (prefix
+    photometry_cutouts.QUARANTINE_PREFIX unless given), each with a row of MANIFEST_sha256.csv (sha256,bytes,moved_from,
+    moved_to,reason), its checksum verified after the move. Each move is appended to ``moved`` as (relative path, quarantine
+    path, sha256, bytes) the moment it is made, so a caller that fails part-way can put back every file moved (restore).
+    Returns ``moved``."""
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
-    q = os.path.join(root, _cc().QUARANTINE_PREFIX + run.run_id)
+    moved = [] if moved is None else moved
+    if not rels:
+        return moved
+    q = os.path.join(root, (prefix or _cc().QUARANTINE_PREFIX) + run.run_id)
     man = os.path.join(q, 'MANIFEST_sha256.csv')
     os.makedirs(q, exist_ok=True)
     new = not os.path.exists(man)
-    moved = []
     with open(man, 'a') as mf:
         if new:
             mf.write('sha256,bytes,moved_from,moved_to,reason\n')
@@ -132,42 +148,216 @@ def quarantine(run, root, rels, reason):
             h = TC.sha256_file(src)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             os.replace(src, dst)
+            moved.append((rel, dst, h, os.path.getsize(dst)))
+            mf.write('%s,%d,%s,%s,%s\n' % (h, os.path.getsize(dst), src, dst, reason.replace(',', ';')))
+            mf.flush()
             if TC.sha256_file(dst) != h:
                 raise Refusal('C-STALE: quarantine checksum of %s differs after the move' % dst)
-            mf.write('%s,%d,%s,%s,%s\n' % (h, os.path.getsize(dst), src, dst, reason.replace(',', ';')))
-            moved.append(dst)
     return moved
 
 
-def place_unit(u, run, root, stage, rels, token, key, band, samples, manifest_path, ctx):
-    """Steps 2 and 3 of the module docstring: one file per key (refuse, or quarantine with --fresh), sha256, os.replace into
-    the root, the manifest, the class tests. Returns the manifest path."""
+def restore(run, root, moved, why, prefix=None):
+    """Undo quarantine(): every (relative path, quarantine path, sha256, bytes) of ``moved`` back to <root>/<relative path>,
+    the last moved first, each with a 'restored' row in the quarantine manifest. Returns [problem] (a file that could not go
+    back - its place taken, or the move failed - named; the caller records them)."""
+    problems, rows = [], []
+    for rel, qp, h, n in reversed(moved):
+        dst = os.path.join(root, rel)
+        try:
+            if os.path.lexists(dst):
+                raise OSError('its place %s is taken' % dst)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.replace(qp, dst)
+            rows.append('%s,%d,%s,%s,%s\n' % (h, n, qp, dst, ('restored: ' + why).replace(',', ';').replace('\n', ' ')))
+        except OSError as e:
+            problems.append('%s not restored from %s: %s' % (rel, qp, e))
+    if rows:
+        man = os.path.join(root, (prefix or _cc().QUARANTINE_PREFIX) + run.run_id, 'MANIFEST_sha256.csv')
+        with open(man, 'a') as mf:
+            mf.writelines(rows)
+    return problems
+
+
+def _makedirs_tracked(d, created):
+    """os.makedirs(d), appending each directory it creates (outermost first) to ``created`` (unplace removes them)."""
+    miss, p = [], d
+    while p and not os.path.isdir(p):
+        miss.append(p)
+        p = os.path.dirname(p)
+    os.makedirs(d, exist_ok=True)
+    created.extend(reversed(miss))
+
+
+def place(root, pairs, placed, created):
+    """Rename each (staged path, relative path) of ``pairs`` to <root>/<relative path>, appending it to ``placed`` the moment it
+    is made (unplace undoes it). A destination that exists refuses: the caller moved every file it replaces to the quarantine
+    first, so one here was written by someone else meanwhile."""
+    for src, rel in pairs:
+        dst = os.path.join(root, rel)
+        _makedirs_tracked(os.path.dirname(dst), created)
+        if os.path.lexists(dst):
+            raise Refusal('C-PLACE: %s appeared in the root while the unit placed its files (another writer?) - not '
+                          'replaced' % dst)
+        os.replace(src, dst)
+        placed.append((src, rel))
+
+
+def unplace(root, placed, created):
+    """Undo place(): every placed file back to its staged path (the last placed first), then the directories placement
+    created, if empty. Returns [problem]."""
+    problems = []
+    for src, rel in reversed(placed):
+        try:
+            os.makedirs(os.path.dirname(src), exist_ok=True)
+            os.replace(os.path.join(root, rel), src)
+        except OSError as e:
+            problems.append('%s not moved back to %s: %s' % (rel, src, e))
+    for d in reversed(created):
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+    return problems
+
+
+def placement(u, run, root, pairs, outputs, reason, prefix=None, aside=(), aside_reason=''):
+    """Step 4 of the module docstring, one transaction: ``aside`` (relative paths: stale / orphan files, --fresh) and every
+    file of ``pairs`` (staged path, relative path) that exists in the root move to the quarantine, the staged files are renamed
+    in, then ``outputs`` (a callable) records the outputs and runs their class tests on the placed files. A failure from the
+    first move on - an exception, or a failed test - undoes every move (unplace, restore), so the root's files are as they
+    were, and the unit is refused (C-PLACE; an exception is re-raised). Returns the moves to the quarantine."""
+    moved, placed, created = [], [], []
+    n_out = len(u.outputs)
+    try:
+        quarantine(run, root, aside, aside_reason, prefix, moved)
+        replaced = [rel for _, rel in pairs if os.path.lexists(os.path.join(root, rel))]
+        quarantine(run, root, replaced, reason, prefix, moved)
+        place(root, pairs, placed, created)
+        outputs()
+        bad = u.failed_tests()
+        if bad:
+            raise Refusal('C-PLACE: the placed files fail their content test: %s' % '; '.join(
+                '%s (%s)' % (t['name'], str(t.get('detail') or t.get('value'))[:200]) for t in bad[:3]))
+    except BaseException as e:
+        probs = unplace(root, placed, created)
+        probs += restore(run, root, moved, '%s did not complete (%s: %s)' % (u.name, type(e).__name__, str(e)[:200]), prefix)
+        del u.outputs[n_out:]
+        u.meta['placement_undone'] = dict(placed=len(placed), restored=len(moved), problems=probs)
+        if probs:
+            u.note('PLACEMENT NOT FULLY UNDONE (%d problem(s)): %s' % (len(probs), '; '.join(probs[:5])))
+        if isinstance(e, Refusal):
+            u.refuse('%s - every move undone (%d placed file(s) back in the staging directory, %d quarantined back in place%s'
+                     ')' % (e, len(placed), len(moved), '; %d NOT undone, see the notes' % len(probs) if probs else ''))
+        raise
+    return moved
+
+
+def staged_tests(u, cls, path, **ctx):
+    """The class tests of ``cls`` on a STAGED product, recorded as unit checks '<cls>.<test>_staged' (review F2: they decide
+    before anything reaches the root). Returns the failed ones."""
+    from exopipe.phase3.core import validate
+    bad = []
+    for r in validate.run(cls, path, **ctx):
+        u.check(r['name'] + '_staged', r['passed'], r['value'], r['detail'], cls=cls, path=path)
+        if not r['passed']:
+            bad.append('%s: %s' % (r['name'], str(r['detail'])[:300]))
+    return bad
+
+
+def place_unit(u, run, root, stage, rels, token, key, band, samples, mrel, ctx, extra=()):
+    """Steps 2 to 4 of the module docstring for the cutouts of one unit (``rels``, relative to the staging directory and the
+    root alike): one file per key (C-STALE: refuse, or quarantine with --fresh), the unit's manifest written in the staging
+    directory (<stage>/<mrel>) and its class tests run on the staged files (C-CONTENT), then the placement transaction with the
+    class tests on the placed manifest. ``extra``: more (staged path, relative path) pairs placed with the cutouts (the wideband
+    member tables beside the manifest). Returns the placed manifest's path."""
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
+    cls = 'photometry_cutout_manifest'
     stale, orphan = TC.superseded(root, token, key, band, samples, rels)
     u.meta.update(n_stale=len(stale), n_orphan=len(orphan))
+    what = ''
     if stale or orphan:
         what = '%d other time stamp(s) of a written key (%s) and %d file(s) of the unit\'s cell and samples it did not write ' \
                '(%s)' % (len(stale), TC._fmt(stale), len(orphan), TC._fmt(orphan))
         if not run.fresh:
             u.refuse('C-STALE: %s in %s - one file per (sample, band, object, LST, date, Stokes); rerun with --fresh to move '
                      'them to a quarantine directory (staged files kept: %s)' % (what, root, stage))
-        u.meta['quarantined'] = quarantine(run, root, stale + orphan, 'superseded by %s (%s)' % (u.name, run.run_id))
-        u.note('C-STALE --fresh: %s moved to quarantine' % what)
     rows = []
     for rel in rels:
         p = TC.parse_cutout(os.path.join(stage, rel))
         sp = os.path.join(stage, rel)
         rows.append(dict(file=rel, sha256=TC.sha256_file(sp), bytes=os.path.getsize(sp), sample=p[0], object=p[2],
                          stokes=p[3]['st']))
-    u.plan(manifest_path, 'photometry_cutout_manifest')
-    for rel in rels:
-        dst = os.path.join(root, rel)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        os.replace(os.path.join(stage, rel), dst)
-    TC.write_manifest(manifest_path, rows)
-    u.add_output(manifest_path, 'photometry_cutout_manifest', root=root, samples=samples, **ctx)
+    staged_man = os.path.join(stage, mrel)
+    TC.write_manifest(staged_man, rows)
+    bad = staged_tests(u, cls, staged_man, root=stage, samples=samples, **ctx)
+    if bad:
+        u.refuse('C-CONTENT: the staged cutouts fail their content test before placement - nothing placed (staging kept: '
+                 '%s): %s' % (stage, '; '.join(bad)[:900]))
+    manifest_path = os.path.join(root, mrel)
+    u.plan(manifest_path, cls)
+    pairs = [(os.path.join(stage, r), r) for r in rels] + list(extra) + [(staged_man, mrel)]
+    moved = placement(u, run, root, pairs, lambda: u.add_output(manifest_path, cls, root=root, samples=samples, **ctx),
+                      'replaced by %s (%s)' % (u.name, run.run_id), aside=stale + orphan,
+                      aside_reason='superseded by %s (%s)' % (u.name, run.run_id))
+    aside = set(stale + orphan)
+    u.meta['quarantined'] = [q for rel, q, _, _ in moved if rel in aside]
+    u.meta['n_replaced_quarantined'] = sum(1 for rel, _, _, _ in moved if rel not in aside)
+    if aside:
+        u.note('C-STALE --fresh: %s moved to quarantine' % what)
     u.meta['n_cutouts'] = len(rows)
     return manifest_path
+
+
+def unit_manifest_rels(token, key, sfx):
+    """The paths, relative to the root, of a unit's manifest and its wideband member tables (_manifest/<token>/<key><sfx>.csv,
+    .members_<S>.csv; key = <cell>_<band> for 10 s, <LST>_<band> for the tiers)."""
+    d = os.path.join(_cc().MANIFEST_SUBDIR, token)
+    return [os.path.join(d, '%s%s.csv' % (key, sfx))] + [os.path.join(d, '%s%s.members_%s.csv' % (key, sfx, S)) for S in 'VI']
+
+
+def nothing_written(u, run, root, token, key, band, samples, why, mrels=()):
+    """A unit that writes no cutout for its (cell, band) (C-EXCLUDED, C-NOCUT): the files of that (cell, band) and samples
+    already in the root - and the unit's earlier manifest (``mrels``, relative paths), which lists them - are not the current
+    regeneration's (review F8: an exclusion added since, a night rule that now refuses both Stokes). One file per key holds
+    only with none left: refused (C-STALE), or with --fresh moved to the quarantine. Returns normally when none is left (the
+    caller then ends the unit with no input)."""
+    from exopipe.phase3.lib.photometry import tests_cutouts as TC
+    stale, orphan = TC.superseded(root, token, key, band, samples, [])
+    left = stale + orphan + [r for r in mrels if os.path.lexists(os.path.join(root, r))]
+    u.meta.update(n_stale=0, n_orphan=len(stale + orphan))
+    if not left:
+        return
+    if not run.fresh:
+        u.refuse('C-STALE: %s, but %s holds %d file(s) of it (%s) - they are not this regeneration\'s (one file per key); '
+                 'rerun with --fresh to move them to a quarantine directory' % (why, root, len(left), TC._fmt(left)))
+    moved = []
+    try:
+        quarantine(run, root, left, 'superseded: %s writes nothing (%s)' % (u.name, why), moved=moved)
+    except BaseException as e:          # part-way: every file moved goes back, the root as it was
+        probs = restore(run, root, moved, '%s did not complete (%s: %s)' % (u.name, type(e).__name__, str(e)[:200]))
+        if probs:
+            u.note('QUARANTINE NOT FULLY UNDONE (%d problem(s)): %s' % (len(probs), '; '.join(probs[:5])))
+        raise
+    u.meta['quarantined'] = [q for _, q, _, _ in moved]
+    u.note('C-STALE --fresh: %d file(s) of %s moved to quarantine - %s' % (len(left), u.name, why))
+
+
+def run_unit(run, name, meta, fn, *a):
+    """Run one unit (``fn(*a)``). An error it raises - an engine crash, a bug - is that unit's: recorded as error by the unit's
+    own __exit__ (or by a unit opened here when it came before the unit started), and the stage goes on with the next unit, as
+    production's drivers marked such a job FAILED and went on (review F3); the run exits 1 at its end. Returns the units the
+    call added."""
+    n0 = len(run.units)
+    try:
+        fn(*a)
+    except Exception:           # noqa: BLE001 - recorded as the unit's error (status error, the traceback in its notes)
+        if not any(u.name == name for u in run.units[n0:]):
+            try:
+                with run.unit(name, **meta):
+                    raise
+            except Exception:   # noqa: BLE001 - recorded (status error) by the unit's __exit__
+                pass
+    return run.units[n0:]
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -226,8 +416,7 @@ def stage_snapshot_cutouts(run, args):
               ','.join(samples), ' (ad hoc: %s)' % ', '.join('%s=%s' % t for t in targets) if targets else '',
               K.python_key('snapshot', 'cutouts_subband')))
     try:
-        K.gate_write_root(root, '--cutout-root')
-        K.gate_adhoc_roots(targets, {'cutout root': root})
+        gate_write_roots(run, args, 'cutouts', [root], targets, {'cutout root': root})
     except Refusal as e:
         if run.dry_run:
             K.would_refuse(run, 'cutouts', str(e))
@@ -240,8 +429,81 @@ def stage_snapshot_cutouts(run, args):
             K.plan(run, '[cutouts]   unit cutouts.%s.%s%s: cubes V %d, I %d' % (cell, band, tag_suffix(targets),
                                                                              len(cubes['V']), len(cubes['I'])))
             continue
-        units += snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
+        units += run_unit(run, 'cutouts.%s.%s%s' % (cell, band, tag_suffix(targets)),
+                          dict(tier='snapshot', stage='cutouts', cell=cell, band=band, cutout_root=root),
+                          snapshot_unit, run, args, cell, band, root, targets, planets, samples, cubes)
     return units
+
+
+def gate_write_roots(run, args, stage, roots, targets, adhoc_roots):
+    """Every gate on the roots a cutouts / cutmeasure stage writes, before its first unit: the INJECTED-RUN GUARD (core/
+    injected.check: an injected run writes scratch only - review F6, whatever flag or default named the root), C-ROOT (a
+    retired generation; a production root in the refactor window), PHOT-ADHOC (an ad-hoc set into or under a served root) and
+    C-INPLACE (the served roots only with --in-place; gate_in_place)."""
+    from exopipe.phase3.core import injected
+    what = {'cutouts': 'the cutout root (--cutout-root)', 'cutmeasure': 'the tier forced root (--tier-out)'}[stage]
+    for r in roots:
+        injected.check(r, 'photometry %s (%s)' % (stage, what))
+    for r in roots:
+        K.gate_write_root(r, what)
+    K.gate_adhoc_roots(targets, adhoc_roots)
+    gate_in_place(run, args, stage, roots)
+
+
+def gate_in_place(run, args, stage, roots):
+    """C-INPLACE (review F4; production's rule, phase3_snapshot_search.regen_cutouts: P3_SNAP_CUTOUT_ROOT is 'a new root -
+    never over the existing product'; generation 5 was built beside generation 4 and the pages switched after). A cutouts /
+    cutmeasure stage writes a SERVED root (photometry.CUTOUT_ROOT; photometry.TIER_FORCED_ROOTS) only with --in-place, and then
+    the measurement of the new cutouts runs in the same invocation: snapshot cutouts -> the measure stage into the served
+    stage 1 (--out = photometry.OUT_ROOT[snapshot]); deep / sublst cutouts -> cutmeasure into the served tier forced roots (no
+    --tier-out); cutmeasure into the served tier forced roots measures the served cutouts (no other --cutout-root). A root
+    INSIDE a served root is no generation root at all (refused); --in-place with no served root to write refuses."""
+    ph = K.cfg().photometry
+    in_place = bool(getattr(args, 'in_place', False))
+    stages = list(getattr(args, 'photometry_stages', ()) or ())
+    real = os.path.realpath
+    served = []
+    for r in roots:
+        hit = K.served_root_of(r)
+        if not hit:
+            continue
+        what, sr = hit
+        if real(r) != real(sr):
+            raise Refusal('C-INPLACE: %s is inside the served generation\'s %s %s - a generation root is a directory of its '
+                          'own, never inside a served one' % (r, what, sr))
+        want = 'cutout root' if stage == 'cutouts' else 'tier forced root'
+        if not what.startswith(want):
+            raise Refusal('C-INPLACE: %s is the served generation\'s %s - the %s stage writes a %s' % (r, what, stage, want))
+        served.append(r)
+    if not served:
+        if in_place:
+            raise Refusal('C-INPLACE: --in-place regenerates the served generation, but the %s stage writes %s, no served '
+                          'root (photometry.CUTOUT_ROOT / TIER_FORCED_ROOTS)' % (stage, ', '.join(roots)))
+        return
+    if not in_place:
+        raise Refusal('C-INPLACE: %s is the SERVED generation\'s root - a regeneration writes a new root (%s), never over the '
+                      'served product (production\'s rule: phase3_snapshot_search.regen_cutouts "a new root - never over the '
+                      'existing product"; generation 5 was built beside generation 4, its measurement too, and the config '
+                      'switched after); --in-place regenerates the served generation itself, its measurement chained'
+                      % (', '.join(served), '--cutout-root NEW' if stage == 'cutouts' else '--tier-out NEW'))
+    if stage == 'cutouts':
+        if args.tier == 'snapshot':
+            if 'measure' not in stages or real(run.out_root) != real(ph.OUT_ROOT['snapshot']):
+                raise Refusal('C-INPLACE: --in-place cutouts replace the cutouts the served stage 1 measured: the measure stage '
+                              'must run in this invocation (--stages cutouts,measure; selected %s) into the served stage 1 '
+                              '(--out %s; given %s)' % (','.join(stages), ph.OUT_ROOT['snapshot'], run.out_root))
+        elif 'cutmeasure' not in stages or getattr(args, 'tier_out', None):
+            raise Refusal('C-INPLACE: --in-place tier cutouts replace the cutouts the served tier forced roots measured: '
+                          'cutmeasure must run in this invocation (--stages cutouts,cutmeasure; selected %s) into the served '
+                          'roots photometry.TIER_FORCED_ROOTS (no --tier-out; given %s)'
+                          % (','.join(stages), getattr(args, 'tier_out', None)))
+    else:
+        if getattr(args, 'tier_out', None):
+            raise Refusal('C-INPLACE: --in-place cutmeasure writes each sample\'s own served root (photometry.'
+                          'TIER_FORCED_ROOTS); --tier-out %s puts every sample under one root' % args.tier_out)
+        if real(K.cutout_root(args)) != real(ph.CUTOUT_ROOT):
+            raise Refusal('C-INPLACE: the served tier forced roots measure the served cutouts (photometry.CUTOUT_ROOT %s); '
+                          '--cutout-root %s is another generation' % (ph.CUTOUT_ROOT, K.cutout_root(args)))
 
 
 def cutout_admitted(cell, band):
@@ -296,6 +558,7 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
         u.set_admitted(admitted)
         stage = staging_dir(root, run, '%s_%s%s' % (cell, band, sfx))
         u.meta['staging'] = stage
+        mrels = unit_manifest_rels('10s', '%s_%s' % (cell, band), sfx)
         eout = os.path.join(stage, '_engine_out')
         # the engine's own switches, set to the values the step's checks read (paths.SNAPSHOT_CUBES_ROOT = the engine's CUBE_ROOT
         # default, paths.SNAPSHOT_FLEET_OUT = its SEARCH_OUT_ROOT default - mirror-tested), so the cube the identity test reads
@@ -311,8 +574,13 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
                                env_extra=env, threads=args.threads)
             if res.rc == cc.REGEN_EXCLUDED_RC or '\nEXCLUDED:' in '\n' + text:
                 remove_staging(stage)
-                raise NoInput('C-EXCLUDED: %s %s carries verdict exclude in data_decisions (the engine refused it, exit %d)'
-                              % (cell, band, res.rc))
+                u.meta['staging'] = None
+                why = 'C-EXCLUDED: %s %s carries verdict exclude in data_decisions (the engine refused it, exit %d)' % (
+                    cell, band, res.rc)
+                nothing_written(u, run, root, '10s', cell, band, samples, why, mrels)
+                raise NoInput(why)
+            if res.refused:          # the engine's own refusal (e.g. a cube repeating integrations without the search's frame
+                u.refuse('C-ENGINE: %s (staging kept: %s)' % (res.reason, stage))   # list): this unit, not the run
             done = [ln for ln in text.splitlines() if cc.REGEN_DONE_SUBBAND in ln]
             if res.rc != 0 or not done:
                 raise RuntimeError('phase3_snapshot_search.py --cutouts-from-cubes exit %d without a %r line (staging kept: '
@@ -329,6 +597,8 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
                 if res.rc == cc.REGEN_EXCLUDED_RC:
                     outcome[S] = 'excluded'
                     continue
+                if res.refused:
+                    u.refuse('C-ENGINE: %s (%s): %s (staging kept: %s)' % (band, S, res.reason, stage))
                 done = [ln for ln in text.splitlines() if cc.REGEN_DONE_WIDEBAND in ln]
                 if res.rc != 0 or not done:
                     raise RuntimeError('phase3_snapshot_group_search.py --cutouts-from-cubes %s (%s) exit %d without a %r '
@@ -341,8 +611,10 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
                     members[S] = mp
             if all(outcome.get(S) == 'excluded' for S in 'VI'):
                 remove_staging(stage)
-                raise NoInput('C-EXCLUDED: %s %s is excluded under the deep rule (the group search refused it, exit 3)'
-                              % (cell, band))
+                u.meta['staging'] = None
+                why = 'C-EXCLUDED: %s %s is excluded under the deep rule (the group search refused it, exit 3)' % (cell, band)
+                nothing_written(u, run, root, '10s', cell, band, samples, why, mrels)
+                raise NoInput(why)
         u.meta['engine_outcome'] = outcome
         rels, other = staged_cutouts(stage, samples)
         if other:
@@ -350,7 +622,10 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
                 ','.join(samples), TC._fmt(other), stage))
         if not rels:
             remove_staging(stage)
-            raise NoInput('C-NOCUT: the engine wrote no cutout for %s %s (outcome %s)' % (cell, band, outcome))
+            u.meta['staging'] = None
+            why = 'C-NOCUT: the engine wrote no cutout for %s %s (outcome %s)' % (cell, band, outcome)
+            nothing_written(u, run, root, '10s', cell, band, samples, why, mrels)
+            raise NoInput(why)
         bad = [r for r in rels if TC.parse_cutout(os.path.join(stage, r))[1] != band
                or TC.parse_cutout(os.path.join(stage, r))[3]['lst'] != lst]
         if bad:
@@ -375,14 +650,12 @@ def snapshot_unit(run, args, cell, band, root, targets, planets, samples, cubes)
                         cc.IDENTITY_TOL, worst, ('; FAIL %s' % TC._fmt(nbad)) if nbad else ''), cls='photometry_cutout_manifest')
         if u.failed_tests():
             u.refuse('C-IDENTITY: %s (staging kept: %s)' % ('; '.join(t['detail'] for t in u.failed_tests())[:600], stage))
-        # 2-3. one file per key, placement, the manifest
-        mdir = TC.manifest_dir(root, '10s')
-        mpath = os.path.join(mdir, '%s_%s%s.csv' % (cell, band, sfx))
-        place_unit(u, run, root, stage, rels, '10s', cell, band, samples, mpath, {'cell': cell, 'band': band})
-        for S, mp in sorted(members.items()):      # beside the manifest: the member tables a wideband is rebuilt from
-            dst = os.path.join(mdir, '%s_%s%s.members_%s.csv' % (cell, band, sfx, S))
-            K.atomic_copy(mp, dst)
-            u.meta.setdefault('members', {})[S] = dst
+        # 2-4. one file per key, the manifest and its content tests on the staged files, the placement transaction
+        extra = [(members[S], mrels[1 + 'VI'.index(S)]) for S in sorted(members)]   # beside the manifest: the member tables
+        place_unit(u, run, root, stage, rels, '10s', cell, band, samples, mrels[0],   # a wideband is rebuilt from
+                   {'cell': cell, 'band': band}, extra)
+        for S, (_, rel) in zip(sorted(members), extra):
+            u.meta.setdefault('members', {})[S] = os.path.join(root, rel)
         remove_staging(stage)
         u.meta['staging'] = None
     return run.units[-1:]
@@ -402,6 +675,30 @@ def tier_universe(tier):
     return sorted(os.path.basename(os.path.dirname(f)) for f in glob.glob(os.path.join(cc.TIER_TENMIN_ROOT, '*', 'frames.csv')))
 
 
+def tier_input_roots(tier):
+    """The input roots the tier tool reads by literal path (photometry_tier_cutouts_20261025.py :46-48): the deep run
+    (TIER_DEEP_RUN, node-local to the deep host) or the 10-minute window root and its search (TIER_TENMIN_ROOT,
+    TIER_TENMIN_SEARCH)."""
+    cc = _cc()
+    return [cc.TIER_DEEP_RUN] if tier == 'deep' else [cc.TIER_TENMIN_ROOT, cc.TIER_TENMIN_SEARCH]
+
+
+def tier_inputs_unreadable(tier):
+    """[root] of tier_input_roots that are not readable directories on this host."""
+    return [r for r in tier_input_roots(tier) if not (os.path.isdir(r) and os.access(r, os.R_OK | os.X_OK))]
+
+
+def gate_tier_host(tier):
+    """C-HOST (review F5): an input root of the tier tool that this host cannot read refuses the tier cutouts (exit 2) - the
+    tool would cut no plane and the unit would end 'no input' (exit 3), which a chain records as nothing to do. The deep run
+    is on /fast of the deep host only."""
+    bad = tier_inputs_unreadable(tier)
+    if bad:
+        raise Refusal('C-HOST: the %s tier cutouts read %s by literal path (photometry_cutouts.TIER_DEEP_RUN / '
+                      'TIER_TENMIN_ROOT / TIER_TENMIN_SEARCH), not a readable directory on %s - run them on the host that '
+                      'holds it' % (tier, ', '.join(bad), K.hostname()))
+
+
 def gate_tier_run(args):
     """C-RUN: the tier tool reads the deep run it names by literal path (photometry_cutouts.TIER_DEEP_RUN); a --src-run /
     --run naming another run refuses (the tool cannot be pointed there in the window)."""
@@ -415,19 +712,33 @@ def gate_tier_run(args):
 
 
 def tier_items(args, tier):
+    """The <LST>_<band> cells of --cells over the tier tool's cell list (tier_universe). A named cell the tool does not know
+    refuses (C-CELLS, review F5: it would cut nothing). Where the tool's inputs are not readable (cutmeasure, which reads only
+    the cutout root, may run there) the cells are taken as named and a pattern refuses (C-HOST)."""
     spec = args.cells
     if not spec:
         raise Refusal('C-CELLS: a tier cutout run names its <LST>_<band> cells (--cells; patterns over the tool\'s cells, '
                       'e.g. --cells "08h_*")')
-    universe = tier_universe(tier)
+    unreadable = tier_inputs_unreadable(tier)
+    universe = None if unreadable else tier_universe(tier)
+    pats = [t for t in str(spec).split(',') if any(ch in t for ch in '*?[')]
+    if universe is None and pats:
+        raise Refusal('C-HOST: --cells %s: a pattern over the tier tool\'s cells, whose list (%s) is not readable on %s - '
+                      'name the cells' % (','.join(pats), ', '.join(unreadable), K.hostname()))
     cells = C.expand(spec, universe=universe, kind='cell')
     for cl in cells:
         C.parse_cell(cl)
+    if universe is not None:
+        unknown = [cl for cl in cells if cl not in universe]
+        if unknown:
+            raise Refusal('C-CELLS: %s %s no cell of the %s tier tool\'s input (%s: %d cells) - it would cut nothing'
+                          % (', '.join(unknown[:5]), 'is' if len(unknown) == 1 else 'are', tier,
+                             ', '.join(tier_input_roots(tier)), len(universe)))
     if args.scopes:
         sc = {s.strip() for s in args.scopes.split(',') if s.strip()}
         cells = [cl for cl in cells if cl.split('_', 1)[1] in sc]
     if args.exclude_cells:
-        ex = set(C.expand(args.exclude_cells, universe=universe, kind='cell'))
+        ex = set(C.expand(args.exclude_cells, universe=universe if universe is not None else cells, kind='cell'))
         cells = [cl for cl in cells if cl not in ex]
     return sorted(cells)
 
@@ -481,9 +792,9 @@ def stage_tier_cutouts(run, args):
     samples = run_samples(targets, planets)
     try:
         gate_tier_run(args)
+        gate_tier_host(tier)
         cells = tier_items(args, tier)
-        K.gate_write_root(root, '--cutout-root')
-        K.gate_adhoc_roots(targets, {'cutout root': root})
+        gate_write_roots(run, args, 'cutouts', [root], targets, {'cutout root': root})
     except Refusal as e:
         if run.dry_run:
             K.would_refuse(run, 'cutouts', str(e))
@@ -498,7 +809,9 @@ def stage_tier_cutouts(run, args):
         if run.dry_run:
             K.plan(run, '[cutouts]   unit cutouts.%s.%s%s' % (token, cell, tag_suffix(targets)))
             continue
-        units += tier_unit(run, args, tier, cell, root, targets, planets, samples)
+        units += run_unit(run, 'cutouts.%s.%s%s' % (token, cell, tag_suffix(targets)),
+                          dict(tier=tier, stage='cutouts', cell=cell, cutout_root=root),
+                          tier_unit, run, args, tier, cell, root, targets, planets, samples)
     return units
 
 
@@ -524,6 +837,8 @@ def tier_unit(run, args, tier, cell, root, targets, planets, samples):
         res, text = K.call(u, 'cutouts_tier', argv, tier, 'cutouts_tier', run, 'cutouts_%s_%s.log' % (token, cell),
                            env_extra=K.adhoc_env(targets, planets), threads=args.threads)
         lines = [ln for ln in text.splitlines() if ln.startswith('%s %s ' % (token, cell))]
+        if res.refused:              # the tool's own refusal (REFUSING: injected run / the old root): this unit, not the run
+            u.refuse('C-ENGINE: %s (staging kept: %s)' % (res.reason, stage))
         if res.rc != 0 or 'PHOTOMETRY-TIER-DONE' not in text:
             raise RuntimeError('photometry_tier_cutouts_20261025.py exit %d without PHOTOMETRY-TIER-DONE (staging kept: %s): %s'
                                % (res.rc, stage, res.tail[-600:]))
@@ -534,7 +849,10 @@ def tier_unit(run, args, tier, cell, root, targets, planets, samples):
                 ','.join(samples), TC._fmt(other), stage))
         if not rels:
             remove_staging(stage)
-            raise NoInput('C-NOCUT: no tier cutout for %s %s (%s)' % (token, cell, '; '.join(lines) or 'no line'))
+            u.meta['staging'] = None
+            why = 'C-NOCUT: no tier cutout for %s %s (%s)' % (token, cell, '; '.join(lines) or 'no line')
+            nothing_written(u, run, root, token, lst, band, samples, why, unit_manifest_rels(token, cell, sfx))
+            raise NoInput(why)
         bad = [r for r in rels if TC.parse_cutout(os.path.join(stage, r))[1] != band
                or TC.parse_cutout(os.path.join(stage, r))[3]['lst'] != lst or TC.parse_cutout(os.path.join(stage, r))[4] != token]
         if bad:
@@ -551,8 +869,8 @@ def tier_unit(run, args, tier, cell, root, targets, planets, samples):
                     cls='photometry_cutout_manifest')
         if u.failed_tests():
             u.refuse('C-IDENTITY: %s (staging kept: %s)' % ('; '.join(t['detail'] for t in u.failed_tests())[:600], stage))
-        mpath = os.path.join(TC.manifest_dir(root, token), '%s%s.csv' % (cell, sfx))
-        place_unit(u, run, root, stage, rels, token, lst, band, samples, mpath, {'tier': token, 'band': band})
+        place_unit(u, run, root, stage, rels, token, lst, band, samples, unit_manifest_rels(token, cell, sfx)[0],
+                   {'tier': token, 'band': band})
         remove_staging(stage)
         u.meta['staging'] = None
     return run.units[-1:]
@@ -584,9 +902,8 @@ def stage_tier_cutmeasure(run, args):
         else:
             samples = list(ph.TIER_FORCED_SAMPLES)
         roots = tier_out_roots(args, samples)
-        for r in roots:
-            K.gate_write_root(r, 'the tier forced root')
-        K.gate_adhoc_roots(targets, {'tier forced root': r for r in roots})
+        gate_write_roots(run, args, 'cutmeasure', sorted(roots), targets,
+                         {'tier forced root %s' % r: r for r in roots})      # one entry per root (review F9)
         cells = tier_items(args, tier)
     except Refusal as e:
         if run.dry_run:
@@ -604,14 +921,17 @@ def stage_tier_cutmeasure(run, args):
             if run.dry_run:
                 K.plan(run, '[cutmeasure]   unit cutmeasure.%s.%s.%s -> %s' % (token, lst, '+'.join(smp), out_root))
                 continue
-            units += cutmeasure_unit(run, args, tier, lst, root, out_root, smp)
+            units += run_unit(run, 'cutmeasure.%s.%s.%s' % (token, lst, '+'.join(smp)),
+                              dict(tier=tier, stage='cutmeasure', lst=lst, cutout_root=root, tier_out=out_root),
+                              cutmeasure_unit, run, args, tier, lst, root, out_root, smp)
     return units
 
 
 def cutmeasure_unit(run, args, tier, lst, root, out_root, samples):
     from exopipe.phase3.lib.photometry import tests_cutouts as TC
     ph = K.cfg().photometry
-    token = _cc().TIER_TOKEN[tier]
+    cc = _cc()
+    token = cc.TIER_TOKEN[tier]
     name = 'cutmeasure.%s.%s.%s' % (token, lst, '+'.join(samples))
     files = sorted(p for s in samples for p in glob.glob(os.path.join(root, s, '*', '*', '*_%s_%s_[IV].fits' % (lst, token))))
     lsha = listing_sha1(files)
@@ -640,6 +960,8 @@ def cutmeasure_unit(run, args, tier, lst, root, out_root, samples):
         res, text = K.call(u, 'cutmeasure_tier', argv, tier, 'cutmeasure_tier', run, 'cutmeasure_%s_%s.log' % (token, lst),
                            threads=args.threads)
         m = re.search(r'PHOTOMETRY-TIER-FORCED-DONE (\d+) cutouts measured, (\d+) refused', text)
+        if res.refused:              # the tool's own refusal (REFUSING: --samples ...): this unit, not the run
+            u.refuse('C-ENGINE: %s (staging kept: %s)' % (res.reason, stage))
         if res.rc != 0 or not m:
             raise RuntimeError('photometry_tier_forced_20261026.py exit %d without PHOTOMETRY-TIER-FORCED-DONE (staging kept: '
                                '%s): %s' % (res.rc, stage, res.tail[-600:]))
@@ -649,16 +971,33 @@ def cutmeasure_unit(run, args, tier, lst, root, out_root, samples):
                 and TC._NPZ_RE.match(os.path.basename(p))['smp'] in samples]
         if int(m.group(2)):
             u.refuse('CM-REFUSED: the tool refused %s cutouts of %s %s (staging kept: %s)' % (m.group(2), token, lst, stage))
+        # the content tests on the STAGED npz and manifest decide before anything reaches the tier forced root (review F2):
+        # TN1 / TN2 (each npz's targets re-measured from the cutout root) and TM1 / TM2 (the npz of the samples this unit does
+        # not measure - a subset run merges the manifest - read where they are served)
+        staged_man = os.path.join(sdir, 'forced_manifest.csv')
+        bad = []
+        for p in mine:
+            bad += staged_tests(u, 'photometry_tier_npz', p, cutout_root=root)
+        bad += staged_tests(u, 'photometry_tier_manifest', staged_man,
+                            npz_dirs={s: odir for s in ph.TIER_FORCED_SAMPLES if s not in samples})
+        if bad:
+            u.refuse('CM-CONTENT: the staged npz / manifest fail their content test before placement - nothing placed '
+                     '(staging kept: %s): %s' % (stage, '; '.join(bad)[:900]))
         for p in mine:
             u.plan(os.path.join(odir, os.path.basename(p)), 'photometry_tier_npz')
         u.plan(old_man, 'photometry_tier_manifest')
-        os.makedirs(odir, exist_ok=True)
-        for p in mine:
-            os.replace(p, os.path.join(odir, os.path.basename(p)))
-        os.replace(os.path.join(sdir, 'forced_manifest.csv'), old_man)
-        for p in mine:
-            u.add_output(os.path.join(odir, os.path.basename(p)), 'photometry_tier_npz', cutout_root=root)
-        u.add_output(old_man, 'photometry_tier_manifest')
+        pairs = [(p, os.path.join(token, lst, os.path.basename(p))) for p in mine] + \
+            [(staged_man, os.path.join(token, lst, 'forced_manifest.csv'))]
+
+        def outputs():
+            for p in mine:
+                u.add_output(os.path.join(odir, os.path.basename(p)), 'photometry_tier_npz', cutout_root=root)
+            u.add_output(old_man, 'photometry_tier_manifest')
+        # placement: the npz and the manifest this unit replaces move to <out root>/<FORCED_QUARANTINE_PREFIX><run id>/ first
+        # (sha256 manifest); a failure undoes every move (placement)
+        moved = placement(u, run, out_root, pairs, outputs, 'replaced by %s (%s)' % (u.name, run.run_id),
+                          prefix=cc.FORCED_QUARANTINE_PREFIX)
+        u.meta['n_replaced_quarantined'] = len(moved)
         remove_staging(stage)
         u.meta['staging'] = None
     return run.units[-1:]
@@ -677,7 +1016,7 @@ def run_tier(run, args, stages):
         units = STAGE_FUNCS[st](run, args)
         if run.dry_run:
             continue
-        if units and not K.stage_ok(units):
+        if K.stop_after(args, st, units):
             K.say('photometry %s: stage %s did not complete (%s) - later stages not run'
                   % (args.tier, st, ', '.join('%s %s' % (u.name, u.status) for u in units
                                               if u.status not in ('done', 'skipped-valid'))))

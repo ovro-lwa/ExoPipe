@@ -5,9 +5,10 @@
     exopipe3 photometry --tier deep --run P3S5 --parent-dir DIR --epochs 04h_2025-10-14 --out ...                (one hour)
     exopipe3 photometry --tier snapshot --stages measure --cells 18h_2025-04-11 --out ... --work /fast/...      (one cell)
     exopipe3 photometry --tier snapshot --stages evaluate --stage1 ROOT --eval-tag 20261013 --out ...          (campaign)
-    exopipe3 photometry --tier snapshot --stages cutouts --cells '18h_*' --out ...                               (regeneration)
-    exopipe3 photometry --tier deep --stages cutouts,cutmeasure --cells '08h_*' --out ...                         (tier cutouts)
-    exopipe3 photometry --tier sublst --cells 08h_46MHz --out ...                         (10-minute cutouts + cutmeasure)
+    exopipe3 photometry --tier snapshot --stages cutouts --cells '18h_*' --cutout-root NEW --out ...              (regeneration)
+    exopipe3 photometry --tier deep --stages cutouts,cutmeasure --cells '08h_*' --cutout-root NEW --tier-out NEWF --out ...
+    exopipe3 photometry --tier sublst --stages cutouts,cutmeasure --cells 08h_46MHz --cutout-root NEW --tier-out NEWF --out ...
+    exopipe3 photometry --tier snapshot --stages cutouts,measure --cells 18h_2025-05-05 --in-place          (served, in place)
     exopipe3 photometry --tier snapshot --stages cutouts,measure --targets ADHOC=list.csv --cutout-root R --out O (ad hoc)
 
 Per hour vs intermittent (DESIGN 12): per hour, --epochs <LST>_<date> measures ONE night of one LST hour - deep: the
@@ -16,7 +17,8 @@ decided over the cell's full night list); snapshot: the measure stage of that ni
 `search --tier snapshot`). The evaluation (thresholds from the controls, completeness, the >= 4 sigma lists) is a CAMPAIGN
 step over a whole measurement (intermittent, DESIGN 12.2): deep `--stages evaluate` on a run directory, snapshot
 `--stages evaluate` over the measured cells. Item kinds (core/cells): deep cell 04h_Full (--cells), epoch 04h_2025-10-14
-(--epochs), snapshot night cell 18h_2025-04-11[_<band>] (--cells / --epochs). Tier sublst: refused (no production engine).
+(--epochs), snapshot night cell 18h_2025-04-11[_<band>] (--cells / --epochs). Tier sublst: the 10-minute tier cutouts and
+their forced measurement only, named with --stages (no default); any other stage refused (no production engine).
 
 Deep tier (lib/photometry/steps_deep.py). --out = the RUN directory (default <photometry.OUT_ROOT[deep]>/Run_<label>).
 Inputs:  the searched run (--src-run DIR or --run LABEL -> <paths.TRANSIENTS_ROOT>/Run_<LABEL>; required, no default):
@@ -48,11 +50,14 @@ Stages:  measure (snapshot_forced_phot.py per band, --band-procs at once, node-l
 Cutouts, every tier (lib/photometry/steps_cutouts.py; named in --stages, never a default): snapshot cutouts per (night cell,
 band) = the 10-s cubes cut from the consolidated flow cubes by the search's own path (in place, --cutouts-from-cubes); deep /
 sublst cutouts per <LST>_<band> = photometry_tier_cutouts_20261025.py, cutmeasure per LST = photometry_tier_forced_20261026.py
-(in place). Written into the cutout generation (--cutout-root, default photometry.CUTOUT_ROOT; cutmeasure: --tier-out, default
-photometry.TIER_FORCED_ROOTS) through a staging directory: identity with the source checked first, then ONE FILE PER (sample,
-band, object, LST, date, Stokes) (C-STALE; --fresh quarantines superseded files), then a per-unit manifest
-<root>/_manifest/<10s|deep|10min>/... (photometry_cutout_manifest). --targets TAG=CSV[,TAG=CSV] (+ --planets): an ad-hoc target
-set for cutouts and measure (P3_SNAP_CUTOUT_SAMPLES), into its own roots only (PHOT-ADHOC).
+(in place). Written into a cutout generation (--cutout-root; cutmeasure: --tier-out) through a staging directory: identity with
+the source checked first, then ONE FILE PER (sample, band, object, LST, date, Stokes) (C-STALE; --fresh quarantines superseded
+files), then a per-unit manifest <root>/_manifest/<10s|deep|10min>/... (photometry_cutout_manifest) whose content tests run on
+the staged files before anything is placed; the files a placement replaces move to a quarantine directory first, and a
+refusal after that puts everything back. The SERVED roots (the defaults photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS) only with
+--in-place, the measurement on the new cutouts chained in the same invocation (C-INPLACE; production's rule: a regeneration
+writes a new root, never over the served product). --targets TAG=CSV[,TAG=CSV] (+ --planets): an ad-hoc target set for cutouts
+and measure (P3_SNAP_CUTOUT_SAMPLES), into its own roots only (PHOT-ADHOC).
 Records: <out>/_records/photometry/<unit>.json; engine logs <out>/_records/photometry/logs/. No marker files.
 --dry-run: prints the plan and writes nothing; exit 2 when a gate would refuse (the plan names it), else 0. A stage whose
   inputs an EARLIER stage of the same invocation writes (stage/measure after frames, evaluate after measure) is planned from
@@ -71,9 +76,14 @@ Failure modes (exit 2 = refused, the gate named in the record; 3 = nothing to do
   to <out>/quarantine_superseded_photometry_<run id>/<cell>/ with a sha256 manifest - never deleted), SE-LISTED, SE-NONE,
   SE-DONE (a cell without a complete stage 1), the evaluation's own refusals, Z (no targets_ge4 rows, or a recomputed
   zone screen differs: the zone-flag file is not written).
-  cutouts: C-CELLS (no --cells), C-ROOT (a retired generation; a production root in the window), C-RUN (--src-run other than
-  the tier tool's deep run), C-NOCUBE / C-EXCLUDED / C-NOCUT (exit 3 per unit), C-NAMES, C-IDENTITY, C-STALE (--fresh),
-  PHOT-ADHOC (an ad-hoc set into a served root, or with frames / stage / deep measure / evaluate).
+  cutouts: C-CELLS (no --cells; a tier cell the tool does not know), C-HOST (the tier tool's inputs not readable on this
+  host), C-ROOT (a retired generation; a production root in the window), C-INPLACE (a served root without --in-place, or
+  --in-place without its measurement chained), C-RUN (--src-run other than the tier tool's deep run), C-NOCUBE / C-EXCLUDED /
+  C-NOCUT (exit 3 per unit; C-STALE when the root still holds that (cell, band)'s files), C-ENGINE (the engine refused the
+  unit), C-NAMES, C-IDENTITY, C-CONTENT / CM-CONTENT (the staged products' content tests), C-STALE (--fresh), C-PLACE (a
+  failure while placing: every move undone), PHOT-ADHOC (an ad-hoc set into or under a served root, or with frames / stage /
+  deep measure / evaluate), INJECTED-RUN GUARD (an injected run writing a root outside scratch). A unit that errors is
+  recorded and the stage goes on with the next unit (exit 1 at the end).
   Any failing content test refuses its unit.
 """
 import importlib
@@ -92,7 +102,7 @@ _TIER_MODULES = {'deep': 'exopipe.phase3.lib.photometry.steps_deep', 'snapshot':
 def add_arguments(p):
     g = p.add_argument_group('stages (deep: cutouts,cutmeasure,frames,stage,measure,evaluate; snapshot: cutouts,measure,'
                              'evaluate; sublst: cutouts,cutmeasure; default photometry.DEFAULT_STAGES - cutouts and cutmeasure '
-                             'of deep / snapshot only when named; with --epochs the per-hour set photometry.EPOCH_STAGES)')
+                             'only when named, sublst always named; with --epochs the per-hour set photometry.EPOCH_STAGES)')
     g.add_argument('--stages', metavar='LIST', help='stages to run, in tier order whatever the order given')
     g.add_argument('--from', dest='stage_from', metavar='STAGE', help='first stage of the selected list')
     g.add_argument('--until', dest='stage_until', metavar='STAGE', help='last stage of the selected list')
@@ -116,6 +126,11 @@ def add_arguments(p):
                          'the engines as P3_SNAP_CUTOUT_SAMPLES; columns common_name|name, ra_current|ra, dec_current|dec); '
                          'never into a served root (give --cutout-root / --out / --tier-out); not evaluated')
     cu.add_argument('--planets', action='store_true', help='with --targets: cut the planets too (P3_SNAP_CUTOUT_PLANETS=1)')
+    cu.add_argument('--in-place', action='store_true',
+                    help='cutouts / cutmeasure: regenerate the SERVED generation itself (photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS '
+                         '- refused without this flag: a regeneration writes a new root), its measurement chained in this '
+                         'invocation (snapshot: --stages cutouts,measure into the served stage 1; deep / sublst: '
+                         '--stages cutouts,cutmeasure without --tier-out)')
     s = p.add_argument_group('snapshot tier')
     s.add_argument('--index', metavar='FILE', help='measure: listing of cutout paths relative to --cutout-root')
     s.add_argument('--band-procs', type=int, help='measure: band processes at once in a cell (default '
@@ -168,6 +183,7 @@ def run(args, run):
         flag_overrides(args, c)
         stages = K.resolve_stages(args, args.tier)
         gate_adhoc_stages(args, stages)
+        gate_in_place_stages(args, stages)
         K.plan(run, 'photometry --tier %s: stages %s; out %s%s' % (args.tier, ','.join(stages), run.out_root,
                                                                    ' (dry run: nothing written)' if run.dry_run else ''))
         rc = importlib.import_module(_TIER_MODULES[args.tier]).run_tier(run, args, stages)
@@ -200,6 +216,15 @@ def gate_adhoc_stages(args, stages):
     if bad:
         raise record.Refusal('PHOT-ADHOC: --targets applies to the stages %s of tier %s, not %s'
                              % (','.join(ADHOC_STAGES.get(args.tier, ())), args.tier, ','.join(bad)))
+
+
+def gate_in_place_stages(args, stages):
+    """C-INPLACE: --in-place applies to a stage that writes a served root (cutouts, cutmeasure); with neither selected it would
+    mean nothing - refused (the stages check the rest: steps_cutouts.gate_in_place)."""
+    from exopipe.phase3.core import record
+    if getattr(args, 'in_place', False) and not {'cutouts', 'cutmeasure'} & set(stages):
+        raise record.Refusal('C-INPLACE: --in-place applies to the cutouts / cutmeasure stages (selected: %s)'
+                             % ','.join(stages))
 
 
 def flag_overrides(args, c):

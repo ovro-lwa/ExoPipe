@@ -183,8 +183,8 @@ def test_refused_roots():
     rp = os.path.realpath
     want = {'paths.PRODUCTION_ROOTS': [rp(x) for x in CFG.paths.PRODUCTION_ROOTS],
             'archive tree': [rp(CFG.paths.PHASE3_ARCHIVE_ROOT)],
-            'photometry roots': [rp(CFG.forced_snapshot.PHOT_ROOT), rp(CFG.archive_snapshot.PHOT_ROOT)]
-            + [rp(x) for x in CFG.photometry.OUT_ROOT.values()],
+            'photometry roots': [rp(CFG.forced_snapshot.PHOT_ROOT), rp(CFG.photometry.CUTOUT_ROOT)]
+            + [rp(x) for x in CFG.photometry.TIER_FORCED_ROOTS.values()] + [rp(x) for x in CFG.photometry.OUT_ROOT.values()],
             'served-run roots': [rp(CFG.paths.TRANSIENTS_ROOT), rp(CFG.paths.SNAPSHOT_REVIEW_ROOT)],
             'Phase-1 / Phase-2 data': [rp(CFG.paths.PHASE1_ROOT), rp(CFG.paths.PHASE2_ROOT)],
             'ops, clv15, reference tables': [rp(CFG.paths.OPS_ROOT), rp(CFG.paths.CLV15_ROOT), rp(CFG.paths.REFERENCE_DIR)],
@@ -294,11 +294,11 @@ def test_writer_photometry_root():
     out = os.path.join(T, 'phot_out')
     run = SimpleNamespace(out_root=out)
     sargs = SimpleNamespace(snap_pause_1min=False)
-    prod_root = os.path.join(CFG.paths.PHASE3_ARCHIVE_ROOT, CFG.search_snapshot.CUTOUT_SUBDIR)
+    prod_root = CFG.photometry.CUTOUT_ROOT           # the served generation: one source of truth (review P F1, 2026-11-03)
     with Clean():
         env0, _ = TS.engine_env(run, sargs)
-        check('ordinary run, PRODUCTION_WRITES True: the cutout root is the production photometry root, cutouts on, no '
-              'injected switch', TS.cutout_root(run) == prod_root and env0['P3_SNAP_CUTOUTS'] == '1'
+        check('ordinary run, PRODUCTION_WRITES True: the cutout root is the production photometry root (photometry.CUTOUT_ROOT), '
+              'cutouts on, no injected switch', TS.cutout_root(run) == prod_root and env0['P3_SNAP_CUTOUTS'] == '1'
               and 'P3_SNAP_INJECTED' not in env0, env0)
     with Clean():
         injected.begin('test: photometry', out)
@@ -313,6 +313,7 @@ def test_writer_photometry_root():
               e is not None and injected.LABEL in str(e) and 'P3_SNAP_CUTOUT_ROOT' in str(e), e)
         CFG.paths.PRODUCTION_WRITES = False
         for p in (os.path.join(prod_root, 'HWJ', '41MHz', 'HS_Psc', 'x.fits'),
+                  os.path.join(CFG.photometry.RETIRED_CUTOUT_ROOTS[0], 'HWJ', '41MHz', 'HS_Psc', 'x.fits'),
                   os.path.join(CFG.paths.PHASE3_ARCHIVE_ROOT, 'photometry_gen5', 'x.fits')):
             check(f'injected.check refuses {p.replace(CFG.paths.PHASE3_ARCHIVE_ROOT, "<archive>")}',
                   raises(Refusal, injected.check, p, 'cutouts') is not None)
@@ -574,9 +575,12 @@ def test_dest_flags():
         injected.begin('test: destinations', out)
         for step, flags in sorted(injected.DEST_FLAGS.items()):
             for flag in flags:
-                bad = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: outside_existing}), out)
-                good = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: inside}), out)
-                remote = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: 'lwacalim07:/data07/x'}), out)
+                when = injected._DEST_WHEN_STAGES.get((step, flag))      # a destination only in the stages that write it
+                st = {'stages': ','.join(when)} if when else {}
+                bad = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: outside_existing}, **st), out)
+                good = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: inside}, **st), out)
+                remote = raises(Refusal, injected.check_flags, step, SimpleNamespace(**{flag: 'lwacalim07:/data07/x'}, **st),
+                                out)
                 in_cell = (step, flag) in injected._IN_CELL          # a relative value names a directory inside the cell
                 check(f'DEST {step} --{flag.replace("_", "-")}: an existing directory outside scratch refused, '
                       + ('a relative one stays inside the cell' if in_cell else 'a remote one refused')
@@ -592,17 +596,41 @@ def test_dest_flags():
         e = raises(Refusal, injected.check_flags, 'photometry', SimpleNamespace(stage_root=os.path.join(outside_existing,
                                                                                                        '{cell}')), out)
         check('a {cell} destination template is checked at its fixed part', e is not None, e)
+        check('photometry --cutout-root is a destination of the cutouts stage only (review P F6): with --stages measure / '
+              'cutmeasure it is the source they read (an injected measure of scratch cutouts is not refused for it)',
+              raises(Refusal, injected.check_flags, 'photometry', SimpleNamespace(cutout_root=outside_existing,
+                                                                                  stages='measure'), out) is None
+              and raises(Refusal, injected.check_flags, 'photometry', SimpleNamespace(cutout_root=outside_existing,
+                                                                                      stages='cutmeasure'), out) is None
+              and raises(Refusal, injected.check_flags, 'photometry', SimpleNamespace(cutout_root=outside_existing,
+                                                                                      stages='cutouts,measure'), out)
+              is not None)
     check('an ordinary run\'s destination flags are not checked here (production writes are gated by PRODUCTION_WRITES)',
           raises(Refusal, injected.check_flags, 'photometry', SimpleNamespace(stage_root=outside_existing), None) is None)
     # the three flags the review named, end to end: refused before the step runs, nothing written there
     for argv, what in ((['photometry', '--tier', 'deep', '--stage-root', outside_existing], 'photometry --stage-root'),
                        (['forced', '--tier', 'snapshot', '--snap-review-root', outside_existing], 'forced --snap-review-root'),
-                       (['pages', '--tier', 'sublst', '--sublst-place-target', outside_existing], 'pages --sublst-place-target')):
+                       (['pages', '--tier', 'sublst', '--sublst-place-target', outside_existing], 'pages --sublst-place-target'),
+                       (['photometry', '--tier', 'snapshot', '--stages', 'cutouts', '--cells', '18h_2025-04-13_64MHz',
+                         '--cutout-root', outside_existing], 'photometry --cutout-root'),
+                       (['photometry', '--tier', 'deep', '--stages', 'cutmeasure', '--cells', '22h_Green', '--cutout-root',
+                         os.path.join(T, 'scratch_cutouts'), '--tier-out', outside_existing], 'photometry --tier-out')):
         before = sorted(os.listdir(outside_existing))
         r = cli(*argv, '--injected', '--out', os.path.join(T, 'dest_cli'), '--dry-run', '--cores', 'none')
         check(f'CLI: `{what} <an existing directory outside scratch> --injected` exits 2, nothing written there',
               r.returncode == 2 and what in r.stderr and injected.LABEL in r.stderr
               and sorted(os.listdir(outside_existing)) == before, (r.returncode, r.stderr[-400:]))
+    # review P F6: a root a photometry stage writes WITHOUT a flag (the served defaults photometry.CUTOUT_ROOT, TIER_FORCED_ROOTS)
+    # is checked by the stage itself before its first unit (lib/photometry/steps_cutouts gate_write_roots)
+    for argv, what in ((['photometry', '--tier', 'snapshot', '--stages', 'cutouts', '--cells', '18h_2025-04-13_64MHz'],
+                        'photometry cutouts (the cutout root'),
+                       (['photometry', '--tier', 'deep', '--stages', 'cutmeasure', '--cells', '22h_Green', '--cutout-root',
+                         os.path.join(T, 'scratch_cutouts')], 'photometry cutmeasure (the tier forced root')):
+        r = cli(*argv, '--injected', '--out', os.path.join(T, 'dest_cli_default'), '--dry-run', '--cores', 'none')
+        both = r.stdout + r.stderr
+        check(f'`{argv[0]} --tier {argv[2]} --stages {argv[4]} --injected` into its served default root: refused by the stage '
+              f'before its first unit (dry run, exit 2, INJECTED-RUN GUARD)', r.returncode == 2 and injected.LABEL in both
+              and what in both, (r.returncode, both[-600:]))
     with Clean():
         e = raises(Refusal, injected.begin, 'test', '/tmp')
         e2 = raises(Refusal, injected.begin, 'test', '/dev/shm')

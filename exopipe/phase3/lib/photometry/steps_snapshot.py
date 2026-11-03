@@ -598,7 +598,7 @@ def run_tier(run, args, stages):
         units = STAGE_FUNCS[st](run, args)
         if run.dry_run:
             continue
-        if units and st != 'measure' and not K.stage_ok(units):
+        if st != 'measure' and K.stop_after(args, st, units):
             break
     return None
 

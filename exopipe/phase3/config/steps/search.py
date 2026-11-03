@@ -463,9 +463,13 @@ class search_snapshot(_Section):
     PAUSE_1MIN = False                      # P3_SNAP_PAUSE_1MIN (v9:81-84; pause lifted 2026-10-08 06:47 UTC): no 1-minute tier, and
                                             # the group search skipped (v9:235); --snap-pause-1min sets it
     CUTOUTS_ON = True                       # P3_SNAP_CUTOUTS (SS:1315 default '1'; photometry cutout cubes, a product of `photometry`)
-    CUTOUT_SUBDIR = 'photometry'            # P3_SNAP_CUTOUT_ROOT = paths.PHASE3_ARCHIVE_ROOT/<this> (= phase3_snapshot_cutouts.
-                                            # ROOT_DEFAULT); while paths.PRODUCTION_WRITES is False: <out>/<this>. Product class
-                                            # photometry_cutout (owned by photometry; recorded by this step on write)
+    CUTOUT_SUBDIR = 'photometry'            # P3_SNAP_CUTOUT_ROOT while paths.PRODUCTION_WRITES is False (and in every injected
+                                            # run): <out>/<this>. With production writes the root is photometry.CUTOUT_ROOT, the
+                                            # served generation the photometry measure and the forced pages read - ONE source of
+                                            # truth, no copy here (review F1 2026-11-03: this key named PHASE3_ARCHIVE_ROOT/
+                                            # photometry, the retired generation 4 = phase3_snapshot_cutouts.ROOT_DEFAULT, which
+                                            # the live fleet still writes); a retired root refuses (tier_snapshot.cutout_root).
+                                            # Product class photometry_cutout (owned by photometry; recorded by this step on write)
     SOLAR_AUDIT = '/lustre/pipeline/exopipe/phase3/QA/solar_contamination_audit.csv'   # P3_SOLAR_AUDIT (SS:419), pinned (G2)
     SOLAR_AUDIT_MD5 = 'f5e4ef1124230351603fba34018a1f4a'   # md5 read 2026-10-13 (spec search.md 3); a different file refuses
     # ---- gates ported from v9 (preflight / completeness) --------------------------------------------------------------------

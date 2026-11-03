@@ -128,7 +128,8 @@ def gate_write_root(path, what):
 def adhoc_targets(args):
     """[(tag, absolute csv path)] of --targets TAG=CSV[,TAG=CSV] (the ad-hoc target sets of phase3_snapshot_cutouts._samples),
     validated: tags unique, a sample directory name, never the planet sample; every file readable with at least one target row
-    by the cutout writer's column rule (common_name|name|Name, ra_current|ra|RA, dec_current|dec|DEC). [] without --targets."""
+    by the cutout writer's column rule (common_name|name|Name, ra_current|ra|RA, dec_current|dec|DEC), and every row with a
+    position named (review F11). [] without --targets."""
     import csv
     import re
     spec = getattr(args, 'targets', None)
@@ -149,16 +150,26 @@ def adhoc_targets(args):
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             raise Refusal('PHOT-ADHOC: --targets %s=%s: no such file' % (tag, path))
-        n = 0
+        from exopipe.phase3.lib.photometry.tests import safe_name
+        n, unnamed = 0, []
         with open(path, encoding='utf-8-sig') as f:
-            for r in csv.DictReader(f):
+            for i, r in enumerate(csv.DictReader(f), 2):
                 ra = r.get('ra_current') or r.get('ra') or r.get('RA')
                 dec = r.get('dec_current') or r.get('dec') or r.get('DEC')
                 try:
                     float(ra), float(dec)
                 except (TypeError, ValueError):
                     continue
+                # the writer cuts every row with a position, under safe_name(name) (phase3_snapshot_cutouts._targets): a row
+                # without a usable name would be cut as <TAG>/<band>/_<LST>_..., an object with no directory (review F11)
+                if not safe_name(r.get('common_name') or r.get('name') or r.get('Name') or ''):
+                    unnamed.append(i)
+                    continue
                 n += 1
+        if unnamed:
+            raise Refusal('PHOT-ADHOC: --targets %s=%s: %d row(s) with a position but no usable name (line(s) %s; columns '
+                          'common_name|name|Name) - the writer would cut them as an object without a directory; name every '
+                          'target' % (tag, path, len(unnamed), ', '.join(map(str, unnamed[:5]))))
         if not n:
             raise Refusal('PHOT-ADHOC: --targets %s=%s: no row with a name and a parsable RA / Dec (columns common_name|name|'
                           'Name, ra_current|ra|RA, dec_current|dec|DEC)' % (tag, path))
@@ -178,20 +189,40 @@ def adhoc_env(targets, planets=False):
     return env
 
 
+def served_roots():
+    """[(what, root)] of the SERVED generation's product roots: photometry.CUTOUT_ROOT, the stage-1 root <OUT_ROOT[snapshot]>/
+    <STAGE1_DIR>, and photometry.TIER_FORCED_ROOTS per sample."""
+    ph = cfg().photometry
+    return ([('cutout root', ph.CUTOUT_ROOT), ('stage-1 root', os.path.join(ph.OUT_ROOT['snapshot'], ph.STAGE1_DIR))]
+            + [('tier forced root (%s)' % s, r) for s, r in sorted(ph.TIER_FORCED_ROOTS.items())])
+
+
+def served_root_of(path):
+    """(what, root) of the served root that equals or holds ``path`` (real paths; the most specific), else None."""
+    if not path:
+        return None
+    real = os.path.realpath(path)
+    hits = []
+    for what, r in served_roots():
+        rr = os.path.realpath(r).rstrip('/') or '/'
+        if real == rr or real.startswith(rr + '/'):
+            hits.append((len(rr), what, r))
+    return max(hits)[1:] if hits else None
+
+
 def gate_adhoc_roots(targets, roots):
     """PHOT-ADHOC: an ad-hoc target set never writes into the served generation (production wrote its own trees,
-    forced_adhoc_20261028/photometry and /stage1): each of ``roots`` ({what: path}) must differ from the served one."""
+    forced_adhoc_20261028/photometry and /stage1): each of ``roots`` ({what: path}) must lie outside every served root - equal
+    to one or anywhere under one refuses (review F10)."""
     if not targets:
         return
-    c = cfg()
-    served = {'cutout root': c.photometry.CUTOUT_ROOT,
-              'stage-1 root': os.path.join(c.photometry.OUT_ROOT['snapshot'], c.photometry.STAGE1_DIR)}
-    served.update({'tier forced root (%s)' % s: r for s, r in c.photometry.TIER_FORCED_ROOTS.items()})
     for what, p in roots.items():
-        for sw, sp in served.items():
-            if p and os.path.realpath(p) == os.path.realpath(sp):
-                raise Refusal('PHOT-ADHOC: --targets with the %s %s = the served generation\'s %s - an ad-hoc target set '
-                              'writes its own root (give --cutout-root / --out / --tier-out)' % (what, p, sw))
+        hit = served_root_of(p)
+        if hit:
+            same = os.path.realpath(p) == os.path.realpath(hit[1])
+            raise Refusal('PHOT-ADHOC: --targets with the %s %s %s the served generation\'s %s %s - an ad-hoc target set '
+                          'writes its own root (give --cutout-root / --out / --tier-out outside it)'
+                          % (what, p, '=' if same else 'inside', hit[0], hit[1]))
 
 
 def gate_pinned_inputs(paths):
@@ -357,6 +388,9 @@ def resolve_stages(args, tier):
                              'select <LST>_<band> cells with --cells' % tier)
     else:
         default = tuple(c.photometry.DEFAULT_STAGES.get(tier, allst))
+        if not default:
+            raise ValueError('tier %s has no default stages: its stages %s regenerate products, so a run names them '
+                             '(--stages; photometry.DEFAULT_STAGES)' % (tier, ','.join(allst)))
         sel = [s for s in allst if s in default]
     for flag, val in (('--from', args.stage_from), ('--until', args.stage_until)):
         if val and val not in allst:
@@ -377,6 +411,18 @@ def stage_ok(units):
     """True when every unit of a stage ended done or skipped-valid (no-input units do not block)."""
     return all(u.status in ('done', 'skipped-valid', 'no-input') for u in units) and \
         any(u.status in ('done', 'skipped-valid') for u in units)
+
+
+def stop_after(args, stage, units):
+    """True when the stages after ``stage`` must not run: one of its units did not complete. Except the cutouts stage of an
+    --in-place regeneration of the served generation (review F4): its measurement runs once any unit placed its files,
+    whatever the others' outcomes - a refused or failed unit leaves its files as they were (steps_cutouts.placement), so the
+    measurement is that of the served root as it now stands."""
+    if not units or stage_ok(units):
+        return False
+    if stage == 'cutouts' and getattr(args, 'in_place', False):
+        return not any(u.status in ('done', 'skipped-valid') for u in units)
+    return True
 
 
 def admitted_epochs(rows):

@@ -640,7 +640,7 @@ def run_tier(run, args, stages):
         units = STAGE_FUNCS[st](run, args)
         if run.dry_run:
             continue
-        if units and not K.stage_ok(units):
+        if K.stop_after(args, st, units):
             K.say('photometry deep: stage %s did not complete (%s) - later stages not run'
                   % (st, ', '.join('%s %s' % (u.name, u.status) for u in units if u.status not in ('done', 'skipped-valid'))))
             break

@@ -42,9 +42,13 @@ class photometry(_Section):
               'snapshot': ('cutouts', 'measure', 'evaluate'),
               'sublst': ('cutouts', 'cutmeasure')}
     # without --stages / --epochs: the measurement chains as before; a cutout (re)generation is a campaign named explicitly
-    # (production ran it as dated drivers, never per hour: the per-hour 10-s cutouts are still the search's, search_snapshot.CUTOUTS_ON)
+    # (production ran it as dated drivers, never per hour). The per-hour 10-s cutouts are the search's: `search --tier snapshot`
+    # writes them into CUTOUT_ROOT (search_snapshot.CUTOUTS_ON; tier_snapshot.cutout_root reads this key - one source of
+    # truth, review F1 2026-11-03), and the night's stage 1 is `photometry --tier snapshot --epochs <LST>_<date>` (EPOCH_STAGES),
+    # a campaign in production (snapshot_forced_fleet.sh) that the runner's per-hour chain (runner.CHAINS['epoch']) does not
+    # run yet. sub-LST: no default - its only stages regenerate products, so they are named (--stages; review F4)
     DEFAULT_STAGES = {'deep': ('frames', 'stage', 'measure', 'evaluate'), 'snapshot': ('measure', 'evaluate'),
-                      'sublst': ('cutouts', 'cutmeasure')}
+                      'sublst': ()}
     EPOCH_STAGES = {'deep': ('frames', 'stage', 'measure'), 'snapshot': ('measure',), 'sublst': ()}   # sub-LST: no per-hour
                                                  # stage (a tier cutout holds every night of its LST hour; --cells <LST>_<band>)
     TIERS_WITH_ENGINE = ('deep', 'snapshot', 'sublst')   # sub-LST: cutouts + cutmeasure; no measure / evaluate engine (ledger
@@ -82,9 +86,13 @@ class photometry(_Section):
     ADHOC_TAG_RE = r'^[A-Za-z0-9][A-Za-z0-9_.+-]*$'   # a sample directory name; PLANET_SAMPLE is refused as a tag
     ADHOC_ENV = 'P3_SNAP_CUTOUT_SAMPLES'         # phase3_snapshot_cutouts.py:45, snapshot_forced_phot.py:61 (MIRROR)
     ADHOC_PLANETS_ENV = 'P3_SNAP_CUTOUT_PLANETS'   # phase3_snapshot_cutouts.py:52 (MIRROR)
-    RETIRED_CUTOUT_ROOTS = ('/lustre/pipeline/exopipe/phase3/photometry',)    # never written by any stage (the in-place engines'
-                                                 # module default: phase3_snapshot_cutouts.ROOT_DEFAULT, snapshot_forced_phot ROOT,
-                                                 # photometry_tier_cutouts_20261025.OLD_ROOT - the step always passes its root)
+    RETIRED_CUTOUT_ROOTS = ('/lustre/pipeline/exopipe/phase3/photometry',)    # never written by any stage: photometry (C-ROOT),
+                                                 # search --tier snapshot (S-CUTROOT) and archive supersede (G-PHOTROOT) refuse it,
+                                                 # and no other config key names it (tests/test_photometry.py test_cutout_root_
+                                                 # one_source). It is the in-place engines' module default (phase3_snapshot_
+                                                 # cutouts.ROOT_DEFAULT, snapshot_forced_phot ROOT, photometry_tier_cutouts_
+                                                 # 20261025.OLD_ROOT - the steps always pass their root) and, on 2026-11-03,
+                                                 # still the root the LIVE fleet's per-hour search writes (review F1)
     # ---- samples (pinned inputs: Gregg's lists, read only). File names under paths.CLV15_ROOT; the engines read the same files
     #      by literal path (deep_forced_phot.py:87-88; phase3_snapshot_cutouts.py:33-35 via snapshot_forced_phot.py:52-57)
     SAMPLE_FILES = {'HWJ': 'Hot_Warm_Jupiters.csv', '10pc': '10pc.csv'}
@@ -337,14 +345,18 @@ class photometry_evaluate(_Section):
 
 class photometry_cutouts(_Section):
     """The photometry cutout product of every tier and the stages that write it. Snapshot (10 s): written per hour by
-    `search --tier snapshot` (phase3_snapshot_cutouts.write_cutouts in place; search_snapshot.CUTOUTS_ON / CUTOUT_SUBDIR steer
-    it) and REGENERATED from the consolidated flow cubes by `photometry --tier snapshot --stages cutouts` (the search's own path,
-    in place: phase3_snapshot_search.py / phase3_snapshot_group_search.py --cutouts-from-cubes; the production campaign
+    `search --tier snapshot` into photometry.CUTOUT_ROOT (phase3_snapshot_cutouts.write_cutouts in place; search_snapshot.
+    CUTOUTS_ON switches it, CUTOUT_SUBDIR names its scratch root under --out in the refactor window) and REGENERATED from the
+    consolidated flow cubes by `photometry --tier snapshot --stages cutouts` (the search's own path, in place:
+    phase3_snapshot_search.py / phase3_snapshot_group_search.py --cutouts-from-cubes; the production campaign
     snapshot_cutout_regen_20261025.sh, _wb_20261025.sh). Deep and 10-minute: `photometry --tier deep|sublst --stages cutouts`
     (photometry_tier_cutouts_20261025.py in place) and `--stages cutmeasure` (photometry_tier_forced_20261026.py in place).
-    Every stage writes into a generation root (photometry.CUTOUT_ROOT / TIER_FORCED_ROOTS, or --cutout-root / --tier-out),
-    never a retired one, through a staging directory of the unit; content tests owned here (classes photometry_cutout,
-    photometry_cutout_manifest, photometry_tier_npz). Keys marked MIRROR are literals of the in-place code (PROTECTED)."""
+    Every stage writes into a generation root (--cutout-root / --tier-out), never a retired one, through a staging directory of
+    the unit; the SERVED roots (photometry.CUTOUT_ROOT / TIER_FORCED_ROOTS) only with --in-place, the measurement on the new
+    cutouts chained in the same invocation (review F4: production's rule is a new root, never over the existing product).
+    Content tests owned here (classes photometry_cutout, photometry_cutout_manifest, photometry_tier_npz,
+    photometry_tier_manifest), run on the staged files before anything reaches the root and again once placed. Keys marked
+    MIRROR are literals of the in-place code (PROTECTED)."""
     CUT_DEG = 5.0                      # deg, cutout side (R-CUTOUT-5DEG-RERULED); MIRROR phase3_snapshot_cutouts.py:30
     MIN_EL_DEG = 20.0                  # deg at the cell's mid-time (the search domain is 30); MIRROR :31
     MERGE_ARCMIN = 1.0                 # arcmin; list entries of one name within it are one object (one file), entries further
@@ -374,13 +386,17 @@ class photometry_cutouts(_Section):
     REGEN_DONE_WIDEBAND = 'CUTOUTS-REGEN-WIDEBAND '
     REGEN_EXCLUDED_RC = 3
     # ---- the stage's own layout (orchestration): a unit stages its files in <root>/<STAGING_SUBDIR>/<run id>/<unit>/ (the
-    #      same filesystem: placement is os.replace), writes <root>/<MANIFEST_SUBDIR>/<tier token>/<unit key>.csv (one row per
-    #      file: sha256, bytes) and moves superseded files to <root>/<QUARANTINE_PREFIX><run id>/ with a sha256 manifest
-    #      (--fresh; never deleted)
+    #      same filesystem: placement is os.replace) with its manifest <MANIFEST_SUBDIR>/<tier token>/<unit key>.csv (one row
+    #      per file: sha256, bytes), passes the content tests there, then is placed: every file the placement replaces (and,
+    #      with --fresh, every stale / orphan file) first moves to <root>/<QUARANTINE_PREFIX><run id>/ with a sha256 manifest
+    #      (never deleted); a failure after that moves the placed files back to the staging directory and the quarantined
+    #      ones back in place, so a refused unit leaves the root as it was (review F2). cutmeasure: the same for the npz and
+    #      forced_manifest.csv it replaces, under <tier forced root>/<FORCED_QUARANTINE_PREFIX><run id>/
     STAGING_SUBDIR = '_staging'
     MANIFEST_SUBDIR = '_manifest'
     MANIFEST_COLUMNS = ('file', 'sha256', 'bytes', 'sample', 'object', 'stokes')
     QUARANTINE_PREFIX = 'quarantine_superseded_cutouts_'
+    FORCED_QUARANTINE_PREFIX = 'quarantine_superseded_tier_forced_'
     # ---- content tests (CUTOVER_READINESS 'Content test of the wideband cutouts' and the regeneration's own test,
     #      snapshot_cutout_regen_20261025_test.py): identity of every cutout with its cube at IDENTITY_TOL x the cutout's robust
     #      rms (:30 TOL), float32 rounding allowed at each pixel's own magnitude (:205, 2 x eps32); a wideband plane rebuilt from

@@ -122,6 +122,9 @@ def superseded(root, token, key, band, samples, keep):
         lst, date = key.split('_', 1)
         ymds = {date.replace('-', '')} | {parse_cutout(os.path.join(root, k))[3]['ymd'] for k in keep
                                           if parse_cutout(os.path.join(root, k))}
+        if not keep:            # nothing written (steps_cutouts.nothing_written): the cell's files may start after 0 UT, so the
+            import datetime     # next day's names are read too - the header CELL below decides
+            ymds.add((datetime.datetime.strptime(date, '%Y-%m-%d') + datetime.timedelta(days=1)).strftime('%Y%m%d'))
         for smp in samples:
             for ymd in sorted(ymds):
                 found.update(glob.glob(os.path.join(root, smp, band, '*', '*_%s_%sT*_[IV].fits' % (lst, ymd))))
@@ -587,7 +590,10 @@ def tm1(path, **ctx):
 
 
 @content_test('photometry_tier_manifest', 'TM2_coverage')
-def tm2(path, **ctx):
+def tm2(path, npz_dirs=None, **ctx):
+    """Every ok row's object is a name of its (sample, band, Stokes) npz, read beside the manifest - or, for a sample of
+    ``npz_dirs`` ({sample: directory}), in that directory: a STAGED manifest of a sample subset (the tool merges the other
+    samples' rows) is tested before placement with the other samples' npz where they are served (steps_cutouts)."""
     import numpy as np
     with open(path, newline='', encoding='utf-8') as f:
         rows = list(csv.DictReader(f))
@@ -599,7 +605,7 @@ def tm2(path, **ctx):
     d = os.path.dirname(os.path.abspath(path))
     bad = []
     for (smp, band, st), objs in sorted(groups.items()):
-        p = os.path.join(d, 'forced_%s_%s_%s.npz' % (smp, band, st))
+        p = os.path.join((npz_dirs or {}).get(smp, d), 'forced_%s_%s_%s.npz' % (smp, band, st))
         if not os.path.exists(p):
             bad.append('no %s for %d measured cutouts' % (os.path.basename(p), len(objs)))
             continue

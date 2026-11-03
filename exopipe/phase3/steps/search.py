@@ -67,8 +67,9 @@ _TIER_MODULES = {'deep': 'exopipe.phase3.lib.search.deep_step',
                  'sublst': 'exopipe.phase3.lib.search.tier_sublst',
                  'snapshot': 'exopipe.phase3.lib.search.tier_snapshot'}
 _DEEP_SECTIONS = ('search', 'search_inputs', 'search_detect', 'search_tables', 'search_fpgate', 'search_fit', 'search_run')
-_SHARED = ('fitting', 'astrometry', 'exclusions', 'paths', 'instrument', 'runner', 'masters_admit')   # masters_admit: how
-                                                    # an admitted night is read (ADMITTED_NIGHTS: preflight E3, the engine)
+_SHARED = ('fitting', 'astrometry', 'exclusions', 'paths', 'instrument', 'runner', 'masters_admit',   # masters_admit: how
+           'photometry')                            # an admitted night is read (ADMITTED_NIGHTS: preflight E3, the engine);
+                                                    # photometry: CUTOUT_ROOT / RETIRED_CUTOUT_ROOTS, the snapshot cutout root
 
 
 def _config_sections():
