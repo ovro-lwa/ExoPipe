@@ -80,6 +80,24 @@ def supersede_plan(cell, workdir, ship, phot):
             'replaced_cutouts': sorted(set(new_c) & set(old_c)), 'cutouts_no_successor': sorted(old_c - set(new_c))}
 
 
+def phot_root(args):
+    """The photometry cutout root supersede ships a cell's wideband cutouts into: --phot-root, else photometry.CUTOUT_ROOT -
+    the served generation, the one root the search writes per hour and the photometry measure and the forced pages read (review
+    F1 2026-11-03; production's snapshot_frametime_rerun.sh:69 named generation 4, PHASE3_ARCHIVE_ROOT/photometry, retired since
+    generation 5 was served). A root equal to or under a retired generation (photometry.RETIRED_CUTOUT_ROOTS: it held cutouts an
+    injected run wrote) refuses: G-PHOTROOT."""
+    C = K.cfg()
+    phot = os.path.abspath(args.phot_root or C.photometry.CUTOUT_ROOT)
+    real = os.path.realpath(phot)
+    for r in C.photometry.RETIRED_CUTOUT_ROOTS:
+        rr = os.path.realpath(r).rstrip('/')
+        if real == rr or real.startswith(rr + '/'):
+            raise Refusal(f'G-PHOTROOT: the photometry cutout root {phot} is under the retired generation {r} '
+                          f'(photometry.RETIRED_CUTOUT_ROOTS: never written by any stage) - the served one is '
+                          f'photometry.CUTOUT_ROOT {C.photometry.CUTOUT_ROOT}')
+    return phot
+
+
 def run_supersede(ctx, args, run, unit_fn):
     from exopipe.phase3.core import cells as CC
     if not args.cells:
@@ -88,7 +106,7 @@ def run_supersede(ctx, args, run, unit_fn):
         raise ValueError('supersede needs --workdir W (the frame-time work directory: W/out, W/cutouts)')
     C = K.cfg()
     ship = os.path.abspath(args.ship_root or C.paths.SNAPSHOT_FLEET_OUT)
-    phot = os.path.abspath(args.phot_root or _sn().PHOT_ROOT)
+    phot = phot_root(args)
     quar = os.path.abspath(args.quar_root or _sn().FRAMETIME_QUARANTINE_ROOT)
     for cell in CC.expand(args.cells, kind='night cell'):
         lst, date, sb = CC.parse_night_cell(cell)

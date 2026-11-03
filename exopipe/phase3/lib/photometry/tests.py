@@ -78,14 +78,32 @@ def safe_name(nm):
     return ''.join(ch if (ch.isalnum() or ch in '+-._') else '_' for ch in nm.strip()).strip('_')
 
 
-def sample_targets(tags=None):
-    """[(tag, name, ra, dec)] of the measured sample lists, read the way the cutout writer reads them
-    (phase3_snapshot_cutouts._targets, :40-56: common_name|name|Name; ra_current|ra|RA; rows whose RA/Dec do not parse
-    are left out)."""
+def _jtag(ra, dec):
+    """'J<hhmm><+/-><ddmm>' of a list position, truncated (phase3_snapshot_cutouts._jtag :90-94), written out."""
+    m = int(ra / 15.0 * 60.0)
+    dm = int(abs(dec) * 60.0)
+    return 'J%02d%02d%s%02d%02d' % (m // 60, m % 60, '-' if dec < 0 else '+', dm // 60, dm % 60)
+
+
+def _sep_arcmin(a, b):
+    r1, d1, r2, d2 = (math.radians(float(x)) for x in (a[0], a[1], b[0], b[1]))
+    s = math.sin((d2 - d1) / 2) ** 2 + math.cos(d1) * math.cos(d2) * math.sin((r2 - r1) / 2) ** 2
+    return math.degrees(2 * math.asin(min(1.0, math.sqrt(s)))) * 60.0
+
+
+def sample_targets(tags=None, lists=None, writer_names=True):
+    """[(tag, name, ra, dec)] of the measured sample lists (or of ``lists`` {tag: csv path}, an ad-hoc target set), read the
+    way the cutout writer reads them (phase3_snapshot_cutouts._targets, :55-87: common_name|name|Name; ra_current|ra|RA; rows
+    whose RA/Dec do not parse are left out), with its naming of DISTINCT OBJECTS SHARING A NAME (clv15 8f2126b): entries of
+    one (tag, safe name) more than photometry_cutouts.MERGE_ARCMIN apart each take the name plus their J-tag ('Gaia DR3
+    WD_Unknown_ID J0041-2221'); entries within it stay one object. writer_names=False: the names as listed (the deep engine's
+    reader, deep_forced_phot.py:86-89, which tags nothing)."""
     c = _cfg()
+    if lists is None:
+        lists = {tag: os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[tag])
+                 for tag in (tags or c.photometry.SAMPLES_MEASURED)}
     out = []
-    for tag in (tags or c.photometry.SAMPLES_MEASURED):
-        p = os.path.join(c.paths.CLV15_ROOT, c.photometry.SAMPLE_FILES[tag])
+    for tag, p in lists.items():
         with open(p, encoding=c.photometry.SAMPLE_ENCODING) as f:
             for r in csv.DictReader(f):
                 ra = r.get('ra_current') or r.get('ra') or r.get('RA')
@@ -95,11 +113,22 @@ def sample_targets(tags=None):
                     out.append((tag, nm, float(ra), float(dec)))
                 except (TypeError, ValueError):
                     continue
+    if not writer_names:
+        return out
+    by = {}
+    for i, (tag, nm, ra, dec) in enumerate(out):
+        by.setdefault((tag, safe_name(nm)), []).append(i)
+    lim = c.photometry_cutouts.MERGE_ARCMIN
+    for idx in by.values():
+        if len(idx) > 1 and max(_sep_arcmin(out[i][2:], out[j][2:]) for i in idx for j in idx) > lim:
+            for i in idx:
+                tag, nm, ra, dec = out[i]
+                out[i] = (tag, '%s %s' % (nm, _jtag(ra, dec)), ra, dec)
     return out
 
 
-def current_safe_names():
-    return {(t, safe_name(n)) for t, n, _, _ in sample_targets()}
+def current_safe_names(lists=None):
+    return {(t, safe_name(n)) for t, n, _, _ in sample_targets(lists=lists)}
 
 
 def node_local_elsewhere(path):
@@ -531,7 +560,7 @@ def _list_positions():
     (deep_forced_phot.py:86-89 floats of ra_current / dec_current); a row prints them to 5 decimals (:288), and the 10 pc
     list carries up to 9, so a re-measurement at the printed position differs by the rounding (0.04 arcsec)."""
     out = {}
-    for tag, nm, ra, dec in sample_targets():
+    for tag, nm, ra, dec in sample_targets(writer_names=False):
         out.setdefault((tag, nm), []).append((ra, dec))
     return out
 
@@ -1115,7 +1144,16 @@ def _pool_map(fn, tasks, procs):
 
 
 def _stage1_root(ev, ctx):
-    return ctx.get('stage1') or os.path.join(os.path.dirname(os.path.abspath(ev.rstrip('/'))), 'stage1')
+    """ctx stage1 (the evaluate unit records it), else the evaluation's sibling stage-1 directory: 'stage1_<tag>' of an
+    eval_<tag> / eval_wb_<tag> when it exists (generation 5: eval_gen5 <- stage1_gen5, snapshot_forced_gen5_stages_20261026.sh
+    :6-7), else 'stage1' (the 2026-10-07 evaluations)."""
+    if ctx.get('stage1'):
+        return ctx['stage1']
+    d = os.path.dirname(os.path.abspath(ev.rstrip('/')))
+    m = re.match(r'^eval(?:_wb)?_(.+)$', os.path.basename(os.path.abspath(ev.rstrip('/'))))
+    if m and os.path.isdir(os.path.join(d, 'stage1_%s' % m.group(1))):
+        return os.path.join(d, 'stage1_%s' % m.group(1))
+    return os.path.join(d, 'stage1')
 
 
 def zone_rows(ev, stage1, max_cells=None, procs=1):
@@ -1379,7 +1417,7 @@ def n2(path, cutout_root=None, **ctx):
             u = (base - datetime.datetime(1970, 1, 1)).total_seconds() + (float('0' + st_[19:]) if len(st_) > 19 else 0.0)
             return (datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=int(math.floor(u + half)))).strftime('%Y%m%d_%H%M')
         cell = os.path.basename(os.path.dirname(os.path.abspath(path)))
-        root = cutout_root or os.path.join(c.paths.PHASE3_ARCHIVE_ROOT, m.CUTOUT_SUBDIR)
+        root = cutout_root or c.photometry.CUTOUT_ROOT
         names = [str(n) for n in d['names']]
         cp = _cutout_for(root, mt['smp'], mt['band'], names[0], cell, mt['st']) if names else []
         if len(cp) != 1:
@@ -1465,7 +1503,7 @@ def n4(path, cutout_root=None, **ctx):
     if not mt:
         return False, None, 'file name is not forced_<sample>_<band>_<S>.npz'
     cell = os.path.basename(os.path.dirname(os.path.abspath(path)))
-    root = cutout_root or os.path.join(c.paths.PHASE3_ARCHIVE_ROOT, m.CUTOUT_SUBDIR)
+    root = cutout_root or c.photometry.CUTOUT_ROOT
     d = _npz(path)
     names = [str(n) for n in d['names']]
     T, F = len(names), len(d['ts'])
@@ -1509,17 +1547,20 @@ def n4(path, cutout_root=None, **ctx):
 
 
 @content_test('photometry_snapshot_npz', 'N5_names')
-def n5(path, **ctx):
+def n5(path, targets=None, **ctx):
+    """Band and sample measured; every name a target of the current lists (or of the run's ad-hoc target set, ctx targets
+    ['TAG=csv', ...]) by the cutout writer's naming; no duplicate."""
     c = _cfg()
     mt = _NPZ_RE.match(os.path.basename(path))
     if not mt:
         return False, None, 'file name is not forced_<sample>_<band>_<S>.npz'
+    lists = dict(t.split('=', 1) for t in targets) if targets else None
     bad = []
     if mt['band'] not in c.photometry.SNAPSHOT_BANDS:
         bad.append('band %s not measured (photometry.SNAPSHOT_BANDS)' % mt['band'])
-    if mt['smp'] not in c.photometry.SAMPLES_MEASURED:
+    if mt['smp'] not in (list(lists) if lists else c.photometry.SAMPLES_MEASURED):
         bad.append('sample %s not measured' % mt['smp'])
-    cur = current_safe_names()
+    cur = current_safe_names(lists)
     names = [str(n) for n in _npz(path)['names']]
     off = [n for n in names if (mt['smp'], n) not in cur]
     if off:
@@ -1601,12 +1642,17 @@ _CUT_RE = re.compile(r'^(?P<obj>.+)_(?P<lst>\d\dh)_(?P<ymd>\d{8})T(?P<hms>\d{6})
 
 @content_test('photometry_cutout', 'C1_C4_cube')
 def c1(path, **ctx):
+    """10 s: C1 cube side, C2 TIMES, C3 header vs path, C4 target inside; a tier file (<object>_<LST>_<10min|deep>_<S>.fits):
+    TC1-TC4 (tests_cutouts.tier_structure)."""
     import numpy as np
     from astropy.io import fits
     cc = _cfg().photometry_cutouts
     mt = _CUT_RE.match(os.path.basename(path))
     if not mt:
-        return False, None, 'file name is not <object>_<LST>_<YYYYMMDD>T<HHMMSS>_<S>.fits'
+        from exopipe.phase3.lib.photometry import tests_cutouts as TC
+        if TC.TIER_RE.match(os.path.basename(path)):
+            return TC.tier_structure(path)
+        return False, None, 'file name is not <object>_<LST>_<YYYYMMDD>T<HHMMSS>_<S>.fits or <object>_<LST>_<tier>_<S>.fits'
     parts = os.path.abspath(path).split('/')
     smp, band, objd = parts[-4], parts[-3], parts[-2]
     bad = []

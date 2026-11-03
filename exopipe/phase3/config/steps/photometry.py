@@ -23,19 +23,76 @@ from exopipe.phase3.config import _Section
 #
 # Shared values are referenced, not copied: paths.CLV15_ROOT (sample lists), paths.COADD_SB_ROOT (deep cell roots, the parent
 # check's P3_COADD_ROOT), paths.TRANSIENTS_ROOT (searched deep runs), paths.SNAPSHOT_FLEET_OUT (snapshot search outputs: noise
-# medians, runinfo), paths.PHASE3_ARCHIVE_ROOT (the snapshot photometry cutouts, sub-directory search_snapshot.CUTOUT_SUBDIR);
+# medians, runinfo), paths.SNAPSHOT_CUBES_ROOT (the consolidated flow cubes the 10-s cutouts are cut from);
 # catalog_snapshot.MASTER_CATALOGS and CURVE_CONSTANTS (zone screen); fitting.* (radio positions).
 # =====================================================================================================================
 
 class photometry(_Section):
-    """exopipe3 photometry - photometry of the input samples at their catalogue positions (deep, snapshot; sub-LST refused):
-    samples, bands, stages, output roots, in-place engines and their process environments."""
+    """exopipe3 photometry - photometry of the input samples at their catalogue positions (deep, snapshot; sub-LST: the 10-minute
+    tier cutouts and their forced measurement only): samples, bands, stages, the served generation's roots, output roots, in-place
+    engines and their process environments."""
     # ---- stages per tier, pipeline order (spec 1). Per hour (DESIGN 12.1, --epochs) the deep tier measures the epoch and the
-    #      evaluation is a campaign step over a whole measurement (DESIGN 12.2 'photometry campaigns')
-    STAGES = {'deep': ('frames', 'stage', 'measure', 'evaluate'), 'snapshot': ('measure', 'evaluate')}
-    EPOCH_STAGES = {'deep': ('frames', 'stage', 'measure'), 'snapshot': ('measure',)}
-    TIERS_WITH_ENGINE = ('deep', 'snapshot')     # sub-LST: no production engine (ledger 1513/1518 notes; the 19h pilot
-                                                 # sublst_forced_phot.py is one-off) - refused, gate PHOT-SUBLST-NO-ENGINE
+    #      evaluation is a campaign step over a whole measurement (DESIGN 12.2 'photometry campaigns').
+    #      cutouts (CUTOVER_READINESS 'PHOTOMETRY CUTOUTS REGENERATED FROM THE FLOW CUBES' and 'EVERY TIER', Gregg 2026-10-25 ~02:15 UTC
+    #      "I want the photometry done for all tiers btw, including 1 hour (deep)"): snapshot = the 10-s cubes cut from the consolidated
+    #      flow cubes by the search's own path (snapshot_cutout_regen_20261025.sh, snapshot_cutout_regen_wb_20261025.sh); deep and
+    #      sub-LST = the tier cutouts of the searched residuals (photometry_tier_cutouts_20261025.py, tiers 'deep' and '10min').
+    #      cutmeasure = the forced measurement of the tier cutouts (photometry_tier_forced_20261026.py, exopipe_ops 9b0ca31 + fa17f4c).
+    STAGES = {'deep': ('cutouts', 'cutmeasure', 'frames', 'stage', 'measure', 'evaluate'),
+              'snapshot': ('cutouts', 'measure', 'evaluate'),
+              'sublst': ('cutouts', 'cutmeasure')}
+    # without --stages / --epochs: the measurement chains as before; a cutout (re)generation is a campaign named explicitly
+    # (production ran it as dated drivers, never per hour). The per-hour 10-s cutouts are the search's: `search --tier snapshot`
+    # writes them into CUTOUT_ROOT (search_snapshot.CUTOUTS_ON; tier_snapshot.cutout_root reads this key - one source of
+    # truth, review F1 2026-11-03), and the night's stage 1 is `photometry --tier snapshot --epochs <LST>_<date>` (EPOCH_STAGES),
+    # a campaign in production (snapshot_forced_fleet.sh) that the runner's per-hour chain (runner.CHAINS['epoch']) does not
+    # run yet. sub-LST: no default - its only stages regenerate products, so they are named (--stages; review F4)
+    DEFAULT_STAGES = {'deep': ('frames', 'stage', 'measure', 'evaluate'), 'snapshot': ('measure', 'evaluate'),
+                      'sublst': ()}
+    EPOCH_STAGES = {'deep': ('frames', 'stage', 'measure'), 'snapshot': ('measure',), 'sublst': ()}   # sub-LST: no per-hour
+                                                 # stage (a tier cutout holds every night of its LST hour; --cells <LST>_<band>)
+    TIERS_WITH_ENGINE = ('deep', 'snapshot', 'sublst')   # sub-LST: cutouts + cutmeasure; no measure / evaluate engine (ledger
+                                                 # 1513/1518 notes; the 19h pilot sublst_forced_phot.py is one-off) - gate
+                                                 # PHOT-SUBLST-NO-ENGINE refuses those
+    # ---- THE GENERATION PRODUCTION SERVES (generation 5: the cutouts regenerated from the flow cubes 2026-10-25/26 and the tier
+    #      cutouts of 2026-10-25, stage 1 on them; served by the snapshot forced pages since 2026-10-26 19:54-20:16 UT -
+    #      snapshot_forced_gen5_20261025.sh:11 P3_PHOT_ROOT / SF_OUT, snapshot_cutout_regen_20261025.sh:13 ROOT,
+    #      photometry_tier_forced_20261026.py --out). The forced step names the same roots (forced_snapshot.PHOT_ROOT, STAGE1_ROOT);
+    #      tests/test_photometry.py test_served_generation checks both against the served runs' FT-START records and the served
+    #      stage-1 manifests, so a generation switch fails until this config follows it. Generation 4 (PHASE3_ARCHIVE_ROOT/photometry,
+    #      <snapshot_forced>/stage1) is retired: it held cutouts an injected run wrote (INCIDENT-INJECTED-SEARCH-WROTE-PRODUCTION-
+    #      PHOTOMETRY-CUTOUTS-HS-PSC-EVENT-UNREPRODUCIBLE-20261024).
+    GENERATION = 'gen5'
+    CUTOUT_ROOT = '/lustre/pipeline/exopipe/phase3/photometry_gen5'          # every tier's cutouts: <sample>/<band>/<object>/
+                                                 # (snapshot measure reads, the cutouts stage writes; --cutout-root overrides)
+    STAGE1_DIR = 'stage1_gen5'                   # snapshot stage 1 = <--out>/<this>; production <OUT_ROOT[snapshot]>/stage1_gen5
+    # cutmeasure: <root>/<10min|deep>/<LST>/forced_<sample>_<band>_<S>.npz + forced_manifest.csv, the root per sample as served:
+    # HWJ / 10 pc in forced_tiers_gen5 (the served tier pages read it: tier_forced_page_20261027.py through
+    # planets_forced_page_20261026.py:61 FT, the P3_FORCED_TIERS default); the
+    # planets' orbit-control re-run (fa17f4c, Gregg 2026-10-28 "all approved") in tiers_gen5_planets_orbit, which the planets page
+    # reads (planets_page_orbit_build_20261028.sh:12 P3_FORCED_TIERS) - forced_tiers_gen5 still holds their 9b0ca31 ring files.
+    # --tier-out puts every sample under one root instead
+    TIER_FORCED_ROOTS = {'HWJ': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
+                         '10pc': '/lustre/pipeline/exopipe/phase3/forced_tiers_gen5',
+                         'SolarSystem': '/lustre/gh/main/phase3/snapshot_forced/tiers_gen5_planets_orbit'}
+    TIER_FORCED_SAMPLES = ('HWJ', '10pc', 'SolarSystem')   # MIRROR photometry_tier_forced_20261026.py:54 SAMPLES (its --samples)
+    PLANET_SAMPLE = 'SolarSystem'                # the cutout tree's planet sample (phase3_snapshot_cutouts.write_cutouts :165)
+    # ---- AD-HOC TARGET LISTS (CUTOVER_READINESS 'DATED DRIVERS TO COVER': regen_adhoc_20261028.sh, stage1_when_done_20261028.sh,
+    #      tier_cutouts_adhoc_20261028.sh; Gregg 2026-10-28 ~07:0x UTC "Can you produce forced photometry of UX Ari and FI Cnc
+    #      please?"): --targets TAG=CSV[,TAG=CSV] replaces the HWJ / 10 pc lists for the cutouts and measure stages, passed to the
+    #      in-place engines as P3_SNAP_CUTOUT_SAMPLES (phase3_snapshot_cutouts._samples, 6057aab; snapshot_forced_phot SAMPLES,
+    #      c4fa0e3); the planets only with --planets (P3_SNAP_CUTOUT_PLANETS=1). Never into the served generation: an ad-hoc run
+    #      needs its own --cutout-root and --out (production wrote forced_adhoc_20261028/photometry, stage1). Gate PHOT-ADHOC
+    ADHOC_TAG_RE = r'^[A-Za-z0-9][A-Za-z0-9_.+-]*$'   # a sample directory name; PLANET_SAMPLE is refused as a tag
+    ADHOC_ENV = 'P3_SNAP_CUTOUT_SAMPLES'         # phase3_snapshot_cutouts.py:45, snapshot_forced_phot.py:61 (MIRROR)
+    ADHOC_PLANETS_ENV = 'P3_SNAP_CUTOUT_PLANETS'   # phase3_snapshot_cutouts.py:52 (MIRROR)
+    RETIRED_CUTOUT_ROOTS = ('/lustre/pipeline/exopipe/phase3/photometry',)    # never written by any stage: photometry (C-ROOT),
+                                                 # search --tier snapshot (S-CUTROOT) and archive supersede (G-PHOTROOT) refuse it,
+                                                 # and no other config key names it (tests/test_photometry.py test_cutout_root_
+                                                 # one_source). It is the in-place engines' module default (phase3_snapshot_
+                                                 # cutouts.ROOT_DEFAULT, snapshot_forced_phot ROOT, photometry_tier_cutouts_
+                                                 # 20261025.OLD_ROOT - the steps always pass their root) and, on 2026-11-03,
+                                                 # still the root the LIVE fleet's per-hour search writes (review F1)
     # ---- samples (pinned inputs: Gregg's lists, read only). File names under paths.CLV15_ROOT; the engines read the same files
     #      by literal path (deep_forced_phot.py:87-88; phase3_snapshot_cutouts.py:33-35 via snapshot_forced_phot.py:52-57)
     SAMPLE_FILES = {'HWJ': 'Hot_Warm_Jupiters.csv', '10pc': '10pc.csv'}
@@ -63,14 +120,28 @@ class photometry(_Section):
     #      runs with the site interpreter named here (core/legacy.run; decision 2: default = py38_orca_nkosogor,
     #      run_deep_forced_20260928.sh:9; py36 = the development env, snapshot_forced_fleet.sh:13)
     ENGINE = {'frames': 'deep_forced_frames.py', 'measure_deep': 'deep_forced_phot.py', 'evaluate_deep': 'deep_forced_eval.py',
-              'measure_snapshot': 'snapshot_forced_phot.py', 'evaluate_snapshot': 'snapshot_forced_eval.py'}
+              'measure_snapshot': 'snapshot_forced_phot.py', 'evaluate_snapshot': 'snapshot_forced_eval.py',
+              'cutouts_subband': 'phase3_snapshot_search.py',          # --cutouts-from-cubes (regen_cutouts, clv15 23a26da)
+              'cutouts_wideband': 'phase3_snapshot_group_search.py',   # --cutouts-from-cubes GROUP (regen_group_cutouts, 8f2126b)
+              'cutouts_tier': 'photometry_tier_cutouts_20261025.py',   # --root --tier --cells (exopipe_ops e1e24ff)
+              'cutmeasure_tier': 'photometry_tier_forced_20261026.py'}  # --root --out --tier --lsts --samples (9b0ca31, fa17f4c)
     ENGINE_PYTHON = {'deep': 'default', 'snapshot': 'py36'}
+    # the interpreter of each cutout engine (core/legacy.run), where it is not its tier's: the 10-s regeneration ran under the
+    # development env (snapshot_cutout_regen_20261025.sh:12 PY, snapshot_cutout_regen_wb_20261025.sh:13 PY); the generation-5 tier
+    # cutouts under py38_orca_nkosogor - measured 2026-11-02 on deep 22h_Green: that interpreter reproduces them byte for byte
+    # (DATE-CRE aside), the development env does not (its astropy puts the planets' TARGRA 1e-12 deg elsewhere). The ephemeris and
+    # WCS arithmetic are part of the bytes, so the parity of these stages depends on this key
+    ENGINE_PYTHON_BY_KEY = {'cutouts_subband': 'py36', 'cutouts_wideband': 'py36', 'cutouts_tier': 'default',
+                            'cutmeasure_tier': 'default'}
     # process environment added to core/legacy.run's (which already clears inherited P3_* and sets runner.ENV_DEFAULTS, i.e.
     # NUMPY_MADVISE_HUGEPAGE=0, snapshot_forced_fleet.sh:10). deep measure: production pinned every shard to ONE core
     # (run_deep_forced_20260928.sh:33 taskset -c <one core>), so each ran one BLAS/OpenMP thread; the thread caps reproduce that
     # without pinning. snapshot evaluate: OMP_NUM_THREADS=1 (snapshot_forced_reserve_20261007.sh:156)
     ENV = {'deep_frames': {}, 'deep_measure': {'OMP_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1'},
-           'deep_evaluate': {}, 'snapshot_measure': {}, 'snapshot_evaluate': {'OMP_NUM_THREADS': '1'}}
+           'deep_evaluate': {}, 'snapshot_measure': {}, 'snapshot_evaluate': {'OMP_NUM_THREADS': '1'},
+           # cutouts: the regeneration drivers' exports besides the root (snapshot_cutout_regen_20261025.sh:20 none;
+           # snapshot_cutout_regen_wb_20261025.sh:22 P3_SNAP_FLOW=1, read by the group search at import - FLOW_MODE)
+           'cutouts_subband': {}, 'cutouts_wideband': {'P3_SNAP_FLOW': '1'}, 'cutouts_tier': {}, 'cutmeasure_tier': {}}
     # caller-environment prefixes refused before any engine starts (gate PHOT-ENV): switches the in-place modules or their
     # launchers read (spec 7.2) that core/legacy.run does not clear (it clears P3_* only)
     ENV_FORBIDDEN_PREFIXES = ('P3S', 'DEEP_FORCED_', 'SF_', 'FORCED_TEST_', 'SUBLST_', 'P3_PHOT_ROOT', 'P3_SNAP_CUTOUT_')
@@ -80,7 +151,8 @@ class photometry(_Section):
     LOG_TAIL_LINES = 40             # engine log lines kept in a refused unit's reason / record (orchestration only)
     PROTECTED_KEYS = ('SAMPLE_FILES', 'SAMPLE_SHA1', 'SAMPLE_COLUMNS', 'SAMPLE_ENCODING', 'SAMPLES_MEASURED',
                       'SAMPLES_NOT_MEASURED', 'CURRENT_LIST_ONLY', 'OUT_ROOT', 'ENGINE', 'ENV_FORBIDDEN_PREFIXES',
-                      'TIERS_WITH_ENGINE')
+                      'TIERS_WITH_ENGINE', 'RETIRED_CUTOUT_ROOTS', 'ENGINE_PYTHON_BY_KEY', 'TIER_FORCED_SAMPLES',
+                      'PLANET_SAMPLE', 'ADHOC_ENV', 'ADHOC_PLANETS_ENV')
     RULED = {'SAMPLES_MEASURED': 'R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES',
              'SAMPLE_FILES': 'HWJ-LIST-CUT-TO-THE-ELEVATION-RULING-AND-HD-20782-REMOVED',
              'SNAPSHOT_BANDS': ('INCIDENT-SNAP-FULL-CUTOUTS-EQUAL-RED-62-CELLS',
@@ -126,7 +198,8 @@ class photometry_frames(_Section):
 
 class photometry_measure(_Section):
     """Measurement at the target and its ring controls (deep_forced_phot.py, snapshot_forced_phot.py in place). MIRROR keys
-    describe the engines' literals (PROTECTED); SHARDS, BAND_PROCS, CUTOUT_SUBDIR and WORK_SUBDIR steer the step."""
+    describe the engines' literals (PROTECTED); SHARDS, BAND_PROCS and WORK_SUBDIR steer the step. The cutouts measured are
+    photometry.CUTOUT_ROOT's (the served generation; --cutout-root overrides); stage 1 is written to <out>/photometry.STAGE1_DIR."""
     # ---- both tiers (identical values today; R-FORCED-PHOTOMETRY-ELEMENTS-APPROVED-V-FAINT-PARENT-ENTRIES = ledger 1513)
     N_CONTROLS = 12                 # MIRROR deep_forced_phot.py:58 (N_CTRL), snapshot_forced_phot.py:47 (NCTL)
     RING_BEAMS = 4.0                # beam FWHM; MIRROR deep :58 (R_CTRL_BEAMS), snapshot :48; snapshot falls back to the largest
@@ -185,8 +258,6 @@ class photometry_measure(_Section):
                                   r'^twilight in a solar-audit QUARANTINE band ', r'^3x per-Stokes noise gate$')}
                                                    # the refusal texts of frames_NNN.csv; MIRROR deep :252-253, :191, :193
     # ---- snapshot only
-    CUTOUT_SUBDIR = 'photometry'                   # cutout root = paths.PHASE3_ARCHIVE_ROOT/<this> (= snapshot_forced_phot.py:43 ROOT,
-                                                   # phase3_snapshot_cutouts.py:32; search_snapshot.CUTOUT_SUBDIR); --cutout-root overrides
     BLOCK_MIN_FRAMES = {'snapshot': 3}             # admitted frames per wall-clock minute for a 1-minute block (IMPLEMENTED-SNAPSHOT-
                                                    # FORCED-PHOTOMETRY-STAGES-1-2-HWJ-10PC); MIRROR snapshot_forced_phot.py:187
     MINUTE_KEY = {'snapshot': 'integration-midpoint'}   # 1-minute blocks keyed by the UTC minute of each admitted frame's
@@ -273,20 +344,75 @@ class photometry_evaluate(_Section):
 
 
 class photometry_cutouts(_Section):
-    """The snapshot photometry cutout product: WRITTEN by `search --tier snapshot` (phase3_snapshot_cutouts.write_cutouts, in
-    place; search_snapshot.CUTOUTS_ON / CUTOUT_SUBDIR steer it), content test owned here (class photometry_cutout). Every key
-    is a MIRROR of phase3_snapshot_cutouts.py (REQUEST-PHOTOMETRY-CUTOUT-PRODUCT-HWJ-10PC-SOLARSYSTEM,
-    IMPLEMENTED-PHOTOMETRY-CUTOUT-PRODUCT)."""
+    """The photometry cutout product of every tier and the stages that write it. Snapshot (10 s): written per hour by
+    `search --tier snapshot` into photometry.CUTOUT_ROOT (phase3_snapshot_cutouts.write_cutouts in place; search_snapshot.
+    CUTOUTS_ON switches it, CUTOUT_SUBDIR names its scratch root under --out in the refactor window) and REGENERATED from the
+    consolidated flow cubes by `photometry --tier snapshot --stages cutouts` (the search's own path, in place:
+    phase3_snapshot_search.py / phase3_snapshot_group_search.py --cutouts-from-cubes; the production campaign
+    snapshot_cutout_regen_20261025.sh, _wb_20261025.sh). Deep and 10-minute: `photometry --tier deep|sublst --stages cutouts`
+    (photometry_tier_cutouts_20261025.py in place) and `--stages cutmeasure` (photometry_tier_forced_20261026.py in place).
+    Every stage writes into a generation root (--cutout-root / --tier-out), never a retired one, through a staging directory of
+    the unit; the SERVED roots (photometry.CUTOUT_ROOT / TIER_FORCED_ROOTS) only with --in-place, the measurement on the new
+    cutouts chained in the same invocation (review F4: production's rule is a new root, never over the existing product).
+    Content tests owned here (classes photometry_cutout, photometry_cutout_manifest, photometry_tier_npz,
+    photometry_tier_manifest), run on the staged files before anything reaches the root and again once placed. Keys marked
+    MIRROR are literals of the in-place code (PROTECTED)."""
     CUT_DEG = 5.0                      # deg, cutout side (R-CUTOUT-5DEG-RERULED); MIRROR phase3_snapshot_cutouts.py:30
     MIN_EL_DEG = 20.0                  # deg at the cell's mid-time (the search domain is 30); MIRROR :31
+    MERGE_ARCMIN = 1.0                 # arcmin; list entries of one name within it are one object (one file), entries further
+                                       # apart each take the name + their J-tag (clv15 8f2126b); MIRROR :32
     PLANETS = ('jupiter', 'saturn', 'uranus', 'neptune')   # SolarSystem sample at per-frame ephemeris positions; MIRROR :34
     PLANET_EPHEM_QUANTUM_MIN = 10      # minutes; ephemeris quantised to the frame's 10-minute key; MIRROR :61
     PLANET_SITE = (37.2398, -118.2817, 1183.0)   # lat deg, lon deg, height m of the planets (B-42 unanswered); MIRROR :66
-    TIMES_COLUMNS = ('ts', 'date_obs', 'admitted', 'global_rms_jyb', 'ra_deg', 'dec_deg', 'target_x', 'target_y')   # :160-167
-    HEADER_CARDS = ('OBJECT', 'SAMPLE', 'LST', 'DATE', 'BAND', 'STOKES', 'CELL', 'UTCSTART', 'TARGRA', 'TARGDEC', 'CUTDEG')  # :150-153
-    PROTECTED_KEYS = ('CUT_DEG', 'MIN_EL_DEG', 'PLANETS', 'PLANET_EPHEM_QUANTUM_MIN', 'PLANET_SITE', 'TIMES_COLUMNS',
-                      'HEADER_CARDS')
-    RULED = {'CUT_DEG': 'R-CUTOUT-5DEG-RERULED', 'PLANETS': 'REQUEST-PHOTOMETRY-CUTOUT-PRODUCT-HWJ-10PC-SOLARSYSTEM'}
+    TIMES_COLUMNS = ('ts', 'date_obs', 'admitted', 'global_rms_jyb', 'ra_deg', 'dec_deg', 'target_x', 'target_y')   # :211-218
+    HEADER_CARDS = ('OBJECT', 'SAMPLE', 'LST', 'DATE', 'BAND', 'STOKES', 'CELL', 'UTCSTART', 'TARGRA', 'TARGDEC', 'CUTDEG')  # :205-208
+    # ---- the tier cutouts (photometry_tier_cutouts_20261025.py, MIRROR): file tier token per step tier, the TIMES columns (the
+    #      5th is 'searched' for 10min, 'deep_refused' for deep: :189-199), the header cards (:181-188), the REFERENCE extension
+    #      of fixed targets (:201-203), and the inputs the tool reads by literal path (:46-48; the step refuses --src-run / --run
+    #      naming another deep run: the tool cannot be pointed elsewhere)
+    TIER_TOKEN = {'deep': 'deep', 'sublst': '10min'}
+    TIER_TIMES_COLUMNS = {'deep': ('night', 'key', 'date_obs', 'mjd_mid', 'deep_refused', 'cut_rms_jyb', 'ra_deg', 'dec_deg',
+                                   'target_x', 'target_y', 'source'),
+                          'sublst': ('night', 'key', 'date_obs', 'mjd_mid', 'searched', 'cut_rms_jyb', 'ra_deg', 'dec_deg',
+                                     'target_x', 'target_y', 'source')}
+    TIER_HEADER_CARDS = ('OBJECT', 'SAMPLE', 'LST', 'BAND', 'STOKES', 'TARGRA', 'TARGDEC', 'CUTDEG', 'TIER', 'NPLANES', 'MODEL')
+    TIER_DEEP_RUN = '/fast/gh/main/phase3/Run_P3S5'             # MIRROR :46 DEEP (/data07/gh/phase3/transients/Run_P3S5 links here)
+    TIER_TENMIN_ROOT = '/lustre/gh/main/phase3/sublst/tenmin_root_x2'   # MIRROR :47 TROOT (<cell>/frames.csv sub_path)
+    TIER_TENMIN_SEARCH = '/lustre/gh/main/phase3/sublst/search_B'      # MIRROR :48 SB (searched windows: v_deep_images.csv)
+    # ---- regeneration of the 10-s cutouts (snapshot_cutout_regen_20261025.sh :29-32, _wb_20261025.sh :28-41): the engines'
+    #      completion and refusal texts (phase3_snapshot_search.regen_cutouts :1414, main :1824-1831; group search
+    #      regen_group_cutouts :469-511, main :531); exit 3 = excluded by data_decisions (an outcome, never a failure)
+    REGEN_DONE_SUBBAND = 'CUTOUTS-REGEN '
+    REGEN_DONE_WIDEBAND = 'CUTOUTS-REGEN-WIDEBAND '
+    REGEN_EXCLUDED_RC = 3
+    # ---- the stage's own layout (orchestration): a unit stages its files in <root>/<STAGING_SUBDIR>/<run id>/<unit>/ (the
+    #      same filesystem: placement is os.replace) with its manifest <MANIFEST_SUBDIR>/<tier token>/<unit key>.csv (one row
+    #      per file: sha256, bytes), passes the content tests there, then is placed: every file the placement replaces (and,
+    #      with --fresh, every stale / orphan file) first moves to <root>/<QUARANTINE_PREFIX><run id>/ with a sha256 manifest
+    #      (never deleted); a failure after that moves the placed files back to the staging directory and the quarantined
+    #      ones back in place, so a refused unit leaves the root as it was (review F2). cutmeasure: the same for the npz and
+    #      forced_manifest.csv it replaces, under <tier forced root>/<FORCED_QUARANTINE_PREFIX><run id>/
+    STAGING_SUBDIR = '_staging'
+    MANIFEST_SUBDIR = '_manifest'
+    MANIFEST_COLUMNS = ('file', 'sha256', 'bytes', 'sample', 'object', 'stokes')
+    QUARANTINE_PREFIX = 'quarantine_superseded_cutouts_'
+    FORCED_QUARANTINE_PREFIX = 'quarantine_superseded_tier_forced_'
+    # ---- content tests (CUTOVER_READINESS 'Content test of the wideband cutouts' and the regeneration's own test,
+    #      snapshot_cutout_regen_20261025_test.py): identity of every cutout with its cube at IDENTITY_TOL x the cutout's robust
+    #      rms (:30 TOL), float32 rounding allowed at each pixel's own magnitude (:205, 2 x eps32); a wideband plane rebuilt from
+    #      the member cubes and the job's member table, whose '%.6g' weights bound the rebuilt stack S by WEIGHT_REL_PRECISION x
+    #      (A + |S|), A = sum w |member| / sum w, per pixel (:116-137; bd8bf26 - never by the stack's magnitude alone)
+    IDENTITY_TOL = 1e-3
+    EPS32_FACTOR = 2.0
+    WEIGHT_REL_PRECISION = 5e-6
+    MANIFEST_HASH_FILES = 8            # files per manifest whose sha256 the content test recomputes (all sizes are checked)
+    TIER_RECUT_SEED = 20261025         # photometry_tier_cutouts_20261025.content_test :214 (one random plane per file)
+    PROTECTED_KEYS = ('CUT_DEG', 'MIN_EL_DEG', 'MERGE_ARCMIN', 'PLANETS', 'PLANET_EPHEM_QUANTUM_MIN', 'PLANET_SITE',
+                      'TIMES_COLUMNS', 'HEADER_CARDS', 'TIER_TOKEN', 'TIER_TIMES_COLUMNS', 'TIER_HEADER_CARDS', 'TIER_DEEP_RUN',
+                      'TIER_TENMIN_ROOT', 'TIER_TENMIN_SEARCH', 'REGEN_DONE_SUBBAND', 'REGEN_DONE_WIDEBAND', 'REGEN_EXCLUDED_RC',
+                      'IDENTITY_TOL', 'EPS32_FACTOR', 'WEIGHT_REL_PRECISION', 'TIER_RECUT_SEED')
+    RULED = {'CUT_DEG': 'R-CUTOUT-5DEG-RERULED', 'PLANETS': 'REQUEST-PHOTOMETRY-CUTOUT-PRODUCT-HWJ-10PC-SOLARSYSTEM',
+             'WEIGHT_REL_PRECISION': 'CONTENT-TEST-WIDEBAND-FIRST-ORDER-ROUNDING-BOUND-22H-20250817-BLUE-20261026'}
 
 
 class photometry_phase2(_Section):

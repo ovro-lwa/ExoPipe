@@ -206,7 +206,10 @@ class archive_snapshot(_Section):
     # inputs are unchanged and content tests A-E of snapshot_frametime_content_test.py passed on the work dir (gate G14).
     SUPERSEDE_PRESHIP_TESTS = ('A', 'B', 'C', 'D', 'E')
     FRAMETIME_QUARANTINE_ROOT = '/lustre/pipeline/exopipe/phase3/Run_SNAP_FRAMETIME_QUARANTINE_20261007'   # snapshot_frametime_rerun.sh:70
-    PHOT_ROOT = '/lustre/pipeline/exopipe/phase3/photometry'       # snapshot_frametime_rerun.sh:69
+    # supersede's photometry cutout root (the ship script's PHOT_ROOT): --phot-root, else photometry.CUTOUT_ROOT - the served
+    # generation, read where it is used (lib/archive/snapshot.phot_root), never copied here (review F1 2026-11-03: this section
+    # held PHOT_ROOT = PHASE3_ARCHIVE_ROOT/photometry, snapshot_frametime_rerun.sh:69 of 2026-10-07, the generation-4 root
+    # retired since generation 5 was served); a root under photometry.RETIRED_CUTOUT_ROOTS refuses
     # Scope approval of the frame-time re-run (RULING-GREGG-20261008-FRAMETIME-RERUN-REJECTED-ACCEPT-ERROR-UNTIL-MAJOR-REDO,
     # 2074; only the cells shipped under the pause). Read as today for production roots (B-52 default (b));
     # snapshot_frametime_rerun.sh:80-81 (a test root, FT_TEST_ROOT, skips it: :76-79).

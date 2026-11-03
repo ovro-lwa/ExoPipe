@@ -51,7 +51,8 @@ Inputs:  the staged/flowed frames and their .filelist; the Masters (search_snaps
 Outputs (product classes): runinfo_<tag>.json (snapshot_search: with its candidates/events/noise/admission tables),
          noise_<tag>_1min.csv (snapshot_1min), model_<tag>.fits (snapshot_model), nightrefused_<tag>.json (night_refusal),
          wideband_outcome_<S>.json (snapshot_wideband), every other shipped CSV (snapshot_table); the photometry cutout
-         cubes under <out>/photometry/ while paths.PRODUCTION_WRITES is False (photometry_cutout); injection runs:
+         cubes under <out>/photometry/ while paths.PRODUCTION_WRITES is False, else in photometry.CUTOUT_ROOT (the served
+         generation; photometry_cutout; S-CUTROOT refuses a retired one); injection runs:
          injected_<sb>_<S>.csv (injection_book). tag = <subband|group>_<S>_median.
 Failure modes: exit 2 = a gate refused (staging incomplete, broken/missing Master, flow incomplete, too few frames, pinned md5,
          a staged excluded subband only with EXCLUDED_STAGED_SUBBAND='unaccounted' (v9 before a40b088), no-clobber, a production --out while paths.PRODUCTION_WRITES is
@@ -348,14 +349,26 @@ def _set_digest(stage, sb, v):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def cutout_root(run):
-    """P3_SNAP_CUTOUT_ROOT: paths.PHASE3_ARCHIVE_ROOT/<CUTOUT_SUBDIR> (production) or <out>/<CUTOUT_SUBDIR> while
+    """P3_SNAP_CUTOUT_ROOT: photometry.CUTOUT_ROOT (production) - the served cutout generation, the one root the photometry
+    measure and the forced pages read (one source of truth, review F1 2026-11-03: the search wrote PHASE3_ARCHIVE_ROOT/
+    photometry, the retired generation 4, while photometry read generation 5) - or <out>/<CUTOUT_SUBDIR> while
     paths.PRODUCTION_WRITES is False - always in an INJECTED run, whose root is checked: the photometry root is a production
     product an injected run never writes (core/injected.check; ledger INCIDENT-INJECTED-SEARCH-WROTE-PRODUCTION-PHOTOMETRY-
-    CUTOUTS-HS-PSC-EVENT-UNREPRODUCIBLE-20261024)."""
+    CUTOUTS-HS-PSC-EVENT-UNREPRODUCIBLE-20261024). A root equal to or under a retired generation (photometry.
+    RETIRED_CUTOUT_ROOTS) refuses: S-CUTROOT."""
     from exopipe.phase3.core import injected
+    from exopipe.phase3.core.record import Refusal
     c = cfg()
-    return injected.check(os.path.join(c.paths.PHASE3_ARCHIVE_ROOT if c.paths.PRODUCTION_WRITES else run.out_root,
-                                       c.search_snapshot.CUTOUT_SUBDIR), 'snapshot photometry cutouts (P3_SNAP_CUTOUT_ROOT)')
+    root = c.photometry.CUTOUT_ROOT if c.paths.PRODUCTION_WRITES else os.path.join(run.out_root,
+                                                                                   c.search_snapshot.CUTOUT_SUBDIR)
+    real = os.path.realpath(root)
+    for r in c.photometry.RETIRED_CUTOUT_ROOTS:
+        rr = os.path.realpath(r).rstrip('/')
+        if real == rr or real.startswith(rr + '/'):
+            raise Refusal(f'S-CUTROOT: the snapshot photometry cutout root {root} is under the retired generation {r} '
+                          f'(photometry.RETIRED_CUTOUT_ROOTS: never written by any stage) - the served one is '
+                          f'photometry.CUTOUT_ROOT')
+    return injected.check(root, 'snapshot photometry cutouts (P3_SNAP_CUTOUT_ROOT)')
 
 
 def engine_env(run, args):

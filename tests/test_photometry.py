@@ -34,9 +34,32 @@ products are only READ.
   and on the real snapshot cell 18h_2025-04-11 (widebands).
 - negative: each content test of each product class fails on a corrupted copy (E4_plot is a display product that never
   gates: no negative).
-- real products (read only): stage-1 npz and manifest of 18h_2025-04-11, the 2026-10-07 wideband evaluation (grid, rows,
-  stage 1 on 3 cells; V1 / Z1 reported), the 2026-10-07 zone-flag file, the 2026-10-07 per-kind refused-cell lists (= the
-  step's), the deep run3 frame list and stage list where readable (pre-PB-step-2: FL3 fails as expected).
+- real products (read only): the SERVED generation-5 stage-1 npz and manifest of 18h_2025-04-11, the 2026-10-07 wideband
+  evaluation (grid, rows, stage 1 on 3 cells; V1 / Z1 reported), the served eval_gen5 / eval_wb_gen5 (every test, 3 cells)
+  and zone flags, the 2026-10-07 zone-flag file, the 2026-10-07 per-kind refused-cell lists (= the step's), the deep run3 frame
+  list and stage list where readable (pre-PB-step-2: FL3 fails as expected).
+- served generation (read only): every served snapshot forced page was built on photometry.CUTOUT_ROOT and
+  <OUT_ROOT[snapshot]>/STAGE1_DIR (its FT-START record), forced_snapshot names the same, the served stage 1 and tier forced
+  manifests measured those cutouts, the tier / planets pages read photometry.TIER_FORCED_ROOTS; falsified with generation 4.
+- cutouts: mirrors of the regeneration engines, the tier tools and the regeneration content test; ports (the writer's
+  J-tag naming, one frame per integration, the tool's box, rrms); identity on synthetic cubes (subband: shifted plane and a
+  5-sigma source fail; wideband: the weights' '%.6g' rounding passes the exact bound 5e-6 x (A + |S|), fails without it and
+  with the stack-magnitude bound); one file per key (stale time stamp, orphan; CM2); the snapshot cutouts stage end to end
+  through a FAKE engine running the REAL writer on synthetic consolidated cubes (done, manifest, --resume, in-place re-run,
+  C-STALE and --fresh quarantine, C-IDENTITY before placement, C-EXCLUDED, C-CELLS, C-ROOT); the deep and 10-minute tier
+  cutouts (the REAL tool's cell_job on synthetic residuals) and cutmeasure (the REAL tier forced tool) end to end; ad-hoc
+  target lists (the REAL stage 1 on ADHOC cutouts; PHOT-ADHOC gates); stage selection (cutouts only when named; sub-LST).
+- the review's findings (refactor_reviews_20261103/P_photometry_review.md): F1 one cutout root for the search, archive and
+  photometry (no config key names a retired root); F2 the content tests on the STAGED products (its reproductions: CM1, TN1
+  made to fail) and the placement transaction (replaced files quarantined, a failure after placement undone); F3 an engine
+  refusal or crash is its unit's, the next unit runs (fake engine and the REAL engine on duplicate-run cubes); F4 the served
+  roots only --in-place with the measurement chained, sub-LST stages named; F5 C-HOST / C-CELLS; F7 the served-generation
+  check where /data07 is not mounted; F8 a unit that writes nothing and the root's leftovers; F9 one ad-hoc gate entry per
+  root; F10 / F11 the ad-hoc gates (a root inside a served one, a row without a name).
+- the fix verification's findings (P_photometry_fix_verification.md): N1 an --in-place snapshot regeneration covers whole cells
+  (the verifier's band-subset reproduction refused before anything is placed; a whole cell placed and its served stage 1
+  re-measured in one run); N2 a SIGTERM sent to a step mid-placement is undone as Ctrl-C is (a child process, signalled from
+  this one: the root byte-identical).
 """
 import ast
 import contextlib
@@ -83,7 +106,8 @@ OPS = '/lustre/gh/main/exopipe_ops'
 CLV = '/lustre/gh/main/clv15'
 REAL_SNAP_CELL = '18h_2025-04-11'
 SYN_SNAP_CELL = '18h_2025-04-13'           # no search output, no exclusion, no tier-3 pin row (checked below)
-REAL_STAGE1 = '/lustre/gh/main/phase3/snapshot_forced/stage1'
+REAL_STAGE1 = os.path.join(CFG.photometry.OUT_ROOT['snapshot'], CFG.photometry.STAGE1_DIR)   # the served generation's
+S1 = CFG.photometry.STAGE1_DIR
 T0 = time.time()
 RESULTS = []
 for _k in list(os.environ):                 # PHOT-ENV: the caller environment must not carry engine switches
@@ -386,7 +410,7 @@ SNAP = os.path.join(TMP, 'snap')
 CUTS = os.path.join(SNAP, 'cutouts')
 SNAP_BANDS = ('64MHz', '73MHz', 'Blue')
 NF = 24                                     # frames per synthetic cutout (4 one-minute blocks)
-CUT_ROOT_REAL = os.path.join(CFG.paths.PHASE3_ARCHIVE_ROOT, CFG.photometry_measure.CUTOUT_SUBDIR)
+CUT_ROOT_REAL = CFG.photometry.CUTOUT_ROOT       # the served generation's cutouts (templates, read only)
 ATEAM = [(350.866, 58.815), (299.868, 40.734), (83.633, 22.014), (187.706, 12.391), (139.524, -12.096), (252.784, 4.993)]
 
 
@@ -584,13 +608,14 @@ def test_mirrors():
     sp = os.path.join(OPS, 'snapshot_forced_phot.py')
     L = mod_literals(sp)
     sps = open(sp).read()
-    want = {'ROOT': os.path.join(CFG.paths.PHASE3_ARCHIVE_ROOT, m.CUTOUT_SUBDIR), 'MCAT': CFG.catalog_snapshot.MASTER_CATALOGS,
+    want = {'ROOT': ph.RETIRED_CUTOUT_ROOTS[0], 'MCAT': CFG.catalog_snapshot.MASTER_CATALOGS,
             'SAMPLES': tuple(ph.SAMPLES_MEASURED), 'STAMP': m.STAMP_PX, 'NCTL': m.N_CONTROLS, 'RING_BEAMS': m.RING_BEAMS,
             'AVOID_BEAMS': m.AVOID_BEAMS, 'AVOID_JY': m.AVOID_JY, 'MIN_STAMP_FRAC': m.MIN_STAMP_FRAC['snapshot'],
             'EDGE_PX': m.EDGE_PX['snapshot']}
     got = {k: L.get(k) for k in want}
     # ROOT and SAMPLES are environment switches since 2026-10-25 / 10-28 (43eaf17 P3_PHOT_ROOT, c4fa0e3 P3_SNAP_CUTOUT_SAMPLES;
-    # the step forbids both in its environment): their DEFAULTS are the mirror
+    # the step forbids both in its environment): their DEFAULTS are the mirror - ROOT's default is the RETIRED generation 4,
+    # which is why the step always passes --root (the served generation, photometry.CUTOUT_ROOT)
     if "ROOT = os.environ.get('P3_PHOT_ROOT', %r)" % want['ROOT'] in sps:
         got['ROOT'] = want['ROOT']
     if "if os.environ.get('P3_SNAP_CUTOUT_SAMPLES') else %r)" % (want['SAMPLES'],) in sps:
@@ -624,10 +649,11 @@ def test_mirrors():
     cs = open(os.path.join(CLV, 'phase3_snapshot_cutouts.py')).read()
     pl = cu.PLANET_SITE
     ok = (L.get('CUT_DEG') == cu.CUT_DEG and L.get('MIN_EL_DEG') == cu.MIN_EL_DEG and L.get('PLANETS') == cu.PLANETS
-          and L.get('ROOT_DEFAULT') == os.path.join(CFG.paths.PHASE3_ARCHIVE_ROOT, m.CUTOUT_SUBDIR)
+          and L.get('ROOT_DEFAULT') == ph.RETIRED_CUTOUT_ROOTS[0] and L.get('MERGE_ARCMIN') == cu.MERGE_ARCMIN
           and 'lat=%s * u.deg, lon=%s * u.deg, height=%s * u.m' % pl in cs and 'key = (body, ts[:12])' in cs
           and cu.PLANET_EPHEM_QUANTUM_MIN == 10)
-    check('mirror phase3_snapshot_cutouts.py (cutout side, floor, planets, root, planet site, 10-minute ephemeris)', ok)
+    check('mirror phase3_snapshot_cutouts.py (cutout side, floor, planets, the retired default root, planet site, 10-minute '
+          'ephemeris, the one-object merge radius)', ok)
     L = mod_literals(os.path.join(CLV, 'phase3_snapshot_astro.py'))
     rep = {k: v for k, v in (L.get('BAND_REP_FREQ') or {}).items() if k != 'Full'}
     ok = (L.get('FWHM_ARCMIN') == ev.SNAPSHOT_FWHM_ARCMIN and rep == ev.SNAPSHOT_BAND_REP_MHZ
@@ -697,7 +723,10 @@ def test_ports():
     for r in T.read_csv(os.path.join(ev, 'targets_ge4.csv'))[1]:
         by.setdefault(r['cell'], []).append(r)
     cells = sorted(by)[::120][:2]
-    same = all(Pm.zones_cell((c, by[c])) == T.zones_cell((c, by[c], REAL_STAGE1)) for c in cells)
+    # the 2026-10-07 evaluation was built on generation 4's stage 1 (<snapshot_forced>/stage1, the reserve test's own STAGE1
+    # default): the port is compared on those inputs
+    s1_gen4 = os.path.join(CFG.photometry.OUT_ROOT['snapshot'], 'stage1')
+    same = Pm.STAGE1 == s1_gen4 and all(Pm.zones_cell((c, by[c])) == T.zones_cell((c, by[c], s1_gen4)) for c in cells)
     check('port Z1: tests.zones_cell = test_snapshot_forced_reserve.zones_cell on real cells %s' % cells, same)
 
 
@@ -714,8 +743,9 @@ def test_gates():
     finally:
         del os.environ['SF_BANDS']
     check('PHOT-ENV: a caller environment with SF_* refuses (exit 2)', rc == 2 and 'PHOT-ENV' in txt and 'SF_BANDS' in txt, txt)
-    rc, txt = step(['photometry', '--tier', 'sublst', '--out', out, '--cores', 'none'])
-    check('PHOT-SUBLST-NO-ENGINE: --tier sublst refuses (exit 2)', rc == 2 and 'PHOT-SUBLST-NO-ENGINE' in txt, txt)
+    rc, txt = step(['photometry', '--tier', 'sublst', '--stages', 'measure', '--out', out, '--cores', 'none'])
+    check('PHOT-SUBLST-NO-ENGINE: --tier sublst --stages measure refuses (exit 2; sub-LST has cutouts and cutmeasure only)',
+          rc == 2 and 'PHOT-SUBLST-NO-ENGINE' in txt, txt)
     rc, txt = step(['photometry'] + SNAP_COMMON + ['--scopes', 'Full', '--cells', SYN_SNAP_CELL, '--out', out])
     check('PHOT-FULL: snapshot --scopes Full refuses (exit 2)', rc == 2 and 'PHOT-FULL' in txt, txt)
     rc, txt = step(['photometry'] + SNAP_COMMON + ['--cells', SYN_SNAP_CELL + '_Full', '--out', out])
@@ -902,7 +932,7 @@ def test_snapshot_e2e():
     failed = {k: [t_['name'] for t_ in v['tests'] if not t_['passed']] for k, v in recs.items()}
     ntests = {k: len(v['tests']) for k, v in recs.items()}
     check('every content test of every output passed (%s)' % ntests, not any(failed.values()) and all(ntests.values()), failed)
-    s1 = os.path.join(SNAP_OUT, 'stage1', SYN_SNAP_CELL)
+    s1 = os.path.join(SNAP_OUT, S1, SYN_SNAP_CELL)
     npz = sorted(os.path.basename(p) for p in glob.glob(os.path.join(s1, 'forced_*.npz')))
     man = T.read_csv(os.path.join(s1, 'forced_manifest.csv'))[1]
     check('stage 1: 12 npz (2 samples x 3 bands x I,V), the merged manifest (12 ok cutouts, 1 skipped non-current target)',
@@ -951,7 +981,7 @@ def test_snapshot_e2e():
     rc, txt = step(ev + ['--cells', '%s,%s' % (SYN_SNAP_CELL, pin[0])])
     check('SE-LISTED: a selected cell that is listed refused refuses the evaluation (exit 2)', rc == 2 and 'SE-LISTED' in txt,
           txt)
-    bare = os.path.join(SNAP_OUT, 'stage1', '18h_2025-04-16')
+    bare = os.path.join(SNAP_OUT, S1, '18h_2025-04-16')
     os.makedirs(bare)
     rc, txt = step(ev)
     os.rmdir(bare)
@@ -1135,7 +1165,7 @@ def test_negative():
         f_, det = neg('photometry_eval', test, e2)
         check('negative %s fails on a corrupted deep evaluation (%s)' % (test, fname), f_, det)
     # ---- snapshot npz, manifest, evaluation, cutout, zone flags
-    s1 = os.path.join(SNAP_OUT, 'stage1', SYN_SNAP_CELL)
+    s1 = os.path.join(SNAP_OUT, S1, SYN_SNAP_CELL)
     nz = os.path.join(s1, 'forced_HWJ_64MHz_I.npz')
     ok, bad = all_pass('photometry_snapshot_npz', nz, cutout_root=CUTS)
     check('snapshot npz original passes N1-N5', ok, bad)
@@ -1183,7 +1213,7 @@ def test_negative():
         f_, det = neg('photometry_manifest', test, p)
         check('negative %s fails on a corrupted manifest' % test, f_, det)
     evs = os.path.join(SNAP_OUT, 'eval_T1')
-    ctx = dict(stage1=os.path.join(SNAP_OUT, 'stage1'), procs=1)
+    ctx = dict(stage1=os.path.join(SNAP_OUT, S1), procs=1)
     ok, bad = all_pass('photometry_eval', evs, **ctx)
     check('snapshot evaluation original passes G, V1, V2, Z1, S', ok, bad)
     th_h = T.read_csv(os.path.join(evs, 'thresholds.csv'))[0]
@@ -1212,7 +1242,7 @@ def test_negative():
     os.makedirs(proto)
     for b, st_ in (('64MHz', 'I'), ('82MHz', 'I')):
         json.dump({'photometry_cutout_cubes': 40}, open(os.path.join(proto, 'runinfo_%s_%s_median.json' % (b, st_)), 'w'))
-    bad_s = T.stage1_cell((SYN_SNAP_CELL, 'sb', os.path.join(SNAP_OUT, 'stage1'), os.path.dirname(proto)))[0]
+    bad_s = T.stage1_cell((SYN_SNAP_CELL, 'sb', os.path.join(SNAP_OUT, S1), os.path.dirname(proto)))[0]
     check('negative S fails: a searched band (82 MHz, 40 cutout cubes) without stage 1, and stage 1 older than its search '
           'runinfo', any('without stage 1' in b for b in bad_s) and any('older than its search' in b for b in bad_s), bad_s)
     cut = sorted(p for p in glob.glob(os.path.join(CUTS, 'HWJ', '64MHz', '*', '*_I.fits'))
@@ -1246,8 +1276,10 @@ def test_real():
         print('skip  real products: %s not readable here' % s1)
         return
     for name in ('forced_HWJ_18MHz_I.npz', 'forced_10pc_Red_V.npz'):
-        # built before exopipe_ops 40611cc (2026-10-28): 1-minute blocks on the FILE-NAME minute, so N2 must fail on them for that
-        # reason until the stage-1 re-run (Gregg's call); every other test passes
+        # the SERVED stage 1 (stage1_gen5, built 2026-10-25/26 before exopipe_ops 40611cc): 1-minute blocks on the FILE-NAME
+        # minute, so N2 must fail on them for that reason until the stage-1 re-run (Gregg's call); every other test passes - N4
+        # re-measures from the served cutouts (photometry.CUTOUT_ROOT), N5 knows the writer's J-tagged names (10 pc Red V holds
+        # Gaia_DR3_WD_Unknown_ID_J1748+7053 and _J2151+5917, which the reader without the 8f2126b naming called non-current)
         res = run_tests('photometry_snapshot_npz', os.path.join(s1, name))
         n2r = res.get('N2_blocks', {})
         check('real %s/%s passes N1, N3-N5 (N4 re-measured from the archive cutouts); N2 fails as a pre-2026-10-28 product on the '
@@ -1269,6 +1301,15 @@ def test_real():
     zf = os.path.join(prod, 'zones_recomputed_20261007.csv')
     ok, bad = all_pass('photometry_zone_flags', zf)
     check('real zones_recomputed_20261007.csv (the 2026-10-07 zone-flag product) passes ZF1', ok, bad)
+    # the SERVED generation's evaluations (eval_gen5 / eval_wb_gen5 on stage1_gen5 - the S test finds that stage 1 by the
+    # evaluation's tag) and their zone flags: every test passes on 3 cells
+    for ev in ('eval_wb_gen5', 'eval_gen5'):
+        res = run_tests('photometry_eval', os.path.join(prod, ev), max_cells=3, procs=1)
+        check('real %s (served): G1-G6, V1, V2, Z1 and S (stage 1 = %s) pass on 3 cells' % (ev, S1),
+              all(r['passed'] for r in res.values()) and 'stage-1 files' in str(res['S_stage1']['detail']),
+              {k: (r['passed'], str(r['detail'])[:160]) for k, r in res.items()})
+    ok, bad = all_pass('photometry_zone_flags', os.path.join(prod, 'zones_recomputed_gen5.csv'))
+    check('real zones_recomputed_gen5.csv (the served zone flags) passes ZF1', ok, bad)
     same = {}
     for kind in ('sb', 'wb'):
         ref, _ = KS.refused_for(kind, {}, REAL_STAGE1, [])
@@ -1316,6 +1357,1400 @@ def test_dry_real():
 REAL_ROOTS = KD.roots_cells
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# 8. the SERVED generation (the config names the cutout and stage-1 roots production serves; read only)
+# ---------------------------------------------------------------------------------------------------------------------
+
+def _served_forced_runs():
+    """{(S, cadence): run} of the snapshot forced pages the review hub serves (registry <S> 10-sec-forced / 1-min-forced,
+    status.REGISTRY_FILE under serve.HUB_DIR), or (None, why) - as tests/test_forced.py reads them."""
+    p = CFG.status.REGISTRY_FILE.format(hub=CFG.serve.HUB_DIR)
+    try:
+        with open(p) as fh:
+            reg = json.load(fh)
+        return {(S, cad): reg[S][key]['run'] for S in ('V', 'I') for key, cad in (('10-sec-forced', '10s'),
+                                                                                 ('1-min-forced', '1min'))}, None
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return None, '%s: %s' % (p, e)
+
+
+def registry_mount():
+    """(the review hub registry's path, the top directory it lives under, whether that directory exists on this host): the
+    registry is on /data07, lwacalim07's node-local disk."""
+    p = CFG.status.REGISTRY_FILE.format(hub=CFG.serve.HUB_DIR)
+    top = '/' + p.strip('/').split('/', 1)[0]
+    return p, top, os.path.isdir(top)
+
+
+def served_generation_mismatches(pages=True):
+    """[what differs] between the photometry config's generation and what production serves (empty = the config follows it):
+    (1) each served snapshot forced page's own record - the FT-START line of snapshot_forced_pages_run_<run>.log - names
+    P3_PHOT_ROOT = photometry.CUTOUT_ROOT and P3_FORCED_STAGE1 = <OUT_ROOT[snapshot]>/<STAGE1_DIR>; (2) the forced step names
+    the same two roots (forced_snapshot.PHOT_ROOT, STAGE1_ROOT); (3) the served stage 1 measured the configured cutouts (every
+    manifest row of 3 cells names a file under CUTOUT_ROOT); (4) the tier forced roots are the ones the serving pages read
+    (planets_forced_page_20261026.py FT default for HWJ / 10 pc - tier_forced_page_20261027.py reads it -, and
+    planets_page_orbit_build_20261028.sh P3_FORCED_TIERS for the planets), and their manifests name cutouts under CUTOUT_ROOT.
+    pages=False leaves out (1), which needs the review hub registry (/data07, lwacalim07 only); every other part reads Lustre."""
+    ph, fs = CFG.photometry, CFG.forced_snapshot
+    out = []
+    stage1 = os.path.join(ph.OUT_ROOT['snapshot'], ph.STAGE1_DIR)
+    runs, why = _served_forced_runs() if pages else ({}, None)
+    if pages and not runs:
+        out.append('the review hub registry: %s' % why)
+    for (S, cad), run in sorted((runs or {}).items()):
+        log = os.path.join(CFG.paths.OPS_ROOT, 'snapshot_forced_pages_run_%s.log' % run)
+        start = [ln for ln in open(log, errors='replace') if ('FT-START %s ' % run) in ln] if os.path.exists(log) else []
+        if not start:
+            out.append('%s: no FT-START record in %s' % (run, log))
+            continue
+        for var, want in (('P3_PHOT_ROOT', ph.CUTOUT_ROOT), ('P3_FORCED_STAGE1', stage1)):
+            m = re.search(r' %s=(\S+)' % var, start[-1])
+            if not m or m.group(1) != want:
+                out.append('%s (Stokes %s %s) was built with %s=%s, the config says %s' % (run, S, cad, var, m and m.group(1),
+                                                                                           want))
+    if fs.PHOT_ROOT != ph.CUTOUT_ROOT or fs.STAGE1_ROOT != stage1:
+        out.append('forced_snapshot.PHOT_ROOT / STAGE1_ROOT %s / %s != photometry %s / %s' % (fs.PHOT_ROOT, fs.STAGE1_ROOT,
+                                                                                            ph.CUTOUT_ROOT, stage1))
+    pre = ph.CUTOUT_ROOT.rstrip('/') + '/'
+    cells = sorted(d for d in os.listdir(stage1) if os.path.isfile(os.path.join(stage1, d, 'forced_manifest.csv')))[::120][:3] \
+        if os.path.isdir(stage1) else []
+    if not cells:
+        out.append('no served stage-1 cell under %s' % stage1)
+    for cl in cells:
+        rows = T.read_csv(os.path.join(stage1, cl, 'forced_manifest.csv'))[1]
+        bad = [r['file'] for r in rows if not r['file'].startswith(pre)]
+        if bad or not rows:
+            out.append('served stage 1 %s: %d of %d rows measured cutouts outside %s (e.g. %s)' % (cl, len(bad), len(rows),
+                                                                                                  ph.CUTOUT_ROOT, bad[:1]))
+    src = open(os.path.join(OPS, 'planets_forced_page_20261026.py')).read()
+    m = re.search(r"^FT = os\.environ\.get\('P3_FORCED_TIERS', '([^']+)'\)", src, re.M)
+    tp = open(os.path.join(OPS, 'tier_forced_page_20261027.py')).read()
+    for smp in ('HWJ', '10pc'):
+        if not m or m.group(1) != ph.TIER_FORCED_ROOTS[smp] or 'import planets_forced_page_20261026 as PP' not in tp:
+            out.append('the HWJ / 10 pc tier pages read %s, TIER_FORCED_ROOTS[%s] = %s' % (m and m.group(1), smp,
+                                                                                         ph.TIER_FORCED_ROOTS[smp]))
+    drv = open(os.path.join(OPS, 'planets_page_orbit_build_20261028.sh')).read()
+    m = re.search(r'P3_FORCED_TIERS=(\S+)', drv)
+    if not m or m.group(1) != ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE]:
+        out.append('the planets page reads %s, TIER_FORCED_ROOTS[%s] = %s' % (m and m.group(1), ph.PLANET_SAMPLE,
+                                                                            ph.TIER_FORCED_ROOTS[ph.PLANET_SAMPLE]))
+    for smp, root in sorted(ph.TIER_FORCED_ROOTS.items()):
+        for tier in ('10min', 'deep'):
+            rows, lst = [], None
+            for mp in sorted(glob.glob(os.path.join(root, tier, '[0-2][0-9]h', 'forced_manifest.csv'))):
+                rows = [r for r in T.read_csv(mp)[1] if r['file'].split('/')[-4] == smp]
+                if rows:            # the first LST whose manifest holds rows of the sample (planets cross only some hours)
+                    lst = os.path.basename(os.path.dirname(mp))
+                    break
+            bad = [r['file'] for r in rows if not r['file'].startswith(pre)]
+            if bad or not rows:
+                out.append('%s %s %s: %d of %d %s rows measured cutouts outside %s' % (root, tier, lst, len(bad), len(rows),
+                                                                                      smp, ph.CUTOUT_ROOT))
+    return out
+
+
+def test_served_generation():
+    reg, top, pages = registry_mount()
+    if not pages:      # review F7: the suite runs on any node; where /data07 exists the check stays strict (an unreadable
+        print('skip  served generation, the served pages\' FT-START records: the review hub registry %s is on %s, which %s '
+              'does not mount (lwacalim07 only) - the forced step, the served stage 1 and the tier forced roots are '
+              'checked below' % (reg, top, env.host()), flush=True)          # registry there fails)
+    bad = served_generation_mismatches(pages)
+    check('served generation: the photometry config names the roots production serves - %sforced_snapshot names the same, '
+          'the served stage 1 measured those cutouts, the tier forced roots are the ones the tier / planets pages read'
+          % ('every served snapshot forced page was built on photometry.CUTOUT_ROOT and <OUT_ROOT[snapshot]>/STAGE1_DIR '
+             '(FT-START), ' if pages else ''), not bad, bad)
+    with patched(CFG.photometry, CUTOUT_ROOT=CFG.photometry.RETIRED_CUTOUT_ROOTS[0], STAGE1_DIR='stage1'):
+        bad4 = served_generation_mismatches(pages)
+    check('served generation falsified: with generation 4\'s roots (PHASE3_ARCHIVE_ROOT/photometry, <out>/stage1 - what the '
+          'config named before) the check fails on %sthe forced step and the tier manifests'
+          % ('every served page (both roots), ' if pages else ''),
+          (not pages or (sum('P3_PHOT_ROOT' in b for b in bad4) == 4 and sum('P3_FORCED_STAGE1' in b for b in bad4) == 4))
+          and any('forced_snapshot' in b for b in bad4) and any('rows measured cutouts outside' in b for b in bad4), bad4)
+    with patched(CFG.status, REGISTRY_FILE=os.path.join(TMP, 'no_registry', 'registry.json')):
+        mnt = registry_mount()          # its disk (/tmp) exists on every host: the strict path
+        badr = served_generation_mismatches(mnt[2])
+    check('served generation stays strict where the registry\'s disk exists: an unreadable registry there is a mismatch, '
+          'never a skip', mnt[2] and any('review hub registry' in b for b in badr), (mnt, badr))
+
+
+def raises(fn, *a, **k):
+    """The Refusal ``fn(*a, **k)`` raises, else None."""
+    try:
+        fn(*a, **k)
+    except record.Refusal as e:
+        return e
+    return None
+
+
+def retired_root_keys(sections):
+    """['section.KEY = path'] of every config value naming a path equal to or under photometry.RETIRED_CUTOUT_ROOTS (the key
+    that lists them aside); ``sections`` {name: [(key, value)]}."""
+    retired = [os.path.realpath(r).rstrip('/') for r in CFG.photometry.RETIRED_CUTOUT_ROOTS]
+
+    def paths_in(v):
+        if isinstance(v, str):
+            if v.startswith('/'):
+                yield v.split('{', 1)[0]
+        elif isinstance(v, (list, tuple, set, frozenset)):
+            for x in v:
+                yield from paths_in(x)
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                yield from paths_in(k)
+                yield from paths_in(x)
+    hits = []
+    for name, items in sections.items():
+        for k, v in items:
+            if (name, k) == ('photometry', 'RETIRED_CUTOUT_ROOTS'):
+                continue
+            for p in paths_in(v):
+                rp = os.path.realpath(p)
+                if any(rp == r or rp.startswith(r + '/') for r in retired):
+                    hits.append('%s.%s = %s' % (name, k, p))
+    return hits
+
+
+def test_cutout_root_one_source():
+    """Review F1 (2026-11-03): the photometry cutout root has ONE source of truth, photometry.CUTOUT_ROOT - the snapshot search
+    writes it per hour, archive supersede ships into it, the measure stage and the forced pages read it - and no config key
+    names a retired root."""
+    from types import SimpleNamespace
+    from exopipe.phase3.lib.archive import snapshot as AS
+    from exopipe.phase3.lib.search import tier_snapshot as TS
+    ph = CFG.photometry
+    secs = {n: list(sec.items()) for n, sec in CFG.sections().items()}
+    hits = retired_root_keys(secs)
+    check('no config key names a path under a retired cutout generation (photometry.RETIRED_CUTOUT_ROOTS) but that list '
+          'itself (%d sections scanned)' % len(secs), not hits, hits)
+    fals = dict(secs, archive_snapshot=secs['archive_snapshot'] + [('PHOT_ROOT', ph.RETIRED_CUTOUT_ROOTS[0])],
+                search_snapshot=secs['search_snapshot'] + [('CUTOUT_ROOT', ph.RETIRED_CUTOUT_ROOTS[0] + '/HWJ')])
+    check('... falsified: the keys the branch left behind (archive_snapshot.PHOT_ROOT = generation 4, a search root under it) '
+          'are found', sorted(h.split(' ')[0] for h in retired_root_keys(fals))
+          == ['archive_snapshot.PHOT_ROOT', 'search_snapshot.CUTOUT_ROOT'], retired_root_keys(fals))
+    run = SimpleNamespace(out_root=os.path.join(TMP, 'f1_out'))
+    noflag = SimpleNamespace(cutout_root=None, phot_root=None)
+    with patched(CFG.paths, PRODUCTION_WRITES=True):            # in memory only: the post-cutover state
+        got = dict(search=TS.cutout_root(run), measure=K.cutout_root(noflag), archive=AS.phot_root(noflag),
+                   forced=CFG.forced_snapshot.PHOT_ROOT)
+    check('one source: with production writes the search\'s per-hour cutout root (P3_SNAP_CUTOUT_ROOT) = the measure stage\'s '
+          'reader = archive supersede\'s default = forced_snapshot.PHOT_ROOT = photometry.CUTOUT_ROOT (%s)' % ph.CUTOUT_ROOT,
+          set(got.values()) == {ph.CUTOUT_ROOT}, got)
+    other = os.path.join(TMP, 'f1_generation_x')
+    with patched(CFG.paths, PRODUCTION_WRITES=True), patched(ph, CUTOUT_ROOT=other):
+        follow = (TS.cutout_root(run), K.cutout_root(noflag), AS.phot_root(noflag))
+    check('one source: the search and archive follow photometry.CUTOUT_ROOT (no copy of their own)', follow == (other,) * 3,
+          follow)
+    with patched(CFG.paths, PRODUCTION_WRITES=True), patched(ph, CUTOUT_ROOT=ph.RETIRED_CUTOUT_ROOTS[0]):
+        e1, e2 = raises(TS.cutout_root, run), raises(AS.phot_root, noflag)
+    e3 = raises(AS.phot_root, SimpleNamespace(phot_root=os.path.join(ph.RETIRED_CUTOUT_ROOTS[0], 'HWJ')))
+    e4 = raises(K.gate_write_root, ph.RETIRED_CUTOUT_ROOTS[0], '--cutout-root')
+    check('a retired root is never written: the search refuses it (S-CUTROOT), archive supersede too (G-PHOTROOT, its default or '
+          '--phot-root under it), the photometry stages too (C-ROOT)', e1 is not None and 'S-CUTROOT' in str(e1)
+          and e2 is not None and 'G-PHOTROOT' in str(e2) and e3 is not None and 'G-PHOTROOT' in str(e3)
+          and e4 is not None and 'C-ROOT' in str(e4), (e1, e2, e3, e4))
+    check('without production writes (the refactor window, an injected run) the search writes <out>/%s, scratch'
+          % CFG.search_snapshot.CUTOUT_SUBDIR, TS.cutout_root(run) == os.path.join(run.out_root,
+                                                                                 CFG.search_snapshot.CUTOUT_SUBDIR))
+    from exopipe.phase3.steps import archive as SA, search as SS
+    check('the search and archive steps declare the photometry section (its CUTOUT_ROOT is in their config hash: a generation '
+          'switch never resumes a unit written to the old root)', 'photometry' in SS.CONFIG and 'photometry' in SA.CONFIG,
+          (SS.CONFIG, SA.CONFIG))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 9. cutouts: mirrors and ports of the in-place engines and the production content tests they port (read only)
+# ---------------------------------------------------------------------------------------------------------------------
+
+from exopipe.phase3.lib.photometry import steps_cutouts as SC     # noqa: E402
+from exopipe.phase3.lib.photometry import tests_cutouts as TC     # noqa: E402
+
+TIER_TOOL = os.path.join(OPS, 'photometry_tier_cutouts_20261025.py')
+TIER_FORCED_TOOL = os.path.join(OPS, 'photometry_tier_forced_20261026.py')
+
+
+def test_cutout_mirrors():
+    cc, ph = CFG.photometry_cutouts, CFG.photometry
+    L, src = mod_literals(TIER_TOOL), open(TIER_TOOL).read()
+    check('mirror photometry_tier_cutouts_20261025.py: its inputs (DEEP, TROOT, SB), the retired root it refuses (OLD_ROOT), '
+          'the planets through the 10-s step\'s selector (e1e24ff), the content test seed',
+          L.get('DEEP') == cc.TIER_DEEP_RUN and L.get('TROOT') == cc.TIER_TENMIN_ROOT and L.get('SB') == cc.TIER_TENMIN_SEARCH
+          and L.get('OLD_ROOT') == ph.RETIRED_CUTOUT_ROOTS[0] and 'for body in CUT._planets():' in src
+          and 'random.Random(%d)' % cc.TIER_RECUT_SEED in src,
+          {k: L.get(k) for k in ('DEEP', 'TROOT', 'SB', 'OLD_ROOT')})
+    cols = re.findall(r"fits\.Column\(name=(?:'searched' if tier == '10min' else 'deep_refused'|'([a-z_0-9]+)')", src)
+    five = "fits.Column(name='searched' if tier == '10min' else 'deep_refused'" in src
+    want = {t: list(v) for t, v in cc.TIER_TIMES_COLUMNS.items()}
+    got = {t: [c or ('searched' if t == 'sublst' else 'deep_refused') for c in cols] for t in want}
+    cards = [k for k in cc.TIER_HEADER_CARDS if "hh['%s']" % k not in src]
+    check('format photometry_tier_cutouts_20261025.py: TIMES columns per tier (searched / deep_refused 5th), header cards, '
+          'tier tokens = photometry_cutouts.TIER_TIMES_COLUMNS, TIER_HEADER_CARDS, TIER_TOKEN',
+          five and got == want and not cards and "choices=('deep', '10min', 'both')" in src
+          and set(cc.TIER_TOKEN.values()) == {'deep', '10min'}, (got, want, cards))
+    LF, fsrc = mod_literals(TIER_FORCED_TOOL), open(TIER_FORCED_TOOL).read()
+    check('mirror photometry_tier_forced_20261026.py: SAMPLES, MOVING, its manifest header and completion line',
+          tuple(LF.get('SAMPLES') or ()) == tuple(ph.TIER_FORCED_SAMPLES) and tuple(LF.get('MOVING') or ()) == (ph.PLANET_SAMPLE,)
+          and "fieldnames=%r" % list(TC.TIER_MANIFEST_HEADER) in fsrc
+          and 'PHOTOMETRY-TIER-FORCED-DONE %d cutouts measured, %d refused' in fsrc, (LF.get('SAMPLES'), LF.get('MOVING')))
+    ss = open(os.path.join(CLV, 'phase3_snapshot_search.py')).read()
+    gs = open(os.path.join(CLV, 'phase3_snapshot_group_search.py')).read()
+    cs = open(os.path.join(CLV, 'phase3_snapshot_cutouts.py')).read()
+    fp = open(os.path.join(OPS, 'snapshot_forced_phot.py')).read()
+    texts = [(ss, 'log.info("%sV %%s I %%s%%s"' % cc.REGEN_DONE_SUBBAND.replace('REGEN ', 'REGEN %s %s %s: ')),
+             (ss, 'raise SystemExit(%d)' % cc.REGEN_EXCLUDED_RC),
+             (ss, 'CUBE_ROOT = os.environ.get("P3_SNAP_CUBE_ROOT", "%s")' % CFG.paths.SNAPSHOT_CUBES_ROOT),
+             (ss, 'SEARCH_OUT_ROOT = os.environ.get("P3_SNAP_SEARCH_OUT_ROOT", "%s")' % CFG.paths.SNAPSHOT_FLEET_OUT),
+             (ss, 'raise RuntimeError("REFUSED: regen_cutouts needs P3_SNAP_CUTOUT_ROOT'),
+             (gs, 'log.info("%s%%s %%s %%s %%s: %%s cutout cubes"' % cc.REGEN_DONE_WIDEBAND),
+             (gs, 'raise SystemExit(%d if r == "excluded" else 0)' % cc.REGEN_EXCLUDED_RC),
+             (cs, 'env = os.environ.get("%s", "")' % ph.ADHOC_ENV),
+             (cs, 'os.environ.get("%s") == "1"' % ph.ADHOC_PLANETS_ENV),
+             (cs, 'jobs.append(("%s", body.capitalize(), pos))' % ph.PLANET_SAMPLE),
+             (fp, "os.environ['%s'].split(',')" % ph.ADHOC_ENV)]
+    miss = [t for s_, t in texts if t not in s_]
+    check('mirror the regeneration engines and the ad-hoc switches: CUTOUTS-REGEN / -WIDEBAND lines, exit 3 on exclusion, the '
+          'cube and search-output roots (= paths.SNAPSHOT_CUBES_ROOT / SNAPSHOT_FLEET_OUT, passed explicitly), the required '
+          'root, P3_SNAP_CUTOUT_SAMPLES / _PLANETS in the writer and stage 1, the planet sample name', not miss, miss)
+    rt = open(os.path.join(OPS, 'snapshot_cutout_regen_20261025_test.py')).read()
+    Lr = mod_literals(os.path.join(OPS, 'snapshot_cutout_regen_20261025_test.py'))
+    check('mirror snapshot_cutout_regen_20261025_test.py (the content test the identity check ports): TOL, 2 x eps32, the '
+          'weights\' first-order bound 5e-6 x (A + |S|) (bd8bf26)',
+          Lr.get('TOL') == cc.IDENTITY_TOL and '- 2 * EPS32 * (np.abs(box_) + np.abs(Rm)[None])' in rt
+          and cc.EPS32_FACTOR == 2.0 and 'R - Rm[None]) - 5e-6 * (A_ + np.abs(S_) + np.nanmedian(A_ + np.abs(S_), axis=0)[None])'
+          in rt and cc.WEIGHT_REL_PRECISION == 5e-6, Lr.get('TOL'))
+    pys = {}
+    for drv, key in (('snapshot_cutout_regen_20261025.sh', 'cutouts_subband'), ('snapshot_cutout_regen_wb_20261025.sh',
+                                                                                 'cutouts_wideband')):
+        m = re.search(r'PY=(\S+)', open(os.path.join(OPS, drv)).read())
+        pys[key] = (m and m.group(1), CFG.site.PYTHON[ph.ENGINE_PYTHON_BY_KEY[key]])
+    check('the regeneration engines run under the interpreter their drivers named (photometry.ENGINE_PYTHON_BY_KEY; the tier '
+          'tools under py38_orca_nkosogor, measured byte for byte - parity run)', all(a == b for a, b in pys.values())
+          and ph.ENGINE_PYTHON_BY_KEY['cutouts_tier'] == 'default', pys)
+    for key in ('cutouts_subband', 'cutouts_wideband', 'cutouts_tier', 'cutmeasure_tier'):
+        check('engine %s resolves to exactly one in-place file (%s)' % (key, ph.ENGINE[key]), os.path.isfile(K.engine(key)))
+
+
+def test_cutout_ports():
+    import importlib
+    os.environ.pop(CFG.photometry.ADHOC_ENV, None)
+    CUT = importlib.import_module('phase3_snapshot_cutouts')
+    CUT._TARGETS = None
+    prod = sorted((t, CUT.safe_name(n), ra, dec) for t, n, ra, dec in CUT._targets())
+    mine = sorted((t, T.safe_name(n), ra, dec) for t, n, ra, dec in T.sample_targets())
+    tagged = sorted(n for t, n, _, _ in mine if '_J' in n and 'Unknown' in n)
+    check('port: tests.sample_targets = phase3_snapshot_cutouts._targets on the real lists, distinct objects of one name '
+          'J-tagged (8f2126b; %d entries, %d J-tagged)' % (len(prod), len(tagged)), prod == mine and len(tagged) >= 2,
+          (len(prod), len(mine), [x for x in prod if x not in mine][:3]))
+    adhoc = os.path.join(TMP, 'adhoc_port.csv')
+    with open(adhoc, 'w') as f:
+        f.write('name,ra,dec\nStar A,10.0,20.0\nStar A,10.5,20.0\nStar B,30.0,-5.0\nNo Position,x,y\n')
+    try:
+        os.environ[CFG.photometry.ADHOC_ENV] = 'ADHOC=%s' % adhoc
+        CUT._TARGETS = None
+        prod = sorted(CUT._targets())
+    finally:
+        os.environ.pop(CFG.photometry.ADHOC_ENV, None)
+        CUT._TARGETS = None
+    mine = sorted(T.sample_targets(lists={'ADHOC': adhoc}))
+    check('port: an ad-hoc list (name / ra / dec columns, a name given to two objects 30 arcmin apart, an unparsable row) is '
+          'read as the writer reads it', prod == mine and len(mine) == 3 and mine[0][1].startswith('Star A J'), (prod, mine))
+    # one frame per integration (phase3_snapshot_search.flowcube_frame_index), the tool's box, the regen test's rrms
+    import logging
+    nz = os.path.join(TMP, 'fleet_out', '18h_2025-04-13')
+    os.makedirs(nz, exist_ok=True)
+    tss = ['20250413_%06d' % (10 * i) for i in range(6)]
+    from astropy.io import fits
+    hd = [fits.Header({'DATE-OBS': '2025-04-13T00:00:%02d' % (10 * (i % 4))}) for i in range(6)]   # 2 repeated integrations
+    with open(os.path.join(nz, 'noise_64MHz_V_median.csv'), 'w') as f:
+        f.write('ts,x\n' + ''.join('%s,1\n' % t for t in tss[:4]))
+    prod_fi = _prod_function(os.path.join(CLV, 'phase3_snapshot_search.py'), 'flowcube_frame_index',
+                             {'os': os, 'csv': csv, 'SEARCH_OUT_ROOT': os.path.join(TMP, 'fleet_out'),
+                              'log': logging.getLogger('x')})
+    a = prod_fi('18h', '2025-04-13', '64MHz', 'V', tss, hd)
+    b = TC.frame_index('18h', '2025-04-13', '64MHz', 'V', tss, hd, os.path.join(TMP, 'fleet_out'))
+    whole = TC.frame_index('18h', '2025-04-13', '64MHz', 'V', tss[:4], hd[:4], os.path.join(TMP, 'fleet_out'))
+    try:
+        TC.frame_index('18h', '2025-04-13', '64MHz', 'I', tss, hd, os.path.join(TMP, 'fleet_out'))
+        refused = False
+    except ValueError:
+        refused = True
+    check('port: tests_cutouts.frame_index = phase3_snapshot_search.flowcube_frame_index (a cube repeating integrations '
+          'restricted to the search\'s frame list; whole without repeats; refused without that list)',
+          a == b == [0, 1, 2, 3] and whole == [0, 1, 2, 3] and refused, (a, b, whole))
+    rng = np.random.default_rng(9)
+    img = rng.normal(0, 1, (1, 60, 50)).astype(np.float32)
+    prod_box = _prod_function(TIER_TOOL, 'box', {'np': np})
+    ok = True
+    for px, py in ((25.3, 30.7), (2.2, 3.9), (48.6, 58.1), (-5.0, 10.0), (70.0, 70.0)):
+        p_, x0, y0 = prod_box(img, 60, 50, px, py, 21, (0,))
+        m_ = TC.tier_box(img, 60, 50, px, py, 21, (0,))
+        ok &= bool(np.array_equal(np.isnan(p_), np.isnan(m_)) and np.array_equal(p_[np.isfinite(p_)], m_[np.isfinite(m_)]))
+    rr = _prod_function(os.path.join(OPS, 'snapshot_cutout_regen_20261025_test.py'), 'rrms', {'np': np})
+    a_ = rng.normal(0, 2, 500).astype(np.float32)
+    a_[:20] = np.nan
+    check('port: tests_cutouts.tier_box = the tier tool\'s box (inside, at and beyond the edges) and rrms = the regeneration '
+          'test\'s rrms', ok and rr(a_) == TC.rrms(a_) and np.isnan(TC.rrms(a_[:40])) and np.isnan(rr(a_[:40])))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 10. cutouts: synthetic consolidated flow cubes, the identity tests (subband, the weighted-stack rebuild bound), one file
+#     per key, the snapshot / tier stages end to end (FAKE engines that call the REAL writers on the synthetic inputs)
+# ---------------------------------------------------------------------------------------------------------------------
+
+CUBES = os.path.join(TMP, 'cubes')
+CUT_SB = '64MHz'
+WB_GROUP, WB_SBS = 'Blue', ('64MHz', '69MHz', '73MHz')
+NPX_C, CD_C, NT_C = 300, 0.05, 6                 # cube pixels, deg / pixel, frames
+CRA, CDEC = 275.0, 60.0                           # 23 deg from the zenith at LST 18h: HD 163607, HIP 91258, Struve 2398 A
+
+
+def cube_header(k, ts, cd=CD_C, n=NPX_C):
+    from astropy.io import fits
+    h = fits.Header()
+    h['NAXIS'], h['NAXIS1'], h['NAXIS2'] = 2, n, n
+    for kk, v in wcs_header(n=n, cd=cd, ra=CRA, dec=CDEC).items():
+        h[kk] = v
+    h['BMAJ'], h['BMIN'], h['BPA'] = 0.2, 0.15, 0.0
+    h['DATE-OBS'] = '%s-%s-%sT%s:%s:%s.000' % (ts[0:4], ts[4:6], ts[6:8], ts[9:11], ts[11:13], ts[13:15])
+    h['MJD-MID'] = 60778.0 + k * 10.031 / 86400.0
+    return h
+
+
+def cube_ts(n=NT_C, ymd='20250413'):
+    """Frame times of a synthetic cell 18h <ymd> (LST 18h at OVRO is ~12:27 UTC on 2025-04-13), 10 s apart."""
+    return ['%s_12%02d%02d' % (ymd, 27 + (k * 10) // 60, (k * 10) % 60) for k in range(n)]
+
+
+def make_cube(cell, sb, stokes, seed, scale=1.0, offset=0.0, n=NPX_C, nt=NT_C):
+    """A consolidated flow cube of the search's layout (FRAMES [T, Y, X] float32, FRAME_TABLE ts + newline-separated header
+    cards): a fixed sky (the hour-median model) plus per-frame noise."""
+    from astropy.io import fits
+    rng = np.random.default_rng(seed)
+    sky = (rng.normal(0, 1, (n, n)) * scale + offset).astype(np.float32)
+    frames = (sky[None] + rng.normal(0, 0.3 * abs(scale) + 0.01, (nt, n, n))).astype(np.float32)
+    ts = cube_ts(nt, cell.split('_', 1)[1].replace('-', ''))
+    hdrs = [cube_header(k, ts[k], n=n).tostring(sep='\n') for k in range(nt)]
+    d = os.path.join(CUBES, cell)
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, '%s_%s_%s_flowcube.fits' % (cell, sb, stokes))
+    tab = fits.BinTableHDU.from_columns([fits.Column(name='ts', format='15A', array=np.array(ts)),
+                                         fits.Column(name='header', format='%dA' % max(len(x) for x in hdrs),
+                                                     array=np.array(hdrs))], name='FRAME_TABLE')
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(frames, name='FRAMES'), tab]).writeto(p, overwrite=True)
+    return p, frames, ts
+
+
+def write_test_cutout(path, cube, model, x0, y0, n, ts, cell, band, stokes, sample, obj, h0):
+    """A 10-s cutout of the writer's layout (fixed target): plane k = cube_k - model over the box with corner (x0, y0), the
+    WCS of the first frame shifted to the box."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    out = (cube[:, y0:y0 + n, x0:x0 + n] - model[None, y0:y0 + n, x0:x0 + n]).astype(np.float32)
+    h = WCS(h0).celestial.to_header()
+    h['CRPIX1'], h['CRPIX2'] = float(h['CRPIX1']) - x0, float(h['CRPIX2']) - y0
+    lst, date = cell.split('_', 1)
+    for k, v in (('OBJECT', obj), ('SAMPLE', sample), ('LST', lst), ('DATE', date), ('BAND', band), ('STOKES', stokes),
+                 ('CELL', cell), ('UTCSTART', ts[0][:8] + 'T' + ts[0][9:15]), ('TARGRA', 0.0), ('TARGDEC', 0.0),
+                 ('CUTDEG', 5.0)):
+        h[k] = v
+    nt = cube.shape[0]
+    cols = [fits.Column(name='ts', format='15A', array=np.array(ts)),
+            fits.Column(name='date_obs', format='26A', array=np.array([''] * nt)),
+            fits.Column(name='admitted', format='L', array=np.ones(nt, bool)),
+            fits.Column(name='global_rms_jyb', format='E', array=np.ones(nt, np.float32)),
+            fits.Column(name='ra_deg', format='D', array=np.zeros(nt)), fits.Column(name='dec_deg', format='D', array=np.zeros(nt)),
+            fits.Column(name='target_x', format='E', array=np.full(nt, n / 2.0, np.float32)),
+            fits.Column(name='target_y', format='E', array=np.full(nt, n / 2.0, np.float32))]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fits.HDUList([fits.PrimaryHDU(out, header=h), fits.BinTableHDU.from_columns(cols, name='TIMES')]).writeto(path, overwrite=True)
+    return path
+
+
+def test_identity():
+    """The identity tests on synthetic cubes: a subband cutout equals its cube (minus the model) and fails when one plane is
+    shifted or a 5-sigma source is added; a wideband cutout equals the stack rebuilt from its member cubes and the job's
+    member table, whose '%.6g' weights the EXACT first-order bound covers while the stack-magnitude bound does not."""
+    from astropy.io import fits
+    cell = '18h_2025-04-13'
+    with patched(CFG.paths, SNAPSHOT_CUBES_ROOT=CUBES):
+        p, frames, ts = make_cube(cell, '82MHz', 'V', 1)
+        model = np.median(frames, axis=0)
+        h0 = fits.Header.fromstring(str(fits.getdata(p, 'FRAME_TABLE')['header'][0]), sep='\n')
+        root = os.path.join(TMP, 'ident', 'root')
+        good = write_test_cutout(os.path.join(root, 'HWJ', '82MHz', 'Obj', 'Obj_18h_20250413T122700_V.fits'), frames, model,
+                                 100, 120, 60, ts, cell, '82MHz', 'V', 'HWJ', 'Obj', h0)
+        shifted = frames.copy()
+        shifted[3] = np.roll(frames[3], 1, axis=1)
+        bad1 = write_test_cutout(os.path.join(root, 'HWJ', '82MHz', 'Obj2', 'Obj2_18h_20250413T122700_V.fits'), shifted,
+                                 model, 100, 120, 60, ts, cell, '82MHz', 'V', 'HWJ', 'Obj2', h0)
+        src = frames.copy()
+        src[2, 150, 130] += 5.0 * 0.3
+        bad2 = write_test_cutout(os.path.join(root, 'HWJ', '82MHz', 'Obj3', 'Obj3_18h_20250413T122700_V.fits'), src, model,
+                                 100, 120, 60, ts, cell, '82MHz', 'V', 'HWJ', 'Obj3', h0)
+        res = {os.path.basename(f): (ok, v) for f, ok, v, _ in TC.identity_subband([good, bad1, bad2], cell, '82MHz', 'V')}
+    check('identity (subband): a cutout = cube - model passes (%.1e x rms); a plane shifted by one pixel and a 5-sigma '
+          'source in one plane fail' % res[os.path.basename(good)][1],
+          res[os.path.basename(good)][0] and not res[os.path.basename(bad1)][0] and not res[os.path.basename(bad2)][0], res)
+    # ---- wideband: members of +-1000 Jy that cancel, weights stored to 6 significant digits (22h 2025-08-16 Green V,
+    #      22h 2025-08-17 Blue V): the rebuilt stack differs from the group frame by up to 5e-6 x (A + |S|)
+    rng = np.random.default_rng(4)
+    n, nt = 80, NT_C
+    with patched(CFG.paths, SNAPSHOT_CUBES_ROOT=CUBES):
+        cubes = {}
+        for i, (sb, off) in enumerate(zip(WB_SBS, (1000.0, -1000.0, 0.0))):
+            cubes[sb] = make_cube(cell, sb, 'V', 10 + i, scale=1.0, offset=off, n=n)[1]
+        w = {('64MHz', k): 1.0000049 if k % 2 == 0 else 1.0000001 for k in range(nt)}   # '%.6g' -> 1: errors 4.9e-6 / 1e-7
+        w.update({('69MHz', k): 1.0 for k in range(nt)})
+        w.update({('73MHz', k): 1e-3 * (1 + 0.1 * k) for k in range(nt)})
+        stack = np.zeros((nt, n, n))
+        for (sb, k), wt in w.items():
+            stack[k] += wt * cubes[sb][k].astype(np.float64)
+        stack = (stack / np.array([sum(w[(sb, k)] for sb in WB_SBS) for k in range(nt)])[:, None, None]).astype(np.float32)
+        model = np.median(stack, axis=0)
+        mem = os.path.join(TMP, 'ident', 'wideband_members_V.csv')
+        with open(mem, 'w') as f:
+            f.write('group,ts,subband,member_ts,weight\n' + ''.join(
+                '%s,%s,%s,%s,%.6g\n' % (WB_GROUP, ts[k], sb, ts[k], w[(sb, k)]) for sb in WB_SBS for k in range(nt)))
+        h0 = cube_header(0, ts[0], n=n)
+        wgood = write_test_cutout(os.path.join(root, 'HWJ', WB_GROUP, 'W1', 'W1_18h_20250413T122700_V.fits'), stack, model,
+                                  10, 12, 50, ts, cell, WB_GROUP, 'V', 'HWJ', 'W1', h0)
+        inj = stack.copy()
+        rms5 = 5.0 * TC.rrms(stack[:, 12:62, 10:60] - model[None, 12:62, 10:60])
+        inj[4, 30, 30] += rms5
+        wbad = write_test_cutout(os.path.join(root, 'HWJ', WB_GROUP, 'W2', 'W2_18h_20250413T122700_V.fits'), inj, model,
+                                 10, 12, 50, ts, cell, WB_GROUP, 'V', 'HWJ', 'W2', h0)
+        res = {os.path.basename(f): (ok, v) for f, ok, v, _ in TC.identity_wideband([wgood, wbad], cell, WB_GROUP, 'V', mem)}
+        tss, stacks, boxes, mabs = TC.wideband_stack(cell, 'V', mem, WB_GROUP, [wgood])
+        cutg = fits.getdata(wgood).astype(np.float32)
+        exact = TC.wideband_identity(cutg, stacks[wgood], mabs[wgood], False)
+        none_ = TC.wideband_identity(cutg, stacks[wgood], mabs[wgood], False, rel=0.0)
+        R = stacks[wgood] - cutg
+        old = float(np.nanmax(np.abs(R - np.nanmedian(R, axis=0)[None]) - 4e-6 * np.abs(stacks[wgood]))) / TC.rrms(cutg)
+    tol = CFG.photometry_cutouts.IDENTITY_TOL
+    check('identity (wideband, the corrected rebuild bound): members of +-1000 Jy with %%.6g weights - the exact first-order '
+          'bound 5e-6 x (A + |S|) passes (%.1e x rms), no allowance fails (%.1e), the first bound 4e-6 x |S| (before '
+          '9dea97a: the stack magnitude alone) fails (%.1e), a 5-sigma source in one plane fails' % (exact, none_, old),
+          res[os.path.basename(wgood)][0] and exact <= tol < none_ and old > tol and not res[os.path.basename(wbad)][0],
+          (res, exact, none_, old))
+
+
+def make_cutout_file(root, smp, band, obj, lst, stamp, stokes, cell):
+    """A minimal cutout of the 10-s naming (header CELL / DATE / LST ...) for the one-file-per-key tests."""
+    from astropy.io import fits
+    p = os.path.join(root, smp, band, obj, '%s_%s_%s_%s.fits' % (obj, lst, stamp, stokes))
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    h = fits.Header()
+    h['CELL'], h['LST'], h['DATE'] = cell, lst, cell.split('_', 1)[1]
+    fits.PrimaryHDU(np.zeros((1, 2, 2), np.float32), header=h).writeto(p, overwrite=True)
+    return p
+
+
+def test_one_file_per_key():
+    root = os.path.join(TMP, 'opk')
+    cell = '12h_2024-12-31'
+    keep = ['HWJ/46MHz/A/A_12h_20241231T131122_I.fits', 'HWJ/46MHz/A/A_12h_20241231T131122_V.fits',
+            'HWJ/46MHz/B/B_12h_20241231T131122_I.fits']
+    for rel in keep:
+        q = rel.split('/')
+        make_cutout_file(root, q[0], q[1], q[2], '12h', q[3].split('_')[2], q[3][-6], cell)
+    stale = make_cutout_file(root, 'HWJ', '46MHz', 'A', '12h', '20241231T131121', 'I', cell)       # 12h 2024-12-31's defect
+    other_night = make_cutout_file(root, 'HWJ', '46MHz', 'A', '12h', '20241231T235959', 'I', '12h_2025-01-01')
+    orphan = make_cutout_file(root, 'HWJ', '46MHz', 'C', '12h', '20241231T131122', 'V', cell)
+    other_smp = make_cutout_file(root, 'ADHOC', '46MHz', 'D', '12h', '20241231T131122', 'V', cell)
+    st, orph = TC.superseded(root, '10s', cell, '46MHz', ['HWJ', '10pc', 'SolarSystem'], keep)
+    rel = lambda p: os.path.relpath(p, root)
+    check('one file per key: another time stamp of a written (object, LST, date, Stokes) is stale (T131121 beside T131122), '
+          'an object the unit did not write is an orphan; a file of another night (header CELL) or of another sample is '
+          'neither', st == [rel(stale)] and orph == [rel(orphan)], (st, orph, rel(other_night), rel(other_smp)))
+    man = TC.write_manifest(os.path.join(TC.manifest_dir(root, '10s'), '%s_46MHz.csv' % cell),
+                            [dict(file=r, sha256=TC.sha256_file(os.path.join(root, r)), bytes=os.path.getsize(os.path.join(root, r)),
+                                  sample='HWJ', object=r.split('/')[2], stokes=r[-6]) for r in keep])
+    r1 = run_tests('photometry_cutout_manifest', man, samples=['HWJ', '10pc', 'SolarSystem'])
+    for p in (stale, orphan):
+        os.remove(p)
+    r2 = run_tests('photometry_cutout_manifest', man, samples=['HWJ', '10pc', 'SolarSystem'])
+    check('CM2 fails while the stale and the orphan file are in the root and passes once they are gone',
+          not r1['CM2_one_per_key']['passed'] and r2['CM2_one_per_key']['passed'],
+          (r1['CM2_one_per_key']['detail'], r2['CM2_one_per_key']['detail']))
+    check('CM1 fails on the minimal files (no WCS, no TIMES: the structure test C1-C4 is part of CM1, each file named) - the '
+          'e2e manifests pass it', not r2['CM1_files']['passed'] and 'structure test raised' in str(r2['CM1_files']['detail']),
+          r2['CM1_files']['detail'])
+
+
+FAKE_REGEN = r'''#!/usr/bin/env python
+"""FAKE phase3_snapshot_search.py --cutouts-from-cubes for tests/test_photometry.py: the synthetic consolidated cube of the cell /
+subband (P3_SNAP_CUBE_ROOT), the hour-median model, every frame admitted, identity screens - then the REAL writer
+(clv15 phase3_snapshot_cutouts.write_cutouts) into P3_SNAP_CUTOUT_ROOT, V then I, and the regeneration's CUTOUTS-REGEN line.
+fake_params.json: 'excluded' cells exit 3 (EXCLUDED:), 'corrupt' shifts plane 1 of every written cutout by one pixel, 'refuse'
+cells raise the engine's REFUSED (a cube repeating integrations without the search's frame list), 'crash' cells fail without a
+refusal."""
+import argparse, glob, json, os, sys
+sys.path.insert(0, '/lustre/gh/main/clv15')
+import numpy as np
+from astropy.io import fits
+P = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fake_params.json')))
+ap = argparse.ArgumentParser()
+for k in ('--lst', '--date', '--subband', '--stokes', '--mode', '--out'):
+    ap.add_argument(k)
+ap.add_argument('--cutouts-from-cubes', action='store_true')
+a = ap.parse_args()
+cell = '%s_%s' % (a.lst, a.date)
+if cell in P.get('excluded', []):
+    print("EXCLUDED: %s %s %s carries verdict 'exclude' - REFUSING to search (no output written)" % (a.lst, a.date, a.subband))
+    raise SystemExit(3)
+if cell in P.get('refuse', []):
+    raise RuntimeError("REFUSED: the %s %s %s V cube repeats 1 integrations and the search's frame list (fake) is missing"
+                       % (a.lst, a.date, a.subband))
+if cell in P.get('crash', []):
+    raise ValueError('fake engine crash: no refusal text')
+import phase3_snapshot_cutouts as CUT
+root = os.environ['P3_SNAP_CUTOUT_ROOT']
+os.makedirs(a.out, exist_ok=True)
+n = {}
+for S in ('V', 'I'):
+    p = os.path.join(os.environ['P3_SNAP_CUBE_ROOT'], cell, '%s_%s_%s_flowcube.fits' % (cell, a.subband, S))
+    with fits.open(p) as h:
+        cube = np.array(h['FRAMES'].data, np.float32)
+        t = h['FRAME_TABLE'].data
+        tss = [str(x) for x in t['ts']]
+        hdrs = [fits.Header.fromstring(str(x), sep='\n') for x in t['header']]
+    model = np.median(cube, axis=0).astype(np.float32)
+    meta = [dict(ts=ts, date_obs=str(hd['DATE-OBS'])) for ts, hd in zip(tss, hdrs)]
+    z = np.zeros(cube.shape[1:], np.float32)
+    n[S] = CUT.write_cutouts(cube, model, meta, [True] * len(tss), hdrs[0], z, z, a.lst, a.date, a.subband, S, root=root)
+    if P.get('corrupt'):
+        for f in glob.glob(os.path.join(root, '*', a.subband, '*', '*_%s.fits' % S)):
+            with fits.open(f, mode='update') as h:
+                h[0].data[1] = np.roll(h[0].data[1], 1, axis=1)
+print('2026-11-02 00:00:00,000 INFO CUTOUTS-REGEN %s %s %s: V %s I %s' % (a.lst, a.date, a.subband, n['V'], n['I']), flush=True)
+'''
+
+
+def setup_fake_regen(excluded=(), corrupt=False, refuse=(), crash=()):
+    p = os.path.join(FAKE_DIR, 'fake_params.json')
+    prm = json.load(open(p)) if os.path.exists(p) else {}
+    prm.update(excluded=list(excluded), corrupt=corrupt, refuse=list(refuse), crash=list(crash))
+    json.dump(prm, open(p, 'w'))
+    fp = os.path.join(FAKE_DIR, CFG.photometry.ENGINE['cutouts_subband'])
+    open(fp, 'w').write(FAKE_REGEN)
+    FAKES['cutouts_subband'] = fp
+
+
+CUT_OUT = os.path.join(TMP, 'cut_out')
+CUT_ROOT = os.path.join(CUT_OUT, 'photometry_genT')
+CUT_CELL = '18h_2025-04-13'
+CUT_COMMON = ['--tier', 'snapshot', '--stages', 'cutouts', '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES]
+
+
+def root_state(root):
+    """{relative path: sha256} of every file of a generation root, its staging and quarantine directories aside."""
+    cc = CFG.photometry_cutouts
+    out = {}
+    for dp, dn, fn in os.walk(root):
+        rel = os.path.relpath(dp, root)
+        top = rel.split(os.sep)[0]
+        if top == cc.STAGING_SUBDIR or top.startswith((cc.QUARANTINE_PREFIX, cc.FORCED_QUARANTINE_PREFIX)):
+            continue
+        for f in fn:
+            out[os.path.normpath(os.path.join(rel, f))] = TC.sha256_file(os.path.join(dp, f))
+    return out
+
+
+def quarantine_rows(root, prefix=None):
+    """{quarantine directory: its MANIFEST_sha256.csv rows} under a root."""
+    pre = prefix or CFG.photometry_cutouts.QUARANTINE_PREFIX
+    return {d: T.read_csv(os.path.join(d, 'MANIFEST_sha256.csv'))[1] for d in glob.glob(os.path.join(root, pre + '*'))
+            if os.path.isfile(os.path.join(d, 'MANIFEST_sha256.csv'))}
+
+
+def new_rows(before, after):
+    """The quarantine manifest rows written between two quarantine_rows() readings (runs of this process that start within
+    one second share a run id, hence a quarantine directory: rows are counted per directory)."""
+    return [r for d, rs in after.items() for r in rs[len(before.get(d, [])):]]
+
+
+def test_cutouts_snapshot():
+    """The snapshot cutouts stage through its engine seam: a FAKE regeneration engine that runs the REAL writer on synthetic
+    consolidated cubes (the default HWJ / 10 pc lists and the planets: what lands in the synthetic image)."""
+    make_cube(CUT_CELL, CUT_SB, 'V', 21)
+    make_cube(CUT_CELL, CUT_SB, 'I', 22)
+    setup_fake_regen()
+    unit = 'cutouts.%s.%s' % (CUT_CELL, CUT_SB)
+    argv = ['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--cutout-root', CUT_ROOT, '--out', CUT_OUT]
+    rc, txt = step(argv + ['--dry-run'])
+    check('cutouts --dry-run: one unit planned, nothing written', rc == 0 and 'unit cutouts.%s.%s' % (CUT_CELL, CUT_SB) in txt
+          and not os.path.exists(CUT_OUT), txt)
+    rc, txt = step(argv)
+    rec = records(CUT_OUT).get(unit, {})
+    man = [o['path'] for o in rec.get('outputs', [])]
+    tests = {t['name']: t['passed'] for t in rec.get('tests', [])}
+    files = sorted(glob.glob(os.path.join(CUT_ROOT, '*', CUT_SB, '*', '*.fits')))
+    check('cutouts (FAKE engine + the REAL writer on synthetic cubes): unit done, %d cutouts placed, the manifest written, '
+          'identity V / I pass, CM1 / CM2 pass on the STAGED files before placement and again once placed, the staging '
+          'directory removed' % len(files),
+          rc == 0 and rec.get('status') == 'done' and len(man) == 1 and files and all(tests.values())
+          and set(tests) >= {'photometry_cutout_manifest.I1_identity_V', 'photometry_cutout_manifest.I1_identity_I',
+                             'photometry_cutout_manifest.CM1_files', 'photometry_cutout_manifest.CM2_one_per_key',
+                             'photometry_cutout_manifest.CM1_files_staged', 'photometry_cutout_manifest.CM2_one_per_key_staged'}
+          and not os.path.exists(os.path.join(CUT_ROOT, CFG.photometry_cutouts.STAGING_SUBDIR)), (rc, rec.get('reason'), tests,
+                                                                                                  txt[-1500:]))
+    rows = TC.read_manifest(man[0])[1] if man else []
+    check('manifest: one row per placed cutout, sha256 of the placed bytes', len(rows) == len(files) and all(
+        TC.sha256_file(os.path.join(CUT_ROOT, r['file'])) == r['sha256'] for r in rows), (len(rows), len(files)))
+    smp = sorted({r['sample'] for r in rows})
+    check('the default target set: HWJ and 10 pc (the pinned lists) in the synthetic image (%s)' % smp,
+          set(smp) <= {'HWJ', '10pc', 'SolarSystem'} and 'HWJ' in smp, smp)
+    h0 = {r['file']: r['sha256'] for r in rows}
+    with patched(record, git_commit=lambda path: 'abc1234'):
+        step(argv)
+        rc, txt = step(argv + ['--resume'])
+    check('--resume (clean tree): the unit is skipped (inputs, cutout root, outputs unchanged)',
+          rc == 0 and ': skipped (' in txt, txt[-800:])
+    s0, q0 = root_state(CUT_ROOT), quarantine_rows(CUT_ROOT)
+    rc, txt = step(argv)
+    rows2 = TC.read_manifest(man[0])[1]
+    qr = new_rows(q0, quarantine_rows(CUT_ROOT))
+    check('a re-run replaces the unit\'s files (same names: no stale time stamp), done - each file it replaces (%d cutouts and '
+          'the unit manifest) moved to the quarantine first with its sha256, never overwritten (review F2)' % len(h0),
+          rc == 0 and sorted(r['file'] for r in rows2) == sorted(h0) and len(qr) == len(h0) + 1
+          and all(r['reason'].startswith('replaced by %s' % unit) for r in qr)
+          and sorted(r['sha256'] for r in qr) == sorted(s0.values()), (txt[-800:], len(qr)))
+    # a stale time stamp of a written key (the 12h 2024-12-31 defect) and an orphan: refused, then quarantined with --fresh
+    f0 = os.path.join(CUT_ROOT, rows2[0]['file'])
+    stale = f0.replace(f0.split('_')[-2], f0.split('_')[-2][:-1] + ('0' if f0.split('_')[-2][-1] != '0' else '1'))
+    shutil.copy(f0, stale)
+    orphan_d = os.path.join(CUT_ROOT, rows2[0]['sample'], CUT_SB, 'Not_A_Written_Object')
+    os.makedirs(orphan_d)
+    orphan = os.path.join(orphan_d, 'Not_A_Written_Object_' + os.path.basename(f0).split('_', len(rows2[0]['object'].split('_')))[-1])
+    shutil.copy(f0, orphan)
+    rc, txt = step(argv)
+    check('C-STALE: another time stamp of a written key and a file of the cell the unit did not write refuse the unit (exit 2), '
+          'nothing placed over them', rc == 2 and 'C-STALE' in txt and os.path.exists(stale) and os.path.exists(orphan), txt[-1200:])
+    hs = TC.sha256_file(stale)
+    q0 = quarantine_rows(CUT_ROOT)
+    rc, txt = step(argv + ['--fresh'])
+    qr = new_rows(q0, quarantine_rows(CUT_ROOT))
+    sup = [r for r in qr if r['reason'].startswith('superseded by')]
+    check('C-STALE --fresh: both moved to <root>/quarantine_superseded_cutouts_<run id>/ with their sha256 (never deleted), the '
+          'unit done and CM2 passes', rc == 0 and not os.path.exists(stale) and not os.path.exists(orphan) and len(sup) == 2
+          and hs in {r['sha256'] for r in sup}, (txt[-800:], qr))
+    # an identity failure refuses BEFORE anything reaches the root; staging kept
+    before = root_state(CUT_ROOT)
+    setup_fake_regen(corrupt=True)
+    rc, txt = step(argv)
+    rec = records(CUT_OUT).get(unit, {})
+    check('C-IDENTITY: a cutout whose plane is shifted refuses the unit (exit 2), the root unchanged, the staging directory '
+          'kept and named', rc == 2 and 'C-IDENTITY' in txt and before == root_state(CUT_ROOT)
+          and rec.get('meta', {}).get('staging') and os.path.isdir(rec['meta']['staging']), txt[-1200:])
+    # review F2: the manifest's content tests run on the STAGED files (the review's reproduction place_before_test.py: CM1
+    # made to fail) - refused before anything is placed or quarantined, the root as it was
+    setup_fake_regen()
+    q0 = quarantine_rows(CUT_ROOT)
+    real_structure = TC.structure
+    TC.structure = lambda p: (False, None, 'test: forced structure failure')
+    try:
+        rc, txt = step(argv)
+    finally:
+        TC.structure = real_structure
+    rec = records(CUT_OUT).get(unit, {})
+    stg = rec.get('meta', {}).get('staging')
+    check('C-CONTENT (review F2): CM1 failing on the STAGED cutouts refuses the unit before placement (exit 2) - the root '
+          'byte-identical, nothing quarantined, the staging directory kept with the new files', rc == 2
+          and 'C-CONTENT' in rec.get('reason', '') and before == root_state(CUT_ROOT)
+          and not new_rows(q0, quarantine_rows(CUT_ROOT))
+          and stg and len(glob.glob(os.path.join(stg, '*', CUT_SB, '*', '*.fits'))) == len(h0),
+          (rec.get('reason'), txt[-800:]))
+    # ... and a failure AFTER placement (the class tests on the placed manifest) undoes every move
+    reg = validate.tests_for('photometry_cutout_manifest')
+    orig = list(reg)
+    cm2 = dict(orig)['CM2_one_per_key']
+
+    def cm2_fails_placed(path, **ctx):
+        if '/%s/' % CFG.photometry_cutouts.STAGING_SUBDIR in path:
+            return cm2(path, **ctx)
+        return False, None, 'test: forced failure on the placed manifest'
+    reg[:] = [(n, cm2_fails_placed if n == 'CM2_one_per_key' else f) for n, f in orig]
+    try:
+        rc, txt = step(argv)
+    finally:
+        reg[:] = orig
+    rec = records(CUT_OUT).get(unit, {})
+    stg = rec.get('meta', {}).get('staging')
+    qr = new_rows(q0, quarantine_rows(CUT_ROOT))
+    moved = [r for r in qr if r['reason'].startswith('replaced by')]
+    back = [r for r in qr if r['reason'].startswith('restored:')]
+    check('C-PLACE (review F2): a content test failing on the PLACED files undoes the placement (exit 2) - the new files back '
+          'in the staging directory, every replaced file back in place (the root byte-identical), each move and its restore in '
+          'the quarantine manifest', rc == 2 and 'C-PLACE' in rec.get('reason', '') and before == root_state(CUT_ROOT)
+          and len(moved) == len(back) == len(before) and sorted(r['sha256'] for r in back) == sorted(before.values())
+          and stg and len(glob.glob(os.path.join(stg, '*', CUT_SB, '*', '*.fits'))) == len(h0)
+          and rec.get('meta', {}).get('placement_undone', {}).get('problems') == [], (rec.get('reason'), len(moved), len(back)))
+    # review F8: a regeneration that writes nothing for its (cell, band) - here the engine's data_decisions refusal - while the
+    # root still holds that (cell, band)'s files: they are not the current regeneration's
+    setup_fake_regen(excluded=[CUT_CELL])
+    left = sorted(glob.glob(os.path.join(CUT_ROOT, '*', CUT_SB, '*', '*.fits')))
+    rc, txt = step(argv)
+    why = records(CUT_OUT).get(unit, {}).get('reason', '')
+    check('C-EXCLUDED with that (cell, band)\'s %d files still in the root: refused (C-STALE, exit 2), nothing moved (review F8)'
+          % len(left), rc == 2 and 'C-STALE' in why and 'C-EXCLUDED' in why and left and all(map(os.path.exists, left)),
+          (why, txt[-600:]))
+    q0 = quarantine_rows(CUT_ROOT)
+    rc, txt = step(argv + ['--fresh'])
+    rec = records(CUT_OUT).get(unit, {})
+    qr = new_rows(q0, quarantine_rows(CUT_ROOT))
+    mfile = os.path.join(CUT_ROOT, CFG.photometry_cutouts.MANIFEST_SUBDIR, '10s', '%s_%s.csv' % (CUT_CELL, CUT_SB))
+    check('C-EXCLUDED --fresh: the files and the unit\'s earlier manifest (which lists them) move to the quarantine with their '
+          'sha256 and the unit has no input (exit 3) - the engine\'s data_decisions refusal is an outcome, never a failure',
+          rc == 3 and 'C-EXCLUDED' in rec.get('reason', '') and not any(map(os.path.exists, left))
+          and not os.path.exists(mfile) and len(qr) == len(left) + 1, (rec.get('reason'), len(qr), txt[-600:]))
+    rc, txt = step(argv)
+    why = records(CUT_OUT).get(unit, {}).get('reason', '')
+    check('C-EXCLUDED with nothing of it left in the root: no input (exit 3)', rc == 3 and 'C-EXCLUDED' in why
+          and 'C-STALE' not in why, (why, txt[-600:]))
+    setup_fake_regen()
+    rc, txt = step(['photometry'] + CUT_COMMON + ['--cutout-root', CUT_ROOT, '--out', CUT_OUT])
+    check('C-CELLS: a regeneration without --cells refuses (exit 2)', rc == 2 and 'C-CELLS' in txt, txt)
+    for root, what in ((CFG.photometry.RETIRED_CUTOUT_ROOTS[0], 'the retired generation 4'),
+                       (os.path.join(CFG.photometry.CUTOUT_ROOT), 'the served generation (a production root)')):
+        rc, txt = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--cutout-root', root,
+                                                      '--out', CUT_OUT, '--dry-run'])
+        check('C-ROOT: --cutout-root %s refuses (dry run, exit 2, nothing written)' % what,
+              rc == 2 and 'C-ROOT' in txt and not os.path.exists(os.path.join(root, CFG.photometry_cutouts.STAGING_SUBDIR)), txt)
+
+
+def make_dup_cube(cubes, cell, sb, stokes, seed):
+    """A consolidated cube whose frame 1 repeats the integration (DATE-OBS) of frame 0 - a duplicate-run cube (the review's
+    reproduction, P_photometry_evidence/engine_refusal2.py)."""
+    from astropy.io import fits
+    rng = np.random.default_rng(seed)
+    frames = rng.normal(0, 1, (NT_C, NPX_C, NPX_C)).astype(np.float32)
+    ts = cube_ts(NT_C, cell.split('_', 1)[1].replace('-', ''))
+    hdrs = []
+    for k in range(NT_C):
+        h = cube_header(k, ts[k])
+        if k == 1:
+            h['DATE-OBS'] = cube_header(0, ts[0])['DATE-OBS']
+        hdrs.append(h.tostring(sep='\n'))
+    d = os.path.join(cubes, cell)
+    os.makedirs(d, exist_ok=True)
+    tab = fits.BinTableHDU.from_columns([fits.Column(name='ts', format='15A', array=np.array(ts)),
+                                         fits.Column(name='header', format='%dA' % max(len(x) for x in hdrs),
+                                                     array=np.array(hdrs))], name='FRAME_TABLE')
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(frames, name='FRAMES'), tab]).writeto(
+        os.path.join(d, '%s_%s_%s_flowcube.fits' % (cell, sb, stokes)), overwrite=True)
+
+
+def test_engine_refusal_carry_on():
+    """Review F3: an engine REFUSAL refuses its unit (C-ENGINE, exit 2) and an engine crash is that unit's error (exit 1); either
+    way the stage goes on with the next unit (production's drivers marked the job FAILED and went on). Fake engine (one cell
+    refusing or crashing, the next one cut) and the REAL engine on the review's reproduction (two duplicate-run cubes without
+    the search's frame list)."""
+    cell2 = '18h_2025-04-14'
+    make_cube(cell2, CUT_SB, 'V', 23)
+    make_cube(cell2, CUT_SB, 'I', 24)
+    cells = '%s_%s,%s_%s' % (CUT_CELL, CUT_SB, cell2, CUT_SB)
+    for kind, rc_want, st_want, code in (('refuse', 2, 'refused', 'C-ENGINE'), ('crash', 1, 'error', 'fake engine crash')):
+        setup_fake_regen(**{kind: [CUT_CELL]})
+        out = os.path.join(TMP, 'f3_%s' % kind)
+        root = os.path.join(out, 'photometry_genT')
+        rc, txt = step(['photometry'] + CUT_COMMON + ['--cells', cells, '--cutout-root', root, '--out', out])
+        recs = records(out)
+        a, b = recs.get('cutouts.%s.%s' % (CUT_CELL, CUT_SB), {}), recs.get('cutouts.%s.%s' % (cell2, CUT_SB), {})
+        placed = glob.glob(os.path.join(root, '*', CUT_SB, '*', '*.fits'))
+        check('the engine %s on %s: that unit %s (%s), the next cell %s still cut and placed (done), the run exits %d'
+              % ('refusing' if kind == 'refuse' else 'crashing', CUT_CELL, st_want, code, cell2, rc_want),
+              rc == rc_want and a.get('status') == st_want and code in str(a.get('reason')) + ' '.join(a.get('notes', []))
+              and b.get('status') == 'done' and placed and all(TC._header_cell(p) == cell2 for p in placed),
+              (rc, a.get('status'), str(a.get('reason'))[:300], b.get('status'), txt[-800:]))
+    setup_fake_regen()
+    cubes = os.path.join(TMP, 'f3_real', 'cubes')
+    for cl in (CUT_CELL, cell2):
+        for S, seed in (('V', 21), ('I', 22)):
+            make_dup_cube(cubes, cl, CUT_SB, S, seed)
+    out = os.path.join(TMP, 'f3_real', 'out')
+    fake = FAKES.pop('cutouts_subband')
+    try:
+        rc, txt = step(['photometry', '--tier', 'snapshot', '--stages', 'cutouts', '--cores', 'none', '--set',
+                        'paths.SNAPSHOT_CUBES_ROOT=%s' % cubes, '--cells', cells, '--cutout-root',
+                        os.path.join(TMP, 'f3_real', 'root'), '--out', out])
+    finally:
+        FAKES['cutouts_subband'] = fake
+    recs = records(out)
+    st = {n: (r.get('status'), str(r.get('reason'))[:200]) for n, r in recs.items()}
+    check('the REAL engine (the review\'s reproduction engine_refusal2.py): both duplicate-run cells REFUSED by the engine are '
+          'refused units (C-ENGINE, exit 2), the second one run after the first - no crash of the run',
+          rc == 2 and len(recs) == 2 and all(s == 'refused' and 'C-ENGINE' in why and 'REFUSED' in why
+                                             for s, why in st.values()), (rc, st, txt[-600:]))
+
+
+def test_in_place_whole_cells():
+    """Fix verification N1 (2026-11-03): an --in-place snapshot regeneration re-measures what it places in the same run, and
+    the chained measure rewrites a cell's served stage 1 only as a whole (its full-band manifest) - so --in-place regenerates
+    WHOLE cells. The verifier's reproduction (inplace_band_subset_vrP.py: one band of a cell whose served stage 1 holds the
+    full-band manifest; the cutouts were placed, then the measure refused SM-SUBSET) and every other way to a band subset or to
+    a cell the measure does not select are refused BEFORE anything is placed; a whole cell is cut, placed and re-measured into
+    the served stage 1 in one run (the REAL snapshot_forced_phot.py). Served roots patched to scratch; the FAKE regeneration
+    engine with the REAL writer on the synthetic cube."""
+    setup_fake_regen()
+    base = os.path.join(TMP, 'n1')
+    served_cut, served_out, fleet = (os.path.join(base, x) for x in ('photometry_genS', 'served_out', 'fleet_out'))
+    s1 = os.path.join(served_out, S1, CUT_CELL)
+    os.makedirs(s1)
+    man = os.path.join(s1, CFG.photometry_measure.MANIFEST_NAME)
+    with open(man, 'w') as f:                       # the cell's served full-band manifest, as in the reproduction
+        f.write(CFG.photometry_measure.MANIFEST_HEADER + '\n')
+    s1_before = {f: TC.sha256_file(os.path.join(s1, f)) for f in os.listdir(s1)}
+    os.makedirs(os.path.join(fleet, '18h_2025-04-14'))      # the measure's universe (search outputs) for the pattern case
+    index = os.path.join(base, 'index.txt')
+    open(index, 'w').close()
+    argv = ['photometry', '--tier', 'snapshot', '--stages', 'cutouts,measure', '--in-place', '--out', served_out, '--work',
+            WORK, '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES]
+
+    def placed():
+        return sorted(glob.glob(os.path.join(served_cut, '*', '*', '*', '*.fits')))
+
+    def s1_now():
+        return {f: TC.sha256_file(os.path.join(s1, f)) for f in os.listdir(s1)}
+    with patched(CFG.photometry, CUTOUT_ROOT=served_cut, OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
+        rc, txt = step(argv + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--dry-run'])
+        check('N1 dry run of the verifier\'s reproduction (--in-place, one band of the cell): the cutouts stage would refuse '
+              'C-INPLACE (whole cells), exit 2', rc == 2 and 'WOULD REFUSE C-INPLACE' in txt and 'whole cells' in txt,
+              txt[-800:])
+        with patched(CFG.paths, SNAPSHOT_FLEET_OUT=fleet):
+            for sel, what, why in ((['--cells', '%s_%s' % (CUT_CELL, CUT_SB)], 'one band of the cell (the verifier\'s '
+                                    'reproduction)', 'whole cells'),
+                                   (['--cells', CUT_CELL, '--scopes', CUT_SB], 'a whole cell narrowed by --scopes',
+                                    'whole cells'),
+                                   (['--cells', CUT_CELL, '--manifest-name', 'forced_manifest_64.csv'],
+                                    'another --manifest-name', '--manifest-name'),
+                                   (['--cells', CUT_CELL, '--index', index], 'an --index listing', '--index'),
+                                   (['--cells', '18h_2025-04-1[34]'], 'a --cells pattern whose cell %s the measure does not '
+                                    'select (it expands patterns over the search outputs)' % CUT_CELL, 'does not select')):
+                rc, txt = step(argv + sel)
+                check('C-INPLACE (verification N1): --in-place with %s refuses before anything is placed (exit 2) - no cutout '
+                      'in the served cutout root, the served stage 1 unchanged' % what, rc == 2 and 'C-INPLACE' in txt
+                      and why in txt and not placed() and s1_now() == s1_before, (rc, txt[-700:], placed()[:3]))
+        # a whole cell; its widebands left to the cutouts stage by a band-level --exclude-cells (the synthetic store holds no
+        # group-search fake), which the measure does not narrow: it still re-measures every band of the cell
+        wbs = ('Red', 'Green', 'Blue')
+        rc, txt = step(argv + ['--cells', CUT_CELL, '--exclude-cells', ','.join('%s_%s' % (CUT_CELL, b) for b in wbs)])
+    recs = records(served_out)
+    cu = {n: r.get('status') for n, r in recs.items() if n.startswith('cutouts.%s.' % CUT_CELL)}
+    me = recs.get('measure.%s' % CUT_CELL, {})
+    rows = T.read_csv(man)[1] if os.path.exists(man) else []
+    npz = sorted(f for f in os.listdir(s1) if f.endswith('.npz'))
+    check('--in-place of a WHOLE cell: its cutouts placed in the served cutout root (%s done; %d other subbands without a cube '
+          'no input) and its served stage 1 re-measured over every band in the same run - the full-band manifest rewritten, '
+          'its rows naming the placed cutouts, %d npz (exit 0)' % (CUT_SB, sum(v == 'no-input' for v in cu.values()), len(npz)),
+          rc == 0 and cu.get('cutouts.%s.%s' % (CUT_CELL, CUT_SB)) == 'done'
+          and len(cu) == len(CFG.photometry.SNAPSHOT_BANDS) - len(wbs) and me.get('status') == 'done'
+          and list(me.get('meta', {}).get('bands') or []) == list(CFG.photometry.SNAPSHOT_BANDS) and placed()
+          and s1_now().get(os.path.basename(man)) != s1_before[os.path.basename(man)]
+          and rows and all(r['file'].startswith(served_cut + '/') for r in rows) and npz
+          and all('_%s_' % CUT_SB in f for f in npz), (rc, cu, me.get('status'), me.get('reason'), len(rows), npz, txt[-900:]))
+
+
+FAKE_TIER = r'''#!/usr/bin/env python3
+"""FAKE photometry_tier_cutouts_20261025.py for tests/test_photometry.py: the REAL tool's code (imported from its file) with its
+input roots DEEP / TROOT / SB pointed at the test's synthetic tree and p3s2_frames.master_path at the synthetic master
+(fake_params.json), then the tool's own __main__ logic (--root --tier --cells --workers) - its cell_job unchanged."""
+import argparse, importlib.util, json, os, sys
+sys.path.insert(0, '/lustre/gh/main/clv15'); sys.path.insert(0, '/lustre/gh/main/exopipe_ops')
+P = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fake_params.json')))
+spec = importlib.util.spec_from_file_location('ptc', P['tier_tool'])
+M = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(M)
+M.DEEP, M.TROOT, M.SB = P['deep_run'], P['tenmin_root'], P['tenmin_search']
+import p3s2_frames
+p3s2_frames.master_path = lambda lst, band, S: P['master'] if S == 'I' else None
+ap = argparse.ArgumentParser()
+ap.add_argument('--root', required=True); ap.add_argument('--workers', type=int, default=4)
+ap.add_argument('--tier', default='both'); ap.add_argument('--cells', nargs='*')
+a = ap.parse_args()
+tot = 0
+for t in (('deep', '10min') if a.tier == 'both' else (a.tier,)):
+    for c in a.cells:
+        for S in ('I', 'V'):
+            (_, lst, band, _, _), nw, msg = M.cell_job((t, c.split('_', 1)[0], c.split('_', 1)[1], S, a.root))
+            tot += nw
+            print('%s %s_%s %s: %d cutouts (%s)' % (t, lst, band, S, nw, msg), flush=True)
+print('PHOTOMETRY-TIER-DONE %d cutouts written under %s' % (tot, a.root))
+'''
+
+TIER = os.path.join(TMP, 'tier')
+TIER_CELL = '18h_64MHz'
+TIER_DATES = ('2025-04-11', '2025-04-12', '2025-04-13')
+
+
+def make_tier_inputs():
+    """Synthetic tier residuals of 18h_64MHz around (275, 60): deep = 3 nights (I, V) in <TIER>/Run_FAKE/{iresid,vresid}/;
+    10-minute = 2 windows per night (frames.csv sub_path), the first searched (v_deep_images.csv); a Stokes I master."""
+    from astropy.io import fits
+    rng = np.random.default_rng(31)
+    deep, troot, sbr = os.path.join(TIER, 'Run_FAKE'), os.path.join(TIER, 'tenmin'), os.path.join(TIER, 'search_B')
+    rows = []
+    for k, date in enumerate(TIER_DATES):
+        for S, sub in (('I', 'iresid'), ('V', 'vresid')):
+            h = cube_header(k, '%s_123000' % date.replace('-', ''))
+            h['MJD-MID'] = 60776.52 + k
+            d = os.path.join(deep, sub, TIER_CELL)
+            os.makedirs(d, exist_ok=True)
+            fits.writeto(os.path.join(d, '%s_%s_redo_resid_64MHz.fits' % (date, S)),
+                         rng.normal(0, 0.1, (NPX_C, NPX_C)).astype(np.float32), h, overwrite=True)
+            for w_ in range(2):
+                key = '%s_%d' % (date.replace('-', ''), w_)
+                p = os.path.join(troot, TIER_CELL, 'win', '%s_%s.fits' % (key, S))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                h['MJD-MID'] = 60776.52 + k + w_ * 0.007
+                fits.writeto(p, rng.normal(0, 0.2, (NPX_C, NPX_C)).astype(np.float32), h, overwrite=True)
+                rows.append(dict(key=key, date=date, stokes=S, sub_path=p))
+    os.makedirs(os.path.join(deep, 'refusals'), exist_ok=True)
+    with open(os.path.join(troot, TIER_CELL, 'frames.csv'), 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=['key', 'date', 'stokes', 'sub_path'])
+        w.writeheader()
+        w.writerows(rows)
+    for S in 'IV':
+        d = os.path.join(sbr, '%s_%s' % (TIER_CELL, S), 'transients', 'Run_SLST18B')
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'v_deep_images.csv'), 'w') as f:
+            f.write('date\n' + ''.join('%s_0\n' % d_.replace('-', '') for d_ in TIER_DATES))
+    master = os.path.join(TIER, 'I_deep_Taper_R075_64MHz.fits')
+    fits.writeto(master, rng.normal(0, 1, (NPX_C, NPX_C)).astype(np.float32), cube_header(0, '20250413_123000'), overwrite=True)
+    p = os.path.join(FAKE_DIR, 'fake_params.json')
+    prm = json.load(open(p)) if os.path.exists(p) else {}
+    prm.update(tier_tool=TIER_TOOL, deep_run=deep, tenmin_root=troot, tenmin_search=sbr, master=master)
+    json.dump(prm, open(p, 'w'))
+    fp = os.path.join(FAKE_DIR, CFG.photometry.ENGINE['cutouts_tier'])
+    open(fp, 'w').write(FAKE_TIER)
+    FAKES['cutouts_tier'] = fp
+    return deep, troot, sbr
+
+
+def tier_hwj_list():
+    """An ad-hoc HWJ list of the two targets in the synthetic tier image (HD 163607, HIP 91258: the pinned list's rows)."""
+    adhoc = os.path.join(TMP, 'tier_hwj.csv')
+    src = [r for r in csv.DictReader(open(os.path.join(CFG.paths.CLV15_ROOT, CFG.photometry.SAMPLE_FILES['HWJ']),
+                                          encoding='utf-8-sig')) if r['common_name'] in ('HD 163607', 'HIP 91258')]
+    with open(adhoc, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=list(src[0]))
+        w.writeheader()
+        w.writerows(src)
+    return adhoc
+
+
+def test_cutouts_tiers():
+    """The deep and 10-minute tier cutouts through the step (the REAL tool's cell_job on synthetic residuals) and the REAL
+    tier forced tool on them (cutmeasure, in place): an ad-hoc HWJ subset, never into the served roots."""
+    deep, troot, sbr = make_tier_inputs()
+    adhoc = tier_hwj_list()
+    out, root, tout = os.path.join(TMP, 'tier_out'), os.path.join(TMP, 'tier_out', 'photometry_genT'), \
+        os.path.join(TMP, 'tier_out', 'forced_tiers_genT')
+    cc = CFG.photometry_cutouts
+    with patched(cc, TIER_DEEP_RUN=deep, TIER_TENMIN_ROOT=troot, TIER_TENMIN_SEARCH=sbr):
+        rcs, recs = {}, {}
+        for tier, token in (('deep', 'deep'), ('sublst', '10min')):
+            argv = ['photometry', '--tier', tier, '--stages', 'cutouts,cutmeasure', '--cells', TIER_CELL, '--targets',
+                    'HWJ=%s' % adhoc, '--cutout-root', root, '--tier-out', tout, '--out', out, '--cores', 'none']
+            rcs[tier], txt = step(argv)
+            recs[tier] = records(out)
+            u = recs[tier].get('cutouts.%s.%s.HWJ' % (token, TIER_CELL), {})
+            m = recs[tier].get('cutmeasure.%s.18h.HWJ' % token, {})
+            files = sorted(glob.glob(os.path.join(root, 'HWJ', '64MHz', '*', '*_18h_%s_[IV].fits' % token)))
+            npz = sorted(glob.glob(os.path.join(tout, token, '18h', 'forced_HWJ_64MHz_[IV].npz')))
+            ut = {t['name'].split('.', 1)[1]: t['passed'] for t in u.get('tests', [])}
+            mt = {t['name'].split('.', 1)[1]: t['passed'] for t in m.get('tests', [])}
+            check('tier %s (%s): cutouts (the REAL tool\'s cell_job on synthetic residuals) and cutmeasure (the REAL '
+                  'photometry_tier_forced_20261026.py) done; %d cutouts of the 2 HWJ targets, one plane each re-cut from its '
+                  'source, CM1 / CM2; npz I and V pass TN1 / TN2, the manifest TM1 / TM2' % (tier, token, len(files)),
+                  rcs[tier] == 0 and u.get('status') == 'done' and m.get('status') == 'done' and len(files) == 4
+                  and len(npz) == 2 and all(ut.values()) and {'I1_recut_I', 'I1_recut_V', 'CM1_files', 'CM2_one_per_key'} <= set(ut)
+                  and all(mt.values()) and {'TN1_shapes', 'TN2_target_remeasure', 'TM1_statuses', 'TM2_coverage'} <= set(mt),
+                  (rcs[tier], u.get('reason'), m.get('reason'), ut, mt, files, txt[-1500:]))
+        from astropy.io import fits
+        f0 = sorted(glob.glob(os.path.join(root, 'HWJ', '64MHz', '*', '*_18h_10min_I.fits')))
+        T10 = fits.getdata(f0[0], 'TIMES') if f0 else None
+        check('10-minute tier file: one plane per window, the searched flag from v_deep_images.csv (TIMES searched)',
+              T10 is not None and len(T10) == 6 and [str(x).strip() for x in T10['searched']] == ['1', '0'] * 3,
+              None if T10 is None else list(T10['searched']))
+        served_t = dict(CFG.photometry.TIER_FORCED_ROOTS, HWJ=os.path.join(TMP, 'served_tier_tmp'))
+        with patched(CFG.photometry, TIER_FORCED_ROOTS=served_t):
+            rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutmeasure', '--cells', TIER_CELL, '--targets',
+                            'HWJ=%s' % adhoc, '--cutout-root', root, '--out', out, '--cores', 'none', '--dry-run'])
+        check('PHOT-ADHOC: cutmeasure of an ad-hoc set into the served tier forced root (no --tier-out) refuses (dry run, '
+              'exit 2)', rc == 2 and 'PHOT-ADHOC' in txt and 'served generation' in txt, txt[-600:])
+        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutmeasure', '--cells', TIER_CELL, '--cutout-root', root,
+                        '--out', out, '--cores', 'none', '--dry-run'])
+        check('C-ROOT: cutmeasure into the production tier forced roots refuses in the refactor window (dry run, exit 2)',
+              rc == 2 and 'C-ROOT' in txt, txt[-600:])
+        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutmeasure', '--cells', TIER_CELL, '--targets',
+                        'ADHOC=%s' % adhoc, '--cutout-root', root, '--tier-out', tout, '--out', out, '--cores', 'none',
+                        '--dry-run'])
+        check('PHOT-ADHOC: cutmeasure of a tag the tier tool does not measure (ADHOC) refuses', rc == 2 and 'PHOT-ADHOC' in txt
+              and 'SAMPLES' in txt, txt[-600:])
+        rc, txt = step(['photometry', '--tier', 'deep', '--stages', 'cutouts', '--cells', TIER_CELL, '--src-run',
+                        os.path.join(TMP, 'deep', 'transients', 'Run_T'), '--cutout-root', root, '--out', out, '--cores', 'none',
+                        '--dry-run'])
+        check('C-RUN: --src-run naming another run than the tier tool reads refuses', rc == 2 and 'C-RUN' in txt, txt[-600:])
+        tier_review_fixes(adhoc, root, tout, out)
+
+
+def tier_review_fixes(adhoc, root, tout, out):
+    """The review's findings on the tier stages (2026-11-03), on the synthetic tier inputs (the caller patches
+    photometry_cutouts.TIER_DEEP_RUN / TIER_TENMIN_ROOT / TIER_TENMIN_SEARCH): F2 the content tests on the STAGED products and
+    the placement transaction, F4 the served roots only --in-place with the measurement chained, F5 the tool's inputs not
+    readable here / a cell it does not know, F9 one entry per tier forced root in the ad-hoc gate."""
+    cc = CFG.photometry_cutouts
+    common = ['--tier', 'deep', '--cells', TIER_CELL, '--targets', 'HWJ=%s' % adhoc, '--cutout-root', root, '--out', out,
+              '--cores', 'none']
+    # ---- F2, cutouts: a re-run quarantines the files it replaces; CM1 failing on the staged files refuses before placement
+    s0 = root_state(root)
+    q0 = quarantine_rows(root)
+    rc, txt = step(['photometry', '--stages', 'cutouts'] + common)
+    qr = new_rows(q0, quarantine_rows(root))
+    deep0 = {k: v for k, v in s0.items() if '_deep_' in k or k.startswith(os.path.join(cc.MANIFEST_SUBDIR, 'deep'))}
+    check('tier cutouts re-run (deep): done, every file it replaces (the 4 cutouts and the unit manifest) moved to the quarantine '
+          'first with its sha256 (review F2)', rc == 0 and len(qr) == len(deep0) == 5
+          and sorted(r['sha256'] for r in qr) == sorted(deep0.values()), (rc, len(qr), sorted(deep0), txt[-600:]))
+    s1 = root_state(root)
+    real_structure = TC.structure
+    TC.structure = lambda p: (False, None, 'test: forced structure failure')
+    try:
+        rc, txt = step(['photometry', '--stages', 'cutouts'] + common)
+    finally:
+        TC.structure = real_structure
+    rec = records(out).get('cutouts.deep.%s.HWJ' % TIER_CELL, {})
+    check('C-CONTENT, tier cutouts (the review\'s reproduction place_before_test.py, CM1 made to fail): refused before placement '
+          '(exit 2), the root byte-identical, the staging kept', rc == 2 and 'C-CONTENT' in rec.get('reason', '')
+          and root_state(root) == s1 and os.path.isdir(rec.get('meta', {}).get('staging') or '/nonexistent'),
+          (rec.get('reason'), txt[-600:]))
+    # ---- F2, cutmeasure: TN1 failing on the staged npz refuses before placement; a failure after placement is undone; a clean
+    #      re-run quarantines the npz and manifest it replaces
+    mc = ['photometry', '--stages', 'cutmeasure'] + common + ['--tier-out', tout]
+    f0 = root_state(tout)
+    f0d = {k: v for k, v in f0.items() if k.startswith('deep' + os.sep)}     # the deep 18h npz and manifest this unit replaces
+    keys0 = TC.TIER_NPZ_KEYS
+    TC.TIER_NPZ_KEYS = keys0 + ('test_missing_key',)
+    try:
+        rc, txt = step(mc)
+    finally:
+        TC.TIER_NPZ_KEYS = keys0
+    rec = records(out).get('cutmeasure.deep.18h.HWJ', {})
+    check('CM-CONTENT, cutmeasure (the review\'s reproduction, TN1 made to fail): refused before placement (exit 2) - the tier '
+          'forced root byte-identical (npz and forced_manifest.csv), nothing quarantined, the staging kept', rc == 2
+          and 'CM-CONTENT' in rec.get('reason', '') and root_state(tout) == f0 and f0
+          and not quarantine_rows(tout, cc.FORCED_QUARANTINE_PREFIX)
+          and os.path.isdir(rec.get('meta', {}).get('staging') or '/nonexistent'), (rec.get('reason'), sorted(f0), txt[-600:]))
+    reg = validate.tests_for('photometry_tier_manifest')
+    orig = list(reg)
+    tm1 = dict(orig)['TM1_statuses']
+
+    def tm1_fails_placed(path, **ctx):
+        if '/%s/' % cc.STAGING_SUBDIR in path:
+            return tm1(path, **ctx)
+        return False, None, 'test: forced failure on the placed manifest'
+    reg[:] = [(n, tm1_fails_placed if n == 'TM1_statuses' else f) for n, f in orig]
+    try:
+        rc, txt = step(mc)
+    finally:
+        reg[:] = orig
+    rec = records(out).get('cutmeasure.deep.18h.HWJ', {})
+    qr = new_rows({}, quarantine_rows(tout, cc.FORCED_QUARANTINE_PREFIX))
+    check('C-PLACE, cutmeasure: a content test failing on the PLACED manifest undoes the placement (exit 2) - the replaced npz '
+          'and manifest back in place (byte-identical), each move and its restore in the quarantine manifest', rc == 2
+          and 'C-PLACE' in rec.get('reason', '') and root_state(tout) == f0 and len(f0d) == 3
+          and sum(r['reason'].startswith('replaced by') for r in qr) == sum(r['reason'].startswith('restored:') for r in qr)
+          == len(f0d), (rec.get('reason'), len(qr), sorted(f0d), txt[-600:]))
+    q0 = quarantine_rows(tout, cc.FORCED_QUARANTINE_PREFIX)
+    rc, txt = step(mc)
+    rec = records(out).get('cutmeasure.deep.18h.HWJ', {})
+    qr = new_rows(q0, quarantine_rows(tout, cc.FORCED_QUARANTINE_PREFIX))
+    tests = {t['name'].split('.', 1)[1] for t in rec.get('tests', []) if t['passed']}
+    check('cutmeasure re-run: done; TN1 / TN2 / TM1 / TM2 passed on the staged files and again once placed; the npz and '
+          'manifest it replaced are in <root>/quarantine_superseded_tier_forced_<run id>/ with their sha256 (review F2)',
+          rc == 0 and rec.get('status') == 'done' and {'TN1_shapes_staged', 'TN2_target_remeasure_staged', 'TM1_statuses_staged',
+                                                         'TM2_coverage_staged', 'TN1_shapes', 'TM2_coverage'} <= tests
+          and sorted(r['sha256'] for r in qr) == sorted(f0d.values()), (rc, rec.get('reason'), sorted(tests), len(qr)))
+    # ---- F4: the served roots only with --in-place, the measurement chained (served roots patched to scratch here)
+    sc, sf, sp = (os.path.join(TMP, 'served_tier', x) for x in ('photometry_genS', 'forced_tiers_genS', 'planets_genS'))
+    base = ['photometry', '--tier', 'deep', '--cells', TIER_CELL, '--out', out, '--cores', 'none']
+    with patched(CFG.photometry, CUTOUT_ROOT=sc, TIER_FORCED_ROOTS={'HWJ': sf, '10pc': sf, 'SolarSystem': sp}):
+        for extra, what in ((['--stages', 'cutouts'], 'tier cutouts into the served cutout root without --in-place'),
+                            (['--stages', 'cutmeasure'], 'cutmeasure into the served tier forced roots without --in-place'),
+                            (['--stages', 'cutouts', '--in-place'], '--in-place tier cutouts without cutmeasure chained'),
+                            (['--stages', 'cutouts,cutmeasure', '--in-place', '--tier-out', tout],
+                             '--in-place with --tier-out (not the served roots)'),
+                            (['--stages', 'cutmeasure', '--in-place', '--cutout-root', root],
+                             '--in-place cutmeasure of another generation\'s cutouts'),
+                            (['--stages', 'cutouts', '--cutout-root', os.path.join(sc, 'sub')],
+                             'a cutout root inside the served one'),
+                            (['--stages', 'cutouts,cutmeasure', '--in-place', '--cutout-root', root, '--tier-out', tout],
+                             '--in-place with no served root to write'),
+                            (['--stages', 'frames', '--in-place', '--src-run', SRC, '--parent-dir', PARENTS],
+                             '--in-place without a cutouts / cutmeasure stage')):
+            rc, txt = step(base + extra + ['--dry-run'])
+            check('C-INPLACE (review F4): %s refuses (dry run, exit 2)' % what, rc == 2 and 'C-INPLACE' in txt, txt[-700:])
+        rc, txt = step(base + ['--stages', 'cutouts,cutmeasure', '--in-place', '--dry-run'])
+        check('C-INPLACE: --in-place --stages cutouts,cutmeasure (into the served roots, cutmeasure chained) is planned (dry run, '
+              'exit 0)', rc == 0 and 'WOULD REFUSE' not in txt and '[cutmeasure]' in txt, txt[-700:])
+        rc, txt = step(base + ['--stages', 'cutouts,cutmeasure', '--in-place'])
+        recs = records(out)
+        cu = recs.get('cutouts.deep.%s' % TIER_CELL, {})
+        cms = {n: r.get('status') for n, r in recs.items() if n.startswith('cutmeasure.deep.18h.') and n.count('.') == 3}
+        check('--in-place regeneration of the (patched) served generation: the tier cutouts placed in the served cutout root and '
+              'cutmeasure run in the same invocation into each sample\'s served tier forced root (exit 0)',
+              rc == 0 and cu.get('status') == 'done' and glob.glob(os.path.join(sc, '*', '64MHz', '*', '*_18h_deep_[IV].fits'))
+              and cms.get('cutmeasure.deep.18h.HWJ+10pc') == 'done' and glob.glob(os.path.join(sf, 'deep', '18h', 'forced_*.npz')),
+              (rc, cu.get('status'), cu.get('reason'), cms, txt[-900:]))
+    # ---- F4 helper: in place, the measurement runs once any cutouts unit placed its files
+    U = [type('U', (), {'status': s_}) for s_ in ('done', 'refused')]
+    check('stop_after: a stage with a refused unit stops the later stages, except --in-place cutouts once a unit placed its '
+          'files (their measurement must follow; a refused unit left its files as they were)',
+          K.stop_after(A(), 'cutouts', U) and not K.stop_after(A(in_place=True), 'cutouts', U)
+          and K.stop_after(A(in_place=True), 'cutouts', U[1:]) and K.stop_after(A(in_place=True), 'cutmeasure', U)
+          and not K.stop_after(A(), 'cutouts', U[:1]))
+    # ---- F5: the tier tool's inputs not readable on this host refuse (never 'no input'); a cell the tool does not know refuses
+    with patched(cc, TIER_DEEP_RUN=os.path.join(TMP, 'no_such_deep_run')):
+        rc, txt = step(['photometry', '--stages', 'cutouts'] + common)
+        check('C-HOST (review F5): deep tier cutouts where the deep run is not readable refuse (exit 2, not the exit 3 of no '
+              'input)', rc == 2 and 'C-HOST' in txt, txt[-600:])
+        rc, txt = step(['photometry', '--stages', 'cutmeasure'] + common + ['--tier-out', tout, '--dry-run'])
+        check('... cutmeasure reads only the cutout root: a NAMED cell is planned there (dry run, exit 0)', rc == 0
+              and 'WOULD REFUSE' not in txt and 'cutmeasure.deep.18h.HWJ' in txt, txt[-600:])
+        rc, txt = step(['photometry', '--stages', 'cutmeasure'] + [x if x != TIER_CELL else '18h_*' for x in common]
+                       + ['--tier-out', tout, '--dry-run'])
+        check('... a pattern over the tool\'s cells refuses there (C-HOST)', rc == 2 and 'C-HOST' in txt, txt[-600:])
+    with patched(cc, TIER_TENMIN_SEARCH=os.path.join(TMP, 'no_such_search_B')):
+        rc, txt = step(['photometry', '--tier', 'sublst', '--stages', 'cutouts'] + common[2:] + ['--dry-run'])
+        check('C-HOST: 10-minute tier cutouts where the 10-minute search root is not readable refuse (dry run, exit 2)',
+              rc == 2 and 'C-HOST' in txt, txt[-600:])
+    rc, txt = step(['photometry', '--stages', 'cutouts'] + [x if x != TIER_CELL else '18h_82MHz' for x in common]
+                   + ['--dry-run'])
+    check('C-CELLS (review F5): a named cell the tier tool does not know (18h_82MHz) refuses (dry run, exit 2)', rc == 2
+          and 'C-CELLS' in txt and '18h_82MHz' in txt, txt[-600:])
+    # ---- F9: cutmeasure hands the ad-hoc gate one entry per tier forced root
+    seen = []
+    real_gate = K.gate_adhoc_roots
+    K.gate_adhoc_roots = lambda targets, roots: (seen.append(dict(roots)), real_gate(targets, roots))[1]
+    try:
+        with patched(CFG.photometry, TIER_FORCED_ROOTS={'HWJ': os.path.join(TMP, 'f9_a'), '10pc': os.path.join(TMP, 'f9_a'),
+                                                        'SolarSystem': os.path.join(TMP, 'f9_b')}):
+            rc, txt = step(['photometry', '--stages', 'cutmeasure', '--planets'] + common + ['--dry-run'])
+    finally:
+        K.gate_adhoc_roots = real_gate
+    check('F9: the ad-hoc gate of cutmeasure gets one entry per tier forced root (HWJ and the planets: 2), never one collapsed '
+          'key - and refuses the served root', seen and len(seen[-1]) == 2 and rc == 2 and 'PHOT-ADHOC' in txt, (seen, txt[-400:]))
+
+
+def sigterm_child(base):
+    """The child process of test_sigterm_rollback (`python <this file> --sigterm-child BASE`, with a TMP of its own): a deep
+    tier cutouts unit (the REAL tool's cell_job on the synthetic residuals: 4 cutouts and the unit manifest) is placed cleanly,
+    then re-run with steps_cutouts.place pausing after 2 of its 5 files are renamed in - BASE/placed_2 tells the parent, which
+    sends SIGTERM. What the interrupted step raised and the SIGTERM disposition after cli.main returned go to BASE/child.json."""
+    import signal
+    from exopipe.phase3.lib.photometry import steps_cutouts as SC_
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)      # the default disposition, whatever the caller's
+    deep, troot, sbr = make_tier_inputs()
+    adhoc = tier_hwj_list()
+    out, root = os.path.join(base, 'out'), os.path.join(base, 'photometry_genT')
+    argv = ['photometry', '--tier', 'deep', '--stages', 'cutouts', '--cells', TIER_CELL, '--targets', 'HWJ=%s' % adhoc,
+            '--cutout-root', root, '--out', out, '--cores', 'none']
+    res = {}
+    real_place = SC_.place
+
+    def paused_place(root_, pairs, placed, created):
+        for i, pr in enumerate(pairs):
+            real_place(root_, [pr], placed, created)
+            if i == 1:
+                with open(os.path.join(base, 'placed_2'), 'w') as f:
+                    json.dump([r for _, r in placed], f)
+                time.sleep(600)                       # the parent's SIGTERM ends this
+    with patched(CFG.photometry_cutouts, TIER_DEEP_RUN=deep, TIER_TENMIN_ROOT=troot, TIER_TENMIN_SEARCH=sbr):
+        res['clean_rc'] = step(argv)[0]
+        res['clean_state'] = root_state(root)
+        SC_.place = paused_place
+        try:
+            res['rc'] = step(argv)[0]
+        except KeyboardInterrupt as e:
+            res['interrupted'] = '%s: %s' % (type(e).__name__, e)
+        finally:
+            SC_.place = real_place
+    res['sigterm_after'] = str(signal.getsignal(signal.SIGTERM))
+    with open(os.path.join(base, 'child.json'), 'w') as f:
+        json.dump(res, f)
+
+
+def test_sigterm_rollback():
+    """Fix verification N2 (2026-11-03): a SIGTERM to a step process in the middle of a placement (an operator's kill, a node
+    shutdown, a scheduler's stop) is undone as Ctrl-C is - cli.main maps SIGTERM to Terminated (a KeyboardInterrupt) while a
+    step runs. The verifier's reproduction (kill_mid_placement_vrP.py: a deep tier unit's 5 files, SIGTERM after 2 were renamed
+    in; before the fix 2 new cutouts stayed placed, 3 files were missing and the old ones stayed in the quarantine), the signal
+    sent here by THIS process to the step's process (sigterm_child): the root ends byte-identical."""
+    import signal
+    import subprocess
+    base = os.path.join(TMP, 'sigterm')
+    os.makedirs(base)
+    marker, resp, logp = (os.path.join(base, x) for x in ('placed_2', 'child.json', 'child.log'))
+    with open(logp, 'w') as log:
+        p = subprocess.Popen([sys.executable, os.path.join(HERE, os.path.basename(__file__)), '--sigterm-child', base],
+                             stdout=log, stderr=subprocess.STDOUT)
+        t0 = time.time()
+        while p.poll() is None and not os.path.exists(marker) and time.time() - t0 < 900:
+            time.sleep(0.2)
+        sent = p.poll() is None and os.path.exists(marker)
+        if sent:
+            os.kill(p.pid, signal.SIGTERM)
+        try:
+            rc = p.wait(timeout=900)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            rc = 'timeout'
+    res = json.load(open(resp)) if os.path.exists(resp) else {}
+    tail = open(logp, errors='replace').read()[-1500:]
+    root, out = os.path.join(base, 'photometry_genT'), os.path.join(base, 'out')
+    intr = str(res.get('interrupted', ''))
+    check('SIGTERM from another process to a step mid-placement (2 of a deep tier unit\'s 5 files renamed in): the step unwinds '
+          'as for Ctrl-C (Terminated, a KeyboardInterrupt), its process carries on (exit 0 of the harness) and SIGTERM is back '
+          'to the default action once cli.main returned', sent and rc == 0 and res.get('clean_rc') == 0
+          and intr.startswith('Terminated') and 'SIGTERM' in intr and res.get('sigterm_after') == str(signal.SIG_DFL),
+          (sent, rc, res.get('clean_rc'), intr, res.get('sigterm_after'), tail))
+    before, now = res.get('clean_state') or {}, root_state(root)
+    check('SIGTERM mid-placement: the root ends byte-identical to before (the 2 placed files back in the staging directory, the '
+          '3 others never placed, the 5 replaced ones back from the quarantine)', len(before) == 5 and now == before,
+          (sorted(before), sorted(now)))
+    qr = new_rows({}, quarantine_rows(root))
+    staged = [os.path.join(dp, f) for dp, _, fs in os.walk(os.path.join(root, CFG.photometry_cutouts.STAGING_SUBDIR)) for f in fs]
+    rec = records(out).get('cutouts.deep.%s.HWJ' % TIER_CELL, {})
+    runs = sorted(glob.glob(os.path.join(out, '_records', 'photometry', '_runs', '*.json')))
+    last = json.load(open(runs[-1])) if runs else {}
+    check('SIGTERM mid-placement: each move and its restore recorded in the quarantine manifest (5 replaced, 5 restored, naming '
+          'the SIGTERM), the 5 new files kept in the staging directory, the unit recorded interrupted with its placement undone '
+          '(2 placed, 5 restored, no problem) and the run summary written (interrupted)',
+          sum(r['reason'].startswith('replaced by') for r in qr) == 5
+          and sum(r['reason'].startswith('restored:') and 'Terminated: SIGTERM' in r['reason'] for r in qr) == 5
+          and len(staged) == 5 and rec.get('status') == 'error' and rec.get('reason') == 'interrupted'
+          and (rec.get('meta') or {}).get('placement_undone') == {'placed': 2, 'restored': 5, 'problems': []}
+          and str(last.get('reason', '')).startswith('interrupted: Terminated'),
+          ([r['reason'][:80] for r in qr], len(staged), rec.get('status'), rec.get('reason'),
+           (rec.get('meta') or {}).get('placement_undone'), last.get('reason')))
+
+
+def test_adhoc_and_selection(objs):
+    """Ad-hoc target lists (the snapshot measure through the REAL snapshot_forced_phot.py with P3_SNAP_CUTOUT_SAMPLES, as
+    stage1_when_done_20261028.sh) and the gates; stage selection (cutouts only when named; sub-LST)."""
+    from exopipe.phase3.lib.photometry import steps_common as K_
+    o = objs['HWJ']
+    ent = [r for r in csv.DictReader(open(os.path.join(CFG.paths.CLV15_ROOT, CFG.photometry.SAMPLE_FILES['HWJ']),
+                                          encoding='utf-8-sig')) if T.safe_name(r['common_name']) == o][0]
+    adhoc = os.path.join(TMP, 'adhoc_list.csv')
+    with open(adhoc, 'w') as f:
+        f.write('name,ra,dec\n%s,%s,%s\n' % (ent['common_name'], ent['ra_current'], ent['dec_current']))
+    ah_root = os.path.join(TMP, 'cuts_adhoc')
+    for p in glob.glob(os.path.join(CUTS, 'HWJ', '*', o, '*.fits')):
+        rel = os.path.relpath(p, os.path.join(CUTS, 'HWJ'))
+        os.makedirs(os.path.dirname(os.path.join(ah_root, 'ADHOC', rel)), exist_ok=True)
+        shutil.copy(p, os.path.join(ah_root, 'ADHOC', rel))
+    out = os.path.join(TMP, 'adhoc_out')
+    rc, txt = step(['photometry', '--tier', 'snapshot', '--stages', 'measure', '--cells', SYN_SNAP_CELL, '--targets',
+                    'ADHOC=%s' % adhoc, '--cutout-root', ah_root, '--out', out, '--work', WORK, '--cores', 'none',
+                    '--band-procs', '3'])
+    rec = records(out).get('measure.%s' % SYN_SNAP_CELL, {})
+    npz = sorted(os.path.basename(p) for p in glob.glob(os.path.join(out, S1, SYN_SNAP_CELL, 'forced_*.npz')))
+    failed = [t['name'] for t in rec.get('tests', []) if not t['passed']]
+    check('ad hoc measure (--targets ADHOC=csv): the REAL snapshot_forced_phot.py measures the ADHOC cutouts (6 npz: 3 bands x '
+          'I, V), every content test passes with the ad-hoc list (N5 names)', rc == 0 and rec.get('status') == 'done'
+          and npz == sorted('forced_ADHOC_%s_%s.npz' % (b, s_) for b in SNAP_BANDS for s_ in 'IV') and not failed
+          and any(t['name'].endswith('N5_names') for t in rec.get('tests', [])), (rc, rec.get('reason'), npz, failed, txt[-1200:]))
+    base = ['photometry', '--tier', 'snapshot', '--cells', SYN_SNAP_CELL, '--out', os.path.join(TMP, 'sel'), '--cores', 'none']
+    rc, txt = step(base + ['--stages', 'evaluate', '--targets', 'ADHOC=%s' % adhoc])
+    check('PHOT-ADHOC: --targets with the evaluation refuses (exit 2)', rc == 2 and 'PHOT-ADHOC' in txt, txt[-500:])
+    rc, txt = step(base + ['--stages', 'measure', '--planets', '--dry-run'])
+    check('PHOT-ADHOC: --planets without --targets refuses', rc == 2 and 'PHOT-ADHOC' in txt, txt[-500:])
+    rc, txt = step(['photometry'] + DEEP_COMMON + ['--stages', 'frames', '--targets', 'ADHOC=%s' % adhoc, '--out',
+                                                   os.path.join(TMP, 'sel_d'), '--dry-run'])
+    check('PHOT-ADHOC: --targets with the deep frame-table chain refuses', rc == 2 and 'PHOT-ADHOC' in txt, txt[-500:])
+    bad = os.path.join(TMP, 'adhoc_bad.csv')
+    open(bad, 'w').write('name,ra,dec\nX,not,a number\n')
+    for spec, what in (('SolarSystem=%s' % adhoc, 'the planet sample as a tag'), ('A=%s' % bad, 'no parsable row'),
+                       ('A=/nonexistent.csv', 'a missing file'), ('A=%s,A=%s' % (adhoc, adhoc), 'a tag twice'),
+                       ('bad tag=%s' % adhoc, 'a tag that is no directory name')):
+        rc, txt = step(base + ['--stages', 'measure', '--targets', spec, '--cutout-root', ah_root, '--dry-run'])
+        check('PHOT-ADHOC: --targets %s refuses' % what, rc == 2 and 'PHOT-ADHOC' in txt, txt[-500:])
+    served_tmp = os.path.join(TMP, 'served_gen_tmp')
+    with patched(CFG.photometry, CUTOUT_ROOT=served_tmp):
+        rc, txt = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--targets', 'ADHOC=%s' % adhoc,
+                                                      '--cutout-root', served_tmp, '--out', CUT_OUT, '--dry-run'])
+    check('PHOT-ADHOC: an ad-hoc cutout run into the served generation\'s root refuses (dry run, exit 2)',
+          rc == 2 and 'PHOT-ADHOC' in txt and 'served generation' in txt, txt[-500:])
+    with patched(CFG.photometry, CUTOUT_ROOT=served_tmp):
+        rc, txt = step(['photometry'] + CUT_COMMON + ['--cells', '%s_%s' % (CUT_CELL, CUT_SB), '--targets', 'ADHOC=%s' % adhoc,
+                                                      '--cutout-root', os.path.join(served_tmp, 'adhoc'), '--out', CUT_OUT,
+                                                      '--dry-run'])
+    check('PHOT-ADHOC: an ad-hoc cutout root INSIDE the served generation (a sub-directory of it) refuses too (review F10)',
+          rc == 2 and 'PHOT-ADHOC' in txt and 'inside' in txt, txt[-500:])
+    for body, what in (('name,ra,dec\nStar A,10.0,20.0\n,11.0,21.0\n', 'a row with a position and no name'),
+                       ('name,ra,dec\n***,10.0,20.0\n', 'a name with no character of a directory name')):
+        noname = os.path.join(TMP, 'adhoc_noname.csv')
+        with open(noname, 'w') as f:
+            f.write(body)
+        rc, txt = step(base + ['--stages', 'measure', '--targets', 'A=%s' % noname, '--cutout-root', ah_root, '--dry-run'])
+        check('PHOT-ADHOC: --targets with %s refuses before any engine runs (review F11: the writer would cut it as an object '
+              'without a directory)' % what, rc == 2 and 'PHOT-ADHOC' in txt and 'no usable name' in txt, txt[-500:])
+    # review F4: the snapshot cutouts write the served generation only --in-place, the measure stage chained into the served
+    # stage 1 (the served roots patched to scratch here)
+    served_out = os.path.join(TMP, 'served_snap_out')
+    snap = ['photometry', '--tier', 'snapshot', '--cores', 'none', '--set', 'paths.SNAPSHOT_CUBES_ROOT=%s' % CUBES, '--cells',
+            CUT_CELL, '--work', WORK, '--dry-run']        # a whole cell: --in-place regenerates whole cells (N1)
+    with patched(CFG.photometry, CUTOUT_ROOT=served_tmp, OUT_ROOT=dict(CFG.photometry.OUT_ROOT, snapshot=served_out)):
+        for extra, what in ((['--stages', 'cutouts', '--out', served_out], 'into the served cutout root without --in-place'),
+                            (['--stages', 'cutouts', '--in-place', '--out', served_out],
+                             '--in-place without the measure stage chained'),
+                            (['--stages', 'cutouts,measure', '--in-place', '--out', os.path.join(TMP, 'not_served_out')],
+                             '--in-place measuring into another stage 1 than the served one'),
+                            (['--stages', 'measure', '--in-place', '--out', served_out],
+                             '--in-place without a cutouts / cutmeasure stage')):
+            rc, txt = step(snap + extra)
+            check('C-INPLACE (review F4, snapshot): %s refuses (dry run, exit 2)' % what, rc == 2 and 'C-INPLACE' in txt,
+                  txt[-600:])
+        rc, txt = step(snap + ['--stages', 'cutouts,measure', '--in-place', '--out', served_out])
+        check('C-INPLACE: --in-place --stages cutouts,measure of a whole cell into the served stage 1 is planned (dry run, '
+              'exit 0)', rc == 0 and 'WOULD REFUSE' not in txt and '[measure]' in txt and '[cutouts]' in txt, txt[-800:])
+    rc, txt = step(base + ['--stages', 'measure', '--targets', 'ADHOC=%s' % adhoc, '--cutout-root', ah_root, '--out',
+                           CFG.photometry.OUT_ROOT['snapshot'], '--dry-run'])
+    check('PHOT-ADHOC: an ad-hoc measure into the served stage 1 refuses (dry run, exit 2)', rc == 2 and 'PHOT-ADHOC' in txt,
+          txt[-500:])
+    rc, txt = step(base + ['--dry-run'])
+    check('stage selection: without --stages the snapshot tier plans measure and evaluate, never the cutout regeneration',
+          rc == 0 and '[measure]' in txt and '[cutouts]' not in txt and 'stages measure,evaluate' in txt, txt[-800:])
+    rc, txt = step(base + ['--from', 'cutouts', '--dry-run'])
+    check('stage selection: --from cutouts without --stages is an error (a regeneration is named)', rc == 1
+          and 'runs only when named' in txt, txt[-500:])
+    rc, txt = step(['photometry', '--tier', 'sublst', '--epochs', '18h_2025-04-13', '--out', os.path.join(TMP, 'sel_s'),
+                    '--cores', 'none', '--dry-run'])
+    check('stage selection: the sub-LST tier has no per-hour stage (--epochs is an error)', rc == 1
+          and 'no per-hour stage' in txt, txt[-500:])
+    try:
+        K_.resolve_stages(A(tier='sublst'), 'sublst')
+        sub_err = ''
+    except ValueError as e:
+        sub_err = str(e)
+    check('stage selection: the configured defaults (deep frames..evaluate, snapshot measure,evaluate); the sub-LST tier has '
+          'none - its stages regenerate products, so a run names them (review F4)',
+          K_.resolve_stages(A(tier='deep'), 'deep') == ['frames', 'stage', 'measure', 'evaluate']
+          and K_.resolve_stages(A(tier='snapshot'), 'snapshot') == ['measure', 'evaluate'] and 'no default stages' in sub_err
+          and K_.resolve_stages(A(stages='cutouts,cutmeasure'), 'sublst') == ['cutouts', 'cutmeasure']
+          and K_.resolve_stages(A(stages='evaluate,cutouts'), 'snapshot') == ['cutouts', 'evaluate'], sub_err)
+    rc, txt = step(['photometry', '--tier', 'sublst', '--cells', TIER_CELL, '--out', os.path.join(TMP, 'sel_s'), '--cores',
+                    'none', '--dry-run'])
+    check('stage selection: `photometry --tier sublst` without --stages is an error (exit 1), never a regeneration by default',
+          rc == 1 and 'no default stages' in txt, txt[-500:])
+
+
+class A:
+    def __init__(self, **kw):
+        self.stages = self.stage_from = self.stage_until = self.epochs = None
+        self.__dict__.update(kw)
+
+
 def main():
     excluded = excluded_frame()
     check('synthetic snapshot cell %s has no search output, no exclusion, no tier-3 pin row' % SYN_SNAP_CELL,
@@ -1335,13 +2770,29 @@ def main():
     test_deep_e2e(excluded)
     test_snapshot_e2e()
     test_negative()
+    test_served_generation()
+    test_cutout_root_one_source()
+    test_cutout_mirrors()
+    test_cutout_ports()
+    test_identity()
+    test_one_file_per_key()
+    test_cutouts_snapshot()
+    test_engine_refusal_carry_on()
+    test_in_place_whole_cells()
+    test_cutouts_tiers()
+    test_sigterm_rollback()
+    test_adhoc_and_selection(objs)
     test_real()
     test_dry_real()
 
 
 if __name__ == '__main__':
+    CHILD = sys.argv[1:2] == ['--sigterm-child']       # test_sigterm_rollback's child process (its own TMP)
     try:
-        main()
+        if CHILD:
+            sigterm_child(sys.argv[2])
+        else:
+            main()
     finally:
         K.engine = REAL_ENGINE
         KD.roots_cells = REAL_ROOTS
@@ -1350,5 +2801,6 @@ if __name__ == '__main__':
             os.rmdir(BASE)
         except OSError:
             pass
-    n = len(RESULTS)
-    print('\n%d of %d checks passed in %.0f s' % (sum(ok for _, ok in RESULTS), n, time.time() - T0))
+    if not CHILD:
+        n = len(RESULTS)
+        print('\n%d of %d checks passed in %.0f s' % (sum(ok for _, ok in RESULTS), n, time.time() - T0))

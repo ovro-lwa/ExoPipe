@@ -27,7 +27,8 @@ What the flag does (cli calls begin() before the step runs):
      root (refused_roots(): paths.PRODUCTION_ROOTS, every other root of the paths section - the archive tree, the Phase-1 and
      Phase-2 data, the working trees, the served-run roots, ops state, clv15 with data_decisions.csv and the fix ledger, the
      production package's reference tables -, every section's own production roots (PRODUCTION_ROOTS, EXTRA_PRODUCTION_ROOTS,
-     OUT_ROOT, PRODUCTION_OUT, PHOT_ROOT: the photometry roots, the served page roots) and the step's default --out). Else exit 2.
+     OUT_ROOT, PRODUCTION_OUT, PHOT_ROOT, CUTOUT_ROOT, TIER_FORCED_ROOTS: the photometry roots, the served page roots) and the
+     step's default --out). Else exit 2.
   3. The write guard of core/guard.py, labelled INJECTED-RUN GUARD, in this process and every Python process it starts: a write
      anywhere but --out, --work, the node's scratch root, /tmp and /dev/shm raises InjectedWriteRefused (a PermissionError)
      before anything is written.
@@ -35,7 +36,9 @@ What the flag does (cli calls begin() before the step runs):
      writer; it also covers what the write guard cannot see: a cp / rsync / shell child, a C library's own I/O):
        archive tree   lib/archive Ctx.guard_writes (every apply: push, sync, quarantine, retire, rollback, supersede)
        photometry root lib/search/tier_snapshot cutout_root (P3_SNAP_CUTOUT_ROOT under --out, checked) with P3_SNAP_CUTOUTS=0
-                      for the engines: no cutout is cut from a cube carrying synthetic sources
+                      for the engines: no cutout is cut from a cube carrying synthetic sources; `photometry` checks every
+                      root its cutouts / cutmeasure stages write, flag or default (lib/photometry/steps_cutouts
+                      gate_write_roots)
        served run     `serve` and `jupiter serve` refuse an injected run outright (servers, registry, hub, journals, restarts,
                       parity ports)
        data_decisions check() refuses paths.DATA_DECISIONS (and the fix ledger, the run-pin file) whatever else is allowed
@@ -61,7 +64,8 @@ ENGINE_ENV = {'P3_SNAP_INJECTED': '1'}      # clv15 721cf07: write_cutouts raise
 LABEL = 'INJECTED-RUN GUARD'
 LOG_NAME = '_injected_guard_refusals.log'   # under <out>/_records/
 # config keys of a section that name production roots (scalar, tuple or dict of paths); 'paths' is taken whole
-ROOT_KEYS = ('PRODUCTION_ROOTS', 'EXTRA_PRODUCTION_ROOTS', 'OUT_ROOT', 'PRODUCTION_OUT', 'PHOT_ROOT')
+ROOT_KEYS = ('PRODUCTION_ROOTS', 'EXTRA_PRODUCTION_ROOTS', 'OUT_ROOT', 'PRODUCTION_OUT', 'PHOT_ROOT', 'CUTOUT_ROOT',
+             'TIER_FORCED_ROOTS')
 # files of the paths section whose directory is refused too (Gregg's rulings and exclusions: never written by any run)
 RULING_FILES = ('DATA_DECISIONS', 'FIX_LEDGER', 'PHASE1_RUN_PINS')
 _ALWAYS_SCRATCH = ('/tmp', '/dev/shm', '/dev/null')     # never a refused root (core/guard.DEFAULT_ALLOWED)
@@ -242,7 +246,10 @@ DEST_FLAGS = {
     'verify': ('emit_failing',),                                   # the failing list
     'status': ('emit', 'list_out'),                                # item lists
     'followup': ('page_dir',),                                     # the periodicity page
-    'photometry': ('stage_root',),                                 # deep stage: os.makedirs + rsync -aL of the inputs
+    'photometry': ('stage_root', 'cutout_root', 'tier_out'),       # deep stage: os.makedirs + rsync -aL of the inputs; the
+                                                                   # cutout generation the cutouts stage writes (a SOURCE of
+                                                                   # measure / cutmeasure: _DEST_WHEN_STAGES); the tier forced
+                                                                   # root cutmeasure writes (review F6)
     'archive': ('archive_root', 'ship_root', 'phot_root', 'quar_root', 'qdir', 'stores'),   # applies: moves, copies, rewrites
     'frames': ('snap_stage_root',),                                # snapshot staging: copies + funpack
     'flow': ('snap_stage_root',),                                  # snapshot flow: <staging>/<sb>/*_flowed.fits
@@ -252,6 +259,9 @@ DEST_FLAGS = {
     'jupiter': ('qdir',),                                          # quarantine: a name inside the site cell (an absolute
 }                                                                  # path is checked; a relative one stays inside the cell)
 _IN_CELL = {('jupiter', 'qdir')}                                   # flags whose relative value is joined to a cell under --out
+# a flag that is a destination only when its step runs one of these stages, named in --stages (photometry --cutout-root is what
+# the cutouts stage writes and what measure / cutmeasure read; a cutouts stage runs only when named, photometry.DEFAULT_STAGES)
+_DEST_WHEN_STAGES = {('photometry', 'cutout_root'): ('cutouts',)}
 # SOURCES: another run's products a step reads (a run directory, an attempt, a generation). An ordinary run refuses one that
 # lies under an injected run's start record (core/record.injected_runs): its data carry synthetic sources.
 SOURCE_FLAGS = {
@@ -345,13 +355,18 @@ def _remote_injected(host, path):
 
 def check_flags(step, args, out, writes=True):
     """The flag checks of one step invocation (cli, before the step runs; Refusal = exit 2):
-    - an INJECTED run: every destination flag of the step (DEST_FLAGS) must be scratch - check(); a remote [HOST:]PATH never is;
+    - an INJECTED run: every destination flag of the step (DEST_FLAGS; one of _DEST_WHEN_STAGES only when its --stages names
+      a stage that writes it) must be scratch - check(); a remote [HOST:]PATH never is;
     - an ORDINARY run: an --out holding an injected run's start record (core/record.injected_runs, the --out or an ancestor)
       refuses when the step writes; every source flag (SOURCE_FLAGS) naming a path under one refuses (a source on another
       host is checked over ssh)."""
     from exopipe.phase3.core import record
     if active():
+        named = {s.strip() for s in str(getattr(args, 'stages', None) or '').split(',') if s.strip()}
         for flag in DEST_FLAGS.get(step, ()):
+            when = _DEST_WHEN_STAGES.get((step, flag))
+            if when and not named & set(when):
+                continue
             what = f'{step} --{flag.replace("_", "-")}'
             for v in _values(flag, getattr(args, flag, None)):
                 if (step, flag) in _IN_CELL and not os.path.isabs(v):
