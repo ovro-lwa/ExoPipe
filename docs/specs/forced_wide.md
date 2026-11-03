@@ -166,7 +166,7 @@ These are PROPOSED (2026-11-03). Production's values are in `exopipe/phase3/pari
 | Key | Default | Production | Why |
 |---|---|---|---|
 | `forced_wide.EVENT_ORDER` | `sorted` | `directory` | The order the events are read is the order a target's bands are listed and summed in. The analysis read `os.listdir` order of its Lustre copy (`v3/events_copy/`). Lustre lists a directory in a fixed hash order of its names, so a copy on Lustre lists the same way; /data07 does not. |
-| `forced_wide.TARGET_MEMBER` | `identity` | `first` | A merged identity (26 in the four gen5 runs) takes the list position of one member. Production took the first member in `build_targets`' glob order on /data07; a copy lists in another order. |
+| `forced_wide.TARGET_MEMBER` | `identity` | `first` | A merged identity (26 in the four gen5 runs) takes the list position of one member. Production took the first member in `build_targets`' glob order on /data07; a copy lists in another order. The searched cutouts are the identity's own, centered on the member it is named after (their TARGRA/TARGDEC). On gen5, `first` put 6 of 205 jobs 0.1–0.4′ off that point, and swapped two identities' positions. `identity` centers each job on its cutouts. Through the pooled controls this changes one verdict: Struve 2398 A, I 1 min, where v2's centering power − z goes from 3.12 to 2.89 against the threshold of 3, so BACKGROUND SOURCE becomes NOT CENTERED ON THE TARGET (source not identified). |
 | `forced_wide_search.FILE_ERRORS` | `refuse` | `drop` | Gates refuse; production dropped a raising cutout. No gen5 cutout raised. |
 
 The night-activity bands table lists the nights of each (LST, band) in date order. The script iterated a set there, so

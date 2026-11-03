@@ -28,7 +28,8 @@ STEPS = [
     ('flow', 'alignment flows: snapshot frames and sub-LST windows (per hour); per-night co-add flows (masters builds)', 'per hour'),
     ('search', 'detection + gates with fitted positions (deep, sub-LST, snapshot)', 'per hour'),
     ('catalog', 'merge, conformance, association, identity, selection, names (--incremental adds one hour); snapshot chain', 'per hour'),
-    ('forced', 'forced photometry (Gaussian fit >= 7 sigma, empirical-beam template below); event panels', 'per hour'),
+    ('forced', 'forced photometry (Gaussian fit >= 7 sigma, empirical-beam template below); event panels; the wide-area burst '
+               'test and the night-activity table', 'per hour'),
     ('curves', 'light-curve products', 'per hour'),
     ('pages', 'review pages (served queues, inspection twins, multiples), incremental or full', 'per hour'),
     ('serve', 'review servers and the hub; served-queue and exclusion content tests; exact-pid restart', 'per hour'),

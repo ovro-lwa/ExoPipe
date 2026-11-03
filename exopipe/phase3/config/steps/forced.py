@@ -258,9 +258,13 @@ class forced_wide(_Section):
     GROUP_ARCMIN = 1.5                           # catalog entries within this are one physical source (forced_wide_jobs.py:30)
     # A MERGED identity (several list targets within forced_snapshot.MERGE_ARCMIN; 26 in the four gen5 runs) takes the list
     # position of ONE member: 'identity' = the member the identity is named after, else the first in (sample, target) order -
-    # the same on any copy of the runs; 'first' = production (forced_ambiguous.py:40 next(iter(...))): the first member in
-    # snapshot_forced_assoc.build_targets' order, the glob order of the run tree on its file system (/data07 for the served
-    # runs; a Lustre copy lists in another order). PROPOSED (refactor 2026-11-03): production's value is in the parity config
+    # the same on any copy of the runs, and the target the searched cutouts are centered on (they are the identity's own:
+    # TARGRA/TARGDEC = that member's position); 'first' = production (forced_ambiguous.py:40 next(iter(...))): the first member
+    # in snapshot_forced_assoc.build_targets' order, the glob order of the run tree on its file system (/data07 for the served
+    # runs; a Lustre copy lists in another order). On gen5 'first' centered 6 of 205 jobs 0.1-0.4' off their cutouts' target (two
+    # identities swapped); 'identity' changes one verdict through the pooled controls (Struve 2398 A, I 1 min: v2's centering
+    # power - z 3.12 -> 2.89 against 3; BACKGROUND SOURCE -> NOT CENTERED ON THE TARGET (source not identified)).
+    # PROPOSED (refactor 2026-11-03): production's value is in the parity config
     TARGET_MEMBER = 'identity'
     # the order the forced events are read in, which is the order the analysis meets - and so LISTS and SUMS - a target's bands
     # (a candidate's bands_far / bands_near, the taper sums): 'sorted' = by directory name (frequency order), the same on any
@@ -350,9 +354,10 @@ class forced_wide_test(_Section):
     MIN_BIN = 0.05
     DISC_GRID = 41
     # CONTROL LINES: cataloged sources of CTL_FLUX x the candidate's flux (>= CTL_MIN_JY) in every job of the same Stokes, one
-    # per cell of 1 / CTL_KEY_PER_DEG deg (round(ra x 20) / 20), imaginary targets at the candidate's distance in CTL_DIRS directions (a random rotation), clear of
-    # sources >= CTL_BRIGHT_JY by NEAR x the smallest FWHM and >= CTL_TARGET_FWHM x the largest from that cutout's own target,
-    # in bands the cutout searched (>= half), up to CTL_CAP lines (forced_wide_v3.py:27-30, :267-308)
+    # per cell of 1 / CTL_KEY_PER_DEG deg (round(ra x 20) / 20), imaginary targets at the candidate's distance in CTL_DIRS
+    # directions (a random rotation), clear of sources >= CTL_BRIGHT_JY by NEAR x the smallest FWHM and >= CTL_TARGET_FWHM x
+    # the largest from that cutout's own target, in bands the cutout searched (>= half), up to CTL_CAP lines
+    # (forced_wide_v3.py:27-30, :267-308)
     CTL_FLUX = (0.5, 2.0)
     CTL_MIN_JY = 3.0
     CTL_DIRS = 8
@@ -401,15 +406,15 @@ class forced_wide_test(_Section):
     COVER = 2.0 / 3.0
     SEED = 20261102                              # numpy default_rng seed, one generator per job (control lines, bootstrap)
     # v2's CENTERING TEST (forced_wide_analyze.py, the near candidates): the region sep/2 + V2_K x FWHM about the pair's
-    # midpoint (controls placed with V2_K_MAX); per-detection weights 1 / sigma^2, sigma = V2_SYS_ARCSEC (nu / V2_SYS_REF_MHZ)^V2_SYS_INDEX (+)
-    # V2_STAT_FWHM x FWHM; pooled controls of V2_CTL_FLUX x S (>= V2_CTL_MIN_JY), their region inside their cutout
-    # (V2_CUT_MARGIN_ARCMIN), clear of the target's region, no source above V2_CTL_BRIGHTER x C in it, none within
-    # V2_VERY_BRIGHT_DEG of a >= V2_VERY_BRIGHT_JY source, one per cell of 1 / V2_KEY_PER_DEG deg, at most V2_CTL_MAX (seed SEED); a verdict
-    # needs >= V2_MIN_NIGHTS nights and >= V2_CTL_MIN_N controls of >= V2_CTL_MIN_CELLS nights; power >= V2_POWER_MIN, then
-    # z < V2_Z_BG and power - z >= V2_D_TG -> BACKGROUND SOURCE, z >= V2_Z_NOT -> NOT THE BACKGROUND SOURCE
+    # midpoint (controls placed with V2_K_MAX); per-detection weights 1 / sigma^2, sigma = V2_SYS_ARCSEC x
+    # (nu / V2_SYS_REF_MHZ)^V2_SYS_INDEX (+) V2_STAT_FWHM x FWHM; pooled controls of V2_CTL_FLUX x S (>= V2_CTL_MIN_JY), their
+    # region inside their cutout (V2_CUT_MARGIN_ARCMIN), clear of the target's region, no source above V2_CTL_BRIGHTER x C in it,
+    # none within V2_VERY_BRIGHT_DEG of a >= V2_VERY_BRIGHT_JY source, one per cell of 1 / V2_KEY_PER_DEG deg, at most V2_CTL_MAX
+    # (seed SEED); a verdict needs >= V2_MIN_NIGHTS nights and >= V2_CTL_MIN_N controls of >= V2_CTL_MIN_CELLS nights; power
+    # >= V2_POWER_MIN, then z < V2_Z_BG and power - z >= V2_D_TG -> BACKGROUND SOURCE, z >= V2_Z_NOT -> NOT THE BACKGROUND SOURCE
     V2_K = 0.35
     V2_K_MAX = 0.5
-    V2_SYS_ARCSEC = 130.0                        # the pulsar-measured 10-s systematic at V2_SYS_REF_MHZ (forced_wide_analyze.py:11)
+    V2_SYS_ARCSEC = 130.0                        # the pulsar-measured 10-s systematic at V2_SYS_REF_MHZ (v2 :11)
     V2_SYS_REF_MHZ = 50.0
     V2_SYS_INDEX = -0.78
     V2_STAT_FWHM = 0.06
@@ -451,8 +456,8 @@ class night_activity(_Section):
     # de-duplication key: the frame id and the position's first DEDUP_CHARS characters (night_activity_build.py:16)
     DEDUP_CHARS = 9
     RATIO_FORMAT = '%.3g'                        # the ratio and activity columns (night_activity_build.py:36, :49)
-    # where the figure reads it: astrometry_assoc.NIGHT_ACT (default /lustre/gh/main/phase3/night_activity/night_activity_I10s.csv)
-    # and its nights table beside it (NIGHT_ACT_NIGHTS: the file name replaced) - the production --out and the two names
+    # where the figure reads it: astrometry_assoc.NIGHT_ACT (default <OUT_ROOT>/night_activity_I10s.csv) and its nights table
+    # beside it (NIGHT_ACT_NIGHTS: the file name replaced) - the production --out and the two names
     OUT_ROOT = '/lustre/gh/main/phase3/night_activity'
     FILES = ('night_activity_I10s.csv', 'night_activity_nights_I10s.csv')
     PROTECTED_KEYS = ('FILES',)

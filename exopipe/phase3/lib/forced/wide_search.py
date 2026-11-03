@@ -38,6 +38,13 @@ TIERS = ('10s', '1min')
 _E = {}
 
 
+def pool_worker_init():
+    """A pool worker forked from the step process inherits the CLI's SIGTERM handler (cli._sigterm_interrupts: Terminated, as
+    for Ctrl-C); Pool.terminate() ends its workers with SIGTERM, so a worker takes the default action instead."""
+    import signal
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 def scfg():
     from exopipe.phase3.config import CFG
     return CFG.forced_wide_search
@@ -56,7 +63,7 @@ def eval_mod():
         _E['LST'] = {}
         _E['GAUL'] = {}
         _E['NOISE'] = {}
-        _E['READ'] = set()
+        _E['TASK'] = set()             # the noise / catalogue files the current task read (its unit's inputs)
         orig_lst = SS.lst_deg_at
 
         def lst_cached(epoch_seconds):
@@ -68,7 +75,7 @@ def eval_mod():
         def gaul_cached(path):
             if path not in _E['GAUL']:
                 _E['GAUL'][path] = orig_gaul(path)
-                _E['READ'].add(path)
+            _E['TASK'].add(path)
             return _E['GAUL'][path].copy()
         E.C.read_gaul = gaul_cached                     # zone_flags reads the Master catalog per call
         orig_noise = E.noise_med
@@ -76,11 +83,12 @@ def eval_mod():
         def noise_cached(cell, sb, st, tier):
             k = (cell, sb, st, tier)
             if k not in _E['NOISE']:
-                _E['NOISE'][k] = orig_noise(cell, sb, st, tier)
                 p = os.path.join(E.PROTO, cell, 'noise_%s_%s_median%s.csv' % (sb, st, '_1min' if tier == '1min' else ''))
-                if os.path.exists(p):
-                    _E['READ'].add(p)
-            return _E['NOISE'][k]
+                _E['NOISE'][k] = (orig_noise(cell, sb, st, tier), p if os.path.exists(p) else None)
+            v, p = _E['NOISE'][k]
+            if p:
+                _E['TASK'].add(p)
+            return v
         E.noise_med = noise_cached
     return _E['E']
 
@@ -214,11 +222,10 @@ def blocks_1min(cube, dobs, adm, ts_list, c=None):
     averaged"""
     from collections import OrderedDict
     c = c or scfg()
-    SS = _E['SS']
     mins = OrderedDict()
     for i in range(len(dobs)):
         if adm[i]:
-            key = ts_list[i][:13] if c.MINUTE_RULE == 'filename' else SS.integration_minute_key(dobs[i])
+            key = ts_list[i][:13] if c.MINUTE_RULE == 'filename' else _E['SS'].integration_minute_key(dobs[i])
             mins.setdefault(key, []).append(i)
     bk = [(k, ix) for k, ix in sorted(mins.items()) if len(ix) >= c.BLOCK_MIN_FRAMES]
     if not bk:
@@ -301,8 +308,8 @@ def io_yield(c=None):
 
 def search_band(task):
     """One (Stokes, target, band): every cutout of the target in that band -> a staged npz. ``task`` = (job, band, cutout root,
-    staged npz path). Returns a dict: path, n_files, n_peaks, statuses, errors, nights (searched), inputs (noise / catalogue
-    files read), cutout_dir, listing (name, size, mtime_ns per cutout), seconds, waited."""
+    staged npz path). Returns a dict: path, n_files, n_peaks, statuses, errors, nights (searched), inputs (the noise / catalogue
+    files this task read), cutout_dir, listing (name, size, mtime_ns per cutout), seconds, waited."""
     job, band, root, part = task
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -310,6 +317,7 @@ def search_band(task):
     from exopipe.phase3.lib.forced.wide_jobs import inplace
     c = scfg()
     E = eval_mod()
+    _E['TASK'] = set()
     deep_search_refused = inplace('phase3_tier_rules').deep_search_refused
     st = job['stokes']
     d, files = cutout_files(root, job, band)
@@ -387,7 +395,7 @@ def search_band(task):
     for t in ftab:
         k = t[4] if not t[4].startswith('ERROR') else 'ERROR'
         out['statuses'][k] = out['statuses'].get(k, 0) + 1
-    out['inputs'] = sorted(_E['READ'])
+    out['inputs'] = sorted(_E['TASK'])
     out['seconds'] = round(time.time() - t0, 1)
     return out
 

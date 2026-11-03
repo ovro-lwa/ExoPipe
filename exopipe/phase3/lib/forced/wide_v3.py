@@ -886,7 +886,8 @@ def analyze_all(jobs, events, bdir, workers=1, only=None, log=print):
         try:
             if workers > 1 and len(todo) > 1:
                 from multiprocessing import get_context
-                with get_context('fork').Pool(workers) as p:
+                from exopipe.phase3.lib.forced.wide_search import pool_worker_init
+                with get_context('fork').Pool(workers, initializer=pool_worker_init) as p:
                     outs = p.map(_one, range(len(todo)), chunksize=1)
             else:
                 outs = [_one(i) for i in range(len(todo))]

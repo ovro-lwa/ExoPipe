@@ -1602,6 +1602,10 @@ def test_item7_parity_file_keys():
     PROPOSED |= {'catalog_omission.ABSENT_WITH_SERVED'}    # 2026-11-03 (Q review F5): G6 'refuse' proposed, pending Gregg; production's
                                                              # 'production' in the parity file (DECISIONS_PENDING FYI named in
                                                              # refactor_reviews_20261103/Q_deepomit_fixes.md)
+    PROPOSED |= {'forced_wide.EVENT_ORDER', 'forced_wide.TARGET_MEMBER',   # 2026-11-03 (forced family W, the wide-area burst
+                 'forced_wide_search.FILE_ERRORS'}         # test ported): deterministic orders and the refusal proposed, pending
+                                                             # Gregg; production's values in the parity file (docs/specs/
+                                                             # forced_wide.md; refactor_reviews_20261103/W_forcedwide_report.md)
     path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     bad, n = [], 0
     for ln in open(path):

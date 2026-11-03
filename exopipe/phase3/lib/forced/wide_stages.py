@@ -341,12 +341,15 @@ def stage_search(c):
     t0 = time.time()
     from multiprocessing import get_context
     try:
-        with get_context('fork').Pool(workers) as pool:
+        with get_context('fork').Pool(workers, initializer=WS.pool_worker_init) as pool:
             pending = {(search_unit(j), b): pool.apply_async(WS.search_band, ((j, b, c.cutout_root,
                                                                                os.path.join(stage, WS.npz_name(j, b))),))
                        for j, b in tasks}
             for k, j in enumerate(todo, 1):
-                search_job(c, j, pending, stage, jobs_path)
+                try:
+                    search_job(c, j, pending, stage, jobs_path)
+                except Exception as e:  # noqa: BLE001 - the unit's record says error; the stage goes on (exit 1 at the end)
+                    print('  %s: ERROR %s: %s' % (search_unit(j), type(e).__name__, str(e)[:300]), flush=True)
                 print('  [%d/%d] %s (%.0f s)' % (k, len(todo), search_unit(j), time.time() - t0), flush=True)
     finally:
         shutil.rmtree(stage, ignore_errors=True)

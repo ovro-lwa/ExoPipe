@@ -366,8 +366,9 @@ def nights_recomputed(path, bands=None, **ctx):
     rows, cols = _rows(path)
     if tuple(cols) != NIGHT_COLUMNS:
         return False, len(rows), 'columns %s != %s' % (cols, list(NIGHT_COLUMNS))
-    if not bands or not os.path.exists(bands):
-        return False, len(rows), 'the bands table (ctx bands) is needed to recompute the nights'
+    bands = bands or os.path.join(os.path.dirname(os.path.abspath(path)), _cfg().night_activity.FILES[0])   # alone: beside it
+    if not os.path.exists(bands):
+        return False, len(rows), 'the bands table %s (ctx bands) is needed to recompute the nights' % bands
     brow = _rows(bands)[0]
     per = {}
     for r in brow:
