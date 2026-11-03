@@ -255,7 +255,8 @@ _IN_CELL = {('jupiter', 'qdir')}                                   # flags whose
 # SOURCES: another run's products a step reads (a run directory, an attempt, a generation). An ordinary run refuses one that
 # lies under an injected run's start record (core/record.injected_runs): its data carry synthetic sources.
 SOURCE_FLAGS = {
-    'serve': ('source', 'carry_from'),
+    'serve': ('source', 'carry_from', 'view_runs', 'view_omit'),   # view_*: the combined snapshot view (lib/serve/snapshot_view.py) -
+                                                               # the served batch runs it merges and the omit product it applies
     'archive': ('attempt', 'staging_root', 'workdir'),
     'install': ('gen', 'rebuild_root'),
     'pages': ('from_run',),
@@ -268,9 +269,11 @@ SOURCE_FLAGS = {
 }
 _KEYWORDS = ('published', 'served', 'none', 'snapshot', 'search')     # flag values that name no path
 _RUN_NAME_FLAGS = {'deep_panels_run': 'TRANSIENTS_ROOT',             # a bare name resolves under this paths root (as the step
-                   'omit_runs': 'SNAPSHOT_REVIEW_ROOT'}              # resolves it: deep_omission._runs_arg)
-_LIST_FLAGS = ('stores', 'omit_runs')            # a comma list of paths (archive --stores: files; catalog --omit-runs: runs)
-_AT_FILE_FLAGS = ('omit_runs',)                  # '@FILE': the paths FILE lists, one per line ('#' starts a comment)
+                   'omit_runs': 'SNAPSHOT_REVIEW_ROOT',              # resolves it: deep_omission._runs_arg, snapshot_view.runs_arg)
+                   'view_runs': 'SNAPSHOT_REVIEW_ROOT'}
+_LIST_FLAGS = ('stores', 'omit_runs', 'view_runs')   # a comma list of paths (archive --stores: files; catalog --omit-runs, serve
+                                                     # --view-runs: runs)
+_AT_FILE_FLAGS = ('omit_runs', 'view_runs')      # '@FILE': the paths FILE lists, one per line ('#' starts a comment)
 
 
 def _at_file(flag, v):

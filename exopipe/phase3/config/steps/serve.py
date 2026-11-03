@@ -29,7 +29,9 @@ class serve(_Section):
     # keys no --set / --config can change (DESIGN 11.4; honoured by config/__init__.py)
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
                       'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS', 'TWO_PORT_DIR', 'TWO_PORT_REGISTRY',
-                      'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT')
+                      'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT',
+                      'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX')   # the combined view's layout: what the page code
+                                                                                    # reads (mirrors of snapshot_combined_view.py)
 
     # ---- served runs (production product roots, from config.paths; PROTECTED) ----------------------------------------
     RUN_ROOT_KEY = {'deep': 'TRANSIENTS_ROOT',        # /data07/gh/phase3/transients; p3s3_serve_stokes.sh:9
@@ -366,6 +368,33 @@ class serve(_Section):
     HOLD_JOURNAL_READER = 'driver'
     SNAPSHOT_LOCALIZE = True                # per-tier positions + figures before the servers (snapshot_serve.sh:44-46, ledger 1831)
 
+    # ---- the COMBINED SNAPSHOT VIEW: the snapshot tier's cumulative step (`serve --tier snapshot --family comb`,
+    # lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md). Port of exopipe_ops snapshot_combined_view.py
+    # (1af2dab .. 5b8b8ff) and its driver snapshot_batch/comb_build_20261102.sh; every value is production's.
+    SNAPVIEW_TIERS = ('10s', '1min')        # the view's tiers, in production's pass order; snapshot_combined_view.py:57 TIERS
+    SNAPVIEW_STOKES = ('V', 'I')            # the Stokes passes, V first (the order of the record rows); :57 STOKES
+    SNAPVIEW_PAGE_SUFFIX = {'10s': '', '1min': '_1min'}   # ONE TIER PER PAGE DIRECTORY: candidates/<S>/<name>_<band><suffix>,
+                                            # the batches' own layout (phase3_snapshot_pages.py); :204 TSFX (Gregg 2026-10-03 "Having
+                                            # the same tiers on a single page is not conformant", SNAP-PAGES-ONE-TIER-PER-PAGE;
+                                            # DEFECT-SNAPCOMB-PAGE-DIRS-HOLD-BOTH-TIERS-20261031); the page code reads this layout
+    SNAPVIEW_OMIT_DIR = '{root}/deep_omission/{name}'     # the omit product of a view (deep_omission_kept.csv + decisions,
+                                            # record, summary): root = the view's run root (production SNAPSHOT_REVIEW_ROOT, a parity
+                                            # run <out>/snapshot), name = the view; = deep_omission.default_out's layout. Production
+                                            # had none: its builder decided in its step 0 (snapshot_combined_view.py:78-139)
+    SNAPVIEW_FIT_STORE = '{batch_dir}/rechain_{run}/fits_store.csv'   # a member batch's fit store (batch_dir =
+                                            # catalog_snapshot.BATCH_DIR, run = the batch run's directory name), the filter
+                                            # catalogue's input; comb_build_20261102.sh:51 (a missing or empty store refuses)
+    SNAPVIEW_PYTHON = 'py36'                # site PYTHON key of the view build (this module's child) and of the filter catalogue:
+                                            # production's driver runs both under /opt/devel/pipeline/envs/development/bin/python,
+                                            # comb_build_20261102.sh:18, :48, :52 (the chain's merge runs under the interpreter
+                                            # production ran it with)
+    SNAPVIEW_LOC_ENV = {'P3_LOC_SHARDS': '12'}   # the per-tier localization's environment: comb_build_20261102.sh:82 (speed
+                                            # only: build_localizations.py localizes the same identities in N processes)
+    SNAPVIEW_BUILD_TIMEOUT_S = 172800       # s, the view build child and the filter catalogue (the 36-batch view of 2026-11-02 took
+                                            # 33,492 s; production's driver sets no limit)
+    SNAPVIEW_TEST_SAMPLE_DIRS = 0           # page directories the snapshot_view content test reads back (0 = every one; N = a
+                                            # seeded sample of N for a full view's re-test - the build's own T1-T6 cover all) [step]
+
     # ---- snapshot forced photometry pages (port of snapshot_forced_gen5_serve_20261026.sh and the 'refresh-siblings' mode of
     # snapshot_forced_serve_20261007.sh; ruled 2026-10-03 / 2026-10-07 Q5/Q7/Q8, ledger 1765) -------------------------------
     FORCED_RUN_NAME = 'Run_SNAPFORCED_{S}{T}_{tag}'          # T = 10s | 1min; snapshot_forced_serve_20261007.sh:30
@@ -411,6 +440,11 @@ class serve(_Section):
         'DEEP_VIEW_REVIEW_DIR': 'FIX-REFACTOR-DEFECTS-D2-D6-D7-D9-D10-AND-RULINGS-D1-D5-D8-20261013',
         'HOLD_FP_VERDICTS': 'R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS',
         'SNAPSHOT_LOCALIZE': 'R-SNAP-EACH-DETECTION-OWN-FIT-AND-PER-TIER-COMBINED-POSITIONS-IMPLEMENTED',
+        # the combined snapshot view: one page per tier and Stokes over every batch (Gregg 2026-10-26 "No! I just mean combine
+        # the batches for each tier/polarization into one page."), one tier per page directory (Gregg 2026-10-03)
+        'SNAPVIEW_TIERS': 'R-GREGG-20261026-5-LST-REBUILD-AFTER-EVERYTHING-DONE-COMBINED-VIEW-ONE-PAGE-PER-TIER-POLARIZATION',
+        'SNAPVIEW_STOKES': 'R-GREGG-20261026-5-LST-REBUILD-AFTER-EVERYTHING-DONE-COMBINED-VIEW-ONE-PAGE-PER-TIER-POLARIZATION',
+        'SNAPVIEW_PAGE_SUFFIX': ('SNAP-PAGES-ONE-TIER-PER-PAGE', 'DEFECT-SNAPCOMB-PAGE-DIRS-HOLD-BOTH-TIERS-20261031'),
         'EXCLUSION_GATE_TIERS': ('RULINGS-GREGG-20261013-DECISIONS-1-7-AND-TENMIN-TABLES',
                                  'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS'),
     }

@@ -134,13 +134,17 @@ def copy_stage(run, plan):
     return u
 
 
-def localize_stage(run, plan):
+def localize_stage(run, plan, env=None):
+    """snapshot_localize_tiers.sh on plan.U (G21). ``env``: the script's extra environment (the combined view's
+    serve.SNAPVIEW_LOC_ENV, comb_build_20261102.sh:82; none for a batch serve, snapshot_serve.sh:46)."""
     DST = plan.U
     with run.unit(f'snapshot_{plan.run_name}_localize', stage='localize', tier='snapshot') as u:
         if not _S().SNAPSHOT_LOCALIZE:
             raise NoInput('serve.SNAPSHOT_LOCALIZE is False')
-        rc, out = scripts.run_shell('snapshot_localize', [DST], unit=u,
-                                    log=os.path.join(plan.out, '_records', 'serve', 'logs', f'localize_{plan.run_name}.log'))
+        logd = os.path.join(plan.out, '_records', 'serve', 'logs')
+        os.makedirs(logd, exist_ok=True)
+        rc, out = scripts.run_shell('snapshot_localize', [DST], env=env, unit=u,
+                                    log=os.path.join(logd, f'localize_{plan.run_name}.log'))
         ok = rc == 0 and any(l.startswith('LOCALIZE-TIERS-OK') for l in out.splitlines())
         u.check('G21_LOCALIZE_TIERS_OK', ok, value=rc, detail=scripts.last_line(out))
         if not ok:

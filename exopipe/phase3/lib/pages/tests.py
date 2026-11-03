@@ -556,26 +556,44 @@ def snapshot_run(path, **ctx):
 
 
 FILTER_COLUMNS = ('cand_id', 'stokes', 'lst', 'band', 'date', 'snr', 'ra', 'dec', 'size_beams', 'axis_ratio',
-                  'nearest_ateam', 'n_v_epoch')      # snapshot_filter_catalog.py:49-51
+                  'nearest_ateam', 'n_v_epoch')      # snapshot_filter_catalog.py before 2026-10-28 (one row per cand_id)
+# since 2026-10-28 (exopipe_ops fe0e6c0, 'one row per DETECTION'): + the detection's peak position, the key with cand_id
+FILTER_COLUMNS_PER_DETECTION = FILTER_COLUMNS + ('ra_peak', 'dec_peak')     # snapshot_filter_catalog.py:77-81
 
 
 @content_test('filter_catalog')
-def filter_rows(path, **ctx):
-    """snapshot_filter_catalog.py's output contract: its columns, one row per cand_id of candidates/*/*/detections.csv,
-    and coadd_root.txt beside it naming CFG.paths.COADD_SB_ROOT (snapshot_filter_catalog.py:55)."""
+def filter_rows(path, per_detection=False, **ctx):
+    """snapshot_filter_catalog.py's output contract, by the writer that wrote it: the CURRENT one (columns + ra_peak, dec_peak;
+    fe0e6c0, 2026-10-28) writes one row per DETECTION of candidates/*/*/detections.csv - key cand_id + (ra_peak or ra) +
+    (dec_peak or dec), each once, every detection present: the combined view's FILTER-INPUTS check, comb_build_20261102.sh:70-78;
+    the one before it wrote one row per cand_id (batch runs served before 2026-10-28). ``per_detection`` (the combined view's
+    filter catalogue) requires the current contract. And coadd_root.txt beside it naming CFG.paths.COADD_SB_ROOT
+    (snapshot_filter_catalog.py:87)."""
     hdr, rows = common.read_csv(path)
-    if tuple(hdr) != FILTER_COLUMNS:
-        return False, len(hdr), f'columns {hdr[:5]}... differ from the filter catalogue contract'
     run = os.path.dirname(os.path.abspath(path))
-    dets = set()
-    for p in glob.glob(os.path.join(run, 'candidates', '*', '*', 'detections.csv')):
-        dets.update(r['cand_id'] for r in common.read_csv(p)[1])
-    ids = [r['cand_id'] for r in rows]
     bad = []
-    if len(ids) != len(set(ids)):
-        bad.append('repeated cand_id')
-    if set(ids) != dets:
-        bad.append(f'{len(set(ids) ^ dets)} cand_ids differ from the pages\' detections ({len(dets)})')
+    if tuple(hdr) == FILTER_COLUMNS_PER_DETECTION:
+        dets = set()
+        for p in glob.glob(os.path.join(run, 'candidates', '*', '*', 'detections.csv')):
+            dets.update((r['cand_id'], r.get('ra_peak') or r['ra'], r.get('dec_peak') or r['dec']) for r in common.read_csv(p)[1])
+        mc = [(r['cand_id'], r.get('ra_peak') or r['ra'], r.get('dec_peak') or r['dec']) for r in rows]
+        if len(mc) != len(set(mc)):
+            bad.append(f'{len(mc) - len(set(mc))} detections with two rows')
+        if set(mc) != dets:
+            bad.append(f'FILTER-INPUTS: {len(dets - set(mc))} view detections without their row, {len(set(mc) - dets)} rows of no '
+                       f'detection ({len(dets)} detections)')
+    elif tuple(hdr) == FILTER_COLUMNS and not per_detection:
+        dets = set()
+        for p in glob.glob(os.path.join(run, 'candidates', '*', '*', 'detections.csv')):
+            dets.update(r['cand_id'] for r in common.read_csv(p)[1])
+        ids = [r['cand_id'] for r in rows]
+        if len(ids) != len(set(ids)):
+            bad.append('repeated cand_id')
+        if set(ids) != dets:
+            bad.append(f'{len(set(ids) ^ dets)} cand_ids differ from the pages\' detections ({len(dets)})')
+    else:
+        return False, len(hdr), (f'columns {hdr[:5]}...{hdr[-2:]} differ from the filter catalogue contract'
+                                 + (' (one row per detection required)' if per_detection else ''))
     cr = os.path.join(run, 'coadd_root.txt')
     want = common.CFG().paths.COADD_SB_ROOT
     if not os.path.exists(cr) or open(cr).read().strip() != want:

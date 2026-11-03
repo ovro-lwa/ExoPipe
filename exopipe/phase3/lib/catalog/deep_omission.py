@@ -35,10 +35,9 @@ DROP (the data level, before the cumulative catalogs, identities and pages):
       dropped, a partial one whose best detection went is re-pointed to its remaining detection of largest |S/N| (its survivor
       gates NOT re-run - recorded; see OWED below), member rows and panels of omitted keys are dropped. This stage COMPUTES the
       drop and WRITES it as the kept product deep_omission_kept.csv; the drop is APPLIED where the combined view is assembled -
-      the snapshot tier's cumulative step, the port of snapshot_combined_view.py (refactor chat 2026-11-03: the combined view is
-      ported as the snapshot tier's cumulative step; not yet written), which reads the kept product instead of recomputing it.
-      Until that step exists the refactor serves no combined view: the 10-s / 1-minute drop is computed, recorded and written,
-      and applied nowhere (Q review F2).
+      the snapshot tier's cumulative step `serve --tier snapshot --family comb` (lib/serve/snapshot_view.py, the port of
+      snapshot_combined_view.py; refactor chat 2026-11-03), which reads the kept product instead of recomputing it, checks the
+      served set against its digests and refuses any row that does not apply exactly (Q review F2, N2).
   10-minute: the cumulative merge drops the OMIT rows per LST before concatenation (sublst_deep_omission_drop.py IN PLACE,
       reading the decision table this stage writes; `serve --tier sublst` build passes it as SUBLST_DEEP_OMISSION). This stage
       records the detections that drop removes (the member rows of every LST run whose key is OMIT).
@@ -48,7 +47,8 @@ pages (the served detections the rate condition counts exist only then) and befo
 pages: the combined snapshot view (snapshot_combined_view.py step 0) and the cumulative 10-minute merge (sublst_cumulative.sh).
 Here: `exopipe3 catalog --tier snapshot --stages omit --omit-runs RUN,RUN..` (the served batch runs of the view) and
 `exopipe3 catalog --tier sublst --stages omit --lsts ...` (the LST runs of the cumulative); the 10-minute cumulative build calls
-tenmin_table() before its merge; the snapshot tier's cumulative step (to come) applies deep_omission_kept.csv.
+tenmin_table() before its merge; the snapshot tier's cumulative step (serve --tier snapshot --family comb: its omit stage calls
+run_snapshot, its build applies deep_omission_kept.csv).
 
 Products (in the stage's output directory --out; production names): deep_omission.csv (class omission_decisions: one row per
 decision, production's columns and formats - byte for byte), deep_omission_dropped.csv (class omission_record: every omitted
