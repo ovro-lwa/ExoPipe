@@ -29,8 +29,13 @@ Stages (--stages / --from / --until; default all, in this order):
   prefit     up to PREFIT_MAX_ITER rounds: per-cell --prefit-list-only (12 at a time), union, fit round, append (P-G15)
   tie        per-cell --stop-after-tie items over the nodes, 16 imfit shards for >= 30,000 detections at the fit step else 8
              (P-G16)
-  chain      memory model + node_mem_gate.sh (P-G17); the multi-cell chain over every cell (P-G18)
-  test       snapshot_rechain_content_test.py R1-R5, R7 (P-G19; R6 after the pages is `pages`')
+  chain      memory model + node_mem_gate.sh (P-G17); the multi-cell chain over every cell (P-G18). THE RESTORE-ONLY 3-D GATE
+             (clv15 b8d1989, exopipe_ops fa90670): the marker's CURVE_CONSTANTS_RESTORE=<table> line passes
+             --curve-constants-restore <table> to every chain call (prefit lists, tie items, the chain); P-G21 (preflight) refuses
+             a named table that is missing or empty
+  test       snapshot_rechain_content_test.py R1-R5, R7 (P-G19; R6 after the pages is `pages`'); class snapshot_run also reads
+             Card 2 per frame (card2_removed.csv against the summary and the record) and the restore-only gate (restored_by
+             against the record's two passes, the summary and every served detections.csv) back
 P-G20 (runaway guard, LIMIT_H hours, from the marker's LIMIT_HOURS or config) is checked before every stage.
 
 Inputs:  the cells file; paths.SNAPSHOT_FLEET_OUT/<cell>/ (search products, runinfo); catalog_snapshot.MASTER_CATALOGS,
@@ -43,7 +48,8 @@ Outputs (product classes): RUN = --out (production catalog_snapshot.WORK_ROOT/sn
          registered yet); the tie cache rows of the run's cells (tie_cache); prefit and repair lists (csv_table); the
          preflight report (catalog_preflight). Non-production runs keep every side file under RUN/_side/ (fit-store and
          tie-cache COPIES, L, W); production writes the production paths of the batch driver.
-Failure modes (exit 2, gate named in the record): P-G1..P-G20 of spec section 5.3; any in-place script exiting non-zero;
+Failure modes (exit 2, gate named in the record): P-G1..P-G20 of spec section 5.3, P-G21 (the restore table); any in-place
+         script exiting non-zero;
          a non-production store stage that needed repair rows (snapshot_store_ready.py reads only the production store
          directory: refused until the test is absorbed); a [lit] key differing from its module literal. Exit 1 = error.
 Per-hour vs intermittent: the chain associates over EVERY cell of the cumulative run at once (2 d 18 h on batch 2), so it is
@@ -171,6 +177,16 @@ def marker_lines(path):
 
 def marker_has(lines, prefix):
     return any(ln.startswith(prefix) for ln in (lines or ()))
+
+
+def restore_table(lines, key='CURVE_CONSTANTS_RESTORE'):
+    """The restore-only 3-D gate's table named by the approval marker: the first line '<key>=<path>' (snapshot_rechain_batch.sh,
+    exopipe_ops fa90670: grep -oE '^CURVE_CONSTANTS_RESTORE=[^ ]+' | head -1 | cut -d= -f2-), else None."""
+    for ln in lines or ():
+        m = re.match(r'^%s=([^ ]+)' % re.escape(key), ln)
+        if m:
+            return m.group(1)
+    return None
 
 
 def marker_value(lines, key):
@@ -417,6 +433,7 @@ class Ctx:
         self.chain_py = os.path.join(self.clv, 'phase3_snapshot_chain.py')
         self.marker = c.APPROVAL_MARKER.format(name=self.name)
         self.marker_lines = marker_lines(self.marker)
+        self.restore = restore_table(self.marker_lines, c.RESTORE_MARKER_KEY)
         self.t0 = time.time()
         self.analysis = self._analysis(arg_list(args, 'snap_analysis'))
 
@@ -452,6 +469,8 @@ class Ctx:
         c = self.c
         a = ['--proto-root', self.cfg.paths.SNAPSHOT_FLEET_OUT, '--master-catalogs', c.MASTER_CATALOGS,
              '--curve-constants', c.CURVE_CONSTANTS, '--fit-store', self.S, '--lightcurves-root', c.LIGHTCURVES_ROOT]
+        if self.restore:                     # THE RESTORE-ONLY 3-D GATE: every chain call of the run (exopipe_ops fa90670)
+            a += ['--curve-constants-restore', self.restore]
         d = argparse_defaults(self.chain_py) if os.path.exists(self.chain_py) else {}
         for flag, val in (('--samples-dir', self.cfg.paths.CLV15_ROOT), ('--store-floor', c.STORE_FLOOR),
                           ('--seed-floor', c.SEED_FLOOR), ('--assoc-floor', c.ASSOC_FLOOR),
@@ -544,6 +563,9 @@ LIT = {
                                               'ratio_high': 'GATE3D_RATIO_HIGH', 'alpha': 'GATE3D_ALPHA',
                                               'alpha_min_sb': 'GATE3D_ALPHA_MINSB'}),
     'catalog_snapshot.GATE3D_NTHR': ('clv15', CH, 'GATE3D_NTHR'),
+    'catalog_snapshot.CARD2': ('clv15', CH, {'ratio': 'CARD2_RATIO', 'tiers': 'CARD2_TIERS'}),
+    'catalog_snapshot.RESTORED_BY': ('clv15', CH, 'RESTORED_BY'),
+    'catalog_snapshot.RESTORE_TOL_BEAMS': ('clv15', CH, 'RESTORE_TOL_BEAMS'),
     'catalog_snapshot.REFASTRO_SHARDS_DEFAULT': ('clv15', RA, 'REFASTRO_SHARDS'),
     'catalog_snapshot.REF_MAX_SEP_DEG': ('clv15', RA, 'REF_MAX_SEP_DEG'),
 }
@@ -878,6 +900,19 @@ def st_preflight(ctx, s, plan):
         refuse('P-G12: /fast has %d GB free (< %d)' % (free, c.FAST_FREE_MIN_GB))
     # binding check
     T.binding_gate(u, T.binding_check(LIT), plan, ctx.dry)
+    # P-G21 the restore-only 3-D gate's table (the marker's CURVE_CONSTANTS_RESTORE line; exopipe_ops fa90670: a named table that is
+    # missing refuses - production `[ -s "$CRT" ] || die`, before the prefit loop)
+    if ctx.restore:
+        ok = os.path.isfile(ctx.restore) and os.path.getsize(ctx.restore) > 0
+        plan.append('P-G21 restore-only 3-D gate: %s (marker %s)%s' % (ctx.restore, ctx.marker, '' if ok else ' - MISSING'))
+        if not ok and not ctx.dry:
+            refuse('P-G21 CURVE_CONSTANTS_RESTORE: no table %s (named by %s)' % (ctx.restore, ctx.marker))
+        if ok:
+            u.meta['curve_constants_restore'] = {'path': ctx.restore, 'sha256': sha256_file(ctx.restore)}
+            if not ctx.dry:
+                s.inp(ctx.restore)
+    else:
+        plan.append('P-G21 restore-only 3-D gate: off (no %s= line in %s)' % (c.RESTORE_MARKER_KEY, ctx.marker))
     plan.append('chain arguments: %s' % ' '.join(ctx.chainargs()))
     if not ctx.dry:
         ctx.log.say('RECHAIN-START %s (exopipe3 catalog --tier snapshot) host=%s cells=%d list=%s sha256=%s approval=%s' % (
@@ -1142,6 +1177,10 @@ def st_chain(ctx, s, plan):
     os.makedirs(ctx.W, exist_ok=True)
     s.code(ctx.chain_py)
     s.inp(ctx.S, ctx.cells_file)
+    if ctx.restore:
+        if not (os.path.isfile(ctx.restore) and os.path.getsize(ctx.restore) > 0):
+            refuse('P-G21 CURVE_CONSTANTS_RESTORE: no table %s (named by %s)' % (ctx.restore, ctx.marker))
+        s.inp(ctx.restore)
     import resource
     res = T.call(ctx, s, ctx.chain_py, a, 'py36', env=env, log=os.path.join(ctx.W, 'chain.log'), cwd=ctx.W)
     peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1e6

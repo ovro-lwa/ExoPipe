@@ -931,6 +931,30 @@ def no_excluded_rows(path, **ctx):
 # exclusion_check (the serve-time exclusion gate's pass file: <run>/serve_exclusion_check.txt of the in-place gate, or
 # serve's own <out>/_records/serve/gates/<run>_<what>.txt)
 # =====================================================================================================================
+@content_test('serve_go')
+def serve_go_passed(path, **ctx):
+    """G27's record (lib/serve/snapshot_copy.go_unit): the first line says SERVE-GO PASS, and every go file it names - read
+    again NOW - is non-empty and names the view as a whole token (a go withdrawn or rewritten since fails)."""
+    with open(path) as f:
+        lines = [ln.rstrip('\n') for ln in f]
+    if not lines or not lines[0].startswith('SERVE-GO PASS'):
+        return False, None, (lines[0][:160] if lines else 'empty file')
+    bad, n = [], 0
+    for ln in lines[1:]:
+        m = re.match(r'^go (\S+) names (\S+)$', ln)
+        if not m:
+            continue
+        n += 1
+        try:
+            text = open(m.group(1), errors='replace').read()
+        except OSError as e:
+            bad.append(f'{m.group(1)}: {e}')
+            continue
+        if not re.search(r'(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])' % re.escape(m.group(2)), text):
+            bad.append(f'{m.group(1)} no longer names {m.group(2)}')
+    return not bad, n, ('; '.join(bad) if bad else f'{lines[0][:100]}; {n} go file name(s) re-read now')
+
+
 @content_test('exclusion_check')
 def gate_passed(path, run=None, **ctx):
     """The file says EXCLUSION-GATE PASS, and - when the run directory is known (ctx run=) - core.exclusions, reading

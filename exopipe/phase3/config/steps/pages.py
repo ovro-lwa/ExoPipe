@@ -239,6 +239,9 @@ class pages_snapshot(_Section):
     KEEP_PANELS = False          # --resume of phase3_snapshot_pages.py; off in every launcher (snapshot_rechain_batch.sh:362-363)
     IMAP_CHUNK = 4               # panels per worker task; snap_pages:749 _pass chunks (mirror; clv15 385e843 executor pool)
     PYTHON_KEY = 'py36'          # site PYTHON key of the snapshot scripts (crosscheck decision 2)
+    FILTERCAT_PROCS = 6          # readers of the filter catalogue's detections.csv pass, passed as SNAPCAT_PROCS (exopipe_ops 1b9475c;
+                                 # 1 = serial; under 1000 files always serial). Production's default 16; the refactor's 6 is the
+                                 # Lustre rule (at most 6 readers). Speed only: the catalogue is byte-identical for every value [step]
     RULED = {'FLOW_FRAMES': 'R-FORCED-PANEL-FITTED-POSITION-AND-RETICLE',
              'SCALE_MODE': 'R-SNAP-PANEL-SCALES-TIED-TO-THE-RESIDUALS',
              'PANELS_TOP_N': 'SNAP-INTERFACE-PANELS-TOP10-PER-BAND',

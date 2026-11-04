@@ -7,7 +7,8 @@ lib/serve/tests_snapshot_view.py, its standing test tests/test_snapshot_view.py)
 
 Production serves the 10-second and 1-minute snapshot pages (p8986-p8989) from ONE combined view of every served batch run:
 36 batch runs since 2026-10-26, rebuilt whole by exopipe_ops `snapshot_combined_view.py` (1af2dab 2026-10-21 .. 5b8b8ff
-2026-10-31) through dated drivers, the latest `snapshot_batch/comb_build_20261102.sh`. Until this stage the refactor had no stage,
+2026-10-31; dde1760, dbc40a6 2026-11-04) through dated drivers, the latest `snapshot_batch/comb_build_20261104.sh` (the same
+steps as comb_build_20261102.sh; the restore-only wave's comb_build_wave_20261104.sh adds per-batch tests, below). Until this stage the refactor had no stage,
 spec or plan for it: its snapshot serve (lib/serve/snapshot_copy.py) serves single chain runs only, and the deep-omission
 stage's 10-s / 1-minute drop (lib/catalog/deep_omission.py, the kept product `deep_omission_kept.csv`) had no consumer.
 
@@ -52,7 +53,7 @@ may still run alone on an existing view).
 |---|---|---|---|
 | omit | snapshot_\<view\>_omit | the deep-omission stage on the view's runs: decisions, record, the kept product, into `serve.SNAPVIEW_OMIT_DIR` (`<run root>/deep_omission/<view>`) | snapshot_combined_view.py step 0 (:71-144) |
 | build | snapshot_\<view\>_build | the view, built aside as `<view>.part` and renamed after every test | snapshot_combined_view.py steps 1-4, T1-T6; driver step 1 |
-| filtercat | snapshot_\<view\>_filtercat | snapshot_filter_catalog.py over the member batches' fit stores, the card2 union, FILTER-INPUTS | driver step 2 (:50-80) |
+| filtercat | snapshot_\<view\>_filtercat | snapshot_filter_catalog.py over the member batches' fit stores (SNAPCAT_PROCS = `SNAPVIEW_FILTERCAT_PROCS`), the card2 union, FILTER-INPUTS | driver step 2 (:50-80) |
 | localize | snapshot_\<view\>_localize | snapshot_localize_tiers.sh on the view (the batch serve's own stage, `SNAPVIEW_LOC_ENV`) | driver step 3 (:81-84) |
 | ready | snapshot_\<view\>_ready | the serve-time exclusion gate, every view test on the final files, `VIEW-READY-FOR-HIDES` | driver step 4 (:85) |
 
@@ -161,7 +162,7 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
   combined identity with a source in a tier view in that view's queue exactly once; T5 every member row's detection in its page
   directory's `detections.csv`; T6 every page directory of one tier (rows and panel tokens).
 - F-G1 a member batch without its fit store; F-G2 a `card2_filter.csv` missing or of another header; F-G3 the filter catalogue
-  script refused or failed.
+  script refused or failed; F-G4 a reader count (`SNAPVIEW_FILTERCAT_PROCS`) that is not an integer >= 1.
 - G21 the localization (LOCALIZE-TIERS-OK); G17 the serve-time exclusion gate on the view (ready); G28 an earlier stage's record
   missing or stale.
 
@@ -187,7 +188,10 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
   detections; the summary's counts; every general-catalogue row's directory exists.
 - V5 record: `deep_omission.csv` equals the omit stage's byte for byte; the record's removals equal the omit stage's (detections,
   dropped identities; per-tier rows kind for kind); the page line; the per-instant test.
-- V6 at ready: the filter catalogue's per-detection contract; the localized identities are view identities.
+- V6 at ready: the filter catalogue's per-detection contract; the localized identities are view identities; THE PAGE FIGURES:
+  every identity localized with more than one detection in a tier has its figure, each of its page directories of that tier holds
+  astrometry.png of the figure's size, and a page of an identity without a figure holds none (production's localizer left 7 of
+  11,245 page copies truncated on 2026-11-04, the V2 follow-up's parity; sizes, not bytes, so a full view's re-test stays cheap).
 
 ## Configuration (section serve)
 
@@ -201,6 +205,7 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
 | SNAPVIEW_PYTHON | 'py36' | comb_build_20261102.sh:18, :48, :52 |
 | SNAPVIEW_LOC_ENV | {'P3_LOC_SHARDS': '12'} | comb_build_20261102.sh:82 (speed only) |
 | SNAPVIEW_BUILD_TIMEOUT_S | 172800 | the 36-batch view took 33,492 s; production sets no limit |
+| SNAPVIEW_FILTERCAT_PROCS | 6 | SNAPCAT_PROCS of the filter catalogue (exopipe_ops 1b9475c: chunks of the glob order read in a process pool, merged in that order; fewer than 1000 files are read serially). Production's default is 16; 6 is the Lustre rule (at most 6 readers). Speed only: the catalogue is byte-identical for every value. Always passed, so no inherited value reaches the child (`SNAPCAT_` is not a cleared switch family). The snapshot pages' own filter catalogue takes `pages_snapshot.FILTERCAT_PROCS` (6) |
 | SNAPSHOT_FIGURE_HASHSEED | '0' | PYTHONHASHSEED of `snapshot_localize_tiers.sh` (every snapshot localize). Production sets none: its figure pool starts from a random string-hash seed each run, and 64 of 4,130 figure v2 PNGs differed between two runs on byte-identical tables (V_combview review F10). A reproducibility setting of the refactor, not a science value and not a ruling: no parity line (production's "value" is a random seed); '' = unset, as production |
 | SNAPVIEW_TEST_SAMPLE_DIRS | 0 | the re-read's sample (0 = every page directory; measured about 0.08 s per directory on cold Lustre, 10,562 directories in 880 s - set a sample for a full view if that is too slow; the build's T5 and T6 always cover every directory) |
 
@@ -227,16 +232,17 @@ The standing test (tests/test_snapshot_view.py) runs production's builder and th
 trees. tests/parity_snapshot_view.py runs both sides on real data and compares them (prod, port, compare).
 
 THE PRODUCTION PIN (V_combview review F3; tests/production_pin.py). The tests compare the port with the production code it
-ports, read at ONE pinned exopipe_ops commit (c7ca600, dde1760^: the builder of 5b8b8ff, the snapshot decisions of 37546f6, the
-10-minute decisions and drop of 0d4f1a9 / c6d2c9e), each file checked against its git blob sha and materialized into the test's
+ports, read at ONE pinned exopipe_ops commit (since the V2 follow-up round fa90670, 2026-11-04 15:38: the builder and the snapshot
+decisions of dde1760 / dbc40a6, snapshot_rejudge.py of dbc40a6, the 10-minute decisions, drop and cumulative of dde1760 / edf3263
+/ 35aad1a, the drivers comb_build_20261102.sh and comb_build_20261104.sh; before it c7ca600), each file checked against its git
+blob sha and materialized into the test's
 scratch: the stage's own tests (gates, copy fallback, content tests, ready) build the stage's view alone and never wait on
 production's builder; production's side runs only in test_drift, test_parity and test_repoint_pinned, from the pinned files.
 `test_production_pin` (in test_snapshot_view and test_deep_omission) is the explicit drift test: it fails when production
 changed a pinned file since the pin, naming the files and the commits to port. Production code the stage runs IN PLACE (the
 chain's merge, snapshot_filter_catalog.py, snapshot_localize_tiers.sh, the localizer and the figure) is live on both sides.
-Moving the pin is a port: the round that ports production's later commits moves PIN_COMMIT / PIN_BLOBS with it. On 2026-11-04
-the drift test fails by design: dde1760 / dbc40a6 (snapshot_combined_view.py, snapshot_deep_omission.py,
-sublst_deep_omission.py) and 35aad1a / edf3263 (sublst_deep_omission_drop.py) are the follow-up round's port.
+Moving the pin is a port: the round that ports production's later commits moves PIN_COMMIT / PIN_BLOBS with it. The V2
+follow-up round (below) moved it to fa90670; the drift test passes again (no pinned file changed after it, 8ff3fc8 included).
 
 Result on real data (2026-11-03/04; refactor_reviews_20261103/V_combview_report.md):
 
@@ -281,19 +287,95 @@ The fix round (2026-11-04, refactor_reviews_20261103/V_combview_report.md sectio
     per-tier views, queues, 10,562 page and 4,136 identity detections.csv, 24,911 panels (the same inodes), the omission
     files, the filter files, and the summary but `seconds`.
 
+## The V2 follow-up round (2026-11-04): production's 11-04 commits
+
+Ported on branch wt-20261104-V2-follow (from 3833971); each is production's behavior byte for byte on the synthetic world
+(tests/test_snapshot_view.py test_parity, tests/test_deep_omission.py) and on real data (below):
+
+- exopipe_ops dde1760, the omission PER IMAGE: a wideband detection is omitted only when its own frame (10 s, `ts`) or block (1
+  minute, clv15 `integration_minute_key(date_obs)` + '00') holds the omitted subband (the cell's `wideband_members_<S>.csv`, per
+  image); an image absent from the table is omitted (production, fail closed) and refused here as a key mismatch (G7, the review's
+  T2); a cell without a member table (searched before 2026-10-07) takes every image of the night to hold every admitted subband
+  (`admission_<sb>.csv`; whole-night rows, fail closed); gate names, values and thresholds paired in one order (`sorted(gates)`);
+  the queue's DEEP OMISSION line and the summary count the per-image wideband omissions separately. The light-curve change of
+  dde1760 was already in the branch (lib/curves/tests.py reads the admission table; an absent ts counts as admitted).
+- exopipe_ops dbc40a6: CARD 2 per frame in the 10-s tier (each batch's `card2_vleak.csv`, self-checked; record kinds `card2
+  detection`, `card2 member row`, `card2 panel`; the served counts exclude them); THE RE-JUDGING of every batch source per tier on
+  the detections it keeps (snapshot_rejudge.rejudge, ported as lib/catalog/rejudge.py and run by the OMIT stage in py36 children,
+  `catalog_omission.REJUDGE_PROCS` 6, never inside the build: the chain's functions cannot run there; its inputs - the batch's
+  detection_record.csv.gz, chain_summary.json, served_tiers.csv, card2_vleak.csv - are fingerprinted (size, mtime) and re-checked by
+  G-V8 at the build; refused unless the reconstruction reproduces the chain on every served source, G9); a (batch identity,
+  tier) that no longer qualifies loses its per-tier source (`source re-judged`, `member row re-judged`, rejudged.csv); THE
+  RE-POINT FIX (the review's defect RP, production's fix): a partial source's best is its own (ts, subband) detection, re-pointed
+  to the largest-|S/N| detection it keeps (`best_cand_id` `<identity>_<lst>_<date>_<band>`, `fit_verdict`, `rejudged_routes`);
+  THE RATE POPULATION (R-REFACTOR-20261104-OMISSION-RATE-POPULATION-SEARCHED-NIGHTS): the rate test counts the nights the view's
+  own batches searched (`chain_summary.json` cells; G2b a batch without them), a decided night outside them has no served rate
+  and passes; T7 (no Card 2 detection left, every re-judged (batch source, tier) met, every combined row ranked by a detection it
+  keeps), the queue line `# CARD 2 AND RE-JUDGING ...`, the summary keys `card2` / `rejudge`, the tests line `T1 ... T7 PASS`.
+  The omit summary records each batch's Card 2 vintage (`card2_vintage`: 'chain' for a batch whose chain ran Card 2 itself, clv15
+  1279bd4, before the tie and the 3-D gate; 'view' for one chained before - the view then applies Card 2 after its chain; the
+  review's T7: a view mixing both applies Card 2 in two orders - recorded, not a gate).
+  The ledger's correction (CORRECTION-R-REFACTOR-20261104-OMISSION-RATE-POPULATION-SEARCHED-NIGHTS-FULL-VIEW-CHANGES, measured by
+  the snapshot chat): on the full 36-batch view the rate population changes 2 decision rows (08h 2025-01-07 23 MHz I 1-minute OMIT
+  -> KEEP, restoring 728 detections, and its Red I 1-minute member row).
+- exopipe_ops edf3263 and 35aad1a, the 10-minute side: the merge drop's re-judging (sublst_deep_omission_drop.py, IN PLACE) is
+  predicted by the omit stage's 10-minute record (`source re-judged` rows; G10 a survival the drop does not re-derive; G11 a
+  re-judged-out source without Gregg's go `catalog_omission.TENMIN_REJUDGE_APPROVED`, which the drop itself also requires).
+- exopipe_ops 35aad1a and 8ff3fc8, the serve side (lib/serve/snapshot_copy.py, G27 before every stage of a snapshot serve):
+  a run whose combined_view_summary.json holds "card2" or "rejudge" is served only when `serve.SNAPSHOT_CARD2_REJUDGE_APPROVED`
+  names it; a combined view's member runs (one per tag of its `batches`, beside it) that ran the restore-only 3-D gate need
+  their test against the run they replaced passed and `serve.SNAPSHOT_RESTORE_ONLY_APPROVED` naming the view. A name counts only
+  as a whole token (production's grep: a substring - a go naming Run_SNAPCOMB_20261104B also passes Run_SNAPCOMB_20261104).
+- exopipe_ops 1b9475c, the parallel filter catalogue: `serve.SNAPVIEW_FILTERCAT_PROCS` (above).
+- exopipe_ops 7119fad, the 10-minute leak veto's Master floor on the deep flux scale, restore-only (R-REFACTOR-20261104-LEAKVETO-
+  FLOOR-RESTORE-ONLY): runs in place; the content test leak_veto_table now reads each row's `master_floor_jy` (= max(0.5, 0.5 x
+  `window_flux_factor`), checked) instead of the fixed 0.5 Jy. exopipe_ops 1907941 (the forced-reserve radius back to linear in
+  ln S): no change, the branch's lib/photometry/tests.py `_radius_bw` was already linear.
+- clv15 1279bd4 + 6baaee5 (Card 2 in the chain before the tie and the 3-D gate; the radius lookup unchanged) and the restore-only
+  3-D gate (clv15 b8d1989, 827cb7d, bf7dce8; exopipe_ops fa90670), in the snapshot chain stage (lib/catalog/tier_snapshot.py): the
+  chain runs in place; its approval marker's `CURVE_CONSTANTS_RESTORE=<table>` line passes `--curve-constants-restore` to every
+  chain call (P-G21 a named table missing); the run content test (class snapshot_run) reads Card 2 (card2_removed.csv against the
+  summary and the record) and the restore-only gate (restored_by against the record's two passes, the summary and every served
+  detections.csv) back; the chain's literals CARD2_RATIO / CARD2_TIERS, RESTORED_BY, RESTORE_TOL_BEAMS are bound config keys.
+
+THE ROUND'S PARITY ON REAL DATA (2026-11-04; tests/parity_snapshot_view.py: production at the pin fa90670 - dbc40a6's builder
+and re-judging, SNAPCOMB_REJUDGE_PROCS=6, its filter catalogue SERIAL - against the stage at 008ec96 as a --parity run, omit ..
+ready; the frozen B6H2 + B6I2 + B6L copies with their chain records, the refusal record, the fleet records frozen 2026-11-04):
+
+- **The subset under the 11-04 code.** 43,553 served detections; 886 decisions, 144 OMIT keys + 23 wideband ones per image; 232
+  detections omitted (6,730 under the 11-03 code: in a subset view the nights of the batches left out counted as zero-rate nights -
+  the rate population, review T1), 5 removed by Card 2, 10 identities dropped; the re-judging reproduced 4,524 served sources, 69
+  (source, tier) touched, 48 still qualify, 3 re-judged out, 18 lose every member; 4,289 combined identities (211 from two or more
+  batches, 1 renamed), 12,108 page directories. Production's T1-T7 pass on both sides; every stage of the stage ended done with
+  every content test passed (G-V8, V1-V7), stale_best 0, no image absent from a member table (T2), the 5 served Card 2 rows all
+  matched (T3), every batch's Card 2 vintage 'view' (T7).
+- **The comparison.** 61,522 files in 16,416 directories on each side, the same sets. Identical: the general catalogue, the 138
+  per-tier view files, 12,108 page and 4,289 identity detections.csv, the 4 queues, the omission files, rejudged.csv, the filter
+  files (master_catalog.csv read by the stage's 6 processes = production's serial pass, 43,317 lines), the 29,052 panels (bytes:
+  the stage copies under the parity guard), the 140 localization inputs, both localization tables and offsets, all 4,529 figures,
+  and the summary but `seconds` (2,850 s, 6,200 s).
+- **The 9 differences, explained.** 2 localization build.log files, each naming its own output path. 7 page astrometry.png files
+  in PRODUCTION's view are truncated copies of their identical figures - 0, 65,536 or 131,072 bytes, each a byte prefix of the
+  figure - written by the localizer's figure pool (snapshot_localize_tiers.sh, shutil.copyfile) without an error; the stage's
+  copies, made by the same in-place script, are complete. A production defect, not a port difference; V6 now refuses a page copy
+  of another size than its figure.
+
+Not ported in this round (listed for the next): the restore-only wave's per-batch test against the run each new run replaces and
+its totals (exopipe_ops snapshot_restore_wave_diff.py, 8ff3fc8) and the wave's dated view driver comb_build_wave_20261104.sh (per
+batch tests as runs land, a GO file, one build): the branch has no place yet that knows which run a new run replaces (production:
+the wave's schedule CSV); until it does, G27 refuses a view holding a restore-only run whose test file is missing (fail closed).
+The snapshot serve's SERVE_HOLD file (exopipe_ops aa100bf, 2026-10-17: snapshot_batch/SERVE_HOLD refuses every snapshot serve) was
+never ported to lib/serve/snapshot_copy.py - found in this round, listed.
+
 ## Production behavior carried for parity, pending Gregg
 
 None of these is ruled; each is production's today and changes only with a ruling (or production's fix first):
 
-1. PRODUCTION BUG RP - the re-point of a partial source never fires on real data. Production re-points a per-tier source whose
-   best detection was omitted only when its `best_cand_id` is one of the omitted detections' cand_ids
-   (snapshot_combined_view.py:254). A per-tier survivors row's `best_cand_id` names its best MEMBER SOURCE
-   (`<identity>_<cell>_<band>`), never a detection, so the condition is never true: such a source keeps the omitted detection's
-   `best_snr`, `ts` and `peak_jy_best`, and the queue ranks it by them. The kept product (deep_omission.per_tier_snapshot) carries
-   the same rule. The build counts these sources (record `stale_best`) and the tests pin the behavior. For production's owner
-   first, then Gregg.
-2. Partial sources keep their survivor gates (deep_omission.py, OWED NOT DONE; DECISIONS_PENDING "Deep omission: the
-   survivor-gate re-run of a partial source").
+1. (RESOLVED 2026-11-04: production fixed the re-point in dbc40a6 and the port follows it - the V2 follow-up round above. It was
+   PRODUCTION BUG RP: the re-point fired only when a per-tier row's `best_cand_id`, which names a member source, was an omitted
+   detection's cand_id - never.)
+2. (RESOLVED 2026-11-04: partial sources are re-judged on the detections they keep - dbc40a6's re-judging, ported above; Gregg's
+   answers R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS.)
 3. The name-clash rule (`<J>~<batch>`, directories with `+` -> `p`, `~` -> `_`), the combined source's row (its member row of
    largest |best S/N|), the queue order (best |S/N|, then name): production's choices, stated in its docstring, not ruled.
 4. PRODUCTION FORMAT: the per-tier survivors files and the general catalogue name `batch_members` twice in their header
@@ -322,7 +404,7 @@ None of these is ruled; each is production's today and changes only with a rulin
 
 ## Open questions
 
-- The re-point (1 above): production's fix first, then the port follows; the pinned test changes on purpose.
+- (The re-point: done - production fixed it, the port follows, test_repoint.)
 - Whether the view should also refuse a per-tier page detection that is not among its identity's kept detections (the build
   counts them; zero would make it a gate).
 

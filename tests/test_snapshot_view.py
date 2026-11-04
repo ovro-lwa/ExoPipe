@@ -31,10 +31,13 @@ and its driver snapshot_batch/comb_build_20261102.sh.
              an identity detection the kept product does not keep, a record off the omit stage's, a panel of an omitted instant
              on a page (V3, its own key) and a page's files not its member batch sources' less the panel drops (V7) - F1;
              snapshot_card2_union a changed line; filter_catalog (per detection) a missing row
+  readers    exopipe_ops 1b9475c: both filter-catalogue stages always pass SNAPCAT_PROCS (serve.SNAPVIEW_FILTERCAT_PROCS,
+             pages_snapshot.FILTERCAT_PROCS: 6, the Lustre rule), never an inherited value; a count not >= 1 refuses (F-G4 / P22)
   m1         F1 proven on the reviewer's mutation M1 (a private copy of this tree whose build links an omitted panel it records as
              dropped): the build's read-back refuses, the view is moved aside (F7), nothing is left under its name
   seed       F10: the localize stage runs snapshot_localize_tiers.sh with PYTHONHASHSEED = serve.SNAPSHOT_FIGURE_HASHSEED
-  ready      the ready stage on the built view (stub localizations): G17 passes, the final tests pass, VIEW-READY-FOR-HIDES
+  ready      the ready stage on the built view (stub localizations): G17 passes, the final tests pass, VIEW-READY-FOR-HIDES;
+             V6's page figures refuse a truncated copy (production 2026-11-04), a missing one, a stale one and a missing figure
   py36       the child's module parses and loads under production's interpreter (Python 3.6)
   pin        production's ported files are the pinned ones (tests/production_pin.py; F3): the only test production's later
              commits fail - the stage's own tests above build the stage's view alone, production's side only in drift / parity /
@@ -57,6 +60,8 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import snapshot_chain_fixture       # noqa: E402
 os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 os.environ.setdefault('EXOPIPE3_SITE', '/lustre/gh/main/exopipe_ops/exopipe3_site.py')
 SCRATCH = '/tmp/exopipe3_tests_snapshot_view'
@@ -152,8 +157,29 @@ def searched(lst, ni, band):
     return not ((lst, band, ni) == ('05h', '55MHz', 7) or (lst == '06h' and band == '27MHz' and ni > 1))
 
 
+def frame_ts(lst, night, k):
+    """The 10-s frame k of a cell (an integration label YYYYMMDD_HHMMSS; det()'s ts)."""
+    return '%s_%02d%02d%02d' % (night.replace('-', ''), int(lst[:2]), k // 6, (k % 6) * 10)
+
+
+def date_obs(ts):
+    """The DATE-OBS of a frame whose integration midpoint is ts (clv15 INTEGRATION_S / 2 = 5.0155102 s before it): its 1-minute
+    block (integration_minute_key + '00') is ts's minute."""
+    import datetime
+    t = datetime.datetime.strptime(ts, '%Y%m%d_%H%M%S') - datetime.timedelta(seconds=5.0155102)
+    return t.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
+
+
+def gap_frame(k):
+    """The Green frames stacked without 46 MHz (the frame exception, dde1760): every frame k with k % 5 == 0."""
+    return k % 5 == 0
+
+
 def fleet(proto, rng):
-    """Noise tables per (cell, band, Stokes, tier) and wideband member lists (05h 46 MHz I 10-s night 1 noisy)."""
+    """Noise tables per (cell, band, Stokes, tier) (05h 46 MHz I 10-s night 1 noisy); per-subband admission tables; the wideband
+    member tables of the 05h cells, one row per (frame, group, subband) with its ts and DATE-OBS (dde1760 applies a member's
+    omission per image: Green holds 46 MHz in every frame but gap_frame's), and none in the 06h cells (searched before the
+    frame-time fix: dde1760 fails closed there, on the admission tables - 06h 27 MHz admits no frame on night 1)."""
     for lst in ('05h', '06h'):
         for ni, night in enumerate(NIGHTS):
             cell = os.path.join(proto, f'{lst}_{night}')
@@ -167,10 +193,24 @@ def fleet(proto, rng):
                         rows = [dict(idx=i, ts='x', admitted='1', global_rms_jyb='%.6f' % (base * (1 + 0.02 * rng.random())))
                                 for i in range(rng.randint(30, 40))]
                         _wcsv(os.path.join(cell, f'noise_{band}_{S}_median{sfx}.csv'), NOISE_COLS, rows)
+            for sb in SUBBANDS:
+                if not searched(lst, ni, sb):
+                    continue
+                adm = '0' if (lst, sb, ni) == ('06h', '27MHz', 0) else '1'
+                _wcsv(os.path.join(cell, f'admission_{sb}.csv'), ['idx', 'ts', 'date_obs', 'admitted'],
+                      [dict(idx=k, ts=frame_ts(lst, night, k), date_obs=date_obs(frame_ts(lst, night, k)), admitted=adm)
+                       for k in range(0, 120, 7)])
+            if lst != '05h':
+                continue
             for S in ('I', 'V'):
-                mem = [('Red', '18MHz'), ('Red', '23MHz'), ('Green', '55MHz'), ('Green', '46MHz')]
-                _wcsv(os.path.join(cell, f'wideband_members_{S}.csv'), ['group', 'ts', 'subband'],
-                      [dict(group=g, ts='x', subband=sb) for g, sb in mem])
+                rows = []
+                for k in range(120):
+                    ts = frame_ts(lst, night, k)
+                    for g, sb in (('Red', '18MHz'), ('Red', '23MHz'), ('Green', '55MHz'), ('Green', '46MHz')):
+                        if (g, sb) == ('Green', '46MHz') and gap_frame(k):
+                            continue
+                        rows.append(dict(group=g, ts=ts, date_obs=date_obs(ts), subband=sb))
+                _wcsv(os.path.join(cell, f'wideband_members_{S}.csv'), ['group', 'ts', 'date_obs', 'subband'], rows)
     return proto
 
 
@@ -187,13 +227,15 @@ def det(lst, night, sb, S, T, k, snr, ra, dec):
                 ra_peak='%.5f' % (ra + 0.001), dec_peak='%.5f' % dec, pos_err_stat_arcsec='40.0', pos_err_sys_arcsec='60.0')
 
 
-def batch_run(root, name, idents, extra_files=(), best_cand_detection=()):
+def batch_run(root, name, idents, cells, extra_files=(), card2=()):
     """A served batch run like production's: the general catalogue per band class (a row per identity and class, its own
-    review_dir with that class's detections, anchored), per-tier views (survivors: one row per (identity, band) with
-    production's best_cand_id '<identity>_<cell>_<band>' - a detection cand_id for the identities in best_cand_detection;
-    members '<identity>_<cell>_<band>'), page directories per (band, tier) with panels (.png + .page.json per detection,
-    astrometry.png, ``extra_files``), the queues with their header lines, card2_filter.csv. idents: [(J, (ra, dec, err_arcsec),
-    [detections])]."""
+    review_dir with that class's detections, anchored); the CHAIN RECORD, chain_summary.json (``cells``) and served_tiers.csv
+    (tests/snapshot_chain_fixture.py: the chain's own route functions decide which (identity, tier) qualifies); per-tier views
+    of the QUALIFYING (identity, tier) only (survivors: one row per (identity, band) with production's best_cand_id
+    '<identity>_<cell>_<band>' and the best detection's ts / subband; members '<identity>_<cell>_<band>'), page directories per
+    (band, tier) with panels (.png + .page.json per detection, astrometry.png, ``extra_files``), the queues with their header
+    lines, card2_filter.csv, card2_vleak.csv (every 10-s Stokes V detection; ``card2`` = the cand_ids Card 2 flags, a row not
+    evaluated, a flagged row the chain did not serve). idents: [(J, (ra, dec, err_arcsec), [detections])]."""
     run = os.path.join(root, name)
     gen = collections.defaultdict(list)
     per = collections.defaultdict(list)
@@ -210,9 +252,12 @@ def batch_run(root, name, idents, extra_files=(), best_cand_detection=()):
                                  best_snr='%.2f' % max(abs(float(x['snr'])) for x in dd), n_det=len(dd),
                                  best_cand_id=f'{J}_{dd[0]["lst"]}_{dd[0]["date"]}_{cls}',
                                  ra_common='%.5f' % (ra + 0.002), dec_common='%.5f' % dec, pos_err_common_arcsec='%.1f' % err))
+    qual = snapshot_chain_fixture.write_chain(run, [(J, dets) for J, _a, dets in idents], cells)
+    for J, (ra, dec, err), dets in idents:
         by = collections.defaultdict(list)
         for d in dets:
-            by[(d['subband'], d['stokes'], d['tier'])].append(d)
+            if qual.get((J, d['tier'])):
+                by[(d['subband'], d['stokes'], d['tier'])].append(d)
         for (sb, S, T), dd in sorted(by.items()):
             pd = f'candidates/{S}/{J}_{sb}' + ('_1min' if T == '1min' else '')
             _wcsv(os.path.join(run, pd, 'detections.csv'), DET_COLS, dd)
@@ -227,10 +272,10 @@ def batch_run(root, name, idents, extra_files=(), best_cand_detection=()):
                 with open(os.path.join(run, pd, fn), 'w') as f:
                     f.write(f'{name} {fn}\n')
             best = max(dd, key=lambda d: abs(float(d['snr'])))
-            bc = best['cand_id'] if J in best_cand_detection else f'{J}_{best["lst"]}_{best["date"]}_{sb}'
             per[(S, T, sb)].append(dict(rank='rank0001', source_id=f'{J}_{sb}', identity_id=J, review_dir=pd, ra=best['ra'],
                                         dec=best['dec'], best_snr=best['snr'], n_det=len(dd), n_det_identity=len(dets),
-                                        best_cand_id=bc, peak_jy_best='12.5', stokes=S, tier=T, subband=sb, ts=best['ts']))
+                                        best_cand_id=f'{J}_{best["lst"]}_{best["date"]}_{sb}', peak_jy_best='12.5', stokes=S,
+                                        tier=T, subband=sb, ts=best['ts']))
             for d in dd:
                 mem[(S, T, sb)].append(dict(source_id=f"{J}_{d['lst']}_{d['date']}_{sb}", cand_id=d['cand_id'], det_snr=d['snr'],
                                             det_date=d['date'], band=sb))
@@ -259,19 +304,41 @@ def batch_run(root, name, idents, extra_files=(), best_cand_detection=()):
             for d in dets[:2]:
                 f.write(f'{d["cand_id"]},keep\n')
         f.write('shared_row,keep\n')
-    # served_tiers.csv (the chain's per-tier serving table): an identity served in a tier holds a per-tier source there, as in
-    # production (36 of 36 batches of Run_SNAPCOMB_20261102); a no-route row and a non-qualifying row as production writes them
-    tiers_of = collections.defaultdict(set)
-    for (S, T, sb), rr in per.items():
-        for x in rr:
-            tiers_of[x['identity_id']].add(T)
-    st = []
-    for J, _a, dets in idents:
-        for T in ('10s', '1min'):
-            st.append(dict(identity_jname=J, chain_outcome='served', tier=T, qualifies='1' if T in tiers_of[J] else '0'))
-    st.append(dict(identity_jname='J9999+9999', chain_outcome='no-route', tier='10s', qualifies='0'))
-    _wcsv(os.path.join(run, 'served_tiers.csv'), ['identity_jname', 'chain_outcome', 'tier', 'qualifies'], st)
+    card2_file(run, idents, card2)
     return run
+
+
+C2_COLS = ['det_uid', 'cand_id', 'ra_peak', 'dec_peak', 'identity_jname', 'stokes', 'tier', 'served', 'peak_jyb', 'i_here_jy',
+           'v_over_i_here', 'card2_ratio', 'card2_would_remove']
+
+
+def card2_file(run, idents, flagged):
+    """card2_vleak.csv of a synthetic batch (phase3_snapshot_card2.py's columns the view reads): every 10-s Stokes V detection, the
+    ratio |peak| / i_here written to 5 decimals and the flag at 0.05 - flagged (0.03) for the cand_ids in ``flagged``, 0.4
+    otherwise, the first one not evaluated (no Stokes I pixel) - and a flagged row the chain did not serve."""
+    rows, n = [], 0
+    tag = os.path.basename(run)
+    for i, (J, _a, dets) in enumerate(idents):
+        for j, d in enumerate(dets):
+            if (d['tier'], d['stokes']) != ('10s', 'V'):
+                continue
+            n += 1
+            uid = '%s:%d:%d' % (tag, i, j)          # the chain record's det_uid (tests/snapshot_chain_fixture.py)
+            pk = abs(float(d['snr'])) * 0.1
+            if n == 1 and d['cand_id'] not in flagged:
+                rows.append(dict(det_uid=uid, cand_id=d['cand_id'], ra_peak=d['ra_peak'], dec_peak=d['dec_peak'],
+                                 identity_jname=J, stokes='V', tier='10s', served='1', peak_jyb='%.4g' % pk, i_here_jy='',
+                                 v_over_i_here='', card2_ratio='0.05', card2_would_remove='0'))
+                continue
+            ratio = 0.03 if d['cand_id'] in flagged else 0.4
+            rows.append(dict(det_uid=uid, cand_id=d['cand_id'], ra_peak=d['ra_peak'], dec_peak=d['dec_peak'],
+                             identity_jname=J, stokes='V', tier='10s', served='1', peak_jyb='%.4g' % pk,
+                             i_here_jy='%.6g' % (pk / ratio), v_over_i_here='%.5f' % ratio, card2_ratio='0.05',
+                             card2_would_remove='1' if ratio <= 0.05 else '0'))
+    rows.append(dict(det_uid='u_unserved', cand_id='05h_2025-06-01_23MHz_V_10s_20250601_051950', ra_peak='1.00000',
+                     dec_peak='2.00000', identity_jname='', stokes='V', tier='10s', served='0', peak_jyb='0.5', i_here_jy='25',
+                     v_over_i_here='0.02000', card2_ratio='0.05', card2_would_remove='1'))
+    _wcsv(os.path.join(run, 'card2_vleak.csv'), C2_COLS, rows)
 
 
 def fit_store(batch_dir, run):
@@ -289,6 +356,11 @@ def fit_store(batch_dir, run):
            'fit_min_asec'], rows)
 
 
+def _off_floor(snr):
+    """An S/N clear of the record's rounding at a singleton floor (10 / 8 sigma; the chain fixture refuses one there)."""
+    return snr + 0.013 if min(abs(snr - 10.0), abs(snr - 8.0)) < 0.006 else snr
+
+
 def world(name='world', seed=31):
     """(root, rdir, proto, runs, batch_dir) of the synthetic world (module docstring)."""
     root = _fresh(name)
@@ -297,34 +369,44 @@ def world(name='world', seed=31):
     proto = fleet(os.path.join(root, 'fleet'), rng)
     review = os.path.join(root, 'review')
     N = NIGHTS
-    a = [  # batch A: 05h nights 1-2
+    c2 = {}                                  # batch -> the cand_ids Card 2 flags
+    a = [  # batch A: 05h nights 1-2 (+ 06h night 2)
         ('J0520+3000', (80.0, 30.0, 60.0), [det('05h', N[0], '46MHz', 'I', '10s', 3, 30.0, 80.0, 30.0),
                                             det('05h', N[1], '18MHz', 'V', '1min', 4, 12.0, 80.0, 30.0)]),
         ('J0600+2500', (90.0, 25.0, 60.0), [det('05h', N[1], '23MHz', 'I', '10s', 5, 15.0, 90.0, 25.0)]),
         ('J0510+2000', (77.5, 20.0, 60.0), [det('05h', N[0], '46MHz', 'I', '10s', 6, 11.0, 77.5, 20.0),     # all omitted:
                                             det('05h', N[0], '46MHz', 'I', '10s', 7, 9.0, 77.5, 20.0)]),    # identity dropped
         ('J0530+3500', (82.5, 35.0, 60.0), [det('05h', N[0], '46MHz', 'I', '10s', 8, 25.0, 82.5, 35.0),     # partial, best
-                                            det('05h', N[1], '46MHz', 'I', '10s', 8, 10.0, 82.5, 35.0)]),   # omitted: RP
+                                            det('05h', N[1], '46MHz', 'I', '10s', 8, 10.6, 82.5, 35.0)]),   # omitted: re-pointed
         ('J0545+3700', (86.0, 37.0, 60.0), [det('05h', N[0], '46MHz', 'I', '10s', 9, 28.0, 86.0, 37.0),     # partial, best
                                             det('05h', N[1], '46MHz', 'I', '10s', 9, 11.0, 86.0, 37.0)]),   # omitted, re-pointed
-        ('J0550+3800', (87.5, 38.0, 60.0), [det('05h', N[0], '46MHz', 'I', '10s', 10, 13.0, 87.5, 38.0),    # source dropped,
-                                            det('05h', N[1], '18MHz', 'V', '10s', 10, 9.0, 87.5, 38.0),     # identity kept
-                                            det('05h', N[1], 'Green', 'I', '10s', 11, 8.5, 87.5, 38.0)]),
+        ('J0550+3800', (87.5, 38.0, 60.0), [det('05h', N[0], '46MHz', 'I', '10s', 10, 13.0, 87.5, 38.0),    # omitted; its 18 MHz
+                                            det('05h', N[1], '18MHz', 'V', '10s', 10, 9.0, 87.5, 38.0),     # V one Card 2: the
+                                            det('05h', N[1], 'Green', 'I', '10s', 11, 8.5, 87.5, 38.0)]),   # 10-s re-judged out
+        ('J0535+3600', (84.0, 36.0, 60.0), [det('05h', N[0], 'Green', 'I', '10s', 12, 12.0, 84.0, 36.0),    # its frame holds
+                                            det('05h', N[0], 'Green', 'I', '10s', 15, 9.5, 84.0, 36.0),     # 46 MHz: omitted per
+                                            det('05h', N[1], '23MHz', 'I', '10s', 13, 16.0, 84.0, 36.0)]),  # image; frame 15 not
+        ('J0612+2200', (93.0, 22.0, 60.0), [det('06h', N[1], 'Red', 'I', '10s', 14, 16.0, 93.0, 22.0)]),    # fail closed (06h)
     ]
+    c2['A'] = {a[5][2][1]['cand_id']}
     b = [  # batch B: 05h nights 3-4, 06h night 3
         ('J0520+3001', (80.0, 30.0, 60.0), [det('05h', N[2], '46MHz', 'I', '10s', 3, 20.0, 80.0, 30.0),     # merges with A's
                                             det('05h', N[3], 'Red', 'I', '1min', 3, 9.5, 80.0, 30.0),       # (and its 18 MHz V
                                             det('05h', N[2], '18MHz', 'V', '1min', 4, 11.0, 80.0, 30.0)]),  # 1-min page: a clash)
-        ('J0610+3100', (92.5, 31.0, 60.0), [det('06h', N[2], '55MHz', 'V', '10s', 5, 14.0, 92.5, 31.0)]),
+        ('J0610+3100', (92.5, 31.0, 60.0), [det('06h', N[2], '55MHz', 'V', '10s', 5, 14.0, 92.5, 31.0)]),  # Card 2: dropped
         ('J0615+3300', (93.7, 33.0, 60.0), [det('06h', N[2], '46MHz', 'I', '1min', 6, 16.0, 93.7, 33.0),
                                             det('05h', N[3], '27MHz', 'I', '10s', 6, 8.8, 93.7, 33.0)]),
     ]
+    c2['B'] = {b[1][2][0]['cand_id']}
     c = [  # batch C: 06h nights 5-6
         ('J0600+2500', (95.0, 35.0, 60.0), [det('06h', N[4], '18MHz', 'I', '10s', 5, 18.0, 95.0, 35.0)]),  # a name clash
         ('J0615+3301', (93.7, 33.0, 60.0), [det('06h', N[5], '46MHz', 'I', '1min', 6, 22.0, 93.7, 33.0)]),  # merges with B's
         ('J0620+2900', (95.0, 29.0, 60.0), [det('06h', N[5], 'Green', 'V', '10s', 7, 10.5, 95.0, 29.0),
                                             det('06h', N[4], '23MHz', 'V', '1min', 7, 9.0, 95.0, 29.0)]),
+        ('J0625+2700', (96.2, 27.0, 60.0), [det('06h', N[4], '46MHz', 'V', '10s', 30, 12.0, 96.2, 27.0),    # one frame Card 2:
+                                            det('06h', N[4], '46MHz', 'V', '10s', 31, 11.0, 96.2, 27.0)]),  # its panel, member row
     ]
+    c2['C'] = {c[3][2][1]['cand_id']}
     rnd = []
     for i in range(24):                    # filler identities (no merge: far apart), every band and tier
         bi = i % 3
@@ -337,15 +419,17 @@ def world(name='world', seed=31):
             nt = rng.choice(nights)
             if lst == '06h' and sb == '27MHz' and nt not in (N[0], N[1]):
                 sb = '23MHz'
-            dets.append(det(lst, nt, sb, rng.choice('IV'), rng.choice(('10s', '1min')), 20 + 3 * i + k, 7.5 + 10 * rng.random(),
-                            ra, dec))
+            dets.append(det(lst, nt, sb, rng.choice('IV'), rng.choice(('10s', '1min')), 20 + 3 * i + k,
+                            _off_floor(7.5 + 10 * rng.random()), ra, dec))
         rnd.append((bi, (f'J{4 + i // 10:02d}{i % 60:02d}+{20 + i:02d}00', (ra, dec, 60.0), dets)))
     a += [x for bi, x in rnd if bi == 0]
     b += [x for bi, x in rnd if bi == 1]
     c += [x for bi, x in rnd if bi == 2]
-    runs = [batch_run(review, 'Run_SNAPT2A_20261103', a, extra_files=('notes.txt',), best_cand_detection=('J0545+3700',)),
-            batch_run(review, 'Run_SNAPT2B_20261103', b, extra_files=('notes.txt',)),
-            batch_run(review, 'Run_SNAPT2C_20261103', c)]
+    cells = {'A': ['05h_' + N[0], '05h_' + N[1], '06h_' + N[1]], 'B': ['05h_' + N[2], '05h_' + N[3], '06h_' + N[2]],
+             'C': ['06h_' + N[4], '06h_' + N[5]]}
+    runs = [batch_run(review, 'Run_SNAPT2A_20261103', a, cells['A'], extra_files=('notes.txt',), card2=c2['A']),
+            batch_run(review, 'Run_SNAPT2B_20261103', b, cells['B'], extra_files=('notes.txt',), card2=c2['B']),
+            batch_run(review, 'Run_SNAPT2C_20261103', c, cells['C'], card2=c2['C'])]
     _wcsv(os.path.join(runs[1], 'detection_ts.csv'), ['cand_id', 'ts_utc'],
           [dict(cand_id=d['cand_id'], ts_utc=d['ts']) for _J, _a, dd in b for d in dd])
     batch_dir = os.path.join(root, 'snapshot_batch')
@@ -362,10 +446,9 @@ def world(name='world', seed=31):
 # the deep-omission decisions it imports, the driver whose heredoc is ported - is read at the pinned exopipe_ops commit, so a later
 # production commit never breaks the stage's own tests; it shows up in test_production_pin. Production code the stage RUNS IN PLACE
 # (the chain's merge, snapshot_filter_catalog.py) is live on both sides.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import production_pin as PIN        # noqa: E402
-PINNED = ('snapshot_combined_view.py', 'snapshot_deep_omission.py', 'sublst_deep_omission.py',
-          'snapshot_batch/comb_build_20261102.sh')
+PINNED = ('snapshot_combined_view.py', 'snapshot_deep_omission.py', 'snapshot_rejudge.py', 'sublst_deep_omission.py',
+          'snapshot_batch/comb_build_20261104.sh')
 _PIN_DIR = []
 
 
@@ -382,16 +465,20 @@ pin, rdir, proto, out, runs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 sys.path[:] = [p for p in sys.path if p not in ('', os.path.dirname(os.path.abspath(__file__)))]
 sys.path.insert(0, pin)                 # the PINNED snapshot_deep_omission (+ the sublst_deep_omission beside it) is imported
 import snapshot_deep_omission as SDO    # first: the builder's own `import snapshot_deep_omission` then finds it cached
+import snapshot_rejudge as SRJ
 assert os.path.dirname(os.path.abspath(SDO.__file__)) == os.path.abspath(pin), SDO.__file__
-SDO.decide.__defaults__ = (rdir, proto)
+assert os.path.dirname(os.path.abspath(SRJ.__file__)) == os.path.abspath(pin), SRJ.__file__
+SDO.decide.__defaults__ = (rdir, proto, None)               # decide(lsts, served, rdir, proto, cells=None): the data roots
+SDO.wb_image_members.__defaults__ = (proto,)                # the per-image member tables (dde1760) read the same fleet
+SDO.wb_image_omitted.__defaults__ = (proto,)
 sys.argv = [os.path.join(pin, 'snapshot_combined_view.py'), out] + runs
 runpy.run_path(os.path.join(pin, 'snapshot_combined_view.py'), run_name='__main__')
 '''
 
 
 def prod_driver_heredoc():
-    """The driver's step-2 heredoc (comb_build_20261102.sh at the pin, between <<'PYC' and PYC), verbatim."""
-    src = open(os.path.join(pinned_ops(), 'snapshot_batch', 'comb_build_20261102.sh')).read()
+    """The driver's step-2 heredoc (comb_build_20261104.sh at the pin, between <<'PYC' and PYC), verbatim."""
+    src = open(os.path.join(pinned_ops(), 'snapshot_batch', 'comb_build_20261104.sh')).read()
     return src.split("<<'PYC'", 1)[1].split('\nPYC\n', 1)[0].split('\n', 1)[1]
 
 
@@ -471,21 +558,27 @@ def test_production_pin():
 
 
 def test_drift():
-    """The port's texts, patterns and layout are production's at the pin (read as text)."""
+    """The port's texts, patterns and layout are production's at the pin (read as text): the view's (dbc40a6), the decisions'
+    (dde1760 / dbc40a6) and the re-judging's (snapshot_rejudge.py)."""
     SV = _SV()
     from exopipe.phase3.lib.catalog import deep_omission as DO
+    from exopipe.phase3.lib.catalog import rejudge as RJ
     src = open(os.path.join(pinned_ops(), 'snapshot_combined_view.py')).read()
-    drv = open(os.path.join(pinned_ops(), 'snapshot_batch', 'comb_build_20261102.sh')).read()
+    srj = open(os.path.join(pinned_ops(), 'snapshot_rejudge.py')).read()
+    sdo = open(os.path.join(pinned_ops(), 'snapshot_deep_omission.py')).read()
+    drv = open(os.path.join(pinned_ops(), 'snapshot_batch', 'comb_build_20261104.sh')).read()
     flat = src.replace('"\n                     "', '').replace('"\n                    "', '').replace('"\n                       "', '')
+    flat = flat.replace('"\n                         "', '').replace('"\n               "', '')
     for txt in ('# queue_name: snapshot Stokes %s, %s tier - COMBINED VIEW of %d served batches\\n',
                 '# run: %s (combined view; batches %s)\\n',
-                '%d detections omitted by the deep-omission rule (Gregg 2026-10-24)\\n',
-                'served detections %d, kept %d; decisions %d (%d OMIT keys); %s\\n', '"T1 T2 T3 T4 T5 T6 PASS"'):
+                '%d detections omitted by the deep-omission rule (Gregg 2026-10-24)" % n_om',
+                'served detections %d, kept %d; decisions %d (%d OMIT keys%s); %s\\n'):
         assert txt in src, txt
     assert SV.QUEUE_NAME.replace('\n', '\\n') in src and SV.QUEUE_RUN.replace('\n', '\\n') in src
-    assert SV.SUMMARY_LINE1.replace('\n', '\\n') in src and SV.SUMMARY_LINE2.replace('\n', '\\n') in src
-    assert '"%s"' % SV.TESTS_PASSED in src
-    for line in (SV.VIEW_LIMITS, SV.DEEP_OMISSION_LINE):         # the two long header lines, joined from their source literals
+    assert SV.SUMMARY_LINE1 in src and SV.SUMMARY_LINE2.replace('\n', '\\n') in src
+    assert SV.SUMMARY_LINE1_NEW in flat and SV.SUMMARY_WB in src and SV.DEEP_OMISSION_WB in src
+    assert 'tests="T1 T2 T3 T4 T5 T6%s PASS" % (" T7" if NEW_ON else "")' in src and SV.TESTS_PASSED == 'T1 T2 T3 T4 T5 T6 T7 PASS'
+    for line in (SV.VIEW_LIMITS, SV.DEEP_OMISSION_LINE, SV.CARD2_REJUDGE_LINE):   # the long header lines, joined from their literals
         assert line.replace('\n', '\\n') in flat, line[:60]
     assert 'TIERS, STOKES = ("10s", "1min"), ("V", "I")' in src
     S = _cfg().serve
@@ -496,10 +589,42 @@ def test_drift():
     assert 're.match(r"^(.*)_(\\d{2}h_\\d{4}-\\d{2}-\\d{2})_([^_]+)$", row["source_id"])' in src and \
         SV.MEMBER_ROW.pattern == r"^(.*)_(\d{2}h_\d{4}-\d{2}-\d{2})_([^_]+)$"
     assert DO.SNAP_CID.pattern in src and DO.SNAP_PANEL.pattern in src
-    assert 'row = dict(row, best_cand_id=top["cand_id"], best_snr=top["snr"], ts=top["ts"], subband=top["subband"], ' \
-           'peak_jy_best="",' in src and SV.REPOINT_FIELDS == ('best_cand_id', 'best_snr', 'ts', 'subband', 'peak_jy_best',
-                                                             'deep_omission')
-    assert 'deep_omission="best detection omitted; re-pointed (survivor gates not re-run)")' in src
+    # the re-point (dbc40a6): best by (ts, subband), best_cand_id '<identity>_<lst>_<date>_<band>', the fields' order and note
+    assert 'row = dict(row, best_cand_id="%s_%s_%s_%s" % (row["identity_id"], top["lst"], top["date"], band),' in src
+    assert 'best_snr=top["snr"], ts=top["ts"], subband=top["subband"], fit_verdict=top.get("fit_verdict", ""),' in src
+    assert DO.REPOINT_FIELDS == ('best_cand_id', 'best_snr', 'ts', 'subband', 'fit_verdict', 'peak_jy_best', 'deep_omission')
+    assert ('peak_jy_best="", deep_omission="%s' % DO.REPOINT_NOTE[:50]) in src.replace('"\n                                   "', '')
+    assert 'note="best %s %s (%s) removed; re-pointed to %s (%s)" % (' in src
+    for t in (DO.SOURCE_EMPTY_NOTE, DO.SOURCE_EMPTY_CARD2_NOTE, DO.IDENTITY_EMPTY_NOTE):
+        assert '"%s"' % t in src, t
+    assert 'rejudged_routes=REJ_ROUTES[(r, row["identity_id"], T)]' in src
+    # Card 2 (dbc40a6): the key at 5 decimals, the 10-s Stokes V rule, the ratio, the per-frame rule of member rows and panels
+    assert 'return (cand, "%.5f" % float(ra), "%.5f" % float(dec))' in src and DO.nk('a', '1', '2') == ('a', '1.00000', '2.00000')
+    assert 'd.get("tier") == "10s" and d.get("stokes") == "V"' in src
+    assert 'CARD2_RATIO = 0.05' in srj and _cfg().catalog_omission.CARD2_RATIO == 0.05
+    assert 'return JC_C2[(r, J, cand)] > 0 and JC_C2[(r, J, cand)] == JC_ALL[(r, J, cand)]' in src
+    assert 'if pm and S == "V" and T == "10s" and JC_C2 and jc_card2(' in src
+    # the decisions (dde1760 / dbc40a6): the member reasons, the members' order, the fail-closed rule, the rate population
+    flat_d = sdo.replace("'\n                                      '", '')
+    assert DO.snapshot_member_image_reason('%s', '%s') in flat_d.replace("' % (', '.join(sorted(why)), g))", '')
+    assert DO.snapshot_member_failclosed_reason('%s', '%s') in flat_d.replace("' % (', '.join(sorted(why)), g))", '')
+    assert "' '.join(sorted({w.split()[0] for w in why}, key=lambda b: int(b[:-3])))" in sdo
+    assert "elif not has_t and searched_sb(lst, r['night'], r['band'], proto):" in sdo
+    assert 'ap = bool(not np.isfinite(rthr) or night not in rate or rate[night] <= rthr)' in sdo
+    assert "rate=('%.4g' % rate[night]) if night in rate else ''" in sdo
+    assert "iid = r['ts'] if T == '10s' else integration_minute_key(r['date_obs']) + '00'" in sdo
+    assert 'return True if mem is None else bool(mem & om)' in sdo
+    # the re-judging (snapshot_rejudge.py): the port's rejudge is production's, line for line but the refusal and the docstring
+    import ast
+
+    def body(srcs, name):
+        f = next(n for n in ast.walk(ast.parse(srcs)) if isinstance(n, ast.FunctionDef) and n.name == name)
+        return [ast.dump(x) for x in f.body[1:]]          # the docstring left out
+    norm = lambda xs: [x.replace("Name(id='RejudgeRefusal', ctx=Load())", "Name(id='RuntimeError', ctx=Load())") for x in xs]
+    port_src = open(RJ.__file__).read()
+    prod_body, port_body = body(srj, 'rejudge'), norm(body(port_src, 'rejudge'))
+    diff = [i for i, (x, y) in enumerate(zip(prod_body, port_body)) if x != y]
+    assert len(prod_body) == len(port_body) and len(diff) <= 12, (len(prod_body), len(port_body), diff[:5])
     # the driver: stores, interpreter, localization environment
     assert 's=snapshot_batch/rechain_$(basename $r)/fits_store.csv' in drv and S.SNAPVIEW_FIT_STORE == \
         '{batch_dir}/rechain_{run}/fits_store.csv' and _cfg().catalog_snapshot.BATCH_DIR == os.path.join(OPS, 'snapshot_batch')
@@ -559,8 +684,18 @@ def test_parity():
     rec = _rows(os.path.join(W['port'], 'deep_omission_dropped.csv'))
     kinds = collections.Counter(x['kind'] for x in rec)
     assert summ['multi_batch_identities'] >= 2 and summ['renamed'] >= 1, summ
-    for k in ('detection', 'identity dropped', 'source dropped', 'member row', 'panel', 'source partial'):
+    for k in ('detection', 'identity dropped', 'source dropped', 'member row', 'panel', 'source partial', 'card2 detection',
+              'card2 member row', 'card2 panel', 'source re-judged', 'member row re-judged'):
         assert kinds.get(k), (k, kinds)
+    # dde1760: a per-image wideband key (05h Green I night 1, 46 MHz omitted) omitted one Green detection (its frame holds 46
+    # MHz) and kept the other (a frame stacked without it); a fail-closed key (06h, no member table) dropped J0612+2200
+    assert summ['deep_omission']['omit_wb_image_keys'] >= 1, summ['deep_omission']
+    om_c = {x['cand_id'] for x in rec if x['kind'] == 'detection'}
+    assert any(c.endswith('_050200') and '_Green_I_10s_' in c for c in om_c), sorted(om_c)[:5]
+    assert not any(c.endswith('_050230') and '_Green_I_10s_' in c for c in om_c)
+    assert ('T2A', 'J0612+2200') in {(x['batch'], x['identity']) for x in rec if x['kind'] == 'identity dropped'}
+    assert summ['card2']['removed_from_view'] >= 2 and summ['rejudge']['rejudged_out'] >= 1, (summ['card2'], summ['rejudge'])
+    assert os.path.getsize(os.path.join(W['port'], 'rejudged.csv')) > 100
     names = {r_['source_id'] for p in glob.glob(os.path.join(W['port'], 'source_catalogs', '*_sources_survivors.csv'))
              for r_ in _rows(p)}
     assert 'J0600+2500' in names and any(n.startswith('J0600+2500~') for n in names), sorted(names)[:8]
@@ -578,10 +713,12 @@ def test_parity():
     names_t = {t['name'] for t in recs[f'snapshot_{VIEW}_build']['tests']}
     for t in ('snapshot_view.files', 'snapshot_view.queues', 'snapshot_view.pages', 'snapshot_view.panels',
               'snapshot_view.identities', 'snapshot_view.record', 'G-V8_decisions_current',
-              'G-V3 omission_served.served_counts_add_up'):
+              'G-V3 omission_served.served_counts_add_up', 'G-V3 omission_rejudged.rejudged_table'):
         assert t in names_t, (t, names_t)
-    assert 'omission_served.served_counts_add_up' in {t['name'] for t in recs[f'snapshot_{VIEW}_omit']['tests']}
-    assert recs[f'snapshot_{VIEW}_build']['meta']['build']['stale_best'] >= 1      # PRODUCTION BUG RP counted (J0530+3500)
+    assert {'omission_served.served_counts_add_up', 'omission_rejudged.rejudged_table'} <= \
+        {t['name'] for t in recs[f'snapshot_{VIEW}_omit']['tests']}
+    assert recs[f'snapshot_{VIEW}_build']['meta']['build']['stale_best'] == 0      # dbc40a6: every row ranked by a kept detection
+    assert recs[f'snapshot_{VIEW}_filtercat']['meta']['filtercat_procs'] == 6    # 1b9475c: SNAPCAT_PROCS, the Lustre rule
     # the omit product is the deep-omission stage's (deep_omission.csv = the view's, byte for byte)
     od = os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW)
     assert filecmp.cmp(os.path.join(od, 'deep_omission.csv'), os.path.join(W['prod'], 'deep_omission.csv'), shallow=False)
@@ -589,23 +726,26 @@ def test_parity():
     assert DO.omitted_keys(_rows(os.path.join(od, 'deep_omission.csv')))
 
 
-def test_repoint_pinned():
-    """PRODUCTION BUG RP, pinned as it is today (production and the port): a per-tier source whose best detection is omitted is
-    re-pointed only when its best_cand_id is a detection cand_id (J0545+3700, a synthetic row); with production's best_cand_id
-    '<identity>_<cell>_<band>' (J0530+3500) it keeps the omitted detection's best_snr and ts. When production's owner fixes it
-    and the port follows, these asserts change on purpose."""
+def test_repoint():
+    """THE RE-POINT, fixed (exopipe_ops dbc40a6; the port review's defect RP): a partial per-tier source whose best detection - the
+    one of its own (ts, subband) - was removed is re-pointed to the largest-|S/N| detection it keeps (production and the port):
+    J0530+3500 and J0545+3700 (their night-1 bests omitted), best_cand_id '<identity>_<lst>_<date>_<band>', fit_verdict, the
+    note; a source still qualifying after re-judging carries rejudged_routes."""
+    from exopipe.phase3.lib.catalog import deep_omission as DO
     W = prod_world()
     for view in (W['prod'], W['port']):
         rows = {r['source_id']: r for r in _rows(os.path.join(view, 'source_catalogs_I_10s', '46MHz_sources_survivors.csv'))}
-        rp = rows['J0545+3700_46MHz']
-        assert rp['best_snr'] == '11.00' and rp['deep_omission'].startswith('best detection omitted; re-pointed'), rp
-        st = rows['J0530+3500_46MHz']
-        assert st['best_snr'] == '25.00' and not st.get('deep_omission'), st          # the omitted night-1 detection's
-        dets = _rows(os.path.join(view, st['review_dir'], 'detections.csv'))
-        assert [d['snr'] for d in dets] == ['10.00'], dets                            # its page holds only the kept one
+        for sid, snr in (('J0545+3700_46MHz', '11.00'), ('J0530+3500_46MHz', '10.60')):
+            rp = rows[sid]
+            assert rp['best_snr'] == snr and rp['deep_omission'] == DO.REPOINT_NOTE, rp
+            assert rp['best_cand_id'] == '%s_05h_%s_46MHz' % (sid.split('_')[0], NIGHTS[1]) and rp['ts'].startswith(
+                NIGHTS[1].replace('-', '')), rp
+            assert rp.get('rejudged_routes'), rp                                        # still qualifies: its routes
+            dets = _rows(os.path.join(view, rp['review_dir'], 'detections.csv'))
+            assert [d['snr'] for d in dets] == [snr], dets                              # its page holds only the kept one
     rec = _rows(os.path.join(W['port'], 'deep_omission_dropped.csv'))
-    part = [x for x in rec if x['kind'] == 'source partial']
-    assert [x['source'] for x in part] == ['J0545+3700_46MHz'], part
+    part = sorted(x['source'] for x in rec if x['kind'] == 'source partial')
+    assert {'J0530+3500_46MHz', 'J0545+3700_46MHz'} <= set(part), part
 
 
 def _mutated_omit(W, name, fix):
@@ -626,10 +766,14 @@ def _build_job(W, omit_dir, out, runs=None, copy_fallback=False):
     from exopipe.phase3.lib.catalog import deep_omission
     SV = _SV()
     S = _cfg().serve
+    co = _cfg().catalog_omission
+    proto = json.load(open(os.path.join(omit_dir, 'deep_omission_summary.json')))['proto']
     job = dict(out=out, runs=runs or W['runs'], kept_dir=omit_dir, tiers=list(S.SNAPVIEW_TIERS), stokes=list(S.SNAPVIEW_STOKES),
                suffix=dict(S.SNAPVIEW_PAGE_SUFFIX), clv15='/lustre/gh/main/clv15', ops=OPS,
                deep_omission_py=os.path.abspath(deep_omission.__file__), result=out + '.result.json',
-               copy_fallback=copy_fallback)
+               copy_fallback=copy_fallback, proto=proto,
+               names=dict(noise=dict(co.SNAPSHOT_NOISE), members=co.SNAPSHOT_MEMBERS, admission=co.SNAPSHOT_ADMISSION),
+               card2_ratio=co.CARD2_RATIO, card2_file=co.SNAPSHOT_CARD2, read_workers=co.READ_WORKERS)
     jp = out + '.job.json'
     os.makedirs(os.path.dirname(out), exist_ok=True)
     json.dump(job, open(jp, 'w'))
@@ -723,7 +867,7 @@ def test_gates():
     od = os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW)
 
     def state(d):
-        return {f: (os.stat(os.path.join(d, f)).st_mtime_ns, open(os.path.join(d, f), 'rb').read()) for f in sorted(os.listdir(d))}
+        return {rel: (os.stat(p).st_mtime_ns, open(p, 'rb').read()) for rel, p in sorted(tree(d).items())}
     rdir2 = shutil.copytree(W['rdir'], os.path.join(root, 'gates_refusals'))
     with open(os.path.join(rdir2, '06h_55MHz_searchtier_excluded.csv'), 'w') as f:
         f.write('06h,55MHz,%s,V,9.0,4.0,%s\n' % (NIGHTS[2], TAG))
@@ -777,6 +921,90 @@ def test_gates():
         CFG.authorize()
     assert u.status == 'refused' and 'G-V5' in u.reason, (u.status, u.reason)
     assert not os.path.exists(plan.U) and flow.halts(u, 'build')
+
+
+def test_filtercat_procs():
+    """exopipe_ops 1b9475c (the parallel filter catalogue: SNAPCAT_PROCS readers, merged in glob order): both filter-catalogue
+    stages ALWAYS pass SNAPCAT_PROCS - the view's serve.SNAPVIEW_FILTERCAT_PROCS, the snapshot pages' pages_snapshot.FILTERCAT_PROCS,
+    6 by default (the Lustre rule; production's default 16) - so an inherited value never reaches the child (SNAPCAT_ is no cleared
+    switch family); a reader count that is not an integer >= 1 refuses before the child runs (F-G4 / P22). The built view's
+    filtercat unit records its count (test_parity)."""
+    import types
+    SV = _SV()
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.serve import scripts
+    from exopipe.phase3.lib.pages import common, mirror, tier_snapshot as TSN
+    assert CFG.serve.SNAPVIEW_FILTERCAT_PROCS == 6 and CFG.pages_snapshot.FILTERCAT_PROCS == 6
+    assert not any('SNAPCAT_'.startswith(x) for x in CFG.runner.CHILD_ENV_CLEAR_PREFIXES)   # so the stages must pass it
+    for bad in (0, -2, 2.5, '6', True, None):
+        try:
+            SV.filtercat_procs(bad)
+        except ValueError as e:
+            assert 'F-G4' in str(e), e
+        else:
+            raise AssertionError(f'reader count {bad!r} accepted')
+    W = shared_world()
+    root = os.path.join(W['root'], 'fcp')
+    shutil.rmtree(root, ignore_errors=True)
+    seen = []
+
+    class Stub:
+        ok, refused, rc, reason, tail = False, True, 2, 'stub child (not run)', ''
+
+    def stub(*a, **kw):
+        seen.append(dict(kw.get('env') or {}))
+        return Stub()
+    real_run, real_lrun, real_gate, real_script = scripts.run, common.lrun, mirror.gate, common.legacy_script
+    old_env = os.environ.get('SNAPCAT_PROCS')
+    os.environ['SNAPCAT_PROCS'] = '64'                 # an inherited value: never the child's
+    scripts.run = stub
+    common.lrun = lambda u, script, args, **kw: stub(**kw)
+    mirror.gate = lambda *a, **kw: None
+    common.legacy_script = lambda roots, name, fn: os.path.join(OPS, fn)
+    try:
+        for n, want in ((6, 'F-G3'), (3, 'F-G3'), (0, 'F-G4')):
+            out = os.path.join(root, f'view_{n}')
+            CFG.authorize(out=out)
+            CFG.set('catalog_snapshot.BATCH_DIR', W['batch_dir'])
+            CFG.set('serve.SNAPVIEW_FILTERCAT_PROCS', str(n))
+            rr = record.Run('serve', ['test'], out, CFG)
+            plan = SV.ViewPlan(types.SimpleNamespace(run_label='Run_SNAPCOMB_FCP', view_runs=','.join(W['runs']), view_omit=None),
+                               out)
+            os.makedirs(plan.U)
+            k = len(seen)
+            u = SV.filtercat_stage(rr, plan)
+            assert u.status == 'refused' and want in u.reason, (n, u.status, u.reason)
+            assert seen[k:] == ([{'SNAPCAT_PROCS': str(n)}] if n else []), (n, seen[k:])
+            assert os.listdir(plan.U) == [], 'the filtercat stage wrote into the view on a refusal'
+            CFG.reset()
+            CFG.authorize()
+        for n, want in ((6, 'P22 filter catalogue failed'), (0, 'P22 F-G4')):
+            out = os.path.join(root, f'pages_{n}')
+            CFG.authorize(out=out)
+            CFG.set('pages_snapshot.FILTERCAT_PROCS', str(n))
+            rr = record.Run('pages', ['test'], out, CFG)
+            c = types.SimpleNamespace(name='Run_SNAPB_FCP', roots={}, store=os.path.join(out, 'fits_store.csv'),
+                                      RUN=os.path.join(out, 'Run_SNAPB_FCP'), W=out)
+            os.makedirs(c.RUN)
+            open(c.store, 'w').write('cand_id\n')
+            k = len(seen)
+            done = {'Run_SNAPB_FCP:build': 'done'}
+            TSN.stage_filtercat(c, rr, done)
+            assert seen[k:] == ([{'SNAPCAT_PROCS': str(n)}] if n else []), (n, seen[k:])
+            assert 'Run_SNAPB_FCP:filtercat' not in done
+            j = json.load(open(record.record_path(out, 'pages', 'Run_SNAPB_FCP:filtercat')))
+            assert j['status'] == 'refused' and want in j['reason'], (n, j['status'], j['reason'])
+            CFG.reset()
+            CFG.authorize()
+    finally:
+        scripts.run, common.lrun, mirror.gate, common.legacy_script = real_run, real_lrun, real_gate, real_script
+        if old_env is None:
+            os.environ.pop('SNAPCAT_PROCS', None)
+        else:
+            os.environ['SNAPCAT_PROCS'] = old_env
+        CFG.reset()
+        CFG.authorize()
 
 
 def _copy_runs(W, name):
@@ -1004,7 +1232,11 @@ def test_copy_fallback():
         ta, tb = tree(W['port']), tree(out)
         skip = {'combined_view_summary.json', 'master_catalog.csv', 'card2_filter.csv', 'coadd_root.txt'}   # filtercat's
         assert set(ta) - skip == set(tb) - {'combined_view_summary.json'}, sorted(set(ta) ^ set(tb))[:5]
-        bad = [rel for rel in tb if rel not in skip and not filecmp.cmp(ta[rel], tb[rel], shallow=False)]
+        # PRODUCTION ORDER: the record's rows follow the per-tier catalogues' directory listing (glob, unsorted), which differs
+        # between /dev/shm and the scratch file system for the same names - the record compares as a multiset here
+        same_rows = lambda a_, b_: sorted(open(a_).read().splitlines()) == sorted(open(b_).read().splitlines())
+        bad = [rel for rel in tb if rel not in skip and not filecmp.cmp(ta[rel], tb[rel], shallow=False)
+               and not (rel == 'deep_omission_dropped.csv' and same_rows(ta[rel], tb[rel]))]
         assert not bad, bad[:5]
     finally:
         shutil.rmtree(shm, ignore_errors=True)
@@ -1104,11 +1336,24 @@ def test_ready():
     from exopipe.phase3.core import record
     W = shared_world()
     SV = _SV()
+    # the page figures (V6): one identity localized with two 10-s detections gets its figure, copied into its 10-s pages
+    pages = collections.defaultdict(set)
+    for p in glob.glob(os.path.join(W['port'], 'source_catalogs_[IV]_10s', '*_sources_survivors.csv')):
+        for r in _rows(p):
+            pages[(r.get('identity_id') or '').strip() or r['source_id']].add(r['review_dir'])
+    fig_id = sorted(pages)[0]
     for T in ('10s', '1min'):
         ids = {r['source_id'] for p in glob.glob(os.path.join(W['port'], 'source_catalogs', '*_sources_survivors.csv'))
                for r in _rows(p)}
-        _wcsv(os.path.join(W['port'], f'source_catalogs_loc_{T}', 'localizations.csv'), ['identity_id', 'ra', 'dec', 'n_det'],
-              [dict(identity_id=i, ra='1', dec='2', n_det='1') for i in sorted(ids)[:3]])
+        rows_ = [dict(identity_id=i, ra='1', dec='2', n_det='1') for i in sorted(ids - {fig_id})[:3]]
+        if T == '10s':
+            rows_.append(dict(identity_id=fig_id, ra='1', dec='2', n_det='2'))
+            os.makedirs(os.path.join(W['port'], 'source_catalogs_loc_10s', 'figs'), exist_ok=True)
+            fig = os.path.join(W['port'], 'source_catalogs_loc_10s', 'figs', f'{fig_id}.png')
+            open(fig, 'wb').write(b'\x89PNG' + bytes(range(256)) * 300)
+            for d in pages[fig_id]:
+                shutil.copyfile(fig, os.path.join(W['port'], d, 'astrometry.png'))
+        _wcsv(os.path.join(W['port'], f'source_catalogs_loc_{T}', 'localizations.csv'), ['identity_id', 'ra', 'dec', 'n_det'], rows_)
     rr = record.Run('serve', ['test'], W['out'], CFG)
     plan = SV.ViewPlan(types.SimpleNamespace(run_label=VIEW, view_runs=','.join(W['runs']), view_omit=None), W['out'])
     try:
@@ -1120,9 +1365,29 @@ def test_ready():
     assert u.status == 'done', (u.status, u.reason, [t for t in u.tests if not t['passed']][:2])
     assert any(t['name'] == 'snapshot_view.final' and t['passed'] for t in u.tests)
     assert any(n.startswith('VIEW-READY-FOR-HIDES') for n in u.notes), u.notes
+    # V6 refuses a truncated page copy (production 2026-11-04: 0 / 65,536 / 131,072 bytes), a figured identity's page without
+    # its copy, a figure missing for an identity localized with more than one detection, and a copy in a figure-less page
+    from exopipe.phase3.lib.serve import tests_snapshot_view as TSV
+    d0 = sorted(pages[fig_id])[0]
+    a0 = os.path.join(W['port'], d0, 'astrometry.png')
+    good = open(a0, 'rb').read()
+    other = os.path.join(W['port'], sorted(d for i, ds in pages.items() if i != fig_id for d in ds)[0], 'astrometry.png')
+    for label, do, undo, want in (
+            ('a truncated copy', lambda: open(a0, 'wb').write(good[:65536]), lambda: open(a0, 'wb').write(good), 'truncated'),
+            ('a missing copy', lambda: os.remove(a0), lambda: open(a0, 'wb').write(good), 'without astrometry.png'),
+            ('a copy in a figure-less page', lambda: open(other, 'wb').write(good), lambda: os.remove(other), 'without a figure'),
+            ('a figure missing', lambda: os.rename(fig, fig + '.x'), lambda: os.rename(fig + '.x', fig), 'have no figure')):
+        do()
+        try:
+            ok_, _v, detail = TSV.view_final(W['port'], final=True)
+        finally:
+            undo()
+        assert not ok_ and want in detail, (label, ok_, detail[:500])
+    ok_, _v, detail = TSV.view_final(W['port'], final=True)
+    assert ok_ and '1 figures' in detail, detail[:300]
 
 
-TESTS = [test_production_pin, test_drift, test_py36, test_parity, test_repoint_pinned, test_kept_refusals, test_gates,
+TESTS = [test_production_pin, test_drift, test_py36, test_parity, test_repoint, test_kept_refusals, test_gates, test_filtercat_procs,
          test_incomplete_inputs, test_stale_omit, test_copy_fallback, test_content, test_m1_mutation, test_figure_seed, test_ready]
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PARITY of the combined snapshot view (`serve --tier snapshot --family comb`, lib/serve/snapshot_view.py) against PRODUCTION's
-own builder and driver (exopipe_ops snapshot_combined_view.py + snapshot_batch/comb_build_20261102.sh steps 2-3), on the same
+own builder and driver (exopipe_ops snapshot_combined_view.py + snapshot_batch/comb_build_20261104.sh steps 2-3), on the same
 inputs, into scratch. Spec: docs/specs/snapshot_combined_view.md, "Parity target". Never writes /data07 or a production root.
 
     PY=/opt/devel/pipeline/envs/py38_orca_nkosogor/bin/python3
@@ -9,16 +9,21 @@ inputs, into scratch. Spec: docs/specs/snapshot_combined_view.md, "Parity target
     $PY tests/parity_snapshot_view.py compare PROD_VIEW PORT_VIEW [OUT_JSON]          file by file
 
   REFUSALS  a copy of the deep refusal record (production's /fast/gh/main/phase3/Run_P3S5/refusals is on lwacalim07 only)
-  FLEET     a copy of the fleet records of the runs' LSTs (noise_*_median*.csv, wideband_members_*.csv), frozen: the live tree
-            is written by the snapshot chat and both sides must decide on the same files
+  FLEET     a copy of the fleet records of the runs' LSTs (noise_*_median*.csv, wideband_members_*.csv, admission_*.csv and the
+            cells' per-image wideband member tables, exopipe_ops dde1760), frozen: the live tree is written by the snapshot chat and
+            both sides must decide on the same files
   RUN       the served batch runs, in the view's order - COPIES on the scratch file system (the panels are hard-linked from
-            them by production; read only by both sides)
+            them by production; read only by both sides), each with its chain record for the re-judging (exopipe_ops dbc40a6:
+            detection_record.csv.gz, chain_summary.json, served_tiers.csv, card2_vleak.csv)
 prod: production's snapshot_combined_view.py run UNCHANGED under its interpreter (site PYTHON 'py36'), AT THE PRODUCTION PIN
-      (tests/production_pin.py, V_combview review F3: the builder, snapshot_deep_omission.py and sublst_deep_omission.py the
-      port reproduces, materialized under WORK/production_pin and imported from there); the only thing set is
-      snapshot_deep_omission.decide's two data roots (REFUSALS, FLEET) before the script imports the module; then
-      snapshot_filter_catalog.py over the runs' fit stores (catalog_snapshot.BATCH_DIR/rechain_<run>/fits_store.csv) and the
-      driver's card2 / FILTER-INPUTS heredoc, VERBATIM (read from the pinned comb_build_20261102.sh); then snapshot_localize_tiers.sh
+      (tests/production_pin.py, V_combview review F3: the builder, snapshot_deep_omission.py, snapshot_rejudge.py and
+      sublst_deep_omission.py the port reproduces, materialized under WORK/production_pin and imported from there); the only things
+      set are the data roots of snapshot_deep_omission (decide's REFUSALS and FLEET, the per-image member tables' FLEET) before the
+      script imports the module, and SNAPCOMB_REJUDGE_PROCS=6 (its re-judging pool; production's default 8 - the Lustre rule; the
+      results are merged in run order); then snapshot_filter_catalog.py over the runs' fit stores
+      (catalog_snapshot.BATCH_DIR/rechain_<run>/fits_store.csv) SERIALLY (SNAPCAT_PROCS=1: the stage reads with 6, so the parity
+      shows the parallel read equals the serial loop, exopipe_ops 1b9475c) and the driver's card2 / FILTER-INPUTS heredoc,
+      VERBATIM (read from the pinned comb_build_20261104.sh); then snapshot_localize_tiers.sh
       (in place, live, as the stage runs it) with P3_LOC_SHARDS=6 SNAP_LOC_FIG_PROCS=6 (speed only; production's driver used 12
       shards on /data07 - 6 keeps to the Lustre rule: at most 6 readers) and PYTHONHASHSEED = the stage's
       serve.SNAPSHOT_FIGURE_HASHSEED: production sets none, so its figure bytes change from run to run (V_combview review F10) and
@@ -56,12 +61,18 @@ sys.path[:] = [p for p in sys.path if p not in ('', os.path.dirname(os.path.absp
 sys.path.insert(0, pin)                       # the PINNED snapshot_deep_omission (+ sublst_deep_omission beside it), imported
 import snapshot_deep_omission as SDO          # first: the builder's own `import snapshot_deep_omission` finds it cached
 assert os.path.dirname(os.path.abspath(SDO.__file__)) == os.path.abspath(pin), SDO.__file__
-SDO.decide.__defaults__ = (rdir, proto)       # the only change: the decisions' two data roots
+import snapshot_rejudge as SRJ
+assert os.path.dirname(os.path.abspath(SRJ.__file__)) == os.path.abspath(pin), SRJ.__file__
+SDO.decide.__defaults__ = (rdir, proto, None)               # decide(lsts, served, rdir, proto, cells=None): the data roots
+SDO.wb_image_members.__defaults__ = (proto,)                # the per-image member tables (dde1760) read the same fleet
+SDO.wb_image_omitted.__defaults__ = (proto,)
 sys.argv = [os.path.join(pin, 'snapshot_combined_view.py'), out] + runs
 runpy.run_path(os.path.join(pin, 'snapshot_combined_view.py'), run_name='__main__')
 '''
-PINNED = ('snapshot_combined_view.py', 'snapshot_deep_omission.py', 'sublst_deep_omission.py',
-          'snapshot_batch/comb_build_20261102.sh')
+PINNED = ('snapshot_combined_view.py', 'snapshot_deep_omission.py', 'snapshot_rejudge.py', 'sublst_deep_omission.py',
+          'snapshot_batch/comb_build_20261104.sh')
+PROD_ENV = {'SNAPCOMB_REJUDGE_PROCS': '6'}          # production's re-judging pool (default 8): the Lustre rule, speed only
+FILTERCAT_ENV = {'SNAPCAT_PROCS': '1'}              # production's filter catalogue SERIAL; the stage reads with 6
 
 
 def pinned_ops(work):
@@ -91,8 +102,8 @@ def _env():
 
 
 def driver_heredoc(pin):
-    """comb_build_20261102.sh's step-2 heredoc (between <<'PYC' and PYC) at the pin, verbatim."""
-    src = open(os.path.join(pin, 'snapshot_batch', 'comb_build_20261102.sh')).read()
+    """comb_build_20261104.sh's step-2 heredoc (between <<'PYC' and PYC) at the pin, verbatim (= comb_build_20261102.sh's)."""
+    src = open(os.path.join(pin, 'snapshot_batch', 'comb_build_20261104.sh')).read()
     return src.split("<<'PYC'", 1)[1].split('\nPYC\n', 1)[0].split('\n', 1)[1]
 
 
@@ -110,15 +121,15 @@ def prod(work, rdir, fleet, runs):
     with open(h, 'w') as f:
         f.write(PROD_HARNESS)
     pin = pinned_ops(work)
-    run = lambda argv, **k: subprocess.run(argv, env=_env(), **k)
-    r = run(['nice', PY36, '-u', h, pin, rdir, fleet, out] + list(runs))
+    run = lambda argv, env=None, **k: subprocess.run(argv, env=dict(_env(), **(env or {})), **k)
+    r = run(['nice', PY36, '-u', h, pin, rdir, fleet, out] + list(runs), env=PROD_ENV)
     if r.returncode or not os.path.isdir(out):
         sys.exit('PROD BUILD REFUSED/FAILED')
     stores = fit_stores(runs)
     for s in stores:
         if not (os.path.isfile(s) and os.path.getsize(s)):
             sys.exit(f'REFUSING: no fit store {s}')
-    if run(['nice', PY36, 'snapshot_filter_catalog.py', out] + stores, cwd=OPS).returncode:
+    if run(['nice', PY36, 'snapshot_filter_catalog.py', out] + stores, env=FILTERCAT_ENV, cwd=OPS).returncode:
         sys.exit('FILTER-CATALOG FAILED')
     if run(['nice', PY36, '-', out] + list(runs), input=driver_heredoc(pin), universal_newlines=True, cwd=OPS).returncode:
         sys.exit('FILTER-INPUTS check FAILED')

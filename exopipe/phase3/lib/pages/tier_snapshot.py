@@ -131,7 +131,14 @@ def stage_filtercat(c, run, done):
         mirror.gate(u, c.roots, TIER, 'filtercat')
         u.add_input(c.store)
         script = common.legacy_script(c.roots, 'ops', 'snapshot_filter_catalog.py')
-        res = common.lrun(u, script, [c.RUN, c.store], python=S.PYTHON_KEY, cwd=c.W, log=os.path.join(c.W, 'filtercat.log'))
+        from exopipe.phase3.lib.serve.snapshot_view import filtercat_procs
+        try:
+            procs = filtercat_procs(S.FILTERCAT_PROCS)
+        except ValueError as e:
+            raise common.Refusal(f'P22 {e}')
+        # SNAPCAT_PROCS always passed (exopipe_ops 1b9475c; no inherited value reaches the child): the Lustre rule's reader count
+        res = common.lrun(u, script, [c.RUN, c.store], python=S.PYTHON_KEY, env={'SNAPCAT_PROCS': str(procs)}, cwd=c.W,
+                          log=os.path.join(c.W, 'filtercat.log'))
         if not res.ok:
             raise common.Refusal(f'P22 filter catalogue failed: {res.reason}')
         u.add_output(os.path.join(c.RUN, 'master_catalog.csv'), 'filter_catalog')
@@ -178,7 +185,8 @@ def dry_run(c):
               f'{S.MASTERS_ROOT} --fit-store {c.store} --nproc {c.nproc}' + (' --resume' if c.keep else '')
               + f'; env {env_for(c)}; then snapshot_rechain_content_test.py {c.RUN} --pages')
     if 'filtercat' in c.stages:
-        print(f'  filtercat: snapshot_filter_catalog.py {c.RUN} {c.store} -> master_catalog.csv, coadd_root.txt [filter_catalog]')
+        print(f'  filtercat: snapshot_filter_catalog.py {c.RUN} {c.store} (SNAPCAT_PROCS={common.CFG().pages_snapshot.FILTERCAT_PROCS}) '
+              f'-> master_catalog.csv, coadd_root.txt [filter_catalog]')
     for r in refuse:
         print(f'  WOULD REFUSE: {r}')
     return 2 if refuse else 0

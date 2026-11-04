@@ -114,15 +114,20 @@ def _cfg():
 # after them for what is not pinned).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import production_pin as PIN        # noqa: E402
-PINNED = ('snapshot_combined_view.py', 'snapshot_deep_omission.py', 'sublst_deep_omission.py', 'sublst_deep_omission_drop.py',
-          'sublst_cumulative.py')
+import snapshot_chain_fixture       # noqa: E402
+PINNED = ('snapshot_combined_view.py', 'snapshot_deep_omission.py', 'snapshot_rejudge.py', 'sublst_deep_omission.py',
+          'sublst_deep_omission_drop.py', 'sublst_cumulative.py')
 _PIN_DIR = []
 
 
 def pinned_ops():
-    """The directory holding the pinned production files (materialized once per test run, under SCRATCH)."""
+    """The directory holding the pinned production files (materialized once per test run, under SCRATCH), with the 10-minute
+    builder build_source_catalogs_v3.py beside them as production has it (the drop's re-judging reads its THR there, edf3263;
+    the builder runs in place: the live file)."""
     if not _PIN_DIR:
-        _PIN_DIR.append(PIN.materialize(os.path.join(SCRATCH, 'production_pin'), PINNED))
+        d = PIN.materialize(os.path.join(SCRATCH, 'production_pin'), PINNED)
+        shutil.copy(os.path.join(OPS, 'build_source_catalogs_v3.py'), d)
+        _PIN_DIR.append(d)
     return _PIN_DIR[0]
 
 
@@ -133,9 +138,10 @@ def _prod():
         sys.path.insert(0, OPS)
     sys.path[:] = [pin] + [x for x in sys.path if x != pin]
     import snapshot_deep_omission as SDO
+    import snapshot_rejudge as SRJ          # cached here: the view's source imports it after putting exopipe_ops first
     import sublst_deep_omission as PDO
     import sublst_deep_omission_drop as PDROP
-    for m in (SDO, PDO, PDROP):
+    for m in (SDO, SRJ, PDO, PDROP):
         assert os.path.dirname(os.path.abspath(m.__file__)) == os.path.abspath(pin), (m.__name__, m.__file__)
     return SDO, PDO, PDROP
 
@@ -222,12 +228,31 @@ def fleet(proto, rng):
                                                                                          global_rms_jyb='%.6f' % base),
                                  dict(idx=n + 2, admitted='1', global_rms_jyb=''), dict(idx=n + 3, admitted='1', global_rms_jyb='nan?')]
                         _wcsv(os.path.join(cell, f'noise_{band}_{S}_median{sfx}.csv'), NOISE_COLS, rows)
+            for sb in SUBBANDS:                       # the per-subband admission tables (dde1760's fail-closed rule reads them)
+                if searched(lst, ni, sb):
+                    _wcsv(os.path.join(cell, f'admission_{sb}.csv'), ['idx', 'ts', 'admitted'],
+                          [dict(idx=k, ts=frame_ts(lst, night, k), admitted='1') for k in range(0, 60, 9)])
+            if lst != '05h':                          # 06h: searched before the frame-time fix, no member table (fail closed)
+                continue
             for S in ('I', 'V'):
                 mem = [('Red', '18MHz'), ('Red', '23MHz'), ('Green', '55MHz')] + ([('Red', '27MHz')] if ni % 2 else []) \
                     + ([('Green', '46MHz')] if ni != 3 else [])
-                _wcsv(os.path.join(cell, f'wideband_members_{S}.csv'), ['group', 'ts', 'subband'],
-                      [dict(group=g, ts='x', subband=sb) for g, sb in mem])
+                rows = [dict(group=g, ts=frame_ts(lst, night, k), date_obs=date_obs(frame_ts(lst, night, k)), subband=sb)
+                        for k in range(60) for g, sb in mem if not ((g, sb) == ('Green', '46MHz') and k % 5 == 0)]
+                _wcsv(os.path.join(cell, f'wideband_members_{S}.csv'), ['group', 'ts', 'date_obs', 'subband'], rows)
     return proto
+
+
+def frame_ts(lst, night, k):
+    """The 10-s frame k of a cell (detection()'s ts)."""
+    return '%s_%02d%02d%02d' % (night.replace('-', ''), int(lst[:2]), k // 6, (k % 6) * 10)
+
+
+def date_obs(ts):
+    """The DATE-OBS of a frame whose integration midpoint is ts (clv15 INTEGRATION_S / 2 before it)."""
+    import datetime
+    t = datetime.datetime.strptime(ts, '%Y%m%d_%H%M%S') - datetime.timedelta(seconds=5.0155102)
+    return t.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
 
 
 DET_COLS = ['lst', 'date', 'band', 'subband', 'stokes', 'ts', 'snr', 'ra', 'dec', 'tier', 'instant', 'cand_id', 'ra_peak',
@@ -236,6 +261,7 @@ BAND_CLASS = {'18MHz': 'Red', '23MHz': 'Red', '27MHz': 'Red', 'Red': 'Red', '46M
 
 
 def detection(lst, night, sb, S, T, k, snr, rng):
+    snr = snr + 0.013 if min(abs(snr - 10.0), abs(snr - 8.0)) < 0.006 else snr   # clear of the record's rounding at a floor
     ts = '%s_%02d%02d%02d' % (night.replace('-', ''), int(lst[:2]), k // 6, (k % 6) * 10)
     if T == '1min':
         ts = ts[:-2] + '00'
@@ -245,10 +271,13 @@ def detection(lst, night, sb, S, T, k, snr, rng):
                 ra_peak='%.5f' % (ra + 0.001), dec_peak='%.5f' % dec)
 
 
-def batch_run(root, name, cells, rng, fixed=()):
+def batch_run(root, name, cells, rng, fixed=(), card2=()):
     """A served batch run: identities of 1-6 detections in its cells (plus ``fixed`` identities: (J, [detections args])),
-    the general catalogue (source_catalogs/), the per-tier views (source_catalogs_<S>_<T>/: survivors, members), every
-    page directory with its detections.csv and one panel + page.json per detection."""
+    the general catalogue (source_catalogs/), the chain record, chain_summary.json and served_tiers.csv
+    (tests/snapshot_chain_fixture.py: the chain's own route functions decide which (identity, tier) qualifies), the per-tier
+    views of the QUALIFYING (identity, tier) (source_catalogs_<S>_<T>/: survivors, members), their page directories with
+    detections.csv and one panel + page.json per detection, card2_vleak.csv (every 10-s Stokes V detection; ``card2``: the
+    cand_ids Card 2 flags)."""
     run = os.path.join(root, name)
     idents = []
     for i in range(36):
@@ -268,9 +297,12 @@ def batch_run(root, name, cells, rng, fixed=()):
         _wcsv(os.path.join(run, rd, 'detections.csv'), DET_COLS, dets)
         gen.append(dict(rank='rank0001', source_id=J, review_dir=rd, ra=dets[0]['ra'], dec=dets[0]['dec'],
                         best_snr=max(d['snr'] for d in dets)))
+    qual = snapshot_chain_fixture.write_chain(run, idents, sorted({'%s_%s' % c for c in cells}))
+    for J, dets in idents:
         by = collections.defaultdict(list)
         for d in dets:
-            by[(d['subband'], d['stokes'], d['tier'])].append(d)
+            if qual.get((J, d['tier'])):
+                by[(d['subband'], d['stokes'], d['tier'])].append(d)
         for (sb, S, T), dd in by.items():
             pd = f'candidates/{S}/{J}_{sb}' + ('_1min' if T == '1min' else '')
             _wcsv(os.path.join(run, pd, 'detections.csv'), DET_COLS, dd)
@@ -293,8 +325,30 @@ def batch_run(root, name, cells, rng, fixed=()):
                 _wcsv(p, cols, old + rows)
     _wcsv(os.path.join(run, 'source_catalogs', 'Red_sources_survivors.csv'),
           ['rank', 'source_id', 'review_dir', 'ra', 'dec', 'best_snr'], gen)
-    write_served_tiers(run)
+    card2_file(run, idents, card2)
     return run
+
+
+C2_COLS = ['det_uid', 'cand_id', 'ra_peak', 'dec_peak', 'identity_jname', 'stokes', 'tier', 'served', 'peak_jyb', 'i_here_jy',
+           'v_over_i_here', 'card2_ratio', 'card2_would_remove']
+
+
+def card2_file(run, idents, flagged):
+    """card2_vleak.csv (phase3_snapshot_card2.py's columns the view reads): every 10-s Stokes V detection, by the chain record's
+    det_uid, the ratio to 5 decimals and the flag at 0.05 (0.03 for the cand_ids in ``flagged``, 0.4 otherwise)."""
+    rows = []
+    tag = os.path.basename(run)
+    for i, (J, dets) in enumerate(idents):
+        for j, d in enumerate(dets):
+            if (d['tier'], d['stokes']) != ('10s', 'V'):
+                continue
+            ratio = 0.03 if d['cand_id'] in flagged else 0.4
+            pk = abs(float(d['snr'])) * 0.1
+            rows.append(dict(det_uid='%s:%d:%d' % (tag, i, j), cand_id=d['cand_id'], ra_peak=d['ra_peak'], dec_peak=d['dec_peak'],
+                             identity_jname=J, stokes='V', tier='10s', served='1', peak_jyb='%.4g' % pk,
+                             i_here_jy='%.6g' % (pk / ratio), v_over_i_here='%.5f' % ratio, card2_ratio='0.05',
+                             card2_would_remove='1' if ratio <= 0.05 else '0'))
+    _wcsv(os.path.join(run, 'card2_vleak.csv'), C2_COLS, rows)
 
 
 def write_served_tiers(run):
@@ -326,8 +380,11 @@ def snapshot_world(name='snap', seed=7):
     fixed_a = [('J0000+0001', [('05h', NIGHTS[0], '46MHz', 'I', '10s', 3, 30.0), ('05h', NIGHTS[0], '46MHz', 'I', '10s', 4, 20.0)]),
                ('J0000+0002', [('05h', NIGHTS[0], '46MHz', 'I', '10s', 5, 50.0), ('05h', NIGHTS[1], '46MHz', 'I', '10s', 5, 9.0),
                                ('05h', NIGHTS[1], '46MHz', 'I', '10s', 6, 8.0)]),
-               ('J0000+0003', [('05h', NIGHTS[1], '46MHz', 'V', '1min', k, 7.0 + k) for k in range(40)])]
-    runs = [batch_run(os.path.join(root, 'review'), 'Run_SNAPT1A_20261101', cells_a, rng, fixed_a),
+               ('J0000+0003', [('05h', NIGHTS[1], '46MHz', 'V', '1min', k, 7.0 + k) for k in range(40)]),
+               # Card 2 (dbc40a6): one of the two 10-s Stokes V frames flagged - its member row and panel leave the view
+               ('J0000+0004', [('05h', NIGHTS[2], '23MHz', 'V', '10s', 7, 12.0), ('05h', NIGHTS[2], '23MHz', 'V', '10s', 8, 11.0)])]
+    flagged = {'05h_%s_23MHz_V_10s_%s' % (NIGHTS[2], frame_ts('05h', NIGHTS[2], 8))}
+    runs = [batch_run(os.path.join(root, 'review'), 'Run_SNAPT1A_20261101', cells_a, rng, fixed_a, card2=flagged),
             batch_run(os.path.join(root, 'review'), 'Run_SNAPT1B_20261101', cells_b, rng)]
     return root, rdir, proto, runs
 
@@ -337,9 +394,11 @@ def prod_snapshot(runs, rdir, proto, outdir):
     with snapshot_deep_omission.decide's record and fleet roots given; returns (DEC, REC, n_all)."""
     SDO, _p, _d = _prod()
     orig = SDO.decide
-    SDO.decide = lambda lsts, served: orig(lsts, served, rdir=rdir, proto=proto)
-    SDO._NS.clear()
-    SDO._WM.clear()
+    SDO.decide = lambda lsts, served, cells=None: orig(lsts, served, rdir=rdir, proto=proto, cells=cells)
+    saved = (SDO.wb_image_members.__defaults__, SDO.wb_image_omitted.__defaults__)
+    SDO.wb_image_members.__defaults__ = SDO.wb_image_omitted.__defaults__ = (proto,)   # the per-image member tables (dde1760)
+    for c_ in (SDO._NS, SDO._WM, SDO._SA, SDO._WIM):
+        c_.clear()
     try:
         src = _ops_src('snapshot_combined_view.py')
         g = {'__name__': 'prod_step0'}
@@ -351,8 +410,9 @@ def prod_snapshot(runs, rdir, proto, outdir):
             sys.argv = argv
     finally:
         SDO.decide = orig
-        SDO._NS.clear()
-        SDO._WM.clear()
+        SDO.wb_image_members.__defaults__, SDO.wb_image_omitted.__defaults__ = saved
+        for c_ in (SDO._NS, SDO._WM, SDO._SA, SDO._WIM):
+            c_.clear()
     assert not os.path.exists(os.path.join(outdir, 'NEVER_WRITTEN'))
     SDO.write(os.path.join(outdir, 'prod_deep_omission.csv'), g['DEC'])
     kept = collections.Counter((g['TAG'][r], J) + tuple(g['dkey'](m['_row'])) for (r, J, _grs), c in zip(g['cinfo'], g['clusters'])
@@ -421,9 +481,22 @@ def test_drift():
     assert DO.snapshot_absent_reason('10s') == ('no searched %s data of this night, band and Stokes in the tier (nothing to drop)'
                                                 % '10s')
     assert "no searched %s data of this night, band and Stokes in the tier (nothing to drop)" in src_s
-    assert DO.snapshot_member_reason('46MHz OMIT', 'Green') == ("wideband-member: %s this night, a member of the cell\'s %s frames"
-                                                                 % ('46MHz OMIT', 'Green'))
-    assert "wideband-member: %s this night, a member of the cell\\'s %s frames" in src_s
+    # the member reasons since dde1760: per image (the frame exception) and fail closed (no member table)
+    flat_s = src_s.replace("'\n                                      '", '')
+    assert ("'wideband-member: %s this night - omitted only in the %s images that include it (frame exception)'" in src_s and
+            DO.snapshot_member_image_reason('%s', '%s') == 'wideband-member: %s this night - omitted only in the %s images that '
+                                                          'include it (frame exception)')
+    assert ('wideband-member: %s this night - the cell has no wideband member table (searched before 2026-10-07): every %s '
+            'image of the night is taken to include it (fail closed)') in flat_s and \
+        DO.snapshot_member_failclosed_reason('%s', '%s') == ('wideband-member: %s this night - the cell has no wideband member '
+                                                             'table (searched before 2026-10-07): every %s image of the night is '
+                                                             'taken to include it (fail closed)')
+    assert DO.snapshot_member_reason('46MHz OMIT', 'Green') == ("wideband-member: %s this night, a member of the cell's %s frames"
+                                                                 % ('46MHz OMIT', 'Green'))      # before dde1760 (old tables)
+    # the gate pairing (dde1760, both tiers) and the rate population (dbc40a6)
+    assert "gs = sorted(gates, key=lambda g: g[0])" in src_s and "gs = sorted(gates, key=lambda g: g[0])" in src_t
+    assert "deep_value=';'.join(g[1] for g in gs), deep_threshold=';'.join(g[2] for g in gs)" in src_s
+    assert 'inview = (lambda nt: True) if cells is None else (lambda nt: "%s_%s" % (lst, nt) in cells)' in src_s
     assert DO.tenmin_member_reason('46MHz OMIT') == 'wideband-member: %s this night, in the WBMEMB of its wideband windows' % '46MHz OMIT'
     assert "wideband-member: %s this night, in the WBMEMB of its wideband windows" in src_t
     # the patterns of keys: snapshot_combined_view CIDK / PANEL, sublst_deep_omission_drop CID
@@ -451,7 +524,9 @@ def test_snapshot():
     assert port_det == prod_det and sum(port_det.values()) == summ['omitted'] > 0, (len(port_det), len(prod_det))
     assert {(r['batch'], r['identity']) for r in rec if r['kind'] == 'identity dropped'} == \
         {(r['batch'], r['identity']) for r in REC if r['kind'] == 'identity dropped'}
-    assert summ['served'] == n_all and summ['kept'] == n_all - summ['omitted']
+    assert summ['served'] == n_all and summ['kept'] == n_all - summ['omitted'] - summ['card2']
+    c2r = collections.Counter(K(r) for r in REC if r['kind'] == 'card2 detection')
+    assert collections.Counter(K(r) for r in rec if r['kind'] == 'card2 detection') == c2r and sum(c2r.values()) == summ['card2'] > 0
     # hand-checked decisions
     D = _dec_by_key(_rows(os.path.join(out, 'deep_omission.csv')))
     one = lambda k, kind='decision': [r for r in D[k] if (r['gates'].startswith('member ')) == (kind == 'member')]
@@ -482,10 +557,14 @@ def test_snapshot():
     assert part and 're-pointed to 05h_%s_46MHz_I_10s' % NIGHTS[1] in part[0]['note'], part
     assert any(r['kind'] == 'source dropped' and r['identity'] == 'J0000+0001' and r['note'] == 'identity left with no detection'
                for r in rec)
-    OM = DO.omitted_keys(_rows(os.path.join(out, 'deep_omission.csv')))
+    dec_ = _rows(os.path.join(out, 'deep_omission.csv'))
+    OM, OMWB = DO.omitted_keys(dec_), DO.omitted_wb(dec_)
     for r in rec:
         if r['kind'] in ('panel', 'detection') or (r['kind'] == 'member row' and r['lst']):
-            assert (r['lst'], r['band'], r['night'], r['stokes'], r['tier']) in OM, r
+            k = (r['lst'], r['band'], r['night'], r['stokes'], r['tier'])
+            assert k in OM or k in OMWB, r                                  # a whole-night key, or a per-image one (dde1760)
+    assert any(k[1] in ('Red', 'Green') for k in OMWB), sorted(OMWB)[:3]        # the world has per-image member rows
+    assert any(r['kind'] == 'detection' and (r['lst'], r['band'], r['night'], r['stokes'], r['tier']) in OMWB for r in rec)
     # the content tests of both classes and the per-instant test pass on the stage's products
     from exopipe.phase3.core import validate
     for cls, p in (('omission_decisions', 'deep_omission.csv'), ('omission_record', 'deep_omission_dropped.csv')):
@@ -501,7 +580,10 @@ def test_snapshot():
     for t in validate.run('omission_kept', os.path.join(out, 'deep_omission_kept.csv'), tier='snapshot'):
         assert t['passed'] and t['value'] == summ['kept'], t
     rp = [r for r in kp if r['kind'] == 'source re-pointed' and r['identity'] == 'J0000+0002']
-    assert rp and json.loads(rp[0]['fields'])['best_cand_id'] == rp[0]['cand_id'] == part[0]['note'].split('re-pointed to ')[1].split(' ')[0], rp
+    # dbc40a6: the new best is the kept detection of largest |S/N| (cand_id / snr of the row, named in the note), the survivors
+    # row's best_cand_id '<identity>_<lst>_<date>_<band>'
+    assert rp and rp[0]['cand_id'] == part[0]['note'].split('re-pointed to ')[1].split(' ')[0], rp
+    assert json.loads(rp[0]['fields'])['best_cand_id'] == 'J0000+0002_05h_%s_46MHz' % NIGHTS[1], rp
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -703,6 +785,7 @@ def prod_merge_copy(ops_dir, tr, sl):
     assert src.count(line) == 1, 'production changed the merge\'s root line: update the fixture rewrite'
     open(os.path.join(ops_dir, 'sublst_cumulative.py'), 'w').write(src.replace(line, f'T = {tr!r}; SL = {sl!r}'))
     shutil.copy(os.path.join(pinned_ops(), 'sublst_deep_omission_drop.py'), ops_dir)
+    shutil.copy(os.path.join(pinned_ops(), 'build_source_catalogs_v3.py'), ops_dir)    # the drop's re-judging reads its THR (edf3263)
 
 
 def test_serve_build_merge():
@@ -922,7 +1005,9 @@ def test_kept_product():
     assert ok and val == summ['kept'], det
     rows = _rows(kp)
     kinds = collections.Counter(r['kind'] for r in rows)
-    assert set(kinds) == set(DO.KEPT_KINDS), kinds                   # every kind present in the synthetic world
+    assert set(kinds) <= set(DO.KEPT_KINDS) and {'detection kept', 'source dropped', 'source re-pointed', 'member row dropped',
+                                                 'panel dropped', 'card2 member row dropped', 'card2 panel dropped',
+                                                 'source routes'} <= set(kinds), kinds     # the re-judged kinds: test_snapshot_view
     rec = _rows(os.path.join(out, 'deep_omission_dropped.csv'))
     OM = DO.omitted_keys(_rows(os.path.join(out, 'deep_omission.csv')))
 
@@ -946,7 +1031,7 @@ def test_kept_product():
     def resurrect(rr):                                  # an omitted detection listed as kept (its own key unchanged)
         r = next(r for r in rr if r['kind'] == 'detection kept' and r['batch'] == det0['batch'])
         r.update(identity=det0['identity'], cand_id=det0['cand_id'])
-    mutated(resurrect, 'the record omits it')
+    mutated(resurrect, 'the record removes it')
     mutated(lambda rr: rr.remove(next(r for r in rr if r['kind'] == 'member row dropped')), 'member row dropped: 0 rows not in')
     mutated(lambda rr: rr.append(dict(next(r for r in rr if r['kind'] == 'panel dropped'))), 'panel dropped: 1 rows not in')
 
@@ -981,13 +1066,14 @@ def test_kept_product():
     # the summary's digests: present, additive (kept + omitted = served), and required
     sj = json.load(open(os.path.join(out, 'deep_omission_summary.json')))
     dg = {k: DO.MultisetDigest(v) for k, v in sj['digests'].items()}
-    assert dg['kept'] + dg['omitted'] == dg['served'] and dg['kept'].n == summ['kept'] and dg['omitted'].n == summ['omitted'], sj
+    assert dg['kept'] + dg['omitted'] + dg['card2'] == dg['served'] and dg['kept'].n == summ['kept'] and \
+        dg['omitted'].n == summ['omitted'] and dg['card2'].n == summ['card2'], sj
     d = os.path.join(root, 'mut_kept_nodigest')
     shutil.rmtree(d, ignore_errors=True)
     shutil.copytree(out, d)
     json.dump(dict(sj, digests={}), open(os.path.join(d, 'deep_omission_summary.json'), 'w'))
     ok_, _v, det_ = TD.check_kept(os.path.join(d, 'deep_omission_kept.csv'))
-    assert not ok_ and 'has no served / kept / omitted digests' in det_, det_
+    assert not ok_ and 'has no served / kept / omitted / card2 digests' in det_, det_
     # the record's detection rows are the omitted detections of the digest: one removed refuses
     shutil.copy(os.path.join(out, 'deep_omission_summary.json'), os.path.join(d, 'deep_omission_summary.json'))
     rp_ = os.path.join(d, 'deep_omission_dropped.csv')
@@ -1000,8 +1086,9 @@ def test_kept_product():
     # of each key, summing to the summary's served; a count changed, a key lost, or the file missing refuses
     sv = os.path.join(out, 'deep_omission_served.csv')
     ok_, val_, det_ = TD.check_served(sv)
-    assert ok_ and val_ == summ['served'], det_
-    assert DO.read_served(sv) == DO.served_counts(DO.served_identities(runs, DO.Reader()))[0]
+    assert ok_ and val_ == summ['served'] - summ['card2_served'], det_       # dbc40a6: Card 2 detections not counted
+    pend_ = DO.served_identities(runs, DO.Reader())
+    assert DO.read_served(sv) == DO.served_counts(pend_, DO.Card2(runs))[0]          # the served set less its Card 2 detections
     srows = _rows(sv)
     for name, fix, want_k5, want_sv in (('count', lambda rr: rr[0].update(n=str(int(rr[0]['n']) + 1)), 'K5 1 served counts',
                                          'the summary\'s served'),
@@ -1023,16 +1110,21 @@ def test_kept_product():
 
 
 def test_pending_values():
-    """Q review F3 / F5. The rate floor and the ABSENT propagation to band groups are production's values, pending Gregg:
-    neither RULED nor PROTECTED, their alternatives work through the config (also into a production root - no ruling needed)
-    and change the decisions as stated (floor 0 = the card's median + 5 x 1.4826 MAD; ('OMIT',) = no ABSENT member). G6's
-    'refuse' is the refactor's PROPOSED value: not ruled, production's 'production' in the parity file, the code sites marked
-    WAVE2 G6."""
-    from exopipe.phase3.config import CFG
+    """Q review F3 / F5 and the 2026-11-04 decision. The rate floor and the ABSENT propagation to band groups were production's
+    values pending Gregg; on 2026-11-04 Gregg delegated and the refactor chat decided, values unchanged
+    (R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS): both RULED under that row, not PROTECTED - their alternatives still
+    work through the config into a non-production --out (into a production root only with --ruling-for) and change the
+    decisions as stated (floor 0 = the card's median + 5 x 1.4826 MAD; ('OMIT',) = no ABSENT member). G6's 'refuse' stays the
+    refactor's PROPOSED value (that row does not decide it): not ruled, production's 'production' in the parity file, the code
+    sites marked WAVE2 G6."""
+    from exopipe.phase3.config import CFG, ConfigRefusal
     DO = _DO()
     c = CFG.catalog_omission
-    for k in ('RATE_FLOOR_PER_NIGHT', 'WIDEBAND_MEMBER_VERDICTS', 'ABSENT_WITH_SERVED'):
-        assert not CFG.ruled(f'catalog_omission.{k}') and not CFG.protected(f'catalog_omission.{k}'), k
+    for k in ('RATE_FLOOR_PER_NIGHT', 'WIDEBAND_MEMBER_VERDICTS'):
+        assert CFG.ruled(f'catalog_omission.{k}') and 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS' in \
+            ((CFG.ruled(f'catalog_omission.{k}'),) if isinstance(CFG.ruled(f'catalog_omission.{k}'), str)
+             else tuple(CFG.ruled(f'catalog_omission.{k}'))) and not CFG.protected(f'catalog_omission.{k}'), k
+    assert not CFG.ruled('catalog_omission.ABSENT_WITH_SERVED') and not CFG.protected('catalog_omission.ABSENT_WITH_SERVED')
     for k in ('PROPAGATE', 'SIGMA', 'WIDEBAND_EXCEPT'):
         assert CFG.ruled(f'catalog_omission.{k}') and CFG.protected(f'catalog_omission.{k}'), k
     assert (c.RATE_FLOOR_PER_NIGHT, tuple(c.WIDEBAND_MEMBER_VERDICTS), c.ABSENT_WITH_SERVED) == (1.0, ('OMIT', 'ABSENT'), 'refuse')
@@ -1042,10 +1134,17 @@ def test_pending_values():
     root, rdir, proto, runs = snapshot_world('pending', seed=7)
     DO.run_snapshot(runs, os.path.join(root, 'base'), rdir=rdir, proto=proto)
     try:
-        CFG.authorize(out=DO.default_out(type('A', (), {'tier': 'sublst'})()))   # a production root: still allowed (not ruled)
+        CFG.authorize(out=DO.default_out(type('A', (), {'tier': 'sublst'})()))   # a production root: refused without a ruling
+        try:
+            CFG.set('catalog_omission.RATE_FLOOR_PER_NIGHT', '0')
+            raise AssertionError('a RULED key overridden into a production root without --ruling-for')
+        except ConfigRefusal as e:
+            assert 'carries a ruling' in str(e), e
+        CFG.authorize(out=os.path.join(root, 'alt'))                              # a scratch --out: allowed, recorded
         CFG.set('catalog_omission.RATE_FLOOR_PER_NIGHT', '0')
         CFG.set('catalog_omission.WIDEBAND_MEMBER_VERDICTS', "('OMIT',)")
-        assert [o[4] for o in CFG.overrides] == [None, None] and not CFG.ruled_overrides(), CFG.overrides
+        assert all(str(o[4]).startswith('non-production out:') for o in CFG.overrides) and len(CFG.ruled_overrides()) == 2, \
+            CFG.overrides
         DO.run_snapshot(runs, os.path.join(root, 'alt'), rdir=rdir, proto=proto)
         from exopipe.phase3.core import validate
         for cls, f in (('omission_decisions', 'deep_omission.csv'), ('omission_record', 'deep_omission_dropped.csv'),
@@ -1133,8 +1232,10 @@ def _pin_world():
 
 
 def test_production_bugs_pinned():
-    """Production's bugs the port carries for parity (Q review F1, F4, F10), pinned AS THEY ARE TODAY - production's own code
-    agrees on every pinned case; when production's owner fixes them and the port follows, these asserts change on purpose."""
+    """Production's bugs the port carries or carried for parity (Q review F1, F4, F10), pinned AS THEY ARE TODAY - production's
+    own code agrees on every pinned case. Production fixed F1 for the 10-s / 1-minute tiers (per image) and F4 (gate pairing,
+    both tiers) in exopipe_ops dde1760, and the port followed (the V2 follow-up round): those asserts changed on purpose; the
+    10-minute F1 and F10 stand (dde1760 left them; the review's T9: production first)."""
     DO = _DO()
     SDO, PDO, PDROP = _prod()
     root, rdir, proto, runs, ts = _pin_world()
@@ -1144,25 +1245,25 @@ def test_production_bugs_pinned():
     assert filecmp.cmp(os.path.join(out, 'deep_omission.csv'), os.path.join(root, 'prod_deep_omission.csv'), shallow=False)
     D = _dec_by_key(_rows(os.path.join(out, 'deep_omission.csv')))
     rec = _rows(os.path.join(out, 'deep_omission_dropped.csv'))
-    # F1 (10-s / 1-minute): 46 MHz night 1 is OMIT at 10 s; the Green detection of frame B (55 MHz only) is omitted all the same
+    # F1 FIXED (10-s / 1-minute, dde1760): 46 MHz night 1 is OMIT at 10 s; the Green row is per image - the detection of frame A
+    # (46 + 55 MHz) is omitted, the one of frame B (55 MHz only) is KEPT, in production and in the port
     assert D[('05h', '46MHz', NIGHTS[0], 'I', '10s')][0]['verdict'] == 'OMIT'
     m = [r for r in D[('05h', 'Green', NIGHTS[0], 'I', '10s')] if r['gates'].startswith('member ')]
-    assert m and m[0]['gates'] == 'member 46MHz OMIT', m
+    assert m and m[0]['gates'] == 'member 46MHz OMIT' and m[0]['wb_omitted_members'] == '46MHz', m
+    assert m[0]['reason'] == DO.snapshot_member_image_reason('46MHz OMIT', 'Green'), m
     om = {(r['identity'], r['cand_id']) for r in rec if r['kind'] == 'detection'}
-    frame_b = f'05h_{NIGHTS[0]}_Green_I_10s_{ts(2)}'
-    assert ('J0000+0102', frame_b) in om and ('J0000+0101', f'05h_{NIGHTS[0]}_Green_I_10s_{ts(1)}') in om, sorted(om)[:4]
-    assert ('J0000+0102', frame_b) in {(r['identity'], r['cand_id']) for r in REC if r['kind'] == 'detection'}   # production too
-    # F4: deep_value / deep_threshold follow the record's LISTING order, the gates are sorted; the meaning, the first sorted gate
+    frame_a, frame_b = f'05h_{NIGHTS[0]}_Green_I_10s_{ts(1)}', f'05h_{NIGHTS[0]}_Green_I_10s_{ts(2)}'
+    assert ('J0000+0101', frame_a) in om and ('J0000+0102', frame_b) not in om, sorted(om)[:4]
+    prod_om = {(r['identity'], r['cand_id']) for r in REC if r['kind'] == 'detection'}
+    assert ('J0000+0101', frame_a) in prod_om and ('J0000+0102', frame_b) not in prod_om       # production too
+    # F4 FIXED (dde1760): names, values and thresholds in ONE order - the gates sorted by name, stably; whatever the listing
     r27 = [r for r in D[('05h', '27MHz', NIGHTS[1], 'I', '10s')] if not r['gates'].startswith('member ')][0]
-    order = [os.path.basename(f) for f in DO.refusal_files(rdir, '05h') if '_27MHz_' in f]
-    want_v = ';'.join({'05h_27MHz_searchtier_excluded.csv': '2895.8', '05h_27MHz_beam_excluded.csv': '3.96'}[f] for f in order)
-    assert r27['gates'] == 'beam;searchtier' and r27['deep_value'] == want_v, (r27['gates'], r27['deep_value'], order)
-    for listing, want in ((lambda d, l: sorted(glob_(d, l), reverse=True), ('2895.8;3.96', '166.5;1.5')),   # misaligned
-                          (lambda d, l: sorted(glob_(d, l)), ('3.96;2895.8', '1.5;166.5'))):              # aligned by chance
+    assert (r27['gates'], r27['deep_value'], r27['deep_threshold']) == ('beam;searchtier', '3.96;2895.8', '1.5;166.5'), r27
+    for listing in (lambda d, l: sorted(glob_(d, l), reverse=True), lambda d, l: sorted(glob_(d, l))):
         with Patch((DO, 'refusal_files', listing)):
             g = DO.load_refusals(rdir, '05h')[('27MHz', NIGHTS[1], 'I')]
             b = DO._base('05h', '27MHz', NIGHTS[1], 'I', g)
-        assert (b['gates'], b['deep_value'], b['deep_threshold']) == ('beam;searchtier',) + want, b
+        assert (b['gates'], b['deep_value'], b['deep_threshold']) == ('beam;searchtier', '3.96;2895.8', '1.5;166.5'), b
     r23 = [r for r in D[('05h', '23MHz', NIGHTS[2], 'I', '10s')] if not r['gates'].startswith('member ')][0]
     assert r23['gates'] == 'beam;sanity' and r23['deep_threshold_meaning'] == DO.GATE_MEANING, r23   # sanity's median, read
     # F10: fewer than 3 nights - no threshold, never passed, and the reason still 'tier rms above threshold'      # as a threshold
@@ -1326,7 +1427,7 @@ def test_stage():
         assert ro and ro[0]['authority'].startswith('non-production out:'), hdr['ruled_overrides']   # Q review F8: recorded
         if want == 'done':
             assert {o['class'] for o in r['outputs']} == {'omission_decisions', 'omission_record', 'omission_served',
-                                                           'omission_kept'}
+                                                           'omission_rejudged', 'omission_kept'}
             assert any(t['name'] == 'omission_served.served_counts_add_up' and t['passed'] for t in r['tests'])
             assert all(t['passed'] for t in r['tests']) and any(t['name'] == 'omission_record.per_instant' for t in r['tests'])
             assert any(t['name'].startswith('omission_kept.') for t in r['tests'])

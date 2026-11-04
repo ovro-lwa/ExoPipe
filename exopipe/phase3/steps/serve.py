@@ -43,7 +43,8 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
   served_view    source_catalogs_<S>/ (deep, sub-LST), views/source_catalogs_<S>_multi/ (deep), source_catalogs_<S>_multi/
   judgement_journal  judgements*/judgements.jsonl after a carry (+ carry_report.csv, carry_missed.csv)
   sublst_cumulative  the Run_SLSTB build (merged CSVs, localizations, figures, page index)
-  review_copy    the snapshot review copy;  exclusion_check  the serve-time exclusion gate's pass file
+  review_copy    the snapshot review copy;  exclusion_check  the serve-time exclusion gate's pass file;  serve_go  G27's
+                 pass file (Gregg's go on a combined view: the go files it names re-read)
   snapshot_view  the combined view (<SNAPSHOT_REVIEW_ROOT>/<view>, parity <out>/snapshot/<view>): V1-V6 read back - queues,
                  page directories, identities against the kept product, the record against the omit stage's;
                  filter_catalog (per detection) and snapshot_card2_union its filter inputs; omission_* its omit product
@@ -99,7 +100,9 @@ Failure modes (exit 2 = refused, the gate named in the record; a refused page ke
   disk space; G21 snapshot localization; G22 snapshot copy; G23 parity guard (offset, production servers, the production
   registry in the refactor window); G24 the server refused to start / the page's build failed on the two-port server or
   its requests got no 200 TWO_PORT_MAX_FAILED_REQUESTS times in a row;
-  G25 not the review host; G26 run label required; G28 an earlier stage's record missing or stale;
+  G25 not the review host; G26 run label required; G27 the Card 2 / re-judging go (a snapshot run whose combined_view_summary.json
+  holds "card2" or "rejudge" is served only when serve.SNAPSHOT_CARD2_REJUDGE_APPROVED names it; before every stage, exopipe_ops
+  35aad1a); G28 an earlier stage's record missing or stale;
   the combined view (--family comb): G-V1..G-V6, G-K, T1-T6, F-G1..F-G3 (lib/serve/snapshot_view.py);
   the pages merge absent or stale (deep). Exit 3: nothing to do (no page selected, nothing to carry). Exit 1: error.
   A refused (or errored) run-level stage stops every later stage of the invocation (views/test/carry; build/views/test/
