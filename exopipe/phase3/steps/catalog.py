@@ -31,7 +31,8 @@ Deep stages (--stages / --from / --until; default preflight..fork because `force
   fork       the multiples fork per Stokes, run + its content test (ops/multiples_fork.py run|check); no-input under
              catalog_grouping.MULTIPLES_RULE 'one-rule' (ONE multiples rule on every tier, Gregg 2026-10-27)
   union      the four primary tiers into source_catalogs/ (ported, D9: one row per (Stokes, source_id), 'stokes' column)
-  identity   one identity per source across tiers and Stokes (ops/p3s3_identity.py)
+  identity   one identity per source across tiers and Stokes (ops/p3s3_identity.py); under design B the grouping's identity
+             per Stokes, written from it (lib/catalog/grouping_stage.identity_writeback; p3s3_identity.py not run)
   localize   combined positions per identity (ops/build_localizations.py)
   list       TRANSIENT_LIST_<label>_<UTC>.csv + _latest (ops/p3s2_transient_list.py)
 

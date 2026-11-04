@@ -286,21 +286,35 @@ def carry_swap_stage(run, plan, state):
             u.refuse('G11 validate before the swap: ' + '; '.join(f'{k}: {why}' for k, why in sorted(blocking.items()))[:800]
                      + ' - nothing swapped in, the served product and its servers untouched')
         src = plan.U_src if plan.parity else plan.U
-        copied = journals.sublst_copy_journals(src, B)
-        u.note(f'journals copied from {src}: {len(copied)}')
+        from exopipe.phase3.lib.catalog import grouping_stage as GS
+        design_b = GS.mode().design_b     # WAVE2 GROUPING (item F.3): design-B page ids are the grouping's identity names -
+        marks = {}                        # the journals are CARRIED by member detections (production: copied, page ids kept)
+        if design_b and os.path.isdir(src):
+            carried, marks = journals.sublst_carry_journals(src, B)
+            u.meta['journal_carry'] = carried
+            u.note(f'journals carried from {src} by member detections (design B): {carried}')
+        else:
+            copied = journals.sublst_copy_journals(src, B)
+            u.note(f'journals copied from {src}: {len(copied)}')
         prev = plan.U + S.SUBLST_PREV_SUFFIX.format(utc=common.stamp())
         moved = journals.sublst_swap(plan.U, B, prev)
         u.note(f'swapped in: {plan.U} (previous {moved or "none"}); {len(os.listdir(os.path.join(plan.U, "candidates", "I")))}'
                f' I pages, {len(os.listdir(os.path.join(plan.U, "candidates", "V")))} V pages')
         between_src = src if plan.parity else moved
         if between_src:
-            app = journals.append_between(between_src, plan.U)
-            u.note(f'journal lines recorded on the old servers between the copy and the swap, appended: {app}')
+            if design_b:
+                app = journals.sublst_carry_between(between_src, plan.U, marks)
+                u.note(f'journal lines recorded on the old servers between the carry and the swap, carried: {app}')
+            else:
+                app = journals.append_between(between_src, plan.U)
+                u.note(f'journal lines recorded on the old servers between the copy and the swap, appended: {app}')
         for J in S.SUBLST_JOURNALS:
             j = os.path.join(plan.U, J, 'judgements.jsonl')
             if os.path.exists(j):
                 ref = os.path.join(between_src or src, J, 'judgements.jsonl')
-                u.add_output(j, 'judgement_journal', carried_from=ref if os.path.exists(ref) else None)
+                # a carried journal (design B) holds re-keyed records, not its source's lines: no prefix test, the carry
+                # report's consistency test (judgement_journal carry_consistent) applies
+                u.add_output(j, 'judgement_journal', carried_from=(ref if os.path.exists(ref) and not design_b else None))
             else:
                 os.makedirs(os.path.dirname(j), exist_ok=True)
         if not any(os.path.exists(os.path.join(plan.U, J, 'judgements.jsonl')) for J in S.SUBLST_JOURNALS):

@@ -642,6 +642,27 @@ def test_grouping_design_b_in_the_chain():
         for unit in ('union', 'identity', 'localize', 'list'):
             r = rec(f'{LABEL}.{unit}')
             assert r['status'] == 'done', (unit, r['reason'])
+            assert not [t for t in r['tests'] if not t['passed']], (unit, [t for t in r['tests'] if not t['passed']][:3])
+        # the identity stage under design B: the grouping's identity per Stokes, written into every tier file and the union
+        # (p3s3_identity.py's single linkage is not run), checked by the identity_table content test against the grouping
+        r = rec(f'{LABEL}.identity')
+        assert r['meta'].get('identity_design_b') and not any('p3s3_identity' in ' '.join(c.get('argv') or [])
+                                                              for c in r['meta'].get('legacy_calls', [])), r['meta']
+        assert any(t['name'].endswith('identity_table.identity_columns') and 'design-B identity' in (t.get('detail') or '')
+                   for t in r['tests']), [t['name'] for t in r['tests']][:5]
+        for S in ('V', 'I'):
+            T_ = {x['cand_id']: x for x in rows(f'{U}/grouping_{S}/detections.csv')}
+            tiers = {}
+            for t in ('wb', 'sb'):
+                for p in glob.glob(f'{U}/source_catalogs_{S}_{t}/*_sources_survivors.csv'):
+                    for x in rows(p):
+                        assert x['identity_id'] == T_[x['best_cand_id']]['identity_name'], x
+                        tiers.setdefault(x['identity_id'], set()).add(f'{S}_{t}')
+            for p in glob.glob(f'{U}/source_catalogs_{S}_[ws]b/*_sources_survivors.csv'):
+                for x in rows(p):
+                    assert x['identity_tiers'] == '+'.join(sorted(tiers[x['identity_id']])), x
+        u_rows = rows(f'{U}/source_catalogs/Full_sources_survivors.csv')
+        assert u_rows and all(x['identity_tiers'] for x in u_rows)
         # a second pass over the same detections: every identity and multiples ID carried, no ID event
         ids0 = {S: {x['cand_id']: (x['identity_id'], x['multiples_id']) for x in rows(f'{U}/grouping_{S}/detections.csv')}
                 for S in ('V', 'I')}

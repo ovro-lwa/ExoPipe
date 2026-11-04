@@ -47,6 +47,7 @@ LABELS (carry_judgements): a journal of Gregg's judgements keyed by the OLD page
 import collections
 import csv
 import json
+import math
 import os
 import re
 import shutil
@@ -69,7 +70,8 @@ MULT_COLS = ('multiples_id', 'multiples_name', 'multiple', 'multiplicity', 'n_id
 # the builder's extra source columns under design B (lib/catalog/wraps/builder_grouping.py writes them; tests read them)
 SOURCE_COLS = ('group_identity_id', 'multiples_id', 'multiples_name', 'multiple', 'multiples_multiplicity',
                'multiples_n_identities', 'multiples_identities')
-CARRY_COLS = ('new_identity', 'new_identity_id', 'n_detections', 'old_identities', 'outcome', 'verdicts')
+CARRY_COLS = ('new_source', 'new_identity_id', 'n_detections', 'old_sources', 'outcome', 'verdicts')   # production's
+#                                                       carry report (deep_carry_judgements.py) + the stable identity ID
 TIER_OF = {'deep': 'deep', 'sublst': '10min', '10min': '10min'}
 csv.field_size_limit(1 << 30)
 
@@ -360,6 +362,116 @@ def covers(table_path, selected_csv):
 
 
 # =====================================================================================================================
+# the deep identity stage under design B (lib/catalog/deep_chain.st_identity, WAVE2 GROUPING)
+# =====================================================================================================================
+# Production's identity stage (exopipe_ops p3s3_identity.py) re-groups the per-tier survivors by single linkage across tiers AND
+# Stokes and rewrites identity_id in place: under design B it would replace the ruled identities (the pages group their rows by
+# identity_id - one review entry per identity - and the serve's deep judgement carry keys the new sources by it). Under design B
+# the stage writes the same four columns from design B's grouping instead, per Stokes (design B groups every band, wideband and
+# subband, of one Stokes): identity_id = the identity's display name (as the builder wrote it), identity_bands / identity_tiers /
+# identity_n over the identity's survivors rows of the Stokes' tiers. No identity spans two Stokes (design B is per Stokes; the
+# one-name-across-Stokes rule of R-CROSS-TIER-SINGLE-IDENTITY has no design-B counterpart yet - an open question; the pages'
+# cross-tier / polarization links, by position, still show an I and a V identity of one source).
+
+def _stokes_of_dir(d):
+    k = os.path.basename(d).replace('source_catalogs_', '')
+    return k.split('_')[0] if k[:1] in ('I', 'V') and '_' in k else None
+
+
+def identity_writeback(tier_files, union_files, tables):
+    """Write identity_id / identity_bands / identity_tiers / identity_n from design B into every per-tier survivors file
+    (tier_files: source_catalogs_<S>_<t>/*_sources_survivors.csv) and the union copies (union_files: source_catalogs/, rows
+    keyed by (stokes, source_id, band)). tables: {Stokes: grouping detections.csv}. A row whose identity_id is not the
+    grouping's identity of its best detection, or a tier file of a Stokes without a table, REFUSES (the builds were not made
+    with this grouping). Returns counts."""
+    T = {S: read_detections(p) for S, p in tables.items()}
+    per = collections.defaultdict(list)         # (S, identity name) -> [(tier, band)]
+    rows_of, bad = {}, []
+    for f in sorted(tier_files):
+        d = os.path.dirname(f)
+        S = _stokes_of_dir(d)
+        if S not in T:
+            raise StageRefusal(f'{f}: no design-B grouping of Stokes {S} - REFUSING')
+        tier = os.path.basename(d).replace('source_catalogs_', '')
+        cols, rr = None, []
+        with open(f, newline='') as fh:
+            rd = csv.DictReader(fh)
+            cols, rr = list(rd.fieldnames or []), list(rd)
+        rows_of[f] = (cols, rr, S, tier)
+        for r in rr:
+            e = T[S].get(r.get('best_cand_id', ''))
+            if e is None or r.get('identity_id') != e['identity_name'] or r.get('source_id') != e['identity_name']:
+                bad.append(f'{os.path.basename(d)}/{os.path.basename(f)} {r.get("source_id")}: identity_id '
+                           f'{r.get("identity_id")!r}, the grouping names its best detection {r.get("best_cand_id")} '
+                           f'{e["identity_name"] if e else "(not grouped)"!r}')
+                continue
+            per[(S, e['identity_name'])].append((tier, r['band']))
+    if bad:
+        raise StageRefusal(f'{len(bad)} survivors row(s) are not named by their design-B identity, e.g. {bad[:2]} - the builds '
+                           f'were not made with this grouping - REFUSING')
+    val = {k: ('+'.join(sorted({b for _, b in v})), '+'.join(sorted({t for t, _ in v})), str(len(v))) for k, v in per.items()}
+    n_rows = 0
+    for f, (cols, rr, S, tier) in rows_of.items():
+        for c in ('identity_tiers', 'identity_n'):
+            if c not in cols:
+                cols.append(c)
+        for r in rr:
+            b_, t_, n_ = val[(S, r['identity_id'])]
+            r.update(identity_bands=b_, identity_tiers=t_, identity_n=n_)
+        if rr:
+            _write_csv(f, cols, rr)
+        n_rows += len(rr)
+    n_union = 0
+    for f in sorted(union_files):
+        with open(f, newline='') as fh:
+            rd = csv.DictReader(fh)
+            cols, rr = list(rd.fieldnames or []), list(rd)
+        if not rr:
+            continue
+        for c in ('identity_tiers', 'identity_n'):
+            if c not in cols:
+                cols.append(c)
+        for r in rr:
+            k = (r.get('stokes'), r.get('identity_id') or r.get('source_id'))
+            if k not in val:
+                raise StageRefusal(f'{f}: union row {r.get("stokes")} {r.get("source_id")} {r.get("band")} has no design-B '
+                                   f'identity among the tier survivors - REFUSING')
+            r.update(identity_bands=val[k][0], identity_tiers=val[k][1], identity_n=val[k][2])
+        _write_csv(f, cols, rr)
+        n_union += len(rr)
+    return dict(tier_rows=n_rows, union_rows=n_union, identities={S: sum(1 for k in val if k[0] == S) for S in T},
+                cross_tier={S: sum(1 for k, v in val.items() if k[0] == S and '+' in v[1]) for S in T})
+
+
+def identity_failures(path, tables):
+    """[failures] of a survivors file (per-tier or union) against design B: identity_id = the grouping's identity name of the
+    row's best detection (and = source_id), identity_n >= 1, and every row of one identity with the same bands / tiers / n."""
+    T = {S: read_detections(p) for S, p in tables.items()}
+    d = os.path.dirname(os.path.abspath(path))
+    union = os.path.basename(d) == 'source_catalogs'
+    with open(path, newline='') as fh:
+        rr = list(csv.DictReader(fh))
+    bad, seen = [], {}
+    for r in rr:
+        S = r.get('stokes') if union else _stokes_of_dir(d)
+        e = T.get(S, {}).get(r.get('best_cand_id', ''))
+        if e is None or r.get('identity_id') != e['identity_name'] or r.get('source_id') != e['identity_name']:
+            bad.append(f'{r.get("source_id")} {r.get("band")}: identity_id {r.get("identity_id")!r} is not the design-B identity')
+            continue
+        try:
+            n = int(r.get('identity_n') or 0)
+        except ValueError:
+            n = 0
+        if n < 1:
+            bad.append(f'{r.get("source_id")}: identity_n {r.get("identity_n")!r}')
+        k = (S, r['identity_id'])
+        v = (r.get('identity_bands'), r.get('identity_tiers'), r.get('identity_n'))
+        if seen.setdefault(k, v) != v:
+            bad.append(f'{r.get("source_id")}: identity columns differ between its rows ({v} vs {seen[k]})')
+    return bad
+
+
+# =====================================================================================================================
 # the one rule against today's outcome (a record: which detections the rule serves, rescues and drops)
 # =====================================================================================================================
 
@@ -511,65 +623,168 @@ def one_rule_record(table_path, cat_dirs, selected, stokes, sstack_thr=7.0, rung
 # labels: carry Gregg's judgements to the new identities by member detections
 # =====================================================================================================================
 
-def read_journal(path):
+def read_journal(path, lines=None):
     """{source_id: the latest 'classify' record of scope 'source'} of a judgements.jsonl (a 'retract' removes it) - the
-    journal's semantics (the review server's)."""
+    journal's semantics (the review server's; serve/journals.latest_carry); ``lines`` (a list of text lines) instead of the
+    file."""
     J = {}
-    with open(path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            r = json.loads(line)
-            if r.get('action') == 'retract':
-                J.pop(r.get('source_id'), None)
-            elif r.get('scope', 'source') == 'source' and r.get('action') == 'classify':
-                J[r['source_id']] = r
+    for line in (lines if lines is not None else open(path)):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        if r.get('action') == 'retract':
+            J.pop(r.get('source_id'), None)
+        elif r.get('scope', 'source') == 'source' and r.get('action') == 'classify':
+            J[r['source_id']] = r
     return J
 
 
-def members_of_catalogs(cat_dirs, stokes=None):
-    """{old page id (source_id): [cand_id, ...]} from the *_source_members.csv files of the given catalogue directories (the
-    previous build the judgements were made on)."""
+def _lst_of(cand_id):
+    """the LST of a production cand_id ('<S><n>_<LST>_<date>_<band>_<seq>'), else ''"""
+    parts = str(cand_id).split('_')
+    return parts[1] if len(parts) >= 4 and len(parts[1]) == 3 and parts[1].endswith('h') else ''
+
+
+def _member_dets(d, with_identity=False):
+    """[(page id, detection)] of a catalogue directory: every member of a survivors row (page id = identity_id, else
+    source_id); a detection = dict(cand_id, band, lst, date, ra, dec) (+ name, id: the row's source_id and group_identity_id)"""
+    if not os.path.isdir(d):
+        return []
+    rows = {}
+    for p in sorted(os.listdir(d)):
+        if p.endswith('_sources_survivors.csv') and not p.startswith('ALL_'):
+            with open(os.path.join(d, p), newline='') as f:
+                for r in csv.DictReader(f):
+                    rows[(r['source_id'], r['band'])] = r
+    out = []
+    for p in sorted(os.listdir(d)):
+        if p.endswith('_source_members.csv'):
+            with open(os.path.join(d, p), newline='') as f:
+                for m in csv.DictReader(f):
+                    r = rows.get((m['source_id'], m.get('band') or p.split('_')[0]))
+                    if r is None:
+                        continue
+                    det = dict(cand_id=m['cand_id'], band=m.get('band') or r['band'], lst=_lst_of(m['cand_id']),
+                               date=m.get('det_date', ''), ra=float(m['det_ra']), dec=float(m['det_dec']))
+                    if with_identity:
+                        det.update(name=r['source_id'], id=r.get('group_identity_id', ''))
+                    out.append(((r.get('identity_id') or '').strip() or r['source_id'], det))
+    return out
+
+
+def page_members(cat_dirs):
+    """{page id: [detection, ...]} of the pages a set of catalogue directories serves - page id = the survivors row's
+    identity_id, else its source_id (the review page groups rows so: classify_transients.py) - with every member detection of
+    the row's (source_id, band) (dicts: cand_id, band, lst, date, ra, dec). The membership the judgements were made on."""
     out = collections.defaultdict(list)
+    seen = set()
     for d in cat_dirs:
-        for p in sorted(os.listdir(d)) if os.path.isdir(d) else []:
-            if p.endswith('_source_members.csv'):
-                with open(os.path.join(d, p), newline='') as f:
-                    for r in csv.DictReader(f):
-                        if r['cand_id'] not in out[r['source_id']]:
-                            out[r['source_id']].append(r['cand_id'])
+        for pg, det in _member_dets(d):
+            if (pg, det['cand_id']) not in seen:
+                seen.add((pg, det['cand_id']))
+                out[pg].append(det)
     return dict(out)
 
 
-def carry_judgements(journal, old_members, table_path, out_dir, run_id, queue_name='', carried_from_run='', on_page=None):
-    """Carry the judgements of ``journal`` (judgements.jsonl, keyed by the OLD page ids) to the identities of the grouping
-    ``table_path`` by member detections: ``old_members`` = {old page id: [cand_id]} (the membership the judgements were made
-    on). A new identity reached by judged old pages that all agree on (judge_confidence, judge_fp_reason, judge_fp_reason_2)
-    takes the judgement UNCHANGED (source_id = the identity's display name; carried_* fields name the old pages and the shared
-    detections); a disagreement is a CONFLICT - reported, not carried; an old judgement whose detections reach no identity is
-    reported. Writes out_dir/judgements.jsonl (REFUSES to write over a non-empty journal: the carry only seeds) and
-    out_dir/carry_report.csv. Returns the counts."""
-    T = read_detections(table_path)
-    name_of = {c: (r['identity_name'], r['identity_id']) for c, r in T.items()}
-    J = read_journal(journal)
+def identities_of_catalogs(cat_dirs):
+    """[detection with name / id] of design-B catalogue directories: every member detection of a survivors row, named by its
+    identity (the builder with the grouping names every source by it; group_identity_id holds the stable ID)."""
+    out, seen = [], set()
+    for d in cat_dirs:
+        for _pg, det in _member_dets(d, with_identity=True):
+            if det['cand_id'] not in seen:
+                seen.add(det['cand_id'])
+                out.append(det)
+    return out
+
+
+def table_detections(table):
+    """[detection with name / id] of a grouping detections.csv"""
+    return [dict(cand_id=c, band=r['band'], lst=r['lst'], date=r['date'], ra=float(r['ra']), dec=float(r['dec']),
+                 name=r['identity_name'], id=r['identity_id']) for c, r in read_detections(table).items()]
+
+
+def half_beam_arcsec(band, cfg=None):
+    """half the nominal beam of a band's class (catalog_conform.NOMINAL_BEAM_ARCSEC; a subband takes its class from
+    catalog.BAND_CLASS): the carry's match radius (production's deep carry: half the cell master's beam)"""
+    cfg = cfg or _cfg()
+    beams = cfg.catalog_conform.NOMINAL_BEAM_ARCSEC
+    if band in beams:
+        return 0.5 * float(beams[band])
+    for cls, members in cfg.catalog.BAND_CLASS.items():
+        if band in members:
+            return 0.5 * float(beams[cls])
+    raise StageRefusal(f'carry: band {band!r} has no class and no nominal beam - REFUSING')
+
+
+class _Matcher:
+    """old detection -> the new detections it is: same band, LST and date (the 10-minute date carries its window bin; a deep
+    date is the night) and within half the band's nominal beam - the deep carry's rule (deep_carry_judgements.py: night and
+    position within half a beam), robust to a re-search that re-numbers candidates; every new detection within the radius is
+    reached, as there"""
+
+    def __init__(self, new):
+        self.by_key = collections.defaultdict(list)
+        for d in new:
+            self.by_key[(d['band'], d['lst'][:3], d['date'])].append(d)
+        self.tol = {}
+
+    def __call__(self, d):
+        if isinstance(d, str):
+            raise StageRefusal('carry: an old member without its fingerprint (band, LST, date, position) - REFUSING')
+        b = d['band']
+        if b not in self.tol:
+            self.tol[b] = half_beam_arcsec(b)
+        out = []
+        for n in self.by_key.get((b, d['lst'][:3], d['date']), ()):
+            dra = ((n['ra'] - d['ra'] + 180.0) % 360.0 - 180.0) * math.cos(math.radians(d['dec']))
+            if math.hypot(dra, n['dec'] - d['dec']) * 3600.0 <= self.tol[b]:
+                out.append(n)
+        return out
+
+
+def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', carried_from_run='', on_page=None,
+                     lines=None, append=False):
+    """Carry the judgements of ``journal`` (judgements.jsonl, keyed by the OLD page ids) to the NEW identities by member
+    detections - the existing carry rule (exopipe_ops deep_carry_judgements.py; the preview's carry_labels): ``old_members`` =
+    {old page id: [detection dicts: cand_id, band, lst, date, ra, dec]} (the membership the judgements were made on, e.g.
+    page_members); ``new`` = the new detections named by identity (a grouping detections.csv path, or identities_of_catalogs);
+    an old detection reaches every new detection of the same band, LST and date within half the band's nominal beam. A new
+    identity reached by judged old pages that all agree on (judge_confidence, judge_fp_reason, judge_fp_reason_2) takes the
+    judgement UNCHANGED (source_id = its display name; carried_from_run / carried_from_source / shared_detections and the
+    'CARRIED from' note); a disagreement is a CONFLICT - reported, NOT carried; an old judgement whose detections reach no new
+    detection is reported. Writes out_dir/judgements.jsonl and out_dir/carry_report.csv (production's columns + new_identity_id).
+    append=False REFUSES a non-empty journal (the carry only seeds); append=True (lines journalled between the carry and the swap)
+    appends both, and a RETRACT among ``lines`` retracts the new identities its old page reached. Returns the counts."""
+    newdets = table_detections(new) if isinstance(new, str) else list(new)
+    match = _Matcher(newdets)
+    raw = lines if lines is not None else open(journal).read().splitlines()
+    J = read_journal(None, lines=raw)
+    retract = [json.loads(ln)['source_id'] for ln in raw if ln.strip() and json.loads(ln).get('action') == 'retract'] \
+        if append else []
+    reach = {}                                           # old page -> {(name, id): shared detections}
+    for s0 in sorted(set(J) | set(retract)):
+        cnt = collections.Counter()
+        for d in old_members.get(s0, []):
+            for n in {(x['name'], x['id']) for x in match(d)}:
+                cnt[n] += 1
+        reach[s0] = cnt
     owner, unmatched = collections.defaultdict(set), []
     for s0 in sorted(J):
-        hit = 0
-        for c in old_members.get(s0, []):
-            if c in name_of:
-                owner[name_of[c]].add(s0)
-                hit += 1
-        if not hit:
+        if reach[s0]:
+            for n in reach[s0]:
+                owner[n].add(s0)
+        else:
             unmatched.append(s0)
-    ndet = collections.Counter(name_of.values())
+    ndet = collections.Counter((d['name'], d['id']) for d in newdets)
     recs, rows = [], []
     now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     for (name, iid), olds in sorted(owner.items()):
-        share = {s0: sum(1 for c in old_members[s0] if name_of.get(c) == (name, iid)) for s0 in olds}
-        shared = ';'.join('%s:%d/%d' % (s0, k, len(old_members[s0])) for s0, k in sorted(share.items()))
+        share = {s0: reach[s0][(name, iid)] for s0 in olds}
+        shared = ';'.join('%s:%d/%d' % (s0, k, len(old_members.get(s0, []))) for s0, k in sorted(share.items()))
         verdicts = {(J[s].get('judge_confidence'), J[s].get('judge_fp_reason', ''), J[s].get('judge_fp_reason_2', ''))
                     for s in olds}
-        base = dict(new_identity=name, new_identity_id=iid, n_detections=ndet[(name, iid)], old_identities=shared)
+        base = dict(new_source=name, new_identity_id=iid, n_detections=ndet[(name, iid)], old_sources=shared)
         if len(verdicts) > 1:
             rows.append(dict(base, outcome='CONFLICT - not carried',
                              verdicts='|'.join('/'.join(str(x) for x in v) for v in sorted(verdicts, key=str))))
@@ -579,8 +794,8 @@ def carry_judgements(journal, old_members, table_path, out_dir, run_id, queue_na
         r.update(source_id=name, run_id=run_id, ts=now, carried_from_run=carried_from_run,
                  carried_from_source=';'.join(sorted(olds)), shared_detections=shared,
                  new_source_detections=ndet[(name, iid)], group_identity_id=iid,
-                 judge_note=('CARRIED from %s (%s shared detections; grouping identity %s with %d detections)'
-                             % (','.join(sorted(olds)), shared, iid, ndet[(name, iid)])
+                 judge_note=('CARRIED from %s %s (%s matched by window and position within half a beam; grouping identity %s '
+                             'with %d detections)' % (carried_from_run, ','.join(sorted(olds)), shared, iid, ndet[(name, iid)])
                              + (' | original note: %s' % J[s0]['judge_note'] if J[s0].get('judge_note') else '')))
         if queue_name:
             r['queue_name'] = queue_name
@@ -589,20 +804,29 @@ def carry_judgements(journal, old_members, table_path, out_dir, run_id, queue_na
         recs.append(r)
         rows.append(dict(base, outcome='carried', verdicts='/'.join(str(x) for x in next(iter(verdicts)))))
     for s0 in unmatched:
-        rows.append(dict(new_identity='', new_identity_id='', n_detections=0, old_identities=s0,
-                         outcome='old judgement reached no detection', verdicts=J[s0].get('judge_confidence', '')))
+        rows.append(dict(new_source='', new_identity_id='', n_detections=0, old_sources=s0,
+                         outcome='old judgement reached no new detection', verdicts=J[s0].get('judge_confidence', '')))
+    for s0 in retract:                                   # append: a retraction of an old page retracts what it reached
+        for (name, iid) in sorted(reach.get(s0) or ()):
+            recs.append(dict(action='retract', scope='source', source_id=name, run_id=run_id, ts=now,
+                             retract_carried_from_run=carried_from_run, retract_carried_from_source=s0, group_identity_id=iid))
     os.makedirs(out_dir, exist_ok=True)
-    jp = os.path.join(out_dir, 'judgements.jsonl')
-    if os.path.exists(jp) and os.path.getsize(jp) > 0:
+    jp, rp = os.path.join(out_dir, 'judgements.jsonl'), os.path.join(out_dir, 'carry_report.csv')
+    if not append and os.path.exists(jp) and os.path.getsize(jp) > 0:
         raise StageRefusal(f'{jp} exists and is not empty - the carry only seeds an empty journal - REFUSING')
-    with open(jp + '.tmp', 'w') as f:
+    with open(jp, 'a' if append else 'w') as f:
         for r in recs:
             f.write(json.dumps(r) + '\n')
-    os.replace(jp + '.tmp', jp)
-    _write_csv(os.path.join(out_dir, 'carry_report.csv'), CARRY_COLS, rows)
-    return dict(judged_old=len(J), carried=len(recs), conflicts=sum(1 for r in rows if r['outcome'].startswith('CONFLICT')),
-                unmatched=len(unmatched), new_identities_touched=len(owner),
-                carried_on_page=(sum(1 for r in recs if r['source_id'] in on_page) if on_page is not None else None))
+    if append and os.path.exists(rp):
+        with open(rp, 'a', newline='') as f:
+            csv.DictWriter(f, fieldnames=list(CARRY_COLS)).writerows(rows)
+    else:
+        _write_csv(rp, CARRY_COLS, rows)
+    carried = sum(1 for r in rows if r['outcome'] == 'carried')
+    return dict(judged_old=len(J), carried=carried, conflicts=sum(1 for r in rows if r['outcome'].startswith('CONFLICT')),
+                unmatched=len(unmatched), new_identities_touched=len(owner), retracted=len(retract), lines=len(raw),
+                carried_on_page=(sum(1 for r in recs if r.get('action') != 'retract' and r['source_id'] in on_page)
+                                 if on_page is not None else None))
 
 
 # =====================================================================================================================

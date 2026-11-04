@@ -518,11 +518,16 @@ def test_carry():
     with open(f'{d}/old/judgements.jsonl', 'w') as f:
         for r in jr:
             f.write(json.dumps(r) + '\n')
-    members = {'OLD_A1': ['I_05h_A1'], 'OLD_A2': ['I_05h_A2'], 'OLD_E1': ['I_05h_E1'], 'OLD_E2': ['I_05h_E2'],
-               'OLD_GONE': ['I_04h_X'], 'OLD_D': ['I_05h_D1']}
+    det = {r['cand_id']: dict(cand_id=r['cand_id'], band=r['band'], lst=r['lst'], date=r['date'], ra=float(r['ra']),
+                              dec=float(r['dec'])) for r in rows}
+    # OLD_A2's detection RE-NUMBERED by a re-search (another cand_id, the same window and position within the radius): the
+    # carry matches by window and position (the deep carry's rule), never by cand_id alone
+    members = {'OLD_A1': [det['I_05h_A1']], 'OLD_A2': [dict(det['I_05h_A2'], cand_id='I_05h_A2_RENUMBERED', ra=80.0013)],
+               'OLD_E1': [det['I_05h_E1']], 'OLD_E2': [det['I_05h_E2']],
+               'OLD_GONE': [dict(det['I_05h_D1'], date='2030-01-09')], 'OLD_D': [det['I_05h_D1']]}
     cnt = GS.carry_judgements(f'{d}/old/judgements.jsonl', members, f'{d}/grouping_I/detections.csv', f'{d}/new', 'Run_TEST',
                               carried_from_run='Run_OLD')
-    rep = {r['new_identity'] or r['old_identities']: r for r in rcsv(f'{d}/new/carry_report.csv')[1]}
+    rep = {r['new_source'] or r['old_sources']: r for r in rcsv(f'{d}/new/carry_report.csv')[1]}
     new = {json.loads(ln)['source_id']: json.loads(ln) for ln in open(f'{d}/new/judgements.jsonl')}
     check('carry: two old pages that agree carry UNCHANGED to their identity (FP/leakage), naming both',
           'J0520+3000a' in new and new['J0520+3000a']['judge_fp_reason'] == 'leakage'
@@ -531,7 +536,7 @@ def test_carry():
     check('carry: disagreeing pages are a CONFLICT, reported and not carried', 'J0536+3400a' not in new
           and rep.get('J0536+3400a', {}).get('outcome') == 'CONFLICT - not carried', rep.get('J0536+3400a'))
     check('carry: a judgement reaching no detection is reported; a retracted one is not carried',
-          rep.get('OLD_GONE', {}).get('outcome') == 'old judgement reached no detection' and 'J0532+3300a' not in new, rep)
+          rep.get('OLD_GONE', {}).get('outcome') == 'old judgement reached no new detection' and 'J0532+3300a' not in new, rep)
     check('carry: the counts', cnt['carried'] == 1 and cnt['conflicts'] == 1 and cnt['unmatched'] == 1, cnt)
     try:
         GS.carry_judgements(f'{d}/old/judgements.jsonl', members, f'{d}/grouping_I/detections.csv', f'{d}/new', 'Run_TEST')
@@ -539,6 +544,136 @@ def test_carry():
     except GS.StageRefusal as e:
         got = str(e)
     check('carry: refuses to write over a non-empty journal (it only seeds)', 'only seeds' in got, got)
+    try:
+        GS.carry_judgements(f'{d}/old/judgements.jsonl', {'OLD_A1': ['I_05h_A1']}, f'{d}/grouping_I/detections.csv',
+                            f'{d}/new_ids_only', 'Run_TEST')
+        got = 'carried'
+    except GS.StageRefusal as e:
+        got = str(e)
+    check('carry: an old member without its fingerprint (a bare cand_id) REFUSES (cand_ids are re-numbered by a re-search)',
+          'fingerprint' in got, got)
+    # the content tests of serve's journal class on the carried journal (production's report columns)
+    from exopipe.phase3.lib.serve import tests as ST
+    r1 = ST.parses_append_only(f'{d}/new/judgements.jsonl')
+    r2 = ST.carry_consistent(f'{d}/new/judgements.jsonl')
+    check("carry: the carried journal passes serve's judgement_journal content tests (parses, carry_consistent)",
+          r1[0] and r2[0], (r1, r2))
+
+
+def test_serve_carry():
+    """serve --tier sublst under design B (lib/serve/journals.sublst_carry_journals / sublst_carry_between, wired in
+    sublst_build.carry_swap_stage): the served run's journals CARRIED into the build by member detections (the page ids change
+    to the identities' names), the lines journalled between the carry and the swap carried and appended, a retraction among
+    them carried as a retraction"""
+    from exopipe.phase3.lib.serve import journals
+    d = f'{T}/serve_carry'
+    shutil.rmtree(d, ignore_errors=True)
+    rows, tab = _stub_world(f'{d}/w')
+    old, B = f'{d}/Run_OLD', f'{d}/Run_NEW.build'
+    # the served run (production's grouping): two pages, J0520+3000 (A1, A2: identity_id set) and J0532+3300 (D1)
+    os.makedirs(f'{old}/source_catalogs_I')
+    wcsv(f'{old}/source_catalogs_I/46MHz_sources_survivors.csv', ['source_id', 'identity_id', 'band', 'best_cand_id'],
+         [dict(source_id='J0520+3000', identity_id='J0520+3000', band='46MHz', best_cand_id='I_05h_A2'),
+          dict(source_id='J0532+3300', identity_id='', band='46MHz', best_cand_id='I_05h_D1')])
+    byc = {r['cand_id']: r for r in rows}
+    wcsv(f'{old}/source_catalogs_I/46MHz_source_members.csv', ['source_id', 'band', 'cand_id', 'det_ra', 'det_dec', 'det_date'],
+         [dict(source_id=s_, band='46MHz', cand_id=c, det_ra=byc[c]['ra'], det_dec=byc[c]['dec'], det_date=byc[c]['date'])
+          for s_, c in (('J0520+3000', 'I_05h_A1'), ('J0520+3000', 'I_05h_A2'), ('J0532+3300', 'I_05h_D1'))])
+    j0 = [dict(action='classify', scope='source', source_id='J0520+3000', judge_confidence='FP', judge_fp_reason='leakage',
+               judge_fp_reason_2='')]
+    os.makedirs(f'{old}/judgements_I')
+    with open(f'{old}/judgements_I/judgements.jsonl', 'w') as f:
+        f.write(''.join(json.dumps(r) + '\n' for r in j0))
+    # the build (design B): the per-tier catalogue the builder wrote with the grouping
+    os.makedirs(f'{B}/source_catalogs_I_sb')
+    wcsv(f'{B}/source_catalogs_I_sb/46MHz_sources_survivors.csv', ['source_id', 'identity_id', 'band', 'best_cand_id',
+                                                                   'group_identity_id'],
+         [dict(source_id='J0520+3000a', identity_id='J0520+3000a', band='46MHz', best_cand_id='I_05h_A2',
+               group_identity_id='GTI-0000001'),
+          dict(source_id='J0532+3300a', identity_id='J0532+3300a', band='46MHz', best_cand_id='I_05h_D1',
+               group_identity_id='GTI-0000004')])
+    wcsv(f'{B}/source_catalogs_I_sb/46MHz_source_members.csv', ['source_id', 'band', 'cand_id', 'det_ra', 'det_dec', 'det_date'],
+         [dict(source_id=s_, band='46MHz', cand_id=c, det_ra=byc[c]['ra'], det_dec=byc[c]['dec'], det_date=byc[c]['date'])
+          for s_, c in (('J0520+3000a', 'I_05h_A1'), ('J0520+3000a', 'I_05h_A2'), ('J0532+3300a', 'I_05h_D1'))])
+    carried, marks = journals.sublst_carry_journals(old, B)
+    new = [json.loads(l) for l in open(f'{B}/judgements_I/judgements.jsonl')]
+    check('serve carry (design B): the served page J0520+3000 judgement reaches the identity J0520+3000a (by member detections)',
+          carried.get('judgements_I', {}).get('carried') == 1 and len(new) == 1 and new[0]['source_id'] == 'J0520+3000a'
+          and new[0]['carried_from_source'] == 'J0520+3000' and marks == {'judgements_I': 1}, (carried, new, marks))
+    with open(f'{old}/judgements_I/judgements.jsonl', 'a') as f:      # journalled on the old server after the carry
+        f.write(json.dumps(dict(action='classify', scope='source', source_id='J0532+3300', judge_confidence='REAL',
+                                judge_fp_reason='', judge_fp_reason_2='')) + '\n')
+        f.write(json.dumps(dict(action='retract', source_id='J0520+3000')) + '\n')
+    os.rename(B, f'{d}/Run_NEW')
+    app = journals.sublst_carry_between(old, f'{d}/Run_NEW', marks)
+    new = [json.loads(l) for l in open(f'{d}/Run_NEW/judgements_I/judgements.jsonl')]
+    last = {}
+    for r in new:
+        if r.get('action') == 'retract':
+            last.pop(r['source_id'], None)
+        else:
+            last[r['source_id']] = r
+    check('serve carry (design B): the between lines are carried and appended - the new judgement of J0532+3300 reaches '
+          'J0532+3300a, the retraction of J0520+3000 retracts J0520+3000a',
+          set(last) == {'J0532+3300a'} and last['J0532+3300a']['judge_confidence'] == 'REAL'
+          and app.get('judgements_I', {}).get('retracted') == 1, (app, new))
+    from exopipe.phase3.lib.serve import tests as ST
+    r2 = ST.carry_consistent(f'{d}/Run_NEW/judgements_I/judgements.jsonl')
+    check("serve carry: the report and the journal agree (serve's carry_consistent content test)", r2[0], r2)
+
+
+# =====================================================================================================================
+def test_identity_writeback():
+    """the deep identity stage under design B (grouping_stage.identity_writeback): the four identity columns from the grouping
+    per Stokes into every tier file and the union; a row not named by its design-B identity REFUSES; the identity_table content
+    test checks the design-B identity (and catches a wrong row)"""
+    from exopipe.phase3.lib.catalog import tests as CT
+    d = f'{T}/identity'
+    shutil.rmtree(d, ignore_errors=True)
+    rows, tab = _stub_world(f'{d}/w')
+    nm = {t['cand_id']: t['identity_name'] for t in tab}
+    cols = ['rank', 'source_id', 'identity_id', 'identity_bands', 'band', 'best_cand_id', 'best_snr']
+    wcsv(f'{d}/run/source_catalogs_I_sb/46MHz_sources_survivors.csv', cols,
+         [dict(rank='rank0001', source_id=nm[c], identity_id=nm[c], identity_bands='46MHz', band='46MHz', best_cand_id=c,
+               best_snr='9') for c in ('I_05h_A2', 'I_05h_D1', 'I_05h_E1')])
+    wcsv(f'{d}/run/source_catalogs_I_sb/50MHz_sources_survivors.csv', cols,
+         [dict(rank='rank0001', source_id=nm['I_05h_E2'], identity_id=nm['I_05h_E2'], identity_bands='50MHz', band='50MHz',
+               best_cand_id='I_05h_E2', best_snr='6')])
+    wcsv(f'{d}/run/source_catalogs_I_wb/Red_sources_survivors.csv', cols,
+         [dict(rank='rank0001', source_id=nm['I_05h_D1'], identity_id=nm['I_05h_D1'], identity_bands='Red', band='Red',
+               best_cand_id='I_05h_D1', best_snr='9')])
+    union = []
+    for p in sorted(glob.glob(f'{d}/run/source_catalogs_I_*/*_sources_survivors.csv')):
+        union += [dict(r, stokes='I') for r in rcsv(p)[1]]
+    for b in ('46MHz', '50MHz', 'Red'):
+        wcsv(f'{d}/run/source_catalogs/{b}_sources_survivors.csv', cols + ['stokes'], [r for r in union if r['band'] == b])
+    tier = set(glob.glob(f'{d}/run/source_catalogs_I_*/*_sources_survivors.csv'))
+    uni = set(glob.glob(f'{d}/run/source_catalogs/*_sources_survivors.csv'))
+    tables = {'I': f'{d}/w/grouping_I/detections.csv'}
+    cnt = GS.identity_writeback(tier, uni, tables)
+    rd = {(r['source_id'], r['band']): r for p in tier for r in rcsv(p)[1]}
+    e = rd[(nm['I_05h_D1'], 'Red')]
+    check('identity (design B): the columns written from the grouping (D in 46MHz sb + Red wb: one identity, both tiers)',
+          e['identity_id'] == nm['I_05h_D1'] and e['identity_bands'] == '46MHz+Red' and e['identity_tiers'] == 'I_sb+I_wb'
+          and e['identity_n'] == '2' and cnt['identities'] == {'I': 3} and cnt['cross_tier'] == {'I': 1}, (e, cnt))
+    ur = {(r['source_id'], r['band']): r for p in uni for r in rcsv(p)[1]}
+    check('identity (design B): the union rows carry the same columns', ur[(nm['I_05h_D1'], '46MHz')]['identity_tiers'] ==
+          'I_sb+I_wb', ur)
+    res = [CT.identity_columns(p, grouping='design-b', tables=tables) for p in sorted(tier | uni)]
+    check('identity_table content test (design B) passes on every written file', all(r[0] for r in res), res)
+    p0 = f'{d}/run/source_catalogs_I_sb/46MHz_sources_survivors.csv'
+    cols_, rr = rcsv(p0)
+    rr[0]['identity_id'] = 'J9999+9999'
+    wcsv(p0, cols_, rr)
+    r = CT.identity_columns(p0, grouping='design-b', tables=tables)
+    check('identity_table content test (design B) catches a row not named by its identity', not r[0], r)
+    try:
+        GS.identity_writeback(tier, uni, tables)
+        got = 'written'
+    except GS.StageRefusal as e_:
+        got = str(e_)
+    check('identity (design B): a row not named by its design-B identity REFUSES the stage', 'not named by their design-B '
+          'identity' in got, got)
 
 
 # =====================================================================================================================
@@ -572,7 +707,7 @@ def test_cli():
 
 # =====================================================================================================================
 ORDER = ['test_mode', 'test_frozen', 'test_defects', 'test_runner', 'test_sublst_build', 'test_one_rule_record', 'test_carry',
-         'test_cli']
+         'test_serve_carry', 'test_identity_writeback', 'test_cli']
 
 
 def main(names):

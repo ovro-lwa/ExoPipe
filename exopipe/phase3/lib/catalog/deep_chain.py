@@ -1171,6 +1171,8 @@ class DeepRun:
                               f'(ops/p3s3_pass.sh:89)')
             if self.grouping_mode.rule == 'one-rule':     # WAVE2 GROUPING (item F.3): ONE multiples rule on every tier
                 u.meta['mode'] = self.grouping_mode.as_dict()
+                for name in (f'fork_{S}', f'source_catalogs_{S}_fwb', f'source_catalogs_{S}_fsb'):
+                    self.move_aside(os.path.join(self.U, name), u)   # a previous pass's fork products never linger (D10)
                 raise NoInput("catalog_grouping.MULTIPLES_RULE = 'one-rule': the multiples are the grouping's multiples level "
                               "(Gregg 2026-10-27, 'let's be consistent'); production's multiples fork (multiples_fork.py: its "
                               "multiples tables, the Stokes I 5-7 sigma members) is not run - the catalogues of stage associate "
@@ -1324,6 +1326,25 @@ class DeepRun:
             self._same_reads(u, 'ops/p3s3_identity.py', tier_files | union_files, self._expected_survivors() | exp_union)
             for p in sorted(tier_files | union_files):
                 u.add_input(p)
+            if self.design_b:
+                # WAVE2 GROUPING (item F.3): the identity is design B's - p3s3_identity.py's single linkage across tiers and
+                # Stokes would replace the ruled identities (the pages group their rows by identity_id; the serve's deep carry
+                # keys the new sources by it); the four columns are written from the grouping (production: p3s3_identity.py)
+                from exopipe.phase3.lib.catalog import grouping_stage as GS
+                tables = {S: self.chain.meta(self.u('group', S), 'grouping_table') or self.grouping_table(S) for S in ('V', 'I')}
+                for t in tables.values():
+                    u.add_input(t)
+                try:
+                    cnt = GS.identity_writeback(tier_files, union_files, tables)
+                except GS.StageRefusal as e:
+                    u.refuse(f'D-G21 identity (design B): {e}')
+                u.meta['identity_design_b'] = cnt
+                self.say(f"identity (design B): {cnt['identities']} identities, {cnt['cross_tier']} spanning the wideband and "
+                         f"subband tiers; {cnt['tier_rows']} tier rows, {cnt['union_rows']} union rows")
+                u.note(f'design B identities written: {cnt}')
+                for p in sorted(tier_files | union_files):
+                    self.out(u, p, 'identity_table', grouping='design-b', tables=tables)
+                return u
             noerr, unparsed = deep_ported.identity_row_fallbacks(tier_files)      # WAVE2 B-30: pre-check (M4)
             if noerr:
                 from exopipe.phase3.core import fallback      # WAVE2 B-30
@@ -1658,8 +1679,14 @@ class DeepRun:
                     p('    ported PYU0 over the files the associate records list; writes source_catalogs/<band>_{sources_survivors,'
                       'sources_master,source_members}.csv (previous moved aside); class union_catalog')
                 elif stage == 'identity':
-                    cmd([self.py, self.script('p3s3_identity.py'), self.U], self.env()[1], self.log)
-                    p('    gate: the files the module globs = the recorded survivors (stale dirs refuse); class identity_table')
+                    if self.design_b:
+                        p('    design B (WAVE2 GROUPING): identity_id / identity_bands / identity_tiers / identity_n written from the '
+                          'grouping of each Stokes into every tier survivors file and the union (grouping_stage.identity_writeback); '
+                          'p3s3_identity.py is not run (its single linkage would replace the ruled identities)')
+                        p('    gate: the recorded survivors only; every row named by its design-B identity; class identity_table')
+                    else:
+                        cmd([self.py, self.script('p3s3_identity.py'), self.U], self.env()[1], self.log)
+                        p('    gate: the files the module globs = the recorded survivors (stale dirs refuse); class identity_table')
                 elif stage == 'localize':
                     cmd([self.py, self.script('build_localizations.py'), self.U], self.env()[1], self.log)
                     p('    gate: the glob = the recorded survivors; writes source_catalogs/localizations.csv, '
