@@ -194,9 +194,11 @@ its rows came in string-hash order, which differs in every process. No value dep
 - The diagnostics `kelt24_evidence.py`, `lag_test*.py` and `taper_quick.py`.
 
 v3's own control lines keep the approved method: up to `CTL_CAP` (900) lines, from sources taken in an order the job's
-generator shuffles, each source's 8 directions rotated by a draw from the same generator. Both the shuffle and the rotations
-follow the pool order, as v2's draw did. Removing the 900 cap alone would not remove that dependence (the rotations
-stay). This is reported for a decision; it is not changed here.
+generator shuffles, each source's 8 directions rotated by a draw from the same generator, which then also draws the
+centroid's bootstrap. Both the shuffle and the rotations follow the pool order, as v2's draw did. On gen5 the cap binds in
+484 of 1,267 control-line calls (38%), in 199 of the 280 (Stokes, tier, target) with a taper test, all Stokes I
+(2026-11-04 census). Removing the 900 cap alone would not remove that dependence, because the rotations stay. This is
+reported for a decision; it is not changed here.
 
 ## Family N: the night-activity table
 
