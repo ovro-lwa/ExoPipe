@@ -657,6 +657,16 @@ class Ctx:
                        else tables)
         self.flux = self.flux_bake()
         self._size = None
+        from exopipe.phase3.lib.catalog import grouping_stage as GS        # item F.3 (WAVE2 GROUPING)
+        try:
+            self.grouping_mode = GS.mode(cfg)
+        except GS.StageRefusal as e:
+            refuse(str(e))
+        self.grouping_dir = os.path.abspath(arg(args, 'sublst_grouping', default=GS.sublst_dir(cfg)))
+
+    def grouping_table(self, stokes):
+        """The 10-minute grouping of a Stokes the builds read (design B): <grouping dir>/grouping_<S>/detections.csv."""
+        return os.path.join(self.grouping_dir, f'grouping_{stokes}', 'detections.csv')
 
     # ---- the size / axis rule of the search jobs (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) --------
     def search_jobs(self):
@@ -1471,8 +1481,15 @@ def _build(ctx, s, plan, tag):
     lv = '' if tag == 'noveto' else f'{U}/leakveto'
     cats = shared('catalog_localize', 'CATS', 'sublst').format(build=tag)
     py = ctx.py['default']
-    plan.append(f'build ({tag}): for K in {", ".join(SPLIT_KEYS)} with >= 1 selected row: P3_LEAKVETO_DIR={lv!r} {py} {script} '
-                f'selected_K.csv source_catalogs_{tag}_K v_deep_images.csv >> catalogs_{tag}_K.log')
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    if ctx.grouping_mode.design_b:      # WAVE2 GROUPING (item F.3): the builder with the 10-minute grouping (production: alone)
+        plan.append(f'build ({tag}): for K in {", ".join(SPLIT_KEYS)} with >= 1 selected row: P3_LEAKVETO_DIR={lv!r} {py} '
+                    f'{GS.builder_runner()} {script} selected_K.csv source_catalogs_{tag}_K v_deep_images.csv >> '
+                    f'catalogs_{tag}_K.log  (design B: the grouping {ctx.grouping_table("<S>")}; repeat rungs '
+                    f'{ctx.grouping_mode.rungs}; S-G18 refuses a selected row the grouping does not hold as selected)')
+    else:
+        plan.append(f'build ({tag}): for K in {", ".join(SPLIT_KEYS)} with >= 1 selected row: P3_LEAKVETO_DIR={lv!r} {py} {script} '
+                    f'selected_K.csv source_catalogs_{tag}_K v_deep_images.csv >> catalogs_{tag}_K.log')
     plan.append(f'localizations ({tag}): P3_LOC_CATS={cats!r} P3_LOC_OUT={U}/localizations_{tag} {py} {loc} {U}')
     if tag == 'noveto':
         plan.append(f'rejected-source record: P3_SERVED_CATALOGS={U}/master_catalog.csv {py} {rej} {U} 10min')
@@ -1493,8 +1510,26 @@ def _build(ctx, s, plan, tag):
         d = f'source_catalogs_{tag}_{k}'
         os.makedirs(f'{U}/{d}', exist_ok=True)
         s.inp(f'{U}/selected_{k}.csv')
-        res = call(ctx, s, script, [f'selected_{k}.csv', d, 'v_deep_images.csv'], env=ctx.env(P3_LEAKVETO_DIR=lv),
-                   log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
+        if ctx.grouping_mode.design_b:
+            # WAVE2 GROUPING (item F.3): the builder in place with the cumulative's grouping (lib/catalog/wraps/builder_grouping.py)
+            table = ctx.grouping_table(k[0])
+            if not os.path.exists(table):
+                refuse(f'S-G18 design B: no 10-minute grouping {table} - run `exopipe3 catalog --tier sublst --stages group '
+                       f'--group-input <cumulative>` first (or give --sublst-grouping)')
+            s.inp(table)
+            bad = GS.covers(table, f'{U}/selected_{k}.csv')
+            if bad:
+                refuse(f'S-G18 design B: the grouping {table} does not hold selected_{k}.csv as selected ({len(bad)}+ rows, e.g. '
+                       f'{bad[:3]}) - group the cumulative again')
+            res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
+                       env=ctx.env(P3_LEAKVETO_DIR=lv, **GS.builder_env(table, '10min', ctx.grouping_mode)),
+                       log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
+            s.u.meta.setdefault('grouping_builder', {})[f'{tag}_{k}'] = GS.builder_line(res.tail)
+            if res.ok and not GS.builder_line(res.tail).startswith('GROUPING-BUILDER done'):
+                refuse(f'S-G18 build {k} ({tag}): the grouping runner gave no done line')
+        else:
+            res = call(ctx, s, script, [f'selected_{k}.csv', d, 'v_deep_images.csv'], env=ctx.env(P3_LEAKVETO_DIR=lv),
+                       log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
         need_ok(res, f'S-G18 build_source_catalogs_v3.py {k} ({tag})', r'REFUS|Error',
                 say=lambda: ctx.log.say(f'{k} ({tag}): build_source_catalogs_v3 FAILED (see catalogs_{tag}_{k}.log)'))
         built.append(d)
@@ -1699,6 +1734,9 @@ def add_arguments(p):
     g.add_argument('--sublst-builds', default=None, metavar='LIST',
                    help='catalogue builds, comma list of noveto,veto (default catalog_sublst.BUILDS; only noveto is served, '
                         'B-24 open)')
+    g.add_argument('--sublst-grouping', default=None, metavar='DIR',
+                   help='item F.3, design B: the 10-minute grouping the builds read (grouping_<S>/detections.csv of `catalog '
+                        '--tier sublst --stages group`; default catalog_grouping.SUBLST_DIR)')
 
 
 def run(args, run):

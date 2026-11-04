@@ -22,9 +22,14 @@ Deep stages (--stages / --from / --until; default preflight..fork because `force
   fitpos     fitted detection positions on the searched frames (ops/deep_fit_positions.py; P3S* labels)
   select     selection (ops/select_v3.py, verdicts from master_catalog.csv), ephemeris filter (ops/p3s2_ephem_filter.py),
              split by Stokes and tier (ported)
+  group      item F.3: design B grouping of every detection of each Stokes (lib/catalog/grouping_stage.py; units
+             <label>.group.<S>) - identities, the multiples level, stable IDs (state <run>/_grouping_state/, the first run
+             needs --group-new-state); no-input under catalog_grouping.GROUPING 'production' (the parity file)
   associate  per catalogue key V_wb, I_wb, V_sb, I_sb: association, identity merge, E statistic, promotion, unique
-             J-names (ops/build_source_catalogs_v3.py)
-  fork       the multiples fork per Stokes, run + its content test (ops/multiples_fork.py run|check)
+             J-names (ops/build_source_catalogs_v3.py; under design B the builder in place with the grouping's identities and
+             the one multiples rule, lib/catalog/wraps/builder_grouping.py)
+  fork       the multiples fork per Stokes, run + its content test (ops/multiples_fork.py run|check); no-input under
+             catalog_grouping.MULTIPLES_RULE 'one-rule' (ONE multiples rule on every tier, Gregg 2026-10-27)
   union      the four primary tiers into source_catalogs/ (ported, D9: one row per (Stokes, source_id), 'stokes' column)
   identity   one identity per source across tiers and Stokes (ops/p3s3_identity.py)
   localize   combined positions per identity (ops/build_localizations.py)
@@ -40,19 +45,24 @@ Outputs (deep, in the run dir = --out, production relative paths): master_catalo
   (union, localizations), TRANSIENT_LIST_*.csv; records <out>/_records/catalog/<label>.<stage>.json and stage
   directories <out>/_records/catalog/<label>/stage_<stage>/ (fresh each run; previous products moved aside, never
   deleted). Product classes: parent_snapshot, harvest_manifest, merged_record, conformant_catalog, frame_table,
-  fitted_catalog, selection, source_catalog, fork_catalog, union_catalog, identity_table, localization_table,
-  transient_list (+ candidate_catalog; the sub-LST and snapshot classes come with their tier modules).
+  fitted_catalog, selection, grouping_table, grouping_state, source_catalog, fork_catalog, union_catalog, identity_table,
+  localization_table, transient_list (+ candidate_catalog; the sub-LST and snapshot classes come with their tier modules).
+  Grouping (design B): grouping_<S>/ (detections, identities, multiples, summary, events) and the state <run>/_grouping_state/.
 Failure modes: exit 2 = refused by a gate, named in the record: binding check (a config literal the in-place module does
   not carry), an override of a bound or protected key, a predecessor record not current (re-run from that stage), a
   stale file the in-place module would glob, parent snapshot incomplete (D-G1), unharvested attempts outside production
   (D-G3), merge gate (D-G4..D-G8), conformance (D-G9..D-G16), fitted positions (D-G17), selection (D-G18), builds
-  (D-G19), fork (D-G20, D-G23), union..list (D-G21; D-G22 no forced record newer than the builds; partial --stokes).
+  (D-G19), fork (D-G20, D-G23), union..list (D-G21; D-G22 no forced record newer than the builds; partial --stokes),
+  grouping (D-G24: no state without --group-new-state, a re-searched window in incremental mode, the grouping's content
+  tests, a builder input the grouping does not hold as selected).
   The chain stops at the first stage that does not end done. Exit 1 = error; 3 = nothing to do.
 Writes outside --out: none when --out is outside the production roots (the search state is copied under
   <out>/_state/, the parent snapshot goes under <out>/_parents/); a production run also edits the search markers
   (staleness gate) and pulls unharvested attempts (harvest), as production does today.
 Other tiers: sub-LST and snapshot run lib/catalog/tier_sublst.py / tier_snapshot.py (their flags are prefixed --sublst-,
-  --snap-). In the refactor window the snapshot per-tier localization belongs to `serve`, the fit-store row quarantine to
+  --snap-). The 10-minute grouping (item F.3): `--tier sublst --stages group --group-input DIR` groups the cumulative's
+  detections (lib/catalog/grouping_stage.py) into catalog_grouping.SUBLST_DIR; every LST's build stage reads it.
+  In the refactor window the snapshot per-tier localization belongs to `serve`, the fit-store row quarantine to
   `archive`, the sub-LST and deep parent catalogues to `masters --stages sources` (refactor decisions 2026-10-13).
 Deep omission of the short tiers (lib/catalog/deep_omission.py; Gregg 2026-10-24, R-GREGG-20261024-DEEP-OMISSION-DESIGN-
   APPROVED-AND-10MIN-HOLD-RELEASED): `--tier snapshot --stages omit --omit-runs RUN,RUN` (the served batch runs a combined view
@@ -76,8 +86,8 @@ SELECTORS = ('tier', 'run_label', 'lsts', 'cells', 'stokes', 'exclude_cells', 'e
 WRITES = True
 CONFIG = ('catalog', 'catalog_merge', 'catalog_conform', 'catalog_fitpos', 'catalog_select', 'catalog_associate',
           'catalog_fork', 'catalog_identity', 'catalog_localize', 'catalog_sublst', 'catalog_sublst_tie',
-          'catalog_sublst_veto', 'catalog_snapshot', 'catalog_incremental', 'catalog_omission', 'astrometry', 'fitting',
-          'exclusions', 'paths', 'instrument', 'runner', 'site')
+          'catalog_sublst_veto', 'catalog_snapshot', 'catalog_incremental', 'catalog_omission', 'catalog_grouping',
+          'astrometry', 'fitting', 'exclusions', 'paths', 'instrument', 'runner', 'site')
 
 _TIER_ERRORS = {}     # tier -> why its module could not be loaded (reported by run and --help)
 
@@ -154,6 +164,9 @@ def add_arguments(p):
             _TIER_ERRORS[tier] = f'add_arguments: {type(e).__name__}: {e}'
     from exopipe.phase3.lib.catalog import deep_omission
     deep_omission.add_arguments(p.add_argument_group('--stages omit, tiers snapshot and sublst (lib/catalog/deep_omission.py)'))
+    from exopipe.phase3.lib.catalog import grouping_stage
+    grouping_stage.add_arguments(p.add_argument_group('grouping (item F.3): deep stage group; --tier sublst --stages group '
+                                                      '(lib/catalog/grouping_stage.py)'))
     inc = _incremental_module()
     if inc is not None and hasattr(inc, 'add_arguments'):
         try:
@@ -172,9 +185,11 @@ def default_out(args):
             return inc.default_out(args)
     if args.tier == 'deep' or getattr(args, 'incremental', False):
         return f'{CFG.paths.TRANSIENTS_ROOT}/Run_{args.run_label or CFG.catalog.DEEP_RUN_LABEL}'
-    from exopipe.phase3.lib.catalog import deep_omission
+    from exopipe.phase3.lib.catalog import deep_omission, grouping_stage
     if deep_omission.wants(args):
         return deep_omission.default_out(args)
+    if grouping_stage.wants(args):
+        return grouping_stage.default_out(args)
     mod = _tier_module(args.tier)
     if mod is not None and hasattr(mod, 'default_out'):
         return mod.default_out(args)
@@ -211,9 +226,11 @@ def run(args, run):
         except ValueError as e:
             print(f'error: {e}', file=sys.stderr)
             return record.EXIT_ERROR
-    from exopipe.phase3.lib.catalog import deep_omission
+    from exopipe.phase3.lib.catalog import deep_omission, grouping_stage
     if deep_omission.wants(args):
         return deep_omission.run(args, run)
+    if grouping_stage.wants(args):
+        return grouping_stage.run(args, run)
     mod = _tier_module(args.tier)
     if mod is None or not hasattr(mod, 'run'):
         print(f'catalog --tier {args.tier}: lib/catalog/tier_{args.tier}.py not available '

@@ -95,6 +95,7 @@ SCRIPTS = {
     'conform': ('p3s2_conform.py', 'gate_inputs.py', 'p3s3_astrom.py', 'source_localization.py'),
     'fitpos': ('deep_fit_positions.py', 'deep_forced_radio.py'),
     'select': ('select_v3.py', 'p3s2_ephem_filter.py'),
+    'group': (),                    # lib/catalog/grouping_stage.py (design B; no in-place module but astrom_frame's mapping)
     'associate': ('build_source_catalogs_v3.py', 'p3s3_astrom.py', 'select_v3.py'),
     'fork': ('multiples_fork.py', 'p3s2_conform.py', 'gate_inputs.py', 'select_v3.py', 'p3s2_ephem_filter.py',
              'build_source_catalogs_v3.py', 'p3s3_repeat_shuffle.py'),
@@ -166,6 +167,7 @@ class DeepRun:
         self.fork_on = not self.label.startswith(c.DEEP_FORK_SKIP_PREFIX)
         self.keys = [K for K in c.DEEP_ASSOC_KEYS if K[0] in self.stokes]
         self.fork_stokes = [S for S in CFG.catalog_fork.STOKES if S in self.stokes]
+        self.group_stokes = [S for S in CFG.catalog_fork.STOKES if S in self.stokes]     # V first, as the fork (item F.3)
         self.ts = time.strftime('%Y%m%dT%H%M', time.gmtime())
         self.lock_fd = None
         self.checked_first = False
@@ -180,6 +182,12 @@ class DeepRun:
     def _build_graph(self):
         c = self.cfg
         u = self.u
+        from exopipe.phase3.lib.catalog import grouping_stage as GS      # item F.3 (WAVE2 GROUPING): the mode decides the graph
+        try:
+            self.grouping_mode = GS.mode(c)
+        except GS.StageRefusal as e:
+            raise Refusal(str(e)) from None
+        self.design_b = self.grouping_mode.design_b
         keys_all = list(c.catalog.DEEP_ASSOC_KEYS)
         self.sel_pred = u('fitpos') if self.deep_label else u('conform')
         forks = [u('fork', S) for S in c.catalog_fork.STOKES] if self.fork_on else []
@@ -193,14 +201,18 @@ class DeepRun:
                       u('identity'): [u('union')] + [u('associate', K) for K in keys_all] + forks,
                       u('localize'): [u('identity')],
                       u('list'): [u('localize'), u('identity'), self.sel_pred]}
+        for S in c.catalog_fork.STOKES:       # item F.3: the grouping of every detection of the Stokes, before the builder
+            self.preds[u('group', S)] = [u('select'), self.sel_pred]
         for K in keys_all:
-            self.preds[u('associate', K)] = [u('select'), u('merge')]
+            # WAVE2 GROUPING: under design B the builder reads its Stokes' grouping (production: no group unit is read)
+            self.preds[u('associate', K)] = [u('select'), u('merge')] + ([u('group', K[0])] if self.design_b else [])
         for S in c.catalog_fork.STOKES:
             self.preds[u('fork', S)] = [u('conform'), u('merge'), u('preflight')]
         self.units = list(self.preds)
         self.chain = deep_records.Chain(self.U, self.label, self.units, self.preds,
                                         may_be_noinput=[u('associate', K) for K in keys_all]
-                                        + [u('fork', S) for S in c.catalog_fork.STOKES] + [u('fitpos'), u('pulsars')],
+                                        + [u('fork', S) for S in c.catalog_fork.STOKES] + [u('fitpos'), u('pulsars')]
+                                        + [u('group', S) for S in c.catalog_fork.STOKES],
                                         forced_step=c.catalog.FORCED_STEP)
 
     def _cell_filter(self):
@@ -1028,6 +1040,67 @@ class DeepRun:
                     self.out(u, os.path.join(self.U, f'selected_{s}_{t}.csv'), 'selection')
         return u
 
+    # ---- item F.3: the ONE grouping of every detection of a Stokes, before every multiplicity-dependent gate ------------
+    def grouping_state_dir(self):
+        """The persistent grouping state of the run (stable IDs carried from pass to pass): <run>/<STATE_SUBDIR>/, never moved
+        aside by a pass (catalog_grouping.STATE_SUBDIR, protected)."""
+        return os.path.join(self.U, self.cfg.catalog_grouping.STATE_SUBDIR)
+
+    def grouping_table(self, S):
+        return os.path.join(self.U, f'grouping_{S}', 'detections.csv')
+
+    def _group_one(self, S):
+        from exopipe.phase3.lib.catalog import grouping_stage as GS, tests_grouping as TG
+        u = self.new_unit('group', S)
+        with u:
+            self.first_unit_gates(u)
+            u.meta['mode'] = self.grouping_mode.as_dict()
+            if not self.design_b:                       # WAVE2 GROUPING: production groups in the builder (the parity file)
+                raise NoInput("catalog_grouping.GROUPING = 'production': production's grouping is the builder's per-band "
+                              "association and identity merge (the parity file) - no grouping stage")
+            self.preds_current(u, u.name)
+            src = self.chain.meta(self.sel_pred, 'copies')['master_catalog.csv']     # the fitted conformant catalogue
+            beam = os.path.join(self.U, 'frame_beam_bmaj.csv')                      # the frames' beams (conform's cache)
+            for x in (src, beam):
+                if not os.path.exists(x):
+                    u.refuse(f'grouping input {x} is missing (re-run from stage {"conform" if x == beam else "fitpos"})')
+                u.add_input(x)
+            d = self.stage_dir(u, 'group', S)
+            self.move_aside(os.path.join(self.U, f'grouping_{S}'), u)            # fresh products; the state dir is NOT moved
+            state = self.grouping_state_dir()
+            det = GS.load_det('deep', S, src, beam)
+            try:
+                paths, summ, _res = GS.run_group(
+                    det, 'deep', S, self.U, state, u.name, dict(master_catalog=src, frame_beam=beam),
+                    group_mode=getattr(self.args, 'group_mode', None), new_state=bool(getattr(self.args, 'group_new_state', False)),
+                    check=lambda pp: TG.failures(pp, tier='deep', stokes=S, input=src))
+            except GS.StageRefusal as e:
+                u.refuse(f'D-G24 grouping {S}: {e}')
+            self.write_stage_json(d, input=src, frame_beam=beam, state_dir=state, mode=self.grouping_mode.as_dict(),
+                                  counts=summ['counts'], group_mode=summ.get('mode'))
+            u.meta['counts'] = summ['counts']
+            u.meta['grouping_table'] = paths['detections']
+            u.meta['grouping_table_sha1'] = GS.table_digest(paths['detections'])
+            for k in ('identities', 'multiples', 'summary', 'events', 'state_next') + (('state_previous',) if 'state_previous'
+                                                                                        in paths else ()):
+                self.out(u, paths[k])
+            self.out(u, paths['detections'], 'grouping_table', tier='deep', stokes=S, input=src)
+            self.out(u, paths['state'], 'grouping_state', cache=True, tier='deep', stokes=S, table=paths['detections'])
+            self.say(f"grouping {S}: {summ['counts']['detections']} detections -> {summ['counts']['identities']} identities, "
+                     f"{summ['counts']['multiples']} multiples ({summ['counts']['identities_in_multiples']} identities)")
+            u.note(f"{summ['counts']['detections']} detections -> {summ['counts']['identities']} identities; "
+                   f"{summ['counts']['multiples_groups']} multiples-level groups, {summ['counts']['multiples']} multiples")
+        return u
+
+    def st_group(self):
+        out = []
+        for S in self.group_stokes:
+            x = self._group_one(S)
+            out.append(x)
+            if x.status not in ('done', 'no-input', 'skipped-valid'):
+                break
+        return out
+
     def _associate_one(self, K):
         c = self.cfg
         u = self.new_unit('associate', K)
@@ -1052,9 +1125,26 @@ class DeepRun:
             from exopipe.phase3.lib.search import size_rule as SZ    # under the size / axis rule the builder's 7-8 sigma gate
             szr = self.size_rule()                                      # for unpromoted singles never acts (replaced by the rule)
             u.meta['size_rule'] = szr['rule']
-            rc, tail, _ = self.call(u, 'build_source_catalogs_v3.py', [f'selected_{st}_{tier}.csv', f'source_catalogs_{K}',
-                                                                      'v_deep_images.csv'], self.env(SZ.catalog_env(szr)),
-                                    os.path.join(self.U, f'catalogs_inc_{K}.log'), mode='w')
+            bargs = [f'selected_{st}_{tier}.csv', f'source_catalogs_{K}', 'v_deep_images.csv']
+            if self.design_b:
+                # WAVE2 GROUPING (item F.3): the builder in place, its grouping and multiplicity decisions from the group stage
+                # (lib/catalog/wraps/builder_grouping.py); production (the parity file): the builder alone, as below
+                from exopipe.phase3.lib.catalog import grouping_stage as GS
+                table = self.chain.meta(self.u('group', st), 'grouping_table') or self.grouping_table(st)
+                u.add_input(table)
+                bad = GS.covers(table, sel)
+                if bad:
+                    u.refuse(f'D-G24 the grouping of Stokes {st} does not hold the builder input {sel} as selected '
+                             f'({len(bad)}+ rows, e.g. {bad[:3]}) - re-run from stage group')
+                env = self.env(dict(SZ.catalog_env(szr), **GS.builder_env(table, 'deep', self.grouping_mode)))
+                rc, tail, hits = self.call(u, GS.builder_runner(), [self.script('build_source_catalogs_v3.py')] + bargs, env,
+                                           os.path.join(self.U, f'catalogs_inc_{K}.log'), mode='w', keep=('GROUPING-BUILDER',))
+                u.meta['grouping_builder'] = hits[-2:]
+                if rc == 0 and not any(h.startswith('GROUPING-BUILDER done') for h in hits):
+                    u.refuse(f'D-G24 catalogue build {K}: the grouping runner gave no done line ({tail[-1] if tail else ""})')
+            else:
+                rc, tail, _ = self.call(u, 'build_source_catalogs_v3.py', bargs, self.env(SZ.catalog_env(szr)),
+                                        os.path.join(self.U, f'catalogs_inc_{K}.log'), mode='w')
             if rc != 0:
                 self.say(f'catalogue build {K} FAILED - pass aborted (D10)')
                 u.refuse(f'D-G19 catalogue build {K} exit {rc}: {tail[-1] if tail else ""}')
@@ -1079,6 +1169,12 @@ class DeepRun:
             if not self.fork_on:
                 raise NoInput(f'label {self.label}: the fork is skipped for {c.catalog.DEEP_FORK_SKIP_PREFIX}* runs '
                               f'(ops/p3s3_pass.sh:89)')
+            if self.grouping_mode.rule == 'one-rule':     # WAVE2 GROUPING (item F.3): ONE multiples rule on every tier
+                u.meta['mode'] = self.grouping_mode.as_dict()
+                raise NoInput("catalog_grouping.MULTIPLES_RULE = 'one-rule': the multiples are the grouping's multiples level "
+                              "(Gregg 2026-10-27, 'let's be consistent'); production's multiples fork (multiples_fork.py: its "
+                              "multiples tables, the Stokes I 5-7 sigma members) is not run - the catalogues of stage associate "
+                              "carry the multiples (multi_integration, multiples_id)")
             self.preds_current(u, u.name)
             if self.first_stage == 'fork':            # D-G23: the resume of ops/p3s3_pass.sh:23-30, on records
                 for K in c.catalog.DEEP_ASSOC_KEYS:
@@ -1313,20 +1409,23 @@ class DeepRun:
         try:
             for stage in self.stages:
                 fn = getattr(self, f'st_{stage}')
-                if stage in ('associate', 'fork'):
-                    keys = self.keys if stage == 'associate' else self.fork_stokes
+                if stage in ('associate', 'fork', 'group'):
+                    keys = {'associate': self.keys, 'fork': self.fork_stokes, 'group': self.group_stokes}[stage]
                     pending = [k for k in keys if not self.skip_if_valid(self.u(stage, k), stage)]
                     if stage == 'associate':
                         self.keys = pending
-                    else:
+                    elif stage == 'fork':
                         self.fork_stokes = pending
+                    else:
+                        self.group_stokes = pending
                     units = fn() if pending else []
                 elif self.skip_if_valid(self.u(stage), stage):
                     continue
                 else:
                     units = [fn()]
                 bad = [x for x in units if x.status not in ('done', 'no-input', 'skipped-valid')]
-                stop_noinput = [x for x in units if x.status == 'no-input' and stage not in ('associate', 'fork', 'fitpos', 'pulsars')]
+                stop_noinput = [x for x in units if x.status == 'no-input'
+                                and stage not in ('associate', 'fork', 'fitpos', 'pulsars', 'group')]
                 if bad or stop_noinput:
                     x = (bad or stop_noinput)[0]
                     print(f'catalog deep: chain stopped at stage {stage} ({x.name} {x.status}: {x.reason})', file=sys.stderr)
@@ -1495,10 +1594,32 @@ class DeepRun:
                     os.path.join(self.U, 'select_inc.log'))
                 p('    then the split (ported PYS): selected_{V,I}_{wb,sb}.csv; class selection')
                 p('    not here: TESS coverage (pages; spec Q10)')
+            elif stage == 'group':
+                for S in self.group_stokes:
+                    p(f'    unit {self.u("group", S)}')
+                if not self.design_b:
+                    p("    no-input: catalog_grouping.GROUPING = 'production' (the builder groups, as production; the parity file)")
+                    continue
+                preds(self.u('group', self.group_stokes[0])) if self.group_stokes else None
+                st_dir = self.grouping_state_dir()
+                p(f'    design B (lib/catalog/grouping.py) on every detection of the Stokes in the fitted conformant catalogue '
+                  f'(the select stage\'s input copy) + frame_beam_bmaj.csv; mode {self.grouping_mode!r}')
+                p(f'    state (stable IDs) {st_dir} [{ex(st_dir)}]'
+                  + (' - new (--group-new-state)' if getattr(self.args, 'group_new_state', False) else ''))
+                p('    writes: grouping_<S>/ (detections.csv, identities.csv, multiples.csv, summary.json, events.jsonl); '
+                  'classes grouping_table, grouping_state; the state is saved only after the content tests pass')
+                p('    gates: D-G24 (no state without --group-new-state; a re-searched window in incremental mode; the content tests)')
             elif stage == 'associate':
                 for K in self.keys:
                     p(f'    unit {self.u("associate", K)}')
                     st, tier = K.split('_')
+                    if self.design_b:
+                        from exopipe.phase3.lib.catalog import grouping_stage as GS
+                        cmd([self.py, GS.builder_runner(), self.script('build_source_catalogs_v3.py'), f'selected_{st}_{tier}.csv',
+                             f'source_catalogs_{K}', 'v_deep_images.csv'],
+                            dict(self.env()[1], **GS.builder_env(self.grouping_table(st), 'deep', self.grouping_mode)),
+                            os.path.join(self.U, f'catalogs_inc_{K}.log'))
+                        continue
                     cmd([self.py, self.script('build_source_catalogs_v3.py'), f'selected_{st}_{tier}.csv',
                          f'source_catalogs_{K}', 'v_deep_images.csv'], self.env()[1],
                         os.path.join(self.U, f'catalogs_inc_{K}.log'))
@@ -1508,6 +1629,10 @@ class DeepRun:
             elif stage == 'fork':
                 if not self.fork_on:
                     p(f'    label {self.label}: fork skipped ({c.catalog.DEEP_FORK_SKIP_PREFIX}*)')
+                    continue
+                if self.grouping_mode.rule == 'one-rule':
+                    p("    no-input: catalog_grouping.MULTIPLES_RULE = 'one-rule' - the multiples are the grouping's multiples "
+                      "level, carried by the associate catalogues; production's multiples_fork.py is not run")
                     continue
                 par = self.chain.meta(self.u('preflight'), 'parent_dir') or '<parent dir from the preflight record>'
                 for S in self.fork_stokes:

@@ -837,8 +837,9 @@ def check_config_and_refusals(det10):
     check('config: operating points as ruled (identity 0.97, cap 4, multiples 0.85 / deep V off)',
           G.operating_point('10min', 'I') == (0.97, 0.85, 4.0) and G.operating_point('10min', 'V') == (0.97, 0.85, 4.0)
           and G.operating_point('deep', 'I') == (0.97, 0.85, 4.0) and G.operating_point('deep', 'V') == (0.97, None, 4.0))
+    layout = ('SUBLST_DIR', 'STATE_SUBDIR')      # where the stage writes (item F.3): layout, not a ruling
     check('config: every key of catalog_grouping is ruled', all(CFG.ruled(f'catalog_grouping.{k}') for k, _ in CFG.catalog_grouping.items()
-                                                             if not k.startswith('ID_')))
+                                                             if not k.startswith('ID_') and k not in layout))
     try:
         G.cdelt(np.array(['91MHz'])); refused = False
     except G.GroupingRefused:
