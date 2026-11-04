@@ -21,10 +21,17 @@ Both families are campaign stages: they run over whole runs, have no per-hour fo
 ## Approval
 
 Gregg approved the v3 method on 2026-11-03: "v3 is not perfect, but it is approved. Proceed." The method is the one in
-the `forced_wide_v3.py` docstring. Its values are the config defaults.
+the `forced_wide_v3.py` docstring. Its values are the config defaults, and the method's keys are RULED by the ledger row
+`R-GREGG-20261103-FORCED-WIDE-V3-APPROVED`. That covers the candidates, the taper test and its control lines, the
+centroid test, the evidence rules, v2's centering, the burst definition and the job thresholds.
 
-No `fix_ledger` row names this approval yet, so no key is marked `RULED`. `tests/test_core_v2.py` requires every RULED
-ID to be a ledger row. When a row is added, its ID can be placed in the sections' `RULED`.
+Two implementation choices inside the approved method are the refactor chat's, made under Gregg's delegation
+(`R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS`). Both are RULED by `R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT`:
+
+- `V2_CTL_DRAW`: every eligible v2 control is used;
+- `CONTROL_ORDER`: the controls are order-independent.
+
+The other three defaults that differ from production are PROPOSED (see the deliberate differences below).
 
 ## Family W: which cataloged source, if any, makes a forced target's events?
 
@@ -118,15 +125,24 @@ zone is not 1, and that have gated planes. For Stokes I it uses positive peaks o
      log-linearly and integrated over the target's 0.35 FWHM disc. This gives n_pred.
    - The prediction is calibrated on **control lines**. Each control line uses a cataloged source of 0.5–2 × the
      candidate's flux (≥ 3 Jy) in any job of the same Stokes. Imaginary targets are placed at the candidate's distance
-     in 8 directions (a random rotation per source), up to 900 lines in all, the sources taken in a shuffled order. The
-     lines must have comparable predictions.
+     in 8 directions, up to 900 lines in all. The lines must have comparable predictions. The lines are
+     **order-independent** (`CONTROL_ORDER = 'canonical'`):
+     - The pool holds one source per 1/20° cell. Its host is the job with the best score (bands searched, nearest the
+       cutout center); a tie goes to the smallest (Stokes, identity), then the source's identity.
+     - The sources are taken in the order of a stable hash (sha256) of (seed, the target's identity, the source's
+       identity). This is the seeded selection the 900-line bound applies.
+     - Line i of a source lies at (i + uᵢ) × 45°, where uᵢ is a stable hash of (seed, target, source, i).
+     - So a moved or added job changes another target's lines only where that job adds lines to its pool: a new source,
+       a source it hosts better, or, at the cap, the lines it displaces at the end of the order.
+     - Production (`'pool'`, the parity file) shuffled a pool-ordered list with the job's generator and drew one
+       rotation per source from it.
    - From these: κ = Σn_obs / Σn_pred, λ = κ n_pred, ratio = (n_obs + ½)/(λ + ½), and
      p = (lines with a ratio ≥ the target's + 1)/(lines + 1).
    - The taper **accounts** for the count when p ≥ 0.05 and ratio ≤ 2. It **falls short** when p ≤ 0.05 and
      ratio ≥ 3.
 3. **Centering** (a capable candidate within 0.6 FWHM): v2's test. It finds where the bursts in the pair's region
-   center on the candidate → target line, compared with pooled flux-matched controls: by default **every** eligible
-   control pair (`V2_CTL_DRAW` None; see the deliberate differences).
+   center on the candidate → target line, compared with pooled flux-matched controls. By default it uses **every**
+   eligible control pair (`V2_CTL_DRAW` None), with host ties broken canonically (`CONTROL_ORDER`).
 4. **Centroid** of the bursts in the target's disc. The error is √(stat² + max(0.028, 0.11/√nights)²), with stat from
    a bootstrap over nights. z = offset/error.
 5. **Verdict.**
@@ -143,8 +159,9 @@ zone is not 1, and that have gated planes. For Stokes I it uses positive peaks o
    - Evidence that a candidate makes the bursts can be: the bursts center on it; v2's centering; night by night
      (Spearman ρ > 0, p < 0.01); or its taper accounts for the count.
 
-Each job has its own numpy generator (seed `SEED` = 20261102). The results therefore do not depend on the number of
-processes. `wide_test` refuses more than `MAX_WORKERS` (6) processes (W-WORKERS): its workers read the Lustre burst
+Each job has its own numpy generator (seed `SEED` = 20261102). With the canonical control order it draws only the
+centroid's bootstrap, so no other job's presence or position moves a target's results. The results also do not depend on
+the number of processes. `wide_test` refuses more than `MAX_WORKERS` (6) processes (W-WORKERS): its workers read the Lustre burst
 files. It pools burst files of one search only: every `W_search` record must have read the current `jobs.json` and the
 selected cutout generation (W-POOL).
 
@@ -170,14 +187,16 @@ the named sources.
 
 ### Deliberate differences from the analysis, and production's values
 
-These are PROPOSED (2026-11-03 and 2026-11-04). Production's values are in
+`EVENT_ORDER`, `TARGET_MEMBER` and `FILE_ERRORS` are PROPOSED (2026-11-03). `V2_CTL_DRAW` and `CONTROL_ORDER` are decided
+(2026-11-04). Production's values of all five are in
 `exopipe/phase3/parity/production_20261013.cfg` (`# WAVE2`).
 
 | Key | Default | Production | Why |
 |---|---|---|---|
 | `forced_wide.EVENT_ORDER` | `sorted` | `directory` | The order the events are read is the order a target's bands are listed and summed in. The analysis read `os.listdir` order of its Lustre copy (`v3/events_copy/`). Lustre lists a directory in a fixed hash order of its names, so a copy on Lustre lists the same way; /data07 does not. |
 | `forced_wide.TARGET_MEMBER` | `identity` | `first` | A merged identity (26 rows, 21 distinct (Stokes, identity) in the four gen5 runs) takes the list position of one member. Production took the first member in `build_targets`' glob order on /data07; a copy lists in another order. The searched cutouts are the identity's own, centered on the member it is named after (their TARGRA/TARGDEC, in every cutout). On gen5, `first` put 6 of 205 jobs 7.30–32.19″ (0.12–0.54′) off that point, at most 0.05 of the frame FWHM, and swapped two identities' positions. `identity` centers each job exactly on its cutouts. The member choice leaves the tests' statistics unchanged. Under production's capped control draw it did move one verdict (Struve 2398 A, I 1 min), but only because one control was re-indexed and the fixed-seed draw then picked 44 different controls; see `V2_CTL_DRAW`. |
-| `forced_wide_test.V2_CTL_DRAW` | `None` (every eligible control pair) | `(300, 20261102)` | v2's centering kept at most 300 eligible control pairs, drawn at random with a fixed seed over a list in pool order, so any change to the job pool re-draws them. Struve 2398 A, I 1 min: 476 eligible pairs, 475 identical under both member rules; production's draw gives power − z 3.120 (BACKGROUND SOURCE), the draw after the member change 2.890 (UNDECIDED), all 476 give 3.003 (BACKGROUND SOURCE) under both rules, and 55% of 2,000 random draws of 300 read BACKGROUND SOURCE (review F2). The refactor chat decided, as coordinator, on 2026-11-04 to use every eligible control: "The cap was a speed convenience, and it makes knife-edge verdicts depend on sampling noise." It changes the approved method, so it is PROPOSED to Gregg. |
+| `forced_wide_test.V2_CTL_DRAW` | `None` (every eligible control pair) | `(300, 20261102)` | v2's centering kept at most 300 eligible control pairs, drawn at random with a fixed seed over a list in pool order, so any change to the job pool re-draws them. Struve 2398 A, I 1 min: 476 eligible pairs, 475 identical under both member rules; production's draw gives power − z 3.120 (BACKGROUND SOURCE), the draw after the member change 2.890 (UNDECIDED), all 476 give 3.003 (BACKGROUND SOURCE) under both rules, and 55% of 2,000 random draws of 300 read BACKGROUND SOURCE (review F2). Decided (RULED): `R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT` (1), "The cap was a speed convenience, and it makes knife-edge verdicts depend on sampling noise." |
+| `forced_wide_test.CONTROL_ORDER` | `canonical` | `pool` | The taper test's control lines came from a pool-ordered list, shuffled by the job's generator, with one rotation per source drawn from the same generator; that generator then drew the centroid's bootstrap. v2's host ties went to the first job in pool order. So a moved or added job re-drew unrelated targets' calibration: the 900 cap binds in 484 of 1,267 gen5 calls (38%). Decided (RULED): `R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT` (2), "in a pipeline fed new data daily, adding a target must not re-draw an unrelated target's calibration." |
 | `forced_wide_search.FILE_ERRORS` | `refuse` | `drop` | Gates refuse; production dropped a raising cutout. No gen5 cutout raised. |
 
 The night-activity bands table lists the nights of each (LST, band) in date order. The script iterated a set there, so
@@ -193,12 +212,9 @@ its rows came in string-hash order, which differs in every process. No value dep
   `jobs.json`): no stage reads them.
 - The diagnostics `kelt24_evidence.py`, `lag_test*.py` and `taper_quick.py`.
 
-v3's own control lines keep the approved method: up to `CTL_CAP` (900) lines, from sources taken in an order the job's
-generator shuffles, each source's 8 directions rotated by a draw from the same generator, which then also draws the
-centroid's bootstrap. Both the shuffle and the rotations follow the pool order, as v2's draw did. On gen5 the cap binds in
-484 of 1,267 control-line calls (38%), in 199 of the 280 (Stokes, tier, target) with a taper test, all Stokes I
-(2026-11-04 census). Removing the 900 cap alone would not remove that dependence, because the rotations stay. This is
-reported for a decision; it is not changed here.
+v3's own 900-line cap binds in 484 of 1,267 gen5 control-line calls (38%), in 199 of the 280 (Stokes, tier, target)
+with a taper test, all Stokes I (2026-11-04 census). The canonical order keeps it as a compute bound: the selection is
+keyed on stable identities, not on pool order.
 
 ## Family N: the night-activity table
 

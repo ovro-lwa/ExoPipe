@@ -148,22 +148,47 @@ def test_config():
     t = CFG.forced_wide_test
     check('the approved amplitude bound MU (forced_wide_v3.py:80)',
           t.MU == {('I', '10s'): 4.0, ('I', '1min'): 2.5, ('V', '10s'): 2.5, ('V', '1min'): 2.0})
-    check('no RULED key without a ledger row (the approval has none yet)',
-          not any(getattr(CFG._section(s), 'RULED', None) for s in ('forced_wide', 'forced_wide_search', 'forced_wide_test',
-                                                                    'night_activity')))
+    from exopipe.phase3.core import ledger
+    V3ID, ORDID = 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED', 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'
+    ruled = {(sec, k): v for sec in ('forced_wide', 'forced_wide_search', 'forced_wide_test', 'night_activity')
+             for k, v in (getattr(CFG._section(sec), 'RULED', None) or {}).items()}
+    check('RULED: CONTROL_ORDER and V2_CTL_DRAW cite the refactor decision, the rest Gregg\'s v3 approval',
+          ruled[('forced_wide_test', 'CONTROL_ORDER')] == ORDID and ruled[('forced_wide_test', 'V2_CTL_DRAW')] == ORDID
+          and {v for k, v in ruled.items() if k[1] not in ('CONTROL_ORDER', 'V2_CTL_DRAW')} == {V3ID}
+          and not any(k[0] == 'night_activity' for k in ruled), sorted(set(ruled.values())))
+    check('RULED: the approved method\'s thresholds are ruled (MU, the taper, the centroid, v2), operations are not',
+          all(('forced_wide_test', k) in ruled for k in ('MU', 'P_CONSISTENT', 'R_EXCESS', 'CEN_FLOOR', 'Z_OFF', 'V2_POWER_MIN',
+                                                          'CTL_CAP')) and ('forced_wide_search', 'SNR_MIN') in ruled
+          and ('forced_wide', 'EXT_MIN_S74_JY') in ruled and not any(k[1] in ('WORKERS', 'MAX_WORKERS', 'SEED', 'MINUTE_RULE',
+                                                                            'TARGET_MEMBER', 'EVENT_ORDER', 'FILE_ERRORS')
+                                                                     for k in ruled))
+    check('both ruling IDs are rows of the fix ledger', ledger.has_id(V3ID, CFG.paths.FIX_LEDGER)
+          and ledger.has_id(ORDID, CFG.paths.FIX_LEDGER))
     # production's values (parity config, # WAVE2) apply and are the three PROPOSED keys
     p = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     lines = [ln.split('#')[0].strip() for ln in open(p) if ln.split('#')[0].strip().startswith(('forced_wide', 'night_activity'))]
     check('parity config: production values of family W', sorted(lines) == sorted([
         "forced_wide.EVENT_ORDER = 'directory'", "forced_wide.TARGET_MEMBER = 'first'",
-        "forced_wide_search.FILE_ERRORS = 'drop'", "forced_wide_test.V2_CTL_DRAW = (300, 20261102)"]), lines)
+        "forced_wide_search.FILE_ERRORS = 'drop'", "forced_wide_test.V2_CTL_DRAW = (300, 20261102)",
+        "forced_wide_test.CONTROL_ORDER = 'pool'"]), lines)
+    CFG.authorize([], out=TMP)                 # two of them are RULED: overridden into a non-production --out, as parity runs do
     for ln in lines:
         k, v = ln.split('=', 1)
         CFG.set(k.strip(), v.strip())
     check('the parity config values apply', (CFG.forced_wide.EVENT_ORDER, CFG.forced_wide.TARGET_MEMBER,
-                                             CFG.forced_wide_search.FILE_ERRORS, CFG.forced_wide_test.V2_CTL_DRAW)
-          == ('directory', 'first', 'drop', (300, 20261102)))
+                                             CFG.forced_wide_search.FILE_ERRORS, CFG.forced_wide_test.V2_CTL_DRAW,
+                                             CFG.forced_wide_test.CONTROL_ORDER)
+          == ('directory', 'first', 'drop', (300, 20261102), 'pool'))
     CFG.reset()
+    check('the controls are order-independent by default', CFG.forced_wide_test.CONTROL_ORDER == 'canonical')
+    CFG.authorize([], out='/lustre/gh/main/phase3/x')
+    try:
+        CFG.set('forced_wide_test.CONTROL_ORDER', 'pool')
+        ok = False
+    except ConfigRefusal:
+        ok = True
+    CFG.reset()
+    check('CONTROL_ORDER is RULED: an override into a production root needs --ruling-for', ok)
     check('v2 controls: the default is every eligible pair (no random cap)', CFG.forced_wide_test.V2_CTL_DRAW is None)
     check('the test caps its processes like the search (W-WORKERS)', CFG.forced_wide_test.MAX_WORKERS == 6
           == CFG.forced_wide_search.MAX_WORKERS)
@@ -442,17 +467,18 @@ def test_v2_draw():
     class FJ:
         pass
 
-    def fj(center, srcs):
+    def fj(center, srcs, ident):
         j = FJ()
         j.center, j.srcs, j.very_bright, j.bands = center, srcs, [], {'27MHz'}
+        j.job = {'stokes': 'I', 'identity': ident}
         return j
-    Jx = fj((10.0, 30.0), [])
-    Jx.job = dict(S=[10.05, 30.0], T=[10.0, 30.0], s74=1.0, bands=['27MHz'])
+    Jx = fj((10.0, 30.0), [], 'X')
+    Jx.job.update(S=[10.05, 30.0], T=[10.0, 30.0], s74=1.0, bands=['27MHz'])
     pool = []
     for k in range(3):
         c0 = (40.0 + 10 * k, 30.0)
         pool.append(fj(c0, [(c0[0] + dx / 60.0 / math.cos(math.radians(30.0)), c0[1] + dy / 60.0, 1.0, 'S%d' % k)
-                            for dx in range(-50, 51, 10) for dy in range(-50, 51, 10)]))
+                            for dx in range(-50, 51, 10) for dy in range(-50, 51, 10)], 'P%d' % k))
     key = lambda e: (pool.index(e[0]), round(e[1][0], 6), round(e[1][1], 6))     # noqa: E731
     every = [key(e) for e in V3.v2_controls_for(Jx, pool)]
     check('v2 controls, default: every eligible pair (3 x 121 synthetic sources)', len(every) == 363 and len(set(every)) == 363,
@@ -464,6 +490,22 @@ def test_v2_draw():
     check('v2 controls, (cap, seed): production\'s draw - default_rng(seed).choice of cap indices, sorted', drawn == want)
     CFG.set('forced_wide_test.V2_CTL_DRAW', '(400, 7)')
     check('v2 controls: a cap above the eligible count draws nothing', [key(e) for e in V3.v2_controls_for(Jx, pool)] == every)
+    import random
+    for draw in ('None', '(50, 7)'):
+        CFG.set('forced_wide_test.V2_CTL_DRAW', draw)
+        base = [key(e) for e in V3.v2_controls_for(Jx, pool)]
+        for seed in (1, 2):
+            sh = list(pool)
+            random.Random(seed).shuffle(sh)
+            got = [key(e) for e in V3.v2_controls_for(Jx, sh)]
+            check('v2 controls, canonical, V2_CTL_DRAW %s: a shuffled job list gives the same controls in the same order '
+                  '(seed %d)' % (draw, seed), got == base and len(base) == (363 if draw == 'None' else 50), len(got))
+    CFG.set('forced_wide_test.CONTROL_ORDER', 'pool')
+    CFG.set('forced_wide_test.V2_CTL_DRAW', '(50, 7)')
+    sh = list(reversed(pool))
+    check('v2 controls, production order with its draw: a reversed job list draws other controls (what canonical removes)',
+          {key(e) for e in V3.v2_controls_for(Jx, sh)} != {key(e) for e in V3.v2_controls_for(Jx, pool)})
+    CFG.set('forced_wide_test.CONTROL_ORDER', 'canonical')
     for bad in ('(0, 7)', '(5,)', '(5, -1)', "'x'"):
         try:
             CFG.set('forced_wide_test.V2_CTL_DRAW', bad)       # the config's own type check refuses a non-tuple
@@ -473,6 +515,104 @@ def test_v2_draw():
             ok = True
         check('V2_CTL_DRAW %s refused (config type or v2_draw)' % bad, ok)
     CFG.reset()
+
+
+class _FJob:
+    """a synthetic job for the control lines: a 300' cutout plane (arcmin) with cataloged sources and one band of bursts"""
+
+    def __init__(self, ident, srcs, bursts, band='27MHz', tier='10s'):
+        from scipy.spatial import cKDTree
+        self.job = {'stokes': 'I', 'identity': ident}
+        self.st = 'I'
+        self.srcs = [(ra, dec, s74, name) for ra, dec, s74, name, _x, _y in srcs]
+        self.sxy = np.array([(x, y) for *_r, x, y in srcs]) if srcs else np.zeros((0, 2))
+        e, n = bursts[:, 0], bursts[:, 1]
+        self.b = {(band, tier): dict(e=e, n=n, tree=cKDTree(np.c_[e, n]), frames=100)}
+
+    def has(self, band, tier):
+        d = self.b.get((band, tier))
+        return d is not None and d['frames'] > 0
+
+
+def _fjob(ident, k, offsets, s74=5.0, seed=0):
+    """job k: sources at the offsets (arcmin; their cells and names unique per job), a taper of bursts about each and a flat
+    background"""
+    rng = np.random.default_rng(seed + 101 * k)
+    srcs = [(100.0 + 5.0 * k + x / 60.0, 30.0 + y / 60.0, s74, 'VLSSr J%d_%d' % (k, i), x, y) for i, (x, y) in enumerate(offsets)]
+    pts = [rng.uniform(-148.0, 148.0, (4000, 2))]
+    for x, y in offsets:
+        pts.append(rng.normal((x, y), 12.0, (600, 2)))
+    return _FJob(ident, srcs, np.clip(np.concatenate(pts), -147.9, 147.9))
+
+
+def test_control_order():
+    """the taper test's control lines are ORDER-INDEPENDENT (R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT): a
+    shuffled job list gives the same lines; an unrelated job changes nothing; a job that adds sources to the pool adds lines
+    and, at the cap, displaces only the end of the order; production's 'pool' order does depend on the job order"""
+    import random
+    from exopipe.phase3.lib.forced import wide_v3 as V3
+    offs = [(-60.0, -60.0), (60.0, -40.0), (-30.0, 70.0), (50.0, 50.0)]
+    pool = [_fjob('J_%s' % c_, k, offs, seed=7) for k, c_ in enumerate('ABCDE')]
+    J0 = _fjob('T0', 9, [], seed=7)
+    cand = {'bands_far': ['27MHz'], 'd': 30.0, 's74': 5.0}
+
+    def lines(p):
+        zs, prov = V3.control_lines_canonical(p, J0, cand, '10s')
+        return zs, prov, dict(zip(prov, zs))
+    zs1, prov1, m1 = lines(pool)
+    check('canonical control lines: 5 jobs x 4 sources give lines, each with its provenance', len(zs1) > 50
+          and len(prov1) == len(zs1) and len({p_[0] for p_ in prov1}) == 20, len(zs1))
+    for seed in (1, 2, 3):
+        sh = list(pool)
+        random.Random(seed).shuffle(sh)
+        zs2, prov2, _m = lines(sh)
+        check('a shuffled job list (seed %d) gives the same control lines, values and order' % seed, zs2 == zs1
+              and prov2 == prov1)
+    unrel = _fjob('J_U', 7, [(10.0, 10.0), (-80.0, 20.0)], s74=0.5, seed=7)   # its sources are outside the 0.5-2x flux range
+    zs3, prov3, _m = lines(pool + [unrel])
+    check('an unrelated job (no source in the flux range) leaves every control line unchanged', zs3 == zs1 and prov3 == prov1)
+    rel = _fjob('J_R', 8, [(-90.0, 0.0), (0.0, -90.0), (80.0, 80.0)], seed=7)
+    zs4, prov4, m4 = lines(pool + [rel])
+    added = [p_ for p_ in prov4 if p_[1] == 'I:J_R']
+    check('a job adding 3 sources adds their lines and changes no other line', added and set(prov1) <= set(prov4)
+          and all(m4[k_] == m1[k_] for k_ in prov1) and len(prov4) == len(prov1) + len(added), (len(prov1), len(prov4)))
+    CFG.authorize([], out=TMP)
+    CFG.set('forced_wide_test.CTL_CAP', '40')
+    zs5, prov5, m5 = lines(pool)
+    zs6, prov6, m6 = lines(pool + [rel])
+    first = next((i for i, p_ in enumerate(prov6) if p_[1] == 'I:J_R'), len(prov6))
+    kept = [p_ for p_ in prov5 if p_ in m6]
+    check('at the cap (40 lines): the order before the first added line is unchanged, the added lines displace only the end',
+          len(zs5) == 40 == len(zs6) and prov6[:first] == prov5[:first] and kept == prov5[:len(kept)]
+          and all(m6[k_] == m5[k_] for k_ in kept), (first, len(kept)))
+    sh = list(pool)
+    random.Random(4).shuffle(sh)
+    check('at the cap, a shuffled job list still gives the same 40 lines', V3.control_lines_canonical(sh, J0, cand, '10s')[0]
+          == zs5)
+    CFG.reset()
+    # a tie between two host jobs of one source (identical cutout geometry): the smaller job identity, in any order
+    twin = _fjob('J_0', 0, offs, seed=7)            # job k = 0: J_A's sources and offsets exactly, a smaller identity
+    for order in ([pool[0], twin], [twin, pool[0]]):
+        prov = V3.control_lines_canonical(order, J0, cand, '10s')[1]
+        hosts = {p_[1] for p_ in prov}
+        check('a host tie goes to the smaller job identity, in either order (%s first)' % job_name(order[0]),
+              hosts == {'I:J_0'}, hosts)
+    # the rotations are the line's own stable hashes
+    u = V3.stable_uniform('rot', 20261102, 'I:T0', 'VLSSr J0_0|100.00000|29.00000', 3)
+    check('stable_uniform: the same value in every call, another for another target', u == V3.stable_uniform(
+        'rot', 20261102, 'I:T0', 'VLSSr J0_0|100.00000|29.00000', 3) != V3.stable_uniform(
+        'rot', 20261102, 'I:T1', 'VLSSr J0_0|100.00000|29.00000', 3) and 0.0 <= u < 1.0)
+    # production's order depends on the job list (what the canonical order removes)
+    CFG.set('forced_wide_test.CONTROL_ORDER', 'pool')
+    a = V3.control_lines(pool, J0, cand, '10s', np.random.default_rng(20261102))
+    b = V3.control_lines(list(reversed(pool)), J0, cand, '10s', np.random.default_rng(20261102))
+    CFG.reset()
+    check('production\'s pool order (CONTROL_ORDER pool) gives other lines for a reversed job list', a != b
+          and len(a) == len(b))
+
+
+def job_name(J):
+    return J.job['identity']
 
 
 def test_pool_provenance():
@@ -868,6 +1008,7 @@ def main():
         test_cli_gates()
         test_publish()
         test_v2_draw()
+        test_control_order()
         test_pool_provenance()
         test_search_functions()
         test_io_yield()

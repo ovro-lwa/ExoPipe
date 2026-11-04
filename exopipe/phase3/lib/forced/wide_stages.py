@@ -523,10 +523,10 @@ def stage_test(c):
     from exopipe.phase3.core import validate
     name = 'W_test'
     workers = c.args.workers or c.wt.WORKERS
-    K.plan('[wide_test] the v3 analysis of every job (bursts %s) -> %s, %s; %d processes (max %d); v2 controls %s%s'
-           % (c.args.wide_bursts or c.bursts, c.results, c.candidates, workers, c.wt.MAX_WORKERS,
-              'every eligible pair' if c.wt.V2_CTL_DRAW is None else 'a draw of %s' % (c.wt.V2_CTL_DRAW,),
-              '; PARTIAL (--wide-only)' if c.only else ''))
+    K.plan('[wide_test] the v3 analysis of every job (bursts %s) -> %s, %s; %d processes (max %d); v2 controls %s; controls\' '
+           'order %s%s' % (c.args.wide_bursts or c.bursts, c.results, c.candidates, workers, c.wt.MAX_WORKERS,
+                           'every eligible pair' if c.wt.V2_CTL_DRAW is None else 'a draw of %s' % (c.wt.V2_CTL_DRAW,),
+                           c.wt.CONTROL_ORDER, '; PARTIAL (--wide-only)' if c.only else ''))
     if c.dry:
         if workers > c.wt.MAX_WORKERS:
             K.plan('[wide_test]   W-WORKERS %d processes > %d: refused' % (workers, c.wt.MAX_WORKERS))
@@ -537,13 +537,14 @@ def stage_test(c):
                       'files; Lustre reads yield to the recorders)' % (workers, c.wt.MAX_WORKERS))
     try:
         V3.v2_draw()
+        V3.control_order()
     except ValueError as e:
         raise Refusal(str(e))
     if K.resumed(c.run, name, None, tier='snapshot', stage='wide_test', family='W'):
         return
     with c.run.unit(name, tier='snapshot', stage='wide_test', family='W', partial=bool(c.only),
                     only=sorted('%s:%s' % x for x in c.only), bursts=c.args.wide_bursts or c.bursts, workers=workers,
-                    v2_ctl_draw=c.wt.V2_CTL_DRAW, cutout_root=c.cutout_root) as u:
+                    v2_ctl_draw=c.wt.V2_CTL_DRAW, control_order=c.wt.CONTROL_ORDER, cutout_root=c.cutout_root) as u:
         gate_env()
         fa = gate_catdir(c.cfg)
         _rec, jobs_path, events_path = c.jobs_record()

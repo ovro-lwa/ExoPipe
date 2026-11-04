@@ -1597,8 +1597,11 @@ def test_item7_parity_file_keys():
              'R-GREGG-20261016-MOSAIC-DEC-MIN-30',                           # the renders' southern edge
              'R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION',            # the wideband member admission (deep search)
              'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4',             # the 18 MHz carve-out of the search's master check
-             'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS'}   # the size / axis rule at every S/N (search_detect /
+             'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS',   # the size / axis rule at every S/N (search_detect /
                                                                              # search_sublst SIZE_RULE; production 'production')
+             'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'}   # forced W: every v2 control (V2_CTL_DRAW) and the
+                                                                             # order-independent controls (CONTROL_ORDER), the
+                                                                             # refactor chat under Gregg's delegation
     PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
                                                              # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
     PROPOSED |= {'catalog_omission.ABSENT_WITH_SERVED'}    # 2026-11-03 (Q review F5): G6 'refuse' proposed, pending Gregg; production's
@@ -1608,9 +1611,6 @@ def test_item7_parity_file_keys():
                  'forced_wide_search.FILE_ERRORS'}         # test ported): deterministic orders and the refusal proposed, pending
                                                              # Gregg; production's values in the parity file (docs/specs/
                                                              # forced_wide.md; refactor_reviews_20261103/W_forcedwide_report.md)
-    PROPOSED |= {'forced_wide_test.V2_CTL_DRAW'}           # 2026-11-04 (W review F2; the refactor chat's decision as coordinator):
-                                                             # every eligible v2 control, no random cap; production's (300, seed)
-                                                             # in the parity file, pending Gregg
     path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     bad, n = [], 0
     for ln in open(path):

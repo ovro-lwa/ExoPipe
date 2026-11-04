@@ -31,10 +31,15 @@ zone 1 out, -1 clean):
 Every computation is the scripts' own, in their order, with one numpy generator per job (seed SEED): the results do not depend
 on the number of processes. One default differs from the approved scripts (PROPOSED; production's value in the parity config):
 v2's centering uses EVERY eligible control pair (forced_wide_test.V2_CTL_DRAW None) where the script drew 300 at random with a
-fixed seed - a draw over a list in pool order, which any change to the job pool re-draws (review F2, 2026-11-04). The figures and the review page of the analysis (figs_v3/, forced_wide_page_v3.py) are not ported:
+fixed seed - a draw over a list in pool order, which any change to the job pool re-draws (review F2, 2026-11-04) - and the
+controls are ORDER-INDEPENDENT (forced_wide_test.CONTROL_ORDER 'canonical'; R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-
+INDEPENDENT): the control lines' pool, rotations and capped selection keyed on stable identities (control_lines_canonical),
+v2's control pairs with canonical host ties, so adding or moving a job changes another target's controls only where that job
+adds controls to its pool. The figures and the review page of the analysis (figs_v3/, forced_wide_page_v3.py) are not ported:
 nothing of the pipeline reads them."""
 import collections
 import csv
+import hashlib
 import math
 import os
 
@@ -273,15 +278,39 @@ def candidates(J, ev, tier):
     return out
 
 
-def control_lines(pool, J0, cand, tier, rng):
-    """z of the taper test on control lines (module notes) for one candidate of job J0"""
+def stable_uniform(*parts):
+    """a number in [0, 1) from a stable hash (sha256) of the parts: the same in every process, on every node and for every job
+    list (Python's hash() is salted per process)"""
+    h = hashlib.sha256('|'.join(str(p) for p in parts).encode()).digest()
+    return int.from_bytes(h[:8], 'big') / 18446744073709551616.0
+
+
+def job_id(J):
+    """a job's stable identity: Stokes:identity (JobData and V2Job alike)"""
+    return '%s:%s' % (J.job['stokes'], J.job['identity'])
+
+
+def source_id(s):
+    """a cataloged physical source's stable identity: its name and position (physical_sources' tuple)"""
+    return '%s|%.5f|%.5f' % (s[3], s[0], s[1])
+
+
+def control_order():
+    """forced_wide_test.CONTROL_ORDER: 'canonical' or 'pool'; anything else raises ValueError (the stage refuses it)."""
+    o = tc().CONTROL_ORDER
+    if o not in ('canonical', 'pool'):
+        raise ValueError('forced_wide_test.CONTROL_ORDER %r: canonical or pool' % (o,))
+    return o
+
+
+def _control_sources(pool, J0, cand, tier):
+    """every eligible (host job, control source) of a candidate's control lines, in pool order: (J, nb, s, x, y, key, score) -
+    a cataloged source of CTL_FLUX x the candidate's flux (>= CTL_MIN_JY) inside a job's cutout (CUT_EDGE_ARCMIN), the job
+    having searched >= half the candidate's bands; key = its CTL_KEY_PER_DEG cell, score = (bands searched, -its distance
+    from the cutout center)"""
     c = tc()
-    FW = fw_table()
     CUT, EDGE = c.CUT_HALF_ARCMIN, c.CUT_EDGE_ARCMIN
     bands = cand['bands_far']
-    d = cand['d']
-    fwmin, fwmax = min(FW[b] for b in bands), max(FW[b] for b in bands)
-    best = {}
     for J in pool:
         if J is J0:
             continue
@@ -295,30 +324,103 @@ def control_lines(pool, J0, cand, tier, rng):
             if max(abs(x), abs(y)) > CUT - EDGE:
                 continue
             key = (round(s[0] * c.CTL_KEY_PER_DEG) / c.CTL_KEY_PER_DEG, round(s[1] * c.CTL_KEY_PER_DEG) / c.CTL_KEY_PER_DEG)
-            score = (len(nb), -max(abs(x), abs(y)))
-            if key not in best or score > best[key][0]:
-                best[key] = (score, J, (float(x), float(y)), nb)
+            yield J, nb, s, x, y, key, (len(nb), -max(abs(x), abs(y)))
+
+
+def _bright1(J, cache):
+    """the >= CTL_BRIGHT_JY sources of a job's cutout (offsets): a control line keeps NEAR x the smallest FWHM from them"""
+    if J not in cache:
+        c = tc()
+        cache[J] = np.array([J.sxy[i] for i, s in enumerate(J.srcs) if s[2] >= c.CTL_BRIGHT_JY]) if J.srcs else np.zeros((0, 2))
+    return cache[J]
+
+
+def _line(J, C, P, nb, tier, b1, fwmin, fwmax):
+    """one control line at the imaginary target P, or None where it is refused (too near the cutout's own target or a bright
+    source; the taper test undefined there)"""
+    c = tc()
+    if math.hypot(*P) < c.CTL_TARGET_FWHM * fwmax:
+        return None
+    if len(b1) and np.min(np.hypot(b1[:, 0] - P[0], b1[:, 1] - P[1])) < c.NEAR * fwmin:
+        return None
+    r = taper_test(J, C, P, nb, tier)
+    if r is None or not np.isfinite(r['z']):
+        return None
+    return r['z'], r['n_obs'], r['n_pred'], r['var']
+
+
+def control_lines(pool, J0, cand, tier, rng):
+    """z of the taper test on control lines (module notes) for one candidate of job J0: [(z, n_obs, n_pred, var)], in the
+    order of forced_wide_test.CONTROL_ORDER ('canonical': order-independent, the job's generator untouched; 'pool':
+    production's, consuming ``rng``)"""
+    if control_order() == 'canonical':
+        return control_lines_canonical(pool, J0, cand, tier)[0]
+    return control_lines_pool(pool, J0, cand, tier, rng)
+
+
+def control_lines_pool(pool, J0, cand, tier, rng):
+    """production's control lines (forced_wide_v3.py control_lines): one source per cell, the first job in pool order winning a
+    tie, the list shuffled by the job's generator, each source's CTL_DIRS lines rotated by one draw of it, up to CTL_CAP"""
+    c = tc()
+    FW = fw_table()
+    bands = cand['bands_far']
+    d = cand['d']
+    fwmin, fwmax = min(FW[b] for b in bands), max(FW[b] for b in bands)
+    best = {}
+    for J, nb, s, x, y, key, score in _control_sources(pool, J0, cand, tier):
+        if key not in best or score > best[key][0]:
+            best[key] = (score, J, (float(x), float(y)), nb)
     ents = [v[1:] for v in best.values()]
     rng.shuffle(ents)
     zs = []
     bright1 = {}
     for J, C, nb in ents:
-        if J not in bright1:
-            bright1[J] = np.array([J.sxy[i] for i, s in enumerate(J.srcs) if s[2] >= c.CTL_BRIGHT_JY]) if J.srcs else np.zeros((0, 2))
+        b1 = _bright1(J, bright1)
         for th in np.radians(np.arange(0, 360, 360 / c.CTL_DIRS)) + rng.uniform(0, 2 * math.pi / c.CTL_DIRS):
-            P = (C[0] + d * math.sin(th), C[1] + d * math.cos(th))
-            if math.hypot(*P) < c.CTL_TARGET_FWHM * fwmax:
+            r = _line(J, C, (C[0] + d * math.sin(th), C[1] + d * math.cos(th)), nb, tier, b1, fwmin, fwmax)
+            if r is None:
                 continue
-            b1 = bright1[J]
-            if len(b1) and np.min(np.hypot(b1[:, 0] - P[0], b1[:, 1] - P[1])) < c.NEAR * fwmin:
-                continue
-            r = taper_test(J, C, P, nb, tier)
-            if r is None or not np.isfinite(r['z']):
-                continue
-            zs.append((r['z'], r['n_obs'], r['n_pred'], r['var']))
+            zs.append(r)
             if len(zs) >= c.CTL_CAP:
                 return zs
     return zs
+
+
+def control_lines_canonical(pool, J0, cand, tier):
+    """ORDER-INDEPENDENT control lines (CONTROL_ORDER 'canonical'; R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT):
+    one source per cell, its host the job with the best score, a tie to the smallest (job identity, source identity); the
+    sources in the order of a stable hash of (SEED, the target's identity, the source's identity) - the seeded selection the
+    CTL_CAP bound applies; line i of a source at (i + u_i) x 2 pi / CTL_DIRS, u_i a stable hash of (SEED, target, source, i).
+    Returns ([(z, n_obs, n_pred, var)], [(source identity, host job identity, i)]) - the lines and where each came from."""
+    c = tc()
+    FW = fw_table()
+    bands = cand['bands_far']
+    d = cand['d']
+    fwmin, fwmax = min(FW[b] for b in bands), max(FW[b] for b in bands)
+    best = {}
+    for J, nb, s, x, y, key, score in _control_sources(pool, J0, cand, tier):
+        tie = (job_id(J), source_id(s))
+        cur = best.get(key)
+        if cur is None or score > cur[0] or (score == cur[0] and tie < cur[4]):
+            best[key] = (score, J, (float(x), float(y)), nb, tie)
+    tid = job_id(J0)
+    ents = sorted(((stable_uniform('rank', c.SEED, tid, v[4][1]), v[4][1], v[1], v[2], v[3]) for v in best.values()),
+                  key=lambda e: (e[0], e[1]))
+    zs, prov = [], []
+    bright1 = {}
+    step = 2 * math.pi / c.CTL_DIRS
+    for _rank, sid, J, C, nb in ents:
+        b1 = _bright1(J, bright1)
+        for i in range(c.CTL_DIRS):
+            th = (i + stable_uniform('rot', c.SEED, tid, sid, i)) * step
+            r = _line(J, C, (C[0] + d * math.sin(th), C[1] + d * math.cos(th)), nb, tier, b1, fwmin, fwmax)
+            if r is None:
+                continue
+            zs.append(r)
+            prov.append((sid, job_id(J), i))
+            if len(zs) >= c.CTL_CAP:
+                return zs, prov
+    return zs, prov
 
 
 def matched(zs, npred):
@@ -801,6 +903,7 @@ def v2_controls_for(Jx, jobs_loaded):
     Mx = tan_pos(de_ / 2, dn_ / 2, S[0], S[1])
     rmax = sep / 2 + c.V2_K_MAX * max(FW[b] for b in jx['bands'])
     need = math.ceil(len(jx['bands']) / 2)
+    canonical = control_order() == 'canonical'
     best = {}
     for J in jobs_loaded:
         bands = Jx.bands & J.bands
@@ -823,9 +926,17 @@ def v2_controls_for(Jx, jobs_loaded):
                 continue
             key = (round(cs[0] * c.V2_KEY_PER_DEG) / c.V2_KEY_PER_DEG, round(cs[1] * c.V2_KEY_PER_DEG) / c.V2_KEY_PER_DEG)
             score = (len(bands), -dcen)
-            if key not in best or score > best[key][0]:
+            if canonical:            # a tie to the smallest (job identity, source identity), never the first in pool order
+                tie = (job_id(J), source_id(cs))
+                cur = best.get(key)
+                if cur is None or score > cur[0] or (score == cur[0] and tie < cur[2]):
+                    best[key] = (score, (J, (cs[0], cs[1]), Tp, bands, cs[2]), tie)
+            elif key not in best or score > best[key][0]:
                 best[key] = (score, (J, (cs[0], cs[1]), Tp, bands, cs[2]))
-    out = [v[1] for v in best.values()]
+    if canonical:                    # by the control source's identity: a capped draw (V2_CTL_DRAW) is then job-order free too
+        out = [v[1] for v in sorted(best.values(), key=lambda v: v[2][1])]
+    else:
+        out = [v[1] for v in best.values()]
     draw = v2_draw()
     if draw is not None and len(out) > draw[0]:            # production's capped draw (forced_wide_analyze.py:188-190)
         rng = np.random.default_rng(draw[1])

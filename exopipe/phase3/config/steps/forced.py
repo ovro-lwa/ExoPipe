@@ -206,10 +206,12 @@ class forced_assoc(_Section):
 # production modules the method calls (the forced evaluation's gates snapshot_forced_eval, the snapshot search's time and
 # night rules phase3_snapshot_search, tier rule 3 phase3_tier_rules, the radio catalogues snapshot_forced_assoc, the beam table
 # phase3_snapshot_astro) are imported in the step process (core/env.legacy), so the search stays gate-exact with stage 2.
-# THE APPROVAL (Gregg 2026-11-03, on the v3 page: "v3 is not perfect, but it is approved. Proceed."): the method of the
-# forced_wide_v3.py docstring - its values are the defaults below. No fix_ledger row names that approval yet, so no key is
-# RULED (tests/test_core_v2.py requires every RULED ID to be a ledger row); mark them RULED when one exists.
-# Spec: docs/specs/forced_wide.md.
+# THE APPROVAL (Gregg 2026-11-03, on the v3 page: "v3 is not perfect, but it is approved. Proceed."; ledger
+# R-GREGG-20261103-FORCED-WIDE-V3-APPROVED): the method of the forced_wide_v3.py docstring - its values are the defaults below,
+# the method's keys RULED by that row (the candidates by flux capability, the taper test and its control lines, the
+# centroid test, the evidence rules, v2's centering; the bursts and the jobs it tests). Implementation choices inside it are
+# the refactor chat's under its delegation (R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS): V2_CTL_DRAW and CONTROL_ORDER are
+# RULED by R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT. Spec: docs/specs/forced_wide.md.
 # =====================================================================================================================
 
 class forced_wide(_Section):
@@ -288,6 +290,9 @@ class forced_wide(_Section):
     ENV_FORBIDDEN = ('P3_RADIO_CATDIR', 'P3_DEEP_SEARCH_STATE', 'P3_COADD_RUN', 'P3_SNAP_RUN_PINS', 'P3_SOLAR_AUDIT',
                      'P3_SNAP_FIT_RAW', 'P3_TABLE_PREFIX', 'P3_TABLE_ELEV', 'P3_PHOT_ROOT', 'FW_RUNS', 'FW_MINUTE_RULE')
     PROTECTED_KEYS = ('PUBLISHED',)
+    RULED = {k: 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED' for k in (
+        'AMB_MIN_S74_JY', 'AMB_SEARCH_BEAMS', 'BASE_MAX_BEAMS', 'BASE_BG_MIN_S74_JY', 'BASE_BG_RADIUS_BEAMS', 'EXT_MIN_S74_JY',
+        'EXT_RADIUS_FWHM', 'GROUP_ARCMIN')}
 
 
 class forced_wide_search(_Section):
@@ -334,6 +339,8 @@ class forced_wide_search(_Section):
     SUN_SITE = (37.2398, -118.2817, 1222)
     NULLABLE_KEYS = ('IO_GUARD_LOG',)
     PROTECTED_KEYS = ('SUN_SITE',)
+    RULED = {k: 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED' for k in (
+        'SNR_MIN', 'PRE_SIGMA', 'STAMP_PX', 'STAMP_CORE_PX', 'STAMP_MIN_FRAC', 'EDGE_PX', 'BLOCK_MIN_FRAMES')}
 
 
 class forced_wide_test(_Section):
@@ -413,7 +420,25 @@ class forced_wide_test(_Section):
     Z_C_NEAR = 3.0
     CENTER_WITHIN = 1.0
     COVER = 2.0 / 3.0
-    SEED = 20261102                              # numpy default_rng seed, one generator per job (control lines, bootstrap)
+    SEED = 20261102                              # numpy default_rng seed, one generator per job (CONTROL_ORDER 'pool': the
+                                                 # control lines, then the bootstrap; 'canonical': the bootstrap only) and the
+                                                 # salt of the canonical controls' stable hashes
+    # THE CONTROLS' ORDER - the taper test's control lines and v2's control pairs. 'canonical' (the decision
+    # R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT, the refactor chat under Gregg's delegation, 2026-11-04: "in a
+    # pipeline fed new data daily, adding a target must not re-draw an unrelated target's calibration"): ORDER-INDEPENDENT -
+    #   the eligible pool by stable identifiers, never by job or pool order: one source per cell, its host the job with the best
+    #   score (bands searched, nearest the cutout center), a tie to the smallest (Stokes, identity), then source identity;
+    #   each control line rotated by its own seed: line i of a source at (i + u) x 360 / CTL_DIRS deg, u = a stable hash
+    #   (sha256) of (SEED, the target's (Stokes, identity), the control source's identity (name, ra, dec), i);
+    #   the CTL_CAP compute bound applied by a seeded selection keyed on the target's identity: the sources taken in the order
+    #   of a stable hash of (SEED, target, source), each with its lines, until CTL_CAP lines are valid;
+    #   so adding or moving a job changes another target's control lines only where that job adds lines to its pool (a new
+    #   source; a source it hosts better; at the cap, the lines it displaces at the end of the order); the job's generator then
+    #   draws only the centroid's bootstrap, which no other job's presence moves.
+    # 'pool' = production (forced_wide_v3.py control_lines, forced_wide_analyze.py controls_for; the parity config): the
+    # pool-ordered list shuffled by the job's generator, one rotation per source from the same generator (which then draws the
+    # centroid's bootstrap), host ties to the first job in pool order
+    CONTROL_ORDER = 'canonical'
     # v2's CENTERING TEST (forced_wide_analyze.py, the near candidates): the region sep/2 + V2_K x FWHM about the pair's
     # midpoint (controls placed with V2_K_MAX); per-detection weights 1 / sigma^2, sigma = V2_SYS_ARCSEC x
     # (nu / V2_SYS_REF_MHZ)^V2_SYS_INDEX (+) V2_STAT_FWHM x FWHM; pooled controls of V2_CTL_FLUX x S (>= V2_CTL_MIN_JY), their
@@ -438,9 +463,9 @@ class forced_wide_test(_Section):
     V2_SRC_PAD_ARCMIN = 2.0                      # a job's sources: within CUT_HALF_ARCMIN + this (>= 0.25 Jy)
     V2_VERY_BRIGHT_PAD_ARCMIN = 62.0             # and its very bright ones within CUT_HALF_ARCMIN + this
     V2_KEY_PER_DEG = 40
-    # v2's CONTROL DRAW. None = EVERY eligible control pair: the refactor chat's decision as coordinator, 2026-11-04 ("use ALL
-    # eligible controls, with no random cap. The cap was a speed convenience, and it makes knife-edge verdicts depend on sampling
-    # noise"), a change to the approved method - PROPOSED to Gregg. (cap, seed) = at most cap pairs, drawn with numpy
+    # v2's CONTROL DRAW. None = EVERY eligible control pair: the refactor chat's decision under Gregg's delegation, 2026-11-04
+    # ("use ALL eligible controls, with no random cap. The cap was a speed convenience, and it makes knife-edge verdicts depend
+    # on sampling noise"; ledger R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT (1)). (cap, seed) = at most cap pairs, drawn with numpy
     # default_rng(seed) when more are eligible: production (forced_wide_analyze.py CTL_MAX = 300, default_rng(20261102); the
     # parity config). The draw takes indices of a list in pool order, so ANY change to the job pool re-draws it - review F2: one
     # control re-indexed by the member change moved 44 of production's 300 for Struve 2398 A (I, 1 min), whose call is BACKGROUND
@@ -461,6 +486,18 @@ class forced_wide_test(_Section):
     # this of the target (publish_v3_to_runs.py:16-27); a name not found refuses the publication (W-NAMED)
     NAMED_RADIUS_ARCMIN = 200.0
     NULLABLE_KEYS = ('V2_CTL_DRAW',)
+    RULED = {**{k: 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED' for k in (
+        'MU', 'REF_MHZ', 'SPECTRAL_INDEX', 'CAPABLE_FRACTION', 'S_MIN_JY', 'R_CAND', 'NEAR', 'CUT_HALF_ARCMIN', 'CUT_EDGE_ARCMIN',
+        'DISC', 'STRIP', 'BIN', 'SIDE', 'MIN_BIN', 'DISC_GRID', 'CTL_FLUX', 'CTL_MIN_JY', 'CTL_DIRS', 'CTL_CAP', 'CTL_KEY_PER_DEG',
+        'CTL_BRIGHT_JY', 'CTL_TARGET_FWHM', 'MATCH_FACTORS', 'MATCH_FLOORS', 'MATCH_MIN', 'P_CONSISTENT', 'RATIO_CONSISTENT',
+        'P_EXCESS', 'R_EXCESS', 'P_NIGHT', 'MIN_NOBS', 'NIGHT_CORE', 'NIGHT_FAR', 'NIGHT_CLEAR', 'NIGHT_MIN_CORE',
+        'NIGHT_MIN_NIGHTS', 'CEN_DET', 'CEN_FLOOR', 'CEN_NIGHT', 'BOOTSTRAP', 'BOOT_MIN_NIGHTS', 'Z_OFF', 'Z_ON', 'Z_C_ON',
+        'Z_C_NEAR', 'CENTER_WITHIN', 'COVER', 'V2_K', 'V2_K_MAX', 'V2_SYS_ARCSEC', 'V2_SYS_REF_MHZ', 'V2_SYS_INDEX',
+        'V2_STAT_FWHM', 'V2_CTL_FLUX', 'V2_CTL_MIN_JY', 'V2_CUT_MARGIN_ARCMIN', 'V2_CTL_BRIGHTER', 'V2_VERY_BRIGHT_JY',
+        'V2_VERY_BRIGHT_DEG', 'V2_VERY_BRIGHT_SELF_ARCMIN', 'V2_SRC_PAD_ARCMIN', 'V2_VERY_BRIGHT_PAD_ARCMIN', 'V2_KEY_PER_DEG',
+        'V2_CTL_MIN_CELLS', 'V2_CTL_MIN_N', 'V2_MIN_NIGHTS', 'V2_POWER_MIN', 'V2_Z_BG', 'V2_D_TG', 'V2_Z_NOT')},
+             'V2_CTL_DRAW': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',
+             'CONTROL_ORDER': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'}
 
 
 class night_activity(_Section):
