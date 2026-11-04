@@ -22,7 +22,21 @@ draws split - <class> in a of 20, <class> in b of 20)"), which the figure prints
 The verdicts' mapping (V3_MAP) is unchanged. A row without the columns, or with them empty (every unflagged row), gives exactly
 today's (verdict, reason). The figures of a run show the text once they are redrawn after the republish (the figure step reads
 the run's file when it draws).
-{EXAMPLES}
+Rows of the refactor's full run (2026-11-04, n9; "<position ...>" stands for the figure's own position test):
+  HAT-P-17, I 10 s (decided, a source knife-edge named): "wide-area burst test: VLSSr J213756.9+303858 3.3 Jy at 10.0' (the
+   bursts center on it, ...); the 24 bursts at the target center 8.4' from it (5.5 sigma, 10 nights) (BACKGROUND SOURCE in
+   20 of 20 Monte Carlo draws; named: VLSSr J213756.9+303858 in 20 of 20; knife-edge: VLSSr J213749.6+303900 named in 9 of
+   20 draws; knife-edge: centroid z to VLSSr J213749.6+303900 2.00 vs 2, Monte Carlo error 0.006); position test alone: ..."
+  Gaia DR3 3741297293732404352, I 10 s (split): "<position reason>; wide-area burst test: undecided (knife-edge: the method's
+   random draws split - consistent with a background source in 10 of 20, undecided in 10 of 20) (knife-edge: VLSSr
+   J134423.8+140911 named in 10 of 20 draws; knife-edge: taper ratio of VLSSr J134423.8+140911 1.45 vs 2, Monte Carlo error
+   0.18)"
+  KELT-24, I 1 min (decided): "<position reason>; wide-area burst test: consistent with a background source (CONSISTENT
+   WITH A BACKGROUND SOURCE in 20 of 20 Monte Carlo draws; named: VLSSr J105425.8+715204 in 20 of 20, VLSSr J105246.5+715924
+   in 19 of 20; knife-edge: taper p of VLSSr J105246.5+715924 0.139 vs 0.05, Monte Carlo error 0.04; ...)"
+Checked (phase3/refactor_analysis/forcedwide_parity_20261103/tools/figure_text_r6.py, logs/figure_text_r6.txt): the 312 rows
+of the four served files and the 295 unflagged rows of n9 give exactly today's (verdict, reason); n9's 17 knife-edge rows are
+all printed there.
 
 --- a/astrometry_assoc.py
 +++ b/astrometry_assoc.py
