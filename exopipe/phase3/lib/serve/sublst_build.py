@@ -32,7 +32,9 @@ import collections
 import contextlib
 import csv
 import fcntl
+import glob
 import hashlib
+import json
 import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -91,6 +93,41 @@ def generation_mix(lsts):
         if 'pos_kind' not in hdr:
             bad.append((l, 'master_catalog.csv has no pos_kind column (catalogued before fitted positions)'))
     return bad
+
+
+def grouping_mix(lsts):
+    """Design B (catalog_grouping.GROUPING 'design-b'; WAVE2 GROUPING; review 2026-11-04, F3 - the minimum gate): every LST
+    run's catalogues must have been built with ONE grouping table per Stokes - their grouping_table.json (the builder runner's
+    provenance, lib/catalog/wraps/builder_grouping.py) names one table sha1 across the LSTs. A regroup renames identities
+    (display names follow mean positions; 121 I / 15 V renamed between the 10-25 and 11-03 inputs, the 11-04 review), and the
+    cumulative merges the LST runs by name: a mix would show one identity under two names or join two under one. Returns
+    ([(lst, reason)], {Stokes: {table sha1: [lsts]}})."""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    bad, by = [], {}
+    for l in lsts:
+        R = lst_run(l)
+        dirs = sorted(d for d in glob.glob(os.path.join(R, 'source_catalogs_[IV]_[sw]b')) if os.path.isdir(d))
+        if not dirs:
+            continue
+        for d in dirs:
+            S = os.path.basename(d).split('_')[2]
+            p = os.path.join(d, BG.PROVENANCE)
+            if not os.path.exists(p):
+                bad.append((l, f'{os.path.basename(d)} has no {BG.PROVENANCE} (built without the design-B grouping)'))
+                continue
+            try:
+                with open(p) as f:
+                    sha = json.load(f)['table_sha1']
+            except (OSError, ValueError, KeyError) as e:
+                bad.append((l, f'{os.path.basename(d)}/{BG.PROVENANCE} unreadable ({e})'))
+                continue
+            by.setdefault(S, {}).setdefault(sha, set()).add(l)
+    for S, shas in by.items():
+        if len(shas) > 1:
+            parts = '; '.join(f'{sha[:12]}: {",".join(sorted(ls))}' for sha, ls in sorted(shas.items(), key=lambda kv: -len(kv[1])))
+            bad.append(('*', f'Stokes {S}: the LST builds name {len(shas)} grouping tables ({parts}) - rebuild the LSTs of the '
+                             f'older tables from stage build (the cumulative joins LST runs by identity name)'))
+    return bad, {S: {sha: sorted(ls) for sha, ls in v.items()} for S, v in by.items()}
 
 
 def figure_key(loc_row, off_rows):
@@ -170,6 +207,13 @@ def build_stage(run, plan):
         if bad:
             u.refuse('G8 sub-LST generation mix: ' + '; '.join(f'{l}: {why}' for l, why in bad)
                      + ' - re-catalogue those LSTs first; the served cumulative stays as it is')
+        from exopipe.phase3.lib.catalog import grouping_stage as _GS
+        if _GS.mode().design_b:           # WAVE2 GROUPING (item F.3): one grouping table across the LST builds (production: none)
+            bad, tables = grouping_mix(plan.lsts)
+            u.meta['grouping_tables'] = tables
+            if bad:
+                u.refuse('G8 design-B grouping mix: ' + '; '.join(f'{l}: {why}' for l, why in bad)[:1500]
+                         + ' - the served cumulative stays as it is')
         for l in plan.lsts:
             for f in ('master_catalog.csv', 'pertie_detections.csv'):
                 u.add_input(os.path.join(lst_run(l), f))

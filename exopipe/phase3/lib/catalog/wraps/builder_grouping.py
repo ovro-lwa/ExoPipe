@@ -34,10 +34,20 @@ EXOPIPE3_GROUPING_MODE=passthrough: every hook returns production's own value (t
 builder must write byte-identical files - the check that the patching and the __main__ harness change nothing else.
 A detection of the builder's input that the grouping table does not hold, or holds with another fingerprint (band, LST,
 date, catalogue ra / dec / S/N), REFUSES (a stale grouping: group again). Machine line: 'GROUPING-BUILDER ...' (stdout).
+PINS (review 2026-11-04): the builder's PATH-NORMALIZED sha1 (a frozen tree's own root replaced by /lustre/gh/main, the
+frozen-code rewrite undone) must be one of EXOPIPE3_GROUPING_BUILDER_SHA1 (config catalog_grouping.BUILDER_SHA1: the builders
+the patches were written and checked for) - any other builder REFUSES until the patches are re-ported (F7: a new multiplicity-
+dependent decision elsewhere in the file would otherwise run unpatched); with EXOPIPE3_GROUPING_TABLE_SHA1 set, the grouping
+table read must have that sha1 (the stage checked the table's record; a regroup in between REFUSES - F2). The table is read
+once: its sha1 and its rows come from the same bytes. With EXOPIPE3_GROUPING_PROVENANCE=1 the runner writes
+grouping_table.json into the builder's output directory (the table's path and sha1, the builder's sha1) - what the
+cumulative build checks (one grouping table for every LST build).
 """
 import collections
 import csv
 import hashlib
+import io
+import json
 import os
 import sys
 import types
@@ -47,6 +57,7 @@ csv.field_size_limit(1 << 30)
 SOURCE_COLS = ['group_identity_id', 'multiples_id', 'multiples_name', 'multiple', 'multiples_multiplicity',
                'multiples_n_identities', 'multiples_identities']
 MODES = ('design-b', 'passthrough')
+PROVENANCE = 'grouping_table.json'          # written into the builder's output directory (design B, EXOPIPE3_GROUPING_PROVENANCE=1)
 RUNGS = ('multiples-level', 'production')
 TIERS = ('10min', 'deep')
 
@@ -103,8 +114,20 @@ CENSUS = {'assoc_groups(': {2}, 'SSTACK_GATE': {4, 7}, '_multi_integration(': {2
           'source_id=jname(': {1}, 'members.append((jname(': {1}, 'identity_id': {4, 7}}
 
 
+LIVE_ROOT = '/lustre/gh/main'               # the live code root a frozen tree's rewrites point away from
+
+
 class Refused(RuntimeError):
     pass
+
+
+def normalized_sha1(builder, src):
+    """sha1 of the builder's source with its own code root (a frozen tree's <root>/, as its rewrites put it) replaced by the
+    live root - the same builder version gives the same value in every frozen tree"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(builder)))
+    if root != LIVE_ROOT:
+        src = src.replace(root + '/', LIVE_ROOT + '/')
+    return hashlib.sha1(src.encode()).hexdigest()
 
 
 def patch(src):
@@ -135,7 +158,7 @@ class Hook:
     """__GROUPING__ in the builder's namespace. mode 'passthrough': production's own value at every hook; 'design-b': the
     grouping's (table: {cand_id: detections.csv row of grouping_stage}). ns: the builder's module namespace (set before it runs)."""
 
-    def __init__(self, mode, table=None, tier=None, rungs='multiples-level'):
+    def __init__(self, mode, table=None, tier=None, rungs='multiples-level', table_sha1=None):
         if mode not in MODES:
             raise Refused(f'EXOPIPE3_GROUPING_MODE={mode!r} is not one of {MODES} - REFUSING')
         if rungs not in RUNGS:
@@ -149,15 +172,19 @@ class Hook:
                 raise Refused(f'EXOPIPE3_GROUPING_TIER={tier!r} is not one of {TIERS} - REFUSING')
             if not table or not os.path.exists(table):
                 raise Refused(f'EXOPIPE3_GROUPING_TABLE={table!r}: no grouping table - run the grouping stage first - REFUSING')
+            with open(table, 'rb') as f:
+                data = f.read()                  # ONE read: the sha1 and the rows are the same bytes
+            self.table_sha1 = hashlib.sha1(data).hexdigest()
+            if table_sha1 and self.table_sha1 != table_sha1:
+                raise Refused(f'{table}: sha1 {self.table_sha1[:12]}, the stage checked {table_sha1[:12]} - the grouping changed '
+                              f'after the check (a regroup in between): build again - REFUSING')
             mg = collections.defaultdict(list)
-            with open(table, newline='') as f:
-                for r in csv.DictReader(f):
-                    if r['cand_id'] in self.T:
-                        raise Refused(f'{table}: cand_id {r["cand_id"]} twice - REFUSING')
-                    self.T[r['cand_id']] = r
-                    mg[r['multiples_id']].append(r)
+            for r in csv.DictReader(io.StringIO(data.decode('utf-8'), newline='')):
+                if r['cand_id'] in self.T:
+                    raise Refused(f'{table}: cand_id {r["cand_id"]} twice - REFUSING')
+                self.T[r['cand_id']] = r
+                mg[r['multiples_id']].append(r)
             self.mgroup = dict(mg)
-            self.table_sha1 = hashlib.sha1(open(table, 'rb').read()).hexdigest()
         else:
             self.table_sha1 = ''
 
@@ -254,14 +281,24 @@ class Hook:
         return list(SOURCE_COLS) if self.active else []
 
 
-def run(builder, args, mode, table=None, tier=None, rungs='multiples-level'):
-    """Run the patched builder as __main__ (its file name, its directory first on sys.path, sys.argv = [builder] + args)."""
+def run(builder, args, mode, table=None, tier=None, rungs='multiples-level', accepted=(), table_sha1=None, provenance=False):
+    """Run the patched builder as __main__ (its file name, its directory first on sys.path, sys.argv = [builder] + args).
+    accepted: the path-normalized sha1s the patches were written for (any other builder REFUSES)."""
     builder = os.path.abspath(builder)
     with open(builder) as f:
         src = f.read()
     sha1 = hashlib.sha1(src.encode()).hexdigest()
+    norm = normalized_sha1(builder, src)
+    accepted = [a for a in accepted if a]
+    if not accepted:
+        raise Refused('EXOPIPE3_GROUPING_BUILDER_SHA1 is empty: the accepted builders must be named (config '
+                      'catalog_grouping.BUILDER_SHA1) - REFUSING')
+    if norm not in accepted:
+        raise Refused(f'the builder {builder} (path-normalized sha1 {norm}) is not one the grouping patches were written and '
+                      f'checked for ({len(accepted)} accepted, config catalog_grouping.BUILDER_SHA1) - re-port '
+                      f'lib/catalog/wraps/builder_grouping.py - REFUSING')
     patched, names = patch(src)
-    hook = Hook(mode, table, tier, rungs)
+    hook = Hook(mode, table, tier, rungs, table_sha1)
     mod = types.ModuleType('__main__')
     mod.__file__ = builder
     mod.__dict__['__GROUPING__'] = hook
@@ -276,6 +313,14 @@ def run(builder, args, mode, table=None, tier=None, rungs='multiples-level'):
           flush=True)
     code = compile(patched, builder, 'exec')
     exec(code, mod.__dict__)
+    if provenance and hook.active and len(args) >= 2:
+        out_dir = args[1] if os.path.isabs(args[1]) else os.path.join(os.getcwd(), args[1])
+        p = os.path.join(out_dir, PROVENANCE)
+        with open(p + '.tmp', 'w') as f:
+            json.dump(dict(table=os.path.abspath(table), table_sha1=hook.table_sha1, tier=tier, repeat_rungs=rungs,
+                           builder=builder, builder_sha1=sha1, builder_normalized_sha1=norm, rows_checked=len(hook.checked)),
+                      f, indent=1, sort_keys=True)
+        os.replace(p + '.tmp', p)
     print(f'GROUPING-BUILDER done: builder sha1 {sha1}; mode {mode}; {len(hook.checked)} input rows checked against the grouping',
           flush=True)
 
@@ -285,7 +330,10 @@ def main(argv):
         sys.exit('usage: builder_grouping.py <builder .py> <selected_K.csv> <out dir> <images csv>  (env EXOPIPE3_GROUPING_*)')
     try:
         run(argv[1], argv[2:], os.environ.get('EXOPIPE3_GROUPING_MODE', ''), os.environ.get('EXOPIPE3_GROUPING_TABLE'),
-            os.environ.get('EXOPIPE3_GROUPING_TIER'), os.environ.get('EXOPIPE3_GROUPING_RUNGS', 'multiples-level'))
+            os.environ.get('EXOPIPE3_GROUPING_TIER'), os.environ.get('EXOPIPE3_GROUPING_RUNGS', 'multiples-level'),
+            accepted=os.environ.get('EXOPIPE3_GROUPING_BUILDER_SHA1', '').split(','),
+            table_sha1=os.environ.get('EXOPIPE3_GROUPING_TABLE_SHA1') or None,
+            provenance=os.environ.get('EXOPIPE3_GROUPING_PROVENANCE') == '1')
     except Refused as e:
         print(f'GROUPING-BUILDER REFUSING: {e}', flush=True)
         sys.exit(2)

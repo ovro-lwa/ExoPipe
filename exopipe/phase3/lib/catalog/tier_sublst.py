@@ -1512,17 +1512,20 @@ def _build(ctx, s, plan, tag):
         s.inp(f'{U}/selected_{k}.csv')
         if ctx.grouping_mode.design_b:
             # WAVE2 GROUPING (item F.3): the builder in place with the cumulative's grouping (lib/catalog/wraps/builder_grouping.py)
-            table = ctx.grouping_table(k[0])
-            if not os.path.exists(table):
-                refuse(f'S-G18 design B: no 10-minute grouping {table} - run `exopipe3 catalog --tier sublst --stages group '
-                       f'--group-input <cumulative>` first (or give --sublst-grouping)')
+            # - only a table a DONE group-unit record recorded, with the sha1 it has now (review 2026-11-04 F2); the runner
+            # refuses a table that changed after this check
+            try:
+                table, sha = GS.recorded_table(ctx.grouping_dir, k[0])
+            except GS.StageRefusal as e:
+                refuse(f'S-G18 design B: {e} (`exopipe3 catalog --tier sublst --stages group`, or --sublst-grouping DIR)')
             s.inp(table)
+            s.u.meta.setdefault('grouping_tables', {})[k[0]] = dict(path=table, sha1=sha)
             bad = GS.covers(table, f'{U}/selected_{k}.csv')
             if bad:
                 refuse(f'S-G18 design B: the grouping {table} does not hold selected_{k}.csv as selected ({len(bad)}+ rows, e.g. '
-                       f'{bad[:3]}) - group the cumulative again')
+                       f'{bad[:3]}) - group again with this LST (--group-lst-dir {ctx.lst}={U})')
             res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
-                       env=ctx.env(P3_LEAKVETO_DIR=lv, **GS.builder_env(table, '10min', ctx.grouping_mode)),
+                       env=ctx.env(P3_LEAKVETO_DIR=lv, **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha)),
                        log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
             s.u.meta.setdefault('grouping_builder', {})[f'{tag}_{k}'] = GS.builder_line(res.tail)
             if res.ok and not GS.builder_line(res.tail).startswith('GROUPING-BUILDER done'):

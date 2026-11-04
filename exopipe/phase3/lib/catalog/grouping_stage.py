@@ -50,6 +50,7 @@ LABELS (carry_judgements): a journal of Gregg's judgements keyed by the OLD page
 """
 import collections
 import csv
+import glob
 import json
 import math
 import os
@@ -228,10 +229,11 @@ def tables(det, res, tier, stokes):
     return rows, irows, mrows
 
 
-def write_products(det, res, tier, stokes, out_dir, inputs, mode_):
-    """Write grouping_<S>/ under out_dir (moved aside by the caller when it existed): the three tables, summary.json and this
-    run's events. Returns {name: path}."""
-    d = group_dir(out_dir, stokes)
+def write_products(det, res, tier, stokes, out_dir, inputs, mode_, d=None):
+    """Write the products into directory d (default grouping_<S>/ under out_dir; run_group writes a temporary directory and
+    renames it into place only after the content tests pass): the three tables, summary.json and this run's events. Returns
+    ({name: path}, summary)."""
+    d = d or group_dir(out_dir, stokes)
     os.makedirs(d, exist_ok=True)
     rows, irows, mrows = tables(det, res, tier, stokes)
     paths = dict(detections=_write_csv(os.path.join(d, DETECTIONS), DET_COLS, rows),
@@ -263,40 +265,94 @@ def history_path(state_dir, tier, stokes):
     return os.path.join(state_dir, f'grouping_{tier}_{stokes}_events.jsonl')
 
 
+def _utc():
+    return time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+
+
+class _Lock:
+    """An exclusive, NON-blocking flock on ``path`` held for a with-block: a second holder REFUSES at once (StageRefusal,
+    naming the holder written into the file) - two grouping runs never share a state (review 2026-11-04, F2)."""
+
+    def __init__(self, path, what):
+        self.path, self.what, self.fd = path, what, None
+
+    def __enter__(self):
+        import fcntl
+        os.makedirs(os.path.dirname(self.path) or '.', exist_ok=True)
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o664)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, PermissionError):
+            try:
+                holder = os.pread(self.fd, 400, 0).decode('utf-8', 'replace').strip()
+            except OSError:
+                holder = '?'
+            os.close(self.fd)
+            self.fd = None
+            raise StageRefusal(f'{self.what}: the lock {self.path} is held by another grouping run ({holder or "holder unknown"}) - '
+                               f'two runs never group one state at once - REFUSING') from None
+        os.ftruncate(self.fd, 0)
+        os.pwrite(self.fd, f'pid {os.getpid()} host {os.uname()[1]} since {_utc()}\n'.encode(), 0)
+        return self
+
+    def __exit__(self, *a):
+        import fcntl
+        if self.fd is not None:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            os.close(self.fd)
+            self.fd = None
+
+
+def state_lock_path(state_dir, tier, stokes):
+    return os.path.join(state_dir, f'.grouping_{tier}_{stokes}.lock')
+
+
 def run_group(det, tier, stokes, out_dir, state_dir, run_label, inputs, group_mode=None, new_state=False, check=None):
-    """Group det (one tier and Stokes) against the saved state, write the products, run ``check`` (a callable (paths, state
-    copy) -> [failures]: the content tests) and only then save the state (atomic) and append this run's events to the state's
-    history. Returns (paths, summary, result). A gate refuses before anything is saved."""
+    """Group det (one tier and Stokes) against the saved state and replace grouping_<S>/ only when every check passed
+    (review 2026-11-04, F2): the products are written into a TEMPORARY directory beside it; ``check`` (a callable (paths) ->
+    [failures]: the content tests) runs there; on a failure the directory is renamed grouping_<S>.refused_<UTC> (kept for
+    inspection, never at the path the builds read) and nothing else changes; on a pass the state is saved (atomic) with its
+    event history, then the previous grouping_<S>/ is moved to grouping_<S>.superseded_<UTC> and the new one renamed into
+    place. The whole run holds an exclusive lock on the state (<state dir>/.grouping_<tier>_<S>.lock; a second run refuses).
+    Returns (paths, summary, result) with the final paths and the table's sha1 (paths['detections_sha1'])."""
     m = mode()
     if not m.design_b:
         raise StageRefusal('grouping stage under catalog_grouping.GROUPING = production - nothing to do (the caller ends no-input)')
-    try:
-        st = G.GroupingState.load(state_dir, tier, stokes, new=new_state)
-    except G.GroupingRefused as e:
-        raise StageRefusal(str(e)) from None
-    try:
-        res = G.group_catalog(det, tier, stokes, state=st, run_label=run_label, mode=group_mode)
-    except G.GroupingRefused as e:
-        raise StageRefusal(str(e)) from None
-    paths, summ = write_products(det, res, tier, stokes, out_dir, inputs, m)
-    # the state this run hands on, written BESIDE the products first (the content test reads it), then saved
-    tmpd = os.path.join(group_dir(out_dir, stokes), 'state_next')
-    os.makedirs(tmpd, exist_ok=True)
-    paths['state_next'] = res.state.save(tmpd)
-    prev = state_path(state_dir, tier, stokes)
-    if os.path.exists(prev):
-        os.makedirs(os.path.join(group_dir(out_dir, stokes), 'state_previous'), exist_ok=True)
-        paths['state_previous'] = shutil.copy2(prev, os.path.join(group_dir(out_dir, stokes), 'state_previous'))
-    if check is not None:
-        bad = check(paths)
-        if bad:
-            raise StageRefusal('grouping products failed their content tests: ' + '; '.join(bad[:6]) + ' - the state is NOT '
-                               'advanced - REFUSING')
-    paths['state'] = res.state.save(state_dir)
-    os.makedirs(state_dir, exist_ok=True)
-    hp = history_path(state_dir, tier, stokes)
-    G.append_events(hp, res)
-    paths['history'] = hp
+    final = group_dir(out_dir, stokes)
+    with _Lock(state_lock_path(state_dir, tier, stokes), f'grouping {tier} {stokes}'):
+        try:
+            st = G.GroupingState.load(state_dir, tier, stokes, new=new_state)
+        except G.GroupingRefused as e:
+            raise StageRefusal(str(e)) from None
+        try:
+            res = G.group_catalog(det, tier, stokes, state=st, run_label=run_label, mode=group_mode)
+        except G.GroupingRefused as e:
+            raise StageRefusal(str(e)) from None
+        tmp = f'{final}.tmp.{os.getpid()}'
+        if os.path.exists(tmp):
+            shutil.rmtree(tmp)
+        paths, summ = write_products(det, res, tier, stokes, out_dir, inputs, m, d=tmp)
+        # the state this run hands on, written BESIDE the products first (the content test reads it), then saved
+        paths['state_next'] = res.state.save(os.path.join(tmp, 'state_next'))
+        prev = state_path(state_dir, tier, stokes)
+        if os.path.exists(prev):
+            os.makedirs(os.path.join(tmp, 'state_previous'), exist_ok=True)
+            paths['state_previous'] = shutil.copy2(prev, os.path.join(tmp, 'state_previous'))
+        if check is not None:
+            bad = check(paths)
+            if bad:
+                kept = f'{final}.refused_{_utc()}'
+                os.rename(tmp, kept)
+                raise StageRefusal('grouping products failed their content tests: ' + '; '.join(bad[:6]) + f' - the state is '
+                                   f'NOT advanced and {final} is unchanged (the refused products: {kept}) - REFUSING')
+        state_file = res.state.save(state_dir)
+        hp = history_path(state_dir, tier, stokes)
+        G.append_events(hp, res)
+        if os.path.exists(final):
+            os.rename(final, f'{final}.superseded_{_utc()}')
+        os.rename(tmp, final)
+    paths = {k: (final + v[len(tmp):] if isinstance(v, str) and v.startswith(tmp) else v) for k, v in paths.items()}
+    paths.update(state=state_file, history=hp, detections_sha1=table_digest(paths['detections']))
     return paths, summ, res
 
 
@@ -332,11 +388,57 @@ def builder_runner():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wraps', 'builder_grouping.py')
 
 
-def builder_env(table, tier, mode_=None):
-    """The environment of the runner: the grouping table of the key's Stokes, the tier, the repeat rungs."""
-    m = mode_ or mode()
-    return {'EXOPIPE3_GROUPING_MODE': 'design-b', 'EXOPIPE3_GROUPING_TABLE': os.path.abspath(table),
-            'EXOPIPE3_GROUPING_TIER': TIER_OF.get(tier, tier), 'EXOPIPE3_GROUPING_RUNGS': m.rungs}
+UNIT_LOCK = '.grouping.lock'              # the 10-minute unit's lock in its output (the shared state's) directory
+
+
+def recorded_table(grouping_dir, stokes):
+    """(table path, sha1) of the 10-minute grouping the LST builds read (review 2026-11-04, F2): the group unit records of
+    grouping_dir (<dir>/_records/catalog/*.json of stage 'group') that grouped Stokes ``stokes`` - the LATEST must be done and
+    have recorded this table (grouping_<S>/detections.csv) with the sha1 it has now. A refused latest run, a table its run did
+    not record, or a table changed since REFUSES (StageRefusal) - a build never reads a grouping no successful run made."""
+    table = os.path.join(os.path.abspath(grouping_dir), f'grouping_{stokes}', DETECTIONS)
+    recs = []
+    for p in sorted(glob.glob(os.path.join(grouping_dir, '_records', 'catalog', '*.json'))):
+        try:
+            with open(p) as f:
+                r = json.load(f)
+        except (OSError, ValueError):
+            continue
+        meta = r.get('meta') or {}
+        if meta.get('stage') == STAGE and stokes in (meta.get('stokes') or ()):
+            recs.append((r.get('finished') or '', p, r))
+    if not recs:
+        raise StageRefusal(f'no record of a 10-minute grouping run of Stokes {stokes} under {grouping_dir}/_records/catalog - '
+                           f'run `exopipe3 catalog --tier sublst --stages group` - REFUSING')
+    fin, p, r = max(recs)
+    if r.get('status') != 'done':
+        raise StageRefusal(f'the latest 10-minute grouping run of Stokes {stokes} ({os.path.basename(p)}, {fin}) ended '
+                           f'{r.get("status")}: {(r.get("reason") or "")[:200]} - group again before building - REFUSING')
+    t = ((r.get('meta') or {}).get('tables') or {}).get(stokes)
+    if not t or os.path.abspath(t.get('path', '')) != table:
+        raise StageRefusal(f'the latest grouping run ({os.path.basename(p)}) recorded no table of Stokes {stokes} at {table} - '
+                           f'REFUSING')
+    if not os.path.exists(table):
+        raise StageRefusal(f'{table} is missing although {os.path.basename(p)} recorded it - REFUSING')
+    sha = table_digest(table)
+    if sha != t.get('sha1'):
+        raise StageRefusal(f'{table} changed since its grouping run recorded it (sha1 {sha[:12]} vs {str(t.get("sha1"))[:12]}) - '
+                           f'REFUSING')
+    return table, sha
+
+
+def builder_env(table, tier, mode_=None, sha1=None, cfg=None):
+    """The environment of the runner: the grouping table of the key's Stokes and its expected sha1 (the runner refuses a table
+    that changed after the stage checked it), the tier, the repeat rungs, and the accepted builders (catalog_grouping.
+    BUILDER_SHA1: path-normalized sha1s of the builders the patches were written for; review 2026-11-04, F7)."""
+    m = mode_ or mode(cfg)
+    env = {'EXOPIPE3_GROUPING_MODE': 'design-b', 'EXOPIPE3_GROUPING_TABLE': os.path.abspath(table),
+           'EXOPIPE3_GROUPING_TIER': TIER_OF.get(tier, tier), 'EXOPIPE3_GROUPING_RUNGS': m.rungs,
+           'EXOPIPE3_GROUPING_BUILDER_SHA1': ','.join((cfg or _cfg()).catalog_grouping.BUILDER_SHA1),
+           'EXOPIPE3_GROUPING_PROVENANCE': '1'}     # grouping_table.json beside the catalogues (the cumulative's one-table gate)
+    if sha1:
+        env['EXOPIPE3_GROUPING_TABLE_SHA1'] = sha1
+    return env
 
 
 def builder_line(text):
@@ -747,52 +849,74 @@ class _Matcher:
         return out
 
 
+def _verdict(r):
+    return (r.get('judge_confidence'), r.get('judge_fp_reason', ''), r.get('judge_fp_reason_2', ''))
+
+
+def _latest_state(path):
+    """{source_id: its latest source-scope record} of a journal file (classify sets, retract clears; any writer, carried or not)
+    - the state the review server shows"""
+    st = {}
+    if not os.path.exists(path):
+        return st
+    with open(path) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if r.get('action') == 'retract':
+                st.pop(r.get('source_id'), None)
+            elif r.get('scope', 'source') == 'source' and r.get('action') == 'classify':
+                st[r['source_id']] = r
+    return st
+
+
 def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', carried_from_run='', on_page=None,
-                     lines=None, append=False):
+                     lines=None, append=False, since=0):
     """Carry the judgements of ``journal`` (judgements.jsonl, keyed by the OLD page ids) to the NEW identities by member
     detections - the existing carry rule (exopipe_ops deep_carry_judgements.py; the preview's carry_labels): ``old_members`` =
     {old page id: [detection dicts: cand_id, band, lst, date, ra, dec]} (the membership the judgements were made on, e.g.
     page_members); ``new`` = the new detections named by identity (a grouping detections.csv path, or identities_of_catalogs);
-    an old detection reaches every new detection of the same band, LST and date within half the band's nominal beam. A new
+    an old detection reaches every new detection of the same band, LST and date within half the band's nominal beam. Each old
+    page's judgement is its FINAL state in the journal (the lines in order: a classify sets it, a retract clears it). A new
     identity reached by judged old pages that all agree on (judge_confidence, judge_fp_reason, judge_fp_reason_2) takes the
     judgement UNCHANGED (source_id = its display name; carried_from_run / carried_from_source / shared_detections and the
     'CARRIED from' note); a disagreement is a CONFLICT - reported, NOT carried; an old judgement whose detections reach no new
     detection is reported. Writes out_dir/judgements.jsonl and out_dir/carry_report.csv (production's columns + new_identity_id).
-    append=False REFUSES a non-empty journal (the carry only seeds); append=True (lines journalled between the carry and the swap)
-    appends both, and a RETRACT among ``lines`` retracts the new identities its old page reached. Returns the counts."""
+    append=False: the SEED carry - it REFUSES a non-empty journal (the carry only seeds).
+    append=True (review 2026-11-04, F1): ``lines`` is the FULL old journal and ``since`` the number of its lines the seed carry
+    read. Every new identity an old page of the lines after ``since`` reaches is RE-DERIVED from the whole journal - the final
+    state of EVERY judged old page reaching it, seed pages included - and compared with what the new journal shows now:
+    one verdict -> a carried classify (unless it already holds exactly that); a disagreement -> a CONFLICT row and, when the
+    identity holds a carried judgement, a retract (never an override: the outcome does not depend on when a label was made);
+    no judged page left (all retracted) -> a retract of its carried judgement. An identity judged directly on the new page (a
+    record without carried_from_run) is never overridden ('not carried: judged on the new page'). Returns the counts."""
     newdets = table_detections(new) if isinstance(new, str) else list(new)
     match = _Matcher(newdets)
     raw = lines if lines is not None else open(journal).read().splitlines()
     J = read_journal(None, lines=raw)
-    retract = [json.loads(ln)['source_id'] for ln in raw if ln.strip() and json.loads(ln).get('action') == 'retract'] \
-        if append else []
+    touched_pages = set()
+    if append:
+        for ln in raw[since:]:
+            if ln.strip():
+                sid = json.loads(ln).get('source_id')
+                if sid:
+                    touched_pages.add(sid)
     reach = {}                                           # old page -> {(name, id): shared detections}
-    for s0 in sorted(set(J) | set(retract)):
+    for s0 in sorted(set(J) | touched_pages):
         cnt = collections.Counter()
         for d in old_members.get(s0, []):
             for n in {(x['name'], x['id']) for x in match(d)}:
                 cnt[n] += 1
         reach[s0] = cnt
-    owner, unmatched = collections.defaultdict(set), []
+    owner = collections.defaultdict(set)                 # new identity -> the judged old pages (final state) reaching it
     for s0 in sorted(J):
-        if reach[s0]:
-            for n in reach[s0]:
-                owner[n].add(s0)
-        else:
-            unmatched.append(s0)
+        for n in reach[s0]:
+            owner[n].add(s0)
     ndet = collections.Counter((d['name'], d['id']) for d in newdets)
-    recs, rows = [], []
     now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-    for (name, iid), olds in sorted(owner.items()):
-        share = {s0: reach[s0][(name, iid)] for s0 in olds}
-        shared = ';'.join('%s:%d/%d' % (s0, k, len(old_members.get(s0, []))) for s0, k in sorted(share.items()))
-        verdicts = {(J[s].get('judge_confidence'), J[s].get('judge_fp_reason', ''), J[s].get('judge_fp_reason_2', ''))
-                    for s in olds}
-        base = dict(new_source=name, new_identity_id=iid, n_detections=ndet[(name, iid)], old_sources=shared)
-        if len(verdicts) > 1:
-            rows.append(dict(base, outcome='CONFLICT - not carried',
-                             verdicts='|'.join('/'.join(str(x) for x in v) for v in sorted(verdicts, key=str))))
-            continue
+
+    def carried_record(name, iid, olds, share, shared):
         s0 = max(sorted(olds), key=lambda s: share[s])
         r = dict(J[s0])
         r.update(source_id=name, run_id=run_id, ts=now, carried_from_run=carried_from_run,
@@ -805,19 +929,67 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
             r['queue_name'] = queue_name
         for k in ('src_ra', 'src_dec'):
             r.pop(k, None)
+        return r
+
+    def retract_record(name, iid, why):
+        return dict(action='retract', scope='source', source_id=name, run_id=run_id, ts=now, group_identity_id=iid,
+                    retract_carried_from_run=carried_from_run, retract_reason=why)
+
+    recs, rows = [], []
+    os.makedirs(out_dir, exist_ok=True)
+    jp, rp = os.path.join(out_dir, 'judgements.jsonl'), os.path.join(out_dir, 'carry_report.csv')
+    cnt = collections.Counter()
+    if not append:
+        if os.path.exists(jp) and os.path.getsize(jp) > 0:
+            raise StageRefusal(f'{jp} exists and is not empty - the carry only seeds an empty journal - REFUSING')
+        targets = sorted(owner)
+        unmatched = [s0 for s0 in sorted(J) if not reach[s0]]
+        cur = {}
+    else:
+        targets = sorted({n for p in touched_pages for n in reach.get(p, ())})
+        cur = _latest_state(jp)
+        done = set()
+        if os.path.exists(rp):
+            with open(rp, newline='') as f:
+                done = {r['old_sources'] for r in csv.DictReader(f) if r['outcome'].startswith('old judgement')}
+        unmatched = [s0 for s0 in sorted(touched_pages) if s0 in J and not reach[s0] and s0 not in done]
+    for (name, iid) in targets:
+        olds = owner.get((name, iid), set())
+        share = {s0: reach[s0][(name, iid)] for s0 in olds}
+        shared = ';'.join('%s:%d/%d' % (s0, k, len(old_members.get(s0, []))) for s0, k in sorted(share.items()))
+        verdicts = {_verdict(J[s]) for s in olds}
+        base = dict(new_source=name, new_identity_id=iid, n_detections=ndet[(name, iid)], old_sources=shared)
+        now_rec = cur.get(name)
+        if now_rec is not None and 'carried_from_run' not in now_rec:     # judged on the new page: never overridden
+            rows.append(dict(base, outcome='not carried: judged on the new page', verdicts='/'.join(
+                str(x) for x in _verdict(now_rec))))
+            cnt['own'] += 1
+            continue
+        if len(verdicts) > 1:
+            rows.append(dict(base, outcome='CONFLICT - not carried',
+                             verdicts='|'.join('/'.join(str(x) for x in v) for v in sorted(verdicts, key=str))))
+            if now_rec is not None:                     # a carried judgement the old pages no longer agree on
+                recs.append(retract_record(name, iid, 'CONFLICT: the old pages reaching this identity now disagree'))
+                cnt['retracted'] += 1
+            cnt['conflicts'] += 1
+            continue
+        if not verdicts:                                 # every judged old page reaching it was retracted
+            if now_rec is not None:
+                recs.append(retract_record(name, iid, 'the old pages reaching this identity retracted their judgements'))
+                rows.append(dict(base, outcome='retracted: its old pages retracted their judgements', verdicts=''))
+                cnt['retracted'] += 1
+            continue
+        r = carried_record(name, iid, olds, share, shared)
+        if now_rec is not None and _verdict(now_rec) == _verdict(r) and \
+                now_rec.get('carried_from_source') == r['carried_from_source']:
+            cnt['unchanged'] += 1
+            continue
         recs.append(r)
-        rows.append(dict(base, outcome='carried', verdicts='/'.join(str(x) for x in next(iter(verdicts)))))
+        rows.append(dict(base, outcome='carried', verdicts='/'.join(str(x) for x in _verdict(r))))
+        cnt['carried'] += 1
     for s0 in unmatched:
         rows.append(dict(new_source='', new_identity_id='', n_detections=0, old_sources=s0,
                          outcome='old judgement reached no new detection', verdicts=J[s0].get('judge_confidence', '')))
-    for s0 in retract:                                   # append: a retraction of an old page retracts what it reached
-        for (name, iid) in sorted(reach.get(s0) or ()):
-            recs.append(dict(action='retract', scope='source', source_id=name, run_id=run_id, ts=now,
-                             retract_carried_from_run=carried_from_run, retract_carried_from_source=s0, group_identity_id=iid))
-    os.makedirs(out_dir, exist_ok=True)
-    jp, rp = os.path.join(out_dir, 'judgements.jsonl'), os.path.join(out_dir, 'carry_report.csv')
-    if not append and os.path.exists(jp) and os.path.getsize(jp) > 0:
-        raise StageRefusal(f'{jp} exists and is not empty - the carry only seeds an empty journal - REFUSING')
     with open(jp, 'a' if append else 'w') as f:
         for r in recs:
             f.write(json.dumps(r) + '\n')
@@ -826,9 +998,9 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
             csv.DictWriter(f, fieldnames=list(CARRY_COLS)).writerows(rows)
     else:
         _write_csv(rp, CARRY_COLS, rows)
-    carried = sum(1 for r in rows if r['outcome'] == 'carried')
-    return dict(judged_old=len(J), carried=carried, conflicts=sum(1 for r in rows if r['outcome'].startswith('CONFLICT')),
-                unmatched=len(unmatched), new_identities_touched=len(owner), retracted=len(retract), lines=len(raw),
+    return dict(judged_old=len(J), carried=cnt['carried'], conflicts=cnt['conflicts'], unmatched=len(unmatched),
+                new_identities_touched=len(targets), retracted=cnt['retracted'], unchanged=cnt['unchanged'],
+                judged_on_new_page=cnt['own'], lines=len(raw), between_lines=(len(raw) - since) if append else 0,
                 carried_on_page=(sum(1 for r in recs if r.get('action') != 'retract' and r['source_id'] in on_page)
                                  if on_page is not None else None))
 
@@ -931,49 +1103,63 @@ def run(args, run):
     from exopipe.phase3.core.record import NoInput
     with run.unit(f'{label}.{STAGE}', tier='sublst', stage=STAGE) as u:
         u.meta['mode'] = m.as_dict()
+        u.meta['stokes'] = stokes
         if not m.design_b:
             raise NoInput("catalog_grouping.GROUPING = 'production': production groups per LST in the builder and joins LSTs "
                           "by J-name (the parity file) - no grouping stage")
+        lock = _Lock(os.path.join(out, UNIT_LOCK), 'the 10-minute grouping')
         try:
-            if src:
-                mc, pt = os.path.join(src, 'master_catalog.csv'), os.path.join(src, 'pertie_detections.csv')
-                u.meta['input'] = src
-            else:
-                ld = {}
-                for x in getattr(args, 'group_lst_dir', None) or []:
-                    if '=' not in x:
-                        raise StageRefusal(f'--group-lst-dir {x!r}: LST=DIR - REFUSING')
-                    k, v = x.split('=', 1)
-                    ld[cells.parse_lst(k)] = os.path.abspath(v)
-                mc, pt, runs = assemble_tenmin_input(lsts, out, lst_dirs=ld)
-                u.meta['input'] = {L: R for L, R in runs.items()}
-                for R in runs.values():
-                    u.add_input(os.path.join(R, 'master_catalog.csv'))
-                    u.add_input(_pertie_of(R))
+            lock.__enter__()                  # the whole unit: one grouping of the shared 10-minute state at a time (F2)
         except StageRefusal as e:
             u.refuse(str(e))
-        for p in (mc, pt):
-            if not os.path.exists(p):
-                u.refuse(f'grouping input {p} is missing')
-            u.add_input(p)
-        for S in stokes:
-            if S not in ('I', 'V'):
-                u.refuse(f'--group-stokes {S}: I and/or V')
-            d = group_dir(out, S)
-            if os.path.exists(d):
-                os.rename(d, f'{d}.superseded_{time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}')
-            from exopipe.phase3.lib.catalog import tests_grouping as TG
-            try:
-                det = load_det('10min', S, mc, pt)
-                paths, summ, _res = run_group(det, '10min', S, out, out, f'{label}.{STAGE}', dict(master_catalog=mc, pertie=pt),
-                                              group_mode=getattr(args, 'group_mode', None),
-                                              new_state=bool(getattr(args, 'group_new_state', False)),
-                                              check=lambda pp, S=S: TG.failures(pp, tier='10min', stokes=S, input=mc))
-            except (StageRefusal, G.GroupingRefused) as e:
-                u.refuse(f'{S}: {e}')
-            u.meta.setdefault('summary', {})[S] = summ['counts']
-            u.add_output(paths['detections'], 'grouping_table', tier='10min', stokes=S, input=mc)
-            u.add_output(paths['state'], 'grouping_state', tier='10min', stokes=S, table=paths['detections'])
-            u.note(f"{S}: {summ['counts']['detections']} detections -> {summ['counts']['identities']} identities, "
-                   f"{summ['counts']['multiples']} multiples ({summ['counts']['identities_in_multiples']} identities)")
+        try:
+            _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells)
+        finally:
+            lock.__exit__()
     return None
+
+
+def _run_tenmin_unit(args, u, m, label, out, src, stokes, lsts, cells):
+    """the body of the 10-minute group unit (run holds the unit lock)"""
+    try:
+        if src:
+            mc, pt = os.path.join(src, 'master_catalog.csv'), os.path.join(src, 'pertie_detections.csv')
+            u.meta['input'] = src
+        else:
+            ld = {}
+            for x in getattr(args, 'group_lst_dir', None) or []:
+                if '=' not in x:
+                    raise StageRefusal(f'--group-lst-dir {x!r}: LST=DIR - REFUSING')
+                k, v = x.split('=', 1)
+                ld[cells.parse_lst(k)] = os.path.abspath(v)
+            mc, pt, runs = assemble_tenmin_input(lsts, out, lst_dirs=ld)
+            u.meta['input'] = {L: R for L, R in runs.items()}
+            for R in runs.values():
+                u.add_input(os.path.join(R, 'master_catalog.csv'))
+                u.add_input(_pertie_of(R))
+    except StageRefusal as e:
+        u.refuse(str(e))
+    for p in (mc, pt):
+        if not os.path.exists(p):
+            u.refuse(f'grouping input {p} is missing')
+        u.add_input(p)
+    for S in stokes:
+        if S not in ('I', 'V'):
+            u.refuse(f'--group-stokes {S}: I and/or V')
+        from exopipe.phase3.lib.catalog import tests_grouping as TG
+        try:
+            det = load_det('10min', S, mc, pt)
+            paths, summ, _res = run_group(det, '10min', S, out, out, f'{label}.{STAGE}', dict(master_catalog=mc, pertie=pt),
+                                          group_mode=getattr(args, 'group_mode', None),
+                                          new_state=bool(getattr(args, 'group_new_state', False)),
+                                          check=lambda pp, S=S: TG.failures(pp, tier='10min', stokes=S, input=mc))
+        except (StageRefusal, G.GroupingRefused) as e:
+            u.refuse(f'{S}: {e}')
+        u.meta.setdefault('summary', {})[S] = summ['counts']
+        u.add_output(paths['detections'], 'grouping_table', tier='10min', stokes=S, input=mc)
+        u.add_output(paths['state'], 'grouping_state', tier='10min', stokes=S, table=paths['detections'])
+        # what the LST builds check (recorded_table): this run's table and its sha1, recorded only on success
+        u.meta.setdefault('tables', {})[S] = dict(path=paths['detections'], sha1=paths['detections_sha1'])
+        u.note(f"{S}: {summ['counts']['detections']} detections -> {summ['counts']['identities']} identities, "
+               f"{summ['counts']['multiples']} multiples ({summ['counts']['identities_in_multiples']} identities); "
+               f"table sha1 {paths['detections_sha1'][:12]}")

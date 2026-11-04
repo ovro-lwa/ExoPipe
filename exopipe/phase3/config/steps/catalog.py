@@ -701,13 +701,29 @@ class catalog_grouping(_Section):
                                                           # two chains: the 10-minute builder's inline exemption (a band's source with
                                                           # detections in two or more (LST, date) frames skips the sigma-stack gate) and
                                                           # the deep fork - the parity file
-    REPEAT_RUNGS = 'multiples-level'                      # under the one rule, the builder's REPEAT promotion rungs (RPT, REP, XREP: a
-                                                          # source's own n_det >= 2 repeats) promote only a member of a multiple - the
-                                                          # 10-26 decision page: "The multiples level decides which detections count as
-                                                          # repeats and skip the singles gates"; a single-window identity keeps the other
-                                                          # rungs (E:<sample>, PRIORITY, MB). 'production' = the rungs as the builder
-                                                          # computes them on its own sources (not a parity line: under MULTIPLES_RULE
-                                                          # 'production' the builder runs unpatched)
+    REPEAT_RUNGS = 'multiples-level'                      # PROPOSED, PENDING GREGG (not RULED - review 2026-11-04 F4; an override needs no
+                                                          # --ruling-for): under the one rule, the builder's REPEAT promotion rungs (RPT,
+                                                          # REP, XREP: a source row's own n_det >= 2 repeats) promote only a member of a
+                                                          # multiple - the refactor's reading of the 10-26 decision page ("The multiples
+                                                          # level decides which detections count as repeats and skip the singles gates");
+                                                          # a single-window identity keeps the other rungs (E:<sample>, PRIORITY, MB).
+                                                          # What it decides is small: a design-B row is (identity, band), so a repeat rung
+                                                          # of a single needs two detections of one band in one window - one image; on
+                                                          # today's data at most 2 deep V and 32 10-minute V detections (the review's
+                                                          # a1_repeat_rungs). 'production' = the rungs as the builder computes them on its
+                                                          # own sources (not a parity line: under MULTIPLES_RULE 'production' the builder
+                                                          # runs unpatched)
+    BUILDER_SHA1 = ('de1fa48aec620c310c14d3b740692bba98ed5e35',   # the frozen 10-minute trees 2026-10-13..10-18 (25)
+                    '537f779ba70f58d2c1dcf4bec47371a17bae207b',   # 2026-10-19..10-25 (51; the per-detection record, ops 6c58469)
+                    '2a12c39a57ff3df502021e4ddcfdac26c801ef02',   # 03h / 05h 2026-10-13 (3)
+                    '6e61376611f124ca4183d416d2ce4de378a3771c',   # 05h / 06h / 14h 2026-10-12..13 (3)
+                    'ab052310e2eafb0d5c13af7bd94beafd289a3064',   # 09h..19h 2026-10-12 (14)
+                    '44d2763087cdde27c5286d33dfcb0f25d18427af')   # live exopipe_ops 0d7861e (RA across 0h; 18h / 21h 11-02 trees)
+                                                          # the builders (build_source_catalogs_v3.py) the grouping runner's patches were
+                                                          # written and checked for, as PATH-NORMALIZED sha1s (a frozen tree's own root
+                                                          # replaced by /lustre/gh/main, its rewrites undone): any other builder REFUSES
+                                                          # until lib/catalog/wraps/builder_grouping.py is re-ported (review 2026-11-04 F7:
+                                                          # a new multiplicity-dependent decision elsewhere would run unpatched)
     SUBLST_DIR = '{transients_root}/grouping_sublst'      # the 10-minute tier's grouping (products + the persistent state): written by
                                                           # `catalog --tier sublst --stages group`, read by every LST's build stage and the
                                                           # cumulative build ({transients_root} = paths.TRANSIENTS_ROOT; --out of the stage
@@ -795,8 +811,8 @@ class catalog_grouping(_Section):
     RULED['MULTIPLE_MIN'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING)
     RULED['GROUPING'] = _GROUPING_RULING
     RULED['MULTIPLES_RULE'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING)
-    RULED['REPEAT_RUNGS'] = _GROUPING_RULING
-    PROTECTED_KEYS = ('STATE_SUBDIR',)                    # where the stable IDs live: moving it would restart every ID
+    PROTECTED_KEYS = ('STATE_SUBDIR',                     # where the stable IDs live: moving it would restart every ID
+                      'BUILDER_SHA1')                     # a pin: changes only by a commit, with the patches re-checked
 
 
 # =====================================================================================================================

@@ -405,7 +405,7 @@ def make_world():
 _SAVED = {}
 _PATCH = (('site', 'LEGACY_CODE_ROOTS'), ('site', 'PYTHON'), ('catalog', 'COLLECT_ROOTS'), ('catalog', 'BINDING_CHECK'),
           ('paths', 'COADD_SB_ROOT'), ('paths', 'OPS_ROOT'), ('catalog_conform', 'MODE'), ('catalog_conform', 'DEEP_ELEV_EPOCH'),
-          ('catalog_grouping', 'GROUPING'), ('catalog_grouping', 'MULTIPLES_RULE'))
+          ('catalog_grouping', 'GROUPING'), ('catalog_grouping', 'MULTIPLES_RULE'), ('catalog_grouping', 'BUILDER_SHA1'))
 
 
 def patch_cfg():
@@ -427,7 +427,18 @@ def patch_cfg():
     # grouping runner's patch points; design B in the chain: test_grouping_design_b_in_the_chain)
     CFG.catalog_grouping.GROUPING = getattr(sys.modules[__name__], '_GROUPING', 'production')
     CFG.catalog_grouping.MULTIPLES_RULE = getattr(sys.modules[__name__], '_MRULE', 'production')
+    # the grouping runner's builder pin (review 2026-11-04 F7) also accepts the stub builder carrying the patch points
+    CFG.catalog_grouping.BUILDER_SHA1 = tuple(_SAVED[('catalog_grouping', 'BUILDER_SHA1')]) + (_stub_builder_sha1(),)
     return CFG
+
+
+def _stub_builder_sha1():
+    import importlib.util
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    spec = importlib.util.spec_from_file_location('bg', GS.builder_runner())
+    bg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bg)
+    return bg.normalized_sha1(f'{T}/exopipe_ops/build_source_catalogs_v3.py', PATCHABLE_BUILDER.lstrip())
 
 
 def unpatch_cfg():
@@ -591,6 +602,13 @@ def test_grouping_design_b_in_the_chain():
     m = sys.modules[__name__]
     make_world()
     open(f'{T}/exopipe_ops/build_source_catalogs_v3.py', 'w').write(PATCHABLE_BUILDER.lstrip())
+    # a previous production pass's fork page products (the pages step wrote them; review 2026-11-04 F6): the one rule's fork
+    # stage moves them aside, so serve's multiples queue refuses instead of rebuilding a stale page
+    stale = [f'{U}/judgements/queue_p3s3_V_fwb_raw.txt', f'{U}/source_catalogs/pages_input_V_fsb.csv',
+             f'{U}/source_catalogs/Red_pages_index_I_fwb.csv']
+    for p_ in stale:
+        os.makedirs(os.path.dirname(p_), exist_ok=True)
+        open(p_, 'w').write('stale\n')
     # the grouping maps positions to the common frame through production's astrom_frame, in place (read-only: the real module
     # and its frozen inputs, loaded by the stub root's name)
     open(f'{T}/exopipe_ops/astrom_frame.py', 'w').write(
@@ -611,6 +629,10 @@ def test_grouping_design_b_in_the_chain():
             f = rec(f'{LABEL}.fork.{S}')
             assert f['status'] == 'no-input' and 'one-rule' in f['reason'], (S, f['status'], f['reason'])
             assert not glob.glob(f'{U}/source_catalogs_{S}_f*')
+            moved = f['meta'].get('fork_page_products_moved') or []
+            assert sorted(moved) == sorted(p_ for p_ in stale if f'_{S}_f' in p_), (S, moved)
+        assert not any(os.path.exists(p_) for p_ in stale), [p_ for p_ in stale if os.path.exists(p_)]
+        for S in ('V', 'I'):
             T_ = {x['cand_id']: x for x in rows(f'{U}/grouping_{S}/detections.csv')}
             assert len(T_) == sum(1 for x in rows(f'{U}/master_catalog.csv') if x['stokes'] == S)
             for t in ('wb', 'sb'):

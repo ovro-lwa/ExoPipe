@@ -304,10 +304,27 @@ def _stub_world(d):
     return rows, tab
 
 
-def _run_runner(d, out, mode, table=None, builder=None):
-    env = dict(os.environ, EXOPIPE3_GROUPING_MODE=mode, EXOPIPE3_GROUPING_TIER='deep', EXOPIPE3_GROUPING_RUNGS='multiples-level')
+def _bg():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('bg', GS.builder_runner())
+    bg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bg)
+    return bg
+
+
+def _stub_sha1(builder):
+    return _bg().normalized_sha1(builder, open(builder).read())
+
+
+def _run_runner(d, out, mode, table=None, builder=None, accepted=None, table_sha1=None, provenance=False):
+    env = dict(os.environ, EXOPIPE3_GROUPING_MODE=mode, EXOPIPE3_GROUPING_TIER='deep', EXOPIPE3_GROUPING_RUNGS='multiples-level',
+               EXOPIPE3_GROUPING_BUILDER_SHA1=','.join(accepted if accepted is not None else [_stub_sha1(builder)]))
     if table:
         env['EXOPIPE3_GROUPING_TABLE'] = table
+    if table_sha1:
+        env['EXOPIPE3_GROUPING_TABLE_SHA1'] = table_sha1
+    if provenance:
+        env['EXOPIPE3_GROUPING_PROVENANCE'] = '1'
     p = subprocess.run([PY, GS.builder_runner(), builder, 'selected_I_sb.csv', out, 'v_deep_images.csv'], cwd=d, env=env,
                        capture_output=True, text=True, timeout=300)
     return p.returncode, p.stdout + p.stderr
@@ -384,6 +401,29 @@ def test_runner():
     check('runner: a row grouped with another fingerprint REFUSES', rc == 2 and 'stale' in txt, txt[-300:])
     check('covers(): the stage pre-check names both', len(GS.covers(f'{d}/stale1.csv', f'{d}/selected_I_sb.csv')) == 1
           and len(GS.covers(f'{d}/stale2.csv', f'{d}/selected_I_sb.csv')) == 1)
+    # F7 (review 2026-11-04): the builder pin - the accepted path-normalized sha1s (config catalog_grouping.BUILDER_SHA1)
+    from exopipe.phase3.config import CFG
+    live = _bg().normalized_sha1(LIVE_BUILDER, open(LIVE_BUILDER).read())
+    frozen = {_bg().normalized_sha1(f, open(f).read()) for f in glob.glob(FROZEN_BUILDERS) if '.refused' not in f}
+    check('F7: the config pin holds the live builder and every frozen 10-minute tree\'s builder (path-normalized; 6 versions)',
+          live in CFG.catalog_grouping.BUILDER_SHA1 and frozen <= set(CFG.catalog_grouping.BUILDER_SHA1)
+          and len(set(CFG.catalog_grouping.BUILDER_SHA1)) == 6, (live, sorted(frozen - set(CFG.catalog_grouping.BUILDER_SHA1))))
+    rc, txt = _run_runner(d, 'out_pin', 'design-b', table=f'{d}/grouping_I/detections.csv', builder=b,
+                          accepted=list(CFG.catalog_grouping.BUILDER_SHA1))
+    check('F7: a builder not in the pin REFUSES before anything runs (re-port), even with every patch text in place',
+          rc == 2 and 're-port' in txt and 'path-normalized sha1' in txt and not os.path.exists(f'{d}/out_pin'), txt[-300:])
+    rc, txt = _run_runner(d, 'out_nopin', 'design-b', table=f'{d}/grouping_I/detections.csv', builder=b, accepted=[])
+    check('F7: no accepted list REFUSES', rc == 2 and 'BUILDER_SHA1 is empty' in txt, txt[-300:])
+    # F2: the table's sha1 - the runner reads the table once and refuses another one than the stage checked
+    rc, txt = _run_runner(d, 'out_sha', 'design-b', table=f'{d}/grouping_I/detections.csv', builder=b, table_sha1='0' * 40)
+    check('F2: a grouping table whose sha1 is not the one the stage checked REFUSES (a regroup in between)',
+          rc == 2 and 'changed after the check' in txt, txt[-300:])
+    sha = GS.table_digest(f'{d}/grouping_I/detections.csv')
+    rc, txt = _run_runner(d, 'out_prov', 'design-b', table=f'{d}/grouping_I/detections.csv', builder=b, table_sha1=sha,
+                          provenance=True)
+    prov = json.load(open(f'{d}/out_prov/grouping_table.json')) if os.path.exists(f'{d}/out_prov/grouping_table.json') else {}
+    check('F2/F3: the checked sha1 passes, and the provenance names the table and its sha1 beside the catalogues',
+          rc == 0 and prov.get('table_sha1') == sha and prov.get('rows_checked') == 8, (rc, prov, txt[-200:]))
 
 
 STUBCAT = r'''
@@ -425,7 +465,7 @@ def test_sublst_build():
     class Ctx:
         pass
     ctx = Ctx()
-    ctx.U, ctx.dry, ctx.builds, ctx.pt = U, False, ('noveto',), f'{U}/pertie'
+    ctx.U, ctx.dry, ctx.builds, ctx.pt, ctx.lst = U, False, ('noveto',), f'{U}/pertie', '05h'
     ctx.py = {'default': PY}
     ctx.opsc = lambda name: os.path.join(ops, name)
     ctx.log = TS.Log(f'{U}/catalogs.log')
@@ -433,6 +473,17 @@ def test_sublst_build():
     ctx.grouping_mode = GS.mode()
     ctx.grouping_dir = gdir
     ctx.grouping_table = lambda S: os.path.join(gdir, f'grouping_{S}', 'detections.csv')
+    keep_pin = CFG.catalog_grouping.BUILDER_SHA1
+    CFG.catalog_grouping.BUILDER_SHA1 = tuple(keep_pin) + (_stub_sha1(f'{ops}/build_source_catalogs_v3.py'),)
+
+    def record(status='done', sha=None, finished='2030-01-01T00:00:00Z', name='Run_SLSTB.group'):
+        t = ctx.grouping_table('I')
+        r = dict(unit=name, status=status, finished=finished, reason='' if status == 'done' else 'a refusal',
+                 meta=dict(stage='group', tier='sublst', stokes=['I'],
+                           tables={} if status != 'done' else {'I': dict(path=t, sha1=sha or GS.table_digest(t))}))
+        os.makedirs(f'{gdir}/_records/catalog', exist_ok=True)
+        json.dump(r, open(f'{gdir}/_records/catalog/{name}.json', 'w'))
+    record()
 
     def run_build():
         s = TS.Stage(ctx, 'build', TS.DryUnit())
@@ -447,12 +498,38 @@ def test_sublst_build():
     check('sub-LST build under design B: the runner ran with the grouping (machine line recorded), identities as sources',
           st == 'done' and 'GROUPING-BUILDER done' in json.dumps(s.u.meta.get('grouping_builder')) and 'J0520+3000a' in surv
           and any('builder_grouping.py' in ln for ln in plan), (st, s.u.meta.get('grouping_builder'), surv))
+    check('sub-LST build: the grouping table and its sha1 recorded on the unit; the provenance beside the catalogues',
+          s.u.meta.get('grouping_tables', {}).get('I', {}).get('sha1') == GS.table_digest(ctx.grouping_table('I'))
+          and os.path.exists(f'{U}/source_catalogs_noveto_I_sb/grouping_table.json'), s.u.meta.get('grouping_tables'))
+    # F2: the build reads only a table a DONE group-unit record recorded, with the sha1 it has now
+    tab0 = open(ctx.grouping_table('I')).read()
+
+    def case_refused():
+        record('refused', finished='2030-01-02T00:00:00Z', name='Run_X.group')
+
+    def case_changed():
+        os.remove(f'{gdir}/_records/catalog/Run_X.group.json')
+        open(ctx.grouping_table('I'), 'a').write('\n')
+
+    def case_none():
+        open(ctx.grouping_table('I'), 'w').write(tab0)
+        shutil.rmtree(f'{gdir}/_records')
+    for what, setup, want in (('the latest grouping run refused', case_refused, 'ended refused'),
+                              ('the table changed since its run recorded it', case_changed,
+                               'changed since its grouping run recorded it'),
+                              ('no record of a grouping run', case_none, 'no record of a 10-minute grouping run')):
+        setup()
+        shutil.rmtree(f'{U}/source_catalogs_noveto_I_sb', ignore_errors=True)
+        st, s, plan = run_build()
+        check(f'F2: sub-LST build REFUSES (S-G18) when {what}', 'S-G18' in st and want in st, st)
+    record()
     tab2 = rcsv(ctx.grouping_table('I'))[1]
     wcsv(ctx.grouping_table('I'), GS.DET_COLS, tab2[1:])
+    record()                                              # a done run recorded this (smaller) table
     shutil.rmtree(f'{U}/source_catalogs_noveto_I_sb')
     st, s, plan = run_build()
     check('sub-LST build: a selected row the grouping does not hold REFUSES (S-G18), naming the remedy',
-          'S-G18' in st and 'group the cumulative again' in st, st)
+          'S-G18' in st and '--group-lst-dir' in st, st)
     keep = (CFG.catalog_grouping.GROUPING, CFG.catalog_grouping.MULTIPLES_RULE)
     try:
         CFG.catalog_grouping.GROUPING = CFG.catalog_grouping.MULTIPLES_RULE = 'production'
@@ -464,6 +541,7 @@ def test_sublst_build():
               and surv and not (surv & {'J0520+3000a'}), (st, surv))
     finally:
         CFG.catalog_grouping.GROUPING, CFG.catalog_grouping.MULTIPLES_RULE = keep
+        CFG.catalog_grouping.BUILDER_SHA1 = keep_pin
 
 
 # =====================================================================================================================
@@ -623,6 +701,144 @@ def test_serve_carry():
 
 
 # =====================================================================================================================
+def test_refused_grouping():
+    """review 2026-11-04 F2 (the reviewer's probe, RV/refused_probe/probe.py): a grouping run whose content tests REFUSE leaves
+    the table every build reads and the state exactly as they were - its products go to grouping_<S>.refused_<UTC>; a run
+    holding the state's lock makes a second one refuse"""
+    mc, side = inputs('10min')
+    det = GS.load_det('10min', 'V', mc, side)
+    out = f'{T}/refused'
+    shutil.rmtree(out, ignore_errors=True)
+    p1, _s1, _r1 = run_stage('10min', 'V', det, out, out, 'probe.group', new=True, inp=mc)
+    sha1 = GS.table_digest(f'{out}/grouping_V/detections.csv')
+    st1 = open(GS.state_path(out, '10min', 'V')).read()
+    try:
+        GS.run_group(det, '10min', 'V', out, out, 'probe.group2', {}, check=lambda pp: ['T3 forced failure (probe)'])
+        got = 'not refused'
+    except GS.StageRefusal as e:
+        got = str(e)
+    refused = glob.glob(f'{out}/grouping_V.refused_*')
+    check('F2: a refused grouping leaves the canonical table (sha1) and the state unchanged; its products are kept aside',
+          'NOT advanced' in got and GS.table_digest(f'{out}/grouping_V/detections.csv') == sha1
+          and open(GS.state_path(out, '10min', 'V')).read() == st1 and len(refused) == 1
+          and not glob.glob(f'{out}/grouping_V.tmp.*'), (got, refused))
+    with GS._Lock(GS.state_lock_path(out, '10min', 'V'), 'the test holder'):
+        try:
+            GS.run_group(det, '10min', 'V', out, out, 'probe.group3', {})
+            got = 'not refused'
+        except GS.StageRefusal as e:
+            got = str(e)
+    check('F2: a second grouping of the same state while one holds its lock REFUSES at once, nothing written',
+          'held by another grouping run' in got and GS.table_digest(f'{out}/grouping_V/detections.csv') == sha1
+          and open(GS.state_path(out, '10min', 'V')).read() == st1, got)
+    p3, _s3, _r3 = run_stage('10min', 'V', det, out, out, 'probe.group4', mode='regroup', inp=mc)
+    check('F2: after the lock is released a run succeeds; the previous table is kept as grouping_V.superseded_*',
+          len(glob.glob(f'{out}/grouping_V.superseded_*')) == 1 and p3['detections_sha1'] == GS.table_digest(p3['detections']))
+
+
+# =====================================================================================================================
+def test_carry_between_window():
+    """review 2026-11-04 F1 (the reviewer's probe, RV/carry_probe/probe.py): the lines journalled between the carry and the swap
+    are carried by RE-DERIVING each identity they reach from the FULL old journal, in order. (1) classify / retract / classify
+    of one old page ends judged as the last action says; (2) a label in the window that disagrees with a carried label (another
+    old page reaching the same identity) is a CONFLICT row and a retract - never an override; (3) the same two labels in one
+    seed carry: the same CONFLICT (the outcome does not depend on when a label was made); (4) an agreeing label re-carries
+    with both pages named; (5) an identity judged on the new page is never overridden"""
+    from exopipe.phase3.lib.serve import tests as ST
+    D = f'{T}/carry_window'
+    shutil.rmtree(D, ignore_errors=True)
+    old = {'J0520+3000': [dict(cand_id='I1_05h_2030-01-01T03_46MHz_0001', band='46MHz', lst='05h', date='2030-01-01T03',
+                               ra=80.0, dec=30.0)],
+           'J0520+3001': [dict(cand_id='I1_05h_2030-01-02T03_46MHz_0002', band='46MHz', lst='05h', date='2030-01-02T03',
+                               ra=80.0, dec=30.0)]}
+    new = [dict(cand_id='I1_05h_2030-01-01T03_46MHz_0001', band='46MHz', lst='05h', date='2030-01-01T03', ra=80.0, dec=30.0,
+                name='J0520+3000a', id='GTI-0000001'),
+           dict(cand_id='I1_05h_2030-01-02T03_46MHz_0002', band='46MHz', lst='05h', date='2030-01-02T03', ra=80.0, dec=30.0,
+                name='J0520+3000a', id='GTI-0000001')]
+
+    def cl(sid, conf, reason=''):
+        return json.dumps(dict(action='classify', scope='source', source_id=sid, judge_confidence=conf, judge_fp_reason=reason))
+
+    def rt(sid):
+        return json.dumps(dict(action='retract', scope='source', source_id=sid))
+
+    def final(path):
+        return {k: (v.get('judge_confidence'), v.get('judge_fp_reason'), 'carried_from_run' in v)
+                for k, v in GS._latest_state(path).items()}
+
+    def carry(case, seed, between, own=None):
+        d = f'{D}/{case}'
+        os.makedirs(d)
+        open(f'{d}/old.jsonl', 'w').write(''.join(x + '\n' for x in seed))
+        GS.carry_judgements(f'{d}/old.jsonl', old, new, f'{d}/new', 'NEW', carried_from_run='OLD', lines=list(seed))
+        if own:                                    # a judgement made on the new page itself
+            with open(f'{d}/new/judgements.jsonl', 'a') as f:
+                f.write(own + '\n')
+        full = list(seed) + list(between)
+        open(f'{d}/old.jsonl', 'w').write(''.join(x + '\n' for x in full))
+        c = GS.carry_judgements(f'{d}/old.jsonl', old, new, f'{d}/new', 'NEW', carried_from_run='OLD', lines=full, append=True,
+                                since=len(seed))
+        rep = rcsv(f'{d}/new/carry_report.csv')[1]
+        ok_ = ST.carry_consistent(f'{d}/new/judgements.jsonl')
+        return c, final(f'{d}/new/judgements.jsonl'), rep, ok_
+    c, f, rep, ok_ = carry('c1', [], [cl('J0520+3000', 'real'), rt('J0520+3000'), cl('J0520+3000', 'FP', 'leakage')])
+    check('F1 (1): classify / retract / classify in the window ends judged as the last action says (FP / leakage)',
+          f == {'J0520+3000a': ('FP', 'leakage', True)} and c['carried'] == 1 and c['retracted'] == 0 and ok_[0], (c, f, ok_))
+    c, f, rep, ok_ = carry('c2', [cl('J0520+3001', 'real')], [cl('J0520+3000', 'FP', 'leakage')])
+    last = [r for r in rep if r['new_source'] == 'J0520+3000a'][-1]
+    check('F1 (2): a label in the window that disagrees with a carried label is a CONFLICT row and a retract, never an '
+          'override', f == {} and last['outcome'] == 'CONFLICT - not carried' and c['conflicts'] == 1 and c['retracted'] == 1
+          and ok_[0], (c, f, rep, ok_))
+    c, f, rep, ok_ = carry('c3', [cl('J0520+3001', 'real'), cl('J0520+3000', 'FP', 'leakage')], [])
+    check('F1 (3): the same two labels in one seed carry give the same CONFLICT (timing-independent)',
+          f == {} and [r['outcome'] for r in rep] == ['CONFLICT - not carried'] and ok_[0], (f, rep, ok_))
+    c, f, rep, ok_ = carry('c4', [cl('J0520+3001', 'FP', 'leakage')], [cl('J0520+3000', 'FP', 'leakage')])
+    nj = [json.loads(l) for l in open(f'{D}/c4/new/judgements.jsonl')]
+    check('F1 (4): an agreeing label in the window re-carries the identity, naming both old pages',
+          f == {'J0520+3000a': ('FP', 'leakage', True)} and nj[-1]['carried_from_source'] == 'J0520+3000;J0520+3001'
+          and ok_[0], (f, nj[-1], ok_))
+    own = json.dumps(dict(action='classify', scope='source', source_id='J0520+3000a', judge_confidence='real',
+                          judge_fp_reason=''))
+    c, f, rep, ok_ = carry('c5', [cl('J0520+3001', 'FP', 'leakage')], [cl('J0520+3000', 'FP', 'sidelobe')], own=own)
+    check('F1 (5): an identity judged on the new page is never overridden by the window carry (reported)',
+          f == {'J0520+3000a': ('real', '', False)} and c['judged_on_new_page'] == 1
+          and rep[-1]['outcome'] == 'not carried: judged on the new page' and ok_[0], (c, f, rep[-1:], ok_))
+
+
+# =====================================================================================================================
+def test_grouping_mix():
+    """review 2026-11-04 F3 (the minimum gate): serve --tier sublst under design B refuses a cumulative whose LST builds name
+    different grouping tables (or an LST built without the design-B grouping) - lib/serve/sublst_build.grouping_mix"""
+    from exopipe.phase3.lib.serve import sublst_build as SB
+    R = f'{T}/mix'
+    shutil.rmtree(R, ignore_errors=True)
+
+    def lst(L, sha=None, stokes='I'):
+        d = f'{R}/Run_SLST{L[:2]}B/source_catalogs_{stokes}_sb'
+        os.makedirs(d, exist_ok=True)
+        if sha:
+            json.dump(dict(table='/x/grouping_I/detections.csv', table_sha1=sha), open(f'{d}/grouping_table.json', 'w'))
+    orig = SB.lst_run
+    SB.lst_run = lambda l: f'{R}/Run_SLST{l[:2]}B'
+    try:
+        lst('05h', 'a' * 40)
+        lst('06h', 'a' * 40)
+        bad, tables = SB.grouping_mix(['05h', '06h'])
+        check('F3 gate: two LST builds on one grouping table pass', not bad and tables == {'I': {'a' * 40: ['05h', '06h']}},
+              (bad, tables))
+        lst('07h', 'b' * 40)
+        bad, tables = SB.grouping_mix(['05h', '06h', '07h'])
+        check('F3 gate: an LST built on another table is named (the cumulative joins LST runs by identity name)',
+              len(bad) == 1 and 'bbbbbbbbbbbb: 07h' in bad[0][1] and '2 grouping tables' in bad[0][1], bad)
+        lst('08h', None)
+        bad, tables = SB.grouping_mix(['05h', '08h'])
+        check('F3 gate: an LST built without the design-B grouping (no provenance) is named',
+              len(bad) == 1 and bad[0][0] == '08h' and 'no grouping_table.json' in bad[0][1], bad)
+    finally:
+        SB.lst_run = orig
+
+
+# =====================================================================================================================
 def test_identity_writeback():
     """the deep identity stage under design B (grouping_stage.identity_writeback): the four identity columns from the grouping
     per Stokes into every tier file and the union; a row not named by its design-B identity REFUSES; the identity_table content
@@ -722,10 +938,31 @@ def test_cli():
     rec = json.load(open(recp[0])) if recp else {}
     check('cli: --group-new-state groups the cumulative (exit 0; unit done; content tests passed)',
           rc == 0 and rec.get('status') == 'done' and rec.get('tests') and all(t['passed'] for t in rec['tests']), txt[-400:])
+    tab, sha = GS.recorded_table(out, 'V')
+    check('cli: the record holds the table and its sha1 - what the LST builds check (F2)',
+          rec.get('meta', {}).get('tables', {}).get('V', {}).get('sha1') == sha == GS.table_digest(f'{out}/grouping_V/detections.csv'),
+          rec.get('meta', {}).get('tables'))
     ids0 = {r['cand_id']: r['identity_id'] for r in rcsv(f'{out}/grouping_V/detections.csv')[1]}
     rc, txt = cli(common)
     ids1 = {r['cand_id']: r['identity_id'] for r in rcsv(f'{out}/grouping_V/detections.csv')[1]}
     check('cli: a second run (incremental, the same detections) carries every identity ID', rc == 0 and ids0 == ids1, txt[-300:])
+    # F2: two 10-minute groupings at once - the second REFUSES on the unit lock, writing nothing
+    sha_before = GS.table_digest(f'{out}/grouping_V/detections.csv')
+    with GS._Lock(os.path.join(out, GS.UNIT_LOCK), 'the test holder'):
+        rc, txt = cli(common)
+    rec = json.load(open(recp[0])) if recp else {}
+    check('cli (F2): a second 10-minute grouping while one holds the lock REFUSES (exit 2), the table unchanged',
+          rc == 2 and rec.get('status') == 'refused' and 'held by another grouping run' in (rec.get('reason') or '')
+          and GS.table_digest(f'{out}/grouping_V/detections.csv') == sha_before, (rc, rec.get('reason')))
+    try:
+        GS.recorded_table(out, 'V')
+        got = 'accepted'
+    except GS.StageRefusal as e:
+        got = str(e)
+    check('cli (F2): after that refusal the builds refuse until a grouping run ends done', 'ended refused' in got, got)
+    rc, txt = cli(common)
+    check('cli (F2): the next run (lock free) ends done and the builds accept its table again',
+          rc == 0 and GS.recorded_table(out, 'V')[1] == GS.table_digest(f'{out}/grouping_V/detections.csv'), txt[-300:])
     rc, txt = cli(common + ['--set', 'catalog_grouping.GROUPING=production', '--set', 'catalog_grouping.MULTIPLES_RULE=production'])
     rec = json.load(open(recp[0])) if recp else {}
     check("cli: under production's mode the unit is no-input (exit 3), naming the parity file",
@@ -734,7 +971,8 @@ def test_cli():
 
 # =====================================================================================================================
 ORDER = ['test_mode', 'test_frozen', 'test_defects', 'test_runner', 'test_sublst_build', 'test_one_rule_record', 'test_carry',
-         'test_serve_carry', 'test_identity_writeback', 'test_tenmin_input', 'test_cli']
+         'test_serve_carry', 'test_carry_between_window', 'test_refused_grouping', 'test_grouping_mix', 'test_identity_writeback',
+         'test_tenmin_input', 'test_cli']
 
 
 def main(names):

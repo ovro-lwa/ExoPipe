@@ -196,21 +196,25 @@ def sublst_carry_journals(src_run, B):
 
 
 def sublst_carry_between(P, U, marks):
-    """Design B: the lines journalled on the old servers (journals of P) after the carry point (marks) - carried into U by the
-    same rule and appended, with their report rows (append_between's design-B counterpart). Returns {journal: counts}."""
+    """Design B: the lines journalled on the old servers (journals of P) after the carry point (marks: the number of lines the
+    seed carry read) - append_between's design-B counterpart. Every new identity those lines' old pages reach is RE-DERIVED
+    from the FULL old journal, in order (review 2026-11-04, F1: classify / retract / classify ends as the last action says; a
+    label that now disagrees with a carried one is a CONFLICT row and a retract, never an override); grouping_stage.
+    carry_judgements(append=True). Returns {journal: counts}."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
     out = {}
     for J in _S().SUBLST_JOURNALS:
         a = os.path.join(P, J, 'judgements.jsonl')
         if not os.path.exists(a):
             continue
-        lines = open(a).read().splitlines()[marks.get(J, 0):]
-        if not any(l.strip() for l in lines):
+        lines = open(a).read().splitlines()
+        since = marks.get(J, 0)
+        if not any(l.strip() for l in lines[since:]):
             continue
         S = _sublst_stokes(J)
         out[J] = GS.carry_judgements(a, _sublst_old_members(P, S), _sublst_new_identities(U, S), os.path.join(U, J),
                                      os.path.basename(U.rstrip('/')), carried_from_run=os.path.basename(P.rstrip('/')),
-                                     lines=lines, append=True)
+                                     lines=lines, append=True, since=since)
     return out
 
 

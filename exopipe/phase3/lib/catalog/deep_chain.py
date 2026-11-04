@@ -1080,7 +1080,7 @@ class DeepRun:
                                   counts=summ['counts'], group_mode=summ.get('mode'))
             u.meta['counts'] = summ['counts']
             u.meta['grouping_table'] = paths['detections']
-            u.meta['grouping_table_sha1'] = GS.table_digest(paths['detections'])
+            u.meta['grouping_table_sha1'] = paths['detections_sha1']
             for k in ('identities', 'multiples', 'summary', 'events', 'state_next') + (('state_previous',) if 'state_previous'
                                                                                         in paths else ()):
                 self.out(u, paths[k])
@@ -1131,12 +1131,16 @@ class DeepRun:
                 # (lib/catalog/wraps/builder_grouping.py); production (the parity file): the builder alone, as below
                 from exopipe.phase3.lib.catalog import grouping_stage as GS
                 table = self.chain.meta(self.u('group', st), 'grouping_table') or self.grouping_table(st)
+                sha = self.chain.meta(self.u('group', st), 'grouping_table_sha1')
                 u.add_input(table)
+                if not sha or GS.table_digest(table) != sha:
+                    u.refuse(f'D-G24 the grouping table {table} is not the one its group record recorded (sha1 '
+                             f'{str(sha)[:12]}) - re-run from stage group')
                 bad = GS.covers(table, sel)
                 if bad:
                     u.refuse(f'D-G24 the grouping of Stokes {st} does not hold the builder input {sel} as selected '
                              f'({len(bad)}+ rows, e.g. {bad[:3]}) - re-run from stage group')
-                env = self.env(dict(SZ.catalog_env(szr), **GS.builder_env(table, 'deep', self.grouping_mode)))
+                env = self.env(dict(SZ.catalog_env(szr), **GS.builder_env(table, 'deep', self.grouping_mode, sha1=sha)))
                 rc, tail, hits = self.call(u, GS.builder_runner(), [self.script('build_source_catalogs_v3.py')] + bargs, env,
                                            os.path.join(self.U, f'catalogs_inc_{K}.log'), mode='w', keep=('GROUPING-BUILDER',))
                 u.meta['grouping_builder'] = hits[-2:]
@@ -1173,6 +1177,13 @@ class DeepRun:
                 u.meta['mode'] = self.grouping_mode.as_dict()
                 for name in (f'fork_{S}', f'source_catalogs_{S}_fwb', f'source_catalogs_{S}_fsb'):
                     self.move_aside(os.path.join(self.U, name), u)   # a previous pass's fork products never linger (D10)
+                # ... nor the fork tiers' page products the pages step wrote (review 2026-11-04 F6): serve's multiples queue reads
+                # the raw queues (queues.deep_multi_queue) and must refuse (G3), never rebuild a previous pass's multiples page
+                import glob as _glob
+                stale = [os.path.join(self.U, 'judgements', f'queue_p3s3_{S}_f{t}_raw.txt') for t in ('wb', 'sb')]
+                stale += [os.path.join(self.U, 'source_catalogs', f'pages_input_{S}_f{t}.csv') for t in ('wb', 'sb')]
+                stale += sorted(_glob.glob(os.path.join(self.U, 'source_catalogs', f'*_pages_index_{S}_f[ws]b.csv')))
+                u.meta['fork_page_products_moved'] = [p_ for p_ in stale if self.move_aside(p_, u)]
                 raise NoInput("catalog_grouping.MULTIPLES_RULE = 'one-rule': the multiples are the grouping's multiples level "
                               "(Gregg 2026-10-27, 'let's be consistent'); production's multiples fork (multiples_fork.py: its "
                               "multiples tables, the Stokes I 5-7 sigma members) is not run - the catalogues of stage associate "
