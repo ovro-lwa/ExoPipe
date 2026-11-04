@@ -94,6 +94,20 @@ class search_detect(_Section):
                                                             # fp_gates_v2.md section 3: a new configuration needs new products).
                                                             # SIZE_FLOOR_BEAMS / AXIS_REMOVE must stay 1.5 under 'envelope' (the
                                                             # rule's own floors: size_rule.check_floors)
+    FULL_BAND_SIZE = 'off'                                  # the rule's SIZE test in the deep Full band (18-82 MHz) under 'envelope'
+                                                            # (R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS): 'off' =
+                                                            # no removal by size there - a low-frequency-weighted source images with the
+                                                            # larger low-frequency beam while its size is compared with the Full header
+                                                            # beam (~50 MHz): the rule removes 46 of 181 verified pulsar detections there
+                                                            # above 8 sigma (25%; at 19 of 47 moments no other band keeps the pulsar).
+                                                            # The axis test still applies there; the subbands, Red, Green and Blue (and
+                                                            # the 10-minute tier, which has no Full band) are unchanged; nothing carries
+                                                            # from a Full-band size test to another band. 'rule' = the size test there as
+                                                            # in every band (for a later spectrum-aware reference). Every Full-band ledger
+                                                            # row says so (size_role ':full_size_off ...'); the engine child reads
+                                                            # EXOPIPE3_SIZE_FULL_BAND; the run records it (size_rule.json full_band_size).
+                                                            # No parity line: production has no rule (its fixed gate, SIZE_RULE
+                                                            # 'production', never reads it). size_rule.full_band_mode
     SANITY_X = 3.0                                          # x cell median, I (qa3) and V (frame rms); P3_SANITY_I_X (deep_search.py:77;
                                                             # R-SANITY-3X-AND-ROWLINE-BOTH-STOKES-INDEPENDENT)
     SEARCH_TIER_RATIO = 2.0                                 # x the cell median of the stage-1 rms, per Stokes: above it the epoch is
@@ -179,6 +193,7 @@ class search_detect(_Section):
                                                             # EXOPIPE3_MASTER_HELD_18MHZ (deep_step.engine_env, frames deep_engine.child_env)
     RULED = {'EPHEMERIS_TIME': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
              'SIZE_RULE': 'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS',
+             'FULL_BAND_SIZE': 'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS',
              'MASTER_HELD_18MHZ': ('R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4', 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD',
                                    'CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023'),
              'REMOVAL_RULES': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',

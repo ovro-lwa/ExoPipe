@@ -455,8 +455,9 @@ def size_axis(r, bmaj_deg=None, beam_ratio=None, size_step=None, rule='productio
     ``rule`` the size / axis rule the row's attempt was searched under (lib/search/size_rule.read_run_record): under
     'envelope' the search's rule at every S/N decided (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) and the
     fixed size threshold here removes nothing (a size above it is flagged as kept); the fixed AXIS step follows
-    catalog_conform.CONFORM_AXIS_UNDER_RULE (size_rule.conform_axis_step, PENDING GREGG): 'second_gate' - it stands, a second
-    gate above 8 sigma, removing in production's words; 'replace' - flagged as kept. The columns are the same either way."""
+    catalog_conform.CONFORM_AXIS_UNDER_RULE (size_rule.conform_axis_step): 'replace' (ruled, size_rule.PULSAR_DECISION: the
+    rule alone) - flagged as kept; 'second_gate' (production's behavior, the parity file) - it stands, a second gate above 8
+    sigma, removing in production's words. The columns are the same either way."""
     c = _cc()
     size_step = c.SIZE_STEP['deep'] if size_step is None else size_step
     if rule not in ('production', 'envelope'):

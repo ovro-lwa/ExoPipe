@@ -120,26 +120,31 @@ class catalog_conform(_Section):
     NOMINAL_BEAM_ARCSEC = {'Red': 787.0, 'Green': 518.0, 'Blue': 374.0, 'Full': 528.0}   # arcsec; ops/p3s2_conform.py:24 [lit] - UNUSED since D8 (Gregg 2026-10-13 'Approved', ops 283a513): conformance keeps the search's own epoch-beam size_beams/axis_norm; a row without them gets FWHM / its searched frame's BMAJ (frame_beam_bmaj.csv); c50_mjy blanked on every conformed row (M6)
     AXIS_REMOVE = 2.0                                     # x epoch-beam axis ratio, above SIZE_SNR; ops/p3s2_conform.py:105 [lit] (Gregg 2026-09-05)
     AXIS_FLAG = 1.5                                       # ops/p3s2_conform.py:105 [lit]
-    CONFORM_AXIS_UNDER_RULE = 'second_gate'               # UNRULED, PENDING GREGG (no RULED entry: an override needs no --ruling-for and is
-                                                          # recorded as unruled). The conformance's axis step above (AXIS_REMOVE 2.0 above
-                                                          # SIZE_SNR 8) on attempts searched under the size / axis rule at every S/N
-                                                          # (search_detect / search_sublst SIZE_RULE 'envelope'; lib/search/size_rule). The
-                                                          # step is R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA (2026-09-05: "Approved - remove above 8
-                                                          # sigma local SNR when the normalized axis ratio exceeds 2.0; flag 1.5 to 2.0; no
-                                                          # action below 8 sigma"); R-SIZE-AXIS-GATE-1.5-RATIFIED (2026-09-09: "1.5 and 1.5 is
-                                                          # correct and should run from now on!"; ledger: "Supersedes ... the 2.0 axis value of
-                                                          # R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA") superseded its 2.0 value, and the 2026-10-22
-                                                          # rule replaced the 1.5 thresholds: the 2.0 step stands only in production's code
-                                                          # (inert behind the search's 1.5 until the rule). Does the rule replace it?
-                                                          # 'second_gate' (default until Gregg answers) = production's current behavior (the
-                                                          # 2.0 axis step of the superseded 09-05 ruling): a second, fixed gate above 8 sigma in
-                                                          # every conformance - production's p3s2_conform.py (deep remove, the multiples fork,
-                                                          # incremental, 10-minute S-G13) and the deep check, which removes those rows itself -
-                                                          # its removals recorded per unit, never refused; 'replace' = the rule replaces it:
-                                                          # P3_CONFORM_AXIS=0 to p3s2_conform.py (a switch production lacks: docs/pending_
-                                                          # production_patch_p3s2_conform_axis.diff; every stage running the script refuses
-                                                          # until it is applied), the deep check keeps and flags. Production's attempts: the
-                                                          # step always acts (no parity line). size_rule.conform_axis_mode
+    CONFORM_AXIS_UNDER_RULE = 'replace'                   # RULED (R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS, the
+                                                          # refactor chat on Gregg's delegation R-GREGG-20261104-AXIS-THRESHOLD-DECIDE-FROM-
+                                                          # PULSARS: "You should decide, based on the data (e.g. verified pulsars again) what
+                                                          # is the correct threshold to use!"). The conformance's axis step above (AXIS_REMOVE
+                                                          # 2.0 above SIZE_SNR 8) on attempts searched under the size / axis rule at every
+                                                          # S/N (search_detect / search_sublst SIZE_RULE 'envelope'; lib/search/size_rule).
+                                                          # The step is R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA (2026-09-05:
+                                                          # "Approved - remove above 8 sigma local SNR when the normalized axis ratio exceeds
+                                                          # 2.0; flag 1.5 to 2.0; no action below 8 sigma"); R-SIZE-AXIS-GATE-1.5-RATIFIED
+                                                          # (2026-09-09: "1.5 and 1.5 is correct and should run from now on!"; ledger:
+                                                          # "Supersedes ... the 2.0 axis value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA")
+                                                          # superseded its 2.0 value, and the 2026-10-22
+                                                          # rule replaced the 1.5 thresholds: the 2.0 step stood only in production's code.
+                                                          # On 9 verified isolated pulsars it removes, on top of the rule, 0.3% [0.1, 1.1]
+                                                          # (deep) and 0.1% [0.0, 0.6] (10-minute) of the Stokes I detections above 8 sigma,
+                                                          # whose 99th-percentile axis ratio lies inside the envelope at every S/N
+                                                          # (refactor_analysis/review_items_20261031/axis_pulsars_20261104). 'replace' = the
+                                                          # rule alone: P3_CONFORM_AXIS=0 to p3s2_conform.py (a switch production lacks:
+                                                          # docs/pending_production_patch_p3s2_conform_axis.diff; every stage running the
+                                                          # script on the rule's attempts refuses until it is applied), the deep check keeps
+                                                          # and flags; 'second_gate' = production's behavior (the parity file): a second, fixed
+                                                          # gate above 8 sigma in every conformance - production's p3s2_conform.py (deep
+                                                          # remove, the multiples fork, incremental, 10-minute S-G13) and the deep check, which
+                                                          # removes those rows itself - its removals recorded per unit, never refused.
+                                                          # Production's attempts: the step always acts. size_rule.conform_axis_mode
     SANITY_X = 3.0                                        # x cell median frame noise (I qa3_rms_mjy, V THERMNOI); ops/p3s2_conform.py:129 [lit] (Gregg 2026-09-05 ratified)
     SANITY_MIN_NIGHTS = 5                                 # nights needed for the median; ops/p3s2_conform.py:139, :157
     ROWLINE_MIN = 5                                       # finals on one pixel row +/-1; ops/p3s2_conform.py:129 [lit] (Gregg 2026-09-05)
@@ -177,7 +182,8 @@ class catalog_conform(_Section):
              'DAYTIME_SAMPLES': 'R-DAYTIME-GATE-DEEP-CONFORM', 'READMIT_V110_MARGINAL': 'R-V110-MARGINAL-RETAIN-AND-LABEL',
              'PULSAR_ASSOC_K': 'R-ASSOCIATION-RADIUS-QUADRATURE', 'TABLE_XM_EXEMPT': 'R-TABLE-EXEMPTION-PULSARS-ONLY',
              'DEEP_ELEV_EPOCH': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',   # B-02 (a); the convention
-                                 'R-REFACTOR-20261016-B02-CONVENTIONS')}                        # under the 2026-10-16 delegation
+                                 'R-REFACTOR-20261016-B02-CONVENTIONS'),                        # under the 2026-10-16 delegation
+             'CONFORM_AXIS_UNDER_RULE': 'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS'}   # (its comment)
 
 
 class catalog_fitpos(_Section):

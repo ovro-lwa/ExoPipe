@@ -739,7 +739,8 @@ def test_b02_check_chain_to_conform():
     from exopipe.phase3.lib.search import removal_rules as RR
     mod = sys.modules[__name__]
     make_world()
-    from exopipe.phase3.lib.search import size_rule as SZ
+    stub_conform('patched')         # the rule's attempts under the ruled 'replace': the merge refuses a pass with a fork while
+    from exopipe.phase3.lib.search import size_rule as SZ               # production's script lacks the switch
     for d in sorted(glob.glob(f'{T}/collect/*/attempts/*')):
         with open(os.path.join(d, RR.RULES_RECORD), 'w') as f:
             _json.dump(RR.rules_record('once-in-search'), f)
@@ -797,15 +798,17 @@ def test_size_rule_in_the_chain():
     """The size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) in the chain: attempts of two rules
     are refused at the merge, before their ledgers are joined; attempts searched under the rule give the builder (and the
     fork) P3_SIZE_GATE_7_8=inf - its 7-8 sigma gate replaced - and production's do not. The conformance's fixed AXIS step on
-    the rule's attempts (catalog_conform.CONFORM_AXIS_UNDER_RULE, PENDING GREGG), with the fork stub running production's
-    step for its validity run as multiples_fork.py does: 'second_gate' (default) - a row at 9 sigma with axis 2.4 (kept by
-    the rule) is removed by the main conformance and by the fork, each recorded once in its unit, the pass completing;
-    'replace' - refused at the merge, before any conformance, while production's script has no switch; with the pending
-    patch's switch P3_CONFORM_AXIS=0 reaches the conformance and the fork and the row is kept (flagged); a script that reads
-    the switch but still removes is refused after its conformance."""
+    the rule's attempts (catalog_conform.CONFORM_AXIS_UNDER_RULE, ruled 'replace': R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-
+    SIZE-OFF-FROM-PULSARS), with the fork stub running production's step for its validity run as multiples_fork.py does:
+    'replace' (the default) - refused at the merge, before any conformance, while production's script has no switch; with the
+    pending patch's switch P3_CONFORM_AXIS=0 reaches the conformance and the fork and a Full-band row at 9 sigma with axis 2.4
+    (kept by the rule) is kept (flagged); a script that reads the switch but still removes is refused after its conformance;
+    'second_gate' (production's behavior, the parity file's value) - the row is removed by the main conformance and by the
+    fork, each recorded once in its unit, the pass completing."""
     import json as _json
     from exopipe.phase3.lib.search import size_rule as SZ
     rec_ = SZ.configured_record('deep')
+    assert rec_['full_band_size'] == 'off' and rec_['version'] == SZ.RECORD_VERSION, rec_
     make_world()
     rds = sorted(glob.glob(f'{T}/collect/*/attempts/*/transients/Run_{LABEL}'))
     assert len(rds) >= 2, rds
@@ -814,15 +817,46 @@ def test_size_rule_in_the_chain():
     cli('--stages', 'preflight,harvest,merge', expect=2)
     r = rec(f'{LABEL}.merge')
     assert r['status'] == 'refused' and 'size rules' in r['reason'] and 'REFUSING' in r['reason'], (r['status'], r['reason'][:300])
-    # 'second_gate' (the default): production's axis step stands on the rule's attempts - removed, recorded, not refused
+    # 'replace' (the default) while production's p3s2_conform.py has no switch: refused at the merge, before any stage runs it
+    size_world()
+    cli('--stages', 'preflight,harvest,merge,conform', expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and SZ.CONFORM_AXIS_PATCH in r['reason'] and 'P3_CONFORM_AXIS' in r['reason'] \
+        and SZ.PULSAR_DECISION in r['reason'], r['reason'][:400]
+    assert rec(f'{LABEL}.conform') is None, 'the conformance ran after the merge refused'
+    # ... with the pending patch's switch: P3_CONFORM_AXIS=0 to the conformance and the fork; the row kept and flagged
     wide = size_world()
+    stub_conform('patched')
     cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate,fork', expect=0)
     m = rec(f'{LABEL}.merge')['meta']
-    assert m['size_rule'] == rec_ and m['conform_axis'] == 'second_gate', (m.get('size_rule'), m.get('conform_axis'))
+    assert m['size_rule'] == rec_ and m['conform_axis'] == 'replace', (m.get('size_rule'), m.get('conform_axis'))
     for K in ('V_wb', 'I_wb'):
         a = rec(f'{LABEL}.associate.{K}')
         assert a['meta']['size_rule'] == 'envelope' and a['meta']['commands'][0]['env'].get('P3_SIZE_GATE_7_8') == 'inf', \
             (K, a['meta'].get('size_rule'), a['meta']['commands'][0]['env'])
+    c_ = rec(f'{LABEL}.conform')
+    assert c_['meta']['commands'][0]['env'].get('P3_CONFORM_AXIS') == '0', c_['meta']['commands'][0]['env']
+    assert c_['meta']['size_rule_second_gate']['conform'] == dict(mode='replace', basis=SZ.AXIS_STEP_BASIS['replace'], rows=0,
+                                                                  examples=[]), c_['meta']['size_rule_second_gate']
+    kept = [x for x in rows(os.path.join(c_['meta']['copies']['master_catalog.csv'])) if x['cand_id'] == wide]
+    assert len(kept) == 1 and kept[0]['axis_flag'].startswith('axis > 2.0 x beam (kept'), kept
+    for S in ('V', 'I'):
+        fk = rec(f'{LABEL}.fork.{S}')
+        assert fk['status'] == 'done' and fk['meta']['commands'][0]['env'].get('P3_CONFORM_AXIS') == '0', (S, fk['status'])
+    assert not [x for n in glob.glob(f'{U}/fork_I/master_catalog_removed*.csv') for x in rows(n) if x['cand_id'] == wide]
+    # ... a script that reads the switch and removes all the same: refused after its conformance (the switch did not act)
+    size_world()
+    stub_conform('ignored')
+    cli('--stages', 'preflight,harvest,merge,conform', expect=2)
+    r = rec(f'{LABEL}.conform')
+    assert r['status'] == 'refused' and 'did not switch its axis step off' in r['reason'], r['reason'][:400]
+    # 'second_gate' (production's behavior, the parity file's value; a ruled key - a non-production --out here): production's
+    # axis step stands on the rule's attempts - removed, recorded, not refused - with production's script as it is today
+    SG = ('--set', 'catalog_conform.CONFORM_AXIS_UNDER_RULE=second_gate')
+    wide = size_world()
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate,fork', *SG, expect=0)
+    m = rec(f'{LABEL}.merge')['meta']
+    assert m['size_rule'] == rec_ and m['conform_axis'] == 'second_gate', (m.get('size_rule'), m.get('conform_axis'))
     AXW = 'axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'
     c_ = rec(f'{LABEL}.conform')
     sg = c_['meta']['size_rule_second_gate']['conform']
@@ -838,38 +872,113 @@ def test_size_rule_in_the_chain():
             for x in rows(f'{U}/fork_I/{n}')]
     assert fsg['rows'] == 1 and both == [wide, wide], (fsg, both)       # one row, though two records hold it
     assert rec(f'{LABEL}.fork.V')['meta']['size_rule_second_gate']['multiples fork V']['rows'] == 0
-    # 'replace' while production's p3s2_conform.py has no switch: refused at the merge, before any stage runs it
-    REPL = ('--set', 'catalog_conform.CONFORM_AXIS_UNDER_RULE=replace')
-    size_world()
-    cli('--stages', 'preflight,harvest,merge,conform', *REPL, expect=2)
-    r = rec(f'{LABEL}.merge')
-    assert r['status'] == 'refused' and SZ.CONFORM_AXIS_PATCH in r['reason'] and 'P3_CONFORM_AXIS' in r['reason'], r['reason'][:400]
-    assert rec(f'{LABEL}.conform') is None, 'the conformance ran after the merge refused'
-    # ... with the pending patch's switch: P3_CONFORM_AXIS=0 to the conformance and the fork; the row kept and flagged
-    wide = size_world()
-    stub_conform('patched')
-    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate,fork', *REPL, expect=0)
-    c_ = rec(f'{LABEL}.conform')
-    assert c_['meta']['commands'][0]['env'].get('P3_CONFORM_AXIS') == '0', c_['meta']['commands'][0]['env']
-    assert c_['meta']['size_rule_second_gate']['conform'] == dict(mode='replace', basis=SZ.AXIS_STEP_BASIS['replace'], rows=0,
-                                                                  examples=[]), c_['meta']['size_rule_second_gate']
-    kept = [x for x in rows(os.path.join(c_['meta']['copies']['master_catalog.csv'])) if x['cand_id'] == wide]
-    assert len(kept) == 1 and kept[0]['axis_flag'].startswith('axis > 2.0 x beam (kept'), kept
-    for S in ('V', 'I'):
-        fk = rec(f'{LABEL}.fork.{S}')
-        assert fk['status'] == 'done' and fk['meta']['commands'][0]['env'].get('P3_CONFORM_AXIS') == '0', (S, fk['status'])
-    assert not [x for n in glob.glob(f'{U}/fork_I/master_catalog_removed*.csv') for x in rows(n) if x['cand_id'] == wide]
-    # ... a script that reads the switch and removes all the same: refused after its conformance (the switch did not act)
-    size_world()
-    stub_conform('ignored')
-    cli('--stages', 'preflight,harvest,merge,conform', *REPL, expect=2)
-    r = rec(f'{LABEL}.conform')
-    assert r['status'] == 'refused' and 'did not switch its axis step off' in r['reason'], r['reason'][:400]
     make_world()                                          # production's attempts: the builder keeps its own 1.7
     cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate', expect=0)
     a = rec(f'{LABEL}.associate.I_wb')
     assert a['meta']['size_rule'] == 'production' and 'P3_SIZE_GATE_7_8' not in a['meta']['commands'][0]['env'], a['meta']
     assert rec(f'{LABEL}.merge')['meta']['conform_axis'] == "production's step"
+
+
+def _engine_frame(seed, amp, smaj, smin, n=300):
+    """A synthetic search frame (beam-correlated unit noise, a deep 36 MHz frame's beam: 2.7 px) with one source at its
+    center: FWHM smaj x BMAJ by smin x BMIN at the beam's PA, peak ``amp`` x the noise. Returns (frame, (BMAJ, BMIN, CDELT))."""
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+    from exopipe.phase3.lib.search import size_rule as SZ
+    bmaj, bmin, bpa, cd = 0.207, 0.184, 161.5, 0.0767
+    bpix = bmaj / cd
+    img = gaussian_filter(np.random.default_rng(seed).normal(0.0, 1.0, (n, n)), bpix / 2.3548)
+    img /= np.std(img)
+    R, c = int(6 * max(smaj, smin) * bpix), n // 2
+    img[c - R:c + R + 1, c - R:c + R + 1] += amp * SZ.beam_image(smaj * bmaj, smin * bmin, bpa, cd, R)
+    return img, (bmaj, bmin, cd)
+
+
+def test_full_band_in_the_chain():
+    """The deep Full band (R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS), from the engine's verdicts through
+    the chain. The rule's engine (size_rule.engine_test: deep_search._size_test's branch) judges synthetic frames under the
+    configured rule (search_detect.FULL_BAND_SIZE 'off'), and the world's attempts carry its ledger rows (GLED_COLS_SIZE): a
+    3.5-beam source at S/N 9 is KEPT in the Full band - point-like by its axis ratio, its size excess above 1 recorded and not
+    applied, its size_role marked - while the same source in 23 MHz is REMOVED by size ('gaussfit-size'); an elongated source
+    (3 x 1 beams) at S/N 12 in the Full band is REMOVED by its axis ratio ('axis-ratio'), the axis test applying there. The
+    chain under the ruled defaults ('replace', the pending patch's switch in the conform stub) carries the kept Full-band
+    detection - source A's on its first night - into the conformant catalog and both catalogs of its multiples (associate I_wb
+    and fork I); no removed one reaches a catalog; the merged ledger holds each row with the verdict and role it was judged
+    with. Under 'rule' the same Full-band source is removed by size, as in every other band."""
+    import json as _json
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.search import size_rule as SZ
+    rec_ = SZ.configured_record('deep')
+    env = SZ.Envelope.load(SZ.resolve(CFG.search_detect.SIZE_ENVELOPE), CFG.search_detect.SIZE_ENVELOPE_MD5,
+                           full_band=SZ.full_band_size('deep', from_env=False)).require()
+    assert env.full_band == 'off' == rec_['full_band_size']
+
+    def judged(band, frame, snr, e_=env):
+        img, beam = frame
+        c = dict(pix_x=img.shape[1] // 2, pix_y=img.shape[0] // 2, local_snr=snr)
+        return c, SZ.engine_test(c, 'I', band, img, *beam, e_)[1]
+    big, ell = _engine_frame(5, 9.0, 3.5, 3.5), _engine_frame(7, 12.0, 3.0, 1.0)
+    kept, v_kept = judged('Full', big, 9.0)
+    gone_sb, v_sb = judged('23MHz', big, 9.0)
+    gone_ax, v_ax = judged('Full', ell, 12.0)
+    on, v_on = judged('Full', big, 9.0, SZ.Envelope.load(env.source, env.md5, full_band='rule').require())
+    FG = f'gate{SZ.ROLE_SEP}{SZ.FULL_OFF_NOTE}'
+    assert v_kept in ('', 'flag') and kept['size_verdict'] == 'point-like' and kept['size_excess'] > 1 \
+        and kept['size_role'] == FG, ('kept by size in the Full band', v_kept, kept)
+    assert v_sb == 'remove' and gone_sb['size_verdict'] == 'gaussfit-size' and gone_sb['size_role'] == 'gate', (v_sb, gone_sb)
+    assert v_ax == 'remove-axis' and gone_ax['size_verdict'] == 'axis-ratio' and gone_ax['size_role'] == FG, (v_ax, gone_ax)
+    assert v_on == 'remove' and on['size_verdict'] == 'gaussfit-size' and on['size_role'] == 'gate', ("under 'rule'", v_on, on)
+    # the world: every attempt searched under the configured rule (its record), its ledger with the rule's columns - the
+    # world's own rows judged point-like (their role per band) - and the engine's rows above in the I attempts
+    make_world()
+    stub_conform('patched')
+    cols = LED_COLS + SZ.GLED_COLS_SIZE
+    for rd in sorted(glob.glob(f'{T}/collect/*/attempts/*/transients/Run_{LABEL}')):
+        with open(os.path.join(rd, SZ.RUN_RECORD), 'w') as f:
+            _json.dump(rec_, f)
+        led = rows(f'{rd}/v_deep_ledger.csv')
+        for x in led:
+            x.update(size_rule=env.label(), size_snr=x['snr'], size_thr='2.4664', axis_thr='2.764', size_excess='0.4',
+                     axis_excess='0.4', size_verdict='point-like', size_role=SZ.role_of('gate', env, x['scope']))
+        cell = rd.split('/attempts/')[1].split('_I_')[0] if '_I_' in rd else None
+        size_cols = {k: kept[k] for k in SZ.GLED_COLS_SIZE}
+        if cell == '05h_Full':                            # source A's first night: the engine's kept detection
+            a0 = [x for x in led if x['date'] == DATES[0] and float(x['ra']) == SRC['A'][0] and x['final'] == '1']
+            assert len(a0) == 1, a0
+            a0[0].update(size_cols)
+            led.append(dict(dict.fromkeys(cols, ''), lst='05h', scope='Full', stokes='I', date=DATES[0], final='0', ra='82.80000',
+                            dec='37.50000', veto_reason='axis-ratio', snr='12', pix_y='7',
+                            **{k: gone_ax[k] for k in SZ.GLED_COLS_SIZE}))
+            cat = rows(f'{rd}/master_catalog.csv')
+            hit = [x for x in cat if x['date'] == DATES[0] and x['ra'] == f'{SRC["A"][0]:.5f}' and x['snr'] == '9.00']
+            assert len(hit) == 1, hit
+            hit[0].update(size_beams=str(kept['size_beams']), axis_norm=str(kept['axis_norm']))
+            write_csv(f'{rd}/master_catalog.csv', list(cat[0].keys()), cat)
+            a_id = hit[0]['cand_id']
+        if cell == '05h_23MHz':                           # the same source in 23 MHz: removed by size
+            led.append(dict(dict.fromkeys(cols, ''), lst='05h', scope='23MHz', stokes='I', date=DATES[0], final='0', ra='82.30000',
+                            dec='36.80000', veto_reason='gaussfit-size', snr='9', pix_y='8',
+                            **{k: gone_sb[k] for k in SZ.GLED_COLS_SIZE}))
+        write_csv(f'{rd}/v_deep_ledger.csv', cols, led)
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate,fork', expect=0)
+    assert rec(f'{LABEL}.merge')['meta']['size_rule'] == rec_
+    mled = {(x['scope'], x['date'], round(float(x['ra']), 4), x['veto_reason']): x for x in rows(f'{U}/v_deep_ledger.csv')
+            if x['stokes'] == 'I'}
+    a_row = mled[('Full', DATES[0], SRC['A'][0], '')]
+    d_row, e_row = mled[('Full', DATES[0], 82.8, 'axis-ratio')], mled[('23MHz', DATES[0], 82.3, 'gaussfit-size')]
+    assert a_row['final'] == '1' and a_row['size_role'] == FG and a_row['size_verdict'] == 'point-like' \
+        and float(a_row['size_excess']) > 1, ('the merged ledger: A kept by size in the Full band', a_row)
+    assert d_row['size_role'] == FG and float(d_row['axis_excess']) > 1, ('removed by axis in the Full band', d_row)
+    assert e_row['size_role'] == 'gate' and float(e_row['size_excess']) > 1, ('removed by size in 23 MHz', e_row)
+    assert all(x['size_role'] == (FG if x['scope'] == 'Full' else 'gate') for x in rows(f'{U}/v_deep_ledger.csv')), \
+        'every Full-band row marked, no other'
+    conf = {x['cand_id']: x for x in rows(f'{U}/master_catalog.csv')}
+    assert a_id in conf and abs(float(conf[a_id]['size_beams']) - kept['size_beams']) < 1e-9, (a_id, conf.get(a_id))
+    assert not [x for x in rows(f'{U}/master_catalog_removed.csv') if x['cand_id'] == a_id]
+    assert not [x for x in conf.values() for ra, dec in ((82.8, 37.5), (82.3, 36.8))
+                if abs(float(x['ra']) - ra) < 0.05 and abs(float(x['dec']) - dec) < 0.05], 'a removed detection in the catalog'
+    for p in (f'{U}/source_catalogs_I_wb/Full_source_members.csv', f'{U}/source_catalogs_I_fwb/Full_source_members.csv'):
+        assert a_id in {x['cand_id'] for x in rows(p)}, (p, a_id)
 
 
 def test_b30_identity_pre_check():
@@ -1089,7 +1198,7 @@ ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
          'test_merge_refresh_replaces_a_changed_attempt', 'test_merge_refusal_record_keeps_extraction_rows',
-         'test_size_rule_in_the_chain', 'test_b30_identity_pre_check',
+         'test_size_rule_in_the_chain', 'test_full_band_in_the_chain', 'test_b30_identity_pre_check',
          'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain', 'test_b02_check_chain_to_conform',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']

@@ -43,8 +43,10 @@ GLED_COLS = GLED_COLS_V1 + GLED_COLS_TABLE
 # the size / axis rule at every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS; deep_search GLED_COLS_SIZE =
 # lib/search/size_rule.GLED_COLS_SIZE): appended after GLED_COLS by a search under SIZE_RULE 'envelope' (its run directory holds
 # size_rule.json); production's ledger is GLED_COLS. size_role since size-rule-2 (2026-11-03): every candidate row carries the
-# rule's columns ('gate': the rule decided it; 'record': measured after an earlier gate removed it); a size-rule-1 search
-# (8957c42) wrote the first seven only (GLED_COLS_SIZE_V1)
+# rule's columns ('gate': the rule decided it; 'record': measured after an earlier gate removed it), since size-rule-3
+# (2026-11-04) with ':full_size_off (spectrum-aware reference pending)' on every deep Full-band row while that band's size test is
+# off (search_detect.FULL_BAND_SIZE, the record's full_band_size); a size-rule-1 search (8957c42) wrote the first seven only
+# (GLED_COLS_SIZE_V1)
 GLED_COLS_SIZE = ['size_rule', 'size_snr', 'size_thr', 'axis_thr', 'size_excess', 'axis_excess', 'size_verdict', 'size_role']
 GLED_COLS_SIZE_V1 = GLED_COLS_SIZE[:7]
 GIMG_COLS = ['lst', 'scope', 'stokes', 'date', 'n_ident5', 'n_after_morph', 'n_after_mstruct', 'n_after_jupiter', 'n_final',
@@ -390,8 +392,10 @@ def size_rule_rows(path, cols, rows, tier='deep'):
     'record' row was removed by an earlier gate (its veto_reason, never the rule's); the member pool is exactly the deep tier's
     Stokes I 'reject_local_snr' rows whose ledger S/N lies in catalog_fork.MEMBER_SNR (5 <= |snr| < 7: size_rule.member_window)
     - each of them 'gate', every other local-SNR row 'record', none in the 10-minute tier; every final was judged (point-like,
-    fit-failed or no-snr) with excesses <= 1. A size-rule-1 ledger (the first seven columns, judged rows only) is read by that
-    version's checks."""
+    fit-failed or no-snr) with excesses <= 1. The deep Full band under the record's full_band_size 'off' (size-rule-3): EVERY
+    row of it carries the mark ('<gate|record>:' + FULL_OFF_NOTE), no other row does, and none of its rows is removed by size
+    (its size excess recorded, never applied; the axis test applies). A size-rule-1 ledger (the first seven columns, judged rows
+    only) is read by that version's checks."""
     from exopipe.phase3.lib.search import size_rule as SZ
     probs = []
     v2, v1 = cols == GLED_COLS + GLED_COLS_SIZE, cols == GLED_COLS + GLED_COLS_SIZE_V1
@@ -404,11 +408,13 @@ def size_rule_rows(path, cols, rows, tier='deep'):
                 f"({SZ.RUN_RECORD}) says {rec['rule']!r}"]
     if not (v2 or v1):
         return []
-    want_v = SZ.RECORD_VERSION if v2 else 'size-rule-1'
-    if rec['version'] != want_v:
-        return [f"the ledger carries the columns of {want_v}, its run's record ({SZ.RUN_RECORD}) says {rec['version']!r}"]
+    want_v = (SZ.RECORD_VERSION, 'size-rule-2') if v2 else ('size-rule-1',)   # size-rule-2 and -3 share the columns
+    if rec['version'] not in want_v:
+        return [f"the ledger carries the columns of {' / '.join(want_v)}, its run's record ({SZ.RUN_RECORD}) says "
+                f"{rec['version']!r}"]
     label = f"envelope:{rec['envelope']}:{rec['md5'][:12]}"
     window = SZ.member_window('deep' if tier == 'deep' else '10min', from_env=False)
+    full_off = tier == 'deep' and rec['full_band_size'] == 'off'      # the deep Full band's size test off (size-rule-3)
     for r in rows:
         v, sv, where = r['veto_reason'], r.get('size_verdict') or '', f"{r['stokes']} {r['date']} {r['ra']},{r['dec']}"
         if (sv or v2) and sv not in SZ.VERDICTS:
@@ -423,7 +429,21 @@ def size_rule_rows(path, cols, rows, tier='deep'):
             if sv in SZ.REMOVING and v != sv:
                 probs.append(f'{where}: the rule removes it ({sv}) but its veto_reason is {v!r}')
             continue
-        role = r.get('size_role') or ''
+        full_role = r.get('size_role') or ''
+        role, off = SZ.role_base(full_role), SZ.role_full_off(full_role)
+        if full_role not in (role, f'{role}{SZ.ROLE_SEP}{SZ.FULL_OFF_NOTE}'):
+            probs.append(f'{where}: size_role {full_role!r} is neither one of {SZ.ROLES} nor one of them marked '
+                         f'{SZ.ROLE_SEP}{SZ.FULL_OFF_NOTE}')
+            continue
+        if off != (full_off and r['scope'] == SZ.FULL_BAND):           # the deep Full band's size test off: every row marked
+            probs.append(f"{where}: a {r['scope']} row with size_role {full_role!r} where the run's record says the deep "
+                         f"Full band's size test is {rec['full_band_size']!r} (tier {tier}) - every deep Full-band row carries "
+                         f"the mark under 'off', no other row")
+            continue
+        if off and (sv == 'gaussfit-size' or v in ('gaussfit-size', SZ.MEMBER_REASON + 'gaussfit-size')):
+            probs.append(f'{where}: removed by size ({v!r}, size_verdict {sv!r}) in the deep Full band, whose size test is '
+                         f'off ({SZ.FULL_OFF_NOTE})')
+            continue
         member = v.startswith(SZ.MEMBER_REASON)
         if (v == 'reject_local_snr' or member) and r['stokes'] == 'I':     # the fork's member pool: judged exactly inside it
             try:
@@ -432,12 +452,12 @@ def size_rule_rows(path, cols, rows, tier='deep'):
                 snr_ = None
             pool = SZ.in_member_pool(snr_, window)
             if pool != (role == 'gate'):
-                probs.append(f"{where}: {v!r} at |S/N| {r['snr']} with size_role {role!r} - the member pool ("
+                probs.append(f"{where}: {v!r} at |S/N| {r['snr']} with size_role {full_role!r} - the member pool ("
                              + (f'{window[0]:g} <= |S/N| < {window[1]:g}' if window else 'none in the 10-minute tier')
                              + ") is judged ('gate'), every other local-SNR row recorded ('record')")
                 continue
         if role not in SZ.ROLES:
-            probs.append(f'{where}: size_role {role!r} is not one of {SZ.ROLES}')
+            probs.append(f'{where}: size_role {full_role!r} is not one of {SZ.ROLES}')
         elif role == 'gate':
             if (v in SZ.REMOVING or member) and sv != (v[len(SZ.MEMBER_REASON):] if member else v):
                 probs.append(f'{where}: removed as {v!r} with size_verdict {sv!r}')
@@ -447,7 +467,7 @@ def size_rule_rows(path, cols, rows, tier='deep'):
                 probs.append(f"{where}: {v!r} on a Stokes {r['stokes']} row (only the Stokes I local-SNR rows are judged so)")
         elif not v or v in SZ.REMOVING or member:
             probs.append(f"{where}: a 'record' row (measured after an earlier gate removed it) with veto_reason {v!r}")
-    for r, _rule, words in SZ.final_findings(rows):
+    for r, _rule, words in SZ.final_findings(rows, full_band=rec['full_band_size'] if tier == 'deep' else 'rule'):
         probs.append(f"{r['stokes']} {r['date']} {r['ra']},{r['dec']}: {words}")
     return probs
 

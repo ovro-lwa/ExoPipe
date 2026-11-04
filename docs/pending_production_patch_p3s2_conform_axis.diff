@@ -1,26 +1,29 @@
 PENDING PRODUCTION PATCH - exopipe_ops/p3s2_conform.py: a switch for the conformance's axis-ratio step (P3_CONFORM_AXIS)
 =========================================================================================================================
-Not applied. exopipe_ops belongs to its owning chat: apply it there, by its commit, when Gregg rules that the size / axis rule
-at every S/N replaces the conformance's axis step (the refactor's catalog_conform.CONFORM_AXIS_UNDER_RULE = 'replace').
+Not applied. exopipe_ops belongs to its owning chat: apply it there, by its commit. The refactor's default is now
+catalog_conform.CONFORM_AXIS_UNDER_RULE = 'replace' (R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS, below), so
+under the ruled default every refactor stage that runs this script on attempts searched under the size / axis rule REFUSES until
+it is applied (list below); production's own passes do not change (the switch's default is on).
 Apply from /lustre/gh/main/exopipe_ops:   git apply <this file>      (patch(1) is not installed on the nodes; git apply
 reads the plain file, this preamble skipped)
-Base: p3s2_conform.py at exopipe_ops 074f96c (md5 7504f11a78f445a097d0c57c5fad193d); patched md5 fcc042c62918f524e5cc53600294b6b6.
+Base: p3s2_conform.py at exopipe_ops 074f96c (md5 7504f11a78f445a097d0c57c5fad193d); patched md5 6d592cf8f4e548cd65f5b306b8c34cdb.
 
-THE QUESTION FOR GREGG. Production's conformance removes a row whose catalog |S/N| > 8 and normalized axis ratio > 2.0 x the
-epoch beam's. The step came from R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA (Gregg 2026-09-05: "Approved - remove above 8 sigma local SNR
-when the normalized axis ratio exceeds 2.0; flag 1.5 to 2.0; no action below 8 sigma"). R-SIZE-AXIS-GATE-1.5-RATIFIED (2026-09-09:
-"1.5 and 1.5 is correct and should run from now on!"; ledger: "Supersedes ... the 2.0 axis value of
-R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA") superseded that 2.0 value; the conformance's 2.0 step has stood since only in production's
-code, inert behind the search's 1.5. R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS: the rule at every S/N
-"replaces the fixed thresholds (1.5 / 1.5 above 8 sigma; 1.7 at 7-8 sigma for unpromoted singles)" - it does not name the
-conformance's step. So no live ruling holds the 2.0 step: the refactor's 'second_gate' keeps production's current behavior.
-Under the rule the search keeps axis ratios up to max(1.5, the 99th percentile of injected point sources): 3.92 for deep I low
-bands at S/N 8, 3.05 at 9, 2.27 at 10; 3.34 for 10-minute I low bands at 8. So the 2.0 step acts again on the rule's attempts.
-  - keep it (refactor default 'second_gate', production's current behavior): ~0.2% more real Stokes I point sources lost above
-    8 sigma (9 of 4,165 deep high, 8 of 4,125 deep low, 13 of 4,066 10-minute low in the injections), ~0% in V;
-  - switch it off ('replace', this patch): up to ~4,900 deep and ~5,400 10-minute Stokes I detections above 8 sigma that today's
-    search and conformance both remove are admitted to the later gates (an upper bound from the Run_P3S5 / Run_SLSTB ledgers).
-  (refactor_reviews_20261103/S_size_review.md finding 1.)
+THE DECISION. Production's conformance removes a row whose catalog |S/N| > 8 and normalized axis ratio > 2.0 x the epoch beam's.
+The step came from R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA (Gregg 2026-09-05: "Approved - remove above 8 sigma local SNR when the
+normalized axis ratio exceeds 2.0; flag 1.5 to 2.0; no action below 8 sigma"). R-SIZE-AXIS-GATE-1.5-RATIFIED (2026-09-09: "1.5
+and 1.5 is correct and should run from now on!"; ledger: "Supersedes ... the 2.0 axis value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA")
+superseded that 2.0 value; the conformance's 2.0 step has stood since only in production's code, inert behind the search's 1.5.
+R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS: the rule at every S/N "replaces the fixed thresholds (1.5 / 1.5
+above 8 sigma; 1.7 at 7-8 sigma for unpromoted singles)" - it did not name the conformance's step. Under the rule the search keeps
+axis ratios up to max(1.5, the 99th percentile of injected point sources): 3.92 for deep I low bands at S/N 8, 3.05 at 9, 2.27
+at 10; 3.34 for 10-minute I low bands at 8. So the 2.0 step acts again on the rule's attempts. Gregg 2026-11-04
+(R-GREGG-20261104-AXIS-THRESHOLD-DECIDE-FROM-PULSARS): "You should decide, based on the data (e.g. verified pulsars again) what is
+the correct threshold to use!" The refactor chat decided (R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS): the
+calibrated rule alone, this step retired. On 9 verified isolated pulsars the 2.0 step on top of the rule removes 0.3% [0.1, 1.1]
+(deep) and 0.1% [0.0, 0.6] (10-minute) of the Stokes I detections above 8 sigma, and the pulsars' 99th-percentile axis ratio lies
+inside the envelope in every S/N bin; the rows the step alone would remove (4,946 deep, 5,400 10-minute) lie mostly at cataloged
+bright sources, for the later gates; their effect on the served catalogs is measured at the first full refactor run
+(refactor_analysis/review_items_20261031/axis_pulsars_20261104/AXIS_PULSARS_20261104.md).
 
 WHERE THE REFACTOR RUNS THIS SCRIPT ON ATTEMPTS SEARCHED UNDER THE RULE (each gets P3_CONFORM_AXIS=0 under 'replace'):
   - 10-minute S-G13 conformance (lib/catalog/tier_sublst.st_conform) - every LST;
@@ -31,7 +34,8 @@ WHERE THE REFACTOR RUNS THIS SCRIPT ON ATTEMPTS SEARCHED UNDER THE RULE (each ge
     one, although the deep main conformance itself is the refactor's check (lib/catalog/conform_check, MODE 'check');
   - deep MODE 'remove' and the incremental replay (production paths; the parity file).
 Until this patch is in exopipe_ops, 'replace' REFUSES before any of those stages runs (lib/search/size_rule.conform_axis_refusal:
-the script must read os.environ.get('P3_CONFORM_AXIS', '1')); 'second_gate' needs no patch.
+the script must read os.environ.get('P3_CONFORM_AXIS', '1')); 'second_gate' (production's behavior, the parity file's value) needs
+no patch.
 
 WHAT IT CHANGES. Unset or any value but '0' (every production pass): nothing - the same statements run in the same order
 (AXIS_STEP is True: the new first branch never fires and the old second 'if' becomes an 'elif' after a 'continue'); byte-identical
@@ -47,8 +51,8 @@ every other step unchanged. The refactor's port (lib/search/removal_rules.confor
  SIZE_REMOVE, SIZE_FLAG, SNR_SIZE = 2.5, 2.0, 8.0   # Gregg 2026-09-04 ~20:00 UT: 2.5 beams
  SIZE_STEP = os.environ.get('P3_CONFORM_SIZE', '1') != '0'   # P3S3: the chain applies the ruled size removal (epoch beam, fit sigma); this stopgap step is off
 +# the axis-ratio step below (R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA, 2026-09-05; its 2.0 value superseded by R-SIZE-AXIS-GATE-1.5-RATIFIED, 2026-09-09):
-+# on unless P3_CONFORM_AXIS=0 - the refactor passes 0 only for attempts searched under the size / axis rule at every S/N if Gregg rules that the rule
-+# replaces this step (catalog_conform.CONFORM_AXIS_UNDER_RULE='replace'); off, a row above it is kept and flagged. Unset (every production pass): unchanged
++# on unless P3_CONFORM_AXIS=0 - the refactor passes 0 for attempts searched under the size / axis rule at every S/N, which replaces this step
++# (R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS, catalog_conform.CONFORM_AXIS_UNDER_RULE='replace'); off, a row above it is kept and flagged. Unset (every production pass): unchanged
 +AXIS_STEP = os.environ.get('P3_CONFORM_AXIS', '1') != '0'
  BEAM = {'Red': 787.0, 'Green': 518.0, 'Blue': 374.0, 'Full': 528.0}
  SUB = {'18': 'Red', '23': 'Red', '27': 'Red', '32': 'Red', '36': 'Red', '41': 'Green', '46': 'Green',
