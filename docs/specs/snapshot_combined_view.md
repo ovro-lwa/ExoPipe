@@ -165,7 +165,7 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
 | SNAPVIEW_PYTHON | 'py36' | comb_build_20261102.sh:18, :48, :52 |
 | SNAPVIEW_LOC_ENV | {'P3_LOC_SHARDS': '12'} | comb_build_20261102.sh:82 (speed only) |
 | SNAPVIEW_BUILD_TIMEOUT_S | 172800 | the 36-batch view took 33,492 s; production sets no limit |
-| SNAPVIEW_TEST_SAMPLE_DIRS | 0 | the re-read's sample (0 = every page directory) |
+| SNAPVIEW_TEST_SAMPLE_DIRS | 0 | the re-read's sample (0 = every page directory; measured about 0.08 s per directory on cold Lustre, 10,562 directories in 880 s - set a sample for a full view if that is too slow; the build's T5 and T6 always cover every directory) |
 
 Every default is production's value; no ruled value differs from production's, so the parity file
 (parity/production_20261013.cfg) has no line for the view. The serve step's CONFIG now declares `catalog_snapshot` (BATCH_DIR).
@@ -187,7 +187,27 @@ same fleet records, run under its interpreter, against this stage, into scratch:
   input copy for both builds.
 
 The standing test (tests/test_snapshot_view.py) runs production's builder and the stage on a synthetic world and compares the two
-trees; the real-data parity of 2026-11-03 is in refactor_reviews_20261103/V_combview_report.md.
+trees. tests/parity_snapshot_view.py runs both sides on real data and compares them (prod, port, compare).
+
+Result on real data (2026-11-03/04; refactor_reviews_20261103/V_combview_report.md):
+
+- **Inputs.** Run_SNAPB6H2_20261101, Run_SNAPB6I2_20261101 and Run_SNAPB6L_20261025, with the refusal record and the fleet records
+  frozen.
+- **The subset.** 43,553 served detections, 6,730 omitted (165 OMIT keys), 182 identities dropped. 4,136 combined identities, 196
+  of them merged across batches and 1 renamed.
+- **The stage.** 78201c1: every stage done, every content test passed.
+- **The comparison.** Each view holds 53,620 files in 14,717 directories, the same sets. Equal byte for byte: every catalogue,
+  per-tier view, page and identity detections.csv, queue, omission file, filter file, localization table and localization input.
+  The 24,911 panels have the same bytes, and the summary is equal but for `seconds`.
+- **The 751 differences, all explained.**
+  - 2 are localization build.log files, each naming its own output path.
+  - 122 of the 4,130 figures, and their 627 copies as page astrometry.png, differ in the stacking order of overlapping detection
+    markers (3-456 pixels, inside the scatter panel). Production's figure code before exopipe_ops 7e6904a, which ran in place and
+    was the same on both sides, draws bytes that depend on the drawing process, not only on its inputs. Redrawn from the same tables,
+    one process drawing in sequence reproduces production's figures (122 of 122), and production's pool layout reproduces the
+    stage's (121 of 122).
+  - The figure code that replaced it on 2026-11-04 (figure v2) is deterministic on the same 122 identities: equal across the two
+    views' tables, the hash seed and the drawing order.
 
 ## Production behavior carried for parity, pending Gregg
 
