@@ -24,6 +24,8 @@ exopipe3 config --step <step>       # every section the step declares (CONFIG), 
 | search for transients | `exopipe3 search` | `steps/search.py` -> `lib/search/` | `search` |
 | build candidate catalogues (merge, associate, select, names; snapshot chain) | `exopipe3 catalog` | `steps/catalog.py` -> `lib/catalog/` | `catalog` |
 | forced photometry | `exopipe3 forced` | `steps/forced.py` -> `lib/forced/` | `forced`, `fitting` |
+| test which cataloged source makes a forced target's events (wide-area burst test, v3) -> `<run>/forced_wide_v3.csv` | `exopipe3 forced --tier snapshot --stages wide_jobs,wide_search,wide_test,wide_publish` | `lib/forced/wide_stages.py` (spec `docs/specs/forced_wide.md`) | `forced_wide`, `forced_wide_search`, `forced_wide_test` |
+| the night-activity table of the astrometry figure | `exopipe3 forced --tier snapshot --stages activity` | `lib/forced/night_activity.py` | `night_activity` |
 | light curves | `exopipe3 curves` | `steps/curves.py` -> `lib/curves/` | `curves` |
 | review pages / servers | `exopipe3 pages`, `exopipe3 serve` | `steps/pages.py`, `steps/serve.py` -> `lib/pages/`, `lib/serve/` | `pages`, `serve` |
 | push to / clean the archive | `exopipe3 archive` | `steps/archive.py` -> `lib/archive/` | `archive` |

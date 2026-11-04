@@ -51,7 +51,8 @@ What the flag does (cli calls begin() before the step runs):
      resume_check never adopts across the injected / ordinary line - and every SOURCE flag naming another run's products
      under one (SOURCE_FLAGS: serve --source / --carry-from, archive --attempt / --staging-root / --workdir, install --gen /
      --rebuild-root, pages --from-run, search --replay-attempt, photometry --src-run / --cutout-root / --stage1, forced
-     --deep-eval-run, catalog --inc-source run: / --omit-runs (each run of its comma list or @FILE, a bare name under
+     --deep-eval-run / --wide-runs / --wide-jobs (each file of its comma list) / --wide-cutout-root / --wide-bursts /
+     --na-detections, catalog --inc-source run: / --omit-runs (each run of its comma list or @FILE, a bare name under
      paths.SNAPSHOT_REVIEW_ROOT, as the deep-omission stage reads it) / --omit-refusals, calibrate --served-run; a source on
      another host is checked over ssh).
 
@@ -272,7 +273,7 @@ SOURCE_FLAGS = {
     'pages': ('from_run',),
     'search': ('replay_attempt',),
     'photometry': ('src_run', 'cutout_root', 'stage1'),
-    'forced': ('deep_eval_run',),
+    'forced': ('deep_eval_run', 'wide_runs', 'wide_jobs', 'wide_cutout_root', 'wide_bursts', 'na_detections'),   # W / N inputs
     'catalog': ('inc_source', 'omit_runs', 'omit_refusals'),   # omit_*: the deep-omission stage (lib/catalog/deep_omission.py) -
                                                                # the served batch runs it counts and the refusal record it reads
     'calibrate': ('served_run',),
@@ -281,8 +282,9 @@ _KEYWORDS = ('published', 'served', 'none', 'snapshot', 'search')     # flag val
 _RUN_NAME_FLAGS = {'deep_panels_run': 'TRANSIENTS_ROOT',             # a bare name resolves under this paths root (as the step
                    'omit_runs': 'SNAPSHOT_REVIEW_ROOT',              # resolves it: deep_omission._runs_arg, snapshot_view.runs_arg)
                    'view_runs': 'SNAPSHOT_REVIEW_ROOT'}
-_LIST_FLAGS = ('stores', 'omit_runs', 'view_runs')   # a comma list of paths (archive --stores: files; catalog --omit-runs, serve
-                                                     # --view-runs: runs)
+_LIST_FLAGS = ('stores', 'omit_runs', 'view_runs', 'wide_jobs')   # a comma list of paths (archive --stores: files; catalog
+                                                                  # --omit-runs, serve --view-runs: runs; forced --wide-jobs:
+                                                                  # job lists)
 _AT_FILE_FLAGS = ('omit_runs', 'view_runs')      # '@FILE': the paths FILE lists, one per line ('#' starts a comment)
 
 

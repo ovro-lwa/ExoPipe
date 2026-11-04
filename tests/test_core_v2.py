@@ -1603,15 +1603,26 @@ def test_item7_parity_file_keys():
              'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',   # the grouping and the ONE multiples
                                                                              # rule (catalog_grouping.GROUPING / MULTIPLES_RULE,
                                                                              # item F.3; production 'production')
-             'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS'}   # the refactor chat's decision on Gregg's
+             'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS',   # the refactor chat's decision on Gregg's
                                                                              # delegation R-GREGG-20261104-AXIS-THRESHOLD-DECIDE-
                                                                              # FROM-PULSARS: catalog_conform.CONFORM_AXIS_UNDER_RULE
                                                                              # 'replace' (production 'second_gate')
+             'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',   # forced W: every v2 control (V2_CTL_DRAW) and the
+                                                                             # order-independent controls (CONTROL_ORDER), the
+                                                                             # refactor chat under Gregg's delegation;
+             'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE'}   # its amendment: every
+                                                                             # taper control line (TAPER_CTL_MAX), the bootstrap's
+                                                                             # precision (BOOT_DRAW, BOOT_Z_SE), the knife-edge
+                                                                             # flag (KNIFE_EDGE_SE)
     PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
                                                              # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
     PROPOSED |= {'catalog_omission.ABSENT_WITH_SERVED'}    # 2026-11-03 (Q review F5): G6 'refuse' proposed, pending Gregg; production's
                                                              # 'production' in the parity file (DECISIONS_PENDING FYI named in
                                                              # refactor_reviews_20261103/Q_deepomit_fixes.md)
+    PROPOSED |= {'forced_wide.EVENT_ORDER', 'forced_wide.TARGET_MEMBER',   # 2026-11-03 (forced family W, the wide-area burst
+                 'forced_wide_search.FILE_ERRORS'}         # test ported): deterministic orders and the refusal proposed, pending
+                                                             # Gregg; production's values in the parity file (docs/specs/
+                                                             # forced_wide.md; refactor_reviews_20261103/W_forcedwide_report.md)
     path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     bad, n = [], 0
     for ln in open(path):
