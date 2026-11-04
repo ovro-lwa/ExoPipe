@@ -104,6 +104,9 @@ def default_out(args, fam):
 
 def run(args, run, fam, stages):
     gate_args(args, fam)
+    if getattr(args, 'threads', None):     # --threads reaches this process too: the CLI sets the variables after numpy loaded
+        from exopipe.phase3.lib.forced.wide_search import limit_threads
+        limit_threads(args.threads)
     if fam == 'N':
         stage_activity(args, run)
         return None
@@ -565,6 +568,7 @@ def stage_test(c):
                     v2_ctl_draw=c.wt.V2_CTL_DRAW, control_order=c.wt.CONTROL_ORDER, taper_ctl_max=c.wt.TAPER_CTL_MAX,
                     boot_draw=c.wt.BOOT_DRAW, boot_z_se=c.wt.BOOT_Z_SE, boot_max=c.wt.BOOT_MAX,
                     knife_edge_se=c.wt.KNIFE_EDGE_SE, knife_edge_draws=c.wt.KNIFE_EDGE_DRAWS,
+                    knife_edge_draws_max=c.wt.KNIFE_EDGE_DRAWS_MAX, knife_edge_decide=c.wt.KNIFE_EDGE_DECIDE,
                     draw_salt=(V3.DRAW_SALT_RULE if c.wt.KNIFE_EDGE_DRAWS and c.wt.KNIFE_EDGE_SE is not None else None),
                     cutout_root=c.cutout_root) as u:
         gate_env()

@@ -1038,22 +1038,34 @@ def test_draws():
 
 
 def _probe_threads(_x):
-    """a pool worker after 1.5 s of matrix products: (each loaded OpenBLAS pool's num_threads, the main thread's CPU ticks, the
-    other threads' CPU ticks in all, OMP_NUM_THREADS)"""
+    """a pool worker's threads in a STEADY window of matrix products: (each loaded OpenBLAS pool's num_threads, the main thread's
+    CPU ticks in the window, the other threads' ticks in all in it, OMP_NUM_THREADS). A warm-up first: OpenBLAS creates its
+    threads on its first use after the fork and they spin briefly before they sleep - a one-time cost, not their use."""
     import scipy.spatial                                  # noqa: F401 - scipy's own OpenBLAS, as the analysis loads it
     from threadpoolctl import threadpool_info
-    a = np.random.default_rng(0).random((900, 900))
-    t0 = time.time()
-    while time.time() - t0 < 1.5:
-        _b = a @ a
-    time.sleep(0.3)
-    ticks = {}
-    for t in os.listdir('/proc/self/task'):
-        f = open('/proc/self/task/%s/stat' % t).read().rsplit(')', 1)[1].split()
-        ticks[int(t)] = int(f[11]) + int(f[12])
-    main = ticks.pop(os.getpid())
+
+    def ticks():
+        out = {}
+        for t in os.listdir('/proc/self/task'):
+            f = open('/proc/self/task/%s/stat' % t).read().rsplit(')', 1)[1].split()
+            out[int(t)] = int(f[11]) + int(f[12])
+        return out
+
+    def busy(sec):
+        a = np.random.default_rng(0).random((900, 900))
+        t0 = time.time()
+        while time.time() - t0 < sec:
+            _b = a @ a
+    busy(0.4)
+    time.sleep(1.0)
+    t1 = ticks()
+    busy(1.2)
+    t2 = ticks()
+    me = os.getpid()
+    main = t2[me] - t1.get(me, 0)
+    other = sum(v - t1.get(k, 0) for k, v in t2.items() if k != me)
     nt = sorted({d['num_threads'] for d in threadpool_info() if d.get('internal_api') == 'openblas'})
-    return nt, main, sum(ticks.values()), os.environ.get('OMP_NUM_THREADS')
+    return nt, main, other, os.environ.get('OMP_NUM_THREADS')
 
 
 def test_worker_threads():
@@ -1070,10 +1082,11 @@ def test_worker_threads():
         one = p.map(_probe_threads, [0])[0]
     with get_context('fork').Pool(1, initializer=WS.pool_worker_init, initargs=(3,)) as p:
         three = p.map(_probe_threads, [0])[0]
-    check('pool workers without the cap run every allowed core (%d): other threads %d ticks against the main thread\'s %d'
-          % (ncpu, plain[2], plain[1]), ncpu < 3 or plain[2] > 2 * plain[1], plain)
-    check('pool_worker_init(1): every OpenBLAS pool at 1 thread, the other threads idle (%d ticks against the main thread\'s %d), '
-          'OMP_NUM_THREADS 1' % (one[2], one[1]), one[0] == [1] and one[2] < 0.75 * one[1] and one[3] == '1', one)
+    check('pool workers without the cap run every allowed core (%d): other threads %d ticks against the main thread\'s %d in a '
+          'steady window' % (ncpu, plain[2], plain[1]), ncpu < 3 or plain[2] > 2 * plain[1], plain)
+    check('pool_worker_init(1): every OpenBLAS pool at 1 thread, the other threads idle in a steady window (%d ticks against the '
+          'main thread\'s %d), OMP_NUM_THREADS 1' % (one[2], one[1]), one[0] == [1] and one[2] < 0.2 * max(one[1], 1)
+          and one[3] == '1', one)
     check('pool_worker_init(3): every OpenBLAS pool at 3 threads (--threads 3)', three[0] == [3] and three[3] == '3', three)
 
 

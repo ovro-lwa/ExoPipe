@@ -310,6 +310,13 @@ its rows came in string-hash order, which differs in every process. No value dep
 
 ### Not ported
 
+The review page `/s/fp_deep/forced_wide/` is not a stage. Its v4 builder, `forced_wide_page_v4.py` (round 7, 2026-11-04;
+installed beside `forced_wide_page_v3.py` in the analysis directory), reads the 4 published files and the family's work
+root (candidates, jobs, events, bursts). It writes only into the site: `index.html`, `figs_v4/` (every per-target figure
+redrawn, the analysis' `draw()` ported, from the published rows and their candidates) and `v3.html` (the v3 page, kept). It
+never writes the analysis' `v3/results_v3.csv`, which is the parity reference. Knife-edge rows whose draws split have
+their own column in the outcome table, so it sums.
+
 - The analysis' figures (`figs_v3/`) and its review page (`forced_wide_page_v3.py`): nothing in the pipeline or the
   figure reads them.
 - The magnification-bound measurement (`v3/mag_bound.py`, `mag_bound_V.py`): its result is the approved constant `MU`.
