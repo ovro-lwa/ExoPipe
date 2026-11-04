@@ -27,12 +27,20 @@ evaluated it: its pixel's sky position on its frame's grid (5 decimals - the cat
 block and BMAJ, the noise the search recorded for the frame (frame_noise.csv), the rules in the search's order (elevation
 floor, Jupiter track, bright-source table, row line). The search's own gates are not re-run (size above 8 sigma among
 them: the ledger holds its inputs rounded, and production's deep conformance runs no size step); the axis ratio is checked
-at the search's limit on the finals and production's own computation on the catalog rows. Any finding: CHECK_REPORT
-written, REFUSED
-(nothing published). Else production's outputs with nothing removed - master_catalog_asrun.csv (a copy of ``merged``, the
-merge's output), master_catalog.csv with the conform columns, master_catalog_removed.csv (the pulsar stage's removals) -
-and the frame caches, as p3s2_conform.py writes them; so conformant + removed = as-run + the restored rows, as production's
-conformant + removed = as-run + the re-admitted VM_ rows.
+at the search's limit on the finals and production's own computation on the catalog rows. Under the size / axis rule at
+every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS; lib/search/size_rule) the attempts must share the
+configured rule (their size_rule.json; refused before any row otherwise), a final must carry the rule's own passing
+verdict (its recorded excesses, size_rule.final_findings), production's fixed size limit on the catalog rows only flags, and
+production's fixed AXIS step (axis ratio > 2.0 x beam above 8 sigma: the 2.0 value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA,
+superseded by R-SIZE-AXIS-GATE-1.5-RATIFIED, kept in production's code) follows catalog_conform.CONFORM_AXIS_UNDER_RULE
+(UNRULED, PENDING GREGG): 'second_gate' - production's current behavior: the step stands as a second gate, as in every
+production conformance of the tier (the multiples fork, 10-minute S-G13): this check REMOVES the catalog rows it removes, in
+its words, into master_catalog_removed.csv (counted in the printed line); 'replace' - kept and flagged.
+Any finding: CHECK_REPORT written, REFUSED
+(nothing published). Else production's outputs with nothing removed but the second gate's rows - master_catalog_asrun.csv (a
+copy of ``merged``, the merge's output), master_catalog.csv with the conform columns, master_catalog_removed.csv (the pulsar
+stage's removals, then the second gate's) - and the frame caches, as p3s2_conform.py writes them; so conformant + removed =
+as-run + the restored rows, as production's conformant + removed = as-run + the re-admitted VM_ rows.
 Not seen: a lifted exclusion of a night the search never had - one the masters build left out as excluded, so the cell
 has no residual of it (at most 2,272 of today's excluded cell-nights, in 435 cells: the 2,355 without a residual less 83
 with no Phase 2 image of the cell at all; the record covers the 145 with a residual). The master then lacks a night
@@ -57,6 +65,7 @@ import numpy as np
 
 from exopipe.phase3.config import CFG
 from exopipe.phase3.lib.search import removal_rules as RR
+from exopipe.phase3.lib.search import size_rule as SZ
 
 MODES = ('check', 'remove')                       # catalog_conform.MODE
 CHECK_REPORT = 'conform_check.csv'                # every finding of a refused check
@@ -519,6 +528,10 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
     if bad:
         raise Refused(f'conform check: {len(bad)} attempt(s) not searched under the once-in-search rules (re-search those '
                       f'cells, or publish with catalog_conform.MODE=remove under the ruling ID): {bad[:3]}')
+    try:                                    # the size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS):
+        szr = SZ.one_rule([a['rd'] for a in atts], want=SZ.configured_record('deep'))   # one rule, the configured one
+    except RuntimeError as e:
+        raise Refused(f'conform check: {e}')
     src = os.path.join(CD, 'master_catalog.csv')
     raw = _rows(src)
     if not raw:
@@ -676,6 +689,10 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
                     finding('a', rule, r, words, pos)
                     continue
                 notes[key6 + pos] = tab.get(id(r), (False, ''))[1]
+                if szr['rule'] == 'envelope':   # the size / axis rule: the final passes by its own recorded verdict
+                    for _r, rule_, words in SZ.final_findings([r]):
+                        finding('a', rule_, r, words, pos)
+                    continue
                 an = RR.f(r.get('axis_norm'))   # the search's axis limit (rounded recorded values cannot exceed it when kept)
                 if abs(RR.f(r['snr'])) > sd.SIZE_SNR_GATE and np.isfinite(an) and an > sd.AXIS_REMOVE:
                     finding('a', 'axis', r, f'axis ratio {an} x beam > {sd.AXIS_REMOVE} above {sd.SIZE_SNR_GATE:g} sigma', pos)
@@ -716,7 +733,7 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
     fkeys = {(r['stokes'], r['lst'], r['band'], r['date']) for r in raw}
     RR.frame_times(U, fkeys)
     BR, BM = RR.frame_beam_ratios(U), RR.frame_bmaj(U)
-    kept = []
+    kept, second = [], []
     for r in raw:
         r = dict(r)
         k6 = (r['lst'], r['band'], r['stokes'], r['date'], round(RR.f(r['ra']), 5), round(RR.f(r['dec']), 5))
@@ -725,9 +742,12 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
         r['fp_prediction'] = r.get('fp_prediction') or ((v if v else 'in-chain pass (verdict file not found)')
                                                         if r['stokes'] == 'V' else '')
         r['conform_note'] = p_restored[k6] if k6 in p_restored else (notes.get(k6, '') or '')
-        cols_, why = RR.size_axis(r, BM.get(fk), BR.get(fk))      # production's columns and flags; a removal it would make
-        r.update(cols_)                                           # (a row the search left without its own axis measure) is
-        if why:                                                   # a finding, not a silent keep
+        cols_, why = RR.size_axis(r, BM.get(fk), BR.get(fk), rule=szr['rule'])   # production's columns and flags; a removal
+        r.update(cols_)                                           # it would make (a row the search left without its own axis
+        if why and szr['rule'] == 'envelope' and why.startswith(SZ.AXIS_STEP_REASON):   # measure) is a finding, not a silent
+            second.append({**r, 'removal_reason': why})          # keep - but the conformance's axis step on the rule's
+            continue                                              # attempts: the second gate ('second_gate'), removed here
+        if why:
             finding('a', 'size' if why.startswith('gaussfit') else 'axis', r, why)
         kept.append(r)
 
@@ -745,13 +765,17 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
     shutil.copy(merged or src, os.path.join(CD, 'master_catalog_asrun.csv'))
     ocols = cols + ['fp_prediction', 'size_beams', 'size_flag', 'axis_norm', 'axis_flag', 'conform_note']
     _write(src, ocols, kept)
-    _write(os.path.join(CD, 'master_catalog_removed.csv'), ocols + ['removal_reason'], removed)
+    _write(os.path.join(CD, 'master_catalog_removed.csv'), ocols + ['removal_reason'], removed + second)
     if os.path.exists(os.path.join(CD, CHECK_REPORT)):
         os.remove(os.path.join(CD, CHECK_REPORT))       # a passing check leaves no report of an earlier refusal
+    sg = (f'; the size / axis rule\'s attempts: production\'s axis step (2.0 x beam above 8 sigma; its current behavior, '
+          f'pending Gregg) as the second gate removed {len(second)}' if szr['rule'] == 'envelope' and SZ.conform_axis_step(szr)
+          else '')
     out(f'conform check: {len(raw)} rows, every removal rule re-evaluated in both directions ({n_ledger} ledger rows, '
-        f'{len(atts)} attempts): nothing removed, nothing missed -> {len(kept)} conformant (the pulsar stage restored '
-        f'{len(p_restored)}, removed {len(p_removed)})', flush=True)
-    return dict(raw=len(raw), kept=len(kept), ledger=n_ledger, attempts=len(atts))
+        f'{len(atts)} attempts): ' + ('nothing removed, nothing missed' if not second else 'nothing missed, nothing removed but '
+                                      'by the second gate') + f' -> {len(kept)} conformant (the pulsar stage restored '
+        f'{len(p_restored)}, removed {len(p_removed)}{sg})', flush=True)
+    return dict(raw=len(raw), kept=len(kept), ledger=n_ledger, attempts=len(atts), second_gate=len(second))
 
 
 def main(argv=None):

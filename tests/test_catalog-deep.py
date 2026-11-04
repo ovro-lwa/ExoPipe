@@ -12,6 +12,10 @@ In-place modules: a stub exopipe_ops root holds
     p3s2_ephem_filter.py, p3s3_identity.py, p3s2_transient_list.py;
   - stubs with the production file contract for the stages that need masters, frames or tables: p3s5_parent_union.py,
     p3s2_conform.py, deep_fit_positions.py, build_source_catalogs_v3.py, multiples_fork.py, build_localizations.py.
+    The conform stub applies production's AXIS step (a row above 8 sigma with axis_norm > 2.0 removed in its words,
+    ops/p3s2_conform.py:632-637) - with no switch, as production today, unless a test writes the pending patch's
+    P3_CONFORM_AXIS switch into it (stub_conform) - and the fork stub runs it for its validity step, as production's
+    multiples_fork.py does (fork mode, table off, its removals kept under the tag A as well).
 The test patches CFG in process (stub legacy root, collect roots, masters root, OPS_ROOT; binding check off for the stubs)
 - protected keys cannot be overridden on the command line, by design. Read-only checks on production: the binding check
 against the real exopipe_ops modules. Nothing outside the scratch directory is written.
@@ -119,23 +123,40 @@ print(f'{ok} cells with a current parent catalogue in {out}; {len(miss)} without
 import csv, os, shutil, sys
 from _stubcat import rcsv, wcsv
 U = sys.argv[1]; CD = os.environ.get('P3_CONFORM_CATALOG_DIR') or U
+FORK = os.environ.get('P3_CONFORM_FORK') == '1'
+AXIS_STEP = True   # AXIS-SWITCH (production today: the axis step has no switch; stub_conform writes the pending patch's here)
 if not os.environ.get('P3_PARENT_DIR'):
     sys.exit('conform stub: no P3_PARENT_DIR - REFUSING')
 if os.environ.get('P3_CONFORM_SIZE') != '0' or os.environ.get('P3_CADENCE') != 'deep' or os.environ.get('P3_TABLE_ELEV') != '1':
     sys.exit('conform stub: the pass environment is wrong - REFUSING')
+if FORK and os.environ.get('P3_CONFORM_TABLE') != 'off':
+    sys.exit("conform stub: the fork's validity run has its table off - REFUSING")
 cols, raw = rcsv(f'{CD}/master_catalog.csv')
-if not raw:
+if not raw and not FORK:
     sys.exit('conform: no rows - REFUSING')
 shutil.copy(f'{CD}/master_catalog.csv', f'{CD}/master_catalog_asrun.csv')
 out, rem = [], []
 for r in raw:
-    if 'RMV' in r['cand_id']:
+    if 'RMV' in r['cand_id'] and not FORK:
         # production's words for a row-line removal (ops/p3s2_conform.py; removal_rules.rowline_reason): the per-instant
         # content test matches every removal reason whole against the writers' templates
         rem.append(dict(r, removal_reason='row-line: >= 5 finals of this epoch on one pixel row (Gregg 2026-09-05)')); continue
-    r = dict(r); r['fp_prediction'] = 'not-FP' if r['stokes'] == 'V' else ''; out.append(r)
-oc = cols + ['fp_prediction']
+    r = dict(r); r['axis_flag'] = ''
+    try:
+        an, snr = float(r.get('axis_norm') or 'nan'), abs(float(r['snr']))
+    except ValueError:
+        an, snr = float('nan'), 0.0
+    if an == an and snr > 8.0 and an > 2.0:            # production's axis step (ops/p3s2_conform.py:632-637), in its words
+        if AXIS_STEP:
+            rem.append(dict(r, removal_reason=f'axis ratio {r["axis_norm"]} x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'))
+            continue
+        r['axis_flag'] = 'axis > 2.0 x beam (kept: point-like at its S/N by the size / axis rule)'
+    r['fp_prediction'] = 'not-FP' if r['stokes'] == 'V' else ''; out.append(r)
+oc = cols + [c for c in ('fp_prediction', 'axis_flag') if c not in cols]
 wcsv(f'{CD}/master_catalog.csv', oc, out); wcsv(f'{CD}/master_catalog_removed.csv', oc + ['removal_reason'], rem)
+if FORK:
+    print(f'conform: {len(raw)} raw -> {len(out)} conformant | removed: {len(rem)} (fork mode)')
+    sys.exit(0)
 keys = sorted({(r['stokes'], r['lst'], r['band'], r['date']) for r in raw})
 wcsv(f'{U}/frame_times.csv', ['stokes', 'lst', 'band', 'date', 'date_obs', 'date_end'],
      [dict(stokes=s, lst=l, band=b, date=d, date_obs=d + 'T12:00:00.000', date_end=d + 'T13:00:00.000') for s, l, b, d in keys])
@@ -174,8 +195,9 @@ if len(st) > 1:
 print(f'built {build(rows, outdir)} survivors -> {outdir}')
 ''',
     'multiples_fork.py': r'''
-import collections, json, os, shutil, sys
+import collections, json, os, shutil, subprocess, sys
 from _stubcat import rcsv, wcsv, build
+HERE = os.path.dirname(os.path.abspath(__file__))
 mode, S = sys.argv[1], sys.argv[2]
 U, OUT = os.environ['FORK_RUN_DIR'], os.environ['FORK_OUT_DIR']
 if not os.environ.get('P3_PARENT_DIR'):
@@ -185,14 +207,22 @@ if mode == 'run':
     shutil.rmtree(w, ignore_errors=True); os.makedirs(w)
     cols, rows = rcsv(f'{U}/master_catalog_asrun.csv')
     rows = [dict(r) for r in rows if r['stokes'] == S and abs(float(r['snr'])) >= {'I': 7.0, 'V': 5.0}[S]]
+    # 2 validity: the conformance in place, fork mode, table off (multiples_fork.conform: its environment from os.environ),
+    # its removals kept under the run's tag too - so the chain reads the same rows in two files
+    wcsv(f'{w}/master_catalog.csv', cols, rows)
+    e = dict(os.environ, P3_CONFORM_CATALOG_DIR=w, P3_CONFORM_FORK='1', P3_CONFORM_TABLE='off', P3_CONFORM_SIZE='0',
+             P3_CADENCE='deep')
+    p = subprocess.run([sys.executable, os.path.join(HERE, 'p3s2_conform.py'), U], env=e, capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.exit(f'FORK REFUSED: conform (A, table off) exit {p.returncode}: {(p.stdout + p.stderr)[-300:]}')
+    shutil.copyfile(f'{w}/master_catalog_removed.csv', f'{w}/master_catalog_removed_A.csv')
+    cols, rows = rcsv(f'{w}/master_catalog.csv')
     g = collections.defaultdict(set)
     for r in rows:
         g[(r['band'], round(float(r['ra']), 1), round(float(r['dec']), 1))].add((r['lst'], r['date']))
     for r in rows:
         r['fork_repeat'] = '1' if len(g[(r['band'], round(float(r['ra']), 1), round(float(r['dec']), 1))]) >= 2 else '0'
     wcsv(f'{w}/master_catalog.csv', cols + ['fork_repeat'], rows)
-    shutil.copy(f'{w}/master_catalog.csv', f'{w}/master_catalog_asrun.csv')
-    wcsv(f'{w}/master_catalog_removed.csv', cols + ['fork_repeat', 'removal_reason'], [])   # its conform calls: none removed
     kept = [r for r in rows if r['fork_repeat'] == '1']
     wcsv(f'{w}/fork_kept_{S}.csv', cols + ['fork_repeat'], kept)
     for t in ('wb', 'sb'):
@@ -709,9 +739,14 @@ def test_b02_check_chain_to_conform():
     from exopipe.phase3.lib.search import removal_rules as RR
     mod = sys.modules[__name__]
     make_world()
+    from exopipe.phase3.lib.search import size_rule as SZ
     for d in sorted(glob.glob(f'{T}/collect/*/attempts/*')):
         with open(os.path.join(d, RR.RULES_RECORD), 'w') as f:
             _json.dump(RR.rules_record('once-in-search'), f)
+        rd = os.path.join(d, 'transients', f'Run_{LABEL}')       # ... and searched under the configured size / axis rule
+        if os.path.isdir(rd) and SZ.configured_record('deep')['rule'] == 'envelope':
+            with open(os.path.join(rd, SZ.RUN_RECORD), 'w') as f:
+                _json.dump(SZ.configured_record('deep'), f)
     try:
         mod._MODE, mod._EPOCH = 'check', 'frame-mid'
         cli('--stages', 'preflight,harvest,merge,pulsars,conform', expect=2)
@@ -724,6 +759,117 @@ def test_b02_check_chain_to_conform():
             and os.path.exists(c['meta']['check_report']), (c['status'], c['reason'][:300])
     finally:
         mod._MODE, mod._EPOCH = 'remove', 'mid-hour'
+
+
+def stub_conform(kind):
+    """The conform stub's axis switch (its AXIS-SWITCH line): 'today' - none, as production's p3s2_conform.py now; 'patched' -
+    the pending patch's (docs/pending_production_patch_p3s2_conform_axis.diff: os.environ.get('P3_CONFORM_AXIS', '1')); 'ignored'
+    - the switch read and then the step forced on (a script that does not act on it)."""
+    p = f'{T}/exopipe_ops/p3s2_conform.py'
+    lines = open(p).read().splitlines(True)
+    i = next(i for i, ln in enumerate(lines) if '# AXIS-SWITCH' in ln)
+    sw = "AXIS_STEP = os.environ.get('P3_CONFORM_AXIS', '1') != '0'"
+    lines[i] = {'today': 'AXIS_STEP = True', 'patched': sw, 'ignored': sw + '; AXIS_STEP = True'}[kind] + '   # AXIS-SWITCH\n'
+    open(p, 'w').writelines(lines)
+
+
+def size_world(records=True):
+    """make_world, every attempt searched under the configured size / axis rule (its record), and source A's Stokes I Full
+    detection of the first night (S/N 9) given an axis ratio of 2.4 x beam: the rule keeps it (deep I high band at S/N 9:
+    limit 2.73), production's conformance axis step (2.0 above 8 sigma) removes it. Returns its cand_id."""
+    import json as _json
+    from exopipe.phase3.lib.search import size_rule as SZ
+    make_world()
+    if records:
+        for rd in sorted(glob.glob(f'{T}/collect/*/attempts/*/transients/Run_{LABEL}')):
+            with open(os.path.join(rd, SZ.RUN_RECORD), 'w') as f:
+                _json.dump(SZ.configured_record('deep'), f)
+    p = glob.glob(f'{T}/collect/*/attempts/05h_Full_I_*/transients/Run_{LABEL}/master_catalog.csv')[0]
+    rr = rows(p)
+    hit = [r for r in rr if r['date'] == DATES[0] and r['ra'] == f'{SRC["A"][0]:.5f}' and r['snr'] == '9.00']
+    assert len(hit) == 1, hit
+    hit[0]['axis_norm'] = '2.4'
+    write_csv(p, list(rr[0].keys()), rr)
+    return hit[0]['cand_id']
+
+
+def test_size_rule_in_the_chain():
+    """The size / axis rule (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) in the chain: attempts of two rules
+    are refused at the merge, before their ledgers are joined; attempts searched under the rule give the builder (and the
+    fork) P3_SIZE_GATE_7_8=inf - its 7-8 sigma gate replaced - and production's do not. The conformance's fixed AXIS step on
+    the rule's attempts (catalog_conform.CONFORM_AXIS_UNDER_RULE, PENDING GREGG), with the fork stub running production's
+    step for its validity run as multiples_fork.py does: 'second_gate' (default) - a row at 9 sigma with axis 2.4 (kept by
+    the rule) is removed by the main conformance and by the fork, each recorded once in its unit, the pass completing;
+    'replace' - refused at the merge, before any conformance, while production's script has no switch; with the pending
+    patch's switch P3_CONFORM_AXIS=0 reaches the conformance and the fork and the row is kept (flagged); a script that reads
+    the switch but still removes is refused after its conformance."""
+    import json as _json
+    from exopipe.phase3.lib.search import size_rule as SZ
+    rec_ = SZ.configured_record('deep')
+    make_world()
+    rds = sorted(glob.glob(f'{T}/collect/*/attempts/*/transients/Run_{LABEL}'))
+    assert len(rds) >= 2, rds
+    with open(os.path.join(rds[0], SZ.RUN_RECORD), 'w') as f:
+        _json.dump(rec_, f)
+    cli('--stages', 'preflight,harvest,merge', expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and 'size rules' in r['reason'] and 'REFUSING' in r['reason'], (r['status'], r['reason'][:300])
+    # 'second_gate' (the default): production's axis step stands on the rule's attempts - removed, recorded, not refused
+    wide = size_world()
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate,fork', expect=0)
+    m = rec(f'{LABEL}.merge')['meta']
+    assert m['size_rule'] == rec_ and m['conform_axis'] == 'second_gate', (m.get('size_rule'), m.get('conform_axis'))
+    for K in ('V_wb', 'I_wb'):
+        a = rec(f'{LABEL}.associate.{K}')
+        assert a['meta']['size_rule'] == 'envelope' and a['meta']['commands'][0]['env'].get('P3_SIZE_GATE_7_8') == 'inf', \
+            (K, a['meta'].get('size_rule'), a['meta']['commands'][0]['env'])
+    AXW = 'axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'
+    c_ = rec(f'{LABEL}.conform')
+    sg = c_['meta']['size_rule_second_gate']['conform']
+    assert sg['mode'] == 'second_gate' and sg['rows'] == 1 and sg['basis'] == SZ.AXIS_STEP_BASIS['second_gate'], sg
+    assert any('as the second gate' in n for n in c_['notes']), c_['notes']
+    assert 'P3_CONFORM_AXIS' not in c_['meta']['commands'][0]['env']
+    assert [(x['cand_id'], x['removal_reason']) for x in rows(f'{U}/master_catalog_removed.csv') if x['cand_id'] == wide] == \
+        [(wide, AXW)]
+    fk = rec(f'{LABEL}.fork.I')
+    assert fk['status'] == 'done' and fk['meta']['commands'][0]['env'].get('P3_SIZE_GATE_7_8') == 'inf', fk['status']
+    fsg = fk['meta']['size_rule_second_gate']['multiples fork I']
+    both = [x['cand_id'] for n in ('master_catalog_removed.csv', 'master_catalog_removed_A.csv')
+            for x in rows(f'{U}/fork_I/{n}')]
+    assert fsg['rows'] == 1 and both == [wide, wide], (fsg, both)       # one row, though two records hold it
+    assert rec(f'{LABEL}.fork.V')['meta']['size_rule_second_gate']['multiples fork V']['rows'] == 0
+    # 'replace' while production's p3s2_conform.py has no switch: refused at the merge, before any stage runs it
+    REPL = ('--set', 'catalog_conform.CONFORM_AXIS_UNDER_RULE=replace')
+    size_world()
+    cli('--stages', 'preflight,harvest,merge,conform', *REPL, expect=2)
+    r = rec(f'{LABEL}.merge')
+    assert r['status'] == 'refused' and SZ.CONFORM_AXIS_PATCH in r['reason'] and 'P3_CONFORM_AXIS' in r['reason'], r['reason'][:400]
+    assert rec(f'{LABEL}.conform') is None, 'the conformance ran after the merge refused'
+    # ... with the pending patch's switch: P3_CONFORM_AXIS=0 to the conformance and the fork; the row kept and flagged
+    wide = size_world()
+    stub_conform('patched')
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate,fork', *REPL, expect=0)
+    c_ = rec(f'{LABEL}.conform')
+    assert c_['meta']['commands'][0]['env'].get('P3_CONFORM_AXIS') == '0', c_['meta']['commands'][0]['env']
+    assert c_['meta']['size_rule_second_gate']['conform'] == dict(mode='replace', basis=SZ.AXIS_STEP_BASIS['replace'], rows=0,
+                                                                  examples=[]), c_['meta']['size_rule_second_gate']
+    kept = [x for x in rows(os.path.join(c_['meta']['copies']['master_catalog.csv'])) if x['cand_id'] == wide]
+    assert len(kept) == 1 and kept[0]['axis_flag'].startswith('axis > 2.0 x beam (kept'), kept
+    for S in ('V', 'I'):
+        fk = rec(f'{LABEL}.fork.{S}')
+        assert fk['status'] == 'done' and fk['meta']['commands'][0]['env'].get('P3_CONFORM_AXIS') == '0', (S, fk['status'])
+    assert not [x for n in glob.glob(f'{U}/fork_I/master_catalog_removed*.csv') for x in rows(n) if x['cand_id'] == wide]
+    # ... a script that reads the switch and removes all the same: refused after its conformance (the switch did not act)
+    size_world()
+    stub_conform('ignored')
+    cli('--stages', 'preflight,harvest,merge,conform', *REPL, expect=2)
+    r = rec(f'{LABEL}.conform')
+    assert r['status'] == 'refused' and 'did not switch its axis step off' in r['reason'], r['reason'][:400]
+    make_world()                                          # production's attempts: the builder keeps its own 1.7
+    cli('--stages', 'preflight,harvest,merge,conform,fitpos,select,associate', expect=0)
+    a = rec(f'{LABEL}.associate.I_wb')
+    assert a['meta']['size_rule'] == 'production' and 'P3_SIZE_GATE_7_8' not in a['meta']['commands'][0]['env'], a['meta']
+    assert rec(f'{LABEL}.merge')['meta']['conform_axis'] == "production's step"
 
 
 def test_b30_identity_pre_check():
@@ -943,7 +1089,7 @@ ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test
          'test_stale_directory_refused_d9', 'test_changed_input_makes_records_stale', 'test_overrides_of_bound_keys_refused',
          'test_harvest_refuses_unharvested_outside_production', 'test_b30_unharvested_merge',
          'test_merge_refresh_replaces_a_changed_attempt', 'test_merge_refusal_record_keeps_extraction_rows',
-         'test_b30_identity_pre_check',
+         'test_size_rule_in_the_chain', 'test_b30_identity_pre_check',
          'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain', 'test_b02_check_chain_to_conform',
          'test_binding_against_production_and_a_mismatch',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']
