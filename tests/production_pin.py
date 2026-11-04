@@ -13,7 +13,7 @@ each by its git blob sha (a commit and its blobs never change), and materialized
                      ONE explicit failure that names what to port, instead of cascading failures
 
 What is pinned: production code the refactor PORTS - the combined view's builder, the deep-omission decisions and drop, the
-10-minute merge the refactor's test runs, the dated driver whose heredoc is ported. What is NOT pinned: production code the refactor
+re-judging module (snapshot_rejudge.py), the 10-minute merge the refactor's test runs, the dated drivers whose heredoc is ported. What is NOT pinned: production code the refactor
 RUNS IN PLACE (the clv15 snapshot chain and its merge, snapshot_filter_catalog.py, snapshot_localize_tiers.sh, the localizer and the
 astrometry figure): the stage and the tests' production side run the same live file, so a parity compares like with like.
 
@@ -24,16 +24,21 @@ import os
 import subprocess
 
 OPS_REPO = '/lustre/gh/main/exopipe_ops'
-# exopipe_ops c7ca600 (2026-11-04 09:10, dde1760^): production as the V_combview port and the deep-omission port reproduce it -
-# the combined view of 5b8b8ff (2026-10-31), the snapshot decisions of 37546f6, the 10-minute decisions and drop of 0d4f1a9 / c6d2c9e
-PIN_COMMIT = 'c7ca600a9263a41d874f680433d7b50e83215584'
+# exopipe_ops fa90670 (2026-11-04 15:38, production HEAD when the V2 follow-up round started): production as the follow-up ports it -
+# the combined view of dbc40a6 (Card 2 per frame, re-judging, the re-point fix, the rate population; dde1760's per-image wideband
+# omission), the snapshot decisions of dbc40a6 / dde1760, the 10-minute decisions of dde1760 (gate pairing), the 10-minute drop of
+# 35aad1a (edf3263's re-judging + the approval marker), snapshot_rejudge.py (dbc40a6), the dated drivers 20261102 / 20261104 (their
+# step-2 heredocs identical). Moved from c7ca600 (dde1760^) by the V2 follow-up round (2026-11-04).
+PIN_COMMIT = 'fa9067019528da47e1174c16a3a647054ec41bc2'
 PIN_BLOBS = {
-    'snapshot_combined_view.py': 'f218d72ac4c947c869ffaa44db0fbe98d9605474',        # = 5b8b8ff's
-    'snapshot_deep_omission.py': '18b5d06f019ff0e4b3b9c99ce52c1cab51b7f9d0',
-    'sublst_deep_omission.py': '64ee51c196a064950fa1c509d74a0ab484de3491',
-    'sublst_deep_omission_drop.py': 'bdfddc9affbcb3ae4025267919bd13718591894f',
-    'sublst_cumulative.py': '948e9cf7dd95ad9a8421a74bdf8e8af22e008695',
+    'snapshot_combined_view.py': 'afc2bb3ce64e1210a0d87fae99d35e46094d6245',        # dbc40a6
+    'snapshot_deep_omission.py': 'b55e6d76d64ed2d289834edce963119a2e48fdb1',        # dbc40a6
+    'snapshot_rejudge.py': '61c44e4496d1a4691b4b1173aa414b026dd17229',              # dbc40a6 (new)
+    'sublst_deep_omission.py': 'a031a978422129f40fc83285169ccde89ec3f2f9',          # dde1760
+    'sublst_deep_omission_drop.py': '6d12fa03ebe1684ae35790b7879407d81c4323fe',     # 35aad1a
+    'sublst_cumulative.py': '948e9cf7dd95ad9a8421a74bdf8e8af22e008695',             # 0d4f1a9 (unchanged)
     'snapshot_batch/comb_build_20261102.sh': 'c68c54847628076892dbeac4775e739f68e4e807',
+    'snapshot_batch/comb_build_20261104.sh': '1be26d8d82c916601edbd9c6743ac350ce93d145',   # dbc40a6
 }
 
 

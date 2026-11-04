@@ -10,18 +10,22 @@ Classes:
                          V2 queues (T4): each queue's header (its name and run lines, the VIEW LIMITS line, the DEEP OMISSION line
                             with the summary's counts) and its names = the identities of its tier view, once each, by best |S/N|.
                          V3 pages (T5, T6, the omission): every combined source's page directory holds detections.csv with
-                            n_det rows, each of the directory's tier and on no OMIT key; its panels carry its tier and no panel's
-                            own key (parsed here, independently of the build's pattern) is an OMIT key (F1); every member row's
-                            detection is in its page directory (serve.SNAPVIEW_TEST_SAMPLE_DIRS > 0: a seeded sample of page
-                            directories).
-                         V7 panels (F1): each page directory's files are exactly its member batch sources' files less the kept
-                            product's 'panel dropped' rows (ctx kept, runs) - a panel linked that the omission removed, a kept
-                            panel missing (the same page directories as V3).
+                            n_det rows, each of the directory's tier, on no OMIT key and in no omitted image (the per-image rule,
+                            exopipe_ops dde1760, read back here: the cells' member tables), none a Card 2 one (the batches' own
+                            card2_vleak.csv flags, dbc40a6); its panels carry its tier and no panel's own key and image (parsed
+                            here, independently of the build's pattern) is omitted (F1); every member row's detection is in its page
+                            directory (serve.SNAPVIEW_TEST_SAMPLE_DIRS > 0: a seeded sample of page directories).
+                         V7 panels (F1): each page directory's files are exactly its member batch sources' files (less the
+                            sources the kept product drops or re-judges out) less the kept product's 'panel dropped' and 'card2
+                            panel dropped' rows (ctx kept, runs) - a panel linked that the omission or Card 2 removed, a kept panel
+                            missing (the same page directories as V3).
                          V4 identities (T2 against the kept product): the detections of candidates/_identity/* are exactly the
                             kept product's kept detections (batch, detection key, multiset); the counts of the summary.
-                         V5 record: deep_omission.csv = the omit product's, byte for byte; the record's removals = the omit
-                            stage's (detections, dropped identities; per-tier rows kind for kind), the summary text's page
-                            line, its per-instant test (tests_per_instant.check_omission, production's record format).
+                         V5 record: deep_omission.csv = the omit product's, byte for byte, rejudged.csv = its re-judging table;
+                            the record's removals = the omit stage's (detections, Card 2 detections, dropped identities; per-tier
+                            rows kind for kind - re-judged sources and member rows, Card 2 member rows and panels included), the
+                            summary text's page line with the Card 2 / re-judging counts, the summary json's card2 and rejudge
+                            counts, its per-instant test (tests_per_instant.check_omission, production's record format).
                          V6 (final) the filter catalogue's per-detection contract (pages' filter_catalog) and the
                             localizations' identities are view identities.
   snapshot_card2_union   card2_filter.csv of a view (ctx runs): the union of the member batches' files, recomputed, byte for byte.
@@ -91,7 +95,7 @@ def view_files(path, runs=None, final=False, **ctx):
         msgs.append(f'summary out {summ.get("out")!r} is not the view\'s name')
     if runs is not None and summ.get('batches') != [DO.batch_tag(r) for r in runs]:
         msgs.append(f'summary batches {summ.get("batches")} != the runs\' tags')
-    need = ['deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_summary.txt', 'judgements']
+    need = ['deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_summary.txt', 'rejudged.csv', 'judgements']
     need += [f'queue_{s}_{t}.txt' for s, t in _tiers()] + [f'source_catalogs_{s}_{t}' for s, t in _tiers()]
     if final:
         need += ['master_catalog.csv', 'card2_filter.csv', 'coadd_root.txt']
@@ -125,11 +129,16 @@ def view_queues(path, **ctx):
             lines = f.read().splitlines()
         head = [ln for ln in lines if ln.startswith('#')]
         names = [ln.strip() for ln in lines if ln.strip() and not ln.startswith('#')]
+        nwb = dom.get('omit_wb_image_keys', 0)
         want = [SV.QUEUE_NAME % (S, T, len(summ.get('batches') or [])),
                 SV.QUEUE_RUN % (summ.get('out'), ' '.join(summ.get('batches') or [])), SV.VIEW_LIMITS,
-                SV.DEEP_OMISSION_LINE % (dom.get('omitted', -1), dom.get('served', -1), dom.get('omit_keys', -1))]
-        if [h + '\n' for h in head[:4]] != want:
-            msgs.append(f'queue_{S}_{T}: header lines {head[:4]} are not the view\'s (name, run, VIEW LIMITS, DEEP OMISSION)')
+                SV.DEEP_OMISSION_LINE % (dom.get('omitted', -1), dom.get('served', -1), dom.get('omit_keys', -1),
+                                         SV.DEEP_OMISSION_WB % nwb if nwb else ''),
+                SV.CARD2_REJUDGE_LINE % ((summ.get('card2') or {}).get('removed_from_view', -1),
+                                         (summ.get('rejudge') or {}).get('rejudged_out', -1))]
+        if [h + '\n' for h in head[:5]] != want:
+            msgs.append(f'queue_{S}_{T}: header lines {head[:5]} are not the view\'s (name, run, VIEW LIMITS, DEEP OMISSION, CARD 2 '
+                        f'AND RE-JUDGING)')
         best = collections.defaultdict(float)
         for _band, r in _cat_rows(path, S, T, 'sources_survivors'):
             best[r['identity_id']] = max(best[r['identity_id']], abs(float(r.get('best_snr') or 0)))
@@ -154,6 +163,13 @@ PANEL_FILE = re.compile(r'^(?:[A-Za-z0-9]+_)?rank\d+_(\d\dh)_(\d{4}-\d\d-\d\d)_(
 PANEL_BAND = re.compile(r'^([A-Za-z0-9]*?[A-Za-z])(\d{14})(1min)?$')
 
 
+def panel_image(fn):
+    """The image id (YYYYMMDD_HHMMSS) of a panel file name, or None."""
+    m = PANEL_FILE.match(fn)
+    t = PANEL_BAND.match(m.group(3)) if m else None
+    return (t.group(2)[:8] + '_' + t.group(2)[8:]) if t else None
+
+
 def panel_key(fn, S, T):
     """(lst, band, night, Stokes, tier) of a panel file name in a page directory of Stokes S, tier T; None for a file that is no
     panel name (counted, never judged)."""
@@ -162,14 +178,49 @@ def panel_key(fn, S, T):
     return (m.group(1), t.group(1), m.group(2), S, T) if t else None
 
 
+class _Removed:
+    """The omission (whole-night and per image) and Card 2 READ BACK HERE (V_combview review T4 / T8 - not deep_omission's
+    Omission / Card2, which the kept product and the build share): the decisions of the view, the cells' member tables
+    (tests_deep_omission.ImageCheck; the fleet root of the omit product's summary beside ctx kept), the batches' Card 2 flags
+    (ctx runs). image: a detection's ts, a panel's 14 digits as YYYYMMDD_HHMMSS."""
+
+    def __init__(self, path, kept=None, runs=None):
+        DO = _DO()
+        from exopipe.phase3.config import CFG
+        from exopipe.phase3.lib.catalog import tests_deep_omission as TD
+        with open(os.path.join(path, 'deep_omission.csv'), newline='') as f:
+            dec = list(csv.DictReader(f))
+        self.OM, self.OMWB = DO.omitted_keys(dec), DO.omitted_wb(dec)
+        proto = None
+        if kept and os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(kept)), 'deep_omission_summary.json')):
+            proto = json.load(open(os.path.join(os.path.dirname(os.path.abspath(kept)), 'deep_omission_summary.json'))).get('proto')
+        self.ic = TD.ImageCheck(proto or CFG.paths.SNAPSHOT_FLEET_OUT, CFG.catalog_omission.SNAPSHOT_MEMBERS)
+        self.flagged = set()
+        for _tag, keys in TD.card2_flagged(runs or [], CFG.catalog_omission.SNAPSHOT_CARD2, DO.batch_tag).items():
+            self.flagged |= keys
+        self.has_card2 = bool(runs)
+
+    def key(self, k, image):
+        if k in self.OM:
+            return True
+        return k in self.OMWB and self.ic.holds(k, image, self.OMWB[k]) is not False
+
+    def det(self, d):
+        DO = _DO()
+        return self.key(DO.okey(d), d['ts'])
+
+    def card2(self, d):
+        return d.get('tier') == '10s' and d.get('stokes') == 'V' and (
+            d['cand_id'], '%.5f' % float(d.get('ra_peak') or d['ra']), '%.5f' % float(d.get('dec_peak') or d['dec'])) in self.flagged
+
+
 @content_test('snapshot_view', name='pages')
-def view_pages(path, **ctx):
-    """V3: page directories (T5, T6 read back), no omitted detection on a page, and no panel of an omitted instant on a page
-    (F1: each panel's own key, parsed independently of the build)."""
+def view_pages(path, kept=None, runs=None, **ctx):
+    """V3: page directories (T5, T6 read back), no omitted (per image, dde1760) or Card 2 (dbc40a6) detection on a page, and
+    no panel of an omitted instant or image on a page (F1: each panel's own key, parsed independently of the build)."""
     SV, DO = _SV(), _DO()
     S_ = _S()
-    with open(os.path.join(path, 'deep_omission.csv'), newline='') as f:
-        OM = DO.omitted_keys(list(csv.DictReader(f)))
+    RM = _Removed(path, kept, runs)
     srcs = []
     for S, T in _tiers():
         srcs += [(S, T, band, r) for band, r in _cat_rows(path, S, T, 'sources_survivors')]
@@ -207,16 +258,19 @@ def view_pages(path, **ctx):
         if tier != T:
             msgs.append(f'{pd}: a {T} source in a {tier} directory')
         bad_t = [x['cand_id'] for x in dets if x.get('tier') != tier]
-        bad_o = [x['cand_id'] for x in dets if DO.okey(x) in OM]
+        bad_o = [x['cand_id'] for x in dets if RM.det(x)]
+        bad_c2 = [x['cand_id'] for x in dets if RM.card2(x)]
         bad_p = [fn for fn in names if SV.panel_tier(fn) not in (None, tier)]
         if bad_t or bad_p:
             msgs.append(f'T6 {pd}: {len(bad_t)} rows and {len(bad_p)} panels of another tier (e.g. {(bad_t + bad_p)[:1]})')
         if bad_o:
-            msgs.append(f'{pd}: {len(bad_o)} detections on an OMIT key (e.g. {bad_o[0]})')
+            msgs.append(f'{pd}: {len(bad_o)} detections on an OMIT key or image (e.g. {bad_o[0]})')
+        if bad_c2:
+            msgs.append(f'T7 {pd}: {len(bad_c2)} detections Card 2 removes (e.g. {bad_c2[0]})')
         keys = [(fn, panel_key(fn, S, T)) for fn in names if fn not in ('detections.csv', 'astrometry.png')]
         n_panels += sum(1 for _fn, k in keys if k)
         n_unparsed += sum(1 for _fn, k in keys if not k)
-        bad_pk = [fn for fn, k in keys if k and k in OM]
+        bad_pk = [fn for fn, k in keys if k and RM.key(k, panel_image(fn))]
         if bad_pk:
             msgs.append(f'F1 {pd}: {len(bad_pk)} panels of an omitted instant are served (e.g. {bad_pk[0]}) - the omission removed '
                         f'their detections')
@@ -225,7 +279,8 @@ def view_pages(path, **ctx):
             msgs.append(f'T5 {pd}: {len(miss)} member detections not in its detections.csv (e.g. {sorted(miss)[0]})')
     return _fail(msgs, len(srcs), f'{len(srcs)} page directories ({"a seeded sample" if sample else "every one"}), {n_rows} '
                                   f'detections, {n_panels} panels ({n_unparsed} other files): one tier each, n_det, no detection '
-                                  f'or panel on an OMIT key, every member detection present')
+                                  f'or panel on an OMIT key or image, no Card 2 detection{"" if RM.has_card2 else " (no runs given)"}, '
+                                  f'every member detection present')
 
 
 @content_test('snapshot_view', name='panels')
@@ -252,9 +307,9 @@ def view_panels(path, kept=None, runs=None, **ctx):
     src_dropped, pan_dropped = set(), collections.Counter()
     with open(kept, newline='') as f:
         for r in csv.DictReader(f):
-            if r['kind'] == 'source dropped':
+            if r['kind'] in ('source dropped', 'source re-judged'):
                 src_dropped.add((r['run'], r['catalog'], r['source_id']))
-            elif r['kind'] == 'panel dropped':
+            elif r['kind'] in ('panel dropped', 'card2 panel dropped'):
                 pan_dropped[(r['run'], r['catalog'], r['source_id'], r['stokes'], r['tier'], r['note'])] += 1
     srcs = []
     for S, T in _tiers():
@@ -377,23 +432,39 @@ def view_record(path, kept=None, **ctx):
     with open(kept, newline='') as f:
         for r in csv.DictReader(f):
             kp[r['kind']] += 1
-    det = lambda rr: collections.Counter((r['batch'], r['identity'], r['cand_id']) for r in rr if r['kind'] == 'detection')
+    det = lambda rr, kd='detection': collections.Counter((r['batch'], r['identity'], r['cand_id']) for r in rr if r['kind'] == kd)
     if det(rec) != det(orec):
         msgs.append('the record\'s omitted detections are not the omit stage\'s')
+    if det(rec, 'card2 detection') != det(orec, 'card2 detection'):
+        msgs.append('the record\'s Card 2 detections are not the omit stage\'s')
     ids = lambda rr: {(r['batch'], r['identity']) for r in rr if r['kind'] == 'identity dropped'}
     if ids(rec) != ids(orec):
         msgs.append('the record\'s dropped identities are not the omit stage\'s')
     k = collections.Counter(r['kind'] for r in rec)
     for mine, theirs in (('source dropped', 'source dropped'), ('member row', 'member row dropped'), ('panel', 'panel dropped'),
-                         ('source partial', 'source re-pointed')):
+                         ('source partial', 'source re-pointed'), ('source re-judged', 'source re-judged'),
+                         ('member row re-judged', 'member row re-judged'), ('card2 member row', 'card2 member row dropped'),
+                         ('card2 panel', 'card2 panel dropped')):
         if k.get(mine, 0) != kp.get(theirs, 0):
             msgs.append(f'{k.get(mine, 0)} {mine!r} rows, the kept product has {kp.get(theirs, 0)} {theirs!r}')
     summ = _summary(path)
     n_det = k.get('detection', 0)
     with open(os.path.join(path, 'deep_omission_summary.txt')) as f:
         lines = f.read().splitlines()
-    if not lines or lines[0] != DO.page_line(n_det):
-        msgs.append(f'summary text line 1 {lines[:1]} is not the page line of {n_det} detections')
+    SV = _SV()
+    want1 = DO.page_line(n_det) + SV.SUMMARY_LINE1_NEW % ((summ.get('card2') or {}).get('removed_from_view', -1),
+                                                          (summ.get('rejudge') or {}).get('rejudged_out', -1))
+    if not lines or lines[0] != want1:
+        msgs.append(f'summary text line 1 {lines[:1]} is not the page line of {n_det} detections with the Card 2 / re-judging '
+                    f'counts')
+    if (summ.get('card2') or {}).get('removed_from_view') != k.get('card2 detection', 0):
+        msgs.append(f'summary json card2 {summ.get("card2")} does not count the record\'s {k.get("card2 detection", 0)} Card 2 '
+                    f'detections')
+    if (summ.get('rejudge') or {}).get('per_tier_rows_dropped') != k.get('source re-judged', 0):
+        msgs.append(f'summary json rejudge {summ.get("rejudge")} does not count the record\'s {k.get("source re-judged", 0)} '
+                    f're-judged source rows')
+    if not filecmp.cmp(os.path.join(path, 'rejudged.csv'), os.path.join(od, 'deep_omission_rejudged.csv'), shallow=False):
+        msgs.append('rejudged.csv differs from the omit stage\'s re-judging table')
     dom = summ.get('deep_omission') or {}
     if (dom.get('omitted'), dom.get('record')) != (n_det, dict(k)):
         msgs.append(f'summary json deep_omission {dom} does not count the record ({dict(k)})')

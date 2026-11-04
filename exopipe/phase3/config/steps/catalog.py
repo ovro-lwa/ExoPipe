@@ -853,23 +853,23 @@ class catalog_omission(_Section):
     #      -> I, sanity_V -> V, the others both)
     SIGMA = 5.0                                           # a night passes at <= median + SIGMA x 1.4826 MAD of the cell's nights (noise)
                                                           # and of their served rates (rate); sublst_deep_omission.py:35
-    # PRODUCTION'S VALUE, PENDING GREGG (not ruled, not locked - an override tries the alternative): production's implementation
-    # details that the approved card does not state - clv15 fix_ledger IMPLEMENTED-DEEP-OMISSION-DROP-IN-THE-10-MINUTE-CUMULATIVE-
-    # 20261025, verbatim: "FOR GREGG (implementation details, not in the approved card): the rate floor (spread floored at one
-    # detection per night) and the ABSENT propagation to widebands"; no later row ratifies either (Q review F3). The card's rate
-    # rule is "above median + 5 x 1.4826 MAD" with no floor. Pending decision: DECISIONS_PENDING entry "Deep omission: two
-    # implementation details of production's, pending you" (named in refactor_reviews_20261103/Q_deepomit_fixes.md).
+    # RULED 2026-11-04, VALUES UNCHANGED (R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS: Gregg delegated - "Fine, again, Im
+    # missing some context and will have to rely on you to make the correct informed choice based on my high level goals and
+    # priorities." - and the refactor chat decided): the rate floor stays (a low rate never keeps a night omitted: to stay omitted
+    # a night must exceed the median by more than five detections) and the ABSENT propagation stays (ABSENT = the tier admitted
+    # no data of that subband that night, so its own QA cannot clear it; R-GREGG 10-23 requires every wideband member admitted).
+    # Until then production's values pending Gregg (clv15 fix_ledger IMPLEMENTED-DEEP-OMISSION-DROP-IN-THE-10-MINUTE-CUMULATIVE-
+    # 20261025 "FOR GREGG", Q review F3). An override needs --ruling-for or a non-production --out (RULED, not PROTECTED).
     RATE_FLOOR_PER_NIGHT = 1.0                            # detections: the rate spread is floored at this many detections per night
-                                                          # (/ the median admitted rows or windows per night); production's value,
-                                                          # pending Gregg; 0.0 = the card's rule (no floor). sublst_deep_omission.py:167-171
-                                                          # ("RATE FLOOR (2026-10-25, for review)"), snapshot_deep_omission.py:97
+                                                          # (/ the median admitted rows or windows per night); ruled 2026-11-04 (above);
+                                                          # 0.0 = the card's rule without a floor. sublst_deep_omission.py:167-171
+                                                          # ("RATE FLOOR (2026-10-25, for review)"), snapshot_deep_omission.py:129
     WIDEBAND_MEMBER_VERDICTS = ('OMIT', 'ABSENT')         # the verdicts of a deep-refused member subband night that also omit that
                                                           # night's detections of its band group (the subband a member of the group's
-                                                          # wideband frames / windows); production's value, pending Gregg: ABSENT (the
-                                                          # tier searched no data of the subband that night) propagates too; ('OMIT',) =
-                                                          # only a subband the tier's own test omitted (the card: "a subband omitted
-                                                          # drops the night's wideband detections that include it").
-                                                          # sublst_deep_omission.py:198, snapshot_deep_omission.py:110
+                                                          # wideband frames / windows; per image since dde1760); ruled 2026-11-04
+                                                          # (above): ABSENT (the tier searched no data of the subband that night)
+                                                          # propagates too; ('OMIT',) = only a subband the tier's own test omitted.
+                                                          # sublst_deep_omission.py:198, snapshot_deep_omission.py:142
     WIDEBAND_EXCEPT = ('18MHz',)                          # subbands whose omission never omits their band group's detections (the
                                                           # 18 MHz carve-out); sublst_deep_omission.py:198, snapshot_deep_omission.py:110
     # (the band groups are instrument.SUBBAND_BANDS = sublst_deep_omission.py:33 GROUPS; drift-tested)
@@ -877,7 +877,27 @@ class catalog_omission(_Section):
     SNAPSHOT_TIERS = ('10s', '1min')                      # snapshot_deep_omission.py:29
     SNAPSHOT_NOISE = {'10s': 'noise_{band}_{stokes}_median.csv', '1min': 'noise_{band}_{stokes}_median_1min.csv'}   # the
                                                           # search's noise table (admitted rows, global_rms_jyb); snapshot_deep_omission.py:48
-    SNAPSHOT_MEMBERS = 'wideband_members_{stokes}.csv'    # the cell's wideband frames' member subbands; snapshot_deep_omission.py:70
+    SNAPSHOT_MEMBERS = 'wideband_members_{stokes}.csv'    # the cell's wideband frames' member subbands and their ts / date_obs (the
+                                                          # per-image application, dde1760); snapshot_deep_omission.py:80
+    SNAPSHOT_ADMISSION = 'admission_{band}.csv'           # the cell's per-subband admission table (joint over Stokes): a cell without
+                                                          # a member table takes a subband it admitted frames of to be in every image of
+                                                          # its group that night (fail closed); snapshot_deep_omission.py:95 (dde1760)
+    # ---- CARD 2 PER FRAME in the 10-s tier (Gregg 2026-11-04 "Approved.", R-GREGG-20261104-CARD2-PER-FRAME-SNAPSHOT-10S-APPROVED):
+    #      applied by the combined view from each batch's card2_vleak.csv (the batches predate the chain's own Card 2, clv15 1279bd4)
+    SNAPSHOT_CARD2 = 'card2_vleak.csv'                    # the batch run's Card 2 back-fill (phase3_snapshot_card2.py); snapshot_rejudge.py:46
+    CARD2_RATIO = 0.05                                    # |V| / (Stokes I Master flux under it) at or below this is removed (I > 20 x |V|);
+                                                          # snapshot_rejudge.py:36 = clv15 phase3_snapshot_chain.CARD2_RATIO
+    # ---- RE-JUDGING (Gregg 2026-11-04, R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS): every batch's served sources re-judged per
+    #      tier on the detections they keep (lib/catalog/rejudge.py, one child per batch; snapshot_rejudge.py)
+    REJUDGE_PYTHON = 'py36'                               # site PYTHON key of the re-judging child (production's view builder runs it)
+    REJUDGE_PROCS = 6                                     # re-judging children at a time (production SNAPCOMB_REJUDGE_PROCS 8 in fork workers
+                                                          # on lwacalim07's disk; the Lustre rule: at most 6 readers) [step]
+    REJUDGE_TIMEOUT_S = 86400                             # s, one batch's re-judging (production: no limit) [step]
+    REJUDGE_SAMPLES_DIR = ''                              # the catalogs of the catalog route (clv15 load_samples); '' = the clv15 root
+                                                          # (production's default samples_dir="/lustre/gh/main/clv15") [step]
+    TENMIN_REJUDGE_APPROVED = '/lustre/gh/main/exopipe_ops/sublst_rejudge_APPROVED'   # Gregg's go on the 10-minute re-judging count:
+                                                          # a 10-minute stage whose re-judging removes a source refuses without it
+                                                          # (sublst_deep_omission_drop.py:52, exopipe_ops 35aad1a; written 2026-11-04T15:30Z)
     # ---- the 10-minute tier (paths.SUBLST_ROOT; the arm catalog_sublst.ARM, its tree catalog_sublst.ARM_TREES and search dir
     #      catalog_sublst.SEARCH_DIR)
     TENMIN_RUN = 'Run_SLST{hh}{arm}'                      # the published per-LST run under paths.TRANSIENTS_ROOT: served counts from its
@@ -900,13 +920,21 @@ class catalog_omission(_Section):
                                                           # refactor's proposal (gates refuse rather than warn), neither production's
                                                           # behavior nor a ruling; production's 'production' is in the parity file
                                                           # (parity/production_20261013.cfg; the code site is marked WAVE2 G6).
-                                                          # DECISIONS_PENDING FYI named in refactor_reviews_20261103/Q_deepomit_fixes.md
+                                                          # DECISIONS_PENDING FYI named in refactor_reviews_20261103/Q_deepomit_fixes.md.
+                                                          # Re-checked 2026-11-04 against R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-
+                                                          # ANSWERS: that row decides the rate floor and the ABSENT PROPAGATION (a
+                                                          # member's ABSENT omits its group's wideband detections), not this gate
+                                                          # (detections served on a key the tier has no record of) - the label stands
     PROTECTED_KEYS = ('PROPAGATE', 'SIGMA', 'WIDEBAND_EXCEPT', 'SNAPSHOT_TIERS', 'SNAPSHOT_NOISE', 'SNAPSHOT_MEMBERS',
-                      'TENMIN_RUN')                       # the ruled rule and the production layout it reads (mirrors, drift-tested);
-                                                          # NOT the two pending values above (RATE_FLOOR_PER_NIGHT,
-                                                          # WIDEBAND_MEMBER_VERDICTS): an override tries the alternative
+                      'SNAPSHOT_ADMISSION', 'SNAPSHOT_CARD2', 'CARD2_RATIO', 'TENMIN_RUN')                       # the ruled rule and the production layout it reads (mirrors, drift-tested);
+                                                          # NOT RATE_FLOOR_PER_NIGHT / WIDEBAND_MEMBER_VERDICTS (ruled 2026-11-04 by
+                                                          # delegation: RULED, so an override needs --ruling-for or a scratch --out)
     RULED = {'PROPAGATE': _OMISSION_RULING, 'SIGMA': _OMISSION_RULING,
              'WIDEBAND_EXCEPT': (_OMISSION_RULING, 'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4'),
+             'CARD2_RATIO': 'R-GREGG-20261104-CARD2-PER-FRAME-SNAPSHOT-10S-APPROVED',
+             'RATE_FLOOR_PER_NIGHT': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',
+             'WIDEBAND_MEMBER_VERDICTS': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',
+             'TENMIN_REJUDGE_APPROVED': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',
              'REFUSALS': ('R-GREGG-20261024-DEEP-OMISSION-APPLIES-TO-SHORT-TIERS-WITH-FRAME-EXCEPTION',
                           'R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE')}   # REFUSALS: the deep record the rulings name;
                                                           # --omit-refusals is an override of it (--ruling-for or a non-production --out)

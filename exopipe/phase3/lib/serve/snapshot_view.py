@@ -75,10 +75,19 @@ kept per-tier source whose page holds no detection (F4: an incomplete input refu
 omit product's decisions re-made now from the refusal record and fleet records the build reads, with its served counts, must
 equal its table byte for byte (F5: never a stale product); a refused build moves its .part, a view failing its read-back tests
 moves the view, aside to <view>.refused_<UTC> (F7).
+V2 follow-up (2026-11-04; exopipe_ops dde1760, dbc40a6 at the pin fa90670): the omission per IMAGE (a wideband detection omitted
+only when its own frame / block holds the omitted subband; fail closed without a member table), CARD 2 per frame in the 10-s tier
+(re-derived here from each batch's card2_vleak.csv; record kinds 'card2 detection', 'card2 member row', 'card2 panel'), the
+RE-JUDGING of every batch source on the detections it keeps (the omit stage's, lib/catalog/rejudge.py - the chain's route
+functions cannot run in this build; applied as 'source re-judged' / 'member row re-judged', rejudged.csv), the RE-POINT of a
+partial source by its own (ts, subband) detection (the review's defect RP fixed), T7 (no Card 2 detection left, every re-judged
+(batch source, tier) met, every combined row ranked by a detection it keeps), the queue's CARD 2 AND RE-JUDGING line and the
+summary's card2 / rejudge keys - production's view byte for byte (tests/test_snapshot_view.py test_parity). G-V8 also re-checks
+the cells (the rate population) and the re-judging / Card 2 inputs (size, mtime) against the omit product; G-V9 a partial source
+whose own detection is absent from its page; G-V10 an image absent from a member table.
 Production details carried for parity, not ruled (spec 'Pending Gregg'): the name-clash rule, the queue order, the survivors
 row of a combined source (its member row of largest |best S/N|), the duplicate batch_members column of production's survivors
-files, partial sources keeping their gates (deep_omission.py OWED), the re-point that never fires on real per-tier rows
-(PRODUCTION BUG RP below).
+files.
 NOT PORTED (spec 'Not ported'): production's REPAIR MODE (SNAPCOMB_REPAIR_OF), the test-build switch SNAPCOMB_DEEP_OMISSION=0,
 the registration of the view's pages on p8986-p8989 with its carry, page context and hub (snapshot_serve.sh SNAP_REGISTER=1;
 serve.PAGES holds no combined-view page), the two snapshot hides the refactor chat writes before it (no FP-filter step yet), an
@@ -105,13 +114,17 @@ VIEW_LIMITS = ("# VIEW LIMITS: (1) routing is not re-run on merged identities - 
                "from two batches' detections combined is absent; (2) the merge is two-level (batch identities, then across "
                "batches) and can differ from one all-cell chain\n")
 DEEP_OMISSION_LINE = ("# DEEP OMISSION: %d of %d served detections omitted by the deep-omission rule (Gregg 2026-10-24), %d (LST, band, "
-                      "night, Stokes, tier) omitted; record deep_omission_dropped.csv, decisions deep_omission.csv\n")
-SUMMARY_LINE1 = '%d detections omitted by the deep-omission rule (Gregg 2026-10-24)\n'
-SUMMARY_LINE2 = 'served detections %d, kept %d; decisions %d (%d OMIT keys); %s\n'
-TESTS_PASSED = 'T1 T2 T3 T4 T5 T6 PASS'
-# the re-pointed fields of a partial source, in production's order (snapshot_combined_view.py:259-260): the order a new column
-# takes in the survivors file's header
-REPOINT_FIELDS = ('best_cand_id', 'best_snr', 'ts', 'subband', 'peak_jy_best', 'deep_omission')
+                      "night, Stokes, tier) omitted%s; record deep_omission_dropped.csv, decisions deep_omission.csv\n")
+DEEP_OMISSION_WB = ' + %d wideband ones in the images that hold the omitted subband only'      # dde1760
+CARD2_REJUDGE_LINE = ("# CARD 2 AND RE-JUDGING (Gregg 2026-11-04): %d Stokes V 10-s detections removed by Card 2 (Stokes I Master flux "
+                      "under them > 20 x |V|); %d batch (source, tier) re-judged out on the detections they keep; record "
+                      "deep_omission_dropped.csv, rejudged.csv\n")                            # dbc40a6
+SUMMARY_LINE1 = '%d detections omitted by the deep-omission rule (Gregg 2026-10-24)'
+SUMMARY_LINE1_NEW = ('; %d Stokes V 10-s detections removed by Card 2 and %d batch sources re-judged out on the detections they keep '
+                     '(Gregg 2026-11-04)')                                                     # dbc40a6
+SUMMARY_LINE2 = 'served detections %d, kept %d; decisions %d (%d OMIT keys%s); %s\n'
+SUMMARY_WB = ' + %d wideband per image'                                                       # dde1760
+TESTS_PASSED = 'T1 T2 T3 T4 T5 T6 T7 PASS'
 PANEL_TOKEN = re.compile(r"^rank\d+_\d\dh_\d{4}-\d\d-\d\d_([A-Za-z0-9]+)\.(?:png|page\.json)$")
 MEMBER_ROW = re.compile(r"^(.*)_(\d{2}h_\d{4}-\d{2}-\d{2})_([^_]+)$")
 
@@ -208,7 +221,9 @@ class KeptProduct:
         self.OM = DO.omitted_keys(dec)
         self.kept = collections.defaultdict(set)
         self.n_kept = 0
-        self.per = {k: collections.Counter() for k in ('source dropped', 'member row dropped', 'panel dropped')}
+        self.per = {k: collections.Counter() for k in ('source dropped', 'source re-judged', 'member row dropped',
+                                                       'member row re-judged', 'card2 member row dropped', 'panel dropped',
+                                                       'card2 panel dropped')}
         self.repoint = {}
         with open(self.path, newline='') as f:
             rd = csv.DictReader(f)
@@ -223,17 +238,17 @@ class KeptProduct:
                         raise ViewRefusal('G-K kept product row %d: %s %s kept twice' % (i + 2, r['identity'], r['cand_id']))
                     s.add(h)
                     self.n_kept += 1
-                elif kd == 'source dropped':
+                elif kd in ('source dropped', 'source re-judged'):
                     self.per[kd][(r['run'], r['catalog'], r['source_id'], r['note'])] += 1
-                elif kd == 'member row dropped':
+                elif kd in ('member row dropped', 'member row re-judged', 'card2 member row dropped'):
                     self.per[kd][(r['run'], r['catalog'], r['source_id'], r['cand_id'])] += 1
-                elif kd == 'panel dropped':
+                elif kd in ('panel dropped', 'card2 panel dropped'):
                     self.per[kd][(r['run'], r['catalog'], r['source_id'], r['stokes'], r['tier'], r['note'])] += 1
-                elif kd == 'source re-pointed':
+                elif kd in ('source re-pointed', 'source routes'):
                     k = (r['run'], r['catalog'], r['source_id'])
                     if k in self.repoint:
                         raise ViewRefusal('G-K kept product row %d: source %s re-pointed twice' % (i + 2, r['source_id']))
-                    self.repoint[k] = json.loads(r['fields'])
+                    self.repoint[k] = (kd, json.loads(r['fields'], object_pairs_hook=collections.OrderedDict))
                 else:
                     raise ViewRefusal('G-K kept product row %d: unknown kind %r' % (i + 2, kd))
 
@@ -248,7 +263,7 @@ class KeptProduct:
     def unapplied(self):
         """{kind: n} of the kept product's rows no served row consumed."""
         out = {k: sum(v for v in c.values() if v > 0) for k, c in self.per.items()}
-        out['source re-pointed'] = len(self.repoint)
+        out['source re-pointed or routes'] = len(self.repoint)
         out['detection kept'] = sum(len(s) for s in self.kept.values())
         return {k: v for k, v in out.items() if v}
 
@@ -295,7 +310,25 @@ def build(job):
     if [os.path.abspath(x) for x in K.summary.get('runs') or []] != RUNS:
         raise ViewRefusal('G-V3 the omit product %s was made for the runs %s, not the view\'s %s (same runs, same order)'
                           % (K.dir, K.summary.get('runs'), RUNS))
-    OM = K.OM
+    os.environ['EXOPIPE3_CLV15'] = job['clv15']         # the standalone deep_omission's minute key (clv15 in place)
+    try:
+        DEC = rows(K.decisions)
+        OMIS = DO.Omission(DEC, DO.SnapshotRecords(job['proto'], DO.Reader(workers=job.get('read_workers', 6)),
+                                                   names=job['names']))
+        # CARD 2 (snapshot_combined_view.py dbc40a6 section 0b), re-derived here from each batch's card2_vleak.csv
+        C2 = DO.Card2(RUNS, None, ratio=job['card2_ratio'], name=job['card2_file'])
+        # RE-JUDGING: the omit stage's (the chain's route functions cannot run in this build - V_combview review T5)
+        REJ = DO.Rejudged.from_csv(os.path.join(K.dir, DO.REJUDGED_FILE), RUNS)
+    except DO.OmissionRefusal as e:
+        raise ViewRefusal(str(e))
+    OM, OMWB = OMIS.OM, OMIS.OMWB
+    d_omitted, d_card2 = OMIS.det, C2.det
+    c2want = K.summary.get('card2_counts') or {}
+    for k_, v_ in (('removed_10s_v_records', C2.n['removed_10s']), ('removed_10s_v_served', C2.n['removed_10s_served']),
+                   ('not_evaluated_10s_v', C2.n['not_evaluated_10s'])):
+        if c2want.get(k_) != v_:
+            raise ViewRefusal('G-V4 Card 2: the batches\' card2_vleak.csv give %s %s, the omit product %s - a file changed since '
+                              'the omit stage' % (k_, v_, c2want.get(k_)))
     REC = []
 
     # ---- 1. clusters = served batch identities (production's step 1)
@@ -329,6 +362,8 @@ def build(job):
                            common=dict(ra=rc, dec=dc, err_arcmin=ec / 60.0, key=None, frame_arcmin=0.0))
             pending.append((r, J, grs, mem, anc))
         log('%s: %d identities, %d detections' % (TAG[r], len(pending) - n0, sum(len(p[3]) for p in pending[n0:])))
+    log('card 2: %d 10-s Stokes V detections of the %d batches\' records rejected (%d of them served); %d 10-s rows not evaluated '
+        '(no Stokes I under them)' % (C2.n['removed_10s'], len(RUNS), C2.n['removed_10s_served'], C2.n['not_evaluated_10s']))
     n_all = sum(len(p[3]) for p in pending)
     # G-V4: the served set as read now is the one the omit stage decided on (Q fix verification N2)
     D = DO.MultisetDigest()
@@ -340,8 +375,8 @@ def build(job):
         raise ViewRefusal('G-V4 the served batch runs changed since the omit stage (served digest now %s, the omit summary\'s %s)'
                           ' - run the omit stage again' % (D.text()[:28], (want or 'none')[:28]))
     # G-V4, the counts (V_combview review F5): the served counts the decisions were made with (deep_omission_served.csv, re-decided
-    # by the step side's G-V8) are the served set's, read now
-    cnt = collections.Counter(okey(m['_row']) for p in pending for m in p[3])
+    # by the step side's G-V8) are the served set's less its Card 2 detections (dbc40a6: not counted as served), read now
+    cnt = collections.Counter(okey(m['_row']) for p in pending for m in p[3] if not d_card2(m['_row']))
     now = {(k[0], k[2], k[1], k[3], k[4]): n for k, n in cnt.items()}
     rec_counts = {(r['lst'], r['night'], r['band'], r['stokes'], r['tier']): int(r['n'])
                   for r in rows(os.path.join(K.dir, 'deep_omission_served.csv'))}
@@ -351,23 +386,30 @@ def build(job):
                           'differ (e.g. %s)' % (len(bad), bad[:2]))
     complete_runs(RUNS, TAG, TIERS)       # G-V7 (V_combview review F4)
 
-    # ---- 0. THE KEPT PRODUCT APPLIED (production's step 0 decided here; the omit stage's product is read instead)
+    # ---- 0. THE KEPT PRODUCT APPLIED (production's step 0 and section 0b decided here; the omit stage's product is read)
     DROPPED = set()
     for r, J, grs, mem, anc in pending:
         want_k = K.kept.pop((r, J), set())
         keep = []
         for m in mem:
             d = m['_row']
-            on_om = okey(d) in OM
+            on_om, on_c2 = d_omitted(d), d_card2(d)
             if _h(dkey(d)) in want_k:
-                if on_om:
-                    raise ViewRefusal('G-K %s %s: the kept product keeps %s on the OMIT key %s' % (TAG[r], J, d['cand_id'], okey(d)))
+                if on_om or on_c2:
+                    raise ViewRefusal('G-K %s %s: the kept product keeps %s, which the rule removes (%s)'
+                                      % (TAG[r], J, d['cand_id'], 'an omitted key' if on_om else 'Card 2'))
                 keep.append(m)
-            else:
-                if not on_om:
-                    raise ViewRefusal('G-K %s %s: %s is neither kept by the kept product nor on an OMIT key' % (TAG[r], J, d['cand_id']))
+            elif on_om:
                 REC.append(dict(kind='detection', batch=TAG[r], identity=J, cand_id=d['cand_id'], lst=d['lst'], band=okey(d)[1],
                                 night=d['date'], stokes=d['stokes'], tier=d['tier'], snr=d['snr']))
+            elif on_c2:
+                REC.append(dict(kind='card2 detection', batch=TAG[r], identity=J, cand_id=d['cand_id'], lst=d['lst'],
+                                band=okey(d)[1], night=d['date'], stokes=d['stokes'], tier=d['tier'], snr=d['snr']))
+                C2.JC_C2[(r, J, d['cand_id'])] += 1
+            else:
+                raise ViewRefusal('G-K %s %s: %s is neither kept by the kept product nor removed by the rule (an omitted key, '
+                                  'Card 2)' % (TAG[r], J, d['cand_id']))
+            C2.JC_ALL[(r, J, d['cand_id'])] += 1
         if len(keep) != len(want_k):
             raise ViewRefusal('G-K %s %s: the kept product keeps %d detections the served identity does not hold'
                               % (TAG[r], J, len(want_k) - len(keep)))
@@ -383,11 +425,17 @@ def build(job):
                           % (len(K.kept), sorted(K.kept)[:2]))
     del pending
     n_om = sum(1 for x in REC if x['kind'] == 'detection')
-    log('deep omission: the kept product of %s applied - %d decisions (%d OMIT), %d of %d served detections omitted, %d batch '
-        'identities dropped' % (K.dir, K.n_dec, len(OM), n_om, n_all, len(DROPPED)))
+    n_c2 = sum(1 for x in REC if x['kind'] == 'card2 detection')
+    n_mixed_c2 = C2.n_mixed()
+    log('deep omission: the kept product of %s applied - %d decisions (%d OMIT, %d of them wideband per image), %d of %d served '
+        'detections omitted, %d batch identities dropped' % (K.dir, K.n_dec, len(OM) + len(OMWB), len(OMWB), n_om, n_all,
+                                                              len(DROPPED)))
+    log('re-judging (the omit stage\'s, %s): %d (batch source, tier) re-judged out, %d still qualify on the members they keep'
+        % (DO.REJUDGED_FILE, len(REJ.OUT), len(REJ.ROUTES)))
     n_in = sum(len(c) for c in clusters)
-    if n_in + n_om != n_all or n_in != K.n_kept:
-        raise ViewRefusal('G-K omission record %d + kept %d != served %d (kept product %d)' % (n_om, n_in, n_all, K.n_kept))
+    if n_in + n_om + n_c2 != n_all or n_in != K.n_kept:
+        raise ViewRefusal('G-K omission record %d + Card 2 record %d + kept %d != served %d (kept product %d)'
+                          % (n_om, n_c2, n_in, n_all, K.n_kept))
     keys_in = collections.Counter(dkey(m['_row']) for c in clusters for m in c)
     dup_in = [k for k, n in keys_in.items() if n > 1]
     if dup_in:
@@ -448,6 +496,8 @@ def build(job):
     PANELS_PD = collections.defaultdict(list)
     qrows = collections.defaultdict(dict)
     src_seen = collections.Counter()
+    REJ_SEEN = collections.Counter()         # (run, J, tier) re-judged out -> its per-tier source rows met (T7)
+    T7_BEST = []                              # combined per-tier rows whose best detection is not among the page's detections
     xstat = collections.Counter()           # the per-tier page detections that are no kept detection of their identity
     copy_runs = set()                       # batch runs whose panels a scratch / parity view copies (a hard link failed)
 
@@ -469,13 +519,21 @@ def build(job):
                     catalog = '%s/%s_sources_survivors.csv' % (cdir, band)
                     for row in rows(p):
                         k = b2c.get((r, row['identity_id']))
+                        what = '%s %s %s' % (TAG[r], cdir, row['source_id'])
                         if k is None and (r, row['identity_id']) in DROPPED:
                             agree('source dropped', True, K.take('source dropped', (r, catalog, row['source_id'],
-                                                                                    'identity left with no detection')),
-                                  '%s %s %s' % (TAG[r], cdir, row['source_id']))
+                                                                                    DO.IDENTITY_EMPTY_NOTE)), what)
                             REC.append(dict(kind='source dropped', batch=TAG[r], identity=row['identity_id'],
                                             source=row['source_id'], stokes=S, tier=T, band=band,
-                                            note='identity left with no detection'))
+                                            note=DO.IDENTITY_EMPTY_NOTE))
+                            continue
+                        rj = (r, row['identity_id'], T) in REJ.OUT
+                        note = REJ.NOTE.get((r, row['identity_id'], T), '')
+                        agree('source re-judged', rj, K.take('source re-judged', (r, catalog, row['source_id'], note)), what)
+                        if rj:
+                            REC.append(dict(kind='source re-judged', batch=TAG[r], identity=row['identity_id'],
+                                            source=row['source_id'], stokes=S, tier=T, band=band, note=note))
+                            REJ_SEEN[(r, row['identity_id'], T)] += 1
                             continue
                         if k is None:
                             raise ViewRefusal('T3 %s %s source %s of identity %s is in no combined identity'
@@ -490,13 +548,26 @@ def build(job):
                         mm = MEMBER_ROW.match(row['source_id'])
                         k = b2c.get((r, mm.group(1))) if mm else None
                         ck = CIDK.match(row.get('cand_id', ''))
+                        mkey = (r, catalog, row['source_id'], row.get('cand_id', ''))
+                        what = '%s %s %s %s' % (TAG[r], cdir, row['source_id'], row.get('cand_id', ''))
                         drop = bool((mm and k is None and (r, mm.group(1)) in DROPPED)
-                                    or (ck and (ck.group(1), ck.group(3), ck.group(2), ck.group(4), ck.group(5)) in OM))
-                        agree('member row dropped', drop, K.take('member row dropped', (r, catalog, row['source_id'],
-                                                                                         row.get('cand_id', ''))),
-                              '%s %s %s %s' % (TAG[r], cdir, row['source_id'], row.get('cand_id', '')))
+                                    or (ck and OMIS.key((ck.group(1), ck.group(3), ck.group(2), ck.group(4), ck.group(5)),
+                                                        row['cand_id'][ck.end():])))
+                        agree('member row dropped', drop, K.take('member row dropped', mkey), what)
                         if drop:
                             REC.append(dict(kind='member row', batch=TAG[r], source=row['source_id'],
+                                            cand_id=row.get('cand_id', ''), stokes=S, tier=T, band=band))
+                            continue
+                        rj = bool(mm and (r, mm.group(1), T) in REJ.OUT)
+                        agree('member row re-judged', rj, K.take('member row re-judged', mkey), what)
+                        if rj:
+                            REC.append(dict(kind='member row re-judged', batch=TAG[r], source=row['source_id'],
+                                            cand_id=row.get('cand_id', ''), stokes=S, tier=T, band=band))
+                            continue
+                        c2 = bool(mm and C2.jc_card2(r, mm.group(1), row.get('cand_id', '')))
+                        agree('card2 member row dropped', c2, K.take('card2 member row dropped', mkey), what)
+                        if c2:
+                            REC.append(dict(kind='card2 member row', batch=TAG[r], source=row['source_id'],
                                             cand_id=row.get('cand_id', ''), stokes=S, tier=T, band=band))
                             continue
                         if k is None:
@@ -511,46 +582,51 @@ def build(job):
                 for r, row in rr0:
                     src = os.path.join(r, row['review_dir'])
                     catalog = '%s/%s_sources_survivors.csv' % (cdir, band)
+                    what = '%s %s %s' % (TAG[r], cdir, row['source_id'])
                     if src not in dcache:
                         dcache[src] = rows(os.path.join(src, 'detections.csv'))
                     ad = dcache[src]
                     if not ad:        # G-V7 (F4): an incomplete input is never booked as a deep omission
                         raise ViewRefusal('G-V7 %s %s source %s: its page %s holds no detection (detections.csv missing or empty) - '
                                           'an incomplete batch run' % (TAG[r], cdir, row['source_id'], row['review_dir']))
-                    kd = [d for d in ad if okey(d) not in OM]
-                    agree('source dropped', not kd, K.take('source dropped', (r, catalog, row['source_id'], 'every detection omitted')),
-                          '%s %s %s' % (TAG[r], cdir, row['source_id']))
+                    kd = [d for d in ad if not d_omitted(d) and not d_card2(d)]
+                    note = DO.SOURCE_EMPTY_CARD2_NOTE if any(d_card2(d) for d in ad) else DO.SOURCE_EMPTY_NOTE
+                    agree('source dropped', not kd, K.take('source dropped', (r, catalog, row['source_id'], note)), what)
                     if not kd:
                         REC.append(dict(kind='source dropped', batch=TAG[r], identity=row['identity_id'], source=row['source_id'],
-                                        stokes=S, tier=T, band=band, note='every detection omitted'))
+                                        stokes=S, tier=T, band=band, note=note))
                         continue
-                    # PRODUCTION BUG RP, pending the production fix (snapshot_combined_view.py:254): best_cand_id of a
-                    # per-tier survivors row names the best MEMBER SOURCE ('<identity>_<cell>_<band>'), never a detection, so
-                    # on production's per-tier rows this re-point never fires and a partial source whose best detection was
-                    # omitted keeps that detection's best_snr / ts / peak_jy_best; the kept product carries the same rule
-                    # (deep_omission.per_tier_snapshot) - kept for parity, counted (stats 'stale_best'), pinned by the tests
-                    rp = len(kd) < len(ad) and row.get('best_cand_id') in {d['cand_id'] for d in ad} - {d['cand_id'] for d in kd}
-                    fields = K.repoint.pop((r, catalog, row['source_id']), None)
-                    agree('source re-pointed', rp, fields is not None, '%s %s %s' % (TAG[r], cdir, row['source_id']))
-                    if rp:
-                        top = max(kd, key=lambda d: abs(float(d['snr'])))
-                        mine = dict(best_cand_id=top['cand_id'], best_snr=top['snr'], ts=top['ts'], subband=top['subband'],
-                                    peak_jy_best='', deep_omission=DO.SNAPSHOT_PARTIAL_NOTE)
-                        if any(fields.get(x) != mine[x] for x in REPOINT_FIELDS):
-                            raise ViewRefusal('G-K source re-pointed %s %s: the kept product\'s fields %s are not the rule\'s %s'
-                                              % (TAG[r], row['source_id'], fields, mine))
+                    # THE RE-POINT (dbc40a6; the refactor port review's defect RP fixed): the row's best detection is the one
+                    # of its own (ts, subband) - best_cand_id names the member SOURCE, never a detection
+                    mine = collections.OrderedDict()
+                    top = None
+                    if len(kd) < len(ad):
+                        bd = [d for d in ad if d['ts'] == row.get('ts') and d['subband'] == row.get('subband')]
+                        if not bd:
+                            raise ViewRefusal('G-V9 %s source %s names a best detection (ts %s, subband %s) absent from its '
+                                              'detections.csv' % (what, row['source_id'], row.get('ts'), row.get('subband')))
+                        kdk = {dkey(d) for d in kd}
+                        if all(dkey(d) not in kdk for d in bd):
+                            top = max(kd, key=lambda d: abs(float(d['snr'])))
+                            mine.update([('best_cand_id', '%s_%s_%s_%s' % (row['identity_id'], top['lst'], top['date'], band)),
+                                         ('best_snr', top['snr']), ('ts', top['ts']), ('subband', top['subband']),
+                                         ('fit_verdict', top.get('fit_verdict', '')), ('peak_jy_best', ''),
+                                         ('deep_omission', DO.REPOINT_NOTE)])
+                        if (r, row['identity_id'], T) in REJ.ROUTES:
+                            mine['rejudged_routes'] = REJ.ROUTES[(r, row['identity_id'], T)]
+                    got = K.repoint.pop((r, catalog, row['source_id']), None)
+                    want_kind = None if not mine else ('source re-pointed' if top is not None else 'source routes')
+                    if (got[0] if got else None) != want_kind or (got and list(got[1].items()) != list(mine.items())):
+                        raise ViewRefusal('G-K %s: the rule %s, the kept product %s' % (
+                            what, '%s %s' % (want_kind, json.dumps(mine)) if want_kind else 'keeps it as it is',
+                            '%s %s' % (got[0], json.dumps(got[1])) if got else 'keeps it as it is'))
+                    if top is not None:
                         REC.append(dict(kind='source partial', batch=TAG[r], identity=row['identity_id'], source=row['source_id'],
-                                        stokes=S, tier=T, band=band,
-                                        note='best %s (%s) omitted; re-pointed to %s (%s)' % (row.get('best_cand_id'),
-                                                                                             row.get('best_snr'), top['cand_id'],
-                                                                                             top['snr'])))
+                                        stokes=S, tier=T, band=band, note=DO.repoint_record_note(row, top)))
+                    if mine:
                         row = dict(row)
-                        for x in REPOINT_FIELDS:            # production's key order (a new column's place in the header)
-                            row[x] = fields[x]
-                    elif len(kd) < len(ad):
-                        best = max(ad, key=lambda d: abs(float(d['snr'])))
-                        if okey(best) in OM:
-                            xstat['stale_best'] += 1
+                        for x, v in mine.items():           # production's key order (a new column's place in the header)
+                            row[x] = v
                     rr.append((r, row))
                 if not rr:
                     continue
@@ -565,11 +641,20 @@ def build(job):
                         if fn in ('detections.csv', 'astrometry.png'):
                             continue
                         pm = PANEL.match(fn)
-                        skip = bool(pm and (pm.group(1), pm.group(3), pm.group(2), S, T) in OM)
+                        skip = bool(pm and OMIS.key((pm.group(1), pm.group(3), pm.group(2), S, T), DO.panel_image(pm.group(4))))
                         agree('panel dropped', skip, K.take('panel dropped', (r, row['review_dir'], row['source_id'], S, T, fn)),
                               '%s %s' % (row['review_dir'], fn))
                         if skip:
                             REC.append(dict(kind='panel', batch=TAG[r], source=row['source_id'], stokes=S, tier=T,
+                                            band=pm.group(3), note=fn))
+                            continue
+                        c2 = bool(pm and S == 'V' and T == '10s' and C2.JC_C2 and C2.jc_card2(
+                            r, row['identity_id'], '%s_%s_%s_%s_%s_%s_%s' % (pm.group(1), pm.group(2), pm.group(3), S, T,
+                                                                             pm.group(4)[:8], pm.group(4)[8:])))
+                        agree('card2 panel dropped', c2, K.take('card2 panel dropped', (r, row['review_dir'], row['source_id'], S,
+                                                                                        T, fn)), '%s %s' % (row['review_dir'], fn))
+                        if c2:
+                            REC.append(dict(kind='card2 panel', batch=TAG[r], source=row['source_id'], stokes=S, tier=T,
                                             band=pm.group(3), note=fn))
                             continue
                         n_link_expected += 1
@@ -599,16 +684,16 @@ def build(job):
                         n_links += 1
                         PANELS_PD[pd].append(fn)
                     for d in (dcache[src] if src in dcache else rows(os.path.join(src, 'detections.csv'))):
-                        if okey(d) in OM:
+                        if d_omitted(d) or d_card2(d):
                             continue
                         if dkey(d) not in seen:
                             seen.add(dkey(d))
                             dets.append(dict(d, batch_run=TAG[r]))
                     if kept_of is None:
                         kept_of = {dkey(m['_row']) for i in members_of[k] for m in clusters[i]}
-                    xstat['page_detections'] += sum(1 for d in dcache.get(src, ()) if okey(d) not in OM)
-                    xstat['page_detections_not_of_identity'] += sum(1 for d in dcache.get(src, ())
-                                                                    if okey(d) not in OM and dkey(d) not in kept_of)
+                    kept_here = [d for d in dcache.get(src, ()) if not d_omitted(d) and not d_card2(d)]
+                    xstat['page_detections'] += len(kept_here)
+                    xstat['page_detections_not_of_identity'] += sum(1 for d in kept_here if dkey(d) not in kept_of)
                 pdets = PDETS.setdefault(pd, collections.OrderedDict())
                 for d in dets:
                     pdets.setdefault(dkey(d), d)
@@ -619,6 +704,8 @@ def build(job):
                                         batch_members='+'.join(sorted({TAG[r] for r, _ in rr}))))
                 q = qrows[(S, T)]
                 q[name[k]] = max(q.get(name[k], 0.0), abs(float(best.get('best_snr') or 0)))
+                if not any(d['ts'] == best.get('ts') and d['subband'] == best.get('subband') for d in pdets.values()):
+                    T7_BEST.append('%s %s' % (pd, best.get('ts')))      # T7: the combined row's best detection is one it keeps
             for band in sorted(set(out_s) | set(memr)):
                 rr = sorted(out_s.get(band, []), key=lambda x: -abs(float(x.get('best_snr') or 0)))
                 for i, x in enumerate(rr):
@@ -639,7 +726,8 @@ def build(job):
                 fh.write(QUEUE_NAME % (S, T, len(RUNS)))
                 fh.write(QUEUE_RUN % (RUNNAME, ' '.join(TAG[r] for r in RUNS)))
                 fh.write(VIEW_LIMITS)
-                fh.write(DEEP_OMISSION_LINE % (n_om, n_all, len(OM)))
+                fh.write(DEEP_OMISSION_LINE % (n_om, n_all, len(OM), DEEP_OMISSION_WB % len(OMWB) if OMWB else ''))
+                fh.write(CARD2_REJUDGE_LINE % (n_c2, len(REJ.OUT)))
                 for ln in hdr0:
                     if not ln.startswith(('# queue_name', '# run')):
                         fh.write(ln + '\n')
@@ -700,6 +788,24 @@ def build(job):
     log('T6 PASS: %d page directories, each one tier (%d detections.csv rows, %d panels with a tier token; %d linked files '
         'without one: %s)' % (len(PDETS), sum(len(v) for v in PDETS.values()), sum(len(v) for v in PANELS_PD.values())
                               - sum(n6u.values()), sum(n6u.values()), dict(n6u) or 'none'))
+    # T7 (dbc40a6): no Card 2 detection in any identity or page directory, every (batch source, tier) re-judged out met in its
+    # batch's per-tier catalogs (it qualified, so it had rows) and none of its rows used, every combined per-tier row ranked by a
+    # detection it keeps
+    n7c = sum(1 for c in clusters for m in c if d_card2(m['_row'])) + sum(1 for v in PDETS.values() for d in v.values()
+                                                                           if d_card2(d))
+    n7r = [k_ for k_ in REJ.OUT if not REJ_SEEN[k_]]
+    if n7c or n7r or T7_BEST:
+        raise ViewRefusal('T7 %d Card 2 detections left in the view; %d re-judged (batch source, tier) with no per-tier row (e.g. '
+                          '%s); %d combined rows ranked by a detection they do not keep (e.g. %s)'
+                          % (n7c, len(n7r), n7r[:3], len(T7_BEST), T7_BEST[:3]))
+    log('T7 PASS: 0 of %d Card 2 detections left (identities and %d page directories); %d re-judged (batch source, tier), every '
+        'one met in its batch\'s per-tier catalogs (%d rows not used); every combined per-tier row ranked by a detection it '
+        'keeps; %d (identity, frame) with Card 2 and other detections (kept)' % (n_c2, len(PDETS), len(REJ.OUT),
+                                                                                  sum(REJ_SEEN.values()), n_mixed_c2))
+    if OMIS.absent:     # V_combview review T2: the omit stage refuses these (G7) - here the inputs changed since
+        raise ViewRefusal('G-V10 %d lookups of a per-image key found no image in the cell\'s member table (e.g. %s) - the image '
+                          'ids of the detections and the member tables differ' % (sum(OMIS.absent.values()),
+                                                                                    sorted(OMIS.absent)[:2]))
     # run-level files
     dts = []
     for r in RUNS:
@@ -708,26 +814,41 @@ def build(job):
         write_csv(os.path.join(PART, 'detection_ts.csv'), list(dts[0].keys()), dts)
     shutil.copyfile(K.decisions, os.path.join(PART, 'deep_omission.csv'))       # the stage's table = production's, byte for byte
     write_csv(os.path.join(PART, 'deep_omission_dropped.csv'), hdr_union(REC)[:-1] if REC else ['kind'], REC)
+    shutil.copyfile(os.path.join(K.dir, DO.REJUDGED_FILE), os.path.join(PART, 'rejudged.csv'))   # production's rejudged.csv
     omc = collections.Counter(x['kind'] for x in REC)
     with open(os.path.join(PART, 'deep_omission_summary.txt'), 'w') as fh:
-        fh.write(SUMMARY_LINE1 % n_om)
-        fh.write(SUMMARY_LINE2 % (n_all, n_in, K.n_dec, len(OM), ', '.join('%s %d' % kv for kv in sorted(omc.items()))))
+        fh.write(SUMMARY_LINE1 % n_om + SUMMARY_LINE1_NEW % (n_c2, len(REJ.OUT)) + '\n')
+        fh.write(SUMMARY_LINE2 % (n_all, n_in, K.n_dec, len(OM), SUMMARY_WB % len(OMWB) if OMWB else '',
+                                  ', '.join('%s %d' % kv for kv in sorted(omc.items()))))
+    rjs = K.summary.get('rejudge') or {}
+    if rjs.get('per_tier_rows_dropped') != sum(REJ_SEEN.values()) or rjs.get('rejudged_out') != len(REJ.OUT):
+        raise ViewRefusal('G-K re-judging: the omit product\'s summary drops %s per-tier rows of %s re-judged (source, tier), this '
+                          'build %d of %d' % (rjs.get('per_tier_rows_dropped'), rjs.get('rejudged_out'), sum(REJ_SEEN.values()),
+                                              len(REJ.OUT)))
     summ = collections.OrderedDict([
         ('out', RUNNAME), ('batches', [TAG[r] for r in RUNS]), ('batch_identities', len(clusters)), ('detections', n_in),
         ('deep_omission', collections.OrderedDict([('on', True), ('served', n_all), ('omitted', n_om), ('omit_keys', len(OM)),
-                                                   ('record', dict(omc))])),
+                                                   ('omit_wb_image_keys', len(OMWB)), ('record', dict(omc))])),
         ('combined_identities', len(merged)), ('multi_batch_identities', n_multi), ('renamed', sum('~' in n for n in name)),
         ('merge', mstats), ('panels_linked', n_links), ('per_tier_source_rows', n_src_rows), ('member_rows', n_mem_rows),
         ('queues', {'%s_%s' % k: len(v) for k, v in qrows.items()}), ('tests', TESTS_PASSED),
-        ('seconds', round(time.time() - T0))])
+        ('seconds', round(time.time() - T0)),
+        ('card2', collections.OrderedDict([('ratio', job['card2_ratio']), ('removed_10s_v_records', C2.n['removed_10s']),
+                                           ('removed_10s_v_served', C2.n['removed_10s_served']),
+                                           ('not_evaluated_10s_v', C2.n['not_evaluated_10s']), ('removed_from_view', n_c2),
+                                           ('mixed_identity_frames_kept', n_mixed_c2)])),
+        ('rejudge', collections.OrderedDict([(k_, rjs.get(k_)) for k_ in (
+            'served_sources_reproduced', 'touched', 'still_qualify', 'rejudged_out', 'every_member_removed', 'per_tier_rows_dropped',
+            'removed_detections_in_records', 'g3d_removals_sharing_a_group_with_card2')]))])
     with open(os.path.join(PART, 'combined_view_summary.json'), 'w') as fh:
         json.dump(summ, fh, indent=1, default=str)
     os.rename(PART, OUT)
-    stats = dict(summary=summ, kept_dir=K.dir, kept_applied=dict(kept=n_in, omitted=n_om, decisions=K.n_dec, omit_keys=len(OM)),
-                 record=dict(omc), page_directories=len(PDETS), stale_best=xstat['stale_best'],
-                 page_detections=xstat['page_detections'],
+    stats = dict(summary=summ, kept_dir=K.dir, kept_applied=dict(kept=n_in, omitted=n_om, card2=n_c2, decisions=K.n_dec,
+                                                                 omit_keys=len(OM), omit_wb_image_keys=len(OMWB)),
+                 record=dict(omc), page_directories=len(PDETS), stale_best=len(T7_BEST),
+                 rejudged_out=len(REJ.OUT), page_detections=xstat['page_detections'],
                  page_detections_not_of_identity=xstat['page_detections_not_of_identity'], panels_copied=xstat['panels_copied'],
-                 seconds=round(time.time() - T0, 1))
+                 absent_images=sum(OMIS.absent.values()), seconds=round(time.time() - T0, 1))
     log('COMBINED-VIEW-OK %s' % json.dumps({k: v for k, v in summ.items() if k != 'merge'}, default=str))
     return stats
 
@@ -890,6 +1011,7 @@ def omit_stage(run, plan):
         u.add_output(dec, 'omission_decisions', tier='snapshot')
         u.add_output(os.path.join(plan.omit_dir, 'deep_omission_dropped.csv'), 'omission_record', tier='snapshot', decisions=dec)
         u.add_output(os.path.join(plan.omit_dir, 'deep_omission_served.csv'), 'omission_served', tier='snapshot')
+        u.add_output(os.path.join(plan.omit_dir, 'deep_omission_rejudged.csv'), 'omission_rejudged', tier='snapshot')
         u.add_output(os.path.join(plan.omit_dir, 'deep_omission_kept.csv'), 'omission_kept', tier='snapshot', decisions=dec)
     return u
 
@@ -899,7 +1021,7 @@ def check_omit_product(u, plan):
     from exopipe.phase3.core import validate
     d = plan.omit_dir
     need = ('deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_served.csv', 'deep_omission_kept.csv',
-            'deep_omission_summary.json')
+            'deep_omission_rejudged.csv', 'deep_omission_summary.json')
     miss = [x for x in need if not os.path.isfile(os.path.join(d, x))]
     if miss:
         u.refuse(f'G-V3 the omit product {d} lacks {", ".join(miss)} (run the omit stage, or give --view-omit DIR)')
@@ -912,6 +1034,7 @@ def check_omit_product(u, plan):
     for cls, name, ctx in (('omission_decisions', 'deep_omission.csv', {}), ('omission_record', 'deep_omission_dropped.csv',
                                                                             {'decisions': dec}),
                            ('omission_served', 'deep_omission_served.csv', {}),
+                           ('omission_rejudged', 'deep_omission_rejudged.csv', {}),
                            ('omission_kept', 'deep_omission_kept.csv', {'decisions': dec})):
         p = os.path.join(d, name)
         u.add_input(p)
@@ -943,7 +1066,19 @@ def check_decisions_current(u, plan, summ, recs):
     DO._record_gate(rdir)
     served = DO.read_served(os.path.join(plan.omit_dir, 'deep_omission_served.csv'))
     now = os.path.join(recs, f'{plan.run_name}_decisions_now.csv')
-    rows = DO.decide_snapshot(summ.get('lsts') or [], served, rdir=rdir, proto=proto)
+    if 'cells' not in summ:
+        u.refuse(f'G-V8 the omit product {plan.omit_dir} records no cells (an omit product made before the rate population of '
+                 f'exopipe_ops dbc40a6) - run the omit stage again')
+    cells_now = DO.view_cells(plan.runs, DO.Reader())
+    if sorted(cells_now) != list(summ['cells']):
+        u.refuse(f'G-V8 the batch runs\' searched cells changed since the omit stage ({len(cells_now)} now, {len(summ["cells"])} '
+                 f'recorded) - run the omit stage again')
+    inp_now = DO.rejudge_inputs(plan.runs)
+    if json.loads(json.dumps(inp_now)) != summ.get('rejudge_inputs'):
+        bad = [t for t in inp_now if json.loads(json.dumps(inp_now[t])) != (summ.get('rejudge_inputs') or {}).get(t)]
+        u.refuse(f'G-V8 the re-judging / Card 2 inputs (detection record, chain summary, served_tiers.csv, card2_vleak.csv) of '
+                 f'{", ".join(bad) or "the runs"} changed since the omit stage - its re-judging is stale; run the omit stage again')
+    rows = DO.decide_snapshot(summ.get('lsts') or [], served, rdir=rdir, proto=proto, cells=set(summ['cells']))
     DO.write_decisions(now, rows, DO.TIER_SNAPSHOT)
     dec = os.path.join(plan.omit_dir, 'deep_omission.csv')
     same = filecmp.cmp(now, dec, shallow=False)
@@ -994,9 +1129,13 @@ def build_stage(run, plan):
         recs = os.path.join(plan.out, '_records', 'serve', 'snapshot_view')
         os.makedirs(recs, exist_ok=True)
         check_decisions_current(u, plan, summ, recs)        # G-V8 (F5)
+        co = CFG.catalog_omission
         job = dict(out=plan.U, runs=plan.runs, kept_dir=plan.omit_dir, tiers=list(S.SNAPVIEW_TIERS),
                    stokes=list(S.SNAPVIEW_STOKES), suffix=dict(S.SNAPVIEW_PAGE_SUFFIX),
                    clv15=_legacy_root('clv15'), ops=_legacy_root('exopipe_ops'), deep_omission_py=_deep_omission_py(),
+                   proto=summ['proto'], names=dict(noise=dict(co.SNAPSHOT_NOISE), members=co.SNAPSHOT_MEMBERS,
+                                                   admission=co.SNAPSHOT_ADMISSION),
+                   card2_ratio=co.CARD2_RATIO, card2_file=co.SNAPSHOT_CARD2, read_workers=co.READ_WORKERS,
                    result=os.path.join(recs, f'{plan.run_name}_build_result.json'),
                    copy_fallback=plan.parity)        # a scratch / parity view copies a panel whose hard link fails (G-V5)
         jp = os.path.join(recs, f'{plan.run_name}_build_job.json')
@@ -1018,7 +1157,7 @@ def build_stage(run, plan):
         u.meta['build'] = {k: v for k, v in st.items() if k != 'summary'}
         u.meta['summary'] = {k: v for k, v in st['summary'].items() if k != 'merge'}
         u.note('view %s: %d combined identities (%d from two or more batches, %d renamed) of %d batch identities, %d detections, '
-               '%d omitted; queues %s; T1-T6 PASS' % (plan.U, st['summary']['combined_identities'],
+               '%d omitted; queues %s; T1-T7 PASS' % (plan.U, st['summary']['combined_identities'],
                                                      st['summary']['multi_batch_identities'], st['summary']['renamed'],
                                                      st['summary']['batch_identities'], st['summary']['detections'],
                                                      st['summary']['deep_omission']['omitted'], st['summary']['queues']))
@@ -1026,8 +1165,9 @@ def build_stage(run, plan):
             u.note(f'{st["panels_copied"]} panels COPIED, not hard-linked (a scratch / parity view: the link failed - another '
                    f'file system or the parity guard, which refuses a hard link of a file outside the parity roots; production '
                    f'links them; same bytes)')
-        u.note(f'partial sources whose best detection was omitted and that keep its best fields (PRODUCTION BUG RP): '
-               f'{st["stale_best"]}; per-tier page detections not among their identity\'s kept detections: '
+        u.note(f'Card 2: {st["summary"]["card2"]["removed_from_view"]} detections removed; re-judging: '
+               f'{st["rejudged_out"]} (batch source, tier) re-judged out; combined rows ranked by a detection they do not keep '
+               f'(T7): {st["stale_best"]}; per-tier page detections not among their identity\'s kept detections: '
                f'{st["page_detections_not_of_identity"]} of {st["page_detections"]}')
         u.add_output(plan.U, 'snapshot_view', kept=os.path.join(plan.omit_dir, 'deep_omission_kept.csv'), runs=plan.runs)
         bad = u.failed_tests()

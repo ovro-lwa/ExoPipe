@@ -951,7 +951,8 @@ OMISSION_TIERS = ('10s', '1min', '10min')
 
 def omission_templates():
     """[(kind, instant, tiers, template tree)] of the omission record's 'why' parts, from the writer's own f-strings
-    (deep_omission.why_part, member_gates, member_word, snapshot_member_reason, tenmin_member_reason) and constants (RMS_ABOVE,
+    (deep_omission.why_part, member_gates, member_word, snapshot_member_image_reason / _failclosed_reason / snapshot_member_reason,
+    tenmin_member_reason) and constants (RMS_ABOVE,
     RATE_HIGH); the gate names are catalog_omission.PROPAGATE, the band groups instrument.SUBBAND_BANDS, a member's verdicts
     catalog_omission.WIDEBAND_MEMBER_VERDICTS."""
     DO = 'deep_omission'
@@ -966,8 +967,10 @@ def omission_templates():
     members = _named(_pat('%s(?:, %s)*' % (_full(word), _full(word)), r'.*'), 'members')
     mfields = {'members': members, 'group': grp}
     mgates = _node(_joined(DO, 'member_gates', lambda v: True, 'the member gates'), mfields, 'the member gates')
-    snap = _node(_joined(DO, 'snapshot_member_reason', lambda v: True, 'the 10-s / 1-minute member reason'), mfields,
-                 'the 10-s / 1-minute member reason')
+    # the 10-s / 1-minute member reasons: per image and fail closed (exopipe_ops dde1760), and the whole-night one written before
+    snap = _alt(*[_node(_joined(DO, fn, lambda v: True, f'the 10-s / 1-minute member reason ({fn})'), mfields,
+                        f'the 10-s / 1-minute member reason ({fn})')
+                  for fn in ('snapshot_member_image_reason', 'snapshot_member_failclosed_reason', 'snapshot_member_reason')])
     tenmin = _node(_joined(DO, 'tenmin_member_reason', lambda v: True, 'the 10-minute member reason'), mfields,
                    'the 10-minute member reason')
     part = _joined(DO, 'why_part', lambda v: True, 'the why part')
