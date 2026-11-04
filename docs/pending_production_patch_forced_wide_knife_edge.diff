@@ -1,0 +1,52 @@
+PENDING PRODUCTION PATCH - exopipe_ops/astrometry_assoc.py: the wide-area burst test's knife-edge flag in the figure's reason
+===========================================================================================================================
+Not applied. exopipe_ops belongs to its owning chat: apply it there, by its commit, when the refactor's family W republishes
+forced_wide_v3.csv with its knife_edge column (forced_wide_test.KNIFE_EDGE_SE, the amendment
+R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE (3): "a knife_edge flag on every row
+whose deciding statistic lies within 2 Monte Carlo SE of its threshold, shown on the page and in the figure's reason text").
+Apply from /lustre/gh/main/exopipe_ops:   git apply <this file>      (patch(1) is not installed on the nodes; git apply
+reads the plain file, this preamble skipped)
+Base: astrometry_assoc.py at exopipe_ops 28ff2fb (md5 1a5410968e09c9028aad8693cc376a86); patched md5
+ce39c00849feffcf087d2282ed42bf37.
+
+WHAT IT DOES. forced_v3_verdict adds the row's knife_edge text, in parentheses, to the burst test's part of the reason, in all
+three forms of it: after the evidence and the centroid for BACKGROUND SOURCE; after "no cataloged source is identified as their
+emitter" for NOT CENTERED ON THE TARGET (source not identified); after the lower-cased verdict for every other result. E.g.
+  "...; wide-area burst test: consistent with a background source (knife-edge: taper p of J060139.3+022732 0.0496 vs 0.05,
+   Monte Carlo error 0.0069)"
+The verdicts and their mapping (V3_MAP) are unchanged. A row without the column, or with it empty, gives exactly today's
+(verdict, reason): checked on all 312 rows of the four served forced_wide_v3.csv files (2026-11-04). The figures of a run
+show the text once they are redrawn after the republish (the figure step reads the run's file when it draws).
+
+--- a/astrometry_assoc.py
++++ b/astrometry_assoc.py
+@@ -312,8 +312,13 @@
+ 
+ 
+ def forced_v3_verdict(row, verdict, reason):
+-    """(verdict, reason) for a forced target with a wide-area burst test row (forced_wide_v3.csv); see V3_MAP"""
++    """(verdict, reason) for a forced target with a wide-area burst test row (forced_wide_v3.csv); see V3_MAP. A row's
++    knife_edge column (the refactor's wide test, 2026-11-04: the statistics deciding its verdict that lie within 2 Monte Carlo
++    errors of their thresholds, e.g. "knife-edge: centroid z 2.97 vs 3, Monte Carlo error 0.02") is added to the burst test's
++    part of the reason; a file without the column reads as before."""
+     v = (row.get('verdict') or '').strip()
++    ke = (row.get('knife_edge') or '').strip()
++    ke_txt = f' ({ke})' if ke else ''
+     cen = ''
+     if row.get('centroid_arcmin') not in (None, ''):
+         cen = (f"the {row.get('bursts_at_target')} bursts at the target center {row['centroid_arcmin']}' from it "
+@@ -323,11 +328,11 @@
+         ev = [w for w in why if '[evidence:' in w]
+         ev_txt = ev[0][ev[0].index('[evidence:') + 10:].rstrip(']').strip() if ev else ''
+         return V3_MAP[v], (f"wide-area burst test: {row.get('named')}" + (f' ({ev_txt})' if ev_txt else '')
+-                           + (f'; {cen}' if cen else '') + f'; position test alone: {verdict}')
++                           + (f'; {cen}' if cen else '') + ke_txt + f'; position test alone: {verdict}')
+     if v == 'NOT CENTERED ON THE TARGET (source not identified)':
+-        return V3_MAP[v], (f'wide-area burst test: {cen}, and no cataloged source is identified as their emitter; '
++        return V3_MAP[v], (f'wide-area burst test: {cen}, and no cataloged source is identified as their emitter{ke_txt}; '
+                            f'position test alone: {verdict}')
+-    return verdict, f'{reason}; wide-area burst test: {v.lower()}' if v else reason
++    return verdict, f'{reason}; wide-area burst test: {v.lower()}{ke_txt}' if v else reason
+ 
+ 
+ def sys_floor_beam(tier_s):

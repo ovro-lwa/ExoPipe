@@ -524,9 +524,16 @@ def stage_test(c):
     name = 'W_test'
     workers = c.args.workers or c.wt.WORKERS
     K.plan('[wide_test] the v3 analysis of every job (bursts %s) -> %s, %s; %d processes (max %d); v2 controls %s; controls\' '
-           'order %s%s' % (c.args.wide_bursts or c.bursts, c.results, c.candidates, workers, c.wt.MAX_WORKERS,
-                           'every eligible pair' if c.wt.V2_CTL_DRAW is None else 'a draw of %s' % (c.wt.V2_CTL_DRAW,),
-                           c.wt.CONTROL_ORDER, '; PARTIAL (--wide-only)' if c.only else ''))
+           'order %s; taper control lines %s; bootstrap %s; knife-edge flag %s%s'
+           % (c.args.wide_bursts or c.bursts, c.results, c.candidates, workers, c.wt.MAX_WORKERS,
+              'every eligible pair' if c.wt.V2_CTL_DRAW is None else 'a draw of %s' % (c.wt.V2_CTL_DRAW,),
+              c.wt.CONTROL_ORDER, 'every eligible line' if c.wt.TAPER_CTL_MAX is None else 'at most %s' % (c.wt.TAPER_CTL_MAX,),
+              ('%s resamples from the job\'s generator' % c.wt.BOOTSTRAP if c.wt.BOOT_DRAW == 'job' else
+               '%s resamples per (target, tier) from its own seed' % c.wt.BOOTSTRAP)
+              + (' until the Monte Carlo error of z <= %g (at most %d)' % (c.wt.BOOT_Z_SE, c.wt.BOOT_MAX)
+                 if c.wt.BOOT_Z_SE is not None else ''),
+              'off' if c.wt.KNIFE_EDGE_SE is None else 'within %g Monte Carlo errors' % c.wt.KNIFE_EDGE_SE,
+              '; PARTIAL (--wide-only)' if c.only else ''))
     if c.dry:
         if workers > c.wt.MAX_WORKERS:
             K.plan('[wide_test]   W-WORKERS %d processes > %d: refused' % (workers, c.wt.MAX_WORKERS))
@@ -538,13 +545,16 @@ def stage_test(c):
     try:
         V3.v2_draw()
         V3.control_order()
+        V3.mc_settings()
     except ValueError as e:
         raise Refusal(str(e))
     if K.resumed(c.run, name, None, tier='snapshot', stage='wide_test', family='W'):
         return
     with c.run.unit(name, tier='snapshot', stage='wide_test', family='W', partial=bool(c.only),
                     only=sorted('%s:%s' % x for x in c.only), bursts=c.args.wide_bursts or c.bursts, workers=workers,
-                    v2_ctl_draw=c.wt.V2_CTL_DRAW, control_order=c.wt.CONTROL_ORDER, cutout_root=c.cutout_root) as u:
+                    v2_ctl_draw=c.wt.V2_CTL_DRAW, control_order=c.wt.CONTROL_ORDER, taper_ctl_max=c.wt.TAPER_CTL_MAX,
+                    boot_draw=c.wt.BOOT_DRAW, boot_z_se=c.wt.BOOT_Z_SE, boot_max=c.wt.BOOT_MAX,
+                    knife_edge_se=c.wt.KNIFE_EDGE_SE, cutout_root=c.cutout_root) as u:
         gate_env()
         fa = gate_catdir(c.cfg)
         _rec, jobs_path, events_path = c.jobs_record()
@@ -581,8 +591,19 @@ def stage_test(c):
             counts[k] = counts.get(k, 0) + 1
         u.meta.update(n_rows=len(rows), n_candidate_rows=len(crows), verdicts=dict(sorted(counts.items())),
                       n_jobs=len(jobs), n_analyzed=len(only) if only else len(jobs))
-        u.add_output(c.results, 'forced_wide_results')
-        u.add_output(c.candidates, 'forced_wide_candidates', results=c.results)
+        if c.wt.KNIFE_EDGE_SE is not None:
+            bn = sorted(int(r['bootstrap_n']) for r in rows if r.get('bootstrap_n') not in ('', None, 0))
+            short = [('%s %s %s' % (r['stokes'], r['tier'], r['identity'])) for r in rows if c.wt.BOOT_Z_SE is not None
+                     and r.get('bootstrap_n') == c.wt.BOOT_MAX and float(r['centroid_z_se']) > c.wt.BOOT_Z_SE]
+            u.meta.update(n_knife_edge=sum(1 for r in rows if r.get('knife_edge')), n_bootstrapped=len(bn),
+                          bootstrap_n_median=bn[len(bn) // 2] if bn else 0, bootstrap_n_max=bn[-1] if bn else 0,
+                          bootstrap_short=short)
+            if short:
+                u.note('%d row(s) reached BOOT_MAX %d resamples with the centroid z\'s Monte Carlo error above BOOT_Z_SE %g '
+                       '(their knife-edge test uses the error reached), e.g. %s' % (len(short), c.wt.BOOT_MAX, c.wt.BOOT_Z_SE,
+                                                                                  ', '.join(short[:4])))
+        u.add_output(c.results, 'forced_wide_results', knife_edge_se=c.wt.KNIFE_EDGE_SE)
+        u.add_output(c.candidates, 'forced_wide_candidates', results=c.results, knife_edge_se=c.wt.KNIFE_EDGE_SE)
         for k, v in sorted(counts.items()):
             print('  %s: %d' % (k, v), flush=True)
 

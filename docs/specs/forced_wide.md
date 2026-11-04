@@ -25,11 +25,18 @@ the `forced_wide_v3.py` docstring. Its values are the config defaults, and the m
 `R-GREGG-20261103-FORCED-WIDE-V3-APPROVED`. That covers the candidates, the taper test and its control lines, the
 centroid test, the evidence rules, v2's centering, the burst definition and the job thresholds.
 
-Two implementation choices inside the approved method are the refactor chat's, made under Gregg's delegation
-(`R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS`). Both are RULED by `R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT`:
+Implementation choices inside the approved method are the refactor chat's, made under Gregg's delegation
+(`R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS`). Two are RULED by `R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT`:
 
 - `V2_CTL_DRAW`: every eligible v2 control is used;
 - `CONTROL_ORDER`: the controls are order-independent.
+
+Its amendment `R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE` ("precision and
+honesty, not a choice of draw") RULES the Monte Carlo keys:
+
+- `TAPER_CTL_MAX`: every eligible taper control line (no 900 cap);
+- `BOOT_DRAW`, `BOOT_Z_SE`, `BOOT_MAX`: the centroid's bootstrap per target, until its z is precise to 0.02;
+- `KNIFE_EDGE_SE`: the knife-edge flag.
 
 The other three defaults that differ from production are PROPOSED (see the deliberate differences below).
 
@@ -125,15 +132,16 @@ zone is not 1, and that have gated planes. For Stokes I it uses positive peaks o
      log-linearly and integrated over the target's 0.35 FWHM disc. This gives n_pred.
    - The prediction is calibrated on **control lines**. Each control line uses a cataloged source of 0.5–2 × the
      candidate's flux (≥ 3 Jy) in any job of the same Stokes. Imaginary targets are placed at the candidate's distance
-     in 8 directions, up to 900 lines in all. The lines must have comparable predictions. The lines are
-     **order-independent** (`CONTROL_ORDER = 'canonical'`):
+     in 8 directions. Every eligible line is used (`TAPER_CTL_MAX` None; production kept at most 900). The lines must
+     have comparable predictions. The lines are **order-independent** (`CONTROL_ORDER = 'canonical'`):
      - The pool holds one source per 1/20° cell. Its host is the job with the best score (bands searched, nearest the
        cutout center); a tie goes to the smallest (Stokes, identity), then the source's identity.
      - The sources are taken in the order of a stable hash (sha256) of (seed, the target's identity, the source's
-       identity). This is the seeded selection the 900-line bound applies.
+       identity). This is the seeded selection a `TAPER_CTL_MAX` cap applies; without a cap it only fixes the order of
+       the sums.
      - Line i of a source lies at (i + uᵢ) × 45°, where uᵢ is a stable hash of (seed, target, source, i).
      - So a moved or added job changes another target's lines only where that job adds lines to its pool: a new source,
-       a source it hosts better, or, at the cap, the lines it displaces at the end of the order.
+       a source it hosts better, or, under a cap, the lines it displaces at the end of the order.
      - Production (`'pool'`, the parity file) shuffled a pool-ordered list with the job's generator and drew one
        rotation per source from it.
    - From these: κ = Σn_obs / Σn_pred, λ = κ n_pred, ratio = (n_obs + ½)/(λ + ½), and
@@ -144,7 +152,11 @@ zone is not 1, and that have gated planes. For Stokes I it uses positive peaks o
    center on the candidate → target line, compared with pooled flux-matched controls. By default it uses **every**
    eligible control pair (`V2_CTL_DRAW` None), with host ties broken canonically (`CONTROL_ORDER`).
 4. **Centroid** of the bursts in the target's disc. The error is √(stat² + max(0.028, 0.11/√nights)²), with stat from
-   a bootstrap over nights. z = offset/error.
+   a bootstrap over nights (≥ 5 nights; else 0.12/√n). z = offset/error. The bootstrap draws from its own generator per
+   (target, tier), seeded by a stable hash of (seed, the target's (Stokes, identity), tier) (`BOOT_DRAW = 'target'`). It
+   draws 1000 resamples, then more in blocks of 1000 until the Monte Carlo error of z is at most 0.02 (`BOOT_Z_SE`),
+   and of each candidate's z_c, counted at most at 3, or `BOOT_MAX` (10⁶) are drawn. Production drew exactly 1000 from
+   the job's generator.
 5. **Verdict.**
 
    | Centroid z | Verdict |
@@ -159,11 +171,40 @@ zone is not 1, and that have gated planes. For Stokes I it uses positive peaks o
    - Evidence that a candidate makes the bursts can be: the bursts center on it; v2's centering; night by night
      (Spearman ρ > 0, p < 0.01); or its taper accounts for the count.
 
-Each job has its own numpy generator (seed `SEED` = 20261102). With the canonical control order it draws only the
-centroid's bootstrap, so no other job's presence or position moves a target's results. The results also do not depend on
-the number of processes. `wide_test` refuses more than `MAX_WORKERS` (6) processes (W-WORKERS): its workers read the Lustre burst
+No generator is shared between targets. The control lines are stable hashes of identities (`CONTROL_ORDER
+'canonical'`), and each (target, tier) bootstrap has its own seed (`BOOT_DRAW 'target'`), so no other job's presence or
+position moves a target's results. Production used one numpy generator per job (seed `SEED` = 20261102) for both. The
+results also do not depend on the number of processes. `wide_test` refuses more than `MAX_WORKERS` (6) processes (W-WORKERS): its workers read the Lustre burst
 files. It pools burst files of one search only: every `W_search` record must have read the current `jobs.json` and the
 selected cutout generation (W-POOL).
+
+### Monte Carlo errors and the knife-edge flag (`KNIFE_EDGE_SE` = 2)
+
+Two parts of the method are random draws: the control lines' directions and the centroid's bootstrap. A verdict can
+therefore sit on a threshold within the method's own Monte Carlo noise. Each row's `knife_edge` column names every
+statistic that **decides** the row and lies within 2 Monte Carlo errors of one of its thresholds. A statistic decides the
+row when moving it alone to just below and just above that threshold (the others as they are) changes the verdict or the
+set of named sources (`knife_edges` re-runs `verdict_row`). The text reads, for example,
+`knife-edge: centroid z 2.97 vs 3, Monte Carlo error 0.02`.
+
+| Statistic | Thresholds | Monte Carlo error |
+|---|---|---|
+| centroid z | `Z_ON` 2, `Z_OFF` 3 | z × SE(stat²)/(2 err²); SE(stat²) = sd(q_b)/√B over the resamples, q_b = ((x_b − x̄)² + (y_b − ȳ)²)/2 |
+| `centroid z to <candidate>` (z_c) | `Z_C_ON` 2, `Z_C_NEAR` 3 | the same relative error as z |
+| `taper p of <candidate>` | `P_CONSISTENT` = `P_EXCESS` = 0.05 | the binomial within each control source: √(Σⱼ kⱼ(mⱼ − kⱼ)/(mⱼ − 1))/n over the n matched lines (source j: mⱼ lines, kⱼ at or above the target's ratio) |
+| `taper ratio of <candidate>` | `RATIO_CONSISTENT` 2, `R_EXCESS` 3 | ratio × λ/(λ + ½) × SE(κ)/κ; SE(κ) from the matched lines' residuals n_obs − κ n_pred, their spread within each control source |
+| `matched control lines (within 3x / 10x) of <candidate>` | `MATCH_MIN` 15 | the binomial within each control source. Flipped, `matched()` takes another window, calibrated on its lines, or none |
+
+The errors are within control sources because a salt re-draws a line's direction, never its control source: the spread
+between sources is no Monte Carlo noise. On real rows (`se_validate.py`: 20 independent global salts, every line
+re-rotated and every bootstrap re-drawn, 26 calibrated candidates of 5 rows) the spread over the salts divided by the
+error has a median of 1.03 for the centroid z (3 of 3 within a factor of 1.5), 0.91 for p (23 of 26) and 1.02 for the
+ratio (24 of 26). The binomial over all lines alike gives 0.81 (21 of 26) and 0.97 (23 of 26). Its misses all
+overestimate, by up to 2×.
+
+With the flag, `results_v3.csv`, and so `forced_wide_v3.csv`, gain `bootstrap_n`, `centroid_z_se` and `knife_edge`.
+`candidates_v3.csv` gains `p_emp_se`, `ratio_se`, `n_ctl_se` and `centroid_to_candidate_se`. With `KNIFE_EDGE_SE` None
+(production) none of these columns is written.
 
 ### `wide_publish` → `<review root>/<run>/forced_wide_v3.csv` (`forced_wide_published`)
 
@@ -185,10 +226,14 @@ never published (W-PARTIAL). Each unit runs W-ENV and W-CATDIR first: `named_rad
 Any other verdict keeps the position verdict, and the burst test's result is added to the reason. `named_radec` marks
 the named sources.
 
+The figure does not read `knife_edge` yet. `docs/pending_production_patch_forced_wide_knife_edge.diff` adds the
+column's text to the burst test's part of the reason. It is a patch to exopipe_ops' `astrometry_assoc.forced_v3_verdict`,
+for the owning chat to apply. A row without the column reads exactly as before (all 312 served rows checked).
+
 ### Deliberate differences from the analysis, and production's values
 
-`EVENT_ORDER`, `TARGET_MEMBER` and `FILE_ERRORS` are PROPOSED (2026-11-03). `V2_CTL_DRAW` and `CONTROL_ORDER` are decided
-(2026-11-04). Production's values of all five are in
+`EVENT_ORDER`, `TARGET_MEMBER` and `FILE_ERRORS` are PROPOSED (2026-11-03). `V2_CTL_DRAW`, `CONTROL_ORDER` and the Monte
+Carlo keys are decided (2026-11-04). Production's values of all nine are in
 `exopipe/phase3/parity/production_20261013.cfg` (`# WAVE2`).
 
 | Key | Default | Production | Why |
@@ -197,6 +242,10 @@ the named sources.
 | `forced_wide.TARGET_MEMBER` | `identity` | `first` | A merged identity (26 rows, 21 distinct (Stokes, identity) in the four gen5 runs) takes the list position of one member. Production took the first member in `build_targets`' glob order on /data07; a copy lists in another order. The searched cutouts are the identity's own, centered on the member it is named after (their TARGRA/TARGDEC, in every cutout). On gen5, `first` put 6 of 205 jobs 7.30–32.19″ (0.12–0.54′) off that point, at most 0.05 of the frame FWHM, and swapped two identities' positions. `identity` centers each job exactly on its cutouts. The member choice leaves the tests' statistics unchanged. Under production's capped control draw it did move one verdict (Struve 2398 A, I 1 min), but only because one control was re-indexed and the fixed-seed draw then picked 44 different controls; see `V2_CTL_DRAW`. |
 | `forced_wide_test.V2_CTL_DRAW` | `None` (every eligible control pair) | `(300, 20261102)` | v2's centering kept at most 300 eligible control pairs, drawn at random with a fixed seed over a list in pool order, so any change to the job pool re-draws them. Struve 2398 A, I 1 min: 476 eligible pairs, 475 identical under both member rules; production's draw gives power − z 3.120 (BACKGROUND SOURCE), the draw after the member change 2.890 (UNDECIDED), all 476 give 3.003 (BACKGROUND SOURCE) under both rules, and 55% of 2,000 random draws of 300 read BACKGROUND SOURCE (review F2). Decided (RULED): `R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT` (1), "The cap was a speed convenience, and it makes knife-edge verdicts depend on sampling noise." |
 | `forced_wide_test.CONTROL_ORDER` | `canonical` | `pool` | The taper test's control lines came from a pool-ordered list, shuffled by the job's generator, with one rotation per source drawn from the same generator; that generator then drew the centroid's bootstrap. v2's host ties went to the first job in pool order. So a moved or added job re-drew unrelated targets' calibration: the 900 cap binds in 484 of 1,267 gen5 calls (38%). Decided (RULED): `R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT` (2), "in a pipeline fed new data daily, adding a target must not re-draw an unrelated target's calibration." |
+| `forced_wide_test.TAPER_CTL_MAX` | `None` (every eligible line) | `900` | v3 kept at most 900 control lines per candidate. The cap shortened 486 of 1,267 gen5 calls (38%, all Stokes I) and left the calibration to the draw of lines it kept. Without it the test evaluates 1.43 × the lines (`cap_cost_census.py`). Decided (RULED): the amendment (1). |
+| `forced_wide_test.BOOT_DRAW` | `target` | `job` | The bootstrap drew from the job's generator, after the control lines in production's order. Its own stable seed per (target, tier) keeps it free of every other draw. Decided (RULED): the amendment (2), "seeded per target". |
+| `forced_wide_test.BOOT_Z_SE` | `0.02` | `None` (exactly 1000 resamples) | At 1000 resamples the bootstrap alone moved a gen5 row's centroid z from 3.016 (the served draw) to 2.968 (round 3's draw), across the threshold 3 (Gaia DR3 3316364602541746048, I 1 min). Decided (RULED): the amendment (2). |
+| `forced_wide_test.KNIFE_EDGE_SE` | `2.0` | `None` (no Monte Carlo columns) | Decided (RULED): the amendment (3). |
 | `forced_wide_search.FILE_ERRORS` | `refuse` | `drop` | Gates refuse; production dropped a raising cutout. No gen5 cutout raised. |
 
 The night-activity bands table lists the nights of each (LST, band) in date order. The script iterated a set there, so
@@ -212,9 +261,9 @@ its rows came in string-hash order, which differs in every process. No value dep
   `jobs.json`): no stage reads them.
 - The diagnostics `kelt24_evidence.py`, `lag_test*.py` and `taper_quick.py`.
 
-v3's own 900-line cap binds in 484 of 1,267 gen5 control-line calls (38%), in 199 of the 280 (Stokes, tier, target)
-with a taper test, all Stokes I (2026-11-04 census). The canonical order keeps it as a compute bound: the selection is
-keyed on stable identities, not on pool order.
+v3's own 900-line cap bound in 484 of 1,267 gen5 control-line calls (38%), in 199 of the 280 (Stokes, tier, target)
+with a taper test, all Stokes I (2026-11-04 census). It is now off by default (`TAPER_CTL_MAX` None); a cap, if set, is
+applied by the canonical order's seeded selection, keyed on stable identities.
 
 ## Family N: the night-activity table
 
@@ -269,7 +318,8 @@ served page through the two-port server.
    exopipe3 forced --tier snapshot --stages wide_publish
    ```
 
-**Family W, parity** (scratch roots only; the parity file holds production's four values, the capped v2 draw included):
+**Family W, parity** (scratch roots only; the parity file holds production's nine values: the capped v2 draw, the
+pool-ordered controls, the 900-line cap and the job generator's 1000 resamples included):
 
 ```
 exopipe3 forced --tier snapshot --stages wide_jobs --wide-runs <Lustre copy> \

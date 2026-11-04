@@ -16,6 +16,7 @@ import csv
 import json
 import math
 import os
+import re
 import statistics
 
 import numpy as np
@@ -174,7 +175,50 @@ def bursts_consistent(path, stokes=None, identity=None, band=None, **ctx):
 RESULT_COLUMNS = ('stokes', 'identity', 'target', 'tier', 'n_events', 'event_jy_median', 'bursts_at_target', 'bursts_by_band',
                   'n_candidates', 'n_capable', 'centroid_fwhm', 'centroid_arcmin', 'centroid_pa', 'centroid_err_fwhm',
                   'centroid_z', 'centroid_nights', 'v2_background', 'verdict', 'named', 'coverage', 'why')
+# with the knife-edge flag (forced_wide_test.KNIFE_EDGE_SE set): the bootstrap's resamples, the centroid z's Monte Carlo error,
+# the flag
+MC_RESULT_COLUMNS = ('bootstrap_n', 'centroid_z_se', 'knife_edge')
 NAMING = ('BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE')
+_KE = re.compile(r'^(?P<stat>.+) (?P<v>-?[0-9.]+(?:e[-+]?[0-9]+)?) vs (?P<t>[0-9.]+(?:e[-+]?[0-9]+)?), '
+                 r'Monte Carlo error (?P<se>[0-9.]+(?:e[-+]?[0-9]+)?)$')
+
+
+def knife_edge_problems(r, k):
+    """[problem] of one results row's Monte Carlo columns: the knife_edge text names known statistics, each at one of its
+    thresholds within k (KNIFE_EDGE_SE) of its Monte Carlo errors (the printed values' rounding allowed); the centroid z's entry
+    agrees with the row's centroid_z and centroid_z_se."""
+    t = _cfg().forced_wide_test
+    out = []
+    if r['bootstrap_n'] not in ('',) and not r['bootstrap_n'].isdigit():
+        out.append('bootstrap_n %r' % r['bootstrap_n'])
+    if r['centroid_z_se'] not in ('',) and not float(r['centroid_z_se']) >= 0:
+        out.append('centroid_z_se %r' % r['centroid_z_se'])
+    txt = r['knife_edge']
+    if not txt:
+        return out
+    if not txt.startswith('knife-edge: '):
+        return out + ['knife_edge %r' % txt[:60]]
+    if r['centroid_z'] == '':
+        out.append('knife-edge without a centroid')
+    kinds = (('centroid z to ', {t.Z_C_ON, t.Z_C_NEAR}), ('centroid z', {t.Z_ON, t.Z_OFF}),
+             ('taper p of ', {t.P_CONSISTENT, t.P_EXCESS}), ('taper ratio of ', {t.RATIO_CONSISTENT, t.R_EXCESS}),
+             ('matched control lines (within ', {float(t.MATCH_MIN)}))
+    for ent in txt[len('knife-edge: '):].split('; '):
+        m = _KE.match(ent)
+        if not m:
+            out.append('knife-edge entry %r' % ent[:60])
+            continue
+        st, v, th, se = m.group('stat'), float(m.group('v')), float(m.group('t')), float(m.group('se'))
+        kind = next((ths for pre, ths in kinds if st.startswith(pre)), None)
+        if kind is None or not any(abs(th - x) < 1e-9 for x in kind):
+            out.append('knife-edge entry %r: an unknown statistic or threshold' % ent[:60])
+        elif not (se > 0 and abs(v - th) <= k * se * 1.05 + 0.006):
+            out.append('knife-edge entry %r: not within %g errors of its threshold' % (ent[:60], k))
+        if st == 'centroid z' and r['centroid_z'] != '' and (abs(v - float(r['centroid_z'])) > 0.051
+                                                              or abs(se - float(r['centroid_z_se'])) > 0.051 * se + 1e-4):
+            out.append('knife-edge entry %r: the centroid z / error of the row are %s / %s' % (ent[:60], r['centroid_z'],
+                                                                                              r['centroid_z_se']))
+    return out
 
 
 def verdict_problems(r, tol=0.05):
@@ -226,18 +270,29 @@ def verdict_problems(r, tol=0.05):
     return out
 
 
+_ABSENT = object()
+
+
 @content_test('forced_wide_results')
-def results_consistent(path, **ctx):
+def results_consistent(path, knife_edge_se=_ABSENT, **ctx):
+    """one row per (Stokes, tier, target), each verdict consistent with its numbers; the Monte Carlo columns exactly when the
+    run flagged knife-edges (knife_edge_se: the run's KNIFE_EDGE_SE; absent - an older record - either column set)"""
     rows, cols = _rows(path)
-    if tuple(cols) != RESULT_COLUMNS:
-        return False, len(rows), 'columns %s != %s' % (cols, list(RESULT_COLUMNS))
+    mc = tuple(cols) == RESULT_COLUMNS + MC_RESULT_COLUMNS
+    given = knife_edge_se is not _ABSENT
+    if not (mc or tuple(cols) == RESULT_COLUMNS) or (given and mc != (knife_edge_se is not None)):
+        return False, len(rows), 'columns %s != %s%s' % (cols, list(RESULT_COLUMNS), ' + %s' % list(MC_RESULT_COLUMNS)
+                                                          if given and knife_edge_se is not None else '')
+    k = knife_edge_se if given and knife_edge_se is not None else _cfg().forced_wide_test.KNIFE_EDGE_SE
     probs, seen = [], set()
     for r in rows:
-        k = (r['stokes'], r['tier'], r['identity'])
-        if k in seen or r['stokes'] not in ('I', 'V') or r['tier'] not in ('10s', '1min'):
-            probs.append('%s listed twice or Stokes / tier unknown' % (k,))
-        seen.add(k)
-        probs += ['%s: %s' % (k, p) for p in verdict_problems(r)]
+        k_ = (r['stokes'], r['tier'], r['identity'])
+        if k_ in seen or r['stokes'] not in ('I', 'V') or r['tier'] not in ('10s', '1min'):
+            probs.append('%s listed twice or Stokes / tier unknown' % (k_,))
+        seen.add(k_)
+        probs += ['%s: %s' % (k_, p) for p in verdict_problems(r)]
+        if mc:
+            probs += ['%s: %s' % (k_, p) for p in knife_edge_problems(r, k if k is not None else 2.0)]
     return (not probs and len(rows) > 0), len(rows), ('%d rows' % len(rows) if not probs else '; '.join(probs[:5]))
 
 
@@ -278,6 +333,11 @@ def candidates_consistent(path, results=None, **ctx):
             probs.append('%s: excess True with the centering %s' % (k, r['centering']))
         if r['shown'] == 'True' and r['centering'] != 'BACKGROUND SOURCE' and r['explains'] != 'True':
             probs.append('%s: shown without explains' % (k,))
+        for f in ('p_emp_se', 'ratio_se', 'n_ctl_se', 'centroid_to_candidate_se'):
+            if f in r and r[f] not in ('', None) and not float(r[f]) >= 0:
+                probs.append('%s: %s %s' % (k, f, r[f]))
+        if 'p_emp_se' in r and (p == p) != (r['p_emp_se'] not in ('', None)):
+            probs.append('%s: p_emp %r with the error %r' % (k, r['p_emp'], r['p_emp_se']))
     return not probs, len(rows), ('%d candidate rows' % len(rows) if not probs else '; '.join(probs[:5]))
 
 
@@ -287,7 +347,7 @@ def published_matches_results(path, results=None, jobs=None, stokes=None, tier=N
     from exopipe.phase3.lib.forced import wide_jobs as WJ
     rows, cols = _rows(path)
     probs = []
-    if cols[-1:] != ['named_radec'] or tuple(cols[:-1]) != RESULT_COLUMNS:
+    if cols[-1:] != ['named_radec'] or tuple(cols[:-1]) not in (RESULT_COLUMNS, RESULT_COLUMNS + MC_RESULT_COLUMNS):
         return False, len(rows), 'columns %s' % cols
     if results:
         want = [r for r in _rows(results)[0] if r['stokes'] == stokes and r['tier'] == tier]

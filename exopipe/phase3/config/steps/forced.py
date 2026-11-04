@@ -211,7 +211,9 @@ class forced_assoc(_Section):
 # the method's keys RULED by that row (the candidates by flux capability, the taper test and its control lines, the
 # centroid test, the evidence rules, v2's centering; the bursts and the jobs it tests). Implementation choices inside it are
 # the refactor chat's under its delegation (R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS): V2_CTL_DRAW and CONTROL_ORDER are
-# RULED by R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT. Spec: docs/specs/forced_wide.md.
+# RULED by R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT; the Monte Carlo precision and its knife-edge flag
+# (TAPER_CTL_MAX, BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE) by its amendment
+# R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE. Spec: docs/specs/forced_wide.md.
 # =====================================================================================================================
 
 class forced_wide(_Section):
@@ -372,12 +374,16 @@ class forced_wide_test(_Section):
     # CONTROL LINES: cataloged sources of CTL_FLUX x the candidate's flux (>= CTL_MIN_JY) in every job of the same Stokes, one
     # per cell of 1 / CTL_KEY_PER_DEG deg (round(ra x 20) / 20), imaginary targets at the candidate's distance in CTL_DIRS
     # directions (a random rotation), clear of sources >= CTL_BRIGHT_JY by NEAR x the smallest FWHM and >= CTL_TARGET_FWHM x
-    # the largest from that cutout's own target, in bands the cutout searched (>= half), up to CTL_CAP lines
-    # (forced_wide_v3.py:27-30, :267-308)
+    # the largest from that cutout's own target, in bands the cutout searched (>= half) (forced_wide_v3.py:27-30, :267-308)
     CTL_FLUX = (0.5, 2.0)
     CTL_MIN_JY = 3.0
     CTL_DIRS = 8
-    CTL_CAP = 900
+    # the most control lines per candidate. None = EVERY eligible line (the amended decision R-REFACTOR-20261104-FORCED-WIDE-
+    # CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE (1), 2026-11-04: precision, not a choice of draw - the cap was a
+    # compute bound, and it left the calibration to the draw of lines it kept); production's cap=900 (forced_wide_v3.py
+    # control_lines) is in the parity config. On gen5 the cap shortened 486 of 1,267 calls (38%, all Stokes I); without it the
+    # test evaluates 1.43 x the lines (cap_cost_census, 2026-11-04)
+    TAPER_CTL_MAX = None
     CTL_KEY_PER_DEG = 20
     CTL_BRIGHT_JY = 1.0
     CTL_TARGET_FWHM = 1.0
@@ -409,8 +415,30 @@ class forced_wide_test(_Section):
     CEN_DET = 0.12
     CEN_FLOOR = 0.028
     CEN_NIGHT = 0.11
-    BOOTSTRAP = 1000
+    BOOTSTRAP = 1000                             # resamples (BOOT_Z_SE None: all of them; else the first block)
     BOOT_MIN_NIGHTS = 5
+    # THE BOOTSTRAP'S PRECISION (the amended decision (2), 2026-11-04). BOOT_Z_SE: after the first BOOTSTRAP resamples, more
+    # until the Monte Carlo standard error of the centroid z is at most this - and of each candidate's z_c, a z_c above Z_C_NEAR
+    # counted as Z_C_NEAR (the error of every z of the centroid is z x SE(stat^2) / (2 err^2), SE(stat^2) from the resamples'
+    # own spread; estimated, so the stop is at BOOT_Z_SE / 1.1) - or BOOT_MAX resamples are drawn; None = production: exactly
+    # BOOTSTRAP (forced_wide_v3.py:478)
+    BOOT_Z_SE = 0.02
+    BOOT_MAX = 1000000
+    # the resamples' generator. 'target' = one per (target, tier): numpy default_rng of a stable hash (sha256) of (SEED, the
+    # target's (Stokes, identity), tier), the nights drawn vectorized; 'job' = production: the job's generator (after the control
+    # lines when CONTROL_ORDER is 'pool'), replicate by replicate (forced_wide_v3.py:477-479)
+    BOOT_DRAW = 'target'
+    # THE KNIFE-EDGE FLAG (the amended decision (3), 2026-11-04): a row's knife_edge column names every statistic that decides
+    # its verdict or its named sources and lies within KNIFE_EDGE_SE of its Monte Carlo standard errors of a threshold - the
+    # centroid z (Z_ON, Z_OFF; error from the bootstrap), a candidate's z_c (Z_C_ON, Z_C_NEAR; the same), its taper p
+    # (P_CONSISTENT, P_EXCESS; the binomial within each control source over the matched lines), its taper ratio
+    # (RATIO_CONSISTENT, R_EXCESS; the matched lines' spread about kappa within each control source), the count of each
+    # matched-line window (MATCH_MIN; the binomial within each control source) - within sources because a salt re-draws a
+    # line's direction, never its control source (validated against 20 global salts on real rows, wide_v3.SE_KIND). DECIDES =
+    # moved alone to the threshold's other side, the statistic changes the verdict or the set of named sources. With the flag,
+    # results_v3.csv (and so forced_wide_v3.csv) gains bootstrap_n, centroid_z_se, knife_edge; candidates_v3.csv the errors.
+    # None = production: none of these columns
+    KNIFE_EDGE_SE = 2.0
     # VERDICT: centroid z >= Z_OFF not centered on the target, < Z_ON centered; a candidate the centroid lies within Z_C_ON of
     # (and within CENTER_WITHIN FWHM of the target) is direct evidence; near candidates v2 cannot separate count when z_c <
     # Z_C_NEAR; NOT EXPLAINED / CONSISTENT need tests covering >= COVER of the bursts (forced_wide_v3.py:42-57, :513)
@@ -421,8 +449,8 @@ class forced_wide_test(_Section):
     CENTER_WITHIN = 1.0
     COVER = 2.0 / 3.0
     SEED = 20261102                              # numpy default_rng seed, one generator per job (CONTROL_ORDER 'pool': the
-                                                 # control lines, then the bootstrap; 'canonical': the bootstrap only) and the
-                                                 # salt of the canonical controls' stable hashes
+                                                 # control lines; BOOT_DRAW 'job': then the bootstrap) and the salt of every
+                                                 # stable hash (the canonical controls; BOOT_DRAW 'target': the bootstrap's)
     # THE CONTROLS' ORDER - the taper test's control lines and v2's control pairs. 'canonical' (the decision
     # R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT, the refactor chat under Gregg's delegation, 2026-11-04: "in a
     # pipeline fed new data daily, adding a target must not re-draw an unrelated target's calibration"): ORDER-INDEPENDENT -
@@ -430,11 +458,10 @@ class forced_wide_test(_Section):
     #   score (bands searched, nearest the cutout center), a tie to the smallest (Stokes, identity), then source identity;
     #   each control line rotated by its own seed: line i of a source at (i + u) x 360 / CTL_DIRS deg, u = a stable hash
     #   (sha256) of (SEED, the target's (Stokes, identity), the control source's identity (name, ra, dec), i);
-    #   the CTL_CAP compute bound applied by a seeded selection keyed on the target's identity: the sources taken in the order
-    #   of a stable hash of (SEED, target, source), each with its lines, until CTL_CAP lines are valid;
+    #   the sources taken in the order of a stable hash of (SEED, target, source), each with its lines - the seeded selection a
+    #   TAPER_CTL_MAX cap applies (keyed on the target's identity); without a cap the order only fixes the sums' order;
     #   so adding or moving a job changes another target's control lines only where that job adds lines to its pool (a new
-    #   source; a source it hosts better; at the cap, the lines it displaces at the end of the order); the job's generator then
-    #   draws only the centroid's bootstrap, which no other job's presence moves.
+    #   source; a source it hosts better; under a cap, the lines it displaces at the end of the order).
     # 'pool' = production (forced_wide_v3.py control_lines, forced_wide_analyze.py controls_for; the parity config): the
     # pool-ordered list shuffled by the job's generator, one rotation per source from the same generator (which then draws the
     # centroid's bootstrap), host ties to the first job in pool order
@@ -485,10 +512,10 @@ class forced_wide_test(_Section):
     # wide_publish: each named source's position, the source of that name among the physical sources (>= S_MIN_JY) within
     # this of the target (publish_v3_to_runs.py:16-27); a name not found refuses the publication (W-NAMED)
     NAMED_RADIUS_ARCMIN = 200.0
-    NULLABLE_KEYS = ('V2_CTL_DRAW',)
+    NULLABLE_KEYS = ('V2_CTL_DRAW', 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'KNIFE_EDGE_SE')
     RULED = {**{k: 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED' for k in (
         'MU', 'REF_MHZ', 'SPECTRAL_INDEX', 'CAPABLE_FRACTION', 'S_MIN_JY', 'R_CAND', 'NEAR', 'CUT_HALF_ARCMIN', 'CUT_EDGE_ARCMIN',
-        'DISC', 'STRIP', 'BIN', 'SIDE', 'MIN_BIN', 'DISC_GRID', 'CTL_FLUX', 'CTL_MIN_JY', 'CTL_DIRS', 'CTL_CAP', 'CTL_KEY_PER_DEG',
+        'DISC', 'STRIP', 'BIN', 'SIDE', 'MIN_BIN', 'DISC_GRID', 'CTL_FLUX', 'CTL_MIN_JY', 'CTL_DIRS', 'CTL_KEY_PER_DEG',
         'CTL_BRIGHT_JY', 'CTL_TARGET_FWHM', 'MATCH_FACTORS', 'MATCH_FLOORS', 'MATCH_MIN', 'P_CONSISTENT', 'RATIO_CONSISTENT',
         'P_EXCESS', 'R_EXCESS', 'P_NIGHT', 'MIN_NOBS', 'NIGHT_CORE', 'NIGHT_FAR', 'NIGHT_CLEAR', 'NIGHT_MIN_CORE',
         'NIGHT_MIN_NIGHTS', 'CEN_DET', 'CEN_FLOOR', 'CEN_NIGHT', 'BOOTSTRAP', 'BOOT_MIN_NIGHTS', 'Z_OFF', 'Z_ON', 'Z_C_ON',
@@ -497,7 +524,9 @@ class forced_wide_test(_Section):
         'V2_VERY_BRIGHT_DEG', 'V2_VERY_BRIGHT_SELF_ARCMIN', 'V2_SRC_PAD_ARCMIN', 'V2_VERY_BRIGHT_PAD_ARCMIN', 'V2_KEY_PER_DEG',
         'V2_CTL_MIN_CELLS', 'V2_CTL_MIN_N', 'V2_MIN_NIGHTS', 'V2_POWER_MIN', 'V2_Z_BG', 'V2_D_TG', 'V2_Z_NOT')},
              'V2_CTL_DRAW': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',
-             'CONTROL_ORDER': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'}
+             'CONTROL_ORDER': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',
+             **{k: 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE' for k in (
+                 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE')}}
 
 
 class night_activity(_Section):

@@ -150,35 +150,46 @@ def test_config():
           t.MU == {('I', '10s'): 4.0, ('I', '1min'): 2.5, ('V', '10s'): 2.5, ('V', '1min'): 2.0})
     from exopipe.phase3.core import ledger
     V3ID, ORDID = 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED', 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'
+    AMDID = ORDID + '-AMENDED-PRECISION-KNIFE-EDGE'
+    MC = ('TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE')
     ruled = {(sec, k): v for sec in ('forced_wide', 'forced_wide_search', 'forced_wide_test', 'night_activity')
              for k, v in (getattr(CFG._section(sec), 'RULED', None) or {}).items()}
-    check('RULED: CONTROL_ORDER and V2_CTL_DRAW cite the refactor decision, the rest Gregg\'s v3 approval',
+    check('RULED: CONTROL_ORDER and V2_CTL_DRAW cite the refactor decision, the Monte Carlo keys its amendment, the rest '
+          'Gregg\'s v3 approval',
           ruled[('forced_wide_test', 'CONTROL_ORDER')] == ORDID and ruled[('forced_wide_test', 'V2_CTL_DRAW')] == ORDID
-          and {v for k, v in ruled.items() if k[1] not in ('CONTROL_ORDER', 'V2_CTL_DRAW')} == {V3ID}
+          and all(ruled[('forced_wide_test', k)] == AMDID for k in MC)
+          and {v for k, v in ruled.items() if k[1] not in ('CONTROL_ORDER', 'V2_CTL_DRAW') + MC} == {V3ID}
           and not any(k[0] == 'night_activity' for k in ruled), sorted(set(ruled.values())))
+    check('the 900-line cap is gone: TAPER_CTL_MAX None by default, no CTL_CAP key', t.TAPER_CTL_MAX is None
+          and not hasattr(t, 'CTL_CAP'))
+    check('the bootstrap: its own seed per (target, tier), until the centroid z\'s Monte Carlo error <= 0.02; the knife-edge '
+          'window 2 errors', (t.BOOT_DRAW, t.BOOT_Z_SE, t.BOOTSTRAP, t.KNIFE_EDGE_SE) == ('target', 0.02, 1000, 2.0)
+          and t.BOOT_MAX >= 100 * t.BOOTSTRAP)
     check('RULED: the approved method\'s thresholds are ruled (MU, the taper, the centroid, v2), operations are not',
           all(('forced_wide_test', k) in ruled for k in ('MU', 'P_CONSISTENT', 'R_EXCESS', 'CEN_FLOOR', 'Z_OFF', 'V2_POWER_MIN',
-                                                          'CTL_CAP')) and ('forced_wide_search', 'SNR_MIN') in ruled
+                                                          'BOOTSTRAP')) and ('forced_wide_search', 'SNR_MIN') in ruled
           and ('forced_wide', 'EXT_MIN_S74_JY') in ruled and not any(k[1] in ('WORKERS', 'MAX_WORKERS', 'SEED', 'MINUTE_RULE',
                                                                             'TARGET_MEMBER', 'EVENT_ORDER', 'FILE_ERRORS')
                                                                      for k in ruled))
-    check('both ruling IDs are rows of the fix ledger', ledger.has_id(V3ID, CFG.paths.FIX_LEDGER)
-          and ledger.has_id(ORDID, CFG.paths.FIX_LEDGER))
+    check('the three ruling IDs are rows of the fix ledger', ledger.has_id(V3ID, CFG.paths.FIX_LEDGER)
+          and ledger.has_id(ORDID, CFG.paths.FIX_LEDGER) and ledger.has_id(AMDID, CFG.paths.FIX_LEDGER))
     # production's values (parity config, # WAVE2) apply and are the three PROPOSED keys
     p = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     lines = [ln.split('#')[0].strip() for ln in open(p) if ln.split('#')[0].strip().startswith(('forced_wide', 'night_activity'))]
     check('parity config: production values of family W', sorted(lines) == sorted([
         "forced_wide.EVENT_ORDER = 'directory'", "forced_wide.TARGET_MEMBER = 'first'",
         "forced_wide_search.FILE_ERRORS = 'drop'", "forced_wide_test.V2_CTL_DRAW = (300, 20261102)",
-        "forced_wide_test.CONTROL_ORDER = 'pool'"]), lines)
+        "forced_wide_test.CONTROL_ORDER = 'pool'", "forced_wide_test.TAPER_CTL_MAX = 900", "forced_wide_test.BOOT_DRAW = 'job'",
+        "forced_wide_test.BOOT_Z_SE = None", "forced_wide_test.KNIFE_EDGE_SE = None"]), lines)
     CFG.authorize([], out=TMP)                 # two of them are RULED: overridden into a non-production --out, as parity runs do
     for ln in lines:
         k, v = ln.split('=', 1)
         CFG.set(k.strip(), v.strip())
+    t = CFG.forced_wide_test
     check('the parity config values apply', (CFG.forced_wide.EVENT_ORDER, CFG.forced_wide.TARGET_MEMBER,
-                                             CFG.forced_wide_search.FILE_ERRORS, CFG.forced_wide_test.V2_CTL_DRAW,
-                                             CFG.forced_wide_test.CONTROL_ORDER)
-          == ('directory', 'first', 'drop', (300, 20261102), 'pool'))
+                                             CFG.forced_wide_search.FILE_ERRORS, t.V2_CTL_DRAW, t.CONTROL_ORDER,
+                                             t.TAPER_CTL_MAX, t.BOOT_DRAW, t.BOOT_Z_SE, t.KNIFE_EDGE_SE)
+          == ('directory', 'first', 'drop', (300, 20261102), 'pool', 900, 'job', None, None))
     CFG.reset()
     check('the controls are order-independent by default', CFG.forced_wide_test.CONTROL_ORDER == 'canonical')
     CFG.authorize([], out='/lustre/gh/main/phase3/x')
@@ -235,8 +246,14 @@ def test_method_truth():
     bad = [(k, v3.get(k), v) for k, v in pairs if v3.get(k) != v]
     check('forced_wide_test = forced_wide_v3.py\'s literals (%d keys)' % len(pairs), not bad, bad)
     src = open(os.path.join(fw, 'v3', 'forced_wide_v3.py')).read()
-    for lit, ok in (('default_rng(20261102)', t.SEED == 20261102), ('for _ in range(1000)', t.BOOTSTRAP == 1000),
-                    ('cap=900', t.CTL_CAP == 900), ('COVER = 2.0 / 3.0', t.COVER == 2.0 / 3.0),
+    par = {ln.split('#')[0].split('=', 1)[0].strip(): ast.literal_eval(ln.split('#')[0].split('=', 1)[1].strip())
+           for ln in open(os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg'))
+           if ln.startswith('forced_wide_test.')}
+    for lit, ok in (('default_rng(20261102)', t.SEED == 20261102), ('for _ in range(1000)', t.BOOTSTRAP == 1000
+                                                                    and par.get('forced_wide_test.BOOT_Z_SE', 0) is None),
+                    ('cap=900', par.get('forced_wide_test.TAPER_CTL_MAX') == 900),
+                    ('rng.integers(0, nn, nn)', par.get('forced_wide_test.BOOT_DRAW') == 'job'),
+                    ('COVER = 2.0 / 3.0', t.COVER == 2.0 / 3.0),
                     ('round(s[0] * 20) / 20', t.CTL_KEY_PER_DEG == 20), ('np.linspace(-DISC, DISC, 41)', t.DISC_GRID == 41),
                     ('if frac >= 0.5:', t.CAPABLE_FRACTION == 0.5), ('s74 * (74.0 / float(band[:-3])) ** 0.7',
                                                                     (t.REF_MHZ, t.SPECTRAL_INDEX) == (74.0, 0.7))):
@@ -384,6 +401,11 @@ def test_cli_gates():
     check('cli: W-WORKERS wide_test with more than 6 processes refused (review F3)', rc == 2 and 'W-WORKERS' in err, err[-300:])
     rc, err = cli(base + ['--stages', 'wide_test', '--set', 'forced_wide_test.V2_CTL_DRAW=(0, 1)'])
     check('cli: a V2_CTL_DRAW that is neither None nor (cap >= 1, seed) refused', rc == 2 and 'V2_CTL_DRAW' in err, err[-300:])
+    for kv, name in (('forced_wide_test.TAPER_CTL_MAX=0', 'TAPER_CTL_MAX'), ("forced_wide_test.BOOT_DRAW='x'", 'BOOT_DRAW'),
+                     ('forced_wide_test.BOOT_Z_SE=-0.1', 'BOOT_Z_SE'), ('forced_wide_test.BOOT_MAX=10', 'BOOT_MAX'),
+                     ('forced_wide_test.KNIFE_EDGE_SE=0.0', 'KNIFE_EDGE_SE')):
+        rc, err = cli(base + ['--stages', 'wide_test', '--set', kv])
+        check('cli: %s refused before any job runs' % kv, rc == 2 and name in err, err[-300:])
     with catdir('/tmp/not_the_radio_catalogues'):
         rc, err = cli(base + ['--stages', 'wide_test'])
     r = rec(out, 'W_test')
@@ -576,8 +598,11 @@ def test_control_order():
     added = [p_ for p_ in prov4 if p_[1] == 'I:J_R']
     check('a job adding 3 sources adds their lines and changes no other line', added and set(prov1) <= set(prov4)
           and all(m4[k_] == m1[k_] for k_ in prov1) and len(prov4) == len(prov1) + len(added), (len(prov1), len(prov4)))
+    full = V3.control_lines(pool, J0, cand, '10s', None)
+    check('control_lines (canonical): the lines of control_lines_canonical, each with its control source\'s identity',
+          [q[:4] for q in full] == zs1 and [q[4] for q in full] == [p_[0] for p_ in prov1])
     CFG.authorize([], out=TMP)
-    CFG.set('forced_wide_test.CTL_CAP', '40')
+    CFG.set('forced_wide_test.TAPER_CTL_MAX', '40')
     zs5, prov5, m5 = lines(pool)
     zs6, prov6, m6 = lines(pool + [rel])
     first = next((i for i, p_ in enumerate(prov6) if p_[1] == 'I:J_R'), len(prov6))
@@ -613,6 +638,204 @@ def test_control_order():
 
 def job_name(J):
     return J.job['identity']
+
+
+class _CJob:
+    """a synthetic job for the centroid and the verdict: bursts at the target in one band, nights with a shared offset each"""
+
+    def __init__(self, ident, nights, per, off, seed, night_sd=0.08, band='27MHz', tier='10s'):
+        from scipy.spatial import cKDTree
+        from exopipe.phase3.lib.forced import wide_v3 as V3
+        g = np.random.default_rng(seed)
+        fw = V3.fw_table()[band]
+        e, n, cell = [], [], []
+        for k in range(nights):
+            sh = g.normal(0, night_sd * fw, 2)
+            for _j in range(max(1, int(g.poisson(per)))):
+                e.append(off[0] * fw + sh[0] + g.normal(0, 0.05 * fw))
+                n.append(off[1] * fw + sh[1] + g.normal(0, 0.05 * fw))
+                cell.append('c_%02d' % k)
+        e, n = np.array(e), np.array(n)
+        self.b = {(band, tier): dict(e=e, n=n, cell=np.array(cell), tree=cKDTree(np.c_[e, n]), frames=100)}
+        self.job = {'stokes': 'I', 'identity': ident, 'target': ident}
+        self.st = 'I'
+
+    def has(self, band, tier):
+        return (band, tier) in self.b
+
+
+def _cand(name, d, p, ratio, z_c=9.0, s74=4.0, n_obs=12, band='27MHz'):
+    """a capable far candidate's analysis as verdict_row reads it (calibrated taper, no centering, no night test)"""
+    nan = float('nan')
+    return dict(name='VLSSr ' + name, s74=s74, d=d, xy=(d, 0.0), bands_far=[band], bands_near=[],
+                taper=dict(n_obs=n_obs, n_pred=4.0, var=0.5, bands=[dict(band=band)]), lam=4.0, kappa=1.0, ratio=ratio,
+                p_emp=p, ctl=(200, 1.0, 0.0), ctl_ratio_q=(1.0, 2.0, 3.0), night=(nan, nan, 0), z_c=z_c, reach={band: (1, 1, 1)})
+
+
+def test_monte_carlo():
+    """the amendment R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE: the Monte Carlo
+    errors match salt reruns (within a factor of 1.5), the bootstrap reaches BOOT_Z_SE per (target, tier) from its own seed,
+    production's draws stay exact, and the knife-edge flag names exactly the statistics that decide a row"""
+    from exopipe.phase3.lib.forced import wide_v3 as V3
+    from exopipe.phase3.lib.forced.tests_wide import knife_edge_problems
+    t = CFG.forced_wide_test
+    # calibrate's errors: the binomial p and the ratio estimator's spread, exactly
+    ctl = [(0.0, n, 2.0, 0.1, 'S%d' % (i // 4)) for i, n in enumerate((0, 1, 2, 2, 3, 1, 2, 4, 2, 2, 1, 3, 2, 2, 0, 2))]
+    tt = {'n_obs': 9, 'n_pred': 2.0, 'var': 0.1}
+    r = V3.calibrate(tt, ctl)
+    no = np.array([q[1] for q in ctl], float)
+    kap = (no.sum() + 0.5) / (2.0 * 16 + 0.5)
+    se_k = math.sqrt(np.sum((no - kap * 2.0) ** 2) * 16 / 15) / (2.0 * 16 + 0.5)
+    lam = kap * 2.0
+    check('calibrate: p_se_line = sqrt(p (1 - p) / n), ratio_se_line = ratio lambda / (lambda + 0.5) SE(kappa) / kappa',
+          abs(r['p_se_line'] - math.sqrt(r['p_emp'] * (1 - r['p_emp']) / 16)) < 1e-12
+          and abs(r['ratio_se_line'] - r['ratio'] * lam / (lam + 0.5) * se_k / kap) < 1e-12, r)
+    rc = (no + 0.5) / (kap * 2.0 + 0.5)
+    ind = (rc >= r['ratio']).astype(float)
+    d = no - kap * 2.0
+    vk = vp = 0.0
+    for j in range(4):                 # 4 control sources of 4 lines each
+        a, b = ind[4 * j:4 * j + 4], d[4 * j:4 * j + 4]
+        vp += float(np.sum((a - a.mean()) ** 2)) * 4 / 3
+        vk += float(np.sum((b - b.mean()) ** 2)) * 4 / 3
+    check('calibrate: the within-source errors (SE_KIND source) - the binomial and the spread within each control source',
+          abs(r['p_se_source'] - math.sqrt(vp) / 16) < 1e-12 and abs(r['ratio_se_source'] - r['ratio'] * lam / (lam + 0.5)
+                                                                     * math.sqrt(vk) / (2.0 * 16 + 0.5) / kap) < 1e-12
+          and V3.SE_KIND == 'source' and 'p_se_source' not in V3.calibrate(tt, [q[:4] for q in ctl]), r)
+    CFG.authorize([], out=TMP)
+    # the centroid's bootstrap: z's analytic Monte Carlo error against 200 salt reruns (BOOTSTRAP resamples each)
+    CFG.set('forced_wide_test.BOOT_Z_SE', 'None')
+    J = _CJob('CJ1', 12, 6, (0.06, 0.02), 1)
+    zz = []
+    for salt in range(200):
+        CFG.set('forced_wide_test.SEED', str(7000 + salt))
+        c_ = V3.centroid(J, '10s', ['27MHz'], None)
+        zz.append((c_['z'], c_['z_se'], c_['boot_n']))
+    a = np.array(zz)
+    q = a[:, 0].std(ddof=1) / a[:, 1].mean()
+    check('the centroid z\'s Monte Carlo error matches 200 salt reruns within a factor of 1.5 (sd / error %.2f)' % q,
+          1 / 1.5 <= q <= 1.5 and set(a[:, 2]) == {t.BOOTSTRAP}, q)
+    CFG.reset()
+    # the taper p and ratio: their errors (SE_KIND source) against 60 salt reruns (each salt rotates every control line). A
+    # salt moves a line within its 45-degree sector only; on the sky the burst field changes within a sector (20 salts on real
+    # rows: salt sd / error median 0.91 for p, 1.02 for the ratio - se_validate.py), and so does this smooth synthetic field
+    # at 2 FWHM, where a sector spans 1.6 FWHM; at 1 FWHM (a sector of 0.8 FWHM, the disc 0.7 FWHM across) it changes less
+    # and the error is conservative, never an underestimate
+    offs = [(-60.0, -60.0), (60.0, -40.0), (-30.0, 70.0), (50.0, 50.0)]
+    pool = [_fjob('J_%s' % c_, k, offs, seed=7) for k, c_ in enumerate('ABCDE')]
+    J0 = _fjob('T0', 9, [], seed=7)
+    for dist, within in ((60.0, True), (30.0, False)):
+        cd = {'bands_far': ['27MHz'], 'd': dist, 's74': 5.0}
+        tt = V3.taper_test(J0, (dist, 0.0), (0.0, 0.0), ['27MHz'], '10s')
+        CFG.authorize([], out=TMP)
+        got = []
+        for salt in range(60):
+            CFG.set('forced_wide_test.SEED', str(9000 + salt))
+            zs = V3.control_lines(pool, J0, cd, '10s', None)
+            got.append(V3.calibrate(tt, V3.matched(zs, tt['n_pred'])))
+        CFG.reset()
+        for k in ('p_emp', 'ratio'):
+            e = 'p_se_source' if k == 'p_emp' else 'ratio_se_source'
+            sd = float(np.std([g[k] for g in got], ddof=1))
+            se = float(np.mean([g[e] for g in got]))
+            if within:
+                check('the taper %s\'s Monte Carlo error matches 60 salt reruns within a factor of 1.5 at 2 FWHM (sd %.4f, '
+                      'error %.4f)' % (k, sd, se), se > 0 and 1 / 1.5 <= sd / se <= 1.5, (sd, se))
+            else:
+                check('the taper %s\'s Monte Carlo error at 1 FWHM is conservative, never an underestimate (sd %.4f, error '
+                      '%.4f)' % (k, sd, se), se > 0 and sd / se <= 1.5, (sd, se))
+    # BOOT_Z_SE: more resamples until the error of z is at most 0.02; BOOT_MAX bounds them; the seed is the target's own
+    Jh = _CJob('CJ2', 40, 4, (0.3, 0.1), 2, night_sd=0.1)
+    c1 = V3.centroid(Jh, '10s', ['27MHz'], None)
+    check('BOOT_Z_SE 0.02: a z of %.1f gets %d resamples, its error %.4f <= 0.02' % (c1['z'], c1['boot_n'], c1['z_se']),
+          c1['boot_n'] > t.BOOTSTRAP and c1['z_se'] <= t.BOOT_Z_SE and c1['boot_n'] % t.BOOTSTRAP == 0, c1)
+    c2 = V3.centroid(Jh, '10s', ['27MHz'], np.random.default_rng(1))
+    check('BOOT_DRAW target: the same (target, tier) draws the same resamples whatever generator is passed', c2 == c1)
+    Jh2 = _CJob('CJ2b', 40, 4, (0.3, 0.1), 2, night_sd=0.1)          # the same bursts, another identity
+    check('BOOT_DRAW target: another target identity draws other resamples', V3.centroid(Jh2, '10s', ['27MHz'], None)['err']
+          != c1['err'])
+    CFG.authorize([], out=TMP)
+    CFG.set('forced_wide_test.BOOT_MAX', '2000')
+    c3 = V3.centroid(Jh, '10s', ['27MHz'], None)
+    check('BOOT_MAX bounds the resamples (2000; the error reached is reported)', c1['boot_n'] > 2000 and c3['boot_n'] == 2000
+          and c3['z_se'] > t.BOOT_Z_SE, (c1['boot_n'], c3))
+    CFG.reset()
+    # BOOT_DRAW job, BOOT_Z_SE None = production's bootstrap exactly (forced_wide_v3.py:477-481)
+    CFG.authorize([], out=TMP)
+    CFG.set('forced_wide_test.BOOT_DRAW', "'job'")
+    CFG.set('forced_wide_test.BOOT_Z_SE', 'None')
+    c4 = V3.centroid(J, '10s', ['27MHz'], np.random.default_rng(20261102))
+    CFG.reset()
+    D = J.b[('27MHz', '10s')]
+    fw = V3.fw_table()['27MHz']
+    m = np.hypot(D['e'], D['n']) / fw < t.DISC
+    xs, ys, cells = D['e'][m] / fw, D['n'][m] / fw, D['cell'][m]
+    rng = np.random.default_rng(20261102)
+    uc = sorted(set(cells))
+    nn = len(uc)
+    idx = [np.where(cells == c_)[0] for c_ in uc]
+    bs = np.array([(xs[ii].mean(), ys[ii].mean()) for ii in (np.concatenate([idx[k] for k in rng.integers(0, nn, nn)])
+                                                             for _ in range(1000))])
+    stat = math.hypot(bs[:, 0].std(), bs[:, 1].std()) / math.sqrt(2)
+    err = math.hypot(stat, max(t.CEN_FLOOR, t.CEN_NIGHT / math.sqrt(nn)))
+    check('BOOT_DRAW job, BOOT_Z_SE None: production\'s 1000 resamples from the job\'s generator, bit for bit',
+          c4['err'] == err and c4['z'] == math.hypot(xs.mean(), ys.mean()) / err and c4['boot_n'] == 1000)
+    # THE KNIFE-EDGE FLAG: decisive statistics only
+    Jv = _CJob('KV', 12, 6, (0.0, 0.0), 3, night_sd=0.02)
+    ev = [('27MHz', '20250101_000000', 5.0)] * 5
+    cen = dict(n=60, nights=12, x=0.1, y=0.0, off=0.1, err=0.0334, z=2.99, pa=90.0, ifw=1.0 / fw, z_se=0.02, boot_n=4000,
+               rel=0.0067)
+
+    def ke(res, cen_):
+        row = V3.verdict_row(Jv, '10s', ev, [], res, cen_)
+        return row['verdict'], V3.knife_edges(Jv, '10s', ev, [], res, cen_, row)
+    v, ks = ke([], cen)
+    check('knife-edge: no capable candidate, centroid z 2.99 +- 0.02 decides UNDECIDED / NOT CENTERED -> flagged',
+          v == 'UNDECIDED' and [k[0] for k in ks] == ['centroid z'], (v, ks))
+    v, ks = ke([], dict(cen, z=2.9))
+    check('knife-edge: centroid z 2.90 +- 0.02 is 5 errors from 3 -> not flagged', v == 'UNDECIDED' and not ks, ks)
+    cand = _cand('J010000.0+100000', d=20.0, p=0.051, ratio=1.5)
+    for r_ in [cand]:
+        r_.update(p_se=0.005, ratio_se=0.05, z_c_se=0.06)
+    v, ks = ke([cand], dict(cen, z=2.5))
+    check('knife-edge: the taper p 0.051 +- 0.005 decides CONSISTENT / UNDECIDED -> flagged, its ratio 1.5 +- 0.05 not',
+          v == 'CONSISTENT WITH A BACKGROUND SOURCE' and [k[0] for k in ks] == ['taper p of J010000.0+100000'], (v, ks))
+    v, ks = ke([cand], dict(cen, z=3.5))
+    check('knife-edge: the same p near 0.05 does not decide NOT CENTERED (z 3.5) -> not flagged',
+          v == 'NOT CENTERED ON THE TARGET (source not identified)' and not ks, (v, ks))
+    cand2 = dict(cand, ratio=1.97, p_emp=0.3, p_se=0.03, ratio_se=0.02)
+    v, ks = ke([cand2], dict(cen, z=2.5))
+    check('knife-edge: the ratio 1.97 +- 0.02 decides CONSISTENT -> flagged with its value', [k[0] for k in ks] ==
+          ['taper ratio of J010000.0+100000'] and abs(ks[0][1] - 1.97) < 1e-12, ks)
+    cand3 = dict(cand2, ratio=1.2, z_c=1.98, z_c_se=0.03, d=5.0)
+    v, ks = ke([cand3], dict(cen, z=2.5))
+    check('knife-edge: z_c 1.98 +- 0.03 (the bursts center on it) decides the named evidence -> flagged',
+          v == 'BACKGROUND SOURCE' and [k[0] for k in ks] == ['centroid z to J010000.0+100000'], (v, ks))
+    # the matched-line count: 15 in the 3x window; at 14 matched() takes the 10x window, whose calibration says no
+    lines = [(0.0, 6, 2.0, 0.1, 'S%d' % i) for i in range(15)] + [(0.0, 1, 8.0, 0.1, 'T%d' % i) for i in range(25)]
+    ttc = {'n_obs': 9, 'n_pred': 2.0, 'var': 0.1, 'z': 0.0, 'bands': [dict(band='27MHz')]}
+    cal = V3.calibrate(ttc, V3.matched(lines, 2.0))
+    cand4 = dict(_cand('J020000.0+200000', d=20.0, p=cal['p_emp'], ratio=cal['ratio']), taper=ttc, **cal)
+    cand4['_windows'] = ([q[4] for q in lines], len(lines), V3.match_windows(lines, 2.0))
+    cand4.update(z_c_se=0.06)
+    V3.mc_errors(cand4)
+    v, ks = ke([cand4], dict(cen, z=2.5))
+    labs = [k[0] for k in ks]
+    check('knife-edge: 15 matched lines (3x) decide the calibration -> flagged; the counts\' errors binomial',
+          v == 'CONSISTENT WITH A BACKGROUND SOURCE' and 'matched control lines (within 3x) of J020000.0+200000' in labs
+          and abs(cand4['_counts'][0][2] - math.sqrt(15 * (1 - 15 / 40))) < 1e-12, (v, ks, cand4['_counts']))
+    # the column's text and its content test
+    txt = V3.knife_text([('centroid z', 2.97, 3.0, 0.0213, '%.2f'), ('taper p of J1', 0.0496, 0.05, 0.0069, '%.3g')])
+    check('knife_text: the statistic, its value, the threshold and the Monte Carlo error',
+          txt == 'knife-edge: centroid z 2.97 vs 3, Monte Carlo error 0.021; taper p of J1 0.0496 vs 0.05, Monte Carlo error '
+                 '0.0069', txt)
+    row = dict(bootstrap_n='4000', centroid_z_se='0.0213', centroid_z='3.0', knife_edge=txt)
+    check('knife-edge content test: a consistent entry passes', not knife_edge_problems(row, 2.0),
+          knife_edge_problems(row, 2.0))
+    bad = dict(row, knife_edge=txt.replace('0.0496 vs', '0.0796 vs'))
+    check('knife-edge content test: an entry outside its window fails', knife_edge_problems(bad, 2.0))
+    bad = dict(row, knife_edge=txt.replace('vs 3,', 'vs 4,'))
+    check('knife-edge content test: an unknown threshold fails', knife_edge_problems(bad, 2.0))
 
 
 def test_pool_provenance():
@@ -1009,6 +1232,7 @@ def main():
         test_publish()
         test_v2_draw()
         test_control_order()
+        test_monte_carlo()
         test_pool_provenance()
         test_search_functions()
         test_io_yield()

@@ -28,15 +28,22 @@ zone 1 out, -1 clean):
               SOURCE / CONSISTENT WITH A BACKGROUND SOURCE / UNDECIDED; no capable candidate: NOT CENTERED ON / NOT EXPLAINED
               BY ... (no cataloged source can make the events). Neither NOT EXPLAINED nor NOT CENTERED names the target as the
               emitter: other causes stay open.
-Every computation is the scripts' own, in their order, with one numpy generator per job (seed SEED): the results do not depend
-on the number of processes. One default differs from the approved scripts (PROPOSED; production's value in the parity config):
-v2's centering uses EVERY eligible control pair (forced_wide_test.V2_CTL_DRAW None) where the script drew 300 at random with a
-fixed seed - a draw over a list in pool order, which any change to the job pool re-draws (review F2, 2026-11-04) - and the
-controls are ORDER-INDEPENDENT (forced_wide_test.CONTROL_ORDER 'canonical'; R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-
-INDEPENDENT): the control lines' pool, rotations and capped selection keyed on stable identities (control_lines_canonical),
-v2's control pairs with canonical host ties, so adding or moving a job changes another target's controls only where that job
-adds controls to its pool. The figures and the review page of the analysis (figs_v3/, forced_wide_page_v3.py) are not ported:
-nothing of the pipeline reads them."""
+Every computation is the scripts' own, in their order: the results do not depend on the number of processes. The defaults
+differ from the approved scripts where the refactor chat decided under Gregg's delegation (production's values in the parity
+config, which reproduces the served files byte for byte):
+  - v2's centering uses EVERY eligible control pair (forced_wide_test.V2_CTL_DRAW None) where the script drew 300 at random with
+    a fixed seed - a draw over a list in pool order, which any change to the job pool re-draws (review F2, 2026-11-04);
+  - the controls are ORDER-INDEPENDENT (CONTROL_ORDER 'canonical'; R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT):
+    the control lines' pool, rotations and order keyed on stable identities (control_lines_canonical), v2's control pairs with
+    canonical host ties, so adding or moving a job changes another target's controls only where that job adds controls to its
+    pool;
+  - PRECISION and its KNIFE-EDGE FLAG (the amendment ...-AMENDED-PRECISION-KNIFE-EDGE): every eligible control line
+    (TAPER_CTL_MAX None, where the script kept 900); the centroid's bootstrap drawn per (target, tier) from a stable seed
+    (BOOT_DRAW 'target') until the Monte Carlo error of its z is at most BOOT_Z_SE; and each row's knife_edge column naming
+    every statistic that decides its verdict or named sources within KNIFE_EDGE_SE Monte Carlo errors of its threshold
+    (knife_edges).
+The figures and the review page of the analysis (figs_v3/, forced_wide_page_v3.py) are not ported: nothing of the pipeline
+reads them."""
 import collections
 import csv
 import hashlib
@@ -285,6 +292,12 @@ def stable_uniform(*parts):
     return int.from_bytes(h[:8], 'big') / 18446744073709551616.0
 
 
+def stable_int(*parts):
+    """a 64-bit integer from the same stable hash (a generator's seed)"""
+    h = hashlib.sha256('|'.join(str(p) for p in parts).encode()).digest()
+    return int.from_bytes(h[:8], 'big')
+
+
 def job_id(J):
     """a job's stable identity: Stokes:identity (JobData and V2Job alike)"""
     return '%s:%s' % (J.job['stokes'], J.job['identity'])
@@ -301,6 +314,32 @@ def control_order():
     if o not in ('canonical', 'pool'):
         raise ValueError('forced_wide_test.CONTROL_ORDER %r: canonical or pool' % (o,))
     return o
+
+
+def taper_cap():
+    """forced_wide_test.TAPER_CTL_MAX: None (every eligible control line) or an int >= 1; anything else raises ValueError (the
+    stage refuses it)."""
+    v = tc().TAPER_CTL_MAX
+    if v is None or (isinstance(v, int) and not isinstance(v, bool) and v >= 1):
+        return v
+    raise ValueError('forced_wide_test.TAPER_CTL_MAX %r: None (every eligible line) or an int >= 1' % (v,))
+
+
+def mc_settings():
+    """the Monte Carlo keys, checked: (BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE); a bad value raises ValueError (the stage
+    refuses it before any job runs)."""
+    c = tc()
+    taper_cap()
+    if c.BOOT_DRAW not in ('target', 'job'):
+        raise ValueError('forced_wide_test.BOOT_DRAW %r: target or job' % (c.BOOT_DRAW,))
+    for k in ('BOOT_Z_SE', 'KNIFE_EDGE_SE'):
+        v = getattr(c, k)
+        if v is not None and not (isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0):
+            raise ValueError('forced_wide_test.%s %r: None or a number > 0' % (k, v))
+    if not (isinstance(c.BOOTSTRAP, int) and isinstance(c.BOOT_MAX, int) and 2 <= c.BOOTSTRAP <= c.BOOT_MAX):
+        raise ValueError('forced_wide_test.BOOTSTRAP %r / BOOT_MAX %r: ints, 2 <= BOOTSTRAP <= BOOT_MAX'
+                         % (c.BOOTSTRAP, c.BOOT_MAX))
+    return c.BOOT_DRAW, c.BOOT_Z_SE, c.BOOT_MAX, c.KNIFE_EDGE_SE
 
 
 def _control_sources(pool, J0, cand, tier):
@@ -351,17 +390,20 @@ def _line(J, C, P, nb, tier, b1, fwmin, fwmax):
 
 def control_lines(pool, J0, cand, tier, rng):
     """z of the taper test on control lines (module notes) for one candidate of job J0: [(z, n_obs, n_pred, var)], in the
-    order of forced_wide_test.CONTROL_ORDER ('canonical': order-independent, the job's generator untouched; 'pool':
-    production's, consuming ``rng``)"""
+    order of forced_wide_test.CONTROL_ORDER ('canonical': order-independent, the job's generator untouched, each line with its
+    control source's identity as a 5th member - the Monte Carlo errors' clusters; 'pool': production's, consuming ``rng``)"""
     if control_order() == 'canonical':
-        return control_lines_canonical(pool, J0, cand, tier)[0]
+        zs, prov = control_lines_canonical(pool, J0, cand, tier)
+        return [q + (p_[0],) for q, p_ in zip(zs, prov)]
     return control_lines_pool(pool, J0, cand, tier, rng)
 
 
 def control_lines_pool(pool, J0, cand, tier, rng):
     """production's control lines (forced_wide_v3.py control_lines): one source per cell, the first job in pool order winning a
-    tie, the list shuffled by the job's generator, each source's CTL_DIRS lines rotated by one draw of it, up to CTL_CAP"""
+    tie, the list shuffled by the job's generator, each source's CTL_DIRS lines rotated by one draw of it, up to TAPER_CTL_MAX
+    (production: 900)"""
     c = tc()
+    cap = taper_cap()
     FW = fw_table()
     bands = cand['bands_far']
     d = cand['d']
@@ -381,7 +423,7 @@ def control_lines_pool(pool, J0, cand, tier, rng):
             if r is None:
                 continue
             zs.append(r)
-            if len(zs) >= c.CTL_CAP:
+            if cap is not None and len(zs) >= cap:
                 return zs
     return zs
 
@@ -389,10 +431,11 @@ def control_lines_pool(pool, J0, cand, tier, rng):
 def control_lines_canonical(pool, J0, cand, tier):
     """ORDER-INDEPENDENT control lines (CONTROL_ORDER 'canonical'; R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT):
     one source per cell, its host the job with the best score, a tie to the smallest (job identity, source identity); the
-    sources in the order of a stable hash of (SEED, the target's identity, the source's identity) - the seeded selection the
-    CTL_CAP bound applies; line i of a source at (i + u_i) x 2 pi / CTL_DIRS, u_i a stable hash of (SEED, target, source, i).
+    sources in the order of a stable hash of (SEED, the target's identity, the source's identity) - the seeded selection a
+    TAPER_CTL_MAX cap applies; line i of a source at (i + u_i) x 2 pi / CTL_DIRS, u_i a stable hash of (SEED, target, source, i).
     Returns ([(z, n_obs, n_pred, var)], [(source identity, host job identity, i)]) - the lines and where each came from."""
     c = tc()
+    cap = taper_cap()
     FW = fw_table()
     bands = cand['bands_far']
     d = cand['d']
@@ -418,7 +461,7 @@ def control_lines_canonical(pool, J0, cand, tier):
                 continue
             zs.append(r)
             prov.append((sid, job_id(J), i))
-            if len(zs) >= c.CTL_CAP:
+            if cap is not None and len(zs) >= cap:
                 return zs, prov
     return zs, prov
 
@@ -435,12 +478,44 @@ def matched(zs, npred):
     return sel
 
 
-def calibrate(tt, ctl):
+def match_windows(zs, npred):
+    """[(factor, the lines in its window)] for each of MATCH_FACTORS (matched() takes the first holding >= MATCH_MIN, else the
+    last)"""
+    c = tc()
+    out = []
+    for k in c.MATCH_FACTORS:
+        lo, hi = max(npred / k, c.MATCH_FLOORS[0]), max(npred * k, c.MATCH_FLOORS[1])
+        out.append((k, [q for q in zs if lo <= q[2] <= hi]))
+    return out
+
+
+def _within_var(vals, labels, per_line):
+    """the variance of a sum over lines when only each line's position within its control source is re-drawn: the sum over
+    sources of the within-source sum of squares x m / (m - 1); a source with one line contributes ``per_line``"""
+    groups = collections.defaultdict(list)
+    for v, l in zip(vals, labels):
+        groups[l].append(v)
+    tot = 0.0
+    for g in groups.values():
+        m = len(g)
+        if m < 2:
+            tot += per_line
+        else:
+            a = np.asarray(g, float)
+            tot += float(np.sum((a - a.mean()) ** 2)) * m / (m - 1)
+    return tot
+
+
+def calibrate(tt, ctl, min_n=None):
     """the target's count against matched CONTROL LINES (module notes): kappa, lambda, ratio, the permutation p-value; also the
-    negative-binomial p with the controls' extra-Poisson scatter, for the record"""
+    negative-binomial p with the controls' extra-Poisson scatter, for the record. With the MONTE CARLO errors of p and the
+    ratio (the knife-edge flag): p_se_line = the binomial sqrt(p (1 - p) / n) over the n matched lines; ratio_se_line = ratio x
+    lambda / (lambda + 0.5) x SE(kappa) / kappa, SE(kappa) = sqrt(n / (n - 1) sum (n_obs - kappa n_pred)^2) / (sum n_pred +
+    0.5) (the ratio estimator's spread over the matched lines); *_source = the same with only the within-source spread (when
+    the lines carry their control source, CONTROL_ORDER canonical). min_n: the fewest lines calibrated (None: MATCH_MIN)."""
     import scipy.stats as SSTAT
     nan = float('nan')
-    if len(ctl) < tc().MATCH_MIN:
+    if len(ctl) < (tc().MATCH_MIN if min_n is None else max(int(min_n), 1)):
         return dict(ctl=(len(ctl), nan, nan), kappa=nan, phi=nan, lam=nan, lam_err=nan, ratio=nan, p_emp=nan, z_emp=nan, p_nb=nan)
     no = np.array([q[1] for q in ctl], float)
     npd = np.array([q[2] for q in ctl], float)
@@ -462,9 +537,22 @@ def calibrate(tt, ctl):
         r = lam ** 2 / V
         q = r / (r + lam)
         p_nb = float(SSTAT.nbinom.sf(n - 1, r, q))
-    return dict(ctl=(len(ctl), round(kappa, 3), round(phi, 3)), kappa=kappa, phi=phi, lam=lam, lam_err=math.sqrt(max(V, 0.0)),
-                ratio=rt, ctl_ratio_q=(float(np.percentile(rc, 50)), float(np.percentile(rc, 95)), float(rc.max())),
-                p_emp=p_emp, z_emp=float(SSTAT.norm.isf(p_emp)), p_nb=p_nb)
+    out = dict(ctl=(len(ctl), round(kappa, 3), round(phi, 3)), kappa=kappa, phi=phi, lam=lam, lam_err=math.sqrt(max(V, 0.0)),
+               ratio=rt, ctl_ratio_q=(float(np.percentile(rc, 50)), float(np.percentile(rc, 95)), float(rc.max())),
+               p_emp=p_emp, z_emp=float(SSTAT.norm.isf(p_emp)), p_nb=p_nb)
+    # the Monte Carlo errors (nothing above reads them)
+    m = len(rc)
+    ind = (rc >= rt).astype(float)
+    d = no - kappa * npd
+    den = npd.sum() + 0.5
+    var_k = float(np.sum(d ** 2)) * m / max(m - 1, 1)
+    gain = rt * lam / (lam + 0.5) / kappa if kappa > 0 else nan
+    out.update(p_se_line=math.sqrt(p_emp * (1.0 - p_emp) / m), ratio_se_line=gain * math.sqrt(var_k) / den)
+    if all(len(q) > 4 for q in ctl):
+        lab = [q[4] for q in ctl]
+        out.update(p_se_source=math.sqrt(_within_var(ind, lab, p_emp * (1.0 - p_emp))) / m,
+                   ratio_se_source=gain * math.sqrt(_within_var(d, lab, var_k / m)) / den)
+    return out
 
 
 def per_night(J, C, tier, bands):
@@ -517,9 +605,12 @@ def v2_centering(J, cand, tier, v2pool, bdir):
     return dict(verdict=v, z=z, power=pw, t=r['t'], t_err=r['err'], n_cells=r['n_cells'], n_bursts=r['n_bursts'], n_ctl=ncv)
 
 
-def analyze(J, events, pool, v2pool, bdir):
-    """(result rows, candidate rows) of one job, both tiers (forced_wide_v3.analyze; one generator per job)"""
+def analyze(J, events, pool, v2pool, bdir, trace=None):
+    """(result rows, candidate rows) of one job, both tiers (forced_wide_v3.analyze; one generator per job). KNIFE_EDGE_SE set:
+    the Monte Carlo errors and the knife-edge flag added (knife_edges). trace: a list given -> (tier, res, cen) of each tier
+    appended (tools)"""
     c = tc()
+    ke = c.KNIFE_EDGE_SE
     rng = np.random.default_rng(c.SEED)
     rows, crows = [], []
     for tier in TIERS:
@@ -538,18 +629,158 @@ def analyze(J, events, pool, v2pool, bdir):
                 if tt is not None:
                     zs = control_lines(pool, J, cd, tier, rng)
                     out.update(calibrate(tt, matched(zs, tt['n_pred'])))
+                    if ke is not None:
+                        out['_windows'] = ([q[4] for q in zs] if all(len(q) > 4 for q in zs) else None, len(zs),
+                                           match_windows(zs, tt['n_pred']))
             if cd['bands_near']:
                 out['center'] = v2_centering(J, cd, tier, v2pool, bdir)
             out['night'] = per_night(J, cd['xy'], tier, cd['bands_far'] + cd['bands_near'])
             res.append(out)
         evb = sorted({e[0] for e in ev}, key=lambda b: float(b[:-3]))
-        cen = centroid(J, tier, evb, rng)
+        cen = centroid(J, tier, evb, rng, [r['xy'] for r in res])
         for r in res:
             r['z_c'] = z_to(cen, r) if cen else float('nan')
-        rows.append(verdict_row(J, tier, ev, cands, res, cen))
+        row = verdict_row(J, tier, ev, cands, res, cen)
+        if ke is not None:
+            for r in res:
+                r['z_c_se'] = r['z_c'] * cen['rel'] if cen else float('nan')
+                mc_errors(r)
+            ks = knife_edges(J, tier, ev, cands, res, cen, row)
+            row.update(bootstrap_n=cen['boot_n'] if cen else '', centroid_z_se=round(cen['z_se'], 4) if cen else '',
+                       knife_edge=knife_text(ks))
+        rows.append(row)
         for r in res:
             crows.append(cand_row(J, tier, r))
+        if trace is not None:
+            trace.append((tier, res, cen))
+        for r in res:
+            r.pop('_windows', None)
     return rows, crows
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the Monte Carlo errors and the knife-edge flag (the amendment R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-
+# AMENDED-PRECISION-KNIFE-EDGE (3))
+# ---------------------------------------------------------------------------------------------------------------------
+
+# THE ERRORS THE FLAG USES (2026-11-04, validated on real rows against 20 independent global salts - every line re-rotated,
+# every bootstrap re-drawn: se_validate.py, 26 calibrated candidates of 5 rows): 'source' = the binomial / spread WITHIN each
+# control source (a salt re-draws a line's direction, never its control source: the between-source spread is no Monte Carlo
+# noise) - salt sd / error median 0.91 (p) and 1.02 (ratio), 23 and 24 of 26 within a factor of 1.5; 'line' = over all lines
+# alike - median 0.81 / 0.97, 21 and 23 of 26 (conservative: the misses overestimate, up to 2x). Lines without their source
+# (CONTROL_ORDER 'pool') fall back to 'line'.
+SE_KIND = 'source'
+
+
+def _count_se(labels, sel, N):
+    """the Monte Carlo error of a matched-line window's count: within control sources (SE_KIND 'source', the lines' labels
+    known) sqrt(sum over sources c (m - c) / (m - 1)) - m a source's lines, c those in the window, a source of one line
+    q (1 - q), q = n / N; else the binomial sqrt(n (1 - n / N))"""
+    n = len(sel)
+    if not N:
+        return 0.0
+    if SE_KIND != 'source' or labels is None:
+        return math.sqrt(max(n * (1.0 - n / N), 0.0))
+    m = collections.Counter(labels)
+    cw = collections.Counter(q[4] for q in sel)
+    q_ = n / N
+    var = sum(q_ * (1.0 - q_) if mj < 2 else cw.get(j, 0) * (mj - cw.get(j, 0)) / (mj - 1.0) for j, mj in m.items())
+    return math.sqrt(max(var, 0.0))
+
+
+def mc_errors(r):
+    """a candidate's Monte Carlo errors for the flag: p_se, ratio_se (calibrate's, SE_KIND) and per matched-line window its
+    count's error (_count_se; r['_counts'] = [(factor, n, se)])"""
+    nan = float('nan')
+    for k in ('p', 'ratio'):
+        r[k + '_se'] = r.get('%s_se_%s' % (k, SE_KIND), r.get(k + '_se_line', nan))
+    w = r.get('_windows')
+    r['_counts'] = [(f, len(sel), _count_se(w[0], sel, w[1])) for f, sel in w[2]] if w else []
+    if w:
+        ch = _window_choice([n for _f, n, _s in r['_counts']])
+        r['n_ctl_se'] = r['_counts'][ch if ch is not None else -1][2]
+
+
+def _window_choice(counts):
+    """the matched-line window matched() takes: the first holding >= MATCH_MIN lines, else None (not calibrated)"""
+    m = tc().MATCH_MIN
+    return next((i for i, n in enumerate(counts) if n >= m), None)
+
+
+def _outcome(row):
+    return row['verdict'], frozenset(row['named'].split('; ')) if row.get('named') else frozenset()
+
+
+_CAL_KEYS = ('ctl', 'kappa', 'phi', 'lam', 'lam_err', 'ratio', 'ctl_ratio_q', 'p_emp', 'z_emp', 'p_nb')
+
+
+def knife_edges(J, tier, ev, cands, res, cen, row):
+    """[(statistic, value, threshold, Monte Carlo error, format)] - every statistic of the row within KNIFE_EDGE_SE errors of
+    a threshold that DECIDES the row: set alone just below and just above that threshold (the others as they are), it changes
+    the verdict or the set of named sources (verdict_row re-run). The statistics: the centroid z (Z_ON, Z_OFF); per candidate
+    its z_c (Z_C_ON, Z_C_NEAR), taper p (P_CONSISTENT, P_EXCESS), taper ratio (RATIO_CONSISTENT, R_EXCESS) and the count of
+    each matched-line window (MATCH_MIN: flipped, matched() takes another window - calibrated on its lines - or none)."""
+    c = tc()
+    k = c.KNIFE_EDGE_SE
+    nan = float('nan')
+    base = _outcome(row)
+    out = []
+    if cen is None:
+        return out
+
+    def flips(res2, cen2):
+        return _outcome(verdict_row(J, tier, ev, cands, res2, cen2)) != base
+
+    def near(v, t, se):
+        return v == v and se == se and se > 0 and abs(v - t) <= k * se
+    eps = 1e-9
+    for t in sorted({c.Z_ON, c.Z_OFF}):
+        if near(cen['z'], t, cen['z_se']) and any(flips(res, dict(cen, z=t + e)) for e in (-eps, eps)):
+            out.append(('centroid z', cen['z'], t, cen['z_se'], '%.2f'))
+    for i, r in enumerate(res):
+        nm = r['name'].split(' ', 1)[-1]
+
+        def sub(**kw):
+            return res[:i] + [dict(r, **kw)] + res[i + 1:]
+        for t in sorted({c.Z_C_ON, c.Z_C_NEAR}):
+            if near(r.get('z_c', nan), t, r.get('z_c_se', nan)) and any(flips(sub(z_c=t + e), cen) for e in (-eps, eps)):
+                out.append(('centroid z to %s' % nm, r['z_c'], t, r['z_c_se'], '%.2f'))
+        p = r.get('p_emp', nan)
+        if p is not None and p == p:
+            for t in sorted({c.P_CONSISTENT, c.P_EXCESS}):
+                if near(p, t, r['p_se']) and any(flips(sub(p_emp=t + e), cen) for e in (-eps, eps)):
+                    out.append(('taper p of %s' % nm, p, t, r['p_se'], '%.3g'))
+            for t in sorted({c.RATIO_CONSISTENT, c.R_EXCESS}):
+                if near(r['ratio'], t, r['ratio_se']) and any(flips(sub(ratio=t + e), cen) for e in (-eps, eps)):
+                    out.append(('taper ratio of %s' % nm, r['ratio'], t, r['ratio_se'], '%.2f'))
+        cnts = r.get('_counts') or []
+        if cnts:
+            now = _window_choice([n for _f, n, _s in cnts])
+            for j, (f, n, se) in enumerate(cnts):
+                if not near(float(n), float(c.MATCH_MIN), se):
+                    continue
+                alt = [x[1] for x in cnts]
+                alt[j] = c.MATCH_MIN - 1 if n >= c.MATCH_MIN else c.MATCH_MIN
+                ch = _window_choice(alt)
+                if ch == now:
+                    continue
+                if ch is None:              # not calibrated
+                    cal = dict.fromkeys(_CAL_KEYS, nan)
+                    cal['ctl'] = (cnts[-1][1], nan, nan)
+                else:                       # calibrated on that window's lines, however few
+                    cal = calibrate(r['taper'], r['_windows'][2][ch][1], min_n=1)
+                    if cal['p_emp'] != cal['p_emp']:
+                        continue
+                if flips(sub(**cal), cen):
+                    out.append(('matched control lines (within %gx) of %s' % (f, nm), float(n), float(c.MATCH_MIN), se, '%d'))
+    return out
+
+
+def knife_text(ks):
+    """the knife_edge column: '' or 'knife-edge: <statistic> <value> vs <threshold>, Monte Carlo error <error>; ...'"""
+    if not ks:
+        return ''
+    return 'knife-edge: ' + '; '.join('%s %s vs %g, Monte Carlo error %.2g' % (lab, fmt % v, t, se) for lab, v, t, se, fmt in ks)
 
 
 def taper_ok(r):
@@ -589,10 +820,21 @@ def excess(r):
     return bool(parts) and all(parts)
 
 
-def centroid(J, tier, bands, rng):
+_BOOT_CHUNK = 50000                 # resamples drawn at once (BOOT_DRAW 'target'): bounds a block's memory, never its values
+# the stop is at BOOT_Z_SE / _BOOT_MARGIN: the error is estimated from the resamples themselves, and stopping on the first
+# estimate under the target left the realized error up to 13% above it (zrow_boot.py, 150 salts per real row, 2026-11-04)
+_BOOT_MARGIN = 1.1
+
+
+def centroid(J, tier, bands, rng, zc_xy=()):
     """WHERE DO THE BURSTS AT THE TARGET CENTER? The bursts within its disc, offsets in FWHM of their band: the mean offset, its
     error = sqrt(stat^2 + floor^2) - stat from a bootstrap over nights (>= BOOT_MIN_NIGHTS nights; else CEN_DET / sqrt(n)),
-    floor = max(CEN_FLOOR, CEN_NIGHT / sqrt(nights)); z_off = |offset| / error"""
+    floor = max(CEN_FLOOR, CEN_NIGHT / sqrt(nights)); z_off = |offset| / error. The bootstrap's MONTE CARLO error: every z of
+    this error (z, each candidate's z_c) has the standard error z x rel, rel = SE(stat^2) / (2 err^2) (err^2 = stat^2 + floor^2;
+    stat^2 = the mean of q_b = ((x_b - x)^2 + (y_b - y)^2) / 2 over the resamples b, SE(stat^2) = sd(q_b) / sqrt(B)).
+    BOOT_DRAW 'job' draws the nights from ``rng`` replicate by replicate (production's draws); 'target' from a generator of its
+    own per (target, tier), vectorized. BOOT_Z_SE: more resamples, in blocks, until max(z, each candidate's z_c at most
+    Z_C_NEAR) x rel <= BOOT_Z_SE / _BOOT_MARGIN or BOOT_MAX are drawn; zc_xy = the candidates' (e, n) offsets (arcmin)."""
     c = tc()
     FW = fw_table()
     xs, ys, cells, ifw = [], [], [], []
@@ -613,16 +855,54 @@ def centroid(J, tier, bands, rng):
     cx, cy = float(xs.mean()), float(ys.mean())
     uc = sorted(set(cells))
     nn = len(uc)
+    floor = max(c.CEN_FLOOR, c.CEN_NIGHT / math.sqrt(nn))
+    ifw_m = float(np.mean(ifw))
+    boot_n, rel = 0, 0.0
     if nn >= c.BOOT_MIN_NIGHTS:
         idx = [np.where(cells == c_)[0] for c_ in uc]
-        bs = np.array([(xs[ii].mean(), ys[ii].mean()) for ii in (np.concatenate([idx[k] for k in rng.integers(0, nn, nn)])
-                                                                 for _ in range(c.BOOTSTRAP))])
-        stat = math.hypot(bs[:, 0].std(), bs[:, 1].std()) / math.sqrt(2)
+        if c.BOOT_DRAW == 'job':
+            def block(m):             # production's draws (forced_wide_v3.py:477-479), from the job's generator
+                return np.array([(xs[ii].mean(), ys[ii].mean()) for ii in (np.concatenate([idx[k] for k in rng.integers(0, nn, nn)])
+                                                                         for _ in range(m))])
+        else:
+            g = np.random.default_rng(stable_int('boot', c.SEED, job_id(J), tier))
+            sx = np.array([xs[i].sum() for i in idx])
+            sy = np.array([ys[i].sum() for i in idx])
+            cnt = np.array([len(i) for i in idx], float)
+
+            def block(m):             # the same resampling (nn nights with replacement), each night by its sums and count
+                out = []
+                for a in range(0, m, _BOOT_CHUNK):
+                    b = min(m - a, _BOOT_CHUNK)
+                    k = g.integers(0, nn, size=(b, nn))
+                    W = np.bincount((np.arange(b)[:, None] * nn + k).ravel(), minlength=b * nn).reshape(b, nn).astype(float)
+                    tot = W @ cnt
+                    out.append(np.c_[(W @ sx) / tot, (W @ sy) / tot])
+                return out[0] if len(out) == 1 else np.concatenate(out)
+        bs = block(c.BOOTSTRAP)
+        while True:
+            boot_n = len(bs)
+            stat = math.hypot(bs[:, 0].std(), bs[:, 1].std()) / math.sqrt(2)
+            err = math.hypot(stat, floor)
+            q = ((bs[:, 0] - bs[:, 0].mean()) ** 2 + (bs[:, 1] - bs[:, 1].mean()) ** 2) / 2.0
+            rel = float(q.std(ddof=1)) / math.sqrt(boot_n) / (2.0 * err ** 2)
+            if c.BOOT_Z_SE is None or boot_n >= c.BOOT_MAX:
+                break
+            zz = [math.hypot(cx, cy) / err] + [min(math.hypot(cx - x * ifw_m, cy - y * ifw_m) / err, c.Z_C_NEAR)
+                                               for x, y in zc_xy]
+            crit = max(zz) * rel
+            goal = c.BOOT_Z_SE / _BOOT_MARGIN
+            if crit <= goal:
+                break
+            need = math.ceil(boot_n * (crit / goal) ** 2)                    # SE ~ 1 / sqrt(B)
+            more = max(c.BOOTSTRAP, -(-(need - boot_n) // c.BOOTSTRAP) * c.BOOTSTRAP)
+            bs = np.concatenate([bs, block(min(more, c.BOOT_MAX - boot_n))])
     else:
         stat = c.CEN_DET / math.sqrt(n)
-    err = math.hypot(stat, max(c.CEN_FLOOR, c.CEN_NIGHT / math.sqrt(nn)))
-    return dict(n=n, nights=nn, x=cx, y=cy, off=math.hypot(cx, cy), err=err, z=math.hypot(cx, cy) / err,
-                pa=math.degrees(math.atan2(cx, cy)) % 360.0, ifw=float(np.mean(ifw)))
+        err = math.hypot(stat, floor)
+    z = math.hypot(cx, cy) / err
+    return dict(n=n, nights=nn, x=cx, y=cy, off=math.hypot(cx, cy), err=err, z=z,
+                pa=math.degrees(math.atan2(cx, cy)) % 360.0, ifw=ifw_m, boot_n=boot_n, rel=rel, z_se=z * rel)
 
 
 def z_to(cen, cand):
@@ -789,7 +1069,11 @@ def cand_row(J, tier, r):
                 centering=ce.get('verdict', ''),
                 center_t=f(ce.get('t', float('nan')) if ce.get('t') is not None else float('nan')),
                 centroid_to_candidate_sigma=f(r.get('z_c', float('nan')), 1), night_rho=f(r['night'][0]),
-                night_p=f(r['night'][1], 4), night_n=r['night'][2], explains=explains(r), excess=excess(r))
+                night_p=f(r['night'][1], 4), night_n=r['night'][2], explains=explains(r), excess=excess(r),
+                **({} if tc().KNIFE_EDGE_SE is None else dict(
+                    p_emp_se=f(r.get('p_se', float('nan')), 4), ratio_se=f(r.get('ratio_se', float('nan')), 3),
+                    n_ctl_se=f(r.get('n_ctl_se', float('nan')), 1),
+                    centroid_to_candidate_se=f(r.get('z_c_se', float('nan')), 3))))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
