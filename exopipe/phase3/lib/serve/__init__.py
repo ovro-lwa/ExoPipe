@@ -22,5 +22,5 @@ Modules (each ports named production launcher logic; the production file:line is
   jupiter.py        the Jupiter program's pages 8800 / 8801
   app_probe.py      run as a SCRIPT (no exopipe import): the server's own loader + App on one page -> expected sources
   tests.py          content tests: served_queue, served_view, judgement_journal, hub_page, served_page, stopped_page,
-                    sublst_cumulative, review_copy, exclusion_check
+                    sublst_cumulative, review_copy, exclusion_check, serve_go
 """

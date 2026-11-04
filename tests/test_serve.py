@@ -20,7 +20,9 @@ Synthetic data under /tmp/exopipe3_tests_serve/ (removed at the end):
      readiness, --restart through the CLI, exact-pid --stop; replace() of an http.server page; served_page / stopped_page.
   4. deep `views` stage end to end through record.Run (records under the scratch root).
   5. (review 2026-10-13) a refused stage stops the later ones (deep G2, sub-LST G8 / G11, snapshot G17), the in-place
-     exclusion gate and core.exclusions agree, the forced switch probes before anything is registered.
+     exclusion gate and core.exclusions agree, the forced switch probes before anything is registered. G27 (exopipe_ops
+     35aad1a, 8ff3fc8): a combined view built with Card 2 / re-judging, or holding restore-only runs, is served only with Gregg's
+     go naming it.
   6. REGISTRATION on the two-port server (lib/serve/register.py; production since 2026-10-22), every server an ISOLATED
      two-port server of this tree on free test ports (>= 19000) over a scratch registry - the live registry, the live server
      and 8765 / 8795 are never touched: the registration = production's register_page.py byte for byte (run on a sandbox);
@@ -1412,6 +1414,143 @@ def test_stage_halting():
         servers.replace, flow.register_pages, register.write = orig
 
 
+def test_card2_rejudge_go():
+    """G27, GREGG'S GO ON A COMBINED VIEW, before every stage of a snapshot serve (unit snapshot_<name>_go; refused = nothing
+    gated, copied or served; --waive does not lift it):
+    card2 / re-judging (exopipe_ops 35aad1a; R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS "the count of removed sources
+    shown to Gregg before serving"): a view whose combined_view_summary.json holds "card2" or "rejudge" is served only when
+    serve.SNAPSHOT_CARD2_REJUDGE_APPROVED is non-empty and names it - refused with no file, an empty one, one naming another view
+    and one naming a longer name (production's grep passes that one: a substring); passes with one naming it (the gate stage
+    then runs);
+    restore-only (exopipe_ops 8ff3fc8; R-GREGG-20261104-EVERYTHING-AS-RECOMMENDED): every tag of the view's 'batches' is exactly
+    one member run beside it (none, two: refused; a summary without 'batches': refused), a member with gate3d_restore_only needs
+    its restore_wave_served_diff.json PASS (absent, FAIL: refused) and the view needs serve.SNAPSHOT_RESTORE_ONLY_APPROVED naming
+    it; a view of members without the restore-only gate passes; a combined view from a remote source refuses;
+    a batch run (no combined_view_summary.json) gets no go unit; the dry run reports both."""
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow, snapshot_copy
+
+    def no_start(*a, **k):
+        raise AssertionError('a page was registered (or a server started) after a refused stage')
+    S = CFG.serve
+    orig = (servers.replace, flow.register_pages, register.write, S.SNAPSHOT_CARD2_REJUDGE_APPROVED,
+            S.SNAPSHOT_RESTORE_ONLY_APPROVED, snapshot_copy._summary_text)
+    servers.replace = flow.register_pages = register.write = no_start
+    name = 'Run_SNAPCOMB_GO_20261104'
+    m_c2, m_ro = f'{T}/go_marker/SNAPCOMB_CARD2_REJUDGE_SERVE_APPROVED', f'{T}/go_marker/SNAPCOMB_RESTORE_ONLY_SERVE_APPROVED'
+    os.makedirs(os.path.dirname(m_c2), exist_ok=True)
+    S.SNAPSHOT_CARD2_REJUDGE_APPROVED, S.SNAPSHOT_RESTORE_ONLY_APPROVED = m_c2, m_ro
+    R = f'{T}/go_src'
+    src = f'{R}/{name}'
+    summ = f'{src}/combined_view_summary.json'
+
+    def member(tag, ro=None, diff=None):
+        d = f'{R}/Run_SNAP{tag}_20261104'
+        os.makedirs(d, exist_ok=True)
+        json.dump(dict(cells=['05h_2030-01-01'], **({'gate3d_restore_only': ro} if ro else {})), open(f'{d}/chain_summary.json', 'w'))
+        if diff is None:
+            if os.path.exists(f'{d}/restore_wave_served_diff.json'):
+                os.remove(f'{d}/restore_wave_served_diff.json')
+        else:
+            json.dump(dict(status=diff, counts={}), open(f'{d}/restore_wave_served_diff.json', 'w'))
+
+    def marker(path, text):
+        if text is None:
+            if os.path.exists(path):
+                os.remove(path)
+        else:
+            open(path, 'w').write(text + ('\n' if text else ''))
+
+    def serve(i, sumd):
+        if sumd is None:
+            if os.path.exists(summ):
+                os.remove(summ)
+        else:
+            json.dump(dict(dict(view=name, seconds=1.0), **sumd), open(summ, 'w'))
+        if os.path.exists(f'{src}/serve_exclusion_check.txt'):
+            os.remove(f'{src}/serve_exclusion_check.txt')
+        a = _ns(tier='snapshot', run_label=name, source=src, label='go test')
+        out = f'{T}/go_out_{i}'
+        plan = planmod.make(a, out)
+        run = Run('serve', ['test'], out, CFG, config_sections=None)
+        run.waived = lambda n: 'R-TEST-WAIVE'            # --waive covers every check: G27 still refuses
+        snapshot_copy.run(a, run, plan, ('gate',))
+        return run, plan
+
+    try:
+        wcsv(f'{src}/detections.csv', ['cand_id', 'snr'], [dict(cand_id='05h_2030-01-01_46MHz_V_10s_20300101_000000', snr=9)])
+        member('B1X')
+        RO = dict(table='t.json', removed_installed_pass=10, removed_restore_pass=9, removed=8, restored=2, restore_pass_only=1)
+        cases = (
+            # (summary, card2 go, restore go, members, outcome: None no go unit / True pass / text refused)
+            (None, None, None, {}, None),
+            ({'batches': ['B1X'], 'card2': {'removed_detections': 3}}, None, None, {}, 'absent or empty'),
+            ({'batches': ['B1X'], 'rejudge': {'out': 2}}, '', None, {}, 'absent or empty'),
+            ({'batches': ['B1X'], 'card2': {}, 'rejudge': {}}, 'Run_SNAPCOMB_OTHER_20261104 - serving APPROVED', None, {},
+             'Gregg\'s go on the counts'),
+            ({'batches': ['B1X'], 'card2': {}}, f'{name}B - serving APPROVED', None, {}, 'Gregg\'s go on the counts'),
+            ({'batches': ['B1X'], 'card2': {}, 'rejudge': {}}, f'{name} - serving with Card 2 per frame and re-judging APPROVED',
+             None, {}, True),
+            ({'batches': ['B1X'], 'deep_omission': {'served': 4}}, None, None, {}, True),
+            ({'deep_omission': {'served': 4}}, None, None, {}, 'could not run'),
+            ({'batches': ['B1X', 'B9Z']}, None, None, {}, 'B9Z: 0 run directories'),
+            ({'batches': ['B1X', 'B2X']}, None, None, {'B2X': (RO, None)}, 'B2X: no restore_wave_served_diff.json'),
+            ({'batches': ['B1X', 'B2X']}, None, None, {'B2X': (RO, 'FAIL: 2 absent')}, 'B2X: FAIL: 2 absent'),
+            ({'batches': ['B1X', 'B2X']}, None, None, {'B2X': (RO, 'PASS')}, 'wave totals is required first'),
+            ({'batches': ['B1X', 'B2X']}, None, 'Run_SNAPCOMB_OTHER_20261104 approved', {'B2X': (RO, 'PASS')}, 'wave totals'),
+            ({'batches': ['B1X', 'B2X']}, None, f'{name} - the wave totals shown; APPROVED', {'B2X': (RO, 'PASS')}, True),
+            ({'batches': ['B1X', 'B2X'], 'card2': {}}, None, f'{name} approved', {'B2X': (RO, 'PASS')},
+             'Gregg\'s go on the counts'))
+        for i, (sumd, t_c2, t_ro, mem, want) in enumerate(cases):
+            marker(m_c2, t_c2)
+            marker(m_ro, t_ro)
+            for tag, (ro, diff) in mem.items():
+                member(tag, ro, diff)
+            run, plan = serve(i, sumd)
+            names = [u.name for u in run.units]
+            if want is None:
+                assert names == [f'snapshot_{name}_gate'], (i, names)
+            elif want is True:
+                assert names == [f'snapshot_{name}_go', f'snapshot_{name}_gate'], (i, names, [u.reason for u in run.units])
+                assert run.units[0].status == 'done', (i, run.units[0].status, run.units[0].reason)
+            else:
+                assert names == [f'snapshot_{name}_go'], (i, names)
+                u = run.units[0]
+                assert u.status == 'refused' and 'G27' in u.reason and want in u.reason and run.exit_code() == 2, \
+                    (i, u.status, u.reason)
+                assert not os.path.exists(f'{src}/serve_exclusion_check.txt') and not os.path.exists(plan.U)
+        # two member runs for one tag
+        os.makedirs(f'{R}/Run_SNAPB1X_20261105', exist_ok=True)
+        run, plan = serve('dup', {'batches': ['B1X']})
+        assert run.units[0].status == 'refused' and 'B1X: 2 run directories' in run.units[0].reason, run.units[0].reason
+        shutil.rmtree(f'{R}/Run_SNAPB1X_20261105')
+        # a combined view from a remote source (its summary read over ssh: stubbed)
+        snapshot_copy._summary_text = lambda host, path: '{"batches": []}'
+        a = _ns(tier='snapshot', run_label=name, source=f'lwacalim04:{src}', label='go test')
+        plan = planmod.make(a, f'{T}/go_out_remote')
+        run = Run('serve', ['test'], f'{T}/go_out_remote', CFG, config_sections=None)
+        snapshot_copy.run(a, run, plan, ('gate',))
+        assert [u.name for u in run.units] == [f'snapshot_{name}_go'] and 'combined view on lwacalim04' in run.units[0].reason, \
+            [(u.name, u.reason) for u in run.units]
+        snapshot_copy._summary_text = orig[5]
+        ok('G27: a combined view built with Card 2 / re-judging, or holding restore-only runs, is served only with Gregg\'s go '
+           'naming it (absent, empty, another view, a longer name, a missing / duplicated member, a test not PASS, a remote view: '
+           'refused before every stage, --waive or not); a batch run: no go unit')
+        # the dry run reports both (read only)
+        json.dump(dict(view=name, card2={}, batches=['B1X', 'B2X']), open(summ, 'w'))
+        marker(m_c2, None)
+        marker(m_ro, None)
+        r = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--tier', 'snapshot', '--run', name, '--source', src,
+                            '--out', f'{T}/go_dry', '--dry-run', '--set', f'serve.SNAPSHOT_CARD2_REJUDGE_APPROVED={m_c2}',
+                            '--set', f'serve.SNAPSHOT_RESTORE_ONLY_APPROVED={m_ro}'], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True, env=dict(os.environ, PYTHONPATH=ROOT), timeout=600)
+        assert 'G27 Card 2 / re-judging go' in r.stdout and 'G27 restore-only go: WOULD REFUSE' in r.stdout, r.stdout[-2500:]
+        ok('G27 in the dry run: WOULD REFUSE without the goes')
+    finally:
+        (servers.replace, flow.register_pages, register.write, S.SNAPSHOT_CARD2_REJUDGE_APPROVED, S.SNAPSHOT_RESTORE_ONLY_APPROVED,
+         snapshot_copy._summary_text) = orig
+
+
 def test_inplace_gate_agrees():
     """G17 two readers: production's gate (snapshot_serve_exclusion_gate.py through core.legacy.run, its reader
     coadd_full_pipeline.is_excluded) and core.exclusions refuse the same rows (subband exact; a wideband through a member
@@ -2298,6 +2437,7 @@ def main():
         test_mchain()
         test_exclusion_gate_per_page_stage()
         test_stage_halting()
+        test_card2_rejudge_go()
         test_inplace_gate_agrees()
         test_forced_probe_before_stop()
         test_register_matches_production()

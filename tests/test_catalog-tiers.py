@@ -287,6 +287,21 @@ def test_content_tests():
     ok('leak_veto_table passes (rows = conformant candidates, rule kept)', TS.leak_veto_rows(vt)[0], TS.leak_veto_rows(vt)[2])
     wcsv(vt, vh, [['V1', '14h', '18MHz', 'V', '20', '1.0', '1', '']])
     ok('leak_veto_table fails on a clear case not vetoed', not TS.leak_veto_rows(vt)[0])
+    # exopipe_ops 7119fad: the Master floor on the deep flux scale, restore-only - each row's master_floor_jy = max(0.5, 0.5 x
+    # window_flux_factor); a Master between 0.5 Jy and the row's floor is no clear case; an elevation veto below the floor is off
+    # the rule; a floor that is not max(0.5, 0.5 F) (or below 0.5 where F < 1) fails
+    vh2 = vh + ['window_flux_factor', 'master_floor_jy']
+    for label, row, want in (('a Master below the scaled floor is kept', ['0.8', '1', '', '2.0000', '1.000'], True),
+                             ('an elevation veto at the scaled floor', ['1.0', '1', 'elevation', '2.0000', '1.000'], True),
+                             ('a clear case above the scaled floor not vetoed', ['1.2', '1', '', '2.0000', '1.000'], False),
+                             ('an elevation veto below the scaled floor', ['0.8', '1', 'elevation', '2.0000', '1.000'], False),
+                             ('a floor that is not max(0.5, 0.5 F)', ['0.8', '1', '', '2.0000', '0.500'], False),
+                             ('F < 1: the floor stays 0.5 (restore-only)', ['0.45', '1', '', '0.8000', '0.500'], True),
+                             ('F < 1: a floor below 0.5', ['0.45', '1', '', '0.8000', '0.400'], False),
+                             ('F < 1: a clear case above 0.5 not vetoed', ['0.6', '1', '', '0.8000', '0.500'], False)):
+        wcsv(vt, vh2, [['V1', '14h', '18MHz', 'V', '20', row[0], row[1], row[2], row[3], row[4]]])
+        r = TS.leak_veto_rows(vt)
+        ok(f'leak_veto_table (7119fad floor): {label} - {"passes" if want else "fails"}', r[0] == want, r[2])
     import numpy as np
     rh = ['veto', 'cell', 'subband', 'stokes', 'tier', 'ts', 'ra_deg', 'dec_deg', 'snr', 'pos_err_arcsec', 'cand_id', 'detail']
     rj = f'{U}/rejected.csv'
@@ -345,6 +360,7 @@ def test_content_tests():
     ok('snapshot_run R3: a served row of the removed cand_id 30 deg away is not a leak; within 1 deg, or unreadable, is',
        res3['another source of the frame'][0] and not res3['the same detection'][0]
        and not res3['an unreadable position'][0], res3)
+    snapshot_run_card2_restore(TP)
     with open(f'{run}/source_catalogs/Red_sources_survivors.csv', 'a') as f:
         f.write('J9999+0000,V,-5.0\n')
     r = TP.snapshot_run_content(run)
@@ -354,6 +370,110 @@ def test_content_tests():
          [['14h_2025-03-09', '18MHz', 'I', '10s', 't', '1.00000', '2.00000', 'tied', '1.01', '2.01', 'M2']])
     ok('tie_cache passes with rows of the installed model', TP.tie_cache_rows(tc, errmodel='M2')[0])
     ok('tie_cache fails without rows of the installed model', not TP.tie_cache_rows(tc, errmodel='M3')[0])
+
+
+def write_record(path, cols, rows):
+    import gzip
+    with gzip.open(path, 'wt', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(cols)
+        w.writerows(rows)
+
+
+def snapshot_run_card2_restore(TP):
+    """snapshot_run's card2 and restore checks (clv15 1279bd4 Card 2 in the chain; b8d1989 + bf7dce8 the restore-only 3-D gate),
+    on synthetic runs: each passes on a consistent run and fails on each inconsistency it reads back."""
+    def checks(run):
+        return dict((n, (p_, d_)) for n, p_, d_ in TP.run_checks(run))
+    run = f'{T}/snaprun_c2'
+    write_snapshot_run(run, ['14h_2025-03-09'])
+    c = checks(run)
+    ok('snapshot_run card2 / restore: a run of a chain before both passes (no summary keys, no files, no record)',
+       c['card2'][0] and c['restore'][0], (c['card2'], c['restore']))
+    S = json.load(open(f'{run}/chain_summary.json'))
+    S['card2'] = dict(ratio=0.05, tiers=['10s'], evaluated=2, not_evaluated=1, removed=1, v_10s_rows=3)
+    json.dump(S, open(f'{run}/chain_summary.json', 'w'))
+    c2h = ['cand_id', 'cell', 'band', 'ts', 'snr', 'peak_jyb', 'ra', 'dec', 'i_master_pix_jyb', 'scale', 'scale_source', 'i_here_jy',
+           'v_over_i_here']
+    c2row = ['14h_2025-03-09_18MHz_V_10s_20250309_101010', '14h_2025-03-09', '18MHz', '20250309_101010', '-9.000', '-0.5', '10.00000',
+             '20.00000', '20', '1.0000', 'lc', '20', '0.02500']
+    wcsv(f'{run}/card2_removed.csv', c2h, [c2row])
+    rh = ['det_uid', 'cand_id', 'ra_peak', 'dec_peak', 'served', 'first_removed_by', 'gate_3d', 'gate_3d_installed', 'gate_3d_restore',
+          'restored_by']
+    rec = [['u1', c2row[0], '10.00000', '20.00000', '0', 'card2', '', '', '', ''],
+           ['u2', 'c1', '10.00000', '0.00000', '1', '', 'pass', '', '', '']]
+    write_record(f'{run}/detection_record.csv.gz', rh, rec)
+    c = checks(run)
+    ok('snapshot_run card2 passes: card2_removed.csv = the summary, |V|/I under the ratio, the record agrees', c['card2'][0],
+       c['card2'][1])
+    for label, edit in (('a row above the ratio', lambda r, s_, rr: r.__setitem__(12, '0.06000')),
+                        ('a Stokes I row', lambda r, s_, rr: r.__setitem__(0, r[0].replace('_V_', '_I_'))),
+                        ('counts that do not add up', lambda r, s_, rr: s_['card2'].__setitem__('not_evaluated', 2)),
+                        ('the record off the file', lambda r, s_, rr: rr[0].__setitem__(5, 'seed')),
+                        ('a card2 detection served', lambda r, s_, rr: rr[0].__setitem__(4, '1'))):
+        r_, s_, rr = list(c2row), json.loads(json.dumps(S)), [list(x) for x in rec]
+        edit(r_, s_, rr)
+        wcsv(f'{run}/card2_removed.csv', c2h, [r_])
+        json.dump(s_, open(f'{run}/chain_summary.json', 'w'))
+        write_record(f'{run}/detection_record.csv.gz', rh, rr)
+        c = checks(run)
+        ok(f'snapshot_run card2 fails on {label}', not c['card2'][0], c['card2'][1])
+    wcsv(f'{run}/card2_removed.csv', c2h, [c2row])
+    json.dump(S, open(f'{run}/chain_summary.json', 'w'))
+    # the restore-only gate: a restored detection (installed pass removes, restore pass keeps) tagged, served, in detections.csv
+    RB = 'restore-only 3-D gate 20261104'
+    rec_ro = rec + [['u3', 'c3', '11.00000', '0.50000', '1', '', 'pass', 'remove', 'pass', RB],
+                    ['u4', 'c4', '12.00000', '0.50000', '0', 'bright-parent-3d', 'remove', 'remove', 'remove', '']]
+    write_record(f'{run}/detection_record.csv.gz', rh, rec_ro)
+    c = checks(run)
+    ok('snapshot_run restore fails on a tagged record without the summary key (no restore table in the run)', not c['restore'][0],
+       c['restore'][1])
+    S['gate3d_restore_only'] = dict(table='t.json', removed_installed_pass=2, removed_restore_pass=1, removed=1, restored=1,
+                                    restore_pass_only=0)
+    json.dump(S, open(f'{run}/chain_summary.json', 'w'))
+    det = f'{run}/candidates/Red/rank0001_Red_J0000+0000/detections.csv'
+    dh = ['cand_id', 'ra', 'ra_peak', 'dec_peak', 'pos_err_stat_arcsec', 'pos_err_arcsec', 'restored_by']
+    wcsv(det, dh, [['c1', '10.0', '10.00000', '0.00000', '30', '60', ''], ['c3', '11.0', '11.00000', '0.50000', '30', '60', RB]])
+    c = checks(run)
+    ok('snapshot_run restore passes: tags = the pair, = the summary\'s restored, served tagged rows = the record\'s',
+       c['restore'][0] and c['card2'][0], (c['restore'][1], c['card2'][1]))
+    for label, do in (
+            ('the summary\'s restored off the record', lambda: S['gate3d_restore_only'].__setitem__('restored', 2)),
+            ('a summary that does not add up', lambda: S['gate3d_restore_only'].__setitem__('removed_installed_pass', 3)),
+            ('a tag without the pair', lambda: rec_ro[2].__setitem__(8, 'remove')),
+            ('the pair without a tag', lambda: rec_ro[2].__setitem__(9, '')),
+            ('a served tagged row missing from detections.csv', lambda: wcsv(det, dh, [['c1', '10.0', '10.00000', '0.00000', '30',
+                                                                                         '60', '']])),
+            ('a detections.csv without the column', lambda: wcsv(det, dh[:-1], [['c1', '10.0', '10.00000', '0.00000', '30', '60']]))):
+        S0, rec0 = json.loads(json.dumps(S)), [list(x) for x in rec_ro]
+        do()
+        json.dump(S, open(f'{run}/chain_summary.json', 'w'))
+        write_record(f'{run}/detection_record.csv.gz', rh, rec_ro)
+        c = checks(run)
+        ok(f'snapshot_run restore fails on {label}', not c['restore'][0], c['restore'][1])
+        S.clear()
+        S.update(S0)
+        rec_ro[:] = rec0
+        wcsv(det, dh, [['c1', '10.0', '10.00000', '0.00000', '30', '60', ''], ['c3', '11.0', '11.00000', '0.50000', '30', '60', RB]])
+
+
+def test_restore_marker():
+    """exopipe_ops fa90670: the approval marker's CURVE_CONSTANTS_RESTORE=<table> line (the first, up to a space) passes
+    --curve-constants-restore <table> to every chain call (chainargs); none without the line."""
+    import types
+    from exopipe.phase3.lib.catalog import tier_snapshot as P
+    from exopipe.phase3.config import CFG
+    ok('restore table: the first CURVE_CONSTANTS_RESTORE= line, up to a space; none when empty or absent',
+       P.restore_table(['x', 'CURVE_CONSTANTS_RESTORE=/a/b.json extra', 'CURVE_CONSTANTS_RESTORE=/c']) == '/a/b.json'
+       and P.restore_table(['CURVE_CONSTANTS_RESTORE=']) is None and P.restore_table(None) is None
+       and P.restore_table([' CURVE_CONSTANTS_RESTORE=/x']) is None)
+    ns = types.SimpleNamespace(c=CFG.catalog_snapshot, cfg=CFG, S='/s/fits_store.csv', chain_py='/nonexistent/chain.py', T=None,
+                               analysis=[], restore='/t/restore.json')
+    a = P.Ctx.chainargs(ns)
+    i = a.index('--curve-constants-restore') if '--curve-constants-restore' in a else -1
+    ns.restore = None
+    ok('chainargs: --curve-constants-restore <table> right after production\'s CHAINARGS; absent without a table',
+       i == 10 and a[i + 1] == '/t/restore.json' and '--curve-constants-restore' not in P.Ctx.chainargs(ns), a[:12])
 
 
 def write_snapshot_run(run, cells):
@@ -847,9 +967,11 @@ def test_dry_runs():
     rc, out = cli(['catalog', '--tier', 'snapshot', '--run', 'Run_SNAPB2R_20261007', '--cells', f'@{cf}', '--dry-run',
                    '--cores', 'none', '--out', out_p, '--snap-served-run',
                    '/data07/gh/phase3/snapshot_search/review/Run_SNAPB1R_20261004'], REAL_SITE)
-    ok('dry-run snapshot (2 cells of batch 2): every stage planned, 0 binding mismatches, nothing written',
-       rc == 0 and '[Run_SNAPB2R_20261007.test]' in out and 'binding check: 28 ok, 0 mismatch' in out
-       and not os.path.exists(out_p), out[-300:])
+    from exopipe.phase3.lib.catalog import tier_snapshot as P
+    ok(f'dry-run snapshot (2 cells of batch 2): every stage planned, 0 binding mismatches ({len(P.LIT)} [lit] keys), the restore-only '
+       f'3-D gate off (no marker line), nothing written',
+       rc == 0 and '[Run_SNAPB2R_20261007.test]' in out and f'binding check: {len(P.LIT)} ok, 0 mismatch' in out
+       and 'P-G21 restore-only 3-D gate: off' in out and not os.path.exists(out_p), out[-300:])
 
 
 def test_real_products():
@@ -881,6 +1003,7 @@ def main():
         test_ported_sublst()
         test_ported_sublst_floor_fitted()
         test_ported_snapshot()
+        test_restore_marker()
         test_content_tests()
         stub = build_stubs()
         site = make_site(stub)

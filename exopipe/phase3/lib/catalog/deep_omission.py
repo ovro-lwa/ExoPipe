@@ -1722,6 +1722,18 @@ def view_cells(runs, reader):
     return cells
 
 
+def card2_vintage(runs, reader):
+    """{batch tag: 'chain' | 'view'}: where each batch's Card 2 ran (V_combview review T7) - 'chain' when its chain_summary.json
+    has the chain's own Card 2 counts (clv15 1279bd4: per frame after the per-frame fit, BEFORE the tie and the 3-D gate), else
+    'view' (a batch chained before: the view applies Card 2 after its chain). A view mixing both applies Card 2 in two orders;
+    recorded in the omit summary, not a gate (production records nothing)."""
+    out = collections.OrderedDict()
+    for r in runs:
+        t = reader.text(os.path.join(r, 'chain_summary.json'), 'chain_summary', missing_ok=True)
+        out[batch_tag(r)] = 'chain' if (t is not None and 'card2' in json.loads(t)) else 'view'
+    return out
+
+
 def rejudge_runs(runs, dec_path, proto, card2, work, u=None):
     """The re-judging of every batch run: lib/catalog/rejudge.py, one CHILD per run under catalog_omission.REJUDGE_PYTHON
     (production's interpreter; clv15's chain and tier-serving modules in place), at most catalog_omission.REJUDGE_PROCS at a
@@ -1850,7 +1862,7 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
                     ('at_threshold_within_rounding', card2.n['at_threshold_within_rounding']),
                     ('served_rows_matched', c2_match)]),
                 rejudge=rej.summary(n_rej_rows), rejudge_counts=dict(rej.N),
-                rejudge_inputs=rejudge_inputs(runs),
+                rejudge_inputs=rejudge_inputs(runs), card2_vintage=card2_vintage(runs, reader),
                 absent_images=sum(absent_images.values()), seconds=round(time.time() - t0, 1))
     _write_summary(out, summ, n_om, 'served detections %d, kept %d; decisions %d (%d OMIT keys + %d wideband per image); %s' % (
         n_all, n_all - n_om - n_c2, len(dec), len(om.OM), len(om.OMWB), ', '.join('%s %d' % kv for kv in sorted(kinds.items()))))

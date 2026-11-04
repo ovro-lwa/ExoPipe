@@ -1,7 +1,8 @@
 """Content tests of the snapshot batch chain (catalog --tier snapshot), registered with core/validate.
 
 Classes: snapshot_run (a chain run directory: R1-R5 and R7 of ops/snapshot_rechain_content_test.py recomputed from the run's
-own files, plus no refusal marker and the per-Stokes views agreeing with the union catalogues), tie_cache (one cell's tie
+own files, plus no refusal marker, the per-Stokes views agreeing with the union catalogues, Card 2 per frame (card2) and the
+restore-only 3-D gate (restore) read back from the per-detection record), tie_cache (one cell's tie
 cache file), snapshot_tie_summary (the chain_summary.json a per-cell --stop-after-tie writes). The run content test's
 operating points are config (catalog_snapshot.TEST_GATE3D_PCT, TEST_MEMBER_ORDER, GHOST_DATES). R6 (missing panels) is the
 pages step's class snapshot_page_run. Every test reads content and returns (passed, value, detail).
@@ -121,7 +122,164 @@ def run_checks(run):
                                                                                                         len(orphan)))
     out.append(('views', not bad_views, 'per-Stokes views cover the union rows of their Stokes and nothing else: %s' % (
         '; '.join(bad_views) or 'yes')))
+    out.append(card2_check(run, S))
+    out.append(restore_check(run, S, dfiles))
     return out
+
+
+def _record_cols(path, want):
+    """Rows of the per-detection record (detection_record.csv.gz) as dicts of the wanted columns ('' for a column it lacks),
+    and whether it has each: (iterator, set of present columns)."""
+    import gzip
+    f = gzip.open(path, 'rt', newline='')
+    rd = csv.reader(f)
+    h = next(rd)
+    ix = [(c, h.index(c)) for c in want if c in h]
+    miss = [c for c in want if c not in h]
+
+    def gen():
+        try:
+            for r in rd:
+                d = {c: r[i] for c, i in ix}
+                for c in miss:
+                    d[c] = ''
+                yield d
+        finally:
+            f.close()
+    return gen(), {c for c, _ in ix}
+
+
+def card2_check(run, S):
+    """CARD 2 PER FRAME in the chain (clv15 1279bd4; catalog_snapshot.CARD2): card2_removed.csv holds the summary's 'removed'
+    rows, each a Stokes V detection of a Card 2 tier (its cand_id) with |V| / (I Master pixel x scale) <= the ratio; the summary's
+    counts add up (evaluated + not evaluated = the V rows of the tiers); the record's rows first removed by 'card2' are the same
+    detections (cand_id multiset) and none is served. A run without the summary key (a chain before 1279bd4) holds no
+    card2_removed.csv."""
+    c = _cfg().catalog_snapshot.CARD2
+    sm = S.get('card2')
+    p = os.path.join(run, 'card2_removed.csv')
+    if sm is None:
+        ok = not os.path.exists(p)
+        return ('card2', ok, 'no Card 2 in this run (a chain before clv15 1279bd4)' if ok else
+                'card2_removed.csv without the chain summary\'s card2 counts')
+    bad = []
+    if not os.path.exists(p):
+        return ('card2', False, 'the chain summary has card2 counts and the run no card2_removed.csv')
+    rows = list(csv.DictReader(open(p, newline='')))
+    if float(sm.get('ratio', -1)) != float(c['ratio']) or list(sm.get('tiers') or []) != list(c['tiers']):
+        bad.append('summary ratio %s tiers %s, config %s %s' % (sm.get('ratio'), sm.get('tiers'), c['ratio'], list(c['tiers'])))
+    n_ev, n_ne, n_rm, n_v = (int(sm.get(k, -1)) for k in ('evaluated', 'not_evaluated', 'removed', 'v_10s_rows'))
+    if n_ev + n_ne != n_v or n_rm > n_ev or n_rm != len(rows):
+        bad.append('counts: evaluated %d + not evaluated %d vs V rows %d; removed %d, file rows %d' % (n_ev, n_ne, n_v, n_rm,
+                                                                                                    len(rows)))
+    off = []
+    for r in rows:
+        parts = (r.get('cand_id') or '').split('_')
+        st, tier = (parts[3], parts[4]) if len(parts) > 4 else ('', '')
+        pk, ih, vi = _f(r.get('peak_jyb')), _f(r.get('i_here_jy')), _f(r.get('v_over_i_here'))
+        pix, sc = _f(r.get('i_master_pix_jyb')), _f(r.get('scale'))
+        if st != 'V' or tier not in c['tiers'] or vi is None or vi > float(c['ratio']) + 5e-6 or pk is None or not ih or \
+                ih <= 0 or abs(abs(pk) / ih - vi) > 2e-3 * max(vi, 1e-3) + 5e-6 or pix is None or sc is None or \
+                abs(pix * sc - ih) > 2e-3 * abs(ih):
+            off.append(r.get('cand_id'))
+    if off:
+        bad.append('%d rows off the rule (not V of a Card 2 tier, |V|/I above the ratio, or I x scale inconsistent; e.g. %s)'
+                   % (len(off), off[:2]))
+    rp = os.path.join(run, 'detection_record.csv.gz')
+    nrec, rec_ok = None, False
+    if os.path.exists(rp):
+        it, have = _record_cols(rp, ['cand_id', 'first_removed_by', 'served'])
+        rec_c2, served_c2 = {}, 0
+        for d in it:
+            if d['first_removed_by'] == 'card2':
+                rec_c2[d['cand_id']] = rec_c2.get(d['cand_id'], 0) + 1
+                served_c2 += d['served'] == '1'
+        csv_c2 = {}
+        for r in rows:
+            csv_c2[r['cand_id']] = csv_c2.get(r['cand_id'], 0) + 1
+        nrec = sum(rec_c2.values())
+        rec_ok = rec_c2 == csv_c2 and not served_c2
+        if not rec_ok:
+            bad.append('record: %d rows first removed by card2 (%d served), card2_removed.csv %d (%d cand_ids differ)'
+                       % (nrec, served_c2, len(rows), len(set(rec_c2.items()) ^ set(csv_c2.items()))))
+    return ('card2', not bad, 'Card 2 per frame: %d removed of %d evaluated (%d V rows of %s, %d not evaluated)%s%s' % (
+        n_rm, n_ev, n_v, '/'.join(c['tiers']), n_ne,
+        '; no per-detection record' if nrec is None else ('; the record agrees (%d rows)' % nrec if rec_ok else ''),
+        ('; ' + '; '.join(bad)) if bad else ''))
+
+
+def _k5(cand, ra, dec):
+    try:
+        return (cand, '%.5f' % (float(ra) % 360.0), '%.5f' % float(dec))
+    except (TypeError, ValueError):
+        return (cand, ra, dec)
+
+
+def restore_check(run, S, dfiles):
+    """THE RESTORE-ONLY 3-D GATE (clv15 b8d1989 + bf7dce8; catalog_snapshot.RESTORED_BY), read back from the run's own files as
+    the wave's per-batch test does (exopipe_ops snapshot_restore_wave_diff.py, its checks within the new run): in a run with the
+    summary's gate3d_restore_only, the record's rows tagged restored_by are RESTORED_BY exactly where gate_3d_installed is
+    'remove' and gate_3d_restore is not, as many as the summary's restored; the summary adds up (removed + restored = the installed
+    pass's removals; restore pass only = the restore pass's removals - removed); every served detections.csv has the column and
+    the chain's tagged rows (candidates/<band>/) are the record's served tagged rows. A run without the key carries no tag."""
+    c = _cfg().catalog_snapshot
+    ro = S.get('gate3d_restore_only')
+    rp = os.path.join(run, 'detection_record.csv.gz')
+    if not os.path.exists(rp):
+        return ('restore', not ro, 'no per-detection record' + (' - a restore-only run cannot be read back' if ro else ''))
+    it, have = _record_cols(rp, ['cand_id', 'ra_peak', 'dec_peak', 'served', 'gate_3d_installed', 'gate_3d_restore',
+                                 'restored_by'])
+    tagged, pair_bad, tag_bad, served_tagged, n_rows = 0, 0, 0, set(), 0
+    for d in it:
+        n_rows += 1
+        pair = d['gate_3d_installed'] == 'remove' and d['gate_3d_restore'] != 'remove'
+        if d['restored_by']:
+            tagged += 1
+            tag_bad += d['restored_by'] != c.RESTORED_BY
+            pair_bad += not pair
+            if d['served'] == '1':
+                served_tagged.add(_k5(d['cand_id'], d['ra_peak'], d['dec_peak']))
+        elif pair:
+            pair_bad += 1
+    if not ro:
+        ok = tagged == 0 and pair_bad == 0
+        return ('restore', ok, 'no restore-only 3-D gate in this run' + ('' if ok else ': %d rows tagged restored_by, %d with '
+                                                                         'the installed-remove / restore-keep pair' % (tagged, pair_bad)))
+    bad = []
+    try:
+        rem, rest = int(ro['removed']), int(ro['restored'])
+        if rem + rest != int(ro['removed_installed_pass']) or int(ro['restore_pass_only']) != int(ro['removed_restore_pass']) - rem:
+            bad.append('summary does not add up: %s' % dict(ro))
+    except (KeyError, TypeError, ValueError) as e:
+        return ('restore', False, 'gate3d_restore_only unreadable: %s %s' % (type(e).__name__, e))
+    if not {'restored_by', 'gate_3d_installed', 'gate_3d_restore'} <= have:
+        bad.append('the record lacks the restore-only columns (version < 5)')
+    if tagged != rest:
+        bad.append('record restored rows %d, chain summary restored %d' % (tagged, rest))
+    if pair_bad or tag_bad:
+        bad.append('%d rows whose tag disagrees with gate_3d_installed / gate_3d_restore, %d with a tag other than %r'
+                   % (pair_bad, tag_bad, c.RESTORED_BY))
+    nocol, tagged_csv = [], set()
+    for p in dfiles:
+        sub = os.path.basename(os.path.dirname(os.path.dirname(p)))
+        with open(p, newline='') as f:
+            rd = csv.DictReader(f)
+            if 'restored_by' not in (rd.fieldnames or []):
+                nocol.append(p)
+                continue
+            if sub in ('Red', 'Green', 'Blue', 'Full'):
+                for r in rd:
+                    if r['restored_by']:
+                        tagged_csv.add(_k5(r['cand_id'], r.get('ra_peak'), r.get('dec_peak')))
+    if nocol:
+        bad.append('%d served detections.csv without the restored_by column (e.g. %s)' % (len(nocol), nocol[:1]))
+    if tagged_csv != served_tagged:
+        bad.append('tagged detections.csv rows %d, record served tagged rows %d (%d only in the files, %d only in the record)'
+                   % (len(tagged_csv), len(served_tagged), len(tagged_csv - served_tagged), len(served_tagged - tagged_csv)))
+    return ('restore', not bad, 'restore-only 3-D gate (%s): installed pass removes %s, restore pass %s; removed %d, restored %d '
+            '(%d served); %d record rows%s' % (os.path.basename(str(ro.get('table'))), ro.get('removed_installed_pass'),
+                                               ro.get('removed_restore_pass'), rem, rest, len(served_tagged), n_rows,
+                                               ('; ' + '; '.join(bad)) if bad else ''))
 
 
 @content_test('snapshot_run')

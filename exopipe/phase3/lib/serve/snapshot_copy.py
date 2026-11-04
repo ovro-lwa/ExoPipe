@@ -16,8 +16,26 @@ carry      (unit snapshot_<name>_carry)  --carry-from (default 'served'): G18 (n
            no CARRY report), snapshot_carry_judgements.py OLD DST in place, the HOLD rule in process (G19: a missed
            non-FP verdict holds the serve; carry_missed.csv written either way).
 test, start, hub, verify: lib/serve/flow (expected sources = queue length, snapshot_rechain_batch.sh:419-426).
+
+Before every stage (snapshot_serve.sh): G27 GREGG'S GO ON A COMBINED VIEW (unit snapshot_<name>_go; refused = nothing gated,
+copied or served):
+  card2 / re-judging (exopipe_ops 35aad1a)  a run whose combined_view_summary.json holds "card2" or "rejudge" (built with Card 2
+           per frame / re-judging; the source, and an existing review copy) is served only when serve.SNAPSHOT_CARD2_REJUDGE_APPROVED
+           is non-empty and names it (Gregg's go on the counts, R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS);
+  restore-only (exopipe_ops 8ff3fc8)  every tag of a combined view's 'batches' resolves to exactly one member run beside it
+           (serve.SNAPSHOT_VIEW_MEMBER_GLOB) with a readable chain_summary.json; a member that ran the restore-only 3-D gate
+           (gate3d_restore_only) needs its test against the run it replaced passed (serve.SNAPSHOT_RESTORE_DIFF status PASS), and
+           a view holding any needs serve.SNAPSHOT_RESTORE_ONLY_APPROVED naming it (Gregg's go on the wave totals,
+           R-GREGG-20261104-EVERYTHING-AS-RECOMMENDED). A combined view from a remote source refuses (production serves a view from
+           its local path on the review host, its member runs beside it).
+A name counts only as a whole token of the go file (production's grep: a substring). A run with neither (a batch run) gets no go
+unit (production checks nothing there).
 """
+import glob
+import json
 import os
+import re
+import shlex
 import subprocess
 
 from exopipe.phase3.core.record import NoInput
@@ -64,6 +82,181 @@ def _check_file(plan, what, scan):
         f.write(('EXCLUSION-GATE PASS ' if not scan.hits else 'EXCLUSION-GATE REFUSED ') + f'{plan.run_name} ({what}): '
                 + scan.summary() + '\n')
     return p
+
+
+GO_KEYS = re.compile(r'"(card2|rejudge)"')   # snapshot_serve.sh (35aad1a): grep -qE '"(card2|rejudge)"' combined_view_summary.json
+GO_SUMMARY = 'combined_view_summary.json'
+_ABSENT = '__EXOPIPE3_NO_SUMMARY__'
+
+
+def _summary_text(host, path):
+    """The text of <path>/combined_view_summary.json, None when the run has none (a remote source over ssh). OSError when it
+    cannot be read: G27 then refuses (fail closed)."""
+    f = os.path.join(path, GO_SUMMARY)
+    if host is None:
+        if not os.path.lexists(f):
+            return None
+        with open(f, errors='replace') as fh:
+            return fh.read()
+    from exopipe.phase3.config import CFG
+    q = shlex.quote(f)
+    p = subprocess.run(['ssh', '-n', '-o', 'BatchMode=yes', host, f'if [ -e {q} ]; then cat {q}; else echo {_ABSENT}; fi'],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(os.environ, **CFG.runner.SSH_PREFIX_ENV),
+                       timeout=600)
+    out = p.stdout.decode('utf-8', 'replace')
+    if p.returncode != 0:
+        raise OSError(f'ssh {host} rc {p.returncode}: {scripts.last_line(out)}')
+    return None if out.strip() == _ABSENT else out
+
+
+def names_in(text, name):
+    """True when ``name`` stands in ``text`` as a whole token (not inside a longer run name)."""
+    return re.search(r'(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])' % re.escape(name), text) is not None
+
+
+def card2_rejudge_go(plan):
+    """G27 (module docstring): None when no run of this serve holds the keys; else (refusal reason or '', detail) - '' = the go
+    names every one of its names (the served name and the source's directory name)."""
+    host, src = split_source(plan.source)
+    runs = [(host, src)] if src else []
+    if plan.U and os.path.isdir(plan.U) and not (host is None and src and os.path.abspath(plan.U) == os.path.abspath(src)):
+        runs.append((None, plan.U))            # an existing review copy (a serve of its later stages only)
+    ap = _S().SNAPSHOT_CARD2_REJUDGE_APPROVED
+    hit = None
+    for h, pth in runs:
+        try:
+            t = _summary_text(h, pth)
+        except OSError as e:
+            return (f'G27 REFUSING: the combined-view summary of {(h + ":") if h else ""}{pth} cannot be read ({e}) - nothing '
+                    f'served, servers untouched', '')
+        if t is not None and GO_KEYS.search(t):
+            hit = (h, pth)
+            break
+    if hit is None:
+        return None
+    names = sorted({plan.run_name} | {os.path.basename(p.rstrip('/')) for _h, p in runs})
+    text = _go_text(ap)
+    missing = [n for n in names if not names_in(text, n)]
+    where = f'{(hit[0] + ":") if hit[0] else ""}{hit[1]}/{GO_SUMMARY}'
+    if missing:
+        return (f"G27 REFUSING: {missing[0]} applies Card 2 and re-judging ({where}) - Gregg's go on the counts is required "
+                f"first ({ap} naming the view{'' if text else ': absent or empty'}) - nothing served, servers untouched", where)
+    return '', where
+
+
+def _go_text(path):
+    try:
+        return open(path, errors='replace').read() if os.path.getsize(path) > 0 else ''
+    except OSError:
+        return ''
+
+
+def restore_only_go(plan):
+    """G27, the restore-only wave's go (module docstring): None when no run of this serve is a combined view; else (refusal
+    reason or '', detail, members used, restore-only members)."""
+    S = _S()
+    host, src = split_source(plan.source)
+    if host is not None:
+        try:
+            t = _summary_text(host, src)
+        except OSError as e:
+            return (f'G27 REFUSING: the combined-view summary of {host}:{src} cannot be read ({e}) - nothing served, servers '
+                    f'untouched', '', [], 0)
+        if t is not None:
+            return (f'G27 REFUSING: {plan.run_name} is a combined view on {host}: serve a view from its local path on the review '
+                    f'host (its member runs beside it, snapshot_serve.sh) - nothing served, servers untouched',
+                    f'{host}:{src}/{GO_SUMMARY}', [], 0)
+    runs = [src] if (host is None and src) else []
+    if plan.U and os.path.isdir(plan.U) and not (runs and os.path.abspath(plan.U) == os.path.abspath(runs[0])):
+        runs.append(plan.U)
+    for pth in runs:
+        f = os.path.join(pth, GO_SUMMARY)
+        if not os.path.isfile(f):                      # production: [ -f "$1/combined_view_summary.json" ]
+            continue
+        name = os.path.basename(pth.rstrip('/'))
+        try:
+            batches = json.load(open(f))['batches']
+        except Exception as e:                         # production: the check heredoc fails -> refused
+            return (f'G27 REFUSING: the restore-only check of {name} could not run ({type(e).__name__}: {e}) - nothing served, '
+                    f'servers untouched', f, [], 0)
+        R = os.path.dirname(os.path.abspath(pth))
+        n, bad, used = 0, [], []
+        for x in batches:
+            c = sorted(glob.glob(os.path.join(R, S.SNAPSHOT_VIEW_MEMBER_GLOB.format(tag=x))))
+            if len(c) != 1:
+                bad.append('%s: %d run directories' % (x, len(c)))
+                continue
+            try:
+                ro = 'gate3d_restore_only' in json.load(open(os.path.join(c[0], 'chain_summary.json')))
+            except Exception as e:
+                bad.append('%s: chain summary unreadable (%s)' % (x, e))
+                continue
+            used.append(c[0])
+            if ro:
+                n += 1
+                p = os.path.join(c[0], S.SNAPSHOT_RESTORE_DIFF)
+                try:
+                    st = json.load(open(p)).get('status') if os.path.exists(p) else f'no {S.SNAPSHOT_RESTORE_DIFF}'
+                except Exception as e:
+                    st = f'{S.SNAPSHOT_RESTORE_DIFF} unreadable ({e})'
+                if st != 'PASS':
+                    bad.append('%s: %s' % (x, str(st)[:120]))
+        if bad:
+            return (f'G27 REFUSING: {name}: {"; ".join(bad[:5])} - nothing served, servers untouched', f, used, n)
+        if n:
+            ap = S.SNAPSHOT_RESTORE_ONLY_APPROVED
+            text = _go_text(ap)
+            missing = [m for m in sorted({plan.run_name, name}) if not names_in(text, m)]
+            if missing:
+                return (f"G27 REFUSING: {missing[0]} holds {n} restore-only re-chain runs - Gregg's go on the wave totals is "
+                        f"required first ({ap} naming the view{'' if text else ': absent or empty'}) - nothing served, servers "
+                        f"untouched", f, used, n)
+        return ('', f'{f}: {len(batches)} member runs, {n} restore-only' + (' (every test PASS; the go names the view)' if n
+                                                                              else ''), used, n)
+    return None
+
+
+def go_unit(run, plan):
+    """G27 as a unit when the serve's run holds the Card 2 / re-judging keys or is a combined view (refused or done), None
+    otherwise (no unit)."""
+    S = _S()
+    c2 = card2_rejudge_go(plan)
+    ro = restore_only_go(plan)
+    if c2 is None and ro is None:
+        return None
+    lines, names = [], sorted({plan.run_name} | ({os.path.basename(split_source(plan.source)[1].rstrip('/'))}
+                                                  if plan.source else set()))
+    with run.unit(f'snapshot_{plan.run_name}_go', stage='go', tier='snapshot', source=plan.source) as u:
+        if c2 is not None:
+            why, where = c2
+            u.check('G27_card2_rejudge_go', not why, detail=why or f'{where}: the go names {plan.run_name} '
+                                                                       f'({S.SNAPSHOT_CARD2_REJUDGE_APPROVED})')
+            if why:
+                u.refuse(why)
+            u.note(f'G27: {where} holds Card 2 / re-judging; Gregg\'s go names the view ({S.SNAPSHOT_CARD2_REJUDGE_APPROVED})')
+            u.add_input(S.SNAPSHOT_CARD2_REJUDGE_APPROVED)
+            lines.append(f'card2/rejudge {where}')
+            lines += [f'go {S.SNAPSHOT_CARD2_REJUDGE_APPROVED} names {n}' for n in names]
+        if ro is not None:
+            why, detail, used, n_ro = ro
+            u.check('G27_restore_only_go', not why, detail=why or detail)
+            if why:
+                u.refuse(why)
+            u.note(f'G27: {detail}')
+            for m in used:
+                for fn in ('chain_summary.json', S.SNAPSHOT_RESTORE_DIFF):
+                    if os.path.exists(os.path.join(m, fn)):
+                        u.add_input(os.path.join(m, fn))
+            lines.append(f'restore-only {detail}')
+            if n_ro:
+                u.add_input(S.SNAPSHOT_RESTORE_ONLY_APPROVED)
+                lines += [f'go {S.SNAPSHOT_RESTORE_ONLY_APPROVED} names {n}' for n in names]
+        p = os.path.join(plan.out, '_records', 'serve', 'gates', f'{plan.run_name}_go.txt')
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, 'w') as f:
+            f.write(f'SERVE-GO PASS {plan.run_name} (G27)\n' + ''.join(x + '\n' for x in lines))
+        u.add_output(p, 'serve_go')
+    return u
 
 
 def gate_stage(run, plan):
@@ -209,6 +402,10 @@ def run(args, run, plan, stages):
     # (:46 exit 4), gate on the copy (:48 exit 5), carry (:38 exit 3; the batch driver's HOLD, snapshot_rechain_batch.sh:406)
     # - nothing copied, no server replaced. A recorded no-input (the parity gate on a remote source, localization off) does
     # not stop.
+    # G27 before every stage (snapshot_serve.sh checks it before the gate, the copy or any server; exit 7 there)
+    go = go_unit(run, plan)
+    if go is not None and flow.halts(go, 'go', need_done=True):
+        return
     if 'gate' in stages and flow.halts(gate_stage(run, plan), 'gate'):
         return
     if 'copy' in stages and flow.halts(copy_stage(run, plan), 'copy', need_done=True):
@@ -241,6 +438,13 @@ def describe(plan, stages, args):
     print(f'  chain run (source): {plan.source or "(unset)"}' + ('' if host or (src and os.path.isdir(src)) else
                                                                    '   [ABSENT locally]'))
     print(f'  review copy (DST):  {plan.U}' + ('   [exists]' if plan.U and os.path.isdir(plan.U) else ''))
+    go = card2_rejudge_go(plan)
+    if go is not None:
+        print(f'  G27 Card 2 / re-judging go: {go[1] or plan.source} - ' + (f'WOULD REFUSE ({go[0]})' if go[0] else
+                                                                           'the go names the view'))
+    go = restore_only_go(plan)
+    if go is not None:
+        print(f'  G27 restore-only go: ' + (f'WOULD REFUSE ({go[0]})' if go[0] else go[1]))
     if host is None and src and os.path.isdir(src):
         scan = exclusion_gate.scan_snapshot_run(src)
         print(f'  G17 on the source (core.exclusions, read now): {scan.summary()}' + (' - WOULD REFUSE' if scan.hits else ''))

@@ -31,6 +31,8 @@ and its driver snapshot_batch/comb_build_20261102.sh.
              an identity detection the kept product does not keep, a record off the omit stage's, a panel of an omitted instant
              on a page (V3, its own key) and a page's files not its member batch sources' less the panel drops (V7) - F1;
              snapshot_card2_union a changed line; filter_catalog (per detection) a missing row
+  readers    exopipe_ops 1b9475c: both filter-catalogue stages always pass SNAPCAT_PROCS (serve.SNAPVIEW_FILTERCAT_PROCS,
+             pages_snapshot.FILTERCAT_PROCS: 6, the Lustre rule), never an inherited value; a count not >= 1 refuses (F-G4 / P22)
   m1         F1 proven on the reviewer's mutation M1 (a private copy of this tree whose build links an omitted panel it records as
              dropped): the build's read-back refuses, the view is moved aside (F7), nothing is left under its name
   seed       F10: the localize stage runs snapshot_localize_tiers.sh with PYTHONHASHSEED = serve.SNAPSHOT_FIGURE_HASHSEED
@@ -715,6 +717,7 @@ def test_parity():
     assert {'omission_served.served_counts_add_up', 'omission_rejudged.rejudged_table'} <= \
         {t['name'] for t in recs[f'snapshot_{VIEW}_omit']['tests']}
     assert recs[f'snapshot_{VIEW}_build']['meta']['build']['stale_best'] == 0      # dbc40a6: every row ranked by a kept detection
+    assert recs[f'snapshot_{VIEW}_filtercat']['meta']['filtercat_procs'] == 6    # 1b9475c: SNAPCAT_PROCS, the Lustre rule
     # the omit product is the deep-omission stage's (deep_omission.csv = the view's, byte for byte)
     od = os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW)
     assert filecmp.cmp(os.path.join(od, 'deep_omission.csv'), os.path.join(W['prod'], 'deep_omission.csv'), shallow=False)
@@ -917,6 +920,90 @@ def test_gates():
         CFG.authorize()
     assert u.status == 'refused' and 'G-V5' in u.reason, (u.status, u.reason)
     assert not os.path.exists(plan.U) and flow.halts(u, 'build')
+
+
+def test_filtercat_procs():
+    """exopipe_ops 1b9475c (the parallel filter catalogue: SNAPCAT_PROCS readers, merged in glob order): both filter-catalogue
+    stages ALWAYS pass SNAPCAT_PROCS - the view's serve.SNAPVIEW_FILTERCAT_PROCS, the snapshot pages' pages_snapshot.FILTERCAT_PROCS,
+    6 by default (the Lustre rule; production's default 16) - so an inherited value never reaches the child (SNAPCAT_ is no cleared
+    switch family); a reader count that is not an integer >= 1 refuses before the child runs (F-G4 / P22). The built view's
+    filtercat unit records its count (test_parity)."""
+    import types
+    SV = _SV()
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.serve import scripts
+    from exopipe.phase3.lib.pages import common, mirror, tier_snapshot as TSN
+    assert CFG.serve.SNAPVIEW_FILTERCAT_PROCS == 6 and CFG.pages_snapshot.FILTERCAT_PROCS == 6
+    assert not any('SNAPCAT_'.startswith(x) for x in CFG.runner.CHILD_ENV_CLEAR_PREFIXES)   # so the stages must pass it
+    for bad in (0, -2, 2.5, '6', True, None):
+        try:
+            SV.filtercat_procs(bad)
+        except ValueError as e:
+            assert 'F-G4' in str(e), e
+        else:
+            raise AssertionError(f'reader count {bad!r} accepted')
+    W = shared_world()
+    root = os.path.join(W['root'], 'fcp')
+    shutil.rmtree(root, ignore_errors=True)
+    seen = []
+
+    class Stub:
+        ok, refused, rc, reason, tail = False, True, 2, 'stub child (not run)', ''
+
+    def stub(*a, **kw):
+        seen.append(dict(kw.get('env') or {}))
+        return Stub()
+    real_run, real_lrun, real_gate, real_script = scripts.run, common.lrun, mirror.gate, common.legacy_script
+    old_env = os.environ.get('SNAPCAT_PROCS')
+    os.environ['SNAPCAT_PROCS'] = '64'                 # an inherited value: never the child's
+    scripts.run = stub
+    common.lrun = lambda u, script, args, **kw: stub(**kw)
+    mirror.gate = lambda *a, **kw: None
+    common.legacy_script = lambda roots, name, fn: os.path.join(OPS, fn)
+    try:
+        for n, want in ((6, 'F-G3'), (3, 'F-G3'), (0, 'F-G4')):
+            out = os.path.join(root, f'view_{n}')
+            CFG.authorize(out=out)
+            CFG.set('catalog_snapshot.BATCH_DIR', W['batch_dir'])
+            CFG.set('serve.SNAPVIEW_FILTERCAT_PROCS', str(n))
+            rr = record.Run('serve', ['test'], out, CFG)
+            plan = SV.ViewPlan(types.SimpleNamespace(run_label='Run_SNAPCOMB_FCP', view_runs=','.join(W['runs']), view_omit=None),
+                               out)
+            os.makedirs(plan.U)
+            k = len(seen)
+            u = SV.filtercat_stage(rr, plan)
+            assert u.status == 'refused' and want in u.reason, (n, u.status, u.reason)
+            assert seen[k:] == ([{'SNAPCAT_PROCS': str(n)}] if n else []), (n, seen[k:])
+            assert os.listdir(plan.U) == [], 'the filtercat stage wrote into the view on a refusal'
+            CFG.reset()
+            CFG.authorize()
+        for n, want in ((6, 'P22 filter catalogue failed'), (0, 'P22 F-G4')):
+            out = os.path.join(root, f'pages_{n}')
+            CFG.authorize(out=out)
+            CFG.set('pages_snapshot.FILTERCAT_PROCS', str(n))
+            rr = record.Run('pages', ['test'], out, CFG)
+            c = types.SimpleNamespace(name='Run_SNAPB_FCP', roots={}, store=os.path.join(out, 'fits_store.csv'),
+                                      RUN=os.path.join(out, 'Run_SNAPB_FCP'), W=out)
+            os.makedirs(c.RUN)
+            open(c.store, 'w').write('cand_id\n')
+            k = len(seen)
+            done = {'Run_SNAPB_FCP:build': 'done'}
+            TSN.stage_filtercat(c, rr, done)
+            assert seen[k:] == ([{'SNAPCAT_PROCS': str(n)}] if n else []), (n, seen[k:])
+            assert 'Run_SNAPB_FCP:filtercat' not in done
+            j = json.load(open(record.record_path(out, 'pages', 'Run_SNAPB_FCP:filtercat')))
+            assert j['status'] == 'refused' and want in j['reason'], (n, j['status'], j['reason'])
+            CFG.reset()
+            CFG.authorize()
+    finally:
+        scripts.run, common.lrun, mirror.gate, common.legacy_script = real_run, real_lrun, real_gate, real_script
+        if old_env is None:
+            os.environ.pop('SNAPCAT_PROCS', None)
+        else:
+            os.environ['SNAPCAT_PROCS'] = old_env
+        CFG.reset()
+        CFG.authorize()
 
 
 def _copy_runs(W, name):
@@ -1266,7 +1353,7 @@ def test_ready():
     assert any(n.startswith('VIEW-READY-FOR-HIDES') for n in u.notes), u.notes
 
 
-TESTS = [test_production_pin, test_drift, test_py36, test_parity, test_repoint, test_kept_refusals, test_gates,
+TESTS = [test_production_pin, test_drift, test_py36, test_parity, test_repoint, test_kept_refusals, test_gates, test_filtercat_procs,
          test_incomplete_inputs, test_stale_omit, test_copy_fallback, test_content, test_m1_mutation, test_figure_seed, test_ready]
 
 

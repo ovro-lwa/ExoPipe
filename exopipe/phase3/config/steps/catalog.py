@@ -540,7 +540,12 @@ class catalog_sublst_veto(_Section):
     ELEV_FLOOR_DEG = 30.0                                 # deg, affected side where the Master has >= MASTER_MIN_JY; leak_veto_sublst.py:33 [env:ELEV_FLOOR] (R-LEAKVETO-IN-GATED-PATH, Gregg 2026-09-22)
     ENVELOPE_PCT = 97.0                                   # percentile of reference (frame - Master)/Master; leak_veto_sublst.py:34 [env:ENVELOPE_PCT]
     REF_MIN = 8                                           # references needed, else refuse; leak_veto_sublst.py:35 [env:REF_MIN]
-    MASTER_MIN_JY = 0.5                                   # Jy; leak_veto_sublst.py:36 [env:MASTER_MIN_JY]
+    MASTER_MIN_JY = 0.5                                   # Jy; leak_veto_sublst.py:36 [env:MASTER_MIN_JY]. The elevation rule's floor
+                                                          # is max(MASTER_MIN_JY, MASTER_MIN_JY x F), F = B / FLUXDC of the row's own window
+                                                          # (exopipe_ops 7119fad, R-REFACTOR-20261104-LEAKVETO-FLOOR-RESTORE-ONLY: the ruled
+                                                          # 0.5 Jy on the deep flux scale, never lower - the veto never removes more;
+                                                          # columns window_flux_factor, master_floor_jy). The references' 0.5 Jy (Mref,
+                                                          # MIref) and the wander column's bright test stay un-scaled (a units-audit item)
     REF_PEAK_MIN_JY = 1.0                                 # Jy, reference parents; leak_veto_sublst.py:153 [lit] (inline literal: not bound by the AST check)
     EL_BINS_DEG = ((0, 18), (18, 23), (23, 28), (28, 35), (35, 45), (45, 90))   # leak_veto_sublst.py:38 [lit]
     K_ASTROM = 12                                         # references for the local astrometry column; leak_veto_sublst.py:39 [env:K_ASTROM]
@@ -560,7 +565,8 @@ class catalog_snapshot(_Section):
                       'REPEAT_SKY_RATE_ARCSEC_S', 'CHECKSOURCE_MATCH_ARCMIN', 'ASTROM_FIT_SNR', 'NO_SOURCE_SNR',
                       'REJECT_NO_SOURCE_FIT', 'REJECT_UNCONSTRAINED_FIT', 'CLUSTER', 'GATE3D', 'GATE3D_NTHR', 'LC_CACHE_DEFAULT',
                       'VETO_PROCS_DEFAULT', 'REFASTRO_SHARDS_DEFAULT', 'REF_MAX_SEP_DEG', 'TEST_GATE3D_PCT', 'TEST_MEMBER_ORDER',
-                      'TEST_GHOST_LEAK_DEG', 'PRE_BUNDLE_TIE_MODEL')
+                      'TEST_GHOST_LEAK_DEG', 'PRE_BUNDLE_TIE_MODEL', 'CARD2', 'RESTORED_BY', 'RESTORE_TOL_BEAMS',
+                      'RESTORE_MARKER_KEY')
     # ---- driver (snapshot_rechain_batch.sh). Shared roots: paths.SNAPSHOT_FLEET_OUT (the chain's --proto-root,
     # snapshot_rechain_batch.sh:280), paths.CLV15_ROOT (--samples-dir, phase3_snapshot_chain.py:3329), paths.SNAPSHOT_REVIEW_ROOT
     # (the served run, :56), paths.OPS_ROOT
@@ -638,6 +644,20 @@ class catalog_snapshot(_Section):
     REFASTRO_SHARDS_DEFAULT = 8                           # phase3_snapshot_refastro.py:354
     REF_MAX_SEP_DEG = 10.0                                # phase3_snapshot_refastro.py:47 ("nearby (within 10 degrees)")
     FLOW_MODE = True                                      # P3_SNAP_FIT_RAW unset -> flow-registered frames; :78 [env:P3_SNAP_FIT_RAW]
+    CARD2 = {'ratio': 0.05, 'tiers': ('10s',)}            # CARD 2 PER FRAME in the chain (clv15 1279bd4, Gregg 2026-11-04 "Approved."):
+                                                          # a Stokes V detection of these tiers whose own band's Stokes I Master flux
+                                                          # under it exceeds |V| / ratio is removed after the per-frame fit, before the
+                                                          # tie and the 3-D gate (card2_removed.csv, record stage 'card2', summary
+                                                          # card2); CARD2_RATIO, CARD2_TIERS
+    # THE RESTORE-ONLY 3-D GATE (clv15 b8d1989 + bf7dce8; exopipe_ops fa90670; Gregg 2026-11-04 "Everything as you recommend.",
+    # R-GREGG-20261104-EVERYTHING-AS-RECOMMENDED, for the re-chain wave of the 36 batches): a run whose approval marker holds
+    # <RESTORE_MARKER_KEY>=<table> passes --curve-constants-restore <table> to EVERY chain call (prefit lists, the tie items, the
+    # chain); the chain removes at the 3-D gate only what both tables' passes remove and tags each detection the installed pass
+    # removes and the run keeps with RESTORED_BY (record v5 restored_by; every served detections.csv). A named table that is missing
+    # or empty refuses (P-G21); without the line the chain is unchanged (production's default: no restore table)
+    RESTORE_MARKER_KEY = 'CURVE_CONSTANTS_RESTORE'        # the marker line's key; snapshot_rechain_batch.sh (fa90670) [step]
+    RESTORED_BY = 'restore-only 3-D gate 20261104'        # the tag; RESTORED_BY
+    RESTORE_TOL_BEAMS = 1e-6                              # beams a restore radius may exceed the installed one (else the chain refuses); RESTORE_TOL_BEAMS
     # ---- run content test (snapshot_rechain_content_test.py R1-R7 operating points)
     TEST_GATE3D_PCT = 95.0                                # snapshot_rechain_content_test.py:71
     TEST_MEMBER_ORDER = 'time, subband, Stokes'           # snapshot_rechain_content_test.py:71 (Gregg 2026-10-07 item 23)
@@ -656,7 +676,9 @@ class catalog_snapshot(_Section):
              'EPHEM_DEG': 'RULINGS-GREGG-20261007-STATUS-ANSWERS',
              'GATE3D': 'RULINGS-GREGG-20261007-STATUS-ANSWERS',
              'CHECKSOURCES': 'R-SNAP-CHECKSOURCE-GATE-LPT-AND-PULSAR-IMPLEMENTED',
-             'REJECT_UNCONSTRAINED_FIT': 'RATIFIED-AND-IMPLEMENTED-EVERY-UNCONSTRAINED-FRAME-REMOVED-SNAPSHOT-TIER'}
+             'REJECT_UNCONSTRAINED_FIT': 'RATIFIED-AND-IMPLEMENTED-EVERY-UNCONSTRAINED-FRAME-REMOVED-SNAPSHOT-TIER',
+             'CARD2': 'R-GREGG-20261104-CARD2-PER-FRAME-SNAPSHOT-10S-APPROVED',
+             'RESTORED_BY': 'R-GREGG-20261104-EVERYTHING-AS-RECOMMENDED'}
 
 
 # =====================================================================================================================

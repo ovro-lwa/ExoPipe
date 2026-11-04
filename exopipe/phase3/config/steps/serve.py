@@ -48,6 +48,21 @@ class serve(_Section):
     SUBLST_PREV_SUFFIX = '.prev_{utc}'      # utc = %Y%m%dT%H%M%S; sublst_cumulative.sh:102
     SNAPSHOT_SOURCE = '/fast/gh/main/phase3/snapshot_rechain_{label}/{label}'   # on site CHAIN_HOST; snapshot_rechain_batch.sh:51
     SNAPSHOT_COPY_EXCLUDE = ('tmp_panels', 'tmp_panel_queue')      # snapshot_serve.sh:28
+    SNAPSHOT_CARD2_REJUDGE_APPROVED = '/lustre/gh/main/exopipe_ops/snapshot_batch/SNAPCOMB_CARD2_REJUDGE_SERVE_APPROVED'   # Gregg's go
+                                            # on the counts of a combined view built with Card 2 / re-judging (its summary holds
+                                            # "card2" or "rejudge"): G27 serves such a run only when this file is non-empty and
+                                            # names it (snapshot_serve.sh, exopipe_ops 35aad1a; written by the session that
+                                            # receives his go - his words, the time, the view; 2026-11-04T15:30Z for
+                                            # Run_SNAPCOMB_20261104). The name must stand as a whole token (production: grep, a
+                                            # substring - a marker naming Run_SNAPCOMB_20261104B also passes Run_SNAPCOMB_20261104)
+    SNAPSHOT_RESTORE_ONLY_APPROVED = '/lustre/gh/main/exopipe_ops/snapshot_batch/SNAPCOMB_RESTORE_ONLY_SERVE_APPROVED'   # Gregg's go on
+                                            # the restore-only wave's totals: G27 serves a combined view holding a run that ran the
+                                            # restore-only 3-D gate (its chain_summary.json key gate3d_restore_only) only when every
+                                            # such run's test against the run it replaced passed (SNAPSHOT_RESTORE_DIFF status PASS)
+                                            # and this file names the view (snapshot_serve.sh, exopipe_ops 8ff3fc8; same name rule)
+    SNAPSHOT_RESTORE_DIFF = 'restore_wave_served_diff.json'   # a restore-only run's test result (snapshot_restore_wave_diff.py)
+    SNAPSHOT_VIEW_MEMBER_GLOB = 'Run_SNAP{tag}_2026????'   # a view's member run beside it, per tag of its summary's 'batches'
+                                            # (snapshot_serve.sh 8ff3fc8: exactly one, else refused) [step]
     SNAPSHOT_COPY_MIN_FREE_FACTOR = 1.0     # x source size; free bytes on the review disk before the copy (owed refusal,
                                             # INCIDENT-REVIEW-HOST-DATA07-FULL-SERVE-FAILED-HUB-PAGE-TRUNCATED-RESTORED, ledger 1208)
     HUB_DIR = '/data07/gh/phase3/transients/review_hub'                # build_review_hub.py:24; served at / on both listeners
@@ -399,6 +414,13 @@ class serve(_Section):
                                             # only: build_localizations.py localizes the same identities in N processes)
     SNAPVIEW_BUILD_TIMEOUT_S = 172800       # s, the view build child and the filter catalogue (the 36-batch view of 2026-11-02 took
                                             # 33,492 s; production's driver sets no limit)
+    SNAPVIEW_FILTERCAT_PROCS = 6            # readers of the filter catalogue's detections.csv pass, passed as SNAPCAT_PROCS (exopipe_ops
+                                            # 1b9475c: chunks of the glob order read in a process pool and merged in that order, so
+                                            # the first copy of a key wins as in the serial loop; 1 = serial; fewer than 1000 files
+                                            # are read serially whatever the value). Production's default 16; the refactor's 6 is the
+                                            # Lustre rule (at most 6 readers on Lustre or the review disk). Speed only: the catalogue
+                                            # is byte-identical for every value (production's FILTERCAT-PARALLEL-TEST, 364,909
+                                            # lines on the 3-batch test view) [step]
     SNAPVIEW_TEST_SAMPLE_DIRS = 0           # page directories the snapshot_view content test reads back (0 = every one; N = a
                                             # seeded sample of N for a full view's re-test - the build's own T1-T6 cover all) [step]
 
@@ -449,6 +471,10 @@ class serve(_Section):
         'SNAPSHOT_LOCALIZE': 'R-SNAP-EACH-DETECTION-OWN-FIT-AND-PER-TIER-COMBINED-POSITIONS-IMPLEMENTED',
         # the combined snapshot view: one page per tier and Stokes over every batch (Gregg 2026-10-26 "No! I just mean combine
         # the batches for each tier/polarization into one page."), one tier per page directory (Gregg 2026-10-03)
+        'SNAPSHOT_CARD2_REJUDGE_APPROVED': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',   # "the count of removed
+                                            # sources shown to Gregg before serving" - as a gate (35aad1a)
+        'SNAPSHOT_RESTORE_ONLY_APPROVED': 'R-GREGG-20261104-EVERYTHING-AS-RECOMMENDED',   # "Gregg gets the wave totals of restored
+                                            # and secondary removals before the new view is served" (8ff3fc8)
         'SNAPVIEW_TIERS': 'R-GREGG-20261026-5-LST-REBUILD-AFTER-EVERYTHING-DONE-COMBINED-VIEW-ONE-PAGE-PER-TIER-POLARIZATION',
         'SNAPVIEW_STOKES': 'R-GREGG-20261026-5-LST-REBUILD-AFTER-EVERYTHING-DONE-COMBINED-VIEW-ONE-PAGE-PER-TIER-POLARIZATION',
         'SNAPVIEW_PAGE_SUFFIX': ('SNAP-PAGES-ONE-TIER-PER-PAGE', 'DEFECT-SNAPCOMB-PAGE-DIRS-HOLD-BOTH-TIERS-20261031'),

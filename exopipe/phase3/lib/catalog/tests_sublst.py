@@ -192,8 +192,13 @@ def window_tie_rows(path, **ctx):
 @content_test('leak_veto_table')
 def leak_veto_rows(path, **ctx):
     """leakveto_<L>_<band>_<S>.csv: veto in {'', elevation, leak-envelope}; an elevation veto only on the affected side below
-    the floor, and every clear case (affected side, elevation < floor - 0.1, Master >= MASTER_MIN_JY + 0.001) vetoed;
-    rows = the conformant candidates of that (LST, band, Stokes) in master_catalog.csv (when the run dir is beside it)."""
+    the elevation floor with the Master at or above the row's Master floor, and every clear case (affected side, elevation <
+    floor - 0.1, Master >= the Master floor + 0.001) vetoed; rows = the conformant candidates of that (LST, band, Stokes) in
+    master_catalog.csv (when the run dir is beside it).
+    THE MASTER FLOOR (exopipe_ops 7119fad, R-REFACTOR-20261104-LEAKVETO-FLOOR-RESTORE-ONLY): the ruled 0.5 Jy (MASTER_MIN_JY) on
+    the deep flux scale of the row's own window, restore-only - master_floor_jy = max(MASTER_MIN_JY, MASTER_MIN_JY x
+    window_flux_factor), F = B / FLUXDC of the window (1 without FLUXBAKE); a row whose floor is not that, or lies below
+    MASTER_MIN_JY, fails. A table written before 7119fad (no such columns) is read with the floor MASTER_MIN_JY."""
     from exopipe.phase3.config import CFG
     v = CFG.catalog_sublst_veto
     hdr, rows = _rows(path)
@@ -201,12 +206,22 @@ def leak_veto_rows(path, **ctx):
         return False, 0, 'empty veto table (the module writes one only for a pair with kept candidates)'
     lst, band, st = rows[0]['lst'], rows[0]['band'], rows[0]['stokes']
     badv = [r['cand_id'] for r in rows if r['veto'] not in ('', 'elevation', 'leak-envelope')]
-    bade, miss = [], []
+    scaled = 'master_floor_jy' in hdr or 'window_flux_factor' in hdr
+    bade, miss, badf = [], [], []
     for r in rows:
         el, mj, aff = _float(r['elevation_deg']), _float(r['master_jy']), r['affected_side'] in ('1', 'True')
-        if r['veto'] == 'elevation' and not (aff and el is not None and el <= v.ELEV_FLOOR_DEG + 0.05):
+        floor = v.MASTER_MIN_JY
+        if scaled:
+            fw, fl = _float(r.get('window_flux_factor')), _float(r.get('master_floor_jy'))
+            if fw is None or fl is None or not fw > 0 or fl < v.MASTER_MIN_JY - 0.0005 or \
+                    abs(fl - max(v.MASTER_MIN_JY, v.MASTER_MIN_JY * fw)) > 0.0015:
+                badf.append(r['cand_id'])
+                continue
+            floor = fl
+        if r['veto'] == 'elevation' and not (aff and el is not None and el <= v.ELEV_FLOOR_DEG + 0.05 and mj is not None
+                                             and mj >= floor - 0.001):
             bade.append(r['cand_id'])
-        if aff and el is not None and el < v.ELEV_FLOOR_DEG - 0.1 and mj is not None and mj >= v.MASTER_MIN_JY + 0.001 \
+        if aff and el is not None and el < v.ELEV_FLOOR_DEG - 0.1 and mj is not None and mj >= floor + 0.001 \
                 and r['veto'] != 'elevation':
             miss.append(r['cand_id'])
     other = [r['cand_id'] for r in rows if (r['lst'], r['band'], r['stokes']) != (lst, band, st)]
@@ -218,10 +233,13 @@ def leak_veto_rows(path, **ctx):
         got = {r['cand_id'] for r in rows}
         if want != got:
             nset = f'; rows {len(got)} != conformant candidates {len(want)} ({len(want - got)} missing, {len(got - want)} extra)'
-    ok = not (badv or bade or miss or other or nset)
+    ok = not (badv or bade or miss or other or nset or badf)
     return ok, len(rows), (f'{lst} {band} {st}: {len(rows)} rows, {sum(1 for r in rows if r["veto"])} vetoed; '
                            f'{len(badv)} unknown veto, {len(bade)} elevation vetoes off the rule, {len(miss)} clear cases not '
-                           f'vetoed, {len(other)} rows of another pair{nset}')
+                           f'vetoed, {len(other)} rows of another pair{nset}'
+                           + (f'; {len(badf)} rows whose Master floor is not max({v.MASTER_MIN_JY}, {v.MASTER_MIN_JY} x '
+                              f'window_flux_factor) (e.g. {badf[:3]})' if badf else '')
+                           + ('' if scaled else f' (a table before 7119fad: the floor {v.MASTER_MIN_JY} Jy)'))
 
 
 @content_test('rejected_record')

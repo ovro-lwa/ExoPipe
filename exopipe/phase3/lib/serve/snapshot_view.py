@@ -1,8 +1,8 @@
 """serve --tier snapshot --family comb: THE COMBINED SNAPSHOT VIEW - the snapshot tier's CUMULATIVE step, the counterpart of the
 10-minute cumulative (lib/serve/sublst_build.py). Spec: docs/specs/snapshot_combined_view.md.
 
-Port of exopipe_ops snapshot_combined_view.py (1af2dab 2026-10-21 .. 5b8b8ff 2026-10-31) and of its dated driver
-snapshot_batch/comb_build_20261102.sh (steps 1-4). Production serves the 10-s and 1-minute snapshot pages (p8986-p8989) from ONE
+Port of exopipe_ops snapshot_combined_view.py (1af2dab 2026-10-21 .. 5b8b8ff 2026-10-31; dde1760, dbc40a6 2026-11-04) and of its
+dated drivers snapshot_batch/comb_build_20261102.sh / comb_build_20261104.sh (steps 1-4, the same in both). Production serves the 10-s and 1-minute snapshot pages (p8986-p8989) from ONE
 combined view of every served batch run (36 since 2026-10-26). Why a view, ported as the cumulative step (refactor chat
 2026-11-03): the real-time pipeline appends hours, so a full all-cell re-chain per night does not fit. The rulings: the view
 (R-REFACTOR-20261020-BUILD-COMBINED-SNAPSHOT-VIEW, citing Gregg; Gregg 2026-10-21 "Start the combined build",
@@ -52,7 +52,9 @@ Stages (--stages / --from / --until; default all, in this order); each runs only
              fit stores serve.SNAPVIEW_FIT_STORE> in place (one row per detection: size, axis ratio, A-team distance, n_v_epoch;
              coadd_root.txt), the union of the member batches' card2_filter.csv (first member's comment lines + a view line,
              one header, each body line once in batch order) and FILTER-INPUTS (class filter_catalog: every view detection has
-             its row, none twice). Classes filter_catalog (per_detection), snapshot_card2_union.
+             its row, none twice). Classes filter_catalog (per_detection), snapshot_card2_union. The catalogue's detections.csv
+             pass reads with SNAPCAT_PROCS = serve.SNAPVIEW_FILTERCAT_PROCS processes (exopipe_ops 1b9475c; 6, the Lustre rule;
+             production's default 16; always passed, never inherited; F-G4 a count not >= 1).
   localize   (unit snapshot_<view>_localize) the driver's step 3: snapshot_localize_tiers.sh VIEW in place with
              serve.SNAPVIEW_LOC_ENV and PYTHONHASHSEED = serve.SNAPSHOT_FIGURE_HASHSEED (F10: the figures reproducible;
              lib/serve/snapshot_copy.localize_stage, the batch serve's own stage; G21 LOCALIZE-TIERS-OK).
@@ -68,7 +70,8 @@ a file outside the parity roots); G-V6 a run or the omit product under an inject
 kept product does not apply exactly (a kept row of no served detection, a served detection neither kept nor on an OMIT key, a
 per-tier row the rule does not
 drop or a drop it does not list, a row left unapplied); T1-T6 (production's); F-G1 a member batch without its fit store, F-G2 a
-card2_filter.csv missing or of another header, the filter catalogue script failing; G21 localization; G17 at ready.
+card2_filter.csv missing or of another header, F-G3 the filter catalogue script failing, F-G4 a reader count not >= 1; G21
+localization; G17 at ready.
 V_combview review fixes (2026-11-04): G-V2 runs before ANY stage when omit or build is asked (F2: an existing view's omit product
 is never rewritten); G-V7 a batch run whose per-tier survivors are not exactly the identities its served_tiers.csv serves, or a
 kept per-tier source whose page holds no detection (F4: an incomplete input refuses, never booked as a deep omission); G-V8 the
@@ -1195,7 +1198,13 @@ def filtercat_stage(run, plan):
             u.add_input(s)
         recs = os.path.join(plan.out, '_records', 'serve', 'snapshot_view')
         os.makedirs(recs, exist_ok=True)
-        res = scripts.run('snapshot_filter_catalog', [plan.U] + stores, python=S.SNAPVIEW_PYTHON,
+        try:
+            procs = filtercat_procs(S.SNAPVIEW_FILTERCAT_PROCS)
+        except ValueError as e:
+            u.refuse(str(e))
+        u.meta['filtercat_procs'] = procs
+        # SNAPCAT_PROCS always passed (exopipe_ops 1b9475c; no inherited value reaches the child): the Lustre rule's reader count
+        res = scripts.run('snapshot_filter_catalog', [plan.U] + stores, python=S.SNAPVIEW_PYTHON, env={'SNAPCAT_PROCS': str(procs)},
                           log=os.path.join(recs, f'{plan.run_name}_filtercat.log'), unit=u, timeout=S.SNAPVIEW_BUILD_TIMEOUT_S)
         if not res.ok:
             u.refuse(f'F-G3 snapshot_filter_catalog.py {"refused" if res.refused else "failed"}: {res.reason}')
@@ -1205,6 +1214,14 @@ def filtercat_stage(run, plan):
         u.add_output(os.path.join(plan.U, 'master_catalog.csv'), 'filter_catalog', per_detection=True)
         u.add_output(os.path.join(plan.U, 'card2_filter.csv'), 'snapshot_card2_union', runs=plan.runs)
     return u
+
+
+def filtercat_procs(n):
+    """The filter catalogue's reader count (serve.SNAPVIEW_FILTERCAT_PROCS, pages_snapshot.FILTERCAT_PROCS): an integer >= 1, else
+    F-G4 refuses (production's int(os.environ['SNAPCAT_PROCS']) would raise on a non-integer and run serially below 2)."""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise ValueError(f'F-G4 the filter catalogue reader count must be an integer >= 1, not {n!r}')
+    return n
 
 
 def card2_union(V, runs):
@@ -1317,7 +1334,7 @@ def describe(plan, stages):
     print(f'  build: child under site PYTHON[{S.SNAPVIEW_PYTHON!r}], the chain merge in place ({_legacy_root("clv15")})')
     print(f'  filtercat: snapshot_filter_catalog.py over ' + ', '.join(
         S.SNAPVIEW_FIT_STORE.format(batch_dir=_CFG().catalog_snapshot.BATCH_DIR, run=os.path.basename(r)) for r in plan.runs[:2])
-          + (' ...' if len(plan.runs) > 2 else ''))
+          + (' ...' if len(plan.runs) > 2 else '') + f' (SNAPCAT_PROCS={S.SNAPVIEW_FILTERCAT_PROCS})')
     print(f'  localize: snapshot_localize_tiers.sh with {S.SNAPVIEW_LOC_ENV}')
     return 0
 
