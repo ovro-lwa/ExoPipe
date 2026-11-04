@@ -1599,6 +1599,10 @@ def test_item7_parity_file_keys():
              'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4',             # the 18 MHz carve-out of the search's master check
              'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS',   # the size / axis rule at every S/N (search_detect /
                                                                              # search_sublst SIZE_RULE; production 'production')
+             'R-GREGG-20261026-GROUPING-DESIGN-B-APPROVED-IDENTITY-097-MULTIPLES-085-DEEPV-IDENTITY-ONLY-PREVIEW-THEN-REFACTOR',
+             'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',   # the grouping and the ONE multiples
+                                                                             # rule (catalog_grouping.GROUPING / MULTIPLES_RULE,
+                                                                             # item F.3; production 'production')
              'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'}   # forced W: every v2 control (V2_CTL_DRAW) and the
                                                                              # order-independent controls (CONTROL_ORDER), the
                                                                              # refactor chat under Gregg's delegation

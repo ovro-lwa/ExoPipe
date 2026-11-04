@@ -1688,6 +1688,19 @@ def run_incremental(args, run, epochs=None):
         if not ctx.dry:
             raise Refusal(msg)
         ctx.say(f'GATE would refuse: {msg}')
+    from exopipe.phase3.lib.catalog import grouping_stage as _GS      # WAVE2 GROUPING (item F.3): the replay runs production's
+    try:                                                             # builder and multiples fork in place - production's
+        _gm = _GS.mode()                                             # grouping and its two multiples chains
+    except _GS.StageRefusal as e:
+        raise Refusal(str(e))
+    if _gm.design_b:
+        msg = ("catalog --incremental replays production's builder association and multiples fork: it runs only under "
+               "catalog_grouping.GROUPING = MULTIPLES_RULE = 'production' (now %r, %r) - design B has no incremental replay yet "
+               "(the grouping module's own incremental mode serves the full chain's stage group): run the full chain, or set "
+               "both under the ruling ID" % (_gm.grouping, _gm.rule))
+        if not ctx.dry:
+            raise Refusal(msg)
+        ctx.say(f'GATE would refuse: {msg}')
     leaks = env_leaks()
     if leaks:
         msg = (f'the environment carries {", ".join(leaks)}: in-place stages would read them (core.legacy.run clears only '

@@ -162,6 +162,9 @@ wcsv(f'{U}/frame_times.csv', ['stokes', 'lst', 'band', 'date', 'date_obs', 'date
      [dict(stokes=s, lst=l, band=b, date=d, date_obs=d + 'T12:00:00.000', date_end=d + 'T13:00:00.000') for s, l, b, d in keys])
 wcsv(f'{U}/frame_beam_ratio.csv', ['stokes', 'lst', 'band', 'date', 'ratio'],
      [dict(stokes=s, lst=l, band=b, date=d, ratio='1.2') for s, l, b, d in keys])
+# the frames' beams (production's D8 cache, ops 283a513): the grouping stage reads them (item F.3)
+wcsv(f'{U}/frame_beam_bmaj.csv', ['stokes', 'lst', 'band', 'date', 'bmaj_deg'],
+     [dict(stokes=s, lst=l, band=b, date=d, bmaj_deg='0.15' if 'MHz' in b else '0.25') for s, l, b, d in keys])
 print(f'conform: {len(raw)} raw -> {len(out)} conformant | removed: {len(rem)}')
 ''',
     'deep_fit_positions.py': r'''
@@ -277,6 +280,10 @@ wcsv(f'{OUT}/localization_offsets.csv', ['cand_id', 'identity_id', 'sep_arcsec',
 print(f'{len(irows)} identities localized (0 without detections), {len(drows)} detection offsets')
 ''',
 }
+# a stub builder carrying production's patch points (tests/grouping_stub_builder.py): design B in the chain runs the
+# grouping runner on it (test_grouping_design_b_in_the_chain)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from grouping_stub_builder import PATCHABLE_BUILDER   # noqa: E402
 REAL = ('p3s3_sources.py', 'p3s3_merge.py', 'select_v3.py', 'p3s2_ephem_filter.py', 'p3s3_identity.py',
         'p3s2_transient_list.py')
 
@@ -397,7 +404,8 @@ def make_world():
 # ---------------------------------------------------------------------------------------------------------------------
 _SAVED = {}
 _PATCH = (('site', 'LEGACY_CODE_ROOTS'), ('site', 'PYTHON'), ('catalog', 'COLLECT_ROOTS'), ('catalog', 'BINDING_CHECK'),
-          ('paths', 'COADD_SB_ROOT'), ('paths', 'OPS_ROOT'), ('catalog_conform', 'MODE'), ('catalog_conform', 'DEEP_ELEV_EPOCH'))
+          ('paths', 'COADD_SB_ROOT'), ('paths', 'OPS_ROOT'), ('catalog_conform', 'MODE'), ('catalog_conform', 'DEEP_ELEV_EPOCH'),
+          ('catalog_grouping', 'GROUPING'), ('catalog_grouping', 'MULTIPLES_RULE'), ('catalog_grouping', 'BUILDER_SHA1'))
 
 
 def patch_cfg():
@@ -415,7 +423,22 @@ def patch_cfg():
     # pulsar stage (catalog_conform.MODE 'check', B-02 steps 2 and 4) are tested in tests/test_conform_check.py and below
     CFG.catalog_conform.MODE = getattr(sys.modules[__name__], '_MODE', 'remove')
     CFG.catalog_conform.DEEP_ELEV_EPOCH = getattr(sys.modules[__name__], '_EPOCH', 'mid-hour')
+    # production's grouping and its two multiples chains, as the parity file runs them (the stub builder carries none of the
+    # grouping runner's patch points; design B in the chain: test_grouping_design_b_in_the_chain)
+    CFG.catalog_grouping.GROUPING = getattr(sys.modules[__name__], '_GROUPING', 'production')
+    CFG.catalog_grouping.MULTIPLES_RULE = getattr(sys.modules[__name__], '_MRULE', 'production')
+    # the grouping runner's builder pin (review 2026-11-04 F7) also accepts the stub builder carrying the patch points
+    CFG.catalog_grouping.BUILDER_SHA1 = tuple(_SAVED[('catalog_grouping', 'BUILDER_SHA1')]) + (_stub_builder_sha1(),)
     return CFG
+
+
+def _stub_builder_sha1():
+    import importlib.util
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    spec = importlib.util.spec_from_file_location('bg', GS.builder_runner())
+    bg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bg)
+    return bg.normalized_sha1(f'{T}/exopipe_ops/build_source_catalogs_v3.py', PATCHABLE_BUILDER.lstrip())
 
 
 def unpatch_cfg():
@@ -568,6 +591,111 @@ def test_chain_to_fork_then_union_to_list():
     assert len({r['identity_id'] for r in a}) == 1 and len(a) >= 6, [(r['source_id'], r['identity_id']) for r in a]
     lst = os.path.realpath(f'{U}/TRANSIENT_LIST_{LABEL}_latest.csv')
     assert os.path.exists(lst) and 'tier' in rows_after_header(lst)[0]
+
+
+def test_grouping_design_b_in_the_chain():
+    """Item F.3 under the RULED default (design B + the one multiples rule): the group stage groups each Stokes of the fitted
+    catalogue (no state: refused until --group-new-state), the builder runs IN PLACE through the grouping runner with the
+    grouping's identities (source_id = the identity's display name, the multiples link columns), the deep fork ends no-input,
+    and union..list run on the design-B catalogues; a second pass carries every ID."""
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    m = sys.modules[__name__]
+    make_world()
+    open(f'{T}/exopipe_ops/build_source_catalogs_v3.py', 'w').write(PATCHABLE_BUILDER.lstrip())
+    # a previous production pass's fork page products (the pages step wrote them; review 2026-11-04 F6): the one rule's fork
+    # stage moves them aside, so serve's multiples queue refuses instead of rebuilding a stale page
+    stale = [f'{U}/judgements/queue_p3s3_V_fwb_raw.txt', f'{U}/source_catalogs/pages_input_V_fsb.csv',
+             f'{U}/source_catalogs/Red_pages_index_I_fwb.csv']
+    for p_ in stale:
+        os.makedirs(os.path.dirname(p_), exist_ok=True)
+        open(p_, 'w').write('stale\n')
+    # the grouping maps positions to the common frame through production's astrom_frame, in place (read-only: the real module
+    # and its frozen inputs, loaded by the stub root's name)
+    open(f'{T}/exopipe_ops/astrom_frame.py', 'w').write(
+        f"import sys as _s\n_s.path.append({REAL_OPS!r})\n_R = {REAL_OPS + '/astrom_frame.py'!r}\n"
+        f"exec(compile(open(_R).read(), _R, 'exec'), globals())\n")
+    m._GROUPING, m._MRULE = 'design-b', 'one-rule'
+    try:
+        rc, err = cli('--until', 'group', expect=2)
+        r = rec(f'{LABEL}.group.V')
+        assert r and r['status'] == 'refused' and 'D-G24' in r['reason'] and 'new=True' in r['reason'], (r and r['reason'])
+        assert not os.path.exists(f'{U}/_grouping_state/grouping_deep_V_state.json')
+        rc, err = cli('--from', 'group', '--until', 'fork', '--group-new-state', expect=0)
+        for S in ('V', 'I'):
+            r = rec(f'{LABEL}.group.{S}')
+            assert r['status'] == 'done', (S, r['reason'])
+            assert not [t for t in r['tests'] if not t['passed']], [t for t in r['tests'] if not t['passed']][:3]
+            assert {t['name'].split('.')[-1] for t in r['tests']} >= {'grouping_table', 'grouping_state'}, r['tests']
+            f = rec(f'{LABEL}.fork.{S}')
+            assert f['status'] == 'no-input' and 'one-rule' in f['reason'], (S, f['status'], f['reason'])
+            assert not glob.glob(f'{U}/source_catalogs_{S}_f*')
+            moved = f['meta'].get('fork_page_products_moved') or []
+            assert sorted(moved) == sorted(p_ for p_ in stale if f'_{S}_f' in p_), (S, moved)
+        assert not any(os.path.exists(p_) for p_ in stale), [p_ for p_ in stale if os.path.exists(p_)]
+        for S in ('V', 'I'):
+            T_ = {x['cand_id']: x for x in rows(f'{U}/grouping_{S}/detections.csv')}
+            assert len(T_) == sum(1 for x in rows(f'{U}/master_catalog.csv') if x['stokes'] == S)
+            for t in ('wb', 'sb'):
+                a = rec(f'{LABEL}.associate.{S}_{t}')
+                assert a['status'] == 'done', (S, t, a['reason'])
+                line = ' '.join(a['meta'].get('grouping_builder') or [])
+                assert 'GROUPING-BUILDER done' in line and 'mode design-b' in line, line
+                for p in glob.glob(f'{U}/source_catalogs_{S}_{t}/*_source_members.csv'):
+                    for mr in rows(p):
+                        assert mr['source_id'] == T_[mr['cand_id']]['identity_name'], (mr['source_id'], T_[mr['cand_id']])
+                for p in glob.glob(f'{U}/source_catalogs_{S}_{t}/*_sources_survivors.csv'):
+                    rr = rows(p)
+                    assert rr and set(GS.SOURCE_COLS) <= set(rr[0]), (p, list(rr[0]) if rr else None)
+                    for x in rr:
+                        e = T_[x['best_cand_id']]
+                        assert x['source_id'] == x['identity_id'] == e['identity_name'], x
+                        assert (x['group_identity_id'], x['multiples_id'], x['multiple']) == \
+                            (e['identity_id'], e['multiples_id'], e['multiple']), (x, e)
+                        assert x['multi_integration'] == e['multiple'], x
+        # downstream on the design-B catalogues: a forced record, then union..list as production runs them
+        for p in glob.glob(f'{U}/source_catalogs_*/*_sources_survivors.csv'):
+            rr = rows(p)
+            write_csv(p, (list(rr[0].keys()) if rr else ['source_id']) + ['forced_jy'], [dict(r_, forced_jy='1.0') for r_ in rr])
+        time.sleep(1.1)
+        os.makedirs(f'{U}/_records/forced', exist_ok=True)
+        json.dump({'status': 'done', 'finished': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'unit': LABEL},
+                  open(f'{U}/_records/forced/{LABEL}.json', 'w'))
+        rc, err = cli('--from', 'union', expect=0)
+        for unit in ('union', 'identity', 'localize', 'list'):
+            r = rec(f'{LABEL}.{unit}')
+            assert r['status'] == 'done', (unit, r['reason'])
+            assert not [t for t in r['tests'] if not t['passed']], (unit, [t for t in r['tests'] if not t['passed']][:3])
+        # the identity stage under design B: the grouping's identity per Stokes, written into every tier file and the union
+        # (p3s3_identity.py's single linkage is not run), checked by the identity_table content test against the grouping
+        r = rec(f'{LABEL}.identity')
+        assert r['meta'].get('identity_design_b') and not any('p3s3_identity' in ' '.join(c.get('argv') or [])
+                                                              for c in r['meta'].get('legacy_calls', [])), r['meta']
+        assert any(t['name'].endswith('identity_table.identity_columns') and 'design-B identity' in (t.get('detail') or '')
+                   for t in r['tests']), [t['name'] for t in r['tests']][:5]
+        for S in ('V', 'I'):
+            T_ = {x['cand_id']: x for x in rows(f'{U}/grouping_{S}/detections.csv')}
+            tiers = {}
+            for t in ('wb', 'sb'):
+                for p in glob.glob(f'{U}/source_catalogs_{S}_{t}/*_sources_survivors.csv'):
+                    for x in rows(p):
+                        assert x['identity_id'] == T_[x['best_cand_id']]['identity_name'], x
+                        tiers.setdefault(x['identity_id'], set()).add(f'{S}_{t}')
+            for p in glob.glob(f'{U}/source_catalogs_{S}_[ws]b/*_sources_survivors.csv'):
+                for x in rows(p):
+                    assert x['identity_tiers'] == '+'.join(sorted(tiers[x['identity_id']])), x
+        u_rows = rows(f'{U}/source_catalogs/Full_sources_survivors.csv')
+        assert u_rows and all(x['identity_tiers'] for x in u_rows)
+        # a second pass over the same detections: every identity and multiples ID carried, no ID event
+        ids0 = {S: {x['cand_id']: (x['identity_id'], x['multiples_id']) for x in rows(f'{U}/grouping_{S}/detections.csv')}
+                for S in ('V', 'I')}
+        rc, err = cli('--from', 'group', '--until', 'associate', expect=0)
+        for S in ('V', 'I'):
+            ids1 = {x['cand_id']: (x['identity_id'], x['multiples_id']) for x in rows(f'{U}/grouping_{S}/detections.csv')}
+            assert ids1 == ids0[S], S
+            ev = [json.loads(l) for l in open(f'{U}/grouping_{S}/events.jsonl')]
+            assert [e['event'] for e in ev] == ['run'], ev[:3]
+    finally:
+        m._GROUPING, m._MRULE = 'production', 'production'
 
 
 def rows_after_header(p):
@@ -1091,7 +1219,7 @@ ORDER = ['test_help_and_dry_run', 'test_preflight_refuses_missing_parent', 'test
          'test_merge_refresh_replaces_a_changed_attempt', 'test_merge_refusal_record_keeps_extraction_rows',
          'test_size_rule_in_the_chain', 'test_b30_identity_pre_check',
          'test_b30_ephem_pre_check', 'test_b02_check_mode_in_the_chain', 'test_b02_check_chain_to_conform',
-         'test_binding_against_production_and_a_mismatch',
+         'test_binding_against_production_and_a_mismatch', 'test_grouping_design_b_in_the_chain',
          'test_ported_heredocs_match_production_bytes', 'test_content_tests_catch_defects', 'test_compileall']
 
 

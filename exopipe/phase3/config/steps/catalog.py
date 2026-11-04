@@ -74,9 +74,11 @@ class catalog(_Section):
     BAND_CLASS = {'Red': ('18MHz', '23MHz', '27MHz', '32MHz', '36MHz'), 'Green': ('41MHz', '46MHz', '50MHz', '55MHz', '59MHz'),
                   'Blue': ('64MHz', '69MHz', '73MHz', '78MHz', '82MHz')}   # ops/p3s2_conform.py:25-26, select_v3.py:21-24, p3s2_ephem_filter.py:13-14 [lit] (Gregg 2026-10-07 Q14)
     # ---- deep chain orchestration (the step's own code; no product value)
-    DEEP_STAGES = ('preflight', 'harvest', 'merge', 'pulsars', 'conform', 'fitpos', 'select', 'associate', 'fork', 'union',
-                   'identity', 'localize', 'list')        # pipeline order (spec 1.2); ops/p3s3_pass.sh:38-136 + fork_serve_p3s5_20261008.sh:20-30 [step];
-                                                          # 'pulsars' = B-02 step 4 (catalog_conform.MODE 'check' only; no-input under 'remove')
+    DEEP_STAGES = ('preflight', 'harvest', 'merge', 'pulsars', 'conform', 'fitpos', 'select', 'group', 'associate', 'fork',
+                   'union', 'identity', 'localize', 'list')   # pipeline order (spec 1.2); ops/p3s3_pass.sh:38-136 + fork_serve_p3s5_20261008.sh:20-30 [step];
+                                                          # 'pulsars' = B-02 step 4 (catalog_conform.MODE 'check' only; no-input under 'remove');
+                                                          # 'group' = item F.3, design B before the builder (no-input under catalog_grouping.GROUPING
+                                                          # 'production'); 'fork' no-input under MULTIPLES_RULE 'one-rule'
     DEEP_DEFAULT_UNTIL = 'fork'                           # a plain deep run stops after the fork: `exopipe3 forced` writes forced_* into the tier survivors in place (ops/p3s3_forced_phot.py:70-89) before union..list (`--from union`) [step]
     DEEP_ASSOC_KEYS = ('V_wb', 'I_wb', 'V_sb', 'I_sb')    # build order of the four primary catalogues; ops/p3s3_pass.sh:77 [step]
     DEEP_ASSOC_WORKERS = 1                                # associate keys built at a time (1 = today, serial: ops/p3s3_pass.sh:77-83); speed-up 11.1 (pure) allows 4 - memory of one build not measured [step]
@@ -674,7 +676,62 @@ _GROUPING_RULING = 'R-GREGG-20261026-GROUPING-DESIGN-B-APPROVED-IDENTITY-097-MUL
 
 
 class catalog_grouping(_Section):
-    """source grouping design B: identities, the nested multiples level, stable identity IDs (lib/catalog/grouping.py)."""
+    """source grouping design B: identities, the nested multiples level, stable identity IDs (lib/catalog/grouping.py); where
+    the catalog step groups and how the multiplicity gates read it (lib/catalog/grouping_stage.py, item F.3)."""
+    # ---- the catalog step's wiring (item F.3, 2026-11-03; lib/catalog/grouping_stage.py). WAVE2 GROUPING: production's values
+    #      are in parity/production_20261013.cfg, so a parity run reproduces production; the two keys must agree (refused)
+    GROUPING = 'design-b'                                 # 'design-b' (RULED 10-26): the catalog step groups every detection of a tier and
+                                                          # Stokes ONCE, before every multiplicity-dependent gate - deep: stage 'group'
+                                                          # after the selection, on the fitted conformant catalogue; 10-minute: `catalog
+                                                          # --tier sublst --stages group` on the cumulative's detections, read by every
+                                                          # LST's build. The builder then forms its sources from the grouping's
+                                                          # identities (one row per (identity, band); source_id = the identity's display
+                                                          # name; lib/catalog/wraps/builder_grouping.py). 'production' = production's
+                                                          # grouping: the builder's per-band association (build_source_catalogs_v3.py
+                                                          # assoc_groups) + its cross-band identity merge, per LST on the 10-minute tier
+                                                          # and joined across LSTs by J-name string (sublst_cumulative.py) - the parity file
+    MULTIPLES_RULE = 'one-rule'                           # 'one-rule' (RULED 10-27 with the 10-26 design; NO multiples tables on any tier,
+                                                          # R-REFACTOR-20261104-NO-MULTIPLES-TABLES-ANY-TIER): ONE multiples rule on every
+                                                          # tier - a detection is a MULTIPLE when its multiples-level group holds
+                                                          # MULTIPLE_MIN windows (10-minute) / nights (deep); its members skip the three
+                                                          # multiplicity gates of the builder (the sigma-stack singleton gate, the 7-8
+                                                          # sigma size gate of unpromoted singles, the 7-sigma floor of unpromoted
+                                                          # sources), singles keep every gate; production's deep multiples fork
+                                                          # (multiples_fork.py: its own multiples tables, the Stokes I 5-7 sigma members)
+                                                          # is not run ("e.g. dropping <7-sigma is fine"). 'production' = production's
+                                                          # two chains: the 10-minute builder's inline exemption (a band's source with
+                                                          # detections in two or more (LST, date) frames skips the sigma-stack gate) and
+                                                          # the deep fork - the parity file
+    REPEAT_RUNGS = 'multiples-level'                      # DECIDED by the refactor chat under Gregg's 2026-10-16 delegation
+                                                          # (R-REFACTOR-20261104-REPEAT-RUNGS-MULTIPLES-LEVEL; R-GREGG-20261016-REFACTOR-
+                                                          # DECIDES-BY-GOALS): under the one rule, the builder's REPEAT promotion rungs
+                                                          # (RPT, REP, XREP: a source row's own n_det >= 2 repeats) promote only a member of
+                                                          # a multiple - two detections in one image are not a repeat (the 10-26 decision
+                                                          # page: "The multiples level decides which detections count as repeats and skip
+                                                          # the singles gates"); a single-window identity keeps the other rungs
+                                                          # (E:<sample>, PRIORITY, MB). What it decides is small: a design-B row is
+                                                          # (identity, band), so a repeat rung of a single needs two detections of one band
+                                                          # in one window - one image; on today's data at most 2 deep V and 32 10-minute V
+                                                          # detections (the 11-04 review's a1_repeat_rungs). 'production' = the rungs as the
+                                                          # builder computes them on its own sources (not a parity line: under
+                                                          # MULTIPLES_RULE 'production' the builder runs unpatched)
+    BUILDER_SHA1 = ('de1fa48aec620c310c14d3b740692bba98ed5e35',   # the frozen 10-minute trees 2026-10-13..10-18 (25)
+                    '537f779ba70f58d2c1dcf4bec47371a17bae207b',   # 2026-10-19..10-25 (51; the per-detection record, ops 6c58469)
+                    '2a12c39a57ff3df502021e4ddcfdac26c801ef02',   # 03h / 05h 2026-10-13 (3)
+                    '6e61376611f124ca4183d416d2ce4de378a3771c',   # 05h / 06h / 14h 2026-10-12..13 (3)
+                    'ab052310e2eafb0d5c13af7bd94beafd289a3064',   # 09h..19h 2026-10-12 (14)
+                    '44d2763087cdde27c5286d33dfcb0f25d18427af')   # live exopipe_ops 0d7861e (RA across 0h; 18h / 21h 11-02 trees)
+                                                          # the builders (build_source_catalogs_v3.py) the grouping runner's patches were
+                                                          # written and checked for, as PATH-NORMALIZED sha1s (a frozen tree's own root
+                                                          # replaced by /lustre/gh/main, its rewrites undone): any other builder REFUSES
+                                                          # until lib/catalog/wraps/builder_grouping.py is re-ported (review 2026-11-04 F7:
+                                                          # a new multiplicity-dependent decision elsewhere would run unpatched)
+    SUBLST_DIR = '{transients_root}/grouping_sublst'      # the 10-minute tier's grouping (products + the persistent state): written by
+                                                          # `catalog --tier sublst --stages group`, read by every LST's build stage and the
+                                                          # cumulative build ({transients_root} = paths.TRANSIENTS_ROOT; --out of the stage
+                                                          # or --sublst-grouping DIR elsewhere)
+    STATE_SUBDIR = '_grouping_state'                      # deep: the persistent grouping state under the run directory (never moved
+                                                          # aside by a pass: stable IDs are carried from pass to pass)
     # ---- operating points (ruled 2026-10-26)
     P_IDENTITY = 0.97                                     # posterior an assignment / merge needs at the identity level; B:506, :611
     U_CAP = 4.0                                           # sigma, uniform Mahalanobis cap against the leave-one-out mean (both levels); B:506
@@ -754,6 +811,13 @@ class catalog_grouping(_Section):
         'POOLED_PRIOR', 'GROUP_SEEDING', 'GROUP_U_LINK', 'GROUP_MAX_K', 'MERGE_RADIUS_DEG', 'MULTIPLES_MAX_ROUNDS', 'FRAME_DEC_DEG',
         'CDELT_DEG', 'ELEVATION_GAMMA', 'ELEVATION_FLOOR_DEG', 'DEEP_STAT_SCALE', 'DEEP_SYS_SCALE')}
     RULED['MULTIPLE_MIN'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING)
+    RULED['GROUPING'] = _GROUPING_RULING
+    RULED['MULTIPLES_RULE'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING,
+                               'R-REFACTOR-20261104-NO-MULTIPLES-TABLES-ANY-TIER')   # the one rule as no multiples tables (refactor
+                                                                                     # chat, 2026-10-16 delegation)
+    RULED['REPEAT_RUNGS'] = 'R-REFACTOR-20261104-REPEAT-RUNGS-MULTIPLES-LEVEL'       # the refactor chat, 2026-10-16 delegation
+    PROTECTED_KEYS = ('STATE_SUBDIR',                     # where the stable IDs live: moving it would restart every ID
+                      'BUILDER_SHA1')                     # a pin: changes only by a commit, with the patches re-checked
 
 
 # =====================================================================================================================

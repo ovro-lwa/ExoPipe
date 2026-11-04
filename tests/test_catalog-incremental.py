@@ -461,16 +461,23 @@ def test_real_engine_batches(ns):
 
 
 class production_conform:
-    """catalog_conform.MODE 'remove' with DEEP_ELEV_EPOCH 'mid-hour' (as the parity file) for the block: the replay runs
-    production's p3s2_conform.py and refuses any other mode (B-02 steps 2 and 4 have no incremental path yet)."""
+    """catalog_conform.MODE 'remove' with DEEP_ELEV_EPOCH 'mid-hour' and catalog_grouping.GROUPING = MULTIPLES_RULE =
+    'production' (as the parity file) for the block: the replay runs production's p3s2_conform.py, builder and multiples fork
+    and refuses any other mode (B-02 steps 2 and 4 and the design-B grouping, item F.3, have no incremental path yet).
+    grouping=False keeps the configured grouping (the test of its own refusal)."""
+    def __init__(self, grouping=True):
+        self.grouping = grouping
+
     def __enter__(self):
         from exopipe.phase3.config import CFG
-        self.c = CFG.catalog_conform
-        self.keep = (self.c.MODE, self.c.DEEP_ELEV_EPOCH)
+        self.c, self.g = CFG.catalog_conform, CFG.catalog_grouping
+        self.keep = (self.c.MODE, self.c.DEEP_ELEV_EPOCH, self.g.GROUPING, self.g.MULTIPLES_RULE)
         self.c.MODE, self.c.DEEP_ELEV_EPOCH = 'remove', 'mid-hour'
+        if self.grouping:
+            self.g.GROUPING, self.g.MULTIPLES_RULE = 'production', 'production'
 
     def __exit__(self, *a):
-        self.c.MODE, self.c.DEEP_ELEV_EPOCH = self.keep
+        self.c.MODE, self.c.DEEP_ELEV_EPOCH, self.g.GROUPING, self.g.MULTIPLES_RULE = self.keep
 
 
 def test_real_dry_run():
@@ -591,6 +598,16 @@ def test_epoch_phase_end_to_end():
         got = str(e)
     ok("B-02: the incremental replay refuses under the ruled catalog_conform.MODE 'check' (it replays production's conform)",
        "MODE='remove'" in got and not os.path.exists(os.path.join(out, '_incremental')), got[:300])
+    run = record.Run('catalog', ['test'], out, CFG)      # item F.3: under the ruled design-B grouping the replay refuses too
+    try:
+        with production_conform(grouping=False):
+            I.run_incremental(args, run)
+        got = 'ran'
+    except record.Refusal as e:
+        got = str(e)
+    ok("F.3: the incremental replay refuses under the ruled catalog_grouping.GROUPING 'design-b' (it replays production's "
+       "builder and multiples fork)", 'catalog_grouping.GROUPING' in got and not os.path.exists(os.path.join(out, '_incremental')),
+       got[:300])
     for attempt in range(2):
         run = record.Run('catalog', ['test'], out, CFG)
         with production_conform():
