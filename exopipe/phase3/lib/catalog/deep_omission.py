@@ -54,7 +54,9 @@ Products (in the stage's output directory --out; production names): deep_omissio
 decision, production's columns and formats - byte for byte), deep_omission_dropped.csv (class omission_record: every omitted
 detection and every consequence, with the decision text of its own key, column 'why'; 10-s / 1-minute: the combined view's
 record columns + why; 10-minute: the merge drop's), deep_omission_summary.txt (line 1 = the page line) and .json (counts);
-10-s / 1-minute also deep_omission_kept.csv (class omission_kept, KEPT_COLS: what the cumulative step applies, every row with
+10-s / 1-minute also deep_omission_served.csv (class omission_served: the served counts per (LST, night, band, Stokes, tier) the
+decisions were made with - the build re-decides with them to show its decisions current, V_combview review F5) and
+deep_omission_kept.csv (class omission_kept, KEPT_COLS: what the cumulative step applies, every row with
 the served run and the catalogue file it acts on - 'detection kept' (each kept detection of each kept identity: the merge's
 input), 'source dropped', 'source re-pointed' (fields: the survivors row's new values, JSON), 'member row dropped', 'panel
 dropped'; its content test traces every row to the decisions, the record and the summary, refuses a detection key kept twice,
@@ -66,7 +68,10 @@ window tables, served tables - as content digests in meta input_digests). --omit
 catalog_omission.REFUSALS through the config (as --set: --ruling-for or a non-production --out; recorded), Q review F8.
 
 Gates (refuse, exit 2): G1 the refusal record missing, empty or holding a row not of its file's LST, or (an ordinary run) lying
-under an injected run's start record, however it was named (Q fix verification N1); G2 a served run without its
+under an injected run's start record, however it was named (Q fix verification N1); G4b a batch run whose per-tier survivors do
+not hold exactly the identities its served_tiers.csv serves in each tier, or without that file; G4c a kept per-tier source whose
+page holds no detection (detections.csv missing or empty: an incomplete batch run, never booked as a deep omission) (both
+V_combview review F4); G2 a served run without its
 catalogue (or a 10-minute LST run without its master_catalog.csv); G3 a served identity without detections, or a detection in
 two identities; G4 a per-tier source or member row of no served identity; G5 kept + omitted != served; G6 served detections in
 an ABSENT key (catalog_omission.ABSENT_WITH_SERVED = 'refuse', the refactor's PROPOSED value pending Gregg: the exception test
@@ -936,6 +941,10 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
                     refuse(f'G4: {tag} {cdir} source {row["source_id"]} of identity {row["identity_id"]} is in no served identity')
                 src = os.path.join(r, row['review_dir'])
                 ad = reader.rows(os.path.join(src, 'detections.csv'), 'served_detections')
+                if not ad:      # G4c (V_combview review F4): an incomplete input is never booked as a deep omission
+                    refuse(f'G4c: {tag} {cdir} source {row["source_id"]}: its page {row["review_dir"]} holds no detection '
+                           f'(detections.csv missing or empty) - an incomplete batch run; production would record it as "every '
+                           f'detection omitted" by the deep rule')
                 kd = [d for d in ad if okey(d) not in OM]
                 if not kd:
                     rec.append(dict(kind='source dropped', batch=tag, identity=row['identity_id'], source=row['source_id'],
@@ -992,7 +1001,64 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
                 continue
             if mm is None or mm.group(1) not in ids[r]:
                 refuse(f'G4: {tag} {cdir} member source {row["source_id"]} is in no served identity')
+    complete_batch_runs(runs, cats, reader)   # G4b (V_combview review F4), after G4 / G4c: a stray source names its own gate
     return rec, repoint, drops
+
+
+SERVED_TIERS = 'served_tiers.csv'          # a batch run's per-tier serving table (the chain's phase3_snapshot_tierserve)
+
+
+def served_tiers(run, reader):
+    """{tier: {identity}} that the batch run's served_tiers.csv serves in each tier (chain_outcome 'served', qualifies 1), or
+    None without the file."""
+    t = reader.text(os.path.join(run, SERVED_TIERS), 'served_catalogs', missing_ok=True)
+    if t is None:
+        return None
+    out = collections.defaultdict(set)
+    for r in csv.DictReader(io.StringIO(t, newline='')):
+        if r.get('chain_outcome') == 'served' and str(r.get('qualifies')) == '1':
+            out[r['tier']].add(r['identity_jname'])
+    return out
+
+
+def complete_batch_runs(runs, cats, reader):
+    """G4b (V_combview review F4): each batch run's per-tier survivors hold exactly the identities its served_tiers.csv serves in
+    that tier - so a per-tier catalogue lost or cut short (an interrupted copy, a re-serve that stopped halfway) refuses instead of
+    a source vanishing from the view unrecorded. Held exactly on all 36 batches of Run_SNAPCOMB_20261102 (2026-11-04).
+    ``cats``: per_tier_snapshot's (S, T, cdir, run, kind, band, rows)."""
+    for r in runs:
+        st = served_tiers(r, reader)
+        if st is None:
+            refuse(f'G4b: {batch_tag(r)} has no {SERVED_TIERS}: its per-tier catalogues cannot be shown complete')
+        for T in _c().SNAPSHOT_TIERS:
+            have = {row['identity_id'] for S, T2, cdir, r2, kind, band, rows in cats if r2 == r and T2 == T and kind == 'sources'
+                    for row in rows}
+            want = st.get(T, set())
+            if have != want:
+                refuse(f'G4b: {batch_tag(r)} tier {T}: its per-tier survivors hold {len(have - want)} identities {SERVED_TIERS} does '
+                       f'not serve (e.g. {sorted(have - want)[:2]}) and lack {len(want - have)} it serves (e.g. '
+                       f'{sorted(want - have)[:2]}) - an incomplete or inconsistent batch run')
+
+
+SERVED_COLS = ['lst', 'night', 'band', 'stokes', 'tier', 'n']
+
+
+def write_served(path, served):
+    """deep_omission_served.csv: the served counts the decisions were made with ({(lst, night, band, stokes, tier): n}, the
+    rate test's input) - so the build can re-decide from the current refusal record and fleet records and show the decisions
+    current (V_combview review F5), and the content test can tie them to the kept and omitted detections."""
+    with open(path + '.tmp', 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(SERVED_COLS)
+        for k in sorted(served):
+            w.writerow(list(k) + [served[k]])
+    os.replace(path + '.tmp', path)
+
+
+def read_served(path):
+    """{(lst, night, band, stokes, tier): n} of a deep_omission_served.csv."""
+    with open(path, newline='') as f:
+        return {(r['lst'], r['night'], r['band'], r['stokes'], r['tier']): int(r['n']) for r in csv.DictReader(f)}
 
 
 def kept_rows(kept):
@@ -1154,6 +1220,7 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
     rec += prec
     os.makedirs(out, exist_ok=True)
     write_decisions(os.path.join(out, 'deep_omission.csv'), dec, TIER_SNAPSHOT)
+    write_served(os.path.join(out, 'deep_omission_served.csv'), served)      # F5: what the decisions were made with
     write_record(os.path.join(out, 'deep_omission_dropped.csv'), rec, RECORD_COLS)
     kept_kinds = collections.Counter()              # Q review F2: the drop, written for the cumulative step that applies it
 
@@ -1367,5 +1434,6 @@ def run(args, run):
         u.add_output(dec, 'omission_decisions', tier=tier)
         u.add_output(os.path.join(out, 'deep_omission_dropped.csv'), 'omission_record', tier=tier, decisions=dec)
         if tier == TIER_SNAPSHOT:          # the drop the snapshot tier's cumulative step applies (Q review F2)
+            u.add_output(os.path.join(out, 'deep_omission_served.csv'), 'omission_served', tier=tier)
             u.add_output(os.path.join(out, 'deep_omission_kept.csv'), 'omission_kept', tier=tier, decisions=dec)
     return None

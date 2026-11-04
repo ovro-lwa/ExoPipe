@@ -22,8 +22,9 @@ Stages (--stages / --from / --until; default all, in this order); each runs only
   omit       (unit snapshot_<view>_omit) the deep-omission stage on the view's batch runs (lib/catalog/deep_omission.run_snapshot,
              the products of `catalog --tier snapshot --stages omit`) into the view's omission directory serve.SNAPVIEW_OMIT_DIR
              (production location <SNAPSHOT_REVIEW_ROOT>/deep_omission/<view>; parity <out>/snapshot/deep_omission/<view>):
-             decisions, record and the KEPT PRODUCT deep_omission_kept.csv (classes omission_decisions, omission_record,
-             omission_kept). With --view-omit DIR the stage is not run: DIR is an omit product made for exactly these runs.
+             decisions, record, the served counts they were made with (deep_omission_served.csv) and the KEPT PRODUCT
+             deep_omission_kept.csv (classes omission_decisions, omission_record, omission_served, omission_kept). With
+             --view-omit DIR the stage is not run: DIR is an omit product made for exactly these runs.
   build      (unit snapshot_<view>_build) the view <view>.part, renamed to <view> only after every test passed, built by this
              module's CHILD entry point under the production interpreter (serve.SNAPVIEW_PYTHON - production's driver runs
              the builder under it; Python 3.6 + clv15 + deep_omission.py, nothing else of the branch):
@@ -45,14 +46,16 @@ Stages (--stages / --from / --until; default all, in this order); each runs only
                   in production's formats, detection_ts.csv, combined_view_summary.json.
              Production's content tests T1-T6 run in the child before the rename (any failure: nothing is moved into place).
              Then class snapshot_view on the view (lib/serve/tests_snapshot_view.py: the same tests read back from disk, the
-             identities against the kept product, the record against the omit stage's).
+             identities against the kept product, the record against the omit stage's, every panel's own key against the OMIT
+             keys and every page's files against its member batch sources' less the panel drops - F1).
   filtercat  (unit snapshot_<view>_filtercat) the driver's step 2: exopipe_ops snapshot_filter_catalog.py VIEW <the member batches'
              fit stores serve.SNAPVIEW_FIT_STORE> in place (one row per detection: size, axis ratio, A-team distance, n_v_epoch;
              coadd_root.txt), the union of the member batches' card2_filter.csv (first member's comment lines + a view line,
              one header, each body line once in batch order) and FILTER-INPUTS (class filter_catalog: every view detection has
              its row, none twice). Classes filter_catalog (per_detection), snapshot_card2_union.
   localize   (unit snapshot_<view>_localize) the driver's step 3: snapshot_localize_tiers.sh VIEW in place with
-             serve.SNAPVIEW_LOC_ENV (lib/serve/snapshot_copy.localize_stage, the batch serve's own stage; G21 LOCALIZE-TIERS-OK).
+             serve.SNAPVIEW_LOC_ENV and PYTHONHASHSEED = serve.SNAPSHOT_FIGURE_HASHSEED (F10: the figures reproducible;
+             lib/serve/snapshot_copy.localize_stage, the batch serve's own stage; G21 LOCALIZE-TIERS-OK).
   ready      (unit snapshot_<view>_ready) the driver's step 4 'VIEW-READY-FOR-HIDES': the serve-time exclusion gate on the view
              (G17, the gate snapshot_serve.sh runs on it before registering), the snapshot_view tests again on the final files
              (filter catalogue and localization in place), and the note VIEW-READY-FOR-HIDES <view>.
@@ -66,6 +69,12 @@ kept product does not apply exactly (a kept row of no served detection, a served
 per-tier row the rule does not
 drop or a drop it does not list, a row left unapplied); T1-T6 (production's); F-G1 a member batch without its fit store, F-G2 a
 card2_filter.csv missing or of another header, the filter catalogue script failing; G21 localization; G17 at ready.
+V_combview review fixes (2026-11-04): G-V2 runs before ANY stage when omit or build is asked (F2: an existing view's omit product
+is never rewritten); G-V7 a batch run whose per-tier survivors are not exactly the identities its served_tiers.csv serves, or a
+kept per-tier source whose page holds no detection (F4: an incomplete input refuses, never booked as a deep omission); G-V8 the
+omit product's decisions re-made now from the refusal record and fleet records the build reads, with its served counts, must
+equal its table byte for byte (F5: never a stale product); a refused build moves its .part, a view failing its read-back tests
+moves the view, aside to <view>.refused_<UTC> (F7).
 Production details carried for parity, not ruled (spec 'Pending Gregg'): the name-clash rule, the queue order, the survivors
 row of a combined source (its member row of largest |best S/N|), the duplicate batch_members column of production's survivors
 files, partial sources keeping their gates (deep_omission.py OWED), the re-point that never fires on real per-tier rows
@@ -330,6 +339,17 @@ def build(job):
     if not want or D.text() != want:
         raise ViewRefusal('G-V4 the served batch runs changed since the omit stage (served digest now %s, the omit summary\'s %s)'
                           ' - run the omit stage again' % (D.text()[:28], (want or 'none')[:28]))
+    # G-V4, the counts (V_combview review F5): the served counts the decisions were made with (deep_omission_served.csv, re-decided
+    # by the step side's G-V8) are the served set's, read now
+    cnt = collections.Counter(okey(m['_row']) for p in pending for m in p[3])
+    now = {(k[0], k[2], k[1], k[3], k[4]): n for k, n in cnt.items()}
+    rec_counts = {(r['lst'], r['night'], r['band'], r['stokes'], r['tier']): int(r['n'])
+                  for r in rows(os.path.join(K.dir, 'deep_omission_served.csv'))}
+    if now != rec_counts:
+        bad = sorted(k for k in set(now) | set(rec_counts) if now.get(k) != rec_counts.get(k))
+        raise ViewRefusal('G-V4 the omit product\'s served counts (deep_omission_served.csv) are not the served set\'s: %d keys '
+                          'differ (e.g. %s)' % (len(bad), bad[:2]))
+    complete_runs(RUNS, TAG, TIERS)       # G-V7 (V_combview review F4)
 
     # ---- 0. THE KEPT PRODUCT APPLIED (production's step 0 decided here; the omit stage's product is read instead)
     DROPPED = set()
@@ -405,6 +425,7 @@ def build(job):
 
     # ---- 4. the view under OUT.part
     os.makedirs(os.path.join(PART, 'source_catalogs'))
+    job['_made_part'] = True             # F7: this build made the .part (child_main moves only its own aside)
     os.makedirs(os.path.join(PART, 'judgements'))
     # 4a the general catalogue (the localizer's input)
     gen = collections.defaultdict(list)
@@ -493,6 +514,9 @@ def build(job):
                     if src not in dcache:
                         dcache[src] = rows(os.path.join(src, 'detections.csv'))
                     ad = dcache[src]
+                    if not ad:        # G-V7 (F4): an incomplete input is never booked as a deep omission
+                        raise ViewRefusal('G-V7 %s %s source %s: its page %s holds no detection (detections.csv missing or empty) - '
+                                          'an incomplete batch run' % (TAG[r], cdir, row['source_id'], row['review_dir']))
                     kd = [d for d in ad if okey(d) not in OM]
                     agree('source dropped', not kd, K.take('source dropped', (r, catalog, row['source_id'], 'every detection omitted')),
                           '%s %s %s' % (TAG[r], cdir, row['source_id']))
@@ -708,16 +732,47 @@ def build(job):
     return stats
 
 
+def complete_runs(runs, tag, tiers):
+    """G-V7 (V_combview review F4), the build's own re-check of the omit stage's G4b: each batch run's per-tier survivors hold
+    exactly the identities its served_tiers.csv serves in each tier (chain_outcome 'served', qualifies 1)."""
+    for r in runs:
+        st = os.path.join(r, 'served_tiers.csv')
+        if not os.path.isfile(st):
+            raise ViewRefusal('G-V7 %s has no served_tiers.csv: its per-tier catalogues cannot be shown complete' % tag[r])
+        want = collections.defaultdict(set)
+        for x in rows(st):
+            if x.get('chain_outcome') == 'served' and str(x.get('qualifies')) == '1':
+                want[x['tier']].add(x['identity_jname'])
+        for T in tiers:
+            have = {x['identity_id'] for p in glob.glob(os.path.join(r, 'source_catalogs_[IV]_%s' % T, '*_sources_survivors.csv'))
+                    for x in rows(p)}
+            if have != want.get(T, set()):
+                raise ViewRefusal('G-V7 %s tier %s: its per-tier survivors hold %d identities served_tiers.csv does not serve and '
+                                  'lack %d it serves - an incomplete or inconsistent batch run'
+                                  % (tag[r], T, len(have - want.get(T, set())), len(want.get(T, set()) - have)))
+
+
 def child_main(job_path):
     """`python3.6 snapshot_view.py build JOB.json` (core/legacy.run): the build; the stats into job['result']; REFUSING + exit 2 on a
-    gate (ViewRefusal), exit 1 on an error (the traceback in the log)."""
+    gate (ViewRefusal), exit 1 on an error (the traceback in the log). A refused or failed build moves its <view>.part aside to
+    <view>.refused_<UTC> (F7): the view name stays free, nothing is deleted."""
     with open(job_path) as f:
         job = json.load(f)
+
+    def part_aside():                    # only the .part THIS build made (a G-V2 refusal never touches another's)
+        part = job['out'].rstrip('/') + '.part'
+        return move_aside(part) if job.get('_made_part') and os.path.isdir(part) else None
     try:
         stats = build(job)
     except ViewRefusal as e:
-        print('REFUSING: %s' % e, flush=True)
+        aside = part_aside()
+        print('REFUSING: %s%s' % (e, ('; the partial view moved aside to %s' % aside) if aside else ''), flush=True)
         return 2
+    except Exception:
+        aside = part_aside()
+        if aside:
+            print('the build failed; the partial view moved aside to %s' % aside, flush=True)
+        raise
     tmp = job['result'] + '.tmp'
     with open(tmp, 'w') as f:
         json.dump(stats, f, indent=1, default=str)
@@ -794,8 +849,17 @@ def select_stages(args):
     return st
 
 
-def gate_runs(plan):
-    """G-V1 (runs), G-V6 (injected) - before any stage."""
+def view_exists(plan):
+    """[the view and / or its .part that exist now] (G-V2)."""
+    return [p for p in (plan.U, plan.U + '.part') if os.path.exists(p)]
+
+
+def gate_runs(plan, stages=STAGES):
+    """G-V1 (runs), G-V2 (the view exists: a run with the omit or build stage refuses BEFORE any stage - the omit product of an
+    existing view is its product of record and is never rewritten; V_combview review F2), G-V6 (injected) - before any stage."""
+    if set(stages) & {'omit', 'build'} and view_exists(plan):
+        _refuse(f'G-V2 {" and ".join(view_exists(plan))} exists - a view is never overwritten, nor its omit product '
+                f'{plan.omit_dir} rewritten (give another --run; run filtercat / localize / ready alone on an existing view)')
     if not plan.runs:
         _refuse('G-V1 no batch run: --view-runs RUN,RUN|@FILE (the served batch runs of the view, in order)')
     if len(set(plan.runs)) != len(plan.runs):
@@ -825,6 +889,7 @@ def omit_stage(run, plan):
         dec = os.path.join(plan.omit_dir, 'deep_omission.csv')
         u.add_output(dec, 'omission_decisions', tier='snapshot')
         u.add_output(os.path.join(plan.omit_dir, 'deep_omission_dropped.csv'), 'omission_record', tier='snapshot', decisions=dec)
+        u.add_output(os.path.join(plan.omit_dir, 'deep_omission_served.csv'), 'omission_served', tier='snapshot')
         u.add_output(os.path.join(plan.omit_dir, 'deep_omission_kept.csv'), 'omission_kept', tier='snapshot', decisions=dec)
     return u
 
@@ -833,7 +898,8 @@ def check_omit_product(u, plan):
     """G-V3 on the step side: the omit product's files, its content tests now (N2's digests included), its runs."""
     from exopipe.phase3.core import validate
     d = plan.omit_dir
-    need = ('deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_kept.csv', 'deep_omission_summary.json')
+    need = ('deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_served.csv', 'deep_omission_kept.csv',
+            'deep_omission_summary.json')
     miss = [x for x in need if not os.path.isfile(os.path.join(d, x))]
     if miss:
         u.refuse(f'G-V3 the omit product {d} lacks {", ".join(miss)} (run the omit stage, or give --view-omit DIR)')
@@ -845,6 +911,7 @@ def check_omit_product(u, plan):
     bad = []
     for cls, name, ctx in (('omission_decisions', 'deep_omission.csv', {}), ('omission_record', 'deep_omission_dropped.csv',
                                                                             {'decisions': dec}),
+                           ('omission_served', 'deep_omission_served.csv', {}),
                            ('omission_kept', 'deep_omission_kept.csv', {'decisions': dec})):
         p = os.path.join(d, name)
         u.add_input(p)
@@ -855,6 +922,53 @@ def check_omit_product(u, plan):
     if bad:
         u.refuse('G-V3 the omit product fails its content tests: ' + '; '.join(bad[:3]))
     return summ
+
+
+def check_decisions_current(u, plan, summ, recs):
+    """G-V8 (V_combview review F5): the omit product's decisions are CURRENT - re-deciding now, from the refusal record and the
+    fleet records the build reads (catalog_omission.REFUSALS, paths.SNAPSHOT_FLEET_OUT; the ones the omit product names) with the
+    served counts the decisions were made with (deep_omission_served.csv; the child checks them against the served runs, G-V4),
+    gives the omit product's deep_omission.csv byte for byte. A product made before the deep search refused more nights, or
+    before the snapshot search rewrote a noise or member table, refuses - production decides inside its build from the current
+    inputs. Also N1's injected-run guard on the record."""
+    import filecmp
+    from exopipe.phase3.lib.catalog import deep_omission as DO
+    CFG = _CFG()
+    rdir = os.path.abspath(CFG.catalog_omission.REFUSALS)
+    proto = os.path.abspath(CFG.paths.SNAPSHOT_FLEET_OUT)
+    made = (os.path.abspath(summ.get('refusals') or ''), os.path.abspath(summ.get('proto') or ''))
+    if made != (rdir, proto):
+        u.refuse(f'G-V8 the omit product {plan.omit_dir} was decided from the refusal record {made[0]} and the fleet {made[1]}; '
+                 f'the build reads {rdir} and {proto}')
+    DO._record_gate(rdir)
+    served = DO.read_served(os.path.join(plan.omit_dir, 'deep_omission_served.csv'))
+    now = os.path.join(recs, f'{plan.run_name}_decisions_now.csv')
+    rows = DO.decide_snapshot(summ.get('lsts') or [], served, rdir=rdir, proto=proto)
+    DO.write_decisions(now, rows, DO.TIER_SNAPSHOT)
+    dec = os.path.join(plan.omit_dir, 'deep_omission.csv')
+    same = filecmp.cmp(now, dec, shallow=False)
+    if not same:
+        a = set(open(dec).read().splitlines())
+        b = set(open(now).read().splitlines())
+        u.refuse(f'G-V8 the omit product is stale: re-deciding now from {rdir} and {proto} gives another table ({len(a - b)} '
+                 f'rows of the product are gone, {len(b - a)} new; re-decided table {now}) - run the omit stage again')
+    u.check('G-V8_decisions_current', same, value=len(rows), detail=f'{len(rows)} decisions re-made now = the omit product\'s')
+    os.remove(now)
+
+
+def move_aside(path):
+    """Move a refused view (or its .part) aside to <view>.refused_<UTC> (V_combview review F7): the view name is free for a retry,
+    nothing is deleted. Returns the new path, or None when ``path`` does not exist."""
+    if not os.path.exists(path):
+        return None
+    base = path[:-len('.part')] if path.endswith('.part') else path
+    aside = '%s.refused_%s' % (base, time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()))
+    n = 1
+    while os.path.exists(aside):
+        n += 1
+        aside = '%s.refused_%s_%d' % (base, time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()), n)
+    os.rename(path, aside)
+    return aside
 
 
 def build_stage(run, plan):
@@ -879,6 +993,7 @@ def build_stage(run, plan):
             u.add_input(os.path.join(r, 'source_catalogs'))
         recs = os.path.join(plan.out, '_records', 'serve', 'snapshot_view')
         os.makedirs(recs, exist_ok=True)
+        check_decisions_current(u, plan, summ, recs)        # G-V8 (F5)
         job = dict(out=plan.U, runs=plan.runs, kept_dir=plan.omit_dir, tiers=list(S.SNAPVIEW_TIERS),
                    stokes=list(S.SNAPVIEW_STOKES), suffix=dict(S.SNAPVIEW_PAGE_SUFFIX),
                    clv15=_legacy_root('clv15'), ops=_legacy_root('exopipe_ops'), deep_omission_py=_deep_omission_py(),
@@ -895,8 +1010,9 @@ def build_stage(run, plan):
                          log=os.path.join(recs, f'{plan.run_name}_build.log'), timeout=S.SNAPVIEW_BUILD_TIMEOUT_S, unit=u,
                          refusal_codes=(2,))
         if not res.ok:
-            u.refuse(f'the view build {"refused" if res.refused else "failed"}: {res.reason} - nothing moved into place '
-                     f'(log {res.log})')
+            aside = move_aside(plan.U + '.part')     # F7: a .part left by the child (it moves its own aside on a gate)
+            u.refuse(f'the view build {"refused" if res.refused else "failed"}: {res.reason} - nothing moved into place'
+                     + (f'; the partial view moved aside to {aside}' if aside else '') + f' (log {res.log})')
         with open(job['result']) as f:
             st = json.load(f)
         u.meta['build'] = {k: v for k, v in st.items() if k != 'summary'}
@@ -914,6 +1030,11 @@ def build_stage(run, plan):
                f'{st["stale_best"]}; per-tier page detections not among their identity\'s kept detections: '
                f'{st["page_detections_not_of_identity"]} of {st["page_detections"]}')
         u.add_output(plan.U, 'snapshot_view', kept=os.path.join(plan.omit_dir, 'deep_omission_kept.csv'), runs=plan.runs)
+        bad = u.failed_tests()
+        if bad:              # F7: the built view fails its read-back tests - moved aside, the view name left free
+            aside = move_aside(plan.U)
+            u.refuse(f'the built view fails its read-back tests ({", ".join(sorted({t["name"] for t in bad}))}): moved aside to '
+                     f'{aside}; nothing is left under {plan.U} - {bad[0]["name"]}: {str(bad[0].get("detail"))[:400]}')
     return u
 
 
@@ -1019,7 +1140,7 @@ def run(args, run_):
     from exopipe.phase3.lib.serve import flow, snapshot_copy
     plan = ViewPlan(args, run_.out_root)
     stages = select_stages(args)
-    gate_runs(plan)
+    gate_runs(plan, stages)
     if run_.dry_run:
         return describe(plan, stages)
     if 'omit' in stages and flow.halts(omit_stage(run_, plan), 'omit', need_done=True):

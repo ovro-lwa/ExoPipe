@@ -367,6 +367,13 @@ class serve(_Section):
     # classify, scope source).
     HOLD_JOURNAL_READER = 'driver'
     SNAPSHOT_LOCALIZE = True                # per-tier positions + figures before the servers (snapshot_serve.sh:44-46, ledger 1831)
+    SNAPSHOT_FIGURE_HASHSEED = '0'          # PYTHONHASHSEED of snapshot_localize_tiers.sh (every snapshot localize: a batch serve, the
+                                            # combined view). Its figure pool forks from a heredoc interpreter; the string-hash seed
+                                            # decides the stacking of overlapping markers in source_astrometry_panel.py (V_combview
+                                            # review F10: 64 of 4,130 figure v2 PNGs differed between two runs on byte-identical
+                                            # tables). Production sets none (a random seed per run: not reproducible, so no parity
+                                            # value exists); '' = unset, as production. The refactor's reproducibility setting, not a
+                                            # ruling: the figures' content is the same, only the marker stacking is fixed [step]
 
     # ---- the COMBINED SNAPSHOT VIEW: the snapshot tier's cumulative step (`serve --tier snapshot --family comb`,
     # lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md). Port of exopipe_ops snapshot_combined_view.py

@@ -136,11 +136,19 @@ def copy_stage(run, plan):
 
 def localize_stage(run, plan, env=None):
     """snapshot_localize_tiers.sh on plan.U (G21). ``env``: the script's extra environment (the combined view's
-    serve.SNAPVIEW_LOC_ENV, comb_build_20261102.sh:82; none for a batch serve, snapshot_serve.sh:46)."""
+    serve.SNAPVIEW_LOC_ENV, comb_build_20261102.sh:82; none for a batch serve, snapshot_serve.sh:46), plus PYTHONHASHSEED =
+    serve.SNAPSHOT_FIGURE_HASHSEED: the figure heredoc's pool inherits its interpreter's string-hash seed, which decides the
+    stacking of overlapping markers in the astrometry figure (V_combview review F10: 64 of 4,130 figure v2 PNGs differed between
+    two runs on byte-identical tables) - fixed, the figures are a function of their inputs."""
     DST = plan.U
+    S = _S()
+    env = dict(env or {})
+    if S.SNAPSHOT_FIGURE_HASHSEED not in (None, ''):
+        env['PYTHONHASHSEED'] = str(S.SNAPSHOT_FIGURE_HASHSEED)
     with run.unit(f'snapshot_{plan.run_name}_localize', stage='localize', tier='snapshot') as u:
-        if not _S().SNAPSHOT_LOCALIZE:
+        if not S.SNAPSHOT_LOCALIZE:
             raise NoInput('serve.SNAPSHOT_LOCALIZE is False')
+        u.note(f'localization environment: {env}')
         logd = os.path.join(plan.out, '_records', 'serve', 'logs')
         os.makedirs(logd, exist_ok=True)
         rc, out = scripts.run_shell('snapshot_localize', [DST], env=env, unit=u,

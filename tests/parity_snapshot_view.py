@@ -13,12 +13,16 @@ inputs, into scratch. Spec: docs/specs/snapshot_combined_view.md, "Parity target
             is written by the snapshot chat and both sides must decide on the same files
   RUN       the served batch runs, in the view's order - COPIES on the scratch file system (the panels are hard-linked from
             them by production; read only by both sides)
-prod: production's snapshot_combined_view.py run UNCHANGED under its interpreter (site PYTHON 'py36'); the only thing set is
+prod: production's snapshot_combined_view.py run UNCHANGED under its interpreter (site PYTHON 'py36'), AT THE PRODUCTION PIN
+      (tests/production_pin.py, V_combview review F3: the builder, snapshot_deep_omission.py and sublst_deep_omission.py the
+      port reproduces, materialized under WORK/production_pin and imported from there); the only thing set is
       snapshot_deep_omission.decide's two data roots (REFUSALS, FLEET) before the script imports the module; then
       snapshot_filter_catalog.py over the runs' fit stores (catalog_snapshot.BATCH_DIR/rechain_<run>/fits_store.csv) and the
-      driver's card2 / FILTER-INPUTS heredoc, VERBATIM (read from comb_build_20261102.sh); then snapshot_localize_tiers.sh with
-      P3_LOC_SHARDS=6 SNAP_LOC_FIG_PROCS=6 (speed only; production's driver used 12 shards on /data07 - 6 keeps to the Lustre
-      rule: at most 6 readers).
+      driver's card2 / FILTER-INPUTS heredoc, VERBATIM (read from the pinned comb_build_20261102.sh); then snapshot_localize_tiers.sh
+      (in place, live, as the stage runs it) with P3_LOC_SHARDS=6 SNAP_LOC_FIG_PROCS=6 (speed only; production's driver used 12
+      shards on /data07 - 6 keeps to the Lustre rule: at most 6 readers) and PYTHONHASHSEED = the stage's
+      serve.SNAPSHOT_FIGURE_HASHSEED: production sets none, so its figure bytes change from run to run (V_combview review F10) and
+      a byte comparison of figures needs one seed on both sides.
 port: `exopipe3 serve --tier snapshot --family comb --stages omit,build,filtercat,localize,ready` of THIS tree as a --parity run
       with the production parity file, --set catalog_omission.REFUSALS=REFUSALS paths.SNAPSHOT_FLEET_OUT=FLEET and the same
       localization environment. WORK must lie outside every production root (the CLI refuses /lustre/gh/main/phase3 ...).
@@ -47,15 +51,31 @@ FORBIDDEN = ('/data07', '/lustre/gh/main/exopipe_ops', '/lustre/gh/main/clv15', 
 
 PROD_HARNESS = r'''
 import os, runpy, sys
-OPS = '/lustre/gh/main/exopipe_ops'
-rdir, proto, out, runs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+pin, rdir, proto, out, runs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
 sys.path[:] = [p for p in sys.path if p not in ('', os.path.dirname(os.path.abspath(__file__)))]
-sys.path.insert(0, OPS)                       # as `python snapshot_combined_view.py` run from exopipe_ops
-import snapshot_deep_omission as SDO
+sys.path.insert(0, pin)                       # the PINNED snapshot_deep_omission (+ sublst_deep_omission beside it), imported
+import snapshot_deep_omission as SDO          # first: the builder's own `import snapshot_deep_omission` finds it cached
+assert os.path.dirname(os.path.abspath(SDO.__file__)) == os.path.abspath(pin), SDO.__file__
 SDO.decide.__defaults__ = (rdir, proto)       # the only change: the decisions' two data roots
-sys.argv = [os.path.join(OPS, 'snapshot_combined_view.py'), out] + runs
-runpy.run_path(os.path.join(OPS, 'snapshot_combined_view.py'), run_name='__main__')
+sys.argv = [os.path.join(pin, 'snapshot_combined_view.py'), out] + runs
+runpy.run_path(os.path.join(pin, 'snapshot_combined_view.py'), run_name='__main__')
 '''
+PINNED = ('snapshot_combined_view.py', 'snapshot_deep_omission.py', 'sublst_deep_omission.py',
+          'snapshot_batch/comb_build_20261102.sh')
+
+
+def pinned_ops(work):
+    """The pinned production files under WORK/production_pin (tests/production_pin.py), materialized now."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import production_pin as PIN
+    return PIN.materialize(os.path.join(work, 'production_pin'), PINNED)
+
+
+def figure_seed():
+    """The stage's serve.SNAPSHOT_FIGURE_HASHSEED (this tree's config), for production's side of a parity run."""
+    sys.path.insert(0, REPO)
+    from exopipe.phase3.config import CFG
+    return CFG.serve.SNAPSHOT_FIGURE_HASHSEED
 
 
 def _refuse_path(p):
@@ -70,9 +90,9 @@ def _env():
     return e
 
 
-def driver_heredoc():
-    """comb_build_20261102.sh's step-2 heredoc (between <<'PYC' and PYC), verbatim."""
-    src = open(os.path.join(OPS, 'snapshot_batch', 'comb_build_20261102.sh')).read()
+def driver_heredoc(pin):
+    """comb_build_20261102.sh's step-2 heredoc (between <<'PYC' and PYC) at the pin, verbatim."""
+    src = open(os.path.join(pin, 'snapshot_batch', 'comb_build_20261102.sh')).read()
     return src.split("<<'PYC'", 1)[1].split('\nPYC\n', 1)[0].split('\n', 1)[1]
 
 
@@ -89,8 +109,9 @@ def prod(work, rdir, fleet, runs):
     h = os.path.join(work, 'prod_harness.py')
     with open(h, 'w') as f:
         f.write(PROD_HARNESS)
+    pin = pinned_ops(work)
     run = lambda argv, **k: subprocess.run(argv, env=_env(), **k)
-    r = run(['nice', PY36, '-u', h, rdir, fleet, out] + list(runs))
+    r = run(['nice', PY36, '-u', h, pin, rdir, fleet, out] + list(runs))
     if r.returncode or not os.path.isdir(out):
         sys.exit('PROD BUILD REFUSED/FAILED')
     stores = fit_stores(runs)
@@ -99,11 +120,13 @@ def prod(work, rdir, fleet, runs):
             sys.exit(f'REFUSING: no fit store {s}')
     if run(['nice', PY36, 'snapshot_filter_catalog.py', out] + stores, cwd=OPS).returncode:
         sys.exit('FILTER-CATALOG FAILED')
-    if run(['nice', PY36, '-', out] + list(runs), input=driver_heredoc(), universal_newlines=True, cwd=OPS).returncode:
+    if run(['nice', PY36, '-', out] + list(runs), input=driver_heredoc(pin), universal_newlines=True, cwd=OPS).returncode:
         sys.exit('FILTER-INPUTS check FAILED')
     log = os.path.join(work, 'prod', 'localize.log')
+    seed = figure_seed()
+    loc = dict(LOC_ENV, **({'PYTHONHASHSEED': str(seed)} if seed not in (None, '') else {}))
     with open(log, 'w') as lf:
-        rc = subprocess.run(['nice', 'bash', 'snapshot_localize_tiers.sh', out], cwd=OPS, env=dict(_env(), **LOC_ENV),
+        rc = subprocess.run(['nice', 'bash', 'snapshot_localize_tiers.sh', out], cwd=OPS, env=dict(_env(), **loc),
                             stdout=lf, stderr=subprocess.STDOUT).returncode
     if rc or 'LOCALIZE-TIERS-OK' not in open(log).read():
         sys.exit(f'LOCALIZATION FAILED ({log})')

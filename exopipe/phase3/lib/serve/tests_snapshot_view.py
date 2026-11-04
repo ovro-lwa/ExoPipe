@@ -10,9 +10,13 @@ Classes:
                          V2 queues (T4): each queue's header (its name and run lines, the VIEW LIMITS line, the DEEP OMISSION line
                             with the summary's counts) and its names = the identities of its tier view, once each, by best |S/N|.
                          V3 pages (T5, T6, the omission): every combined source's page directory holds detections.csv with
-                            n_det rows, each of the directory's tier and on no OMIT key; its panels carry its tier; every member
-                            row's detection is in its page directory (serve.SNAPVIEW_TEST_SAMPLE_DIRS > 0: a seeded sample of
-                            page directories).
+                            n_det rows, each of the directory's tier and on no OMIT key; its panels carry its tier and no panel's
+                            own key (parsed here, independently of the build's pattern) is an OMIT key (F1); every member row's
+                            detection is in its page directory (serve.SNAPVIEW_TEST_SAMPLE_DIRS > 0: a seeded sample of page
+                            directories).
+                         V7 panels (F1): each page directory's files are exactly its member batch sources' files less the kept
+                            product's 'panel dropped' rows (ctx kept, runs) - a panel linked that the omission removed, a kept
+                            panel missing (the same page directories as V3).
                          V4 identities (T2 against the kept product): the detections of candidates/_identity/* are exactly the
                             kept product's kept detections (batch, detection key, multiset); the counts of the summary.
                          V5 record: deep_omission.csv = the omit product's, byte for byte; the record's removals = the omit
@@ -29,6 +33,7 @@ import glob
 import json
 import os
 import random
+import re
 
 from exopipe.phase3.core.validate import content_test
 
@@ -141,9 +146,26 @@ def view_queues(path, **ctx):
     return _fail(msgs, n, f'{n} queued identities in {len(_tiers())} queues; headers, coverage and order')
 
 
+# THE PANEL'S OWN KEY (V_combview review F1), parsed HERE - not with deep_omission.SNAP_PANEL, the pattern the kept product and the
+# build both use: a mistake in that shared helper would make them agree on the wrong panels, unseen. A panel file is
+# [<batch tag>_]rank<N>_<LST>_<night>_<band><14-digit frame time>[1min].(png|page.json) (the page code's PANEL_TOKEN, with the
+# view's clash prefix); its key is (LST, band, night) with its page directory's Stokes and tier.
+PANEL_FILE = re.compile(r'^(?:[A-Za-z0-9]+_)?rank\d+_(\d\dh)_(\d{4}-\d\d-\d\d)_([A-Za-z0-9]+)\.(?:png|page\.json)$')
+PANEL_BAND = re.compile(r'^([A-Za-z0-9]*?[A-Za-z])(\d{14})(1min)?$')
+
+
+def panel_key(fn, S, T):
+    """(lst, band, night, Stokes, tier) of a panel file name in a page directory of Stokes S, tier T; None for a file that is no
+    panel name (counted, never judged)."""
+    m = PANEL_FILE.match(fn)
+    t = PANEL_BAND.match(m.group(3)) if m else None
+    return (m.group(1), t.group(1), m.group(2), S, T) if t else None
+
+
 @content_test('snapshot_view', name='pages')
 def view_pages(path, **ctx):
-    """V3: page directories (T5, T6 read back) and no omitted detection on a page."""
+    """V3: page directories (T5, T6 read back), no omitted detection on a page, and no panel of an omitted instant on a page
+    (F1: each panel's own key, parsed independently of the build)."""
     SV, DO = _SV(), _DO()
     S_ = _S()
     with open(os.path.join(path, 'deep_omission.csv'), newline='') as f:
@@ -155,6 +177,7 @@ def view_pages(path, **ctx):
     if sample and len(srcs) > sample:
         srcs = random.Random(20261103).sample(srcs, sample)
     msgs, n_rows, members_pd = [], 0, collections.defaultdict(set)
+    n_panels = n_unparsed = 0
     want_pd = {r['review_dir'] for _S, _T, _b, r in srcs}
     for S, T in _tiers():
         for band, r in _cat_rows(path, S, T, 'source_members'):
@@ -190,11 +213,99 @@ def view_pages(path, **ctx):
             msgs.append(f'T6 {pd}: {len(bad_t)} rows and {len(bad_p)} panels of another tier (e.g. {(bad_t + bad_p)[:1]})')
         if bad_o:
             msgs.append(f'{pd}: {len(bad_o)} detections on an OMIT key (e.g. {bad_o[0]})')
+        keys = [(fn, panel_key(fn, S, T)) for fn in names if fn not in ('detections.csv', 'astrometry.png')]
+        n_panels += sum(1 for _fn, k in keys if k)
+        n_unparsed += sum(1 for _fn, k in keys if not k)
+        bad_pk = [fn for fn, k in keys if k and k in OM]
+        if bad_pk:
+            msgs.append(f'F1 {pd}: {len(bad_pk)} panels of an omitted instant are served (e.g. {bad_pk[0]}) - the omission removed '
+                        f'their detections')
         miss = members_pd.get(pd, set()) - {x['cand_id'] for x in dets}
         if miss:
             msgs.append(f'T5 {pd}: {len(miss)} member detections not in its detections.csv (e.g. {sorted(miss)[0]})')
     return _fail(msgs, len(srcs), f'{len(srcs)} page directories ({"a seeded sample" if sample else "every one"}), {n_rows} '
-                                  f'detections: one tier each, n_det, no OMIT key, every member detection present')
+                                  f'detections, {n_panels} panels ({n_unparsed} other files): one tier each, n_det, no detection '
+                                  f'or panel on an OMIT key, every member detection present')
+
+
+@content_test('snapshot_view', name='panels')
+def view_panels(path, kept=None, runs=None, **ctx):
+    """V7 (V_combview review F1): every page directory's files are exactly its member batch sources' files minus the kept
+    product's 'panel dropped' rows - no panel the omission removed is linked, no kept panel is missing (production's T3 counts
+    links in the loop that decides them, so it cannot see a wrong decision). A page's member batch sources: the general
+    catalogue's batch_members ('<batch>:<identity>'), each such batch identity's per-tier survivors row of the page's band (its
+    batch's source_catalogs_<S>_<T>), less the sources the kept product drops; their page directories are listed now. A name
+    clash ('<batch>_<file>', production's rule) counts as the file. The same page directories as V3 (all, or the seeded sample)."""
+    DO, SV = _DO(), _SV()
+    S_ = _S()
+    if not kept or not os.path.isfile(kept) or not runs:
+        return False, None, f'no kept product or batch runs given (ctx kept = {kept!r}, runs = {runs!r}): the panels cannot be traced'
+    tag2run = {DO.batch_tag(r): os.path.abspath(r) for r in runs}
+    # batch_members = '+'.join('<batch>:<identity>'): a J-name holds '+' itself, so split only at a '+' that starts '<batch>:'
+    split_bm = re.compile(r'\+(?=(?:%s):)' % '|'.join(re.escape(t) for t in sorted(tag2run, key=len, reverse=True)))
+    members = {}
+    for p in glob.glob(os.path.join(path, 'source_catalogs', '*_sources_survivors.csv')):
+        with open(p, newline='') as f:
+            for r in csv.DictReader(f):
+                members[r['source_id']] = [tuple(x.split(':', 1)) for x in split_bm.split(r.get('batch_members') or '')
+                                           if ':' in x]
+    src_dropped, pan_dropped = set(), collections.Counter()
+    with open(kept, newline='') as f:
+        for r in csv.DictReader(f):
+            if r['kind'] == 'source dropped':
+                src_dropped.add((r['run'], r['catalog'], r['source_id']))
+            elif r['kind'] == 'panel dropped':
+                pan_dropped[(r['run'], r['catalog'], r['source_id'], r['stokes'], r['tier'], r['note'])] += 1
+    srcs = []
+    for S, T in _tiers():
+        srcs += [(S, T, band, r) for band, r in _cat_rows(path, S, T, 'sources_survivors')]
+    sample = S_.SNAPVIEW_TEST_SAMPLE_DIRS
+    if sample and len(srcs) > sample:
+        srcs = random.Random(20261103).sample(srcs, sample)
+    bcache, msgs, n_files = {}, [], 0
+    for S, T, band, r in srcs:
+        cdir = f'source_catalogs_{S}_{T}'
+        catalog = f'{cdir}/{band}_sources_survivors.csv'
+        want = collections.Counter()
+        for tag, J in members.get(r['identity_id'], []):
+            run = tag2run.get(tag)
+            if run is None:
+                msgs.append(f'{r["review_dir"]}: member batch {tag} is no run given')
+                continue
+            if (run, cdir, band) not in bcache:
+                by = collections.defaultdict(list)
+                bp = os.path.join(run, cdir, f'{band}_sources_survivors.csv')
+                if os.path.exists(bp):
+                    with open(bp, newline='') as f:
+                        for x in csv.DictReader(f):
+                            by[x['identity_id']].append(x)
+                bcache[(run, cdir, band)] = by
+            for x in bcache[(run, cdir, band)].get(J, []):
+                if (run, catalog, x['source_id']) in src_dropped:
+                    continue
+                for fn in os.listdir(os.path.join(run, x['review_dir'])):
+                    if fn in ('detections.csv', 'astrometry.png'):
+                        continue
+                    if pan_dropped[(run, x['review_dir'], x['source_id'], S, T, fn)] > 0:
+                        continue
+                    want[fn] += 1
+        have = [fn for fn in os.listdir(os.path.join(path, r['review_dir'])) if fn not in ('detections.csv', 'astrometry.png')]
+        n_files += len(have)
+        extra = []
+        for fn in sorted(have, key=lambda x: (not x.startswith('rank'), x)):     # the plain names first, then the clash names
+            pre, _, rest = fn.partition('_')
+            if want[fn] > 0:
+                want[fn] -= 1
+            elif pre in tag2run and want[rest] > 0:
+                want[rest] -= 1
+            else:
+                extra.append(fn)
+        miss = sorted(k for k, v in want.items() if v > 0)
+        if extra or miss:
+            msgs.append(f'F1 {r["review_dir"]}: {len(extra)} files no member batch source keeps (e.g. {extra[:1]}), {len(miss)} of its '
+                        f'member batch sources\' kept panels missing (e.g. {miss[:1]})')
+    return _fail(msgs, n_files, f'{len(srcs)} page directories, {n_files} files: exactly their member batch sources\' files less '
+                                f'the kept product\'s panel drops')
 
 
 def _kept_rows(kept):

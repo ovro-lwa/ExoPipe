@@ -15,16 +15,30 @@ and its driver snapshot_batch/comb_build_20261102.sh.
              build, filtercat): every file of the two views equal byte for byte but the summary's 'seconds', the panels hard
              links of the same inodes; the stage's records done, every content test passed
   kept       G-K / G-V4: the build refuses (nothing moved into place) on a kept detection moved to another identity, a per-tier
-             row removed from the kept product, a served run changed after the omit stage, an omit product of other runs
-  gates      G-V1 (no name, no runs, a run twice, a run without catalogues), G-V2 (the view exists), G-V5 (another file system,
-             simulated, a production view), G-V6 (an injected run's products), --view-omit with --stages omit
+             row removed from the kept product, a served run changed after the omit stage, an omit product of other runs, served
+             counts that are not the served set's; a refusal after the .part was made moves it aside to <view>.refused_<UTC>
+             (F7), a .part the build did not make stays where it is
+  gates      G-V1 (no name, no runs, a run twice, a run without catalogues), G-V2 (the view or its .part exists: refused BEFORE
+             the omit stage writes, its omit product unchanged - F2), G-V5 (another file system, simulated, a production view),
+             G-V6 (an injected run's products), --view-omit with --stages omit
+  incomplete G4b / G4c at the omit stage and G-V7 in the build child (F4): a batch's per-tier catalogue lost (I3), a kept
+             source's page detections.csv lost with its member rows (I2) - refused, never booked as a deep omission
+  stale      G-V8 (F5): the build re-decides from the refusal record and fleet records it reads now - a refusal added after the omit
+             stage, a noise table rewritten, a product decided from another record refuse; K5 tampered served counts
   copy       G-V5 in the child (batch runs on /dev/shm): a production view refuses; a scratch / parity view copies every panel
              (as under the parity guard) and equals the hard-linked view byte for byte
   content    snapshot_view refuses a queue that lost a name, a page holding an omitted detection, a page directory of two tiers,
-             an identity detection the kept product does not keep, a record off the omit stage's; snapshot_card2_union a changed
-             line; filter_catalog (per detection) a missing row
+             an identity detection the kept product does not keep, a record off the omit stage's, a panel of an omitted instant
+             on a page (V3, its own key) and a page's files not its member batch sources' less the panel drops (V7) - F1;
+             snapshot_card2_union a changed line; filter_catalog (per detection) a missing row
+  m1         F1 proven on the reviewer's mutation M1 (a private copy of this tree whose build links an omitted panel it records as
+             dropped): the build's read-back refuses, the view is moved aside (F7), nothing is left under its name
+  seed       F10: the localize stage runs snapshot_localize_tiers.sh with PYTHONHASHSEED = serve.SNAPSHOT_FIGURE_HASHSEED
   ready      the ready stage on the built view (stub localizations): G17 passes, the final tests pass, VIEW-READY-FOR-HIDES
   py36       the child's module parses and loads under production's interpreter (Python 3.6)
+  pin        production's ported files are the pinned ones (tests/production_pin.py; F3): the only test production's later
+             commits fail - the stage's own tests above build the stage's view alone, production's side only in drift / parity /
+             repoint, from the pinned files
 
 Scratch: /tmp/exopipe3_tests_snapshot_view/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_snapshot_view.py [test_name ...]
@@ -87,12 +101,22 @@ def _cfg():
     return CFG
 
 
-def _cli(*args, timeout=1800):
-    """The real CLI of this tree (an ordinary run)."""
+def _cli(*args, timeout=1800, repo=REPO):
+    """The real CLI of this tree (an ordinary run); ``repo``: another tree's (test_m1_mutation's mutated copy)."""
     e = {k: v for k, v in os.environ.items() if k not in ('EXOPIPE3_INJECTED', 'P3_SNAP_INJECTED', 'EXOPIPE3_PARITY_ROOT')}
-    e['PYTHONPATH'] = REPO + (os.pathsep + e['PYTHONPATH'] if e.get('PYTHONPATH') else '')
-    return subprocess.run([sys.executable, '-m', 'exopipe.phase3'] + [str(a) for a in args], cwd=REPO, env=e,
+    e['PYTHONPATH'] = repo + (os.pathsep + e['PYTHONPATH'] if e.get('PYTHONPATH') else '')
+    return subprocess.run([sys.executable, '-m', 'exopipe.phase3'] + [str(a) for a in args], cwd=repo, env=e,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+
+
+def unit_records(out):
+    """{unit: record} of the serve units under ``out``."""
+    recs = {}
+    for p in glob.glob(os.path.join(out, '_records', 'serve', '*.json')):
+        j = json.load(open(p))
+        if isinstance(j, dict) and 'unit' in j:
+            recs[j['unit']] = j
+    return recs
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -235,6 +259,18 @@ def batch_run(root, name, idents, extra_files=(), best_cand_detection=()):
             for d in dets[:2]:
                 f.write(f'{d["cand_id"]},keep\n')
         f.write('shared_row,keep\n')
+    # served_tiers.csv (the chain's per-tier serving table): an identity served in a tier holds a per-tier source there, as in
+    # production (36 of 36 batches of Run_SNAPCOMB_20261102); a no-route row and a non-qualifying row as production writes them
+    tiers_of = collections.defaultdict(set)
+    for (S, T, sb), rr in per.items():
+        for x in rr:
+            tiers_of[x['identity_id']].add(T)
+    st = []
+    for J, _a, dets in idents:
+        for T in ('10s', '1min'):
+            st.append(dict(identity_jname=J, chain_outcome='served', tier=T, qualifies='1' if T in tiers_of[J] else '0'))
+    st.append(dict(identity_jname='J9999+9999', chain_outcome='no-route', tier='10s', qualifies='0'))
+    _wcsv(os.path.join(run, 'served_tiers.csv'), ['identity_jname', 'chain_outcome', 'tier', 'qualifies'], st)
     return run
 
 
@@ -322,34 +358,53 @@ def world(name='world', seed=31):
 # production's side and the stage's side
 # ---------------------------------------------------------------------------------------------------------------------
 
+# THE PRODUCTION PIN (V_combview review F3; tests/production_pin.py): the production code this stage PORTS - the view's builder,
+# the deep-omission decisions it imports, the driver whose heredoc is ported - is read at the pinned exopipe_ops commit, so a later
+# production commit never breaks the stage's own tests; it shows up in test_production_pin. Production code the stage RUNS IN PLACE
+# (the chain's merge, snapshot_filter_catalog.py) is live on both sides.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import production_pin as PIN        # noqa: E402
+PINNED = ('snapshot_combined_view.py', 'snapshot_deep_omission.py', 'sublst_deep_omission.py',
+          'snapshot_batch/comb_build_20261102.sh')
+_PIN_DIR = []
+
+
+def pinned_ops():
+    """The directory holding the pinned production files (materialized once per test run, under SCRATCH)."""
+    if not _PIN_DIR:
+        _PIN_DIR.append(PIN.materialize(os.path.join(SCRATCH, 'production_pin'), PINNED))
+    return _PIN_DIR[0]
+
+
 PROD_HARNESS = r'''
 import os, runpy, sys
-OPS = '/lustre/gh/main/exopipe_ops'
-rdir, proto, out, runs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+pin, rdir, proto, out, runs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
 sys.path[:] = [p for p in sys.path if p not in ('', os.path.dirname(os.path.abspath(__file__)))]
-sys.path.insert(0, OPS)
-import snapshot_deep_omission as SDO
+sys.path.insert(0, pin)                 # the PINNED snapshot_deep_omission (+ the sublst_deep_omission beside it) is imported
+import snapshot_deep_omission as SDO    # first: the builder's own `import snapshot_deep_omission` then finds it cached
+assert os.path.dirname(os.path.abspath(SDO.__file__)) == os.path.abspath(pin), SDO.__file__
 SDO.decide.__defaults__ = (rdir, proto)
-sys.argv = [os.path.join(OPS, 'snapshot_combined_view.py'), out] + runs
-runpy.run_path(os.path.join(OPS, 'snapshot_combined_view.py'), run_name='__main__')
+sys.argv = [os.path.join(pin, 'snapshot_combined_view.py'), out] + runs
+runpy.run_path(os.path.join(pin, 'snapshot_combined_view.py'), run_name='__main__')
 '''
 
 
 def prod_driver_heredoc():
-    """The driver's step-2 heredoc (comb_build_20261102.sh, between <<'PYC' and PYC), verbatim."""
-    src = open(os.path.join(OPS, 'snapshot_batch', 'comb_build_20261102.sh')).read()
+    """The driver's step-2 heredoc (comb_build_20261102.sh at the pin, between <<'PYC' and PYC), verbatim."""
+    src = open(os.path.join(pinned_ops(), 'snapshot_batch', 'comb_build_20261102.sh')).read()
     return src.split("<<'PYC'", 1)[1].split('\nPYC\n', 1)[0].split('\n', 1)[1]
 
 
 def prod_view(root, rdir, proto, runs, batch_dir, out):
-    """Production's builder + the driver's filter catalogue and heredoc into ``out`` (production's interpreter)."""
+    """Production's builder (pinned) + the driver's filter catalogue (in place, live) and heredoc (pinned) into ``out``
+    (production's interpreter)."""
     h = os.path.join(root, 'prod_harness.py')
     with open(h, 'w') as f:
         f.write(PROD_HARNESS)
     env = dict(os.environ, NUMPY_MADVISE_HUGEPAGE='0')
     for k in [k for k in env if k.startswith(('P3_', 'SNAP', 'EXOPIPE3_'))]:
         env.pop(k)
-    r = subprocess.run([PY36, '-u', h, rdir, proto, out] + runs, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    r = subprocess.run([PY36, '-u', h, pinned_ops(), rdir, proto, out] + runs, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        universal_newlines=True, env=env, cwd=root, timeout=1800)
     assert r.returncode == 0 and 'COMBINED-VIEW-OK' in r.stdout, r.stdout[-3000:]
     stores = [os.path.join(batch_dir, f'rechain_{os.path.basename(x)}', 'fits_store.csv') for x in runs]
@@ -407,12 +462,20 @@ def compare_views(a, b):
 
 # ---------------------------------------------------------------------------------------------------------------------
 
+def test_production_pin():
+    """THE EXPLICIT DRIFT TEST (V_combview review F3): the production files this stage ports are the pinned ones
+    (tests/production_pin.py). When production changes one, this test fails, naming the files and the commits to port - the
+    stage's own tests keep running against the pin. Moving the pin is the port of those commits."""
+    d = PIN.drift(PINNED)
+    assert not d, PIN.drift_message(d)
+
+
 def test_drift():
-    """The port's texts, patterns and layout are production's (read as text)."""
+    """The port's texts, patterns and layout are production's at the pin (read as text)."""
     SV = _SV()
     from exopipe.phase3.lib.catalog import deep_omission as DO
-    src = open(os.path.join(OPS, 'snapshot_combined_view.py')).read()
-    drv = open(os.path.join(OPS, 'snapshot_batch', 'comb_build_20261102.sh')).read()
+    src = open(os.path.join(pinned_ops(), 'snapshot_combined_view.py')).read()
+    drv = open(os.path.join(pinned_ops(), 'snapshot_batch', 'comb_build_20261102.sh')).read()
     flat = src.replace('"\n                     "', '').replace('"\n                    "', '').replace('"\n                       "', '')
     for txt in ('# queue_name: snapshot Stokes %s, %s tier - COMBINED VIEW of %d served batches\\n',
                 '# run: %s (combined view; batches %s)\\n',
@@ -463,21 +526,30 @@ _W = {}
 
 
 def shared_world():
-    """The parity world, built once (production's view and the stage's), reused by the later tests."""
+    """The world and the STAGE's view (omit, build, filtercat), built once - production's side is not involved (F3: the stage's
+    own tests never wait on production's builder); test_parity and test_repoint_pinned add production's view (prod_world)."""
     if not _W:
         root, rdir, proto, runs, batch_dir = world()
-        prod_out = os.path.join(root, 'prod', VIEW)
-        log = prod_view(root, rdir, proto, runs, batch_dir, prod_out)
         r, port, out = port_view(root, rdir, proto, runs, batch_dir)
-        _W.update(root=root, rdir=rdir, proto=proto, runs=runs, batch_dir=batch_dir, prod=prod_out, port=port, out=out, cli=r,
-                  prod_log=log)
+        _W.update(root=root, rdir=rdir, proto=proto, runs=runs, batch_dir=batch_dir, port=port, out=out, cli=r)
+        assert r.returncode == 0, ('the stage\'s view of the shared world', r.returncode, r.stderr[-3000:])
     return _W
+
+
+def prod_world():
+    """shared_world + production's view of the same world (the pinned builder; built once)."""
+    W = shared_world()
+    if 'prod' not in W:
+        prod_out = os.path.join(W['root'], 'prod', VIEW)
+        W['prod_log'] = prod_view(W['root'], W['rdir'], W['proto'], W['runs'], W['batch_dir'], prod_out)
+        W['prod'] = prod_out
+    return W
 
 
 def test_parity():
     """Production's builder + driver steps 1-2 and the stage (omit, build, filtercat) on the synthetic world: equal views."""
     from exopipe.phase3.lib.catalog import deep_omission as DO
-    W = shared_world()
+    W = prod_world()
     r = W['cli']
     assert r.returncode == 0, (r.returncode, r.stderr[-3000:])
     diff = compare_views(W['prod'], W['port'])
@@ -498,19 +570,17 @@ def test_parity():
                                                                                                           '[IV]', '*'))), [])), \
         'a panel-name clash gets the batch tag'
     # the stage's records: every unit done, every content test passed
-    recs = {}
-    for p in glob.glob(os.path.join(W['out'], '_records', 'serve', '*.json')):
-        j = json.load(open(p))
-        if isinstance(j, dict) and 'unit' in j:
-            recs[j['unit']] = j
+    recs = unit_records(W['out'])
     for st in ('omit', 'build', 'filtercat'):
         j = recs.get(f'snapshot_{VIEW}_{st}')
         assert j and j['status'] == 'done', (st, j and (j['status'], j['reason']))
         assert j['tests'] and all(t['passed'] for t in j['tests']), [t for t in j['tests'] if not t['passed']][:2]
     names_t = {t['name'] for t in recs[f'snapshot_{VIEW}_build']['tests']}
-    for t in ('snapshot_view.files', 'snapshot_view.queues', 'snapshot_view.pages', 'snapshot_view.identities',
-              'snapshot_view.record'):
+    for t in ('snapshot_view.files', 'snapshot_view.queues', 'snapshot_view.pages', 'snapshot_view.panels',
+              'snapshot_view.identities', 'snapshot_view.record', 'G-V8_decisions_current',
+              'G-V3 omission_served.served_counts_add_up'):
         assert t in names_t, (t, names_t)
+    assert 'omission_served.served_counts_add_up' in {t['name'] for t in recs[f'snapshot_{VIEW}_omit']['tests']}
     assert recs[f'snapshot_{VIEW}_build']['meta']['build']['stale_best'] >= 1      # PRODUCTION BUG RP counted (J0530+3500)
     # the omit product is the deep-omission stage's (deep_omission.csv = the view's, byte for byte)
     od = os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW)
@@ -524,7 +594,7 @@ def test_repoint_pinned():
     re-pointed only when its best_cand_id is a detection cand_id (J0545+3700, a synthetic row); with production's best_cand_id
     '<identity>_<cell>_<band>' (J0530+3500) it keeps the omitted detection's best_snr and ts. When production's owner fixes it
     and the port follows, these asserts change on purpose."""
-    W = shared_world()
+    W = prod_world()
     for view in (W['prod'], W['port']):
         rows = {r['source_id']: r for r in _rows(os.path.join(view, 'source_catalogs_I_10s', '46MHz_sources_survivors.csv'))}
         rp = rows['J0545+3700_46MHz']
@@ -569,7 +639,9 @@ def _build_job(W, omit_dir, out, runs=None, copy_fallback=False):
 
 
 def test_kept_refusals():
-    """G-K and G-V3 / G-V4: the build refuses a kept product that does not apply exactly, and moves nothing into place."""
+    """G-K and G-V3 / G-V4: the build refuses a kept product that does not apply exactly, and moves nothing into place; a
+    refusal after the build made its .part moves the .part aside to <view>.refused_<UTC> (F7: the view name stays free, nothing
+    is deleted); a .part the build did not make (G-V2) is never touched."""
     W = shared_world()
     cases = []
 
@@ -587,7 +659,24 @@ def test_kept_refusals():
         out = os.path.join(W['root'], 'refused', name, VIEW)
         rc, log = _build_job(W, d, out)
         assert rc == 2 and 'REFUSING' in log and want in log, (name, rc, log[-1500:])
-        assert not os.path.exists(out), (name, 'a refused build left its view')
+        assert not os.path.exists(out) and not os.path.exists(out + '.part'), (name, 'a refused build left its view or .part')
+        aside = glob.glob(out + '.refused_*')
+        assert len(aside) == (1 if 'moved aside to' in log else 0), (name, aside, log[-600:])
+        if name != 'moved':          # refused after the .part was made (step 0 refuses 'moved' before): moved aside (F7)
+            assert aside and os.path.isdir(os.path.join(aside[0], 'source_catalogs')) and aside[0] in log, (name, aside, log[-600:])
+    # G-V2 in the child: a .part this build did not make (another build's, running or refused) stays where it is
+    out = os.path.join(W['root'], 'refused', 'other_part', VIEW)
+    os.makedirs(out + '.part')
+    rc, log = _build_job(W, os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW), out)
+    assert rc == 2 and 'G-V2' in log and os.path.isdir(out + '.part') and not glob.glob(out + '.refused_*'), log[-800:]
+    # G-V4, the counts (F5): served counts that are not the served set's (the child; the step side's K5 refuses them earlier)
+    d = _mutated_omit(W, 'counts', lambda rr: None)
+    sp = os.path.join(d, 'deep_omission_served.csv')
+    rr = _rows(sp)
+    rr[0]['n'] = str(int(rr[0]['n']) + 1)
+    _wcsv(sp, list(rr[0]), rr)
+    rc, log = _build_job(W, d, os.path.join(W['root'], 'refused', 'counts', VIEW))
+    assert rc == 2 and "G-V4 the omit product's served counts" in log, log[-800:]
     # G-V3: the omit product of other runs (the runs reversed)
     od = os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW)
     rc, log = _build_job(W, od, os.path.join(W['root'], 'refused', 'order', VIEW), runs=list(reversed(W['runs'])))
@@ -611,7 +700,9 @@ def test_kept_refusals():
 
 
 def test_gates():
-    """G-V1, G-V2, G-V5, G-V6 and the --view-omit / --stages omit conflict, through the real CLI (exit 2, nothing written)."""
+    """G-V1, G-V2, G-V5, G-V6 and the --view-omit / --stages omit conflict, through the real CLI (exit 2, nothing written).
+    G-V2 refuses BEFORE any stage when omit or build is asked (V_combview review F2): an existing view's omit product is its
+    product of record, never rewritten by a re-run of its name."""
     W = shared_world()
     root, runs = W['root'], W['runs']
     base = ['serve', '--tier', 'snapshot', '--family', 'comb', '--set', f'catalog_omission.REFUSALS={W["rdir"]}', '--cores',
@@ -626,10 +717,30 @@ def test_gates():
                          'do not also run the omit stage')):
         r = _cli(*base, *extra, '--out', gout)
         assert r.returncode == 2 and want in r.stderr, (extra, r.returncode, r.stderr[-600:])
-    # G-V2: the view exists (the parity view of this world)
-    r = _cli(*base, '--run', VIEW, '--view-runs', ','.join(runs), '--out', W['out'], '--stages', 'build',
+    # G-V2: the view exists (the stage's view of this world) - for omit,build, omit alone and build alone the gate refuses
+    # before any stage: the omit product of the existing view is not rewritten (the reviewer's case O1: a refusal file added
+    # to the record, the same command again), its files' bytes and times unchanged (F2)
+    od = os.path.join(W['out'], 'snapshot', 'deep_omission', VIEW)
+
+    def state(d):
+        return {f: (os.stat(os.path.join(d, f)).st_mtime_ns, open(os.path.join(d, f), 'rb').read()) for f in sorted(os.listdir(d))}
+    rdir2 = shutil.copytree(W['rdir'], os.path.join(root, 'gates_refusals'))
+    with open(os.path.join(rdir2, '06h_55MHz_searchtier_excluded.csv'), 'w') as f:
+        f.write('06h,55MHz,%s,V,9.0,4.0,%s\n' % (NIGHTS[2], TAG))
+    before = state(od)
+    time.sleep(1.1)
+    for st in ('omit,build', 'omit', 'build'):
+        r = _cli(*base, '--run', VIEW, '--view-runs', ','.join(runs), '--out', W['out'], '--stages', st,
+                 '--set', f'catalog_snapshot.BATCH_DIR={W["batch_dir"]}', '--set', f'catalog_omission.REFUSALS={rdir2}')
+        assert r.returncode == 2 and 'G-V2' in r.stderr and 'exists' in r.stderr, (st, r.returncode, r.stderr[-600:])
+    assert state(od) == before, 'the existing view\'s omit product was rewritten'
+    # a .part alone (a build running, or one that failed) blocks the name the same way, before anything is written
+    gp = os.path.join(gout, 'snapshot', 'Run_SNAPCOMB_GP')
+    os.makedirs(gp + '.part')
+    r = _cli(*base, '--run', 'Run_SNAPCOMB_GP', '--view-runs', ','.join(runs), '--out', gout, '--stages', 'omit,build',
              '--set', f'catalog_snapshot.BATCH_DIR={W["batch_dir"]}')
     assert r.returncode == 2 and 'G-V2' in r.stderr, r.stderr[-600:]
+    assert not os.path.exists(os.path.join(gout, 'snapshot', 'deep_omission', 'Run_SNAPCOMB_GP')) and not os.path.exists(gp)
     # G-V6: an injected run's products as a view run (the CLI's source-flag guard, then the stage's own)
     inj = os.path.join(root, 'inj')
     shutil.rmtree(inj, ignore_errors=True)
@@ -666,6 +777,205 @@ def test_gates():
         CFG.authorize()
     assert u.status == 'refused' and 'G-V5' in u.reason, (u.status, u.reason)
     assert not os.path.exists(plan.U) and flow.halts(u, 'build')
+
+
+def _copy_runs(W, name):
+    """Copies of the world's batch runs (to damage), in the view's order."""
+    d = os.path.join(W['root'], 'runs_' + name)
+    shutil.rmtree(d, ignore_errors=True)
+    return [shutil.copytree(r, os.path.join(d, os.path.basename(r)), symlinks=True) for r in W['runs']]
+
+
+def _view_cli(W, runs, out, stages, rdir=None, proto=None, extra=()):
+    return _cli('serve', '--tier', 'snapshot', '--family', 'comb', '--run', VIEW, '--view-runs', ','.join(runs), '--out', out,
+                '--set', f'catalog_omission.REFUSALS={rdir or W["rdir"]}', '--set', f'paths.SNAPSHOT_FLEET_OUT={proto or W["proto"]}',
+                '--set', f'catalog_snapshot.BATCH_DIR={W["batch_dir"]}', '--stages', stages, '--cores', 'none', *extra)
+
+
+def lose_tier_catalogue(runs):
+    """I3: batch A's I 10-s 46 MHz per-tier catalogue lost (survivors and members) - its identities with no other I/V 10-s
+    source leave the 10-s tier unrecorded (production: every stage done, every test passed)."""
+    for fn in ('46MHz_sources_survivors.csv', '46MHz_source_members.csv'):
+        os.remove(os.path.join(runs[0], 'source_catalogs_I_10s', fn))
+
+
+def lose_page_detections(runs):
+    """I2: a KEPT per-tier source's page detections.csv lost with its member rows (batch A, J0600+2500 23 MHz I 10 s) -
+    production records it as 'source dropped ... every detection omitted', an input defect booked to the deep rule."""
+    os.remove(os.path.join(runs[0], 'candidates', 'I', 'J0600+2500_23MHz', 'detections.csv'))
+    mp = os.path.join(runs[0], 'source_catalogs_I_10s', '23MHz_source_members.csv')
+    _wcsv(mp, ['source_id', 'cand_id', 'det_snr', 'det_date', 'band'],
+          [x for x in _rows(mp) if not x['source_id'].startswith('J0600+2500_')])
+
+
+def test_incomplete_inputs():
+    """F4 (V_combview review): a batch run copied or re-served incompletely refuses - at the omit stage (G4b: a batch's per-tier
+    survivors are not exactly the identities its served_tiers.csv serves per tier; G4c: a kept per-tier source whose page holds
+    no detection) with nothing written, and in the build child on the same damage after the omit stage (G-V7). Never booked as
+    a deep omission, never a source lost unrecorded."""
+    W = shared_world()
+    for name, damage, want in (('I3', lose_tier_catalogue, 'G4b: T2A tier 10s'),
+                               ('I2', lose_page_detections, 'G4c: T2A source_catalogs_I_10s source J0600+2500_23MHz')):
+        runs = _copy_runs(W, name)
+        damage(runs)
+        out = os.path.join(W['root'], 'inc_out_' + name)
+        r = _view_cli(W, runs, out, 'omit')
+        assert r.returncode == 2 and want in r.stderr, (name, r.returncode, r.stderr[-800:])
+        assert not os.path.exists(os.path.join(out, 'snapshot', 'deep_omission', VIEW)), (name, 'the refused omit wrote')
+        # the same damage AFTER the omit stage (the product of the intact runs, re-pointed to the damaged copies): the child
+        old = {os.path.abspath(a): b for a, b in zip(W['runs'], runs)}
+
+        def repoint(rr):
+            for x in rr:
+                x['run'] = old.get(x['run'], x['run'])
+        d = _mutated_omit(W, 'inc_' + name, repoint)
+        sj = json.load(open(os.path.join(d, 'deep_omission_summary.json')))
+        sj['runs'] = runs
+        json.dump(sj, open(os.path.join(d, 'deep_omission_summary.json'), 'w'))
+        bout = os.path.join(W['root'], 'inc_build_' + name, VIEW)
+        rc, log = _build_job(W, d, bout, runs=runs)
+        want_c = 'G-V7 T2A tier 10s' if name == 'I3' else 'G-V7 T2A source_catalogs_I_10s source J0600+2500_23MHz'
+        assert rc == 2 and want_c in log, (name, rc, log[-1200:])
+        assert not os.path.exists(bout) and not os.path.exists(bout + '.part'), name
+
+
+def test_stale_omit():
+    """F5 (V_combview review): the build applies only an omit product whose decisions are CURRENT - G-V8 re-decides from the
+    refusal record and fleet records the build reads (with the served counts the product records) and refuses a product
+    decided from another record, a refusal added after the omit stage, a noise table rewritten after it; K5 (the omit
+    product's content test) refuses served counts that are not its kept + omitted detections. Nothing is built."""
+    W = shared_world()
+    rdir = shutil.copytree(W['rdir'], os.path.join(W['root'], 'stale_refusals'))
+    proto = shutil.copytree(W['proto'], os.path.join(W['root'], 'stale_fleet'))
+    out = os.path.join(W['root'], 'stale_out')
+    view = os.path.join(out, 'snapshot', VIEW)
+    r = _view_cli(W, W['runs'], out, 'omit', rdir=rdir, proto=proto)
+    assert r.returncode == 0, r.stderr[-2000:]
+
+    def refused_g_v8(want, **kw):
+        r = _view_cli(W, W['runs'], out, 'build', **kw)
+        assert r.returncode == 2 and 'G-V8' in r.stderr and want in r.stderr, (want, r.returncode, r.stderr[-800:])
+        assert not os.path.exists(view) and not os.path.exists(view + '.part')
+        u = unit_records(out)[f'snapshot_{VIEW}_build']
+        assert u['status'] == 'refused' and u['reason'].startswith('G-V8'), (u['status'], u['reason'][:300])
+    refused_g_v8('was decided from the refusal record', rdir=W['rdir'], proto=proto)      # another record than the product's
+    extra = os.path.join(rdir, '06h_55MHz_searchtier_excluded.csv')
+    with open(extra, 'w') as f:                                                         # a refusal added after the omit stage
+        f.write('06h,55MHz,%s,V,9.0,4.0,%s\n' % (NIGHTS[2], TAG))
+    refused_g_v8('the omit product is stale', rdir=rdir, proto=proto)
+    os.remove(extra)
+    p = os.path.join(proto, f'05h_{NIGHTS[0]}', 'noise_46MHz_I_median.csv')             # a noise table rewritten after it
+    keep = open(p, 'rb').read()
+    _wcsv(p, NOISE_COLS, [dict(x, global_rms_jyb='%.6f' % (float(x['global_rms_jyb']) / 4.0)) for x in _rows(p)])
+    refused_g_v8('the omit product is stale', rdir=rdir, proto=proto)
+    open(p, 'wb').write(keep)
+    # K5: served counts tampered (a copy of the product, given with --view-omit)
+    od = os.path.join(out, 'snapshot', 'deep_omission', VIEW)
+    d = shutil.copytree(od, os.path.join(W['root'], 'stale_counts'))
+    sp = os.path.join(d, 'deep_omission_served.csv')
+    rr = _rows(sp)
+    rr[0]['n'] = str(int(rr[0]['n']) + 1)
+    _wcsv(sp, list(rr[0]), rr)
+    r = _view_cli(W, W['runs'], out, 'build', rdir=rdir, proto=proto, extra=('--view-omit', d))
+    assert r.returncode == 2 and 'G-V3' in r.stderr, r.stderr[-800:]
+    u = unit_records(out)[f'snapshot_{VIEW}_build']
+    bad = [t for t in u['tests'] if not t['passed']]
+    assert any(t['name'] == 'G-V3 omission_kept.kept_product_follows_the_drop' and 'K5' in str(t['detail']) for t in bad), bad
+    assert any(t['name'] == 'G-V3 omission_served.served_counts_add_up' for t in bad), bad
+    assert not os.path.exists(view)
+
+
+M1_OLD = """                        if skip:
+                            REC.append(dict(kind='panel', batch=TAG[r], source=row['source_id'], stokes=S, tier=T,
+                                            band=pm.group(3), note=fn))
+                            continue
+"""
+M1_NEW = """                        if skip:
+                            REC.append(dict(kind='panel', batch=TAG[r], source=row['source_id'], stokes=S, tier=T,
+                                            band=pm.group(3), note=fn))
+"""
+
+
+def test_m1_mutation():
+    """F1, PROVEN on the reviewer's mutation M1 (V_combview review; RV/tools/mutate.py): a private copy of this tree whose build
+    records an omitted panel as dropped but links it anyway (the `continue` removed) - the kept product and the build agree,
+    production's T3 counts in the same loop, V5 counts the record. Before F1 every stage ended done and every test passed, the
+    view serving 4 panel files of the OMIT key 05h 2025-06-01 46 MHz I 10 s. Now the build's read-back refuses (V3: the panels'
+    own keys; V7: the page's files against its member batch sources' less the panel drops), the built view is moved aside (F7)
+    and nothing is left under its name."""
+    W = shared_world()
+    tree_m1 = os.path.join(SCRATCH, 'm1_tree')
+    shutil.rmtree(tree_m1, ignore_errors=True)
+    shutil.copytree(REPO, tree_m1, ignore=shutil.ignore_patterns('.git', '__pycache__', 'tests', 'docs'))
+    p = os.path.join(tree_m1, 'exopipe', 'phase3', 'lib', 'serve', 'snapshot_view.py')
+    src = open(p).read()
+    assert src.count(M1_OLD) == 1, 'the M1 anchor moved: update M1_OLD to the panel loop of snapshot_view.build'
+    open(p, 'w').write(src.replace(M1_OLD, M1_NEW))
+    out = os.path.join(W['root'], 'm1_out')
+    r = _cli('serve', '--tier', 'snapshot', '--family', 'comb', '--run', VIEW, '--view-runs', ','.join(W['runs']), '--out', out,
+             '--set', f'catalog_omission.REFUSALS={W["rdir"]}', '--set', f'paths.SNAPSHOT_FLEET_OUT={W["proto"]}',
+             '--set', f'catalog_snapshot.BATCH_DIR={W["batch_dir"]}', '--stages', 'omit,build,filtercat', '--cores', 'none',
+             repo=tree_m1)
+    view = os.path.join(out, 'snapshot', VIEW)
+    recs = unit_records(out)
+    assert recs[f'snapshot_{VIEW}_omit']['status'] == 'done', recs[f'snapshot_{VIEW}_omit']['reason']
+    u = recs[f'snapshot_{VIEW}_build']
+    assert r.returncode == 2 and u['status'] == 'refused', (r.returncode, u['status'], u['reason'][:500], r.stderr[-1500:])
+    assert 'fails its read-back tests' in u['reason'] and 'snapshot_view.pages' in u['reason'] and \
+        'snapshot_view.panels' in u['reason'], u['reason'][:600]
+    bad = {t['name']: str(t['detail']) for t in u['tests'] if not t['passed']}
+    assert 'panels of an omitted instant are served' in bad['snapshot_view.pages'], bad
+    assert 'files no member batch source keeps' in bad['snapshot_view.panels'], bad
+    assert set(bad) == {'snapshot_view.pages', 'snapshot_view.panels'}, sorted(bad)          # the rest of the view is right
+    assert f'snapshot_{VIEW}_filtercat' not in recs and not os.path.exists(view) and not os.path.exists(view + '.part')
+    aside = glob.glob(view + '.refused_*')
+    assert len(aside) == 1 and aside[0] in u['reason'], (aside, u['reason'][:400])
+    served = [os.path.relpath(x, aside[0]) for x in glob.glob(os.path.join(aside[0], 'candidates', 'I', 'J0530p3500_46MHz',
+                                                                          f'rank0001_05h_{NIGHTS[0]}_46MHz*'))]
+    assert served, 'the mutation linked no omitted panel: M1 did not act'
+    # control: the unmutated stage's view of the same world passes both (test_parity: every content test passed)
+
+
+def test_figure_seed():
+    """F10 (V_combview review): the localize stage runs snapshot_localize_tiers.sh with PYTHONHASHSEED =
+    serve.SNAPSHOT_FIGURE_HASHSEED ('0'), over an inherited seed, besides the view's SNAPVIEW_LOC_ENV - the figure pool's workers
+    inherit it, so a figure is a function of its tables; '' leaves the seed as production has it (unset)."""
+    import types
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.serve import scripts, snapshot_copy
+    W = shared_world()
+    seen = []
+    real = scripts.run_shell
+
+    def fake(name, args, env=None, **kw):
+        seen.append((name, list(args), dict(env or {}), scripts._base_env(env)))
+        return 0, 'stub\nLOCALIZE-TIERS-OK\n'
+    out = os.path.join(W['root'], 'seed_out')
+    os.makedirs(out, exist_ok=True)
+    plan = types.SimpleNamespace(U=os.path.join(out, 'snapshot', VIEW), run_name=VIEW, out=out)
+    inherited = os.environ.get('PYTHONHASHSEED')
+    os.environ['PYTHONHASHSEED'] = '7'
+    scripts.run_shell = fake
+    try:
+        CFG.authorize(out=out)
+        rr = record.Run('serve', ['test'], out, CFG)
+        snapshot_copy.localize_stage(rr, plan, env=dict(CFG.serve.SNAPVIEW_LOC_ENV))
+        CFG.set('serve.SNAPSHOT_FIGURE_HASHSEED', '')
+        snapshot_copy.localize_stage(rr, plan, env=dict(CFG.serve.SNAPVIEW_LOC_ENV))
+    finally:
+        scripts.run_shell = real
+        CFG.reset()
+        CFG.authorize()
+        if inherited is None:
+            os.environ.pop('PYTHONHASHSEED', None)
+        else:
+            os.environ['PYTHONHASHSEED'] = inherited
+    (n1, a1, e1, b1), (n2, a2, e2, b2) = seen
+    assert n1 == n2 == 'snapshot_localize' and a1 == a2 == [plan.U]
+    assert e1 == dict(CFG.serve.SNAPVIEW_LOC_ENV, PYTHONHASHSEED='0') and b1['PYTHONHASHSEED'] == '0', (e1, b1.get('PYTHONHASHSEED'))
+    assert e2 == dict(CFG.serve.SNAPVIEW_LOC_ENV) and b2['PYTHONHASHSEED'] == '7', (e2, b2.get('PYTHONHASHSEED'))   # as production
+    assert all(b1[k] == v for k, v in CFG.serve.SNAPVIEW_LOC_ENV.items())
 
 
 def test_copy_fallback():
@@ -747,6 +1057,30 @@ def test_content():
         rr.remove(next(r for r in rr if r['kind'] == 'detection'))
         _wcsv(p, list(rr[0]), rr)
     mutated('record', record_off, 'record', "omitted detections are not the omit stage's")
+
+    # F1: a panel of an omitted instant served on a page (the batch's own file, as M1 links it): V3 by the panel's own key,
+    # V7 by the page's member batch sources' listing less the kept product's panel drops
+    omitted_panel = f'rank0001_05h_{NIGHTS[0]}_46MHz{NIGHTS[0].replace("-", "")}050120.png'
+    src_panel = os.path.join(W['runs'][0], 'candidates', 'I', 'J0530+3500_46MHz', omitted_panel)
+    assert os.path.isfile(src_panel) and os.path.isdir(os.path.join(W['port'], 'candidates', 'I', 'J0530p3500_46MHz'))
+    assert not os.path.exists(os.path.join(W['port'], 'candidates', 'I', 'J0530p3500_46MHz', omitted_panel))
+
+    def panel_served(d):
+        shutil.copy2(src_panel, os.path.join(d, 'candidates', 'I', 'J0530p3500_46MHz', omitted_panel))
+    mutated('panel_om', panel_served, 'pages', 'panels of an omitted instant are served')
+    mutated('panel_om7', panel_served, 'panels', 'files no member batch source keeps')
+
+    def panel_lost(d):                  # a kept panel missing from its page
+        pd = os.path.join(d, 'candidates', 'I', 'J0530p3500_46MHz')
+        os.remove(os.path.join(pd, sorted(fn for fn in os.listdir(pd) if fn.startswith('rank') and fn.endswith('.png'))[0]))
+    mutated('panel_lost', panel_lost, 'panels', "member batch sources' kept panels missing")
+
+    def panel_foreign(d):               # a kept panel of another source's page linked onto this one (F6's case, read back)
+        a = os.path.join(d, 'candidates', 'I', 'J0545p3700_46MHz')
+        b = os.path.join(d, 'candidates', 'I', 'J0530p3500_46MHz')
+        fn = sorted(x for x in os.listdir(a) if x.startswith('rank'))[0]
+        shutil.copy2(os.path.join(a, fn), os.path.join(b, fn))
+    mutated('panel_foreign', panel_foreign, 'panels', 'files no member batch source keeps')
     # the card2 union and the per-detection filter catalogue
     c2 = os.path.join(W['port'], 'card2_filter.csv')
     assert validate.run('snapshot_card2_union', c2, runs=W['runs'])[0]['passed']
@@ -788,8 +1122,8 @@ def test_ready():
     assert any(n.startswith('VIEW-READY-FOR-HIDES') for n in u.notes), u.notes
 
 
-TESTS = [test_drift, test_py36, test_parity, test_repoint_pinned, test_kept_refusals, test_gates, test_copy_fallback,
-         test_content, test_ready]
+TESTS = [test_production_pin, test_drift, test_py36, test_parity, test_repoint_pinned, test_kept_refusals, test_gates,
+         test_incomplete_inputs, test_stale_omit, test_copy_fallback, test_content, test_m1_mutation, test_figure_seed, test_ready]
 
 
 def main(argv):
