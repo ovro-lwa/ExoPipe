@@ -37,7 +37,7 @@ honesty, not a choice of draw") RULES the Monte Carlo keys:
 - `TAPER_CTL_MAX`: every eligible taper control line (no 900 cap);
 - `BOOT_DRAW`, `BOOT_Z_SE`, `BOOT_MAX`: the centroid's bootstrap per target, until its z is precise to 0.02;
 - `KNIFE_EDGE_SE`: the knife-edge flag;
-- `KNIFE_EDGE_DRAWS`: a flagged row's published outcome is the majority of 20 Monte Carlo draws.
+- `KNIFE_EDGE_DRAWS`, `KNIFE_EDGE_DECIDE`: a flagged row is decided only by 20 Monte Carlo draws of the method (Wilson 95%).
 
 The other three defaults that differ from production are PROPOSED (see the deliberate differences below).
 
@@ -179,7 +179,7 @@ results also do not depend on the number of processes. `wide_test` refuses more 
 files. It pools burst files of one search only: every `W_search` record must have read the current `jobs.json` and the
 selected cutout generation (W-POOL).
 
-### Monte Carlo errors, the knife-edge flag (`KNIFE_EDGE_SE` = 4) and the majority of draws (`KNIFE_EDGE_DRAWS` = 20)
+### Monte Carlo errors, the knife-edge flag (`KNIFE_EDGE_SE` = 4) and the decision by draws (`KNIFE_EDGE_DRAWS` = 20)
 
 Two parts of the method are random draws: the control lines' directions and the centroid's bootstrap. A verdict can
 therefore sit on a threshold within the method's own Monte Carlo noise. Each row's `knife_edge` column names every
@@ -214,25 +214,33 @@ served outcome comes out in 6-13 of 20, the new one in 7-14. With `KNIFE_EDGE_SE
 row the salts showed flipping, for 17 flags in 312 rows; with 2 they give 13. Hence the default 4 (the refactor chat,
 2026-11-04).
 
-**A flagged row is published as the majority of 20 draws** (`KNIFE_EDGE_DRAWS`; the refactor chat's decision, 2026-11-04).
-One draw cannot decide such a row, so `analyze_all` re-runs the approved method itself (8 lines per source, `CTL_DIRS`) for
-it 20 more times. Each draw k < 20 has its own salt in place of `SEED`: a stable hash (sha256) of (`SEED`, the target's
-(Stokes, identity), k). The salts are fixed and recorded (the unit's `draw_salt`), so the result is reproducible and
-independent of the job list's order. Then:
+**A flagged row is DECIDED only when the method's own draws decide it** (`KNIFE_EDGE_DRAWS` 20, `KNIFE_EDGE_DECIDE` 0.95; the
+refactor chat's decisions, 2026-11-04). One draw cannot decide such a row, so `analyze_all` re-runs the approved method itself
+(8 lines per source, `CTL_DIRS`) 20 more times for it. Each draw k < 20 has its own salt in place of `SEED`: a stable hash
+(sha256) of (`SEED`, the target's (Stokes, identity), k). The salts are fixed and recorded (the unit's `draw_salt`), so the
+result is reproducible and independent of the job list's order. Then:
 
-- **The published verdict and set of named sources** are the most frequent outcome of the 20 (a plurality).
-- **The row's other columns** come from the default draw when its outcome is the majority's (`mc_row` = `default`). Otherwise
-  they come from the first draw that has it (`draw k`), with that draw's candidate rows, so each row stays self-consistent.
+- **The verdict class** (the verdict string) is published only when the Wilson 95% interval of its fraction of the 20 draws
+  lies wholly above one half. At K = 20 that means 15 of 20 or more.
+- **Otherwise the row is published as** "UNDECIDED (knife-edge: the method's random draws split - <class> in a of 20,
+  <class> in b of 20)". It names no source, keeps the default draw's numbers (`mc_row` = `split`), and leaves `mc_draws`
+  empty, because the verdict holds the split.
+- **A source is named** only when it is named in a decided fraction of the 20 draws (15 or more). A source named in an
+  undecided fraction (6 to 14) goes to `named_knife_edge` ("knife-edge: VLSSr J... named in 9 of 20 draws") and never into
+  `named` or `named_radec`. One named in 5 or fewer is decidedly not named.
+- **A naming class decided with no source decidedly named** is published as a split, with "no source named in a decided
+  majority". It does not occur on gen5.
+- **A decided row's other columns** come from the default draw when its verdict and named set are exactly the decided ones
+  (`mc_row` = `default`). Otherwise they come from the first draw that has them (`draw k`), with that draw's candidate rows,
+  so each row stays self-consistent. `mc_draws` gives the fractions: "CONSISTENT WITH A BACKGROUND SOURCE in 20 of 20 Monte
+  Carlo draws; named: VLSSr J105425.8+715204 in 20 of 20, VLSSr J105246.5+715924 in 19 of 20".
 - **`knife_edge`** is always the default draw's: it is what flagged the row.
-- **A tie** (two or more outcomes most frequent) is published UNDECIDED with no named source, with the default draw's
-  numbers (`mc_row` = `tie`).
-- **`mc_draws`** says it in words: `CONSISTENT WITH A BACKGROUND SOURCE (VLSSr J105425.8+715204, VLSSr J105246.5+715924) in 14
-  of 20 Monte Carlo draws`, or `a tie of 20 Monte Carlo draws, 10 each: <outcome>; <outcome>`.
-- **`mc_outcomes`** counts every outcome, most frequent first (`14: <outcome> | 6: <outcome>`).
+- **`mc_outcomes`** counts every outcome (verdict and named set), most frequent first. Equal counts are ordered by name, so
+  the decision depends on the counts alone.
 - **Unflagged rows** keep their single draw.
 
-With the flag, `results_v3.csv`, and so `forced_wide_v3.csv`, gain `bootstrap_n`, `centroid_z_se`, `knife_edge`, `mc_draws`,
-`mc_outcomes` and `mc_row`. `candidates_v3.csv` gains `p_emp_se`, `ratio_se`, `n_ctl_se` and `centroid_to_candidate_se`. With
+With the flag, `results_v3.csv`, and so `forced_wide_v3.csv`, gain `bootstrap_n`, `centroid_z_se`, `knife_edge`,
+`named_knife_edge`, `mc_draws`, `mc_outcomes` and `mc_row`. `candidates_v3.csv` gains `p_emp_se`, `ratio_se`, `n_ctl_se` and `centroid_to_candidate_se`. With
 `KNIFE_EDGE_SE` None (production) none of these columns is written. `KNIFE_EDGE_DRAWS` None (production's value) keeps
 every row a single draw.
 
@@ -257,7 +265,7 @@ Any other verdict keeps the position verdict, and the burst test's result is add
 the named sources.
 
 The figure does not read the knife-edge columns yet. `docs/pending_production_patch_forced_wide_knife_edge.diff` adds a
-flagged row's `mc_draws` and `knife_edge` text to the burst test's part of the reason. It is a patch to exopipe_ops'
+flagged row's `mc_draws`, `named_knife_edge` and `knife_edge` text to the burst test's part of the reason. It is a patch to exopipe_ops'
 `astrometry_assoc.forced_v3_verdict`, for the owning chat to apply. A row without them reads exactly as before (every
 served row and every unflagged row checked).
 
@@ -277,7 +285,7 @@ Carlo keys are decided (2026-11-04). Production's values of all nine are in
 | `forced_wide_test.BOOT_DRAW` | `target` | `job` | The bootstrap drew from the job's generator, after the control lines in production's order. Its own stable seed per (target, tier) keeps it free of every other draw. Decided (RULED): the amendment (2), "seeded per target". |
 | `forced_wide_test.BOOT_Z_SE` | `0.02` | `None` (exactly 1000 resamples) | At 1000 resamples the bootstrap alone moved a gen5 row's centroid z from 3.016 (the served draw) to 2.968 (round 3's draw), across the threshold 3 (Gaia DR3 3316364602541746048, I 1 min). Decided (RULED): the amendment (2). |
 | `forced_wide_test.KNIFE_EDGE_SE` | `4.0` | `None` (no Monte Carlo columns) | Decided (RULED): the amendment (3); 4 from the 20-salt flip check of the gen5 run (2026-11-04). |
-| `forced_wide_test.KNIFE_EDGE_DRAWS` | `20` | `None` (every row a single draw) | A flagged row's published outcome is the majority of 20 Monte Carlo draws. Production has no equivalent. Decided (RULED): the amendment, extended 2026-11-04. |
+| `forced_wide_test.KNIFE_EDGE_DRAWS` | `20` | `None` (every row a single draw) | A flagged row is re-run in 20 Monte Carlo draws and decided only by them (`KNIFE_EDGE_DECIDE`, a Wilson 95% interval above one half). Production has no equivalent. Decided (RULED): the amendment, extended 2026-11-04. |
 | `forced_wide_search.FILE_ERRORS` | `refuse` | `drop` | Gates refuse; production dropped a raising cutout. No gen5 cutout raised. |
 
 The night-activity bands table lists the nights of each (LST, band) in date order. The script iterated a set there, so

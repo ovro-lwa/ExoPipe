@@ -534,7 +534,7 @@ def stage_test(c):
                  if c.wt.BOOT_Z_SE is not None else ''),
               'off' if c.wt.KNIFE_EDGE_SE is None else 'within %g Monte Carlo errors%s' % (
                   c.wt.KNIFE_EDGE_SE, '' if c.wt.KNIFE_EDGE_DRAWS is None else
-                  ', its rows published as the majority of %d draws' % c.wt.KNIFE_EDGE_DRAWS),
+                  ', its rows decided by %d draws (Wilson %g)' % (c.wt.KNIFE_EDGE_DRAWS, c.wt.KNIFE_EDGE_DECIDE)),
               '; PARTIAL (--wide-only)' if c.only else ''))
     if c.dry:
         if workers > c.wt.MAX_WORKERS:
@@ -602,7 +602,8 @@ def stage_test(c):
             u.meta.update(n_knife_edge=sum(1 for r in rows if r.get('knife_edge')), n_bootstrapped=len(bn),
                           bootstrap_n_median=bn[len(bn) // 2] if bn else 0, bootstrap_n_max=bn[-1] if bn else 0,
                           bootstrap_short=short,
-                          draws={k: sum(1 for r in rows if r.get('mc_row', '').startswith(k)) for k in ('default', 'draw', 'tie')})
+                          draws={k: sum(1 for r in rows if r.get('mc_row', '').startswith(k)) for k in ('default', 'draw', 'split')},
+                          knife_edge_named=sum(1 for r in rows if r.get('named_knife_edge')))
             if short:
                 u.note('%d row(s) reached BOOT_MAX %d resamples with the centroid z\'s Monte Carlo error above BOOT_Z_SE %g '
                        '(their knife-edge test uses the error reached), e.g. %s' % (len(short), c.wt.BOOT_MAX, c.wt.BOOT_Z_SE,

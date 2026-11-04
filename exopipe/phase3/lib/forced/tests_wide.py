@@ -178,7 +178,7 @@ RESULT_COLUMNS = ('stokes', 'identity', 'target', 'tier', 'n_events', 'event_jy_
 # with the knife-edge flag (forced_wide_test.KNIFE_EDGE_SE set): the bootstrap's resamples, the centroid z's Monte Carlo error,
 # the flag, and a flagged row's Monte Carlo draws (KNIFE_EDGE_DRAWS: the majority's fraction, every outcome's count, where the
 # row's numbers come from)
-MC_RESULT_COLUMNS = ('bootstrap_n', 'centroid_z_se', 'knife_edge', 'mc_draws', 'mc_outcomes', 'mc_row')
+MC_RESULT_COLUMNS = ('bootstrap_n', 'centroid_z_se', 'knife_edge', 'named_knife_edge', 'mc_draws', 'mc_outcomes', 'mc_row')
 NAMING = ('BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE')
 _KE = re.compile(r'^(?P<stat>.+) (?P<v>-?[0-9.]+(?:e[-+]?[0-9]+)?) vs (?P<t>[0-9.]+(?:e[-+]?[0-9]+)?(?: and [0-9.]+(?:e[-+]?[0-9]+)?)?), '
                  r'Monte Carlo error (?P<se>[0-9.]+(?:e[-+]?[0-9]+)?)$')
@@ -216,7 +216,7 @@ def knife_edge_problems(r, k):
             out.append('knife-edge entry %r: an unknown statistic or threshold' % ent[:60])
         elif not all(se > 0 and abs(v - th) <= k * se * 1.05 + 0.006 for th in ths):
             out.append('knife-edge entry %r: not within %g errors of its threshold' % (ent[:60], k))
-        if st == 'centroid z' and r['centroid_z'] != '' and r.get('mc_row', '') in ('', 'default', 'tie') and (
+        if st == 'centroid z' and r['centroid_z'] != '' and r.get('mc_row', '') in ('', 'default', 'split') and (
                 abs(v - float(r['centroid_z'])) > 0.051 or abs(se - float(r['centroid_z_se'])) > 0.051 * se + 1e-4):
             out.append('knife-edge entry %r: the centroid z / error of the row are %s / %s' % (ent[:60], r['centroid_z'],
                                                                                               r['centroid_z_se']))
@@ -226,11 +226,14 @@ def knife_edge_problems(r, k):
 def verdict_problems(r, tol=0.05):
     """[problem] of one results row: its verdict against its own numbers (the rule of forced_wide_v3.verdict_row; the centroid
     z is written to 0.1, so a z within ``tol`` of a threshold may sit on either side)."""
-    from exopipe.phase3.lib.forced.wide_v3 import VERDICTS
+    from exopipe.phase3.lib.forced.wide_v3 import VERDICTS, SPLIT_PREFIX
     t = _cfg().forced_wide_test
     v = r['verdict']
     out = []
-    if v not in VERDICTS:
+    split = r.get('mc_row') == 'split'             # its draws split: UNDECIDED (knife-edge ...) whatever this draw's z
+    if split and not (v.startswith(SPLIT_PREFIX) and v.endswith(')')):
+        return ['a split row with the verdict %r' % v[:60]]
+    if v not in VERDICTS and not split:
         return ['verdict %r unknown' % v]
     by_band = sum(int(x.split(':')[1]) for x in r['bursts_by_band'].split()) if r['bursts_by_band'] else 0
     if by_band != int(r['bursts_at_target']):
@@ -243,7 +246,7 @@ def verdict_problems(r, tol=0.05):
         if not v.startswith('UNDECIDED (fewer than 3'):
             out.append('fewer than %d bursts / no centroid, verdict %s' % (t.MIN_NOBS, v))
         return out
-    tie = r.get('mc_row') == 'tie'                 # a tie of the Monte Carlo draws is UNDECIDED whatever this draw's z
+
     z = float(r['centroid_z'])
     hi = z >= t.Z_OFF - tol
     lo = z < t.Z_ON + tol
@@ -265,8 +268,8 @@ def verdict_problems(r, tol=0.05):
                         'NOT EXPLAINED BY A CATALOGED SOURCE (centered on the target)', 'UNDECIDED'}
         if mid:
             allowed |= {'BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE', 'UNDECIDED'}
-    if tie:
-        allowed = {'UNDECIDED'}
+    if split:
+        allowed = {v}
     if v not in allowed:
         out.append('centroid z %.1f with %d capable candidates allows %s, not %s' % (z, int(r['n_capable']), sorted(allowed), v))
     f, e = float(r['centroid_fwhm']), float(r['centroid_err_fwhm'])
@@ -285,41 +288,40 @@ def _parse_outcome(txt):
 
 def draws_problems(r, K):
     """[problem] of a row's Monte Carlo draws (K = the run's KNIFE_EDGE_DRAWS): exactly the knife-edge rows have them; their
-    counts add up to K, most frequent first; the published outcome is the most frequent one, its fraction in mc_draws; a tie is
-    UNDECIDED with no named source; mc_row names the default draw, a draw k < K, or the tie."""
-    from exopipe.phase3.lib.forced.wide_v3 import named_names, outcome_text
-    md, mo, mr = r['mc_draws'], r['mc_outcomes'], r['mc_row']
+    outcome counts (mc_outcomes) add up to K, most frequent first; and the row is what those counts DECIDE (wide_v3.
+    draws_decision, re-derived here from mc_outcomes): the decided verdict class and decidedly named sources with mc_draws,
+    or the split verdict with no named source; named_knife_edge = the sources named in an undecided fraction."""
+    from exopipe.phase3.lib.forced import wide_v3 as V3
+    md, mo, mr, nk = r['mc_draws'], r['mc_outcomes'], r['mc_row'], r.get('named_knife_edge', '')
     if not K or not r['knife_edge']:
-        return ['Monte Carlo draws on a row without them (no flag, or KNIFE_EDGE_DRAWS None)'] if (md or mo or mr) else []
-    if not (md and mo and mr):
+        return ['Monte Carlo draws on a row without them (no flag, or KNIFE_EDGE_DRAWS None)'] if (md or mo or mr or nk) else []
+    if not (mo and mr):
         return ['a knife-edge row without its Monte Carlo draws']
-    out, tally = [], []
+    out, outs = [], []
     for ent in mo.split(' | '):
         n, _sep, txt = ent.partition(': ')
         if not n.isdigit() or not txt:
             out.append('mc_outcomes entry %r' % ent[:60])
             continue
-        tally.append((int(n), txt))
-    if not tally:
-        return out
-    ns = [n for n, _t in tally]
-    if sum(ns) != K or ns != sorted(ns, reverse=True):
-        out.append('mc_outcomes count %d draws (not %d) or not most frequent first: %s' % (sum(ns), K, ns))
-    top = ns[0]
-    tied = [t for n, t in tally if n == top]
-    row_txt = outcome_text(r['verdict'], named_names(r['named']))
-    if mr == 'tie':
-        if len(tied) < 2 or r['verdict'] != 'UNDECIDED' or r['named']:
-            out.append('a tie row (%d outcomes at %d) published as %s %r' % (len(tied), top, r['verdict'], r['named'][:40]))
-        if md != 'a tie of %d Monte Carlo draws, %d each: %s' % (K, top, '; '.join(tied)):
-            out.append('mc_draws %r' % md[:80])
+        v_, names = _parse_outcome(txt)
+        outs += [(v_, sorted(names))] * int(n)
+    ns = [int(e.partition(': ')[0]) for e in mo.split(' | ') if e.partition(': ')[0].isdigit()]
+    if len(outs) != K or ns != sorted(ns, reverse=True):
+        return out + ['mc_outcomes count %d draws (not %d) or not most frequent first: %s' % (len(outs), K, ns)]
+    dec = V3.draws_decision(outs, K, _cfg().forced_wide_test.KNIFE_EDGE_DECIDE)
+    if nk != V3.knife_named_text(dec, K):
+        out.append('named_knife_edge %r, the draws give %r' % (nk[:60], V3.knife_named_text(dec, K)[:60]))
+    names_row = sorted(V3.named_names(r['named']))
+    if dec['cls'] is None:
+        if mr != 'split' or r['verdict'] != V3.split_verdict(dec, K) or r['named'] or md:
+            out.append('the draws split (%s) but the row reads %s / %r / %r / %r' % (
+                ', '.join('%s %d' % kv for kv in dec['classes'])[:80], mr, r['verdict'][:50], r['named'][:30], md[:30]))
     else:
-        if len(tied) != 1:
-            out.append('a tie of %d outcomes published as %s' % (len(tied), mr))
-        if _parse_outcome(tally[0][1]) != _parse_outcome(row_txt):
-            out.append('the row\'s outcome %r is not the most frequent %r' % (row_txt[:60], tally[0][1][:60]))
-        if md != '%s in %d of %d Monte Carlo draws' % (row_txt, top, K):
-            out.append('mc_draws %r' % md[:80])
+        if r['verdict'] != dec['cls'] or names_row != sorted(dec['named']):
+            out.append('the draws decide %s naming %s, the row reads %s naming %s' % (dec['cls'], sorted(dec['named']),
+                                                                                   r['verdict'], names_row))
+        if md != V3.decided_text(dec, K):
+            out.append('mc_draws %r, the draws give %r' % (md[:80], V3.decided_text(dec, K)[:80]))
         if not (mr == 'default' or (mr.startswith('draw ') and mr[5:].isdigit() and int(mr[5:]) < K)):
             out.append('mc_row %r' % mr)
     return out

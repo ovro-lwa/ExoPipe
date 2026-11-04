@@ -342,6 +342,9 @@ def mc_settings():
     d = c.KNIFE_EDGE_DRAWS
     if d is not None and not (isinstance(d, int) and not isinstance(d, bool) and d >= 2):
         raise ValueError('forced_wide_test.KNIFE_EDGE_DRAWS %r: None (the single draw) or an int >= 2' % (d,))
+    q = c.KNIFE_EDGE_DECIDE
+    if not (isinstance(q, float) and 0.5 <= q < 1.0):
+        raise ValueError('forced_wide_test.KNIFE_EDGE_DECIDE %r: a confidence in [0.5, 1)' % (q,))
     return c.BOOT_DRAW, c.BOOT_Z_SE, c.BOOT_MAX, c.KNIFE_EDGE_SE, c.KNIFE_EDGE_DRAWS
 
 
@@ -658,7 +661,7 @@ def analyze(J, events, pool, v2pool, bdir, trace=None, tiers=None, salt=None, fl
                 mc_errors(r)
             ks = knife_edges(J, tier, ev, cands, res, cen, row) if flag else []
             row.update(bootstrap_n=cen['boot_n'] if cen else '', centroid_z_se=round(cen['z_se'], 4) if cen else '',
-                       knife_edge=knife_text(ks), mc_draws='', mc_outcomes='', mc_row='')
+                       knife_edge=knife_text(ks), named_knife_edge='', mc_draws='', mc_outcomes='', mc_row='')
         rows.append(row)
         for r in res:
             crows.append(cand_row(J, tier, r))
@@ -1305,10 +1308,12 @@ def _one(i):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# THE KNIFE-EDGE ROWS' MAJORITY OUTCOME (forced_wide_test.KNIFE_EDGE_DRAWS; the refactor chat's decision under Gregg's delegation,
-# 2026-11-04, extending R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE): a flagged
-# row's published verdict and named set are the most frequent outcome of K independent Monte Carlo draws - the approved method
-# itself (8 lines per source, CTL_DIRS) with K other salts - published with its fraction; a tie is UNDECIDED
+# THE KNIFE-EDGE ROWS' DRAWS (forced_wide_test.KNIFE_EDGE_DRAWS, KNIFE_EDGE_DECIDE; the refactor chat's decisions under Gregg's
+# delegation, 2026-11-04, extending R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE): a
+# flagged row is re-run in K independent Monte Carlo draws - the approved method itself (8 lines per source, CTL_DIRS) with K
+# other salts - and DECIDED only when its own draws decide it: its verdict class and each named source by a Wilson interval of
+# their fraction wholly above 1/2 (K = 20 at 95%: 15 of 20); else "UNDECIDED (knife-edge: the method's random draws split ...)"
+# and a source named in an undecided fraction listed apart (named_knife_edge), never named (draws_decision, apply_draws)
 # ---------------------------------------------------------------------------------------------------------------------
 
 DRAW_SALT_RULE = "stable_int('draw', SEED, '<Stokes>:<identity>', k) for k < KNIFE_EDGE_DRAWS (sha256, first 8 bytes)"
@@ -1346,14 +1351,93 @@ def _draw(task):
     return analyze(J, _G['events'], _G['pool'], _G['v2pool'], _G['bdir'], tiers=tiers, salt=draw_salt(J, k), flag=False)
 
 
+NAMING_VERDICTS = ('BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE')   # the verdicts that name sources
+SPLIT_PREFIX = "UNDECIDED (knife-edge: the method's random draws split - "
+
+
+def wilson(n, K, conf):
+    """the Wilson score interval (lo, hi) of a binomial fraction n / K at confidence conf"""
+    from statistics import NormalDist
+    z = NormalDist().inv_cdf(0.5 + conf / 2.0)
+    p = n / K
+    den = 1.0 + z * z / K
+    c = (p + z * z / (2.0 * K)) / den
+    h = z * math.sqrt(p * (1.0 - p) / K + z * z / (4.0 * K * K)) / den
+    return c - h, c + h
+
+
+def draws_decision(outs, K, conf):
+    """THE DECISION OF A KNIFE-EDGE ROW'S DRAWS (KNIFE_EDGE_DECIDE; the refactor chat, 2026-11-04: "a knife-edge row is DECIDED
+    only when the method's own draws decide it"). outs = [(verdict, [source keys named])] of the K draws, in draw order.
+    Returns dict(classes = [(verdict, n)] most frequent first, cls = the verdict class DECIDED - the most frequent, its
+    fraction's Wilson interval at conf wholly above 1/2 - or None (split), named = the sources DECIDEDLY named (their fraction
+    of the K draws above 1/2 likewise), knife = [(source, n)] named in an undecided fraction (the interval holds 1/2), counts =
+    {source: n}, no_source = True when a naming class is decided but no source is decidedly named (then split). Equal counts
+    are ordered by name: the result depends on the counts alone, never on the draws' order."""
+    cc = collections.Counter(v for v, _s in outs)
+    classes = sorted(cc.items(), key=lambda kv: (-kv[1], kv[0]))
+    sc = collections.Counter(x for _v, srcs in outs for x in set(srcs))
+    order = sorted(sc, key=lambda x: (-sc[x], x))
+    lo = {x: wilson(sc[x], K, conf) for x in order}
+    named = [x for x in order if lo[x][0] > 0.5]
+    knife = [(x, sc[x]) for x in order if lo[x][0] <= 0.5 < lo[x][1]]
+    top, n = classes[0]
+    cls = top if wilson(n, K, conf)[0] > 0.5 else None
+    no_source = bool(cls in NAMING_VERDICTS and not named)
+    if no_source:
+        cls = None
+    return dict(classes=classes, cls=cls, n=n, named=named if cls in NAMING_VERDICTS else [], knife=knife, counts=dict(sc),
+                decided_named=named, no_source=no_source)
+
+
+def split_verdict(dec, K, names=None):
+    """the published verdict of a row its draws do not decide: "UNDECIDED (knife-edge: the method's random draws split -
+    <class> in a of K, <class> in b of K)" (and the sources decidedly named in it, and when a naming class is decided but no
+    source is, that)"""
+    nm = names or (lambda x: x)
+    txt = SPLIT_PREFIX + ', '.join('%s in %d of %d' % (v, n, K) for v, n in dec['classes'])
+    if dec['decided_named']:
+        txt += '; naming ' + ', '.join('%s in %d of %d' % (nm(x), dec['counts'][x], K) for x in dec['decided_named'])
+    if dec['no_source']:
+        txt += '; no source named in a decided majority'
+    return txt + ')'
+
+
+def knife_named_text(dec, K, names=None):
+    """the named_knife_edge column: 'knife-edge: <source> named in n of K draws; ...' (sources named in an undecided fraction)"""
+    nm = names or (lambda x: x)
+    return '; '.join('knife-edge: %s named in %d of %d draws' % (nm(x), n, K) for x, n in dec['knife'])
+
+
+def decided_text(dec, K, names=None):
+    """the mc_draws column of a decided row: '<class> in n of K Monte Carlo draws[; named: <source> in a of K, ...]'"""
+    nm = names or (lambda x: x)
+    return ('%s in %d of %d Monte Carlo draws' % (dec['cls'], dec['n'], K)
+            + ('; named: ' + ', '.join('%s in %d of %d' % (nm(x), dec['counts'][x], K) for x in dec['named'])
+               if dec['named'] else ''))
+
+
+def _entries(row):
+    return row['named'].split('; ') if row.get('named') else []
+
+
+def _src_name(entry):
+    return ' '.join(entry.split(' ')[:2])
+
+
 def apply_draws(outs, tasks, douts, K):
-    """outs with each knife-edge row replaced by its draws' MAJORITY OUTCOME (verdict, set of named sources):
-      the most frequent outcome of the K draws (a plurality); its row = the default draw's when that has the majority outcome
-      ('default'), else the first draw's that has (lowest k: 'draw k'), with the default draw's knife_edge text (the trigger)
-      and its candidates rows; mc_draws = '<outcome> in n of K Monte Carlo draws'; mc_outcomes = every outcome, most frequent
-      first ('n: <outcome> | ...'); mc_row = where the row's numbers come from.
-      A TIE (two or more outcomes most frequent): the default draw's row with verdict UNDECIDED and no named source, mc_row
-      'tie', mc_draws 'a tie of K Monte Carlo draws, n each: <outcome>; <outcome>'."""
+    """outs with each knife-edge row replaced by what its K draws DECIDE (draws_decision, KNIFE_EDGE_DECIDE):
+      DECIDED (the verdict class's fraction decidedly above 1/2): that verdict, naming only the decidedly named sources; the
+      row's numbers from the default draw when its verdict and named set are exactly these ('default'), else from the first
+      draw (lowest k) that has them ('draw k'; failing that, the first draw of that class naming most of them, its named set
+      replaced), with that draw's candidates rows; mc_draws = '<class> in n of K Monte Carlo draws; named: ...';
+      SPLIT: verdict "UNDECIDED (knife-edge: the method's random draws split - <class> in a of K, ...)", no named source, the
+      default draw's numbers ('split'), mc_draws empty;
+      either way: knife_edge = the default draw's flag (the trigger); named_knife_edge = every source named in an undecided
+      fraction ("knife-edge: <source> named in n of K draws"), never in the named set; mc_outcomes = every outcome (verdict and
+      named set) with its count, most frequent first."""
+    c = tc()
+    conf = c.KNIFE_EDGE_DECIDE
     by = collections.defaultdict(dict)                     # (job index, tier) -> k -> (row, its candidate rows)
     for (i, k, _tiers), (rows, crows) in zip(tasks, douts):
         for r in rows:
@@ -1366,34 +1450,37 @@ def apply_draws(outs, tasks, douts, K):
             if not r.get('knife_edge') or not d:
                 continue
             ks_ = sorted(d)
+            Kd = len(ks_)
+            dec = draws_decision([(d[k][0]['verdict'], _entries(d[k][0])) for k in ks_], Kd, conf)
+            # the full outcomes, most frequent first (as round 5)
             oc = {k: _outcome(d[k][0]) for k in ks_}
             cnt = collections.Counter(oc.values())
             first = {}
             for k in ks_:
                 first.setdefault(oc[k], k)
             order = sorted(cnt, key=lambda o: (-cnt[o], first[o]))
-            top, n = order[0], cnt[order[0]]
-            tied = [o for o in order if cnt[o] == n]
-            text = lambda o: outcome_text(o[0], named_names(d[first[o]][0]['named']))     # noqa: E731
-            tally = ' | '.join('%d: %s' % (cnt[o], text(o)) for o in order)
-            if len(tied) > 1:
-                row = dict(r, verdict='UNDECIDED', named='', mc_row='tie',
-                           mc_draws='a tie of %d Monte Carlo draws, %d each: %s' % (len(ks_), n,
-                                                                                         '; '.join(text(o) for o in tied)),
-                           mc_outcomes=tally)
+            tally = ' | '.join('%d: %s' % (cnt[o], outcome_text(o[0], named_names(d[first[o]][0]['named']))) for o in order)
+            knife = knife_named_text(dec, Kd, _src_name)
+            if dec['cls'] is None:
+                row = dict(r, verdict=split_verdict(dec, Kd, _src_name), named='', named_knife_edge=knife, mc_draws='',
+                           mc_outcomes=tally, mc_row='split')
             else:
-                if _outcome(r) == top:
+                N = set(dec['named'])
+                if r['verdict'] == dec['cls'] and set(_entries(r)) == N:
                     row, src = dict(r), 'default'
                 else:
-                    kk = first[top]
+                    exact = [k for k in ks_ if d[k][0]['verdict'] == dec['cls'] and set(_entries(d[k][0])) == N]
+                    kk = exact[0] if exact else max((k for k in ks_ if d[k][0]['verdict'] == dec['cls']),
+                                                    key=lambda k: (len(N & set(_entries(d[k][0]))), -k))
                     row, src = dict(d[kk][0], knife_edge=r['knife_edge']), 'draw %d' % kk
                     cand = d[kk][1]
                     pos = [q for q, c_ in enumerate(crows) if c_['tier'] == r['tier']]
                     if len(pos) == len(cand):          # the same candidates in every draw (they depend on the data only)
                         for q, c_ in zip(pos, cand):
                             crows[q] = c_
-                row.update(mc_row=src, mc_draws='%s in %d of %d Monte Carlo draws' % (
-                    outcome_text(top[0], named_names(row['named'])), n, len(ks_)), mc_outcomes=tally)
+                own = [e for e in _entries(row) if e in N]
+                row.update(named='; '.join(own + [x for x in dec['named'] if x not in own]), named_knife_edge=knife,
+                           mc_draws=decided_text(dec, Kd, _src_name), mc_outcomes=tally, mc_row=src)
             rows[j] = row
         new.append((rows, crows))
     return new

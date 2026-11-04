@@ -212,7 +212,7 @@ class forced_assoc(_Section):
 # centroid test, the evidence rules, v2's centering; the bursts and the jobs it tests). Implementation choices inside it are
 # the refactor chat's under its delegation (R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS): V2_CTL_DRAW and CONTROL_ORDER are
 # RULED by R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT; the Monte Carlo precision and its knife-edge flag
-# (TAPER_CTL_MAX, BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE, KNIFE_EDGE_DRAWS) by its amendment
+# (TAPER_CTL_MAX, BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE, KNIFE_EDGE_DRAWS, KNIFE_EDGE_DECIDE) by its amendment
 # R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE. Spec: docs/specs/forced_wide.md.
 # =====================================================================================================================
 
@@ -441,14 +441,18 @@ class forced_wide_test(_Section):
     # 20-salt flip check of the gen5 run: at 2 the flag marked 5 of the 7 rows that differ from the served files - all 7 flip
     # between draws - and 10 of the 12 rows seen flipping; at 4 all of them, 17 flags in 312 rows against 13)
     KNIFE_EDGE_SE = 4.0
-    # THE KNIFE-EDGE ROWS' MAJORITY (the refactor chat's decision, 2026-11-04, under the same amendment): a flagged row's
-    # published verdict and named set are the most frequent outcome of KNIFE_EDGE_DRAWS independent Monte Carlo draws of the
-    # approved method (each a salt of its own in place of SEED: a stable hash of (SEED, the target's (Stokes, identity), k),
-    # k < KNIFE_EDGE_DRAWS), with the fraction (mc_draws, e.g. 'BACKGROUND SOURCE (VLSSr J...) in 14 of 20 Monte Carlo draws'),
-    # every outcome's count (mc_outcomes) and where the row's numbers come from (mc_row: 'default', 'draw k', 'tie'); a tie is
-    # UNDECIDED, its mc_draws 'a tie of 20 Monte Carlo draws, 10 each: <outcome>; <outcome>'. Unflagged rows keep their single draw. None = production: the single draw (no draws); with KNIFE_EDGE_SE None
-    # no row is flagged and nothing is drawn
+    # THE KNIFE-EDGE ROWS' DRAWS (the refactor chat's decisions, 2026-11-04, under the same amendment): every flagged row is
+    # re-run KNIFE_EDGE_DRAWS times - the approved method itself, each draw a salt of its own in place of SEED (a stable hash of
+    # (SEED, the target's (Stokes, identity), k), k < KNIFE_EDGE_DRAWS) - and a knife-edge row is DECIDED only when its own
+    # draws decide it (KNIFE_EDGE_DECIDE): its verdict class is published only if the Wilson interval at that confidence of
+    # the class's fraction of the draws lies wholly above 1/2 (K = 20: 15 of 20 or more); otherwise "UNDECIDED (knife-edge:
+    # the method's random draws split - <class> in a of 20, <class> in b of 20)". A source is named only if decidedly named
+    # in the same sense; one named in an undecided fraction (6-14 of 20) is listed in named_knife_edge ("knife-edge: <source>
+    # named in n of 20 draws"), never in the named set. Columns: mc_draws (a decided row's fraction), mc_outcomes (every
+    # outcome's count), mc_row (default / draw k / split). Unflagged rows keep their single draw. None = production: the
+    # single draw (no draws); with KNIFE_EDGE_SE None no row is flagged and nothing is drawn
     KNIFE_EDGE_DRAWS = 20
+    KNIFE_EDGE_DECIDE = 0.95
     # VERDICT: centroid z >= Z_OFF not centered on the target, < Z_ON centered; a candidate the centroid lies within Z_C_ON of
     # (and within CENTER_WITHIN FWHM of the target) is direct evidence; near candidates v2 cannot separate count when z_c <
     # Z_C_NEAR; NOT EXPLAINED / CONSISTENT need tests covering >= COVER of the bursts (forced_wide_v3.py:42-57, :513)
@@ -536,7 +540,8 @@ class forced_wide_test(_Section):
              'V2_CTL_DRAW': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',
              'CONTROL_ORDER': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',
              **{k: 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE' for k in (
-                 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS')}}
+                 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS',
+                 'KNIFE_EDGE_DECIDE')}}
 
 
 class night_activity(_Section):
