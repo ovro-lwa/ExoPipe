@@ -28,7 +28,11 @@ WHERE IT RUNS
              BEFORE the cumulative merge's deep omission, which the merge applies as production does), per Stokes, into
              catalog_grouping.SUBLST_DIR (or --out; the state beside it); --group-input DIR groups DIR/master_catalog.csv +
              DIR/pertie_detections.csv instead (e.g. a frozen cumulative). Every LST's build stage then reads the grouping and
-             refuses a selected row it does not hold (S-G18): an LST re-catalogued since the grouping is grouped again first.
+             refuses a selected row it does not hold (S-G18). THE ORDER for an LST being catalogued: its chain --until veto,
+             then the group stage with --group-lst-dir <LST>=<its catalogue directory> (its new detections in place of its
+             published run), then its chain --from build. KNOWN LIMIT: a regroup can rename or merge identities of LSTs built
+             before it; their published catalogues still carry the old names (the runner's start line records the grouping
+             table's sha1) - the cumulative build does not yet refuse a mix of tables (report: what remains).
 PRODUCTS (per Stokes S, directory grouping_<S>/ of the stage's output)
   detections.csv   one row per detection of the input (DET_COLS): its catalog fingerprint, identity and multiples-level IDs and
                    display names, the multiples group's multiplicity (10-minute windows / deep nights) and multiple flag
@@ -844,6 +848,10 @@ def add_arguments(p):
                    help="grouping.group_catalog mode: default 'batch' for a new state, else 'incremental' (pure appends; a "
                         "re-searched window refuses, naming 'regroup'); 'regroup' recomputes the partition and carries the IDs")
     p.add_argument('--group-stokes', default='I,V', metavar='I,V', help='Stokes to group (default both)')
+    p.add_argument('--group-lst-dir', action='append', default=[], metavar='LST=DIR',
+                   help='tier sublst: take this LST\'s detections from its CATALOGUE directory DIR (master_catalog.csv, '
+                        'pertie/pertie_detections.csv) instead of its published run - the LST being catalogued, grouped '
+                        'before its build stage (repeatable)')
 
 
 def wants(args):
@@ -862,7 +870,14 @@ def lst_run(lst, cfg=None):
     return os.path.join(cfg.paths.TRANSIENTS_ROOT, cfg.catalog_omission.TENMIN_RUN.format(hh=lst[:2], arm=cfg.catalog_sublst.ARM))
 
 
-def assemble_tenmin_input(lsts, out_dir, cfg=None):
+def _pertie_of(d):
+    for p in (os.path.join(d, 'pertie_detections.csv'), os.path.join(d, 'pertie', 'pertie_detections.csv')):
+        if os.path.exists(p):
+            return p
+    return os.path.join(d, 'pertie_detections.csv')
+
+
+def assemble_tenmin_input(lsts, out_dir, cfg=None, lst_dirs=None):
     """The 10-minute grouping input: the master_catalog.csv and pertie_detections.csv rows of every published LST run of
     ``lsts`` (header union, LST order, the run's row order) - every detection the LSTs' builds see, BEFORE the cumulative's deep
     omission (the merge applies it, as production; a build refuses a detection the grouping does not hold). Writes
@@ -870,12 +885,16 @@ def assemble_tenmin_input(lsts, out_dir, cfg=None):
     either file, or a cand_id in two runs, REFUSES."""
     d = os.path.join(out_dir, 'grouping_input')
     os.makedirs(d, exist_ok=True)
-    runs = {L: lst_run(L, cfg) for L in lsts}
+    lst_dirs = dict(lst_dirs or {})
+    bad = sorted(set(lst_dirs) - set(lsts))
+    if bad:
+        raise StageRefusal(f'--group-lst-dir names LST(s) {bad} outside --lsts {lsts} - REFUSING')
+    runs = {L: lst_dirs.get(L) or lst_run(L, cfg) for L in lsts}
     out = []
     for name in ('master_catalog.csv', 'pertie_detections.csv'):
         hdr, rows, seen = [], [], {}
         for L, R in runs.items():
-            p = os.path.join(R, name)
+            p = os.path.join(R, name) if name == 'master_catalog.csv' else _pertie_of(R)
             if not os.path.exists(p):
                 raise StageRefusal(f'{L}: no {p} - publish the LST before grouping the cumulative')
             with open(p, newline='') as f:
@@ -920,11 +939,17 @@ def run(args, run):
                 mc, pt = os.path.join(src, 'master_catalog.csv'), os.path.join(src, 'pertie_detections.csv')
                 u.meta['input'] = src
             else:
-                mc, pt, runs = assemble_tenmin_input(lsts, out)
+                ld = {}
+                for x in getattr(args, 'group_lst_dir', None) or []:
+                    if '=' not in x:
+                        raise StageRefusal(f'--group-lst-dir {x!r}: LST=DIR - REFUSING')
+                    k, v = x.split('=', 1)
+                    ld[cells.parse_lst(k)] = os.path.abspath(v)
+                mc, pt, runs = assemble_tenmin_input(lsts, out, lst_dirs=ld)
                 u.meta['input'] = {L: R for L, R in runs.items()}
                 for R in runs.values():
-                    for name in ('master_catalog.csv', 'pertie_detections.csv'):
-                        u.add_input(os.path.join(R, name))
+                    u.add_input(os.path.join(R, 'master_catalog.csv'))
+                    u.add_input(_pertie_of(R))
         except StageRefusal as e:
             u.refuse(str(e))
         for p in (mc, pt):

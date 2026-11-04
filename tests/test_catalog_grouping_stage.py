@@ -677,6 +677,33 @@ def test_identity_writeback():
 
 
 # =====================================================================================================================
+def test_tenmin_input():
+    """the 10-minute grouping input (grouping_stage.assemble_tenmin_input): every LST's master_catalog.csv and window tie
+    concatenated - a published run's layout (pertie_detections.csv at the top) or a catalogue directory's (pertie/) given by
+    --group-lst-dir; a cand_id in two LSTs and an LST outside --lsts refuse"""
+    d = f'{T}/tenmin_input'
+    shutil.rmtree(d, ignore_errors=True)
+    mc_cols = ['cand_id', 'lst', 'stokes', 'snr']
+    wcsv(f'{d}/run05/master_catalog.csv', mc_cols, [dict(cand_id='I1_05h_a', lst='05h', stokes='I', snr='8')])
+    wcsv(f'{d}/run05/pertie_detections.csv', ['cand_id', 'sys_arcmin'], [dict(cand_id='I1_05h_a', sys_arcmin='0.5')])
+    wcsv(f'{d}/cat06/master_catalog.csv', mc_cols, [dict(cand_id='I1_06h_b', lst='06h', stokes='I', snr='9')])
+    wcsv(f'{d}/cat06/pertie/pertie_detections.csv', ['cand_id', 'sys_arcmin'], [dict(cand_id='I1_06h_b', sys_arcmin='0.4')])
+    mc, pt, runs = GS.assemble_tenmin_input(['05h', '06h'], f'{d}/out', lst_dirs={'05h': f'{d}/run05', '06h': f'{d}/cat06'})
+    check('10-minute input: both layouts concatenated in LST order (published run; catalogue directory)',
+          [r['cand_id'] for r in rcsv(mc)[1]] == ['I1_05h_a', 'I1_06h_b'] and [r['cand_id'] for r in rcsv(pt)[1]] ==
+          ['I1_05h_a', 'I1_06h_b'], (rcsv(mc)[1], rcsv(pt)[1]))
+    wcsv(f'{d}/cat06/master_catalog.csv', mc_cols, [dict(cand_id='I1_05h_a', lst='06h', stokes='I', snr='9')])
+    for what, kw in (('a cand_id in two LSTs', dict(lst_dirs={'05h': f'{d}/run05', '06h': f'{d}/cat06'})),
+                     ('an LST outside --lsts', dict(lst_dirs={'05h': f'{d}/run05', '07h': f'{d}/cat06'}))):
+        try:
+            GS.assemble_tenmin_input(['05h', '06h'] if '07h' not in kw['lst_dirs'] else ['05h'], f'{d}/out2', **kw)
+            got = 'assembled'
+        except GS.StageRefusal as e:
+            got = str(e)
+        check(f'10-minute input: {what} REFUSES', 'REFUSING' in got, got)
+
+
+# =====================================================================================================================
 def cli(args, timeout=1800):
     env = dict(os.environ, PYTHONPATH=REPO)
     p = subprocess.run([PY, '-m', 'exopipe.phase3'] + args, cwd=REPO, env=env, capture_output=True, text=True, timeout=timeout)
@@ -707,7 +734,7 @@ def test_cli():
 
 # =====================================================================================================================
 ORDER = ['test_mode', 'test_frozen', 'test_defects', 'test_runner', 'test_sublst_build', 'test_one_rule_record', 'test_carry',
-         'test_serve_carry', 'test_identity_writeback', 'test_cli']
+         'test_serve_carry', 'test_identity_writeback', 'test_tenmin_input', 'test_cli']
 
 
 def main(names):
