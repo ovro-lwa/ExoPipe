@@ -185,7 +185,8 @@ therefore sit on a threshold within the method's own Monte Carlo noise. Each row
 statistic that **decides** the row and lies within 2 Monte Carlo errors of one of its thresholds. A statistic decides the
 row when moving it alone to just below and just above that threshold (the others as they are) changes the verdict or the
 set of named sources (`knife_edges` re-runs `verdict_row`). The text reads, for example,
-`knife-edge: centroid z 2.97 vs 3, Monte Carlo error 0.02`.
+`knife-edge: centroid z 2.97 vs 3, Monte Carlo error 0.02`. A statistic that decides at both of its thresholds is named
+once (`... 9.10 vs 2 and 3, ...`).
 
 | Statistic | Thresholds | Monte Carlo error |
 |---|---|---|
@@ -196,7 +197,9 @@ set of named sources (`knife_edges` re-runs `verdict_row`). The text reads, for 
 | `matched control lines (within 3x / 10x) of <candidate>` | `MATCH_MIN` 15 | the binomial within each control source. Flipped, `matched()` takes another window, calibrated on its lines, or none |
 
 The errors are within control sources because a salt re-draws a line's direction, never its control source: the spread
-between sources is no Monte Carlo noise. On real rows (`se_validate.py`: 20 independent global salts, every line
+between sources is no Monte Carlo noise. A within-source estimate of zero (no control source with lines on both sides,
+for example no line at or above the target's ratio) is degenerate, not a zero error; the binomial over all lines is used
+then. On real rows (`se_validate.py`: 20 independent global salts, every line
 re-rotated and every bootstrap re-drawn, 26 calibrated candidates of 5 rows) the spread over the salts divided by the
 error has a median of 1.03 for the centroid z (3 of 3 within a factor of 1.5), 0.91 for p (23 of 26) and 1.02 for the
 ratio (24 of 26). The binomial over all lines alike gives 0.81 (21 of 26) and 0.97 (23 of 26). Its misses all

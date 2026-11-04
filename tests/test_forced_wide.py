@@ -690,8 +690,9 @@ def test_monte_carlo():
     check('calibrate: p_se_line = sqrt(p (1 - p) / n), ratio_se_line = ratio lambda / (lambda + 0.5) SE(kappa) / kappa',
           abs(r['p_se_line'] - math.sqrt(r['p_emp'] * (1 - r['p_emp']) / 16)) < 1e-12
           and abs(r['ratio_se_line'] - r['ratio'] * lam / (lam + 0.5) * se_k / kap) < 1e-12, r)
+    r3 = V3.calibrate({'n_obs': 3, 'n_pred': 2.0, 'var': 0.1}, ctl)      # lines on both sides of the target within sources
     rc = (no + 0.5) / (kap * 2.0 + 0.5)
-    ind = (rc >= r['ratio']).astype(float)
+    ind = (rc >= r3['ratio']).astype(float)
     d = no - kap * 2.0
     vk = vp = 0.0
     for j in range(4):                 # 4 control sources of 4 lines each
@@ -699,9 +700,17 @@ def test_monte_carlo():
         vp += float(np.sum((a - a.mean()) ** 2)) * 4 / 3
         vk += float(np.sum((b - b.mean()) ** 2)) * 4 / 3
     check('calibrate: the within-source errors (SE_KIND source) - the binomial and the spread within each control source',
-          abs(r['p_se_source'] - math.sqrt(vp) / 16) < 1e-12 and abs(r['ratio_se_source'] - r['ratio'] * lam / (lam + 0.5)
-                                                                     * math.sqrt(vk) / (2.0 * 16 + 0.5) / kap) < 1e-12
-          and V3.SE_KIND == 'source' and 'p_se_source' not in V3.calibrate(tt, [q[:4] for q in ctl]), r)
+          vp > 0 and abs(r3['p_se_source'] - math.sqrt(vp) / 16) < 1e-12
+          and abs(r3['ratio_se_source'] - r3['ratio'] * lam / (lam + 0.5) * math.sqrt(vk) / (2.0 * 16 + 0.5) / kap) < 1e-12
+          and V3.SE_KIND == 'source' and 'p_se_source' not in V3.calibrate(tt, [q[:4] for q in ctl]), r3)
+    # a degenerate within-source estimate (no line at or above the target: every source all one side) is no zero error
+    flat = [(0.0, 1, 2.0, 0.1, 'S%d' % (i // 4)) for i in range(16)]
+    r0 = V3.calibrate({'n_obs': 30, 'n_pred': 2.0, 'var': 0.1}, flat)
+    check('calibrate: a zero within-source estimate falls back to the binomial over all lines', r0['p_se_source']
+          == r0['p_se_line'] > 0 and r0['p_emp'] == 1 / 17, r0)
+    sel = [q for q in flat if q[4] in ('S0', 'S1')]
+    check('the counts\' error: a zero within-source estimate (every source wholly in or out) falls back to the binomial',
+          V3._count_se([q[4] for q in flat], sel, 16) == math.sqrt(8 * (1 - 8 / 16)))
     CFG.authorize([], out=TMP)
     # the centroid's bootstrap: z's analytic Monte Carlo error against 200 salt reruns (BOOTSTRAP resamples each)
     CFG.set('forced_wide_test.BOOT_Z_SE', 'None')
@@ -836,6 +845,10 @@ def test_monte_carlo():
     check('knife-edge content test: an entry outside its window fails', knife_edge_problems(bad, 2.0))
     bad = dict(row, knife_edge=txt.replace('vs 3,', 'vs 4,'))
     check('knife-edge content test: an unknown threshold fails', knife_edge_problems(bad, 2.0))
+    two = V3.knife_text([('taper ratio of J2', 2.6, 2.0, 0.5, '%.2f'), ('taper ratio of J2', 2.6, 3.0, 0.5, '%.2f')])
+    check('knife_text: a statistic deciding at both thresholds is named once, its content test passes',
+          two == 'knife-edge: taper ratio of J2 2.60 vs 2 and 3, Monte Carlo error 0.5'
+          and not knife_edge_problems(dict(row, knife_edge=two), 2.0), two)
 
 
 def test_pool_provenance():

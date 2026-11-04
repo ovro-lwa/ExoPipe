@@ -512,7 +512,9 @@ def calibrate(tt, ctl, min_n=None):
     ratio (the knife-edge flag): p_se_line = the binomial sqrt(p (1 - p) / n) over the n matched lines; ratio_se_line = ratio x
     lambda / (lambda + 0.5) x SE(kappa) / kappa, SE(kappa) = sqrt(n / (n - 1) sum (n_obs - kappa n_pred)^2) / (sum n_pred +
     0.5) (the ratio estimator's spread over the matched lines); *_source = the same with only the within-source spread (when
-    the lines carry their control source, CONTROL_ORDER canonical). min_n: the fewest lines calibrated (None: MATCH_MIN)."""
+    the lines carry their control source, CONTROL_ORDER canonical) - a zero within-source spread (no control source with lines
+    on both sides, e.g. no line at or above the target's ratio) is degenerate, not a zero error: the *_line value then. min_n:
+    the fewest lines calibrated (None: MATCH_MIN)."""
     import scipy.stats as SSTAT
     nan = float('nan')
     if len(ctl) < (tc().MATCH_MIN if min_n is None else max(int(min_n), 1)):
@@ -550,8 +552,9 @@ def calibrate(tt, ctl, min_n=None):
     out.update(p_se_line=math.sqrt(p_emp * (1.0 - p_emp) / m), ratio_se_line=gain * math.sqrt(var_k) / den)
     if all(len(q) > 4 for q in ctl):
         lab = [q[4] for q in ctl]
-        out.update(p_se_source=math.sqrt(_within_var(ind, lab, p_emp * (1.0 - p_emp))) / m,
-                   ratio_se_source=gain * math.sqrt(_within_var(d, lab, var_k / m)) / den)
+        vp_, vk_ = _within_var(ind, lab, p_emp * (1.0 - p_emp)), _within_var(d, lab, var_k / m)
+        out.update(p_se_source=math.sqrt(vp_) / m if vp_ > 0 else out['p_se_line'],
+                   ratio_se_source=gain * math.sqrt(vk_) / den if vk_ > 0 else out['ratio_se_line'])
     return out
 
 
@@ -675,17 +678,19 @@ SE_KIND = 'source'
 def _count_se(labels, sel, N):
     """the Monte Carlo error of a matched-line window's count: within control sources (SE_KIND 'source', the lines' labels
     known) sqrt(sum over sources c (m - c) / (m - 1)) - m a source's lines, c those in the window, a source of one line
-    q (1 - q), q = n / N; else the binomial sqrt(n (1 - n / N))"""
+    q (1 - q), q = n / N; else, or when that is zero (degenerate: no source with lines on both sides of the window), the
+    binomial sqrt(n (1 - n / N))"""
     n = len(sel)
     if not N:
         return 0.0
+    binom = math.sqrt(max(n * (1.0 - n / N), 0.0))
     if SE_KIND != 'source' or labels is None:
-        return math.sqrt(max(n * (1.0 - n / N), 0.0))
+        return binom
     m = collections.Counter(labels)
     cw = collections.Counter(q[4] for q in sel)
     q_ = n / N
     var = sum(q_ * (1.0 - q_) if mj < 2 else cw.get(j, 0) * (mj - cw.get(j, 0)) / (mj - 1.0) for j, mj in m.items())
-    return math.sqrt(max(var, 0.0))
+    return math.sqrt(var) if var > 0 else binom
 
 
 def mc_errors(r):
@@ -777,10 +782,18 @@ def knife_edges(J, tier, ev, cands, res, cen, row):
 
 
 def knife_text(ks):
-    """the knife_edge column: '' or 'knife-edge: <statistic> <value> vs <threshold>, Monte Carlo error <error>; ...'"""
+    """the knife_edge column: '' or 'knife-edge: <statistic> <value> vs <threshold>[ and <threshold>], Monte Carlo error
+    <error>; ...' (a statistic deciding at both of its thresholds is named once)"""
     if not ks:
         return ''
-    return 'knife-edge: ' + '; '.join('%s %s vs %g, Monte Carlo error %.2g' % (lab, fmt % v, t, se) for lab, v, t, se, fmt in ks)
+    merged = []
+    for lab, v, t, se, fmt in ks:
+        if merged and merged[-1][0] == lab and merged[-1][1] == v:
+            merged[-1][2].append(t)
+        else:
+            merged.append((lab, v, [t], se, fmt))
+    return 'knife-edge: ' + '; '.join('%s %s vs %s, Monte Carlo error %.2g' % (lab, fmt % v, ' and '.join('%g' % t for t in ts), se)
+                                      for lab, v, ts, se, fmt in merged)
 
 
 def taper_ok(r):

@@ -179,7 +179,7 @@ RESULT_COLUMNS = ('stokes', 'identity', 'target', 'tier', 'n_events', 'event_jy_
 # the flag
 MC_RESULT_COLUMNS = ('bootstrap_n', 'centroid_z_se', 'knife_edge')
 NAMING = ('BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE')
-_KE = re.compile(r'^(?P<stat>.+) (?P<v>-?[0-9.]+(?:e[-+]?[0-9]+)?) vs (?P<t>[0-9.]+(?:e[-+]?[0-9]+)?), '
+_KE = re.compile(r'^(?P<stat>.+) (?P<v>-?[0-9.]+(?:e[-+]?[0-9]+)?) vs (?P<t>[0-9.]+(?:e[-+]?[0-9]+)?(?: and [0-9.]+(?:e[-+]?[0-9]+)?)?), '
                  r'Monte Carlo error (?P<se>[0-9.]+(?:e[-+]?[0-9]+)?)$')
 
 
@@ -208,11 +208,12 @@ def knife_edge_problems(r, k):
         if not m:
             out.append('knife-edge entry %r' % ent[:60])
             continue
-        st, v, th, se = m.group('stat'), float(m.group('v')), float(m.group('t')), float(m.group('se'))
-        kind = next((ths for pre, ths in kinds if st.startswith(pre)), None)
-        if kind is None or not any(abs(th - x) < 1e-9 for x in kind):
+        st, v, se = m.group('stat'), float(m.group('v')), float(m.group('se'))
+        ths = [float(x) for x in m.group('t').split(' and ')]
+        kind = next((ths_ for pre, ths_ in kinds if st.startswith(pre)), None)
+        if kind is None or not all(any(abs(th - x) < 1e-9 for x in kind) for th in ths):
             out.append('knife-edge entry %r: an unknown statistic or threshold' % ent[:60])
-        elif not (se > 0 and abs(v - th) <= k * se * 1.05 + 0.006):
+        elif not all(se > 0 and abs(v - th) <= k * se * 1.05 + 0.006 for th in ths):
             out.append('knife-edge entry %r: not within %g errors of its threshold' % (ent[:60], k))
         if st == 'centroid z' and r['centroid_z'] != '' and (abs(v - float(r['centroid_z'])) > 0.051
                                                               or abs(se - float(r['centroid_z_se'])) > 0.051 * se + 1e-4):
