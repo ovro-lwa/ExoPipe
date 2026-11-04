@@ -346,9 +346,10 @@ def mc_settings():
     if not (isinstance(q, float) and 0.5 <= q < 1.0):
         raise ValueError('forced_wide_test.KNIFE_EDGE_DECIDE %r: a confidence in [0.5, 1)' % (q,))
     m = c.KNIFE_EDGE_DRAWS_MAX
-    if m is not None and not (isinstance(m, int) and not isinstance(m, bool) and d is not None and m >= d and m % d == 0):
-        raise ValueError('forced_wide_test.KNIFE_EDGE_DRAWS_MAX %r: None or a multiple of KNIFE_EDGE_DRAWS %r, at least it'
-                         % (m, d))
+    if m is not None and not (isinstance(m, int) and not isinstance(m, bool) and m >= 1):
+        raise ValueError('forced_wide_test.KNIFE_EDGE_DRAWS_MAX %r: None or an int >= 1' % (m,))
+    if m is not None and d is not None and not (m >= d and m % d == 0):          # with no draws (d None) the cap is moot
+        raise ValueError('forced_wide_test.KNIFE_EDGE_DRAWS_MAX %r: a multiple of KNIFE_EDGE_DRAWS %r, at least it' % (m, d))
     return c.BOOT_DRAW, c.BOOT_Z_SE, c.BOOT_MAX, c.KNIFE_EDGE_SE, c.KNIFE_EDGE_DRAWS
 
 

@@ -191,6 +191,15 @@ def test_config():
         k, v = ln.split('=', 1)
         CFG.set(k.strip(), v.strip())
     t = CFG.forced_wide_test
+    from exopipe.phase3.lib.forced import wide_v3 as V3
+    try:
+        V3.mc_settings()
+        V3.v2_draw()
+        V3.control_order()
+        ok_ = True
+    except ValueError as e:                                # the parity run's own key checks (round 7: one refused it)
+        ok_ = str(e)
+    check('the parity config values pass the stage\'s key checks (mc_settings, v2_draw, control_order)', ok_ is True, ok_)
     check('the parity config values apply', (CFG.forced_wide.EVENT_ORDER, CFG.forced_wide.TARGET_MEMBER,
                                              CFG.forced_wide_search.FILE_ERRORS, t.V2_CTL_DRAW, t.CONTROL_ORDER,
                                              t.TAPER_CTL_MAX, t.BOOT_DRAW, t.BOOT_Z_SE, t.KNIFE_EDGE_SE, t.KNIFE_EDGE_DRAWS)
