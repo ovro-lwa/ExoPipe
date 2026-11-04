@@ -27,10 +27,13 @@ group rule with the served localization's estimator - are the real functions.
       searched under it (their size_rule.json, the ledger's GLED_COLS_SIZE); a final the rule removes by its recorded excess
       is refused (size, axis), a final it never judged too; production's fixed axis check stays for attempts under
       'production' (configured so); a final at 9 sigma with an axis ratio of 2.4 passes the rule - and the conformance's
-      fixed axis step (2.0 x beam above 8 sigma) follows catalog_conform.CONFORM_AXIS_UNDER_RULE (PENDING GREGG):
-      'second_gate' removes its catalog row in production's words (the check passes, the removal recorded, the content
-      tests pass), 'replace' keeps it flagged; attempts of two rules, of another product or record version, or not of the
-      configured rule are refused before any row;
+      fixed axis step (2.0 x beam above 8 sigma) follows catalog_conform.CONFORM_AXIS_UNDER_RULE: 'replace' (ruled,
+      R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS) keeps it flagged, 'second_gate' (production's
+      behavior, the parity file) removes its catalog row in production's words (the check passes, the removal recorded, the
+      content tests pass); attempts of two rules, of another product, record version or deep Full-band size test, or not of
+      the configured rule are refused before any row; the deep Full band (a 05h_Full run) under search_detect.FULL_BAND_SIZE
+      'off': a final above its size limit passes (its size excess recorded, not applied), one above its axis limit is refused,
+      one judged with the size test (unmarked) is refused; under 'rule' (attempts and configuration) the size test applies;
   (3) restored rows carry an ID in the catalog's shape (field 2 the LST, as downstream parses it);
   (4) the pulsar stage with production's group rule: a group consistent with its pulsar gets its cut detection back, an
       inconsistent one loses its exempted detections; both recorded (members included) and accepted by the check, which
@@ -127,9 +130,10 @@ class Attempt:
         r.update(lst=LST, scope=SC, stokes=self.st, date=night, ra=ra + 0.001, dec=dec - 0.001, pix_x=x, pix_y=y, snr=7.5,
                  peak_jy=0.5, morph_pass=1, veto_reason=veto, final=final, pass_mstruct=1,
                  fp_prediction='inconclusive' if self.st == 'V' else '')
-        if self.size['rule'] == 'envelope':         # judged point-like by the rule at its S/N
+        if self.size['rule'] == 'envelope':         # judged point-like by the rule at its S/N (the role marked where the deep
             r.update(size_rule=f"envelope:{self.size['envelope']}:{self.size['md5'][:12]}", size_snr=7.5, size_thr=2.99,
-                     axis_thr=4.11, size_excess=0.4, axis_excess=0.3, size_verdict='point-like', size_role='gate')
+                     axis_thr=4.11, size_excess=0.4, axis_excess=0.3, size_verdict='point-like',   # Full band's size test is
+                     size_role=SZ.role_of('gate', types.SimpleNamespace(full_band=self.size['full_band_size']), SC))   # off)
         r.update(kw)
         self.ledger.append(r)
         return r
@@ -622,8 +626,20 @@ def test_size_rule_records():
     r.att['V'].size = dict(r.att['V'].size, version='size-rule-1')
     r.write()
     ok, f, res = run_check(r)
-    check('an attempt searched by size-rule-1 (8957c42: judged rows only) where the configuration applies size-rule-2 is refused '
+    check('an attempt searched by size-rule-1 (8957c42: judged rows only) where the configuration applies size-rule-3 is refused '
           'before any row', not ok and not f, (ok, f, res))
+    r = fresh('size_v2')                             # 3aa89e0's record: no full_band_size (read as 'rule'), size-rule-2
+    r.att['V'].size = {**{k: v for k, v in r.att['V'].size.items() if k != 'full_band_size'}, 'version': 'size-rule-2'}
+    r.write()
+    ok, f, res = run_check(r)
+    check('an attempt searched by size-rule-2 (3aa89e0: the deep Full band\'s size test on) where the configuration applies '
+          'size-rule-3 is refused before any row', not ok and not f, (ok, f, res))
+    r = fresh('size_fullband_rule')                  # the deep Full band's size test on in the attempts, off in the configuration
+    r.att['V'].size = dict(r.att['V'].size, full_band_size='rule')
+    r.write()
+    ok, f, res = run_check(r)
+    check("an attempt searched with the deep Full band's size test on ('rule') where the configuration has it off is refused "
+          "before any row", not ok and not f, (ok, f, res))
     r = fresh('size_prod_cfg')
     r.write()
     keep = CFG.search_detect.SIZE_RULE
@@ -651,11 +667,12 @@ def test_size_rule_records():
 
 def test_axis_second_gate():
     """The conformance's fixed axis step (axis ratio > 2.0 x beam above 8 sigma, R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA) on the size /
-    axis rule's attempts, per catalog_conform.CONFORM_AXIS_UNDER_RULE (PENDING GREGG): under 'second_gate' (the default until
-    he rules) the check passes and removes the catalog row of a final at 9 sigma with axis 2.4 (the rule keeps it: limit 3.05
-    there) in production's words - as the multiples fork's and 10-minute S-G13's p3s2_conform.py remove it - recorded in
-    master_catalog_removed.csv and the printed line, the conformant_catalog and per-instant content tests passing; a final
-    at 1.8 is kept, flagged 1.5-2.0; under 'replace' nothing is removed: the row kept, flagged as kept by the rule."""
+    axis rule's attempts, per catalog_conform.CONFORM_AXIS_UNDER_RULE: under 'replace' (the ruled default, R-REFACTOR-20261104-
+    AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS) nothing is removed: the catalog row of a final at 9 sigma with axis 2.4
+    (the rule keeps it: limit 3.05 there) kept, flagged as kept by the rule; under 'second_gate' (production's behavior, the
+    parity file) the check passes and removes that row in production's words - as the multiples fork's and 10-minute S-G13's
+    p3s2_conform.py remove it - recorded in master_catalog_removed.csv and the printed line, the conformant_catalog and
+    per-instant content tests passing; a final at 1.8 is kept, flagged 1.5-2.0, under both."""
     from exopipe.phase3.lib.catalog import tests as CT, tests_per_instant as TPI
     AXW = 'axis ratio 2.4 x beam > 2.0 above 8.0 sigma (Gregg 2026-09-05)'
 
@@ -671,43 +688,104 @@ def test_axis_second_gate():
         rows = CC._rows(os.path.join(r.U, 'master_catalog.csv'))
         rem = CC._rows(os.path.join(r.U, 'master_catalog_removed.csv'))
         return rows, rem, {x['axis_norm']: x for x in rows}          # the two edited rows: axis 2.4 and 1.8
-    lines = []
-    r = build('axis_second_gate')
-    assert CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE == 'second_gate'
-    CC._deps = deps(r)
-    CC.cell_base = lambda cell, roots_csv=None: r.base
-    stage_record(r)
-    try:
-        res = CC.check(r.U, r.man, LABEL, merged=r.merged, out=lambda *a, **k: lines.append(a[0]))
-        ok = True
-    except SystemExit as e:
-        ok, res = False, f'exit {e.code}'
+    assert CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE == 'replace'
+    r = build('axis_replace')
+    ok, f, res = run_check(r)
     rows, rem, by = outputs(r) if ok else ([], [], {})
-    check("'second_gate' (default): the check passes and removes the 9-sigma axis-2.4 row in production's words (the second gate), "
-          "keeps the axis-1.8 row flagged 1.5-2.0, says so in its line", ok and res['second_gate'] == 1
-          and [x['removal_reason'] for x in rem] == [AXW] and len(rows) == len(r.cat) - 1
-          and by.get('1.8', {}).get('axis_flag') == 'axis 1.5-2.0 x beam' and '2.4' not in by
-          and 'as the second gate removed 1' in (lines[-1] if lines else '')
-          and 'nothing removed but by the second gate' in (lines[-1] if lines else ''), (ok, res, [x.get('removal_reason') for x in rem],
-                                                                             lines[-1:] if lines else None))
-    if ok:
-        cr = CT.conformance_record(os.path.join(r.U, 'master_catalog.csv'), merge_copy=r.merged)
-        pi = TPI.conform_per_instant(os.path.join(r.U, 'master_catalog.csv'), merge_copy=r.merged, tier='deep')
-        check("'second_gate': the conformant_catalog content test (conformant + removed = as-run) and the per-instant test (its "
-              "removal judged at its own instant) pass on the check's output", cr[0] and pi[0], (cr, pi))
+    check("'replace' (the ruled default): the check passes and removes nothing - the axis-2.4 row kept, flagged as kept by the "
+          "rule", ok and res['second_gate'] == 0 and not rem and len(rows) == len(r.cat)
+          and by.get('2.4', {}).get('axis_flag') == 'axis > 2.0 x beam (kept: point-like at its S/N by the size / axis rule)'
+          and by.get('1.8', {}).get('axis_flag') == 'axis 1.5-2.0 x beam', (ok, f, res, len(rem)))
     keep = CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE
     try:
-        CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE = 'replace'
-        r = build('axis_replace')
-        ok, f, res = run_check(r)
+        CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE = 'second_gate'
+        lines = []
+        r = build('axis_second_gate')
+        CC._deps = deps(r)
+        CC.cell_base = lambda cell, roots_csv=None: r.base
+        stage_record(r)
+        try:
+            res = CC.check(r.U, r.man, LABEL, merged=r.merged, out=lambda *a, **k: lines.append(a[0]))
+            ok = True
+        except SystemExit as e:
+            ok, res = False, f'exit {e.code}'
         rows, rem, by = outputs(r) if ok else ([], [], {})
-        check("'replace': the check passes and removes nothing - the axis-2.4 row kept, flagged as kept by the rule",
-              ok and res['second_gate'] == 0 and not rem and len(rows) == len(r.cat)
-              and by.get('2.4', {}).get('axis_flag') == 'axis > 2.0 x beam (kept: point-like at its S/N by the size / axis rule)'
-              and by.get('1.8', {}).get('axis_flag') == 'axis 1.5-2.0 x beam',
-              (ok, f, res, len(rem)))
+        check("'second_gate' (production's behavior): the check passes and removes the 9-sigma axis-2.4 row in production's words "
+              "(the second gate), keeps the axis-1.8 row flagged 1.5-2.0, says so in its line", ok and res['second_gate'] == 1
+              and [x['removal_reason'] for x in rem] == [AXW] and len(rows) == len(r.cat) - 1
+              and by.get('1.8', {}).get('axis_flag') == 'axis 1.5-2.0 x beam' and '2.4' not in by
+              and 'as the second gate removed 1' in (lines[-1] if lines else '')
+              and 'nothing removed but by the second gate' in (lines[-1] if lines else ''),
+              (ok, res, [x.get('removal_reason') for x in rem], lines[-1:] if lines else None))
+        if ok:
+            cr = CT.conformance_record(os.path.join(r.U, 'master_catalog.csv'), merge_copy=r.merged)
+            pi = TPI.conform_per_instant(os.path.join(r.U, 'master_catalog.csv'), merge_copy=r.merged, tier='deep')
+            check("'second_gate': the conformant_catalog content test (conformant + removed = as-run) and the per-instant test "
+                  "(its removal judged at its own instant) pass on the check's output", cr[0] and pi[0], (cr, pi))
     finally:
         CFG.catalog_conform.CONFORM_AXIS_UNDER_RULE = keep
+
+
+class full_band_cell:
+    """The synthetic cell's band switched to the deep Full band (05h_Full) inside the block: SC and CELL are read at call
+    time by the run's builders (a Full band has the Red band's 5-degree Jupiter track radius, as 23 MHz)."""
+
+    def __enter__(self):
+        global SC, CELL
+        self.old = (SC, CELL)
+        SC, CELL = SZ.FULL_BAND, f'{LST}_{SZ.FULL_BAND}'
+        return self
+
+    def __exit__(self, *exc):
+        global SC, CELL
+        SC, CELL = self.old
+
+
+def test_full_band():
+    """The deep Full band (R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS) in the check, on a 05h_Full run.
+    Attempts and configuration with its size test off (search_detect.FULL_BAND_SIZE 'off', the default; every ledger row's
+    size_role marked ':full_size_off ...'): the clean run passes; a final above its size limit (size excess 1.4) passes - kept
+    by size, its excess recorded and not applied; a final above its axis limit too (axis excess 1.2) is refused ('a', 'axis')
+    - removed by axis; a final judged with the size test (its role unmarked) is refused ('a', 'size'). Attempts and
+    configuration under 'rule': the clean run passes and the same large final is refused ('a', 'size')."""
+    FG = f'gate{SZ.ROLE_SEP}{SZ.FULL_OFF_NOTE}'
+
+    def final_of(r_):
+        return first(r_.att['V'], lambda x: x['final'] == 1 and x['date'] == NIGHTS[1])
+
+    def wide(r_):
+        final_of(r_).update(snr=12.0, size_beams=2.9, size_snr=12.0, size_thr=1.5, size_excess=1.4)
+
+    def wide_long(r_):
+        final_of(r_).update(snr=12.0, size_beams=2.9, size_snr=12.0, size_thr=1.5, size_excess=1.4, axis_norm=1.9,
+                            axis_thr=1.5, axis_excess=1.2)
+
+    def unmarked(r_):
+        final_of(r_).update(size_role='gate')
+    with full_band_cell():
+        assert CFG.search_detect.FULL_BAND_SIZE == 'off' and SC == 'Full' and CELL == '05h_Full'
+        r = fresh('full_clean').write()
+        marked = [x['size_role'] for a in r.att.values() for x in a.ledger]
+        ok, f, res = run_check(r)
+        check("the deep Full band, FULL_BAND_SIZE 'off' in the attempts (their size_rule.json) and the configuration: every "
+              "ledger row marked, the clean run passes", ok and marked and set(marked) == {FG}
+              and r.att['V'].size['full_band_size'] == 'off', (ok, sorted(f), res, sorted(set(marked))))
+        fault('full_wide', wide, None, "the deep Full band under 'off': a final above its size limit (size excess 1.4, the "
+                                       "envelope's, recorded and not applied) - kept by size")
+        fault('full_wide_long', wide_long, ('a', 'axis'), "the deep Full band under 'off': the same final above its axis limit "
+                                                          "(axis excess 1.2) - removed by axis")
+        fault('full_unmarked', unmarked, ('a', 'size'), "the deep Full band under 'off': a final judged with the size test (its "
+                                                        "size_role unmarked)")
+        keep = CFG.search_detect.FULL_BAND_SIZE
+        try:
+            CFG.search_detect.FULL_BAND_SIZE = 'rule'               # attempts (their record) and configuration under 'rule'
+            fault('full_clean_rule', lambda r_: None, None, "the deep Full band under 'rule' (attempts and configuration, rows "
+                                                            "unmarked): the clean run")
+            fault('full_wide_rule', wide, ('a', 'size'), "the deep Full band under 'rule': the same large final - removed by "
+                                                         "size")
+        finally:
+            CFG.search_detect.FULL_BAND_SIZE = keep
+    assert SC == '23MHz' and CELL == '05h_23MHz'
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -990,6 +1068,7 @@ def main():
         test_clean()
         test_faults()
         test_axis_second_gate()
+        test_full_band()
         test_pulsar_stage()
         test_pulsar_stage_per_epoch()
         test_chain_pieces()

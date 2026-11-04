@@ -1603,6 +1603,10 @@ def test_item7_parity_file_keys():
              'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',   # the grouping and the ONE multiples
                                                                              # rule (catalog_grouping.GROUPING / MULTIPLES_RULE,
                                                                              # item F.3; production 'production')
+             'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS',   # the refactor chat's decision on Gregg's
+                                                                             # delegation R-GREGG-20261104-AXIS-THRESHOLD-DECIDE-
+                                                                             # FROM-PULSARS: catalog_conform.CONFORM_AXIS_UNDER_RULE
+                                                                             # 'replace' (production 'second_gate')
              'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'}   # forced W: every v2 control (V2_CTL_DRAW) and the
                                                                              # order-independent controls (CONTROL_ORDER), the
                                                                              # refactor chat under Gregg's delegation

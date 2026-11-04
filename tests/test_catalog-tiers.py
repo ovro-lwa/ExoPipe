@@ -532,6 +532,11 @@ def build_stubs():
 def test_e2e_sublst(site):
     import numpy as np
     from astropy.io import fits
+    # production's p3s2_conform.py as the pending patch leaves it (its P3_CONFORM_AXIS switch, default on): under the ruled
+    # catalog_conform.CONFORM_AXIS_UNDER_RULE 'replace' (R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS) the
+    # preflight of the rule's search jobs refuses at S-G7 while the script lacks it (sg13_size_rule tests both)
+    open(f'{T}/stub/exopipe_ops/p3s2_conform.py', 'w').write(STUB_CONFORM_SUBLST.replace(
+        'AXIS_STEP = True   # AXIS-SWITCH', "AXIS_STEP = os.environ.get('P3_CONFORM_AXIS', '1') != '0'   # AXIS-SWITCH"))
     sl, ops = f'{T}/sl', f'{T}/ops'
     os.makedirs(f'{sl}/tenmin_root_x2/14h_18MHz', exist_ok=True)
     wcsv(f'{sl}/tenmin_root_x2/14h_18MHz/frames.csv', ['key', 'stokes', 'bmaj_deg', 'fluxbake'], [['2025-04-06T00', 'I', '0.2', '1']])
@@ -683,10 +688,12 @@ print("conform: %d raw -> %d conformant | removed %d (stub)" % (len(rows), len(o
 def sg13_size_rule(site, common):
     """The 10-minute conformance (S-G13) on search jobs of the size / axis rule (lib/search/size_rule; the 2026-11-03 review
     finding 1 and its verification), with production's axis step in the stand-in conformance: one Stokes I row at S/N 9 with an
-    axis ratio of 2.4 x beam (kept by the rule: its limit there is above 3) among kept rows. 'second_gate' (the default):
-    the stage completes, the row removed in production's words and recorded (S-G13.size-rule-axis-step, value 1), the
-    content tests of the conformant catalog passing; 'replace' without the switch: refused before the script runs, naming the
-    pending patch; 'replace' with it: P3_CONFORM_AXIS=0 reaches the script, the row kept and flagged, value 0."""
+    axis ratio of 2.4 x beam (kept by the rule: its limit there is above 3) among kept rows. 'replace' (the ruled default,
+    R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS) without the switch: refused before the script runs,
+    naming the pending patch (S-G13 and the preflight's S-G7); 'second_gate' (production's behavior, the parity file's value)
+    with production's script as it is: the stage completes, the row removed in production's words and recorded
+    (S-G13.size-rule-axis-step, value 1), the content tests of the conformant catalog passing; 'replace' with the switch:
+    P3_CONFORM_AXIS=0 reaches the script, the row kept and flagged, value 0; 'second_gate' with it: removed as today."""
     from exopipe.phase3.core import record
     from exopipe.phase3.lib.search import size_rule as SZ
     U = f'{T}/out_sublst_sg13'                                        # its own run directory: the stages above stay as they are
@@ -699,9 +706,11 @@ def sg13_size_rule(site, common):
         line = {'today': 'AXIS_STEP = True', 'patched': sw}[kind] + '   # AXIS-SWITCH'
         open(conform, 'w').write(STUB_CONFORM_SUBLST.replace('AXIS_STEP = True   # AXIS-SWITCH', line))
 
-    def setup():
+    def setup(pre=(), conf=()):
+        """A fresh run directory: the preflight (``pre``: its --set), the conformance's input (a fabricated tie-pulsars record),
+        then the conformance stage alone (``conf``)."""
         shutil.rmtree(U, ignore_errors=True)
-        rc, out = cli(common + ['--stages', 'preflight'], site)
+        rc, out = cli(common + ['--stages', 'preflight'] + list(pre), site)
         if rc != 0:
             return rc, out
         hdr = ['cand_id', 'lst', 'date', 'band', 'stokes', 'cadence', 'ra', 'dec', 'snr', 'peak_jy', 'axis_norm', 'size_beams']
@@ -714,46 +723,47 @@ def sg13_size_rule(site, common):
         record.atomic_write_json(record.record_path(U, 'catalog', '14h_B.tie-pulsars'), {
             'status': 'done', 'unit': '14h_B.tie-pulsars',
             'meta': {'output_fingerprints': {f'{U}/master_catalog.csv': record.fingerprint(f'{U}/master_catalog.csv')}}})
-        return cli(common + ['--from', 'conform', '--until', 'conform'] + extra[0], site)
-    extra = [[]]
-    stub('today')
-    rc, out = setup()
-    rec = json.load(open(f'{U}/_records/catalog/14h_B.conform.json')) if os.path.exists(
-        f'{U}/_records/catalog/14h_B.conform.json') else {}
-    g = [t for t in rec.get('tests', []) if t['name'] == 'S-G13.size-rule-axis-step']
-    rem = [r['cand_id'] for r in rcsv(f'{U}/master_catalog_removed.csv')] if os.path.exists(f'{U}/master_catalog_removed.csv') else None
-    ok("S-G13 under the size / axis rule, 'second_gate' (production's axis step, its current behavior): the stage completes, the "
-       "9-sigma axis-2.4 row removed in production's words and recorded (S-G13.size-rule-axis-step 1), the conformant "
-       "catalog's content tests passing", rc == 0 and rec.get('status') == 'done' and rem == ['I3'] and g and g[0]['value'] == 1
-       and g[0]['passed'] and 'second gate' in g[0]['detail'] and all(t['passed'] for t in rec['tests']),
-       (rc, rec.get('status'), rec.get('reason'), rem, g, out[-500:]))
-    extra[0] = ['--set', 'catalog_conform.CONFORM_AXIS_UNDER_RULE=replace']
-    rc, out = setup()
-    rec = json.load(open(f'{U}/_records/catalog/14h_B.conform.json'))
-    ok("S-G13, 'replace' while production's script has no P3_CONFORM_AXIS switch: the stage refuses before the script runs "
-       "(exit 2; no master_catalog_asrun.csv), naming the pending patch", rc == 2 and rec.get('status') == 'refused'
-       and SZ.CONFORM_AXIS_PATCH in (rec.get('reason') or '') and not os.path.exists(f'{U}/master_catalog_asrun.csv'),
+        return cli(common + ['--from', 'conform', '--until', 'conform'] + list(conf), site)
+
+    def conform_rec():
+        p_ = f'{U}/_records/catalog/14h_B.conform.json'
+        return json.load(open(p_)) if os.path.exists(p_) else {}
+    SG = ['--set', 'catalog_conform.CONFORM_AXIS_UNDER_RULE=second_gate']   # production's behavior (a ruled key: this --out is
+    stub('today')                                                            # not a production root)
+    rc, out = setup(pre=SG)
+    rec = conform_rec()
+    ok("S-G13 under the size / axis rule, 'replace' (the ruled default) while production's script has no P3_CONFORM_AXIS "
+       "switch: the stage refuses before the script runs (exit 2; no master_catalog_asrun.csv), naming the pending patch and "
+       "the decision", rc == 2 and rec.get('status') == 'refused' and SZ.CONFORM_AXIS_PATCH in (rec.get('reason') or '')
+       and SZ.PULSAR_DECISION in (rec.get('reason') or '') and not os.path.exists(f'{U}/master_catalog_asrun.csv'),
        (rc, rec.get('status'), (rec.get('reason') or '')[:300], out[-300:]))
-    rc, out = cli(common + ['--stages', 'preflight'] + extra[0], site)
+    rc, out = cli(common + ['--stages', 'preflight'], site)
     rec = json.load(open(f'{U}/_records/catalog/14h_B.preflight.json'))
     ok("S-G7 under 'replace' without the switch: the preflight refuses too (exit 2), naming the pending patch",
        rc == 2 and rec.get('status') == 'refused' and SZ.CONFORM_AXIS_PATCH in (rec.get('reason') or ''),
        (rc, rec.get('status'), (rec.get('reason') or '')[:300], out[-300:]))
+    rc, out = setup(pre=SG, conf=SG)
+    rec = conform_rec()
+    g = [t for t in rec.get('tests', []) if t['name'] == 'S-G13.size-rule-axis-step']
+    rem = [r['cand_id'] for r in rcsv(f'{U}/master_catalog_removed.csv')] if os.path.exists(f'{U}/master_catalog_removed.csv') else None
+    ok("S-G13, 'second_gate' (production's behavior, the parity file's value) with production's script as it is: the stage "
+       "completes, the 9-sigma axis-2.4 row removed in production's words and recorded (S-G13.size-rule-axis-step 1), the "
+       "conformant catalog's content tests passing", rc == 0 and rec.get('status') == 'done' and rem == ['I3'] and g
+       and g[0]['value'] == 1 and g[0]['passed'] and 'second gate' in g[0]['detail'] and all(t['passed'] for t in rec['tests']),
+       (rc, rec.get('status'), rec.get('reason'), rem, g, out[-500:]))
     stub('patched')
     rc, out = setup()
-    rec = json.load(open(f'{U}/_records/catalog/14h_B.conform.json')) if os.path.exists(
-        f'{U}/_records/catalog/14h_B.conform.json') else {}
+    rec = conform_rec()
     g = [t for t in rec.get('tests', []) if t['name'] == 'S-G13.size-rule-axis-step']
     kept = {r['cand_id']: r for r in rcsv(f'{U}/master_catalog.csv')} if rc == 0 else {}
-    ok("S-G13, 'replace' with the pending patch's switch: P3_CONFORM_AXIS=0 reaches the script (the stand-in keeps the row only "
-       "then), the axis-2.4 row kept and flagged, nothing removed by the axis step (S-G13.size-rule-axis-step 0), the content "
-       "tests passing", rc == 0 and rec.get('status') == 'done' and sorted(kept) == ['I3', 'I4', 'V1']
-       and kept['I3'].get('axis_flag', '').startswith('axis > 2.0 x beam (kept') and g and g[0]['value'] == 0
-       and 'replaced (P3_CONFORM_AXIS=0)' in g[0]['detail'] and not rcsv(f'{U}/master_catalog_removed.csv')
-       and all(t['passed'] for t in rec['tests']),
+    ok("S-G13, 'replace' (the default) with the pending patch's switch: P3_CONFORM_AXIS=0 reaches the script (the stand-in "
+       "keeps the row only then), the axis-2.4 row kept and flagged, nothing removed by the axis step "
+       "(S-G13.size-rule-axis-step 0), the content tests passing", rc == 0 and rec.get('status') == 'done'
+       and sorted(kept) == ['I3', 'I4', 'V1'] and kept['I3'].get('axis_flag', '').startswith('axis > 2.0 x beam (kept')
+       and g and g[0]['value'] == 0 and 'replaced (P3_CONFORM_AXIS=0)' in g[0]['detail']
+       and not rcsv(f'{U}/master_catalog_removed.csv') and all(t['passed'] for t in rec['tests']),
        (rc, rec.get('status'), rec.get('reason'), g, sorted(kept), out[-500:]))
-    extra[0] = []
-    rc, out = setup()
+    rc, out = setup(pre=SG, conf=SG)
     rem = [r['cand_id'] for r in rcsv(f'{U}/master_catalog_removed.csv')] if rc == 0 else None
     ok("S-G13, 'second_gate' with the patched script (P3_CONFORM_AXIS unset: its default on): the row removed as today",
        rc == 0 and rem == ['I3'], (rc, rem, out[-300:]))
