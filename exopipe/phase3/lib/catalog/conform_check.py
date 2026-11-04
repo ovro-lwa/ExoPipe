@@ -29,13 +29,15 @@ floor, Jupiter track, bright-source table, row line). The search's own gates are
 them: the ledger holds its inputs rounded, and production's deep conformance runs no size step); the axis ratio is checked
 at the search's limit on the finals and production's own computation on the catalog rows. Under the size / axis rule at
 every S/N (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS; lib/search/size_rule) the attempts must share the
-configured rule (their size_rule.json; refused before any row otherwise), a final must carry the rule's own passing
-verdict (its recorded excesses, size_rule.final_findings), production's fixed size limit on the catalog rows only flags, and
-production's fixed AXIS step (axis ratio > 2.0 x beam above 8 sigma: the 2.0 value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA,
-superseded by R-SIZE-AXIS-GATE-1.5-RATIFIED, kept in production's code) follows catalog_conform.CONFORM_AXIS_UNDER_RULE
-(UNRULED, PENDING GREGG): 'second_gate' - production's current behavior: the step stands as a second gate, as in every
-production conformance of the tier (the multiples fork, 10-minute S-G13): this check REMOVES the catalog rows it removes, in
-its words, into master_catalog_removed.csv (counted in the printed line); 'replace' - kept and flagged.
+configured rule (their size_rule.json, its deep Full-band size test included; refused before any row otherwise), a final must
+carry the rule's own passing verdict (its recorded excesses, size_rule.final_findings - in the deep Full band under
+search_detect.FULL_BAND_SIZE 'off' its axis alone, R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS),
+production's fixed size limit on the catalog rows only flags, and production's fixed AXIS step (axis ratio > 2.0 x beam above
+8 sigma: the 2.0 value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA, superseded by R-SIZE-AXIS-GATE-1.5-RATIFIED, kept in production's
+code) follows catalog_conform.CONFORM_AXIS_UNDER_RULE: 'replace' (ruled, the same 2026-11-04 decision: the rule alone) - kept
+and flagged; 'second_gate' - production's behavior (the parity file): the step stands as a second gate, as in every production
+conformance of the tier (the multiples fork, 10-minute S-G13): this check REMOVES the catalog rows it removes, in its words,
+into master_catalog_removed.csv (counted in the printed line).
 Any finding: CHECK_REPORT written, REFUSED
 (nothing published). Else production's outputs with nothing removed but the second gate's rows - master_catalog_asrun.csv (a
 copy of ``merged``, the merge's output), master_catalog.csv with the conform columns, master_catalog_removed.csv (the pulsar
@@ -690,7 +692,7 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
                     continue
                 notes[key6 + pos] = tab.get(id(r), (False, ''))[1]
                 if szr['rule'] == 'envelope':   # the size / axis rule: the final passes by its own recorded verdict
-                    for _r, rule_, words in SZ.final_findings([r]):
+                    for _r, rule_, words in SZ.final_findings([r], full_band=szr['full_band_size']):
                         finding('a', rule_, r, words, pos)
                     continue
                 an = RR.f(r.get('axis_norm'))   # the search's axis limit (rounded recorded values cannot exceed it when kept)
@@ -768,9 +770,9 @@ def check(U, manifest, label, merged=None, catalog_dir=None, out=print, pulsar_r
     _write(os.path.join(CD, 'master_catalog_removed.csv'), ocols + ['removal_reason'], removed + second)
     if os.path.exists(os.path.join(CD, CHECK_REPORT)):
         os.remove(os.path.join(CD, CHECK_REPORT))       # a passing check leaves no report of an earlier refusal
-    sg = (f'; the size / axis rule\'s attempts: production\'s axis step (2.0 x beam above 8 sigma; its current behavior, '
-          f'pending Gregg) as the second gate removed {len(second)}' if szr['rule'] == 'envelope' and SZ.conform_axis_step(szr)
-          else '')
+    sg = (f'; the size / axis rule\'s attempts: production\'s axis step (2.0 x beam above 8 sigma; production\'s behavior, '
+          f'CONFORM_AXIS_UNDER_RULE=second_gate) as the second gate removed {len(second)}'
+          if szr['rule'] == 'envelope' and SZ.conform_axis_step(szr) else '')
     out(f'conform check: {len(raw)} rows, every removal rule re-evaluated in both directions ({n_ledger} ledger rows, '
         f'{len(atts)} attempts): ' + ('nothing removed, nothing missed' if not second else 'nothing missed, nothing removed but '
                                       'by the second gate') + f' -> {len(kept)} conformant (the pulsar stage restored '

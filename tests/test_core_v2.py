@@ -1600,9 +1600,13 @@ def test_item7_parity_file_keys():
              'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS',   # the size / axis rule at every S/N (search_detect /
                                                                              # search_sublst SIZE_RULE; production 'production')
              'R-GREGG-20261026-GROUPING-DESIGN-B-APPROVED-IDENTITY-097-MULTIPLES-085-DEEPV-IDENTITY-ONLY-PREVIEW-THEN-REFACTOR',
-             'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER'}   # the grouping and the ONE multiples
+             'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER',   # the grouping and the ONE multiples
                                                                              # rule (catalog_grouping.GROUPING / MULTIPLES_RULE,
                                                                              # item F.3; production 'production')
+             'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS'}   # the refactor chat's decision on Gregg's
+                                                                             # delegation R-GREGG-20261104-AXIS-THRESHOLD-DECIDE-
+                                                                             # FROM-PULSARS: catalog_conform.CONFORM_AXIS_UNDER_RULE
+                                                                             # 'replace' (production 'second_gate')
     PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
                                                              # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
     PROPOSED |= {'catalog_omission.ABSENT_WITH_SERVED'}    # 2026-11-03 (Q review F5): G6 'refuse' proposed, pending Gregg; production's

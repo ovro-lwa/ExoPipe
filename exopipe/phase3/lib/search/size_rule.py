@@ -39,21 +39,37 @@ multiples fork's member pool, ``engine_early`` / ``member_window``: one the rule
 never a fork member), 'record' where an earlier gate had removed it (measured, deciding nothing: every other identification
 removal, the local-SNR rows outside the window and every one at 10 minutes, where no fork reads the ledger). The catalog reads the attempts' records (one rule per catalog): its builder's 7-8 sigma gate is replaced
 (catalog_env); the conformance's own fixed size step contradicts the rule (refused: ``conform_removals``), and its fixed AXIS
-step (axis ratio > 2.0 x beam above 8 sigma) follows catalog_conform.CONFORM_AXIS_UNDER_RULE - UNRULED, PENDING GREGG. The step
-came from R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA (2026-09-05); R-SIZE-AXIS-GATE-1.5-RATIFIED (2026-09-09) superseded its 2.0 value
-("Supersedes ... the 2.0 axis value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA") and the 2026-10-22 rule replaced the 1.5 thresholds,
-so it stands only in production's code - inert behind the search's 1.5 until the rule. Does the rule replace it?
-    'second_gate' (default until he answers; production's current behavior - the 2.0 axis step of the superseded 09-05
-                  ruling, no live ruling): the step stands as a SECOND, fixed gate above 8 sigma on the rule's attempts, in
-                  every conformance - production's p3s2_conform.py (deep 'remove', the multiples fork's validity runs, the
-                  incremental path, 10-minute S-G13) and the deep check (lib/catalog/conform_check, which removes those rows
-                  itself) - its removals recorded per unit (``conform_removals``), never refused;
-    'replace':    the rule replaces the step: production's p3s2_conform.py gets P3_CONFORM_AXIS=0 (``conform_env``) - a switch
-                  production does not have yet: the patch, default on and byte-identical, is CONFORM_AXIS_PATCH; until it is
-                  applied every stage that would run the script REFUSES (``conform_axis_refusal``), and the deep check keeps
-                  and flags the rows. The deep chain's multiples fork runs p3s2_conform.py in place for its validity step
-                  (exopipe_ops/multiples_fork.py: conform, table off, on the chain's finals plus its table-cut rows), so the
-                  deep catalog depends on the switch as much as the 10-minute S-G13 does.
+step (axis ratio > 2.0 x beam above 8 sigma) follows catalog_conform.CONFORM_AXIS_UNDER_RULE. The step came from
+R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA (2026-09-05); R-SIZE-AXIS-GATE-1.5-RATIFIED (2026-09-09) superseded its 2.0 value ("Supersedes
+... the 2.0 axis value of R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA") and the 2026-10-22 rule replaced the 1.5 thresholds, so it stood
+only in production's code - inert behind the search's 1.5 until the rule. RULED 2026-11-04 (PULSAR_DECISION, decided by the
+refactor chat on Gregg's delegation PULSAR_DELEGATION: "You should decide, based on the data (e.g. verified pulsars again) what
+is the correct threshold to use!"): the calibrated rule ALONE - on 9 verified isolated pulsars the 2.0 step on top of the rule
+removes 0.3% [0.1, 1.1] (deep) and 0.1% [0.0, 0.6] (10-minute) of the Stokes I detections above 8 sigma, and their 99th
+percentile axis ratio lies inside the envelope in every S/N bin (refactor_analysis/review_items_20261031/axis_pulsars_20261104/
+AXIS_PULSARS_20261104.md):
+    'replace':    (the default) the rule replaces the step: production's p3s2_conform.py gets P3_CONFORM_AXIS=0
+                  (``conform_env``) - a switch production does not have yet: the patch, default on and byte-identical, is
+                  CONFORM_AXIS_PATCH; until it is applied every stage that would run the script REFUSES
+                  (``conform_axis_refusal``), and the deep check keeps and flags the rows. The deep chain's multiples fork runs
+                  p3s2_conform.py in place for its validity step (exopipe_ops/multiples_fork.py: conform, table off, on the
+                  chain's finals plus its table-cut rows), so the deep catalog depends on the switch as much as the 10-minute
+                  S-G13 does;
+    'second_gate': production's behavior (the parity file's value): the step stands as a SECOND, fixed gate above 8 sigma on
+                  the rule's attempts, in every conformance - production's p3s2_conform.py (deep 'remove', the multiples fork's
+                  validity runs, the incremental path, 10-minute S-G13) and the deep check (lib/catalog/conform_check, which
+                  removes those rows itself) - its removals recorded per unit (``conform_removals``), never refused.
+
+THE DEEP FULL BAND (PULSAR_DECISION, the same ruling): no removal by the SIZE test in the deep tier's Full band (18-82 MHz) while
+search_detect.FULL_BAND_SIZE is 'off' (the default; 'rule' applies the size test there as in every other band, for a later
+spectrum-aware reference). A source whose flux sits at the low end of the band images with the larger low-frequency beam, while
+its size is compared with the Full header beam (~50 MHz): measured, the rule removes 46 of 181 real pulsar detections there
+above 8 sigma (25.4% [19.6, 32.2]), and at 19 of the 47 moments no other band keeps the pulsar. The AXIS test still applies in
+the Full band; every other band (the subbands, Red, Green, Blue, every 10-minute band - that tier has no Full band) is
+unchanged; and nothing carries from a Full-band size test to another band (``carry_instant``). Every gate-ledger row the rule
+writes in the deep Full band says so: its size_role is '<gate|record>:' + FULL_OFF_NOTE (``role_of``), its size threshold
+and excess are recorded (the envelope's, not applied), and the run's record carries full_band_size (one rule per run and per
+catalog: RECORD_VERSION size-rule-3).
 Otherwise pure functions; the record helpers write only the file they name.
 
 Not wired here: the per-instant carry across bands (``carry_instant``; spec section 1 places it at publish, by position within
@@ -94,8 +110,19 @@ RULE_ENV = 'EXOPIPE3_SIZE_RULE'           # how the step hands the rule to the e
 ENVELOPE_ENV = 'EXOPIPE3_SIZE_ENVELOPE'   # ... the calibration product's path
 ENVELOPE_MD5_ENV = 'EXOPIPE3_SIZE_ENVELOPE_MD5'   # ... and its pinned md5
 RUN_RECORD = 'size_rule.json'             # in the engine's run directory (beside v_deep_ledger.csv): the rule it searched under
-RECORD_VERSION = 'size-rule-2'            # 2 (2026-11-03): every candidate row judged or recorded (size_role); the Stokes I rows
-                                          # below the local-SNR floor judged as the fork's member pool. One version per run.
+RECORD_VERSION = 'size-rule-3'            # 2 (2026-11-03): every candidate row judged or recorded (size_role); the Stokes I rows
+                                          # below the local-SNR floor judged as the fork's member pool. 3 (2026-11-04): the deep
+                                          # Full band's size test per search_detect.FULL_BAND_SIZE, recorded on the run
+                                          # (full_band_size) and on each Full-band row (size_role). One version per run.
+OLD_VERSIONS = ('size-rule-1', 'size-rule-2')   # records without full_band_size: the size test applied in every band
+PULSAR_DECISION = 'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS'   # the refactor chat, 2026-11-04, on
+PULSAR_DELEGATION = 'R-GREGG-20261104-AXIS-THRESHOLD-DECIDE-FROM-PULSARS'                # Gregg's delegation of the same day
+# the deep Full band (18-82 MHz): its size test per search_detect.FULL_BAND_SIZE (module docstring; PULSAR_DECISION)
+FULL_BAND = 'Full'                        # the deep tier's full-bandwidth image (the 10-minute tier has none: search_sublst.BANDS)
+FULL_BAND_MODES = ('off', 'rule')         # 'off': no size removal there (the axis test applies); 'rule': as every other band
+FULL_BAND_ENV = 'EXOPIPE3_SIZE_FULL_BAND'   # how the deep step hands search_detect.FULL_BAND_SIZE to the engine child
+FULL_OFF_NOTE = 'full_size_off (spectrum-aware reference pending)'   # on the size_role of every deep Full-band row under 'off'
+ROLE_SEP = ':'                            # size_role '<gate|record>:<FULL_OFF_NOTE>' (role_of / role_base / role_full_off)
 # the gate ledger's columns of the rule (appended to deep_search.GLED_COLS under 'envelope' only; production's ledger is unchanged)
 GLED_COLS_SIZE = ['size_rule', 'size_snr', 'size_thr', 'axis_thr', 'size_excess', 'axis_excess', 'size_verdict', 'size_role']
 VERDICTS = ('gaussfit-size', 'axis-ratio', 'point-like', 'fit-failed', 'no-snr')   # size_verdict; the first two remove
@@ -106,17 +133,19 @@ MEMBER_REASON = 'reject_local_snr:'       # + a removing verdict: a Stokes I row
                                           # of the pool, which multiples_fork.py takes by veto_reason 'reject_local_snr'
 MEMBER_ENV = 'EXOPIPE3_SIZE_MEMBER_SNR'   # the pool's S/N window the deep step hands its engine child ('5.0,7.0': member_window)
 GATE_7_8_OFF = 'inf'                      # P3_SIZE_GATE_7_8 for the catalogue builder under 'envelope': its 7-8 sigma gate never acts
-# the conformance's fixed axis step under the rule (catalog_conform.CONFORM_AXIS_UNDER_RULE; module docstring) - PENDING GREGG
+# the conformance's fixed axis step under the rule (catalog_conform.CONFORM_AXIS_UNDER_RULE; module docstring): RULED 'replace'
 CONFORM_AXIS_MODES = ('second_gate', 'replace')
 CONFORM_AXIS_ENV = 'P3_CONFORM_AXIS'      # production's switch of p3s2_conform.py's axis step ('0' = off), once the patch is applied
 CONFORM_AXIS_PATCH = 'docs/pending_production_patch_p3s2_conform_axis.diff'   # in this repository: the patch, default on
 AXIS_STEP_ORIGIN = 'R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA'   # 2026-09-05: the axis-ratio step (2.0 x beam above 8 sigma) the conformance
 AXIS_STEP_SUPERSEDED_BY = 'R-SIZE-AXIS-GATE-1.5-RATIFIED'   # still applies; 2026-09-09: "Supersedes ... the 2.0 axis value of" it
-# what each value of CONFORM_AXIS_UNDER_RULE rests on (the record's 'basis'): neither is a ruling of Gregg's yet
+# what each value of CONFORM_AXIS_UNDER_RULE rests on (the record's 'basis')
 AXIS_STEP_BASIS = {
-    'second_gate': (f"production's current behavior: the 2.0 axis step of the superseded 2026-09-05 ruling ({AXIS_STEP_ORIGIN}; "
-                    f"superseded by {AXIS_STEP_SUPERSEDED_BY}), pending Gregg"),
-    'replace': "the size / axis rule at every S/N replaces production's 2.0 axis step (unruled until Gregg answers)",
+    'second_gate': (f"production's behavior (the parity file's value): the 2.0 axis step of the superseded 2026-09-05 ruling "
+                    f"({AXIS_STEP_ORIGIN}; superseded by {AXIS_STEP_SUPERSEDED_BY}) as a second gate; the ruled default is "
+                    f"'replace' ({PULSAR_DECISION})"),
+    'replace': (f"the size / axis rule at every S/N alone: production's 2.0 axis step retired ({PULSAR_DECISION}, on Gregg's "
+                f"delegation {PULSAR_DELEGATION}: measured on verified pulsars)"),
 }
 
 
@@ -137,6 +166,52 @@ def band_class(band):
     if band in LOW_BANDS:
         return 'low'
     _refuse(f'size rule: band {band!r} is in neither calibrated band class (low {sorted(LOW_BANDS)}, high {sorted(HIGH_BANDS)})')
+
+
+def full_band_mode(value=None, what='search_detect.FULL_BAND_SIZE'):
+    """search_detect.FULL_BAND_SIZE (``value`` checked): 'off' (no size removal in the deep Full band; the axis test applies)
+    or 'rule' (the size test there as in every other band); an unknown or empty value REFUSES - a typo never selects either."""
+    if value is None:
+        from exopipe.phase3.config import CFG
+        value = CFG.search_detect.FULL_BAND_SIZE
+    if value not in FULL_BAND_MODES:
+        _refuse(f'{what} = {value!r} is not one of {FULL_BAND_MODES}')
+    return value
+
+
+def full_band_size(cadence, from_env=True):
+    """The deep Full band's size test for a search of ``cadence``: deep - search_detect.FULL_BAND_SIZE, in the engine child
+    as the step hands it (FULL_BAND_ENV; ``from_env``), else the config (a process no step started, the catalog's configured
+    record); 10min - 'rule' (that tier has no Full band - search_sublst.BANDS - and every one of its bands keeps the size
+    test). A malformed value REFUSES."""
+    if cadence != 'deep':
+        return 'rule'
+    v = os.environ.get(FULL_BAND_ENV) if from_env else None
+    return full_band_mode(v, FULL_BAND_ENV if v is not None else 'search_detect.FULL_BAND_SIZE')
+
+
+def size_tested(env, band):
+    """False where the rule removes nothing by size: the deep Full band under FULL_BAND_SIZE 'off' (``env.full_band``, set by
+    engine_rule / configured_record); True in every other band, and wherever the product is used alone (Envelope's default
+    'rule': the calibration and the reproduction of the 2026-10-22 page filters)."""
+    return not (band == FULL_BAND and getattr(env, 'full_band', 'rule') == 'off')
+
+
+def role_of(role, env, band):
+    """The size_role a row gets: ``role`` ('gate' | 'record'), with ROLE_SEP + FULL_OFF_NOTE where the size test is off (the
+    deep Full band under 'off') - on every row the rule writes there, so a reader sees why a large Full-band detection was
+    kept."""
+    return role if size_tested(env, band) else f'{role}{ROLE_SEP}{FULL_OFF_NOTE}'
+
+
+def role_base(role):
+    """'gate' | 'record' (or whatever precedes ROLE_SEP) of a recorded size_role."""
+    return str(role or '').split(ROLE_SEP, 1)[0]
+
+
+def role_full_off(role):
+    """True when a recorded size_role says the Full band's size test was off for the row (role_of)."""
+    return str(role or '').endswith(f'{ROLE_SEP}{FULL_OFF_NOTE}')
 
 
 def check_floors(size_floor, axis_floor, what='the size / axis rule'):
@@ -319,18 +394,21 @@ def measure_at(img, x, y, bmaj_deg, bmin_deg, cd_deg):
 
 class Envelope:
     """The calibration product: per '<Stokes>_<class>_<S/N>' the injections' n and percentiles. ``source`` and ``md5`` name the
-    file it was read from (recorded with every verdict)."""
+    file it was read from (recorded with every verdict). ``full_band`` is the deep Full band's size test the verdicts apply
+    (FULL_BAND_MODES; the engine and the configured record set the search's - engine_rule, configured_record; 'rule', the
+    default, judges every band alike, as the calibration and the 2026-10-22 page filters did)."""
 
-    def __init__(self, cal, source='', md5=''):
+    def __init__(self, cal, source='', md5='', full_band='rule'):
         if not isinstance(cal, dict):
             _refuse(f'size envelope {source or "(in memory)"}: not a mapping')
         self.cal = cal
         self.source = source
         self.md5 = md5
+        self.full_band = full_band_mode(full_band, 'the size envelope\'s full_band')
         self._pts = {}
 
     @classmethod
-    def load(cls, path, md5=None):
+    def load(cls, path, md5=None, full_band='rule'):
         """The product at ``path``; with ``md5`` the file must have it. Unreadable, malformed or another md5: REFUSED."""
         if not path or not os.path.isfile(path):
             _refuse(f'size envelope {path!r} does not exist')
@@ -342,7 +420,7 @@ class Envelope:
                 cal = json.load(f)
         except (OSError, ValueError) as e:
             _refuse(f'size envelope {path} unreadable ({type(e).__name__}: {e})')
-        return cls(cal, source=path, md5=got)
+        return cls(cal, source=path, md5=got, full_band=full_band)
 
     def points(self, stokes, cls, key):
         """[(S/N, value)] of one percentile, sorted by S/N."""
@@ -390,17 +468,20 @@ class Envelope:
 
 def size_verdict(env, stokes, band, rec):
     """('gaussfit-size' | 'axis-ratio' | '', size excess, axis excess) for a measure_detection record; excess = value /
-    threshold, > 1 removes. A record without a finite S/N is kept ('', nan, nan)."""
+    threshold, > 1 removes - the size excess only where the size test applies (size_tested: not the deep Full band under
+    FULL_BAND_SIZE 'off', where it is computed and recorded but removes nothing; the axis test applies in every band). A
+    record without a finite S/N is kept ('', nan, nan)."""
     if rec is None or not np.isfinite(rec['snr']):
         return '', float('nan'), float('nan')
     ts, ta = env.thresholds(stokes, band_class(band), abs(rec['snr']))
     sx, ax = rec['eff'] / ts, rec['axis'] / ta
-    return ('gaussfit-size' if sx > 1 else ('axis-ratio' if ax > 1 else '')), sx, ax
+    return ('gaussfit-size' if (sx > 1 and size_tested(env, band)) else ('axis-ratio' if ax > 1 else '')), sx, ax
 
 
 def judge(env, stokes, band, rec):
     """Every quantity the verdict uses, for the record: dict(size_snr, size_thr, axis_thr, size_excess, axis_excess,
-    size_verdict) - size_verdict one of VERDICTS ('fit-failed': no fit; 'no-snr': no finite S/N; both keep)."""
+    size_verdict) - size_verdict one of VERDICTS ('fit-failed': no fit; 'no-snr': no finite S/N; both keep). In the deep Full
+    band under FULL_BAND_SIZE 'off' size_thr and size_excess are the envelope's, recorded and not applied (size_verdict)."""
     if rec is None:
         return dict(size_snr='', size_thr='', axis_thr='', size_excess='', axis_excess='', size_verdict='fit-failed')
     if not np.isfinite(rec['snr']):
@@ -432,13 +513,25 @@ def envelope_from_injections(rows, min_n=30):
     return cal
 
 
+def carries(band, verdict):
+    """True when a detection's removal by the rule (``verdict``: its size_verdict, or its 'gaussfit-size' / 'axis-ratio'
+    veto_reason) may carry to its instant's other bands: a removing verdict, except a SIZE verdict of the deep Full band -
+    nothing carries from the Full band's size test to another band (PULSAR_DECISION: a low-frequency-weighted source is wider
+    there than the Full header beam, the subbands measure it point-like; carried, that loss would spread to them). Under
+    FULL_BAND_SIZE 'off' the Full band has no size verdict to carry at all; this holds under 'rule' too."""
+    return verdict in REMOVING and not (band == FULL_BAND and verdict == 'gaussfit-size')
+
+
 def carry_instant(records):
     """Per-instant carry across frequency (R-GREGG-20261018-VETOES-PER-FRAME-REFINED-FREQUENCY-YES-TIME-NO): records =
-    iterable of (identity, instant, removed_by_the_rule); returns the (identity, instant) pairs whose detections in EVERY band
-    go, because one of them is removed. Never across instants.
+    iterable of (identity, instant, band, verdict) - the rule's verdict of one detection; returns the (identity, instant)
+    pairs whose detections in EVERY band go, because one of them is removed by a verdict that carries (``carries``: never the
+    deep Full band's size verdict). Never across instants.
 
     NOT WIRED (a known deviation from the spec's section 1 and 4 until it is; 2026-10-22 reference: 17 of 7,122 served deep
-    detections, 2 I and 15 V, removed by the carry alone). What wiring it at publish needs, and the choices it leaves open:
+    detections, 2 I and 15 V, removed by the carry alone). Nothing else in the rule's wiring carries a verdict across bands:
+    the engine judges one (cell, Stokes) - one band - per run, and the catalog stages read each row's own verdict. What wiring
+    it at publish needs, and the choices it leaves open:
       - the removals: the merged gate ledger's 'gaussfit-size' / 'axis-ratio' rows (the rule's own; whether the fork member
         pool's 'reject_local_snr:<verdict>' rows - not detections - carry too is open);
       - the match: the same instant (deep: LST and night; 10-minute: the window), another band, within "the tier's association
@@ -450,10 +543,12 @@ def carry_instant(records):
         S-G13, AND the multiples fork, which re-reads the raw as-run rows and the ledger in production's code
         (exopipe_ops/multiples_fork.py): a carried detection would still be served by the fork without a production change
         (a list of removals its validity conformance reads) - a second production patch;
-      - a reason of its own ('size-carry: ...') declared to the per-instant content test (lib/catalog/tests_per_instant)."""
+      - a reason of its own ('size-carry: ...') declared to the per-instant content test (lib/catalog/tests_per_instant);
+      - the deep Full band's size verdicts never carry (``carries``; PULSAR_DECISION); whether its axis verdicts carry follows
+        the per-instant ruling as for every band (the decision names only the size test)."""
     out = set()
-    for ident, inst, removed in records:
-        if removed:
+    for ident, inst, band, verdict in records:
+        if carries(band, verdict):
             out.add((ident, inst))
     return out
 
@@ -467,7 +562,8 @@ def engine_test(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, flag_snr=
     Records on ``c`` size_beams, size_err_beams, axis_norm (the rule's measurement; production keeps those names) and
     GLED_COLS_SIZE, and the record-only flags of production above ``flag_snr`` (the candidate's own S/N; size above
     ``size_flag`` beams, axis above ``axis_flag`` - kept by the rule at its S/N). Returns what deep_search._size_test returns:
-    (size_beams or '', 'remove' | 'remove-axis' | 'flag' | ''). An epoch without a beam REFUSES (its frame cannot be judged)."""
+    (size_beams or '', 'remove' | 'remove-axis' | 'flag' | ''). An epoch without a beam REFUSES (its frame cannot be judged).
+    In the deep Full band under FULL_BAND_SIZE 'off' the size removes nothing (size_tested) and its flag says why."""
     rec, j = _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, 'gate')
     if rec is None:
         return '', ''
@@ -482,7 +578,10 @@ def engine_test(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, flag_snr=
         snr = 0.0
     if snr > flag_snr and j['size_verdict'] == 'point-like':
         if rec['size'] > size_flag:
-            c['size_flag'] = f'size > {size_flag:g} beams (point-like at its S/N: limit {j["size_thr"]:.2f})'
+            exempt = not size_tested(env, band) and j['size_excess'] > 1      # kept only because the size test is off there
+            c['size_flag'] = (f'size > {size_flag:g} beams (kept: {FULL_OFF_NOTE}; the envelope\'s limit {j["size_thr"]:.2f})'
+                              if exempt else
+                              f'size > {size_flag:g} beams (point-like at its S/N: limit {j["size_thr"]:.2f})')
             verdict = 'flag'
         if rec['axis'] > axis_flag:
             c['axis_flag'] = f'axis > {axis_flag:g} x beam (point-like at its S/N: limit {j["axis_thr"]:.2f})'
@@ -492,7 +591,8 @@ def engine_test(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, flag_snr=
 
 def _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, role):
     """(measure_detection record or None, judge's dict) of one candidate, recorded on ``c``: GLED_COLS_SIZE (size_role
-    ``role``) and production's size_beams / size_err_beams / axis_norm. An epoch without a beam REFUSES."""
+    ``role``, marked in the deep Full band under FULL_BAND_SIZE 'off': role_of) and production's size_beams / size_err_beams
+    / axis_norm. An epoch without a beam REFUSES."""
     try:
         bmaj, bmin = float(bmaj_deg), float(bmin_deg)
     except (TypeError, ValueError):
@@ -503,7 +603,7 @@ def _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, role):
     j = judge(env, stokes, band, rec)
     c.update(j)
     c['size_rule'] = env.label()
-    c['size_role'] = role
+    c['size_role'] = role_of(role, env, band)
     if rec is not None:
         c['size_beams'] = round(rec['size'], 2)
         if np.isfinite(rec['err']):
@@ -566,7 +666,7 @@ def engine_early(c, reason, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, 
     verdict ('reject_local_snr:gaussfit-size' / 'reject_local_snr:axis-ratio') and no fork member nor calibration row -
     "removed at EVERY S/N". Every other row - the local-SNR rows outside the window (never members: the floor removed them), the
     other identification removals, Stokes V, the 10-minute cadence - is recorded only (engine_record), its reason kept. Returns
-    the row's veto_reason."""
+    the row's veto_reason. (In the deep Full band under FULL_BAND_SIZE 'off' a pool row is removed by its axis ratio only.)"""
     if stokes == 'I' and reason == 'reject_local_snr' and in_member_pool(ledger_snr(c), member):
         _rec, j = _measure_row(c, stokes, band, img, bmaj_deg, bmin_deg, cd_deg, env, 'gate')
         return MEMBER_REASON + j['size_verdict'] if j['size_verdict'] in REMOVING else reason
@@ -602,22 +702,26 @@ def step_env(rule, path, md5, what='SIZE_RULE', floors=None, frames=None):
 
 def step_env_for(cadence, run_frames, what=None):
     """step_env with every check, from the cadence's config section: search_detect (deep) or search_sublst (10min);
-    ``run_frames`` this search's imaging configuration (the keys of the section's SIZE_ENVELOPE_FRAMES)."""
+    ``run_frames`` this search's imaging configuration (the keys of the section's SIZE_ENVELOPE_FRAMES). Under 'envelope' the
+    deep engine child also gets the fork's member window (MEMBER_ENV) and the Full band's size test (FULL_BAND_ENV:
+    search_detect.FULL_BAND_SIZE, checked)."""
     from exopipe.phase3.config import CFG
     sec = CFG.search_detect if cadence == 'deep' else CFG.search_sublst
     what = what or ('search_detect.SIZE_RULE' if cadence == 'deep' else 'search_sublst.SIZE_RULE')
     env = step_env(sec.SIZE_RULE, sec.SIZE_ENVELOPE, sec.SIZE_ENVELOPE_MD5, what,
                    floors=(sec.SIZE_FLOOR_BEAMS, sec.AXIS_REMOVE), frames=(sec.SIZE_ENVELOPE_FRAMES, run_frames))
-    if env[RULE_ENV] == 'envelope' and cadence == 'deep':      # the fork's member window, for engine_early (deep only)
-        lo, hi = member_window('deep', from_env=False)
+    if env[RULE_ENV] == 'envelope' and cadence == 'deep':      # the fork's member window, for engine_early (deep only), and
+        lo, hi = member_window('deep', from_env=False)          # the deep Full band's size test (search_detect.FULL_BAND_SIZE)
         env[MEMBER_ENV] = f'{lo!r},{hi!r}'
+        env[FULL_BAND_ENV] = full_band_size('deep', from_env=False)
     return env
 
 
 def engine_rule(cadence):
-    """In the engine child: None under 'production' (the fixed rule above 8 sigma, unchanged), else the checked Envelope. From
-    the step's environment (step_env); a process no step started reads its cadence's config. REFUSED: an unknown rule, a product
-    missing, without its pinned md5 or with another, or without a Stokes or band class."""
+    """In the engine child: None under 'production' (the fixed rule above 8 sigma, unchanged), else the checked Envelope, with
+    the deep Full band's size test the search applies (full_band_size: FULL_BAND_ENV; 'rule' at 10 minutes). From the step's
+    environment (step_env_for); a process no step started reads its cadence's config. REFUSED: an unknown rule, a product
+    missing, without its pinned md5 or with another, or without a Stokes or band class, an unknown FULL_BAND_SIZE."""
     rule = os.environ.get(RULE_ENV)
     if rule is None:
         rule, path, md5 = configured(cadence)
@@ -628,22 +732,26 @@ def engine_rule(cadence):
         return None
     if not md5:
         _refuse(f'size rule {rule!r}: no md5 pinned for the envelope {path!r}')
-    return Envelope.load(path, md5).require()
+    return Envelope.load(path, md5, full_band=full_band_size(cadence)).require()
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
 # the run's record: which rule a run directory (an attempt's transients/Run_<label>) was searched under
 
 def run_record(env):
-    """The record of a run searched with ``env`` (None = production's fixed rule)."""
+    """The record of a run searched with ``env`` (None = production's fixed rule): the rule, the product, RECORD_VERSION, the
+    ruling, and the deep Full band's size test it applied (full_band_size: env.full_band; '' under production, which has no
+    rule)."""
     if env is None:
-        return dict(rule='production', envelope='', md5='', version=RECORD_VERSION, ruling='')
-    return dict(rule='envelope', envelope=os.path.basename(env.source), md5=env.md5, version=RECORD_VERSION, ruling=RULING)
+        return dict(rule='production', envelope='', md5='', version=RECORD_VERSION, ruling='', full_band_size='')
+    return dict(rule='envelope', envelope=os.path.basename(env.source), md5=env.md5, version=RECORD_VERSION, ruling=RULING,
+                full_band_size=env.full_band)
 
 
 def read_run_record(run_dir):
-    """The rule a run directory was searched under: its RUN_RECORD, else production's (every run before the rule). An
-    unreadable or malformed record REFUSES."""
+    """The rule a run directory was searched under: its RUN_RECORD, else production's (every run before the rule). A record
+    of OLD_VERSIONS (written before full_band_size existed) is read with full_band_size 'rule' - what those versions applied -
+    so that one_rule / write_run_record name it in their refusals; an unreadable or malformed record REFUSES."""
     p = os.path.join(run_dir, RUN_RECORD)
     if not os.path.exists(p):
         return run_record(None)
@@ -652,15 +760,21 @@ def read_run_record(run_dir):
             rec = json.load(f)
     except (OSError, ValueError) as e:
         _refuse(f'{p} unreadable ({type(e).__name__}: {e})')
-    if not isinstance(rec, dict) or set(rec) != set(run_record(None)) or rec.get('rule') not in RULES:
+    keys = set(run_record(None))
+    if isinstance(rec, dict) and rec.get('version') in OLD_VERSIONS and set(rec) == keys - {'full_band_size'}:
+        rec = dict(rec, full_band_size='rule')
+    if (not isinstance(rec, dict) or set(rec) != keys or rec.get('rule') not in RULES
+            or (rec['rule'] == 'envelope' and rec['full_band_size'] not in FULL_BAND_MODES)):
         _refuse(f'{p}: not a size-rule record ({str(rec)[:160]})')
     return rec
 
 
 def _rule_key(r):
     """What makes two records one rule: the rule, the product's md5 and, under 'envelope', the record's version (what the
-    engine wrote per row: RECORD_VERSION). A production record has no version of its own."""
-    return (r['rule'], r['md5'], r['version'] if r['rule'] == 'envelope' else '')
+    engine wrote per row: RECORD_VERSION) and the deep Full band's size test (full_band_size). A production record has
+    neither of its own."""
+    env_ = r['rule'] == 'envelope'
+    return (r['rule'], r['md5'], r['version'] if env_ else '', r.get('full_band_size', '') if env_ else '')
 
 
 def same_rule(a, b):
@@ -705,25 +819,34 @@ def one_rule(run_dirs, want=None, what='the merged attempts'):
     return rec
 
 
+FULL_BAND_WORDS = {'off': 'Full band: no size test', 'rule': 'Full band: size tested'}
+
+
 def _words(r):
-    """A record in a refusal's words: 'envelope e184ac13f6eb (size-rule-2)' / 'production'."""
-    return f'{r["rule"]} {r["md5"][:12]} ({r["version"]})' if r['rule'] == 'envelope' else 'production'
+    """A record in a refusal's words: 'envelope e184ac13f6eb (size-rule-3, Full band: no size test)' / 'production'."""
+    if r['rule'] != 'envelope':
+        return 'production'
+    fb = FULL_BAND_WORDS.get(r.get('full_band_size') or '')
+    return f'{r["rule"]} {r["md5"][:12]} ({r["version"]}' + (f', {fb})' if fb else ')')
 
 
 def configured_record(cadence):
-    """run_record of the configured rule and product of a cadence (the product checked: Envelope.require)."""
+    """run_record of the configured rule and product of a cadence (the product checked: Envelope.require), with the configured
+    deep Full band's size test (full_band_size; 'rule' at 10 minutes)."""
     rule, path, md5 = configured(cadence)
     rule_value(rule)
     if rule == 'production':
         return run_record(None)
     if not md5:
         _refuse(f'size rule {rule!r}: no md5 pinned for the envelope {path!r}')
-    return run_record(Envelope.load(path, md5).require())
+    return run_record(Envelope.load(path, md5, full_band=full_band_size(cadence, from_env=False)).require())
 
 
 def ledger_rule(path):
     """The rule of a gate ledger from its header - 'envelope' when it ends with GLED_COLS_SIZE (a merged view's ledger: the
-    merge refuses attempts of two rules), else production's; a missing file is production's. As run_record."""
+    merge refuses attempts of two rules), else production's; a missing file is production's. As run_record, without the
+    product's md5 and the Full band's size test (a header holds neither; size-rule-2 and -3 share the columns, the header is
+    read as RECORD_VERSION): for the rule ('envelope' / 'production') it was searched under, never for one_rule."""
     import csv
     if path and os.path.exists(path):
         with open(path, newline='') as f:
@@ -766,7 +889,8 @@ def conform_axis_mode(value=None):
 def conform_axis_step(rule):
     """True when the conformance's fixed axis step (axis ratio > 2.0 x beam above 8 sigma, R-AXIS-RATIO-REMOVAL-ABOVE-8SIGMA)
     acts on a catalog of attempts searched under ``rule`` (a record, or its 'rule'): always under 'production'; under
-    'envelope' as catalog_conform.CONFORM_AXIS_UNDER_RULE says ('second_gate': it stands; 'replace': the rule replaced it)."""
+    'envelope' as catalog_conform.CONFORM_AXIS_UNDER_RULE says ('replace', the ruled default: the rule replaced it -
+    PULSAR_DECISION; 'second_gate', production's behavior: it stands)."""
     rule = rule_value(rule['rule'] if isinstance(rule, dict) else rule)
     return rule == 'production' or conform_axis_mode() == 'second_gate'
 
@@ -797,12 +921,13 @@ def conform_axis_refusal(rule, script, what='the conformance'):
         return None
     if os.path.exists(script) and conform_switch(script):
         return None
-    return (f'{what}: catalog_conform.CONFORM_AXIS_UNDER_RULE = \'replace\' (the size / axis rule replaces production\'s '
-            f'axis-ratio step - 2.0 x beam above 8 sigma, a leftover of {AXIS_STEP_ORIGIN}, superseded by {AXIS_STEP_SUPERSEDED_BY}) '
-            f'needs production\'s {script} to switch that step off ({CONFORM_AXIS_ENV}=0); it '
+    return (f'{what}: catalog_conform.CONFORM_AXIS_UNDER_RULE = \'replace\' (the size / axis rule alone, {PULSAR_DECISION}: '
+            f'production\'s axis-ratio step - 2.0 x beam above 8 sigma, a leftover of {AXIS_STEP_ORIGIN}, superseded by '
+            f'{AXIS_STEP_SUPERSEDED_BY} - retired) needs production\'s {script} to switch that step off ({CONFORM_AXIS_ENV}=0); it '
             f'has no {CONFORM_AXIS_ENV} switch (os.environ.get({CONFORM_AXIS_ENV!r}, \'1\')) - apply {CONFORM_AXIS_PATCH} of the '
-            f'refactor repository in exopipe_ops (its owner\'s commit; default on, byte-identical), or set '
-            f'catalog_conform.CONFORM_AXIS_UNDER_RULE=second_gate - REFUSING')
+            f'refactor repository in exopipe_ops (its owner\'s commit; default on, byte-identical), or run production\'s '
+            f'behavior, catalog_conform.CONFORM_AXIS_UNDER_RULE=second_gate (a ruled key: --ruling-for, or a non-production '
+            f'--out) - REFUSING')
 
 
 def removed_rows(paths):
@@ -847,9 +972,9 @@ def conform_removals(paths, rule, what='the conformance'):
     """(refusal words or None, record or None) for the removal records ``paths`` a conformance wrote for attempts searched under
     ``rule`` (a record or its 'rule'). Production's attempts: (None, None) - its removals stand. Under 'envelope': a removal by
     the fixed size step refuses (the step is off in every pass, catalog_conform.SIZE_STEP; acting, it contradicts the rule);
-    the fixed axis step's removals are the SECOND GATE under 'second_gate' (production's current behavior, pending Gregg) -
-    recorded: {mode, basis (AXIS_STEP_BASIS), rows, examples}, rows counted once each - and refuse under 'replace'
-    (P3_CONFORM_AXIS=0 was passed: the script did not switch the step off)."""
+    the fixed axis step's removals are the SECOND GATE under 'second_gate' (production's behavior, the parity file's value) -
+    recorded: {mode, basis (AXIS_STEP_BASIS), rows, examples}, rows counted once each - and refuse under 'replace', the ruled
+    default (P3_CONFORM_AXIS=0 was passed: the script did not switch the step off)."""
     if rule_value(rule['rule'] if isinstance(rule, dict) else rule) == 'production':
         return None, None
     axis_on = conform_axis_step(rule)
@@ -864,25 +989,37 @@ def conform_removals(paths, rule, what='the conformance'):
                       examples=[f'{f} {r.get("cand_id", "")}: {str(r.get("removal_reason", ""))[:100]}' for f, r in axis[:3]])
 
 
-def final_findings(rows):
+def final_findings(rows, full_band=None):
     """[(row, 'size' | 'axis', words)] of gate-ledger FINAL rows (final == '1') a run under 'envelope' must not hold: a final
     the rule removes by its own recorded quantities (size_excess or axis_excess > 1, or a removing verdict), or a final the
-    rule never judged (no size_verdict). The conformance check reads them from the ledger, never refits."""
+    rule never judged (no size_verdict). The conformance check reads them from the ledger, never refits. A final whose size
+    test was off - the deep Full band under FULL_BAND_SIZE 'off', its size_role marked (role_full_off) - passes by its axis
+    alone: its size excess is the envelope's, recorded and not applied. The mark belongs on the Full band only, and with
+    ``full_band`` (the run's record full_band_size) where the record says: a Full-band final judged with the size test under
+    'off', or a marked one under 'rule', is a finding."""
     out = []
     for r in rows:
         if str(r.get('final')) != '1':
             continue
         v = r.get('size_verdict') or ''
-        if v not in VERDICTS or r.get('size_role') == 'record':
+        role = r.get('size_role')
+        if v not in VERDICTS or role_base(role) == 'record':
             out.append((r, 'size', f'size rule: a final row without a size verdict ({v!r}, size_role '
-                                   f'{r.get("size_role")!r}): the rule never judged it'))
+                                   f'{role!r}): the rule never judged it'))
+            continue
+        off, scope = role_full_off(role), r.get('scope', r.get('band', ''))
+        if (off and scope != FULL_BAND) or (full_band is not None and off != (scope == FULL_BAND and full_band == 'off')):
+            out.append((r, 'size', f'size rule: a {scope} final with size_role {role!r} where the run\'s record says the deep '
+                                   f'Full band\'s size test is {full_band!r} (its exemption, {FULL_OFF_NOTE}, is the Full '
+                                   f'band\'s under \'off\' only)'))
             continue
         try:
             sx = float(r['size_excess']) if r.get('size_excess') not in (None, '') else float('nan')
             ax = float(r['axis_excess']) if r.get('axis_excess') not in (None, '') else float('nan')
         except (TypeError, ValueError):
             sx = ax = float('nan')
-        big, long_ = v == 'gaussfit-size' or (np.isfinite(sx) and sx > 1), v == 'axis-ratio' or (np.isfinite(ax) and ax > 1)
+        big = v == 'gaussfit-size' or (np.isfinite(sx) and sx > 1 and not off)
+        long_ = v == 'axis-ratio' or (np.isfinite(ax) and ax > 1)
         if big or long_:
             out.append((r, 'size' if big else 'axis',
                         f'size rule: a final row the rule removes (verdict {v}, size excess {r.get("size_excess")} of '
