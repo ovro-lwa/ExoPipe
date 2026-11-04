@@ -16,15 +16,21 @@ Classes:
                       the drop the snapshot tier's cumulative step applies (Q review F2). K1 the writer's columns and kinds,
                       every row of a served run of the summary (its batch tag); K2 every 'detection kept' row has no OMIT key, is
                       no detection the record omits, of no identity it drops; their number = the summary's kept = served -
-                      omitted, their identities = identities_kept, kept + dropped identities = identities; K3 the per-tier rows
+                      omitted, their identities = identities_kept, kept + dropped identities = identities; no detection key kept
+                      twice, the kept rows' multiset digest = the summary's and kept + omitted = the served set's digest, the
+                      record's detection rows = the omitted digest (Q fix verification N2); K5 the served counts beside
+                      (deep_omission_served.csv) = the kept + omitted detections of each key (V_combview review F5); K3 the per-tier rows
                       are the record's one to one ('source dropped' / 'source re-pointed' = 'source partial' / 'member row
                       dropped' = 'member row' / 'panel dropped' = 'panel'), each on its tier's catalogue file; K4 a re-pointed
                       source's fields name its new best, a kept detection of its own identity, with production's note; a row
                       with a key has an OMIT key, one without names its identity's drop. Streamed (two passes over the file).
+  omission_served     deep_omission_served.csv (10-s / 1-minute): the served counts the decisions were made with - columns, one row per
+                      key, positive counts of the snapshot tiers summing to the summary's served (V_combview review F5).
 Every test reads content and returns (passed, value, detail).
 """
 import collections
 import csv
+import hashlib
 import json
 import math
 import os
@@ -320,8 +326,18 @@ def check_kept(path, decisions=None):
             extra, miss = per_tier[kd] - exp, exp - per_tier[kd]
             msgs.append(f'K3 {kd}: {sum(extra.values())} rows not in the record\'s {rk!r} rows (e.g. {list(extra)[:1]}), '
                         f'{sum(miss.values())} of the record\'s missing (e.g. {list(miss)[:1]})')
-    # pass 2: the kept detections, streamed
+    # pass 2: the kept detections, streamed. N2 (Q fix verification): a detection key (cand_id, ra_peak, dec_peak) kept twice
+    # refuses (G3's key: one detection in two places), and the kept rows' digest must be the summary's and, with the omitted
+    # detections' digest, add up to the served set's - so a kept row substituted, duplicated or moved to another identity
+    # refuses; the record's detection rows must be the omitted ones (their (batch, identity, cand_id) digest)
+    dg = summ.get('digests') or {}
+    if not all(dg.get(k) for k in ('served', 'kept', 'omitted', 'omitted_cid')):
+        msgs.append('K2 the summary has no served / kept / omitted digests (deep_omission_summary.json written before the '
+                    'served-set fingerprint, Q fix verification N2): re-run the omit stage')
+    seen_keys, n_dup = set(), 0
+    D_kept = DO.MultisetDigest()
     kept_ids, found = set(), set()
+    kept_per_key = collections.Counter()          # K5: the served counts = kept + omitted, per decision key
     with open(path, newline='') as f:
         for i, r in enumerate(csv.DictReader(f)):
             if r['kind'] != 'detection kept':
@@ -334,13 +350,51 @@ def check_kept(path, decisions=None):
                 msgs.append(f'K2 row {i + 2} detection kept {r["cand_id"]}: the record omits it')
             if idk in dropped_ids:
                 msgs.append(f'K2 row {i + 2} detection kept {r["cand_id"]}: its identity {idk} is dropped in the record')
+            dk = (r['cand_id'], r['ra_peak'], r['dec_peak'])
+            h = hashlib.blake2b('\x1f'.join(dk).encode('utf-8'), digest_size=16).digest()
+            if h in seen_keys:
+                n_dup += 1
+                if n_dup <= 3:
+                    msgs.append(f'K2 row {i + 2} detection kept {r["cand_id"]} ({r["ra_peak"]}, {r["dec_peak"]}): this detection '
+                                f'key is kept twice')
+            seen_keys.add(h)
+            D_kept.add(DO.detection_item(r['batch'], r['identity'], dk))
+            kept_per_key[(r['lst'], r['night'], r['band'], r['stokes'], r['tier'])] += 1
             kept_ids.add(idk)
             t = (r['batch'], r['identity'], r['cand_id'])
             if t in targets:
                 found.add(t)
+    if n_dup > 3:
+        msgs.append(f'K2 {n_dup} detection keys kept twice in all')
+    if dg.get('kept') and dg.get('omitted') and dg.get('served'):
+        if D_kept.text() != dg['kept']:
+            msgs.append(f'K2 the kept rows\' digest {D_kept.text()[:24]}... is not the summary\'s kept digest '
+                        f'{dg["kept"][:24]}... (a kept detection substituted, duplicated, lost or moved to another identity)')
+        if D_kept + DO.MultisetDigest(dg['omitted']) != DO.MultisetDigest(dg['served']):
+            msgs.append('K2 the kept rows + the omitted detections do not reproduce the served set\'s digest')
+    if dg.get('omitted_cid'):
+        D_rec = DO.MultisetDigest()
+        for r in rec:
+            if r['kind'] == 'detection':
+                D_rec.add('\x1f'.join((r['batch'], r['identity'], r['cand_id'])))
+        if D_rec.text() != dg['omitted_cid']:
+            msgs.append('K2 the record\'s detection rows are not the omitted detections of the summary\'s digest')
     for t, where in targets.items():
         if t not in found:
             msgs.append(f'K4 {where}: its new best {t[2]} is no kept detection of its identity {t[0]} {t[1]}')
+    # K5 (V_combview review F5): the served counts the decisions were made with (deep_omission_served.csv beside) are the kept
+    # plus the omitted detections of each (LST, night, band, Stokes, tier)
+    svp = os.path.join(d, 'deep_omission_served.csv')
+    if not os.path.exists(svp):
+        msgs.append('K5 no deep_omission_served.csv beside: the counts the decisions were made with are not recorded')
+    else:
+        served = DO.read_served(svp)
+        omitted = collections.Counter((r['lst'], r['night'], r['band'], r['stokes'], r['tier']) for r in rec
+                                      if r['kind'] == 'detection')
+        want = kept_per_key + omitted
+        if served != dict(want):
+            bad = sorted(k for k in set(served) | set(want) if served.get(k, 0) != want.get(k, 0))
+            msgs.append(f'K5 {len(bad)} served counts are not the kept + omitted detections of their key (e.g. {bad[:2]})')
     nk = n['detection kept']
     if not (nk == summ.get('kept') == summ.get('served', -1) - summ.get('omitted', 0)):
         msgs.append(f'K2 {nk} kept detections != the summary\'s kept {summ.get("kept")} (served {summ.get("served")} - omitted '
@@ -350,6 +404,38 @@ def check_kept(path, decisions=None):
                     f'{summ.get("identities_kept")} kept of {summ.get("identities")}')
     return _fail(msgs, nk, f'kept product: ' + ', '.join(f'{k} {v}' for k, v in sorted(n.items()))
                  + '; traced to the decisions, the record and the summary beside')
+
+
+def check_served(path):
+    """(passed, value, detail) of deep_omission_served.csv: production's key columns, one row per key, positive counts of the
+    snapshot tiers, their sum = the summary's served (the per-key tie to the kept and omitted detections is K5 of omission_kept)."""
+    DO = _DO()
+    cols, rows = _rows(path)
+    if cols != DO.SERVED_COLS:
+        return False, None, f'columns {cols} are not {DO.SERVED_COLS}'
+    from exopipe.phase3.config import CFG
+    msgs, seen, tot = [], set(), 0
+    for i, r in enumerate(rows):
+        k = tuple(r[c] for c in DO.SERVED_COLS[:-1])
+        if k in seen:
+            msgs.append(f'row {i + 2}: key {k} twice')
+        seen.add(k)
+        if r['tier'] not in CFG.catalog_omission.SNAPSHOT_TIERS or not r['n'].isdigit() or int(r['n']) < 1:
+            msgs.append(f'row {i + 2}: tier {r["tier"]!r} / n {r["n"]!r}')
+            continue
+        tot += int(r['n'])
+    sp = os.path.join(os.path.dirname(os.path.abspath(path)), 'deep_omission_summary.json')
+    if not os.path.exists(sp):
+        msgs.append('no deep_omission_summary.json beside')
+    elif json.load(open(sp)).get('served') != tot:
+        msgs.append(f'the counts sum to {tot}, the summary\'s served is {json.load(open(sp)).get("served")}')
+    return _fail(msgs, tot, f'{len(rows)} (LST, night, band, Stokes, tier) keys, {tot} served detections')
+
+
+@content_test('omission_served')
+def served_counts_add_up(path, **ctx):
+    """deep_omission_served.csv: the served counts the decisions were made with."""
+    return check_served(path)
 
 
 @content_test('omission_kept')

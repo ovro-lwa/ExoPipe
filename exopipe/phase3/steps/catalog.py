@@ -72,10 +72,11 @@ Deep omission of the short tiers (lib/catalog/deep_omission.py; Gregg 2026-10-24
   deep_omission_summary.txt; classes omission_decisions, omission_record); unit '<--run or tier label>.omit'. It sits where the
   cumulative product is assembled: after each unit's chain and pages, before the cumulative catalogues, identities and pages
   (the 10-minute cumulative build of `serve --tier sublst` writes the same table and passes it to the merge, which applies
-  the drop). 10-s / 1-minute: the drop is written as the kept product deep_omission_kept.csv (class omission_kept) and is
-  APPLIED by the snapshot tier's cumulative step - the port of the combined snapshot view, not yet written; until then it is
-  computed and recorded, and applied nowhere. --omit-refusals is an override of the RULED catalog_omission.REFUSALS
-  (--ruling-for or a non-production --out).
+  the drop). 10-s / 1-minute: the drop is written as the kept product deep_omission_kept.csv (class omission_kept), beside
+  the served counts the decisions were made with (deep_omission_served.csv, class omission_served), and is
+  APPLIED by the snapshot tier's cumulative step, the combined snapshot view (`serve --tier snapshot --family comb`,
+  lib/serve/snapshot_view.py: --view-omit takes this stage's --out, or its own omit stage writes the same products).
+  --omit-refusals is an override of the RULED catalog_omission.REFUSALS (--ruling-for or a non-production --out).
 """
 import importlib
 import sys

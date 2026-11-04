@@ -22,6 +22,11 @@ Stages (--stages/--from/--until; default all, in order):
   deep      views, test, carry (only with --carry-from), start, hub, verify
   sublst    build, views, test, carry, swap, start (carry+swap+start only together), hub, verify
   snapshot  gate, copy, localize, gate-copy, carry, test, start, hub, verify
+  snapshot --family comb  omit, build, filtercat, localize, ready: THE COMBINED SNAPSHOT VIEW, the snapshot tier's cumulative step
+            (lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md): the deep-omission kept product of the
+            --view-runs applied, the batch identities merged with the chain's merge (in place), one page per tier and Stokes
+            with hard-linked panels, production's tests T1-T6, the filter catalogue, the per-tier localization; ends
+            VIEW-READY-FOR-HIDES (the registration of its pages on p8986-p8989 is not ported: production registers it)
   forced    switch, hub, verify            jupiter   start, hub, verify
 
 Inputs (read, never rewritten unless listed under Outputs):
@@ -39,6 +44,9 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
   judgement_journal  judgements*/judgements.jsonl after a carry (+ carry_report.csv, carry_missed.csv)
   sublst_cumulative  the Run_SLSTB build (merged CSVs, localizations, figures, page index)
   review_copy    the snapshot review copy;  exclusion_check  the serve-time exclusion gate's pass file
+  snapshot_view  the combined view (<SNAPSHOT_REVIEW_ROOT>/<view>, parity <out>/snapshot/<view>): V1-V6 read back - queues,
+                 page directories, identities against the kept product, the record against the omit stage's;
+                 filter_catalog (per detection) and snapshot_card2_union its filter inputs; omission_* its omit product
   hub_page       review hub registry.json / index.html (served on both listeners of the two-port server; the separate
                  inspection hub page and the hub HTTP servers were retired by production on 2026-10-27)
   page_registration  <out>/_records/serve/registrations/<unit>_<UTC>_<hash>.json: the ONE registration of a serve
@@ -92,6 +100,7 @@ Failure modes (exit 2 = refused, the gate named in the record; a refused page ke
   registry in the refactor window); G24 the server refused to start / the page's build failed on the two-port server or
   its requests got no 200 TWO_PORT_MAX_FAILED_REQUESTS times in a row;
   G25 not the review host; G26 run label required; G28 an earlier stage's record missing or stale;
+  the combined view (--family comb): G-V1..G-V6, G-K, T1-T6, F-G1..F-G3 (lib/serve/snapshot_view.py);
   the pages merge absent or stale (deep). Exit 3: nothing to do (no page selected, nothing to carry). Exit 1: error.
   A refused (or errored) run-level stage stops every later stage of the invocation (views/test/carry; build/views/test/
   swap; gate/copy/localize/gate-copy/carry/test): nothing is copied, swapped in or registered after a refusal.
@@ -107,16 +116,25 @@ import sys
 SUMMARY = 'review pages registered on the two-port server and the hub; served-queue and exclusion content tests'
 TIERS = ('deep', 'sublst', 'snapshot', 'jupiter')
 SELECTORS = ('tier', 'run_label', 'stokes', 'lsts', 'epochs')
-CONFIG = ('serve', 'pages', 'catalog_omission', 'catalog_sublst', 'exclusions', 'paths', 'runner', 'site')
+CONFIG = ('serve', 'pages', 'catalog_omission', 'catalog_sublst', 'catalog_snapshot', 'exclusions', 'paths', 'runner', 'site')
 WRITES = True
-FAMILIES = ('review', 'forced', 'strat', 'deep-forced', 'jupiter')
+FAMILIES = ('review', 'forced', 'strat', 'deep-forced', 'jupiter', 'comb')
 
 
 def add_arguments(p):
     g = p.add_argument_group('serve')
     g.add_argument('--family', choices=FAMILIES, default=None,
                    help="page family of the tier (default: review; jupiter for --tier jupiter): forced = the snapshot forced "
-                        "photometry pages; strat / deep-forced = restart-only deep pages")
+                        "photometry pages; strat / deep-forced = restart-only deep pages; comb = the COMBINED SNAPSHOT VIEW, the "
+                        "snapshot tier's cumulative step (lib/serve/snapshot_view.py: stages omit, build, filtercat, localize, "
+                        "ready)")
+    g.add_argument('--view-runs', metavar='RUN,RUN|@FILE',
+                   help='--family comb: the served batch runs of the view, in order (directories, a comma list or @FILE; bare '
+                        'names under paths.SNAPSHOT_REVIEW_ROOT)')
+    g.add_argument('--view-omit', metavar='DIR',
+                   help='--family comb: an omit product made for exactly these runs (deep_omission_kept.csv with its decisions, '
+                        'record and summary; `catalog --tier snapshot --stages omit`) - the omit stage is then not run; default '
+                        'the view\'s own omission directory serve.SNAPVIEW_OMIT_DIR, written by the omit stage')
     g.add_argument('--pages', help='comma list of page keys to (re)serve (default every page of the family; see serve.PAGES)')
     g.add_argument('--source', help='snapshot: the chain run to copy, [HOST:]PATH (default site CHAIN_HOST + '
                                     'serve.SNAPSHOT_SOURCE)')
@@ -241,6 +259,11 @@ def run(args, run):
         if args.restart and args.stop:
             raise Refusal('give --restart or --stop, not both')
         return restart_or_stop(args, run)
+    if getattr(args, 'family', None) == 'comb':        # the combined snapshot view: a cumulative build, no page of its own yet
+        if args.tier != 'snapshot':
+            raise Refusal(f'--family comb is the snapshot tier\'s combined view (--tier snapshot), not --tier {args.tier}')
+        from exopipe.phase3.lib.serve import snapshot_view
+        return snapshot_view.run(args, run)
     plan = planmod.make(args, run.out_root)
     if not plan.pages:
         from exopipe.phase3.core.record import NoInput
