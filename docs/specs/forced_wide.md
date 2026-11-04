@@ -36,7 +36,8 @@ honesty, not a choice of draw") RULES the Monte Carlo keys:
 
 - `TAPER_CTL_MAX`: every eligible taper control line (no 900 cap);
 - `BOOT_DRAW`, `BOOT_Z_SE`, `BOOT_MAX`: the centroid's bootstrap per target, until its z is precise to 0.02;
-- `KNIFE_EDGE_SE`: the knife-edge flag.
+- `KNIFE_EDGE_SE`: the knife-edge flag;
+- `KNIFE_EDGE_DRAWS`: a flagged row's published outcome is the majority of 20 Monte Carlo draws.
 
 The other three defaults that differ from production are PROPOSED (see the deliberate differences below).
 
@@ -178,11 +179,11 @@ results also do not depend on the number of processes. `wide_test` refuses more 
 files. It pools burst files of one search only: every `W_search` record must have read the current `jobs.json` and the
 selected cutout generation (W-POOL).
 
-### Monte Carlo errors and the knife-edge flag (`KNIFE_EDGE_SE` = 2)
+### Monte Carlo errors, the knife-edge flag (`KNIFE_EDGE_SE` = 4) and the majority of draws (`KNIFE_EDGE_DRAWS` = 20)
 
 Two parts of the method are random draws: the control lines' directions and the centroid's bootstrap. A verdict can
 therefore sit on a threshold within the method's own Monte Carlo noise. Each row's `knife_edge` column names every
-statistic that **decides** the row and lies within 2 Monte Carlo errors of one of its thresholds. A statistic decides the
+statistic that **decides** the row and lies within 4 Monte Carlo errors of one of its thresholds. A statistic decides the
 row when moving it alone to just below and just above that threshold (the others as they are) changes the verdict or the
 set of named sources (`knife_edges` re-runs `verdict_row`). The text reads, for example,
 `knife-edge: centroid z 2.97 vs 3, Monte Carlo error 0.02`. A statistic that decides at both of its thresholds is named
@@ -210,11 +211,30 @@ salts per row) the ratio is 0.996-1.026 at 1000 resamples, and the realized erro
 threshold is flagged in most runs, not in all. On the gen5 run (2026-11-04, every job) the flag marked 5 of the 7 rows that
 differ from the served files. Re-run with 20 independent salts each (`flip_check.py`), all 7 flip between draws: the
 served outcome comes out in 6-13 of 20, the new one in 7-14. With `KNIFE_EDGE_SE` = 4 the same draws flag all 7, and every
-row the salts showed flipping, for 17 flags in 312 rows; with 2 they give 13.
+row the salts showed flipping, for 17 flags in 312 rows; with 2 they give 13. Hence the default 4 (the refactor chat,
+2026-11-04).
 
-With the flag, `results_v3.csv`, and so `forced_wide_v3.csv`, gain `bootstrap_n`, `centroid_z_se` and `knife_edge`.
-`candidates_v3.csv` gains `p_emp_se`, `ratio_se`, `n_ctl_se` and `centroid_to_candidate_se`. With `KNIFE_EDGE_SE` None
-(production) none of these columns is written.
+**A flagged row is published as the majority of 20 draws** (`KNIFE_EDGE_DRAWS`; the refactor chat's decision, 2026-11-04).
+One draw cannot decide such a row, so `analyze_all` re-runs the approved method itself (8 lines per source, `CTL_DIRS`) for
+it 20 more times. Each draw k < 20 has its own salt in place of `SEED`: a stable hash (sha256) of (`SEED`, the target's
+(Stokes, identity), k). The salts are fixed and recorded (the unit's `draw_salt`), so the result is reproducible and
+independent of the job list's order. Then:
+
+- **The published verdict and set of named sources** are the most frequent outcome of the 20 (a plurality).
+- **The row's other columns** come from the default draw when its outcome is the majority's (`mc_row` = `default`). Otherwise
+  they come from the first draw that has it (`draw k`), with that draw's candidate rows, so each row stays self-consistent.
+- **`knife_edge`** is always the default draw's: it is what flagged the row.
+- **A tie** (two or more outcomes most frequent) is published UNDECIDED with no named source, with the default draw's
+  numbers (`mc_row` = `tie`).
+- **`mc_draws`** says it in words: `CONSISTENT WITH A BACKGROUND SOURCE (VLSSr J105425.8+715204, VLSSr J105246.5+715924) in 14
+  of 20 Monte Carlo draws`, or `a tie of 20 Monte Carlo draws, 10 each: <outcome>; <outcome>`.
+- **`mc_outcomes`** counts every outcome, most frequent first (`14: <outcome> | 6: <outcome>`).
+- **Unflagged rows** keep their single draw.
+
+With the flag, `results_v3.csv`, and so `forced_wide_v3.csv`, gain `bootstrap_n`, `centroid_z_se`, `knife_edge`, `mc_draws`,
+`mc_outcomes` and `mc_row`. `candidates_v3.csv` gains `p_emp_se`, `ratio_se`, `n_ctl_se` and `centroid_to_candidate_se`. With
+`KNIFE_EDGE_SE` None (production) none of these columns is written. `KNIFE_EDGE_DRAWS` None (production's value) keeps
+every row a single draw.
 
 ### `wide_publish` → `<review root>/<run>/forced_wide_v3.csv` (`forced_wide_published`)
 
@@ -236,9 +256,10 @@ never published (W-PARTIAL). Each unit runs W-ENV and W-CATDIR first: `named_rad
 Any other verdict keeps the position verdict, and the burst test's result is added to the reason. `named_radec` marks
 the named sources.
 
-The figure does not read `knife_edge` yet. `docs/pending_production_patch_forced_wide_knife_edge.diff` adds the
-column's text to the burst test's part of the reason. It is a patch to exopipe_ops' `astrometry_assoc.forced_v3_verdict`,
-for the owning chat to apply. A row without the column reads exactly as before (all 312 served rows checked).
+The figure does not read the knife-edge columns yet. `docs/pending_production_patch_forced_wide_knife_edge.diff` adds a
+flagged row's `mc_draws` and `knife_edge` text to the burst test's part of the reason. It is a patch to exopipe_ops'
+`astrometry_assoc.forced_v3_verdict`, for the owning chat to apply. A row without them reads exactly as before (every
+served row and every unflagged row checked).
 
 ### Deliberate differences from the analysis, and production's values
 
@@ -255,7 +276,8 @@ Carlo keys are decided (2026-11-04). Production's values of all nine are in
 | `forced_wide_test.TAPER_CTL_MAX` | `None` (every eligible line) | `900` | v3 kept at most 900 control lines per candidate. The cap shortened 486 of 1,267 gen5 calls (38%, all Stokes I) and left the calibration to the draw of lines it kept. Without it the test evaluates 1.43 × the lines (`cap_cost_census.py`). Decided (RULED): the amendment (1). |
 | `forced_wide_test.BOOT_DRAW` | `target` | `job` | The bootstrap drew from the job's generator, after the control lines in production's order. Its own stable seed per (target, tier) keeps it free of every other draw. Decided (RULED): the amendment (2), "seeded per target". |
 | `forced_wide_test.BOOT_Z_SE` | `0.02` | `None` (exactly 1000 resamples) | At 1000 resamples the bootstrap alone moved a gen5 row's centroid z from 3.016 (the served draw) to 2.968 (round 3's draw), across the threshold 3 (Gaia DR3 3316364602541746048, I 1 min). Decided (RULED): the amendment (2). |
-| `forced_wide_test.KNIFE_EDGE_SE` | `2.0` | `None` (no Monte Carlo columns) | Decided (RULED): the amendment (3). |
+| `forced_wide_test.KNIFE_EDGE_SE` | `4.0` | `None` (no Monte Carlo columns) | Decided (RULED): the amendment (3); 4 from the 20-salt flip check of the gen5 run (2026-11-04). |
+| `forced_wide_test.KNIFE_EDGE_DRAWS` | `20` | `None` (every row a single draw) | A flagged row's published outcome is the majority of 20 Monte Carlo draws. Production has no equivalent. Decided (RULED): the amendment, extended 2026-11-04. |
 | `forced_wide_search.FILE_ERRORS` | `refuse` | `drop` | Gates refuse; production dropped a raising cutout. No gen5 cutout raised. |
 
 The night-activity bands table lists the nights of each (LST, band) in date order. The script iterated a set there, so

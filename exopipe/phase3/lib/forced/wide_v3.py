@@ -326,8 +326,8 @@ def taper_cap():
 
 
 def mc_settings():
-    """the Monte Carlo keys, checked: (BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE); a bad value raises ValueError (the stage
-    refuses it before any job runs)."""
+    """the Monte Carlo keys, checked: (BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE, KNIFE_EDGE_DRAWS); a bad value raises
+    ValueError (the stage refuses it before any job runs)."""
     c = tc()
     taper_cap()
     if c.BOOT_DRAW not in ('target', 'job'):
@@ -339,7 +339,10 @@ def mc_settings():
     if not (isinstance(c.BOOTSTRAP, int) and isinstance(c.BOOT_MAX, int) and 2 <= c.BOOTSTRAP <= c.BOOT_MAX):
         raise ValueError('forced_wide_test.BOOTSTRAP %r / BOOT_MAX %r: ints, 2 <= BOOTSTRAP <= BOOT_MAX'
                          % (c.BOOTSTRAP, c.BOOT_MAX))
-    return c.BOOT_DRAW, c.BOOT_Z_SE, c.BOOT_MAX, c.KNIFE_EDGE_SE
+    d = c.KNIFE_EDGE_DRAWS
+    if d is not None and not (isinstance(d, int) and not isinstance(d, bool) and d >= 2):
+        raise ValueError('forced_wide_test.KNIFE_EDGE_DRAWS %r: None (the single draw) or an int >= 2' % (d,))
+    return c.BOOT_DRAW, c.BOOT_Z_SE, c.BOOT_MAX, c.KNIFE_EDGE_SE, c.KNIFE_EDGE_DRAWS
 
 
 def _control_sources(pool, J0, cand, tier):
@@ -388,12 +391,13 @@ def _line(J, C, P, nb, tier, b1, fwmin, fwmax):
     return r['z'], r['n_obs'], r['n_pred'], r['var']
 
 
-def control_lines(pool, J0, cand, tier, rng):
+def control_lines(pool, J0, cand, tier, rng, seed=None):
     """z of the taper test on control lines (module notes) for one candidate of job J0: [(z, n_obs, n_pred, var)], in the
     order of forced_wide_test.CONTROL_ORDER ('canonical': order-independent, the job's generator untouched, each line with its
-    control source's identity as a 5th member - the Monte Carlo errors' clusters; 'pool': production's, consuming ``rng``)"""
+    control source's identity as a 5th member - the Monte Carlo errors' clusters; 'pool': production's, consuming ``rng``).
+    seed: the stable hashes' salt (None: SEED; a Monte Carlo draw passes its own, draw_salt)"""
     if control_order() == 'canonical':
-        zs, prov = control_lines_canonical(pool, J0, cand, tier)
+        zs, prov = control_lines_canonical(pool, J0, cand, tier, seed=seed)
         return [q + (p_[0],) for q, p_ in zip(zs, prov)]
     return control_lines_pool(pool, J0, cand, tier, rng)
 
@@ -428,14 +432,16 @@ def control_lines_pool(pool, J0, cand, tier, rng):
     return zs
 
 
-def control_lines_canonical(pool, J0, cand, tier):
+def control_lines_canonical(pool, J0, cand, tier, seed=None):
     """ORDER-INDEPENDENT control lines (CONTROL_ORDER 'canonical'; R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT):
     one source per cell, its host the job with the best score, a tie to the smallest (job identity, source identity); the
     sources in the order of a stable hash of (SEED, the target's identity, the source's identity) - the seeded selection a
     TAPER_CTL_MAX cap applies; line i of a source at (i + u_i) x 2 pi / CTL_DIRS, u_i a stable hash of (SEED, target, source, i).
-    Returns ([(z, n_obs, n_pred, var)], [(source identity, host job identity, i)]) - the lines and where each came from."""
+    Returns ([(z, n_obs, n_pred, var)], [(source identity, host job identity, i)]) - the lines and where each came from.
+    seed: the salt of the hashes (None: SEED)."""
     c = tc()
     cap = taper_cap()
+    salt = c.SEED if seed is None else seed
     FW = fw_table()
     bands = cand['bands_far']
     d = cand['d']
@@ -447,7 +453,7 @@ def control_lines_canonical(pool, J0, cand, tier):
         if cur is None or score > cur[0] or (score == cur[0] and tie < cur[4]):
             best[key] = (score, J, (float(x), float(y)), nb, tie)
     tid = job_id(J0)
-    ents = sorted(((stable_uniform('rank', c.SEED, tid, v[4][1]), v[4][1], v[1], v[2], v[3]) for v in best.values()),
+    ents = sorted(((stable_uniform('rank', salt, tid, v[4][1]), v[4][1], v[1], v[2], v[3]) for v in best.values()),
                   key=lambda e: (e[0], e[1]))
     zs, prov = [], []
     bright1 = {}
@@ -455,7 +461,7 @@ def control_lines_canonical(pool, J0, cand, tier):
     for _rank, sid, J, C, nb in ents:
         b1 = _bright1(J, bright1)
         for i in range(c.CTL_DIRS):
-            th = (i + stable_uniform('rot', c.SEED, tid, sid, i)) * step
+            th = (i + stable_uniform('rot', salt, tid, sid, i)) * step
             r = _line(J, C, (C[0] + d * math.sin(th), C[1] + d * math.cos(th)), nb, tier, b1, fwmin, fwmax)
             if r is None:
                 continue
@@ -608,15 +614,17 @@ def v2_centering(J, cand, tier, v2pool, bdir):
     return dict(verdict=v, z=z, power=pw, t=r['t'], t_err=r['err'], n_cells=r['n_cells'], n_bursts=r['n_bursts'], n_ctl=ncv)
 
 
-def analyze(J, events, pool, v2pool, bdir, trace=None):
+def analyze(J, events, pool, v2pool, bdir, trace=None, tiers=None, salt=None, flag=True):
     """(result rows, candidate rows) of one job, both tiers (forced_wide_v3.analyze; one generator per job). KNIFE_EDGE_SE set:
     the Monte Carlo errors and the knife-edge flag added (knife_edges). trace: a list given -> (tier, res, cen) of each tier
-    appended (tools)"""
+    appended (tools). A MONTE CARLO DRAW (analyze_all, knife-edge rows): tiers = those to analyze, salt = the draw's salt in
+    place of SEED (every stable hash and the job's generator), flag False = no knife-edge test (its rows' outcomes only)"""
     c = tc()
     ke = c.KNIFE_EDGE_SE
-    rng = np.random.default_rng(c.SEED)
+    seed = c.SEED if salt is None else salt
+    rng = np.random.default_rng(seed)
     rows, crows = [], []
-    for tier in TIERS:
+    for tier in (TIERS if tiers is None else tiers):
         ev = events.get((J.st, tier), {}).get(J.job['identity'], [])
         ev = [e for e in ev if e[0] in J.bands]
         if not ev:
@@ -630,7 +638,7 @@ def analyze(J, events, pool, v2pool, bdir, trace=None):
                 tt = taper_test(J, cd['xy'], (0.0, 0.0), cd['bands_far'], tier)
                 out['taper'] = tt
                 if tt is not None:
-                    zs = control_lines(pool, J, cd, tier, rng)
+                    zs = control_lines(pool, J, cd, tier, rng, seed=seed)
                     out.update(calibrate(tt, matched(zs, tt['n_pred'])))
                     if ke is not None:
                         out['_windows'] = ([q[4] for q in zs] if all(len(q) > 4 for q in zs) else None, len(zs),
@@ -640,7 +648,7 @@ def analyze(J, events, pool, v2pool, bdir, trace=None):
             out['night'] = per_night(J, cd['xy'], tier, cd['bands_far'] + cd['bands_near'])
             res.append(out)
         evb = sorted({e[0] for e in ev}, key=lambda b: float(b[:-3]))
-        cen = centroid(J, tier, evb, rng, [r['xy'] for r in res])
+        cen = centroid(J, tier, evb, rng, [r['xy'] for r in res], seed=seed)
         for r in res:
             r['z_c'] = z_to(cen, r) if cen else float('nan')
         row = verdict_row(J, tier, ev, cands, res, cen)
@@ -648,9 +656,9 @@ def analyze(J, events, pool, v2pool, bdir, trace=None):
             for r in res:
                 r['z_c_se'] = r['z_c'] * cen['rel'] if cen else float('nan')
                 mc_errors(r)
-            ks = knife_edges(J, tier, ev, cands, res, cen, row)
+            ks = knife_edges(J, tier, ev, cands, res, cen, row) if flag else []
             row.update(bootstrap_n=cen['boot_n'] if cen else '', centroid_z_se=round(cen['z_se'], 4) if cen else '',
-                       knife_edge=knife_text(ks))
+                       knife_edge=knife_text(ks), mc_draws='', mc_outcomes='', mc_row='')
         rows.append(row)
         for r in res:
             crows.append(cand_row(J, tier, r))
@@ -839,7 +847,7 @@ _BOOT_CHUNK = 50000                 # resamples drawn at once (BOOT_DRAW 'target
 _BOOT_MARGIN = 1.1
 
 
-def centroid(J, tier, bands, rng, zc_xy=()):
+def centroid(J, tier, bands, rng, zc_xy=(), seed=None):
     """WHERE DO THE BURSTS AT THE TARGET CENTER? The bursts within its disc, offsets in FWHM of their band: the mean offset, its
     error = sqrt(stat^2 + floor^2) - stat from a bootstrap over nights (>= BOOT_MIN_NIGHTS nights; else CEN_DET / sqrt(n)),
     floor = max(CEN_FLOOR, CEN_NIGHT / sqrt(nights)); z_off = |offset| / error. The bootstrap's MONTE CARLO error: every z of
@@ -847,7 +855,8 @@ def centroid(J, tier, bands, rng, zc_xy=()):
     stat^2 = the mean of q_b = ((x_b - x)^2 + (y_b - y)^2) / 2 over the resamples b, SE(stat^2) = sd(q_b) / sqrt(B)).
     BOOT_DRAW 'job' draws the nights from ``rng`` replicate by replicate (production's draws); 'target' from a generator of its
     own per (target, tier), vectorized. BOOT_Z_SE: more resamples, in blocks, until max(z, each candidate's z_c at most
-    Z_C_NEAR) x rel <= BOOT_Z_SE / _BOOT_MARGIN or BOOT_MAX are drawn; zc_xy = the candidates' (e, n) offsets (arcmin)."""
+    Z_C_NEAR) x rel <= BOOT_Z_SE / _BOOT_MARGIN or BOOT_MAX are drawn; zc_xy = the candidates' (e, n) offsets (arcmin); seed =
+    the stable hash's salt (None: SEED)."""
     c = tc()
     FW = fw_table()
     xs, ys, cells, ifw = [], [], [], []
@@ -878,7 +887,7 @@ def centroid(J, tier, bands, rng, zc_xy=()):
                 return np.array([(xs[ii].mean(), ys[ii].mean()) for ii in (np.concatenate([idx[k] for k in rng.integers(0, nn, nn)])
                                                                          for _ in range(m))])
         else:
-            g = np.random.default_rng(stable_int('boot', c.SEED, job_id(J), tier))
+            g = np.random.default_rng(stable_int('boot', c.SEED if seed is None else seed, job_id(J), tier))
             sx = np.array([xs[i].sum() for i in idx])
             sy = np.array([ys[i].sum() for i in idx])
             cnt = np.array([len(i) for i in idx], float)
@@ -1295,10 +1304,107 @@ def _one(i):
     return analyze(_G['todo'][i], _G['events'], _G['pool'], _G['v2pool'], _G['bdir'])
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# THE KNIFE-EDGE ROWS' MAJORITY OUTCOME (forced_wide_test.KNIFE_EDGE_DRAWS; the refactor chat's decision under Gregg's delegation,
+# 2026-11-04, extending R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE): a flagged
+# row's published verdict and named set are the most frequent outcome of K independent Monte Carlo draws - the approved method
+# itself (8 lines per source, CTL_DIRS) with K other salts - published with its fraction; a tie is UNDECIDED
+# ---------------------------------------------------------------------------------------------------------------------
+
+DRAW_SALT_RULE = "stable_int('draw', SEED, '<Stokes>:<identity>', k) for k < KNIFE_EDGE_DRAWS (sha256, first 8 bytes)"
+
+
+def draw_salt(J, k):
+    """the salt of a job's k-th Monte Carlo draw: a stable hash (sha256) of (SEED, the target's (Stokes, identity), k) - fixed,
+    recorded, the same for any job list or order (it replaces SEED in every stable hash and the job's generator)"""
+    return stable_int('draw', tc().SEED, job_id(J), k)
+
+
+def named_names(named):
+    """the source names of a row's named field ('VLSSr J... 3.3 Jy at 10.0'; ...' -> ['VLSSr J...', ...])"""
+    return [' '.join(x.split(' ')[:2]) for x in named.split('; ')] if named else []
+
+
+def outcome_text(verdict, names):
+    """a draw's outcome as text: the verdict, and for a naming verdict its sources ('BACKGROUND SOURCE (VLSSr J..., ...)')"""
+    return verdict + (' (%s)' % ', '.join(names) if names else '')
+
+
+def draw_tasks(todo, outs, K):
+    """[(job index, k, the job's knife-edge tiers)] for every job of ``todo`` with a knife-edge row, k < K"""
+    out = []
+    for i, (rows, _cr) in enumerate(outs):
+        tiers = tuple(r['tier'] for r in rows if r.get('knife_edge'))
+        if tiers:
+            out += [(i, k, tiers) for k in range(K)]
+    return out
+
+
+def _draw(task):
+    i, k, tiers = task
+    J = _G['todo'][i]
+    return analyze(J, _G['events'], _G['pool'], _G['v2pool'], _G['bdir'], tiers=tiers, salt=draw_salt(J, k), flag=False)
+
+
+def apply_draws(outs, tasks, douts, K):
+    """outs with each knife-edge row replaced by its draws' MAJORITY OUTCOME (verdict, set of named sources):
+      the most frequent outcome of the K draws (a plurality); its row = the default draw's when that has the majority outcome
+      ('default'), else the first draw's that has (lowest k: 'draw k'), with the default draw's knife_edge text (the trigger)
+      and its candidates rows; mc_draws = '<outcome> in n of K Monte Carlo draws'; mc_outcomes = every outcome, most frequent
+      first ('n: <outcome> | ...'); mc_row = where the row's numbers come from.
+      A TIE (two or more outcomes most frequent): the default draw's row with verdict UNDECIDED and no named source, mc_row
+      'tie', mc_draws 'a tie of K Monte Carlo draws, n each: <outcome>; <outcome>'."""
+    by = collections.defaultdict(dict)                     # (job index, tier) -> k -> (row, its candidate rows)
+    for (i, k, _tiers), (rows, crows) in zip(tasks, douts):
+        for r in rows:
+            by[(i, r['tier'])][k] = (r, [c_ for c_ in crows if c_['tier'] == r['tier']])
+    new = []
+    for i, (rows, crows) in enumerate(outs):
+        rows, crows = list(rows), list(crows)
+        for j, r in enumerate(rows):
+            d = by.get((i, r['tier']))
+            if not r.get('knife_edge') or not d:
+                continue
+            ks_ = sorted(d)
+            oc = {k: _outcome(d[k][0]) for k in ks_}
+            cnt = collections.Counter(oc.values())
+            first = {}
+            for k in ks_:
+                first.setdefault(oc[k], k)
+            order = sorted(cnt, key=lambda o: (-cnt[o], first[o]))
+            top, n = order[0], cnt[order[0]]
+            tied = [o for o in order if cnt[o] == n]
+            text = lambda o: outcome_text(o[0], named_names(d[first[o]][0]['named']))     # noqa: E731
+            tally = ' | '.join('%d: %s' % (cnt[o], text(o)) for o in order)
+            if len(tied) > 1:
+                row = dict(r, verdict='UNDECIDED', named='', mc_row='tie',
+                           mc_draws='a tie of %d Monte Carlo draws, %d each: %s' % (len(ks_), n,
+                                                                                         '; '.join(text(o) for o in tied)),
+                           mc_outcomes=tally)
+            else:
+                if _outcome(r) == top:
+                    row, src = dict(r), 'default'
+                else:
+                    kk = first[top]
+                    row, src = dict(d[kk][0], knife_edge=r['knife_edge']), 'draw %d' % kk
+                    cand = d[kk][1]
+                    pos = [q for q, c_ in enumerate(crows) if c_['tier'] == r['tier']]
+                    if len(pos) == len(cand):          # the same candidates in every draw (they depend on the data only)
+                        for q, c_ in zip(pos, cand):
+                            crows[q] = c_
+                row.update(mc_row=src, mc_draws='%s in %d of %d Monte Carlo draws' % (
+                    outcome_text(top[0], named_names(row['named'])), n, len(ks_)), mc_outcomes=tally)
+            rows[j] = row
+        new.append((rows, crows))
+    return new
+
+
 def analyze_all(jobs, events, bdir, workers=1, only=None, log=print):
     """(result rows, candidate rows) of the jobs (base then extension, the analysis' order): per Stokes I then V, the pool =
     every job of that Stokes, the v2 pool = those with every band searched; ``only`` = {(Stokes, identity)} analyzed (None:
     all). Fork workers share the loaded bursts copy-on-write; map keeps the order."""
+    c = tc()
+    K = c.KNIFE_EDGE_DRAWS if c.KNIFE_EDGE_SE is not None else None
     rows, crows = [], []
     for st in ('I', 'V'):
         pool = [JobData(j, bdir) for j in jobs if j['stokes'] == st]
@@ -1306,16 +1412,26 @@ def analyze_all(jobs, events, bdir, workers=1, only=None, log=print):
         todo = [J for J in pool if not only or (st, J.job['identity']) in only]
         log(f'Stokes {st}: {len(pool)} jobs loaded, {len(v2pool)} for the centering controls, {len(todo)} to analyze')
         _G.update(todo=todo, events=events, pool=pool, v2pool=v2pool, bdir=bdir)
+        tasks, douts = [], []
         try:
             if workers > 1 and len(todo) > 1:
                 from multiprocessing import get_context
                 from exopipe.phase3.lib.forced.wide_search import pool_worker_init
                 with get_context('fork').Pool(workers, initializer=pool_worker_init) as p:
                     outs = p.map(_one, range(len(todo)), chunksize=1)
+                    tasks = draw_tasks(todo, outs, K) if K else []
+                    douts = p.map(_draw, tasks, chunksize=1) if tasks else []
             else:
                 outs = [_one(i) for i in range(len(todo))]
+                tasks = draw_tasks(todo, outs, K) if K else []
+                douts = [_draw(t) for t in tasks]
         finally:
             _G.clear()
+        if tasks:
+            nr = sum(1 for r_, _c in outs for r in r_ if r.get('knife_edge'))
+            log(f'Stokes {st}: {nr} knife-edge rows, {K} Monte Carlo draws each ({len(tasks)} job analyses); their majority '
+                f'outcome published')
+            outs = apply_draws(outs, tasks, douts, K)
         for r, c_ in outs:
             rows += r
             crows += c_

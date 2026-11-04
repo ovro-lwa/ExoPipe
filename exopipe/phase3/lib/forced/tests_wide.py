@@ -176,8 +176,9 @@ RESULT_COLUMNS = ('stokes', 'identity', 'target', 'tier', 'n_events', 'event_jy_
                   'n_candidates', 'n_capable', 'centroid_fwhm', 'centroid_arcmin', 'centroid_pa', 'centroid_err_fwhm',
                   'centroid_z', 'centroid_nights', 'v2_background', 'verdict', 'named', 'coverage', 'why')
 # with the knife-edge flag (forced_wide_test.KNIFE_EDGE_SE set): the bootstrap's resamples, the centroid z's Monte Carlo error,
-# the flag
-MC_RESULT_COLUMNS = ('bootstrap_n', 'centroid_z_se', 'knife_edge')
+# the flag, and a flagged row's Monte Carlo draws (KNIFE_EDGE_DRAWS: the majority's fraction, every outcome's count, where the
+# row's numbers come from)
+MC_RESULT_COLUMNS = ('bootstrap_n', 'centroid_z_se', 'knife_edge', 'mc_draws', 'mc_outcomes', 'mc_row')
 NAMING = ('BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE')
 _KE = re.compile(r'^(?P<stat>.+) (?P<v>-?[0-9.]+(?:e[-+]?[0-9]+)?) vs (?P<t>[0-9.]+(?:e[-+]?[0-9]+)?(?: and [0-9.]+(?:e[-+]?[0-9]+)?)?), '
                  r'Monte Carlo error (?P<se>[0-9.]+(?:e[-+]?[0-9]+)?)$')
@@ -215,8 +216,8 @@ def knife_edge_problems(r, k):
             out.append('knife-edge entry %r: an unknown statistic or threshold' % ent[:60])
         elif not all(se > 0 and abs(v - th) <= k * se * 1.05 + 0.006 for th in ths):
             out.append('knife-edge entry %r: not within %g errors of its threshold' % (ent[:60], k))
-        if st == 'centroid z' and r['centroid_z'] != '' and (abs(v - float(r['centroid_z'])) > 0.051
-                                                              or abs(se - float(r['centroid_z_se'])) > 0.051 * se + 1e-4):
+        if st == 'centroid z' and r['centroid_z'] != '' and r.get('mc_row', '') in ('', 'default', 'tie') and (
+                abs(v - float(r['centroid_z'])) > 0.051 or abs(se - float(r['centroid_z_se'])) > 0.051 * se + 1e-4):
             out.append('knife-edge entry %r: the centroid z / error of the row are %s / %s' % (ent[:60], r['centroid_z'],
                                                                                               r['centroid_z_se']))
     return out
@@ -242,6 +243,7 @@ def verdict_problems(r, tol=0.05):
         if not v.startswith('UNDECIDED (fewer than 3'):
             out.append('fewer than %d bursts / no centroid, verdict %s' % (t.MIN_NOBS, v))
         return out
+    tie = r.get('mc_row') == 'tie'                 # a tie of the Monte Carlo draws is UNDECIDED whatever this draw's z
     z = float(r['centroid_z'])
     hi = z >= t.Z_OFF - tol
     lo = z < t.Z_ON + tol
@@ -263,6 +265,8 @@ def verdict_problems(r, tol=0.05):
                         'NOT EXPLAINED BY A CATALOGED SOURCE (centered on the target)', 'UNDECIDED'}
         if mid:
             allowed |= {'BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE', 'UNDECIDED'}
+    if tie:
+        allowed = {'UNDECIDED'}
     if v not in allowed:
         out.append('centroid z %.1f with %d capable candidates allows %s, not %s' % (z, int(r['n_capable']), sorted(allowed), v))
     f, e = float(r['centroid_fwhm']), float(r['centroid_err_fwhm'])
@@ -271,11 +275,61 @@ def verdict_problems(r, tol=0.05):
     return out
 
 
+def _parse_outcome(txt):
+    """(verdict, set of source names) of an outcome's text (wide_v3.outcome_text)"""
+    for v in NAMING:
+        if txt.startswith(v + ' (') and txt.endswith(')'):
+            return v, frozenset(txt[len(v) + 2:-1].split(', '))
+    return txt, frozenset()
+
+
+def draws_problems(r, K):
+    """[problem] of a row's Monte Carlo draws (K = the run's KNIFE_EDGE_DRAWS): exactly the knife-edge rows have them; their
+    counts add up to K, most frequent first; the published outcome is the most frequent one, its fraction in mc_draws; a tie is
+    UNDECIDED with no named source; mc_row names the default draw, a draw k < K, or the tie."""
+    from exopipe.phase3.lib.forced.wide_v3 import named_names, outcome_text
+    md, mo, mr = r['mc_draws'], r['mc_outcomes'], r['mc_row']
+    if not K or not r['knife_edge']:
+        return ['Monte Carlo draws on a row without them (no flag, or KNIFE_EDGE_DRAWS None)'] if (md or mo or mr) else []
+    if not (md and mo and mr):
+        return ['a knife-edge row without its Monte Carlo draws']
+    out, tally = [], []
+    for ent in mo.split(' | '):
+        n, _sep, txt = ent.partition(': ')
+        if not n.isdigit() or not txt:
+            out.append('mc_outcomes entry %r' % ent[:60])
+            continue
+        tally.append((int(n), txt))
+    if not tally:
+        return out
+    ns = [n for n, _t in tally]
+    if sum(ns) != K or ns != sorted(ns, reverse=True):
+        out.append('mc_outcomes count %d draws (not %d) or not most frequent first: %s' % (sum(ns), K, ns))
+    top = ns[0]
+    tied = [t for n, t in tally if n == top]
+    row_txt = outcome_text(r['verdict'], named_names(r['named']))
+    if mr == 'tie':
+        if len(tied) < 2 or r['verdict'] != 'UNDECIDED' or r['named']:
+            out.append('a tie row (%d outcomes at %d) published as %s %r' % (len(tied), top, r['verdict'], r['named'][:40]))
+        if md != 'a tie of %d Monte Carlo draws, %d each: %s' % (K, top, '; '.join(tied)):
+            out.append('mc_draws %r' % md[:80])
+    else:
+        if len(tied) != 1:
+            out.append('a tie of %d outcomes published as %s' % (len(tied), mr))
+        if _parse_outcome(tally[0][1]) != _parse_outcome(row_txt):
+            out.append('the row\'s outcome %r is not the most frequent %r' % (row_txt[:60], tally[0][1][:60]))
+        if md != '%s in %d of %d Monte Carlo draws' % (row_txt, top, K):
+            out.append('mc_draws %r' % md[:80])
+        if not (mr == 'default' or (mr.startswith('draw ') and mr[5:].isdigit() and int(mr[5:]) < K)):
+            out.append('mc_row %r' % mr)
+    return out
+
+
 _ABSENT = object()
 
 
 @content_test('forced_wide_results')
-def results_consistent(path, knife_edge_se=_ABSENT, **ctx):
+def results_consistent(path, knife_edge_se=_ABSENT, knife_edge_draws=_ABSENT, **ctx):
     """one row per (Stokes, tier, target), each verdict consistent with its numbers; the Monte Carlo columns exactly when the
     run flagged knife-edges (knife_edge_se: the run's KNIFE_EDGE_SE; absent - an older record - either column set)"""
     rows, cols = _rows(path)
@@ -294,6 +348,8 @@ def results_consistent(path, knife_edge_se=_ABSENT, **ctx):
         probs += ['%s: %s' % (k_, p) for p in verdict_problems(r)]
         if mc:
             probs += ['%s: %s' % (k_, p) for p in knife_edge_problems(r, k if k is not None else 2.0)]
+            K = knife_edge_draws if knife_edge_draws is not _ABSENT else _cfg().forced_wide_test.KNIFE_EDGE_DRAWS
+            probs += ['%s: %s' % (k_, p) for p in draws_problems(r, K)]
     return (not probs and len(rows) > 0), len(rows), ('%d rows' % len(rows) if not probs else '; '.join(probs[:5]))
 
 

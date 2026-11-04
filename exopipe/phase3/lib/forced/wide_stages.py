@@ -532,7 +532,9 @@ def stage_test(c):
                '%s resamples per (target, tier) from its own seed' % c.wt.BOOTSTRAP)
               + (' until the Monte Carlo error of z <= %g (at most %d)' % (c.wt.BOOT_Z_SE, c.wt.BOOT_MAX)
                  if c.wt.BOOT_Z_SE is not None else ''),
-              'off' if c.wt.KNIFE_EDGE_SE is None else 'within %g Monte Carlo errors' % c.wt.KNIFE_EDGE_SE,
+              'off' if c.wt.KNIFE_EDGE_SE is None else 'within %g Monte Carlo errors%s' % (
+                  c.wt.KNIFE_EDGE_SE, '' if c.wt.KNIFE_EDGE_DRAWS is None else
+                  ', its rows published as the majority of %d draws' % c.wt.KNIFE_EDGE_DRAWS),
               '; PARTIAL (--wide-only)' if c.only else ''))
     if c.dry:
         if workers > c.wt.MAX_WORKERS:
@@ -554,7 +556,9 @@ def stage_test(c):
                     only=sorted('%s:%s' % x for x in c.only), bursts=c.args.wide_bursts or c.bursts, workers=workers,
                     v2_ctl_draw=c.wt.V2_CTL_DRAW, control_order=c.wt.CONTROL_ORDER, taper_ctl_max=c.wt.TAPER_CTL_MAX,
                     boot_draw=c.wt.BOOT_DRAW, boot_z_se=c.wt.BOOT_Z_SE, boot_max=c.wt.BOOT_MAX,
-                    knife_edge_se=c.wt.KNIFE_EDGE_SE, cutout_root=c.cutout_root) as u:
+                    knife_edge_se=c.wt.KNIFE_EDGE_SE, knife_edge_draws=c.wt.KNIFE_EDGE_DRAWS,
+                    draw_salt=(V3.DRAW_SALT_RULE if c.wt.KNIFE_EDGE_DRAWS and c.wt.KNIFE_EDGE_SE is not None else None),
+                    cutout_root=c.cutout_root) as u:
         gate_env()
         fa = gate_catdir(c.cfg)
         _rec, jobs_path, events_path = c.jobs_record()
@@ -597,12 +601,13 @@ def stage_test(c):
                      and r.get('bootstrap_n') == c.wt.BOOT_MAX and float(r['centroid_z_se']) > c.wt.BOOT_Z_SE]
             u.meta.update(n_knife_edge=sum(1 for r in rows if r.get('knife_edge')), n_bootstrapped=len(bn),
                           bootstrap_n_median=bn[len(bn) // 2] if bn else 0, bootstrap_n_max=bn[-1] if bn else 0,
-                          bootstrap_short=short)
+                          bootstrap_short=short,
+                          draws={k: sum(1 for r in rows if r.get('mc_row', '').startswith(k)) for k in ('default', 'draw', 'tie')})
             if short:
                 u.note('%d row(s) reached BOOT_MAX %d resamples with the centroid z\'s Monte Carlo error above BOOT_Z_SE %g '
                        '(their knife-edge test uses the error reached), e.g. %s' % (len(short), c.wt.BOOT_MAX, c.wt.BOOT_Z_SE,
                                                                                   ', '.join(short[:4])))
-        u.add_output(c.results, 'forced_wide_results', knife_edge_se=c.wt.KNIFE_EDGE_SE)
+        u.add_output(c.results, 'forced_wide_results', knife_edge_se=c.wt.KNIFE_EDGE_SE, knife_edge_draws=c.wt.KNIFE_EDGE_DRAWS)
         u.add_output(c.candidates, 'forced_wide_candidates', results=c.results, knife_edge_se=c.wt.KNIFE_EDGE_SE)
         for k, v in sorted(counts.items()):
             print('  %s: %d' % (k, v), flush=True)

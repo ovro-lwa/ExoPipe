@@ -151,7 +151,7 @@ def test_config():
     from exopipe.phase3.core import ledger
     V3ID, ORDID = 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED', 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'
     AMDID = ORDID + '-AMENDED-PRECISION-KNIFE-EDGE'
-    MC = ('TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE')
+    MC = ('TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS')
     ruled = {(sec, k): v for sec in ('forced_wide', 'forced_wide_search', 'forced_wide_test', 'night_activity')
              for k, v in (getattr(CFG._section(sec), 'RULED', None) or {}).items()}
     check('RULED: CONTROL_ORDER and V2_CTL_DRAW cite the refactor decision, the Monte Carlo keys its amendment, the rest '
@@ -163,7 +163,8 @@ def test_config():
     check('the 900-line cap is gone: TAPER_CTL_MAX None by default, no CTL_CAP key', t.TAPER_CTL_MAX is None
           and not hasattr(t, 'CTL_CAP'))
     check('the bootstrap: its own seed per (target, tier), until the centroid z\'s Monte Carlo error <= 0.02; the knife-edge '
-          'window 2 errors', (t.BOOT_DRAW, t.BOOT_Z_SE, t.BOOTSTRAP, t.KNIFE_EDGE_SE) == ('target', 0.02, 1000, 2.0)
+          'window 4 errors, its rows the majority of 20 draws', (t.BOOT_DRAW, t.BOOT_Z_SE, t.BOOTSTRAP, t.KNIFE_EDGE_SE,
+                                                                  t.KNIFE_EDGE_DRAWS) == ('target', 0.02, 1000, 4.0, 20)
           and t.BOOT_MAX >= 100 * t.BOOTSTRAP)
     check('RULED: the approved method\'s thresholds are ruled (MU, the taper, the centroid, v2), operations are not',
           all(('forced_wide_test', k) in ruled for k in ('MU', 'P_CONSISTENT', 'R_EXCESS', 'CEN_FLOOR', 'Z_OFF', 'V2_POWER_MIN',
@@ -180,7 +181,8 @@ def test_config():
         "forced_wide.EVENT_ORDER = 'directory'", "forced_wide.TARGET_MEMBER = 'first'",
         "forced_wide_search.FILE_ERRORS = 'drop'", "forced_wide_test.V2_CTL_DRAW = (300, 20261102)",
         "forced_wide_test.CONTROL_ORDER = 'pool'", "forced_wide_test.TAPER_CTL_MAX = 900", "forced_wide_test.BOOT_DRAW = 'job'",
-        "forced_wide_test.BOOT_Z_SE = None", "forced_wide_test.KNIFE_EDGE_SE = None"]), lines)
+        "forced_wide_test.BOOT_Z_SE = None", "forced_wide_test.KNIFE_EDGE_SE = None",
+        "forced_wide_test.KNIFE_EDGE_DRAWS = None"]), lines)
     CFG.authorize([], out=TMP)                 # two of them are RULED: overridden into a non-production --out, as parity runs do
     for ln in lines:
         k, v = ln.split('=', 1)
@@ -188,8 +190,8 @@ def test_config():
     t = CFG.forced_wide_test
     check('the parity config values apply', (CFG.forced_wide.EVENT_ORDER, CFG.forced_wide.TARGET_MEMBER,
                                              CFG.forced_wide_search.FILE_ERRORS, t.V2_CTL_DRAW, t.CONTROL_ORDER,
-                                             t.TAPER_CTL_MAX, t.BOOT_DRAW, t.BOOT_Z_SE, t.KNIFE_EDGE_SE)
-          == ('directory', 'first', 'drop', (300, 20261102), 'pool', 900, 'job', None, None))
+                                             t.TAPER_CTL_MAX, t.BOOT_DRAW, t.BOOT_Z_SE, t.KNIFE_EDGE_SE, t.KNIFE_EDGE_DRAWS)
+          == ('directory', 'first', 'drop', (300, 20261102), 'pool', 900, 'job', None, None, None))
     CFG.reset()
     check('the controls are order-independent by default', CFG.forced_wide_test.CONTROL_ORDER == 'canonical')
     CFG.authorize([], out='/lustre/gh/main/phase3/x')
@@ -403,7 +405,7 @@ def test_cli_gates():
     check('cli: a V2_CTL_DRAW that is neither None nor (cap >= 1, seed) refused', rc == 2 and 'V2_CTL_DRAW' in err, err[-300:])
     for kv, name in (('forced_wide_test.TAPER_CTL_MAX=0', 'TAPER_CTL_MAX'), ("forced_wide_test.BOOT_DRAW='x'", 'BOOT_DRAW'),
                      ('forced_wide_test.BOOT_Z_SE=-0.1', 'BOOT_Z_SE'), ('forced_wide_test.BOOT_MAX=10', 'BOOT_MAX'),
-                     ('forced_wide_test.KNIFE_EDGE_SE=0.0', 'KNIFE_EDGE_SE')):
+                     ('forced_wide_test.KNIFE_EDGE_SE=0.0', 'KNIFE_EDGE_SE'), ('forced_wide_test.KNIFE_EDGE_DRAWS=1', 'KNIFE_EDGE_DRAWS')):
         rc, err = cli(base + ['--stages', 'wide_test', '--set', kv])
         check('cli: %s refused before any job runs' % kv, rc == 2 and name in err, err[-300:])
     with catdir('/tmp/not_the_radio_catalogues'):
@@ -851,6 +853,83 @@ def test_monte_carlo():
           and not knife_edge_problems(dict(row, knife_edge=two), 2.0), two)
 
 
+def test_draws():
+    """THE KNIFE-EDGE ROWS' MAJORITY (KNIFE_EDGE_DRAWS): each flagged row's published outcome is the most frequent of its K
+    draws, with its fraction; a tie is UNDECIDED; unflagged rows keep their single draw; the salts are fixed per target"""
+    from exopipe.phase3.lib.forced import wide_v3 as V3
+    from exopipe.phase3.lib.forced.tests_wide import draws_problems, verdict_problems, RESULT_COLUMNS
+
+    class J_:
+        def __init__(self, ident):
+            self.job = {'stokes': 'I', 'identity': ident}
+    a, b = J_('A'), J_('B')
+    salts = [V3.draw_salt(a, k) for k in range(20)]
+    check('draw salts: a stable hash of (SEED, the target, k) - fixed, 20 distinct, another set for another target',
+          salts == [V3.draw_salt(J_('A'), k) for k in range(20)] and len(set(salts)) == 20
+          and not set(salts) & {V3.draw_salt(b, k) for k in range(20)} and salts[0] == V3.stable_int('draw', 20261102, 'I:A', 0))
+    X, Y, Z = "VLSSr J1 3.0 Jy at 10.0'", "VLSSr J2 2.0 Jy at 20.0'", "VLSSr J3 5.0 Jy at 30.0'"
+    BG, CO, NC = 'BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE', 'NOT CENTERED ON THE TARGET (source not identified)'
+
+    def row(ident, tier, v, named='', ke='', z='2.5'):
+        return dict(stokes='I', identity=ident, tier=tier, verdict=v, named=named, knife_edge=ke, centroid_z=z, mc_draws='',
+                    mc_outcomes='', mc_row='')
+
+    def crow(ident, tier, tag):
+        return dict(stokes='I', identity=ident, tier=tier, candidate='VLSSr J1', tag=tag)
+    KE = 'knife-edge: taper ratio of VLSSr J2 1.97 vs 2, Monte Carlo error 0.02'
+    outs = [([row('A', '10s', CO, X, KE), row('A', '1min', BG, X)], [crow('A', '10s', 'default'), crow('A', '1min', 'default')]),
+            ([row('B', '10s', BG, X, KE, '3.1')], [crow('B', '10s', 'default')]),
+            ([row('C', '1min', NC, '', 'knife-edge: centroid z 3.02 vs 3, Monte Carlo error 0.017', '3.0')],
+             [crow('C', '1min', 'default')]),
+            ([row('D', '10s', CO, Z)], [crow('D', '10s', 'default')])]
+    tasks = V3.draw_tasks([a, b, None, None], outs, 20)
+    check('draw_tasks: K draws of every job with a knife-edge row, its flagged tiers only; unflagged jobs none',
+          len(tasks) == 60 and {t[0] for t in tasks} == {0, 1, 2} and {t[2] for t in tasks if t[0] == 0} == {('10s',)}
+          and sorted(t[1] for t in tasks if t[0] == 2) == list(range(20)))
+    plan = {0: [(CO, X + '; ' + Y)] * 14 + [(CO, X)] * 6, 1: [(BG, X)] * 10 + [(NC, '')] * 10,
+            2: [(NC, '')] * 19 + [(CO, Z)]}
+    douts = []
+    for i, k, tiers in tasks:
+        ident = 'ABC'[i]
+        v, nm = plan[i][(k + 3) % 20]                      # the draws' order is not the outcomes'
+        douts.append(([dict(row(ident, tiers[0], v, nm, '', '2.6'), centroid_z='2.%d' % (k % 10))],
+                      [crow(ident, tiers[0], 'draw %d' % k)]))
+    new = V3.apply_draws(outs, tasks, douts, 20)
+    r0, r1, r2, r3 = new[0][0][0], new[1][0][0], new[2][0][0], new[3][0][0]
+    k0 = next(k for k in range(20) if plan[0][(k + 3) % 20][1] == X + '; ' + Y)
+    check('majority: the default draw\'s outcome is not the majority -> the first majority draw\'s row, its candidates, the '
+          'default\'s flag and the fraction', r0['verdict'] == CO and r0['named'] == X + '; ' + Y and r0['mc_row'] == 'draw %d' % k0
+          and r0['knife_edge'] == KE and r0['centroid_z'] == '2.%d' % (k0 % 10)
+          and r0['mc_draws'] == '%s (VLSSr J1, VLSSr J2) in 14 of 20 Monte Carlo draws' % CO
+          and r0['mc_outcomes'] == '14: %s (VLSSr J1, VLSSr J2) | 6: %s (VLSSr J1)' % (CO, CO)
+          and new[0][1][0]['tag'] == 'draw %d' % k0 and new[0][1][1]['tag'] == 'default', r0)
+    check('majority: an unflagged row keeps its single draw', new[0][0][1] == outs[0][0][1] and r3 == outs[3][0][0])
+    check('majority: a tie (10 and 10) is UNDECIDED, no named source, the default draw\'s numbers',
+          r1['verdict'] == 'UNDECIDED' and r1['named'] == '' and r1['mc_row'] == 'tie' and r1['centroid_z'] == '3.1'
+          and r1['mc_draws'] == 'a tie of 20 Monte Carlo draws, 10 each: %s (VLSSr J1); %s' % (BG, NC)
+          and new[1][1][0]['tag'] == 'default', r1)
+    check('majority: the default draw\'s outcome is the majority -> its own row, "in 19 of 20"', r2['mc_row'] == 'default'
+          and r2['verdict'] == NC and r2['centroid_z'] == '3.0' and r2['mc_draws'] == '%s in 19 of 20 Monte Carlo draws' % NC
+          and r2['mc_outcomes'] == '19: %s | 1: %s (VLSSr J3)' % (NC, CO), r2)
+    check('draws content test: the three flagged rows pass, the unflagged ones too',
+          not any(draws_problems(r, 20) for r in (r0, r1, r2, r3, new[0][0][1])),
+          [draws_problems(r, 20) for r in (r0, r1, r2, r3)])
+    check('draws content test: a wrong fraction, a missing draw, a tie published as an outcome fail',
+          draws_problems(dict(r0, mc_draws=r0['mc_draws'].replace('14 of', '13 of')), 20)
+          and draws_problems(dict(r2, mc_draws=''), 20) and draws_problems(dict(r1, verdict=BG, named=X), 20)
+          and draws_problems(dict(r3, mc_row='default'), 20))
+    base = dict.fromkeys(RESULT_COLUMNS, '')
+    base.update(stokes='I', identity='X', target='X', tier='10s', n_events='9', event_jy_median='5', bursts_at_target='5',
+                bursts_by_band='27MHz:5', n_candidates='4', n_capable='2', centroid_fwhm='0.300', centroid_err_fwhm='0.100',
+                centroid_z='3.0', centroid_nights='5')
+    hi = dict(base, centroid_z='3.5', centroid_fwhm='0.350')
+    check('verdict rule: a tie row is UNDECIDED whatever its z (z 3.5 would otherwise allow BACKGROUND / NOT CENTERED only)',
+          not verdict_problems(dict(hi, verdict='UNDECIDED', mc_row='tie'))
+          and verdict_problems(dict(hi, verdict='UNDECIDED')) and verdict_problems(dict(hi, verdict=BG, named=X, mc_row='tie')),
+          (verdict_problems(dict(hi, verdict='UNDECIDED', mc_row='tie')), verdict_problems(dict(hi, verdict='UNDECIDED')),
+           verdict_problems(dict(hi, verdict=BG, named=X, mc_row='tie'))))
+
+
 def test_pool_provenance():
     """wide_test pools burst files of ONE search: the current jobs.json and the selected cutout generation (review F8)"""
     import types
@@ -1246,6 +1325,7 @@ def main():
         test_v2_draw()
         test_control_order()
         test_monte_carlo()
+        test_draws()
         test_pool_provenance()
         test_search_functions()
         test_io_yield()

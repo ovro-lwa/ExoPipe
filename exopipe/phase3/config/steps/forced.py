@@ -212,7 +212,7 @@ class forced_assoc(_Section):
 # centroid test, the evidence rules, v2's centering; the bursts and the jobs it tests). Implementation choices inside it are
 # the refactor chat's under its delegation (R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS): V2_CTL_DRAW and CONTROL_ORDER are
 # RULED by R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT; the Monte Carlo precision and its knife-edge flag
-# (TAPER_CTL_MAX, BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE) by its amendment
+# (TAPER_CTL_MAX, BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE, KNIFE_EDGE_DRAWS) by its amendment
 # R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE. Spec: docs/specs/forced_wide.md.
 # =====================================================================================================================
 
@@ -436,9 +436,19 @@ class forced_wide_test(_Section):
     # matched-line window (MATCH_MIN; the binomial within each control source) - within sources because a salt re-draws a
     # line's direction, never its control source (validated against 30 global salts on real rows, wide_v3.SE_KIND). DECIDES =
     # moved alone to the threshold's other side, the statistic changes the verdict or the set of named sources. With the flag,
-    # results_v3.csv (and so forced_wide_v3.csv) gains bootstrap_n, centroid_z_se, knife_edge; candidates_v3.csv the errors.
-    # None = production: none of these columns
-    KNIFE_EDGE_SE = 2.0
+    # results_v3.csv (and so forced_wide_v3.csv) gains bootstrap_n, centroid_z_se, knife_edge (and mc_draws, mc_outcomes, mc_row,
+    # below); candidates_v3.csv the errors. None = production: none of these columns. 4 (the refactor chat, 2026-11-04, from the
+    # 20-salt flip check of the gen5 run: at 2 the flag marked 5 of the 7 rows that differ from the served files - all 7 flip
+    # between draws - and 10 of the 12 rows seen flipping; at 4 all of them, 17 flags in 312 rows against 13)
+    KNIFE_EDGE_SE = 4.0
+    # THE KNIFE-EDGE ROWS' MAJORITY (the refactor chat's decision, 2026-11-04, under the same amendment): a flagged row's
+    # published verdict and named set are the most frequent outcome of KNIFE_EDGE_DRAWS independent Monte Carlo draws of the
+    # approved method (each a salt of its own in place of SEED: a stable hash of (SEED, the target's (Stokes, identity), k),
+    # k < KNIFE_EDGE_DRAWS), with the fraction (mc_draws, e.g. 'BACKGROUND SOURCE (VLSSr J...) in 14 of 20 Monte Carlo draws'),
+    # every outcome's count (mc_outcomes) and where the row's numbers come from (mc_row: 'default', 'draw k', 'tie'); a tie is
+    # UNDECIDED, its mc_draws 'a tie of 20 Monte Carlo draws, 10 each: <outcome>; <outcome>'. Unflagged rows keep their single draw. None = production: the single draw (no draws); with KNIFE_EDGE_SE None
+    # no row is flagged and nothing is drawn
+    KNIFE_EDGE_DRAWS = 20
     # VERDICT: centroid z >= Z_OFF not centered on the target, < Z_ON centered; a candidate the centroid lies within Z_C_ON of
     # (and within CENTER_WITHIN FWHM of the target) is direct evidence; near candidates v2 cannot separate count when z_c <
     # Z_C_NEAR; NOT EXPLAINED / CONSISTENT need tests covering >= COVER of the bursts (forced_wide_v3.py:42-57, :513)
@@ -512,7 +522,7 @@ class forced_wide_test(_Section):
     # wide_publish: each named source's position, the source of that name among the physical sources (>= S_MIN_JY) within
     # this of the target (publish_v3_to_runs.py:16-27); a name not found refuses the publication (W-NAMED)
     NAMED_RADIUS_ARCMIN = 200.0
-    NULLABLE_KEYS = ('V2_CTL_DRAW', 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'KNIFE_EDGE_SE')
+    NULLABLE_KEYS = ('V2_CTL_DRAW', 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS')
     RULED = {**{k: 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED' for k in (
         'MU', 'REF_MHZ', 'SPECTRAL_INDEX', 'CAPABLE_FRACTION', 'S_MIN_JY', 'R_CAND', 'NEAR', 'CUT_HALF_ARCMIN', 'CUT_EDGE_ARCMIN',
         'DISC', 'STRIP', 'BIN', 'SIDE', 'MIN_BIN', 'DISC_GRID', 'CTL_FLUX', 'CTL_MIN_JY', 'CTL_DIRS', 'CTL_KEY_PER_DEG',
@@ -526,7 +536,7 @@ class forced_wide_test(_Section):
              'V2_CTL_DRAW': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',
              'CONTROL_ORDER': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',
              **{k: 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE' for k in (
-                 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE')}}
+                 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS')}}
 
 
 class night_activity(_Section):
