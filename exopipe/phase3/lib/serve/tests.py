@@ -499,8 +499,20 @@ def carry_consistent(path, **ctx):
     bad = [r.get('source_id') for r in carried if not (r.get('carried_from_source') and r.get('shared_detections')
                                                       and str(r.get('judge_note', '')).startswith('CARRIED from'))]
     n_rep = sum(1 for r in rep if r.get('outcome') == 'carried')
-    conflict = {r['new_source'] for r in rep if str(r.get('outcome', '')).startswith('CONFLICT')}
-    conf_carried = [r['source_id'] for r in carried if r.get('source_id') in conflict]
+    # the LAST report row of a new source decides, against the journal's FINAL state (latest record; a retract clears): an
+    # appended carry (design B, the lines journalled between the carry and the swap) re-derives an identity, so a later row
+    # supersedes an earlier one; a source whose last row is a CONFLICT must not end holding a carried judgement. For a one-pass
+    # carry (production's tools) each source has one row and this is the old test.
+    last, final = {}, {}
+    for r in rep:
+        if r.get('new_source'):
+            last[r['new_source']] = str(r.get('outcome', ''))
+    for r in recs:
+        if r.get('action') == 'retract':
+            final.pop(r.get('source_id'), None)
+        elif r.get('scope', 'source') == 'source' and r.get('action') == 'classify':
+            final[r.get('source_id')] = r
+    conf_carried = [s for s, o in sorted(last.items()) if o.startswith('CONFLICT') and 'carried_from_run' in final.get(s, {})]
     ok = not bad and n_rep == len(carried) and not conf_carried
     return ok, len(carried), (f'{len(carried)} carried records = {n_rep} report rows' if ok else
                               f'carried {len(carried)} vs report {n_rep}; malformed {bad[:3]}; conflicts carried '

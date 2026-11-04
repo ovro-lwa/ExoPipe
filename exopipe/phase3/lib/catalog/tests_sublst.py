@@ -412,7 +412,8 @@ def sublst_source_catalog(path, **ctx):
             if ra is None or not (0.0 <= ra < 360.0):
                 bad.append(f'{band}: RA {r.get("ra")} of {r["source_id"]}')
                 break
-            if 'best_snr' in r and 'promotion' in r and abs(_float(r['best_snr']) or 0) < 7.0 and not r['promotion']:
+            if 'best_snr' in r and 'promotion' in r and abs(_float(r['best_snr']) or 0) < 7.0 and not r['promotion'] \
+                    and not (r.get('multiples_id') and r.get('multiple') == '1'):      # the one multiples rule (item F.3)
                 bad.append(f'{band}: {r["source_id"]} below 7 sigma unpromoted')
                 break
     return not bad, n, f'{name}: {len(surv)} band files, {n} survivors; ' + ('; '.join(bad[:4]) if bad else 'all checks pass')

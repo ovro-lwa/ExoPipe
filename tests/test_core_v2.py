@@ -1597,8 +1597,12 @@ def test_item7_parity_file_keys():
              'R-GREGG-20261016-MOSAIC-DEC-MIN-30',                           # the renders' southern edge
              'R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION',            # the wideband member admission (deep search)
              'R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4',             # the 18 MHz carve-out of the search's master check
-             'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS'}   # the size / axis rule at every S/N (search_detect /
+             'R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS',   # the size / axis rule at every S/N (search_detect /
                                                                              # search_sublst SIZE_RULE; production 'production')
+             'R-GREGG-20261026-GROUPING-DESIGN-B-APPROVED-IDENTITY-097-MULTIPLES-085-DEEPV-IDENTITY-ONLY-PREVIEW-THEN-REFACTOR',
+             'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER'}   # the grouping and the ONE multiples
+                                                                             # rule (catalog_grouping.GROUPING / MULTIPLES_RULE,
+                                                                             # item F.3; production 'production')
     PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
                                                              # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
     PROPOSED |= {'catalog_omission.ABSENT_WITH_SERVED'}    # 2026-11-03 (Q review F5): G6 'refuse' proposed, pending Gregg; production's

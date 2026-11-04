@@ -664,7 +664,10 @@ def _catalogue_checks(d, msgs):
         s = [abs(_f(r.get('best_snr'))) for r in rr]
         if any(not (s[i] >= s[i + 1]) for i in range(len(s) - 1)):
             msgs.append(f'{band}: survivors not sorted by |best_snr|')
-        weak = [r['source_id'] for r in rr if not (abs(_f(r.get('best_snr'))) >= thr or (r.get('promotion') or '').strip())]
+        # the ONE multiples rule (item F.3, design B: a catalogue built with the grouping carries multiples_id / multiple): a
+        # member of a multiple survives the 7-sigma floor unpromoted (Gregg 2026-10-26: multiples skip the floor)
+        weak = [r['source_id'] for r in rr if not (abs(_f(r.get('best_snr'))) >= thr or (r.get('promotion') or '').strip()
+                                                   or (r.get('multiples_id') and r.get('multiple') == '1'))]
         if weak:
             msgs.append(f'{band}: {len(weak)} survivors below {thr:g} sigma and unpromoted')
         offsky = [r['source_id'] for r in rr if not (0.0 <= _f(r.get('ra')) < 360.0 and -90.0 <= _f(r.get('dec')) <= 90.0)]
@@ -907,6 +910,12 @@ def identity_columns(path, **ctx):
     union = os.path.basename(d) == 'source_catalogs'
     run = os.path.dirname(d)
     n_chk = 0
+    if ctx.get('grouping') == 'design-b':
+        # item F.3 (WAVE2 GROUPING): the identity is design B's (lib/catalog/grouping_stage.identity_writeback), not the
+        # single linkage of p3s3_identity.py - each row's identity_id is the grouping's identity of its best detection
+        from exopipe.phase3.lib.catalog import grouping_stage as GS
+        msgs += GS.identity_failures(path, ctx.get('tables') or {})
+        return _fail(msgs, len(rows), f'{len(rows)} rows, every identity_id = the design-B identity of its best detection')
     if os.path.basename(d).startswith('source_catalogs'):
         by_row, by_key = identity_groups(run)
         if union:
