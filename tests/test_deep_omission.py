@@ -572,7 +572,14 @@ def test_serve_build():
                (C.catalog_omission, 'TENMIN_FRAME_RMS', frms), (C.catalog_omission, 'TENMIN_RMS_CACHE_SEED', ''),
                (sublst_build.scripts, 'run', fake_run), (sublst_build, 'generation_mix', lambda lsts: []),
                (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B'))):
-        u = sublst_build.build_stage(run, plan)
+        # the fixture's LST runs are production builds (no grouping_table.json): under the design-B default the build refuses
+        # them before the merge (G8 design-B grouping mix, item F.3) ...
+        u0 = sublst_build.build_stage(record.Run('serve', ['test_serve_build_designb'], out, C), plan)
+        assert u0.status == 'refused' and 'G8 design-B grouping mix' in u0.reason and not calls, (u0.status, u0.reason, calls)
+        # ... and the parity plan runs production's grouping, as the parity file sets it (catalog_grouping.GROUPING =
+        # MULTIPLES_RULE = 'production')
+        with Patch((C.catalog_grouping, 'GROUPING', 'production'), (C.catalog_grouping, 'MULTIPLES_RULE', 'production')):
+            u = sublst_build.build_stage(run, plan)
         DO.run_tenmin(plan.lsts, os.path.join(root, 'stage'), seed_dir='')
     assert u.status == 'refused' and 'merge failed' in u.reason, (u.status, u.reason)
     assert len(calls) == 1 and calls[0][0] == 'sublst_cumulative' and calls[0][1][1:] == plan.lsts, calls
@@ -663,7 +670,9 @@ def test_serve_build_merge():
         with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.catalog_omission, 'REFUSALS', rdir),
                    (C.catalog_omission, 'TENMIN_FRAME_RMS', frms), (C.catalog_omission, 'TENMIN_RMS_CACHE_SEED', ''),
                    (sublst_build.scripts, 'run', run_), (sublst_build.scripts, 'ops_root', lambda: ops_dir),
-                   (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B'))):
+                   (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B')),
+                   # production-built LST runs, a parity plan: production's grouping, as the parity file sets it (item F.3)
+                   (C.catalog_grouping, 'GROUPING', 'production'), (C.catalog_grouping, 'MULTIPLES_RULE', 'production')):
             u = sublst_build.build_stage(run, plan)
             summ = DO.run_tenmin(lsts, os.path.join(root, 'stage'), seed_dir='')
     finally:

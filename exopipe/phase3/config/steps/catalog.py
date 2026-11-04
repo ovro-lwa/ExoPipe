@@ -690,7 +690,8 @@ class catalog_grouping(_Section):
                                                           # grouping: the builder's per-band association (build_source_catalogs_v3.py
                                                           # assoc_groups) + its cross-band identity merge, per LST on the 10-minute tier
                                                           # and joined across LSTs by J-name string (sublst_cumulative.py) - the parity file
-    MULTIPLES_RULE = 'one-rule'                           # 'one-rule' (RULED 10-27 with the 10-26 design): ONE multiples rule on every
+    MULTIPLES_RULE = 'one-rule'                           # 'one-rule' (RULED 10-27 with the 10-26 design; NO multiples tables on any tier,
+                                                          # R-REFACTOR-20261104-NO-MULTIPLES-TABLES-ANY-TIER): ONE multiples rule on every
                                                           # tier - a detection is a MULTIPLE when its multiples-level group holds
                                                           # MULTIPLE_MIN windows (10-minute) / nights (deep); its members skip the three
                                                           # multiplicity gates of the builder (the sigma-stack singleton gate, the 7-8
@@ -701,18 +702,19 @@ class catalog_grouping(_Section):
                                                           # two chains: the 10-minute builder's inline exemption (a band's source with
                                                           # detections in two or more (LST, date) frames skips the sigma-stack gate) and
                                                           # the deep fork - the parity file
-    REPEAT_RUNGS = 'multiples-level'                      # PROPOSED, PENDING GREGG (not RULED - review 2026-11-04 F4; an override needs no
-                                                          # --ruling-for): under the one rule, the builder's REPEAT promotion rungs (RPT,
-                                                          # REP, XREP: a source row's own n_det >= 2 repeats) promote only a member of a
-                                                          # multiple - the refactor's reading of the 10-26 decision page ("The multiples
-                                                          # level decides which detections count as repeats and skip the singles gates");
-                                                          # a single-window identity keeps the other rungs (E:<sample>, PRIORITY, MB).
-                                                          # What it decides is small: a design-B row is (identity, band), so a repeat rung
-                                                          # of a single needs two detections of one band in one window - one image; on
-                                                          # today's data at most 2 deep V and 32 10-minute V detections (the review's
-                                                          # a1_repeat_rungs). 'production' = the rungs as the builder computes them on its
-                                                          # own sources (not a parity line: under MULTIPLES_RULE 'production' the builder
-                                                          # runs unpatched)
+    REPEAT_RUNGS = 'multiples-level'                      # DECIDED by the refactor chat under Gregg's 2026-10-16 delegation
+                                                          # (R-REFACTOR-20261104-REPEAT-RUNGS-MULTIPLES-LEVEL; R-GREGG-20261016-REFACTOR-
+                                                          # DECIDES-BY-GOALS): under the one rule, the builder's REPEAT promotion rungs
+                                                          # (RPT, REP, XREP: a source row's own n_det >= 2 repeats) promote only a member of
+                                                          # a multiple - two detections in one image are not a repeat (the 10-26 decision
+                                                          # page: "The multiples level decides which detections count as repeats and skip
+                                                          # the singles gates"); a single-window identity keeps the other rungs
+                                                          # (E:<sample>, PRIORITY, MB). What it decides is small: a design-B row is
+                                                          # (identity, band), so a repeat rung of a single needs two detections of one band
+                                                          # in one window - one image; on today's data at most 2 deep V and 32 10-minute V
+                                                          # detections (the 11-04 review's a1_repeat_rungs). 'production' = the rungs as the
+                                                          # builder computes them on its own sources (not a parity line: under
+                                                          # MULTIPLES_RULE 'production' the builder runs unpatched)
     BUILDER_SHA1 = ('de1fa48aec620c310c14d3b740692bba98ed5e35',   # the frozen 10-minute trees 2026-10-13..10-18 (25)
                     '537f779ba70f58d2c1dcf4bec47371a17bae207b',   # 2026-10-19..10-25 (51; the per-detection record, ops 6c58469)
                     '2a12c39a57ff3df502021e4ddcfdac26c801ef02',   # 03h / 05h 2026-10-13 (3)
@@ -810,7 +812,10 @@ class catalog_grouping(_Section):
         'CDELT_DEG', 'ELEVATION_GAMMA', 'ELEVATION_FLOOR_DEG', 'DEEP_STAT_SCALE', 'DEEP_SYS_SCALE')}
     RULED['MULTIPLE_MIN'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING)
     RULED['GROUPING'] = _GROUPING_RULING
-    RULED['MULTIPLES_RULE'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING)
+    RULED['MULTIPLES_RULE'] = ('R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER', _GROUPING_RULING,
+                               'R-REFACTOR-20261104-NO-MULTIPLES-TABLES-ANY-TIER')   # the one rule as no multiples tables (refactor
+                                                                                     # chat, 2026-10-16 delegation)
+    RULED['REPEAT_RUNGS'] = 'R-REFACTOR-20261104-REPEAT-RUNGS-MULTIPLES-LEVEL'       # the refactor chat, 2026-10-16 delegation
     PROTECTED_KEYS = ('STATE_SUBDIR',                     # where the stable IDs live: moving it would restart every ID
                       'BUILDER_SHA1')                     # a pin: changes only by a commit, with the patches re-checked
 

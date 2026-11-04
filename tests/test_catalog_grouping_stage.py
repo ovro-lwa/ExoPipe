@@ -96,10 +96,14 @@ def test_mode():
     m = GS.mode()
     check('mode: the ruled defaults (design-b, one-rule, multiples-level)', (m.grouping, m.rule, m.rungs, m.design_b) ==
           ('design-b', 'one-rule', 'multiples-level', True), m)
-    check('mode: GROUPING and MULTIPLES_RULE are RULED (10-26 design; 10-27 one chain)',
+    check('mode: GROUPING, MULTIPLES_RULE and REPEAT_RUNGS are RULED (10-26 design; 10-27 one chain; the refactor chat\'s 11-04 '
+          'decisions under the 10-16 delegation: no multiples tables on any tier, repeat rungs at the multiples level)',
           'R-GREGG-20261026-GROUPING-DESIGN-B-APPROVED-IDENTITY-097-MULTIPLES-085-DEEPV-IDENTITY-ONLY-PREVIEW-THEN-REFACTOR'
           in str(CFG.ruled('catalog_grouping.GROUPING'))
-          and 'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER' in str(CFG.ruled('catalog_grouping.MULTIPLES_RULE')))
+          and 'R-GREGG-20261027-HUB-BOTH-LISTENERS-MULTIPLES-CHAIN-FORCED-EVERY-TIER' in str(CFG.ruled('catalog_grouping.MULTIPLES_RULE'))
+          and 'R-REFACTOR-20261104-NO-MULTIPLES-TABLES-ANY-TIER' in str(CFG.ruled('catalog_grouping.MULTIPLES_RULE'))
+          and CFG.ruled('catalog_grouping.REPEAT_RUNGS') == ('R-REFACTOR-20261104-REPEAT-RUNGS-MULTIPLES-LEVEL',),
+          [CFG.ruled(f'catalog_grouping.{k}') for k in ('GROUPING', 'MULTIPLES_RULE', 'REPEAT_RUNGS')])
     keep = (g.GROUPING, g.MULTIPLES_RULE, g.REPEAT_RUNGS)
     try:
         for a, b, c, want in (('production', 'one-rule', 'multiples-level', 'must agree'),
@@ -803,6 +807,16 @@ def test_carry_between_window():
     check('F1 (5): an identity judged on the new page is never overridden by the window carry (reported)',
           f == {'J0520+3000a': ('real', '', False)} and c['judged_on_new_page'] == 1
           and rep[-1]['outcome'] == 'not carried: judged on the new page' and ok_[0], (c, f, rep[-1:], ok_))
+    # the review server keys a page's state by (source_id, presentation_id): a judgement made on a re-queue presentation (p2)
+    # carries as p1 (production's carry tools: deep_carry_judgements.py:106), and the retract a conflict writes names p1
+    p2 = json.dumps(dict(json.loads(cl('J0520+3001', 'real')), presentation_id='p2'))
+    c, f, rep, ok_ = carry('c6', [p2], [])
+    n6 = [json.loads(l) for l in open(f'{D}/c6/new/judgements.jsonl')]
+    c, f, rep, ok_ = carry('c7', [p2], [cl('J0520+3000', 'FP', 'leakage')])
+    n7 = [json.loads(l) for l in open(f'{D}/c7/new/judgements.jsonl')]
+    check('carry: a judgement of presentation p2 carries as p1; the retract of a conflict names p1 (the server\'s state key)',
+          [r.get('presentation_id') for r in n6] == ['p1'] and [(r.get('action'), r.get('presentation_id')) for r in n7]
+          == [('classify', 'p1'), ('retract', 'p1')], (n6, n7))
 
 
 # =====================================================================================================================

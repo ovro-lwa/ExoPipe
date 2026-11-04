@@ -919,7 +919,10 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
     def carried_record(name, iid, olds, share, shared):
         s0 = max(sorted(olds), key=lambda s: share[s])
         r = dict(J[s0])
-        r.update(source_id=name, run_id=run_id, ts=now, carried_from_run=carried_from_run,
+        # presentation p1, as production's carry tools write it (deep_carry_judgements.py:106, snapshot_carry_judgements.py:158):
+        # the review server keys a page's state by (source_id, presentation_id), and the new queue presents a carried identity
+        # first as p1 - so the carried judgement shows there, and a retract (which names no presentation: p1) clears it
+        r.update(source_id=name, run_id=run_id, presentation_id='p1', ts=now, carried_from_run=carried_from_run,
                  carried_from_source=';'.join(sorted(olds)), shared_detections=shared,
                  new_source_detections=ndet[(name, iid)], group_identity_id=iid,
                  judge_note=('CARRIED from %s %s (%s matched by window and position within half a beam; grouping identity %s '
@@ -932,8 +935,8 @@ def carry_judgements(journal, old_members, new, out_dir, run_id, queue_name='', 
         return r
 
     def retract_record(name, iid, why):
-        return dict(action='retract', scope='source', source_id=name, run_id=run_id, ts=now, group_identity_id=iid,
-                    retract_carried_from_run=carried_from_run, retract_reason=why)
+        return dict(action='retract', scope='source', source_id=name, presentation_id='p1', run_id=run_id, ts=now,
+                    group_identity_id=iid, retract_carried_from_run=carried_from_run, retract_reason=why)
 
     recs, rows = [], []
     os.makedirs(out_dir, exist_ok=True)

@@ -837,8 +837,7 @@ def check_config_and_refusals(det10):
     check('config: operating points as ruled (identity 0.97, cap 4, multiples 0.85 / deep V off)',
           G.operating_point('10min', 'I') == (0.97, 0.85, 4.0) and G.operating_point('10min', 'V') == (0.97, 0.85, 4.0)
           and G.operating_point('deep', 'I') == (0.97, 0.85, 4.0) and G.operating_point('deep', 'V') == (0.97, None, 4.0))
-    layout = ('SUBLST_DIR', 'STATE_SUBDIR', 'BUILDER_SHA1',   # where the stage writes and the builder pin (item F.3): not rulings
-              'REPEAT_RUNGS')                                 # PROPOSED, pending Gregg (review 2026-11-04 F4)
+    layout = ('SUBLST_DIR', 'STATE_SUBDIR', 'BUILDER_SHA1')   # where the stage writes and the builder pin (item F.3): not rulings
     check('config: every key of catalog_grouping is ruled', all(CFG.ruled(f'catalog_grouping.{k}') for k, _ in CFG.catalog_grouping.items()
                                                              if not k.startswith('ID_') and k not in layout))
     try:
