@@ -1168,7 +1168,8 @@ def describe(plan, stages):
     S = _CFG().serve
     print(f'serve --tier snapshot --family {FAMILY}: the combined snapshot view (lib/serve/snapshot_view.py)')
     print(f'  stages: {", ".join(stages)}')
-    print(f'  view: {plan.U}' + ('   [EXISTS - G-V2 would refuse]' if os.path.exists(plan.U) else '')
+    print(f'  view: {plan.U}' + ('   [EXISTS - the omit and build stages refuse (G-V2); filtercat, localize and ready run on it]'
+                                  if os.path.exists(plan.U) else '')
           + ('   (parity: under --out)' if plan.parity else ''))
     print(f'  batch runs ({len(plan.runs)}, in order): ' + ' '.join(os.path.basename(r) for r in plan.runs))
     print(f'  omit product: {plan.omit_dir}' + (' (given)' if plan.omit_given else ' (the omit stage writes it)')

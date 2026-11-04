@@ -43,7 +43,10 @@ batch runs in the view's order (a comma list, `@FILE` with `#` comments, or bare
 order decides the batch tags of the headers, the order of the record and the ties of the names. A production `--out` is
 `paths.SNAPSHOT_REVIEW_ROOT` (the view `<root>/<view>`, refused while `paths.PRODUCTION_WRITES` is False); any other `--out` is a
 parity run: the view is `<out>/snapshot/<view>` (plan.make's layout). Each stage runs only after the previous one of the
-invocation ended done; a stage run alone requires the build's record done and current (G28).
+invocation ended done; a stage run alone requires the build's record done and current (G28). When the view or its `.part`
+exists, an invocation with the omit or the build stage refuses BEFORE any stage runs (G-V2): the omit product of an existing view
+is its product of record and is never rewritten by a re-run of its name (V_combview review F2; filtercat, localize and ready
+may still run alone on an existing view).
 
 | Stage | Unit | What | Production source |
 |---|---|---|---|
@@ -62,10 +65,10 @@ runs, in this order); the omit stage is then not run, and asking for both refuse
   band class, `review_dir` = the identity's directory, `ra_common`, `dec_common`, `pos_err_common_arcsec` = its served common-frame
   anchor); each `review_dir/detections.csv`; `source_catalogs_<S>_<T>/<band>_sources_survivors.csv` and `_source_members.csv`;
   every per-tier page directory (`detections.csv` and its panels); `queue_<S>_<T>.txt` (the first batch's header lines);
-  `detection_ts.csv` when present; `card2_filter.csv`.
-- The omit product (`deep_omission.csv`, `deep_omission_dropped.csv`, `deep_omission_kept.csv`, `deep_omission_summary.json`)
-  and, through the omit stage, the deep refusal record `catalog_omission.REFUSALS` and the fleet records under
-  `paths.SNAPSHOT_FLEET_OUT`.
+  `detection_ts.csv` when present; `card2_filter.csv`; `served_tiers.csv` (the chain's per-tier serving table: G4b / G-V7).
+- The omit product (`deep_omission.csv`, `deep_omission_dropped.csv`, `deep_omission_served.csv`, `deep_omission_kept.csv`,
+  `deep_omission_summary.json`) and the deep refusal record `catalog_omission.REFUSALS` and the fleet records under
+  `paths.SNAPSHOT_FLEET_OUT` - read by the omit stage, and read AGAIN by the build, which re-decides from them (G-V8).
 - clv15 `phase3_snapshot_chain.py` in place (`merge_identities_or_refuse`, its content test `verify_identity_merge`, the frame
   models it reads), exopipe_ops `snapshot_filter_catalog.py` and `snapshot_localize_tiers.sh` in place.
 - The member batches' fit stores `serve.SNAPVIEW_FIT_STORE` (`<catalog_snapshot.BATCH_DIR>/rechain_<run>/fits_store.csv`).
@@ -104,12 +107,24 @@ member row dropped, a panel left unlinked. The page directory's detections are t
 (production's reading; the kept product lists no per-source detections). At the end every kept-product row must have been
 applied (G-K).
 
+Before the child runs, the step side re-decides (G-V8): the decisions made NOW from the refusal record and the fleet records the
+build reads, with the served counts the omit product recorded (`deep_omission_served.csv`), must equal the omit product's
+`deep_omission.csv` byte for byte - production decides inside its build from the current inputs, so an omit product made before
+the deep search refused more nights, or before the snapshot search rewrote a noise or member table, refuses instead of being
+applied (V_combview review F5). The child then checks those served counts against the served set it reads (G-V4) and each batch
+run's per-tier catalogues against its `served_tiers.csv` (G-V7).
+
+A build that refuses or fails after it made `<view>.part` moves the `.part` aside to `<view>.refused_<UTC>`; a built view that
+fails its read-back tests (V1-V7 at build) is moved aside the same way; nothing is deleted, the view name is left free for a retry,
+and the refusal names the new place (V_combview review F7). A `.part` the build did not make (another build's, G-V2) is never
+touched.
+
 ## Outputs (product classes)
 
 | Path | Class | Content test |
 |---|---|---|
-| the omit product (`SNAPVIEW_OMIT_DIR`) | omission_decisions, omission_record, omission_kept | lib/catalog/tests_deep_omission.py (N2's digests) and the per-instant test |
-| `<view>/` | snapshot_view | V1-V6 below |
+| the omit product (`SNAPVIEW_OMIT_DIR`) | omission_decisions, omission_record, omission_served, omission_kept | lib/catalog/tests_deep_omission.py (N2's digests, K5 the served counts) and the per-instant test |
+| `<view>/` | snapshot_view | V1-V7 below |
 | `<view>/master_catalog.csv` | filter_catalog (per_detection) | the current writer's contract: one row per detection, every detection once (FILTER-INPUTS) |
 | `<view>/card2_filter.csv` | snapshot_card2_union | the union of the member batches' files, recomputed byte for byte |
 | `<view>/source_catalogs_loc_<T>/localizations.csv` | csv_table (the batch serve's) | rows present; LOCALIZE-TIERS-OK |
@@ -120,9 +135,20 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
 
 - G-V1: no view name or no snapshot prefix; no run, a run listed twice, a run without `source_catalogs`; an identity without
   detections; a detection in two batch identities (the batches are not cell-disjoint).
-- G-V2: the view or its `.part` exists (a view is never overwritten).
+- G-V2: the view or its `.part` exists (a view is never overwritten) - checked before ANY stage of an invocation that asks for
+  omit or build (F2), again in the build stage and in the child.
 - G-V3: the omit product misses a file, fails its content tests now, or was made for other runs or another order.
-- G-V4: the served batch runs changed since the omit stage (served digest).
+- G-V4: the served batch runs changed since the omit stage (served digest), or the served counts the decisions were made with
+  (`deep_omission_served.csv`) are not the served set's.
+- G-V7 (V_combview review F4): a batch run without `served_tiers.csv`, or whose per-tier survivors do not hold exactly the
+  identities its `served_tiers.csv` serves in each tier (chain_outcome 'served', qualifies 1); a kept per-tier source whose page
+  holds no detection (`detections.csv` missing or empty). An incomplete input (an interrupted copy, a re-serve that stopped
+  halfway) refuses; production would serve the view without those sources, or record them as "every detection omitted" by the
+  deep rule. The omit stage refuses the same inputs first (deep_omission G4b, G4c). The served_tiers relation holds exactly on
+  all 36 batches of Run_SNAPCOMB_20261102 (2026-11-04, both tiers). Not seen by it: a per-tier file lost for an identity that
+  keeps another per-tier source in that tier (the table is per identity and tier).
+- G-V8 (V_combview review F5): the omit product's decisions are not the ones re-made now from the refusal record and the fleet
+  records the build reads (a product decided from another record or fleet, a refusal added, a noise or member table rewritten).
 - G-V5: a batch run on another file system than a PRODUCTION view, or a panel that cannot be hard-linked into it (the panels are
   hard links; production failed there with an error, and a copy of ~3 million panels would fill the review disk). A scratch or
   parity view copies such a panel instead - same bytes, counted (`panels_copied`) - because the parity guard (core/guard.py)
@@ -146,7 +172,17 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
 - V2 queues (T4): the header lines (name, run, VIEW LIMITS, DEEP OMISSION with the summary's counts) and the names = the tier
   view's identities, once each, by best |S/N|.
 - V3 pages (T5, T6): every combined source's page directory has `n_det` rows, all of its tier and on no OMIT key, panels of its
-  tier, every member row's detection (all directories, or a seeded sample `serve.SNAPVIEW_TEST_SAMPLE_DIRS` for a full view).
+  tier and none of an omitted instant - each panel's own key (LST, band, night) parsed by the test itself, not with the shared
+  `deep_omission.SNAP_PANEL` the kept product and the build both use (F1) - every member row's detection (all directories, or a
+  seeded sample `serve.SNAPVIEW_TEST_SAMPLE_DIRS` for a full view).
+- V7 panels (F1): every page directory's files are exactly its member batch sources' files (the general catalogue's
+  `batch_members`, each member identity's per-tier survivors row of the page's band, less the sources the kept product drops,
+  their page directories listed now) less the kept product's 'panel dropped' rows; a name clash (`<batch>_<file>`) counts as the
+  file. A panel linked that the omission removed, or a kept panel missing, refuses - production's T3 counts links in the loop that
+  decides them and cannot see a wrong decision. The reviewer's mutation M1 (the build links an omitted panel it records as
+  dropped) is refused by V3 and V7 (tests/test_snapshot_view.py test_m1_mutation). Cost: one listing of every page directory
+  and of every member batch source's directory (on cold Lustre about 0.08 s each; a production view on the review disk lists
+  far faster); `serve.SNAPVIEW_TEST_SAMPLE_DIRS` samples V3 and V7 alike.
 - V4 identities (T2 against the kept product): the detections under `candidates/_identity/` are exactly the kept product's kept
   detections; the summary's counts; every general-catalogue row's directory exists.
 - V5 record: `deep_omission.csv` equals the omit stage's byte for byte; the record's removals equal the omit stage's (detections,
@@ -165,9 +201,10 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
 | SNAPVIEW_PYTHON | 'py36' | comb_build_20261102.sh:18, :48, :52 |
 | SNAPVIEW_LOC_ENV | {'P3_LOC_SHARDS': '12'} | comb_build_20261102.sh:82 (speed only) |
 | SNAPVIEW_BUILD_TIMEOUT_S | 172800 | the 36-batch view took 33,492 s; production sets no limit |
+| SNAPSHOT_FIGURE_HASHSEED | '0' | PYTHONHASHSEED of `snapshot_localize_tiers.sh` (every snapshot localize). Production sets none: its figure pool starts from a random string-hash seed each run, and 64 of 4,130 figure v2 PNGs differed between two runs on byte-identical tables (V_combview review F10). A reproducibility setting of the refactor, not a science value and not a ruling: no parity line (production's "value" is a random seed); '' = unset, as production |
 | SNAPVIEW_TEST_SAMPLE_DIRS | 0 | the re-read's sample (0 = every page directory; measured about 0.08 s per directory on cold Lustre, 10,562 directories in 880 s - set a sample for a full view if that is too slow; the build's T5 and T6 always cover every directory) |
 
-Every default is production's value; no ruled value differs from production's, so the parity file
+Every default but SNAPSHOT_FIGURE_HASHSEED is production's value; no ruled value differs from production's, so the parity file
 (parity/production_20261013.cfg) has no line for the view. The serve step's CONFIG now declares `catalog_snapshot` (BATCH_DIR).
 
 ## Parity target
@@ -189,6 +226,18 @@ same fleet records, run under its interpreter, against this stage, into scratch:
 The standing test (tests/test_snapshot_view.py) runs production's builder and the stage on a synthetic world and compares the two
 trees. tests/parity_snapshot_view.py runs both sides on real data and compares them (prod, port, compare).
 
+THE PRODUCTION PIN (V_combview review F3; tests/production_pin.py). The tests compare the port with the production code it
+ports, read at ONE pinned exopipe_ops commit (c7ca600, dde1760^: the builder of 5b8b8ff, the snapshot decisions of 37546f6, the
+10-minute decisions and drop of 0d4f1a9 / c6d2c9e), each file checked against its git blob sha and materialized into the test's
+scratch: the stage's own tests (gates, copy fallback, content tests, ready) build the stage's view alone and never wait on
+production's builder; production's side runs only in test_drift, test_parity and test_repoint_pinned, from the pinned files.
+`test_production_pin` (in test_snapshot_view and test_deep_omission) is the explicit drift test: it fails when production
+changed a pinned file since the pin, naming the files and the commits to port. Production code the stage runs IN PLACE (the
+chain's merge, snapshot_filter_catalog.py, snapshot_localize_tiers.sh, the localizer and the figure) is live on both sides.
+Moving the pin is a port: the round that ports production's later commits moves PIN_COMMIT / PIN_BLOBS with it. On 2026-11-04
+the drift test fails by design: dde1760 / dbc40a6 (snapshot_combined_view.py, snapshot_deep_omission.py,
+sublst_deep_omission.py) and 35aad1a / edf3263 (sublst_deep_omission_drop.py) are the follow-up round's port.
+
 Result on real data (2026-11-03/04; refactor_reviews_20261103/V_combview_report.md):
 
 - **Inputs.** Run_SNAPB6H2_20261101, Run_SNAPB6I2_20261101 and Run_SNAPB6L_20261025, with the refusal record and the fleet records
@@ -206,8 +255,31 @@ Result on real data (2026-11-03/04; refactor_reviews_20261103/V_combview_report.
     was the same on both sides, draws bytes that depend on the drawing process, not only on its inputs. Redrawn from the same tables,
     one process drawing in sequence reproduces production's figures (122 of 122), and production's pool layout reproduces the
     stage's (121 of 122).
-  - The figure code that replaced it on 2026-11-04 (figure v2) is deterministic on the same 122 identities: equal across the two
-    views' tables, the hash seed and the drawing order.
+  - CORRECTED (V_combview review F10): the figure code that replaced it on 2026-11-04 (figure v2) is NOT byte-reproducible across
+    runs. In the reviewer's comparison (figure v2 on both sides, byte-identical tables) 64 of 4,130 figures and their 325 page
+    copies differ; the figure pool's string-hash seed decides the stacking of overlapping markers (PYTHONHASHSEED 4 reproduces all
+    64 of one side, 5 all 64 of the other). The earlier check (seeds 0 and 1 on the 122 v1 identities) happened to agree. The
+    stage now runs the localization with PYTHONHASHSEED = `serve.SNAPSHOT_FIGURE_HASHSEED` ('0'); a parity run gives production's
+    side the same seed (tests/parity_snapshot_view.py), and the figures then compare byte for byte (see the fix round's
+    demonstration below).
+
+The fix round (2026-11-04, refactor_reviews_20261103/V_combview_report.md section 10):
+
+- **The 64 figures.** Both sides' localization tables from the reviewer's comparison were copied and redrawn THROUGH THE STAGE'S
+  localize stage (figures only, `SNAP_LOC_FIGURES_ONLY=1`; the seed from the config, PYTHONHASHSEED=0 seen in every figure
+  process). Production's tables were drawn by a pool of 2 and the stage's by a pool of 3. All 4,130 figures were identical (3,361
+  at 10 s, 769 at 1 minute), the 64 that had differed among them.
+- **The new checks on real data, read only.**
+  - V3 with F1 and V7 pass on both the stage's and production's parity views: 10,562 page directories, 24,911 panels, all
+    parsed as panels.
+  - G-V7 (served_tiers.csv) passes on the three batches.
+  - G-V8 re-makes 869 decisions from the frozen record and fleet, equal to the omit product byte for byte; K5 holds.
+- **The stage at 2027bce on the same inputs.** It ran omit, build and filtercat as an ordinary run, hard links, SNAPCAT_PROCS=6.
+  - Every unit ended done and every content test passed, G-V8 included.
+  - The decisions equal production's view's byte for byte.
+  - Against production's view, every file is identical but the localization's, which was not re-run: the general catalogue,
+    per-tier views, queues, 10,562 page and 4,136 identity detections.csv, 24,911 panels (the same inodes), the omission
+    files, the filter files, and the summary but `seconds`.
 
 ## Production behavior carried for parity, pending Gregg
 
@@ -253,3 +325,17 @@ None of these is ruled; each is production's today and changes only with a rulin
 - The re-point (1 above): production's fix first, then the port follows; the pinned test changes on purpose.
 - Whether the view should also refuse a per-tier page detection that is not among its identity's kept detections (the build
   counts them; zero would make it a gate).
+
+Listed from the V_combview review, not fixed in its fix round (2026-11-04; low, none seen on real data):
+
+- F6: a KEPT panel moved into another source's page directory of the same batch after the omit stage is served on that page
+  (production links whatever the directory lists). V7 compares a page with its member batch sources' directories as they are
+  now, so it does not see the move; the review's cheap fix is a check that a linked panel's frame is a detection of its page.
+  (A kept panel copied onto another page of the VIEW is refused by V7: test_content.)
+- F8: a three-way panel-name clash (three member sources of one page directory with one panel name, two from one batch): the
+  second clash name `<TAG>_<fn>` exists too - a production view refuses with the wrong G-V5 cause, a scratch / parity view's copy
+  overwrites one panel silently (both counted). Production raises FileExistsError. Fix: refuse a second clash explicitly in both
+  modes.
+- F9: the view's `--dry-run` does not run the injected-run guard on the refusal record (`--set catalog_omission.REFUSALS=<an
+  injected run's record> --dry-run` exits 0; the real run refuses at the omit stage, G1, nothing written; `catalog --stages omit
+  --dry-run` refuses). Fix: `DO.injected_record_gate` before `describe()`.
