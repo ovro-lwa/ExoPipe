@@ -35,10 +35,9 @@ DROP (the data level, before the cumulative catalogs, identities and pages):
       dropped, a partial one whose best detection went is re-pointed to its remaining detection of largest |S/N| (its survivor
       gates NOT re-run - recorded; see OWED below), member rows and panels of omitted keys are dropped. This stage COMPUTES the
       drop and WRITES it as the kept product deep_omission_kept.csv; the drop is APPLIED where the combined view is assembled -
-      the snapshot tier's cumulative step, the port of snapshot_combined_view.py (refactor chat 2026-11-03: the combined view is
-      ported as the snapshot tier's cumulative step; not yet written), which reads the kept product instead of recomputing it.
-      Until that step exists the refactor serves no combined view: the 10-s / 1-minute drop is computed, recorded and written,
-      and applied nowhere (Q review F2).
+      the snapshot tier's cumulative step `serve --tier snapshot --family comb` (lib/serve/snapshot_view.py, the port of
+      snapshot_combined_view.py; refactor chat 2026-11-03), which reads the kept product instead of recomputing it, checks the
+      served set against its digests and refuses any row that does not apply exactly (Q review F2, N2).
   10-minute: the cumulative merge drops the OMIT rows per LST before concatenation (sublst_deep_omission_drop.py IN PLACE,
       reading the decision table this stage writes; `serve --tier sublst` build passes it as SUBLST_DEEP_OMISSION). This stage
       records the detections that drop removes (the member rows of every LST run whose key is OMIT).
@@ -48,21 +47,31 @@ pages (the served detections the rate condition counts exist only then) and befo
 pages: the combined snapshot view (snapshot_combined_view.py step 0) and the cumulative 10-minute merge (sublst_cumulative.sh).
 Here: `exopipe3 catalog --tier snapshot --stages omit --omit-runs RUN,RUN..` (the served batch runs of the view) and
 `exopipe3 catalog --tier sublst --stages omit --lsts ...` (the LST runs of the cumulative); the 10-minute cumulative build calls
-tenmin_table() before its merge; the snapshot tier's cumulative step (to come) applies deep_omission_kept.csv.
+tenmin_table() before its merge; the snapshot tier's cumulative step (serve --tier snapshot --family comb: its omit stage calls
+run_snapshot, its build applies deep_omission_kept.csv).
 
 Products (in the stage's output directory --out; production names): deep_omission.csv (class omission_decisions: one row per
 decision, production's columns and formats - byte for byte), deep_omission_dropped.csv (class omission_record: every omitted
 detection and every consequence, with the decision text of its own key, column 'why'; 10-s / 1-minute: the combined view's
 record columns + why; 10-minute: the merge drop's), deep_omission_summary.txt (line 1 = the page line) and .json (counts);
-10-s / 1-minute also deep_omission_kept.csv (class omission_kept, KEPT_COLS: what the cumulative step applies, every row with
+10-s / 1-minute also deep_omission_served.csv (class omission_served: the served counts per (LST, night, band, Stokes, tier) the
+decisions were made with - the build re-decides with them to show its decisions current, V_combview review F5) and
+deep_omission_kept.csv (class omission_kept, KEPT_COLS: what the cumulative step applies, every row with
 the served run and the catalogue file it acts on - 'detection kept' (each kept detection of each kept identity: the merge's
 input), 'source dropped', 'source re-pointed' (fields: the survivors row's new values, JSON), 'member row dropped', 'panel
-dropped'; its content test traces every row to the decisions, the record and the summary).
+dropped'; its content test traces every row to the decisions, the record and the summary, refuses a detection key kept twice,
+and checks kept + omitted against the served set's fingerprint in the summary json - order-free multiset digests of the
+served, kept and omitted detections, key 'digests', which the cumulative step also checks against the served runs as it
+reads them; Q fix verification N2).
 Records: <out>/_records/catalog/<label>.omit.json - every refusal file read (and the larger groups - noise tables, member lists,
 window tables, served tables - as content digests in meta input_digests). --omit-refusals DIR is an override of the RULED
 catalog_omission.REFUSALS through the config (as --set: --ruling-for or a non-production --out; recorded), Q review F8.
 
-Gates (refuse, exit 2): G1 the refusal record missing, empty or holding a row not of its file's LST; G2 a served run without its
+Gates (refuse, exit 2): G1 the refusal record missing, empty or holding a row not of its file's LST, or (an ordinary run) lying
+under an injected run's start record, however it was named (Q fix verification N1); G4b a batch run whose per-tier survivors do
+not hold exactly the identities its served_tiers.csv serves in each tier, or without that file; G4c a kept per-tier source whose
+page holds no detection (detections.csv missing or empty: an incomplete batch run, never booked as a deep omission) (both
+V_combview review F4); G2 a served run without its
 catalogue (or a 10-minute LST run without its master_catalog.csv); G3 a served identity without detections, or a detection in
 two identities; G4 a per-tier source or member row of no served identity; G5 kept + omitted != served; G6 served detections in
 an ABSENT key (catalog_omission.ABSENT_WITH_SERVED = 'refuse', the refactor's PROPOSED value pending Gregg: the exception test
@@ -80,9 +89,11 @@ OWED, NOT DONE - the re-run of a partial source's survivor gates (Q review F6). 
 TO THE SHORTER TIERS", Port: "Partial sources re-run their survivor gates, which today's drops do not" - the reading of Gregg's
 2026-10-24 ruling (R-GREGG-20261024-DEEP-OMISSION-APPLIES-TO-SHORT-TIERS-WITH-FRAME-EXCEPTION, verbatim: "Omission from the deep
 transient search is sufficient for omission from the 10s/1-min/10-min search") that an omitted detection was never searched, so
-a source must stand on its remaining detections. Production does not: it re-points and records (clv15 fix_ledger
-IMPLEMENTED-DEEP-OMISSION-DROP-IN-THE-10-MINUTE-CUMULATIVE-20261025: "its survivor gates are NOT re-run (recorded) - it stays
-visible, so no real source is lost"; IMPLEMENTED-DEEP-OMISSION-10S-1MIN-IN-THE-COMBINED-SNAPSHOT-VIEW-20261025 the same). What is
+a source must stand on its remaining detections. Production does not: it re-points and records - exopipe_ops
+sublst_deep_omission_drop.py:17-18 (its docstring): "its survivor gates are NOT re-run (recorded) - it stays visible, so no real
+source is lost"; clv15 fix_ledger IMPLEMENTED-DEEP-OMISSION-DROP-IN-THE-10-MINUTE-CUMULATIVE-20261025: "(its survivor gates are
+not re-run, recorded)"; IMPLEMENTED-DEEP-OMISSION-10S-1MIN-IN-THE-COMBINED-SNAPSHOT-VIEW-20261025: "(survivor gates not re-run,
+recorded)" (attribution corrected, Q fix verification N4). What is
 owed, per partial source (some detections omitted, at least one kept - re-pointed or not), on its KEPT detections only, by each
 tier's own rule for a source that lost instants:
   10-s / 1-minute: the snapshot chain's re-build of a source after a per-instant veto (clv15 phase3_snapshot_chain.py 9465ae6,
@@ -307,12 +318,48 @@ def mad_thr(vals, sigma=None):
     return m + sigma * 1.4826 * np.median(np.abs(v - m))
 
 
+def _rate_floor_problem(v):
+    import math
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
+        return f'catalog_omission.RATE_FLOOR_PER_NIGHT must be a finite number >= 0 (detections per night), not {v!r}'
+    return None
+
+
+def _member_verdicts_problem(v):
+    try:
+        v = tuple(v)
+    except TypeError:
+        v = (v,)
+    if 'OMIT' not in v or not set(v) <= {'OMIT', 'ABSENT'}:
+        return ("catalog_omission.WIDEBAND_MEMBER_VERDICTS must be ('OMIT',) or ('OMIT', 'ABSENT') (the card: a subband "
+                f"omitted drops the night's wideband detections that include it), not {v!r}")
+    return None
+
+
+def _absent_mode_problem(v):
+    if v not in ('refuse', 'production'):
+        return f"catalog_omission.ABSENT_WITH_SERVED must be 'refuse' or 'production', not {v!r}"
+    return None
+
+
+def check_values(cfg=None):
+    """[problems] of the catalog_omission values the stage reads only when it runs - RATE_FLOOR_PER_NIGHT,
+    WIDEBAND_MEMBER_VERDICTS (production's values, pending Gregg) and ABSENT_WITH_SERVED (proposed). cli.main refuses the step on
+    any (exit 2, before the run, as B-30 / B-32 do for theirs): an invalid value given with --set or --config never starts a run
+    that would stop late with an error, and the floor is checked even where no cell has 3 nights (Q fix verification N3)."""
+    if cfg is None:
+        from exopipe.phase3.config import CFG as cfg
+    c = cfg.catalog_omission
+    return [p for p in (_rate_floor_problem(c.RATE_FLOOR_PER_NIGHT), _member_verdicts_problem(c.WIDEBAND_MEMBER_VERDICTS),
+                        _absent_mode_problem(c.ABSENT_WITH_SERVED)) if p]
+
+
 def rate_floor():
     """catalog_omission.RATE_FLOOR_PER_NIGHT (production's value, pending Gregg; 0 = the card's rule without a floor)."""
-    import math
     v = _c().RATE_FLOOR_PER_NIGHT
-    if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
-        raise ValueError(f'catalog_omission.RATE_FLOOR_PER_NIGHT must be a finite number >= 0 (detections per night), not {v!r}')
+    bad = _rate_floor_problem(v)
+    if bad:
+        raise ValueError(bad)
     return float(v)
 
 
@@ -320,9 +367,9 @@ def member_verdicts():
     """catalog_omission.WIDEBAND_MEMBER_VERDICTS (production's ('OMIT', 'ABSENT'), the ABSENT part pending Gregg): the verdicts
     of a member subband night that omit its band group's detections. 'OMIT' is always one (the card's rule)."""
     v = tuple(_c().WIDEBAND_MEMBER_VERDICTS)
-    if 'OMIT' not in v or not set(v) <= {'OMIT', 'ABSENT'}:
-        raise ValueError("catalog_omission.WIDEBAND_MEMBER_VERDICTS must be ('OMIT',) or ('OMIT', 'ABSENT') (the card: a subband "
-                         f"omitted drops the night's wideband detections that include it), not {v!r}")
+    bad = _member_verdicts_problem(v)
+    if bad:
+        raise ValueError(bad)
     return v
 
 
@@ -894,6 +941,10 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
                     refuse(f'G4: {tag} {cdir} source {row["source_id"]} of identity {row["identity_id"]} is in no served identity')
                 src = os.path.join(r, row['review_dir'])
                 ad = reader.rows(os.path.join(src, 'detections.csv'), 'served_detections')
+                if not ad:      # G4c (V_combview review F4): an incomplete input is never booked as a deep omission
+                    refuse(f'G4c: {tag} {cdir} source {row["source_id"]}: its page {row["review_dir"]} holds no detection '
+                           f'(detections.csv missing or empty) - an incomplete batch run; production would record it as "every '
+                           f'detection omitted" by the deep rule')
                 kd = [d for d in ad if okey(d) not in OM]
                 if not kd:
                     rec.append(dict(kind='source dropped', batch=tag, identity=row['identity_id'], source=row['source_id'],
@@ -950,7 +1001,64 @@ def per_tier_snapshot(runs, pending, dropped, OM, why, reader):
                 continue
             if mm is None or mm.group(1) not in ids[r]:
                 refuse(f'G4: {tag} {cdir} member source {row["source_id"]} is in no served identity')
+    complete_batch_runs(runs, cats, reader)   # G4b (V_combview review F4), after G4 / G4c: a stray source names its own gate
     return rec, repoint, drops
+
+
+SERVED_TIERS = 'served_tiers.csv'          # a batch run's per-tier serving table (the chain's phase3_snapshot_tierserve)
+
+
+def served_tiers(run, reader):
+    """{tier: {identity}} that the batch run's served_tiers.csv serves in each tier (chain_outcome 'served', qualifies 1), or
+    None without the file."""
+    t = reader.text(os.path.join(run, SERVED_TIERS), 'served_catalogs', missing_ok=True)
+    if t is None:
+        return None
+    out = collections.defaultdict(set)
+    for r in csv.DictReader(io.StringIO(t, newline='')):
+        if r.get('chain_outcome') == 'served' and str(r.get('qualifies')) == '1':
+            out[r['tier']].add(r['identity_jname'])
+    return out
+
+
+def complete_batch_runs(runs, cats, reader):
+    """G4b (V_combview review F4): each batch run's per-tier survivors hold exactly the identities its served_tiers.csv serves in
+    that tier - so a per-tier catalogue lost or cut short (an interrupted copy, a re-serve that stopped halfway) refuses instead of
+    a source vanishing from the view unrecorded. Held exactly on all 36 batches of Run_SNAPCOMB_20261102 (2026-11-04).
+    ``cats``: per_tier_snapshot's (S, T, cdir, run, kind, band, rows)."""
+    for r in runs:
+        st = served_tiers(r, reader)
+        if st is None:
+            refuse(f'G4b: {batch_tag(r)} has no {SERVED_TIERS}: its per-tier catalogues cannot be shown complete')
+        for T in _c().SNAPSHOT_TIERS:
+            have = {row['identity_id'] for S, T2, cdir, r2, kind, band, rows in cats if r2 == r and T2 == T and kind == 'sources'
+                    for row in rows}
+            want = st.get(T, set())
+            if have != want:
+                refuse(f'G4b: {batch_tag(r)} tier {T}: its per-tier survivors hold {len(have - want)} identities {SERVED_TIERS} does '
+                       f'not serve (e.g. {sorted(have - want)[:2]}) and lack {len(want - have)} it serves (e.g. '
+                       f'{sorted(want - have)[:2]}) - an incomplete or inconsistent batch run')
+
+
+SERVED_COLS = ['lst', 'night', 'band', 'stokes', 'tier', 'n']
+
+
+def write_served(path, served):
+    """deep_omission_served.csv: the served counts the decisions were made with ({(lst, night, band, stokes, tier): n}, the
+    rate test's input) - so the build can re-decide from the current refusal record and fleet records and show the decisions
+    current (V_combview review F5), and the content test can tie them to the kept and omitted detections."""
+    with open(path + '.tmp', 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(SERVED_COLS)
+        for k in sorted(served):
+            w.writerow(list(k) + [served[k]])
+    os.replace(path + '.tmp', path)
+
+
+def read_served(path):
+    """{(lst, night, band, stokes, tier): n} of a deep_omission_served.csv."""
+    with open(path, newline='') as f:
+        return {(r['lst'], r['night'], r['band'], r['stokes'], r['tier']): int(r['n']) for r in csv.DictReader(f)}
 
 
 def kept_rows(kept):
@@ -963,6 +1071,69 @@ def kept_rows(kept):
             c, ra, dec = dkey(d)
             yield dict(kind='detection kept', run=run, batch=tag, identity=J, cand_id=c, ra_peak=ra, dec_peak=dec,
                        lst=d['lst'], band=okey(d)[1], night=d['date'], stokes=d['stokes'], tier=d['tier'], snr=d['snr'])
+
+
+# ---- the served set's fingerprint (Q fix verification N2) -----------------------------------------------------------------
+# The kept product's content test could not see a kept detection listed twice, one the served product never had, or one moved
+# to another identity: it checked each kept row against the decisions and the record, never against the served set. The writer
+# now puts ORDER-FREE MULTISET DIGESTS into deep_omission_summary.json (key 'digests'): of the served detections, the kept ones,
+# the omitted ones - each item (batch, identity, cand_id, ra_peak, dec_peak) - and of the omitted ones' (batch, identity,
+# cand_id), the record's detection rows (they carry no peak). The digest is additive (the count and the sum of the items'
+# sha256 modulo 2**256), so the content test streams the kept rows once and checks kept + omitted = served, and the cumulative
+# step re-reads the served runs and checks served = the summary's (the served product has not changed since the drop).
+
+class MultisetDigest:
+    """An order-free, additive digest of a multiset of text items: '<count>:<sum of their sha256 modulo 2**256, 64 hex>'."""
+    MOD = 1 << 256
+
+    def __init__(self, text=None):
+        self.n, self.s = 0, 0
+        if text:
+            n, _, s = str(text).partition(':')
+            self.n, self.s = int(n), int(s, 16)
+
+    def add(self, item):
+        self.n += 1
+        self.s = (self.s + int.from_bytes(hashlib.sha256(item.encode('utf-8')).digest(), 'big')) % self.MOD
+        return self
+
+    def __add__(self, other):
+        out = MultisetDigest()
+        out.n, out.s = self.n + other.n, (self.s + other.s) % self.MOD
+        return out
+
+    def __eq__(self, other):
+        return isinstance(other, MultisetDigest) and (self.n, self.s) == (other.n, other.s)
+
+    def __ne__(self, other):          # Python 3.6 children import this module too
+        return not self == other
+
+    def text(self):
+        return '%d:%064x' % (self.n, self.s)
+
+
+def detection_item(batch, identity, k):
+    """A served detection as a digest item: batch tag, identity, cand_id, ra_peak, dec_peak (k = dkey), unit-separated."""
+    return '\x1f'.join((batch, identity) + tuple(k))
+
+
+def served_digests(pending, OM):
+    """{'served', 'kept', 'omitted', 'omitted_cid'} digests (texts) of the served identities ``pending`` under the OMIT keys OM:
+    every detection, the kept ones, the omitted ones (detection_item) and the omitted ones' (batch, identity, cand_id)."""
+    D = {k: MultisetDigest() for k in ('served', 'kept', 'omitted', 'omitted_cid')}
+    for r, J, _grs, dets in pending:
+        tag = batch_tag(r)
+        for d in dets:
+            item = detection_item(tag, J, dkey(d))
+            D['served'].add(item)
+            if okey(d) in OM:
+                D['omitted'].add(item)
+                D['omitted_cid'].add('\x1f'.join((tag, J, d['cand_id'])))
+            else:
+                D['kept'].add(item)
+    if D['kept'] + D['omitted'] != D['served']:            # additive by construction; a broken digest refuses here
+        refuse('G5: the kept and omitted digests do not add up to the served digest')
+    return {k: v.text() for k, v in D.items()}
 
 
 # =====================================================================================================================
@@ -1020,8 +1191,8 @@ def absent_gate(rows, served_of):
             if n:
                 bad.append((k, n))
     mode = _c().ABSENT_WITH_SERVED
-    if mode not in ('refuse', 'production'):
-        raise ValueError(f"catalog_omission.ABSENT_WITH_SERVED must be 'refuse' or 'production', not {mode!r}")
+    if _absent_mode_problem(mode):
+        raise ValueError(_absent_mode_problem(mode))
     if bad and mode == 'refuse':    # WAVE2 G6: the refactor's PROPOSED gate, pending Gregg (production keeps; parity file 'production')
         refuse(f'G6: {len(bad)} deep-refused keys the tier has no record of hold served detections (e.g. {bad[:3]}) - the '
                f'exception test cannot be evaluated')
@@ -1044,10 +1215,12 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
     absent = absent_gate(dec, lambda k: served.get((k[0], k[2], k[1], k[3], k[4]), 0))
     OM, why = omitted_keys(dec), why_of(dec)
     kept, dropped, rec = apply_snapshot(pending, OM, why)
+    digests = served_digests(pending, OM)          # N2: the served set's fingerprint, checked by the kept product's test
     prec, _repoint, drops = per_tier_snapshot(runs, pending, dropped, OM, why, reader)
     rec += prec
     os.makedirs(out, exist_ok=True)
     write_decisions(os.path.join(out, 'deep_omission.csv'), dec, TIER_SNAPSHOT)
+    write_served(os.path.join(out, 'deep_omission_served.csv'), served)      # F5: what the decisions were made with
     write_record(os.path.join(out, 'deep_omission_dropped.csv'), rec, RECORD_COLS)
     kept_kinds = collections.Counter()              # Q review F2: the drop, written for the cumulative step that applies it
 
@@ -1064,7 +1237,7 @@ def run_snapshot(runs, out, rdir=None, proto=None, u=None, label='omit'):
                 omit_keys_by_tier={t: sum(1 for k in OM if k[4] == t) for t in c.SNAPSHOT_TIERS},
                 verdicts=dict(collections.Counter(r['verdict'] for r in dec)), record=dict(sorted(kinds.items())),
                 kept_product=dict(sorted(kept_kinds.items())),
-                identities=len(pending), identities_kept=len(kept), absent_with_served=len(absent),
+                identities=len(pending), identities_kept=len(kept), absent_with_served=len(absent), digests=digests,
                 seconds=round(time.time() - t0, 1))
     _write_summary(out, summ, n_om, 'served detections %d, kept %d; decisions %d (%d OMIT keys); %s' % (
         n_all, n_all - n_om, len(dec), len(OM), ', '.join('%s %d' % kv for kv in sorted(kinds.items()))))
@@ -1129,8 +1302,27 @@ def run_tenmin(lsts, out, rdir=None, seed_dir=None, u=None, label='omit', frame_
     return summ
 
 
+def injected_record_gate(rdir):
+    """G1, the injected-run guard on the refusal record (Q fix verification N1): an ORDINARY run never takes its decisions from
+    an injected run's refusal record (core/record.injected_runs: an injected run's start record in the directory or an
+    ancestor), however the record was named - --omit-refusals, --set / --config catalog_omission.REFUSALS, or a caller's rdir
+    (the 10-minute cumulative build's tenmin_table). The flag route is also checked by core/injected.check_flags before the
+    step runs; this check covers the config route and every caller. An injected run may read it."""
+    from exopipe.phase3.core import injected, record
+    if injected.active():
+        return
+    hit = record.injected_runs(rdir)
+    if hit:
+        root, f, why = hit[0]
+        refuse(f'G1 {injected.LABEL}: the deep refusal record {rdir}: {root} holds an injected run\'s products ({f}: {why}) - '
+               f'an ordinary run never takes its omission decisions from an injected run (catalog_omission.REFUSALS, however '
+               f'it was set)')
+
+
 def _record_gate(rdir):
-    """G1: the refusal record exists and holds files (a rule that cannot be checked is never applied as 'nothing to drop')."""
+    """G1: the refusal record exists and holds files (a rule that cannot be checked is never applied as 'nothing to drop'),
+    and an ordinary run's record is no injected run's (injected_record_gate)."""
+    injected_record_gate(rdir)
     if not os.path.isdir(rdir):
         refuse(f'G1: no deep refusal record {rdir}')
     if not glob.glob(os.path.join(rdir, '*_excluded.csv')):
@@ -1213,6 +1405,7 @@ def run(args, run):
     if tier not in (TIER_SNAPSHOT, TIER_TENMIN):
         raise SystemExit(f'error: --stages omit is a stage of the short tiers (snapshot, sublst), not {tier}')
     rdir = refusals_arg(args)
+    injected_record_gate(rdir)               # N1: before the dry-run plan too, whichever route set the record
     out = os.path.abspath(run.out_root)
     if tier == TIER_SNAPSHOT:
         runs = _runs_arg(args)
@@ -1241,5 +1434,6 @@ def run(args, run):
         u.add_output(dec, 'omission_decisions', tier=tier)
         u.add_output(os.path.join(out, 'deep_omission_dropped.csv'), 'omission_record', tier=tier, decisions=dec)
         if tier == TIER_SNAPSHOT:          # the drop the snapshot tier's cumulative step applies (Q review F2)
+            u.add_output(os.path.join(out, 'deep_omission_served.csv'), 'omission_served', tier=tier)
             u.add_output(os.path.join(out, 'deep_omission_kept.csv'), 'omission_kept', tier=tier, decisions=dec)
     return None
