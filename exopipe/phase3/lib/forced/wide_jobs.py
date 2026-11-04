@@ -6,15 +6,17 @@ tapering to be identified", "Go"), v3/jobs_ext.py (the extension jobs after Greg
 v3/forced_wide_v3.py load_events. Every computation is the scripts' own, in their order (a target's first row wins); the
 values come from config (forced_wide).
 
-A job is one (Stokes, target) of the four forced runs (forced_wide.RUNS, in that order):
-  AMBIGUOUS  each listed identity of a run (queue_<S>.txt order) at its current list position (snapshot_forced_assoc.
-             build_targets, in place): the nearest cataloged entry >= AMB_MIN_S74_JY within AMB_SEARCH_BEAMS Master beams, the
-             beam at the median frequency of its forced events (MASTER_BEAM_ARCMIN, nearest key; WIDEBAND_MHZ for a wideband);
+A job is one (Stokes, target) of the four tested forced runs (forced_wide.RUNS, in that order):
+  AMBIGUOUS  each listed identity of the eight forced runs (forced_wide.AMBIGUOUS_RUNS, in that order; queue_<S>.txt order) at
+             its current list position (snapshot_forced_assoc.build_targets, in place): the nearest cataloged entry
+             >= AMB_MIN_S74_JY within AMB_SEARCH_BEAMS Master beams, the beam at the median frequency of its forced events in that
+             run (MASTER_BEAM_ARCMIN, nearest key; WIDEBAND_MHZ for a wideband);
   BASE       ambiguous targets of the 10-s and 1-minute runs with that entry within BASE_MAX_BEAMS beams: the background S = the
              nearest physical source (entries grouped within GROUP_ARCMIN, the flux VLSSr's where listed) >= BASE_BG_MIN_S74_JY
              within BASE_BG_RADIUS_BEAMS beams, the bands = the subbands with forced events of that Stokes (10 s or 1 min);
-  EXTENSION  the other targets with forced events that have a physical source >= EXT_MIN_S74_JY within EXT_RADIUS_FWHM x the
-             snapshot FWHM of their lowest event band (sorted by Stokes, identity).
+  EXTENSION  the other targets with forced events (of the tested runs) that have a physical source >= EXT_MIN_S74_JY within
+             EXT_RADIUS_FWHM x the snapshot FWHM of their lowest event band (sorted by Stokes, identity); a (Stokes, identity)
+             takes its first row of all eight runs' ambiguous rows (jobs_ext.py:18-19).
 The base jobs' v1 same-cutout control pairs (forced_wide_jobs.py 'controls', 'mid', 'r_max_arcmin', 'bg_not_isolated') are
 not carried: no stage reads them (v2 pooled its controls; v3 calibrates on control lines).
 EVENTS: every forced event of a run's subbands - the candidates/<dir>/<dir>/detections.csv rows with a frame sigma, one per
@@ -125,10 +127,11 @@ def run_label(stokes, cadence):
     return f'{stokes}{cadence}'
 
 
-def run_dirs(root):
-    """[(label, Stokes, cadence, run dir)] of forced_wide.RUNS under ``root`` (forced_wide.RUN_NAME)."""
+def run_dirs(root, which=None):
+    """[(label, Stokes, cadence, run dir)] under ``root`` (forced_wide.RUN_NAME) of ``which`` (default forced_wide.RUNS, the
+    tested runs; forced_wide.AMBIGUOUS_RUNS for the runs whose queues give the ambiguous list)."""
     w = cfg().forced_wide
-    return [(run_label(S, cad), S, cad, os.path.join(root, w.RUN_NAME.format(S=S, cadence=cad))) for S, cad in w.RUNS]
+    return [(run_label(S, cad), S, cad, os.path.join(root, w.RUN_NAME.format(S=S, cadence=cad))) for S, cad in (which or w.RUNS)]
 
 
 def queue_ids(run, stokes):
@@ -243,11 +246,13 @@ def event_bands(runs):
     return out
 
 
-def build_jobs(runs, log=print):
-    """(base jobs, extension jobs, ambiguous rows) for ``runs`` (module notes)."""
+def build_jobs(runs, amb_runs=None, log=print):
+    """(base jobs, extension jobs, ambiguous rows) for the tested ``runs`` (their events and base rows) and the ambiguous
+    list of ``amb_runs`` (default ``runs``; the stage passes forced_wide.AMBIGUOUS_RUNS, as forced_ambiguous.py read all eight
+    forced runs) (module notes)."""
     fa = FA()
     w = cfg().forced_wide
-    amb = ambiguous_rows(runs)
+    amb = ambiguous_rows(amb_runs or runs)
     labels = {lb for lb, _s, _c, _r in runs}
     ev_bands = event_bands(runs)
     pairs = collections.OrderedDict()

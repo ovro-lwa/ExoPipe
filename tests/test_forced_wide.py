@@ -89,12 +89,32 @@ def write_csv(path, rows, cols):
         w.writerows(rows)
 
 
-def fake_record(out, unit, outputs, meta=None, status='done'):
-    """a minimal run record of a previous stage (the record chain reads status and outputs)"""
+def fake_record(out, unit, outputs, meta=None, status='done', inputs=None):
+    """a minimal run record of a previous stage (the record chain reads status, outputs, meta and inputs)"""
     p = os.path.join(out, '_records', 'forced', unit + '.json')
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    json.dump({'unit': unit, 'status': status, 'outputs': [{'path': a, 'class': b} for a, b in outputs], 'meta': meta or {}},
-              open(p, 'w'))
+    json.dump({'unit': unit, 'status': status, 'outputs': [{'path': a, 'class': b} for a, b in outputs], 'meta': meta or {},
+               'inputs': inputs or {}}, open(p, 'w'))
+
+
+@contextlib.contextmanager
+def catdir(path):
+    """snapshot_forced_assoc.CATDIR (fixed at its import from $P3_RADIO_CATDIR) pointed elsewhere for a block"""
+    from exopipe.phase3.lib.forced import wide_jobs as WJ
+    fa = WJ.FA()
+    old = fa.CATDIR
+    fa.CATDIR = path
+    try:
+        yield
+    finally:
+        fa.CATDIR = old
+
+
+def runs8(root):
+    """the eight forced run directories (empty) under root: a host-independent --wide-runs for dry runs"""
+    for s_, c_ in CFG.forced_wide.AMBIGUOUS_RUNS:
+        os.makedirs(os.path.join(root, CFG.forced_wide.RUN_NAME.format(S=s_, cadence=c_)), exist_ok=True)
+    return root
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -136,13 +156,20 @@ def test_config():
     lines = [ln.split('#')[0].strip() for ln in open(p) if ln.split('#')[0].strip().startswith(('forced_wide', 'night_activity'))]
     check('parity config: production values of family W', sorted(lines) == sorted([
         "forced_wide.EVENT_ORDER = 'directory'", "forced_wide.TARGET_MEMBER = 'first'",
-        "forced_wide_search.FILE_ERRORS = 'drop'"]), lines)
+        "forced_wide_search.FILE_ERRORS = 'drop'", "forced_wide_test.V2_CTL_DRAW = (300, 20261102)"]), lines)
     for ln in lines:
         k, v = ln.split('=', 1)
         CFG.set(k.strip(), v.strip())
     check('the parity config values apply', (CFG.forced_wide.EVENT_ORDER, CFG.forced_wide.TARGET_MEMBER,
-                                             CFG.forced_wide_search.FILE_ERRORS) == ('directory', 'first', 'drop'))
+                                             CFG.forced_wide_search.FILE_ERRORS, CFG.forced_wide_test.V2_CTL_DRAW)
+          == ('directory', 'first', 'drop', (300, 20261102)))
     CFG.reset()
+    check('v2 controls: the default is every eligible pair (no random cap)', CFG.forced_wide_test.V2_CTL_DRAW is None)
+    check('the test caps its processes like the search (W-WORKERS)', CFG.forced_wide_test.MAX_WORKERS == 6
+          == CFG.forced_wide_search.MAX_WORKERS)
+    w = CFG.forced_wide
+    check('the ambiguous list reads the eight forced runs, the tested four first (forced_ambiguous.py:28)',
+          w.AMBIGUOUS_RUNS[:4] == w.RUNS and [c for _s, c in w.AMBIGUOUS_RUNS[4:]] == ['10min', '10min', 'deep', 'deep'])
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -199,11 +226,19 @@ def test_method_truth():
           and s.MINUTE_RULE == 'filename')
     v2 = _assigns(os.path.join(fw, 'forced_wide_analyze.py'))
     pairs = [('CTL_FLUX', t.V2_CTL_FLUX), ('CTL_BRIGHTER', t.V2_CTL_BRIGHTER), ('CTL_MIN_CELLS', t.V2_CTL_MIN_CELLS),
-             ('CTL_MIN_N', t.V2_CTL_MIN_N), ('CTL_MAX', t.V2_CTL_MAX), ('MIN_CELLS_DECIDE', t.V2_MIN_NIGHTS),
+             ('CTL_MIN_N', t.V2_CTL_MIN_N), ('MIN_CELLS_DECIDE', t.V2_MIN_NIGHTS),
              ('CUT_HALF', t.CUT_HALF_ARCMIN), ('MARGIN', t.V2_CUT_MARGIN_ARCMIN)]
     bad = [(k, v2.get(k), v) for k, v in pairs if v2.get(k) != v]
     check('forced_wide_test V2_* = forced_wide_analyze.py\'s literals', not bad and max(v2.get('KS')) == t.V2_K_MAX
           and t.V2_K in v2.get('KS'), bad)
+    # production's capped draw = the parity config's V2_CTL_DRAW (the default draws none: every eligible pair)
+    v2src = open(os.path.join(fw, 'forced_wide_analyze.py')).read()
+    m = re.search(r'if len\(out\) > CTL_MAX:\s*\n\s*rng = np\.random\.default_rng\((\d+)\)', v2src)
+    pl = [ln.split('#')[0].split('=', 1)[1].strip() for ln in open(os.path.join(REPO, 'exopipe', 'phase3', 'parity',
+                                                                                   'production_20261013.cfg'))
+          if ln.startswith('forced_wide_test.V2_CTL_DRAW')]
+    check('parity V2_CTL_DRAW = forced_wide_analyze.py\'s (CTL_MAX, its draw\'s seed)',
+          m is not None and pl and ast.literal_eval(pl[0]) == (v2.get('CTL_MAX'), int(m.group(1))), (pl, m and m.group(1)))
     jo = _assigns(os.path.join(fw, 'forced_wide_jobs.py'))
     check('GROUP_ARCMIN = forced_wide_jobs.py\'s', jo.get('GROUP_ARCMIN') == w.GROUP_ARCMIN)
     na = open(os.path.join(ANA, 'figure_v2', 'night_activity_build.py')).read()
@@ -217,7 +252,8 @@ def test_mirrors():
     check('forced_wide_search.SUN_SITE = phase3_snapshot_search.sun_state\'s location',
           m and (float(m.group(1)), float(m.group(2)), float(m.group(3))) == CFG.forced_wide_search.SUN_SITE,
           m.groups() if m else None)
-    s2 = open(os.path.join(OPS, 'source_astrometry_panel_v2.py')).read()
+    # the figure: source_astrometry_panel.py (v2 since exopipe_ops 7e6904a, 2026-11-04; source_astrometry_panel_v2.py its alias)
+    s2 = open(os.path.join(OPS, 'source_astrometry_panel.py')).read()
     check('forced_wide.PUBLISHED = the name the figure reads', "os.path.join(U, '%s')" % CFG.forced_wide.PUBLISHED in s2)
     aa = open(os.path.join(OPS, 'astrometry_assoc.py')).read()
     m = re.search(r"NIGHT_ACT = os\.environ\.get\('P3_NIGHT_ACTIVITY', '([^']+)'\)", aa)
@@ -272,10 +308,33 @@ def test_cli_gates():
     check('cli: a W stage per hour refused', rc == 2 and 'W-FAMILY' in err and '--epochs' in err, err[-300:])
     rc, err = cli(base + ['--stages', 'wide_search', '--stokes', 'I'])
     check('cli: --stokes refused for W (use --wide-only)', rc == 2 and '--wide-only' in err, err[-300:])
-    rc, err = cli(base + ['--stages', 'wide_jobs,wide_search,wide_test,wide_publish', '--dry-run'])
+    r8 = runs8(os.path.join(TMP, 'runs8'))
+    rc, err = cli(base + ['--stages', 'wide_jobs,wide_search,wide_test,wide_publish', '--wide-runs', r8, '--dry-run'])
     check('cli: W dry run exit 0, plans every stage', rc == 0 and all(('[%s]' % s) in _LAST_OUT[0] for s in
                                                                       ('wide_jobs', 'wide_search', 'wide_test', 'wide_publish')),
-          (rc, err[-300:]))
+          (rc, err[-300:], _LAST_OUT[0][-400:]))
+    check('dry run: the jobs plan names all eight runs, the tier runs for their queue only',
+          _LAST_OUT[0].count('[wide_jobs]   run ') == 8 and _LAST_OUT[0].count('its queue only') == 4)
+    shutil.rmtree(os.path.join(r8, 'Run_SNAPFORCED_Vdeep_gen5'))
+    rc, err = cli(base + ['--stages', 'wide_jobs', '--wide-runs', r8, '--dry-run'])
+    check('dry run: a missing tier run is planned as W-HOST, exit 2', rc == 2 and 'W-HOST' in _LAST_OUT[0]
+          and 'Run_SNAPFORCED_Vdeep_gen5' in _LAST_OUT[0], (rc, _LAST_OUT[0][-300:]))
+    runs8(r8)
+    rc, err = cli(base + ['--stages', 'wide_jobs', '--wide-runs', r8, '--dry-run', '--set',
+                          "forced_wide.AMBIGUOUS_RUNS=(('I','10s'),('V','10s'),('I','1min'))"])
+    check('dry run: AMBIGUOUS_RUNS without a tested run is planned as W-RUNS, exit 2', rc == 2 and 'W-RUNS' in _LAST_OUT[0],
+          (rc, _LAST_OUT[0][-300:]))
+    rc, err = cli(base + ['--stages', 'wide_search', '--wide-cutout-root', '/lustre/pipeline/exopipe/phase3/photometry',
+                          '--dry-run'])
+    check('dry run: a retired cutout root is planned as W-CUTROOT (exit 2), its files never listed (review F6)',
+          rc == 2 and 'W-CUTROOT' in _LAST_OUT[0] and 'cutout files' not in _LAST_OUT[0], (rc, _LAST_OUT[0][-300:]))
+    rc, err = cli(base + ['--stages', 'wide_test', '--workers', '7', '--dry-run'])
+    check('dry run: wide_test with 7 processes is planned as W-WORKERS, exit 2 (review F3)', rc == 2
+          and 'W-WORKERS' in _LAST_OUT[0], (rc, _LAST_OUT[0][-300:]))
+    rc, err = cli(base + ['--stages', 'wide_search', '--dry-run', '--set',
+                          "forced_wide_search.IO_GUARD_LOG='%s'" % os.path.join(TMP, 'no_such_guard.log')])
+    check('dry run: a set but missing I/O-guard log is said in the plan (review F7)', rc == 0 and 'ABSENT' in _LAST_OUT[0],
+          (rc, _LAST_OUT[0][-300:]))
     rc, err = cli(base + ['--stages', 'wide_search'])
     check('cli: wide_search without the jobs record refused (W-RECORD, exit 2)', rc == 2 and 'W-RECORD' in err, err[-300:])
     rc, err = cli(base + ['--stages', 'wide_jobs'], env={'P3_RADIO_CATDIR': '/tmp/x'})
@@ -296,6 +355,15 @@ def test_cli_gates():
     r = rec(out, 'W_test')
     check('cli: W-POOL a job band without its search record refused', rc == 2 and 'W-POOL' in r.get('reason', ''),
           (rc, r.get('reason')))
+    rc, err = cli(base + ['--stages', 'wide_test', '--workers', '7'])
+    check('cli: W-WORKERS wide_test with more than 6 processes refused (review F3)', rc == 2 and 'W-WORKERS' in err, err[-300:])
+    rc, err = cli(base + ['--stages', 'wide_test', '--set', 'forced_wide_test.V2_CTL_DRAW=(0, 1)'])
+    check('cli: a V2_CTL_DRAW that is neither None nor (cap >= 1, seed) refused', rc == 2 and 'V2_CTL_DRAW' in err, err[-300:])
+    with catdir('/tmp/not_the_radio_catalogues'):
+        rc, err = cli(base + ['--stages', 'wide_test'])
+    r = rec(out, 'W_test')
+    check('cli: W-CATDIR wide_test refuses catalogues other than forced_assoc.RADIO_CATDIR (review F4)',
+          rc == 2 and 'W-CATDIR' in r.get('reason', ''), (rc, r.get('reason')))
     # W-PARTIAL / W-RUNDIR / the publication
     res = os.path.join(out, 'results_v3.csv')
     fake_record(out, 'W_test', [(res, 'forced_wide_results')], meta={'partial': True, 'only': ['I:X']})
@@ -325,6 +393,15 @@ def test_publish():
     check('results content test passes a consistent row', all(x['passed'] for x in t), t)
     fake_record(out, 'W_test', [(res, 'forced_wide_results')], meta={'partial': False})
     base = ['forced', '--tier', 'snapshot', '--cores', 'none', '--out', out, '--stages', 'wide_publish']
+    rc, err = cli(base, env={'P3_RADIO_CATDIR': '/tmp/x'})
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    check('cli: W-ENV wide_publish refuses a caller P3_RADIO_CATDIR (review F4)', rc == 2 and 'W-ENV' in r.get('reason', ''),
+          (rc, r.get('reason')))
+    with catdir('/tmp/not_the_radio_catalogues'):
+        rc, err = cli(base)
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    check('cli: W-CATDIR wide_publish refuses catalogues other than forced_assoc.RADIO_CATDIR (review F4)',
+          rc == 2 and 'W-CATDIR' in r.get('reason', ''), (rc, r.get('reason')))
     rc, err = cli(base)
     r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
     check('cli: W-RUNDIR the run directory absent at the review root', rc == 2 and 'W-RUNDIR' in r.get('reason', ''),
@@ -356,6 +433,83 @@ def test_publish():
     r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
     check('cli: W-NAMED a named source not found around its target refuses', rc == 2 and 'W-NAMED' in r.get('reason', ''),
           (rc, r.get('reason')))
+
+
+def test_v2_draw():
+    """v2's control finder: every eligible pair by default; production's capped draw (cap, seed) only when configured"""
+    from exopipe.phase3.lib.forced import wide_v3 as V3
+
+    class FJ:
+        pass
+
+    def fj(center, srcs):
+        j = FJ()
+        j.center, j.srcs, j.very_bright, j.bands = center, srcs, [], {'27MHz'}
+        return j
+    Jx = fj((10.0, 30.0), [])
+    Jx.job = dict(S=[10.05, 30.0], T=[10.0, 30.0], s74=1.0, bands=['27MHz'])
+    pool = []
+    for k in range(3):
+        c0 = (40.0 + 10 * k, 30.0)
+        pool.append(fj(c0, [(c0[0] + dx / 60.0 / math.cos(math.radians(30.0)), c0[1] + dy / 60.0, 1.0, 'S%d' % k)
+                            for dx in range(-50, 51, 10) for dy in range(-50, 51, 10)]))
+    key = lambda e: (pool.index(e[0]), round(e[1][0], 6), round(e[1][1], 6))     # noqa: E731
+    every = [key(e) for e in V3.v2_controls_for(Jx, pool)]
+    check('v2 controls, default: every eligible pair (3 x 121 synthetic sources)', len(every) == 363 and len(set(every)) == 363,
+          len(every))
+    CFG.authorize([], out=TMP)
+    CFG.set('forced_wide_test.V2_CTL_DRAW', '(50, 7)')
+    drawn = [key(e) for e in V3.v2_controls_for(Jx, pool)]
+    want = [every[i] for i in sorted(np.random.default_rng(7).choice(363, 50, replace=False))]
+    check('v2 controls, (cap, seed): production\'s draw - default_rng(seed).choice of cap indices, sorted', drawn == want)
+    CFG.set('forced_wide_test.V2_CTL_DRAW', '(400, 7)')
+    check('v2 controls: a cap above the eligible count draws nothing', [key(e) for e in V3.v2_controls_for(Jx, pool)] == every)
+    for bad in ('(0, 7)', '(5,)', '(5, -1)', "'x'"):
+        try:
+            CFG.set('forced_wide_test.V2_CTL_DRAW', bad)       # the config's own type check refuses a non-tuple
+            V3.v2_draw()
+            ok = False
+        except ValueError:
+            ok = True
+        check('V2_CTL_DRAW %s refused (config type or v2_draw)' % bad, ok)
+    CFG.reset()
+
+
+def test_pool_provenance():
+    """wide_test pools burst files of ONE search: the current jobs.json and the selected cutout generation (review F8)"""
+    import types
+    from exopipe.phase3.core import record as R
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.forced import wide_stages as WS
+    out = os.path.join(TMP, 'pool')
+    os.makedirs(os.path.join(out, 'bursts'), exist_ok=True)
+    jobs = os.path.join(out, 'jobs.json')
+    job = {'stokes': 'I', 'identity': 'X', 'target': 'X', 'sample': 'HWJ', 'T': [10.0, 20.0], 'bands': ['27MHz'], 'bright': []}
+    json.dump({'base': [], 'ext': [job], 'runs': []}, open(jobs, 'w'))
+    npz = os.path.join(out, 'bursts', 'I_X_27MHz.npz')
+    open(npz, 'wb').write(b'x')
+    gen = '/lustre/pipeline/exopipe/phase3/photometry_gen5'
+    c = types.SimpleNamespace(args=types.SimpleNamespace(wide_bursts=None), W=out, cutout_root=gen)
+
+    def search_rec(jobs_fp, root):
+        fake_record(out, 'W_search_I_X', [(npz, 'forced_wide_bursts')], meta={'cutout_root': root},
+                    inputs={os.path.abspath(jobs): jobs_fp})
+
+    def pool():
+        try:
+            return WS.pool_files(c, [job], jobs), ''
+        except Refusal as e:
+            return None, str(e)
+    search_rec(R.fingerprint(jobs), gen)
+    got, why = pool()
+    check('pool: the current jobs.json and the selected generation -> pooled', got and got[0] == {('I', 'X', '27MHz'): npz}, why)
+    search_rec(dict(R.fingerprint(jobs), sha1='0' * 40), gen)
+    got, why = pool()
+    check('pool: a search of another jobs.json refused (W-POOL)', got is None and 'W-POOL' in why and 'jobs.json' in why, why)
+    search_rec(R.fingerprint(jobs), '/lustre/pipeline/exopipe/phase3/photometry_gen6')
+    got, why = pool()
+    check('pool: a search of another cutout generation refused (W-POOL)', got is None and 'W-POOL' in why
+          and 'photometry_gen6' in why, why)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -713,6 +867,8 @@ def main():
         test_families()
         test_cli_gates()
         test_publish()
+        test_v2_draw()
+        test_pool_provenance()
         test_search_functions()
         test_io_yield()
         test_jobs_functions()

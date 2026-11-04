@@ -1608,6 +1608,9 @@ def test_item7_parity_file_keys():
                  'forced_wide_search.FILE_ERRORS'}         # test ported): deterministic orders and the refusal proposed, pending
                                                              # Gregg; production's values in the parity file (docs/specs/
                                                              # forced_wide.md; refactor_reviews_20261103/W_forcedwide_report.md)
+    PROPOSED |= {'forced_wide_test.V2_CTL_DRAW'}           # 2026-11-04 (W review F2; the refactor chat's decision as coordinator):
+                                                             # every eligible v2 control, no random cap; production's (300, seed)
+                                                             # in the parity file, pending Gregg
     path = os.path.join(REPO, 'exopipe', 'phase3', 'parity', 'production_20261013.cfg')
     bad, n = [], 0
     for ln in open(path):

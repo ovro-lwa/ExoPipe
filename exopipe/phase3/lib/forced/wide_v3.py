@@ -29,7 +29,9 @@ zone 1 out, -1 clean):
               BY ... (no cataloged source can make the events). Neither NOT EXPLAINED nor NOT CENTERED names the target as the
               emitter: other causes stay open.
 Every computation is the scripts' own, in their order, with one numpy generator per job (seed SEED): the results do not depend
-on the number of processes. The figures and the review page of the analysis (figs_v3/, forced_wide_page_v3.py) are not ported:
+on the number of processes. One default differs from the approved scripts (PROPOSED; production's value in the parity config):
+v2's centering uses EVERY eligible control pair (forced_wide_test.V2_CTL_DRAW None) where the script drew 300 at random with a
+fixed seed - a draw over a list in pool order, which any change to the job pool re-draws (review F2, 2026-11-04). The figures and the review page of the analysis (figs_v3/, forced_wide_page_v3.py) are not ported:
 nothing of the pipeline reads them."""
 import collections
 import csv
@@ -824,10 +826,23 @@ def v2_controls_for(Jx, jobs_loaded):
             if key not in best or score > best[key][0]:
                 best[key] = (score, (J, (cs[0], cs[1]), Tp, bands, cs[2]))
     out = [v[1] for v in best.values()]
-    if len(out) > c.V2_CTL_MAX:
-        rng = np.random.default_rng(c.SEED)
-        out = [out[i] for i in sorted(rng.choice(len(out), c.V2_CTL_MAX, replace=False))]
+    draw = v2_draw()
+    if draw is not None and len(out) > draw[0]:            # production's capped draw (forced_wide_analyze.py:188-190)
+        rng = np.random.default_rng(draw[1])
+        out = [out[i] for i in sorted(rng.choice(len(out), draw[0], replace=False))]
     return out
+
+
+def v2_draw():
+    """forced_wide_test.V2_CTL_DRAW: None (every eligible control pair) or (cap, seed); anything else raises ValueError (the
+    stage refuses it before any job runs)."""
+    d = tc().V2_CTL_DRAW
+    if d is None:
+        return None
+    if (isinstance(d, (tuple, list)) and len(d) == 2 and all(isinstance(x, int) and not isinstance(x, bool) for x in d)
+            and d[0] >= 1 and d[1] >= 0):
+        return int(d[0]), int(d[1])
+    raise ValueError('forced_wide_test.V2_CTL_DRAW %r: None (every eligible control) or (cap >= 1, seed >= 0)' % (d,))
 
 
 def v2_verdict(t, err, ncell, ctl):

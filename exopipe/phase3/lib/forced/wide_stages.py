@@ -4,9 +4,9 @@
 docs/specs/forced_wide.md. Campaign stages (no per-hour form), named only (never a default), one family per invocation.
 
 Family W. --out = the work root W (default forced_wide.WORK_ROOT); records W/_records/forced/W_*.json.
-  wide_jobs     unit W_jobs: the jobs of the four forced runs (forced_wide.RUNS under --wide-runs, default the served runs in
-                paths.SNAPSHOT_REVIEW_ROOT) -> W/jobs.json (forced_wide_jobs) and the runs' forced events -> W/events.csv
-                (forced_wide_events). --wide-jobs FILE[,FILE] adopts job lists the analysis wrote (forced_wide_jobs.py
+  wide_jobs     unit W_jobs: the jobs of the four tested forced runs (forced_wide.RUNS under --wide-runs, default the served
+                runs in paths.SNAPSHOT_REVIEW_ROOT; the ambiguous list from the queues of all eight, forced_wide.AMBIGUOUS_RUNS)
+                -> W/jobs.json (forced_wide_jobs) and the tested runs' forced events -> W/events.csv (forced_wide_events). --wide-jobs FILE[,FILE] adopts job lists the analysis wrote (forced_wide_jobs.py
                 jobs.json, v3 jobs_ext.json) instead of selecting (a replay; recorded).
   wide_search   unit W_search_<S>_<identity> per job: the burst search of each band on the cutouts (--wide-cutout-root, default
                 photometry.CUTOUT_ROOT) -> W/bursts/<S>_<identity>_<band>.npz (forced_wide_bursts), a pool of at most
@@ -27,14 +27,18 @@ Family N. --out = night_activity.OUT_ROOT by default (where the figure reads).
 Gates (exit 2, the gate named in the record): W-FAMILY (stages of two families, a W/N stage with --epochs, --cells or a family-C
 flag), W-ENV (a switch of forced_wide.ENV_FORBIDDEN set in the caller environment), W-HOST (a run or the review root node-local
 to another host), W-CATDIR (the radio catalogues the in-place association module reads are not forced_assoc.RADIO_CATDIR),
-W-TARGETS (build_targets refused: a listed target missing from its list), W-EVENTS (a forced event read twice with different
-values), W-RECORD (no done record of the previous stage), W-WORKERS (more than MAX_WORKERS processes), W-CUTROOT (the cutout root
-absent or a retired generation), W-NOCUT (a band without a cutout directory: item refusal), W-FILE (a cutout raised, FILE_ERRORS
-'refuse': item refusal), W-POOL (a job's band without its done search / burst file, or a burst file failing its test), W-PARTIAL
-(publishing a partial test), W-NAMED (a named source not found around its target), W-RUNDIR (the run directory absent at the
-review root), W-ROOT (a production review root while paths.PRODUCTION_WRITES is False), N-INPUT (input columns missing, or rows
-of another Stokes or tier than night_activity.STOKES / TIER). A failing content test refuses its unit. --dry-run prints the plan
-and writes nothing. The INJECTED-RUN GUARD (core/injected.py) covers the families' flags: an injected run's --snap-review-root
+W-TARGETS (build_targets refused: a listed target missing from its list), W-RUNS (forced_wide.AMBIGUOUS_RUNS lacks a tested
+run), W-EVENTS (a forced event read twice with different values), W-RECORD (no done record of the previous stage), W-WORKERS
+(more processes than forced_wide_search / forced_wide_test MAX_WORKERS), W-CUTROOT (the cutout root absent or a retired
+generation), W-NOCUT (a band without a cutout directory: item refusal), W-FILE (a cutout raised, FILE_ERRORS 'refuse': item
+refusal), W-POOL (a job's band without its done search / burst file, a burst file failing its test, a search of another
+jobs.json or of another cutout generation), W-PARTIAL (publishing a partial test), W-NAMED (a named source not found around its
+target), W-RUNDIR (the run directory absent at the review root), W-ROOT (a production review root while
+paths.PRODUCTION_WRITES is False), N-INPUT (input columns missing, or rows of another Stokes or tier than night_activity.STOKES /
+TIER). W-ENV and W-CATDIR run in every stage that reads the radio catalogues (wide_jobs, wide_test, wide_publish; W-ENV in
+wide_search too). A failing content test refuses its unit. --dry-run prints the plan and writes nothing; it exits 2 when the
+plan names a gate the real run would hit (W-HOST, W-RUNS, W-WORKERS, W-CUTROOT). A W_search unit with a refused band (W-FILE,
+W-NOCUT) ends done, so --resume keeps it and wide_test refuses W-POOL until wide_search runs again without --resume. The INJECTED-RUN GUARD (core/injected.py) covers the families' flags: an injected run's --snap-review-root
 must be scratch, and an ordinary run refuses a --wide-runs / --wide-jobs / --wide-cutout-root / --wide-bursts / --na-detections
 source under an injected run."""
 import hashlib
@@ -102,6 +106,10 @@ def run(args, run, fam, stages):
               '; only %s' % ','.join('%s:%s' % x for x in sorted(c.only)) if c.only else ''))
     for st in stages:
         STAGE_FN[st](c)
+    if c.dry and c.would_refuse:            # the plan named a gate the real run would hit: the dry run exits 2 as well
+        print('dry run: %d gate(s) would refuse: %s' % (len(c.would_refuse), '; '.join(c.would_refuse)[:800]), flush=True)
+        from exopipe.phase3.core.record import EXIT_REFUSED
+        return EXIT_REFUSED
     return None
 
 
@@ -132,6 +140,23 @@ def gate_env():
     if bad:
         raise Refusal('W-ENV the caller environment sets %s: the in-place modules would read it (the stage passes its roots '
                       'as arguments); unset it' % ', '.join('%s=%s' % (v, os.environ[v]) for v in bad))
+
+
+def gate_catdir(cfg):
+    """W-CATDIR: the radio catalogues the in-place association module reads (snapshot_forced_assoc.CATDIR = $P3_RADIO_CATDIR
+    or its default, fixed at its import) are forced_assoc.RADIO_CATDIR. Returns the module."""
+    from exopipe.phase3.lib.forced import wide_jobs as WJ
+    fa = WJ.FA()
+    if os.path.realpath(fa.CATDIR) != os.path.realpath(cfg.forced_assoc.RADIO_CATDIR):
+        raise Refusal('W-CATDIR snapshot_forced_assoc reads the radio catalogues from %s, not forced_assoc.RADIO_CATDIR %s'
+                      % (fa.CATDIR, cfg.forced_assoc.RADIO_CATDIR))
+    return fa
+
+
+def catalogue_inputs(u, fa):
+    """The radio catalogue files (pinned, sha256-checked by the module) as inputs of a unit that reads them."""
+    for fn in sorted(fa.FILES.values()):
+        u.add_input(os.path.join(fa.CATDIR, fn))
 
 
 def parse_only(text):
@@ -168,7 +193,9 @@ class WCtx:
         self.dry = run.dry_run
         self.W = os.path.abspath(run.out_root)
         self.runs_root = os.path.abspath(args.wide_runs or cfg.paths.SNAPSHOT_REVIEW_ROOT)
-        self.runs = WJ.run_dirs(self.runs_root)
+        self.runs = WJ.run_dirs(self.runs_root)                              # the tested runs (forced_wide.RUNS)
+        self.amb_runs = WJ.run_dirs(self.runs_root, self.w.AMBIGUOUS_RUNS)    # the queues of the ambiguous list
+        self.would_refuse = []           # gates a dry run's plan names (the dry run then exits 2)
         self.cutout_root = os.path.abspath(args.wide_cutout_root or cfg.photometry.CUTOUT_ROOT)
         if args.out:
             rr = args.snap_review_root or os.path.join(self.W, cfg.forced_snapshot.REVIEW_SUBDIR_UNDER_OUT)
@@ -211,33 +238,41 @@ def stage_jobs(c):
            % ('ADOPT the job lists %s' % ','.join(adopt) if adopt else 'select the jobs', ', '.join(r[3] for r in c.runs),
               c.w.EVENT_ORDER, c.w.TARGET_MEMBER, c.jobs_path, c.events_path))
     if c.dry:
-        for _lb, st, _cad, d in c.runs:
+        tested = {r[3] for r in c.runs}
+        for _lb, st, _cad, d in c.amb_runs:
             h = K.host_of(d)
             if h and h != K.hostname():
                 state = 'node-local on %s (this is %s): W-HOST refuses' % (h, K.hostname())
+                c.would_refuse.append('W-HOST %s' % d)
+            elif os.path.isdir(d):
+                state = 'found'
             else:
-                state = 'found' if os.path.isdir(d) else 'NOT FOUND (refused)'
-            K.plan('[wide_jobs]   run %s: %s' % (d, state))
+                state = 'NOT FOUND: W-HOST refuses'
+                c.would_refuse.append('W-HOST %s not found' % d)
+            K.plan('[wide_jobs]   run %s (%s): %s' % (d, 'tested' if d in tested else 'its queue only', state))
+        if not set(c.w.RUNS) <= set(c.w.AMBIGUOUS_RUNS):
+            K.plan('[wide_jobs]   W-RUNS forced_wide.AMBIGUOUS_RUNS lacks a tested run: refused')
+            c.would_refuse.append('W-RUNS')
         return
     if K.resumed(c.run, name, None, tier='snapshot', stage='wide_jobs', family='W'):
         return
     with c.run.unit(name, tier='snapshot', stage='wide_jobs', family='W', runs=[r[3] for r in c.runs],
-                    event_order=c.w.EVENT_ORDER, target_member=c.w.TARGET_MEMBER, adopted=adopt) as u:
+                    ambiguous_runs=[r[3] for r in c.amb_runs], event_order=c.w.EVENT_ORDER, target_member=c.w.TARGET_MEMBER,
+                    adopted=adopt) as u:
         gate_env()
-        for _lb, st, _cad, d in c.runs:
+        if not set(c.w.RUNS) <= set(c.w.AMBIGUOUS_RUNS):
+            u.refuse('W-RUNS forced_wide.AMBIGUOUS_RUNS %s lacks a tested run of forced_wide.RUNS %s: its queue would give no '
+                     'base job' % (c.w.AMBIGUOUS_RUNS, c.w.RUNS))
+        for _lb, st, _cad, d in (c.amb_runs if not adopt else c.runs):
             try:
                 K.require_host(d, 'forced run')
             except Refusal as e:
                 raise Refusal('W-HOST %s' % e)
-        fa = WJ.FA()
-        if os.path.realpath(fa.CATDIR) != os.path.realpath(c.cfg.forced_assoc.RADIO_CATDIR):
-            u.refuse('W-CATDIR snapshot_forced_assoc reads the radio catalogues from %s, not forced_assoc.RADIO_CATDIR %s'
-                     % (fa.CATDIR, c.cfg.forced_assoc.RADIO_CATDIR))
-        for _lb, st, _cad, d in c.runs:
+        fa = gate_catdir(c.cfg)
+        for _lb, st, _cad, d in (c.amb_runs if not adopt else c.runs):
             for p in WJ.run_inputs(d, st):
                 u.add_input(p)
-        for fn in sorted(fa.FILES.values()):
-            u.add_input(os.path.join(fa.CATDIR, fn))
+        catalogue_inputs(u, fa)
         for fn in c.cfg.forced.SAMPLE_FILES.values():
             u.add_input(os.path.join(c.cfg.paths.CLV15_ROOT, fn))
         bad = WJ.event_conflicts(c.runs)
@@ -252,7 +287,7 @@ def stage_jobs(c):
             amb = []
         else:
             try:
-                base, ext, amb = WJ.build_jobs(c.runs, log=notes.append)
+                base, ext, amb = WJ.build_jobs(c.runs, c.amb_runs, log=notes.append)
             except SystemExit as e:              # build_targets: 'REFUSING: ... is not in the current ... list'
                 u.refuse('W-TARGETS snapshot_forced_assoc.build_targets: %s' % e)
         for n in notes:
@@ -295,13 +330,30 @@ def _jobs_planned(c):
     return None
 
 
+def guard_state(c):
+    """The I/O guard as the plan states it: off, the log, or the log ABSENT (no yield; noted in every search unit)."""
+    g = c.ws.IO_GUARD_LOG
+    if not g:
+        return 'off'
+    return g if os.path.exists(g) else '%s ABSENT (the search will not yield to the recorders; noted in every unit)' % g
+
+
 def stage_search(c):
     from exopipe.phase3.lib.forced import wide_jobs as WJ
     from exopipe.phase3.lib.forced import wide_search as WS
     workers = c.args.workers or c.ws.WORKERS
     K.plan('[wide_search] bursts of every job band in %s -> %s/<S>_<identity>_<band>.npz; %d processes (max %d); I/O guard %s'
-           % (c.cutout_root, c.bursts, workers, c.ws.MAX_WORKERS, c.ws.IO_GUARD_LOG or 'off'))
+           % (c.cutout_root, c.bursts, workers, c.ws.MAX_WORKERS, guard_state(c)))
     if c.dry:
+        if workers > c.ws.MAX_WORKERS:
+            K.plan('[wide_search]   W-WORKERS %d processes > %d: refused' % (workers, c.ws.MAX_WORKERS))
+            c.would_refuse.append('W-WORKERS wide_search %d > %d' % (workers, c.ws.MAX_WORKERS))
+        try:
+            gate_cutout_root(c)
+        except Refusal as e:             # a retired or absent generation: refused, nothing of it is listed (review F6)
+            K.plan('[wide_search]   %s: refused' % e)
+            c.would_refuse.append(str(e).split(' ', 1)[0] + ' ' + c.cutout_root)
+            return
         jobs = _jobs_planned(c)
         if jobs is None:
             K.plan('[wide_search]   the jobs come from wide_jobs (no %s yet)' % c.jobs_path)
@@ -315,8 +367,6 @@ def stage_search(c):
                 if d is None:
                     K.plan('[wide_search]   %s %s: NO cutout directory (W-NOCUT)' % (search_unit(j), b))
         K.plan('[wide_search]   %d jobs, %d band units, %d cutout files' % (len(jobs), sum(len(j['bands']) for j in jobs), nf))
-        if workers > c.ws.MAX_WORKERS:
-            K.plan('[wide_search]   W-WORKERS %d processes > %d: refused' % (workers, c.ws.MAX_WORKERS))
         return
     _rec, jobs_path, _ev = c.jobs_record()
     jobs = [j for j in WJ.all_jobs(WJ.load_jobs(jobs_path)) if selected(j, c.only)]
@@ -333,6 +383,7 @@ def stage_search(c):
     # in the workers only: wide_search.eval_mod)
     for m in ('snapshot_forced_eval', 'phase3_snapshot_search', 'phase3_tier_rules', 'phase3_snapshot_astro'):
         WJ.inplace(m)
+    c.tier_rule3_pin = getattr(WJ.inplace('phase3_tier_rules'), 'DEEP_SEARCH_PIN', None)   # tier rule 3's frozen pin (an input)
     todo = [j for j in jobs if not K.resumed(c.run, search_unit(j), None, tier='snapshot', stage='wide_search', family='W')]
     if not todo:
         return
@@ -366,6 +417,11 @@ def search_job(c, job, pending, stage, jobs_path):
                     bands=list(job['bands']), cutout_root=c.cutout_root, file_errors=c.ws.FILE_ERRORS) as u:
         u.add_input(jobs_path)
         u.add_input(c.cfg.paths.DATA_DECISIONS)
+        if getattr(c, 'tier_rule3_pin', None) and os.path.exists(c.tier_rule3_pin):
+            u.add_input(c.tier_rule3_pin)
+        if c.ws.IO_GUARD_LOG and not os.path.exists(c.ws.IO_GUARD_LOG):
+            u.note('the I/O guard log %s (forced_wide_search.IO_GUARD_LOG) is absent: this unit read its cutouts without yielding '
+                   'to the recorders' % c.ws.IO_GUARD_LOG)
         os.makedirs(c.bursts, exist_ok=True)
         nights, inputs, per_band = set(), set(), {}
         for b in job['bands']:
@@ -408,11 +464,15 @@ def search_job(c, job, pending, stage, jobs_path):
 # wide_test
 # ---------------------------------------------------------------------------------------------------------------------
 
-def pool_files(c, jobs):
+def pool_files(c, jobs, jobs_path=None):
     """{(S, identity, band): npz path} of every job band - from --wide-bursts DIR, else this root's done W_search records
-    (refuses W-POOL naming what is missing)."""
+    (refuses W-POOL naming what is missing). Pooled from records, every file must come from ONE search: each record's jobs.json
+    is the current one (same fingerprint) and its cutout root is the selected generation (--wide-cutout-root or
+    photometry.CUTOUT_ROOT) - a search of another generation or of other jobs is refused, never pooled (review F8)."""
+    from exopipe.phase3.core import record as R
     from exopipe.phase3.lib.forced import wide_search as WS
-    out, missing = {}, []
+    out, missing, stale, roots = {}, [], [], {}
+    jfp = R.fingerprint(jobs_path) if jobs_path else None
     for j in jobs:
         if c.args.wide_bursts:
             for b in j['bands']:
@@ -427,6 +487,12 @@ def pool_files(c, jobs):
         except Refusal as e:
             missing.append(str(e))
             continue
+        if jfp is not None:
+            fp = (rec.get('inputs') or {}).get(os.path.abspath(jobs_path))
+            if fp is None or not R.same_fingerprint(fp, jfp):
+                stale.append(search_unit(j))
+        root = (rec.get('meta') or {}).get('cutout_root')
+        roots.setdefault(root, []).append(search_unit(j))
         have = {os.path.basename(p): p for p in K.outputs_of(rec, 'forced_wide_bursts')}
         for b in j['bands']:
             p = have.get(WS.npz_name(j, b))
@@ -437,6 +503,14 @@ def pool_files(c, jobs):
     if missing:
         raise Refusal('W-POOL %d job band(s) without a burst file: the v3 pools every job of a Stokes, e.g. %s'
                       % (len(missing), '; '.join(missing[:4])))
+    if stale:
+        raise Refusal('W-POOL %d search unit(s) searched another jobs.json than the current %s (re-run wide_search for them), '
+                      'e.g. %s' % (len(stale), jobs_path, ', '.join(stale[:4])))
+    other = {r: u for r, u in roots.items() if os.path.abspath(r or '') != c.cutout_root}
+    if other:
+        raise Refusal('W-POOL search unit(s) of another cutout generation than %s: %s'
+                      % (c.cutout_root, '; '.join('%s (%d units, e.g. %s)' % (r, len(u), u[0]) for r, u in sorted(
+                          other.items(), key=lambda kv: str(kv[0])))))
     dirs = {os.path.dirname(p) for p in out.values()}
     if len(dirs) != 1:
         raise Refusal('W-POOL the burst files lie in %d directories (%s): the analysis reads one' % (len(dirs), sorted(dirs)[:3]))
@@ -449,21 +523,38 @@ def stage_test(c):
     from exopipe.phase3.core import validate
     name = 'W_test'
     workers = c.args.workers or c.wt.WORKERS
-    K.plan('[wide_test] the v3 analysis of every job (bursts %s) -> %s, %s; %d processes%s'
-           % (c.args.wide_bursts or c.bursts, c.results, c.candidates, workers,
+    K.plan('[wide_test] the v3 analysis of every job (bursts %s) -> %s, %s; %d processes (max %d); v2 controls %s%s'
+           % (c.args.wide_bursts or c.bursts, c.results, c.candidates, workers, c.wt.MAX_WORKERS,
+              'every eligible pair' if c.wt.V2_CTL_DRAW is None else 'a draw of %s' % (c.wt.V2_CTL_DRAW,),
               '; PARTIAL (--wide-only)' if c.only else ''))
     if c.dry:
+        if workers > c.wt.MAX_WORKERS:
+            K.plan('[wide_test]   W-WORKERS %d processes > %d: refused' % (workers, c.wt.MAX_WORKERS))
+            c.would_refuse.append('W-WORKERS wide_test %d > %d' % (workers, c.wt.MAX_WORKERS))
         return
+    if workers > c.wt.MAX_WORKERS:
+        raise Refusal('W-WORKERS %d processes > forced_wide_test.MAX_WORKERS %d (the test\'s workers read the Lustre burst '
+                      'files; Lustre reads yield to the recorders)' % (workers, c.wt.MAX_WORKERS))
+    try:
+        V3.v2_draw()
+    except ValueError as e:
+        raise Refusal(str(e))
     if K.resumed(c.run, name, None, tier='snapshot', stage='wide_test', family='W'):
         return
     with c.run.unit(name, tier='snapshot', stage='wide_test', family='W', partial=bool(c.only),
-                    only=sorted('%s:%s' % x for x in c.only), bursts=c.args.wide_bursts or c.bursts, workers=workers) as u:
+                    only=sorted('%s:%s' % x for x in c.only), bursts=c.args.wide_bursts or c.bursts, workers=workers,
+                    v2_ctl_draw=c.wt.V2_CTL_DRAW, cutout_root=c.cutout_root) as u:
         gate_env()
+        fa = gate_catdir(c.cfg)
         _rec, jobs_path, events_path = c.jobs_record()
         u.add_input(jobs_path)
         u.add_input(events_path)
+        catalogue_inputs(u, fa)
         jobs = WJ.all_jobs(WJ.load_jobs(jobs_path))
-        files, bdir = pool_files(c, jobs)
+        files, bdir = pool_files(c, jobs, jobs_path)
+        if c.args.wide_bursts:
+            u.note('burst files from --wide-bursts %s: their provenance (jobs, cutout root) is not recorded; each file is '
+                   'content-tested here' % c.args.wide_bursts)
         for (st, ident, b), p in sorted(files.items()):
             if c.args.wide_bursts:
                 bad = [t for t in validate.run('forced_wide_bursts', p, stokes=st, identity=ident, band=b) if not t['passed']]
@@ -518,6 +609,9 @@ def stage_publish(c):
         if K.resumed(c.run, name, None, tier='snapshot', stage='wide_publish', family='W'):
             continue
         with c.run.unit(name, tier='snapshot', stage='wide_publish', family='W', stokes=st, cadence=cad, run=D) as u:
+            gate_env()                  # named_radec reads the radio catalogues (review F4)
+            fa = gate_catdir(c.cfg)
+            catalogue_inputs(u, fa)
             try:
                 rec = K.load_done(c.W, STEP, 'W_test', 'the v3 analysis (wide_test)')
             except Refusal as e:

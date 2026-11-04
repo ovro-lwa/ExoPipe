@@ -51,7 +51,8 @@ What the flag does (cli calls begin() before the step runs):
      resume_check never adopts across the injected / ordinary line - and every SOURCE flag naming another run's products
      under one (SOURCE_FLAGS: serve --source / --carry-from, archive --attempt / --staging-root / --workdir, install --gen /
      --rebuild-root, pages --from-run, search --replay-attempt, photometry --src-run / --cutout-root / --stage1, forced
-     --deep-eval-run, catalog --inc-source run: / --omit-runs (each run of its comma list or @FILE, a bare name under
+     --deep-eval-run / --wide-runs / --wide-jobs (each file of its comma list) / --wide-cutout-root / --wide-bursts /
+     --na-detections, catalog --inc-source run: / --omit-runs (each run of its comma list or @FILE, a bare name under
      paths.SNAPSHOT_REVIEW_ROOT, as the deep-omission stage reads it) / --omit-refusals, calibrate --served-run; a source on
      another host is checked over ssh).
 

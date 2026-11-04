@@ -199,7 +199,8 @@ class forced_assoc(_Section):
 
 # =====================================================================================================================
 # FAMILY W - THE FORCED TARGETS' WIDE-AREA BURST TEST (v3), and FAMILY N - THE NIGHT-ACTIVITY TABLE: the two inputs of the
-# astrometry figure v2 (exopipe_ops source_astrometry_panel_v2.py, astrometry_assoc.py; live 2026-11-03 for the forced runs of
+# astrometry figure v2 (exopipe_ops source_astrometry_panel.py - v2 since 7e6904a, 2026-11-04; source_astrometry_panel_v2.py
+# is its alias - and astrometry_assoc.py; live 2026-11-03 for the forced runs of
 # every tier and the deep tier) that analysis scripts made (phase3/refactor_analysis/review_items_20261031/forced_wide/ and
 # figure_v2/night_activity_build.py). Ported, not run in place: the analysis directory is not a production tree. The in-place
 # production modules the method calls (the forced evaluation's gates snapshot_forced_eval, the snapshot search's time and
@@ -220,10 +221,17 @@ class forced_wide(_Section):
     # ---- inputs: the forced runs (generation 5, served 2026-10-26: hub p8785 I 10 s, p8786 V 10 s, p8776 I 1 min, p8775 V 1 min)
     #      under paths.SNAPSHOT_REVIEW_ROOT (lwacalim07's /data07); --wide-runs DIR reads a copy holding the same run names
     RUN_NAME = 'Run_SNAPFORCED_{S}{cadence}_gen5'
-    # (Stokes, cadence) of the runs, in the order the job list reads them (forced_ambiguous.py: I10s, V10s, I1min, V1min; a
-    # target's first row wins, so the order is part of the result). The 10-minute and 1-hour forced runs have no wide test:
-    # their events are not single-frame bursts (forced_wide_jobs.py:72, jobs_ext.py:12)
+    # (Stokes, cadence) of the runs TESTED - their events, their base jobs, the publication - in the order the job list reads them
+    # (forced_ambiguous.py: I10s, V10s, I1min, V1min; a target's first row wins, so the order is part of the result). The
+    # 10-minute and 1-hour forced runs have no wide test: their events are not single-frame bursts (forced_wide_jobs.py:72,
+    # jobs_ext.py:12)
     RUNS = (('I', '10s'), ('V', '10s'), ('I', '1min'), ('V', '1min'))
+    # the runs whose QUEUES give the ambiguous list (forced_ambiguous.py:28: all eight forced runs, this order): the extension jobs
+    # take a (Stokes, identity)'s first row from all of them (jobs_ext.py:18-19), so a target with 10-s / 1-min events that only a
+    # 10-minute or 1-hour run lists is found too; the base jobs keep the RUNS' rows (forced_wide_jobs.py:69). On gen5 the four
+    # tier runs add no job (review F9, 2026-11-04: 55 (Stokes, identity) only in their rows, none with 10-s / 1-min events)
+    AMBIGUOUS_RUNS = (('I', '10s'), ('V', '10s'), ('I', '1min'), ('V', '1min'), ('I', '10min'), ('V', '10min'), ('I', 'deep'),
+                      ('V', 'deep'))
     # the cutouts searched: photometry.CUTOUT_ROOT (the served generation - one source of truth); --wide-cutout-root overrides
     CUTOUT_GLOB = '*_??h_????????T??????_{S}.fits'   # the per-cell 10-s cutouts of an object (not _10min_ / _deep_);
                                                  # forced_wide_search.py:251
@@ -234,7 +242,7 @@ class forced_wide(_Section):
     BURSTS_DIR = 'bursts'                        # wide_search: <BURSTS_DIR>/<S>_<identity>_<band>.npz
     RESULTS = 'results_v3.csv'                   # wide_test: one row per Stokes x tier x target (forced_wide_v3.py:60)
     CANDIDATES = 'candidates_v3.csv'             # wide_test: one row per tested candidate
-    # the file each forced run carries and the figure reads (source_astrometry_panel_v2.load:118, its literal)
+    # the file each forced run carries and the figure reads (source_astrometry_panel.load:119, its literal)
     PUBLISHED = 'forced_wide_v3.csv'
     # ---- THE JOBS (forced_ambiguous.py 2026-11-01, forced_wide_jobs.py, v3/jobs_ext.py)
     # AMBIGUOUS: the nearest cataloged background source (VLSSr / TGSS / GLEAM entry, S74 >= AMB_MIN_S74_JY) within
@@ -256,15 +264,16 @@ class forced_wide(_Section):
     EXT_MIN_S74_JY = 3.0
     EXT_RADIUS_FWHM = 2.0
     GROUP_ARCMIN = 1.5                           # catalog entries within this are one physical source (forced_wide_jobs.py:30)
-    # A MERGED identity (several list targets within forced_snapshot.MERGE_ARCMIN; 26 in the four gen5 runs) takes the list
-    # position of ONE member: 'identity' = the member the identity is named after, else the first in (sample, target) order -
-    # the same on any copy of the runs, and the target the searched cutouts are centered on (they are the identity's own:
-    # TARGRA/TARGDEC = that member's position); 'first' = production (forced_ambiguous.py:40 next(iter(...))): the first member
-    # in snapshot_forced_assoc.build_targets' order, the glob order of the run tree on its file system (/data07 for the served
-    # runs; a Lustre copy lists in another order). On gen5 'first' centered 6 of 205 jobs 0.1-0.4' off their cutouts' target (two
-    # identities swapped); 'identity' changes one verdict through the pooled controls (Struve 2398 A, I 1 min: v2's centering
-    # power - z 3.12 -> 2.89 against 3; BACKGROUND SOURCE -> NOT CENTERED ON THE TARGET (source not identified)).
-    # PROPOSED (refactor 2026-11-03): production's value is in the parity config
+    # A MERGED identity (several list targets within forced_snapshot.MERGE_ARCMIN; 26 rows, 21 distinct (Stokes, identity) in the
+    # four gen5 runs) takes the list position of ONE member: 'identity' = the member the identity is named after, else the first in
+    # (sample, target) order - the same on any copy of the runs, and exactly the point the searched cutouts are centered on (they
+    # are the identity's own: TARGRA/TARGDEC = that member's position, in every cutout, to 0.00"); 'first' = production
+    # (forced_ambiguous.py:40 next(iter(...))): the first member in snapshot_forced_assoc.build_targets' order, the glob order of
+    # the run tree on its file system (/data07 for the served runs; a Lustre copy lists in another order). On gen5 'first' put 6 of
+    # 205 jobs 7.30-32.19" (0.12-0.54') off their cutouts' TARGRA/TARGDEC - at most 0.05 of the frame FWHM - and swapped two
+    # identities' positions. The member choice leaves the tests' statistics unchanged: the one gen5 verdict that moved with it
+    # (Struve 2398 A, I 1 min) moved because the job change re-indexed one control of v2's capped random draw (V2_CTL_DRAW; review
+    # F2, 2026-11-04). PROPOSED (refactor 2026-11-03): production's value is in the parity config
     TARGET_MEMBER = 'identity'
     # the order the forced events are read in, which is the order the analysis meets - and so LISTS and SUMS - a target's bands
     # (a candidate's bands_far / bands_near, the taper sums): 'sorted' = by directory name (frequency order), the same on any
@@ -312,7 +321,7 @@ class forced_wide_search(_Section):
     # the recorders' I/O guard (exopipe_ops io_guard_20261023.sh): before each cutout read a worker waits while the latest
     # guard round has a node above IO_GUARD_MAX_S, until the last two rounds are both at or below it (the rule of
     # forced_wide/yield_forced_wide.sh, cooperative: no signals, no process matching); polled every IO_GUARD_POLL_S. None = no
-    # yield (a missing log = no yield, noted)
+    # yield; a set but missing log = no yield, said in the plan and noted in every search unit's record
     IO_GUARD_LOG = '/lustre/gh/main/exopipe_ops/io_guard_20261023.log'
     IO_GUARD_MAX_S = 4.0
     IO_GUARD_POLL_S = 20
@@ -409,9 +418,10 @@ class forced_wide_test(_Section):
     # midpoint (controls placed with V2_K_MAX); per-detection weights 1 / sigma^2, sigma = V2_SYS_ARCSEC x
     # (nu / V2_SYS_REF_MHZ)^V2_SYS_INDEX (+) V2_STAT_FWHM x FWHM; pooled controls of V2_CTL_FLUX x S (>= V2_CTL_MIN_JY), their
     # region inside their cutout (V2_CUT_MARGIN_ARCMIN), clear of the target's region, no source above V2_CTL_BRIGHTER x C in it,
-    # none within V2_VERY_BRIGHT_DEG of a >= V2_VERY_BRIGHT_JY source, one per cell of 1 / V2_KEY_PER_DEG deg, at most V2_CTL_MAX
-    # (seed SEED); a verdict needs >= V2_MIN_NIGHTS nights and >= V2_CTL_MIN_N controls of >= V2_CTL_MIN_CELLS nights; power
-    # >= V2_POWER_MIN, then z < V2_Z_BG and power - z >= V2_D_TG -> BACKGROUND SOURCE, z >= V2_Z_NOT -> NOT THE BACKGROUND SOURCE
+    # none within V2_VERY_BRIGHT_DEG of a >= V2_VERY_BRIGHT_JY source, one per cell of 1 / V2_KEY_PER_DEG deg, every one of them or
+    # a capped draw (V2_CTL_DRAW); a verdict needs >= V2_MIN_NIGHTS nights and >= V2_CTL_MIN_N controls of >= V2_CTL_MIN_CELLS
+    # nights; power >= V2_POWER_MIN, then z < V2_Z_BG and power - z >= V2_D_TG -> BACKGROUND SOURCE, z >= V2_Z_NOT -> NOT THE
+    # BACKGROUND SOURCE
     V2_K = 0.35
     V2_K_MAX = 0.5
     V2_SYS_ARCSEC = 130.0                        # the pulsar-measured 10-s systematic at V2_SYS_REF_MHZ (v2 :11)
@@ -428,7 +438,14 @@ class forced_wide_test(_Section):
     V2_SRC_PAD_ARCMIN = 2.0                      # a job's sources: within CUT_HALF_ARCMIN + this (>= 0.25 Jy)
     V2_VERY_BRIGHT_PAD_ARCMIN = 62.0             # and its very bright ones within CUT_HALF_ARCMIN + this
     V2_KEY_PER_DEG = 40
-    V2_CTL_MAX = 300
+    # v2's CONTROL DRAW. None = EVERY eligible control pair: the refactor chat's decision as coordinator, 2026-11-04 ("use ALL
+    # eligible controls, with no random cap. The cap was a speed convenience, and it makes knife-edge verdicts depend on sampling
+    # noise"), a change to the approved method - PROPOSED to Gregg. (cap, seed) = at most cap pairs, drawn with numpy
+    # default_rng(seed) when more are eligible: production (forced_wide_analyze.py CTL_MAX = 300, default_rng(20261102); the
+    # parity config). The draw takes indices of a list in pool order, so ANY change to the job pool re-draws it - review F2: one
+    # control re-indexed by the member change moved 44 of production's 300 for Struve 2398 A (I, 1 min), whose call is BACKGROUND
+    # SOURCE in 55% of 2,000 random draws of 300; with all 476 eligible pairs power - z = 3.003 under both member rules
+    V2_CTL_DRAW = None
     V2_CTL_MIN_CELLS = 3
     V2_CTL_MIN_N = 10
     V2_MIN_NIGHTS = 5
@@ -437,9 +454,13 @@ class forced_wide_test(_Section):
     V2_D_TG = 3.0
     V2_Z_NOT = 3.0
     WORKERS = 6                                  # processes (fork; outputs identical for any number: one generator per job)
+    # at most this many processes (W-WORKERS): the test's workers read the Lustre burst files (each near candidate's centering
+    # loads its job's npz), and Lustre reads yield to the recorders - as forced_wide_search.MAX_WORKERS (review F3)
+    MAX_WORKERS = 6
     # wide_publish: each named source's position, the source of that name among the physical sources (>= S_MIN_JY) within
     # this of the target (publish_v3_to_runs.py:16-27); a name not found refuses the publication (W-NAMED)
     NAMED_RADIUS_ARCMIN = 200.0
+    NULLABLE_KEYS = ('V2_CTL_DRAW',)
 
 
 class night_activity(_Section):
