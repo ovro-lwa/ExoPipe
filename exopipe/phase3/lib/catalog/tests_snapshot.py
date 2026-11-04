@@ -107,6 +107,18 @@ def run_checks(run):
     for p in glob.glob(os.path.join(run, 'source_catalogs', '*_sources_survivors.csv')):
         for r in csv.DictReader(open(p)):
             union.setdefault(r.get('stokes', ''), set()).add(r['source_id'])
+    # PER-TIER PAGES (clv15 82792d5, 2026-10-18, under Gregg 2026-10-17 'four independent tiers'): an identity the chain serves
+    # that QUALIFIES IN NO TIER (served_tiers.csv: chain_outcome served, qualifies 0 in every tier row - its seed is in the other
+    # tier) is dropped from the per-Stokes views and the tier pages, recorded there; it is the only union row a view may lack
+    notier = set()
+    stp = os.path.join(run, 'served_tiers.csv')
+    if os.path.exists(stp):
+        q = {}
+        for r in csv.DictReader(open(stp, newline='')):
+            if r.get('chain_outcome') == 'served':
+                q.setdefault(r.get('identity_jname', ''), []).append(r.get('qualifies'))
+        notier = {j for j, v in q.items() if v and all(x == '0' for x in v)}
+    n_notier = 0
     for st in ('V', 'I'):
         view = set()
         for p in glob.glob(os.path.join(run, 'source_catalogs_%s' % st, '*_sources_survivors.csv')):
@@ -117,11 +129,14 @@ def run_checks(run):
         # Run_SNAPB1R: 139 of 396 V-view identities have an I union row)
         allu = set().union(*union.values()) if union else set()
         miss, orphan = union.get(st, set()) - view, view - allu
+        n_notier += len(miss & notier)
+        miss -= notier
         if miss or orphan:
             bad_views.append('%s: %d union rows not in the view, %d view identities not in the union' % (st, len(miss),
                                                                                                         len(orphan)))
-    out.append(('views', not bad_views, 'per-Stokes views cover the union rows of their Stokes and nothing else: %s' % (
-        '; '.join(bad_views) or 'yes')))
+    out.append(('views', not bad_views, 'per-Stokes views cover the union rows of their Stokes and nothing else: %s%s' % (
+        '; '.join(bad_views) or 'yes', '; %d union rows of identities that qualify in no tier (served_tiers.csv), not viewed as '
+        'the per-tier rule drops them' % n_notier if n_notier else '')))
     out.append(card2_check(run, S))
     out.append(restore_check(run, S, dfiles))
     return out

@@ -361,6 +361,21 @@ def test_content_tests():
        res3['another source of the frame'][0] and not res3['the same detection'][0]
        and not res3['an unreadable position'][0], res3)
     snapshot_run_card2_restore(TP)
+    # per-tier pages (clv15 82792d5): a union identity that qualifies in no tier (served_tiers.csv) is not viewed - allowed;
+    # any other unviewed union row fails
+    nt = f'{T}/snaprun_notier'
+    write_snapshot_run(nt, ['14h_2025-03-09'])
+    with open(f'{nt}/source_catalogs/Red_sources_survivors.csv', 'a') as f:
+        f.write('J0001+0001,V,11.0\n')
+    stc = ['identity_jname', 'chain_outcome', 'tier', 'qualifies']
+    wcsv(f'{nt}/served_tiers.csv', stc, [['J0000+0000', 'served', '10s', '1'], ['J0001+0001', 'served', '10s', '0'],
+                                          ['J0001+0001', 'served', '1min', '0']])
+    v_ = dict((n, (p_, d_)) for n, p_, d_ in TP.run_checks(nt))['views']
+    wcsv(f'{nt}/served_tiers.csv', stc, [['J0000+0000', 'served', '10s', '1'], ['J0001+0001', 'served', '10s', '0'],
+                                          ['J0001+0001', 'served', '1min', '1']])
+    v2_ = dict((n, (p_, d_)) for n, p_, d_ in TP.run_checks(nt))['views']
+    ok('snapshot_run views: a union identity that qualifies in no tier is not viewed (allowed, counted); one that qualifies '
+       'in a tier must be', v_[0] and 'qualify in no tier' in v_[1] and not v2_[0], (v_, v2_))
     with open(f'{run}/source_catalogs/Red_sources_survivors.csv', 'a') as f:
         f.write('J9999+0000,V,-5.0\n')
     r = TP.snapshot_run_content(run)
