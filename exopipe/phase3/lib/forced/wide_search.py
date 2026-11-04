@@ -38,11 +38,36 @@ TIERS = ('10s', '1min')
 _E = {}
 
 
-def pool_worker_init():
+THREAD_VARS = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS')
+_LIMITS = []
+
+
+def limit_threads(n):
+    """Cap this process's BLAS / OpenMP / MKL / numexpr threads at n: the environment (for a library loaded later) and the pools
+    already loaded (threadpoolctl - numpy's OpenBLAS is loaded before the CLI's --threads reaches the environment, so the
+    variables alone do not reach it; the republish verification 2026-11-04 saw 26 threads in each of 6 wide_test workers)."""
+    import sys
+    n = max(int(n or 1), 1)
+    for k in THREAD_VARS:
+        os.environ[k] = str(n)
+    try:
+        from threadpoolctl import threadpool_limits
+        _LIMITS.append(threadpool_limits(limits=n))          # kept: the limits hold for the life of the process
+    except ImportError:                                     # pragma: no cover - threadpoolctl is in the py38 environment
+        pass
+    ne = sys.modules.get('numexpr')
+    if ne is not None:
+        ne.set_num_threads(n)
+    return n
+
+
+def pool_worker_init(threads=1):
     """A pool worker forked from the step process inherits the CLI's SIGTERM handler (cli._sigterm_interrupts: Terminated, as
-    for Ctrl-C); Pool.terminate() ends its workers with SIGTERM, so a worker takes the default action instead."""
+    for Ctrl-C); Pool.terminate() ends its workers with SIGTERM, so a worker takes the default action instead. Its BLAS /
+    OpenMP threads are capped at ``threads`` (the step's --threads, else 1: the step's processes are its parallelism)."""
     import signal
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    limit_threads(threads)
 
 
 def scfg():

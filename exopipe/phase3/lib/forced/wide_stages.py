@@ -1,6 +1,7 @@
 """`exopipe3 forced --tier snapshot --stages wide_jobs,wide_search,wide_test,wide_publish` (family W) and `--stages activity`
 (family N): the two inputs of the astrometry figure v2 that analysis scripts made - the forced targets' wide-area burst test
-(<run>/forced_wide_v3.csv, astrometry_assoc.V3_MAP) and the night-activity table (astrometry_assoc.night_act). Spec
+(forced_wide_v3.csv in each of the 4 tested forced runs, Run_SNAPFORCED_{I,V}{10s,1min}_gen5; astrometry_assoc.V3_MAP) and
+the night-activity table (astrometry_assoc.night_act). Spec
 docs/specs/forced_wide.md. Campaign stages (no per-hour form), named only (never a default), one family per invocation.
 
 Family W. --out = the work root W (default forced_wide.WORK_ROOT); records W/_records/forced/W_*.json.
@@ -14,10 +15,13 @@ Family W. --out = the work root W (default forced_wide.WORK_ROOT); records W/_re
   wide_test     unit W_test: the v3 analysis of every job (pool: every job of the Stokes) -> W/results_v3.csv
                 (forced_wide_results) and W/candidates_v3.csv (forced_wide_candidates). The bursts: this root's done
                 W_search units, or --wide-bursts DIR (every file content-tested as an input).
-  wide_publish  unit W_publish_<run> per run: <review root>/<run>/forced_wide_v3.csv (forced_wide_published): the results of
-                that (Stokes, cadence) with each named source's position (named_radec). The review root: --snap-review-root,
-                else <out>/forced_snapshot.REVIEW_SUBDIR_UNDER_OUT under --out, else paths.SNAPSHOT_REVIEW_ROOT (production).
-                Written as <file>.part, content-tested, then renamed over the served file (one atomic replace).
+  wide_publish  unit W_publish_<run> per tested run - the 4 of forced_wide.RUNS (I / V x 10 s / 1 min; the 10-minute and deep
+                forced runs neither hold nor read the file): <review root>/<run>/forced_wide_v3.csv (forced_wide_published),
+                the results of that (Stokes, cadence) with each named source's position (named_radec). The review root:
+                --snap-review-root, else <out>/forced_snapshot.REVIEW_SUBDIR_UNDER_OUT under --out, else
+                paths.SNAPSHOT_REVIEW_ROOT (production). Written as <file>.part, content-tested; the file it replaces is
+                copied beside it first, as <file>.bak_<UTC> (its sha1 and the new file's in the unit's meta: backup,
+                backup_sha1, published_sha1), then the .part is renamed over it (one atomic replace).
   --wide-only S:IDENTITY[,..] (IDENTITY '*' = every job of that Stokes): wide_search searches, wide_test analyzes only those
   (the test's pool stays every job; its results are recorded partial and wide_publish refuses them).
 Family N. --out = night_activity.OUT_ROOT by default (where the figure reads).
@@ -37,10 +41,13 @@ target), W-RUNDIR (the run directory absent at the review root), W-ROOT (a produ
 paths.PRODUCTION_WRITES is False), N-INPUT (input columns missing, or rows of another Stokes or tier than night_activity.STOKES /
 TIER). W-ENV and W-CATDIR run in every stage that reads the radio catalogues (wide_jobs, wide_test, wide_publish; W-ENV in
 wide_search too). A failing content test refuses its unit. --dry-run prints the plan and writes nothing; it exits 2 when the
-plan names a gate the real run would hit (W-HOST, W-RUNS, W-WORKERS, W-CUTROOT). A W_search unit with a refused band (W-FILE,
+plan names a gate the real run would hit (W-HOST, W-RUNS, W-WORKERS, W-CUTROOT; wide_publish: W-HOST, W-ROOT and W-RUNDIR of
+every run). The process pools of wide_search and wide_test run --threads BLAS / OpenMP threads per process (else 1:
+wide_search.limit_threads). A W_search unit with a refused band (W-FILE,
 W-NOCUT) ends done, so --resume keeps it and wide_test refuses W-POOL until wide_search runs again without --resume. The INJECTED-RUN GUARD (core/injected.py) covers the families' flags: an injected run's --snap-review-root
 must be scratch, and an ordinary run refuses a --wide-runs / --wide-jobs / --wide-cutout-root / --wide-bursts / --na-detections
 source under an injected run."""
+import collections
 import hashlib
 import json
 import os
@@ -97,6 +104,9 @@ def default_out(args, fam):
 
 def run(args, run, fam, stages):
     gate_args(args, fam)
+    if getattr(args, 'threads', None):     # --threads reaches this process too: the CLI sets the variables after numpy loaded
+        from exopipe.phase3.lib.forced.wide_search import limit_threads
+        limit_threads(args.threads)
     if fam == 'N':
         stage_activity(args, run)
         return None
@@ -394,7 +404,7 @@ def stage_search(c):
     t0 = time.time()
     from multiprocessing import get_context
     try:
-        with get_context('fork').Pool(workers, initializer=WS.pool_worker_init) as pool:
+        with get_context('fork').Pool(workers, initializer=WS.pool_worker_init, initargs=(c.args.threads or 1,)) as pool:
             pending = {(search_unit(j), b): pool.apply_async(WS.search_band, ((j, b, c.cutout_root,
                                                                                os.path.join(stage, WS.npz_name(j, b))),))
                        for j, b in tasks}
@@ -534,7 +544,8 @@ def stage_test(c):
                  if c.wt.BOOT_Z_SE is not None else ''),
               'off' if c.wt.KNIFE_EDGE_SE is None else 'within %g Monte Carlo errors%s' % (
                   c.wt.KNIFE_EDGE_SE, '' if c.wt.KNIFE_EDGE_DRAWS is None else
-                  ', its rows decided by %d draws (Wilson %g)' % (c.wt.KNIFE_EDGE_DRAWS, c.wt.KNIFE_EDGE_DECIDE)),
+                  ', its rows decided by draws in batches of %d up to %s (Wilson %g)' % (
+                      c.wt.KNIFE_EDGE_DRAWS, c.wt.KNIFE_EDGE_DRAWS_MAX or c.wt.KNIFE_EDGE_DRAWS, c.wt.KNIFE_EDGE_DECIDE)),
               '; PARTIAL (--wide-only)' if c.only else ''))
     if c.dry:
         if workers > c.wt.MAX_WORKERS:
@@ -557,6 +568,7 @@ def stage_test(c):
                     v2_ctl_draw=c.wt.V2_CTL_DRAW, control_order=c.wt.CONTROL_ORDER, taper_ctl_max=c.wt.TAPER_CTL_MAX,
                     boot_draw=c.wt.BOOT_DRAW, boot_z_se=c.wt.BOOT_Z_SE, boot_max=c.wt.BOOT_MAX,
                     knife_edge_se=c.wt.KNIFE_EDGE_SE, knife_edge_draws=c.wt.KNIFE_EDGE_DRAWS,
+                    knife_edge_draws_max=c.wt.KNIFE_EDGE_DRAWS_MAX, knife_edge_decide=c.wt.KNIFE_EDGE_DECIDE,
                     draw_salt=(V3.DRAW_SALT_RULE if c.wt.KNIFE_EDGE_DRAWS and c.wt.KNIFE_EDGE_SE is not None else None),
                     cutout_root=c.cutout_root) as u:
         gate_env()
@@ -581,7 +593,7 @@ def stage_test(c):
         if only is not None and not only:
             raise NoInput('no job selected (--wide-only %s)' % c.args.wide_only)
         WJ.inplace('phase3_snapshot_astro')
-        rows, crows = V3.analyze_all(jobs, events, bdir, workers=workers, only=only, log=u.note)
+        rows, crows = V3.analyze_all(jobs, events, bdir, workers=workers, only=only, log=u.note, threads=c.args.threads or 1)
         if not rows:
             raise NoInput('no job has forced events in its bands')
         u.plan(c.results, 'forced_wide_results')
@@ -603,12 +615,14 @@ def stage_test(c):
                           bootstrap_n_median=bn[len(bn) // 2] if bn else 0, bootstrap_n_max=bn[-1] if bn else 0,
                           bootstrap_short=short,
                           draws={k: sum(1 for r in rows if r.get('mc_row', '').startswith(k)) for k in ('default', 'draw', 'split')},
-                          knife_edge_named=sum(1 for r in rows if r.get('named_knife_edge')))
+                          knife_edge_named=sum(1 for r in rows if r.get('named_knife_edge')),
+                          draws_n=dict(sorted(collections.Counter(int(r['mc_n']) for r in rows if r.get('mc_n') not in ('', None)).items())))
             if short:
                 u.note('%d row(s) reached BOOT_MAX %d resamples with the centroid z\'s Monte Carlo error above BOOT_Z_SE %g '
                        '(their knife-edge test uses the error reached), e.g. %s' % (len(short), c.wt.BOOT_MAX, c.wt.BOOT_Z_SE,
                                                                                   ', '.join(short[:4])))
-        u.add_output(c.results, 'forced_wide_results', knife_edge_se=c.wt.KNIFE_EDGE_SE, knife_edge_draws=c.wt.KNIFE_EDGE_DRAWS)
+        u.add_output(c.results, 'forced_wide_results', knife_edge_se=c.wt.KNIFE_EDGE_SE, knife_edge_draws=c.wt.KNIFE_EDGE_DRAWS,
+                     knife_edge_draws_max=c.wt.KNIFE_EDGE_DRAWS_MAX)
         u.add_output(c.candidates, 'forced_wide_candidates', results=c.results, knife_edge_se=c.wt.KNIFE_EDGE_SE)
         for k, v in sorted(counts.items()):
             print('  %s: %d' % (k, v), flush=True)
@@ -622,12 +636,30 @@ def stage_publish(c):
     from exopipe.phase3.lib.forced import wide_jobs as WJ
     from exopipe.phase3.lib.forced import wide_v3 as V3
     from exopipe.phase3.core import validate
-    K.plan('[wide_publish] %s into each run under %s: %s' % (c.w.PUBLISHED, c.review_root,
-                                                           ', '.join(c.w.RUN_NAME.format(S=s, cadence=t) for s, t in c.w.RUNS)))
+    K.plan('[wide_publish] %s into the %d tested forced runs under %s (each replaced file backed up as <file>.bak_<UTC>): %s'
+           % (c.w.PUBLISHED, len(c.w.RUNS), c.review_root, ', '.join(c.w.RUN_NAME.format(S=s, cadence=t) for s, t in c.w.RUNS)))
     if c.dry:
+        # every gate of a run the real publication would hit is planned and counted (the republish verification 2026-11-04:
+        # the dry run against the served root exited 0 while the real run refuses W-ROOT and W-HOST)
         h = K.host_of(c.review_root)
-        K.plan('[wide_publish]   review root %s%s' % (c.review_root, (' node-local on %s (this is %s)' % (h, K.hostname()))
-                                                     if h and h != K.hostname() else ''))
+        local = not (h and h != K.hostname())
+        K.plan('[wide_publish]   review root %s%s' % (c.review_root, '' if local else
+                                                     ' node-local on %s (this is %s): W-HOST refuses' % (h, K.hostname())))
+        if not local:
+            c.would_refuse.append('W-HOST wide_publish %s' % c.review_root)
+        for st, cad in c.w.RUNS:
+            D = os.path.join(c.review_root, c.w.RUN_NAME.format(S=st, cadence=cad))
+            try:
+                K.refuse_production_target(D, 'review run')
+            except Refusal as e:
+                K.plan('[wide_publish]   W-ROOT %s: refused' % e)
+                c.would_refuse.append('W-ROOT %s' % D)
+                continue
+            if local and not os.path.isdir(D):
+                K.plan('[wide_publish]   W-RUNDIR no run %s: refused' % D)
+                c.would_refuse.append('W-RUNDIR %s' % D)
+            elif local and os.path.exists(os.path.join(D, c.w.PUBLISHED)):
+                K.plan('[wide_publish]   %s replaced (backed up first)' % os.path.join(D, c.w.PUBLISHED))
         return
     for st, cad in c.w.RUNS:
         rname = c.w.RUN_NAME.format(S=st, cadence=cad)
@@ -680,8 +712,20 @@ def stage_publish(c):
                 u.refuse('content test of %s failed: %s' % (part, '; '.join('%s (%s)' % (t['name'], str(t['detail'])[:200])
                                                                            for t in bad)))
             prev = _sha1_file(final) if os.path.exists(final) else None
+            backup = None
+            if prev is not None:            # the file replaced is kept beside it, as it was (copy first, then the replace)
+                stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+                backup = '%s.bak_%s' % (final, stamp)
+                n_ = 1
+                while os.path.exists(backup):
+                    backup = '%s.bak_%s_%d' % (final, stamp, n_)
+                    n_ += 1
+                shutil.copy2(final, backup)
+                if _sha1_file(backup) != prev:
+                    os.remove(part)
+                    u.refuse('W-BACKUP the backup %s of %s does not read back (sha1): nothing replaced' % (backup, final))
             os.replace(part, final)
-            u.meta.update(n_rows=len(rr), replaced_sha1=prev)
+            u.meta.update(n_rows=len(rr), replaced_sha1=prev, backup=backup, backup_sha1=prev, published_sha1=_sha1_file(final))
             u.add_output(final, 'forced_wide_published', **ctx)
             print('%s %s: %d rows -> %s' % (st, cad, len(rr), final), flush=True)
 

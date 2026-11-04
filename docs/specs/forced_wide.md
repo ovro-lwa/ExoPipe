@@ -7,7 +7,7 @@ This spec covers the two `exopipe3 forced --tier snapshot` families that now mak
 
 | Family | Stages | Product the figure reads | Ported from (`phase3/refactor_analysis/review_items_20261031/`) |
 |---|---|---|---|
-| W | `wide_jobs`, `wide_search`, `wide_test`, `wide_publish` | `<forced run>/forced_wide_v3.csv` | `forced_wide/forced_wide_jobs.py`, `forced_wide_search.py`, `forced_wide_analyze.py` (v2 centering), `v3/jobs_ext.py`, `v3/forced_wide_v3.py`, `v3/publish_v3_to_runs.py`; the ambiguous-target list `forced_ambiguous.py` (2026-11-01) |
+| W | `wide_jobs`, `wide_search`, `wide_test`, `wide_publish` | `forced_wide_v3.csv` in each of the 4 tested forced runs (`Run_SNAPFORCED_{I,V}{10s,1min}_gen5`) | `forced_wide/forced_wide_jobs.py`, `forced_wide_search.py`, `forced_wide_analyze.py` (v2 centering), `v3/jobs_ext.py`, `v3/forced_wide_v3.py`, `v3/publish_v3_to_runs.py`; the ambiguous-target list `forced_ambiguous.py` (2026-11-01) |
 | N | `activity` | `night_activity_I10s.csv`, `night_activity_nights_I10s.csv` | `figure_v2/night_activity_build.py` |
 
 Code: `exopipe/phase3/lib/forced/wide_stages.py` (stages, gates, records), `wide_jobs.py`, `wide_search.py`,
@@ -37,7 +37,8 @@ honesty, not a choice of draw") RULES the Monte Carlo keys:
 - `TAPER_CTL_MAX`: every eligible taper control line (no 900 cap);
 - `BOOT_DRAW`, `BOOT_Z_SE`, `BOOT_MAX`: the centroid's bootstrap per target, until its z is precise to 0.02;
 - `KNIFE_EDGE_SE`: the knife-edge flag;
-- `KNIFE_EDGE_DRAWS`, `KNIFE_EDGE_DECIDE`: a flagged row is decided only by 20 Monte Carlo draws of the method (Wilson 95%).
+- `KNIFE_EDGE_DRAWS`, `KNIFE_EDGE_DRAWS_MAX`, `KNIFE_EDGE_DECIDE`: a flagged row is decided only by Monte Carlo draws of the
+  method (20 at a time, up to 100 while undecided; Wilson 95%).
 
 The other three defaults that differ from production are PROPOSED (see the deliberate differences below).
 
@@ -214,43 +215,59 @@ served outcome comes out in 6-13 of 20, the new one in 7-14. With `KNIFE_EDGE_SE
 row the salts showed flipping, for 17 flags in 312 rows; with 2 they give 13. Hence the default 4 (the refactor chat,
 2026-11-04).
 
-**A flagged row is DECIDED only when the method's own draws decide it** (`KNIFE_EDGE_DRAWS` 20, `KNIFE_EDGE_DECIDE` 0.95; the
-refactor chat's decisions, 2026-11-04). One draw cannot decide such a row, so `analyze_all` re-runs the approved method itself
-(8 lines per source, `CTL_DIRS`) 20 more times for it. Each draw k < 20 has its own salt in place of `SEED`: a stable hash
-(sha256) of (`SEED`, the target's (Stokes, identity), k). The salts are fixed and recorded (the unit's `draw_salt`), so the
-result is reproducible and independent of the job list's order. Then:
+**A flagged row is DECIDED only when the method's own draws decide it** (`KNIFE_EDGE_DRAWS` 20, `KNIFE_EDGE_DRAWS_MAX` 100,
+`KNIFE_EDGE_DECIDE` 0.95; the refactor chat's decisions, 2026-11-04). One draw cannot decide such a row, so `analyze_all`
+re-runs the approved method itself (8 lines per source, `CTL_DIRS`) for it in Monte Carlo draws.
 
-- **The verdict class** (the verdict string) is published only when the Wilson 95% interval of its fraction of the 20 draws
-  lies wholly above one half. At K = 20 that means 15 of 20 or more.
-- **Otherwise the row is published as** "UNDECIDED (knife-edge: the method's random draws split - <class> in a of 20,
-  <class> in b of 20)". It names no source, keeps the default draw's numbers (`mc_row` = `split`), and leaves `mc_draws`
+- **The salts.** Draw k has its own salt in place of `SEED`: a stable hash (sha256) of (`SEED`, the target's (Stokes,
+  identity), k). The salts are fixed and recorded (the unit's `draw_salt`), so the result is reproducible and independent of
+  the job list's order.
+- **Sequential draws.** A row gets 20 draws first. While its verdict class or one of its sources stays undecided, it gets 20
+  more, up to 100 (k = 0 .. 99, the same salt for draw k in any batch). "20 draws are too few near 75%."
+- **The verdict class** (the verdict string) is published only when the Wilson 95% interval of its fraction of the row's K
+  draws lies wholly above one half: 15 of 20, 27 of 40, 38 of 60, 49 of 80, 60 of 100.
+- **Otherwise the row is published as** "UNDECIDED (knife-edge: the method's random draws split - <class> in a of K,
+  <class> in b of K)". It names no source, keeps the default draw's numbers (`mc_row` = `split`), and leaves `mc_draws`
   empty, because the verdict holds the split.
-- **A source is named** only when it is named in a decided fraction of the 20 draws (15 or more). A source named in an
-  undecided fraction (6 to 14) goes to `named_knife_edge` ("knife-edge: VLSSr J... named in 9 of 20 draws") and never into
-  `named` or `named_radec`. One named in 5 or fewer is decidedly not named.
-- **A naming class decided with no source decidedly named** is published as a split, with "no source named in a decided
-  majority". It does not occur on gen5.
+- **A source is named** only when it is named in a decided fraction of the K draws, in the same sense.
+  - One named in an undecided fraction goes to `named_knife_edge` ("knife-edge: VLSSr J... named in 9 of 20 draws"), never
+    into `named` or `named_radec`.
+  - One at or below the lower line (5 of 20, 13 of 40, 22 of 60, 31 of 80, 40 of 100) is decidedly not named and appears in
+    `mc_outcomes` only.
+- **The settled case** is a naming class decided with no source decidedly named. It publishes the class, with no named source
+  and the sources' split: "<class> (source split: A in a of K, B in b of K draws)" (the refactor chat: "It's informative,
+  and it reads straight"). It does not occur on gen5.
 - **A decided row's other columns** come from the default draw when its verdict and named set are exactly the decided ones
   (`mc_row` = `default`). Otherwise they come from the first draw that has them (`draw k`), with that draw's candidate rows,
   so each row stays self-consistent. `mc_draws` gives the fractions: "CONSISTENT WITH A BACKGROUND SOURCE in 20 of 20 Monte
   Carlo draws; named: VLSSr J105425.8+715204 in 20 of 20, VLSSr J105246.5+715924 in 19 of 20".
 - **`knife_edge`** is always the default draw's: it is what flagged the row.
+- **`mc_n`** is the row's number of draws K.
 - **`mc_outcomes`** counts every outcome (verdict and named set), most frequent first. Equal counts are ordered by name, so
   the decision depends on the counts alone.
 - **Unflagged rows** keep their single draw.
 
 With the flag, `results_v3.csv`, and so `forced_wide_v3.csv`, gain `bootstrap_n`, `centroid_z_se`, `knife_edge`,
-`named_knife_edge`, `mc_draws`, `mc_outcomes` and `mc_row`. `candidates_v3.csv` gains `p_emp_se`, `ratio_se`, `n_ctl_se` and `centroid_to_candidate_se`. With
+`named_knife_edge`, `mc_draws`, `mc_n`, `mc_outcomes` and `mc_row`. `candidates_v3.csv` gains `p_emp_se`, `ratio_se`, `n_ctl_se` and `centroid_to_candidate_se`. With
 `KNIFE_EDGE_SE` None (production) none of these columns is written. `KNIFE_EDGE_DRAWS` None (production's value) keeps
 every row a single draw.
 
-### `wide_publish` → `<review root>/<run>/forced_wide_v3.csv` (`forced_wide_published`)
+### `wide_publish` → `<review root>/<run>/forced_wide_v3.csv` in the 4 tested runs (`forced_wide_published`)
 
-Each run gets the results rows of its (Stokes, cadence). A `named_radec` column holds `ra,dec` (5 decimals) of each
-named source, `;`-joined. A named source is found by name among the physical sources within 200′ of the target.
+It writes **4 runs**, `forced_wide.RUNS`: `Run_SNAPFORCED_{I,V}{10s,1min}_gen5`. The 10-minute and deep forced runs
+neither hold nor read the file; their queues only feed the job list. Each run gets the results rows of its (Stokes,
+cadence). A `named_radec` column holds `ra,dec` (5 decimals) of each named source, `;`-joined. A named source is found by
+name among the physical sources within 200′ of the target.
 
-The file is written as `.part`, content-tested, and then renamed over the served file. A partial test (`--wide-only`) is
+The file is written as `.part` and content-tested. The file it replaces is first copied beside it as
+`<file>.bak_<UTC>` and read back. The `.part` is then renamed over the served file in one atomic replace. The unit's
+meta records `backup`, `backup_sha1` (the replaced file's sha1) and `published_sha1`. A partial test (`--wide-only`) is
 never published (W-PARTIAL). Each unit runs W-ENV and W-CATDIR first: `named_radec` reads the radio catalogues.
+
+`--dry-run` plans and counts every gate the real publication would hit, and exits 2 if any: W-HOST (the review root on
+another host), W-ROOT (a production review root while `paths.PRODUCTION_WRITES` is False; that holds for the served runs
+today, so the install is a recorded copy of the scratch-published files, the coordinator's) and W-RUNDIR, for each of the
+4 runs.
 
 ### What the figure consumes
 
@@ -285,13 +302,20 @@ Carlo keys are decided (2026-11-04). Production's values of all nine are in
 | `forced_wide_test.BOOT_DRAW` | `target` | `job` | The bootstrap drew from the job's generator, after the control lines in production's order. Its own stable seed per (target, tier) keeps it free of every other draw. Decided (RULED): the amendment (2), "seeded per target". |
 | `forced_wide_test.BOOT_Z_SE` | `0.02` | `None` (exactly 1000 resamples) | At 1000 resamples the bootstrap alone moved a gen5 row's centroid z from 3.016 (the served draw) to 2.968 (round 3's draw), across the threshold 3 (Gaia DR3 3316364602541746048, I 1 min). Decided (RULED): the amendment (2). |
 | `forced_wide_test.KNIFE_EDGE_SE` | `4.0` | `None` (no Monte Carlo columns) | Decided (RULED): the amendment (3); 4 from the 20-salt flip check of the gen5 run (2026-11-04). |
-| `forced_wide_test.KNIFE_EDGE_DRAWS` | `20` | `None` (every row a single draw) | A flagged row is re-run in 20 Monte Carlo draws and decided only by them (`KNIFE_EDGE_DECIDE`, a Wilson 95% interval above one half). Production has no equivalent. Decided (RULED): the amendment, extended 2026-11-04. |
+| `forced_wide_test.KNIFE_EDGE_DRAWS` | `20` | `None` (every row a single draw) | A flagged row is re-run in Monte Carlo draws, 20 at a time up to `KNIFE_EDGE_DRAWS_MAX` (100) while undecided, and decided only by them (`KNIFE_EDGE_DECIDE`, a Wilson 95% interval above one half). Production has no equivalent. Decided (RULED): the amendment, extended 2026-11-04. |
 | `forced_wide_search.FILE_ERRORS` | `refuse` | `drop` | Gates refuse; production dropped a raising cutout. No gen5 cutout raised. |
 
 The night-activity bands table lists the nights of each (LST, band) in date order. The script iterated a set there, so
 its rows came in string-hash order, which differs in every process. No value depends on this order.
 
 ### Not ported
+
+The review page `/s/fp_deep/forced_wide/` is not a stage. Its v4 builder, `forced_wide_page_v4.py` (round 7, 2026-11-04;
+installed beside `forced_wide_page_v3.py` in the analysis directory), reads the 4 published files and the family's work
+root (candidates, jobs, events, bursts). It writes only into the site: `index.html`, `figs_v4/` (every per-target figure
+redrawn, the analysis' `draw()` ported, from the published rows and their candidates) and `v3.html` (the v3 page, kept). It
+never writes the analysis' `v3/results_v3.csv`, which is the parity reference. Knife-edge rows whose draws split have
+their own column in the outcome table, so it sums.
 
 - The analysis' figures (`figs_v3/`) and its review page (`forced_wide_page_v3.py`): nothing in the pipeline or the
   figure reads them.
@@ -341,7 +365,8 @@ served page through the two-port server.
    exopipe3 forced --tier snapshot --stages wide_jobs
    ```
 
-2. `wide_search` and `wide_test` run on any node that reads Lustre, at most 6 processes each:
+2. `wide_search` and `wide_test` run on any node that reads Lustre, at most 6 processes each. Each process runs one BLAS /
+   OpenMP thread unless `--threads` says otherwise:
 
    ```
    exopipe3 forced --tier snapshot --stages wide_search,wide_test --workers 6
@@ -352,11 +377,14 @@ served page through the two-port server.
    needs that re-run). A changed `jobs.json` (a re-run of `wide_jobs` that changes any job) or another cutout generation
    needs a fresh `wide_search` of every job before `wide_test` pools them.
 
-3. Publish on the review host:
+3. Publish on the review host, into the 4 tested runs:
 
    ```
    exopipe3 forced --tier snapshot --stages wide_publish
    ```
+
+   While `paths.PRODUCTION_WRITES` is False this refuses W-ROOT for the served runs, and its dry run says so with exit 2.
+   Until the cutover the files are published into a scratch review root and installed by a recorded copy.
 
 **Family W, parity** (scratch roots only; the parity file holds production's nine values: the capped v2 draw, the
 pool-ordered controls, the 900-line cap and the job generator's 1000 resamples included):

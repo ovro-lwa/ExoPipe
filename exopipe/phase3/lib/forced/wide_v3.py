@@ -345,6 +345,11 @@ def mc_settings():
     q = c.KNIFE_EDGE_DECIDE
     if not (isinstance(q, float) and 0.5 <= q < 1.0):
         raise ValueError('forced_wide_test.KNIFE_EDGE_DECIDE %r: a confidence in [0.5, 1)' % (q,))
+    m = c.KNIFE_EDGE_DRAWS_MAX
+    if m is not None and not (isinstance(m, int) and not isinstance(m, bool) and m >= 1):
+        raise ValueError('forced_wide_test.KNIFE_EDGE_DRAWS_MAX %r: None or an int >= 1' % (m,))
+    if m is not None and d is not None and not (m >= d and m % d == 0):          # with no draws (d None) the cap is moot
+        raise ValueError('forced_wide_test.KNIFE_EDGE_DRAWS_MAX %r: a multiple of KNIFE_EDGE_DRAWS %r, at least it' % (m, d))
     return c.BOOT_DRAW, c.BOOT_Z_SE, c.BOOT_MAX, c.KNIFE_EDGE_SE, c.KNIFE_EDGE_DRAWS
 
 
@@ -661,7 +666,7 @@ def analyze(J, events, pool, v2pool, bdir, trace=None, tiers=None, salt=None, fl
                 mc_errors(r)
             ks = knife_edges(J, tier, ev, cands, res, cen, row) if flag else []
             row.update(bootstrap_n=cen['boot_n'] if cen else '', centroid_z_se=round(cen['z_se'], 4) if cen else '',
-                       knife_edge=knife_text(ks), named_knife_edge='', mc_draws='', mc_outcomes='', mc_row='')
+                       knife_edge=knife_text(ks), named_knife_edge='', mc_draws='', mc_n='', mc_outcomes='', mc_row='')
         rows.append(row)
         for r in res:
             crows.append(cand_row(J, tier, r))
@@ -1372,8 +1377,9 @@ def draws_decision(outs, K, conf):
     Returns dict(classes = [(verdict, n)] most frequent first, cls = the verdict class DECIDED - the most frequent, its
     fraction's Wilson interval at conf wholly above 1/2 - or None (split), named = the sources DECIDEDLY named (their fraction
     of the K draws above 1/2 likewise), knife = [(source, n)] named in an undecided fraction (the interval holds 1/2), counts =
-    {source: n}, no_source = True when a naming class is decided but no source is decidedly named (then split). Equal counts
-    are ordered by name: the result depends on the counts alone, never on the draws' order."""
+    {source: n}, no_source = True when a naming class is decided but no source is decidedly named (THE SETTLED CASE: the class
+    is published, with no named source and the sources' split). Equal counts are ordered by name: the result depends on the
+    counts alone, never on the draws' order."""
     cc = collections.Counter(v for v, _s in outs)
     classes = sorted(cc.items(), key=lambda kv: (-kv[1], kv[0]))
     sc = collections.Counter(x for _v, srcs in outs for x in set(srcs))
@@ -1384,22 +1390,42 @@ def draws_decision(outs, K, conf):
     top, n = classes[0]
     cls = top if wilson(n, K, conf)[0] > 0.5 else None
     no_source = bool(cls in NAMING_VERDICTS and not named)
-    if no_source:
-        cls = None
     return dict(classes=classes, cls=cls, n=n, named=named if cls in NAMING_VERDICTS else [], knife=knife, counts=dict(sc),
-                decided_named=named, no_source=no_source)
+                decided_named=named, no_source=no_source, order=order)
+
+
+def settled(dec):
+    """the draws decide the row completely: its verdict class and every source (no source in an undecided fraction)"""
+    return dec['cls'] is not None and not dec['knife'] and not dec['no_source']
+
+
+SOURCE_SPLIT = ' (source split: '
+
+
+def source_split_verdict(dec, K, names=None):
+    """THE SETTLED CASE's verdict: the decided class and its sources' split, "<class> (source split: A in a of K, B in b of K
+    draws)" (the refactor chat, 2026-11-04: "It's informative, and it reads straight")"""
+    nm = names or (lambda x: x)
+    return dec['cls'] + SOURCE_SPLIT + ', '.join('%s in %d of %d' % (nm(x), dec['counts'][x], K) for x in dec['order']) + ' draws)'
+
+
+def verdict_class(v):
+    """the verdict class of a published verdict: a split -> UNDECIDED; a source split -> its class; else the verdict"""
+    if v.startswith(SPLIT_PREFIX):
+        return 'UNDECIDED'
+    for c_ in NAMING_VERDICTS:
+        if v.startswith(c_ + SOURCE_SPLIT):
+            return c_
+    return v
 
 
 def split_verdict(dec, K, names=None):
     """the published verdict of a row its draws do not decide: "UNDECIDED (knife-edge: the method's random draws split -
-    <class> in a of K, <class> in b of K)" (and the sources decidedly named in it, and when a naming class is decided but no
-    source is, that)"""
+    <class> in a of K, <class> in b of K)" (and the sources decidedly named in it)"""
     nm = names or (lambda x: x)
     txt = SPLIT_PREFIX + ', '.join('%s in %d of %d' % (v, n, K) for v, n in dec['classes'])
     if dec['decided_named']:
         txt += '; naming ' + ', '.join('%s in %d of %d' % (nm(x), dec['counts'][x], K) for x in dec['decided_named'])
-    if dec['no_source']:
-        txt += '; no source named in a decided majority'
     return txt + ')'
 
 
@@ -1425,23 +1451,22 @@ def _src_name(entry):
     return ' '.join(entry.split(' ')[:2])
 
 
-def apply_draws(outs, tasks, douts, K):
-    """outs with each knife-edge row replaced by what its K draws DECIDE (draws_decision, KNIFE_EDGE_DECIDE):
+def apply_draws(outs, by):
+    """outs with each knife-edge row replaced by what its draws DECIDE (draws_decision, KNIFE_EDGE_DECIDE); by = {(job index,
+    tier): {k: (draw row, its candidates rows)}}, each row's K draws (20, 40, ... - analyze_all's sequential batches):
       DECIDED (the verdict class's fraction decidedly above 1/2): that verdict, naming only the decidedly named sources; the
       row's numbers from the default draw when its verdict and named set are exactly these ('default'), else from the first
       draw (lowest k) that has them ('draw k'; failing that, the first draw of that class naming most of them, its named set
       replaced), with that draw's candidates rows; mc_draws = '<class> in n of K Monte Carlo draws; named: ...';
+      THE SETTLED CASE (a naming class decided, no source decidedly named): the class with its sources' split, "<class>
+      (source split: A in a of K, B in b of K draws)", no named source; the numbers from the default draw when it has that
+      class, else from the first draw that has;
       SPLIT: verdict "UNDECIDED (knife-edge: the method's random draws split - <class> in a of K, ...)", no named source, the
       default draw's numbers ('split'), mc_draws empty;
-      either way: knife_edge = the default draw's flag (the trigger); named_knife_edge = every source named in an undecided
-      fraction ("knife-edge: <source> named in n of K draws"), never in the named set; mc_outcomes = every outcome (verdict and
-      named set) with its count, most frequent first."""
-    c = tc()
-    conf = c.KNIFE_EDGE_DECIDE
-    by = collections.defaultdict(dict)                     # (job index, tier) -> k -> (row, its candidate rows)
-    for (i, k, _tiers), (rows, crows) in zip(tasks, douts):
-        for r in rows:
-            by[(i, r['tier'])][k] = (r, [c_ for c_ in crows if c_['tier'] == r['tier']])
+      every one: knife_edge = the default draw's flag (the trigger); named_knife_edge = every source named in an undecided
+      fraction ("knife-edge: <source> named in n of K draws"), never in the named set; mc_n = K; mc_outcomes = every outcome
+      (verdict and named set) with its count, most frequent first."""
+    conf = tc().KNIFE_EDGE_DECIDE
     new = []
     for i, (rows, crows) in enumerate(outs):
         rows, crows = list(rows), list(crows)
@@ -1452,7 +1477,6 @@ def apply_draws(outs, tasks, douts, K):
             ks_ = sorted(d)
             Kd = len(ks_)
             dec = draws_decision([(d[k][0]['verdict'], _entries(d[k][0])) for k in ks_], Kd, conf)
-            # the full outcomes, most frequent first (as round 5)
             oc = {k: _outcome(d[k][0]) for k in ks_}
             cnt = collections.Counter(oc.values())
             first = {}
@@ -1461,37 +1485,83 @@ def apply_draws(outs, tasks, douts, K):
             order = sorted(cnt, key=lambda o: (-cnt[o], first[o]))
             tally = ' | '.join('%d: %s' % (cnt[o], outcome_text(o[0], named_names(d[first[o]][0]['named']))) for o in order)
             knife = knife_named_text(dec, Kd, _src_name)
+            common = dict(named_knife_edge=knife, mc_n=Kd, mc_outcomes=tally)
             if dec['cls'] is None:
-                row = dict(r, verdict=split_verdict(dec, Kd, _src_name), named='', named_knife_edge=knife, mc_draws='',
-                           mc_outcomes=tally, mc_row='split')
+                row = dict(r, verdict=split_verdict(dec, Kd, _src_name), named='', mc_draws='', mc_row='split', **common)
             else:
                 N = set(dec['named'])
-                if r['verdict'] == dec['cls'] and set(_entries(r)) == N:
+                if r['verdict'] == dec['cls'] and (dec['no_source'] or set(_entries(r)) == N):
                     row, src = dict(r), 'default'
                 else:
-                    exact = [k for k in ks_ if d[k][0]['verdict'] == dec['cls'] and set(_entries(d[k][0])) == N]
-                    kk = exact[0] if exact else max((k for k in ks_ if d[k][0]['verdict'] == dec['cls']),
-                                                    key=lambda k: (len(N & set(_entries(d[k][0]))), -k))
+                    cls_k = [k for k in ks_ if d[k][0]['verdict'] == dec['cls']]
+                    exact = [k for k in cls_k if dec['no_source'] or set(_entries(d[k][0])) == N]
+                    kk = exact[0] if exact else max(cls_k, key=lambda k: (len(N & set(_entries(d[k][0]))), -k))
                     row, src = dict(d[kk][0], knife_edge=r['knife_edge']), 'draw %d' % kk
                     cand = d[kk][1]
                     pos = [q for q, c_ in enumerate(crows) if c_['tier'] == r['tier']]
                     if len(pos) == len(cand):          # the same candidates in every draw (they depend on the data only)
                         for q, c_ in zip(pos, cand):
                             crows[q] = c_
-                own = [e for e in _entries(row) if e in N]
-                row.update(named='; '.join(own + [x for x in dec['named'] if x not in own]), named_knife_edge=knife,
-                           mc_draws=decided_text(dec, Kd, _src_name), mc_outcomes=tally, mc_row=src)
+                if dec['no_source']:
+                    row.update(verdict=source_split_verdict(dec, Kd, _src_name), named='',
+                               mc_draws='%s in %d of %d Monte Carlo draws' % (dec['cls'], dec['n'], Kd), mc_row=src, **common)
+                else:
+                    own = [e for e in _entries(row) if e in N]
+                    row.update(named='; '.join(own + [x for x in dec['named'] if x not in own]),
+                               mc_draws=decided_text(dec, Kd, _src_name), mc_row=src, **common)
             rows[j] = row
         new.append((rows, crows))
     return new
 
 
-def analyze_all(jobs, events, bdir, workers=1, only=None, log=print):
+def _draws_round(todo, by, pending, k_lo, k_hi, mapper):
+    """one batch of draws k_lo <= k < k_hi for the pending (job index, tier); returns how many job analyses ran"""
+    jobs_ = sorted({i for i, _t in pending})
+    tasks = [(i, k, tuple(t for (ii, t) in sorted(pending) if ii == i)) for i in jobs_ for k in range(k_lo, k_hi)]
+    for (i, k, _tiers), (rows, crows) in zip(tasks, mapper(_draw, tasks)):
+        for r in rows:
+            by.setdefault((i, r['tier']), {})[k] = (r, [c_ for c_ in crows if c_['tier'] == r['tier']])
+    return len(tasks)
+
+
+def sequential_draws(todo, outs, mapper, log=print):
+    """THE KNIFE-EDGE ROWS' SEQUENTIAL DRAWS (KNIFE_EDGE_DRAWS, KNIFE_EDGE_DRAWS_MAX; the refactor chat, 2026-11-04: "20 draws are
+    too few near 75%"): every knife-edge row gets KNIFE_EDGE_DRAWS draws (k = 0 ..), and while its verdict class or one of its
+    sources stays undecided (settled), KNIFE_EDGE_DRAWS more, up to KNIFE_EDGE_DRAWS_MAX; k counts on across batches, so draw k
+    has the same salt whatever batch it falls in. Returns ({(job index, tier): {k: (row, candidates rows)}}, a log)."""
+    c = tc()
+    K0 = c.KNIFE_EDGE_DRAWS
+    KMAX = max(c.KNIFE_EDGE_DRAWS_MAX or K0, K0)
+    conf = c.KNIFE_EDGE_DECIDE
+    by = {}
+    pending = {(i, r['tier']) for i, (rows, _c) in enumerate(outs) for r in rows if r.get('knife_edge')}
+    hist, k_lo, n_an = [], 0, 0
+    while pending and k_lo < KMAX:
+        k_hi = min(k_lo + K0, KMAX)
+        n_an += _draws_round(todo, by, pending, k_lo, k_hi, mapper)
+        done = set()
+        for key in pending:
+            d = by.get(key, {})
+            dec = draws_decision([(d[k][0]['verdict'], _entries(d[k][0])) for k in sorted(d)], len(d), conf)
+            if settled(dec):
+                done.add(key)
+        hist.append((k_hi, len(pending), len(done)))
+        pending -= done
+        k_lo = k_hi
+    log('knife-edge draws: %s; %d job analyses' % ('; '.join('%d rows drawn to %d, %d settled' % (p_, k, d_)
+                                                             for k, p_, d_ in hist), n_an))
+    return by
+
+
+def analyze_all(jobs, events, bdir, workers=1, only=None, log=print, threads=1):
     """(result rows, candidate rows) of the jobs (base then extension, the analysis' order): per Stokes I then V, the pool =
     every job of that Stokes, the v2 pool = those with every band searched; ``only`` = {(Stokes, identity)} analyzed (None:
-    all). Fork workers share the loaded bursts copy-on-write; map keeps the order."""
+    all). Fork workers share the loaded bursts copy-on-write; map keeps the order. Every process of the analysis (the workers,
+    or this one with workers 1) runs ``threads`` BLAS / OpenMP threads (wide_search.limit_threads). The knife-edge rows' draws
+    (KNIFE_EDGE_SE and KNIFE_EDGE_DRAWS set): sequential_draws, then apply_draws."""
+    from exopipe.phase3.lib.forced.wide_search import limit_threads, pool_worker_init
     c = tc()
-    K = c.KNIFE_EDGE_DRAWS if c.KNIFE_EDGE_SE is not None else None
+    drawing = c.KNIFE_EDGE_SE is not None and c.KNIFE_EDGE_DRAWS is not None
     rows, crows = [], []
     for st in ('I', 'V'):
         pool = [JobData(j, bdir) for j in jobs if j['stokes'] == st]
@@ -1499,26 +1569,26 @@ def analyze_all(jobs, events, bdir, workers=1, only=None, log=print):
         todo = [J for J in pool if not only or (st, J.job['identity']) in only]
         log(f'Stokes {st}: {len(pool)} jobs loaded, {len(v2pool)} for the centering controls, {len(todo)} to analyze')
         _G.update(todo=todo, events=events, pool=pool, v2pool=v2pool, bdir=bdir)
-        tasks, douts = [], []
+        by = {}
         try:
             if workers > 1 and len(todo) > 1:
                 from multiprocessing import get_context
-                from exopipe.phase3.lib.forced.wide_search import pool_worker_init
-                with get_context('fork').Pool(workers, initializer=pool_worker_init) as p:
+                with get_context('fork').Pool(workers, initializer=pool_worker_init, initargs=(threads,)) as p:
                     outs = p.map(_one, range(len(todo)), chunksize=1)
-                    tasks = draw_tasks(todo, outs, K) if K else []
-                    douts = p.map(_draw, tasks, chunksize=1) if tasks else []
+                    if drawing:
+                        by = sequential_draws(todo, outs, lambda f, t: p.map(f, t, chunksize=1) if t else [],
+                                              log=lambda m: log('Stokes %s %s' % (st, m)))
             else:
-                outs = [_one(i) for i in range(len(todo))]
-                tasks = draw_tasks(todo, outs, K) if K else []
-                douts = [_draw(t) for t in tasks]
+                from threadpoolctl import threadpool_limits
+                with threadpool_limits(limits=max(int(threads or 1), 1)):
+                    outs = [_one(i) for i in range(len(todo))]
+                    if drawing:
+                        by = sequential_draws(todo, outs, lambda f, t: [f(x) for x in t],
+                                              log=lambda m: log('Stokes %s %s' % (st, m)))
         finally:
             _G.clear()
-        if tasks:
-            nr = sum(1 for r_, _c in outs for r in r_ if r.get('knife_edge'))
-            log(f'Stokes {st}: {nr} knife-edge rows, {K} Monte Carlo draws each ({len(tasks)} job analyses); their majority '
-                f'outcome published')
-            outs = apply_draws(outs, tasks, douts, K)
+        if by:
+            outs = apply_draws(outs, by)
         for r, c_ in outs:
             rows += r
             crows += c_
