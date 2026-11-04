@@ -26,8 +26,10 @@ Classes:
                             rows kind for kind - re-judged sources and member rows, Card 2 member rows and panels included), the
                             summary text's page line with the Card 2 / re-judging counts, the summary json's card2 and rejudge
                             counts, its per-instant test (tests_per_instant.check_omission, production's record format).
-                         V6 (final) the filter catalogue's per-detection contract (pages' filter_catalog) and the
-                            localizations' identities are view identities.
+                         V6 (final) the filter catalogue's per-detection contract (pages' filter_catalog), the
+                            localizations' identities are view identities, and the page figures: every figured identity's
+                            page directories hold astrometry.png of the figure's size (production left truncated copies,
+                            2026-11-04), none without a figure.
   snapshot_card2_union   card2_filter.csv of a view (ctx runs): the union of the member batches' files, recomputed, byte for byte.
 Every test reads content and returns (passed, value, detail).
 """
@@ -479,7 +481,12 @@ def view_record(path, kept=None, **ctx):
 @content_test('snapshot_view', name='final')
 def view_final(path, final=False, **ctx):
     """V6: after the filter catalogue and the localization (final=True): the per-detection filter catalogue, the localized
-    identities are view identities."""
+    identities are view identities; THE PAGE FIGURES - every identity localized with more than one detection in a tier has its
+    figure (source_catalogs_loc_<T>/figs/<identity>.png, snapshot_localize_tiers.sh), each of its page directories of that tier
+    holds astrometry.png of the figure's size, and a page of an identity without a figure holds none. Found by the V2 follow-up's
+    real-data parity (2026-11-04): production's localizer left 7 of 11,245 page copies TRUNCATED at 64 KiB multiples (0, 65,536,
+    131,072 bytes; shutil.copyfile in its figure pool) without an error, the figures themselves complete. Sizes, not bytes: a
+    truncated copy is shorter; reading every copy of a full view would cost more than the build."""
     if not final:
         return True, 0, 'not the final view (the filter catalogue and the localization come later)'
     from exopipe.phase3.lib.pages import tests as PT
@@ -498,7 +505,49 @@ def view_final(path, final=False, **ctx):
         nloc += len(loc)
         if loc - gen:
             msgs.append(f'{T}: {len(loc - gen)} localized identities are no view identity (e.g. {sorted(loc - gen)[0]})')
-    return _fail(msgs, n, f'filter catalogue {detail}; {nloc} localizations of view identities')
+    nfig, npage = page_figures(path, msgs)
+    return _fail(msgs, n, f'filter catalogue {detail}; {nloc} localizations of view identities; {nfig} figures, {npage} page '
+                          f'copies of their size')
+
+
+def page_figures(path, msgs):
+    """V6's page-figure check (view_final): (figures, page copies checked); problems appended to ``msgs``."""
+    nfig = npage = 0
+    for T in _S().SNAPVIEW_TIERS:
+        loc = os.path.join(path, f'source_catalogs_loc_{T}')
+        figs = os.path.join(loc, 'figs')
+        sizes = {fn[:-4]: os.path.getsize(os.path.join(figs, fn)) for fn in os.listdir(figs) if fn.endswith('.png')} \
+            if os.path.isdir(figs) else {}
+        nfig += len(sizes)
+        with open(os.path.join(loc, 'localizations.csv'), newline='') as f:
+            multi = {r['identity_id'] for r in csv.DictReader(f) if int(r.get('n_det') or 0) > 1}
+        if multi - set(sizes):
+            msgs.append(f'{T}: {len(multi - set(sizes))} identities localized with more than one detection have no figure '
+                        f'(e.g. {sorted(multi - set(sizes))[0]})')
+        short, stale, missing = [], [], []
+        for p in sorted(glob.glob(os.path.join(path, f'source_catalogs_[IV]_{T}', '*_sources_survivors.csv'))):
+            with open(p, newline='') as f:
+                for r in csv.DictReader(f):
+                    i = (r.get('identity_id') or '').strip() or r['source_id']
+                    a = os.path.join(path, r['review_dir'], 'astrometry.png')
+                    try:
+                        sz = os.path.getsize(a)
+                    except OSError:
+                        sz = None
+                    if i in sizes:
+                        npage += 1
+                        if sz is None:
+                            missing.append(r['review_dir'])
+                        elif sz != sizes[i]:
+                            short.append(f"{r['review_dir']} ({sz} of {sizes[i]} bytes)")
+                    elif sz is not None:
+                        stale.append(r['review_dir'])
+        for what, xs in (('page copies of another size than their figure (truncated)', short),
+                         ('pages of a figured identity without astrometry.png', missing),
+                         ('pages of an identity without a figure holding an astrometry.png', stale)):
+            if xs:
+                msgs.append(f'{T}: {len(xs)} {what}, e.g. {xs[:3]}')
+    return nfig, npage
 
 
 @content_test('snapshot_card2_union')

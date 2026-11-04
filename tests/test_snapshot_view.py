@@ -36,7 +36,8 @@ and its driver snapshot_batch/comb_build_20261102.sh.
   m1         F1 proven on the reviewer's mutation M1 (a private copy of this tree whose build links an omitted panel it records as
              dropped): the build's read-back refuses, the view is moved aside (F7), nothing is left under its name
   seed       F10: the localize stage runs snapshot_localize_tiers.sh with PYTHONHASHSEED = serve.SNAPSHOT_FIGURE_HASHSEED
-  ready      the ready stage on the built view (stub localizations): G17 passes, the final tests pass, VIEW-READY-FOR-HIDES
+  ready      the ready stage on the built view (stub localizations): G17 passes, the final tests pass, VIEW-READY-FOR-HIDES;
+             V6's page figures refuse a truncated copy (production 2026-11-04), a missing one, a stale one and a missing figure
   py36       the child's module parses and loads under production's interpreter (Python 3.6)
   pin        production's ported files are the pinned ones (tests/production_pin.py; F3): the only test production's later
              commits fail - the stage's own tests above build the stage's view alone, production's side only in drift / parity /
@@ -1335,11 +1336,24 @@ def test_ready():
     from exopipe.phase3.core import record
     W = shared_world()
     SV = _SV()
+    # the page figures (V6): one identity localized with two 10-s detections gets its figure, copied into its 10-s pages
+    pages = collections.defaultdict(set)
+    for p in glob.glob(os.path.join(W['port'], 'source_catalogs_[IV]_10s', '*_sources_survivors.csv')):
+        for r in _rows(p):
+            pages[(r.get('identity_id') or '').strip() or r['source_id']].add(r['review_dir'])
+    fig_id = sorted(pages)[0]
     for T in ('10s', '1min'):
         ids = {r['source_id'] for p in glob.glob(os.path.join(W['port'], 'source_catalogs', '*_sources_survivors.csv'))
                for r in _rows(p)}
-        _wcsv(os.path.join(W['port'], f'source_catalogs_loc_{T}', 'localizations.csv'), ['identity_id', 'ra', 'dec', 'n_det'],
-              [dict(identity_id=i, ra='1', dec='2', n_det='1') for i in sorted(ids)[:3]])
+        rows_ = [dict(identity_id=i, ra='1', dec='2', n_det='1') for i in sorted(ids - {fig_id})[:3]]
+        if T == '10s':
+            rows_.append(dict(identity_id=fig_id, ra='1', dec='2', n_det='2'))
+            os.makedirs(os.path.join(W['port'], 'source_catalogs_loc_10s', 'figs'), exist_ok=True)
+            fig = os.path.join(W['port'], 'source_catalogs_loc_10s', 'figs', f'{fig_id}.png')
+            open(fig, 'wb').write(b'\x89PNG' + bytes(range(256)) * 300)
+            for d in pages[fig_id]:
+                shutil.copyfile(fig, os.path.join(W['port'], d, 'astrometry.png'))
+        _wcsv(os.path.join(W['port'], f'source_catalogs_loc_{T}', 'localizations.csv'), ['identity_id', 'ra', 'dec', 'n_det'], rows_)
     rr = record.Run('serve', ['test'], W['out'], CFG)
     plan = SV.ViewPlan(types.SimpleNamespace(run_label=VIEW, view_runs=','.join(W['runs']), view_omit=None), W['out'])
     try:
@@ -1351,6 +1365,26 @@ def test_ready():
     assert u.status == 'done', (u.status, u.reason, [t for t in u.tests if not t['passed']][:2])
     assert any(t['name'] == 'snapshot_view.final' and t['passed'] for t in u.tests)
     assert any(n.startswith('VIEW-READY-FOR-HIDES') for n in u.notes), u.notes
+    # V6 refuses a truncated page copy (production 2026-11-04: 0 / 65,536 / 131,072 bytes), a figured identity's page without
+    # its copy, a figure missing for an identity localized with more than one detection, and a copy in a figure-less page
+    from exopipe.phase3.lib.serve import tests_snapshot_view as TSV
+    d0 = sorted(pages[fig_id])[0]
+    a0 = os.path.join(W['port'], d0, 'astrometry.png')
+    good = open(a0, 'rb').read()
+    other = os.path.join(W['port'], sorted(d for i, ds in pages.items() if i != fig_id for d in ds)[0], 'astrometry.png')
+    for label, do, undo, want in (
+            ('a truncated copy', lambda: open(a0, 'wb').write(good[:65536]), lambda: open(a0, 'wb').write(good), 'truncated'),
+            ('a missing copy', lambda: os.remove(a0), lambda: open(a0, 'wb').write(good), 'without astrometry.png'),
+            ('a copy in a figure-less page', lambda: open(other, 'wb').write(good), lambda: os.remove(other), 'without a figure'),
+            ('a figure missing', lambda: os.rename(fig, fig + '.x'), lambda: os.rename(fig + '.x', fig), 'have no figure')):
+        do()
+        try:
+            ok_, _v, detail = TSV.view_final(W['port'], final=True)
+        finally:
+            undo()
+        assert not ok_ and want in detail, (label, ok_, detail[:500])
+    ok_, _v, detail = TSV.view_final(W['port'], final=True)
+    assert ok_ and '1 figures' in detail, detail[:300]
 
 
 TESTS = [test_production_pin, test_drift, test_py36, test_parity, test_repoint, test_kept_refusals, test_gates, test_filtercat_procs,

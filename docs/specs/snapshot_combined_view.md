@@ -188,7 +188,10 @@ Records: `<out>/_records/serve/<unit>.json`; the build's job, log and result und
   detections; the summary's counts; every general-catalogue row's directory exists.
 - V5 record: `deep_omission.csv` equals the omit stage's byte for byte; the record's removals equal the omit stage's (detections,
   dropped identities; per-tier rows kind for kind); the page line; the per-instant test.
-- V6 at ready: the filter catalogue's per-detection contract; the localized identities are view identities.
+- V6 at ready: the filter catalogue's per-detection contract; the localized identities are view identities; THE PAGE FIGURES:
+  every identity localized with more than one detection in a tier has its figure, each of its page directories of that tier holds
+  astrometry.png of the figure's size, and a page of an identity without a figure holds none (production's localizer left 7 of
+  11,245 page copies truncated on 2026-11-04, the V2 follow-up's parity; sizes, not bytes, so a full view's re-test stays cheap).
 
 ## Configuration (section serve)
 
@@ -334,6 +337,28 @@ Ported on branch wt-20261104-V2-follow (from 3833971); each is production's beha
   chain call (P-G21 a named table missing); the run content test (class snapshot_run) reads Card 2 (card2_removed.csv against the
   summary and the record) and the restore-only gate (restored_by against the record's two passes, the summary and every served
   detections.csv) back; the chain's literals CARD2_RATIO / CARD2_TIERS, RESTORED_BY, RESTORE_TOL_BEAMS are bound config keys.
+
+THE ROUND'S PARITY ON REAL DATA (2026-11-04; tests/parity_snapshot_view.py: production at the pin fa90670 - dbc40a6's builder
+and re-judging, SNAPCOMB_REJUDGE_PROCS=6, its filter catalogue SERIAL - against the stage at 008ec96 as a --parity run, omit ..
+ready; the frozen B6H2 + B6I2 + B6L copies with their chain records, the refusal record, the fleet records frozen 2026-11-04):
+
+- **The subset under the 11-04 code.** 43,553 served detections; 886 decisions, 144 OMIT keys + 23 wideband ones per image; 232
+  detections omitted (6,730 under the 11-03 code: in a subset view the nights of the batches left out counted as zero-rate nights -
+  the rate population, review T1), 5 removed by Card 2, 10 identities dropped; the re-judging reproduced 4,524 served sources, 69
+  (source, tier) touched, 48 still qualify, 3 re-judged out, 18 lose every member; 4,289 combined identities (211 from two or more
+  batches, 1 renamed), 12,108 page directories. Production's T1-T7 pass on both sides; every stage of the stage ended done with
+  every content test passed (G-V8, V1-V7), stale_best 0, no image absent from a member table (T2), the 5 served Card 2 rows all
+  matched (T3), every batch's Card 2 vintage 'view' (T7).
+- **The comparison.** 61,522 files in 16,416 directories on each side, the same sets. Identical: the general catalogue, the 138
+  per-tier view files, 12,108 page and 4,289 identity detections.csv, the 4 queues, the omission files, rejudged.csv, the filter
+  files (master_catalog.csv read by the stage's 6 processes = production's serial pass, 43,317 lines), the 29,052 panels (bytes:
+  the stage copies under the parity guard), the 140 localization inputs, both localization tables and offsets, all 4,529 figures,
+  and the summary but `seconds` (2,850 s, 6,200 s).
+- **The 9 differences, explained.** 2 localization build.log files, each naming its own output path. 7 page astrometry.png files
+  in PRODUCTION's view are truncated copies of their identical figures - 0, 65,536 or 131,072 bytes, each a byte prefix of the
+  figure - written by the localizer's figure pool (snapshot_localize_tiers.sh, shutil.copyfile) without an error; the stage's
+  copies, made by the same in-place script, are complete. A production defect, not a port difference; V6 now refuses a page copy
+  of another size than its figure.
 
 Not ported in this round (listed for the next): the restore-only wave's per-batch test against the run each new run replaces and
 its totals (exopipe_ops snapshot_restore_wave_diff.py, 8ff3fc8) and the wave's dated view driver comb_build_wave_20261104.sh (per
