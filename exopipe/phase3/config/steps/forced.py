@@ -434,7 +434,7 @@ class forced_wide_test(_Section):
     # (P_CONSISTENT, P_EXCESS; the binomial within each control source over the matched lines), its taper ratio
     # (RATIO_CONSISTENT, R_EXCESS; the matched lines' spread about kappa within each control source), the count of each
     # matched-line window (MATCH_MIN; the binomial within each control source) - within sources because a salt re-draws a
-    # line's direction, never its control source (validated against 20 global salts on real rows, wide_v3.SE_KIND). DECIDES =
+    # line's direction, never its control source (validated against 30 global salts on real rows, wide_v3.SE_KIND). DECIDES =
     # moved alone to the threshold's other side, the statistic changes the verdict or the set of named sources. With the flag,
     # results_v3.csv (and so forced_wide_v3.csv) gains bootstrap_n, centroid_z_se, knife_edge; candidates_v3.csv the errors.
     # None = production: none of these columns

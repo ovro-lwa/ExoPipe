@@ -666,12 +666,12 @@ def analyze(J, events, pool, v2pool, bdir, trace=None):
 # AMENDED-PRECISION-KNIFE-EDGE (3))
 # ---------------------------------------------------------------------------------------------------------------------
 
-# THE ERRORS THE FLAG USES (2026-11-04, validated on real rows against 20 independent global salts - every line re-rotated,
-# every bootstrap re-drawn: se_validate.py, 26 calibrated candidates of 5 rows): 'source' = the binomial / spread WITHIN each
-# control source (a salt re-draws a line's direction, never its control source: the between-source spread is no Monte Carlo
-# noise) - salt sd / error median 0.91 (p) and 1.02 (ratio), 23 and 24 of 26 within a factor of 1.5; 'line' = over all lines
-# alike - median 0.81 / 0.97, 21 and 23 of 26 (conservative: the misses overestimate, up to 2x). Lines without their source
-# (CONTROL_ORDER 'pool') fall back to 'line'.
+# THE ERRORS THE FLAG USES (2026-11-04, validated on real rows against 30 independent global salts - every line re-rotated,
+# every bootstrap re-drawn: se_validate.py, 26 calibrated candidates and 56 matched-line counts of 5 rows): 'source' = the
+# binomial / spread WITHIN each control source (a salt re-draws a line's direction, never its control source: the
+# between-source spread is no Monte Carlo noise) - salt sd / error median 0.89 (p), 1.00 (ratio), 0.95 (counts), 23, 25 and 53
+# of 26 / 26 / 56 within a factor of 1.5; 'line' = over all lines alike - median 0.77 / 0.99 / 0.84 (conservative: the misses
+# overestimate, up to 2x). Lines without their source (CONTROL_ORDER 'pool') fall back to 'line'.
 SE_KIND = 'source'
 
 

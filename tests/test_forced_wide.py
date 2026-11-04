@@ -726,8 +726,8 @@ def test_monte_carlo():
           1 / 1.5 <= q <= 1.5 and set(a[:, 2]) == {t.BOOTSTRAP}, q)
     CFG.reset()
     # the taper p and ratio: their errors (SE_KIND source) against 60 salt reruns (each salt rotates every control line). A
-    # salt moves a line within its 45-degree sector only; on the sky the burst field changes within a sector (20 salts on real
-    # rows: salt sd / error median 0.91 for p, 1.02 for the ratio - se_validate.py), and so does this smooth synthetic field
+    # salt moves a line within its 45-degree sector only; on the sky the burst field changes within a sector (30 salts on real
+    # rows: salt sd / error median 0.89 for p, 1.00 for the ratio - se_validate.py), and so does this smooth synthetic field
     # at 2 FWHM, where a sector spans 1.6 FWHM; at 1 FWHM (a sector of 0.8 FWHM, the disc 0.7 FWHM across) it changes less
     # and the error is conservative, never an underestimate
     offs = [(-60.0, -60.0), (60.0, -40.0), (-30.0, 70.0), (50.0, 50.0)]

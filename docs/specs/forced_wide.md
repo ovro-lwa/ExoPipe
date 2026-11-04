@@ -199,11 +199,18 @@ once (`... 9.10 vs 2 and 3, ...`).
 The errors are within control sources because a salt re-draws a line's direction, never its control source: the spread
 between sources is no Monte Carlo noise. A within-source estimate of zero (no control source with lines on both sides,
 for example no line at or above the target's ratio) is degenerate, not a zero error; the binomial over all lines is used
-then. On real rows (`se_validate.py`: 20 independent global salts, every line
-re-rotated and every bootstrap re-drawn, 26 calibrated candidates of 5 rows) the spread over the salts divided by the
-error has a median of 1.03 for the centroid z (3 of 3 within a factor of 1.5), 0.91 for p (23 of 26) and 1.02 for the
-ratio (24 of 26). The binomial over all lines alike gives 0.81 (21 of 26) and 0.97 (23 of 26). Its misses all
-overestimate, by up to 2×.
+then. On real rows (`se_validate.py`: 30 independent global salts, every line re-rotated and every bootstrap re-drawn, 26
+calibrated candidates, 56 matched-line counts and 3 bootstrapped centroids of 5 rows) the spread over the salts divided by
+the error has a median of 0.96 for the centroid z (3 of 3 within a factor of 1.5), 0.89 for p (23 of 26), 1.00 for the
+ratio (25 of 26) and 0.95 for the counts (53 of 56). The binomial over all lines alike gives 0.77 (20 of 26) for p and
+0.84 (50 of 56) for the counts; its misses all overestimate, by up to 2×. For the centroid alone (`zrow_boot.py`, 150-400
+salts per row) the ratio is 0.996-1.026 at 1000 resamples, and the realized error at the adaptive count is 0.016-0.018.
+
+**The flag's limit.** It tests one realization against its own estimated error. A statistic whose distribution straddles a
+threshold is flagged in most runs, not in all. On the gen5 run (2026-11-04, every job) the flag marked 5 of the 7 rows that
+differ from the served files. Re-run with 20 independent salts each (`flip_check.py`), all 7 flip between draws: the
+served outcome comes out in 6-13 of 20, the new one in 7-14. With `KNIFE_EDGE_SE` = 4 the same draws flag all 7, and every
+row the salts showed flipping, for 17 flags in 312 rows; with 2 they give 13.
 
 With the flag, `results_v3.csv`, and so `forced_wide_v3.csv`, gain `bootstrap_n`, `centroid_z_se` and `knife_edge`.
 `candidates_v3.csv` gains `p_emp_se`, `ratio_se`, `n_ctl_se` and `centroid_to_candidate_se`. With `KNIFE_EDGE_SE` None
