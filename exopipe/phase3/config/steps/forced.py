@@ -212,7 +212,8 @@ class forced_assoc(_Section):
 # centroid test, the evidence rules, v2's centering; the bursts and the jobs it tests). Implementation choices inside it are
 # the refactor chat's under its delegation (R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS): V2_CTL_DRAW and CONTROL_ORDER are
 # RULED by R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT; the Monte Carlo precision and its knife-edge flag
-# (TAPER_CTL_MAX, BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE, KNIFE_EDGE_DRAWS, KNIFE_EDGE_DECIDE) by its amendment
+# (TAPER_CTL_MAX, BOOT_DRAW, BOOT_Z_SE, BOOT_MAX, KNIFE_EDGE_SE, KNIFE_EDGE_DRAWS, KNIFE_EDGE_DRAWS_MAX, KNIFE_EDGE_DECIDE) by its
+# amendment
 # R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE. Spec: docs/specs/forced_wide.md.
 # =====================================================================================================================
 
@@ -246,7 +247,8 @@ class forced_wide(_Section):
     BURSTS_DIR = 'bursts'                        # wide_search: <BURSTS_DIR>/<S>_<identity>_<band>.npz
     RESULTS = 'results_v3.csv'                   # wide_test: one row per Stokes x tier x target (forced_wide_v3.py:60)
     CANDIDATES = 'candidates_v3.csv'             # wide_test: one row per tested candidate
-    # the file each forced run carries and the figure reads (source_astrometry_panel.load:119, its literal)
+    # the file each of the 4 tested forced runs (RUNS) carries and the figure reads (source_astrometry_panel.load:119, its
+    # literal); the 10-minute and deep forced runs neither hold nor read it
     PUBLISHED = 'forced_wide_v3.csv'
     # ---- THE JOBS (forced_ambiguous.py 2026-11-01, forced_wide_jobs.py, v3/jobs_ext.py)
     # AMBIGUOUS: the nearest cataloged background source (VLSSr / TGSS / GLEAM entry, S74 >= AMB_MIN_S74_JY) within
@@ -442,16 +444,21 @@ class forced_wide_test(_Section):
     # between draws - and 10 of the 12 rows seen flipping; at 4 all of them, 17 flags in 312 rows against 13)
     KNIFE_EDGE_SE = 4.0
     # THE KNIFE-EDGE ROWS' DRAWS (the refactor chat's decisions, 2026-11-04, under the same amendment): every flagged row is
-    # re-run KNIFE_EDGE_DRAWS times - the approved method itself, each draw a salt of its own in place of SEED (a stable hash of
-    # (SEED, the target's (Stokes, identity), k), k < KNIFE_EDGE_DRAWS) - and a knife-edge row is DECIDED only when its own
-    # draws decide it (KNIFE_EDGE_DECIDE): its verdict class is published only if the Wilson interval at that confidence of
-    # the class's fraction of the draws lies wholly above 1/2 (K = 20: 15 of 20 or more); otherwise "UNDECIDED (knife-edge:
-    # the method's random draws split - <class> in a of 20, <class> in b of 20)". A source is named only if decidedly named
-    # in the same sense; one named in an undecided fraction (6-14 of 20) is listed in named_knife_edge ("knife-edge: <source>
-    # named in n of 20 draws"), never in the named set. Columns: mc_draws (a decided row's fraction), mc_outcomes (every
+    # re-run in Monte Carlo draws of the approved method itself - draw k has a salt of its own in place of SEED, a stable hash
+    # of (SEED, the target's (Stokes, identity), k) - KNIFE_EDGE_DRAWS at first and, while its verdict class or one of its
+    # sources stays undecided, KNIFE_EDGE_DRAWS more, up to KNIFE_EDGE_DRAWS_MAX (k = 0 .. 99: reproducible, order-free; "20
+    # draws are too few near 75%"). A knife-edge row is DECIDED only when its draws decide it (KNIFE_EDGE_DECIDE): its verdict
+    # class is published only if the Wilson interval at that confidence of the class's fraction of the K draws lies wholly
+    # above 1/2 (K = 20: 15 or more; 40: 27; 60: 38; 80: 49; 100: 60); otherwise "UNDECIDED (knife-edge: the method's random
+    # draws split - <class> in a of K, <class> in b of K)". A source is named only if decidedly named in the same sense; one
+    # named in an undecided fraction is listed in named_knife_edge ("knife-edge: <source> named in n of K draws"), never in the
+    # named set; one at or below the lower line is decidedly not named (in mc_outcomes only). THE SETTLED CASE - a naming class
+    # decided, no source decidedly named - publishes the class with its sources' split, "<class> (source split: A in a of K, B
+    # in b of K draws)", and no named source. Columns: mc_draws (a decided row's fraction), mc_n (K), mc_outcomes (every
     # outcome's count), mc_row (default / draw k / split). Unflagged rows keep their single draw. None = production: the
     # single draw (no draws); with KNIFE_EDGE_SE None no row is flagged and nothing is drawn
     KNIFE_EDGE_DRAWS = 20
+    KNIFE_EDGE_DRAWS_MAX = 100
     KNIFE_EDGE_DECIDE = 0.95
     # VERDICT: centroid z >= Z_OFF not centered on the target, < Z_ON centered; a candidate the centroid lies within Z_C_ON of
     # (and within CENTER_WITHIN FWHM of the target) is direct evidence; near candidates v2 cannot separate count when z_c <
@@ -526,7 +533,7 @@ class forced_wide_test(_Section):
     # wide_publish: each named source's position, the source of that name among the physical sources (>= S_MIN_JY) within
     # this of the target (publish_v3_to_runs.py:16-27); a name not found refuses the publication (W-NAMED)
     NAMED_RADIUS_ARCMIN = 200.0
-    NULLABLE_KEYS = ('V2_CTL_DRAW', 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS')
+    NULLABLE_KEYS = ('V2_CTL_DRAW', 'TAPER_CTL_MAX', 'BOOT_Z_SE', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS', 'KNIFE_EDGE_DRAWS_MAX')
     RULED = {**{k: 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED' for k in (
         'MU', 'REF_MHZ', 'SPECTRAL_INDEX', 'CAPABLE_FRACTION', 'S_MIN_JY', 'R_CAND', 'NEAR', 'CUT_HALF_ARCMIN', 'CUT_EDGE_ARCMIN',
         'DISC', 'STRIP', 'BIN', 'SIDE', 'MIN_BIN', 'DISC_GRID', 'CTL_FLUX', 'CTL_MIN_JY', 'CTL_DIRS', 'CTL_KEY_PER_DEG',
@@ -541,7 +548,7 @@ class forced_wide_test(_Section):
              'CONTROL_ORDER': 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',
              **{k: 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE' for k in (
                  'TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS',
-                 'KNIFE_EDGE_DECIDE')}}
+                 'KNIFE_EDGE_DRAWS_MAX', 'KNIFE_EDGE_DECIDE')}}
 
 
 class night_activity(_Section):

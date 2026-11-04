@@ -178,7 +178,8 @@ RESULT_COLUMNS = ('stokes', 'identity', 'target', 'tier', 'n_events', 'event_jy_
 # with the knife-edge flag (forced_wide_test.KNIFE_EDGE_SE set): the bootstrap's resamples, the centroid z's Monte Carlo error,
 # the flag, and a flagged row's Monte Carlo draws (KNIFE_EDGE_DRAWS: the majority's fraction, every outcome's count, where the
 # row's numbers come from)
-MC_RESULT_COLUMNS = ('bootstrap_n', 'centroid_z_se', 'knife_edge', 'named_knife_edge', 'mc_draws', 'mc_outcomes', 'mc_row')
+MC_RESULT_COLUMNS = ('bootstrap_n', 'centroid_z_se', 'knife_edge', 'named_knife_edge', 'mc_draws', 'mc_n', 'mc_outcomes',
+                     'mc_row')
 NAMING = ('BACKGROUND SOURCE', 'CONSISTENT WITH A BACKGROUND SOURCE')
 _KE = re.compile(r'^(?P<stat>.+) (?P<v>-?[0-9.]+(?:e[-+]?[0-9]+)?) vs (?P<t>[0-9.]+(?:e[-+]?[0-9]+)?(?: and [0-9.]+(?:e[-+]?[0-9]+)?)?), '
                  r'Monte Carlo error (?P<se>[0-9.]+(?:e[-+]?[0-9]+)?)$')
@@ -226,22 +227,25 @@ def knife_edge_problems(r, k):
 def verdict_problems(r, tol=0.05):
     """[problem] of one results row: its verdict against its own numbers (the rule of forced_wide_v3.verdict_row; the centroid
     z is written to 0.1, so a z within ``tol`` of a threshold may sit on either side)."""
-    from exopipe.phase3.lib.forced.wide_v3 import VERDICTS, SPLIT_PREFIX
+    from exopipe.phase3.lib.forced.wide_v3 import VERDICTS, SPLIT_PREFIX, verdict_class
     t = _cfg().forced_wide_test
-    v = r['verdict']
+    v_pub = r['verdict']
     out = []
     split = r.get('mc_row') == 'split'             # its draws split: UNDECIDED (knife-edge ...) whatever this draw's z
-    if split and not (v.startswith(SPLIT_PREFIX) and v.endswith(')')):
-        return ['a split row with the verdict %r' % v[:60]]
+    if split and not (v_pub.startswith(SPLIT_PREFIX) and v_pub.endswith(')')):
+        return ['a split row with the verdict %r' % v_pub[:60]]
+    v = verdict_class(v_pub)                       # a source split ("<class> (source split: ...)") reads as its class
+    if v != v_pub and not split and not (r.get('mc_row') or '').startswith(('default', 'draw ')):
+        return ['the verdict %r on a row without Monte Carlo draws' % v_pub[:60]]
     if v not in VERDICTS and not split:
-        return ['verdict %r unknown' % v]
+        return ['verdict %r unknown' % v_pub]
     by_band = sum(int(x.split(':')[1]) for x in r['bursts_by_band'].split()) if r['bursts_by_band'] else 0
     if by_band != int(r['bursts_at_target']):
         out.append('bursts_by_band sum %d != bursts_at_target %s' % (by_band, r['bursts_at_target']))
     if int(r['n_capable']) > int(r['n_candidates']):
         out.append('n_capable > n_candidates')
-    if bool(r['named']) != (v in NAMING):
-        out.append('named %r with verdict %s' % (r['named'][:60], v))
+    if bool(r['named']) != (v in NAMING and v == v_pub):
+        out.append('named %r with verdict %s' % (r['named'][:60], v_pub[:60]))
     if int(r['bursts_at_target']) < t.MIN_NOBS or r['centroid_z'] == '':
         if not v.startswith('UNDECIDED (fewer than 3'):
             out.append('fewer than %d bursts / no centroid, verdict %s' % (t.MIN_NOBS, v))
@@ -286,17 +290,21 @@ def _parse_outcome(txt):
     return txt, frozenset()
 
 
-def draws_problems(r, K):
-    """[problem] of a row's Monte Carlo draws (K = the run's KNIFE_EDGE_DRAWS): exactly the knife-edge rows have them; their
-    outcome counts (mc_outcomes) add up to K, most frequent first; and the row is what those counts DECIDE (wide_v3.
-    draws_decision, re-derived here from mc_outcomes): the decided verdict class and decidedly named sources with mc_draws,
-    or the split verdict with no named source; named_knife_edge = the sources named in an undecided fraction."""
+def draws_problems(r, K, KMAX=None):
+    """[problem] of a row's Monte Carlo draws (K = the run's KNIFE_EDGE_DRAWS, KMAX its KNIFE_EDGE_DRAWS_MAX): exactly the
+    knife-edge rows have them; their outcome counts (mc_outcomes) add up to the row's draws (mc_n: a multiple of K, K to KMAX),
+    most frequent first; the row stopped drawing before KMAX only when settled; and the row is what those counts DECIDE
+    (wide_v3.draws_decision, re-derived here from mc_outcomes): the decided verdict class and decidedly named sources with
+    mc_draws; the settled case's class and source split; or the split verdict with no named source; named_knife_edge = the
+    sources named in an undecided fraction."""
     from exopipe.phase3.lib.forced import wide_v3 as V3
     md, mo, mr, nk = r['mc_draws'], r['mc_outcomes'], r['mc_row'], r.get('named_knife_edge', '')
+    mn = r.get('mc_n', '')
     if not K or not r['knife_edge']:
-        return ['Monte Carlo draws on a row without them (no flag, or KNIFE_EDGE_DRAWS None)'] if (md or mo or mr or nk) else []
+        return ['Monte Carlo draws on a row without them (no flag, or KNIFE_EDGE_DRAWS None)'] if (md or mo or mr or nk or mn) else []
     if not (mo and mr):
         return ['a knife-edge row without its Monte Carlo draws']
+    KMAX = max(KMAX or K, K)
     out, outs = [], []
     for ent in mo.split(' | '):
         n, _sep, txt = ent.partition(': ')
@@ -306,24 +314,34 @@ def draws_problems(r, K):
         v_, names = _parse_outcome(txt)
         outs += [(v_, sorted(names))] * int(n)
     ns = [int(e.partition(': ')[0]) for e in mo.split(' | ') if e.partition(': ')[0].isdigit()]
-    if len(outs) != K or ns != sorted(ns, reverse=True):
-        return out + ['mc_outcomes count %d draws (not %d) or not most frequent first: %s' % (len(outs), K, ns)]
-    dec = V3.draws_decision(outs, K, _cfg().forced_wide_test.KNIFE_EDGE_DECIDE)
-    if nk != V3.knife_named_text(dec, K):
-        out.append('named_knife_edge %r, the draws give %r' % (nk[:60], V3.knife_named_text(dec, K)[:60]))
+    Kr = len(outs)
+    if str(Kr) != str(mn) or Kr % K or not K <= Kr <= KMAX or ns != sorted(ns, reverse=True):
+        return out + ['mc_outcomes count %d draws (mc_n %r; batches of %d to %d) or not most frequent first: %s'
+                      % (Kr, mn, K, KMAX, ns)]
+    conf = _cfg().forced_wide_test.KNIFE_EDGE_DECIDE
+    dec = V3.draws_decision(outs, Kr, conf)
+    if Kr < KMAX and not V3.settled(dec):
+        out.append('drawing stopped at %d of %d with the row not settled' % (Kr, KMAX))
+    if nk != V3.knife_named_text(dec, Kr):
+        out.append('named_knife_edge %r, the draws give %r' % (nk[:60], V3.knife_named_text(dec, Kr)[:60]))
     names_row = sorted(V3.named_names(r['named']))
     if dec['cls'] is None:
-        if mr != 'split' or r['verdict'] != V3.split_verdict(dec, K) or r['named'] or md:
+        if mr != 'split' or r['verdict'] != V3.split_verdict(dec, Kr) or r['named'] or md:
             out.append('the draws split (%s) but the row reads %s / %r / %r / %r' % (
                 ', '.join('%s %d' % kv for kv in dec['classes'])[:80], mr, r['verdict'][:50], r['named'][:30], md[:30]))
+    elif dec['no_source']:
+        if r['verdict'] != V3.source_split_verdict(dec, Kr) or r['named'] or md != '%s in %d of %d Monte Carlo draws' % (
+                dec['cls'], dec['n'], Kr):
+            out.append('the draws decide %s with no source, the row reads %r / %r / %r' % (dec['cls'], r['verdict'][:70],
+                                                                                         r['named'][:30], md[:40]))
     else:
         if r['verdict'] != dec['cls'] or names_row != sorted(dec['named']):
             out.append('the draws decide %s naming %s, the row reads %s naming %s' % (dec['cls'], sorted(dec['named']),
                                                                                    r['verdict'], names_row))
-        if md != V3.decided_text(dec, K):
-            out.append('mc_draws %r, the draws give %r' % (md[:80], V3.decided_text(dec, K)[:80]))
-        if not (mr == 'default' or (mr.startswith('draw ') and mr[5:].isdigit() and int(mr[5:]) < K)):
-            out.append('mc_row %r' % mr)
+        if md != V3.decided_text(dec, Kr):
+            out.append('mc_draws %r, the draws give %r' % (md[:80], V3.decided_text(dec, Kr)[:80]))
+    if dec['cls'] is not None and not (mr == 'default' or (mr.startswith('draw ') and mr[5:].isdigit() and int(mr[5:]) < Kr)):
+        out.append('mc_row %r' % mr)
     return out
 
 
@@ -331,7 +349,7 @@ _ABSENT = object()
 
 
 @content_test('forced_wide_results')
-def results_consistent(path, knife_edge_se=_ABSENT, knife_edge_draws=_ABSENT, **ctx):
+def results_consistent(path, knife_edge_se=_ABSENT, knife_edge_draws=_ABSENT, knife_edge_draws_max=_ABSENT, **ctx):
     """one row per (Stokes, tier, target), each verdict consistent with its numbers; the Monte Carlo columns exactly when the
     run flagged knife-edges (knife_edge_se: the run's KNIFE_EDGE_SE; absent - an older record - either column set)"""
     rows, cols = _rows(path)
@@ -351,7 +369,8 @@ def results_consistent(path, knife_edge_se=_ABSENT, knife_edge_draws=_ABSENT, **
         if mc:
             probs += ['%s: %s' % (k_, p) for p in knife_edge_problems(r, k if k is not None else 2.0)]
             K = knife_edge_draws if knife_edge_draws is not _ABSENT else _cfg().forced_wide_test.KNIFE_EDGE_DRAWS
-            probs += ['%s: %s' % (k_, p) for p in draws_problems(r, K)]
+            KM = knife_edge_draws_max if knife_edge_draws_max is not _ABSENT else _cfg().forced_wide_test.KNIFE_EDGE_DRAWS_MAX
+            probs += ['%s: %s' % (k_, p) for p in draws_problems(r, K, KM)]
     return (not probs and len(rows) > 0), len(rows), ('%d rows' % len(rows) if not probs else '; '.join(probs[:5]))
 
 

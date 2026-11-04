@@ -151,7 +151,8 @@ def test_config():
     from exopipe.phase3.core import ledger
     V3ID, ORDID = 'R-GREGG-20261103-FORCED-WIDE-V3-APPROVED', 'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT'
     AMDID = ORDID + '-AMENDED-PRECISION-KNIFE-EDGE'
-    MC = ('TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS', 'KNIFE_EDGE_DECIDE')
+    MC = ('TAPER_CTL_MAX', 'BOOT_Z_SE', 'BOOT_MAX', 'BOOT_DRAW', 'KNIFE_EDGE_SE', 'KNIFE_EDGE_DRAWS', 'KNIFE_EDGE_DRAWS_MAX',
+          'KNIFE_EDGE_DECIDE')
     ruled = {(sec, k): v for sec in ('forced_wide', 'forced_wide_search', 'forced_wide_test', 'night_activity')
              for k, v in (getattr(CFG._section(sec), 'RULED', None) or {}).items()}
     check('RULED: CONTROL_ORDER and V2_CTL_DRAW cite the refactor decision, the Monte Carlo keys its amendment, the rest '
@@ -163,8 +164,10 @@ def test_config():
     check('the 900-line cap is gone: TAPER_CTL_MAX None by default, no CTL_CAP key', t.TAPER_CTL_MAX is None
           and not hasattr(t, 'CTL_CAP'))
     check('the bootstrap: its own seed per (target, tier), until the centroid z\'s Monte Carlo error <= 0.02; the knife-edge '
-          'window 4 errors, its rows the majority of 20 draws', (t.BOOT_DRAW, t.BOOT_Z_SE, t.BOOTSTRAP, t.KNIFE_EDGE_SE,
-                                                                  t.KNIFE_EDGE_DRAWS) == ('target', 0.02, 1000, 4.0, 20)
+          'window 4 errors, its rows decided by draws (20 at a time, up to 100)', (t.BOOT_DRAW, t.BOOT_Z_SE, t.BOOTSTRAP,
+                                                                                  t.KNIFE_EDGE_SE, t.KNIFE_EDGE_DRAWS,
+                                                                                  t.KNIFE_EDGE_DRAWS_MAX, t.KNIFE_EDGE_DECIDE)
+          == ('target', 0.02, 1000, 4.0, 20, 100, 0.95)
           and t.BOOT_MAX >= 100 * t.BOOTSTRAP)
     check('RULED: the approved method\'s thresholds are ruled (MU, the taper, the centroid, v2), operations are not',
           all(('forced_wide_test', k) in ruled for k in ('MU', 'P_CONSISTENT', 'R_EXCESS', 'CEN_FLOOR', 'Z_OFF', 'V2_POWER_MIN',
@@ -353,6 +356,8 @@ def test_cli_gates():
     rc, err = cli(base + ['--stages', 'wide_search', '--stokes', 'I'])
     check('cli: --stokes refused for W (use --wide-only)', rc == 2 and '--wide-only' in err, err[-300:])
     r8 = runs8(os.path.join(TMP, 'runs8'))
+    for s_, c_ in CFG.forced_wide.RUNS:                # the publication's run directories under <out>/review (a clean dry run)
+        os.makedirs(os.path.join(out, 'review', CFG.forced_wide.RUN_NAME.format(S=s_, cadence=c_)), exist_ok=True)
     rc, err = cli(base + ['--stages', 'wide_jobs,wide_search,wide_test,wide_publish', '--wide-runs', r8, '--dry-run'])
     check('cli: W dry run exit 0, plans every stage', rc == 0 and all(('[%s]' % s) in _LAST_OUT[0] for s in
                                                                       ('wide_jobs', 'wide_search', 'wide_test', 'wide_publish')),
@@ -406,7 +411,8 @@ def test_cli_gates():
     for kv, name in (('forced_wide_test.TAPER_CTL_MAX=0', 'TAPER_CTL_MAX'), ("forced_wide_test.BOOT_DRAW='x'", 'BOOT_DRAW'),
                      ('forced_wide_test.BOOT_Z_SE=-0.1', 'BOOT_Z_SE'), ('forced_wide_test.BOOT_MAX=10', 'BOOT_MAX'),
                      ('forced_wide_test.KNIFE_EDGE_SE=0.0', 'KNIFE_EDGE_SE'), ('forced_wide_test.KNIFE_EDGE_DRAWS=1', 'KNIFE_EDGE_DRAWS'),
-                     ('forced_wide_test.KNIFE_EDGE_DECIDE=0.4', 'KNIFE_EDGE_DECIDE')):
+                     ('forced_wide_test.KNIFE_EDGE_DECIDE=0.4', 'KNIFE_EDGE_DECIDE'),
+                     ('forced_wide_test.KNIFE_EDGE_DRAWS_MAX=30', 'KNIFE_EDGE_DRAWS_MAX')):
         rc, err = cli(base + ['--stages', 'wide_test', '--set', kv])
         check('cli: %s refused before any job runs' % kv, rc == 2 and name in err, err[-300:])
     with catdir('/tmp/not_the_radio_catalogues'):
@@ -476,6 +482,23 @@ def test_publish():
     open(bad, 'w').write(txt.replace('163.19400,71.99017', '163.19400,72.99017'))
     t = validate.run('forced_wide_published', bad, results=res, jobs=jobs, stokes='I', tier='10s')
     check('published content test fails a named position at the wrong distance', not all(x['passed'] for x in t))
+    # publishing again: the file it replaces is backed up beside it (<file>.bak_<UTC>), its sha1 and the new one's recorded
+    before = open(p, 'rb').read()
+    rc, err = cli(base + ['--fresh'])
+    r = rec(out, 'W_publish_Run_SNAPFORCED_I10s_gen5')
+    m = r.get('meta') or {}
+    bak = m.get('backup') or ''
+    import hashlib
+    check('cli: a replaced file is backed up first (<file>.bak_<UTC>, the same bytes), its sha1 and the new file\'s in the record',
+          rc == 0 and bak.startswith(p + '.bak_') and os.path.exists(bak) and open(bak, 'rb').read() == before
+          and m.get('backup_sha1') == hashlib.sha1(before).hexdigest() == m.get('replaced_sha1')
+          and m.get('published_sha1') == hashlib.sha1(open(p, 'rb').read()).hexdigest(), (rc, m))
+    rc, err = cli(base[:-2] + ['--stages', 'wide_publish', '--dry-run', '--snap-review-root', '/data07/gh/phase3/snapshot_search/review'])
+    check('dry run: publishing into the served runs (a production root) is planned as W-ROOT for each of the 4 runs, exit 2',
+          rc == 2 and _LAST_OUT[0].count('W-ROOT') >= 4, (rc, _LAST_OUT[0][-500:]))
+    rc, err = cli(base[:-2] + ['--stages', 'wide_publish', '--dry-run', '--snap-review-root', os.path.join(TMP, 'no_review')])
+    check('dry run: a run directory absent at the review root is planned as W-RUNDIR, exit 2', rc == 2 and 'W-RUNDIR' in _LAST_OUT[0],
+          (rc, _LAST_OUT[0][-400:]))
     # W-NAMED: a name not found around the target
     row2 = dict(row, named="VLSSr J000000.0+000000 9.9 Jy at 31.3'")
     write_csv(res, [row2], list(RESULT_COLUMNS))
@@ -879,7 +902,7 @@ def test_draws():
 
     def row(ident, tier, v, named='', ke='', z='2.5'):
         return dict(stokes='I', identity=ident, tier=tier, verdict=v, named=named, knife_edge=ke, centroid_z=z, named_knife_edge='',
-                    mc_draws='', mc_outcomes='', mc_row='')
+                    mc_draws='', mc_n='', mc_outcomes='', mc_row='')
 
     def crow(ident, tier, tag):
         return dict(stokes='I', identity=ident, tier=tier, candidate='VLSSr J1', tag=tag)
@@ -901,13 +924,15 @@ def test_draws():
     tasks = V3.draw_tasks([None] * 7, outs, 20)
     check('draw_tasks: K draws of every job with a knife-edge row, its flagged tiers only; unflagged jobs none',
           len(tasks) == 120 and {t[0] for t in tasks} == set(range(6)) and {t[2] for t in tasks if t[0] == 0} == {('10s',)})
-    douts = []
-    for i, k, tiers in tasks:
+
+    def drawn(i, k, tier):
         v, nm = plan[i][(k + 3) % 20]                      # the draws' order is not the outcomes'
-        douts.append(([dict(row(jobs[i], tiers[0], v, nm, '', '2.6'), centroid_z='2.%d' % (k % 10))],
-                      [crow(jobs[i], tiers[0], 'draw %d' % k)]))
+        return dict(row(jobs[i], tier, v, nm, '', '2.6'), centroid_z='2.%d' % (k % 10)), [crow(jobs[i], tier, 'draw %d' % k)]
+    by = {(i, tiers[0]): {} for i, _k, tiers in tasks}
+    for i, k, tiers in tasks:
+        by[(i, tiers[0])][k] = drawn(i, k, tiers[0])
     CFG.authorize([], out=TMP)
-    new = V3.apply_draws(outs, tasks, douts, 20)
+    new = V3.apply_draws(outs, by)
     CFG.reset()
     r0, r1, r2, r3, r4, r5 = (new[i][0][0] for i in range(6))
     check('decided: CONSISTENT in 20 of 20, X named in 20 (named), Y in 14 (knife-edge, never named); the default draw\'s row',
@@ -925,23 +950,66 @@ def test_draws():
     check('decided, the default draw\'s named set {X, Y} is not the decided {X}: the first draw\'s row that has it, its candidates',
           r3['named'] == X and r3['mc_row'] == 'draw %d' % k3 and r3['centroid_z'] == '2.%d' % (k3 % 10) and r3['knife_edge'] == KE
           and r3['named_knife_edge'] == '' and new[3][1][0]['tag'] == 'draw %d' % k3, r3)
-    check('a naming class decided but no source decidedly named: split, both sources knife-edge named',
-          r4['mc_row'] == 'split' and r4['verdict'].startswith(V3.SPLIT_PREFIX) and 'no source named in a decided majority' in r4['verdict']
-          and r4['named'] == '' and r4['named_knife_edge'] == ('knife-edge: VLSSr J1 named in 10 of 20 draws; knife-edge: VLSSr J2 '
-                                                             'named in 10 of 20 draws'), r4)
+    check('THE SETTLED CASE (a naming class decided, no source decidedly named): the class with its sources\' split, no named '
+          'source, both knife-edge named',
+          r4['verdict'] == '%s (source split: VLSSr J1 in 10 of 20, VLSSr J2 in 10 of 20 draws)' % CO and r4['named'] == ''
+          and r4['mc_row'] == 'default' and r4['mc_draws'] == '%s in 20 of 20 Monte Carlo draws' % CO
+          and r4['named_knife_edge'] == ('knife-edge: VLSSr J1 named in 10 of 20 draws; knife-edge: VLSSr J2 '
+                                         'named in 10 of 20 draws') and V3.verdict_class(r4['verdict']) == CO, r4)
     check('KELT-24-like: 19 of 20 name both sources - both decidedly named, the default draw\'s row',
           r5['named'] == X + '; ' + Y and r5['mc_row'] == 'default' and r5['named_knife_edge'] == ''
           and r5['mc_draws'] == '%s in 20 of 20 Monte Carlo draws; named: VLSSr J1 in 20 of 20, VLSSr J2 in 19 of 20' % CO, r5)
     check('an unflagged row keeps its single draw', new[0][0][1] == outs[0][0][1] and new[6][0][0] == outs[6][0][0])
     rows_ = [r0, r1, r2, r3, r4, r5, new[0][0][1], new[6][0][0]]
+    check('mc_n: every flagged row holds its number of draws (20 here), an unflagged row none',
+          all(r['mc_n'] == 20 for r in (r0, r1, r2, r3, r4, r5)) and new[6][0][0]['mc_n'] == '')
     CFG.authorize([], out=TMP)
-    check('draws content test: every row passes (the decision re-derived from its mc_outcomes)', not any(draws_problems(r, 20)
-                                                                                                  for r in rows_),
-          [draws_problems(r, 20) for r in rows_])
+    check('draws content test: every row passes (the decision re-derived from its mc_outcomes; batches of 20, at most 20)',
+          not any(draws_problems(r, 20, 20) for r in rows_), [draws_problems(r, 20, 20) for r in rows_])
     check('draws content test: a knife-edge source in the named set, a split published as decided, a wrong fraction fail',
-          draws_problems(dict(r0, named=X + '; ' + Y), 20) and draws_problems(dict(r1, verdict=BG, named=X, mc_row='default'), 20)
-          and draws_problems(dict(r5, mc_draws=r5['mc_draws'].replace('19 of', '18 of')), 20)
-          and draws_problems(dict(r0, named_knife_edge=''), 20) and draws_problems(dict(new[6][0][0], mc_row='default'), 20))
+          draws_problems(dict(r0, named=X + '; ' + Y), 20, 20) and draws_problems(dict(r1, verdict=BG, named=X, mc_row='default'), 20, 20)
+          and draws_problems(dict(r5, mc_draws=r5['mc_draws'].replace('19 of', '18 of')), 20, 20)
+          and draws_problems(dict(r0, named_knife_edge=''), 20, 20) and draws_problems(dict(new[6][0][0], mc_row='default'), 20, 20)
+          and draws_problems(dict(r4, verdict=CO), 20, 20))
+    check('draws content test: drawing stopped at 20 of 100 with a source undecided fails (sequential draws)',
+          draws_problems(r0, 20, 100) and not draws_problems(r2, 20, 100), draws_problems(r0, 20, 100))
+    CFG.reset()
+    # SEQUENTIAL DRAWS: 20, and while the class or a source stays undecided 20 more, up to 100 (draw k = the same salt in any batch)
+    UN = 'UNDECIDED'
+    seq = {0: lambda k: (CO, X + '; ' + Y) if k == 0 else (CO, X),                       # settled at 20 (Y 1 of 20: decidedly not)
+           1: lambda k: (NC, '') if k % 20 < (14 if k < 20 else 17) else (UN, ''),        # 14 of 20 split, 31 of 40 decided
+           2: lambda k: (BG, X) if k % 2 else (NC, ''),                                   # 50 / 50: split at 100
+           3: lambda k: (CO, X + '; ' + Y) if k % 2 else (CO, X),                         # Y at 50%: knife-edge at 100
+           4: lambda k: (CO, X) if k % 2 else (CO, Y)}                                    # the settled case at 100
+    outs2 = [([row(jobs[i], '10s', seq[i](0)[0], seq[i](0)[1], KE, '2.5')], [crow(jobs[i], '10s', 'default')]) for i in range(5)]
+    seen = []
+
+    def fake_draw(task):
+        i, k, tiers = task
+        seen.append((i, k))
+        v, nm = seq[i](k)
+        return [dict(row(jobs[i], tiers[0], v, nm, '', '2.6'), centroid_z='2.%d' % (k % 10))], [crow(jobs[i], tiers[0], 'draw %d' % k)]
+    real = V3._draw
+    V3._draw = fake_draw
+    logs = []
+    try:
+        by2 = V3.sequential_draws([None] * 5, outs2, lambda f, t: [f(x) for x in t], log=logs.append)
+    finally:
+        V3._draw = real
+    new2 = V3.apply_draws(outs2, by2)
+    q = [new2[i][0][0] for i in range(5)]
+    check('sequential draws: settled at 20 / 40, still undecided at 100 -> 20, 40, 100, 100, 100 draws, k counting on (0 .. 99)',
+          [r['mc_n'] for r in q] == [20, 40, 100, 100, 100] and sorted(k for i, k in seen if i == 2) == list(range(100))
+          and sorted(k for i, k in seen if i == 1) == list(range(40)), ([r['mc_n'] for r in q], logs))
+    check('sequential draws: 31 of 40 decides NOT CENTERED; 50 / 50 splits at 100; Y at 50 of 100 stays knife-edge; the settled case',
+          q[1]['verdict'] == NC and q[1]['mc_draws'] == '%s in 31 of 40 Monte Carlo draws' % NC
+          and q[2]['verdict'].startswith(V3.SPLIT_PREFIX) and 'in 50 of 100' in q[2]['verdict']
+          and q[3]['named'] == X and q[3]['named_knife_edge'] == 'knife-edge: VLSSr J2 named in 50 of 100 draws'
+          and q[4]['verdict'] == '%s (source split: VLSSr J1 in 50 of 100, VLSSr J2 in 50 of 100 draws)' % CO, [r['verdict'] for r in q])
+    CFG.authorize([], out=TMP)
+    check('sequential draws: every row passes the content test (batches of 20 up to 100)', not any(draws_problems(r, 20, 100)
+                                                                                                   for r in q),
+          [draws_problems(r, 20, 100) for r in q])
     CFG.reset()
     base = dict.fromkeys(RESULT_COLUMNS, '')
     base.update(stokes='I', identity='X', target='X', tier='10s', n_events='9', event_jy_median='5', bursts_at_target='5',
@@ -952,6 +1020,52 @@ def test_draws():
           not verdict_problems(dict(base, verdict=sv, mc_row='split')) and verdict_problems(dict(base, verdict='UNDECIDED'))
           and verdict_problems(dict(base, verdict=sv)) and verdict_problems(dict(base, verdict=BG, named=X, mc_row='split')),
           (verdict_problems(dict(base, verdict=sv, mc_row='split')), verdict_problems(dict(base, verdict=sv))))
+    ss = '%s (source split: VLSSr J1 in 10 of 20, VLSSr J2 in 10 of 20 draws)' % BG
+    check('verdict rule: a source split reads as its class (BACKGROUND at z 3.5), with no named source, only on a row with draws',
+          not verdict_problems(dict(base, verdict=ss, mc_row='default')) and verdict_problems(dict(base, verdict=ss))
+          and verdict_problems(dict(base, verdict=ss, named=X, mc_row='default'))
+          and verdict_problems(dict(base, verdict=ss.replace(BG, CO), mc_row='default')),
+          verdict_problems(dict(base, verdict=ss, mc_row='default')))
+
+
+def _probe_threads(_x):
+    """a pool worker after 1.5 s of matrix products: (each loaded OpenBLAS pool's num_threads, the main thread's CPU ticks, the
+    other threads' CPU ticks in all, OMP_NUM_THREADS)"""
+    import scipy.spatial                                  # noqa: F401 - scipy's own OpenBLAS, as the analysis loads it
+    from threadpoolctl import threadpool_info
+    a = np.random.default_rng(0).random((900, 900))
+    t0 = time.time()
+    while time.time() - t0 < 1.5:
+        _b = a @ a
+    time.sleep(0.3)
+    ticks = {}
+    for t in os.listdir('/proc/self/task'):
+        f = open('/proc/self/task/%s/stat' % t).read().rsplit(')', 1)[1].split()
+        ticks[int(t)] = int(f[11]) + int(f[12])
+    main = ticks.pop(os.getpid())
+    nt = sorted({d['num_threads'] for d in threadpool_info() if d.get('internal_api') == 'openblas'})
+    return nt, main, sum(ticks.values()), os.environ.get('OMP_NUM_THREADS')
+
+
+def test_worker_threads():
+    """wide_search / wide_test pool workers run --threads BLAS / OpenMP threads (else 1). The CLI's environment variables come
+    after numpy's OpenBLAS is loaded, so the initializer caps the loaded pools (threadpoolctl; the republish verification
+    2026-11-04 saw 26 threads in each of 6 workers, all running). OpenBLAS re-creates its pool in a forked child at its
+    load-time width, so the threads still exist - capped, they stay idle: the check is the CPU they use."""
+    from multiprocessing import get_context
+    from exopipe.phase3.lib.forced import wide_search as WS
+    ncpu = len(os.sched_getaffinity(0))
+    with get_context('fork').Pool(1) as p:
+        plain = p.map(_probe_threads, [0])[0]
+    with get_context('fork').Pool(1, initializer=WS.pool_worker_init, initargs=(1,)) as p:
+        one = p.map(_probe_threads, [0])[0]
+    with get_context('fork').Pool(1, initializer=WS.pool_worker_init, initargs=(3,)) as p:
+        three = p.map(_probe_threads, [0])[0]
+    check('pool workers without the cap run every allowed core (%d): other threads %d ticks against the main thread\'s %d'
+          % (ncpu, plain[2], plain[1]), ncpu < 3 or plain[2] > 2 * plain[1], plain)
+    check('pool_worker_init(1): every OpenBLAS pool at 1 thread, the other threads idle (%d ticks against the main thread\'s %d), '
+          'OMP_NUM_THREADS 1' % (one[2], one[1]), one[0] == [1] and one[2] < 0.75 * one[1] and one[3] == '1', one)
+    check('pool_worker_init(3): every OpenBLAS pool at 3 threads (--threads 3)', three[0] == [3] and three[3] == '3', three)
 
 
 def test_pool_provenance():
@@ -1350,6 +1464,7 @@ def main():
         test_control_order()
         test_monte_carlo()
         test_draws()
+        test_worker_threads()
         test_pool_provenance()
         test_search_functions()
         test_io_yield()
