@@ -34,7 +34,9 @@ absent or a retired generation), W-NOCUT (a band without a cutout directory: ite
 (publishing a partial test), W-NAMED (a named source not found around its target), W-RUNDIR (the run directory absent at the
 review root), W-ROOT (a production review root while paths.PRODUCTION_WRITES is False), N-INPUT (input columns missing, or rows
 of another Stokes or tier than night_activity.STOKES / TIER). A failing content test refuses its unit. --dry-run prints the plan
-and writes nothing."""
+and writes nothing. The INJECTED-RUN GUARD (core/injected.py) covers the families' flags: an injected run's --snap-review-root
+must be scratch, and an ordinary run refuses a --wide-runs / --wide-jobs / --wide-cutout-root / --wide-bursts / --na-detections
+source under an injected run."""
 import hashlib
 import json
 import os
