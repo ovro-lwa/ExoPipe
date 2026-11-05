@@ -1425,6 +1425,26 @@ def describe(plan, stages):
         S.SNAPVIEW_FIT_STORE.format(batch_dir=_CFG().catalog_snapshot.BATCH_DIR, run=os.path.basename(r)) for r in plan.runs[:2])
           + (' ...' if len(plan.runs) > 2 else '') + f' (SNAPCAT_PROCS={S.SNAPVIEW_FILTERCAT_PROCS})')
     print(f'  localize: snapshot_localize_tiers.sh with {S.SNAPVIEW_LOC_ENV}; then snapshot_page_figures_check.py VIEW --repair')
+
+    class _DryUnit:                     # G-V11 read now: a refusal is reported, nothing recorded
+        meta = {}
+
+        def refuse(self, why):
+            raise _DryRefusal(why)
+
+        def add_input(self, p):
+            pass
+
+        def note(self, t):
+            pass
+
+    class _DryRefusal(Exception):
+        pass
+    try:
+        line = restore_wave_gate(_DryUnit(), plan.runs)
+        print('  G-V11 restore-only wave: ' + ('no member ran the restore-only 3-D gate' if line is None else line[:600]))
+    except _DryRefusal as e:
+        print(f'  G-V11 restore-only wave: WOULD REFUSE ({str(e)[:600]})')
     return 0
 
 

@@ -369,11 +369,23 @@ def test_view_gate():
             raise AssertionError(f'G-V11 accepted {label}')
         except RuntimeError as e:
             assert 'G-V11' in str(e), (label, e)
+    import contextlib
+    import io
+
+    def dry(runs):
+        f = io.StringIO()
+        with contextlib.redirect_stdout(f):
+            SV.describe(types.SimpleNamespace(U=os.path.join(SCRATCH, 'view', 'dry_view'), parity=True, runs=runs,
+                                              omit_dir=os.path.join(SCRATCH, 'view', 'dry_omit'), omit_given=False), ['omit'])
+        return f.getvalue()
+    assert 'G-V11 restore-only wave: WOULD REFUSE' in dry([plain, new])          # the last state: a test older than its record
     RW.diff(old, new)
     u = _Unit()
     line = SV.restore_wave_gate(u, [plain, new])
     assert line and line.startswith('RESTORE-WAVE-TOTALS over 1 runs') and 'every run PASS' in line, line
     assert u.meta['restore_wave']['runs'] == [os.path.basename(new)], u.meta
+    out = dry([plain, new])
+    assert 'G-V11 restore-only wave: RESTORE-WAVE-TOTALS over 1 runs' in out and 'no member ran' in dry([plain]), out[-800:]
     # G27 on a view beside its members (production's layout: one run per tag of its batches)
     view = os.path.join(os.path.dirname(old), 'Run_SNAPCOMB_WAVE_20261105')
     os.makedirs(view)
