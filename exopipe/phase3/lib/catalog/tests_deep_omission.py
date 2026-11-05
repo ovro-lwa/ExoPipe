@@ -335,14 +335,24 @@ def check_record(path, tier=None, decisions=None):
     n_det = n.get('detection', 0)
     sp = os.path.join(os.path.dirname(os.path.abspath(path)), 'deep_omission_summary.txt')
     if os.path.exists(sp):
-        line = open(sp).readline().rstrip('\n')
-        if line != DO.page_line(n_det):
-            msgs.append(f'summary line {line!r} is not the page line of {n_det} detections')
+        lines = open(sp).read().splitlines()
+        line = lines[0] if lines else ''
         jp = sp[:-len('.txt')] + '.json'
-        if os.path.exists(jp):
-            j = json.load(open(jp))
-            if j.get('omitted') != n_det:
-                msgs.append(f'summary json omitted {j.get("omitted")} != {n_det} recorded detections')
+        j = json.load(open(jp)) if os.path.exists(jp) else None
+        # 10-minute: production's page line also counts the member rows of the sources re-judged out (sublst_deep_omission_drop.
+        # finish: its members_rejudged_<S>_<T> counts, listed in the summary; the stage's json 'rejudged_members')
+        n_rjm = 0
+        if tier == 'sublst':
+            cnt = [ln.split() for ln in lines[2:] if ln.startswith('members_rejudged_')]
+            n_rjm = sum(int(x[1]) for x in cnt if len(x) == 2 and x[1].isdigit()) if cnt else \
+                int((j or {}).get('rejudged_members') or 0)
+            if n.get('source re-judged') and not n_rjm:
+                msgs.append(f"{n['source re-judged']} sources re-judged out and no count of their member rows in the summary")
+        if line != DO.page_line(n_det + n_rjm):
+            msgs.append(f'summary line {line!r} is not the page line of {n_det} detections'
+                        + (f' + {n_rjm} member rows of re-judged sources' if n_rjm else ''))
+        if j is not None and j.get('omitted') != n_det:
+            msgs.append(f'summary json omitted {j.get("omitted")} != {n_det} recorded detections')
     return _fail(msgs, n_det, f'{len(rows)} record rows ({tier}): ' + ', '.join(f'{k} {v}' for k, v in sorted(n.items()))
                  + f'; every removal traced to its OMIT key in {os.path.basename(dp)}'
                  + (f', {n_img} on per-image keys each in an image holding an omitted member' if n_img else ''))

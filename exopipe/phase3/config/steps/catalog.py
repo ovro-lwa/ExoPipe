@@ -656,6 +656,11 @@ class catalog_snapshot(_Section):
     # removes and the run keeps with RESTORED_BY (record v5 restored_by; every served detections.csv). A named table that is missing
     # or empty refuses (P-G21); without the line the chain is unchanged (production's default: no restore table)
     RESTORE_MARKER_KEY = 'CURVE_CONSTANTS_RESTORE'        # the marker line's key; snapshot_rechain_batch.sh (fa90670) [step]
+    REPLACES_SCHEDULES = ('/lustre/gh/main/exopipe_ops/snapshot_rechain_wave_restore_20261104_schedule.csv',)   # WHICH RUN A NEW
+                                                          # RUN REPLACES, for the wave's per-batch test (stage wavediff): a row whose
+                                                          # 'new' is the run names the replaced run in 'run' (under
+                                                          # paths.SNAPSHOT_REVIEW_ROOT); production's wave schedule (8ff3fc8, the
+                                                          # mapping its view driver tests with); --snap-replaces RUN overrides [step]
     RESTORED_BY = 'restore-only 3-D gate 20261104'        # the tag; RESTORED_BY
     RESTORE_TOL_BEAMS = 1e-6                              # beams a restore radius may exceed the installed one (else the chain refuses); RESTORE_TOL_BEAMS
     # ---- run content test (snapshot_rechain_content_test.py R1-R7 operating points)
@@ -938,15 +943,13 @@ class catalog_omission(_Section):
                                                           # (verdict ABSENT) while the served product holds detections of it: the
                                                           # exception test cannot be evaluated. 'refuse' (G6; the rule is never applied
                                                           # as 'nothing to drop') | 'production' (kept and counted, as production does;
-                                                          # 0 on B4X+B6H). PROPOSED, PENDING GREGG (Q review F5): 'refuse' is the
-                                                          # refactor's proposal (gates refuse rather than warn), neither production's
-                                                          # behavior nor a ruling; production's 'production' is in the parity file
-                                                          # (parity/production_20261013.cfg; the code site is marked WAVE2 G6).
-                                                          # DECISIONS_PENDING FYI named in refactor_reviews_20261103/Q_deepomit_fixes.md.
-                                                          # Re-checked 2026-11-04 against R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-
-                                                          # ANSWERS: that row decides the rate floor and the ABSENT PROPAGATION (a
-                                                          # member's ABSENT omits its group's wideband detections), not this gate
-                                                          # (detections served on a key the tier has no record of) - the label stands
+                                                          # 0 on B4X+B6H). RULED R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE (the
+                                                          # refactor chat under R-GREGG-20261016-REFACTOR-DECIDES-BY-GOALS, 2026-11-04):
+                                                          # 'refuse' stands, a data-integrity guard - a served detection on a night the
+                                                          # tier never searched is an inconsistency to investigate, never a silent keep
+                                                          # or drop (0 of 1,083 ABSENT rows of the 10-minute table, 0 of 798 keys of the
+                                                          # 11-02 view); production's 'production' stays in the parity file (parity/
+                                                          # production_20261013.cfg; the code sites are marked WAVE2 G6)
     PROTECTED_KEYS = ('PROPAGATE', 'SIGMA', 'WIDEBAND_EXCEPT', 'SNAPSHOT_TIERS', 'SNAPSHOT_NOISE', 'SNAPSHOT_MEMBERS',
                       'SNAPSHOT_ADMISSION', 'SNAPSHOT_CARD2', 'CARD2_RATIO', 'TENMIN_RUN')                       # the ruled rule and the production layout it reads (mirrors, drift-tested);
                                                           # NOT RATE_FLOOR_PER_NIGHT / WIDEBAND_MEMBER_VERDICTS (ruled 2026-11-04 by
@@ -957,6 +960,7 @@ class catalog_omission(_Section):
              'RATE_FLOOR_PER_NIGHT': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',
              'WIDEBAND_MEMBER_VERDICTS': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',
              'TENMIN_REJUDGE_APPROVED': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',
+             'ABSENT_WITH_SERVED': 'R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE',
              'REFUSALS': ('R-GREGG-20261024-DEEP-OMISSION-APPLIES-TO-SHORT-TIERS-WITH-FRAME-EXCEPTION',
                           'R-GREGG-20261031-SNAPSHOT-RESEARCH-LC-DEEPOMIT-GPU-RELEASE')}   # REFUSALS: the deep record the rulings name;
                                                           # --omit-refusals is an override of it (--ruling-for or a non-production --out)

@@ -360,12 +360,52 @@ ready; the frozen B6H2 + B6I2 + B6L copies with their chain records, the refusal
   copies, made by the same in-place script, are complete. A production defect, not a port difference; V6 now refuses a page copy
   of another size than its figure.
 
-Not ported in this round (listed for the next): the restore-only wave's per-batch test against the run each new run replaces and
-its totals (exopipe_ops snapshot_restore_wave_diff.py, 8ff3fc8) and the wave's dated view driver comb_build_wave_20261104.sh (per
-batch tests as runs land, a GO file, one build): the branch has no place yet that knows which run a new run replaces (production:
-the wave's schedule CSV); until it does, G27 refuses a view holding a restore-only run whose test file is missing (fail closed).
-The snapshot serve's SERVE_HOLD file (exopipe_ops aa100bf, 2026-10-17: snapshot_batch/SERVE_HOLD refuses every snapshot serve) was
-never ported to lib/serve/snapshot_copy.py - found in this round, listed.
+Listed by the V2 round and ported by the V3 round (below): the restore-only wave's per-batch test and its totals, the notion of
+which run a new run replaces, the wave driver's steps, the snapshot serve's SERVE_HOLD.
+
+## The V3 round (2026-11-05)
+
+Branch wt-20261104-V3-follow (from e274cd8), production pinned at exopipe_ops 0e05399:
+
+- THE RESTORE-ONLY WAVE'S PER-BATCH TEST (exopipe_ops snapshot_restore_wave_diff.py, 8ff3fc8), ported as
+  lib/catalog/restore_wave.py: every detection the replaced run served, classified in the new run's record - served, card2,
+  secondary (a restored detection in one of its groups: the removing stage's, every other grouping down to the pre-gate cluster,
+  then its previous identity's other members' new groups), secondary-pool (the catalog route's E raised by the restored
+  detections), 3d-gate, other-later, other-earlier, not-served, absent (= FAIL) - with production's FAIL conditions (the restored
+  rows against their gate pair and the chain summary, every served detections.csv carrying restored_by, the chain's tagged rows
+  = the record's served tagged rows), its csv / json bytes and its totals line. Production's pinned script and the port agree
+  byte for byte on synthetic worlds of every class and every FAIL (tests/test_restore_wave.py) and on the wave's real runs
+  (READ ONLY on the review disk, 2026-11-05: Run_SNAPB6L3_20261104 against Run_SNAPB6L_20261025, 1,873 served again, 104
+  restored; Run_SNAPB1S3_20261104 against Run_SNAPB1S_20261025, 70 not served now - Card 2 38, secondary 10, 3-D gate 19, other
+  after the gate 2, other before 1 - 395 restored: both csv and json identical to production's files in the runs). Class
+  restore_wave_diff reads the files back against both records on its own reading (passes on both real runs).
+- WHICH RUN A NEW RUN REPLACES: the chain step's stage wavediff (catalog --tier snapshot --stages wavediff, named only, after
+  `pages --tier snapshot`): --snap-replaces RUN, else the wave schedules catalog_snapshot.REPLACES_SCHEDULES (production's
+  snapshot_rechain_wave_restore_20261104_schedule.csv: a row whose 'new' is the run names the replaced run in 'run'); the test is
+  written into the run (restore_wave_served_diff.{csv,json}, the file G27 reads); NO-INPUT for a run without the restore-only
+  gate, P-G22 no replaced run / itself / its record missing, P-G23 the pages not built, P-G24 FAIL (its files written).
+- The view: G-V11 at omit and build - every member run that ran the restore-only gate carries its PASSED test, made for that run
+  and after its record, else nothing is built (production's wave driver builds only then); the wave totals (what Gregg is shown
+  before the view is served) go into the record and beside the omit product (restore_wave_totals.txt). G27 then accepts the view
+  at serve time with Gregg's go naming it (SNAPCOMB_RESTORE_ONLY_SERVE_APPROVED).
+- The page figures (exopipe_ops 0e05399, the wave driver's step 4b, production's answer to the V2 parity's truncated copies): the
+  localize stage runs snapshot_page_figures_check.py VIEW --repair in place after the localization (unit snapshot_<view>_figures;
+  G21b a figure without its source or a page directory claimed by two identities; class snapshot_page_figures reads every copy's
+  size back). The parity tool's production side runs the same step.
+- THE SERVE HOLD (exopipe_ops aa100bf): G29 in lib/serve/snapshot_copy.py - while serve.SNAPSHOT_SERVE_HOLD exists (any file,
+  empty included) no snapshot run is served; before every stage, G27 included.
+- The 10-minute re-judging's 7-8 sigma gate follows the configured size rule (lib/catalog/deep_omission.tenmin_size_gate): under
+  'envelope' (the refactor's default) the remaining single carries the rule's verdict from the search and no fixed gate acts -
+  the merge's in-place drop gets P3_SIZE_GATE_7_8 = inf, as the builder does - under 'production' (the parity file's
+  search_sublst.SIZE_RULE) production's 1.7 beams. G12 refuses LSTs whose search jobs were searched under another rule than the
+  configured one (the re-judging would apply a verdict the catalogue never had: production's 08h J0645+4024, a 7.07-sigma single
+  of 2.32 beams, is re-judged out by the fixed gate; under 'envelope' on production's unjudged catalogue it would be kept). The
+  port's 10-minute record no longer lists a re-judged-out source's members one by one (production's filter_rows drops them with
+  the source; the V2 port listed its omitted members - found by the V3 test against production's drop), and the page line counts
+  them as production's does (its members_rejudged counts). Production's own inconsistency, reported: its drop compares a remaining
+  single's raw size_beams with 1.7 while its builder compares size_beams - size_err_beams.
+- catalog_omission.ABSENT_WITH_SERVED 'refuse' RULED (R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE); production's 'production'
+  stays in the parity file.
 
 ## Production behavior carried for parity, pending Gregg
 

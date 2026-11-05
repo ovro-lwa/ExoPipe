@@ -11,7 +11,9 @@ build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 f
        omission_decisions; window-rms cache beside it, production's cache read as a seed in a parity run);
        rm -rf B; SUBLST_DEEP_OMISSION=<table> sublst_cumulative.py B LSTs (the merge drops the OMIT rows per LST in place,
        sublst_deep_omission_drop.py, and records them: B/deep_omission_dropped.csv, class omission_record, with its
-       per-instant test); build_localizations.py with the per-case tie and the common frame (G9);
+       per-instant test; its re-judging of a partial survivor's remaining single takes the builder's own 7-8 sigma gate under
+       the configured 10-minute size rule - P3_SIZE_GATE_7_8 = inf under 'envelope', production's 1.7 under 'production',
+       deep_omission.tenmin_size_gate); build_localizations.py with the per-case tie and the common frame (G9);
        the localization figures (md5-keyed reuse from the served run, else drawn, 4 at a time, 600 s each; refuse a
        missing one - port of the PYF heredoc :36-61); p3t_pages_index.py per tier (G10). Output class sublst_cumulative.
 views  (unit sublst_<run>_views)  on B: the union with the Stokes key (G5), the review_dir merge with
@@ -184,7 +186,7 @@ def omission_table(plan, u):
     seed = _CFG().catalog_omission.TENMIN_RMS_CACHE_SEED
     seed = None if (not seed or os.path.realpath(seed) == os.path.realpath(cache)) else seed
     rows, recs = deep_omission.tenmin_table(list(plan.lsts), table, cache_dir=cache, seed_dir=seed)
-    # WAVE2 G6: catalog_omission.ABSENT_WITH_SERVED 'refuse' (the refactor's PROPOSED gate, pending Gregg) refuses the whole
+    # WAVE2 G6: catalog_omission.ABSENT_WITH_SERVED 'refuse' (ruled R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE) refuses the whole
     # build on a served detection in an ABSENT key; production proceeds - a parity build passes parity/production_20261013.cfg
     # ('production': kept and counted). 0 on the 24 served LSTs (Q review F5).
     deep_omission.absent_gate(rows, deep_omission.tenmin_served_of(recs))
@@ -222,7 +224,16 @@ def build_stage(run, plan):
         table = omission_table(plan, u)
         if os.path.isdir(B):
             shutil.rmtree(B)
-        res = scripts.run('sublst_cumulative', [B] + list(plan.lsts), env={'SUBLST_DEEP_OMISSION': table}, log=log, unit=u)
+        # the drop's RE-JUDGING judges a partial survivor's remaining single with the builder's own 7-8 sigma gate under the
+        # configured 10-minute size rule (deep_omission.tenmin_size_gate: P3_SIZE_GATE_7_8 = inf under 'envelope', unset - the
+        # drop's 1.7 - under 'production'); the stage's prediction (catalog --stages omit) uses the same value
+        from exopipe.phase3.lib.catalog import deep_omission as _DO
+        _DO.tenmin_rule_check(list(plan.lsts))           # G12: every LST's search jobs under the configured size rule
+        g78, g_env, g_rule = _DO.tenmin_size_gate()
+        u.meta['rejudge_size_gate'] = dict(rule=g_rule, gate_beams=str(g78), env=g_env)
+        u.note(f're-judging 7-8 sigma gate: {g78} beams (size rule {g_rule!r}; merge environment {g_env or "none"})')
+        res = scripts.run('sublst_cumulative', [B] + list(plan.lsts), env=dict(g_env, SUBLST_DEEP_OMISSION=table), log=log,
+                          unit=u)
         if not res.ok:
             u.refuse(f'merge failed: {res.reason or scripts.last_line(res.tail)}')
         for f in ('deep_omission.csv', 'deep_omission_dropped.csv', 'deep_omission_summary.txt'):

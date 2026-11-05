@@ -37,6 +37,8 @@ SCRIPTS = {
     'sublst_served_test': ('sublst_reserve_test_served.py', 'sublst_catalog_publish.sh:106'),
     'forced_adleo': ('test_snapshot_forced_reserve.py', 'snapshot_forced_serve_20261007.sh:68'),
     'snapshot_filter_catalog': ('snapshot_filter_catalog.py', 'snapshot_batch/comb_build_20261102.sh:52 (the combined view)'),
+    'snapshot_page_figures': ('snapshot_page_figures_check.py', 'snapshot_batch/comb_build_wave_20261104.sh step 4b (exopipe_ops '
+                                                                '0e05399; the combined view)'),
 }
 
 

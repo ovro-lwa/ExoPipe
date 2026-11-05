@@ -22,7 +22,7 @@ Synthetic data under /tmp/exopipe3_tests_serve/ (removed at the end):
   5. (review 2026-10-13) a refused stage stops the later ones (deep G2, sub-LST G8 / G11, snapshot G17), the in-place
      exclusion gate and core.exclusions agree, the forced switch probes before anything is registered. G27 (exopipe_ops
      35aad1a, 8ff3fc8): a combined view built with Card 2 / re-judging, or holding restore-only runs, is served only with Gregg's
-     go naming it.
+     go naming it; G29 (aa100bf): no snapshot run is served while the serve hold exists.
   6. REGISTRATION on the two-port server (lib/serve/register.py; production since 2026-10-22), every server an ISOLATED
      two-port server of this tree on free test ports (>= 19000) over a scratch registry - the live registry, the live server
      and 8765 / 8795 are never touched: the registration = production's register_page.py byte for byte (run on a sandbox);
@@ -1414,6 +1414,64 @@ def test_stage_halting():
         servers.replace, flow.register_pages, register.write = orig
 
 
+def test_serve_hold():
+    """G29 THE SERVE HOLD (snapshot_serve.sh, exopipe_ops aa100bf): while serve.SNAPSHOT_SERVE_HOLD exists - empty included, as
+    production's `[ -e ]` - unit snapshot_<name>_hold refuses BEFORE every stage (G27, the gate, the copy, any server; --waive
+    does not lift it), its reason holding the file's first 400 bytes; without the file there is no hold unit; the dry run says
+    which."""
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow, snapshot_copy
+
+    def no_start(*a, **k):
+        raise AssertionError('a page was registered (or a server started) under the serve hold')
+    S = CFG.serve
+    orig = (servers.replace, flow.register_pages, register.write, S.SNAPSHOT_SERVE_HOLD)
+    servers.replace = flow.register_pages = register.write = no_start
+    name = 'Run_SNAPHOLD_20261104'
+    hold = f'{T}/hold_marker/SERVE_HOLD'
+    os.makedirs(os.path.dirname(hold), exist_ok=True)
+    S.SNAPSHOT_SERVE_HOLD = hold
+    try:
+        src = f'{T}/hold_src/{name}'
+        wcsv(f'{src}/detections.csv', ['cand_id', 'snr'], [dict(cand_id='05h_2030-01-01_46MHz_V_10s_20300101_000000', snr=9)])
+        json.dump(dict(view=name, card2={}, batches=[]), open(f'{src}/combined_view_summary.json', 'w'))   # also a G27 case
+        for i, (text, held) in enumerate((('batch 3 chained on pre-mirror-fix template fits - ' + 'x' * 600, True), ('', True),
+                                          (None, False))):
+            if text is None:
+                os.remove(hold)
+            else:
+                open(hold, 'w').write(text)
+            if os.path.exists(f'{src}/serve_exclusion_check.txt'):
+                os.remove(f'{src}/serve_exclusion_check.txt')
+            a = _ns(tier='snapshot', run_label=name, source=src, label='hold test')
+            out = f'{T}/hold_out_{i}'
+            plan = planmod.make(a, out)
+            run = Run('serve', ['test'], out, CFG, config_sections=None)
+            run.waived = lambda n: 'R-TEST-WAIVE'
+            snapshot_copy.run(a, run, plan, ('gate',))
+            names = [u.name for u in run.units]
+            if held:
+                u = run.units[0]
+                assert names == [f'snapshot_{name}_hold'] and u.status == 'refused' and 'G29 SERVE HELD' in u.reason \
+                    and run.exit_code() == 2, (i, names, u.status, u.reason)
+                assert (text[:60] in u.reason) if text else '(empty)' in u.reason, u.reason
+                assert len(u.reason) < 700 and not os.path.exists(f'{src}/serve_exclusion_check.txt'), len(u.reason)
+            else:
+                assert names[0] == f'snapshot_{name}_go', names            # no hold unit: G27 is next (no go file: refused)
+        ok('G29: while the serve hold exists (text or empty) nothing is gated, copied or served, --waive or not; without it no '
+           'hold unit')
+        open(hold, 'w').write('held for the test\n')
+        r = subprocess.run([PY, '-m', 'exopipe.phase3', 'serve', '--tier', 'snapshot', '--run', name, '--source', src,
+                            '--out', f'{T}/hold_dry', '--dry-run', '--set', f'serve.SNAPSHOT_SERVE_HOLD={hold}'], cwd=ROOT,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True,
+                           env=dict(os.environ, PYTHONPATH=ROOT), timeout=600)
+        assert 'G29 serve hold: HELD - WOULD REFUSE' in r.stdout and 'held for the test' in r.stdout, r.stdout[-2000:]
+        os.remove(hold)
+        ok('G29 in the dry run: HELD - WOULD REFUSE with the file\'s text')
+    finally:
+        servers.replace, flow.register_pages, register.write, S.SNAPSHOT_SERVE_HOLD = orig
+
+
 def test_card2_rejudge_go():
     """G27, GREGG'S GO ON A COMBINED VIEW, before every stage of a snapshot serve (unit snapshot_<name>_go; refused = nothing
     gated, copied or served; --waive does not lift it):
@@ -2419,6 +2477,7 @@ def main():
     if os.path.exists(T):
         shutil.rmtree(T)
     os.makedirs(T)
+    CFG.serve.SNAPSHOT_SERVE_HOLD = f'{T}/no_serve_hold'      # G29: production's hold file never steers these tests (test_serve_hold)
     try:
         B = test_deep_ports()
         test_queue_view_content(B)
@@ -2437,6 +2496,7 @@ def main():
         test_mchain()
         test_exclusion_gate_per_page_stage()
         test_stage_halting()
+        test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()
         test_forced_probe_before_stop()

@@ -13,7 +13,8 @@ each by its git blob sha (a commit and its blobs never change), and materialized
                      ONE explicit failure that names what to port, instead of cascading failures
 
 What is pinned: production code the refactor PORTS - the combined view's builder, the deep-omission decisions and drop, the
-re-judging module (snapshot_rejudge.py), the 10-minute merge the refactor's test runs, the dated drivers whose heredoc is ported. What is NOT pinned: production code the refactor
+re-judging module (snapshot_rejudge.py), the 10-minute merge the refactor's test runs, the dated drivers whose heredoc is ported, the
+restore-only wave's served-difference test (snapshot_restore_wave_diff.py, ported as lib/catalog/restore_wave.py). What is NOT pinned: production code the refactor
 RUNS IN PLACE (the clv15 snapshot chain and its merge, snapshot_filter_catalog.py, snapshot_localize_tiers.sh, the localizer and the
 astrometry figure): the stage and the tests' production side run the same live file, so a parity compares like with like.
 
@@ -24,12 +25,14 @@ import os
 import subprocess
 
 OPS_REPO = '/lustre/gh/main/exopipe_ops'
-# exopipe_ops fa90670 (2026-11-04 15:38, production HEAD when the V2 follow-up round started): production as the follow-up ports it -
-# the combined view of dbc40a6 (Card 2 per frame, re-judging, the re-point fix, the rate population; dde1760's per-image wideband
+# exopipe_ops 0e05399 (2026-11-04 23:37, production HEAD when the V3 round started): the V2 follow-up's files unchanged since fa90670
+# - the combined view of dbc40a6 (Card 2 per frame, re-judging, the re-point fix, the rate population; dde1760's per-image wideband
 # omission), the snapshot decisions of dbc40a6 / dde1760, the 10-minute decisions of dde1760 (gate pairing), the 10-minute drop of
 # 35aad1a (edf3263's re-judging + the approval marker), snapshot_rejudge.py (dbc40a6), the dated drivers 20261102 / 20261104 (their
-# step-2 heredocs identical). Moved from c7ca600 (dde1760^) by the V2 follow-up round (2026-11-04).
-PIN_COMMIT = 'fa9067019528da47e1174c16a3a647054ec41bc2'
+# step-2 heredocs identical) - and the restore-only wave's per-batch served-difference test (snapshot_restore_wave_diff.py, 8ff3fc8)
+# the V3 round ports, with the wave's dated view driver (comb_build_wave_20261104.sh, 8ff3fc8 + 19a1831 + 0e05399). Moved from
+# c7ca600 (dde1760^) by the V2 follow-up round, from fa90670 by the V3 round (2026-11-04).
+PIN_COMMIT = '0e05399a27e693fa2a26ed520a60ee7edfd72c1c'
 PIN_BLOBS = {
     'snapshot_combined_view.py': 'afc2bb3ce64e1210a0d87fae99d35e46094d6245',        # dbc40a6
     'snapshot_deep_omission.py': 'b55e6d76d64ed2d289834edce963119a2e48fdb1',        # dbc40a6
@@ -39,6 +42,8 @@ PIN_BLOBS = {
     'sublst_cumulative.py': '948e9cf7dd95ad9a8421a74bdf8e8af22e008695',             # 0d4f1a9 (unchanged)
     'snapshot_batch/comb_build_20261102.sh': 'c68c54847628076892dbeac4775e739f68e4e807',
     'snapshot_batch/comb_build_20261104.sh': '1be26d8d82c916601edbd9c6743ac350ce93d145',   # dbc40a6
+    'snapshot_restore_wave_diff.py': '929e48baec8fc0186293e54355a6f0c62b072ae6',    # 8ff3fc8 (new)
+    'snapshot_batch/comb_build_wave_20261104.sh': 'eb01aac7fa0af9fb7db6ab2eea9642c42d60999e',   # 0e05399 (8ff3fc8, 19a1831)
 }
 
 

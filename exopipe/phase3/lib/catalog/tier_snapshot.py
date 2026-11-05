@@ -33,6 +33,14 @@ Stages (--stages / --from / --until; default all, in this order):
              (clv15 b8d1989, exopipe_ops fa90670): the marker's CURVE_CONSTANTS_RESTORE=<table> line passes
              --curve-constants-restore <table> to every chain call (prefit lists, tie items, the chain); P-G21 (preflight) refuses
              a named table that is missing or empty
+  wavediff   (only when named; after the pages) THE RESTORE-ONLY WAVE'S PER-BATCH TEST (lib/catalog/restore_wave, port of
+             exopipe_ops snapshot_restore_wave_diff.py 8ff3fc8): every detection the run this run REPLACES served, classified in
+             this run's record (served / card2 / secondary / secondary-pool / 3d-gate / other-later / other-earlier / not-served /
+             absent = FAIL) -> RUN/restore_wave_served_diff.{csv,json} (class restore_wave_diff), the file the snapshot serve's
+             G27 reads. The run it replaces: --snap-replaces RUN, else the wave schedules catalog_snapshot.REPLACES_SCHEDULES (a
+             row whose 'new' is this run names its 'run'), under paths.SNAPSHOT_REVIEW_ROOT. NO-INPUT for a run without the
+             restore-only gate; P-G22 a restore-only run without the run it replaces (or that run without its record, or itself);
+             P-G23 the pages not built; P-G24 the test FAILED (its files are written either way, as production writes them)
   test       snapshot_rechain_content_test.py R1-R5, R7 (P-G19; R6 after the pages is `pages`'); class snapshot_run also reads
              Card 2 per frame (card2_removed.csv against the summary and the record) and the restore-only gate (restored_by
              against the record's two passes, the summary and every served detections.csv) back
@@ -71,6 +79,7 @@ import time
 TIER = 'snapshot'
 STAGES = ('preflight', 'store', 'prefit', 'tie', 'chain', 'test')
 INTERNAL = ('fit-shard',)
+AFTER_PAGES = ('wavediff',)          # run only when named in --stages: after `pages --tier snapshot` built the run's pages
 WAIVERS = {'served': 'snapshot.served-cells-kept', 'frametime': 'snapshot.frame-time-prefix', 'tiemodel': 'snapshot.tie-model'}
 MARKER_SWITCH = {'served': 'ALLOW-DROP-SERVED-CELLS', 'frametime': 'ALLOW-PREFIX-WIDEBAND-1MIN',
                  'tiemodel': 'ALLOW-PRE-BUNDLE-TIES'}
@@ -1219,8 +1228,64 @@ def st_fit_shard(ctx, s, plan):
     item_fit_shard(ctx, s, item, plan)
 
 
+def replaced_run(ctx):
+    """(the run directory this run REPLACES or None, how it was named): --snap-replaces (a directory, or a run name under
+    paths.SNAPSHOT_REVIEW_ROOT), else the first row of the wave schedules (catalog_snapshot.REPLACES_SCHEDULES: production's
+    CSV, columns 'new' and 'run') whose 'new' is this run."""
+    v = arg_val(ctx.args, 'snap_replaces')
+    root = ctx.cfg.paths.SNAPSHOT_REVIEW_ROOT
+    if v:
+        return (os.path.abspath(v) if (os.sep in v or os.path.isdir(v)) else os.path.join(root, v)), '--snap-replaces %s' % v
+    for sch in ctx.c.REPLACES_SCHEDULES or ():
+        try:
+            with open(sch, newline='') as f:
+                for r in csv.DictReader(f):
+                    if (r.get('new') or '').strip() == ctx.name and (r.get('run') or '').strip():
+                        return os.path.join(root, r['run'].strip()), 'schedule %s' % sch
+        except OSError:
+            continue
+    return None, 'no --snap-replaces and no row of catalog_snapshot.REPLACES_SCHEDULES names %s' % ctx.name
+
+
+def st_wavediff(ctx, s, plan):
+    """THE RESTORE-ONLY WAVE'S PER-BATCH TEST of this run against the run it replaces (module docstring, stage wavediff)."""
+    from exopipe.phase3.core.record import NoInput
+    from exopipe.phase3.lib.catalog import restore_wave as RW
+    old, how = replaced_run(ctx)
+    plan.append('wavediff: the restore-only wave\'s test of %s against the run it replaces: %s (%s) -> %s/{%s,%s} '
+                '[restore_wave_diff]; P-G22 that run and its record, P-G23 the pages built, P-G24 PASS'
+                % (ctx.name, old or '(none)', how, ctx.RUN, RW.CSV_NAME, RW.JSON_NAME))
+    if ctx.dry:
+        return
+    sp = os.path.join(ctx.RUN, 'chain_summary.json')
+    if not os.path.isfile(sp):
+        refuse('P-G22: %s has no chain_summary.json (run the chain first)' % ctx.RUN)
+    if 'gate3d_restore_only' not in json.load(open(sp)):
+        raise NoInput('%s ran no restore-only 3-D gate (its chain summary has no gate3d_restore_only): no wave test' % ctx.name)
+    if old is None:
+        refuse('P-G22: %s ran the restore-only 3-D gate and the run it replaces is not known: %s - give --snap-replaces RUN'
+               % (ctx.name, how))
+    if os.path.abspath(old) == os.path.abspath(ctx.RUN):
+        refuse('P-G22: %s cannot replace itself (%s)' % (ctx.name, old))
+    if not os.path.isfile(os.path.join(old, 'detection_record.csv.gz')):
+        refuse('P-G22: the replaced run %s (%s) has no detection_record.csv.gz' % (old, how))
+    pages = [p for st in ('I', 'V') for p in glob.glob(os.path.join(ctx.RUN, 'candidates', st, '*', 'detections.csv'))[:1]]
+    if not pages:
+        refuse('P-G23: %s has no pages (candidates/I, candidates/V): build them first (pages --tier snapshot) - the test reads '
+               'every served detections.csv, as production runs it after the run is BUILT' % ctx.RUN)
+    s.inp(os.path.join(old, 'detection_record.csv.gz'), os.path.join(ctx.RUN, 'detection_record.csv.gz'), sp)
+    j = RW.diff(old, ctx.RUN)
+    s.u.meta['wave'] = dict(old=old, how=how, status=j['status'], counts=j['counts'], later_stages=j['later_stages'])
+    s.u.note(j['line'][:1500])
+    ctx.log.say(j['line'])
+    s.out(os.path.join(ctx.RUN, RW.JSON_NAME), 'restore_wave_diff')
+    if j['status'] != 'PASS':
+        refuse('P-G24: the restore-only wave test of %s against %s FAILED: %s' % (ctx.name, os.path.basename(old),
+                                                                                 j['status'][:600]))
+
+
 FUNCS = {'preflight': st_preflight, 'store': st_store, 'prefit': st_prefit, 'tie': st_tie, 'chain': st_chain,
-         'test': st_test, 'fit-shard': st_fit_shard}
+         'test': st_test, 'fit-shard': st_fit_shard, 'wavediff': st_wavediff}
 
 
 def lim_check(ctx, what):
@@ -1256,11 +1321,14 @@ def add_arguments(p):
                         'analysis, never served (B-83)' % ', '.join(ANALYSIS))
     p.add_argument('--snap-item', metavar='ITEM', help='runner item of the internal stages (tie: a cell; fit-shard: '
                                                        '<tag>:<part>) - set by the stage that submits the job')
+    p.add_argument('--snap-replaces', metavar='RUN',
+                   help='stage wavediff: the batch run this run REPLACES (a directory, or a run name under '
+                        'paths.SNAPSHOT_REVIEW_ROOT); default: the row of catalog_snapshot.REPLACES_SCHEDULES whose new is this run')
 
 
 def run(args, run):
     T = _T()
-    sel = T.select_stages(args, STAGES, internal=INTERNAL, label='snapshot')
+    sel = T.select_stages(args, STAGES, internal=INTERNAL + AFTER_PAGES, label='snapshot')
     item = arg_val(args, 'snap_item')
     if item and sel not in (['tie'], ['fit-shard']):
         raise SystemExit('error: --snap-item goes with --stages tie or --stages fit-shard only')

@@ -274,13 +274,16 @@ SOURCE_FLAGS = {
     'search': ('replay_attempt',),
     'photometry': ('src_run', 'cutout_root', 'stage1'),
     'forced': ('deep_eval_run', 'wide_runs', 'wide_jobs', 'wide_cutout_root', 'wide_bursts', 'na_detections'),   # W / N inputs
-    'catalog': ('inc_source', 'omit_runs', 'omit_refusals'),   # omit_*: the deep-omission stage (lib/catalog/deep_omission.py) -
-                                                               # the served batch runs it counts and the refusal record it reads
+    'catalog': ('inc_source', 'omit_runs', 'omit_refusals', 'snap_replaces'),   # omit_*: the deep-omission stage (lib/catalog/
+                                                               # deep_omission.py) - the served batch runs it counts and the refusal
+                                                               # record it reads; snap_replaces: the run a snapshot run replaces (its
+                                                               # record read by the wave test, tier_snapshot wavediff)
     'calibrate': ('served_run',),
 }
 _KEYWORDS = ('published', 'served', 'none', 'snapshot', 'search')     # flag values that name no path
 _RUN_NAME_FLAGS = {'deep_panels_run': 'TRANSIENTS_ROOT',             # a bare name resolves under this paths root (as the step
-                   'omit_runs': 'SNAPSHOT_REVIEW_ROOT',              # resolves it: deep_omission._runs_arg, snapshot_view.runs_arg)
+                   'omit_runs': 'SNAPSHOT_REVIEW_ROOT',              # resolves it: deep_omission._runs_arg, snapshot_view.runs_arg,
+                   'snap_replaces': 'SNAPSHOT_REVIEW_ROOT',          # tier_snapshot.replaced_run)
                    'view_runs': 'SNAPSHOT_REVIEW_ROOT'}
 _LIST_FLAGS = ('stores', 'omit_runs', 'view_runs', 'wide_jobs')   # a comma list of paths (archive --stores: files; catalog
                                                                   # --omit-runs, serve --view-runs: runs; forced --wide-jobs:

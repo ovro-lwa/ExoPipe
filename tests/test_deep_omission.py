@@ -40,10 +40,11 @@ R-GREGG-20261024-DEEP-OMISSION-DESIGN-APPROVED-AND-10MIN-HOLD-RELEASED).
   stage      `exopipe3 catalog --tier snapshot --stages omit` and `--tier sublst --stages omit` through the step's run();
              --omit-refusals is an override of the RULED catalog_omission.REFUSALS (refused into a production root without
              --ruling-for, allowed and recorded with one or into a non-production --out; Q review F8)
-  pending    the two values production chose that Gregg has not ruled (RATE_FLOOR_PER_NIGHT, WIDEBAND_MEMBER_VERDICTS) are neither
-             RULED nor PROTECTED and their alternatives work (0 = the card's rule without a floor; ('OMIT',) = no ABSENT
-             propagation); ABSENT_WITH_SERVED is PROPOSED with production's value in the parity file and the WAVE2 G6 marks
-             (Q review F3, F5); an invalid value refuses at --set through the real CLI, before the run (N3)
+  pending    production's two values RULED 2026-11-04 (RATE_FLOOR_PER_NIGHT, WIDEBAND_MEMBER_VERDICTS: R-GREGG-20261104-DEEP-
+             OMISSION-SHORT-TIERS-ANSWERS) are not PROTECTED and their alternatives work (0 = the card's rule without a floor;
+             ('OMIT',) = no ABSENT propagation); ABSENT_WITH_SERVED's 'refuse' is RULED (R-REFACTOR-20261104-ABSENT-WITH-SERVED-
+             REFUSE) with production's value in the parity file and the WAVE2 G6 marks (Q review F3, F5); an invalid value
+             refuses at --set through the real CLI, before the run (N3)
   prodbugs   production's bugs carried for parity, pinned as they are today (Q review F1: a wideband detection dropped for a member
              its own frame / window lacks; F4: deep_value / deep_threshold in the record's listing order, gates sorted, the
              meaning from the first sorted gate; F10: 'tier rms above threshold' without a threshold) - a fix shows here; the
@@ -59,6 +60,7 @@ Run standalone:  python tests/test_deep_omission.py [test_name ...]
 import collections
 import csv
 import filecmp
+import glob
 import json
 import os
 import random
@@ -640,7 +642,38 @@ def tenmin_world(name='tenmin', seed=11):
                     _wcsv(os.path.join(R, f'source_catalogs_{S}_{T}', f'{band}_source_members.csv'),
                           ['source_id', 'cand_id', 'band', 'det_snr'], mem)
     _wcsv(os.path.join(root, 'page_context_frames.csv'), ['path', 'size', 'mtime', 'rms'], frms)
+    set_job_rule(sl, 'envelope')            # searched under the refactor's default rule (G12 reads each job's size_rule.json)
     return root, rdir, sl, tr, os.path.join(root, 'page_context_frames.csv')
+
+
+_ENV_REC = []
+
+
+def _envelope_record():
+    """The configured 10-minute envelope's run record (lib/search/size_rule.configured_record under 'envelope'; loaded once)."""
+    if not _ENV_REC:
+        from exopipe.phase3.lib.search import size_rule as SZ
+        C = _cfg()
+        with Patch((C.search_sublst, 'SIZE_RULE', 'envelope')):
+            _ENV_REC.append(SZ.configured_record('10min'))
+    return dict(_ENV_REC[0])
+
+
+def set_job_rule(sl, rule, lsts=None):
+    """Every 10-minute search job of the fixture (sl/search_B/<lst>_<band>_<S>/transients/Run_SLST<hh>B) searched under
+    ``rule``: 'envelope' writes its size_rule.json (the engine's record), 'production' removes it (production writes none)."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    rec = _envelope_record() if rule == 'envelope' else None
+    for d in glob.glob(os.path.join(sl, 'search_B', '*_*_[IV]', 'transients', 'Run_SLST*B')):
+        if lsts and os.path.basename(os.path.dirname(os.path.dirname(d))).split('_')[0] not in lsts:
+            continue
+        p = os.path.join(d, SZ.RUN_RECORD)
+        if rec is None:
+            if os.path.exists(p):
+                os.remove(p)
+        else:
+            with open(p, 'w') as f:
+                json.dump(rec, f, indent=1, sort_keys=True)
 
 
 def test_tenmin():
@@ -731,6 +764,20 @@ def test_serve_build():
         DO.run_tenmin(plan.lsts, os.path.join(root, 'stage'), seed_dir='')
     assert u.status == 'refused' and 'merge failed' in u.reason, (u.status, u.reason)
     assert len(calls) == 1 and calls[0][0] == 'sublst_cumulative' and calls[0][1][1:] == plan.lsts, calls
+    # the V3 round: the merge's drop judges a remaining single with the builder's gate under the configured 10-minute size rule -
+    # the refactor's default 'envelope': P3_SIZE_GATE_7_8 = inf (no fixed gate); production's rule: nothing set (the drop's 1.7)
+    assert calls[0][2].get('P3_SIZE_GATE_7_8') == 'inf' and u.meta['rejudge_size_gate']['rule'] == 'envelope', (calls[0][2], u.meta)
+    with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.catalog_omission, 'REFUSALS', rdir),
+               (C.catalog_omission, 'TENMIN_FRAME_RMS', frms), (C.catalog_omission, 'TENMIN_RMS_CACHE_SEED', ''),
+               (sublst_build.scripts, 'run', fake_run), (sublst_build, 'generation_mix', lambda lsts: []),
+               (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B')),
+               (C.catalog_grouping, 'GROUPING', 'production'), (C.catalog_grouping, 'MULTIPLES_RULE', 'production'),
+               (C.search_sublst, 'SIZE_RULE', 'production')):
+        set_job_rule(sl, 'production')
+        u2 = sublst_build.build_stage(record.Run('serve', ['test_serve_build_prodrule'], out, C), plan)
+        set_job_rule(sl, 'envelope')
+    assert len(calls) == 2 and 'P3_SIZE_GATE_7_8' not in calls[1][2] and u2.meta['rejudge_size_gate'] == dict(
+        rule='production', gate_beams='1.7', env={}), (calls[1][2], u2.meta.get('rejudge_size_gate'))
     table = calls[0][2].get('SUBLST_DEEP_OMISSION', '')
     assert table.startswith(os.path.join(out, 'sublst', 'deep_omission', 'deep_omission_')) and table.endswith('Z.csv'), table
     assert filecmp.cmp(table, os.path.join(root, 'stage', 'deep_omission.csv'), shallow=False), 'the build table is the stage\'s'
@@ -775,6 +822,161 @@ def merge_ready(tr, lsts):
                         open(os.path.join(page, f'rank0001_{L}_{c.group(3)}_bin{b}_{band}.png'), 'w').close()
 
 
+# the 10-minute RE-JUDGING world (edf3263; the V3 round): partial survivors in 05h's Stokes I 46 MHz table - one member on the OMIT
+# key (05h 46 MHz 2025-06-01 I) and one kept (2025-06-07); (source, kept |S/N|, size, axis, promotion, xm_best)
+REJUDGE_SOURCES = (('JR01_46MHz', 7.5, 1.85, 1.10, '', ''),        # a 7-8 sigma single above 1.7 beams: out under production only
+                   ('JR02_46MHz', 6.5, 1.00, 1.00, '', ''),        # below the survivor threshold: no route (both rules)
+                   ('JR03_46MHz', 9.5, 2.50, 1.00, '', ''),        # above 8 sigma: survives (both)
+                   ('JR04_46MHz', 7.4, 1.20, 1.00, '', ''),        # a compact 7-8 sigma single: survives (both)
+                   ('JR05_46MHz', 6.8, 1.00, 1.00, 'RPT', ''),     # a repeat promotion void with one member: no route (both)
+                   ('JR06_46MHz', 7.5, 1.90, 1.00, '', 'gaia:1'))   # a cross-matched single: the gate does not apply (both)
+REJUDGE_OUT = {'production': {'JR01_46MHz', 'JR02_46MHz', 'JR05_46MHz'}, 'envelope': {'JR02_46MHz', 'JR05_46MHz'}}
+
+
+def rejudge_ready(tr, lst='05h', extra=()):
+    """Add REJUDGE_SOURCES (+ ``extra``) to the LST run of a merge_ready world: members, survivors (promotion, xm_best), master
+    rows (size_beams, axis_norm), page directories with their blocks."""
+    R = os.path.join(tr, f'Run_SLST{lst[:2]}B')
+    gone_n, keep_n = f'{NIGHTS[0]}T00', f'{NIGHTS[6]}T01'
+    mp = os.path.join(R, 'master_catalog.csv')
+    mc = _rows(mp)
+    d = os.path.join(R, 'source_catalogs_I_sb')
+    mem = _rows(os.path.join(d, '46MHz_source_members.csv'))
+    sv = _rows(os.path.join(d, '46MHz_sources_survivors.csv'))
+    for i, (sid, snr, sz, ax, promo, xm) in enumerate(REJUDGE_SOURCES + tuple(extra)):
+        g, k = f'I1_{lst}_{gone_n}_46MHz_{9000 + 2 * i}', f'I1_{lst}_{keep_n}_46MHz_{9001 + 2 * i}'
+        mc += [dict(cand_id=g, band='46MHz', date=gone_n, stokes='I', pos_kind='fitted', peak_jy='1.0', size_beams='1.0',
+                    axis_norm='1.0'),
+               dict(cand_id=k, band='46MHz', date=keep_n, stokes='I', pos_kind='fitted', peak_jy='1.0', size_beams='%.2f' % sz,
+                    axis_norm='%.2f' % ax)]
+        mem += [dict(source_id=sid, cand_id=g, band='46MHz', det_snr='9.0'), dict(source_id=sid, cand_id=k, band='46MHz',
+                                                                                  det_snr='%.2f' % snr)]
+        sv.append(dict(source_id=sid, band='46MHz', identity_id=sid.split('_')[0], n_det=2, best_cand_id=g, best_snr='9.0',
+                       promotion=promo, xm_best=xm))
+        for c_, night in ((g, NIGHTS[0]), (k, NIGHTS[6])):
+            page = os.path.join(R, 'candidates', 'I', f'{sid}_{lst}_{night}_46MHz')
+            os.makedirs(page, exist_ok=True)
+            b = int(c_.split('T')[1][:2])
+            open(os.path.join(page, f'rank0001_{lst}_{night}_bin{b}_46MHz.png'), 'w').close()
+    _wcsv(mp, ['cand_id', 'band', 'date', 'stokes', 'pos_kind', 'peak_jy', 'size_beams', 'axis_norm'], mc)
+    _wcsv(os.path.join(d, '46MHz_source_members.csv'), ['source_id', 'cand_id', 'band', 'det_snr'], mem)
+    _wcsv(os.path.join(d, '46MHz_sources_survivors.csv'),
+          ['source_id', 'band', 'identity_id', 'n_det', 'best_cand_id', 'best_snr', 'promotion', 'xm_best'], sv)
+
+
+def prod_rejudge(PDROP, table, tr, lsts, gate, approved):
+    """Production's drop (pinned) on the decision table: its re-judging (_ctx) per LST with SIZE_GATE_7_8 = ``gate`` (what
+    P3_SIZE_GATE_7_8 sets; unset = 1.7), then filter_rows over every members table - (REJ, its 'detection' REC rows)."""
+    with Patch((PDROP, 'SIZE_GATE_7_8', gate), (PDROP, 'APPROVED', approved)):
+        PDROP.OM.clear()
+        PDROP.WHY.clear()
+        del PDROP.REC[:]
+        PDROP.CNT.clear()
+        PDROP._CTX.clear()
+        PDROP.REJ.clear()
+        PDROP.load(table)
+        for L in lsts:
+            R = os.path.join(tr, f'Run_SLST{L[:2]}B')
+            PDROP._ctx(L, R)
+            for S in ('I', 'V'):
+                for T in ('sb', 'wb'):
+                    dd = os.path.join(R, f'source_catalogs_{S}_{T}')
+                    for nm in sorted(os.listdir(dd)):
+                        if nm.endswith('_source_members.csv'):
+                            PDROP.filter_rows(L, R, f'source_catalogs_{S}_{T}/{nm}', _rows(os.path.join(dd, nm)))
+        return dict(PDROP.REJ), [dict(r) for r in PDROP.REC if r['kind'] == 'detection']
+
+
+def test_tenmin_rejudge():
+    """THE 10-MINUTE RE-JUDGING (exopipe_ops edf3263 + 35aad1a; the V3 round): on partial survivors the stage's prediction
+    (run_tenmin: 'source re-judged' rows, the reasons) = production's drop (pinned sublst_deep_omission_drop: _ctx's REJ), for
+    BOTH size rules - under 'envelope' (the refactor's default) the remaining single carries the rule's verdict and no fixed
+    7-8 sigma gate acts (the drop given P3_SIZE_GATE_7_8 = inf, as the builder), under 'production' (the parity file) the drop's
+    1.7 beams; the members of a re-judged-out source get no 'detection' row (production's filter_rows); the summary records the
+    gate; G11 refuses without the go file; G10 refuses where survival rests on a statistic not re-derived (production too)."""
+    DO, C = _DO(), _cfg()
+    SDO, PDO, PDROP = _prod()
+    root, rdir, sl, tr, frms = tenmin_world('rejudge', seed=11)
+    lsts = ['05h', '06h']
+    merge_ready(tr, lsts)
+    rejudge_ready(tr)
+    go = os.path.join(root, 'go.txt')
+    open(go, 'w').write('the test go\n')
+    for rule, gate, gate_txt in (('production', 1.7, '1.7'), ('envelope', float('inf'), 'inf')):
+        out = os.path.join(root, f'stage_{rule}')
+        set_job_rule(sl, rule)                      # the jobs searched under the rule the configuration applies (G12)
+        with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.search_sublst, 'SIZE_RULE', rule),
+                   (C.catalog_omission, 'TENMIN_REJUDGE_APPROVED', go)):
+            assert DO.tenmin_size_gate()[:2] == (gate, {'P3_SIZE_GATE_7_8': 'inf'} if rule == 'envelope' else {}), rule
+            summ = DO.run_tenmin(lsts, out, rdir=rdir, seed_dir='', frame_rms=frms)
+        rec = _rows(os.path.join(out, 'deep_omission_dropped.csv'))
+        port = {(r['lst'], r['stokes'], r['view'], r['source_id'], r['band']): r['why'] for r in rec if r['kind'] == 'source re-judged'}
+        REJ, pdet = prod_rejudge(PDROP, os.path.join(out, 'deep_omission.csv'), tr, lsts, gate, go)
+        prod = {k: 're-judged on the members it keeps: %s' % v for k, v in REJ.items()}
+        assert port == prod, (rule, sorted(set(port.items()) ^ set(prod.items()))[:4])
+        assert {k[3] for k in port} == REJUDGE_OUT[rule], (rule, sorted(port))
+        assert summ['rejudged'] == len(REJUDGE_OUT[rule]) and summ['rejudge_size_gate'] == dict(
+            rule=rule, gate_beams=gate_txt, lst_rules={L: rule for L in lsts}), summ['rejudge_size_gate']
+        K = lambda r: (r['lst'], r['stokes'], r['view'], r['source_id'], r['band'], r['cand_id'], r['night'], r['why'])
+        got = collections.Counter(K(r) for r in rec if r['kind'] == 'detection')
+        assert got == collections.Counter(K(r) for r in pdet), (rule, sum(got.values()), len(pdet))
+        assert not [r for r in rec if r['kind'] == 'detection' and r['source_id'] in REJUDGE_OUT[rule]], rule
+        assert any(r['kind'] == 'detection' and r['source_id'] == 'JR03_46MHz' for r in rec)    # a survivor's omitted member: listed
+        from exopipe.phase3.core import validate
+        for t in validate.run('omission_record', os.path.join(out, 'deep_omission_dropped.csv'), tier='sublst'):
+            assert t['passed'], (rule, t)
+    # the 7-8 sigma reason names production's gate and the measured size; under 'envelope' no size reason at all
+    why1 = [r['why'] for r in _rows(os.path.join(root, 'stage_production', 'deep_omission_dropped.csv'))
+            if r['kind'] == 'source re-judged' and r['source_id'] == 'JR01_46MHz']
+    assert why1 and '7-8 sigma size/axis gate' in why1[0] and 'size 1.85' in why1[0] and '> 1.7' in why1[0], why1
+    assert not [r for r in _rows(os.path.join(root, 'stage_envelope', 'deep_omission_dropped.csv')) if 'size/axis gate' in r['why']]
+    # G12: the LSTs' search jobs must be searched under the configured rule - a job without the envelope's record (production's
+    # search) under the default, or envelope records under production's rule, refuse; and an LST without any job under 'envelope'
+    for rule, jobs_rule, lsts_off in (('envelope', 'production', ['06h']), ('production', 'envelope', None)):
+        set_job_rule(sl, 'envelope')
+        set_job_rule(sl, jobs_rule, lsts=lsts_off)
+        with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.search_sublst, 'SIZE_RULE', rule),
+                   (C.catalog_omission, 'TENMIN_REJUDGE_APPROVED', go)):
+            try:
+                DO.run_tenmin(lsts, os.path.join(root, f'stage_g12_{rule}'), rdir=rdir, seed_dir='', frame_rms=frms)
+                raise AssertionError('G12 did not refuse')
+            except Exception as e:
+                assert 'G12' in str(e) and ('06h' in str(e) if lsts_off else '05h' in str(e)), e
+    set_job_rule(sl, 'envelope')
+    bare = os.path.join(root, 'bare_sl')
+    shutil.copytree(sl, bare, ignore=shutil.ignore_patterns('search_B'))
+    with Patch((C.paths, 'SUBLST_ROOT', bare), (C.paths, 'TRANSIENTS_ROOT', tr), (C.catalog_omission, 'TENMIN_REJUDGE_APPROVED', go)):
+        try:
+            DO.tenmin_rule_check(lsts)
+            raise AssertionError('G12 accepted an LST without search jobs under the envelope')
+        except Exception as e:
+            assert 'G12' in str(e) and 'no 10-minute search job' in str(e), e
+    # G11: re-judging removes sources and no go is recorded - refused before anything is written
+    with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr),
+               (C.catalog_omission, 'TENMIN_REJUDGE_APPROVED', os.path.join(root, 'no_go.txt'))):
+        try:
+            DO.run_tenmin(lsts, os.path.join(root, 'stage_nogo'), rdir=rdir, seed_dir='', frame_rms=frms)
+            raise AssertionError('G11 did not refuse')
+        except Exception as e:
+            assert 'G11' in str(e), e
+    assert not os.path.exists(os.path.join(root, 'stage_nogo', 'deep_omission_dropped.csv'))
+    # G10: a cross-match E promotion rests on the members left - refused (production refuses the same)
+    root2, rdir2, sl2, tr2, frms2 = tenmin_world('rejudge_g10', seed=11)
+    merge_ready(tr2, lsts)
+    rejudge_ready(tr2, extra=(('JR07_46MHz', 6.5, 1.0, 1.0, 'E:gaia', ''),))
+    with Patch((C.paths, 'SUBLST_ROOT', sl2), (C.paths, 'TRANSIENTS_ROOT', tr2), (C.catalog_omission, 'TENMIN_REJUDGE_APPROVED', go)):
+        try:
+            DO.run_tenmin(lsts, os.path.join(root2, 'stage'), rdir=rdir2, seed_dir='', frame_rms=frms2)
+            raise AssertionError('G10 did not refuse')
+        except Exception as e:
+            assert 'G10' in str(e) and 'JR07_46MHz' in str(e), e
+    try:
+        prod_rejudge(PDROP, os.path.join(root, 'stage_production', 'deep_omission.csv'), tr2, lsts, 1.7, go)
+        raise AssertionError('production did not refuse')
+    except SystemExit as e:
+        assert 'REFUSING re-judging' in str(e) and 'E:gaia' in str(e), e
+
+
 def prod_merge_copy(ops_dir, tr, sl):
     """production's sublst_cumulative.py with its two data roots (T, SL) pointed at the fixture - the one line rewritten,
     refused if production changed it - and sublst_deep_omission_drop.py verbatim, into ``ops_dir`` (the merge imports the drop
@@ -793,7 +995,9 @@ def test_serve_build_merge():
     fixture, run through scripts.run / core.legacy.run - SUBLST_DEEP_OMISSION survives its SUBLST_* clearing): the merge drops
     exactly the detections the stage predicts, the build's record is registered (class omission_record) and passes its
     content and per-instant tests, no omitted row is left in the build, the LST runs keep their files. The build is stopped
-    after the merge (build_localizations stubbed)."""
+    after the merge (build_localizations stubbed). The V3 round: partial survivors (REJUDGE_SOURCES) - the merge's own
+    re-judging removes exactly the sources the stage predicts, under the refactor's default size rule ('envelope': the merge
+    given P3_SIZE_GATE_7_8 = inf) and under production's (the parity file: 1.7 beams), JR01 only under the latter."""
     import types
     from exopipe.phase3.core import record
     from exopipe.phase3.lib.serve import sublst_build
@@ -801,6 +1005,7 @@ def test_serve_build_merge():
     root, rdir, sl, tr, frms = tenmin_world('serve_merge', seed=13)
     lsts = ['05h', '06h']
     merge_ready(tr, lsts)
+    rejudge_ready(tr)
     ops_dir = os.path.join(root, 'ops')
     prod_merge_copy(ops_dir, tr, sl)
     real_run, calls = sublst_build.scripts.run, []
@@ -833,7 +1038,8 @@ def test_serve_build_merge():
     assert filecmp.cmp(table, os.path.join(B, 'deep_omission.csv'), shallow=False), 'the merge copied another table'
     K = lambda r: (r['lst'], r['stokes'], r['view'], r['source_id'], r['band'], r['cand_id'], r['night'], r['why'])
     merged = collections.Counter(K(r) for r in _rows(os.path.join(B, 'deep_omission_dropped.csv')) if r['kind'] == 'detection')
-    stage = collections.Counter(K(r) for r in _rows(os.path.join(root, 'stage', 'deep_omission_dropped.csv')))
+    stage = collections.Counter(K(r) for r in _rows(os.path.join(root, 'stage', 'deep_omission_dropped.csv'))
+                                if r['kind'] == 'detection')
     assert merged == stage and sum(stage.values()) == summ['omitted'] > 0, (sum(merged.values()), sum(stage.values()))
     outs = {o['class']: o for o in u.outputs}
     assert outs['omission_record']['path'] == os.path.join(B, 'deep_omission_dropped.csv')
@@ -855,6 +1061,31 @@ def test_serve_build_merge():
                         kept_in_run += 1
                         gone += not os.path.exists(os.path.join(B, 'candidates', S, page, fn))
     assert kept_in_run and gone == kept_in_run, (gone, kept_in_run)    # every omitted block left the build, none left a run
+    # the re-judging under both size rules: the merge's own (in place) = the stage's prediction
+    RJ = lambda p: {(r['lst'], r['stokes'], r['view'], r['source_id'], r['band']): r['why'] for r in _rows(p)
+                    if r['kind'] == 'source re-judged'}
+    assert RJ(os.path.join(B, 'deep_omission_dropped.csv')) == RJ(os.path.join(root, 'stage', 'deep_omission_dropped.csv'))
+    assert {k[3] for k in RJ(os.path.join(B, 'deep_omission_dropped.csv'))} == REJUDGE_OUT['envelope']
+    calls.clear()
+    with Patch((C.paths, 'SUBLST_ROOT', sl), (C.paths, 'TRANSIENTS_ROOT', tr), (C.catalog_omission, 'REFUSALS', rdir),
+               (C.catalog_omission, 'TENMIN_FRAME_RMS', frms), (C.catalog_omission, 'TENMIN_RMS_CACHE_SEED', ''),
+               (sublst_build.scripts, 'run', run_), (sublst_build.scripts, 'ops_root', lambda: ops_dir),
+               (sublst_build, 'lst_run', lambda l: os.path.join(tr, f'Run_SLST{l[:2]}B')),
+               (C.catalog_grouping, 'GROUPING', 'production'), (C.catalog_grouping, 'MULTIPLES_RULE', 'production'),
+               (C.search_sublst, 'SIZE_RULE', 'production')):
+        set_job_rule(sl, 'production')
+        u2 = sublst_build.build_stage(record.Run('serve', ['test_serve_build_merge_prodrule'], out, C), plan)
+        DO.run_tenmin(lsts, os.path.join(root, 'stage_prodrule'), seed_dir='')
+        set_job_rule(sl, 'envelope')
+    assert u2.status == 'refused' and 'G9 localizations failed' in u2.reason, (u2.status, u2.reason)
+    assert all(t['passed'] for t in u2.tests), [t for t in u2.tests if not t['passed']]
+    got = RJ(os.path.join(B, 'deep_omission_dropped.csv'))
+    assert got == RJ(os.path.join(root, 'stage_prodrule', 'deep_omission_dropped.csv')) and {k[3] for k in got} == \
+        REJUDGE_OUT['production'], sorted(got)
+    merged2 = collections.Counter(K(r) for r in _rows(os.path.join(B, 'deep_omission_dropped.csv')) if r['kind'] == 'detection')
+    stage2 = collections.Counter(K(r) for r in _rows(os.path.join(root, 'stage_prodrule', 'deep_omission_dropped.csv'))
+                                 if r['kind'] == 'detection')
+    assert merged2 == stage2, (sum(merged2.values()), sum(stage2.values()))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1114,8 +1345,8 @@ def test_pending_values():
     values pending Gregg; on 2026-11-04 Gregg delegated and the refactor chat decided, values unchanged
     (R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS): both RULED under that row, not PROTECTED - their alternatives still
     work through the config into a non-production --out (into a production root only with --ruling-for) and change the
-    decisions as stated (floor 0 = the card's median + 5 x 1.4826 MAD; ('OMIT',) = no ABSENT member). G6's 'refuse' stays the
-    refactor's PROPOSED value (that row does not decide it): not ruled, production's 'production' in the parity file, the code
+    decisions as stated (floor 0 = the card's median + 5 x 1.4826 MAD; ('OMIT',) = no ABSENT member). G6's 'refuse' is RULED by its
+    own row (R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE), not PROTECTED; production's 'production' in the parity file, the code
     sites marked WAVE2 G6."""
     from exopipe.phase3.config import CFG, ConfigRefusal
     DO = _DO()
@@ -1124,7 +1355,8 @@ def test_pending_values():
         assert CFG.ruled(f'catalog_omission.{k}') and 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS' in \
             ((CFG.ruled(f'catalog_omission.{k}'),) if isinstance(CFG.ruled(f'catalog_omission.{k}'), str)
              else tuple(CFG.ruled(f'catalog_omission.{k}'))) and not CFG.protected(f'catalog_omission.{k}'), k
-    assert not CFG.ruled('catalog_omission.ABSENT_WITH_SERVED') and not CFG.protected('catalog_omission.ABSENT_WITH_SERVED')
+    assert CFG.ruled('catalog_omission.ABSENT_WITH_SERVED') == ('R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE',) and \
+        not CFG.protected('catalog_omission.ABSENT_WITH_SERVED')            # ruled 2026-11-04, overridable (parity file 'production')
     for k in ('PROPAGATE', 'SIGMA', 'WIDEBAND_EXCEPT'):
         assert CFG.ruled(f'catalog_omission.{k}') and CFG.protected(f'catalog_omission.{k}'), k
     assert (c.RATE_FLOOR_PER_NIGHT, tuple(c.WIDEBAND_MEMBER_VERDICTS), c.ABSENT_WITH_SERVED) == (1.0, ('OMIT', 'ABSENT'), 'refuse')
@@ -1497,7 +1729,8 @@ def test_real_one_lst():
     print(f'    07h on B6H ({n} served detections): {len(port)} decisions identical to production ({time.time() - t0:.0f} s)')
 
 
-TESTS = [test_production_pin, test_drift, test_snapshot, test_tenmin, test_serve_build, test_serve_build_merge, test_gates, test_content,
+TESTS = [test_production_pin, test_drift, test_snapshot, test_tenmin, test_tenmin_rejudge, test_serve_build, test_serve_build_merge,
+         test_gates, test_content,
          test_kept_product, test_stage, test_refusals_override, test_pending_values, test_production_bugs_pinned,
          test_injected_record, test_real_one_lst]
 
