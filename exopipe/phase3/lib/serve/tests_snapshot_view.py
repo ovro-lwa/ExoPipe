@@ -550,6 +550,15 @@ def page_figures(path, msgs):
     return nfig, npage
 
 
+@content_test('snapshot_page_figures')
+def view_page_figures(path, **ctx):
+    """The page figures of a localized view (after snapshot_page_figures_check.py --repair): every figured identity's page
+    directories of a tier hold astrometry.png of the figure's size, none without a figure (V6's check, page_figures)."""
+    msgs = []
+    nfig, npage = page_figures(path, msgs)
+    return _fail(msgs, npage, f'{nfig} figures, {npage} page copies of their size')
+
+
 @content_test('snapshot_card2_union')
 def card2_union_exact(path, runs=None, **ctx):
     """card2_filter.csv of a combined view: the union of its member batches' files (comb_build_20261102.sh:53-69), recomputed

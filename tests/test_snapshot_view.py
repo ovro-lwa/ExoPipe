@@ -37,7 +37,9 @@ and its driver snapshot_batch/comb_build_20261102.sh.
              dropped): the build's read-back refuses, the view is moved aside (F7), nothing is left under its name
   seed       F10: the localize stage runs snapshot_localize_tiers.sh with PYTHONHASHSEED = serve.SNAPSHOT_FIGURE_HASHSEED
   ready      the ready stage on the built view (stub localizations): G17 passes, the final tests pass, VIEW-READY-FOR-HIDES;
-             V6's page figures refuse a truncated copy (production 2026-11-04), a missing one, a stale one and a missing figure
+             V6's page figures refuse a truncated copy (production 2026-11-04), a missing one, a stale one and a missing figure;
+             the localize stage's page-figure step (production's snapshot_page_figures_check.py --repair, 0e05399) re-copies a
+             truncated copy and refuses a figure without its source (G21b)
   py36       the child's module parses and loads under production's interpreter (Python 3.6)
   pin        production's ported files are the pinned ones (tests/production_pin.py; F3): the only test production's later
              commits fail - the stage's own tests above build the stage's view alone, production's side only in drift / parity /
@@ -1356,8 +1358,23 @@ def test_ready():
         _wcsv(os.path.join(W['port'], f'source_catalogs_loc_{T}', 'localizations.csv'), ['identity_id', 'ra', 'dec', 'n_det'], rows_)
     rr = record.Run('serve', ['test'], W['out'], CFG)
     plan = SV.ViewPlan(types.SimpleNamespace(run_label=VIEW, view_runs=','.join(W['runs']), view_omit=None), W['out'])
+    # THE PAGE FIGURES (the wave driver's step 4b, exopipe_ops 0e05399): a copy left truncated by the localizer is re-copied by
+    # production's snapshot_page_figures_check.py --repair (in place), the unit done, its class passing; a figure without its
+    # source (a page directory of a figured identity whose figure went) refuses (G21b)
+    d_t = sorted(pages[fig_id])[0]
+    a_t = os.path.join(W['port'], d_t, 'astrometry.png')
+    good_t = open(a_t, 'rb').read()
+    open(a_t, 'wb').write(good_t[:65536])
     try:
         CFG.authorize(out=W['out'])
+        uf = SV.figures_stage(rr, plan)
+        assert uf.status == 'done' and 'PAGE-FIGURES REPAIRED' in uf.meta.get('page_figures', ''), (uf.status, uf.reason,
+                                                                                                 uf.meta.get('page_figures'))
+        assert open(a_t, 'rb').read() == good_t and all(t['passed'] for t in uf.tests), [t for t in uf.tests if not t['passed']]
+        os.rename(fig, fig + '.gone')
+        uf2 = SV.figures_stage(record.Run('serve', ['test_figures_missing'], W['out'], CFG), plan)
+        os.rename(fig + '.gone', fig)
+        assert uf2.status == 'refused' and 'G21b' in uf2.reason, (uf2.status, uf2.reason)
         u = SV.ready_stage(rr, plan)
     finally:
         CFG.reset()

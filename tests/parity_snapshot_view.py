@@ -27,7 +27,8 @@ prod: production's snapshot_combined_view.py run UNCHANGED under its interpreter
       (in place, live, as the stage runs it) with P3_LOC_SHARDS=6 SNAP_LOC_FIG_PROCS=6 (speed only; production's driver used 12
       shards on /data07 - 6 keeps to the Lustre rule: at most 6 readers) and PYTHONHASHSEED = the stage's
       serve.SNAPSHOT_FIGURE_HASHSEED: production sets none, so its figure bytes change from run to run (V_combview review F10) and
-      a byte comparison of figures needs one seed on both sides.
+      a byte comparison of figures needs one seed on both sides; then the wave driver's step 4b, snapshot_page_figures_check.py
+      VIEW --repair (in place, live; exopipe_ops 0e05399), as the stage's localize runs it.
 port: `exopipe3 serve --tier snapshot --family comb --stages omit,build,filtercat,localize,ready` of THIS tree as a --parity run
       with the production parity file, --set catalog_omission.REFUSALS=REFUSALS paths.SNAPSHOT_FLEET_OUT=FLEET and the same
       localization environment. WORK must lie outside every production root (the CLI refuses /lustre/gh/main/phase3 ...).
@@ -141,6 +142,14 @@ def prod(work, rdir, fleet, runs):
                             stdout=lf, stderr=subprocess.STDOUT).returncode
     if rc or 'LOCALIZE-TIERS-OK' not in open(log).read():
         sys.exit(f'LOCALIZATION FAILED ({log})')
+    # step 4b of the wave's view driver (comb_build_wave_20261104.sh, exopipe_ops 0e05399): every page astrometry.png against its
+    # figure, a differing copy re-copied atomically - the stage's localize runs the same script in place
+    flog = os.path.join(work, 'prod', 'page_figures.log')
+    with open(flog, 'w') as lf:
+        rc = run(['nice', PY36, 'snapshot_page_figures_check.py', out, '--repair'], cwd=OPS, stdout=lf,
+                 stderr=subprocess.STDOUT).returncode
+    if rc:
+        sys.exit(f'PAGE-FIGURES FAILED ({flog})')
     print(f'PROD VIEW-READY-FOR-HIDES {out}')
 
 

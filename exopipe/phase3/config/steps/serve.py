@@ -48,6 +48,11 @@ class serve(_Section):
     SUBLST_PREV_SUFFIX = '.prev_{utc}'      # utc = %Y%m%dT%H%M%S; sublst_cumulative.sh:102
     SNAPSHOT_SOURCE = '/fast/gh/main/phase3/snapshot_rechain_{label}/{label}'   # on site CHAIN_HOST; snapshot_rechain_batch.sh:51
     SNAPSHOT_COPY_EXCLUDE = ('tmp_panels', 'tmp_panel_queue')      # snapshot_serve.sh:28
+    SNAPSHOT_SERVE_HOLD = '/lustre/gh/main/exopipe_ops/snapshot_batch/SERVE_HOLD'   # THE SERVE HOLD: while this file exists (any
+                                            # file, empty included; its text says why) no snapshot run is served - G29 refuses before
+                                            # every stage, G27 included (snapshot_serve.sh, exopipe_ops aa100bf, 2026-10-17:
+                                            # FINDING-SNAPSHOT-BATCH3-CHAINED-ON-PRE-MIRROR-FIX-TEMPLATE-FITS-20261017; lifted
+                                            # 2026-10-18 as SERVE_HOLD.lifted_20261018T0132) [step]
     SNAPSHOT_CARD2_REJUDGE_APPROVED = '/lustre/gh/main/exopipe_ops/snapshot_batch/SNAPCOMB_CARD2_REJUDGE_SERVE_APPROVED'   # Gregg's go
                                             # on the counts of a combined view built with Card 2 / re-judging (its summary holds
                                             # "card2" or "rejudge"): G27 serves such a run only when this file is non-empty and

@@ -17,8 +17,11 @@ carry      (unit snapshot_<name>_carry)  --carry-from (default 'served'): G18 (n
            non-FP verdict holds the serve; carry_missed.csv written either way).
 test, start, hub, verify: lib/serve/flow (expected sources = queue length, snapshot_rechain_batch.sh:419-426).
 
-Before every stage (snapshot_serve.sh): G27 GREGG'S GO ON A COMBINED VIEW (unit snapshot_<name>_go; refused = nothing gated,
-copied or served):
+Before every stage (snapshot_serve.sh, exopipe_ops aa100bf): G29 THE SERVE HOLD - while serve.SNAPSHOT_SERVE_HOLD exists (any
+file; its text says why) unit snapshot_<name>_hold refuses and no snapshot run is served (nothing gated, copied or served; no
+--waive lifts it); without the file there is no hold unit.
+Then (snapshot_serve.sh): G27 GREGG'S GO ON A COMBINED VIEW (unit snapshot_<name>_go; refused = nothing gated, copied or
+served):
   card2 / re-judging (exopipe_ops 35aad1a)  a run whose combined_view_summary.json holds "card2" or "rejudge" (built with Card 2
            per frame / re-judging; the source, and an existing review copy) is served only when serve.SNAPSHOT_CARD2_REJUDGE_APPROVED
            is non-empty and names it (Gregg's go on the counts, R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS);
@@ -216,6 +219,32 @@ def restore_only_go(plan):
     return None
 
 
+def serve_hold():
+    """G29 (module docstring): None when serve.SNAPSHOT_SERVE_HOLD does not exist, else (path, its first 400 bytes as text) -
+    production's `[ -e $HOLDF ]` and `head -c 400 $HOLDF`."""
+    p = _S().SNAPSHOT_SERVE_HOLD
+    if not (p and os.path.exists(p)):
+        return None
+    try:
+        with open(p, 'rb') as f:
+            why = f.read(400).decode('utf-8', 'replace')
+    except OSError as e:
+        why = f'(unreadable: {e})'
+    return p, why
+
+
+def hold_unit(run, plan):
+    """G29 as a unit, always refused, when the serve hold exists; None (no unit) otherwise."""
+    h = serve_hold()
+    if h is None:
+        return None
+    p, why = h
+    with run.unit(f'snapshot_{plan.run_name}_hold', stage='hold', tier='snapshot', source=plan.source) as u:
+        u.add_input(p)
+        u.refuse(f'G29 SERVE HELD {plan.run_name}: {why.strip() or "(empty)"} ({p}) - nothing served, servers untouched')
+    return u
+
+
 def go_unit(run, plan):
     """G27 as a unit when the serve's run holds the Card 2 / re-judging keys or is a combined view (refused or done), None
     otherwise (no unit)."""
@@ -402,7 +431,9 @@ def run(args, run, plan, stages):
     # (:46 exit 4), gate on the copy (:48 exit 5), carry (:38 exit 3; the batch driver's HOLD, snapshot_rechain_batch.sh:406)
     # - nothing copied, no server replaced. A recorded no-input (the parity gate on a remote source, localization off) does
     # not stop.
-    # G27 before every stage (snapshot_serve.sh checks it before the gate, the copy or any server; exit 7 there)
+    # G29 then G27 before every stage (snapshot_serve.sh checks both before the gate, the copy or any server; exit 7 there)
+    if flow.halts(hold_unit(run, plan), 'hold', need_done=True):
+        return
     go = go_unit(run, plan)
     if go is not None and flow.halts(go, 'go', need_done=True):
         return
@@ -438,6 +469,9 @@ def describe(plan, stages, args):
     print(f'  chain run (source): {plan.source or "(unset)"}' + ('' if host or (src and os.path.isdir(src)) else
                                                                    '   [ABSENT locally]'))
     print(f'  review copy (DST):  {plan.U}' + ('   [exists]' if plan.U and os.path.isdir(plan.U) else ''))
+    h = serve_hold()
+    print('  G29 serve hold: ' + (f'HELD - WOULD REFUSE ({h[0]}: {h[1].strip()[:200] or "(empty)"})' if h else
+                                  f'none ({_S().SNAPSHOT_SERVE_HOLD} absent)'))
     go = card2_rejudge_go(plan)
     if go is not None:
         print(f'  G27 Card 2 / re-judging go: {go[1] or plan.source} - ' + (f'WOULD REFUSE ({go[0]})' if go[0] else

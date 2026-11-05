@@ -2,11 +2,13 @@
 
 Classes: snapshot_run (a chain run directory: R1-R5 and R7 of ops/snapshot_rechain_content_test.py recomputed from the run's
 own files, plus no refusal marker, the per-Stokes views agreeing with the union catalogues, Card 2 per frame (card2) and the
-restore-only 3-D gate (restore) read back from the per-detection record), tie_cache (one cell's tie
+restore-only 3-D gate (restore) read back from the per-detection record), restore_wave_diff (the restore-only wave's per-batch
+test, restore_wave_served_diff.json + .csv, read back against both runs' records), tie_cache (one cell's tie
 cache file), snapshot_tie_summary (the chain_summary.json a per-cell --stop-after-tie writes). The run content test's
 operating points are config (catalog_snapshot.TEST_GATE3D_PCT, TEST_MEMBER_ORDER, GHOST_DATES). R6 (missing panels) is the
 pages step's class snapshot_page_run. Every test reads content and returns (passed, value, detail).
 """
+import collections
 import csv
 import glob
 import json
@@ -342,3 +344,108 @@ def tie_summary(path, **ctx):
     ok = pf.get('n_without_fit') == 0 and isinstance(tc.get('from_cache'), int) and isinstance(tc.get('tied_now'), int)
     return ok, tc.get('tied_now'), 'prefit without fit %s of %s; tie cache %s from cache, %s tied now' % (
         pf.get('n_without_fit'), pf.get('n_at_per_frame_fit_step'), tc.get('from_cache'), tc.get('tied_now'))
+
+
+@content_test('restore_wave_diff')
+def restore_wave_rows(path, **ctx):
+    """restore_wave_served_diff.json and the .csv beside it (lib/catalog/restore_wave, port of exopipe_ops
+    snapshot_restore_wave_diff.py; the file G27 reads) read back against BOTH runs' records, on its own reading (not the port's):
+    the csv's columns; one row per previously served detection not served now (the old record's served rows less the new
+    record's served ones), none twice; each row's cause from the new record - absent (not in it), card2 / 3d-gate / not-served /
+    other-earlier by the removing stage, and for a stage after the 3-D gate: secondary only with restored detections listed,
+    each tagged in the new record and (for a grouping column) in the row's group; other-later / secondary-pool with none; the
+    json's counts = the rows' and the records' (previously served, served again, restored, restored served); its status PASS
+    exactly when no detection is absent and the restored rows agree with their pair and the chain summary."""
+    from exopipe.phase3.lib.catalog import restore_wave as RW
+    try:
+        j = json.load(open(path))
+        old, new = j['old'], j['new']
+        counts = j['counts']
+    except (OSError, ValueError, KeyError) as e:
+        return False, None, f'unreadable wave test {path}: {type(e).__name__}: {e}'
+    cp = os.path.join(os.path.dirname(os.path.abspath(path)), RW.CSV_NAME)
+    if not os.path.exists(cp):
+        return False, None, f'no {RW.CSV_NAME} beside {path}'
+    with open(cp, newline='') as f:
+        rd = csv.DictReader(f)
+        cols, rows = rd.fieldnames or [], list(rd)
+    msgs = []
+    if cols != RW.COLS:
+        msgs.append(f'columns {cols} are not the wave test\'s')
+    for p in (os.path.join(old, 'detection_record.csv.gz'), os.path.join(new, 'detection_record.csv.gz')):
+        if not os.path.exists(p):
+            return False, None, f'{p} is not readable: the wave test cannot be read back'
+    it, _h = _record_cols(os.path.join(old, 'detection_record.csv.gz'), ['det_uid', 'served'])
+    prev = {d['det_uid'] for d in it if d['served'] == '1'}
+    want = ['det_uid', 'cand_id', 'ra_peak', 'dec_peak', 'served', 'first_removed_by', 'restored_by', 'gate_3d_installed',
+            'gate_3d_restore'] + list(RW.FALLBACK)
+    it, _h = _record_cols(os.path.join(new, 'detection_record.csv.gz'), want)
+    now, n_tag, served_tag, pair_bad = {}, 0, 0, 0
+    for d in it:
+        now[d['det_uid']] = d
+        pair = d['gate_3d_installed'] == 'remove' and d['gate_3d_restore'] != 'remove'
+        if d['restored_by']:
+            n_tag += 1
+            served_tag += d['served'] == '1'
+            pair_bad += (not pair) or d['restored_by'] != RW.RESTORED_BY
+        elif pair:
+            pair_bad += 1
+    listed = [r['det_uid'] for r in rows]
+    if len(set(listed)) != len(listed):
+        msgs.append(f'{len(listed) - len(set(listed))} detections listed twice')
+    want_listed = {u for u in prev if not (u in now and now[u]['served'] == '1')}
+    if set(listed) != want_listed:
+        msgs.append(f'rows {len(set(listed))}, previously served not served now {len(want_listed)} ({len(set(listed) - want_listed)} '
+                    f'listed wrongly, {len(want_listed - set(listed))} missing)')
+    bad_cause = []
+    for r in rows:
+        u, c = r['det_uid'], r['cause']
+        d = now.get(u)
+        st = d['first_removed_by'] if d else None
+        if d is None:
+            ok_ = c == 'absent'
+        elif st == 'card2':
+            ok_ = c == 'card2'
+        elif st == 'bright-parent-3d':
+            ok_ = c == '3d-gate'
+        elif st in RW.POST3D:
+            nr = int(r['n_restored_in_group'] or 0)
+            rs = [x for x in (r['restored_in_group'] or '').split(';') if x]
+            if c == 'secondary':
+                gc = r['group_column']
+                ok_ = nr > 0 and rs and all(now.get(x, {}).get('restored_by') == RW.RESTORED_BY for x in rs)
+                if ok_ and gc in RW.FALLBACK:
+                    ok_ = all(now[x].get(gc) == r['group_index'] for x in rs) and d.get(gc) == r['group_index']
+            else:
+                ok_ = c in ('other-later', 'secondary-pool') and nr == 0 and not rs
+        elif st:
+            ok_ = c == 'other-earlier'
+        else:
+            ok_ = c == 'not-served'
+        if not ok_:
+            bad_cause.append(f'{u} {c} (stage {st!r})')
+    if bad_cause:
+        msgs.append(f'{len(bad_cause)} rows whose cause the new record does not give, e.g. {bad_cause[:2]}')
+    by = collections.Counter(r['cause'] for r in rows)
+    for c in RW.CAUSES[1:]:
+        if counts.get(c) != by.get(c, 0):
+            msgs.append(f'counts {c} {counts.get(c)} != {by.get(c, 0)} rows')
+    n_served = sum(1 for u in prev if u in now and now[u]['served'] == '1')
+    for k, v in (('prev_served', len(prev)), ('served', n_served), ('restored', n_tag), ('restored_served', served_tag)):
+        if counts.get(k) != v:
+            msgs.append(f'counts {k} {counts.get(k)} != {v} read from the records')
+    try:
+        ro = json.load(open(os.path.join(new, 'chain_summary.json'))).get('gate3d_restore_only') or {}
+    except (OSError, ValueError):
+        ro = {}
+    rest_ok = bool(ro) and int(ro.get('restored', -1)) == n_tag and not pair_bad
+    expect_pass = not by.get('absent') and rest_ok
+    if (j.get('status') == 'PASS') and not expect_pass:
+        msgs.append(f'status PASS while {by.get("absent", 0)} detections are absent / the restored rows disagree ({n_tag} tagged, '
+                    f'summary {ro.get("restored")}, {pair_bad} off their pair)')
+    if j.get('status') != 'PASS' and expect_pass and not str(j.get('status', '')).startswith('FAIL'):
+        msgs.append(f'status {j.get("status")!r} is neither PASS nor FAIL')
+    return (not msgs and j.get('status') == 'PASS'), len(rows), (
+        '; '.join(msgs) if msgs else
+        f'{j.get("tag_new")} against {j.get("tag_old")}: {len(prev)} previously served, {n_served} served again, {len(rows)} listed '
+        f'({dict(sorted(by.items()))}); restored {n_tag} ({served_tag} served); status {str(j.get("status"))[:200]}')

@@ -57,7 +57,9 @@ Stages (--stages / --from / --until; default all, in this order); each runs only
              production's default 16; always passed, never inherited; F-G4 a count not >= 1).
   localize   (unit snapshot_<view>_localize) the driver's step 3: snapshot_localize_tiers.sh VIEW in place with
              serve.SNAPVIEW_LOC_ENV and PYTHONHASHSEED = serve.SNAPSHOT_FIGURE_HASHSEED (F10: the figures reproducible;
-             lib/serve/snapshot_copy.localize_stage, the batch serve's own stage; G21 LOCALIZE-TIERS-OK).
+             lib/serve/snapshot_copy.localize_stage, the batch serve's own stage; G21 LOCALIZE-TIERS-OK); then (unit
+             snapshot_<view>_figures) the wave driver's step 4b, snapshot_page_figures_check.py VIEW --repair in place: every page
+             astrometry.png against its figure, a truncated copy re-copied atomically (exopipe_ops 0e05399; G21b).
   ready      (unit snapshot_<view>_ready) the driver's step 4 'VIEW-READY-FOR-HIDES': the serve-time exclusion gate on the view
              (G17, the gate snapshot_serve.sh runs on it before registering), the snapshot_view tests again on the final files
              (filter catalogue and localization in place), and the note VIEW-READY-FOR-HIDES <view>.
@@ -78,6 +80,9 @@ kept per-tier source whose page holds no detection (F4: an incomplete input refu
 omit product's decisions re-made now from the refusal record and fleet records the build reads, with its served counts, must
 equal its table byte for byte (F5: never a stale product); a refused build moves its .part, a view failing its read-back tests
 moves the view, aside to <view>.refused_<UTC> (F7).
+V3 round (2026-11-05; exopipe_ops 8ff3fc8): G-V11 at omit and build - every member run that ran the restore-only 3-D gate
+carries its PASSED per-batch test against the run it replaces (restore_wave_served_diff.json; catalog --stages wavediff), else
+nothing is built; the wave totals go into the record and beside the omit product (restore_wave_totals.txt).
 V2 follow-up (2026-11-04; exopipe_ops dde1760, dbc40a6 at the pin fa90670): the omission per IMAGE (a wideband detection omitted
 only when its own frame / block holds the omitted subband; fail closed without a member table), CARD 2 per frame in the 10-s tier
 (re-derived here from each batch's card2_vleak.csv; record kinds 'card2 detection', 'card2 member row', 'card2 panel'), the
@@ -1000,13 +1005,67 @@ def gate_runs(plan, stages=STAGES):
                         f'view never reads them')
 
 
+RESTORE_WAVE_TOTALS = 'restore_wave_totals.txt'
+
+
+def restore_wave_gate(u, runs):
+    """G-V11 THE RESTORE-ONLY WAVE (exopipe_ops 8ff3fc8, comb_build_wave_20261104.sh steps 0-1): every member run that ran the
+    restore-only 3-D gate (its chain_summary.json gate3d_restore_only) carries its per-batch test against the run it replaces,
+    PASSED - restore_wave_served_diff.json status PASS, made for that run (tag_new) and after its record (newer than its
+    detection_record.csv.gz) by `catalog --tier snapshot --stages wavediff` (lib/catalog/restore_wave) or production's
+    snapshot_restore_wave_diff.py - else refused, nothing built (production's driver builds only then; G27 refuses serving such
+    a view). Returns None for a view without such members, else the wave totals line (restore_wave.totals: what Gregg is shown
+    before the view is served), recorded in the unit."""
+    from exopipe.phase3.lib.catalog import restore_wave as RW
+    ro, bad = [], []
+    for r in runs:
+        try:
+            S = json.load(open(os.path.join(r, 'chain_summary.json')))
+        except (OSError, ValueError) as e:
+            u.refuse(f'G-V11 {r}: its chain_summary.json is unreadable ({type(e).__name__}: {e})')
+        if 'gate3d_restore_only' not in S:
+            continue
+        ro.append(r)
+        p = os.path.join(r, RW.JSON_NAME)
+        name = os.path.basename(r.rstrip('/'))
+        if not os.path.exists(p):
+            bad.append(f'{name}: no {RW.JSON_NAME} (catalog --tier snapshot --run {name} --stages wavediff)')
+            continue
+        try:
+            j = json.load(open(p))
+        except ValueError as e:
+            bad.append(f'{name}: {RW.JSON_NAME} unreadable ({e})')
+            continue
+        rec = os.path.join(r, 'detection_record.csv.gz')
+        if j.get('status') != 'PASS':
+            bad.append(f'{name}: {str(j.get("status"))[:160]}')
+        elif j.get('tag_new') != RW.tag_of(r):
+            bad.append(f'{name}: its test was made for {j.get("tag_new")!r}, not {RW.tag_of(r)!r}')
+        elif os.path.exists(rec) and os.path.getmtime(p) < os.path.getmtime(rec):
+            bad.append(f'{name}: its test is older than its detection_record.csv.gz (the record changed since)')
+        u.add_input(p)
+    if not ro:
+        return None
+    if bad:
+        u.refuse(f'G-V11 the restore-only wave: {len(bad)} of {len(ro)} restore-only member runs carry no passed test against the '
+                 f'run they replace: ' + '; '.join(bad[:5]))
+    st, line = RW.totals(ro)
+    u.meta['restore_wave'] = dict(runs=[os.path.basename(r.rstrip('/')) for r in ro], totals=line)
+    u.note(line[:1500])
+    return line
+
+
 def omit_stage(run, plan):
-    """The deep-omission stage on the view's runs into plan.omit_dir (deep_omission.run_snapshot; its classes)."""
+    """The deep-omission stage on the view's runs into plan.omit_dir (deep_omission.run_snapshot; its classes). G-V11 first."""
     from exopipe.phase3.lib.catalog import deep_omission as DO
     with run.unit(plan.unit('omit'), stage='omit', tier='snapshot', runs=plan.runs, out=plan.omit_dir) as u:
+        wave = restore_wave_gate(u, plan.runs)
         rdir = _CFG().catalog_omission.REFUSALS
         DO.injected_record_gate(rdir)
         summ = DO.run_snapshot(plan.runs, plan.omit_dir, rdir=rdir, u=u, label=plan.run_name)
+        if wave:
+            with open(os.path.join(plan.omit_dir, RESTORE_WAVE_TOTALS), 'w') as f:
+                f.write(wave + '\n')
         u.meta['summary'] = summ
         u.note('deep omission (snapshot): %d decisions, %d OMIT keys, %d of %d served detections omitted'
                % (summ['decisions'], summ['omit_keys'], summ['omitted'], summ['served']))
@@ -1116,6 +1175,7 @@ def build_stage(run, plan):
     S = CFG.serve
     with run.unit(plan.unit('build'), stage='build', tier='snapshot', view=plan.U, runs=plan.runs, omit=plan.omit_dir) as u:
         flow.excl_note(u)
+        restore_wave_gate(u, plan.runs)                     # G-V11 again: the members' tests as they are now
         summ = check_omit_product(u, plan)
         if os.path.exists(plan.U) or os.path.exists(plan.U + '.part'):
             u.refuse(f'G-V2 {plan.U} or its .part exists - a view is never overwritten (give another --run)')
@@ -1312,12 +1372,41 @@ def run(args, run_):
     if 'localize' in stages:
         if flow.halts(snapshot_copy.localize_stage(run_, plan, env=_CFG().serve.SNAPVIEW_LOC_ENV), 'localize', need_done=True):
             return None
+        if flow.halts(figures_stage(run_, plan), 'localize (page figures)', need_done=True):
+            return None
     if 'ready' in stages:
-        for st in ('filtercat', 'localize'):
-            if st not in stages:
+        for st in ('filtercat', 'localize', 'figures'):
+            if (st if st != 'figures' else 'localize') not in stages:
                 flow.require_done(run_, plan.unit(st), f'the view\'s {st} stage')
         ready_stage(run_, plan)
     return None
+
+
+def figures_stage(run, plan):
+    """THE PAGE FIGURES, step 4b of the wave's view driver (exopipe_ops 0e05399, comb_build_wave_20261104.sh; unit
+    snapshot_<view>_figures, run by the localize stage right after the localization): snapshot_page_figures_check.py VIEW --repair
+    in place - every identity's page astrometry.png against its source figure (size; an md5 sample), a differing copy re-copied
+    atomically and md5-verified; it refuses (G21b) a page directory claimed by two identities or a figure without its source.
+    The localizer's shutil.copyfile can leave a copy truncated with no error (the V2 follow-up's parity, 2026-11-04: 7 of 11,245 in
+    production's view). Class snapshot_page_figures reads every copy's size back (V6's page-figure check)."""
+    from exopipe.phase3.lib.serve import scripts
+    S = _CFG().serve
+    with run.unit(plan.unit('figures'), stage='localize', tier='snapshot', view=plan.U) as u:
+        if not os.path.isdir(plan.U):
+            u.refuse(f'no view {plan.U} (run the build stage)')
+        recs = os.path.join(plan.out, '_records', 'serve', 'snapshot_view')
+        os.makedirs(recs, exist_ok=True)
+        res = scripts.run('snapshot_page_figures', [plan.U, '--repair'], python=S.SNAPVIEW_PYTHON,
+                          log=os.path.join(recs, f'{plan.run_name}_figures.log'), unit=u, timeout=S.SNAPVIEW_BUILD_TIMEOUT_S,
+                          refusal_codes=(1, 2))
+        line = next((ln for ln in reversed((res.tail or '').splitlines()) if ln.startswith('PAGE-FIGURES')), '')
+        u.check('G21b_page_figures', res.ok and bool(line), value=res.rc, detail=line or scripts.last_line(res.tail))
+        if not (res.ok and line):
+            u.refuse(f'G21b page figures: {line or res.reason or scripts.last_line(res.tail)}')
+        u.meta['page_figures'] = line
+        u.note(line)
+        u.add_output(plan.U, 'snapshot_page_figures')
+    return u
 
 
 def describe(plan, stages):
@@ -1335,7 +1424,27 @@ def describe(plan, stages):
     print(f'  filtercat: snapshot_filter_catalog.py over ' + ', '.join(
         S.SNAPVIEW_FIT_STORE.format(batch_dir=_CFG().catalog_snapshot.BATCH_DIR, run=os.path.basename(r)) for r in plan.runs[:2])
           + (' ...' if len(plan.runs) > 2 else '') + f' (SNAPCAT_PROCS={S.SNAPVIEW_FILTERCAT_PROCS})')
-    print(f'  localize: snapshot_localize_tiers.sh with {S.SNAPVIEW_LOC_ENV}')
+    print(f'  localize: snapshot_localize_tiers.sh with {S.SNAPVIEW_LOC_ENV}; then snapshot_page_figures_check.py VIEW --repair')
+
+    class _DryUnit:                     # G-V11 read now: a refusal is reported, nothing recorded
+        meta = {}
+
+        def refuse(self, why):
+            raise _DryRefusal(why)
+
+        def add_input(self, p):
+            pass
+
+        def note(self, t):
+            pass
+
+    class _DryRefusal(Exception):
+        pass
+    try:
+        line = restore_wave_gate(_DryUnit(), plan.runs)
+        print('  G-V11 restore-only wave: ' + ('no member ran the restore-only 3-D gate' if line is None else line[:600]))
+    except _DryRefusal as e:
+        print(f'  G-V11 restore-only wave: WOULD REFUSE ({str(e)[:600]})')
     return 0
 
 

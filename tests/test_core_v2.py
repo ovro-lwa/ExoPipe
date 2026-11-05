@@ -1610,15 +1610,15 @@ def test_item7_parity_file_keys():
              'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT',   # forced W: every v2 control (V2_CTL_DRAW) and the
                                                                              # order-independent controls (CONTROL_ORDER), the
                                                                              # refactor chat under Gregg's delegation;
-             'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE'}   # its amendment: every
+             'R-REFACTOR-20261104-FORCED-WIDE-CONTROLS-ORDER-INDEPENDENT-AMENDED-PRECISION-KNIFE-EDGE',   # its amendment: every
                                                                              # taper control line (TAPER_CTL_MAX), the bootstrap's
                                                                              # precision (BOOT_DRAW, BOOT_Z_SE), the knife-edge
                                                                              # flag (KNIFE_EDGE_SE)
+             'R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE'}   # the refactor chat under R-GREGG-20261016-REFACTOR-DECIDES-BY-
+                                                                             # GOALS: catalog_omission.ABSENT_WITH_SERVED 'refuse'
+                                                                             # (G6, a data-integrity guard; production 'production')
     PROPOSED = {'masters_pbmaps.PB_QA_MISSING_MAX_FRAC'}   # 2026-10-14: proposed to Gregg (DECISIONS_PENDING open item 4); MASTER_SPAN_SOURCE and
                                                              # EPOCH_GATE_MAX_PASSES ruled (DECISIONS-LIST-RECOMMENDATIONS)
-    PROPOSED |= {'catalog_omission.ABSENT_WITH_SERVED'}    # 2026-11-03 (Q review F5): G6 'refuse' proposed, pending Gregg; production's
-                                                             # 'production' in the parity file (DECISIONS_PENDING FYI named in
-                                                             # refactor_reviews_20261103/Q_deepomit_fixes.md)
     PROPOSED |= {'forced_wide.EVENT_ORDER', 'forced_wide.TARGET_MEMBER',   # 2026-11-03 (forced family W, the wide-area burst
                  'forced_wide_search.FILE_ERRORS'}         # test ported): deterministic orders and the refusal proposed, pending
                                                              # Gregg; production's values in the parity file (docs/specs/

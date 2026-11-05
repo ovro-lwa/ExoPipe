@@ -94,7 +94,7 @@ page holds no detection (detections.csv missing or empty: an incomplete batch ru
 V_combview review F4); G2 a served run without its
 catalogue (or a 10-minute LST run without its master_catalog.csv); G3 a served identity without detections, or a detection in
 two identities; G4 a per-tier source or member row of no served identity; G5 kept + omitted != served; G6 served detections in
-an ABSENT key (catalog_omission.ABSENT_WITH_SERVED = 'refuse', the refactor's PROPOSED value pending Gregg: the exception test
+an ABSENT key (catalog_omission.ABSENT_WITH_SERVED = 'refuse', RULED R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE: the exception test
 cannot be evaluated - never 'nothing to drop'; 'production' keeps them and counts them, as production does - the parity file's
 value; the site is marked WAVE2 G6). Since the V2 follow-up round (exopipe_ops dde1760, dbc40a6, edf3263, 35aad1a): G2b a batch
 run without its chain_summary.json cells (the rate population); G4d a partial source whose own (ts, subband) detection is not on
@@ -103,7 +103,11 @@ table (production omits such a detection, fail closed - here a key-format mismat
 without card2_vleak.csv, a file disagreeing with itself, or a served flagged row matching no served detection by its key (T3);
 G9 a re-judging child refusing (the chain or served_tiers.csv not reproduced, the record incomplete) or failing, or its inputs
 missing; G10 (10-minute) a partial survivor whose survival rests on a statistic the drop does not re-derive; G11 (10-minute)
-re-judging removing a source without Gregg's go.
+re-judging removing a source without Gregg's go. The V3 round: the 10-minute re-judging's 7-8 sigma gate is the builder's under
+the configured size rule (tenmin_size_gate: none under 'envelope' - the rule judged every detection at the search - production's
+1.7 beams under 'production', the parity file; the merge's in-place drop gets the same through P3_SIZE_GATE_7_8), and G12 refuses
+LSTs whose search jobs were searched under another rule than the configured one (tenmin_rule_check); a re-judged-out source's
+members are not recorded one by one and production's page line counts them (summary rejudged_members).
 
 Per instant (Gregg 2026-10-18: a veto removes that instant's detections across frequency only, never other times or tiers;
 2026-10-24: the omission is assessed "on a per hour, per band basis"): every removal names its OWN key - the (LST, night) hour
@@ -401,7 +405,7 @@ def _absent_mode_problem(v):
 
 def check_values(cfg=None):
     """[problems] of the catalog_omission values the stage reads only when it runs - RATE_FLOOR_PER_NIGHT,
-    WIDEBAND_MEMBER_VERDICTS (production's values, ruled 2026-11-04) and ABSENT_WITH_SERVED (proposed). cli.main refuses the step on
+    WIDEBAND_MEMBER_VERDICTS (production's values, ruled 2026-11-04) and ABSENT_WITH_SERVED (the refactor's 'refuse', ruled 2026-11-04). cli.main refuses the step on
     any (exit 2, before the run, as B-30 / B-32 do for theirs): an invalid value given with --set or --config never starts a run
     that would stop late with an error, and the floor is checked even where no cell has 3 nights (Q fix verification N3)."""
     if cfg is None:
@@ -1574,12 +1578,16 @@ def tenmin_detections(lsts, OM, why, recs, reader):
     """Record rows of the in-place merge drop (sublst_deep_omission_drop.py, 35aad1a): every member row of the LST runs whose
     (lst, band, night, stokes) is OMIT - the 'detection' rows filter_rows writes (source_catalogs_<S>_<sb|wb>/*_source_members.csv;
     Stokes = the table's) - and every PARTIAL survivor the drop's RE-JUDGING removes (edf3263; tenmin_rejudge) - its 'source
-    re-judged' rows. Returns (rows, {(lst, S, T, source_id, band): reason} of the re-judged-out sources)."""
-    rec, rej = [], {}
+    re-judged' rows; a re-judged-out source's members get no 'detection' row (production's filter_rows drops them with the
+    source before its omission test - fixed in the V3 round: the V2 port listed its omitted members too). Returns (rows,
+    {(lst, S, T, source_id, band): reason} of the re-judged-out sources, the member rows of those sources - production's
+    page line counts them with the omitted detections)."""
+    rec, rej, gate, n_rjm = [], {}, None, 0
     keys4 = {k[:4]: k for k in OM}
     for L in lsts:
         R = recs.run_dir(L)
         left, gone = collections.defaultdict(list), collections.defaultdict(list)
+        dets = []
         for S in ('I', 'V'):
             for T in ('sb', 'wb'):
                 for p in sorted(glob.glob(os.path.join(R, f'source_catalogs_{S}_{T}', '*_source_members.csv'))):
@@ -1588,8 +1596,12 @@ def tenmin_detections(lsts, OM, why, recs, reader):
                         k = (m.group(2), m.group(4), m.group(3), S) if m else None
                         (gone if k in keys4 else left)[(S, T, r['source_id'], r['band'])].append(r)
                         if k in keys4:
-                            rec.append(dict(kind='detection', lst=L, stokes=S, view=T, source_id=r['source_id'], band=r['band'],
-                                            cand_id=r['cand_id'], night=k[2], why=why[keys4[k]], detail=''))
+                            dets.append(dict(kind='detection', lst=L, stokes=S, view=T, source_id=r['source_id'], band=r['band'],
+                                             cand_id=r['cand_id'], night=k[2], why=why[keys4[k]], detail=''))
+        # the members of a source re-judged out leave with it and are not recorded one by one: production's filter_rows skips
+        # them before its omission test (sublst_deep_omission_drop.py, REJ before 'omitted'; the 'members_rejudged' counts)
+        n_rec = len(rec)
+        rec += dets
         # RE-JUDGING of every partial survivor (sublst_deep_omission_drop._ctx, edf3263), once per LST: on the members it keeps
         if not any(gone.values()):
             continue
@@ -1598,20 +1610,28 @@ def tenmin_detections(lsts, OM, why, recs, reader):
         if os.path.exists(mp):
             for r in reader.rows(mp, 'tenmin_served', missing_ok=False):
                 master[r['cand_id']] = r
+        if gate is None:
+            gate = tenmin_size_gate()[0]
         for S in ('I', 'V'):
             for T in ('sb', 'wb'):
                 for p in sorted(glob.glob(os.path.join(R, f'source_catalogs_{S}_{T}', '*_sources_survivors.csv'))):
                     for r in reader.rows(p, 'tenmin_survivors', missing_ok=False):
                         key = (S, T, r['source_id'], r['band'])
                         if key in gone and left.get(key):
-                            reason = tenmin_rejudge(L, key, r, left[key], master)
+                            reason = tenmin_rejudge(L, key, r, left[key], master, gate)
                             if reason:
                                 rej[(L,) + key] = reason
                                 rec.append(dict(kind='source re-judged', lst=L, stokes=S, view=T, source_id=r['source_id'],
                                                 band=r['band'], cand_id='', night='',
                                                 why='re-judged on the members it keeps: %s' % reason,
                                                 detail='identity %s' % r.get('identity_id', '')))
-    return rec, rej
+        if any(k[0] == L for k in rej):
+            rec[n_rec:] = [x for x in rec[n_rec:] if x['kind'] != 'detection'
+                           or (L, x['stokes'], x['view'], x['source_id'], x['band']) not in rej]
+            # production's page line counts every member row of a re-judged-out source with the omitted detections (its
+            # 'members_rejudged_<S>_<T>' counts, kept and omitted members alike, sublst_deep_omission_drop.finish)
+            n_rjm += sum(len(left.get(k[1:], ())) + len(gone.get(k[1:], ())) for k in rej if k[0] == L)
+    return rec, rej, n_rjm
 
 
 def _tsnr(r, col='det_snr'):
@@ -1621,17 +1641,67 @@ def _tsnr(r, col='det_snr'):
         return 0.0
 
 
-def tenmin_rejudge(L, key, r, lf, master):
+def tenmin_size_gate():
+    """(gate in beams, the merge's environment, the rule): the 7-8 sigma size/axis gate the 10-minute RE-JUDGING applies to a
+    partial survivor's remaining single - the catalogue builder's own under the configured 10-minute size rule
+    (search_sublst.SIZE_RULE; lib/search/size_rule.catalog_env), so the re-judging judges a remaining single as the builder of
+    the same catalogues judged it and the tiers judge one way (the refactor chat, the V3 round 2026-11-04). Under 'envelope'
+    (the refactor's default, R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) the builder's fixed gate is
+    replaced by the rule: every detection a catalogue holds was kept by the rule's SNR-calibrated size and axis test at the
+    search, so the remaining single carries the rule's verdict (kept) and no fixed gate acts - (inf, {P3_SIZE_GATE_7_8: inf},
+    'envelope'), the environment the merge passes to its in-place drop (sublst_deep_omission_drop.SIZE_GATE_7_8 reads
+    P3_SIZE_GATE_7_8). Under 'production' (the parity file's search_sublst.SIZE_RULE) production's fixed
+    catalog_associate.SIZE_GATE_7_8 (1.7 beams) and nothing set - the drop's own default (P3_SIZE_GATE_7_8 unset, cleared
+    from any inherited environment by core.legacy.run)."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    rule = SZ.rule_value(SZ.configured('10min')[0], 'search_sublst.SIZE_RULE')
+    env = SZ.catalog_env({'rule': rule})
+    v = env.get('P3_SIZE_GATE_7_8')
+    return (float(v) if v is not None else float(_cfg().catalog_associate.SIZE_GATE_7_8)), env, rule
+
+
+def tenmin_rule_check(lsts):
+    """G12 (the V3 round): the re-judging applies the builder's 7-8 sigma gate of the CONFIGURED 10-minute size rule
+    (tenmin_size_gate), so every search job of the LSTs must have been searched under that rule - under 'envelope' the
+    remaining single's verdict is the rule's at the search (a job searched under production's fixed rule gave its detections no
+    verdict of the rule: 2026-11-04, production's 08h J0645+4024, a 7.07-sigma single of 2.32 beams, would be kept unjudged);
+    under 'production' the fixed gate presumes catalogues the rule never judged. Each LST's jobs (catalog_sublst.SEARCH_DIR/
+    <lst>_<band>_<S>/transients/Run_SLST<hh><arm>/size_rule.json; none = production) must hold ONE rule, the configured one
+    (lib/search/size_rule.one_rule, as the catalogue's S-G7 requires before it builds); under 'envelope' an LST without any job
+    refuses too (the verdict cannot be shown). Returns {lst: rule}."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    cs = _cfg().catalog_sublst
+    search = cs.SEARCH_DIR.format(root=_cfg().paths.SUBLST_ROOT, arm=cs.ARM)
+    try:
+        want = SZ.configured_record('10min')
+    except SZ.RuleRefusal as e:
+        refuse(f'G12: the configured 10-minute size rule cannot be read: {e}')
+    out = {}
+    for L in lsts:
+        runs = [os.path.join(j, 'transients', 'Run_SLST%s%s' % (L[:-1], cs.ARM))
+                for j in sorted(glob.glob(os.path.join(search, '%s_*_[IV]' % L)))]
+        runs = [r for r in runs if os.path.isdir(r)]
+        if not runs and want['rule'] == 'envelope':
+            refuse(f'G12: no 10-minute search job of {L} under {search} - the size rule its catalogue was judged by cannot be '
+                   f'shown, so its remaining singles cannot be re-judged with it')
+        try:
+            out[L] = SZ.one_rule(runs, want=want, what=f'the {L} 10-minute search jobs in {search}')['rule']
+        except SZ.RuleRefusal as e:
+            refuse(f'G12 the re-judging\'s size rule: {e}')
+    return out
+
+
+def tenmin_rejudge(L, key, r, lf, master, gate=None):
     """'' when a PARTIAL 10-minute survivor still survives on the members it keeps, else the reason - the merge drop's re-judging
     (sublst_deep_omission_drop._rejudge, exopipe_ops edf3263; Gregg 2026-11-04, R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-
     ANSWERS) with build_source_catalogs_v3's own survivor rule: |best SNR| >= catalog_associate.SURVIVOR_SNR (7), or a
     promotion that still holds (RPT / REP / XREP need >= 2 members, void with one; E:<sample>, PRIORITY, MB hold while the
-    best is unchanged), then the 7-8 sigma size/axis gate (catalog_associate.SIZE_GATE_7_8, 1.7 beams - production's builder
-    value; the merge's drop reads P3_SIZE_GATE_7_8, which the refactor's runner clears) for an unpromoted single without a
-    cross-match. G10 refuses where survival rests on a statistic the members left change and that is not re-derived (a
-    repeat or cross-match E, a multi-band test) - production refuses the build there."""
+    best is unchanged), then the 7-8 sigma size/axis gate ``gate`` (tenmin_size_gate: the builder's own under the configured
+    size rule - none under 'envelope', production's 1.7 beams under 'production'; the merge passes the same value to its drop)
+    for an unpromoted single without a cross-match. G10 refuses where survival rests on a statistic the members left change and
+    that is not re-derived (a repeat or cross-match E, a multi-band test) - production refuses the build there."""
     ca = _cfg().catalog_associate
-    THR, GATE = float(ca.SURVIVOR_SNR), float(ca.SIZE_GATE_7_8)
+    THR, GATE = float(ca.SURVIVOR_SNR), (tenmin_size_gate()[0] if gate is None else float(gate))
     b = max(lf, key=_tsnr)
     a, n = _tsnr(b), len(lf)
     labels = [x for x in (r.get('promotion') or '').split('+') if x]
@@ -1702,7 +1772,7 @@ def absent_gate(rows, served_of):
     mode = _c().ABSENT_WITH_SERVED
     if _absent_mode_problem(mode):
         raise ValueError(_absent_mode_problem(mode))
-    if bad and mode == 'refuse':    # WAVE2 G6: the refactor's PROPOSED gate, pending Gregg (production keeps; parity file 'production')
+    if bad and mode == 'refuse':    # WAVE2 G6: ruled R-REFACTOR-20261104-ABSENT-WITH-SERVED-REFUSE (production keeps: parity file)
         refuse(f'G6: {len(bad)} deep-refused keys the tier has no record of hold served detections (e.g. {bad[:3]}) - the '
                f'exception test cannot be evaluated')
     return bad
@@ -1948,17 +2018,21 @@ def run_tenmin(lsts, out, rdir=None, seed_dir=None, u=None, label='omit', frame_
                               seed_dir=seed_dir, reader=reader, frame_rms=frame_rms)
     OM, why = omitted_keys(rows), why_of(rows)
     absent = absent_gate(rows, tenmin_served_of(recs))
-    rec, rej = tenmin_detections(lsts, OM, why, recs, reader)
+    rules = tenmin_rule_check(lsts)                     # G12: the LSTs' jobs searched under the configured size rule
+    rec, rej, n_rjm = tenmin_detections(lsts, OM, why, recs, reader)
     tenmin_rejudge_gate(rej)
     write_record(os.path.join(out, 'deep_omission_dropped.csv'), rec, TENMIN_RECORD_COLS)
     n_det = sum(1 for x in rec if x['kind'] == 'detection')
+    g78, _env, g_rule = tenmin_size_gate()
     summ = dict(tier=TIER_TENMIN, label=label, lsts=list(lsts), refusals=os.path.abspath(rdir), omitted=n_det,
-                rejudged=len(rej), decisions=len(rows), omit_keys=len(OM),
+                rejudged=len(rej), rejudged_members=n_rjm, rejudge_size_gate=dict(rule=g_rule, gate_beams=str(g78),
+                                                                                  lst_rules=rules),
+                decisions=len(rows), omit_keys=len(OM),
                 verdicts=dict(collections.Counter(r['verdict'] for r in rows)),
                 absent_with_served=len(absent), window_rms=dict(sorted(recs.n.items())), rms_cache_seed=seed_dir,
                 seconds=round(time.time() - t0, 1))
-    _write_summary(out, summ, n_det, 'decision table %s; %d (lst, band, night, Stokes) omitted; %d sources re-judged out'
-                   % (os.path.join(out, 'deep_omission.csv'), len(OM), len(rej)))
+    _write_summary(out, summ, n_det + n_rjm, 'decision table %s; %d (lst, band, night, Stokes) omitted; %d sources re-judged out'
+                   ' (%d member rows)' % (os.path.join(out, 'deep_omission.csv'), len(OM), len(rej), n_rjm))
     if u is not None:
         reader.record(u, {'refusals': rdir, 'tenmin_frames': recs.tree, 'tenmin_searched': recs.search,
                           'tenmin_served': _cfg().paths.TRANSIENTS_ROOT, 'tenmin_members': _cfg().paths.TRANSIENTS_ROOT})
