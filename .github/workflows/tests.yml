@@ -1,6 +1,7 @@
 # Data-free checks on every push and pull request to v2 (REVIEW.md, adopted 2026-11-08). Most of the suite reads the cluster's
 # archive and runs on the cluster before a merge; these steps need only the code: every module compiles, imports have no side
-# effects, and the four data-free test files pass.
+# effects, and the data-free test files pass. (tests/test_refactor_shims.py compares imports with a baseline recorded in the cluster's
+# py38_orca_nkosogor environment, so it runs on the cluster, not here.)
 name: tests
 on:
   push:
@@ -27,5 +28,3 @@ jobs:
         run: python tests/test_masters_wideband_admission.py
       - name: R1 epoch header gate
         run: python tests/test_r1_epoch_header_gate.py
-      - name: refactor shims
-        run: python tests/test_refactor_shims.py
