@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.8'
       - name: dependencies (the cluster environment's versions)
-        run: pip install numpy==1.24.4 scipy==1.10.1 astropy==5.2.2 matplotlib pandas
+        run: pip install numpy==1.24.4 scipy==1.10.1 astropy==5.2.2 matplotlib==3.7.2 pandas==2.0.3 reproject==0.13.0 astropy-healpix==0.7 pyyaml==6.0.1 psutil==5.9.5 pytest
       - name: every module compiles
         run: python -m compileall -q exopipe
       - name: imports have no side effects
