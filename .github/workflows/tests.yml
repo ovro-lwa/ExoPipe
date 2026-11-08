@@ -1,0 +1,31 @@
+# Data-free checks on every push and pull request to v2 (REVIEW.md, adopted 2026-11-08). Most of the suite reads the cluster's
+# archive and runs on the cluster before a merge; these steps need only the code: every module compiles, imports have no side
+# effects, and the four data-free test files pass.
+name: tests
+on:
+  push:
+    branches: [v2]
+  pull_request:
+    branches: [v2]
+permissions:
+  contents: read
+jobs:
+  data-free:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+      - name: dependencies (the cluster environment's versions)
+        run: pip install numpy==1.24.4 scipy==1.10.1 astropy==5.2.2 matplotlib pandas
+      - name: every module compiles
+        run: python -m compileall -q exopipe
+      - name: imports have no side effects
+        run: python tests/test_import_side_effects.py
+      - name: wideband admission
+        run: python tests/test_masters_wideband_admission.py
+      - name: R1 epoch header gate
+        run: python tests/test_r1_epoch_header_gate.py
+      - name: refactor shims
+        run: python tests/test_refactor_shims.py
