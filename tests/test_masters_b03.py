@@ -300,9 +300,15 @@ def test_night_checks():
 # 4. real cells (read only): the dry-run preview equals the measured state table
 # ---------------------------------------------------------------------------------------------------------------------
 
+# Nights whose survey image changed after the 2026-10-14 table was measured: the preview follows the tree, the table does not.
+AFTER_TABLE = {('11h', 'Red', '2024-12-23'): 'its displaced dewarped survey image (09-06 restack) was quarantined 2026-11-08 by the deep '
+                                               'chat (DONE-20261108-QUARANTINE-11H-RED-20241223-DISPLACED-ALIGNMENT-IMAGE): the raw '
+                                               'survey image now matches its raw products'}
+
+
 def test_real_preview():
     table = '/lustre/gh/main/exopipe_ops/refactor_20261012/plan/parity/b03_input_states_20261014.csv'
-    rows = list(csv.DictReader(open(table)))
+    rows = [r for r in csv.DictReader(open(table)) if (r['lst'], r['scope'], r['date']) not in AFTER_TABLE]
     for cell in ('11h_Red', '23h_Green', '13h_69MHz', '23h_23MHz'):
         lst, sc = cell.split('_')
         fq = sc[:-3] if sc.endswith('MHz') else sc
@@ -314,6 +320,9 @@ def test_real_preview():
                 want.setdefault(r['product'], []).append(r['date'])
         check(f'{cell}: the preview refuses the measured mismatches ({sum(len(v) for v in want.values())} night-products)',
               {k: sorted(v) for k, v in pv.items()} == {k: sorted(v) for k, v in want.items()}, (pv, want))
+        gone = [d for (l_, s_, d) in AFTER_TABLE if (l_, s_) == (lst, sc) and any(d in v for v in pv.values())]
+        if any((l_, s_) == (lst, sc) for (l_, s_, _) in AFTER_TABLE):
+            check(f'{cell}: a night whose survey image changed after the table is no longer refused', not gone, gone)
 
 
 # ---------------------------------------------------------------------------------------------------------------------

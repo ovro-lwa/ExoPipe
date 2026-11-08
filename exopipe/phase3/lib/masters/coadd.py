@@ -3247,6 +3247,81 @@ def _variant_input_divergent(path, max_jy=1e5, min_finite=0.99):
         return f'unreadable ({e})'
 
 
+GEOM_FLOOR = 0.5   # Gregg 2026-11-08 "go on all fixes!": aligned variants read 0.8-1.3, the misplaced 23h 69 MHz images 0.01-0.02
+_GEOM_PEAKS = {}
+
+
+def _alignment_peaks(path, n=100):
+    """Sky positions and values of an image's n brightest local maxima (15-px neighbourhood) inside radius 0.42 of the
+    smaller axis about the centre (horizon excluded). Cached per path: one alignment image serves a night's variants."""
+    if path not in _GEOM_PEAKS:
+        with fits.open(path, memmap=True) as hd:
+            a = np.asarray(hd[0].data).squeeze().astype(np.float64); w = WCS(hd[0].header).celestial
+        a = np.where(np.isfinite(a), a, -np.inf); ny, nx = a.shape; yy, xx = np.mgrid[0:ny, 0:nx]
+        a[np.hypot(yy - ny / 2, xx - nx / 2) > 0.42 * min(nx, ny)] = -np.inf
+        ys, xs = np.nonzero((a == maxfilt(a, size=15)) & np.isfinite(a)); o = np.argsort(-a[ys, xs])[:n]
+        ra, dec = w.all_pix2world(xs[o], ys[o], 0)
+        _GEOM_PEAKS.clear(); _GEOM_PEAKS[path] = (ra, dec, a[ys[o], xs[o]])
+    return _GEOM_PEAKS[path]
+
+
+def _variant_geometry_mismatch(img, ref, floor=GEOM_FLOOR):
+    """PER-VARIANT GEOMETRY GATE (Gregg 2026-11-08: "That was a failure that should have been caught", "go on all fixes!";
+    ledger FINDING-20261108-23H-69MHZ-MASTERS-HOLD-MISPLACED-DEWARPED-2025-09-06). A night's flows and flux scale are
+    measured on its I Taper Robust -0.75 alignment image and applied to every variant, and the divergence gates read pixel
+    values only, so a variant image with its OWN geometry passed unchecked: 23h 69 MHz 2025-09-06, whose warp-corrected
+    NoTaper Robust 0 / -0.75 and Taper Robust 0 images had been displaced by a wrong screen (2026-08-31 cascade re-run),
+    entered three masters at 12.8% of the weight. Test: at the alignment image's 100 brightest peaks, the variant's
+    brightest pixel within 2 px (its own WCS) / the alignment peak; a median below floor refuses. Returns a reason, else ''."""
+    try:
+        ra, dec, pk = _alignment_peaks(ref)
+        q = []
+        with fits.open(img, memmap=True) as hd:
+            d = np.asarray(hd[0].data).squeeze(); x, y = WCS(hd[0].header).celestial.all_world2pix(ra, dec, 0)
+            for xi, yi, p in zip(np.round(x).astype(int), np.round(y).astype(int), pk):
+                if p > 0 and 2 <= xi < d.shape[1] - 2 and 2 <= yi < d.shape[0] - 2:
+                    win = np.asarray(d[yi - 2:yi + 3, xi - 2:xi + 3], dtype=np.float64)
+                    if np.isfinite(win).all():
+                        q.append(win.max() / p)
+        if len(q) < 20:
+            return f'geometry: only {len(q)} of the alignment image\'s brightest peaks measurable'
+        med = float(np.median(q))
+        return '' if med >= floor else (f'geometry: median peak ratio {med:.3f} at the {len(q)} brightest peaks of '
+                                        f'{os.path.basename(ref)} (< {floor})')
+    except Exception as e:
+        return f'geometry: unreadable ({e})'
+
+
+def _variant_geometry_checked(img, sci_dir, freq_str, lst, date, vk):
+    """(image to use, refusal reason, note). The night's variant image must line up with its own alignment image
+    (_variant_geometry_mismatch). A warp-corrected image that does not is replaced by its raw image when that one passes
+    the divergence and geometry tests (the raw-image failsafe the finders already apply when no corrected image exists);
+    otherwise the variant refuses the night. The alignment image itself is the reference (Taper_R075: not tested)."""
+    if vk == 'Taper_R075':
+        return img, '', ''
+    ref = (find_subband_alignment_image(sci_dir, freq_str) if is_subband(freq_str)
+           else find_wideband_alignment_image(sci_dir, freq_str, lst, date))
+    if not ref:
+        raise RuntimeError(f'{lst} {freq_str} {date}: no I Taper R-0.75 alignment image to check the {vk} geometry against; REFUSING')
+    why = _variant_geometry_mismatch(img, ref)
+    if not why:
+        return img, '', ''
+    raw = os.path.join(os.path.dirname(img), os.path.basename(img).replace('_dewarped', ''))
+    if raw != img and os.path.exists(raw) and not _variant_input_divergent(raw) and not _variant_geometry_mismatch(raw, ref):
+        return raw, '', f'{why} for {os.path.basename(img)}; its raw image {os.path.basename(raw)} lines up and is used'
+    return img, why, ''
+
+
+def _stamp_variant_notes(path, notes):
+    """HISTORY provenance of a geometry-gate substitution (raw image used for a misaligned warp-corrected one)."""
+    if not notes:
+        return
+    with fits.open(path, mode='update') as hd:
+        for d, note in notes:
+            hd[0].header.add_history(f'VARIANT-GATE geometry {d}: {note}')
+        hd.flush()
+
+
 VARIANT_REL_K = 3.0   # Gregg 2026-09-29 "Go at 3x"
 
 
@@ -3321,7 +3396,7 @@ def _stamp_variant_gate(path, refused):
         return
     with fits.open(path, mode='update') as hd:
         for d, why in refused:
-            hd[0].header.add_history(f'VARIANT-GATE refused {d}: divergent input ({why})')
+            hd[0].header.add_history(f'VARIANT-GATE refused {d}: ' + (why if str(why).startswith('geometry') else f'divergent input ({why})'))
         hd[0].header['NVARREF'] = (len(refused), 'epochs refused by the per-variant divergence gate')
         hd.flush()
 
@@ -3657,7 +3732,7 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
     os.makedirs(out_dir, exist_ok=True); os.makedirs(prep_dir, exist_ok=True)
     results = {}
     for vk in variants:
-        aligned = []; refused = []
+        aligned = []; refused = []; notes = []
         _rel = _variant_relative_refusals([(r['date'], r.get('sci_dir') or sci_of.get(r['date'])) for r in members],
                                           freq_str, vk)
         for r in members:
@@ -3678,6 +3753,12 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
             if date in _rel:
                 print(f"  VARIANT GATE {vk} {date}: input REFUSED - {_rel[date]} ({os.path.basename(img)})")
                 refused.append((date, _rel[date])); continue
+            img, _gw, _gn = _variant_geometry_checked(img, sci_dir, freq_str, lst, date, vk)
+            if _gw:
+                print(f"  VARIANT GATE {vk} {date}: input REFUSED - {_gw} ({os.path.basename(img)})")
+                refused.append((date, _gw)); continue
+            if _gn:
+                print(f"  VARIANT GATE {vk} {date}: {_gn}"); notes.append((date, _gn))
             if (r.get('qa3_guard') or '') == 'reference-identity':
                 flow = None; dc = 1.0
             else:
@@ -3714,6 +3795,7 @@ def rebuild_variants_from_record(lst, freq_str, variants=('Taper_R0', 'NoTaper_R
                                dates=[d for d, _, _ in aligned], sigclip=False)
         stamp_master_span(path, lst, fl, [d for d, _, _ in aligned], sources=_span_sources)
         _stamp_variant_gate(path, refused)
+        _stamp_variant_notes(path, notes)
         # bake in the cell's absolute flux factor exactly as the generation carries it
         # (2026-10-01: once the survey master carries FLUXBAKE the factor is SHSCALE x FLUXCORR - flux_correction.pixel_factor)
         from exopipe.phase3.lib.masters import flux_correction as _FC
@@ -4320,6 +4402,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
 
     # Also create I Taper R0 co-add for subtraction
     _variant_refused = {}      # variant -> [(date, reason)] refused by the per-variant divergence gate
+    _variant_notes = {}        # variant -> [(date, note)] geometry-gate raw-image substitutions
     i_r0_aligned = []
     _rel = _variant_relative_refusals([(d, sd) for d, sd, _ in dates if d in good_dates_deep and d in date_params],
                                       freq_str, 'Taper_R0')
@@ -4342,6 +4425,13 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             print(f"  VARIANT GATE Taper_R0 {date}: input REFUSED - {_rel[date]} ({os.path.basename(i_r0_img)})")
             _variant_refused.setdefault('Taper_R0', []).append((date, _rel[date]))
             continue
+        i_r0_img, _gw, _gn = _variant_geometry_checked(i_r0_img, sci_dir, freq_str, lst, date, 'Taper_R0')
+        if _gw:
+            print(f"  VARIANT GATE Taper_R0 {date}: input REFUSED - {_gw} ({os.path.basename(i_r0_img)})")
+            _variant_refused.setdefault('Taper_R0', []).append((date, _gw))
+            continue
+        if _gn:
+            print(f"  VARIANT GATE Taper_R0 {date}: {_gn}"); _variant_notes.setdefault('Taper_R0', []).append((date, _gn))
         i_r0_out = f'{prep_dir}/{date}_I_R0.fits'
         ok = process_variant_image(i_r0_img, params['flow'], params['scale_map'],
                                     tmpl_hdr, target_shape, i_r0_out, _product_mapping(i_r0_img, _i_img, params['regrid']))   # B-03 (a)
@@ -4357,6 +4447,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
             sigclip=False)
         stamp_master_span(final_i_r0_path, lst, fl, [d for d, _, _ in i_r0_aligned], sources=_span_sources)
         _stamp_variant_gate(final_i_r0_path, _variant_refused.get('Taper_R0', []))
+        _stamp_variant_notes(final_i_r0_path, _variant_notes.get('Taper_R0', []))
         print(f"  Final I R0 co-add: {len(i_r0_aligned)} dates")
 
     # Also create the NoTaper R0 / R0.75 variants (2-stage QA'd) so coadd_final
@@ -4385,6 +4476,13 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 print(f"  VARIANT GATE {_vk} {date}: input REFUSED - {_rel[date]} ({os.path.basename(_img)})")
                 _variant_refused.setdefault(_vk, []).append((date, _rel[date]))
                 continue
+            _img, _gw, _gn = _variant_geometry_checked(_img, sci_dir, freq_str, lst, date, _vk)
+            if _gw:
+                print(f"  VARIANT GATE {_vk} {date}: input REFUSED - {_gw} ({os.path.basename(_img)})")
+                _variant_refused.setdefault(_vk, []).append((date, _gw))
+                continue
+            if _gn:
+                print(f"  VARIANT GATE {_vk} {date}: {_gn}"); _variant_notes.setdefault(_vk, []).append((date, _gn))
             _out = f'{prep_dir}/{date}_{_vk}.fits'
             ok = process_variant_image(_img, params['flow'], params['scale_map'],
                                        tmpl_hdr, target_shape, _out, _product_mapping(_img, _i_img, params['regrid']))   # B-03 (a)
@@ -4399,6 +4497,7 @@ def run_final_lst_freq(lst, freq_str, exclusions):
                 sigclip=False)
             stamp_master_span(_path, lst, fl, [d for d, _, _ in _aligned], sources=_span_sources)
             _stamp_variant_gate(_path, _variant_refused.get(_vk, []))
+            _stamp_variant_notes(_path, _variant_notes.get(_vk, []))
             print(f"  Final {_vk} co-add: {len(_aligned)} dates")
 
     # ── Step 2: Per-date subtraction ──
