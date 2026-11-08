@@ -2012,8 +2012,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # row per refused image to refusals/<lst>_<scope>_extraction_<S>_excluded.csv (lst, scope, date, Stokes, reason, attempt,
     # UTC time) and writes NO image row, gate-ledger row or candidate for it - its search frame stays archived (the frame
     # exists for every epoch, Gregg 2026-09-13) - and the cell's other images are searched as before. The 10-minute cadence
-    # (sub-LST tier, the snapshot / sub-LST chat's) keeps the old behaviour until ruled for that tier.
-    _xrefuse = cadence == 'deep'
+    # (sub-LST tier, the snapshot / sub-LST chat's) too since Gregg 2026-11-08 on P14 ("your recommendation": refuse, as the deep
+    # tier does; R-GREGG-20261108-P14-REFUSE-10MIN-EXTRACTION-FAILURES; production exopipe fab3131) - before, a failed 10-minute
+    # image was counted as searched.
+    _xrefuse = cadence in ('deep', '10min')
     _xref = {'I': [], 'V': []}
 
     def _refuse_extraction(st, d, err):

@@ -145,8 +145,9 @@ class search_detect(_Section):
     I_BDSF_THRESH_ISL = 3.0                                 # sigma; search_i CONFIG BDSF_THRESH_ISL (search_i_transients.py:73)
     LOCAL_SNR_ANNULUS_BEAMS = (2.0, 10.0)                   # beams; search_i CONFIG LOCAL_SNR_INNER/OUTER_BEAMS (search_i_transients.py:81-82)
     LOCAL_SNR_MIN_PIX = 400                                 # px; search_i CONFIG LOCAL_SNR_MIN_PIX (search_i_transients.py:84)
-    EXTRACTION_FAILURE = 'refuse'                           # deep: PyBDSF failure refuses that image (deep_search.py:1580 _xrefuse = cadence ==
-                                                            # 'deep'; IMPL-DEEP-SEARCH-EXTRACTION-FAILURE-REFUSAL)
+    EXTRACTION_FAILURE = 'refuse'                           # deep and 10-minute: PyBDSF failure refuses that image (deep_search.py _xrefuse =
+                                                            # cadence in ('deep', '10min'); IMPL-DEEP-SEARCH-EXTRACTION-FAILURE-REFUSAL;
+                                                            # 10-minute: R-GREGG-20261108-P14-REFUSE-10MIN-EXTRACTION-FAILURES)
     MSTRUCT_K = 5.0                                         # |SNR| < K x max(mstruct, 1) removed (deep_search.py:56 SIGMA_MSTRUCT; contract 37)
     STRIATION_WINDOW_BEAMS = 8.0                            # beams (deep_search.py:57; R-STRIATION-WINDOW-APPROVED-8BEAMS)
     SIGMA_STACK_BUILD_MIN = 5                               # epochs; identification.MIN_EPOCHS_SIGMA (phase3_pipeline.py:112)

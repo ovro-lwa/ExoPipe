@@ -341,8 +341,8 @@ def engine_literals():
         ('search_detect.PB_FLOOR', sd.PB_FLOOR, r'np\.where\(_pb > ([0-9.]+), _pb, np\.nan\)', float),
         ('search_detect.DETECTION_FLOOR_SIGMA[V]', sd.DETECTION_FLOOR_SIGMA['V'],
          r'run_identification_v\(rV, master_I, hdr, beam, None, sigma_thresh=([0-9.]+)', float),
-        ('search_detect.EXTRACTION_FAILURE', sd.EXTRACTION_FAILURE, r"_xrefuse = cadence == '(deep)'",
-         lambda x: 'refuse' if x == 'deep' else x),
+        ('search_detect.EXTRACTION_FAILURE', sd.EXTRACTION_FAILURE, r"_xrefuse = cadence in \('deep', '(10min)'\)",
+         lambda x: 'refuse' if x == '10min' else x),
         ('search_tables.MID_HOUR_LAT_DEG', st.MID_HOUR_LAT_DEG, r'lat = np\.radians\(([0-9.]+)\)', float),
         ('search_tables.MID_HOUR_OFFSET_H', st.MID_HOUR_OFFSET_H, r'int\(lst\[:-1\]\) \+ ([0-9.]+)\)', float))]
 
