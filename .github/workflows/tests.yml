@@ -28,3 +28,5 @@ jobs:
         run: python tests/test_masters_wideband_admission.py
       - name: R1 epoch header gate
         run: python tests/test_r1_epoch_header_gate.py
+      - name: grammar sync with production
+        run: python tests/test_products_grammar_sync.py
