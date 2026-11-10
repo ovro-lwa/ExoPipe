@@ -77,9 +77,20 @@ TAPERS = ['Taper', 'NoTaper']
 # 'shflux' (SH12 absolute flux scale baked in) and 'mdewarp' (final master dewarp) added per
 # MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828 (ratified 2026-08-28; implemented 2026-09-06).
 PROC_ORDER = ['vclean', 'mstruct', 'loo', 'shflux', 'mdewarp', 'pbcorr', 'dewarped', 'aligned',
-              'psfmatch', 'coadd', 'msub', 'nmsub', 'ssub', 'sigstack',
-              'mosaic', 'jysr', 'jybeam', 'feather', 'tcorr', 'lsfill',
-              'psfmap', 'rgbcomp', 'molrender', 'carrender', 'pbmap']
+              'psfmatch', 'coadd', 'lsrecon', 'msub', 'nmsub', 'ssub', 'sigstack',
+              'mosaic', 'jysr', 'jybeam', 'feather', 'tcorr', 'lsfill', 'cleanres',
+              'psfmap', 'rgbcomp', 'molrender', 'carrender', 'pbmap', 'pkcorr', 'caveat']
+# 'caveat' (the caveat map of a high-band hybrid mosaic, exopipe.phase3.notaper_largescale.caveat_map: per pixel the weighted mean
+# large-scale level / LWA1 survey prior and the weight fraction of Taper-only tiles) added 2026-10-31 (R-GREGG-20261031-HIGH-BAND-
+# CAVEATS-APPROVED-GO-ON-EVERYTHING); reported to the refactor chat.
+# 'cleanres' (the CLEAN residual of a master product: for the hybrid NoTaper master (Taper master + reconstructed large scales,
+# tokens lsrecon + lsfill) the Taper residual stack + the low-passed reconstruction residual; exopipe.phase3.notaper_largescale) added
+# 2026-10-28 (R-GREGG-20261028-HYBRID-NOTAPER-RERUN-APPROVED-..., item d); reported to the refactor chat.
+# 'pkcorr' (injection-calibrated peak-recovery map of a mosaic, exopipe.phase3.mosaic_pkcorr: S = peak x Omega_eff / PKCORR; the
+# point-source set Gregg requires with every mosaic run, 2026-10-23) added 2026-10-26, agreed with the refactor chat.
+# 'lsrecon' (NoTaper large-scale reconstruction: the dirty stack re-deconvolved in the image domain + the large-scale step toward
+# the LWA1 survey prior; exopipe.phase3.notaper_largescale) added 2026-10-26 (R-GREGG-20261026-NOTAPER-PRODUCTION-18-59MHZ-...,
+# token agreed with the refactor chat).
 # Mosaic extension (agreed with the mosaic thread 2026-07-21): vclean/
 # mstruct = input-basis modifiers (lead); mosaic..lsfill = the HEALPix
 # all-sky chain; psfmap/rgbcomp/molrender/carrender = first-class mosaic
