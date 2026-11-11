@@ -9,7 +9,10 @@
      independent tasks still run; every task has an outcome (nothing silently missing);
   4. a task that does not fit does not block a later, smaller one - until it has been passed over max_passes times;
   5. add() refuses a need without a budget, a need larger than the budget, a duplicate name and an unknown prerequisite;
-  6. a non-zero or False return value and an exception (SystemExit included) are failures; None and 0 are not.
+  6. a non-zero or False return value and an exception (SystemExit included) are failures; None and 0 are not;
+  7. a task added with hold=True that does not fit HOLDS what it is short of: no later task takes it, and the waiting task
+     starts as soon as enough is released - but it holds nothing of the budgets it is not short of (a flow waiting for a GPU
+     slot does not keep cores idle).
 Data-free; standard library only. Run: python tests/test_snapshot_schedule.py   (or under pytest)
 """
 import os
@@ -194,10 +197,58 @@ def test_what_counts_as_a_failure():
     assert 'REFUSED: flow incomplete' in out['exit'].detail and 'ZeroDivisionError' in out['raise'].detail
 
 
+def test_a_holding_task_is_not_passed_by_what_it_waits_for():
+    budgets = {'cores': 4, 'gpu': 1}
+    # (a) short of cores: the later one-core task must not take the two free cores while the holder waits for four
+    w, s = _World(budgets), S.Scheduler(budgets)
+    s.add('long', w.task('long', {'cores': 2}, 0.25), needs={'cores': 2})
+    s.add('critical', w.task('critical', {'cores': 4}, 0.02), needs={'cores': 4}, hold=True)
+    s.add('small', w.task('small', {'cores': 1}, 0.01), needs={'cores': 1})
+    out = _run(s)
+    assert all(o.status == 'done' for o in out.values()) and not w.over
+    assert w.end['long'] <= w.start['critical'] <= w.start['small'], 'a later task took the cores a holding task was waiting for'
+    # the same three without hold: the small one goes first (rule 4) - the two orders differ only by the flag
+    w, s = _World(budgets), S.Scheduler(budgets)
+    s.add('long', w.task('long', {'cores': 2}, 0.25), needs={'cores': 2})
+    s.add('critical', w.task('critical', {'cores': 4}, 0.02), needs={'cores': 4})
+    s.add('small', w.task('small', {'cores': 1}, 0.01), needs={'cores': 1})
+    _run(s)
+    assert w.start['small'] < w.start['critical']
+    # (b) short of the GPU slot only: it holds no cores, so the one-core task runs while it waits
+    w, s = _World(budgets), S.Scheduler(budgets)
+    s.add('flow1', w.task('flow1', {'gpu': 1, 'cores': 1}, 0.25), needs={'gpu': 1, 'cores': 1}, hold=True)
+    s.add('flow2', w.task('flow2', {'gpu': 1, 'cores': 1}, 0.02), needs={'gpu': 1, 'cores': 1}, hold=True)
+    s.add('small', w.task('small', {'cores': 3}, 0.01), needs={'cores': 3})
+    out = _run(s)
+    assert all(o.status == 'done' for o in out.values()) and not w.over
+    assert w.start['small'] < w.end['flow1'] <= w.start['flow2'], 'a task waiting for a GPU slot kept the cores idle'
+    # (c) many holders and budgets on random graphs: everything still runs, in order, within every budget
+    for seed in range(4):
+        rng = random.Random(100 + seed)
+        budgets = {'cores': 8, 'mem': 20, 'gpu': 2}
+        w, s, deps, names = _World(budgets), S.Scheduler(budgets), {}, []
+        for i in range(40):
+            name = 't%d' % i
+            after = rng.sample(names, k=min(len(names), rng.choice((0, 0, 1, 2))))
+            needs = {'cores': rng.choice((1, 2, 4, 8))}
+            if rng.random() < 0.5:
+                needs['mem'] = rng.choice((5, 10, 20))
+            if rng.random() < 0.3:
+                needs['gpu'] = 1
+            s.add(name, w.task(name, needs, seconds=rng.choice((0.0, 0.005, 0.02))), after=after, needs=needs, hold=rng.random() < 0.5)
+            names.append(name); deps[name] = after
+        out = _run(s)
+        assert all(o.status == 'done' for o in out.values()) and not w.over, (seed, w.over[:3])
+        for n in names:
+            for d in deps[n]:
+                assert w.start[n] >= w.end[d], (seed, n, d)
+
+
 TESTS = [test_prerequisites_and_budgets_on_random_graphs, test_the_shape_of_a_cell,
          test_a_failure_skips_its_dependents_and_names_the_cause,
          test_a_task_that_does_not_fit_does_not_block_a_smaller_one_until_it_starves,
-         test_add_refuses_what_could_never_run, test_what_counts_as_a_failure]
+         test_add_refuses_what_could_never_run, test_what_counts_as_a_failure,
+         test_a_holding_task_is_not_passed_by_what_it_waits_for]
 
 
 def main():

@@ -7,7 +7,8 @@ scheduler of schedule.py. The fleet runs the stages of a cell one after another 
 the same arguments, start as soon as what they read exists:
 
     stage -> regrid -> Master and zero-visibility gates                     (before anything else, as the fleet)
-    flow:<sb>            FLOW_PER_GPU processes per GPU (two give byte-identical frames and ~1.4x the throughput)
+    flow:<sb>            FLOW_PER_GPU processes per GPU (two give byte-identical frames and ~1.4x the throughput); a flow
+                         takes whichever GPU has a free slot (the fields are identical on every GPU and node)
     fields:<sb>          the subband's flow fields into the flow tree            after flow:<sb>
     search:<sb>          10-s and 1-minute search, both Stokes                   after flow:<sb>
     curves:<sb>:I, :V    light curves (read the search's admission table)        after search:<sb>, fields:<sb>; V after I
@@ -19,6 +20,11 @@ the same arguments, start as soon as what they read exists:
     framemovies          the 19 frame movies                                     after every flow
     ship                 search products, models, flow products, light curves, cubes + MANIFEST (v10:340-429)
 
+PRIORITY (the order build_tasks() plans in): the flows, then the searches, the guard and the wideband search - the chain that
+decides when the cell can end - then the frame movies, light curves, cubes and flow movies. The tasks of that chain HOLD what
+they wait for (schedule.py), so the work of an earlier subband never keeps a GPU slot idle or a search waiting: in the first
+ten-band run (2026-11-11) the flows were planned subband by subband and the last one ended at 38 minutes instead of ~20.
+
 WHAT FAILS THE CELL is what fails it in the fleet: staging incomplete, a broken or missing Master, an incomplete flow, too few
 frames, an unaccounted subband or wideband search. Then nothing is shipped and the work directory is kept for inspection.
 Movies, light curves and cubes do not fail the cell (v10: FRAMEMOVIES-FAILED, LIGHTCURVE-FAILED, CUBE-INCOMPLETE are logged
@@ -27,7 +33,8 @@ and the cell is DONE); here each is recorded with its status in the cell record,
 WHERE IT WRITES: only under --out (D): D/stage/<cell> (staging), D/work/<cell> (the fleet's node-local output),
 D/snapshot_fleet_out/<cell>, D/snapshot_flow/<cell>, D/snapshot_lightcurves/<cell>, D/snapshot_movies/<cell>,
 D/snapshot_cubes/<cell>, D/photometry (cutout cubes), D/cell_<cell>.json (every task's outcome and times) and
-D/cell_<cell>.log (the fleet's log lines). Production roots are not offered: the fleet remains production's driver until the
+D/cell_<cell>.log (the fleet's log lines). The record holds, per task, the wall time and the CPU time of its engine
+processes (cpu_s; cpu_s / seconds = the cores it really used, which is what the core charges below should follow). Production roots are not offered: the fleet remains production's driver until the
 snapshot tier is cut over.
 
 NOT PORTED: the injection battery hook (v10:291-338; a study, not part of the per-hour chain) and the 1-minute pause switch
@@ -71,24 +78,16 @@ def band_class(sb):
     return 'low' if f <= 36 else ('mid' if f <= 59 else 'high')
 
 
-def build_tasks(subbands, gpus, wideband, frame_movies, cubes, threads):
-    """The task graph of one cell: [(name, after, needs)] in priority order. Pure: no I/O, so it is tested without data.
-    Flows go high band first: the last subbands to finish their flow are then the cheapest to search, which keeps the tail
-    after the last flow short. Subbands are dealt to the GPUs in turn, as the fleet does (v10:144-145)."""
+def build_tasks(subbands, wideband, frame_movies, cubes, threads):
+    """The task graph of one cell: [(name, after, needs)] in PRIORITY order (the scheduler starts the first that fits). Pure:
+    no I/O, so it is tested without data. First the chain that decides when the cell can end - flows, searches, the guard,
+    the wideband search - then what only has to be finished by then. Flows go high band first: the last subbands to finish
+    their flow are then the cheapest to search, which keeps the tail after the last flow short. A flow needs one slot of the
+    pooled 'gpu' budget (which device is chosen when it starts)."""
     order = sorted(subbands, key=lambda s: -int(s[:-3]))
-    tasks = []
-    for k, sb in enumerate(order):
-        g = 'gpu%s' % gpus[k % len(gpus)]
-        c = band_class(sb)
-        tasks.append(('flow:' + sb, (), {g: 1, 'cores': 1}))
-        tasks.append(('fields:' + sb, ('flow:' + sb,), {'cores': 1}))
-        tasks.append(('search:' + sb, ('flow:' + sb,), {'cores': threads['search'], 'mem_gb': MEM_SEARCH[c]}))
-        tasks.append(('curves:%s:I' % sb, ('search:' + sb, 'fields:' + sb), {'cores': threads['curves']}))
-        tasks.append(('curves:%s:V' % sb, ('curves:%s:I' % sb,), {'cores': threads['curves']}))
-        if cubes:
-            for st in ('I', 'V'):
-                tasks.append(('cube:%s:%s' % (sb, st), ('flow:' + sb,), {'cores': 1, 'mem_gb': MEM_CUBE[c]}))
-        tasks.append(('flowmovie:' + sb, ('flow:' + sb,), {'cores': 1}))
+    tasks = [('flow:' + sb, (), {'gpu': 1, 'cores': 1}) for sb in order]
+    tasks += [('fields:' + sb, ('flow:' + sb,), {'cores': 1}) for sb in order]
+    tasks += [('search:' + sb, ('flow:' + sb,), {'cores': threads['search'], 'mem_gb': MEM_SEARCH[band_class(sb)]}) for sb in order]
     tasks.append(('subbands', tuple('search:' + sb for sb in order), {'cores': 1}))
     if wideband:
         for st in ('V', 'I'):                                                       # v10:242: V then I
@@ -96,10 +95,20 @@ def build_tasks(subbands, gpus, wideband, frame_movies, cubes, threads):
         tasks.append(('widebands', ('wideband:V', 'wideband:I'), {'cores': 1}))
     if frame_movies:
         tasks.append(('framemovies', tuple('flow:' + sb for sb in order), {'cores': threads['movies']}))
+    for sb in order:
+        tasks.append(('curves:%s:I' % sb, ('search:' + sb, 'fields:' + sb), {'cores': threads['curves']}))
+        tasks.append(('curves:%s:V' % sb, ('curves:%s:I' % sb,), {'cores': threads['curves']}))
+    if cubes:
+        for sb in order:
+            for st in ('I', 'V'):
+                tasks.append(('cube:%s:%s' % (sb, st), ('flow:' + sb,), {'cores': 1, 'mem_gb': MEM_CUBE[band_class(sb)]}))
+    tasks += [('flowmovie:' + sb, ('flow:' + sb,), {'cores': 1}) for sb in order]
     return tasks
 
 
 FATAL_PREFIXES = ('flow:', 'search:', 'subbands', 'wideband')        # these fail the cell, as in the fleet; the rest are recorded
+HOLD_PREFIXES = FATAL_PREFIXES                                       # ... and they are the chain that decides when the cell ends:
+#                                                                      while one waits, nothing planned after it takes what it lacks
 
 
 class Cell(object):
@@ -137,7 +146,10 @@ class Cell(object):
         self.threads = dict(search=a.search_threads, curves=a.curves_threads, wideband=a.wideband_threads, movies=a.movie_threads)
         self.record = OrderedDict(cell=self.cell, subbands=self.subbands, started=None, status='running', steps=OrderedDict())
         self._lock = threading.Lock()
+        self._gpu_load = OrderedDict((g, 0) for g in self.gpus)        # flows running per device
+        self._cpu = {}                                                 # scheduler thread name -> CPU seconds of its engine processes
         self.cores = None
+        self.cores_budget = self.mem_budget_gb = None                  # set in prepare(), from the node unless given
         self.zero_vis = set()
 
     # ---------------------------------------------------------------- small helpers
@@ -173,11 +185,18 @@ class Cell(object):
         return (['taskset', '-c', self.cores] if self.cores else []) + list(argv)
 
     def call(self, argv, logfile, env=None, append=False, pin=True):
-        """Run one engine command; its stdout and stderr go to logfile. Returns the exit code."""
+        """Run one engine command; its stdout and stderr go to logfile. Returns the exit code. The CPU time of the process
+        (and of the children it waited for) is added to the running task's account."""
         os.makedirs(os.path.dirname(logfile), exist_ok=True)
         with open(logfile, 'ab' if append else 'wb') as f:
-            return subprocess.call(self.pinned(argv) if pin else list(argv), stdout=f, stderr=subprocess.STDOUT,
-                                   stdin=subprocess.DEVNULL, env=env or self.env())
+            p = subprocess.Popen(self.pinned(argv) if pin else list(argv), stdout=f, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, env=env or self.env())
+            _, status, ru = os.wait4(p.pid, 0)
+        p.returncode = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
+        who = threading.current_thread().name
+        with self._lock:
+            self._cpu[who] = self._cpu.get(who, 0.0) + ru.ru_utime + ru.ru_stime
+        return p.returncode
 
     def eng(self, name):
         return os.path.join(self.a.engine, name)
@@ -204,8 +223,28 @@ class Cell(object):
         else:
             r = subprocess.run(['bash', os.path.join(OPS, 'node_free_cores.sh')], stdout=subprocess.PIPE, universal_newlines=True)
             self.cores = r.stdout.strip() or None         # leave the data-recorder cores alone (v10:47)
-        self.log('CLAIM %s (cell.py: subbands %d, gpus [%s] x %d flows, cores %s)' % (self.cell, len(self.subbands), ' '.join(self.gpus),
-                                                                                    a.flow_per_gpu, self.cores))
+        self.cores_budget = a.cores_budget or (_count_cores(self.cores) if self.cores else os.cpu_count())
+        self.mem_budget_gb = a.mem_budget_gb or int(0.8 * _mem_available_gb())
+        need = max(MEM_CUBE[band_class(sb)] if a.cubes else MEM_SEARCH[band_class(sb)] for sb in self.subbands)
+        need = max(need, MEM_WIDEBAND if self.wideband else 0)
+        most = max(self.threads.values())
+        self.log('CLAIM %s (cell.py: subbands %d, gpus [%s] x %d flows, cores %s; budgets: %d cores, %d GB)'
+                 % (self.cell, len(self.subbands), ' '.join(self.gpus), a.flow_per_gpu, self.cores, self.cores_budget, self.mem_budget_gb))
+        if self.mem_budget_gb < need or self.cores_budget < most:
+            raise SystemExit('REFUSED %s the budgets (%d cores, %d GB) are below the largest single task (%d threads, %d GB)'
+                             % (self.cell, self.cores_budget, self.mem_budget_gb, most, need))
+        # WHO ELSE IS ON THE NODE: recorded, so that a run's times can be read (the nightly GPU imaging uses the GPUs of several
+        # nodes from 13:41 UTC for about four hours; the first ten-band run of this driver overlapped it)
+        try:
+            r = subprocess.run(['nvidia-smi', '--query-compute-apps=pid,used_memory', '--format=csv,noheader'], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, universal_newlines=True, timeout=30)
+            others = len([l for l in r.stdout.splitlines() if l.strip()]) if r.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            others = None
+        self.record['node'] = OrderedDict(name=os.uname()[1], load_at_start=round(os.getloadavg()[0], 1), gpu_processes_at_start=others,
+                                          cores_budget=self.cores_budget, mem_budget_gb=self.mem_budget_gb)
+        if others:
+            self.log('GPU-SHARED %s %d other process(es) on the GPUs at the start - this run\'s flow times are not a benchmark' % (self.cell, others))
         # DISK GUARD (v10:93-99)
         free = shutil.disk_usage(os.path.dirname(self.stage)).free // 2 ** 30
         if free < a.min_free_gb:
@@ -291,16 +330,23 @@ class Cell(object):
             raise SystemExit('REFUSED %s only %d decompressed frames (need %d) - not searching' % (self.cell, nst, a.min_frames))
 
     # ---------------------------------------------------------------- the tasks
-    def t_flow(self, sb, gpu):
-        e = self.env(CUDA_VISIBLE_DEVICES=gpu, XLA_PYTHON_CLIENT_PREALLOCATE='false', XLA_PYTHON_CLIENT_MEM_FRACTION=self.a.xla_mem_fraction)
-        rc = self.call([self.a.flowpy, self.eng('phase3_snapshot_flow.py'), '--stage', os.path.join(self.stage, sb),
-                        '--reference', self.master(sb), '--subband', sb, '--out', self.flowdir],
-                       os.path.join(self.flowdir, 'flow_%s.log' % sb), env=e)
+    def t_flow(self, sb):
+        with self._lock:                                               # the device with the fewest flows running (first on a tie)
+            gpu = min(self._gpu_load, key=lambda g: self._gpu_load[g])
+            self._gpu_load[gpu] += 1
+        try:
+            e = self.env(CUDA_VISIBLE_DEVICES=gpu, XLA_PYTHON_CLIENT_PREALLOCATE='false', XLA_PYTHON_CLIENT_MEM_FRACTION=self.a.xla_mem_fraction)
+            rc = self.call([self.a.flowpy, self.eng('phase3_snapshot_flow.py'), '--stage', os.path.join(self.stage, sb),
+                            '--reference', self.master(sb), '--subband', sb, '--out', self.flowdir],
+                           os.path.join(self.flowdir, 'flow_%s.log' % sb), env=e)
+        finally:
+            with self._lock:
+                self._gpu_load[gpu] -= 1
         # FLOW COMPLETE for this subband (v10:192-199, per subband): every staged frame but the zero-visibility ones is flowed
         want = [p for p in self.staged(sb) if not p.endswith('_flowed.fits') and p not in self.zero_vis]
         missing = [p for p in want if not os.path.exists(p[:-5] + '_flowed.fits')]
         if rc != 0 or missing:
-            raise RuntimeError('FLOW-INCOMPLETE %s %s: exit %d, %d of %d frames without a flowed copy' % (self.cell, sb, rc, len(missing), len(want)))
+            raise RuntimeError('FLOW-INCOMPLETE %s %s (GPU %s): exit %d, %d of %d frames without a flowed copy' % (self.cell, sb, gpu, rc, len(missing), len(want)))
 
     def t_fields(self, sb):
         d = os.path.join(self.flowtree, self.cell)                    # v10:346-348: cp -n flow_*.npy to the flow tree
@@ -448,6 +494,7 @@ class Cell(object):
         self.log('LIGHTCURVES %s I-tables=%d/%d' % (self.cell, nlc, nsb))
         if nlc < nsb:
             self.log('LIGHTCURVES-INCOMPLETE %s %d of %d subbands - the chain will re-measure those from frames' % (self.cell, nlc, nsb))
+        shutil.rmtree(self.lcout, ignore_errors=True)                  # v10:383
         # cubes (v10:391-429): all or nothing - 2 per subband, each verified, copied and checked by md5, then the MANIFEST
         if self.a.cubes:
             cub = os.path.join(self.cubework, 'cubes')
@@ -485,19 +532,17 @@ class Cell(object):
                             p = os.path.join(self.cubework, 'cube_%s_%s_%s.log' % (kind, sb, st))
                             f.write(open(p, errors='replace').read() if os.path.exists(p) else '')
             self.log('CUBES %s %d cubes verified + shipped' % (self.cell, len(want)))
+            shutil.rmtree(self.cubework, ignore_errors=True)           # v10:425 (kept when incomplete or the copy failed: the logs)
         return 'shipped'
 
     # ---------------------------------------------------------------- run
     def scheduler(self):
         a = self.a
-        budgets = {'cores': a.cores_budget, 'mem_gb': a.mem_budget_gb}
-        budgets.update({'gpu%s' % g: a.flow_per_gpu for g in self.gpus})
+        budgets = {'cores': self.cores_budget, 'mem_gb': self.mem_budget_gb, 'gpu': len(self.gpus) * a.flow_per_gpu}
         s = schedule.Scheduler(budgets)
-        order = sorted(self.subbands, key=lambda x: -int(x[:-3]))
-        gpu_of = {sb: self.gpus[k % len(self.gpus)] for k, sb in enumerate(order)}
         fns = {}
         for sb in self.subbands:
-            fns['flow:' + sb] = lambda sb=sb: self.t_flow(sb, gpu_of[sb])
+            fns['flow:' + sb] = lambda sb=sb: self.t_flow(sb)
             fns['fields:' + sb] = lambda sb=sb: self.t_fields(sb)
             fns['search:' + sb] = lambda sb=sb: self.t_search(sb)
             fns['flowmovie:' + sb] = lambda sb=sb: self.t_flowmovie(sb)
@@ -522,8 +567,8 @@ class Cell(object):
                     soft[name] = str(e)[:300]
                     self.log('%s-FAILED %s: %s' % (name.split(':')[0].upper(), self.cell, soft[name]))
             return run
-        for name, after, needs in build_tasks(self.subbands, self.gpus, self.wideband, self.frame_movies, a.cubes, self.threads):
-            s.add(name, wrap(name), after=after, needs=needs)
+        for name, after, needs in build_tasks(self.subbands, self.wideband, self.frame_movies, a.cubes, self.threads):
+            s.add(name, wrap(name), after=after, needs=needs, hold=name.startswith(HOLD_PREFIXES))
         return s, soft
 
     def run(self):
@@ -547,6 +592,8 @@ class Cell(object):
                 d[k] = None if d[k] is None else round(d[k] - t0, 1)   # seconds since the cell's start
             if name in soft:
                 d['status'], d['detail'] = 'failed-not-fatal', soft[name]
+            if 'task-' + name in self._cpu:
+                d['cpu_s'] = round(self._cpu['task-' + name], 1)
             self.record['steps'][name] = d
         failed = [n for n, o in out.items() if o.status == 'failed']
         flows = [o for n, o in out.items() if n.startswith('flow:') and o.ended]
@@ -570,6 +617,25 @@ class Cell(object):
         with open(os.path.join(self.D, 'cell_%s.json' % self.cell), 'w') as f:
             json.dump(self.record, f, indent=1)
         return 0 if not failed else 1
+
+
+def _count_cores(spec):
+    """'0-23,30-31' -> 26"""
+    n = 0
+    for part in spec.split(','):
+        lo, _, hi = part.strip().partition('-')
+        n += int(hi or lo) - int(lo) + 1
+    return n
+
+
+def _mem_available_gb():
+    try:
+        for l in open('/proc/meminfo'):
+            if l.startswith('MemAvailable:'):
+                return int(l.split()[1]) // 2 ** 20
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
 
 
 def _md5(path, block=1 << 22):
@@ -605,8 +671,8 @@ def parse_args(argv=None):
     ap.add_argument('--flow-per-gpu', type=int, default=2)
     ap.add_argument('--xla-mem-fraction', default='0.45')
     ap.add_argument('--cores', default='', help='taskset core list for the engines; default: the node\'s free cores (node_free_cores.sh)')
-    ap.add_argument('--cores-budget', type=int, default=26)
-    ap.add_argument('--mem-budget-gb', type=int, default=250)
+    ap.add_argument('--cores-budget', type=int, default=0, help='cores the tasks may use together; default: the size of the core list')
+    ap.add_argument('--mem-budget-gb', type=int, default=0, help='memory the tasks may hold together; default: 80%% of what is available at the start')
     ap.add_argument('--search-threads', type=int, default=8)
     ap.add_argument('--group-threads', type=int, default=12)
     ap.add_argument('--wideband-threads', type=int, default=12)
@@ -624,8 +690,8 @@ def main(argv=None):
     a = parse_args(argv)
     c = Cell(a)
     if a.plan:
-        for name, after, needs in build_tasks(c.subbands, c.gpus, c.wideband, c.frame_movies, a.cubes, c.threads):
-            print('%-22s after %-40s needs %s' % (name, ', '.join(after) or '-', needs))
+        for name, after, needs in build_tasks(c.subbands, c.wideband, c.frame_movies, a.cubes, c.threads):
+            print('%-22s after %-40s needs %s%s' % (name, ', '.join(after) or '-', needs, '  (holds)' if name.startswith(HOLD_PREFIXES) else ''))
         return 0
     return c.run()
 

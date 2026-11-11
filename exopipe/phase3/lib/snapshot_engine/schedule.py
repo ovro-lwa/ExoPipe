@@ -7,9 +7,9 @@ curves need the search's admission table; the wideband search needs every member
 every flowed subband. Everything else can overlap. This module holds the ordering and the budgets; what a task DOES is the
 caller's (a step command, an engine script).
 
-    s = Scheduler({'cores': 26, 'mem_gb': 250, 'gpu0': 2, 'gpu1': 2})
-    s.add('flow:64MHz', run=..., needs={'gpu0': 1, 'cores': 1})
-    s.add('search:64MHz', run=..., after=['flow:64MHz'], needs={'cores': 8, 'mem_gb': 21})
+    s = Scheduler({'cores': 26, 'mem_gb': 250, 'gpu': 4})
+    s.add('flow:64MHz', run=..., needs={'gpu': 1, 'cores': 1}, hold=True)
+    s.add('search:64MHz', run=..., after=['flow:64MHz'], needs={'cores': 8, 'mem_gb': 21}, hold=True)
     s.add('curves:64MHz:I', run=..., after=['search:64MHz'], needs={'cores': 4})
     result = s.run()          # {name: Outcome(status, seconds, started, ended, detail)}
 
@@ -17,8 +17,11 @@ Rules (each is tested in tests/test_snapshot_schedule.py):
 - a task starts only when every task in `after` is DONE, and only when its needs fit in what is free of every budget; a need
   larger than the whole budget is refused at add() (it could never start);
 - among the tasks that can start, the one added first starts first (the caller's order is the priority order), and a task
-  that does not fit never blocks a later, smaller one from starting (no head-of-line blocking), except that no task may be
-  passed over more than `max_passes` times: then nothing later starts until it has (no starvation of a large task);
+  that does not fit does not block a later, smaller one from starting (no head-of-line blocking) - with two exceptions:
+  a task added with hold=True (the cell's critical path: flow, search, wideband search) HOLDS, while it waits, what is
+  free of every budget it is short of, so no later task can take it and the waiting task starts as soon as enough is
+  released; and any task that has been passed over more than `max_passes` times holds in the same way (no starvation of
+  a large task). A hold touches only the budgets the waiting task lacks: a flow waiting for a GPU slot holds no cores;
 - a task FAILS when its run() raises or returns a non-zero / False value; a failure is never retried here. Every task that
   depends on a failed or skipped task is SKIPPED (not run), and with stop_on_failure (the default: one failure fails the
   cell) no new task starts after the first failure; tasks already running finish;
@@ -45,10 +48,10 @@ class Outcome(object):
 
 
 class _Task(object):
-    __slots__ = ('name', 'run', 'after', 'needs', 'passes')
+    __slots__ = ('name', 'run', 'after', 'needs', 'hold', 'passes')
 
-    def __init__(self, name, run, after, needs):
-        self.name, self.run, self.after, self.needs, self.passes = name, run, tuple(after), dict(needs), 0
+    def __init__(self, name, run, after, needs, hold):
+        self.name, self.run, self.after, self.needs, self.hold, self.passes = name, run, tuple(after), dict(needs), bool(hold), 0
 
 
 class Scheduler(object):
@@ -60,7 +63,7 @@ class Scheduler(object):
         self.stop_on_failure, self.max_passes, self.clock = stop_on_failure, max_passes, clock
         self.tasks = OrderedDict()
 
-    def add(self, name, run, after=(), needs=None):
+    def add(self, name, run, after=(), needs=None, hold=False):
         needs = dict(needs or {})
         if name in self.tasks:
             raise ValueError('task %r added twice' % name)
@@ -75,7 +78,7 @@ class Scheduler(object):
         for d in after:
             if d not in self.tasks:
                 raise ValueError('task %r comes after %r, which is not added yet (add prerequisites first)' % (name, d))
-        self.tasks[name] = _Task(name, run, after, needs)
+        self.tasks[name] = _Task(name, run, after, needs, hold)
         return name
 
     def run(self):
@@ -84,9 +87,6 @@ class Scheduler(object):
         free = dict(self.budgets)
         out, running, threads = {}, set(), []
         failed_any = [False]
-
-        def fits(t):
-            return all(free[k] >= v for k, v in t.needs.items())
 
         def worker(t):
             t0 = self.clock()
@@ -126,13 +126,12 @@ class Scheduler(object):
                         progressed = True
                     # (nothing pending: this thread must WAIT below for the running tasks - they need the lock to report)
                 else:
-                    starved = False
+                    held = {}                                  # per budget: what an earlier, waiting task holds of the free amount
                     for t in list(pending):
                         if not all(d in out and out[d].status == 'done' for d in t.after):
                             continue
-                        if starved:
-                            break                              # a large task has waited long enough: nothing passes it
-                        if fits(t):
+                        short = [k for k, v in t.needs.items() if free[k] - held.get(k, 0) < v]
+                        if not short:
                             for k, v in t.needs.items():
                                 free[k] -= v
                             pending.remove(t)
@@ -144,8 +143,9 @@ class Scheduler(object):
                             progressed = True
                         else:
                             t.passes += 1
-                            if t.passes > self.max_passes:
-                                starved = True
+                            if t.hold or t.passes > self.max_passes:
+                                for k in short:                # nothing later takes what this task is waiting for
+                                    held[k] = free[k]
                 if pending and not running and not progressed:
                     # nothing runs, nothing can start: only possible if a prerequisite never finishes - a defect, never silent
                     for t in pending:
