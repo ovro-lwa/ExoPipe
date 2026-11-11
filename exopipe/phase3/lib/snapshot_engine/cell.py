@@ -407,6 +407,12 @@ class Cell(object):
         missing = [p for p in want if not os.path.exists(p[:-5] + '_flowed.fits')]
         if rc != 0 or missing:
             raise RuntimeError('FLOW-INCOMPLETE %s %s (GPU %s): exit %d, %d of %d frames without a flowed copy' % (self.cell, sb, gpu, rc, len(missing), len(want)))
+        # DISK: on XFS the flow's output files keep their speculative preallocation long after they are closed - measured
+        # 2026-11-11 on lwacalim00: 104 MB on disk for a 39 MB flowed frame (2.7x), 232 GB of slack for five 3122-px subbands,
+        # which took /fast below its floor. Setting each file to its own length releases it; content and times are unchanged
+        freed = sum(release_preallocation(p[:-5] + '_flowed.fits') for p in want)
+        if freed > 2 ** 30:
+            self.log('TRIMMED %s %s %.0f GB of preallocation released from %d flowed frames' % (self.cell, sb, freed / 2 ** 30, len(want)))
 
     def t_fields(self, sb):
         d = os.path.join(self.flowtree, self.cell)                    # v10:346-348: cp -n flow_*.npy to the flow tree
@@ -741,6 +747,22 @@ def _refuse_protected(path, what):
         if r == '/' or r == pr or r.startswith(pr + '/') or pr.startswith(r + '/'):
             raise SystemExit('REFUSED: %s %s is, is inside, or contains a production tree (%s); this driver writes only to its own root'
                              % (what, path, p))
+
+
+def release_preallocation(path):
+    """Give back the blocks a filesystem holds for `path` beyond its length (XFS speculative preallocation): the file is
+    set to its own length, which changes no byte, and its access and modification times are put back. Returns the bytes
+    released (0 when there was nothing, on a filesystem without the effect, or when the file cannot be touched)."""
+    try:
+        st = os.stat(path)
+        before = st.st_blocks * 512
+        if before <= st.st_size + (1 << 20):                 # nothing worth a truncate
+            return 0
+        os.truncate(path, st.st_size)
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        return max(0, before - os.stat(path).st_blocks * 512)
+    except OSError:
+        return 0
 
 
 def _count_cores(spec):

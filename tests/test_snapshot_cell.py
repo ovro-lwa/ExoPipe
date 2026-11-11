@@ -19,7 +19,9 @@ rules themselves:
      too), an unknown subband, and a run without a GPU or with a count below 1;
   7. run() always leaves a record and never a half-shipped cell: a failed fatal task, an exception while shipping, and a
      SIGTERM each end with the status recorded, the ship trees moved aside, the staging removed, and no engine process left;
-  8. only the subbands with staged frames are planned.
+  8. only the subbands with staged frames are planned;
+  9. releasing a file's preallocation (after a subband's flow) changes no byte and no time of the file, and a missing file
+     or a file without slack is left alone.
 Data-free; standard library only. Run: python tests/test_snapshot_cell.py   (or under pytest)
 """
 import json
@@ -296,10 +298,65 @@ def test_only_the_staged_subbands_are_planned():
     assert all(s.tasks[n].hold == n.startswith(C.HOLD_PREFIXES) for n in names)
 
 
+def test_releasing_preallocation_changes_nothing_in_the_file():
+    tmp = tempfile.mkdtemp(prefix='cell_trim_')
+    try:
+        p = os.path.join(tmp, 'frame_flowed.fits')
+        body = os.urandom(3 << 20)
+        with open(p, 'wb') as f:
+            f.write(body)
+        try:                                                      # ask the filesystem for slack beyond the end, where it can
+            fd = os.open(p, os.O_RDWR)
+            try:
+                import fcntl                                      # noqa: F401
+                os.posix_fallocate(fd, 0, len(body))              # (allocated blocks only; KEEP_SIZE slack is not portable)
+            finally:
+                os.close(fd)
+        except (OSError, AttributeError):
+            pass
+        os.utime(p, ns=(1700000000 * 10 ** 9 + 123, 1700000001 * 10 ** 9 + 456))
+        before = os.stat(p)
+        freed = C.release_preallocation(p)
+        after = os.stat(p)                                        # (times compared before the file is read: a read moves atime)
+        assert (after.st_atime_ns, after.st_mtime_ns) == (before.st_atime_ns, before.st_mtime_ns), 'the file\'s times changed'
+        assert freed >= 0 and after.st_size == before.st_size and open(p, 'rb').read() == body
+        assert C.release_preallocation(os.path.join(tmp, 'missing.fits')) == 0
+        # a file reported with far more blocks than its length is set to its own length and its times are put back
+        calls = []
+        real_stat, real_trunc = C.os.stat, C.os.truncate
+
+        class _St(object):
+            def __init__(self, st, blocks):
+                self.st_size, self.st_blocks, self.st_atime_ns, self.st_mtime_ns = st.st_size, blocks, st.st_atime_ns, st.st_mtime_ns
+        state = {'blocks': (len(body) * 3) // 512}
+
+        def fake_stat(path, *a, **k):
+            return _St(real_stat(path), state['blocks'])
+
+        def fake_trunc(path, n):
+            calls.append((path, n))
+            real_trunc(path, n)
+            os.utime(path)                                        # as XFS does: a truncate stamps the file with now
+            state['blocks'] = len(body) // 512
+        before = os.stat(p)
+        C.os.stat, C.os.truncate = fake_stat, fake_trunc
+        try:
+            freed = C.release_preallocation(p)
+        finally:
+            C.os.stat, C.os.truncate = real_stat, real_trunc
+        assert calls == [(p, len(body))] and freed == (len(body) * 3) // 512 * 512 - len(body) // 512 * 512, (calls, freed)
+        after = os.stat(p)
+        assert (after.st_atime_ns, after.st_mtime_ns) == (before.st_atime_ns, before.st_mtime_ns), 'the truncate left its own time on the file'
+        assert open(p, 'rb').read() == body
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 TESTS = [test_the_ordering_rules, test_priority_the_flows_first_and_never_waiting_for_cpu_work,
          test_a_flow_takes_the_device_with_a_free_slot, test_switches,
          test_the_scheduler_runs_the_plan_in_a_valid_order, test_what_fails_the_cell, test_refusals_before_any_work,
-         test_run_always_leaves_a_record_and_never_a_half_shipped_cell, test_only_the_staged_subbands_are_planned]
+         test_run_always_leaves_a_record_and_never_a_half_shipped_cell, test_only_the_staged_subbands_are_planned,
+         test_releasing_preallocation_changes_nothing_in_the_file]
 
 
 def main():
