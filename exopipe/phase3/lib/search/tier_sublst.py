@@ -864,6 +864,8 @@ def engine_env(plan, attempt, tmpdir=None):
         'P3_SEARCH_TIER_MIN': str(int(s.SEARCH_TIER_MIN)),
         'P3_BEAM_GATE_MIN_NIGHTS': str(int(s.BEAM_GATE_MIN_NIGHTS)),
         'P3_V110_TIMEOUT': str(int(s.V110_TIMEOUT_S)),
+        'DEEP_SEARCH_THREADS': str(int(s.SEARCH_THREADS)),
+        'DEEP_IDENT_PROCS': str(int(s.IDENT_PROCS)),
         'P3_TABLE_ELEV': '1' if s.TABLE_ELEV else '0',
         'P3_TABLE_ELEV_BANDS': s.TABLE_ELEV_BANDS,
         'P3_TABLE_XM_EXEMPT': '1' if s.TABLE_XM_EXEMPT else '0',

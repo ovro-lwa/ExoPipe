@@ -461,6 +461,19 @@ MIN_EPOCHS = int(os.environ.get('P3_MIN_EPOCHS', '3'))   # Gregg 2026-09-11: 3 f
 # the search design, never a ruled threshold: FINDING-THIN-CELLS-POLICY-SKIPPED-BY-MIN-EPOCHS-5-AFTER-FLOOR-WAIVER-FOR-GREGG).
 DEEP_MIN_EPOCHS = int(os.environ.get('P3_DEEP_MIN_EPOCHS', '1'))
 NPROC_RESID = int(os.environ.get('DEEP_NPROC_RESID', '6'))   # epoch-parallel residual build
+# SPEED-UP 2026-11-11 (identical products): threads for the per-frame reads of the gates. 1 = the serial loops as they were.
+SEARCH_THREADS = max(1, int(os.environ.get('DEEP_SEARCH_THREADS', '1')))
+
+
+def _in_order(fn, items, nthreads):
+    """[fn(x) for x in items], computed on nthreads threads, returned in the order of items. fn must not print or write
+    (the caller applies the results in order, so messages and records keep the serial order)."""
+    items = list(items)
+    if nthreads <= 1 or len(items) < 2:
+        return [fn(x) for x in items]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=nthreads) as ex:
+        return list(ex.map(fn, items))
 
 
 def _unmeasured_searched(dates, skip, resid, unm_qa3, unm_tier):
@@ -475,8 +488,16 @@ def _unmeasured_searched(dates, skip, resid, unm_qa3, unm_tier):
 _ZAP_COUNTED = set()   # WAVE2 B-30: files whose zapped pixels this process has counted (streaming re-reads an epoch at every use)
 
 
+def _read(p):
+    """The file's pixels, nothing else: no message, no record (safe on a reader thread; _zap does the rest in the caller)."""
+    return fits.getdata(p).squeeze().astype(float)
+
+
 def _load(p):
-    a = fits.getdata(p).squeeze().astype(float)
+    return _zap(_read(p), p)
+
+
+def _zap(a, p):
     # zap non-finite + corrupt pixels (real sky is << 1e4 Jy/beam; some B
     # co-adds carry a single garbage pixel ~1e26 that breaks the beam fit)
     a[~np.isfinite(a)] = 0.0
@@ -639,6 +660,199 @@ def _mid_hour_elev(lst, ra, dec):
     lstdeg = 15.0 * (int(lst[:-1]) + 0.5); lat = np.radians(37.2398)
     hr = np.radians(lstdeg - np.asarray(ra, float)); dr = np.radians(np.asarray(dec, float))
     return np.degrees(np.arcsin(np.sin(dr) * np.sin(lat) + np.cos(dr) * np.cos(lat) * np.cos(hr)))
+
+
+# SPEED-UP 2026-11-11 (identical products; exopipe_ops/refactor_20261012/plan/STAGE_MAP_20261111.md): the source extraction of
+# the per-window detection loop (run_identification_i / _v: PyBDSF on each residual, ~25 s per window at 41 MHz, 30 of the 44
+# minutes of a 96-window job) is computed AHEAD in forked processes while the loop itself stays serial and unchanged. A worker
+# builds a window's arguments the way the loop builds them and returns the result with a digest of those arguments; the loop
+# uses a result only when the digest of the arguments IT is about to pass is the same, the worker saw no error, and the call
+# changed none of its arguments - otherwise it makes the call itself, exactly as before. What the call printed is replayed
+# at the place of the call. DEEP_IDENT_PROCS=1 (the default) = no look-ahead.
+IDENT_PROCS = max(1, int(os.environ.get('DEEP_IDENT_PROCS', '1')))
+IDENT_WAIT_S = float(os.environ.get('DEEP_IDENT_WAIT_S', '3600'))    # the loop waits this long for a look-ahead result, then calls itself
+
+
+def _ident_digest(kind, resid, hdr, sstack, zenith_time):
+    """Everything run_identification_i / _v is given for one window that is not the same object for every window."""
+    import hashlib
+    h = hashlib.md5()
+    for a in (resid, sstack):
+        if a is None:
+            h.update(b'<none>')
+        else:
+            a = np.ascontiguousarray(a)
+            h.update(f'{a.dtype.str} {a.shape}'.encode()); h.update(a.tobytes())
+    h.update(kind.encode()); h.update(hdr.tostring().encode()); h.update(repr(zenith_time).encode())
+    return h.hexdigest()
+
+
+def _ident_args(ctx, kind, d):
+    """The arguments the detection loop passes for window d, built as the loop builds them but with no message and no record
+    (the loop still does both itself; the digest decides whether the look-ahead result may be used)."""
+    ebase, scope, cadence = ctx['ebase'], ctx['scope'], ctx['cadence']
+    hdr = _det_header(ctx['hdr0'], scope, ctx['em'], ctx['cd'], _epoch_time(ebase, d, scope))
+    try:
+        _dh = fits.getheader(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits')
+        hdr['DURATION'] = float(_dh.get('DURATION') or (600.0 if cadence == '10min' else 3600.0))
+    except Exception:
+        hdr['DURATION'] = 600.0 if cadence == '10min' else 3600.0
+    if kind == 'I':
+        return np.nan_to_num(ctx['resid_I'][d], nan=0.0), hdr, ctx['ssA_I'].get(d, ctx['sstack_I']), None
+    zt = sv2.frame_mid_time(fits.getheader(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits')) if cadence == '10min' else None
+    return np.nan_to_num(ctx['resid_V'][d], nan=0.0), hdr, None, zt
+
+
+def _ident_call(kind, resid, master_I, hdr, beam, sstack, zenith_time, xrefuse):
+    """The loop's two calls, in one place (the look-ahead worker and the loop make the same call)."""
+    if kind == 'I':
+        return run_identification_i(resid, master_I, hdr, beam, sstack, refuse_on_extraction_failure=xrefuse)
+    return run_identification_v(resid, master_I, hdr, beam, None, sigma_thresh=5.0, refuse_on_extraction_failure=xrefuse,
+                                zenith_time=zenith_time, return_all=True)
+
+
+def _ident_worker(ctx, job):
+    """In a forked process: one window's identification. Returns (status, result, digest of the arguments, what it printed).
+    status 'ok' only when the call returned and left its arguments as they were; anything else makes the loop call itself."""
+    import tempfile
+    kind, d = job
+    sys.stdout.flush(); sys.stderr.flush()
+    tf = tempfile.TemporaryFile()
+    keep = os.dup(1), os.dup(2)
+    os.dup2(tf.fileno(), 1); os.dup2(tf.fileno(), 2)             # everything the call writes, C level included, in order
+    status, result, digest = 'error', None, None
+    try:
+        try:
+            resid, hdr, sstack, zt = _ident_args(ctx, kind, d)
+            digest = _ident_digest(kind, resid, hdr, sstack, zt)
+            result = _ident_call(kind, resid, ctx['master_I'], hdr, ctx['beam'], sstack, zt, ctx['xrefuse'])
+            status = 'ok' if _ident_digest(kind, resid, hdr, sstack, zt) == digest else 'arguments-changed'
+        except BaseException as e:                               # a refusal or a failure: the loop makes the call and meets it
+            status, result = 'error', repr(e)[:300]
+    finally:
+        sys.stdout.flush(); sys.stderr.flush()
+        os.dup2(keep[0], 1); os.dup2(keep[1], 2); os.close(keep[0]); os.close(keep[1])
+    tf.seek(0); out = tf.read(); tf.close()
+    return status, result, digest, out
+
+
+class _IdentAhead(object):
+    """The look-ahead of one detection loop. start(jobs): the jobs in the order the loop will ask for them. Each job runs in
+    its own forked process (a copy of this one at that moment, so it reads the loop's own objects; at most nproc at a time,
+    started in order), writes its result to a file and exits without this process's exit handlers. take() hands the loop a
+    result or makes the call. No pool, no queue: a process lives for one job, so nothing outlives the search by more than that."""
+
+    def __init__(self, ctx, nproc):
+        self.ctx, self.nproc = ctx, nproc
+        self.jobs, self.index, self.pid, self.alive, self.dir = [], {}, {}, set(), None
+        self.next, self.used, self.called = 0, 0, []
+
+    def start(self, jobs):
+        if self.nproc <= 1 or len(jobs) < 2:
+            return
+        import tempfile
+        self.jobs = list(jobs)
+        self.index = {j: n for n, j in enumerate(self.jobs)}
+        self.dir = tempfile.mkdtemp(prefix='ident_ahead_')
+        self._launch()
+
+    def _reap(self):
+        for pid in list(self.alive):
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+            except OSError:
+                done = pid
+            if done:
+                self.alive.discard(pid)
+
+    def _launch(self):
+        """Start the next jobs, in order, while fewer than nproc are running."""
+        import pickle
+        self._reap()
+        while self.next < len(self.jobs) and len(self.alive) < self.nproc:
+            n, job = self.next, self.jobs[self.next]
+            self.next += 1
+            sys.stdout.flush(); sys.stderr.flush()               # nothing buffered may be written twice
+            pid = os.fork()
+            if pid == 0:
+                code = 1
+                try:
+                    res = _ident_worker(self.ctx, job)
+                    path = os.path.join(self.dir, '%d.pkl' % n)
+                    with open(path + '.part', 'wb') as fh:
+                        pickle.dump(res, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                    os.replace(path + '.part', path)
+                    code = 0
+                finally:
+                    os._exit(code)                               # never this process's exit handlers (they remove its work files)
+            self.pid[job] = pid
+            self.alive.add(pid)
+
+    def _result(self, job):
+        """Wait for the job's process (started first if it is not yet) and read its result; ('worker-failed', ...) otherwise."""
+        import pickle
+        t_end = time.time() + IDENT_WAIT_S
+        while job not in self.pid:                               # the processes of earlier jobs still fill the slots
+            self._launch()
+            if job in self.pid:
+                break
+            if time.time() > t_end:
+                return 'worker-failed', 'never started', None, b''
+            time.sleep(0.05)
+        pid = self.pid[job]
+        while pid in self.alive:
+            self._reap()
+            if pid not in self.alive:
+                break
+            if time.time() > t_end:
+                try:
+                    os.kill(pid, 9)
+                    os.waitpid(pid, 0)
+                except OSError:
+                    pass
+                self.alive.discard(pid)
+                return 'worker-failed', 'no answer in %.0f s' % IDENT_WAIT_S, None, b''
+            time.sleep(0.02)
+        self._launch()                                           # its slot is free: the next job starts before the loop goes on
+        try:
+            with open(os.path.join(self.dir, '%d.pkl' % self.index[job]), 'rb') as fh:
+                return pickle.load(fh)
+        except Exception as e:
+            return 'worker-failed', repr(e)[:200], None, b''
+
+    def take(self, kind, d, resid, hdr, sstack, zenith_time):
+        why = 'not computed ahead'
+        if (kind, d) in self.index:
+            status, result, digest, out = self._result((kind, d))
+            if status == 'ok' and digest == _ident_digest(kind, resid, hdr, sstack, zenith_time):
+                sys.stdout.flush(); sys.stderr.flush()
+                if out:
+                    os.write(1, out)
+                self.used += 1
+                return result
+            why = status if status != 'ok' else 'arguments differ'
+        if self.dir is not None:
+            self.called.append(f'{kind} {d}: {why}')
+        return _ident_call(kind, resid, self.ctx['master_I'], hdr, self.ctx['beam'], sstack, zenith_time, self.ctx['xrefuse'])
+
+    def close(self, record=None):
+        if self.dir is None:
+            return
+        import shutil
+        self._reap()
+        for pid in list(self.alive):                             # results the loop never asked for
+            try:
+                os.kill(pid, 15)
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+        self.alive.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+        self.dir = None
+        if record:                                               # the attempt's work directory: never published
+            import json
+            with open(record, 'w') as fh:
+                json.dump({'processes': self.nproc, 'jobs': len(self.jobs), 'used': self.used, 'called_in_loop': self.called}, fh, indent=1)
 
 
 def _x2_copy(arr, hdr0, path):
@@ -1317,8 +1531,22 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         return _binm[_bm]
     if _STREAM:
         epoch_I = _Lazy()
-    for d in dates:
-        ei = _load(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits') + _recon_master(d)
+
+    def _sub_or_error(_d):                         # the frame's pixels, or the exception reading them raised (re-raised in the
+        try:                                       # serial order); the zap and its record stay in this thread, below
+            return _read(f'{ebase}/subtracted/{_d}_I_sub_{scope}.fits')
+        except Exception as _e:
+            return _e
+    _ahead = {}                                    # frames read ahead by the threads: at most SEARCH_THREADS held at a time
+    for _i, d in enumerate(dates):
+        if d not in _ahead:
+            _chunk = dates[_i:_i + SEARCH_THREADS]
+            _ahead = dict(zip(_chunk, _in_order(_sub_or_error, _chunk, SEARCH_THREADS)))
+        _sub = _ahead.pop(d)
+        if isinstance(_sub, Exception):
+            raise _sub
+        ei = _zap(_sub, f'{ebase}/subtracted/{d}_I_sub_{scope}.fits') + _recon_master(d)
+        del _sub
         if _STREAM:
             dict.__setitem__(epoch_I, d, (lambda _d=d: _load(f'{ebase}/subtracted/{_d}_I_sub_{scope}.fits') + _recon_master(_d)))
         else:
@@ -1491,16 +1719,23 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             # Stokes above threshold refuses the frame from both searches, as at deep.
             from exopipe.phase3.lib.search.identification import inner_rms as _irms
             _rmsI, _rmsV = {}, {}
-            for _d in dates:
-                for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
-                    _fp = f'{ebase}/subtracted/{_d}_{_st}_sub_{scope}.fits'
-                    if os.path.exists(_fp):
-                        try:
-                            _rv = float(_irms(np.squeeze(fits.getdata(_fp)).astype(float)))
-                            if np.isfinite(_rv) and _rv > 0:
-                                _rm[_d] = _rv
-                        except Exception as _e:
-                            print(f'  {lst} {scope} {_d}: stage-1 rms unreadable ({_e!r}) - frame keeps no rms')
+
+            def _stage1_rms(_job):                 # one frame: None (no file), a value, or the exception reading it raised
+                _fp = f'{ebase}/subtracted/{_job[0]}_{_job[1]}_sub_{scope}.fits'
+                if not os.path.exists(_fp):
+                    return None
+                try:
+                    return float(_irms(np.squeeze(fits.getdata(_fp)).astype(float)))
+                except Exception as _e:
+                    return _e
+            _jobs = [(_d, _st) for _d in dates for _st in ('I', 'V')]
+            for (_d, _st), _rv in zip(_jobs, _in_order(_stage1_rms, _jobs, SEARCH_THREADS)):   # applied in the serial order
+                if _rv is None:
+                    continue
+                if isinstance(_rv, Exception):
+                    print(f'  {lst} {scope} {_d}: stage-1 rms unreadable ({_rv!r}) - frame keeps no rms')
+                elif np.isfinite(_rv) and _rv > 0:
+                    (_rmsI if _st == 'I' else _rmsV)[_d] = _rv
             _key = lambda d: d
         _tier = []
         for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
@@ -2036,6 +2271,17 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                  time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())])
         print(f'  {lst} {scope} {d}: SOURCE-EXTRACTION GATE - Stokes {st} image REFUSED, not searched '
               f'(source extraction failed: {err})', flush=True)
+    # SPEED-UP 2026-11-11: the identifications of the windows this loop will search, computed ahead (see _IdentAhead)
+    _ahead_id = _IdentAhead(dict(ebase=ebase, scope=scope, cadence=cadence, hdr0=hdr0, em=em, cd=cd, master_I=master_I, beam=beam,
+                                 resid_I=resid_I, resid_V=resid_V, sstack_I=sstack_I, ssA_I=_ssA_I, xrefuse=_xrefuse), IDENT_PROCS)
+    _ahead_jobs = []
+    for d in dates:
+        _doI = 'I' in stokes and d in resid_I
+        if _doI and d not in skip_I_dates:
+            _ahead_jobs.append(('I', d))
+        if d in resid_V and d not in skip_V_dates and not (_doI and d in skip_I_dates) and not _b02:
+            _ahead_jobs.append(('V', d))
+    _ahead_id.start(_ahead_jobs)
     for d in dates:
         ot = _epoch_time(ebase, d, scope)
         hdr = _det_header(hdr0, scope, em, cd, ot)
@@ -2098,8 +2344,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 gimg_rows.append([lst, scope, 'I', d, 0, 0, '', '', 0, 0, _elev_floor('I')]); continue
             _xfI = None
             try:
-                _allI = run_identification_i(rI, master_I, hdr, beam, _ssA_I.get(d, sstack_I),   # WAVE2 D-ADMIT: its own stack
-                                             refuse_on_extraction_failure=_xrefuse)
+                _allI = _ahead_id.take('I', d, rI, hdr, _ssA_I.get(d, sstack_I), None)   # WAVE2 D-ADMIT: its own stack
             except sv2.SourceExtractionFailed as _xf:
                 _xfI = _xf
                 _refuse_extraction('I', d, _xf)
@@ -2227,8 +2472,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                         if cadence == '10min' else None)
                 if _b02:                                               # WAVE2 B-02 (step 3b, decision (2)): the deep V mask from
                     _ztV = sv2.frame_mid_time(_fhV[d]) if _eep == 'frame-mid' else None   # WAVE2 B-02: the zenith at the floor's time
-                _allV = run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0,
-                                             refuse_on_extraction_failure=_xrefuse, zenith_time=_ztV, return_all=True)
+                _allV = _ahead_id.take('V', d, rV, hdr, None, _ztV)
             except sv2.SourceExtractionFailed as _xf:
                 _refuse_extraction('V', d, _xf); continue
             pV = [c for c in _allV if c['status'] == 'PASS']
@@ -2401,6 +2645,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             if keptv:
                 v_pending.append((d, keptv, vr_path, hdr, ot,
                                   1 if gate_ran else '', ))
+    _ahead_id.close(f'{cell_work}/ident_ahead.json')
     # ── I 2-D BRIGHT-PARENT STAGE. The ratified flood-night curve (R25 1.0 nominal / 1.4 on a flood
     # night) was SUPERSEDED on 2026-09-05/06 by the measured per-Stokes per-band table, and flood keying
     # was retired with it (see the table call below): nothing downstream has read a flood classification
