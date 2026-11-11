@@ -757,7 +757,12 @@ def admission_table(v_cube, meta_i, meta_v, rms_outlier_k=5.0,
     headers.  A frame is admitted only if it passes everything.
     """
     nt = v_cube.shape[0]
-    vrms = np.array([central_rms(v_cube[i]) for i in range(nt)])
+    if DETECT_THREADS > 1 and nt > 1:      # SPEED-UP 1c (refactor, 2026-11-11): one value per frame, DETECT_THREADS at a time, in frame order
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=DETECT_THREADS) as ex:
+            vrms = np.array(list(ex.map(lambda i: central_rms(v_cube[i]), range(nt))))
+    else:
+        vrms = np.array([central_rms(v_cube[i]) for i in range(nt)])
     fin = np.isfinite(vrms)
     med = np.median(vrms[fin]) if fin.any() else np.nan
     mad = np.median(np.abs(vrms[fin] - med)) if fin.any() else np.nan
@@ -869,13 +874,24 @@ def highpass_blocks(blocks, size=65):
     beam) intact.  NaN-aware boxcar of `size` pixels (~2 deg)."""
     from scipy.ndimage import uniform_filter
     out = np.empty_like(blocks)
-    for i in range(blocks.shape[0]):
+
+    # SPEED-UP 1b (refactor, 2026-11-11): each block is filtered on its own and written to its own slot, so the blocks are done
+    # DETECT_THREADS at a time; the statements are production's loop body unchanged (clv15 be63765 :873-878)
+    def _one(i):
         r = blocks[i]
         finite = np.isfinite(r)
         rz = np.where(finite, r, 0).astype(np.float32)
         norm = uniform_filter(finite.astype(np.float32), size)
         sm = uniform_filter(rz, size) / np.maximum(norm, 1e-3)
         out[i] = np.where(finite, r - sm, np.nan)
+
+    if DETECT_THREADS > 1 and blocks.shape[0] > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=DETECT_THREADS) as ex:
+            list(ex.map(_one, range(blocks.shape[0])))
+    else:
+        for i in range(blocks.shape[0]):
+            _one(i)
     return out
 
 
@@ -951,6 +967,10 @@ def robust_scale(model_a, model_b, lo=5.0):
 
 NOISE_OUTLIER_K = 5.0   # per-Stokes residual-MAD frame refusal (Gregg 2026-09-09)
 
+# Images measured at a time by detect() (speed only; the products are identical for every value - see SPEED-UP 1 there).
+# 1 = production's serial loop.  The refactor's search step sets it from config search_snapshot.DETECT_THREADS.
+DETECT_THREADS = max(1, int(os.environ.get("P3_SNAP_DETECT_THREADS", "1")))
+
 
 def detect(cube, model, admitted, meta, thresh, stokes, masks, bin_of,
            flood_rel=FLOOD_REL, flood_min_abs=FLOOD_MIN_ABS,
@@ -969,7 +989,14 @@ def detect(cube, model, admitted, meta, thresh, stokes, masks, bin_of,
     nt = cube.shape[0]
     cands_by_t = {}
     rows = []
-    for t in range(nt):
+
+    # SPEED-UP 1 (refactor, 2026-11-11; plan/STAGE_MAP_20261111.md hot spot 2): the per-image work below is a pure function of
+    # that image (its frame, the shared model and mask, its own meta row), so the images are measured DETECT_THREADS at a time
+    # and the results are applied afterwards in image order, exactly as the serial loop applied them: rows in order t, the
+    # candidate list of image t under key t, admitted[t] cleared for the same reasons.  The statements inside _one are the
+    # production loop body unchanged (clv15 be63765 phase3_snapshot_search.py:973-1026), with `rows.append(row); continue`
+    # replaced by a return.  DETECT_THREADS = 1 runs them in this thread in the same order as production.
+    def _one(t):
         row = OrderedDict([
             ("idx", t), ("ts", meta[t]["ts"]),
             ("date_obs", meta[t].get("date_obs", "")),
@@ -981,17 +1008,14 @@ def detect(cube, model, admitted, meta, thresh, stokes, masks, bin_of,
             ("flood_refused", 0), ("refuse_reason", "")])
         if not admitted[t]:
             row["refuse_reason"] = "admission"
-            rows.append(row)
-            continue
+            return row, None, False
         mask = masks[bin_of[t]]
         resid = cube[t] - model
         sig = central_rms(resid, mask=mask)
         if not (np.isfinite(sig) and sig > 0):
             row["admitted"] = 0
             row["refuse_reason"] = "no-noise-estimate"
-            admitted[t] = False
-            rows.append(row)
-            continue
+            return row, None, True
         row["global_rms_jyb"] = "%.6g" % sig
         snr_img = resid / np.float32(sig)
         work = np.abs(snr_img) if stokes == "V" else snr_img
@@ -1003,9 +1027,8 @@ def detect(cube, model, admitted, meta, thresh, stokes, masks, bin_of,
             row["flood_refused"] = 1
             row["refuse_reason"] = "hard-cap"
             row["admitted"] = 0
-            admitted[t] = False
-            rows.append(row)
-            continue
+            return row, None, True
+        cl = None
         if nlab:
             index = np.arange(1, nlab + 1)
             pos = ndimage.maximum_position(work, lab, index=index)
@@ -1022,8 +1045,21 @@ def detect(cube, model, admitted, meta, thresh, stokes, masks, bin_of,
                     "sigma_frame_jyb": float(sig),
                     "elev_bin": int(bin_of[t]),
                 })
+        return row, cl, False
+
+    if DETECT_THREADS > 1 and nt > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=DETECT_THREADS) as ex:
+            per_image = list(ex.map(_one, range(nt)))      # map returns the results in image order
+    else:
+        per_image = [_one(t) for t in range(nt)]
+    for t, (row, cl, unadmit) in enumerate(per_image):
+        if unadmit:
+            admitted[t] = False
+        if cl is not None:
             cands_by_t[t] = cl
         rows.append(row)
+    del per_image
     # ---- noise-outlier refusal (RULING, Gregg 2026-09-09: Stokes I noise is
     # measured on the Stokes I median-subtracted frame, Stokes V on the Stokes V
     # median-subtracted frame, both as MAD).  sig above is exactly that

@@ -33,7 +33,13 @@ MERGE_ARCMIN = 1.0         # list entries sharing one name within this are one o
 ROOT_DEFAULT = "/lustre/pipeline/exopipe/phase3/photometry"
 SAMPLES = (("HWJ", "Hot_Warm_Jupiters.csv"), ("10pc", "10pc.csv"))
 PLANETS = ("jupiter", "saturn", "uranus", "neptune")
-SAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
+# PORT (refactor, 2026-11-11): production reads the two target lists BESIDE THE SCRIPT (clv15/10pc.csv, clv15/Hot_Warm_Jupiters.csv)
+# and skips a list that is not there.  This copy lives in the refactor, without the lists beside it, so it reads them from
+# P3_SNAP_SAMPLES_DIR (default: production's directory, the same two files) and REFUSES when a default list is missing: a skipped
+# list would write the planets only and read as "no target in the field" (found 2026-11-11 on a copy of the engine without them).
+SAMPLES_DIR = os.environ.get("P3_SNAP_SAMPLES_DIR", "/lustre/gh/main/clv15")
+# Objects cut at a time by write_cutouts (speed only; identical products - SPEED-UP 2b there); the search's own thread knob.
+CUT_THREADS = max(1, int(os.environ.get("P3_SNAP_DETECT_THREADS", "1")))
 _TARGETS = None
 _EPH = {}
 
@@ -58,6 +64,9 @@ def _targets():
         out = []
         for tag, p in _samples():
             if not os.path.exists(p):
+                if not os.environ.get("P3_SNAP_CUTOUT_SAMPLES"):       # a DEFAULT list is never skipped (PORT note at SAMPLES_DIR)
+                    raise RuntimeError("REFUSED: target list %s (%s) not found - set P3_SNAP_SAMPLES_DIR to the directory "
+                                       "holding %s" % (p, tag, ", ".join(fn for _, fn in SAMPLES)))
                 continue
             for r in csv.DictReader(open(p, encoding="utf-8-sig")):
                 ra = r.get("ra_current") or r.get("ra") or r.get("RA"); dec = r.get("dec_current") or r.get("dec") or r.get("DEC")
@@ -167,12 +176,35 @@ def write_cutouts(cube, model, meta, admitted, hdr, screen_x, screen_y, lst, dat
         return 0
     ut0 = meta[0]["ts"]; utc = "%sT%s" % (ut0[:8], ut0[9:15])
     written = 0
+    # SPEED-UP 2 (refactor, 2026-11-11; identical products): a fixed target has ONE position for every frame and a planet one per
+    # 10 minutes, so (a) the pixel position of a (ra, dec) is computed once and reused - the same call on the same WCS returns
+    # the same floats - and (b) the dewarp's coordinate arrays, which depend only on the box, are built once per box and passed
+    # to the same map_coordinates call.  Production computed both for every frame (358 times per object).
+    _w2p = {}
+
+    def _pix(ra, dec):
+        k = (ra, dec)
+        if k not in _w2p:
+            px, py = w.all_world2pix(ra, dec, 0)
+            _w2p[k] = (float(px), float(py))
+        return _w2p[k]
+
+    # SPEED-UP 2b (refactor, 2026-11-11; identical products): the cut of one object reads the cube and writes only its own
+    # array, so CUT_THREADS objects are cut at a time and then their files are built and written one after another in
+    # production's object order.  Every pixel position is computed here first, in the main thread, so the workers only read
+    # the table (the WCS object is never used from two threads).
     for tag, nm, pos in jobs:
+        for ra, dec in pos:
+            _pix(ra, dec)
+
+    def _cut(job):
+        tag, nm, pos = job
         out = np.full((nt, n, n), np.nan, dtype=np.float32)
         cx_list, cy_list = [], []
+        box, box_coords = None, None
         for t in range(nt):
             ra, dec = pos[t]
-            px, py = w.all_world2pix(ra, dec, 0); px, py = float(px), float(py)
+            px, py = _w2p[(ra, dec)]
             if not (np.isfinite(px) and np.isfinite(py)):
                 cx_list.append(np.nan); cy_list.append(np.nan); continue
             x0, y0 = int(round(px)) - half, int(round(py)) - half
@@ -183,8 +215,11 @@ def write_cutouts(cube, model, meta, admitted, hdr, screen_x, screen_y, lst, dat
                 continue
             raw = cube[t, ya_:yb_, xa_:xb_] - model[ya_:yb_, xa_:xb_]
             if screen_x is not None:
-                gy, gx = np.mgrid[ya_:yb_, xa_:xb_]
-                dew = ndimage.map_coordinates(raw, [gy - ya_ + screen_y[ya_:yb_, xa_:xb_], gx - xa_ + screen_x[ya_:yb_, xa_:xb_]], order=1, mode="constant", cval=np.nan)
+                if box != (ya_, yb_, xa_, xb_):
+                    gy, gx = np.mgrid[ya_:yb_, xa_:xb_]
+                    box_coords = [gy - ya_ + screen_y[ya_:yb_, xa_:xb_], gx - xa_ + screen_x[ya_:yb_, xa_:xb_]]
+                    box = (ya_, yb_, xa_, xb_)
+                dew = ndimage.map_coordinates(raw, box_coords, order=1, mode="constant", cval=np.nan)
             else:
                 dew = raw
             # place into the n x n box (WCS grid coordinates)
@@ -194,6 +229,9 @@ def write_cutouts(cube, model, meta, admitted, hdr, screen_x, screen_y, lst, dat
             h_ = min(n - sy0, dew.shape[0] - ty0); w_ = min(n - sx0, dew.shape[1] - tx0)
             if h_ > 0 and w_ > 0:
                 out[t, sy0:sy0 + h_, sx0:sx0 + w_] = dew[ty0:ty0 + h_, tx0:tx0 + w_]
+        return out, cx_list, cy_list
+
+    def _write_one(tag, nm, pos, out, cx_list, cy_list):
         # header: cutout WCS = frame WCS with CRPIX shifted to the FIRST frame's box (moving targets carry per-frame RA/Dec)
         ra0, dec0 = pos[0]
         px0, py0 = w.all_world2pix(ra0, dec0, 0); x00, y00 = int(round(float(px0))) - half, int(round(float(py0))) - half
@@ -220,7 +258,22 @@ def write_cutouts(cube, model, meta, admitted, hdr, screen_x, screen_y, lst, dat
         d = os.path.join(root, tag, band, safe_name(nm)); os.makedirs(d, exist_ok=True)
         fn = os.path.join(d, "%s_%s_%s_%s.fits" % (safe_name(nm), lst, utc.replace(":", ""), stokes))
         fits.HDUList([fits.PrimaryHDU(out, header=h), tab]).writeto(fn, overwrite=True)
-        written += 1
+        return 1
+
+    def _cut_many(chunk):
+        if CUT_THREADS > 1 and len(chunk) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=CUT_THREADS) as ex:
+                return list(ex.map(_cut, chunk))
+        return [_cut(job) for job in chunk]
+
+    done = []
+    for c0 in range(0, len(jobs), CUT_THREADS):
+        chunk = jobs[c0:c0 + CUT_THREADS]
+        done = list(zip(chunk, _cut_many(chunk)))
+        for (tag, nm, pos), (out, cx_list, cy_list) in done:
+            written += _write_one(tag, nm, pos, out, cx_list, cy_list)
+    del done
     log.info("photometry cutouts: %d objects x %d frames, %s %s %s -> %s (names: distinct objects unique, 2026-10-25)", written, nt, lst,
              band, stokes, root)
     return written
