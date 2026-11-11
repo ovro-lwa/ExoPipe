@@ -666,37 +666,59 @@ def _mid_hour_elev(lst, ra, dec):
 # the per-window detection loop (run_identification_i / _v: PyBDSF on each residual, ~25 s per window at 41 MHz, 30 of the 44
 # minutes of a 96-window job) is computed AHEAD in forked processes while the loop itself stays serial and unchanged. A worker
 # builds a window's arguments the way the loop builds them and returns the result with a digest of those arguments; the loop
-# uses a result only when the digest of the arguments IT is about to pass is the same, the worker saw no error, and the call
-# changed none of its arguments - otherwise it makes the call itself, exactly as before. What the call printed is replayed
-# at the place of the call. DEEP_IDENT_PROCS=1 (the default) = no look-ahead.
+# uses a result only when the digest of the arguments IT is about to pass is the same, the worker saw no error and reached no
+# fallback site, and the call changed none of its arguments - otherwise it makes the call itself, exactly as before (and says
+# so in the log). What the call printed is replayed at the place of the call. DEEP_IDENT_PROCS=1 (the default) = no look-ahead.
 IDENT_PROCS = max(1, int(os.environ.get('DEEP_IDENT_PROCS', '1')))
-IDENT_WAIT_S = float(os.environ.get('DEEP_IDENT_WAIT_S', '3600'))    # the loop waits this long for a look-ahead result, then calls itself
+IDENT_WAIT_S = float(os.environ.get('DEEP_IDENT_WAIT_S', '1200'))    # the loop waits this long for ONE look-ahead result; then
+#                                                                      it calls itself and the look-ahead is off for the rest
 
 
-def _ident_digest(kind, resid, hdr, sstack, zenith_time):
-    """Everything run_identification_i / _v is given for one window that is not the same object for every window."""
+def _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d):
+    """(ot, hdr, what the DURATION fell back on or None) for window d: the detection header the loop passes to the
+    identification. No message and no record here - the loop names the fallback itself (WAVE2 B-30) - so the look-ahead
+    worker builds its header from this very function."""
+    ot = _epoch_time(ebase, d, scope)
+    hdr = _det_header(hdr0, scope, em, cd, ot)
+    # 2026-09-01 fix: hdr0 is the MASTER header, whose DURATION is the
+    # month-scale coverage span. search_i_transients.get_midpoint_time
+    # computes DATE-OBS + DURATION/2, which then lands hours off in
+    # time-of-day, and the time-based I elevation mask blanks the
+    # field (00h Red: fully masked -> rms NaN -> BDSF refused ->
+    # fallback 0 peaks, silently, every epoch). Stamp the epoch's own
+    # duration. (V is immune: its deep-path mask is zenith geometry.)
+    _dur_fb = None                                 # WAVE2 B-30: the same values; the fallback named by the caller
+    try:
+        _dh = fits.getheader(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits')
+        if not _dh.get('DURATION'):
+            _dur_fb = 'no DURATION card'
+        hdr['DURATION'] = float(_dh.get('DURATION') or (600.0 if cadence == '10min' else 3600.0))
+    except Exception:
+        _dur_fb = _dur_fb or 'header unreadable or DURATION not a number'
+        hdr['DURATION'] = 600.0 if cadence == '10min' else 3600.0
+    return ot, hdr, _dur_fb
+
+
+def _ident_digest(kind, resid, hdr, sstack, zenith_time, master_I, beam, xrefuse):
+    """Everything run_identification_i / _v is given for one window."""
     import hashlib
     h = hashlib.md5()
-    for a in (resid, sstack):
+    for a in (resid, sstack, master_I):
         if a is None:
             h.update(b'<none>')
         else:
             a = np.ascontiguousarray(a)
             h.update(f'{a.dtype.str} {a.shape}'.encode()); h.update(a.tobytes())
-    h.update(kind.encode()); h.update(hdr.tostring().encode()); h.update(repr(zenith_time).encode())
+    h.update(kind.encode()); h.update(hdr.tostring().encode())
+    h.update(repr((zenith_time, beam, xrefuse)).encode())
     return h.hexdigest()
 
 
 def _ident_args(ctx, kind, d):
-    """The arguments the detection loop passes for window d, built as the loop builds them but with no message and no record
-    (the loop still does both itself; the digest decides whether the look-ahead result may be used)."""
+    """The arguments the detection loop passes for window d, from the loop's own header builder; the digest decides whether
+    the look-ahead result may be used."""
     ebase, scope, cadence = ctx['ebase'], ctx['scope'], ctx['cadence']
-    hdr = _det_header(ctx['hdr0'], scope, ctx['em'], ctx['cd'], _epoch_time(ebase, d, scope))
-    try:
-        _dh = fits.getheader(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits')
-        hdr['DURATION'] = float(_dh.get('DURATION') or (600.0 if cadence == '10min' else 3600.0))
-    except Exception:
-        hdr['DURATION'] = 600.0 if cadence == '10min' else 3600.0
+    _ot, hdr, _fb = _det_epoch_header(ctx['hdr0'], ebase, scope, ctx['em'], ctx['cd'], cadence, d)
     if kind == 'I':
         return np.nan_to_num(ctx['resid_I'][d], nan=0.0), hdr, ctx['ssA_I'].get(d, ctx['sstack_I']), None   # WAVE2 D-ADMIT: its own stack
     zt = sv2.frame_mid_time(fits.getheader(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits')) if cadence == '10min' else None
@@ -716,9 +738,18 @@ def _ident_call(kind, resid, master_I, hdr, beam, sstack, zenith_time, xrefuse):
 
 def _ident_worker(ctx, job):
     """In a forked process: one window's identification. Returns (status, result, digest of the arguments, what it printed).
-    status 'ok' only when the call returned and left its arguments as they were; anything else makes the loop call itself."""
+    status 'ok' only when the call returned, left its arguments as they were and reached no fallback site (a fallback is a
+    RECORD of the search: it must be made once, by the loop's own call); anything else makes the loop call itself."""
     import tempfile
     kind, d = job
+    try:                                                         # a fallback site reached here refuses the look-ahead result
+        from exopipe.phase3.core import fallback as _fb
+
+        def _site(*a, **k):
+            raise RuntimeError('a fallback site was reached in a look-ahead worker')
+        _fb.site = _site                                         # this process only (a fork)
+    except ImportError:
+        pass
     sys.stdout.flush(); sys.stderr.flush()
     tf = tempfile.TemporaryFile()
     keep = os.dup(1), os.dup(2)
@@ -727,9 +758,10 @@ def _ident_worker(ctx, job):
     try:
         try:
             resid, hdr, sstack, zt = _ident_args(ctx, kind, d)
-            digest = _ident_digest(kind, resid, hdr, sstack, zt)
+            const = (ctx['master_I'], ctx['beam'], ctx['xrefuse'])
+            digest = _ident_digest(kind, resid, hdr, sstack, zt, *const)
             result = _ident_call(kind, resid, ctx['master_I'], hdr, ctx['beam'], sstack, zt, ctx['xrefuse'])
-            status = 'ok' if _ident_digest(kind, resid, hdr, sstack, zt) == digest else 'arguments-changed'
+            status = 'ok' if _ident_digest(kind, resid, hdr, sstack, zt, *const) == digest else 'arguments-changed'
         except BaseException as e:                               # a refusal or a failure: the loop makes the call and meets it
             status, result = 'error', repr(e)[:300]
     finally:
@@ -743,20 +775,28 @@ class _IdentAhead(object):
     """The look-ahead of one detection loop. start(jobs): the jobs in the order the loop will ask for them. Each job runs in
     its own forked process (a copy of this one at that moment, so it reads the loop's own objects; at most nproc at a time,
     started in order), writes its result to a file and exits without this process's exit handlers. take() hands the loop a
-    result or makes the call. No pool, no queue: a process lives for one job, so nothing outlives the search by more than that."""
+    result or makes the call. No pool, no queue: a process lives for one job. If a process cannot be started or does not
+    answer in IDENT_WAIT_S the look-ahead switches itself off and the loop goes on serially, as before. close() ends it; if
+    the loop is left by an exception instead, the exit handler stops the processes and removes the directory."""
 
-    def __init__(self, ctx, nproc):
-        self.ctx, self.nproc = ctx, nproc
+    def __init__(self, ctx, nproc, label=''):
+        self.ctx, self.nproc, self.label = ctx, nproc, label
         self.jobs, self.index, self.pid, self.alive, self.dir = [], {}, {}, set(), None
-        self.next, self.used, self.called = 0, 0, []
+        self.next, self.used, self.called, self.off = 0, 0, [], ''
 
     def start(self, jobs):
         if self.nproc <= 1 or len(jobs) < 2:
             return
+        import atexit
         import tempfile
+        try:
+            import bdsf                                          # noqa: F401  once here, not once in every one-job process
+        except Exception:
+            pass
         self.jobs = list(jobs)
         self.index = {j: n for n, j in enumerate(self.jobs)}
         self.dir = tempfile.mkdtemp(prefix='ident_ahead_')
+        atexit.register(self._abort)
         self._launch()
 
     def _reap(self):
@@ -771,15 +811,21 @@ class _IdentAhead(object):
     def _launch(self):
         """Start the next jobs, in order, while fewer than nproc are running."""
         import pickle
+        import signal
         self._reap()
-        while self.next < len(self.jobs) and len(self.alive) < self.nproc:
+        while not self.off and self.next < len(self.jobs) and len(self.alive) < self.nproc:
             n, job = self.next, self.jobs[self.next]
-            self.next += 1
             sys.stdout.flush(); sys.stderr.flush()               # nothing buffered may be written twice
-            pid = os.fork()
+            try:
+                pid = os.fork()
+            except OSError as e:                                 # no process to be had: the loop goes on serially
+                self.off = 'fork failed (%s)' % e
+                return
+            self.next += 1
             if pid == 0:
                 code = 1
                 try:
+                    signal.signal(signal.SIGTERM, lambda *_a: sys.exit(1))   # so the extractors' own clean-up runs
                     res = _ident_worker(self.ctx, job)
                     path = os.path.join(self.dir, '%d.pkl' % n)
                     with open(path + '.part', 'wb') as fh:
@@ -799,8 +845,11 @@ class _IdentAhead(object):
             self._launch()
             if job in self.pid:
                 break
+            if self.off:
+                return 'worker-failed', 'look-ahead off: ' + self.off, None, b''
             if time.time() > t_end:
-                return 'worker-failed', 'never started', None, b''
+                self.off = 'no free process in %.0f s' % IDENT_WAIT_S
+                return 'worker-failed', self.off, None, b''
             time.sleep(0.05)
         pid = self.pid[job]
         while pid in self.alive:
@@ -814,7 +863,8 @@ class _IdentAhead(object):
                 except OSError:
                     pass
                 self.alive.discard(pid)
-                return 'worker-failed', 'no answer in %.0f s' % IDENT_WAIT_S, None, b''
+                self.off = 'no answer in %.0f s' % IDENT_WAIT_S
+                return 'worker-failed', self.off, None, b''
             time.sleep(0.02)
         self._launch()                                           # its slot is free: the next job starts before the loop goes on
         try:
@@ -824,10 +874,11 @@ class _IdentAhead(object):
             return 'worker-failed', repr(e)[:200], None, b''
 
     def take(self, kind, d, resid, hdr, sstack, zenith_time):
+        c = self.ctx
         why = 'not computed ahead'
-        if (kind, d) in self.index:
+        if self.dir is not None and (kind, d) in self.index:
             status, result, digest, out = self._result((kind, d))
-            if status == 'ok' and digest == _ident_digest(kind, resid, hdr, sstack, zenith_time):
+            if status == 'ok' and digest == _ident_digest(kind, resid, hdr, sstack, zenith_time, c['master_I'], c['beam'], c['xrefuse']):
                 sys.stdout.flush(); sys.stderr.flush()
                 if out:
                     os.write(1, out)
@@ -836,26 +887,48 @@ class _IdentAhead(object):
             why = status if status != 'ok' else 'arguments differ'
         if self.dir is not None:
             self.called.append(f'{kind} {d}: {why}')
-        return _ident_call(kind, resid, self.ctx['master_I'], hdr, self.ctx['beam'], sstack, zenith_time, self.ctx['xrefuse'])
+        return _ident_call(kind, resid, c['master_I'], hdr, c['beam'], sstack, zenith_time, c['xrefuse'])
 
-    def close(self, record=None):
+    def _abort(self):
+        """Stop every process still running and remove the directory (close(), or the exit handler after an exception)."""
+        import shutil
         if self.dir is None:
             return
-        import shutil
         self._reap()
-        for pid in list(self.alive):                             # results the loop never asked for
+        for pid in list(self.alive):
             try:
                 os.kill(pid, 15)
+            except OSError:
+                pass
+        t_end = time.time() + 10
+        while self.alive and time.time() < t_end:
+            self._reap()
+            time.sleep(0.05)
+        for pid in list(self.alive):
+            try:
+                os.kill(pid, 9)
                 os.waitpid(pid, 0)
             except OSError:
                 pass
         self.alive.clear()
         shutil.rmtree(self.dir, ignore_errors=True)
         self.dir = None
+
+    def close(self, record=None):
+        if self.dir is None:
+            return
+        import atexit
+        self._abort()
+        atexit.unregister(self._abort)
+        if self.called:                                          # never silent: the speed-up did not hold for these windows
+            print(f'  {self.label}: look-ahead source extraction not used for {len(self.called)} of {len(self.jobs)} window '
+                  f'searches (made in the loop instead): {"; ".join(self.called[:4])}' + (f' (off: {self.off})' if self.off else ''),
+                  flush=True)
         if record:                                               # the attempt's work directory: never published
             import json
             with open(record, 'w') as fh:
-                json.dump({'processes': self.nproc, 'jobs': len(self.jobs), 'used': self.used, 'called_in_loop': self.called}, fh, indent=1)
+                json.dump({'processes': self.nproc, 'jobs': len(self.jobs), 'used': self.used, 'called_in_loop': self.called,
+                           'off': self.off}, fh, indent=1)
 
 
 def _x2_copy(arr, hdr0, path):
@@ -2277,7 +2350,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # SPEED-UP 2026-11-11: the identifications of the windows this loop will search, computed ahead (see _IdentAhead)
     _ahead_id = _IdentAhead(dict(ebase=ebase, scope=scope, cadence=cadence, hdr0=hdr0, em=em, cd=cd, master_I=master_I, beam=beam,
                                  resid_I=resid_I, resid_V=resid_V, sstack_I=sstack_I, xrefuse=_xrefuse,
-                                 ssA_I=_ssA_I), IDENT_PROCS)       # WAVE2 D-ADMIT: an admitted night's own stack, as the loop passes it
+                                 ssA_I=_ssA_I), IDENT_PROCS, f'{lst} {scope}')   # WAVE2 D-ADMIT: an admitted night's own stack, as the loop passes it
     _ahead_jobs = []
     for d in dates:
         _doI = 'I' in stokes and d in resid_I
@@ -2287,25 +2360,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _ahead_jobs.append(('V', d))                                # time comes from the frame header the loop builds (no look-ahead)
     _ahead_id.start(_ahead_jobs)
     for d in dates:
-        ot = _epoch_time(ebase, d, scope)
-        hdr = _det_header(hdr0, scope, em, cd, ot)
-        # 2026-09-01 fix: hdr0 is the MASTER header, whose DURATION is the
-        # month-scale coverage span. search_i_transients.get_midpoint_time
-        # computes DATE-OBS + DURATION/2, which then lands hours off in
-        # time-of-day, and the time-based I elevation mask blanks the
-        # field (00h Red: fully masked -> rms NaN -> BDSF refused ->
-        # fallback 0 peaks, silently, every epoch). Stamp the epoch's own
-        # duration. (V is immune: its deep-path mask is zenith geometry.)
-        _dur_fb = None                                 # WAVE2 B-30: the same values; the fallback named, after the try
-        try:
-            _dh = fits.getheader(f'{ebase}/subtracted/{d}_I_sub_{scope}.fits')
-            if not _dh.get('DURATION'):
-                _dur_fb = 'no DURATION card'
-            hdr['DURATION'] = float(_dh.get('DURATION') or (600.0 if cadence == '10min' else 3600.0))
-        except Exception:
-            _dur_fb = _dur_fb or 'header unreadable or DURATION not a number'
-            hdr['DURATION'] = 600.0 if cadence == '10min' else 3600.0
-        if _dur_fb:
+        ot, hdr, _dur_fb = _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d)   # the header (2026-09-01: the epoch's own
+        if _dur_fb:                                                                   # DURATION) and what it fell back on
             from exopipe.phase3.core import fallback      # WAVE2 B-30
             fallback.site('fallbacks.SEARCH_DURATION_FALLBACK', f'{ebase}/subtracted/{d}_I_sub_{scope}.fits: {_dur_fb} - '
                           f'its DURATION would be {hdr["DURATION"]:.0f} s')

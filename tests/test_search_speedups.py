@@ -17,13 +17,14 @@ packages and site file to import):
   4. the look-ahead source extraction (`_IdentAhead`): the detection loop gets, for every window, exactly what the serial
      call returns, and what the call printed appears at the place of the call, in the serial order; a result is used ONLY
      when it was computed from the very arguments the loop passes - different arguments, an error in the worker, or a call
-     that changed its arguments make the loop call itself (so an error is raised where it was); with one process there is
-     no pool at all;
-  5. the per-hour seed of the 10-minute search (lib/search/tier_sublst.py detect()): the new attempt receives the published
-     attempt's size-rule record (without it the engine refuses every per-hour search of a cell searched under the envelope
-     rule - found 2026-11-11 by timing the mode) and its search-table record (the publish would otherwise replace the cell's
-     cumulative record with one night's rows); the parent catalogue is seeded only under search_sublst.SEED_PARENT_CATALOG,
-     and the engine still validates it against the Master (the .gen.json digest test is in the engine's source).
+     that changed its arguments make the loop call itself (so an error is raised where it was) and the log says so; with
+     one process there is no look-ahead at all; when no process can be started the loop goes on serially; when the loop is
+     left by an exception the exit handler stops the processes and removes their directory; the worker builds its header
+     with the loop's own builder and treats a fallback site as a refusal of its result (a fallback is a record of the search);
+  5. the per-hour seed of the parent catalogue (lib/search/tier_sublst.py): it reads the catalogue where the publish keeps it
+     (<publish>/catdir), copies the catalogue files and their generation records only, compares every copy with its source
+     and removes a copy that differs; it is behind search_sublst.SEED_PARENT_CATALOG, and the engine still tests a catalogue
+     in its work directory against the Master it searches.
 Data-free (numpy only). Run: python tests/test_search_speedups.py   (or under pytest)
 """
 import ast
@@ -166,18 +167,24 @@ def _ahead_namespace(calls, fail=(), mutate=()):
                       np=np, run_identification_i=ident_i, run_identification_v=ident_v, _ident_args=ident_args), np
 
 
-def _loop(ns, np, nproc, windows, resid, sstack, tamper=None):
-    """A stand-in for the detection loop: the same calls in the same order; returns (results, everything written to fd 1/2)."""
+def _loop(ns, np, nproc, windows, resid, sstack, tamper=None, leave_at=None):
+    """A stand-in for the detection loop: the same calls in the same order. Returns (results, errors, what the loop wrote to
+    fd 1/2, what close() wrote, the look-ahead, its record). leave_at: the loop is left by an exception at that window and
+    close() is NOT called (the exit handler's case)."""
     ctx = dict(resid=resid, sstack=sstack, master_I='M', beam='B', xrefuse=True)
-    ahead = ns['_IdentAhead'](ctx, nproc)
+    ahead = ns['_IdentAhead'](ctx, nproc, 'cell')
     ahead.start([(k, d) for d in windows for k in ('I', 'V')])
     out, errors = [], []
+    rec = os.path.join(tempfile.mkdtemp(prefix='ident_ahead_test_'), 'ident_ahead.json')
     sys.stdout.flush(); sys.stderr.flush()
     tf = tempfile.TemporaryFile()
     keep = os.dup(1), os.dup(2)
     os.dup2(tf.fileno(), 1); os.dup2(tf.fileno(), 2)
+    mark = 0
     try:
         for d in windows:
+            if d == leave_at:
+                break
             for k in ('I', 'V'):
                 r = resid[k][d].copy()
                 if tamper and (k, d) in tamper:
@@ -188,61 +195,148 @@ def _loop(ns, np, nproc, windows, resid, sstack, tamper=None):
                 except RuntimeError as e:
                     errors.append((k, d, str(e)))
                     print(f'REFUSED {d}: {e}', flush=True)
+        sys.stdout.flush(); sys.stderr.flush()
+        mark = os.lseek(1, 0, os.SEEK_CUR)
+        if leave_at is None:
+            ahead.close(rec)
     finally:
         sys.stdout.flush(); sys.stderr.flush()
         os.dup2(keep[0], 1); os.dup2(keep[1], 2); os.close(keep[0]); os.close(keep[1])
-    rec = os.path.join(tempfile.mkdtemp(prefix='ident_ahead_'), 'ident_ahead.json')
-    ahead.close(rec)
     tf.seek(0)
     text = tf.read().decode()
     tf.close()
-    return out, errors, text, ahead, rec
+    return out, errors, text[:mark], text[mark:], ahead, rec
 
 
 def test_look_ahead_identification_equals_the_serial_loop():
     import json
     windows = ['2025-05-08T%02d' % i for i in range(6)]
     for case, kw in (('plain', {}), ('a failing window', dict(fail=('2025-05-08T02',))), ('a call that changes its arguments', dict(mutate=('2025-05-08T03',))),
-                     ('the loop passes other pixels', dict(tamper={('I', '2025-05-08T04'), ('V', '2025-05-08T01')}))):
-        tamper = kw.pop('tamper', None)
+                     ('the loop passes other pixels', dict(tamper={('I', '2025-05-08T04'), ('V', '2025-05-08T01')})),
+                     ('no process can be started', dict(no_fork=True))):
+        tamper, no_fork = kw.pop('tamper', None), kw.pop('no_fork', False)
         calls_s, calls_p = [], []
         ns_s, np = _ahead_namespace(calls_s, **kw)
         ns_p, _ = _ahead_namespace(calls_p, **kw)
+        if no_fork:
+            class _NoFork(object):                                  # os for the engine's code only: fork fails, the rest is os
+                def __getattr__(self, name):
+                    return getattr(os, name)
+
+                def fork(self):
+                    raise OSError(11, 'Resource temporarily unavailable')
+            ns_p['os'] = _NoFork()
         rng = np.random.RandomState(7)
         resid = {k: {d: rng.normal(size=(8, 8)) for d in windows} for k in ('I', 'V')}
         sstack = np.ones((8, 8))
-        out_s, err_s, text_s, ah_s, _ = _loop(ns_s, np, 1, windows, resid, sstack, tamper)
-        out_p, err_p, text_p, ah_p, rec = _loop(ns_p, np, 4, windows, resid, sstack, tamper)
-        assert ah_s.dir is None and not ah_s.pid and ah_s.used == 0 and len(calls_s) == 12, f'{case}: one process must mean no look-ahead at all'
+        out_s, err_s, text_s, tail_s, ah_s, _ = _loop(ns_s, np, 1, windows, resid, sstack, tamper)
+        out_p, err_p, text_p, tail_p, ah_p, rec = _loop(ns_p, np, 4, windows, resid, sstack, tamper)
+        assert ah_s.dir is None and not ah_s.pid and ah_s.used == 0 and len(calls_s) == 12 and tail_s == '', \
+            f'{case}: one process must mean no look-ahead at all'
         assert out_p == out_s and err_p == err_s, f'{case}: the look-ahead changed what the loop received'
         assert text_p == text_s, f'{case}: the log differs from the serial loop\n--- serial\n{text_s}\n--- look-ahead\n{text_p}'
         here = os.getpid()
         in_loop = [(k, d) for k, d, pid in calls_p if pid == here]
         r = json.load(open(rec))
         expect = sorted({('I', d) for d in kw.get('fail', ())} | {('I', d) for d in kw.get('mutate', ())} | set(tamper or ()))
+        if no_fork:
+            expect = sorted((k, d) for d in windows for k in ('I', 'V'))
+            assert 'fork failed' in r['off'] and not ah_p.pid, r
         assert sorted(in_loop) == expect, f'{case}: the loop itself made the calls {in_loop}, expected {expect}'
         assert r['used'] == 12 - len(expect) and len(r['called_in_loop']) == len(expect) and r['jobs'] == 12, (case, r)
         assert not ah_p.alive and ah_p.dir is None, f'{case}: a look-ahead process or its directory was left behind'
+        if expect:
+            assert 'look-ahead source extraction not used for %d of 12' % len(expect) in tail_p, f'{case}: the log does not say so: {tail_p!r}'
+        else:
+            assert tail_p == '', f'{case}: close() wrote to the log of a run in which every result was used: {tail_p!r}'
         if 'fail' in kw:
             assert err_p == [('I', '2025-05-08T02', 'extraction failed for 2025-05-08T02')], 'the error was not raised by the loop\'s own call'
 
 
+def test_look_ahead_cleans_up_when_the_loop_is_left_by_an_exception():
+    import atexit
+    calls = []
+    ns, np = _ahead_namespace(calls)
+    windows = ['2025-05-08T%02d' % i for i in range(6)]
+    rng = np.random.RandomState(3)
+    resid = {k: {d: rng.normal(size=(8, 8)) for d in windows} for k in ('I', 'V')}
+    registered = []
+    real = atexit.register
+    atexit.register = lambda fn, *a, **k: registered.append(fn) or real(fn, *a, **k)
+    try:
+        _out, _err, _text, _tail, ah, _rec = _loop(ns, np, 4, windows, resid, np.ones((8, 8)), leave_at='2025-05-08T01')
+    finally:
+        atexit.register = real
+    assert registered == [ah._abort], 'start() did not register the exit handler'
+    d0 = ah.dir
+    assert d0 is not None and os.path.isdir(d0), 'the look-ahead had ended by itself: the test proves nothing'
+    pids = set(ah.pid.values())
+    ah._abort()                                                   # what the exit handler does
+    atexit.unregister(ah._abort)
+    assert not ah.alive and ah.dir is None and not os.path.exists(d0)
+    t_end = time.time() + 10
+    while time.time() < t_end and any(os.path.exists('/proc/%d' % p) for p in pids):
+        time.sleep(0.05)
+    assert not any(os.path.exists('/proc/%d' % p) for p in pids), 'a look-ahead process survived'
+    # the worker's header comes from the loop's own builder, and a fallback site refuses its result
+    src, tree = _tree()
+    run = ast.get_source_segment(src, _function(tree, 'run_deep_cell'))
+    args = ast.get_source_segment(src, _function(tree, '_ident_args'))
+    assert 'ot, hdr, _dur_fb = _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d)' in run and '_det_epoch_header(' in args, \
+        'the loop and the look-ahead worker no longer build the detection header with one function'
+    hb = _function(tree, '_det_epoch_header')
+    called = {(n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, 'id', '')) for n in ast.walk(hb) if isinstance(n, ast.Call)}
+    assert not called & {'site', 'print', 'write'}, f'the shared header builder records or prints: {called}'
+    wk = ast.get_source_segment(src, _function(tree, '_ident_worker'))
+    assert '_fb.site = _site' in wk and "raise RuntimeError('a fallback site was reached in a look-ahead worker')" in wk
+
+
 def test_the_per_hour_seed():
+    import shutil
     step = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'tier_sublst.py')
     with open(step) as f:
         src = f.read()
     tree = ast.parse(src)
-    det = ast.get_source_segment(src, [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'detect'][0])
-    seeds = [n for n in ast.walk(ast.parse(det)) if isinstance(n, ast.For) and isinstance(n.iter, ast.Tuple)
-             and any(isinstance(e, ast.Constant) and e.value == 'v_deep_ledger.csv' for e in n.iter.elts)]
-    assert len(seeds) == 1, 'the per-hour seed loop of detect() was not found'
-    names = [ast.unparse(e) if hasattr(ast, 'unparse') else (e.value if isinstance(e, ast.Constant) else '_SZ.RUN_RECORD') for e in seeds[0].iter.elts]
-    for want in ("'master_catalog.csv'", "'v_deep_ledger.csv'", "'v_deep_images.csv'", "'sigstack'", "'refusals'", "'search_table_record.csv'"):
-        assert want in names or want.strip("'") in names, f'{want} is not seeded: {names}'
-    assert any('RUN_RECORD' in str(n) for n in names), f'the size-rule record is not seeded: {names}'
-    with open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'size_rule.py')) as f:
-        assert "RUN_RECORD = 'size_rule.json'" in f.read()
-    assert 's.SEED_PARENT_CATALOG and os.path.isdir(cat_src)' in det, 'the parent catalogue seed is no longer behind its switch'
+    fn = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    det = ast.get_source_segment(src, fn['detect'])
+    # the catalogue is read where the publish keeps it: the item 'flow/<cell>_10min/catdir' is published under its base name
+    assert "cat_src = os.path.join(plan['publish'], 'catdir')" in det
+    assert 'dst = os.path.join(pub, os.path.basename(rel))' in ast.get_source_segment(src, fn['_publish_files'])
+    with open(os.path.join(REPO, 'exopipe', 'phase3', 'config', 'steps', 'search.py')) as f:
+        assert "'flow/{cell}_10min/catdir'" in f.read(), 'the catalogue is no longer a published item under that path'
+    assert 'if s.SEED_PARENT_CATALOG and os.path.isdir(cat_src) and not os.path.exists(cat_dst):' in det
+    ns = dict(os=os, shutil=shutil)
+    exec(compile(ast.Module(body=[fn['seed_parent_catalog']], type_ignores=[]), step, 'exec'), ns)
+    tmp = tempfile.mkdtemp(prefix='seed_catalog_')
+    try:
+        srcd, dst = os.path.join(tmp, 'published', 'catdir'), os.path.join(tmp, 'attempt', 'flow', '17h_41MHz_10min', 'catdir')
+        os.makedirs(srcd)
+        for n, body in (('master_R075_17h_41MHz.gaul.csv', 'x' * 5000), ('master_R075_17h_41MHz.gaul.csv.gen.json', '{"master_md5_data": "abc"}'),
+                        ('.gaul.lock', ''), ('_master_tmp_1.fits.pybdsf.log', 'log')):
+            with open(os.path.join(srcd, n), 'w') as f:
+                f.write(body)
+        said = ns['seed_parent_catalog'](srcd, dst)
+        assert sorted(os.listdir(dst)) == ['master_R075_17h_41MHz.gaul.csv', 'master_R075_17h_41MHz.gaul.csv.gen.json'] and said.startswith('2 files'), \
+            (os.listdir(dst), said)
+        assert open(os.path.join(dst, 'master_R075_17h_41MHz.gaul.csv')).read() == 'x' * 5000
+        # a short copy (Lustre, 2026-11-09): the copies are removed and the engine builds the catalogue itself
+        shutil.rmtree(dst)
+
+        class _Short(object):
+            def __getattr__(self, name):
+                return getattr(shutil, name)
+
+            def copyfile(self, a, b):
+                with open(a, 'rb') as fa, open(b, 'wb') as fb:
+                    fb.write(fa.read()[:100])
+        ns['shutil'] = _Short()
+        said = ns['seed_parent_catalog'](srcd, dst)
+        assert said.startswith('NOT seeded') and not os.path.exists(dst), (said, os.path.exists(dst))
+        ns['shutil'] = shutil
+        os.makedirs(os.path.join(tmp, 'empty'))
+        assert ns['seed_parent_catalog'](os.path.join(tmp, 'empty'), os.path.join(tmp, 'never')) == '' and not os.path.exists(os.path.join(tmp, 'never'))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     esrc, _ = _tree()
     assert "if _old != _cur_md5:" in esrc and "parent catalog is STALE" in esrc, \
         'the engine no longer tests a parent catalogue left in its work directory against the Master it searches'
@@ -250,7 +344,7 @@ def test_the_per_hour_seed():
 
 TESTS = [test_x2_copies_are_made_only_for_the_refinement, test_only_the_refinement_reads_the_x2_copies,
          test_threaded_reads_keep_the_serial_order, test_look_ahead_identification_equals_the_serial_loop,
-         test_the_per_hour_seed]
+         test_look_ahead_cleans_up_when_the_loop_is_left_by_an_exception, test_the_per_hour_seed]
 
 
 def main():
