@@ -46,6 +46,7 @@ csv.field_size_limit(100000000)
 import json
 import logging
 import os
+import threading
 import time
 
 import numpy as np
@@ -64,6 +65,9 @@ log = logging.getLogger("snapgroup")
 GROUPS = {"Red": SCIENCE_SUBBANDS[0:5],
           "Green": SCIENCE_SUBBANDS[5:10],
           "Blue": SCIENCE_SUBBANDS[10:15]}
+# Instants accumulated at a time (speed only; identical products for every value - SPEED-UP 3 in _run_group_search).
+# 0 = the --nthreads value, production's reader count.  The refactor's search step sets it from config search_snapshot.
+GROUP_THREADS = max(0, int(os.environ.get("P3_SNAP_GROUP_THREADS", "0")))
 MATCH_TOL_S = 12.0      # RETIRED 2026-10-07 (pairing by file-name time); kept for readers of old logs only
 PAIR_TOL_S = 1.0        # s: members = frames of the SAME integration, DATE-OBS equal within 1 s (distinct integrations of a
                         # cell are 10.0-10.1 s apart: 358 per cell on 19h 2025-05-03 and 14h 2025-04-21, measured 2026-10-07)
@@ -309,33 +313,59 @@ def _run_group_search(lst, date, stokes, out_dir, thresh, stage_root_fmt, nthrea
             log.warning("%s frame %s has grid %s, wideband %s expects %s — dropped",
                         sb, ts, data.shape, group_of[sb], grid_of[group_of[sb]])
             return None
-        sx, sy = sb_screens[sb]
-        dw = dewarp_frame(data, sx, sy)
+        dw = _dewarp(sb, data)
         rms = central_rms(dw)
         if not (np.isfinite(rms) and rms > 0):
             return None
         return sb, t, dw, 1.0 / rms ** 2
 
-    member_rows = []
-    for c0 in range(0, nt, chunk_frames):
-        c1 = min(c0 + chunk_frames, nt)
-        jobs = [(sb, t) for sb in sb_frames for t in range(c0, c1)]
-        with ThreadPoolExecutor(max_workers=nthreads) as ex:
-            for res in ex.map(lambda a: _one(*a), jobs):
-                if res is None:
-                    continue
-                sb, t, dw, w = res
-                contrib = np.nan_to_num(dw, nan=0.0) * np.float32(w)
-                gmask = np.isfinite(dw)
-                for g in ((group_of[sb], "Full") if full_ok else (group_of[sb],)):
-                    cubes[g][t] += contrib
-                    wsums[g][t] += w
-                    nsubs[g][t] += 1
-                    j = sb_match[sb][t]
-                    member_rows.append((g, ref_list[t][0], sb, sb_frames[sb][j][0], sb_dsec[sb][1][sb_frames[sb][j][1]],
-                                        ref_dob[ref_list[t][1]], w))
-        log.info("chunk %d-%d accumulated (%.0f s elapsed)",
-                 c0, c1, time.time() - t0)
+    # SPEED-UP 3 (refactor, 2026-11-11; identical products; plan/STAGE_MAP_20261111.md hot spot 3).  Production accumulated in
+    # the main thread: workers read and dewarped the frames of a chunk, and one loop added them, subband after subband.  Here:
+    #  (a) a subband's dewarp coordinates (pixel grid + its screen) depend only on the subband, so they are built once per
+    #      subband and passed to the same map_coordinates call (production rebuilt them for every frame, dewarp_frame);
+    #  (b) one worker handles one INSTANT t: it reads that instant's member frames in production's subband order and adds them
+    #      into cubes[g][t] / wsums[g][t] / nsubs[g][t] in that order.  The adds of one (group, instant) are therefore the same
+    #      float operations in the same order as production's; different instants touch different array elements;
+    #  (c) the member rows are put back in production's append order (chunk, subband, instant, group) before the sort below.
+    _coords, _coords_lock = {}, threading.Lock()
+
+    def _dewarp(sb, data):
+        key = (sb, data.shape)
+        with _coords_lock:
+            if key not in _coords:
+                sx, sy = sb_screens[sb]
+                gy, gx = np.mgrid[0:data.shape[0], 0:data.shape[1]]
+                _coords[key] = [gy + sy, gx + sx]
+        return ndimage.map_coordinates(data, _coords[key], order=1, mode="constant", cval=np.nan).astype(np.float32)
+
+    sb_order = {sb: k for k, sb in enumerate(sb_frames)}
+
+    def _instant(t):
+        rows_t = []
+        for sb in sb_frames:
+            res = _one(sb, t)
+            if res is None:
+                continue
+            _, _, dw, w = res
+            contrib = np.nan_to_num(dw, nan=0.0) * np.float32(w)
+            for gi, g in enumerate((group_of[sb], "Full") if full_ok else (group_of[sb],)):
+                cubes[g][t] += contrib
+                wsums[g][t] += w
+                nsubs[g][t] += 1
+                j = sb_match[sb][t]
+                rows_t.append(((t // chunk_frames, sb_order[sb], t, gi),
+                               (g, ref_list[t][0], sb, sb_frames[sb][j][0], sb_dsec[sb][1][sb_frames[sb][j][1]],
+                                ref_dob[ref_list[t][1]], w)))
+        return rows_t
+
+    keyed_rows = []
+    with ThreadPoolExecutor(max_workers=max(1, GROUP_THREADS or nthreads)) as ex:
+        for k, rows_t in enumerate(ex.map(_instant, range(nt))):
+            keyed_rows.extend(rows_t)
+            if (k + 1) % chunk_frames == 0 or k + 1 == nt:
+                log.info("instants 0-%d accumulated (%.0f s elapsed)", k + 1, time.time() - t0)
+    member_rows = [r for _, r in sorted(keyed_rows, key=lambda kr: kr[0])]
+    del keyed_rows, _coords
     # MEMBER TABLE (frame-time fix 2026-10-07): every wideband frame's members, each with its own DATE-OBS, so "the members of
     # a wideband frame share one integration" is checked on the product, and readers rebuild a wideband frame from exactly
     # its members (by member file-name ts) instead of re-pairing by name

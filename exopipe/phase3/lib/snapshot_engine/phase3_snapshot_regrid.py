@@ -12,12 +12,20 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from scipy.ndimage import map_coordinates
 
-ap = argparse.ArgumentParser(); ap.add_argument("stage_dir"); ap.add_argument("master"); ap.add_argument("--nproc", type=int, default=8)
-a = ap.parse_args()
-mh = fits.getheader(a.master)
-MN = int(mh["NAXIS1"]); mw = WCS(mh).celestial
-yy, xx = np.mgrid[0:MN, 0:MN]
-ra, dec = mw.all_pix2world(xx.ravel(), yy.ravel(), 0)
+# PORT (refactor, 2026-11-11): production parses the arguments and builds the Master grid at module level; here _setup() runs
+# the same statements and sets the same module globals, so the module imports without side effects.  main() calls it BEFORE
+# the worker pool is forked, so the workers inherit a, mh, MN, ra and dec exactly as they did.
+a = mh = MN = ra = dec = None
+
+
+def _setup(argv=None):
+    global a, mh, MN, ra, dec
+    ap = argparse.ArgumentParser(); ap.add_argument("stage_dir"); ap.add_argument("master"); ap.add_argument("--nproc", type=int, default=8)
+    a = ap.parse_args(argv)
+    mh = fits.getheader(a.master)
+    MN = int(mh["NAXIS1"]); mw = WCS(mh).celestial
+    yy, xx = np.mgrid[0:MN, 0:MN]
+    ra, dec = mw.all_pix2world(xx.ravel(), yy.ravel(), 0)
 
 
 def regrid(path):
@@ -42,7 +50,8 @@ def regrid(path):
     return path, "regridded"
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    _setup(argv)
     files = sorted(glob.glob(os.path.join(a.stage_dir, "*-image.fits")))
     from multiprocessing import Pool
     n = {"already": 0, "regridded": 0}
@@ -50,3 +59,7 @@ if __name__ == "__main__":
         for _, st in p.imap_unordered(regrid, files, chunksize=4):
             n[st] += 1
     print("REGRID-DONE %s: %d regridded, %d already on the Master grid" % (a.stage_dir, n["regridded"], n["already"]), flush=True)
+
+
+if __name__ == "__main__":
+    main()
