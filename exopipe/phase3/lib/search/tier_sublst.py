@@ -938,10 +938,25 @@ def detect(run, u, plan, attempt):
         src = _run_root(plan['publish'], plan['label'])
         dst = _run_root(attempt, plan['label'])
         os.makedirs(dst, exist_ok=True)
-        for name in ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals'):
+        # 2026-11-11 (found by timing this mode): the size-rule record and the search-table record belong to the seed. Without
+        # size_rule.json the engine reads the seeded ledger as searched under production's rule and REFUSES every per-hour
+        # search of a cell searched under the envelope (size_rule.write_run_record: one rule per run); without
+        # search_table_record.csv the publish would replace the cell's cumulative record with this night's rows only
+        from exopipe.phase3.lib.search import size_rule as _SZ
+        for name in ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals',
+                     _SZ.RUN_RECORD, 'search_table_record.csv'):
             if os.path.exists(os.path.join(src, name)):
                 copy_tree(os.path.join(src, name), os.path.join(dst, name))
-        u.note(f'per-hour mode: attempt seeded from {src} (catalogue, ledgers, refusal records, sigma-stack maps)')
+        # SPEED-UP 2026-11-11: the published parent catalogue of the cell (PyBDSF on the Robust -0.75 Master, ~1 min per job)
+        # is put where the engine looks for it. The engine itself decides: it reuses the catalogue only when its .gen.json
+        # carries the md5 of the Master being searched, and rebuilds it otherwise (deep_search.py, CAT1/CAT2)
+        cat_rel = os.path.join('flow', f'{plan["cell"]}_10min', 'catdir')
+        cat_src = os.path.join(plan['publish'], cat_rel)
+        seeded_cat = s.SEED_PARENT_CATALOG and os.path.isdir(cat_src) and not os.path.exists(os.path.join(attempt, cat_rel))
+        if seeded_cat:
+            copy_tree(cat_src, os.path.join(attempt, cat_rel))
+        u.note(f'per-hour mode: attempt seeded from {src} (catalogue, ledgers, refusal records, sigma-stack maps'
+               + (f'; parent catalogue from {cat_src}' if seeded_cat else '') + ')')
     log = os.path.join(attempt, f'{plan["cell"]}.log')
     result = os.path.join(attempt, '.engine_result.json')
     a = dict(lst=plan['lst'], band=plan['band'], cell=plan['cell'], label=plan['label'], stokes=plan['stokes'],

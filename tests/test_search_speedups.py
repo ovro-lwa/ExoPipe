@@ -18,7 +18,12 @@ packages and site file to import):
      call returns, and what the call printed appears at the place of the call, in the serial order; a result is used ONLY
      when it was computed from the very arguments the loop passes - different arguments, an error in the worker, or a call
      that changed its arguments make the loop call itself (so an error is raised where it was); with one process there is
-     no pool at all.
+     no pool at all;
+  5. the per-hour seed of the 10-minute search (lib/search/tier_sublst.py detect()): the new attempt receives the published
+     attempt's size-rule record (without it the engine refuses every per-hour search of a cell searched under the envelope
+     rule - found 2026-11-11 by timing the mode) and its search-table record (the publish would otherwise replace the cell's
+     cumulative record with one night's rows); the parent catalogue is seeded only under search_sublst.SEED_PARENT_CATALOG,
+     and the engine still validates it against the Master (the .gen.json digest test is in the engine's source).
 Data-free (numpy only). Run: python tests/test_search_speedups.py   (or under pytest)
 """
 import ast
@@ -222,8 +227,30 @@ def test_look_ahead_identification_equals_the_serial_loop():
             assert err_p == [('I', '2025-05-08T02', 'extraction failed for 2025-05-08T02')], 'the error was not raised by the loop\'s own call'
 
 
+def test_the_per_hour_seed():
+    step = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'tier_sublst.py')
+    with open(step) as f:
+        src = f.read()
+    tree = ast.parse(src)
+    det = ast.get_source_segment(src, [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'detect'][0])
+    seeds = [n for n in ast.walk(ast.parse(det)) if isinstance(n, ast.For) and isinstance(n.iter, ast.Tuple)
+             and any(isinstance(e, ast.Constant) and e.value == 'v_deep_ledger.csv' for e in n.iter.elts)]
+    assert len(seeds) == 1, 'the per-hour seed loop of detect() was not found'
+    names = [ast.unparse(e) if hasattr(ast, 'unparse') else (e.value if isinstance(e, ast.Constant) else '_SZ.RUN_RECORD') for e in seeds[0].iter.elts]
+    for want in ("'master_catalog.csv'", "'v_deep_ledger.csv'", "'v_deep_images.csv'", "'sigstack'", "'refusals'", "'search_table_record.csv'"):
+        assert want in names or want.strip("'") in names, f'{want} is not seeded: {names}'
+    assert any('RUN_RECORD' in str(n) for n in names), f'the size-rule record is not seeded: {names}'
+    with open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'size_rule.py')) as f:
+        assert "RUN_RECORD = 'size_rule.json'" in f.read()
+    assert 's.SEED_PARENT_CATALOG and os.path.isdir(cat_src)' in det, 'the parent catalogue seed is no longer behind its switch'
+    esrc, _ = _tree()
+    assert "if _old != _cur_md5:" in esrc and "parent catalog is STALE" in esrc, \
+        'the engine no longer tests a parent catalogue left in its work directory against the Master it searches'
+
+
 TESTS = [test_x2_copies_are_made_only_for_the_refinement, test_only_the_refinement_reads_the_x2_copies,
-         test_threaded_reads_keep_the_serial_order, test_look_ahead_identification_equals_the_serial_loop]
+         test_threaded_reads_keep_the_serial_order, test_look_ahead_identification_equals_the_serial_loop,
+         test_the_per_hour_seed]
 
 
 def main():

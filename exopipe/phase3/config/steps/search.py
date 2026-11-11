@@ -460,6 +460,8 @@ class search_sublst(_Section):
     SEARCH_THREADS = 8                      # threads of the engine's per-frame reads (the first read of every window, the
                                             # search-tier gate's stage-1 rms); DEEP_SEARCH_THREADS. Speed only: results are
                                             # applied in the serial order (STAGE_MAP_20261111.md); 1 = production's serial loops
+    SEED_PARENT_CATALOG = True              # per-hour mode: copy the published attempt's parent catalogue (catdir) into the new
+                                            # attempt; the engine reuses it only for the same Master (its md5 in .gen.json)
     IDENT_PROCS = 6                         # processes computing the per-window source extraction ahead of the engine's
                                             # detection loop; DEEP_IDENT_PROCS. Speed only: a result is used only when it was
                                             # computed from the very arguments the loop passes; 1 = no look-ahead
