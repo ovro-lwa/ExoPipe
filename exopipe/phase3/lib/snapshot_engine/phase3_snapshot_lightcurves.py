@@ -37,6 +37,10 @@ from scipy.ndimage import map_coordinates
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import phase3_snapshot_search as SS
 from phase3_snapshot_search import discover_frames, pb_value, ts_to_epoch_seconds
+# PORT (refactor, 2026-11-11): the two modules below are NOT ported (lib/snapshot_engine/__init__.py): they are imported in place
+# from the legacy clv15 root, put LAST on sys.path so every ported module is found first.  phase3_snapshot_search is already
+# loaded from this directory, so the two legacy modules use the ported search module, not clv15's.
+sys.path.append(os.environ.get("P3_SNAP_LEGACY_ROOT", "/lustre/gh/main/clv15"))
 import phase3_snapshot_refastro as R
 import phase3_snapshot_chain as C
 
@@ -44,6 +48,38 @@ STAMP = 41
 NBINS = 6
 REF_SNR = 20.0
 CODE = os.path.dirname(os.path.abspath(__file__))
+# PORT (refactor, 2026-11-11): production's --samples-dir default is the script's own directory (clv15/, where the target lists
+# live).  This copy lives in the refactor without the lists beside it, so the default is production's directory itself.
+SAMPLES_DIR_DEFAULT = os.environ.get("P3_SNAP_SAMPLES_DIR", "/lustre/gh/main/clv15")
+# Frames sampled at a time (speed only; identical tables for every value - SPEED-UP 4 in extract).  1 = production's serial loop.
+LC_THREADS = max(1, int(os.environ.get("P3_SNAP_LC_THREADS", "1")))
+
+
+def _nanmedian_rows(a):
+    """np.nanmedian(a, axis=1) of a 2-D float array, value for value and dtype for dtype (SPEED-UP 4, refactor 2026-11-11).
+
+    What numpy does for a row length >= 600 (numpy 1.19.2 lib/nanfunctions._nanmedian): np.apply_along_axis calls
+    _nanmedian1d on every row - drop the NaNs, np.median of the rest, python-float nan for an all-NaN row - and the result array
+    takes the dtype of the FIRST row's result (a's dtype, or float64 when the first row is all NaN).  That is ~10,000 Python
+    calls per frame here.  The same values, without the per-row calls:
+      - rows without a NaN: np.median(rows, axis=1) is the per-row np.median (same partition order statistics, the same
+        float mean of the two middle values);
+      - rows with a NaN: numpy's own np.nanmedian on those rows only (the production path, row by row);
+      - the result dtype: numpy's own, asked of numpy for the first row.
+    Shorter rows (numpy's _nanmedian_small path) are left to np.nanmedian itself."""
+    if a.ndim != 2 or a.shape[1] < 600 or a.shape[0] == 0:
+        return np.nanmedian(a, axis=1)
+    nanrow = np.isnan(a).any(axis=1)
+    # the result dtype is numpy's own for the first row (whatever this numpy's rule is: 1.19.2 gives float64 for an all-NaN row)
+    out = np.empty(a.shape[0], dtype=np.nanmedian(a[:1], axis=1).dtype)
+    good = ~nanrow
+    if good.all():
+        out[:] = np.median(a, axis=1)
+    else:
+        if good.any():
+            out[good] = np.median(a[good], axis=1)
+        out[nanrow] = np.nanmedian(a[nanrow], axis=1)
+    return out
 
 
 def git_hash():
@@ -158,7 +194,14 @@ def extract(cell, sb, stage, proto_root, master_dir, run_dir, samples_dir, out_d
         flux = np.full((n, nf), np.nan, np.float32); rms = np.full((n, nf), np.nan, np.float32)
         fr_ts, fr_adm, fr_flow, fr_exact, fr_sec = [], [], [], [], []
         t1 = time.time()
-        for j, (ts, path) in enumerate(fl):
+
+        # SPEED-UP 4 (refactor, 2026-11-11; identical tables; plan/STAGE_MAP_20261111.md hot spot 1): a frame fills its own column
+        # of flux and rms and nothing else, so the frames are sampled LC_THREADS at a time and the per-frame lists are filled in
+        # frame order afterwards; the two stamp medians go through _nanmedian_rows (numpy's values without its per-row Python
+        # calls).  The other statements are production's loop body unchanged (clv15 be63765 :162-176).  A refusal raised for a
+        # frame surfaces as the first one in frame order, as in the serial loop.
+        def _frame(j):
+            ts, path = fl[j]
             d, h = SS.read_frame(path)
             if abs(float(h["CRVAL1"]) - float(hdr0["CRVAL1"])) > 1e-3 or abs(float(h["CRVAL2"]) - float(hdr0["CRVAL2"])) > 1e-3:
                 raise RuntimeError("%s %s %s: frame %s WCS differs from the first frame - refusing" % (cell, sb, st, ts))
@@ -172,11 +215,24 @@ def extract(cell, sb, stage, proto_root, master_dir, run_dir, samples_dir, out_d
             rx = px + off[iy, ix, 0]; ry = py + off[iy, ix, 1]        # raw pixel that maps onto the flowed position
             flux[:, j] = map_coordinates(d, [ry, rx], order=1, mode="constant", cval=np.nan)
             st_ = d[yy, xx]
-            med = np.nanmedian(st_, axis=1)
-            rms[:, j] = 1.4826 * np.nanmedian(np.abs(st_ - med[:, None]), axis=1)
+            med = _nanmedian_rows(st_)
+            rms[:, j] = 1.4826 * _nanmedian_rows(np.abs(st_ - med[:, None]))
+            return fts, exact
+
+        if LC_THREADS > 1 and nf > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=LC_THREADS) as ex:
+                per_frame = list(ex.map(_frame, range(nf)))
+        else:
+            per_frame = []
+            for j in range(nf):
+                per_frame.append(_frame(j))
+                if j % 50 == 0:
+                    log("%s %s %s: frame %d/%d (%.0fs)" % (cell, sb, st, j, nf, time.time() - t1))
+        for j, (ts, path) in enumerate(fl):
+            fts, exact = per_frame[j]
             fr_ts.append(ts); fr_adm.append(adm.get(ts, True)); fr_flow.append(fts); fr_exact.append(exact); fr_sec.append(secs[j])
-            if j % 50 == 0:
-                log("%s %s %s: frame %d/%d (%.0fs)" % (cell, sb, st, j, nf, time.time() - t1))
+        log("%s %s %s: %d frames sampled (%.0fs, %d at a time)" % (cell, sb, st, nf, time.time() - t1, LC_THREADS))
         # model-beam value per row and bin
         pb = np.full((n, NBINS), np.nan, np.float32)
         for b in range(NBINS):
@@ -202,7 +258,7 @@ def extract(cell, sb, stage, proto_root, master_dir, run_dir, samples_dir, out_d
                 ip = os.path.join(out_dir, "%s_%s_I_lightcurves.fits" % (cell, sb))
                 t_w = time.time()
                 while not os.path.exists(ip) and time.time() - t_w < float(os.environ.get("P3_LC_WAIT_I_S", "3600")):
-                    time.sleep(15)
+                    time.sleep(1)        # production polls every 15 s; with a 40-s extraction that wait was a third of the pass
                 if not os.path.exists(ip):
                     raise RuntimeError("%s %s V: no Stokes I light-curve table %s to take the flux scale from - refusing "
                                        "(Stokes V carries the Stokes I scale)" % (cell, sb, ip))
@@ -279,7 +335,7 @@ def main():
     ap.add_argument("--proto-root", required=True)
     ap.add_argument("--master-catalogs", required=True)
     ap.add_argument("--run-dir", default=None, help="closed chain run whose served sources become rows")
-    ap.add_argument("--samples-dir", default=CODE)
+    ap.add_argument("--samples-dir", default=SAMPLES_DIR_DEFAULT)
     ap.add_argument("--out", required=True)
     ap.add_argument("--stokes", default="I,V")
     ap.add_argument("--search-frames", action="store_true", help="sample exactly the search's own frame list (its noise table); "
