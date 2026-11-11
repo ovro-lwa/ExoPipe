@@ -40,7 +40,8 @@ WHERE IT WRITES: only under --out (D) and --stage-root, neither of which may be,
 D/snapshot_fleet_out/<cell>, D/snapshot_flow/<cell>, D/snapshot_lightcurves/<cell>, D/snapshot_movies/<cell>,
 D/snapshot_cubes/<cell>, D/photometry (cutout cubes, written by the search as it runs - as in the fleet), D/cell_<cell>.json (every task's outcome and times) and
 D/cell_<cell>.log (the fleet's log lines). The record holds, per task, the wall time and the CPU time of its engine
-processes (cpu_s; cpu_s / seconds = the cores it really used, which is what the core charges below should follow). Production roots are not offered: the fleet remains production's driver until the
+processes (cpu_s; cpu_s / seconds = the cores it really used) and their peak memory (maxrss_gb): what the core and memory
+charges below should follow. Production roots are not offered: the fleet remains production's driver until the
 snapshot tier is cut over.
 
 NOT PORTED: the injection battery hook (v10:291-338; a study, not part of the per-hour chain) and the 1-minute pause switch
@@ -161,6 +162,7 @@ class Cell(object):
         self._lock = threading.Lock()
         self._gpu_load = OrderedDict((g, 0) for g in self.gpus)        # flows running per device
         self._cpu = {}                                                 # scheduler thread name -> CPU seconds of its engine processes
+        self._rss = {}                                                 # ... -> peak resident memory of one of them, GB
         self._children = set()                                         # engine processes running now (each its own process group)
         self.active = list(self.subbands)                              # the subbands with staged frames (set in prepare)
         self._own_stage = False                                        # True once THIS run has begun to stage (then it removes it)
@@ -218,6 +220,7 @@ class Cell(object):
         who = threading.current_thread().name
         with self._lock:
             self._cpu[who] = self._cpu.get(who, 0.0) + ru.ru_utime + ru.ru_stime
+            self._rss[who] = max(self._rss.get(who, 0.0), ru.ru_maxrss / 2.0 ** 20)      # GB (Linux reports kB)
         return p.returncode
 
     def stop_children(self, grace=30):
@@ -715,6 +718,7 @@ class Cell(object):
                 d['status'], d['detail'] = 'failed-not-fatal', soft[name]
             if 'task-' + name in self._cpu:
                 d['cpu_s'] = round(self._cpu['task-' + name], 1)
+                d['maxrss_gb'] = round(self._rss.get('task-' + name, 0.0), 1)
             self.record['steps'][name] = d
         failed = [n for n, o in out.items() if o.status == 'failed']
         flows = [o for n, o in out.items() if n.startswith('flow:') and o.ended]

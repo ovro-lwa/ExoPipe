@@ -229,10 +229,16 @@ def _record(c):
 def test_run_always_leaves_a_record_and_never_a_half_shipped_cell():
     tmp = tempfile.mkdtemp(prefix='cell_run_')
     try:
-        # (a) everything done
-        c = _stub_cell(os.path.join(tmp, 'a'), [('flow:18MHz', lambda: None), ('search:18MHz', lambda: None)])
+        # (a) everything done; the record holds the CPU time and the peak memory of a task's engine process
+        def small_engine():
+            return c.call([sys.executable, '-c', 'x = bytearray(80 << 20); print(sum(range(2000000)))'],
+                          os.path.join(c.out, 'engine_small.log'), pin=False)
+        c = _stub_cell(os.path.join(tmp, 'a'), [('flow:18MHz', small_engine), ('search:18MHz', lambda: None)])
         assert c.run() == 0 and _record(c)['status'] == 'done' and not os.path.exists(c.stage)
         assert os.path.isdir(os.path.join(c.flowtree, c.cell))
+        st = _record(c)['steps']
+        assert st['flow:18MHz']['cpu_s'] > 0 and st['flow:18MHz']['maxrss_gb'] >= 0.05, st['flow:18MHz']
+        assert 'cpu_s' not in st['search:18MHz'], 'a task that ran no engine process has an engine account'
         # (b) a fatal task fails: nothing stays in a ship tree under its own name
         def bad():
             raise RuntimeError('FLOW-INCOMPLETE stand-in')
