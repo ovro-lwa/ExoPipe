@@ -641,6 +641,18 @@ def _mid_hour_elev(lst, ra, dec):
     return np.degrees(np.arcsin(np.sin(dr) * np.sin(lat) + np.cos(dr) * np.cos(lat) * np.cos(hr)))
 
 
+def _x2_copy(arr, hdr0, path):
+    """The x2 FFT-upsampled copy of a Master or an epoch, written for the x2 flow refinement (_batch_flows), its ONLY reader.
+    With the refinement off (P3_REFINE_OFF=1: the 10-minute tier) nothing reads it, so it is not made. SPEED-UP 2026-11-11
+    (identical products; exopipe_ops/refactor_20261012/plan/STAGE_MAP_20261111.md): it cost 3.8 s per window at 41 MHz for
+    EVERY window of the cell in every job, the per-hour job included; the copies went to the attempt's work directory and were
+    never published. Returns True when it wrote the file."""
+    if _REFINE_OFF or os.path.exists(path):
+        return False
+    write_up_fits(fft_upsample2(arr), hdr0, path)
+    return True
+
+
 def _residual(epoch, master, flow, hdr, cd):
     """×2-upflow refine epoch -> direct subtract master -> striation clean."""
     up = epoch if _REFINE_OFF else fft_decimate2(apply_flow_field(fft_upsample2(epoch), flow))
@@ -1289,8 +1301,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         print(f'  {lst} {scope}: flow cache generation verified ({_gen[:8]})')
     else:
         print(f'  {lst} {scope}: flow cache generation UNVERIFIED (legacy cache, no sidecar) - sidecar written after this search')
-    if not os.path.exists(mup):
-        write_up_fits(fft_upsample2(master_I), hdr0, mup)
+    _x2_copy(master_I, hdr0, mup)
     items, epoch_I = [], {}
     _binm = {}
     def _recon_master(d):
@@ -1313,8 +1324,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         else:
             epoch_I[d] = ei
         ep_up = f'{cell_work}/ep_{d}_up2.fits'
-        if not os.path.exists(ep_up):
-            write_up_fits(fft_upsample2(ei), hdr0, ep_up)
+        _x2_copy(ei, hdr0, ep_up)
         items.append((d, ep_up))
     if _REFINE_OFF:
         print(f'  {lst} {scope}: P3_REFINE_OFF=1 - per-epoch x2 flow refinement SKIPPED (battery variant; night flow only)')
