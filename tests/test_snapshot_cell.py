@@ -267,8 +267,8 @@ def test_run_always_leaves_a_record_and_never_a_half_shipped_cell():
         if threading.current_thread() is threading.main_thread():
             pids = []
 
-            def engine():
-                return c.call(['sleep', '120'], os.path.join(c.out, 'engine.log'), pin=False)
+            def engine():                                         # as t_search: the engine's exit code is not the task's verdict
+                c.call(['sleep', '120'], os.path.join(c.out, 'engine.log'), pin=False)
 
             def killer():
                 t_end = time.time() + 30
@@ -283,6 +283,8 @@ def test_run_always_leaves_a_record_and_never_a_half_shipped_cell():
             assert _record(c)['status'] == 'interrupted' and not os.path.exists(c.stage)
             st = _record(c)['steps']
             assert st.get('fields:18MHz', {}).get('status') == 'done', f'the row of a task that had finished is not in the record: {st}'
+            assert st.get('flow:18MHz', {'status': 'interrupted'})['status'] == 'interrupted', \
+                f'a task whose engine was stopped with the run is recorded as {st["flow:18MHz"]["status"]}: {st}'
             assert pids, 'the stand-in engine never started'
             t_end = time.time() + 10
             while time.time() < t_end and any(os.path.exists('/proc/%d' % p) for p in pids):
@@ -391,14 +393,21 @@ def test_bulk_products_on_their_own_roots():
             assert 'REFUSED' in str(ex) and opt in str(ex)
         else:
             raise AssertionError(f'{opt} inside a production tree was accepted')
+    assert C.CUTOUTS_GB > 0 and C.CUBES_GB > 0
+    # the budget check before any work follows the charges, not the thread counts
+    import inspect
+    assert 'most = max(charge(k, self.threads) for k in CORE_SHARE)' in inspect.getsource(C.Cell.prepare)
 
 
 def test_cutouts_are_trimmed_per_band():
     tmp = tempfile.mkdtemp(prefix='cell_trimband_')
     try:
-        c = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', os.path.join(tmp, 'out')]))
-        for rel in ('10pc/GJ1/18MHz/a_I.fits', '10pc/GJ1/18MHz/a_V.fits', '10pc/GJ1/23MHz/a_I.fits', 'HWJ/x/Red/a_I.fits',
-                    'HWJ/x/18MHz/notes.txt', 'HWJ/x/118MHz/a_I.fits'):
+        # the engine's layout: <root>/<sample>/<band>/<source>/<file>; the --out path itself holds a band token and a
+        # group name, which must not make other bands match
+        out = os.path.join(tmp, '18MHz', 'Red', 'out')
+        c = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', out]))
+        for rel in ('10pc/18MHz/GJ1/GJ1_04h_T_I.fits', '10pc/18MHz/GJ1/GJ1_04h_T_V.fits', '10pc/23MHz/GJ1/GJ1_04h_T_I.fits',
+                    'HWJ/Red/x/x_04h_T_I.fits', 'HWJ/18MHz/x/notes.txt', 'HWJ/118MHz/x/x_04h_T_I.fits', 'HWJ/x/18MHz/odd.fits'):
             p = os.path.join(c.cutouts, rel)
             os.makedirs(os.path.dirname(p), exist_ok=True)
             open(p, 'w').close()
@@ -407,10 +416,18 @@ def test_cutouts_are_trimmed_per_band():
         C.release_preallocation = lambda p: seen.append(os.path.relpath(p, c.cutouts)) or 7
         try:
             freed = c.trim_band('18MHz')
-            assert sorted(seen) == ['10pc/GJ1/18MHz/a_I.fits', '10pc/GJ1/18MHz/a_V.fits'] and freed == 14, (seen, freed)
+            assert sorted(seen) == ['10pc/18MHz/GJ1/GJ1_04h_T_I.fits', '10pc/18MHz/GJ1/GJ1_04h_T_V.fits'] and freed == 14, (seen, freed)
             del seen[:]
             c.trim_band('Red')
-            assert seen == ['HWJ/x/Red/a_I.fits'], seen
+            assert seen == ['HWJ/Red/x/x_04h_T_I.fits'], seen
+            # an external cutout root may be shared between cells: nothing there is ever touched
+            ext = os.path.join(tmp, 'shared')
+            c2 = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', out, '--cutout-root', ext]))
+            p = os.path.join(ext, '10pc', '18MHz', 'GJ1', 'GJ1_05h_T_I.fits')
+            os.makedirs(os.path.dirname(p))
+            open(p, 'w').close()
+            del seen[:]
+            assert c2.trim_band('18MHz') == 0 and seen == [], f'a file of a shared cutout root was touched: {seen}'
         finally:
             C.release_preallocation = real
     finally:

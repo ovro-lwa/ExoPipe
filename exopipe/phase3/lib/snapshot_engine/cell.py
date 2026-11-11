@@ -83,10 +83,12 @@ MEM_CUBE = {'low': 15, 'mid': 40, 'high': 70}
 MEM_WIDEBAND = 28
 # cores a task is CHARGED, as a share of its thread count: what the engines were measured to use on 04h 2024-12-19 (11-11,
 # cpu_s / seconds of the cell records): a search with 8 threads 3.9-5.3 cores; the frame movies with 8 threads 3.0; light
-# curves 2.7-6.9 with 8 threads; the wideband search with 12 threads about 2 while it reads and its 12 only for the minutes
-# it accumulates. Charged at the thread count, the two wideband searches and the frame movies took the whole budget of the
+# curves 2.7-6.9 with 8 threads (their default is 4, charged in full); the wideband search with 12 threads about 2 while
+# it reads and its 12 only for the minutes it accumulates. A charge is an AVERAGE: for those minutes the threads of the
+# running tasks can exceed the core list - products do not depend on it. Charged at the thread count, the two wideband searches and the frame movies took the whole budget of the
 # first full cell one after another (20 minutes) and left the cube writers two cores.
 CORE_SHARE = {'search': 0.65, 'wideband': 0.5, 'movies': 0.5, 'curves': 1.0}
+CUTOUTS_GB, CUBES_GB = 83, 39          # what one full cell writes: photometry cutout cubes, flowed-frame cubes (04h 2024-12-19)
 
 
 def charge(kind, threads):
@@ -281,7 +283,8 @@ class Cell(object):
         # A RUN STARTS CLEAN: products of an earlier run of this cell would be mixed in silently (every ship copy is cp -n)
         old = [d for d in (self.ship, self.lcship, self.movies, self.cubes, os.path.join(self.flowtree, self.cell)) if os.path.exists(d)]
         if old:
-            raise SystemExit('REFUSED %s products of an earlier run under this --out: %s - give a new --out' % (self.cell, ' '.join(old)))
+            raise SystemExit('REFUSED %s products of an earlier run of this cell: %s - give a new --out%s, or remove them'
+                             % (self.cell, ' '.join(old), ' (and a new --cubes-root: one of them is there)' if self.a.cubes_root and self.cubes in old else ''))
         for d in (self.lcout, self.cubework, self.movies_work):        # this driver's own work copies (v10:367, :396)
             shutil.rmtree(d, ignore_errors=True)
         if a.cores:
@@ -295,7 +298,7 @@ class Cell(object):
         self.mem_budget_gb = a.mem_budget_gb or int(0.8 * _mem_available_gb())
         need = max(MEM_CUBE[band_class(sb)] if a.cubes else MEM_SEARCH[band_class(sb)] for sb in self.subbands)
         need = max(need, MEM_WIDEBAND if self.wideband else 0)
-        most = max(self.threads.values())
+        most = max(charge(k, self.threads) for k in CORE_SHARE)
         self.log('CLAIM %s (cell.py: subbands %d, gpus [%s] x %d flows, cores %s; budgets: %d cores, %d GB)'
                  % (self.cell, len(self.subbands), ' '.join(self.gpus), a.flow_per_gpu, self.cores, self.cores_budget, self.mem_budget_gb))
         if self.mem_budget_gb < need or self.cores_budget < most:
@@ -314,6 +317,13 @@ class Cell(object):
         if others:
             self.log('GPU-SHARED %s %d other process(es) on the GPUs at the start - this run\'s flow times are not a benchmark' % (self.cell, others))
         # DISK GUARD (v10:93-99)
+        for what, root, need in (('--cutout-root', a.cutout_root, CUTOUTS_GB), ('--cubes-root', a.cubes_root, CUBES_GB)):
+            if root:                                       # the bulk products of one cell must fit where they are sent
+                os.makedirs(root, exist_ok=True)
+                have = shutil.disk_usage(root).free // 2 ** 30
+                if have < 2 * need:
+                    raise SystemExit('DISK-REFUSED %s only %d GB free under %s %s (a cell writes ~%d GB there; twice that is asked)'
+                                     % (self.cell, have, what, root, need))
         free = shutil.disk_usage(os.path.dirname(self.stage)).free // 2 ** 30
         if free < a.min_free_gb:
             raise SystemExit('DISK-REFUSED %s only %d GB free under %s (need %d)' % (self.cell, free, self.stage, a.min_free_gb))
@@ -446,18 +456,23 @@ class Cell(object):
         # judged by the completeness guard from the records the engine wrote, as in the fleet (v10:207-241)
         self.call([self.a.py36, '-u', self.eng('phase3_snapshot_search.py'), '--lst', self.lst, '--date', self.date, '--subband', sb,
                    '--stokes', 'VI', '--mode', 'median', '--thresh', '5.0', '--out', self.out,
-                   '--stage-root', os.path.join(self.stage, sb), '--nthreads', str(min(8, self.a.search_threads))],   # the fleet's 8, never above the charge
+                   '--stage-root', os.path.join(self.stage, sb), '--nthreads', str(min(8, self.a.search_threads))],   # the fleet's 8, never above the thread count
                   os.path.join(self.out, 'search_%s.log' % sb),
                   env=self.env(P3_SNAP_FLOW='1'))
         self.trim_band(sb)
 
     def trim_band(self, band):
-        """Release the preallocation of the cutout cubes of one band (a path component .../<band>/...), after the only task
-        that writes them has ended: 49 of 118 GB in the first full cell."""
+        """Release the preallocation of one band's cutout cubes after the only task that writes them has ended (49 of
+        118 GB in the first full cell). ONLY in this run's own cutout tree (<out>/photometry), which no other cell writes:
+        an external --cutout-root may be shared between cells and is another filesystem's business - nothing is touched
+        there. The engine's layout is <root>/<sample>/<band>/<source>/<file> (phase3_snapshot_cutouts.py)."""
+        if self.a.cutout_root:
+            return 0
         freed = 0
-        for dp, _dn, fn in os.walk(self.cutouts):
-            if ('/%s/' % band) in dp + '/':
-                freed += sum(release_preallocation(os.path.join(dp, f)) for f in fn if f.endswith('.fits'))
+        for p in glob.glob(os.path.join(self.cutouts, '*', band, '*', '*.fits')):
+            freed += release_preallocation(p)
+        if freed > 2 ** 30:
+            self.log('TRIMMED %s %s cutouts: %.0f GB of preallocation released' % (self.cell, band, freed / 2 ** 30))
         return freed
 
     def t_curves(self, sb, st):
@@ -628,6 +643,10 @@ class Cell(object):
                 lines.append('%s md5=%s %s | %s' % (n, m2, 'copy-OK' if m1 == m2 else 'COPY-MISMATCH', verify[n]))
             if nbad:
                 self.log('CUBE-SHIP-FAILED %s %d cubes differ after the copy' % (self.cell, nbad))
+                try:                                                   # never a partial cube directory under its own name
+                    os.rename(self.cubes, '%s.failed_%s' % (self.cubes, time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())))
+                except OSError as e:
+                    self.log('SET-ASIDE-FAILED %s %s: %s' % (self.cell, self.cubes, e))
                 return 'cubes-ship-failed'
             lines.append('COMPLETE %s cubes=%d subbands=%d node=%s %s writer=cell.py' % (self.cell, len(want), len(csbs), os.uname()[1],
                                                                                         time.strftime('%a %b %e %H:%M:%S UTC %Y', time.gmtime())))
@@ -699,6 +718,7 @@ class Cell(object):
             self.record.update(status='refused', refusal=str(e))
             rc = 2
         except (_Interrupted, KeyboardInterrupt) as e:
+            self._stopped_at = time.time()
             self.stop_children()
             self._record_partial(t0)
             self.log('CELL-INTERRUPTED %s (%s) - engine processes stopped, nothing shipped; work kept in %s' % (self.cell, e or 'keyboard', self.out))
@@ -706,6 +726,7 @@ class Cell(object):
             self._set_aside()
             rc = 130
         except Exception as e:                                         # a defect or a full disk: never a silent traceback only
+            self._stopped_at = time.time()
             self.stop_children()
             self._record_partial(t0)
             self.log('CELL-FAILED %s %s: %s - work kept in %s' % (self.cell, type(e).__name__, str(e)[:300], self.out))
@@ -744,6 +765,11 @@ class Cell(object):
                 d[k] = None if d[k] is None else round(d[k] - t0, 1)   # seconds since the cell's start
             if name in soft:
                 d['status'], d['detail'] = 'failed-not-fatal', soft[name]
+            stopped = getattr(self, '_stopped_at', None)
+            if stopped is not None and o.ended is not None and o.ended >= stopped:
+                # its engine process was stopped with the run (a search or a wideband search returns without an error of
+                # its own - their verdict is the completeness guard's): never 'done'
+                d['status'], d['detail'] = 'interrupted', 'stopped with the run'
             if 'task-' + name in self._cpu:
                 d['cpu_s'] = round(self._cpu['task-' + name], 1)
                 d['maxrss_gb'] = round(self._rss.get('task-' + name, 0.0), 1)
