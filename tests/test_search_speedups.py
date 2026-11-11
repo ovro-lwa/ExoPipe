@@ -282,8 +282,12 @@ def test_look_ahead_cleans_up_when_the_loop_is_left_by_an_exception():
     src, tree = _tree()
     run = ast.get_source_segment(src, _function(tree, 'run_deep_cell'))
     args = ast.get_source_segment(src, _function(tree, '_ident_args'))
-    assert 'ot, hdr, _dur_fb = _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d)' in run and '_det_epoch_header(' in args, \
+    assert 'hdr, _dur_fb = _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d, ot)' in run and '_det_epoch_header(' in args, \
         'the loop and the look-ahead worker no longer build the detection header with one function'
+    # lib/frames/deep_seam (the proposed frames_only keyword) wraps the search-only block before the loop in a condition and
+    # anchors on the loop's first two lines: the look-ahead object is made BEFORE that block, and the anchor is intact
+    assert run.index('_ahead_id = _IdentAhead(') < run.index('# ── R-ROUND2-RATIFIED shared per-cell inputs') < run.index('_ahead_id.start(')
+    assert run.count('    for d in dates:\n        ot = _epoch_time(ebase, d, scope)\n') == 1
     hb = _function(tree, '_det_epoch_header')
     called = {(n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, 'id', '')) for n in ast.walk(hb) if isinstance(n, ast.Call)}
     assert not called & {'site', 'print', 'write'}, f'the shared header builder records or prints: {called}'

@@ -674,11 +674,10 @@ IDENT_WAIT_S = float(os.environ.get('DEEP_IDENT_WAIT_S', '1200'))    # the loop 
 #                                                                      it calls itself and the look-ahead is off for the rest
 
 
-def _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d):
-    """(ot, hdr, what the DURATION fell back on or None) for window d: the detection header the loop passes to the
-    identification. No message and no record here - the loop names the fallback itself (WAVE2 B-30) - so the look-ahead
+def _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d, ot):
+    """(hdr, what the DURATION fell back on or None) for window d observed at ot: the detection header the loop passes to
+    the identification. No message and no record here - the loop names the fallback itself (WAVE2 B-30) - so the look-ahead
     worker builds its header from this very function."""
-    ot = _epoch_time(ebase, d, scope)
     hdr = _det_header(hdr0, scope, em, cd, ot)
     # 2026-09-01 fix: hdr0 is the MASTER header, whose DURATION is the
     # month-scale coverage span. search_i_transients.get_midpoint_time
@@ -696,7 +695,7 @@ def _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d):
     except Exception:
         _dur_fb = _dur_fb or 'header unreadable or DURATION not a number'
         hdr['DURATION'] = 600.0 if cadence == '10min' else 3600.0
-    return ot, hdr, _dur_fb
+    return hdr, _dur_fb
 
 
 def _ident_digest(kind, resid, hdr, sstack, zenith_time, master_I, beam, xrefuse):
@@ -718,7 +717,7 @@ def _ident_args(ctx, kind, d):
     """The arguments the detection loop passes for window d, from the loop's own header builder; the digest decides whether
     the look-ahead result may be used."""
     ebase, scope, cadence = ctx['ebase'], ctx['scope'], ctx['cadence']
-    _ot, hdr, _fb = _det_epoch_header(ctx['hdr0'], ebase, scope, ctx['em'], ctx['cd'], cadence, d)
+    hdr, _fb = _det_epoch_header(ctx['hdr0'], ebase, scope, ctx['em'], ctx['cd'], cadence, d, _epoch_time(ebase, d, scope))
     if kind == 'I':
         return np.nan_to_num(ctx['resid_I'][d], nan=0.0), hdr, ctx['ssA_I'].get(d, ctx['sstack_I']), None   # WAVE2 D-ADMIT: its own stack
     zt = sv2.frame_mid_time(fits.getheader(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits')) if cadence == '10min' else None
@@ -2142,6 +2141,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _te_v = {}    # WAVE2 B-30: each V epoch's ephemeris time (its vetoes; its candidates' body labels)
     _gimgI = {}   # I image rows by date, completed after the post-loop curve stage
     _fhV, _fhI = {}, {}   # conformant frame headers per date (cutouts inherit them)
+    _ahead_id = _IdentAhead({}, IDENT_PROCS, f'{lst} {scope}')    # SPEED-UP 2026-11-11: made here, started before the detection loop
+    #                                                               (it must exist when the search-only block below is skipped:
+    #                                                               lib/frames/deep_seam wraps that block in `if not frames_only`)
     # ── R-ROUND2-RATIFIED shared per-cell inputs ────────────────────────
     # (1) BDSF parent catalog on the CURRENT I master: parents for the
     # ratified I 2-D curve AND the v110 stage's CATDIR (gate contract
@@ -2348,9 +2350,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         print(f'  {lst} {scope} {d}: SOURCE-EXTRACTION GATE - Stokes {st} image REFUSED, not searched '
               f'(source extraction failed: {err})', flush=True)
     # SPEED-UP 2026-11-11: the identifications of the windows this loop will search, computed ahead (see _IdentAhead)
-    _ahead_id = _IdentAhead(dict(ebase=ebase, scope=scope, cadence=cadence, hdr0=hdr0, em=em, cd=cd, master_I=master_I, beam=beam,
-                                 resid_I=resid_I, resid_V=resid_V, sstack_I=sstack_I, xrefuse=_xrefuse,
-                                 ssA_I=_ssA_I), IDENT_PROCS, f'{lst} {scope}')   # WAVE2 D-ADMIT: an admitted night's own stack, as the loop passes it
+    _ahead_id.ctx = dict(ebase=ebase, scope=scope, cadence=cadence, hdr0=hdr0, em=em, cd=cd, master_I=master_I, beam=beam,
+                         resid_I=resid_I, resid_V=resid_V, sstack_I=sstack_I, xrefuse=_xrefuse,
+                         ssA_I=_ssA_I)                             # WAVE2 D-ADMIT: an admitted night's own stack, as the loop passes it
     _ahead_jobs = []
     for d in dates:
         _doI = 'I' in stokes and d in resid_I
@@ -2360,7 +2362,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _ahead_jobs.append(('V', d))                                # time comes from the frame header the loop builds (no look-ahead)
     _ahead_id.start(_ahead_jobs)
     for d in dates:
-        ot, hdr, _dur_fb = _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d)   # the header (2026-09-01: the epoch's own
+        ot = _epoch_time(ebase, d, scope)
+        hdr, _dur_fb = _det_epoch_header(hdr0, ebase, scope, em, cd, cadence, d, ot)   # the header (2026-09-01: the epoch's own
         if _dur_fb:                                                                   # DURATION) and what it fell back on
             from exopipe.phase3.core import fallback      # WAVE2 B-30
             fallback.site('fallbacks.SEARCH_DURATION_FALLBACK', f'{ebase}/subtracted/{d}_I_sub_{scope}.fits: {_dur_fb} - '
