@@ -76,10 +76,11 @@ OPS = '/lustre/gh/main/exopipe_ops'
 PROTECTED = (OPS, '/lustre/gh/main/clv15', '/lustre/gh/main/exopipe', '/lustre/gh/main/phase3', '/lustre/pipeline',
              '/fast/gh/main/phase3', '/fast/pipeline')
 ON_GRID_NAXIS = 1508                                                                # v10:131
-# memory a task holds, GB, by the subband's grid (1508 / 2358 / 3122 px): measured maxima of the engines on 04h 2024-12-19
-# (search 5.4 / 12.8 / 21.0; cube writer ~15 / 40 / 70; wideband search 27 per Stokes)
+# memory a task holds, GB, by the subband's grid (1508 / 2358 / 3122 px): the peak resident memory of the engines on
+# 04h 2024-12-19, from the cell records (maxrss_gb, 2026-11-11), with a little room: search 5.6 / 12.7 / 21.1; cube writer
+# 12.2 / 29.5 / 51.6 (charged 15 / 40 / 70 before it was measured, which let only two or three of the largest run at once)
 MEM_SEARCH = {'low': 6, 'mid': 14, 'high': 23}
-MEM_CUBE = {'low': 15, 'mid': 40, 'high': 70}
+MEM_CUBE = {'low': 14, 'mid': 32, 'high': 55}
 MEM_WIDEBAND = 28
 # cores a task is CHARGED, as a share of its thread count: what the engines were measured to use on 04h 2024-12-19 (11-11,
 # cpu_s / seconds of the cell records): a search with 8 threads 3.9-5.3 cores; the frame movies with 8 threads 3.0; light
