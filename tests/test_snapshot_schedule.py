@@ -7,7 +7,8 @@
      search only after every member's search, the frame movies only after every flow; at most N flows per GPU;
   3. a failure: the dependents are skipped with the cause named; with stop_on_failure nothing new starts; without it the
      independent tasks still run; every task has an outcome (nothing silently missing);
-  4. a task that does not fit does not block a later, smaller one - until it has been passed over max_passes times;
+  4. a task that does not fit does not block a later, smaller one - until it has been passed over max_passes times; a
+     pass-over is a later task STARTED while it waited (waiting through many completions without being passed is not one);
   5. add() refuses a need without a budget, a need larger than the budget, a duplicate name and an unknown prerequisite;
   6. a non-zero or False return value and an exception (SystemExit included) are failures; None and 0 are not;
   7. a task added with hold=True that does not fit HOLDS what it is short of: no later task takes it, and the waiting task
@@ -163,6 +164,32 @@ def test_a_task_that_does_not_fit_does_not_block_a_smaller_one_until_it_starves(
     out = _run(s)
     assert all(o.status == 'done' for o in out.values())
     assert w.start['big'] < w.start['small29'], 'the big task was starved to the very end by the chain of small ones'
+    # passed over exactly max_passes times: it holds from the next one on. One core is always free beside the two-core chain
+    # links below, so every link passes 'big' (which needs all four) - and with max_passes=2 the third link must wait for it
+    w, s = _World(budgets), S.Scheduler(budgets, max_passes=2)
+    s.add('long', w.task('long', {'cores': 1}, 0.3), needs={'cores': 1})
+    s.add('big', w.task('big', {'cores': 4}, 0.01), needs={'cores': 4})
+    prev = 'long_marker'
+    s.add(prev, w.task(prev, {'cores': 1}, 0.0), needs={'cores': 1})
+    for i in range(6):
+        s.add('link%d' % i, w.task('link%d' % i, {'cores': 2}, 0.02), after=[prev], needs={'cores': 2})
+        prev = 'link%d' % i
+    out = _run(s)
+    assert all(o.status == 'done' for o in out.values())
+    started_before_big = [n for n in w.start if n.startswith('link') and w.start[n] < w.start['big']]
+    assert 2 <= len(started_before_big) <= 3, f'{len(started_before_big)} later tasks started past a task allowed 2 pass-overs'
+    # waiting is not being passed over: five earlier tasks end one by one (five looks at 'big', none starts past it); the
+    # small task that becomes ready afterwards is only the FIRST to pass it and must start although max_passes is 3
+    budgets8 = {'cores': 8}
+    w, s = _World(budgets8), S.Scheduler(budgets8, max_passes=3)
+    s.add('long', w.task('long', {'cores': 3}, 0.6), needs={'cores': 3})
+    for i in range(5):
+        s.add('e%d' % i, w.task('e%d' % i, {'cores': 1}, 0.04 * (i + 1)), needs={'cores': 1})
+    s.add('big', w.task('big', {'cores': 6}, 0.01), needs={'cores': 6})
+    s.add('small', w.task('small', {'cores': 1}, 0.01), after=['e4'], needs={'cores': 1})
+    out = _run(s)
+    assert all(o.status == 'done' for o in out.values())
+    assert w.start['small'] < w.end['long'] <= w.start['big'], 'a task that only waited (never passed over) blocked a later one'
 
 
 def test_add_refuses_what_could_never_run():

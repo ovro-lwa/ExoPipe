@@ -20,8 +20,9 @@ Rules (each is tested in tests/test_snapshot_schedule.py):
   that does not fit does not block a later, smaller one from starting (no head-of-line blocking) - with two exceptions:
   a task added with hold=True (the cell's critical path: flow, search, wideband search) HOLDS, while it waits, what is
   free of every budget it is short of, so no later task can take it and the waiting task starts as soon as enough is
-  released; and any task that has been passed over more than `max_passes` times holds in the same way (no starvation of
-  a large task). A hold touches only the budgets the waiting task lacks: a flow waiting for a GPU slot holds no cores;
+  released; and any task that has been PASSED OVER more than `max_passes` times - a later task was started while it
+  waited, counted per start, not per look - holds in the same way (no starvation of a large task). A hold touches only
+  the budgets the waiting task lacks: a flow waiting for a GPU slot holds no cores;
 - a task FAILS when its run() raises or returns a non-zero / False value; a failure is never retried here. Every task that
   depends on a failed or skipped task is SKIPPED (not run), and with stop_on_failure (the default: one failure fails the
   cell) no new task starts after the first failure; tasks already running finish;
@@ -127,6 +128,7 @@ class Scheduler(object):
                     # (nothing pending: this thread must WAIT below for the running tasks - they need the lock to report)
                 else:
                     held = {}                                  # per budget: what an earlier, waiting task holds of the free amount
+                    waiting = []                               # ready tasks found short in this pass, in priority order
                     for t in list(pending):
                         if not all(d in out and out[d].status == 'done' for d in t.after):
                             continue
@@ -141,11 +143,13 @@ class Scheduler(object):
                             threads.append(th)
                             th.start()
                             progressed = True
+                            for w in waiting:                  # each of them has just been passed over
+                                w.passes += 1
                         else:
-                            t.passes += 1
                             if t.hold or t.passes > self.max_passes:
                                 for k in short:                # nothing later takes what this task is waiting for
                                     held[k] = free[k]
+                            waiting.append(t)
                 if pending and not running and not progressed:
                     # nothing runs, nothing can start: only possible if a prerequisite never finishes - a defect, never silent
                     for t in pending:

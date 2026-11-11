@@ -15,11 +15,19 @@ rules themselves:
      that respects every rule of 1;
   5. what fails the cell and what is only recorded (as the fleet): flows, searches and the two guards are fatal; movies, light
      curves, cubes and the field copies are not;
-  6. the driver refuses an --out inside a production tree and an unknown subband.
+  6. the driver refuses an --out or --stage-root that is, is inside, or contains a production tree (through a symbolic link
+     too), an unknown subband, and a run without a GPU or with a count below 1;
+  7. run() always leaves a record and never a half-shipped cell: a failed fatal task, an exception while shipping, and a
+     SIGTERM each end with the status recorded, the ship trees moved aside, the staging removed, and no engine process left;
+  8. only the subbands with staged frames are planned.
 Data-free; standard library only. Run: python tests/test_snapshot_cell.py   (or under pytest)
 """
+import json
 import os
+import shutil
+import signal
 import sys
+import tempfile
 import threading
 import time
 
@@ -118,19 +126,19 @@ def test_priority_the_flows_first_and_never_waiting_for_cpu_work():
 
 def test_a_flow_takes_the_device_with_a_free_slot():
     c = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', '/tmp/x', '--gpus', '0 1']))
-    seen, lock = [], threading.Lock()
+    seen, lock, all_in = [], threading.Lock(), threading.Barrier(4)
 
-    def fake_call(argv, logfile, env=None, **kw):                # stands in for the engine: records the device, takes a while
+    def fake_call(argv, logfile, env=None, **kw):                # stands in for the engine: all four are in flight together
         with lock:
             seen.append((env['CUDA_VISIBLE_DEVICES'], dict(c._gpu_load)))
-        time.sleep(0.05)
+        all_in.wait(30)
         return 0
     c.call, c.staged = fake_call, lambda sb: []
     ths = [threading.Thread(target=c.t_flow, args=(sb,)) for sb in ('82MHz', '78MHz', '73MHz', '69MHz')]
     for t in ths:
         t.start()
     for t in ths:
-        t.join(30)
+        t.join(60)
     assert sorted(g for g, _ in seen) == ['0', '0', '1', '1'], f'four flows on two devices were not two per device: {seen}'
     assert all(max(load.values()) <= 2 for _, load in seen) and c._gpu_load == {'0': 0, '1': 0}
 
@@ -163,24 +171,135 @@ def test_what_fails_the_cell():
 
 
 def test_refusals_before_any_work():
-    for argv, what in ((['--cell', '04h_2024-12-19', '--out', '/lustre/pipeline/exopipe/phase3/x'], 'production tree'),
-                       (['--cell', '04h_2024-12-19', '--out', '/lustre/gh/main/exopipe_ops/snapshot_fleet_out'], 'production tree'),
-                       (['--cell', '04h_2024-12-19', '--out', '/tmp/x', '--subbands', '18MHz 99MHz'], 'unknown subband')):
-        try:
-            C.Cell(C.parse_args(argv))
-        except SystemExit as e:
-            assert 'REFUSED' in str(e) and what in str(e), (what, str(e))
-        else:
-            raise AssertionError(f'the driver accepted {argv} ({what})')
+    tmp = tempfile.mkdtemp(prefix='cell_refusals_')
+    try:
+        link = os.path.join(tmp, 'looks_private')
+        os.symlink('/lustre/gh/main/exopipe_ops/snapshot_fleet_out', link)
+        cell = ['--cell', '04h_2024-12-19']
+        for argv, what in ((cell + ['--out', '/lustre/pipeline/exopipe/phase3/x'], 'production tree'),
+                           (cell + ['--out', '/lustre/gh/main/exopipe_ops/snapshot_fleet_out'], 'production tree'),
+                           (cell + ['--out', '/lustre/gh/main/exopipe_ops'], 'production tree'),         # its ship trees would be production's
+                           (cell + ['--out', '/lustre/gh/main'], 'production tree'),                     # a parent of them
+                           (cell + ['--out', '/fast/gh/main/phase3/x'], 'production tree'),              # the fleet's node-local trees
+                           (cell + ['--out', link], 'production tree'),                                  # through a symbolic link
+                           (cell + ['--out', '/tmp/x', '--stage-root', '/fast/gh/main/phase3/snapshot_stage'], '--stage-root'),
+                           (cell + ['--out', '/tmp/x', '--subbands', '18MHz 99MHz'], 'unknown subband'),
+                           (cell + ['--out', '/tmp/x', '--gpus', ''], 'no GPU'),
+                           (cell + ['--out', '/tmp/x', '--flow-per-gpu', '0'], 'below 1')):
+            try:
+                C.Cell(C.parse_args(argv))
+            except SystemExit as e:
+                assert 'REFUSED' in str(e) and what in str(e), (what, str(e))
+            else:
+                raise AssertionError(f'the driver accepted {argv} ({what})')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     c = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', '/tmp/x', '--subbands', '18MHz 23MHz']))
     assert c.wideband is False and c.frame_movies is False, 'a subset must skip the wideband search and the frame movies unless asked'
     c = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', '/tmp/x']))
     assert c.wideband is True and c.frame_movies is True and c.out == '/tmp/x/work/04h_2024-12-19'
+    assert not os.path.exists('/lustre/gh/main/exopipe_refactor_x') and C._refuse_protected('/lustre/gh/main/exopipe_refactor_x', '--out') is None, \
+        'a sibling whose name only begins like a production tree was refused'
+
+
+def _stub_cell(tmp, tasks, ship=None):
+    """A Cell under tmp whose staging, plan and ship are stand-ins: run() itself is what is tested."""
+    c = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', os.path.join(tmp, 'out'), '--subbands', '18MHz']))
+
+    def prepare():
+        c._own_stage = True
+        for d in (c.stage, c.out, os.path.join(c.flowtree, c.cell)):      # the flow fields are in the flow tree during a run
+            os.makedirs(d)
+
+    def scheduler():
+        s = S.Scheduler({'cores': 4})
+        for name, fn in tasks:
+            s.add(name, fn, needs={'cores': 1})
+        return s, {}
+    c.prepare, c.scheduler, c.ship_all = prepare, scheduler, (ship or (lambda outcomes: 'shipped'))
+    return c
+
+
+def _record(c):
+    return json.load(open(os.path.join(c.D, 'cell_%s.json' % c.cell)))
+
+
+def test_run_always_leaves_a_record_and_never_a_half_shipped_cell():
+    tmp = tempfile.mkdtemp(prefix='cell_run_')
+    try:
+        # (a) everything done
+        c = _stub_cell(os.path.join(tmp, 'a'), [('flow:18MHz', lambda: None), ('search:18MHz', lambda: None)])
+        assert c.run() == 0 and _record(c)['status'] == 'done' and not os.path.exists(c.stage)
+        assert os.path.isdir(os.path.join(c.flowtree, c.cell))
+        # (b) a fatal task fails: nothing stays in a ship tree under its own name
+        def bad():
+            raise RuntimeError('FLOW-INCOMPLETE stand-in')
+        c = _stub_cell(os.path.join(tmp, 'b'), [('flow:18MHz', bad)])
+        assert c.run() == 1
+        r = _record(c)
+        assert r['status'] == 'failed' and r['steps']['flow:18MHz']['status'] == 'failed' and not os.path.exists(c.stage)
+        assert not os.path.exists(os.path.join(c.flowtree, c.cell)), 'the flow fields of a failed cell stayed in the flow tree'
+        assert [d for d in os.listdir(c.flowtree) if d.startswith(c.cell + '.failed_')], 'the failed cell\'s flow fields were not kept aside'
+        assert 'CELL-FAILED' in open(c.logpath).read()
+        # (c) an exception while shipping (a full disk): recorded, and the half-filled ship directory is moved aside
+        def ship(outcomes):
+            os.makedirs(c.ship)
+            open(os.path.join(c.ship, 'candidates_18MHz_I_median.csv'), 'w').close()
+            raise OSError(28, 'No space left on device')
+        c = _stub_cell(os.path.join(tmp, 'c'), [('flow:18MHz', lambda: None)], ship=ship)
+        assert c.run() == 1
+        r = _record(c)
+        assert r['status'] == 'failed' and 'No space left' in r['error'] and not os.path.exists(c.ship) and not os.path.exists(c.stage)
+        assert [d for d in os.listdir(os.path.dirname(c.ship)) if d.startswith(c.cell + '.failed_')]
+        # (d) SIGTERM while an engine process runs: the process is stopped, the record says interrupted
+        if threading.current_thread() is threading.main_thread():
+            pids = []
+
+            def engine():
+                return c.call(['sleep', '120'], os.path.join(c.out, 'engine.log'), pin=False)
+
+            def killer():
+                t_end = time.time() + 30
+                while not c._children and time.time() < t_end:
+                    time.sleep(0.02)
+                pids.extend(c._children)
+                os.kill(os.getpid(), signal.SIGTERM)
+            c = _stub_cell(os.path.join(tmp, 'd'), [('flow:18MHz', engine), ('search:18MHz', killer)])
+            before = signal.getsignal(signal.SIGTERM)
+            assert c.run() == 130
+            assert signal.getsignal(signal.SIGTERM) is before, 'run() did not restore the signal handler'
+            assert _record(c)['status'] == 'interrupted' and not os.path.exists(c.stage)
+            assert pids, 'the stand-in engine never started'
+            t_end = time.time() + 10
+            while time.time() < t_end and any(os.path.exists('/proc/%d' % p) for p in pids):
+                time.sleep(0.1)
+            assert not any(os.path.exists('/proc/%d' % p) for p in pids), 'an engine process survived the interruption'
+        # (e) a refusal before any work (an earlier run's products under the same --out): recorded, and that run's staging is NOT removed
+        c = _stub_cell(os.path.join(tmp, 'e'), [])
+        del c.prepare                                               # the real prepare()
+        os.makedirs(c.ship)
+        os.makedirs(c.stage)
+        assert c.run() == 2
+        r = _record(c)
+        assert r['status'] == 'refused' and 'earlier run' in r['refusal'] and os.path.isdir(c.stage) and os.path.isdir(c.ship)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_only_the_staged_subbands_are_planned():
+    c = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', '/tmp/x', '--subbands', '18MHz 23MHz 27MHz', '--wideband', 'yes']))
+    c.cores_budget, c.mem_budget_gb, c.active = 26, 250, ['18MHz', '27MHz']       # 23 MHz has no frame this hour
+    s, _ = c.scheduler()
+    names = list(s.tasks)
+    assert not any('23MHz' in n for n in names) and 'search:18MHz' in names and 'cube:27MHz:V' in names
+    assert s.tasks['subbands'].after == ('search:27MHz', 'search:18MHz')
+    assert all(s.tasks[n].hold == n.startswith(C.HOLD_PREFIXES) for n in names)
 
 
 TESTS = [test_the_ordering_rules, test_priority_the_flows_first_and_never_waiting_for_cpu_work,
          test_a_flow_takes_the_device_with_a_free_slot, test_switches,
-         test_the_scheduler_runs_the_plan_in_a_valid_order, test_what_fails_the_cell, test_refusals_before_any_work]
+         test_the_scheduler_runs_the_plan_in_a_valid_order, test_what_fails_the_cell, test_refusals_before_any_work,
+         test_run_always_leaves_a_record_and_never_a_half_shipped_cell, test_only_the_staged_subbands_are_planned]
 
 
 def main():

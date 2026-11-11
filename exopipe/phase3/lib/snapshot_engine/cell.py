@@ -26,13 +26,19 @@ they wait for (schedule.py), so the work of an earlier subband never keeps a GPU
 ten-band run (2026-11-11) the flows were planned subband by subband and the last one ended at 38 minutes instead of ~20.
 
 WHAT FAILS THE CELL is what fails it in the fleet: staging incomplete, a broken or missing Master, an incomplete flow, too few
-frames, an unaccounted subband or wideband search. Then nothing is shipped and the work directory is kept for inspection.
+frames, an unaccounted subband or wideband search (and here also a failed regrid, which the fleet does not notice). Then
+nothing is shipped: the work directory is kept for inspection, the staging is removed (as the fleet does on every refusal),
+and the flow fields the light curves needed during the run are moved aside (snapshot_flow/<cell>.failed_<time>).
 Movies, light curves and cubes do not fail the cell (v10: FRAMEMOVIES-FAILED, LIGHTCURVE-FAILED, CUBE-INCOMPLETE are logged
 and the cell is DONE); here each is recorded with its status in the cell record, never silently.
+A RUN STARTS CLEAN: a ship directory of this cell under --out (an earlier run's products) refuses the run. An exception, a
+SIGTERM or a Ctrl-C stops the engine processes (each runs in its own process group), and the record is written with the
+status failed or interrupted - there is always a cell_<cell>.json.
 
-WHERE IT WRITES: only under --out (D): D/stage/<cell> (staging), D/work/<cell> (the fleet's node-local output),
+WHERE IT WRITES: only under --out (D) and --stage-root, neither of which may be, be inside, or contain a production tree
+(PROTECTED below; symbolic links resolved): D/stage/<cell> (staging), D/work/<cell> (the fleet's node-local output),
 D/snapshot_fleet_out/<cell>, D/snapshot_flow/<cell>, D/snapshot_lightcurves/<cell>, D/snapshot_movies/<cell>,
-D/snapshot_cubes/<cell>, D/photometry (cutout cubes), D/cell_<cell>.json (every task's outcome and times) and
+D/snapshot_cubes/<cell>, D/photometry (cutout cubes, written by the search as it runs - as in the fleet), D/cell_<cell>.json (every task's outcome and times) and
 D/cell_<cell>.log (the fleet's log lines). The record holds, per task, the wall time and the CPU time of its engine
 processes (cpu_s; cpu_s / seconds = the cores it really used, which is what the core charges below should follow). Production roots are not offered: the fleet remains production's driver until the
 snapshot tier is cut over.
@@ -65,6 +71,9 @@ ALL_SUBBANDS = ['18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '
                 '64MHz', '69MHz', '73MHz', '78MHz', '82MHz']                        # v10:48
 GROUPS = ('Red', 'Green', 'Blue')                                                   # v10:262
 OPS = '/lustre/gh/main/exopipe_ops'
+# production's code, state and product trees, and the fleet's node-local ones: never a place this driver writes to
+PROTECTED = (OPS, '/lustre/gh/main/clv15', '/lustre/gh/main/exopipe', '/lustre/gh/main/phase3', '/lustre/pipeline',
+             '/fast/gh/main/phase3', '/fast/pipeline')
 ON_GRID_NAXIS = 1508                                                                # v10:131
 # memory a task holds, GB, by the subband's grid (1508 / 2358 / 3122 px): measured maxima of the engines on 04h 2024-12-19
 # (search 5.4 / 12.8 / 21.0; cube writer ~15 / 40 / 70; wideband search 27 per Stokes)
@@ -126,9 +135,14 @@ class Cell(object):
         self.wideband = self.full if yes[a.wideband] is None else yes[a.wideband]
         self.frame_movies = self.full if yes[a.frame_movies] is None else yes[a.frame_movies]
         D = os.path.abspath(a.out)
-        for p in (OPS + '/snapshot_fleet_out', '/lustre/pipeline/exopipe/phase3', '/lustre/gh/main/phase3'):
-            if D == p or D.startswith(p + '/'):
-                raise SystemExit('REFUSED: --out %s is inside a production tree (%s); this driver writes only to its own root' % (D, p))
+        _refuse_protected(D, '--out')
+        if a.stage_root:
+            _refuse_protected(a.stage_root, '--stage-root')
+        self.gpus = a.gpus.split()
+        self.threads = dict(search=a.search_threads, curves=a.curves_threads, wideband=a.wideband_threads, movies=a.movie_threads)
+        if not self.gpus or a.flow_per_gpu < 1 or min(self.threads.values()) < 1 or a.movie_procs < 1:
+            raise SystemExit('REFUSED: no GPU, or a flow, thread or process count below 1 (--gpus %r --flow-per-gpu %d, threads %s)'
+                             % (a.gpus, a.flow_per_gpu, self.threads))
         self.D = D
         self.stage = os.path.join(os.path.abspath(a.stage_root) if a.stage_root else os.path.join(D, 'stage'), self.cell)
         self.out = os.path.join(D, 'work', self.cell)                 # the fleet's $OUT
@@ -138,16 +152,18 @@ class Cell(object):
         self.lcout = os.path.join(D, 'work', 'lightcurves', self.cell)
         self.lcship = os.path.join(D, 'snapshot_lightcurves', self.cell)
         self.movies = os.path.join(D, 'snapshot_movies', self.cell)
+        self.movies_work = os.path.join(D, 'work', 'movies', self.cell)
         self.cubework = os.path.join(D, 'work', 'cubes', self.cell)
         self.cubes = os.path.join(D, 'snapshot_cubes', self.cell)
         self.cutouts = os.path.join(D, 'photometry')
         self.logpath = os.path.join(D, 'cell_%s.log' % self.cell)
-        self.gpus = a.gpus.split()
-        self.threads = dict(search=a.search_threads, curves=a.curves_threads, wideband=a.wideband_threads, movies=a.movie_threads)
         self.record = OrderedDict(cell=self.cell, subbands=self.subbands, started=None, status='running', steps=OrderedDict())
         self._lock = threading.Lock()
         self._gpu_load = OrderedDict((g, 0) for g in self.gpus)        # flows running per device
         self._cpu = {}                                                 # scheduler thread name -> CPU seconds of its engine processes
+        self._children = set()                                         # engine processes running now (each its own process group)
+        self.active = list(self.subbands)                              # the subbands with staged frames (set in prepare)
+        self._own_stage = False                                        # True once THIS run has begun to stage (then it removes it)
         self.cores = None
         self.cores_budget = self.mem_budget_gb = None                  # set in prepare(), from the node unless given
         self.zero_vis = set()
@@ -170,7 +186,7 @@ class Cell(object):
         e.update(NUMPY_MADVISE_HUGEPAGE='0', PYTHONUNBUFFERED='1',
                  P3_SNAP_CUTOUT_ROOT=self.cutouts, P3_SNAP_FLOWTREE=self.flowtree,
                  P3_SNAP_SAMPLES_DIR=self.a.samples_dir, P3_SNAP_LEGACY_ROOT=self.a.legacy_root,
-                 P3_SNAP_DETECT_THREADS=str(self.a.search_threads), P3_SNAP_GROUP_THREADS=str(self.a.group_threads),
+                 P3_SNAP_DETECT_THREADS=str(self.a.search_threads), P3_SNAP_GROUP_THREADS=str(self.a.wideband_threads),
                  P3_SNAP_LC_THREADS=str(self.a.curves_threads), P3_SNAP_MOVIE_THREADS=str(self.a.movie_threads),
                  P3_SNAP_MOVIE_PROCS=str(self.a.movie_procs))
         if self.a.phase1_root:
@@ -190,13 +206,39 @@ class Cell(object):
         os.makedirs(os.path.dirname(logfile), exist_ok=True)
         with open(logfile, 'ab' if append else 'wb') as f:
             p = subprocess.Popen(self.pinned(argv) if pin else list(argv), stdout=f, stderr=subprocess.STDOUT,
-                                 stdin=subprocess.DEVNULL, env=env or self.env())
-            _, status, ru = os.wait4(p.pid, 0)
+                                 stdin=subprocess.DEVNULL, env=env or self.env(), start_new_session=True)
+            with self._lock:
+                self._children.add(p.pid)
+            try:
+                _, status, ru = os.wait4(p.pid, 0)
+            finally:
+                with self._lock:
+                    self._children.discard(p.pid)
         p.returncode = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
         who = threading.current_thread().name
         with self._lock:
             self._cpu[who] = self._cpu.get(who, 0.0) + ru.ru_utime + ru.ru_stime
         return p.returncode
+
+    def stop_children(self, grace=30):
+        """Terminate every running engine process group (SIGTERM, then SIGKILL after `grace` seconds)."""
+        import signal
+        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 10)):
+            with self._lock:
+                pids = list(self._children)
+            if not pids:
+                return
+            for pid in pids:
+                try:
+                    os.killpg(pid, sig)
+                except OSError:
+                    pass
+            t_end = time.time() + wait
+            while time.time() < t_end:
+                with self._lock:
+                    if not self._children:
+                        return
+                time.sleep(0.2)
 
     def eng(self, name):
         return os.path.join(self.a.engine, name)
@@ -218,12 +260,20 @@ class Cell(object):
             os.makedirs(d, exist_ok=True)
         if os.listdir(self.out) != ['flow'] or os.listdir(self.flowdir):
             raise SystemExit('REFUSED: the work directory %s is not empty (an earlier run) - give a new --out' % self.out)
+        # A RUN STARTS CLEAN: products of an earlier run of this cell would be mixed in silently (every ship copy is cp -n)
+        old = [d for d in (self.ship, self.lcship, self.movies, self.cubes, os.path.join(self.flowtree, self.cell)) if os.path.exists(d)]
+        if old:
+            raise SystemExit('REFUSED %s products of an earlier run under this --out: %s - give a new --out' % (self.cell, ' '.join(old)))
+        for d in (self.lcout, self.cubework, self.movies_work):        # this driver's own work copies (v10:367, :396)
+            shutil.rmtree(d, ignore_errors=True)
         if a.cores:
             self.cores = a.cores
         else:
             r = subprocess.run(['bash', os.path.join(OPS, 'node_free_cores.sh')], stdout=subprocess.PIPE, universal_newlines=True)
-            self.cores = r.stdout.strip() or None         # leave the data-recorder cores alone (v10:47)
-        self.cores_budget = a.cores_budget or (_count_cores(self.cores) if self.cores else os.cpu_count())
+            self.cores = r.stdout.strip()                 # leave the data-recorder cores alone (v10:47)
+            if r.returncode != 0 or not self.cores:       # never unpinned: the engines would land on the recorders' cores
+                raise SystemExit('REFUSED %s no core list from node_free_cores.sh (exit %d) - give --cores' % (self.cell, r.returncode))
+        self.cores_budget = a.cores_budget or _count_cores(self.cores)
         self.mem_budget_gb = a.mem_budget_gb or int(0.8 * _mem_available_gb())
         need = max(MEM_CUBE[band_class(sb)] if a.cubes else MEM_SEARCH[band_class(sb)] for sb in self.subbands)
         need = max(need, MEM_WIDEBAND if self.wideband else 0)
@@ -251,6 +301,7 @@ class Cell(object):
             raise SystemExit('DISK-REFUSED %s only %d GB free under %s (need %d)' % (self.cell, free, self.stage, a.min_free_gb))
         # STAGE (v10:100-124): one file per (Stokes, integration), chosen by the engine's own discovery; copy, funpack, count
         t0 = time.time()
+        self._own_stage = True
         code = ('import sys; sys.path.insert(0, %r); import phase3_snapshot_search as s\n'
                 'fr = s.discover_frames(sys.argv[1], sys.argv[2], sys.argv[3])\n'
                 'for st in ("I", "V"):\n'
@@ -307,7 +358,9 @@ class Cell(object):
                     continue
                 rc = self.call([a.py36, self.eng('phase3_snapshot_regrid.py'), os.path.join(self.stage, sb), self.master(sb), '--nproc', '8'],
                                os.path.join(self.out, 'regrid_%s.log' % sb))
-                nreg += rc == 0
+                if rc != 0:                              # the fleet goes on with frames on the wrong grid; here the cell is refused
+                    raise SystemExit('REFUSED %s REGRID-FAILED %s (exit %d, see %s)' % (self.cell, sb, rc, os.path.join(self.out, 'regrid_%s.log' % sb)))
+                nreg += 1
         if nreg:
             self.log('REGRIDDED %s %d subbands to the Master grid' % (self.cell, nreg))
         self.record['steps']['regrid'] = dict(status='done', seconds=round(time.time() - t0, 1), regridded=nreg)
@@ -323,11 +376,18 @@ class Cell(object):
                       'for p in glob.glob(sys.argv[1] + "/*/*-image.fits"):\n'
                       '    try:\n        v = fits.getheader(p).get("WSCNVIS", 1)\n    except Exception:\n        continue\n'
                       '    if v is not None and float(v) == 0:\n        print(p)\n', self.stage)
+        if r.returncode != 0:
+            raise SystemExit('REFUSED %s the zero-visibility probe failed: %s' % (self.cell, (r.stderr.strip().splitlines() or ['exit %d' % r.returncode])[-1][:300]))
         self.zero_vis = set(p for p in r.stdout.splitlines() if p.startswith('/'))
         if self.zero_vis:
             self.log('ZERO-VIS %s %d staged frames with WSCNVIS = 0 refused (not expected to flow)' % (self.cell, len(self.zero_vis)))
         if nst < a.min_frames:                             # v10:200-203 (tested before the flow here: nothing to gain by flowing first)
             raise SystemExit('REFUSED %s only %d decompressed frames (need %d) - not searching' % (self.cell, nst, a.min_frames))
+        # a subband without a single frame this hour is not staged: nothing is planned for it and nothing is expected of it
+        # (the fleet's guards and its cube count read the staged subbands only: v10:207-241, :400-402)
+        self.active = [sb for sb in self.subbands if self.staged(sb)]
+        if len(self.active) < len(self.subbands):
+            self.log('NO-FRAMES %s %s: not staged, not planned' % (self.cell, ' '.join(sb for sb in self.subbands if sb not in self.active)))
 
     # ---------------------------------------------------------------- the tasks
     def t_flow(self, sb):
@@ -362,7 +422,8 @@ class Cell(object):
         # judged by the completeness guard from the records the engine wrote, as in the fleet (v10:207-241)
         self.call([self.a.py36, '-u', self.eng('phase3_snapshot_search.py'), '--lst', self.lst, '--date', self.date, '--subband', sb,
                    '--stokes', 'VI', '--mode', 'median', '--thresh', '5.0', '--out', self.out,
-                   '--stage-root', os.path.join(self.stage, sb), '--nthreads', '8'], os.path.join(self.out, 'search_%s.log' % sb),
+                   '--stage-root', os.path.join(self.stage, sb), '--nthreads', str(min(8, self.a.search_threads))],   # the fleet's 8, never above the charge
+                  os.path.join(self.out, 'search_%s.log' % sb),
                   env=self.env(P3_SNAP_FLOW='1'))
 
     def t_curves(self, sb, st):
@@ -404,7 +465,7 @@ class Cell(object):
         excluded = set(r.stdout.split())
         nri = len(glob.glob(os.path.join(self.out, 'runinfo_*MHz_*_median.json')))
         nnr, nex, miss, refused = 0, 0, [], []
-        staged = [sb for sb in self.subbands if self.staged(sb)]
+        staged = self.active
         for sb in staged:
             if sb in excluded:
                 nex += 2
@@ -431,7 +492,8 @@ class Cell(object):
 
     def t_wideband(self, st):
         self.call([self.a.py36, '-u', self.eng('phase3_snapshot_group_search.py'), '--lst', self.lst, '--date', self.date, '--stokes', st,
-                   '--thresh', '5.0', '--out', self.out, '--stage-root-fmt', os.path.join(self.stage, '%s'), '--nthreads', '8'],
+                   '--thresh', '5.0', '--out', self.out, '--stage-root-fmt', os.path.join(self.stage, '%s'),
+                   '--nthreads', str(min(8, self.a.wideband_threads))],
                   os.path.join(self.out, 'group_%s.log' % st), env=self.env(P3_SNAP_FLOW='1'))   # judged by the guard below
 
     def t_widebands(self):
@@ -456,14 +518,15 @@ class Cell(object):
             raise RuntimeError('SEARCH-INCOMPLETE %s wideband group search unaccounted: %s - NOT shipped' % (self.cell, ' '.join(bad)))
 
     def t_framemovies(self):
-        os.makedirs(self.movies, exist_ok=True)                        # v10:284-289
-        log = os.path.join(self.movies, 'movies.log')
-        rc = self.call([self.a.flowpy, '-u', self.eng('phase3_snapshot_frame_movie.py'), self.cell, self.movies, '--frames-root', self.stage], log)
+        # v10:284-289. Made in the work tree and shipped with everything else: the fleet makes them after its two guards, so a
+        # failed cell has no movies and no MOVIES_DONE
+        os.makedirs(self.movies_work, exist_ok=True)
+        log = os.path.join(self.movies_work, 'movies.log')
+        rc = self.call([self.a.flowpy, '-u', self.eng('phase3_snapshot_frame_movie.py'), self.cell, self.movies_work, '--frames-root', self.stage], log)
         total = [l for l in open(log, errors='replace') if l.startswith('TOTAL')]
         if rc != 0 or not total:
             raise RuntimeError('FRAMEMOVIES-FAILED %s (see %s)' % (self.cell, log))
-        open(os.path.join(self.movies, 'MOVIES_DONE'), 'w').close()
-        self.log('FRAMEMOVIES %s %d %s' % (self.cell, len(glob.glob(os.path.join(self.movies, '*.mp4'))), total[-1].strip()))
+        self.log('FRAMEMOVIES %s %d %s' % (self.cell, len(glob.glob(os.path.join(self.movies_work, '*.mp4'))), total[-1].strip()))
 
     # ---------------------------------------------------------------- ship (v10:340-429), after every task
     @staticmethod
@@ -487,28 +550,36 @@ class Cell(object):
                 self._cp_n(p, os.path.join(self.ship, 'flow'))
         self.log('FLOWPRODUCTS %s movies=%d fields=%d' % (self.cell, len(glob.glob(os.path.join(self.ship, 'flow', '*.mp4'))),
                                                          len(glob.glob(os.path.join(self.flowtree, self.cell, '*.npy')))))
+        # frame movies: the mp4 files, the log, then the marker (v10:286)
+        if outcomes.get('framemovies') == 'done':
+            for p in glob.glob(os.path.join(self.movies_work, '*.mp4')) + [os.path.join(self.movies_work, 'movies.log')]:
+                self._cp_n(p, self.movies)
+            open(os.path.join(self.movies, 'MOVIES_DONE'), 'w').close()
+            shutil.rmtree(self.movies_work, ignore_errors=True)
         # light curves (v10:379-382)
         for p in glob.glob(os.path.join(self.lcout, '*_lightcurves.fits')):
             self._cp_n(p, self.lcship)
-        nlc, nsb = len(glob.glob(os.path.join(self.lcship, '*_I_lightcurves.fits'))), len(self.subbands)
+        nlc, nsb = len(glob.glob(os.path.join(self.lcship, '*_I_lightcurves.fits'))), len(self.active)
         self.log('LIGHTCURVES %s I-tables=%d/%d' % (self.cell, nlc, nsb))
         if nlc < nsb:
             self.log('LIGHTCURVES-INCOMPLETE %s %d of %d subbands - the chain will re-measure those from frames' % (self.cell, nlc, nsb))
         shutil.rmtree(self.lcout, ignore_errors=True)                  # v10:383
-        # cubes (v10:391-429): all or nothing - 2 per subband, each verified, copied and checked by md5, then the MANIFEST
+        # cubes (v10:391-429): all or nothing over the subbands with flowed frames (v10:400-402) - 2 per subband, each verified,
+        # copied and checked by md5, then the MANIFEST
+        csbs = [sb for sb in self.active if glob.glob(os.path.join(self.stage, sb, '*_flowed.fits'))]
         if self.a.cubes:
             cub = os.path.join(self.cubework, 'cubes')
-            want = ['%s_%s_%s_flowcube.fits' % (self.cell, sb, st) for sb in self.subbands for st in ('I', 'V')]
+            want = ['%s_%s_%s_flowcube.fits' % (self.cell, sb, st) for sb in csbs for st in ('I', 'V')]
             ok = [n for n in want if outcomes.get('cube:%s:%s' % tuple(n[len(self.cell) + 1:-len('_flowcube.fits')].split('_'))) == 'done'
                   and os.path.exists(os.path.join(cub, n))]
             verify = {}
-            for sb in self.subbands:
+            for sb in csbs:
                 for st in ('I', 'V'):
                     p = os.path.join(self.cubework, 'cube_verify_%s_%s.log' % (sb, st))
                     for l in (open(p, errors='replace') if os.path.exists(p) else ()):
                         if l.startswith('VERIFY') and ' -> OK' in l:
                             verify['%s_%s_%s_flowcube.fits' % (self.cell, sb, st)] = l.strip()
-            if len(ok) != len(want) or len(verify) != len(want):
+            if not want or len(ok) != len(want) or len(verify) != len(want):
                 self.log('CUBE-INCOMPLETE %s cubes=%d verify_OK=%d of %d - not shipped (logs %s)' % (self.cell, len(ok), len(verify), len(want), self.cubework))
                 return 'cubes-incomplete'
             os.makedirs(self.cubes, exist_ok=True)
@@ -521,13 +592,13 @@ class Cell(object):
             if nbad:
                 self.log('CUBE-SHIP-FAILED %s %d cubes differ after the copy' % (self.cell, nbad))
                 return 'cubes-ship-failed'
-            lines.append('COMPLETE %s cubes=%d subbands=%d node=%s %s writer=cell.py' % (self.cell, len(want), len(self.subbands), os.uname()[1],
+            lines.append('COMPLETE %s cubes=%d subbands=%d node=%s %s writer=cell.py' % (self.cell, len(want), len(csbs), os.uname()[1],
                                                                                         time.strftime('%a %b %e %H:%M:%S UTC %Y', time.gmtime())))
             with open(os.path.join(self.cubes, 'MANIFEST.txt'), 'w') as f:
                 f.write('\n'.join(lines) + '\n')
             for kind in ('write', 'verify'):
                 with open(os.path.join(self.cubes, 'cube_%s.log' % kind), 'w') as f:
-                    for sb in self.subbands:
+                    for sb in csbs:
                         for st in ('I', 'V'):
                             p = os.path.join(self.cubework, 'cube_%s_%s_%s.log' % (kind, sb, st))
                             f.write(open(p, errors='replace').read() if os.path.exists(p) else '')
@@ -541,7 +612,7 @@ class Cell(object):
         budgets = {'cores': self.cores_budget, 'mem_gb': self.mem_budget_gb, 'gpu': len(self.gpus) * a.flow_per_gpu}
         s = schedule.Scheduler(budgets)
         fns = {}
-        for sb in self.subbands:
+        for sb in self.active:
             fns['flow:' + sb] = lambda sb=sb: self.t_flow(sb)
             fns['fields:' + sb] = lambda sb=sb: self.t_fields(sb)
             fns['search:' + sb] = lambda sb=sb: self.t_search(sb)
@@ -567,21 +638,65 @@ class Cell(object):
                     soft[name] = str(e)[:300]
                     self.log('%s-FAILED %s: %s' % (name.split(':')[0].upper(), self.cell, soft[name]))
             return run
-        for name, after, needs in build_tasks(self.subbands, self.wideband, self.frame_movies, a.cubes, self.threads):
+        for name, after, needs in build_tasks(self.active, self.wideband, self.frame_movies, a.cubes, self.threads):
             s.add(name, wrap(name), after=after, needs=needs, hold=name.startswith(HOLD_PREFIXES))
         return s, soft
 
     def run(self):
+        """Run the cell. Returns 0 (done), 1 (failed), 2 (refused before any search), 130 (interrupted). Whatever happens the
+        record D/cell_<cell>.json is written, no engine process is left running, and the staging is removed (--keep-stage keeps it)."""
+        import signal
         t0 = time.time()
         self.record['started'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t0))
+        handlers = {}
+        if threading.current_thread() is threading.main_thread():
+            def on_signal(signum, frame):
+                raise _Interrupted('signal %d' % signum)
+            for sg in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                handlers[sg] = signal.signal(sg, on_signal)
+        rc = 1
         try:
-            self.prepare()
+            rc = self._run(t0)
         except SystemExit as e:                                        # a refusal before any search: logged and recorded, never silent
             self.log(str(e))
-            self.record.update(status='refused', refusal=str(e), elapsed_s=round(time.time() - t0, 1))
+            self.record.update(status='refused', refusal=str(e))
+            rc = 2
+        except (_Interrupted, KeyboardInterrupt) as e:
+            self.stop_children()
+            self.log('CELL-INTERRUPTED %s (%s) - engine processes stopped, nothing shipped; work kept in %s' % (self.cell, e or 'keyboard', self.out))
+            self.record['status'] = 'interrupted'
+            self._set_aside()
+            rc = 130
+        except Exception as e:                                         # a defect or a full disk: never a silent traceback only
+            self.stop_children()
+            self.log('CELL-FAILED %s %s: %s - work kept in %s' % (self.cell, type(e).__name__, str(e)[:300], self.out))
+            self.record.update(status='failed', error='%s: %s' % (type(e).__name__, str(e)[:500]))
+            self._set_aside()
+            rc = 1
+        finally:
+            for sg, h in handlers.items():
+                signal.signal(sg, h)
+            if self._own_stage and not self.a.keep_stage:              # v10:431 and every refusal and failure path of the fleet;
+                shutil.rmtree(self.stage, ignore_errors=True)          # never the staging of an earlier run this one refused on
+            self.record['elapsed_s'] = round(time.time() - t0, 1)
+            os.makedirs(self.D, exist_ok=True)
             with open(os.path.join(self.D, 'cell_%s.json' % self.cell), 'w') as f:
                 json.dump(self.record, f, indent=1)
-            return 2
+        return rc
+
+    def _set_aside(self):
+        """A cell that did not complete ships nothing: what the run put into a ship tree is moved aside, marked as failed
+        (the flow fields the light curves read during the run; a ship that stopped half way)."""
+        stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+        for d in (os.path.join(self.flowtree, self.cell), self.ship, self.lcship, self.movies, self.cubes):
+            if os.path.isdir(d):
+                try:
+                    os.rename(d, '%s.failed_%s' % (d, stamp))
+                except OSError as e:
+                    self.log('SET-ASIDE-FAILED %s %s: %s' % (self.cell, d, e))
+
+    def _run(self, t0):
+        self.prepare()
         s, soft = self.scheduler()
         t1 = time.time()
         out = s.run()
@@ -604,19 +719,28 @@ class Cell(object):
             for n in failed:
                 self.log('%s' % out[n].detail)
             self.log('CELL-FAILED %s (%s) - nothing shipped; work kept in %s' % (self.cell, ', '.join(failed), self.out))
-        else:
-            outcomes = {n: ('failed-not-fatal' if n in soft else o.status) for n, o in out.items()}
-            self.record['ship'] = self.ship_all(outcomes)
-            self.record['status'] = 'done'
-            if not self.a.keep_stage:
-                shutil.rmtree(self.stage, ignore_errors=True)          # v10:431
-            self.log('DONE %s runinfo=%d nightrefused=%d elapsed=%dmin (scheduler %dmin) node=%s'
-                     % (self.cell, len(glob.glob(os.path.join(self.out, 'runinfo_*.json'))),
-                        len(glob.glob(os.path.join(self.out, 'nightrefused_*.json'))), (time.time() - t0) / 60, (time.time() - t1) / 60, os.uname()[1]))
-        self.record['elapsed_s'] = round(time.time() - t0, 1)
-        with open(os.path.join(self.D, 'cell_%s.json' % self.cell), 'w') as f:
-            json.dump(self.record, f, indent=1)
-        return 0 if not failed else 1
+            self._set_aside()
+            return 1
+        outcomes = {n: ('failed-not-fatal' if n in soft else o.status) for n, o in out.items()}
+        self.record['ship'] = self.ship_all(outcomes)
+        self.record['status'] = 'done'
+        self.log('DONE %s runinfo=%d nightrefused=%d elapsed=%dmin (scheduler %dmin) node=%s'
+                 % (self.cell, len(glob.glob(os.path.join(self.out, 'runinfo_*.json'))),
+                    len(glob.glob(os.path.join(self.out, 'nightrefused_*.json'))), (time.time() - t0) / 60, (time.time() - t1) / 60, os.uname()[1]))
+        return 0
+
+
+class _Interrupted(BaseException):
+    """SIGTERM / SIGINT / SIGHUP in the main thread (BaseException: no task wrapper may swallow it)."""
+
+
+def _refuse_protected(path, what):
+    r = os.path.realpath(path)
+    for p in PROTECTED:
+        pr = os.path.realpath(p)
+        if r == '/' or r == pr or r.startswith(pr + '/') or pr.startswith(r + '/'):
+            raise SystemExit('REFUSED: %s %s is, is inside, or contains a production tree (%s); this driver writes only to its own root'
+                             % (what, path, p))
 
 
 def _count_cores(spec):
@@ -674,8 +798,7 @@ def parse_args(argv=None):
     ap.add_argument('--cores-budget', type=int, default=0, help='cores the tasks may use together; default: the size of the core list')
     ap.add_argument('--mem-budget-gb', type=int, default=0, help='memory the tasks may hold together; default: 80%% of what is available at the start')
     ap.add_argument('--search-threads', type=int, default=8)
-    ap.add_argument('--group-threads', type=int, default=12)
-    ap.add_argument('--wideband-threads', type=int, default=12)
+    ap.add_argument('--wideband-threads', type=int, default=12, help='threads of one wideband search (two run side by side)')
     ap.add_argument('--curves-threads', type=int, default=4)
     ap.add_argument('--movie-threads', type=int, default=8)
     ap.add_argument('--movie-procs', type=int, default=6)
