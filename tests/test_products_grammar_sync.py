@@ -40,7 +40,7 @@ PRODUCTION = '/lustre/gh/main/exopipe/exopipe/common/phase3_products.py'
 # Production's vocabulary on 2026-11-10 (exopipe/common/phase3_products.py at e2d3bf7).
 PRODUCTION_PROC_ORDER = ['vclean', 'mstruct', 'loo', 'shflux', 'mdewarp', 'pbcorr', 'dewarped', 'aligned',
                          'psfmatch', 'coadd', 'lsrecon', 'msub', 'nmsub', 'ssub', 'sigstack',
-                         'mosaic', 'jysr', 'jybeam', 'feather', 'tcorr', 'lsfill', 'cleanres',
+                         'mosaic', 'jysr', 'jybeam', 'feather', 'tcorr', 'lsfill', 'tpfill', 'cleanres',
                          'psfmap', 'rgbcomp', 'molrender', 'carrender', 'pbmap', 'pkcorr', 'caveat']
 PRODUCTION_CADENCES = ['deep', '10min', 'snap']
 
@@ -69,6 +69,10 @@ CLEANRES_MASTERS = [
 ]
 # lsrecon: hybrid mosaics (mosaic/Run_HYBRID_20241218-20260419/<scope>/I/{healpix,radec}/)
 LSRECON_MOSAICS = [
+    'Green_I_deep_Taper_Robust+0.0_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_tpfill_molrender_allsky_20241218-20260419_N024.fits',   # tpfill (exopipe 4b8fdd5; sampled 2026-11-11)
+    '23MHz_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_tpfill_molrender_allsky_20241218-20251029_N024.fits',   # tpfill (exopipe 4b8fdd5; sampled 2026-11-11)
+    '50MHz_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_tpfill_carrender_allsky_20241218-20260419_N024.fits',   # tpfill (exopipe 4b8fdd5; sampled 2026-11-11)
+    '36MHz_I_deep_Taper_Robust-0.75_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_tpfill_allsky_20241218-20251029_N024.fits',   # tpfill (exopipe 4b8fdd5; sampled 2026-11-11)
     '55MHz_I_deep_Taper_Robust+0.0_pbcorr_coadd_lsrecon_mosaic_jysr_feather_lsfill_allsky_20241218-20251029_N024.fits',
     '27MHz_I_deep_Taper_Robust-0.75_coadd_lsrecon_mosaic_jybeam_feather_lsfill_allsky_20241218-20251029_N024.fits',
     '41MHz_I_deep_Taper_Robust+0.0_coadd_lsrecon_mosaic_jybeam_feather_lsfill_carrender_allsky_20241218-20251029_N024.fits',

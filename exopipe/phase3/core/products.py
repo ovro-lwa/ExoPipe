@@ -78,8 +78,12 @@ TAPERS = ['Taper', 'NoTaper']
 # MASTER_SHFLUX_VLSSR_DEWARP_SPEC_20260828 (ratified 2026-08-28; implemented 2026-09-06).
 PROC_ORDER = ['vclean', 'mstruct', 'loo', 'shflux', 'mdewarp', 'pbcorr', 'dewarped', 'aligned',
               'psfmatch', 'coadd', 'lsrecon', 'msub', 'nmsub', 'ssub', 'sigstack',
-              'mosaic', 'jysr', 'jybeam', 'feather', 'tcorr', 'lsfill', 'cleanres',
+              'mosaic', 'jysr', 'jybeam', 'feather', 'tcorr', 'lsfill', 'tpfill', 'cleanres',
               'psfmap', 'rgbcomp', 'molrender', 'carrender', 'pbmap', 'pkcorr', 'caveat']
+# 'tpfill' (TOTAL-POWER fill of a mosaic: the LWA1 LFSS (Dowell+2017, zero level from LEDA total power) replaces multipoles l < 8,
+# cosine blend to l 12, scaled to the map by s = sqrt(Cl_map / Cl_LFSS) at l 10-30 - the July 2026 design (Gregg 2026-07-15,
+# LARGE-SCALE RECOVERY v2) restored on the hybrid NoTaper mosaics; exopipe.phase3.mosaic_tpfill) added 2026-11-10 (Gregg 2026-11-10).
+# NOTE: on the hybrid products 'lsfill' means the RECONSTRUCTED large scales of the hybrid master, NOT a survey fill.
 # 'caveat' (the caveat map of a high-band hybrid mosaic, exopipe.phase3.notaper_largescale.caveat_map: per pixel the weighted mean
 # large-scale level / LWA1 survey prior and the weight fraction of Taper-only tiles) added 2026-10-31 (R-GREGG-20261031-HIGH-BAND-
 # CAVEATS-APPROVED-GO-ON-EVERYTHING); reported to the refactor chat.
