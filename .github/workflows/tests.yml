@@ -34,3 +34,5 @@ jobs:
         run: python tests/test_products_grammar_sync.py
       - name: snapshot engine speed-ups change no product
         run: python tests/test_snapshot_engine.py
+      - name: snapshot cell scheduler and driver plan
+        run: python tests/test_snapshot_schedule.py && python tests/test_snapshot_cell.py

@@ -19,6 +19,13 @@ What this directory is
     phase3_snapshot_flow_movie.py    flow movie + series per subband (flow interpreter)
     phase3_snapshot_frame_movie.py   the 19 frame movies of a cell (flow interpreter)
 
+The per-cell driver (refactor code, not from clv15)
+    schedule.py                      tasks with prerequisites and core / memory / GPU budgets, run side by side
+    cell.py                          one cell, the fleet's products, pipelined: a port of the cell body of
+                                     exopipe_ops/snapshot_fleet_node_v10.sh onto the scheduler - two flow processes per GPU, and
+                                     each subband's search, light curves, cubes and flow movie started when its flow ends.
+                                     Writes only under its --out root; the fleet remains production's driver until cutover.
+
 The pin (PIN_COMMIT / PIN_BLOBS below)
   clv15 be63765 (2026-11-11), the commit that searched the Dec 18-27 2024 cells used for the parity runs. PIN_BLOBS holds the
   git blob id of every ported file at that commit. Production keeps moving: tests/test_snapshot_engine.py reports every pinned
