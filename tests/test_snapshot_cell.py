@@ -21,7 +21,11 @@ rules themselves:
      SIGTERM each end with the status recorded, the ship trees moved aside, the staging removed, and no engine process left;
   8. only the subbands with staged frames are planned;
   9. releasing a file's preallocation (after a subband's flow) changes no byte and no time of the file, and a missing file
-     or a file without slack is left alone.
+     or a file without slack is left alone; the cutout cubes are trimmed per band, only under that band's directories;
+ 10. tasks are charged the cores their engines were measured to use (a share of the thread count), never less than one;
+ 11. the cutout cubes and the shipped flowed-frame cubes may go to their own roots (refused inside a production tree);
+     the engines' write guard then covers the output root, the staging root and the cutout root;
+ 12. a run that is stopped keeps the rows of the tasks that had finished.
 Data-free; standard library only. Run: python tests/test_snapshot_cell.py   (or under pytest)
 """
 import json
@@ -263,8 +267,8 @@ def test_run_always_leaves_a_record_and_never_a_half_shipped_cell():
         if threading.current_thread() is threading.main_thread():
             pids = []
 
-            def engine():
-                return c.call(['sleep', '120'], os.path.join(c.out, 'engine.log'), pin=False)
+            def engine():                                         # as t_search: the engine's exit code is not the task's verdict
+                c.call(['sleep', '120'], os.path.join(c.out, 'engine.log'), pin=False)
 
             def killer():
                 t_end = time.time() + 30
@@ -272,11 +276,15 @@ def test_run_always_leaves_a_record_and_never_a_half_shipped_cell():
                     time.sleep(0.02)
                 pids.extend(c._children)
                 os.kill(os.getpid(), signal.SIGTERM)
-            c = _stub_cell(os.path.join(tmp, 'd'), [('flow:18MHz', engine), ('search:18MHz', killer)])
+            c = _stub_cell(os.path.join(tmp, 'd'), [('fields:18MHz', lambda: None), ('flow:18MHz', engine), ('search:18MHz', killer)])
             before = signal.getsignal(signal.SIGTERM)
             assert c.run() == 130
             assert signal.getsignal(signal.SIGTERM) is before, 'run() did not restore the signal handler'
             assert _record(c)['status'] == 'interrupted' and not os.path.exists(c.stage)
+            st = _record(c)['steps']
+            assert st.get('fields:18MHz', {}).get('status') == 'done', f'the row of a task that had finished is not in the record: {st}'
+            assert st.get('flow:18MHz', {'status': 'interrupted'})['status'] == 'interrupted', \
+                f'a task whose engine was stopped with the run is recorded as {st["flow:18MHz"]["status"]}: {st}'
             assert pids, 'the stand-in engine never started'
             t_end = time.time() + 10
             while time.time() < t_end and any(os.path.exists('/proc/%d' % p) for p in pids):
@@ -358,11 +366,80 @@ def test_releasing_preallocation_changes_nothing_in_the_file():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_charges_follow_measured_use():
+    _, _, needs = _graph()                                       # THREADS: search 8, curves 4, wideband 12, movies 8
+    assert needs['search:82MHz']['cores'] == 5 and needs['wideband:V']['cores'] == 6 and needs['framemovies']['cores'] == 4
+    assert needs['curves:18MHz:I']['cores'] == 4 and needs['cube:18MHz:I']['cores'] == 1 and needs['flow:18MHz']['cores'] == 1
+    one = dict(search=1, curves=1, wideband=1, movies=1)
+    assert all(C.charge(k, one) == 1 for k in one), 'a task charged no core at all'
+    # the two wideband searches and the frame movies fit the budget together (they took turns in the first full cell)
+    assert needs['wideband:V']['cores'] + needs['wideband:I']['cores'] + needs['framemovies']['cores'] <= 26 - 8
+
+
+def test_bulk_products_on_their_own_roots():
+    cell = ['--cell', '04h_2024-12-19', '--out', '/tmp/x']
+    c = C.Cell(C.parse_args(cell))
+    assert c.cutouts == '/tmp/x/photometry' and c.cubes == '/tmp/x/snapshot_cubes/04h_2024-12-19'
+    c = C.Cell(C.parse_args(cell + ['--cutout-root', '/tmp/y/cut', '--cubes-root', '/tmp/y/cubes', '--stage-root', '/tmp/z/stage',
+                                    '--guard', '/tmp/guard']))
+    assert c.cutouts == '/tmp/y/cut' and c.cubes == '/tmp/y/cubes/04h_2024-12-19'
+    e = c.env()
+    assert e['P3_SNAP_CUTOUT_ROOT'] == '/tmp/y/cut'
+    assert set(e['EXOPIPE3_PARITY_ROOT'].split(os.pathsep)) == {'/tmp/x', '/tmp/z/stage', '/tmp/y/cut'}, e['EXOPIPE3_PARITY_ROOT']
+    for opt in ('--cutout-root', '--cubes-root'):
+        try:
+            C.Cell(C.parse_args(cell + [opt, '/lustre/pipeline/exopipe/phase3/photometry']))
+        except SystemExit as ex:
+            assert 'REFUSED' in str(ex) and opt in str(ex)
+        else:
+            raise AssertionError(f'{opt} inside a production tree was accepted')
+    assert C.CUTOUTS_GB > 0 and C.CUBES_GB > 0
+    # the budget check before any work follows the charges, not the thread counts
+    import inspect
+    assert 'most = max(charge(k, self.threads) for k in CORE_SHARE)' in inspect.getsource(C.Cell.prepare)
+
+
+def test_cutouts_are_trimmed_per_band():
+    tmp = tempfile.mkdtemp(prefix='cell_trimband_')
+    try:
+        # the engine's layout: <root>/<sample>/<band>/<source>/<file>; the --out path itself holds a band token and a
+        # group name, which must not make other bands match
+        out = os.path.join(tmp, '18MHz', 'Red', 'out')
+        c = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', out]))
+        for rel in ('10pc/18MHz/GJ1/GJ1_04h_T_I.fits', '10pc/18MHz/GJ1/GJ1_04h_T_V.fits', '10pc/23MHz/GJ1/GJ1_04h_T_I.fits',
+                    'HWJ/Red/x/x_04h_T_I.fits', 'HWJ/18MHz/x/notes.txt', 'HWJ/118MHz/x/x_04h_T_I.fits', 'HWJ/x/18MHz/odd.fits'):
+            p = os.path.join(c.cutouts, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, 'w').close()
+        seen = []
+        real = C.release_preallocation
+        C.release_preallocation = lambda p: seen.append(os.path.relpath(p, c.cutouts)) or 7
+        try:
+            freed = c.trim_band('18MHz')
+            assert sorted(seen) == ['10pc/18MHz/GJ1/GJ1_04h_T_I.fits', '10pc/18MHz/GJ1/GJ1_04h_T_V.fits'] and freed == 14, (seen, freed)
+            del seen[:]
+            c.trim_band('Red')
+            assert seen == ['HWJ/Red/x/x_04h_T_I.fits'], seen
+            # an external cutout root may be shared between cells: nothing there is ever touched
+            ext = os.path.join(tmp, 'shared')
+            c2 = C.Cell(C.parse_args(['--cell', '04h_2024-12-19', '--out', out, '--cutout-root', ext]))
+            p = os.path.join(ext, '10pc', '18MHz', 'GJ1', 'GJ1_05h_T_I.fits')
+            os.makedirs(os.path.dirname(p))
+            open(p, 'w').close()
+            del seen[:]
+            assert c2.trim_band('18MHz') == 0 and seen == [], f'a file of a shared cutout root was touched: {seen}'
+        finally:
+            C.release_preallocation = real
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 TESTS = [test_the_ordering_rules, test_priority_the_flows_first_and_never_waiting_for_cpu_work,
          test_a_flow_takes_the_device_with_a_free_slot, test_switches,
          test_the_scheduler_runs_the_plan_in_a_valid_order, test_what_fails_the_cell, test_refusals_before_any_work,
          test_run_always_leaves_a_record_and_never_a_half_shipped_cell, test_only_the_staged_subbands_are_planned,
-         test_releasing_preallocation_changes_nothing_in_the_file]
+         test_releasing_preallocation_changes_nothing_in_the_file, test_charges_follow_measured_use,
+         test_bulk_products_on_their_own_roots, test_cutouts_are_trimmed_per_band]
 
 
 def main():
