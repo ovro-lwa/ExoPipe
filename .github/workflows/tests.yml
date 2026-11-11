@@ -12,7 +12,9 @@ permissions:
   contents: read
 jobs:
   data-free:
-    runs-on: ubuntu-latest
+    # pinned (2026-11-11): ubuntu-latest moved to Ubuntu 26.04, for which setup-python has no Python 3.8 build (the job failed
+    # at set-up, before any test); 24.04 is the newest image with one. Move both together when the cluster environment moves.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
