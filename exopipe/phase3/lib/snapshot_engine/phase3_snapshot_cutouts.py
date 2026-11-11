@@ -38,8 +38,6 @@ PLANETS = ("jupiter", "saturn", "uranus", "neptune")
 # P3_SNAP_SAMPLES_DIR (default: production's directory, the same two files) and REFUSES when a default list is missing: a skipped
 # list would write the planets only and read as "no target in the field" (found 2026-11-11 on a copy of the engine without them).
 SAMPLES_DIR = os.environ.get("P3_SNAP_SAMPLES_DIR", "/lustre/gh/main/clv15")
-# Objects cut at a time by write_cutouts (speed only; identical products - SPEED-UP 2b there); the search's own thread knob.
-CUT_THREADS = max(1, int(os.environ.get("P3_SNAP_DETECT_THREADS", "1")))
 _TARGETS = None
 _EPH = {}
 
@@ -52,6 +50,19 @@ def _samples():
     if env:
         return [tuple(x.split("=", 1)) for x in env.split(",") if "=" in x]
     return [(tag, os.path.join(SAMPLES_DIR, fn)) for tag, fn in SAMPLES]
+
+
+def check_default_lists():
+    """REFUSE (RuntimeError) when a default target list is not there (PORT note at SAMPLES_DIR).  The search calls this BEFORE
+    any work, so a copy of the engine without its lists fails the search itself: raised inside write_cutouts the same refusal is
+    caught by the search ('the product must never take the search down') and would leave a cell with no cutouts and a
+    successful search (review 2026-11-11).  An ad-hoc target set (P3_SNAP_CUTOUT_SAMPLES) is not checked here, as before."""
+    if os.environ.get("P3_SNAP_CUTOUT_SAMPLES"):
+        return
+    missing = [p for _, p in _samples() if not os.path.exists(p)]
+    if missing:
+        raise RuntimeError("REFUSED: target list(s) not found: %s - set P3_SNAP_SAMPLES_DIR to the directory holding %s"
+                           % (", ".join(missing), ", ".join(fn for _, fn in SAMPLES)))
 
 
 def _planets():
@@ -190,12 +201,14 @@ def write_cutouts(cube, model, meta, admitted, hdr, screen_x, screen_y, lst, dat
         return _w2p[k]
 
     # SPEED-UP 2b (refactor, 2026-11-11; identical products): the cut of one object reads the cube and writes only its own
-    # array, so CUT_THREADS objects are cut at a time and then their files are built and written one after another in
-    # production's object order.  Every pixel position is computed here first, in the main thread, so the workers only read
-    # the table (the WCS object is never used from two threads).
-    for tag, nm, pos in jobs:
-        for ra, dec in pos:
-            _pix(ra, dec)
+    # array, so `nthr` objects (the search's DETECT_THREADS, read at call time) are cut at a time and then their files are
+    # built and written one after another in production's object order.  The pixel positions of a batch are computed first,
+    # in this thread, so the workers only read the table (the WCS object is never used from two threads).
+    # FAILURE ORDER (review 2026-11-11): production cut and wrote object after object, so when object k raised, the files of
+    # the objects before it existed and nothing after it was cut.  The same here: a batch stops at its first failing object,
+    # the objects before it are written, then the exception is raised.
+    import phase3_snapshot_search as _SS
+    nthr = max(1, int(getattr(_SS, "DETECT_THREADS", 1)))
 
     def _cut(job):
         tag, nm, pos = job
@@ -260,20 +273,37 @@ def write_cutouts(cube, model, meta, admitted, hdr, screen_x, screen_y, lst, dat
         fits.HDUList([fits.PrimaryHDU(out, header=h), tab]).writeto(fn, overwrite=True)
         return 1
 
-    def _cut_many(chunk):
-        if CUT_THREADS > 1 and len(chunk) > 1:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=CUT_THREADS) as ex:
-                return list(ex.map(_cut, chunk))
-        return [_cut(job) for job in chunk]
+    def _cut_caught(job):
+        try:
+            return None, _cut(job)
+        except Exception as e:
+            return e, None
 
-    done = []
-    for c0 in range(0, len(jobs), CUT_THREADS):
-        chunk = jobs[c0:c0 + CUT_THREADS]
-        done = list(zip(chunk, _cut_many(chunk)))
-        for (tag, nm, pos), (out, cx_list, cy_list) in done:
-            written += _write_one(tag, nm, pos, out, cx_list, cy_list)
-    del done
+    def _cut_many(chunk):
+        if nthr > 1 and len(chunk) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=nthr) as ex:
+                return list(ex.map(_cut_caught, chunk))
+        return [_cut_caught(job) for job in chunk]
+
+    for c0 in range(0, len(jobs), nthr):
+        ready, failure = [], None
+        for job in jobs[c0:c0 + nthr]:
+            try:
+                for ra, dec in job[2]:
+                    _pix(ra, dec)
+            except Exception as e:
+                failure = e
+                break
+            ready.append(job)
+        done = _cut_many(ready)
+        for (tag, nm, pos), (err, res) in zip(ready, done):
+            if err is not None:
+                raise err
+            written += _write_one(tag, nm, pos, res[0], res[1], res[2])
+        del done
+        if failure is not None:
+            raise failure
     log.info("photometry cutouts: %d objects x %d frames, %s %s %s -> %s (names: distinct objects unique, 2026-10-25)", written, nt, lst,
              band, stokes, root)
     return written

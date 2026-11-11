@@ -65,9 +65,11 @@ log = logging.getLogger("snapgroup")
 GROUPS = {"Red": SCIENCE_SUBBANDS[0:5],
           "Green": SCIENCE_SUBBANDS[5:10],
           "Blue": SCIENCE_SUBBANDS[10:15]}
-# Instants accumulated at a time (speed only; identical products for every value - SPEED-UP 3 in _run_group_search).
-# 0 = the --nthreads value, production's reader count.  The refactor's search step sets it from config search_snapshot.
+# Instants accumulated at a time by accumulate() (speed only; identical products for every value).  0 = production's own loop,
+# unchanged.  Read from the environment at import; the step wiring that sets it from config comes with the next pull request.
 GROUP_THREADS = max(0, int(os.environ.get("P3_SNAP_GROUP_THREADS", "0")))
+_STAGED_READ_FRAME = read_frame      # the staged-file reader; regen_group_cutouts swaps read_frame for its member-cube reader
+LUSTRE_READERS = 6                   # frames read from /lustre at a time by the per-instant accumulation (REVIEW.md)
 MATCH_TOL_S = 12.0      # RETIRED 2026-10-07 (pairing by file-name time); kept for readers of old logs only
 PAIR_TOL_S = 1.0        # s: members = frames of the SAME integration, DATE-OBS equal within 1 s (distinct integrations of a
                         # cell are 10.0-10.1 s apart: 358 per cell on 19h 2025-05-03 and 14h 2025-04-21, measured 2026-10-07)
@@ -130,11 +132,124 @@ def read_admission(out_dir, subband):
         return {r["ts"]: r["admitted"] == "1" for r in csv.DictReader(f)}
 
 
-def dewarp_frame(data, screen_x, screen_y):
-    gy, gx = np.mgrid[0:data.shape[0], 0:data.shape[1]]
+def dewarp_coords(shape, screen_x, screen_y):
+    """The sample coordinates dewarp_frame builds for a frame of this shape and these screens."""
+    gy, gx = np.mgrid[0:shape[0], 0:shape[1]]
+    return [gy + screen_y, gx + screen_x]
+
+
+def dewarp_frame(data, screen_x, screen_y, coords=None):
+    """coords (refactor, 2026-11-11): dewarp_coords(data.shape, screen_x, screen_y) built once by the caller for many frames of
+    one subband - the same arrays, so the same result; None builds them here, as production does for every frame."""
+    if coords is None:
+        coords = dewarp_coords(data.shape, screen_x, screen_y)
     return ndimage.map_coordinates(
-        data, [gy + screen_y, gx + screen_x], order=1,
+        data, coords, order=1,
         mode="constant", cval=np.nan).astype(np.float32)
+
+
+def accumulate(nt, sb_frames, sb_match, sb_adm, sb_screens, grid_of, group_of, full_ok, ref_list, sb_dsec, ref_dob,
+               cubes, wsums, nsubs, nthreads, chunk_frames, t0, per_instant):
+    """Add every admitted member frame, weighted 1/rms^2, into its wideband cube(s) (cubes[g][t], wsums[g][t], nsubs[g][t], in
+    place) and return the member rows in production's append order.
+
+    per_instant False = PRODUCTION'S LOOP, unchanged (clv15 be63765 :299-338): workers read and dewarp the frames of a chunk
+    subband after subband, and this thread adds them.  It is the default (P3_SNAP_GROUP_THREADS = 0) and the only order used
+    when the frames come from member cubes (regen_group_cutouts swaps read_frame for a reader that keeps two cubes in memory and
+    must be read member after member).
+
+    per_instant True = SPEED-UP 3 (refactor, 2026-11-11; identical products; plan/STAGE_MAP_20261111.md hot spot 3):
+     (a) a subband's dewarp coordinates depend only on the subband, so they are built once per subband and passed to the same
+         map_coordinates call (dewarp_frame; production rebuilt them for every frame);
+     (b) one worker handles one INSTANT t: it reads that instant's member frames in production's subband order and adds them
+         into cubes[g][t] / wsums[g][t] / nsubs[g][t] in that order.  The adds of one (group, instant) are therefore the same
+         float operations in the same order as production's; different instants touch different array elements;
+     (c) the member rows are put back in production's append order (chunk, subband, instant, group)."""
+    from concurrent.futures import ThreadPoolExecutor
+    coords, coord_locks = {}, {sb: threading.Lock() for sb in sb_frames}
+
+    def _one(sb, t):
+        j = sb_match[sb][t]
+        if j < 0:
+            return None
+        ts, path = sb_frames[sb][j]
+        adm = sb_adm[sb]
+        if adm and not adm.get(ts, False):
+            return None
+        data, _ = read_frame(path)
+        if data.shape != grid_of[group_of[sb]]:
+            log.warning("%s frame %s has grid %s, wideband %s expects %s — dropped",
+                        sb, ts, data.shape, group_of[sb], grid_of[group_of[sb]])
+            return None
+        sx, sy = sb_screens[sb]
+        if per_instant:
+            key = (sb, data.shape)
+            with coord_locks[sb]:                 # one lock per subband: building one grid does not hold the others up
+                if key not in coords:
+                    coords[key] = dewarp_coords(data.shape, sx, sy)
+            dw = dewarp_frame(data, sx, sy, coords=coords[key])
+        else:
+            dw = dewarp_frame(data, sx, sy)
+        rms = central_rms(dw)
+        if not (np.isfinite(rms) and rms > 0):
+            return None
+        return sb, t, dw, 1.0 / rms ** 2
+
+    if not per_instant:
+        member_rows = []
+        for c0 in range(0, nt, chunk_frames):
+            c1 = min(c0 + chunk_frames, nt)
+            jobs = [(sb, t) for sb in sb_frames for t in range(c0, c1)]
+            with ThreadPoolExecutor(max_workers=nthreads) as ex:
+                for res in ex.map(lambda a: _one(*a), jobs):
+                    if res is None:
+                        continue
+                    sb, t, dw, w = res
+                    contrib = np.nan_to_num(dw, nan=0.0) * np.float32(w)
+                    gmask = np.isfinite(dw)
+                    for g in ((group_of[sb], "Full") if full_ok else (group_of[sb],)):
+                        cubes[g][t] += contrib
+                        wsums[g][t] += w
+                        nsubs[g][t] += 1
+                        j = sb_match[sb][t]
+                        member_rows.append((g, ref_list[t][0], sb, sb_frames[sb][j][0], sb_dsec[sb][1][sb_frames[sb][j][1]],
+                                            ref_dob[ref_list[t][1]], w))
+            log.info("chunk %d-%d accumulated (%.0f s elapsed)",
+                     c0, c1, time.time() - t0)
+        return member_rows
+
+    sb_order = {sb: k for k, sb in enumerate(sb_frames)}
+
+    def _instant(t):
+        rows_t = []
+        for sb in sb_frames:
+            res = _one(sb, t)
+            if res is None:
+                continue
+            _, _, dw, w = res
+            contrib = np.nan_to_num(dw, nan=0.0) * np.float32(w)
+            for gi, g in enumerate((group_of[sb], "Full") if full_ok else (group_of[sb],)):
+                cubes[g][t] += contrib
+                wsums[g][t] += w
+                nsubs[g][t] += 1
+                j = sb_match[sb][t]
+                rows_t.append(((t // chunk_frames, sb_order[sb], t, gi),
+                               (g, ref_list[t][0], sb, sb_frames[sb][j][0], sb_dsec[sb][1][sb_frames[sb][j][1]],
+                                ref_dob[ref_list[t][1]], w)))
+        return rows_t
+
+    # LUSTRE READS (REVIEW.md: at most 6 Lustre-heavy workers; review 2026-11-11): frames staged node-local are read
+    # GROUP_THREADS at a time; frames read from /lustre (no staging given) at most LUSTRE_READERS at a time
+    workers = GROUP_THREADS
+    if any(str(fl[0][1]).startswith("/lustre/") for fl in sb_frames.values() if fl):
+        workers = min(workers, LUSTRE_READERS)
+    keyed_rows = []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for k, rows_t in enumerate(ex.map(_instant, range(nt))):
+            keyed_rows.extend(rows_t)
+            if (k + 1) % 24 == 0 or k + 1 == nt:
+                log.info("instants 0-%d accumulated (%.0f s elapsed)", k + 1, time.time() - t0)
+    return [r for _, r in sorted(keyed_rows, key=lambda kr: kr[0])]
 
 
 def run_group_search(lst, date, stokes, out_dir, thresh=5.0,
@@ -162,6 +277,10 @@ def run_group_search(lst, date, stokes, out_dir, thresh=5.0,
 
 def _run_group_search(lst, date, stokes, out_dir, thresh, stage_root_fmt, nthreads, chunk_frames, outcome):
     t0 = time.time()
+    # PORT (refactor, 2026-11-11): as run_search - a missing default cutout target list refuses before any work
+    if os.environ.get("P3_SNAP_CUTOUTS", "1") != "0" and os.environ.get("P3_SNAP_INJECTED") != "1":
+        from phase3_snapshot_cutouts import check_default_lists
+        check_default_lists()
 
     # WIDEBAND EXCLUSION = the deep rule (Q29, Gregg 2026-10-07 "Fine"): a refused wideband is neither built nor searched
     sys.path.insert(0, "/lustre/gh/main/exopipe")
@@ -298,74 +417,11 @@ def _run_group_search(lst, date, stokes, out_dir, thresh, stage_root_fmt, nthrea
         for sb in sbs:
             group_of[sb] = g
 
-    from concurrent.futures import ThreadPoolExecutor
-
-    def _one(sb, t):
-        j = sb_match[sb][t]
-        if j < 0:
-            return None
-        ts, path = sb_frames[sb][j]
-        adm = sb_adm[sb]
-        if adm and not adm.get(ts, False):
-            return None
-        data, _ = read_frame(path)
-        if data.shape != grid_of[group_of[sb]]:
-            log.warning("%s frame %s has grid %s, wideband %s expects %s — dropped",
-                        sb, ts, data.shape, group_of[sb], grid_of[group_of[sb]])
-            return None
-        dw = _dewarp(sb, data)
-        rms = central_rms(dw)
-        if not (np.isfinite(rms) and rms > 0):
-            return None
-        return sb, t, dw, 1.0 / rms ** 2
-
-    # SPEED-UP 3 (refactor, 2026-11-11; identical products; plan/STAGE_MAP_20261111.md hot spot 3).  Production accumulated in
-    # the main thread: workers read and dewarped the frames of a chunk, and one loop added them, subband after subband.  Here:
-    #  (a) a subband's dewarp coordinates (pixel grid + its screen) depend only on the subband, so they are built once per
-    #      subband and passed to the same map_coordinates call (production rebuilt them for every frame, dewarp_frame);
-    #  (b) one worker handles one INSTANT t: it reads that instant's member frames in production's subband order and adds them
-    #      into cubes[g][t] / wsums[g][t] / nsubs[g][t] in that order.  The adds of one (group, instant) are therefore the same
-    #      float operations in the same order as production's; different instants touch different array elements;
-    #  (c) the member rows are put back in production's append order (chunk, subband, instant, group) before the sort below.
-    _coords, _coords_lock = {}, threading.Lock()
-
-    def _dewarp(sb, data):
-        key = (sb, data.shape)
-        with _coords_lock:
-            if key not in _coords:
-                sx, sy = sb_screens[sb]
-                gy, gx = np.mgrid[0:data.shape[0], 0:data.shape[1]]
-                _coords[key] = [gy + sy, gx + sx]
-        return ndimage.map_coordinates(data, _coords[key], order=1, mode="constant", cval=np.nan).astype(np.float32)
-
-    sb_order = {sb: k for k, sb in enumerate(sb_frames)}
-
-    def _instant(t):
-        rows_t = []
-        for sb in sb_frames:
-            res = _one(sb, t)
-            if res is None:
-                continue
-            _, _, dw, w = res
-            contrib = np.nan_to_num(dw, nan=0.0) * np.float32(w)
-            for gi, g in enumerate((group_of[sb], "Full") if full_ok else (group_of[sb],)):
-                cubes[g][t] += contrib
-                wsums[g][t] += w
-                nsubs[g][t] += 1
-                j = sb_match[sb][t]
-                rows_t.append(((t // chunk_frames, sb_order[sb], t, gi),
-                               (g, ref_list[t][0], sb, sb_frames[sb][j][0], sb_dsec[sb][1][sb_frames[sb][j][1]],
-                                ref_dob[ref_list[t][1]], w)))
-        return rows_t
-
-    keyed_rows = []
-    with ThreadPoolExecutor(max_workers=max(1, GROUP_THREADS or nthreads)) as ex:
-        for k, rows_t in enumerate(ex.map(_instant, range(nt))):
-            keyed_rows.extend(rows_t)
-            if (k + 1) % chunk_frames == 0 or k + 1 == nt:
-                log.info("instants 0-%d accumulated (%.0f s elapsed)", k + 1, time.time() - t0)
-    member_rows = [r for _, r in sorted(keyed_rows, key=lambda kr: kr[0])]
-    del keyed_rows, _coords
+    # the member frames are added into the wideband cubes by accumulate() (module level, so its two orders can be tested
+    # against each other on synthetic frames: tests/test_snapshot_engine.py)
+    member_rows = accumulate(nt, sb_frames, sb_match, sb_adm, sb_screens, grid_of, group_of, full_ok, ref_list, sb_dsec, ref_dob,
+                             cubes, wsums, nsubs, nthreads, chunk_frames, t0,
+                             per_instant=GROUP_THREADS > 0 and read_frame is _STAGED_READ_FRAME)
     # MEMBER TABLE (frame-time fix 2026-10-07): every wideband frame's members, each with its own DATE-OBS, so "the members of
     # a wideband frame share one integration" is checked on the product, and readers rebuild a wideband frame from exactly
     # its members (by member file-name ts) instead of re-pairing by name

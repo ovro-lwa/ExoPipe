@@ -217,9 +217,13 @@ def main(argv=None):
         if r: RES[sb] = r
     if MOVIE_PROCS > 1 and len(want) > 1:
         import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
         sys.stdout.flush()
-        with multiprocessing.get_context("fork").Pool(MOVIE_PROCS) as pool:      # children inherit RES; nothing is pickled in
-            done = pool.map(_render, want, chunksize=1)
+        # forked children inherit RES (nothing is pickled in).  ProcessPoolExecutor, not multiprocessing.Pool: when a child
+        # dies (killed for memory, a hard exit) the executor raises BrokenProcessPool here, where Pool.map would wait forever
+        # (review 2026-11-11) - the movie step fails loudly, as the serial loop does
+        with ProcessPoolExecutor(max_workers=MOVIE_PROCS, mp_context=multiprocessing.get_context("fork")) as pool:
+            done = list(pool.map(_render, want))
     else:
         done = None
     tot = 0.0

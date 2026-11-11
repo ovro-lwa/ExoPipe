@@ -967,8 +967,10 @@ def robust_scale(model_a, model_b, lo=5.0):
 
 NOISE_OUTLIER_K = 5.0   # per-Stokes residual-MAD frame refusal (Gregg 2026-09-09)
 
-# Images measured at a time by detect() (speed only; the products are identical for every value - see SPEED-UP 1 there).
-# 1 = production's serial loop.  The refactor's search step sets it from config search_snapshot.DETECT_THREADS.
+# Images measured at a time by detect(), blocks by highpass_blocks(), frames by admission_table() and objects by
+# phase3_snapshot_cutouts.write_cutouts() (speed only; the products are identical for every value - SPEED-UP 1, 1b, 1c, 2b).
+# 1 = production's serial loop.  Read from the environment at import; the step wiring that sets it from a config key comes
+# with the next pull request (no config key exists yet).
 DETECT_THREADS = max(1, int(os.environ.get("P3_SNAP_DETECT_THREADS", "1")))
 
 
@@ -1282,6 +1284,11 @@ def run_search(lst, date, subband, stokes, mode, out_dir, thresh=5.0,
         os.environ["P3_SNAP_INJECTED"] = "1"
     else:
         os.environ.pop("P3_SNAP_INJECTED", None)
+    # PORT (refactor, 2026-11-11): the cutout target lists are checked BEFORE any work, so a copy of the engine without them
+    # refuses the search itself (phase3_snapshot_cutouts.check_default_lists; production reads them beside the script)
+    if not inject and os.environ.get("P3_SNAP_CUTOUTS", "1") != "0":
+        from phase3_snapshot_cutouts import check_default_lists
+        check_default_lists()
     os.makedirs(out_dir, exist_ok=True)
     frames = discover_frames(lst, date, subband, stage_root=stage_root)
     stokes_list = ["V", "I"] if stokes == "VI" else [stokes]

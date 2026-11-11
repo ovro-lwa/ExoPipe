@@ -27,6 +27,7 @@ import glob
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import numpy as np
@@ -52,23 +53,23 @@ CODE = os.path.dirname(os.path.abspath(__file__))
 # live).  This copy lives in the refactor without the lists beside it, so the default is production's directory itself.
 SAMPLES_DIR_DEFAULT = os.environ.get("P3_SNAP_SAMPLES_DIR", "/lustre/gh/main/clv15")
 # Frames sampled at a time (speed only; identical tables for every value - SPEED-UP 4 in extract).  1 = production's serial loop.
+# Read from the environment at import; the step wiring that sets it from a config key comes with the next pull request.
 LC_THREADS = max(1, int(os.environ.get("P3_SNAP_LC_THREADS", "1")))
+# LUSTRE READS (REVIEW.md: at most 6 Lustre-heavy workers; review 2026-11-11): however many frames are sampled at a time, at
+# most LUSTRE_READERS of this process's threads read a file under /lustre at once (the shipped flow fields; the frames too
+# when no node-local staging is given).  Node-local reads are not limited.  The driver bounds the processes.
+LUSTRE_READERS = 6
+_LUSTRE_SEM = threading.BoundedSemaphore(LUSTRE_READERS)
 
 
-def _nanmedian_rows(a):
-    """np.nanmedian(a, axis=1) of a 2-D float array, value for value and dtype for dtype (SPEED-UP 4, refactor 2026-11-11).
+def _read_limited(fn, path):
+    if os.path.abspath(path).startswith("/lustre/"):
+        with _LUSTRE_SEM:
+            return fn(path)
+    return fn(path)
 
-    What numpy does for a row length >= 600 (numpy 1.19.2 lib/nanfunctions._nanmedian): np.apply_along_axis calls
-    _nanmedian1d on every row - drop the NaNs, np.median of the rest, python-float nan for an all-NaN row - and the result array
-    takes the dtype of the FIRST row's result (a's dtype, or float64 when the first row is all NaN).  That is ~10,000 Python
-    calls per frame here.  The same values, without the per-row calls:
-      - rows without a NaN: np.median(rows, axis=1) is the per-row np.median (same partition order statistics, the same
-        float mean of the two middle values);
-      - rows with a NaN: numpy's own np.nanmedian on those rows only (the production path, row by row);
-      - the result dtype: numpy's own, asked of numpy for the first row.
-    Shorter rows (numpy's _nanmedian_small path) are left to np.nanmedian itself."""
-    if a.ndim != 2 or a.shape[1] < 600 or a.shape[0] == 0:
-        return np.nanmedian(a, axis=1)
+
+def _nanmedian_rows_fast(a):
     nanrow = np.isnan(a).any(axis=1)
     # the result dtype is numpy's own for the first row (whatever this numpy's rule is: 1.19.2 gives float64 for an all-NaN row)
     out = np.empty(a.shape[0], dtype=np.nanmedian(a[:1], axis=1).dtype)
@@ -81,6 +82,55 @@ def _nanmedian_rows(a):
         out[nanrow] = np.nanmedian(a[nanrow], axis=1)
     return out
 
+
+_FAST_MEDIAN_OK = None
+
+
+def _fast_median_ok():
+    """True when _nanmedian_rows_fast equals np.nanmedian(a, axis=1), bytes and dtype, on a probe UNDER THE RUNNING NUMPY
+    (review 2026-11-11: the fast path leans on numpy's row-length dispatch and first-row dtype rule, which differ between numpy
+    versions; CI runs another numpy than the engine).  Checked once per process; on any difference the engine uses np.nanmedian."""
+    global _FAST_MEDIAN_OK
+    if _FAST_MEDIAN_OK is None:
+        import warnings
+        ok = True
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for dt in (np.float32, np.float64):
+                base = (((np.arange(8 * 640, dtype=np.int64) * 2654435761) % 1000003) / 1000003.0 - 0.5).reshape(8, 640).astype(dt)
+                probes = [base]
+                b = base.copy(); b[2, 5] = np.nan; b[3, ::2] = np.nan; b[5] = np.nan; b[6, 1:] = np.nan
+                probes.append(b)
+                c = b.copy(); c[0] = np.nan
+                probes.append(c)
+                probes.append(np.abs(c - np.nanmedian(c, axis=1)[:, None]))
+                probes.append(np.round(base * 4).astype(dt)[:, :639])
+                for x in probes:
+                    r, f = np.nanmedian(x, axis=1), _nanmedian_rows_fast(x)
+                    if not (r.dtype == f.dtype and r.shape == f.shape and r.tobytes() == f.tobytes()):
+                        ok = False
+        if not ok:
+            print("WARNING: the fast row median differs from np.nanmedian under numpy %s - using np.nanmedian" % np.__version__, flush=True)
+        _FAST_MEDIAN_OK = ok
+    return _FAST_MEDIAN_OK
+
+
+def _nanmedian_rows(a):
+    """np.nanmedian(a, axis=1) of a 2-D float array, value for value and dtype for dtype (SPEED-UP 4, refactor 2026-11-11).
+
+    What numpy does for a row length >= 600 (numpy 1.19.2 lib/nanfunctions._nanmedian): np.apply_along_axis calls
+    _nanmedian1d on every row - drop the NaNs, np.median of the rest, python-float nan for an all-NaN row - and the result array
+    takes the dtype of the FIRST row's result (a's dtype, or float64 when the first row is all NaN).  That is ~10,000 Python
+    calls per frame here.  The same values, without the per-row calls (_nanmedian_rows_fast):
+      - rows without a NaN: np.median(rows, axis=1) is the per-row np.median (same partition order statistics, the same
+        float mean of the two middle values);
+      - rows with a NaN: numpy's own np.nanmedian on those rows only (the production path, row by row);
+      - the result dtype: numpy's own, asked of numpy for the first row.
+    Shorter rows (numpy's _nanmedian_small path) are left to np.nanmedian itself, and so is everything when the probe of
+    _fast_median_ok finds a difference under the running numpy."""
+    if a.ndim != 2 or a.shape[1] < 600 or a.shape[0] == 0 or not _fast_median_ok():
+        return np.nanmedian(a, axis=1)
+    return _nanmedian_rows_fast(a)
 
 def git_hash():
     try:
@@ -202,14 +252,14 @@ def extract(cell, sb, stage, proto_root, master_dir, run_dir, samples_dir, out_d
         # frame surfaces as the first one in frame order, as in the serial loop.
         def _frame(j):
             ts, path = fl[j]
-            d, h = SS.read_frame(path)
+            d, h = _read_limited(SS.read_frame, path)
             if abs(float(h["CRVAL1"]) - float(hdr0["CRVAL1"])) > 1e-3 or abs(float(h["CRVAL2"]) - float(hdr0["CRVAL2"])) > 1e-3:
                 raise RuntimeError("%s %s %s: frame %s WCS differs from the first frame - refusing" % (cell, sb, st, ts))
             d = np.asarray(d, np.float32)
             fp, fts, exact = R.flow_file_for(cell, sb, ts)
             if fp is None:
                 raise RuntimeError("%s %s: no flow field at all for %s" % (cell, sb, ts))
-            off = np.load(fp).astype(np.float32)
+            off = _read_limited(np.load, fp).astype(np.float32)
             iy = np.clip(np.round(py / 8.0).astype(int), 0, off.shape[0] - 1)
             ix = np.clip(np.round(px / 8.0).astype(int), 0, off.shape[1] - 1)
             rx = px + off[iy, ix, 0]; ry = py + off[iy, ix, 1]        # raw pixel that maps onto the flowed position

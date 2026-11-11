@@ -15,8 +15,13 @@ the same property on synthetic inputs, so CI catches a change that breaks it:
   3. highpass_blocks(): identical bytes for every DETECT_THREADS value;
   4. admission_table(): identical rows and flags for every DETECT_THREADS value (the night rule is stubbed: no ephemeris here);
   5. the cutout target lists: a missing DEFAULT list refuses (production skipped it: a copy of the engine without the lists
-     wrote the planets only);
-  6. cluster only (the clv15 repository present): every ported file's pinned blob is the blob of the pin commit, and the files
+     wrote the planets only), in _targets() and in check_default_lists(), which the searches call before any work;
+  6. the wideband accumulation: the per-instant order (P3_SNAP_GROUP_THREADS > 0) gives the cubes, weight sums, member counts
+     and member rows of production's loop, bit for bit, for several chunk sizes and thread counts, with screens, NaN regions,
+     refused and unmatched frames, a blank frame and a frame on the wrong grid; with and without a Full group;
+  7. write_cutouts(): the same cutout cubes and tables for every DETECT_THREADS value (fixed targets on and off the frame edge);
+  8. the frame movies: a subband's binned cube is the same for every P3_SNAP_MOVIE_THREADS value;
+  9. cluster only (the clv15 repository present): every ported file's pinned blob is the blob of the pin commit, and the files
      production has changed since the pin are listed in ONE failure that names what to port. Without clv15 this prints
      UNTESTED-PRODUCTION and does not fail.
 Run: python tests/test_snapshot_engine.py   (or under pytest). On the cluster run it ALSO under the engine's own interpreter
@@ -41,6 +46,7 @@ try:
     sys.path.insert(0, ENGINE)                 # the engine files are scripts that import each other by name, as in clv15
     import phase3_snapshot_search as SS
     import phase3_snapshot_cutouts as SC
+    import phase3_snapshot_group_search as GS
     from exopipe.phase3.lib import snapshot_engine as PIN
 except Exception as e:                                    # pragma: no cover
     _IMPORT_ERROR = f'{e.__class__.__name__}: {e}'
@@ -49,9 +55,10 @@ except Exception as e:                                    # pragma: no cover
 def _nanmedian_rows():
     """The function from the light-curve module, without importing the module (it imports two unported clv15 modules)."""
     src = open(os.path.join(ENGINE, 'phase3_snapshot_lightcurves.py')).read()
-    start, end = src.index('def _nanmedian_rows(a):'), src.index('\ndef git_hash')
+    start, end = src.index('def _nanmedian_rows_fast(a):'), src.index('\ndef git_hash')
     ns = {'np': np}
     exec(src[start:end], ns)
+    assert ns['_fast_median_ok']() is True, f'the fast row median is switched off under numpy {np.__version__} (its probe differs)'
     return ns['_nanmedian_rows']
 
 
@@ -201,6 +208,184 @@ def test_a_missing_default_target_list_refuses():
                 os.environ['P3_SNAP_CUTOUT_SAMPLES'] = keep[2]
 
 
+def _accum_world(full):
+    """Synthetic member frames for accumulate(): two groups on different grids (or one grid and a Full group)."""
+    rng = np.random.RandomState(21)
+    nt = 30
+    red, green = list(GS.GROUPS['Red']), list(GS.GROUPS['Green'])[:2]
+    # frames of 80 px or more: central_rms needs 1,000 finite pixels in the central quarter (smaller frames are all dropped)
+    shape_of = {sb: (80, 80) for sb in red}
+    shape_of.update({sb: ((80, 80) if full else (96, 96)) for sb in green})
+    frames, sb_frames, sb_match, sb_adm, sb_screens, sb_dsec = {}, {}, {}, {}, {}, {}
+    for k, sb in enumerate(red + green):
+        fl = []
+        for j in range(nt):
+            key = '%s:%d' % (sb, j)
+            d = rng.standard_normal(shape_of[sb]).astype(np.float32) * np.float32(1.0 + 0.3 * k)
+            d[:3, :] = np.nan
+            if (k + j) % 11 == 0:
+                d[38:42, 38:42] = np.nan
+            frames[key] = d
+            fl.append(('20241219_06%02d%02d' % (j // 6, (j % 6) * 10 + k % 3), key))
+        frames['%s:%d' % (sb, 4)] = np.full(shape_of[sb], np.nan, np.float32) if k == 1 else frames['%s:%d' % (sb, 4)]   # blank
+        if k == 2:
+            frames['%s:%d' % (sb, 9)] = rng.standard_normal((12, 12)).astype(np.float32)                                # wrong grid
+        sb_frames[sb] = fl
+        m = np.arange(nt)
+        m[(np.arange(nt) + k) % 13 == 0] = -1                                    # unmatched instants
+        sb_match[sb] = m
+        sb_adm[sb] = {} if k == 3 else {ts: (j + k) % 7 != 0 for j, (ts, _) in enumerate(fl)}       # {} = every frame eligible
+        sx = (rng.standard_normal(shape_of[sb]) * 0.3).astype(np.float32) if k % 2 else np.zeros(shape_of[sb], np.float32)
+        sb_screens[sb] = (sx, np.zeros(shape_of[sb], np.float32))
+        sb_dsec[sb] = (np.arange(nt, dtype=float), {key: 'dob-' + key for _, key in fl})
+    group_of = {sb: g for g, sbs in GS.GROUPS.items() for sb in sbs}
+    grid_of = {'Red': (80, 80), 'Green': (80, 80) if full else (96, 96)}
+    if full:
+        grid_of['Full'] = (80, 80)
+    ref_list = sb_frames[red[0]]
+    return dict(nt=nt, frames=frames, sb_frames=sb_frames, sb_match=sb_match, sb_adm=sb_adm, sb_screens=sb_screens,
+                grid_of=grid_of, group_of=group_of, ref_list=ref_list, sb_dsec=sb_dsec, ref_dob=sb_dsec[red[0]][1])
+
+
+def _accumulate(w, full, per_instant, threads, chunk):
+    cubes = {g: np.zeros((w['nt'],) + w['grid_of'][g], dtype=np.float32) for g in w['grid_of']}
+    wsums = {g: np.zeros(w['nt'], dtype=np.float64) for g in w['grid_of']}
+    nsubs = {g: np.zeros(w['nt'], dtype=int) for g in w['grid_of']}
+    keep = GS.read_frame, GS.GROUP_THREADS, GS.log.level
+    GS.read_frame = lambda key: (w['frames'][key], None)
+    GS.GROUP_THREADS = threads
+    GS.log.setLevel(100)                                         # the wrong-grid warning is expected
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            rows = GS.accumulate(w['nt'], w['sb_frames'], w['sb_match'], w['sb_adm'], w['sb_screens'], w['grid_of'], w['group_of'],
+                                 full, w['ref_list'], w['sb_dsec'], w['ref_dob'], cubes, wsums, nsubs, 8, chunk, 0.0, per_instant)
+    finally:
+        GS.read_frame, GS.GROUP_THREADS = keep[0], keep[1]
+        GS.log.setLevel(keep[2])
+    return ([(g, cubes[g].tobytes(), wsums[g].tobytes(), nsubs[g].tobytes()) for g in sorted(cubes)], rows)
+
+
+def test_wideband_accumulation_per_instant_equals_production_loop():
+    for full in (False, True):
+        w = _accum_world(full)
+        ref = _accumulate(w, full, False, 0, 24)
+        counts = np.frombuffer(ref[0][-1][3], dtype=int)             # Red's member count per instant
+        assert len(ref[1]) > 100 and counts.min() < counts.max() <= 5, 'the synthetic frames no longer drop members at some instants'
+        for chunk in (7, 24, 10 ** 6):
+            for threads in (1, 3, 8):
+                got = _accumulate(w, full, True, threads, chunk)
+                prod = ref if chunk == 24 else _accumulate(w, full, False, 0, chunk)
+                assert got[0] == prod[0], f'cubes / weight sums / member counts differ (Full {full}, chunk {chunk}, threads {threads})'
+                assert got[1] == prod[1], f'member rows differ or are in another order (Full {full}, chunk {chunk}, threads {threads})'
+
+
+def _cutout_tree(threads, root, lists):
+    from astropy.io import fits
+    rng = np.random.RandomState(31)
+    nt, n = 9, 256
+    hdr = fits.Header()
+    for k, v in (('NAXIS', 2), ('NAXIS1', n), ('NAXIS2', n), ('CTYPE1', 'RA---SIN'), ('CTYPE2', 'DEC--SIN'), ('CRVAL1', 60.0),
+                 ('CRVAL2', 37.24), ('CRPIX1', n / 2 + 0.5), ('CRPIX2', n / 2 + 0.5), ('CDELT1', -0.25), ('CDELT2', 0.25),
+                 ('BMAJ', 0.45), ('BMIN', 0.33), ('BPA', 10.0)):
+        hdr[k] = v
+    cube = rng.standard_normal((nt, n, n)).astype(np.float32); cube[:, :20, :] = np.nan
+    model = np.median(cube, axis=0).astype(np.float32)
+    meta = [{'ts': '20241219_0600%02d' % (t * 6), 'date_obs': '2024-12-19T06:00:%02d.0' % (t * 6)} for t in range(nt)]
+    admitted = np.ones(nt, dtype=bool); admitted[3] = False
+    screen = np.zeros((n, n), np.float32)
+    keep = os.environ.get('P3_SNAP_CUTOUT_SAMPLES'), SC._TARGETS, SS.DETECT_THREADS, SS.lst_deg_at
+    os.environ['P3_SNAP_CUTOUT_SAMPLES'] = 'T=' + lists
+    SC._TARGETS, SS.DETECT_THREADS = None, threads
+    SS.lst_deg_at = lambda sec: 60.0                               # the field is at the zenith at the cell's mid-time
+    try:
+        nw = SC.write_cutouts(cube, model, meta, admitted, hdr, screen, screen, '04h', '2024-12-19', '18MHz', 'I',
+                              noise_rows=[{'ts': m['ts'], 'global_rms_jyb': '1.0'} for m in meta], root=root)
+    finally:
+        SC._TARGETS, SS.DETECT_THREADS, SS.lst_deg_at = keep[1], keep[2], keep[3]
+        if keep[0] is None:
+            os.environ.pop('P3_SNAP_CUTOUT_SAMPLES', None)
+        else:
+            os.environ['P3_SNAP_CUTOUT_SAMPLES'] = keep[0]
+    out = {}
+    for d, _, fs in os.walk(root):
+        for f in fs:
+            with fits.open(os.path.join(d, f), memmap=False) as h:
+                cards = [repr(c) for c in h[0].header.cards if c.keyword != 'DATE-CRE']
+                out[os.path.relpath(os.path.join(d, f), root)] = (h[0].data.tobytes(), cards, h[1].data.tobytes(), repr(h[1].columns))
+    return nw, out
+
+
+def test_cutouts_are_identical_for_every_thread_count():
+    with tempfile.TemporaryDirectory() as d:
+        lists = os.path.join(d, 'targets.csv')
+        with open(lists, 'w') as f:
+            f.write('name,ra,dec\n')
+            for i in range(11):                                   # inside the frame, near its edges, and far outside it
+                f.write('obj%d,%.3f,%.3f\n' % (i, 60.0 + (i - 5) * 6.5, 37.24 + ((i * 7) % 11 - 5) * 5.0))
+            f.write('far,200.0,-40.0\n')
+        ref = _cutout_tree(1, os.path.join(d, 'r1'), lists)
+        assert ref[0] >= 5 and len(ref[1]) == ref[0], f'the synthetic targets no longer give cutouts ({ref[0]})'
+        for n in (2, 4, 16):
+            got = _cutout_tree(n, os.path.join(d, 'r%d' % n), lists)
+            assert got[0] == ref[0] and sorted(got[1]) == sorted(ref[1]), f'other cutout files with DETECT_THREADS={n}'
+            for k in ref[1]:
+                assert got[1][k] == ref[1][k], f'cutout {k} differs with DETECT_THREADS={n}'
+
+
+def test_check_default_lists_refuses_before_any_work():
+    keep = SC.SAMPLES_DIR, os.environ.pop('P3_SNAP_CUTOUT_SAMPLES', None)
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            SC.SAMPLES_DIR = d
+            with open(os.path.join(d, 'Hot_Warm_Jupiters.csv'), 'w') as f:
+                f.write('name,ra,dec\nA,10.0,20.0\n')
+            try:
+                SC.check_default_lists()
+            except RuntimeError as e:
+                assert 'REFUSED' in str(e) and '10pc.csv' in str(e)
+            else:
+                raise AssertionError('one default list missing: check_default_lists did not refuse')
+            with open(os.path.join(d, '10pc.csv'), 'w') as f:
+                f.write('name,ra,dec\nB,11.0,21.0\n')
+            SC.check_default_lists()                               # both present: no refusal
+            os.environ['P3_SNAP_CUTOUT_SAMPLES'] = 'X=/nonexistent/list.csv'
+            SC.check_default_lists()                               # an ad-hoc set is not checked here, as before
+        finally:
+            SC.SAMPLES_DIR = keep[0]
+            os.environ.pop('P3_SNAP_CUTOUT_SAMPLES', None)
+            if keep[1] is not None:
+                os.environ['P3_SNAP_CUTOUT_SAMPLES'] = keep[1]
+
+
+def test_movie_frames_binned_identically_for_every_thread_count():
+    from astropy.io import fits
+    try:
+        import phase3_snapshot_frame_movie as FM
+    except Exception as e:                                         # matplotlib missing: reported, not failed
+        print(f'UNTESTED-IMPORT: phase3_snapshot_frame_movie ({e.__class__.__name__}: {e})')
+        return
+    rng = np.random.RandomState(41)
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, '18MHz'))
+        for j in range(14):
+            h = fits.Header(); h['DATE-OBS'] = '2024-12-19T06:%02d:%02d.000' % (j // 6, (j % 6) * 10)
+            x = rng.standard_normal((64, 64)).astype(np.float32); x[:5] = np.nan
+            fits.writeto(os.path.join(d, '18MHz', '18MHz-Clean-Snapshot-20241219_06%02d%02d-image_flowed.fits' % (j // 6, (j % 6) * 10)), x, h)
+        keep = FM.a, FM.MOVIE_THREADS
+        try:
+            FM.a = FM.parse_args(['04h_2024-12-19', os.path.join(d, 'out'), '--frames-root', d, '--size', '32'])
+            out = []
+            for n in (1, 2, 5):
+                FM.MOVIE_THREADS = n
+                ts, cube = FM.load_staged('18MHz')
+                out.append((ts, cube.shape, cube.tobytes()))
+            assert out[0] == out[1] == out[2], 'load_staged differs between P3_SNAP_MOVIE_THREADS values'
+            assert out[0][1] == (14, 32, 32)
+        finally:
+            FM.a, FM.MOVIE_THREADS = keep
+
+
 def test_production_pin():
     """Cluster only. The pin is honest (each blob is the pin commit's) and production's later changes to a ported file are
     reported in one failure that names them: moving the pin is a port round."""
@@ -228,7 +413,9 @@ def test_production_pin():
 
 TESTS = [test_row_medians_equal_numpy, test_detect_is_the_serial_loop_for_every_thread_count,
          test_highpass_is_identical_for_every_thread_count, test_admission_is_identical_for_every_thread_count,
-         test_a_missing_default_target_list_refuses, test_production_pin]
+         test_a_missing_default_target_list_refuses, test_check_default_lists_refuses_before_any_work,
+         test_wideband_accumulation_per_instant_equals_production_loop, test_cutouts_are_identical_for_every_thread_count,
+         test_movie_frames_binned_identically_for_every_thread_count, test_production_pin]
 
 
 def main():
