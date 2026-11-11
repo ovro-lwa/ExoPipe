@@ -457,6 +457,17 @@ class search_sublst(_Section):
                                             # 'legacy' = exopipe_ops deep_forced_radio.detection_position in place with the same K
                                             # (spec Q11: the two differ only in the observatory latitude, 37.23977727 vs 37.2398 deg)
     FIT_NPROC = 16                          # processes over frames; SFP:159 (--nproc default)
+    SEARCH_THREADS = 4                      # threads of the engine's per-frame reads from Lustre (the first read of every
+                                            # window, the search-tier gate's stage-1 rms); DEEP_SEARCH_THREADS. Speed only:
+                                            # results are applied in the serial order; 1 = production's serial loops. Kept at 4:
+                                            # several units search at once on a node and the recorders share Lustre (REVIEW.md:
+                                            # at most 6 Lustre-heavy workers)
+    SEED_PARENT_CATALOG = True              # per-hour mode: copy the published parent catalogue (<publish>/catdir) into the new
+                                            # attempt, checked byte for byte; the engine reuses it only for the same Master (its
+                                            # md5 in .gen.json). The reused catalogue's comment line names the run that built it
+    IDENT_PROCS = 6                         # processes computing the per-window source extraction ahead of the engine's
+                                            # detection loop; DEEP_IDENT_PROCS. Speed only: a result is used only when it was
+                                            # computed from the very arguments the loop passes; 1 = no look-ahead
     FIT_LST_LON_DEG = -118.2817             # deg; LST at MJD-MID; SFP:54
     FIT_BLANKED = ('pos_sys_arcsec', 'pos_err_maj_arcsec', 'pos_err_min_arcsec')   # error model A: the deep systematic never
                                             # enters a 10-minute product; SFP:56 (ruled 2026-10-08/10)

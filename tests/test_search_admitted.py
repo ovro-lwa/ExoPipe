@@ -538,7 +538,9 @@ def test_engine_source():
         'the V sanity median: the cell\'s nights': "and _d not in _adm)",
         'the members\' I stack: the cell\'s nights': "_sigma_stack(_ADS.only(resid_I, _ADS.without(dates, _adm))",
         'the members\' V stack: the cell\'s nights': "_sigma_stack(_ADS.only(resid_V, _ADS.without(dates, _adm))",
-        'an admitted night\'s I gate uses its own stack': "run_identification_i(rI, master_I, hdr, beam, _ssA_I.get(d, sstack_I)",
+        # 2026-11-11: the call is made through the look-ahead (deep_search._IdentAhead.take -> _ident_call); the loop still passes
+        # the admitted night's own stack, and a look-ahead result is used only when it was computed from that very stack (digest)
+        'an admitted night\'s I gate uses its own stack': "_ahead_id.take('I', d, rI, hdr, _ssA_I.get(d, sstack_I), None)",
     }
     miss = [k for k, v in want.items() if v not in src]
     check('the engine applies each rule at its gate', not miss, miss)

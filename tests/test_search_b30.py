@@ -81,7 +81,11 @@ def duration_blocks():
     assert pl[i].strip() == 'try:', pl[i]
     bl = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read().split('\n')
     j = next(k for k, ln in enumerate(bl) if '_dur_fb = None' in ln)
-    return cut(pl, i, 'wcs = WCS(hdr).celestial'), cut(bl, j, 'wcs = WCS(hdr).celestial')
+    # 2026-11-11 (the search speed-ups): the branch block is in two places - the values in _det_epoch_header (one header
+    # builder for the detection loop and its look-ahead), the site in the loop right after the call. Same statements, same order.
+    m = next(k for k, ln in enumerate(bl) if 'hdr, _dur_fb = _det_epoch_header(' in ln) + 1
+    return (cut(pl, i, 'wcs = WCS(hdr).celestial'),
+            cut(bl, j, 'return hdr, _dur_fb') + '\n' + cut(bl, m, 'wcs = WCS(hdr).celestial'))
 
 
 def main():

@@ -864,6 +864,8 @@ def engine_env(plan, attempt, tmpdir=None):
         'P3_SEARCH_TIER_MIN': str(int(s.SEARCH_TIER_MIN)),
         'P3_BEAM_GATE_MIN_NIGHTS': str(int(s.BEAM_GATE_MIN_NIGHTS)),
         'P3_V110_TIMEOUT': str(int(s.V110_TIMEOUT_S)),
+        'DEEP_SEARCH_THREADS': str(int(s.SEARCH_THREADS)),
+        'DEEP_IDENT_PROCS': str(int(s.IDENT_PROCS)),
         'P3_TABLE_ELEV': '1' if s.TABLE_ELEV else '0',
         'P3_TABLE_ELEV_BANDS': s.TABLE_ELEV_BANDS,
         'P3_TABLE_XM_EXEMPT': '1' if s.TABLE_XM_EXEMPT else '0',
@@ -914,6 +916,24 @@ def engine_child(argj):
         return 2 if refused else 1
 
 
+def seed_parent_catalog(src, dst):
+    """Copy the published parent catalogue (the .gaul.csv files and their .gen.json records; never a lock file) into the
+    attempt's work directory, each file compared with its source after the copy. Returns what was done, in words; on any
+    difference the copies are removed and the engine builds the catalogue itself."""
+    names = sorted(n for n in os.listdir(src) if n.endswith(('.gaul.csv', '.gaul.csv.gen.json')) and os.path.isfile(os.path.join(src, n)))
+    if not names:
+        return ''
+    os.makedirs(dst, exist_ok=True)
+    for n in names:
+        shutil.copyfile(os.path.join(src, n), os.path.join(dst, n))
+        with open(os.path.join(src, n), 'rb') as a, open(os.path.join(dst, n), 'rb') as b:
+            same = a.read() == b.read()
+        if not same:
+            shutil.rmtree(dst, ignore_errors=True)
+            return f'NOT seeded - the copy of {n} differs from {src} (the engine builds the catalogue)'
+    return f'{len(names)} files from {src}'
+
+
 def _run_root(attempt, label):
     return os.path.join(attempt, 'transients', f'Run_{label}')
 
@@ -939,7 +959,19 @@ def detect(run, u, plan, attempt):
         for name in ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals'):
             if os.path.exists(os.path.join(src, name)):
                 copy_tree(os.path.join(src, name), os.path.join(dst, name))
-        u.note(f'per-hour mode: attempt seeded from {src} (catalogue, ledgers, refusal records, sigma-stack maps)')
+        # SPEED-UP 2026-11-11: the published parent catalogue of the cell (PyBDSF on the Robust -0.75 Master, about a minute
+        # per job) is put where the engine looks for it. The engine decides: it reuses the catalogue only when its .gen.json
+        # carries the md5 of the Master being searched, and rebuilds it otherwise (deep_search.py, CAT1/CAT2). The publish
+        # keeps the catalogue as <publish>/catdir (_publish_files: the item's base name). Each file is copied and compared
+        # with its source byte for byte (Lustre has made silent short copies); a copy that differs is removed, so the engine
+        # builds the catalogue itself, as before
+        cat_src = os.path.join(plan['publish'], 'catdir')
+        cat_dst = os.path.join(attempt, 'flow', f'{plan["cell"]}_10min', 'catdir')
+        seeded_cat = ''
+        if s.SEED_PARENT_CATALOG and os.path.isdir(cat_src) and not os.path.exists(cat_dst):
+            seeded_cat = seed_parent_catalog(cat_src, cat_dst)
+        u.note(f'per-hour mode: attempt seeded from {src} (catalogue, ledgers, refusal records, sigma-stack maps'
+               + (f'; parent catalogue: {seeded_cat}' if seeded_cat else '') + ')')
     log = os.path.join(attempt, f'{plan["cell"]}.log')
     result = os.path.join(attempt, '.engine_result.json')
     a = dict(lst=plan['lst'], band=plan['band'], cell=plan['cell'], label=plan['label'], stokes=plan['stokes'],
