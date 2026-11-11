@@ -698,17 +698,20 @@ def _ident_args(ctx, kind, d):
     except Exception:
         hdr['DURATION'] = 600.0 if cadence == '10min' else 3600.0
     if kind == 'I':
-        return np.nan_to_num(ctx['resid_I'][d], nan=0.0), hdr, ctx['ssA_I'].get(d, ctx['sstack_I']), None
+        return np.nan_to_num(ctx['resid_I'][d], nan=0.0), hdr, ctx['ssA_I'].get(d, ctx['sstack_I']), None   # WAVE2 D-ADMIT: its own stack
     zt = sv2.frame_mid_time(fits.getheader(f'{ebase}/subtracted/{d}_V_sub_{scope}.fits')) if cadence == '10min' else None
     return np.nan_to_num(ctx['resid_V'][d], nan=0.0), hdr, None, zt
 
 
 def _ident_call(kind, resid, master_I, hdr, beam, sstack, zenith_time, xrefuse):
-    """The loop's two calls, in one place (the look-ahead worker and the loop make the same call)."""
+    """The loop's two calls, in one place (the look-ahead worker and the loop make the same call). The V call keeps its
+    literal form: deep_step.engine_literals() reads the detection floor (sigma_thresh) from this source line."""
     if kind == 'I':
-        return run_identification_i(resid, master_I, hdr, beam, sstack, refuse_on_extraction_failure=xrefuse)
-    return run_identification_v(resid, master_I, hdr, beam, None, sigma_thresh=5.0, refuse_on_extraction_failure=xrefuse,
-                                zenith_time=zenith_time, return_all=True)
+        rI = resid
+        return run_identification_i(rI, master_I, hdr, beam, sstack, refuse_on_extraction_failure=xrefuse)
+    rV = resid
+    return run_identification_v(rV, master_I, hdr, beam, None, sigma_thresh=5.0,
+                                refuse_on_extraction_failure=xrefuse, zenith_time=zenith_time, return_all=True)
 
 
 def _ident_worker(ctx, job):
@@ -2273,14 +2276,15 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
               f'(source extraction failed: {err})', flush=True)
     # SPEED-UP 2026-11-11: the identifications of the windows this loop will search, computed ahead (see _IdentAhead)
     _ahead_id = _IdentAhead(dict(ebase=ebase, scope=scope, cadence=cadence, hdr0=hdr0, em=em, cd=cd, master_I=master_I, beam=beam,
-                                 resid_I=resid_I, resid_V=resid_V, sstack_I=sstack_I, ssA_I=_ssA_I, xrefuse=_xrefuse), IDENT_PROCS)
+                                 resid_I=resid_I, resid_V=resid_V, sstack_I=sstack_I, xrefuse=_xrefuse,
+                                 ssA_I=_ssA_I), IDENT_PROCS)       # WAVE2 D-ADMIT: an admitted night's own stack, as the loop passes it
     _ahead_jobs = []
     for d in dates:
         _doI = 'I' in stokes and d in resid_I
         if _doI and d not in skip_I_dates:
             _ahead_jobs.append(('I', d))
-        if d in resid_V and d not in skip_V_dates and not (_doI and d in skip_I_dates) and not _b02:
-            _ahead_jobs.append(('V', d))
+        if d in resid_V and d not in skip_V_dates and not (_doI and d in skip_I_dates) and not _b02:   # WAVE2 B-02: its V mask
+            _ahead_jobs.append(('V', d))                                # time comes from the frame header the loop builds (no look-ahead)
     _ahead_id.start(_ahead_jobs)
     for d in dates:
         ot = _epoch_time(ebase, d, scope)
