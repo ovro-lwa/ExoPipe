@@ -35,8 +35,8 @@ A RUN STARTS CLEAN: a ship directory of this cell under --out (an earlier run's 
 SIGTERM or a Ctrl-C stops the engine processes (each runs in its own process group), and the record is written with the
 status failed or interrupted - there is always a cell_<cell>.json.
 
-WHERE IT WRITES: only under --out (D) and --stage-root, neither of which may be, be inside, or contain a production tree
-(PROTECTED below; symbolic links resolved): D/stage/<cell> (staging), D/work/<cell> (the fleet's node-local output),
+WHERE IT WRITES: only under --out (D), --stage-root, --cutout-root and --cubes-root, none of which may be, be inside, or
+contain a production tree (PROTECTED below; symbolic links resolved): D/stage/<cell> (staging), D/work/<cell> (the fleet's node-local output),
 D/snapshot_fleet_out/<cell>, D/snapshot_flow/<cell>, D/snapshot_lightcurves/<cell>, D/snapshot_movies/<cell>,
 D/snapshot_cubes/<cell>, D/photometry (cutout cubes, written by the search as it runs - as in the fleet), D/cell_<cell>.json (every task's outcome and times) and
 D/cell_<cell>.log (the fleet's log lines). The record holds, per task, the wall time and the CPU time of its engine
@@ -81,6 +81,16 @@ ON_GRID_NAXIS = 1508                                                            
 MEM_SEARCH = {'low': 6, 'mid': 14, 'high': 23}
 MEM_CUBE = {'low': 15, 'mid': 40, 'high': 70}
 MEM_WIDEBAND = 28
+# cores a task is CHARGED, as a share of its thread count: what the engines were measured to use on 04h 2024-12-19 (11-11,
+# cpu_s / seconds of the cell records): a search with 8 threads 3.9-5.3 cores; the frame movies with 8 threads 3.0; light
+# curves 2.7-6.9 with 8 threads; the wideband search with 12 threads about 2 while it reads and its 12 only for the minutes
+# it accumulates. Charged at the thread count, the two wideband searches and the frame movies took the whole budget of the
+# first full cell one after another (20 minutes) and left the cube writers two cores.
+CORE_SHARE = {'search': 0.65, 'wideband': 0.5, 'movies': 0.5, 'curves': 1.0}
+
+
+def charge(kind, threads):
+    return max(1, int(round(threads[kind] * CORE_SHARE[kind])))
 
 
 def band_class(sb):
@@ -97,17 +107,17 @@ def build_tasks(subbands, wideband, frame_movies, cubes, threads):
     order = sorted(subbands, key=lambda s: -int(s[:-3]))
     tasks = [('flow:' + sb, (), {'gpu': 1, 'cores': 1}) for sb in order]
     tasks += [('fields:' + sb, ('flow:' + sb,), {'cores': 1}) for sb in order]
-    tasks += [('search:' + sb, ('flow:' + sb,), {'cores': threads['search'], 'mem_gb': MEM_SEARCH[band_class(sb)]}) for sb in order]
+    tasks += [('search:' + sb, ('flow:' + sb,), {'cores': charge('search', threads), 'mem_gb': MEM_SEARCH[band_class(sb)]}) for sb in order]
     tasks.append(('subbands', tuple('search:' + sb for sb in order), {'cores': 1}))
     if wideband:
         for st in ('V', 'I'):                                                       # v10:242: V then I
-            tasks.append(('wideband:' + st, ('subbands',), {'cores': threads['wideband'], 'mem_gb': MEM_WIDEBAND}))
+            tasks.append(('wideband:' + st, ('subbands',), {'cores': charge('wideband', threads), 'mem_gb': MEM_WIDEBAND}))
         tasks.append(('widebands', ('wideband:V', 'wideband:I'), {'cores': 1}))
     if frame_movies:
-        tasks.append(('framemovies', tuple('flow:' + sb for sb in order), {'cores': threads['movies']}))
+        tasks.append(('framemovies', tuple('flow:' + sb for sb in order), {'cores': charge('movies', threads)}))
     for sb in order:
-        tasks.append(('curves:%s:I' % sb, ('search:' + sb, 'fields:' + sb), {'cores': threads['curves']}))
-        tasks.append(('curves:%s:V' % sb, ('curves:%s:I' % sb,), {'cores': threads['curves']}))
+        tasks.append(('curves:%s:I' % sb, ('search:' + sb, 'fields:' + sb), {'cores': charge('curves', threads)}))
+        tasks.append(('curves:%s:V' % sb, ('curves:%s:I' % sb,), {'cores': charge('curves', threads)}))
     if cubes:
         for sb in order:
             for st in ('I', 'V'):
@@ -155,8 +165,13 @@ class Cell(object):
         self.movies = os.path.join(D, 'snapshot_movies', self.cell)
         self.movies_work = os.path.join(D, 'work', 'movies', self.cell)
         self.cubework = os.path.join(D, 'work', 'cubes', self.cell)
-        self.cubes = os.path.join(D, 'snapshot_cubes', self.cell)
-        self.cutouts = os.path.join(D, 'photometry')
+        # the two bulk products (83 GB of cutout cubes and 39 GB of flowed-frame cubes per cell) may go to another filesystem,
+        # as production's do (Lustre); the first full cell kept them beside its staging and ran the node's disk to its floor
+        for opt, root in (('--cutout-root', a.cutout_root), ('--cubes-root', a.cubes_root)):
+            if root:
+                _refuse_protected(root, opt)
+        self.cubes = os.path.join(os.path.abspath(a.cubes_root) if a.cubes_root else os.path.join(D, 'snapshot_cubes'), self.cell)
+        self.cutouts = os.path.abspath(a.cutout_root) if a.cutout_root else os.path.join(D, 'photometry')
         self.logpath = os.path.join(D, 'cell_%s.log' % self.cell)
         self.record = OrderedDict(cell=self.cell, subbands=self.subbands, started=None, status='running', steps=OrderedDict())
         self._lock = threading.Lock()
@@ -194,7 +209,7 @@ class Cell(object):
         if self.a.phase1_root:
             e['P3_SNAP_PHASE1_ROOT'] = self.a.phase1_root
         if self.a.guard:                                 # the refactor's write guard: a write outside --out is refused in the child
-            e['EXOPIPE3_PARITY_ROOT'] = self.D
+            e['EXOPIPE3_PARITY_ROOT'] = os.pathsep.join(sorted({self.D, os.path.dirname(self.stage), self.cutouts}))
             e['PYTHONPATH'] = self.a.guard + (os.pathsep + e['PYTHONPATH'] if e.get('PYTHONPATH') else '')
         e.update({k: str(v) for k, v in more.items()})
         return e
@@ -434,6 +449,16 @@ class Cell(object):
                    '--stage-root', os.path.join(self.stage, sb), '--nthreads', str(min(8, self.a.search_threads))],   # the fleet's 8, never above the charge
                   os.path.join(self.out, 'search_%s.log' % sb),
                   env=self.env(P3_SNAP_FLOW='1'))
+        self.trim_band(sb)
+
+    def trim_band(self, band):
+        """Release the preallocation of the cutout cubes of one band (a path component .../<band>/...), after the only task
+        that writes them has ended: 49 of 118 GB in the first full cell."""
+        freed = 0
+        for dp, _dn, fn in os.walk(self.cutouts):
+            if ('/%s/' % band) in dp + '/':
+                freed += sum(release_preallocation(os.path.join(dp, f)) for f in fn if f.endswith('.fits'))
+        return freed
 
     def t_curves(self, sb, st):
         rc = self.call([self.a.py36, '-u', self.eng('phase3_snapshot_lightcurves.py'), 'extract', '--cell', self.cell, '--subband', sb,
@@ -456,6 +481,7 @@ class Cell(object):
                             '--stage', os.path.join(self.stage, sb)], os.path.join(self.cubework, 'cube_verify_%s_%s.log' % (sb, st)))
         if rc != 0:
             raise RuntimeError('cube %s %s %s not written or not verified (exit %d)' % (self.cell, sb, st, rc))
+        release_preallocation(os.path.join(cub, '%s_%s_%s_flowcube.fits' % (self.cell, sb, st)))
 
     def t_flowmovie(self, sb):
         fl = sorted(glob.glob(os.path.join(self.stage, sb, '*Clean-Snapshot-*-image_flowed.fits')) +
@@ -523,6 +549,8 @@ class Cell(object):
                 if not ok:
                     bad.append('%s_%s:%s' % (grp, st, s))
         self.log('WIDEBAND %s runinfo=%d' % (self.cell, len(glob.glob(os.path.join(self.out, 'runinfo_*.json')))))
+        for grp in GROUPS:                                             # both Stokes' searches have ended: their cutouts are whole
+            self.trim_band(grp)
         if bad:
             raise RuntimeError('SEARCH-INCOMPLETE %s wideband group search unaccounted: %s - NOT shipped' % (self.cell, ' '.join(bad)))
 
@@ -672,12 +700,14 @@ class Cell(object):
             rc = 2
         except (_Interrupted, KeyboardInterrupt) as e:
             self.stop_children()
+            self._record_partial(t0)
             self.log('CELL-INTERRUPTED %s (%s) - engine processes stopped, nothing shipped; work kept in %s' % (self.cell, e or 'keyboard', self.out))
             self.record['status'] = 'interrupted'
             self._set_aside()
             rc = 130
         except Exception as e:                                         # a defect or a full disk: never a silent traceback only
             self.stop_children()
+            self._record_partial(t0)
             self.log('CELL-FAILED %s %s: %s - work kept in %s' % (self.cell, type(e).__name__, str(e)[:300], self.out))
             self.record.update(status='failed', error='%s: %s' % (type(e).__name__, str(e)[:500]))
             self._set_aside()
@@ -693,6 +723,32 @@ class Cell(object):
                 json.dump(self.record, f, indent=1)
         return rc
 
+    def _record_partial(self, t0):
+        """The rows of the tasks that had finished when the run stopped (the first full cell was stopped three minutes
+        before its end and its record held no task at all)."""
+        s = getattr(self, '_sched', None)
+        if s is not None:
+            try:
+                self._record_steps(dict(s.outcomes), t0)
+            except Exception as e:
+                self.log('RECORD-PARTIAL-FAILED %s %s' % (self.cell, e))
+
+    def _record_steps(self, out, t0):
+        """One row per task outcome in the record: status, times since the cell's start, the CPU seconds and peak memory of
+        its engine processes. Also called with what had finished when the run is interrupted or fails."""
+        soft = getattr(self, '_soft', {})
+        for name, o in list(out.items()):
+            d = o.as_dict()
+            d['seconds'] = round(d['seconds'], 1)
+            for k in ('started', 'ended'):
+                d[k] = None if d[k] is None else round(d[k] - t0, 1)   # seconds since the cell's start
+            if name in soft:
+                d['status'], d['detail'] = 'failed-not-fatal', soft[name]
+            if 'task-' + name in self._cpu:
+                d['cpu_s'] = round(self._cpu['task-' + name], 1)
+                d['maxrss_gb'] = round(self._rss.get('task-' + name, 0.0), 1)
+            self.record['steps'][name] = d
+
     def _set_aside(self):
         """A cell that did not complete ships nothing: what the run put into a ship tree is moved aside, marked as failed
         (the flow fields the light curves read during the run; a ship that stopped half way)."""
@@ -707,19 +763,10 @@ class Cell(object):
     def _run(self, t0):
         self.prepare()
         s, soft = self.scheduler()
+        self._sched, self._soft = s, soft
         t1 = time.time()
         out = s.run()
-        for name, o in out.items():
-            d = o.as_dict()
-            d['seconds'] = round(d['seconds'], 1)
-            for k in ('started', 'ended'):
-                d[k] = None if d[k] is None else round(d[k] - t0, 1)   # seconds since the cell's start
-            if name in soft:
-                d['status'], d['detail'] = 'failed-not-fatal', soft[name]
-            if 'task-' + name in self._cpu:
-                d['cpu_s'] = round(self._cpu['task-' + name], 1)
-                d['maxrss_gb'] = round(self._rss.get('task-' + name, 0.0), 1)
-            self.record['steps'][name] = d
+        self._record_steps(out, t0)
         failed = [n for n, o in out.items() if o.status == 'failed']
         flows = [o for n, o in out.items() if n.startswith('flow:') and o.ended]
         if flows:
@@ -807,6 +854,8 @@ def parse_args(argv=None):
     ap.add_argument('--keep-stage', action='store_true', help='do not delete the staging at the end')
     ap.add_argument('--plan', action='store_true', help='print the task graph and stop')
     ap.add_argument('--stage-root', default=None)
+    ap.add_argument('--cutout-root', default=None, help='where the search writes the photometry cutout cubes (default <out>/photometry)')
+    ap.add_argument('--cubes-root', default=None, help='where the flowed-frame cubes are shipped (default <out>/snapshot_cubes)')
     ap.add_argument('--phase1-root', default=None, help='P3_SNAP_PHASE1_ROOT for the engines (e.g. the GPU pipeline frame root)')
     ap.add_argument('--masters', default='/lustre/pipeline/exopipe/phase3/snapshot_masters')
     ap.add_argument('--master-catalogs', default=OPS + '/snapshot_master_catalogs')

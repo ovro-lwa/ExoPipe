@@ -63,6 +63,8 @@ class Scheduler(object):
                 raise ValueError('budget %r must be positive, got %r' % (k, v))
         self.stop_on_failure, self.max_passes, self.clock = stop_on_failure, max_passes, clock
         self.tasks = OrderedDict()
+        self.outcomes = {}        # {name: Outcome} of the tasks finished so far, while run() is still going (a caller that is
+        #                           interrupted reads here what was done; run() returns the complete, ordered result)
 
     def add(self, name, run, after=(), needs=None, hold=False):
         needs = dict(needs or {})
@@ -87,6 +89,7 @@ class Scheduler(object):
         cv = threading.Condition()
         free = dict(self.budgets)
         out, running, threads = {}, set(), []
+        self.outcomes = out
         failed_any = [False]
 
         def worker(t):
