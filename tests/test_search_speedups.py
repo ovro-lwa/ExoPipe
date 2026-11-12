@@ -24,7 +24,12 @@ packages and site file to import):
   5. the per-hour seed of the parent catalogue (lib/search/tier_sublst.py): it reads the catalogue where the publish keeps it
      (<publish>/catdir), copies the catalogue files and their generation records only, compares every copy with its source
      and removes a copy that differs; it is behind search_sublst.SEED_PARENT_CATALOG, and the engine still tests a catalogue
-     in its work directory against the Master it searches.
+     in its work directory against the Master it searches;
+  6. the deep step hands the engine child both speed settings from its config section (lib/search/deep_step.engine_env:
+     DEEP_SEARCH_THREADS = search_detect.SEARCH_THREADS, DEEP_IDENT_PROCS = search_detect.IDENT_PROCS), under the names the
+     engine reads, each set once; both keys are whole numbers of at least 1 and may be set per run (1 / 1 = the serial code);
+     and what the config says of Stokes V stays true: under the deep removal rules ('once-in-search') the engine queues no
+     Stokes V window for the look-ahead, so a V unit runs its serial loop.
 Data-free (numpy only). Run: python tests/test_search_speedups.py   (or under pytest)
 """
 import ast
@@ -346,9 +351,63 @@ def test_the_per_hour_seed():
         'the engine no longer tests a parent catalogue left in its work directory against the Master it searches'
 
 
+def test_the_deep_step_passes_both_settings_from_config():
+    step = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_step.py')
+    with open(step) as f:
+        ssrc = f.read()
+    fns = [n for n in ast.walk(ast.parse(ssrc)) if isinstance(n, ast.FunctionDef) and n.name == 'engine_env']
+    assert len(fns) == 1, f'engine_env: {len(fns)} definitions in the deep step'
+    fn = fns[0]
+    bound = {}                                     # the names engine_env binds: `sd` must be the section search_detect
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            t, v = node.targets[0], node.value
+            if isinstance(t, ast.Tuple) and isinstance(v, ast.Tuple) and len(t.elts) == len(v.elts):
+                bound.update({a.id: ast.get_source_segment(ssrc, b) for a, b in zip(t.elts, v.elts) if isinstance(a, ast.Name)})
+            elif isinstance(t, ast.Name):
+                bound.setdefault(t.id, ast.get_source_segment(ssrc, v))
+    assert (bound.get('c'), bound.get('sd')) == ('_cfg()', 'c.search_detect'), (bound.get('c'), bound.get('sd'))
+    envs = [n.value for n in ast.walk(fn) if isinstance(n, ast.Assign) and len(n.targets) == 1
+            and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'env' and isinstance(n.value, ast.Dict)]
+    assert len(envs) == 1, 'engine_env no longer builds its environment as one dict literal'
+    items = {k.value: v for k, v in zip(envs[0].keys, envs[0].values) if isinstance(k, ast.Constant)}
+
+    class _Section(object):                        # a config section with other values than the defaults
+        SEARCH_THREADS, IDENT_PROCS = 3, 5
+    body = ast.get_source_segment(ssrc, fn)
+    for var, key, want in (('DEEP_SEARCH_THREADS', 'SEARCH_THREADS', '3'), ('DEEP_IDENT_PROCS', 'IDENT_PROCS', '5')):
+        assert var in items, f'deep_step.engine_env does not pass {var}'
+        read = sorted(ast.get_source_segment(ssrc, n) for n in ast.walk(items[var]) if isinstance(n, ast.Attribute))
+        assert read == [f'sd.{key}'], f'{var} is built from {read}, not from search_detect.{key} alone'
+        got = eval(compile(ast.Expression(body=items[var]), step, 'eval'), {'sd': _Section, 'str': str, 'int': int})
+        assert got == want, f'{var} = {got!r} for search_detect.{key} = {getattr(_Section, key)}'
+        assert body.count(var) == 1, f'{var} is named {body.count(var)} times in engine_env: set once, never overwritten'
+    # the engine reads those very names; unset = 1 = the serial code
+    esrc, _ = _tree()
+    for var, name in (('DEEP_SEARCH_THREADS', 'SEARCH_THREADS'), ('DEEP_IDENT_PROCS', 'IDENT_PROCS')):
+        assert f"{name} = max(1, int(os.environ.get('{var}', '1')))" in esrc, f'the engine no longer reads {var} (default 1)'
+    # the config section: whole numbers of at least 1, not locked (a run may set 1 / 1)
+    with open(os.path.join(REPO, 'exopipe', 'phase3', 'config', 'steps', 'search.py')) as f:
+        csrc = f.read()
+    sec = [n for n in ast.walk(ast.parse(csrc)) if isinstance(n, ast.ClassDef) and n.name == 'search_detect']
+    assert len(sec) == 1
+    vals = {n.targets[0].id: n.value for n in sec[0].body
+            if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)}
+    for key in ('SEARCH_THREADS', 'IDENT_PROCS'):
+        assert key in vals, f'config section search_detect has no {key}'
+        v = ast.literal_eval(vals[key])
+        assert type(v) is int and v >= 1, f'search_detect.{key} = {v!r}'
+        assert key not in ast.literal_eval(vals['PROTECTED_KEYS']), f'search_detect.{key} is locked'
+    # Stokes V at deep: no window is queued for the look-ahead under the removal rules (the comment of IDENT_PROCS says so)
+    assert "_b02 = cadence == 'deep' and _RR.search_rules() == 'once-in-search'" in esrc
+    assert 'if d in resid_V and d not in skip_V_dates and not (_doI and d in skip_I_dates) and not _b02:' in esrc, \
+        'the engine\'s look-ahead queue for Stokes V changed: re-prove the deep V search before trusting the look-ahead there'
+
+
 TESTS = [test_x2_copies_are_made_only_for_the_refinement, test_only_the_refinement_reads_the_x2_copies,
          test_threaded_reads_keep_the_serial_order, test_look_ahead_identification_equals_the_serial_loop,
-         test_look_ahead_cleans_up_when_the_loop_is_left_by_an_exception, test_the_per_hour_seed]
+         test_look_ahead_cleans_up_when_the_loop_is_left_by_an_exception, test_the_per_hour_seed,
+         test_the_deep_step_passes_both_settings_from_config]
 
 
 def main():

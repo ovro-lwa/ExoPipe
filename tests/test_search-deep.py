@@ -205,12 +205,21 @@ def test_env_and_items():
     check("engine env: the search's removal rules (B-02, ruled 'once-in-search') and the solar audit its daytime gate reads",
           (env.get('EXOPIPE3_REMOVAL_RULES'), env.get('EXOPIPE3_SOLAR_AUDIT')) == ('once-in-search', CFG.search_tables.SOLAR_AUDIT),
           (env.get('EXOPIPE3_REMOVAL_RULES'), env.get('EXOPIPE3_SOLAR_AUDIT')))
+    speed = (env.get('DEEP_SEARCH_THREADS'), env.get('DEEP_IDENT_PROCS'))
+    check('engine env: the two speed settings from config (search_detect.SEARCH_THREADS, IDENT_PROCS)',
+          speed == (str(CFG.search_detect.SEARCH_THREADS), str(CFG.search_detect.IDENT_PROCS)) and all(int(x) >= 1 for x in speed),
+          speed)
     test_b02_rules_record()
     CFG.authorize(out=TMP)
     CFG.set('search_detect.BEAM_GATE_ON', 'false')
+    CFG.set('search_detect.SEARCH_THREADS', '1')
+    CFG.set('search_detect.IDENT_PROCS', '1')
     env2 = DS.engine_env('/x', '/x', '/x', 'P3S5', '/x', '/x')
     check('comparison key BEAM_GATE_ON False -> P3_BEAM_GATE_OFF=1', env2.get('P3_BEAM_GATE_OFF') == '1')
     check('comparison deviation reported', DS.comparison_deviations() == [('search_detect.BEAM_GATE_ON', False)])
+    check('speed settings set to 1 / 1 for a run reach the engine child (the serial code; no comparison deviation)',
+          (env2.get('DEEP_SEARCH_THREADS'), env2.get('DEEP_IDENT_PROCS')) == ('1', '1'),
+          (env2.get('DEEP_SEARCH_THREADS'), env2.get('DEEP_IDENT_PROCS')))
     CFG.reset()
 
     class A:
