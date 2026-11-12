@@ -179,21 +179,67 @@ def _copy_checked(pair):
     raise IOError(f"short copy after two attempts: {src} -> {dst}")
 
 
+# Runtime settings read from the environment. They are checked before anything runs (check_runtime_settings, called
+# by main): a value that cannot be used stops the hour at its start, not after the cascade (P2_TENMIN_WORKERS is first
+# read in the 10-minute stage).
+_WHOLE_NUMBER_SETTINGS = ('P2_COPY_WORKERS', 'P2_TENMIN_WORKERS', 'FULLBAND_WORKERS', 'BDSF_NCORES')
+MAX_COPY_WORKERS = 6        # the recorders share Lustre: at most 6 Lustre-heavy workers
+
+
+def _whole_number_setting(name, default=None):
+    """The runtime setting `name` as a whole number of at least 1 (unset or empty = default); refuses anything else."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        sys.exit(f"REFUSING: {name}={raw!r} is not a whole number of at least 1")
+    return value
+
+
+def _copy_workers():
+    """P2_COPY_WORKERS (unset = 1); more than MAX_COPY_WORKERS is refused."""
+    n = _whole_number_setting('P2_COPY_WORKERS', 1)
+    if n > MAX_COPY_WORKERS:
+        sys.exit(f"REFUSING: P2_COPY_WORKERS={n}: at most {MAX_COPY_WORKERS} files are copied from Lustre at a time "
+                 f"(the recorders share it)")
+    return n
+
+
+def check_runtime_settings():
+    """Refuse an unusable runtime setting before the run starts."""
+    for name in _WHOLE_NUMBER_SETTINGS:
+        _whole_number_setting(name)
+    _copy_workers()
+
+
 def _copy_files(pairs):
     """Copy (source, destination) pairs; returns the number copied.
 
     P2_COPY_WORKERS (a runtime setting) copies that many files at a time; unset or 1 = one after another, as before.
-    Keep it at 6 or below: the recorders share Lustre. The destination files are created first, in the listed order,
-    so the directory holds them in the same order whatever the setting.
+    The destination files are created first, in the listed order, so the directory holds them in the same order
+    whatever the setting. A copy that does not complete (an error, a refused short copy, an interrupt) removes every
+    destination of the call before the error goes on: no empty or short image is left for a rerun to take as copied.
     """
-    n_workers = int(os.environ.get('P2_COPY_WORKERS') or 1)
-    if n_workers <= 1 or len(pairs) <= 1:
-        return sum(_copy_checked(p) for p in pairs)
-    from concurrent.futures import ThreadPoolExecutor
-    for _, dst in pairs:
-        open(dst, 'wb').close()
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        return sum(pool.map(_copy_checked, pairs))
+    n_workers = _copy_workers()
+    try:
+        if n_workers <= 1 or len(pairs) <= 1:
+            return sum(_copy_checked(p) for p in pairs)
+        from concurrent.futures import ThreadPoolExecutor
+        for _, dst in pairs:
+            open(dst, 'wb').close()
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            return sum(pool.map(_copy_checked, pairs))
+    except BaseException:
+        for _, dst in pairs:
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+        raise
 
 
 def copy_to_nvme(subband_map, work_dir):
@@ -212,7 +258,14 @@ def copy_to_nvme(subband_map, work_dir):
         dest_sb = os.path.join(work_dir, subband)
 
         if os.path.isdir(dest_sb):
-            n_existing = len(glob.glob(os.path.join(dest_sb, "*", "*", "*.fits")))
+            existing = glob.glob(os.path.join(dest_sb, "*", "*", "*.fits"))
+            n_existing = len(existing)
+            # An empty image is the trace of a copy that was killed part-way (the parallel copy creates its
+            # destination files before it fills them). Such a directory is never taken as copied.
+            n_empty = sum(1 for p in existing if os.path.getsize(p) == 0)
+            if n_empty:
+                raise IOError(f"{subband}: {n_empty} empty image files in {dest_sb} - an earlier copy was "
+                              f"interrupted. Remove that directory and run again.")
             if n_existing > 0:
                 logger.info(f"  {subband}: already on NVMe ({n_existing} files)  skipping copy")
                 continue
@@ -1296,6 +1349,7 @@ def main():
                         help="Skip header validation and correction step")
 
     args = parser.parse_args()
+    check_runtime_settings()
 
     # Generate or validate run label
     if args.run_label:

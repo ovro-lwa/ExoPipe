@@ -15,13 +15,21 @@ product (REVIEW.md item 8). What full LST hours prove on data is in exopipe_ops/
      and what is handed back are copies; an empty extraction is never kept; P2_REUSE_CASCADE_CATALOGS=0 switches the reuse off;
   3. the copy-in (`_copy_files`) copies every listed file with the same bytes whatever P2_COPY_WORKERS is, creates the
      destination files in the listed order before any parallel copy starts, runs the plain serial loop when the setting is
-     unset, and refuses (after one retry) a copy whose size differs from its source's;
-  4. the 10-minute interval pool keeps its size (8, or the CPU count minus 2) unless P2_TENMIN_WORKERS is set;
+     unset, and refuses (after one retry) a copy whose size differs from its source's; a copy that does not complete leaves
+     no destination file behind, and `copy_to_nvme` refuses a subband directory that holds an empty image (the trace of a
+     killed parallel copy) instead of taking it as copied;
+  4. the 10-minute interval pool keeps its size (8, or the CPU count minus 2) unless P2_TENMIN_WORKERS is set; the runtime
+     settings are checked at the start of the run: a value that is not a whole number of at least 1 is refused, and so are
+     more than 6 copy streams (the recorders share Lustre);
   5. the controller switches numpy's huge-page advice off before anything can import numpy, and a value already in the
      environment wins.
 Data-free. Run: python tests/test_phase2_speedups.py   (or under pytest)
 """
 import ast
+import contextlib
+import glob
+import io
+import itertools
 import os
 import re
 import shutil
@@ -165,13 +173,16 @@ def test_vlssr_parser_falls_back_to_the_per_line_parser():
         ns = _parsers()
         calls, per_line = _count_per_line_calls(ns)
         path = _write(HEADER + SOURCES + extra)
+        said = io.StringIO()
         try:
-            new = ns['parse_vlssr_text'](path)
+            with contextlib.redirect_stdout(said):
+                new = ns['parse_vlssr_text'](path)
             with open(path) as f:
                 lines = f.readlines()
         finally:
             os.remove(path)
         assert calls == [len(lines)], f'the per-line parser ran {len(calls)} times on {calls} lines, expected once on the file'
+        assert 'using the per-line parser for the whole catalog' in said.getvalue(), 'the fallback was taken without a word'
         old = per_line(lines)
         assert len(new['ra']) == n_expected, f"{len(new['ra'])} sources, expected {n_expected}"
         _same_catalog(new, old)
@@ -318,17 +329,25 @@ def test_the_catalog_key_holds_every_setting_the_extraction_reads():
 # ------------------------------------------------------------------------------------------------------------------------
 class _Log:
     def __init__(self):
-        self.warnings = []
+        self.warnings, self.infos = [], []
 
     def warning(self, msg):
         self.warnings.append(msg)
+
+    def info(self, msg):
+        self.infos.append(msg)
+
+
+COPY_NAMES = ('_WHOLE_NUMBER_SETTINGS', 'MAX_COPY_WORKERS', '_whole_number_setting', '_copy_workers',
+              'check_runtime_settings', '_copy_checked', '_copy_files', 'copy_to_nvme')
+SETTINGS = ('P2_COPY_WORKERS', 'P2_TENMIN_WORKERS', 'FULLBAND_WORKERS', 'BDSF_NCORES')
 
 
 def _copy_namespace(copy2=None):
     _, tree = _source(CONTROLLER)
     log = _Log()
     sh = types.SimpleNamespace(copy2=copy2 or shutil.copy2)
-    return _pick(tree, ('_copy_checked', '_copy_files'), CONTROLLER, {'os': os, 'shutil': sh, 'logger': log}), log
+    return _pick(tree, COPY_NAMES, CONTROLLER, {'os': os, 'sys': sys, 'glob': glob, 'shutil': sh, 'logger': log}), log
 
 
 def test_copy_in_copies_the_same_bytes_in_the_listed_order():
@@ -412,6 +431,9 @@ def test_copy_in_refuses_a_short_copy():
                     raised = True
                     assert 'short copy after two attempts' in str(e)
                 assert raised == must_raise, f'{n_short} short attempt(s), P2_COPY_WORKERS={workers}: raised={raised}'
+                if must_raise:
+                    left = [d for _, d in pairs if os.path.exists(d)]
+                    assert not left, f'a refused copy left {len(left)} destination file(s) behind (P2_COPY_WORKERS={workers})'
                 if not must_raise:
                     assert n == len(pairs) and os.path.getsize(dst) == 1000 and len(log.warnings) == 1 \
                         and '500 of 1000 bytes' in log.warnings[0], 'one short attempt must be retried, logged and then accepted'
@@ -422,9 +444,130 @@ def test_copy_in_refuses_a_short_copy():
             os.environ['P2_COPY_WORKERS'] = saved
 
 
+def test_an_interrupted_copy_is_never_taken_as_copied():
+    saved = {k: os.environ.pop(k, None) for k in SETTINGS}
+    tmp = tempfile.mkdtemp()
+    try:
+        src = os.path.join(tmp, 'phase1', '73MHz')
+        names = {('I', 'deep'): ['a-I-image.fits', 'a-I-image_pbcorr.fits', 'a-I-residual.fits', 'a-I-image.pybdsf.fits'],
+                 ('I', '10min'): ['t%04d-I-image.fits' % i for i in range(6)],
+                 ('V', '10min'): ['t%04d-V-image.fits' % i for i in range(6)]}
+        for (pol, cat), files in names.items():
+            os.makedirs(os.path.join(src, pol, cat))
+            for i, n in enumerate(files):
+                with open(os.path.join(src, pol, cat, n), 'wb') as f:
+                    f.write(b'F' * (2880 * (i + 1)))
+        wanted = sorted(os.path.join(pol, cat, n) for (pol, cat), files in names.items() for n in files
+                        if '-image' in n and '.pybdsf' not in n)
+
+        def images(work):
+            return sorted(os.path.relpath(p, os.path.join(work, '73MHz'))
+                          for p in glob.glob(os.path.join(work, '73MHz', '*', '*', '*.fits')))
+
+        for workers in (None, '4'):
+            if workers:
+                os.environ['P2_COPY_WORKERS'] = workers
+            # a copy interrupted at its fifth file: the error goes on, and no image is left in the run directory
+            order = itertools.count(1)                            # next() is one step: no two threads get the same number
+
+            def interrupted_copy2(s, d, _order=order):
+                if next(_order) == 5:
+                    raise KeyboardInterrupt()
+                shutil.copy2(s, d)
+            ns, log = _copy_namespace(interrupted_copy2)
+            work = os.path.join(tmp, f'work_{workers}')
+            try:
+                ns['copy_to_nvme']({'73MHz': src}, work)
+                raise AssertionError('the interrupt did not go on')
+            except KeyboardInterrupt:
+                pass
+            assert images(work) == [], f'an interrupted copy left images behind (P2_COPY_WORKERS={workers}): {images(work)[:3]}'
+            # the rerun copies the subband; a third run finds it copied and copies nothing
+            ns, log = _copy_namespace()
+            ns['copy_to_nvme']({'73MHz': src}, work)
+            assert images(work) == wanted, 'the rerun did not copy exactly the image files'
+            for rel in wanted:
+                assert os.path.getsize(os.path.join(work, '73MHz', rel)) == os.path.getsize(os.path.join(src, rel))
+            copies = []
+            ns, log = _copy_namespace(lambda s, d: copies.append(d))
+            ns['copy_to_nvme']({'73MHz': src}, work)
+            assert not copies and any('already on NVMe' in m for m in log.infos), 'a copied subband was copied again'
+            # the trace of a KILLED parallel copy (no clean-up could run): an empty image. The directory is refused.
+            open(os.path.join(work, '73MHz', wanted[0]), 'wb').close()
+            try:
+                ns['copy_to_nvme']({'73MHz': src}, work)
+                raise AssertionError('a subband directory holding an empty image was taken as copied')
+            except IOError as e:
+                assert 'empty image files' in str(e) and 'Remove that directory' in str(e)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        for k in SETTINGS:
+            os.environ.pop(k, None)
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
 # ------------------------------------------------------------------------------------------------------------------------
-# 4. the 10-minute interval pool, 5. the huge-page advice
+# 4. the runtime settings and the 10-minute interval pool, 5. the huge-page advice
 # ------------------------------------------------------------------------------------------------------------------------
+def test_unusable_runtime_settings_are_refused_at_the_start():
+    saved = {k: os.environ.pop(k, None) for k in SETTINGS}
+    try:
+        ns, _ = _copy_namespace()
+        check = ns['check_runtime_settings']
+        check()                                                           # nothing set
+        for name in SETTINGS:
+            for bad in ('auto', '0', '-2', '2.5', 'six'):
+                os.environ[name] = bad
+                try:
+                    check()
+                    raise AssertionError(f'{name}={bad!r} was accepted')
+                except SystemExit as e:
+                    assert 'REFUSING' in str(e) and name in str(e)
+            for good in ('1', '6', ' 4 '):
+                os.environ[name] = good
+                check()
+            os.environ[name] = ''                                         # empty = unset
+            check()
+            del os.environ[name]
+        for name, value, refused in (('P2_COPY_WORKERS', '7', True), ('P2_COPY_WORKERS', '32', True),
+                                     ('P2_TENMIN_WORKERS', '32', False), ('FULLBAND_WORKERS', '8', False)):
+            os.environ[name] = value
+            try:
+                check()
+                was_refused = False
+            except SystemExit as e:
+                was_refused = True
+                assert 'at most 6' in str(e)
+            assert was_refused == refused, f'{name}={value}: refused={was_refused}'
+            if name == 'P2_COPY_WORKERS':
+                try:                                                      # the copy itself refuses too, whoever calls it
+                    ns['_copy_files']([])
+                    raise AssertionError('_copy_files ran with more than 6 copy streams')
+                except SystemExit:
+                    pass
+            del os.environ[name]
+    finally:
+        for k in SETTINGS:
+            os.environ.pop(k, None)
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+    # the check runs right after the arguments are read, before the run starts
+    src, tree = _source(CONTROLLER)
+    body = _function(tree, 'main').body
+    at = [i for i, n in enumerate(body) if ast.get_source_segment(src, n) == 'args = parser.parse_args()']
+    assert len(at) == 1 and ast.get_source_segment(src, body[at[0] + 1]) == 'check_runtime_settings()', \
+        'main no longer checks the runtime settings right after reading its arguments'
+    # every setting the three modules read as a whole number is in the checked list
+    read = set()
+    for path in (CONTROLLER, CASCADE, os.path.join(P2, 'phase2_science_agg.py')):
+        read |= set(re.findall(r"int\(os\.environ(?:\.get\(|\[)'([A-Z0-9_]+)'", _source(path)[0]))
+    assert read and read <= set(ns['_WHOLE_NUMBER_SETTINGS']), \
+        f"read as whole numbers but not checked at the start: {sorted(read - set(ns['_WHOLE_NUMBER_SETTINGS']))}"
+
+
 def test_interval_pool_size_is_unchanged_unless_set():
     src, tree = _source(CASCADE)
     tenmin = _function(tree, 'dewarp_10min_intervals')
@@ -454,6 +597,7 @@ TESTS = [test_vlssr_one_call_parser_equals_the_per_line_parser, test_vlssr_parse
          test_kept_catalog_is_reused_only_for_the_same_file_and_settings,
          test_the_catalog_key_holds_every_setting_the_extraction_reads,
          test_copy_in_copies_the_same_bytes_in_the_listed_order, test_copy_in_refuses_a_short_copy,
+         test_an_interrupted_copy_is_never_taken_as_copied, test_unusable_runtime_settings_are_refused_at_the_start,
          test_interval_pool_size_is_unchanged_unless_set, test_huge_page_advice_is_off_before_numpy_can_load]
 
 

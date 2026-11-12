@@ -2359,7 +2359,7 @@ def dewarp_10min_intervals(work_dir, subband_list, diag_dir, logger,
     # above (unchanged behaviour). Each interval is dewarped by itself against the same reference catalog, so the
     # results do not depend on the pool size.
     if os.environ.get('P2_TENMIN_WORKERS'):
-        n_workers = max(1, int(os.environ['P2_TENMIN_WORKERS']))
+        n_workers = max(1, int(os.environ['P2_TENMIN_WORKERS']))    # checked at the run's start by the controller
     logger.info(f"  Using {n_workers} parallel workers")
 
     results_10min = {}

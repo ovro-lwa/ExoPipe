@@ -151,6 +151,8 @@ def parse_vlssr_text(path):
                     SkyCoord(ra_str, dec_str, frame='icrs')
             except Exception:
                 continue
+            print(f"  [VLSSr] A line outside the plain sexagesimal form parses ({ra_str} {dec_str}): "
+                  f"using the per-line parser for the whole catalog (slow).")
             return _parse_vlssr_text_per_line(lines)
         ra_strs.append(ra_str)
         dec_strs.append(dec_str)
@@ -171,7 +173,9 @@ def parse_vlssr_text(path):
             # ascension in hours; radians and Cartesian vectors derived from hours differ from the per-line
             # parser's in the last bit.)
             coords = SkyCoord(ra_deg * u.deg, dec_deg * u.deg, frame='icrs')
-    except Exception:
+    except Exception as e:
+        print(f"  [VLSSr] The one-call parse was refused ({type(e).__name__}): "
+              f"using the per-line parser for the whole catalog (slow).")
         return _parse_vlssr_text_per_line(lines)
 
     return {
