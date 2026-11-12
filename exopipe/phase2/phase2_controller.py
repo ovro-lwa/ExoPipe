@@ -27,6 +27,12 @@ Usage:
 """
 import argparse
 import os
+# numpy asks the kernel for huge pages for every large array. On a node whose free memory is fragmented (no free 2 MB
+# block: lwacalim00 on 2026-11-12, with 349 GB free) each such request waits on memory compaction that fails. A source
+# extraction that needs 15 s then sat in the kernel for more than 10 minutes (2 s of user time, 630 s of system time).
+# Set here, before numpy is first imported, and inherited by every worker; a value already in the environment wins.
+# It changes no result.
+os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 import sys
 import subprocess
 import glob
@@ -159,6 +165,37 @@ def validate_subband(sb_dir, subband, logger):
 # STEP 2: COPY TO NVMe
 # =====================================================================
 
+def _copy_checked(pair):
+    """Copy one file and compare its size with the source's. One retry, then refuse: Lustre has made silent short
+    copies (2026-11-09), and a short image must never enter the run."""
+    src, dst = pair
+    for attempt in (1, 2):
+        shutil.copy2(src, dst)
+        n_src, n_dst = os.path.getsize(src), os.path.getsize(dst)
+        if n_src == n_dst:
+            return 1
+        logger.warning(f"  short copy (attempt {attempt}): {os.path.basename(src)} "
+                       f"{n_dst} of {n_src} bytes")
+    raise IOError(f"short copy after two attempts: {src} -> {dst}")
+
+
+def _copy_files(pairs):
+    """Copy (source, destination) pairs; returns the number copied.
+
+    P2_COPY_WORKERS (a runtime setting) copies that many files at a time; unset or 1 = one after another, as before.
+    Keep it at 6 or below: the recorders share Lustre. The destination files are created first, in the listed order,
+    so the directory holds them in the same order whatever the setting.
+    """
+    n_workers = int(os.environ.get('P2_COPY_WORKERS') or 1)
+    if n_workers <= 1 or len(pairs) <= 1:
+        return sum(_copy_checked(p) for p in pairs)
+    from concurrent.futures import ThreadPoolExecutor
+    for _, dst in pairs:
+        open(dst, 'wb').close()
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        return sum(pool.map(_copy_checked, pairs))
+
+
 def copy_to_nvme(subband_map, work_dir):
     """Copy image data from Lustre to NVMe working directory.
 
@@ -185,7 +222,7 @@ def copy_to_nvme(subband_map, work_dir):
         # Only copy *image* FITS files (the only science products).
         # All other wsclean outputs (dirty, model, psf, residual, mask)
         # are excluded by requiring '-image' in the filename.
-        n_copied = 0
+        pairs = []
         for pol in ['I', 'V']:
             src_pol = os.path.join(src_dir, pol)
             if not os.path.isdir(src_pol):
@@ -202,8 +239,8 @@ def copy_to_nvme(subband_map, work_dir):
                         continue
                     if ".pybdsf" in bn:
                         continue
-                    shutil.copy2(f, os.path.join(dest_cat, bn))
-                    n_copied += 1
+                    pairs.append((f, os.path.join(dest_cat, bn)))
+        n_copied = _copy_files(pairs)
 
         logger.info(f"  {subband}: {n_copied} image files copied")
 

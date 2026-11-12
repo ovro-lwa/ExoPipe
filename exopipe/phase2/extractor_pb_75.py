@@ -4,6 +4,7 @@ extractor_pb_75.py
 """
 
 import os
+import re
 import sys
 import argparse
 import warnings
@@ -113,12 +114,80 @@ class BeamModel:
             resp[el < 10.0] = np.nan
         return resp
 
+_VLSSR_RA = re.compile(r'^\d{1,2}h\d{1,2}m\d{1,2}(\.\d+)?s$')
+_VLSSR_DEC = re.compile(r'^[+-]?\d{1,2}d\d{1,2}m\d{1,2}(\.\d+)?s$')
+
+
 def parse_vlssr_text(path):
+    """Parse the VLSSr text catalog: positions, peak fluxes and major axes of every line that parses.
+
+    The positions of all plain sexagesimal lines go through astropy's parser in ONE SkyCoord call. Building one
+    SkyCoord per line, as before, took ~90 s for the same numbers. The catalog text also holds lines that are not
+    sources (headers, and the uncertainty line under each source); the per-line parser used to reject those one by
+    one. Here a line that is not plain sexagesimal is still put to astropy by itself: if astropy rejects it, it is
+    skipped as before; if astropy accepts it, or if the single call refuses, the original per-line parser below
+    parses the whole file as before.
+    """
     print("  [VLSSr] Parsing as custom text format...")
-    coords, fluxes, maj_axes = [], [], []
     with open(path, 'r') as f:
         lines = f.readlines()
-        
+
+    ra_strs, dec_strs, fluxes, maj_axes = [], [], [], []
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) < 8: continue
+        try:
+            flux_val = float(parts[7].replace('<',''))
+            maj_deg = 0.0
+            if len(parts) >= 11:
+                maj_deg = float(parts[9].replace('<','')) / 3600.0
+        except Exception: continue
+        ra_str = f"{parts[0]}h{parts[1]}m{parts[2]}s"
+        dec_str = f"{parts[3]}d{parts[4]}m{parts[5]}s"
+        if not (_VLSSR_RA.match(ra_str) and _VLSSR_DEC.match(dec_str)):
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', AstropyWarning)
+                    SkyCoord(ra_str, dec_str, frame='icrs')
+            except Exception:
+                continue
+            return _parse_vlssr_text_per_line(lines)
+        ra_strs.append(ra_str)
+        dec_strs.append(dec_str)
+        fluxes.append(flux_val)
+        maj_axes.append(maj_deg)
+
+    if not ra_strs:
+        print("  [VLSSr] Failed to parse any sources.")
+        return None
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', AstropyWarning)
+            parsed = SkyCoord(ra_strs, dec_strs, frame='icrs')
+            ra_deg = np.array(parsed.ra.deg)
+            dec_deg = np.array(parsed.dec.deg)
+            # Held in degrees, as SkyCoord(list of per-line SkyCoords) held them. (The single call keeps right
+            # ascension in hours; radians and Cartesian vectors derived from hours differ from the per-line
+            # parser's in the last bit.)
+            coords = SkyCoord(ra_deg * u.deg, dec_deg * u.deg, frame='icrs')
+    except Exception:
+        return _parse_vlssr_text_per_line(lines)
+
+    return {
+        'coords': coords,
+        'flux': np.array(fluxes),
+        'maj': np.array(maj_axes),
+        'ra': ra_deg,
+        'dec': dec_deg,
+        'type': 'VLSS'
+    }
+
+
+def _parse_vlssr_text_per_line(lines):
+    """The original parser, one SkyCoord per line: the fallback of parse_vlssr_text and the reference its test
+    compares against."""
+    coords, fluxes, maj_axes = [], [], []
     for line in lines:
         parts = line.strip().split()
         if len(parts) < 8: continue
