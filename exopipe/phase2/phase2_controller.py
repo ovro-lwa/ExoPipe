@@ -1217,6 +1217,9 @@ def main():
                         help="Skip all photometry (target + solar system)")
     parser.add_argument("--skip_transients", action="store_true",
                         help="Skip transient search")
+    parser.add_argument("--defer_email", action="store_true",
+                        help="Do not send the report email at the end of Phase 2: `exopipe3 email` sends the same "
+                             "report, with the Phase 3 highlights of the hour added, at the end of Phase 3")
     parser.add_argument("--debug", action="store_true",
                         help="Write flux measurement debug log (flux_debug.log)")
     parser.add_argument("--workers", type=int, default=19,
@@ -1528,10 +1531,15 @@ def main():
         from exopipe.phase2 import phase2_science_agg
         phase2_science_agg.logger = logger
         gather_detections(work_dir)
-        send_email_report(work_dir,
-                          run_command=run_command,
-                          run_duration=time.time() - t0_pipeline,
-                          lst=args.lst, date=args.date)
+        if args.defer_email:
+            phase2_science_agg.write_deferred_email(work_dir, run_command=run_command,
+                                                    run_duration=time.time() - t0_pipeline,
+                                                    lst=args.lst, date=args.date)
+        else:
+            send_email_report(work_dir,
+                              run_command=run_command,
+                              run_duration=time.time() - t0_pipeline,
+                              lst=args.lst, date=args.date)
 
     logger.info("\n" + "=" * 60)
     logger.info("PHASE 2 PIPELINE COMPLETE")
