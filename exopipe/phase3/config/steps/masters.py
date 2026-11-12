@@ -472,9 +472,11 @@ class masters_sublst(_Section):
     # Stack units side by side under a MEMORY BUDGET when --workers is not given. Speed only: a unit's products do not depend
     # on what runs beside it. A unit is one (night, subband): Stokes I then V, one stacker process at a time. The charge is
     # the peak memory of ONE stacker process by image size, measured 2026-11-12 on 03h 2024-12-19 Stokes I with the frozen
-    # stacker (18 MHz: 13.0 GB, 51 s; 41 MHz: 28.6 GB, 136 s; 73 MHz: 51.0 GB, 233 s; 73 MHz Stokes V: see the pull
-    # request), plus about 10%; classes as lib/snapshot_engine/cell.band_class (low to 36 MHz, mid to 59 MHz, high). An LST
-    # hour holds the same number of frames every night, so the cube of a band has one size.
+    # stacker (18 MHz: 13.0 GB, 51 s; 41 MHz: 28.6 GB, 136 s; 73 MHz: 51.0 GB, 233 s; 73 MHz Stokes V: 49.0 GB, 204 s; the
+    # largest of the 30 jobs of that night-hour, 82 MHz included: 51.2 GB), plus about 10%; classes as
+    # lib/snapshot_engine/cell.band_class (low to 36 MHz, mid to 59 MHz, high). An LST hour holds the same number of frames
+    # every night, so the cube of a band has one size. Measured on lwacalim00 (339 GB available, so four of the five high
+    # units fit at once and the fifth follows): the 30 jobs of 03h 2024-12-19 in 768 s against 973 s with 4 units at once.
     STACK_MEM_GB = dict(low=15, mid=32, high=56)
     STACK_MEM_FRACTION = 0.8                  # of the node's MemAvailable: the budget when the stage starts (as the snapshot
                                               # cell driver), and again of what is free when a further unit is to start
