@@ -1152,6 +1152,12 @@ def test_stack_budget_node():
         first_off = back.off
         os.makedirs(os.path.join(td, 'no-such-directory'))    # the cause is gone
         said_ += quiet(lambda: back.begin(60.0))              # within RETRY_S: not tried yet
+        import inspect
+        poll0 = inspect.signature(TS.budget_map).parameters['poll_s'].default
+        check('a switched-off ledger is tried again before the other invocations stop counting its entry: lock wait + '
+              'RETRY_S + two default polls < the stale limit',
+              back.lock_wait_s + TS.NodeLedger.RETRY_S + 2 * poll0 < max(TS.NodeLedger.STALE_MIN_S, 3 * poll0),
+              f'{back.lock_wait_s} + {TS.NodeLedger.RETRY_S} + 2 x {poll0} against {max(TS.NodeLedger.STALE_MIN_S, 3 * poll0)}')
         still_off = back.off is not None
         back._retry_at = 0.0                                  # RETRY_S later
         said_ += quiet(lambda: back.commit((1, 15.0, 0.0)) if back.begin(60.0) else None)
@@ -1221,15 +1227,15 @@ def test_stack_budget_node():
         TS.budget_map(lambda b: at_start.append(len(looks)), ['64MHz'], charge, 10000, 6, node=TS.NodeLedger(path),
                       mem_now_gb=rising, poll_s=0.005)
         check('no other invocation on the node: the first unit starts without the look (progress)', at_start == [0], str(at_start))
-        write({'old': entry(5, 0.0, 0.0, age=70.0)})          # an invocation that hung 70 s ago with 5 units
+        write({'old': entry(5, 0.0, 0.0, age=130.0)})         # an invocation that hung 130 s ago with 5 units
         fn, st = gather(6)
         TS.budget_map(fn, bands[:6], charge, 10000, 6, node=TS.NodeLedger(path), poll_s=0.005)
-        check('an entry not rewritten for 70 s is past the stale limit max(60 s, 3 poll_s) = 60 s: it no longer counts (the 6 '
+        check('an entry not rewritten for 130 s is past the stale limit max(120 s, 3 poll_s) = 120 s: it no longer counts (the 6 '
               'units of this call run together) and is dropped', st['peak'] == 6 and read() == {}, f"peak {st['peak']} {read()}")
-        write({'old': entry(5, 0.0, 0.0, age=70.0)})
+        write({'old': entry(5, 0.0, 0.0, age=130.0)})
         node = StackNode(charge, 1e9, life=0.01)
-        TS.budget_map(node.unit(), bands[:3], charge, 10000, 6, node=TS.NodeLedger(path), poll_s=30.0)
-        check('with poll_s = 30 s the stale limit is 90 s: the same entry still counts (5 of the 6 units): one unit at a time',
+        TS.budget_map(node.unit(), bands[:3], charge, 10000, 6, node=TS.NodeLedger(path), poll_s=50.0)
+        check('with poll_s = 50 s the stale limit is 150 s: the same entry still counts (5 of the 6 units): one unit at a time',
               node.peak_n == 1 and len(node.done) == 3 and list(read()) == ['old'], f'peak {node.peak_n} {list(read())}')
         write({'stale': entry(2, 0.0, 0.0, age=3600.0), 'dead-pid': entry(2, 0.0, 0.0, pid_=gone.pid),
                'reused-pid': entry(2, 0.0, 0.0, ct_=ct - 1000.0)})

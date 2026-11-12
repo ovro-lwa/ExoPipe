@@ -555,8 +555,11 @@ class NodeLedger:
     One object per invocation; an object is not shared between threads."""
 
     CREATE_TIME_TOL_S = 2.0      # psutil derives a create time from the boot time, which a clock step moves by a second
-    RETRY_S = 60.0               # a switched-off ledger is tried again after this long (a full /dev/shm, a slow lock holder,
-                                 # are passing states: one such moment must not leave the node unshared for hours)
+    RETRY_S = 20.0               # a switched-off ledger is tried again after this long (a full /dev/shm, a slow lock holder,
+                                 # are passing states: one such moment must not leave the node unshared for hours). With
+                                 # the 30 s lock wait and two 20 s polls (90 s) it stays under STALE_MIN_S: an entry whose
+                                 # owner was switched off once is rewritten before the other invocations stop counting it
+    STALE_MIN_S = 120.0          # readers count an entry for at least this long after its last write
 
     def __init__(self, path, lock_wait_s=30.0):
         self.path, self.lock_wait_s = str(path), float(lock_wait_s)
@@ -667,7 +670,7 @@ class NodeLedger:
         finally:
             self._unlock()
 
-    def leave(self, stale_s=60.0):
+    def leave(self, stale_s=STALE_MIN_S):
         """Remove this invocation's entry: the end of a budget_map call, an interrupt included."""
         if self.key is not None and self.begin(stale_s):
             self.commit()
@@ -737,7 +740,7 @@ def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of
         say(f'  memory budget {budget:g} GB is below the largest unit charge {max(charges):g} GB: one unit at a time')
         budget, cap = max(charges), 1
     order = sorted(range(len(items)), key=lambda k: -charges[k])               # stable: the caller's order within a charge
-    stale_s = max(60.0, 3.0 * poll_s)                                          # a ledger entry older than this is not live
+    stale_s = max(NodeLedger.STALE_MIN_S, 3.0 * poll_s)                        # a ledger entry older than this is not live
 
     def one(it):
         try:

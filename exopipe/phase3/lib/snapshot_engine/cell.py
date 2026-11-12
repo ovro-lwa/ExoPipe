@@ -858,11 +858,14 @@ def _mem_available_gb():
     Until 2026-11-12 this read MemAvailable alone, which does not know the cap the nodes put on all user sessions
     together (lwacalim00: 400 GiB of 503)."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'exopipe3_nodemem', os.path.join(HERE, os.pardir, os.pardir, 'core', 'nodemem.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.mem_available_gb() or 0
+    try:
+        spec = importlib.util.spec_from_file_location(
+            'exopipe3_nodemem', os.path.join(HERE, os.pardir, os.pardir, 'core', 'nodemem.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.mem_available_gb() or 0
+    except Exception:            # a copy of this driver without core/nodemem.py beside it: 0, so the driver REFUSES on
+        return 0                 # its budgets with a recorded line (or runs on --mem-budget-gb), never a bare traceback
 
 
 def _md5(path, block=1 << 22):
