@@ -118,14 +118,16 @@ class PageFilters:
             rows = self.by_cid.get(cid) or []
             if fr is None and len(rows) == 1:
                 fr = rows[0]
+            open_ = False
             for c in self.cats:
                 if fr is None and len(rows) > 1 and ra is None:
                     vals = set(r.get(c['key']) for r in rows)        # the members table of this tier holds no position:
                     v = vals.pop() if len(vals) == 1 else None       # rows of one frame that agree decide; else as unmatched
-                    self.undecided += c['key'] in self.defaults and v is None
+                    open_ = open_ or (c['key'] in self.defaults and v is None)
                 else:
                     v = (fr or {}).get(c['key'])
                 m[c['key']] = v if v in c['states'] else c['states'][-1]
+            self.undecided += open_                                  # counted once per detection
         if self.scint:
             m[self.rf.SCINT_CAT['key']] = self.scint.get((lst, date[:10], band), self.rf.SCINT_STATES[2])
         return m
@@ -228,9 +230,11 @@ def _detections(tier, stokes, p, lst, date, CFG):
         hour = [(rd, [r for r in det if r.get('tier') == tag and r.get('stokes') == stokes])
                 for rd, det in _hour_from_index(p['run'], lst, date) if f'/{stokes}/' in f'/{rd}/']
         hour = [(rd, det) for rd, det in hour if det]
-        by_band = {}
-        for rd, det in hour:
-            by_band.setdefault(det[0].get('band'), set()).add(rd)
+        by_band = {}                         # the served row of a candidate directory is looked up in the table of the
+        for rd, det in hour:                 # directory's own band suffix and of every band its detections name (the
+            for band in {rd.rsplit('_', 1)[-1]} | {r.get('band') for r in det} | {r.get('subband') for r in det}:
+                if band:                     # 1-minute directories are <identity>_<band>_1min: their suffix is no band)
+                    by_band.setdefault(band, set()).add(rd)
         surv = {}
         for band, wanted in by_band.items():
             surv.update(_survivors_by_review_dir(os.path.join(p['cat'], f'{band}_sources_survivors.csv'), wanted))

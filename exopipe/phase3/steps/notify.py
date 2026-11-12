@@ -64,7 +64,7 @@ def run(args, run):
     items = cells.expand_epochs(args.epochs)
     if args.phase2_run and len(items) != 1:
         raise record.Refusal('--phase2-run names one run directory: give one --epochs item')
-    top_n = args.top or CFG.notify.TOP_N
+    top_n = CFG.notify.TOP_N if args.top is None else args.top
     for item in items:
         lst, date = cells.parse_epoch(item)
         rd = args.phase2_run or inputs.latest_science_dir(lst, date)
@@ -100,7 +100,8 @@ def run(args, run):
                                          lst=lst, date=date, highlights_html=html, phases='Phases 2-3', write_to=copy)
             n_list = sum(len(r) for _s, r, _n in transients)
             u.note(f'{len(targets)} target rows, {n_list} of {n_pass} filter-passing transient candidates listed; '
-                   f'limits: {len(limits)}; ' + (f'NOT sent, written to {copy}.eml' if copy else 'sent'))
+                   f'limits: {len(limits)}; '
+                   + (f'NOT sent, written to {copy}.eml' if copy else 'sent' if sent else 'SEND FAILED'))
             if not sent:
                 raise RuntimeError(f'N3: the mailer did not send the email of {item} (its log line "Email failed" names '
                                    f'the cause); the block is kept at {keep}')
