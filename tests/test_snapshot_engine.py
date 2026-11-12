@@ -21,7 +21,10 @@ the same property on synthetic inputs, so CI catches a change that breaks it:
      refused and unmatched frames, a blank frame and a frame on the wrong grid; with and without a Full group;
   7. write_cutouts(): the same cutout cubes and tables for every DETECT_THREADS value (fixed targets on and off the frame edge);
   8. the frame movies: a subband's binned cube is the same for every P3_SNAP_MOVIE_THREADS value;
-  9. cluster only (the clv15 repository present): every ported file's pinned blob is the blob of the pin commit, and the files
+  9. the flowed-frame cube writer: the cube and the NaN mask it hands to the compression, the blank flags and the frame count
+     are those of the earlier form (frames stacked, then one whole-cube mask) on frames with NaN borders, infinities, an
+     all-NaN frame and a mostly-NaN frame (the writer was changed 2026-11-12 to fill one cube frame by frame: memory only);
+ 10. cluster only (the clv15 repository present): every ported file's pinned blob is the blob of the pin commit, and the files
      production has changed since the pin are listed in ONE failure that names what to port. Without clv15 this prints
      UNTESTED-PRODUCTION and does not fail.
 Run: python tests/test_snapshot_engine.py   (or under pytest). On the cluster run it ALSO under the engine's own interpreter
@@ -47,6 +50,7 @@ try:
     import phase3_snapshot_search as SS
     import phase3_snapshot_cutouts as SC
     import phase3_snapshot_group_search as GS
+    import phase3_snapshot_cube as CU
     from exopipe.phase3.lib import snapshot_engine as PIN
 except Exception as e:                                    # pragma: no cover
     _IMPORT_ERROR = f'{e.__class__.__name__}: {e}'
@@ -386,6 +390,71 @@ def test_movie_frames_binned_identically_for_every_thread_count():
             FM.a, FM.MOVIE_THREADS = keep
 
 
+def test_cube_writer_arrays_equal_the_stacked_form():
+    """phase3_snapshot_cube.write fills ONE preallocated cube and one int16 mask frame by frame (2026-11-12, memory only). The
+    arrays it hands to the two compressed HDUs, the blank flags of FRAME_TABLE and NFRAMES must be those of the earlier form:
+    cube = np.stack(frames); mask = ~np.isfinite(cube); cube[mask] = 0; MASK = mask.astype(int16);
+    blank = no finite pixel, or fewer than half finite. The lossy compression of FRAMES is replaced by a plain image HDU here
+    (it needs astropy >= 5.3 and seeds its dither from the clock); the MASK goes through the writer's own lossless RICE."""
+    import argparse
+    from astropy.io import fits
+    rng = np.random.RandomState(20261112)
+    ny, nx, n = 12, 16, 6
+    frames = [rng.normal(0, 1, (ny, nx)).astype(np.float32) for _ in range(n)]
+    frames[0][:] = np.nan                                   # a blank instant
+    frames[1][:2, :] = np.nan; frames[1][:, :3] = np.nan    # a NaN border
+    frames[2].flat[:int(0.6 * ny * nx)] = np.nan            # mostly NaN: blank by the half rule
+    frames[3][4, 5] = np.inf; frames[3][7, 9] = -np.inf     # infinities are not finite: stored 0, masked
+    frames[5][::2, ::3] = np.nan                            # scattered NaN, exactly one third: not blank
+    with tempfile.TemporaryDirectory() as d:
+        stage, flows, out = os.path.join(d, 'stage'), os.path.join(d, 'flows'), os.path.join(d, 'out')
+        os.makedirs(stage); os.makedirs(flows)
+        for k, f in enumerate(frames):
+            ts = '20241219_0400%02d' % (10 * k)
+            raw = os.path.join(stage, '18MHz-Clean-Snapshot-%s-image.fits' % ts)
+            open(raw, 'wb').write(b'raw frame %d' % k)
+            h = fits.Header()
+            h['DATE-OBS'] = '2024-12-19T04:00:%02d' % (10 * k)
+            if k:
+                h['FLOWREF'] = 'I_deep_Taper_R0_18MHz.fits'
+                h['FLOWED'] = (True, 'registered to the master')
+            fits.writeto(raw[:-5] + '_flowed.fits', f.reshape(1, 1, ny, nx) if k % 2 else f, h)   # 4-D and 2-D frames
+            if k in (1, 3, 4):
+                fl = rng.normal(0, 2, (3, 4, 2)).astype(np.float16)
+                if k == 3:
+                    fl[0, 0, 0] = np.nan
+                np.save(os.path.join(flows, 'flow_18MHz_%s.npy' % ts), fl)
+        got = {}
+
+        def plain(fits_, cube, header, quant):
+            got['cube'] = cube
+            return fits_.ImageHDU(data=cube, header=header, name='FRAMES')
+        keep, CU.comp_hdu = CU.comp_hdu, plain
+        try:
+            path = CU.write(argparse.Namespace(stage=stage, cell='04h_2024-12-19', subband='18MHz', stokes='I', flows=flows,
+                                               out=out, quant=CU.QUANT))
+        finally:
+            CU.comp_hdu = keep
+        ref = np.stack(frames)
+        mask = ~np.isfinite(ref)
+        ref[mask] = 0.0
+        blank = [(not np.isfinite(f).any()) or (np.isfinite(f).mean() < 0.5) for f in frames]
+        assert blank == [True, False, True, False, False, False], blank
+        assert _same(got['cube'], ref), 'the cube handed to the compression differs from the stacked form'
+        with fits.open(path) as hl:
+            assert [h.name for h in hl] == ['PRIMARY', 'FRAMES', 'MASK', 'FLOW', 'FRAME_TABLE'], [h.name for h in hl]
+            assert hl[0].header['NFRAMES'] == n
+            fr = np.asarray(hl['FRAMES'].data)
+            assert fr.dtype.kind == 'f' and fr.dtype.itemsize == 4 and np.array_equal(fr, ref), 'FRAMES differs from the stacked form'
+            mk = np.asarray(hl['MASK'].data)
+            assert mk.dtype.kind == 'i' and mk.dtype.itemsize == 2 and np.array_equal(mk, mask.astype(np.int16)), 'MASK differs'
+            assert int(mk.sum()) == int(mask.sum()) > 0
+            t = hl['FRAME_TABLE'].data
+            assert [bool(b) for b in t['blank']] == blank, list(t['blank'])
+            assert [bool(b) for b in t['has_flow']] == [k in (1, 3, 4) for k in range(n)]
+            assert hl['FLOW'].data.shape == (n, 3, 4, 2)
+
+
 def test_production_pin():
     """Cluster only. The pin is honest (each blob is the pin commit's) and production's later changes to a ported file are
     reported in one failure that names them: moving the pin is a port round."""
@@ -415,7 +484,8 @@ TESTS = [test_row_medians_equal_numpy, test_detect_is_the_serial_loop_for_every_
          test_highpass_is_identical_for_every_thread_count, test_admission_is_identical_for_every_thread_count,
          test_a_missing_default_target_list_refuses, test_check_default_lists_refuses_before_any_work,
          test_wideband_accumulation_per_instant_equals_production_loop, test_cutouts_are_identical_for_every_thread_count,
-         test_movie_frames_binned_identically_for_every_thread_count, test_production_pin]
+         test_movie_frames_binned_identically_for_every_thread_count, test_cube_writer_arrays_equal_the_stacked_form,
+         test_production_pin]
 
 
 def main():
