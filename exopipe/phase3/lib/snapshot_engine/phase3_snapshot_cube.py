@@ -91,9 +91,20 @@ def comp_hdu(fits, cube, header, quant):
     if (major, minor) < (5, 3):
         sys.exit("REFUSED: astropy %s cannot write NaN-safe compressed float cubes; run the writer under "
                  "/opt/devel/pipeline/envs/py310_orca/bin/python" % astropy.__version__)
+    # DITHER SEED FROM THE DATA (2026-11-12, R-GREGG-20261112-CUBE-DITHER-SEED-FROM-THE-DATA): astropy's default takes the
+    # seed of the subtractive dither from the clock, so two writes of the same frames gave two cubes whose pixels differed
+    # at 1-2% of the noise, and no cube could be proven by writing it a second time. DITHER_SEED_CHECKSUM takes the seed
+    # from the bytes of the first tile (recorded in ZDITHER0, as before): same pixels in, same stored pixels out. The noise
+    # the quantization adds is unchanged; only which realization a cube holds. The stored BYTES are the same too, except
+    # in a tile that cannot be quantized (a blank instant, all zeros): astropy stores it losslessly through Python's gzip,
+    # which writes the time of day into its 10-byte header (astropy 6.1.7, measured 2026-11-12) - so a proof by a second
+    # write compares the decoded pixels, or the bytes apart from those gzip headers. astropy.io.fits itself does not
+    # export the constant (6.1.7): it lives in astropy.io.fits.hdu.compressed (a module in 5.3, a package since 6.0)
+    from astropy.io.fits.hdu.compressed import DITHER_SEED_CHECKSUM
     return fits.CompImageHDU(data=cube, header=header, name="FRAMES", compression_type="RICE_1",
                              tile_shape=(1,) + cube.shape[1:], quantize_level=quant,
-                             quantize_method=1)       # 1 = SUBTRACTIVE_DITHER_1
+                             quantize_method=1,       # 1 = SUBTRACTIVE_DITHER_1
+                             dither_seed=DITHER_SEED_CHECKSUM)
 
 
 def write(a):
@@ -355,19 +366,27 @@ def rescale(a):
         ph = h[0].header.copy()
         if "FSAPPLD" in ph:
             sys.exit("REFUSED: %s already carries FSAPPLD=%s" % (a.cube, ph["FSAPPLD"]))
-        old = np.asarray(h["FRAMES"].data, dtype=np.float32)
+        new = np.asarray(h["FRAMES"].data, dtype=np.float32)
         ch = h["FRAMES"].header.copy()
-        mask = np.asarray(h["MASK"].data)
+        mask = np.asarray(np.asarray(h["MASK"].data), dtype=np.int16)      # int16 as stored: no copy
         rest = [fits.ImageHDU(data=np.array(h["FLOW"].data), header=h["FLOW"].header.copy(), name="FLOW")] \
             if "FLOW" in h else []
         rest.append(fits.BinTableHDU(data=h["FRAME_TABLE"].data.copy(), header=h["FRAME_TABLE"].header.copy(), name="FRAME_TABLE"))
+    # MEMORY (2026-11-12, memory only; the rewritten cube is unchanged byte for byte): the decompressed cube is divided by
+    # the factor IN PLACE, frame by frame, and is from here on the cube in Master units BEFORE re-quantization (what
+    # "old / F" was). Before, a second whole cube (old / F) and two int16 copies of the mask were held beside it
+    if not new.flags.writeable:
+        new = new.copy()
+    f32 = np.float32(fs)
+    for i in range(new.shape[0]):
+        np.divide(new[i], f32, out=new[i])
     quant = float(ph.get("QUANTLEV", QUANT))
     for k in [k for k in ch if k.startswith("Z") or k in ("XTENSION", "PCOUNT", "GCOUNT", "TFIELDS", "TTYPE1", "TFORM1")]:
         del ch[k]
     ph["FSAPPLD"] = (float(fs), "frame-to-Master flux scale divided out of the pixels")
     ph["RESCALED"] = (git_hash(), "clv15 commit of the rescale")
-    hdus = [fits.PrimaryHDU(header=ph), comp_hdu(fits, old / np.float32(fs), ch, quant),
-            fits.CompImageHDU(data=mask.astype(np.int16), name="MASK", compression_type="RICE_1",
+    hdus = [fits.PrimaryHDU(header=ph), comp_hdu(fits, new, ch, quant),
+            fits.CompImageHDU(data=mask, name="MASK", compression_type="RICE_1",
                               tile_shape=(1,) + mask.shape[1:])] + rest
     os.makedirs(a.out, exist_ok=True)
     out = os.path.join(a.out, os.path.basename(a.cube))
@@ -377,12 +396,16 @@ def rescale(a):
     fits.HDUList(hdus).writeto(tmp, overwrite=True, checksum=True)
     worst = 0.0
     with fits.open(tmp, memmap=False) as n:
-        if not np.array_equal(np.asarray(n["MASK"].data), mask.astype(np.int16)):
+        # the whole MASK at once, not section[]: in a high-band cube the MASK starts past 2 GiB, where section[] overflows
+        # (astropy 6.1 + numpy 2, see Cube.frame); compared frame by frame so that no whole-cube temporary is made
+        nm = np.asarray(n["MASK"].data)
+        if nm.shape != mask.shape or any(not np.array_equal(nm[i], mask[i]) for i in range(mask.shape[0])):
             os.remove(tmp); sys.exit("RESCALE FAILED %s: MASK differs" % out)
+        del nm
         if n["FRAME_TABLE"].data.tobytes() != rest[-1].data.tobytes():
             os.remove(tmp); sys.exit("RESCALE FAILED %s: FRAME_TABLE differs" % out)
-        for i in range(old.shape[0]):
-            d0, d1 = old[i] / np.float32(fs), np.asarray(n["FRAMES"].section[i], dtype=np.float32)
+        for i in range(new.shape[0]):
+            d0, d1 = new[i], np.asarray(n["FRAMES"].section[i], dtype=np.float32)
             m = np.isfinite(d0)
             if (m != np.isfinite(d1)).any():
                 os.remove(tmp); sys.exit("RESCALE FAILED %s: NaN mask differs in frame %d" % (out, i))
@@ -393,7 +416,7 @@ def rescale(a):
     if worst > RESCALE_TOL:
         os.remove(tmp); sys.exit("RESCALE FAILED %s: worst pixel %.4f of frame noise > %.2f" % (out, worst, RESCALE_TOL))
     os.replace(tmp, out)
-    print("RESCALE %s FSAPPLD=%.6f frames=%d worst pixel/noise=%.4f -> OK" % (out, fs, old.shape[0], worst))
+    print("RESCALE %s FSAPPLD=%.6f frames=%d worst pixel/noise=%.4f -> OK" % (out, fs, new.shape[0], worst))
 
 
 RESCALE_TOL = 0.05     # re-quantization of an already-quantized cube: measured 0.006 per quantization (2026-11-12 write test)

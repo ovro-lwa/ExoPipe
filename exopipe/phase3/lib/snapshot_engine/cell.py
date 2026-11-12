@@ -80,8 +80,8 @@ ON_GRID_NAXIS = 1508                                                            
 # 04h 2024-12-19, from the cell records (maxrss_gb, 2026-11-11), with a little room: search 5.6 / 12.7 / 21.1; cube writer
 # 12.2 / 29.5 / 51.6 until 2026-11-12. Since the writer fills one cube frame by frame (phase3_snapshot_cube.write, memory
 # only): 8.4 GB at 1508 px and 35.3 GB at 3122 px, MEASURED on 04h 2024-12-19 18 MHz and 82 MHz Stokes I (lwacalim03, the
-# cube's own verify step under the py36 interpreter 6.1 and 25.2 GB); 2358 px is NOT measured: 22 GB charged from the same
-# ratio (0.69 of 29.5 = 20.4) - read maxrss_gb of the mid-band cube tasks in the next cell record and correct it
+# cube's own verify step under the py36 interpreter 6.1 and 25.2 GB), and in two full cells of 2026-11-12 (records
+# cell_x1 / cell_x2, all 30 cube tasks each): 8.4-8.5 GB at 1508 px, 20.3-20.7 GB at 2358 px, 35.2-35.4 GB at 3122 px
 MEM_SEARCH = {'low': 6, 'mid': 14, 'high': 23}
 MEM_CUBE = {'low': 10, 'mid': 22, 'high': 38}
 MEM_WIDEBAND = 28

@@ -24,7 +24,10 @@ the same property on synthetic inputs, so CI catches a change that breaks it:
   9. the flowed-frame cube writer: the cube and the NaN mask it hands to the compression, the blank flags and the frame count
      are those of the earlier form (frames stacked, then one whole-cube mask) on frames with NaN borders, infinities, an
      all-NaN frame and a mostly-NaN frame (the writer was changed 2026-11-12 to fill one cube frame by frame: memory only);
- 10. cluster only (the clv15 repository present): every ported file's pinned blob is the blob of the pin commit, and the files
+ 10. the cube's dither seed comes from the data: comp_hdu asks for DITHER_SEED_CHECKSUM (any astropy); under astropy >= 5.3
+     two writes and two rescales of the same input are identical byte for byte, and rescale's in-place division stores the
+     bytes of the earlier form;
+ 11. cluster only (the clv15 repository present): every ported file's pinned blob is the blob of the pin commit, and the files
      production has changed since the pin are listed in ONE failure that names what to port. Without clv15 this prints
      UNTESTED-PRODUCTION and does not fail.
 Run: python tests/test_snapshot_engine.py   (or under pytest). On the cluster run it ALSO under the engine's own interpreter
@@ -455,6 +458,99 @@ def test_cube_writer_arrays_equal_the_stacked_form():
             assert hl['FLOW'].data.shape == (n, 3, 4, 2)
 
 
+def test_cube_dither_seed_comes_from_the_data():
+    """The lossy compression of FRAMES takes the seed of its dither from the data, not from the clock (2026-11-12, ledger
+    R-GREGG-20261112-CUBE-DITHER-SEED-FROM-THE-DATA), so the same frames give the same cube, byte for byte.
+    (a) under any astropy: comp_hdu asks CompImageHDU for dither_seed = DITHER_SEED_CHECKSUM, with the tiling and
+        quantization it always asked for;
+    (b) under astropy >= 5.3 (the writer's interpreter; comp_hdu refuses under an older one): write() twice and rescale()
+        twice give the same ZDITHER0 and the same decoded pixels bit for bit, and FRAMES data units identical byte for byte
+        when no frame is blank; rescale(), which divides the cube in place frame by frame (memory only), stores what the
+        earlier form comp_hdu(old / F) stored; its MASK is the source's.
+        A BLANK frame (all zeros, not quantizable) is stored losslessly through Python's gzip, whose header holds the time
+        of day: with one, two writes a second apart differ in those header bytes and nowhere else (astropy 6.1.7, measured
+        2026-11-12), so the bytes are compared only for the cube without a blank frame.
+    Under an older astropy (b) is NOT run, and the test says so."""
+    import argparse
+    import astropy
+    from astropy.io import fits
+    from astropy.io.fits.hdu.compressed import DITHER_SEED_CHECKSUM, DITHER_SEED_CLOCK
+    assert DITHER_SEED_CHECKSUM != DITHER_SEED_CLOCK
+    seen = {}
+
+    class _Fits(object):                 # stands in for astropy.io.fits: keeps what comp_hdu asks of CompImageHDU
+        @staticmethod
+        def CompImageHDU(**kw):
+            seen.update(kw)
+            return 'hdu'
+    version = astropy.__version__
+    astropy.__version__ = '6.1.7'        # comp_hdu refuses under astropy < 5.3; what it asks for does not depend on it
+    try:
+        assert CU.comp_hdu(_Fits, np.zeros((2, 3, 4), np.float32), fits.Header(), 8.0) == 'hdu'
+    finally:
+        astropy.__version__ = version
+    assert seen.get('dither_seed') == DITHER_SEED_CHECKSUM, 'comp_hdu does not ask for the data-derived dither seed'
+    assert (seen.get('quantize_method'), seen.get('quantize_level'), seen.get('tile_shape'), seen.get('compression_type')) \
+        == (1, 8.0, (1, 3, 4), 'RICE_1'), seen
+    if tuple(int(x) for x in version.split('.')[:2]) < (5, 3):
+        print(f'      NOT RUN under astropy {version} (< 5.3): the byte comparison of two real writes and two real rescales')
+        return
+    from scipy.ndimage import gaussian_filter
+    rng = np.random.RandomState(20261113)
+    ny, nx, n = 96, 128, 5
+    # smooth frames, as the sky's are (beam >> pixel): rescale's own content test allows 0.05 of a frame's noise
+    frames = [gaussian_filter(rng.normal(0, 1, (ny, nx)), 3).astype(np.float32) for _ in range(n)]
+    frames[2][:5, :] = np.nan
+
+    def unit(path, name):                # the data unit of one HDU as stored in the file, and its ZDITHER0
+        with fits.open(path, disable_image_compression=True) as hl:
+            h = hl[name]
+            off, size, z = h._data_offset, h._data_size, h.header.get('ZDITHER0')
+        with open(path, 'rb') as fh:
+            fh.seek(off)
+            return fh.read(size), z
+
+    def pixels(path):                    # the decoded FRAMES pixels
+        with fits.open(path) as hl:
+            return np.asarray(hl['FRAMES'].data, dtype=np.float32).tobytes()
+    with tempfile.TemporaryDirectory() as d:
+        for first_blank in (False, True):          # a blank first instant: the seed's tile is all zeros
+            stage = os.path.join(d, 'stage%d' % first_blank)
+            os.makedirs(stage)
+            for k, f in enumerate(frames):
+                ts = '20241219_0400%02d' % (10 * k)
+                raw = os.path.join(stage, '18MHz-Clean-Snapshot-%s-image.fits' % ts)
+                open(raw, 'wb').write(b'raw frame %d' % k)
+                fits.writeto(raw[:-5] + '_flowed.fits', np.full_like(f, np.nan) if (first_blank and k == 0) else f)
+            tag = 'b%d' % first_blank
+            w = [CU.write(argparse.Namespace(stage=stage, cell='04h_2024-12-19', subband='18MHz', stokes='I', flows=None,
+                                             out=os.path.join(d, tag + o), quant=CU.QUANT)) for o in ('w1', 'w2')]
+            (b1, z1), (b2, z2) = unit(w[0], 'FRAMES'), unit(w[1], 'FRAMES')
+            assert z1 == z2 and 1 <= int(z1) <= 10000, (z1, z2)
+            assert first_blank is False or int(z1) == 1, z1
+            assert pixels(w[0]) == pixels(w[1]), 'two writes of the same frames differ in their decoded pixels'
+            assert len(b1) > 0 and (first_blank or b1 == b2), 'two writes of the same frames differ in the FRAMES data unit'
+            for o in ('r1', 'r2'):
+                CU.rescale(argparse.Namespace(cube=w[0], fluxscal=0.75, out=os.path.join(d, tag + o)))
+            r1, r2 = (os.path.join(d, tag + o, os.path.basename(w[0])) for o in ('r1', 'r2'))
+            assert unit(r1, 'FRAMES')[1] == unit(r2, 'FRAMES')[1] and pixels(r1) == pixels(r2), \
+                'two rescales of the same cube differ in ZDITHER0 or in their decoded pixels'
+            assert first_blank or unit(r1, 'FRAMES') == unit(r2, 'FRAMES'), 'two rescales differ in the FRAMES data unit'
+            assert pixels(r1) != pixels(w[0])
+            assert unit(r1, 'MASK')[0] == unit(w[0], 'MASK')[0], 'the rescaled MASK is not the source MASK'
+            with fits.open(w[0]) as hl:
+                old = np.asarray(hl['FRAMES'].data, dtype=np.float32)
+                ch = hl['FRAMES'].header.copy()
+            for k in [k for k in ch if k.startswith('Z') or k in ('XTENSION', 'PCOUNT', 'GCOUNT', 'TFIELDS', 'TTYPE1', 'TFORM1')]:
+                del ch[k]
+            ref = os.path.join(d, tag + 'ref.fits')
+            fits.HDUList([fits.PrimaryHDU(), CU.comp_hdu(fits, old / np.float32(0.75), ch, CU.QUANT)]).writeto(ref)
+            assert pixels(ref) == pixels(r1) and (first_blank or unit(ref, 'FRAMES')[0] == unit(r1, 'FRAMES')[0]), \
+                'rescale in place differs from the earlier form comp_hdu(old / F)'
+            with fits.open(r1) as hl:
+                assert abs(hl[0].header['FSAPPLD'] - 0.75) < 1e-12 and hl[0].header['NFRAMES'] == n
+
+
 def test_production_pin():
     """Cluster only. The pin is honest (each blob is the pin commit's) and production's later changes to a ported file are
     reported in one failure that names them: moving the pin is a port round."""
@@ -485,7 +581,7 @@ TESTS = [test_row_medians_equal_numpy, test_detect_is_the_serial_loop_for_every_
          test_a_missing_default_target_list_refuses, test_check_default_lists_refuses_before_any_work,
          test_wideband_accumulation_per_instant_equals_production_loop, test_cutouts_are_identical_for_every_thread_count,
          test_movie_frames_binned_identically_for_every_thread_count, test_cube_writer_arrays_equal_the_stacked_form,
-         test_production_pin]
+         test_cube_dither_seed_comes_from_the_data, test_production_pin]
 
 
 def main():
