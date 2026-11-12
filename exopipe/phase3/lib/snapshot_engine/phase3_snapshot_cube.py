@@ -404,6 +404,9 @@ def rescale(a):
         del nm
         if n["FRAME_TABLE"].data.tobytes() != rest[-1].data.tobytes():
             os.remove(tmp); sys.exit("RESCALE FAILED %s: FRAME_TABLE differs" % out)
+        # FRAMES is read by section[]: it is the first extension (data at byte 11,520), and astropy gives it 32-bit
+        # pointers only when the decoded cube is under 4 GiB, whose compressed heap is under 1 GiB - no sum passes 2 GiB
+        # (82 MHz, 358 frames, 2.19 GB compressed: 64-bit pointers, every frame read back, 2026-11-12)
         for i in range(new.shape[0]):
             d0, d1 = new[i], np.asarray(n["FRAMES"].section[i], dtype=np.float32)
             m = np.isfinite(d0)
