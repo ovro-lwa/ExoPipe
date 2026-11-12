@@ -853,13 +853,16 @@ def _count_cores(spec):
 
 
 def _mem_available_gb():
-    try:
-        for l in open('/proc/meminfo'):
-            if l.startswith('MemAvailable:'):
-                return int(l.split()[1]) // 2 ** 20
-    except (OSError, ValueError, IndexError):
-        pass
-    return 0
+    """The memory this driver may count on, whole GB (0 when it cannot be read): MemAvailable bounded by the memory limit
+    of the process's cgroups - core/nodemem.py, loaded by its path (this driver runs as a script outside the package).
+    Until 2026-11-12 this read MemAvailable alone, which does not know the cap the nodes put on all user sessions
+    together (lwacalim00: 400 GiB of 503)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'exopipe3_nodemem', os.path.join(HERE, os.pardir, os.pardir, 'core', 'nodemem.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.mem_available_gb() or 0
 
 
 def _md5(path, block=1 << 22):

@@ -76,6 +76,8 @@ import threading
 import time
 
 from exopipe.phase3.core import record
+from exopipe.phase3.core.nodemem import cgroup_available_gb, mem_available_gb   # noqa: F401  names of this module too:
+#   the stack stage calls mem_available_gb through this module, where its tests replace it
 from exopipe.phase3.core.record import NoInput, Refusal
 
 TIER = 'sublst'
@@ -492,65 +494,6 @@ def cube_nframes(path):
     return n if n > 0 else None
 
 
-def cgroup_available_gb(proc_cgroup='/proc/self/cgroup', root='/sys/fs/cgroup'):
-    """What this process may still take (GB = 2**30 bytes) under the memory limits of the cgroups it runs in (cgroup v2),
-    or None when no enclosing cgroup sets a limit or nothing can be read (cgroup v1, no /sys). For every cgroup from the
-    process's own up to the root that holds a number in memory.max: memory.max - memory.current + the file cache charged
-    to it that can be dropped (inactive_file + active_file of memory.stat; shared memory is in neither); the smallest of
-    those levels. A limited level whose usage cannot be read gives no number (it is skipped).
-    Why (2026-11-12): the cluster's nodes cap all user sessions together - lwacalim00: /user.slice memory.max = 400 GiB on
-    a node of 503 GiB. MemAvailable does not know that cap, and a job that crosses it is killed while the node still shows
-    memory available: six high-band units (6 x 51 GB) beside 100 GB of other user jobs would cross it."""
-    try:
-        with open(proc_cgroup) as f:
-            rel = next((line.strip().split('::', 1)[1] for line in f if line.startswith('0::')), None)
-    except (OSError, IndexError):
-        return None
-    if rel is None:
-        return None
-    root = os.path.normpath(root)
-    d = os.path.normpath(os.path.join(root, rel.lstrip('/')))
-    best = None
-    while d != root and d.startswith(root + os.sep):
-        try:
-            with open(os.path.join(d, 'memory.max')) as f:
-                limit = f.read().strip()
-            if limit != 'max':
-                with open(os.path.join(d, 'memory.current')) as f:
-                    current = int(f.read().strip())
-                cache = 0
-                with open(os.path.join(d, 'memory.stat')) as f:
-                    for line in f:
-                        k, _, v = line.partition(' ')
-                        if k in ('inactive_file', 'active_file'):
-                            cache += int(v)
-                left = max(0, int(limit) - current + cache) / 2 ** 30
-                best = left if best is None else min(best, left)
-        except (OSError, ValueError):
-            pass                                                               # no memory controller at this level
-        d = os.path.dirname(d)
-    return best
-
-
-def mem_available_gb():
-    """The memory this process can still count on, in whole GB (0 for less than 1 GB): this node's MemAvailable, or what
-    is left under the memory limit of its cgroups (cgroup_available_gb) when that is less. None when MemAvailable cannot
-    be read."""
-    m = None
-    try:
-        with open('/proc/meminfo') as f:
-            for line in f:
-                if line.startswith('MemAvailable:'):
-                    m = int(line.split()[1]) // 2 ** 20
-                    break
-    except (OSError, ValueError, IndexError):
-        m = None
-    if m is None:
-        return None
-    c = cgroup_available_gb()
-    return m if c is None else min(m, int(c))
-
-
 def stack_parallelism(workers, avail_gb, section, n_cores=None):
     """How the stack units of one LST run: ('pool', n) = n at once whatever their memory (an explicit --workers, or a node
     whose MemAvailable cannot be read: PARALLEL['stack'] as before), or ('budget', GB, cap) = side by side within GB of
@@ -604,23 +547,32 @@ class NodeLedger:
       starts, commit() writes this invocation's totals and releases the lock.
     - Without psutil or fcntl, or when the file cannot be created, locked (within lock_wait_s: a holder stopped inside its
       transaction must not stop the node) or written, the ledger switches itself off with ONE log line; the budget and
-      the unit cap are then per invocation.
+      the unit cap are then per invocation. It is tried again every RETRY_S seconds and says when it is in use again.
+    LIMITS (review 2026-11-12, accepted): an entry counts while its DRIVER process lives and rewrites it - a driver that
+    is stopped or killed while its stackers run on stops counting after the stale limit (their memory is then seen only
+    once resident); invocations with --workers (the fixed pool) write no entry; a waiting invocation looks again only
+    every poll, so a lane that keeps 6 units running is not interrupted by a second lane until its call ends.
     One object per invocation; an object is not shared between threads."""
 
     CREATE_TIME_TOL_S = 2.0      # psutil derives a create time from the boot time, which a clock step moves by a second
+    RETRY_S = 60.0               # a switched-off ledger is tried again after this long (a full /dev/shm, a slow lock holder,
+                                 # are passing states: one such moment must not leave the node unshared for hours)
 
     def __init__(self, path, lock_wait_s=30.0):
         self.path, self.lock_wait_s = str(path), float(lock_wait_s)
-        self.off = None                                  # why the ledger is switched off (said once); None = in use
+        self.off = None                                  # why the ledger is switched off (said once per outage); None = in use
+        self._retry_at = 0.0                             # time.monotonic() from which a switched-off ledger is tried again
         self.key = self._me = self._fd = None
         self._others, self.others_units, self.others_unmaterialized = {}, 0, 0.0
 
     def _switch_off(self, why):
         self._unlock()
+        self._retry_at = time.monotonic() + self.RETRY_S
         if self.off is None:
             self.off = str(why)[:300]
             say(f'  node ledger {self.path} switched off ({self.off}): the memory budget and the unit cap of this run are '
-                f'then PER INVOCATION, not shared with the other invocations on this node')
+                f'then PER INVOCATION, not shared with the other invocations on this node; tried again every '
+                f'{self.RETRY_S:g} s')
         return False
 
     def _unlock(self):
@@ -658,8 +610,9 @@ class NodeLedger:
     def begin(self, stale_s):
         """Start one transaction: take the lock and read the other invocations' live entries (others_units,
         others_unmaterialized). False = the ledger is off (said once): the caller goes on alone."""
-        if self.off is not None:
+        if self.off is not None and time.monotonic() < self._retry_at:
             return False
+        self._unlock()             # a descriptor left by a transaction an interrupt cut short: never a second one beside it
         try:
             import fcntl
             import psutil
@@ -685,6 +638,9 @@ class NodeLedger:
             self.others_units = sum(max(0, int(e['units'])) for e in self._others.values())
             self.others_unmaterialized = sum(max(0.0, float(e['charged_gb']) - float(e['held_gb']))
                                              for e in self._others.values())
+            if self.off is not None:
+                say(f'  node ledger {self.path} in use again (it was switched off: {self.off})')
+                self.off = None
             return True
         except Exception as e:
             return self._switch_off(f'{type(e).__name__}: {e}')
@@ -761,8 +717,9 @@ def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of
       item's charge must also fit after what the others have been charged and not taken, and the first item starts
       without the look only when no other invocation runs a unit. The loop wakes every poll_s seconds at least and
       rewrites its entry (one not rewritten for max(60 s, 3 poll_s) no longer counts); while nothing of this call runs
-      and nothing may start it looks again every poll_s seconds (said once). The entry is removed at the end. A ledger
-      that switches itself off (one log line) leaves this call alone on its budget.
+      and nothing may start it looks again every poll_s seconds (said once). The entry is removed at the end. While a
+      ledger is switched off (one log line; it is tried again later) this call is alone on its budget.
+      held_gb is the memory of ALL of this process's descendants: right when the units are its only children (the stage).
     - A budget below the largest single charge means ONE item at a time (said in the log): nothing is refused for memory,
       and nothing runs beside an item the budget cannot hold.
     - Errors as in pool_map: an item's exception is printed, recorded as the item's unit if that had not opened, and the
@@ -800,12 +757,11 @@ def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of
                     # the charges of the running items, summed anew: exactly 0 when nothing runs (frame-scaled charges
                     # are fractions; a rounding residue of a running total must never hold the largest item back)
                     used = sum(running.values())
-                    if node is not None and not node.begin(stale_s):
-                        node = None                                            # switched off (said by the ledger): alone
-                    o_units, o_unmat = (node.others_units, node.others_unmaterialized) if node is not None else (0, 0.0)
+                    ledger = node is not None and node.begin(stale_s)          # False: off for this look (said by the
+                    o_units, o_unmat = (node.others_units, node.others_unmaterialized) if ledger else (0, 0.0)   # ledger)
                     free_now, held, asked = None, None, False                  # this look's readings, made once
                     try:
-                        if node is not None:
+                        if ledger:
                             held = held_now()                                  # for the entry, whatever this look starts
                         for k in list(order):
                             if len(running) >= min(cap, node_cap - o_units):
@@ -825,7 +781,7 @@ def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of
                             used += charges[k]                                 # an item started in this look has taken nothing
                             order.remove(k)
                     finally:
-                        if node is not None:
+                        if ledger:
                             node.commit((len(running), used, held))
                     if order and not running:
                         # only with a ledger: the other invocations hold the node's units or its free memory
@@ -858,8 +814,6 @@ def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of
                         del running[f]
                     if node.begin(stale_s):
                         node.commit((len(running), sum(running.values()), held_now()))
-                    else:
-                        node = None
                 raise
     finally:
         if node is not None:

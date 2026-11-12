@@ -42,6 +42,7 @@ _env.legacy()
 from exopipe.phase3.config import CFG, ConfigRefusal   # noqa: E402
 from exopipe.phase3.core import record, validate       # noqa: E402
 from exopipe.phase3.lib.masters import tier_sublst as TS, tier_snapshot as TN   # noqa: E402
+from exopipe.phase3.core import nodemem as NM         # noqa: E402
 
 _STATE = {}
 
@@ -1042,18 +1043,34 @@ def test_stack_budget():
         check('usage above the limit: 0, never negative', left() == 0.0, repr(left()))
         level('user.slice/user-1.slice', 50 * G)
         check('a limited level whose usage cannot be read is skipped', left() == 240.0, repr(left()))
+        with open(os.path.join(root, 'user.slice', 'memory.high'), 'w') as f:
+            f.write(f'{350 * G}\n')
+        check('memory.high below memory.max is the limit (above it the cgroup is throttled)', left() == 190.0, repr(left()))
+        with open(os.path.join(root, 'user.slice', 'memory.high'), 'w') as f:
+            f.write('max\n')
+        check('memory.high = max: memory.max alone', left() == 240.0, repr(left()))
         with open(pc, 'w') as f:
             f.write('12:memory:/user.slice\n')
         check('cgroup v1 (no line of the unified hierarchy): None', left() is None, repr(left()))
     if m is not None and m >= 3:
-        with Patch((TS, 'cgroup_available_gb', lambda: 1.9)):
+        check('the stack stage reads the shared helper (core/nodemem.py)', TS.mem_available_gb is NM.mem_available_gb
+              and TS.cgroup_available_gb is NM.cgroup_available_gb)
+        with Patch((NM, 'cgroup_available_gb', lambda: 1.9)):
             check('the free memory is what is left under the cgroup limit when that is less than MemAvailable',
-                  TS.mem_available_gb() == 1, repr(TS.mem_available_gb()))
-        with Patch((TS, 'cgroup_available_gb', lambda: None)):
-            big = TS.mem_available_gb()
-        with Patch((TS, 'cgroup_available_gb', lambda: 1e9)):
-            check('and MemAvailable when the limit leaves more, or there is none', abs(TS.mem_available_gb() - big) <= 2,
-                  f'{TS.mem_available_gb()} against {big}')
+                  NM.mem_available_gb() == 1, repr(NM.mem_available_gb()))
+        with Patch((NM, 'cgroup_available_gb', lambda: None)):
+            big = NM.mem_available_gb()
+        with Patch((NM, 'cgroup_available_gb', lambda: 1e9)):
+            check('and MemAvailable when the limit leaves more, or there is none', abs(NM.mem_available_gb() - big) <= 2,
+                  f'{NM.mem_available_gb()} against {big}')
+        # the snapshot cell driver (a script outside the package) loads the same helper by its path
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'cell_for_test', os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'snapshot_engine', 'cell.py'))
+        with open(spec.origin) as f:
+            csrc = f.read()
+        check('the snapshot cell driver budgets from the same helper, no reader of its own',
+              "'core', 'nodemem.py'" in csrc and 'MemAvailable:' not in csrc)
 
 
 def test_stack_budget_node():
@@ -1114,6 +1131,35 @@ def test_stack_budget_node():
             with contextlib.redirect_stdout(buf):
                 fn_(*a, **k)
             return buf.getvalue().splitlines()
+        # ---- review 2026-11-12 (second pass on d7da1ea): a transaction cut short keeps no lock; an outage is passing ---
+        cut = TS.NodeLedger(os.path.join(td, 'cut.json'), lock_wait_s=20.0)
+        ok1 = cut.begin(60.0)                                 # ... and an interrupt before commit(): the lock is still held
+        t0 = time.monotonic()
+        ok2 = cut.begin(60.0)                                 # the recovery path begins again: at once, not after the lock wait
+        waited = time.monotonic() - t0
+        cut.commit((1, 56.0, 0.0))
+        other = TS.NodeLedger(os.path.join(td, 'cut.json'), lock_wait_s=2.0)
+        ok3 = other.begin(60.0)                               # and no descriptor is left holding the lock for a later taker
+        seen = sum(e['units'] for e in read(cut.path).values())   # (same process, so the same key: the file is read here)
+        other._others = read(cut.path)                        # keep the entry: this taker only looked
+        other.commit()
+        check('a transaction cut short by an interrupt keeps no lock: the next begin() of the same ledger is immediate and a '
+              'second invocation gets the lock', ok1 and ok2 and waited < 5.0 and ok3 and seen == 1 and cut.off is None
+              and other.off is None, f'{ok1} {ok2} {waited:.1f} s {ok3} {seen} {cut.off} {other.off}')
+        cut.leave()
+        back = TS.NodeLedger(os.path.join(td, 'no-such-directory', 'ledger.json'))
+        said_ = quiet(lambda: [back.begin(60.0), back.begin(60.0)])
+        first_off = back.off
+        os.makedirs(os.path.join(td, 'no-such-directory'))    # the cause is gone
+        said_ += quiet(lambda: back.begin(60.0))              # within RETRY_S: not tried yet
+        still_off = back.off is not None
+        back._retry_at = 0.0                                  # RETRY_S later
+        said_ += quiet(lambda: back.commit((1, 15.0, 0.0)) if back.begin(60.0) else None)
+        check('a ledger that could not be used is switched off with one line, tried again after RETRY_S and says when it is in '
+              'use again', bool(first_off) and still_off and back.off is None
+              and len([x for x in said_ if 'PER INVOCATION' in x]) == 1 and len([x for x in said_ if 'in use again' in x]) == 1
+              and read(back.path)[back.key]['units'] == 1, f'{first_off} {still_off} {back.off} {said_}')
+        back.leave()
         # ---- the ledger alone: entries, liveness, the stale limit ------------------------------------------------------
         L = TS.NodeLedger(path)
         check('a first transaction on a new ledger: no other invocation',
