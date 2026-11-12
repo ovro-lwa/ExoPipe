@@ -461,8 +461,16 @@ def stack_band_class(sb):
     return 'low' if f <= 36 else ('mid' if f <= 59 else 'high')
 
 
+def stack_charge_gb(sb, section):
+    """Memory charge (GB) of one stack unit of subband sb; the largest charge for a label that is no '<n>MHz' subband."""
+    try:
+        return float(section.STACK_MEM_GB[stack_band_class(sb)])
+    except (ValueError, KeyError, TypeError):
+        return float(max(section.STACK_MEM_GB.values()))
+
+
 def mem_available_gb():
-    """This node's MemAvailable in GB; 0 when it cannot be read."""
+    """This node's MemAvailable in GB (0 for less than 1 GB); None when it cannot be read."""
     try:
         with open('/proc/meminfo') as f:
             for line in f:
@@ -470,18 +478,38 @@ def mem_available_gb():
                     return int(line.split()[1]) // 2 ** 20
     except (OSError, ValueError, IndexError):
         pass
-    return 0
+    return None
 
 
-def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of=None):
-    """fn(item) for every item, side by side while the memory charges (GB) of the running items fit in mem_budget_gb and at
-    most max_units run (lib/snapshot_engine/schedule.Scheduler; threads: every unit's work is a child process). Speed only:
-    what an item computes does not depend on what runs beside it. The item with the largest charge starts first (it is
-    also the longest), the caller's order within a charge; a smaller item starts beside it as soon as it fits. A budget
-    below the largest single charge means ONE item at a time (said in the log): nothing is refused for memory, and nothing
-    runs beside an item the budget cannot hold. Errors as in pool_map: printed, recorded as the item's unit if that had
-    not opened, and the others go on."""
-    from exopipe.phase3.lib.snapshot_engine.schedule import Scheduler
+def stack_parallelism(workers, avail_gb, section, n_cores=None):
+    """How the stack units of one LST run: ('pool', n) = n at once whatever their memory (an explicit --workers, or a node
+    whose MemAvailable cannot be read: PARALLEL['stack'] as before), or ('budget', GB, cap) = side by side within GB of
+    memory, at most cap at once (STACK_MAX_UNITS, and never more than the cores this process may use)."""
+    if workers:
+        return ('pool', int(workers))
+    if avail_gb is None:
+        return ('pool', int(section.PARALLEL['stack']))
+    cap = int(section.STACK_MAX_UNITS)
+    if n_cores:
+        cap = min(cap, int(n_cores))
+    return ('budget', int(section.STACK_MEM_FRACTION * avail_gb), max(1, cap))
+
+
+def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of=None, mem_now_gb=None, poll_s=20.0):
+    """fn(item) for every item, side by side (threads: every unit's work is a child process) while the memory charges (GB)
+    of the running items fit in mem_budget_gb and at most max_units run. Speed only: what an item computes does not depend
+    on what runs beside it.
+    - The item with the largest charge starts first (it is also the longest), the caller's order within a charge; a smaller
+      item starts beside it as soon as it fits.
+    - mem_now_gb (a function returning the memory free on the node NOW, in GB, or None): while items of this call run, a
+      further item starts only if its charge also fits in what is free now - other jobs on the node may have taken memory
+      since the budget was set. It is looked at again every poll_s seconds and whenever an item ends.
+    - A budget below the largest single charge means ONE item at a time (said in the log): nothing is refused for memory,
+      and nothing runs beside an item the budget cannot hold.
+    - Errors and interrupts as in pool_map: an item's exception is printed, recorded as the item's unit if that had not
+      opened, and the others go on; an interrupt of the caller waits for the running items (no new one starts); a
+      SystemExit or the like raised by an item is raised again here after every item has run."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
     if not items:
         return
     charges = [float(charge_of(it)) for it in items]
@@ -489,18 +517,49 @@ def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of
     if budget < max(charges):
         say(f'  memory budget {budget:g} GB is below the largest unit charge {max(charges):g} GB: one unit at a time')
         budget, cap = max(charges), 1
-    sch = Scheduler({'mem_gb': budget, 'units': cap}, stop_on_failure=False)
+    order = sorted(range(len(items)), key=lambda k: -charges[k])               # stable: the caller's order within a charge
 
     def one(it):
         try:
             fn(it)
         except Exception as e:
             _unit_error(e, it, run, name_of)
-        return 0
 
-    for i in sorted(range(len(items)), key=lambda k: -charges[k]):          # stable: the caller's order within a charge
-        sch.add(str(i), run=(lambda it=items[i]: one(it)), needs={'mem_gb': charges[i], 'units': 1})
-    sch.run()
+    first = None
+    with ThreadPoolExecutor(max_workers=cap) as ex:
+        running, used = {}, 0.0
+        while order or running:
+            fresh = set()                               # started in this pass: their memory is not taken yet
+            free_now, asked = None, False               # what is free on the node now, less what this pass has started
+            for k in list(order):
+                if len(running) >= cap:
+                    break
+                if used + charges[k] > budget:
+                    continue
+                if running and mem_now_gb is not None:      # the first item of an idle call starts without this look
+                    if not asked:
+                        free_now, asked = mem_now_gb(), True
+                        if free_now is not None:
+                            free_now -= sum(c for f, c in running.items() if f in fresh)
+                    if free_now is not None:
+                        if charges[k] > free_now:
+                            continue
+                        free_now -= charges[k]
+                f = ex.submit(one, items[k])
+                running[f] = charges[k]
+                fresh.add(f)
+                used += charges[k]
+                order.remove(k)
+            done, _ = wait(list(running), timeout=(poll_s if order and mem_now_gb is not None else None),
+                           return_when=FIRST_COMPLETED)
+            for f in done:
+                used -= running.pop(f)
+                try:
+                    f.result()
+                except BaseException as e:                                     # the other items still run, as pool_map's did
+                    first = first or e
+    if first is not None:
+        raise first
 
 
 def exclusion_readers_agree(lst, scope, nights):
@@ -1187,16 +1246,16 @@ def stage_stack(run, opts, sel, root, planned_now=False, lst_test=True):
             continue
         _unit = lambda x: _stack_unit(run, opts, root, lst, x[0], x[1], x[2], x[3], files)          # noqa: E731
         _name = lambda x: stack_unit_name(lst, x[0].split('_', 1)[1], x[1])                          # noqa: E731
-        _avail = 0 if opts.workers else mem_available_gb()
-        if opts.workers or not _avail:
+        _avail = None if opts.workers else mem_available_gb()
+        _how = stack_parallelism(opts.workers, _avail, s, len(os.sched_getaffinity(0)))
+        if _how[0] == 'pool':
             # --workers N: that many units at once, whatever their memory (as before); also when MemAvailable is unreadable
-            pool_map(_unit, units, opts.workers or s.PARALLEL['stack'], run, _name)
+            pool_map(_unit, units, _how[1], run, _name)
         else:
-            _budget = int(s.STACK_MEM_FRACTION * _avail)
-            say(f'[sublst stack {lst}] {len(units)} units, at most {int(s.STACK_MAX_UNITS)} at once within {_budget} GB '
+            say(f'[sublst stack {lst}] {len(units)} units, at most {_how[2]} at once within {_how[1]} GB '
                 f'({s.STACK_MEM_FRACTION:g} of the {_avail} GB available; per unit {dict(s.STACK_MEM_GB)} GB)')
-            budget_map(_unit, units, lambda x: s.STACK_MEM_GB[stack_band_class(x[1])], _budget, s.STACK_MAX_UNITS,
-                       run, _name)
+            budget_map(_unit, units, lambda x: stack_charge_gb(x[1], s), _how[1], _how[2], run, _name,
+                       mem_now_gb=lambda: s.STACK_MEM_FRACTION * (mem_available_gb() or 0))
         if lst_test and any(u.name.startswith(f'stack_{lst}_') and u.status == 'done' for u in run.units):
             lst_test_unit(run, lst, root, files)
     return bad

@@ -746,8 +746,9 @@ def test_real_stack_night_dry():
 
 def test_stack_budget():
     """The stack stage's memory budget (speed only): every unit runs exactly once; the charges of the units running at one
-    moment never exceed the budget and never more than the unit cap run; the largest charge starts first; a budget below
-    the largest charge means one unit at a time; an error is printed and recorded and the others go on; --workers keeps the
+    moment never exceed the budget and never more than the unit cap run; the largest charges start first; a budget below
+    the largest charge, or no memory free on the node now, means one unit at a time; an error is printed and the others go
+    on; a SystemExit of one unit is raised after every unit has run; --workers and an unreadable MemAvailable keep the
     fixed pool."""
     import threading
     import time
@@ -758,56 +759,78 @@ def test_stack_budget():
     bands = ['18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz',
              '73MHz', '78MHz', '82MHz']
     classes = [TS.stack_band_class(b) for b in bands]
-    check('stack budget: 5 low, 5 mid, 5 high subbands (the classes of the snapshot cell driver)',
-          classes == ['low'] * 5 + ['mid'] * 5 + ['high'] * 5, str(classes))
+    check('5 low, 5 mid, 5 high subbands', classes == ['low'] * 5 + ['mid'] * 5 + ['high'] * 5, str(classes))
     from exopipe.phase3.lib.snapshot_engine import cell as _cell
-    check('stack budget: the same classes as lib/snapshot_engine/cell.band_class',
-          classes == [_cell.band_class(b) for b in bands])
-    check('stack budget: config holds a charge per class, a fraction in (0, 1] and a unit cap of at most 6 (Lustre rule)',
-          set(sec.STACK_MEM_GB) == {'low', 'mid', 'high'} and 0 < sec.STACK_MEM_FRACTION <= 1 and 1 <= sec.STACK_MAX_UNITS <= 6
-          and sec.STACK_MEM_GB['low'] <= sec.STACK_MEM_GB['mid'] <= sec.STACK_MEM_GB['high'],
-          f'{dict(sec.STACK_MEM_GB)} {sec.STACK_MEM_FRACTION} {sec.STACK_MAX_UNITS}')
-    charge = lambda b: sec.STACK_MEM_GB[TS.stack_band_class(b)]                              # noqa: E731
+    check('the same classes as lib/snapshot_engine/cell.band_class', classes == [_cell.band_class(b) for b in bands])
+    G = sec.STACK_MEM_GB
+    check('config: a charge per class, a fraction in (0, 1], a unit cap of at most 6 (the Lustre-reader rule)',
+          set(G) == {'low', 'mid', 'high'} and 0 < sec.STACK_MEM_FRACTION <= 1 and 1 <= sec.STACK_MAX_UNITS <= 6
+          and 0 < G['low'] <= G['mid'] <= G['high'], f'{dict(G)} {sec.STACK_MEM_FRACTION} {sec.STACK_MAX_UNITS}')
+    check('config: the charges are above the measured peaks (13.0, 28.6, 51.0 GB)',
+          G['low'] > 13.0 and G['mid'] > 28.6 and G['high'] > 51.0, str(dict(G)))
+    charge = lambda b: TS.stack_charge_gb(b, sec)                                            # noqa: E731
+    check('a label that is no <n>MHz subband is charged as the largest', charge('Red') == G['high'] == charge('82MHz'))
 
-    def drive(budget, cap, fail=()):
-        lock, state = threading.Lock(), dict(mem=0, n=0, peak_mem=0, peak_n=0, started=[], done=[])
+    def drive(budget, cap, fail=(), leave=(), **kw):
+        lock, st = threading.Lock(), dict(mem=0, n=0, peak_mem=0, peak_n=0, started=[], done=[], raised=None)
 
         def fn(b):
             with lock:
-                state['mem'] += charge(b)
-                state['n'] += 1
-                state['peak_mem'] = max(state['peak_mem'], state['mem'])
-                state['peak_n'] = max(state['peak_n'], state['n'])
-                state['started'].append(b)
-            time.sleep(0.02)
+                st['mem'] += charge(b)
+                st['n'] += 1
+                st['peak_mem'] = max(st['peak_mem'], st['mem'])
+                st['peak_n'] = max(st['peak_n'], st['n'])
+                st['started'].append(b)
+            time.sleep(0.05)
             with lock:
-                state['mem'] -= charge(b)
-                state['n'] -= 1
-                state['done'].append(b)
+                st['mem'] -= charge(b)
+                st['n'] -= 1
+                st['done'].append(b)
             if b in fail:
                 raise RuntimeError('synthetic failure of ' + b)
-        TS.budget_map(fn, list(bands), charge, budget, cap)
-        return state
-    st = drive(200, 6)
-    check('stack budget 200 GB, cap 6: every unit ran exactly once', sorted(st['done']) == sorted(bands), str(st['done']))
-    check('stack budget 200 GB, cap 6: the running charges never exceeded 200 GB and never more than 6 units ran',
-          st['peak_mem'] <= 200 and st['peak_n'] <= 6, f"peak {st['peak_mem']} GB, {st['peak_n']} units")
-    check('stack budget: the largest units start first (the first three are high bands, in the plan order)',
-          st['started'][:3] == ['64MHz', '69MHz', '73MHz'], str(st['started'][:4]))
-    check('stack budget 200 GB: units did run side by side', st['peak_n'] >= 3, str(st['peak_n']))
+            if b in leave:
+                raise SystemExit('synthetic refusal of ' + b)
+        try:
+            TS.budget_map(fn, list(bands), charge, budget, cap, **kw)
+        except SystemExit as e:
+            st['raised'] = e
+        return st
+    budget = 3 * G['high'] + G['mid']                         # three high units and one mid unit fit, a fourth high does not
+    st = drive(budget, 6)
+    check('every unit ran exactly once', sorted(st['done']) == sorted(bands), str(st['done']))
+    check('the running charges never exceeded the budget, and never more than 6 units ran',
+          st['peak_mem'] <= budget and st['peak_n'] <= 6, f"peak {st['peak_mem']} of {budget} GB, {st['peak_n']} units")
+    check('the largest units start first: the first four are three high bands (in the plan order) and the first mid band',
+          set(st['started'][:4]) == {'64MHz', '69MHz', '73MHz', '41MHz'}, str(st['started'][:5]))
     st = drive(10000, 6)
-    check('stack budget without a memory limit: the cap of 6 units holds', st['peak_n'] == 6 and len(st['done']) == 15,
-          str(st['peak_n']))
-    st = drive(20, 6)
-    check('stack budget below the largest charge: one unit at a time, every unit still runs',
+    check('without a memory limit the cap of 6 units holds', 2 <= st['peak_n'] <= 6 and len(st['done']) == 15, str(st['peak_n']))
+    st = drive(10000, 2)
+    check('a cap of 2 units holds', st['peak_n'] == 2 and len(st['done']) == 15, str(st['peak_n']))
+    st = drive(G['high'] - 1, 6)
+    check('a budget below the largest charge: one unit at a time, every unit still runs',
           st['peak_n'] == 1 and len(st['done']) == 15, f"peak {st['peak_n']}, done {len(st['done'])}")
-    st = drive(200, 6, fail=('64MHz', '18MHz'))
-    check('stack budget: a failing unit does not stop the others', len(st['done']) == 15, str(len(st['done'])))
+    st = drive(10000, 6, mem_now_gb=lambda: 0.0, poll_s=0.01)
+    check('no memory free on the node now: nothing starts beside a running unit, every unit still runs',
+          st['peak_n'] == 1 and len(st['done']) == 15, f"peak {st['peak_n']}, done {len(st['done'])}")
+    st = drive(10000, 6, mem_now_gb=lambda: None, poll_s=0.01)
+    check('free memory unreadable while running: the budget alone decides', st['peak_n'] >= 2 and len(st['done']) == 15)
+    st = drive(budget, 6, fail=('64MHz', '18MHz'))
+    check('a failing unit does not stop the others', len(st['done']) == 15 and st['raised'] is None, str(len(st['done'])))
+    st = drive(budget, 6, leave=('69MHz',))
+    check('a SystemExit of one unit is raised again after every unit has run',
+          len(st['done']) == 15 and 'synthetic refusal of 69MHz' in str(st['raised']), f"{len(st['done'])} {st['raised']}")
     TS.budget_map(lambda b: None, [], charge, 100, 6)
-    src = open(TS.__file__).read()
-    check('stack stage: --workers keeps the fixed pool; the budget is used only without it and with a readable MemAvailable',
-          "if opts.workers or not _avail:" in src and "pool_map(_unit, units, opts.workers or s.PARALLEL['stack'], run, _name)" in src
-          and src.count('budget_map(') == 2)
+    # the choice between the fixed pool and the budget
+    P = TS.stack_parallelism
+    check('--workers N: the fixed pool of N', P(3, 400, sec) == ('pool', 3) and P(3, None, sec) == ('pool', 3))
+    check("MemAvailable unreadable: the fixed pool of PARALLEL['stack']", P(None, None, sec) == ('pool', sec.PARALLEL['stack']))
+    check('otherwise the budget: the configured fraction of the available memory, the configured cap',
+          P(None, 100, sec) == ('budget', int(sec.STACK_MEM_FRACTION * 100), sec.STACK_MAX_UNITS), str(P(None, 100, sec)))
+    check('never more units than the cores this process may use', P(None, 400, sec, n_cores=2)[2] == 2
+          and P(None, 400, sec, n_cores=64)[2] == sec.STACK_MAX_UNITS)
+    check('no memory available (0 GB) is a budget of 0, not "unreadable"', P(None, 0, sec)[:2] == ('budget', 0))
+    m = TS.mem_available_gb()
+    check('MemAvailable of this node reads as a whole number of GB (or None)', m is None or (isinstance(m, int) and m >= 0), repr(m))
 
 
 TESTS = [test_config, test_grammar, test_outcome, test_cpv, test_stack_unit, test_stack_budget, test_stack_gate, test_loo_gates,
