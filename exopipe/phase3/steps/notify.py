@@ -12,7 +12,8 @@ one block placed above its sections, the Phase 3 highlights of the hour:
      first, then Stokes I (notify.TOP_N of each, default 10).
 Nothing is computed: the block is read from the tables the hour's searches, catalogs, forced photometry and pages wrote.
 
-    exopipe3 notify --epochs 04h_2025-10-14                               # send (the closing step of the per-hour chain)
+    exopipe3 notify --epochs 04h_2025-10-14                               # the closing step of the per-hour chain: sends when
+                                                                          # notify.SEND is True, else writes <out>/notify/<item>.eml
     exopipe3 notify --epochs 04h_2025-10-14 --write-to /fast/gh/tmp/mail  # review copy: nothing is sent or posted
     exopipe3 notify --epochs 04h_2025-10-14 --chain-record <jobs>/<job>/items/04h_2025-10-14.json
 
@@ -69,7 +70,8 @@ def run(args, run):
         rd = args.phase2_run or inputs.latest_science_dir(lst, date)
         if run.dry_run:
             print(f'{item}: would build the highlights block and '
-                  + (f'write {args.write_to}_{item}.eml/.html' if args.write_to else 'SEND the email')
+                  + (f'write {args.write_to}_{item}.eml/.html' if args.write_to else 'SEND the email' if CFG.notify.SEND
+                     else 'write it under <out>/notify/ (notify.SEND is False: nothing is sent)')
                   + f' (Phase 2 run {rd})')
             continue
         with run.unit(item) as u:
@@ -91,15 +93,17 @@ def run(args, run):
             # Phase 2's own mailer, in this process: its two module lists are refilled from the run's files
             from exopipe.phase2 import phase2_science_agg as agg
             saved = agg.restore_email_inputs(rd)
+            # notify.SEND False (the default until Gregg's go): the email is written beside the block, never sent
+            copy = (f'{args.write_to}_{item}' if args.write_to
+                    else None if CFG.notify.SEND else os.path.join(run.out_root, 'notify', item))
             sent = agg.send_email_report(rd, run_command=saved.get('run_command'), run_duration=saved.get('run_duration'),
-                                         lst=lst, date=date, highlights_html=html, phases='Phases 2-3',
-                                         write_to=f'{args.write_to}_{item}' if args.write_to else None)
+                                         lst=lst, date=date, highlights_html=html, phases='Phases 2-3', write_to=copy)
             n_list = sum(len(r) for _s, r, _n in transients)
             u.note(f'{len(targets)} target rows, {n_list} of {n_pass} filter-passing transient candidates listed; '
-                   f'limits: {len(limits)}; ' + ('review copy written' if args.write_to else 'sent'))
+                   f'limits: {len(limits)}; ' + (f'NOT sent, written to {copy}.eml' if copy else 'sent'))
             if not sent:
                 raise RuntimeError(f'N3: the mailer did not send the email of {item} (its log line "Email failed" names '
                                    f'the cause); the block is kept at {keep}')
             print(f'{item}: {len(targets)} target rows, {n_list} of {n_pass} filter-passing candidates listed; '
-                  + (f'review copy {args.write_to}_{item}.html' if args.write_to else 'email sent'), file=sys.stderr)
+                  + (f'NOT sent - written to {copy}.eml and {copy}.html' if copy else 'email sent'), file=sys.stderr)
     return record.EXIT_DONE if run.dry_run else run.exit_code()

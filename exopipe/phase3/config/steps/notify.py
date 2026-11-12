@@ -11,6 +11,8 @@ class notify(_Section):
     transients not junk" (the candidates that pass every default filter of their served page, most significant first);
     targets of the Hot / Warm Jupiter and 10 pc samples: "Just detections!!". The recipients, the mail account and the Slack
     webhook are Phase 2's (exopipe/common/phase2_config.py): this section adds none."""
+    SEND = False                                                 # False: the email is WRITTEN (<out>/notify/<item>.eml, .html), not sent.
+                                                                 # True needs Gregg's go: the recipients are Phase 2's list
     TOP_N = 10                                                   # transient candidates listed per Stokes (V first, then I)
     OUT_ROOT = '/lustre/gh/main/exopipe_ops/status_reports'      # <out>/notify/<item>_highlights.html (one small file per hour)
     # The served review pages (two-port server): the registry gives each page's run directory, catalog directory and code.
