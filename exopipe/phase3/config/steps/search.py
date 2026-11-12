@@ -126,6 +126,23 @@ class search_detect(_Section):
     BEAM_GATE_MIN_NIGHTS = 5                                # nights with a beam area for the beam gate (Gregg 2026-09-11 floor waived)
     REFINE_X2 = True                                        # False = P3_REFINE_OFF=1 (deep_search.py:454); deep refines (production)
     NPROC_RESID = 6                                         # processes; DEEP_NPROC_RESID (deep_search.py:304)
+    SEARCH_THREADS = 4                                      # threads of the engine's per-frame reads; DEEP_SEARCH_THREADS. At deep: the
+                                                            # first read of every epoch's Stokes I frame (the stage-1 rms reads are the
+                                                            # 10-minute tier's). Speed only: results are applied in the serial order;
+                                                            # 1 = production's serial loop. 4 as search_sublst.SEARCH_THREADS (at deep
+                                                            # one read per night: a gain of seconds)
+    IDENT_PROCS = 6                                         # processes computing the per-epoch source extraction ahead of the engine's
+                                                            # detection loop; DEEP_IDENT_PROCS. Speed only: a result is used only when it
+                                                            # was computed from the very arguments the loop passes; 1 = no look-ahead.
+                                                            # At deep it acts on the Stokes I unit: under REMOVAL_RULES 'once-in-search'
+                                                            # the engine queues no Stokes V window (the V mask time comes from the frame
+                                                            # header the loop builds), so a V unit runs its serial loop whatever this is;
+                                                            # under 'production' it queues the V windows too. Measured 2026-11-12 on
+                                                            # 20h 73 MHz, 16 nights (exopipe_ops/refactor_20261012/plan/stage_map_tools/
+                                                            # deep_bench_20261112/results): the Stokes I unit 10.1 -> 6.7 min with every
+                                                            # output identical, peak memory 10.5 -> 13.7 GB; 3, 6 and 12 processes within
+                                                            # 4% of each other (the loop's own work per night is then the limit), so 6 as
+                                                            # search_sublst.IDENT_PROCS; the V unit (73 min, 59 in the v110 gate): no change
     FLOW_XLA_MEM_FRACTION = 0.5                             # DEEP_XLA_MEMFRAC (deep_search.py:378)
     FLOW_PYTHON = 'flow'                                    # site PYTHON key -> P3_FLOW_PYTHON (deep_search.py:385; T2B-MERGE-COMPLETE)
     FLOW_LOCK = '/fast/gh/main/phase3/.flow_batch.lock'     # P3_FLOW_LOCK: node-global flock, one GPU batch per node, SHARED with production on

@@ -391,6 +391,7 @@ def engine_env(cell_root_parent, attempt, flow_root, label, archive_root, tmpdir
            'P3_SANITY_MIN_NIGHTS': str(int(sd.SANITY_MIN_NIGHTS)), 'P3_SEARCH_TIER_MIN': str(int(sd.SEARCH_TIER_MIN)),
            'P3_BEAM_GATE_MIN_NIGHTS': str(int(sd.BEAM_GATE_MIN_NIGHTS)),
            'P3_V110_TIMEOUT': str(int(sf.TIMEOUT_S)), 'DEEP_NPROC_RESID': str(int(sd.NPROC_RESID)),
+           'DEEP_SEARCH_THREADS': str(int(sd.SEARCH_THREADS)), 'DEEP_IDENT_PROCS': str(int(sd.IDENT_PROCS)),   # speed only
            'DEEP_XLA_MEMFRAC': repr(float(sd.FLOW_XLA_MEM_FRACTION)), 'P3_FLOW_PYTHON': legacy.interpreter(sd.FLOW_PYTHON),
            'P3_FLOW_LOCK': sd.FLOW_LOCK, 'TMPDIR': tmpdir, 'PYTHONUNBUFFERED': '1',
            'PYTHONPATH': _PKG_ROOT + (os.pathsep + os.environ['PYTHONPATH'] if os.environ.get('PYTHONPATH') else '')}
