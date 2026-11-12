@@ -744,20 +744,90 @@ def test_real_stack_night_dry():
     assert sorted(main + deep) == sorted(prod), (main, deep, prod)
 
 
+STACK_BANDS = ['18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz',
+               '73MHz', '78MHz', '82MHz']
+GUARD_S = 3.0     # s, how long a synthetic unit waits for what a correct budget does at once (only a wrong one pays it)
+
+
+class StackNode:
+    """A synthetic node for the stack-budget tests. free0 GB are free while no unit of the test runs (another job holds
+    the rest). A unit TAKES its charge only ramp seconds after its start - until then the free memory still reads high -
+    and ends life seconds after its start. Units of several budget_map calls (owners) may run on it. Recorded: what ran,
+    the largest sum of the CHARGES of the units running at one moment, the largest number of units at one moment."""
+
+    def __init__(self, charge, free0, ramp=0.04, life=0.06):
+        import threading
+        self.charge, self.free0, self.ramp, self.life = charge, float(free0), ramp, life
+        self.lock, self.live, self.started, self.done, self.peak_mem, self.peak_n = threading.Lock(), {}, [], [], 0.0, 0
+
+    def taken(self, owner=None):
+        """GB the running units (of one owner, or of all) have taken by now."""
+        import time
+        now = time.time()
+        with self.lock:
+            return sum(self.charge(b) for (o, b), t0 in self.live.items()
+                       if (owner is None or o == owner) and now - t0 >= self.ramp)
+
+    def free(self):
+        return self.free0 - self.taken()
+
+    def unit(self, owner=None):
+        import time
+
+        def fn(b):
+            with self.lock:
+                self.live[(owner, b)] = time.time()
+                self.started.append(b)
+                self.peak_mem = max(self.peak_mem, sum(self.charge(x) for _, x in self.live))
+                self.peak_n = max(self.peak_n, len(self.live))
+            time.sleep(self.life)
+            with self.lock:
+                del self.live[(owner, b)]
+                self.done.append(b)
+        return fn
+
+
+def gather(n_together, hold=0.0):
+    """A synthetic unit that ends once n_together units run at one moment (or after GUARD_S) and hold seconds more, and the
+    state it keeps: st['peak'] = the most units at one moment, st['n'] = running now, st['first'] = set when one has
+    started. What a correct budget starts side by side is seen without relying on sleeps; the hold shows a unit too many."""
+    import threading
+    import time
+    lock, ev, st = threading.Lock(), threading.Event(), dict(n=0, peak=0, started=[], first=threading.Event())
+
+    def fn(b):
+        with lock:
+            st['n'] += 1
+            st['peak'] = max(st['peak'], st['n'])
+            st['started'].append(b)
+            if st['n'] >= n_together:
+                ev.set()
+        st['first'].set()
+        ev.wait(GUARD_S)
+        time.sleep(hold)
+        with lock:
+            st['n'] -= 1
+    return fn, st
+
+
 def test_stack_budget():
     """The stack stage's memory budget (speed only): every unit runs exactly once; the charges of the units running at one
     moment never exceed the budget and never more than the unit cap run; the largest charges start first; a budget below
     the largest charge, or no memory free on the node now, means one unit at a time; an error is printed and the others go
-    on; a SystemExit of one unit is raised after every unit has run; --workers and an unreadable MemAvailable keep the
-    fixed pool."""
+    on; a SystemExit of one unit is raised after every unit has run, a second one is printed; an interrupt is raised at
+    once; --workers and an unreadable MemAvailable keep the fixed pool; the free memory is also bounded by the memory limit
+    of the process's cgroups. Review fixes 2 (2026-11-12): the charge follows the
+    cube's frame count; a further unit starts only within the free memory LESS what the running units have been charged
+    and not taken yet (the free memory reads high while they ramp); the look is repeated every poll."""
+    import contextlib
+    import io
     import threading
     import time
 
     def check(what, ok, detail=''):
         assert ok, f'{what}: {detail}'
     sec = CFG.masters_sublst
-    bands = ['18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz',
-             '73MHz', '78MHz', '82MHz']
+    bands = list(STACK_BANDS)
     classes = [TS.stack_band_class(b) for b in bands]
     check('5 low, 5 mid, 5 high subbands', classes == ['low'] * 5 + ['mid'] * 5 + ['high'] * 5, str(classes))
     from exopipe.phase3.lib.snapshot_engine import cell as _cell
@@ -768,8 +838,35 @@ def test_stack_budget():
           and 0 < G['low'] <= G['mid'] <= G['high'], f'{dict(G)} {sec.STACK_MEM_FRACTION} {sec.STACK_MAX_UNITS}')
     check('config: the charges are above the measured peaks (13.0, 28.6, 51.0 GB)',
           G['low'] > 13.0 and G['mid'] > 28.6 and G['high'] > 51.0, str(dict(G)))
-    charge = lambda b: TS.stack_charge_gb(b, sec)                                            # noqa: E731
-    check('a label that is no <n>MHz subband is charged as the largest', charge('Red') == G['high'] == charge('82MHz'))
+    # the charge follows the cube's frame count (review 2026-11-12: archived cubes hold 358 to 681 frames, not one size)
+    R, U, C = sec.STACK_REF_FRAMES, sec.STACK_UNKNOWN_FRAMES_FACTOR, TS.stack_charge_gb
+    check('config: the charges are those of 358-frame cubes; an unknown frame count is charged at least as the longest '
+          'archived cube (681 frames)', R == 358 and U >= 681 / 358.0, f'{R} {U}')
+    check('358 frames: the class charge', [C(b, sec, 358) for b in ('18MHz', '41MHz', '73MHz')]
+          == [G['low'], G['mid'], G['high']], str([C(b, sec, 358) for b in ('18MHz', '41MHz', '73MHz')]))
+    check('680 frames: the class charge x 680/358', abs(C('73MHz', sec, 680) - G['high'] * 680 / 358.0) < 1e-9
+          and abs(C('18MHz', sec, 680) - G['low'] * 680 / 358.0) < 1e-9, f"{C('73MHz', sec, 680)} {C('18MHz', sec, 680)}")
+    check('fewer than 358 frames: the class charge', C('73MHz', sec, 100) == G['high'] and C('41MHz', sec, 1) == G['mid'])
+    check('an unknown frame count (None, not given, 0, negative, no number): the class charge x the unknown factor',
+          all(C('73MHz', sec, n) == G['high'] * U for n in (None, 0, -5, 'x', float('nan'), float('inf')))
+          and C('73MHz', sec) == G['high'] * U and C('18MHz', sec, None) == G['low'] * U)
+    charge = lambda b: C(b, sec, R)                                                          # noqa: E731
+    check('a label that is no <n>MHz subband is charged as the largest', charge('Red') == G['high'] == charge('82MHz')
+          and C('Red', sec, 2 * R) == 2 * G['high'] and C('Red', sec) == G['high'] * U)
+    with tempfile.TemporaryDirectory() as td:               # the frame count: the NFRAMES card of the cube's PRIMARY header
+        from astropy.io import fits
+        import numpy as np
+        ph = fits.Header()
+        ph['NFRAMES'] = 681
+        cube = os.path.join(td, 'cube.fits')
+        fits.HDUList([fits.PrimaryHDU(header=ph), fits.ImageHDU(np.zeros((2, 2), np.float32))]).writeto(cube)
+        nocard = os.path.join(td, 'nocard.fits')
+        fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.zeros((2, 2), np.float32), header=ph)]).writeto(nocard)
+        nofits = os.path.join(td, 'nofits.fits')
+        open(nofits, 'wb').write(b'cube')
+        got = [TS.cube_nframes(p) for p in (cube, nocard, nofits, os.path.join(td, 'missing.fits'))]
+        check('cube_nframes: the primary NFRAMES card; None without the card (a card of an extension does not count), for a '
+              'file that is no FITS, for a missing file', got == [681, None, None, None], str(got))
 
     def drive(budget, cap, fail=(), leave=(), **kw):
         lock, st = threading.Lock(), dict(mem=0, n=0, peak_mem=0, peak_n=0, started=[], done=[], raised=None)
@@ -819,6 +916,83 @@ def test_stack_budget():
     st = drive(budget, 6, leave=('69MHz',))
     check('a SystemExit of one unit is raised again after every unit has run',
           len(st['done']) == 15 and 'synthetic refusal of 69MHz' in str(st['raised']), f"{len(st['done'])} {st['raised']}")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        st = drive(budget, 6, leave=('69MHz', '18MHz'))
+    said = [x for x in buf.getvalue().splitlines() if 'not raised again' in x]
+    both = {'synthetic refusal of 69MHz', 'synthetic refusal of 18MHz'}
+    check('two units raise SystemExit: every unit runs, the first is raised again, the second is printed (not dropped)',
+          len(st['done']) == 15 and str(st['raised']) in both and len(said) == 1
+          and (both - {str(st['raised'])}).pop() in said[0], f"{len(st['done'])} {st['raised']!r} {said}")
+    lock, seen = threading.Lock(), dict(started=[], ended=[])
+
+    def interrupting(b):
+        with lock:
+            seen['started'].append(b)
+        if b == '64MHz':
+            raise KeyboardInterrupt('synthetic interrupt in 64MHz')
+        time.sleep(0.05)
+        with lock:
+            seen['ended'].append(b)
+    try:
+        TS.budget_map(interrupting, list(bands), charge, 2 * G['high'], 6)
+        raised = None
+    except KeyboardInterrupt as e:
+        raised = e
+    check('an interrupt is raised at once, not after the remaining units: no further unit starts (2 of 15 started) and '
+          'the running one is waited for', raised is not None and sorted(seen['started']) == ['64MHz', '69MHz']
+          and seen['ended'] == ['69MHz'], f'{raised!r} {seen}')
+    # the memory the running units have been charged and have not taken yet (review 2026-11-12: the free memory reads
+    # high for about a minute after a start, and again when a unit's Stokes V job starts)
+    st = drive(10000, 6, mem_now_gb=lambda: 60.0, held_gb=lambda: None, poll_s=0.005)
+    check('60 GB read free at every look and nothing known to be held: the charges of the running units never exceed 60 '
+          'GB - a started unit has taken nothing yet, in the look that starts it and in the following ones',
+          st['peak_mem'] <= 60 and len(st['done']) == 15, f"peak {st['peak_mem']} GB, done {len(st['done'])}")
+    node = StackNode(charge, free0=139.0)                     # a 339 GB node on which another job holds 200 GB
+    TS.budget_map(node.unit(), list(bands), charge, 271, 6, mem_now_gb=node.free, held_gb=node.taken, poll_s=0.005)
+    check('units that take their memory only after a ramp of several polls, on a node where another job took 200 of 339 GB '
+          'after the 271 GB budget was set: every unit runs once, and the charges of the running units never exceed the '
+          '139 GB the node has, although the free memory still reads high during every ramp',
+          sorted(node.done) == sorted(bands) and node.peak_mem <= 139.0, f'peak {node.peak_mem} GB, done {len(node.done)}')
+    fn, st = gather(2)
+
+    def holding():                                            # a running unit holds its whole charge from its start
+        st['first'].wait(GUARD_S)
+        return G['high'] * st['n']
+    TS.budget_map(fn, ['64MHz', '69MHz'], charge, 10000, 6, mem_now_gb=lambda: 120.0 - G['high'] * st['n'],
+                  held_gb=holding, poll_s=0.005)
+    check('memory a running unit HOLDS is no longer "not yet taken": 120 GB free before, a 56 GB unit that holds its 56 GB '
+          'leaves 64 GB free, and a second 56 GB unit starts beside it', st['peak'] == 2, str(st['peak']))
+    fn, st = gather(2)
+    looks = []
+
+    def rising():
+        looks.append(1)
+        return 0.0 if len(looks) <= 3 else 1000.0
+    TS.budget_map(fn, ['64MHz', '69MHz'], charge, 10000, 6, mem_now_gb=rising, poll_s=0.005)
+    check('the look is made again every poll_s seconds: the second unit starts when the reading rises (the fourth look), '
+          'while the first still runs and without any unit ending', st['peak'] == 2 and len(looks) >= 4,
+          f"peak {st['peak']}, {len(looks)} looks")
+    with Patch((TS, 'mem_available_gb', lambda: None)):
+        check('MemAvailable unreadable: the look returns None (the budget alone decides), never 0',
+              TS.stack_free_gb(sec) is None)
+    with Patch((TS, 'mem_available_gb', lambda: 100)):
+        check('the look: the configured fraction of MemAvailable', TS.stack_free_gb(sec) == sec.STACK_MEM_FRACTION * 100)
+    with Patch((TS, 'mem_available_gb', lambda: 0)):
+        check('no memory available reads 0 GB, not "unreadable"', TS.stack_free_gb(sec) == 0)
+    import subprocess
+    kid = subprocess.Popen(['sleep', '30'])
+    try:
+        h = TS.descendants_held_gb()
+    finally:
+        kid.kill()
+        kid.wait()
+    try:
+        import psutil  # noqa: F401
+        check('the memory resident in the child processes of this process: above 0 GB with a child running',
+              isinstance(h, float) and 0 < h < 10000, repr(h))
+    except ImportError:
+        check('without psutil the memory the units hold is unknown (None)', h is None, repr(h))
     TS.budget_map(lambda b: None, [], charge, 100, 6)
     # the choice between the fixed pool and the budget
     P = TS.stack_parallelism
@@ -831,9 +1005,348 @@ def test_stack_budget():
     check('no memory available (0 GB) is a budget of 0, not "unreadable"', P(None, 0, sec)[:2] == ('budget', 0))
     m = TS.mem_available_gb()
     check('MemAvailable of this node reads as a whole number of GB (or None)', m is None or (isinstance(m, int) and m >= 0), repr(m))
+    # the memory limit of the cgroups the process runs in (2026-11-12: /user.slice caps all user sessions together at
+    # 400 GiB on a node of 503 GiB; MemAvailable does not know that cap)
+    G = 2 ** 30
+    with tempfile.TemporaryDirectory() as cg:
+        root, pc = os.path.join(cg, 'sys'), os.path.join(cg, 'proc_cgroup')
+
+        def level(rel, limit, current=None, stat=None):
+            d = os.path.join(root, rel)
+            os.makedirs(d, exist_ok=True)
+            for name, text in (('memory.max', f'{limit}\n'), ('memory.current', None if current is None else f'{current}\n'),
+                               ('memory.stat', None if stat is None else ''.join(f'{k} {v}\n' for k, v in stat.items()))):
+                if text is None:
+                    if os.path.exists(os.path.join(d, name)):
+                        os.remove(os.path.join(d, name))
+                else:
+                    with open(os.path.join(d, name), 'w') as f:
+                        f.write(text)
+
+        def left():
+            return TS.cgroup_available_gb(pc, root)
+        check('no cgroup file of the process: None', left() is None, repr(left()))
+        with open(pc, 'w') as f:
+            f.write('0::/user.slice/user-1.slice/session-2.scope\n')
+        check('no cgroup tree: None', left() is None, repr(left()))
+        level('user.slice/user-1.slice/session-2.scope', 'max')
+        level('user.slice/user-1.slice', 'max', 5 * G, dict(inactive_file=G))
+        check('no level sets a limit: None', left() is None, repr(left()))
+        level('user.slice', 400 * G, 300 * G, dict(anon=150 * G, file=150 * G, shmem=10 * G, inactive_file=60 * G,
+                                                    active_file=80 * G))
+        check('limit - usage + the file cache that can be dropped (inactive and active; shared memory is not)',
+              left() == 400 - 300 + 60 + 80, repr(left()))
+        level('user.slice/user-1.slice', 50 * G, 45 * G, dict(inactive_file=2 * G, active_file=0))
+        check('the smallest over the levels from the process up', left() == 7.0, repr(left()))
+        level('user.slice/user-1.slice', 50 * G, 60 * G, dict(inactive_file=0, active_file=0))
+        check('usage above the limit: 0, never negative', left() == 0.0, repr(left()))
+        level('user.slice/user-1.slice', 50 * G)
+        check('a limited level whose usage cannot be read is skipped', left() == 240.0, repr(left()))
+        with open(pc, 'w') as f:
+            f.write('12:memory:/user.slice\n')
+        check('cgroup v1 (no line of the unified hierarchy): None', left() is None, repr(left()))
+    if m is not None and m >= 3:
+        with Patch((TS, 'cgroup_available_gb', lambda: 1.9)):
+            check('the free memory is what is left under the cgroup limit when that is less than MemAvailable',
+                  TS.mem_available_gb() == 1, repr(TS.mem_available_gb()))
+        with Patch((TS, 'cgroup_available_gb', lambda: None)):
+            big = TS.mem_available_gb()
+        with Patch((TS, 'cgroup_available_gb', lambda: 1e9)):
+            check('and MemAvailable when the limit leaves more, or there is none', abs(TS.mem_available_gb() - big) <= 2,
+                  f'{TS.mem_available_gb()} against {big}')
 
 
-TESTS = [test_config, test_grammar, test_outcome, test_cpv, test_stack_unit, test_stack_budget, test_stack_gate, test_loo_gates,
+def test_stack_budget_node():
+    """The stack budget on a node that several invocations share (review fixes 2, 2026-11-12). The node ledger - a JSON
+    file under a lock, one entry per budget invocation - makes the unit cap and the free memory NODE-wide: an entry counts
+    while it is live (a process of that pid and create time, updated within the stale limit) and is dropped otherwise; the
+    own entry is rewritten every poll and removed at the end, an interrupt included; two budget_map calls sharing a ledger
+    never run more units than the cap together and never exceed the node's memory together; a ledger that cannot be
+    created or locked switches itself off with one log line and the call runs as a single invocation, as with no ledger.
+    The stage: charges from the cubes' own NFRAMES cards, its log line, the look, the held memory, the ledger from config.
+    Everything in a temporary directory; no archive data, nothing under /dev/shm."""
+    import contextlib
+    import fcntl
+    import io
+    import subprocess
+    import threading
+    import time
+    import types
+
+    def check(what, ok, detail=''):
+        assert ok, f'{what}: {detail}'
+    sec = CFG.masters_sublst
+    G, R, U, bands = sec.STACK_MEM_GB, sec.STACK_REF_FRAMES, sec.STACK_UNKNOWN_FRAMES_FACTOR, list(STACK_BANDS)
+    charge = lambda b: TS.stack_charge_gb(b, sec, R)                                         # noqa: E731
+    check('config: the ledger is a per-user file on node-local shared memory',
+          sec.STACK_NODE_LEDGER.startswith('/dev/shm/') and '{uid}' in sec.STACK_NODE_LEDGER, sec.STACK_NODE_LEDGER)
+    with Patch((sec, 'STACK_NODE_LEDGER', '')):
+        check('config: an empty ledger path means no ledger', TS.stack_node_tools(sec)[1] is None)
+    try:
+        import psutil
+    except ImportError:                                       # no ledger without psutil: switched off, one line
+        with tempfile.TemporaryDirectory() as td, contextlib.redirect_stdout(io.StringIO()) as buf:
+            L = TS.NodeLedger(os.path.join(td, 'ledger.json'))
+            ok = L.begin(60.0) or L.begin(60.0)
+        check('without psutil the ledger switches itself off with one line', not ok and L.off
+              and buf.getvalue().count('switched off') == 1, buf.getvalue())
+        return
+    me = psutil.Process()
+    pid, ct = me.pid, me.create_time()
+    gone = subprocess.Popen(['true'])
+    gone.wait()                                               # a pid no process has any more
+
+    def entry(units, charged, held, age=0.0, pid_=pid, ct_=ct):
+        return dict(pid=pid_, create_time=ct_, units=units, charged_gb=charged, held_gb=held, t=time.time() - age)
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'ledger.json')
+
+        def write(entries):
+            with open(path, 'w') as f:
+                json.dump(entries, f)
+
+        def read(p=None):
+            with open(p or path) as f:
+                return json.load(f)
+
+        def quiet(fn_, *a, **k):                              # a budget_map call, its log lines returned
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                fn_(*a, **k)
+            return buf.getvalue().splitlines()
+        # ---- the ledger alone: entries, liveness, the stale limit ------------------------------------------------------
+        L = TS.NodeLedger(path)
+        check('a first transaction on a new ledger: no other invocation',
+              L.begin(60.0) and (L.others_units, L.others_unmaterialized) == (0, 0.0))
+        L.commit((2, 88.0, 30.5))
+        own = read().get(L.key) or {}
+        main = threading.current_thread() is threading.main_thread()
+        check('the entry: keyed <pid>:<process create time> (and :<thread id> outside the main thread), holding pid, '
+              'create_time, units, charged_gb, held_gb and the time of the update',
+              list(read()) == [L.key] and (L.key == f'{pid}:{ct!r}' if main else L.key.startswith(f'{pid}:{ct!r}:'))
+              and set(own) == {'pid', 'create_time', 'units', 'charged_gb', 'held_gb', 't'}
+              and (own['pid'], own['create_time'], own['units'], own['charged_gb'], own['held_gb']) == (pid, ct, 2, 88.0, 30.5)
+              and abs(own['t'] - time.time()) < 30, f'{L.key} {own}')
+        write({L.key: own, 'live': entry(4, 100.0, 30.0), 'holds-more-than-charged': entry(1, 10.0, 25.0),
+               'old-50s': entry(1, 20.0, 0.0, age=50.0), 'stale': entry(6, 500.0, 0.0, age=3600.0),
+               'dead-pid': entry(6, 500.0, 0.0, pid_=gone.pid), 'reused-pid': entry(6, 500.0, 0.0, ct_=ct - 1000.0),
+               'no-fields': {'pid': pid}, 'no-dict': [1, 2]})
+        ok = L.begin(60.0)
+        check('other entries count while live (4 + 1 + 1 units; charged and not held 70 + 0 + 20 GB): not the own entry, not '
+              'a stale one (1 h old), not one of a dead pid, not one of a reused pid (another create time), not a malformed one',
+              ok and (L.others_units, L.others_unmaterialized) == (6, 90.0), f'{L.others_units} {L.others_unmaterialized}')
+        L.commit((0, 0.0, 0.0))
+        check('entries that are not live are dropped when the file is written',
+              sorted(read()) == sorted([L.key, 'live', 'holds-more-than-charged', 'old-50s']), str(sorted(read())))
+        ok = L.begin(40.0)
+        check('the stale limit is the reader\'s: an entry updated 50 s ago is not live within a limit of 40 s',
+              ok and (L.others_units, L.others_unmaterialized) == (5, 70.0), f'{L.others_units} {L.others_unmaterialized}')
+        L.commit((0, 0.0, 0.0))
+        L.leave()
+        check('leave removes the own entry and no other', sorted(read()) == ['holds-more-than-charged', 'live']
+              and L.key is None, str(sorted(read())))
+        # ---- budget_map beside another invocation's entry --------------------------------------------------------------
+        write({'other': entry(4, 200.0, 200.0)})
+        fn, st = gather(2, hold=0.03)
+        TS.budget_map(fn, bands[:6], charge, 10000, 6, node=TS.NodeLedger(path), poll_s=0.005)
+        check('the unit cap is node-wide: another invocation runs 4 units, so 6 - 4 = 2 units of this call run at one moment, '
+              'never 3; the own entry is gone after the call and the other one is kept',
+              st['peak'] == 2 and len(st['started']) == 6 and list(read()) == ['other'], f"peak {st['peak']} {list(read())}")
+        write({'other': entry(1, 100.0, 30.0)})               # 70 GB charged to the other invocation and not taken yet
+        node = StackNode(charge, 1e9, life=0.03)
+        TS.budget_map(node.unit(), ['64MHz', '69MHz', '73MHz'], charge, 10000, 6, node=TS.NodeLedger(path),
+                      mem_now_gb=lambda: 150.0, poll_s=0.005)
+        check('what another invocation has been charged and has not taken (70 GB) is subtracted from the free memory (150 '
+              'GB): one 56 GB unit at a time (56 + 56 > 150 - 70)', node.peak_n == 1 and len(node.done) == 3,
+              f'peak {node.peak_n}, done {len(node.done)}')
+        write({'other': entry(1, 56.0, 56.0)})
+        looks, at_start = [], []
+
+        def rising():
+            looks.append(1)
+            return 0.0 if len(looks) <= 3 else 1000.0
+        said = quiet(TS.budget_map, lambda b: at_start.append(len(looks)), ['64MHz'], charge, 10000, 6,
+                     node=TS.NodeLedger(path), mem_now_gb=rising, poll_s=0.005)
+        check('another invocation runs a unit: the first unit of this call does NOT start without the look - it starts when '
+              'the look allows it (the fourth here); the wait is said once, not at every poll',
+              at_start == [4] and len([x for x in said if 'may start yet' in x]) == 1, f'{at_start} {said}')
+        write({})
+        looks, at_start = [], []
+        TS.budget_map(lambda b: at_start.append(len(looks)), ['64MHz'], charge, 10000, 6, node=TS.NodeLedger(path),
+                      mem_now_gb=rising, poll_s=0.005)
+        check('no other invocation on the node: the first unit starts without the look (progress)', at_start == [0], str(at_start))
+        write({'old': entry(5, 0.0, 0.0, age=70.0)})          # an invocation that hung 70 s ago with 5 units
+        fn, st = gather(6)
+        TS.budget_map(fn, bands[:6], charge, 10000, 6, node=TS.NodeLedger(path), poll_s=0.005)
+        check('an entry not rewritten for 70 s is past the stale limit max(60 s, 3 poll_s) = 60 s: it no longer counts (the 6 '
+              'units of this call run together) and is dropped', st['peak'] == 6 and read() == {}, f"peak {st['peak']} {read()}")
+        write({'old': entry(5, 0.0, 0.0, age=70.0)})
+        node = StackNode(charge, 1e9, life=0.01)
+        TS.budget_map(node.unit(), bands[:3], charge, 10000, 6, node=TS.NodeLedger(path), poll_s=30.0)
+        check('with poll_s = 30 s the stale limit is 90 s: the same entry still counts (5 of the 6 units): one unit at a time',
+              node.peak_n == 1 and len(node.done) == 3 and list(read()) == ['old'], f'peak {node.peak_n} {list(read())}')
+        write({'stale': entry(2, 0.0, 0.0, age=3600.0), 'dead-pid': entry(2, 0.0, 0.0, pid_=gone.pid),
+               'reused-pid': entry(2, 0.0, 0.0, ct_=ct - 1000.0)})
+        fn, st = gather(6)
+        L = TS.NodeLedger(path)
+        TS.budget_map(fn, bands[:6], charge, 10000, 6, node=L, mem_now_gb=lambda: 1000.0, poll_s=0.005)
+        check('a stale entry, an entry of a dead pid and one of a reused pid are ignored (the 6 units of this call run '
+              'together) and dropped; the own entry is gone after the call',
+              st['peak'] == 6 and read() == {} and L.key is None and L.off is None, f"peak {st['peak']} {read()} {L.off}")
+        # ---- the own entry while a unit runs, and on an interrupt -------------------------------------------------------
+        L = TS.NodeLedger(path)
+        beats, shown = set(), set()
+
+        def watching(b):
+            t_end = time.time() + GUARD_S
+            while len(beats) < 3 and time.time() < t_end:
+                e = read().get(L.key)
+                if e:
+                    beats.add(e['t'])
+                    shown.add((e['units'], e['charged_gb'], e['pid']))
+                time.sleep(0.002)
+        TS.budget_map(watching, ['64MHz'], charge, 10000, 6, node=L, poll_s=0.01)
+        check('while a unit runs the own entry shows it (1 unit, its 56 GB charge, this pid) and is rewritten every poll_s '
+              'seconds although nothing can start or end (3 updates seen); it is gone after the call',
+              len(beats) >= 3 and shown == {(1, G['high'], pid)} and read() == {}, f'{len(beats)} {shown} {read()}')
+        L = TS.NodeLedger(path)
+        after = []
+
+        def interrupting(b):
+            if b == '64MHz':
+                raise KeyboardInterrupt('synthetic interrupt in 64MHz')
+            seen, t_end = set(), time.time() + GUARD_S        # the unit beside it: this call's entry once 1 unit is left
+            while len(seen) < 2 and time.time() < t_end:
+                e = read().get(L.key)
+                if e and e['units'] == 1:
+                    seen.add(e['t'])
+                time.sleep(0.002)
+            after.append((b, len(seen)))
+        try:
+            TS.budget_map(interrupting, ['64MHz', '69MHz', '73MHz'], charge, 2 * G['high'], 6, node=L, poll_s=0.01)
+            raised = None
+        except KeyboardInterrupt as e:
+            raised = e
+        check('an interrupt with a ledger: raised, no further unit starts; while the running unit ends the entry of this '
+              'call stays (1 unit) and is rewritten; it is removed at the end',
+              raised is not None and after == [('69MHz', 2)] and read() == {}, f'{raised!r} {after} {read()}')
+        # ---- two invocations sharing the node ---------------------------------------------------------------------------
+        def two_calls(free0, items_a, items_b):
+            write({})
+            node = StackNode(charge, free0)
+            ledgers, errors = [TS.NodeLedger(path), TS.NodeLedger(path)], []
+
+            def call(owner, items):
+                try:
+                    TS.budget_map(node.unit(owner), items, charge, 271, 6, node=ledgers[owner], mem_now_gb=node.free,
+                                  held_gb=lambda: node.taken(owner), poll_s=0.005)
+                except BaseException as e:
+                    errors.append(e)
+            threads = [threading.Thread(target=call, args=(o, it), daemon=True) for o, it in enumerate((items_a, items_b))]
+            with contextlib.redirect_stdout(io.StringIO()):
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(60)
+            hung = [t for t in threads if t.is_alive()]
+            return node, errors, hung, [x.off for x in ledgers]
+        node, errors, hung, off = two_calls(139.0, bands[0::2], bands[1::2])
+        check('two budget_map calls sharing one ledger on a 139 GB node, units ramping over several polls: every unit of both '
+              'runs once, the charges of the units running at one moment never exceed 139 GB together, never more than 6 '
+              'units run together, both entries are gone at the end, the ledger stayed on',
+              not hung and not errors and sorted(node.done) == sorted(bands) and node.peak_mem <= 139.0 and node.peak_n <= 6
+              and read() == {} and off == [None, None],
+              f'hung {len(hung)} errors {errors} done {len(node.done)} peak {node.peak_mem} GB {node.peak_n} units {off}')
+        node, errors, hung, off = two_calls(1e9, bands, bands)
+        check('two calls of 15 units each with memory to spare: the cap of 6 units holds for the two together',
+              not hung and not errors and len(node.done) == 30 and node.peak_n <= 6 and read() == {},
+              f'hung {len(hung)} errors {errors} done {len(node.done)} peak {node.peak_n} units')
+        # ---- a ledger that cannot be used; no ledger ---------------------------------------------------------------------
+        nowhere = TS.NodeLedger(os.path.join(td, 'no_such_directory', 'ledger.json'))
+        fn, st = gather(6)
+        fn2, st2 = gather(6)
+        said = quiet(TS.budget_map, fn, bands[:6], charge, 10000, 6, node=nowhere, poll_s=0.005)
+        said += quiet(TS.budget_map, fn2, bands[:6], charge, 10000, 6, node=nowhere, poll_s=0.005)
+        lines = [x for x in said if 'switched off' in x]
+        check('a ledger file that cannot be created: switched off with ONE log line saying the budget is then per invocation; '
+              'this call and the next with the same ledger run as a single invocation',
+              len(lines) == 1 and 'PER INVOCATION' in lines[0] and nowhere.off and st['peak'] == 6 and st2['peak'] == 6,
+              f"{said} {st['peak']} {st2['peak']}")
+        write({})
+        fd = os.open(path + '.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)                        # another invocation stopped inside its transaction
+        try:
+            held_lock = TS.NodeLedger(path, lock_wait_s=0.05)
+            fn, st = gather(6)
+            said = quiet(TS.budget_map, fn, bands[:6], charge, 10000, 6, node=held_lock, poll_s=0.005)
+        finally:
+            os.close(fd)
+        check('a ledger that cannot be locked within its wait: switched off with one line, the units run',
+              len([x for x in said if 'switched off' in x]) == 1 and 'no lock' in (held_lock.off or '') and st['peak'] == 6,
+              f"{said} {held_lock.off} {st['peak']}")
+        firsts = []
+        for nd in (None, TS.NodeLedger(path), nowhere):
+            fn, st = gather(4)
+            TS.budget_map(fn, list(bands), charge, 3 * G['high'] + G['mid'], 6, node=nd, poll_s=0.005)
+            firsts.append((sorted(st['started'][:4]), len(st['started'])))
+        check('a ledger with no other invocation, a ledger switched off and no ledger give the same single-invocation '
+              'behavior: the first four units are the three first high bands and the first mid band, all 15 run',
+              firsts == [(['41MHz', '64MHz', '69MHz', '73MHz'], 15)] * 3, str(firsts))
+        # ---- the stage: charges from the cubes' own NFRAMES cards, its log line, the helpers it hands to budget_map ------
+        from astropy.io import fits
+        lst, night = '09h', '2030-01-01'
+        cell = f'{lst}_{night}'
+        croot = os.path.join(td, 'cubes')
+        os.makedirs(os.path.join(croot, cell))
+        for sb, n in (('18MHz', 358), ('73MHz', 680)):        # 41 MHz has no cube here: its frame count is unknown
+            ph = fits.Header()
+            ph['NFRAMES'] = n
+            fits.PrimaryHDU(header=ph).writeto(os.path.join(croot, cell, f'{cell}_{sb}_I_flowcube.fits'))
+        jobs = [(cell, sb, ['I', 'V'], croot) for sb in ('18MHz', '41MHz', '73MHz')]
+        ran, calls, real = [], [], TS.budget_map
+
+        def spy(fn_, items, charge_of, budget, cap, run=None, name_of=None, **kw):
+            calls.append(dict(charges={it[1]: charge_of(it) for it in items}, budget=budget, cap=cap, kw=kw,
+                              free=kw['mem_now_gb'](), names=[name_of(it) for it in items]))
+            with Patch((TS, 'mem_available_gb', lambda: None)):
+                calls[-1]['free_unreadable'] = kw['mem_now_gb']()
+            return real(fn_, items, charge_of, budget, cap, run, name_of, **kw)
+        run = types.SimpleNamespace(dry_run=False, units=[], out_root=td, step='masters')
+        sel = TS.Selection.one_night(lst, night, ['18MHz', '41MHz', '73MHz'])
+        stage_ledger = os.path.join(td, f'stage_{os.getuid()}.json')
+        with Patch((TS, 'load_plan', lambda *a, **k: (jobs, [], 'synthetic plan')),
+                   (TS, '_stack_unit', lambda run_, opts, root, l_, c, sb, S, cr, files: ran.append((c, sb, tuple(S), cr))),
+                   (TS, 'mem_available_gb', lambda: 400), (TS, 'budget_map', spy),
+                   (sec, 'STACK_NODE_LEDGER', os.path.join(td, 'stage_{uid}.json'))):
+            said = quiet(TS.stage_stack, run, TS.Opts(), sel, td, lst_test=False)
+            n_budget = len(calls)
+            quiet(TS.stage_stack, run, TS.Opts(workers=2), sel, td, lst_test=False)
+        c = calls[0] if calls else {}
+        check('the stage ran the three units once under the budget (0.8 of the 400 GB available, at most 6 units and no '
+              'more than the cores), and again under --workers 2 without the budget',
+              n_budget == 1 and len(calls) == 1 and sorted(ran) == sorted([(cell, sb, ('I', 'V'), croot) for _, sb, _, _ in jobs] * 2)
+              and c['budget'] == int(sec.STACK_MEM_FRACTION * 400) and 1 <= c['cap'] <= sec.STACK_MAX_UNITS
+              and c['names'] == [f'stack_{lst}_{night}_{sb}' for sb in ('18MHz', '41MHz', '73MHz')], f'{calls} {ran}')
+        want = {'18MHz': float(G['low']), '41MHz': G['mid'] * U, '73MHz': G['high'] * 680 / 358.0}
+        check('the stage charges each unit by the NFRAMES card of its own Stokes I cube: 358 frames the class charge, 680 '
+              'frames x 680/358, no cube (unknown) x the unknown factor',
+              set(c['charges']) == set(want) and all(abs(c['charges'][k] - want[k]) < 1e-9 for k in want), str(c['charges']))
+        line = [x for x in said if x.startswith(f'[sublst stack {lst}] 3 units')]
+        check('the stage log line says how many units are charged above the class charge (1) and how many have an unknown '
+              'frame count (1), and names the node ledger',
+              len(line) == 1 and '1 unit(s) charged above' in line[0] and '1 with an unknown frame count' in line[0]
+              and f'node ledger {stage_ledger}' in line[0], str(said))
+        nd = c['kw'].get('node')
+        check('the stage hands budget_map the look (the fraction of MemAvailable now; None, not 0, when it is unreadable), the '
+              'memory held by its child processes and the node ledger at the configured path with the user id filled in; '
+              'the ledger is empty after', c['free'] == sec.STACK_MEM_FRACTION * 400 and c['free_unreadable'] is None
+              and c['kw'].get('held_gb') is TS.descendants_held_gb
+              and isinstance(nd, TS.NodeLedger) and nd.path == stage_ledger and nd.off is None and read(stage_ledger) == {},
+              f"{c['free']} {c['kw']} {getattr(nd, 'path', None)} {getattr(nd, 'off', None)}")
+
+
+TESTS = [test_config, test_grammar, test_outcome, test_cpv, test_stack_unit, test_stack_budget, test_stack_budget_node,
+         test_stack_gate, test_loo_gates,
          test_sources_prep_waivers, test_admit_noinput, test_loo_products,
          test_snapshot_units, test_snapshot_sources, test_real_mirrors, test_real_content, test_real_stack_night_dry,
          test_real_snapshot_parents]
