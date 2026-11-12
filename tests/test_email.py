@@ -125,6 +125,178 @@ def test_mailer_run_that_was_not_deferred_has_no_record():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_block_states_chain_outcome_limits_targets_then_transients():
+    from exopipe.phase3.lib.notify import block
+    d = tempfile.mkdtemp(prefix='test_email_')
+    try:
+        step = lambda name, status, rc: {'name': name, 'argv': ['py', '-m', 'exopipe.phase3', name, '--tier', 'deep'],
+                                         'status': status, 'rc': rc}
+        recs = {'done': {'chain_status': 'done', 'steps': [step('search', 'done', 0), step('catalog', 'no-input', 3)]},
+                'refused': {'chain_status': 'refused', 'log': '/x/logs/04h.log',
+                            'steps': [step('search', 'done', 0), step('catalog', 'refused', 2)]},
+                'failed': {'chain_status': 'failed', 'steps': [step('search', 'error', 1)]}}
+        for k, r in recs.items():
+            json.dump(r, open(os.path.join(d, k + '.json'), 'w'))
+        t, ok = block.chain_summary(os.path.join(d, 'done.json'))
+        assert ok is True and 'done (2 steps: 1 done, 1 no-input)' in t, t
+        t, ok = block.chain_summary(os.path.join(d, 'refused.json'))
+        assert ok is False and 'REFUSED at step 2 (<code>catalog --tier</code>, exit code 2)' in t and '/x/logs/04h.log' in t, t
+        t, ok = block.chain_summary(os.path.join(d, 'failed.json'))
+        assert ok is False and 'FAILED at step 1' in t, t
+        t, ok = block.chain_summary(None)
+        assert ok is None and 'none given' in t
+        t, ok = block.chain_summary(os.path.join(d, 'missing.json'))
+        assert ok is None and 'unreadable' in t
+        targets = [{'target': 'HD 189733 <b>', 'sample': 'Hot / Warm Jupiter', 'found_by': 'forced photometry',
+                    'tier': '10-minute', 'band': '73 MHz', 'stokes': 'V', 'time_utc': '2024-12-19 08:10:00',
+                    'flux_jy': 1.2345, 'snr_formal': 7.26, 'snr_local': None, 'link': 'http://h/p1'}]
+        trans = [{'rank': 1, 'tier': 'deep', 'band': '41 MHz', 'stokes': 'I', 'time_utc': '2024-12-19',
+                  'ra_deg': 62.55, 'dec_deg': -0.5, 'snr_formal': 12.04, 'snr_local': float('nan'), 'cls': 'single',
+                  'link': 'http://h/p2'}]
+        h = block.build('04h_2024-12-19', 'CHAIN', ['the 10-s table is missing'], targets, '1 detection of 40 targets',
+                        [('V', [], 0), ('I', trans, 37)], 37, {'deep': (120, 37)}, 20)
+        order = [h.index(x) for x in ('CHAIN', 'Limits and missing inputs', 'the 10-s table is missing',
+                                      'Detections of Hot / Warm Jupiter and 10 pc sample targets', 'HD 189733 &lt;b&gt;',
+                                      '1 detection of 40 targets', '(37 pass every default filter', 'deep: 37 of 120',
+                                      'Stokes V: top 0 of 0', '<p>None.</p>', 'Stokes I: top 1 of 37', '12.0')]
+        assert order == sorted(order), order
+        assert '<td>7.3</td><td>&ndash;</td>' in h and '<td>12.0</td><td>&ndash;</td>' in h   # a missing value is a dash
+        assert '04:10:12.0 -00:30:00' in h, h
+        assert 'HD 189733 <b>' not in h
+        none = block.build('04h_2024-12-19', 'CHAIN', [], [], 'No target detected (40 measured).', [('V', [], 0), ('I', [], 0)],
+                           0, {}, 20)
+        assert 'Limits and missing inputs' not in none and '<p>None.</p>' in none and 'No target detected' in none
+        assert block.sexagesimal(359.99999, 89.99999) == '00:00:00.0 +90:00:00', block.sexagesimal(359.99999, 89.99999)
+        assert block.sexagesimal(None, 1) == '&ndash;'
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+STUB_FILTERS = """
+FP_FILE, FP_META = 'fp_filters.csv', 'fp_filters.json'
+SCINT_FILE, SCINT_META = 'scintillation_index.csv', 'scintillation_index.json'
+SCINT_STATES = ['worst 10% - hidden by default', 'below', 'not measured']
+SCINT_FROM = {'worst 10% of its band': SCINT_STATES[0], 'other': SCINT_STATES[1], 'not measured': SCINT_STATES[2]}
+SCINT_CAT = dict(key='fp_c_scint', states=SCINT_STATES, default_off=[SCINT_STATES[0]])
+NO_DEFAULT_CATS = frozenset(('fp_c_track', 'fp_c_flood'))
+def passes(dets, flt):
+    if not flt:
+        return True
+    return any(all(d.get(k) in rng for k, rng in flt.items()) for d in dets)
+"""
+
+
+def _w(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(text)
+
+
+def test_sources_read_served_tables_apply_page_defaults_and_group_targets():
+    """lib/notify/sources.py on synthetic tables of both layouts (members + survivors: deep, 10-minute; page index:
+    10-s, 1-minute) and a forced event list: only served identities, only detections that pass the page's default
+    filters, exempt categories ignored, one row per identity, targets grouped with their association verdict."""
+    import gzip
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.notify import sources
+    d = tempfile.mkdtemp(prefix='test_email_')
+    old = {k: getattr(CFG.notify, k) for k in ('REGISTRY', 'PAGES')}
+    old_root = CFG.paths.SNAPSHOT_REVIEW_ROOT
+    try:
+        code = os.path.join(d, 'code', 'classify_transients.py')
+        _w(code, '')
+        _w(os.path.join(d, 'code', 'review_filters.py'), STUB_FILTERS)
+        r1, r2, rev = os.path.join(d, 'run_deep'), os.path.join(d, 'run_snap'), os.path.join(d, 'review')
+        c1, c2 = os.path.join(r1, 'source_catalogs_V'), os.path.join(r2, 'source_catalogs_V_10s')
+        _w(os.path.join(c1, '41MHz_source_members.csv'), 'source_id,band,cand_id,det_ra,det_dec,det_snr,det_date\n'
+           'J0100+1000,41MHz,VD_04h_2024-12-19_41MHz_0001,15.0,10.0,9.5,2024-12-19\n'       # served, passes
+           'J0100+1000,41MHz,VD_04h_2024-12-20_41MHz_0001,15.0,10.0,30.0,2024-12-20\n'      # another night
+           'J0200+2000,41MHz,VD_04h_2024-12-19_41MHz_0002,30.0,20.0,12.0,2024-12-19\n'      # served, hidden by a default
+           'J0300+3000,41MHz,VD_04h_2024-12-19_41MHz_0003,45.0,30.0,50.0,2024-12-19\n'      # not served
+           'J0400+4000,41MHz,VD_04h_2024-12-19_41MHz_0004,60.0,40.0,7.0,2024-12-19\n')      # served, exempt category only
+        _w(os.path.join(c1, '41MHz_sources_survivors.csv'),
+           'source_id,identity_id,ra,dec,promotion,multi_integration,xm_best,xm_offset_pct,xm_p_chance,xm_ambiguous\n'
+           'J0100+1000,J0100+1000,15.001,10.001,REP,1,10pc:GJ 1000,40,0.002,0\n'
+           'J0200+2000,J0200+2000,30.0,20.0,,0,,,,\nJ0400+4000,,60.0,40.0,,0,ATNF_psr:PSR J0400+4000,5,0.0001,0\n')
+        _w(os.path.join(r1, 'master_catalog.csv'), 'cand_id,stokes,global_snr\nVD_04h_2024-12-19_41MHz_0001,V,11.25\n')
+        json.dump({'cats': [{'key': 'fp_c_zone', 'states': ['in zone', 'clear', 'not evaluated'], 'default_off': ['in zone']},
+                            {'key': 'fp_c_track', 'states': ['tracked', 'clear'], 'default_off': ['tracked']},
+                            {'key': 'fp_c_iony', 'stokes': 'I', 'states': ['bad', 'ok'], 'default_off': ['bad']}]},
+                  open(os.path.join(r1, 'fp_filters.json'), 'w'))
+        _w(os.path.join(r1, 'fp_filters.csv'), '# comment\ncand_id,ra,dec,fp_c_zone,fp_c_track,fp_c_iony\n'
+           'VD_04h_2024-12-19_41MHz_0002,30.0,20.0,in zone,clear,ok\n'
+           'VD_04h_2024-12-19_41MHz_0004,60.0,40.0,clear,tracked,bad\n')
+        # the page-index layout: one served candidate with two detections of the hour (one in a hidden scintillation hour-band)
+        det_head = 'lst,date,band,stokes,ts,snr,ra,dec,tier,cand_id\n'
+        det = (det_head + '15h,2025-05-01,27MHz,V,20250501_083820,-8.5,170.0,31.0,10s,15h_2025-05-01_27MHz_V_10s_20250501_083820\n'
+               '15h,2025-05-01,27MHz,V,20250501_083900,-5.0,170.0,31.0,1min,15h_2025-05-01_27MHz_V_1min_20250501_083900\n'
+               '16h,2025-05-01,27MHz,V,20250501_093820,-99.0,170.0,31.0,10s,16h_2025-05-01_27MHz_V_10s_20250501_093820\n')
+        det23 = det_head + '15h,2025-05-01,23MHz,V,20250501_083830,-20.0,170.0,31.0,10s,15h_2025-05-01_23MHz_V_10s_20250501_083830\n'
+        os.makedirs(os.path.join(r2, 'page_index'))
+        _w(os.path.join(r2, 'page_index', 'manifest.json'), '{}')
+        with gzip.open(os.path.join(r2, 'page_index', 'shard_000.tsv.gz'), 'wt') as f:
+            f.write('candidates/V/J1120p3100_27MHz\t[[1,2]]\t' + json.dumps({'d': True, 't': det}) + '\n')
+            f.write('candidates/V/J1120p3100_23MHz\t[[1,2]]\t' + json.dumps({'d': True, 't': det23}) + '\n')
+            f.write('candidates/V/J0000p0000_27MHz\t[[1,2]]\t' + json.dumps({'d': True, 't': det_head}) + '\n')
+        _w(os.path.join(c2, '27MHz_sources_survivors.csv'), 'rank,source_id,identity_id,review_dir,xm_best,multi_integration\n'
+           'rank0001,J1120+3100_27MHz,J1120+3100,candidates/V/J1120p3100_27MHz,'
+           '"Hot_Warm_Jupiters:HIP 57274(5.7 arcmin, 0.19 beam, pct 25, E=0.360, p=1.3e-04)",1\n')
+        _w(os.path.join(c2, '23MHz_sources_survivors.csv'), 'rank,source_id,identity_id,review_dir,xm_best,multi_integration\n'
+           'rank0001,J1120+3100_23MHz,J1120+3100,candidates/V/J1120p3100_23MHz,'
+           '"Hot_Warm_Jupiters:HIP 57274(9.9 arcmin, 0.30 beam, pct 60, E=0.9, p=2.0e-03)",1\n')
+        json.dump({'default_hidden': True}, open(os.path.join(r2, 'scintillation_index.json'), 'w'))
+        _w(os.path.join(r2, 'scintillation_index.csv'), 'lst,date,band,scint_index,state\n15h,2025-05-01,23MHz,0.9,worst 10% of its band\n'
+           '15h,2025-05-01,27MHz,0.1,other\n')
+        fr = os.path.join(rev, 'Run_SNAPFORCED_V10s_gen5')
+        _w(os.path.join(fr, 'forced_assoc_events.csv'),
+           'cand_id,identity_id,sample,target,band,tier,ts,snr,identity_label,sep_target_arcsec,pct_target,bg_name,pct_bg\n'
+           'F_15h_2025-05-01_27MHz_20250501_083820_HIP_57274,HIP_57274,HWJ,HIP_57274,27MHz,10s,20250501_083820,-6.5,target,30,17,,\n'
+           'F_15h_2025-05-01_27MHz_20250501_083830_HIP_57274,HIP_57274,HWJ,HIP_57274,27MHz,10s,20250501_083830,-9.0,target,30,12,,\n'
+           'F_15h_2025-05-01_27MHz_20250501_084000_GJ_1,GJ_1,10pc,GJ_1,27MHz,10s,20250501_084000,7.0,background source,300,99,VLSSr J1,3\n'
+           'F_15h_2025-05-01_27MHz_20250501_084000_X_1,X_1,flare,X_1,27MHz,10s,20250501_084000,70.0,target,3,9,,\n'
+           'F_15h_2025-05-02_27MHz_20250502_084000_HIP_57274,HIP_57274,HWJ,HIP_57274,27MHz,10s,20250502_084000,-60.0,target,3,9,,\n')
+        _w(os.path.join(fr, 'forced_assoc_identity.csv'), 'identity_id,label,target_pcc\nHIP_57274,target,0.00013\n')
+        _w(os.path.join(fr, 'forced_fits.csv'), 'cand_id,fit_peak_jyb\nF_15h_2025-05-01_27MHz_20250501_083830_HIP_57274,-7.5\n')
+        reg = os.path.join(d, 'registry.json')
+        page = lambda i, run, cat: {'id': i, 'code': code, 'argv': ['--run', run] + (['--catalog-dir', cat] if cat else [])}
+        json.dump({'pages': [page('pD', r1, c1), page('pS', r2, c2), page('pF', fr, None)]}, open(reg, 'w'))
+        CFG.notify.REGISTRY, CFG.notify.PAGES = reg, {('deep', 'V'): 'pD', ('10-s', 'V'): 'pS', ('10-minute', 'I'): 'pGone'}
+        CFG.paths.SNAPSHOT_REVIEW_ROOT = rev
+        sources._CACHE.clear(); sources._INDEX_CACHE.clear()
+        parts, n_pass, per_tier, limits = sources.transients('04h_2024-12-19', CFG, 10)
+        (sv, rows_v, nv), (si, rows_i, ni) = parts
+        assert (sv, si, nv, ni, n_pass) == ('V', 'I', 2, 0, 2) and rows_i == [], parts
+        assert [(r['link_text'], r['snr_local'], r['snr_formal'], r['rank']) for r in rows_v] == \
+            [('J0100+1000', 9.5, 11.25, 1), ('J0400+4000', 7.0, None, 2)], rows_v     # 0002 hidden, 0003 not served
+        assert rows_v[0]['cls'] == 'REP, multi-integration' and rows_v[0]['link'].endswith('/p/pD/source/J0100+1000?b=41MHz')
+        assert (rows_v[0]['ra_deg'], rows_v[0]['time_utc']) == (15.001, '2024-12-19, LST 04h hour'), rows_v[0]
+        assert per_tier == {'deep Stokes V': (3, 2)}, per_tier
+        assert any('pGone' in x for x in limits) and any('10-s Stokes V (page pS)' in x for x in limits), limits
+        tg, note, lim = sources.targets('04h_2024-12-19', CFG)
+        assert [(t['target'], t['sample'], t['found_by'], t['offset_percentile'], t['p_chance']) for t in tg] == \
+            [('GJ 1000', '10 pc', 'untargeted search', 40.0, 0.002)], tg                # the pulsar match is not a target
+        assert any('no served event list' in x for x in lim) and '0 forced-photometry events' in note, (lim, note)
+        # the page-index layout, and the forced list of the same hour
+        parts, n_pass, per_tier, limits = sources.transients('15h_2025-05-01', CFG, 10)
+        rows_v = parts[0][1]
+        assert n_pass == 1 and [(r['link_text'], r['band'], r['snr_local'], r['time_utc']) for r in rows_v] == \
+            [('J1120+3100', '27MHz', -8.5, '2025-05-01 08:38:20')], rows_v             # 23 MHz: hidden scintillation hour
+        assert per_tier == {'10-s Stokes V': (1, 1)}, per_tier
+        tg, note, lim = sources.targets('15h_2025-05-01', CFG)
+        assert [(t['target'], t['found_by'], t['snr_formal'], t['flux_jy'], t['offset_percentile'], t['p_chance']) for t in tg] == \
+            [('HIP 57274', 'forced photometry', -9.0, -7.5, 12.0, 0.00013),
+             ('HIP 57274', 'untargeted search', None, None, 25.0, 0.00013)], tg
+        assert '2 events of this target' in tg[0]['note'] and tg[0]['link'].endswith('/p/pF/source/HIP_57274'), tg[0]
+        assert '3 forced-photometry events' in note and '1 given to a catalogued background source' in note, note
+        assert tg[1]['snr_local'] == -8.5 and 'hidden' not in tg[1]['note'] and '2 detections' in tg[1]['note'], tg[1]
+    finally:
+        for k, v in old.items():
+            setattr(CFG.notify, k, v)
+        CFG.paths.SNAPSHOT_REVIEW_ROOT = old_root
+        sources._CACHE.clear(); sources._INDEX_CACHE.clear()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def _all_tests():
     return sorted((n, f) for n, f in globals().items() if n.startswith('test_') and callable(f))
 

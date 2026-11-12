@@ -337,7 +337,7 @@ class runner(_Section):
     # their exit codes are recorded and never change the item's status. The per-hour chain closes with the ONE email
     # of the hour (Gregg 2026-11-12: "one email at the end of Phase 3 that is close to identical to the current one in
     # what is included, just with the transient and forced photometry highlights added").
-    CHAIN_FINALLY = {'epoch': ['email --epochs {item} --chain-record {record}']}
+    CHAIN_FINALLY = {'epoch': ['notify --epochs {item} --chain-record {record}']}
 
 
 class site(_Section):

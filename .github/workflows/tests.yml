@@ -38,3 +38,5 @@ jobs:
         run: python tests/test_snapshot_engine.py
       - name: snapshot cell scheduler and driver plan
         run: python tests/test_snapshot_schedule.py && python tests/test_snapshot_cell.py
+      - name: the hour's one email (Phase 2 report rebuilt, highlights block, table readers)
+        run: python tests/test_email.py

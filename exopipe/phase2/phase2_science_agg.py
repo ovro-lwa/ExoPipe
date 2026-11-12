@@ -1957,7 +1957,8 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
     highlights_html: an HTML block placed above the Phase 2 sections (the Phase 3 highlights of the hour; the step at
     the end of Phase 3 passes it with phases="Phases 2-3"). Nothing else of the report changes.
     write_to: a path prefix; the message is written to <write_to>.eml and its body to <write_to>.html and NOTHING is
-    sent or posted (the review copy)."""
+    sent or posted (the review copy).
+    Returns True when the email was sent (or the review copy written), False when the send failed (logged)."""
     logger.info("\n--- Sending Email Report ---")
 
     secrets_path = os.path.expanduser(cfg.SECRETS_FILE)
@@ -2125,7 +2126,7 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
             f.write(msg.as_string())
         logger.info(f"Email NOT sent: written to {write_to}.eml and {write_to}.html "
                     f"(subject {msg['Subject']!r}, to {msg['To']})")
-        return
+        return True
 
     try:
         if creds:
@@ -2137,8 +2138,11 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
         s.send_message(msg)
         s.quit()
         logger.info(f"Email sent to {msg['To']}")
+        sent = True
     except Exception as e:
         logger.error(f"Email failed: {e}")
+        sent = False
 
     # Post to Slack
     post_to_slack(run_dir, run_duration=run_duration)
+    return sent

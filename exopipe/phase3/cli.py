@@ -34,6 +34,7 @@ STEPS = [
     ('pages', 'review pages (served queues, inspection twins, multiples), incremental or full', 'per hour'),
     ('serve', 'review servers and the hub; served-queue and exclusion content tests; exact-pid restart', 'per hour'),
     ('archive', 'manifest, checksum transfer, content audit, quarantine; retire excluded nights; rollback', 'per hour'),
+    ('notify', "the hour's one email: the Phase 2 report plus the Phase 3 highlights (target detections, top transients)", 'per hour'),
     # survey (intermittent): many hours on disk (DESIGN 12.2)
     ('masters', 'co-add masters + LOO + QA gates; V clean; flux scale; PB maps; source catalogue (all tiers)', 'survey'),
     ('dewarp', 'master dewarp per LST: RBF screen on the rebuilt masters, cubic apply, content test D1-D6', 'survey'),
