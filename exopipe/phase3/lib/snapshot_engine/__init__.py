@@ -27,7 +27,11 @@ The per-cell driver (refactor code, not from clv15)
                                      Writes only under its --out root; the fleet remains production's driver until cutover.
 
 The pin (PIN_COMMIT / PIN_BLOBS below)
-  clv15 be63765 (2026-11-11), the commit that searched the Dec 18-27 2024 cells used for the parity runs. PIN_BLOBS holds the
+  clv15 e731a4a (2026-11-12) = be63765 (2026-11-11, the commit that searched the Dec 18-27 2024 cells used for the parity
+  runs) plus production's two later commits to phase3_snapshot_cube.py (c868cb1: write --fluxscal divides the pixels by the
+  hour-band factor and records FSAPPLD, default off; e731a4a: rescale rewrites an archived cube in Master units), ported
+  2026-11-12; no other pinned file changed between the two commits. The cell driver passes no --fluxscal: where the factor
+  comes from in v2 is the flux-scale ruling's implementation, not part of this port. PIN_BLOBS holds the
   git blob id of every ported file at that commit. Production keeps moving: tests/test_snapshot_engine.py reports every pinned
   file production has changed since (one explicit failure naming what to port), as tests/production_pin.py does for the ops
   ports. Moving the pin is a port round.
@@ -44,13 +48,13 @@ This module itself is import-safe and holds only the pin; nothing here is import
 """
 
 CLV15_REPO = '/lustre/gh/main/clv15'
-PIN_COMMIT = 'be637650b56a4bde9ff3221b9321dc4b71febb90'
+PIN_COMMIT = 'e731a4a11661335e82bc317e946da5ead80bbc2c'
 PIN_BLOBS = {
     'phase3_snapshot_search.py': 'db49397021a1c7596170dc6c0c3de48d4c8bf75c',
     'phase3_snapshot_group_search.py': 'bab2c8b058095075fd4fa2a13c4bb1a1a263adc1',
     'phase3_snapshot_cutouts.py': '5c6fa63521b581e27d31524c6aec819fc779de9d',
     'phase3_snapshot_lightcurves.py': '8f669f5504115267a7b9551e06b0a120bf36e8c4',
-    'phase3_snapshot_cube.py': 'ddbbca80e1f134f915936f667fea56524660ab07',
+    'phase3_snapshot_cube.py': '912501b17d139c56b165c725687cb211dcd7ba62',
     'phase3_snapshot_frame_movie.py': '709a9448ddb2ba218754ee88347696e32ecef965',
     'phase3_snapshot_flow_movie.py': '0407eb749f1e2fd34329d9f41a4ad8a40873572c',
     'phase3_snapshot_flow.py': 'ff7c35eb50ce120a71a68cf4f94f4ca19b0e21be',

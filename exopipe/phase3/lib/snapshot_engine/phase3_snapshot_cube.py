@@ -91,9 +91,20 @@ def comp_hdu(fits, cube, header, quant):
     if (major, minor) < (5, 3):
         sys.exit("REFUSED: astropy %s cannot write NaN-safe compressed float cubes; run the writer under "
                  "/opt/devel/pipeline/envs/py310_orca/bin/python" % astropy.__version__)
+    # DITHER SEED FROM THE DATA (2026-11-12, R-GREGG-20261112-CUBE-DITHER-SEED-FROM-THE-DATA): astropy's default takes the
+    # seed of the subtractive dither from the clock, so two writes of the same frames gave two cubes whose pixels differed
+    # at 1-2% of the noise, and no cube could be proven by writing it a second time. DITHER_SEED_CHECKSUM takes the seed
+    # from the bytes of the first tile (recorded in ZDITHER0, as before): same pixels in, same stored pixels out. The noise
+    # the quantization adds is unchanged; only which realization a cube holds. The stored BYTES are the same too, except
+    # in a tile that cannot be quantized (a blank instant, all zeros): astropy stores it losslessly through Python's gzip,
+    # which writes the time of day into its 10-byte header (astropy 6.1.7, measured 2026-11-12) - so a proof by a second
+    # write compares the decoded pixels, or the bytes apart from those gzip headers. astropy.io.fits itself does not
+    # export the constant (6.1.7): it lives in astropy.io.fits.hdu.compressed (a module in 5.3, a package since 6.0)
+    from astropy.io.fits.hdu.compressed import DITHER_SEED_CHECKSUM
     return fits.CompImageHDU(data=cube, header=header, name="FRAMES", compression_type="RICE_1",
                              tile_shape=(1,) + cube.shape[1:], quantize_level=quant,
-                             quantize_method=1)       # 1 = SUBTRACTIVE_DITHER_1
+                             quantize_method=1,       # 1 = SUBTRACTIVE_DITHER_1
+                             dither_seed=DITHER_SEED_CHECKSUM)
 
 
 def write(a):
@@ -101,11 +112,22 @@ def write(a):
     raws = raw_frames(a.stage, a.stokes)
     if not raws:
         sys.exit("REFUSED: no %s frames under %s" % (a.stokes, a.stage))
+    # FLUX SCALE INTO THE PIXELS (2026-11-12, R-GREGG-20261112-FLUXSCAL-NO-BSCALE-PIPELINE-WRITES-PIXELS-...: "No user will know to
+    # check some obscure BSCALE factor"): --fluxscal F divides every stored pixel by the hour-band's frame-to-Master factor
+    # (snapshot_fluxscal.band_factors) and records it as FSAPPLD; without it the cube is in frame units, as before
+    fs = getattr(a, "fluxscal", None)
+    if fs is not None and not (np.isfinite(fs) and fs > 0):
+        sys.exit("REFUSED: --fluxscal %r is not a finite factor > 0" % fs)
     no_master = os.path.exists(os.path.join(a.stage, ".no_master"))
-    frames, rows, flows = [], [], []
+    # MEMORY (refactor, 2026-11-12, speed only; the cube file is unchanged byte for byte): the frames go straight into ONE
+    # preallocated cube and the NaN mask into one int16 array, frame by frame. Before, every frame was held twice (a list
+    # and its stacked copy) beside two whole-cube masks (bool, then int16): 51.6 GB at the peak for a 14 GB cube of 358
+    # frames of 3122 x 3122 px, which let only four or five writers of the high bands run side by side in a cell
+    cube = nanmask16 = None
+    rows, flows = [], []
     hdr0 = None
     flowref = ""        # the first frame that names its flow reference (frame 0 is often a blank I instant without one, 2026-10-08)
-    for ts, raw in raws.items():
+    for i, (ts, raw) in enumerate(raws.items()):
         fl = raw[:-5] + "_flowed.fits"
         if os.path.exists(fl):
             src, flowed = fl, True
@@ -118,13 +140,18 @@ def write(a):
             d = np.asarray(h[0].data, dtype=np.float32)
             hh = h[0].header
         d = d.reshape(d.shape[-2:])
+        if fs is not None:
+            d = d / np.float32(fs)
         if hdr0 is None:
             hdr0 = hh.copy(); shape = d.shape
         if not flowref and str(hh.get("FLOWREF", "")).strip():
             flowref = str(hh.get("FLOWREF")).strip()
         if d.shape != shape:
             sys.exit("REFUSED: %s has shape %s, the cube's frames are %s" % (src, d.shape, shape))
-        frames.append(d)
+        if cube is None:
+            cube = np.empty((len(raws),) + shape, dtype=np.float32)
+            nanmask16 = np.empty(cube.shape, dtype=np.int16)
+        fin = np.isfinite(d)
         fp = os.path.join(a.flows, "flow_%s_%s.npy" % (a.subband, ts)) if a.flows else None
         if fp and os.path.exists(fp):
             f = np.load(fp).astype(np.float32)
@@ -132,16 +159,19 @@ def write(a):
         else:
             flows.append(None); has_flow = False
         note = str(hh.get("FLOWED", "")) + " " + str(hh.comments["FLOWED"] if "FLOWED" in hh else "")
-        blank = (not np.isfinite(d).any()) or (np.isfinite(d).mean() < 0.5)
+        blank = (not fin.any()) or (fin.mean() < 0.5)
+        # NaN pixels (outside the projected sky; blank instants) are stored as 0 and restored from the MASK extension:
+        # astropy 4.1, which the chain runs under, ignores ZBLANK when decompressing and returned -2.6e8 for every
+        # NaN pixel of a cube written correctly by astropy 6.1 (2026-09-23 synthetic test), so the cube never relies
+        # on the compression's own null handling
+        np.logical_not(fin, out=fin)                      # now: True where the frame pixel is NaN or infinite
+        cube[i] = d
+        cube[i][fin] = 0.0
+        nanmask16[i] = fin
+        del d, fin
         rows.append((ts, flowed, note.strip()[:80], has_flow, blank, os.path.basename(raw), os.path.getsize(raw),
                      md5_file(raw), hh.tostring(sep="\n")))
-    cube = np.stack(frames)
-    # NaN pixels (outside the projected sky; blank instants) are stored as 0 and restored from the MASK extension:
-    # astropy 4.1, which the chain runs under, ignores ZBLANK when decompressing and returned -2.6e8 for every
-    # NaN pixel of a cube written correctly by astropy 6.1 (2026-09-23 synthetic test), so the cube never relies
-    # on the compression's own null handling
-    nanmask = ~np.isfinite(cube)
-    cube[nanmask] = 0.0
+    nframes = len(rows)
     gshape = next((f.shape for f in flows if f is not None), None)
     if gshape is not None:
         # storage step chosen PER CUBE: 1e-3 px unless the largest |flow| needs more room (the 2026-09-23 cube test
@@ -157,12 +187,14 @@ def write(a):
     # primary
     ph = fits.Header()
     ph["CELL"] = (a.cell, "LST_date"); ph["SUBBAND"] = a.subband; ph["STOKES"] = a.stokes
-    ph["NFRAMES"] = (len(frames), "10-s frames, time order"); ph["QUANTLEV"] = (a.quant, "RICE quantize level")
+    ph["NFRAMES"] = (nframes, "10-s frames, time order"); ph["QUANTLEV"] = (a.quant, "RICE quantize level")
     ph["FLOWED"] = (not no_master, "frames are the fleet's flowed (registered) frames")
     ph["NOMASTER"] = (no_master, "subband had no Master: frames stored as searched (unflowed)")
     ph["FLOWREF"] = (flowref[:60], "flow reference (multi-night master), first frame naming one")
     ph["CODE"] = (git_hash(), "clv15 commit of phase3_snapshot_cube.py")
     ph["PRODUCT"] = "snapshot-flowcube-v1"
+    if fs is not None:
+        ph["FSAPPLD"] = (float(fs), "frame-to-Master flux scale divided out of the pixels")
     ph.add_comment("Frames = the search's own registered frames; FLOW = 1/8-grid per-frame flow (dx, dy) px;")
     ph.add_comment("raw frame recoverable to interpolation accuracy; FRAME_TABLE header column = each frame's header.")
     # frames: WCS/celestial keys of the first frame, 3rd axis = frame index
@@ -174,7 +206,7 @@ def write(a):
     ch["CTYPE3"] = ("FRAMEIDX", "row of FRAME_TABLE"); ch["CRPIX3"] = 1; ch["CRVAL3"] = 0; ch["CDELT3"] = 1
     hdus = [fits.PrimaryHDU(header=ph),
             comp_hdu(fits, cube, ch, a.quant),
-            fits.CompImageHDU(data=nanmask.astype(np.int16), name="MASK", compression_type="RICE_1",
+            fits.CompImageHDU(data=nanmask16, name="MASK", compression_type="RICE_1",
                               tile_shape=(1,) + cube.shape[1:])]      # 1 = pixel was NaN in the frame; lossless
     if gshape is not None:
         # NOT BSCALE/BLANK: astropy refuses to memory-map a scaled image, so the scale and the no-field value are
@@ -199,8 +231,8 @@ def write(a):
     fits.HDUList(hdus).writeto(tmp, overwrite=True, checksum=True)
     os.replace(tmp, out)
     print("CUBE %s frames=%d flowed=%s flow_fields=%d size=%.1f MB (%.2f MB/frame)" % (
-        out, len(frames), not no_master, sum(r[3] for r in rows), os.path.getsize(out) / 1e6,
-        os.path.getsize(out) / 1e6 / len(frames)))
+        out, nframes, not no_master, sum(r[3] for r in rows), os.path.getsize(out) / 1e6,
+        os.path.getsize(out) / 1e6 / nframes))
     return out
 
 
@@ -267,12 +299,15 @@ def verify(a):
     from astropy.io import fits
     c = open_cube(a.cube)
     raws = raw_frames(a.stage, c.primary["STOKES"])
+    fsv = float(c.primary["FSAPPLD"]) if "FSAPPLD" in c.primary else None
     worst_rms, worst_pix, nbad, n = 0.0, 0.0, 0, 0
     for ts in c.timestamps:
         src = raws[ts][:-5] + "_flowed.fits" if c.primary["FLOWED"] else raws[ts]
         with fits.open(src, memmap=False) as h:
             d0 = np.asarray(h[0].data, dtype=np.float32).reshape(-1, h[0].data.shape[-1])
             h0 = h[0].header
+        if fsv is not None:
+            d0 = d0 / np.float32(fsv)     # a scaled cube (FSAPPLD) against its frame-unit source frames / the factor
         d1, h1 = c.frame(ts)
         m0, m1 = np.isfinite(d0), np.isfinite(d1)
         n += 1
@@ -317,6 +352,79 @@ def explode(a):
     c.close()
 
 
+def rescale(a):
+    """Rewrite an archived frame-unit cube in Master units (2026-11-12, R-GREGG-20261112-FLUXSCAL-NO-BSCALE-PIPELINE-WRITES-PIXELS-...:
+    "existing cubes rewritten", new files, no BSCALE): FRAMES / F re-compressed as write() does (same tiling, the cube's own
+    QUANTLEV, dither); MASK, FLOW and FRAME_TABLE carried over unchanged; the primary gains FSAPPLD.  Writes <out>/<same name>,
+    never over the source; REFUSES a cube already carrying FSAPPLD.  Content test before the rename: masks and FRAME_TABLE
+    identical, and every frame's |new - old / F| at most RESCALE_TOL of that frame's robust noise / F."""
+    from astropy.io import fits
+    fs = a.fluxscal
+    if not (np.isfinite(fs) and fs > 0):
+        sys.exit("REFUSED: --fluxscal %r is not a finite factor > 0" % fs)
+    with fits.open(a.cube, memmap=False) as h:
+        ph = h[0].header.copy()
+        if "FSAPPLD" in ph:
+            sys.exit("REFUSED: %s already carries FSAPPLD=%s" % (a.cube, ph["FSAPPLD"]))
+        new = np.asarray(h["FRAMES"].data, dtype=np.float32)
+        ch = h["FRAMES"].header.copy()
+        mask = np.asarray(np.asarray(h["MASK"].data), dtype=np.int16)      # int16 as stored: no copy
+        rest = [fits.ImageHDU(data=np.array(h["FLOW"].data), header=h["FLOW"].header.copy(), name="FLOW")] \
+            if "FLOW" in h else []
+        rest.append(fits.BinTableHDU(data=h["FRAME_TABLE"].data.copy(), header=h["FRAME_TABLE"].header.copy(), name="FRAME_TABLE"))
+    # MEMORY (2026-11-12, memory only; the rewritten cube is unchanged byte for byte): the decompressed cube is divided by
+    # the factor IN PLACE, frame by frame, and is from here on the cube in Master units BEFORE re-quantization (what
+    # "old / F" was). Before, a second whole cube (old / F) and two int16 copies of the mask were held beside it
+    if not new.flags.writeable:
+        new = new.copy()
+    f32 = np.float32(fs)
+    for i in range(new.shape[0]):
+        np.divide(new[i], f32, out=new[i])
+    quant = float(ph.get("QUANTLEV", QUANT))
+    for k in [k for k in ch if k.startswith("Z") or k in ("XTENSION", "PCOUNT", "GCOUNT", "TFIELDS", "TTYPE1", "TFORM1")]:
+        del ch[k]
+    ph["FSAPPLD"] = (float(fs), "frame-to-Master flux scale divided out of the pixels")
+    ph["RESCALED"] = (git_hash(), "clv15 commit of the rescale")
+    hdus = [fits.PrimaryHDU(header=ph), comp_hdu(fits, new, ch, quant),
+            fits.CompImageHDU(data=mask, name="MASK", compression_type="RICE_1",
+                              tile_shape=(1,) + mask.shape[1:])] + rest
+    os.makedirs(a.out, exist_ok=True)
+    out = os.path.join(a.out, os.path.basename(a.cube))
+    if os.path.abspath(out) == os.path.abspath(a.cube):
+        sys.exit("REFUSED: --out is the source directory - a rescale never overwrites its source")
+    tmp = out + ".tmp"
+    fits.HDUList(hdus).writeto(tmp, overwrite=True, checksum=True)
+    worst = 0.0
+    with fits.open(tmp, memmap=False) as n:
+        # the whole MASK at once, not section[]: in a high-band cube the MASK starts past 2 GiB, where section[] overflows
+        # (astropy 6.1 + numpy 2, see Cube.frame); compared frame by frame so that no whole-cube temporary is made
+        nm = np.asarray(n["MASK"].data)
+        if nm.shape != mask.shape or any(not np.array_equal(nm[i], mask[i]) for i in range(mask.shape[0])):
+            os.remove(tmp); sys.exit("RESCALE FAILED %s: MASK differs" % out)
+        del nm
+        if n["FRAME_TABLE"].data.tobytes() != rest[-1].data.tobytes():
+            os.remove(tmp); sys.exit("RESCALE FAILED %s: FRAME_TABLE differs" % out)
+        # FRAMES is read by section[]: it is the first extension (data at byte 11,520), and astropy gives it 32-bit
+        # pointers only when the decoded cube is under 4 GiB, whose compressed heap is under 1 GiB - no sum passes 2 GiB
+        # (82 MHz, 358 frames, 2.19 GB compressed: 64-bit pointers, every frame read back, 2026-11-12)
+        for i in range(new.shape[0]):
+            d0, d1 = new[i], np.asarray(n["FRAMES"].section[i], dtype=np.float32)
+            m = np.isfinite(d0)
+            if (m != np.isfinite(d1)).any():
+                os.remove(tmp); sys.exit("RESCALE FAILED %s: NaN mask differs in frame %d" % (out, i))
+            if m.any():
+                mad = 1.4826 * np.median(np.abs(d0[m] - np.median(d0[m])))
+                if mad > 0:
+                    worst = max(worst, float(np.max(np.abs(d1[m] - d0[m])) / mad))
+    if worst > RESCALE_TOL:
+        os.remove(tmp); sys.exit("RESCALE FAILED %s: worst pixel %.4f of frame noise > %.2f" % (out, worst, RESCALE_TOL))
+    os.replace(tmp, out)
+    print("RESCALE %s FSAPPLD=%.6f frames=%d worst pixel/noise=%.4f -> OK" % (out, fs, new.shape[0], worst))
+
+
+RESCALE_TOL = 0.05     # re-quantization of an already-quantized cube: measured 0.006 per quantization (2026-11-12 write test)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd")
@@ -325,10 +433,13 @@ def main():
     w.add_argument("--subband", required=True); w.add_argument("--stokes", required=True, choices=["I", "V"])
     w.add_argument("--flows", default=None); w.add_argument("--out", required=True)
     w.add_argument("--quant", type=float, default=QUANT)
+    w.add_argument("--fluxscal", type=float, default=None, help="divide the pixels by this hour-band factor (FSAPPLD)")
     v = sp.add_parser("verify"); v.add_argument("cube"); v.add_argument("--stage", required=True)
     e = sp.add_parser("explode"); e.add_argument("cube"); e.add_argument("--out", required=True)
+    r = sp.add_parser("rescale"); r.add_argument("cube"); r.add_argument("--fluxscal", type=float, required=True)
+    r.add_argument("--out", required=True)
     a = ap.parse_args()
-    {"write": write, "verify": verify, "explode": explode}[a.cmd](a)
+    {"write": write, "verify": verify, "explode": explode, "rescale": rescale}[a.cmd](a)
 
 
 if __name__ == "__main__":
