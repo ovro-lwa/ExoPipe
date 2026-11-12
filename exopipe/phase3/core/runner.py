@@ -10,7 +10,8 @@ record lives in ``CFG.runner.JOBS_ROOT/<job>/`` (a handful of files per item, on
     items.txt             the items in run order (rewritten by `run reorder`)
     items/<item>.json     per item: status (queued|running|done|refused|no-input|error|failed), host, pid, rc,
                           attempts, started, finished, log path; code_commit (--code); steps (chain: one entry per
-                          step run, with its own status, rc, started, finished)
+                          step run, with its own status, rc, started, finished); chain_status + finally (a chain
+                          with closing steps: the chain's outcome, and one entry per closing step)
     claims/<item>/        atomic claim (mkdir) by the worker that runs the item
     logs/<item>.log       the step's stdout/stderr for that item (every step of a chain, in order)
     HOLD                  present = workers take no new items (running items finish)
@@ -27,7 +28,10 @@ Chains (``run submit --chain NAME``; ``CFG.runner.CHAINS``): one worker runs eve
 node; a step that ends no-input (exit 3: nothing to do for this item) is recorded and the chain goes on; the item stops
 at its first refused (2) or error exit, and its status is that step's. An item where every step had no input ends
 no-input. A retried
-chain item resumes at its first step not done.
+chain item resumes at its first step not done. Closing steps (``CFG.runner.CHAIN_FINALLY[NAME]``, e.g. the hour's
+email): run for every item once its chain has ended in a terminal status - done, refused, no-input or failed, not when
+it is queued for a retry - with the item's record path for ``{record}``; the record then holds ``chain_status`` and the
+steps so far. Their exit codes are recorded under ``finally`` and never change the item's status.
 
 Pinned code (``run submit --code COMMIT``): ``ensure_code_worktree`` makes ONE read-only ``git worktree add --detach``
 of the commit under ``CFG.runner.CODE_WORKTREES_ROOT/<sha>`` (reused by every later job of that commit) and every step
@@ -223,6 +227,15 @@ def chain_steps(name):
     return steps
 
 
+def chain_finally(name):
+    """The closing step templates of the chain ``name`` (runner.CHAIN_FINALLY; none for most chains)."""
+    fin = (getattr(_cfg().runner, 'CHAIN_FINALLY', None) or {}).get(name) or []
+    steps = [shlex.split(s) if isinstance(s, str) else list(s) for s in fin]
+    if not all(steps):
+        raise SystemExit(f'refused: chain {name!r} has an empty closing step')
+    return steps
+
+
 def _overrides_of(forward):
     out = {'set': [], 'config': None, 'ruling_for': [], 'parity': False, 'injected': False}
     i = 0
@@ -284,7 +297,7 @@ def submit(name, step_argv, item_list, nodes, after=None, retry=0, gpu=False, py
          'launch_host': socket.gethostname(), 'python': python, 'pkg_root': _pkg_root(),
          'site_file': os.environ.get('EXOPIPE3_SITE', ''), 'n_items': len(item_list), 'jobs_root': jobs_root(),
          'forward_argv': forward, 'overrides': _overrides_of(forward),
-         'chain': chain, 'chain_steps': steps,
+         'chain': chain, 'chain_steps': steps, 'chain_finally': chain_finally(chain) if chain else None,
          'code_commit': code_commit, 'code_root': code_root, 'code_repo': code_repo() if code else None}
     _wjson(os.path.join(d, 'job.json'), j)
     if start:
@@ -372,10 +385,15 @@ def _release(job, item):
         pass
 
 
-def _subst(argv, item):
+def _subst_vars(argv):
     out = list(argv)
     for k, v in (getattr(_cfg().runner, 'CHAIN_VARS', None) or {}).items():   # named variables, e.g. {deep_run}
         out = [a.replace('{' + k + '}', str(v)) for a in out]
+    return out
+
+
+def _subst(argv, item):
+    out = _subst_vars(argv)
     if any('{item}' in a for a in out):
         return [a.replace('{item}', item) for a in out]
     return out + ['--cells', item]
@@ -478,6 +496,28 @@ def _run_item(j, job, it, st, host, lane):
         status = 'queued'                       # retried by the next free worker
     elif status == 'error':
         status = 'failed'
+    if chain and j.get('chain_finally') and status != 'queued':
+        # closing steps (runner.CHAIN_FINALLY): whatever the chain's outcome; they read it from the record ({record})
+        fin = []
+        rec.update(chain_status=status, rc=rc)
+        rec['finally'] = fin
+        _wjson(ipath, rec)
+        with open(log, 'a') as lf:
+            for k, tmpl in enumerate(j['chain_finally']):
+                full = (head + [a.replace('{item}', it).replace('{record}', ipath) for a in _subst_vars(tmpl)]
+                        + list(j.get('forward_argv') or []))     # no '--cells <item>' is appended to a closing step
+                lf.write(f'\n===== {_now()} {host} lane {lane} attempt {attempts} closing step {k + 1}/'
+                         f'{len(j["chain_finally"])} (chain {status}): {" ".join(map(shlex.quote, full))}\n')
+                lf.flush()
+                p = subprocess.Popen(full, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=root,
+                                     env=_child_env(j, root))
+                entry = {'step': k, 'name': tmpl[0], 'argv': full, 'status': 'running', 'started': _now(),
+                         'pid': p.pid, 'attempt': attempts}
+                fin.append(entry)
+                _wjson(ipath, rec)
+                frc = p.wait()
+                entry.update(status=RC_STATUS.get(frc, 'error'), rc=frc, finished=_now())
+                _wjson(ipath, rec)
     rec.update(status=status, rc=rc, finished=_now())
     _wjson(ipath, rec)
 

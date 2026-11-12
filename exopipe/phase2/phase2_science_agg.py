@@ -1913,8 +1913,52 @@ def post_to_slack(run_dir, run_duration=None):
         logger.warning(f"  Slack post failed: {e}")
 
 
-def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, date=None):
-    """Send summary email with diagnostics and detection list."""
+DEFERRED_EMAIL_FILE = "email_deferred.json"     # in <run_dir>/QA: written by --defer_email, read at the end of Phase 3
+
+
+def write_deferred_email(run_dir, run_command=None, run_duration=None, lst=None, date=None):
+    """--defer_email: the report is not sent now. Record what only this process knows (command, duration) so that the
+    step at the end of Phase 3 (`exopipe3 email`) sends the SAME report with the Phase 3 highlights added."""
+    path = os.path.join(run_dir, "QA", DEFERRED_EMAIL_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as f:
+        json.dump({"run_command": run_command, "run_duration": run_duration, "lst": lst, "date": date}, f, indent=1)
+    os.replace(path + ".tmp", path)
+    logger.info(f"Email deferred to the end of Phase 3: {path}")
+    return path
+
+
+def restore_email_inputs(run_dir):
+    """Refill ATTACHMENT_FILES and EMAIL_REPORT_LINES from the files of a finished Phase 2 run, in the order the run
+    itself fills them (thermal-noise plot, dewarp summary plot, 3-color PNG, then the detection tables of
+    gather_detections), for a process that did not run the Phase 2 steps. Nothing is written or recomputed.
+    Returns the record of write_deferred_email ({} when the run was not deferred)."""
+    del ATTACHMENT_FILES[:]
+    del EMAIL_REPORT_LINES[:]
+    qa_dir = os.path.join(run_dir, "QA")
+    for pat in ("*thermal_noise_vs_freq.png", "*dewarp_vs_frequency.png", "I_deep_*_3color.png"):
+        ATTACHMENT_FILES.extend(sorted(glob.glob(os.path.join(qa_dir, pat))))
+    for name in ("subband_detections.csv", "wideband_detections.csv"):
+        if os.path.exists(os.path.join(run_dir, name)):
+            ATTACHMENT_FILES.append(os.path.join(run_dir, name))
+    if not os.path.exists(os.path.join(run_dir, "combined_detections.csv")):
+        EMAIL_REPORT_LINES.append("No significant detections found.")
+    try:
+        with open(os.path.join(qa_dir, DEFERRED_EMAIL_FILE)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, date=None,
+                      highlights_html=None, phases="Phase 2", write_to=None):
+    """Send summary email with diagnostics and detection list.
+
+    highlights_html: an HTML block placed above the Phase 2 sections (the Phase 3 highlights of the hour; the step at
+    the end of Phase 3 passes it with phases="Phases 2-3"). Nothing else of the report changes.
+    write_to: a path prefix; the message is written to <write_to>.eml and its body to <write_to>.html and NOTHING is
+    sent or posted (the review copy).
+    Returns True when the email was sent (or the review copy written), False when the send failed (logged)."""
     logger.info("\n--- Sending Email Report ---")
 
     secrets_path = os.path.expanduser(cfg.SECRETS_FILE)
@@ -1932,9 +1976,9 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
     msg['To'] = ", ".join(recips) if isinstance(recips, (list, tuple)) else recips
     obs_tag = " ".join(p for p in (lst, date) if p)   # e.g. "11h 2024-12-24"
     subj_obs = f"{obs_tag} — " if obs_tag else ""
-    msg['Subject'] = f"OVRO-LWA Phase 2: {subj_obs}{os.path.basename(run_dir)}"
+    msg['Subject'] = f"OVRO-LWA {phases}: {subj_obs}{os.path.basename(run_dir)}"
 
-    body = "<h3>Phase 2 Pipeline Complete</h3>"
+    body = f"<h3>{phases} Pipeline Complete</h3>"
     body += f"<p>Run Directory: <code>{run_dir}</code></p>"
     if run_command:
         body += f"<p>Command: <code>{run_command}</code></p>"
@@ -1942,6 +1986,8 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
         hours = int(run_duration // 3600)
         mins = int((run_duration % 3600) // 60)
         body += f"<p>Duration: {hours}h {mins}m ({run_duration:.0f}s)</p>"
+    if highlights_html:
+        body += highlights_html
 
     # Attach the pipeline log file
     log_files = sorted(glob.glob(os.path.join(run_dir, "phase2_*.log")))
@@ -2073,6 +2119,15 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
                         f"attachment; filename={os.path.basename(f)}")
         msg.attach(part)
 
+    if write_to:
+        with open(write_to + ".html", "w") as f:
+            f.write(body)
+        with open(write_to + ".eml", "w") as f:
+            f.write(msg.as_string())
+        logger.info(f"Email NOT sent: written to {write_to}.eml and {write_to}.html "
+                    f"(subject {msg['Subject']!r}, to {msg['To']})")
+        return True
+
     try:
         if creds:
             s = smtplib.SMTP(creds['server'], creds['port'])
@@ -2083,8 +2138,11 @@ def send_email_report(run_dir, run_command=None, run_duration=None, lst=None, da
         s.send_message(msg)
         s.quit()
         logger.info(f"Email sent to {msg['To']}")
+        sent = True
     except Exception as e:
         logger.error(f"Email failed: {e}")
+        sent = False
 
     # Post to Slack
     post_to_slack(run_dir, run_duration=run_duration)
+    return sent

@@ -332,6 +332,12 @@ class runner(_Section):
                           'curves --tier snapshot --cells {item}',
                           'catalog --tier snapshot --cells {item}'],
     }
+    # Closing steps of a chain (core/runner.py): run for every item once its chain has ended, whatever the outcome
+    # (done, refused, no-input, failed; not while it is queued for a retry), with the item's record path for {record};
+    # their exit codes are recorded and never change the item's status. The per-hour chain closes with the ONE email
+    # of the hour (Gregg 2026-11-12: "one email at the end of Phase 3 that is close to identical to the current one in
+    # what is included, just with the transient and forced photometry highlights added").
+    CHAIN_FINALLY = {'epoch': ['notify --epochs {item} --chain-record {record}']}
 
 
 class site(_Section):

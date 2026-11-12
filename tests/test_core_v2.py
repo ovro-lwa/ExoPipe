@@ -785,6 +785,51 @@ def test_item4_chain_steps_per_item():
             assert open(l2['log']).read().count('step 1/3') == 1
 
 
+def test_item4_chain_closing_steps_run_whatever_the_outcome():
+    """runner.CHAIN_FINALLY: the closing steps of a chain (the hour's email) run for a done item, a refused item and a
+    failed item, get the item's record path for {record}, find the chain's outcome in it, and never change the status;
+    an item queued for a retry gets none until its last attempt."""
+    import socket
+    from exopipe.phase3.core import runner
+    with Scratch('item4fin') as d:
+        good = os.path.join(d, 'good.csv')
+        late = os.path.join(d, 'late.csv')           # missing: step 2 refuses, the closing steps still run
+        open(good, 'w').write('a,b\n1,2\n')
+        chains = {'t5': ['verify --list --glob {item} --cores none', 'verify csv_table {item} --cores none'],
+                  't6': ['verify compare {item} --cores none'],                  # one root: exit 1 = error
+                  't7': ['verify --list --glob {item} --cores none']}            # no closing step configured
+        # closing step 1 fails on purpose (compare with one root: exit 1); closing step 2 still runs
+        fin = {'t5': ['verify compare {record} --cores none', 'verify --list --glob {record} --cores none'],
+               't6': ['verify --list --glob {record} --cores none']}
+        with runner_cfg(JOBS_ROOT=os.path.join(d, 'jobs'), CHAINS=chains, CHAIN_FINALLY=fin, POLL_S=1):
+            job = runner.submit(None, [], [good, late], [(socket.gethostname(), 1)], start=False, chain='t5')
+            assert len(runner.load_job(job)['chain_finally']) == 2
+            runner.worker(job)
+            for it, want, nsteps in ((good, 'done', 2), (late, 'refused', 2)):
+                st = runner.item_state(job, it)
+                rec_path = os.path.join(runner.job_dir(job), 'items', f'{runner._safe(it)}.json')
+                assert st['status'] == want and st['chain_status'] == want and len(st['steps']) == nsteps, st
+                assert [f['status'] for f in st['finally']] == ['error', 'done'], st['finally']
+                assert all(rec_path in f['argv'] and it not in f['argv'] for f in st['finally']), st['finally']
+                assert 'closing step 2/2 (chain %s)' % want in open(st['log']).read()
+            assert runner.job_state(job) == ('finished', {'done': 1, 'refused': 1})
+            # an error with one retry: no closing step after the first attempt, one after the last
+            job6 = runner.submit(None, [], [good], [(socket.gethostname(), 1)], start=False, chain='t6', retry=1)
+            runner._run_item(runner.load_job(job6), job6, good, {}, socket.gethostname(), 0)
+            st = runner.item_state(job6, good)
+            assert st['status'] == 'queued' and 'finally' not in st and 'chain_status' not in st, st
+            runner._run_item(runner.load_job(job6), job6, good, st, socket.gethostname(), 0)
+            st = runner.item_state(job6, good)
+            assert st['status'] == 'failed' and st['chain_status'] == 'failed' and st['attempts'] == 2, st
+            assert [f['status'] for f in st['finally']] == ['done'], st
+            # a chain without closing steps is unchanged
+            job7 = runner.submit(None, [], [good], [(socket.gethostname(), 1)], start=False, chain='t7')
+            assert runner.load_job(job7)['chain_finally'] == []
+            runner.worker(job7)
+            st = runner.item_state(job7, good)
+            assert st['status'] == 'done' and 'finally' not in st and 'chain_status' not in st, st
+
+
 def test_item4_submit_forwards_set_and_config():
     import socket
     from exopipe.phase3.core import runner
