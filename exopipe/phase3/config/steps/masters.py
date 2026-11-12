@@ -467,7 +467,16 @@ class masters_sublst(_Section):
     TEST_WINDOWS_PYTHON = 'py36'              # site PYTHON key of sublst_reserve_test_windows.py (catpub:21 PYD, :87)
     STACK_JOB_UNIT = 'two-jobs-I-then-V'      # B-76 default (b): the I and V stacker invocations stay separate; I runs first
     PARALLEL = dict(stack=4, loo=8)           # units at once in one process when --workers is not given
-                                              # (sublst_stack_pass.sh:8 NPAR; nocat:230 xargs -P 8)
+                                              # (sublst_stack_pass.sh:8 NPAR; nocat:230 xargs -P 8); for the stack stage
+                                              # only when the node's MemAvailable cannot be read (see STACK_MEM_GB)
+    # Stack units side by side under a MEMORY BUDGET when --workers is not given. Speed only: a unit's products do not depend
+    # on what runs beside it. A unit is one (night, subband): Stokes I then V, one stacker process at a time. The charge is
+    # the peak memory of ONE stacker process by image size, measured 2026-11-12 on 03h 2024-12-19 Stokes I with the frozen
+    # stacker (18 MHz: 13.0 GB, 51 s; 41 MHz: 28.6 GB, 136 s; 73 MHz: 51.0 GB, 233 s), rounded up; classes as
+    # lib/snapshot_engine/cell.band_class (low to 36 MHz, mid to 59 MHz, high).
+    STACK_MEM_GB = dict(low=14, mid=30, high=53)
+    STACK_MEM_FRACTION = 0.8                  # of the node's MemAvailable when the stage starts (as the snapshot cell driver)
+    STACK_MAX_UNITS = 6                       # every unit reads its cube from Lustre: at most 6 Lustre-heavy workers (REVIEW.md)
     # ---- content tests (lib/masters/tests_sublst.py) ----------------------------------------------------------------------
     # Production content test (a) (catpub:87): windows = frames x stated factors on a seeded sample of n (night, subband) cells.
     WINDOW_SAMPLE_TEST = dict(n=3, seed='')   # sublst_reserve_test_windows.py --n / --seed defaults (its :23)

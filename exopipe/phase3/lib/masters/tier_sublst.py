@@ -439,14 +439,68 @@ def pool_map(fn, items, workers, run=None, name_of=None):
             try:
                 f.result()
             except Exception as e:
-                say(f'  unit error: {type(e).__name__}: {str(e)[:300]}')
-                name = name_of(it) if (run is not None and name_of) else None
-                if name and not any(u.name == name for u in run.units):
-                    try:
-                        with run.unit(name):
-                            raise e
-                    except Exception:
-                        pass
+                _unit_error(e, it, run, name_of)
+
+
+def _unit_error(e, it, run, name_of):
+    """An item's exception, as pool_map and budget_map treat it: printed, and recorded as the item's unit when the unit had
+    not opened yet."""
+    say(f'  unit error: {type(e).__name__}: {str(e)[:300]}')
+    name = name_of(it) if (run is not None and name_of) else None
+    if name and not any(u.name == name for u in run.units):
+        try:
+            with run.unit(name):
+                raise e
+        except Exception:
+            pass
+
+
+def stack_band_class(sb):
+    """Image-size class of a subband, as lib/snapshot_engine/cell.band_class: 'low' to 36 MHz, 'mid' to 59 MHz, 'high'."""
+    f = int(str(sb)[:-3])
+    return 'low' if f <= 36 else ('mid' if f <= 59 else 'high')
+
+
+def mem_available_gb():
+    """This node's MemAvailable in GB; 0 when it cannot be read."""
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    return int(line.split()[1]) // 2 ** 20
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of=None):
+    """fn(item) for every item, side by side while the memory charges (GB) of the running items fit in mem_budget_gb and at
+    most max_units run (lib/snapshot_engine/schedule.Scheduler; threads: every unit's work is a child process). Speed only:
+    what an item computes does not depend on what runs beside it. The item with the largest charge starts first (it is
+    also the longest), the caller's order within a charge; a smaller item starts beside it as soon as it fits. A budget
+    below the largest single charge means ONE item at a time (said in the log): nothing is refused for memory, and nothing
+    runs beside an item the budget cannot hold. Errors as in pool_map: printed, recorded as the item's unit if that had
+    not opened, and the others go on."""
+    from exopipe.phase3.lib.snapshot_engine.schedule import Scheduler
+    if not items:
+        return
+    charges = [float(charge_of(it)) for it in items]
+    budget, cap = float(mem_budget_gb), max(1, int(max_units))
+    if budget < max(charges):
+        say(f'  memory budget {budget:g} GB is below the largest unit charge {max(charges):g} GB: one unit at a time')
+        budget, cap = max(charges), 1
+    sch = Scheduler({'mem_gb': budget, 'units': cap}, stop_on_failure=False)
+
+    def one(it):
+        try:
+            fn(it)
+        except Exception as e:
+            _unit_error(e, it, run, name_of)
+        return 0
+
+    for i in sorted(range(len(items)), key=lambda k: -charges[k]):          # stable: the caller's order within a charge
+        sch.add(str(i), run=(lambda it=items[i]: one(it)), needs={'mem_gb': charges[i], 'units': 1})
+    sch.run()
 
 
 def exclusion_readers_agree(lst, scope, nights):
@@ -1131,8 +1185,18 @@ def stage_stack(run, opts, sel, root, planned_now=False, lst_test=True):
                 say(f'    WOULD REFUSE (G-S01): {n_old} unit(s) with earlier products under {root} (no --fresh --supersede)')
             bad += bool(n_miss or n_old)
             continue
-        pool_map(lambda x: _stack_unit(run, opts, root, lst, x[0], x[1], x[2], x[3], files), units,
-                 opts.workers or s.PARALLEL['stack'], run, lambda x: stack_unit_name(lst, x[0].split('_', 1)[1], x[1]))
+        _unit = lambda x: _stack_unit(run, opts, root, lst, x[0], x[1], x[2], x[3], files)          # noqa: E731
+        _name = lambda x: stack_unit_name(lst, x[0].split('_', 1)[1], x[1])                          # noqa: E731
+        _avail = 0 if opts.workers else mem_available_gb()
+        if opts.workers or not _avail:
+            # --workers N: that many units at once, whatever their memory (as before); also when MemAvailable is unreadable
+            pool_map(_unit, units, opts.workers or s.PARALLEL['stack'], run, _name)
+        else:
+            _budget = int(s.STACK_MEM_FRACTION * _avail)
+            say(f'[sublst stack {lst}] {len(units)} units, at most {int(s.STACK_MAX_UNITS)} at once within {_budget} GB '
+                f'({s.STACK_MEM_FRACTION:g} of the {_avail} GB available; per unit {dict(s.STACK_MEM_GB)} GB)')
+            budget_map(_unit, units, lambda x: s.STACK_MEM_GB[stack_band_class(x[1])], _budget, s.STACK_MAX_UNITS,
+                       run, _name)
         if lst_test and any(u.name.startswith(f'stack_{lst}_') and u.status == 'done' for u in run.units):
             lst_test_unit(run, lst, root, files)
     return bad
@@ -1165,7 +1229,8 @@ def stack_night(run, lst, night, sublst_root=None, subbands=None, stokes=('I', '
     lst, night   '09h', '2024-12-29'
     sublst_root  the sub-LST product root (default run.out_root); must lie under run.out_root (supersede moves)
     subbands     subset of instrument.ALL_SUBBANDS (default all); stokes ('I', 'V') or one of them
-    workers      stack units at once (default masters_sublst.PARALLEL['stack'])
+    workers      stack units at once; default: as many as fit the memory budget (masters_sublst.STACK_MEM_GB,
+                 STACK_MEM_FRACTION), at most masters_sublst.STACK_MAX_UNITS
     fresh, supersede, resume   as the common flags (--fresh --supersede TAG moves earlier products; --resume by record)
     Returns {'admit_unit', 'stack_units', 'jobs', 'left_out', 'would_refuse'} ('jobs'/'left_out' from the admit record;
     'would_refuse' counts dry-run refusals). Raises record.Refusal (dry run too) when an in-place literal differs from its
