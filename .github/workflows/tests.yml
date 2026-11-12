@@ -34,6 +34,8 @@ jobs:
         run: python tests/test_products_grammar_sync.py
       - name: search engine speed-ups change no product
         run: python tests/test_search_speedups.py
+      - name: Phase 2 speed-ups change no product
+        run: python tests/test_phase2_speedups.py
       - name: snapshot engine speed-ups change no product
         run: python tests/test_snapshot_engine.py
       - name: snapshot cell scheduler and driver plan

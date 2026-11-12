@@ -228,8 +228,8 @@ def extract_sources(image_path, logger):
 # The cascade extracts each subband's dewarped hour image (dewarp_subband, step 9). The 10-minute stage needs the
 # catalog of that same file as its reference and used to extract it a second time, one subband after another
 # (15 extractions, ~5 minutes per LST hour, for the same catalog). The cascade's result is kept here instead. The key
-# is the file (path, size, modification time) AND every extraction setting, so a file or a setting that differs is
-# extracted afresh exactly as before. P2_REUSE_CASCADE_CATALOGS=0 switches the reuse off.
+# is the file (path, size, modification time) AND every setting extract_sources reads, so a file or a setting that
+# differs is extracted afresh exactly as before. P2_REUSE_CASCADE_CATALOGS=0 switches the reuse off.
 _DEWARPED_CATALOGS = {}
 
 
@@ -237,7 +237,7 @@ def _catalog_key(image_path):
     st = os.stat(image_path)
     return (os.path.abspath(image_path), st.st_size, st.st_mtime_ns,
             ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS,
-            cfg.BDSF_THRESH_PIX, cfg.BDSF_THRESH_ISL)
+            cfg.BDSF_THRESH_PIX, cfg.BDSF_THRESH_ISL, os.environ.get('BDSF_NCORES'))
 
 
 def _remember_catalog(image_path, df):
