@@ -491,6 +491,41 @@ def test_restore_marker():
        i == 10 and a[i + 1] == '/t/restore.json' and '--curve-constants-restore' not in P.Ctx.chainargs(ns), a[:12])
 
 
+def test_from_copied_run():
+    """Speed-up session finding 2026-11-13 (ledger FINDING-20261113-V2-TENMIN-CHAIN-PARTIAL-RUN-RESTORES-INTO-THE-RECORDED-PATH):
+    a stage record names its outputs by absolute path, so after `cp -a A B` a `--from` in B restored A/master_catalog.csv.
+    check_from now refuses a record naming a path outside its run directory; in the source directory it still restores."""
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.catalog import tier_sublst as S
+    A, B = f'{T}/copied_run/A', f'{T}/copied_run/B'
+    stages = ('merge', 'tier-rules', 'conform')
+    rd = f'{A}/_records/catalog/14h_B'
+    os.makedirs(f'{rd}/stage_merge', exist_ok=True)
+    open(f'{A}/master_catalog.csv', 'w').write('cand_id\nV1\nV2\nV3\n')            # what the merge stage wrote
+    shutil.copy2(f'{A}/master_catalog.csv', f'{rd}/stage_merge/master_catalog.csv')
+    fps = {f'{A}/master_catalog.csv': record.fingerprint(f'{A}/master_catalog.csv')}
+    record.atomic_write_json(record.record_path(A, 'catalog', '14h_B.merge'),
+                             {'status': 'done', 'unit': '14h_B.merge', 'meta': {'output_fingerprints': fps}})
+    open(f'{A}/rejected.csv', 'w').write('cand_id\nV2\n')
+    tr = {f'{A}/rejected.csv': record.fingerprint(f'{A}/rejected.csv')}
+    record.atomic_write_json(record.record_path(A, 'catalog', '14h_B.tier-rules'),
+                             {'status': 'done', 'unit': '14h_B.tier-rules', 'meta': {'output_fingerprints': tr}})
+    open(f'{A}/master_catalog.csv', 'w').write('cand_id\nV1\n')                     # a later stage rewrote it in place
+    subprocess.run(['cp', '-a', A, B], check=True)
+    before = open(f'{A}/master_catalog.csv', 'rb').read(), os.stat(f'{A}/master_catalog.csv').st_ctime_ns
+    try:
+        S.check_from(B, '14h_B', stages, 2, f'{B}/_records/catalog/14h_B', ('master_catalog.csv',))
+        refused = ''
+    except record.Refusal as e:
+        refused = str(e)
+    after = open(f'{A}/master_catalog.csv', 'rb').read(), os.stat(f'{A}/master_catalog.csv').st_ctime_ns
+    ok('--from in a copied run directory refuses (its records name the source directory) and leaves the source untouched',
+       f'names {A}/' in refused and 'outside' in refused and after == before, (refused[:300], before[0], after[0]))
+    notes = S.check_from(A, '14h_B', stages, 2, rd, ('master_catalog.csv',))
+    ok('--from in the source directory still restores the in-place file from the stage copy',
+       any('restored' in n for n in notes) and open(f'{A}/master_catalog.csv').read() == 'cand_id\nV1\nV2\nV3\n', notes)
+
+
 def write_snapshot_run(run, cells):
     os.makedirs(f'{run}/candidates/Red/rank0001_Red_J0000+0000', exist_ok=True)
     json.dump({'cells': cells, 'prefit': {'n_without_fit': 0, 'n_at_per_frame_fit_step': 3}, 'n_served_with_unfitted_frames': 0,
@@ -1019,6 +1054,7 @@ def main():
         test_ported_sublst_floor_fitted()
         test_ported_snapshot()
         test_restore_marker()
+        test_from_copied_run()
         test_content_tests()
         stub = build_stubs()
         site = make_site(stub)

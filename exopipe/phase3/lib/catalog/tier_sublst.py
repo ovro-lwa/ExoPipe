@@ -437,7 +437,18 @@ def check_from(out_root, unit_prefix, stages, first, recdir, in_place=(), ok_sta
     if r.get('status') not in ok_status:
         refuse(f'--from {stages[first]}: the previous stage {prev} is {r.get("status")} ({r.get("reason")})')
     notes = []
+    root = os.path.abspath(out_root) + os.sep
+
+    def _inside(p, unit):
+        # a record names its outputs by absolute path: a copied run directory keeps its source's paths, and a check or a
+        # restore through them would read or rewrite the source (speed-up session finding 2026-11-13)
+        if not os.path.abspath(p).startswith(root):
+            refuse(f'--from {stages[first]}: the record of {unit} names {p}, outside {out_root} (a copied run directory '
+                   f'keeps the paths of the one it was copied from); run the chain in this directory from its first stage')
+        return p
+
     for p, fp in ((r.get('meta') or {}).get('output_fingerprints') or {}).items():
+        _inside(p, prev)
         if os.path.basename(p) in in_place:
             continue
         if not rec.same_fingerprint(fp, rec.fingerprint(p)):
@@ -449,7 +460,7 @@ def check_from(out_root, unit_prefix, stages, first, recdir, in_place=(), ok_sta
             hit = [p for p in fps if os.path.basename(p) == name]
             if not hit:
                 continue
-            p, fp = hit[0], fps[hit[0]]
+            p, fp = _inside(hit[0], f'{unit_prefix}.{st}'), fps[hit[0]]
             if rr.get('status') != 'done':
                 refuse(f'--from {stages[first]}: {name} was last written by {unit_prefix}.{st}, whose record is '
                        f'{rr.get("status")}')
