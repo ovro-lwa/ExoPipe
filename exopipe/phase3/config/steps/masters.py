@@ -438,6 +438,12 @@ class masters_sublst(_Section):
     QA3_ADMIT_FLOOR = 0.1                     # deep record qa3_scale must exceed this (stack:232; nocat:160) - admission only since Q10
     TIER_RULE4_RANGE = (0.33, 3.0)            # tier rule 4: degenerate-flatDC with qa3_scale outside -> refused (rules:151); B-21 default (a)
     MIN_USABLE_FRAMES = 10                    # frames passing the blank, beam and night gates (stack:353; nocat:181)
+    # the non-member nights list, under paths.OPS_ROOT (loo:39 NONMEMBER_FILE; Gregg 2026-11-11 'approved', ledger
+    # R-GREGG-20261111-TENMIN-DEC18-27-NONMEMBER-NIGHTS-OPTION-B-PRIME): 'LST NIGHT' per line. A listed night WITHOUT a usable
+    # qa3_scale in the frozen deep weights is admitted to the stack as a non-member (weight 0: never a window-Master
+    # constituent; the stacker measures its flux scale itself) instead of being left out (nocat:177, stack:234-239). The
+    # stacker, the leave-one-out stage, refine and the tree builder read the same file in place: it is the ONE switch
+    NONMEMBER_NIGHTS_FILE = 'sublst_nonmember_nights.txt'
     FLUXDC_WAIT_S = 14400                     # s, a V job waits this long for its night's I flux_dc record (stack:279, env
                                               # SUBLST_FLUXDC_WAIT_S); the unit runs I before V, so the wait never triggers (B-76 (b))
     PRODUCT_CARD = 'sublst-v0-test'           # PRODUCT card of every window (stack:450); B-29 default (b)
@@ -527,7 +533,7 @@ class masters_sublst(_Section):
         # mirrors of literals in the in-place code
         'WINDOW_MIN', 'N_WINDOWS', 'BEAM_AREA_MAX', 'NOISE_K', 'BLANK_FINITE_MIN', 'QA3_ADMIT_FLOOR', 'TIER_RULE4_RANGE',
         'MIN_USABLE_FRAMES', 'PRODUCT_CARD', 'INTEGRATION_S', 'LOO_MIN_WEIGHTED_NIGHTS', 'PER_NIGHT_MIN', 'WINDOW_COADDOP',
-        'JUPITER_MASK_RADIUS_BEAMS')
+        'JUPITER_MASK_RADIUS_BEAMS', 'NONMEMBER_NIGHTS_FILE')
     RULED = {'FROZEN_RECORDS_DIR': 'IMPLEMENTED-RULINGS-A-B-20261008-SUBLST-FLOWREF-AND-MEMBERSHIP-VETOES',
              'MEMBERSHIP_VETO_PIN_MD5': 'IMPLEMENTED-RULINGS-A-B-20261008-SUBLST-FLOWREF-AND-MEMBERSHIP-VETOES',
              'DEEP_SEARCH_PIN': 'RULINGS-GREGG-20261008-TIER3-FREEZE-B2-RECHAIN-LABELS',
@@ -536,6 +542,7 @@ class masters_sublst(_Section):
              'MIN_USABLE_FRAMES': 'IMPLEMENTED-SUBLST-JOB-BUILDER-RULE-REFUSALS-AND-DEEPFLOW-CUBES-20261011',
              'DEEPFLOW_CUBES_DIR': 'IMPLEMENTED-SUBLST-JOB-BUILDER-RULE-REFUSALS-AND-DEEPFLOW-CUBES-20261011',
              'PER_NIGHT_MIN': 'IMPLEMENTED-Q11-PER-NIGHT-LEAVE-ONE-OUT-RULE-AND-COUNTS',
+             'NONMEMBER_NIGHTS_FILE': 'R-GREGG-20261111-TENMIN-DEC18-27-NONMEMBER-NIGHTS-OPTION-B-PRIME',
              'JUPITER_MASK_RADIUS_BEAMS': 'RULING-MOVING-JUPITER-MASK-IN-MASTERS',
              'PRODUCT_CARD': 'IMPLEMENTED-Q10-DEEP-FLUX-SCALE-BAKED-AND-Q1-FRAME-TIME-IN-10MIN-STACKS',
              'INTEGRATION_S': 'IMPLEMENTED-Q10-DEEP-FLUX-SCALE-BAKED-AND-Q1-FRAME-TIME-IN-10MIN-STACKS'}

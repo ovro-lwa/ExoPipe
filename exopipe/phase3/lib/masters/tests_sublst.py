@@ -28,6 +28,9 @@ on a production file with no context (``exopipe3 verify <class> <file>``); the s
                           per hour): the Master's record does not weight the night, LOONCOAD = the Master's weighted nights,
                           the residual cards, and the pixel identity residual = float32(stack - installed Master), EXACT
                           (bit for bit; NaN exactly where the stack or the Master is NaN); the night not excluded now
+  sublst_nonmember_list_record  _plans/nonmember_list_<LST>_<night>.json (lib/masters/sublst_nonmember.list_night, per hour):
+                          the decision's fields; 'append' / 'already-listed' = a subband needed the list and the night is on
+                          the list NOW (the readers' parser); 'not-needed' = every subband read was usable or excluded
   sublst_window_sample    the <LST> directory: production content test (a), sublst_reserve_test_windows.py, in place
 The sub-LST parent catalogues are class master_catalog (lib/masters/tests.py, shared with the deep tier). Wideband windows and
 production content test (b) (sublst_reserve_test_residuals.py) are frames' classes (refactor decision 6, crosscheck 1.1 #3, #13).
@@ -246,6 +249,39 @@ def plan_well_formed(path, lst=None, **ctx):
     if half:
         problems.append(f'{len(half)} (cell, subband) without both Stokes, e.g. {half[0]}')
     return _verdict(problems, len(lines), f'{len(lines)} jobs, {len(pairs)} (cell, subband)')
+
+
+@content_test('sublst_nonmember_list_record')
+def nonmember_list_record(path, **ctx):
+    """The decision record of the nonmember-list step against its own fields and the list as it is now."""
+    try:
+        with open(path) as f:
+            m = json.load(f)
+    except (OSError, ValueError) as e:
+        return False, None, f'unreadable decision record: {e}'
+    problems = [f'no {k}' for k in ('lst', 'night', 'list', 'action', 'reason', 'utc', 'subbands') if k not in m]
+    if problems:
+        return _verdict(problems, None, '')
+    sbs = m['subbands']
+    need = [s.get('subband') for s in sbs if not s.get('excluded') and not s.get('usable')]
+    if m['action'] not in ('append', 'already-listed', 'not-needed'):
+        problems.append(f'unknown action {m["action"]!r}')
+    elif m['action'] == 'not-needed':
+        if need:
+            problems.append(f'recorded as not needed with {len(need)} subband(s) lacking a usable qa3_scale, e.g. {need[0]}')
+    else:
+        if not need:
+            problems.append('the night was listed although no subband read lacks a usable qa3_scale')
+        on = False
+        try:
+            for ln in open(m['list']):                       # the parser of production's readers (phase3_sublst_loo)
+                p = ln.split()
+                on = on or (len(p) >= 2 and not ln.startswith('#') and p[0] == m['lst'] and p[1] == m['night'])
+        except OSError as e:
+            problems.append(f'the list {m["list"]} cannot be read: {e}')
+        if not on and not problems:
+            problems.append(f'{m["lst"]} {m["night"]} is not on {m["list"]} now')
+    return _verdict(problems, len(sbs), f'{m["action"]}: {len(sbs)} subband(s) read, {len(need)} without a usable qa3_scale')
 
 
 # =====================================================================================================================
@@ -477,7 +513,6 @@ def _vetoed(lst, band, night):
     return membership_vetoed(lst, band, night)
 
 
-@content_test('sublst_window_master')
 def master_record_problems(h, rows, k):
     """A window Master's header against its own weights record ``rows`` [(night, weight)], no other file read: COADDOP;
     LSTWIN = window k; NCOADD = the weighted nights, at least LOO_MIN_WEIGHTED_NIGHTS of them, of at least 2 listed;
@@ -510,10 +545,13 @@ def master_record_problems(h, rows, k):
     return problems
 
 
+@content_test('sublst_window_master')
 def window_master_record(path, lst=None, subband=None, **ctx):
     """COADDOP; NCOADD = weighted nights >= LOO_MIN_WEIGHTED_NIGHTS; CONSTDIG = md5 of the sorted night list; HISTORY lists
     the weighted nights as constituents and the others as NOT in the Master; weights = the frozen deep record (in_master 0
-    or a membership veto -> 0; phase3_sublst_loo.py:67-78); no night excluded in data_decisions.csv carries weight."""
+    or a membership veto -> 0; phase3_sublst_loo.py:67-78), plus the nights of the non-member nights list that have no
+    frozen row at weight 0 (phase3_sublst_loo.py:97-98: the batch Master step records them so); no night excluded in
+    data_decisions.csv carries weight."""
     from exopipe.phase3.core import exclusions
     s = _sec()
     m = _MASTER_RE.match(os.path.basename(path))
@@ -538,6 +576,8 @@ def window_master_record(path, lst=None, subband=None, **ctx):
                     else float(r['weight'])
             except (KeyError, ValueError, TypeError):
                 pass
+        for n in _T_mod().nonmember_nights(lst) - set(want):        # listed, no frozen row: weight 0 (loo.py:97-98)
+            want[n] = 0.0
         off = [n for n, w in rows if n not in want or abs(w - want[n]) > 1e-9 * max(1.0, abs(w))]
         if off:
             problems.append(f'{len(off)} night weight(s) != the frozen deep record, e.g. {off[0]}')

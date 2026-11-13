@@ -142,6 +142,26 @@ def frozen_masters():
     return cfg().masters_snapshot.FROZEN_ROOT
 
 
+def nonmember_file():
+    """The non-member nights list (phase3_sublst_loo.NONMEMBER_FILE, mirror-checked): the ONE switch the in-place stacker,
+    leave-one-out stage, refine and tree builder read."""
+    return os.path.join(cfg().paths.OPS_ROOT, _sec().NONMEMBER_NIGHTS_FILE)
+
+
+def nonmember_nights(lst):
+    """Nights of ``lst`` listed as non-members (phase3_sublst_loo.nonmember_nights, line for line: 'LST NIGHT' per line,
+    '#' lines skipped; no file = no night). A listed night without a usable qa3_scale in the frozen deep weights of a
+    subband is stacked there as a non-member; where it HAS one, the listing changes nothing."""
+    out = set()
+    path = nonmember_file()
+    if os.path.exists(path):
+        for ln in open(path):
+            p = ln.split()
+            if len(p) >= 2 and not ln.startswith("#") and p[0] == lst:
+                out.add(p[1])
+    return out
+
+
 def master_path(lst, sb):
     """The frozen gen-4 I Taper R0 master the cubes were flowed to (phase3_sublst_stack.MASTER_PATH)."""
     return os.path.join(frozen_masters(), f'{lst}_{sb}', 'coadd_final', f'I_deep_Taper_R0_{sb}.fits')
@@ -221,6 +241,8 @@ MIRRORS = [
      r'^COADD_FROZEN = "([^"]+)"', str),
     ('masters_snapshot.FROZEN_ROOT', lambda s: frozen_masters(), 'stack', r'^MASTER_PATH = "([^"{]+)/\{lst\}', str),
     ('masters_sublst.N_WINDOWS', lambda s: s.N_WINDOWS, 'loo', r'for k in range\((\d+)\):', int),
+    ('the non-member nights list (paths.OPS_ROOT + masters_sublst.NONMEMBER_NIGHTS_FILE)', lambda s: nonmember_file(), 'loo',
+     r'^NONMEMBER_FILE = "([^"]+)"', str),
     ('masters_sublst.LOO_MIN_WEIGHTED_NIGHTS', lambda s: s.LOO_MIN_WEIGHTED_NIGHTS, 'loo',
      r'if sum\(1 for x in w if x > 0\) < (\d+) or', int),
     ('masters_sublst.PER_NIGHT_MIN', lambda s: s.PER_NIGHT_MIN, 'loo', r'if n_loo < (\d+):', int),
@@ -1097,9 +1119,11 @@ def stage_prep(run, opts, sel, root):
 # stage: admit  (port of the job-list heredoc, sublst_run_lst_nocat.sh:82-186)
 # =====================================================================================================================
 
-def admit_plan(lst, cells, subbands_=None):
+def admit_plan(lst, cells, subbands_=None, nonmember=None):
     """(jobs on the main cube root, jobs on the deep-flow cubes, left-out reasons) for the cells of one LST: the heredoc of
-    sublst_run_lst_nocat.sh:82-186 line for line. Changes, all value-identical: roots and floors from config (mirror-checked
+    sublst_run_lst_nocat.sh:82-186 line for line. ``nonmember``: a list that receives '<cell> <sb>' of every job admitted
+    as a NON-MEMBER (a night of the non-member list without a usable qa3_scale in the frozen deep weights; nocat:177,
+    Gregg 2026-11-11) - a record for the caller, the job lines are production's. Changes, all value-identical: roots and floors from config (mirror-checked
     against the stacker); the co-add's exclusion reader from its moved home (lib/masters/coadd); BEAM_AREA_MAX from config
     instead of `from phase3_sublst_stack import` (mirror-checked; avoids the stacker's sys.path insertion of the production
     package). clv15 phase3_snapshot_cube, phase3_snapshot_search.night_verdict and phase3_tier_rules.flux_scale_failed are
@@ -1169,6 +1193,7 @@ def admit_plan(lst, cells, subbands_=None):
 
     SBS = list(subbands_) if subbands_ else list(subbands())
     out, outd, drop = [], [], []
+    nonmem = nonmember_nights(lst)
     for c in cells:
         night = c.split("_", 1)[1]
         for sb in SBS:
@@ -1186,7 +1211,8 @@ def admit_plan(lst, cells, subbands_=None):
                             dc = None
             except OSError:
                 dc = None
-            if dc is None or not (dc == dc) or dc <= s.QA3_ADMIT_FLOOR:
+            no_scale = dc is None or not (dc == dc) or dc <= s.QA3_ADMIT_FLOOR
+            if no_scale and night not in nonmem:            # non-member nights admitted (Gregg 2026-11-11; nocat:177)
                 drop.append("%s %s (no usable qa3_scale in the deep co-add record)" % (c, sb))
                 continue
             fsf = flux_scale_failed(lst, night, sb)
@@ -1208,6 +1234,8 @@ def admit_plan(lst, cells, subbands_=None):
                                 % (c, sb, nu, nt))
                     continue
             (out if root == CUBES else outd).extend("%s %s %s" % (c, sb, S) for S in ("I", "V"))
+            if no_scale and nonmember is not None:
+                nonmember.append("%s %s" % (c, sb))
     return out, outd, drop
 
 
@@ -1285,9 +1313,13 @@ def stage_admit(run, opts, sel):
             if problems or not cells:
                 bad += 1
                 continue
-            main, deep, drop = admit_plan(lst, cells, sel.subbands)
+            nm = []
+            main, deep, drop = admit_plan(lst, cells, sel.subbands, nm)
             say("    job list: %d jobs (+ %d on the deep-Master re-flow cubes); left out: %s"
                 % (len(main), len(deep), "; ".join(drop) or "none"))
+            if nm:
+                say("    admitted as NON-MEMBER (listed in %s, no usable qa3_scale in the frozen deep weights): %s"
+                    % (nonmember_file(), "; ".join(nm)))
             _compare_plan(opts, main, deep, cells)
             if not (main or deep):
                 say('    NO-INPUT (G-S03): every (cell, subband) left out by rule - nothing to stack (exit 3)')
@@ -1306,17 +1338,21 @@ def stage_admit(run, opts, sel):
                 ex, _ = exclusion_readers_agree(lst, sb, nights)
             u.set_admitted([f'{n}/{sb}' for n in nights for sb in sel.subbands if not ex.is_excluded(lst, sb, n)])
             for p in pins + [frozen_weights(lst, sb) for sb in sel.subbands] + [cfg().paths.DATA_DECISIONS,
-                                                                                 solar_audit_path()]:
+                                                                                 solar_audit_path(), nonmember_file()]:
                 if os.path.exists(p):
                     u.add_input(p)
             for c in cells:
                 u.add_input(os.path.join(cube_root(), c, 'MANIFEST.txt'))
-            main, deep, drop = admit_plan(lst, cells, sel.subbands)
+            nm = []
+            main, deep, drop = admit_plan(lst, cells, sel.subbands, nm)
             summary = ("job list: %d jobs (+ %d on the deep-Master re-flow cubes); left out: %s"
                        % (len(main), len(deep), "; ".join(drop) or "none"))
             say(f'  {name}: {summary[:300]}')
             u.note(summary)
-            u.meta.update(left_out=drop, subbands=list(sel.subbands))
+            u.meta.update(left_out=drop, subbands=list(sel.subbands), nonmember=nm)
+            if nm:
+                u.note("admitted as NON-MEMBER (listed in %s, no usable qa3_scale in the frozen deep weights; weight 0, "
+                       "never a window-Master constituent): %s" % (nonmember_file(), "; ".join(nm)))
             if not (main or deep):          # production goes on with 0 jobs (nocat:210 'na -ge NJ'): nothing to do, not a refusal
                 raise NoInput(f'G-S03: every (cell, subband) of {key} left out by rule: ' + '; '.join(drop[:10]))
             os.makedirs(os.path.dirname(jf), exist_ok=True)
@@ -1403,6 +1439,21 @@ def stack_inputs(lst, cell, sb, croot):
     return cubes, master_path(lst, sb), frozen_weights(lst, sb)
 
 
+def pb_cache_env(work=None):
+    """Environment of the in-place stacker for its primary-beam window cache. Production's pb_apply.window_model_pb keeps a
+    node-local cache (P3_PB_WINDOW_CACHE, default /fast/gh/main/phase3/pb_window_cache; node-local, never Lustre) and saves
+    a window there the first time a node computes it. In a parity run that directory is outside the write guard's roots,
+    so a window not yet cached on the node was refused at the save (02h 2024-12-24, 55 and 82 MHz on lwacalim07,
+    2026-11-13). The cache holds the float32 array the function returns when it computes (a pure function of subband,
+    window and beam directory), so a parity run's own cache changes no product; it lives under the node-local scratch root
+    (core.fitsio.scratch_root: --work or the site's SCRATCH_ROOT, refused on Lustre), which the write guard allows, and
+    never under --out (which may be on Lustre). {} outside a parity run: production's directory, as before."""
+    from exopipe.phase3.core import fitsio, guard
+    if not guard.active():
+        return {}
+    return {'P3_PB_WINDOW_CACHE': os.path.join(fitsio.scratch_root(work), 'pb_window_cache')}
+
+
 def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
     from exopipe.phase3.core import exclusions
     s = _sec()
@@ -1429,7 +1480,7 @@ def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
             u.plan(stack_products(root, lst, cell, sb, S)['admission'], 'sublst_admission')
         if 'I' in stokes:
             u.plan(stack_products(root, lst, cell, sb, 'I')['fluxdc'], 'sublst_fluxdc_record')
-        env = {'SUBLST_FLUXDC_WAIT_S': s.FLUXDC_WAIT_S}
+        env = dict({'SUBLST_FLUXDC_WAIT_S': s.FLUXDC_WAIT_S}, **pb_cache_env(getattr(opts, 'work', None)))
         for S in ('I', 'V'):
             if S not in stokes:
                 continue
