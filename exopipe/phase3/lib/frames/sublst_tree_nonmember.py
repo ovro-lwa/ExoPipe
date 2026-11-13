@@ -18,14 +18,19 @@ This unit writes exactly that, and nothing else: it reads the night's own residu
 headers, the band's frames.csv and the PB_bin maps of the night's windows; no other night's file. The result is the tree
 the builder writes from the same inputs (frames.csv byte for byte, the same links, PB_bin files byte for byte).
 
-Unit of work: one (LST hour, band, night): unit <LST>_tree-nonmember_<band>_<night>. It is idempotent: a night that is
+Unit of work: one (LST hour, band, night): unit <LST>_tree-nonmember_<band>_<night>, for EVERY band of the selection (a
+band without an x2 residual of the night refuses T-3; it is never left out silently). It is idempotent: a night that is
 presented already, with these residuals, writes nothing. With --resume a unit is skipped when the night is presented
 and its record is valid for today's inputs (the record of the run that wrote stays); it is never skipped otherwise.
-It writes in the order links, frames.csv, PB_bin headers; a run interrupted after frames.csv leaves the night's rows with
-PBNNIGHT one short, and the next run of the same unit completes exactly that. One writer per band's tree at a time: the
-lease <tree>/.leases/<LST>_<band> (the Lease class of lib/search/tier_sublst.py), which the batch stage `tree` takes too.
-Production's own chain (sublst_run_lst_nocat.sh) runs the builder without it: never run this unit on a tree that chain
-is rebuilding.
+It writes in the order frames.csv, links, PB_bin headers. The search lists its epochs from the links
+(lib/search/tier_sublst._windows), so a link never exists without its row: a run interrupted after frames.csv leaves
+rows without a link, or a map with PBNNIGHT one short, and the next run of the same unit completes exactly that; a run
+interrupted before frames.csv is replaced leaves the tree as it was. One writer per band's tree at a time: the lease
+<tree>/.leases/<LST>_<band> (the Lease class of lib/search/tier_sublst.py), which the batch stage `tree` takes too.
+Production's own chain (sublst_run_lst_nocat.sh) runs the builder without it, and the search does not take it: never run
+this unit on a tree that chain is rebuilding or a search is reading.
+The unit reads the night's inputs under this root (--out) only, in the dry run and in the run: --sublst-mirror, which
+links production's inputs of every night for the batch stage, does not apply to it.
 
 Inputs (read only): <root>/<LST>_x2/<LST>_<night>/<band>/<S>/sublst_<LST>_<night>_<band>_<S>_w<k>_resid_loo.fits (S = I,
 V), <root>/<LST>/<LST>_<night>/<band>/I/sublst_<LST>_<night>_<band>_I_w<k>_pb.fits, the frozen deep weights of the band,
@@ -37,8 +42,9 @@ Failure modes (exit 2 = refused; every gate is checked before anything is writte
   T-1  the (LST hour, band, night) is excluded in data_decisions.csv, by the 10-minute tier's read of the night (the
        frames tier's reader, core.exclusions.for_tier('sublst'): the builder's own per-night read, tree:98-108).
   T-2  the night has a co-add weight above 0 in the band (a member changes the PB_bin pixels: the batch stage `tree`),
-       or no weight at all (not in the frozen deep weights and not on the non-member nights list).
-  T-3  no x2 residual of the night, or no window with both Stokes.
+       or no weight at all (not in the frozen deep weights and not on the non-member nights list), or the band has no
+       frozen deep weights file (the builder fails on it).
+  T-3  no x2 residual of the night in the band, or no window with both Stokes.
   T-4  a residual without LSTBIN or DURATION, or with BINMSTR (the builder's refusal).
   T-5  a presented window without the night's window primary-beam map.
   T-6  the band has no tree to add to (no frames.csv, a frames.csv without rows or with other columns, NO_WINDOWS.txt):
@@ -47,6 +53,8 @@ Failure modes (exit 2 = refused; every gate is checked before anything is writte
   T-8  a window of the night without a PB_bin map, with a PB_bin that is not a weighted mean (only non-member nights so
        far: one more would change its pixels), of another shape, or whose PBNNIGHT is not the Stokes I rows of the window
        in frames.csv (one short is accepted when the night's rows are in already: the interrupted run above).
+  T-9  another night in the band's frames.csv is excluded in data_decisions.csv now (the tree is older than the
+       exclusion; the builder would drop that night): the batch stage rebuilds, nothing is added to such a tree.
   S-G8 the x2 refine of the band is not complete (its log), as the batch stage.
 """
 import csv
@@ -63,7 +71,8 @@ PBSRC_WEIGHTED = ('sub-LST window PB, night-weighted mean', 'phase3_sublst_tenmi
 PBNNIGHT_COMMENT = 'nights averaged'
 LEASE_SUBDIR = '.leases'    # <tree>/.leases/<LST>_<band>: beside the tree it guards, outside every '<LST>_*' listing
 LEASE_POLL_S = 2            # s between attempts to take the band tree's writer lease (the unit holds it for seconds)
-LEASE_WAIT_S = 900          # s before a unit gives up waiting for it (error, retryable); a batch build holds it ~1 min
+LEASE_WAIT_S = 1200         # s before a unit gives up waiting for it (error, retryable): longer than the 900 s after
+                            # which a dead holder on another node is stale; a batch build holds it ~1 min
 # cards the FITS writer derives from the pixels: never compared (a window primary-beam header may have 4 axes or 64 bits)
 STRUCTURAL = ('SIMPLE', 'BITPIX', 'EXTEND')
 
@@ -90,15 +99,17 @@ def night_residuals(x2, lst, night, band):
 
 def weights(lst, band):
     """({night: co-add weight}, the frozen deep weights file) as the builder reads them (tree:95-104): the rows of the
-    frozen record with a weight, and the listed non-member nights it lacks at weight 0."""
+    frozen record with a weight, and the listed non-member nights it lacks at weight 0. (None, the file) without the
+    file: the builder fails on it, and no night's weight is known."""
     from exopipe.phase3.lib.masters import tier_sublst as TS
     wp = TS.frozen_weights(lst, band)
+    if not os.path.exists(wp):
+        return None, wp
     wts = {}
-    if os.path.exists(wp):
-        with open(wp, newline='') as f:
-            for r in csv.DictReader(f):
-                if r.get('weight') not in (None, ''):
-                    wts[r['date']] = float(r['weight'])
+    with open(wp, newline='') as f:
+        for r in csv.DictReader(f):
+            if r.get('weight') not in (None, ''):
+                wts[r['date']] = float(r['weight'])
     for n in TS.nonmember_nights(lst) - set(wts):
         wts[n] = 0.0
     return wts, wp
@@ -111,15 +122,15 @@ def row_line(cols, row):
     return buf.getvalue()
 
 
-def night_rows(cols, sdir, band, night, found, ks):
-    """[(sort key, csv line, link, residual)] of the night's presented windows, the builder's row (tree:119-128)."""
-    from astropy.io import fits
+def night_rows(cols, sdir, band, night, found, ks, hdr):
+    """[(sort key, csv line, link, residual)] of the night's presented windows, the builder's row (tree:119-128); hdr =
+    {(window, Stokes): the residual's header}, read once by assess_night."""
     out = []
     for k in ks:
         key = '%sT%02d' % (night, k)
         for i, s in enumerate(('I', 'V')):
             src = found[k][s]
-            h = fits.getheader(src)
+            h = hdr[(k, s)]
             link = os.path.join(sdir, '%s_%s_sub_%s.fits' % (key, s, band))
             row = {'key': key, 'date': night, 'bin': k, 'stokes': s, 'src': src, 'dc': h.get('FLUXDC', ''),
                    'has_flow': 1, 'src_dewarped': '', 'pb_blank_frac': '', 'pb_ratio_median': '',
@@ -158,53 +169,73 @@ def _cards(header):
         return [str(c) for c in header.cards if c.keyword not in STRUCTURAL and not c.keyword.startswith('NAXIS')]
 
 
-def assess(lst, band, night, x2, root, tree, cols, excluded):
-    """What the unit would do, without writing: dict(refuse, action ('present' or 'already presented'), ks, skipped,
-    lines (the new frames.csv, or None when unchanged), links [(link, residual)] to create, pb {window: target header}
-    to write, inputs, weight, n_rows)."""
+def assess_night(lst, band, night, x2, root, ex):
+    """The night's own side of the unit, gates T-1 to T-5 (nothing here reads the band's tree): dict(refuse, ks, skipped,
+    found {window: {Stokes: residual}}, hdr {(window, Stokes): residual header}, night_pb {window: the night's window
+    primary-beam map}, inputs, weight). ex = the 10-minute tier's exclusion reader (frames tier `exclusions()`)."""
     from astropy.io import fits
-    a = dict(refuse=None, action=None, ks=[], skipped=[], lines=None, links=[], pb={}, inputs=[], weight=None, n_rows=0)
-    cdir = cell_dir(tree, lst, band)
-    sdir, bdir, fcsv = os.path.join(cdir, 'subtracted'), os.path.join(cdir, 'bin_masters'), os.path.join(cdir, 'frames.csv')
-    what = f'{lst}_{night} {band}'
-    if excluded:
-        a['refuse'] = f'T-1: {what}: excluded in data_decisions.csv - never presented to the search'
-        return a
     from exopipe.phase3.lib.masters import tier_sublst as TS
+    n = dict(refuse=None, ks=[], skipped=[], found={}, hdr={}, night_pb={}, inputs=[], weight=None)
+    what = f'{lst}_{night} {band}'
     wts, wp = weights(lst, band)
-    a['inputs'] += [p for p in (wp, TS.nonmember_file(), TS.cfg().paths.DATA_DECISIONS) if os.path.exists(p)]
+    n['inputs'] += [p for p in (wp, TS.nonmember_file(), TS.cfg().paths.DATA_DECISIONS) if os.path.exists(p)]
+    if ex.is_excluded(lst, band, night):
+        n['refuse'] = f'T-1: {what}: excluded in data_decisions.csv - never presented to the search'
+        return n
+    if wts is None:
+        n['refuse'] = (f'T-2: {what}: no frozen deep weights file of the band ({wp}) - the night\'s co-add weight is not '
+                       f'known (the builder fails on the file too)')
+        return n
     if night not in wts:
-        a['refuse'] = (f'T-2: {what}: no co-add weight - the night has no weight in {wp} and is not on the non-member '
+        n['refuse'] = (f'T-2: {what}: no co-add weight - the night has no weight in {wp} and is not on the non-member '
                        f'nights list (the builder refuses it too)')
-        return a
-    a['weight'] = wts[night]
+        return n
+    n['weight'] = wts[night]
     if wts[night] != 0.0:
-        a['refuse'] = (f'T-2: {what}: the night has the co-add weight {wts[night]:g} in {wp} - a member night changes the '
+        n['refuse'] = (f'T-2: {what}: the night has the co-add weight {wts[night]:g} in {wp} - a member night changes the '
                        f'pixels of the window primary-beam maps: `{BATCH_STAGE}` rebuilds the band\'s tree')
-        return a
+        return n
     found = night_residuals(x2, lst, night, band)
     ks = sorted(k for k, st in found.items() if set(st) == {'I', 'V'})
-    a['skipped'] = ['%s w%d (only %s)' % (night, k, ''.join(sorted(st))) for k, st in sorted(found.items())
+    n['skipped'] = ['%s w%d (only %s)' % (night, k, ''.join(sorted(st))) for k, st in sorted(found.items())
                     if set(st) != {'I', 'V'}]
     if not ks:
-        a['refuse'] = (f'T-3: {what}: no window with an x2 residual of both Stokes under '
-                       f'{os.path.join(x2, f"{lst}_{night}", band)} ({len(found)} window(s) with one Stokes)')
-        return a
-    a['ks'] = ks
-    night_pb = {}
+        n['refuse'] = (f'T-3: {what}: no window with an x2 residual of both Stokes under '
+                       f'{os.path.join(x2, f"{lst}_{night}", band)} ({len(found)} window(s) with one Stokes) - `flow --tier '
+                       f'sublst --stages refine-nonmember` writes a subband\'s, the wideband stage a group\'s')
+        return n
+    n['ks'], n['found'] = ks, found
     for k in ks:
         for s in ('I', 'V'):
             h = fits.getheader(found[k][s])
             if 'BINMSTR' in h or 'LSTBIN' not in h or 'DURATION' not in h:
-                a['refuse'] = f'T-4: {found[k][s]} lacks LSTBIN/DURATION or carries BINMSTR'
-                return a
-            a['inputs'].append(found[k][s])
+                n['refuse'] = f'T-4: {found[k][s]} lacks LSTBIN/DURATION or carries BINMSTR'
+                return n
+            n['hdr'][(k, s)] = h
+            n['inputs'].append(found[k][s])
         pbp = os.path.join(root, f'{lst}_{night}', band, 'I', 'sublst_%s_%s_%s_I_w%d_pb.fits' % (lst, night, band, k))
         if not os.path.exists(pbp):
-            a['refuse'] = f'T-5: {what} w{k}: no window primary-beam map {pbp}'
-            return a
-        night_pb[k] = pbp
-        a['inputs'].append(pbp)
+            n['refuse'] = f'T-5: {what} w{k}: no window primary-beam map {pbp}'
+            return n
+        n['night_pb'][k] = pbp
+        n['inputs'].append(pbp)
+    return n
+
+
+def assess(lst, band, night, x2, root, tree, cols, ex):
+    """What the unit would do, without writing: dict(refuse, action ('present' or 'already presented'), ks, skipped,
+    lines (the new frames.csv, or None when unchanged), links [(link, residual)] to create, pb {window: target header}
+    to write, inputs, weight, n_rows). assess_night (T-1 to T-5), then the band's tree (T-6 to T-9)."""
+    from astropy.io import fits
+    n = assess_night(lst, band, night, x2, root, ex)
+    a = dict(refuse=n['refuse'], action=None, ks=n['ks'], skipped=n['skipped'], lines=None, links=[], pb={},
+             inputs=n['inputs'], weight=n['weight'], n_rows=0)
+    if a['refuse']:
+        return a
+    found, ks, night_pb = n['found'], n['ks'], n['night_pb']
+    cdir = cell_dir(tree, lst, band)
+    sdir, bdir, fcsv = os.path.join(cdir, 'subtracted'), os.path.join(cdir, 'bin_masters'), os.path.join(cdir, 'frames.csv')
+    what = f'{lst}_{night} {band}'
     if os.path.exists(os.path.join(cdir, 'NO_WINDOWS.txt')) or not os.path.exists(fcsv):
         a['refuse'] = (f'T-6: {what}: the band has no tree to add a night to ({cdir}: '
                        f'{"NO_WINDOWS.txt" if os.path.exists(fcsv) else "no frames.csv"}) - `{BATCH_STAGE}` builds it')
@@ -213,9 +244,16 @@ def assess(lst, band, night, x2, root, tree, cols, excluded):
     if bad or not have:
         a['refuse'] = f'T-6: {what}: {bad or fcsv + " has no rows"} - `{BATCH_STAGE}` builds the band\'s tree'
         return a
-    new = night_rows(cols, sdir, band, night, found, ks)
+    new = night_rows(cols, sdir, band, night, found, ks, n['hdr'])
     mine = [x for x in have if x[2]['date'] == night]
     others = [x for x in have if x[2]['date'] != night]
+    gone = sorted(d for d in {x[2]['date'] for x in others} if ex.is_excluded(lst, band, d))
+    if gone:
+        a['refuse'] = (f'T-9: {what}: {len(gone)} other night(s) in {fcsv} are excluded in data_decisions.csv now '
+                       f'({", ".join(gone[:6])}{", ..." if len(gone) > 6 else ""}) - the tree is older than the exclusion: '
+                       f'`{BATCH_STAGE}` rebuilds the band\'s tree; nothing is added to a tree that presents an excluded '
+                       f'night')
+        return a
     if mine and [x[1] for x in mine] != [x[1] for x in new]:
         a['refuse'] = (f'T-7: {what}: the night is in {fcsv} already with other rows ({len(mine)} row(s), {len(new)} to '
                        f'present) - `{BATCH_STAGE}` rebuilds the band\'s tree')
@@ -279,36 +317,40 @@ def _replace_pb(path, header):
     tmp = os.path.join(os.path.dirname(path), '.%s.%d.tmp' % (os.path.basename(path), os.getpid()))
     try:
         fits.writeto(tmp, data, header, overwrite=True)
+        _sync(tmp)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
 
 
+def _sync(path):
+    """The file's bytes on disk before it replaces another (a node that fails after the rename must not leave a short
+    file under the final name)."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def apply(a, fcsv):
-    """Write what assess found: the links, then frames.csv, then the PB_bin headers. A failure removes the links this
-    call made; a rerun completes whatever is left (assess reads the tree as it is)."""
-    made = []
+    """Write what assess found, in the order frames.csv, links, PB_bin headers. The search lists its epochs from the
+    links, so a link is made only when its row is in: a failure before frames.csv is replaced leaves the tree as it was;
+    a failure after it leaves rows without a link or a map one night short, which a rerun completes (assess reads the
+    tree as it is)."""
     tmp = os.path.join(os.path.dirname(fcsv), '.frames.csv.%d.tmp' % os.getpid())
     try:
         if a['lines']:
             with open(tmp, 'w', newline='') as f:
                 f.write(''.join(a['lines']))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, fcsv)
         for link, src in a['links']:
             os.symlink(src, link)
-            made.append(link)
-        if a['lines']:
-            os.replace(tmp, fcsv)
-            made = []                      # the rows are in: the links stay
         for _k, (pb, header) in sorted(a['pb'].items()):
             _replace_pb(pb, header)
-    except BaseException:
-        for link in made:
-            try:
-                os.remove(link)
-            except OSError:
-                pass
-        raise
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -323,18 +365,19 @@ def tree_lease(tree, lst, band, unit):
                     wait_s=LEASE_WAIT_S, info={'unit': unit, 'tree': cell_dir(tree, lst, band)})
 
 
-def unit_inputs(ctx, a, lst, band, ex, base=None):
+def unit_inputs(ctx, a, lst, band, ex, with_gate=True):
     """(the S-G8 gate of the band, the unit's inputs): what the assessment read, the refine log(s) the gate reads and
-    the list of GPU-frame cells that sets the night's exclusion read (core.exclusions.PerNight)."""
+    the list of GPU-frame cells that sets the night's exclusion read (core.exclusions.PerNight). with_gate False (a unit
+    refused on the night's own inputs): no gate, no refine log."""
     from exopipe.phase3.lib.frames import tier_sublst as F
-    gate = F.tree_refine_gate(ctx, lst, band, base)
+    gate = F.tree_refine_gate(ctx, lst, band) if with_gate else []
     more = {g[3] for g in gate} | {getattr(ex, 'gpu_path', None)}
     return gate, sorted(set(a['inputs']) | {p for p in more if p and os.path.exists(p)})
 
 
 def stage(ctx, lst, nights):
-    """Run (or plan) the stage for the named nights of an LST hour: one unit per band of TREE_BANDS in the selection that
-    has an x2 residual of the night."""
+    """Run (or plan) the stage for the named nights of an LST hour: one unit per band of TREE_BANDS in the selection (a
+    band without an x2 residual of the night refuses T-3: it is recorded, never left out)."""
     from exopipe.phase3.lib.frames import tier_sublst as F
     if not nights:
         F.unit_refused(ctx.run, f'{lst}_{STAGE}', f'the {STAGE} stage adds ONE named night to the tree: give --epochs '
@@ -346,26 +389,21 @@ def stage(ctx, lst, nights):
     tree = ctx.tree_dir()
     resume = getattr(ctx.args, 'resume', False) and not getattr(ctx.args, 'fresh', False)
     bands = [b for b in S.TREE_BANDS if not ctx.scopes or b in ctx.scopes]
+    x2, root = ctx.x2_dir(lst), ctx.lst_dir(lst)      # this root only, in the plan and in the run (no --sublst-mirror)
     for night in nights:
-        base = ctx.input_base(f'{lst}_x2') if ctx.dry else None
-        x2, root = ctx.x2_dir(lst, base), ctx.lst_dir(lst, base)
-        todo = [b for b in bands if night_residuals(x2, lst, night, b)]
-        if ctx.dry:
-            F.plan(f'  STAGE {STAGE} {lst}_{night}: {len(todo)} band(s) with an x2 residual of the night under {x2} (of '
-                   f'{len(bands)} selected); tree {tree}')
-        if not todo:
-            F.unit_refused(ctx.run, f'{lst}_{night}_{STAGE}', f'T-3: {lst}_{night}: no x2 residual of the night under {x2} '
-                           f'in the {len(bands)} selected band(s) - `flow --tier sublst --stages refine-nonmember` writes '
-                           f'them', ctx.dry, ctx, tier=F.TIER)
-            continue
         ex = F.exclusions()
         if ctx.dry:
-            for b in todo:
+            F.plan(f'  STAGE {STAGE} {lst}_{night}: {len(bands)} band(s); x2 residuals {x2}; window PBs {root}; tree {tree}'
+                   + ('; --sublst-mirror does not apply (the night\'s inputs are read under this root only)'
+                      if ctx.mirror else ''))
+            for b in bands:
                 name = unit_name(lst, b, night)
-                a = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
-                gate, inputs = unit_inputs(ctx, a, lst, b, ex, base)
-                gate = [g for g in gate if not g[1]]
-                why = a['refuse'] or (f'S-G8 x2 refine of {lst} {gate[0][0]} not complete ({gate[0][2]})' if gate else None)
+                a = assess(lst, b, night, x2, root, tree, cols, ex)
+                why, inputs = a['refuse'], None
+                if not why:
+                    gate, inputs = unit_inputs(ctx, a, lst, b, ex)
+                    gate = [g for g in gate if not g[1]]
+                    why = f'S-G8 x2 refine of {lst} {gate[0][0]} not complete ({gate[0][2]})' if gate else None
                 if why:
                     F.plan(f'    UNIT {name}: WOULD REFUSE - {why}')
                     ctx.would_refuse += 1
@@ -379,25 +417,38 @@ def stage(ctx, lst, nights):
                 ctx.planned += 1
             continue
 
-        def one(b, night=night, x2=x2, root=root, ex=ex):
+        def one(b, night=night, ex=ex):
             name = unit_name(lst, b, night)
             cdir = cell_dir(tree, lst, b)
             if resume and os.path.isdir(cdir):
                 # --resume: skipped only when the tree holds the night NOW (an assessment that would write or refuse is
-                # never skipped) and the unit's record is valid for today's inputs
-                a0 = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
-                if not a0['refuse'] and a0['action'] == 'already presented' \
+                # never skipped) and the unit's record is valid for today's inputs. A read error here is the unit's: it
+                # reads again below and its record carries the error.
+                try:
+                    a0 = assess(lst, b, night, x2, root, tree, cols, ex)
+                except Exception:                                        # noqa: BLE001
+                    a0 = None
+                if a0 and not a0['refuse'] and a0['action'] == 'already presented' \
                         and F.try_resume(ctx.run, ctx.args, name, unit_inputs(ctx, a0, lst, b, ex)[1], [night]):
                     return
             with ctx.run.unit(name, tier=F.TIER, stage=STAGE, lst=lst, band=b, night=night) as u:
+                # before the lease, the refusals that need no look at the tree: an excluded cell (T-1) and a band with
+                # no x2 residual of the night (T-3, or T-2 before it); then a band without a tree (T-6)
+                if ex.is_excluded(lst, b, night) or not night_residuals(x2, lst, night, b):
+                    n = assess_night(lst, b, night, x2, root, ex)
+                    if n['refuse']:
+                        for p in unit_inputs(ctx, n, lst, b, ex, with_gate=False)[1]:
+                            u.add_input(p)
+                        u.set_admitted([] if n['refuse'].startswith('T-1') else [night])
+                        u.refuse(n['refuse'])
                 if not os.path.isdir(cdir):
                     u.refuse(f'T-6: {lst}_{night} {b}: the band has no tree to add a night to (no {cdir}) - '
                              f'`{BATCH_STAGE}` builds it')
-                # every gate that reads the tree is checked under the lease: the tree is then what this unit adds to
+                # every gate is checked under the lease, on the files as they are then: the tree is what this unit adds to
                 lease = tree_lease(tree, lst, b, name)
                 lease.acquire(say=lambda m: F.say(f'frames: [{name}] {m}'))
                 try:
-                    a = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
+                    a = assess(lst, b, night, x2, root, tree, cols, ex)
                     gate, inputs = unit_inputs(ctx, a, lst, b, ex)
                     for p in inputs:
                         u.add_input(p)
@@ -424,4 +475,4 @@ def stage(ctx, lst, nights):
             F.report(u)
 
         # a unit's error is in its record; the other bands go on (the batch stage's rule)
-        F.parallel(one, todo, ctx.workers or S.TREE_PARALLEL)
+        F.parallel(one, bands, ctx.workers or S.TREE_PARALLEL)

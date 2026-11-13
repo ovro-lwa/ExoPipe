@@ -453,17 +453,21 @@ def test_refusals_write_nothing():
         os.remove(log)
         refused(t, 'S-G8')
         t.write_log()
-        # T-3: one Stokes only in every window; no residual of the night at all (the stage's own refusal)
+        # T-3: one Stokes only in every window; no residual of the night at all (the unit refuses: never left out)
         hidden = os.path.dirname(t.resid(NEW, 'V', 0)) + '.hidden'
         os.rename(os.path.dirname(t.resid(NEW, 'V', 0)), hidden)
         refused(t, 'T-3')
         os.rename(hidden, os.path.dirname(t.resid(NEW, 'V', 0)))
         night_dir = os.path.join(t.root, f'{LST}_x2', f'{LST}_{NEW}')
         os.rename(night_dir, night_dir + '.hidden')
-        r, _ = t.run()
-        assert [(x.status, x.reason[:4]) for x in r.units] == [('refused', 'T-3:')] and 'refine-nonmember' in r.units[0].reason
-        same(t.snapshot(), t.before)
+        u = refused(t, 'T-3:')
+        assert 'refine-nonmember' in u.reason
         os.rename(night_dir + '.hidden', night_dir)
+        # T-2: no frozen deep weights file of the band (the builder fails on it)
+        wp = TS.frozen_weights(LST, SB)
+        os.rename(wp, wp + '.hidden')
+        assert 'no frozen deep weights file' in refused(t, 'T-2').reason
+        os.rename(wp + '.hidden', wp)
         # and after all of them the unit is done
         r, _ = t.run()
         assert unit(r).status == 'done', unit(r).reason
@@ -497,6 +501,12 @@ def test_refusals_of_the_tree_it_adds_to():
         refused(t, 'T-7')
         os.remove(link)
         t.before = t.snapshot()
+        # T-9: a night the tree presents was excluded after the tree was built (the builder would drop it)
+        gone = sorted(MEMBERS)[1]
+        t.write_decisions([(LST, SB, gone)])
+        u = refused(t, 'T-9')
+        assert gone in u.reason and TN.BATCH_STAGE in u.reason and 'excluded' in u.reason
+        t.write_decisions(())
         # T-8: a window of the night without a map; a map that is not a weighted mean; another shape; a count that is
         # not the rows of frames.csv
         pb0 = os.path.join(t.cdir, 'bin_masters', f'PB_bin0_{SB}.fits')
@@ -535,7 +545,7 @@ def test_refusals_of_the_tree_it_adds_to():
 
 def test_an_interrupted_run_is_completed():
     with Tree() as t:
-        # a failure before frames.csv is replaced: the links this run made are removed, the tree is what it was
+        # a failure before frames.csv is replaced: nothing was written (no link without its row), the tree is what it was
         real = os.replace
 
         def no_csv(src, dst):
@@ -548,7 +558,26 @@ def test_an_interrupted_run_is_completed():
         assert u.status == 'error' and 'injected' in u.reason, (u.status, u.reason)
         same(t.snapshot(), t.before)
         assert not t.leases_held()
-        # a failure after frames.csv, at the second map: the rows are in, one map counts one night short
+        # a failure after frames.csv, at the third link: the rows are in, two links, no map changed; no link without
+        # its row at any time (the search lists its epochs from the links)
+        made, real_link = [], os.symlink
+
+        def third_fails(src, dst):
+            if len(made) == 2:
+                raise OSError('injected: link not made')
+            made.append(dst)
+            return real_link(src, dst)
+        with Patch((os, 'symlink', third_fails)):
+            r, _ = t.run()
+        assert unit(r).status == 'error' and 'injected' in unit(r).reason and not t.leases_held()
+        snap = t.snapshot()
+        rows = [x for x in snap['frames.csv'].split(b'\r\n') if NEW.encode() in x]
+        links = sorted(os.path.basename(x) for x in glob.glob(os.path.join(t.cdir, 'subtracted', f'{NEW}T*')))
+        assert len(rows) == 6 and links == [f'{NEW}T00_I_sub_{SB}.fits', f'{NEW}T00_V_sub_{SB}.fits'], (len(rows), links)
+        assert all(os.path.basename(x).encode() in snap['frames.csv'] for x in made)
+        n = [fits.getheader(os.path.join(t.cdir, 'bin_masters', f'PB_bin{k}_{SB}.fits'))['PBNNIGHT'] for k in (0, 1, 2)]
+        assert n == [3, 3, 2], n
+        # a failure at the second map: the rows and the links are in, one map counts the night, two are one short
         calls = []
 
         def second_fails(path, header):
@@ -568,6 +597,7 @@ def test_an_interrupted_run_is_completed():
         u = unit(r)
         assert u.status == 'done' and u.meta[TN.STAGE]['pb_headers_written'] == [1, 2], (u.status, u.reason, u.meta)
         assert not u.meta[TN.STAGE]['frames_written'] and u.meta[TN.STAGE]['links_made'] == 0
+        assert len(glob.glob(os.path.join(t.cdir, 'subtracted', f'{NEW}T*'))) == 6
         same(t.snapshot(), t.reference()[0])
 
 
@@ -630,6 +660,24 @@ def test_dry_run_plans_and_writes_nothing():
         r, rc = t.run(dry=True)
         assert rc == 2
         same(t.snapshot(), t.before)
+        t.write_decisions(())
+        # --sublst-mirror does not apply: the plan and the run read the night's inputs under this root only (a root
+        # of production that holds other residuals is never looked at)
+        other = os.path.join(t.dir, 'production')
+        os.makedirs(os.path.join(other, f'{LST}_x2', f'{LST}_{NEW}', SB, 'I'))
+        with Patch((CFG.paths, 'SUBLST_ROOT', other)):
+            night_dir = os.path.join(t.root, f'{LST}_x2', f'{LST}_{NEW}')
+            os.rename(night_dir, night_dir + '.hidden')
+            r, rc = t.run(dry=True, sublst_mirror=True)
+            assert rc == 2
+            r, _ = t.run(sublst_mirror=True)
+            assert unit(r).status == 'refused' and 'T-3' in unit(r).reason
+            os.rename(night_dir + '.hidden', night_dir)
+            r, rc = t.run(dry=True, sublst_mirror=True)
+            assert rc == 0
+            r, _ = t.run(sublst_mirror=True)
+            assert unit(r).status == 'done', unit(r).reason
+            same(t.snapshot(), t.reference()[0])
 
 
 def test_stage_wiring():
@@ -643,13 +691,20 @@ def test_stage_wiring():
         FT.run(t.args(epochs=None, lsts=LST), r)
         assert [u.status for u in r.units] == ['refused'] and 'ONE named night' in r.units[0].reason
         same(t.snapshot(), t.before)
-        # a band without a residual of the night has no unit; the selection of another band alone refuses
+        # every selected band has a unit: a band without a residual of the night refuses (T-2 without its frozen
+        # weights, T-3 with them), it is never left out; the other band is done
         r = record.Run('frames', ['test'], t.root, CFG)
-        FT.run(t.args(scopes=f'{SB},73MHz'), r)
-        assert [u.name for u in r.units] == [TN.unit_name(LST, SB, NEW)] and r.units[0].status == 'done'
+        rc = FT.run(t.args(scopes=f'{SB},73MHz'), r)
+        got = {u.name: (u.status, u.reason[:4]) for u in r.units}
+        assert got == {TN.unit_name(LST, SB, NEW): ('done', got[TN.unit_name(LST, SB, NEW)][1]),
+                       TN.unit_name(LST, '73MHz', NEW): ('refused', 'T-2:')}, got
+        os.makedirs(os.path.dirname(TS.frozen_weights(LST, '73MHz')))
+        shutil.copy(TS.frozen_weights(LST, SB), TS.frozen_weights(LST, '73MHz'))
         r = record.Run('frames', ['test'], t.root, CFG)
         FT.run(t.args(scopes='73MHz'), r)
-        assert [u.status for u in r.units] == ['refused'] and 'T-3' in r.units[0].reason
+        assert [(u.name, u.status, u.reason[:4]) for u in r.units] == [(TN.unit_name(LST, '73MHz', NEW), 'refused', 'T-3:')]
+        assert not os.path.exists(os.path.join(t.tree, f'{LST}_73MHz')) and not t.leases_held()
+        assert not os.path.exists(os.path.join(t.tree, TN.LEASE_SUBDIR, f'{LST}_73MHz'))     # refused before any lease
 
 
 def test_content_tests_count_listed_nights_at_weight_zero():
