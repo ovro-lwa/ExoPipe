@@ -284,7 +284,8 @@ def _apply(lst, scope, groot, root, screen, row):
                  MDWMED1=(float(row['med_after']), 'median VLSSr sep after, arcmin'),
                  MDWP50=(float(row['warp_p50_as']), 'screen amplitude p50, arcsec'),
                  MDWP95=(float(row['warp_p95_as']), 'screen amplitude p95, arcsec'),
-                 MDWDATE=(row['measured_at'], 'dewarp measured'))
+                 MDWDATE=(row['measured_at'], 'dewarp measured'),
+                 MDWSTAT=('applied', 'master dewarp status (Gregg 2026-11-11, MDWSTAT card)'))
     # PB-CORRECTED SIBLINGS ARE RECOMPUTED, NOT RESAMPLED (Gregg 2026-10-04; preamble "RBF master-dewarp install"): the
     # resampled ratio is not the ratio of the resampled plain to the resampled map, so a resampled sibling fails
     # sibling x PB == plain. Every other product (plain masters, PB maps, leave-one-out masters, residuals) is resampled;
