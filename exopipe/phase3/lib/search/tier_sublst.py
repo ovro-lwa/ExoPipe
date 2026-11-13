@@ -19,9 +19,10 @@ Two operating modes (DESIGN 12):
   (catalogue, ledgers, refusal records, persisted sigma-stack maps); the publish is transactional (the replaced cumulative
   files are backed up under <out>/_superseded/, the published cell is verified, and a failure rolls it back). Needs the
   cell's full search published first; a night already in the published image ledger refuses. search_sublst.EPOCHS_MODE =
-  'refuse' turns per-hour mode off (spec G4). Two per-hour searches of ONE published cell and Stokes never overlap: each
-  holds the cell's lease (per_hour_cell_lease) from before its seed until after its publish, and a search that had to wait
-  plans again from the cell as the other left it. At the publish the published records must still be the ones the attempt
+  'refuse' turns per-hour mode off (spec G4). Two searches of ONE published cell and Stokes (per-hour or full) never
+  overlap: each holds the cell's lease (held_cell_lease) from before its seed until after its publish, and plans again
+  once it holds the lease, from the cell as the last search left it. At the publish the unit must still hold its lease,
+  and in per-hour mode the published records must still be the ones the attempt
   was seeded from (seed_changed), or the unit refuses and publishes nothing: the publish copies the attempt's cumulative
   files over the published ones, so a publish over records another writer has appended to would drop that writer's rows.
 
@@ -372,7 +373,7 @@ def lease_root(out_root):
     try:
         from exopipe.phase3.core import guard
         if guard.active() and not guard.is_allowed(root):
-            root = os.path.join(out_root, '_leases')
+            root = os.path.join(os.path.realpath(out_root), '_leases')    # one place for every spelling of --out
     except Exception:
         pass
     return root
@@ -1035,22 +1036,23 @@ def seed_changed(run_dir, state):
 
 def cell_lease(root, plan, unit):
     """The lease of ONE published cell and Stokes (capacity 1: a mutex across processes and nodes; the Lease class's
-    heartbeat and stale rules). Its name carries a digest of the published directory, so searches publishing to different
-    roots do not wait for each other."""
+    heartbeat and stale rules). Its name carries a digest of the published directory (symbolic links resolved: two
+    spellings of one directory are one lease), so searches publishing to different roots do not wait for each other."""
     s = cfg().search_sublst
-    key = hashlib.md5(os.path.abspath(plan['publish']).encode()).hexdigest()[:10]
+    key = hashlib.md5(os.path.realpath(plan['publish']).encode()).hexdigest()[:10]
     return Lease(root, f'search_sublst-cell-{plan["cell"]}_{plan["stokes"]}-{key}', 'node-memory', capacity=1,
                  poll_s=s.LEASE_POLL_S, wait_s=s.LEASE_WAIT_S, heartbeat_s=s.LEASE_HEARTBEAT_S, stale_s=s.LEASE_STALE_S,
                  info={'unit': unit, 'publish': plan['publish']})
 
 
 @contextlib.contextmanager
-def per_hour_cell_lease(run, plan, unit, stages):
-    """Hold cell_lease for a per-hour unit that will seed an attempt (a real run with the detect stage and a plan that
-    neither refuses nor lacks input); yields the Lease, or None when no lease is needed. Held from before the seed until
-    the unit ends, so the seed of one search never reads a cell another search is publishing to, and two searches of one
-    cell publish one after the other, each onto the other's result."""
-    if not plan['date'] or run.dry_run or 'detect' not in stages or plan['refuse'] or plan['noinput']:
+def held_cell_lease(run, plan, unit, stages):
+    """Hold cell_lease for a unit that will search the cell (a real run with the detect stage and a plan that neither
+    refuses nor lacks input), per-hour or full; yields the Lease, or None when no lease is needed. Held from before the
+    seed until the unit ends, so the seed of one search never reads a cell another search is publishing to, two per-hour
+    searches of one cell publish one after the other, each onto the other's result, and a full pass never replaces a
+    cell a per-hour search appended to after the pass planned (that night would vanish without a refusal)."""
+    if run.dry_run or 'detect' not in stages or plan['refuse'] or plan['noinput']:
         yield None
         return
     lease = cell_lease(lease_root(run.out_root), plan, unit)
@@ -1114,6 +1116,10 @@ def detect(run, u, plan, attempt):
         src = _run_root(plan['publish'], plan['label'])
         dst = _run_root(attempt, plan['label'])
         seeded = seed_attempt(src, dst)
+        if 'v_deep_images.csv' not in seeded:     # the plan saw it (epoch.published_attempt): the cell was moved since
+            u.refuse(f'per-hour seed: the published image ledger {os.path.join(src, "v_deep_images.csv")} is gone since '
+                     f'the plan (the published cell was moved or removed): the engine would start new ledgers and the '
+                     f'publish would leave a one-night cell - nothing is searched; run the unit again')
         plan['seed_state'] = seed_state(dst)      # compared with the published records at the publish (seed_changed)
         # SPEED-UP 2026-11-11: the published parent catalogue of the cell (PyBDSF on the Robust -0.75 Master, about a minute
         # per job) is put where the engine looks for it. The engine decides: it reuses the catalogue only when its .gen.json
@@ -1564,20 +1570,45 @@ def _prior_attempt(run, unit):
     return None, rec
 
 
+def attempt_dir(work_root, arm, cell, stokes, date):
+    """The path of a NEW attempt directory: <scratch>/<WORK_SUBDIR>/<cell>_<S>[_<night>]_<UTC to the second>. A per-hour
+    attempt carries its night, and a name already taken (an attempt kept by a unit of the same cell that started in the
+    same second) gets this process's id: no unit ever seeds into, or appends its log to, another unit's attempt."""
+    p = os.path.join(work_root, cfg().search_sublst.WORK_SUBDIR.format(arm=arm),
+                     '_'.join(x for x in (cell, stokes, date, utc_stamp()) if x))
+    return f'{p}_p{os.getpid()}' if os.path.exists(p) else p
+
+
 def run_unit(args, run, cell, lst, band, stokes, date, stages, work_root):
     s = cfg().search_sublst
     arm = _arm(args)
     unit = _unit_name(arm, cell, stokes, date)
     replay = getattr(args, 'replay_attempt', None)
-    plan = preflight(args, run, cell, lst, band, stokes, date)
-    plan['unit'] = unit
-    attempt = os.path.join(work_root, s.WORK_SUBDIR.format(arm=arm), f'{cell}_{stokes}_{utc_stamp()}')
-    # an intermittent pass starts clean (NOCAT:62-68): a published dir of an earlier search would be merged into silently
-    if not date and 'publish' in stages and os.path.isdir(plan['publish']) and not run.fresh and not plan['refuse'] \
-            and not plan['noinput']:
-        plan['gates'].append(('publish.starts_clean', False, f'{plan["publish"]} exists'))
-        plan['refuse'] = (f'{plan["publish"]} holds the published search of an earlier run: a pass starts clean (NOCAT:62-68) '
-                          f'- --fresh moves it to {run.out_root}/_superseded/ first, or search one night with --epochs')
+
+    def planned():
+        plan = preflight(args, run, cell, lst, band, stokes, date)
+        plan['unit'] = unit
+        # an intermittent pass starts clean (NOCAT:62-68): a published dir of an earlier search would be merged into silently
+        if not date and 'publish' in stages and os.path.isdir(plan['publish']) and not run.fresh and not plan['refuse'] \
+                and not plan['noinput']:
+            plan['gates'].append(('publish.starts_clean', False, f'{plan["publish"]} exists'))
+            plan['refuse'] = (f'{plan["publish"]} holds the published search of an earlier run: a pass starts clean '
+                              f'(NOCAT:62-68) - --fresh moves it to {run.out_root}/_superseded/ first, or search one '
+                              f'night with --epochs')
+        return plan
+
+    def resume_skip(plan):
+        if not (run.resume and 'detect' in stages and not plan['refuse'] and not plan['noinput']):
+            return False
+        ok, why = run.resume_check(unit, plan['inputs'], plan['admitted'])
+        if ok:
+            u = run.unit(unit, tier=TIER)
+            u.status, u.reason = 'skipped-valid', why
+            print(f'[{unit}] resume: {why}')
+        return ok
+
+    plan = planned()
+    attempt = attempt_dir(work_root, arm, cell, stokes, date)
     if run.dry_run:
         _print_plan(plan, stages, attempt)
         if replay:
@@ -1586,28 +1617,28 @@ def run_unit(args, run, cell, lst, band, stokes, date, stages, work_root):
         u.status = 'refused' if plan['refuse'] else ('no-input' if plan['noinput'] else 'planned')
         u.reason = plan['refuse'] or plan['noinput'] or ''
         return
-    if run.resume and 'detect' in stages and not plan['refuse'] and not plan['noinput']:
-        ok, why = run.resume_check(unit, plan['inputs'], plan['admitted'])
-        if ok:
-            u = run.unit(unit, tier=TIER)
-            u.status, u.reason = 'skipped-valid', why
-            print(f'[{unit}] resume: {why}')
-            return
-    # per-hour mode: the cell's lease, from before the seed until the unit ends (per_hour_cell_lease). A unit that had to
-    # wait for another search of the cell planned on the cell as it was BEFORE that search published: it plans again
+    if resume_skip(plan):
+        return
+    # the cell's lease, from before the seed until the unit ends (held_cell_lease). The plan above read the published cell
+    # BEFORE the lease was held: another search of the cell may have published since (during a wait for the lease, or in
+    # the seconds between that plan and the lease). So under the lease the resume check is made again (the same unit, run
+    # twice, is skipped the second time, never refused over the first's record), the unit plans again (the gates on the
+    # published cell: night not yet searched, size rule, appended headers), and only then is the attempt directory named
     held = contextlib.ExitStack()
     try:
-        clease = held.enter_context(per_hour_cell_lease(run, plan, unit, stages))
-        if clease is not None and clease.waited_s >= clease.poll_s:
-            plan = preflight(args, run, cell, lst, band, stokes, date)
-            plan['unit'] = unit
+        clease = held.enter_context(held_cell_lease(run, plan, unit, stages))
+        if clease is not None:
+            if resume_skip(plan):
+                held.close()
+                return
+            plan = planned()
+            attempt = attempt_dir(work_root, arm, cell, stokes, date)
     except BaseException:
         held.close()
         raise
     with held, run.unit(unit, tier=TIER, cell=cell, stokes=stokes, arm=arm, label=plan['label'], date=date) as u:
         if clease is not None:
-            u.meta['cell_lease'] = dict(dir=clease.dir, waited_s=round(clease.waited_s, 1),
-                                        planned_again=clease.waited_s >= clease.poll_s)
+            u.meta['cell_lease'] = dict(dir=clease.dir, waited_s=round(clease.waited_s, 1), planned_under_lease=True)
         u.meta.update(stages=stages, tree=plan['tree'], coadd=plan['coadd'], windows=len(plan['windows']),
                       excluded_nights=plan['excluded_nights'], gates=plan['gates'],
                       included_dates=plan['included_dates'])
@@ -1691,6 +1722,10 @@ def run_unit(args, run, cell, lst, band, stokes, date, stages, work_root):
         if 'publish' in stages:
             if not own:
                 u.refuse('publish copies this run\'s own attempt only')
+            if clease is not None and not os.path.exists(clease.path):
+                u.refuse(f'publish: this unit no longer holds the lease of the cell ({clease.path} is gone: reclaimed '
+                         f'as stale after a long gap in its heartbeat) - another search of the cell may have started: '
+                         f'nothing is published; run the unit again; attempt kept: {attempt}')
             if not date and os.path.isdir(plan['publish']):          # --fresh (checked in the plan): move the old one aside
                 old = os.path.join(run.out_root, '_superseded', f'{unit}_{utc_stamp()}')
                 os.makedirs(os.path.dirname(old), exist_ok=True)

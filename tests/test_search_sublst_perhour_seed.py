@@ -408,15 +408,123 @@ def test_cell_lease_admits_one_search_of_a_cell_at_a_time():
         ok, _ = b.try_acquire()                                        # released: the second search goes on
         assert ok
         b.release()
+        link = os.path.join(root, 'pub_link')                          # another spelling of the same published directory
+        os.symlink(os.path.join(root, 'pub'), link)
+        assert TS.cell_lease(lr, dict(plan, publish=os.path.join(link, 'search_B', '03h_73MHz_V')), 'u').dir == a.dir
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_held_cell_lease_is_taken_and_released():
+    root = tempfile.mkdtemp(prefix='perhour_seed_')
+    saved = TS.lease_root
+    TS.lease_root = lambda out_root: os.path.join(out_root, '_leases')       # never the configured (production) root
+    try:
         run = types.SimpleNamespace(dry_run=False, out_root=root)
-        full = dict(plan, date='2024-12-27', refuse='', noinput='')
-        for case in (dict(full, date=''), dict(full, refuse='x'), dict(full, noinput='x')):
-            with TS.per_hour_cell_lease(run, case, 'u', ['detect', 'publish']) as lease:
-                assert lease is None, case                             # an intermittent pass, or a unit that will not seed
-        with TS.per_hour_cell_lease(types.SimpleNamespace(dry_run=True, out_root=root), full, 'u', ['detect']) as lease:
+        full = dict(cell='03h_73MHz', stokes='V', publish=os.path.join(root, 'pub', 'search_B', '03h_73MHz_V'),
+                    date='2024-12-27', refuse='', noinput='')
+        for case in (dict(full, refuse='x'), dict(full, noinput='x')):
+            with TS.held_cell_lease(run, case, 'u', ['detect', 'publish']) as lease:
+                assert lease is None, case                             # a unit that will not seed
+        with TS.held_cell_lease(types.SimpleNamespace(dry_run=True, out_root=root), full, 'u', ['detect']) as lease:
             assert lease is None
-        with TS.per_hour_cell_lease(run, full, 'u', ['fit', 'verify']) as lease:
+        with TS.held_cell_lease(run, full, 'u', ['fit', 'verify']) as lease:
             assert lease is None                                       # no detect: nothing is seeded or published
+        for case in (full, dict(full, date='')):                       # a per-hour search and a full pass both hold it
+            other = TS.cell_lease(TS.lease_root(root), case, 'other')
+            with TS.held_cell_lease(run, case, 'u', ['detect', 'publish']) as lease:
+                assert lease is not None and os.path.isfile(lease.path), case
+                ok, live = other.try_acquire()
+                assert not ok and [h.get('unit') for h in live] == ['u'], live
+            assert not os.path.exists(lease.path)                      # released at the end of the block
+            ok, _ = other.try_acquire()
+            assert ok
+            other.release()
+            try:
+                with TS.held_cell_lease(run, case, 'u', ['detect']) as lease:
+                    raise KeyError('the unit failed')
+            except KeyError:
+                pass
+            assert not os.path.exists(lease.path)                      # and when the unit raises
+    finally:
+        TS.lease_root = saved
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _stubbed_unit(root, changed, resume_ok=False, lose_lease=False):
+    """run_unit of one per-hour unit with the plan, the engine and the publish replaced by stand-ins that record their
+    calls. Returns (calls, the run's unit record status, the lease holders seen by the engine)."""
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import record
+    calls, seen = [], {}
+    pub = os.path.join(root, 'pub', 'search_B', '03h_73MHz_V')
+
+    def preflight(args, run, cell, lst, band, stokes, date):
+        calls.append('plan')
+        return dict(cell=cell, stokes=stokes, publish=pub, label=LABEL, date=date, refuse='', noinput='', gates=[], tree='t',
+                    coadd='c', windows=[], excluded_nights=[], included_dates=[date], admitted=[date], inputs=[])
+
+    def detect(run, u, plan, attempt):
+        calls.append('detect')
+        ldir = TS.cell_lease(TS.lease_root(run.out_root), plan, 'x').hdir
+        seen['holders'] = sorted(os.listdir(ldir))
+        seen['attempt'] = attempt
+        plan['seed_state'] = {'v_deep_images.csv': 'md5-at-the-seed'}
+        if lose_lease:
+            for f in seen['holders']:
+                os.remove(os.path.join(ldir, f))
+        return dict(summary='stand-in', rc=0, image_rows=1)
+
+    def publish(u, run, plan, attempt):
+        calls.append('publish')
+        return pub, (lambda: calls.append('rollback'))
+
+    def seed_changed(run_dir, state):
+        calls.append('seed_changed')
+        assert state == {'v_deep_images.csv': 'md5-at-the-seed'}
+        return changed
+
+    names = dict(preflight=preflight, detect=detect, publish=publish, seed_changed=seed_changed,
+                 lease_root=lambda out_root: os.path.join(out_root, '_leases'), make_lease=lambda *a, **k: None,
+                 wait_free=lambda *a, **k: None, products=lambda *a, **k: [])
+    saved = {k: getattr(TS, k) for k in names}
+    run = record.Run('search', ['test'], os.path.join(root, 'out'), CFG, config_sections=None)
+    if resume_ok:
+        run.resume, run.resume_check = True, (lambda unit, inputs, admitted: (calls.append('resume') or len(calls) > 2, 'r'))
+    for k, v in names.items():
+        setattr(TS, k, v)
+    try:
+        args = types.SimpleNamespace(sublst_arm='B', replay_attempt=None, sublst_keep_attempt=False)
+        try:
+            TS.run_unit(args, run, '03h_73MHz', '03h', '73MHz', 'V', '2024-12-27', ['detect', 'publish'],
+                        os.path.join(root, 'work'))
+        except record.Refusal as e:
+            seen['refusal'] = str(e)
+    finally:
+        for k, v in saved.items():
+            setattr(TS, k, v)
+    u = run.units[-1] if getattr(run, 'units', None) else None
+    seen['status'], seen['reason'] = getattr(u, 'status', None), getattr(u, 'reason', '') or seen.get('refusal', '')
+    seen['left'] = sorted(f for _d, _s, fs in os.walk(os.path.join(root, 'out', '_leases')) for f in fs if f.endswith('.json'))
+    return calls, seen
+
+
+def test_run_unit_plans_under_the_lease_and_refuses_a_changed_record():
+    root = tempfile.mkdtemp(prefix='perhour_seed_')
+    try:
+        calls, seen = _stubbed_unit(os.path.join(root, 'a'), changed=None)
+        assert calls == ['plan', 'plan', 'detect', 'seed_changed', 'publish'], calls     # planned again under the lease
+        assert len(seen['holders']) == 1 and not seen['left'], seen                       # held at the engine, released after
+        assert os.path.basename(seen['attempt']).startswith('03h_73MHz_V_2024-12-27_'), seen['attempt']
+        calls, seen = _stubbed_unit(os.path.join(root, 'b'), changed='the image ledger changed after this attempt')
+        assert calls == ['plan', 'plan', 'detect', 'seed_changed'], calls                 # never published
+        assert 'NOT published' in seen['reason'] and not seen['left'], seen
+        calls, seen = _stubbed_unit(os.path.join(root, 'c'), changed=None, lose_lease=True)
+        assert calls == ['plan', 'plan', 'detect'], calls                                 # the lease was lost: no publish
+        assert 'no longer holds the lease' in seen['reason'], seen
+        calls, seen = _stubbed_unit(os.path.join(root, 'd'), changed=None, resume_ok=True)
+        assert calls == ['plan', 'resume', 'resume'], calls       # done by the other run meanwhile: skipped under the lease
+        assert seen['status'] == 'skipped-valid' and not seen['left'], seen
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -427,7 +535,7 @@ def test_run_unit_holds_the_lease_and_checks_before_the_publish():
 
     def calls(fn, name):
         return [n for n in ast.walk(funcs[fn]) if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == name]
-    lease, unit_with = calls('run_unit', 'per_hour_cell_lease'), None
+    lease, unit_with = calls('run_unit', 'held_cell_lease'), None
     assert len(lease) == 1
     for n in ast.walk(funcs['run_unit']):                              # the with statement that opens the unit's record
         if isinstance(n, ast.With) and any(isinstance(i.context_expr, ast.Call) and getattr(i.context_expr.func, 'attr', '')
