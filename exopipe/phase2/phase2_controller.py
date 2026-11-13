@@ -1308,7 +1308,7 @@ def main():
     parser.add_argument("--skip_transients", action="store_true",
                         help="Skip transient search")
     parser.add_argument("--defer_email", action="store_true",
-                        help="Do not send the report email at the end of Phase 2: `exopipe3 email` sends the same "
+                        help="Do not send the report email at the end of Phase 2: `exopipe3 notify` sends the same "
                              "report, with the Phase 3 highlights of the hour added, at the end of Phase 3")
     parser.add_argument("--debug", action="store_true",
                         help="Write flux measurement debug log (flux_debug.log)")
