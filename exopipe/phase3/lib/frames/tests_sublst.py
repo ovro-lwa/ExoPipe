@@ -64,6 +64,14 @@ def _frozen_weights(lst, band):
     return frozen_weights(lst, band)
 
 
+def _listed_nonmembers(lst):
+    """Nights of the LST on the non-member nights list (masters' one parser): a listed night without a row in the frozen
+    deep weights has the co-add weight 0 (phase3_sublst_tenmin_tree.py:103-104, phase3_sublst_refine.py:95-97; Gregg
+    2026-11-11)."""
+    from exopipe.phase3.lib.masters.tier_sublst import nonmember_nights
+    return nonmember_nights(lst)
+
+
 def _excluded(lst, band, night):
     from exopipe.phase3.core import exclusions
     return exclusions.load().is_excluded(lst, band, night)
@@ -220,7 +228,8 @@ def tree_content(path, **ctx):
     name carries the row's (night, band, Stokes, window) and whose header has LSTBIN = bin, DURATION, no BINMSTR and
     FLUXBAKE = the fluxbake column; both Stokes per key; PB_bin<k> exists for every bin; no excluded (LST, band, night).
     PB_bin<k>_<band>.fits: finite PB values in [0, 1], PBSRC present, PBNNIGHT = the I rows of bin k, and the central patch
-    = the co-add-weight-weighted mean of those nights' window PB maps (frozen deep record weights).
+    = the co-add-weight-weighted mean of those nights' window PB maps (frozen deep record weights; a listed non-member
+    night without a row there has weight 0; only weight-0 nights = their unweighted mean, as the tree writer).
     NO_WINDOWS.txt: frames.csv has no rows and the refine record it names shows every window refused by rule
     (phase3_sublst_tenmin_tree.rule_empty, in place)."""
     lst, band, cdir = _tree_name(path)
@@ -298,16 +307,20 @@ def tree_content(path, **ctx):
                 wp = _frozen_weights(lst, band)
                 if sl and os.path.exists(wp):
                     wts = {r['date']: float(r['weight']) for r in csv.DictReader(open(wp)) if r.get('weight') not in (None, '')}
-                    acc, wsum = 0.0, 0.0
+                    for n in _listed_nonmembers(lst) - set(wts):
+                        wts[n] = 0.0
+                    acc, wsum, unw = 0.0, 0.0, 0.0
                     for n in nights:
                         pbp = os.path.join(sl, lst, f'{lst}_{n}', band, 'I', f'sublst_{lst}_{n}_{band}_I_w{kbin}_pb.fits')
                         if n not in wts or not os.path.exists(pbp):
                             msgs.append(f'no weight or window PB for {n}')
                             break
-                        acc = acc + wts[n] * np.nan_to_num(_patch(pbp, 16))
+                        pbn = np.nan_to_num(_patch(pbp, 16))
+                        acc = acc + wts[n] * pbn
+                        unw = unw + pbn
                         wsum += wts[n]
                     else:
-                        exp = acc / wsum
+                        exp = acc / wsum if wsum > 0 else unw / len(nights)     # tree:139 (only non-member nights)
                         dev = float(np.max(np.abs(_patch(path, 16) - exp)))
                         if dev > 1e-5:
                             msgs.append(f'central patch deviates from the weighted window-PB mean by {dev:.3g}')
@@ -360,6 +373,8 @@ def residual_set_report(stack_root, x2_root=None, lst=None, weights_tmpl=None, s
                     else float(r['weight'])
             except (KeyError, ValueError, TypeError):
                 pass
+        for n in _listed_nonmembers(L) - set(wts):     # as the refine's model (lib/flow/tests._weights)
+            wts[n] = 0.0
         for S in 'IV':
             for k in range(C.frames_sublst.WINDOWS):
                 ns = [n for n in stacks.get((sb, S, k), ()) if n in wts]
