@@ -689,8 +689,13 @@ def test_e2e_sublst(site):
     json.dump({'master': os.path.basename(m), 'master_md5_data': hashlib.md5(np.ascontiguousarray(data).tobytes()).hexdigest()},
               open(pc + '.gen.json', 'w'))
     U = f'{T}/out_sublst'
+    # the conformance of this file is a stand-in script (STUB_CONFORM_SUBLST): the table-noise / pulsar-evidence record
+    # (catalog_conform.TABLE_NOISE_RECORD, on for this tier) runs production's module through five exact-once text patches
+    # and refuses any other text, so it is off here (a ruled key: this --out is not a production root); the record, the
+    # frozen mode and the stage's wiring are tested against production's module in tests/test_catalog_conform_noise.py
     common = ['catalog', '--tier', 'sublst', '--lsts', '14h', '--out', U, '--cores', 'none',
-              '--set', f'paths.SUBLST_ROOT={sl}', '--set', f'paths.OPS_ROOT={ops}']
+              '--set', f'paths.SUBLST_ROOT={sl}', '--set', f'paths.OPS_ROOT={ops}',
+              '--set', 'catalog_conform.TABLE_NOISE_RECORD[sublst]=False']
     rc, out = cli(common + ['--stages', 'preflight'], site)
     ok('sub-LST preflight refuses an incomplete search (35 of 36 done): exit 2, S-G1', rc == 2 and 'S-G1' in out, out[-400:])
     open(f'{ops}/sublst_search_state_B/done/14h_job35', 'w').close()

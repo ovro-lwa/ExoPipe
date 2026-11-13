@@ -54,8 +54,19 @@ Failure modes (exit 2, gate named in the record): S-G1..S-G22 of spec section 5.
          (its last machine line recorded); a [lit] key whose module literal differs from config; a module switch set in this
          process environment that would leak into the children; a missing shared config key (named). Exit 1 = error.
 Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the sub-LST per-hour chain runs `catalog` after
-         `search`). `--incremental` (one epoch into the cumulative catalogue) is NOT implemented for this tier: the chain is
-         LST-wide today (one merge spans the LST's 36 search jobs).
+         `search`). `--incremental` (one epoch into the cumulative catalog) is NOT implemented for this tier.
+         PER-HOUR NIGHT PASS (`--sublst-night YYYY-MM-DD --sublst-frozen-from <LST-wide catalog directory> --out <the
+         night's own directory>`; Gregg 2026-11-12, R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (1), (2)): the stages
+         preflight to veto on ONE night's rows. The merge reads a night view of the search jobs (lib/catalog/night_view.py:
+         the cumulative record files cut to the night's windows), never the jobs themselves; the conformance takes the
+         bright-parent table's noise from the LST-wide pass's record (conform_table_noise.csv) and, for its pulsar step,
+         the other nights' detections near ATNF pulsars from the LST-wide pass's second record
+         (conform_pulsar_evidence.csv; both through the frozen mode of wraps/conform_noise.py), and refuses without
+         either. The two records are read only when the LST-wide directory's own record of its conformance stage (same
+         LST, same arm) is done and lists both files as they are now (frozen_records_refusal). Every other stage is the
+         LST chain's, on the night's rows. No earlier night's row is judged again. The builds, the tests and the
+         comparison are not offered for a night (NIGHT_STAGES): the grouping's incremental mode and the builder's
+         frozen statistics are the next step.
 """
 import ast
 import contextlib
@@ -77,6 +88,9 @@ STAGES = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos'
 HEAVY = ('merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto', 'build', 'buildv', 'test',
          'compare')
 OPTIONAL = ('build', 'buildv', 'compare', 'reftie')   # may end no-input by configuration (not selected / switched off)
+# PER-HOUR night pass (--sublst-night): the stages offered for one night's rows (the builds need the grouping's incremental
+# mode and frozen builder statistics; the tests and the comparison are LST-wide)
+NIGHT_STAGES = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto')
 IN_PLACE = ('master_catalog.csv',)                    # rewritten in place by merge, tier-rules, conform, fitpos
 SPLIT_KEYS = ('V_sb', 'I_sb', 'V_wb', 'I_wb')         # sublst_catalogs.sh:235, :255 (order of the --rows and of the builds)
 # environment variables the in-place sub-LST modules read that core/legacy.run does not clear (it clears P3_* only): a value
@@ -641,6 +655,27 @@ class Ctx:
             self.scratch = os.path.join(arg(args, 'work', default=side), f'catalog_sublst_{self.unit}_scratch')
             self.chain_log = os.path.join(side, f'sublst_catalog_chain_{self.sfx}.log')
             self.pcheck_txt = os.path.join(side, f'sublst_parentcheck_{self.lst}.txt')
+        # PER-HOUR night pass: the chain reads a night view of the search jobs (self.src), built by the merge stage from the
+        # jobs themselves (self.jobs_src); --out is the night's own directory, never an LST-wide catalog directory
+        self.jobs_src = self.src
+        self.night = arg(args, 'sublst_night')
+        self.frozen_from = arg(args, 'sublst_frozen_from')
+        if self.night:
+            if not re.match(r'^\d{4}-\d\d-\d\d$', self.night):
+                raise SystemExit(f'error: --sublst-night {self.night!r} is not YYYY-MM-DD')
+            if self.prod:
+                raise SystemExit(f'error: --sublst-night: --out {self.U} is a production root; a night\'s pass writes its own '
+                                 f'directory, never an LST-wide catalog directory (give --out)')
+            if not self.frozen_from:
+                raise SystemExit('error: --sublst-night needs --sublst-frozen-from <the LST-wide catalog directory>: its '
+                                 'conform_table_noise.csv and conform_pulsar_evidence.csv are the frozen records the '
+                                 'night is judged by')
+            self.frozen_from = os.path.abspath(self.frozen_from)
+            if os.path.realpath(self.frozen_from) == os.path.realpath(self.U):
+                raise SystemExit('error: --sublst-frozen-from is the night\'s own --out')
+            self.src = os.path.join(self.U, '_side', 'night_view')
+        elif self.frozen_from:
+            raise SystemExit('error: --sublst-frozen-from is for a night pass (--sublst-night)')
         self.cmp_catalog = os.path.join(self.cmp_new, 'catalog')
         self.pt = os.path.join(self.U, 'pertie')
         self.recdir = os.path.join(self.U, '_records', 'catalog', self.unit)
@@ -671,7 +706,7 @@ class Ctx:
     # ---- the size / axis rule of the search jobs (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-READMISSION-SUBAGENTS) --------
     def search_jobs(self):
         """The LST's completed search jobs (a gate ledger in transients/Run_<label>), as the merge reads them."""
-        return [d for d in sorted(glob.glob(f'{self.src}/{self.lst}_*_[IV]'))
+        return [d for d in sorted(glob.glob(f'{self.jobs_src}/{self.lst}_*_[IV]'))    # (a night pass: the jobs, not the view)
                 if os.path.isfile(f'{d}/transients/Run_{self.label}/v_deep_ledger.csv')]
 
     def size_rule(self):
@@ -686,7 +721,7 @@ class Ctx:
             try:
                 self._size = SZ.one_rule([f'{d}/transients/Run_{self.label}' for d in self.search_jobs()],
                                          want=SZ.configured_record('10min'),
-                                         what=f'the {self.lst} 10-minute search jobs in {self.src}')
+                                         what=f'the {self.lst} 10-minute search jobs in {self.jobs_src}')
             except RuntimeError as e:
                 refuse(f'S-G7: {e}')
         return self._size
@@ -1166,10 +1201,39 @@ def st_preflight(ctx, s, plan):
         s.out(rep, 'catalog_preflight')
 
 
+def night_view(ctx, s):
+    """PER-HOUR night pass: build the night view the merge reads (ctx.src) from the search jobs (ctx.jobs_src) and run its
+    content test. A night without a catalog row in any job ends the stage no-input (nothing to catalog), never a refusal."""
+    from exopipe.phase3.lib.catalog import night_view as NV
+    if os.path.lexists(ctx.src):                            # a view is built once: an earlier one is moved aside
+        dst = os.path.join(ctx.recdir, 'superseded', f'night_view_{utc("%Y%m%dT%H%M%SZ")}')
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.move(ctx.src, dst)
+        s.u.note(f'previous {ctx.src} kept as {dst}')
+    try:
+        rec = NV.build(ctx.jobs_src, ctx.src, ctx.lst, ctx.label, ctx.night, 'night')
+    except NV.ViewRefusal as e:
+        refuse(f'night view of {ctx.night}: {e}')
+    ok, n, detail = NV.verify(ctx.src)
+    s.u.check('night-view.content', ok, value=n, detail=detail, path=ctx.src)
+    ctx.log.say(f'night view {ctx.src}: {detail}')
+    if not ok:
+        refuse(f'night view of {ctx.night}: content test failed: {detail}')
+    s.u.meta['night_view'] = {'night': ctx.night, 'jobs': ctx.jobs_src, 'rows': rec['rows'], 'candidates': rec['candidates']}
+    if rec['rows']['master_catalog.csv'][1] == 0:
+        raise _record().NoInput(f'night {ctx.night}: no catalog row in any of the {len(rec["jobs"])} search jobs of {ctx.lst} '
+                                f'({rec["rows"]["v_deep_images.csv"][1]} image-ledger rows of the night): nothing to catalog')
+
+
 def st_merge(ctx, s, plan):
     U, A = ctx.U, os.path.join(ctx.coll, f'{ctx.low}_collect_sublst')
     script = ctx.opsc('p3s3_merge.py')
-    jobs = sorted(glob.glob(f'{ctx.src}/{ctx.lst}_*_[IV]'))
+    if ctx.night:
+        plan.append(f'night view of {ctx.night}: the search jobs of {ctx.jobs_src} with their record files cut to the night\'s '
+                    f'windows -> {ctx.src} (lib/catalog/night_view.py), then its content test; no catalog row = no-input')
+        if not ctx.dry:
+            night_view(ctx, s)
+    jobs = sorted(glob.glob(f'{ctx.jobs_src if (ctx.night and ctx.dry) else ctx.src}/{ctx.lst}_*_[IV]'))
     usable = [d for d in jobs if os.path.isfile(f'{d}/transients/Run_{ctx.label}/v_deep_ledger.csv')]
     plan.append(f'collect layout {A} by symlinks: {len(usable)} of {len(jobs)} search jobs in {ctx.src} carry '
                 f'transients/Run_{ctx.label}/v_deep_ledger.csv; state {ctx.state}')
@@ -1299,12 +1363,73 @@ def st_tie(ctx, s, plan):
     _pertie(ctx, s, plan, [f'selected_{k}.csv' for k in SPLIT_KEYS], False, '2 of 2: every selected detection')
 
 
+def conform_noise_runner():
+    """Path of the table-noise runner (self-contained: loaded by path in the child, whose `exopipe` can be production's)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wraps', 'conform_noise.py')
+
+
+def conform_noise_record(catalog_dir):
+    """The record of the table's noise in a catalog directory (written by the LST-wide conformance; wraps/conform_noise.FILE)."""
+    return os.path.join(catalog_dir, _conform_noise().FILE)
+
+
+def conform_pulsar_evidence(catalog_dir):
+    """The record of the detections near ATNF pulsars in a catalog directory (written by the LST-wide conformance after its
+    pulsar step; wraps/conform_noise.EVIDENCE_FILE): what a night pass's pulsar step reads of the other nights."""
+    return os.path.join(catalog_dir, _conform_noise().EVIDENCE_FILE)
+
+
+def _conform_noise():
+    from exopipe.phase3.lib.catalog.wraps import conform_noise
+    return conform_noise
+
+
+def frozen_records_refusal(catalog_dir, unit, paths):
+    """Whether the records ``paths`` of an LST-wide catalog directory may judge a night. The directory's own
+    record of its conformance stage (unit <LST>_<arm>.conform: the night's LST and arm) must be done and must list each
+    file with the fingerprint the file has now. So: the directory is this LST's and this arm's; the two records are one
+    run's (a run that stopped between writing them is not done); and no later conformance of the directory refused or
+    failed after them (the runner leaves the records of the last run that ended, so the files alone cannot tell).
+    Returns (None, the stage record's finished time) or (reason, None)."""
+    rec = _record()
+    name = f'{unit}.conform'
+    r = stage_record(catalog_dir, name)
+    if r is None:
+        return (f'{catalog_dir} holds no record of the conformance stage {name} ({rec.record_path(catalog_dir, "catalog", name)}): '
+                f'it is not the LST-wide catalog directory of this LST and arm, or its conformance did not run through '
+                f'`exopipe3 catalog --tier sublst --stages conform`'), None
+    if r.get('status') != 'done':
+        return (f'the LST-wide conformance {name} of {catalog_dir} is {r.get("status")} ({str(r.get("reason"))[:200]}): the '
+                f'records in the directory are an earlier run\'s - run the LST-wide conformance again'), None
+    fps = (r.get('meta') or {}).get('output_fingerprints') or {}
+    for p in paths:
+        hit = [k for k in fps if os.path.basename(k) == os.path.basename(p)]
+        if len(hit) != 1:
+            return (f'{p} is not an output of the LST-wide conformance {name} of {catalog_dir} ({len(hit)} entries of that '
+                    f'name in its record): written by another run'), None
+        if not rec.same_fingerprint(fps[hit[0]], rec.fingerprint(p)):
+            return f'{p} changed since the LST-wide conformance {name} of {catalog_dir} recorded it', None
+    return None, r.get('finished')
+
+
 def st_conform(ctx, s, plan):
     U, c = ctx.U, ctx.c
     script = ctx.opsc('p3s2_conform.py')
     from exopipe.phase3.lib.search import size_rule as SZ
     env_x = dict(P3_TABLE_RECORD_ONLY='1' if shared('catalog_conform', 'TABLE_RECORD_ONLY') else '0',
                  P3_CONFORM_SIZE='1' if shared('catalog_conform', 'SIZE_STEP', 'sublst') else '0')
+    rec_on = bool(shared('catalog_conform', 'TABLE_NOISE_RECORD', 'sublst'))
+    frozen = evid = None
+    if ctx.night:                                           # PER-HOUR night pass: judged by the LST-wide pass's records
+        frozen, evid, rec_on = conform_noise_record(ctx.frozen_from), conform_pulsar_evidence(ctx.frozen_from), False
+        plan.append(f'conform: the table\'s noise is FROZEN, read from {frozen}, and the pulsar step reads the other nights\' '
+                    f'detections near pulsars from {evid} (the module in place through '
+                    f'{os.path.basename(conform_noise_runner())}, five patched lines, mode frozen; module versions accepted: '
+                    f'catalog_conform.NOISE_MODULE_SHA1); a missing record = refusal')
+    if rec_on:
+        plan.append(f'conform: the table\'s noise and the detections near pulsars are recorded where they are computed '
+                    f'({conform_noise_record(U)}, {conform_pulsar_evidence(U)}; the module in place through '
+                    f'{os.path.basename(conform_noise_runner())}, five patched lines, mode record)')
     plan.append(f'conform: {" ".join(f"{k}={v}" for k, v in env_x.items())} {ctx.py["default"]} {script} {U}   >> '
                 f'catalogs.log; then TABLE-NOTES on master_catalog_removed.csv (S-G13); on the size / axis rule\'s attempts '
                 f'+ P3_CONFORM_AXIS=0 under catalog_conform.CONFORM_AXIS_UNDER_RULE=\'replace\' (now '
@@ -1326,8 +1451,52 @@ def st_conform(ctx, s, plan):
     ctx.log.say('conformance check with the sub-LST tables')
     s.code(script, ctx.opsc('gate_inputs.py'))
     s.inp(f'{U}/master_catalog.csv', ctx.tables, ctx.roots_csv)
-    res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)
+    if frozen:                                              # PER-HOUR night pass: the statistic of the LST-wide pass
+        if not os.path.isfile(frozen):
+            refuse(f'S-G13: no table-noise record {frozen}: the LST-wide conformance of {ctx.frozen_from} writes it (`exopipe3 '
+                   f'catalog --tier sublst --stages conform` with catalog_conform.TABLE_NOISE_RECORD[sublst] on)')
+        if not os.path.isfile(evid):
+            refuse(f'S-G13: no pulsar-evidence record {evid}: the LST-wide conformance of {ctx.frozen_from} writes it with '
+                   f'the table-noise record (`exopipe3 catalog --tier sublst --stages conform`); without it a pulsar\'s '
+                   f'detection of {ctx.night} that the other nights\' detections keep would be removed')
+        why, fin = frozen_records_refusal(ctx.frozen_from, ctx.unit, (frozen, evid))
+        if why:
+            ctx.log.say(f'REFUSING: {why[:300]}')
+            refuse(f'S-G13: {why}')
+        s.u.meta['frozen_from_conformance_finished'] = fin
+        s.inp(frozen, evid)
+        s.code(conform_noise_runner())
+        res = call(ctx, s, conform_noise_runner(), [script, U],
+                   env=ctx.env(**env_x, EXOPIPE3_CONFORM_NOISE_MODE='frozen', EXOPIPE3_CONFORM_NOISE_RECORD=frozen,
+                               EXOPIPE3_CONFORM_NOISE_EVIDENCE=evid, EXOPIPE3_CONFORM_NOISE_NIGHT=ctx.night,
+                               EXOPIPE3_CONFORM_NOISE_SHA1=','.join(shared('catalog_conform', 'NOISE_MODULE_SHA1'))),
+                   log=ctx.log.path, cwd=U)
+    elif rec_on:                                            # PER-HOUR: the one statistic of the population of rows and the
+        rec = conform_noise_record(U)                       # rows the pulsar step reads across nights are recorded by the
+        evr = conform_pulsar_evidence(U)                    # run that computes them (wraps/conform_noise.py)
+        s.code(conform_noise_runner())
+        res = call(ctx, s, conform_noise_runner(), [script, U],
+                   env=ctx.env(**env_x, EXOPIPE3_CONFORM_NOISE_MODE='record', EXOPIPE3_CONFORM_NOISE_RECORD=rec,
+                               EXOPIPE3_CONFORM_NOISE_EVIDENCE=evr),
+                   log=ctx.log.path, cwd=U)
+    else:
+        res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)
     need_ok(res, 'S-G13 conformance (p3s2_conform.py)', r'REFUS', say=lambda: ctx.log.say('CONFORM REFUSED - stopping'))
+    if frozen:
+        done = last_line(res.tail, r'^CONFORM-NOISE done')
+        if not done or 'read frozen from' not in done or 'pulsar evidence:' not in done:
+            refuse(f'S-G13: the table-noise runner gave no done line of the frozen mode (the conformance ended rc 0)')
+        s.u.meta['table_noise'] = done
+        s.u.meta['table_noise_frozen_from'] = frozen
+        s.u.meta['pulsar_evidence_from'] = evid
+    if rec_on:
+        done = last_line(res.tail, r'^CONFORM-NOISE done')
+        if not done or not os.path.isfile(rec) or not os.path.isfile(evr):
+            refuse(f'S-G13: the table-noise runner gave no done line, no record {rec} or no pulsar-evidence record {evr} '
+                   f'(the conformance ended rc 0)')
+        s.u.meta['table_noise'] = done
+        s.out(rec, 'csv_table')
+        s.out(evr, 'csv_table')
     why, sg = SZ.conform_removals([f'{U}/master_catalog_removed.csv'], szr, 'S-G13 conformance')   # the size / axis rule:
     if why:                                                 # its fixed size step's removals refused, its axis step's the
         ctx.log.say(f'REFUSING: {why[:300]}')               # second gate (recorded) or, under 'replace', refused
@@ -1737,6 +1906,15 @@ def add_arguments(p):
     g.add_argument('--sublst-builds', default=None, metavar='LIST',
                    help='catalogue builds, comma list of noveto,veto (default catalog_sublst.BUILDS; only noveto is served, '
                         'B-24 open)')
+    g.add_argument('--sublst-night', default=None, metavar='YYYY-MM-DD',
+                   help='per-hour night pass: the stages preflight to veto on ONE night\'s rows of the LST, read through a '
+                        'night view of the search jobs; needs --sublst-frozen-from and an --out of its own')
+    g.add_argument('--sublst-frozen-from', default=None, metavar='DIR',
+                   help='with --sublst-night: the LST-wide catalog directory of the same LST and arm, whose '
+                        'conform_table_noise.csv (the frozen bright-parent table noise) and conform_pulsar_evidence.csv '
+                        '(the other nights\' detections near ATNF pulsars) judge the night; the conformance refuses '
+                        'without either, and unless that directory\'s own conformance record is done and lists both '
+                        'files as they are now')
     g.add_argument('--sublst-grouping', default=None, metavar='DIR',
                    help='item F.3, design B: the 10-minute grouping the builds read (grouping_<S>/detections.csv of `catalog '
                         '--tier sublst --stages group`; default catalog_grouping.SUBLST_DIR)')
@@ -1746,10 +1924,18 @@ def run(args, run):
     """Run the selected stages of one LST, in order; the first stage that does not end done stops the chain (D10)."""
     ctx = Ctx(args, run)
     sel = select_stages(args, STAGES)
+    if ctx.night:
+        if not (arg(args, 'stages') or arg(args, 'until_stage', 'stage_until', 'until')):
+            sel = [x for x in sel if x in NIGHT_STAGES]     # a night pass ends at the leak veto by default
+        notn = [x for x in sel if x not in NIGHT_STAGES]
+        if notn or not sel:
+            raise SystemExit(f'error: --sublst-night offers the stages {", ".join(NIGHT_STAGES)}; not {", ".join(notn) or "none"} '
+                             f'(the builds of a night need the grouping\'s incremental mode; the tests are LST-wide)')
     first = STAGES.index(sel[0])
     where = 'production' if ctx.prod else 'non-production; side files under ' + os.path.join(ctx.U, '_side')
     print(f'catalog --tier sublst {ctx.unit}: U={ctx.U} ({where}); label {ctx.label}; tree {ctx.tree}; code {ctx.ops}, '
-          f'{ctx.clv}; stages {",".join(sel)}', file=sys.stderr)
+          f'{ctx.clv}; stages {",".join(sel)}'
+          + (f'; NIGHT PASS {ctx.night}, frozen statistics from {ctx.frozen_from}' if ctx.night else ''), file=sys.stderr)
     if ctx.dry:
         for name in sel:
             plan = []
@@ -1795,6 +1981,9 @@ def run(args, run):
                 finally:
                     u.meta['plan'] = plan
                     st.close()
+            if ctx.night and name == 'merge' and u.status == 'no-input':
+                ctx.chainlog.say(f'CHAIN-END arm {ctx.arm} night {ctx.night}: {u.reason}')
+                break
             if u.status != 'done' and not (u.status == 'no-input' and name in OPTIONAL):
                 ctx.chainlog.say(f'REFUSING: {name} {u.status}: {u.reason}')
                 break

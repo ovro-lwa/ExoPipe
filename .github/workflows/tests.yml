@@ -52,3 +52,7 @@ jobs:
         run: python tests/test_email.py
       - name: per-hour 10-minute search seed (size-rule record, table record, header gate)
         run: python tests/test_search_sublst_perhour_seed.py
+      - name: per-hour 10-minute catalog, the conformance table's noise recorded or frozen
+        run: python tests/test_catalog_conform_noise.py
+      - name: per-hour 10-minute catalog, the night view of the published search jobs and the night pass's wiring
+        run: python tests/test_catalog_night_view.py
