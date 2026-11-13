@@ -70,6 +70,8 @@ def items(args, admit=False):
     out = list(cells.expand_cells(args.cells)) if args.cells else []
     for lst in cells.expand(args.lsts, universe=cells.LSTS, kind='LST') if args.lsts else []:
         out += [f'{lst}_{s}' for s in cells.scopes()]
+    if admit and _epochs_only(args):                   # the per-hour form: --epochs alone, every cell of its LSTs
+        out = [c for c in cells.all_cells() if cells.parse_cell(c)[0] in cells.epoch_lsts(args.epochs)]
     if args.scopes:
         keep = set(cells.expand(args.scopes, universe=cells.scopes(), kind='scope'))
         out = [c for c in out if cells.parse_cell(c)[1] in keep]
@@ -560,9 +562,17 @@ def admit_cells(args, out_root, cells_):
         if {_admit_date(p) for p in pairs} & want:
             keep.append(cell)
     if not keep:
-        raise Refusal('--epochs names no night that a selected cell\'s admit-prep record prepared: no cell selected, '
-                      'no record changed')
+        msg = '--epochs names no night that a selected cell\'s admit-prep record prepared: no cell selected, no record changed'
+        if _epochs_only(args):                       # per-hour form: admit-prep admitted the night in no cell (no input)
+            raise NoInput(msg)
+        raise Refusal(msg)
     return keep
+
+
+def _epochs_only(args):
+    """--epochs as the only cell selector: the per-hour form (masters deep_stages.epochs_only)."""
+    return bool(getattr(args, 'epochs', None)) and not (getattr(args, 'cells', None) or getattr(args, 'lsts', None)
+                                                       or getattr(args, 'scopes', None))
 
 
 def admit_signature(reference):
