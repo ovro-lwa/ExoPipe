@@ -800,6 +800,10 @@ def preflight(args, run, cell, lst, band, stokes, date):
         if not gate('epoch.size_rule_of_the_base', why is None, why or f'{s.SIZE_RULE}, as the published attempt'):
             plan['refuse'] = why
             return plan
+        why = table_record_refusal(os.path.join(pub, 'transients', f'Run_{label}'))     # refuse before the work, not after
+        if not gate('epoch.table_record_header', why is None, why or 'search_table_record.csv: the engine\'s columns, or none yet'):
+            plan['refuse'] = why
+            return plan
     # inputs (fingerprinted at run time; listed here for the plan)
     ins = [p for p in sorted(glob.glob(os.path.join(tree, 'subtracted', f'*_{stokes}_sub_{band}.fits')))]
     if stokes == 'V':
@@ -938,6 +942,53 @@ def _run_root(attempt, label):
     return os.path.join(attempt, 'transients', f'Run_{label}')
 
 
+def per_hour_seed_names():
+    """What the per-hour (incremental) mode copies from the published attempt's run directory (transients/Run_<label>/)
+    into the new attempt before the engine runs. The engine APPENDS the night's rows to the three ledgers and to the
+    table's record, and the publish then copies the attempt's files over the published ones - so every cumulative record
+    the engine appends to must be seeded, or the publish would replace it with one night's rows:
+      master_catalog.csv, v_deep_ledger.csv, v_deep_images.csv   the cumulative catalogue and ledgers
+      sigstack/, refusals/                                       the cell's sigma-stack maps and refusal records
+      size_rule.RUN_RECORD (size_rule.json)                      the size / axis rule the published ledger was searched
+          under. Without it the engine reads the seeded ledger as production's rule and refuses every cell searched
+          under the envelope rule ('one rule per run', size_rule.write_run_record) - the defect of 2026-11-11.
+      search_table_record.csv                                    every verdict of the search's bright-source table
+          (deep_search.STR_COLS); without it a per-hour publish left the cell with one night's rows."""
+    from exopipe.phase3.lib.search import size_rule as SZ
+    return ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals', SZ.RUN_RECORD,
+            'search_table_record.csv')
+
+
+def seed_attempt(src, dst):
+    """Copy the items of per_hour_seed_names() that exist under the published run directory ``src`` into the new attempt's
+    run directory ``dst`` (copy_tree: a file replaced, a directory merged). Returns the names copied."""
+    os.makedirs(dst, exist_ok=True)
+    done = []
+    for name in per_hour_seed_names():
+        if os.path.exists(os.path.join(src, name)):
+            copy_tree(os.path.join(src, name), os.path.join(dst, name))
+            done.append(name)
+    return done
+
+
+def table_record_refusal(run_dir):
+    """Why the per-hour mode cannot append to the published search_table_record.csv of ``run_dir``, or None. The engine
+    appends the night's rows under the file's own header and refuses, at the END of the search, a header that does not
+    describe them (deep_search._append_locked: a record written by older code with another column set). The same test
+    here refuses before the work. No file (a cell searched before the record existed): None - the engine starts one.
+    The expected columns are the content test's literal (lib/search/tests.STR_COLS = deep_search.STR_COLS)."""
+    from exopipe.phase3.lib.search import tests as ST
+    p = os.path.join(run_dir, 'search_table_record.csv')
+    if not os.path.exists(p):
+        return None
+    with open(p, newline='') as f:
+        have = next(csv.reader(f), None)
+    if have is None or have == list(ST.STR_COLS):
+        return None
+    return (f'{p}: its header has {len(have)} columns, the engine writes {len(ST.STR_COLS)} ({ST.STR_COLS[-1]!r} last): the '
+            f'night\'s rows cannot be appended to a record written with another column set - re-search the cell (--fresh)')
+
+
 def _read_csv(path):
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return []
@@ -955,10 +1006,7 @@ def detect(run, u, plan, attempt):
     if plan['date']:                     # per-hour: seed the attempt with the published attempt's cumulative records
         src = _run_root(plan['publish'], plan['label'])
         dst = _run_root(attempt, plan['label'])
-        os.makedirs(dst, exist_ok=True)
-        for name in ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals'):
-            if os.path.exists(os.path.join(src, name)):
-                copy_tree(os.path.join(src, name), os.path.join(dst, name))
+        seed_attempt(src, dst)
         # SPEED-UP 2026-11-11: the published parent catalogue of the cell (PyBDSF on the Robust -0.75 Master, about a minute
         # per job) is put where the engine looks for it. The engine decides: it reuses the catalogue only when its .gen.json
         # carries the md5 of the Master being searched, and rebuilds it otherwise (deep_search.py, CAT1/CAT2). The publish
@@ -970,7 +1018,8 @@ def detect(run, u, plan, attempt):
         seeded_cat = ''
         if s.SEED_PARENT_CATALOG and os.path.isdir(cat_src) and not os.path.exists(cat_dst):
             seeded_cat = seed_parent_catalog(cat_src, cat_dst)
-        u.note(f'per-hour mode: attempt seeded from {src} (catalogue, ledgers, refusal records, sigma-stack maps'
+        u.note(f'per-hour mode: attempt seeded from {src} (catalogue, ledgers, refusal records, sigma-stack maps, the size '
+               f'rule\'s record, the table\'s record'
                + (f'; parent catalogue: {seeded_cat}' if seeded_cat else '') + ')')
     log = os.path.join(attempt, f'{plan["cell"]}.log')
     result = os.path.join(attempt, '.engine_result.json')
