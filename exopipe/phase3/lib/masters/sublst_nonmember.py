@@ -249,6 +249,22 @@ def night_plan(run, opts, lst, night, planned_now=False):
                       f'{key}`)')
 
 
+def night_owed(run, opts, lst, night):
+    """{subband: [Stokes]} of the stack jobs of ONE night in its job plan (night_plan): the subbands, and their Stokes,
+    that owe the night an arm-A residual. Empty when the plan holds no job of the night (a job of another night's cell
+    does not count). Raises Refusal (N-2) when this root holds no usable plan of the night. The ONE reading of "the
+    subbands of the night's plan" for the stages after this one (the wideband stage's arm-A gate, the tree entry's
+    choice of bands)."""
+    jobs, _files, _how = night_plan(run, opts, lst, night)
+    cell = f'{lst}_{night}'
+    owed = {}
+    for c, sb, st, _cr in jobs or []:
+        if c == cell:
+            owed.setdefault(sb, [])
+            owed[sb] += [S for S in st if S not in owed[sb]]
+    return owed
+
+
 def _completion(log, cell, sb, S):
     """The stacker's last completion line 'SUBLST <cell> <sb> <S> ... windows=<n>' in its log (production's own evidence
     of a complete stack job, sublst_stack_pass.sh:23), or None."""

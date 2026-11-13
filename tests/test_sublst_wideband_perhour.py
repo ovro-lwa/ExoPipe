@@ -102,15 +102,22 @@ class Root:
         self._patch.__exit__(*exc)
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def write_record(self, step, name, status):
+    def write_record(self, step, name, status, **meta):
         p = record.record_path(self.root, step, name)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, 'w') as f:
-            json.dump({'unit': name, 'status': status, 'reason': '' if status == 'done' else 'N-9 test'}, f)
+            json.dump({'unit': name, 'status': status, 'reason': '' if status == 'done' else 'N-9 test', 'meta': meta}, f)
         return p
 
-    def night_record(self, sb, status='done'):
-        return self.write_record('frames', NM.unit_name(LST, NIGHT, sb), status)
+    def night_record(self, sb, status='done', stokes=('I', 'V')):
+        return self.write_record('frames', NM.unit_name(LST, NIGHT, sb), status, stokes=list(stokes))
+
+    def stack(self, sb, S='I', k=0, night=NIGHT):
+        """One window stack of a night at a subband (an empty file: only its modification time is read)."""
+        p = os.path.join(self.root, LST, f'{LST}_{night}', sb, S, f'sublst_{LST}_{night}_{sb}_{S}_w{k}.fits')
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, 'w').close()
+        return p
 
     def batch_record(self, sb, status='done'):
         return self.write_record('masters', f'loo_{LST}_{sb}', status)
@@ -176,6 +183,93 @@ def test_the_nights_own_record_decides_where_this_root_holds_one():
         t.forget('masters', f'loo_{LST}_{sb}')
         t.night_record(sb)
         assert not FT.wideband_arm_a(c, LST, sb)[0] and FT.wideband_arm_a(c, LST, sb, NIGHT)[0]
+
+
+def plan_of(sbs, stokes=('I', 'V')):
+    """A night_plan (the stack's admit record) with one stack job of the night per subband, and one of another night."""
+    return lambda run, opts, lst, night, planned_now=False: (
+        [(f'{LST}_{NIGHT}', sb, list(stokes), '/cubes') for sb in sbs]
+        + [(f'{LST}_2024-01-02', '73MHz', ['I', 'V'], '/cubes')], ['plan.txt'], 'record')
+
+
+def test_the_record_is_read_against_the_nights_job_plan():
+    """Where this root holds the night's job plan: a subband with a stack job needs the night's own record (the LST-wide
+    record does not stand in for it), done for every Stokes the plan owes; a record of a subband the plan does not hold
+    says nothing; a plan that cannot be read refuses. The plan is read once per run."""
+    with Root() as t:
+        a, b, other = t.members[0], t.members[1], t.members[2]
+        reads = []
+
+        def plan(run, opts, lst, night, planned_now=False):
+            reads.append(night)
+            return plan_of([a, b])(run, opts, lst, night)
+
+        with Patch((NM, 'night_plan', plan)):
+            c = t.ctx()
+            assert NM.night_owed(c.run, None, LST, NIGHT) == {a: ['I', 'V'], b: ['I', 'V']}   # the other night's job apart
+            # a stack job in the plan and no record of the night's unit: not complete, also with the LST-wide record done
+            t.batch_record(a)
+            ok, why, path, how = FT.wideband_arm_a(c, LST, a, NIGHT)
+            assert not ok and 'holds a stack job' in why and why.endswith(': missing') and '--stages nonmember' in how, why
+            assert path == record.record_path(t.root, 'frames', NM.unit_name(LST, NIGHT, a))
+            t.night_record(a)                                   # done for both Stokes: complete
+            assert FT.wideband_arm_a(c, LST, a, NIGHT)[0]
+            t.night_record(b, stokes=('I',))                    # done for Stokes I only: the plan owes V too
+            ok, why, _p, how = FT.wideband_arm_a(c, LST, b, NIGHT)
+            assert not ok and 'for Stokes I only' in why and 'owes Stokes V too' in why and '--stages nonmember' in how, why
+            assert FT.wideband_arm_a(t.ctx(stokes='I'), LST, b, NIGHT)[0]     # ... which a run of Stokes I alone does not need
+            # no stack job of the subband in the plan: a record of an earlier plan says nothing, the LST-wide evidence decides
+            t.night_record(other, 'refused')
+            assert FT.night_arm_a_complete(c, LST, other, NIGHT) is None
+            ok, why, _p, how = FT.wideband_arm_a(c, LST, other, NIGHT)
+            assert not ok and 'masters loo record' in why and '--stages loo' in how, why
+            del reads[:]
+            c = t.ctx()
+            for sb in t.members:
+                FT.wideband_arm_a(c, LST, sb, NIGHT)
+            assert reads == [NIGHT], reads                      # one read of the plan per run
+            # the stage: the group refuses on the subband whose record is missing
+            for sb in t.members:
+                t.night_record(sb)
+                t.batch_record(sb)
+            t.forget('frames', NM.unit_name(LST, NIGHT, b))
+            u = only(t.run()[0], f'{LST}_wideband_{G}_{NIGHT}')
+            assert u.status == 'refused' and f'arm A of {LST} {b} not complete' in u.reason and 'holds a stack job' in u.reason \
+                and not t.calls, (u.status, u.reason)
+
+        def broken(run, opts, lst, night, planned_now=False):
+            raise ValueError('bad plan line')
+
+        with Patch((NM, 'night_plan', broken)):                 # never taken for "no plan"
+            ok, why, _p, _how = FT.wideband_arm_a(t.ctx(), LST, a, NIGHT)
+            assert not ok and 'could not be read' in why and 'ValueError: bad plan line' in why, why
+            u = only(t.run()[0], f'{LST}_wideband_{G}_{NIGHT}')
+            assert u.status == 'refused' and 'could not be read' in u.reason and not t.calls, (u.status, u.reason)
+
+
+def test_a_record_older_than_the_nights_newest_stack_is_not_complete():
+    """The night's residuals are of the stack the unit read: a done record older than the night's newest window stack of
+    the subband refuses (S-G8's rule); another night's stack, or another subband's, does not count."""
+    with Root() as t:
+        sb, name = t.members[1], f'{LST}_wideband_{G}_{NIGHT}'
+        for m in t.members:
+            t.night_record(m)
+        p = record.record_path(t.root, 'frames', NM.unit_name(LST, NIGHT, sb))
+        s = t.stack(sb, 'V', 2)
+        os.utime(p, (1000, 1000))
+        os.utime(s, (2000, 2000))
+        c = t.ctx()
+        ok, why, path, how = FT.wideband_arm_a(c, LST, sb, NIGHT)
+        assert not ok and "older than the night's newest" in why and path == p and '--stages nonmember' in how, why
+        u = only(t.run()[0], name)
+        assert u.status == 'refused' and f'arm A of {LST} {sb} not complete' in u.reason and 'older than' in u.reason \
+            and not t.calls, (u.status, u.reason)
+        os.utime(s, (500, 500))                               # the stack is older than the record: complete
+        os.utime(t.stack(sb, 'I', 0, night='2024-01-02'), (3000, 3000))
+        os.utime(t.stack(t.members[2], 'I', 0), (900, 900))
+        assert FT.wideband_arm_a(c, LST, sb, NIGHT)[0]
+        u = only(t.run()[0], name)
+        assert u.status == 'refused' and STUB_LINE in u.reason and len(t.calls) == 1, (u.status, u.reason)
 
 
 # =====================================================================================================================

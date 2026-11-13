@@ -757,10 +757,10 @@ def test_stage_wiring():
 
 
 def test_the_default_selection_is_the_bands_the_night_owes():
-    """Without --scopes (the per-hour chain) a band has a unit when the night owes it a tree entry by the night's own
-    records: a subband with a stack job in the night's job plan; a wideband group unless the night's wideband unit ended
-    no-input. The bands left out are named in the log. With --scopes, and in a root without a job plan, every band of the
-    selection has a unit, as before."""
+    """Without --scopes (the per-hour chain) a band enters or refuses when the night owes it a tree entry by the night's
+    own records: a subband with a stack job in the night's job plan; a wideband group unless the night's wideband unit
+    ended no-input. A band that owes nothing has a recorded no-input unit with the reason. With --scopes, and in a root
+    without a job plan, every band of the selection is judged, as before."""
     from exopipe.phase3.core.record import Refusal
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
     S = CFG.frames_sublst
@@ -797,47 +797,129 @@ def test_the_default_selection_is_the_bands_the_night_owes():
         assert any('no job plan of the night' in m and 'every band has a unit' in m for m in said), said
         after = t.snapshot()
         # the night's plan holds one subband (a job of ANOTHER night's cell does not count): that subband and the three
-        # groups (no wideband record of the night: each keeps its unit and refuses on what it finds)
+        # groups enter or refuse (no wideband record of the night: each refuses on what it finds); every other subband
+        # has a recorded no-input unit that says why
+        every = {TN.unit_name(LST, b, NEW) for b in S.TREE_BANDS}
         del said[:]
         with Patch((NM, 'night_plan', plan_of(SB))):
             r, rc = t.run(scopes=None)
         got = names(r)
-        assert set(got) == {TN.unit_name(LST, b, NEW) for b in [SB] + groups}, sorted(got)
+        assert set(got) == every, sorted(got)
         assert got[TN.unit_name(LST, SB, NEW)] == 'done' and r.exit_code() == 2, (got, r.exit_code())
-        left = [m for m in said if 'no unit - ' in m]
-        assert len(left) == len(S.TREE_BANDS) - 4 and all('holds no stack job of the subband' in m for m in left), left
+        assert all(got[TN.unit_name(LST, G, NEW)] == 'refused' for G in groups), got
+        left = [u for u in r.units if u.status == 'no-input']
+        assert len(left) == len(S.TREE_BANDS) - 4, [(u.name, u.status) for u in r.units]
+        assert all('no tree entry owed' in u.reason and 'holds no stack job of the subband' in u.reason for u in left), \
+            [u.reason for u in left]
+        assert all(os.path.isfile(record.record_path(t.root, 'frames', u.name)) for u in left)        # recorded
         assert any(f'4 of {len(S.TREE_BANDS)} band(s) owe the night a tree entry' in m for m in said), said
-        # a group whose wideband unit of the night ended no-input owes nothing; done, refused or error keeps the unit
+        # a group whose wideband unit of the night ended no-input owes nothing (no-input, the unit's reason quoted); done
+        # keeps the unit (refused here on what it finds: no weights file, no residual); refused keeps it and refuses T-10
         for G, st in zip(groups, ('no-input', 'done', 'refused')):
             wideband_record(G, st, 'no wideband window for the night: 1 night(s) refused under the band rule')
-        del said[:]
         with Patch((NM, 'night_plan', plan_of(SB))):
             r, rc = t.run(scopes=None)
-        got = names(r)
-        assert set(got) == {TN.unit_name(LST, b, NEW) for b in [SB] + groups[1:]}, sorted(got)
-        assert any(f'{groups[0]}: no unit - ' in m and 'ended no-input' in m and 'band rule' in m for m in said), said
-        # every owed band done -> exit 0: the chain goes on with the search (here: all three groups no-input)
+        by = {u.name: u for u in r.units}
+        assert set(by) == every, sorted(by)
+        u0, u1, u2 = (by[TN.unit_name(LST, G, NEW)] for G in groups)
+        assert u0.status == 'no-input' and 'ended no-input' in u0.reason and 'band rule' in u0.reason, (u0.status, u0.reason)
+        assert u1.status == 'refused' and u1.reason.startswith(('T-2', 'T-3')), (u1.status, u1.reason)
+        assert u2.status == 'refused' and 'T-10' in u2.reason, (u2.status, u2.reason)
+        # every owed band done, the others no-input -> exit 0: the chain goes on with the search
         for G in groups:
             wideband_record(G, 'no-input', 'no admitted night with window stacks')
         with Patch((NM, 'night_plan', plan_of(SB))):
             r, rc = t.run(scopes=None)
-        assert names(r) == {TN.unit_name(LST, SB, NEW): 'done'} and rc is None and r.exit_code() == 0, (names(r), rc)
+        got = names(r)
+        assert set(got) == every and got.pop(TN.unit_name(LST, SB, NEW)) == 'done' and set(got.values()) == {'no-input'} \
+            and rc is None and r.exit_code() == 0, (names(r), rc)
         # the dry run plans the same bands
         del said[:]
         with Patch((NM, 'night_plan', plan_of(SB))):
             r, rc = t.run(scopes=None, dry=True)
-        assert rc == 0 and sum('UNIT ' in m for m in said) == 1, (rc, said)
-        assert sum('no unit - ' in m for m in said) == len(S.TREE_BANDS) - 1, said
-        # no band of the plan: no unit at all, said in the log
+        units = [m for m in said if 'UNIT ' in m]
+        assert rc == 0 and sum('NO-INPUT - ' not in m for m in units) == 1, (rc, said)
+        assert sum('NO-INPUT - ' in m and 'no tree entry owed' in m for m in units) == len(S.TREE_BANDS) - 1, said
+        # no band of the plan: every band no-input, recorded -> exit 3 (nothing to do; the chain goes on)
         with Patch((NM, 'night_plan', plan_of())):
             r, rc = t.run(scopes=None)
-        assert not r.units
+        assert set(names(r)) == every and set(names(r).values()) == {'no-input'} and r.exit_code() == 3, names(r)
         # --scopes: a named band is always judged, plan or not
         with Patch((NM, 'night_plan', plan_of())):
             r, rc = t.run(scopes=f'{SB},{groups[0]}')
         got = names(r)
         assert set(got) == {TN.unit_name(LST, b, NEW) for b in (SB, groups[0])} and got[TN.unit_name(LST, SB, NEW)] == 'done'
         same(t.snapshot(), after)                    # the tree is what the first entry left: nothing else was written
+
+
+def test_a_group_whose_wideband_unit_failed_refuses():
+    """T-10: a wideband group whose unit of the night under this root did not end done (refused, error, still running)
+    refuses before anything of the group is read - its residuals on disk are not that unit's. Done and no-input are judged
+    as before (refused here on what the band holds: no weights file, no residual); no record of the unit too. The dry run
+    says the same."""
+    S = CFG.frames_sublst
+    G = [b for b in S.TREE_BANDS if b not in CFG.instrument.ALL_SUBBANDS][0]
+    name, wb = TN.unit_name(LST, G, NEW), f'{LST}_wideband_{G}_{NEW}'
+
+    with Tree() as t:
+        p = record.record_path(t.root, 'frames', wb)
+
+        def wideband_record(status):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'w') as f:
+                json.dump({'unit': wb, 'step': 'frames', 'status': status, 'reason': 'arm A of 82MHz not complete'}, f)
+
+        def unit_of(r):
+            hits = [u for u in r.units if u.name == name]
+            assert len(hits) == 1, [(u.name, u.status) for u in r.units]
+            return hits[0]
+
+        r, _ = t.run(scopes=G)                                  # no record of the wideband unit: judged as before
+        assert unit_of(r).status == 'refused' and 'T-10' not in unit_of(r).reason, unit_of(r).reason
+        for status in ('refused', 'error', 'running'):
+            wideband_record(status)
+            r, _ = t.run(scopes=G, resume=True)                 # --resume never skips it
+            u = unit_of(r)
+            assert u.status == 'refused' and u.reason.startswith(f'T-10: {LST}_{NEW} {G}: ') and wb in u.reason \
+                and f'ended {status}' in u.reason and 'arm A of 82MHz not complete' in u.reason \
+                and '--stages wideband' in u.reason, (status, u.status, u.reason)
+            assert p in rec_inputs(record.load_record(t.root, 'frames', name))
+            same(t.snapshot(), t.before)
+            assert not t.leases_held()
+        said = []
+        with Patch((FT, 'plan', said.append)):
+            _r, rc = t.run(scopes=G, dry=True)
+        assert rc == 2 and any(f'UNIT {name}: WOULD REFUSE - T-10' in m for m in said), (rc, said)
+        for status in ('done', 'no-input'):
+            wideband_record(status)
+            r, _ = t.run(scopes=G)
+            u = unit_of(r)
+            assert u.status == 'refused' and u.reason.startswith(('T-2', 'T-3')), (status, u.status, u.reason)
+        # a subband is never judged on a wideband record
+        assert TN.wideband_gate(FT._Ctx(t.args(), record.Run('frames', ['test'], t.root, CFG)), LST, SB, NEW) is None
+
+
+def test_a_job_plan_that_cannot_be_read_refuses_the_night():
+    """Without --scopes the bands come from the night's job plan: a plan that cannot be read (not "no plan under this
+    root", which keeps every band) refuses the night as ONE recorded unit, before any band; with --scopes the plan is
+    not read."""
+    def broken(run, opts, lst, night, planned_now=False):
+        raise ValueError('bad plan line')
+
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    said = []
+    with Tree() as t, Patch((NM, 'night_plan', broken)):
+        r, rc = t.run(scopes=None)
+        assert [u.name for u in r.units] == [f'{LST}_{TN.STAGE}_{NEW}'], [(u.name, u.status) for u in r.units]
+        u = r.units[0]
+        assert u.status == 'refused' and 'could not be read' in u.reason and 'ValueError: bad plan line' in u.reason \
+            and r.exit_code() == 2, (u.status, u.reason, r.exit_code())
+        same(t.snapshot(), t.before)
+        with Patch((FT, 'plan', said.append)):
+            r, rc = t.run(scopes=None, dry=True)
+        assert rc == 2 and not r.units and any('WOULD REFUSE' in m and 'could not be read' in m for m in said), (rc, said)
+        r, rc = t.run()                                        # --scopes names the band: judged on its own evidence
+        assert unit(r).status == 'done', (unit(r).status, unit(r).reason)
 
 
 def test_content_tests_count_listed_nights_at_weight_zero():
@@ -923,6 +1005,7 @@ TESTS = [test_entry_equals_the_builders_tree, test_the_earliest_night_gives_the_
          test_refusals_of_the_tree_it_adds_to, test_an_interrupted_run_is_completed,
          test_resume_skips_a_presented_night_with_a_valid_record, test_one_writer_per_tree,
          test_dry_run_plans_and_writes_nothing, test_stage_wiring, test_the_default_selection_is_the_bands_the_night_owes,
+         test_a_group_whose_wideband_unit_failed_refuses, test_a_job_plan_that_cannot_be_read_refuses_the_night,
          test_content_tests_count_listed_nights_at_weight_zero,
          test_the_builders_literals]
 
