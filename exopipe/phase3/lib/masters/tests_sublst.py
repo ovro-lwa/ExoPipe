@@ -549,7 +549,9 @@ def master_record_problems(h, rows, k):
 def window_master_record(path, lst=None, subband=None, **ctx):
     """COADDOP; NCOADD = weighted nights >= LOO_MIN_WEIGHTED_NIGHTS; CONSTDIG = md5 of the sorted night list; HISTORY lists
     the weighted nights as constituents and the others as NOT in the Master; weights = the frozen deep record (in_master 0
-    or a membership veto -> 0; phase3_sublst_loo.py:67-78); no night excluded in data_decisions.csv carries weight."""
+    or a membership veto -> 0; phase3_sublst_loo.py:67-78), plus the nights of the non-member nights list that have no
+    frozen row at weight 0 (phase3_sublst_loo.py:97-98: the batch Master step records them so); no night excluded in
+    data_decisions.csv carries weight."""
     from exopipe.phase3.core import exclusions
     s = _sec()
     m = _MASTER_RE.match(os.path.basename(path))
@@ -574,6 +576,8 @@ def window_master_record(path, lst=None, subband=None, **ctx):
                     else float(r['weight'])
             except (KeyError, ValueError, TypeError):
                 pass
+        for n in _T_mod().nonmember_nights(lst) - set(want):        # listed, no frozen row: weight 0 (loo.py:97-98)
+            want[n] = 0.0
         off = [n for n, w in rows if n not in want or abs(w - want[n]) > 1e-9 * max(1.0, abs(w))]
         if off:
             problems.append(f'{len(off)} night weight(s) != the frozen deep record, e.g. {off[0]}')

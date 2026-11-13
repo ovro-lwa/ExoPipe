@@ -707,6 +707,8 @@ def test_real_content():
               ('sublst_admission', f'{PROD_SL}/09h/09h_2024-12-29/18MHz/I/admission_09h_2024-12-29_18MHz_I.csv'),
               ('sublst_fluxdc_record', f'{PROD_SL}/09h/09h_2024-12-29/18MHz/I/fluxdc_09h_2024-12-29_18MHz.json'),
               ('sublst_window_master', f'{PROD_SL}/09h_masters/18MHz/I/sublst_master_09h_18MHz_I_w2.fits'),
+              # a Master whose record holds listed non-member nights without a frozen row, at weight 0 (2026-11-13)
+              ('sublst_window_master', f'{PROD_SL}/02h_masters/55MHz/I/sublst_master_02h_55MHz_I_w0.fits'),
               ('sublst_loo_residual', w[:-5] + '_resid_loo.fits'),
               ('sublst_input_copy', f'{PROD_SL}/coadd_09h/09h_18MHz/coadd_final/I_deep_Taper_R0_18MHz.fits')]
     for cls, p in checks:
@@ -731,18 +733,26 @@ def test_real_snapshot_parents():
 
 
 def test_pb_cache_env():
-    """The stacker's primary-beam window cache: production's node-local directory outside a parity run, a private one under
-    the run's root in a parity run (the write guard refuses the save of a window the node has not cached yet)."""
+    """The stacker's primary-beam window cache: production's node-local directory outside a parity run; in a parity run a
+    cache under the node-local scratch root (the write guard refuses the save of a window the node has not cached yet;
+    never under --out, which may be on Lustre)."""
     from exopipe.phase3.core import guard
+    from exopipe.phase3.core.record import Refusal
     saved = guard.active
     try:
         guard.active = lambda: False
-        assert TS.pb_cache_env('/x/out') == {}
+        assert TS.pb_cache_env('/fast/x/work') == {} == TS.pb_cache_env()
         guard.active = lambda: True
-        assert TS.pb_cache_env('/x/out') == {'P3_PB_WINDOW_CACHE': '/x/out/_pb_window_cache'}
+        assert TS.pb_cache_env('/fast/x/work') == {'P3_PB_WINDOW_CACHE': '/fast/x/work/pb_window_cache'}
+        try:
+            TS.pb_cache_env('/lustre/x/work')
+        except Refusal as e:
+            assert 'Lustre' in str(e), e
+        else:
+            raise AssertionError('a cache on Lustre was not refused')
     finally:
         guard.active = saved
-    print('  PASS pb_cache_env: {} outside a parity run, <root>/_pb_window_cache in one')
+    print('  PASS pb_cache_env: {} outside a parity run, <node-local scratch>/pb_window_cache in one, Lustre refused')
 
 
 def test_admit_nonmember():

@@ -1439,15 +1439,19 @@ def stack_inputs(lst, cell, sb, croot):
     return cubes, master_path(lst, sb), frozen_weights(lst, sb)
 
 
-def pb_cache_env(root):
+def pb_cache_env(work=None):
     """Environment of the in-place stacker for its primary-beam window cache. Production's pb_apply.window_model_pb keeps a
-    node-local cache (P3_PB_WINDOW_CACHE, default /fast/gh/main/phase3/pb_window_cache) and saves a window there the first
-    time a node computes it. In a parity run that directory is outside the write guard's roots, so a window not yet cached
-    on the node was refused at the save (02h 2024-12-24, 55 and 82 MHz on lwacalim07, 2026-11-13). The cache holds the
-    float32 array the function returns when it computes (a pure function of subband, window and beam directory), so a
-    private cache under the run's own root changes no product. {} outside a parity run: production's directory, as before."""
-    from exopipe.phase3.core import guard
-    return {'P3_PB_WINDOW_CACHE': os.path.join(root, '_pb_window_cache')} if guard.active() else {}
+    node-local cache (P3_PB_WINDOW_CACHE, default /fast/gh/main/phase3/pb_window_cache; node-local, never Lustre) and saves
+    a window there the first time a node computes it. In a parity run that directory is outside the write guard's roots,
+    so a window not yet cached on the node was refused at the save (02h 2024-12-24, 55 and 82 MHz on lwacalim07,
+    2026-11-13). The cache holds the float32 array the function returns when it computes (a pure function of subband,
+    window and beam directory), so a parity run's own cache changes no product; it lives under the node-local scratch root
+    (core.fitsio.scratch_root: --work or the site's SCRATCH_ROOT, refused on Lustre), which the write guard allows, and
+    never under --out (which may be on Lustre). {} outside a parity run: production's directory, as before."""
+    from exopipe.phase3.core import fitsio, guard
+    if not guard.active():
+        return {}
+    return {'P3_PB_WINDOW_CACHE': os.path.join(fitsio.scratch_root(work), 'pb_window_cache')}
 
 
 def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
@@ -1476,7 +1480,7 @@ def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
             u.plan(stack_products(root, lst, cell, sb, S)['admission'], 'sublst_admission')
         if 'I' in stokes:
             u.plan(stack_products(root, lst, cell, sb, 'I')['fluxdc'], 'sublst_fluxdc_record')
-        env = dict({'SUBLST_FLUXDC_WAIT_S': s.FLUXDC_WAIT_S}, **pb_cache_env(root))
+        env = dict({'SUBLST_FLUXDC_WAIT_S': s.FLUXDC_WAIT_S}, **pb_cache_env(getattr(opts, 'work', None)))
         for S in ('I', 'V'):
             if S not in stokes:
                 continue
