@@ -1886,6 +1886,70 @@ def test_register_matches_production():
        'refused entry writes neither file; the production registry and a production run\'s hold are refused (G23)')
 
 
+def test_registry_lock():
+    """THE REGISTRY LOCK (2026-11-13): register.registry_lock is production's register_page.py lock - the same file name
+    (serve.TWO_PORT_LOCK = register_page.py LOCK, read from the live file); 12 concurrent registrations (separate interpreters,
+    as production's registrations are) in one sandbox all survive in registered_pages.json and registry.json; while this
+    process holds the lock a registration waits, then completes; held past wait_s it is refused and neither file changes; the
+    production directory is refused (G23) before its lock is taken."""
+    import re as _re
+    src = open('/lustre/gh/main/phase3/serve/register_page.py').read()
+    m = _re.search(r"^LOCK = os\.path\.join\(D, '([^']+)'\)", src, _re.M)
+    assert m and m.group(1) == CFG.serve.TWO_PORT_LOCK, (m and m.group(1), CFG.serve.TWO_PORT_LOCK)
+    D = f'{T}/reglock'
+    site = f'{T}/reglock_site'
+    os.makedirs(D); os.makedirs(site)
+    for name, obj in (('registry.json', {'pages': [dict(id='hub', kind='static', root=site, greenlit=False)]}),
+                      ('registered_pages.json', {'pages': []}), ('greenlit_pages.json', {'pages': {}})):
+        with open(f'{D}/{name}', 'w') as f:
+            json.dump(obj, f)
+    child = ('''import sys; sys.path.insert(0, sys.argv[1])
+from exopipe.phase3.core import env; env.legacy()
+from exopipe.phase3.core.record import Refusal
+from exopipe.phase3.lib.serve import register
+D, i, wait = sys.argv[2], int(sys.argv[3]), float(sys.argv[4])
+e = dict(id=f'p{i}', kind='review', code='/x/ops/classify_transients.py', argv=['--run', f'/data99/r/Run_{i}', '--queue',
+         f'/data99/r/Run_{i}/q.txt', '--title', f'T{i}'], env={'P3_X': str(i)}, legacy_port=i, greenlit=False,
+         inspection_legacy_port=None, inspection_title=None, title=f'T{i}')
+try:
+    with register.registry_lock(D, wait_s=wait):
+        register.write(register.prepare([e], D))
+    print('ok')
+except Refusal as x:
+    print('REFUSED', x)
+''')
+
+    def start(i, wait=60):
+        return subprocess.Popen([PY, '-c', child, ROOT, D, str(i), str(wait)], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+    ps = {9100 + k: start(9100 + k) for k in range(12)}
+    got = {i: p_.communicate(timeout=300)[0].strip().splitlines()[-1:] for i, p_ in ps.items()}
+    ids = {f'p{i}' for i in ps}
+    rp = {e['id'] for e in json.load(open(f'{D}/registered_pages.json'))['pages']}
+    rg = {e['id'] for e in json.load(open(f'{D}/registry.json'))['pages']}
+    assert all(v == ['ok'] for v in got.values()) and ids <= rp and ids <= rg, (got, sorted(ids - rp), sorted(ids - rg))
+    with register.registry_lock(D):                 # held here: the registration waits, then completes
+        t0 = time.time(); p_ = start(9200)
+        time.sleep(8)
+        assert p_.poll() is None, ('the registration did not wait for the held lock', p_.communicate())
+    out = p_.communicate(timeout=120)[0].strip().splitlines()[-1:]
+    assert out == ['ok'] and time.time() - t0 >= 8 and 'p9200' in {
+        e['id'] for e in json.load(open(f'{D}/registered_pages.json'))['pages']}, out
+    before = {n: open(f'{D}/{n}', 'rb').read() for n in ('registry.json', 'registered_pages.json')}
+    with register.registry_lock(D):                 # held past the writer's wait_s: refused, nothing written
+        out = start(9300, wait=1).communicate(timeout=120)[0].strip().splitlines()[-1:]
+    assert out and out[0].startswith('REFUSED') and 'held by another writer' in out[0], out
+    assert before == {n: open(f'{D}/{n}', 'rb').read() for n in before}
+    try:
+        with register.registry_lock(CFG.serve.TWO_PORT_DIR):
+            pass
+        raise AssertionError('the production registry lock was not refused')
+    except Refusal as e:
+        assert 'G23' in str(e), e
+    ok('registry lock = production register_page.py\'s (.registry.lock): 12 concurrent registrations (separate interpreters) '
+       'all kept in registered_pages.json and registry.json; a held lock makes a registration wait, then it completes; held '
+       'past wait_s it is refused and neither file changes; the production directory is refused (G23)')
+
 def _rules_entry(d, pid_, title='Page', run=None, extra=()):
     run = run or f'{d}/runs/{pid_}'
     os.makedirs(f'{run}/judgements', exist_ok=True)
@@ -2501,6 +2565,7 @@ def main():
         test_inplace_gate_agrees()
         test_forced_probe_before_stop()
         test_register_matches_production()
+        test_registry_lock()
         srv = TwoPortServer(f'{T}/tp_rules', 29865, 29895)
         try:
             test_two_port_rules(srv)

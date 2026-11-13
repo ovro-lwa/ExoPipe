@@ -29,7 +29,7 @@ class serve(_Section):
     # keys no --set / --config can change (DESIGN 11.4; honoured by config/__init__.py)
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
                       'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS', 'TWO_PORT_DIR', 'TWO_PORT_REGISTRY',
-                      'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT',
+                      'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT', 'TWO_PORT_LOCK',
                       'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX')   # the combined view's layout: what the page code
                                                                                     # reads (mirrors of snapshot_combined_view.py)
 
@@ -202,6 +202,10 @@ class serve(_Section):
     TWO_PORT_REGISTRY = 'registry.json'             # register_page.py:25 (REG): what the server reads
     TWO_PORT_REGISTERED = 'registered_pages.json'   # register_page.py:25 (REGD): the registered entries (the re-seed keeps them)
     TWO_PORT_GREENLIT = 'greenlit_pages.json'       # greenlit_overlay.py:16: Gregg's list (read only; applied to every write)
+    TWO_PORT_LOCK = '.registry.lock'                # register_page.py LOCK (2026-11-13): the registry lock - an exclusive flock
+                                                    # every writer of the registry holds for its whole read-modify-write
+                                                    # (register_page.py, reseed_loop_v5.sh, register.registry_lock)
+    TWO_PORT_LOCK_WAIT_S = 900.0                    # register_page.py LOCK_WAIT_S: s to wait for another writer; then refused
     TWO_PORT_PARITY_DIR = 'two_port'                # a parity serve's registry directory under --out
     TWO_PORT_ENV_PREFIXES = ('P3_',)                # an entry's env: these variables of the page's server environment
                                                     # (snapshot_register_page.py:50, SNAP_REGISTER_ENV default)
