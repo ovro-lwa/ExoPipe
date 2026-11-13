@@ -390,7 +390,7 @@ class search_sublst(_Section):
                                             # one <cell>_<S>/ per unit
     PUBLISH_ITEMS = ('Run_{label}', 'transients', '{cell}.log', 'flow/{cell}_10min/catdir', 'flow/{cell}_10min/v110_out')
                                             # copied from the attempt, rsync -a semantics; SP:53-55 (the last two when present)
-    WORK_SUBDIR = 'sublst_search/{arm}'     # attempt dirs <scratch>/<this>/<cell>_<S>_<UTC>/ (+ /flow); SP:25, :42-43
+    WORK_SUBDIR = 'sublst_search/{arm}'     # attempt dirs <scratch>/<this>/<cell>_<S>[_<night>]_<UTC>/ (+ /flow); SP:25, :42-43
     ENGINE_TMP_ROOT = '/tmp'                # the engine child's TMPDIR root, as search_run.ENGINE_TMP_ROOT (SP sets no TMPDIR)
     KEEP_ATTEMPT_ON_SUCCESS = False         # SP:57 'rm -rf $att' after a published success; a failed attempt is always kept (SP:52)
     BANDS = _SUBBANDS + ('Red', 'Green', 'Blue')   # 15 subbands + the three wideband groups; no Full in this tier (B-82; NOCAT:271)
