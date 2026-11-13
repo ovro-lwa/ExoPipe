@@ -701,7 +701,7 @@ def preflight(args, run, cell, lst, band, stokes, date):
     coadd = os.path.join(coadd_root(lst), cell)
     pub = os.path.join(run.out_root, s.PUBLISH_SUBDIR.format(arm=arm), f'{cell}_{stokes}')
     plan = dict(cell=cell, lst=lst, band=band, stokes=stokes, arm=arm, label=label, tree=tree, coadd=coadd, publish=pub,
-                date=date, inputs=[], gates=[], refuse=None, noinput=None, included_dates=None, windows=[],
+                date=date, inputs=[], gates=[], refuse=None, noinput=None, included_dates=None, nonmember_nights=None, windows=[],
                 admitted=[], excluded_nights=[])
 
     def gate(name, ok, detail):
@@ -810,6 +810,20 @@ def preflight(args, run, cell, lst, band, stokes, date):
                                                                          'gates judged by'):
             plan['refuse'] = why
             return plan
+        nm = nonmember_admission(run.out_root, coadd, cell, lst, band, date)             # a night outside the window Masters
+        if nm is not None:
+            if not gate('epoch.nonmember_tree_entry', nm['entry_ok'], nm['entry']):
+                plan['refuse'] = (f'{date} is not in the window Masters of {cell} and has no finished tree entry '
+                                  f'({nm["entry"]}): run frames --tier sublst --epochs {lst}_{date} --stages tree-nonmember '
+                                  f'first; a night is never searched on a deep verdict')
+                return plan
+            if not gate('epoch.nonmember_i_sanity_value', nm['value'] is not None, nm['value_text']):
+                plan['refuse'] = (f'{date} is not in the window Masters of {cell}: its Stokes I sanity gates need the night\'s '
+                                  f'alignment rms, and {nm["value_text"]}. A missing measurement, not a deep veto: the '
+                                  f'deep admit of the night (masters --tier deep --stages admit) records it whatever its '
+                                  f'verdict')
+                return plan
+            plan['nonmember_nights'] = {date: nm['value']}
         why = append_header_refusal(os.path.join(pub, 'transients', f'Run_{label}'))     # refuse before the work, not after
         if not gate('epoch.appended_headers', why is None, why or 'the published ledgers and the table\'s record carry the '
                                                                   'engine\'s columns (or do not exist yet)'):
@@ -914,6 +928,8 @@ def engine_child(argj):
         kw = dict(label=a['label'], stokes=a['stokes'], cadence=a['cadence'])
         if a['included_dates']:
             kw['included_dates'] = a['included_dates']
+        if a.get('nonmember_nights'):
+            kw['nonmember_nights'] = a['nonmember_nights']
         rc = run_deep_cell(a['lst'], a['band'], **kw)
         print('SUBLST-SEARCH-DONE %s %s' % (a['cell'], a['stokes']), flush=True)
         _w({'ok': True, 'rc': rc})
@@ -951,6 +967,55 @@ def seed_parent_catalog(src, dst):
 
 def _run_root(attempt, label):
     return os.path.join(attempt, 'transients', f'Run_{label}')
+
+
+def nonmember_admission(out_root, coadd, cell, lst, band, date):
+    """PER-HOUR, a night OUTSIDE the cell's window Masters (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (3): "run the deep and
+    10-minute searches on them as non-members against the frozen Masters"). None for a night of the co-add copy's record
+    (coadd_final/weights.csv: its provenance and its Stokes I sanity value are the build's) and without that record (the
+    engine's own rule for it stands). Else a dict: entry_ok / entry = the night's own tree-entry record of the band (frames
+    stage tree-nonmember, status done) - the night is admitted to the search by that record, never by a deep verdict; value /
+    value_text = the night's alignment rms in mJy (qa3_rms_mjy) from the deep cell's coadd_final/admissions.csv row of the
+    night, whatever that row's verdict - the same kind of value a build night has in weights.csv; None when there is no row
+    or the row holds no value (a night refused at alignment; every night of a deep cell that carries the master dewarp,
+    which the deep admit refuses whole: named, so a census can count it)."""
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.frames import sublst_tree_nonmember as TN
+    from exopipe.phase3.lib.masters import admit as A
+    wcsv = os.path.join(coadd, 'coadd_final', 'weights.csv')
+    if not os.path.exists(wcsv):
+        return None
+    with open(wcsv, newline='') as f:
+        if date in {r.get('date') for r in csv.DictReader(f)}:
+            return None
+    unit = TN.unit_name(lst, band, date)
+    rec = record.load_record(out_root, 'frames', unit)
+    st = rec.get('status') if rec else 'no record'
+    out = dict(entry_ok=st == 'done', entry=f'frames record {record.record_path(out_root, "frames", unit)}: {st}',
+               value=None, value_text='')
+    deep = os.path.join(cfg().paths.COADD_SB_ROOT, cell)
+    adm = os.path.join(deep, 'coadd_final', A.ADMISSIONS)
+    rows = [r for r in A._rows(adm) if r.get('date') == date] if os.path.exists(adm) else []
+    if not rows:
+        try:
+            dewarped = any(e['mdwarp'] for e in A.installed_reference(cell, deep, read_data=False))
+        except Exception:
+            dewarped = False
+        out['value_text'] = (f'{adm} has no row of {date}'
+                             + (' - DEEP CELL WITH THE MASTER DEWARP (MDWARP): the deep admit refuses the whole cell '
+                                '(admit.mdwarp), so no night of it has a row' if dewarped else ''))
+        return out
+    r = rows[-1]
+    try:
+        v = float(r.get('qa3_rms_mjy') or 'nan')
+    except ValueError:
+        v = float('nan')
+    if not (math.isfinite(v) and v > 0):
+        out['value_text'] = (f'the row of {date} in {adm} holds no qa3_rms_mjy (verdict {r.get("verdict")!r}, reason '
+                             f'{r.get("reason")!r})')
+        return out
+    out.update(value=v, value_text=f'qa3_rms_mjy {v:.2f} mJy from the row of {date} in {adm} (verdict {r.get("verdict")!r})')
+    return out
 
 
 def gate_population_refusal(run_dir, lst, band):
@@ -1166,7 +1231,8 @@ def detect(run, u, plan, attempt):
     log = os.path.join(attempt, f'{plan["cell"]}.log')
     result = os.path.join(attempt, '.engine_result.json')
     a = dict(lst=plan['lst'], band=plan['band'], cell=plan['cell'], label=plan['label'], stokes=plan['stokes'],
-             cadence=s.CADENCE, included_dates=plan['included_dates'], markers=list(s.REFUSAL_MARKERS), result=result)
+             cadence=s.CADENCE, included_dates=plan['included_dates'], nonmember_nights=plan.get('nonmember_nights'),
+             markers=list(s.REFUSAL_MARKERS), result=result)
     from exopipe.phase3.lib.search.deep_step import engine_tmpdir
     etmp = engine_tmpdir(s.ENGINE_TMP_ROOT, f'{plan["cell"]}_{plan["stokes"]}')     # short: AF_UNIX socket paths
     env = dict(engine_env(plan, attempt, etmp), PYTHONPATH=pkg_root())
@@ -1564,6 +1630,9 @@ def _print_plan(plan, stages, attempt):
           f"admitted {len(plan['admitted'])}, excluded now {plan['excluded_nights'] or 'none'})")
     if plan['included_dates']:
         print(f"  included windows: {', '.join(plan['included_dates'])}")
+    if plan.get('nonmember_nights'):
+        print(f"  night(s) outside the window Masters, with the alignment rms (mJy) of the Stokes I sanity gates: "
+              f"{plan['nonmember_nights']}")
     print(f"  co-add copy {plan['coadd']}")
     for name, ok, det in plan['gates']:
         print(f"  gate {'PASS' if ok else 'STOP'} {name}: {det}")

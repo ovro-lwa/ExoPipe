@@ -7,20 +7,29 @@ factor or minimum, an 'off' row, an inconsistent row and a population holding a 
 verdict of a new night's windows is the frozen median's, whatever the windows' own values are. The earlier frames' refusal
 rows are carried under the append's tag (carried_refusals): only the rows of the attempt's newest search (the newest tag
 over EVERY refusal file of the cell, drop-patch rows aside), only the frames the caller keeps, every field but the tag
-unchanged; a newest tag that is not older than the append's refuses. The engine: a whole-cell 10-minute search writes the
-rows and reads none; an append reads them, reads the stage-1 rms of its own windows only, and writes no row.
+unchanged; a newest tag that is not older than the append's refuses. A night outside the window Masters
+(tier_sublst.nonmember_admission): a night of the co-add copy's record is the build's (None); else the night is admitted by
+its own done tree-entry record and takes its Stokes I sanity value from the deep cell's admissions.csv row, whatever the
+verdict; no record, no row (a deep cell with the master dewarp named), or a row without the value leave it unadmitted.
+NOT checked here: the engine's use of the records on frames (a run on real data, in the pull request's record).
 Run: python tests/test_search_gate_population_tenmin.py
 """
 import csv
+import json
 import os
 import shutil
 import sys
+import types
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 
+from exopipe.phase3.core import record as REC                       # noqa: E402
+from exopipe.phase3.lib.frames import sublst_tree_nonmember as TN   # noqa: E402
+from exopipe.phase3.lib.masters import admit as A                   # noqa: E402
 from exopipe.phase3.lib.search import gate_population as GP         # noqa: E402
+from exopipe.phase3.lib.search import tier_sublst as TS             # noqa: E402
 
 T = '/tmp/exopipe3_tests_gate_population_tenmin'
 FAILS, N = [], [0]
@@ -133,12 +142,71 @@ def test_carried_refusals():
           GP.refusal_tag('extraction_I', ext[0]) == '20261109T000000' and GP.newest_search_tag(rd, CELL) == '20261109T000000')
 
 
+def test_nonmember_admission():
+    root = os.path.join(T, 'nonmember')
+    out, coadd, deep_root = (os.path.join(root, x) for x in ('out', 'coadd_copy', 'deep'))
+    deep = os.path.join(deep_root, CELL)
+    for d in (os.path.join(coadd, 'coadd_final'), os.path.join(deep, 'coadd_final')):
+        os.makedirs(d)
+    cfg0, ref0 = TS.cfg, A.installed_reference
+    TS.cfg = lambda: types.SimpleNamespace(paths=types.SimpleNamespace(COADD_SB_ROOT=deep_root))
+    try:
+        new, member = '2025-10-30', '2024-12-27'
+        call = lambda night: TS.nonmember_admission(out, coadd, CELL, LST, BAND, night)
+        check('without the co-add copy\'s record the engine\'s own rule stands (None)', call(new) is None)
+        with open(os.path.join(coadd, 'coadd_final', 'weights.csv'), 'w') as f:
+            f.write(f'date,weight,qa3_rms_mjy\n{member},1.0,300.0\n2024-12-29,0.0,2000.0\n')
+        check('a night of the co-add copy\'s record, weighted or omitted, is the build\'s (None)',
+              call(member) is None and call('2024-12-29') is None)
+        n0 = call(new)
+        check('a new night without a tree-entry record and without a deep admissions row: not admitted, no value, both named',
+              n0 is not None and not n0['entry_ok'] and 'no record' in n0['entry'] and n0['value'] is None
+              and 'has no row of 2025-10-30' in n0['value_text'] and 'MDWARP' not in n0['value_text'], n0)
+        rp = REC.record_path(out, 'frames', TN.unit_name(LST, BAND, new))
+        os.makedirs(os.path.dirname(rp))
+        with open(rp, 'w') as f:
+            json.dump({'status': 'failed'}, f)
+        n1 = call(new)
+        with open(rp, 'w') as f:
+            json.dump({'status': 'done'}, f)
+        n2 = call(new)
+        check('the tree-entry record admits the night only when its status is done',
+              not n1['entry_ok'] and 'failed' in n1['entry'] and n2['entry_ok'] and n2['value'] is None, (n1, n2))
+        A.installed_reference = lambda cell, cell_dir, read_data=True: [dict(mdwarp=True)]
+        n3 = call(new)
+        A.installed_reference = ref0
+        check('no row in a deep cell that carries the master dewarp: named (a census can count it)',
+              n3['value'] is None and 'MDWARP' in n3['value_text'] and 'admit.mdwarp' in n3['value_text'], n3)
+        adm = os.path.join(deep, 'coadd_final', A.ADMISSIONS)
+
+        def rows(*rr):
+            with open(adm, 'w', newline='') as f:
+                w = csv.DictWriter(f, ['date', 'verdict', 'reason', 'qa3_rms_mjy'])
+                w.writeheader()
+                w.writerows(rr)
+        rows(dict(date=new, verdict='refused', reason='alignment: off the master grid', qa3_rms_mjy=''))
+        n4 = call(new)
+        check('a row refused at alignment holds no value: no value, the row\'s verdict and reason named',
+              n4['value'] is None and 'holds no qa3_rms_mjy' in n4['value_text'] and 'alignment: off the master grid'
+              in n4['value_text'], n4)
+        rows(dict(date='2025-10-29', verdict='admitted', reason='', qa3_rms_mjy='250.00'),
+             dict(date=new, verdict='refused', reason='night-image check FAIL: x', qa3_rms_mjy='1234.56'))
+        n5 = call(new)
+        check('a refused row with the value gives the value: the verdict of the deep admit is not a veto here; another '
+              'night\'s row is not read', n5['entry_ok'] and n5['value'] == 1234.56 and "'refused'" in n5['value_text'], n5)
+        rows(dict(date=new, verdict='admitted', reason='', qa3_rms_mjy='310.25'))
+        check('an admitted row gives its value', call(new)['value'] == 310.25)
+    finally:
+        TS.cfg, A.installed_reference = cfg0, ref0
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
     try:
         test_record_and_reader()
         test_carried_refusals()
+        test_nonmember_admission()
     finally:
         shutil.rmtree(T, ignore_errors=True)
     print(f'{N[0] - len(FAILS)} of {N[0]} checks passed')

@@ -124,7 +124,7 @@ def test_v_sanity_record():
           'never caught); a whole-cell deep search with a V search writes the row (median _vf[len // 2] when applied, the '
           'recorded below-minimum otherwise)', i_read > 0 and i_read < i_try < i_vr
           and "if _b02 and included_dates and resid_V and _RR.base_vsanmed(run_root) is None:" in src
-          and "if cadence == 'deep' and not included_dates and resid_V:" in src
+          and "if cadence in ('deep', '10min') and not included_dates and resid_V:" in src   # the 10-minute cadence records it too
           and "lst, scope, 'v_sanity', _vfn, _vf[len(_vf) // 2] if _ok_v else None, SANITY_I_X, SANITY_MIN_NIGHTS," in src
           and "'applied' if _ok_v else 'below-minimum', 'search', _attempt)])" in src, (i_read, i_try, i_vr))
 

@@ -1411,7 +1411,7 @@ def _write_archive_frame(path, data, hdr, cell_tag, d):
 
 
 def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
-                  cadence='deep'):
+                  cadence='deep', nonmember_nights=None):
     """cadence='deep' (hour epochs from the co-add's Stage-1 products) or '10min'
     (frames from tenmin_frames: PB-ratioed, DC-scaled, night-flow-aligned 10-minute
     images minus the Taper Robust 0 master; keys 'YYYY-MM-DDTkk'). Everything after
@@ -1553,6 +1553,17 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _ph = cadence == 'deep' and bool(included_dates)   # PER-HOUR: a deep append, judged by its base's recorded populations
     _ph10 = cadence == '10min' and bool(included_dates)   # PER-HOUR 10-minute: an append (one night's windows), judged by the
     from exopipe.phase3.lib.search import gate_population as _GP   # populations its base attempt recorded (gate_population.csv)
+    # PER-HOUR 10-minute, a night OUTSIDE the window Masters (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (3): searched as a
+    # non-member against the frozen Masters): {night: its alignment rms in mJy}, handed by the step, which holds the evidence
+    # (the night's own done tree-entry record; the value of the deep cell's admissions.csv row, whatever that row's verdict).
+    # Such a night passes the input-provenance gate and is judged by the Stokes I sanity gates with that value against the
+    # median of the build's nights (weights.csv), which it does not enter. Any other use refuses.
+    _nm10 = {str(_k): float(_v) for _k, _v in (nonmember_nights or {}).items()}
+    if _nm10 and not (_ph10 and all(np.isfinite(_v) and _v > 0 for _v in _nm10.values())
+                      and set(_nm10) <= {str(_d)[:10] for _d in included_dates}):
+        raise RuntimeError(f'{lst} {scope}: nonmember_nights {_nm10} is for a per-hour 10-minute append of those nights\' own '
+                           f'windows, each with a positive alignment rms (cadence {cadence}, included_dates '
+                           f'{included_dates}) - REFUSING')
     from exopipe.phase3.lib.search import size_rule as _SZ              # WAVE2 SIZE-RULE (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-...):
     _szr = _SZ.engine_rule(cadence)                                     # WAVE2 SIZE-RULE: None = production's fixed rule; else the checked
     if _szr is not None:                                                # WAVE2 SIZE-RULE: the rule's floors are its 1.5 / 1.5 - another
@@ -1745,6 +1756,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _enough(len(_fin), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes I sanity gate, nights with a qa3 rms', perhour=_ph):   # WAVE2 B-30
             _med = _fin[len(_fin) // 2]
             _wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}                # WAVE2 D-ADMIT: an admitted night's own value, after the median
+            if set(_nm10) & set(_wr):                                      # PER-HOUR 10-minute: a night of the build is no non-member
+                raise RuntimeError(f'{lst} {scope}: night(s) {sorted(set(_nm10) & set(_wr))} handed as outside the window Masters '
+                                   f'are in the co-add record {base}/coadd_final/weights.csv - REFUSING')
+            _wr = {**_wr, **_nm10}                                         # the non-member night's own value, after the median
             _unm_qa3 = {d for d in dates if not (_wr.get(_kd(d), 0) > 0)}   # WAVE2 B-30: unmeasured (named after (1e))
             _bad = [d for d in dates
                     if _wr.get(_kd(d), 0) > 10.0 * _med]
@@ -1840,7 +1855,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _ph10:
             for _st in ('I', 'V'):
                 _tfz[_st] = _GP.frozen_frames(run_root, lst, scope, _GP.TIER_GATES[_st], SEARCH_TIER_RATIO, SEARCH_TIER_MIN,
-                                              lambda _n: is_excluded(lst, scope, _kd(_n), _excl), f'SEARCH-TIER GATE ({_st})')
+                                              lambda _n: _xtest(lst, scope, _kd(_n)), f'SEARCH-TIER GATE ({_st})')
         for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
             _v = np.array(sorted(x for x in _rm.values() if np.isfinite(x) and x > 0))
             _fz = _tfz.get(_st)
@@ -1966,7 +1981,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _vref = _vref | _ADS.same_state_v(_adm)   # WAVE2 D-ADMIT: an admitted night's same-state V refusal (admissions.csv)
         for d in dates:
             _why = ''
-            if _cur is not None and _kd(d) not in _cons and _kd(d) not in _cur and _kd(d) not in _adm:   # WAVE2 D-ADMIT: admitted accepted
+            if (_cur is not None and _kd(d) not in _cons and _kd(d) not in _cur and _kd(d) not in _adm   # WAVE2 D-ADMIT: admitted accepted
+                    and _kd(d) not in _nm10):                              # PER-HOUR 10-minute: a night with its tree-entry record
                 _why = 'not a constituent and absent from the final co-add record (weights.csv)'
                 if _kd(d) in _adm_bad:                                     # WAVE2 D-ADMIT
                     _why += f'; {_adm_bad[_kd(d)]}'                        # WAVE2 D-ADMIT
@@ -2304,7 +2320,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _vfz10 = None                                                      # PER-HOUR 10-minute: an append's V frames are judged by the
     if _ph10 and resid_V:                                              # population its base recorded (a 10-minute attempt has no
         _vfz10 = _GP.frozen_frames(run_root, lst, scope, 'v_sanity', SANITY_I_X, SANITY_MIN_NIGHTS,   # frame_noise.csv); outside the
-                                   lambda _n: is_excluded(lst, scope, _kd(_n), _excl), 'V SANITY GATE')   # try: a refusal, never caught
+                                   lambda _n: _xtest(lst, scope, _kd(_n)), 'V SANITY GATE')   # try: a refusal, never caught
     try:
         _vr = {}
         for _d, _rv in resid_V.items():
