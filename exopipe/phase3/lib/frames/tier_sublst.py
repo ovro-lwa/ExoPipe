@@ -40,6 +40,14 @@ Stages (always run in the order of frames_sublst.ORDER; defaults per operating m
   tree      tree B for the 10-minute search: clv15/phase3_sublst_tenmin_tree.py in place (site PYTHON['py36']), one process
             per band (15 subbands + Red/Green/Blue). Outputs <root>/tenmin_root_x2/<LST>_<band>/{frames.csv, subtracted/
             links, bin_masters/PB_bin<k>_<band>.fits} or NO_WINDOWS.txt [tenmin_tree].
+  tree-nonmember  PER HOUR, on request (in no default), after the night's x2 refine (`flow --tier sublst --stages
+            refine-nonmember`): the entry of ONE night of co-add weight 0 in the tree of each band that has an x2 residual
+            of the night - its links, its rows in frames.csv (the builder's order, the other rows byte for byte), PBNNIGHT
+            (and the header, when the night is the earliest of a window) of the window primary-beam maps, whose pixels a
+            weight-0 night does not change. lib/frames/sublst_tree_nonmember.py (unit of work, inputs, outputs and failure
+            modes T-1..T-8 in that module): units <LST>_tree-nonmember_<band>_<night> [tenmin_tree]. A member night
+            refuses and names the stage `tree`. One writer per band's tree: the lease <tree>/.leases/<LST>_<band>, which
+            the stage `tree` takes too.
   searchframes  optional: REFUSED in the window (crosscheck decision 6, group 14: `search --tier sublst` stays the producer
             of the sub-LST search frames; a frames-only call needs the frames_only seam, frames.md B1/B15).
   verify    content test (b) of exopipe_ops/sublst_reserve_test_residuals.py, ported (R1 per-night rule + LOONCOAD, R2
@@ -322,8 +330,10 @@ def parallel(fn, items, workers):
 
 
 def exclusions():
+    """The 10-minute tier's read, per night (core.exclusions.for_tier; the in-place tree and wideband read the same way,
+    clv15 3e64f79)."""
     from exopipe.phase3.core import exclusions as ex
-    return ex.load()
+    return ex.for_tier('sublst')
 
 
 def report(u):
@@ -501,6 +511,9 @@ def run(args, run):
                 stage_wideband(ctx, lst, ns or None, per_hour=(mode == 'per-hour'))
             elif st == 'tree':
                 stage_tree(ctx, lst)
+            elif st == 'tree-nonmember':
+                from exopipe.phase3.lib.frames import sublst_tree_nonmember
+                sublst_tree_nonmember.stage(ctx, lst, ns)
             elif st == 'searchframes':
                 unit_refused(run, f'{lst}_searchframes', 'not offered in the window: `search --tier sublst` '
                              '(run_deep_cell(cadence=\'10min\')) stays the producer of the sub-LST search frames '
@@ -1018,10 +1031,17 @@ def stage_tree(ctx, lst):
                     u.refuse(f'S-G8 x2 refine of {lst} {sb} not complete ({why}): tree B is built only after the refine of '
                              f'every subband it reads (nocat:236-247 before :264)')
             cdir = os.path.join(tree, f'{lst}_{b}')
-            clean_start(ctx.run, ctx.args, name, [os.path.join(cdir, 'frames.csv')])
-            log = os.path.join(root, 'logs', f'tree_{lst}_{b}.log')
-            res, lines = engine(script, ['--resid-root', x2, '--stack-root', root, '--tree', tree, '--lst', lst,
-                                         '--subbands', b], py, log, unit=u)
+            # one writer per band's tree: the per-night entry (stage tree-nonmember) takes the same lease
+            from exopipe.phase3.lib.frames import sublst_tree_nonmember as TN
+            lease = TN.tree_lease(tree, lst, b, name)
+            lease.acquire(say=lambda m: say(f'frames: [{name}] {m}'))
+            try:
+                clean_start(ctx.run, ctx.args, name, [os.path.join(cdir, 'frames.csv')])
+                log = os.path.join(root, 'logs', f'tree_{lst}_{b}.log')
+                res, lines = engine(script, ['--resid-root', x2, '--stack-root', root, '--tree', tree, '--lst', lst,
+                                             '--subbands', b], py, log, unit=u)
+            finally:
+                lease.release()
             fin = [l for l in lines if l.startswith(f'TREE {lst} {b} ')]
             if not res.ok or not fin:
                 why = refusal_line(lines, res)

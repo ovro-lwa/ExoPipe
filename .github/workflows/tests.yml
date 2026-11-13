@@ -30,6 +30,12 @@ jobs:
         run: python tests/test_masters_wideband_admission.py
       - name: 10-minute residual of a night that is not in the window Masters
         run: python tests/test_sublst_nonmember.py
+      - name: exclusion read scopes (default, snapshot tiers per night)
+        run: python tests/test_exclusion_scope.py
+      - name: 10-minute x2-aligned residual of a night that is not in the window Masters
+        run: python tests/test_sublst_refine_nonmember.py
+      - name: 10-minute tree entry of a night that is not in the window Masters
+        run: python tests/test_sublst_tree_nonmember.py
       - name: R1 epoch header gate
         run: python tests/test_r1_epoch_header_gate.py
       - name: grammar sync with production

@@ -82,9 +82,10 @@ def _run_dir(path, ctx=None):
     return rd or os.path.dirname(os.path.abspath(path))
 
 
-def _excl():
+def _excl(tier=None):
+    """core.exclusions read as the tier reads it (the deep classes serve the sub-LST tier too, which passes tier='sublst')."""
     from exopipe.phase3.core import exclusions
-    return exclusions.load()
+    return exclusions.for_tier(tier)
 
 
 def _band_class(band):
@@ -251,7 +252,7 @@ def merge_gate_record(path, backing_keys=None, **ctx):
             msgs.append(f'{len(nr)} refused rows without a refusal_reason')
     else:
         msgs.append('master_catalog_refused.csv not found')
-    ex = _excl()
+    ex = _excl(ctx.get('tier'))
     bad = [r['cand_id'] for r in acc if ex.is_excluded(r['lst'], r['band'], r['date'])]
     if bad:
         msgs.append(f'{len(bad)} accepted rows on epochs data_decisions excludes now, e.g. {bad[:3]}')
@@ -364,7 +365,7 @@ def conformance_record(path, tier='deep', **ctx):
     nr = [r['cand_id'] for r in removed if not (r.get('removal_reason') or '').strip()]
     if nr:
         msgs.append(f'{len(nr)} removed rows without removal_reason')
-    ex = _excl()
+    ex = _excl(tier)
     lat = cfg.catalog.SITE_LAT_DEG['conform']
     floor = cfg.catalog_conform.DEEP_ELEV_FLOOR_DEG
     epoch = _stage_info(path).get('elev_epoch') or 'mid-hour'   # what the stage applied: no record of it = production's
@@ -716,7 +717,7 @@ def source_catalogue_dir(path, **ctx):
                 msgs.append(f'selection {os.path.basename(sel)} holds Stokes {sorted(st)}')
             sid = {r['cand_id']: r for r in srows}
             alien = n_exm = 0
-            ex = _excl()
+            ex = _excl(ctx.get('tier'))
             for mp in glob.glob(os.path.join(path, '*_source_members.csv')):
                 for m in _rows(mp)[1]:
                     r = sid.get(m['cand_id'])
@@ -767,7 +768,7 @@ def fork_catalogue_dir(path, **ctx):
                     msgs.append(f'{sid}: a member is not in the repeat class')
                 if len(ms) >= 2 and len({(v['lst'], v['date'][:10]) for v in rows}) < 2:
                     msgs.append(f'{sid}: {len(ms)} members from one (LST, night) cell')
-                ex = _excl()
+                ex = _excl(ctx.get('tier'))
                 if any(ex.is_excluded(v['lst'], v['band'], v['date'][:10]) for v in rows):
                     msgs.append(f'{sid}: a member on an epoch data_decisions excludes now')
     else:

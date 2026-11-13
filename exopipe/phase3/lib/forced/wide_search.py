@@ -8,9 +8,10 @@ frame minus hour median - on the cell's fixed grid, every 10-s frame with its ad
   FRAMES   10 s: admitted (TIMES) and the forced evaluation's domain gate at the target (snapshot_forced_eval.gate_mask, in
            place: elevation >= 30 deg, A-team, the night rule, Sun / Jupiter); 1 min: gen5's blocks (admitted frames of one
            minute - MINUTE_RULE - >= BLOCK_MIN_FRAMES, averaged), gated the same way at the block time. A band excluded by
-           data_decisions (core.exclusions) or refused by tier rule 3 for (LST, night) (phase3_tier_rules.deep_search_refused,
-           in place) is skipped, as the evaluation drops it. The target's a-priori screen (zone / clean, snapshot_forced_eval.
-           zone_flags) is recorded per file and tier: the forced queue lists CLEAN measurements only.
+           data_decisions (core.exclusions, scope 'snapshot' as the evaluation reads it) or refused by tier rule 3 for
+           (LST, night) (phase3_tier_rules.deep_search_refused, in place) is skipped, as the evaluation drops it. The target's
+           a-priori screen (zone / clean, snapshot_forced_eval.zone_flags) is recorded per file and tier: the forced queue lists
+           CLEAN measurements only.
   PEAKS    local extrema of |value| over 3 x 3 pixels, EITHER SIGN, more than EDGE_PX inside the cutout; candidates at
            >= PRE_SIGMA x the plane's robust rms, then S/N = value / the LOCAL rms of the forced definition (1.4826 x MAD of the
            STAMP_PX stamp about the peak, its core excluded, >= STAMP_MIN_FRAC of it inside the cutout); kept at |S/N| >= SNR_MIN.
@@ -370,7 +371,7 @@ def search_band(task):
             cell = H.get('CELL')
             lst, date = cell.split('_', 1)
             tra, tde = float(H.get('TARGRA', job['T'][0])), float(H.get('TARGDEC', job['T'][1]))   # stage 2's gate position
-            if X.is_excluded(lst, band, date):
+            if X.load(scope='snapshot').is_excluded(lst, band, date):    # the evaluation's read: flat 'snapshot'
                 ftab.append((cell, '-', 0, -1, 'excluded band'))
                 continue
             if deep_search_refused(lst, date, band, st):
