@@ -698,11 +698,13 @@ def test_real():
                      '--out', os.path.join(d, 'dry'), '--work', os.path.join(d, 'work')])
     assert rc == 2 and 'owed frames' in o and 'PASS D-G3' in o and 'REFUSE deep-producer' in o, (rc, o[-800:], e[-300:])
     assert '18 against their LOO V master, 1 against the central master' in o, o
-    # D-G3 on 07h_Red (rebuild pending, exopipe_ops/rebuild_pending/wideband_admission_20261017.csv): its master holds
-    # 2024-12-23, stacked without 23 and 36 MHz - a violation, the gate refuses - and 2025-10-14 with its 18 MHz excluded
-    # - the 18 MHz exception keeps that night until the master's next rebuild (reported, not a violation). Production's
-    # strict reading (parity/production_20261013.cfg) counts it as a violation too.
-    per_hour_red = ['frames', '--tier', 'deep', '--epochs', '07h_2025-10-15', '--scopes', 'Red', '--stokes', 'V',
+    # D-G3 through the per-hour CLI on a real cell. Since the 2026-11-08 rebuild no installed deep cell holds a membership
+    # violation (all 456 scanned 2026-11-13; the 07h Red case this used is gone, and its 2025-10-15 is excluded): 7 Red cells
+    # hold 12 nights with their excluded 18 MHz. 16h_Red holds 2025-04-05 so - the 18 MHz exception keeps that night until
+    # the master's next rebuild (reported, not a violation); production's strict reading (parity/production_20261013.cfg)
+    # refuses it. A violation itself (a member subband missing) is tested on synthetic records in
+    # test_masters_wideband_admission.py; the carve-out against the engine's own gate in test_d_g3_engine_agree.
+    per_hour_red = ['frames', '--tier', 'deep', '--epochs', '16h_2025-05-08', '--scopes', 'Red', '--stokes', 'V',
                     '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
                     os.path.join(d, 'work')]
     for parity in (False, True):
@@ -710,15 +712,15 @@ def test_real():
                                                                               'production_20261013.cfg')] if parity else []))
         g3 = next((x for x in o.splitlines() if ' D-G3 ' in x), '')
         viol, _, rep = g3.partition('reported, not violations:')
-        assert rc == 2 and 'REFUSE D-G3' in g3 and '07h Red 2024-12-23: IN the master' in viol \
-            and 'missing 23MHz, 36MHz' in viol, (parity, rc, g3, o[-600:], e[-300:])
         if parity:
-            assert '07h Red 2025-10-14: IN the master' in viol and '18 MHz excluded but' in viol, g3
+            assert rc == 2 and 'REFUSE D-G3' in g3 and '16h Red 2025-04-05: IN the master' in viol \
+                and '18 MHz excluded but' in viol, (parity, rc, g3, o[-600:], e[-300:])
         else:
-            assert '2025-10-14' not in viol and '07h Red 2025-10-14: holds its excluded 18 MHz' in rep \
-                and "kept until the master's next rebuild" in rep, g3
-    lines.append('per-hour 07h_2025-10-15 Red: D-G3 refuses 2024-12-23 (no 23/36 MHz) and keeps 2025-10-14 (18 MHz '
-                 'exception; production strict refuses both)')
+            assert 'PASS D-G3' in g3 and '2025-04-05' not in viol \
+                and '16h Red 2025-04-05: holds its excluded 18 MHz' in rep and "kept until the master's next rebuild" in rep, \
+                (parity, rc, g3, o[-600:], e[-300:])
+    lines.append('per-hour 16h_2025-05-08 Red: D-G3 keeps 2025-04-05 (18 MHz exception, reported); production strict '
+                 'refuses it')
     # a night outside the master subtracts the central master: 07h_Blue (no rebuild pending), 2025-10-14 in_master 0
     rc, o, e = _cli(['frames', '--tier', 'deep', '--epochs', '07h_2025-10-14', '--scopes', 'Blue', '--stokes', 'V',
                      '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
