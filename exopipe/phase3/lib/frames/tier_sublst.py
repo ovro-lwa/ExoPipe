@@ -7,6 +7,15 @@ Stages (always run in the order of frames_sublst.ORDER; defaults per operating m
             Called as tier_sublst.stack_night(run, lst, night, ...): units, products and content tests are the masters
             wrapper's (admit_<LST>_<night> with its plan under <out>/_plans/, stack_<LST>_<night>_<sb>; classes
             sublst_job_plan, sublst_window*, sublst_admission, sublst_fluxdc_record), recorded under <out>/_records/frames/.
+  nonmember PER HOUR, on request (in no default): the arm-A residuals of ONE night that is NOT in the installed window
+            Masters (Gregg 2026-11-12: nights that are not in a Master are searched as non-members against the frozen
+            Masters) - residual = the night's window stack minus the installed window Master <root>/<LST>_masters/...,
+            no other night's stack read. Through lib/masters/sublst_nonmember.nonmember_night (unit of work, inputs,
+            outputs and failure modes N-1..N-12 in that module): units nonmember_<LST>_<night>_<sb>, one per subband of
+            the night's plan, outputs <root>/<LST>/<LST>_<night>/<sb>/<S>/..._w<k>_resid_loo.fits
+            [sublst_nonmember_residual], recorded under <out>/_records/frames/. A night that IS in the Masters refuses
+            (its residual is `masters --tier sublst --stages loo`), as does a missing installed Master or an incomplete
+            stack of the night.
   wideband  Red/Green/Blue windows = inverse-variance stacks of the member subband windows, both residual sets:
             clv15/phase3_sublst_wideband.py in place (site PYTHON['default']), one process per (group, night),
             frames_sublst.WIDEBAND_PARALLEL at a time. Gates: arm A complete for every member subband (the done record of
@@ -47,6 +56,8 @@ use it with --parity.
 
 Failure modes (exit 2 = refused, the gate named): a site PYTHON key missing; an override of a PROTECTED key; a production
 root while paths.PRODUCTION_WRITES is False; exclusion list missing (C-09); masters wrapper refusals (G-S01..G-S09);
+the nonmember stage's refusals (N-1..N-12 of lib/masters/sublst_nonmember.py: excluded night, no plan or incomplete stack
+of the night, a member night, a missing or unusable installed window Master, differing flux scales, earlier residuals);
 arm A incomplete (no masters loo record / log line); S-G8 x2 refine incomplete or older than the stacks; wideband engine
 REFUSED (S-G9: mixed or disagreeing flux scales, shapes); S-G10 no window of a group over the LST; tree engine REFUSED
 (S-G11); S-G12 (production's run-starts-clean rule) products of an earlier run where a unit writes, no record of this unit
@@ -377,6 +388,7 @@ class _Ctx:
         self.workers = getattr(args, 'workers', None)
         self.would_refuse = 0
         self.planned = 0
+        self.stages = ()              # the stages of this invocation, set by run()
 
     def lst_dir(self, lst, base=None):
         return os.path.join(base or self.root, lst)
@@ -446,6 +458,7 @@ def run(args, run):
             raise ValueError('tier sublst needs --epochs <LST>_<date> (per hour) or --lsts <LST> (intermittent)')
         mode = 'per-hour' if by_night else 'intermittent'
         stages = requested_stages(args, ctx.S.ORDER, ctx.S.STAGES[mode])
+        ctx.stages = tuple(stages)
         ctx.groups()
         ctx.loo_evidence()
         from exopipe.phase3.core import cells
@@ -471,6 +484,8 @@ def run(args, run):
         for st in stages:
             if st == 'stack':
                 stage_stack(ctx, lst, ns)
+            elif st == 'nonmember':
+                stage_nonmember(ctx, lst, ns)
             elif st == 'wideband':
                 stage_wideband(ctx, lst, ns or None, per_hour=(mode == 'per-hour'))
             elif st == 'tree':
@@ -521,6 +536,43 @@ def stage_stack(ctx, lst, nights):
         else:
             say(f'frames: stack {lst}_{n}: {len(res.get("stack_units", []))} stack unit(s), {len(res.get("jobs", []))} '
                 f'job(s), left out: {"; ".join(res.get("left_out") or []) or "none"}')
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# stage: nonmember (per hour) - the masters wrapper's residual of a night that is not in the window Masters
+# ---------------------------------------------------------------------------------------------------------------------
+
+def stage_nonmember(ctx, lst, nights):
+    """The arm-A residuals of the named night(s) against the INSTALLED window Masters, through
+    lib/masters/sublst_nonmember.nonmember_night (config masters_sublst): one unit nonmember_<LST>_<night>_<sb> per subband
+    of the night's plan, recorded under this run. A night that is in the Masters refuses there and names the batch stage."""
+    from exopipe.phase3.core.record import Refusal
+    if not nights:
+        unit_refused(ctx.run, f'{lst}_nonmember', 'the nonmember stage subtracts ONE named night against the installed '
+                     'window Masters: give --epochs <LST>_<date> (or --lsts with --nights); the residuals of every night '
+                     'of an LST are `masters --tier sublst --stages loo`', ctx.dry, ctx, tier=TIER)
+        return
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    sbs = [s for s in ctx.C.instrument.ALL_SUBBANDS if not ctx.scopes or s in ctx.scopes] or None
+    for n in nights:
+        if ctx.dry:
+            plan(f'  STAGE nonmember {lst}_{n}: lib/masters/sublst_nonmember.nonmember_night (night minus the installed '
+                 f'window Masters under {os.path.join(ctx.root, lst + "_masters")}; config masters_sublst) into {ctx.root}')
+        try:
+            res = NM.nonmember_night(ctx.run, lst, n, sublst_root=ctx.root, subbands=sbs, stokes=tuple(ctx.stokes),
+                                     workers=ctx.workers, fresh=bool(getattr(ctx.args, 'fresh', False)),
+                                     supersede=getattr(ctx.args, 'supersede', None),
+                                     resume=bool(getattr(ctx.args, 'resume', False)),
+                                     stack_planned='stack' in ctx.stages)
+        except (Refusal, SystemExit) as e:
+            unit_refused(ctx.run, f'{lst}_{n}_nonmember', f'masters sub-LST wrapper: {e}', ctx.dry, ctx, tier=TIER)
+            continue
+        if ctx.dry:
+            ctx.planned += 1
+            ctx.would_refuse += int(res.get('would_refuse') or 0)
+        else:
+            done = [u for u in ctx.run.units if u.name in res.get('units', []) and u.status == 'done']
+            say(f'frames: nonmember {lst}_{n}: {len(res.get("units", []))} unit(s), {len(done)} done')
 
 
 # ---------------------------------------------------------------------------------------------------------------------

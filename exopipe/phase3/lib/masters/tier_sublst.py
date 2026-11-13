@@ -16,6 +16,9 @@ Stages, in this order (default --stages = masters.DEFAULT_STAGES['sublst'] = pre
   sources   unit sources_<LST>     parent catalogues on the LST's masters: production's conformance check (exopipe_ops/
                                    gate_inputs.parents, in place) and exopipe_ops/sublst_parent_catalogs.py when stale
   wideband is NOT a masters stage: frames --tier sublst --stages wideband (refactor decision 6; content test (b) is frames' too).
+  The residual of ONE night that is not in the window Masters (per hour; Gregg 2026-11-12) is not a masters stage either:
+  frames --tier sublst --stages nonmember, implemented in lib/masters/sublst_nonmember.py on this module's helpers
+  (class sublst_nonmember_residual). loo stays the only writer of window Masters and of member (leave-one-out) residuals.
 
 Items: --lsts 09h (prep, loo, sources; admit/stack over the LST's nights); --cells <LST>_<night>[_<subband>] (core.cells
 night_cell: stack and admit restricted to those nights / subbands); --epochs <LST>_<date> when the step declares it;
@@ -1349,11 +1352,13 @@ def stack_products(root, lst, cell, sb, S, k=None):
     return out
 
 
-def load_plan(run, opts, lst, key, planned_now=False):
+def load_plan(run, opts, lst, key, planned_now=False, step=None):
     """The job plan: [(cell, sb, [Stokes], cube root)], the plan files, how it was found. From the admit record's outputs
     (DESIGN 11.5: a stage reads only the files listed in the previous stage's record; their sha1 must be unchanged), or from
     --sublst-jobs / --sublst-deepflow-jobs (production job lists; recorded with fingerprints). (None, [], why) in a dry run
-    whose admit stage is planned in the same invocation."""
+    whose admit stage is planned in the same invocation. ``step``: the step whose records hold the admit record (default the
+    caller's, run.step; the non-member stage names the step that planned the night, sublst_nonmember.night_plan)."""
+    step = step or run.step
     files = []
     if opts.sublst_jobs:
         files = [(opts.sublst_jobs, cube_root())]
@@ -1361,7 +1366,7 @@ def load_plan(run, opts, lst, key, planned_now=False):
             files.append((opts.sublst_deepflow_jobs, deepflow_root()))
         how = 'job list file(s) given with --sublst-jobs'
     else:
-        rec = record.load_record(run.out_root, run.step, f'admit_{key}')
+        rec = record.load_record(run.out_root, step, f'admit_{key}')
         if rec is not None and rec.get('status') == 'no-input':
             return [], [], f'admit record no-input: {rec.get("reason", "")[:300]}'
         if rec is None or rec.get('status') != 'done':
@@ -1377,7 +1382,7 @@ def load_plan(run, opts, lst, key, planned_now=False):
             if not os.path.isfile(p) or hashlib.sha1(open(p, 'rb').read()).hexdigest() != sha.get(p):
                 raise Refusal(f'the admit plan {p} changed or vanished since its record (sha1) - re-run --stages admit')
             files.append((p, deepflow_root() if p.endswith('_deepflow.txt') else cube_root()))
-        how = f'admit record {record.record_path(run.out_root, run.step, f"admit_{key}")}'
+        how = f'admit record {record.record_path(run.out_root, step, f"admit_{key}")}'
     jobs, order = {}, []
     for path, root in files:
         for line in _read_jobs(path):

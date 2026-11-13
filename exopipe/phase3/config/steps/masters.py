@@ -455,6 +455,15 @@ class masters_sublst(_Section):
     # without a completion line'). False = that behaviour. True = the spec's G-S05 reading ('every planned stack job done OR
     # refused'): window Masters are then built without the refused (night, subband). Open question for Gregg (impl note Q2).
     LOO_ADMITS_REFUSED_STACKS = False
+    # ---- the residual of ONE night that is not in the window Masters (per hour; lib/masters/sublst_nonmember.py) ----------
+    # Gregg 2026-11-12: nights that are not in a Master are searched as non-members against the frozen Masters. The stage
+    # (frames --tier sublst --stages nonmember) subtracts the INSTALLED window Master from the night's window stacks. What
+    # proves the night's stack jobs complete before it reads them: 'record' = the done stack record stack_<LST>_<night>_<sb>
+    # of this run root (the G-S05 evidence of the loo stage); 'log' = the stacker's own completion line 'SUBLST <cell> <sb>
+    # <S> ... windows=<n>' in <root>/<LST>/logs/<cell>_<sb>_<S>.log (production's evidence, sublst_stack_pass.sh:23), for
+    # parity runs on production stacks, which have no record - as frames_sublst.LOO_EVIDENCE does for arm A. Under both
+    # the admission record must agree with the window files. No ruling: a refactor seam choice.
+    NONMEMBER_STACK_EVIDENCE = 'record'
     # ---- prep (port of sublst_prep_lst.sh) ---------------------------------------------------------------------------------
     PREP_WIDEBAND = ('Red', 'Green', 'Blue')  # wideband groups whose masters prep copies (SUBLST_PREP_WIDEBAND default, prep:22)
     PREP_FILES = ('I_deep_Taper_R0_{b}.fits', 'I_deep_Taper_R075_{b}.fits', 'V_deep_Taper_R0_{b}.fits', 'PB_deep_{b}.fits')   # from the frozen masters (prep:30)
@@ -466,9 +475,11 @@ class masters_sublst(_Section):
     # py36 / py36 / default = sublst_stack_pass.sh:10, nocat:28, catpub:21) - one name per value; this section adds test (a)'s:
     TEST_WINDOWS_PYTHON = 'py36'              # site PYTHON key of sublst_reserve_test_windows.py (catpub:21 PYD, :87)
     STACK_JOB_UNIT = 'two-jobs-I-then-V'      # B-76 default (b): the I and V stacker invocations stay separate; I runs first
-    PARALLEL = dict(stack=4, loo=8)           # units at once in one process when --workers is not given
+    PARALLEL = dict(stack=4, loo=8, nonmember=4)   # units at once in one process when --workers is not given
                                               # (sublst_stack_pass.sh:8 NPAR; nocat:230 xargs -P 8); for the stack stage
-                                              # only when the node's MemAvailable cannot be read (see STACK_MEM_GB)
+                                              # only when the node's MemAvailable cannot be read (see STACK_MEM_GB);
+                                              # nonmember: one (night, subband) reads 12 window stacks and 12 window
+                                              # Masters from Lustre (at most 6 Lustre-heavy workers per node, REVIEW.md)
     # Stack units side by side under a MEMORY BUDGET when --workers is not given. Speed only: a unit's products do not depend
     # on what runs beside it. A unit is one (night, subband): Stokes I then V, one stacker process at a time. The charge is
     # the peak memory of ONE stacker process by image size, measured 2026-11-12 on 03h 2024-12-19 Stokes I with the frozen
