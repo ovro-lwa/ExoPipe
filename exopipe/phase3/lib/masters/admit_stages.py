@@ -291,7 +291,7 @@ ADMISSION_COLS = ('date', 'verdict', 'reason', 'image', 'image_sha1', 'v_image',
                   'flow_sha1', 'reference_constdig', 'reference_md5', 'pixel_factor', 'dc1', 'dc2', 'dc2_nsrc', 'guard_median',
                   'guard_median_source', 'night_image', 'night_image_reason', 'epoch_gate', 'epoch_ratio', 'epoch_reason',
                   'qa3_scale', 'qa3_window', 'stage2_i_rms_mjy', 'stage2_i', 'stage2_v_rms_mjy', 'stage2_v', 'qa3_rms_mjy',
-                  'beam_area', 'beam_gate', 'build_stats_sha1', 'commit', 'utc')
+                  'beam_area', 'beam_gate', 'build_stats_sha1', 'screen_md5', 'commit', 'utc')
 PRODUCTS = tuple((st, kind) for st in ('I', 'V') for kind in ('epoch', 'sub', 'clean'))
 PROV = (('I', 'I_deep_Taper_R075'), ('V', 'V_deep_Taper_R0'))      # coadd_provisional/: the build's provisional masters
 LOCK = '.admit.lock'
@@ -525,6 +525,7 @@ def admit_stage(cell, args, run, out, ran_now):
     from exopipe.phase3.core import record as R, validate
     from exopipe.phase3.lib.masters import (admit as A, build_stats as BS, deep_inplace as IP, deep_stages as DS,
                                             flux_correction as FC, shflux as SH)
+    from exopipe.phase3.lib.dewarp import master_dewarp as MD
     lst, sc = cell.split('_', 1)
     fl, freq_str = sc, DS._freq(sc)
     cd = cell_tree(args, cell)
@@ -550,7 +551,10 @@ def admit_stage(cell, args, run, out, ran_now):
             def fail(gate, why):
                 u.check(gate, False, detail=why[:400])
                 u.refuse(why)
-            refs, med, med_src, factor = admit_gates(cell, cd, prep, frec, ents, fail, write=True)
+            refs, med, med_src, factor, scr = admit_gates(cell, cd, prep, frec, ents, fail, write=True)
+            if scr:
+                for p in (_cfg().masters_verify.DEWARP_SCREEN_RECORD, scr['path']):
+                    u.add_input(p)
             row = DS.scale_row(lst, sc)
             corr_t = FC.load_table(_cfg().masters_fluxscale.FLUXCORR_TABLE)
             if not todo:
@@ -568,6 +572,11 @@ def admit_stage(cell, args, run, out, ran_now):
             for st, v in PROV:
                 pp = os.path.join(cd, 'coadd_provisional', f'{v}_{sc}.fits')
                 prov_d[st] = co.load_image(pp)[0] if os.path.exists(pp) else None
+                if scr and prov_d[st] is not None:             # the dewarp resampled coadd_final/ and subtracted/, not
+                    w = MD.resample(prov_d[st], scr['sx'], scr['sy'])   # these: into the dewarped master's frame, as the
+                    if w is None:                                       # members' products were resampled
+                        raise RuntimeError(f'{pp}: shape {prov_d[st].shape} is not the screen\'s {scr["sx"].shape}')
+                    prov_d[st] = np.nan_to_num(w, nan=0.0)     # load_image's convention
             bst = BS.read(cd)
             S = BS.settings_in_force(co, _cfg())
             prep_rows = {r['date']: r for r in ((prep.get('meta') or {}).get('admit') or {}).get('dates', [])}
@@ -588,7 +597,7 @@ def admit_stage(cell, args, run, out, ran_now):
                 for d, sd, img in todo:
                     rowd = dict.fromkeys(ADMISSION_COLS, '')
                     rowd.update(date=d, image=img, image_sha1=_sha1(img), reference_constdig=ents[0]['constdig'] or '',
-                                reference_md5=ref_md5,
+                                reference_md5=ref_md5, screen_md5=scr['md5'] if scr else '',
                                 pixel_factor=f'{factor:.9f}', guard_median=f'{med:.6f}', guard_median_source=med_src,
                                 build_stats_sha1=bs_sha1, commit=commit, utc=R.utcnow())
                     dests = {k: os.path.join(subd, f'{d}_{k[0]}_{k[1]}_{fl}.fits') for k in PRODUCTS}
@@ -686,6 +695,10 @@ def admit_stage(cell, args, run, out, ran_now):
                             dd, hd = SH.bake(h[0].data, h[0].header.copy(), sc, row, corr_t)
                         hd['ADMITTED'] = (True, 'admitted into the installed master after its build (D-ADMIT)')
                         hd['ADMITREF'] = (str(ents[0]['constdig'] or '')[:32], 'CONSTDIG of the installed master')
+                        if scr:                                # the dewarped master's provenance, as its members' products
+                            for kc, vc in scr['cards'].items():
+                                hd[kc] = vc
+                            hd['ADMWARP'] = ('flow', 'aligned to the dewarped master by its flow; no screen applied (D-ADMIT)')
                         baked[k] = (dests[k], dd, hd)
                     ng = nr['gate']
                     e_ok, e_why, e_med, _n = co._epoch_content_arrays(
@@ -755,12 +768,14 @@ def admit_stage(cell, args, run, out, ran_now):
 
 def admit_gates(cell, cd, prep, frec, ents, fail, write):
     """The admit stage's gates before any night, in its order - one definition for the stage and its dry-run plan (seventh
-    review: the plan lacked three of them): admit-prep's inputs unchanged since it ran; no master dewarp (item 7); the
-    reference copies (write=True: written, or refused when an existing one differs; write=False: an existing copy compared,
+    review: the plan lacked three of them): admit-prep's inputs unchanged since it ran; a master-dewarped cell's screen
+    (item 7: admit.mdwarp_screen; every Stokes master of the measurement, provisional masters un-warped on the screen's grid);
+    the reference copies (write=True: written, or refused when an existing one differs; write=False: an existing copy compared,
     nothing written); the admit flows made against this reference (its MASTER:<COADDOP>:<CONSTDIG> signature - the installed
     master's cards, which the copy carries); a guard median (item 10); the pinned scale row x correction = each installed
     master's pixel factor. ``fail(gate, why)``: the stage refuses at the first, the plan lists each. Returns (reference
-    copies or None, guard median, its source, bake factor)."""
+    copies or None, guard median, its source, bake factor, the screen or None)."""
+    from astropy.io import fits
     from exopipe.phase3.lib.flow import steps_deep as FSD
     from exopipe.phase3.lib.masters import admit as A, deep_stages as DS
     lst, sc = cell.split('_', 1)
@@ -768,10 +783,26 @@ def admit_gates(cell, cd, prep, frec, ents, fail, write):
     if changed:
         fail('admit.prep_inputs', f'admit-prep\'s inputs changed since it ran ({", ".join(os.path.basename(p) for p in changed[:4])}'
                                   f'{" ..." if len(changed) > 4 else ""}) - run admit-prep and the flow step again')
-    if any(e['mdwarp'] for e in ents):
-        fail('admit.mdwarp', f'{cell} carries the master dewarp (MDWARP): its admitted night\'s flow must be made against the '
-                             f'dewarped master and its stage-2 number needs the provisional masters resampled with the '
-                             f'archived screen - not written until the GPU test (DECISIONS_PENDING item 7)')
+    scr = None
+    if any(e['mdwarp'] for e in ents):         # item 7: the flow aligns to the dewarped master (the reference copy is the
+        if not all(e['mdwarp'] for e in ents):  # installed master); the stage-2 number needs the provisional masters resampled
+            fail('admit.mdwarp', f'{cell}: MDWARP on {[e["var"] for e in ents if e["mdwarp"]]} only - the cell\'s masters '
+                                 f'are not of one dewarp')
+        try:
+            scr = A.mdwarp_screen(cell, ents[0]['path'], _cfg().masters_verify.DEWARP_SCREEN_RECORD)
+        except Refusal as e:
+            fail('admit.mdwarp', str(e))
+        for e in ents:
+            if scr and any(e['header'].get(k) != v[0] for k, v in scr['cards'].items()):
+                fail('admit.mdwarp', f'{e["path"]}: its MDW* cards are not the {ents[0]["var"]} master\'s - the cell\'s '
+                                     f'masters are not of one dewarp')
+        for st, v in PROV:
+            pp = os.path.join(cd, 'coadd_provisional', f'{v}_{sc}.fits')
+            if scr and os.path.exists(pp):
+                h = fits.getheader(pp)
+                if h.get('MDWARP') or (h.get('NAXIS2'), h.get('NAXIS1')) != scr['sx'].shape:
+                    fail('admit.mdwarp', f'{pp}: MDWARP {h.get("MDWARP")!r}, shape {(h.get("NAXIS2"), h.get("NAXIS1"))} - '
+                                         f'not an un-warped provisional master on the screen\'s grid {scr["sx"].shape}')
     refs = None
     if write:
         refs = A.write_reference(cd, sc, ents)
@@ -803,7 +834,7 @@ def admit_gates(cell, cd, prep, frec, ents, fail, write):
                 fail('admit.bake_factor', f'the pinned scale row x correction {factor:.9f} is not the installed {e["var"]} '
                                           f'master\'s pixel factor {e["factor"]:.9f} - an admitted night would not be on '
                                           f'its scale')
-    return refs, med, med_src, factor
+    return refs, med, med_src, factor, scr
 
 
 def plan_admit(cell, args, out, planned):
@@ -824,7 +855,8 @@ def plan_admit(cell, args, out, planned):
         ents = A.installed_reference(cell, cd)
     except _Ref as e:
         return lines, gates + [str(e)]
-    _refs, med, med_src, _factor = admit_gates(cell, cd, prep, frec, ents, lambda g, why: gates.append(why), write=False)
+    _refs, med, med_src, _factor, _scr = admit_gates(cell, cd, prep, frec, ents, lambda g, why: gates.append(why),
+                                                    write=False)
     lines.append(f'nights to admit: {[x[0] for x in todo] or "none (no input)"}; guard median {med} ({med_src})')
     sc = cell.split('_', 1)[1]
     has_v = any(e['stokes'] == 'V' and e['data'] is not None for e in ents)

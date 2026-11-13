@@ -12,7 +12,12 @@ compact sources: median |ratio - 1| <= REPRODUCE_TOL (1e-3, Gregg's tolerance), 
 differ by design (the first DC read on another image; the guard median) the test reports by how much. The admitted
 residual's identity (epoch - residual - master) holds; admissions.csv passes its content test; a second run admits
 nothing (never twice); the guard median is the build's recorded one, else the ruled 1.0.
-Run: python tests/test_masters_admit6.py
+Dewarped mode (DECISIONS_PENDING item 7, the design's acceptance of admission into a master-dewarped cell): `--dewarped
+<cell>` runs the end-to-end test on that cell. The members' stored flows align to the pre-dewarp frame, so the flow step
+solves new ones against the dewarped master (GPU host; Gregg's OK per the design), and the test measures, besides
+admission_reproduces, how well the flow takes up the screen. The admitted products carry the master's MDW* cards and
+ADMWARP 'flow'; admissions.csv names the screen (screen_md5 = the record's). The failure paths are not rerun there.
+Run: python tests/test_masters_admit6.py [--dewarped <cell>]
 """
 import calendar
 import csv
@@ -42,6 +47,10 @@ from exopipe.phase3.lib.masters import admit as A                   # noqa: E402
 T = '/tmp/exopipe3_tests_admit6'
 FAILS, N = [], [0]
 CELL, LST, SC = '05h_78MHz', '05h', '78MHz'
+DEWARPED = '--dewarped' in sys.argv
+if DEWARPED:
+    CELL = sys.argv[sys.argv.index('--dewarped') + 1]
+    LST, SC = CELL.split('_', 1)
 REPRODUCE_TOL = 1e-3
 
 
@@ -146,16 +155,21 @@ def test_admit_end_to_end():
     pr = rec(out, 'masters', f'admit-prep_{CELL}')
     check('admit-prep prepares the two nights made new', rc == 0 and sorted(d['date'] for d in pr['meta']['admit']['dates'])
           == nights, (rc, pr.get('reason'), txt[-400:]))
-    for d in nights:                                   # the members' stored flows: fresh, so the flow step solves nothing
+    for d in nights if not DEWARPED else []:           # the members' stored flows: fresh, so the flow step solves nothing
         for f in (f'{d}_scaled_flow.npy', f'{d}_scaled_dewarp.fits'):
             shutil.copy2(os.path.join(flows, f), os.path.join(cd, A.ADMIT_DIR, 'flow', f))
             t = time.time()
             os.utime(os.path.join(cd, A.ADMIT_DIR, 'flow', f), (t, t))
+    t0 = time.time()
     rc, txt = cli('flow', '--stages', 'admit', '--out', out)      # the pairs carry the cell tree's paths
     fr = rec(out, 'flow', f'admit_{CELL}')
-    check('the flow step\'s admit stage takes the stored flows (nothing solved, no GPU) and is done',
-          rc == 0 and fr.get('status') == 'done' and not (fr.get('meta') or {}).get('admit', {}).get('recomputed'),
-          (rc, fr.get('reason'), txt[-400:]))
+    recomp = sorted((fr.get('meta') or {}).get('admit', {}).get('recomputed') or [])
+    if DEWARPED:                                       # stored flows align to the pre-dewarp frame: new ones, on the GPU
+        check(f'the flow step\'s admit stage solves both nights\' flows against the dewarped master ({time.time() - t0:.0f} s)',
+              rc == 0 and fr.get('status') == 'done' and recomp == nights, (rc, fr.get('reason'), recomp, txt[-400:]))
+    else:
+        check('the flow step\'s admit stage takes the stored flows (nothing solved, no GPU) and is done',
+              rc == 0 and fr.get('status') == 'done' and not recomp, (rc, fr.get('reason'), txt[-400:]))
     sel = _select('admit', nights[0], wt, out)
     check('--epochs (admit): before the admission a prepared night selects its cell', sel == [CELL], sel)
     # (the stage's refusal when no guard median exists - none recorded, the ruled value unset - is now reachable only in
@@ -191,7 +205,16 @@ def test_admit_end_to_end():
           + '; '.join(f'{d}: median {v[0]:.6f}, median |r-1| {v[1]:.2e}, {v[2]} sources' for d, v in res.items()))
     check(f'admission_reproduces: each admitted epoch equals the member\'s at bright peaks within {REPRODUCE_TOL:g}',
           all(abs(v[0] - 1) <= REPRODUCE_TOL and v[2] >= 20 for v in res.values()), res)
-    skip = {'HISTORY', 'COMMENT', '', 'ADMITTED', 'ADMITREF', 'GITTAG'}     # GITTAG: the code commit that wrote it
+    if DEWARPED:                                       # item 7: the screen's provenance on every product and row
+        scr = A.mdwarp_screen(CELL, os.path.join(inst, 'coadd_final', f'I_deep_Taper_R075_{SC}.fits'),
+                              CFG.masters_verify.DEWARP_SCREEN_RECORD)
+        bad = [(d, st, k) for d in nights for st in ('I', 'V') for k in ('epoch', 'sub', 'clean')
+               for h in [fits.getheader(os.path.join(cd, 'subtracted', f'{d}_{st}_{k}_{SC}.fits'))]
+               if h.get('ADMWARP') != 'flow' or any(h.get(c) != v[0] for c, v in scr['cards'].items())]
+        check('dewarped cell: every admitted product carries the master\'s MDW* cards and ADMWARP \'flow\'; each row names the '
+              'screen (screen_md5 = the record\'s)', not bad and all(r.get('screen_md5') == scr['md5'] for r in rows),
+              (bad[:4], [r.get('screen_md5') for r in rows], scr['md5']))
+    skip = {'HISTORY', 'COMMENT', '', 'ADMITTED', 'ADMITREF', 'GITTAG', 'ADMWARP'}   # GITTAG: the code commit that wrote it
     std = {'THERMNOI', 'P2RUN'} if CFG.masters_build.HEADER_STANDARD == 'full' else set()   # writers step 1: the night's
     skip |= std                                     # output-standard cards (the members were built under production's headers)
     hdiff, sdiff, night_cards = {}, {}, {}
@@ -1073,7 +1096,8 @@ def main():
     os.makedirs(T)
     try:
         nights = test_admit_end_to_end()
-        test_failure_paths(nights)
+        if not DEWARPED:
+            test_failure_paths(nights)
     finally:
         if not os.environ.get('EXOPIPE3_TEST_KEEP'):            # set to inspect the admission copy afterwards
             shutil.rmtree(T, ignore_errors=True)
