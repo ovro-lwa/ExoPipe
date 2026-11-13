@@ -609,3 +609,249 @@ def nonmember_night(run, lst, night, sublst_root=None, subbands=None, stokes=('I
     sel = TS.Selection.one_night(lst, night, subbands, stokes)
     bad = stage_nonmember(run, opts, sel, sublst_root or run.out_root, planned_now=bool(stack_planned))
     return {'units': [u.name for u in run.units if u.name.startswith(f'{STAGE}_{lst}_{night}')], 'would_refuse': bad}
+
+
+# =====================================================================================================================
+# the non-member nights list: one night put on it (stage nonmember-list; per hour, on request)
+# =====================================================================================================================
+# The list (tier_sublst.nonmember_file: <paths.OPS_ROOT>/sublst_nonmember_nights.txt, 'LST NIGHT' per line) is the ONE
+# switch that admits a night without a usable qa3_scale in the frozen deep weights: production's launchers, stacker,
+# leave-one-out, refine and tree builder read it in place, and so does tier_sublst.admit_plan. A night observed after the
+# deep weights were frozen has no row there, so the per-hour chain puts it on the list in this one explicit step (agreed
+# with the refactor chat 2026-11-13; ruling: nights not in a Master are searched as non-members against the frozen
+# Masters, Gregg 2026-11-12). The step
+#   L-1 refuses a night excluded in data_decisions.csv in every subband it reads (exclusion is absolute); an excluded
+#       subband never counts as a reason to list the night;
+#   L-2 reads each subband's frozen weights and writes nothing when every subband has a usable qa3_scale ('not needed':
+#       the stack admission takes such a night without the list). A listed night with member rows in some subbands is
+#       the normal state (the list is per night, membership per subband; production's readers subtract the weighted
+#       nights themselves), so member rows are recorded, never refused;
+#   L-3 refuses a night without a cube directory under the cube roots (nothing to stack: no line for a mistyped night);
+#   L-4 appends under an exclusive flock on the list, once (a line already there is not added twice): one '#' line of
+#       provenance and then the exact 'LST NIGHT' line. The file is never rewritten and never created here;
+#   L-5 refuses to write where this run may not: under a production root while paths.PRODUCTION_WRITES is False, or
+#       outside the write guard's roots in a parity run - unless the night is already listed (nothing to write);
+#   L-6 reads the list back through tier_sublst.nonmember_nights (the parser of production's readers) and refuses when
+#       the night is not on it.
+# Removal of a line stays a deliberate act by hand; nothing here removes one.
+# Output (the unit's product, so a batch reader can see why a night is listed): <out>/_plans/nonmember_list_<LST>_<night>.json
+# [sublst_nonmember_list_record] - the list and its sha256 before and after, the action ('append', 'already-listed',
+# 'not-needed'), the reason, UTC, the ruling, and per subband the frozen weights file, its sha256, row or no row,
+# qa3_scale, in_master, excluded. A later run of the unit keeps the record of the run that appended ('appended_by').
+LIST_STAGE = 'nonmember-list'
+LIST_CLASS = 'sublst_nonmember_list_record'
+LIST_RULING = 'R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS'
+
+
+def list_unit_name(lst, night):
+    return f'{LIST_STAGE}_{lst}_{night}'
+
+
+def list_record_path(out_root, lst, night):
+    return os.path.join(out_root, '_plans', f'nonmember_list_{lst}_{night}.json')
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 22), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
+def weights_state(lst, sb, night):
+    """What the frozen deep weights of (LST, subband) hold for the night: {'subband', 'weights' (the file), 'sha256' (None:
+    no file), 'row' (a row of the night exists), 'qa3_scale' and 'in_master' (the row's text), 'usable'}. 'usable' is the
+    stack admission's own test (tier_sublst.admit_plan, sublst_run_lst_nocat.sh:177): a qa3_scale that reads as a number
+    above masters_sublst.QA3_ADMIT_FLOOR; the last row of the night decides, as there."""
+    wp = TS.frozen_weights(lst, sb)
+    st = dict(subband=sb, weights=wp, sha256=None, row=False, qa3_scale=None, in_master=None, usable=False)
+    try:
+        with open(wp, newline='') as f:
+            rows = list(csv.DictReader(f))
+    except OSError:
+        return st
+    st['sha256'] = _sha256(wp)
+    dc = None
+    for r in rows:
+        if r.get('date') == night:
+            st.update(row=True, qa3_scale=r.get('qa3_scale'), in_master=r.get('in_master'))
+            try:
+                dc = float(r['qa3_scale'])
+            except (KeyError, ValueError, TypeError):
+                dc = None
+    st['usable'] = not (dc is None or not (dc == dc) or dc <= TS._sec().QA3_ADMIT_FLOOR)
+    return st
+
+
+def _listed(text, lst, night):
+    """A line of (LST, night) in the list's text - the test of production's parser (phase3_sublst_loo.nonmember_nights)."""
+    for ln in text.splitlines():
+        p = ln.split()
+        if len(p) >= 2 and not ln.startswith('#') and p[0] == lst and p[1] == night:
+            return True
+    return False
+
+
+def append_list_line(path, lst, night, why):
+    """L-4: append '# <why>' and '<LST> <night>' to the list under an exclusive flock, unless a line of the night is there.
+    Opened for append (every write lands at the end; the file is never rewritten, never created: a missing list raises
+    Refusal); a missing final newline is completed first. Returns True when the line was written."""
+    import fcntl
+    if not os.path.isfile(path):
+        raise Refusal(f'L-4: the non-member nights list {path} does not exist: this step appends to the list production '
+                      f'reads and never creates one')
+    with open(path, 'a+') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.seek(0)
+            text = f.read()
+            if _listed(text, lst, night):
+                return False
+            f.write(('' if not text or text.endswith('\n') else '\n') + f'# {why}\n{lst} {night}\n')
+            f.flush()
+            os.fsync(f.fileno())
+            return True
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def write_refusal(path):
+    """L-5: why this run may not write the list, or None."""
+    from exopipe.phase3.core import guard
+    from exopipe.phase3.lib.masters import deep_inplace
+    if guard.active() and not guard.is_allowed(path):
+        return f'{path} is outside the write guard\'s roots (a parity run never writes a production list)'
+    root = deep_inplace.is_production_path(path)
+    if root and not TS.cfg().paths.PRODUCTION_WRITES:
+        return f'{path} is under the production root {root} and paths.PRODUCTION_WRITES is False (refactor window)'
+    return None
+
+
+def list_assess(lst, night, subbands=None):
+    """Everything the step decides from, read only: {'path', 'listed', 'states' (weights_state per subband, with
+    'excluded'), 'need' (subbands that are not excluded and have no usable qa3_scale), 'cubes' (cube directories of the
+    night that exist), 'action', 'refuse'}. action: 'refuse', 'not-needed', 'already-listed' or 'append'. Raises Refusal
+    when the two exclusion readers disagree (G-M01)."""
+    cell = f'{lst}_{night}'
+    path = TS.nonmember_file()
+    states = []
+    for sb in (subbands or TS.subbands()):
+        st = weights_state(lst, sb, night)
+        ex, _ = TS.exclusion_readers_agree(lst, sb, [night])
+        st['excluded'] = bool(ex.is_excluded(lst, sb, night))
+        states.append(st)
+    need = [st['subband'] for st in states if not st['excluded'] and not st['usable']]
+    cubes = [d for d in (os.path.join(TS.cube_root(), cell), os.path.join(TS.deepflow_root(), cell)) if os.path.isdir(d)]
+    listed = night in TS.nonmember_nights(lst)
+    a = dict(path=path, listed=listed, states=states, need=need, cubes=cubes, refuse=None)
+    if states and all(st['excluded'] for st in states):
+        a['refuse'] = (f'L-1: {lst} {night} is excluded in data_decisions.csv in every subband read '
+                       f'({len(states)}): exclusion is absolute - an excluded night is never listed')
+    elif not need:
+        a['action'] = 'not-needed'
+    elif listed:
+        a['action'] = 'already-listed'
+    elif not cubes:
+        a['refuse'] = (f'L-3: no cube directory of {cell} under {TS.cube_root()} or {TS.deepflow_root()}: nothing to '
+                       f'stack, no line added')
+    else:
+        why = write_refusal(path)
+        if why:
+            a['refuse'] = (f'L-5: {lst} {night} needs a line in the non-member nights list ({len(need)} subband(s) '
+                           f'without a usable qa3_scale in the frozen deep weights, e.g. {need[0]}) and this run may '
+                           f'not write it: {why}')
+        else:
+            a['action'] = 'append'
+    if a['refuse']:
+        a['action'] = 'refuse'
+    return a
+
+
+def _list_summary(a, lst, night):
+    n_row = sum(1 for st in a['states'] if st['row'])
+    n_exc = sum(1 for st in a['states'] if st['excluded'])
+    return (f'{lst} {night}: {len(a["states"])} subband(s) read, {n_row} with a row in the frozen deep weights, '
+            f'{len(a["need"])} without a usable qa3_scale' + (f' ({",".join(a["need"])})' if a['need'] else '')
+            + (f', {n_exc} excluded' if n_exc else '') + f'; list {a["path"]}: '
+            + ('holds the night' if a['listed'] else 'does not hold the night'))
+
+
+def list_night(run, lst, night, subbands=None):
+    """Stage nonmember-list for ONE night (frames --tier sublst imports this): put the night on the non-member nights
+    list when the stack admission needs it there (rules L-1 .. L-6 above). One unit nonmember-list_<LST>_<night>; its
+    record holds what was read and done (meta 'nonmember_list': the list and its sha256 before and after, the action, the
+    reason, UTC, and per subband the frozen weights file, its sha256, row or no row, qa3_scale, in_master, excluded).
+    A dry run prints the plan and writes nothing. Returns {'unit', 'action', 'would_refuse'}."""
+    import time
+    from exopipe.phase3.core import cells as CL
+    CL.parse_epoch(f'{lst}_{night}')
+    TS.clear_p3_env()
+    viol = TS.mirror_violations()                    # the list's path is a mirrored literal of the in-place readers
+    if viol:
+        raise Refusal('config differs from the in-place code it mirrors: ' + '; '.join(viol))
+    name = list_unit_name(lst, night)
+    if run.dry_run:
+        try:
+            a = list_assess(lst, night, subbands)
+        except Refusal as e:
+            TS.say(f'[sublst {LIST_STAGE} {lst}_{night}] WOULD REFUSE: {e}')
+            return {'unit': name, 'action': 'refuse', 'would_refuse': 1}
+        TS.say(f'[sublst {LIST_STAGE} {lst}_{night}] {_list_summary(a, lst, night)}')
+        TS.say(f'    {name}: ' + {'refuse': f'WOULD REFUSE: {a["refuse"]}',
+                                 'not-needed': 'not needed (every subband read has a usable qa3_scale or is excluded): '
+                                               'nothing would be written',
+                                 'already-listed': 'already listed: nothing would be written',
+                                 'append': f'WOULD APPEND "{lst} {night}" to {a["path"]}'}[a['action']])
+        return {'unit': name, 'action': a['action'], 'would_refuse': int(a['action'] == 'refuse')}
+    action = 'refuse'                                # a refusal ends the unit's block: the unit record holds the reason
+    with run.unit(name, lst=lst, night=night, stage=LIST_STAGE) as u:
+        a = list_assess(lst, night, subbands)
+        u.set_admitted([night])
+        for p in [a['path']] + [st['weights'] for st in a['states']]:
+            if os.path.exists(p):
+                u.add_input(p)
+        utc = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        reason = (f'no usable qa3_scale in the frozen deep weights at {",".join(a["need"])}' if a['need'] else
+                  'every subband read has a usable qa3_scale in the frozen deep weights or is excluded')
+        meta = dict(lst=lst, night=night, unit=name, list=a['path'],
+                    sha256_before=_sha256(a['path']) if os.path.isfile(a['path']) else None,
+                    action=a['action'], reason=reason, utc=utc, ruling=LIST_RULING, cubes=a['cubes'], subbands=a['states'])
+        u.meta['nonmember_list'] = meta
+        out = list_record_path(run.out_root, lst, night)
+        u.note(_list_summary(a, lst, night))
+        if a['refuse']:
+            u.refuse(a['refuse'])
+        if a['action'] == 'append':
+            wrote = append_list_line(a['path'], lst, night,
+                                     f'{lst} {night}: added {utc} by exopipe3 {LIST_STAGE} (unit {name}): {reason}; '
+                                     f'{LIST_RULING}')
+            meta['action'] = 'append' if wrote else 'already-listed'      # another writer added it under the lock
+            meta['sha256_after'] = _sha256(a['path'])
+            u.note(f'appended "{lst} {night}" to {a["path"]}' if wrote else
+                   f'"{lst} {night}" was added to {a["path"]} by another writer meanwhile: nothing written')
+        else:
+            u.note({'not-needed': 'not needed: nothing written (the stack admission takes the night without the list)',
+                    'already-listed': 'already listed: nothing written'}[a['action']])
+        if meta['action'] != 'not-needed':
+            ok = night in TS.nonmember_nights(lst)                        # L-6: through the readers' own parser
+            u.check('nonmember_list.read_back', ok, detail=f'{lst} {night} in {a["path"]} by tier_sublst.nonmember_nights')
+            if not ok:
+                u.refuse(f'L-6: {lst} {night} is not on {a["path"]} when read back through the readers\' parser')
+        prev = {}
+        if os.path.isfile(out):                      # the record of the run that appended outlives later runs of the unit
+            try:
+                import json
+                with open(out) as f:
+                    prev = json.load(f)
+            except (OSError, ValueError):
+                prev = {}
+        by = prev if prev.get('action') == 'append' else prev.get('appended_by')
+        if by and meta['action'] != 'append':
+            meta['appended_by'] = {k: v for k, v in by.items() if k != 'appended_by'}
+        record.atomic_write_json(out, meta)
+        u.add_output(out, LIST_CLASS, lst=lst)
+        action = meta['action']
+        TS.say(f'[sublst {LIST_STAGE} {lst}_{night}] {action}: {reason}')
+    return {'unit': name, 'action': action, 'would_refuse': 0}

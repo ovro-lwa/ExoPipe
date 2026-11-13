@@ -683,12 +683,251 @@ def test_frames_stage():
         assert [u.status for u in run.units] == ['refused'] and 'ONE named night' in run.units[0].reason
 
 
+# =====================================================================================================================
+# the non-member nights list: one night put on it (stage nonmember-list)
+# =====================================================================================================================
+
+class ListInputs:
+    """The list step's inputs inside a Tree's directory: the list, frozen deep weights per subband, a cube directory.
+    rows: {subband: [(date, qa3_scale, in_master)], or None for no weights file}. A context manager that points the
+    step's readers at them."""
+
+    def __init__(self, t, rows, listed=(), cube=True, final_newline=True):
+        self.list = os.path.join(t.dir, 'sublst_nonmember_nights.txt')
+        text = '# SUB-LST NON-MEMBER NIGHTS (synthetic)\n' + ''.join(f'{l} {n}\n' for l, n in listed)
+        with open(self.list, 'w') as f:
+            f.write(text if final_newline else text.rstrip('\n'))
+        self.wdir = os.path.join(t.dir, 'frozen')
+        for sb, rr in rows.items():
+            if rr is None:
+                continue
+            os.makedirs(os.path.join(self.wdir, LST, sb))
+            with open(self.weights(sb), 'w', newline='') as f:
+                w = csv.writer(f)
+                w.writerow(['date', 'qa3_scale', 'in_master', 'weight'])
+                w.writerows([d, q, m, 1.0] for d, q, m in rr)
+        self.cubes = os.path.join(t.dir, 'cubes')
+        if cube:
+            os.makedirs(os.path.join(self.cubes, CELL))
+        self.root = t.root
+        self._patch = Patch((TS, 'nonmember_file', lambda: self.list),
+                            (TS, 'frozen_weights', lambda lst, sb: os.path.join(self.wdir, lst, sb, 'weights.csv')),
+                            (TS, 'cube_root', lambda: self.cubes),
+                            (TS, 'deepflow_root', lambda: os.path.join(t.dir, 'deepflow')),
+                            (TS, 'mirror_violations', lambda: []))    # the in-place clv15 literals: not data-free
+
+    def weights(self, sb):
+        return os.path.join(self.wdir, LST, sb, 'weights.csv')
+
+    def __enter__(self):
+        self._patch.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.__exit__(*exc)
+
+    def text(self):
+        return open(self.list).read()
+
+    def go(self, sbs=('18MHz', '73MHz'), dry=False):
+        """Run the step for the new night; returns (the action, the unit or None in a dry run, the record.Run)."""
+        r = record.Run('frames', ['test'], self.root, CFG, dry_run=dry)
+        res = NM.list_night(r, LST, NEW, subbands=sbs)
+        hits = [u for u in r.units if u.name == NM.list_unit_name(LST, NEW)]
+        return res['action'], (hits[-1] if hits else None), r
+
+
+MEMBER_ROWS = [(d, 0.95, 1) for d in MEMBERS]
+
+
+def production_parser(text, lst):
+    """clv15 phase3_sublst_loo.nonmember_nights on a text (the parser of every production reader of the list)."""
+    out = set()
+    for ln in text.splitlines(True):
+        p = ln.split()
+        if len(p) >= 2 and not ln.startswith("#") and p[0] == lst:
+            out.add(p[1])
+    return out
+
+
+def test_list_appends_a_night_without_a_usable_scale():
+    with Tree() as t, ListInputs(t, {'18MHz': MEMBER_ROWS, '73MHz': MEMBER_ROWS + [(NEW, 0.9, 1)]},
+                                 listed=[(LST, '2023-12-31'), ('10h', NEW)]) as li:
+        before = li.text()
+        action, u, run = li.go()
+        assert action == 'append' and u.status == 'done', (action, u.status, u.reason)
+        after = li.text()
+        added = after[len(before):].splitlines()
+        assert after.startswith(before) and len(added) == 2, added          # appended, never rewritten
+        assert added[0].startswith(f'# {LST} {NEW}: added ') and '18MHz' in added[0] and NM.LIST_RULING in added[0]
+        assert added[1] == f'{LST} {NEW}'
+        assert production_parser(after, LST) == {'2023-12-31', NEW} == TS.nonmember_nights(LST)
+        assert production_parser(after, '10h') == {NEW}                      # the other hour's line is untouched
+        rec = record.load_record(t.root, 'frames', NM.list_unit_name(LST, NEW))
+        m = rec['meta']['nonmember_list']
+        assert m['action'] == 'append' and m['list'] == li.list and m['sha256_before'] != m['sha256_after']
+        assert m['sha256_after'] == hashlib.sha256(open(li.list, 'rb').read()).hexdigest() and m['utc'].endswith('Z')
+        by = {s['subband']: s for s in m['subbands']}
+        assert by['18MHz']['row'] is False and by['18MHz']['usable'] is False and by['18MHz']['in_master'] is None
+        assert by['73MHz']['row'] is True and by['73MHz']['usable'] is True and by['73MHz']['in_master'] == '1'
+        for sb in ('18MHz', '73MHz'):
+            assert by[sb]['weights'] == li.weights(sb)
+            assert by[sb]['sha256'] == hashlib.sha256(open(li.weights(sb), 'rb').read()).hexdigest()
+        out = NM.list_record_path(t.root, LST, NEW)
+        assert [o['path'] for o in rec['outputs'] if o['class'] == NM.LIST_CLASS] == [out]
+        assert validate.run(NM.LIST_CLASS, out)[0]['passed']
+        action, u, _ = li.go()                                               # once: a second run adds nothing
+        assert action == 'already-listed' and u.status == 'done' and li.text() == after
+        again = record.load_record(t.root, 'frames', NM.list_unit_name(LST, NEW))['meta']['nonmember_list']
+        assert again['action'] == 'already-listed' and again['appended_by']['utc'] == m['utc']    # why it is listed stays
+        assert again['appended_by']['sha256_before'] == m['sha256_before']
+        # the decision record's content test reads the list as it is NOW: a line removed by hand since fails it
+        with open(li.list, 'w') as f:
+            f.write(before)
+        r = validate.run(NM.LIST_CLASS, out)
+        assert not r[0]['passed'] and 'is not on' in r[0]['detail'], r
+
+
+def test_list_writes_nothing_when_not_needed():
+    usable = MEMBER_ROWS + [(NEW, 0.9, 0)]                   # a row with a usable scale, weight 0 in the Master
+    with Tree() as t, ListInputs(t, {'18MHz': usable, '73MHz': MEMBER_ROWS + [(NEW, 1.1, 1)]}) as li:
+        before = li.text()
+        action, u, _ = li.go()
+        assert action == 'not-needed' and u.status == 'done' and li.text() == before
+    # a listed night whose subbands all have member rows is the normal state of the list (per night; membership is per
+    # subband): recorded, never refused
+    with Tree() as t, ListInputs(t, {'18MHz': usable, '73MHz': usable}, listed=[(LST, NEW)]) as li:
+        before = li.text()
+        action, u, _ = li.go()
+        assert action == 'not-needed' and u.status == 'done' and li.text() == before
+    # the stack admission's own test of 'usable': at or under the floor, not a number, NaN and no weights file all need the list
+    floor = CFG.masters_sublst.QA3_ADMIT_FLOOR
+    for bad in ([(NEW, floor, 1)], [(NEW, '', 1)], [(NEW, 'nan', 1)], None):
+        rows = None if bad is None else MEMBER_ROWS + bad
+        with Tree() as t, ListInputs(t, {'18MHz': rows, '73MHz': usable}) as li:
+            assert NM.weights_state(LST, '18MHz', NEW)['usable'] is False, bad
+            action, u, _ = li.go()
+            assert action == 'append' and production_parser(li.text(), LST) == {NEW}, (bad, action)
+
+
+def test_list_refusals():
+    norow = {'18MHz': MEMBER_ROWS, '73MHz': MEMBER_ROWS}
+    with Tree(excluded=[(LST, '18MHz', NEW), (LST, '73MHz', NEW)]) as t, ListInputs(t, norow) as li:
+        before = li.text()
+        action, u, _ = li.go()                               # excluded in every subband: never listed
+        assert action == 'refuse' and u.status == 'refused' and 'L-1' in u.reason and li.text() == before, u.reason
+    with Tree(excluded=[(LST, '18MHz', NEW)]) as t, ListInputs(t, {'18MHz': MEMBER_ROWS,
+                                                                  '73MHz': MEMBER_ROWS + [(NEW, 0.9, 1)]}) as li:
+        before = li.text()
+        action, u, _ = li.go()                               # an excluded subband is never a reason to list the night
+        assert action == 'not-needed' and li.text() == before
+        rec = record.load_record(t.root, 'frames', NM.list_unit_name(LST, NEW))
+        assert {s['subband']: s['excluded'] for s in rec['meta']['nonmember_list']['subbands']} == {'18MHz': True,
+                                                                                                    '73MHz': False}
+    with Tree() as t, ListInputs(t, norow, cube=False) as li:
+        before = li.text()
+        action, u, _ = li.go()                               # no cube of the night: no line for a mistyped night
+        assert action == 'refuse' and 'L-3' in u.reason and li.text() == before, u.reason
+    with Tree() as t, ListInputs(t, norow) as li:
+        before = li.text()
+        with Patch((NM, 'write_refusal', lambda path: 'this run may not write it')):
+            action, u, _ = li.go()                           # needed, and this run may not write the list
+            assert action == 'refuse' and 'L-5' in u.reason and li.text() == before, u.reason
+    with Tree() as t, ListInputs(t, norow, listed=[(LST, NEW)]) as li:
+        before = li.text()
+        with Patch((NM, 'write_refusal', lambda path: 'this run may not write it')):
+            action, u, _ = li.go()                           # already listed: nothing to write, so nothing refused
+            assert action == 'already-listed' and u.status == 'done' and li.text() == before
+    with Tree() as t, ListInputs(t, norow) as li:
+        os.remove(li.list)
+        action, u, _ = li.go()                               # the list is never created here
+        assert action == 'refuse' and 'L-4' in u.reason and not os.path.exists(li.list), u.reason
+    # the production list is not written while paths.PRODUCTION_WRITES is False (the refactor window)
+    assert CFG.paths.PRODUCTION_WRITES is False
+    why = NM.write_refusal(os.path.join(CFG.paths.OPS_ROOT, CFG.masters_sublst.NONMEMBER_NIGHTS_FILE))
+    assert why and 'PRODUCTION_WRITES is False' in why, why
+
+
+def test_list_append_is_locked_and_once():
+    import fcntl
+    import threading
+    import time
+    d = tempfile.mkdtemp(prefix='sublst_nonmember_')
+    try:
+        p = os.path.join(d, 'list.txt')
+        with open(p, 'w') as f:
+            f.write(f'# header\n{LST} 2023-12-31')            # no final newline: completed before the new lines
+        assert NM.append_list_line(p, LST, NEW, 'why 1') is True
+        assert open(p).read() == f'# header\n{LST} 2023-12-31\n# why 1\n{LST} {NEW}\n'
+        assert NM.append_list_line(p, LST, NEW, 'why 2') is False and 'why 2' not in open(p).read()
+        done = []
+        with open(p) as held:                                # another writer holds the list's lock
+            fcntl.flock(held, fcntl.LOCK_EX)
+            th = threading.Thread(target=lambda: done.append(NM.append_list_line(p, LST, '2024-03-03', 'why 3')))
+            th.start()
+            time.sleep(0.5)
+            assert th.is_alive() and not done and 'why 3' not in open(p).read()      # waits, writes nothing
+            fcntl.flock(held, fcntl.LOCK_UN)
+        th.join(20)
+        assert done == [True] and open(p).read().endswith(f'# why 3\n{LST} 2024-03-03\n')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_list_stage_in_frames():
+    S = CFG.frames_sublst
+    order = list(S.ORDER)
+    assert order.index(NM.LIST_STAGE) < order.index('stack')                 # the list is read by the stack admission
+    assert NM.LIST_STAGE not in S.STAGES['per-hour'] and NM.LIST_STAGE not in S.STAGES['intermittent']
+    with Tree() as t, ListInputs(t, {'18MHz': MEMBER_ROWS}) as li:
+        before = li.text()
+        args = argparse.Namespace(epochs=CELL, cells=None, lsts=None, nights=None, scopes='18MHz', stokes=None,
+                                  stages=NM.LIST_STAGE, from_stage=None, until_stage=None, dry_run=True, workers=1,
+                                  fresh=False, supersede=None, resume=False, sublst_groups=None, sublst_mirror=False,
+                                  sublst_loo_evidence=None)
+        run = record.Run('frames', ['test'], t.root, CFG, dry_run=True)
+        FT.run(args, run)
+        assert li.text() == before                                           # a dry run writes nothing
+        assert not os.path.exists(record.record_path(t.root, 'frames', NM.list_unit_name(LST, NEW)))
+        args.dry_run = False
+        run = record.Run('frames', ['test'], t.root, CFG)
+        rc = FT.run(args, run)
+        assert rc is None and [(u.name, u.status) for u in run.units] == [(NM.list_unit_name(LST, NEW), 'done')], run.units
+        assert production_parser(li.text(), LST) == {NEW}
+        args.epochs, args.lsts = None, LST                                   # without a named night the stage refuses
+        run = record.Run('frames', ['test'], t.root, CFG)
+        FT.run(args, run)
+        assert [u.status for u in run.units] == ['refused'] and 'ONE named night' in run.units[0].reason
+
+
+def test_content_tests_are_registered_under_their_names():
+    """Every never-waivable '<class>.<test>' of the sub-LST classes is a registered content test of that class, and every
+    registered sub-LST test takes the product's path first. (Found 2026-11-13: a helper inserted under the decorator of
+    the window Master's test took its registration, so every window Master failed its content test with a TypeError; the
+    tests that read real Masters need the site and are not part of the data-free job.)"""
+    import inspect
+    for full in TS.NEVER_WAIVABLE:
+        cls, _, name = full.partition('.')
+        if cls.startswith('sublst_'):
+            assert name in [n for n, _ in validate.tests_for(cls)], (full, validate.tests_for(cls))
+    assert [n for n, _ in validate.tests_for('sublst_window_master')] == ['window_master_record']
+    n_tests = 0
+    for cls in validate.classes():
+        if cls.startswith('sublst_'):
+            for name, fn in validate.tests_for(cls):
+                n_tests += 1
+                assert list(inspect.signature(fn).parameters)[0] == 'path', (cls, name)
+    assert n_tests >= 10, n_tests
+
+
 TESTS = [test_residual_is_window_minus_installed_master, test_arithmetic_function, test_member_night_is_refused,
          test_night_listed_with_weight_zero_is_served, test_missing_installed_master, test_unusable_installed_master,
          test_stack_missing_or_incomplete, test_stack_log_evidence, test_excluded_night_is_refused,
          test_flux_scale_and_time_block, test_earlier_residuals_and_supersede, test_failed_content_test_leaves_no_residual,
          test_dry_run_agrees_with_resume, test_nothing_owed_is_no_input, test_dry_run_writes_nothing,
-         test_frames_step_accepts_supersede, test_frames_stage]
+         test_frames_step_accepts_supersede, test_frames_stage, test_list_appends_a_night_without_a_usable_scale,
+         test_list_writes_nothing_when_not_needed, test_list_refusals, test_list_append_is_locked_and_once,
+         test_list_stage_in_frames, test_content_tests_are_registered_under_their_names]
 
 
 def main(argv):

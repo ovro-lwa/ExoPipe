@@ -7,6 +7,11 @@ Stages (always run in the order of frames_sublst.ORDER; defaults per operating m
             Called as tier_sublst.stack_night(run, lst, night, ...): units, products and content tests are the masters
             wrapper's (admit_<LST>_<night> with its plan under <out>/_plans/, stack_<LST>_<night>_<sb>; classes
             sublst_job_plan, sublst_window*, sublst_admission, sublst_fluxdc_record), recorded under <out>/_records/frames/.
+  nonmember-list  PER HOUR, on request (in no default), before stack: puts ONE night on the non-member nights list
+            (<paths.OPS_ROOT>/sublst_nonmember_nights.txt, the one switch production's readers and the stack admission
+            read) when a subband of the night has no usable qa3_scale in the frozen deep weights - locked, once, recorded;
+            nothing is written when not needed or already listed. lib/masters/sublst_nonmember.list_night (rules
+            L-1..L-6 there), unit nonmember-list_<LST>_<night>.
   nonmember PER HOUR, on request (in no default): the arm-A residuals of ONE night that is NOT in the installed window
             Masters (Gregg 2026-11-12: nights that are not in a Master are searched as non-members against the frozen
             Masters) - residual = the night's window stack minus the installed window Master <root>/<LST>_masters/...,
@@ -488,6 +493,8 @@ def run(args, run):
         for st in stages:
             if st == 'stack':
                 stage_stack(ctx, lst, ns)
+            elif st == 'nonmember-list':
+                stage_nonmember_list(ctx, lst, ns)
             elif st == 'nonmember':
                 stage_nonmember(ctx, lst, ns)
             elif st == 'wideband':
@@ -545,6 +552,30 @@ def stage_stack(ctx, lst, nights):
 # ---------------------------------------------------------------------------------------------------------------------
 # stage: nonmember (per hour) - the masters wrapper's residual of a night that is not in the window Masters
 # ---------------------------------------------------------------------------------------------------------------------
+
+def stage_nonmember_list(ctx, lst, nights):
+    """Put the named night(s) on the non-member nights list when the stack admission needs them there, through
+    lib/masters/sublst_nonmember.list_night (rules L-1 .. L-6 there): one unit nonmember-list_<LST>_<night>. Writes nothing
+    when every subband has a usable qa3_scale in the frozen deep weights, or when the night is listed already."""
+    from exopipe.phase3.core.record import Refusal
+    if not nights:
+        unit_refused(ctx.run, f'{lst}_nonmember-list', 'the nonmember-list stage lists ONE named night: give --epochs '
+                     '<LST>_<date> (or --lsts with --nights)', ctx.dry, ctx, tier=TIER)
+        return
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    sbs = [s for s in ctx.C.instrument.ALL_SUBBANDS if not ctx.scopes or s in ctx.scopes] or None
+    for n in nights:
+        try:
+            res = NM.list_night(ctx.run, lst, n, subbands=sbs)
+        except (Refusal, SystemExit) as e:
+            unit_refused(ctx.run, f'{lst}_{n}_nonmember-list', f'masters sub-LST wrapper: {e}', ctx.dry, ctx, tier=TIER)
+            continue
+        if ctx.dry:
+            ctx.planned += 1
+            ctx.would_refuse += int(res.get('would_refuse') or 0)
+        else:
+            say(f'frames: nonmember-list {lst}_{n}: {res.get("action")}')
+
 
 def stage_nonmember(ctx, lst, nights):
     """The arm-A residuals of the named night(s) against the INSTALLED window Masters, through

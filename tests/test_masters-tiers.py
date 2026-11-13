@@ -440,7 +440,7 @@ def test_admit_noinput():
         os.makedirs(os.path.join(cubes, f'09h_{night}'), exist_ok=True)
         open(os.path.join(cubes, f'09h_{night}', 'MANIFEST.txt'), 'w').write('COMPLETE synthetic\n')
 
-    def fake_plan(lst, cells, sbs=None):
+    def fake_plan(lst, cells, sbs=None, nonmember=None):
         if cells == ['09h_2030-01-01']:
             return [], [], ['09h_2030-01-01 18MHz (admission rule: 0 of 358 frames pass the blank, beam and night gates)']
         return ['09h_2030-01-02 18MHz I', '09h_2030-01-02 18MHz V'], [], []
@@ -728,6 +728,73 @@ def test_real_snapshot_parents():
         r = validate.run('snapshot_parent_catalog', os.path.join(d, f))
         assert r and all(t['passed'] for t in r), (f, r)
         print(f'  PASS snapshot_parent_catalog on {f}: {r[0]["detail"][:110]}')
+
+
+def test_pb_cache_env():
+    """The stacker's primary-beam window cache: production's node-local directory outside a parity run, a private one under
+    the run's root in a parity run (the write guard refuses the save of a window the node has not cached yet)."""
+    from exopipe.phase3.core import guard
+    saved = guard.active
+    try:
+        guard.active = lambda: False
+        assert TS.pb_cache_env('/x/out') == {}
+        guard.active = lambda: True
+        assert TS.pb_cache_env('/x/out') == {'P3_PB_WINDOW_CACHE': '/x/out/_pb_window_cache'}
+    finally:
+        guard.active = saved
+    print('  PASS pb_cache_env: {} outside a parity run, <root>/_pb_window_cache in one')
+
+
+def test_admit_nonmember():
+    """The stack admission of a night WITHOUT a usable qa3_scale in the frozen deep weights (nocat:177, Gregg 2026-11-11):
+    listed in the non-member nights file -> admitted, and named as a non-member job; not listed -> left out with production's
+    words. A night WITH a usable qa3_scale is admitted as before, listed or not, and is never named a non-member. The
+    list's reader parses as production's (phase3_sublst_loo.nonmember_nights)."""
+    d = os.path.join(scratch(), 'admit_nonmember')
+    os.makedirs(d, exist_ok=True)
+    wp = os.path.join(d, 'frozen_weights.csv')
+    with open(wp, 'w') as f:
+        f.write('date,weight,qa3_scale\n2030-01-01,0.5,1.02000\n2030-01-04,0.0,0.05000\n2030-01-05,0.5,0.98000\n')
+    lp = os.path.join(d, 'nonmember_nights.txt')
+    with open(lp, 'w') as f:
+        f.write('# SUB-LST NON-MEMBER NIGHTS: LST NIGHT per line\n09h 2030-01-02\n09h 2030-01-04\n09h 2030-01-05\n'
+                '10h 2030-01-03\n09h\n\n#09h 2030-01-09\n')
+    cubes = os.path.join(d, 'cubes')            # no cube files: the frame-count rule has nothing to read (as for a night
+    os.makedirs(cubes, exist_ok=True)           # whose cube is not there yet - the stack unit refuses that, G-S04)
+    with Patch((TS, 'frozen_weights', lambda l, sb: wp), (TS, 'nonmember_file', lambda: lp), (TS, 'cube_root', lambda: cubes),
+               (TS, 'deepflow_root', lambda: os.path.join(d, 'deepflow'))):
+        assert TS.nonmember_nights('09h') == {'2030-01-02', '2030-01-04', '2030-01-05'}, TS.nonmember_nights('09h')
+        assert TS.nonmember_nights('10h') == {'2030-01-03'} and TS.nonmember_nights('11h') == set()
+        cells = [f'09h_2030-01-0{i}' for i in (1, 2, 3, 4, 5)]
+        nm = []
+        main, deep, drop = TS.admit_plan('09h', cells, ['18MHz'], nm)
+        assert deep == []
+        assert main == [f'09h_2030-01-0{i} 18MHz {S}' for i in (1, 2, 4, 5) for S in 'IV'], main
+        assert drop == ['09h_2030-01-03 18MHz (no usable qa3_scale in the deep co-add record)'], drop
+        # 01-02: no row, listed; 01-04: a row at or below the floor, listed (the stacker's own test, stack:234); 01-05: a
+        # usable row AND listed - a member there, the listing changes nothing
+        assert nm == ['09h_2030-01-02 18MHz', '09h_2030-01-04 18MHz'], nm
+        main2, _deep2, drop2 = TS.admit_plan('09h', cells, ['18MHz'])          # the record list is optional
+        assert (main2, drop2) == (main, drop)
+    with Patch((TS, 'frozen_weights', lambda l, sb: wp), (TS, 'nonmember_file', lambda: os.path.join(d, 'no_such_list.txt')),
+               (TS, 'cube_root', lambda: cubes), (TS, 'deepflow_root', lambda: os.path.join(d, 'deepflow'))):
+        nm = []
+        main, _deep, drop = TS.admit_plan('09h', cells, ['18MHz'], nm)          # no list: the rule before 2026-11-11
+        assert main == [f'09h_2030-01-0{i} 18MHz {S}' for i in (1, 5) for S in 'IV'] and nm == [] and len(drop) == 3, (main, drop)
+
+
+def test_real_admit_nonmember():
+    """A real night production stacked as a non-member (02h 2024-12-24 at 55 and 82 MHz: listed, no row in the frozen deep
+    weights; production's stacks carry NONMEMB = True): the admission plans its four jobs and names both as non-members."""
+    if not os.path.isdir(f'{CFG.paths.SNAPSHOT_CUBES_ROOT}/02h_2024-12-24') or not os.path.isfile(TS.nonmember_file()):
+        print('  (production cubes or the non-member nights list not reachable: skipped)')
+        return
+    assert '2024-12-24' in TS.nonmember_nights('02h')
+    nm = []
+    main, deep, drop = TS.admit_plan('02h', ['02h_2024-12-24'], ['55MHz', '82MHz'], nm)
+    assert sorted(main + deep) == sorted(f'02h_2024-12-24 {sb} {S}' for sb in ('55MHz', '82MHz') for S in 'IV'), (main, deep, drop)
+    assert nm == ['02h_2024-12-24 55MHz', '02h_2024-12-24 82MHz'] and drop == [], (nm, drop)
+    assert not any('NONMEMBER' in v for v in TS.mirror_violations())           # the list's path is production's
 
 
 def test_real_stack_night_dry():
@@ -1399,8 +1466,8 @@ def test_stack_budget_node():
 
 TESTS = [test_config, test_grammar, test_outcome, test_cpv, test_stack_unit, test_stack_budget, test_stack_budget_node,
          test_stack_gate, test_loo_gates,
-         test_sources_prep_waivers, test_admit_noinput, test_loo_products,
-         test_snapshot_units, test_snapshot_sources, test_real_mirrors, test_real_content, test_real_stack_night_dry,
+         test_sources_prep_waivers, test_admit_noinput, test_admit_nonmember, test_real_admit_nonmember, test_loo_products,
+         test_snapshot_units, test_snapshot_sources, test_pb_cache_env, test_real_mirrors, test_real_content, test_real_stack_night_dry,
          test_real_snapshot_parents]
 
 
