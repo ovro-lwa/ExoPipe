@@ -23,6 +23,14 @@ product (REVIEW.md item 8). What full LST hours prove on data is in exopipe_ops/
      more than 6 copy streams (the recorders share Lustre);
   5. the controller switches numpy's huge-page advice off before anything can import numpy, and a value already in the
      environment wins.
+  6. the cascade's first extractions made in a pool up front, and its UP arm run in a child process beside the DOWN arm,
+     leave the cascade the one it was: every subband is dewarped against the same reference with the same first catalog,
+     the results keep their order (anchor, DOWN arm, UP arm), the same subbands reach the 10-minute stage and the same
+     dewarped catalogs are kept for it; P2_CASCADE_WORKERS=1 and P2_CASCADE_ARMS_SIDE_BY_SIDE=0 give the code path as it
+     was (no pool is made); an up-front catalog is used only for exactly that file under exactly those settings, an empty
+     or failed one is never kept; a pool that dies or a child that cannot start or dies leaves the cascade to do that work
+     itself, in order, as before. (The pools are replaced by an in-process stand-in here; the real ones are proven on a
+     full LST hour.)
 Data-free. Run: python tests/test_phase2_speedups.py   (or under pytest)
 """
 import ast
@@ -340,7 +348,7 @@ class _Log:
 
 COPY_NAMES = ('_WHOLE_NUMBER_SETTINGS', 'MAX_COPY_WORKERS', '_whole_number_setting', '_copy_workers',
               'check_runtime_settings', '_copy_checked', '_copy_files', 'copy_to_nvme')
-SETTINGS = ('P2_COPY_WORKERS', 'P2_TENMIN_WORKERS', 'FULLBAND_WORKERS', 'BDSF_NCORES')
+SETTINGS = ('P2_COPY_WORKERS', 'P2_TENMIN_WORKERS', 'FULLBAND_WORKERS', 'BDSF_NCORES', 'P2_CASCADE_WORKERS')
 
 
 def _copy_namespace(copy2=None):
@@ -593,12 +601,337 @@ def test_huge_page_advice_is_off_before_numpy_can_load():
             assert names <= standard, f'line {node.lineno} imports {sorted(names)} before the huge-page setting'
 
 
+# ------------------------------------------------------------------------------------------------------------------------
+# 5. the cascade's first extractions up front, and its two arms side by side
+# ------------------------------------------------------------------------------------------------------------------------
+UPFRONT_FUNCTIONS = KEY_FUNCTIONS + ('_UPFRONT_CATALOGS', 'CASCADE_WORKERS_DEFAULT', '_cascade_workers',
+                                     '_extract_up_front_one', '_extract_up_front', '_recall_up_front',
+                                     '_cascade_arm_in_child', 'run_cascade_dewarping')
+BANDS = ['55MHz', '59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz']
+
+
+class _InlinePool:
+    """Stands in for concurrent.futures.ProcessPoolExecutor: the same calls, run in this process."""
+    made = []
+    fail_submit = fail_result = fail_map_after = None
+
+    def __init__(self, max_workers=None):
+        self.max_workers = max_workers
+        _InlinePool.made.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def shutdown(self, wait=True):
+        self.was_shut_down = True
+
+    def map(self, fn, items):
+        for i, item in enumerate(items):
+            if _InlinePool.fail_map_after is not None and i >= _InlinePool.fail_map_after:
+                raise RuntimeError('a worker of the pool died')
+            yield fn(item)
+
+    def submit(self, fn, arg):
+        if _InlinePool.fail_submit:
+            raise OSError('no process could be started')
+        pool = self
+
+        class _Future:
+            def result(self_inner):
+                if _InlinePool.fail_result:
+                    raise RuntimeError('the child process died')
+                if not hasattr(pool, 'value'):
+                    pool.value = fn(arg)                      # run when asked for: after the DOWN arm, like a slow child
+                return pool.value
+        return _Future()
+
+
+@contextlib.contextmanager
+def _inline_pools():
+    import concurrent.futures as cf
+    real = cf.ProcessPoolExecutor
+    cf.ProcessPoolExecutor = _InlinePool
+    _InlinePool.made, _InlinePool.fail_submit, _InlinePool.fail_result, _InlinePool.fail_map_after = [], None, None, None
+    try:
+        yield _InlinePool
+    finally:
+        cf.ProcessPoolExecutor = real
+
+
+class _CascadeLog:
+    name = 'test_cascade'
+
+    def __init__(self):
+        self.lines = []
+
+    def info(self, m):
+        self.lines.append(m)
+    warning = error = info
+
+
+def _cascade_namespace(tmp, bands=BANDS, empty=(), extraction_fails=()):
+    """The cascade driver with its engines replaced: every extraction and every subband dewarp is recorded, no image is
+    read. Hour images are small files under tmp/<band>/."""
+    import pandas as pd
+    _, tree = _source(CASCADE)
+    calls = dict(extract=[], dewarp=[], arm=[], tenmin=[])
+    for b in bands:
+        os.makedirs(os.path.join(tmp, b), exist_ok=True)
+        with open(os.path.join(tmp, b, f'hour_{b}.fits'), 'wb') as f:
+            f.write(b.encode() * 100)
+
+    def catalog(tag):
+        return pd.DataFrame({'ra': [1.0, 2.0], 'dec': [3.0, 4.0], 'flux_peak': [5.0, 6.0], 'tag': [tag, tag]})
+
+    def extract_sources(image_path, logger):
+        calls['extract'].append(os.path.basename(image_path))
+        b = os.path.basename(os.path.dirname(image_path))
+        if b in extraction_fails:
+            raise RuntimeError('extraction engine broke')
+        return pd.DataFrame() if b in empty else catalog('first:' + os.path.basename(image_path))
+
+    def find_deep_pb_image(work_dir, subband, logger):
+        p = os.path.join(work_dir, subband, f'hour_{subband}.fits')
+        return p if os.path.exists(p) else None
+
+    def dewarp_subband(work_dir, subband, ref_catalog, ref_label, is_anchor, diag_dir, logger, **kw):
+        img = find_deep_pb_image(work_dir, subband, logger)
+        first = ns['_recall_up_front'](img, logger)
+        if first is None:
+            first = extract_sources(img, logger)
+        dewarped = img.replace('.fits', '_dewarped.fits')
+        with open(dewarped, 'wb') as f:
+            f.write(b'd' * 50)
+        out = catalog('dewarped:' + subband)
+        ns['_remember_catalog'](dewarped, out)
+        calls['dewarp'].append((subband, ref_label, os.getpid(), list(first['tag'])[0] if len(first) else None))
+        return out, True, None
+
+    def _run_cascade_arm(work_dir, subband_list, start_catalog, start_subband, diag_dir, results, logger, **kw):
+        calls['arm'].append((tuple(subband_list), start_subband, tuple(sorted(kw))))
+        ref = start_subband
+        for sb in subband_list:
+            _, ok, _ = dewarp_subband(work_dir, sb, start_catalog, f'{ref}_dewarped', False, diag_dir, logger, **kw)
+            results[sb] = ok
+            ref = sb
+
+    def refuse(*a, **k):
+        raise AssertionError('a flow-method or snapshot engine ran in a source-based test')
+
+    ns = {'os': os, 'pd': pd, 'warnings': warnings,
+          'cfg': types.SimpleNamespace(BDSF_THRESH_PIX=5.0, BDSF_THRESH_ISL=3.0, ANCHOR_METHOD='rbf', CASCADE_METHOD='rbf',
+                                       WARP_RBF_KERNEL='thin_plate_spline', WARP_RBF_SMOOTHING=1.5, WARP_RBF_EPSILON=None,
+                                       ALL_SUBBANDS=list(bands), ANCHOR_SUBBAND='73MHz', VLSSR_CATALOG='vlssr'),
+          'ANCHOR_EL_CUT': None, 'ANCHOR_EAST_EL_CUT': None, 'ANCHOR_MAXPIX_BEAM_AREAS': None,
+          'ANCHOR_FALLBACK': ['73MHz', '78MHz', '69MHz'],
+          'extract_sources': extract_sources, 'find_deep_pb_image': find_deep_pb_image, 'dewarp_subband': dewarp_subband,
+          '_run_cascade_arm': _run_cascade_arm, 'load_vlssr_catalog': lambda *a: {'ra': []},
+          'dewarp_10min_intervals': lambda work_dir, subbands, *a, **k: calls['tenmin'].append(list(subbands)),
+          '_run_cascade_arm_flow': refuse, '_run_flow_anchor': refuse, '_dewarp_10min_flow': refuse,
+          '_dewarp_remaining_snapshots': refuse, 'find_deep_pb_image_dewarped': refuse}
+    return _pick(tree, UPFRONT_FUNCTIONS, CASCADE, ns), calls
+
+
+def _run_cascade(tmp, **kw):
+    ns, calls = _cascade_namespace(tmp, **kw)
+    log = _CascadeLog()
+    results = ns['run_cascade_dewarping'](tmp, log)
+    return ns, calls, log, results
+
+
+def _clean_cascade_env():
+    return {k: os.environ.pop(k, None) for k in ('P2_CASCADE_WORKERS', 'P2_CASCADE_ARMS_SIDE_BY_SIDE', 'BDSF_NCORES',
+                                                 'P2_REUSE_CASCADE_CATALOGS', 'P2_FORCE_ANCHOR_SUBBAND')}
+
+
+def _restore_env(saved):
+    for k, v in saved.items():
+        os.environ.pop(k, None)
+        if v is not None:
+            os.environ[k] = v
+
+
+def _what_the_cascade_did(ns, calls, results):
+    """Everything a product depends on: per subband its reference and its first catalog; the order of the results; the
+    subbands handed to the 10-minute stage; the dewarped catalogs kept for it."""
+    return (sorted((sb, ref, first) for sb, ref, _, first in calls['dewarp']), list(results.items()), calls['tenmin'],
+            sorted((k[0], list(v['tag'])) for k, v in ns['_DEWARPED_CATALOGS'].items()))
+
+
+def test_the_cascade_is_the_same_cascade_with_the_pool_and_the_child_arm():
+    saved = _clean_cascade_env()
+    tmps = []
+    try:
+        def run(env, **kw):
+            _restore_env({k: None for k in saved})
+            os.environ.update(env)
+            tmp = tempfile.mkdtemp()
+            tmps.append(tmp)
+            with _inline_pools() as pools:
+                ns, calls, log, results = _run_cascade(tmp, **kw)
+                made = list(pools.made)
+            return ns, calls, log, _what_the_cascade_did(ns, calls, results), made, tmp
+
+        def strip(did, tmp):
+            return (did[0], did[1], did[2], [(k.replace(tmp, ''), v) for k, v in did[3]])
+
+        # as before: no pool, the UP arm after the DOWN arm
+        ns0, calls0, log0, did0, made0, tmp0 = run({'P2_CASCADE_WORKERS': '1', 'P2_CASCADE_ARMS_SIDE_BY_SIDE': '0'})
+        assert made0 == [], 'a pool was made although both settings were off'
+        assert [a[0] for a in calls0['arm']] == [('69MHz', '64MHz', '59MHz', '55MHz'), ('78MHz', '82MHz')], calls0['arm']
+        assert calls0['extract'] == [f'hour_{b}.fits' for b in ('73MHz', '69MHz', '64MHz', '59MHz', '55MHz', '78MHz', '82MHz')], \
+            'with the pool off the first extractions are not made one by one in cascade order'
+        assert list(did0[1]) == [(b, True) for b in ('73MHz', '69MHz', '64MHz', '59MHz', '55MHz', '78MHz', '82MHz')]
+        assert not any('up-front' in m or 'child process' in m for m in log0.lines)
+
+        # the defaults: every first extraction once, in the pool; the UP arm through the child function
+        ns1, calls1, log1, did1, made1, tmp1 = run({})
+        assert [p.max_workers for p in made1] == [4, 1], f'pools made: {[p.max_workers for p in made1]}'
+        assert sorted(calls1['extract']) == sorted(f'hour_{b}.fits' for b in BANDS), \
+            f'first extractions with the pool on: {calls1["extract"]}'
+        assert [a[0] for a in calls1['arm']] == [('69MHz', '64MHz', '59MHz', '55MHz'), ('78MHz', '82MHz')]
+        assert strip(did1, tmp1) == strip(did0, tmp0), 'the cascade with the pool and the child arm is not the cascade as before'
+        # the anchor and the four subbands of the DOWN arm say so here; the UP arm's two say so through the logger of the
+        # same name in the child
+        assert sum('catalog of the up-front extraction' in m for m in log1.lines) == 5
+        assert all(first == f'first:hour_{sb}.fits' for sb, _, first in did1[0])
+        assert any('7 of 7 catalogs kept' in m for m in log1.lines) and any('UP arm (child process) finished: 2 of 2' in m
+                                                                             for m in log1.lines)
+        assert getattr(made1[1], 'was_shut_down', False), 'the child pool was not shut down'
+        assert calls1['arm'][0][2] == calls1['arm'][1][2] == calls0['arm'][1][2], 'the arms were given different settings'
+
+        # each half alone
+        for env in ({'P2_CASCADE_WORKERS': '1'}, {'P2_CASCADE_ARMS_SIDE_BY_SIDE': '0'}, {'P2_CASCADE_WORKERS': '3'}):
+            nsx, callsx, logx, didx, madex, tmpx = run(env)
+            assert strip(didx, tmpx) == strip(did0, tmp0), f'{env}: not the cascade as before'
+            want = ([] if env.get('P2_CASCADE_WORKERS') == '1' else [int(env.get('P2_CASCADE_WORKERS', 4))]) + \
+                   ([] if env.get('P2_CASCADE_ARMS_SIDE_BY_SIDE') == '0' else [1])
+            assert [p.max_workers for p in madex] == want, f'{env}: pools {[p.max_workers for p in madex]}, expected {want}'
+
+        # an empty or failed up-front extraction is not kept: the cascade extracts that image itself, as before
+        for kw in (dict(empty=('64MHz',)), dict(extraction_fails=('64MHz',))):
+            tmp = tempfile.mkdtemp()
+            tmps.append(tmp)
+            _restore_env({k: None for k in saved})
+            with _inline_pools():
+                ns, calls = _cascade_namespace(tmp, **kw)
+                log = _CascadeLog()
+                try:
+                    ns['run_cascade_dewarping'](tmp, log)
+                except RuntimeError:
+                    assert 'extraction_fails' in kw                # the stand-in engine raises again at step 3: as before
+            assert calls['extract'].count('hour_64MHz.fits') == 2, f'{kw}: {calls["extract"]}'
+            if 'empty' in kw:
+                assert any('6 of 7 catalogs kept' in m for m in log.lines)
+            else:
+                assert any('Up-front extraction stopped' in m for m in log.lines)
+    finally:
+        _restore_env(saved)
+        for t in tmps:
+            shutil.rmtree(t, ignore_errors=True)
+
+
+def test_a_failed_pool_or_child_leaves_the_cascade_as_before():
+    saved = _clean_cascade_env()
+    tmps = []
+    try:
+        def run(setup):
+            tmp = tempfile.mkdtemp()
+            tmps.append(tmp)
+            with _inline_pools() as pools:
+                setup(pools)
+                ns, calls, log, results = _run_cascade(tmp)
+            did = _what_the_cascade_did(ns, calls, results)
+            return calls, log, (did[0], did[1], did[2], [(k.replace(tmp, ''), v) for k, v in did[3]])
+
+        os.environ.update({'P2_CASCADE_WORKERS': '1', 'P2_CASCADE_ARMS_SIDE_BY_SIDE': '0'})
+        _, _, before = run(lambda pools: None)
+        del os.environ['P2_CASCADE_WORKERS'], os.environ['P2_CASCADE_ARMS_SIDE_BY_SIDE']
+
+        # the up-front pool dies after three images: three catalogs kept, the other four extracted at step 3
+        calls, log, did = run(lambda pools: setattr(pools, 'fail_map_after', 3))
+        assert did == before
+        assert len(calls['extract']) == 3 + 4 and sorted(set(calls['extract'])) == sorted(f'hour_{b}.fits' for b in BANDS)
+        assert any('Up-front extraction stopped' in m for m in log.lines) and any('3 of 7 catalogs kept' in m for m in log.lines)
+
+        # the child cannot be started: the UP arm runs after the DOWN arm in this process
+        calls, log, did = run(lambda pools: setattr(pools, 'fail_submit', True))
+        assert did == before and [a[0] for a in calls['arm']] == [('69MHz', '64MHz', '59MHz', '55MHz'), ('78MHz', '82MHz')]
+        assert any('could not be started beside the DOWN arm' in m for m in log.lines)
+
+        # the child dies: the same
+        calls, log, did = run(lambda pools: setattr(pools, 'fail_result', True))
+        assert did == before and [a[0] for a in calls['arm']] == [('69MHz', '64MHz', '59MHz', '55MHz'), ('78MHz', '82MHz')]
+        assert any("UP arm's child process failed" in m for m in log.lines)
+    finally:
+        _restore_env(saved)
+        for t in tmps:
+            shutil.rmtree(t, ignore_errors=True)
+
+
+def test_the_up_front_catalog_is_for_the_same_file_and_settings_only():
+    saved = _clean_cascade_env()
+    tmp = tempfile.mkdtemp()
+    try:
+        ns, calls = _cascade_namespace(tmp)
+        log = _CascadeLog()
+        with _inline_pools():
+            ns['_extract_up_front'](tmp, BANDS, log)
+        image = os.path.join(tmp, '64MHz', 'hour_64MHz.fits')
+        got = ns['_recall_up_front'](image, log)
+        assert got is not None and list(got['tag']) == ['first:hour_64MHz.fits'] * 2
+        got.loc[0, 'ra'] = 999.0
+        assert list(ns['_recall_up_front'](image, log)['ra']) == [1.0, 2.0], 'what is handed back is not a copy'
+        for name, value in (('ANCHOR_EL_CUT', 20.0), ('ANCHOR_EAST_EL_CUT', 35.0), ('ANCHOR_MAXPIX_BEAM_AREAS', 400.0)):
+            ns[name] = value
+            assert ns['_recall_up_front'](image, log) is None, f'the up-front catalog was used although {name} changed'
+            ns[name] = None
+        os.environ['BDSF_NCORES'] = '2'
+        assert ns['_recall_up_front'](image, log) is None, 'the up-front catalog was used although BDSF_NCORES changed'
+        del os.environ['BDSF_NCORES']
+        st = os.stat(image)
+        os.utime(image, ns=(st.st_atime_ns, st.st_mtime_ns + 1))
+        assert ns['_recall_up_front'](image, log) is None, 'the up-front catalog was used for a file written again'
+        assert ns['_recall_up_front'](os.path.join(tmp, 'gone.fits'), log) is None
+        # the dewarped catalogs of the 10-minute stage are another memo: an up-front catalog is never taken for one
+        assert ns['_recall_catalog'](os.path.join(tmp, '55MHz', 'hour_55MHz.fits')) is None
+        # the worker runs under the settings it is handed, and says which image its catalog is of
+        path, df = ns['_extract_up_front_one']((os.path.join(tmp, '55MHz', 'hour_55MHz.fits'), (11.0, 12.0, 13.0)))
+        assert (ns['ANCHOR_EL_CUT'], ns['ANCHOR_EAST_EL_CUT'], ns['ANCHOR_MAXPIX_BEAM_AREAS']) == (11.0, 12.0, 13.0)
+        assert path.endswith('hour_55MHz.fits') and list(df['tag']) == ['first:hour_55MHz.fits'] * 2
+        # a new cascade starts from an empty memo
+        ns['_extract_up_front'](tmp, [], log)
+        assert ns['_UPFRONT_CATALOGS'] == {}
+    finally:
+        _restore_env(saved)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_step_3_extracts_itself_when_no_up_front_catalog_is_there():
+    src, tree = _source(CASCADE)
+    body = _function(tree, 'dewarp_subband').body
+    at = [i for i, n in enumerate(body) if ast.get_source_segment(src, n) == 'df_lwa = _recall_up_front(calc_img, logger)']
+    assert len(at) == 1, 'step 3 no longer asks for the up-front catalog of its extraction image'
+    assert ast.get_source_segment(src, body[at[0] + 1]) == 'if df_lwa is None:\n        df_lwa = extract_sources(calc_img, logger)', \
+        'step 3 no longer extracts the image itself when no up-front catalog is there'
+    calls = [ast.get_source_segment(src, n) for n in ast.walk(_function(tree, 'dewarp_subband'))
+             if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == 'extract_sources']
+    assert sorted(calls) == ['extract_sources(calc_img, logger)', 'extract_sources(dewarped_pbcorr, logger)'], calls
+
+
 TESTS = [test_vlssr_one_call_parser_equals_the_per_line_parser, test_vlssr_parser_falls_back_to_the_per_line_parser,
          test_kept_catalog_is_reused_only_for_the_same_file_and_settings,
          test_the_catalog_key_holds_every_setting_the_extraction_reads,
          test_copy_in_copies_the_same_bytes_in_the_listed_order, test_copy_in_refuses_a_short_copy,
          test_an_interrupted_copy_is_never_taken_as_copied, test_unusable_runtime_settings_are_refused_at_the_start,
-         test_interval_pool_size_is_unchanged_unless_set, test_huge_page_advice_is_off_before_numpy_can_load]
+         test_interval_pool_size_is_unchanged_unless_set, test_huge_page_advice_is_off_before_numpy_can_load,
+         test_the_cascade_is_the_same_cascade_with_the_pool_and_the_child_arm,
+         test_a_failed_pool_or_child_leaves_the_cascade_as_before,
+         test_the_up_front_catalog_is_for_the_same_file_and_settings_only,
+         test_step_3_extracts_itself_when_no_up_front_catalog_is_there]
 
 
 def main():

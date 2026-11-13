@@ -261,6 +261,106 @@ def _recall_catalog(image_path):
 
 
 # =====================================================================
+# THE CASCADE'S FIRST EXTRACTIONS UP FRONT; ITS TWO ARMS SIDE BY SIDE
+# =====================================================================
+# (Gregg 2026-11-12: "Approved".) Each subband's dewarp starts with an extraction of its not-yet-dewarped hour image
+# (dewarp_subband, step 3). Those 15 extractions do not depend on the chain: they are made in a process pool before the
+# anchor and kept here; step 3 takes its catalog from this memo. The key is the file (path, size, modification time) AND
+# every setting extract_sources reads (_catalog_key), so a file or a setting that differs is extracted at step 3 exactly
+# as before, as is an image whose up-front extraction failed or found nothing.
+#   P2_CASCADE_WORKERS   processes of the up-front pool (default 4); 1 = no up-front extraction (the cascade as before)
+# After the anchor, the DOWN arm and the UP arm share nothing but the anchor's catalog: the UP arm runs in one child
+# process while this process runs the DOWN arm. A child process, not a thread: the diagnostics use matplotlib.pyplot.
+# The child returns its per-subband results and the dewarped catalogs it kept for the 10-minute stage.
+#   P2_CASCADE_ARMS_SIDE_BY_SIDE=0   the UP arm after the DOWN arm, in this process (the cascade as before)
+# Neither setting changes a product: every subband's computation is the one it was. Only the order of log lines changes.
+_UPFRONT_CATALOGS = {}
+CASCADE_WORKERS_DEFAULT = 4
+
+
+def _cascade_workers():
+    n = CASCADE_WORKERS_DEFAULT
+    if os.environ.get('P2_CASCADE_WORKERS'):
+        n = max(1, int(os.environ['P2_CASCADE_WORKERS']))       # checked at the run's start by the controller
+    return n
+
+
+def _extract_up_front_one(args):
+    """Pool worker: extract_sources of one not-yet-dewarped hour image under the parent's extraction settings."""
+    global ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS
+    image_path, (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS) = args
+    import logging as _logging
+    warnings.filterwarnings('ignore')
+    _logger = _logging.getLogger('cascade_upfront')
+    _logger.setLevel(_logging.WARNING)                  # quiet in workers; the parent logs what it kept
+    return image_path, extract_sources(image_path, _logger)
+
+
+def _extract_up_front(work_dir, subbands, logger):
+    """Extract the not-yet-dewarped hour image of each of ``subbands`` in a process pool and keep the catalogs for
+    dewarp_subband's step 3. Any failure here leaves the cascade to extract at step 3, as before."""
+    _UPFRONT_CATALOGS.clear()
+    n = _cascade_workers()
+    if n <= 1:
+        return
+    import logging as _logging
+    import time as _time
+    quiet = _logging.getLogger('cascade_upfront_find')
+    quiet.setLevel(_logging.ERROR)
+    images = []
+    for sb in subbands:
+        if os.path.isdir(os.path.join(work_dir, sb)):
+            img = find_deep_pb_image(work_dir, sb, quiet)
+            if img:
+                images.append(img)
+    if len(images) < 2:
+        return
+    n = min(n, len(images))
+    logger.info(f"  [BDSF] Up-front extraction of {len(images)} not-yet-dewarped hour images, {n} at a time "
+                f"(P2_CASCADE_WORKERS)")
+    t0 = _time.time()
+    settings = (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS)
+    try:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=n) as executor:
+            for img, df in executor.map(_extract_up_front_one, [(i, settings) for i in images]):
+                if df is not None and not df.empty:
+                    _UPFRONT_CATALOGS[_catalog_key(img)] = df
+    except Exception as e:
+        logger.warning(f"  [BDSF] Up-front extraction stopped ({type(e).__name__}: {e}) - the cascade extracts the "
+                       f"remaining images itself, as before")
+    logger.info(f"  [BDSF] Up-front extraction: {len(_UPFRONT_CATALOGS)} of {len(images)} catalogs kept "
+                f"in {_time.time() - t0:.0f} s")
+
+
+def _recall_up_front(image_path, logger):
+    """The up-front extraction of exactly this file under exactly these settings, or None."""
+    try:
+        df = _UPFRONT_CATALOGS.get(_catalog_key(image_path))
+    except OSError:
+        return None
+    if df is None:
+        return None
+    logger.info(f"  [BDSF] {os.path.basename(image_path)}: catalog of the up-front extraction ({len(df)} sources)")
+    return df.copy(deep=True)
+
+
+def _cascade_arm_in_child(args):
+    """Child process: one source-based arm of the cascade. Returns (its {subband: ok}, the dewarped catalogs this arm
+    kept for the 10-minute stage)."""
+    global ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS
+    (work_dir, subband_list, start_catalog, start_subband, diag_dir, logger_name, kwargs,
+     (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS), upfront) = args
+    import logging as _logging
+    _UPFRONT_CATALOGS.update(upfront)
+    had = set(_DEWARPED_CATALOGS)                       # the anchor's, inherited at the fork: the parent holds it already
+    results = {}
+    _run_cascade_arm(work_dir, subband_list, start_catalog, start_subband, diag_dir, results,
+                     _logging.getLogger(logger_name), **kwargs)
+    return results, {k: v for k, v in _DEWARPED_CATALOGS.items() if k not in had}
+
+
+# =====================================================================
 # CROSS-MATCHING
 # =====================================================================
 
@@ -1076,8 +1176,10 @@ def dewarp_subband(work_dir, subband, ref_catalog, ref_label, is_anchor,
     except ValueError:
         freq_mhz = freq_hz / 1e6 if freq_hz else cfg.ANCHOR_FREQ_MHZ
 
-    # 3. Extract sources
-    df_lwa = extract_sources(calc_img, logger)
+    # 3. Extract sources (the up-front extraction of this very file, when the cascade made one)
+    df_lwa = _recall_up_front(calc_img, logger)
+    if df_lwa is None:
+        df_lwa = extract_sources(calc_img, logger)
     if df_lwa.empty:
         return pd.DataFrame(), False, None
 
@@ -1568,6 +1670,12 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
             logger.error("Failed to load VLSSr catalog  aborting dewarping")
             return results
 
+    # The first extraction of every subband a source-based step will dewarp, in a pool up front (see _UPFRONT_CATALOGS)
+    _UPFRONT_CATALOGS.clear()
+    if not anchor_only and cascade_method != 'flow':
+        _extract_up_front(work_dir, [sb for sb in cfg.ALL_SUBBANDS
+                                     if anchor_method != 'flow' or sb != cfg.ANCHOR_SUBBAND], logger)
+
     anchor_sb = None
     anchor_catalog = None
     anchor_ok = False
@@ -1629,6 +1737,25 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
         logger.info(f"Cascade arms re-rooted at {anchor_sb}: "
                     f"DOWN={cascade_down}  UP={cascade_up}")
 
+    # The UP arm in a child process beside the DOWN arm (source-based cascade; see _UPFRONT_CATALOGS above)
+    _arm_kwargs = dict(method=cascade_method, rbf_kernel=rbf_kernel, rbf_smoothing=rbf_smoothing,
+                       rbf_epsilon=rbf_epsilon, snr_weighting=snr_weighting, warp_categories=warp_categories)
+    _up_pool = _up_future = None
+    if (cascade_method != 'flow' and cascade_down and cascade_up
+            and os.environ.get('P2_CASCADE_ARMS_SIDE_BY_SIDE', '1') != '0'):
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            _up_pool = ProcessPoolExecutor(max_workers=1)
+            _up_future = _up_pool.submit(_cascade_arm_in_child, (
+                work_dir, list(cascade_up), anchor_catalog, anchor_sb, diag_dir, logger.name, _arm_kwargs,
+                (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS), dict(_UPFRONT_CATALOGS)))
+            logger.info(f"CASCADE UP ({cascade_method}) {list(cascade_up)} runs beside the DOWN arm, in a child process "
+                        f"(P2_CASCADE_ARMS_SIDE_BY_SIDE)")
+        except Exception as e:
+            logger.warning(f"The UP arm could not be started beside the DOWN arm ({type(e).__name__}: {e}) - it runs "
+                           f"after it, as before")
+            _up_pool = _up_future = None
+
     # -- Phase 1b: Cascade Down --
     logger.info(f"\n{'='*40}")
     logger.info(f"CASCADE DOWN ({cascade_method})")
@@ -1651,7 +1778,23 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
     logger.info(f"CASCADE UP ({cascade_method})")
     logger.info(f"{'='*40}")
 
-    if cascade_method == 'flow':
+    _up_done = False
+    if _up_future is not None:
+        try:
+            _up_results, _up_catalogs = _up_future.result()
+            results.update(_up_results)
+            _DEWARPED_CATALOGS.update(_up_catalogs)
+            _up_done = True
+            logger.info(f"  UP arm (child process) finished: "
+                        f"{sum(1 for v in _up_results.values() if v)} of {len(_up_results)} subband(s) OK")
+        except Exception as e:
+            logger.warning(f"  The UP arm's child process failed ({type(e).__name__}: {e}) - the arm runs here, "
+                           f"as before")
+        finally:
+            _up_pool.shutdown()
+    if _up_done:
+        pass
+    elif cascade_method == 'flow':
         _run_cascade_arm_flow(work_dir, cascade_up,
                               anchor_sb, diag_dir, results, logger,
                               warp_categories=warp_categories)
