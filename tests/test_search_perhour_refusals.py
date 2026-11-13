@@ -11,6 +11,11 @@ by frozen_v_sanity (no row, an 'applied' row without a frame_noise.csv median, a
 refuse; 'below-minimum' is returned), read before the gate's try (a refusal is never caught), the content test; (c) the wideband
 member mirror: a searched member night without the value a running gate judges it by is refused in that Stokes, a gate below its
 minimum judges nobody, 18 MHz and a member the image does not hold are not judged, a record without perhour is the batch record.
+(d) the append's carry: the base attempt's current refusal tag is read before the append writes any row; the rows of that tag
+in the files an append writes for its own nights only (sanity_V, daytime, extraction_I/V) are written again under the append's
+tag for the nights the gates admit and the append does not list - before the first return after the gates - every other field
+unchanged (a source-extraction row keeps its UTC time); the newest-tag reading (p3s3_merge.py _cur_refusals) then holds the
+base's rows of those nights beside the append's own; the engine's block is executed on a synthetic record.
 Real data (read only, the production co-add root; skipped without it): on three wideband cells the per-hour record and verdict
 equal the batch ones for every measured night, the added refusals are exactly the unmeasured nights; the census of unmeasured
 present member nights over every subband cell is printed.
@@ -159,6 +164,91 @@ def test_wideband_synthetic():
           and all(r.startswith('member night unmeasured') for v in ref.values() for _, r in v), ref)
 
 
+CARRIED = ('sanity_V', 'daytime', 'extraction_I', 'extraction_V')
+
+
+def _current(rd, cell):
+    """{gate: rows} of the record as the merge reads it (p3s3_merge.py _cur_refusals): the newest tag's rows, drop-patch rows kept."""
+    t = GP.newest_search_tag(rd, cell)
+    out = {}
+    for f in sorted(glob.glob(os.path.join(rd, f'{cell}_*_excluded.csv'))):
+        g = os.path.basename(f)[len(cell) + 1:-len('_excluded.csv')]
+        out[g] = [r for r in csv.reader(open(f, newline='')) if r and (GP.refusal_tag(g, r) == t or GP.refusal_tag(g, r).endswith('stdrop'))]
+    return out
+
+
+def _carry_block(src):
+    """The engine's carry block (run_deep_cell), dedented: from its `if included_dates and _base_tag:` to the ZERO-flows check."""
+    i = src.index('    if included_dates and _base_tag:')
+    j = src.index("    if len(dates) == 0:\n        raise RuntimeError(f'{lst} {scope}: ZERO flows", i)
+    return '\n'.join(ln[4:] for ln in src[i:j].splitlines()) + '\n'
+
+
+def test_append_carry():
+    lst, scope = '05h', '78MHz'
+    cell = f'{lst}_{scope}'
+    rd = os.path.join(T, 'carry', 'refusals')
+    os.makedirs(rd)
+    old, base, drop, app = '20261020T000000', '20261101T000000', '20261025T000000stdrop', '20261113T090000'
+    n1, n2, n3, n4, n5 = '2025-01-01', '2025-01-02', '2025-01-03', '2025-01-04', '2025-01-05'
+
+    def w(g, rows, mode='w'):
+        with open(os.path.join(rd, f'{cell}_{g}_excluded.csv'), mode, newline='') as fh:
+            csv.writer(fh, lineterminator='\n').writerows(rows)
+    w('sanity_V', [[lst, scope, n3, '90.0', '8.0', old], [lst, scope, n1, '95.0', '8.1', base],
+                   [lst, scope, n2, '96.0', '8.1', base], [lst, scope, n4, '97.0', '8.1', base],
+                   [lst, scope, n5, '98.0', '8.1', base]])
+    w('daytime', [[lst, scope, n1, 'V', 'Sun up (elevation 3.1 deg, min -6), twilight', base]])
+    w('extraction_I', [[lst, scope, n2, 'I', 'source extraction failed: no beam', base, '2026-11-01T00:00:05Z']])
+    w('searchtier', [[lst, scope, n3, 'V', '9.0', '4.0', 'ratio2xmedian', drop]])
+    w('beam', [[lst, scope, n5, '1.80', '1.5', base]])
+    before = _current(rd, cell)
+    bt = GP.newest_search_tag(rd, cell)
+    check('(d) the base tag: the newest over every refusal file of the cell (an older search and a drop patch aside; a source-'
+          'extraction row\'s tag is its sixth field)', bt == base, bt)
+    w('beam', [[lst, scope, n5, '1.80', '1.5', app]], 'a')          # the append's gates re-list the whole cell first
+    late = _refuses(lambda: GP.carried_refusals(rd, cell, 'sanity_V', lambda k: True, app))
+    check('(d) read once the append has written a row, the newest tag is its own and the carry refuses (why the engine reads the '
+          'base tag first)', 'not older' in late, late)
+    src = _src()
+    said = []
+    ns = dict(included_dates=[n4], _base_tag=bt, dates=[n1, n2, n3, n4], _GP=GP, _refdir=rd, lst=lst, scope=scope,
+              _attempt=app, csv=csv, print=lambda *a, **k: said.append(' '.join(map(str, a))))
+    exec(_carry_block(src), ns)                                     # n5: refused by the gates now; n4: the append's own night
+    w('sanity_V', [[lst, scope, n4, '99.0', '8.1', app]], 'a')      # the append's own verdict on its night, after the narrowing
+    cur = _current(rd, cell)
+    want = {'sanity_V': [r[:-1] + [app] for r in before['sanity_V'] if r[2] in (n1, n2)] + [[lst, scope, n4, '99.0', '8.1', app]],
+            'daytime': [r[:-1] + [app] for r in before['daytime']],
+            'extraction_I': [r[:5] + [app] + r[6:] for r in before['extraction_I']],
+            'searchtier': before['searchtier'], 'beam': [[lst, scope, n5, '1.80', '1.5', app]]}
+    check('(d) after the append the newest-tag reading holds the base\'s sanity_V, daytime and source-extraction rows of the '
+          'nights it does not list and the gates admit, every field but the tag unchanged (the extraction row keeps its UTC '
+          'time), beside its own row; not the night it lists, the night the gates refuse now, the older search\'s row; the drop '
+          'patch\'s row stays', cur == want and len(said) == 3, (cur, said))
+    shutil.rmtree(os.path.join(T, 'carry'))
+    os.makedirs(rd)
+    w('beam', [[lst, scope, n5, '1.80', '1.5', app]])
+    ns.update(_base_tag=GP.newest_search_tag(rd, cell) and None, dates=[n1, n4])
+    exec(_carry_block(src), ns)
+    check('(d) a base without a refusal row carries nothing', sorted(os.listdir(rd)) == [f'{cell}_beam_excluded.csv'],
+          os.listdir(rd))
+    # the engine's order (run_deep_cell): the base tag is read before the first refusal row is written; the carry comes before the
+    # first return after the gates; every refusal file written after the carry is one it carries; the 10-minute search-tier carry
+    # is given the same base tag
+    r0 = src.index('def run_deep_cell(')
+    i_bt = src.index("_base_tag = _GP.newest_search_tag(_refdir, f'{lst}_{scope}') if included_dates else None", r0)
+    i_w = src.index("_refdir}/", src.index('_refusal_columns(_refdir)', r0) + 30)
+    i_c = src.index('    if included_dates and _base_tag:', r0)
+    rets = [src.index(t, r0) for t in ("ZERO flows — REFUSING", "P3-POLICY-SKIP only {len(dates)} flows",
+                                       "INCREMENTAL - nothing admitted")]
+    after = set(re.findall(r"_refdir\}/\{lst\}_\{scope\}_([A-Za-z_{}]+?)_excluded\.csv", src[src.index("ZERO flows — REFUSING", i_c):]))
+    after = {g.replace('{st}', s) for g in after for s in ('I', 'V')} if after else set()
+    check('(d) the engine: the base tag is read before the first refusal row, the carry before the first return after the '
+          'gates, every refusal file written after the carry is a carried one, the 10-minute search-tier carry passes the base tag',
+          i_bt < i_w < i_c < min(rets) and after and after <= set(CARRIED)
+          and "_attempt, base_tag=_base_tag) if _base_tag else []" in src, (i_bt, i_w, i_c, rets, sorted(after)))
+
+
 def _real_cells():
     root = CFG.paths.COADD_SB_ROOT
     return root if os.path.isdir(os.path.join(root, '11h_59MHz')) else None
@@ -234,6 +324,7 @@ def main():
         test_skip_key()
         test_v_sanity_record()
         test_wideband_synthetic()
+        test_append_carry()
         test_wideband_real()
     finally:
         shutil.rmtree(T, ignore_errors=True)
