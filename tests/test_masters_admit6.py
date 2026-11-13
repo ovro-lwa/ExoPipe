@@ -17,7 +17,11 @@ Dewarped mode (DECISIONS_PENDING item 7, the design's acceptance of admission in
 solves new ones against the dewarped master (GPU host; Gregg's OK per the design), and the test measures, besides
 admission_reproduces, how well the flow takes up the screen. The admitted products carry the master's MDW* cards and
 ADMWARP 'flow'; admissions.csv names the screen (screen_md5 = the record's). The failure paths are not rerun there.
-Run: python tests/test_masters_admit6.py [--dewarped <cell>]
+Baseline mode: `--new-flows <cell>` (a cell without the dewarp) solves new flows too, so admission_reproduces gives what any
+re-solved flow costs against the members' stored ones (2026-11-13: 01h_46MHz, median |ratio - 1| 3.8-4.2e-3, peaks 0.020 px
+from the members', as far from the master's peaks as the members are; 21h_46MHz dewarped: 1.1-1.2e-2, 0.045 px, 9-13 per
+cent farther from the master's peaks than the members). Its header comparison needs a cell the current build wrote.
+Run: python tests/test_masters_admit6.py [--dewarped <cell> | --new-flows <cell>]
 """
 import calendar
 import csv
@@ -48,8 +52,9 @@ T = '/tmp/exopipe3_tests_admit6'
 FAILS, N = [], [0]
 CELL, LST, SC = '05h_78MHz', '05h', '78MHz'
 DEWARPED = '--dewarped' in sys.argv
-if DEWARPED:
-    CELL = sys.argv[sys.argv.index('--dewarped') + 1]
+NEWFLOWS = DEWARPED or '--new-flows' in sys.argv     # the flows solved anew on the GPU (the members' stored ones not copied)
+if NEWFLOWS:
+    CELL = sys.argv[sys.argv.index('--dewarped' if DEWARPED else '--new-flows') + 1]
     LST, SC = CELL.split('_', 1)
 REPRODUCE_TOL = 1e-3
 
@@ -123,8 +128,8 @@ def _night_cards(cd, d):
     return TN.measure(sci, SC)[0], os.path.basename(sci.rstrip('/'))
 
 
-def bright_ratio(e, m):
-    """Median and count of e / m at the master's bright compact sources - the selection of coadd._epoch_content_arrays."""
+def _bright_peaks(e, m):
+    """(yy, xx) of the master's bright compact sources - the selection of coadd._epoch_content_arrays."""
     from scipy.ndimage import maximum_filter
     ok = np.isfinite(e) & np.isfinite(m) & (m != 0)
     v = m[ok]
@@ -134,10 +139,35 @@ def bright_ratio(e, m):
     yy, xx = np.nonzero(pk)
     h, w = m.shape
     keep = np.hypot(xx - w / 2, yy - h / 2) / (w / 2) < 0.9
-    yy, xx = yy[keep], xx[keep]
+    return yy[keep], xx[keep]
+
+
+def bright_ratio(e, m):
+    """Median of e / m, median |e / m - 1| and count at the master's bright compact sources (_bright_peaks)."""
+    yy, xx = _bright_peaks(e, m)
     r = e[yy, xx] / m[yy, xx]
     r = r[np.isfinite(r)]
     return float(np.median(r)), float(np.median(np.abs(r - 1))), len(r)
+
+
+def peak_offsets(e, m):
+    """(median, 90th percentile) of the distance in pixels between e's and m's sub-pixel peak positions (a parabola through
+    each axis' three pixels around m's peak pixel) at the master's bright compact sources away from the edge: how well
+    the admitted epoch's flow put the sources where the member's alignment put them."""
+    yy, xx = _bright_peaks(e, m)
+    h, w = m.shape
+    keep = (yy > 1) & (xx > 1) & (yy < h - 2) & (xx < w - 2)
+    yy, xx = yy[keep], xx[keep]
+
+    def sub(a, y, x):
+        def par(l, c, r):
+            den = l - 2 * c + r
+            return np.where(den != 0, 0.5 * (l - r) / np.where(den != 0, den, 1), 0.0)
+        return (par(a[y - 1, x], a[y, x], a[y + 1, x]), par(a[y, x - 1], a[y, x], a[y, x + 1]))
+    (ey, ex), (my, mx) = sub(e, yy, xx), sub(m, yy, xx)
+    d = np.hypot(ey - my, ex - mx)
+    d = d[np.isfinite(d)]
+    return (float(np.median(d)), float(np.percentile(d, 90))) if len(d) else (float('nan'), float('nan'))
 
 
 def test_admit_end_to_end():
@@ -155,7 +185,7 @@ def test_admit_end_to_end():
     pr = rec(out, 'masters', f'admit-prep_{CELL}')
     check('admit-prep prepares the two nights made new', rc == 0 and sorted(d['date'] for d in pr['meta']['admit']['dates'])
           == nights, (rc, pr.get('reason'), txt[-400:]))
-    for d in nights if not DEWARPED else []:           # the members' stored flows: fresh, so the flow step solves nothing
+    for d in nights if not NEWFLOWS else []:           # the members' stored flows: fresh, so the flow step solves nothing
         for f in (f'{d}_scaled_flow.npy', f'{d}_scaled_dewarp.fits'):
             shutil.copy2(os.path.join(flows, f), os.path.join(cd, A.ADMIT_DIR, 'flow', f))
             t = time.time()
@@ -164,8 +194,9 @@ def test_admit_end_to_end():
     rc, txt = cli('flow', '--stages', 'admit', '--out', out)      # the pairs carry the cell tree's paths
     fr = rec(out, 'flow', f'admit_{CELL}')
     recomp = sorted((fr.get('meta') or {}).get('admit', {}).get('recomputed') or [])
-    if DEWARPED:                                       # stored flows align to the pre-dewarp frame: new ones, on the GPU
-        check(f'the flow step\'s admit stage solves both nights\' flows against the dewarped master ({time.time() - t0:.0f} s)',
+    if NEWFLOWS:                                       # stored flows align to the pre-dewarp frame: new ones, on the GPU
+        check(f'the flow step\'s admit stage solves both nights\' flows against the '
+              f'{"dewarped " if DEWARPED else ""}master ({time.time() - t0:.0f} s)',
               rc == 0 and fr.get('status') == 'done' and recomp == nights, (rc, fr.get('reason'), recomp, txt[-400:]))
     else:
         check('the flow step\'s admit stage takes the stored flows (nothing solved, no GPU) and is done',
@@ -190,21 +221,30 @@ def test_admit_end_to_end():
           and all(tests.values()), {k: v for k, v in tests.items() if not v} or sorted(tests)[:6])
     inst = os.path.join(CFG.paths.COADD_SB_ROOT, CELL)
     m = np.squeeze(fits.getdata(os.path.join(inst, 'coadd_final', f'I_deep_Taper_R075_{SC}.fits'))).astype(np.float64)
-    res = {}
+    res, offs, offm = {}, {}, {}
     for d in nights:
         pa = os.path.join(cd, 'subtracted', f'{d}_I_epoch_{SC}.fits')
         if not os.path.exists(pa):
-            res[d] = (float('nan'), float('nan'), 0)
+            res[d], offs[d] = (float('nan'), float('nan'), 0), (float('nan'), float('nan'))
+            offm[d] = (offs[d], offs[d])
             continue
         e_adm = np.squeeze(fits.getdata(pa)).astype(np.float64)
         pe = os.path.join(inst, 'subtracted', f'{d}_I_epoch_{SC}.fits')        # the member's installed epoch
         e_mem = (np.squeeze(fits.getdata(pe)).astype(np.float64) if os.path.exists(pe) else
                  np.squeeze(fits.getdata(os.path.join(inst, 'subtracted', f'{d}_I_sub_{SC}.fits'))).astype(np.float64) + m)
         res[d] = bright_ratio(e_adm, e_mem)
+        offs[d] = peak_offsets(e_adm, e_mem)
+        offm[d] = (peak_offsets(e_adm, m), peak_offsets(e_mem, m))  # each epoch's peaks against the installed master's
+    pix = abs(float(fits.getheader(os.path.join(inst, 'coadd_final', f'I_deep_Taper_R075_{SC}.fits'))['CDELT2'])) * 3600
     print('  admission_reproduces (admitted / member epoch at the master\'s bright compact sources): '
-          + '; '.join(f'{d}: median {v[0]:.6f}, median |r-1| {v[1]:.2e}, {v[2]} sources' for d, v in res.items()))
-    check(f'admission_reproduces: each admitted epoch equals the member\'s at bright peaks within {REPRODUCE_TOL:g}',
-          all(abs(v[0] - 1) <= REPRODUCE_TOL and v[2] >= 20 for v in res.values()), res)
+          + '; '.join(f'{d}: median {v[0]:.6f}, median |r-1| {v[1]:.2e}, {v[2]} sources; peak offset median '
+                      f'{offs[d][0]:.3f} px, 90th percentile {offs[d][1]:.3f} px ({pix:.0f} arcsec pixels)'
+                      for d, v in res.items()))
+    print('  peak offset from the installed master\'s peaks (median / 90th percentile, px): '
+          + '; '.join(f'{d}: admitted {a[0]:.3f} / {a[1]:.3f}, member {b[0]:.3f} / {b[1]:.3f}' for d, (a, b) in offm.items()))
+    check(f'admission_reproduces: each admitted epoch equals the member\'s at bright peaks, median |ratio - 1| within '
+          f'{REPRODUCE_TOL:g} (the ruled tolerance, DADMIT_DESIGN.md)',
+          all(v[1] <= REPRODUCE_TOL and v[2] >= 20 for v in res.values()), res)
     if DEWARPED:                                       # item 7: the screen's provenance on every product and row
         scr = A.mdwarp_screen(CELL, os.path.join(inst, 'coadd_final', f'I_deep_Taper_R075_{SC}.fits'),
                               CFG.masters_verify.DEWARP_SCREEN_RECORD)
@@ -217,13 +257,17 @@ def test_admit_end_to_end():
     skip = {'HISTORY', 'COMMENT', '', 'ADMITTED', 'ADMITREF', 'GITTAG', 'ADMWARP'}   # GITTAG: the code commit that wrote it
     std = {'THERMNOI', 'P2RUN'} if CFG.masters_build.HEADER_STANDARD == 'full' else set()   # writers step 1: the night's
     skip |= std                                     # output-standard cards (the members were built under production's headers)
-    hdiff, sdiff, night_cards = {}, {}, {}
+    hdiff, sdiff, night_cards, absent = {}, {}, {}, []
     adm_rows = {r['date']: r for r in csv.DictReader(open(os.path.join(cd, 'coadd_final', 'admissions.csv')))} if std else {}
     for d in nights:
         for st in ('I', 'V'):
             for kind in ('epoch', 'sub', 'clean'):
                 a = fits.getheader(os.path.join(cd, 'subtracted', f'{d}_{st}_{kind}_{SC}.fits'))
-                b = fits.getheader(os.path.join(inst, 'subtracted', f'{d}_{st}_{kind}_{SC}.fits'))
+                pb_ = os.path.join(inst, 'subtracted', f'{d}_{st}_{kind}_{SC}.fits')
+                if not os.path.exists(pb_):         # an older build kept no such member product (01h_46MHz: no epochs)
+                    absent.append(f'{d}_{st}_{kind}')
+                    continue
+                b = fits.getheader(pb_)
                 dk = sorted(k for k in set(a) | set(b) if k not in skip and a.get(k) != b.get(k))
                 if dk:
                     hdiff[f'{d}_{st}_{kind}'] = dk[:6]
@@ -243,7 +287,9 @@ def test_admit_end_to_end():
                         sdiff[f'{d}_{st}_{kind}'] = (got, want, a.get('P2RUN'), run_)
     check('every admitted product\'s header equals the member\'s card for card (the epochs stamped as the archive '
           'publish stamps them) but ADMITTED / ADMITREF / HISTORY and the code commit (GITTAG)'
-          + (', and the night\'s output-standard cards (THERMNOI, P2RUN)' if std else ''), not hdiff, hdiff)
+          + (', and the night\'s output-standard cards (THERMNOI, P2RUN)' if std else '')
+          + (f' ({len(absent)} member products the installed cell does not keep, not compared)' if absent else ''),
+          not hdiff and (NEWFLOWS or not absent), (hdiff, absent))
     if std:
         check('writers step 1: every admitted product carries its night\'s THERMNOI in the product\'s units (measured as '
               'Phase 2 stamps it on the night\'s V deep image, divided by the first- and second-pass DCs the pixels were divided '
@@ -1096,7 +1142,7 @@ def main():
     os.makedirs(T)
     try:
         nights = test_admit_end_to_end()
-        if not DEWARPED:
+        if not NEWFLOWS:
             test_failure_paths(nights)
     finally:
         if not os.environ.get('EXOPIPE3_TEST_KEEP'):            # set to inspect the admission copy afterwards

@@ -317,6 +317,19 @@ def mdwarp_screen(cell, master_path, record):
     return dict(path=p, md5=md5, sx=sx, sy=sy, cards={k: (h[k], h.comments[k]) for k in SCREEN_CARDS if k in h})
 
 
+def screen_inputs(cell, master_path, record):
+    """The files a master-dewarped cell's admission reads for its screen: the screen record ``record`` and the screen file
+    its last row of the cell names, those that exist (mdwarp_screen verifies them); [] when the master carries no MDWARP.
+    Part of the admit stage's --resume identity (admit_stages.admit_inputs), so declared with its other inputs."""
+    from astropy.io import fits
+    if not os.path.exists(master_path) or not fits.getheader(master_path).get('MDWARP'):
+        return []
+    lst, sc = cell.split('_', 1)
+    rows = [r for r in (_rows(record) if os.path.exists(record) else []) if r.get('lst') == lst and r.get('scope') == sc]
+    f = rows[-1].get('screen_file') if rows else ''
+    return [p for p in (record, os.path.join(os.path.dirname(record), f) if f else '') if p and os.path.isfile(p)]
+
+
 def header_differences(a, b):
     """The keys whose value differs between headers ``a`` and ``b``: every card of either but HISTORY, COMMENT, blank
     cards (the reference copy carries its own HISTORY line) and the structure cards the FITS writer sets (SIMPLE, BITPIX,

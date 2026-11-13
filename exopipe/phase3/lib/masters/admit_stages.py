@@ -417,7 +417,8 @@ def admit_inputs(cell, args, co, out, held=()):
     """(todo, inputs, admit-prep record, flow record) of the admit stage, as the stage records them - also its --resume
     identity: the nights admit-prep prepared that still qualify now, with every input (prep_inputs' records, masters and
     images; the admit-prep and flow records; each night's scaled input, flow, V image and beam-gate image; the reference
-    copies; the provisional masters; the scale and correction tables). Refuses without a done admit-prep record or a done
+    copies; the provisional masters; the scale and correction tables; a master-dewarped cell's screen record and screen,
+    admit.screen_inputs). Refuses without a done admit-prep record or a done
     flow admit record made from it. ``held``: the unit's own nights, for a --resume check (prep_inputs)."""
     from exopipe.phase3.core import record as R
     from exopipe.phase3.lib.masters import admit as A, deep_stages as DS
@@ -442,6 +443,7 @@ def admit_inputs(cell, args, co, out, held=()):
                              fs.SCALE_TABLE, fs.FLUXCORR_TABLE]
     inputs += [os.path.join(W, 'ref', f'{v}_{sc}.fits') for _st, v in PROV]
     inputs += [p for p in (os.path.join(cd, 'coadd_provisional', f'{v}_{sc}.fits') for _st, v in PROV) if os.path.exists(p)]
+    inputs += A.screen_inputs(cell, A.master_path(cd), _cfg().masters_verify.DEWARP_SCREEN_RECORD)   # item 7
     freq_str = DS._freq(sc)
     for d, sd, _img in todo:
         inputs += [os.path.join(W, 'prep', f'{d}_scaled.fits'), os.path.join(W, 'flow', f'{d}_scaled_flow.npy')]
@@ -552,9 +554,6 @@ def admit_stage(cell, args, run, out, ran_now):
                 u.check(gate, False, detail=why[:400])
                 u.refuse(why)
             refs, med, med_src, factor, scr = admit_gates(cell, cd, prep, frec, ents, fail, write=True)
-            if scr:
-                for p in (_cfg().masters_verify.DEWARP_SCREEN_RECORD, scr['path']):
-                    u.add_input(p)
             row = DS.scale_row(lst, sc)
             corr_t = FC.load_table(_cfg().masters_fluxscale.FLUXCORR_TABLE)
             if not todo:

@@ -105,6 +105,9 @@ def test_screen():
           and all(s['cards'][k] == (h[k], h.comments[k]) for k in A.SCREEN_CARDS), s and sorted(s['cards']))
     check('a master without MDWARP has no screen (None; nothing read)',
           A.mdwarp_screen(CELL, master(d, 'plain', mdwarp=False), os.path.join(d, 'missing.csv')) is None)
+    check('screen_inputs (the stage\'s --resume identity): the record and the screen its last row names; [] without MDWARP',
+          A.screen_inputs(CELL, mp, rp) == [rp, sp]
+          and A.screen_inputs(CELL, master(d, 'plain', mdwarp=False), rp) == [], A.screen_inputs(CELL, mp, rp))
     for sub in ('r1', 'r2', 'r3', 'r4', 'm5', 'm6'):
         os.makedirs(os.path.join(d, sub), exist_ok=True)
     for sub in ('r2', 'r3', 'r4'):                              # the record names the screen in its own directory
@@ -118,6 +121,9 @@ def test_screen():
     bad['the master\'s MDWNANC not the record\'s'] = (master(d + '/m5', 'I_deep_Taper_R075', nanc=36), rp)
     bad['the master\'s MDWDATE not the record\'s measured_at'] = (master(d + '/m6', 'I_deep_Taper_R075',
                                                                          when='2026-10-01T00:00:00'), rp)
+    check('screen_inputs names only files that exist (the gate refuses the rest): a missing screen leaves the record',
+          A.screen_inputs(CELL, mp, bad['the screen file missing'][1]) == [bad['the screen file missing'][1]]
+          and A.screen_inputs(CELL, mp, os.path.join(d, 'missing.csv')) == [])
     for what, (m, r) in bad.items():
         try:
             A.mdwarp_screen(CELL, m, r)
@@ -208,19 +214,22 @@ def test_gates():
 
 
 def test_stage_wiring():
-    """The admit stage: the screen's record and file are inputs, the provisional masters are resampled with the screen
-    before any night, every product gets the master's MDW* cards and ADMWARP after ADMITTED/ADMITREF, the row records the
+    """The admit stage: the screen's record and file are inputs declared in admit_inputs (its --resume identity: an input
+    added after the gates made every --resume re-run the stage - GPU test 2026-11-13), the provisional masters are resampled
+    with the screen before any night, every product gets the master's MDW* cards and ADMWARP after ADMITTED/ADMITREF, the row records the
     screen's md5 (ADMISSION_COLS screen_md5); the dry-run plan takes the same gates."""
     src = inspect.getsource(AS.admit_stage)
     i_g = src.index('admit_gates(cell, cd, prep, frec, ents, fail, write=True)')
-    i_in = src.index("for p in (_cfg().masters_verify.DEWARP_SCREEN_RECORD, scr['path'])")
     i_rs = src.index("MD.resample(prov_d[st], scr['sx'], scr['sy'])")
     i_loop = src.index('for d, sd, img in todo:')
     i_ref = src.index("hd['ADMITREF']")
     i_cards = src.index("for kc, vc in scr['cards'].items()")
     i_w = src.index("hd['ADMWARP']")
-    check('admit_stage: gates, screen inputs, provisional resample, then the nights; cards after ADMITREF',
-          i_g < i_in < i_rs < i_loop < i_ref < i_cards < i_w, (i_g, i_in, i_rs, i_loop, i_ref, i_cards, i_w))
+    check('admit_stage: gates, provisional resample, then the nights; cards after ADMITREF',
+          i_g < i_rs < i_loop < i_ref < i_cards < i_w, (i_g, i_rs, i_loop, i_ref, i_cards, i_w))
+    check('the screen inputs are declared with the stage\'s others (admit_inputs, the --resume identity), never added '
+          'after the gates', 'A.screen_inputs(cell, A.master_path(cd), _cfg().masters_verify.DEWARP_SCREEN_RECORD)'
+          in inspect.getsource(AS.admit_inputs) and 'u.add_input' not in src[i_g:])
     check('admissions.csv carries screen_md5, filled from the screen', 'screen_md5' in AS.ADMISSION_COLS
           and "screen_md5=scr['md5'] if scr else ''" in src)
     check('the dry-run plan takes the stage\'s gates (five values)',
