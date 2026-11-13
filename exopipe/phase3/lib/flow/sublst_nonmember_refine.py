@@ -88,7 +88,8 @@ def fft_upsample2(a, workers):
 
 
 def fft_decimate2(a, workers):
-    """The inverse of fft_upsample2 (the Fourier plane cropped back); refine.py:67-70."""
+    """The Fourier plane of an x2 image cropped back; refine.py:67-70. The inverse of fft_upsample2 except on the Nyquist
+    row and column, which come back halved (the real part of the x2 image keeps half of them); as production."""
     import numpy as np
     import scipy.fft as sf
     n = a.shape[0] // 2
