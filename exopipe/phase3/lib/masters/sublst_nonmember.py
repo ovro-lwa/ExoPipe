@@ -131,6 +131,18 @@ def subtract(stack, master):
     return np.where(np.isfinite(d) & np.isfinite(m), d - m, np.nan).astype(np.float32)
 
 
+def duration_s(header):
+    """DURATION of a window (s): its last frame's end minus its first frame's start, from the stack's own time block
+    (DATE-END - DATE-OBS, rounded to 0.1 s; clv15/phase3_sublst_loo.py:180). An unreadable time block refuses (N-10):
+    production falls back to TEFFSEC or 600 s there; an epoch product carries its own time, so nothing is assumed here."""
+    try:
+        from astropy.time import Time
+        return round((Time(header['DATE-END']) - Time(header['DATE-OBS'])).sec, 1)
+    except Exception as e:
+        raise Refusal(f'N-10: the stack\'s own time block (DATE-OBS, DATE-END) cannot be read ({type(e).__name__}: {e}) - '
+                      f'no DURATION is assumed')
+
+
 def residual_header(stack_header, master_header, master_path, k, n_weighted, code):
     """The residual's header: the stack's own header (its own time block) plus the cards of clv15/phase3_sublst_loo.py
     :169-184, same keywords, values, comments and order. n_weighted = the Master's weighted nights (LOONCOAD: the nights in
@@ -143,14 +155,7 @@ def residual_header(stack_header, master_header, master_path, k, n_weighted, cod
     rh['JUPMASK'] = (master_header['JUPMASK'], 'arcmin, Jupiter masked per night in the leave-one-out Master')
     # cards the 10-minute search reads: LSTBIN selects the window PB and names the product; BINMSTR must not be present
     rh['LSTBIN'] = (int(k), 'sidereal window index (sub-LST)')
-    try:
-        from astropy.time import Time
-        dur = round((Time(rh['DATE-END']) - Time(rh['DATE-OBS'])).sec, 1)      # s, the stack's own time block
-    except Exception as e:
-        raise Refusal(f'N-10: the stack\'s own time block (DATE-OBS, DATE-END) cannot be read ({type(e).__name__}: {e}) - '
-                      f'no DURATION is assumed (production falls back to TEFFSEC or 600 s; an epoch product carries its '
-                      f'own time)')
-    rh['DURATION'] = (dur, 's, first frame start to last frame end')
+    rh['DURATION'] = (duration_s(rh), 's, first frame start to last frame end')
     if 'BINMSTR' in rh:
         del rh['BINMSTR']
     return rh
@@ -339,7 +344,7 @@ def assess(run, root, lst, cell, sb, stokes, how, ex):
                          + f' - run `{STACK_STAGE} --epochs {cell}` first (with --fresh --supersede TAG over earlier '
                            f'products); no residual is written from a partial stack')
         return out
-    member, bad_master, bad_scale = [], [], []
+    member, bad_master, bad_scale, bad_time = [], [], [], []
     for S in sorted(windows):
         mdir = os.path.join(root, f'{lst}_masters', sb, S)
         if not glob.glob(os.path.join(mdir, f'sublst_master_{lst}_{sb}_{S}_w[0-9].fits')):
@@ -385,6 +390,11 @@ def assess(run, root, lst, cell, sb, stokes, how, ex):
             if fs != fm:
                 bad_scale.append(f'w{k} Stokes {S}: stack (baked, pixel factor) {fs} != Master {fm}')
                 continue
+            try:
+                duration_s(sh)
+            except Refusal as e:
+                bad_time.append(f'{os.path.basename(w)}: {e}')
+                continue
             item['n_weighted'] = sum(1 for _n, x in rows if x > 0)
     if member:
         out['refuse'] = (f'N-5: {cell} {sb}: the night IS a member of the installed window Master(s) - ' + ', '.join(member[:12])
@@ -398,6 +408,8 @@ def assess(run, root, lst, cell, sb, stokes, how, ex):
         out['refuse'] = (f'N-9: {cell} {sb}: the stack and the installed window Master carry different flux scales: '
                          + '; '.join(bad_scale[:4]) + ' (one flux scale per window, Gregg 2026-10-07; production refuses the '
                                                       'window, clv15/phase3_sublst_loo.py:123-125)')
+    elif bad_time:
+        out['refuse'] = '; '.join(bad_time[:4])
     return out
 
 
@@ -459,14 +471,26 @@ def _unit(run, opts, root, lst, cell, sb, stokes, plan_files, how):
         for it in a['items']:
             u.plan(it['resid'], PRODUCT_CLASS)
         mroot = os.path.join(root, f'{lst}_masters')
-        n_written = 0
-        for it in a['items']:
-            if it['refuse']:
-                u.refuse_item(it['resid'], it['refuse'], gate=it['gate'])
-                continue
-            write_residual(it, run.commit)
-            u.add_output(it['resid'], PRODUCT_CLASS, master_root=mroot)
-            n_written += 1
+        written = []
+        try:
+            for it in a['items']:
+                if it['refuse']:
+                    u.refuse_item(it['resid'], it['refuse'], gate=it['gate'])
+                    continue
+                written.append(write_residual(it, run.commit))
+        except BaseException:
+            # a unit that fails while writing leaves NO residual of its own behind (a partial set would be read by the
+            # wideband and search stages as the night's residuals): only the files THIS process wrote a moment ago, and
+            # its own unfinished temporary file (core.fitsio.write_fits writes .<name>.tmp.<pid>, then renames)
+            tmp = [os.path.join(os.path.dirname(it['resid']), f'.{os.path.basename(it["resid"])}.tmp.{os.getpid()}')
+                   for it in a['items']]
+            for p in written + tmp:
+                if os.path.lexists(p):
+                    os.unlink(p)
+            raise
+        for p in written:
+            u.add_output(p, PRODUCT_CLASS, master_root=mroot)
+        n_written = len(written)
         u.meta.update(residuals=n_written, windows_refused=len(u.refused_items))
         TS.say(f'  {name}: {n_written} residual(s) against the installed window Masters'
                + (f', {len(u.refused_items)} window(s) refused (no installed Master)' if u.refused_items else ''))
