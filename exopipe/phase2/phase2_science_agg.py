@@ -1918,7 +1918,7 @@ DEFERRED_EMAIL_FILE = "email_deferred.json"     # in <run_dir>/QA: written by --
 
 def write_deferred_email(run_dir, run_command=None, run_duration=None, lst=None, date=None):
     """--defer_email: the report is not sent now. Record what only this process knows (command, duration) so that the
-    step at the end of Phase 3 (`exopipe3 email`) sends the SAME report with the Phase 3 highlights added."""
+    step at the end of Phase 3 (`exopipe3 notify`) sends the SAME report with the Phase 3 highlights added."""
     path = os.path.join(run_dir, "QA", DEFERRED_EMAIL_FILE)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".tmp", "w") as f:
