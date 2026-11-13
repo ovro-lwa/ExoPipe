@@ -2002,7 +2002,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if cadence == 'deep' and included_dates:                           # an append is judged by the population its base attempt
             from exopipe.phase3.lib.search import gate_population as _GP   # recorded (gate_population.csv), never a recomputed one;
             _bfz = _GP.frozen_beam(run_root, lst, scope, float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')),   # none recorded,
-                                   BEAM_GATE_MIN_NIGHTS, lambda _n: is_excluded(lst, scope, _kd(_n), _excl))   # another rule: refused
+                                   BEAM_GATE_MIN_NIGHTS, lambda _n: _xtest(lst, scope, _kd(_n)))   # another rule: refused (the
+                                                                   # cadence's own exclusion test: at 10 minutes _excl is not set)
             print(f'  {lst} {scope}: BEAM GATE (append) - the base attempt\'s frozen population: {_bfz["n"]} nights, '
                   f'{_bfz["outcome"]}' + (f', median {_bfz["median"]:.6g}' if _bfz['median'] is not None else '')
                   + (f'; recomputed now {len(_fin)} nights' if len(_fin) != _bfz['n'] else ''))
