@@ -356,8 +356,16 @@ class masters_admit(_Section):
                                               # 'admitted, rebuild pending' and the deep search accepts it, judged against the cell's own
                                               # nights; 'absent' (production): it is a night absent from the co-add record - a membership
                                               # violation, refused by the search's input-provenance gate E15. One value for every step
+    MASTER_HELD_18MHZ = 'keep'                # build-stats' membership check of the INSTALLED master (as the deep search judges it,
+                                              # lib/search/admitted.verify_master; search_detect.MASTER_HELD_18MHZ is the search's same
+                                              # choice, install.MASTER_HELD_18MHZ the install's): 'keep' = a Red / Full night whose only
+                                              # finding is that it holds its excluded 18 MHz is reported and kept until the master's next
+                                              # rebuild, never a violation (the 18 MHz carve-out); 'refuse' = the strict check (such a
+                                              # cell refuses build-stats); any other value refuses the stage
     RULED = {'ADMITTED_NIGHTS': 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',
-             'DC2_MEDIAN_WITHOUT_RECORD': 'R-REFACTOR-20261016-DC2-MEDIAN-1'}
+             'DC2_MEDIAN_WITHOUT_RECORD': 'R-REFACTOR-20261016-DC2-MEDIAN-1',
+             'MASTER_HELD_18MHZ': ('R-GREGG-20261017-18MHZ-CARVEOUT-MEANS-RED-FROM-4', 'IMPL-R-GREGG-20261017-18MHZ-ENFORCE-GOING-FORWARD',
+                                   'CORRECTION-12H-RED-18MHZ-IS-THE-CARVE-OUT-NOT-A-DEEP-ISSUE-20261023')}
 
 
 class masters_sources(_Section):
