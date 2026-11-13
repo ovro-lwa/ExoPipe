@@ -19,7 +19,7 @@ tiers read per night ('snapshot-gpu' on a GPU-frame cell, 'snapshot' on every ot
          same per-night verdicts as the v2 co-add port.
 
 Inputs: a COPY of the real /lustre/gh/main/clv15/data_decisions.csv (read only) and of the GPU-frame cell list when they exist,
-else small synthetic lists (CI); the tagged row (23h, 82 MHz, 2025-10-29) is appended to the copy only. Scratch: a fresh
+else small synthetic lists (CI); the tagged row (23h, 82 MHz, test-only night 2099-12-30) is appended to the copy only. Scratch: a fresh
 directory under $EXOPIPE3_TEST_SCRATCH, else the system temp directory, removed at exit.
 
 Run standalone:  python tests/test_exclusion_scope.py
@@ -50,7 +50,7 @@ except Exception as e:                                    # pragma: no cover
 REAL_CSV = '/lustre/gh/main/clv15/data_decisions.csv'
 REAL_GPU = '/lustre/gh/main/exopipe_ops/snapshot_gpu_frame_cells.txt'
 PRODUCTION = '/lustre/gh/main/exopipe'
-KEY = ('23h', '82', '2025-10-29')
+KEY = ('23h', '82', '2099-12-30')   # a night no real row names (2025-10-29 became a real snapshot-only row 2026-11-13)
 TAG = '[SNAPSHOT-TIERS-ONLY'
 GPU_TAG = '[SNAPSHOT-GPU-READMITTED'
 SCOPES = (None, 'snapshot', 'snapshot-gpu')
@@ -97,7 +97,7 @@ def _fixture():
         f.write(raw if raw.endswith(b'\n') else raw + eol.encode())
     with open(tg, 'a', newline='') as f:
         csv.writer(f, lineterminator=eol).writerow(
-            ['23h', '82MHz', '2025-10-29', 'exclude', TAG + '] test row (tests/test_exclusion_scope.py), never in the real list',
+            ['23h', '82MHz', '2099-12-30', 'exclude', TAG + '] test row (tests/test_exclusion_scope.py), never in the real list',
              '', '', ''])
     _FX.update(dir=d, untagged=un, tagged=tg, gpu=gp, real=real)
     return _FX
@@ -277,6 +277,11 @@ def test_tenmin_search_read():
             and "        _xtest = snapshot_exclusion_test()\n    else:\n        _excl = load_exclusions()\n" in body), \
         'run_deep_cell: the 10-minute read is not snapshot_exclusion_test (deep: the default)'
     assert 'is_excluded(lst, scope, _kd(d), _excl)' not in body, 'run_deep_cell: a night test bypasses the cadence read'
+    for rel, call, old_ in (('tenmin_frames.py', '    xtest = snapshot_exclusion_test()', 'load_exclusions()'),
+                            ('phase3_tenmin.py', '    _xtest = snapshot_exclusion_test()', 'load_exclusions()')):
+        s_ = open(os.path.join(REPO, 'exopipe', 'phase3', rel)).read()
+        assert call in s_ and old_ not in s_ and 'is_excluded(' not in s_, \
+            f'{rel}: a 10-minute night read is not snapshot_exclusion_test (the default scope keeps a snapshot-only night)'
 
 
 def test_constants_mirror():
