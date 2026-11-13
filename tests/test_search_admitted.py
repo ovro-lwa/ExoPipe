@@ -533,7 +533,9 @@ def test_engine_source():
         'E11 epoch verdicts of admitted nights': "_egf = set(_egf) | _ADS.gate_failures(_adm)[1]",
         'the I sanity gate: own value after the median': "_wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}",
         'the search-tier gate: own value after the threshold': "_rm = {**_rm, **_ADS.values(_adm, f'stage2_{_st.lower()}_rms_mjy')}",
-        'E15 accepts an admitted night': "and _kd(d) not in _adm:",
+        # 2026-11-13: the condition goes on to the per-hour 10-minute term on the next line (the engine's line no longer ends at _adm)
+        'E15 accepts an admitted night': "and _kd(d) not in _cur and _kd(d) not in _adm   # WAVE2 D-ADMIT: admitted accepted",
+        'E15 accepts a 10-minute night with its tree-entry record': "and _kd(d) not in _nm10):",
         'the beam gate median: the cell\'s nights': "_fin = sorted(v for d, v in _areas.items() if d not in _adm)",
         'the V sanity median: the cell\'s nights': "and _d not in _adm)",
         'the members\' I stack: the cell\'s nights': "_sigma_stack(_ADS.only(resid_I, _ADS.without(dates, _adm))",
