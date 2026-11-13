@@ -282,6 +282,10 @@ class Tree:
         return r, rc
 
 
+def rec_inputs(rec):
+    return [(i['path'] if isinstance(i, dict) else i) for i in rec['inputs']]
+
+
 def unit(run, night=NEW):
     name = TN.unit_name(LST, SB, night)
     hits = [u for u in run.units if u.name == name]
@@ -341,7 +345,9 @@ def test_entry_equals_the_builders_tree():
         # the record: frames.csv and the three maps, content-tested as the batch stage's products
         rec = record.load_record(t.root, 'frames', u.name)
         assert rec['status'] == 'done' and {o['class'] for o in rec['outputs']} == {'tenmin_tree'} and len(rec['outputs']) == 4
-        assert all(x['passed'] for o in rec['outputs'] for x in o.get('tests', [{'passed': True}])), rec['outputs']
+        assert len(rec['tests']) == 4 and all(x['passed'] for x in rec['tests']), rec['tests']
+        assert rec['admitted'] == [NEW] and t.decisions in rec_inputs(rec) and t.listfile in rec_inputs(rec)
+        assert t.resid(NEW, 'V', 2) in rec_inputs(rec) and t.pb(NEW, 0) in rec_inputs(rec) and len(rec_inputs(rec)) == 13
         assert all(all(x['passed'] for x in validate.run('tenmin_tree', os.path.join(t.cdir, p), lst=LST, band=SB))
                    for p in ['frames.csv'] + [os.path.join('bin_masters', f'PB_bin{k}_{SB}.fits') for k in (0, 1, 2)])
         assert not t.leases_held() and os.path.isdir(os.path.join(t.tree, '.leases', f'{LST}_{SB}'))
@@ -562,6 +568,27 @@ def test_an_interrupted_run_is_completed():
         same(t.snapshot(), t.reference()[0])
 
 
+def test_resume_skips_a_presented_night_with_a_valid_record():
+    with Tree() as t:
+        # the record's own check (fingerprints, code, config, outputs) by a stand-in: this checkout may have local edits
+        with Patch((record, 'resume_check', lambda *a, **k: (True, 'stand-in'))):
+            r, _ = t.run(resume=True)                 # the night is not presented: never skipped, whatever the record says
+            assert unit(r).status == 'done' and unit(r).meta[TN.STAGE]['action'] == 'present'
+            snap = t.snapshot()
+            r, _ = t.run(resume=True)
+            assert unit(r).status == 'skipped-valid', (unit(r).status, unit(r).reason)
+            r, rc = t.run(resume=True, dry=True)
+            assert rc == 0 and not r.units
+            same(t.snapshot(), snap)
+            # the record of the run that wrote is still the unit's record
+            rec = record.load_record(t.root, 'frames', TN.unit_name(LST, SB, NEW))
+            assert rec['status'] == 'done' and rec['meta'][TN.STAGE]['action'] == 'present'
+        with Patch((record, 'resume_check', lambda *a, **k: (False, 'stand-in: an input changed'))):
+            r, _ = t.run(resume=True)                 # the record's check says no: the unit runs (and writes nothing)
+            assert unit(r).status == 'done' and unit(r).meta[TN.STAGE]['action'] == 'already presented'
+            same(t.snapshot(), snap)
+
+
 def test_one_writer_per_tree():
     with Tree() as t:
         other = TN.tree_lease(t.tree, LST, SB, 'another unit')
@@ -701,7 +728,8 @@ def test_the_builders_literals():
 
 TESTS = [test_entry_equals_the_builders_tree, test_the_earliest_night_gives_the_map_its_header,
          test_two_nights_one_after_the_other, test_a_window_with_one_stokes_is_skipped, test_refusals_write_nothing,
-         test_refusals_of_the_tree_it_adds_to, test_an_interrupted_run_is_completed, test_one_writer_per_tree,
+         test_refusals_of_the_tree_it_adds_to, test_an_interrupted_run_is_completed,
+         test_resume_skips_a_presented_night_with_a_valid_record, test_one_writer_per_tree,
          test_dry_run_plans_and_writes_nothing, test_stage_wiring, test_content_tests_count_listed_nights_at_weight_zero,
          test_the_builders_literals]
 

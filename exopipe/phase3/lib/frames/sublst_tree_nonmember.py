@@ -19,7 +19,8 @@ headers, the band's frames.csv and the PB_bin maps of the night's windows; no ot
 the builder writes from the same inputs (frames.csv byte for byte, the same links, PB_bin files byte for byte).
 
 Unit of work: one (LST hour, band, night): unit <LST>_tree-nonmember_<band>_<night>. It is idempotent: a night that is
-presented already, with these residuals, writes nothing (so --resume needs no skip: the unit re-reads the tree, seconds).
+presented already, with these residuals, writes nothing. With --resume a unit is skipped when the night is presented
+and its record is valid for today's inputs (the record of the run that wrote stays); it is never skipped otherwise.
 It writes in the order links, frames.csv, PB_bin headers; a run interrupted after frames.csv leaves the night's rows with
 PBNNIGHT one short, and the next run of the same unit completes exactly that. One writer per band's tree at a time: the
 lease <tree>/.leases/<LST>_<band> (the Lease class of lib/search/tier_sublst.py), which the batch stage `tree` takes too.
@@ -168,8 +169,9 @@ def assess(lst, band, night, x2, root, tree, cols, excluded):
     if excluded:
         a['refuse'] = f'T-1: {what}: excluded in data_decisions.csv - never presented to the search'
         return a
+    from exopipe.phase3.lib.masters import tier_sublst as TS
     wts, wp = weights(lst, band)
-    a['inputs'].append(wp)
+    a['inputs'] += [p for p in (wp, TS.nonmember_file(), TS.cfg().paths.DATA_DECISIONS) if os.path.exists(p)]
     if night not in wts:
         a['refuse'] = (f'T-2: {what}: no co-add weight - the night has no weight in {wp} and is not on the non-member '
                        f'nights list (the builder refuses it too)')
@@ -320,6 +322,13 @@ def tree_lease(tree, lst, band, unit):
                     wait_s=LEASE_WAIT_S, info={'unit': unit, 'tree': cell_dir(tree, lst, band)})
 
 
+def unit_inputs(ctx, a, lst, band, base=None):
+    """(the S-G8 gate of the band, the unit's inputs): what the assessment read and the refine log(s) the gate reads."""
+    from exopipe.phase3.lib.frames import tier_sublst as F
+    gate = F.tree_refine_gate(ctx, lst, band, base)
+    return gate, sorted(set(a['inputs']) | {g[3] for g in gate if os.path.exists(g[3])})
+
+
 def stage(ctx, lst, nights):
     """Run (or plan) the stage for the named nights of an LST hour: one unit per band of TREE_BANDS in the selection that
     has an x2 residual of the night."""
@@ -332,6 +341,7 @@ def stage(ctx, lst, nights):
     S = ctx.S
     cols = tuple(S.TREE_COLUMNS)
     tree = ctx.tree_dir()
+    resume = getattr(ctx.args, 'resume', False) and not getattr(ctx.args, 'fresh', False)
     bands = [b for b in S.TREE_BANDS if not ctx.scopes or b in ctx.scopes]
     for night in nights:
         base = ctx.input_base(f'{lst}_x2') if ctx.dry else None
@@ -350,11 +360,15 @@ def stage(ctx, lst, nights):
             for b in todo:
                 name = unit_name(lst, b, night)
                 a = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
-                gate = [g for g in F.tree_refine_gate(ctx, lst, b, base) if not g[1]]
+                gate, inputs = unit_inputs(ctx, a, lst, b, base)
+                gate = [g for g in gate if not g[1]]
                 why = a['refuse'] or (f'S-G8 x2 refine of {lst} {gate[0][0]} not complete ({gate[0][2]})' if gate else None)
                 if why:
                     F.plan(f'    UNIT {name}: WOULD REFUSE - {why}')
                     ctx.would_refuse += 1
+                elif resume and a['action'] == 'already presented' \
+                        and ctx.run.resume_check(name, inputs=inputs, admitted=[night])[0]:
+                    F.plan(f'    UNIT {name}: WOULD BE SKIPPED (--resume: the night is presented, the record is valid)')
                 else:
                     F.plan(f'    UNIT {name}: {a["action"]}: {len(a["ks"])} window(s), {len(a["links"])} link(s), '
                            f'{"frames.csv with " + str(a["n_rows"]) + " rows" if a["lines"] else "frames.csv unchanged"}, '
@@ -365,6 +379,13 @@ def stage(ctx, lst, nights):
         def one(b, night=night, x2=x2, root=root, ex=ex):
             name = unit_name(lst, b, night)
             cdir = cell_dir(tree, lst, b)
+            if resume and os.path.isdir(cdir):
+                # --resume: skipped only when the tree holds the night NOW (an assessment that would write or refuse is
+                # never skipped) and the unit's record is valid for today's inputs
+                a0 = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
+                if not a0['refuse'] and a0['action'] == 'already presented' \
+                        and F.try_resume(ctx.run, ctx.args, name, unit_inputs(ctx, a0, lst, b)[1], [night]):
+                    return
             with ctx.run.unit(name, tier=F.TIER, stage=STAGE, lst=lst, band=b, night=night) as u:
                 if not os.path.isdir(cdir):
                     u.refuse(f'T-6: {lst}_{night} {b}: the band has no tree to add a night to (no {cdir}) - '
@@ -374,12 +395,13 @@ def stage(ctx, lst, nights):
                 lease.acquire(say=lambda m: F.say(f'frames: [{name}] {m}'))
                 try:
                     a = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
-                    for p in a['inputs']:
+                    gate, inputs = unit_inputs(ctx, a, lst, b)
+                    for p in inputs:
                         u.add_input(p)
                     u.set_admitted([] if a['refuse'] and a['refuse'].startswith('T-1') else [night])
                     if a['refuse']:
                         u.refuse(a['refuse'])
-                    for sb, ok, why, _log in F.tree_refine_gate(ctx, lst, b):
+                    for sb, ok, why, _log in gate:
                         if not ok:
                             u.refuse(f'S-G8 x2 refine of {lst} {sb} not complete ({why}): a night is presented only '
                                      f'after its refine')
