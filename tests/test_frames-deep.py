@@ -7,6 +7,8 @@ read-only real products.
   seam       lib/frames/deep_seam: the proposed frames_only edit of the REAL engine source keeps the default call
              AST-identical and makes the search unreachable; a tampered default path and a literal fold are detected
   items      per-hour --epochs (core.cells epoch kind) x bands x Stokes, bulk --cells, --nights, unit names, Stokes order
+  population a per-hour unit's fresh attempt gets the published attempt's frozen beam-gate population (gate_population.csv)
+             the engine judges the listed nights by; a published attempt without one refuses, naming the backfill stage
   overrides  an engine literal override refuses; a detection-key override is noted
   child      core.legacy.run plumbing with a FAKE engine child: env from config, inherited P3_* cleared, result mapping
              (ok / refused -> Refusal / policy skip -> NoInput / error / crash -> RuntimeError)
@@ -21,7 +23,8 @@ read-only real products.
   real       READ-ONLY: content tests on production frames, siblings, archive copies, sigma stacks and epoch images;
              --deep-adopt of a published attempt (records under the scratch dir); --dry-run on the real cell 07h_18MHz,
              the per-hour item 07h_2025-10-15 Red (D-G3: the 18 MHz exception, ruled and production) and 07h_2025-10-14
-             Blue (a night outside the master: central master)
+             Blue (a night outside the master: central master; both per-hour items name the published attempt's
+             frozen beam-gate population or refuse for its lack)
 
 Scratch: /tmp/exopipe3_tests_frames-deep/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_frames-deep.py [test_name ...]
@@ -216,6 +219,33 @@ def test_items():
         except ValueError:
             pass
     print('items: per-hour, bulk, incremental units and refusals of bad item specs')
+
+
+def test_population():
+    import types
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.frames import deep_step
+    from exopipe.phase3.lib.search import gate_population as GP
+    d = _fresh('population')
+    with open(os.path.join(d, 'published_V.csv'), 'w') as f:      # this --out's own register: the newest row is current
+        f.write('07h_Blue,lwacalim01,20261101T000000\n07h_Blue,lwacalim02,20261102T000000\n')
+    run = os.path.join(d, 'attempts', '07h_Blue_V_20261102T000000', 'transients', 'Run_P3S5')
+    os.makedirs(run)
+    ctx = types.SimpleNamespace(args=types.SimpleNamespace(out=d), attempts_root=os.path.join(d, 'deep_attempts'))
+    plan = types.SimpleNamespace(cell='07h_Blue', stokes='V', dates=['2025-10-14'])
+    try:
+        deep_step.published_population(ctx, plan)
+        raise AssertionError('a published attempt without gate_population.csv was accepted')
+    except Refusal as e:
+        assert GP.BACKFILL_STAGE in str(e) and '0 gate_population.csv' in str(e), e
+    with open(os.path.join(run, GP.FILE), 'w') as f:
+        f.write(','.join(GP.COLS) + '\n')
+    assert deep_step.published_population(ctx, plan) == os.path.join(run, GP.FILE)
+    src = open(os.path.join(os.path.dirname(deep_step.__file__), 'deep_step.py')).read()
+    i_pop, i_att = src.index('pop = published_population(ctx, plan) if plan.dates'), src.index('attempt = _new_attempt(ctx, plan)')
+    i_cp = src.index('shutil.copyfile(pop, dst)')
+    i_run = src.index('res = deep_engine.run_child(spec')
+    assert i_pop < i_att < i_cp < i_run, 'the unit resolves the population before its attempt and copies it before the engine'
 
 
 def test_overrides():
@@ -724,12 +754,13 @@ def test_real():
                      '--deep-rebuild', '--dry-run', '--cores', 'none', '--out', os.path.join(d, 'dry'), '--work',
                      os.path.join(d, 'work')])
     assert 'PASS D-G3' in o and "nights outside the master ['2025-10-14']" in o, o[-800:]
+    assert 'PASS beam-population' in o or 'REFUSE beam-population' in o, o[-800:]     # the published attempt's record
     assert not os.path.exists(os.path.join(d, 'dry')), 'the dry run wrote something'
     lines.append('dry-run 07h_18MHz V: 19 owed frames (18 LOO, 1 central); per-hour 07h_2025-10-14 Blue: central master')
     print('real:\n  ' + '\n  '.join(lines))
 
 
-TESTS = ['test_config', 'test_seam', 'test_items', 'test_overrides', 'test_preview_sanity_minimum', 'test_child', 'test_register',
+TESTS = ['test_config', 'test_seam', 'test_items', 'test_population', 'test_overrides', 'test_preview_sanity_minimum', 'test_child', 'test_register',
          'test_cli', 'test_d_g3_engine_agree', 'test_real']
 
 
