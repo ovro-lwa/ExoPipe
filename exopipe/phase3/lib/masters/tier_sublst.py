@@ -68,12 +68,16 @@ INTERFACE imported by frames --tier sublst (keep stable; documented contract):
 import csv
 import glob
 import hashlib
+import json
 import os
 import re
 import shutil
 import threading
+import time
 
 from exopipe.phase3.core import record
+from exopipe.phase3.core.nodemem import cgroup_available_gb, mem_available_gb   # noqa: F401  names of this module too:
+#   the stack stage calls mem_available_gb through this module, where its tests replace it
 from exopipe.phase3.core.record import NoInput, Refusal
 
 TIER = 'sublst'
@@ -439,14 +443,386 @@ def pool_map(fn, items, workers, run=None, name_of=None):
             try:
                 f.result()
             except Exception as e:
-                say(f'  unit error: {type(e).__name__}: {str(e)[:300]}')
-                name = name_of(it) if (run is not None and name_of) else None
-                if name and not any(u.name == name for u in run.units):
+                _unit_error(e, it, run, name_of)
+
+
+def _unit_error(e, it, run, name_of):
+    """An item's exception, as pool_map and budget_map treat it: printed, and recorded as the item's unit when the unit had
+    not opened yet."""
+    say(f'  unit error: {type(e).__name__}: {str(e)[:300]}')
+    name = name_of(it) if (run is not None and name_of) else None
+    if name and not any(u.name == name for u in run.units):
+        try:
+            with run.unit(name):
+                raise e
+        except Exception:
+            pass
+
+
+def stack_band_class(sb):
+    """Image-size class of a subband, as lib/snapshot_engine/cell.band_class: 'low' to 36 MHz, 'mid' to 59 MHz, 'high'."""
+    f = int(str(sb)[:-3])
+    return 'low' if f <= 36 else ('mid' if f <= 59 else 'high')
+
+
+def stack_charge_gb(sb, section, nframes=None):
+    """Memory charge (GB) of one stack unit of subband sb whose cube holds nframes frames: the class charge (the largest
+    one for a label that is no '<n>MHz' subband) x max(1, nframes / STACK_REF_FRAMES) - the stacker holds the whole cube,
+    and the class charges were measured on cubes of STACK_REF_FRAMES frames (archived cubes hold up to 681, review
+    2026-11-12). An unknown frame count (None, or no positive number) is charged x STACK_UNKNOWN_FRAMES_FACTOR."""
+    try:
+        gb = float(section.STACK_MEM_GB[stack_band_class(sb)])
+    except (ValueError, KeyError, TypeError):
+        gb = float(max(section.STACK_MEM_GB.values()))
+    try:
+        n = float(nframes)
+    except (ValueError, TypeError):
+        n = 0.0
+    if not 0 < n < float('inf'):                                               # None, 0, negative, NaN, inf: unknown
+        return gb * float(section.STACK_UNKNOWN_FRAMES_FACTOR)
+    return gb * max(1.0, n / float(section.STACK_REF_FRAMES))
+
+
+def cube_nframes(path):
+    """Frames in a snapshot cube: the NFRAMES card of its PRIMARY header (the header alone is read); None when the file or
+    the card is missing or unreadable."""
+    try:
+        from astropy.io import fits
+        n = int(fits.getheader(path, 0)['NFRAMES'])
+    except Exception:                                                          # no file, no FITS, no card, no number
+        return None
+    return n if n > 0 else None
+
+
+def stack_parallelism(workers, avail_gb, section, n_cores=None):
+    """How the stack units of one LST run: ('pool', n) = n at once whatever their memory (an explicit --workers, or a node
+    whose MemAvailable cannot be read: PARALLEL['stack'] as before), or ('budget', GB, cap) = side by side within GB of
+    memory, at most cap at once (STACK_MAX_UNITS, and never more than the cores this process may use)."""
+    if workers:
+        return ('pool', int(workers))
+    if avail_gb is None:
+        return ('pool', int(section.PARALLEL['stack']))
+    cap = int(section.STACK_MAX_UNITS)
+    if n_cores:
+        cap = min(cap, int(n_cores))
+    return ('budget', int(section.STACK_MEM_FRACTION * avail_gb), max(1, cap))
+
+
+def stack_free_gb(section):
+    """What a further stack unit may take of this node's memory NOW: STACK_MEM_FRACTION of MemAvailable. None (never 0)
+    when MemAvailable cannot be read: the budget alone then decides."""
+    m = mem_available_gb()
+    return None if m is None else section.STACK_MEM_FRACTION * m
+
+
+def descendants_held_gb():
+    """Memory (GB = 2**30 bytes) resident NOW in every descendant process of this process - the stackers of the running
+    units. A process that ends while it is read counts nothing. None when it cannot be told (no psutil)."""
+    try:
+        import psutil
+        kids = psutil.Process().children(recursive=True)
+    except Exception:                                                          # no psutil, or the process table unreadable
+        return None
+    rss = 0
+    for p in kids:
+        try:
+            rss += p.memory_info().rss
+        except psutil.Error:                                                   # ended since the list was made
+            pass
+    return rss / 2 ** 30
+
+
+class NodeLedger:
+    """The node-wide ledger of the stack budget (review 2026-11-12: two invocations starting seconds apart each read the
+    same MemAvailable and each started a full budget of units; the 6-reader rule is per NODE too). A JSON file on node-local
+    shared memory, guarded by an exclusive flock on the sidecar <path>.lock, with one entry per budget invocation running
+    on the node. Key '<pid>:<process create time>' (a call outside the process's main thread appends ':<thread id>', so
+    two calls of one process are two entries); entry {pid, create_time, units, charged_gb, held_gb, t} = the units it runs,
+    the sum of their memory charges, the memory resident in them, the time of this update.
+    - An entry is LIVE while a process of that pid with that create time exists (a reused pid has another create time) and
+      t is no older than the reader's stale limit. Entries that are not live are dropped whenever the file is written, so
+      an invocation that hangs or is killed stops counting after the stale limit: no deadlock.
+    - One look of budget_map is ONE transaction: begin() takes the lock and reads the OTHER invocations' live totals
+      (others_units; others_unmaterialized = the sum over them of max(0, charged_gb - held_gb)), the caller decides its
+      starts, commit() writes this invocation's totals and releases the lock.
+    - Without psutil or fcntl, or when the file cannot be created, locked (within lock_wait_s: a holder stopped inside its
+      transaction must not stop the node) or written, the ledger switches itself off with ONE log line; the budget and
+      the unit cap are then per invocation. It is tried again every RETRY_S seconds and says when it is in use again.
+    LIMITS (review 2026-11-12, accepted): an entry counts while its DRIVER process lives and rewrites it - a driver that
+    is stopped or killed while its stackers run on stops counting after the stale limit (their memory is then seen only
+    once resident); invocations with --workers (the fixed pool) write no entry; a waiting invocation looks again only
+    every poll, so a lane that keeps 6 units running is not interrupted by a second lane until its call ends.
+    One object per invocation; an object is not shared between threads."""
+
+    CREATE_TIME_TOL_S = 2.0      # psutil derives a create time from the boot time, which a clock step moves by a second
+    RETRY_S = 20.0               # a switched-off ledger is tried again after this long (a full /dev/shm, a slow lock holder,
+                                 # are passing states: one such moment must not leave the node unshared for hours). With
+                                 # the 30 s lock wait and two 20 s polls (90 s) it stays under STALE_MIN_S: an entry whose
+                                 # owner was switched off once is rewritten before the other invocations stop counting it
+    STALE_MIN_S = 120.0          # readers count an entry for at least this long after its last write
+
+    def __init__(self, path, lock_wait_s=30.0):
+        self.path, self.lock_wait_s = str(path), float(lock_wait_s)
+        self.off = None                                  # why the ledger is switched off (said once per outage); None = in use
+        self._retry_at = 0.0                             # time.monotonic() from which a switched-off ledger is tried again
+        self.key = self._me = self._fd = None
+        self._others, self.others_units, self.others_unmaterialized = {}, 0, 0.0
+
+    def _switch_off(self, why):
+        self._unlock()
+        self._retry_at = time.monotonic() + self.RETRY_S
+        if self.off is None:
+            self.off = str(why)[:300]
+            say(f'  node ledger {self.path} switched off ({self.off}): the memory budget and the unit cap of this run are '
+                f'then PER INVOCATION, not shared with the other invocations on this node; tried again every '
+                f'{self.RETRY_S:g} s')
+        return False
+
+    def _unlock(self):
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def _read(self):
+        try:
+            with open(self.path) as f:
+                d = json.load(f)
+        except (OSError, ValueError):                                          # no file yet, or no JSON: no entry
+            return {}
+        return d if isinstance(d, dict) else {}
+
+    @classmethod
+    def _live(cls, psutil, e, now, stale_s):
+        try:
+            if now - float(e['t']) > stale_s:
+                return False
+            float(e['charged_gb']), float(e['held_gb']), int(e['units'])       # an entry that cannot be used is not live
+            return abs(psutil.Process(int(e['pid'])).create_time() - float(e['create_time'])) <= cls.CREATE_TIME_TOL_S
+        except (psutil.Error, KeyError, TypeError, ValueError, OverflowError):
+            return False
+
+    def begin(self, stale_s):
+        """Start one transaction: take the lock and read the other invocations' live entries (others_units,
+        others_unmaterialized). False = the ledger is off (said once): the caller goes on alone."""
+        if self.off is not None and time.monotonic() < self._retry_at:
+            return False
+        self._unlock()             # a descriptor left by a transaction an interrupt cut short: never a second one beside it
+        try:
+            import fcntl
+            import psutil
+            if self.key is None:
+                me = psutil.Process()
+                self._me = (me.pid, me.create_time())
+                self.key = '%d:%r' % self._me + ('' if threading.current_thread() is threading.main_thread()
+                                                else ':%d' % threading.get_ident())
+            self._fd = os.open(self.path + '.lock', os.O_RDWR | os.O_CREAT, 0o600)
+            t_end, nap = time.monotonic() + self.lock_wait_s, 0.001
+            while True:
+                try:
+                    fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= t_end:
+                        raise OSError(f'no lock on {self.path}.lock within {self.lock_wait_s:g} s')
+                    time.sleep(nap)
+                    nap = min(0.05, 2 * nap)
+            now = time.time()
+            self._others = {k: e for k, e in self._read().items()
+                            if k != self.key and self._live(psutil, e, now, stale_s)}
+            self.others_units = sum(max(0, int(e['units'])) for e in self._others.values())
+            self.others_unmaterialized = sum(max(0.0, float(e['charged_gb']) - float(e['held_gb']))
+                                             for e in self._others.values())
+            if self.off is not None:
+                say(f'  node ledger {self.path} in use again (it was switched off: {self.off})')
+                self.off = None
+            return True
+        except Exception as e:
+            return self._switch_off(f'{type(e).__name__}: {e}')
+        except BaseException:                                                  # an interrupt: the lock is not kept
+            self._unlock()
+            raise
+
+    def commit(self, own=None):
+        """End the transaction: write the others' live entries (those not live are dropped here) and, with own = (units
+        running, the sum of their charges in GB, the GB resident in them), this invocation's entry; release the lock."""
+        if self._fd is None:
+            return
+        try:
+            entries = dict(self._others)
+            if own is not None:
+                entries[self.key] = dict(pid=self._me[0], create_time=self._me[1], units=int(own[0]),
+                                         charged_gb=float(own[1]), held_gb=float(own[2] or 0.0), t=time.time())
+            tmp = f'{self.path}.{os.getpid()}.tmp'                             # replaced in one step: a reader that
+            with open(tmp, 'w') as f:                                          # does not lock never sees half a file
+                json.dump(entries, f)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            self._switch_off(f'{type(e).__name__}: {e}')
+        finally:
+            self._unlock()
+
+    def leave(self, stale_s=STALE_MIN_S):
+        """Remove this invocation's entry: the end of a budget_map call, an interrupt included."""
+        if self.key is not None and self.begin(stale_s):
+            self.commit()
+        self.key = None
+
+
+def stack_node_tools(section):
+    """The budget path's two node helpers, made once per stage so that what is missing is said once: (held_gb, node) for
+    budget_map = descendants_held_gb (None without psutil: the memory the running units hold is then unknown) and the
+    NodeLedger at STACK_NODE_LEDGER with {uid} filled in (None when that value is empty)."""
+    held = descendants_held_gb
+    try:
+        import psutil  # noqa: F401
+    except ImportError:
+        held = None
+        say('  psutil cannot be imported: the memory the running units hold is unknown, so the whole charge of a running '
+            'unit counts as not yet taken')
+    node, path = None, str(section.STACK_NODE_LEDGER or '')
+    if path:
+        node = NodeLedger(path)
+        try:
+            node.path = path.format(uid=os.getuid())
+        except (KeyError, IndexError, ValueError) as e:
+            node._switch_off(f'STACK_NODE_LEDGER {type(e).__name__}: {e}')
+    return held, node
+
+
+def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of=None, mem_now_gb=None, poll_s=20.0,
+               held_gb=None, node=None):
+    """fn(item) for every item, side by side (threads: every unit's work is a child process) while the memory charges (GB)
+    of the running items fit in mem_budget_gb and at most max_units run. Speed only: what an item computes does not depend
+    on what runs beside it.
+    - The item with the largest charge starts first (it is also the longest), the caller's order within a charge; a smaller
+      item starts beside it as soon as it fits.
+    - mem_now_gb (a function returning the memory free on the node NOW, in GB, or None = unreadable: the budget alone then
+      decides): while items of this call run, a further item starts only if its charge also fits in what is free now LESS
+      what the running items have been charged but have not taken yet. A stacker needs about a minute to reach its peak,
+      and a unit ramps a second time when its Stokes V job starts: the free memory still reads high meanwhile (review
+      2026-11-12). held_gb (a function returning the memory resident NOW in the processes of this call's running items,
+      in GB, or None = unknown) gives what they have taken: not yet taken = max(0, the charges of the running items,
+      those started in this look included, - held); without held_gb the whole of the running charges counts. The look is
+      made again every poll_s seconds and whenever an item ends. When nothing of this call runs, the first item starts
+      without the look (progress).
+    - node (a NodeLedger; None = this call alone): the budget invocations on one node (lanes) share the node. Every look is
+      then ONE transaction under the ledger's lock - the other live invocations' totals are read, the starts decided, this
+      call's totals written. max_units is NODE-wide (this call may run max_units less the others' running units), an
+      item's charge must also fit after what the others have been charged and not taken, and the first item starts
+      without the look only when no other invocation runs a unit. The loop wakes every poll_s seconds at least and
+      rewrites its entry (one not rewritten for max(60 s, 3 poll_s) no longer counts); while nothing of this call runs
+      and nothing may start it looks again every poll_s seconds (said once). The entry is removed at the end. While a
+      ledger is switched off (one log line; it is tried again later) this call is alone on its budget.
+      held_gb is the memory of ALL of this process's descendants: right when the units are its only children (the stage).
+    - A budget below the largest single charge means ONE item at a time (said in the log): nothing is refused for memory,
+      and nothing runs beside an item the budget cannot hold.
+    - Errors as in pool_map: an item's exception is printed, recorded as the item's unit if that had not opened, and the
+      others go on. A SystemExit or the like raised by an item is raised again here after every item has run; a further
+      one is printed, not raised.
+    - An interrupt (KeyboardInterrupt: the caller's, or one an item raised) is raised at once: budget_map starts no new
+      item and waits for the running ones. (pool_map, the fixed pool, drains its queue on an interrupt as it always did.)"""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    if not items:
+        return
+    charges = [float(charge_of(it)) for it in items]
+    budget, cap = float(mem_budget_gb), max(1, int(max_units))
+    node_cap = cap                                                             # with a ledger: the units on the NODE
+    if budget < max(charges):
+        say(f'  memory budget {budget:g} GB is below the largest unit charge {max(charges):g} GB: one unit at a time')
+        budget, cap = max(charges), 1
+    order = sorted(range(len(items)), key=lambda k: -charges[k])               # stable: the caller's order within a charge
+    stale_s = max(NodeLedger.STALE_MIN_S, 3.0 * poll_s)                        # a ledger entry older than this is not live
+
+    def one(it):
+        try:
+            fn(it)
+        except Exception as e:
+            _unit_error(e, it, run, name_of)
+
+    def held_now():
+        h = held_gb() if held_gb is not None else None
+        return 0.0 if h is None else float(h)                                  # unknown: nothing counts as taken yet
+
+    first, told, running = None, False, {}
+    try:
+        with ThreadPoolExecutor(max_workers=cap) as ex:
+            try:
+                while order or running:
+                    # the charges of the running items, summed anew: exactly 0 when nothing runs (frame-scaled charges
+                    # are fractions; a rounding residue of a running total must never hold the largest item back)
+                    used = sum(running.values())
+                    ledger = node is not None and node.begin(stale_s)          # False: off for this look (said by the
+                    o_units, o_unmat = (node.others_units, node.others_unmaterialized) if ledger else (0, 0.0)   # ledger)
+                    free_now, held, asked = None, None, False                  # this look's readings, made once
                     try:
-                        with run.unit(name):
-                            raise e
-                    except Exception:
-                        pass
+                        if ledger:
+                            held = held_now()                                  # for the entry, whatever this look starts
+                        for k in list(order):
+                            if len(running) >= min(cap, node_cap - o_units):
+                                break
+                            if used + charges[k] > budget:
+                                continue
+                            # the first item starts without the look when nothing runs here or in another invocation
+                            if (running or o_units) and mem_now_gb is not None:
+                                if not asked:
+                                    if held is None:
+                                        held = held_now()                      # BEFORE the free memory: what is taken
+                                    free_now, asked = mem_now_gb(), True       # between the two is counted twice, not missed
+                                if free_now is not None and charges[k] > free_now - max(0.0, used - held) - o_unmat:
+                                    continue
+                            f = ex.submit(one, items[k])
+                            running[f] = charges[k]
+                            used += charges[k]                                 # an item started in this look has taken nothing
+                            order.remove(k)
+                    finally:
+                        if ledger:
+                            node.commit((len(running), used, held))
+                    if order and not running:
+                        # only with a ledger: the other invocations hold the node's units or its free memory
+                        if not told:
+                            told = True
+                            say(f'  no unit of this call may start yet: other invocations on this node run {o_units} unit(s) '
+                                f'(node cap {node_cap}), {o_unmat:.1f} GB of their charges not taken yet; looking again '
+                                f'every {poll_s:g} s')
+                        time.sleep(poll_s)
+                        continue
+                    done, _ = wait(list(running), return_when=FIRST_COMPLETED,
+                                   timeout=(poll_s if node is not None or (order and mem_now_gb is not None) else None))
+                    for f in done:
+                        del running[f]
+                        try:
+                            f.result()
+                        except KeyboardInterrupt:                              # an interrupt: at once, not after the rest
+                            raise
+                        except BaseException as e:                             # the other items still run
+                            if first is None:
+                                first = e
+                            else:
+                                say(f'  unit {type(e).__name__} not raised again (the first, {type(first).__name__}: '
+                                    f'{str(first)[:100]}, is): {str(e)[:300]}')
+            except BaseException:
+                # an interrupt (or an error of this loop): no new item starts, and the pool's exit below waits for the
+                # running ones. They hold their memory until they end: with a ledger this call's entry is kept fresh
+                while node is not None and running:
+                    for f in wait(list(running), timeout=poll_s, return_when=FIRST_COMPLETED)[0]:
+                        del running[f]
+                    if node.begin(stale_s):
+                        node.commit((len(running), sum(running.values()), held_now()))
+                raise
+    finally:
+        if node is not None:
+            node.leave(stale_s)
+    if first is not None:
+        raise first
 
 
 def exclusion_readers_agree(lst, scope, nights):
@@ -1079,6 +1455,7 @@ def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
 def stage_stack(run, opts, sel, root, planned_now=False, lst_test=True):
     s = _sec()
     bad = 0
+    tools = None                                        # the budget path's (held_gb, node ledger), made at its first use
     for lst in sel.lsts:
         key = sel.admit_key(lst)
         try:
@@ -1131,8 +1508,30 @@ def stage_stack(run, opts, sel, root, planned_now=False, lst_test=True):
                 say(f'    WOULD REFUSE (G-S01): {n_old} unit(s) with earlier products under {root} (no --fresh --supersede)')
             bad += bool(n_miss or n_old)
             continue
-        pool_map(lambda x: _stack_unit(run, opts, root, lst, x[0], x[1], x[2], x[3], files), units,
-                 opts.workers or s.PARALLEL['stack'], run, lambda x: stack_unit_name(lst, x[0].split('_', 1)[1], x[1]))
+        _unit = lambda x: _stack_unit(run, opts, root, lst, x[0], x[1], x[2], x[3], files)          # noqa: E731
+        _name = lambda x: stack_unit_name(lst, x[0].split('_', 1)[1], x[1])                          # noqa: E731
+        _avail = None if opts.workers else mem_available_gb()
+        _how = stack_parallelism(opts.workers, _avail, s, len(os.sched_getaffinity(0)))
+        if _how[0] == 'pool':
+            # --workers N: that many units at once, whatever their memory (as before); also when MemAvailable is unreadable
+            pool_map(_unit, units, _how[1], run, _name)
+        else:
+            if tools is None:
+                tools = stack_node_tools(s)             # once per stage: what is missing on this node is said once
+            # the charge follows the frame count of the unit's own Stokes I cube (one header read per unit, before the
+            # loop): the stacker holds the whole cube, and archived cubes hold 358 to 681 frames (review 2026-11-12)
+            _nfr = {(x[0], x[1]): cube_nframes(stack_inputs(lst, x[0], x[1], x[3])[0][0]) for x in units}
+            _chg = {k: stack_charge_gb(k[1], s, n) for k, n in _nfr.items()}
+            _long = sum(1 for n in _nfr.values() if n is not None and n > s.STACK_REF_FRAMES)
+            _unknown = sum(1 for n in _nfr.values() if n is None)
+            say(f'[sublst stack {lst}] {len(units)} units, at most {_how[2]} at once within {_how[1]} GB '
+                f'({s.STACK_MEM_FRACTION:g} of the {_avail} GB available; per unit {dict(s.STACK_MEM_GB)} GB for a cube of '
+                f'{s.STACK_REF_FRAMES} frames; {_long} unit(s) charged above that for a longer cube, {_unknown} with an '
+                f'unknown frame count charged x{s.STACK_UNKNOWN_FRAMES_FACTOR:g}; largest charge {max(_chg.values()):.1f} GB; '
+                + (f'node ledger {tools[1].path}' if tools[1] is not None and tools[1].off is None
+                   else 'no node ledger: budget and cap per invocation') + ')')
+            budget_map(_unit, units, lambda x: _chg[(x[0], x[1])], _how[1], _how[2], run, _name,
+                       mem_now_gb=lambda: stack_free_gb(s), held_gb=tools[0], node=tools[1])
         if lst_test and any(u.name.startswith(f'stack_{lst}_') and u.status == 'done' for u in run.units):
             lst_test_unit(run, lst, root, files)
     return bad
@@ -1165,7 +1564,9 @@ def stack_night(run, lst, night, sublst_root=None, subbands=None, stokes=('I', '
     lst, night   '09h', '2024-12-29'
     sublst_root  the sub-LST product root (default run.out_root); must lie under run.out_root (supersede moves)
     subbands     subset of instrument.ALL_SUBBANDS (default all); stokes ('I', 'V') or one of them
-    workers      stack units at once (default masters_sublst.PARALLEL['stack'])
+    workers      stack units at once; default: as many as fit the memory budget (masters_sublst.STACK_MEM_GB by the cube's
+                 frame count, STACK_MEM_FRACTION), at most masters_sublst.STACK_MAX_UNITS on the node (shared with the
+                 other budget invocations there through STACK_NODE_LEDGER)
     fresh, supersede, resume   as the common flags (--fresh --supersede TAG moves earlier products; --resume by record)
     Returns {'admit_unit', 'stack_units', 'jobs', 'left_out', 'would_refuse'} ('jobs'/'left_out' from the admit record;
     'would_refuse' counts dry-run refusals). Raises record.Refusal (dry run too) when an in-place literal differs from its

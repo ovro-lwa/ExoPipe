@@ -467,7 +467,39 @@ class masters_sublst(_Section):
     TEST_WINDOWS_PYTHON = 'py36'              # site PYTHON key of sublst_reserve_test_windows.py (catpub:21 PYD, :87)
     STACK_JOB_UNIT = 'two-jobs-I-then-V'      # B-76 default (b): the I and V stacker invocations stay separate; I runs first
     PARALLEL = dict(stack=4, loo=8)           # units at once in one process when --workers is not given
-                                              # (sublst_stack_pass.sh:8 NPAR; nocat:230 xargs -P 8)
+                                              # (sublst_stack_pass.sh:8 NPAR; nocat:230 xargs -P 8); for the stack stage
+                                              # only when the node's MemAvailable cannot be read (see STACK_MEM_GB)
+    # Stack units side by side under a MEMORY BUDGET when --workers is not given. Speed only: a unit's products do not depend
+    # on what runs beside it. A unit is one (night, subband): Stokes I then V, one stacker process at a time. The charge is
+    # the peak memory of ONE stacker process by image size, measured 2026-11-12 on 03h 2024-12-19 Stokes I with the frozen
+    # stacker (18 MHz: 13.0 GB, 51 s; 41 MHz: 28.6 GB, 136 s; 73 MHz: 51.0 GB, 233 s; 73 MHz Stokes V: 49.0 GB, 204 s; the
+    # largest of the 30 jobs of that night-hour, 82 MHz included: 51.2 GB), plus about 10%; classes as
+    # lib/snapshot_engine/cell.band_class (low to 36 MHz, mid to 59 MHz, high). Measured on lwacalim00 (339 GB available,
+    # so four of the five high units fit at once and the fifth follows): the 30 jobs of 03h 2024-12-19 in 768 s against
+    # 973 s with 4 units at once.
+    # The cubes of a band do NOT have one size (review 2026-11-12; the earlier comment here said they had): the usual cube
+    # of an LST hour holds 358 frames (03h 2024-12-19 73 MHz: NFRAMES = 358, the cubes the charges were measured on), but
+    # archived cubes exist with 582 to 681 (12h 2025-01-10 73 MHz: 681; 23h 2025-08-22 73 MHz: 680). The stacker holds the
+    # whole cube, so its peak follows the frame count: a unit is charged its class charge x max(1, frames / STACK_REF_FRAMES),
+    # frames = the NFRAMES card of the unit's Stokes I cube (primary header), and x STACK_UNKNOWN_FRAMES_FACTOR when that
+    # card cannot be read (2.0 covers the longest archived cube, 681 / 358 = 1.90).
+    STACK_MEM_GB = dict(low=15, mid=32, high=56)
+    STACK_REF_FRAMES = 358                    # frames of the cubes STACK_MEM_GB was measured on
+    STACK_UNKNOWN_FRAMES_FACTOR = 2.0         # x the class charge for a unit whose cube frame count is unknown
+    STACK_MEM_FRACTION = 0.8                  # of the memory available: the budget when the stage starts (as the snapshot
+                                              # cell driver), and again of what is free when a further unit is to start.
+                                              # Available = the node's MemAvailable, or what is left under the memory
+                                              # limit of the process's cgroups when that is less (the nodes cap all user
+                                              # sessions together: 400 GiB of 503 on lwacalim00, 2026-11-12)
+    STACK_MAX_UNITS = 6                       # every unit reads its cube from Lustre: at most 6 Lustre-heavy workers PER
+                                              # NODE (REVIEW.md). Budget invocations on one node (lanes without --workers)
+                                              # share this cap and the node's free memory through STACK_NODE_LEDGER;
+                                              # without the ledger both are per invocation
+    # The node-wide ledger of the budget path (review 2026-11-12: two lanes starting seconds apart each read the same
+    # MemAvailable and each started a full budget of units): a small JSON file on node-local shared memory, one entry per
+    # running budget invocation (units running, memory charged, memory held), written under a lock. {uid} = the user id.
+    # An empty value switches it off: the budget and the cap are then per invocation.
+    STACK_NODE_LEDGER = '/dev/shm/exopipe3_sublst_stack_{uid}.json'
     # ---- content tests (lib/masters/tests_sublst.py) ----------------------------------------------------------------------
     # Production content test (a) (catpub:87): windows = frames x stated factors on a seeded sample of n (night, subband) cells.
     WINDOW_SAMPLE_TEST = dict(n=3, seed='')   # sublst_reserve_test_windows.py --n / --seed defaults (its :23)

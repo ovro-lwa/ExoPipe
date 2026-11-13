@@ -235,7 +235,8 @@ def test_run_always_leaves_a_record_and_never_a_half_shipped_cell():
     try:
         # (a) everything done; the record holds the CPU time and the peak memory of a task's engine process
         def small_engine():
-            return c.call([sys.executable, '-c', 'x = bytearray(80 << 20); print(sum(range(2000000)))'],
+            # enough work to show in a CPU time rounded to 0.1 s (2,000,000 terms took 0.04-0.08 s: the check failed now and then)
+            return c.call([sys.executable, '-c', 'x = bytearray(80 << 20); print(sum(range(30000000)))'],
                           os.path.join(c.out, 'engine_small.log'), pin=False)
         c = _stub_cell(os.path.join(tmp, 'a'), [('flow:18MHz', small_engine), ('search:18MHz', lambda: None)])
         assert c.run() == 0 and _record(c)['status'] == 'done' and not os.path.exists(c.stage)
