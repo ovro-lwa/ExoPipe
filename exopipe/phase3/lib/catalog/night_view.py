@@ -12,14 +12,22 @@ with the layout of the search directory in which
 
 - the four record files hold their header and the rows of the chosen windows only, each kept row byte for byte;
 - candidates/ holds links to the candidate directories of the chosen windows only;
-- lock files are left out; every other entry is a link to the job's own.
+- lock files and writers' temporary files (<name>.tmp, <name>.tmp.<pid>) are left out; every other entry is a link to
+  the job's own.
 
 mode 'night' chooses the windows of the night; mode 'without' chooses every other window (the earlier nights' pass of
 the held-out-night test, and nothing else). The chain reads a view through catalog_sublst.SEARCH_DIR.
 
 Nothing here judges a row. build() refuses rather than guess: a record file without a `date` column, a row whose date is
 not a night or a window (YYYY-MM-DD or YYYY-MM-DDTnn), a record that spans lines, a candidate directory whose name
-carries no window. verify() is the view's content test: it re-reads the jobs and the view and compares them.
+carries no window. A refused or failed build leaves no partial view. verify() is the view's content test: it re-reads
+the jobs and the view and compares them; it reports a defect, it does not raise on one.
+
+A SEARCH PUBLISHING MEANWHILE: a job's four record files are read one after the other, without the search's lease of
+the cell. build_job() takes each file's size, modification time and inode before the first read and after the last and
+refuses when one moved; verify(), run after every job is built, then compares the view with the jobs as they are. An
+append of ANOTHER night does not change the chosen night's rows, so a view of the night is right before and after it; a
+search that rewrites the chosen night's rows while the view is built is caught by one of the two.
 
 Standard library only.
 """
@@ -28,6 +36,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -38,6 +47,7 @@ _NIGHT = re.compile(r'^\d{4}-\d\d-\d\d$')
 _WINDOW = re.compile(r'^(\d{4}-\d\d-\d\d)(T\d\d)?$')
 _CAND = re.compile(r'^[A-Za-z0-9]+_\d\dh_(\d{4}-\d\d-\d\d)(T\d\d)?_[A-Za-z0-9]+_\d+$')
 _OPEN = dict(newline='', encoding='utf-8', errors='surrogateescape')     # a kept row is written back byte for byte
+_LEFT_OUT = re.compile(r'(\.lock|\.tmp(\.\d+)?)$')                         # a lock, a writer's temporary file
 
 
 class ViewRefusal(RuntimeError):
@@ -118,8 +128,26 @@ def _cand_night(name, where):
     return m.group(1)
 
 
+def _stat(path):
+    """[size, modification time in ns, inode] of a file; None when it is not there."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return [st.st_size, st.st_mtime_ns, st.st_ino]
+
+
+def _is_link_to(path, target):
+    try:
+        return os.path.islink(path) and os.readlink(path) == target
+    except OSError:
+        return False
+
+
 def build_job(job, dst, label, night, mode):
-    """The view of one job directory; returns {'records': {name: [rows, rows kept]}, 'candidates': [n, n kept]}."""
+    """The view of one job directory; returns {'records': {name: [rows, rows kept]}, 'candidates': [n, n kept], 'stat':
+    {name: [size, modification time ns, inode] of the job's record file as it was read}}. REFUSES when a record file
+    of the job changed between the first read and the last (a search publishing to the cell)."""
     _check(night, mode)
     job = os.path.abspath(job)
     if os.path.lexists(dst):
@@ -133,6 +161,7 @@ def build_job(job, dst, label, night, mode):
         return out
     rd = run_dir(dst, label)
     os.makedirs(rd)
+    before = {e: _stat(os.path.join(rs, e)) for e in RECORDS}
     for e in sorted(os.listdir(job)):
         if e != 'transients':
             os.symlink(os.path.join(job, e), os.path.join(dst, e))
@@ -150,10 +179,15 @@ def build_job(job, dst, label, night, mode):
             for n in keep:
                 os.symlink(os.path.join(s, n), os.path.join(d, n))
             out['candidates'] = [len(names), len(keep)]
-        elif e.endswith('.lock') or e.endswith('.tmp'):
+        elif _LEFT_OUT.search(e):
             continue
         else:
             os.symlink(s, d)
+    moved = sorted(e for e in RECORDS if _stat(os.path.join(rs, e)) != before[e])
+    if moved:
+        raise ViewRefusal(f'{rs}: {", ".join(moved)} changed while the view was built (a search publishing to the cell?) - '
+                          f'build the view again when the search has ended')
+    out['stat'] = {e: v for e, v in before.items() if v is not None}
     return out
 
 
@@ -169,8 +203,12 @@ def build(src, dst, lst, label, night, mode):
     os.makedirs(dst)
     rec = {'night': night, 'mode': mode, 'lst': lst, 'label': label, 'search_dir': src,
            'utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'jobs': {}}
-    for job in jobs:
-        rec['jobs'][os.path.basename(job)] = build_job(job, os.path.join(dst, os.path.basename(job)), label, night, mode)
+    try:
+        for job in jobs:
+            rec['jobs'][os.path.basename(job)] = build_job(job, os.path.join(dst, os.path.basename(job)), label, night, mode)
+    except BaseException:                                   # a refused or failed build leaves no partial view: the next
+        shutil.rmtree(dst, ignore_errors=True)              # build would refuse on it ("exists"). dst was made by this
+        raise                                               # call and holds links and cut copies only (links are unlinked)
     tot = {n: [sum(j['records'].get(n, [0, 0])[k] for j in rec['jobs'].values()) for k in (0, 1)] for n in RECORDS}
     rec['rows'] = tot
     rec['candidates'] = [sum(j['candidates'][k] for j in rec['jobs'].values()) for k in (0, 1)]
@@ -205,48 +243,69 @@ def verify(dst):
         bad.append('the view does not hold exactly the search directory\'s jobs')
     for job in jobs:
         name = os.path.basename(job)
-        v, rs, rv = os.path.join(dst, name), run_dir(job, label), run_dir(os.path.join(dst, name), label)
-        if not os.path.isfile(os.path.join(rs, 'v_deep_ledger.csv')):
-            if not (os.path.islink(v) and os.readlink(v) == job):
-                bad.append(f'{name}: not a completed search and not linked whole')
+        try:
+            nr, nf, nc = _verify_job(job, os.path.join(dst, name), name, label, night, mode, bad)
+        except OSError as x:                                # a path of the job or of the view that cannot be listed or read
+            bad.append(f'{name}: unreadable ({x})')
             continue
-        for e in sorted(os.listdir(rs)):
-            s, d = os.path.join(rs, e), os.path.join(rv, e)
-            if e in RECORDS:
-                try:
-                    hs, rows_s = _parsed(s)
-                    hv, rows_v = _parsed(d)
-                except (OSError, csv.Error) as x:
-                    bad.append(f'{name}/{e}: unreadable ({x})')
-                    continue
-                i = hs.index('date') if 'date' in hs else None
-                want = [r for r in rows_s if i is not None and len(r) > i and _WINDOW.match(r[i])
-                        and chosen(r[i][:10], night, mode)]
-                other = [r for r in rows_v if i is None or len(r) <= i or not chosen(r[i][:10], night, mode)]
-                if hs != hv or rows_v != want or other:
-                    bad.append(f'{name}/{e}: {len(rows_v)} rows in the view, {len(want)} chosen rows in the job, '
-                               f'{len(other)} of another night')
-                nrows += len(rows_v)
-                nfiles += 1
-            elif e == 'candidates' and os.path.isdir(s):
-                want = sorted(n for n in os.listdir(s) if _CAND.match(n) and chosen(_CAND.match(n).group(1), night, mode))
-                got = sorted(os.listdir(d)) if os.path.isdir(d) else None
-                if got != want or any(os.readlink(os.path.join(d, n)) != os.path.join(s, n) for n in want):
-                    bad.append(f'{name}/candidates: {None if got is None else len(got)} in the view, {len(want)} chosen in the job')
-                ncand += len(want)
-            elif e.endswith('.lock') or e.endswith('.tmp'):
-                if os.path.lexists(d):
-                    bad.append(f'{name}/{e}: a lock or temporary file in the view')
-            elif not (os.path.islink(d) and os.readlink(d) == s):
-                bad.append(f'{name}/{e}: not a link to the job\'s')
-        for e in sorted(os.listdir(job)):
-            d = os.path.join(v, e)
-            if e != 'transients' and not (os.path.islink(d) and os.readlink(d) == os.path.join(job, e)):
-                bad.append(f'{name}/{e}: not a link to the job\'s')
+        nrows, nfiles, ncand = nrows + nr, nfiles + nf, ncand + nc
     words = 'the night' if mode == 'night' else 'every night except'
     detail = (f'{len(jobs)} jobs of {lst}, {words} {night}: {nfiles} record files with {nrows} rows, {ncand} candidate '
               f'directories' + (f'; {len(bad)} defects, e.g. {bad[:3]}' if bad else ''))
     return not bad, nrows, detail
+
+
+def _verify_job(job, v, name, label, night, mode, bad):
+    """The content test of one job's view ``v``: appends its defects to ``bad``; returns (record rows in the view, record
+    files, candidate directories)."""
+    nrows = nfiles = ncand = 0
+    rs, rv = run_dir(job, label), run_dir(v, label)
+    if not os.path.isfile(os.path.join(rs, 'v_deep_ledger.csv')):
+        if not _is_link_to(v, job):
+            bad.append(f'{name}: not a completed search and not linked whole')
+        return 0, 0, 0
+    if os.path.islink(v) or not os.path.isdir(rv):
+        bad.append(f'{name}: a completed search whose view is a link or holds no Run_{label}')
+        return 0, 0, 0
+    extra = sorted(set(os.listdir(rv)) - set(os.listdir(rs)))
+    if extra:
+        bad.append(f'{name}: {len(extra)} entries of the view that the job does not hold, e.g. {extra[:3]}')
+    for e in sorted(os.listdir(os.path.join(job, 'transients'))):
+        if e != f'Run_{label}' and not _is_link_to(os.path.join(v, 'transients', e), os.path.join(job, 'transients', e)):
+            bad.append(f'{name}/transients/{e}: not a link to the job\'s')
+    for e in sorted(os.listdir(rs)):
+        s, d = os.path.join(rs, e), os.path.join(rv, e)
+        if e in RECORDS:
+            try:
+                hs, rows_s = _parsed(s)
+                hv, rows_v = _parsed(d)
+            except (OSError, csv.Error) as x:
+                bad.append(f'{name}/{e}: unreadable ({x})')
+                continue
+            i = hs.index('date') if 'date' in hs else None
+            want = [r for r in rows_s if i is not None and len(r) > i and _WINDOW.match(r[i])
+                    and chosen(r[i][:10], night, mode)]
+            other = [r for r in rows_v if i is None or len(r) <= i or not chosen(r[i][:10], night, mode)]
+            if hs != hv or rows_v != want or other:
+                bad.append(f'{name}/{e}: {len(rows_v)} rows in the view, {len(want)} chosen rows in the job, '
+                           f'{len(other)} of another night')
+            nrows += len(rows_v)
+            nfiles += 1
+        elif e == 'candidates' and os.path.isdir(s):
+            want = sorted(n for n in os.listdir(s) if _CAND.match(n) and chosen(_CAND.match(n).group(1), night, mode))
+            got = sorted(os.listdir(d)) if os.path.isdir(d) else None
+            if got != want or any(not _is_link_to(os.path.join(d, n), os.path.join(s, n)) for n in want):
+                bad.append(f'{name}/candidates: {None if got is None else len(got)} in the view, {len(want)} chosen in the job')
+            ncand += len(want)
+        elif _LEFT_OUT.search(e):
+            if os.path.lexists(d):
+                bad.append(f'{name}/{e}: a lock or temporary file in the view')
+        elif not _is_link_to(d, s):
+            bad.append(f'{name}/{e}: not a link to the job\'s')
+    for e in sorted(os.listdir(job)):
+        if e != 'transients' and not _is_link_to(os.path.join(v, e), os.path.join(job, e)):
+            bad.append(f'{name}/{e}: not a link to the job\'s')
+    return nrows, nfiles, ncand
 
 
 def main(argv):

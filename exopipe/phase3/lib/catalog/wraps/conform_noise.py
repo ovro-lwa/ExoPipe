@@ -31,7 +31,7 @@ applies its verdicts, so no later line and no output file holds them.
 SELF-CONTAINED (stdlib only): the child's `exopipe` package can be production's, so this file imports nothing from the
 branch. It reads the module's source, applies the PATCHES below - each an exact text that must occur EXACTLY ONCE, with the
 census of the names they touch (a new use of `_RMS`, a second assignment, or a second reader of the pulsar step's rows
-would bypass the records) - and runs the patched source as the module's own __main__ (its file name, its directory first on sys.path, its argv), so every other line of
+would bypass the records; counted in the module's code, its comments left out) - and runs the patched source as the module's own __main__ (its file name, its directory first on sys.path, its argv), so every other line of
 production's module runs unchanged.
 
 EXOPIPE3_CONFORM_NOISE_MODE:
@@ -62,9 +62,10 @@ import io
 import math
 import os
 import sys
+import tokenize
 import types
 
-MODES = ('passthrough', 'record', 'frozen')
+MODES =('passthrough', 'record', 'frozen')
 COLS = ['lst', 'band', 'stokes', 'n', 'median_jy', 'module_sha1']
 FILE = 'conform_table_noise.csv'            # the record's name in the catalog directory of an LST-wide run
 # the pulsar evidence: the catalog's own strings (cand_id ... snr), the frame beam (deg, repr(float); '' = the module's
@@ -103,10 +104,10 @@ PATCHES = [
      "for i, _vs in _PSR_VERDICTS.items():\n"),
 ]
 # how often the name occurs in the module the patch was written for (exopipe_ops p3s2_conform.py, sha1 48f69a39...,
-# 2026-11-13): its initialisation, the per-row append, the median (twice on that line), three look-ups by the table step;
-# two assignments (the initialisation and the median)
-# the pulsar step (sha1 6b3fe52d..., 2026-11-13): `_psr_rows` - its initialisation, the append, the reset at another cadence,
-# the loop, the summary line; `_PSR_VERDICTS` - its initialisation, the append, the loop that applies them; `_sig_row(` - its
+# 2026-11-13): its initialization, the per-row append, the median (twice on that line), three look-ups by the table step;
+# two assignments (the initialization and the median)
+# the pulsar step (sha1 6b3fe52d..., 2026-11-13): `_psr_rows` - its initialization, the append, the reset at another cadence,
+# the loop, the summary line; `_PSR_VERDICTS` - its initialization, the append, the loop that applies them; `_sig_row(` - its
 # definition and its one call
 CENSUS = {'_RMS': {7}, '_RMS = ': {2}, '_RMS.get(': {3}, '_psr_rows': {5}, '_PSR_VERDICTS': {3}, '_sig_row(': {2}}
 
@@ -126,15 +127,33 @@ def normalized_sha1(module, src):
     return hashlib.sha1(src.encode()).hexdigest()
 
 
+def code_text(src):
+    """The source with every comment taken out (by the tokenizer: a `#` inside a string is no comment). The census counts
+    in it, so a comment that mentions one of the names is not taken for a use of it and does not stop the LST-wide
+    conformance. REFUSES a source that does not tokenize."""
+    lines = io.StringIO(src).readlines()
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT:
+                row, col = tok.start
+                ln = lines[row - 1]
+                lines[row - 1] = ln[:col] + ('\n' if ln.endswith('\n') else '')
+    except (tokenize.TokenError, SyntaxError) as e:          # IndentationError is a SyntaxError
+        raise Refused(f'the conformance module does not tokenize ({e}) - REFUSING')
+    return ''.join(lines)
+
+
 def patch(src):
-    """(patched source, [names]) - REFUSES unless the patch's text occurs exactly once and the census holds."""
+    """(patched source, [names]) - REFUSES unless the patch's text occurs exactly once and the census holds (the census
+    is counted in the module's code, comments left out)."""
     bad = []
     for name, old, _new in PATCHES:
         n = src.count(old)
         if n != 1:
             bad.append(f'{name}: its text occurs {n} times (1 expected)')
+    code = code_text(src)
     for tok, want in CENSUS.items():
-        n = src.count(tok)
+        n = code.count(tok)
         if n not in want:
             bad.append(f'census {tok!r}: {n} occurrences ({sorted(want)} expected)')
     if bad:
@@ -148,7 +167,10 @@ def patch(src):
 
 def read_record(path):
     """{(lst, band, stokes): (n, median_jy)}, the set of module sha1s of the record's rows. REFUSES a missing, empty,
-    malformed or duplicated record."""
+    malformed or duplicated record. It reads back every row write_record can write (n = the number of finite values; the
+    median is production's nanmedian: nan or infinite over no finite value, and over finite values a number that can
+    be 0.0 or infinite); whether a recorded noise can judge a night is `Hook.medians`' question, asked for the keys of
+    the night's rows only."""
     if not path or not os.path.isfile(path):
         raise Refused(f'no table-noise record {path!r}: the LST-wide conformance writes it where it computes the noise '
                       f'(`exopipe3 catalog --tier sublst --stages conform`) - REFUSING')
@@ -166,8 +188,9 @@ def read_record(path):
             raise Refused(f'{path}: row {k} is not readable (n {r["n"]!r}, median {r["median_jy"]!r}) - REFUSING')
         if k in out:
             raise Refused(f'{path}: {k} twice - REFUSING')
-        if n < 0 or (n > 0 and not (math.isfinite(med) and med > 0)) or (n == 0 and not math.isnan(med)):
-            raise Refused(f'{path}: row {k} is inconsistent (n {n}, median {med!r}) - REFUSING')
+        if n < 0 or (n == 0 and math.isfinite(med)) or (n > 0 and math.isnan(med)):
+            raise Refused(f'{path}: row {k} is inconsistent (n {n}, median {med!r}: a finite median needs a finite '
+                          f'value, and a median over finite values is a number) - REFUSING')
         out[k] = (n, med)
         shas.add(r['module_sha1'])
     return out, shas, hashlib.sha1(data).hexdigest()
@@ -196,7 +219,11 @@ def _num(x):
 
 def read_evidence(path):
     """[row dict], the set of module sha1s of the rows, the file's sha1. A record with no row is a valid one (an LST with no
-    detection near a pulsar). REFUSES a missing or malformed record, a cand_id twice, an unreadable beam or error."""
+    detection near a pulsar). REFUSES a missing or malformed record, a row without a cand_id, an unreadable beam or error.
+    A cand_id MAY occur twice: the record holds the module's rows as its pulsar step saw them, and the module takes out
+    the rows of a cell executed twice only after that step - the LST-wide run grouped both, so the night's run does
+    (measured 2026-11-13 on 17 catalog directories - 15 published or superseded 10-minute catalogs and two proof runs:
+    no row removed as such a duplicate and no repeated cand_id among 352,866 rows)."""
     if not path or not os.path.isfile(path):
         raise Refused(f'no pulsar-evidence record {path!r}: the LST-wide conformance writes it after its pulsar step '
                       f'(`exopipe3 catalog --tier sublst --stages conform`) - REFUSING')
@@ -206,11 +233,10 @@ def read_evidence(path):
     rows = list(rd)
     if rd.fieldnames != EVIDENCE_COLS:
         raise Refused(f'{path}: not a pulsar-evidence record (columns {EVIDENCE_COLS}) - REFUSING')
-    seen, shas = set(), set()
-    for r in rows:
-        if not r['cand_id'] or r['cand_id'] in seen:
-            raise Refused(f'{path}: cand_id {r["cand_id"]!r} is empty or occurs twice - REFUSING')
-        seen.add(r['cand_id'])
+    shas = set()
+    for n, r in enumerate(rows, 2):
+        if not r['cand_id']:
+            raise Refused(f'{path}: line {n} holds no cand_id - REFUSING')
         for c in ('beam_deg', 'sig_arcsec'):
             if r[c] != '' and _num(r[c]) is None:
                 raise Refused(f'{path}: {r["cand_id"]}: {c} {r[c]!r} is not a finite positive number - REFUSING')
@@ -301,6 +327,13 @@ class Hook:
             raise Refused(f'{self.record}: no recorded noise for {len(missing)} (LST, band, Stokes) of this run\'s rows, '
                           f'e.g. {missing[:4]}: no earlier night gives it - run the LST-wide conformance, which records '
                           f'it (`exopipe3 catalog --tier sublst --stages conform`) - REFUSING')
+        unusable = sorted(k for k in own if not (math.isfinite(self.frozen[k][1]) and self.frozen[k][1] > 0))
+        if unusable:                            # the LST-wide run computed it (and the record reads back), but it is no noise
+            k = unusable[0]
+            raise Refused(f'{self.record}: the recorded noise of {len(unusable)} (LST, band, Stokes) of this run\'s rows is '
+                          f'not a finite positive number, e.g. {k}: {self.frozen[k][1]!r} Jy over {self.frozen[k][0]} rows - '
+                          f'the bright-parent table cannot judge a night by it; look at the peak fluxes and global S/N of '
+                          f'the LST-wide catalog\'s rows of that key - REFUSING')
         for k in sorted(own):
             n, med = self.frozen[k]
             print(f'CONFORM-NOISE frozen {k[0]} {k[1]} {k[2]}: recorded median {med!r} Jy over {n} rows (used); this '

@@ -313,10 +313,27 @@ def test_frozen(rec, m, used_all):
         f.write(body.replace('median_jy', 'median'))
     rc, out = child(m, df, 'frozen', bad, acc)
     check('frozen: a record with other columns refuses', rc == 2 and 'not a table-noise record' in out, out[-300:])
+    # the reader takes back every row the writer can write; whether a recorded noise can judge the night is asked for the
+    # keys of the night's rows only (code review of pull request 36)
     with open(bad, 'w') as f:
-        f.write(body.replace(',3,0.3,', ',3,-0.3,'))
-    rc, out = child(m, df, 'frozen', bad, acc)
-    check('frozen: a record with a non-positive median refuses', rc == 2 and 'inconsistent' in out, out[-300:])
+        f.write(body.replace(',2,3.85,', ',2,0.0,'))
+    rc, out = child(m, df, 'frozen', bad, acc, evidence=os.path.join(os.path.dirname(rec), CN.EVIDENCE_FILE))
+    check('frozen: a recorded median of 0.0 Jy for a key of the night\'s rows refuses as no usable noise; the record reads back',
+          rc == 2 and 'not a finite positive number' in out and "('01h', '73MHz', 'I')" in out
+          and CN.read_record(bad)[0][('01h', '73MHz', 'I')] == (2, 0.0), out[-300:])
+    with open(bad, 'w') as f:
+        f.write(body.replace(',3,0.3,', ',3,0.0,'))
+    rc, out = child(m, df, 'frozen', bad, acc, evidence=os.path.join(os.path.dirname(rec), CN.EVIDENCE_FILE))
+    check('frozen: a recorded median of 0.0 Jy for a key the night has no row of does not stop the night',
+          rc == 0 and 'read frozen from' in out, out[-300:])
+    for old, new, what in ((',3,0.3,', ',3,nan,', 'no median over 3 finite values'),
+                           (',0,nan,', ',0,1.5,', 'a finite median over no finite value'),
+                           (',3,0.3,', ',-1,0.3,', 'a negative count')):
+        with open(bad, 'w') as f:
+            f.write(body.replace(old, new))
+        rc, out = child(m, df, 'frozen', bad, acc)
+        check(f'frozen: a record row with {what} refuses as inconsistent', old in body and rc == 2 and 'inconsistent' in out,
+              out[-300:])
     # a frozen tree's copy of the same module gives the same path-normalized sha1
     d5, m5 = rundir('night_tree3', night, src=STANDIN.replace("U = sys.argv[1]", "U = sys.argv[1]   # /lustre/gh/main/exopipe_ops"),
                     tree='tree3')
@@ -394,7 +411,12 @@ def test_evidence():
     with open(bad, 'w') as f:
         f.write(body + body.splitlines()[1] + '\n')
     rc, out = child(m, df, 'frozen', rec, acc, evidence=bad)
-    check('evidence: frozen - a record with a cand_id twice refuses', rc == 2 and 'occurs twice' in out, out[-300:])
+    check('evidence: frozen - a record with a row twice (a cell executed twice, as the LST-wide pulsar step saw it) is read whole',
+          rc == 0 and len(CN.read_evidence(bad)[0]) == len(body.splitlines()) and 'pulsar evidence:' in out, out[-300:])
+    with open(bad, 'w') as f:
+        f.write(body + ',' + body.splitlines()[1].split(',', 1)[1] + '\n')
+    rc, out = child(m, df, 'frozen', rec, acc, evidence=bad)
+    check('evidence: frozen - a row without a cand_id refuses', rc == 2 and 'holds no cand_id' in out, out[-300:])
     with open(bad, 'w') as f:
         f.write(body.replace(',0.5,', ',-0.5,', 1))
     rc, out = child(m, df, 'frozen', rec, acc, evidence=bad)
@@ -439,6 +461,12 @@ def test_patch():
     check('patch: a module without the line refuses', refuses(STANDIN.replace(line, '_RMS = {}\n'), 'occurs 0 times'))
     check('patch: a module with the line twice refuses', refuses(STANDIN.replace(line, line + line), 'occurs 2 times'))
     check('patch: another use of the name refuses (census)', refuses(STANDIN + 'print(len(_RMS))\n', "census '_RMS'"))
+    check('patch: a comment that mentions the names is no use of them (the census counts the code)',
+          CN.patch(STANDIN + '# _RMS, _RMS.get(, _psr_rows, _PSR_VERDICTS and _sig_row( in a comment\nx = 1   # _RMS = 2\n')[1]
+          == names)
+    check('patch: a `#` inside a string starts no comment (the use after it is counted)',
+          refuses(STANDIN + "print('# ' + str(len(_RMS)))\n", "census '_RMS'"))
+    check('patch: a module that does not tokenize refuses', refuses(STANDIN + 'x = (1,\n', 'does not tokenize'))
     check('patch: another look-up of the name refuses (census)',
           refuses(STANDIN.replace("print('conform: stand-in done'", "_RMS.get(1); print('conform: stand-in done'"), 'census'))
 
@@ -463,6 +491,10 @@ def test_wiring():
           and 'EXOPIPE3_CONFORM_NOISE_NIGHT=ctx.night' in body and 's.inp(frozen, evid)' in body
           and body.index('if not os.path.isfile(evid):') < body.index("EXOPIPE3_CONFORM_NOISE_MODE='frozen'")
           and "'pulsar evidence:' not in done" in body)
+    check('wiring: the night pass reads the two records only under the LST-wide directory\'s own conformance record',
+          'frozen_records_refusal(ctx.frozen_from, ctx.unit, (frozen, evid))' in body
+          and body.index('if not os.path.isfile(evid):') < body.index('frozen_records_refusal(')
+          < body.index("EXOPIPE3_CONFORM_NOISE_MODE='frozen'"))
     check('wiring: with the key off the module runs as before', "res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)"
           in body)
     from exopipe.phase3.lib.catalog import tier_sublst as TS
@@ -497,6 +529,48 @@ def test_wiring():
         CFG.reset()
 
 
+def test_frozen_records_gate():
+    """tier_sublst.frozen_records_refusal: the two records judge a night only when the LST-wide directory's own record of
+    its conformance stage (same LST and arm) is done and lists both files as they are now."""
+    from exopipe.phase3.lib.catalog import tier_sublst as TS
+    from exopipe.phase3.core import record as R
+    d = os.path.join(T, 'lstwide_gate')
+    os.makedirs(d)
+    a, b = TS.conform_noise_record(d), TS.conform_pulsar_evidence(d)
+    for p, text in ((a, 'noise\n'), (b, 'evidence\n')):
+        with open(p, 'w') as f:
+            f.write(text)
+
+    def stage(status='done', paths=(a, b), unit='01h_B.conform'):
+        p = R.record_path(d, 'catalog', unit)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        R.atomic_write_json(p, dict(status=status, reason='S-G13: stand-in', finished='2026-11-13T00:00:00Z',
+                                    meta={'output_fingerprints': TS.output_fingerprints(paths)}))
+    why = TS.frozen_records_refusal(d, '01h_B', (a, b))
+    check('gate: a directory without a record of its conformance stage refuses', why[1] is None
+          and 'holds no record of the conformance stage 01h_B.conform' in why[0], why)
+    stage()
+    check('gate: a done conformance that lists both records as they are passes, with its finished time',
+          TS.frozen_records_refusal(d, '01h_B', (a, b)) == (None, '2026-11-13T00:00:00Z'))
+    why = TS.frozen_records_refusal(d, '01h_A', (a, b))
+    check('gate: the directory of another arm refuses (no record of this arm\'s stage)',
+          'holds no record of the conformance stage 01h_A.conform' in str(why[0]), why)
+    stage(status='refused')
+    why = TS.frozen_records_refusal(d, '01h_B', (a, b))
+    check('gate: a later conformance that refused makes the records an earlier run\'s: refuses',
+          'is refused' in str(why[0]) and 'earlier run' in str(why[0]), why)
+    stage(paths=(a,))
+    why = TS.frozen_records_refusal(d, '01h_B', (a, b))
+    check('gate: a record file the conformance did not write refuses', 'is not an output' in str(why[0])
+          and os.path.basename(b) in str(why[0]), why)
+    stage()
+    with open(b, 'a') as f:
+        f.write('x\n')
+    why = TS.frozen_records_refusal(d, '01h_B', (a, b))
+    check('gate: a record file changed since the conformance recorded it refuses', 'changed since' in str(why[0])
+          and os.path.basename(b) in str(why[0]), why)
+
+
 def main():
     shutil.rmtree(T, ignore_errors=True)
     os.makedirs(T)
@@ -506,6 +580,7 @@ def main():
         test_evidence()
         test_patch()
         test_wiring()
+        test_frozen_records_gate()
     finally:
         if not os.environ.get('EXOPIPE3_TEST_KEEP'):
             shutil.rmtree(T, ignore_errors=True)

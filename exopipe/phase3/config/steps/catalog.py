@@ -167,8 +167,10 @@ class catalog_conform(_Section):
     TABLE_NOISE_RECORD = {'deep': False, 'sublst': True, 'fork': False}   # the table's noise (per LST, band, Stokes: the median over
                                                           # the catalog rows of |peak / global S/N|, ops/p3s2_conform.py `_RMS`) is
                                                           # RECORDED by the conformance that computes it (conform_table_noise.csv in the
-                                                          # catalog directory; lib/catalog/wraps/conform_noise.py runs the module in
-                                                          # place with one patched line). A per-hour 10-minute catalog reads it frozen
+                                                          # catalog directory, with conform_pulsar_evidence.csv: the detections near
+                                                          # ATNF pulsars its pulsar step grouped; lib/catalog/wraps/conform_noise.py
+                                                          # runs the module in place with five patched lines). A per-hour 10-minute
+                                                          # catalog reads both frozen
                                                           # (Gregg 2026-11-12: a new night is judged by statistics frozen from earlier
                                                           # nights). Not a parity line: production writes no such record; every other
                                                           # file of the stage is byte-identical with the record on or off.

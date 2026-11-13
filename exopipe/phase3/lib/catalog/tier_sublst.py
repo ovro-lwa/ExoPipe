@@ -54,17 +54,19 @@ Failure modes (exit 2, gate named in the record): S-G1..S-G22 of spec section 5.
          (its last machine line recorded); a [lit] key whose module literal differs from config; a module switch set in this
          process environment that would leak into the children; a missing shared config key (named). Exit 1 = error.
 Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the sub-LST per-hour chain runs `catalog` after
-         `search`). `--incremental` (one epoch into the cumulative catalogue) is NOT implemented for this tier.
-         PER-HOUR NIGHT PASS (`--sublst-night YYYY-MM-DD --sublst-frozen-from <LST-wide catalogue directory> --out <the
+         `search`). `--incremental` (one epoch into the cumulative catalog) is NOT implemented for this tier.
+         PER-HOUR NIGHT PASS (`--sublst-night YYYY-MM-DD --sublst-frozen-from <LST-wide catalog directory> --out <the
          night's own directory>`; Gregg 2026-11-12, R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (1), (2)): the stages
          preflight to veto on ONE night's rows. The merge reads a night view of the search jobs (lib/catalog/night_view.py:
          the cumulative record files cut to the night's windows), never the jobs themselves; the conformance takes the
-         bright-parent table's noise from the LST-wide pass's record (conform_table_noise.csv, frozen mode of
-         wraps/conform_noise.py) and refuses without it; every other stage is the LST chain's, on the night's rows. No
-         earlier night's row is read or judged again. The builds, the tests and the comparison are not offered for a
-         night (NIGHT_STAGES): the grouping's incremental mode and the builder's frozen statistics are the next step.
-         Not yet handed to the night: the published detections near ATNF pulsars the conformance's pulsar groups would
-         use as evidence (a night's table-cut row that only an earlier night's detection would rescue stays removed).
+         bright-parent table's noise from the LST-wide pass's record (conform_table_noise.csv) and, for its pulsar step,
+         the other nights' detections near ATNF pulsars from the LST-wide pass's second record
+         (conform_pulsar_evidence.csv; both through the frozen mode of wraps/conform_noise.py), and refuses without
+         either. The two records are read only when the LST-wide directory's own record of its conformance stage (same
+         LST, same arm) is done and lists both files as they are now (frozen_records_refusal). Every other stage is the
+         LST chain's, on the night's rows. No earlier night's row is judged again. The builds, the tests and the
+         comparison are not offered for a night (NIGHT_STAGES): the grouping's incremental mode and the builder's
+         frozen statistics are the next step.
 """
 import ast
 import contextlib
@@ -654,7 +656,7 @@ class Ctx:
             self.chain_log = os.path.join(side, f'sublst_catalog_chain_{self.sfx}.log')
             self.pcheck_txt = os.path.join(side, f'sublst_parentcheck_{self.lst}.txt')
         # PER-HOUR night pass: the chain reads a night view of the search jobs (self.src), built by the merge stage from the
-        # jobs themselves (self.jobs_src); --out is the night's own directory, never an LST-wide catalogue directory
+        # jobs themselves (self.jobs_src); --out is the night's own directory, never an LST-wide catalog directory
         self.jobs_src = self.src
         self.night = arg(args, 'sublst_night')
         self.frozen_from = arg(args, 'sublst_frozen_from')
@@ -663,10 +665,11 @@ class Ctx:
                 raise SystemExit(f'error: --sublst-night {self.night!r} is not YYYY-MM-DD')
             if self.prod:
                 raise SystemExit(f'error: --sublst-night: --out {self.U} is a production root; a night\'s pass writes its own '
-                                 f'directory, never an LST-wide catalogue directory (give --out)')
+                                 f'directory, never an LST-wide catalog directory (give --out)')
             if not self.frozen_from:
-                raise SystemExit('error: --sublst-night needs --sublst-frozen-from <the LST-wide catalogue directory>: its '
-                                 'conform_table_noise.csv is the frozen statistic the night is judged by')
+                raise SystemExit('error: --sublst-night needs --sublst-frozen-from <the LST-wide catalog directory>: its '
+                                 'conform_table_noise.csv and conform_pulsar_evidence.csv are the frozen records the '
+                                 'night is judged by')
             self.frozen_from = os.path.abspath(self.frozen_from)
             if os.path.realpath(self.frozen_from) == os.path.realpath(self.U):
                 raise SystemExit('error: --sublst-frozen-from is the night\'s own --out')
@@ -1367,13 +1370,46 @@ def conform_noise_runner():
 
 def conform_noise_record(catalog_dir):
     """The record of the table's noise in a catalog directory (written by the LST-wide conformance; wraps/conform_noise.FILE)."""
-    return os.path.join(catalog_dir, 'conform_table_noise.csv')
+    return os.path.join(catalog_dir, _conform_noise().FILE)
 
 
 def conform_pulsar_evidence(catalog_dir):
     """The record of the detections near ATNF pulsars in a catalog directory (written by the LST-wide conformance after its
     pulsar step; wraps/conform_noise.EVIDENCE_FILE): what a night pass's pulsar step reads of the other nights."""
-    return os.path.join(catalog_dir, 'conform_pulsar_evidence.csv')
+    return os.path.join(catalog_dir, _conform_noise().EVIDENCE_FILE)
+
+
+def _conform_noise():
+    from exopipe.phase3.lib.catalog.wraps import conform_noise
+    return conform_noise
+
+
+def frozen_records_refusal(catalog_dir, unit, paths):
+    """Whether the records ``paths`` of an LST-wide catalog directory may judge a night. The directory's own
+    record of its conformance stage (unit <LST>_<arm>.conform: the night's LST and arm) must be done and must list each
+    file with the fingerprint the file has now. So: the directory is this LST's and this arm's; the two records are one
+    run's (a run that stopped between writing them is not done); and no later conformance of the directory refused or
+    failed after them (the runner leaves the records of the last run that ended, so the files alone cannot tell).
+    Returns (None, the stage record's finished time) or (reason, None)."""
+    rec = _record()
+    name = f'{unit}.conform'
+    r = stage_record(catalog_dir, name)
+    if r is None:
+        return (f'{catalog_dir} holds no record of the conformance stage {name} ({rec.record_path(catalog_dir, "catalog", name)}): '
+                f'it is not the LST-wide catalog directory of this LST and arm, or its conformance did not run through '
+                f'`exopipe3 catalog --tier sublst --stages conform`'), None
+    if r.get('status') != 'done':
+        return (f'the LST-wide conformance {name} of {catalog_dir} is {r.get("status")} ({str(r.get("reason"))[:200]}): the '
+                f'records in the directory are an earlier run\'s - run the LST-wide conformance again'), None
+    fps = (r.get('meta') or {}).get('output_fingerprints') or {}
+    for p in paths:
+        hit = [k for k in fps if os.path.basename(k) == os.path.basename(p)]
+        if len(hit) != 1:
+            return (f'{p} is not an output of the LST-wide conformance {name} of {catalog_dir} ({len(hit)} entries of that '
+                    f'name in its record): written by another run'), None
+        if not rec.same_fingerprint(fps[hit[0]], rec.fingerprint(p)):
+            return f'{p} changed since the LST-wide conformance {name} of {catalog_dir} recorded it', None
+    return None, r.get('finished')
 
 
 def st_conform(ctx, s, plan):
@@ -1423,6 +1459,11 @@ def st_conform(ctx, s, plan):
             refuse(f'S-G13: no pulsar-evidence record {evid}: the LST-wide conformance of {ctx.frozen_from} writes it with '
                    f'the table-noise record (`exopipe3 catalog --tier sublst --stages conform`); without it a pulsar\'s '
                    f'detection of {ctx.night} that the other nights\' detections keep would be removed')
+        why, fin = frozen_records_refusal(ctx.frozen_from, ctx.unit, (frozen, evid))
+        if why:
+            ctx.log.say(f'REFUSING: {why[:300]}')
+            refuse(f'S-G13: {why}')
+        s.u.meta['frozen_from_conformance_finished'] = fin
         s.inp(frozen, evid)
         s.code(conform_noise_runner())
         res = call(ctx, s, conform_noise_runner(), [script, U],
@@ -1869,8 +1910,11 @@ def add_arguments(p):
                    help='per-hour night pass: the stages preflight to veto on ONE night\'s rows of the LST, read through a '
                         'night view of the search jobs; needs --sublst-frozen-from and an --out of its own')
     g.add_argument('--sublst-frozen-from', default=None, metavar='DIR',
-                   help='with --sublst-night: the LST-wide catalogue directory whose conform_table_noise.csv (the frozen '
-                        'bright-parent table noise) judges the night; the conformance refuses without it')
+                   help='with --sublst-night: the LST-wide catalog directory of the same LST and arm, whose '
+                        'conform_table_noise.csv (the frozen bright-parent table noise) and conform_pulsar_evidence.csv '
+                        '(the other nights\' detections near ATNF pulsars) judge the night; the conformance refuses '
+                        'without either, and unless that directory\'s own conformance record is done and lists both '
+                        'files as they are now')
     g.add_argument('--sublst-grouping', default=None, metavar='DIR',
                    help='item F.3, design B: the 10-minute grouping the builds read (grouping_<S>/detections.csv of `catalog '
                         '--tier sublst --stages group`; default catalog_grouping.SUBLST_DIR)')

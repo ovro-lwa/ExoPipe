@@ -160,6 +160,27 @@ def test_content_test_fails(src, vn):
     os.unlink(f'{d}/17h_82MHz_V')
     ok, _, det = NV.verify(d)
     check('content test: a job missing from the view fails', not ok and 'exactly the search directory' in det, det)
+    # the content test reports a defect, it does not raise on one (code review of pull request 36)
+    d, r = fresh('candcopy')
+    c = 'V1_17h_2025-05-08T02_73MHz_0001'
+    os.unlink(f'{r}/candidates/{c}')
+    os.makedirs(f'{r}/candidates/{c}')
+    ok, _, det = NV.verify(d)
+    check('content test: a directory where a candidate link belongs fails', not ok and 'candidates' in det, det)
+    d, r = fresh('transients')
+    os.unlink(f'{d}/17h_73MHz_V/transients/other')
+    os.makedirs(f'{d}/17h_73MHz_V/transients/other')
+    ok, _, det = NV.verify(d)
+    check('content test: an entry beside the run directory that is no link to the job\'s fails',
+          not ok and 'transients/other: not a link' in det, det)
+    d, r = fresh('extra')
+    put(f'{r}/extra.csv', 'x')
+    ok, _, det = NV.verify(d)
+    check('content test: an entry of the view that the job does not hold fails', not ok and 'does not hold' in det, det)
+    d, r = fresh('nojob')
+    shutil.rmtree(f'{d}/17h_73MHz_I')
+    ok, _, det = NV.verify(d)
+    check('content test: a job directory gone from the view fails', not ok and '17h_73MHz_I' in det, det)
     ok, _, det = NV.verify(f'{T}/no_such_view')
     check('content test: a directory without the view\'s record fails', not ok and 'no readable' in det, det)
 
@@ -194,6 +215,34 @@ def test_refusals(src, vn):
     s = search_dir(f'{T}/search_blank', ledger=LEDGER.replace('5.0,1\r\n', '5.0,1\r\n\r\n'))
     check('an empty line inside a record file refuses', 'empty line' in refusal(NV.build, s, f'{T}/r8', '17h', LABEL, NIGHT,
                                                                                'night'))
+    check('a refused build leaves no partial view', not any(os.path.lexists(f'{T}/r{k}') for k in range(1, 9)),
+          [k for k in range(1, 9) if os.path.lexists(f'{T}/r{k}')])
+    s = search_dir(f'{T}/search_moving')
+    orig = NV.read_record
+
+    def moving(path):                                       # a search publishes to the cell while its records are read
+        out = orig(path)
+        if path.endswith(f'17h_73MHz_V/transients/Run_{LABEL}/v_deep_images.csv'):
+            with open(os.path.dirname(path) + '/master_catalog.csv', 'a', newline='') as f:
+                f.write('\nV1_17h_2025-05-08T05_73MHz_0009,17h,2025-05-08T05,73MHz,V,1.000,9.00')
+        return out
+    NV.read_record = moving
+    try:
+        msg = refusal(NV.build, s, f'{T}/r11', '17h', LABEL, NIGHT, 'night')
+    finally:
+        NV.read_record = orig
+    check('a record file of a job that changes while the view is built refuses, naming it, and leaves no partial view',
+          'changed while the view was built' in msg and 'master_catalog.csv' in msg and not os.path.lexists(f'{T}/r11'), msg)
+    s = search_dir(f'{T}/search_tmp', extra={'master_catalog.csv.tmp.1234': 'x', 'v_deep_images.csv.tmp': 'y'})
+    rec = NV.build(s, f'{T}/r12', '17h', LABEL, NIGHT, 'night')
+    rv = f'{T}/r12/17h_73MHz_V/transients/Run_{LABEL}'
+    check('a writer\'s temporary file (<name>.tmp, <name>.tmp.<pid>) is left out of the view, and the content test passes',
+          not os.path.lexists(f'{rv}/master_catalog.csv.tmp.1234') and not os.path.lexists(f'{rv}/v_deep_images.csv.tmp')
+          and NV.verify(f'{T}/r12')[0], sorted(os.listdir(rv)))
+    check('the view\'s record keeps each record file\'s size, modification time and inode as read',
+          sorted(rec['jobs']['17h_73MHz_V']['stat']) == sorted(NV.RECORDS)
+          and rec['jobs']['17h_73MHz_V']['stat']['master_catalog.csv'][0]
+          == os.path.getsize(f'{s}/17h_73MHz_V/transients/Run_{LABEL}/master_catalog.csv'))
     s = search_dir(f'{T}/search_ff', cat=CAT.replace('"0.700"', '"0.7\x0c00"'))
     rec = NV.build(s, f'{T}/r9', '17h', LABEL, NIGHT, 'night')
     check('a form feed inside a field is not a line end (the row is kept whole)',
@@ -221,7 +270,7 @@ def test_cli(src):
     src_txt = open(me).read()
     check('the module imports the standard library only',
           not [ln for ln in src_txt.splitlines() if ln.startswith(('import ', 'from '))
-               and ln.split()[1].split('.')[0] not in ('csv', 'glob', 'json', 'os', 're', 'sys', 'time')])
+               and ln.split()[1].split('.')[0] not in ('csv', 'glob', 'json', 'os', 're', 'shutil', 'sys', 'time')])
 
 
 def test_wiring():
