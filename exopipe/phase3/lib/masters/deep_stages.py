@@ -1177,7 +1177,10 @@ def build_stats_stage(cell, args, run, out, ran_now):
                      f'rebuild the cell (exclusions are absolute, DESIGN 5 (d))')
         mods, _ = inplace(out)
         with IP.capture_stdout(_log(out, cell, 'build-stats'), echo=False):   # the stage-2 rule's notes: in the stage's log
-            viol = list(_admit().verify(cell_src)[0])        # D-ADMIT: a night admitted into the master is not a violation
+            try:
+                viol = _build_stats_violations(cell_src)      # D-ADMIT + the 18 MHz carve-out: as the deep search judges the master
+            except RuntimeError as e:                         # an unknown masters_admit.MASTER_HELD_18MHZ
+                u.refuse(f'{cell}: {e}')
             try:
                 st = None if viol else BS.compute(cell_src, lst, sc, mods['coadd'], _cfg(), 'stage')
             except BS.NoRecord as e:
@@ -1216,6 +1219,19 @@ STAGES = {'stage-in': stage_in, 'build': build, 'pbmaps': pbmaps, 'vclean': vcle
           'verify': verify, 'sources': sources, 'variants': variants, 'build-stats': build_stats_stage,
           'admit-prep': lambda cell, args, run, out, ran_now: _admit_stages().admit_prep(cell, args, run, out, ran_now),
           'admit': lambda cell, args, run, out, ran_now: _admit_stages().admit_stage(cell, args, run, out, ran_now)}
+
+
+def _build_stats_violations(cell_src):
+    """The membership violations of the installed master of ``cell_src`` as the deep search judges it (lib/search/admitted.
+    verify_master: a night admitted into the master is not a violation, and under masters_admit.MASTER_HELD_18MHZ 'keep' a Red /
+    Full night held only for its excluded 18 MHz is kept until the master's next rebuild). build-stats records the population an
+    admitted night - and the per-hour search - is judged by: a cell the search accepts is never refused here. An unknown value
+    raises RuntimeError (the stage refuses the cell)."""
+    from exopipe.phase3.lib.search import admitted as ADS
+    v = _cfg().masters_admit.MASTER_HELD_18MHZ
+    if v not in ADS.MASTER_18:
+        raise RuntimeError(f'masters_admit.MASTER_HELD_18MHZ = {v!r} is not one of {ADS.MASTER_18} - REFUSING')
+    return list(ADS.verify_master(cell_src, held_18=v)[0])
 
 
 def _admit_stages():
@@ -1439,7 +1455,10 @@ def _plan_simple(stage):
                 if stale:
                     gates.append(f'night(s) {stale} of the build population are excluded now (rebuild the cell)')
                 inplace(out)
-                viol = list(_admit().verify(cs)[0])           # D-ADMIT: as the stage reads it
+                try:
+                    viol = _build_stats_violations(cs)        # as the stage reads it
+                except RuntimeError as e:
+                    viol = [str(e)]
                 if viol:
                     gates.append(f'the cell fails membership.verify ({len(viol)}): {viol[0][:200]}')
         return lines, gates
