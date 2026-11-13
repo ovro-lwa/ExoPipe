@@ -364,6 +364,10 @@ def test_the_per_hour_chain_makes_the_night_cubes_before_the_ten_minute_tier():
     args = argparse.Namespace(stages='cube,movies', from_stage=None, until_stage=None)
     assert FT.requested_stages(args, T.ORDER, T.DEFAULT_STAGES) == ['cube', 'movies']    # known, in pipeline order
     assert 'cube' not in T.DEFAULT_STAGES             # the default frames step makes no cube: the stage must be named
+    # every catalog step of the per-hour chain is incremental: steps/catalog.py takes --epochs only with --incremental (a
+    # usage error, exit 1, otherwise); a tier with no incremental path then refuses (exit 2) with its reason recorded
+    cats = [a for a in runner.chain_steps('epoch') if a[0] == 'catalog']
+    assert [tier(a) for a in cats] == ['deep', 'sublst', 'snapshot'] and all('--incremental' in a for a in cats), cats
 
 
 def main(argv):

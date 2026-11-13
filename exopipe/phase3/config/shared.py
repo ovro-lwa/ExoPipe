@@ -336,10 +336,12 @@ class runner(_Section):
                   'frames --tier sublst --stages wideband,tree-nonmember --epochs {item}',
                   'search --tier sublst --epochs {item}',
                   'catalog --tier sublst --incremental --epochs {item}',
-                  # the rest of the 10-second tier
+                  # the rest of the 10-second tier. Its catalog step, like the 10-minute one, refuses every night until the
+                  # tier has an incremental path (plan/PER_HOUR_GAP_DESIGNS_20261111.md 2.2); without --incremental it was a
+                  # usage error (exit 1, a failed item, not a refusal): steps/catalog.py takes --epochs only with it
                   'search --tier snapshot --epochs {item}',
                   'curves --tier snapshot --epochs {item}',
-                  'catalog --tier snapshot --epochs {item}',
+                  'catalog --tier snapshot --incremental --epochs {item}',
                   'forced --tier snapshot --epochs {item}',
                   'pages --run {deep_run} --epochs {item}',
                   'serve --run {deep_run} --epochs {item}',
