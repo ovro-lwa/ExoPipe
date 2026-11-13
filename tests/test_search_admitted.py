@@ -731,11 +731,13 @@ def seed_base_noise(label_root, exclude, stokes=None):
     return {st: {d: v for d, (v, _f) in nz.items()} for st, nz in pop.items()}
 
 
-def seed_base_beam(label_root):
+def seed_base_beam(label_root, exclude=()):
     """PER-HOUR (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)): an append reads the beam gate's population frozen by its
     base's whole-cell search (gate_population.csv) and refuses without one. A test attempt is fresh, so it is given the
     record of the served base: the backfill of the cell's published Stokes I attempt (read only), the copy's admitted nights
-    left out (they were in no base) and the median taken over the rest by the engine's own expression."""
+    left out (they were in no base) and the median taken over the rest by the engine's own expression. ``exclude``: the
+    nights the run's exclusion device excludes, left out too - the base of such an append was searched under those
+    exclusions (a base population holding a night excluded now refuses the append: gate_population.frozen_beam)."""
     from exopipe.phase3.core import exclusions as EX
     from exopipe.phase3.lib.search import deep_step as D, gate_population as GP, wideband_admission as WBA
     src = os.path.join(CFG.paths.COADD_SB_ROOT, CELL)
@@ -747,7 +749,7 @@ def seed_base_beam(label_root):
                                  lambda d: ex.is_excluded(LST, SC, d))
     if r is None:
         raise RuntimeError(f'seed_base_beam: the backfill of {att} refused: {rep.get("refused")}')
-    pop = [d for d in r[8].split(';') if d and d not in _SEED_EXCLUDE]
+    pop = [d for d in r[8].split(';') if d and d not in _SEED_EXCLUDE and d not in set(exclude)]
     fin = sorted(area(d) for d in pop)
     ok = len(fin) >= mn
     rd = os.path.join(label_root, 'transients', 'Run_ADMITTEST')
@@ -762,7 +764,7 @@ def engine(root, work, label_root, policy, dates, fail_i=None, rules=None, b02=N
             os.path.join(label_root, 'transients', 'Run_ADMITTEST', 'frame_noise.csv')):
         seed_base_noise(label_root, set(dates), stokes)   # B-02 step 3b: the base an incremental search appends to
     if seed and dates and not os.path.exists(os.path.join(label_root, 'transients', 'Run_ADMITTEST', 'gate_population.csv')):
-        seed_base_beam(label_root)                        # PER-HOUR: the beam population an append reads (either rules)
+        seed_base_beam(label_root, exclude or ())        # PER-HOUR: the beam population an append reads (either rules)
     env = {k: v for k, v in os.environ.items() if not k.startswith('P3_')}
     env.update(PYTHONPATH=REPO, P3_COADD_ROOT=root, P3_FLOW_ROOT=work, P3_STAGING_ROOT=label_root,
                P3_IRESID_ROOT=os.path.join(label_root, 'iresid'), P3_VRESID_ROOT=os.path.join(label_root, 'vresid'),
