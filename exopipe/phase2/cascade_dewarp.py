@@ -223,6 +223,44 @@ def extract_sources(image_path, logger):
 
 
 # =====================================================================
+# CATALOGS OF THE DEWARPED HOUR IMAGES, KEPT FOR THE 10-MINUTE STAGE
+# =====================================================================
+# The cascade extracts each subband's dewarped hour image (dewarp_subband, step 9). The 10-minute stage needs the
+# catalog of that same file as its reference and used to extract it a second time, one subband after another
+# (15 extractions, ~5 minutes per LST hour, for the same catalog). The cascade's result is kept here instead. The key
+# is the file (path, size, modification time) AND every setting extract_sources reads, so a file or a setting that
+# differs is extracted afresh exactly as before. P2_REUSE_CASCADE_CATALOGS=0 switches the reuse off.
+_DEWARPED_CATALOGS = {}
+
+
+def _catalog_key(image_path):
+    st = os.stat(image_path)
+    return (os.path.abspath(image_path), st.st_size, st.st_mtime_ns,
+            ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS,
+            cfg.BDSF_THRESH_PIX, cfg.BDSF_THRESH_ISL, os.environ.get('BDSF_NCORES'))
+
+
+def _remember_catalog(image_path, df):
+    """Keep a successful (non-empty) extraction of image_path for the 10-minute stage."""
+    try:
+        if df is not None and not df.empty:
+            _DEWARPED_CATALOGS[_catalog_key(image_path)] = df.copy(deep=True)
+    except OSError:
+        pass
+
+
+def _recall_catalog(image_path):
+    """The kept extraction of exactly this file under exactly these settings, or None."""
+    if os.environ.get('P2_REUSE_CASCADE_CATALOGS', '1') == '0':
+        return None
+    try:
+        df = _DEWARPED_CATALOGS.get(_catalog_key(image_path))
+    except OSError:
+        return None
+    return None if df is None else df.copy(deep=True)
+
+
+# =====================================================================
 # CROSS-MATCHING
 # =====================================================================
 
@@ -1143,6 +1181,7 @@ def dewarp_subband(work_dir, subband, ref_catalog, ref_label, is_anchor,
     dewarped_pbcorr = calc_img.replace('.fits', '_dewarped.fits')
     if os.path.exists(dewarped_pbcorr):
         dewarped_catalog = extract_sources(dewarped_pbcorr, logger)
+        _remember_catalog(dewarped_pbcorr, dewarped_catalog)
     else:
         dewarped_catalog = pd.DataFrame()
 
@@ -2237,7 +2276,12 @@ def dewarp_10min_intervals(work_dir, subband_list, diag_dir, logger,
             # Serialize WCS as header dict (picklable)
             wcs_header = WCS(header).celestial.to_header()
 
-        ref_catalog = extract_sources(deep_dewarped, logger)
+        ref_catalog = _recall_catalog(deep_dewarped)
+        if ref_catalog is not None:
+            logger.info(f"  [BDSF] Reusing the cascade's extraction of "
+                        f"{os.path.basename(deep_dewarped)}")
+        else:
+            ref_catalog = extract_sources(deep_dewarped, logger)
         if ref_catalog.empty:
             continue
 
@@ -2311,6 +2355,11 @@ def dewarp_10min_intervals(work_dir, subband_list, diag_dir, logger,
 
     # -- 3. Run in parallel --
     n_workers = min(8, max(1, multiprocessing.cpu_count() - 2))
+    # P2_TENMIN_WORKERS (a runtime setting) sizes the pool for a node this run has to itself; unset = the default
+    # above (unchanged behaviour). Each interval is dewarped by itself against the same reference catalog, so the
+    # results do not depend on the pool size.
+    if os.environ.get('P2_TENMIN_WORKERS'):
+        n_workers = max(1, int(os.environ['P2_TENMIN_WORKERS']))    # checked at the run's start by the controller
     logger.info(f"  Using {n_workers} parallel workers")
 
     results_10min = {}

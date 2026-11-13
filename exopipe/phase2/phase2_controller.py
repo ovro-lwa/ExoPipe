@@ -27,6 +27,12 @@ Usage:
 """
 import argparse
 import os
+# numpy asks the kernel for huge pages for every large array. On a node whose free memory is fragmented (no free 2 MB
+# block: lwacalim00 on 2026-11-12, with 349 GB free) each such request waits on memory compaction that fails. A source
+# extraction that needs 15 s then sat in the kernel for more than 10 minutes (2 s of user time, 630 s of system time).
+# Set here, before numpy is first imported, and inherited by every worker; a value already in the environment wins.
+# It changes no result.
+os.environ.setdefault('NUMPY_MADVISE_HUGEPAGE', '0')
 import sys
 import subprocess
 import glob
@@ -159,6 +165,83 @@ def validate_subband(sb_dir, subband, logger):
 # STEP 2: COPY TO NVMe
 # =====================================================================
 
+def _copy_checked(pair):
+    """Copy one file and compare its size with the source's. One retry, then refuse: Lustre has made silent short
+    copies (2026-11-09), and a short image must never enter the run."""
+    src, dst = pair
+    for attempt in (1, 2):
+        shutil.copy2(src, dst)
+        n_src, n_dst = os.path.getsize(src), os.path.getsize(dst)
+        if n_src == n_dst:
+            return 1
+        logger.warning(f"  short copy (attempt {attempt}): {os.path.basename(src)} "
+                       f"{n_dst} of {n_src} bytes")
+    raise IOError(f"short copy after two attempts: {src} -> {dst}")
+
+
+# Runtime settings read from the environment. They are checked before anything runs (check_runtime_settings, called
+# by main): a value that cannot be used stops the hour at its start, not after the cascade (P2_TENMIN_WORKERS is first
+# read in the 10-minute stage).
+_WHOLE_NUMBER_SETTINGS = ('P2_COPY_WORKERS', 'P2_TENMIN_WORKERS', 'FULLBAND_WORKERS', 'BDSF_NCORES')
+MAX_COPY_WORKERS = 6        # the recorders share Lustre: at most 6 Lustre-heavy workers
+
+
+def _whole_number_setting(name, default=None):
+    """The runtime setting `name` as a whole number of at least 1 (unset or empty = default); refuses anything else."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        sys.exit(f"REFUSING: {name}={raw!r} is not a whole number of at least 1")
+    return value
+
+
+def _copy_workers():
+    """P2_COPY_WORKERS (unset = 1); more than MAX_COPY_WORKERS is refused."""
+    n = _whole_number_setting('P2_COPY_WORKERS', 1)
+    if n > MAX_COPY_WORKERS:
+        sys.exit(f"REFUSING: P2_COPY_WORKERS={n}: at most {MAX_COPY_WORKERS} files are copied from Lustre at a time "
+                 f"(the recorders share it)")
+    return n
+
+
+def check_runtime_settings():
+    """Refuse an unusable runtime setting before the run starts."""
+    for name in _WHOLE_NUMBER_SETTINGS:
+        _whole_number_setting(name)
+    _copy_workers()
+
+
+def _copy_files(pairs):
+    """Copy (source, destination) pairs; returns the number copied.
+
+    P2_COPY_WORKERS (a runtime setting) copies that many files at a time; unset or 1 = one after another, as before.
+    The destination files are created first, in the listed order, so the directory holds them in the same order
+    whatever the setting. A copy that does not complete (an error, a refused short copy, an interrupt) removes every
+    destination of the call before the error goes on: no empty or short image is left for a rerun to take as copied.
+    """
+    n_workers = _copy_workers()
+    try:
+        if n_workers <= 1 or len(pairs) <= 1:
+            return sum(_copy_checked(p) for p in pairs)
+        from concurrent.futures import ThreadPoolExecutor
+        for _, dst in pairs:
+            open(dst, 'wb').close()
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            return sum(pool.map(_copy_checked, pairs))
+    except BaseException:
+        for _, dst in pairs:
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+        raise
+
+
 def copy_to_nvme(subband_map, work_dir):
     """Copy image data from Lustre to NVMe working directory.
 
@@ -175,7 +258,14 @@ def copy_to_nvme(subband_map, work_dir):
         dest_sb = os.path.join(work_dir, subband)
 
         if os.path.isdir(dest_sb):
-            n_existing = len(glob.glob(os.path.join(dest_sb, "*", "*", "*.fits")))
+            existing = glob.glob(os.path.join(dest_sb, "*", "*", "*.fits"))
+            n_existing = len(existing)
+            # An empty image is the trace of a copy that was killed part-way (the parallel copy creates its
+            # destination files before it fills them). Such a directory is never taken as copied.
+            n_empty = sum(1 for p in existing if os.path.getsize(p) == 0)
+            if n_empty:
+                raise IOError(f"{subband}: {n_empty} empty image files in {dest_sb} - an earlier copy was "
+                              f"interrupted. Remove that directory and run again.")
             if n_existing > 0:
                 logger.info(f"  {subband}: already on NVMe ({n_existing} files)  skipping copy")
                 continue
@@ -185,7 +275,7 @@ def copy_to_nvme(subband_map, work_dir):
         # Only copy *image* FITS files (the only science products).
         # All other wsclean outputs (dirty, model, psf, residual, mask)
         # are excluded by requiring '-image' in the filename.
-        n_copied = 0
+        pairs = []
         for pol in ['I', 'V']:
             src_pol = os.path.join(src_dir, pol)
             if not os.path.isdir(src_pol):
@@ -202,8 +292,8 @@ def copy_to_nvme(subband_map, work_dir):
                         continue
                     if ".pybdsf" in bn:
                         continue
-                    shutil.copy2(f, os.path.join(dest_cat, bn))
-                    n_copied += 1
+                    pairs.append((f, os.path.join(dest_cat, bn)))
+        n_copied = _copy_files(pairs)
 
         logger.info(f"  {subband}: {n_copied} image files copied")
 
@@ -1262,6 +1352,7 @@ def main():
                         help="Skip header validation and correction step")
 
     args = parser.parse_args()
+    check_runtime_settings()
 
     # Generate or validate run label
     if args.run_label:
