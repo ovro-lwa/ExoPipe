@@ -650,6 +650,13 @@ def test_dry_run_writes_nothing():
 # the frames step
 # =====================================================================================================================
 
+def test_frames_step_accepts_supersede():
+    # the stage's refusal N-11 names --fresh --supersede TAG: the frames step must accept the flag it names
+    p = argparse.ArgumentParser()
+    FT.add_arguments(p)
+    assert p.parse_args(['--supersede', 'tag1']).supersede == 'tag1' and p.parse_args([]).supersede is None
+
+
 def test_frames_stage():
     S = CFG.frames_sublst
     order = list(S.ORDER)
@@ -680,7 +687,8 @@ TESTS = [test_residual_is_window_minus_installed_master, test_arithmetic_functio
          test_night_listed_with_weight_zero_is_served, test_missing_installed_master, test_unusable_installed_master,
          test_stack_missing_or_incomplete, test_stack_log_evidence, test_excluded_night_is_refused,
          test_flux_scale_and_time_block, test_earlier_residuals_and_supersede, test_failed_content_test_leaves_no_residual,
-         test_dry_run_agrees_with_resume, test_nothing_owed_is_no_input, test_dry_run_writes_nothing, test_frames_stage]
+         test_dry_run_agrees_with_resume, test_nothing_owed_is_no_input, test_dry_run_writes_nothing,
+         test_frames_step_accepts_supersede, test_frames_stage]
 
 
 def main(argv):

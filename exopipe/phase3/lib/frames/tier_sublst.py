@@ -366,6 +366,10 @@ def add_arguments(p):
     g.add_argument('--sublst-mirror', action='store_true',
                    help='non-production --out: link the production inputs a stage needs but the root lacks (frames-only '
                         'parity runs on production stacks / residuals; spec 7.3)')
+    g.add_argument('--supersede', metavar='TAG',
+                   help='stages stack and nonmember, with --fresh: move a unit\'s earlier outputs aside under '
+                        '<out>/_superseded/<TAG>/ with a sha1 manifest instead of refusing (as `masters --supersede`; the '
+                        'stages read it already, the flag was missing here)')
     g.add_argument('--sublst-loo-evidence', choices=('record', 'log'),
                    help="what proves arm A complete before wideband: 'record' = the done masters loo record (default "
                         "frames_sublst.LOO_EVIDENCE), 'log' = production's SUBLST-LOO log lines (parity on production inputs)")
