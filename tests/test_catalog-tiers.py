@@ -169,12 +169,35 @@ def test_ported_sublst():
                    ('source_catalogs_noveto_V_sb/18MHz_sources_survivors.csv', 'source_id\nJ1\n')):
         os.makedirs(os.path.dirname(f'{U}/{p}'), exist_ok=True)
         open(f'{U}/{p}', 'w').write(txt)
+    try:
+        S.compare_copy(U, f'{T}/cmp/catalog')
+        r = False
+    except OSError:
+        r = True
+    ok('compare copy refuses a catalogue without the per-detection record / complete-parent verdicts', r)
+    for p, txt in (('detection_record_10min_summary.json', '{"status": "PASS"}\n'), ('table_filter.csv', 'cand_id\nV1\n'),
+                   ('complete_parent/14h/cells.csv', 'cell\n1\n'), ('complete_parent/14h/complete_parent_rows.csv', 'row\n1\n'),
+                   ('complete_parent/14h/provenance.json', '{}\n'), ('pertie/conform_inputs/SHA256SUMS', 'x  y\n')):
+        os.makedirs(os.path.dirname(f'{U}/{p}'), exist_ok=True)
+        open(f'{U}/{p}', 'w').write(txt)
+    import gzip
+    with gzip.open(f'{U}/detection_record_10min.csv.gz', 'wt') as f:
+        f.write('cand_id\nV1\n')
     S.compare_copy(U, f'{T}/cmp/catalog')
+    ok('compare copy: the per-detection record and the complete-parent verdicts (sublst_catalog_chain.sh:50-57)',
+       all(S.files_equal(f'{U}/{a}', f'{T}/cmp/catalog/{b}') for a, b in (
+           ('detection_record_10min.csv.gz', 'detection_record_10min.csv.gz'), ('table_filter.csv', 'table_filter.csv'),
+           ('complete_parent/14h/provenance.json', 'complete_parent/provenance.json'),
+           ('pertie/conform_inputs/SHA256SUMS', 'pertie/conform_inputs/SHA256SUMS'))))
     ok('compare copy: small products and the window-tie tables whole',
        S.files_equal(f'{U}/pertie/pertie_detections.csv', f'{T}/cmp/catalog/pertie/pertie_detections.csv')
        and os.path.exists(f'{T}/cmp/catalog/source_catalogs_noveto_V_sb/18MHz_sources_survivors.csv'))
     from exopipe.phase3.lib.catalog import tests_sublst as TS
     ok('compare_copy content test passes against its source', TS.compare_copy_equal(f'{T}/cmp/catalog', source=U)[0])
+    open(f'{T}/cmp/catalog/complete_parent/cells.csv', 'w').write('changed\n')
+    ok('compare_copy content test fails on a changed complete-parent file',
+       not TS.compare_copy_equal(f'{T}/cmp/catalog', source=U)[0])
+    shutil.copy2(f'{U}/complete_parent/14h/cells.csv', f'{T}/cmp/catalog/complete_parent/cells.csv')
     open(f'{T}/cmp/catalog/a.csv', 'w').write('changed\n')
     ok('compare_copy content test fails on a changed file', not TS.compare_copy_equal(f'{T}/cmp/catalog', source=U)[0])
 
@@ -801,9 +824,12 @@ def test_e2e_sublst(site):
 # a stub that applies production's AXIS step (|S/N| > 8 and axis_norm > 2.0 x beam removed in its words, p3s2_conform.py:635-639)
 # - with no switch, as production today, or with the pending patch's P3_CONFORM_AXIS switch
 STUB_CONFORM_SUBLST = r'''
-import csv, os, shutil, sys
+import csv, hashlib, os, shutil, sys
 AXIS_STEP = True   # AXIS-SWITCH
 U = sys.argv[1]
+_ptp = os.environ.get("P3_TENMIN_PERTIE")   # production's checksum line of the window-tie table read (p3s2_conform.py:455-460)
+if _ptp:
+    print("conform: window-tie table read: %s sha256 %s" % (_ptp, hashlib.sha256(open(_ptp, "rb").read()).hexdigest()), flush=True)
 rows = list(csv.DictReader(open(os.path.join(U, "master_catalog.csv"))))
 cols = list(rows[0].keys()) if rows else ["cand_id"]
 shutil.copy(os.path.join(U, "master_catalog.csv"), os.path.join(U, "master_catalog_asrun.csv"))
@@ -860,6 +886,9 @@ def sg13_size_rule(site, common):
                                                '1.6'],
                                               ['I4', '14h', '2025-04-06T02', '18MHz', 'I', '10min', '212.0', '39.0', '9.5', '2.1',
                                                '1.8', '1.2']])
+        os.makedirs(f'{U}/pertie', exist_ok=True)                       # the window tie 1 of 2 (its tables)
+        wcsv(f'{U}/pertie/pertie_detections.csv', ['cand_id', 'tie_status', 'sys_arcmin', 'sys_source'], [['V1', 'tied', '0.5', 'T1']])
+        wcsv(f'{U}/pertie/pertie_frames.csv', ['frame', 'scale'], [['w1', '1.0']])
         record.atomic_write_json(record.record_path(U, 'catalog', '14h_B.tie-pulsars'), {
             'status': 'done', 'unit': '14h_B.tie-pulsars',
             'meta': {'output_fingerprints': {f'{U}/master_catalog.csv': record.fingerprint(f'{U}/master_catalog.csv')}}})
@@ -891,6 +920,22 @@ def sg13_size_rule(site, common):
        "conformant catalog's content tests passing", rc == 0 and rec.get('status') == 'done' and rem == ['I3'] and g
        and g[0]['value'] == 1 and g[0]['passed'] and 'second gate' in g[0]['detail'] and all(t['passed'] for t in rec['tests']),
        (rc, rec.get('status'), rec.get('reason'), rem, g, out[-500:]))
+    ci = [t for t in rec.get('tests', []) if t['name'] == 'S-G13.conform-inputs']
+    from exopipe.phase3.lib.catalog import conform_inputs as CI, tier_sublst as S
+    ok("S-G13 conform inputs (refactor-chat ruling 2026-10-18, sublst_catalogs.sh:183-196): the stage recorded "
+       "pertie/conform_inputs (verifies), the conformance read the copy (its read line names it with the copy's sha256), "
+       "the check recorded as passed", rc == 0 and ci and ci[0]['passed'] and CI.verify(f'{U}/pertie/conform_inputs') == ''
+       and CI.check(f'{U}/pertie', f'{U}/catalogs.log')[0]
+       and S.files_equal(f'{U}/pertie/pertie_detections.csv', f'{U}/pertie/conform_inputs/pertie_detections.csv'),
+       (rc, ci, CI.check(f'{U}/pertie', f'{U}/catalogs.log')))
+    src = open(conform).read()
+    open(conform, 'w').write(src.replace(
+        'if _ptp:', 'if _ptp:\n    _ptp = _ptp.replace("/conform_inputs/", "/")   # reads pertie/ itself, not the copy'))
+    rc, out = setup(pre=SG, conf=SG)
+    rec = conform_rec()
+    ok("S-G13 conform inputs: a conformance that read pertie/ itself (not the recorded copy) refuses (exit 2)",
+       rc == 2 and rec.get('status') == 'refused' and 'did not read the recorded copy' in (rec.get('reason') or ''),
+       (rc, rec.get('status'), (rec.get('reason') or '')[:300]))
     stub('patched')
     rc, out = setup()
     rec = conform_rec()

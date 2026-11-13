@@ -140,6 +140,14 @@ def stage_prep(c, run, done, lst):
         miss = [f for f in S.REQUIRED_FILES if not os.path.exists(os.path.join(cat, f))]
         if miss:
             raise common.Refusal(f'P12/P13: {cat} lacks {miss} (window-tie table / rejected-source record; sublst_pages_prep.py:39-48)')
+        # THE TIE TABLES THE CONFORMANCE READ (refactor-chat ruling 2026-10-18, option (a) "record and check"): the recorded
+        # copy pertie/conform_inputs verifies and every current read line of catalogs.log names it with its sha256
+        # (sublst_catalog_publish.sh:94-110 ci_check, before the publish; lib/catalog/conform_inputs.py)
+        from exopipe.phase3.lib.catalog import conform_inputs as CI
+        ok, why = CI.check(os.path.join(cat, 'pertie'), os.path.join(cat, 'catalogs.log'))
+        u.check('P14.conform-inputs', ok, detail=why, path=os.path.join(cat, 'pertie', CI.DIR))
+        if not ok:
+            raise common.Refusal(f'P14: {why} - NOT published (sublst_catalog_publish.sh:107-109)')
         mirror.gate(u, c.roots, TIER, 'prep')
         for f in ('master_catalog.csv', 'v_deep_images.csv') + tuple(S.REQUIRED_FILES):
             p = os.path.join(cat, f)
