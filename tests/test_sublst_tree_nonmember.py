@@ -347,7 +347,10 @@ def test_entry_equals_the_builders_tree():
         assert rec['status'] == 'done' and {o['class'] for o in rec['outputs']} == {'tenmin_tree'} and len(rec['outputs']) == 4
         assert len(rec['tests']) == 4 and all(x['passed'] for x in rec['tests']), rec['tests']
         assert rec['admitted'] == [NEW] and t.decisions in rec_inputs(rec) and t.listfile in rec_inputs(rec)
-        assert t.resid(NEW, 'V', 2) in rec_inputs(rec) and t.pb(NEW, 0) in rec_inputs(rec) and len(rec_inputs(rec)) == 13
+        assert t.resid(NEW, 'V', 2) in rec_inputs(rec) and t.pb(NEW, 0) in rec_inputs(rec)
+        # 6 residuals, 3 window primary-beam maps, the weights, the two lists, the refine log (and, where it exists, the
+        # list of GPU-frame cells that sets the night's exclusion read)
+        assert len(set(rec_inputs(rec)) - {CFG.paths.SNAPSHOT_GPU_FRAME_CELLS}) == 13, rec_inputs(rec)
         assert all(all(x['passed'] for x in validate.run('tenmin_tree', os.path.join(t.cdir, p), lst=LST, band=SB))
                    for p in ['frames.csv'] + [os.path.join('bin_masters', f'PB_bin{k}_{SB}.fits') for k in (0, 1, 2)])
         assert not t.leases_held() and os.path.isdir(os.path.join(t.tree, '.leases', f'{LST}_{SB}'))

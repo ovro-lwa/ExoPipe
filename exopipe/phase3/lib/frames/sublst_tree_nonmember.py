@@ -34,7 +34,8 @@ Outputs: the band's tree as above [tenmin_tree]: the night's links, frames.csv (
 night's windows (replaced atomically when a card changes).
 
 Failure modes (exit 2 = refused; every gate is checked before anything is written):
-  T-1  the (LST hour, band, night) is excluded in data_decisions.csv.
+  T-1  the (LST hour, band, night) is excluded in data_decisions.csv, by the 10-minute tier's read of the night (the
+       frames tier's reader, core.exclusions.for_tier('sublst'): the builder's own per-night read, tree:98-108).
   T-2  the night has a co-add weight above 0 in the band (a member changes the PB_bin pixels: the batch stage `tree`),
        or no weight at all (not in the frozen deep weights and not on the non-member nights list).
   T-3  no x2 residual of the night, or no window with both Stokes.
@@ -322,11 +323,13 @@ def tree_lease(tree, lst, band, unit):
                     wait_s=LEASE_WAIT_S, info={'unit': unit, 'tree': cell_dir(tree, lst, band)})
 
 
-def unit_inputs(ctx, a, lst, band, base=None):
-    """(the S-G8 gate of the band, the unit's inputs): what the assessment read and the refine log(s) the gate reads."""
+def unit_inputs(ctx, a, lst, band, ex, base=None):
+    """(the S-G8 gate of the band, the unit's inputs): what the assessment read, the refine log(s) the gate reads and
+    the list of GPU-frame cells that sets the night's exclusion read (core.exclusions.PerNight)."""
     from exopipe.phase3.lib.frames import tier_sublst as F
     gate = F.tree_refine_gate(ctx, lst, band, base)
-    return gate, sorted(set(a['inputs']) | {g[3] for g in gate if os.path.exists(g[3])})
+    more = {g[3] for g in gate} | {getattr(ex, 'gpu_path', None)}
+    return gate, sorted(set(a['inputs']) | {p for p in more if p and os.path.exists(p)})
 
 
 def stage(ctx, lst, nights):
@@ -360,7 +363,7 @@ def stage(ctx, lst, nights):
             for b in todo:
                 name = unit_name(lst, b, night)
                 a = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
-                gate, inputs = unit_inputs(ctx, a, lst, b, base)
+                gate, inputs = unit_inputs(ctx, a, lst, b, ex, base)
                 gate = [g for g in gate if not g[1]]
                 why = a['refuse'] or (f'S-G8 x2 refine of {lst} {gate[0][0]} not complete ({gate[0][2]})' if gate else None)
                 if why:
@@ -384,7 +387,7 @@ def stage(ctx, lst, nights):
                 # never skipped) and the unit's record is valid for today's inputs
                 a0 = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
                 if not a0['refuse'] and a0['action'] == 'already presented' \
-                        and F.try_resume(ctx.run, ctx.args, name, unit_inputs(ctx, a0, lst, b)[1], [night]):
+                        and F.try_resume(ctx.run, ctx.args, name, unit_inputs(ctx, a0, lst, b, ex)[1], [night]):
                     return
             with ctx.run.unit(name, tier=F.TIER, stage=STAGE, lst=lst, band=b, night=night) as u:
                 if not os.path.isdir(cdir):
@@ -395,7 +398,7 @@ def stage(ctx, lst, nights):
                 lease.acquire(say=lambda m: F.say(f'frames: [{name}] {m}'))
                 try:
                     a = assess(lst, b, night, x2, root, tree, cols, ex.is_excluded(lst, b, night))
-                    gate, inputs = unit_inputs(ctx, a, lst, b)
+                    gate, inputs = unit_inputs(ctx, a, lst, b, ex)
                     for p in inputs:
                         u.add_input(p)
                     u.set_admitted([] if a['refuse'] and a['refuse'].startswith('T-1') else [night])
