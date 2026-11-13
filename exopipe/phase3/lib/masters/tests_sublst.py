@@ -24,6 +24,10 @@ on a production file with no context (``exopipe3 verify <class> <file>``); the s
   sublst_loo_residual     *_resid_loo.fits (arm A): LOONCOAD = the independent count (>= 2, Q11), LOOMSTR, LSTBIN, no BINMSTR,
                           DURATION, and the pixel identity residual = stack - (M W - w a) / (W - w) on the pixels finite in stack
                           and master (Jupiter-masked pixels differ by construction: masters_sublst.LOO_IDENTITY)
+  sublst_nonmember_residual  *_resid_loo.fits of a night that is NOT in the window Master (lib/masters/sublst_nonmember.py,
+                          per hour): the Master's record does not weight the night, LOONCOAD = the Master's weighted nights,
+                          the residual cards, and the pixel identity residual = float32(stack - installed Master), EXACT
+                          (bit for bit; NaN exactly where the stack or the Master is NaN); the night not excluded now
   sublst_window_sample    the <LST> directory: production content test (a), sublst_reserve_test_windows.py, in place
 The sub-LST parent catalogues are class master_catalog (lib/masters/tests.py, shared with the deep tier). Wideband windows and
 production content test (b) (sublst_reserve_test_residuals.py) are frames' classes (refactor decision 6, crosscheck 1.1 #3, #13).
@@ -474,6 +478,38 @@ def _vetoed(lst, band, night):
 
 
 @content_test('sublst_window_master')
+def master_record_problems(h, rows, k):
+    """A window Master's header against its own weights record ``rows`` [(night, weight)], no other file read: COADDOP;
+    LSTWIN = window k; NCOADD = the weighted nights, at least LOO_MIN_WEIGHTED_NIGHTS of them, of at least 2 listed;
+    CONSTDIG = md5 of the sorted night list; HISTORY lists the weighted nights as constituents and the others as NOT in
+    the Master; a JUPMASK card. [] when consistent. ONE definition for the Master's content test (window_master_record)
+    and for the per-hour stage that subtracts an installed Master (sublst_nonmember.master_problems, gate N-8)."""
+    s = _sec()
+    nights = [n for n, _ in rows]
+    weighted = sorted(n for n, w in rows if w > 0)
+    problems = []
+    if h.get('COADDOP') != s.WINDOW_COADDOP:
+        problems.append(f'COADDOP {h.get("COADDOP")!r}')
+    if h.get('LSTWIN') != k:
+        problems.append(f'LSTWIN {h.get("LSTWIN")} != w{k}')
+    try:
+        ncoadd = int(h.get('NCOADD', -1))
+    except (TypeError, ValueError):                       # a card that is not a number: reported, not raised
+        ncoadd = -1
+    if ncoadd != len(weighted) or len(weighted) < s.LOO_MIN_WEIGHTED_NIGHTS or len(rows) < 2:
+        problems.append(f'NCOADD {h.get("NCOADD")} vs {len(weighted)} weighted of {len(rows)} nights')
+    if h.get('CONSTDIG') != hashlib.md5(','.join(sorted(nights)).encode()).hexdigest():
+        problems.append('CONSTDIG != md5 of the sorted night list')
+    hist = [str(x) for x in h.get('HISTORY', [])]
+    cons = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('window-Master constituent '))
+    notin = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('NOT in the Master'))
+    if cons != weighted or notin != sorted(n for n, w in rows if w <= 0):
+        problems.append(f'HISTORY constituents {len(cons)} / not-in {len(notin)} disagree with the weights record')
+    if 'JUPMASK' not in h:
+        problems.append('no JUPMASK card')
+    return problems
+
+
 def window_master_record(path, lst=None, subband=None, **ctx):
     """COADDOP; NCOADD = weighted nights >= LOO_MIN_WEIGHTED_NIGHTS; CONSTDIG = md5 of the sorted night list; HISTORY lists
     the weighted nights as constituents and the others as NOT in the Master; weights = the frozen deep record (in_master 0
@@ -489,24 +525,8 @@ def window_master_record(path, lst=None, subband=None, **ctx):
     if not os.path.isfile(wp):
         return False, None, f'no weights record {os.path.basename(wp)}'
     rows = _weights_csv(wp)
-    nights = [n for n, _ in rows]
     weighted = sorted(n for n, w in rows if w > 0)
-    problems = []
-    if h.get('COADDOP') != s.WINDOW_COADDOP:
-        problems.append(f'COADDOP {h.get("COADDOP")!r}')
-    if h.get('LSTWIN') != k:
-        problems.append(f'LSTWIN {h.get("LSTWIN")} != w{k}')
-    if int(h.get('NCOADD', -1)) != len(weighted) or len(weighted) < s.LOO_MIN_WEIGHTED_NIGHTS or len(rows) < 2:
-        problems.append(f'NCOADD {h.get("NCOADD")} vs {len(weighted)} weighted of {len(rows)} nights')
-    if h.get('CONSTDIG') != hashlib.md5(','.join(sorted(nights)).encode()).hexdigest():
-        problems.append('CONSTDIG != md5 of the sorted night list')
-    hist = [str(x) for x in h.get('HISTORY', [])]
-    cons = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('window-Master constituent '))
-    notin = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('NOT in the Master'))
-    if cons != weighted or notin != sorted(n for n, w in rows if w <= 0):
-        problems.append(f'HISTORY constituents {len(cons)} / not-in {len(notin)} disagree with the weights record')
-    if 'JUPMASK' not in h:
-        problems.append('no JUPMASK card')
+    problems = master_record_problems(h, rows, k)
     fr = _T_mod().frozen_weights(lst, band)
     if not os.path.isfile(fr):
         problems.append(f'frozen record {fr} missing')
@@ -590,6 +610,70 @@ def loo_residual_identity(path, master_root=None, **ctx):
             if frac < s.LOO_IDENTITY['frac_min']:
                 problems.append(f'identity holds on {frac:.4f} of {int(v.sum())} pixels < {s.LOO_IDENTITY["frac_min"]}')
     return _verdict(problems, frac, f'LOONCOAD {want}; identity on {frac if frac is None else round(frac, 5)} of pixels')
+
+
+@content_test('sublst_nonmember_residual')
+def nonmember_residual_identity(path, master_root=None, **ctx):
+    """The residual of a night that is not in the installed window Master (lib/masters/sublst_nonmember.py). The Master's
+    weights record does not weight the night (listed with weight 0, or not listed: a night newer than the Master);
+    LOONCOAD = the Master's weighted nights (none left out) and >= PER_NIGHT_MIN; LOOMSTR, LSTBIN, no BINMSTR, SUBTRACT,
+    FLUXBAKE carried, JUPMASK = the Master's, DURATION = DATE-END - DATE-OBS; the night is not excluded in
+    data_decisions.csv now; and the pixel identity, EXACT: residual = float32(stack - Master) formed in float64 from the
+    two float32 images, bit for bit, NaN exactly where the stack or the Master has no data (a non-member's residual does
+    not depend on the Jupiter mask or on the night weights, so there is no tolerance)."""
+    from exopipe.phase3.core import exclusions
+    s = _sec()
+    d = _parse_window(path)
+    if d['sfx'] != '_resid_loo':
+        return False, None, 'not a window residual name'
+    S_dir = os.path.dirname(os.path.abspath(path))
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(S_dir))))
+    mroot = master_root or os.path.join(root, f"{d['lst']}_masters")
+    mp = os.path.join(mroot, d['band'], d['S'], f"sublst_master_{d['lst']}_{d['band']}_{d['S']}_w{d['k']}.fits")
+    stack = path[:-len('_resid_loo.fits')] + '.fits'
+    for p in (mp, mp[:-5] + '_weights.csv', stack):
+        if not os.path.isfile(p):
+            return False, None, f'{p} missing'
+    h, hm = _hdr(path), _hdr(mp)
+    rows = dict(_weights_csv(mp[:-5] + '_weights.csv'))
+    problems = []
+    wn = rows.get(d['night'], 0.0)
+    if wn > 0:
+        problems.append(f'night {d["night"]} is a constituent of the window Master (weight {wn:g}): not a non-member residual')
+    nw = sum(1 for w in rows.values() if w > 0)
+    if int(h.get('LOONCOAD', -1)) != nw or nw < s.PER_NIGHT_MIN:
+        problems.append(f'LOONCOAD {h.get("LOONCOAD")} != {nw} weighted nights of the Master (>= {s.PER_NIGHT_MIN} required)')
+    if h.get('LOOMSTR') != os.path.basename(mp)[:68] or h.get('LSTBIN') != d['k'] or 'BINMSTR' in h:
+        problems.append(f'LOOMSTR {h.get("LOOMSTR")} / LSTBIN {h.get("LSTBIN")} / BINMSTR {"BINMSTR" in h}')
+    if str(h.get('SUBTRACT', '')) != 'leave-one-out window Master' or h.get('FLUXBAKE') is not True:
+        problems.append(f'SUBTRACT {h.get("SUBTRACT")!r} FLUXBAKE {h.get("FLUXBAKE")}')
+    if 'JUPMASK' not in h or h.get('JUPMASK') != hm.get('JUPMASK'):
+        problems.append(f'JUPMASK {h.get("JUPMASK")} != master {hm.get("JUPMASK")}')
+    try:
+        from astropy.time import Time
+        dur = round((Time(str(h['DATE-END'])) - Time(str(h['DATE-OBS']))).sec, 1)
+        if abs(float(h.get('DURATION', -1)) - dur) > 0.051:
+            problems.append(f'DURATION {h.get("DURATION")} != {dur}')
+    except Exception as e:
+        problems.append(f'DURATION not checkable ({e})')
+    if exclusions.load().is_excluded(d['lst'], d['band'], d['night']):
+        problems.append(f'{d["lst"]} {d["band"]} {d["night"]} is excluded in data_decisions.csv: no residual of it may exist')
+    a = np.asarray(_data(stack), dtype=np.float64)
+    M = np.asarray(_data(mp), dtype=np.float64)
+    r = np.asarray(_data(path), dtype=np.float32)
+    n_off = None
+    if not (a.shape == M.shape == r.shape):
+        problems.append(f'shapes {a.shape} {M.shape} {r.shape}')
+    else:
+        want = np.where(np.isfinite(a) & np.isfinite(M), a - M, np.nan).astype(np.float32)
+        nan_off = int(np.sum(np.isnan(want) != np.isnan(r)))
+        v = np.isfinite(want) & np.isfinite(r)
+        n_off = int(np.sum(want[v].view(np.uint32) != r[v].view(np.uint32)))      # bit patterns of the float32 values
+        if nan_off or n_off:
+            problems.append(f'{n_off} pixel(s) differ from float32(stack - Master), {nan_off} NaN position(s) differ')
+        if not v.any():
+            problems.append('no pixel with data in both the stack and the Master')
+    return _verdict(problems, n_off, f'LOONCOAD {nw}; residual = float32(stack - installed Master) on every pixel')
 
 
 # =====================================================================================================================

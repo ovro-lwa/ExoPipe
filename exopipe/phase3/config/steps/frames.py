@@ -121,10 +121,14 @@ class frames_sublst(_Section):
     content test (b). The sub-LST root is the run's --out (production paths.SUBLST_ROOT), laid out as production:
     <root>/<LST>/, <root>/<LST>_x2/, <root>/<LST>_masters/, <root>/tenmin_root_x2/."""
     # ---- stages ------------------------------------------------------------------------------------------------------
-    ORDER = ('stack', 'wideband', 'tree', 'searchframes', 'verify')   # run order of any --stages list (frames.md 1.2)
+    ORDER = ('stack', 'nonmember', 'wideband', 'tree', 'searchframes', 'verify')   # run order of any --stages list (frames.md 1.2)
     # default --stages per operating mode (DESIGN 12): 'per-hour' = --epochs <LST>_<date> (one night): the night's window
     # stacks; the x2 refine (`flow --tier sublst`, GPU) follows, then `frames --stages wideband,tree,verify` for the night.
     # 'intermittent' = --lsts <LST> (every night): after `masters --tier sublst --stages loo` and the refine.
+    # 'nonmember' (on request: --stages nonmember, or stack,nonmember): the arm-A residuals of ONE night that is not in the
+    # installed window Masters (Gregg 2026-11-12), night minus installed Master, through lib/masters/sublst_nonmember.py.
+    # It is in neither default: a night that IS in the Masters refuses there (its residual is the batch loo stage's), so
+    # adding it to the per-hour default is a decision about the per-hour chain, not made here.
     STAGES = {'per-hour': ('stack',), 'intermittent': ('wideband', 'tree', 'verify')}
     # ---- wideband (S-G8 .. S-G10) --------------------------------------------------------------------------------------
     GROUPS = ('Red', 'Green', 'Blue')       # nocat:256 (WBS); Full not built; Gregg 2026-10-01 'Go, Red/Green/Blue first'
