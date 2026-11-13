@@ -172,7 +172,9 @@ class catalog_conform(_Section):
                                                           # (Gregg 2026-11-12: a new night is judged by statistics frozen from earlier
                                                           # nights). Not a parity line: production writes no such record; every other
                                                           # file of the stage is byte-identical with the record on or off.
-    NOISE_MODULE_SHA1 = ('48f69a39c7f03185676c660f13933399453784c4',)   # live exopipe_ops p3s2_conform.py, 2026-11-13: the
+    NOISE_MODULE_SHA1 = ('48f69a39c7f03185676c660f13933399453784c4',    # exopipe_ops p3s2_conform.py until 2026-11-13 10:43 UTC
+                         '6b3fe52d842b76e1c687126f992cbd8e437c1b39')    # ... since then (exopipe_ops 5546c51: the 10-minute exclusion
+                                                          # test reads the snapshot tiers' scope per night; per row, no new statistic): the
                                                           # PATH-NORMALIZED sha1s of the module versions the FROZEN mode was checked for
                                                           # (one population statistic at 10 minutes: design section 2.2a). Another
                                                           # version REFUSES a frozen run until it is read for a second statistic of the
