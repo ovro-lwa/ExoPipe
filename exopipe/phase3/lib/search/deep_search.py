@@ -96,14 +96,19 @@ def _same_state_refused_v(base):
         return {r['date'] for r in csv.DictReader(f) if r.get('product') == 'V'}
 
 
-def _enough(n, need, what, count=True):
+def _enough(n, need, what, count=True, perhour=False):
     """WAVE2 B-30: True when a cell-median gate has its minimum count ``need``; else the skip is counted (never refused) -
-    ``count`` False: the gate guards no search of this unit (another Stokes' gate in a one-Stokes unit), nothing counted."""
+    ``count`` False: the gate guards no search of this unit (another Stokes' gate in a one-Stokes unit), nothing counted.
+    ``perhour`` (a deep append, included_dates): the skip is counted under its own key, fallbacks.SEARCH_GATE_SKIP_PERHOUR_FALLBACK."""
     if n >= need:
         return True
     if not count:
         return False
     from exopipe.phase3.core import fallback
+    if perhour:                                    # PER-HOUR: the base's recorded population is below the minimum
+        fallback.site('fallbacks.SEARCH_GATE_SKIP_PERHOUR_FALLBACK', f'{what}: {n} (needs {need}) - the gate is skipped (an append; '
+                      f'the population its base recorded)', n=1)
+        return False
     fallback.site('fallbacks.SEARCH_GATE_SKIP_FALLBACK', f'{what}: {n} (needs {need}) - the gate is skipped', n=1)
     return False
 ROWLINE_MIN = 5                                              # I finals on one pixel row +/-1 -> all removed (Gregg 2026-09-05)
@@ -1545,6 +1550,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     _refusal_columns(_refdir)
     from exopipe.phase3.lib.search import removal_rules as _RR         # WAVE2 B-02: every removal rule once, in the search
     _b02 = cadence == 'deep' and _RR.search_rules() == 'once-in-search'   # WAVE2 B-02 (step 3a; 'production': none of it)
+    _ph = cadence == 'deep' and bool(included_dates)   # PER-HOUR: a deep append, judged by its base's recorded populations
     from exopipe.phase3.lib.search import size_rule as _SZ              # WAVE2 SIZE-RULE (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-...):
     _szr = _SZ.engine_rule(cadence)                                     # WAVE2 SIZE-RULE: None = production's fixed rule; else the checked
     if _szr is not None:                                                # WAVE2 SIZE-RULE: the rule's floors are its 1.5 / 1.5 - another
@@ -1725,7 +1731,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _wr = {r['date']: float(r['qa3_rms_mjy']) for r in _wrows
                if r.get('qa3_rms_mjy') not in (None, '', 'nan')}
         _fin = sorted(v for v in _wr.values() if np.isfinite(v) and v > 0)
-        if _enough(len(_fin), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes I sanity gate, nights with a qa3 rms'):   # WAVE2 B-30
+        if _enough(len(_fin), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes I sanity gate, nights with a qa3 rms', perhour=_ph):   # WAVE2 B-30
             _med = _fin[len(_fin) // 2]
             _wr = {**_wr, **_ADS.values(_adm, 'qa3_rms_mjy')}                # WAVE2 D-ADMIT: an admitted night's own value, after the median
             _unm_qa3 = {d for d in dates if not (_wr.get(_kd(d), 0) > 0)}   # WAVE2 B-30: unmeasured (named after (1e))
@@ -1816,7 +1822,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
             _v = np.array(sorted(x for x in _rm.values() if np.isfinite(x) and x > 0))
             if not _enough(len(_v), SEARCH_TIER_MIN, f'{lst} {scope}: search-tier gate ({_st}), '      # WAVE2 B-30
-                           f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms', count=_st in stokes):
+                           f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms', count=_st in stokes, perhour=_ph):
                 print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}) SKIPPED - only {len(_v)} '
                       f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms (needs {SEARCH_TIER_MIN})')
                 continue
@@ -1861,7 +1867,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     beam_min=(10 ** 9 if os.environ.get('P3_BEAM_GATE_OFF') == '1' else BEAM_GATE_MIN_NIGHTS))
         _wbrd = dict(night_failed=_NGm.failed_dates, epoch_failed=_EGm.failed_dates, same_state_v=_same_state_refused_v,
                      excluded=lambda _l, _m, _n: is_excluded(_l, _m, _n, _excl), beam_area=_WBA.beam_area)
-        _recs = {_m: _WBA.member_record(f'{coadd_root()}/{lst}_{_m}', _m, lst, _wbp, _wbrd,
+        _wbph = {_kd(d) for d in included_dates} if _ph else None   # PER-HOUR: an append's searched nights - a member night of them
+        _recs = {_m: _WBA.member_record(f'{coadd_root()}/{lst}_{_m}', _m, lst, _wbp, _wbrd, perhour=_wbph,   # its tables miss refuses
                                         admitted=_ADS.nights(f'{coadd_root()}/{lst}_{_m}', _m, cadence))   # WAVE2 D-ADMIT: as the member's own search
                  for _m in _WBA.members(scope, _SBB)}
         _sci = {}
@@ -1996,7 +2003,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _bok = _bfz['outcome'] == 'applied'                            # skip is counted, as the whole-cell search counted it
             if not _bok:
                 _enough(_bfz['n'], BEAM_GATE_MIN_NIGHTS, f'{lst} {scope}: beam gate of an append, nights in the base attempt\'s '
-                        f'frozen population')
+                        f'frozen population', perhour=True)
         if not _bok:
             # GREGG 2026-09-11 ("Waive the floor. I want a complete Masters set"): a thin cell is
             # SEARCHED with the beam gate skipped LOUDLY (as the search-tier gate does below 5
@@ -2237,6 +2244,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # the V frames are refused from the V search (I uses the flux-alignment QA rms above)
     skip_V_dates = set()
     _vr, _vmed = {}, None                                              # WAVE2 B-02: read by step 3b below
+    _vfz = None                                                        # PER-HOUR: an append whose base recorded no V median is
+    if _b02 and included_dates and resid_V and _RR.base_vsanmed(run_root) is None:   # WAVE2 B-02: judged by its base's V sanity
+        from exopipe.phase3.lib.search import gate_population as _GP   # row - 'below-minimum' skips, counted; none / 'applied' refuse
+        _vfz = _GP.frozen_v_sanity(run_root, lst, scope, SANITY_I_X, SANITY_MIN_NIGHTS)   # (outside the try: a refusal, never caught)
     try:
         _vr = {}
         for _d, _rv in resid_V.items():
@@ -2253,14 +2264,19 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _b02 and included_dates:                                            # WAVE2 B-02 (step 3b): an append is judged with the
             _vb = _RR.base_vsanmed(run_root)                                   # WAVE2 B-02: V median its base recorded - the cell's
             _ok_v = _vb is not None                                            # WAVE2 B-02: (its own nights are not); none
-            if not _ok_v and resid_V:                                          # WAVE2 B-02: recorded - the skip counted, as the
-                from exopipe.phase3.core import fallback                       # WAVE2 B-02: gate's minimum count skips it
-                fallback.site('fallbacks.SEARCH_GATE_SKIP_FALLBACK', f'{lst} {scope}: Stokes V sanity gate of an append: its base '   # WAVE2 B-02
-                              f'recorded no V noise-rule median - the gate is skipped', n=1)   # WAVE2 B-02
+            if not _ok_v and resid_V:                                          # WAVE2 B-02: recorded - its base's recorded outcome
+                _enough(_vfz['n'], SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate of an append, nights in the base '   # PER-HOUR:
+                        f'attempt\'s recorded V population', perhour=True)   # 'below-minimum' (_vfz above): the skip counted, as the base's
         else:                                                                  # WAVE2 B-02
             _vb = None                                                         # WAVE2 B-02
             _ok_v = _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms',   # WAVE2 B-30
-                            count=bool(resid_V))         # an I-only unit (or no V epoch) has no V search for the gate to guard
+                            count=bool(resid_V), perhour=_ph)   # an I-only unit (or no V epoch) has no V search for the gate to guard
+        if cadence == 'deep' and not included_dates and resid_V:               # PER-HOUR: a whole-cell search records the V sanity
+            from exopipe.phase3.lib.search import gate_population as _GP       # gate's population for the appends it will judge (an
+            _vfn = [_d for _d, v in _vr.items() if np.isfinite(v) and v > 0 and _d not in _adm]   # WAVE2 D-ADMIT: the nights of _vf
+            _append_locked(f'{run_root}/{_GP.FILE}', _GP.COLS, [_GP.row(       # addition: nothing reads it here); thin: the recorded
+                lst, scope, 'v_sanity', _vfn, _vf[len(_vf) // 2] if _ok_v else None, SANITY_I_X, SANITY_MIN_NIGHTS,   # outcome
+                'applied' if _ok_v else 'below-minimum', 'search', _attempt)])   # 'below-minimum' with its n, never an absence
         if _ok_v:                                                              # WAVE2 B-02
             _vmed = _vb if _vb is not None else _vf[len(_vf) // 2]             # WAVE2 B-02
             skip_V_dates = {d for d, v in _vr.items() if v > SANITY_I_X * _vmed and d in dates}   # WAVE2 D-ADMIT: searched nights

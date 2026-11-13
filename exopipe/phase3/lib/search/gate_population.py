@@ -1,4 +1,4 @@
-"""The frozen population of the deep search's beam gate - recorded by a whole-cell search, read by an append.
+"""The frozen populations of the deep search's beam and V sanity gates - recorded by a whole-cell search, read by an append.
 
 R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2), Gregg: "Frozen statistics from earlier nights judge a new night, everywhere"
 - "Approved."; the deep tier's frozen state lives with the master's records and the published attempt
@@ -24,6 +24,13 @@ READ. An append (deep_search incremental mode: per hour, --nights) judges every 
 no row, two different rows, another factor or minimum, a base searched with the gate off, or a population holding a night
 data_decisions excludes now refuses the cell (a gate refuses; it never falls back to recomputing). Whole-cell searches read
 nothing (byte-identical gate; the row is an addition).
+
+THE V SANITY GATE ('v_sanity'). A whole-cell search that runs a V search records the gate's population too: the nights with a
+positive finite V frame rms (admitted nights excluded), its median (the engine's _vf[len // 2]) when the gate applied, the factor
+(SANITY_I_X) and the minimum (SANITY_MIN_NIGHTS). Under the B-02 rules an append judges by the median its base recorded in
+frame_noise.csv (removal_rules.base_vsanmed); when the base recorded none, this row tells why (frozen_v_sanity): 'below-minimum'
+(the base skipped the gate - the append skips it, counted, fallbacks.SEARCH_GATE_SKIP_PERHOUR_FALLBACK) from no row or an 'applied' row
+without a median, which refuse. Under the production rules an append recomputes the V median from its own frames, as before.
 """
 import csv
 import glob
@@ -32,7 +39,7 @@ import re
 
 FILE = 'gate_population.csv'
 COLS = ['lst', 'scope', 'gate', 'n', 'median', 'factor', 'min_nights', 'outcome', 'nights', 'basis', 'attempt']
-GATES = ('beam',)
+GATES = ('beam', 'v_sanity')
 OUTCOMES = ('applied', 'below-minimum', 'off')
 BASES = ('search', 'backfill')
 BACKFILL_STAGE = 'gate-backfill'
@@ -115,6 +122,28 @@ def frozen_beam(run_dir, lst, scope, factor, min_nights, excluded):
         raise RuntimeError(f'{lst} {scope}: BEAM GATE of an append - the frozen population holds night(s) {ex} that '
                            f'data_decisions.csv excludes now: a population holding them is not one to judge a new night by '
                            f'(exclusions are absolute; re-search the cell); REFUSING')
+    return fz
+
+
+def frozen_v_sanity(run_dir, lst, scope, factor, min_nights):
+    """The V sanity row of the base attempt of an append whose base carries no V noise-rule median in frame_noise.csv (module
+    docstring, THE V SANITY GATE): returned when it records 'below-minimum' (the base skipped the gate; the append skips it,
+    counted); RuntimeError naming why otherwise - no row (thin cannot be told from missing), an 'applied' row (the base applied
+    the gate, so its frame_noise.csv should carry the median), another factor or minimum, an inconsistent row."""
+    fz = read(run_dir, lst, scope, 'v_sanity')
+    if fz is None:
+        raise RuntimeError(f'{lst} {scope}: V SANITY GATE of an append - the base attempt recorded no V noise-rule median '
+                           f'(frame_noise.csv) and no V sanity population ({os.path.join(run_dir, FILE)}): a base below the '
+                           f'minimum cannot be told from a missing value (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)); '
+                           f're-search the cell; REFUSING')
+    if fz['factor'] != float(factor) or fz['min_nights'] != int(min_nights):
+        raise RuntimeError(f'{lst} {scope}: V SANITY GATE of an append - the base attempt ran it with factor {fz["factor"]:g} / '
+                           f'minimum {fz["min_nights"]}, this run with {float(factor):g} / {int(min_nights)}; REFUSING')
+    if fz['outcome'] != 'below-minimum' or fz['n'] != len(fz['nights']) or fz['n'] >= fz['min_nights'] \
+            or fz['median'] is not None:
+        raise RuntimeError(f'{fz["path"]}: {lst} {scope}: V SANITY GATE of an append - the base recorded the gate '
+                           f'{fz["outcome"]} (n {fz["n"]}, {len(fz["nights"])} nights, minimum {fz["min_nights"]}, median '
+                           f'{fz["median"]}) but its frame_noise.csv carries no V median - inconsistent records; REFUSING')
     return fz
 
 

@@ -146,13 +146,19 @@ def _beam_ok(path):
         return False
 
 
-def member_record(cell_dir, member, lst, p, readers, admitted=({}, {})):
+def member_record(cell_dir, member, lst, p, readers, admitted=({}, {}), perhour=None):
     """The deep search's admission of every night of one member cell, mirrored from its records (module docstring). p = dict(ratio,
     tier_min, sanity_x_both, sanity_x_i, sanity_min, beam_ratio, beam_min); readers = dict(night_failed(final_dir), epoch_failed(
     final_dir, band), excluded(lst, band, date) -> bool, same_state_v(cell_dir) -> set, beam_area(cell_dir, member, lst, date)).
     admitted = (accepted, refused) of lib/search/admitted.nights(cell_dir, member). Returns dict(present, both={night: [reasons]},
     i_only={night: [reasons]}, v_only={night: [reasons]}, tier={stokes: {night: (rms, thr)}}). REFUSES (RuntimeError naming the
-    member) when its records are missing or stale, or a night it would search has no readable beam."""
+    member) when its records are missing or stale, or a night it would search has no readable beam.
+    perhour (PER-HOUR, a deep append: the set of nights it searches; None = the whole-cell mirror, unchanged): the record also
+    holds unmeasured={night: {stokes: [reasons]}} - a present night of them that the member's sanity gate (weights.csv /
+    admissions.csv qa3_rms_mjy) or its search-tier gate in a Stokes (residuals_provisional.csv / admissions.csv stage-1 rms)
+    cannot judge for want of its value while that gate runs (its population at the minimum). refusals() refuses the wideband
+    night in that Stokes for it: a frozen value missing refuses, as the member's own search refuses an epoch it cannot measure
+    (fallbacks.SEARCH_SANITY_FALLBACK)."""
     final = os.path.join(cell_dir, 'coadd_final')
     wp = os.path.join(final, 'weights.csv')
     pp = os.path.join(cell_dir, 'residuals_provisional.csv')
@@ -223,7 +229,52 @@ def member_record(cell_dir, member, lst, p, readers, admitted=({}, {})):
         for d, a in areas.items():
             if a > p['beam_ratio'] * bmed:
                 both.setdefault(d, []).append('beam gate (area %.2f x the median)' % (a / bmed))
-    return dict(present=present, both=both, i_only=i_only, v_only=v_only, tier=tier)
+    out = dict(present=present, both=both, i_only=i_only, v_only=v_only, tier=tier)
+    if perhour is not None:                     # PER-HOUR: the searched nights each gate cannot judge (docstring)
+        out['unmeasured'] = unmeasured_nights(wrows, prows, adm, sorted(present & set(perhour)), p)
+    return out
+
+
+def _values(rows, col):
+    """{date: value} of one column as the gates read it (empty, 'nan' and unparsable left out)."""
+    out = {}
+    for r in rows:
+        if r.get(col) in (None, '', 'nan') or not r.get('date'):
+            continue
+        x = _num(r.get(col))
+        if x is not None:
+            out[r['date']] = x
+    return out
+
+
+def unmeasured_nights(wrows, prows, adm, nights, p):
+    """{night: {stokes: [reasons]}} of ``nights`` (present member nights an append searches) without the value a running gate
+    judges them by, as the engine names its own (deep_search: not (value > 0)): the sanity gate when weights.csv holds at least
+    p['sanity_min'] positive finite qa3 values (both Stokes); the search tier per Stokes when residuals_provisional.csv holds at
+    least p['tier_min'] in that Stokes. An admitted night's values are its admissions.csv row's (qa3_rms_mjy,
+    stage2_<s>_rms_mjy). A gate below its minimum judges nobody, so nobody is unmeasured by it."""
+    out = {}
+    pos = lambda x: x is not None and x > 0
+    qa3 = _values(wrows, 'qa3_rms_mjy')
+    if len([x for x in qa3.values() if math.isfinite(x) and x > 0]) >= p['sanity_min']:
+        for d in nights:
+            v = _num(adm[d].get('qa3_rms_mjy')) if d in adm else qa3.get(d)
+            if not pos(v):
+                for st in ('I', 'V'):
+                    out.setdefault(d, {}).setdefault(st, []).append(
+                        'member night unmeasured: no qa3 rms in %s (the sanity gate cannot judge it)'
+                        % ('admissions.csv' if d in adm else 'weights.csv'))
+    for st, col in (('I', 'i_rms_mjy'), ('V', 'v_rms_mjy')):
+        tv = _values(prows, col)
+        if len([x for x in tv.values() if math.isfinite(x) and x > 0]) < p['tier_min']:
+            continue
+        for d in nights:
+            v = _num(adm[d].get('stage2_%s_rms_mjy' % st.lower())) if d in adm else tv.get(d)
+            if not pos(v):
+                out.setdefault(d, {}).setdefault(st, []).append(
+                    'member night unmeasured: no %s stage-1 rms in %s (the search-tier gate cannot judge it)'
+                    % (st, 'admissions.csv' if d in adm else 'residuals_provisional.csv'))
+    return out
 
 
 def image_findings(lst, scope, sci_dir, night, ex18=None):
@@ -273,6 +324,7 @@ def refusals(lst, scope, nights, records, images):
                 t = rec['tier'].get(st, {}).get(night)
                 if t:
                     rs.append('search tier (%s stage-1 rms %.1f > %.1f mJy)' % (st, t[0], t[1]))
+                rs += (rec.get('unmeasured') or {}).get(night, {}).get(st, [])   # PER-HOUR (member_record perhour): none in batch
                 for r in rs:
                     out.setdefault((night, st), []).append((m, r))
     return out
