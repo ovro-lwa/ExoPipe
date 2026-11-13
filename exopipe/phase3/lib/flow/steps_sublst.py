@@ -14,6 +14,10 @@ Units:
                and the cards (G-C9).
   check_<LST>_<sb>[_<night>]   the same verdict on residuals already on disk (no GPU); runs only when refine did not run in
                the same invocation.
+  refine-nonmember_<LST>_<sb>_<night>   (stage refine-nonmember, on request only, named nights only) the x2 residuals of ONE
+               night that is not in the window Masters, aligned to and subtracted against the INSTALLED window Masters: no
+               other night's stack is read, one aligner process per subband (lib/flow/sublst_nonmember_refine.py; Gregg
+               2026-11-12: nights not in a Master are searched as non-members against the frozen Masters). The same verdict.
 """
 import hashlib
 import os
@@ -21,7 +25,7 @@ import os
 from exopipe.phase3.core.record import NoInput, Refusal
 from exopipe.phase3.lib.flow import steps_common as C
 
-STAGES = ('refine', 'check')
+STAGES = ('refine', 'refine-nonmember', 'check')
 REFINE_SCRIPT = ('clv15', 'phase3_sublst_refine.py')   # (legacy root, file); tests replace it with a stand-in
 
 
@@ -128,7 +132,7 @@ def drift_guard(note):
 
 def excluded_stacks(model, lst, sb):
     from exopipe.phase3.core import exclusions
-    E = exclusions.load()
+    E = exclusions.for_tier('sublst')
     nights = sorted({n for nd in model['stacks'].values() for n in nd})
     return E.path, [n for n in nights if E.is_excluded(lst, sb, n)]
 
@@ -288,6 +292,12 @@ def run(args, run):
         raise NoInput('no sub-LST item selected (give --lsts, --cells <LST>_<subband> or --epochs <LST>_<date>)')
     if run.dry_run:
         return plan(args, run, its, stages)
+    from exopipe.phase3.lib.flow import sublst_nonmember_refine as NMR
+    if NMR.STAGE in stages:
+        if 'refine' in stages:
+            raise Refusal(f'the stages refine and {NMR.STAGE} both write the x2 residuals of a night: give one of them')
+        NMR.run_stage(args, run, its, _stack_base(args))      # its units end with the verdict: no check unit after them
+        return None
     for lst, sb, nights in its:
         refined = False
         if 'refine' in stages:
@@ -338,6 +348,16 @@ def plan(args, run, its, stages):
     except Refusal as e:
         print(f'[plan] WOULD REFUSE - {e}')
         return 2
+    from exopipe.phase3.lib.flow import sublst_nonmember_refine as NMR
+    if NMR.STAGE in stages:
+        if 'refine' in stages:
+            print(f'[plan] WOULD REFUSE - the stages refine and {NMR.STAGE} both write the x2 residuals of a night')
+            return 2
+        try:
+            return NMR.plan_stage(args, run, its, base)
+        except Refusal as e:
+            print(f'[plan] WOULD REFUSE - {e}')
+            return 2
     gpus = C.parse_gpus(args.gpus) or C.site_gpu_ids()
     for lst, sb, nights in its:
         refusal = None

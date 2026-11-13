@@ -30,6 +30,10 @@ class paths(_Section):
     # reason. A pinned cell resolves to its pinned Phase-1 run only and refuses when that run is absent; no file = no pins
     # (core/inputs.phase1_frames). Gregg's rulings fill it, like data_decisions.csv: read only, protected.
     PHASE1_RUN_PINS = '/lustre/gh/main/exopipe_ops/snapshot_phase1_run_pins.csv'
+    # (LST, date) cells whose 10-s frames are the observatory GPU pipeline's (Gregg 2026-11-08/10; one 'LST DATE' per line, '#'
+    # comments): the snapshot tiers read their exclusions with scope 'snapshot-gpu' there (core/exclusions.PerNight; production
+    # coadd_full_pipeline.gpu_frame_cells, exopipe 36351ca, and clv15 phase3_snapshot_search.gpu_cells read the same file).
+    SNAPSHOT_GPU_FRAME_CELLS = '/lustre/gh/main/exopipe_ops/snapshot_gpu_frame_cells.txt'
     PHASE2_ROOT = '/lustre/pipeline/exopipe/phase2'
     PHASE3_ARCHIVE_ROOT = '/lustre/pipeline/exopipe/phase3'
     DATA_DECISIONS = '/lustre/gh/main/clv15/data_decisions.csv'    # Gregg's exclusions (read only; core/exclusions)
@@ -68,13 +72,27 @@ class paths(_Section):
 # parameter, the ruling ledger, the production-root guard, the list of pinned inputs (and, through it, each pinned
 # input) and the Phase-1 run-pin file. 'section.*' protects a whole section. Change them in this file, by a commit.
 PROTECTED = ('paths.DATA_DECISIONS', 'paths.FIX_LEDGER', 'paths.PRODUCTION_WRITES', 'paths.PRODUCTION_ROOTS',
-             'paths.PINNED_INPUTS', 'paths.PHASE1_RUN_PINS', 'exclusions.*')
+             'paths.PINNED_INPUTS', 'paths.PHASE1_RUN_PINS', 'paths.SNAPSHOT_GPU_FRAME_CELLS', 'exclusions.*')
 
 
 class exclusions(_Section):
     """Exclusion rule parameters (core/exclusions.py is the only reader of data_decisions.csv)."""
     SUBBAND_ONLY = ('18MHz',)      # subbands whose exclusion does NOT propagate to their band (Gregg 2026-06-29)
     PERBAND_TAG = '[PERBAND]'      # reason tag of a per-image row: excludes only its own scope (Gregg 2026-08-26)
+    # Scopes of a read (core/exclusions.py; production coadd_full_pipeline.EXCLUSION_SCOPES, exopipe a8b56d3): None = the
+    # default (the co-adds, the deep tier, every reader that names no scope); 'snapshot' = the snapshot (10-s, 1-minute) and
+    # sub-LST (10-minute) tiers on Phase 1 frames; 'snapshot-gpu' = those tiers on the observatory GPU pipeline's frames.
+    SCOPES = (None, 'snapshot', 'snapshot-gpu')
+    # reason tag of a snapshot-tier-only row (DECIDED-20261113-SNAPSHOT-OPEN-ITEMS-LOWSKY-CONFORMANCE-17H22H: the 10-s frames of
+    # the cell-band lost the sky while its deep night image is healthy): skipped by the default scope, honored by 'snapshot'
+    # and 'snapshot-gpu' (production SNAPSHOT_ONLY_EXCLUDE_TAG)
+    SNAPSHOT_ONLY_TAG = '[SNAPSHOT-TIERS-ONLY'
+    # reason tag of a row the snapshot tiers re-admit on the GPU pipeline's frames (R-GREGG-20261110-PEELING-READMIT-GPU-
+    # SNAPSHOT-ONLY-OWN-CLEAN-CELLS-KEEP-OWN-FRAMES): skipped by 'snapshot-gpu' only (production SNAPSHOT_GPU_READMIT_TAG)
+    GPU_READMIT_TAG = '[SNAPSHOT-GPU-READMITTED'
+    # tiers whose readers read the snapshot scopes per night (core/exclusions.for_tier: 'snapshot-gpu' on a GPU-frame cell,
+    # 'snapshot' on every other night); the deep tier reads the default
+    SNAPSHOT_SCOPE_TIERS = ('snapshot', 'sublst', '10s', '1min', '10min')
 
 
 class astrometry(_Section):

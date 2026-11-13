@@ -473,7 +473,7 @@ def sublst_no_excluded_epoch(path, **ctx):
     if not _is_sublst(path, ctx):
         return _NA
     from exopipe.phase3.core import exclusions
-    ex = exclusions.load()
+    ex = exclusions.for_tier('sublst')
     hdr, rows = _rows(path)
     bad = sorted({(r['lst'], r['band'], r['date'][:10]) for r in rows if ex.is_excluded(r['lst'], r['band'], r['date'][:10])})
     return bool(rows) and not bad, len(rows), (f'{len(rows)} rows, {len(bad)} (LST, band, night) excluded now'
