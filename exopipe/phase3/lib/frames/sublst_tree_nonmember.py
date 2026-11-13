@@ -28,9 +28,19 @@ rows without a link, or a map with PBNNIGHT one short, and the next run of the s
 interrupted before frames.csv is replaced leaves the tree as it was. One writer per band's tree at a time: the lease
 <tree>/.leases/<LST>_<band> (the Lease class of lib/search/tier_sublst.py), which the batch stage `tree` takes too.
 Production's own chain (sublst_run_lst_nocat.sh) runs the builder without it, and the search does not take it: never run
-this unit on a tree that chain is rebuilding or a search is reading.
+this unit on a tree that chain is rebuilding. A per-hour search of ANOTHER night may read the tree meanwhile: it searches
+the links of its own night only (lib/search/tier_sublst.preflight, included dates), this unit never touches a link of
+another night, and frames.csv and the PB_bin maps are replaced atomically with unchanged pixels. A search during a BATCH
+rebuild of the band's tree is not covered (the builder empties the tree; the search does not look at the lease).
 The unit reads the night's inputs under this root (--out) only, in the dry run and in the run: --sublst-mirror, which
 links production's inputs of every night for the batch stage, does not apply to it.
+
+Which bands get a unit (owed_bands): with --scopes, every band named (a band without a residual refuses T-3: a named band
+is always judged). Without --scopes - the per-hour chain - the bands that owe the night an entry by the night's own
+records under this root: a subband when the night's job plan (the stack's admit record) holds a stack job of it; a
+wideband group unless the night's wideband unit <LST>_wideband_<G>_<night> ended no-input (the band rule or an exclusion
+left the group without a window of the night). The bands left out are named in the log with the reason, never dropped
+silently; a root without a job plan of the night keeps every band (each then refuses or enters on its own evidence).
 
 Inputs (read only): <root>/<LST>_x2/<LST>_<night>/<band>/<S>/sublst_<LST>_<night>_<band>_<S>_w<k>_resid_loo.fits (S = I,
 V), <root>/<LST>/<LST>_<night>/<band>/I/sublst_<LST>_<night>_<band>_I_w<k>_pb.fits, the frozen deep weights of the band,
@@ -375,9 +385,47 @@ def unit_inputs(ctx, a, lst, band, ex, with_gate=True):
     return gate, sorted(set(a['inputs']) | {p for p in more if p and os.path.exists(p)})
 
 
+def owed_bands(ctx, lst, night, bands):
+    """The bands of the DEFAULT selection (no --scopes) that owe one night a tree entry, by the night's own records under
+    this root: (owed [band], left out [(band, why)], the evidence in words).
+      - a subband is owed when the night's job plan (the stack's admit record, lib/masters/sublst_nonmember.night_plan)
+        holds a stack job of it; a subband the admission left out (excluded, or no usable frames) has no residual to enter;
+      - a wideband group is owed unless the record of the night's wideband unit <LST>_wideband_<G>_<night> says no-input
+        (the band rule or an exclusion left the group without a window of the night); a group whose unit is done,
+        refused, in error or absent keeps its unit here, which then enters the night or refuses (T-3) on what it finds;
+      - a root without a job plan of the night (the stack ran elsewhere, or has not run) keeps every band."""
+    from exopipe.phase3.core import record
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    from exopipe.phase3.lib.masters import tier_sublst as TS
+    try:
+        jobs, _files, _how = NM.night_plan(ctx.run, TS.Opts.from_args(ctx.args), lst, night)
+    except (Refusal, SystemExit) as e:
+        return list(bands), [], f'no job plan of the night under this root, so every band has a unit ({str(e)[:200]})'
+    cell = f'{lst}_{night}'
+    stacked = {sb for c_, sb, _st, _cr in (jobs or []) if c_ == cell}
+    subbands = set(ctx.C.instrument.ALL_SUBBANDS)
+    owed, rest = [], []
+    for b in bands:
+        if b in subbands:
+            if b in stacked:
+                owed.append(b)
+            else:
+                rest.append((b, 'the night\'s job plan holds no stack job of the subband (the admission left it out)'))
+            continue
+        wb = f'{lst}_wideband_{b}_{night}'
+        rec = record.load_record(ctx.root, 'frames', wb)
+        if rec and rec.get('status') == 'no-input':
+            rest.append((b, f'the night\'s wideband unit {wb} ended no-input ({str(rec.get("reason") or "")[:200]})'))
+        else:
+            owed.append(b)
+    return owed, rest, f'the night\'s job plan ({len(stacked)} subband(s) with a stack job) and its wideband unit records'
+
+
 def stage(ctx, lst, nights):
-    """Run (or plan) the stage for the named nights of an LST hour: one unit per band of TREE_BANDS in the selection (a
-    band without an x2 residual of the night refuses T-3: it is recorded, never left out)."""
+    """Run (or plan) the stage for the named nights of an LST hour: one unit per band of TREE_BANDS in the selection.
+    With --scopes every named band has a unit (a band without an x2 residual of the night refuses T-3: it is recorded,
+    never left out); without, the bands the night owes (owed_bands), the others named in the log."""
     from exopipe.phase3.lib.frames import tier_sublst as F
     if not nights:
         F.unit_refused(ctx.run, f'{lst}_{STAGE}', f'the {STAGE} stage adds ONE named night to the tree: give --epochs '
@@ -390,8 +438,16 @@ def stage(ctx, lst, nights):
     resume = getattr(ctx.args, 'resume', False) and not getattr(ctx.args, 'fresh', False)
     bands = [b for b in S.TREE_BANDS if not ctx.scopes or b in ctx.scopes]
     x2, root = ctx.x2_dir(lst), ctx.lst_dir(lst)      # this root only, in the plan and in the run (no --sublst-mirror)
+    selection = bands
     for night in nights:
         ex = F.exclusions()
+        bands = selection
+        if not ctx.scopes:
+            bands, rest, how = owed_bands(ctx, lst, night, selection)
+            out, pre = (F.plan, '  ') if ctx.dry else (F.say, 'frames: ')
+            out(f'{pre}{STAGE} {lst}_{night}: {len(bands)} of {len(selection)} band(s) owe the night a tree entry - {how}')
+            for b, why in rest:
+                out(f'{pre}  {b}: no unit - {why}')
         if ctx.dry:
             F.plan(f'  STAGE {STAGE} {lst}_{night}: {len(bands)} band(s); x2 residuals {x2}; window PBs {root}; tree {tree}'
                    + ('; --sublst-mirror does not apply (the night\'s inputs are read under this root only)'

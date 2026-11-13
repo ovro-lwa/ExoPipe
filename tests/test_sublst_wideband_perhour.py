@@ -260,6 +260,33 @@ def test_the_dry_run_reads_the_same_evidence():
         assert not os.path.exists(os.path.join(t.root, '_records', 'frames', f'{LST}_wideband_{G}_{NIGHT}.json'))
 
 
+def test_the_per_hour_chain_names_the_ten_minute_stages_in_order():
+    """runner.CHAINS['epoch']: the 10-minute tier of ONE night is the list line + stack + arm A, the x2-aligned residual,
+    the wideband groups + the tree entry, then the search and the catalog - each stage named (the tier's defaults are the
+    stack alone and the LST-wide refine), each a stage the step knows, in the tier's own order."""
+    from exopipe.phase3.core import runner
+    from exopipe.phase3.steps import flow as FLOW
+    steps = runner.chain_steps('epoch')
+    ten = [(i, a) for i, a in enumerate(steps) if '--tier' in a and a[a.index('--tier') + 1] == 'sublst']
+    assert [a[0] for _, a in ten] == ['frames', 'flow', 'frames', 'search', 'catalog'], [a[:3] for _, a in ten]
+    assert [i for i, _ in ten] == list(range(ten[0][0], ten[0][0] + 5)), 'the 10-minute steps are consecutive'
+    assert all(a[a.index('--epochs') + 1] == '{item}' for _, a in ten)
+
+    def stages(a):
+        return a[a.index('--stages') + 1].split(',') if '--stages' in a else None
+
+    got = [stages(a) for _, a in ten]
+    assert got == [['nonmember-list', 'stack', 'nonmember'], ['refine-nonmember'], ['wideband', 'tree-nonmember'], None,
+                   None], got
+    S = CFG.frames_sublst
+    for st in (got[0], got[2]):
+        args = argparse.Namespace(stages=','.join(st), from_stage=None, until_stage=None)
+        assert FT.requested_stages(args, S.ORDER, S.STAGES['per-hour']) == st, st          # known, and in pipeline order
+    assert got[1][0] in FLOW.STAGES['sublst'] and got[1][0] not in CFG.flow.DEFAULT_STAGES['sublst']
+    # the defaults would not make the night's residuals or its tree entry: the stages must be named
+    assert tuple(S.STAGES['per-hour']) == ('stack',)
+
+
 def main(argv):
     if _IMPORT_ERROR is not None:
         print(f'imports missing: {type(_IMPORT_ERROR).__name__}: {_IMPORT_ERROR}')
