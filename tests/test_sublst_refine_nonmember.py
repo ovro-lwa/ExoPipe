@@ -13,6 +13,7 @@ Run: python3 tests/test_sublst_refine_nonmember.py   (also collected by pytest)
 import argparse
 import contextlib
 import glob
+import io
 import os
 import re
 import sys
@@ -430,7 +431,8 @@ def _const_flow(dx, dy):
 
 
 def test_refusals_before_anything_is_written():
-    # a night that IS a member of an installed window Master: the batch stage's work, never this unit's
+    # a night that IS a member of an installed window Master: the batch chain's work, never this unit's - no-input (Gregg
+    # 2026-11-13: the per-hour chain goes on)
     with stage() as s:
         t = s.t
         for S in t.stokes:
@@ -438,7 +440,8 @@ def test_refusals_before_anything_is_written():
                 t.write_master('18MHz', S, k, rows=list(zip(F.MEMBERS, F.WEIGHTS)) + [(NEW, 0.4)])
         r = s.run()
         u = s.unit(r, '18MHz')
-        assert u.status == 'refused' and 'N-5' in u.reason and R.BATCH_STAGE in u.reason, u.reason
+        assert u.status == 'no-input' and 'IS in the installed window Master' in u.reason, (u.status, u.reason)
+        assert "'sublst-lst'" in u.reason and len(u.meta['master_member']) == 12, u.meta
         assert s.unit(r, '73MHz').status == 'done'                           # the other subband is not held back
         assert len(s.calls) == 1 and not os.path.exists(s.log('18MHz')) and len(s.on_disk()) == 8
     # an excluded night: no aligner, no file
@@ -674,8 +677,11 @@ def test_dry_run_plans_and_writes_nothing():
         for S in s.t.stokes:
             for k in range(6):
                 s.t.write_master('18MHz', S, k, rows=list(zip(F.MEMBERS, F.WEIGHTS)) + [(NEW, 0.4)])
-        _, rc = s.run(dry=True)
-        assert rc == 2 and not s.calls                                       # a gate that would refuse is the dry run's exit 2
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _, rc = s.run(dry=True)
+        assert rc == 0 and not s.calls, rc                                   # a member night: no-input, not a refusal
+        assert 'NO-INPUT - ' in out.getvalue() and 'IS in the installed window Master' in out.getvalue(), out.getvalue()
 
 
 # =====================================================================================================================

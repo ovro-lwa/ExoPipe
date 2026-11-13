@@ -220,6 +220,18 @@ def test_sublst_preflight():
     assert p['refuse'] and 'published attempt' in p['refuse']
     p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-05')
     assert p['noinput'] and 'no window' in p['noinput']
+    # per-hour: a night IN the window Masters of the band -> no-input before the per-hour gates (Gregg 2026-11-13)
+    wp = os.path.join(root, '09h_masters', '18MHz', 'V', 'sublst_master_09h_18MHz_V_w1_weights.csv')
+    os.makedirs(os.path.dirname(wp))
+    with open(wp, 'w') as f:
+        f.write('night,weight\n2025-01-01,0.0\n2025-01-02,0.5\n')
+    p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-02')
+    assert not p['refuse'] and p['noinput'] and 'IS in the installed window Master' in p['noinput'] \
+        and 'w1 Stokes V weight 0.5' in p['noinput'], (p['refuse'], p['noinput'])
+    assert ('epoch.not_in_window_masters', False) in [g[:2] for g in p['gates']], p['gates']
+    p = TS.preflight(ns(), run, '09h_18MHz', '09h', '18MHz', 'I', '2025-01-01')       # listed at weight 0: not a member
+    assert p['refuse'] and 'published attempt' in p['refuse'], p['refuse']
+    shutil.rmtree(os.path.join(root, '09h_masters'))
     # a superseded master: refused (E2)
     _fits(os.path.join(root, 'coadd_09h', '09h_18MHz', 'coadd_final', 'I_deep_Taper_R0_18MHz.fits'), np.ones((8, 8)),
           COADDOP='ivw-mean-v2', **_wcs_cards(8))

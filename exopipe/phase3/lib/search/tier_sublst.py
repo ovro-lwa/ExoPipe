@@ -18,7 +18,9 @@ Two operating modes (DESIGN 12):
   window keys (every admission gate still runs on the whole cell), appended to a copy of the cell's PUBLISHED records
   (catalogue, ledgers, refusal records, persisted sigma-stack maps); the publish is transactional (the replaced cumulative
   files are backed up under <out>/_superseded/, the published cell is verified, and a failure rolls it back). Needs the
-  cell's full search published first; a night already in the published image ledger refuses. search_sublst.EPOCHS_MODE =
+  cell's full search published first; a night already in the published image ledger refuses. A night IN the window
+  Masters of the band (lib/masters/sublst_nonmember.band_member; a group when any member subband is) ends no-input
+  (gate epoch.not_in_window_masters): the cell's full search is its search (Gregg 2026-11-13). search_sublst.EPOCHS_MODE =
   'refuse' turns per-hour mode off (spec G4). Two searches of ONE published cell and Stokes (per-hour or full) never
   overlap: each holds the cell's lease (held_cell_lease) from before its seed until after its publish, and plans again
   once it holds the lease, from the cell as the last search left it. At the publish the unit must still hold its lease,
@@ -783,6 +785,14 @@ def preflight(args, run, cell, lst, band, stokes, date):
             plan['refuse'] = f'G2: the size / axis rule cannot be applied: {why_}'
             return plan
     if date:                              # per-hour (incremental) mode
+        # a night IN the window Masters of the band (a group: of any member subband) was searched by the cell's full run
+        # and is the batch chain's: no-input, the per-hour chain goes on (Gregg 2026-11-13)
+        from exopipe.phase3.lib.masters import sublst_nonmember as NM
+        bm = NM.band_member(c.paths.SUBLST_ROOT, lst, band, date)
+        if not gate('epoch.not_in_window_masters', not bm,
+                    NM.band_member_why(lst, date, band, bm) if bm else 'the night is in no window Master of the band'):
+            plan['noinput'] = NM.band_member_why(lst, date, band, bm)
+            return plan
         inc = [k for k in keys if k[:10] == date]
         plan['included_dates'] = inc
         if not gate('epoch.windows', bool(inc), f'{len(inc)} windows of {date}'):

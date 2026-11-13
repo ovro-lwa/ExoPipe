@@ -49,7 +49,9 @@ line (the frames tier's refine gate refuses the subband) until the unit has run 
 --resume skips a unit whose record is done and still describes what an assessment finds now.
 
 Failure modes (exit 2 = refused; every gate is checked before anything is moved or written):
-  N-1..N-10  as the arm-A unit; N-5 = the night IS a member of an installed window Master: the batch stage `refine`.
+  N-1..N-10  as the arm-A unit; N-5 = the night IS a member of an installed window Master: the batch stage `refine` -
+         checked first, the unit ends NO-INPUT (exit 3; Gregg 2026-11-13: a member night's 10-minute products stay the
+         batch chain's), its record names the member windows (meta master_member).
   N-11   a Stokes V window stack of the night without the night's Stokes I stack of the window (nothing registers it).
   N-12   the residuals the unit would write are not the ones the verdict's independent model owes, or the weighted
          nights of an installed Master's weights record differ from the model's count (a member night's stacks moved
@@ -382,6 +384,10 @@ def refine_unit(u, args, run, lst, sb, night, base, plan_files=()):
     SS.drift_guard(u.note)
     # ---- every gate, before anything is moved or written: the arm-A unit's on the same stack and installed Masters,
     #      N-11 and N-12, then the GPU, its lock, the scratch root, the aligner's interpreter, G-C5 and the log ----------
+    member = None if NM._exclusion_gate(lst, sb, night)[1] else NM.master_member(base, lst, sb, night)
+    if member:                                            # N-5 first: no-input, the batch chain's (Gregg 2026-11-13)
+        u.meta['master_member'] = [list(x) for x in member]
+        raise NoInput(NM.member_why(lst, night, sb, member))
     why, a = assess(run, base, lst, night, sb)
     if a is not None:
         for p in NM._inputs(a, plan_files):
@@ -667,6 +673,11 @@ def plan_stage(args, run, its, base):
                 print(f'[plan]   {name}: valid by its record, WOULD BE SKIPPED (--resume)')
                 continue
             g = '?'
+            from exopipe.phase3.lib.masters import sublst_nonmember as NM
+            member = None if NM._exclusion_gate(lst, sb, night)[1] else NM.master_member(base, lst, sb, night)
+            if member:
+                print(f'[plan]   {name}: NO-INPUT - {NM.member_why(lst, night, sb, member)}')
+                continue
             try:
                 why, a = assess(run, base, lst, night, sb)
                 if not why:
