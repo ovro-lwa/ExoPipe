@@ -976,9 +976,10 @@ def nonmember_admission(out_root, coadd, cell, lst, band, date):
     engine's own rule for it stands). Else a dict: entry_ok / entry = the night's own tree-entry record of the band (frames
     stage tree-nonmember, status done) - the night is admitted to the search by that record, never by a deep verdict; value /
     value_text = the night's alignment rms in mJy (qa3_rms_mjy) from the deep cell's coadd_final/admissions.csv row of the
-    night, whatever that row's verdict - the same kind of value a build night has in weights.csv; None when there is no row
-    or the row holds no value (a night refused at alignment; every night of a deep cell that carries the master dewarp,
-    which the deep admit refuses whole: named, so a census can count it)."""
+    night, whatever that row's verdict - the same kind of value a build night has in weights.csv; None when there is no row,
+    when the row was made into another Master than the installed one (reference_constdig, reference_md5), or when the row
+    holds no value (a night refused at alignment; every night of a deep cell that carries the master dewarp, which the deep
+    admit refuses whole: named, so a census can count it)."""
     from exopipe.phase3.core import record
     from exopipe.phase3.lib.frames import sublst_tree_nonmember as TN
     from exopipe.phase3.lib.masters import admit as A
@@ -1005,7 +1006,19 @@ def nonmember_admission(out_root, coadd, cell, lst, band, date):
                              + (' - DEEP CELL WITH THE MASTER DEWARP (MDWARP): the deep admit refuses the whole cell '
                                 '(admit.mdwarp), so no night of it has a row' if dewarped else ''))
         return out
-    r = rows[-1]
+    # a row counts only when it was made into the INSTALLED Master (admit.master_identity: its CONSTDIG and data md5 - the
+    # rule of admit.admitted_rows and admitted_nights): a value measured against an earlier Master is not one to compare
+    # with this build's nights (code review of pull request 30)
+    ident = A.master_identity(deep)
+    mine = [r for r in rows if ident[0] and (r.get('reference_constdig'), r.get('reference_md5')) == ident]
+    if not mine:
+        o = rows[-1]
+        out['value_text'] = (f'the row of {date} in {adm} was made into another Master than the installed one (row: CONSTDIG '
+                             f'{o.get("reference_constdig")!r}, data md5 {str(o.get("reference_md5") or "")[:12]!r}; '
+                             f'installed: {ident[0]!r}, {ident[1][:12]!r}): a value measured against another Master is '
+                             f'not read')
+        return out
+    r = mine[-1]
     try:
         v = float(r.get('qa3_rms_mjy') or 'nan')
     except ValueError:
@@ -1508,7 +1521,9 @@ def products(root, plan):
     unit = dict(tier=TIER, stokes=S, cell=cell)
     rr = _run_root(root, label)
     out = []
+    from exopipe.phase3.lib.search import gate_population as GP
     for name, cls in (('master_catalog.csv', 'detections'), ('v_deep_ledger.csv', 'gate_ledger'),
+                      (GP.FILE, 'gate_population'),            # the frozen populations: tested here as in the deep step
                       ('v_deep_images.csv', 'image_ledger'), ('search_table_record.csv', 'search_table_record')):   # the table's
         p = os.path.join(rr, name)                                                                                # record: 55b0263
         if os.path.exists(p):

@@ -750,8 +750,9 @@ def medians_and_cards(path, **ctx):
 
 @content_test('gate_population')
 def frozen_gate_population(path, cell=None, **ctx):
-    """gate_population.csv (lib/search/gate_population: the beam gate's population a whole-cell search judged by, read by an
-    append): COLS; one cell (``cell`` when given); per gate one content (the rows of a base and of a re-written backfill agree);
+    """gate_population.csv (lib/search/gate_population: the populations a whole-cell search judged by, read by an append -
+    the beam gate at both cadences, and at 10 minutes the search-tier gate per Stokes and the V sanity gate, whose "nights"
+    are window keys): COLS; one cell (``cell`` when given); per gate one content (the rows of a base and of a re-written backfill agree);
     n = the nights listed (dates, no repeat); 'applied' exactly when n reaches min_nights, with a positive finite median,
     'below-minimum' / 'off' without one ('off': no nights); the attempt's beam refusals (refusals/<cell>_beam_excluded.csv)
     were made with the row's factor, and none recorded under 'below-minimum' or 'off'."""
