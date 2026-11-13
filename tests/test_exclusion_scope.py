@@ -271,8 +271,10 @@ def test_tenmin_search_read():
     i = src.index('def run_deep_cell(')
     j = min([k for k in (src.find('\ndef ', i + 1), src.find('\nclass ', i + 1)) if k > 0] or [len(src)])
     body = src[i:j]
-    assert ("if cadence == '10min':\n        from exopipe.phase3.lib.masters.coadd import snapshot_exclusion_test\n"
-            "        _xtest = snapshot_exclusion_test()\n    else:\n        _excl = load_exclusions()\n") in body, \
+    assert ("if cadence == '10min':\n        from exopipe.phase3.core.exclusions import refuse_frame_overrides\n"
+            "        from exopipe.phase3.lib.masters.coadd import snapshot_exclusion_test\n"
+            "        refuse_frame_overrides()" in body
+            and "        _xtest = snapshot_exclusion_test()\n    else:\n        _excl = load_exclusions()\n" in body), \
         'run_deep_cell: the 10-minute read is not snapshot_exclusion_test (deep: the default)'
     assert 'is_excluded(lst, scope, _kd(d), _excl)' not in body, 'run_deep_cell: a night test bypasses the cadence read'
 
@@ -335,8 +337,43 @@ def test_production_agrees():
     print(f'      production coadd_full_pipeline: same key sets per scope and same {len(grid)} verdicts per scope and per night')
 
 
+def test_overrides_and_fingerprint():
+    """An environment override of the GPU-frame cell list or frame root refuses the per-night read (the in-place engines
+    would follow it, core.exclusions would not); the per-night fingerprint changes with the cell set."""
+    fx = _fixture()
+    saved = {k: os.environ.pop(k, None) for k in ('P3_SNAP_GPU_CELLS', 'P3_SNAP_PHASE1_ROOT')}
+    try:
+        for var, val in (('P3_SNAP_GPU_CELLS', fx['gpu']),
+                         ('P3_SNAP_PHASE1_ROOT', '/lustre/pipeline/snapshots_gpu_pipeline')):
+            os.environ[var] = val
+            try:
+                E.PerNight(fx['tagged'], fresh=True)
+            except Refusal:
+                pass
+            else:
+                raise AssertionError(f'{var}={val}: the per-night read did not refuse')
+            del os.environ[var]
+        os.environ['P3_SNAP_GPU_CELLS'] = CFG.paths.SNAPSHOT_GPU_FRAME_CELLS     # the configured list itself: no refusal
+        E.refuse_frame_overrides()
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    cells = sorted(_gpu_cells())
+    a = E.PerNight(fx['tagged'], gpu_cells=cells, fresh=True).fingerprint()
+    b = E.PerNight(fx['tagged'], gpu_cells=cells[1:], fresh=True).fingerprint()
+    snap = E.Exclusions(fx['tagged'], scope='snapshot').fingerprint()
+    assert all(a[k] == b[k] == snap[k] for k in snap), 'the per-night fingerprint lost the list fingerprint'
+    assert a['gpu_frame_cells'] != b['gpu_frame_cells'], 'the cell set is not fingerprinted'
+    assert a['n_gpu_frame_cells'] == len(cells), a
+    assert a == E.PerNight(fx['tagged'], gpu_cells=list(reversed(cells)), fresh=True).fingerprint(), 'order-dependent'
+    print(f'      overrides refuse; fingerprint covers the {len(cells)} GPU-frame cells')
+
+
 TESTS = [test_default_skips_tagged_row, test_snapshot_scopes_honor_tagged_row, test_band_rule, test_unknown_scope_refuses,
-         test_for_tier, test_core_and_coadd_agree, test_tenmin_search_read, test_constants_mirror, test_production_agrees]
+         test_for_tier, test_core_and_coadd_agree, test_tenmin_search_read, test_constants_mirror, test_production_agrees,
+         test_overrides_and_fingerprint]
 
 
 def main():

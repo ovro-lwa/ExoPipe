@@ -11,10 +11,11 @@ tier only (snapshot_serve_exclusion_gate.py, f1996ee). Its row keying (cand_id '
              else source_id as a page id 'Jname_LST_date[Tnn]_band' (the pages_index rows); queue ids are page ids too
 
 Verdicts come from core.exclusions (a FRESH read, never the process cache: the list is read now), as the page's tier reads
-it (core.exclusions.for_tier: the snapshot tiers' per-night read - 'snapshot-gpu' on a GPU-frame cell, else 'snapshot' - for
-the snapshot, forced snapshot and sub-LST pages, the default for the deep pages; 2026-11-13, the [SNAPSHOT-TIERS-ONLY rows
-exclude in the snapshot tiers only). For the snapshot tier the in-place gate (production's reader,
-coadd_full_pipeline.is_excluded) also runs, and the two readers must agree (a disagreement refuses with both lists). Whether a hit REFUSES is config serve.EXCLUSION_GATE_TIERS; for the keys not in
+it (``fresh_exclusions``: a snapshot run - the snapshot and snapshot forced pages - flat 'snapshot-gpu', as production's
+gate and product readers; the sub-LST pages the 10-minute tier's per-night read, core.exclusions.for_tier; the deep pages
+the default; 2026-11-13, the [SNAPSHOT-TIERS-ONLY rows exclude in the snapshot tiers only). For the snapshot tier the
+in-place gate (production's reader, coadd_full_pipeline.is_excluded) also runs, and the two readers must agree (a
+disagreement refuses with both lists). Whether a hit REFUSES is config serve.EXCLUSION_GATE_TIERS; for the keys not in
 it the hits are reported (unit notes, dry-run plan). Gregg 2026-10-14 approved enforcing it for the deep and sub-LST pages
 and the snapshot forced pages too (R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS); production ('snapshot' only)
 is the parity file's value.
@@ -96,8 +97,10 @@ def page_id_key(pid):
 
 
 def fresh_exclusions(tier=None):
-    from exopipe.phase3.core.exclusions import for_tier
-    return for_tier(tier, fresh=True)
+    """The read of a page tier's gate, fresh: a snapshot run (the snapshot and snapshot forced pages) flat 'snapshot-gpu', as
+    the in-place gate it must agree with (snapshot_serve_exclusion_gate.py:62); any other tier core.exclusions.for_tier."""
+    from exopipe.phase3.core.exclusions import Exclusions, for_tier
+    return Exclusions(scope='snapshot-gpu') if tier == 'snapshot' else for_tier(tier, fresh=True)
 
 
 class Scan:

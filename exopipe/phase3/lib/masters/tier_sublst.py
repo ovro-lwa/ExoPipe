@@ -1143,10 +1143,13 @@ def admit_plan(lst, cells, subbands_=None, nonmember=None):
     import phase3_snapshot_cube as CB
     from phase3_snapshot_search import night_verdict, frames_from_gpu
     from phase3_tier_rules import flux_scale_failed
+    from exopipe.phase3.core.exclusions import refuse_frame_overrides
     from exopipe.phase3.lib.masters.coadd import load_exclusions, is_excluded
     s = _sec()
     # nocat:103 (exopipe_ops c845cd6, d57b66f): per cell - 'snapshot-gpu' on a GPU-frame cell (Gregg 2026-11-10), else
-    # 'snapshot' (+ the [SNAPSHOT-TIERS-ONLY rows, 2026-11-13)
+    # 'snapshot' (+ the [SNAPSHOT-TIERS-ONLY rows, 2026-11-13); frames_from_gpu follows the environment, so an override
+    # refuses (the stack gate and leave-one-out read core.exclusions' cell list)
+    refuse_frame_overrides()
     excl = load_exclusions(scope='snapshot'); excl_g = load_exclusions(scope='snapshot-gpu')
     CUBES, DEEPFLOW = cube_root(), deepflow_root()
     INTEGRATION_S = s.INTEGRATION_S

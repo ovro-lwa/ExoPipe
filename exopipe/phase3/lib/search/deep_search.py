@@ -1646,7 +1646,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # 10-minute cadence (2026-11-13): the snapshot tiers' scope per night - 'snapshot-gpu' for a GPU-frame night, else 'snapshot'
     # (honors [SNAPSHOT-TIERS-ONLY rows); the deep cadence keeps the default scope (production phase3_deep.py, exopipe 36351ca)
     if cadence == '10min':
+        from exopipe.phase3.core.exclusions import refuse_frame_overrides
         from exopipe.phase3.lib.masters.coadd import snapshot_exclusion_test
+        refuse_frame_overrides()                   # the cell list and frame root the other 10-minute readers use
         _xtest = snapshot_exclusion_test()
     else:
         _excl = load_exclusions()

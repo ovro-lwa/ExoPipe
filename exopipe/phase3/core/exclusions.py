@@ -143,13 +143,33 @@ def gpu_frame_cells(path=None):
     return out
 
 
+def refuse_frame_overrides():
+    """Refuses when the environment overrides the GPU-frame cell list (P3_SNAP_GPU_CELLS) or the frame root
+    (P3_SNAP_PHASE1_ROOT, run-wide): the in-place snapshot engines (clv15 phase3_snapshot_search.frames_from_gpu) and the
+    co-add port follow them, ``gpu_frame_cells`` reads ``CFG.paths.SNAPSHOT_GPU_FRAME_CELLS``, so their per-night verdicts
+    on a re-admitted row would differ within one run."""
+    from exopipe.phase3.config import CFG
+    for var, want in (('P3_SNAP_GPU_CELLS', CFG.paths.SNAPSHOT_GPU_FRAME_CELLS),
+                      ('P3_SNAP_PHASE1_ROOT', CFG.paths.PHASE1_ROOT)):
+        v = os.environ.get(var)
+        if v and os.path.realpath(v) != os.path.realpath(want):
+            raise Refusal(f'REFUSING: {var}={v} in the environment (config: {want}) - the in-place snapshot engines would '
+                          f'choose the exclusion scope per night from it and the per-night read here would not; unset it')
+
+
 class PerNight:
     """The snapshot tiers' read, per night (production coadd_full_pipeline.snapshot_exclusion_test, exopipe 36351ca, and the
     per-cell readers of the 10-minute tree, wideband, stacker, job lists, catalog/publish gate and snapshot group search):
     scope 'snapshot-gpu' on a GPU-frame cell (``gpu_frame_cells``), 'snapshot' on every other night. The verdicts of
-    Exclusions; ``path`` and ``fingerprint()`` are the 'snapshot' read's. ``fresh``: read the file now, not the process cache."""
+    Exclusions; ``path`` is the 'snapshot' read's, ``gpu_path`` the cell list read (None when ``gpu_cells`` is given), and
+    ``fingerprint()`` covers both. ``fresh``: read the file now, not the process cache."""
 
     def __init__(self, path=None, gpu_cells=None, fresh=False):
+        from exopipe.phase3.config import CFG
+        self.gpu_path = None
+        if gpu_cells is None:
+            refuse_frame_overrides()
+            self.gpu_path = CFG.paths.SNAPSHOT_GPU_FRAME_CELLS
         self.snapshot = Exclusions(path, scope='snapshot') if fresh else load(path, scope='snapshot')
         self.gpu = Exclusions(path, scope='snapshot-gpu') if fresh else load(path, scope='snapshot-gpu')
         self.gpu_cells = gpu_frame_cells() if gpu_cells is None else set(gpu_cells)
@@ -172,7 +192,10 @@ class PerNight:
         return self.of(lst, date).is_whole_night_excluded(lst, date)
 
     def fingerprint(self):
-        return self.snapshot.fingerprint()
+        """The 'snapshot' read's (the whole file's sha1) and the GPU-frame cell set's: either changes verdicts."""
+        cells = '\n'.join(sorted(f'{l} {d}' for l, d in self.gpu_cells)).encode()
+        return dict(self.snapshot.fingerprint(), gpu_frame_cells=hashlib.sha1(cells).hexdigest(),
+                    n_gpu_frame_cells=len(self.gpu_cells))
 
 
 def for_tier(tier, fresh=False, path=None):
