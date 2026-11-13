@@ -202,7 +202,7 @@ def build_stage(run, plan):
     S = _CFG().serve
     B = build_dir(plan)
     with run.unit(f'sublst_{plan.run_name}_build', stage='build', tier='sublst', lsts=plan.lsts, parity=plan.parity) as u:
-        flow.excl_note(u)
+        flow.excl_note(u, 'sublst')
         if not plan.lsts:
             raise NoInput('no LST run to merge (no Run_SLST<hh>B under the runs root, or --lsts empty)')
         bad = generation_mix(plan.lsts)
@@ -334,7 +334,7 @@ def carry_swap_stage(run, plan, state):
         if exclusion_gate.refuses('sublst', plan.family):
             for pg in plan.pages:
                 if pg.family == 'review' and pg.program == 'classify' and pg.key not in state['refused']:
-                    scan = exclusion_gate.scan_server_page(pg, B)
+                    scan = exclusion_gate.scan_server_page(pg, B, tier='sublst')
                     if scan.hits:
                         blocking[pg.key] = f'G17 serve-time exclusion gate at the swap: {scan.summary()}'
         if blocking:

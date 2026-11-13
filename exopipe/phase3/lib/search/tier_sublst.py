@@ -725,7 +725,7 @@ def preflight(args, run, cell, lst, band, stokes, date):
         plan['noinput'] = f'P3-POLICY-SKIP: only {len(keys)} windows (minimum {s.MIN_EPOCHS}, cadence 10min)'
         return plan
     nights = sorted({k[:10] for k in keys})
-    ex = exclusions.load()
+    ex = exclusions.for_tier('sublst')
     plan['admitted'] = ex.admitted(lst, band, nights)
     plan['excluded_nights'] = ex.excluded_constituents(lst, band, nights)
     mI = os.path.join(coadd, 'coadd_final', f'I_deep_Taper_R0_{band}.fits')

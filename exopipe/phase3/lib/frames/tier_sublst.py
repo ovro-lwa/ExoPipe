@@ -322,8 +322,10 @@ def parallel(fn, items, workers):
 
 
 def exclusions():
+    """The 10-minute tier's read, per night (core.exclusions.for_tier; the in-place tree and wideband read the same way,
+    clv15 3e64f79)."""
     from exopipe.phase3.core import exclusions as ex
-    return ex.load()
+    return ex.for_tier('sublst')
 
 
 def report(u):

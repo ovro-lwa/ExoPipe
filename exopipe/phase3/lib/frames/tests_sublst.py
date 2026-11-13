@@ -66,7 +66,7 @@ def _frozen_weights(lst, band):
 
 def _excluded(lst, band, night):
     from exopipe.phase3.core import exclusions
-    return exclusions.load().is_excluded(lst, band, night)
+    return exclusions.for_tier('sublst').is_excluded(lst, band, night)
 
 
 def _fail(msgs):

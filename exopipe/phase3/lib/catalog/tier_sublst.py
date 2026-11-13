@@ -467,7 +467,7 @@ def check_from(out_root, unit_prefix, stages, first, recdir, in_place=(), ok_sta
 def _exclusions_fp():
     try:
         from exopipe.phase3.core import exclusions
-        return exclusions.load().fingerprint()
+        return exclusions.for_tier('sublst').fingerprint()
     except Exception as e:          # recorded; the merge's staleness gate (in place) is what enforces exclusions
         return {'error': str(e)}
 

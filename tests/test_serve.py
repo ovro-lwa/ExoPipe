@@ -1061,7 +1061,7 @@ def test_mchain():
     dd = f'{T}/mchain_dd/data_decisions.csv'
     wcsv(dd, ['lst', 'subband', 'date', 'verdict', 'reason'], [])
     ex0, orig_fx = Exclusions(dd), exclusion_gate.fresh_exclusions
-    exclusion_gate.fresh_exclusions = lambda: ex0
+    exclusion_gate.fresh_exclusions = lambda tier=None: ex0
     try:
         # the App probe (the server's own loader, the deep pages' environment) on a synthetic deep run: V's fork has J0001
         # (a page source) and J0009 (fork only); I has no fork (I-multi refused, G3: no chain written)
@@ -1228,7 +1228,7 @@ def test_exclusion_gate_per_page_stage():
     shutil.copytree(f'{T}/deep_base/Run_TEST', src)
     add_fork(src, 'I', [('J0007+0007', '08h', '2025-01-05', 2), ('J0010+0010', '09h', '2025-01-06', 1)])
     orig, ruled = exclusion_gate.fresh_exclusions, CFG.serve.EXCLUSION_GATE_TIERS
-    exclusion_gate.fresh_exclusions = lambda: ex
+    exclusion_gate.fresh_exclusions = lambda tier=None: ex
     try:
         for value, label in ((ruled, 'ruled'), (('snapshot',), 'production')):
             CFG.serve.EXCLUSION_GATE_TIERS = value

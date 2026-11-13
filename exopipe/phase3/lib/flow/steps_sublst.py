@@ -132,7 +132,7 @@ def drift_guard(note):
 
 def excluded_stacks(model, lst, sb):
     from exopipe.phase3.core import exclusions
-    E = exclusions.load()
+    E = exclusions.for_tier('sublst')
     nights = sorted({n for nd in model['stacks'].values() for n in nd})
     return E.path, [n for n in nights if E.is_excluded(lst, sb, n)]
 

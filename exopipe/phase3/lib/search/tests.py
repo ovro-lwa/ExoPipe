@@ -247,9 +247,9 @@ def _elev_floor(tier, stokes, tag=None):
     return float(sec.I_MASK_FLOOR_DEG if stokes == 'I' else sec.MIN_ELEVATION_DEG)
 
 
-def _excluded_now(lst, scope, dates):
+def _excluded_now(lst, scope, dates, tier='deep'):
     from exopipe.phase3.core import exclusions
-    return exclusions.load().excluded_constituents(lst, scope, sorted(dates))
+    return exclusions.for_tier(tier).excluded_constituents(lst, scope, sorted(dates))
 
 
 def sha1_file(path):
@@ -348,7 +348,7 @@ def schema_and_backing(path, stokes=None, cell=None, tier='deep', **ctx):
             probs.append(f'{lost} final ledger rows without a catalogue row')
     # exclusions now
     for (lst, band, st) in units:
-        bad = _excluded_now(lst, band, {r['date'][:10] for r in rows})
+        bad = _excluded_now(lst, band, {r['date'][:10] for r in rows}, tier)
         if bad:
             probs.append(f'rows on nights data_decisions excludes now: {bad[:5]}')
     if patch:
@@ -604,7 +604,7 @@ def one_row_per_searched_epoch(path, stokes=None, cell=None, tier='deep', **ctx)
     # STALE (verify_p3s3_stage.py:106-107; p3s3_stale_exclusions.py:25-27): an epoch searched (image row) on a night
     # data_decisions.csv excludes NOW - the merge gate refuses such an attempt
     for (lst, scope, st) in units:
-        bad = _excluded_now(lst, scope, {r['date'][:10] for r in rows if r['stokes'] == st})
+        bad = _excluded_now(lst, scope, {r['date'][:10] for r in rows if r['stokes'] == st}, tier)
         if bad:
             probs.append(f'STALE: Stokes {st} searched night(s) data_decisions excludes now: {bad[:5]}')
     if probs:
