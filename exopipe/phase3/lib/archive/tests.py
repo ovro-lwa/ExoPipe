@@ -208,8 +208,8 @@ def archive_equals_attempt(path, **ctx):
 # ---------------------------------------------------------------------------------------------------------------------
 
 def _stale(rec):
-    from exopipe.phase3.core import exclusions
-    now = exclusions.load().fingerprint()
+    from exopipe.phase3.lib.archive import retire as R
+    now = R.exclusions(rec.get('tier') if rec.get('kind') == 'report' else None).fingerprint()   # the read the run made
     was = rec.get('exclusions') or {}
     if (now.get('sha1'), now.get('n_exclude_rows')) != (was.get('sha1'), was.get('n_exclude_rows')):
         return f"STALE: exclusion list changed since the record (sha1 {str(was.get('sha1'))[:12]} -> {now['sha1'][:12]}, " \
@@ -219,7 +219,6 @@ def _stale(rec):
 
 @content_test('retirement_audit')
 def no_excluded_product_left(path, **ctx):
-    from exopipe.phase3.core import exclusions
     from exopipe.phase3.lib.archive import retire as R
     K = _K()
     rec = K.read_json(path)
@@ -229,7 +228,7 @@ def no_excluded_product_left(path, **ctx):
     st = _stale(rec)
     if st:
         return False, None, st
-    ex = exclusions.load()
+    ex = R.exclusions(rec.get('tier') if kind == 'report' else None)   # as the run read it (retire.run_report: the tier's read)
     if kind == 'report':
         _, rows = R.report_rows(rec['tier'], rec['cell'], ex)
         now, was = {r['path'] for r in rows}, set(rec.get('paths') or [])

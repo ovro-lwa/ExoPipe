@@ -31,7 +31,10 @@ The pin (PIN_COMMIT / PIN_BLOBS below)
   runs) plus production's two later commits to phase3_snapshot_cube.py (c868cb1: write --fluxscal divides the pixels by the
   hour-band factor and records FSAPPLD, default off; e731a4a: rescale rewrites an archived cube in Master units), ported
   2026-11-12; no other pinned file changed between the two commits. The cell driver passes no --fluxscal: where the factor
-  comes from in v2 is the flux-scale ruling's implementation, not part of this port. PIN_BLOBS holds the
+  comes from in v2 is the flux-scale ruling's implementation, not part of this port.
+  clv15 12b9a71 (2026-11-13) = e731a4a plus production's _excl_scope change in phase3_snapshot_group_search.py (a non-GPU
+  cell reads exclusion scope 'snapshot', which honors the [SNAPSHOT-TIERS-ONLY rows; was None, the default), ported
+  2026-11-13; no other pinned file changed between the two commits. PIN_BLOBS holds the
   git blob id of every ported file at that commit. Production keeps moving: tests/test_snapshot_engine.py reports every pinned
   file production has changed since (one explicit failure naming what to port), as tests/production_pin.py does for the ops
   ports. Moving the pin is a port round.
@@ -48,10 +51,10 @@ This module itself is import-safe and holds only the pin; nothing here is import
 """
 
 CLV15_REPO = '/lustre/gh/main/clv15'
-PIN_COMMIT = 'e731a4a11661335e82bc317e946da5ead80bbc2c'
+PIN_COMMIT = '12b9a71d67c687fe6f4d1b03e97f01a822f312f8'
 PIN_BLOBS = {
     'phase3_snapshot_search.py': 'db49397021a1c7596170dc6c0c3de48d4c8bf75c',
-    'phase3_snapshot_group_search.py': 'bab2c8b058095075fd4fa2a13c4bb1a1a263adc1',
+    'phase3_snapshot_group_search.py': '860b42e94cc6073596583997d416a3d4a83ffc24',
     'phase3_snapshot_cutouts.py': '5c6fa63521b581e27d31524c6aec819fc779de9d',
     'phase3_snapshot_lightcurves.py': '8f669f5504115267a7b9551e06b0a120bf36e8c4',
     'phase3_snapshot_cube.py': '912501b17d139c56b165c725687cb211dcd7ba62',

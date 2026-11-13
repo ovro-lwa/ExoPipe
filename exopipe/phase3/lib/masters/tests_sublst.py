@@ -233,7 +233,7 @@ def plan_well_formed(path, lst=None, **ctx):
     lst = lst or (m.group(1) if m else None)
     lines = [l.split() for l in open(path) if l.strip() and not l.startswith('#')]
     problems, seen, pairs = [], set(), {}
-    ex = exclusions.load()
+    ex = exclusions.for_tier('sublst')
     sbs = set(_cfg().instrument.ALL_SUBBANDS)
     for f in lines:
         if len(f) != 3 or not re.match(rf'^{lst}_\d{{4}}-\d\d-\d\d$', f[0]) or f[1] not in sbs or f[2] not in ('I', 'V'):
@@ -581,7 +581,7 @@ def window_master_record(path, lst=None, subband=None, **ctx):
         off = [n for n, w in rows if n not in want or abs(w - want[n]) > 1e-9 * max(1.0, abs(w))]
         if off:
             problems.append(f'{len(off)} night weight(s) != the frozen deep record, e.g. {off[0]}')
-    ex = exclusions.load()
+    ex = exclusions.for_tier('sublst')
     exw = [n for n in weighted if ex.is_excluded(lst, band, n)]
     if exw:
         problems.append(f'excluded night(s) with weight: {exw}')
@@ -696,7 +696,7 @@ def nonmember_residual_identity(path, master_root=None, **ctx):
             problems.append(f'DURATION {h.get("DURATION")} != {dur}')
     except Exception as e:
         problems.append(f'DURATION not checkable ({e})')
-    if exclusions.load().is_excluded(d['lst'], d['band'], d['night']):
+    if exclusions.for_tier('sublst').is_excluded(d['lst'], d['band'], d['night']):
         problems.append(f'{d["lst"]} {d["band"]} {d["night"]} is excluded in data_decisions.csv: no residual of it may exist')
     a = np.asarray(_data(stack), dtype=np.float64)
     M = np.asarray(_data(mp), dtype=np.float64)

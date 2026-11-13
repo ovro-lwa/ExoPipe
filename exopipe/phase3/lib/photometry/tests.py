@@ -177,9 +177,9 @@ def _cached(kind, path, fn):
     return _CACHE[key]
 
 
-def _excl():
+def _excl(scope=None):
     from exopipe.phase3.core import exclusions
-    return exclusions.load()
+    return exclusions.load(scope=scope)
 
 
 def _sigfig_tol(printed):
@@ -1235,7 +1235,7 @@ def _snapshot_eval(ev, ctx):
     if len(kinds) != 1:
         bad.append('cells.csv kinds %s' % sorted(kinds))
     kind = next(iter(kinds)) if kinds else '?'
-    excl = _excl()
+    excl = _excl('snapshot')      # as snapshot_forced_eval.py (exopipe_ops 0fc3207)
     seen = {}
     for r in T:
         b = r['band']
