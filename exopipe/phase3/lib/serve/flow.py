@@ -146,7 +146,7 @@ def test_stage(run, plan, state, unit_name, root=None, probe=True):
             # the swap of the whole build (G11), so no sub-LST page is replaced (its servers share the run directory)
             pages = {}
             for pg in gated:
-                scan = exclusion_gate.scan_server_page(pg, U, strict=refuses)
+                scan = exclusion_gate.scan_server_page(pg, U, strict=refuses, tier=plan.tier)
                 pages[pg.key] = {'hits': len(scan.hits), 'files': scan.n_files, 'rows': scan.n_rows,
                                  'per_key': {' '.join(k): n for k, n in scan.per_key().items()}}
                 if scan.hits and refuses:

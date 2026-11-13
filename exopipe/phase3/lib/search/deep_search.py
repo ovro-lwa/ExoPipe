@@ -1643,13 +1643,20 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # (0) drop data_decisions-excluded epochs — the master already excludes them, but the
     # per-epoch residual still exists on disk, so the search would otherwise pull them back
     # in (e.g. vortex night 2025-05-04; mstruct can't catch it — it's not in the master).
-    _excl = load_exclusions()
-    _ddrop = [d for d in dates if is_excluded(lst, scope, _kd(d), _excl)]
+    # 10-minute cadence (2026-11-13): the snapshot tiers' scope per night - 'snapshot-gpu' for a GPU-frame night, else 'snapshot'
+    # (honors [SNAPSHOT-TIERS-ONLY rows); the deep cadence keeps the default scope (production phase3_deep.py, exopipe 36351ca)
+    if cadence == '10min':
+        from exopipe.phase3.lib.masters.coadd import snapshot_exclusion_test
+        _xtest = snapshot_exclusion_test()
+    else:
+        _excl = load_exclusions()
+        _xtest = lambda _l, _m, _n: is_excluded(_l, _m, _n, _excl)
+    _ddrop = [d for d in dates if _xtest(lst, scope, _kd(d))]
     if _ddrop:
         dates = [d for d in dates if d not in _ddrop]
         print(f'  {lst} {scope}: dropped {len(_ddrop)} data_decisions-excluded epoch(s): {_ddrop}')
     if _b02:                                                           # WAVE2 B-02 (step 3c): every night of the cell that
-        _ddx = sorted(set(_ddrop) | {d for d in _noflow if is_excluded(lst, scope, _kd(d), _excl)})   # WAVE2 B-02: data_decisions
+        _ddx = sorted(set(_ddrop) | {d for d in _noflow if _xtest(lst, scope, _kd(d))})   # WAVE2 B-02: data_decisions
         if _ddx:                                                       # WAVE2 B-02: excludes, with a flow or without, recorded -
             with open(f'{_refdir}/{lst}_{scope}_datadecisions_excluded.csv', 'a') as _ddf:   # WAVE2 B-02: the conformance check
                 for d in _ddx:                                         # WAVE2 B-02: confirms each is excluded still (a lifted
@@ -1691,7 +1698,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     _ef.write(f'{lst},{scope},{d},{_attempt}\n')
             print(f'  {lst} {scope}: EPOCH GATE - {len(_egd)} epoch(s) REFUSED from both searches: {_egd}')
     # WAVE2 B-30: epochs without a flow that the gates above do not refuse (data_decisions; deep: night-image, epoch gate)
-    _noflow = [d for d in _noflow if not is_excluded(lst, scope, _kd(d), _excl)
+    _noflow = [d for d in _noflow if not _xtest(lst, scope, _kd(d))
                and not (cadence == 'deep' and (_kd(d) in _ngf or _kd(d) in _egf))]
     if _noflow:
         from exopipe.phase3.core import fallback      # WAVE2 B-30

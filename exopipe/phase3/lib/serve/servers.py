@@ -244,7 +244,7 @@ def restart_port(port, out, notes, offset=0):
     if program == 'classify' and exclusion_gate.refuses(tier, fam):
         for info in infos:
             scan = (exclusion_gate.scan_snapshot_run(procs.argv_value(info['argv'], '--run')) if tier == 'snapshot'
-                    else exclusion_gate.scan_server_argv(info['argv']))
+                    else exclusion_gate.scan_server_argv(info['argv'], tier=tier))
             if scan.hits:
                 raise Refusal(f'G17 serve-time exclusion gate at the restart of {port}: {scan.summary()} - not restarted '
                               f'(the running server is left as it is)')

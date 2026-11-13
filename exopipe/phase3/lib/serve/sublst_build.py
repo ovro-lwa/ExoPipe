@@ -334,7 +334,7 @@ def carry_swap_stage(run, plan, state):
         if exclusion_gate.refuses('sublst', plan.family):
             for pg in plan.pages:
                 if pg.family == 'review' and pg.program == 'classify' and pg.key not in state['refused']:
-                    scan = exclusion_gate.scan_server_page(pg, B)
+                    scan = exclusion_gate.scan_server_page(pg, B, tier='sublst')
                     if scan.hits:
                         blocking[pg.key] = f'G17 serve-time exclusion gate at the swap: {scan.summary()}'
         if blocking:

@@ -228,7 +228,7 @@ def preflight(args, run, cell, only_sb=None):
         return ok
 
     from exopipe.phase3.core import exclusions
-    ex = exclusions.load()
+    ex = exclusions.for_tier('snapshot')
     plan['excluded'] = {sb: True for sb in s.SUBBANDS if ex.is_excluded(lst, sb, date)}
     plan['excluded_groups'] = {g: True for g in s.GROUPS if ex.is_excluded(lst, g, date)}
     if not sbs:

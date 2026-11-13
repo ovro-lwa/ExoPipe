@@ -551,7 +551,7 @@ def _measure_refusals(stage1, cells):
 
 def _eval_admitted(cells, kind):
     from exopipe.phase3.core import exclusions
-    ex = exclusions.load()
+    ex = exclusions.load(scope='snapshot')     # as snapshot_forced_eval.py (exopipe_ops 0fc3207), in place: flat 'snapshot'
     return sorted('%s:%s' % (cl, b) for cl in cells for b in kind_bands(kind)
                   if not ex.is_excluded(cl[:3], b, cl[4:]))
 

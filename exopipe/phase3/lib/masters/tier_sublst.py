@@ -854,9 +854,15 @@ def budget_map(fn, items, charge_of, mem_budget_gb, max_units, run=None, name_of
 def exclusion_readers_agree(lst, scope, nights):
     """G-M01: core.exclusions and the co-add's own reader (the reader the stacker and the admit heredoc use) agree on every
     (LST, scope, night), the exclusion file paths and the 18 MHz carve-out agree; (core Exclusions, co-add exclusion set).
-    The masters step's one implementation: lib/masters/deep_inplace.exclusion_readers_agree."""
+    The masters step's one implementation: lib/masters/deep_inplace.exclusion_readers_agree, run for both scopes of the
+    tier's per-night read ('snapshot-gpu' on a GPU-frame cell, else 'snapshot': production's job lists and stacker since
+    2026-11-13, which honor the [SNAPSHOT-TIERS-ONLY rows); returns that per-night read (core.exclusions.for_tier) and the
+    co-add's 'snapshot' set."""
+    from exopipe.phase3.core import exclusions
     from exopipe.phase3.lib.masters import deep_inplace
-    return deep_inplace.exclusion_readers_agree(lst, scope, nights)
+    deep_inplace.exclusion_readers_agree(lst, scope, nights, read_scope='snapshot-gpu')
+    _, excl = deep_inplace.exclusion_readers_agree(lst, scope, nights, read_scope='snapshot')
+    return exclusions.for_tier('sublst'), excl
 
 
 # =====================================================================================================================
@@ -1126,8 +1132,8 @@ def admit_plan(lst, cells, subbands_=None, nonmember=None):
     Gregg 2026-11-11) - a record for the caller, the job lines are production's. Changes, all value-identical: roots and floors from config (mirror-checked
     against the stacker); the co-add's exclusion reader from its moved home (lib/masters/coadd); BEAM_AREA_MAX from config
     instead of `from phase3_sublst_stack import` (mirror-checked; avoids the stacker's sys.path insertion of the production
-    package). clv15 phase3_snapshot_cube, phase3_snapshot_search.night_verdict and phase3_tier_rules.flux_scale_failed are
-    imported IN PLACE (legacy roots on sys.path through core.env.legacy)."""
+    package). clv15 phase3_snapshot_cube, phase3_snapshot_search.night_verdict + frames_from_gpu and
+    phase3_tier_rules.flux_scale_failed are imported IN PLACE (legacy roots on sys.path through core.env.legacy)."""
     import calendar
     import time as _time
     import numpy as np
@@ -1135,11 +1141,13 @@ def admit_plan(lst, cells, subbands_=None, nonmember=None):
     from exopipe.phase3.core import env
     env.legacy()
     import phase3_snapshot_cube as CB
-    from phase3_snapshot_search import night_verdict
+    from phase3_snapshot_search import night_verdict, frames_from_gpu
     from phase3_tier_rules import flux_scale_failed
     from exopipe.phase3.lib.masters.coadd import load_exclusions, is_excluded
     s = _sec()
-    excl = load_exclusions()
+    # nocat:103 (exopipe_ops c845cd6, d57b66f): per cell - 'snapshot-gpu' on a GPU-frame cell (Gregg 2026-11-10), else
+    # 'snapshot' (+ the [SNAPSHOT-TIERS-ONLY rows, 2026-11-13)
+    excl = load_exclusions(scope='snapshot'); excl_g = load_exclusions(scope='snapshot-gpu')
     CUBES, DEEPFLOW = cube_root(), deepflow_root()
     INTEGRATION_S = s.INTEGRATION_S
     BEAM_AREA_MAX = s.BEAM_AREA_MAX
@@ -1197,7 +1205,7 @@ def admit_plan(lst, cells, subbands_=None, nonmember=None):
     for c in cells:
         night = c.split("_", 1)[1]
         for sb in SBS:
-            if is_excluded(lst, sb, night, excl):
+            if is_excluded(lst, sb, night, excl_g if frames_from_gpu(lst, night) else excl):
                 drop.append("%s %s (data_decisions)" % (c, sb))
                 continue
             wp = frozen_weights(lst, sb)                    # frozen copy (ruling B, 2026-10-08)
@@ -1469,7 +1477,7 @@ def _stack_unit(run, opts, root, lst, cell, sb, stokes, croot, plan_files):
         miss = [p for p in cubes + [master, weights] if not os.path.exists(p)]
         if miss:
             u.refuse(f'G-S04: REFUSED: missing input {miss[0]} ({len(miss)} missing)')
-        if exclusions.load().is_excluded(lst, sb, night):
+        if exclusions.for_tier('sublst').is_excluded(lst, sb, night):
             u.refuse(f'G-S04: REFUSED: {lst} {sb} {night} is excluded in data_decisions.csv (core.exclusions)')
         u.set_admitted([f'{night}/{sb}'])
         for p in inputs:
@@ -1726,7 +1734,7 @@ def _loo_unit(run, opts, root, lst, sb, stokes, jobs, plan_files):
         u.check('loo.admission_files', n_adm >= n_jobs, value=n_adm,
                 detail=f'{n_adm} admission files for {n_jobs} done (night, Stokes) jobs (nocat:210)')
         from exopipe.phase3.core import exclusions
-        ex = exclusions.load()
+        ex = exclusions.for_tier('sublst')
         u.set_admitted([f'{n}/{sb}' for n in nights if not ex.is_excluded(lst, sb, n)])
         for p in inputs:
             if os.path.exists(p):

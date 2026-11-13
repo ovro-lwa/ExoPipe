@@ -10,9 +10,11 @@ tier only (snapshot_serve_exclusion_gate.py, f1996ee). Its row keying (cand_id '
   deep, sublst  keys_tier(row): cand_id, else best_cand_id '<S><x>_<LST>_<date>[Tnn]_<band>_<n>' -> (LST, date[:10], band);
              else source_id as a page id 'Jname_LST_date[Tnn]_band' (the pages_index rows); queue ids are page ids too
 
-Verdicts come from core.exclusions (a FRESH Exclusions(), never the process cache: the list is read now). For the snapshot
-tier the in-place gate (production's reader, coadd_full_pipeline.is_excluded) also runs, and the two readers must agree
-(a disagreement refuses with both lists). Whether a hit REFUSES is config serve.EXCLUSION_GATE_TIERS; for the keys not in
+Verdicts come from core.exclusions (a FRESH read, never the process cache: the list is read now), as the page's tier reads
+it (core.exclusions.for_tier: the snapshot tiers' per-night read - 'snapshot-gpu' on a GPU-frame cell, else 'snapshot' - for
+the snapshot, forced snapshot and sub-LST pages, the default for the deep pages; 2026-11-13, the [SNAPSHOT-TIERS-ONLY rows
+exclude in the snapshot tiers only). For the snapshot tier the in-place gate (production's reader,
+coadd_full_pipeline.is_excluded) also runs, and the two readers must agree (a disagreement refuses with both lists). Whether a hit REFUSES is config serve.EXCLUSION_GATE_TIERS; for the keys not in
 it the hits are reported (unit notes, dry-run plan). Gregg 2026-10-14 approved enforcing it for the deep and sub-LST pages
 and the snapshot forced pages too (R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS); production ('snapshot' only)
 is the parity file's value.
@@ -93,9 +95,9 @@ def page_id_key(pid):
     return _tier_key(pid, 1) if pid.startswith('J') and pid.count('_') >= 3 else None
 
 
-def fresh_exclusions():
-    from exopipe.phase3.core.exclusions import Exclusions
-    return Exclusions()
+def fresh_exclusions(tier=None):
+    from exopipe.phase3.core.exclusions import for_tier
+    return for_tier(tier, fresh=True)
 
 
 class Scan:
@@ -174,7 +176,7 @@ def snapshot_run_files(run):
 
 
 def scan_snapshot_run(run, ex=None):
-    return scan_files(snapshot_run_files(run), keys_snapshot, run, ex=ex)
+    return scan_files(snapshot_run_files(run), keys_snapshot, run, ex=ex or fresh_exclusions('snapshot'))
 
 
 # The review server of every deep and sub-LST page (program 'classify': exopipe_ops/classify_transients.py), mirrored here
@@ -318,21 +320,23 @@ def page_loc_offsets(pg, U):
     return os.path.join(d, 'localization_offsets.csv')
 
 
-def scan_server_page(pg, U, strict=True, ex=None):
-    """scan_page for a planned review page (its queue, catalogue view, offsets table and multiples chain under run ``U``)."""
-    return scan_page(U, pg.at('catalog', U), pg.at('queue', U), ex=ex, loc_offsets=page_loc_offsets(pg, U), strict=strict,
+def scan_server_page(pg, U, strict=True, ex=None, tier='deep'):
+    """scan_page for a planned review page (its queue, catalogue view, offsets table and multiples chain under run ``U``) of
+    a deep or sub-LST page (``tier``: the scope of the exclusion read)."""
+    return scan_page(U, pg.at('catalog', U), pg.at('queue', U), ex=ex or fresh_exclusions(tier),
+                     loc_offsets=page_loc_offsets(pg, U), strict=strict,
                      mchain_queue=pg.at('mchain_queue', U), mchain_catalog=pg.at('mchain_catalog', U))
 
 
-def scan_server_argv(argv, strict=True, ex=None):
+def scan_server_argv(argv, strict=True, ex=None, tier='deep'):
     """scan_page for a RUNNING classify server, from its argv (--run, --queue, --catalog-dir, --loc-dir, --loc-offsets,
-    --mchain-queue, --mchain-catalog-dir)."""
+    --mchain-queue, --mchain-catalog-dir), of a deep or sub-LST page (``tier``: the scope of the exclusion read)."""
     from exopipe.phase3.lib.serve import procs
     U = procs.argv_value(argv, '--run')
     ld = procs.argv_value(argv, '--loc-dir')
     lo = os.path.join(ld or os.path.join(U, 'source_catalogs'), 'localization_offsets.csv') if '--loc-offsets' in argv else None
     return scan_page(U, procs.argv_value(argv, '--catalog-dir') or os.path.join(U, 'source_catalogs'),
-                     procs.argv_value(argv, '--queue'), ex=ex, loc_offsets=lo, strict=strict,
+                     procs.argv_value(argv, '--queue'), ex=ex or fresh_exclusions(tier), loc_offsets=lo, strict=strict,
                      mchain_queue=procs.argv_value(argv, '--mchain-queue'),
                      mchain_catalog=procs.argv_value(argv, '--mchain-catalog-dir'))
 
