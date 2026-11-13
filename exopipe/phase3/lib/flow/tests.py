@@ -708,7 +708,9 @@ _MODEL_CACHE = {}
 
 def _weights(lst, sb):
     """Frozen deep co-add night weights of (LST, subband) with in_master 0 and the membership vetoes at weight 0
-    (phase3_sublst_refine.py:83-94; the veto read in place from clv15 phase3_tier_rules, md5-pinned there)."""
+    (phase3_sublst_refine.py:83-94; the veto read in place from clv15 phase3_tier_rules, md5-pinned there), and the
+    nights of the non-member nights list that have no row there at weight 0 (refine.py:95-97, clv15 5b1fc5b, Gregg
+    2026-11-11: such a night is aligned to and subtracted against the Master of the weighted nights)."""
     wp = _cfg().flow_refine.WEIGHTS_CSV.format(lst=lst, sb=sb)
     if not os.path.exists(wp):
         return None, wp
@@ -720,6 +722,9 @@ def _weights(lst, sb):
                 else float(r['weight'])
         except (KeyError, ValueError, TypeError):
             pass
+    from exopipe.phase3.lib.masters import tier_sublst as TS     # the one parser of the list (mirror-checked there)
+    for n in TS.nonmember_nights(lst) - set(wts):
+        wts[n] = 0.0
     return wts, wp
 
 
