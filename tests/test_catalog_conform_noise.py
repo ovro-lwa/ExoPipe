@@ -12,6 +12,13 @@ Checks, data-free (a stand-in module that holds the patched line and writes what
                 versions, no accepted versions named, a key of the run's rows that the record lacks, a malformed or
                 duplicated record
   patch         refuses a module without the line, with the line twice, or with another use of the name
+  evidence      the pulsar step's rows of other nights: the LST-wide run records every row within its frame beam of a
+                pulsar (beam, daytime verdict, position error, the pulsar its note names); a night judged alone loses
+                the group, the frozen run of the night gives its row the verdicts the LST-wide run gave it (from every
+                pulsar the LST-wide run visited), with no evidence row left in the module's rows; a cell excluded since
+                the record leaves the group; refusals: no evidence record, a malformed one, one of another module
+                version, a needed evidence row without a position error, a row of another night, no night, another
+                cadence
   wiring        the 10-minute conform stage runs the runner in record mode under catalog_conform.TABLE_NOISE_RECORD
                 ['sublst'] and registers the record; the config names the ruling and the checked module version
 Real module (read only; skipped where exopipe_ops is not mounted): the patch applies to the live p3s2_conform.py, the
@@ -59,6 +66,50 @@ with open(f'{U}/used.csv', 'w') as _o:
         _b = _RMS.get((_r['lst'], _r['band'], 'V'), 0.0)
         _c = _RMS.get((_r['lst'], '99MHz', _r['stokes']), 0.0)
         _o.write(f"{_r['lst']},{_r['band']},{_r['stokes']},{_r['date']},{_a!r},{_b!r},{_c!r}\\n")
+# the pulsar step, its lines as production has them where the patches touch (the loop over the pulsars the table notes name,
+# the rows near a pulsar, the group of 2+ with each row's position error, the verdicts applied after the loop)
+import collections, math, types
+_TABLE_CUT = {_i: (_r.get('cut') == '1', _r.get('note') or '') for _i, _r in enumerate(raw) if _r.get('note')}
+_DAY = {(_r['stokes'], _r['lst'], _r['band'], _r['date']): (_r.get('day') or '') for _r in raw}
+_EXCL = set(filter(None, os.environ.get('STANDIN_EXCLUDED', '').split(';')))
+def _is_excl(lst, band, date): return f'{lst},{band},{date}' in _EXCL
+_G = types.SimpleNamespace(target_beam=lambda lst, band, date, stokes: 0.5)
+_PSR_POS = {'J0001+01': (10.0, 20.0), 'J0002+02': (10.3, 20.0), 'J0003+03': (50.0, -5.0)}
+_TIE = {_r['cand_id']: float(_r['sys']) for _r in csv.DictReader(open(f'{U}/tie.csv'))} if os.path.exists(f'{U}/tie.csv') else {}
+def _sig_row(r):
+    return math.hypot(10.0 / max(abs(f(r['snr'])), 5.0), _TIE[r['cand_id']])
+def _unit(ra_, de_):
+    return np.array([math.cos(math.radians(de_)) * math.cos(math.radians(ra_)), math.cos(math.radians(de_)) * math.sin(math.radians(ra_)),
+                     math.sin(math.radians(de_))])
+_psr_rows = collections.defaultdict(list)
+for _i, (_c, _nt) in _TABLE_CUT.items():
+    if _nt.startswith('PSR '): _psr_rows[_nt[4:]].append(_i)
+_PSR_VERDICTS = collections.defaultdict(list)
+if os.environ.get('P3_CADENCE', 'deep') not in ('deep', '10min'):
+    _psr_rows = {}
+_RA_ = np.array([f(r.get('ra')) for r in raw]); _DE_ = np.array([f(r.get('dec')) for r in raw])
+_RAWU = np.nan_to_num(np.stack([np.cos(np.radians(_DE_)) * np.cos(np.radians(_RA_)), np.cos(np.radians(_DE_)) * np.sin(np.radians(_RA_)),
+                                np.sin(np.radians(_DE_))], -1))
+for _pn, _idx0 in _psr_rows.items():
+    _pra, _pdec = _PSR_POS[_pn]; _pu = _unit(_pra, _pdec)
+    near = []
+    for _i in np.where(_RAWU @ _pu > math.cos(math.radians(1.5)))[0]:
+        r = raw[_i]
+        _sep = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(_pu, _unit(f(r['ra']), f(r['dec']))))))))
+        if _sep > _G.target_beam(r['lst'], r['band'], r['date'], r['stokes']): continue
+        if _is_excl(r['lst'], r['band'], r['date']) or _DAY.get((r['stokes'], r['lst'], r['band'], r['date']), 'x'): continue
+        near.append(_i)
+    if len(near) < 2: continue
+    dets = {i: dict(ra=f(raw[i]['ra']), dec=f(raw[i]['dec']), sig=_sig_row(raw[i])) for i in near}
+    _w = math.fsum(1.0 / d['sig'] ** 2 for d in dets.values())
+    for i in near:
+        if i in _TABLE_CUT: _PSR_VERDICTS[i].append((_pn, len(near), repr(_w)))
+_out = []
+for i, _vs in _PSR_VERDICTS.items():
+    _out.append(raw[i]['cand_id'] + '|' + ';'.join(f'{_a},{_b},{_c}' for _a, _b, _c in sorted(_vs)))
+with open(f'{U}/psr.csv', 'w') as _o:
+    _o.write(''.join(_x + '\\n' for _x in sorted(_out)) + f'rows {len(raw)}\\n')
+print(f'conform: stand-in pulsars {len(_psr_rows)}', flush=True)
 print('conform: stand-in done', flush=True)
 '''
 
@@ -69,6 +120,26 @@ ROWS = [   # lst, band, stokes, date, peak_jy, global_snr
     ('01h', '55MHz', 'I', '2025-01-03T00', 'x', '7'),                                                         # unreadable: nan
     ('01h', '73MHz', 'I', '2025-01-01T03', '7.0', '10'), ('01h', '73MHz', 'I', '2025-01-09T00', '70.0', '10')]
 NIGHT = '2025-01-09'            # the "new night": one row of 73 MHz I, whose own median (7.0) is not the LST-wide one (3.85)
+
+# the pulsar step's rows (all 01h 41 MHz I; frame beam 0.5 deg): pulsars J0001+01 at (10.0, 20.0), J0002+02 0.28 deg from it,
+# J0003+03 at (50.0, -5.0)
+ECOLS = ['lst', 'band', 'stokes', 'date', 'peak_jy', 'global_snr', 'cand_id', 'ra', 'dec', 'snr', 'note', 'cut', 'day']
+
+
+def erow(cand, date, ra, dec, snr, note='', cut='', day=''):
+    return dict(lst='01h', band='41MHz', stokes='I', date=date, peak_jy='2.0', global_snr='10', cand_id=cand, ra=str(ra),
+                dec=str(dec), snr=str(snr), note=note, cut=cut, day=day)
+
+
+EROWS = [erow('a1', '2025-01-01T00', 10.01, 20.0, 10, 'PSR J0001+01', '1'),      # another night, its note names the first pulsar
+         erow('a2', '2025-01-02T00', 10.02, 20.01, 8),                            # another night, no note
+         erow('a3', '2025-01-03T01', 10.0, 20.02, 12, 'PSR J0002+02', '1'),       # another night, its note names the SECOND pulsar
+         erow('n1', NIGHT + 'T00', 10.015, 20.005, 9, 'PSR J0001+01', '1'),       # the night's row
+         erow('d1', '2025-01-04T00', 10.0, 20.0, 9, day='daytime: stand-in'),     # another night, its frame daytime
+         erow('x1', '2025-01-05T00', 10.0, 19.99, 9),                             # another night, its cell excluded LATER
+         erow('u1', '2025-01-06T00', 50.0, -5.0, 9),                              # near the third pulsar, no window tie
+         erow('far', '2025-01-02T00', 100.0, 0.0, 9)]                             # near no pulsar
+TIE = {'a1': 0.5, 'a2': 0.7, 'a3': 0.4, 'n1': 0.6, 'd1': 0.5, 'x1': 0.9, 'far': 0.5, 'n2': 0.5}
 
 
 def check(name, ok, detail=''):
@@ -83,9 +154,16 @@ def rundir(name, rows, src=STANDIN, tree='tree'):
     d = os.path.join(T, name)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, 'rows.csv'), 'w', newline='') as f:
-        w = csv.writer(f)
-        w.writerow(['lst', 'band', 'stokes', 'date', 'peak_jy', 'global_snr'])
-        w.writerows(rows)
+        if rows and isinstance(rows[0], dict):              # the pulsar step's rows, with the window-tie stand-in
+            w = csv.DictWriter(f, ECOLS)
+            w.writeheader()
+            w.writerows(rows)
+            with open(os.path.join(d, 'tie.csv'), 'w') as g:
+                g.write('cand_id,sys\n' + ''.join(f'{k},{v}\n' for k, v in TIE.items()))
+        else:
+            w = csv.writer(f)
+            w.writerow(['lst', 'band', 'stokes', 'date', 'peak_jy', 'global_snr'])
+            w.writerows(rows)
     m = os.path.join(T, tree, 'exopipe_ops', 'p3s2_conform.py')
     os.makedirs(os.path.dirname(m), exist_ok=True)
     with open(m, 'w') as f:
@@ -93,9 +171,11 @@ def rundir(name, rows, src=STANDIN, tree='tree'):
     return d, m
 
 
-def child(module, d, mode=None, record=None, accepted=None, extra=None):
-    env = {k: v for k, v in os.environ.items() if not k.startswith('EXOPIPE3_CONFORM_NOISE_')}
-    env.pop('STANDIN_EXIT_EARLY', None)
+def child(module, d, mode=None, record=None, accepted=None, extra=None, evidence=None, night=NIGHT):
+    """Run the module (mode None) or the runner. The pulsar-evidence record defaults to the table-noise record's sibling,
+    the night to NIGHT, the cadence to the 10-minute one."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('EXOPIPE3_CONFORM_NOISE_', 'STANDIN_'))}
+    env['P3_CADENCE'] = '10min'
     if mode is None:
         cmd = [sys.executable, module, d]
     else:
@@ -103,6 +183,9 @@ def child(module, d, mode=None, record=None, accepted=None, extra=None):
         env['EXOPIPE3_CONFORM_NOISE_MODE'] = mode
         if record:
             env['EXOPIPE3_CONFORM_NOISE_RECORD'] = record
+            env['EXOPIPE3_CONFORM_NOISE_EVIDENCE'] = evidence or os.path.join(os.path.dirname(record), CN.EVIDENCE_FILE)
+        if mode == 'frozen' and night:
+            env['EXOPIPE3_CONFORM_NOISE_NIGHT'] = night
         if accepted is not None:
             env['EXOPIPE3_CONFORM_NOISE_SHA1'] = ','.join(accepted)
     env.update(extra or {})
@@ -111,8 +194,16 @@ def child(module, d, mode=None, record=None, accepted=None, extra=None):
 
 
 def used(d):
-    with open(os.path.join(d, 'used.csv')) as f:
-        return f.read()
+    """What the stand-in wrote: its table step's values, then its pulsar step's verdicts and its number of rows."""
+    with open(os.path.join(d, 'used.csv')) as f, open(os.path.join(d, 'psr.csv')) as g:
+        return f.read() + g.read()
+
+
+def psr(d):
+    """{cand_id: verdicts} and the stand-in's number of rows after its pulsar step."""
+    with open(os.path.join(d, 'psr.csv')) as f:
+        lines = f.read().splitlines()
+    return dict(ln.split('|') for ln in lines[:-1]), lines[-1]
 
 
 def norm_of(module):
@@ -134,6 +225,8 @@ def test_passthrough_and_record():
     rec = os.path.join(d2, CN.FILE)
     rc2, out2 = child(m, d2, 'record', rec)
     check('record: rc 0 and the done line names the record', rc2 == 0 and f'recorded in {rec}' in out2, out2[-300:])
+    check('record: the pulsar-evidence record is written beside it, empty when no row lies near a pulsar',
+          CN.read_evidence(os.path.join(d2, CN.EVIDENCE_FILE))[0] == [] and 'recorded in ' + os.path.join(d2, CN.EVIDENCE_FILE) in out2)
     check('record: the module\'s output equals the unpatched run\'s, byte for byte', used(d2) == used(d0))
     got, shas, _sha = CN.read_record(rec)
     check('record: one row per (LST, band, Stokes) of the rows', sorted(got) == [
@@ -153,7 +246,8 @@ def test_passthrough_and_record():
           out3[-200:])
     d4, _ = rundir('record_none', ROWS)
     rc4, out4 = child(m, d4, 'record', os.path.join(d4, CN.FILE), extra={'STANDIN_EXIT_EARLY': '1'})
-    check('record: a module that exits early writes no record', rc4 != 0 and not os.path.exists(os.path.join(d4, CN.FILE)), out4[-200:])
+    check('record: a module that exits early writes no record', rc4 != 0 and not os.path.exists(os.path.join(d4, CN.FILE))
+          and not os.path.exists(os.path.join(d4, CN.EVIDENCE_FILE)), out4[-200:])
     rc5, out5 = child(m, d1, 'record')
     check('record: refuses without a record path', rc5 == 2 and 'CONFORM-NOISE REFUSING' in out5 and 'RECORD is not set' in out5,
           out5[-200:])
@@ -167,7 +261,7 @@ def test_frozen(rec, m, used_all):
     night = [r for r in ROWS if r[3].startswith(NIGHT)]
     dn, _ = rundir('night_alone', night)
     rc, out = child(m, dn)
-    alone = [ln for ln in used(dn).splitlines()][0]
+    alone = used(dn).splitlines()[0]
     check('a night judged alone uses its own median (7.0 Jy) - the defect the frozen mode removes',
           rc == 0 and alone.split(',')[4] == '7.0', alone)
     df, _ = rundir('night_frozen', night)
@@ -175,15 +269,15 @@ def test_frozen(rec, m, used_all):
     check('frozen: rc 0, the done line names the record', rc == 0 and 'read frozen from' in out, out[-400:])
     want = [ln for ln in used_all.splitlines() if ln.startswith('01h,73MHz,I,' + NIGHT)][0]
     check('frozen: the night\'s row is given the median the LST-wide run gave it (3.85 Jy, not its own 7.0 Jy)',
-          used(df).strip() == want,
-          f'{used(df).strip()} / {want}')
+          used(df).splitlines()[0] == want,
+          f'{used(df).splitlines()[0]} / {want}')
     check('frozen: the run\'s own median is printed beside the frozen one, not used',
           'recorded median 3.85 Jy over 2 rows (used)' in out and "own 1 rows give 7.0 Jy (not used)" in out, out[-500:])
     # a night with a row of 41 MHz V only: its look-up of ('01h', '41MHz', 'V') and the I key answer as LST-wide
     nv = [('01h', '41MHz', 'V', '2025-01-09T00', '5.0', '10')]
     dv, _ = rundir('night_v', nv)
     rc, out = child(m, dv, 'frozen', rec, acc)
-    g = used(dv).strip().split(',')
+    g = used(dv).splitlines()[0].split(',')
     check('frozen: a key this run has no row of answers as LST-wide (the record is used whole)',
           rc == 0 and abs(float(g[4]) - 0.105) < 1e-12 and abs(float(g[5]) - 0.105) < 1e-12 and g[6] == '0.0', used(dv))
     # refusals
@@ -231,6 +325,96 @@ def test_frozen(rec, m, used_all):
           and norm_of(m5) != norm_of(m), f'{norm_of(m5)} {norm_of(m6)}')
 
 
+def test_evidence():
+    """The pulsar step's rows of other nights (patches P2 - P5)."""
+    d0, m = rundir('ev_plain', EROWS)
+    rc0, out0 = child(m, d0)
+    all_v, all_n = psr(d0)
+    check('evidence: unpatched, all nights - the night\'s row takes a verdict from BOTH pulsars the notes name (groups of 5: the '
+          'daytime row is out)', rc0 == 0 and [v.split(',')[:2] for v in all_v.get('n1', '').split(';')]
+          == [['J0001+01', '5'], ['J0002+02', '5']] and all_n == 'rows 8', f'{all_v} {all_n} {out0[-300:]}')
+    d1, _ = rundir('ev_pass', EROWS)
+    rc1, out1 = child(m, d1, 'passthrough')
+    check('evidence: passthrough equals the unpatched run, byte for byte', rc1 == 0 and used(d1) == used(d0), out1[-300:])
+    d2, _ = rundir('ev_record', EROWS)
+    rec, evr = os.path.join(d2, CN.FILE), os.path.join(d2, CN.EVIDENCE_FILE)
+    rc2, out2 = child(m, d2, 'record', rec)
+    check('evidence: record mode equals the unpatched run, byte for byte', rc2 == 0 and used(d2) == used(d0), out2[-300:])
+    rows, shas, _sha = CN.read_evidence(evr) if os.path.isfile(evr) else ([], set(), '')
+    by = {r['cand_id']: r for r in rows}
+    check('evidence: the record holds every row within its frame beam of a pulsar, in the module\'s order, and no other',
+          [r['cand_id'] for r in rows] == ['a1', 'a2', 'a3', 'n1', 'd1', 'x1', 'u1'], [r['cand_id'] for r in rows])
+    check('evidence: the record carries the catalog\'s own strings, the frame beam, the daytime verdict, the note\'s pulsar',
+          bool(by) and by['a1']['ra'] == '10.01' and by['a1']['beam_deg'] == '0.5' and by['a1']['note_pulsar'] == 'J0001+01'
+          and by['a3']['note_pulsar'] == 'J0002+02' and by['a2']['note_pulsar'] == '' and by['d1']['day'] == 'daytime: stand-in'
+          and by['a2']['day'] == '' and shas == {norm_of(m)}, by.get('a1'))
+    check('evidence: the recorded position error is the module\'s own (repr), empty for a row without a window tie',
+          bool(by) and by['a1']['sig_arcsec'] == repr(math.hypot(10.0 / 10, 0.5)) and by['u1']['sig_arcsec'] == '', by.get('u1'))
+    acc = [norm_of(m)]
+    night = [r for r in EROWS if r['date'].startswith(NIGHT)]
+    dn, _ = rundir('ev_night_alone', night)
+    rc, out = child(m, dn)
+    check('evidence: the night judged alone loses its group - no verdict for its row (the defect)', rc == 0 and psr(dn) == ({}, 'rows 1'),
+          psr(dn))
+    df, _ = rundir('ev_night_frozen', night)
+    rc, out = child(m, df, 'frozen', rec, acc)
+    fv, fn = psr(df) if rc == 0 else ({}, '')
+    check('evidence: frozen - the night\'s row takes the verdicts the all-nights run gave it, from both pulsars, value for value',
+          rc == 0 and fv == {'n1': all_v['n1']}, f'{fv} / {all_v.get("n1")} {out[-400:]}')
+    check('evidence: frozen - no evidence row is left in the module\'s rows after its pulsar step', fn == 'rows 1', fn)
+    check('evidence: frozen - the done line counts the recorded rows read, joined, and the pulsar only other nights name',
+          '6 recorded detection(s) of other nights' in out and '4 joined a group' in out and 'in 2 pulsar look-up(s)' in out
+          and '1 pulsar(s) named only by other nights' in out, out[-500:])
+    rc, out = child(m, df, 'frozen', rec, acc, extra={'STANDIN_EXCLUDED': '01h,41MHz,2025-01-05T00'})
+    fv, fn = psr(df) if rc == 0 else ({}, '')
+    check('evidence: frozen - a cell excluded since the record leaves the groups (exclusion is tested live): groups of 4',
+          rc == 0 and [v.split(',')[:2] for v in fv.get('n1', '').split(';')] == [['J0001+01', '4'], ['J0002+02', '4']], f'{fv} {out[-300:]}')
+    # refusals
+    two = night + [erow('n2', NIGHT + 'T01', 50.0, -5.01, 9, 'PSR J0003+03', '1')]
+    d3, _ = rundir('ev_night_untied', two)
+    rc, out = child(m, d3, 'frozen', rec, acc)
+    check('evidence: frozen - a group that needs an evidence row without a position error refuses, naming the row',
+          rc == 2 and 'u1 joins a pulsar\'s group and holds no recorded position error' in out, out[-300:])
+    d4, _ = rundir('ev_two_nights', night + [EROWS[0]])
+    rc, out = child(m, d4, 'frozen', rec, acc)
+    check('evidence: frozen - a row of another night in the run refuses', rc == 2 and 'rows of 1 other night(s)' in out
+          and '2025-01-01' in out, out[-300:])
+    rc, out = child(m, df, 'frozen', rec, acc, night='')
+    check('evidence: frozen - no night named refuses', rc == 2 and 'is not a night YYYY-MM-DD' in out, out[-300:])
+    rc, out = child(m, df, 'frozen', rec, acc, evidence=os.path.join(T, 'no_such_evidence.csv'))
+    check('evidence: frozen - no evidence record refuses, naming the LST-wide conformance', rc == 2
+          and 'no pulsar-evidence record' in out and '--stages conform' in out, out[-300:])
+    body = open(evr).read()
+    bad = os.path.join(T, 'bad_evidence.csv')
+    with open(bad, 'w') as f:
+        f.write(body.replace('sig_arcsec', 'sig'))
+    rc, out = child(m, df, 'frozen', rec, acc, evidence=bad)
+    check('evidence: frozen - a record with other columns refuses', rc == 2 and 'not a pulsar-evidence record' in out, out[-300:])
+    with open(bad, 'w') as f:
+        f.write(body + body.splitlines()[1] + '\n')
+    rc, out = child(m, df, 'frozen', rec, acc, evidence=bad)
+    check('evidence: frozen - a record with a cand_id twice refuses', rc == 2 and 'occurs twice' in out, out[-300:])
+    with open(bad, 'w') as f:
+        f.write(body.replace(',0.5,', ',-0.5,', 1))
+    rc, out = child(m, df, 'frozen', rec, acc, evidence=bad)
+    check('evidence: frozen - a record with a non-positive beam refuses', rc == 2 and 'not a finite positive number' in out, out[-300:])
+    with open(bad, 'w') as f:
+        f.write(body.replace(norm_of(m), '0' * 40, 1))
+    rc, out = child(m, df, 'frozen', rec, acc, evidence=bad)
+    check('evidence: frozen - a record written by another module version refuses', rc == 2 and 'recorded by other code' in out,
+          out[-300:])
+    for mode in ('record', 'frozen'):
+        d5, _ = rundir(f'ev_cadence_{mode}', night)
+        rc, out = child(m, d5, mode, rec if mode == 'frozen' else os.path.join(d5, CN.FILE), acc, extra={'P3_CADENCE': 'deep'})
+        check(f'evidence: {mode} - another cadence than the 10-minute one refuses', rc == 2 and 'cadence only' in out, out[-300:])
+    env = {k: v for k, v in os.environ.items() if not k.startswith('EXOPIPE3_CONFORM_NOISE_')}
+    env.update(P3_CADENCE='10min', EXOPIPE3_CONFORM_NOISE_MODE='record', EXOPIPE3_CONFORM_NOISE_RECORD=os.path.join(d5, CN.FILE))
+    r = subprocess.run([sys.executable, RUNNER, m, d5], env=env, cwd=d5, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True)
+    check('evidence: record - no evidence path refuses', r.returncode == 2 and 'EXOPIPE3_CONFORM_NOISE_EVIDENCE is not set' in r.stdout,
+          r.stdout[-300:])
+
+
 def test_patch():
     def refuses(src, what):
         try:
@@ -239,9 +423,18 @@ def test_patch():
             return what in str(e)
         return False
     line = CN.PATCHES[0][1]
-    check('patch: applies to the stand-in (one patch, the hook\'s call in place of the line)',
-          CN.patch(STANDIN)[1] == ['P1-table-noise'] and '__CONFORM_NOISE__.medians(_RMS, np)' in CN.patch(STANDIN)[0]
-          and line not in CN.patch(STANDIN)[0])
+    names = ['P1-table-noise', 'P2-pulsar-loop', 'P3-pulsar-near', 'P4-pulsar-error', 'P5-pulsar-release']
+    check('patch: applies to the stand-in (five patches, the hook\'s calls in place of the lines)',
+          CN.patch(STANDIN)[1] == names and '__CONFORM_NOISE__.medians(_RMS, np)' in CN.patch(STANDIN)[0]
+          and line not in CN.patch(STANDIN)[0] and all(CN.patch(STANDIN)[0].count(f'__CONFORM_NOISE__.{h}(') == 1
+                                                         for h in ('evidence', 'pulsars', 'near', 'sig', 'release')))
+    for nm, old, _new in CN.PATCHES[1:]:
+        check(f'patch: a module without the {nm} text refuses', refuses(STANDIN.replace(old, old.replace(old.strip()[:6], old.strip()[:6].upper(), 1)),
+                                                                      f'{nm}: its text occurs 0 times'))
+    check('patch: a second call of the position-error function refuses (census)',
+          refuses(STANDIN + '_sig_row(raw[0])\n', "census '_sig_row('"))
+    check('patch: a second reader of the pulsars the notes name refuses (census)',
+          refuses(STANDIN + 'print(len(_psr_rows))\n', "census '_psr_rows'"))
     check('patch: a module without the line refuses', refuses(STANDIN.replace(line, '_RMS = {}\n'), 'occurs 0 times'))
     check('patch: a module with the line twice refuses', refuses(STANDIN.replace(line, line + line), 'occurs 2 times'))
     check('patch: another use of the name refuses (census)', refuses(STANDIN + 'print(len(_RMS))\n', "census '_RMS'"))
@@ -260,11 +453,21 @@ def test_wiring():
           "EXOPIPE3_CONFORM_NOISE_MODE='record'" in body and 'conform_noise_runner(), [script, U]' in body
           and "s.out(rec, 'csv_table')" in body and "last_line(res.tail, r'^CONFORM-NOISE done')" in body
           and body.index('need_ok(res') < body.index("last_line(res.tail, r'^CONFORM-NOISE done')"))
+    check('wiring: record mode writes the pulsar-evidence record beside the noise record and registers it; a missing one refuses',
+          'EXOPIPE3_CONFORM_NOISE_EVIDENCE=evr' in body and 'evr = conform_pulsar_evidence(U)' in body
+          and "s.out(evr, 'csv_table')" in body and 'not os.path.isfile(evr)' in body)
+    check('wiring: the night pass reads the pulsar evidence of the frozen-from directory for its night; a missing record refuses '
+          'before the module runs',
+          'conform_pulsar_evidence(ctx.frozen_from)' in body and 'EXOPIPE3_CONFORM_NOISE_EVIDENCE=evid' in body
+          and 'EXOPIPE3_CONFORM_NOISE_NIGHT=ctx.night' in body and 's.inp(frozen, evid)' in body
+          and body.index('if not os.path.isfile(evid):') < body.index("EXOPIPE3_CONFORM_NOISE_MODE='frozen'")
+          and "'pulsar evidence:' not in done" in body)
     check('wiring: with the key off the module runs as before', "res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)"
           in body)
     from exopipe.phase3.lib.catalog import tier_sublst as TS
     check('wiring: the runner and the record name are the wrap\'s', TS.conform_noise_runner() == RUNNER
-          and os.path.basename(TS.conform_noise_record('/x')) == CN.FILE)
+          and os.path.basename(TS.conform_noise_record('/x')) == CN.FILE
+          and os.path.basename(TS.conform_pulsar_evidence('/x')) == CN.EVIDENCE_FILE)
     from exopipe.phase3.core import env as _env
     _env.legacy()
     from exopipe.phase3.config import CFG
@@ -299,6 +502,7 @@ def main():
     try:
         rec, m, used_all = test_passthrough_and_record()
         test_frozen(rec, m, used_all)
+        test_evidence()
         test_patch()
         test_wiring()
     finally:

@@ -252,7 +252,8 @@ def test_wiring():
           "EXOPIPE3_CONFORM_NOISE_MODE='frozen'" in conf and 'EXOPIPE3_CONFORM_NOISE_RECORD=frozen' in conf
           and "','.join(shared('catalog_conform', 'NOISE_MODULE_SHA1'))" in conf)
     check('wiring: a night writes no record of its own, and a missing LST-wide record refuses before the module runs',
-          'frozen, rec_on = conform_noise_record(ctx.frozen_from), False' in conf and 'no table-noise record' in conf
+          'frozen, evid, rec_on = conform_noise_record(ctx.frozen_from), conform_pulsar_evidence(ctx.frozen_from), False' in conf
+          and 'no table-noise record' in conf
           and conf.index('no table-noise record') < conf.index("EXOPIPE3_CONFORM_NOISE_MODE='frozen'"))
     if not os.environ.get('EXOPIPE3_SITE'):
         print('SKIP  command line of the night pass: no site file on this machine (EXOPIPE3_SITE)')
