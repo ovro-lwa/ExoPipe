@@ -478,6 +478,38 @@ def _vetoed(lst, band, night):
 
 
 @content_test('sublst_window_master')
+def master_record_problems(h, rows, k):
+    """A window Master's header against its own weights record ``rows`` [(night, weight)], no other file read: COADDOP;
+    LSTWIN = window k; NCOADD = the weighted nights, at least LOO_MIN_WEIGHTED_NIGHTS of them, of at least 2 listed;
+    CONSTDIG = md5 of the sorted night list; HISTORY lists the weighted nights as constituents and the others as NOT in
+    the Master; a JUPMASK card. [] when consistent. ONE definition for the Master's content test (window_master_record)
+    and for the per-hour stage that subtracts an installed Master (sublst_nonmember.master_problems, gate N-8)."""
+    s = _sec()
+    nights = [n for n, _ in rows]
+    weighted = sorted(n for n, w in rows if w > 0)
+    problems = []
+    if h.get('COADDOP') != s.WINDOW_COADDOP:
+        problems.append(f'COADDOP {h.get("COADDOP")!r}')
+    if h.get('LSTWIN') != k:
+        problems.append(f'LSTWIN {h.get("LSTWIN")} != w{k}')
+    try:
+        ncoadd = int(h.get('NCOADD', -1))
+    except (TypeError, ValueError):                       # a card that is not a number: reported, not raised
+        ncoadd = -1
+    if ncoadd != len(weighted) or len(weighted) < s.LOO_MIN_WEIGHTED_NIGHTS or len(rows) < 2:
+        problems.append(f'NCOADD {h.get("NCOADD")} vs {len(weighted)} weighted of {len(rows)} nights')
+    if h.get('CONSTDIG') != hashlib.md5(','.join(sorted(nights)).encode()).hexdigest():
+        problems.append('CONSTDIG != md5 of the sorted night list')
+    hist = [str(x) for x in h.get('HISTORY', [])]
+    cons = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('window-Master constituent '))
+    notin = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('NOT in the Master'))
+    if cons != weighted or notin != sorted(n for n, w in rows if w <= 0):
+        problems.append(f'HISTORY constituents {len(cons)} / not-in {len(notin)} disagree with the weights record')
+    if 'JUPMASK' not in h:
+        problems.append('no JUPMASK card')
+    return problems
+
+
 def window_master_record(path, lst=None, subband=None, **ctx):
     """COADDOP; NCOADD = weighted nights >= LOO_MIN_WEIGHTED_NIGHTS; CONSTDIG = md5 of the sorted night list; HISTORY lists
     the weighted nights as constituents and the others as NOT in the Master; weights = the frozen deep record (in_master 0
@@ -493,24 +525,8 @@ def window_master_record(path, lst=None, subband=None, **ctx):
     if not os.path.isfile(wp):
         return False, None, f'no weights record {os.path.basename(wp)}'
     rows = _weights_csv(wp)
-    nights = [n for n, _ in rows]
     weighted = sorted(n for n, w in rows if w > 0)
-    problems = []
-    if h.get('COADDOP') != s.WINDOW_COADDOP:
-        problems.append(f'COADDOP {h.get("COADDOP")!r}')
-    if h.get('LSTWIN') != k:
-        problems.append(f'LSTWIN {h.get("LSTWIN")} != w{k}')
-    if int(h.get('NCOADD', -1)) != len(weighted) or len(weighted) < s.LOO_MIN_WEIGHTED_NIGHTS or len(rows) < 2:
-        problems.append(f'NCOADD {h.get("NCOADD")} vs {len(weighted)} weighted of {len(rows)} nights')
-    if h.get('CONSTDIG') != hashlib.md5(','.join(sorted(nights)).encode()).hexdigest():
-        problems.append('CONSTDIG != md5 of the sorted night list')
-    hist = [str(x) for x in h.get('HISTORY', [])]
-    cons = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('window-Master constituent '))
-    notin = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('NOT in the Master'))
-    if cons != weighted or notin != sorted(n for n, w in rows if w <= 0):
-        problems.append(f'HISTORY constituents {len(cons)} / not-in {len(notin)} disagree with the weights record')
-    if 'JUPMASK' not in h:
-        problems.append('no JUPMASK card')
+    problems = master_record_problems(h, rows, k)
     fr = _T_mod().frozen_weights(lst, band)
     if not os.path.isfile(fr):
         problems.append(f'frozen record {fr} missing')

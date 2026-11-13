@@ -19,8 +19,11 @@ Asserts:
   membership   a night with weight above 0 in an installed window Master is REFUSED and the refusal names
                `masters --tier sublst --stages loo`; a night listed with weight 0 is served
   masters      no installed Master of a Stokes: unit refused, the batch stage named; one window's Master missing: item
-               refusal, the other windows written; every window refused: unit refused; an unusable Master (COADDOP,
-               NCOADD, no weights record, an excluded constituent): refused
+               refusal, the other windows written; no window with a Master: unit refused, nothing moved aside; an
+               unusable Master (COADDOP, NCOADD, CONSTDIG, HISTORY, no weights record, an excluded constituent): refused,
+               by the same function as the Master's own content test
+  content test a residual that fails it: every residual of the unit removed, unit refused (N-12); never waivable
+  dry run      agrees with the real run under --resume (a unit valid by its record is skipped, not refused)
   stack        no plan; no done stack record; a window file missing; a sibling missing; no admission record; windows not
                those of the record; 'log' evidence with and without the completion line
   exclusion    a night excluded in data_decisions.csv is refused by the readers the stack stage uses; nothing written
@@ -53,6 +56,7 @@ try:
     from astropy.io import fits
 
     from exopipe.phase3.config import CFG
+    from exopipe.phase3.core import exclusions as EX
     from exopipe.phase3.core import record, validate
     from exopipe.phase3.lib.frames import tier_sublst as FT
     from exopipe.phase3.lib.masters import coadd as CO
@@ -403,14 +407,21 @@ def test_missing_installed_master():
         for k in (0, 1):
             os.unlink(t.master_paths('18MHz', 'I', k)[0])
         run, _ = t.run(stokes=('I',))
-        u = unit(run, '18MHz')
-        assert u.status == 'refused' and 'every planned item refused' in u.reason, (u.status, u.reason)
+        refused(run, '18MHz', 'N-7', 'no window of the night has an installed window Master')
         assert t.residuals() == []
+        # a unit that can write nothing moves nothing aside either: an earlier residual stays where it is
+        with open(t.resid('18MHz', 'I', 0), 'wb') as f:
+            f.write(b'residual of an earlier run')
+        run, _ = t.run(stokes=('I',), fresh=True, supersede='tag0')
+        refused(run, '18MHz', 'N-7')
+        assert open(t.resid('18MHz', 'I', 0), 'rb').read() == b'residual of an earlier run'
+        assert not os.path.exists(os.path.join(t.root, '_superseded'))
 
 
 def test_unusable_installed_master():
     for change, needle in ((dict(COADDOP='another-generation'), 'COADDOP'), (dict(NCOADD=7), 'NCOADD'),
-                           (dict(JUPMASK=None), 'JUPMASK'), (dict(LSTWIN=4), 'LSTWIN')):
+                           (dict(JUPMASK=None), 'JUPMASK'), (dict(LSTWIN=4), 'LSTWIN'),
+                           (dict(CONSTDIG='0' * 32), 'CONSTDIG')):
         with Tree(sbs=('18MHz',), stokes=('I',)) as t:
             t.write_master('18MHz', 'I', 1, **change)
             run, _ = t.run(stokes=('I',))
@@ -424,6 +435,20 @@ def test_unusable_installed_master():
         t.write_master('18MHz', 'I', 0, rows=[(MEMBERS[0], 0.8), (MEMBERS[1], 0.0)])
         run, _ = t.run(stokes=('I',))
         refused(run, '18MHz', 'N-8', 'fewer than')
+    with Tree(sbs=('18MHz',), stokes=('I',)) as t:           # the weights record gained a night after the Master was written
+        with open(t.master_paths('18MHz', 'I', 2)[1], 'a') as f:
+            f.write('2023-12-31,0.0\n')
+        run, _ = t.run(stokes=('I',))
+        refused(run, '18MHz', 'N-8', 'CONSTDIG', 'HISTORY')
+        assert t.residuals() == []
+    with Tree(sbs=('18MHz',), stokes=('I',)) as t:           # the stage's check IS the Master's own content test's
+        mp, wp = t.master_paths('18MHz', 'I', 1)
+        rows = NM.read_weights(wp)
+        assert TST.master_record_problems(fits.getheader(mp), rows, 1) == []
+        assert NM.master_problems(fits.getheader(mp), rows, 1, EX.load(), LST, '18MHz') == []
+        t.write_master('18MHz', 'I', 1, CONSTDIG='0' * 32)
+        shared = TST.master_record_problems(fits.getheader(mp), rows, 1)
+        assert shared and NM.master_problems(fits.getheader(mp), rows, 1, EX.load(), LST, '18MHz') == shared
     with Tree(sbs=('18MHz',), stokes=('I',), excluded=[(LST, '18MHz', MEMBERS[1])]) as t:
         run, _ = t.run(stokes=('I',))                        # a constituent of the Master is excluded now
         refused(run, '18MHz', 'N-8', 'excluded in data_decisions.csv now', BATCH)
@@ -526,6 +551,13 @@ def test_flux_scale_and_time_block():
         run, _ = t.run(stokes=('I',))
         refused(run, '18MHz', 'N-9', 'flux scales')
         assert t.residuals() == []
+    with Tree(sbs=('18MHz',), stokes=('I',)) as t:           # neither the stack nor the Master carries the correction in
+        for q in [t.window('18MHz', 'I', k) for k in t.windows] + [t.master_paths('18MHz', 'I', k)[0] for k in range(6)]:
+            with fits.open(q, mode='update') as hd:          # its pixels: the same scale, and still no residual (the
+                hd[0].header['FLUXBAKE'] = False             # residual's content test requires FLUXBAKE)
+        run, _ = t.run(stokes=('I',))
+        refused(run, '18MHz', 'N-9', 'FLUXBAKE')
+        assert t.residuals() == []
     with Tree(sbs=('18MHz',), stokes=('I',)) as t:           # no DATE-END: no DURATION is assumed, nothing is written
         with fits.open(t.window('18MHz', 'I', 3), mode='update') as hd:
             del hd[0].header['DATE-END']
@@ -551,6 +583,49 @@ def test_earlier_residuals_and_supersede():
         shutil.copy(t.resid('18MHz', 'I', 0), stale)
         run, _ = t.run(stokes=('I',), fresh=True, supersede='tag2')
         assert unit(run, '18MHz').status == 'done' and not os.path.exists(stale)
+
+
+def test_failed_content_test_leaves_no_residual():
+    assert 'sublst_nonmember_residual.nonmember_residual_identity' in TS.NEVER_WAIVABLE
+    real = NM.write_residual
+
+    def one_wrong(item, code):                               # window 2 is written with one pixel off by one float32 step
+        p = real(item, code)
+        if item['k'] == 2:
+            with fits.open(p, memmap=False) as hd:
+                d, h = np.array(hd[0].data, dtype=np.float32), hd[0].header.copy()
+            i = np.flatnonzero(np.isfinite(d))[7]
+            d.flat[i] = np.nextafter(d.flat[i], np.float32(np.inf))
+            fits.writeto(p, d, h, overwrite=True)
+        return p
+
+    with Tree(sbs=('18MHz', '73MHz'), stokes=('I',)) as t:
+        with Patch((NM, 'write_residual', one_wrong)):
+            run, _ = t.run(stokes=('I',))
+        for sb in ('18MHz', '73MHz'):
+            u = refused(run, sb, 'N-12', f'1 of {len(t.windows)} residual(s) failed', 'removed')
+            assert u.outputs == [] and [x for x in u.tests if not x['passed']], u.tests
+        assert t.residuals() == [], 'a residual stayed where the wideband, tree and search stages read it'
+        assert run.exit_code() == record.EXIT_REFUSED
+        run, _ = t.run(stokes=('I',))                        # nothing was left behind: the next run needs no --supersede
+        assert unit(run, '18MHz').status == 'done' and len(t.residuals()) == 2 * len(t.windows)
+
+
+def test_dry_run_agrees_with_resume():
+    with Tree(sbs=('18MHz',), stokes=('I',)) as t:
+        run, _ = t.run(stokes=('I',))
+        assert unit(run, '18MHz').status == 'done'
+        _dry, bad = t.run(stokes=('I',), dry=True)           # without --resume the earlier residuals refuse (N-11)
+        assert bad == 1
+        for valid in (True, False):                          # --resume: skipped when the record is valid, as the real run
+            with Patch((record, 'resume_check', lambda *a, _v=valid, **k: (_v, 'stand-in'))):
+                real, _ = t.run(stokes=('I',), resume=True)
+                _dry, bad = t.run(stokes=('I',), dry=True, resume=True)
+            assert (unit(real, '18MHz').status == 'skipped-valid') == valid, unit(real, '18MHz').status
+            assert bad == (0 if valid else 1), (valid, bad)
+        real, _ = t.run(stokes=('I',), resume=True)          # and with the real check, whatever this checkout's state
+        _dry, bad = t.run(stokes=('I',), dry=True, resume=True)
+        assert (bad == 0) == (unit(real, '18MHz').status == 'skipped-valid')
 
 
 def test_nothing_owed_is_no_input():
@@ -604,8 +679,8 @@ def test_frames_stage():
 TESTS = [test_residual_is_window_minus_installed_master, test_arithmetic_function, test_member_night_is_refused,
          test_night_listed_with_weight_zero_is_served, test_missing_installed_master, test_unusable_installed_master,
          test_stack_missing_or_incomplete, test_stack_log_evidence, test_excluded_night_is_refused,
-         test_flux_scale_and_time_block, test_earlier_residuals_and_supersede, test_nothing_owed_is_no_input,
-         test_dry_run_writes_nothing, test_frames_stage]
+         test_flux_scale_and_time_block, test_earlier_residuals_and_supersede, test_failed_content_test_leaves_no_residual,
+         test_dry_run_agrees_with_resume, test_nothing_owed_is_no_input, test_dry_run_writes_nothing, test_frames_stage]
 
 
 def main(argv):

@@ -53,15 +53,22 @@ Failure modes (exit 2 = refused, the gate named in the record; nothing is writte
   N-6  no installed window Master of the (LST, subband, Stokes) at all: `masters --tier sublst --stages loo` writes them.
   N-7  the installed Master of ONE window is missing where the night has a stack: that window's residual is an item
        refusal (production's batch writes no residual for a window without a Master either); the unit completes with
-       the other windows, and is refused when every window is refused.
-  N-8  an installed Master cannot be subtracted: no weights record, COADDOP of another generation, NCOADD or the HISTORY
-       constituents disagree with the weights record, fewer than masters_sublst.LOO_MIN_WEIGHTED_NIGHTS weighted nights,
-       LSTWIN is not the window, no JUPMASK card, another image shape, or a constituent excluded in data_decisions.csv
-       now (the Master must be rebuilt by the batch stage).
-  N-9  the stack and the Master carry different flux scales (baked flag, pixel factor): production refuses such a window.
+       the other windows. When NO window of the night has a Master the unit is refused as a whole, before anything is
+       moved or written.
+  N-8  an installed Master cannot be subtracted: no weights record; its header disagrees with its weights record by the
+       Master's own content test (tests_sublst.master_record_problems: COADDOP of another generation, LSTWIN, NCOADD,
+       CONSTDIG, the HISTORY lists of constituents and of nights not in the Master, fewer than
+       masters_sublst.LOO_MIN_WEIGHTED_NIGHTS weighted nights, no JUPMASK card); another image shape; or a constituent
+       excluded in data_decisions.csv now (the Master must be rebuilt by the batch stage).
+  N-9  the stack and the Master carry different flux scales (baked flag, pixel factor): production refuses such a window;
+       or the stack's pixels do not carry the flux correction (FLUXBAKE is not True).
   N-10 the stack's own time block (DATE-OBS, DATE-END) cannot be read: no DURATION is assumed.
   N-11 residuals of an earlier run where this unit writes, without --fresh --supersede TAG (G-S01).
-  N-12 a written residual fails its content test (class sublst_nonmember_residual: the pixel identity, exact).
+  N-12 a written residual fails its content test (class sublst_nonmember_residual: the pixel identity, exact; never
+       waivable): every residual the unit wrote is removed and the unit is refused.
+With --fresh --supersede TAG the earlier residuals are moved to <out>/_superseded/<TAG>/ (sha1 manifest) once every gate
+N-1 to N-10 has passed; a unit that then fails while writing, or at N-12, leaves no residual of its own and the earlier
+ones under _superseded/<TAG>/ (as every stage with --supersede).
 Exit 3 (no input, never done): the plan holds no job of the night in this selection (the admission left every subband
 out by rule; the reasons are in the admit record). Exit 1: an error (for example an unreadable FITS file).
 
@@ -284,31 +291,18 @@ def read_weights(path):
 
 
 def master_problems(header, rows, k, ex, lst, sb):
-    """Why an installed window Master cannot be subtracted (N-8), [] when it can: the checks of the Master's own content
-    test that concern its pixels and its record (lib/masters/tests_sublst.window_master_record: COADDOP, LSTWIN, NCOADD =
-    the weighted nights, at least LOO_MIN_WEIGHTED_NIGHTS of them, the HISTORY constituents = the weighted nights, a
-    JUPMASK card, no constituent excluded now). Its comparison with the frozen deep record is the batch stage's."""
+    """Why an installed window Master cannot be subtracted (N-8), [] when it can: the Master's header against its own
+    weights record, by the SAME function as the Master's content test (tests_sublst.master_record_problems: COADDOP,
+    LSTWIN, NCOADD = the weighted nights, at least LOO_MIN_WEIGHTED_NIGHTS of them, CONSTDIG = md5 of the listed nights,
+    HISTORY = the constituents and the nights not in the Master, a JUPMASK card), plus: at least PER_NIGHT_MIN weighted
+    nights (the residual's LOONCOAD), and no constituent excluded now. The content test's comparison with the frozen deep
+    record is the batch stage's: an installed Master stays the reference after the deep record has moved on."""
+    from exopipe.phase3.lib.masters import tests_sublst as TST
     s = TS._sec()
     weighted = sorted(n for n, w in rows if w > 0)
-    out = []
-    if header.get('COADDOP') != s.WINDOW_COADDOP:
-        out.append(f'COADDOP {header.get("COADDOP")!r} is not {s.WINDOW_COADDOP!r}')
-    if header.get('LSTWIN') != k:
-        out.append(f'LSTWIN {header.get("LSTWIN")!r} is not window {k}')
-    try:
-        ncoadd = int(header.get('NCOADD', -1))
-    except (TypeError, ValueError):
-        ncoadd = -1
-    if ncoadd != len(weighted):
-        out.append(f'NCOADD {header.get("NCOADD")!r} != {len(weighted)} weighted night(s) of the weights record')
-    if len(weighted) < max(int(s.LOO_MIN_WEIGHTED_NIGHTS), int(s.PER_NIGHT_MIN)):
-        out.append(f'{len(weighted)} weighted night(s): fewer than the {s.LOO_MIN_WEIGHTED_NIGHTS} a window Master needs')
-    hist = [str(x) for x in header.get('HISTORY', [])]
-    cons = sorted(x.rsplit(' ', 1)[1] for x in hist if x.startswith('window-Master constituent '))
-    if cons != weighted:
-        out.append(f'HISTORY names {len(cons)} constituent(s), the weights record weights {len(weighted)}')
-    if 'JUPMASK' not in header:
-        out.append('no JUPMASK card')
+    out = list(TST.master_record_problems(header, rows, k))
+    if len(weighted) < int(s.PER_NIGHT_MIN):
+        out.append(f'{len(weighted)} weighted night(s): fewer than the {s.PER_NIGHT_MIN} a residual needs (PER_NIGHT_MIN)')
     gone = [n for n in weighted if ex.is_excluded(lst, sb, n)]
     if gone:
         out.append(f'constituent night(s) {gone} are excluded in data_decisions.csv now (exclusion is absolute: the Master '
@@ -390,6 +384,10 @@ def assess(run, root, lst, cell, sb, stokes, how, ex):
             if fs != fm:
                 bad_scale.append(f'w{k} Stokes {S}: stack (baked, pixel factor) {fs} != Master {fm}')
                 continue
+            if sh.get('FLUXBAKE') is not True:               # the residual inherits the card; its content test requires it
+                bad_scale.append(f'w{k} Stokes {S}: the stack\'s pixels do not carry the flux correction (FLUXBAKE '
+                                 f'{sh.get("FLUXBAKE")!r})')
+                continue
             try:
                 duration_s(sh)
             except Refusal as e:
@@ -405,7 +403,8 @@ def assess(run, root, lst, cell, sb, stokes, how, ex):
         out['refuse'] = (f'N-8: installed window Master(s) of {lst} {sb} cannot be subtracted: ' + ' | '.join(bad_master[:4])
                          + f' - rebuild them with the batch stage `{BATCH_STAGE}`')
     elif bad_scale:
-        out['refuse'] = (f'N-9: {cell} {sb}: the stack and the installed window Master carry different flux scales: '
+        out['refuse'] = (f'N-9: {cell} {sb}: the stack and the installed window Master carry different flux scales, or the '
+                         f'stack\'s pixels do not carry the flux correction: '
                          + '; '.join(bad_scale[:4]) + ' (one flux scale per window, Gregg 2026-10-07; production refuses the '
                                                       'window, clv15/phase3_sublst_loo.py:123-125)')
     elif bad_time:
@@ -467,6 +466,11 @@ def _unit(run, opts, root, lst, cell, sb, stokes, plan_files, how):
             u.note(n)
         if a['refuse']:
             u.refuse(a['refuse'])
+        if not any(it['refuse'] is None for it in a['items']):
+            # nothing to write: refused as a whole and BEFORE earlier residuals are moved aside (a refused unit changes
+            # nothing under the product root)
+            u.refuse(f'N-7: {cell} {sb}: no window of the night has an installed window Master ({len(a["items"])} window '
+                     f'stack(s)): ' + '; '.join(it['refuse'] for it in a['items'][:3]))
         TS.clear_earlier(run, opts, u, _earlier(root, lst, cell, sb, stokes), f'{cell} {sb} non-member residuals')
         for it in a['items']:
             u.plan(it['resid'], PRODUCT_CLASS)
@@ -490,6 +494,19 @@ def _unit(run, opts, root, lst, cell, sb, stokes, plan_files, how):
             raise
         for p in written:
             u.add_output(p, PRODUCT_CLASS, master_root=mroot)
+        mine = {os.path.abspath(p) for p in written}
+        failed = [t for t in u.failed_tests() if t.get('path') in mine]
+        if failed:
+            # N-12: the wideband, tree and search stages take the night's residuals from the directory, so a residual
+            # that failed its content test must not stay there, and no partial set either: every residual this unit
+            # wrote is removed (the tests stay in the record) and the unit is refused
+            for p in written:
+                if os.path.lexists(p):
+                    os.unlink(p)
+            u.outputs[:] = [o for o in u.outputs if o['path'] not in mine]
+            u.refuse(f'N-12: {len({t["path"] for t in failed})} of {len(written)} residual(s) failed the content test, e.g. '
+                     f'{os.path.basename(failed[0]["path"])}: {failed[0]["name"]} ({failed[0].get("detail") or failed[0].get("value")}); '
+                     f'every residual this unit wrote was removed')
         n_written = len(written)
         u.meta.update(residuals=n_written, windows_refused=len(u.refused_items))
         TS.say(f'  {name}: {n_written} residual(s) against the installed window Masters'
@@ -540,6 +557,11 @@ def stage_nonmember(run, opts, sel, root, planned_now=False):
                         a = None if why else assess(run, root, lst, c, sb, st, how, ex)
                         why = why or a['refuse']
                         old = _earlier(root, lst, c, sb, st)
+                        if (not why and old and opts.resume and not opts.fresh
+                                and run.resume_check(unit_name(lst, night, sb), inputs=_inputs(a, files),
+                                                     admitted=[f'{night}/{sb}'])[0]):
+                            TS.say(f'    {unit_name(lst, night, sb)}: valid by its record, WOULD BE SKIPPED (--resume)')
+                            continue                         # what the real run does (tier_sublst.resume_skip)
                         if not why and old and not (opts.fresh and opts.supersede):
                             why = f'N-11 (G-S01): {len(old)} residual(s) of an earlier run, e.g. {old[0]} (no --fresh --supersede)'
                     except Refusal as e:

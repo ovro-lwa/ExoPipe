@@ -173,7 +173,8 @@ NEVER_WAIVABLE = ('sublst_input_copy.copy_md5_equals_source', 'sublst_job_plan.p
                   'sublst_fluxdc_record.fluxdc_current', 'master_catalog.sidecar_md5',
                   'snapshot_master_registry.registry_matches_tree', 'snapshot_pb_library.library_maps',
                   'snapshot.G-D01_links_into_frozen_tree', 'snapshot.G-D02_md5_equals_manifest', 'snapshot.G-D02_counts',
-                  'snapshot.G-D03_library_complete', 'loo.admission_files')
+                  'snapshot.G-D03_library_complete', 'loo.admission_files',
+                  'sublst_nonmember_residual.nonmember_residual_identity')   # it holds the excluded-night and member checks
 
 
 def waiver_problem(run):
