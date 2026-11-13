@@ -2344,6 +2344,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         elif _vfz10 is not None:                                               # PER-HOUR 10-minute: the recorded median, or the
             _vb = _vfz10['median']                                             # recorded skip (below the minimum), counted as the
             _ok_v = _vfz10['outcome'] == 'applied'                             # whole-cell search counted it
+            print(f"  {lst} {scope}: V SANITY GATE (append) - the base attempt's frozen population: {_vfz10['n']} frames, "
+                  + (f"median {_vb * 1e3:.1f} mJy; this night: {len(_vr)} window(s), frame rms / that median: "
+                     + ', '.join(f'{_d[-2:]}: {_vr[_d] / _vb:.3f}' for _d in sorted(_vr)) if _ok_v
+                     else 'below the minimum, the gate skipped as the whole-cell search skipped it'))
             if not _ok_v:
                 _enough(_vfz10['n'], SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate of an append, frames in the base '
                         f'attempt\'s frozen population', perhour=True)
