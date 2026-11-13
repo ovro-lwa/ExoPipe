@@ -556,19 +556,23 @@ def stage_stack(ctx, lst, nights):
 def stage_nonmember_list(ctx, lst, nights):
     """Put the named night(s) on the non-member nights list when the stack admission needs them there, through
     lib/masters/sublst_nonmember.list_night (rules L-1 .. L-6 there): one unit nonmember-list_<LST>_<night>. Writes nothing
-    when every subband has a usable qa3_scale in the frozen deep weights, or when the night is listed already."""
+    when every subband has a usable qa3_scale in the frozen deep weights, or when the night is listed already. A line of
+    the list switches the admission of the night in EVERY subband, so the step always decides from every subband:
+    --scopes does not narrow it."""
     from exopipe.phase3.core.record import Refusal
     if not nights:
         unit_refused(ctx.run, f'{lst}_nonmember-list', 'the nonmember-list stage lists ONE named night: give --epochs '
                      '<LST>_<date> (or --lsts with --nights)', ctx.dry, ctx, tier=TIER)
         return
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
-    sbs = [s for s in ctx.C.instrument.ALL_SUBBANDS if not ctx.scopes or s in ctx.scopes] or None
+    if ctx.scopes:
+        say(f'frames: nonmember-list {lst}: --scopes is not applied (a line of the list is per LST and night: every '
+            f'subband is read)')
     for n in nights:
         try:
-            res = NM.list_night(ctx.run, lst, n, subbands=sbs)
+            res = NM.list_night(ctx.run, lst, n)
         except (Refusal, SystemExit) as e:
-            unit_refused(ctx.run, f'{lst}_{n}_nonmember-list', f'masters sub-LST wrapper: {e}', ctx.dry, ctx, tier=TIER)
+            unit_refused(ctx.run, NM.list_unit_name(lst, n), f'masters sub-LST wrapper: {e}', ctx.dry, ctx, tier=TIER)
             continue
         if ctx.dry:
             ctx.planned += 1

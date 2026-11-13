@@ -626,11 +626,13 @@ def nonmember_night(run, lst, night, sublst_root=None, subbands=None, stokes=('I
 #       the stack admission takes such a night without the list). A listed night with member rows in some subbands is
 #       the normal state (the list is per night, membership per subband; production's readers subtract the weighted
 #       nights themselves), so member rows are recorded, never refused;
-#   L-3 refuses a night without a cube directory under the cube roots (nothing to stack: no line for a mistyped night);
+#   L-3 refuses a night without a cube directory holding a COMPLETE manifest under the cube roots (nothing to stack: no
+#       line for a mistyped night or a cube still being written);
 #   L-4 appends under an exclusive flock on the list, once (a line already there is not added twice): one '#' line of
 #       provenance and then the exact 'LST NIGHT' line. The file is never rewritten and never created here;
 #   L-5 refuses to write where this run may not: under a production root while paths.PRODUCTION_WRITES is False, or
-#       outside the write guard's roots in a parity run - unless the night is already listed (nothing to write);
+#       outside the write guard's roots in a parity run, or under a production root from a run whose --out is under no
+#       production root (a test or scratch run) - unless the night is already listed (nothing to write);
 #   L-6 reads the list back through tier_sublst.nonmember_nights (the parser of production's readers) and refuses when
 #       the night is not on it.
 # Removal of a line stays a deliberate act by hand; nothing here removes one.
@@ -694,10 +696,12 @@ def _listed(text, lst, night):
     return False
 
 
-def append_list_line(path, lst, night, why):
+def append_list_line(path, lst, night, why, audit=None):
     """L-4: append '# <why>' and '<LST> <night>' to the list under an exclusive flock, unless a line of the night is there.
     Opened for append (every write lands at the end; the file is never rewritten, never created: a missing list raises
-    Refusal); a missing final newline is completed first. Returns True when the line was written."""
+    Refusal); a missing final newline is completed first. Returns True when the line was written. ``audit``: a dict that
+    receives 'sha256_before' and 'sha256_after' of the list, both taken while the lock is held (so the pair brackets this
+    writer's own bytes and no other writer's)."""
     import fcntl
     if not os.path.isfile(path):
         raise Refusal(f'L-4: the non-member nights list {path} does not exist: this step appends to the list production '
@@ -707,18 +711,23 @@ def append_list_line(path, lst, night, why):
         try:
             f.seek(0)
             text = f.read()
+            if audit is not None:
+                audit['sha256_before'] = audit['sha256_after'] = _sha256(path)
             if _listed(text, lst, night):
                 return False
             f.write(('' if not text or text.endswith('\n') else '\n') + f'# {why}\n{lst} {night}\n')
             f.flush()
             os.fsync(f.fileno())
+            if audit is not None:
+                audit['sha256_after'] = _sha256(path)
             return True
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def write_refusal(path):
-    """L-5: why this run may not write the list, or None."""
+def write_refusal(path, out_root=None):
+    """L-5: why this run may not write the list, or None. ``out_root``: the run's --out; a run whose own products go
+    outside the production roots (a test or scratch run) never writes a list under one, whatever PRODUCTION_WRITES says."""
     from exopipe.phase3.core import guard
     from exopipe.phase3.lib.masters import deep_inplace
     if guard.active() and not guard.is_allowed(path):
@@ -726,14 +735,30 @@ def write_refusal(path):
     root = deep_inplace.is_production_path(path)
     if root and not TS.cfg().paths.PRODUCTION_WRITES:
         return f'{path} is under the production root {root} and paths.PRODUCTION_WRITES is False (refactor window)'
+    if root and out_root is not None and not deep_inplace.is_production_path(out_root):
+        return (f'{path} is under the production root {root} and this run writes its products to {out_root}, which is '
+                f'under no production root (a test or scratch run never changes the list production reads)')
     return None
 
 
-def list_assess(lst, night, subbands=None):
+def cube_dir_complete(d):
+    """A cube directory the stack admission can take cubes from: its MANIFEST.txt holds a COMPLETE line (the directory
+    half of tier_sublst.admit_plan's cube test, sublst_run_lst_nocat.sh; the per-subband half - a flowed cube with a
+    Master - stays with the admission, which names every subband it leaves out)."""
+    try:
+        with open(os.path.join(d, 'MANIFEST.txt')) as f:
+            return any(ln.startswith('COMPLETE') for ln in f)
+    except OSError:
+        return False
+
+
+def list_assess(lst, night, subbands=None, out_root=None):
     """Everything the step decides from, read only: {'path', 'listed', 'states' (weights_state per subband, with
     'excluded'), 'need' (subbands that are not excluded and have no usable qa3_scale), 'cubes' (cube directories of the
-    night that exist), 'action', 'refuse'}. action: 'refuse', 'not-needed', 'already-listed' or 'append'. Raises Refusal
-    when the two exclusion readers disagree (G-M01)."""
+    night with a COMPLETE manifest), 'action', 'refuse'}. action: 'refuse', 'not-needed', 'already-listed' or 'append'.
+    ``subbands``: None = every subband (what the stage passes: a line of the list switches the admission of the night in
+    every subband, so a narrower read would decide from part of what the line changes; tests pass a subset).
+    ``out_root``: the run's --out, for L-5. Raises Refusal when the two exclusion readers disagree (G-M01)."""
     cell = f'{lst}_{night}'
     path = TS.nonmember_file()
     states = []
@@ -743,7 +768,8 @@ def list_assess(lst, night, subbands=None):
         st['excluded'] = bool(ex.is_excluded(lst, sb, night))
         states.append(st)
     need = [st['subband'] for st in states if not st['excluded'] and not st['usable']]
-    cubes = [d for d in (os.path.join(TS.cube_root(), cell), os.path.join(TS.deepflow_root(), cell)) if os.path.isdir(d)]
+    cubes = [d for d in (os.path.join(TS.cube_root(), cell), os.path.join(TS.deepflow_root(), cell))
+             if cube_dir_complete(d)]
     listed = night in TS.nonmember_nights(lst)
     a = dict(path=path, listed=listed, states=states, need=need, cubes=cubes, refuse=None)
     if states and all(st['excluded'] for st in states):
@@ -754,10 +780,13 @@ def list_assess(lst, night, subbands=None):
     elif listed:
         a['action'] = 'already-listed'
     elif not cubes:
-        a['refuse'] = (f'L-3: no cube directory of {cell} under {TS.cube_root()} or {TS.deepflow_root()}: nothing to '
-                       f'stack, no line added')
+        a['refuse'] = (f'L-3: no cube directory of {cell} with a COMPLETE manifest under {TS.cube_root()} or '
+                       f'{TS.deepflow_root()}: nothing to stack, no line added')
+    elif not os.path.isfile(path):
+        a['refuse'] = (f'L-4: the non-member nights list {path} does not exist: this step appends to the list production '
+                       f'reads and never creates one')
     else:
-        why = write_refusal(path)
+        why = write_refusal(path, out_root)
         if why:
             a['refuse'] = (f'L-5: {lst} {night} needs a line in the non-member nights list ({len(need)} subband(s) '
                            f'without a usable qa3_scale in the frozen deep weights, e.g. {need[0]}) and this run may '
@@ -794,7 +823,7 @@ def list_night(run, lst, night, subbands=None):
     name = list_unit_name(lst, night)
     if run.dry_run:
         try:
-            a = list_assess(lst, night, subbands)
+            a = list_assess(lst, night, subbands, run.out_root)
         except Refusal as e:
             TS.say(f'[sublst {LIST_STAGE} {lst}_{night}] WOULD REFUSE: {e}')
             return {'unit': name, 'action': 'refuse', 'would_refuse': 1}
@@ -803,11 +832,13 @@ def list_night(run, lst, night, subbands=None):
                                  'not-needed': 'not needed (every subband read has a usable qa3_scale or is excluded): '
                                                'nothing would be written',
                                  'already-listed': 'already listed: nothing would be written',
-                                 'append': f'WOULD APPEND "{lst} {night}" to {a["path"]}'}[a['action']])
+                                 'append': f'WOULD APPEND "{lst} {night}" to {a["path"]} (a dry run writes nothing: '
+                                           f'a stack stage planned in the same dry run reads the list as it is now)'}
+               [a['action']])
         return {'unit': name, 'action': a['action'], 'would_refuse': int(a['action'] == 'refuse')}
     action = 'refuse'                                # a refusal ends the unit's block: the unit record holds the reason
     with run.unit(name, lst=lst, night=night, stage=LIST_STAGE) as u:
-        a = list_assess(lst, night, subbands)
+        a = list_assess(lst, night, subbands, run.out_root)
         u.set_admitted([night])
         for p in [a['path']] + [st['weights'] for st in a['states']]:
             if os.path.exists(p):
@@ -824,11 +855,12 @@ def list_night(run, lst, night, subbands=None):
         if a['refuse']:
             u.refuse(a['refuse'])
         if a['action'] == 'append':
+            audit = {}
             wrote = append_list_line(a['path'], lst, night,
                                      f'{lst} {night}: added {utc} by exopipe3 {LIST_STAGE} (unit {name}): {reason}; '
-                                     f'{LIST_RULING}')
+                                     f'{LIST_RULING}', audit=audit)
             meta['action'] = 'append' if wrote else 'already-listed'      # another writer added it under the lock
-            meta['sha256_after'] = _sha256(a['path'])
+            meta.update(audit)                                            # both hashes taken while the lock was held
             u.note(f'appended "{lst} {night}" to {a["path"]}' if wrote else
                    f'"{lst} {night}" was added to {a["path"]} by another writer meanwhile: nothing written')
         else:
