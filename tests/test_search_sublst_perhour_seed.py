@@ -12,12 +12,14 @@ and the publish copies the attempt's files over the published ones. Two records 
                             the one night's rows.
 
   seed      the seed copies both, byte for byte, with the five items it copied before; items the published cell lacks are
-            skipped; a second seed changes nothing
+            skipped; a second seed changes nothing; a short copy is tried once more and then refused
   rule      with the seed the engine's own check (write_run_record) accepts the attempt and without the record it refuses:
             the defect and its repair, on the engine's function
   append    the night's rows appended to the seeded table record and published leave BOTH nights' rows in the cell
-  header    the preflight gate refuses a published table record with another column set, exactly where the engine's own
-            append (deep_search._append_locked, run here from its source) would refuse at the END of the search
+  header    the preflight gate refuses a published gate ledger, image ledger or table record with another column set,
+            exactly where the engine's own append (deep_search._append_locked, run here from its source) would refuse at
+            the END of the search, and an empty one; its column lists are the engine's
+  publish   the publish's own file list carries the two records to the published cell
   wiring    detect() seeds through seed_attempt, and the per-hour plan holds the gate after the size-rule gate
 
 Synthetic files only, each test in its own temporary directory. Run standalone:
@@ -44,6 +46,8 @@ STEP = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'tier_sublst.py'
 ENGINE = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')
 OLD_SEED = ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals')
 NEW_SEED = (SZ.RUN_RECORD, 'search_table_record.csv')
+LABEL = 'SLSTB_03h_73MHz_V'
+LABEL_DIR = f'Run_{LABEL}'
 
 
 def _env(md5='e184ac13f6eb0123456789abcdef0123'):
@@ -56,14 +60,20 @@ def _table_rows(date, n=3):
             + [''] * (len(ST.STR_COLS) - 11) for i in range(n)]
 
 
+def _csv_text(cols, date='2024-12-19'):
+    return ','.join(cols) + '\n' + ','.join(['03h', '73MHz', 'V', date] + ['1'] * (len(cols) - 4)) + '\n'
+
+
 def _published(root, table=True, record=True, header=None):
-    """A published run directory of one cell searched under the envelope rule, holding night 2024-12-19."""
-    rd = os.path.join(root, 'pub', 'transients', 'Run_SLSTB_03h_73MHz_V')
+    """A published run directory of one cell holding night 2024-12-19, searched under the envelope rule (record=True: its
+    gate ledger carries the size rule's columns) or under production's. header: another header for the table's record."""
+    rd = os.path.join(root, 'pub', 'transients', LABEL_DIR)
     os.makedirs(os.path.join(rd, 'sigstack'))
     os.makedirs(os.path.join(rd, 'refusals'))
+    gled = list(ST.GLED_COLS) + (list(ST.GLED_COLS_SIZE) if record else [])
     for name, text in (('master_catalog.csv', 'source_id,date\ns1,2024-12-19\n'),
-                       ('v_deep_ledger.csv', 'lst,scope,stokes,date,final\n03h,73MHz,V,2024-12-19,1\n'),
-                       ('v_deep_images.csv', 'lst,scope,stokes,date,n_final\n03h,73MHz,V,2024-12-19,1\n'),
+                       ('v_deep_ledger.csv', _csv_text(gled)),
+                       ('v_deep_images.csv', _csv_text(ST.GIMG_COLS)),
                        (os.path.join('sigstack', 'sigstack_03h_73MHz_V_w0.fits'), 'stand-in for a sigma-stack map\n'),
                        (os.path.join('refusals', '03h_73MHz_V_night_excluded.csv'), 'date,why\n')):
         with open(os.path.join(rd, name), 'w') as f:
@@ -109,7 +119,7 @@ def test_seed_copies_every_item_byte_for_byte():
     root = tempfile.mkdtemp(prefix='perhour_seed_')
     try:
         src = _published(root)
-        dst = os.path.join(root, 'attempt', 'transients', 'Run_SLSTB_03h_73MHz_V')
+        dst = os.path.join(root, 'attempt', 'transients', LABEL_DIR)
         done = TS.seed_attempt(src, dst)
         assert done == list(TS.per_hour_seed_names()), done
         for name in OLD_SEED[:3] + NEW_SEED:
@@ -137,6 +147,45 @@ def test_seed_skips_what_the_published_cell_lacks():
         os.makedirs(empty)
         assert TS.seed_attempt(empty, os.path.join(root, 'attempt2')) == []
         assert os.path.isdir(os.path.join(root, 'attempt2'))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_seed_refuses_a_short_copy():
+    real = TS.copy_tree
+    for bad_tries, refused in ((1, False), (2, True)):               # short once: tried again; short twice: refused
+        root = tempfile.mkdtemp(prefix='perhour_seed_')
+        calls = []
+
+        def short(a, b, _n=bad_tries, _calls=calls):
+            real(a, b)
+            if os.path.basename(a) == 'v_deep_ledger.csv':
+                _calls.append(a)
+                if len(_calls) <= _n:
+                    with open(b, 'r+b') as f:                         # what Lustre did: the copy ends early, no error
+                        f.truncate(os.path.getsize(a) // 2)
+        try:
+            src = _published(root)
+            dst = os.path.join(root, 'attempt', 'run')
+            TS.copy_tree = short
+            try:
+                done = TS.seed_attempt(src, dst)
+                assert not refused, 'a ledger copied short twice was seeded'
+                assert done == list(TS.per_hour_seed_names()) and len(calls) == 2
+                assert filecmp.cmp(os.path.join(src, 'v_deep_ledger.csv'), os.path.join(dst, 'v_deep_ledger.csv'), shallow=False)
+            except Exception as e:                                    # noqa: BLE001 - the step's Refusal
+                assert refused and type(e).__name__ == 'Refusal' and 'copied short twice' in str(e), repr(e)
+        finally:
+            TS.copy_tree = real
+            shutil.rmtree(root, ignore_errors=True)
+    root = tempfile.mkdtemp(prefix='perhour_seed_')
+    try:                                                             # a file missing from a copied directory is short too
+        src = _published(root)
+        dst = os.path.join(root, 'attempt', 'run')
+        TS.seed_attempt(src, dst)
+        os.unlink(os.path.join(dst, 'sigstack', 'sigstack_03h_73MHz_V_w0.fits'))
+        assert TS._short_copies(os.path.join(src, 'sigstack'), os.path.join(dst, 'sigstack'))
+        assert not TS._short_copies(os.path.join(src, 'refusals'), os.path.join(dst, 'refusals'))
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -196,36 +245,84 @@ def test_publish_keeps_both_nights_in_the_table_record():
         shutil.rmtree(root, ignore_errors=True)
 
 
-def test_header_gate_refuses_where_the_engine_append_would():
-    assert _engine_literal('STR_COLS') == list(ST.STR_COLS)            # the gate's columns are the engine's
-    append = _engine_function('_append_locked')
-    cases = (('the engine\'s columns', None, False),
-             ('one column fewer (a record of older code)', list(ST.STR_COLS[:-1]), True),
-             ('one column renamed', list(ST.STR_COLS[:-1]) + ['other'], True),
-             ('two columns swapped', [ST.STR_COLS[1], ST.STR_COLS[0]] + list(ST.STR_COLS[2:]), True))
-    for what, header, refused in cases:
+def test_gate_columns_are_the_engines():
+    assert _engine_literal('STR_COLS') == list(ST.STR_COLS)
+    assert _engine_literal('GIMG_COLS') == list(ST.GIMG_COLS)
+    # the engine: GLED_COLS = [the 28 columns] (its first assignment), GLED_COLS_V1 = list(GLED_COLS), then
+    # GLED_COLS = GLED_COLS_V1 + GLED_COLS_TABLE
+    assert _engine_literal('GLED_COLS') + _engine_literal('GLED_COLS_TABLE') == list(ST.GLED_COLS)
+    assert list(SZ.GLED_COLS_SIZE) == list(ST.GLED_COLS_SIZE)         # the engine imports the size rule's columns from size_rule
+    for record in (True, False):
         root = tempfile.mkdtemp(prefix='perhour_seed_')
         try:
-            rd = _published(root, header=header)
-            why = TS.table_record_refusal(rd)
-            assert (why is not None) == refused, (what, why)
-            if refused:
-                assert 'search_table_record.csv' in why and str(len(header)) in why and '--fresh' in why, why
-            try:
-                append(os.path.join(rd, 'search_table_record.csv'), ST.STR_COLS, _table_rows('2024-12-27', n=1))
-                engine_refused = False
-            except RuntimeError:
-                engine_refused = True
-            assert engine_refused == refused, what                     # gate and engine agree
+            want = TS.appended_headers(_published(root, record=record))
+            assert want == {'v_deep_ledger.csv': list(ST.GLED_COLS) + (list(ST.GLED_COLS_SIZE) if record else []),
+                            'v_deep_images.csv': list(ST.GIMG_COLS), 'search_table_record.csv': list(ST.STR_COLS)}
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+def test_header_gate_refuses_where_the_engine_append_would():
+    append = _engine_function('_append_locked')
+    changes = (('the engine\'s columns', lambda c: list(c), False),
+               ('one column fewer (a record of older code)', lambda c: list(c[:-1]), True),
+               ('one column renamed', lambda c: list(c[:-1]) + ['other'], True),
+               ('two columns swapped', lambda c: [c[1], c[0]] + list(c[2:]), True))
+    for record in (True, False):                                      # a cell under the envelope rule, one under production's
+        for name in ('v_deep_ledger.csv', 'v_deep_images.csv', 'search_table_record.csv'):
+            for what, change, refused in changes:
+                root = tempfile.mkdtemp(prefix='perhour_seed_')
+                try:
+                    rd = _published(root, record=record)
+                    cols = TS.appended_headers(rd)[name]
+                    header = change(cols)
+                    with open(os.path.join(rd, name), 'w') as f:
+                        f.write(_csv_text(header))
+                    why = TS.append_header_refusal(rd)
+                    assert (why is not None) == refused, (name, what, why)
+                    if refused:
+                        assert name in why and str(len(header)) in why and '--fresh' in why, why
+                    try:
+                        append(os.path.join(rd, name), cols, [['03h', '73MHz', 'V', '2024-12-27'] + ['1'] * (len(cols) - 4)])
+                        engine_refused = False
+                    except RuntimeError:
+                        engine_refused = True
+                    assert engine_refused == refused, (name, what)    # gate and engine agree
+                finally:
+                    shutil.rmtree(root, ignore_errors=True)
+    root = tempfile.mkdtemp(prefix='perhour_seed_')
+    try:                                                             # the gate ledger's columns follow the cell's own rule
+        rd = _published(root, record=True)
+        with open(os.path.join(rd, 'v_deep_ledger.csv'), 'w') as f:
+            f.write(_csv_text(ST.GLED_COLS))                         # an envelope cell whose ledger lacks the rule's columns
+        assert 'v_deep_ledger.csv' in (TS.append_header_refusal(rd) or '')
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
     root = tempfile.mkdtemp(prefix='perhour_seed_')
     try:
         rd = _published(root, table=False)
-        assert TS.table_record_refusal(rd) is None                     # no record yet: the engine starts one
-        open(os.path.join(rd, 'search_table_record.csv'), 'w').close()
-        assert TS.table_record_refusal(rd) is None                     # an empty file: the engine appends without refusing
-        append(os.path.join(rd, 'search_table_record.csv'), ST.STR_COLS, _table_rows('2024-12-27', n=1))
+        assert TS.append_header_refusal(rd) is None                    # no table record yet: the engine starts one
+        p = os.path.join(rd, 'search_table_record.csv')
+        open(p, 'w').close()                                           # an EMPTY record: the engine would append rows with no
+        why = TS.append_header_refusal(rd)                             # header (shown below), so the gate refuses it
+        assert why and 'is empty' in why and 'search_table_record.csv' in why, why
+        append(p, ST.STR_COLS, _table_rows('2024-12-27', n=1))
+        assert next(csv.reader(open(p, newline=''))) != list(ST.STR_COLS)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_publish_file_list_carries_the_two_records():
+    root = tempfile.mkdtemp(prefix='perhour_seed_')
+    try:
+        src = _published(root)
+        attempt = os.path.join(root, 'attempt')
+        TS.seed_attempt(src, os.path.join(attempt, 'transients', LABEL_DIR))
+        plan = dict(label=LABEL, cell='03h_73MHz', arm='A', date='2024-12-27', publish=os.path.join(root, 'pub'))
+        pairs = dict(TS._publish_files(plan, attempt))                 # the publish's own list (search_sublst.PUBLISH_ITEMS)
+        for name in NEW_SEED + ('v_deep_ledger.csv', 'v_deep_images.csv', 'master_catalog.csv'):
+            a = os.path.join(attempt, 'transients', LABEL_DIR, name)
+            assert pairs.get(a) == os.path.join(root, 'pub', 'transients', LABEL_DIR, name), (name, pairs.get(a))
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -233,20 +330,21 @@ def test_header_gate_refuses_where_the_engine_append_would():
 def test_detect_seeds_through_seed_attempt_and_the_plan_holds_the_gate():
     tree = ast.parse(open(STEP).read())
     funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-    calls = [n for n in ast.walk(funcs['detect']) if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == 'seed_attempt']
-    assert len(calls) == 1, 'detect() must seed the attempt through seed_attempt, once'
+    calls = [n for n in ast.walk(funcs['detect']) if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)
+             and getattr(n.value.func, 'id', '') == 'seed_attempt']
+    assert len(calls) == 1, 'detect() must seed the attempt through seed_attempt, once, and keep what it returns (the note)'
     for n in ast.walk(funcs['detect']):                                # no second, private list of seeded names in detect()
         assert not (isinstance(n, ast.Constant) and n.value == 'v_deep_ledger.csv'), 'detect() names seeded files itself'
     holders = [name for name, f in funcs.items()
-               if any(isinstance(n, ast.Constant) and n.value == 'epoch.table_record_header' for n in ast.walk(f))]
+               if any(isinstance(n, ast.Constant) and n.value == 'epoch.appended_headers' for n in ast.walk(f))]
     assert len(holders) == 1 and holders[0] != 'detect', holders       # in the plan (before any work), not in detect()
     lines = {}
     for n in ast.walk(funcs[holders[0]]):
-        if isinstance(n, ast.Constant) and n.value in ('epoch.size_rule_of_the_base', 'epoch.table_record_header'):
+        if isinstance(n, ast.Constant) and n.value in ('epoch.size_rule_of_the_base', 'epoch.appended_headers'):
             lines[n.value] = n.lineno
-    assert lines['epoch.size_rule_of_the_base'] < lines['epoch.table_record_header'], lines
+    assert lines['epoch.size_rule_of_the_base'] < lines['epoch.appended_headers'], lines
     gate_calls = [n for n in ast.walk(funcs[holders[0]])
-                  if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == 'table_record_refusal']
+                  if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == 'append_header_refusal']
     assert len(gate_calls) == 1
 
 
@@ -256,6 +354,10 @@ def _all_tests():
 
 def main(argv):
     names = argv or [n for n, _ in _all_tests()]
+    unknown = sorted(set(names) - {n for n, _ in _all_tests()})
+    if unknown:
+        print(f'no such test: {", ".join(unknown)}')
+        return 2
     fails = 0
     for n, f in _all_tests():
         if n not in names:
