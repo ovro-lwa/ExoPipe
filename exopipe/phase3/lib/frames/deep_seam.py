@@ -111,6 +111,11 @@ def _edits():
          "    # ── I 2-D BRIGHT-PARENT STAGE.",
          "    if frames_only:\n        return _frames_only_result(lst, scope, dates, _fo, run_root, _refdir)\n"
          "    # ── I 2-D BRIGHT-PARENT STAGE."),
+        ('population-beam',                                       # the beam-gate population row is a search record
+         "    if cadence == 'deep' and not included_dates:                       # PER-HOUR: a whole-cell search records "
+         "its beam-gate\n",
+         "    if not frames_only and cadence == 'deep' and not included_dates:   # PER-HOUR: a whole-cell search records "
+         "its beam-gate\n"),
         ('helper', "\n\ndef run_deep_cell(", _HELPER.rstrip('\n') + "\n\n\ndef run_deep_cell("),
     ]
 
