@@ -41,6 +41,7 @@ import types
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+from exopipe.phase3.lib.search import gate_population as GP    # noqa: E402
 from exopipe.phase3.lib.search import size_rule as SZ          # noqa: E402
 from exopipe.phase3.lib.search import tests as ST              # noqa: E402
 from exopipe.phase3.lib.search import tier_sublst as TS        # noqa: E402
@@ -48,7 +49,7 @@ from exopipe.phase3.lib.search import tier_sublst as TS        # noqa: E402
 STEP = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'tier_sublst.py')
 ENGINE = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')
 OLD_SEED = ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals')
-NEW_SEED = (SZ.RUN_RECORD, 'search_table_record.csv')
+NEW_SEED = (SZ.RUN_RECORD, 'search_table_record.csv', GP.FILE)
 LABEL = 'SLSTB_03h_73MHz_V'
 LABEL_DIR = f'Run_{LABEL}'
 
@@ -81,6 +82,10 @@ def _published(root, table=True, record=True, header=None):
                        (os.path.join('refusals', '03h_73MHz_V_night_excluded.csv'), 'date,why\n')):
         with open(os.path.join(rd, name), 'w') as f:
             f.write(text)
+    frames = [f'2024-12-19T{w:02d}' for w in range(6)]                  # the populations its whole-cell search recorded
+    GP.append(rd, [GP.row('03h', '73MHz', g, frames, 0.25, 2.0 if g != 'beam' else 1.5, 5, 'applied', 'search', '20261101T000000')
+                   for g in (GP.TIER_GATES['I'], GP.TIER_GATES['V'], 'beam')])
+    os.remove(os.path.join(rd, GP.FILE + '.lock'))
     if record:
         SZ.write_run_record(os.path.join(root, 'rec_src'), _env())      # the engine's own writer, in an empty directory
         shutil.copy2(os.path.join(root, 'rec_src', SZ.RUN_RECORD), os.path.join(rd, SZ.RUN_RECORD))

@@ -805,6 +805,11 @@ def preflight(args, run, cell, lst, band, stokes, date):
         if not gate('epoch.size_rule_of_the_base', why is None, why or f'{s.SIZE_RULE}, as the published attempt'):
             plan['refuse'] = why
             return plan
+        why = gate_population_refusal(os.path.join(pub, 'transients', f'Run_{label}'), lst, band)   # before the work, not after
+        if not gate('epoch.frozen_gate_populations', why is None, why or 'the published attempt records the populations its '
+                                                                         'gates judged by'):
+            plan['refuse'] = why
+            return plan
         why = append_header_refusal(os.path.join(pub, 'transients', f'Run_{label}'))     # refuse before the work, not after
         if not gate('epoch.appended_headers', why is None, why or 'the published ledgers and the table\'s record carry the '
                                                                   'engine\'s columns (or do not exist yet)'):
@@ -948,6 +953,24 @@ def _run_root(attempt, label):
     return os.path.join(attempt, 'transients', f'Run_{label}')
 
 
+def gate_population_refusal(run_dir, lst, band):
+    """Why a per-hour search cannot append to the published run directory ``run_dir``, or None: the whole-cell search that
+    wrote it must have recorded the populations of the search-tier gate (both Stokes: every job computes both) and of the beam
+    gate (lib/search/gate_population, "the 10-minute cadence"). The engine checks each row it reads against its own rule and
+    refuses too; this refuses before the seed and the engine start. The V sanity row is the engine's to require (written only
+    by a search that had V frames)."""
+    from exopipe.phase3.lib.search import gate_population as GP
+    try:
+        miss = [g for g in (GP.TIER_GATES['I'], GP.TIER_GATES['V'], 'beam') if GP.read(run_dir, lst, band, g) is None]
+    except RuntimeError as e:
+        return f'per-hour mode: {e}'
+    if miss:
+        return (f'per-hour mode judges the night by the populations the cell was searched with (R-GREGG-20261112-PER-HOUR-STEPS-'
+                f'SIX-RULINGS (2)); the published attempt records none for {", ".join(miss)} ({os.path.join(run_dir, GP.FILE)}): '
+                f'it was searched before the search recorded them - run the full search of the cell first')
+    return None
+
+
 def per_hour_seed_names():
     """What the per-hour (incremental) mode copies from the published attempt's run directory (transients/Run_<label>/)
     into the new attempt before the engine runs. The engine APPENDS the night's rows to the three ledgers and to the
@@ -959,10 +982,14 @@ def per_hour_seed_names():
           under. Without it the engine reads the seeded ledger as production's rule and refuses every cell searched
           under the envelope rule ('one rule per run', size_rule.write_run_record) - the defect of 2026-11-11.
       search_table_record.csv                                    every verdict of the search's bright-source table
-          (deep_search.STR_COLS); without it a per-hour publish left the cell with one night's rows."""
-    from exopipe.phase3.lib.search import size_rule as SZ
+          (deep_search.STR_COLS); without it a per-hour publish left the cell with one night's rows.
+      gate_population.FILE (gate_population.csv)                 the populations the whole-cell search judged its frames by
+          (search-tier gate per Stokes, beam gate, V sanity gate); the engine judges the night by them and refuses a
+          run directory without them (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)), and the publish must not drop
+          them from the cell."""
+    from exopipe.phase3.lib.search import gate_population as GP, size_rule as SZ
     return ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals', SZ.RUN_RECORD,
-            'search_table_record.csv')
+            'search_table_record.csv', GP.FILE)
 
 
 def _short_copies(src, dst):

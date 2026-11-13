@@ -1551,6 +1551,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     from exopipe.phase3.lib.search import removal_rules as _RR         # WAVE2 B-02: every removal rule once, in the search
     _b02 = cadence == 'deep' and _RR.search_rules() == 'once-in-search'   # WAVE2 B-02 (step 3a; 'production': none of it)
     _ph = cadence == 'deep' and bool(included_dates)   # PER-HOUR: a deep append, judged by its base's recorded populations
+    _ph10 = cadence == '10min' and bool(included_dates)   # PER-HOUR 10-minute: an append (one night's windows), judged by the
+    from exopipe.phase3.lib.search import gate_population as _GP   # populations its base attempt recorded (gate_population.csv)
     from exopipe.phase3.lib.search import size_rule as _SZ              # WAVE2 SIZE-RULE (R-GREGG-20261022-ALL-APPROVED-SIZE-GATE-...):
     _szr = _SZ.engine_rule(cadence)                                     # WAVE2 SIZE-RULE: None = production's fixed rule; else the checked
     if _szr is not None:                                                # WAVE2 SIZE-RULE: the rule's floors are its 1.5 / 1.5 - another
@@ -1818,7 +1820,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     return float(_irms(np.squeeze(fits.getdata(_fp)).astype(float)))
                 except Exception as _e:
                     return _e
-            _jobs = [(_d, _st) for _d in dates for _st in ('I', 'V')]
+            _mine = set(included_dates) if _ph10 else None       # PER-HOUR 10-minute: an append reads its own windows' rms only
+            _jobs = [(_d, _st) for _d in dates for _st in ('I', 'V') if _mine is None or _d in _mine]
             for (_d, _st), _rv in zip(_jobs, _in_order(_stage1_rms, _jobs, SEARCH_THREADS)):   # applied in the serial order
                 if _rv is None:
                     continue
@@ -1828,27 +1831,67 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                     (_rmsI if _st == 'I' else _rmsV)[_d] = _rv
             _key = lambda d: d
         _tier = []
+        # PER-HOUR 10-minute (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (1), (2)): the population of this gate is the cell's
+        # frames at search time, so a whole-cell search records it per Stokes (_tgp -> gate_population.csv) and an append is
+        # judged by the rows its base recorded (_tfz: none, another rule, or a population night excluded now REFUSES - never a
+        # recomputed median); the append measures its own windows only, and the earlier frames keep their recorded verdicts
+        # (_tcar below). Deep: the population is the Master build's table (residuals_provisional.csv), frozen as it is.
+        _tfz, _tgp = {}, []
+        if _ph10:
+            for _st in ('I', 'V'):
+                _tfz[_st] = _GP.frozen_frames(run_root, lst, scope, _GP.TIER_GATES[_st], SEARCH_TIER_RATIO, SEARCH_TIER_MIN,
+                                              lambda _n: is_excluded(lst, scope, _kd(_n), _excl), f'SEARCH-TIER GATE ({_st})')
         for _st, _rm in (('I', _rmsI), ('V', _rmsV)):
             _v = np.array(sorted(x for x in _rm.values() if np.isfinite(x) and x > 0))
-            if not _enough(len(_v), SEARCH_TIER_MIN, f'{lst} {scope}: search-tier gate ({_st}), '      # WAVE2 B-30
-                           f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms', count=_st in stokes, perhour=_ph):
-                print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}) SKIPPED - only {len(_v)} '
+            _fz = _tfz.get(_st)
+            if _fz is None:                                    # a whole-cell search (and deep), as before
+                _tok = _enough(len(_v), SEARCH_TIER_MIN, f'{lst} {scope}: search-tier gate ({_st}), '      # WAVE2 B-30
+                               f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms', count=_st in stokes, perhour=_ph)
+            else:                                              # PER-HOUR 10-minute: the recorded outcome - below the minimum the
+                _tok = _fz['outcome'] == 'applied'             # skip is counted, as the whole-cell search counted it
+                if not _tok:
+                    _enough(_fz['n'], SEARCH_TIER_MIN, f'{lst} {scope}: search-tier gate ({_st}) of an append, frames in the base '
+                            f'attempt\'s frozen population', count=_st in stokes, perhour=True)
+            if cadence == '10min' and not included_dates:      # PER-HOUR 10-minute: the population the appends will be judged by
+                _tgp.append(_GP.row(lst, scope, _GP.TIER_GATES[_st], [k for k, x in _rm.items() if np.isfinite(x) and x > 0],
+                                    float(np.median(_v)) if _tok else None, SEARCH_TIER_RATIO, SEARCH_TIER_MIN,
+                                    'applied' if _tok else 'below-minimum', 'search', _attempt))
+            if not _tok:
+                print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}) SKIPPED - only {len(_v) if _fz is None else _fz["n"]} '
                       f'{"frames" if cadence == "10min" else "nights"} with a stage-1 rms (needs {SEARCH_TIER_MIN})')
                 continue
-            _med = float(np.median(_v)); _mad = float(np.median(np.abs(_v - _med))) * 1.4826
+            if _fz is None:
+                _med = float(np.median(_v)); _mad = float(np.median(np.abs(_v - _med))) * 1.4826
+            else:                                              # PER-HOUR 10-minute: the frozen median of an append
+                _med = _fz['median']
+                print(f'  {lst} {scope}: SEARCH-TIER GATE ({_st}, append) - the base attempt\'s frozen population: {_fz["n"]} '
+                      f'frames, median {_med:.6g}; this night: {len(_v)} window(s) with a stage-1 rms')
             _thr = SEARCH_TIER_RATIO * _med                # Gregg 2026-10-30 (was _med + SEARCH_TIER_SIGMA * _mad)
             _rm = {**_rm, **_ADS.values(_adm, f'stage2_{_st.lower()}_rms_mjy')}   # WAVE2 D-ADMIT: an admitted night's own value, after
                                                                            # the threshold (the same provisional-stage metric)
-            for d in dates:
+            _judged = dates if not _ph10 else [d for d in dates if d in _mine]   # PER-HOUR 10-minute: its own windows
+            for d in _judged:
                 if _rm.get(_key(d), 0) > _thr:
                     _tier.append((d, _st, _rm[_key(d)], _thr))
-            _unm_tier |= {(d, _st) for d in dates if not (_rm.get(_key(d), 0) > 0)}   # WAVE2 B-30: named after (1e)
+            _unm_tier |= {(d, _st) for d in _judged if not (_rm.get(_key(d), 0) > 0)}   # WAVE2 B-30: named after (1e)
+        if _tgp:
+            _append_locked(f'{run_root}/{_GP.FILE}', _GP.COLS, _tgp)
+        _tcar = []                                             # PER-HOUR 10-minute: the earlier frames' search-tier refusals of the
+        if _ph10:                                              # attempt's newest search, written again under this append's tag (the
+            _tcar = _GP.carried_refusals(_refdir, f'{lst}_{scope}', 'searchtier',   # record's readers keep an attempt's newest tag)
+                                         lambda _k: _k in dates and _k not in _mine, _attempt)
         # GREGG 2026-09-13 ("this is a mistake. That sounds like the gate for the co-add, not the search!"): the
         # search-tier admission is PER STOKES - an epoch (or 10-minute frame) is refused from the I search on the I
         # stage-1 rms and from the V search on the V rms, never from both on either. Until this fix the deep run
         # refused 472 epochs in 291 cell-Stokes on the other Stokes' rms (EQ Peg 2025-08-01 in six 21h bands).
         _skipI_tier = {d for d, _st, *_ in _tier if _st == 'I'}
         _skipV_tier = {d for d, _st, *_ in _tier if _st == 'V'}
+        if _tcar:                                              # PER-HOUR 10-minute (never set by a whole-cell or a deep search)
+            with open(f'{_refdir}/{lst}_{scope}_searchtier_excluded.csv', 'a') as _sf:
+                for _row in _tcar:
+                    _sf.write(','.join(_row) + '\n')
+            print(f'  {lst} {scope}: SEARCH-TIER GATE (append) - {len(_tcar)} recorded refusal(s) of earlier frames carried under '
+                  f'this attempt\'s tag')
         if _tier:
             with open(f'{_refdir}/{lst}_{scope}_searchtier_excluded.csv', 'a') as _sf:
                 for d, _st, _r, _thr in _tier:
@@ -1999,8 +2042,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             raise RuntimeError(f'{lst} {scope}: no readable Phase-2 beam header for '
                                f'{_nobeam} - beam gate cannot run; REFUSING')
         _bfz = None                                                        # PER-HOUR (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)):
-        if cadence == 'deep' and included_dates:                           # an append is judged by the population its base attempt
-            from exopipe.phase3.lib.search import gate_population as _GP   # recorded (gate_population.csv), never a recomputed one;
+        if _ph or _ph10:                                                   # an append (deep, 10-minute) is judged by the population its
+            # base attempt recorded (gate_population.csv), never a recomputed one;
             _bfz = _GP.frozen_beam(run_root, lst, scope, float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')),   # none recorded,
                                    BEAM_GATE_MIN_NIGHTS, lambda _n: _xtest(lst, scope, _kd(_n)))   # another rule: refused (the
                                                                    # cadence's own exclusion test: at 10 minutes _excl is not set)
@@ -2036,8 +2079,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                       f' REFUSED from search (fitted-beam area >{_thr}x '
                       f'cell median): '
                       f'{[(d, round(_areas[d]/_bmed, 2)) for d in _bbad]}')
-    if cadence == 'deep' and not included_dates:                       # PER-HOUR: a whole-cell search records its beam-gate
-        from exopipe.phase3.lib.search import gate_population as _GP       # population for the appends it will judge (an
+    if cadence in ('deep', '10min') and not included_dates:            # PER-HOUR: a whole-cell search records its beam-gate
+        # population for the appends it will judge (an
         _boff = os.environ.get('P3_BEAM_GATE_OFF') == '1'                  # addition: nothing above reads it)
         _bpop = [] if _boff else [d for d in _areas if d not in _adm]      # WAVE2 D-ADMIT: the nights of _fin (admitted left out)
         _append_locked(f'{run_root}/{_GP.FILE}', _GP.COLS, [_GP.row(
@@ -2258,6 +2301,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     if _b02 and included_dates and resid_V and _RR.base_vsanmed(run_root) is None:   # WAVE2 B-02: judged by its base's V sanity
         from exopipe.phase3.lib.search import gate_population as _GP   # row - 'below-minimum' skips, counted; none / 'applied' refuse
         _vfz = _GP.frozen_v_sanity(run_root, lst, scope, SANITY_I_X, SANITY_MIN_NIGHTS)   # (outside the try: a refusal, never caught)
+    _vfz10 = None                                                      # PER-HOUR 10-minute: an append's V frames are judged by the
+    if _ph10 and resid_V:                                              # population its base recorded (a 10-minute attempt has no
+        _vfz10 = _GP.frozen_frames(run_root, lst, scope, 'v_sanity', SANITY_I_X, SANITY_MIN_NIGHTS,   # frame_noise.csv); outside the
+                                   lambda _n: is_excluded(lst, scope, _kd(_n), _excl), 'V SANITY GATE')   # try: a refusal, never caught
     try:
         _vr = {}
         for _d, _rv in resid_V.items():
@@ -2277,12 +2324,18 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             if not _ok_v and resid_V:                                          # WAVE2 B-02: recorded - its base's recorded outcome
                 _enough(_vfz['n'], SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate of an append, nights in the base '   # PER-HOUR:
                         f'attempt\'s recorded V population', perhour=True)   # 'below-minimum' (_vfz above): the skip counted, as the base's
+        elif _vfz10 is not None:                                               # PER-HOUR 10-minute: the recorded median, or the
+            _vb = _vfz10['median']                                             # recorded skip (below the minimum), counted as the
+            _ok_v = _vfz10['outcome'] == 'applied'                             # whole-cell search counted it
+            if not _ok_v:
+                _enough(_vfz10['n'], SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate of an append, frames in the base '
+                        f'attempt\'s frozen population', perhour=True)
         else:                                                                  # WAVE2 B-02
             _vb = None                                                         # WAVE2 B-02
             _ok_v = _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms',   # WAVE2 B-30
                             count=bool(resid_V), perhour=_ph)   # an I-only unit (or no V epoch) has no V search for the gate to guard
-        if cadence == 'deep' and not included_dates and resid_V:               # PER-HOUR: a whole-cell search records the V sanity
-            from exopipe.phase3.lib.search import gate_population as _GP       # gate's population for the appends it will judge (an
+        if cadence in ('deep', '10min') and not included_dates and resid_V:    # PER-HOUR: a whole-cell search records the V sanity
+            # gate's population for the appends it will judge (an
             _vfn = [_d for _d, v in _vr.items() if np.isfinite(v) and v > 0 and _d not in _adm]   # WAVE2 D-ADMIT: the nights of _vf
             _append_locked(f'{run_root}/{_GP.FILE}', _GP.COLS, [_GP.row(       # addition: nothing reads it here); thin: the recorded
                 lst, scope, 'v_sanity', _vfn, _vf[len(_vf) // 2] if _ok_v else None, SANITY_I_X, SANITY_MIN_NIGHTS,   # outcome
