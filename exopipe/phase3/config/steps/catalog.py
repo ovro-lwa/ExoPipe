@@ -164,6 +164,19 @@ class catalog_conform(_Section):
     TABLE_ELEV_BANDS = '25-35,35-50,50-90'                # deg; parent_curve_table.py:117 [env:P3_TABLE_ELEV_BANDS]
     TABLE_PREFIX = {'deep': '', 'sublst': 'sublst'}       # '' = cadence prefix; ops/sublst_catalogs.sh:81 [env:P3_TABLE_PREFIX] (RULINGS-GREGG-20261013-DECISIONS-1-7-AND-TENMIN-TABLES; ops 7042670)
     TABLE_RECORD_ONLY = False                             # ops/sublst_catalogs.sh:186 [env:P3_TABLE_RECORD_ONLY=0]; parent_curve_table.py:49
+    TABLE_NOISE_RECORD = {'deep': False, 'sublst': True, 'fork': False}   # the table's noise (per LST, band, Stokes: the median over
+                                                          # the catalog rows of |peak / global S/N|, ops/p3s2_conform.py `_RMS`) is
+                                                          # RECORDED by the conformance that computes it (conform_table_noise.csv in the
+                                                          # catalog directory; lib/catalog/wraps/conform_noise.py runs the module in
+                                                          # place with one patched line). A per-hour 10-minute catalog reads it frozen
+                                                          # (Gregg 2026-11-12: a new night is judged by statistics frozen from earlier
+                                                          # nights). Not a parity line: production writes no such record; every other
+                                                          # file of the stage is byte-identical with the record on or off.
+    NOISE_MODULE_SHA1 = ('48f69a39c7f03185676c660f13933399453784c4',)   # live exopipe_ops p3s2_conform.py, 2026-11-13: the
+                                                          # PATH-NORMALIZED sha1s of the module versions the FROZEN mode was checked for
+                                                          # (one population statistic at 10 minutes: design section 2.2a). Another
+                                                          # version REFUSES a frozen run until it is read for a second statistic of the
+                                                          # population of rows; the record mode needs the patch text and its census only.
     TABLE_TARGET_BEAM = True                              # gate distance in the searched frame's beam; ops/p3s2_conform.py:234 [env:P3_GATE_TARGET_BEAM] (Gregg 2026-09-24)
     TABLE_XM_EXEMPT = True                                # parent_curve_table.py:90 [env:P3_TABLE_XM_EXEMPT] (R-TABLE-EXEMPTION-PULSARS-ONLY)
     JUPITER_TRACK_RADIUS_DEG = {'Red': 5.0, 'Full': 5.0, 'Green': 0.5, 'Blue': 0.5}   # deg; ops/p3s2_conform.py:288 [lit] (Gregg 2026-09-18, R-JUPITER-TRACK-VETO-IMPLEMENTED-IN-THE-CONFORMANCE-STAGE-BOTH-TIERS)
@@ -185,7 +198,8 @@ class catalog_conform(_Section):
              'PULSAR_ASSOC_K': 'R-ASSOCIATION-RADIUS-QUADRATURE', 'TABLE_XM_EXEMPT': 'R-TABLE-EXEMPTION-PULSARS-ONLY',
              'DEEP_ELEV_EPOCH': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',   # B-02 (a); the convention
                                  'R-REFACTOR-20261016-B02-CONVENTIONS'),                        # under the 2026-10-16 delegation
-             'CONFORM_AXIS_UNDER_RULE': 'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS'}   # (its comment)
+             'CONFORM_AXIS_UNDER_RULE': 'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS',   # (its comment)
+             'TABLE_NOISE_RECORD': 'R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS'}   # ruling (2): frozen statistics
 
 
 class catalog_fitpos(_Section):

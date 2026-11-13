@@ -1299,12 +1299,26 @@ def st_tie(ctx, s, plan):
     _pertie(ctx, s, plan, [f'selected_{k}.csv' for k in SPLIT_KEYS], False, '2 of 2: every selected detection')
 
 
+def conform_noise_runner():
+    """Path of the table-noise runner (self-contained: loaded by path in the child, whose `exopipe` can be production's)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wraps', 'conform_noise.py')
+
+
+def conform_noise_record(catalog_dir):
+    """The record of the table's noise in a catalog directory (written by the LST-wide conformance; wraps/conform_noise.FILE)."""
+    return os.path.join(catalog_dir, 'conform_table_noise.csv')
+
+
 def st_conform(ctx, s, plan):
     U, c = ctx.U, ctx.c
     script = ctx.opsc('p3s2_conform.py')
     from exopipe.phase3.lib.search import size_rule as SZ
     env_x = dict(P3_TABLE_RECORD_ONLY='1' if shared('catalog_conform', 'TABLE_RECORD_ONLY') else '0',
                  P3_CONFORM_SIZE='1' if shared('catalog_conform', 'SIZE_STEP', 'sublst') else '0')
+    rec_on = bool(shared('catalog_conform', 'TABLE_NOISE_RECORD', 'sublst'))
+    if rec_on:
+        plan.append(f'conform: the table\'s noise is recorded where it is computed ({conform_noise_record(U)}; the module in '
+                    f'place through {os.path.basename(conform_noise_runner())}, one patched line, mode record)')
     plan.append(f'conform: {" ".join(f"{k}={v}" for k, v in env_x.items())} {ctx.py["default"]} {script} {U}   >> '
                 f'catalogs.log; then TABLE-NOTES on master_catalog_removed.csv (S-G13); on the size / axis rule\'s attempts '
                 f'+ P3_CONFORM_AXIS=0 under catalog_conform.CONFORM_AXIS_UNDER_RULE=\'replace\' (now '
@@ -1326,8 +1340,21 @@ def st_conform(ctx, s, plan):
     ctx.log.say('conformance check with the sub-LST tables')
     s.code(script, ctx.opsc('gate_inputs.py'))
     s.inp(f'{U}/master_catalog.csv', ctx.tables, ctx.roots_csv)
-    res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)
+    if rec_on:                                              # PER-HOUR: the one statistic of the population of rows is
+        rec = conform_noise_record(U)                       # recorded by the run that computes it (wraps/conform_noise.py)
+        s.code(conform_noise_runner())
+        res = call(ctx, s, conform_noise_runner(), [script, U],
+                   env=ctx.env(**env_x, EXOPIPE3_CONFORM_NOISE_MODE='record', EXOPIPE3_CONFORM_NOISE_RECORD=rec),
+                   log=ctx.log.path, cwd=U)
+    else:
+        res = call(ctx, s, script, [U], env=ctx.env(**env_x), log=ctx.log.path, cwd=U)
     need_ok(res, 'S-G13 conformance (p3s2_conform.py)', r'REFUS', say=lambda: ctx.log.say('CONFORM REFUSED - stopping'))
+    if rec_on:
+        done = last_line(res.tail, r'^CONFORM-NOISE done')
+        if not done or not os.path.isfile(rec):
+            refuse(f'S-G13: the table-noise runner gave no done line or no record {rec} (the conformance ended rc 0)')
+        s.u.meta['table_noise'] = done
+        s.out(rec, 'csv_table')
     why, sg = SZ.conform_removals([f'{U}/master_catalog_removed.csv'], szr, 'S-G13 conformance')   # the size / axis rule:
     if why:                                                 # its fixed size step's removals refused, its axis step's the
         ctx.log.say(f'REFUSING: {why[:300]}')               # second gate (recorded) or, under 'replace', refused
