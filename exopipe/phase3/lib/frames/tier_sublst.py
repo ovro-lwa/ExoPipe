@@ -27,6 +27,10 @@ Stages (always run in the order of frames_sublst.ORDER; defaults per operating m
             `masters --tier sublst --stages loo`, unit loo_<LST>_<sb>; frames_sublst.LOO_EVIDENCE='log' reads production's
             SUBLST-LOO lines instead) and the x2 refine complete (S-G8: <LST>_x2/logs/<LST>_<sb>.log newer than the
             subband's newest window stack ends 'refused=0', or exopipe_ops/sublst_refine_approved.py accepts its refusals).
+            Per hour with ONE night, arm A of a member subband is judged by the record of the night's own unit
+            nonmember_<LST>_<night>_<sb> (stage nonmember, under this root) where this root holds one: done passes, any
+            other status refuses; a subband without such a record (the night is in the window Masters there, or the
+            batch stage wrote its residuals) keeps the LST-wide evidence above (night_arm_a_complete, wideband_arm_a).
             Outputs <root>/<LST>/<LST>_<night>/<G>/<S>/sublst_<LST>_<night>_<G>_<S>_w<k>{,_pb,_nframes,_resid_loo}.fits and
             <root>/<LST>_x2/.../..._resid_loo.fits [sublst_wideband]; logs <root>/<LST>/logs/wideband_<LST>_<G>_<night>.log.
             Per hour: the epoch's night; intermittent: every night (or --nights), and a group with no window over the LST
@@ -707,6 +711,33 @@ def arm_a_complete(ctx, lst, sb, base=None):
         os.path.join(root, 'logs', f'loo_{lst}_{sb}_I.log')
 
 
+def night_arm_a_complete(ctx, lst, sb, night):
+    """Arm A of ONE night of the per-hour path at one subband, from the record of the night's own unit
+    nonmember_<LST>_<night>_<sb> (stage nonmember) under this root: (ok, why, record path), ok only for status done. None
+    when this root holds no record of that unit: the night's arm-A residuals at that subband are then not the per-hour
+    unit's (the night is in the window Masters there, or the batch stage wrote them) and the LST-wide evidence decides."""
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    name = NM.unit_name(lst, night, sb)
+    rec = record.load_record(ctx.root, 'frames', name)
+    if not rec:
+        return None
+    p = record.record_path(ctx.root, 'frames', name)
+    st = rec.get('status')
+    return st == 'done', f'record of the night\'s own arm-A unit {name} ({p}): {st}', p
+
+
+def wideband_arm_a(ctx, lst, sb, night=None, base=None):
+    """The arm-A evidence the wideband stage reads for one member subband: (ok, why, evidence path, how to complete it).
+    With `night` (per hour, ONE night) the night's own record decides where this root holds one (night_arm_a_complete);
+    otherwise, and for every LST-wide run, arm_a_complete."""
+    own = night_arm_a_complete(ctx, lst, sb, night) if night else None
+    if own is not None:
+        return own + (f'run `frames --tier sublst --stages nonmember --epochs {lst}_{night}` for {sb} first',)
+    return arm_a_complete(ctx, lst, sb, base) + ('run `masters --tier sublst --stages loo` first (nocat:232-234; '
+                                                 'crosscheck decision 6)',)
+
+
 def refine_complete(ctx, lst, sb, base=None):
     """S-G8 (nocat:236-247): (ok, why, log). THIS run's refine = its log newer than the subband's newest window stack (the
     production driver compared with its RUN-START, before the stacks); complete = final line refused=0, or
@@ -845,8 +876,9 @@ def stage_wideband(ctx, lst, nights, per_hour):
         plan(f'  STAGE wideband {lst}: groups {",".join(groups)}; nights '
              f'{",".join(alln) if len(alln) <= 6 else "all %d" % len(alln)}; inputs {ctx.lst_dir(lst, base)} + '
              f'{ctx.x2_dir(lst, base)}; outputs {ctx.lst_dir(lst)} + {ctx.x2_dir(lst)}')
+        one_night = alln[0] if per_hour and len(alln) == 1 else None
         for sb in members:
-            ok, why, _ = arm_a_complete(ctx, lst, sb, base if ctx.loo_evidence() == 'log' else None)
+            ok, why, _, _ = wideband_arm_a(ctx, lst, sb, one_night, base if ctx.loo_evidence() == 'log' else None)
             ctx.gate(f'arm A complete {sb}', ok, why)
             ok, why, _ = refine_complete(ctx, lst, sb, base)
             ctx.gate(f'S-G8 x2 complete {sb}', ok, why)
@@ -865,11 +897,12 @@ def stage_wideband(ctx, lst, nights, per_hour):
     root, x2 = ctx.lst_dir(lst), ctx.x2_dir(lst)
     alln = list(nights) if nights else _nights(root, lst)
     ex = exclusions()
+    one_night = alln[0] if per_hour and len(alln) == 1 else None
 
     def one(G):
-        name = f'{lst}_wideband_{G}' + (f'_{alln[0]}' if per_hour and len(alln) == 1 else '')
+        name = f'{lst}_wideband_{G}' + (f'_{one_night}' if one_night else '')
         mem = group_members(G)
-        ev = {sb: (arm_a_complete(ctx, lst, sb), refine_complete(ctx, lst, sb)) for sb in mem}
+        ev = {sb: (wideband_arm_a(ctx, lst, sb, one_night), refine_complete(ctx, lst, sb)) for sb in mem}
         inputs = [p for sb in mem for p in (ev[sb][0][2], ev[sb][1][2]) if os.path.exists(p)] + [script]
         admitted = ex.admitted(lst, G, alln)
         if try_resume(ctx.run, ctx.args, name, inputs, admitted):
@@ -879,10 +912,9 @@ def stage_wideband(ctx, lst, nights, per_hour):
                 u.add_input(p)
             u.set_admitted(admitted)
             for sb in mem:
-                (aok, awhy, _), (rok, rwhy, _) = ev[sb]
+                (aok, awhy, _, ahow), (rok, rwhy, _) = ev[sb]
                 if not aok:
-                    u.refuse(f'arm A of {lst} {sb} not complete ({awhy}): run `masters --tier sublst --stages loo` first '
-                             f'(nocat:232-234; crosscheck decision 6)')
+                    u.refuse(f'arm A of {lst} {sb} not complete ({awhy}): {ahow}')
                 if not rok:
                     u.refuse(f'S-G8 x2 refine of {lst} {sb} not complete: {rwhy}')
             run_n = []

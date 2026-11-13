@@ -36,6 +36,8 @@ jobs:
         run: python tests/test_sublst_refine_nonmember.py
       - name: 10-minute tree entry of a night that is not in the window Masters
         run: python tests/test_sublst_tree_nonmember.py
+      - name: 10-minute wideband of one night that is not in the window Masters (arm-A evidence)
+        run: python tests/test_sublst_wideband_perhour.py
       - name: R1 epoch header gate
         run: python tests/test_r1_epoch_header_gate.py
       - name: grammar sync with production
