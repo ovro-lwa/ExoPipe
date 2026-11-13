@@ -4,6 +4,7 @@ Classes (spec search.md section 6): detections (master_catalog.csv), gate_ledger
 (v_deep_images.csv), refusal_record (refusals/<cell>_<kind>_excluded.csv), candidate_stamps (the candidates/ directory),
 fp_gate_verdicts (V_top100_fp_gate_p3.csv), detection_positions (fit_positions.csv); under the B-02 rules (step 3b) frame_noise
 (frame_noise.csv: each frame's noise and the medians it was judged by) and table_pulsar_decisions (table_pulsar_decisions.csv);
+gate_population (gate_population.csv: the beam gate's population a whole-cell search judged by, read by an append);
 search_table_record (search_table_record.csv: every verdict of the search's bright-source table, its inputs and whether it was
 applied; production exopipe 55b0263). search_frame and noise_map belong to frames,
 master_catalog to masters; the search step runs their tests through the registry when they exist.
@@ -745,6 +746,55 @@ def medians_and_cards(path, **ctx):
         return _fail(probs, len(rows))
     return True, len(rows), f'{len(rows)} frames ({nfr} found); population ' + ', '.join(
         f'{st} {sum(1 for r in rows if r["stokes"] == st and r["population"] == "1")}' for st in ('I', 'V'))
+
+
+@content_test('gate_population')
+def frozen_gate_population(path, cell=None, **ctx):
+    """gate_population.csv (lib/search/gate_population: the beam gate's population a whole-cell search judged by, read by an
+    append): COLS; one cell (``cell`` when given); per gate one content (the rows of a base and of a re-written backfill agree);
+    n = the nights listed (dates, no repeat); 'applied' exactly when n reaches min_nights, with a positive finite median,
+    'below-minimum' / 'off' without one ('off': no nights); the attempt's beam refusals (refusals/<cell>_beam_excluded.csv)
+    were made with the row's factor, and none recorded under 'below-minimum' or 'off'."""
+    from exopipe.phase3.lib.search import gate_population as GP
+    cols, rows = _rows(path)
+    if cols != GP.COLS:
+        return False, len(rows), f'header != gate_population.COLS: {cols[:6]}...'
+    probs = []
+    cells = {(r['lst'], r['scope']) for r in rows}
+    if len(cells) > 1 or (cell and cells and cells != {tuple(cell.split('_', 1))}):
+        probs.append(f'rows of {sorted(cells)[:3]} (one cell{", " + cell if cell else ""})')
+    for r in rows:
+        nights = [x for x in r['nights'].split(';') if x]
+        k = f'{r["lst"]} {r["scope"]} {r["gate"]}'
+        if r['gate'] not in GP.GATES or r['outcome'] not in GP.OUTCOMES or r['basis'] not in GP.BASES:
+            probs.append(f'{k}: gate / outcome / basis {r["gate"]!r} / {r["outcome"]!r} / {r["basis"]!r}')
+            continue
+        if str(len(nights)) != r['n'] or len(set(nights)) != len(nights) or not all(_DATE.match(d) for d in nights):
+            probs.append(f'{k}: n {r["n"]} != {len(nights)} distinct dated nights')
+        med, mn = _f(r['median']) if r['median'] else None, int(_f(r['min_nights']) or 0)
+        if r['outcome'] == 'applied' and not (len(nights) >= mn and med is not None and med > 0 and med == med):
+            probs.append(f'{k}: applied with {len(nights)} nights (minimum {mn}) and median {r["median"]!r}')
+        if r['outcome'] != 'applied' and (r['median'] or (r['outcome'] == 'below-minimum' and len(nights) >= mn)
+                                          or (r['outcome'] == 'off' and nights)):
+            probs.append(f'{k}: {r["outcome"]} with {len(nights)} nights (minimum {mn}) and median {r["median"]!r}')
+    for g in {r['gate'] for r in rows}:
+        if len({tuple(r[c] for c in GP._KEY) for r in rows if r['gate'] == g}) > 1:
+            probs.append(f'{g}: rows of different content in one attempt')
+    beam = [r for r in rows if r['gate'] == 'beam']
+    if beam and cells:
+        lst, scope = sorted(cells)[0]
+        bp = os.path.join(os.path.dirname(path), 'refusals', f'{lst}_{scope}_beam_excluded.csv')
+        if os.path.exists(bp):
+            with open(bp, newline='') as fh:
+                br = [x for x in csv.reader(fh) if x and x[0] == lst and x[1] == scope]
+            if br and beam[0]['outcome'] != 'applied':
+                probs.append(f'{len(br)} beam refusal(s) recorded under outcome {beam[0]["outcome"]}')
+            badf = [x[2] for x in br if len(x) >= 5 and _f(x[4]) != _f(beam[0]['factor'])]
+            if badf:
+                probs.append(f'beam refusal(s) of {badf[:3]} made with another factor than {beam[0]["factor"]}')
+    if probs:
+        return _fail(probs, len(rows))
+    return True, len(rows), f'{len(rows)} frozen gate population row(s)'
 
 
 @content_test('table_pulsar_decisions')
