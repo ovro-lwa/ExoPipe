@@ -28,9 +28,13 @@ product (REVIEW.md item 8). What full LST hours prove on data is in exopipe_ops/
      the results keep their order (anchor, DOWN arm, UP arm), the same subbands reach the 10-minute stage and the same
      dewarped catalogs are kept for it; P2_CASCADE_WORKERS=1 and P2_CASCADE_ARMS_SIDE_BY_SIDE=0 give the code path as it
      was (no pool is made); an up-front catalog is used only for exactly that file under exactly those settings, an empty
-     or failed one is never kept; a pool that dies or a child that cannot start or dies leaves the cascade to do that work
-     itself, in order, as before. (The pools are replaced by an in-process stand-in here; the real ones are proven on a
-     full LST hour.)
+     or failed one is never kept, and the warning lines of a kept one reach the hour's log; an up-front pool that stops,
+     or a child that cannot be started, leaves the cascade to do that work itself, in order, as before, and the
+     elevation-cut copies that stopped workers left are removed; a child that fails or dies after it started ends the
+     cascade with that error (the arm is not run a second time over what the child left), and an error in the DOWN arm
+     waits for the child before it goes on; the helper processes are forked and end with their parent. (Most of these
+     tests replace the pools by an in-process stand-in; two run real processes; the products are proven on a full LST
+     hour.)
 Data-free. Run: python tests/test_phase2_speedups.py   (or under pytest)
 """
 import ast
@@ -41,9 +45,11 @@ import itertools
 import os
 import re
 import shutil
+import signal
 import sys
 import tempfile
 import threading
+import time
 import types
 import warnings
 
@@ -604,9 +610,10 @@ def test_huge_page_advice_is_off_before_numpy_can_load():
 # ------------------------------------------------------------------------------------------------------------------------
 # 5. the cascade's first extractions up front, and its two arms side by side
 # ------------------------------------------------------------------------------------------------------------------------
-UPFRONT_FUNCTIONS = KEY_FUNCTIONS + ('_UPFRONT_CATALOGS', 'CASCADE_WORKERS_DEFAULT', '_cascade_workers',
-                                     '_extract_up_front_one', '_extract_up_front', '_recall_up_front',
-                                     '_cascade_arm_in_child', 'run_cascade_dewarping')
+UPFRONT_FUNCTIONS = KEY_FUNCTIONS + ('_UPFRONT_CATALOGS', 'CASCADE_WORKERS_DEFAULT', '_cascade_workers', '_end_with_parent',
+                                     '_helper_pool', '_extract_up_front_one', '_remove_left_cut_copies',
+                                     '_extract_up_front', '_recall_up_front', '_cascade_arm_in_child',
+                                     'run_cascade_dewarping')
 BANDS = ['55MHz', '59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz']
 
 
@@ -615,8 +622,8 @@ class _InlinePool:
     made = []
     fail_submit = fail_result = fail_map_after = None
 
-    def __init__(self, max_workers=None):
-        self.max_workers = max_workers
+    def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=()):
+        self.max_workers, self.mp_context, self.initializer, self.initargs = max_workers, mp_context, initializer, initargs
         _InlinePool.made.append(self)
 
     def __enter__(self):
@@ -627,6 +634,7 @@ class _InlinePool:
 
     def shutdown(self, wait=True):
         self.was_shut_down = True
+        self.waited = wait
 
     def map(self, fn, items):
         for i, item in enumerate(items):
@@ -672,12 +680,26 @@ class _CascadeLog:
     warning = error = info
 
 
-def _cascade_namespace(tmp, bands=BANDS, empty=(), extraction_fails=()):
+def _cascade_namespace(tmp, bands=BANDS, empty=(), extraction_fails=(), warns=(), down_fails=False, module=None,
+                       killed_in_helper=()):
     """The cascade driver with its engines replaced: every extraction and every subband dewarp is recorded, no image is
-    read. Hour images are small files under tmp/<band>/."""
+    read. Hour images are small files under tmp/<band>/. What a helper PROCESS does is not seen in ``calls``; every
+    extraction and dewarp also writes a line (its process id first) to tmp/extracted.txt or tmp/dewarped.txt.
+    ``warns``: bands whose extraction says a warning; ``down_fails``: the DOWN arm raises; ``module``: run the
+    definitions in this module object (real pools pickle their functions by module and name); ``killed_in_helper``:
+    'extract:<band>' or 'dewarp:<band>' - the helper process doing that work kills itself (never this process)."""
     import pandas as pd
     _, tree = _source(CASCADE)
     calls = dict(extract=[], dewarp=[], arm=[], tenmin=[])
+    main_pid = os.getpid()
+
+    def note(name, *words):
+        with open(os.path.join(tmp, name), 'a') as f:
+            f.write(' '.join(str(w) for w in (os.getpid(),) + words) + '\n')
+
+    def killed(what, band):
+        if f'{what}:{band}' in killed_in_helper and os.getpid() != main_pid:
+            os.kill(os.getpid(), signal.SIGKILL)
     for b in bands:
         os.makedirs(os.path.join(tmp, b), exist_ok=True)
         with open(os.path.join(tmp, b, f'hour_{b}.fits'), 'wb') as f:
@@ -688,9 +710,16 @@ def _cascade_namespace(tmp, bands=BANDS, empty=(), extraction_fails=()):
 
     def extract_sources(image_path, logger):
         calls['extract'].append(os.path.basename(image_path))
+        note('extracted.txt', os.path.basename(image_path))
         b = os.path.basename(os.path.dirname(image_path))
+        if f'extract:{b}' in killed_in_helper and os.getpid() != main_pid:
+            with open(image_path.replace('.fits', '.elcut20e35.fits'), 'wb') as f:      # the copy a killed worker leaves
+                f.write(b'cut')
+        killed('extract', b)
         if b in extraction_fails:
             raise RuntimeError('extraction engine broke')
+        if b in warns:
+            logger.warning('  [BDSF] elevation mask failed (stand-in) - using full image')
         return pd.DataFrame() if b in empty else catalog('first:' + os.path.basename(image_path))
 
     def find_deep_pb_image(work_dir, subband, logger):
@@ -702,16 +731,20 @@ def _cascade_namespace(tmp, bands=BANDS, empty=(), extraction_fails=()):
         first = ns['_recall_up_front'](img, logger)
         if first is None:
             first = extract_sources(img, logger)
+        killed('dewarp', subband)
         dewarped = img.replace('.fits', '_dewarped.fits')
         with open(dewarped, 'wb') as f:
             f.write(b'd' * 50)
         out = catalog('dewarped:' + subband)
         ns['_remember_catalog'](dewarped, out)
         calls['dewarp'].append((subband, ref_label, os.getpid(), list(first['tag'])[0] if len(first) else None))
+        note('dewarped.txt', subband, ref_label, list(first['tag'])[0] if len(first) else None)
         return out, True, None
 
     def _run_cascade_arm(work_dir, subband_list, start_catalog, start_subband, diag_dir, results, logger, **kw):
         calls['arm'].append((tuple(subband_list), start_subband, tuple(sorted(kw))))
+        if down_fails and subband_list[0] == '69MHz':
+            raise RuntimeError('the DOWN arm broke')
         ref = start_subband
         for sb in subband_list:
             _, ok, _ = dewarp_subband(work_dir, sb, start_catalog, f'{ref}_dewarped', False, diag_dir, logger, **kw)
@@ -721,7 +754,8 @@ def _cascade_namespace(tmp, bands=BANDS, empty=(), extraction_fails=()):
     def refuse(*a, **k):
         raise AssertionError('a flow-method or snapshot engine ran in a source-based test')
 
-    ns = {'os': os, 'pd': pd, 'warnings': warnings,
+    ns = {} if module is None else module.__dict__
+    ns.update({'os': os, 'glob': glob, 'pd': pd, 'warnings': warnings,
           'cfg': types.SimpleNamespace(BDSF_THRESH_PIX=5.0, BDSF_THRESH_ISL=3.0, ANCHOR_METHOD='rbf', CASCADE_METHOD='rbf',
                                        WARP_RBF_KERNEL='thin_plate_spline', WARP_RBF_SMOOTHING=1.5, WARP_RBF_EPSILON=None,
                                        ALL_SUBBANDS=list(bands), ANCHOR_SUBBAND='73MHz', VLSSR_CATALOG='vlssr'),
@@ -731,7 +765,7 @@ def _cascade_namespace(tmp, bands=BANDS, empty=(), extraction_fails=()):
           '_run_cascade_arm': _run_cascade_arm, 'load_vlssr_catalog': lambda *a: {'ra': []},
           'dewarp_10min_intervals': lambda work_dir, subbands, *a, **k: calls['tenmin'].append(list(subbands)),
           '_run_cascade_arm_flow': refuse, '_run_flow_anchor': refuse, '_dewarp_10min_flow': refuse,
-          '_dewarp_remaining_snapshots': refuse, 'find_deep_pb_image_dewarped': refuse}
+          '_dewarp_remaining_snapshots': refuse, 'find_deep_pb_image_dewarped': refuse})
     return _pick(tree, UPFRONT_FUNCTIONS, CASCADE, ns), calls
 
 
@@ -790,6 +824,10 @@ def test_the_cascade_is_the_same_cascade_with_the_pool_and_the_child_arm():
         # the defaults: every first extraction once, in the pool; the UP arm through the child function
         ns1, calls1, log1, did1, made1, tmp1 = run({})
         assert [p.max_workers for p in made1] == [4, 1], f'pools made: {[p.max_workers for p in made1]}'
+        for p in made1:
+            assert p.mp_context is not None and p.mp_context.get_start_method() == 'fork', 'a helper pool is not forked'
+            assert p.initializer is ns1['_end_with_parent'] and p.initargs == (os.getpid(),), \
+                'a helper pool does not ask to end with this process'
         assert sorted(calls1['extract']) == sorted(f'hour_{b}.fits' for b in BANDS), \
             f'first extractions with the pool on: {calls1["extract"]}'
         assert [a[0] for a in calls1['arm']] == [('69MHz', '64MHz', '59MHz', '55MHz'), ('78MHz', '82MHz')]
@@ -828,6 +866,33 @@ def test_the_cascade_is_the_same_cascade_with_the_pool_and_the_child_arm():
                 assert any('6 of 7 catalogs kept' in m for m in log.lines)
             else:
                 assert any('Up-front extraction stopped' in m for m in log.lines)
+
+        # the warning of an up-front extraction whose catalog is kept reaches the hour's log, named by its image; the
+        # warning of one that is not kept is said by step 3, which extracts that image again
+        for kw, want in ((dict(warns=('59MHz',)), 1), (dict(warns=('59MHz',), empty=('59MHz',)), 0)):
+            tmp = tempfile.mkdtemp()
+            tmps.append(tmp)
+            _restore_env({k: None for k in saved})
+            with _inline_pools():
+                ns, calls, log, results = _run_cascade(tmp, **kw)
+            said = [m for m in log.lines if 'up-front extraction of hour_59MHz.fits: [BDSF] elevation mask failed' in m]
+            assert len(said) == want, f'{kw}: {said}'
+            if not want:
+                assert sum('elevation mask failed (stand-in)' in m for m in log.lines) == 1, 'step 3 did not say the warning'
+
+        # the setting, read by any caller of the cascade: unset or empty = 4; not a whole number of at least 1 = refused
+        ns, _ = _cascade_namespace(tmps[0])
+        for raw, want in ((None, 4), ('', 4), ('1', 1), ('7', 7)):
+            _restore_env({'P2_CASCADE_WORKERS': raw})
+            assert ns['_cascade_workers']() == want, (raw, ns['_cascade_workers']())
+        for raw in ('0', '-2', 'four', '2.5'):
+            os.environ['P2_CASCADE_WORKERS'] = raw
+            try:
+                ns['_cascade_workers']()
+            except ValueError as e:
+                assert 'REFUSING: P2_CASCADE_WORKERS' in str(e), e
+            else:
+                raise AssertionError(f'P2_CASCADE_WORKERS={raw!r} was taken')
     finally:
         _restore_env(saved)
         for t in tmps:
@@ -838,38 +903,194 @@ def test_a_failed_pool_or_child_leaves_the_cascade_as_before():
     saved = _clean_cascade_env()
     tmps = []
     try:
-        def run(setup):
+        def run(setup, left=()):
             tmp = tempfile.mkdtemp()
             tmps.append(tmp)
+            for name in left:
+                os.makedirs(os.path.dirname(os.path.join(tmp, name)), exist_ok=True)
+                open(os.path.join(tmp, name), 'wb').close()
             with _inline_pools() as pools:
                 setup(pools)
                 ns, calls, log, results = _run_cascade(tmp)
             did = _what_the_cascade_did(ns, calls, results)
+            run.tmp = tmp
             return calls, log, (did[0], did[1], did[2], [(k.replace(tmp, ''), v) for k, v in did[3]])
+
+        def stops(setup, **kw):
+            """A cascade that must end with an error: (the error, calls, log, the pools made)."""
+            tmp = tempfile.mkdtemp()
+            tmps.append(tmp)
+            with _inline_pools() as pools:
+                setup(pools)
+                ns, calls = _cascade_namespace(tmp, **kw)
+                log = _CascadeLog()
+                try:
+                    ns['run_cascade_dewarping'](tmp, log)
+                except RuntimeError as e:
+                    return e, calls, log, list(pools.made)
+            raise AssertionError('the cascade did not stop')
 
         os.environ.update({'P2_CASCADE_WORKERS': '1', 'P2_CASCADE_ARMS_SIDE_BY_SIDE': '0'})
         _, _, before = run(lambda pools: None)
         del os.environ['P2_CASCADE_WORKERS'], os.environ['P2_CASCADE_ARMS_SIDE_BY_SIDE']
 
-        # the up-front pool dies after three images: three catalogs kept, the other four extracted at step 3
-        calls, log, did = run(lambda pools: setattr(pools, 'fail_map_after', 3))
+        # the up-front pool dies after three images: three catalogs kept, the other four extracted at step 3; the
+        # elevation-cut copies its stopped workers left beside the hour images are removed, nothing else is
+        left = ('64MHz/hour_64MHz.elcut20.fits', '59MHz/hour_59MHz.elcut20e35.fits')
+        stay = ('64MHz/hour_64MHz.elcut20.txt', '64MHz/other_64MHz.elcut20.fits', '64MHz/hour_64MHz_dewarped_old.fits')
+        calls, log, did = run(lambda pools: setattr(pools, 'fail_map_after', 3), left=left + stay)
         assert did == before
         assert len(calls['extract']) == 3 + 4 and sorted(set(calls['extract'])) == sorted(f'hour_{b}.fits' for b in BANDS)
         assert any('Up-front extraction stopped' in m for m in log.lines) and any('3 of 7 catalogs kept' in m for m in log.lines)
+        assert not any(os.path.exists(os.path.join(run.tmp, n)) for n in left), 'a left elevation-cut copy is still there'
+        assert all(os.path.exists(os.path.join(run.tmp, n)) for n in stay), 'a file that is no elevation-cut copy was removed'
+        assert any('Removed 2 elevation-cut copies' in m for m in log.lines), log.lines
+        # a pool that does not stop removes nothing (its workers remove their own copies)
+        calls, log, did = run(lambda pools: None, left=left)
+        assert did == before and all(os.path.exists(os.path.join(run.tmp, n)) for n in left)
 
         # the child cannot be started: the UP arm runs after the DOWN arm in this process
         calls, log, did = run(lambda pools: setattr(pools, 'fail_submit', True))
         assert did == before and [a[0] for a in calls['arm']] == [('69MHz', '64MHz', '59MHz', '55MHz'), ('78MHz', '82MHz')]
         assert any('could not be started beside the DOWN arm' in m for m in log.lines)
 
-        # the child dies: the same
-        calls, log, did = run(lambda pools: setattr(pools, 'fail_result', True))
-        assert did == before and [a[0] for a in calls['arm']] == [('69MHz', '64MHz', '59MHz', '55MHz'), ('78MHz', '82MHz')]
-        assert any("UP arm's child process failed" in m for m in log.lines)
+
+        # the child fails after it started: the cascade ends with the child's error; the arm is NOT run a second time in
+        # this process, the 10-minute stage is not reached, the pool is shut down
+        e, calls, log, made = stops(lambda pools: setattr(pools, 'fail_result', True))
+        assert str(e) == 'the child process died', e
+        assert [a[0] for a in calls['arm']] == [('69MHz', '64MHz', '59MHz', '55MHz')], calls['arm']
+        assert calls['tenmin'] == [] and getattr(made[1], 'was_shut_down', False) and made[1].waited
+        assert any("UP arm's child process failed" in m and 'not run a second time' in m for m in log.lines)
+
+        # the DOWN arm fails: its error goes on only after the child was waited for
+        e, calls, log, made = stops(lambda pools: None, down_fails=True)
+        assert str(e) == 'the DOWN arm broke', e
+        assert getattr(made[1], 'was_shut_down', False) and made[1].waited, 'the child was not waited for'
+        assert any("waiting for the UP arm's child process to end" in m for m in log.lines) and calls['tenmin'] == []
     finally:
         _restore_env(saved)
         for t in tmps:
             shutil.rmtree(t, ignore_errors=True)
+
+
+def _process_state(pid):
+    """The kernel's state letter of a process, or None when it is gone."""
+    try:
+        with open(f'/proc/{pid}/stat') as f:
+            return f.read().rsplit(')', 1)[1].split()[0]
+    except OSError:
+        return None
+
+
+def test_the_pool_and_the_child_are_real_processes():
+    """The same cascade through real forked processes: the catalogs and results cross the process boundary, the UP arm's
+    products are written by the child, a killed up-front worker is absorbed, a killed child ends the cascade."""
+    if not sys.platform.startswith('linux'):
+        return
+    saved = _clean_cascade_env()
+    tmps = []
+    try:
+        def run(env, **kw):
+            _restore_env({k: None for k in saved})
+            os.environ.update(env)
+            tmp = tempfile.mkdtemp()
+            tmps.append(tmp)
+            module = types.ModuleType(f'cascade_in_real_processes_{len(tmps)}')
+            sys.modules[module.__name__] = module
+            ns, calls = _cascade_namespace(tmp, module=module, **kw)
+            log = _CascadeLog()
+            try:
+                results, error = ns['run_cascade_dewarping'](tmp, log), None
+            except RuntimeError as e:
+                results, error = {}, e
+            finally:
+                del sys.modules[module.__name__]
+
+            def lines(name):
+                with open(os.path.join(tmp, name)) as f:
+                    return [ln.split() for ln in f.read().splitlines()]
+            kept = sorted((k[0].replace(tmp, ''), list(v['tag'])) for k, v in ns['_DEWARPED_CATALOGS'].items())
+            return dict(tmp=tmp, log=log, calls=calls, error=error, results=list(results.items()), kept=kept,
+                        extracted=lines('extracted.txt'), dewarped=lines('dewarped.txt'))
+
+        me = str(os.getpid())
+        before = run({'P2_CASCADE_WORKERS': '1', 'P2_CASCADE_ARMS_SIDE_BY_SIDE': '0'})
+        assert before['error'] is None and {ln[0] for ln in before['extracted'] + before['dewarped']} == {me}
+
+        on = run({})
+        assert on['error'] is None and on['results'] == before['results'] and on['kept'] == before['kept'], \
+            'through real processes the cascade is not the cascade as before'
+        assert sorted(ln[1:] for ln in on['dewarped']) == sorted(ln[1:] for ln in before['dewarped']), \
+            'a subband was dewarped against another reference or from another first catalog'
+        assert sorted(ln[1] for ln in on['extracted']) == sorted(f'hour_{b}.fits' for b in BANDS), on['extracted']
+        workers = {ln[0] for ln in on['extracted']}
+        assert me not in workers and 1 <= len(workers) <= 4, f'the first extractions ran in {workers} (this process: {me})'
+        by = {ln[1]: ln[0] for ln in on['dewarped']}
+        assert all(by[b] == me for b in ('73MHz', '69MHz', '64MHz', '59MHz', '55MHz')), by
+        assert by['78MHz'] == by['82MHz'] and by['78MHz'] not in workers | {me}, f'the UP arm ran in {by}'
+        assert all(os.path.exists(os.path.join(on['tmp'], b, f'hour_{b}_dewarped.fits')) for b in BANDS)
+
+        # an up-front worker is killed in its extraction (it leaves its elevation-cut copy): absorbed, the copy removed
+        got = run({}, killed_in_helper=('extract:64MHz',))
+        assert got['error'] is None and got['results'] == before['results'] and got['kept'] == before['kept']
+        assert any('Up-front extraction stopped (BrokenProcessPool' in m for m in got['log'].lines), got['log'].lines
+        assert glob.glob(os.path.join(got['tmp'], '*', '*.elcut*')) == [], 'a killed worker\'s copy is still there'
+        assert [ln[0] for ln in got['dewarped'] if ln[1] == '64MHz'] == [me]
+
+        # the child is killed in its second subband: the cascade ends; this process does not dewarp the UP arm again
+        got = run({}, killed_in_helper=('dewarp:82MHz',))
+        assert isinstance(got['error'], RuntimeError) and 'ended from outside' in str(got['error']), got['error']
+        up = [ln for ln in got['dewarped'] if ln[1] in ('78MHz', '82MHz')]
+        assert [ln[1] for ln in up] == ['78MHz'] and up[0][0] != me, f'the UP arm after its child was killed: {up}'
+        assert got['calls']['tenmin'] == [], 'the 10-minute stage ran after the cascade had stopped'
+    finally:
+        _restore_env(saved)
+        for t in tmps:
+            shutil.rmtree(t, ignore_errors=True)
+
+
+def test_a_helper_process_ends_with_its_parent():
+    """A process that starts a helper pool and is then killed leaves no helper behind (Linux: the parent-death signal)."""
+    if not sys.platform.startswith('linux'):
+        return
+    tmp = tempfile.mkdtemp()
+    module = types.ModuleType('cascade_helper_ends_with_parent')
+    sys.modules[module.__name__] = module
+    helper = None
+    try:
+        ns, _ = _cascade_namespace(tmp, module=module)
+        r, w = os.pipe()
+        sys.stdout.flush()                                 # the fork below copies what is not yet written
+        sys.stderr.flush()
+        middle = os.fork()
+        if middle == 0:                                    # the stand-in controller: starts a helper, then is killed
+            try:
+                pool = ns['_helper_pool'](1)
+                os.write(w, str(pool.submit(os.getpid).result()).encode())
+                pool.submit(time.sleep, 300)
+                time.sleep(0.5)
+            finally:
+                os.kill(os.getpid(), signal.SIGKILL)
+        os.close(w)
+        os.waitpid(middle, 0)
+        helper = int(os.read(r, 32).decode() or 0)
+        os.close(r)
+        assert helper > 0, 'the stand-in controller started no helper'
+        t0 = time.time()
+        while _process_state(helper) not in (None, 'Z', 'X') and time.time() - t0 < 20:
+            time.sleep(0.1)
+        state = _process_state(helper)
+        assert state in (None, 'Z', 'X'), f'helper {helper} is still at work (state {state}) 20 s after its parent was killed'
+        helper = None
+    finally:
+        if helper:
+            try:
+                os.kill(helper, signal.SIGKILL)
+            except OSError:
+                pass
+        del sys.modules[module.__name__]
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_the_up_front_catalog_is_for_the_same_file_and_settings_only():
@@ -899,9 +1120,9 @@ def test_the_up_front_catalog_is_for_the_same_file_and_settings_only():
         # the dewarped catalogs of the 10-minute stage are another memo: an up-front catalog is never taken for one
         assert ns['_recall_catalog'](os.path.join(tmp, '55MHz', 'hour_55MHz.fits')) is None
         # the worker runs under the settings it is handed, and says which image its catalog is of
-        path, df = ns['_extract_up_front_one']((os.path.join(tmp, '55MHz', 'hour_55MHz.fits'), (11.0, 12.0, 13.0)))
+        path, df, said = ns['_extract_up_front_one']((os.path.join(tmp, '55MHz', 'hour_55MHz.fits'), (11.0, 12.0, 13.0)))
         assert (ns['ANCHOR_EL_CUT'], ns['ANCHOR_EAST_EL_CUT'], ns['ANCHOR_MAXPIX_BEAM_AREAS']) == (11.0, 12.0, 13.0)
-        assert path.endswith('hour_55MHz.fits') and list(df['tag']) == ['first:hour_55MHz.fits'] * 2
+        assert path.endswith('hour_55MHz.fits') and list(df['tag']) == ['first:hour_55MHz.fits'] * 2 and said == []
         # a new cascade starts from an empty memo
         ns['_extract_up_front'](tmp, [], log)
         assert ns['_UPFRONT_CATALOGS'] == {}
@@ -930,6 +1151,7 @@ TESTS = [test_vlssr_one_call_parser_equals_the_per_line_parser, test_vlssr_parse
          test_interval_pool_size_is_unchanged_unless_set, test_huge_page_advice_is_off_before_numpy_can_load,
          test_the_cascade_is_the_same_cascade_with_the_pool_and_the_child_arm,
          test_a_failed_pool_or_child_leaves_the_cascade_as_before,
+         test_the_pool_and_the_child_are_real_processes, test_a_helper_process_ends_with_its_parent,
          test_the_up_front_catalog_is_for_the_same_file_and_settings_only,
          test_step_3_extracts_itself_when_no_up_front_catalog_is_there]
 

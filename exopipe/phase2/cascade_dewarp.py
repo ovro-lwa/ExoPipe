@@ -274,26 +274,91 @@ def _recall_catalog(image_path):
 # The child returns its per-subband results and the dewarped catalogs it kept for the 10-minute stage.
 #   P2_CASCADE_ARMS_SIDE_BY_SIDE=0   the UP arm after the DOWN arm, in this process (the cascade as before)
 # Neither setting changes a product: every subband's computation is the one it was. Only the order of log lines changes.
+# The helper processes are forked (they inherit this module's state and the hour's logger) and ask the kernel to end
+# them when this process ends (_end_with_parent): a killed controller leaves none of them at work in the hour's directory.
+# When a helper process fails:
+#   - an up-front worker writes nothing but the temporary elevation-cut copy of its image. A pool that stops is absorbed:
+#     the copies its workers left are removed (find_deep_pb_image would take one for the hour image) and the cascade
+#     extracts the remaining images itself at step 3;
+#   - the UP arm's child writes products. Once it has started on the arm, an error in it or its death ends the cascade
+#     with that error, as an error or a kill in the arm did when it ran in this process: the arm is not run a second time
+#     over what the child left (step 8 skips a _dewarped.fits that exists, whole or not). If the DOWN arm stops with an
+#     error, this process waits for the child to end before the error goes on.
+# Each up-front worker is one PyBDSF extraction, and PyBDSF sizes its own pool from the machine unless BDSF_NCORES is set.
 _UPFRONT_CATALOGS = {}
 CASCADE_WORKERS_DEFAULT = 4
 
 
 def _cascade_workers():
-    n = CASCADE_WORKERS_DEFAULT
-    if os.environ.get('P2_CASCADE_WORKERS'):
-        n = max(1, int(os.environ['P2_CASCADE_WORKERS']))       # checked at the run's start by the controller
+    """P2_CASCADE_WORKERS as a whole number of at least 1 (unset or empty = the default). The controller refuses an
+    unusable value at the run's start; any other caller meets the same refusal here."""
+    raw = os.environ.get('P2_CASCADE_WORKERS')
+    if not raw:
+        return CASCADE_WORKERS_DEFAULT
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise ValueError(f"REFUSING: P2_CASCADE_WORKERS={raw!r} is not a whole number of at least 1")
     return n
 
 
+def _end_with_parent(parent_pid):
+    """Initializer of the cascade's helper processes (Linux): the kernel ends this process when the process that
+    started it ends, so a killed controller leaves no helper extracting or writing in the hour's directory."""
+    try:
+        import ctypes
+        import signal
+        ctypes.CDLL(None, use_errno=True).prctl(1, int(signal.SIGKILL))     # 1 = PR_SET_PDEATHSIG
+    except Exception:
+        return
+    if os.getppid() != parent_pid:                      # the parent ended before the request was in place
+        os._exit(1)
+
+
+def _helper_pool(n):
+    """A pool of ``n`` forked helper processes that end with this process."""
+    import multiprocessing as _multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    return ProcessPoolExecutor(max_workers=n, mp_context=_multiprocessing.get_context('fork'),
+                               initializer=_end_with_parent, initargs=(os.getpid(),))
+
+
 def _extract_up_front_one(args):
-    """Pool worker: extract_sources of one not-yet-dewarped hour image under the parent's extraction settings."""
+    """Pool worker: extract_sources of one not-yet-dewarped hour image under the parent's extraction settings. Returns
+    (the image, its catalog, the warning and error lines of the extraction as (level, text)): a warning can say that the
+    extraction was not the usual one ("elevation mask failed - using full image"), so the parent writes the lines of
+    every catalog it keeps into the hour's log."""
     global ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS
     image_path, (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS) = args
     import logging as _logging
     warnings.filterwarnings('ignore')
+    said = []
+
+    class _Keep(_logging.Handler):
+        def emit(self, record):
+            said.append((record.levelno, record.getMessage()))
     _logger = _logging.getLogger('cascade_upfront')
-    _logger.setLevel(_logging.WARNING)                  # quiet in workers; the parent logs what it kept
-    return image_path, extract_sources(image_path, _logger)
+    _logger.setLevel(_logging.WARNING)                  # the information lines stay in the worker
+    _logger.propagate = False
+    _logger.handlers = [_Keep()]
+    return image_path, extract_sources(image_path, _logger), said
+
+
+def _remove_left_cut_copies(images, logger):
+    """Remove the elevation-cut copies (extract_sources' temporary input, <image>.elcut*.fits) that stopped workers left
+    beside ``images``. Called when no helper process is at work on them."""
+    n = 0
+    for img in images:
+        for left in glob.glob(glob.escape(img[:-len('.fits')]) + '.elcut*.fits'):
+            try:
+                os.remove(left)
+                n += 1
+            except OSError as e:
+                logger.warning(f"  [BDSF] {left}: a left elevation-cut copy could not be removed ({e})")
+    if n:
+        logger.warning(f"  [BDSF] Removed {n} elevation-cut copies that stopped up-front workers left")
 
 
 def _extract_up_front(work_dir, subbands, logger):
@@ -321,14 +386,17 @@ def _extract_up_front(work_dir, subbands, logger):
     t0 = _time.time()
     settings = (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS)
     try:
-        from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=n) as executor:
-            for img, df in executor.map(_extract_up_front_one, [(i, settings) for i in images]):
+        with _helper_pool(n) as executor:
+            for img, df, said in executor.map(_extract_up_front_one, [(i, settings) for i in images]):
                 if df is not None and not df.empty:
                     _UPFRONT_CATALOGS[_catalog_key(img)] = df
-    except Exception as e:
+                    for level, line in said:            # an image that is not kept is extracted again at step 3,
+                        (logger.error if level >= 40 else logger.warning)(     # which says its lines itself
+                            f"  [BDSF] up-front extraction of {os.path.basename(img)}: {line.strip()}")
+    except Exception as e:                              # the pool is shut down here: none of its workers is at work
         logger.warning(f"  [BDSF] Up-front extraction stopped ({type(e).__name__}: {e}) - the cascade extracts the "
                        f"remaining images itself, as before")
+        _remove_left_cut_copies(images, logger)
     logger.info(f"  [BDSF] Up-front extraction: {len(_UPFRONT_CATALOGS)} of {len(images)} catalogs kept "
                 f"in {_time.time() - t0:.0f} s")
 
@@ -1744,8 +1812,7 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
     if (cascade_method != 'flow' and cascade_down and cascade_up
             and os.environ.get('P2_CASCADE_ARMS_SIDE_BY_SIDE', '1') != '0'):
         try:
-            from concurrent.futures import ProcessPoolExecutor
-            _up_pool = ProcessPoolExecutor(max_workers=1)
+            _up_pool = _helper_pool(1)
             _up_future = _up_pool.submit(_cascade_arm_in_child, (
                 work_dir, list(cascade_up), anchor_catalog, anchor_sb, diag_dir, logger.name, _arm_kwargs,
                 (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS), dict(_UPFRONT_CATALOGS)))
@@ -1754,6 +1821,8 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
         except Exception as e:
             logger.warning(f"The UP arm could not be started beside the DOWN arm ({type(e).__name__}: {e}) - it runs "
                            f"after it, as before")
+            if _up_pool is not None:                    # nothing was handed to a child
+                _up_pool.shutdown(wait=False)
             _up_pool = _up_future = None
 
     # -- Phase 1b: Cascade Down --
@@ -1761,17 +1830,24 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
     logger.info(f"CASCADE DOWN ({cascade_method})")
     logger.info(f"{'='*40}")
 
-    if cascade_method == 'flow':
-        _run_cascade_arm_flow(work_dir, cascade_down,
-                              anchor_sb, diag_dir, results, logger,
-                              warp_categories=warp_categories)
-    else:
-        _run_cascade_arm(work_dir, cascade_down, anchor_catalog,
-                         anchor_sb, diag_dir, results, logger,
-                         method=cascade_method, rbf_kernel=rbf_kernel,
-                         rbf_smoothing=rbf_smoothing, rbf_epsilon=rbf_epsilon,
-                         snr_weighting=snr_weighting,
-                         warp_categories=warp_categories)
+    try:
+        if cascade_method == 'flow':
+            _run_cascade_arm_flow(work_dir, cascade_down,
+                                  anchor_sb, diag_dir, results, logger,
+                                  warp_categories=warp_categories)
+        else:
+            _run_cascade_arm(work_dir, cascade_down, anchor_catalog,
+                             anchor_sb, diag_dir, results, logger,
+                             method=cascade_method, rbf_kernel=rbf_kernel,
+                             rbf_smoothing=rbf_smoothing, rbf_epsilon=rbf_epsilon,
+                             snr_weighting=snr_weighting,
+                             warp_categories=warp_categories)
+    except BaseException:
+        if _up_pool is not None:                        # no process of this cascade is left at work behind its error
+            logger.error("  The DOWN arm stopped with an error - waiting for the UP arm's child process to end before "
+                         "the error goes on")
+            _up_pool.shutdown(wait=True)
+        raise
 
     # -- Phase 1c: Cascade Up --
     logger.info(f"\n{'='*40}")
@@ -1782,16 +1858,22 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
     if _up_future is not None:
         try:
             _up_results, _up_catalogs = _up_future.result()
-            results.update(_up_results)
-            _DEWARPED_CATALOGS.update(_up_catalogs)
-            _up_done = True
-            logger.info(f"  UP arm (child process) finished: "
-                        f"{sum(1 for v in _up_results.values() if v)} of {len(_up_results)} subband(s) OK")
-        except Exception as e:
-            logger.warning(f"  The UP arm's child process failed ({type(e).__name__}: {e}) - the arm runs here, "
-                           f"as before")
-        finally:
-            _up_pool.shutdown()
+        except BaseException as e:                      # the child had started on the arm: see the note at _UPFRONT_CATALOGS
+            _up_pool.shutdown(wait=True)
+            logger.error(f"  The UP arm's child process failed ({type(e).__name__}: {e}) - the cascade stops with this "
+                         f"error; the arm is not run a second time over what the child left "
+                         f"(P2_CASCADE_ARMS_SIDE_BY_SIDE=0 runs the UP arm in this process)")
+            from concurrent.futures.process import BrokenProcessPool
+            if isinstance(e, BrokenProcessPool):
+                raise RuntimeError("the UP arm's child process was ended from outside (killed, or out of memory) "
+                                   "before it returned its result - the hour's cascade is incomplete") from e
+            raise
+        _up_pool.shutdown(wait=True)
+        results.update(_up_results)
+        _DEWARPED_CATALOGS.update(_up_catalogs)
+        _up_done = True
+        logger.info(f"  UP arm (child process) finished: "
+                    f"{sum(1 for v in _up_results.values() if v)} of {len(_up_results)} subband(s) OK")
     if _up_done:
         pass
     elif cascade_method == 'flow':
