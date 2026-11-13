@@ -21,6 +21,9 @@ and the publish copies the attempt's files over the published ones. Two records 
             the END of the search, and an empty one; its column lists are the engine's
   publish   the publish's own file list carries the two records to the published cell
   wiring    detect() seeds through seed_attempt, and the per-hour plan holds the gate after the size-rule gate
+  guard     two per-hour searches of one cell: the cell's lease admits one holder at a time (another Stokes, or another
+            published root, is another lease); at the publish a published record that changed, appeared or vanished since
+            the seed is named and refuses; run_unit takes the lease before the unit and checks before publish()
 
 Synthetic files only, each test in its own temporary directory. Run standalone:
     python tests/test_search_sublst_perhour_seed.py [test_name ...]
@@ -346,6 +349,97 @@ def test_detect_seeds_through_seed_attempt_and_the_plan_holds_the_gate():
     gate_calls = [n for n in ast.walk(funcs[holders[0]])
                   if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == 'append_header_refusal']
     assert len(gate_calls) == 1
+
+
+def test_seed_state_names_a_record_changed_since_the_seed():
+    root = tempfile.mkdtemp(prefix='perhour_seed_')
+    try:
+        src = _published(root, table=False)                            # the published cell has no table record yet
+        dst = os.path.join(root, 'attempt', 'transients', LABEL_DIR)
+        TS.seed_attempt(src, dst)
+        state = TS.seed_state(dst)
+        assert set(state) == set(TS.per_hour_seed_names()) - {'sigstack', 'refusals'}, state
+        assert state['search_table_record.csv'] is None and all(v for k, v in state.items() if k != 'search_table_record.csv')
+        assert TS.seed_changed(src, state) is None                     # nothing published meanwhile
+        with open(os.path.join(dst, 'v_deep_ledger.csv'), 'a') as f:   # the engine appends to the ATTEMPT: not a change
+            f.write('03h,73MHz,V,2024-12-27\n')
+        assert TS.seed_changed(src, state) is None
+        with open(os.path.join(src, 'v_deep_images.csv'), 'a') as f:   # another search published a night
+            f.write('03h,73MHz,V,2024-12-23\n')
+        why = TS.seed_changed(src, state)
+        assert why and 'v_deep_images.csv' in why and 'changed after this attempt was seeded' in why, why
+        src2 = _published(os.path.join(root, 'two'), table=False)
+        dst2 = os.path.join(root, 'two', 'attempt', 'transients', LABEL_DIR)
+        TS.seed_attempt(src2, dst2)
+        state2 = TS.seed_state(dst2)
+        with open(os.path.join(src2, 'search_table_record.csv'), 'w') as f:
+            f.write(','.join(ST.STR_COLS) + '\n')
+        why = TS.seed_changed(src2, state2)
+        assert why and 'search_table_record.csv' in why and 'did not exist' in why, why
+        os.remove(os.path.join(src2, 'search_table_record.csv'))
+        os.remove(os.path.join(src2, 'master_catalog.csv'))
+        why = TS.seed_changed(src2, state2)
+        assert why and 'master_catalog.csv' in why and 'is gone' in why, why
+        assert 'no record' in TS.seed_changed(src, None)               # an attempt without a seed record never publishes
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_cell_lease_admits_one_search_of_a_cell_at_a_time():
+    root = tempfile.mkdtemp(prefix='perhour_seed_')
+    try:
+        lr = os.path.join(root, 'leases')
+        plan = dict(cell='03h_73MHz', stokes='V', publish=os.path.join(root, 'pub', 'search_B', '03h_73MHz_V'))
+        a = TS.cell_lease(lr, plan, 'sublst-B_03h_73MHz_V_2024-12-19')
+        b = TS.cell_lease(lr, plan, 'sublst-B_03h_73MHz_V_2024-12-27')
+        assert a.capacity == 1 and a.dir == b.dir
+        ok, _ = a.try_acquire()
+        assert ok
+        ok, live = b.try_acquire()                                     # the same cell and Stokes: refused while a holds it
+        assert not ok and [h.get('unit') for h in live] == ['sublst-B_03h_73MHz_V_2024-12-19'], live
+        other_stokes = TS.cell_lease(lr, dict(plan, stokes='I'), 'u')
+        other_root = TS.cell_lease(lr, dict(plan, publish=os.path.join(root, 'parity', 'search_B', '03h_73MHz_V')), 'u')
+        assert len({a.dir, other_stokes.dir, other_root.dir}) == 3
+        for other in (other_stokes, other_root):
+            ok, _ = other.try_acquire()
+            assert ok
+            other.release()
+        a.release()
+        ok, _ = b.try_acquire()                                        # released: the second search goes on
+        assert ok
+        b.release()
+        run = types.SimpleNamespace(dry_run=False, out_root=root)
+        full = dict(plan, date='2024-12-27', refuse='', noinput='')
+        for case in (dict(full, date=''), dict(full, refuse='x'), dict(full, noinput='x')):
+            with TS.per_hour_cell_lease(run, case, 'u', ['detect', 'publish']) as lease:
+                assert lease is None, case                             # an intermittent pass, or a unit that will not seed
+        with TS.per_hour_cell_lease(types.SimpleNamespace(dry_run=True, out_root=root), full, 'u', ['detect']) as lease:
+            assert lease is None
+        with TS.per_hour_cell_lease(run, full, 'u', ['fit', 'verify']) as lease:
+            assert lease is None                                       # no detect: nothing is seeded or published
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_run_unit_holds_the_lease_and_checks_before_the_publish():
+    tree = ast.parse(open(STEP).read())
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+    def calls(fn, name):
+        return [n for n in ast.walk(funcs[fn]) if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == name]
+    lease, unit_with = calls('run_unit', 'per_hour_cell_lease'), None
+    assert len(lease) == 1
+    for n in ast.walk(funcs['run_unit']):                              # the with statement that opens the unit's record
+        if isinstance(n, ast.With) and any(isinstance(i.context_expr, ast.Call) and getattr(i.context_expr.func, 'attr', '')
+                                           == 'unit' for i in n.items):
+            unit_with = n
+    assert unit_with is not None and lease[0].lineno < unit_with.lineno          # taken before the unit starts
+    assert getattr(unit_with.items[0].context_expr, 'id', '') == 'held'            # and released when the unit ends
+    check, pub = calls('run_unit', 'seed_changed'), calls('run_unit', 'publish')
+    assert len(check) == 1 and len(pub) == 1 and check[0].lineno < pub[0].lineno
+    assert len(calls('detect', 'seed_state')) == 1
+    state_line = calls('detect', 'seed_state')[0].lineno
+    assert calls('detect', 'seed_attempt')[0].lineno < state_line < calls('detect', 'legacy_call')[0].lineno   # before the engine
 
 
 def _all_tests():
