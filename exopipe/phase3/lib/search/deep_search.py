@@ -2061,7 +2061,8 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _ph or _ph10:                                                   # an append (deep, 10-minute) is judged by the population its
             # base attempt recorded (gate_population.csv), never a recomputed one;
             _bfz = _GP.frozen_beam(run_root, lst, scope, float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')),   # none recorded,
-                                   BEAM_GATE_MIN_NIGHTS, lambda _n: _xtest(lst, scope, _kd(_n)))   # another rule: refused (the
+                                   BEAM_GATE_MIN_NIGHTS, lambda _n: _xtest(lst, scope, _kd(_n)),   # another rule: refused (the
+                                   remedy=_GP.whole_cell_remedy(lst, scope) if _ph10 else None)
                                                                    # cadence's own exclusion test: at 10 minutes _excl is not set)
             print(f'  {lst} {scope}: BEAM GATE (append) - the base attempt\'s frozen population: {_bfz["n"]} nights, '
                   f'{_bfz["outcome"]}' + (f', median {_bfz["median"]:.6g}' if _bfz['median'] is not None else '')

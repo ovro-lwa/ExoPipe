@@ -98,15 +98,23 @@ def read(run_dir, lst, scope, gate):
                 basis=r['basis'], attempt=r['attempt'], path=p)
 
 
-def frozen_beam(run_dir, lst, scope, factor, min_nights, excluded):
+def whole_cell_remedy(lst, scope):
+    """What a 10-minute append without a recorded population is told to do: the record is written by a whole-cell search."""
+    return f'search the cell whole again (search --tier sublst --cells {lst}_{scope})'
+
+
+def frozen_beam(run_dir, lst, scope, factor, min_nights, excluded, remedy=None):
     """The base attempt's beam-gate population an append is judged by (module docstring, READ), or RuntimeError naming why it
-    cannot be: missing, another factor / minimum, a base searched with the gate off, a population night ``excluded(date)`` now."""
+    cannot be: missing, another factor / minimum, a base searched with the gate off, a population night ``excluded(date)`` now.
+    ``remedy``: what the refusal for a missing record tells the reader to do; None is the deep tier's (the backfill stage or a
+    re-search), the 10-minute cadence passes whole_cell_remedy (it has no backfill)."""
     fz = read(run_dir, lst, scope, 'beam')
     if fz is None:
         raise RuntimeError(f'{lst} {scope}: BEAM GATE of an append - the base attempt holds no frozen beam-gate population '
                            f'({os.path.join(run_dir, FILE)}): a new night is judged by the population the cell was searched '
-                           f'with (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)), never a recomputed one - backfill the '
-                           f'published attempt (search --tier deep --stages {BACKFILL_STAGE}) or re-search the cell; REFUSING')
+                           f'with (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)), never a recomputed one - '
+                           + (remedy or f'backfill the published attempt (search --tier deep --stages {BACKFILL_STAGE}) or '
+                                        f're-search the cell') + '; REFUSING')
     if fz['outcome'] == 'off':
         raise RuntimeError(f'{lst} {scope}: BEAM GATE of an append - the base attempt was searched with the beam gate off '
                            f'(P3_BEAM_GATE_OFF=1); an append with it on would mix the rules in one attempt; REFUSING')
@@ -309,7 +317,7 @@ def frozen_frames(run_dir, lst, scope, gate, factor, min_frames, excluded, what)
         raise RuntimeError(f'{lst} {scope}: {what} of an append - the base attempt holds no frozen population of it '
                            f'({os.path.join(run_dir, FILE)}, gate {gate}): a new night is judged by the population the cell '
                            f'was searched with (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)), never a recomputed one - '
-                           f'search the cell whole again (search --tier sublst --cells {lst}_{scope}); REFUSING')
+                           f'{whole_cell_remedy(lst, scope)}; REFUSING')
     if fz['outcome'] not in ('applied', 'below-minimum'):
         raise RuntimeError(f'{fz["path"]}: {lst} {scope} {gate}: outcome {fz["outcome"]!r} (this gate is applied or below its '
                            f'minimum, never off); REFUSING')

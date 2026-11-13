@@ -360,6 +360,27 @@ def test_detect_seeds_through_seed_attempt_and_the_plan_holds_the_gate():
     gate_calls = [n for n in ast.walk(funcs[holders[0]])
                   if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == 'append_header_refusal']
     assert len(gate_calls) == 1
+    # the frozen gate populations and the admission of a night outside the window Masters are gates of the same plan, in
+    # this order, each read through its one function; what the plan admits reaches the engine through detect() and the child
+    order = ('epoch.published_attempt', 'epoch.not_yet_searched', 'epoch.size_rule_of_the_base',
+             'epoch.frozen_gate_populations', 'epoch.nonmember_tree_entry', 'epoch.nonmember_i_sanity_value',
+             'epoch.appended_headers')
+    at = {}
+    for n in ast.walk(funcs[holders[0]]):
+        if isinstance(n, ast.Constant) and n.value in order:
+            assert n.value not in at, f'{n.value} named twice in the plan'
+            at[n.value] = n.lineno
+    assert [at[g] for g in order] == sorted(at[g] for g in order) and len(at) == len(order), at
+    for fn in ('gate_population_refusal', 'nonmember_admission'):
+        assert len([n for n in ast.walk(funcs[holders[0]])
+                    if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == fn]) == 1, fn
+    src = open(STEP).read()
+    assert "plan['nonmember_nights'] = {date: nm['value']}" in src
+    assert "nonmember_nights=plan.get('nonmember_nights')," in src                 # detect() -> the engine child's arguments
+    assert "if a.get('nonmember_nights'):\n            kw['nonmember_nights'] = a['nonmember_nights']\n" in src   # the child
+    eng = open(ENGINE).read()
+    assert "cadence='deep', nonmember_nights=None):" in eng
+    assert "and _kd(d) not in _nm10):" in eng and "_wr = {**_wr, **_nm10}" in eng
 
 
 def test_seed_state_names_a_record_changed_since_the_seed():

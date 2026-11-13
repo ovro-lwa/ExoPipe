@@ -77,6 +77,11 @@ def test_record_and_reader():
           and thin['outcome'] == 'below-minimum' and thin['n'] == 3 and thin['median'] is None
           and vs['median'] == 0.75 and vs['factor'] == 3.0
           and 'no frozen population' in miss and 'search the cell whole again' in miss, (fz, thin, vs, miss))
+    b10 = _refuses(lambda: GP.frozen_beam(d, LST, BAND, 1.5, 5, no, remedy=GP.whole_cell_remedy(LST, BAND)))
+    bdp = _refuses(lambda: GP.frozen_beam(d, LST, BAND, 1.5, 5, no))
+    check('the beam reader without a record names the tier\'s remedy: the whole-cell search at 10 minutes, the backfill '
+          'stage at the deep tier (the default text)',
+          f'search --tier sublst --cells {CELL}' in b10 and 'backfill' not in b10 and 'backfill' in bdp, (b10, bdp))
     f1 = _refuses(lambda: GP.frozen_frames(d, LST, BAND, 'search_tier_I', 2.5, 5, no, what))
     f2 = _refuses(lambda: GP.frozen_frames(d, LST, BAND, 'search_tier_I', 2.0, 6, no, what))
     f3 = _refuses(lambda: GP.frozen_frames(d, LST, BAND, 'search_tier_I', 2.0, 5, lambda k: k[:10] == '2024-12-29', what))

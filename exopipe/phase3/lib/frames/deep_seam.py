@@ -75,9 +75,10 @@ def _edits():
              "'V', cadence, f'{lst} {scope}')\n")
     return [
         ('signature',
-         "def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',\n                  cadence='deep'):\n",
          "def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',\n"
-         "                  cadence='deep', frames_only=False):\n"),
+         "                  cadence='deep', nonmember_nights=None):\n",
+         "def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',\n"
+         "                  cadence='deep', nonmember_nights=None, frames_only=False):\n"),
         ('docstring',
          "    the frame source is the same chain (Gregg 2026-09-08: 'identical to deep').\"\"\"\n",
          "    the frame source is the same chain (Gregg 2026-09-08: 'identical to deep').\n" + _DOC_ADD + "\n"),
