@@ -30,6 +30,12 @@ R-FRAME-TIME-FROM-INTEGRATION-ALL-STAGES), with production's own arithmetic (pha
 integration_label). instrument.INTEGRATION_S (Phase 2's LWA_DT, 10.0310 s) is 2.0e-5 s shorter: a midpoint within ~1e-5 s of a
 second boundary got another label (FOLD_IN 10-28 finding).
 
+FRAME ROOT (production clv15 phase3_snapshot_search.frame_root, 5c83ddc, 2026-11-10; Gregg 2026-11-08/10): a cell listed in
+paths.SNAPSHOT_GPU_FRAME_CELLS (the Dec 18-27 2024 nights without the survey's own CLEANed Stokes I) takes its frames from the
+observatory GPU pipeline's tree, paths.SNAPSHOT_GPU_FRAME_ROOT (the same <LST>/<date>/Run_*/<subband>/ layout); every other
+cell from paths.PHASE1_ROOT (``frame_root``). Production's run-wide P3_SNAP_PHASE1_ROOT override has no counterpart here
+(core/exclusions.refuse_frame_overrides refuses it).
+
 PHASE-1 CODE VERSION (CUTOVER_READINESS 'Phase-1 provenance'; ledger FINDING-PHASE1-MNC-ANTENNA-FLAGS-FROM-WRONG-DATE-BEFORE-
 ORCA-ACD5038-20261026: Phase 1 runs on Orca code older than acd5038 (2026-07-24) took the antenna flags of the LATEST MNC health
 record, not the observation night's). Every Phase-1 run writes <run>/<subband>/provenance.json; its pipeline_version is the Orca
@@ -66,6 +72,14 @@ _DATEOBS_KEY = b'DATE-OBS='
 def _cfg():
     from exopipe.phase3.config import CFG
     return CFG
+
+
+def frame_root(lst, date):
+    """The frame root of ONE cell (module docstring, FRAME ROOT): paths.SNAPSHOT_GPU_FRAME_ROOT for a cell of
+    paths.SNAPSHOT_GPU_FRAME_CELLS, paths.PHASE1_ROOT for every other cell."""
+    from exopipe.phase3.core import exclusions
+    P = _cfg().paths
+    return P.SNAPSHOT_GPU_FRAME_ROOT if (lst, date) in exclusions.gpu_frame_cells() else P.PHASE1_ROOT
 
 
 def read_dateobs(path, nblk=8):
@@ -321,7 +335,7 @@ def phase1_frames(lst, date, subband, phase1_root=None, report=None, run_pins=No
     lost (integrations lost to a file-name second another run's frame holds), shadowed, rule, index_named (CLEAN files named
     by interval index, not used), pin ({'run', 'file', 'sha1'} of the cell's pin, or None), phase1_code ({run: phase1_code}
     of every run a returned frame comes from)."""
-    root = phase1_root or _cfg().paths.PHASE1_ROOT
+    root = phase1_root or frame_root(lst, date)
     rundirs = sorted(glob.glob(os.path.join(root, lst, date, 'Run_*')))
     if not rundirs:
         raise Refusal(f'no Phase 1 runs for {lst} {date} under {root}')

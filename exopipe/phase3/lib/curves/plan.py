@@ -190,10 +190,22 @@ def stage_problems(stage_root, plan):
     return out
 
 
+def frame_root(plan, phase1_root):
+    """The frame root of the plan's cell, as production phase3_snapshot_search.frame_root (clv15 5c83ddc) resolves it for
+    discover_frames: a root other than paths.PHASE1_ROOT wins for every cell (its run-wide P3_SNAP_PHASE1_ROOT override, which
+    gate G13 refuses in the step; the synthetic tests' archive); otherwise the cell's own root (core/inputs.frame_root: the
+    GPU pipeline's tree for a cell of paths.SNAPSHOT_GPU_FRAME_CELLS)."""
+    from exopipe.phase3.core import inputs
+    if os.path.realpath(phase1_root) != os.path.realpath(_paths().PHASE1_ROOT):
+        return phase1_root
+    return inputs.frame_root(plan['lst'], plan['date'])
+
+
 def phase1_dirs(C, plan, sb, phase1_root):
-    """Phase-1 frame directories of one subband (every Run_*): the archive the stage was copied from."""
+    """Phase-1 frame directories of one subband (every Run_*) under the cell's frame root (frame_root): the archive the stage
+    was copied from."""
     out = []
-    for rd in sorted(glob.glob(os.path.join(phase1_root, plan['lst'], plan['date'], 'Run_*'))):
+    for rd in sorted(glob.glob(os.path.join(frame_root(plan, phase1_root), plan['lst'], plan['date'], 'Run_*'))):
         for sub in ('snapshots', 'snapshots_clean'):
             d = os.path.join(rd, sb, sub)
             if os.path.isdir(d):
