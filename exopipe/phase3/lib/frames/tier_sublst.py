@@ -835,6 +835,29 @@ def wideband_arm_a(ctx, lst, sb, night=None, base=None):
                                                  'crosscheck decision 6)',)
 
 
+def night_unit_evidence(ctx, lst, sb, night):
+    """Every file the night's arm-A unit nonmember_<LST>_<night>_<sb> judges by, as sublst_nonmember reads them under this
+    root: the night's admit records (its job plan; N-2) and the subband's stack records (N-3) under every stack step; per
+    Stokes the stack log (N-3/N-4 'log' evidence), admission record, window stacks and their _nframes / _pb siblings (N-4,
+    N-8, N-10), the flux-scale record (N-9); the installed window Masters and their weights records (N-5 to N-7); the
+    exclusion list and the GPU-frame cell list that sets its per-night scope (N-1, G-M01). Existing files only; a refusal
+    older than any of them may no longer hold."""
+    from exopipe.phase3.core import record
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    from exopipe.phase3.lib.masters import tier_sublst as MT
+    cell = f'{lst}_{night}'
+    out = [record.record_path(ctx.root, step, name) for step in MT.STACK_RECORD_STEPS
+           for name in (f'admit_{cell}', MT.stack_unit_name(lst, night, sb))]
+    for St in ('I', 'V'):
+        P = MT.stack_products(ctx.root, lst, cell, sb, St)
+        out += [P['log'], P['admission'], P['fluxdc']]
+        out += [q for sfx in ('', '_nframes', '_pb')
+                for q in glob.glob(os.path.join(P['dir'], f'sublst_{cell}_{sb}_{St}_w[0-9]{sfx}.fits'))]
+        out += [q for pat in NM.master_products(ctx.root, lst, sb, St, '[0-9]') for q in glob.glob(pat)]
+    out += [cfg().paths.DATA_DECISIONS, cfg().paths.SNAPSHOT_GPU_FRAME_CELLS]
+    return sorted(q for q in set(out) if os.path.exists(q))
+
+
 def optional_member_left_out(ctx, lst, sb, night):
     """Per hour, ONE night: whether member `sb` is left out of its wideband groups instead of refusing them. The rule
     holds only for a subband of frames_sublst.WIDEBAND_OPTIONAL (18 MHz; Gregg 2026-10-17: "Red can be built without
@@ -847,11 +870,13 @@ def optional_member_left_out(ctx, lst, sb, night):
     record is read where night_arm_a_complete reads it.
     Returns None when the rule does not apply (the arm-A and S-G8 gates decide), else (left out, why):
       - left out (True) when no arm-A or x2 residual of the night at the subband is on disk and the refusal is newer than
-        the unit's inputs that can change it: the night's newest window stack of the subband, its newest installed window
-        Master and the exclusion list (paths.DATA_DECISIONS). The engine then builds the group from the other members, as
-        it does for a window 18 MHz lacks (S-G9);
+        every file the unit judges by (night_unit_evidence: the night's job plan and stack records, the subband's stack
+        logs, admission records, windows and flux-scale record, the installed window Masters and their weights, the
+        exclusion lists). The engine then builds the group from the other members, as it does for a window 18 MHz lacks
+        (S-G9);
       - not left out (False) when a residual of the night is on disk (an earlier run's, which the engine would stack) or
-        the refusal is older than a stack, a Master or the exclusion list (it may no longer hold)."""
+        the refusal is older than one of those files (it may no longer hold: a stack that completed after an N-3, a
+        Master installed after an N-6)."""
     from exopipe.phase3.core import record
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
     if sb not in ctx.S.WIDEBAND_OPTIONAL:
@@ -871,16 +896,13 @@ def optional_member_left_out(ctx, lst, sb, night):
     bases = [ctx.root] + ([ctx.prod] if ctx.mirror else [])
     resid = sorted(q for b in bases for d in (ctx.lst_dir(lst, b), ctx.x2_dir(lst, b)) for St in ('I', 'V')
                    for q in glob.glob(os.path.join(d, cell, sb, St, f'sublst_{cell}_{sb}_{St}_w[0-9]_resid_loo.fits')))
-    m = re.match(r'([A-Z]+-[A-Z]?[0-9]+):', reason)
+    m = re.match(r'([A-Z]+-[A-Z]?[0-9]+)\b', reason)
     gate = m.group(1) if m else 'refused'
     if resid:
         return False, (f'{sb} is not left out: its unit of the night was refused ({gate}) but {len(resid)} residual(s) '
                        f'of the night are on disk, e.g. {resid[0]} (an earlier run\'s, which the engine would stack): move '
                        f'them aside')
-    ins = [q for St in ('I', 'V') for q in
-           glob.glob(os.path.join(ctx.lst_dir(lst), cell, sb, St, f'sublst_{cell}_{sb}_{St}_w[0-9].fits'))
-           + glob.glob(NM.master_products(ctx.root, lst, sb, St, '[0-9]')[0])] + [cfg().paths.DATA_DECISIONS]
-    newer = sorted(q for q in ins if mtime(q) > mtime(p))
+    newer = sorted(q for q in night_unit_evidence(ctx, lst, sb, night) if mtime(q) > mtime(p))
     if newer:
         return False, (f'{sb} is not left out: its unit of the night was refused ({gate}) before {newer[0]} was last '
                        f'written, so the refusal may no longer hold: run the unit again')

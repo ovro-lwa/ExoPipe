@@ -84,6 +84,9 @@ class Root:
             w = csv.writer(f)
             w.writerow(['lst', 'subband', 'date', 'verdict', 'reason'])
             w.writerow(['23h', '18', '2020-01-01', 'exclude', 'unrelated'])
+        self.gpu_cells = os.path.join(self.dir, 'snapshot_gpu_frame_cells.txt')
+        with open(self.gpu_cells, 'w') as f:
+            f.write('# none\n')
         self.script = os.path.join(self.dir, 'phase3_sublst_wideband.py')
         open(self.script, 'w').close()
 
@@ -91,8 +94,9 @@ class Root:
             self.calls.append(list(args_))
             res = types.SimpleNamespace(ok=False, refused=True, rc=2, reason='stub', tail=STUB_LINE, fallback_refusals=[])
             return res, [STUB_LINE]
-        self._patch = Patch((CFG.paths, 'DATA_DECISIONS', self.decisions), (FT, 'legacy_script', lambda _r, _f: self.script),
-                            (FT, 'engine', engine))
+        self._patch = Patch((CFG.paths, 'DATA_DECISIONS', self.decisions),
+                            (CFG.paths, 'SNAPSHOT_GPU_FRAME_CELLS', self.gpu_cells),
+                            (FT, 'legacy_script', lambda _r, _f: self.script), (FT, 'engine', engine))
 
     def __enter__(self):
         self._patch.__enter__()
@@ -462,6 +466,7 @@ def test_eighteen_mhz_refusal_older_than_a_stack_or_a_master_refuses():
         p = t.night_record(sb, 'refused', reason=N6)
         os.utime(p, (2000, 2000))
         os.utime(t.decisions, (1000, 1000))
+        os.utime(t.gpu_cells, (1000, 1000))
         s = t.stack(sb, 'I', 0)
         md = os.path.join(t.root, f'{LST}_masters', sb, 'V')
         os.makedirs(md)
@@ -480,6 +485,47 @@ def test_eighteen_mhz_refusal_older_than_a_stack_or_a_master_refuses():
         assert FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT)[0]
         u = only(t.run()[0], name)
         assert u.status == 'refused' and STUB_LINE in u.reason and len(t.calls) == 1, u.reason
+
+
+def test_eighteen_mhz_refusal_older_than_any_evidence_of_the_unit_refuses():
+    """Review of PR 68: the refusal is judged against every file the unit judges by (FT.night_unit_evidence), not only the
+    window stacks: e.g. an N-3 refusal (stack record not complete), then the stack record completes with no new window file
+    - the refusal no longer holds and the group refuses until the unit runs again."""
+    from exopipe.phase3.lib.masters import tier_sublst as MT
+    with Root() as t:
+        name, sb, cell = f'{LST}_wideband_{G}_{NIGHT}', '18MHz', f'{LST}_{NIGHT}'
+        for m in t.members:
+            t.night_record(m)
+        win = t.stack(sb, 'I', 0)
+        files = [t.write_record('frames', f'admit_{cell}', 'done'), t.write_record('masters', f'admit_{cell}', 'done'),
+                 t.write_record('frames', MT.stack_unit_name(LST, NIGHT, sb), 'done'),
+                 t.write_record('masters', MT.stack_unit_name(LST, NIGHT, sb), 'done')]
+        P = MT.stack_products(t.root, LST, cell, sb, 'V')
+        for q in (P['log'], P['admission'], P['fluxdc'], win[:-5] + '_nframes.fits', win[:-5] + '_pb.fits',
+                  NM.master_products(t.root, LST, sb, 'I', 3)[1]):
+            os.makedirs(os.path.dirname(q), exist_ok=True)
+            open(q, 'w').close()
+            files.append(q)
+        files += [win, t.decisions, t.gpu_cells]
+        assert sorted(files) == FT.night_unit_evidence(t.ctx(), LST, sb, NIGHT), FT.night_unit_evidence(t.ctx(), LST, sb, NIGHT)
+        # the admit records (the night's job plan) are evidence too; a record without a readable plan is the plan gate's
+        # (test_eighteen_mhz_review60_plan_gate_kept_...), so the rest is judged without them
+        for q in files[:2]:
+            os.remove(q)
+        files = files[2:]
+        p = t.night_record(sb, 'refused', reason='N-3 (G-S05): stack job(s) not complete by their record: [...]')
+        os.utime(p, (2000, 2000))
+        for q in files:
+            os.utime(q, (1000, 1000))
+        assert FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT)[0]
+        for q in files:
+            os.utime(q, (3000, 3000))
+            lo = FT.optional_member_left_out(t.ctx(), LST, sb, NIGHT)
+            assert lo[0] is False and q in lo[1] and '(N-3)' in lo[1] and 'run the unit again' in lo[1], (q, lo)
+            os.utime(q, (1000, 1000))
+        os.utime(files[0], (3000, 3000))                  # the stack record completed after the refusal
+        u = only(t.run()[0], name)
+        assert u.status == 'refused' and files[0] in u.reason and not t.calls, u.reason
 
 
 def test_eighteen_mhz_excluded_at_the_night_builds_the_group_from_the_rest():
