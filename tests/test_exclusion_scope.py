@@ -277,6 +277,11 @@ def test_tenmin_search_read():
             and "        _xtest = snapshot_exclusion_test()\n    else:\n        _excl = load_exclusions()\n" in body), \
         'run_deep_cell: the 10-minute read is not snapshot_exclusion_test (deep: the default)'
     assert 'is_excluded(lst, scope, _kd(d), _excl)' not in body, 'run_deep_cell: a night test bypasses the cadence read'
+    for rel, call, old_ in (('tenmin_frames.py', '    xtest = snapshot_exclusion_test()', 'load_exclusions()'),
+                            ('phase3_tenmin.py', '    _xtest = snapshot_exclusion_test()', 'load_exclusions()')):
+        s_ = open(os.path.join(REPO, 'exopipe', 'phase3', rel)).read()
+        assert call in s_ and old_ not in s_ and 'is_excluded(' not in s_, \
+            f'{rel}: a 10-minute night read is not snapshot_exclusion_test (the default scope keeps a snapshot-only night)'
 
 
 def test_constants_mirror():

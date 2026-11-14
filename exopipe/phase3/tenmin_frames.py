@@ -57,7 +57,7 @@ from exopipe.phase3.core import products as pp
 from exopipe.common import phase2_config as cfg
 from exopipe.phase3.lib.masters import coadd as C
 from exopipe.phase3.lib.masters import pb_apply as PB
-from exopipe.phase3.lib.masters.coadd import load_exclusions, is_excluded
+from exopipe.phase3.lib.masters.coadd import snapshot_exclusion_test
 
 PB_FLOOR = float(os.environ.get('P3_TENMIN_PB_FLOOR', str(PB.PB_FLOOR)))   # 0.1 as pbcorr
 BIN_SEC = 600.0
@@ -692,8 +692,8 @@ def build_cell_frames(lst, scope, out_root=None, stokes='IV', dates=None, inject
     else:
         ratios, pbmeta = pb_ratio_maps(scope, lst, mI if 'I' in stokes else mV, hdr0, shape)
     freq_str = scope.replace('MHz', '')
-    excl = load_exclusions()
-    nights = [x for x in C.discover_dates(lst, freq_str) if not is_excluded(lst, scope, x[0], excl)]
+    xtest = snapshot_exclusion_test()     # the 10-minute tier's scope per night: snapshot-gpu / snapshot (2026-11-13)
+    nights = [x for x in C.discover_dates(lst, freq_str) if not xtest(lst, scope, x[0])]
     if dates:
         nights = [x for x in nights if x[0] in dates]
     inj_by_key = {}
