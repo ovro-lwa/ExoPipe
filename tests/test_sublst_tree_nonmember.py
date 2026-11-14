@@ -15,6 +15,7 @@ import argparse
 import csv
 import glob
 import inspect
+import json
 import os
 import re
 import shutil
@@ -707,6 +708,90 @@ def test_stage_wiring():
         assert not os.path.exists(os.path.join(t.tree, TN.LEASE_SUBDIR, f'{LST}_73MHz'))     # refused before any lease
 
 
+def test_the_default_selection_is_the_bands_the_night_owes():
+    """Without --scopes (the per-hour chain) a band has a unit when the night owes it a tree entry by the night's own
+    records: a subband with a stack job in the night's job plan; a wideband group unless the night's wideband unit ended
+    no-input. The bands left out are named in the log. With --scopes, and in a root without a job plan, every band of the
+    selection has a unit, as before."""
+    from exopipe.phase3.core.record import Refusal
+    from exopipe.phase3.lib.masters import sublst_nonmember as NM
+    S = CFG.frames_sublst
+    cell = f'{LST}_{NEW}'
+    groups = [b for b in S.TREE_BANDS if b not in CFG.instrument.ALL_SUBBANDS]
+    assert len(groups) == 3 and SB in S.TREE_BANDS, (groups, S.TREE_BANDS)
+
+    def names(r):
+        return {u.name: u.status for u in r.units}
+
+    def no_plan(run, opts, lst, night, planned_now=False):
+        raise Refusal(f'N-2: no job plan of the night {lst}_{night}: test')
+
+    def plan_of(*sbs):
+        return lambda run, opts, lst, night, planned_now=False: ([(cell, sb, ['I', 'V'], '/cubes') for sb in sbs]
+                                                                 + [(f'{LST}_{EARLY}', '73MHz', ['I', 'V'], '/cubes')],
+                                                                 ['plan.txt'], 'record')
+
+    def wideband_record(G, status, reason=''):
+        p = record.record_path(t.root, 'frames', f'{LST}_wideband_{G}_{NEW}')
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, 'w') as f:
+            json.dump({'unit': f'{LST}_wideband_{G}_{NEW}', 'step': 'frames', 'status': status, 'reason': reason}, f)
+
+    said = []
+    with Tree() as t, Patch((FT, 'say', said.append), (FT, 'plan', said.append)):
+        # a root without a job plan of the night: every band of TREE_BANDS has a unit (the one with residuals is done)
+        with Patch((NM, 'night_plan', no_plan)):
+            r, rc = t.run(scopes=None)
+        got = names(r)
+        assert set(got) == {TN.unit_name(LST, b, NEW) for b in S.TREE_BANDS}, sorted(got)
+        assert got[TN.unit_name(LST, SB, NEW)] == 'done' and r.exit_code() == 2, (got, r.exit_code())
+        assert sum(v == 'refused' for v in got.values()) == len(S.TREE_BANDS) - 1
+        assert any('no job plan of the night' in m and 'every band has a unit' in m for m in said), said
+        after = t.snapshot()
+        # the night's plan holds one subband (a job of ANOTHER night's cell does not count): that subband and the three
+        # groups (no wideband record of the night: each keeps its unit and refuses on what it finds)
+        del said[:]
+        with Patch((NM, 'night_plan', plan_of(SB))):
+            r, rc = t.run(scopes=None)
+        got = names(r)
+        assert set(got) == {TN.unit_name(LST, b, NEW) for b in [SB] + groups}, sorted(got)
+        assert got[TN.unit_name(LST, SB, NEW)] == 'done' and r.exit_code() == 2, (got, r.exit_code())
+        left = [m for m in said if 'no unit - ' in m]
+        assert len(left) == len(S.TREE_BANDS) - 4 and all('holds no stack job of the subband' in m for m in left), left
+        assert any(f'4 of {len(S.TREE_BANDS)} band(s) owe the night a tree entry' in m for m in said), said
+        # a group whose wideband unit of the night ended no-input owes nothing; done, refused or error keeps the unit
+        for G, st in zip(groups, ('no-input', 'done', 'refused')):
+            wideband_record(G, st, 'no wideband window for the night: 1 night(s) refused under the band rule')
+        del said[:]
+        with Patch((NM, 'night_plan', plan_of(SB))):
+            r, rc = t.run(scopes=None)
+        got = names(r)
+        assert set(got) == {TN.unit_name(LST, b, NEW) for b in [SB] + groups[1:]}, sorted(got)
+        assert any(f'{groups[0]}: no unit - ' in m and 'ended no-input' in m and 'band rule' in m for m in said), said
+        # every owed band done -> exit 0: the chain goes on with the search (here: all three groups no-input)
+        for G in groups:
+            wideband_record(G, 'no-input', 'no admitted night with window stacks')
+        with Patch((NM, 'night_plan', plan_of(SB))):
+            r, rc = t.run(scopes=None)
+        assert names(r) == {TN.unit_name(LST, SB, NEW): 'done'} and rc is None and r.exit_code() == 0, (names(r), rc)
+        # the dry run plans the same bands
+        del said[:]
+        with Patch((NM, 'night_plan', plan_of(SB))):
+            r, rc = t.run(scopes=None, dry=True)
+        assert rc == 0 and sum('UNIT ' in m for m in said) == 1, (rc, said)
+        assert sum('no unit - ' in m for m in said) == len(S.TREE_BANDS) - 1, said
+        # no band of the plan: no unit at all, said in the log
+        with Patch((NM, 'night_plan', plan_of())):
+            r, rc = t.run(scopes=None)
+        assert not r.units
+        # --scopes: a named band is always judged, plan or not
+        with Patch((NM, 'night_plan', plan_of())):
+            r, rc = t.run(scopes=f'{SB},{groups[0]}')
+        got = names(r)
+        assert set(got) == {TN.unit_name(LST, b, NEW) for b in (SB, groups[0])} and got[TN.unit_name(LST, SB, NEW)] == 'done'
+        same(t.snapshot(), after)                    # the tree is what the first entry left: nothing else was written
+
+
 def test_content_tests_count_listed_nights_at_weight_zero():
     with Tree() as t:
         r, _ = t.run()
@@ -788,7 +873,8 @@ TESTS = [test_entry_equals_the_builders_tree, test_the_earliest_night_gives_the_
          test_two_nights_one_after_the_other, test_a_window_with_one_stokes_is_skipped, test_refusals_write_nothing,
          test_refusals_of_the_tree_it_adds_to, test_an_interrupted_run_is_completed,
          test_resume_skips_a_presented_night_with_a_valid_record, test_one_writer_per_tree,
-         test_dry_run_plans_and_writes_nothing, test_stage_wiring, test_content_tests_count_listed_nights_at_weight_zero,
+         test_dry_run_plans_and_writes_nothing, test_stage_wiring, test_the_default_selection_is_the_bands_the_night_owes,
+         test_content_tests_count_listed_nights_at_weight_zero,
          test_the_builders_literals]
 
 

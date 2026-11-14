@@ -317,8 +317,21 @@ class runner(_Section):
                   'photometry --tier deep --epochs {item}',
                   'catalog --tier deep --incremental --run {deep_run} --epochs {item}',
                   'forced --tier deep --run {deep_run} --epochs {item}',
-                  'frames --tier sublst --epochs {item}',
-                  'flow --tier sublst --epochs {item}',
+                  # 10-minute tier of ONE night against the frozen window Masters (Gregg 2026-11-12: a night that is not
+                  # in a Master is searched as a non-member): the list line and the stack, the night minus the installed
+                  # Masters (arm A), its x2-aligned residual (GPU), the three wideband groups, the entry in each band's tree.
+                  # A subband the admission left out and a group the band rule leaves without a window end no-input
+                  # or have no unit: the chain goes on.
+                  # OPEN, both with Gregg (2026-11-13):
+                  # (1) order: the stack reads the night's 10-second cubes (masters_sublst gate G-S02), which
+                  #     `frames --tier snapshot --stages cube` writes after the snapshot flow - steps that come later in
+                  #     this chain, and the cube stage is not in it. A night without cubes refuses at the first step below.
+                  # (2) a night that IS in the window Masters refuses at `nonmember` (N-5: its residual is the
+                  #     leave-one-out one of the batch chain 'sublst-lst') and the item stops there: a re-run list of
+                  #     old nights (install's rerun_epochs) does not reach the steps after this tier.
+                  'frames --tier sublst --stages nonmember-list,stack,nonmember --epochs {item}',
+                  'flow --tier sublst --stages refine-nonmember --epochs {item}',
+                  'frames --tier sublst --stages wideband,tree-nonmember --epochs {item}',
                   'search --tier sublst --epochs {item}',
                   'catalog --tier sublst --incremental --epochs {item}',
                   'frames --tier snapshot --epochs {item}',
