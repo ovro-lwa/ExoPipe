@@ -75,9 +75,10 @@ def _edits():
              "'V', cadence, f'{lst} {scope}')\n")
     return [
         ('signature',
-         "def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',\n                  cadence='deep'):\n",
          "def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',\n"
-         "                  cadence='deep', frames_only=False):\n"),
+         "                  cadence='deep', nonmember_nights=None):\n",
+         "def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',\n"
+         "                  cadence='deep', nonmember_nights=None, frames_only=False):\n"),
         ('docstring',
          "    the frame source is the same chain (Gregg 2026-09-08: 'identical to deep').\"\"\"\n",
          "    the frame source is the same chain (Gregg 2026-09-08: 'identical to deep').\n" + _DOC_ADD + "\n"),
@@ -112,10 +113,16 @@ def _edits():
          "    if frames_only:\n        return _frames_only_result(lst, scope, dates, _fo, run_root, _refdir)\n"
          "    # ── I 2-D BRIGHT-PARENT STAGE."),
         ('population-beam',                                       # the beam-gate population row is a search record
-         "    if cadence == 'deep' and not included_dates:                       # PER-HOUR: a whole-cell search records "
+         "    if cadence in ('deep', '10min') and not included_dates:            # PER-HOUR: a whole-cell search records "
          "its beam-gate\n",
-         "    if not frames_only and cadence == 'deep' and not included_dates:   # PER-HOUR: a whole-cell search records "
-         "its beam-gate\n"),
+         "    if not frames_only and cadence in ('deep', '10min') and not included_dates:   # PER-HOUR: a whole-cell search "
+         "records its beam-gate\n"),
+        # the search-tier gate populations a whole-cell 10-minute SEARCH records for its appends
+        # (lib/search/gate_population.py) are not a frame build's to write either: the gate runs and decides the frames
+        # as in a search, its record is left to the search
+        ('population-search-tier',
+         "        if _tgp:\n            _append_locked(f'{run_root}/{_GP.FILE}', _GP.COLS, _tgp)\n",
+         "        if not frames_only and _tgp:\n            _append_locked(f'{run_root}/{_GP.FILE}', _GP.COLS, _tgp)\n"),
         ('helper', "\n\ndef run_deep_cell(", _HELPER.rstrip('\n') + "\n\n\ndef run_deep_cell("),
     ]
 

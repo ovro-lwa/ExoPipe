@@ -1528,10 +1528,13 @@ def _minute_tier(cube, meta, admitted, model, times, masks, thresh, stokes, tol_
         cube1 = highpass_blocks(blocks - model[None, :, :])
         del blocks
         zero1 = np.zeros_like(model)
-        btimes = [ts_to_epoch_seconds(b["ts"]) for b in blk_meta]
+        # FIRST-BLOCK BIN FIX (2026-11-12, snapshot chat): a block is binned at its minute's MIDDLE and the bin is clipped to
+        # [0, N_TIME_BINS - 1].  block_ts is the minute START, before the hour's first frame, so the first block's bin was -1 and
+        # masks[-1] / bin_lsts[-1] = the hour's LAST bin (~50 min later): its elevation mask and elevation_deg were those of the end
+        # of the hour (17h 2025-05-06 78 MHz V 09:55: recorded 35.66 deg, 25.2 deg at the block time)
+        btimes = [ts_to_epoch_seconds(b["ts"]) + 30.0 for b in blk_meta]
         t0, span = min(times), max(max(times) - min(times), 1.0)
-        bbin = np.minimum((np.floor((np.array(btimes) - t0) / span * N_TIME_BINS)).astype(int),
-                          N_TIME_BINS - 1)
+        bbin = np.clip((np.floor((np.array(btimes) - t0) / span * N_TIME_BINS)).astype(int), 0, N_TIME_BINS - 1)
         blk_adm = np.ones(n_blk, dtype=bool)
         cands1, noise1, blk_adm, flood1 = detect(cube1, zero1, blk_adm, blk_meta,
                                                  thresh, stokes, masks, bbin)
