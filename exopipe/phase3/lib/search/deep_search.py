@@ -1573,6 +1573,10 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     global _GLED_EXTRA                                                  # WAVE2 SIZE-RULE: the ledger carries the rule's columns
     _GLED_EXTRA = tuple(GLED_COLS_SIZE) if _szr is not None else ()     # WAVE2 SIZE-RULE: under 'envelope' only
     _attempt = time.strftime('%Y%m%dT%H%M%S', time.gmtime())
+    # PER-HOUR: an append's base tag - the tag of the base attempt's current refusal rows (gate_population.newest_search_tag,
+    # p3s3_merge.py _cur_refusals), read before this append writes any row under its own; its earlier nights' rows are carried
+    # under this append's tag (below), because the record's readers keep an attempt's newest tag only
+    _base_tag = _GP.newest_search_tag(_refdir, f'{lst}_{scope}') if included_dates else None
 
     dates = []
     for c in sorted(glob.glob(f'{ebase}/subtracted/*_I_sub_{scope}.fits')):
@@ -1894,7 +1898,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         _tcar = []                                             # PER-HOUR 10-minute: the earlier frames' search-tier refusals of the
         if _ph10:                                              # attempt's newest search, written again under this append's tag (the
             _tcar = _GP.carried_refusals(_refdir, f'{lst}_{scope}', 'searchtier',   # record's readers keep an attempt's newest tag)
-                                         lambda _k: _k in dates and _k not in _mine, _attempt)
+                                         lambda _k: _k in dates and _k not in _mine, _attempt, base_tag=_base_tag) if _base_tag else []
         # GREGG 2026-09-13 ("this is a mistake. That sounds like the gate for the co-add, not the search!"): the
         # search-tier admission is PER STOKES - an epoch (or 10-minute frame) is refused from the I search on the I
         # stage-1 rms and from the V search on the V rms, never from both on either. Until this fix the deep run
@@ -2112,6 +2116,15 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             lst, scope, 'beam', _bpop, None if (_boff or not _bok) else _bmed,
             float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')), BEAM_GATE_MIN_NIGHTS,
             'off' if _boff else ('applied' if _bok else 'below-minimum'), 'search', _attempt)])
+    if included_dates and _base_tag:                                   # PER-HOUR: an append (deep, 10-minute) judges the sanity_V,
+        _ckeep = lambda _k, _g=set(dates), _i=set(included_dates): _k in _g and _k not in _i   # daytime and source-extraction gates
+        for _cg in ('sanity_V', 'daytime', 'extraction_I', 'extraction_V'):   # on its own nights only (below): the base's current
+            _crows = _GP.carried_refusals(_refdir, f'{lst}_{scope}', _cg, _ckeep, _attempt, base_tag=_base_tag)   # rows of the
+            if _crows:                                                 # nights the gates admit and it does not list are written again
+                with open(f'{_refdir}/{lst}_{scope}_{_cg}_excluded.csv', 'a', newline='') as _cf:   # under its tag, every other
+                    csv.writer(_cf, lineterminator='\n').writerows(_crows)   # field unchanged - here, before any return
+                print(f'  {lst} {scope}: {_cg} (append) - {len(_crows)} recorded refusal(s) of earlier nights carried under '
+                      f'this attempt\'s tag')
     if len(dates) == 0:
         raise RuntimeError(f'{lst} {scope}: ZERO flows — REFUSING')
     if len(dates) < _minE:

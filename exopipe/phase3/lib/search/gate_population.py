@@ -373,6 +373,11 @@ def refusal_tag(gate, r):
     return r[5] if gate.startswith('extraction') and len(r) >= 7 else r[-1]
 
 
+def retagged(gate, r, tag):
+    """The refusal row ``r`` with ``tag`` as its attempt tag and every other field unchanged (the tag's position: refusal_tag)."""
+    return r[:5] + [tag] + r[6:] if gate.startswith('extraction') and len(r) >= 7 else r[:-1] + [tag]
+
+
 def newest_search_tag(refdir, cell):
     """The newest attempt tag over every refusal file of ``cell`` in ``refdir`` (the rows a drop patch appended, tagged
     '<UTC>stdrop', aside), or None: the tag whose rows are the attempt's current refusals (p3s3_merge.py _cur_refusals)."""
@@ -385,15 +390,15 @@ def newest_search_tag(refdir, cell):
     return max(tags) if tags else None
 
 
-def carried_refusals(refdir, cell, gate, keep, tag):
+def carried_refusals(refdir, cell, gate, keep, tag, base_tag=None):
     """The rows of ``refdir``/<cell>_<gate>_excluded.csv under the attempt's newest search tag whose frame ``keep(key)``
     accepts, each with ``tag`` as its attempt tag and every other field unchanged: the earlier frames' verdicts an append
-    writes again under its own tag (the block comment above). RuntimeError when the newest tag is not older than ``tag``
-    (the rows of a later search are not this append's to carry). A gate whose tag is not the last field is not carried."""
-    if gate.startswith('extraction'):
-        raise ValueError(f'carried_refusals: the tag of {gate} rows is not their last field')
+    writes again under its own tag (the block comment above). ``base_tag``: that newest tag, read by the append before it
+    wrote any row (newest_search_tag) - read here instead when None, which is right only before the append's first row.
+    A source-extraction row keeps its UTC time (its tag is the sixth field, refusal_tag). RuntimeError when the newest tag
+    is not older than ``tag`` (the rows of a later search, or this append's own, are not this append's to carry)."""
     p = os.path.join(refdir, f'{cell}_{gate}_excluded.csv')
-    newest = newest_search_tag(refdir, cell)
+    newest = newest_search_tag(refdir, cell) if base_tag is None else base_tag
     if newest is None or not os.path.exists(p):
         return []
     if not newest < tag:
@@ -401,4 +406,4 @@ def carried_refusals(refdir, cell, gate, keep, tag):
                            f'to carry its rows')
     with open(p, newline='') as fh:
         rows = [r for r in csv.reader(fh) if r and r[0] + '_' + r[1] == cell]
-    return [r[:-1] + [tag] for r in rows if r[-1] == newest and keep(r[2])]
+    return [retagged(gate, r, tag) for r in rows if refusal_tag(gate, r) == newest and keep(r[2])]
