@@ -46,6 +46,8 @@ class serve(_Section):
     SUBLST_LST_RUN_GLOB = 'Run_SLST[0-9][0-9]B'   # sublst_publish_lst.sh:42; sublst_catalog_publish.sh:96
     SUBLST_BUILD_SUFFIX = '.build'          # sublst_cumulative.sh:15
     SUBLST_PREV_SUFFIX = '.prev_{utc}'      # utc = %Y%m%dT%H%M%S; sublst_cumulative.sh:102
+    SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers after the swap (sublst_cumulative.sh:298; the
+                                            # 10-minute panels' run context as page text, Gregg 2026-10-22)
     SNAPSHOT_SOURCE = '/fast/gh/main/phase3/snapshot_rechain_{label}/{label}'   # on site CHAIN_HOST; snapshot_rechain_batch.sh:51
     SNAPSHOT_COPY_EXCLUDE = ('tmp_panels', 'tmp_panel_queue')      # snapshot_serve.sh:28
     SNAPSHOT_SERVE_HOLD = '/lustre/gh/main/exopipe_ops/snapshot_batch/SERVE_HOLD'   # THE SERVE HOLD: while this file exists (any

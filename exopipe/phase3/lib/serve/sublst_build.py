@@ -22,9 +22,11 @@ views  (unit sublst_<run>_views)  on B: the union with the Stokes key (G5), the 
        views (G6), the multi-integration queues and views (sublst_cumulative.sh:77-95). G11: a refusal here leaves the
        served product and its servers untouched.
 test   App probes and content tests on B (expected index sources), G17 report.
-carry/swap/start  journals copied into B, B swapped in (U -> U.prev_<utc>), the between lines appended, the four pages
-       registered in ONE registration and each one's build waited on (flow.start_stage; sublst_cumulative.sh:291-300 ->
-       sublst_register_pages.py: no server of its own since 2026-10-22).
+carry/swap/start  journals copied into B, B swapped in (U -> U.prev_<utc>), the between lines appended, the page context
+       (unit sublst_<run>_page_context: page_context_tenmin.py U --workers serve.SUBLST_PAGE_CONTEXT_WORKERS, the panels'
+       <png>.page.json run-context sidecars; page text, not a gate - a failure is recorded and the serve continues,
+       sublst_cumulative.sh:295-300), the four pages registered in ONE registration and each one's build waited on
+       (flow.start_stage; sublst_cumulative.sh:301-307 -> sublst_register_pages.py: no server of its own since 2026-10-22).
 hub    10-min / 10-min-multiples set; '10-min-sublst' removed (sublst_cumulative.sh:145-150).
 verify served_page tests + sublst_cumulative (with tests (c)+(d), sublst_catalog_publish.sh:101-108) on the served run.
 Parity: U, B and the lock live under <out>/sublst/; the build hard-links the LST runs' candidates (cp -al), so a parity
@@ -39,6 +41,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from exopipe.phase3.core.record import NoInput, Refusal
@@ -377,6 +380,29 @@ def carry_swap_stage(run, plan, state):
     return u
 
 
+def page_context_stage(run, plan):
+    """PAGE CONTEXT (sublst_cumulative.sh:295-300; page_context_tenmin.py, 2026-10-23; Gregg 2026-10-22: "Go ahead with both
+    fixes, keep it as page text"): the 10-minute panels' run context - global noise V / I, chain survivors, beam epoch/master,
+    windows searched, each with its percentile - written as the <png>.page.json sidecars beside the SERVED panels of the
+    swapped-in run, before the pages are registered (the review server prints them under each panel). Page text, not a gate:
+    a failure is recorded and the serve continues, as production (whose exit status it does not change; here a missing or
+    malformed sidecar refuses this unit, so the serve exits 2 after registering the pages). Returns the unit."""
+    S = _CFG().serve
+    log = os.path.join(plan.U, 'page_context_tenmin.log')
+    with run.unit(f'sublst_{plan.run_name}_page_context', stage='page-context', tier='sublst', parity=plan.parity) as u:
+        res = scripts.run('page_context_tenmin', [plan.U, '--workers', str(S.SUBLST_PAGE_CONTEXT_WORKERS)], log=log, unit=u,
+                          env={'NUMPY_MADVISE_HUGEPAGE': '0'})
+        line = scripts.last_line(res.tail)
+        u.meta['page_context'] = {'ok': bool(res.ok), 'line': line[:400], 'log': log}
+        if res.ok:
+            u.note(f'page context: {line[:200]}')
+        else:
+            u.note(f'PAGE-CONTEXT FAILED (see {log}) - the serve continues without the page text: '
+                   f'{(res.reason or line)[:300]}')
+        u.add_output(plan.U, 'tenmin_page_context')     # its content tests judge the sidecars either way (refused if missing)
+    return u
+
+
 def run(args, run, plan, stages):
     S = _CFG().serve
     state = flow.new_state()
@@ -407,6 +433,11 @@ def run(args, run, plan, stages):
         if 'start' in stages:
             if flow.halts(carry_swap_stage(run, plan, state), 'carry+swap', need_done=True):
                 return
+            try:                                       # page text: never halts the serve (sublst_cumulative.sh:295-300)
+                page_context_stage(run, plan)
+            except Exception as e:                     # the unit is recorded 'error' (the serve exits 1 at the end); the
+                print(f'serve: PAGE-CONTEXT FAILED ({type(e).__name__}: {str(e)[:300]}) - the serve continues without the '
+                      f'page text', file=sys.stderr)   # pages are still registered, as production's `|| say` does
             flow.start_stage(run, plan, state)
     if 'hub' in stages and not getattr(args, 'no_hub', False):
         flow.hub_stage(run, plan, state, remove=S.HUB_REMOVE_TIERS.get('sublst', ()))
@@ -422,3 +453,6 @@ def describe(plan, stages, args):
     print('  G8 generation mix: ' + ('ok (every LST carries the window tie and fitted positions)' if not bad else
                                      'WOULD REFUSE - ' + '; '.join(f'{l}: {w}' for l, w in bad)))
     print(f'  build directory: {build_dir(plan)}; journals copied from {plan.U_src}')
+    if 'start' in stages:
+        print(f'  page context after the swap: {scripts.SCRIPTS["page_context_tenmin"][0]} {plan.U} --workers '
+              f'{_CFG().serve.SUBLST_PAGE_CONTEXT_WORKERS} (page text; a failure does not stop the serve)')

@@ -43,6 +43,9 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
   served_view    source_catalogs_<S>/ (deep, sub-LST), views/source_catalogs_<S>_multi/ (deep), source_catalogs_<S>_multi/
   judgement_journal  judgements*/judgements.jsonl after a carry (+ carry_report.csv, carry_missed.csv)
   sublst_cumulative  the Run_SLSTB build (merged CSVs, localizations, figures, page index)
+  tenmin_page_context  the swapped-in Run_SLSTB after page_context_tenmin.py (sublst_cumulative.sh:295-300): every 10-minute
+                 panel of its four views has its <png>.page.json run-context sidecar (six lines, the panel's own frame) and no
+                 sidecar of the tool stands without its panel; page text, not a gate - its failure never stops the registration
   review_copy    the snapshot review copy;  exclusion_check  the serve-time exclusion gate's pass file;  serve_go  G27's
                  pass file (Gregg's go on a combined view: the go files it names re-read)
   snapshot_view  the combined view (<SNAPSHOT_REVIEW_ROOT>/<view>, parity <out>/snapshot/<view>): V1-V6 read back - queues,
