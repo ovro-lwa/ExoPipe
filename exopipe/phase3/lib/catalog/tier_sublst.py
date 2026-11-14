@@ -1671,6 +1671,18 @@ def st_veto(ctx, s, plan):
         s.out(f'{U}/leakveto/leakveto_{ctx.lst}_{band}_{st}.csv', 'leak_veto_table', run_dir=U)
 
 
+DELTA_STARTED = '.delta_build_started'   # a night's delta directory of a key, from its creation until its content test passed
+
+
+def _own_delta(d, k, tag):
+    """REFUSES unless the directory ``d`` is empty or this stage's own: a finished delta (builder_delta.json) or one a failed
+    pass left (DELTA_STARTED) - anything else is not replaced or removed."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    if os.listdir(d) and not (os.path.exists(f'{d}/{DB.DELTA_RECORD}') or os.path.exists(f'{d}/{DELTA_STARTED}')):
+        refuse(f'S-G18 delta build {k} ({tag}): {d} holds files but neither {DB.DELTA_RECORD} nor {DELTA_STARTED}: not a delta '
+               f'build of this pass, not replaced')
+
+
 def hour_ctx(ctx, lst):
     """The context of ANOTHER LST hour, for a delta build or a localization of it inside this hour's night pass: the hour's own
     paths, label, flux scale and size rule (its environment is what an LST-wide build of that hour hands the builder). Its
@@ -1695,8 +1707,7 @@ def _delta_inputs(ctx):
     tables, first = {}, None
     for st in sorted({k[0] for k in SPLIT_KEYS}):
         try:
-            tables[st] = GS.recorded_table(ctx.grouping_dir, st)
-            runs, nd = GS.recorded_inputs(ctx.grouping_dir, st)
+            runs, nd, tables[st] = GS.recorded_inputs(ctx.grouping_dir, st, with_table=True)   # one record: table and nights
         except GS.StageRefusal as e:
             refuse(f'S-G18 delta build: {e} (`exopipe3 catalog --tier sublst --stages group --group-mode incremental '
                    f'--group-night-dir {ctx.lst}={U}`, or --sublst-grouping DIR)')
@@ -1821,11 +1832,10 @@ def _build_delta(ctx, s, plan, tag):
             rec = states[k]['record']
             m = asm['selected'][k]
             if os.path.isdir(d):
-                if os.listdir(d) and not os.path.exists(f'{d}/{DB.DELTA_RECORD}'):
-                    refuse(f'S-G18 delta build {L} {k} ({tag}): {d} holds files but no {DB.DELTA_RECORD}: not a delta build of '
-                           f'this pass, not replaced')
+                _own_delta(d, f'{L} {k}', tag)
                 shutil.rmtree(d)                   # this pass's earlier delta of the key: a delta is built whole
             os.makedirs(d)
+            open(f'{d}/{DELTA_STARTED}', 'w').close()   # this stage's own directory from here on, finished or not
             table, sha = tables[k[0]]
             s.inp(f'{FL}/selected_{k}.csv', rec, *[f'{n}/selected_{k}.csv' for n in nights if os.path.exists(f'{n}/selected_{k}.csv')])
             bad = GS.covers(table, f'{B}/selected_{k}.csv')
@@ -1844,11 +1854,11 @@ def _build_delta(ctx, s, plan, tag):
                 refuse(f'S-G18 delta build {L} {k} ({tag}): the grouping runner gave no done line')
             need_ok(res, f'S-G18 build_source_catalogs_v3.py {L} {k} ({tag}, delta)', r'REFUS|Error',
                     say=lambda: ctx.log.say(f'{L} {k} ({tag}): delta build FAILED (see {root}/catalogs_{tag}_{k}.log)'))
-            mine_c = []
-            if own and os.path.exists(f'{U}/selected_{k}.csv'):
+            mine_c = set(m['appended'])                # every appended row of the hour (each night's, every hour's), and this
+            if own and os.path.exists(f'{U}/selected_{k}.csv'):   # night's own rows
                 with open(f'{U}/selected_{k}.csv', newline='') as f:
-                    mine_c = [r['cand_id'] for r in csv.DictReader(f)]
-            ok, detail, counts = DB.content_test(d, mine_c, vetoed=asm['vetoed'])
+                    mine_c |= {r['cand_id'] for r in csv.DictReader(f)}
+            ok, detail, counts = DB.content_test(d, sorted(mine_c), vetoed=asm['vetoed'])
             s.u.check(f'delta.content.{name}', ok, value=counts.get('sources'), detail=detail, path=d)
             meta['hours'][L]['keys'][k] = counts
             if own:
@@ -1856,11 +1866,12 @@ def _build_delta(ctx, s, plan, tag):
             ctx.log.say(f'{L} {k} ({tag}): delta content test {"PASS" if ok else "FAIL"}: {detail}')
             if not ok:
                 refuse(f'S-G18 delta build {L} {k} ({tag}): content test failed: {detail}')
+            os.remove(f'{d}/{DELTA_STARTED}')
             DB.write_inputs(d, L, k, tag, FL, nights, asm['digest'][k])
             built.append(d)
     if not built:
         raise _record().NoInput(f'night {ctx.night} ({tag}): no delta build owed in any hour or key')
-    ctx.log.say(f'delta source catalogues ({tag}) complete: {len(built)} key(s) in '
+    ctx.log.say(f'delta source catalogs ({tag}) complete: {len(built)} key(s) in '
                 f'{len({os.path.dirname(d) for d in built})} hour(s)')
     for d in built:
         s.out(d, 'source_catalog', run_dir=U)
@@ -1931,7 +1942,14 @@ def st_view(ctx, s, plan):
             entry.update(kind='all-nights', root=FL, written_here=False)       # certified: the all-nights directory is the view
             n_all += 1
         else:
-            root = next((r for r in DB.index_roots(earlier, L) if DB.root_stands(r, digest)), None)
+            idg, root = DB.view_inputs_digest(FL, nights), None
+            for r in DB.index_roots(earlier, L):               # carried only when it stands and its catalogs pass view_test again
+                ok, why = DB.root_carries(r, digest, idg, states, groupings)
+                if ok:
+                    root = r
+                    break
+                if DB.root_stands(r, digest):
+                    ctx.log.say(f'view of {L}: the earlier root {r} is not carried: {why}')
             if root:
                 entry.update(kind='view', root=root, written_here=False)
                 n_carried += 1

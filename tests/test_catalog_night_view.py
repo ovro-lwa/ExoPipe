@@ -299,7 +299,7 @@ def test_wiring():
           bd.index('if not ctx.grouping_mode.design_b:') < bd.index('if ctx.dry:') < bd.index('_delta_inputs(ctx)'))
     check('wiring: it takes the hours and their appended nights from the grouping\'s own record and refuses another all-nights '
           'build, a grouping without this night, or Stokes I and V groupings assembled from different directories',
-          'GS.recorded_inputs(ctx.grouping_dir, st)' in di and 'same(runs[ctx.lst], F)' in di
+          'GS.recorded_inputs(ctx.grouping_dir, st, with_table=True)' in di and 'same(runs[ctx.lst], F)' in di
           and 'os.path.realpath(U) not in mine' in di and 'if first is not None and got != first:' in di
           and bd.index('_delta_inputs(ctx)') < bd.index('DB.assemble('))
     check('wiring: which build is owed is decided from content, per hour and key; this hour takes no earlier pass\'s delta',
@@ -322,11 +322,16 @@ def test_wiring():
     check('wiring: a missing frozen record refuses; the grouping must hold every input row (S-G18)',
           "st['kind'] == 'no-record'" in bd and "GS.covers(table, f'{B}/selected_{k}.csv')" in bd
           and bd.index('if norec:') < bd.index('res = call('))
-    check('wiring: a directory that is not this night\'s own delta is not replaced',
-          bd.index('not os.path.exists(f\'{d}/{DB.DELTA_RECORD}\')') < bd.index('shutil.rmtree(d)'))
+    od = body('_own_delta')
+    check('wiring: a directory that is not this pass\'s own delta (finished, or marked started by a failed pass) is not '
+          'replaced; the marker is written on creation and removed after the content test',
+          "os.path.exists(f'{d}/{DB.DELTA_RECORD}')" in od and "os.path.exists(f'{d}/{DELTA_STARTED}')" in od and 'refuse(' in od
+          and bd.index('_own_delta(d, ') < bd.index('shutil.rmtree(d)')
+          and bd.index('os.makedirs(d)') < bd.index("open(f'{d}/{DELTA_STARTED}', 'w')") < bd.index('res = call(')
+          and bd.index('content test failed') < bd.index("os.remove(f'{d}/{DELTA_STARTED}')") < bd.index('built.append(d)'))
     check('wiring: every delta catalog is content-tested on the night\'s own selected rows, recorded as a check, and a failed '
           'test refuses',
-          "DB.content_test(d, mine_c, vetoed=asm['vetoed'])" in bd and "s.u.check(f'delta.content.{name}', ok" in bd
+          "mine_c = set(m['appended'])" in bd and "DB.content_test(d, sorted(mine_c), vetoed=asm['vetoed'])" in bd and "s.u.check(f'delta.content.{name}', ok" in bd
           and bd.index('DB.content_test(') < bd.index("content test failed") < bd.index('DB.write_inputs(')
           < bd.index('built.append(d)'))
     check('wiring: the delta build writes no rejected-source record and no localization, and assigns nothing outside the '
@@ -339,7 +344,7 @@ def test_wiring():
     check('wiring: the view takes this pass\'s own delta first, then the ones earlier passes listed; an earlier root is carried '
           'only when it stands for exactly the present states',
           "[here] + DB.index_candidates(earlier, L, tag, k)" in vw
-          and 'next((r for r in DB.index_roots(earlier, L) if DB.root_stands(r, digest)), None)' in vw)
+          and 'ok, why = DB.root_carries(r, digest, idg, states, groupings)' in vw and 'idg, root = DB.view_inputs_digest(FL, nights), None' in vw)
     check('wiring: the localizations of a view are computed on a side directory of the touched names with the view\'s own '
           'window-tie table and the hour\'s environment, merged, and the root is marked complete only after them',
           'DB.loc_side(root, tag, cats)' in vw and 'P3_TENMIN_PERTIE=os.path.join(root, DB.PERTIE)' in vw and 'env=cL.env(' in vw

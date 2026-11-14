@@ -719,8 +719,12 @@ class Frozen:
         srcs = [[s['band'], float(s['best_snr']), s['best_cand_id'], (s['_matches'][0][2] if s['_matches'] else ''),
                  s['source_id']] for s in ns['allsrc']]
         ep = os.path.join(out_dir, 'E_params.json')
-        with open(ep) as f:
-            e_par = json.load(f)['best_snr']
+        try:
+            with open(ep) as f:
+                e_par = json.load(f)['best_snr']
+        except (OSError, ValueError, KeyError) as e:
+            raise Refused(f'{ep}: unreadable or without best_snr ({type(e).__name__}: {e}; the builder only prints when it '
+                          f'cannot write it) - no frozen record - REFUSING')
         mine = collections.defaultdict(list)
         for band, snr, _b, _s, _n in srcs:
             mine[band].append(abs(snr))
@@ -820,6 +824,12 @@ def run(builder, args, mode, table=None, tier=None, rungs='multiples-level', acc
     if frozen_mode not in FROZEN_MODES:
         raise Refused(f'EXOPIPE3_FROZEN_MODE={frozen_mode!r} is not one of {FROZEN_MODES} - REFUSING')
     patch_frozen = frozen_mode in ('delta', 'passthrough')
+    if frozen_mode == 'record' and norm not in [a for a in frozen_accepted if a]:
+        # the record mode patches nothing: a builder accepted for the grouping but not pinned for the frozen statistics (an older
+        # frozen tree's) builds all nights as before and writes NO record - a delta build on it then refuses for want of one
+        print(f'FROZEN-BUILDER record skipped: the builder {builder} (path-normalized sha1 {norm}) is not one whose population-wide '
+              f'quantities were listed (EXOPIPE3_FROZEN_BUILDER_SHA1): no {FROZEN_RECORD} is written', flush=True)
+        frozen_mode = ''
     if frozen_mode and norm not in [a for a in frozen_accepted if a]:
         raise Refused(f'EXOPIPE3_FROZEN_MODE={frozen_mode}: the builder {builder} (path-normalized sha1 {norm}) is not the one '
                       f'whose population-wide quantities were listed for the frozen statistics (EXOPIPE3_FROZEN_BUILDER_SHA1, '
