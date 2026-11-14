@@ -145,7 +145,7 @@ class frames_sublst(_Section):
     # members a group is built without (S-G9: every other member is required; wideband:110, engine literal). Gregg
     # 2026-10-17: "Red can be built without 18 MHz, i.e. using just the 4 other subbands. This is the only allowed case
     # where wideband data can be built without a full 5-subband set." Per hour, such a member whose unit of the night was
-    # refused for want of a window Master is left out instead of refusing the group (tier_sublst.optional_member_left_out)
+    # refused as a whole (any gate) is left out instead of refusing the group (tier_sublst.optional_member_left_out)
     WIDEBAND_OPTIONAL = ('18MHz',)
     # arm A must be complete before wideband (nocat:232-234). 'record' = the done record of `masters --tier sublst --stages
     # loo` (unit loo_<LST>_<sb>) under this run's root (crosscheck decision 6); 'log' = production's own evidence, the final
