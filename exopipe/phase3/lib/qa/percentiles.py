@@ -10,8 +10,9 @@ window tag, n_after_morph, n_after_mstruct, n_raw_floor).
   count      Stokes V: n_after_mstruct, the candidates left after the master-structure gate (the document's count: it
              does not move when later vetoes are tuned).
              Stokes I: n_after_morph, the candidates left after the Stokes I search's morphology gate. The Stokes I search
-             records no master-structure count (its n_after_mstruct is blank), so this is the nearest recorded count;
-             count_kind says which one a row carries.
+             records no master-structure count (its n_after_mstruct is blank), so this is the nearest recorded count
+             (Gregg 2026-11-14 "Fine", ledger R-GREGG-20261114-SPEEDUP-SIX-ANSWERS-OWN-MEDIAN-TENMIN-ROWS-PATCH-STOKESI-
+             TESTSEND-PR59-PR60-PR68 item 4); count_kind says which one a row carries.
              A blank count with n_after_morph 0 is 0: nothing reached the later gate (the Stokes V search records no
              master-structure count for an image with no candidate left after the morphology gate; Run_SLSTB: 319 of its
              31,078 V images). Any other blank count is not recorded: the image is left out and is in no population.

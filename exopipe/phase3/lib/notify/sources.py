@@ -272,8 +272,13 @@ def at_least_deep(sel, top_n, fraction):
     """The listed rows of one Stokes: the top_n most significant of `sel` (sorted by significance), changed until at
     least `fraction` of the listed rows are of the deep tier: while they are fewer, the least significant listed row of
     another tier leaves and the next most significant deep row not yet listed, if there is one, enters. With no passing
-    deep candidate nothing is listed. The rows keep their rank among all passing candidates of the Stokes."""
+    deep candidate in the Stokes the rule does not apply: the top_n rows of the other tiers are listed (Gregg 2026-11-14
+    "10-minute rows should still appear when no deep one passes.", ledger
+    R-GREGG-20261114-SPEEDUP-SIX-ANSWERS-OWN-MEDIAN-TENMIN-ROWS-PATCH-STOKESI-TESTSEND-PR59-PR60-PR68 item 2). The rows keep
+    their rank among all passing candidates of the Stokes."""
     chosen = list(sel[:top_n])
+    if not any(r['tier'] == 'deep' for r in sel):
+        return chosen
     rest = [r for r in sel[top_n:] if r['tier'] == 'deep']
     while chosen and sum(r['tier'] == 'deep' for r in chosen) < fraction * len(chosen):
         del chosen[max(k for k, r in enumerate(chosen) if r['tier'] != 'deep')]

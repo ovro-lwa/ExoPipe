@@ -413,15 +413,17 @@ def test_sources_apply_the_filters_of_the_list_through_the_page_code():
                      **{'pass': 4}, listed=3, n_max=40.0), c
             assert c['bright']['mean_sky_loss'] == 0.0499 and c['bright']['bands'] == 2 and c['bright']['listed'] == 10, c
             assert per_tier['10-minute Stokes I']['pass'] == 1 and len(per_tier) == 2
-            # at least half of the listed candidates of a Stokes are deep: no deep Stokes I candidate, so none is listed
+            # at least half of the listed candidates of a Stokes are deep; no deep Stokes I candidate passes, so its
+            # 10-minute row is still listed (Gregg 2026-11-14 "10-minute rows should still appear when no deep one passes.")
             CFG.notify.DEEP_MIN_FRACTION = 0.5
             (_sv, rows_v2, _nv), (_si, rows_i2, ni2) = sources.transients('04h_2024-12-19', CFG, 10)[0]
-            assert rows_v2 == rows_v and rows_i2 == [] and ni2 == 1, (rows_v2, rows_i2)
+            assert rows_v2 == rows_v and rows_i2 == rows_i and len(rows_i2) == 1 and ni2 == 1, (rows_v2, rows_i2)
             R = lambda tiers: [{'tier': 'deep' if t == 'd' else '10-minute', 'rank': i + 1} for i, t in enumerate(tiers)]   # noqa: E731
             pick = lambda tiers, n, f=0.5: [r['rank'] for r in sources.at_least_deep(R(tiers), n, f)]                     # noqa: E731
             assert pick('ttttdddd', 4) == [1, 2, 5, 6]            # two 10-minute rows leave, the two best deep rows enter
             assert pick('ttdtttd', 4) == [1, 2, 3, 7]
-            assert pick('tttd', 4) == [1, 4] and pick('tttt', 4) == [] and pick('dtdt', 4) == [1, 2, 3, 4]
+            assert pick('tttd', 4) == [1, 4] and pick('tttt', 4) == [1, 2, 3, 4] and pick('dtdt', 4) == [1, 2, 3, 4]
+            assert pick('tttttt', 4) == [1, 2, 3, 4] and pick('ttttttd', 4) == [1, 7]   # no deep: top 10-minute rows
             assert pick('tdt', 3) == [1, 2] and pick('tttt', 3, 0.0) == [1, 2, 3] and pick('', 4) == []
             CFG.notify.DEEP_MIN_FRACTION = 0.0
             assert len(limits) == 1 and 'pGone' in limits[0], limits
