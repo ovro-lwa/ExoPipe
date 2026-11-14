@@ -22,7 +22,9 @@ CHECKS, per tier x Stokes (10-minute I and V, deep I and V):
                consistent with the known limit (<= 1%; binomial at 95%: the subsets hold ~60 such injections)
   faint        harness_extra.faint_repeat_recovery (n = 2/3/5; partner modes): labels = research; recovery at the multiples level
                >= identity level (nesting)
-  incremental  a first run on the early 75% of the nights, then the rest added: partitions = the research frozen run; no early
+  incremental  a first run on the early 75% of the nights, then the rest added: every group (both levels) without a new
+               detection is exactly a group of the first run (2026-11-14; the research frozen run's partitions are printed, no
+               longer checked); a second run without a new detection changes nothing at either level; no early
                identity split; IDs carried; EVERY changed assignment has its event (merge / split / move); state save/load;
                refusals (mixed windows, batch over a state); regroup mode (every change recorded; a split event for exactly
                the IDs now in several groups)
@@ -484,8 +486,32 @@ def run_incremental(tier, S, det, z, meta):
     check(f'{tag}: incremental - the first run issues IDs 1..n per level ({r1.summary["identities"]} identities)',
           r1.summary['new_ids']['identity'] == r1.summary['identities'] and r1.state.next_seq['identity'] == r1.summary['identities'] + 1)
     r2 = G.group_catalog(det, tier, S, state=r1.state, run_label='late')
-    check(f'{tag}: incremental - identity partition = the research frozen run', G.same_partition(r2.identity_id, z['incr_ident']))
-    check(f'{tag}: incremental - multiples partition = the research frozen run', G.same_partition(r2.multiples_id, z['incr_fork']))
+    # 2026-11-14 (AMEND-20261114-GROUPING-INCREMENTAL-CHANGES-ONLY-WHAT-NEW-DETECTIONS-TOUCH): the incremental mode changes only
+    # what a new detection touches, so its partitions are no longer the research frozen run's (which also merged and seeded
+    # among frozen components alone); the difference is printed, and the rule is checked instead
+    late = set(np.asarray(det['cand_id'])[~em].astype(str).tolist())   # group_catalog's cand_ids are str
+    for lv, now, gold in (('identity', r2.identity_id, z['incr_ident']), ('multiples', r2.multiples_id, z['incr_fork'])):
+        print(f'  {tag}: incremental {lv} partition = the research frozen run: {G.same_partition(now, gold)}', flush=True)
+        prev = r1.identity_id if lv == 'identity' else r1.multiples_id
+        g1 = {}
+        for c, x in zip(r1.cand_id.tolist(), prev.tolist()):
+            g1.setdefault(x, set()).add(c)
+        g2 = {}
+        for c, x in zip(r2.cand_id.tolist(), now.tolist()):
+            g2.setdefault(x, set()).add(c)
+        early_only = [m for m in g2.values() if not (m & late)]
+        same = {frozenset(m) for m in g1.values()}
+        bad = [m for m in early_only if frozenset(m) not in same]
+        check(f'{tag}: incremental - every {lv} group without a new detection is exactly a group of the first run '
+              f'({len(early_only)} such groups)', not bad, [sorted(m)[:3] for m in bad[:3]])
+    # a run without a new detection changes nothing at either level
+    r0 = G.group_catalog(d_early, tier, S, state=r1.state, run_label='noop', mode='incremental')
+    check(f'{tag}: incremental without a new detection - identity and multiples partitions unchanged, no merge '
+          f'({r0.summary["merges"]} merges)', G.same_partition(r0.identity_id, r1.identity_id)
+          and G.same_partition(r0.multiples_id, r1.multiples_id) and all(v == 0 for v in r0.summary['merges'].values())
+          and r0.cand_id.tolist() == r1.cand_id.tolist(),
+          (G.same_partition(r0.identity_id, r1.identity_id), G.same_partition(r0.multiples_id, r1.multiples_id),
+           r0.cand_id.tolist() == r1.cand_id.tolist()))
     # no early identity split; every early ID present (live) or merged into a live one
     pos = {c: j for j, c in enumerate(r2.cand_id.tolist())}
     split = 0
