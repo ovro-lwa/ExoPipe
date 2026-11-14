@@ -97,22 +97,50 @@ def generation_mix(lsts):
     return bad
 
 
-def grouping_mix(lsts):
-    """Design B (catalog_grouping.GROUPING 'design-b'; WAVE2 GROUPING; review 2026-11-04, F3 - the minimum gate): every LST
-    run's catalogues must have been built with ONE grouping table per Stokes - their grouping_table.json (the builder runner's
-    provenance, lib/catalog/wraps/builder_grouping.py) names one table sha1 across the LSTs. A regroup renames identities
-    (display names follow mean positions; 121 I / 15 V renamed between the 10-25 and 11-03 inputs, the 11-04 review), and the
-    cumulative merges the LST runs by name: a mix would show one identity under two names or join two under one. Returns
-    ([(lst, reason)], {Stokes: {table sha1: [lsts]}})."""
+def present_grouping(stokes):
+    """(table path, delta_build.read_grouping(table)) of the grouping the LST builds read NOW: the grouping state's own
+    table of this Stokes (grouping_stage.recorded_table: the latest group run is done and recorded it), read ONCE - rows,
+    sha1 and sha256 are the same bytes, and the sha1 must be the recorded one. Raises StageRefusal."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    table, sha = GS.recorded_table(GS.sublst_dir(_CFG()), stokes)
+    g = DB.read_grouping(table)
+    if g[2] != sha:
+        raise GS.StageRefusal(f'{table} changed while the cumulative read it (sha1 {g[2][:12]} vs the recorded {sha[:12]}) - '
+                              f'REFUSING')
+    return table, g
+
+
+def grouping_mix(lsts, present=present_grouping):
+    """Design B (catalog_grouping.GROUPING 'design-b'; WAVE2 GROUPING; review 2026-11-04, F3): every LST run's catalogs
+    must stand on ONE grouping table per Stokes, the PRESENT one (``present``: Stokes -> (path, read_grouping result); the
+    grouping state's table, never a majority of the directories). A regroup renames identities (display names follow mean
+    positions; 121 I / 15 V renamed between the 10-25 and 11-03 inputs, the 11-04 review), and the cumulative merges the LST
+    runs by name: a mix would show one identity under two names or join two under one.
+      - EVERY catalog directory, whatever table its grouping_table.json (the builder runner's provenance,
+        lib/catalog/wraps/builder_grouping.py, or a view's, lib/catalog/delta_build.view_catalog) names, passes only when
+        THIS gate finds, from the directory's own record, that it stands under the present table
+        (lib/catalog/delta_build.standing: the record bound to the directory by its sha256, every detection grouped as
+        recorded, the populations of the hour and key equal but for the detections the record lists as removed before the
+        builder). A directory naming the present sha1 is checked too: the table identity is not taken from the directory's
+        own provenance (DECISION-20261114-PR51-F3-POPULATION-CHECK-ON-EVERY-DIRECTORY; the carried-root rule,
+        DECISION-20261114-PR47-CARRIED-ROOT-READERS-TAKE-TABLE-FROM-INDEX). No stored certificate is trusted;
+      - anything else refuses: no provenance, a table that cannot be read, a directory that does not stand, and a MISSING
+        directory: an LST of ``lsts`` whose run holds no catalog directory of a Stokes and key class (sb | wb) of which the
+        present table has detections of that hour (judged for each Stokes whose present table was read).
+    Returns ([(lst, reason)], {Stokes: {table sha1: [lsts]}}, {'present': {Stokes: path, sha1, sha256}, 'certified': [one
+    dict per directory passed by the certificate: LST, key, record name/sha1/sha256, both tables' digests, detections]})."""
     from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
-    bad, by = [], {}
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    bad, by, now, certified = [], {}, {}, []
     for l in lsts:
         R = lst_run(l)
         dirs = sorted(d for d in glob.glob(os.path.join(R, 'source_catalogs_[IV]_[sw]b')) if os.path.isdir(d))
         if not dirs:
             continue
         for d in dirs:
-            S = os.path.basename(d).split('_')[2]
+            S, kind = os.path.basename(d).split('_')[2:4]
             p = os.path.join(d, BG.PROVENANCE)
             if not os.path.exists(p):
                 bad.append((l, f'{os.path.basename(d)} has no {BG.PROVENANCE} (built without the design-B grouping)'))
@@ -124,12 +152,47 @@ def grouping_mix(lsts):
                 bad.append((l, f'{os.path.basename(d)}/{BG.PROVENANCE} unreadable ({e})'))
                 continue
             by.setdefault(S, {}).setdefault(sha, set()).add(l)
-    for S, shas in by.items():
-        if len(shas) > 1:
-            parts = '; '.join(f'{sha[:12]}: {",".join(sorted(ls))}' for sha, ls in sorted(shas.items(), key=lambda kv: -len(kv[1])))
-            bad.append(('*', f'Stokes {S}: the LST builds name {len(shas)} grouping tables ({parts}) - rebuild the LSTs of the '
-                             f'older tables from stage build (the cumulative joins LST runs by identity name)'))
-    return bad, {S: {sha: sorted(ls) for sha, ls in v.items()} for S, v in by.items()}
+            if S not in now:
+                try:
+                    now[S] = present(S)
+                except (GS.StageRefusal, DB.DeltaRefusal, OSError, ValueError, KeyError, csv.Error) as e:
+                    now[S] = None
+                    bad.append(('*', f'Stokes {S}: the present grouping table cannot be read ({str(e)[:300]})'))
+            if now[S] is None:
+                continue
+            table, g = now[S]
+            try:                # EVERY directory, also one naming the present sha1 (its own provenance is not the pass's
+                #                 index: DECISION-20261114-PR51-F3-POPULATION-CHECK-ON-EVERY-DIRECTORY)
+                st = DB.standing(d, g, table, l, f'{S}_{kind}')
+            except (DB.DeltaRefusal, ValueError, KeyError, TypeError) as e:     # a malformed record: a refusal, not a crash
+                st = dict(ok=False, why=f'its record could not be certified ({type(e).__name__}: {str(e)[:200]})')
+            if st['ok'] is True:
+                certified.append(dict(lst=l, key=st['key'], record=st['record'], record_sha1=st['record_sha1'],
+                                      record_sha256=st['record_sha256'], table_from=st['table_from'], table_to=st['table_to'],
+                                      detections=st['record_detections']))
+            else:
+                fix = ('make this hour\'s catalog view again in a night pass (catalog --tier sublst; its delta builds), or '
+                       'build this LST again from stage build' if st.get('record') == DB.VIEW_ROWS else
+                       'build this LST again from stage build')
+                named = ('names the present grouping table' if sha == g[2] else
+                         f'names the grouping table {sha[:12]}, the present table is')
+                bad.append((l, f'{os.path.basename(d)} {named} {g[2][:12]} ({table}), and the directory does not stand under '
+                               f'it: {st["why"]} - {fix} (the cumulative joins LST runs by identity name)'))
+    for S, v in now.items():            # a key of an hour the present table holds detections of must have its directory
+        if not v:
+            continue
+        cls = {k: DB.key_class(k) for k in ('sb', 'wb')}
+        held = {(r.get('lst'), k) for r in v[1][0].values() if r.get('stokes') == S
+                for k in ('sb', 'wb') if cls[k](r.get('band') or '')}
+        for l in lsts:
+            for k in ('sb', 'wb'):
+                d = os.path.join(lst_run(l), f'source_catalogs_{S}_{k}')
+                if (l, k) in held and not os.path.isdir(d):
+                    bad.append((l, f'{os.path.basename(d)} is missing: the present grouping table {v[1][2][:12]} holds '
+                                   f'detections of {l} Stokes {S} {k} - build this LST again'))
+    return (bad, {S: {sha: sorted(ls) for sha, ls in v.items()} for S, v in by.items()},
+            dict(present={S: dict(path=os.path.abspath(v[0]), sha1=v[1][2], sha256=v[1][3]) for S, v in now.items() if v},
+                 certified=certified))
 
 
 def figure_key(loc_row, off_rows):
@@ -211,8 +274,14 @@ def build_stage(run, plan):
                      + ' - re-catalogue those LSTs first; the served cumulative stays as it is')
         from exopipe.phase3.lib.catalog import grouping_stage as _GS
         if _GS.mode().design_b:           # WAVE2 GROUPING (item F.3): one grouping table across the LST builds (production: none)
-            bad, tables = grouping_mix(plan.lsts)
+            bad, tables, how = grouping_mix(plan.lsts)
             u.meta['grouping_tables'] = tables
+            u.meta['grouping_present'] = how['present']
+            u.meta['grouping_certified'] = how['certified']
+            u.meta['grouping_refusals'] = [dict(lst=l, why=why) for l, why in bad]   # in full: the reason below is cut
+            if how['certified']:
+                u.note(f'G8 design-B grouping: {len(how["certified"])} catalog directory(ies) built under an earlier grouping '
+                       f'table stand under the present one (certified here from their own records)')
             if bad:
                 u.refuse('G8 design-B grouping mix: ' + '; '.join(f'{l}: {why}' for l, why in bad)[:1500]
                          + ' - the served cumulative stays as it is')
