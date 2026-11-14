@@ -170,7 +170,7 @@ def test_block_states_chain_outcome_limits_targets_then_transients():
         trans.append(dict(trans[0], rank=2, gal_lat_deg=45.04, elevation_deg=61.4))
         trans[0].update(gal_lat_deg=-5.04, elevation_deg=40.2)
         counts = {'served': 120, 'candidates': 90, 'snr': 100, 'elev': 80, 'nve': 70, 'size': 60, 'axis': 50, 'defaults': 119,
-                  'bright_pass': 110, 'pulsar': 3, 'pass': 40, 'listed': 37, 'n_max': 9.0,
+                  'bright_pass': 110, 'bright_no_data': 2, 'pulsar': 3, 'pass': 40, 'listed': 37, 'n_max': 9.0,
                   'bright': {'mean_sky_loss': 0.0499, 'bands': 19, 'candidates_removed': 863, 'listed': 5280}}
         h = block.build('04h_2024-12-19', 'CHAIN', ['the 10-s table is missing'], targets, '1 detection of 40 targets',
                         [('V', [], 0), ('I', trans, 37)], 37, {'deep Stokes I': counts}, 20, cfg=CFG.notify)
@@ -181,7 +181,8 @@ def test_block_states_chain_outcome_limits_targets_then_transients():
                                       'deep Stokes I: 120 detections of 90 listed candidates', 'Passing S/N: 100; elevation: 80; '
                                       'count in the epoch image (at most 9): 70; size: 60; axis ratio: 50',
                                       'the bright-source filter: 110 (mean sky loss 5.0% over 19 searched bands; it removes 863 of '
-                                      'the page\'s 5280 listed candidates)', 'known pulsar: 3. Passing all: 40 detections of 37 '
+                                      'the page\'s 5280 listed candidates; 2 of this hour\'s detections have no precomputed data '
+                                      'for it and are never removed by it, as on the page)', 'known pulsar: 3. Passing all: 40 detections of 37 '
                                       'candidates', 'Stokes V: top 0 of 0', '<p>None.</p>', 'Stokes I: top 2 of 37', '12.0')]
         assert order == sorted(order), order
         assert '<td>7.3</td><td>&ndash;</td>' in h and '<td>12.0</td><td>&ndash;</td>' in h   # a missing value is a dash
@@ -230,6 +231,9 @@ class App:
         import review_filters as RF
         PAGE.update(json.load(open(os.path.join(run_dir, 'page_' + os.environ['P3_PAGE_ID'] + '.json'))))
         self.run_dir, self.sources, self.RF, self.mstokes = run_dir, sources, RF, PAGE['stokes']
+        if PAGE.get('stale'):
+            print('bright-source filter: x.npz: 1 parent catalogs changed or missing since it was made (first c) - '
+                  'their 1 cells never remove a detection and leave the sky loss; the other 3 cells exact')
         self.queue_ids = [s for s, p in queue_entries if s in sources]
         self.mdets = {sid: [d['m'] for d in s.detections] for sid, s in sources.items()}
         self.metrics_json = json.dumps({'ref': PAGE['ref']}).encode()
@@ -237,6 +241,8 @@ class App:
         sids = list(sources)
         self.bsf = None if PAGE.get('no_bsf') else dict(
             BP=types.SimpleNamespace(psr_match=lambda r: r.get('credible') == '1'), sids=sids, n_miss=0,
+            ok=L((s, p) not in {tuple(x) for x in PAGE.get('no_data', [])}
+                 for s in sids for p in range(len(sources[s].detections))),
             d_src=L(i for i, s in enumerate(sids) for _ in sources[s].detections),
             d_pos=L(p for s in sids for p in range(len(sources[s].detections))))
 def _bsf_opt_prep(app, key, levels, rstep, nr):
@@ -430,11 +436,32 @@ def test_sources_apply_the_filters_of_the_list_through_the_page_code():
             assert tg[2]['note'].startswith('AMBIGUOUS association') and '2 detections' in tg[2]['note'], tg[2]
             assert tg[0]['link'].endswith('/p/pF/source/HIP_57274') and tg[0]['p_chance'] == 0.00013, tg[0]
             for text in ('7 forced-photometry events', '3 pass every filter', 'S/N above 7: 6', 'elevation above 35 deg: 6',
-                         'fitted size below 1.75 beams: 6', 'fitted axis ratio below 1.75: 6', '90th percentile: 6, of which 1',
-                         '1 events have no fitted size', '1 given to a catalogued background source',
+                         'fitted size below 1.75 beams: 6', 'fitted axis ratio below 1.75: 6',
+                         '90th percentile: 6, of which 0 are 10-second or 1-minute events (no listed page, no count) and 1 are '
+                         'of an epoch image without a catalog detection, and pass',
+                         '1 events have no fitted size or axis ratio and fail, of which 0 have |S/N| at or below 7',
+                         '1 given to a catalogued background source',
                          '2 served untargeted detections', '(2 more are cross-matched and do not pass)'):
                 assert text in note, (text, note)
             assert sum('no served event list' in x for x in lim) == 7, lim
+            assert 'because their page' not in note, note
+            # the hour's detections without precomputed bright-source data are counted; the page's stale-catalog warning
+            # is a limit
+            J = json.load(open(os.path.join(d, 'run_deep', 'page_pD.json')))
+            json.dump(dict(J, no_data=[['J0100+1000', 0], ['J0100+1000', 1]], stale=True),
+                      open(os.path.join(d, 'run_deep', 'page_pD.json'), 'w'))
+            sources._CACHE.clear(); sources._RULES.clear()
+            parts, n_pass, per_tier, limits = sources.transients('04h_2024-12-19', CFG, 10)
+            assert per_tier['deep Stokes V']['bright_no_data'] == 1 and n_pass == 4, per_tier
+            assert any(x.startswith('deep Stokes V, page pD: bright-source filter:') and 'changed or missing' in x
+                       for x in limits), limits
+            # a page whose own Stokes is not the one config notify.PAGES names is refused
+            CFG.notify.PAGES = {**pages, ('10-minute', 'V'): 'pT'}
+            sources._CACHE.clear(); sources._RULES.clear()
+            parts, n_pass, per_tier, limits = sources.transients('04h_2024-12-19', CFG, 10)
+            assert any('10-minute Stokes V: page pT is a Stokes I page by its own code' in x for x in limits), limits
+            assert list(per_tier) == ['deep Stokes V', '10-minute Stokes I'], per_tier
+            CFG.notify.PAGES = pages
             # a page without a bright-source filter file is not listed, and says why
             _w(os.path.join(d, 'run_tenmin', 'page_pT.json'), json.dumps(dict(stokes='I', ref={}, defaults={}, no_bsf=True)))
             sources._CACHE.clear(); sources._RULES.clear()
@@ -447,6 +474,11 @@ def test_sources_apply_the_filters_of_the_list_through_the_page_code():
             sources._CACHE.clear(); sources._RULES.clear()
             parts, n_pass, per_tier, limits = sources.transients('04h_2024-12-19', CFG, 10)
             assert n_pass == 0 and any('removes 0.0502 of the searched sky' in x for x in limits), limits
+            # ... and then the deep forced events have no count: they FAIL the count filter instead of passing it
+            tg, note, lim = sources.targets('04h_2024-12-19', CFG)
+            assert [t['target'] for t in tg if t['found_by'] == 'forced photometry'] == [], tg
+            assert 'S/N above 7: 6' in note and '90th percentile: 0, of which 0 are 10-second' in note, note
+            assert '7 deep or 10-minute events fail it because their page' in note, note
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -505,12 +537,23 @@ def test_qa_percentile_table_and_ionosphere_percentiles():
             assert len(lim) == 1 and 'variability' in lim[0], lim           # this hour's run has no variability file
             pop = json.load(open(os.path.join(out, 'notify', CFG.notify.IONOSPHERE_POPULATION)))
             assert sorted(pop) == ['04h_2024-12-19', '04h_2024-12-20', '04h_2024-12-21'], pop
-            # an hour the file holds is not read again; this hour is
+            # an hour whose diagnostics are gone leaves the population; a rewritten file is read again
             shutil.rmtree(os.path.join(root, '04h', '2024-12-20'))
             json.dump({'disturbance_rms_arcmin': 0.2, 'median_shift_arcmin': 2.0, 'n_anchors': 800},
                       open(os.path.join(rd, 'Dewarp_Diagnostics', '2024-12-19_04h_warp_stats_73MHz.json'), 'w'))
             words, _lim = qa.ionosphere_rank(rd, '04h_2024-12-19', CFG, out)
-            assert words['disturbance'].startswith("RMS 0.20', percentile 17 of the 3 processed hours"), words
+            assert words['disturbance'].startswith("RMS 0.20', percentile 25 of the 2 processed hours"), words
+            # an hour that gains its diagnostics, and an hour whose file is rewritten, are read again
+            dd = os.path.join(root, '05h', '2024-12-19', 'Science_20260527_000000', 'Dewarp_Diagnostics')
+            os.makedirs(dd)
+            json.dump({'disturbance_rms_arcmin': 0.1}, open(os.path.join(dd, 'x_warp_stats_73MHz.json'), 'w'))
+            json.dump({'disturbance_rms_arcmin': 0.15}, open(os.path.join(
+                root, '04h', '2024-12-21', 'Science_20260527_000000', 'Dewarp_Diagnostics', 'x_warp_stats_73MHz.json'), 'w'))
+            words, _lim = qa.ionosphere_rank(rd, '04h_2024-12-19', CFG, out)
+            assert words['disturbance'].startswith("RMS 0.20', percentile 83 of the 3 processed hours"), words
+            pop = json.load(open(os.path.join(out, 'notify', CFG.notify.IONOSPHERE_POPULATION)))
+            assert sorted(pop) == ['04h_2024-12-19', '04h_2024-12-21', '05h_2024-12-19'] and \
+                pop['04h_2024-12-21']['var'] == 0.4 and pop['04h_2024-12-21']['rms'] == 0.15, pop
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

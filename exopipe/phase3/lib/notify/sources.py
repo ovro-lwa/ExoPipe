@@ -154,16 +154,29 @@ def collect(item, CFG):
             hour = rule.hour(lst, date)
         except Exception as e:                      # noqa: BLE001 - a rule that cannot be evaluated is said, not guessed
             limits.append(f'{name}: the rule of page {pid} cannot be evaluated from the page\'s own code '
-                          f'({type(e).__name__}: {e}) - not listed')
+                          f'({type(e).__name__}: {e}) - not listed; the forced-photometry events of this tier and Stokes '
+                          f'fail the epoch-image count filter (no count)')
             continue
+        if rule.stokes != stokes:
+            limits.append(f'{name}: page {pid} is a Stokes {rule.stokes} page by its own code, not Stokes {stokes} as '
+                          f'config notify.PAGES names it - not listed; the forced-photometry events of this tier and Stokes '
+                          f'fail the epoch-image count filter (no count)')
+            continue
+        for w in rule.warnings:
+            limits.append(f'{name}, page {pid}: {w}')
         bp = rule.ref.get('nve') or []
         n_max = bp[c.N_EPOCH_MAX_PERCENTILE] if len(bp) == 101 else None
         # the hour's rows of the run's per-detection table: the formal S/N where the tier records one, and the count of
         # each epoch image as the page counts it (Stokes V: the search's recorded n_v_epoch of the image; Stokes I: the
-        # table's Stokes I rows of the band and night), for the forced-photometry events of the same images
+        # table's Stokes I rows of the band and night), for the forced-photometry events of the same images. The table is
+        # streamed and only the hour's lines are parsed.
         formal, count = {}, {}
         mc = os.path.join(p['run'], 'master_catalog.csv')
-        if os.path.exists(mc) and os.path.getsize(mc) < 2 ** 28:
+        if not os.path.exists(mc):
+            count = None
+            limits.append(f'{name}: page {pid}\'s run has no {mc}: no formal S/N, and the forced-photometry events of '
+                          f'this tier and Stokes fail the epoch-image count filter (no count)')
+        else:
             for r in _rows(mc, needle):
                 if r.get('lst') != lst or r.get('date', '')[:10] != date or r.get('stokes', stokes) != stokes:
                     continue
@@ -176,7 +189,7 @@ def collect(item, CFG):
                     k = (r.get('band'), r.get('date', '')[:10])
                     count[k] = count.get(k, 0) + 1
         images[(tier, stokes)] = (n_max, count)
-        cnt = dict.fromkeys(('served',) + HONED + ('defaults', 'bright_pass', 'pulsar', 'pass'), 0)
+        cnt = dict.fromkeys(('served',) + HONED + ('defaults', 'bright_pass', 'bright_no_data', 'pulsar', 'pass'), 0)
         best, bands, seen = {}, {}, set()            # identity -> best passing detection; its passing bands; served identities
         for sid, pos, d, m, s in hour:
             snr = _f(d.get('snr'))
@@ -191,6 +204,7 @@ def collect(item, CFG):
                 cnt[k] += h[k]
             cnt['defaults'] += dflt
             cnt['bright_pass'] += bright
+            cnt['bright_no_data'] += (sid, pos) in rule.no_data
             cnt['pulsar'] += psr
             ok = snr is not None and all(h.values()) and dflt and bright and not psr
             url = f'{c.HUB_URL}/p/{pid}/source/{sid}?b={band}'
@@ -206,7 +220,7 @@ def collect(item, CFG):
                         'time_utc': when, 'flux_jy': None,
                         'snr_formal': formal.get(d.get('cand_id')), 'snr_local': snr, 'offset_percentile': xm[2],
                         'p_chance': xm[3], 'note': 'AMBIGUOUS association' if xm[4] else '',
-                        'link': url, '_abs': abs(snr), '_ok': ok, '_key': (xm[1], tier, stokes)})
+                        'link': url, '_abs': abs(snr), '_key': (xm[1], tier, stokes)})
             if not ok:
                 continue
             cnt['pass'] += 1
@@ -293,7 +307,9 @@ def targets(item, CFG):
         lst_h = float(lst[:2])
     except ValueError:
         lst_h = None
-    fcnt = dict.fromkeys(('events',) + HONED + ('pass', 'no_fit', 'no_count'), 0)
+    fcnt = dict.fromkeys(('events',) + HONED + ('pass', 'no_fit', 'no_fit_low_snr', 'no_page', 'no_image_count',
+                                                 'no_count_fail'), 0)
+    listed_tiers = {t for t, _s in c.PAGES}
     try:
         reg = _registry(CFG)
     except (OSError, ValueError, KeyError):
@@ -319,13 +335,17 @@ def targets(item, CFG):
                 fits = {r['cand_id']: r for r in _rows(fp, prefix)}
             pid = page_of.get(os.path.normpath(run))
             n_max, count = extra['images'].get((tier, stokes), (None, None))
+            # a tier with a listed page (deep, 10-minute) whose page rule or per-detection table could not be read has no
+            # count: its events FAIL the count filter (collect() states why in the limits); a tier without a listed page
+            # (10-s, 1-minute) has no count by design and its events pass it
+            paged = tier in listed_tiers
             for r in hour:
                 # THE SAME FILTERS AS THE TRANSIENT LIST (Gregg 2026-11-14: "Apply the following filters to *all* of
                 # these"), from the event's own tables: S/N, elevation at the middle of the LST hour from the event's
                 # position, the fitted size and axis ratio of forced_fits.csv, and - for a deep or 10-minute event - the
-                # count of its epoch image as the same tier's page counts it. A missing value fails, except the count of an
-                # image the tables hold no count for. The bright-source filter and the pulsar match are the pages' and do
-                # not exist for a forced event.
+                # count of its epoch image as the same tier's page counts it. A missing value fails, except the count of
+                # an image without a catalog detection and of a tier without a listed page. The bright-source filter and
+                # the pulsar match are the pages' and do not exist for a forced event.
                 fit = fits.get(r['cand_id'], {})
                 ra = _f(r.get('ra')) if _f(r.get('ra')) is not None else _f(fit.get('fit_ra_deg'))
                 dec = _f(r.get('dec')) if _f(r.get('dec')) is not None else _f(fit.get('fit_dec_deg'))
@@ -333,18 +353,23 @@ def targets(item, CFG):
                      'elev': elevation_deg(lst_h + 0.5, ra, dec, c.SITE_LAT_DEG) if None not in (ra, dec, lst_h) else None,
                      'size': _f(fit.get('size_beams')), 'axis': _f(fit.get('axis_ratio')), 'nve': None}
                 h = honed(m, n_max, c)
-                if count is None or n_max is None:
+                if not paged:
                     h['nve'] = True                              # a tier without a listed page: no count exists
-                    fcnt['no_count'] += 1
+                    fcnt['no_page'] += 1
+                elif count is None or n_max is None:
+                    h['nve'] = False                             # its page's count could not be read: fails
+                    fcnt['no_count_fail'] += 1
                 else:
                     night = (r.get('cand_id') or '').split('_')[2] if (r.get('cand_id') or '').count('_') >= 2 else ''
                     n = count.get((r.get('band'), night)) if stokes == 'V' else count.get((r.get('band'), night[:10]), 0)
                     h['nve'] = n is None or n <= n_max
-                    fcnt['no_count'] += n is None
+                    fcnt['no_image_count'] += n is None
                 fcnt['events'] += 1
                 for k in HONED:
                     fcnt[k] += h[k]
-                fcnt['no_fit'] += m['size'] is None or m['axis'] is None
+                if m['size'] is None or m['axis'] is None:
+                    fcnt['no_fit'] += 1
+                    fcnt['no_fit_low_snr'] += not h['snr']
                 if not all(h.values()):
                     continue
                 fcnt['pass'] += 1
@@ -393,9 +418,14 @@ def targets(item, CFG):
     passing = (f'{fcnt["pass"]} pass every filter (S/N above {c.SNR_MIN:g}: {fcnt["snr"]}; elevation above '
                f'{c.ELEVATION_MIN_DEG:g} deg: {fcnt["elev"]}; fitted size below {c.SIZE_MAX_BEAMS:g} beams: {fcnt["size"]}; '
                f'fitted axis ratio below {c.AXIS_RATIO_MAX:g}: {fcnt["axis"]}; count of the epoch image at or below the '
-               f'{c.N_EPOCH_MAX_PERCENTILE}th percentile: {fcnt["nve"]}, of which {fcnt["no_count"]} have no count '
-               f'(10-second and 1-minute events, and images without a catalog detection) and pass; {fcnt["no_fit"]} events '
-               f'have no fitted size or axis ratio and fail)')
+               f'{c.N_EPOCH_MAX_PERCENTILE}th percentile: {fcnt["nve"]}, of which {fcnt["no_page"]} are 10-second or '
+               f'1-minute events (no listed page, no count) and {fcnt["no_image_count"]} are of an epoch image without a '
+               f'catalog detection, and pass'
+               + (f'; {fcnt["no_count_fail"]} deep or 10-minute events fail it because their page\'s count could not be '
+                  f'read (see the limits)' if fcnt['no_count_fail'] else '')
+               + f'; {fcnt["no_fit"]} events have no fitted size or axis ratio and fail, of which {fcnt["no_fit_low_snr"]} '
+               f'have |S/N| at or below {c.SNR_MIN:g} and fail that filter too: the forced fit is a template fit, without '
+               f'a size, below 7 sigma)')
     note = (f'{n_events} forced-photometry events of the two samples at or above their sample\'s detection threshold in this '
             f'hour ({n_runs} served event lists read: four tiers, Stokes V and I); {passing}'
             + (f'. Of the passing events the association step gives to no target: {others} (not listed; they are on the '

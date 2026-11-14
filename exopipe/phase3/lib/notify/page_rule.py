@@ -77,6 +77,10 @@ class PageRule:
                 if f and os.path.dirname(os.path.abspath(f)) == here:
                     del sys.modules[name]
             self.log = log.getvalue()
+        # the page's own warnings on its bright-source filter (parent catalogs changed or missing since its file was
+        # made: those cells never remove a detection and are left out of the sky loss), for the email's limits
+        self.warnings = [ln.strip() for ln in self.log.splitlines()
+                         if ln.startswith('bright-source filter:') and 'changed or missing' in ln]
 
     def _bright(self, loss):
         """The staircase of the page's bright-source filter for the allowed mean sky loss, with the page's default settings
@@ -100,9 +104,13 @@ class PageRule:
             rem = CT.bsf_det_state(P, (tuple(sorted(tuple(s) for s in steps)),) + key)[0]
             self.removed = {(P['sids'][s], int(p)) for s, p, r in zip(P['d_src'].tolist(), P['d_pos'].tolist(), rem.tolist())
                             if r}
+        # detections the filter has no precomputed data for (no parent catalog, or a stale one): the page never removes
+        # them; the email counts them per hour (sources.collect)
+        self.no_data = {(P['sids'][s], int(p)) for s, p, k in zip(P['d_src'].tolist(), P['d_pos'].tolist(),
+                                                                   P['ok'].tolist()) if not k}
         self.bright = dict(allowed=loss, mean_sky_loss=mean, bands=len(sky), steps=[list(s) for s in steps], how=how,
                            candidates_removed=int(n_removed), listed=int(prep['n_listed']),
-                           detections_removed=len(self.removed), detections_without_data=int(P.get('n_miss', 0)))
+                           detections_removed=len(self.removed))
         self._psr = P['BP'].psr_match
 
     def hour(self, lst, date):

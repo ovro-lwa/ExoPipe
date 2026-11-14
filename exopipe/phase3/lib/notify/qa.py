@@ -27,12 +27,10 @@ WIDEBAND = ('Red', 'Green', 'Blue', 'Full')
 
 
 def midrank(value, population):
-    """Percentile (0-100) of a value in a list: the share below it plus half the share equal to it; None without both."""
+    """percentiles.midrank of a value in an unsorted list; None without both."""
     if value is None or not population:
         return None
-    below = sum(1 for x in population if x < value)
-    same = sum(1 for x in population if x == value)
-    return 100.0 * (below + 0.5 * same) / len(population)
+    return percentiles.midrank(value, sorted(population))
 
 
 def image_rows(run, tier):
@@ -111,58 +109,83 @@ def phase3_percentiles(item, CFG):
     return html, limits
 
 
-def _read_hour(sci_dir):
-    """{'rms': disturbance RMS in arcmin, 'var': mean variability} of a Phase 2 run directory (keys absent when the file
-    is), or None when the run has no dewarp diagnostics yet."""
+def _sources(sci_dir):
+    """(the two diagnostics files of a Phase 2 run directory as {'rms' | 'var': file name}, their stamp: the run
+    directory's name and each file's name, size and mtime), or None when the run has no dewarp diagnostics yet."""
     d = os.path.join(sci_dir, 'Dewarp_Diagnostics')
     try:
         names = sorted(os.listdir(d))
     except OSError:
         return None
-    out = {}
+    files = {}
     for n in names:
-        if not n.endswith('.json'):
-            continue
+        if n.endswith('.json') and 'warp_stats_' in n and '73MHz' in n:
+            files['rms'] = n
+        elif n.endswith('.json') and 'ionosphere_variability_' in n:
+            files['var'] = n
+    stamp = [os.path.basename(sci_dir)]
+    for k in sorted(files):
         try:
-            if 'warp_stats_' in n and '73MHz' in n:
-                with open(os.path.join(d, n)) as f:
-                    out['rms'] = json.load(f).get('disturbance_rms_arcmin')
-            elif 'ionosphere_variability_' in n:
-                with open(os.path.join(d, n)) as f:
-                    out['var'] = json.load(f).get('mean_variability')
-        except (OSError, ValueError):
-            pass
+            st = os.stat(os.path.join(d, files[k]))
+            stamp.append([files[k], st.st_size, st.st_mtime_ns])
+        except OSError:
+            stamp.append([files[k], None, None])
+    return files, stamp
+
+
+def _read_hour(sci_dir, known=None):
+    """{'rms': disturbance RMS in arcmin, 'var': mean variability, 'stamp': what they were read from} of a Phase 2 run
+    directory (a value is absent while its file is), or None when the run has no dewarp diagnostics yet. known: the
+    hour's stored entry, returned as it is while its stamp still holds (same run directory, same files, sizes and
+    mtimes); an hour that gains a file, is rewritten or is reprocessed into a new run directory is read again."""
+    got = _sources(sci_dir)
+    if got is None:
+        return None
+    files, stamp = got
+    if known is not None and known.get('stamp') == stamp:
+        return known
+    d = os.path.join(sci_dir, 'Dewarp_Diagnostics')
+    out = {'stamp': stamp}
+    for key, field in (('rms', 'disturbance_rms_arcmin'), ('var', 'mean_variability')):
+        if key in files:
+            try:
+                with open(os.path.join(d, files[key])) as f:
+                    out[key] = json.load(f).get(field)
+            except (OSError, ValueError):
+                out['stamp'] = None                  # unreadable now (being written?): read again next time
     return out
 
 
 def ionosphere_rank(sci_dir, item, CFG, out_root):
     """({'disturbance': words, 'variability': words} for the mailer, limits): the hour's two ionosphere numbers as
     percentiles among the processed hours. The population file is brought up to date first: every hour under
-    paths.PHASE2_ROOT that it does not hold yet is read once (its latest Science directory)."""
+    paths.PHASE2_ROOT (its latest Science directory) is read when the file does not hold it or its stored stamp no longer
+    matches its diagnostics files (_read_hour); an hour whose diagnostics are gone leaves the population."""
+    from exopipe.phase3.core import inputs
     path = os.path.join(out_root, 'notify', CFG.notify.IONOSPHERE_POPULATION)
     try:
         with open(path) as f:
-            pop = json.load(f)
+            old = json.load(f)
     except (OSError, ValueError):
-        pop = {}
-    n0 = len(pop)
+        old = {}
+    pop = {}
     for ld in sorted(glob.glob(os.path.join(CFG.paths.PHASE2_ROOT, '[0-2][0-9]h'))):
         try:
             dates = sorted(os.listdir(ld))
         except OSError:
             continue
         for d in dates:
-            key = f'{os.path.basename(ld)}_{d}'
-            if key in pop or len(d) != 10:
+            if len(d) != 10:
                 continue
-            sd = sorted(glob.glob(os.path.join(ld, d, 'Science_*')))
-            got = _read_hour(sd[-1]) if sd else None
+            key = f'{os.path.basename(ld)}_{d}'
+            sd = inputs.latest_science_dir(os.path.basename(ld), d, CFG.paths.PHASE2_ROOT)
+            got = _read_hour(sd, old.get(key)) if sd else None
             if got is not None:
                 pop[key] = got
-    own = _read_hour(sci_dir)
+    own = _read_hour(sci_dir, pop.get(item))
     if own is not None:
         pop[item] = own
-    if len(pop) != n0 or own is not None:
+    if pop != old:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f'{path}.tmp{os.getpid()}'
         with open(tmp, 'w') as f:

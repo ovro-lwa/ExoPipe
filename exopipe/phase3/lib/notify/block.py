@@ -113,7 +113,9 @@ def filter_sentence(name, c):
             f'{c["snr"]}; elevation: {c["elev"]}; count in the epoch image (at most {num(c["n_max"], "g")}): {c["nve"]}; '
             f'size: {c["size"]}; axis ratio: {c["axis"]}; the page\'s default filters: {c["defaults"]}; the bright-source '
             f'filter: {c["bright_pass"]} (mean sky loss {100 * b["mean_sky_loss"]:.1f}% over {b["bands"]} searched bands; it '
-            f'removes {b["candidates_removed"]} of the page\'s {b["listed"]} listed candidates); detections of candidates '
+            f'removes {b["candidates_removed"]} of the page\'s {b["listed"]} listed candidates; '
+            f'{c.get("bright_no_data", 0)} of this hour\'s detections have no precomputed data for it and are never '
+            f'removed by it, as on the page); detections of candidates '
             f'matched to a known pulsar: {c["pulsar"]}. Passing all: {c["pass"]} detections of {c["listed"]} candidates.</li>')
 
 
