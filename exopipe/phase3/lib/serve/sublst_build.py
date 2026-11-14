@@ -245,7 +245,10 @@ def build_stage(run, plan):
         u.note('deep omission: ' + open(os.path.join(B, 'deep_omission_summary.txt')).readline().strip())
         u.add_output(os.path.join(B, 'deep_omission_dropped.csv'), 'omission_record', tier='sublst',
                      decisions=os.path.join(B, 'deep_omission.csv'))
-        env = dict(S.SUBLST_LOC_ENV, P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv', P3_LOC_OUT=f'{B}/source_catalogs')
+        # SPEED (design 2.3a stage 4): production's own row-index and shard switches - the same tables (serve.SUBLST_LOC_SPEED_ENV)
+        env = dict(S.SUBLST_LOC_ENV, **dict(S.SUBLST_LOC_SPEED_ENV or {}), P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv',
+                   P3_LOC_OUT=f'{B}/source_catalogs')
+        u.meta['localization_speed_env'] = dict(S.SUBLST_LOC_SPEED_ENV or {})
         res = scripts.run('build_localizations', [B], env=env, log=log, unit=u)
         if not res.ok:
             u.refuse(f'G9 localizations failed: {res.reason or scripts.last_line(res.tail)}')
@@ -321,6 +324,62 @@ def views_stage(run, plan, state):
     return u
 
 
+def carry_page_context_cache(src, B, u=None):
+    """SPEED (design 2.3a stage 4): the page context's frame-noise table of the served run ``src`` copied into the build ``B``
+    before the swap (serve.SUBLST_PAGE_CONTEXT_CACHE), so page_context_tenmin.py - run on the swapped-in run - finds every frame
+    it measured before and re-validates it by size and mtime instead of measuring every frame again; a value is stored as
+    its repr, so a carried value is the float a new measurement of the unchanged file gives. A table the build already holds is
+    left; a served run without one is production's state (every frame measured). Returns a dict for the unit's record."""
+    name = _CFG().serve.SUBLST_PAGE_CONTEXT_CACHE
+    if not name:
+        return dict(carried=False, why='serve.SUBLST_PAGE_CONTEXT_CACHE is not set (as production)')
+    a, b = os.path.join(src, name), os.path.join(B, name)
+    if os.path.exists(b):
+        return dict(carried=False, why=f'the build already holds {name}')
+    if not os.path.isfile(a) or os.path.getsize(a) == 0:
+        if u is not None:
+            u.note(f'page context: no frame-noise table {a} to carry - every frame is measured (as production)')
+        return dict(carried=False, why=f'no {a}')
+    # only the rows of frames the 10-minute tree still lists (its frames.csv sub_path: the frames page_context_tenmin.py
+    # looks up, :111-133): the tool writes back every row it loaded, so a carried table would otherwise keep the rows of
+    # frames the rebuild lanes removed or renamed, growing from build to build
+    cs = _CFG().catalog_sublst
+    tree = cs.TENMIN_TREE.format(root=_CFG().paths.SUBLST_ROOT, tree=cs.ARM_TREES['B'])   # page_context_tenmin.py:48 TROOT
+    try:
+        keep = set()
+        for fl in glob.glob(os.path.join(tree, '*_*', 'frames.csv')):
+            with open(fl, newline='') as f:
+                keep.update(r['sub_path'] for r in csv.DictReader(f))
+        if not keep:
+            raise OSError(f'no frames.csv rows under {tree}')
+        h, n, dropped = hashlib.sha1(), 0, 0
+        with open(a, newline='') as f, open(b + '.part', 'w', newline='') as o:
+            head = f.readline()                          # each kept line copied as written (a table with nothing to drop is
+            ip = next(csv.reader([head])).index('path')  # carried byte for byte); one row per line (paths hold no newline)
+            o.write(head)
+            h.update(head.encode())
+            for ln in f:
+                r = next(csv.reader([ln]), None)
+                if r and r[ip] in keep:
+                    o.write(ln)
+                    h.update(ln.encode())
+                    n += 1
+                else:
+                    dropped += 1
+        shutil.copystat(a, b + '.part')
+        os.replace(b + '.part', b)
+    except (OSError, ValueError, KeyError, StopIteration) as e:   # speed only: never blocks the swap
+        with contextlib.suppress(OSError):
+            os.remove(b + '.part')
+        if u is not None:
+            u.note(f'page context: the frame-noise table {a} was not carried ({e}) - every frame is measured (as production)')
+        return dict(carried=False, why=f'not carried: {e}')
+    if u is not None:
+        u.note(f'page context: frame-noise table carried from {a}: {n} frames to re-validate by size and mtime ({dropped} '
+               f'rows of frames the 10-minute tree no longer lists dropped)')
+    return dict(carried=True, source=a, frames=n, dropped=dropped, sha1=h.hexdigest()[:12])
+
+
 def carry_swap_stage(run, plan, state):
     """Copy the journals into B, swap B in, append the between lines. Returns the unit. G11 (validate before the swap,
     sublst_cumulative.sh:65-74): a page refused on the build by the views or test stage (anything but a multiples page with
@@ -354,6 +413,7 @@ def carry_swap_stage(run, plan, state):
         else:
             copied = journals.sublst_copy_journals(src, B)
             u.note(f'journals copied from {src}: {len(copied)}')
+        u.meta['page_context_cache'] = carry_page_context_cache(src, B, u)
         prev = plan.U + S.SUBLST_PREV_SUFFIX.format(utc=common.stamp())
         moved = journals.sublst_swap(plan.U, B, prev)
         u.note(f'swapped in: {plan.U} (previous {moved or "none"}); {len(os.listdir(os.path.join(plan.U, "candidates", "I")))}'
