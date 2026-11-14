@@ -262,15 +262,20 @@ DET_COLS = ['lst', 'date', 'band', 'subband', 'stokes', 'ts', 'snr', 'ra', 'dec'
 BAND_CLASS = {'18MHz': 'Red', '23MHz': 'Red', '27MHz': 'Red', 'Red': 'Red', '46MHz': 'Green', '55MHz': 'Green', 'Green': 'Green'}
 
 
-def detection(lst, night, sb, S, T, k, snr, rng):
+def detection(lst, night, sb, S, T, k, snr, rng, pos=None, elev_bin=None):
+    """pos: (ra, dec) in deg (drawn from rng when absent); elev_bin: the chain record's (2 when absent; '-1' = the hour's first
+    1-min block, re-measured by the 1-minute elevation floor, exopipe_ops b114ff3)."""
     snr = snr + 0.013 if min(abs(snr - 10.0), abs(snr - 8.0)) < 0.006 else snr   # clear of the record's rounding at a floor
     ts = '%s_%02d%02d%02d' % (night.replace('-', ''), int(lst[:2]), k // 6, (k % 6) * 10)
     if T == '1min':
         ts = ts[:-2] + '00'
-    ra, dec = 10 + rng.random(), 20 + rng.random()
-    return dict(lst=lst, date=night, band=BAND_CLASS[sb], subband=sb, stokes=S, ts=ts, snr='%.2f' % snr, ra='%.5f' % ra,
-                dec='%.5f' % dec, tier=T, instant=ts[:13] if T == '1min' else ts, cand_id=f'{lst}_{night}_{sb}_{S}_{T}_{ts}',
-                ra_peak='%.5f' % (ra + 0.001), dec_peak='%.5f' % dec)
+    ra, dec = pos or (10 + rng.random(), 20 + rng.random())
+    d = dict(lst=lst, date=night, band=BAND_CLASS[sb], subband=sb, stokes=S, ts=ts, snr='%.2f' % snr, ra='%.5f' % ra,
+             dec='%.5f' % dec, tier=T, instant=ts[:13] if T == '1min' else ts, cand_id=f'{lst}_{night}_{sb}_{S}_{T}_{ts}',
+             ra_peak='%.5f' % (ra + 0.001), dec_peak='%.5f' % dec)
+    if elev_bin is not None:
+        d['elev_bin'] = elev_bin
+    return d
 
 
 def batch_run(root, name, cells, rng, fixed=(), card2=()):
@@ -279,7 +284,7 @@ def batch_run(root, name, cells, rng, fixed=(), card2=()):
     (tests/snapshot_chain_fixture.py: the chain's own route functions decide which (identity, tier) qualifies), the per-tier
     views of the QUALIFYING (identity, tier) (source_catalogs_<S>_<T>/: survivors, members), their page directories with
     detections.csv and one panel + page.json per detection, card2_vleak.csv (every 10-s Stokes V detection; ``card2``: the
-    cand_ids Card 2 flags)."""
+    cand_ids Card 2 flags), FLUXSCAL_APPLIED.json with no scaled hour-band (production's flux-scale gate, exopipe_ops 5c49199)."""
     run = os.path.join(root, name)
     idents = []
     for i in range(36):
@@ -292,7 +297,7 @@ def batch_run(root, name, cells, rng, fixed=(), card2=()):
                                       6 + 20 * rng.random(), rng))
         idents.append((f'J{name[-12:-9]}{i:03d}+0000', dets))
     for J, spec in fixed:
-        idents.append((J, [detection(*a, rng) for a in spec]))
+        idents.append((J, [detection(*a[:7], rng, **(a[7] if len(a) > 7 else {})) for a in spec]))
     gen = []
     for J, dets in idents:
         rd = f'candidates/_identity/{J}'
@@ -328,6 +333,8 @@ def batch_run(root, name, cells, rng, fixed=(), card2=()):
     _wcsv(os.path.join(run, 'source_catalogs', 'Red_sources_survivors.csv'),
           ['rank', 'source_id', 'review_dir', 'ra', 'dec', 'best_snr'], gen)
     card2_file(run, idents, card2)
+    with open(os.path.join(run, 'FLUXSCAL_APPLIED.json'), 'w') as f:
+        json.dump({'factors': {}}, f)
     return run
 
 
@@ -384,7 +391,14 @@ def snapshot_world(name='snap', seed=7):
                                ('05h', NIGHTS[1], '46MHz', 'I', '10s', 6, 8.0)]),
                ('J0000+0003', [('05h', NIGHTS[1], '46MHz', 'V', '1min', k, 7.0 + k) for k in range(40)]),
                # Card 2 (dbc40a6): one of the two 10-s Stokes V frames flagged - its member row and panel leave the view
-               ('J0000+0004', [('05h', NIGHTS[2], '23MHz', 'V', '10s', 7, 12.0), ('05h', NIGHTS[2], '23MHz', 'V', '10s', 8, 11.0)])]
+               ('J0000+0004', [('05h', NIGHTS[2], '23MHz', 'V', '10s', 7, 12.0), ('05h', NIGHTS[2], '23MHz', 'V', '10s', 8, 11.0)]),
+               # the 1-minute elevation floor (b114ff3): an elev_bin -1 1-min detection at dec -55 deg (below 30 deg at every
+               # time: removed - its panel and member row leave the page, which keeps a later block's detection, re-pointed to
+               # it) beside a kept 10-s one, and one at dec +89 deg (37 +- 1 deg: kept)
+               ('J0000+0005', [('05h', NIGHTS[0], '23MHz', 'I', '10s', 20, 15.0, dict(pos=(10.5, -55.0))),
+                               ('05h', NIGHTS[0], '23MHz', 'I', '1min', 21, 14.0, dict(pos=(10.5, -55.0), elev_bin='-1')),
+                               ('05h', NIGHTS[0], '23MHz', 'I', '1min', 45, 12.5, dict(pos=(10.5, -55.0)))]),
+               ('J0000+0006', [('05h', NIGHTS[0], '23MHz', 'I', '1min', 22, 13.0, dict(pos=(10.5, 89.0), elev_bin='-1'))])]
     flagged = {'05h_%s_23MHz_V_10s_%s' % (NIGHTS[2], frame_ts('05h', NIGHTS[2], 8))}
     runs = [batch_run(os.path.join(root, 'review'), 'Run_SNAPT1A_20261101', cells_a, rng, fixed_a, card2=flagged),
             batch_run(os.path.join(root, 'review'), 'Run_SNAPT1B_20261101', cells_b, rng)]
@@ -526,9 +540,17 @@ def test_snapshot():
     assert port_det == prod_det and sum(port_det.values()) == summ['omitted'] > 0, (len(port_det), len(prod_det))
     assert {(r['batch'], r['identity']) for r in rec if r['kind'] == 'identity dropped'} == \
         {(r['batch'], r['identity']) for r in REC if r['kind'] == 'identity dropped'}
-    assert summ['served'] == n_all and summ['kept'] == n_all - summ['omitted'] - summ['card2']
+    assert summ['served'] == n_all and summ['kept'] == n_all - summ['omitted'] - summ['card2'] - summ['elev1min']
     c2r = collections.Counter(K(r) for r in REC if r['kind'] == 'card2 detection')
     assert collections.Counter(K(r) for r in rec if r['kind'] == 'card2 detection') == c2r and sum(c2r.values()) == summ['card2'] > 0
+    # the 1-minute elevation floor (b114ff3): J0000+0005's dec -55 deg 1-min detection removed, J0000+0006's dec +89 deg one kept
+    elr = collections.Counter(K(r) for r in REC if r['kind'] == 'elevation-floor 1min detection')
+    assert collections.Counter(K(r) for r in rec if r['kind'] == 'elevation-floor 1min detection') == elr and \
+        sum(elr.values()) == summ['elev1min'] == 1, (elr, summ['elev1min'])
+    assert {k[1] for k in elr} == {'J0000+0005'}, elr
+    ec = summ['elev1min_counts']
+    assert (ec['rows_1min_elev_bin_minus1'], ec['below_floor_records'], ec['below_floor_served'], ec['removed_from_view']) == \
+        (2, 1, 1, 1) and ec['rows_1min'] > 2, ec
     # hand-checked decisions
     D = _dec_by_key(_rows(os.path.join(out, 'deep_omission.csv')))
     one = lambda k, kind='decision': [r for r in D[k] if (r['gates'].startswith('member ')) == (kind == 'member')]
@@ -829,13 +851,15 @@ REJUDGE_SOURCES = (('JR01_46MHz', 7.5, 1.85, 1.10, '', ''),        # a 7-8 sigma
                    ('JR03_46MHz', 9.5, 2.50, 1.00, '', ''),        # above 8 sigma: survives (both)
                    ('JR04_46MHz', 7.4, 1.20, 1.00, '', ''),        # a compact 7-8 sigma single: survives (both)
                    ('JR05_46MHz', 6.8, 1.00, 1.00, 'RPT', ''),     # a repeat promotion void with one member: no route (both)
-                   ('JR06_46MHz', 7.5, 1.90, 1.00, '', 'gaia:1'))   # a cross-matched single: the gate does not apply (both)
+                   ('JR06_46MHz', 7.5, 1.90, 1.00, '', 'gaia:1'),   # a cross-matched single: the gate does not apply (both)
+                   ('JR08_46MHz', 7.5, 1.95, 1.00, '', '', 0.35))   # 1.95 beams less its 0.35 error = 1.60: survives (both;
+                                                                    # exopipe_ops 40d6f42 - the raw size, compared before, removed it)
 REJUDGE_OUT = {'production': {'JR01_46MHz', 'JR02_46MHz', 'JR05_46MHz'}, 'envelope': {'JR02_46MHz', 'JR05_46MHz'}}
 
 
 def rejudge_ready(tr, lst='05h', extra=()):
     """Add REJUDGE_SOURCES (+ ``extra``) to the LST run of a merge_ready world: members, survivors (promotion, xm_best), master
-    rows (size_beams, axis_norm), page directories with their blocks."""
+    rows (size_beams, size_err_beams when given, axis_norm), page directories with their blocks."""
     R = os.path.join(tr, f'Run_SLST{lst[:2]}B')
     gone_n, keep_n = f'{NIGHTS[0]}T00', f'{NIGHTS[6]}T01'
     mp = os.path.join(R, 'master_catalog.csv')
@@ -843,12 +867,12 @@ def rejudge_ready(tr, lst='05h', extra=()):
     d = os.path.join(R, 'source_catalogs_I_sb')
     mem = _rows(os.path.join(d, '46MHz_source_members.csv'))
     sv = _rows(os.path.join(d, '46MHz_sources_survivors.csv'))
-    for i, (sid, snr, sz, ax, promo, xm) in enumerate(REJUDGE_SOURCES + tuple(extra)):
+    for i, (sid, snr, sz, ax, promo, xm, *se) in enumerate(REJUDGE_SOURCES + tuple(extra)):
         g, k = f'I1_{lst}_{gone_n}_46MHz_{9000 + 2 * i}', f'I1_{lst}_{keep_n}_46MHz_{9001 + 2 * i}'
         mc += [dict(cand_id=g, band='46MHz', date=gone_n, stokes='I', pos_kind='fitted', peak_jy='1.0', size_beams='1.0',
                     axis_norm='1.0'),
                dict(cand_id=k, band='46MHz', date=keep_n, stokes='I', pos_kind='fitted', peak_jy='1.0', size_beams='%.2f' % sz,
-                    axis_norm='%.2f' % ax)]
+                    size_err_beams='%.2f' % se[0] if se else '', axis_norm='%.2f' % ax)]
         mem += [dict(source_id=sid, cand_id=g, band='46MHz', det_snr='9.0'), dict(source_id=sid, cand_id=k, band='46MHz',
                                                                                   det_snr='%.2f' % snr)]
         sv.append(dict(source_id=sid, band='46MHz', identity_id=sid.split('_')[0], n_det=2, best_cand_id=g, best_snr='9.0',
@@ -858,7 +882,7 @@ def rejudge_ready(tr, lst='05h', extra=()):
             os.makedirs(page, exist_ok=True)
             b = int(c_.split('T')[1][:2])
             open(os.path.join(page, f'rank0001_{lst}_{night}_bin{b}_46MHz.png'), 'w').close()
-    _wcsv(mp, ['cand_id', 'band', 'date', 'stokes', 'pos_kind', 'peak_jy', 'size_beams', 'axis_norm'], mc)
+    _wcsv(mp, ['cand_id', 'band', 'date', 'stokes', 'pos_kind', 'peak_jy', 'size_beams', 'size_err_beams', 'axis_norm'], mc)
     _wcsv(os.path.join(d, '46MHz_source_members.csv'), ['source_id', 'cand_id', 'band', 'det_snr'], mem)
     _wcsv(os.path.join(d, '46MHz_sources_survivors.csv'),
           ['source_id', 'band', 'identity_id', 'n_det', 'best_cand_id', 'best_snr', 'promotion', 'xm_best'], sv)
@@ -980,7 +1004,7 @@ def test_tenmin_rejudge():
 def prod_merge_copy(ops_dir, tr, sl):
     """production's sublst_cumulative.py with its two data roots (T, SL) pointed at the fixture - the one line rewritten,
     refused if production changed it - and sublst_deep_omission_drop.py verbatim, into ``ops_dir`` (the merge imports the drop
-    from its own directory)."""
+    and, since d1616d6, gate_inputs from its own directory)."""
     os.makedirs(ops_dir, exist_ok=True)
     src = _ops_src('sublst_cumulative.py')
     line = "T = '/data07/gh/phase3/transients'; SL = '/lustre/gh/main/phase3/sublst'"
@@ -988,6 +1012,9 @@ def prod_merge_copy(ops_dir, tr, sl):
     open(os.path.join(ops_dir, 'sublst_cumulative.py'), 'w').write(src.replace(line, f'T = {tr!r}; SL = {sl!r}'))
     shutil.copy(os.path.join(pinned_ops(), 'sublst_deep_omission_drop.py'), ops_dir)
     shutil.copy(os.path.join(pinned_ops(), 'build_source_catalogs_v3.py'), ops_dir)    # the drop's re-judging reads its THR (edf3263)
+    # the merge's ghost-track refusal (exopipe_ops d1616d6) imports gate_inputs from its own directory: production's live file, run
+    # in place by the port too (lib/catalog/tier_sublst.py), so not pinned - as the builder beside the pinned files
+    shutil.copy(os.path.join(OPS, 'gate_inputs.py'), ops_dir)
 
 
 def test_serve_build_merge():
@@ -1238,6 +1265,7 @@ def test_kept_product():
     kinds = collections.Counter(r['kind'] for r in rows)
     assert set(kinds) <= set(DO.KEPT_KINDS) and {'detection kept', 'source dropped', 'source re-pointed', 'member row dropped',
                                                  'panel dropped', 'card2 member row dropped', 'card2 panel dropped',
+                                                 'elevation-floor member row dropped', 'elevation-floor panel dropped',
                                                  'source routes'} <= set(kinds), kinds     # the re-judged kinds: test_snapshot_view
     rec = _rows(os.path.join(out, 'deep_omission_dropped.csv'))
     OM = DO.omitted_keys(_rows(os.path.join(out, 'deep_omission.csv')))
@@ -1297,14 +1325,14 @@ def test_kept_product():
     # the summary's digests: present, additive (kept + omitted = served), and required
     sj = json.load(open(os.path.join(out, 'deep_omission_summary.json')))
     dg = {k: DO.MultisetDigest(v) for k, v in sj['digests'].items()}
-    assert dg['kept'] + dg['omitted'] + dg['card2'] == dg['served'] and dg['kept'].n == summ['kept'] and \
-        dg['omitted'].n == summ['omitted'] and dg['card2'].n == summ['card2'], sj
+    assert dg['kept'] + dg['omitted'] + dg['card2'] + dg['elev1min'] == dg['served'] and dg['kept'].n == summ['kept'] and \
+        dg['omitted'].n == summ['omitted'] and dg['card2'].n == summ['card2'] and dg['elev1min'].n == summ['elev1min'] == 1, sj
     d = os.path.join(root, 'mut_kept_nodigest')
     shutil.rmtree(d, ignore_errors=True)
     shutil.copytree(out, d)
     json.dump(dict(sj, digests={}), open(os.path.join(d, 'deep_omission_summary.json'), 'w'))
     ok_, _v, det_ = TD.check_kept(os.path.join(d, 'deep_omission_kept.csv'))
-    assert not ok_ and 'has no served / kept / omitted / card2 digests' in det_, det_
+    assert not ok_ and 'has no served / kept / omitted / card2 / elev1min digests' in det_, det_
     # the record's detection rows are the omitted detections of the digest: one removed refuses
     shutil.copy(os.path.join(out, 'deep_omission_summary.json'), os.path.join(d, 'deep_omission_summary.json'))
     rp_ = os.path.join(d, 'deep_omission_dropped.csv')
@@ -1317,9 +1345,10 @@ def test_kept_product():
     # of each key, summing to the summary's served; a count changed, a key lost, or the file missing refuses
     sv = os.path.join(out, 'deep_omission_served.csv')
     ok_, val_, det_ = TD.check_served(sv)
-    assert ok_ and val_ == summ['served'] - summ['card2_served'], det_       # dbc40a6: Card 2 detections not counted
+    assert ok_ and val_ == summ['served'] - summ['card2_served'] - summ['elev1min_served'] and summ['elev1min_served'] == 1, \
+        det_    # dbc40a6 / b114ff3: Card 2 and below-floor 1-min detections not counted
     pend_ = DO.served_identities(runs, DO.Reader())
-    assert DO.read_served(sv) == DO.served_counts(pend_, DO.Card2(runs))[0]          # the served set less its Card 2 detections
+    assert DO.read_served(sv) == DO.served_counts(pend_, DO.Card2(runs), DO.Elev1min(runs))[0]   # less Card 2 and the floor
     srows = _rows(sv)
     for name, fix, want_k5, want_sv in (('count', lambda rr: rr[0].update(n=str(int(rr[0]['n']) + 1)), 'K5 1 served counts',
                                          'the summary\'s served'),

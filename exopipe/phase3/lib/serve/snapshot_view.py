@@ -93,6 +93,10 @@ partial source by its own (ts, subband) detection (the review's defect RP fixed)
 summary's card2 / rejudge keys - production's view byte for byte (tests/test_snapshot_view.py test_parity). G-V8 also re-checks
 the cells (the rate population) and the re-judging / Card 2 inputs (size, mtime) against the omit product; G-V9 a partial source
 whose own detection is absent from its page; G-V10 an image absent from a member table.
+G-V12 (exopipe_ops 5c49199) a batch without FLUXSCAL_APPLIED.json, or an hour-band it scaled that no longer has status ok and that
+factor (snapshot_fluxscal.band_factors, in place). The 1-minute elevation floor (b114ff3; R-GREGG-20261112-1MIN-ELEVATION-POSTHOC-
+REPAIR) acts at every site Card 2 acts on (record kinds 'elevation-floor 1min detection', 'elevation-floor member row',
+'elevation-floor panel'; summary key elev1min), re-derived from each batch's detection record and checked against the omit product.
 Production details carried for parity, not ruled (spec 'Pending Gregg'): the name-clash rule, the queue order, the survivors
 row of a combined source (its member row of largest |best S/N|), the duplicate batch_members column of production's survivors
 files.
@@ -231,7 +235,8 @@ class KeptProduct:
         self.n_kept = 0
         self.per = {k: collections.Counter() for k in ('source dropped', 'source re-judged', 'member row dropped',
                                                        'member row re-judged', 'card2 member row dropped', 'panel dropped',
-                                                       'card2 panel dropped')}
+                                                       'card2 panel dropped', 'elevation-floor member row dropped',
+                                                       'elevation-floor panel dropped')}
         self.repoint = {}
         with open(self.path, newline='') as f:
             rd = csv.DictReader(f)
@@ -248,9 +253,10 @@ class KeptProduct:
                     self.n_kept += 1
                 elif kd in ('source dropped', 'source re-judged'):
                     self.per[kd][(r['run'], r['catalog'], r['source_id'], r['note'])] += 1
-                elif kd in ('member row dropped', 'member row re-judged', 'card2 member row dropped'):
+                elif kd in ('member row dropped', 'member row re-judged', 'card2 member row dropped',
+                            'elevation-floor member row dropped'):
                     self.per[kd][(r['run'], r['catalog'], r['source_id'], r['cand_id'])] += 1
-                elif kd in ('panel dropped', 'card2 panel dropped'):
+                elif kd in ('panel dropped', 'card2 panel dropped', 'elevation-floor panel dropped'):
                     self.per[kd][(r['run'], r['catalog'], r['source_id'], r['stokes'], r['tier'], r['note'])] += 1
                 elif kd in ('source re-pointed', 'source routes'):
                     k = (r['run'], r['catalog'], r['source_id'])
@@ -314,6 +320,31 @@ def build(job):
     for r in RUNS:
         if not os.path.isdir(os.path.join(r, 'source_catalogs')):
             raise ViewRefusal('G-V1 %s has no source_catalogs' % r)
+    # FLUX-SCALE AND EXCLUSION GATE (snapshot_combined_view.py 5c49199; R-GREGG-20261112-FLUXSCAL-ONE-FACTOR-POST-HOC; exclusion is
+    # total): every batch carries FLUXSCAL_APPLIED.json (snapshot_fluxscal.py apply), and every hour-band it scaled must STILL have
+    # status ok and that factor - an hour-band excluded after the apply (or a wideband made stale by a member's exclusion), or a
+    # light-curve table re-extracted since, REFUSES the view. snapshot_fluxscal runs in place (exopipe_ops on the path above, as
+    # production imports it); production's repair mode, which skips the gate, is not ported
+    import snapshot_fluxscal as FS               # noqa: E402
+    _fs = {}
+    for r in RUNS:
+        mk = os.path.join(r, FS.APPLIED_RUN_FILE)
+        if not os.path.isfile(mk):
+            raise ViewRefusal('G-V12 %s has no %s - run snapshot_fluxscal.py apply on it first' % (r, FS.APPLIED_RUN_FILE))
+        bad = []
+        with open(mk) as fh:
+            applied = json.load(fh)['factors']
+        for k, v in applied.items():
+            cell, band = k.split('|')
+            if cell not in _fs:
+                _fs[cell] = FS.band_factors(cell)
+            d = _fs[cell].get(band, {})
+            if d.get('status') != 'ok' or abs(d['factor'] - v) > 2e-6:
+                bad.append('%s %s: applied %.6f, now %s %s' % (cell, band, v, d.get('status'), d.get('factor')))
+        if bad:
+            raise ViewRefusal('G-V12 %s - %d hour-band(s) changed since the flux-scale apply (re-chain or re-apply first):\n  %s'
+                              % (r, len(bad), '\n  '.join(bad[:20])))
+    log('flux-scale and exclusion gate: %d batches, %d cells - PASS' % (len(RUNS), len(_fs)))
     K = KeptProduct(job['kept_dir'], DO)
     if [os.path.abspath(x) for x in K.summary.get('runs') or []] != RUNS:
         raise ViewRefusal('G-V3 the omit product %s was made for the runs %s, not the view\'s %s (same runs, same order)'
@@ -325,18 +356,30 @@ def build(job):
                                                    names=job['names']))
         # CARD 2 (snapshot_combined_view.py dbc40a6 section 0b), re-derived here from each batch's card2_vleak.csv
         C2 = DO.Card2(RUNS, None, ratio=job['card2_ratio'], name=job['card2_file'])
+        # THE 1-MINUTE ELEVATION FLOOR (snapshot_combined_view.py b114ff3 section 0c), re-derived here from each batch's record
+        EL = DO.Elev1min(RUNS)
         # RE-JUDGING: the omit stage's (the chain's route functions cannot run in this build - V_combview review T5)
         REJ = DO.Rejudged.from_csv(os.path.join(K.dir, DO.REJUDGED_FILE), RUNS)
     except DO.OmissionRefusal as e:
         raise ViewRefusal(str(e))
     OM, OMWB = OMIS.OM, OMIS.OMWB
-    d_omitted, d_card2 = OMIS.det, C2.det
+    d_omitted, d_card2, d_elev = OMIS.det, C2.det, EL.det
+
+    def d_pre(d):            # removed before the view: Card 2 or the 1-min elevation floor (production's d_pre, b114ff3)
+        return d_card2(d) or d_elev(d)
     c2want = K.summary.get('card2_counts') or {}
     for k_, v_ in (('removed_10s_v_records', C2.n['removed_10s']), ('removed_10s_v_served', C2.n['removed_10s_served']),
                    ('not_evaluated_10s_v', C2.n['not_evaluated_10s'])):
         if c2want.get(k_) != v_:
             raise ViewRefusal('G-V4 Card 2: the batches\' card2_vleak.csv give %s %s, the omit product %s - a file changed since '
                               'the omit stage' % (k_, v_, c2want.get(k_)))
+    elwant = K.summary.get('elev1min_counts') or {}
+    for k_, v_ in (('rows_1min', EL.n['rows_1min']), ('rows_1min_elev_bin_minus1', EL.n['rows_1min_elev_bin_minus1']),
+                   ('below_floor_records', EL.n['removed_1min']), ('below_floor_served', EL.n['removed_1min_served'])):
+        if elwant.get(k_) != v_:
+            raise ViewRefusal('G-V4 1-min elevation floor: the batches\' detection records give %s %s, the omit product %s - a '
+                              'record changed since the omit stage, or the omit product predates the floor (run it again)'
+                              % (k_, v_, elwant.get(k_)))
     REC = []
 
     # ---- 1. clusters = served batch identities (production's step 1)
@@ -384,7 +427,7 @@ def build(job):
                           ' - run the omit stage again' % (D.text()[:28], (want or 'none')[:28]))
     # G-V4, the counts (V_combview review F5): the served counts the decisions were made with (deep_omission_served.csv, re-decided
     # by the step side's G-V8) are the served set's less its Card 2 detections (dbc40a6: not counted as served), read now
-    cnt = collections.Counter(okey(m['_row']) for p in pending for m in p[3] if not d_card2(m['_row']))
+    cnt = collections.Counter(okey(m['_row']) for p in pending for m in p[3] if not d_pre(m['_row']))
     now = {(k[0], k[2], k[1], k[3], k[4]): n for k, n in cnt.items()}
     rec_counts = {(r['lst'], r['night'], r['band'], r['stokes'], r['tier']): int(r['n'])
                   for r in rows(os.path.join(K.dir, 'deep_omission_served.csv'))}
@@ -401,11 +444,12 @@ def build(job):
         keep = []
         for m in mem:
             d = m['_row']
-            on_om, on_c2 = d_omitted(d), d_card2(d)
+            on_om, on_c2, on_el = d_omitted(d), d_card2(d), d_elev(d)
             if _h(dkey(d)) in want_k:
-                if on_om or on_c2:
+                if on_om or on_c2 or on_el:
                     raise ViewRefusal('G-K %s %s: the kept product keeps %s, which the rule removes (%s)'
-                                      % (TAG[r], J, d['cand_id'], 'an omitted key' if on_om else 'Card 2'))
+                                      % (TAG[r], J, d['cand_id'], 'an omitted key' if on_om else
+                                         ('Card 2' if on_c2 else 'the 1-min elevation floor')))
                 keep.append(m)
             elif on_om:
                 REC.append(dict(kind='detection', batch=TAG[r], identity=J, cand_id=d['cand_id'], lst=d['lst'], band=okey(d)[1],
@@ -414,9 +458,13 @@ def build(job):
                 REC.append(dict(kind='card2 detection', batch=TAG[r], identity=J, cand_id=d['cand_id'], lst=d['lst'],
                                 band=okey(d)[1], night=d['date'], stokes=d['stokes'], tier=d['tier'], snr=d['snr']))
                 C2.JC_C2[(r, J, d['cand_id'])] += 1
+            elif on_el:
+                REC.append(dict(kind='elevation-floor 1min detection', batch=TAG[r], identity=J, cand_id=d['cand_id'],
+                                lst=d['lst'], band=okey(d)[1], night=d['date'], stokes=d['stokes'], tier=d['tier'], snr=d['snr']))
+                C2.JC_C2[(r, J, d['cand_id'])] += 1
             else:
                 raise ViewRefusal('G-K %s %s: %s is neither kept by the kept product nor removed by the rule (an omitted key, '
-                                  'Card 2)' % (TAG[r], J, d['cand_id']))
+                                  'Card 2, the 1-min elevation floor)' % (TAG[r], J, d['cand_id']))
             C2.JC_ALL[(r, J, d['cand_id'])] += 1
         if len(keep) != len(want_k):
             raise ViewRefusal('G-K %s %s: the kept product keeps %d detections the served identity does not hold'
@@ -434,6 +482,7 @@ def build(job):
     del pending
     n_om = sum(1 for x in REC if x['kind'] == 'detection')
     n_c2 = sum(1 for x in REC if x['kind'] == 'card2 detection')
+    n_el = sum(1 for x in REC if x['kind'] == 'elevation-floor 1min detection')
     n_mixed_c2 = C2.n_mixed()
     log('deep omission: the kept product of %s applied - %d decisions (%d OMIT, %d of them wideband per image), %d of %d served '
         'detections omitted, %d batch identities dropped' % (K.dir, K.n_dec, len(OM) + len(OMWB), len(OMWB), n_om, n_all,
@@ -441,9 +490,9 @@ def build(job):
     log('re-judging (the omit stage\'s, %s): %d (batch source, tier) re-judged out, %d still qualify on the members they keep'
         % (DO.REJUDGED_FILE, len(REJ.OUT), len(REJ.ROUTES)))
     n_in = sum(len(c) for c in clusters)
-    if n_in + n_om + n_c2 != n_all or n_in != K.n_kept:
-        raise ViewRefusal('G-K omission record %d + Card 2 record %d + kept %d != served %d (kept product %d)'
-                          % (n_om, n_c2, n_in, n_all, K.n_kept))
+    if n_in + n_om + n_c2 + n_el != n_all or n_in != K.n_kept:
+        raise ViewRefusal('G-K omission record %d + Card 2 record %d + 1-min elevation-floor record %d + kept %d != served %d '
+                          '(kept product %d)' % (n_om, n_c2, n_el, n_in, n_all, K.n_kept))
     keys_in = collections.Counter(dkey(m['_row']) for c in clusters for m in c)
     dup_in = [k for k, n in keys_in.items() if n > 1]
     if dup_in:
@@ -573,10 +622,12 @@ def build(job):
                                             cand_id=row.get('cand_id', ''), stokes=S, tier=T, band=band))
                             continue
                         c2 = bool(mm and C2.jc_card2(r, mm.group(1), row.get('cand_id', '')))
-                        agree('card2 member row dropped', c2, K.take('card2 member row dropped', mkey), what)
+                        c2t = T == '10s'     # b114ff3: a 1-min frame's are the elevation floor's (JC_C2 counts both)
+                        c2k = 'card2 member row dropped' if c2t else 'elevation-floor member row dropped'
+                        agree(c2k, c2, K.take(c2k, mkey), what)
                         if c2:
-                            REC.append(dict(kind='card2 member row', batch=TAG[r], source=row['source_id'],
-                                            cand_id=row.get('cand_id', ''), stokes=S, tier=T, band=band))
+                            REC.append(dict(kind='card2 member row' if c2t else 'elevation-floor member row', batch=TAG[r],
+                                            source=row['source_id'], cand_id=row.get('cand_id', ''), stokes=S, tier=T, band=band))
                             continue
                         if k is None:
                             raise ViewRefusal('T3 %s %s member source %s is in no combined identity' % (TAG[r], cdir, row['source_id']))
@@ -597,8 +648,8 @@ def build(job):
                     if not ad:        # G-V7 (F4): an incomplete input is never booked as a deep omission
                         raise ViewRefusal('G-V7 %s %s source %s: its page %s holds no detection (detections.csv missing or empty) - '
                                           'an incomplete batch run' % (TAG[r], cdir, row['source_id'], row['review_dir']))
-                    kd = [d for d in ad if not d_omitted(d) and not d_card2(d)]
-                    note = DO.SOURCE_EMPTY_CARD2_NOTE if any(d_card2(d) for d in ad) else DO.SOURCE_EMPTY_NOTE
+                    kd = [d for d in ad if not d_omitted(d) and not d_pre(d)]
+                    note = DO.SOURCE_EMPTY_CARD2_NOTE if any(d_pre(d) for d in ad) else DO.SOURCE_EMPTY_NOTE
                     agree('source dropped', not kd, K.take('source dropped', (r, catalog, row['source_id'], note)), what)
                     if not kd:
                         REC.append(dict(kind='source dropped', batch=TAG[r], identity=row['identity_id'], source=row['source_id'],
@@ -656,14 +707,17 @@ def build(job):
                             REC.append(dict(kind='panel', batch=TAG[r], source=row['source_id'], stokes=S, tier=T,
                                             band=pm.group(3), note=fn))
                             continue
-                        c2 = bool(pm and S == 'V' and T == '10s' and C2.JC_C2 and C2.jc_card2(
+                        # b114ff3: a 1-min panel too, of a frame where every detection is below the elevation floor
+                        c2 = bool(pm and ((S == 'V' and T == '10s') or T == '1min') and C2.JC_C2 and C2.jc_card2(
                             r, row['identity_id'], '%s_%s_%s_%s_%s_%s_%s' % (pm.group(1), pm.group(2), pm.group(3), S, T,
                                                                              pm.group(4)[:8], pm.group(4)[8:])))
-                        agree('card2 panel dropped', c2, K.take('card2 panel dropped', (r, row['review_dir'], row['source_id'], S,
-                                                                                        T, fn)), '%s %s' % (row['review_dir'], fn))
+                        c2t = T == '10s'
+                        c2k = 'card2 panel dropped' if c2t else 'elevation-floor panel dropped'
+                        agree(c2k, c2, K.take(c2k, (r, row['review_dir'], row['source_id'], S, T, fn)),
+                              '%s %s' % (row['review_dir'], fn))
                         if c2:
-                            REC.append(dict(kind='card2 panel', batch=TAG[r], source=row['source_id'], stokes=S, tier=T,
-                                            band=pm.group(3), note=fn))
+                            REC.append(dict(kind='card2 panel' if c2t else 'elevation-floor panel', batch=TAG[r],
+                                            source=row['source_id'], stokes=S, tier=T, band=pm.group(3), note=fn))
                             continue
                         n_link_expected += 1
                         dst = os.path.join(PART, pd, fn)
@@ -692,14 +746,14 @@ def build(job):
                         n_links += 1
                         PANELS_PD[pd].append(fn)
                     for d in (dcache[src] if src in dcache else rows(os.path.join(src, 'detections.csv'))):
-                        if d_omitted(d) or d_card2(d):
+                        if d_omitted(d) or d_pre(d):
                             continue
                         if dkey(d) not in seen:
                             seen.add(dkey(d))
                             dets.append(dict(d, batch_run=TAG[r]))
                     if kept_of is None:
                         kept_of = {dkey(m['_row']) for i in members_of[k] for m in clusters[i]}
-                    kept_here = [d for d in dcache.get(src, ()) if not d_omitted(d) and not d_card2(d)]
+                    kept_here = [d for d in dcache.get(src, ()) if not d_omitted(d) and not d_pre(d)]
                     xstat['page_detections'] += len(kept_here)
                     xstat['page_detections_not_of_identity'] += sum(1 for d in kept_here if dkey(d) not in kept_of)
                 pdets = PDETS.setdefault(pd, collections.OrderedDict())
@@ -799,8 +853,8 @@ def build(job):
     # T7 (dbc40a6): no Card 2 detection in any identity or page directory, every (batch source, tier) re-judged out met in its
     # batch's per-tier catalogs (it qualified, so it had rows) and none of its rows used, every combined per-tier row ranked by a
     # detection it keeps
-    n7c = sum(1 for c in clusters for m in c if d_card2(m['_row'])) + sum(1 for v in PDETS.values() for d in v.values()
-                                                                           if d_card2(d))
+    n7c = sum(1 for c in clusters for m in c if d_pre(m['_row'])) + sum(1 for v in PDETS.values() for d in v.values()
+                                                                          if d_pre(d))      # b114ff3: the floor's too
     n7r = [k_ for k_ in REJ.OUT if not REJ_SEEN[k_]]
     if n7c or n7r or T7_BEST:
         raise ViewRefusal('T7 %d Card 2 detections left in the view; %d re-judged (batch source, tier) with no per-tier row (e.g. '
@@ -845,13 +899,18 @@ def build(job):
                                            ('removed_10s_v_served', C2.n['removed_10s_served']),
                                            ('not_evaluated_10s_v', C2.n['not_evaluated_10s']), ('removed_from_view', n_c2),
                                            ('mixed_identity_frames_kept', n_mixed_c2)])),
+        ('elev1min', collections.OrderedDict([('ruling', DO.ELEV1MIN_RULING), ('rows_1min', EL.n['rows_1min']),
+                                              ('rows_1min_elev_bin_minus1', EL.n['rows_1min_elev_bin_minus1']),
+                                              ('below_floor_records', EL.n['removed_1min']),
+                                              ('below_floor_served', EL.n['removed_1min_served']), ('removed_from_view', n_el)])),
         ('rejudge', collections.OrderedDict([(k_, rjs.get(k_)) for k_ in (
             'served_sources_reproduced', 'touched', 'still_qualify', 'rejudged_out', 'every_member_removed', 'per_tier_rows_dropped',
             'removed_detections_in_records', 'g3d_removals_sharing_a_group_with_card2')]))])
     with open(os.path.join(PART, 'combined_view_summary.json'), 'w') as fh:
         json.dump(summ, fh, indent=1, default=str)
     os.rename(PART, OUT)
-    stats = dict(summary=summ, kept_dir=K.dir, kept_applied=dict(kept=n_in, omitted=n_om, card2=n_c2, decisions=K.n_dec,
+    stats = dict(summary=summ, kept_dir=K.dir, kept_applied=dict(kept=n_in, omitted=n_om, card2=n_c2, elev1min=n_el,
+                                                                 decisions=K.n_dec,
                                                                  omit_keys=len(OM), omit_wb_image_keys=len(OMWB)),
                  record=dict(omc), page_directories=len(PDETS), stale_best=len(T7_BEST),
                  rejudged_out=len(REJ.OUT), page_detections=xstat['page_detections'],

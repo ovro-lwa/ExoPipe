@@ -32,14 +32,18 @@ OPS_REPO = '/lustre/gh/main/exopipe_ops'
 # step-2 heredocs identical) - and the restore-only wave's per-batch served-difference test (snapshot_restore_wave_diff.py, 8ff3fc8)
 # the V3 round ports, with the wave's dated view driver (comb_build_wave_20261104.sh, 8ff3fc8 + 19a1831 + 0e05399). Moved from
 # c7ca600 (dde1760^) by the V2 follow-up round, from fa90670 by the V3 round (2026-11-04).
-PIN_COMMIT = '0e05399a27e693fa2a26ed520a60ee7edfd72c1c'
+# Moved from 0e05399 to exopipe_ops b114ff3 (2026-11-12 21:41, the newest commit touching a pinned file; refactor chat 2026-11-14,
+# ledger STATUS-20261114-V2-PRODUCTION-PIN-DRIFT-PORTS-OWED) with the ports of 40d6f42 (the 10-minute re-judging's size gate:
+# size_beams - size_err_beams), d1616d6 (the 2024-12-28 ghost-track gate; pull request 44), 5c49199 (the combined view's flux-scale
+# and exclusion gate) and b114ff3 (the 1-minute elevation floor at the block's own time, the view and the re-judging).
+PIN_COMMIT = 'b114ff364144525051e73b6e38bb8c1ac2581192'
 PIN_BLOBS = {
-    'snapshot_combined_view.py': 'afc2bb3ce64e1210a0d87fae99d35e46094d6245',        # dbc40a6
+    'snapshot_combined_view.py': '665f5dbcc337c394bcdd7069f6eeb3ef9156a036',        # b114ff3 (5c49199, dbc40a6)
     'snapshot_deep_omission.py': 'b55e6d76d64ed2d289834edce963119a2e48fdb1',        # dbc40a6
-    'snapshot_rejudge.py': '61c44e4496d1a4691b4b1173aa414b026dd17229',              # dbc40a6 (new)
+    'snapshot_rejudge.py': 'f6f3c620c8618c2f8f0f4a9571bb0dcbe788e5e9',              # b114ff3 (dbc40a6 new)
     'sublst_deep_omission.py': 'a031a978422129f40fc83285169ccde89ec3f2f9',          # dde1760
-    'sublst_deep_omission_drop.py': '6d12fa03ebe1684ae35790b7879407d81c4323fe',     # 35aad1a
-    'sublst_cumulative.py': '948e9cf7dd95ad9a8421a74bdf8e8af22e008695',             # 0d4f1a9 (unchanged)
+    'sublst_deep_omission_drop.py': '23f61f185614f0c66a4638ab8c57909bb1ef570c',     # 40d6f42 (35aad1a)
+    'sublst_cumulative.py': '540491780d9d35a01bd7a8cf9e4e8c7ea00632c6',             # d1616d6 (0d4f1a9)
     'snapshot_batch/comb_build_20261102.sh': 'c68c54847628076892dbeac4775e739f68e4e807',
     'snapshot_batch/comb_build_20261104.sh': '1be26d8d82c916601edbd9c6743ac350ce93d145',   # dbc40a6
     'snapshot_restore_wave_diff.py': '929e48baec8fc0186293e54355a6f0c62b072ae6',    # 8ff3fc8 (new)

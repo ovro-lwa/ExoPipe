@@ -18,7 +18,7 @@ Classes:
                       the drop the snapshot tier's cumulative step applies (Q review F2). K1 the writer's columns and kinds,
                       every row of a served run of the summary (its batch tag); K2 every 'detection kept' row has no OMIT key, is
                       no detection the record omits, of no identity it drops; their number = the summary's kept = served -
-                      omitted, their identities = identities_kept, kept + dropped identities = identities; no detection key kept
+                      omitted - Card 2 - 1-min elevation floor, their identities = identities_kept, kept + dropped identities = identities; no detection key kept
                       twice, the kept rows' multiset digest = the summary's and kept + omitted = the served set's digest, the
                       record's detection rows = the omitted digest (Q fix verification N2); K5 the served counts beside
                       (deep_omission_served.csv) = the kept + omitted detections of each key (V_combview review F5); K3 the per-tier rows
@@ -251,7 +251,8 @@ def image_of(r):
     """The image id of a record or kept-product row (a detection or member row by its cand_id, a panel by its file name), or
     None."""
     DO = _DO()
-    if r['kind'] in ('panel', 'panel dropped', 'card2 panel', 'card2 panel dropped'):
+    if r['kind'] in ('panel', 'panel dropped', 'card2 panel', 'card2 panel dropped', 'elevation-floor panel',
+                     'elevation-floor panel dropped'):
         m = re.match(r'^(?:[A-Za-z0-9]+_)?rank\d+_\d\dh_\d{4}-\d\d-\d\d_[A-Za-z0-9]+?(\d{14})', r.get('note') or '')
         return (m.group(1)[:8] + '_' + m.group(1)[8:]) if m else None
     m = DO.SNAP_CID.match(r.get('cand_id') or '')
@@ -385,7 +386,8 @@ def check_kept(path, decisions=None):
     runs = {os.path.abspath(r) for r in summ.get('runs') or []}
     ic = ImageCheck(summ.get('proto') or CFG.paths.SNAPSHOT_FLEET_OUT, CFG.catalog_omission.SNAPSHOT_MEMBERS)
     flagged = card2_flagged(sorted(runs), CFG.catalog_omission.SNAPSHOT_CARD2, DO.batch_tag)
-    om_det = {(r['batch'], r['identity'], r['cand_id']) for r in rec if r['kind'] in ('detection', 'card2 detection')}
+    om_det = {(r['batch'], r['identity'], r['cand_id']) for r in rec
+              if r['kind'] in ('detection', 'card2 detection', 'elevation-floor 1min detection')}
     dropped_ids = {(r['batch'], r['identity']) for r in rec if r['kind'] == 'identity dropped'}
     # the re-judging's table beside (the omit product's copy of rejudged.csv): its re-judged-out (batch, identity, tier) and notes
     rjp = os.path.join(d, DO.REJUDGED_FILE)
@@ -403,7 +405,7 @@ def check_kept(path, decisions=None):
     cat_rx = {'sources': re.compile(r'^source_catalogs_([IV])_(10s|1min)/.+_sources_survivors\.csv$'),
               'members': re.compile(r'^source_catalogs_([IV])_(10s|1min)/.+_source_members\.csv$')}
     SOURCE_KINDS = ('source dropped', 'source re-pointed', 'source routes', 'source re-judged')
-    MEMBER_KINDS = ('member row dropped', 'member row re-judged', 'card2 member row dropped')
+    MEMBER_KINDS = ('member row dropped', 'member row re-judged', 'card2 member row dropped', 'elevation-floor member row dropped')
     msgs, n = [], collections.Counter()
     # pass 1: the per-tier rows (few), checked against the record; the re-pointed sources' new bests to find in pass 2
     per_tier = collections.defaultdict(collections.Counter)
@@ -433,6 +435,8 @@ def check_kept(path, decisions=None):
                     msgs.append(f'K4 {where}: neither an OMIT key nor its dropped identity')
             if kd in ('card2 member row dropped', 'card2 panel dropped') and (r['stokes'], r['tier']) != ('V', '10s'):
                 msgs.append(f'K4 {where}: a Card 2 row of {r["stokes"]} {r["tier"]} (Card 2 acts on 10-s Stokes V only)')
+            if kd in ('elevation-floor member row dropped', 'elevation-floor panel dropped') and r['tier'] != '1min':
+                msgs.append(f'K4 {where}: an elevation-floor row of the {r["tier"]} tier (the floor acts on 1-min rows only)')
             if kd == 'source dropped':
                 ok = ((r['batch'], r['identity']) in dropped_ids if r['note'] == DO.IDENTITY_EMPTY_NOTE
                       else r['note'] in (DO.SOURCE_EMPTY_NOTE, DO.SOURCE_EMPTY_CARD2_NOTE)
@@ -476,7 +480,9 @@ def check_kept(path, decisions=None):
                   'member row re-judged': (r['batch'], src, r['cand_id'], r['stokes'], r['tier']),
                   'card2 member row dropped': (r['batch'], src, r['cand_id'], r['stokes'], r['tier']),
                   'panel dropped': (r['batch'], src, r['stokes'], r['tier'], r['note']),
-                  'card2 panel dropped': (r['batch'], src, r['stokes'], r['tier'], r['note'])}[kd]
+                  'card2 panel dropped': (r['batch'], src, r['stokes'], r['tier'], r['note']),
+                  'elevation-floor member row dropped': (r['batch'], src, r['cand_id'], r['stokes'], r['tier']),
+                  'elevation-floor panel dropped': (r['batch'], src, r['stokes'], r['tier'], r['note'])}[kd]
             per_tier[kd][kk] += 1
     miss_rj = sorted(t for t in rj_out if not rj_seen[t])
     if miss_rj:
@@ -494,7 +500,11 @@ def check_kept(path, decisions=None):
             'card2 member row dropped': ('card2 member row', lambda x: (x['batch'], x['source'], x['cand_id'], x['stokes'],
                                                                        x['tier'])),
             'panel dropped': ('panel', lambda x: (x['batch'], x['source'], x['stokes'], x['tier'], x['note'])),
-            'card2 panel dropped': ('card2 panel', lambda x: (x['batch'], x['source'], x['stokes'], x['tier'], x['note']))}
+            'card2 panel dropped': ('card2 panel', lambda x: (x['batch'], x['source'], x['stokes'], x['tier'], x['note'])),
+            'elevation-floor member row dropped': ('elevation-floor member row', lambda x: (x['batch'], x['source'], x['cand_id'],
+                                                                                           x['stokes'], x['tier'])),
+            'elevation-floor panel dropped': ('elevation-floor panel', lambda x: (x['batch'], x['source'], x['stokes'], x['tier'],
+                                                                                 x['note']))}
     for kd, (rk, kf) in want.items():
         exp = collections.Counter(kf(x) for x in rec if x['kind'] == rk)
         if per_tier[kd] != exp:
@@ -508,9 +518,10 @@ def check_kept(path, decisions=None):
     # per-image predicate and Card 2 are read back here (T4): a kept detection whose image holds an omitted member, or whose
     # key Card 2 flags, refuses
     dg = summ.get('digests') or {}
-    if not all(dg.get(k) for k in ('served', 'kept', 'omitted', 'omitted_cid', 'card2')):
-        msgs.append('K2 the summary has no served / kept / omitted / card2 digests (deep_omission_summary.json written before the '
-                    'served-set fingerprint, Q fix verification N2, or before Card 2): re-run the omit stage')
+    if not all(dg.get(k) for k in ('served', 'kept', 'omitted', 'omitted_cid', 'card2', 'elev1min')):
+        msgs.append('K2 the summary has no served / kept / omitted / card2 / elev1min digests (deep_omission_summary.json written '
+                    'before the served-set fingerprint, Q fix verification N2, before Card 2 or before the 1-min elevation floor, '
+                    'exopipe_ops b114ff3): re-run the omit stage')
     seen_keys, n_dup = set(), 0
     D_kept = DO.MultisetDigest()
     kept_ids, found = set(), set()
@@ -552,12 +563,14 @@ def check_kept(path, decisions=None):
                 found.add(t)
     if n_dup > 3:
         msgs.append(f'K2 {n_dup} detection keys kept twice in all')
-    if dg.get('kept') and dg.get('omitted') and dg.get('served') and dg.get('card2'):
+    if dg.get('kept') and dg.get('omitted') and dg.get('served') and dg.get('card2') and dg.get('elev1min'):
         if D_kept.text() != dg['kept']:
             msgs.append(f'K2 the kept rows\' digest {D_kept.text()[:24]}... is not the summary\'s kept digest '
                         f'{dg["kept"][:24]}... (a kept detection substituted, duplicated, lost or moved to another identity)')
-        if D_kept + DO.MultisetDigest(dg['omitted']) + DO.MultisetDigest(dg['card2']) != DO.MultisetDigest(dg['served']):
-            msgs.append('K2 the kept rows + the omitted + the Card 2 detections do not reproduce the served set\'s digest')
+        if D_kept + DO.MultisetDigest(dg['omitted']) + DO.MultisetDigest(dg['card2']) + DO.MultisetDigest(dg['elev1min']) != \
+                DO.MultisetDigest(dg['served']):
+            msgs.append('K2 the kept rows + the omitted + the Card 2 + the 1-min elevation-floor detections do not reproduce the '
+                        'served set\'s digest')
     if dg.get('omitted_cid'):
         D_rec = DO.MultisetDigest()
         for r in rec:
@@ -569,22 +582,24 @@ def check_kept(path, decisions=None):
         if t not in found:
             msgs.append(f'K4 {where}: its new best {t[2]} is no kept detection of its identity {t[0]} {t[1]}')
     # K5 (V_combview review F5): the served counts the decisions were made with (deep_omission_served.csv beside) are the kept
-    # plus the omitted detections of each (LST, night, band, Stokes, tier), the Card 2 ones not counted (dbc40a6)
+    # plus the omitted detections of each (LST, night, band, Stokes, tier), the Card 2 ones (dbc40a6) and the 1-min ones below the
+    # elevation floor (b114ff3) not counted
     svp = os.path.join(d, 'deep_omission_served.csv')
     if not os.path.exists(svp):
         msgs.append('K5 no deep_omission_served.csv beside: the counts the decisions were made with are not recorded')
     else:
         served = DO.read_served(svp)
         omitted = collections.Counter((r['lst'], r['night'], r['band'], r['stokes'], r['tier']) for r in rec
-                                      if r['kind'] == 'detection' and r.get('note') != DO.ALSO_CARD2)
+                                      if r['kind'] == 'detection' and r.get('note') not in (DO.ALSO_CARD2, DO.ALSO_ELEV1MIN))
         want_c = kept_per_key + omitted
         if served != dict(want_c):
             bad = sorted(k for k in set(served) | set(want_c) if served.get(k, 0) != want_c.get(k, 0))
             msgs.append(f'K5 {len(bad)} served counts are not the kept + omitted detections of their key (e.g. {bad[:2]})')
     nk = n['detection kept']
-    if not (nk == summ.get('kept') == summ.get('served', -1) - summ.get('omitted', 0) - summ.get('card2', 0)):
+    if not (nk == summ.get('kept') == summ.get('served', -1) - summ.get('omitted', 0) - summ.get('card2', 0)
+            - summ.get('elev1min', 0)):
         msgs.append(f'K2 {nk} kept detections != the summary\'s kept {summ.get("kept")} (served {summ.get("served")} - omitted '
-                    f'{summ.get("omitted")} - Card 2 {summ.get("card2")})')
+                    f'{summ.get("omitted")} - Card 2 {summ.get("card2")} - 1-min elevation floor {summ.get("elev1min")})')
     if len(kept_ids) != summ.get('identities_kept') or len(kept_ids) + len(dropped_ids) != summ.get('identities'):
         msgs.append(f'K2 identities: {len(kept_ids)} kept + {len(dropped_ids)} dropped vs the summary\'s '
                     f'{summ.get("identities_kept")} kept of {summ.get("identities")}')
@@ -618,7 +633,7 @@ def check_rejudged(path):
             msgs.append(f'row {i + 2}: unreadable counts {r}')
             continue
         if q0 not in (0, 1) or q1 not in (0, 1) or not 1 <= nr <= nm or nrb != nr or \
-                any(x[0] not in ('omit', 'card2', 'omit;card2') for x in parts):
+                any(not set(x[0].split(';')) <= {'omit', 'card2', 'elev1min'} for x in parts):
             msgs.append(f'row {i + 2} {k}: qualifies {q0}/{q1}, removed {nr} of {nm}, removed_by {r["removed_by"]!r}')
         if (r['reason_after'] == 'every member removed') != (q1 == 0 and nr == nm and r['routes_after'] == ''):
             msgs.append(f'row {i + 2} {k}: reason {r["reason_after"]!r} with {nr} of {nm} removed')
@@ -648,6 +663,7 @@ def rejudged_table(path, **ctx):
 def check_served(path):
     """(passed, value, detail) of deep_omission_served.csv: production's key columns, one row per key, positive counts of the
     snapshot tiers, their sum = the summary's served less its Card 2 detections (dbc40a6: not counted as served in the rate test;
+    b114ff3: nor the 1-min ones below the elevation floor;
     the per-key tie to the kept and omitted detections is K5 of omission_kept)."""
     DO = _DO()
     cols, rows = _rows(path)
@@ -669,9 +685,10 @@ def check_served(path):
         msgs.append('no deep_omission_summary.json beside')
     else:
         sj = json.load(open(sp))
-        want = sj.get('served', -1) - sj.get('card2_served', 0)        # dbc40a6: the Card 2 detections are not counted as served
+        # dbc40a6 / b114ff3: the Card 2 detections and the 1-min ones below the elevation floor are not counted as served
+        want = sj.get('served', -1) - sj.get('card2_served', 0) - sj.get('elev1min_served', 0)
         if want != tot:
-            msgs.append(f'the counts sum to {tot}, the summary\'s served less its Card 2 detections is {want}')
+            msgs.append(f'the counts sum to {tot}, the summary\'s served less its Card 2 and elevation-floor detections is {want}')
     return _fail(msgs, tot, f'{len(rows)} (LST, night, band, Stokes, tier) keys, {tot} served detections')
 
 

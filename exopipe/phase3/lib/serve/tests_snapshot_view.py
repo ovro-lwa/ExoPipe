@@ -311,7 +311,7 @@ def view_panels(path, kept=None, runs=None, **ctx):
         for r in csv.DictReader(f):
             if r['kind'] in ('source dropped', 'source re-judged'):
                 src_dropped.add((r['run'], r['catalog'], r['source_id']))
-            elif r['kind'] in ('panel dropped', 'card2 panel dropped'):
+            elif r['kind'] in ('panel dropped', 'card2 panel dropped', 'elevation-floor panel dropped'):
                 pan_dropped[(r['run'], r['catalog'], r['source_id'], r['stokes'], r['tier'], r['note'])] += 1
     srcs = []
     for S, T in _tiers():
@@ -439,6 +439,8 @@ def view_record(path, kept=None, **ctx):
         msgs.append('the record\'s omitted detections are not the omit stage\'s')
     if det(rec, 'card2 detection') != det(orec, 'card2 detection'):
         msgs.append('the record\'s Card 2 detections are not the omit stage\'s')
+    if det(rec, 'elevation-floor 1min detection') != det(orec, 'elevation-floor 1min detection'):
+        msgs.append('the record\'s 1-min elevation-floor detections are not the omit stage\'s')
     ids = lambda rr: {(r['batch'], r['identity']) for r in rr if r['kind'] == 'identity dropped'}
     if ids(rec) != ids(orec):
         msgs.append('the record\'s dropped identities are not the omit stage\'s')
@@ -446,7 +448,8 @@ def view_record(path, kept=None, **ctx):
     for mine, theirs in (('source dropped', 'source dropped'), ('member row', 'member row dropped'), ('panel', 'panel dropped'),
                          ('source partial', 'source re-pointed'), ('source re-judged', 'source re-judged'),
                          ('member row re-judged', 'member row re-judged'), ('card2 member row', 'card2 member row dropped'),
-                         ('card2 panel', 'card2 panel dropped')):
+                         ('card2 panel', 'card2 panel dropped'), ('elevation-floor member row', 'elevation-floor member row dropped'),
+                         ('elevation-floor panel', 'elevation-floor panel dropped')):
         if k.get(mine, 0) != kp.get(theirs, 0):
             msgs.append(f'{k.get(mine, 0)} {mine!r} rows, the kept product has {kp.get(theirs, 0)} {theirs!r}')
     summ = _summary(path)
