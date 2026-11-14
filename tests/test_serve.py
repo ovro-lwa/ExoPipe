@@ -460,21 +460,31 @@ def test_sublst_ports():
 
 
 def test_generation_mix():
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
     R = f'{T}/lstruns'
-    for l, (pert, posk) in {'04h': (True, True), '05h': (False, True), '06h': (True, False)}.items():
+    # (window tie, fitted positions, conform inputs: 'ok' recorded + read line of the copy, None absent, 'sha' another sha256)
+    for l, (pert, posk, ci) in {'04h': (True, True, 'ok'), '05h': (False, True, None), '06h': (True, False, 'ok'),
+                                '08h': (True, True, None), '09h': (True, True, 'sha')}.items():
         d = f'{R}/Run_SLST{l[:-1]}B'
         os.makedirs(f'{d}/candidates', exist_ok=True)
         if pert:
             open(f'{d}/pertie_detections.csv', 'w').write('cand_id\n')
+            open(f'{d}/pertie_frames.csv', 'w').write('frame\n')
+        if ci:                                     # sublst_pages_prep.py:43-63: the copy + the read lines travel with the pages
+            cid, _ = CI.record(d)
+            h = CI.sums(cid)['pertie_detections.csv'] if ci == 'ok' else '0' * 64
+            open(f'{cid}/{CI.LOG_COPY}', 'w').write(f'{CI.READ}/x/catalog/pertie/{CI.DIR}/pertie_detections.csv sha256 {h}\n')
         open(f'{d}/master_catalog.csv', 'w').write('cand_id,ra' + (',pos_kind' if posk else '') + '\n')
     orig = sublst_build.lst_run
     sublst_build.lst_run = lambda l: f'{R}/Run_SLST{l[:-1]}B'
     try:
-        bad = dict(sublst_build.generation_mix(['04h', '05h', '06h', '07h']))
+        bad = dict(sublst_build.generation_mix(['04h', '05h', '06h', '07h', '08h', '09h']))
     finally:
         sublst_build.lst_run = orig
-    assert set(bad) == {'05h', '06h', '07h'} and 'pertie' in bad['05h'] and 'pos_kind' in bad['06h'], bad
-    ok('sub-LST G8: LST runs without the window tie / fitted positions / candidates are named (generation mix)')
+    assert set(bad) == {'05h', '06h', '07h', '08h', '09h'} and 'pertie' in bad['05h'] and 'pos_kind' in bad['06h'] \
+        and f'{CI.DIR}/pertie_detections.csv' in bad['08h'] and 'logged sha256' in bad['09h'], bad
+    ok('sub-LST G8: LST runs without the window tie / fitted positions / candidates / a verified record of the tie tables the '
+       'conformance read (sublst_cumulative.sh:60, 76-96) are named (generation mix)')
 
 
 # ---- 1c. journals ------------------------------------------------------------------------------------------------------
