@@ -1414,6 +1414,110 @@ def test_stage_halting():
         servers.replace, flow.register_pages, register.write = orig
 
 
+def test_page_context_stage():
+    """THE 10-MINUTE PAGE CONTEXT (sublst_cumulative.sh:295-300): after the swap and before the registration, unit
+    sublst_<run>_page_context runs page_context_tenmin.py on the swapped-in run U with production's arguments and environment
+    and records U as class tenmin_page_context; a failed script or an exception in the stage never stops the registration
+    (page text, not a gate); the class's content tests pass on well-formed sidecars and fail on a missing, malformed,
+    misplaced or orphaned one."""
+    import types
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow
+    from exopipe.phase3.lib.serve import tests as stests
+    S = CFG.serve
+    line = next(l_ for l_ in open(f'{OPS}/sublst_cumulative.sh') if 'page_context_tenmin.py' in l_ and l_.lstrip()[:1] != '#')
+    assert (scripts.SCRIPTS['page_context_tenmin'][0] == 'page_context_tenmin.py' and os.path.isfile(scripts.path('page_context_tenmin'))
+            and line.startswith('NUMPY_MADVISE_HUGEPAGE=0 $PY8 $OPSC/page_context_tenmin.py $U ')
+            and f'--workers {S.SUBLST_PAGE_CONTEXT_WORKERS} ' in line), line
+    ok(f'page context: the script resolves in place and production calls it as `NUMPY_MADVISE_HUGEPAGE=0 page_context_tenmin.py '
+       f'$U --workers {S.SUBLST_PAGE_CONTEXT_WORKERS}` (sublst_cumulative.sh, the port\'s arguments)')
+    a = _ns(tier='sublst', lsts='05h')
+    plan = planmod.make(a, f'{T}/pctx_out')
+    U = plan.U
+    rd = f'{U}/candidates/V/J0006+0006_23MHz'
+    os.makedirs(rd)
+    wcsv(f'{U}/source_catalogs_V/23MHz_sources_survivors.csv', ['source_id', 'band', 'review_dir'],
+         [dict(source_id='J0006+0006', band='23MHz', review_dir='candidates/V/J0006+0006_23MHz')])
+    pngs = ['rank1_05h_2025-01-02_bin3_23MHz.png', 'rank2_05h_2025-01-04_bin11_23MHz.png', 'rank3_05h_2025-01-05_23MHz.png']
+    for fn in pngs:
+        open(f'{rd}/{fn}', 'wb').close()
+    heads = list(stests.PCTX_HEADS)
+
+    def sidecars():
+        for fn, win in ((pngs[0], '2025-01-02T03'), (pngs[1], '2025-01-04T11')):
+            json.dump(dict(ctx_lines=[h + ' x' for h in heads], builder='page_context_tenmin.py', code='0', frame=['05h', '23MHz', win]),
+                      open(f'{rd}/{fn[:-4]}.page.json', 'w'))
+    calls, mode = [], {}
+
+    def fake_run(name, args=(), log=None, unit=None, env=None, **k):
+        calls.append(('script', name, list(args), log, dict(env or {})))
+        if mode['raise_']:
+            raise OSError('stand-in failure')
+        if mode['ok']:
+            sidecars()
+        return types.SimpleNamespace(ok=mode['ok'], rc=0 if mode['ok'] else 1, reason='' if mode['ok'] else 'rc=1 - error',
+                                     tail='Run_SLSTB: sidecars written 2, unchanged 0, orphans removed 0, panels without a window bin 1; 1 s')
+
+    def fake_carry(run_, plan_, state_):
+        calls.append('swap')
+        with run_.unit(f'sublst_{plan_.run_name}_carry', stage='swap', tier='sublst') as u_:
+            pass
+        u_.status = 'done'                          # a stand-in swap with no output (it would end no-input)
+        return u_
+    orig = (sublst_build.carry_swap_stage, flow.start_stage, flow.require_done, flow.expected_from_record, scripts.run)
+    sublst_build.carry_swap_stage, scripts.run = fake_carry, fake_run
+    flow.start_stage = lambda run_, plan_, state_: calls.append('register')
+    flow.require_done = lambda *a_, **k_: {'meta': {}}
+    flow.expected_from_record = lambda *a_, **k_: ({}, {})
+    try:
+        for case in ('ok', 'failed', 'raised'):
+            calls.clear()
+            for f_ in glob.glob(f'{rd}/*.page.json'):
+                os.remove(f_)
+            mode.update(ok=case == 'ok', raise_=case == 'raised')
+            run = Run('serve', ['test'], f'{T}/pctx_out', CFG, config_sections=None)
+            sublst_build.run(a, run, plan, ['carry', 'swap', 'start'])
+            want = ('script', 'page_context_tenmin', [U, '--workers', str(S.SUBLST_PAGE_CONTEXT_WORKERS)],
+                    f'{U}/page_context_tenmin.log', {'NUMPY_MADVISE_HUGEPAGE': '0'})
+            assert calls == ['swap', want, 'register'], calls
+            u = next(x for x in run.units if x.name == f'sublst_{plan.run_name}_page_context')
+            if case == 'ok':
+                assert u.status == 'done' and u.meta['page_context']['ok'] and run.exit_code() == 0, (u.status, u.reason)
+                assert any(n_.startswith('page context: Run_SLSTB: sidecars written 2') for n_ in u.notes), u.notes
+            elif case == 'failed':
+                assert u.status == 'refused' and 'sidecar_per_panel' in u.reason and run.exit_code() == 2, (u.status, u.reason)
+                assert any(n_.startswith('PAGE-CONTEXT FAILED') for n_ in u.notes), u.notes
+            else:
+                assert u.status == 'error' and 'stand-in failure' in u.reason and run.exit_code() == 1, (u.status, u.reason)
+    finally:
+        (sublst_build.carry_swap_stage, flow.start_stage, flow.require_done, flow.expected_from_record, scripts.run) = orig
+    ok('page context: after the swap and before the registration, with production\'s arguments, U recorded as '
+       'tenmin_page_context (done); a failed script refuses the unit and an exception errors it - the pages are registered '
+       'in both (exit 2 / 1 after the registration)')
+    sidecars()
+    good = {t.__name__: t(U) for t in (stests.sidecar_per_panel, stests.no_orphan_sidecars)}
+    assert all(r[0] for r in good.values()), good
+    assert '2 panels with their run-context sidecar' in good['sidecar_per_panel'][2] and \
+        '1 panels without a window bin' in good['sidecar_per_panel'][2], good
+    sc0, sc1 = (f'{rd}/{fn[:-4]}.page.json' for fn in pngs[:2])
+    neg = []
+    o = json.load(open(sc1))
+    json.dump(dict(o, frame=['05h', '23MHz', '2025-01-04T12']), open(sc1, 'w'))
+    neg.append(('frame of another window', stests.sidecar_per_panel(U)))
+    json.dump(dict(o, ctx_lines=o['ctx_lines'][:5]), open(sc1, 'w'))
+    neg.append(('five lines', stests.sidecar_per_panel(U)))
+    os.remove(sc1)
+    neg.append(('missing sidecar', stests.sidecar_per_panel(U)))
+    json.dump(dict(o, builder='build_i14.py'), open(sc1, 'w'))     # another builder's sidecar: kept, passes
+    other = stests.sidecar_per_panel(U)
+    os.rename(f'{rd}/{pngs[0]}', f'{rd}/{pngs[0]}.gone')
+    neg.append(('orphan', stests.no_orphan_sidecars(U)))
+    assert all(not r[0] for _, r in neg), neg
+    assert other[0] and '1 written by another builder' in other[2], other
+    ok('tenmin_page_context content tests: pass on well-formed sidecars (a panel without a window bin counted, another '
+       'builder\'s sidecar kept); fail on a wrong frame, five lines, a missing sidecar and an orphan')
+
+
 def test_serve_hold():
     """G29 THE SERVE HOLD (snapshot_serve.sh, exopipe_ops aa100bf): while serve.SNAPSHOT_SERVE_HOLD exists - empty included, as
     production's `[ -e ]` - unit snapshot_<name>_hold refuses BEFORE every stage (G27, the gate, the copy, any server; --waive
@@ -2496,6 +2600,7 @@ def main():
         test_mchain()
         test_exclusion_gate_per_page_stage()
         test_stage_halting()
+        test_page_context_stage()
         test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()
