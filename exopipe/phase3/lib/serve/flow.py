@@ -250,16 +250,17 @@ def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
         got['items'], got['refused'], got['prepared'] = items, refused, True
         if not items:
             raise recmod.NoInput('no page passed its checks - nothing registered (the registry is unchanged)')
-        prep = register.prepare([it[2] for it in items], d)
-        st = register.check_server(ports, d)            # again, right before the write: and what it has built now
-        got['inspection'] = register.built_inspection(st)
-        holds = []
-        for r in dict.fromkeys(it[1] for it in items):
-            lifted = register.lift_hold(r)
-            holds.append({'run': r, 'lifted': lifted})
-            if lifted:
-                u.note(f'publish marker of {r} removed right before the registration ({lifted})')
-        res = register.write(prep)
+        with register.registry_lock(d):                 # from the registry's read to its write: no other writer between
+            prep = register.prepare([it[2] for it in items], d)
+            st = register.check_server(ports, d)        # again, right before the write: and what it has built now
+            got['inspection'] = register.built_inspection(st)
+            holds = []
+            for r in dict.fromkeys(it[1] for it in items):
+                lifted = register.lift_hold(r)
+                holds.append({'run': r, 'lifted': lifted})
+                if lifted:
+                    u.note(f'publish marker of {r} removed right before the registration ({lifted})')
+            res = register.write(prep)
         res['record'] = register.registration_record(plan.out, unit_name, res, holds)
         got['res'] = res
         u.add_output(res['record'], 'page_registration')
