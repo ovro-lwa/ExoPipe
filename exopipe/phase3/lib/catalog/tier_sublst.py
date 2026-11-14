@@ -1768,6 +1768,17 @@ def _delta_inputs(ctx):
     return tables, hours, [d for _l, d in nd], scope, out
 
 
+def _all_nights_tie(ctx, L, FL):
+    """The reference-tie table the all-nights build of hour L (catalog directory FL) stood on: where st_reftie of that build
+    writes it (production's compare_<L>/new_<arm>/tie/ for a production directory, <FL>/_side/compare_<L>/new_<arm>/tie/
+    otherwise; the rule of Ctx.cmp_new). It may not exist (the tie has not run)."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    if _cfg().production_root_of(FL) is not None:
+        f = dict(root=ctx.sl, lst=L, arm=ctx.arm, tree=ctx.c.ARM_TREES[ctx.arm])
+        return os.path.join(ctx.c.COMPARE_ROOT.format(**f), f'new_{ctx.arm}', 'tie', DB.TIE)
+    return os.path.join(FL, '_side', f'compare_{L}', f'new_{ctx.arm}', 'tie', DB.TIE)
+
+
 def _groupings(tables):
     """{Stokes: read_grouping result} of the recorded tables; refuses a table that changed since its record."""
     from exopipe.phase3.lib.catalog import delta_build as DB
@@ -1925,7 +1936,9 @@ def st_view(ctx, s, plan):
                 + f' and the builds {", ".join(ctx.builds)}: the state of each key (all-nights / delta, each under a certificate '
                   f'of the present grouping table; a build owed REFUSES); an hour with a delta: view root {U}/views/<LST> '
                   f'(catalogs with the rows of touched identities replaced, content-tested; selected rows, window-tie table, '
-                  f'detection table, image table of all nights), unless an earlier pass\'s root of the same states stands')
+                  f'detection table, image table of all nights; its own conformance read of the merged window-tie table, '
+                  f'standing on the verified reads it merges; the all-nights build\'s reference-tie table), unless an earlier '
+                  f'pass\'s root of the same states and inputs stands')
     plan.append(f'localizations of a new view root, per build: P3_LOC_CATS=<catalog glob> P3_LOC_OUT=<root>/_loc/<build>/out '
                 f'P3_TENMIN_PERTIE=<root>/pertie/pertie_detections.csv {ctx.py["default"]} {loc} <root>/_loc/<build> (the names of '
                 f'touched identities only), merged with the all-nights rows of every other name')
@@ -1973,7 +1986,8 @@ def st_view(ctx, s, plan):
             entry.update(kind='all-nights', root=FL, written_here=False)       # certified: the all-nights directory is the view
             n_all += 1
         else:
-            idg, root = DB.view_inputs_digest(FL, nights), None
+            tie = _all_nights_tie(ctx, L, FL)
+            idg, root = DB.view_inputs_digest(FL, nights, tie), None
             for r in DB.index_roots(earlier, L):               # carried only when it stands and its catalogs pass view_test again
                 ok, why = DB.root_carries(r, digest, idg, states, groupings)
                 if ok:
@@ -1989,7 +2003,7 @@ def st_view(ctx, s, plan):
                 cL = hour_ctx(ctx, L)
                 try:
                     rec = DB.view_root(root, L, FL, nights, states, {st: (groupings[st], tables[st][0]) for st in tables},
-                                       ctx.builds, SPLIT_KEYS)
+                                       ctx.builds, SPLIT_KEYS, ctx.arm, tie)
                 except DB.DeltaRefusal as e:
                     refuse(f'S-G21 view of {L}: {e}')
                 locs = {}

@@ -9,6 +9,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from exopipe.phase3.lib.catalog import conform_inputs as CI   # noqa: E402
 from exopipe.phase3.lib.catalog import delta_build as DB   # noqa: E402
 
 T = '/tmp/exopipe3_tests_catalog_delta_build'
@@ -467,6 +468,22 @@ OLD_ROWS = [('c1', 'G1', 'J0001', 'M1'), ('c2', 'G2', 'J0002', 'M2'), ('c3', 'G3
             ('c5', 'G5', 'J0005', 'M5'), ('c7', 'G7', 'J0007', 'M7')]
 
 
+def conform_read(d, det, frames, stage='conform'):
+    """<d>/pertie/conform_inputs as conform_inputs.record leaves it (the two tables and SHA256SUMS) and <d>/catalogs.log with
+    the stage header and the read line p3s2_conform.py logs (naming the chain's working copy, as production's do)."""
+    ci = f'{d}/pertie/conform_inputs'
+    put(f'{ci}/pertie_detections.csv', det)
+    put(f'{ci}/pertie_frames.csv', frames)
+    with open(f'{ci}/SHA256SUMS', 'w') as f:
+        f.write(''.join(f'{CI.sha256_file(f"{ci}/{n}")}  {n}\n' for n in CI.FILES))
+    put(f'{d}/catalogs.log', [f'2030-01-05T00:00:00Z CATALOGS B {stage} 05h', 'conform: pulsar step',
+                              f'{CI.READ}/fast/work/pertie/conform_inputs/pertie_detections.csv sha256 '
+                              f'{CI.sums(ci)["pertie_detections.csv"]}'])
+
+
+CF_HEAD, FR_HEAD = 'cand_id,sys', 'cand_id,ts,member'
+
+
 def hour_world(root):
     """view_world plus the directory-level tables of the hour: the all-nights directory <root>/A (selected rows, window-tie
     table, image table, detection table, localizations) and the night directory <root>/N (its two selected rows)."""
@@ -485,6 +502,9 @@ def hour_world(root):
     put(f'{Nd}/pertie/pertie_detections.csv', ['cand_id,sys', 'n2,2.0', 'n1,2.1'])
     put(f'{Nd}/v_deep_images.csv', [IMG, '05h,46MHz,V,2030-01-05T01,2', '05h,46MHz,V,2030-01-05T00,2'])
     put(f'{Nd}/master_catalog.csv', [SEL, 'n2,05h,46MHz,10.0', 'n1,05h,46MHz,9.5'])
+    # the conformance reads (the rows near pulsars at the conformance: a subset of the final window-tie table)
+    conform_read(F, [CF_HEAD, 'c3,1.3', 'c1,1.0'], [FR_HEAD, 'c3,t1,a', 'c1,t2,b', 'c1,t1,a'])
+    conform_read(Nd, [CF_HEAD, 'n2,2.0', 'n1,2.1'], [FR_HEAD, 'n2,t6,b', 'n2,t5,a', 'n1,t5,a'])
     return F, Nd, D, gold, gnew
 
 
@@ -554,10 +574,10 @@ def test_hour():
     root = f'{R}/views/05h'
     os.makedirs(f'{root}/stale')
     why = refusal(DB.view_root, root, '05h', F, [Nd], {('noveto', 'V_sb'): dict(st, kind='build')}, {'V': (gnew, tnew)},
-                  ('noveto',), keys)
+                  ('noveto',), keys, 'B', None)
     check('view root: a state that does not stand refuses and leaves the directory as it was',
           'build is owed' in why and os.path.isdir(f'{root}/stale'), why)
-    rec = DB.view_root(root, '05h', F, [Nd], states, {'V': (gnew, tnew)}, ('noveto',), keys)
+    rec = DB.view_root(root, '05h', F, [Nd], states, {'V': (gnew, tnew)}, ('noveto',), keys, 'B', f'{R}/no_tie/tie_members.csv')
     check('view root: the catalogs of every standing key, content-tested; an earlier root is replaced',
           rec['catalogs']['noveto_V_sb']['kind'] == 'delta' and rec['catalogs']['noveto_V_sb']['survivors'] == 5
           and os.path.exists(f'{root}/source_catalogs_noveto_V_sb/catalog_view.json') and not os.path.exists(f'{root}/stale'), rec)
@@ -570,39 +590,113 @@ def test_hour():
     check('view root: the image table gains the nights\' windows, sorted, after the all-nights rows',
           [ln.split(',')[3] for ln in img[1:5]] == ['2030-01-01T00', '2030-01-02T00', '2030-01-05T00', '2030-01-05T01']
           and rec['images'] == dict(base=2, appended=2), img)
+    # the view root's own conformance read (DECISION-20261114-PR50-VIEW-ROOT-RECORDS-ITS-OWN-CONFORMANCE-READ)
+    ci = f'{root}/pertie/conform_inputs'
+    cd, cf = raw(f'{ci}/pertie_detections.csv').decode(), raw(f'{ci}/pertie_frames.csv').decode()
+    check('view conform: the merged window-tie table = the all-nights read\'s lines, then the night\'s sorted by cand_id',
+          cd == 'cand_id,sys\nc3,1.3\nc1,1.0\nn1,2.1\nn2,2.0\n' and rec['conform']['tables']['pertie_detections.csv']
+          == dict(base=2, appended=2), cd)
+    check('view conform: the merged frame table keeps a detection\'s lines together and in their order',
+          cf == 'cand_id,ts,member\nc3,t1,a\nc1,t2,b\nc1,t1,a\nn1,t5,a\nn2,t6,b\nn2,t5,a\n'
+          and rec['conform']['tables']['pertie_frames.csv'] == dict(base=3, appended=3), cf)
+    lg = raw(f'{root}/catalogs.log').decode().split('\n')
+    check('view conform: SHA256SUMS verifies; the log holds the view header, provenance lines and ONE read line naming the '
+          'merged copy, which every reader\'s check passes',
+          CI.verify(ci) == '' and lg[0].endswith('Z CATALOGS B view 05h (the view root\'s conformance read: the keyed merge of 2 '
+                                                 'verified reads)')
+          and sum(ln.startswith(CI.READ) for ln in lg) == 1
+          and lg[3] == f'{CI.READ}{ci}/pertie_detections.csv sha256 {CI.sha256_file(ci + "/pertie_detections.csv")}'
+          and lg[1].startswith(f'view: verified read of {F}: pertie_detections.csv sha256 ') and lg[2].startswith(f'view: verified read of {Nd}')
+          and CI.check(f'{root}/pertie', f'{root}/catalogs.log')[0] and DB.conform_test(root, F, [Nd])[0], lg)
+    hv = json.load(open(f'{root}/hour_view.json'))
+    check('view conform: hour_view.json records the sources by checksum, the counts and the test',
+          [x['dir'] for x in hv['conform']['sources']] == [F, Nd] and hv['conform']['sources'][1]['reads'] == 1
+          and hv['conform']['sources'][0]['sha256'] == CI.sums(f'{F}/pertie/conform_inputs')
+          and hv['conform']['sha256'] == CI.sums(ci) and 'conformance inputs verified (1 reads' in hv['conform']['detail'], hv['conform'])
+    check('view tie: no tie table = none in the root, recorded as absent',
+          hv['tie'] == dict(source=f'{R}/no_tie/tie_members.csv', absent=True) and not os.path.exists(f'{root}/tie_members.csv'))
+    # its content test, negative controls (each on a copy of the root)
+    def cf_tamper(fn):
+        c = f'{R}/cf_copy'
+        shutil.rmtree(c, ignore_errors=True)
+        shutil.copytree(root, c)
+        fn(c)
+        return DB.conform_test(c, F, [Nd])
+    def resum(c):
+        with open(f'{c}/pertie/conform_inputs/SHA256SUMS', 'w') as f:
+            f.write(''.join(f'{CI.sha256_file(f"{c}/pertie/conform_inputs/{n}")}  {n}\n' for n in CI.FILES))
+        h = CI.sums(f'{c}/pertie/conform_inputs')['pertie_detections.csv']
+        put(f'{c}/catalogs.log', ['2030-01-05T00:00:00Z CATALOGS B view 05h', f'{CI.READ}{c}/pertie/conform_inputs/pertie_detections.csv sha256 {h}'])
+    def swap(c, n, i, j):
+        ls = raw(f'{c}/pertie/conform_inputs/{n}').decode().split('\n')
+        ls[i], ls[j] = ls[j], ls[i]
+        open(f'{c}/pertie/conform_inputs/{n}', 'w').write('\n'.join(ls))
+        resum(c)
+    cases = [('two night groups out of cand_id order', lambda c: swap(c, 'pertie_frames.csv', 4, 5), 'cand_id order'),
+             ('a detection\'s lines out of their order', lambda c: swap(c, 'pertie_frames.csv', 5, 6), 'in their order'),
+             ('the all-nights lines reordered', lambda c: swap(c, 'pertie_detections.csv', 1, 2), 'all-nights lines'),
+             ('a night line lost', lambda c: (open(f'{c}/pertie/conform_inputs/pertie_detections.csv', 'w').write(cd[:-len('n2,2.0\n')]),
+                                              resum(c)), 'each once'),
+             ('a SHA256SUMS that does not verify', lambda c: (resum(c), open(f'{c}/pertie/conform_inputs/SHA256SUMS', 'w').write(
+                 f'{"0" * 64}  pertie_frames.csv\n')), 'does not verify'),
+             ('a second read line', lambda c: open(f'{c}/catalogs.log', 'a').write(f'{CI.READ}/x/conform_inputs/pertie_detections.csv sha256 0\n'),
+              '2 current read line(s)')]
+    for name, fn, want in cases:
+        ok, why = cf_tamper(fn)
+        check(f'view conform test: {name} fails it', not ok and want in why, why)
+    check('view conform test: the untouched copy passes (control)', cf_tamper(lambda c: resum(c))[0])
+    shutil.rmtree(f'{R}/cf_copy')
+    # a source read that does not verify, or that names a detection twice across sources, refuses the root
+    keep_log = raw(f'{Nd}/catalogs.log')
+    open(f'{Nd}/catalogs.log', 'ab').write(f'{CI.READ}/fast/work/pertie/conform_inputs/pertie_detections.csv sha256 {"0" * 64}\n'.encode())
+    why = refusal(DB.view_root, f'{R}/vr_bad', '05h', F, [Nd], states, {'V': (gnew, tnew)}, ('noveto',), keys, 'B', None)
+    check('view conform: a night whose logged read differs from its recorded copy refuses the root',
+          f'{Nd}: its conformance read does not verify (logged sha256' in why, why)
+    open(f'{Nd}/catalogs.log', 'wb').write(keep_log[:keep_log.index(CI.READ.encode())])
+    why = refusal(DB.view_root, f'{R}/vr_bad', '05h', F, [Nd], states, {'V': (gnew, tnew)}, ('noveto',), keys, 'B', None)
+    check('view conform: a night without a read line refuses the root', "no 'conform: window-tie table read' line" in why, why)
+    open(f'{Nd}/catalogs.log', 'wb').write(keep_log)
+    keep_ci = {n: raw(f'{Nd}/pertie/conform_inputs/{n}') for n in os.listdir(f'{Nd}/pertie/conform_inputs')}
+    conform_read(Nd, [CF_HEAD, 'n2,2.0', 'c1,2.1'], [FR_HEAD, 'n2,t6,b'])
+    why = refusal(DB.view_root, f'{R}/vr_bad', '05h', F, [Nd], states, {'V': (gnew, tnew)}, ('noveto',), keys, 'B', None)
+    check('view conform: a night read naming a detection of the all-nights read refuses the root',
+          'detection c1 of' in why and 'is already in' in why, why)
+    for n, b in keep_ci.items():
+        open(f'{Nd}/pertie/conform_inputs/{n}', 'wb').write(b)
+    open(f'{Nd}/catalogs.log', 'wb').write(keep_log)
     # the selection before its split by key (the cumulative product reads each hour's)
     check('view root: no directory holds selected_all.csv = none in the root',
           rec['selected_all'] is None and not os.path.exists(f'{root}/selected_all.csv'), rec['selected_all'])
     put(f'{F}/selected_all.csv', [SEL] + [f'{c},05h,46MHz,7.5' for c in ('c1', 'c2', 'c3', 'c4', 'c5', 'c7')])
     r2, two, gr = f'{R}/views_sa/05h', ('V_sb', 'V_wb'), {'V': (gnew, tnew)}
-    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two)
+    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two, 'B', None)
     check('view root: a night directory without selected_all.csv refuses when the all-nights directory holds one',
           'holds no selected_all.csv (the all-nights directory' in why, why)
     put(f'{Nd}/selected_all.csv', [SEL, 'n2,05h,46MHz,10.0', 'n1,05h,46MHz,9.5'])
-    rec2 = DB.view_root(r2, '05h', F, [Nd], states, gr, ('noveto',), two)
+    rec2 = DB.view_root(r2, '05h', F, [Nd], states, gr, ('noveto',), two, 'B', None)
     sa = raw(f'{r2}/selected_all.csv').decode().split('\n')
     check('view root: selected_all.csv = the all-nights rows then the nights\', the detections of the keyed tables',
           [ln.split(',')[0] for ln in sa[1:9]] == ['c1', 'c2', 'c3', 'c4', 'c5', 'c7', 'n1', 'n2'] and sa[9:] == ['']
           and rec2['selected_all'] == dict(base=6, appended=2, outside_keys=0)
           and json.load(open(f'{r2}/hour_view.json'))['selected_all'] == rec2['selected_all'], rec2['selected_all'])
     put(f'{Nd}/selected_all.csv', [SEL, 'n2,05h,46MHz,10.0'])
-    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two)
+    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two, 'B', None)
     check('view root: a keyed selected row that selected_all.csv lacks refuses', "1 keyed row(s) not in it, e.g. ['n1']" in why, why)
     put(f'{Nd}/selected_all.csv', [SEL, 'n2,05h,46MHz,10.0', 'n1,05h,46MHz,9.5', 'n9,05h,46MHz,8.0'])
-    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two)
+    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two, 'B', None)
     check('view root: a selected_all.csv row in no keyed table refuses when every key has a table',
           "1 of its rows in no keyed table, e.g. ['n9']" in why, why)
-    rec3 = DB.view_root(r2, '05h', F, [Nd], states, gr, ('noveto',), keys)
+    rec3 = DB.view_root(r2, '05h', F, [Nd], states, gr, ('noveto',), keys, 'B', None)
     check('view root: with a key that has no table the rows outside the keyed tables are counted',
           rec3['selected_all'] == dict(base=6, appended=3, outside_keys=1), rec3['selected_all'])
     os.remove(f'{F}/selected_all.csv')
-    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two)
+    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two, 'B', None)
     check('view root: a night directory with selected_all.csv on an all-nights directory without one refuses',
           'holds no selected_all.csv but the night directory' in why, why)
     os.remove(f'{Nd}/selected_all.csv')
     keep_det = raw(f'{Nd}/master_catalog.csv')
     os.remove(f'{Nd}/master_catalog.csv')
-    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two)
+    why = refusal(DB.view_root, r2, '05h', F, [Nd], states, gr, ('noveto',), two, 'B', None)
     check('view root: a night directory without the detection (or image) table the all-nights directory holds refuses',
           'holds no master_catalog.csv (the all-nights directory' in why, why)
     open(f'{Nd}/master_catalog.csv', 'wb').write(keep_det)
@@ -640,8 +734,19 @@ def test_hour():
     check('view root: complete after its localizations, and standing for exactly its states',
           DB.root_stands(root, dg) and not DB.root_stands(root, '0' * 40) and not DB.root_stands(f'{R}/nowhere', dg)
           and json.load(open(f'{root}/hour_view.json'))['localizations']['noveto']['localizations.csv']['new'] == 3)
+    # the night pages take the root as it is (lib/pages/night.stage_catalog, the contract of PR 50): the conformance files are the
+    # view's own, and the staged read passes the check every reader makes
+    from exopipe.phase3.config import CFG
+    from exopipe.phase3.lib.pages import night as PN
+    S = CFG.pages_sublst
+    stg = PN.stage_catalog(f'{R}/staging', root, S.NIGHT_ALL_NIGHTS_FILES, S.NIGHT_CONFORM_FILES)
+    check('night pages: the root is staged with its own conformance read, never the all-nights one, which passes the check',
+          all(n in stg['view'] and os.path.realpath(f'{R}/staging/{n}') == os.path.realpath(f'{root}/{n}') for n in S.NIGHT_CONFORM_FILES)
+          and not any(n.startswith('pertie/conform_inputs') for n in stg['carried'])
+          and CI.check(f'{R}/staging/pertie', f'{R}/staging/catalogs.log')[0], stg)
+    shutil.rmtree(f'{R}/staging')
     # carrying an earlier root: it must stand, be made from the same image / detection / selection tables, and pass view_test
-    idg, gv = DB.view_inputs_digest(F, [Nd]), {'V': gnew}
+    idg, gv = DB.view_inputs_digest(F, [Nd], None), {'V': gnew}
     ok0, why0 = DB.root_carries(root, dg, idg, states, gv)
     check('carry: a complete root of these states, made from the same tables, whose catalogs pass view_test again, is carried',
           ok0 and rec['inputs_digest'] == idg, why0)
@@ -651,8 +756,34 @@ def test_hour():
     img_n = f'{Nd}/v_deep_images.csv'
     keep_img = raw(img_n)
     open(img_n, 'wb').write(keep_img + keep_img.split(b'\n')[1] + b'\n')
-    check('carry: a night image table that changed changes the inputs digest', DB.view_inputs_digest(F, [Nd]) != idg)
+    check('carry: a night image table that changed changes the inputs digest', DB.view_inputs_digest(F, [Nd], None) != idg)
     open(img_n, 'wb').write(keep_img)
+    sums_n = f'{Nd}/pertie/conform_inputs/SHA256SUMS'
+    keep_sums = raw(sums_n)
+    open(sums_n, 'ab').write(b'\n')
+    check('carry: a night conformance read that changed changes the inputs digest', DB.view_inputs_digest(F, [Nd], None) != idg)
+    open(sums_n, 'wb').write(keep_sums)
+    put(f'{R}/tie_x/tie_members.csv', ['cand_id,stokes,band,snr'])
+    check('carry: a reference-tie table appearing changes the inputs digest', DB.view_inputs_digest(F, [Nd], f'{R}/tie_x/tie_members.csv') != idg
+          and DB.view_inputs_digest(F, [Nd], f'{R}/no_tie/tie_members.csv') == idg)
+    mp = f'{root}/pertie/conform_inputs/pertie_frames.csv'
+    keep_m = raw(mp)
+    open(mp, 'ab').write(b'n2,t7,c\n')
+    ok3, why3 = DB.root_carries(root, dg, idg, states, gv)
+    check('carry: a root whose conformance read changed after it was made is not carried', not ok3 and 'conformance read' in why3, why3)
+    open(mp, 'wb').write(keep_m)
+    put(f'{root}/tie_members.csv', ['cand_id,stokes,band,snr'])
+    ok4, why4 = DB.root_carries(root, dg, idg, states, gv)
+    check('carry: a root holding a tie table it recorded as absent is not carried', not ok4 and 'tie_members.csv' in why4, why4)
+    hvp, keep_hv = f'{root}/hour_view.json', raw(f'{root}/hour_view.json')
+    hvj = json.loads(keep_hv)
+    hvj['tie'] = dict(source='x', sha256='0' * 64, rows=0)
+    DB._dump(hvp, hvj)
+    ok5, why5 = DB.root_carries(root, dg, idg, states, gv)
+    check('carry: a root whose tie table is not the one it recorded is not carried', not ok5 and 'tie_members.csv' in why5, why5)
+    open(hvp, 'wb').write(keep_hv)
+    os.remove(f'{root}/tie_members.csv')
+    check('carry: restored, the root is carried again (control)', DB.root_carries(root, dg, idg, states, gv)[0])
     vp = f'{root}/source_catalogs_noveto_V_sb/46MHz_sources_survivors.csv'
     keep_v = raw(vp)
     lines = keep_v.split(b'\n')
@@ -684,6 +815,41 @@ def test_hour():
     check('image table: a night table with another header refuses', 'header' in why, why)
 
 
+def test_view_tie():
+    """view_tie: the all-nights build's reference-tie table, tested against the all-nights selection, copied byte for byte."""
+    R = f'{T}/tie'
+    F, root = f'{R}/F', f'{R}/root'
+    sh = 'cand_id,lst,date,band,stokes,snr,ra'
+    put(f'{F}/selected_all.csv', [sh, 'c1,05h,2030-01-01,46MHz,V,7.50,1.0', 'c2,05h,2030-01-01,46MHz,V,8.00,2.0',
+                                  'c3,05h,2030-01-02,50MHz,I,9.10,3.0'])
+    th = 'source_id,cand_id,stokes,band,night,k,ra,dec,snr,n_frames'
+    good = [th, 'J1,c1,V,46MHz,2030-01-01,0,1.01,0,7.50,3', 'J3,c3,I,50MHz,2030-01-02,0,3.02,0,9.10,"2"']
+    put(f'{R}/t/tie_members.csv', good, term='\r\n')
+    os.makedirs(root)
+    r = DB.view_tie(root, f'{R}/t/tie_members.csv', F, ('V_sb',))
+    check('tie: a table of the build is copied byte for byte (fitted positions may differ from the selected rows)',
+          raw(f'{root}/tie_members.csv') == raw(f'{R}/t/tie_members.csv')
+          and r == dict(source=f'{R}/t/tie_members.csv', sha256=DB._sha256(f'{R}/t/tie_members.csv'), rows=2), r)
+    cases = [('a detection outside the all-nights selection', good + ['J9,c9,V,46MHz,2030-01-01,0,9,0,7.00,1'], '1 not in its selection'),
+             ('a row whose S/N differs from its selected row (another build)', [th, 'J1,c1,V,46MHz,2030-01-01,0,1.01,0,7.5,3'],
+              '1 whose stokes/band/snr differ'),
+             ('a row whose Stokes differs', [th, 'J1,c1,I,46MHz,2030-01-01,0,1.01,0,7.50,3'], '1 whose stokes/band/snr differ'),
+             ('a detection named twice', good + [good[1]], '1 detection(s) named twice'),
+             ('a table without the band column', ['source_id,cand_id,stokes,snr', 'J1,c1,V,7.50'], 'lacks one of the columns')]
+    for name, lines, want in cases:
+        put(f'{R}/bad/tie_members.csv', lines)
+        why = refusal(DB.view_tie, f'{R}/r_{len(name)}', f'{R}/bad/tie_members.csv', F, ('V_sb',))
+        check(f'tie: {name} refuses', want in why and not os.path.exists(f'{R}/r_{len(name)}/tie_members.csv'), why)
+    check('tie: no table = absent, nothing written', DB.view_tie(f'{R}/r0', None, F, ()) == dict(source=None, absent=True)
+          and DB.view_tie(f'{R}/r0', f'{R}/none.csv', F, ())['absent'] and not os.path.exists(f'{R}/r0'))
+    os.remove(f'{F}/selected_all.csv')
+    put(f'{F}/selected_V_sb.csv', [sh, 'c1,05h,2030-01-01,46MHz,V,7.50,1.0'])
+    put(f'{F}/selected_I_sb.csv', [sh, 'c3,05h,2030-01-02,50MHz,I,9.10,3.0'])
+    check('tie: without selected_all.csv the selected tables of the keys are the selection',
+          DB.view_tie(root, f'{R}/t/tie_members.csv', F, ('V_sb', 'I_sb'))['rows'] == 2
+          and '1 not in its selection' in refusal(DB.view_tie, root, f'{R}/t/tie_members.csv', F, ('V_sb',)))
+
+
 def main():
     t0 = time.time()
     shutil.rmtree(T, ignore_errors=True)
@@ -695,6 +861,7 @@ def main():
     test_recorded_inputs()
     test_view()
     test_hour()
+    test_view_tie()
     print(f'\n{N[1]} of {N[0]} checks passed in {time.time() - t0:.0f} s')
     if N[1] == N[0]:
         shutil.rmtree(T, ignore_errors=True)

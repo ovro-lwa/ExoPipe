@@ -27,6 +27,7 @@ import io
 import json
 import os
 import shutil
+import time
 
 SELECTED = 'selected_{key}.csv'
 IMAGES = 'v_deep_images.csv'
@@ -65,11 +66,12 @@ def _lines(path):
     return lines[0], lines[1:], term, [r[i] for r in recs[1:]]
 
 
-def _merged(base, nights, what):
-    """(text, result) of merge, nothing written."""
+def _merged(base, nights, what, groups=False):
+    """(text, result) of merge, nothing written. groups: a table of several lines per detection (the conformance read's frame
+    table): a detection's lines are all in ONE table and keep their order there; the appended groups follow sorted by cand_id."""
     head, rows, term, ids = _lines(base)
     seen = dict.fromkeys(ids, base)
-    if len(seen) != len(ids):
+    if len(seen) != len(ids) and not groups:
         raise DeltaRefusal(f'{what}: {base} names a detection twice - REFUSING')
     add, per = [], {}
     for p in nights:
@@ -78,13 +80,16 @@ def _merged(base, nights, what):
             raise DeltaRefusal(f'{what}: the header of {p} differs from the all-nights table\'s ({base}): tables of another '
                                f'code version are not appended - REFUSING')
         for c, ln in zip(i, r):
-            if c in seen:
+            if c in seen and not (groups and seen[c] == p):
                 raise DeltaRefusal(f'{what}: detection {c} of {p} is already in {seen[c]}: a night is appended once, and a '
                                    f'night that is in the all-nights build is not appended - REFUSING')
             seen[c] = p
             add.append((c, ln))
         per[p] = len(r)
-    add.sort()
+    if groups:
+        add.sort(key=lambda x: x[0])                   # stable: a detection's lines keep their order
+    else:
+        add.sort()
     return (term.join([head] + rows + [ln for _c, ln in add]) + term,
             dict(base=len(rows), nights=per, appended=[c for c, _ln in add]))
 
@@ -288,6 +293,11 @@ VIEW_RECORD = 'catalog_view.json'              # in a view's catalog directory: 
 PROVENANCE = 'grouping_table.json'             # the builder runner's provenance (wraps/builder_grouping.PROVENANCE)
 SURVIVORS, MASTER = '_sources_survivors.csv', '_sources_master.csv'
 CARRIED = ('E_params.json', 'README_source_catalogs.txt')    # the all-nights build's, carried: the frozen statistics in force
+
+
+def _sha256(path):
+    with open(path, 'rb') as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def _sha1(path):
@@ -604,7 +614,10 @@ def view_test(view_cat, all_cat, delta_cat, grouping):
 # identity carries, the rest computed again on the view: loc_side, loc_merge). An hour whose every key is `all-nights` has
 # no view root: its all-nights directory is its view. The INDEX (hour_views.json in the night's directory) lists every
 # hour's root, state digest and certificates under the pass's grouping tables.
-# NOT in a view root: the rejected-source record, detection_ts.csv, the table filter file, the conformance records.
+# NOT in a view root: the rejected-source record, detection_ts.csv, the table filter file (a night's pages carry the all-nights
+# ones, pages_sublst.NIGHT_ALL_NIGHTS_FILES). IN it, so that every shipped table is certified (view_conform, view_tie): its OWN
+# conformance read of its merged window-tie table (DECISION-20261114-PR50-VIEW-ROOT-RECORDS-ITS-OWN-CONFORMANCE-READ) and the
+# reference-tie table its all-nights build stood on (DECISION-20261114-PR50-VIEW-CARRIES-ITS-REFERENCE-TIE-TABLE).
 # =====================================================================================================================
 INPUTS_RECORD = 'delta_inputs.json'            # beside a delta catalog once its content test passed: what the build read
 ROOT_RECORD = 'hour_view.json'                 # in a view root: what it was made from; complete only when `complete` is true
@@ -617,6 +630,9 @@ LOC_TABLES = ('localizations.csv', 'localization_offsets.csv')
 MEMBERS = '_source_members.csv'
 STANDS = ('all-nights', 'delta')
 SELECTED_ALL = 'selected_all.csv'                 # the selection before its split by key: the cumulative product reads it per hour
+CONFORM_LOG = 'catalogs.log'                   # a catalog directory's log: the conformance read lines (conform_inputs.READ)
+TIE = 'tie_members.csv'                        # the reference tie's per-detection table (sublst_tie.py; pages_sublst.NIGHT_TIE)
+TIE_SAME = ('stokes', 'band', 'snr')           # a tie row's columns that must equal its selected row's (the same build)
 
 
 def _json(path):
@@ -725,12 +741,153 @@ def _whole(frozen_from, nights, name, what):
     return [os.path.join(d, name) for d in nights]
 
 
-def view_root(root, lst, frozen_from, night_dirs, states, groupings, tags, keys):
+def _ci_of(d):
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
+    return os.path.join(d, 'pertie', CI.DIR)
+
+
+def view_conform(root, lst, arm, frozen_from, night_dirs):
+    """The view root's OWN conformance read (DECISION-20261114-PR50-VIEW-ROOT-RECORDS-ITS-OWN-CONFORMANCE-READ), in the layout
+    every reader checks (conform_inputs.check; sublst_pages_prep.py and the publish and cumulative checks):
+    <root>/pertie/conform_inputs/ = the keyed merge of the recorded copies of the all-nights directory and of every night
+    directory (the window-tie table one line per detection, the frame table a group of lines per detection; the all-nights
+    lines first, the nights' after them sorted by cand_id) and their SHA256SUMS; and <root>/catalogs.log = a header
+    '<UTC> CATALOGS <arm> view <lst>', one provenance line per source (the sha256 of its recorded tables and its number of read
+    lines; none starts with the read prefix) and ONE read line naming the merged copy with its sha256. It stands only on
+    verified reads: a source whose own read fails conform_inputs.check REFUSES, and conform_test must pass on the result.
+    Returns the root record's entry (hour_view.json 'conform')."""
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
+    srcs = [os.path.abspath(frozen_from)] + [os.path.abspath(d) for d in night_dirs]
+    prov = []
+    for d in srcs:
+        ok, msg = CI.check(os.path.join(d, 'pertie'), os.path.join(d, CONFORM_LOG))
+        if not ok:
+            raise DeltaRefusal(f'{d}: its conformance read does not verify ({msg}): a view root stands only on verified reads - '
+                               f'REFUSING')
+        prov.append(dict(dir=d, sha256=CI.sums(_ci_of(d)), reads=len(CI.reads(os.path.join(d, CONFORM_LOG)))))
+    out = _ci_of(root)
+    if os.path.lexists(out):
+        shutil.rmtree(out)
+    tables, sums = {}, ''
+    for n in CI.FILES:
+        text, r = _merged(os.path.join(_ci_of(srcs[0]), n), [os.path.join(_ci_of(d), n) for d in srcs[1:]],
+                          f'conformance read {n}', groups=n != 'pertie_detections.csv')
+        _put(os.path.join(out, n), text)
+        tables[n] = dict(base=r['base'], appended=len(r['appended']))
+        sums += f'{CI.sha256_file(os.path.join(out, n))}  {n}\n'
+    _put(os.path.join(out, CI.SUMS), sums)
+    sha = CI.sums(out)
+    lines = [f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} CATALOGS {arm} view {lst} (the view root\'s conformance '
+             f'read: the keyed merge of {len(srcs)} verified reads)']
+    lines += [f'view: verified read of {p["dir"]}: ' + ', '.join(f'{n} sha256 {h}' for n, h in sorted(p['sha256'].items()))
+              + f'; {p["reads"]} read line(s) in its {CONFORM_LOG}' for p in prov]
+    lines.append(f'{CI.READ}{os.path.join(out, "pertie_detections.csv")} sha256 {sha["pertie_detections.csv"]}')
+    _put(os.path.join(root, CONFORM_LOG), '\n'.join(lines) + '\n')
+    ok, detail = conform_test(root, srcs[0], srcs[1:])
+    if not ok:
+        raise DeltaRefusal(f'{root}: its conformance read fails its content test: {detail} - REFUSING')
+    return dict(sources=prov, tables=tables, sha256=sha, detail=detail)
+
+
+def conform_test(root, frozen_from, night_dirs):
+    """The content test of a view root's conformance read: (ok, detail). Each table of <root>/pertie/conform_inputs is EXACTLY
+    the keyed merge of the sources' recorded copies, checked from the tables themselves: the one header of every source; the
+    all-nights lines first, byte for byte and in order; then the nights' lines, cand_id never decreasing, every detection's
+    lines those of its source table in their order (each line once); no detection in two sources, and the window-tie table
+    names each detection once. SHA256SUMS verifies, and the root's log holds one current read line, naming this copy with its
+    sha256 (conform_inputs.check, the check every reader makes)."""
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
+    out = _ci_of(root)
+    srcs = [os.path.abspath(frozen_from)] + [os.path.abspath(d) for d in night_dirs]
+    counts = []
+    try:
+        for n in CI.FILES:
+            head, rows, _t, ids = _lines(os.path.join(out, n))
+            parts = [_lines(os.path.join(_ci_of(d), n)) for d in srcs]
+            if any(pt[0] != head for pt in parts):
+                return False, f'{n}: a source table\'s header differs from the merged one'
+            nb = len(parts[0][1])
+            if rows[:nb] != parts[0][1]:
+                return False, f'{n}: the all-nights lines are not first, byte for byte and in order'
+            tail, tids = rows[nb:], ids[nb:]
+            if any(a > b for a, b in zip(tids, tids[1:])):
+                return False, f'{n}: the appended lines are not in cand_id order'
+            owner = {}
+            for k, pt in enumerate(parts):
+                for c in dict.fromkeys(pt[3]):
+                    if c in owner:
+                        return False, f'{n}: detection {c} is in two sources ({srcs[owner[c]]}, {srcs[k]})'
+                    owner[c] = k
+            want, got = collections.defaultdict(list), collections.defaultdict(list)
+            for pt in parts[1:]:
+                for c, ln in zip(pt[3], pt[1]):
+                    want[c].append(ln)
+            for c, ln in zip(tids, tail):
+                got[c].append(ln)
+            if got != want:
+                return False, (f'{n}: the appended lines are not the nights\' lines, each once and in their order '
+                               f'({len(tail)} lines, {sum(map(len, want.values()))} in the nights\' tables)')
+            if n == 'pertie_detections.csv' and len(set(ids)) != len(ids):
+                return False, f'{n}: a detection is named twice'
+            counts.append(f'{n} {nb} + {len(tail)} lines')
+    except (OSError, DeltaRefusal) as e:
+        return False, str(e)
+    why = CI.verify(out)
+    if why:
+        return False, why
+    reads = CI.reads(os.path.join(root, CONFORM_LOG))
+    want_ln = f'{CI.READ}{os.path.join(out, "pertie_detections.csv")} sha256 '
+    if len(reads) != 1 or not reads[0].startswith(want_ln):
+        return False, f'the log {os.path.join(root, CONFORM_LOG)} holds {len(reads)} current read line(s), not one naming {out}'
+    ok, msg = CI.check(os.path.join(root, 'pertie'), os.path.join(root, CONFORM_LOG))
+    return ok, (f'{"; ".join(counts)} from {len(srcs)} verified reads; {msg}' if ok else msg)
+
+
+def view_tie(root, tie, frozen_from, keys):
+    """<root>/tie_members.csv = a byte copy of the reference-tie table ``tie`` that the all-nights build of the hour stood on
+    (DECISION-20261114-PR50-VIEW-CARRIES-ITS-REFERENCE-TIE-TABLE), after its content test against the all-nights selection
+    (selected_all.csv, else the selected tables of ``keys``): every row names a selected detection, each once, with the
+    selected row's TIE_SAME values; a table of another build of the hour REFUSES. No table (``tie`` None or no file): none in
+    the root, recorded as absent (the tie is an annotation: the pages say that it has not run). A night's rows would come only
+    from that night's own tie run; no night pass runs one (tier_sublst.NIGHT_STAGES), so the table holds the all-nights rows.
+    Returns the root record's entry (hour_view.json 'tie')."""
+    if not tie or not os.path.exists(tie):
+        return dict(source=tie, absent=True)
+    tie, frozen_from = os.path.abspath(tie), os.path.abspath(frozen_from)
+    sa = os.path.join(frozen_from, SELECTED_ALL)
+    tabs = [sa] if os.path.exists(sa) else [p for p in (os.path.join(frozen_from, SELECTED.format(key=k)) for k in keys)
+                                            if os.path.exists(p)]
+    sel = {}
+    for p in tabs:
+        with open(p, newline='') as f:
+            sel.update((r['cand_id'], r) for r in csv.DictReader(f))
+    with open(tie, 'rb') as f:
+        data = f.read()                                # one read: the table tested is the table copied
+    rd = csv.DictReader(io.StringIO(data.decode('utf-8'), newline=''))
+    rows = list(rd)
+    if any(c not in (rd.fieldnames or []) for c in ('cand_id',) + TIE_SAME):
+        raise DeltaRefusal(f'{tie} lacks one of the columns cand_id, {", ".join(TIE_SAME)} - REFUSING')
+    ids = [r['cand_id'] for r in rows]
+    lost = [c for c in ids if c not in sel]
+    other = [r['cand_id'] for r in rows if r['cand_id'] in sel and any(r[c] != sel[r['cand_id']].get(c) for c in TIE_SAME)]
+    if len(set(ids)) != len(ids) or lost or other:
+        raise DeltaRefusal(f'{tie} is not the reference tie of the all-nights build {frozen_from}: {len(ids) - len(set(ids))} '
+                           f'detection(s) named twice, {len(lost)} not in its selection (e.g. {lost[:3]}), {len(other)} whose '
+                           f'{"/".join(TIE_SAME)} differ from the selected row (e.g. {other[:3]}) - REFUSING')
+    dst = os.path.join(root, TIE)
+    with open(dst + '.part', 'wb') as f:
+        f.write(data)
+    os.replace(dst + '.part', dst)
+    return dict(source=tie, sha256=hashlib.sha256(data).hexdigest(), rows=len(rows))
+
+
+def view_root(root, lst, frozen_from, night_dirs, states, groupings, tags, keys, arm, tie):
     """Write the VIEW ROOT ``root`` of one LST hour (removed first when it exists) from its all-nights catalog directory, the
     catalog directories of the nights appended since, and the standing ``states`` ({(tag, key): key_state}; any other kind
     REFUSES). ``groupings``: {Stokes: (read_grouping result, table path)}. Every catalog must pass view_test or the root
-    REFUSES. Returns the root's record (also written as hour_view.json, with complete false: finish_root sets it once the
-    localizations are in)."""
+    REFUSES; the root's own conformance read (view_conform, its log header naming the catalog arm ``arm``) and the all-nights
+    build's reference-tie table ``tie`` (view_tie; None or no file: absent) must pass theirs. Returns the root's record (also
+    written as hour_view.json, with complete false: finish_root sets it once the localizations are in)."""
     bad = sorted(f'{t}_{k} {st["kind"]}' for (t, k), st in states.items() if st['kind'] not in STANDS)
     if bad:
         raise DeltaRefusal(f'{lst}: no view while a build is owed or cannot be made ({bad}) - REFUSING')
@@ -745,6 +902,8 @@ def view_root(root, lst, frozen_from, night_dirs, states, groupings, tags, keys)
         m = merge(os.path.join(frozen_from, DETECTIONS), dets, os.path.join(root, DETECTIONS), 'detection table')
         det = dict(base=m['base'], appended=len(m['appended']))
     sel_all = _selected_all(root, frozen_from, nights, asm, keys)
+    conform = view_conform(root, lst, arm, frozen_from, nights)
+    tie_rec = view_tie(root, tie, frozen_from, keys)
     cats = {}
     for (tag, key), st in sorted(states.items()):
         g, table = groupings[key[0]]
@@ -757,9 +916,11 @@ def view_root(root, lst, frozen_from, night_dirs, states, groupings, tags, keys)
         cats[f'{tag}_{key}'] = dict(kind=rec['kind'], delta=d, record_sha1=st['record_sha1'], digest=st['digest'],
                                     detail=detail, **counts)
     rec = dict(version=1, complete=False, lst=lst, all_nights=frozen_from, nights=nights, tags=list(tags),
-               state_digest=state_digest(states), inputs_digest=view_inputs_digest(frozen_from, nights), catalogs=cats, images=img, detections=det,
+               state_digest=state_digest(states), inputs_digest=view_inputs_digest(frozen_from, nights, tie), catalogs=cats,
+               images=img, detections=det,
                selected={k: dict(base=r['base'], appended=len(r['appended'])) for k, r in asm['selected'].items()},
-               selected_all=sel_all, window_tie=dict(base=asm['pertie']['base'], appended=len(asm['pertie']['appended'])), localizations={})
+               selected_all=sel_all, window_tie=dict(base=asm['pertie']['base'], appended=len(asm['pertie']['appended'])),
+               conform=conform, tie=tie_rec, localizations={})
     _dump(os.path.join(root, ROOT_RECORD), rec)
     return rec
 
@@ -845,26 +1006,37 @@ def finish_root(root, localizations):
     return rec
 
 
-def view_inputs_digest(frozen_from, night_dirs):
-    """One digest of the tables a view root merges besides the keyed ones (whose content the states' digests name): the image
-    table, the detection table and the whole selection of the all-nights directory and of every night directory."""
+def view_inputs_digest(frozen_from, night_dirs, tie):
+    """One digest of the tables a view root merges or carries besides the keyed ones (whose content the states' digests name):
+    the image table, the detection table, the whole selection and the recorded conformance read (its SHA256SUMS) of the
+    all-nights directory and of every night directory, and the all-nights build's reference-tie table ``tie``."""
     lines = []
     for d in [os.path.abspath(frozen_from)] + [os.path.abspath(x) for x in night_dirs]:
-        for name in (IMAGES, DETECTIONS, SELECTED_ALL):
+        for name in (IMAGES, DETECTIONS, SELECTED_ALL, os.path.join('pertie', 'conform_inputs', 'SHA256SUMS')):
             p = os.path.join(d, name)
             lines.append(f'{d}|{name}|{_sha1(p) if os.path.exists(p) else "-"}')
+    # the tie table by content only: its place follows from the all-nights directory
+    lines.append(f'tie|{_sha1(tie) if tie and os.path.exists(tie) else "-"}')
     return hashlib.sha1('\n'.join(lines).encode()).hexdigest()
 
 
 def root_carries(root, digest, inputs_digest, states, groupings):
     """(True, '') when an earlier pass's view root ``root`` may be carried: root_stands for ``digest``, made from the same
-    image, detection and selection tables (view_inputs_digest), and every catalog of ``states`` ({(tag, key): key_state})
-    passes view_test again from its files under the present ``groupings`` ({Stokes: read_grouping result}); else (False,
-    why). Its completion flag alone never carries it."""
+    image, detection and selection tables, conformance reads and reference-tie table (view_inputs_digest), its conformance
+    read passes conform_test again, its tie table is the one it recorded (or none when it recorded none), and every catalog of
+    ``states`` ({(tag, key): key_state}) passes view_test again from its files under the present ``groupings`` ({Stokes:
+    read_grouping result}); else (False, why). Its completion flag alone never carries it."""
     if not root_stands(root, digest):
         return False, 'not a complete root of these states'
-    if _json(os.path.join(root, ROOT_RECORD)).get('inputs_digest') != inputs_digest:
-        return False, 'made from other image, detection or selection tables'
+    rec = _json(os.path.join(root, ROOT_RECORD))
+    if rec.get('inputs_digest') != inputs_digest:
+        return False, 'made from other image, detection or selection tables, conformance reads or reference-tie table'
+    ok, why = conform_test(root, rec['all_nights'], rec['nights'])
+    if not ok:
+        return False, f'its conformance read: {why}'
+    tp, want = os.path.join(root, TIE), (rec.get('tie') or {}).get('sha256')
+    if (want is None) != (not os.path.exists(tp)) or (want and want != _sha256(tp)):
+        return False, f'its {TIE} is not the table it recorded'
     for (tag, key), st in sorted(states.items()):
         ok, detail, _c = view_test(os.path.join(root, CAT.format(tag=tag, key=key)), st['all_nights'],
                                    st['dir'] if st['kind'] == 'delta' else None, groupings[key[0]])
