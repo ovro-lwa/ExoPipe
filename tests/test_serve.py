@@ -1124,8 +1124,13 @@ def test_mchain():
     shutil.copytree(f'{T}/sub_base/Run_SLSTB.build', B5)
     run5 = Run('serve', ['test'], p5.out, CFG, config_sections=None)
     st5 = flow.new_state()
-    u5 = sublst_build.views_stage(run5, p5, st5)
-    assert u5.status == 'done' and not st5['refused'], (u5.status, u5.reason, st5)
+    filt, sublst_build.filters = sublst_build.filters, lambda u_, B_, log_: filt_calls.append(B_)   # test_sublst_filters
+    filt_calls = []
+    try:
+        u5 = sublst_build.views_stage(run5, p5, st5)
+    finally:
+        sublst_build.filters = filt
+    assert u5.status == 'done' and not st5['refused'] and filt_calls == [B5], (u5.status, u5.reason, st5, filt_calls)
     assert common.has_j_line(f'{B5}/judgements/queue_p3s3_V_multi.txt') and not os.path.exists(f'{B5}/source_catalogs_V_multi')
     assert not os.path.exists(f'{B5}/judgements/queue_p3s3_I_multi.txt')
     ok('multiples chain, sub-LST: the views stage writes the multi-integration queue of every Stokes it builds (the singles '
@@ -1516,6 +1521,129 @@ def test_page_context_stage():
     assert other[0] and '1 written by another builder' in other[2], other
     ok('tenmin_page_context content tests: pass on well-formed sidecars (a panel without a window bin counted, another '
        'builder\'s sidecar kept); fail on a wrong frame, five lines, a missing sidecar and an orphan')
+
+
+def test_sublst_filters():
+    """THE 10-MINUTE FILTERS (sublst_cumulative.sh:172-181; Gregg 2026-11-12, R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-
+    SCINTILLATION): the views stage's last step (sublst_build.filters, called by views_stage: test_mchain) runs
+    bright_source_filter_precompute.py, then scintillation_index.py, on the new build with production's arguments, records their
+    outputs under their classes and refuses when either fails; the classes' content tests pass on well-formed files and fail on
+    malformed or stale ones."""
+    import types
+    import numpy as np
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import tests as stests
+    S = CFG.serve
+    sh = open(f'{OPS}/sublst_cumulative.sh').read()
+    for name in ('bright_source_filter', 'scintillation_index'):
+        assert (f'NUMPY_MADVISE_HUGEPAGE=0 $PY8 $OPSC/{scripts.SCRIPTS[name][0]} $B --tier {S.SUBLST_FILTER_TIER} >> $LOG' in sh
+                and os.path.isfile(scripts.path(name))), name
+    ok(f'filters: production runs bright_source_filter_precompute.py and scintillation_index.py as `$B --tier '
+       f'{S.SUBLST_FILTER_TIER}` with NUMPY_MADVISE_HUGEPAGE=0 (sublst_cumulative.sh; the port\'s arguments); both resolve in place')
+    D = f'{T}/filters'
+    B = f'{D}/Run_SLSTB.build'
+    cat = f'{D}/parents/master_R075_05h_23MHz.gaul.csv'
+    os.makedirs(os.path.dirname(cat))
+    open(cat, 'w').write('# Gaus_id, Isl_id\n')
+    wcsv(f'{B}/master_catalog.csv', ['cand_id', 'lst', 'date', 'band', 'stokes'],
+         [dict(cand_id='V1_05h_2025-01-02T03_23MHz_0001', lst='05h', date='2025-01-02T03', band='23MHz', stokes='V'),
+          dict(cand_id='V1_06h_2025-01-04T11_23MHz_0001', lst='06h', date='2025-01-04T11', band='23MHz', stokes='V')])
+    states = ['worst 10% of its band', 'other', 'not measured']
+
+    def write_bsf(path, tier='tenmin', **over):
+        Z = dict(det_cand=np.array(['a', 'b']), det_ra=np.array([1., 2.]), det_dec=np.array([3., 4.]), det_stokes=np.array(['V', 'V']),
+                 det_cell=np.array([0, -1], np.int16), det_sin_el=np.array([.5, .6], np.float32), dfront_n=np.array([1, 0], np.uint8),
+                 det_peak=np.array([1., 2.], np.float32), det_psr=np.array([0, 0], np.uint8),
+                 ctl_cell=np.array([0, 0, 0], np.int16), ctl_sin_el=np.array([.1, .2, .3]), cfront_n=np.array([0, 1, 1], np.uint8),
+                 cell_lst=np.array(['05h']), cell_bandname=np.array(['23MHz']), cell_band=np.array([0], np.int16),
+                 cell_beam_deg=np.array([1.]), cell_freq=np.array([23e6]), cell_ep_I=np.array([1.]), cell_ep_V=np.array([1.]),
+                 cell_cap_sr=np.array([1.]), cell_n_draw=np.array([3.]), cell_n_src=np.array([5]),
+                 pair_det=np.array([0, 1], np.int32), pair_snr=np.array([7., 8.], np.float32), pair_sep=np.array([10, 20], np.uint16),
+                 dfront_snr=np.array([9.], np.float32), dfront_sep=np.array([5], np.uint16), dfront_flux=np.array([1.], np.float32),
+                 cfront_snr=np.array([1, 2], np.uint16), cfront_sep=np.array([3, 4], np.uint16))
+        Z.update(over)
+        Z['meta'] = np.array(json.dumps(dict(tier=tier, catalogs={'05h_23MHz': cat},
+                                             catalog_mtimes={'05h_23MHz': os.path.getmtime(cat)})))
+        with open(path, 'wb') as f:
+            np.savez_compressed(f, **Z)
+
+    def write_sci(run_dir, rows=None, **over):
+        rows = rows or [dict(lst='05h', date='2025-01-02', band='23MHz', scint_index='0.1000', n_sources=10, n_frames=100,
+                             pct_in_band='50.0000', state=states[1]),
+                        dict(lst='05h', date='2025-01-02', band='27MHz', scint_index='', n_sources=2, n_frames=100, pct_in_band='',
+                             state=states[2]),
+                        dict(lst='06h', date='2025-01-04', band='23MHz', scint_index='0.3000', n_sources=10, n_frames=100,
+                             pct_in_band='100.0000', state=states[0])]
+        wcsv(f'{run_dir}/scintillation_index.csv', list(stests.SCI_FIELDS), rows)
+        counts = {}
+        for r in rows:
+            counts.setdefault(r['band'], {s_: 0 for s_ in states})[r['state']] += 1
+        meta = dict(tier='tenmin', default_hidden=False, hour_bands=len(rows), states=states, worst_pct=90.0, counts=counts,
+                    forced_run=False)
+        meta.update(over)
+        json.dump(meta, open(f'{run_dir}/scintillation_index.json', 'w'))
+    calls, mode = [], {}
+
+    def fake_run(name, args=(), log=None, unit=None, env=None, **k):
+        calls.append((name, list(args), log, dict(env or {})))
+        good = mode.get('fail') != name
+        if good:
+            (write_bsf(f'{B}/bright_source_filter.npz') if name == 'bright_source_filter' else write_sci(B))
+        return types.SimpleNamespace(ok=good, rc=0 if good else 1, reason='' if good else 'rc=1 - error',
+                                     tail=f'wrote {name}' if good else 'REFUSED: no light-curve tables')
+    orig = scripts.run
+    scripts.run = fake_run
+    try:
+        res = {}
+        for case in ('ok', 'bright_source_filter', 'scintillation_index'):
+            calls.clear()
+            for f_ in glob.glob(f'{B}/bright_source_filter.npz') + glob.glob(f'{B}/scintillation_index.*'):
+                os.remove(f_)
+            mode['fail'] = case
+            run = Run('serve', ['test'], f'{D}/out_{case}', CFG, config_sections=None)
+            with run.unit(f'filters_{case}', stage='views', tier='sublst') as u:
+                sublst_build.filters(u, B, f'{B}/incremental.log')
+            res[case] = (u, [c[0] for c in calls])
+            want = [(n_, [B, '--tier', 'tenmin'], f'{B}/incremental.log', {'NUMPY_MADVISE_HUGEPAGE': '0'})
+                    for n_ in ('bright_source_filter', 'scintillation_index')]
+            assert calls == want[:1 if case == 'bright_source_filter' else 2], calls
+    finally:
+        scripts.run = orig
+    u = res['ok'][0]
+    assert u.status == 'done' and {(o['class']) for o in u.outputs} == {'bright_source_filter', 'scintillation_index'}, \
+        (u.status, u.reason, u.outputs)
+    assert all(t['passed'] for t in u.tests) and len(u.tests) == 4, u.tests
+    for case in ('bright_source_filter', 'scintillation_index'):
+        u_ = res[case][0]
+        assert u_.status == 'refused' and f'{scripts.SCRIPTS[case][0]} on the new build' in u_.reason, (u_.status, u_.reason)
+    ok('filters: the bright-source filter, then the scintillation index, on the new build with production\'s arguments; both '
+       'outputs recorded and their 4 content tests pass; a failure of either refuses the views unit (nothing swapped in; the '
+       'scintillation index never runs after a failed bright-source filter)')
+    npz, csvp = f'{B}/bright_source_filter.npz', f'{B}/scintillation_index.csv'
+    neg = []
+    write_bsf(npz, tier='snapshot')
+    neg.append(('tier', stests.arrays_consistent(npz, tier='tenmin')))
+    write_bsf(npz, dfront_n=np.array([2, 0], np.uint8))
+    neg.append(('front sum', stests.arrays_consistent(npz, tier='tenmin')))
+    write_bsf(npz, det_cell=np.array([0, 1], np.int16))
+    neg.append(('cell index', stests.arrays_consistent(npz, tier='tenmin')))
+    write_bsf(npz, det_peak=np.array([1.], np.float32))
+    neg.append(('lengths', stests.arrays_consistent(npz, tier='tenmin')))
+    write_bsf(npz)
+    os.utime(cat, (os.path.getmtime(cat) + 5, os.path.getmtime(cat) + 5))
+    neg.append(('parent changed', stests.parents_current(npz)))
+    write_sci(B)
+    rows = list(csv.DictReader(open(csvp)))
+    write_sci(B, rows=[dict(rows[0], state=states[0])] + rows[1:])
+    neg.append(('state', stests.table_matches_definition(csvp, tier='tenmin')))
+    write_sci(B, default_hidden=True)
+    neg.append(('default_hidden', stests.table_matches_definition(csvp, tier='tenmin')))
+    write_sci(B, counts={'23MHz': {states[1]: 2}})
+    neg.append(('counts', stests.table_matches_definition(csvp, tier='tenmin')))
+    write_sci(B, rows=rows + [dict(rows[0], lst='07h')], hour_bands=4)
+    neg.append(('hour not in the run', stests.run_own_hours(csvp)))
+    assert all(not r[0] for _, r in neg), [(n_, r) for n_, r in neg if r[0]]
+    ok(f'filters content tests fail on {", ".join(n_ for n_, _ in neg)}')
 
 
 def test_serve_hold():
@@ -2601,6 +2729,7 @@ def main():
         test_exclusion_gate_per_page_stage()
         test_stage_halting()
         test_page_context_stage()
+        test_sublst_filters()
         test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()

@@ -19,8 +19,9 @@ build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 f
 views  (unit sublst_<run>_views)  on B: the union with the Stokes key (G5), the review_dir merge with
        pages.REVIEW_DIR_MERGE['sublst'] (the merge's config key is pages'; the call runs here because the union is
        built inside this build), the tier queues sectioned (sb, wb when present), p3s3_stokes_queue.py, the per-Stokes
-       views (G6), the multi-integration queues and views (sublst_cumulative.sh:77-95). G11: a refusal here leaves the
-       served product and its servers untouched.
+       views (G6), the multi-integration queues and views (sublst_cumulative.sh:77-95), then the bright-source filter and
+       the scintillation index on B (bright_source_filter_precompute.py, scintillation_index.py --tier tenmin; refusing,
+       sublst_cumulative.sh:172-181). G11: a refusal here leaves the served product and its servers untouched.
 test   App probes and content tests on B (expected index sources), G17 report.
 carry/swap/start  journals copied into B, B swapped in (U -> U.prev_<utc>), the between lines appended, the page context
        (unit sublst_<run>_page_context: page_context_tenmin.py U --workers serve.SUBLST_PAGE_CONTEXT_WORKERS, the panels'
@@ -317,8 +318,29 @@ def views_stage(run, plan, state):
             mv = views.sublst_multi_view(B, ST, QM)
             u.note(f'{ST} multi view: {mv["sources"]} sources')
             u.add_output(mv['dir'], 'served_view', tier='sublst')
+        filters(u, B, log)
         u.meta['refused_pages'] = dict(state['refused'])
     return u
+
+
+FILTER_OUTPUTS = (('bright_source_filter', 'bright_source_filter.npz'), ('scintillation_index', 'scintillation_index.csv'))
+
+
+def filters(u, B, log):
+    """BRIGHT-SOURCE AND SCINTILLATION FILTERS (sublst_cumulative.sh:172-181; Gregg 2026-11-12, R-GREGG-20261112-FILTERS-FINALIZE-
+    BRIGHT-AND-SCINTILLATION): bright_source_filter_precompute.py and scintillation_index.py, --tier serve.SUBLST_FILTER_TIER, in
+    place on the new build B after its views (the bright file reads the survivors views) and before the swap -
+    <B>/bright_source_filter.npz (the 2-D bright-source panel) and <B>/scintillation_index.{csv,json} (the 10-minute pages' slider,
+    default off). A failure refuses the views unit, so nothing is swapped in (G11; production: the served product and its pages
+    untouched)."""
+    S = _CFG().serve
+    for name, fn in FILTER_OUTPUTS:
+        res = scripts.run(name, [B, '--tier', S.SUBLST_FILTER_TIER], log=log, unit=u, env={'NUMPY_MADVISE_HUGEPAGE': '0'})
+        if not res.ok:
+            u.refuse(f'{scripts.SCRIPTS[name][0]} on the new build: {res.reason or scripts.last_line(res.tail)} - nothing swapped '
+                     f'in (sublst_cumulative.sh:177-180)')
+        u.note(f'{name}: {scripts.last_line(res.tail)[:200]}')
+        u.add_output(os.path.join(B, fn), name, tier=S.SUBLST_FILTER_TIER)
 
 
 def carry_swap_stage(run, plan, state):
