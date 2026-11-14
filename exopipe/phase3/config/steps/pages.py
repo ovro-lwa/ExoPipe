@@ -200,7 +200,8 @@ class pages_sublst(_Section):
     """Sub-LST page run (ops/sublst_pages_prep.py, p3t_pages_input.py, build_tenmin_pages.py, p3t_pages_index.py in place) and the
     publish wrapper's page part (sublst_publish_lst.sh, sublst_pages_build.sh). Product root of the inputs: CFG.paths.SUBLST_ROOT."""
     # LOO_MASTER and OLD_CHAIN_FLAG describe sublst_pages_prep.py in place (B-27, E22): protected, no code reads them (review)
-    PROTECTED_KEYS = ('SERVED_CATALOG_TAG', 'REQUIRED_FILES', 'RUN_COLUMN', 'LOO_MASTER', 'OLD_CHAIN_FLAG')
+    PROTECTED_KEYS = ('SERVED_CATALOG_TAG', 'REQUIRED_FILES', 'RUN_COLUMN', 'LOO_MASTER', 'OLD_CHAIN_FLAG', 'NIGHT_INDEX',
+                      'PREP_SHA1')
     ARM = 'B'                    # catalogue arm served (cube-based chain, set B); sublst_publish_lst.sh:28, 31
     SEARCH_ROOT = '{root}/search_{arm}'   # SUBLST_SEARCH_ROOT; sublst_publish_lst.sh:31; sublst_pages_build.sh:8
     LOC_REQUIRED = '{root}/compare_{lst}/new_{arm}/catalog/localizations_noveto/localizations.csv'   # refusal P11; sublst_publish_lst.sh:26
@@ -218,6 +219,13 @@ class pages_sublst(_Section):
     PLACE_TARGET = '{review_host}:/data07/gh/phase3/transients/{run}/'   # rsync -a --delete; sublst_publish_lst.sh:38 ({review_host} = the site file's REVIEW_HOST; no host name in config, README rule 2)
     PLACE_DELETE = True         # --delete (stale 19h test pages, 2026-09-30)
     CODE_PINNED = True           # the in-place code must be a verified frozen tree (FROZEN.ok + MANIFEST.sha256; sublst_code_root.sh:15-31)
+    # THE PAGES OF A NIGHT (design 2.3a of plan/PER_HOUR_GAP_DESIGNS_20261111.md, stage 3; lib/pages/night.py)
+    NIGHT_INDEX = 'hour_views.json'   # in a night pass's catalog directory: its view of every hour (lib/catalog/delta_build.INDEX)
+    NIGHT_STAGING = '_night/{lst}/catalog'   # under the pass's out root: the staged catalog view prep reads (links)
+    NIGHT_ALL_NIGHTS_FILES = ('rejected.csv', 'rejected_index.npz', 'detection_ts.csv', 'table_filter.csv', 'table_inputs.csv',
+                              'catalogs.log')   # carried from the hour's all-nights catalog directory (a night pass does not write them again); sublst_pages_prep.py:63-83
+    PREP_SHA1 = ('38da7a8723f0a789f799b021b71c82bf913497cb',   # sublst_pages_prep.py of the frozen trees up to 2026-11-13 (path-normalized sha1)
+                 '187acd897b30e8f5ce6c189fc4a8bc6ca0e838d4')   # live exopipe_ops since 2026-11-13 (tie_members.csv travels with the pages)
     RULED = {'SERVED_CATALOG_TAG': 'R-SUBLST-FORCED-SKIP-V110-AND-LEAK-VETO',
              'PLACE_DELETE': 'R-NEW-CHAIN-TAKES-OVER-10MIN-PAGES-CUMULATIVE',
              'CODE_PINNED': 'INSTALLED-FROZEN-CODE-PER-10MIN-LAUNCH-20261011',

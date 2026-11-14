@@ -9,6 +9,14 @@
 import os
 import sys
 
+# ONCE PER PROCESS. Another sitecustomize that chains "to any other sitecustomize on the path" finds THIS file again and
+# executes it again, and this file chains back to it, without end: the sub-LST frozen-code guard does so (2026-11-14,
+# `pages --tier sublst` under a frozen tree: both hooks were installed dozens of times and every later import ended in a
+# RecursionError). The second execution stops here; the chaining file catches the exception and goes on.
+if getattr(sys, '_exopipe3_sitecustomize_loaded', False):
+    raise ImportError('exopipe3 sitecustomize: already loaded in this process (chained back from another sitecustomize)')
+sys._exopipe3_sitecustomize_loaded = True
+
 _ROOTS = os.environ.get('EXOPIPE3_PARITY_ROOT', '')
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
