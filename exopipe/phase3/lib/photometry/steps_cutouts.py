@@ -556,7 +556,7 @@ def cutout_admitted(cell, band):
     (regen_group_cutouts :467-470) - plus, for a wideband, '<cell>:<member>' of every member subband it keeps (it drops the
     excluded ones, :472-473). A new exclusion changes the set, so --resume re-runs the unit."""
     from exopipe.phase3.core import exclusions
-    ex = exclusions.load()
+    ex = exclusions.for_tier('snapshot')
     lst, date = cell.split('_', 1)
     if ex.is_excluded(lst, band, date):
         return []

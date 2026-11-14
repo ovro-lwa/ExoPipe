@@ -356,7 +356,7 @@ def run(args, run):
     if problems and not run.dry_run:
         raise record.Refusal(problems[0] + (f' (+{len(problems) - 1} more: ' + ' | '.join(problems[1:]) + ')'
                                             if len(problems) > 1 else ''))
-    ex = exclusions.load()                                    # G2: a missing / unreadable file refuses (C-09)
+    ex = exclusions.for_tier('snapshot')                    # G2: a missing / unreadable file refuses (C-09)
 
     if run.dry_run:
         rc = record.EXIT_DONE

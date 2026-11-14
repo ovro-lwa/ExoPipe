@@ -221,8 +221,8 @@ def selected_events(ev_dirs, S, cad, keep=None):
 def excluded_events(rows, ex=None):
     """[(cell, band, ts)] of the selected evaluation rows on an excluded (LST, band, night) - core.exclusions read now (a
     wideband is excluded with any excluded member subband, the 18 MHz carve-out kept)."""
-    from exopipe.phase3.core.exclusions import Exclusions
-    ex = ex or Exclusions()
+    from exopipe.phase3.core.exclusions import PerNight
+    ex = ex or PerNight(fresh=True)
     out = []
     for r in rows:
         cell = r.get('cell') or ''

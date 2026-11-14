@@ -77,9 +77,10 @@ PAIR_TOL_S = 1.0        # s: members = frames of the SAME integration, DATE-OBS 
 
 
 def _excl_scope(lst=None, date=None):
-    """'snapshot-gpu' when the cell's frames are the GPU pipeline's (Gregg 2026-11-10 re-admission), else None (the deep rule)."""
+    """'snapshot-gpu' when the cell's frames are the GPU pipeline's (Gregg 2026-11-10 re-admission), else 'snapshot' (the deep rule
+    plus the snapshot-tier-only rows, [SNAPSHOT-TIERS-ONLY, 2026-11-13)."""
     import phase3_snapshot_search as _S
-    return 'snapshot-gpu' if _S.frames_from_gpu(lst, date) else None
+    return 'snapshot-gpu' if _S.frames_from_gpu(lst, date) else 'snapshot'
 
 def pair_by_integration(ref_secs, secs, tol=PAIR_TOL_S):
     """Index into one subband's frame list per reference instant: the frame whose DATE-OBS (unix s) lies within tol of the

@@ -4,7 +4,8 @@ build -> views -> test -> carry -> swap -> start -> hub -> verify. carry, swap a
 lines written on the old servers between the copy and the swap are appended at the swap, sublst_cumulative.sh:106-120).
 
 build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 flock, servers never inherit it); the
-       generation-mix gate G8 (every LST run has candidates/, pertie_detections.csv and a pos_kind column - else exit 2;
+       generation-mix gate G8 (every LST run has candidates/, pertie_detections.csv, a verified conform_inputs/ whose
+       CONFORM_LOG.txt read lines name it (sublst_cumulative.sh:60, 76-96) and a pos_kind column - else exit 2;
        today the caller skipped the cumulative and exited 0, sublst_catalog_publish.sh:96-100, batch row B-73);
        the DEEP-OMISSION decision table of the LSTs (lib/catalog/deep_omission.tenmin_table; Gregg 2026-10-24,
        sublst_cumulative.sh:37-46, 98-100) written OUTSIDE B, <runs root>/deep_omission/deep_omission_<UTC>.csv (class
@@ -19,12 +20,15 @@ build  (unit sublst_<run>_build)  the build lock (G12; sublst_cumulative.sh:23 f
 views  (unit sublst_<run>_views)  on B: the union with the Stokes key (G5), the review_dir merge with
        pages.REVIEW_DIR_MERGE['sublst'] (the merge's config key is pages'; the call runs here because the union is
        built inside this build), the tier queues sectioned (sb, wb when present), p3s3_stokes_queue.py, the per-Stokes
-       views (G6), the multi-integration queues and views (sublst_cumulative.sh:77-95). G11: a refusal here leaves the
-       served product and its servers untouched.
+       views (G6), the multi-integration queues and views (sublst_cumulative.sh:77-95), then the bright-source filter and
+       the scintillation index on B (bright_source_filter_precompute.py, scintillation_index.py --tier tenmin; refusing,
+       sublst_cumulative.sh:172-181). G11: a refusal here leaves the served product and its servers untouched.
 test   App probes and content tests on B (expected index sources), G17 report.
-carry/swap/start  journals copied into B, B swapped in (U -> U.prev_<utc>), the between lines appended, the four pages
-       registered in ONE registration and each one's build waited on (flow.start_stage; sublst_cumulative.sh:291-300 ->
-       sublst_register_pages.py: no server of its own since 2026-10-22).
+carry/swap/start  journals copied into B, B swapped in (U -> U.prev_<utc>), the between lines appended, the page context
+       (unit sublst_<run>_page_context: page_context_tenmin.py U --workers serve.SUBLST_PAGE_CONTEXT_WORKERS, the panels'
+       <png>.page.json run-context sidecars; page text, not a gate - a failure is recorded and the serve continues,
+       sublst_cumulative.sh:295-300), the four pages registered in ONE registration and each one's build waited on
+       (flow.start_stage; sublst_cumulative.sh:301-307 -> sublst_register_pages.py: no server of its own since 2026-10-22).
 hub    10-min / 10-min-multiples set; '10-min-sublst' removed (sublst_cumulative.sh:145-150).
 verify served_page tests + sublst_cumulative (with tests (c)+(d), sublst_catalog_publish.sh:101-108) on the served run.
 Parity: U, B and the lock live under <out>/sublst/; the build hard-links the LST runs' candidates (cp -al), so a parity
@@ -39,6 +43,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from exopipe.phase3.core.record import NoInput, Refusal
@@ -87,6 +92,13 @@ def generation_mix(lsts):
         if not os.path.exists(os.path.join(R, 'pertie_detections.csv')):
             bad.append((l, 'no pertie_detections.csv (catalogued before the window tie)'))
             continue
+        # the tie tables the conformance read, recorded and checked (refactor-chat ruling 2026-10-18; sublst_cumulative.sh:60,
+        # 76-96): R/conform_inputs verifies and every read line of its CONFORM_LOG.txt names the copy with its sha256
+        from exopipe.phase3.lib.catalog import conform_inputs as CI
+        ok, why = CI.check(R, os.path.join(R, CI.DIR, CI.LOG_COPY))
+        if not ok:
+            bad.append((l, f'{why} - re-catalogue {l}'))
+            continue
         try:
             with open(os.path.join(R, 'master_catalog.csv'), newline='') as f:
                 hdr = next(csv.reader(f), [])
@@ -97,22 +109,50 @@ def generation_mix(lsts):
     return bad
 
 
-def grouping_mix(lsts):
-    """Design B (catalog_grouping.GROUPING 'design-b'; WAVE2 GROUPING; review 2026-11-04, F3 - the minimum gate): every LST
-    run's catalogues must have been built with ONE grouping table per Stokes - their grouping_table.json (the builder runner's
-    provenance, lib/catalog/wraps/builder_grouping.py) names one table sha1 across the LSTs. A regroup renames identities
-    (display names follow mean positions; 121 I / 15 V renamed between the 10-25 and 11-03 inputs, the 11-04 review), and the
-    cumulative merges the LST runs by name: a mix would show one identity under two names or join two under one. Returns
-    ([(lst, reason)], {Stokes: {table sha1: [lsts]}})."""
+def present_grouping(stokes):
+    """(table path, delta_build.read_grouping(table)) of the grouping the LST builds read NOW: the grouping state's own
+    table of this Stokes (grouping_stage.recorded_table: the latest group run is done and recorded it), read ONCE - rows,
+    sha1 and sha256 are the same bytes, and the sha1 must be the recorded one. Raises StageRefusal."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    table, sha = GS.recorded_table(GS.sublst_dir(_CFG()), stokes)
+    g = DB.read_grouping(table)
+    if g[2] != sha:
+        raise GS.StageRefusal(f'{table} changed while the cumulative read it (sha1 {g[2][:12]} vs the recorded {sha[:12]}) - '
+                              f'REFUSING')
+    return table, g
+
+
+def grouping_mix(lsts, present=present_grouping):
+    """Design B (catalog_grouping.GROUPING 'design-b'; WAVE2 GROUPING; review 2026-11-04, F3): every LST run's catalogs
+    must stand on ONE grouping table per Stokes, the PRESENT one (``present``: Stokes -> (path, read_grouping result); the
+    grouping state's table, never a majority of the directories). A regroup renames identities (display names follow mean
+    positions; 121 I / 15 V renamed between the 10-25 and 11-03 inputs, the 11-04 review), and the cumulative merges the LST
+    runs by name: a mix would show one identity under two names or join two under one.
+      - EVERY catalog directory, whatever table its grouping_table.json (the builder runner's provenance,
+        lib/catalog/wraps/builder_grouping.py, or a view's, lib/catalog/delta_build.view_catalog) names, passes only when
+        THIS gate finds, from the directory's own record, that it stands under the present table
+        (lib/catalog/delta_build.standing: the record bound to the directory by its sha256, every detection grouped as
+        recorded, the populations of the hour and key equal but for the detections the record lists as removed before the
+        builder). A directory naming the present sha1 is checked too: the table identity is not taken from the directory's
+        own provenance (DECISION-20261114-PR51-F3-POPULATION-CHECK-ON-EVERY-DIRECTORY; the carried-root rule,
+        DECISION-20261114-PR47-CARRIED-ROOT-READERS-TAKE-TABLE-FROM-INDEX). No stored certificate is trusted;
+      - anything else refuses: no provenance, a table that cannot be read, a directory that does not stand, and a MISSING
+        directory: an LST of ``lsts`` whose run holds no catalog directory of a Stokes and key class (sb | wb) of which the
+        present table has detections of that hour (judged for each Stokes whose present table was read).
+    Returns ([(lst, reason)], {Stokes: {table sha1: [lsts]}}, {'present': {Stokes: path, sha1, sha256}, 'certified': [one
+    dict per directory passed by the certificate: LST, key, record name/sha1/sha256, both tables' digests, detections]})."""
     from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
-    bad, by = [], {}
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    bad, by, now, certified = [], {}, {}, []
     for l in lsts:
         R = lst_run(l)
         dirs = sorted(d for d in glob.glob(os.path.join(R, 'source_catalogs_[IV]_[sw]b')) if os.path.isdir(d))
         if not dirs:
             continue
         for d in dirs:
-            S = os.path.basename(d).split('_')[2]
+            S, kind = os.path.basename(d).split('_')[2:4]
             p = os.path.join(d, BG.PROVENANCE)
             if not os.path.exists(p):
                 bad.append((l, f'{os.path.basename(d)} has no {BG.PROVENANCE} (built without the design-B grouping)'))
@@ -124,12 +164,47 @@ def grouping_mix(lsts):
                 bad.append((l, f'{os.path.basename(d)}/{BG.PROVENANCE} unreadable ({e})'))
                 continue
             by.setdefault(S, {}).setdefault(sha, set()).add(l)
-    for S, shas in by.items():
-        if len(shas) > 1:
-            parts = '; '.join(f'{sha[:12]}: {",".join(sorted(ls))}' for sha, ls in sorted(shas.items(), key=lambda kv: -len(kv[1])))
-            bad.append(('*', f'Stokes {S}: the LST builds name {len(shas)} grouping tables ({parts}) - rebuild the LSTs of the '
-                             f'older tables from stage build (the cumulative joins LST runs by identity name)'))
-    return bad, {S: {sha: sorted(ls) for sha, ls in v.items()} for S, v in by.items()}
+            if S not in now:
+                try:
+                    now[S] = present(S)
+                except (GS.StageRefusal, DB.DeltaRefusal, OSError, ValueError, KeyError, csv.Error) as e:
+                    now[S] = None
+                    bad.append(('*', f'Stokes {S}: the present grouping table cannot be read ({str(e)[:300]})'))
+            if now[S] is None:
+                continue
+            table, g = now[S]
+            try:                # EVERY directory, also one naming the present sha1 (its own provenance is not the pass's
+                #                 index: DECISION-20261114-PR51-F3-POPULATION-CHECK-ON-EVERY-DIRECTORY)
+                st = DB.standing(d, g, table, l, f'{S}_{kind}')
+            except (DB.DeltaRefusal, ValueError, KeyError, TypeError) as e:     # a malformed record: a refusal, not a crash
+                st = dict(ok=False, why=f'its record could not be certified ({type(e).__name__}: {str(e)[:200]})')
+            if st['ok'] is True:
+                certified.append(dict(lst=l, key=st['key'], record=st['record'], record_sha1=st['record_sha1'],
+                                      record_sha256=st['record_sha256'], table_from=st['table_from'], table_to=st['table_to'],
+                                      detections=st['record_detections']))
+            else:
+                fix = ('make this hour\'s catalog view again in a night pass (catalog --tier sublst; its delta builds), or '
+                       'build this LST again from stage build' if st.get('record') == DB.VIEW_ROWS else
+                       'build this LST again from stage build')
+                named = ('names the present grouping table' if sha == g[2] else
+                         f'names the grouping table {sha[:12]}, the present table is')
+                bad.append((l, f'{os.path.basename(d)} {named} {g[2][:12]} ({table}), and the directory does not stand under '
+                               f'it: {st["why"]} - {fix} (the cumulative joins LST runs by identity name)'))
+    for S, v in now.items():            # a key of an hour the present table holds detections of must have its directory
+        if not v:
+            continue
+        cls = {k: DB.key_class(k) for k in ('sb', 'wb')}
+        held = {(r.get('lst'), k) for r in v[1][0].values() if r.get('stokes') == S
+                for k in ('sb', 'wb') if cls[k](r.get('band') or '')}
+        for l in lsts:
+            for k in ('sb', 'wb'):
+                d = os.path.join(lst_run(l), f'source_catalogs_{S}_{k}')
+                if (l, k) in held and not os.path.isdir(d):
+                    bad.append((l, f'{os.path.basename(d)} is missing: the present grouping table {v[1][2][:12]} holds '
+                                   f'detections of {l} Stokes {S} {k} - build this LST again'))
+    return (bad, {S: {sha: sorted(ls) for sha, ls in v.items()} for S, v in by.items()},
+            dict(present={S: dict(path=os.path.abspath(v[0]), sha1=v[1][2], sha256=v[1][3]) for S, v in now.items() if v},
+                 certified=certified))
 
 
 def figure_key(loc_row, off_rows):
@@ -202,7 +277,7 @@ def build_stage(run, plan):
     S = _CFG().serve
     B = build_dir(plan)
     with run.unit(f'sublst_{plan.run_name}_build', stage='build', tier='sublst', lsts=plan.lsts, parity=plan.parity) as u:
-        flow.excl_note(u)
+        flow.excl_note(u, 'sublst')
         if not plan.lsts:
             raise NoInput('no LST run to merge (no Run_SLST<hh>B under the runs root, or --lsts empty)')
         bad = generation_mix(plan.lsts)
@@ -211,8 +286,14 @@ def build_stage(run, plan):
                      + ' - re-catalogue those LSTs first; the served cumulative stays as it is')
         from exopipe.phase3.lib.catalog import grouping_stage as _GS
         if _GS.mode().design_b:           # WAVE2 GROUPING (item F.3): one grouping table across the LST builds (production: none)
-            bad, tables = grouping_mix(plan.lsts)
+            bad, tables, how = grouping_mix(plan.lsts)
             u.meta['grouping_tables'] = tables
+            u.meta['grouping_present'] = how['present']
+            u.meta['grouping_certified'] = how['certified']
+            u.meta['grouping_refusals'] = [dict(lst=l, why=why) for l, why in bad]   # in full: the reason below is cut
+            if how['certified']:
+                u.note(f'G8 design-B grouping: {len(how["certified"])} catalog directory(ies) built under an earlier grouping '
+                       f'table stand under the present one (certified here from their own records)')
             if bad:
                 u.refuse('G8 design-B grouping mix: ' + '; '.join(f'{l}: {why}' for l, why in bad)[:1500]
                          + ' - the served cumulative stays as it is')
@@ -242,7 +323,10 @@ def build_stage(run, plan):
         u.note('deep omission: ' + open(os.path.join(B, 'deep_omission_summary.txt')).readline().strip())
         u.add_output(os.path.join(B, 'deep_omission_dropped.csv'), 'omission_record', tier='sublst',
                      decisions=os.path.join(B, 'deep_omission.csv'))
-        env = dict(S.SUBLST_LOC_ENV, P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv', P3_LOC_OUT=f'{B}/source_catalogs')
+        # SPEED (design 2.3a stage 4): production's own row-index and shard switches - the same tables (serve.SUBLST_LOC_SPEED_ENV)
+        env = dict(S.SUBLST_LOC_ENV, **dict(S.SUBLST_LOC_SPEED_ENV or {}), P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv',
+                   P3_LOC_OUT=f'{B}/source_catalogs')
+        u.meta['localization_speed_env'] = dict(S.SUBLST_LOC_SPEED_ENV or {})
         res = scripts.run('build_localizations', [B], env=env, log=log, unit=u)
         if not res.ok:
             u.refuse(f'G9 localizations failed: {res.reason or scripts.last_line(res.tail)}')
@@ -314,8 +398,85 @@ def views_stage(run, plan, state):
             mv = views.sublst_multi_view(B, ST, QM)
             u.note(f'{ST} multi view: {mv["sources"]} sources')
             u.add_output(mv['dir'], 'served_view', tier='sublst')
+        filters(u, B, log)
         u.meta['refused_pages'] = dict(state['refused'])
     return u
+
+
+FILTER_OUTPUTS = (('bright_source_filter', 'bright_source_filter.npz'), ('scintillation_index', 'scintillation_index.csv'))
+
+
+def filters(u, B, log):
+    """BRIGHT-SOURCE AND SCINTILLATION FILTERS (sublst_cumulative.sh:172-181; Gregg 2026-11-12, R-GREGG-20261112-FILTERS-FINALIZE-
+    BRIGHT-AND-SCINTILLATION): bright_source_filter_precompute.py and scintillation_index.py, --tier serve.SUBLST_FILTER_TIER, in
+    place on the new build B after its views (the bright file reads the survivors views) and before the swap -
+    <B>/bright_source_filter.npz (the 2-D bright-source panel) and <B>/scintillation_index.{csv,json} (the 10-minute pages' slider,
+    default off). A failure refuses the views unit, so nothing is swapped in (G11; production: the served product and its pages
+    untouched)."""
+    S = _CFG().serve
+    for name, fn in FILTER_OUTPUTS:
+        res = scripts.run(name, [B, '--tier', S.SUBLST_FILTER_TIER], log=log, unit=u, env={'NUMPY_MADVISE_HUGEPAGE': '0'})
+        if not res.ok:
+            u.refuse(f'{scripts.SCRIPTS[name][0]} on the new build: {res.reason or scripts.last_line(res.tail)} - nothing swapped '
+                     f'in (sublst_cumulative.sh:177-180)')
+        u.note(f'{name}: {scripts.last_line(res.tail)[:200]}')
+        u.add_output(os.path.join(B, fn), name, tier=S.SUBLST_FILTER_TIER)
+
+
+def carry_page_context_cache(src, B, u=None):
+    """SPEED (design 2.3a stage 4): the page context's frame-noise table of the served run ``src`` copied into the build ``B``
+    before the swap (serve.SUBLST_PAGE_CONTEXT_CACHE), so page_context_tenmin.py - run on the swapped-in run - finds every frame
+    it measured before and re-validates it by size and mtime instead of measuring every frame again; a value is stored as
+    its repr, so a carried value is the float a new measurement of the unchanged file gives. A table the build already holds is
+    left; a served run without one is production's state (every frame measured). Returns a dict for the unit's record."""
+    name = _CFG().serve.SUBLST_PAGE_CONTEXT_CACHE
+    if not name:
+        return dict(carried=False, why='serve.SUBLST_PAGE_CONTEXT_CACHE is not set (as production)')
+    a, b = os.path.join(src, name), os.path.join(B, name)
+    if os.path.exists(b):
+        return dict(carried=False, why=f'the build already holds {name}')
+    if not os.path.isfile(a) or os.path.getsize(a) == 0:
+        if u is not None:
+            u.note(f'page context: no frame-noise table {a} to carry - every frame is measured (as production)')
+        return dict(carried=False, why=f'no {a}')
+    # only the rows of frames the 10-minute tree still lists (its frames.csv sub_path: the frames page_context_tenmin.py
+    # looks up, :111-133): the tool writes back every row it loaded, so a carried table would otherwise keep the rows of
+    # frames the rebuild lanes removed or renamed, growing from build to build
+    cs = _CFG().catalog_sublst
+    tree = cs.TENMIN_TREE.format(root=_CFG().paths.SUBLST_ROOT, tree=cs.ARM_TREES['B'])   # page_context_tenmin.py:48 TROOT
+    try:
+        keep = set()
+        for fl in glob.glob(os.path.join(tree, '*_*', 'frames.csv')):
+            with open(fl, newline='') as f:
+                keep.update(r['sub_path'] for r in csv.DictReader(f))
+        if not keep:
+            raise OSError(f'no frames.csv rows under {tree}')
+        h, n, dropped = hashlib.sha1(), 0, 0
+        with open(a, newline='') as f, open(b + '.part', 'w', newline='') as o:
+            head = f.readline()                          # each kept line copied as written (a table with nothing to drop is
+            ip = next(csv.reader([head])).index('path')  # carried byte for byte); one row per line (paths hold no newline)
+            o.write(head)
+            h.update(head.encode())
+            for ln in f:
+                r = next(csv.reader([ln]), None)
+                if r and r[ip] in keep:
+                    o.write(ln)
+                    h.update(ln.encode())
+                    n += 1
+                else:
+                    dropped += 1
+        shutil.copystat(a, b + '.part')
+        os.replace(b + '.part', b)
+    except (OSError, ValueError, KeyError, StopIteration) as e:   # speed only: never blocks the swap
+        with contextlib.suppress(OSError):
+            os.remove(b + '.part')
+        if u is not None:
+            u.note(f'page context: the frame-noise table {a} was not carried ({e}) - every frame is measured (as production)')
+        return dict(carried=False, why=f'not carried: {e}')
+    if u is not None:
+        u.note(f'page context: frame-noise table carried from {a}: {n} frames to re-validate by size and mtime ({dropped} '
+               f'rows of frames the 10-minute tree no longer lists dropped)')
+    return dict(carried=True, source=a, frames=n, dropped=dropped, sha1=h.hexdigest()[:12])
 
 
 def carry_swap_stage(run, plan, state):
@@ -334,7 +495,7 @@ def carry_swap_stage(run, plan, state):
         if exclusion_gate.refuses('sublst', plan.family):
             for pg in plan.pages:
                 if pg.family == 'review' and pg.program == 'classify' and pg.key not in state['refused']:
-                    scan = exclusion_gate.scan_server_page(pg, B)
+                    scan = exclusion_gate.scan_server_page(pg, B, tier='sublst')
                     if scan.hits:
                         blocking[pg.key] = f'G17 serve-time exclusion gate at the swap: {scan.summary()}'
         if blocking:
@@ -351,6 +512,7 @@ def carry_swap_stage(run, plan, state):
         else:
             copied = journals.sublst_copy_journals(src, B)
             u.note(f'journals copied from {src}: {len(copied)}')
+        u.meta['page_context_cache'] = carry_page_context_cache(src, B, u)
         prev = plan.U + S.SUBLST_PREV_SUFFIX.format(utc=common.stamp())
         moved = journals.sublst_swap(plan.U, B, prev)
         u.note(f'swapped in: {plan.U} (previous {moved or "none"}); {len(os.listdir(os.path.join(plan.U, "candidates", "I")))}'
@@ -374,6 +536,29 @@ def carry_swap_stage(run, plan, state):
                 os.makedirs(os.path.dirname(j), exist_ok=True)
         if not any(os.path.exists(os.path.join(plan.U, J, 'judgements.jsonl')) for J in S.SUBLST_JOURNALS):
             u.add_output(plan.U, 'sublst_cumulative', with_served_tests=False)
+    return u
+
+
+def page_context_stage(run, plan):
+    """PAGE CONTEXT (sublst_cumulative.sh:295-300; page_context_tenmin.py, 2026-10-23; Gregg 2026-10-22: "Go ahead with both
+    fixes, keep it as page text"): the 10-minute panels' run context - global noise V / I, chain survivors, beam epoch/master,
+    windows searched, each with its percentile - written as the <png>.page.json sidecars beside the SERVED panels of the
+    swapped-in run, before the pages are registered (the review server prints them under each panel). Page text, not a gate:
+    a failure is recorded and the serve continues, as production (whose exit status it does not change; here a missing or
+    malformed sidecar refuses this unit, so the serve exits 2 after registering the pages). Returns the unit."""
+    S = _CFG().serve
+    log = os.path.join(plan.U, 'page_context_tenmin.log')
+    with run.unit(f'sublst_{plan.run_name}_page_context', stage='page-context', tier='sublst', parity=plan.parity) as u:
+        res = scripts.run('page_context_tenmin', [plan.U, '--workers', str(S.SUBLST_PAGE_CONTEXT_WORKERS)], log=log, unit=u,
+                          env={'NUMPY_MADVISE_HUGEPAGE': '0'})
+        line = scripts.last_line(res.tail)
+        u.meta['page_context'] = {'ok': bool(res.ok), 'line': line[:400], 'log': log}
+        if res.ok:
+            u.note(f'page context: {line[:200]}')
+        else:
+            u.note(f'PAGE-CONTEXT FAILED (see {log}) - the serve continues without the page text: '
+                   f'{(res.reason or line)[:300]}')
+        u.add_output(plan.U, 'tenmin_page_context')     # its content tests judge the sidecars either way (refused if missing)
     return u
 
 
@@ -407,6 +592,11 @@ def run(args, run, plan, stages):
         if 'start' in stages:
             if flow.halts(carry_swap_stage(run, plan, state), 'carry+swap', need_done=True):
                 return
+            try:                                       # page text: never halts the serve (sublst_cumulative.sh:295-300)
+                page_context_stage(run, plan)
+            except Exception as e:                     # the unit is recorded 'error' (the serve exits 1 at the end); the
+                print(f'serve: PAGE-CONTEXT FAILED ({type(e).__name__}: {str(e)[:300]}) - the serve continues without the '
+                      f'page text', file=sys.stderr)   # pages are still registered, as production's `|| say` does
             flow.start_stage(run, plan, state)
     if 'hub' in stages and not getattr(args, 'no_hub', False):
         flow.hub_stage(run, plan, state, remove=S.HUB_REMOVE_TIERS.get('sublst', ()))
@@ -422,3 +612,6 @@ def describe(plan, stages, args):
     print('  G8 generation mix: ' + ('ok (every LST carries the window tie and fitted positions)' if not bad else
                                      'WOULD REFUSE - ' + '; '.join(f'{l}: {w}' for l, w in bad)))
     print(f'  build directory: {build_dir(plan)}; journals copied from {plan.U_src}')
+    if 'start' in stages:
+        print(f'  page context after the swap: {scripts.SCRIPTS["page_context_tenmin"][0]} {plan.U} --workers '
+              f'{_CFG().serve.SUBLST_PAGE_CONTEXT_WORKERS} (page text; a failure does not stop the serve)')

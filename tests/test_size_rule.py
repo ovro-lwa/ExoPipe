@@ -1072,7 +1072,8 @@ def test_catalog_paths():
     os.makedirs(os.path.join(src, '14h_23MHz_I', 'transients', 'Run_SLST14B'))      # no ledger: not a completed search job
 
     def ctx():
-        o = types.SimpleNamespace(src=src, lst='14h', label='SLST14B', _size=None)
+        o = types.SimpleNamespace(src=src, jobs_src=src, lst='14h', label='SLST14B', _size=None)   # jobs_src: the search jobs
+                                                                                    # (= src except in a per-hour night pass)
         o.search_jobs = lambda: CS.Ctx.search_jobs(o)
         return o
     o = ctx()

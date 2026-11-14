@@ -436,10 +436,11 @@ def _new_files(paths, t0):
     return [p for p in paths if os.path.isfile(p) and os.path.getmtime(p) >= t0 - 1.0]
 
 
-def _exclusion_report(u, lst, scope, dates):
-    """EXCLUSION_MODE 'report' (today's behaviour): record the admitted nights; note excluded nights used."""
+def _exclusion_report(u, lst, scope, dates, tier='deep'):
+    """EXCLUSION_MODE 'report' (today's behaviour): record the admitted nights; note excluded nights used. ``tier``: the
+    tier of the products used ('10min': the snapshot tiers' per-night read, 2026-11-13)."""
     from exopipe.phase3.core import exclusions
-    ex = exclusions.load()
+    ex = exclusions.for_tier(tier)
     dates = sorted(set(dates))
     bad = ex.excluded_constituents(lst, scope, dates)
     u.set_admitted([d for d in dates if d not in bad])
@@ -799,7 +800,7 @@ def _investigate_one(u, run, args, c, R, D, C, env, no_xmatch):
         p = R.bundle_path(c.rank, c.lst, c.band, c.date, c.cadence, c.iv, k)
         if p:
             u.add_input(p)
-    _exclusion_report(u, c.lst, c.band, [c.date])
+    _exclusion_report(u, c.lst, c.band, [c.date], tier=c.cadence)
     log = _log_path(run, c.cand_id)
     with open(log, 'a') as lf, contextlib.redirect_stdout(lf):
         print(f'===== {time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} investigate rank{c.rank} {c.cand_id} =====')
@@ -1050,7 +1051,7 @@ def _op_hone(args, run):
                 for sb, (tree, g) in sorted(frames[cid].items()):
                     for p in g:
                         u.add_input(p)
-                _exclusion_report(u, c['lst'], c.get('disc_sb') or c.get('band') or band, [c['date']])
+                _exclusion_report(u, c['lst'], c.get('disc_sb') or c.get('band') or band, [c['date']], tier='10min')
                 if res.rc != 0:
                     raise RuntimeError(f'phase3_honing.py exit {res.rc}; see {res.log}')
                 row = rows.get(cid)
@@ -1207,7 +1208,7 @@ def _pd_lightcurves(args, run, P, units, lc_out):
         name = f'lc3_{lst}_{band}_{S}'
         fr = _lc_frames(P, lst, band, S)
         nights = sorted({_night_of(f, lst) for f in fr} - {None})
-        adm = exclusions.load().admitted(lst, band, nights)
+        adm = exclusions.for_tier('10min').admitted(lst, band, nights)
         if _resumed(run, name, admitted=adm, op='periodicity', stage='lightcurves'):
             return
 
@@ -1217,7 +1218,7 @@ def _pd_lightcurves(args, run, P, units, lc_out):
             u.add_input(P.LC_POSITIONS)
             for f in fr:
                 u.add_input(f)
-            _exclusion_report(u, lst, band, nights)
+            _exclusion_report(u, lst, band, nights, tier='10min')
             t0 = time.time()
             res = _call(u, run, 'lightcurves', [P.LC_POSITIONS, lc_out, lst, band, S],
                         env={'P3_GEN': P.LC_GENERATION, 'P3_ARCHIVE_ROOT': P.LC_ARCHIVE_ROOT,
@@ -1639,7 +1640,7 @@ _SPECTRUM_COLS = ['scope', 'freq_mhz', 'is_subband', 'v_source', 'v_peak', 'v_er
                   'i_snr', 'vi_ratio', 'v_fwhm_maj_deg', 'v_axis_ratio', 'v_ra', 'v_dec', 'v_detected', 'i_detected']
 _SNAP_LC_COLS = ['time', 'mjd', 'peak', 'snr', 'sign']                              # io_products.py:143
 _SNAP_SPEC_COLS = ['scope', 'freq_mhz', 'dewarped', 'V_peak', 'V_err', 'V_snr', 'V_sign', 'I_peak', 'I_err', 'I_snr',
-                   'I_sign', 'vi_ratio']                                             # io_products.py:158-159
+                   'I_sign', 'vi_ratio', 'refused']                                  # io_products.py:158-159
 # _SPECTRUM_COLS = io_products.py:126-129. tests/test_followup.py writes a dossier through the package writers and checks
 # these three lists against what they write.
 

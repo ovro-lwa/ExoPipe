@@ -199,9 +199,10 @@ def check_pinned_overrides(roots):
 
 
 def exclusion_gate(lst, date, scopes):
-    """J2: the scopes of (lst, date) that data_decisions.csv excludes today (core.exclusions; a missing list refuses)."""
+    """J2: the scopes of (lst, date) that data_decisions.csv excludes today (core.exclusions; a missing list refuses), read as
+    the snapshot tiers read it (the measurement's inputs are 10-s, 1-minute and 10-minute products; 2026-11-13)."""
     from exopipe.phase3.core import exclusions
-    ex = exclusions.load()
+    ex = exclusions.for_tier('sublst')
     return [s for s in scopes if ex.is_excluded(lst, s, date)], ex.fingerprint()
 
 

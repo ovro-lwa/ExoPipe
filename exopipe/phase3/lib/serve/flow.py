@@ -42,17 +42,19 @@ def halts(u, what, need_done=False):
     return False
 
 
-def excl_note(u):
-    """The exclusion list read now: its fingerprint in the unit, and the file an INPUT of the unit, so a later stage of
-    another invocation that requires this record (require_done, G28) refuses once data_decisions.csv changed (review
-    2026-10-14 M1: a test stage passed, an exclusion added, a start in a separate invocation served the page)."""
+def excl_note(u, tier=None):
+    """The exclusion list read now (as ``tier``'s gate reads it): its fingerprint in the unit, and the file an INPUT of the
+    unit, so a later stage of another invocation that requires this record (require_done, G28) refuses once
+    data_decisions.csv changed (review 2026-10-14 M1: a test stage passed, an exclusion added, a start in a separate
+    invocation served the page); the GPU-frame cell list too where the read depends on it (the per-night read)."""
     try:
-        ex = exclusion_gate.fresh_exclusions()
+        ex = exclusion_gate.fresh_exclusions(tier)
         fp = ex.fingerprint()
         u.note(f'exclusions: {fp}')
         u.meta['exclusions'] = fp
-        if getattr(ex, 'path', None) and os.path.exists(ex.path):
-            u.add_input(ex.path)
+        for p in (getattr(ex, 'path', None), getattr(ex, 'gpu_path', None)):
+            if p and os.path.exists(p):
+                u.add_input(p)
     except Refusal as e:
         raise Refusal(f'G17 serve-time exclusion gate: {e}')
 
@@ -100,7 +102,7 @@ def test_stage(run, plan, state, unit_name, root=None, probe=True):
     again, and the App probe (expected index sources, 0 unexplained drops) of every selected page."""
     U = root or plan.U
     with run.unit(unit_name, stage='test', tier=plan.tier, run=plan.run_name, parity=plan.parity) as u:
-        excl_note(u)
+        excl_note(u, plan.tier)
         gated = []
         for pg in plan.pages:
             if pg.key in state['refused']:
@@ -146,7 +148,7 @@ def test_stage(run, plan, state, unit_name, root=None, probe=True):
             # the swap of the whole build (G11), so no sub-LST page is replaced (its servers share the run directory)
             pages = {}
             for pg in gated:
-                scan = exclusion_gate.scan_server_page(pg, U, strict=refuses)
+                scan = exclusion_gate.scan_server_page(pg, U, strict=refuses, tier=plan.tier)
                 pages[pg.key] = {'hits': len(scan.hits), 'files': scan.n_files, 'rows': scan.n_rows,
                                  'per_key': {' '.join(k): n for k, n in scan.per_key().items()}}
                 if scan.hits and refuses:
@@ -248,16 +250,17 @@ def register_pages(run, plan, prepare, unit_name, stage='start', inc_log=True):
         got['items'], got['refused'], got['prepared'] = items, refused, True
         if not items:
             raise recmod.NoInput('no page passed its checks - nothing registered (the registry is unchanged)')
-        prep = register.prepare([it[2] for it in items], d)
-        st = register.check_server(ports, d)            # again, right before the write: and what it has built now
-        got['inspection'] = register.built_inspection(st)
-        holds = []
-        for r in dict.fromkeys(it[1] for it in items):
-            lifted = register.lift_hold(r)
-            holds.append({'run': r, 'lifted': lifted})
-            if lifted:
-                u.note(f'publish marker of {r} removed right before the registration ({lifted})')
-        res = register.write(prep)
+        with register.registry_lock(d):                 # from the registry's read to its write: no other writer between
+            prep = register.prepare([it[2] for it in items], d)
+            st = register.check_server(ports, d)        # again, right before the write: and what it has built now
+            got['inspection'] = register.built_inspection(st)
+            holds = []
+            for r in dict.fromkeys(it[1] for it in items):
+                lifted = register.lift_hold(r)
+                holds.append({'run': r, 'lifted': lifted})
+                if lifted:
+                    u.note(f'publish marker of {r} removed right before the registration ({lifted})')
+            res = register.write(prep)
         res['record'] = register.registration_record(plan.out, unit_name, res, holds)
         got['res'] = res
         u.add_output(res['record'], 'page_registration')

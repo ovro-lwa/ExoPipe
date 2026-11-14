@@ -26,6 +26,8 @@ Stages (--stages a,b / --from S / --until S; always in pipeline order; default c
                                             record of `masters --tier deep --stages admit-prep` lists, into <cell>/admit/flow/
   snapshot  flow, ship                     (the flow movies are `frames --tier snapshot --stages movies`)
   sublst    refine, check                  (check runs only when refine did not run in the same invocation)
+            refine-nonmember (on request)  one named night that is not in the window Masters, against the INSTALLED
+                                            window Masters (per hour; never together with refine)
 
 Inputs:
   deep      the done record <out>/_records/masters/stage-in_<cell>.json and the reference it wrote in <out>/<cell>/coadd_final/
@@ -96,8 +98,9 @@ TIERS = ('deep', 'snapshot', 'sublst')
 SELECTORS = ('tier', 'cells', 'lsts', 'nights', 'scopes', 'exclude_cells', 'epochs')
 CONFIG = ('flow', 'flow_prep', 'flow_snapshot', 'flow_refine', 'masters', 'masters_build', 'masters_stagein', 'runner')
 WRITES = True
-STAGES = {'deep': ('stage-in', 'prep', 'solve', 'check', 'admit'), 'snapshot': ('flow', 'ship'), 'sublst': ('refine', 'check')}
+STAGES = {'deep': ('stage-in', 'prep', 'solve', 'check', 'admit'), 'snapshot': ('flow', 'ship'), 'sublst': ('refine', 'refine-nonmember', 'check')}
 # deep 'admit' (D-ADMIT slice 3) is in no default: the flows of the nights `masters --stages admit-prep` prepared, alone
+# sublst 'refine-nonmember' is in no default: one named non-member night against the installed window Masters (per hour)
 
 _TIER_MODULES = {t: f'exopipe.phase3.lib.flow.steps_{t}' for t in TIERS}
 
@@ -109,7 +112,8 @@ def _tier(t):
 def add_arguments(p):
     g = p.add_argument_group('flow (every tier)')
     g.add_argument('--stages', help='stages to run, comma list, always in pipeline order (default flow.DEFAULT_STAGES[tier]): '
-                                    'deep stage-in,prep,solve,check; snapshot flow,ship; sublst refine,check')
+                                    'deep stage-in,prep,solve,check; snapshot flow,ship; sublst refine,check '
+                                    '(and, on request only, refine-nonmember: one named non-member night)')
     g.add_argument('--from', dest='from_stage', metavar='S', help='first stage (of --stages or the default list)')
     g.add_argument('--until', dest='until_stage', metavar='S', help='last stage (of --stages or the default list)')
     g.add_argument('--gpus', help="GPU ids this process may use, comma list (default: the site file's GPU_IDS[host]); snapshot "

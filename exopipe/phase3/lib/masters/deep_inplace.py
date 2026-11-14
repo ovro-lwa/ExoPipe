@@ -373,20 +373,27 @@ def refuse_production_write(path, what):
 # exclusions: the two readers must agree (G-M01)
 # ---------------------------------------------------------------------------------------------------------------------
 
-def exclusion_readers_agree(lst, scope, dates, coadd_mod=None):
+def exclusion_readers_agree(lst, scope, dates, coadd_mod=None, read_scope=None):
     """core.exclusions vs the in-place co-add reader on every (lst, scope, night): returns the core Exclusions; refuses
     when the two readers or the two file paths disagree. Loads the co-add's exclusions through coadd.load_exclusions() so
-    its module state (_PERBAND_EXCL) is filled (FIX-COADD-SINGLE-MODULE-INSTANCE-PERBAND)."""
+    its module state (_PERBAND_EXCL) is filled (FIX-COADD-SINGLE-MODULE-INSTANCE-PERBAND). ``read_scope`` is the scope of
+    both reads (core/exclusions.py: None for the deep tier; the sub-LST tier checks 'snapshot' and 'snapshot-gpu')."""
     from exopipe.phase3.core import exclusions
     c = cfg()
-    ex = exclusions.load()
+    ex = exclusions.load(scope=read_scope)
     co = coadd_mod or _module('coadd')
     if os.path.realpath(co.DECISIONS_CSV) != os.path.realpath(c.paths.DATA_DECISIONS):
         raise Refusal(f'co-add exclusion list {co.DECISIONS_CSV} != paths.DATA_DECISIONS {c.paths.DATA_DECISIONS} (U-1c)')
     if {s.replace('MHz', '') for s in c.exclusions.SUBBAND_ONLY} != set(co.SUBBAND_ONLY_EXCL):
         raise Refusal(f'exclusions.SUBBAND_ONLY {c.exclusions.SUBBAND_ONLY} != co-add SUBBAND_ONLY_EXCL '
                       f'{sorted(co.SUBBAND_ONLY_EXCL)} (R-18MHZ-CARVEOUT-REAFFIRMED)')
-    excl = co.load_exclusions()
+    mine = (c.exclusions.SNAPSHOT_ONLY_TAG, c.exclusions.GPU_READMIT_TAG, tuple(c.exclusions.SCOPES))
+    theirs = (getattr(co, 'SNAPSHOT_ONLY_EXCLUDE_TAG', None), getattr(co, 'SNAPSHOT_GPU_READMIT_TAG', None),
+              tuple(getattr(co, 'EXCLUSION_SCOPES', ())))
+    if mine != theirs:
+        raise Refusal(f'exclusions scope tags and scopes {mine} != the co-add reader\'s {theirs} '
+                      f'(DECIDED-20261113-SNAPSHOT-OPEN-ITEMS-LOWSKY-CONFORMANCE-17H22H)')
+    excl = co.load_exclusions(scope=read_scope)
     fs = scope.replace('MHz', '')
     bad = [d for d in dates if ex.is_excluded(lst, scope, d) != co.is_excluded(lst, fs, d, excl)]
     if bad:

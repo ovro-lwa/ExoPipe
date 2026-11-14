@@ -104,6 +104,8 @@ def tree(d):
             if rel.endswith('incremental.log') or '/_records/' in p:
                 continue
             out[rel] = open(p, 'rb').read()
+            if rel == os.path.join('page_index', 'DIRTY'):    # '<UTC stamp to the second> <writer>': compare the writer only
+                out[rel] = out[rel].split(b' ', 1)[-1]
     return out
 
 
@@ -460,21 +462,31 @@ def test_sublst_ports():
 
 
 def test_generation_mix():
+    from exopipe.phase3.lib.catalog import conform_inputs as CI
     R = f'{T}/lstruns'
-    for l, (pert, posk) in {'04h': (True, True), '05h': (False, True), '06h': (True, False)}.items():
+    # (window tie, fitted positions, conform inputs: 'ok' recorded + read line of the copy, None absent, 'sha' another sha256)
+    for l, (pert, posk, ci) in {'04h': (True, True, 'ok'), '05h': (False, True, None), '06h': (True, False, 'ok'),
+                                '08h': (True, True, None), '09h': (True, True, 'sha')}.items():
         d = f'{R}/Run_SLST{l[:-1]}B'
         os.makedirs(f'{d}/candidates', exist_ok=True)
         if pert:
             open(f'{d}/pertie_detections.csv', 'w').write('cand_id\n')
+            open(f'{d}/pertie_frames.csv', 'w').write('frame\n')
+        if ci:                                     # sublst_pages_prep.py:43-63: the copy + the read lines travel with the pages
+            cid, _ = CI.record(d)
+            h = CI.sums(cid)['pertie_detections.csv'] if ci == 'ok' else '0' * 64
+            open(f'{cid}/{CI.LOG_COPY}', 'w').write(f'{CI.READ}/x/catalog/pertie/{CI.DIR}/pertie_detections.csv sha256 {h}\n')
         open(f'{d}/master_catalog.csv', 'w').write('cand_id,ra' + (',pos_kind' if posk else '') + '\n')
     orig = sublst_build.lst_run
     sublst_build.lst_run = lambda l: f'{R}/Run_SLST{l[:-1]}B'
     try:
-        bad = dict(sublst_build.generation_mix(['04h', '05h', '06h', '07h']))
+        bad = dict(sublst_build.generation_mix(['04h', '05h', '06h', '07h', '08h', '09h']))
     finally:
         sublst_build.lst_run = orig
-    assert set(bad) == {'05h', '06h', '07h'} and 'pertie' in bad['05h'] and 'pos_kind' in bad['06h'], bad
-    ok('sub-LST G8: LST runs without the window tie / fitted positions / candidates are named (generation mix)')
+    assert set(bad) == {'05h', '06h', '07h', '08h', '09h'} and 'pertie' in bad['05h'] and 'pos_kind' in bad['06h'] \
+        and f'{CI.DIR}/pertie_detections.csv' in bad['08h'] and 'logged sha256' in bad['09h'], bad
+    ok('sub-LST G8: LST runs without the window tie / fitted positions / candidates / a verified record of the tie tables the '
+       'conformance read (sublst_cumulative.sh:60, 76-96) are named (generation mix)')
 
 
 # ---- 1c. journals ------------------------------------------------------------------------------------------------------
@@ -1061,7 +1073,7 @@ def test_mchain():
     dd = f'{T}/mchain_dd/data_decisions.csv'
     wcsv(dd, ['lst', 'subband', 'date', 'verdict', 'reason'], [])
     ex0, orig_fx = Exclusions(dd), exclusion_gate.fresh_exclusions
-    exclusion_gate.fresh_exclusions = lambda: ex0
+    exclusion_gate.fresh_exclusions = lambda tier=None: ex0
     try:
         # the App probe (the server's own loader, the deep pages' environment) on a synthetic deep run: V's fork has J0001
         # (a page source) and J0009 (fork only); I has no fork (I-multi refused, G3: no chain written)
@@ -1124,8 +1136,13 @@ def test_mchain():
     shutil.copytree(f'{T}/sub_base/Run_SLSTB.build', B5)
     run5 = Run('serve', ['test'], p5.out, CFG, config_sections=None)
     st5 = flow.new_state()
-    u5 = sublst_build.views_stage(run5, p5, st5)
-    assert u5.status == 'done' and not st5['refused'], (u5.status, u5.reason, st5)
+    filt, sublst_build.filters = sublst_build.filters, lambda u_, B_, log_: filt_calls.append(B_)   # test_sublst_filters
+    filt_calls = []
+    try:
+        u5 = sublst_build.views_stage(run5, p5, st5)
+    finally:
+        sublst_build.filters = filt
+    assert u5.status == 'done' and not st5['refused'] and filt_calls == [B5], (u5.status, u5.reason, st5, filt_calls)
     assert common.has_j_line(f'{B5}/judgements/queue_p3s3_V_multi.txt') and not os.path.exists(f'{B5}/source_catalogs_V_multi')
     assert not os.path.exists(f'{B5}/judgements/queue_p3s3_I_multi.txt')
     ok('multiples chain, sub-LST: the views stage writes the multi-integration queue of every Stokes it builds (the singles '
@@ -1228,7 +1245,7 @@ def test_exclusion_gate_per_page_stage():
     shutil.copytree(f'{T}/deep_base/Run_TEST', src)
     add_fork(src, 'I', [('J0007+0007', '08h', '2025-01-05', 2), ('J0010+0010', '09h', '2025-01-06', 1)])
     orig, ruled = exclusion_gate.fresh_exclusions, CFG.serve.EXCLUSION_GATE_TIERS
-    exclusion_gate.fresh_exclusions = lambda: ex
+    exclusion_gate.fresh_exclusions = lambda tier=None: ex
     try:
         for value, label in ((ruled, 'ruled'), (('snapshot',), 'production')):
             CFG.serve.EXCLUSION_GATE_TIERS = value
@@ -1412,6 +1429,586 @@ def test_stage_halting():
         ok(f'snapshot: G17 refuses the chain run ({l_} {d_} {s_}MHz excluded now) and nothing is copied or served')
     finally:
         servers.replace, flow.register_pages, register.write = orig
+
+
+def test_cumulative_reuses():
+    """SPEED (design 2.3a stage 4 of PER_HOUR_GAP_DESIGNS_20261111.md): the 10-minute cumulative's localizations run with
+    production's own row-index and shard switches (same tables), and the page context's frame-noise table is carried from the
+    served run into the build before the swap (the tool re-validates every entry by size and mtime)."""
+    import inspect
+    S = CFG.serve
+    src = open(f'{OPS}/build_localizations.py').read()
+    assert set(S.SUBLST_LOC_SPEED_ENV) == {'P3_LOC_ROW_INDEX', 'P3_LOC_SHARDS'} and not set(S.SUBLST_LOC_SPEED_ENV) & set(S.SUBLST_LOC_ENV)
+    assert "NSHARD = int(os.environ.get('P3_LOC_SHARDS') or 0)" in src and "_pool.imap(_locate, sorted(idents), chunksize=50)" in src \
+        and "if os.environ.get('P3_LOC_ROW_INDEX') == '1':\n    LOC.enable_row_index()" in src, 'build_localizations.py: the switches moved'
+    assert S.SUBLST_LOC_SPEED_ENV['P3_LOC_ROW_INDEX'] == '1' and 1 < int(S.SUBLST_LOC_SPEED_ENV['P3_LOC_SHARDS']) <= 6
+    b = inspect.getsource(sublst_build.build_stage)
+    assert "dict(S.SUBLST_LOC_ENV, **dict(S.SUBLST_LOC_SPEED_ENV or {}), P3_TENMIN_PERTIE=f'{B}/pertie_detections.csv'" in b
+    ok(f'cumulative reuses: the localizations run with production\'s own speed switches {S.SUBLST_LOC_SPEED_ENV} '
+       f'(build_localizations.py holds both; at most 6 processes)')
+    psrc = open(f'{OPS}/page_context_tenmin.py').read()
+    assert S.SUBLST_PAGE_CONTEXT_CACHE == 'page_context_frames.csv' and "cache_p = run + '/page_context_frames.csv'" in psrc \
+        and 'rms=repr(v)' in psrc and "float(c['rms'])" in psrc \
+        and "c['size'] == str(st.st_size) and c['mtime'] == str(int(st.st_mtime))" in psrc, 'page_context_tenmin.py: the cache moved'
+    c = inspect.getsource(sublst_build.carry_swap_stage)
+    assert 0 < c.index('carry_page_context_cache(src, B, u)') < c.index('journals.sublst_swap(')
+    d = f'{T}/reuses'
+    shutil.rmtree(d, ignore_errors=True)
+    served, B = f'{d}/served', f'{d}/build'
+    os.makedirs(served)
+    os.makedirs(B)
+    name = S.SUBLST_PAGE_CONTEXT_CACHE
+    saved_root = CFG.paths.SUBLST_ROOT                 # the 10-minute tree whose frames.csv lists the frames to keep
+    CFG.paths.SUBLST_ROOT = f'{d}/sl'
+    tree = CFG.catalog_sublst.TENMIN_TREE.format(root=f'{d}/sl', tree=CFG.catalog_sublst.ARM_TREES['B'])
+    os.makedirs(f'{tree}/17h_sb3')
+    open(f'{tree}/17h_sb3/frames.csv', 'w').write('key,stokes,sub_path\nk1,V,/x/a.fits\nk2,V,/x/b.fits\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and not os.path.exists(f'{B}/{name}'), r
+    open(f'{served}/{name}', 'w').close()
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and not os.path.exists(f'{B}/{name}'), r
+    text = 'path,size,mtime,rms\n/x/a.fits,9103680,1791465397,0.38537807207107544\n/x/b.fits,9103680,1791465448,nan\n'
+    open(f'{served}/{name}', 'w').write(text)
+    os.utime(f'{served}/{name}', (1700000000, 1700000000))
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and r['frames'] == 2 and open(f'{B}/{name}').read() == text \
+        and int(os.stat(f'{B}/{name}').st_mtime) == 1700000000 and not os.path.exists(f'{B}/{name}.part'), r
+    os.remove(f'{B}/{name}')                           # review of PR 55: rows of frames the tree no longer lists are dropped
+    open(f'{served}/{name}', 'w').write(text + '/x/gone.fits,1,1,0.5\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and r['frames'] == 2 and r['dropped'] == 1 and open(f'{B}/{name}').read() == text, r
+    os.remove(f'{B}/{name}')                           # a carry that fails never blocks the swap: no table, no .part left
+    os.rename(f'{tree}/17h_sb3/frames.csv', f'{tree}/17h_sb3/frames.csv_x')
+    r = sublst_build.carry_page_context_cache(served, B)
+    os.rename(f'{tree}/17h_sb3/frames.csv_x', f'{tree}/17h_sb3/frames.csv')
+    assert r['carried'] is False and 'not carried' in r['why'] and os.listdir(B) == [], (r, os.listdir(B))
+    open(f'{served}/{name}', 'w').write('size,mtime,rms\n1,1,0.5\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and 'not carried' in r['why'] and os.listdir(B) == [], (r, os.listdir(B))
+    open(f'{served}/{name}', 'w').write(text)
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and open(f'{B}/{name}').read() == text, r
+    assert float(repr(0.38537807207107544)) == 0.38537807207107544
+    open(f'{B}/{name}', 'w').write('path,size,mtime,rms\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and open(f'{B}/{name}').read() == 'path,size,mtime,rms\n', r
+    os.remove(f'{B}/{name}')
+    saved = S.SUBLST_PAGE_CONTEXT_CACHE
+    S.SUBLST_PAGE_CONTEXT_CACHE = None
+    try:
+        r = sublst_build.carry_page_context_cache(served, B)
+        assert r['carried'] is False and os.listdir(B) == [], (r, os.listdir(B))
+    finally:
+        S.SUBLST_PAGE_CONTEXT_CACHE = saved
+        CFG.paths.SUBLST_ROOT = saved_root
+    ok('cumulative reuses: the frame-noise table of the served run is copied into the build before the swap (bytes and mtime kept; '
+       'a missing or empty table, a table the build holds, or the key unset: nothing carried, as production; rows of frames the '
+       '10-minute tree no longer lists dropped; a carry that fails is noted and never blocks the swap)')
+
+
+def test_page_context_stage():
+    """THE 10-MINUTE PAGE CONTEXT (sublst_cumulative.sh:295-300): after the swap and before the registration, unit
+    sublst_<run>_page_context runs page_context_tenmin.py on the swapped-in run U with production's arguments and environment
+    and records U as class tenmin_page_context; a failed script or an exception in the stage never stops the registration
+    (page text, not a gate); the class's content tests pass on well-formed sidecars and fail on a missing, malformed,
+    misplaced or orphaned one."""
+    import types
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow
+    from exopipe.phase3.lib.serve import tests as stests
+    S = CFG.serve
+    line = next(l_ for l_ in open(f'{OPS}/sublst_cumulative.sh') if 'page_context_tenmin.py' in l_ and l_.lstrip()[:1] != '#')
+    assert (scripts.SCRIPTS['page_context_tenmin'][0] == 'page_context_tenmin.py' and os.path.isfile(scripts.path('page_context_tenmin'))
+            and line.startswith('NUMPY_MADVISE_HUGEPAGE=0 $PY8 $OPSC/page_context_tenmin.py $U ')
+            and f'--workers {S.SUBLST_PAGE_CONTEXT_WORKERS} ' in line), line
+    ok(f'page context: the script resolves in place and production calls it as `NUMPY_MADVISE_HUGEPAGE=0 page_context_tenmin.py '
+       f'$U --workers {S.SUBLST_PAGE_CONTEXT_WORKERS}` (sublst_cumulative.sh, the port\'s arguments)')
+    a = _ns(tier='sublst', lsts='05h')
+    plan = planmod.make(a, f'{T}/pctx_out')
+    U = plan.U
+    rd = f'{U}/candidates/V/J0006+0006_23MHz'
+    os.makedirs(rd)
+    wcsv(f'{U}/source_catalogs_V/23MHz_sources_survivors.csv', ['source_id', 'band', 'review_dir'],
+         [dict(source_id='J0006+0006', band='23MHz', review_dir='candidates/V/J0006+0006_23MHz')])
+    pngs = ['rank1_05h_2025-01-02_bin3_23MHz.png', 'rank2_05h_2025-01-04_bin11_23MHz.png', 'rank3_05h_2025-01-05_23MHz.png']
+    for fn in pngs:
+        open(f'{rd}/{fn}', 'wb').close()
+    heads = list(stests.PCTX_HEADS)
+
+    def sidecars():
+        for fn, win in ((pngs[0], '2025-01-02T03'), (pngs[1], '2025-01-04T11')):
+            json.dump(dict(ctx_lines=[h + ' x' for h in heads], builder='page_context_tenmin.py', code='0', frame=['05h', '23MHz', win]),
+                      open(f'{rd}/{fn[:-4]}.page.json', 'w'))
+    calls, mode = [], {}
+
+    def fake_run(name, args=(), log=None, unit=None, env=None, **k):
+        calls.append(('script', name, list(args), log, dict(env or {})))
+        if mode['raise_']:
+            raise OSError('stand-in failure')
+        if mode['ok']:
+            sidecars()
+        return types.SimpleNamespace(ok=mode['ok'], rc=0 if mode['ok'] else 1, reason='' if mode['ok'] else 'rc=1 - error',
+                                     tail='Run_SLSTB: sidecars written 2, unchanged 0, orphans removed 0, panels without a window bin 1; 1 s')
+
+    def fake_carry(run_, plan_, state_):
+        calls.append('swap')
+        with run_.unit(f'sublst_{plan_.run_name}_carry', stage='swap', tier='sublst') as u_:
+            pass
+        u_.status = 'done'                          # a stand-in swap with no output (it would end no-input)
+        return u_
+    orig = (sublst_build.carry_swap_stage, flow.start_stage, flow.require_done, flow.expected_from_record, scripts.run)
+    sublst_build.carry_swap_stage, scripts.run = fake_carry, fake_run
+    flow.start_stage = lambda run_, plan_, state_: calls.append('register')
+    flow.require_done = lambda *a_, **k_: {'meta': {}}
+    flow.expected_from_record = lambda *a_, **k_: ({}, {})
+    try:
+        for case in ('ok', 'failed', 'raised'):
+            calls.clear()
+            for f_ in glob.glob(f'{rd}/*.page.json'):
+                os.remove(f_)
+            mode.update(ok=case == 'ok', raise_=case == 'raised')
+            run = Run('serve', ['test'], f'{T}/pctx_out', CFG, config_sections=None)
+            sublst_build.run(a, run, plan, ['carry', 'swap', 'start'])
+            want = ('script', 'page_context_tenmin', [U, '--workers', str(S.SUBLST_PAGE_CONTEXT_WORKERS)],
+                    f'{U}/page_context_tenmin.log', {'NUMPY_MADVISE_HUGEPAGE': '0'})
+            assert calls == ['swap', want, 'register'], calls
+            u = next(x for x in run.units if x.name == f'sublst_{plan.run_name}_page_context')
+            if case == 'ok':
+                assert u.status == 'done' and u.meta['page_context']['ok'] and run.exit_code() == 0, (u.status, u.reason)
+                assert any(n_.startswith('page context: Run_SLSTB: sidecars written 2') for n_ in u.notes), u.notes
+            elif case == 'failed':
+                assert u.status == 'refused' and 'sidecar_per_panel' in u.reason and run.exit_code() == 2, (u.status, u.reason)
+                assert any(n_.startswith('PAGE-CONTEXT FAILED') for n_ in u.notes), u.notes
+            else:
+                assert u.status == 'error' and 'stand-in failure' in u.reason and run.exit_code() == 1, (u.status, u.reason)
+    finally:
+        (sublst_build.carry_swap_stage, flow.start_stage, flow.require_done, flow.expected_from_record, scripts.run) = orig
+    ok('page context: after the swap and before the registration, with production\'s arguments, U recorded as '
+       'tenmin_page_context (done); a failed script refuses the unit and an exception errors it - the pages are registered '
+       'in both (exit 2 / 1 after the registration)')
+    sidecars()
+    good = {t.__name__: t(U) for t in (stests.sidecar_per_panel, stests.no_orphan_sidecars)}
+    assert all(r[0] for r in good.values()), good
+    assert '2 panels with their run-context sidecar' in good['sidecar_per_panel'][2] and \
+        '1 panels without a window bin' in good['sidecar_per_panel'][2], good
+    sc0, sc1 = (f'{rd}/{fn[:-4]}.page.json' for fn in pngs[:2])
+    neg = []
+    o = json.load(open(sc1))
+    json.dump(dict(o, frame=['05h', '23MHz', '2025-01-04T12']), open(sc1, 'w'))
+    neg.append(('frame of another window', stests.sidecar_per_panel(U)))
+    json.dump(dict(o, ctx_lines=o['ctx_lines'][:5]), open(sc1, 'w'))
+    neg.append(('five lines', stests.sidecar_per_panel(U)))
+    os.remove(sc1)
+    neg.append(('missing sidecar', stests.sidecar_per_panel(U)))
+    json.dump(dict(o, builder='build_i14.py'), open(sc1, 'w'))     # another builder's sidecar: kept, passes
+    other = stests.sidecar_per_panel(U)
+    os.rename(f'{rd}/{pngs[0]}', f'{rd}/{pngs[0]}.gone')
+    neg.append(('orphan', stests.no_orphan_sidecars(U)))
+    assert all(not r[0] for _, r in neg), neg
+    assert other[0] and '1 written by another builder' in other[2], other
+    ok('tenmin_page_context content tests: pass on well-formed sidecars (a panel without a window bin counted, another '
+       'builder\'s sidecar kept); fail on a wrong frame, five lines, a missing sidecar and an orphan')
+
+
+def test_sublst_filters():
+    """THE 10-MINUTE FILTERS (sublst_cumulative.sh:172-181; Gregg 2026-11-12, R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-
+    SCINTILLATION): the views stage's last step (sublst_build.filters, called by views_stage: test_mchain) runs
+    bright_source_filter_precompute.py, then scintillation_index.py, on the new build with production's arguments, records their
+    outputs under their classes and refuses when either fails; the classes' content tests pass on well-formed files and fail on
+    malformed or stale ones."""
+    import types
+    import numpy as np
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import tests as stests
+    S = CFG.serve
+    sh = open(f'{OPS}/sublst_cumulative.sh').read()
+    for name in ('bright_source_filter', 'scintillation_index'):
+        assert (f'NUMPY_MADVISE_HUGEPAGE=0 $PY8 $OPSC/{scripts.SCRIPTS[name][0]} $B --tier {S.SUBLST_FILTER_TIER} >> $LOG' in sh
+                and os.path.isfile(scripts.path(name))), name
+    ok(f'filters: production runs bright_source_filter_precompute.py and scintillation_index.py as `$B --tier '
+       f'{S.SUBLST_FILTER_TIER}` with NUMPY_MADVISE_HUGEPAGE=0 (sublst_cumulative.sh; the port\'s arguments); both resolve in place')
+    D = f'{T}/filters'
+    B = f'{D}/Run_SLSTB.build'
+    cat = f'{D}/parents/master_R075_05h_23MHz.gaul.csv'
+    os.makedirs(os.path.dirname(cat))
+    open(cat, 'w').write('# Gaus_id, Isl_id\n')
+    wcsv(f'{B}/master_catalog.csv', ['cand_id', 'lst', 'date', 'band', 'stokes'],
+         [dict(cand_id='V1_05h_2025-01-02T03_23MHz_0001', lst='05h', date='2025-01-02T03', band='23MHz', stokes='V'),
+          dict(cand_id='V1_06h_2025-01-04T11_23MHz_0001', lst='06h', date='2025-01-04T11', band='23MHz', stokes='V')])
+    states = ['worst 10% of its band', 'other', 'not measured']
+
+    def write_bsf(path, tier='tenmin', **over):
+        Z = dict(det_cand=np.array(['a', 'b']), det_ra=np.array([1., 2.]), det_dec=np.array([3., 4.]), det_stokes=np.array(['V', 'V']),
+                 det_cell=np.array([0, -1], np.int16), det_sin_el=np.array([.5, .6], np.float32), dfront_n=np.array([1, 0], np.uint8),
+                 det_peak=np.array([1., 2.], np.float32), det_psr=np.array([0, 0], np.uint8),
+                 ctl_cell=np.array([0, 0, 0], np.int16), ctl_sin_el=np.array([.1, .2, .3]), cfront_n=np.array([0, 1, 1], np.uint8),
+                 cell_lst=np.array(['05h']), cell_bandname=np.array(['23MHz']), cell_band=np.array([0], np.int16),
+                 cell_beam_deg=np.array([1.]), cell_freq=np.array([23e6]), cell_ep_I=np.array([1.]), cell_ep_V=np.array([1.]),
+                 cell_cap_sr=np.array([1.]), cell_n_draw=np.array([3.]), cell_n_src=np.array([5]),
+                 pair_det=np.array([0, 1], np.int32), pair_snr=np.array([7., 8.], np.float32), pair_sep=np.array([10, 20], np.uint16),
+                 dfront_snr=np.array([9.], np.float32), dfront_sep=np.array([5], np.uint16), dfront_flux=np.array([1.], np.float32),
+                 cfront_snr=np.array([1, 2], np.uint16), cfront_sep=np.array([3, 4], np.uint16))
+        Z.update(over)
+        Z['meta'] = np.array(json.dumps(dict(tier=tier, catalogs={'05h_23MHz': cat},
+                                             catalog_mtimes={'05h_23MHz': os.path.getmtime(cat)})))
+        with open(path, 'wb') as f:
+            np.savez_compressed(f, **Z)
+
+    def write_sci(run_dir, rows=None, **over):
+        rows = rows or [dict(lst='05h', date='2025-01-02', band='23MHz', scint_index='0.1000', n_sources=10, n_frames=100,
+                             pct_in_band='50.0000', state=states[1]),
+                        dict(lst='05h', date='2025-01-02', band='27MHz', scint_index='', n_sources=2, n_frames=100, pct_in_band='',
+                             state=states[2]),
+                        dict(lst='06h', date='2025-01-04', band='23MHz', scint_index='0.3000', n_sources=10, n_frames=100,
+                             pct_in_band='100.0000', state=states[0])]
+        wcsv(f'{run_dir}/scintillation_index.csv', list(stests.SCI_FIELDS), rows)
+        counts = {}
+        for r in rows:
+            counts.setdefault(r['band'], {s_: 0 for s_ in states})[r['state']] += 1
+        meta = dict(tier='tenmin', default_hidden=False, hour_bands=len(rows), states=states, worst_pct=90.0, counts=counts,
+                    forced_run=False)
+        meta.update(over)
+        json.dump(meta, open(f'{run_dir}/scintillation_index.json', 'w'))
+    calls, mode = [], {}
+
+    def fake_run(name, args=(), log=None, unit=None, env=None, **k):
+        calls.append((name, list(args), log, dict(env or {})))
+        good = mode.get('fail') != name
+        if good:
+            (write_bsf(f'{B}/bright_source_filter.npz') if name == 'bright_source_filter' else write_sci(B))
+        return types.SimpleNamespace(ok=good, rc=0 if good else 1, reason='' if good else 'rc=1 - error',
+                                     tail=f'wrote {name}' if good else 'REFUSED: no light-curve tables')
+    orig = scripts.run
+    scripts.run = fake_run
+    try:
+        res = {}
+        for case in ('ok', 'bright_source_filter', 'scintillation_index'):
+            calls.clear()
+            for f_ in glob.glob(f'{B}/bright_source_filter.npz') + glob.glob(f'{B}/scintillation_index.*'):
+                os.remove(f_)
+            mode['fail'] = case
+            run = Run('serve', ['test'], f'{D}/out_{case}', CFG, config_sections=None)
+            with run.unit(f'filters_{case}', stage='views', tier='sublst') as u:
+                sublst_build.filters(u, B, f'{B}/incremental.log')
+            res[case] = (u, [c[0] for c in calls])
+            want = [(n_, [B, '--tier', 'tenmin'], f'{B}/incremental.log', {'NUMPY_MADVISE_HUGEPAGE': '0'})
+                    for n_ in ('bright_source_filter', 'scintillation_index')]
+            assert calls == want[:1 if case == 'bright_source_filter' else 2], calls
+    finally:
+        scripts.run = orig
+    u = res['ok'][0]
+    assert u.status == 'done' and {(o['class']) for o in u.outputs} == {'bright_source_filter', 'scintillation_index'}, \
+        (u.status, u.reason, u.outputs)
+    assert all(t['passed'] for t in u.tests) and len(u.tests) == 4, u.tests
+    for case in ('bright_source_filter', 'scintillation_index'):
+        u_ = res[case][0]
+        assert u_.status == 'refused' and f'{scripts.SCRIPTS[case][0]} on the new build' in u_.reason, (u_.status, u_.reason)
+    ok('filters: the bright-source filter, then the scintillation index, on the new build with production\'s arguments; both '
+       'outputs recorded and their 4 content tests pass; a failure of either refuses the views unit (nothing swapped in; the '
+       'scintillation index never runs after a failed bright-source filter)')
+    npz, csvp = f'{B}/bright_source_filter.npz', f'{B}/scintillation_index.csv'
+    neg = []
+    write_bsf(npz, tier='snapshot')
+    neg.append(('tier', stests.arrays_consistent(npz, tier='tenmin')))
+    write_bsf(npz, dfront_n=np.array([2, 0], np.uint8))
+    neg.append(('front sum', stests.arrays_consistent(npz, tier='tenmin')))
+    write_bsf(npz, det_cell=np.array([0, 1], np.int16))
+    neg.append(('cell index', stests.arrays_consistent(npz, tier='tenmin')))
+    write_bsf(npz, det_peak=np.array([1.], np.float32))
+    neg.append(('lengths', stests.arrays_consistent(npz, tier='tenmin')))
+    write_bsf(npz)
+    os.utime(cat, (os.path.getmtime(cat) + 5, os.path.getmtime(cat) + 5))
+    neg.append(('parent changed', stests.parents_current(npz)))
+    write_sci(B)
+    rows = list(csv.DictReader(open(csvp)))
+    write_sci(B, rows=[dict(rows[0], state=states[0])] + rows[1:])
+    neg.append(('state', stests.table_matches_definition(csvp, tier='tenmin')))
+    write_sci(B, default_hidden=True)
+    neg.append(('default_hidden', stests.table_matches_definition(csvp, tier='tenmin')))
+    write_sci(B, counts={'23MHz': {states[1]: 2}})
+    neg.append(('counts', stests.table_matches_definition(csvp, tier='tenmin')))
+    write_sci(B, rows=rows + [dict(rows[0], lst='07h')], hour_bands=4)
+    neg.append(('hour not in the run', stests.run_own_hours(csvp)))
+    assert all(not r[0] for _, r in neg), [(n_, r) for n_, r in neg if r[0]]
+    ok(f'filters content tests fail on {", ".join(n_ for n_, _ in neg)}')
+
+
+def test_snapshot_steps():
+    """THE FOUR STEPS ON THE SNAPSHOT REVIEW COPY (snapshot_serve.sh:164-198, exopipe_ops 607f7a2 + acfa685): after the carry and
+    before any page starts, snapshot_copy runs scintillation_index.py, page_context_snapshot.py, bright_source_filter_precompute.py
+    (after its --help names the snapshot tier; per served Stokes, I first, and cadence) and build_detections_index.py on DST with
+    production's arguments, working directories and environment (a parity run's tool caches under --out); each output is recorded
+    under its class and its content tests pass; a failure of any refuses its unit and stops the later stages; a start without them
+    needs their records (G28); the classes' content tests fail on malformed or stale files."""
+    import gzip
+    import hashlib
+    import types
+    from collections import Counter
+    import numpy as np
+    from exopipe.phase3.core.record import Run
+    from exopipe.phase3.lib.serve import flow, snapshot_copy as SC
+    from exopipe.phase3.lib.serve import tests as stests
+    S = CFG.serve
+    sh = open(f'{OPS}/snapshot_serve.sh').read()
+    tier, cw = S.SNAPSHOT_FILTER_TIER, S.SNAPSHOT_STEP_CWD
+    frag = [f'cd {cw} && NUMPY_MADVISE_HUGEPAGE=0 {PY} {scripts.path("scintillation_index")} $DST --tier {tier} > '
+            f'$DST/scintillation_index.log 2>&1',
+            f'cd {OPS} && NUMPY_MADVISE_HUGEPAGE=0 {PY} page_context_snapshot.py $DST --workers {S.SNAPSHOT_PAGE_CONTEXT_WORKERS} > '
+            f'$DST/page_context_snapshot.log 2>&1',
+            'REFUSING: the page context of $NAME was not built',
+            'BSF_STOKES="I V"; [ "$SNAP_STOKES" = V ] && BSF_STOKES=V',
+            f'{PY} {scripts.path("bright_source_filter")} --help 2>&1 | grep -qw {tier}',
+            f'for S in $BSF_STOKES; do for C in {" ".join(S.SNAPSHOT_BRIGHT_CADENCES)}; do',
+            f'cd {cw} && NUMPY_MADVISE_HUGEPAGE=0 taskset -c \\$(bash {OPS}/node_free_cores.sh) {PY} '
+            f'{scripts.path("bright_source_filter")} $DST --tier {tier} --stokes $S --cadence $C --out '
+            f'$DST/bright_source_filter_${{S}}_${{C}}.npz --workers {S.SNAPSHOT_BRIGHT_WORKERS} --peak-cache '
+            f'{S.SNAPSHOT_BRIGHT_PEAK_CACHE} > $DST/bright_source_filter_${{S}}_${{C}}.log 2>&1',
+            f'cd {cw} && {PY} {scripts.path("build_detections_index")} --run $DST > $DST/page_index_build.log 2>&1',
+            'serve() {']
+    pos = [sh.find(f_) for f_ in frag]
+    assert all(p_ >= 0 for p_ in pos) and pos == sorted(pos), [f_[:70] for f_, p_ in zip(frag, pos) if p_ < 0] or pos
+    rf = sh[pos[2]:sh.find('\n', pos[2])]
+    assert 'exit 4' in rf and all(os.path.isfile(scripts.path(n_)) for n_ in
+                                  ('scintillation_index', 'page_context_snapshot', 'bright_source_filter', 'build_detections_index')), rf
+    ok('snapshot steps: production runs the scintillation index, the page context (refusing, acfa685), the bright-source filter '
+       '(after its --help check; I and V, or V for SNAP_STOKES=V; per cadence) and the page index on $DST in this order before the '
+       'pages, with the port\'s arguments, working directories, environment and peak cache; all four resolve in place')
+
+    D = f'{T}/snap_steps'
+    a = _ns(tier='snapshot', run_label='Run_SNAPSTEP', source=f'{D}/src/Run_SNAPSTEP', label='steps test')
+    out = f'{D}/out'
+    plan = planmod.make(a, out)
+    DST = plan.U
+    assert plan.parity and SC.bright_stokes(plan) == ['I', 'V'] and SC._parity_cache(types.SimpleNamespace(parity=False), 'x') is None
+    cell, band, ts = '05h_2025-01-02', '23MHz', '20250102_030000'
+    cid = f'{cell}_{band}_V_10s_{ts}'
+    rd = 'candidates/V/J0100+0100_23MHz'
+    png = f'{DST}/{rd}/rank1_05h_2025-01-02_23MHz{ts.replace("_", "")}.png'
+    os.makedirs(os.path.dirname(png))
+    open(png, 'wb').write(b'png')
+    wcsv(f'{DST}/{rd}/detections.csv', ['cand_id', 'band', 'ts', 'tier'], [dict(cand_id=cid, band=band, ts=ts, tier='10s')])
+    wcsv(f'{DST}/master_catalog.csv', ['cand_id', 'lst', 'date', 'band', 'stokes'],
+         [dict(cand_id=cid, lst='05h', date='2025-01-02', band=band, stokes='V')])
+    wcsv(f'{DST}/source_catalogs_V_10s/23MHz_source_members.csv', ['source_id', 'cand_id'],
+         [dict(source_id='J0100+0100_23MHz', cand_id=cid), dict(source_id='J0100+0100_23MHz', cand_id=cid),
+          dict(source_id='J0100+0100_23MHz', cand_id=f'{cell}_{band}_V_10s_20250102_030010')])
+    surv = f'{DST}/source_catalogs/23MHz_sources_survivors.csv'
+    wcsv(surv, ['source_id', 'review_dir'], [dict(source_id='J0100+0100_23MHz', review_dir=rd)])
+    cat = f'{D}/parents/master_R075_05h_23MHz.gaul.csv'
+    os.makedirs(os.path.dirname(cat))
+    open(cat, 'w').write('# Gaus_id, Isl_id\n')
+    states = ['worst 10% of its band', 'other', 'not measured']
+    lines = ['hours searched el>25d: 1 of 1 (all hour-cells of this view)', 'global noise V: -', 'global noise I: -',
+             'served detections in this frame, Stokes I (n_i_epoch): - (this view holds no Stokes I 10s catalog)',
+             'served detections in this frame, Stokes V (n_v_epoch): 2  (100 pctile of band, all admitted frames, FLOOD)',
+             'scintillation of the hour and band: index 0.100 (50 pctile of the band\'s hours)', 'beam epoch/hour: -']
+    sidecar = png[:-4] + '.page.json'
+
+    def w_sci():
+        wcsv(f'{DST}/scintillation_index.csv', list(stests.SCI_FIELDS),
+             [dict(lst='05h', date='2025-01-02', band=band, scint_index='0.1000', n_sources=10, n_frames=100, pct_in_band='50.0000',
+                   state=states[1])])
+        json.dump(dict(tier=tier, default_hidden=False, hour_bands=1, states=states, worst_pct=90.0, forced_run=False,
+                       counts={band: {states[0]: 0, states[1]: 1, states[2]: 0}}), open(f'{DST}/scintillation_index.json', 'w'))
+
+    def w_pctx(ctx_lines=None, frame=None, view=None, n=2):
+        json.dump(dict(ctx_lines=ctx_lines or lines, builder=stests.SPCTX_TOOL, code='x', frame=frame or [cell, band, 'V', '10s', ts]),
+                  open(sidecar, 'w'))
+        json.dump(dict(builder=stests.SPCTX_TOOL, view=view or DST, cells=[cell], held=['V_10s'],
+                       hist={'V_10s': {band: {'0': 3, '1': 1, '2': 1}}}), open(f'{DST}/frame_counts.json', 'w'))
+        with gzip.open(f'{DST}/frame_counts_V_10s.csv.gz', 'wt', newline='') as f:
+            f.write(f'cell,band,ts,n\r\n{cell},{band},{ts},{n}\r\n{cell},{band},20250102_030010,1\r\n')
+
+    fleet = f'{D}/fleet_out'                     # the search's own noise tables (paths.SNAPSHOT_FLEET_OUT), frames_admitted
+    noise = f'{fleet}/{cell}/noise_{band}_V_median.csv'
+
+    def w_noise(admitted=('1', '1'), rows=2):
+        wcsv(noise, ['idx', 'ts', 'date_obs', 'admitted', 'global_rms_jyb', 'flood_refused', 'refuse_reason'],
+             [dict(idx=i, ts=t_, admitted=a_, global_rms_jyb='1.0', flood_refused='1' if a_ == '0' else '0',
+                   refuse_reason='flood' if a_ == '0' else '')
+              for i, (t_, a_) in enumerate(list(zip((ts, '20250102_030010'), admitted))[:rows])])
+    w_noise()
+
+    def w_bsf(path, stokes, cadence):
+        Z = dict(det_cand=np.array(['a']), det_ra=np.array([1.]), det_dec=np.array([3.]), det_stokes=np.array([stokes]),
+                 det_cell=np.array([0], np.int16), det_sin_el=np.array([.5], np.float32), dfront_n=np.array([0], np.uint8),
+                 det_peak=np.array([1.], np.float32), det_psr=np.array([0], np.uint8), ctl_cell=np.array([0], np.int16),
+                 ctl_sin_el=np.array([.1]), cfront_n=np.array([0], np.uint8), cell_lst=np.array(['05h']),
+                 cell_bandname=np.array([band]), cell_band=np.array([0], np.int16), cell_beam_deg=np.array([1.]),
+                 cell_freq=np.array([23e6]), cell_ep_I=np.array([1.]), cell_ep_V=np.array([1.]), cell_cap_sr=np.array([1.]),
+                 cell_n_draw=np.array([3.]), cell_n_src=np.array([5]), pair_det=np.array([0], np.int32),
+                 pair_snr=np.array([7.], np.float32), pair_sep=np.array([10], np.uint16), dfront_snr=np.array([], np.float32),
+                 dfront_sep=np.array([], np.uint16), dfront_flux=np.array([], np.float32), cfront_snr=np.array([], np.uint16),
+                 cfront_sep=np.array([], np.uint16))
+        Z['meta'] = np.array(json.dumps(dict(tier=tier, stokes=stokes, cadence=cadence, catalogs={'05h_23MHz': cat},
+                                             catalog_mtimes={'05h_23MHz': os.path.getmtime(cat)})))
+        with open(path, 'wb') as f:
+            np.savez_compressed(f, **Z)
+
+    def w_index():
+        fd = f'{DST}/{rd}'
+        names = [fn for fn in sorted(os.listdir(fd)) if '.png' in fn]
+        st = os.stat(f'{fd}/detections.csv')
+        stats = [[st.st_size, st.st_mtime_ns], [[os.stat(f'{fd}/{n_}').st_size, os.stat(f'{fd}/{n_}').st_mtime_ns] for n_ in names],
+                 names]
+        rec = dict(d=True, t=open(f'{fd}/detections.csv').read(), n=names, m=[os.path.getmtime(f'{fd}/{n_}') for n_ in names],
+                   a=False)
+        os.makedirs(f'{DST}/page_index', exist_ok=True)
+        sp = f'{DST}/page_index/shard_000.tsv.gz'
+        with gzip.open(sp, 'wt', encoding='UTF-8', newline='\n') as f:
+            f.write(f'{rd}\t{json.dumps(stats, separators=(",", ":"))}\t{json.dumps(rec, separators=(",", ":"))}\n')
+        cs = os.stat(surv)
+        json.dump(dict(format=S.PAGE_INDEX_FORMAT, run_dir=DST, encoding='UTF-8', n_errors=0, n_folders=1, n_det_rows=1,
+                       started_ns=time.time_ns() - 10 ** 9, created_utc='now',   # file times use the coarse kernel clock
+                       catalogs={surv: dict(size=cs.st_size, mtime_ns=cs.st_mtime_ns)},
+                       shards={'candidates/V': dict(file='shard_000.tsv.gz', n_folders=1, n_det_rows=1,
+                                                    sha256=hashlib.sha256(open(sp, 'rb').read()).hexdigest())}),
+                  open(f'{DST}/page_index/manifest.json', 'w'))
+    calls, mode = [], {}
+
+    def fake_run(name, args=(), log=None, unit=None, env=None, cwd=None, **k):
+        calls.append((name, list(args), log, cwd, dict(env or {})))
+        if list(args) == ['--help']:
+            txt = 'usage: bright_source_filter_precompute.py RUN --tier {tenmin,deep%s}' % (',snapshot' if mode.get('fail') != 'help'
+                                                                                          else '')
+            return types.SimpleNamespace(ok=True, rc=0, reason='', tail=txt)
+        good = mode.get('fail') != name
+        if good:
+            if name == 'scintillation_index':
+                w_sci()
+            elif name == 'page_context_snapshot':
+                w_pctx()
+            elif name == 'bright_source_filter':
+                w_bsf(args[args.index('--out') + 1], args[args.index('--stokes') + 1], args[args.index('--cadence') + 1])
+            else:
+                w_index()
+        return types.SimpleNamespace(ok=good, rc=0 if good else 1, reason='' if good else 'exit 1 - error',
+                                     tail=f'wrote {name}' if good else 'REFUSED: no input')
+    NH = {'NUMPY_MADVISE_HUGEPAGE': '0'}
+    pc = f'{out}/_cache'
+    want = ([('scintillation_index', [DST, '--tier', tier, '--cache', f'{pc}/scintillation_table_index.json'],
+              f'{DST}/scintillation_index.log', cw, NH),
+             ('page_context_snapshot', [DST, '--workers', S.SNAPSHOT_PAGE_CONTEXT_WORKERS], f'{DST}/page_context_snapshot.log', None,
+              NH),
+             ('bright_source_filter', ['--help'], None, cw, {})]
+            + [('bright_source_filter', [DST, '--tier', tier, '--stokes', s_, '--cadence', c_, '--out',
+                                         f'{DST}/bright_source_filter_{s_}_{c_}.npz', '--workers', S.SNAPSHOT_BRIGHT_WORKERS,
+                                         '--peak-cache', f'{pc}/bright_filter_snapshot_peaks'],
+                f'{DST}/bright_source_filter_{s_}_{c_}.log', cw, NH) for s_ in ('I', 'V') for c_ in S.SNAPSHOT_BRIGHT_CADENCES]
+            + [('build_detections_index', ['--run', DST], f'{DST}/page_index_build.log', cw, {})])
+    steps = tuple(st for st, _ in SC.STEP_STAGES)
+    unit_of = {st: f'snapshot_Run_SNAPSTEP_{st.replace("-", "_")}' for st in steps}
+    orig = (scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT)
+    scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = fake_run, f'{D}/NO_HOLD', fleet
+    try:
+        res = {}
+        for case in ('ok', 'scintillation_index', 'page_context_snapshot', 'help', 'bright_source_filter', 'build_detections_index'):
+            calls.clear()
+            mode['fail'] = case
+            for f_ in glob.glob(f'{DST}/scintillation_index.*') + glob.glob(f'{DST}/bright_source_filter_*.npz') + [sidecar]:
+                if os.path.exists(f_):
+                    os.remove(f_)
+            shutil.rmtree(f'{DST}/page_index', ignore_errors=True)
+            run = Run('serve', ['test'], f'{out}_{case}', CFG, config_sections=None)
+            SC.run(a, run, plan, steps)
+            res[case] = run
+            n_want = {'ok': len(want), 'scintillation_index': 1, 'page_context_snapshot': 2, 'help': 3,
+                      'bright_source_filter': 4, 'build_detections_index': len(want)}[case]
+            assert calls == want[:n_want], (case, calls[len(calls) - 1:], want[n_want - 1:n_want])
+        u = {x.name: x for x in res['ok'].units}
+        assert [x.name for x in res['ok'].units] == [unit_of[st] for st in steps] and all(x.status == 'done' for x in u.values()), \
+            [(x.name, x.status, x.reason) for x in res['ok'].units]
+        cls = Counter(o['class'] for x in u.values() for o in x.outputs)
+        assert cls == {'scintillation_index': 1, 'snapshot_page_context': 1, 'bright_source_filter': 4, 'detections_index': 1}, cls
+        tests_ = [t for x in u.values() for t in x.tests]
+        assert tests_ and all(t['passed'] for t in tests_), [t for t in tests_ if not t['passed']]
+        assert res['ok'].exit_code() == 0
+        for case, st, text in (('scintillation_index', 'scintillation', 'scintillation_index.py on the review copy'),
+                               ('page_context_snapshot', 'page-context', 'page_context_snapshot.py on the review copy'),
+                               ('help', 'bright-filter', f'has no {tier} tier'),
+                               ('bright_source_filter', 'bright-filter', 'bright_source_filter_precompute.py I 10s on the review copy'),
+                               ('build_detections_index', 'page-index', 'build_detections_index.py on the review copy')):
+            r_ = res[case]
+            last = r_.units[-1]
+            assert (last.name == unit_of[st] and last.status == 'refused' and text in last.reason and r_.exit_code() == 2
+                    and len(r_.units) == steps.index(st) + 1), (case, [(x.name, x.status, x.reason) for x in r_.units])
+        ok(f'snapshot steps: {len(want)} calls in production\'s order with its arguments (parity: caches under --out); 7 outputs '
+           f'recorded, their {len(tests_)} content tests and checks pass; a failure of each tool (and a --help without the {tier} tier) '
+           f'refuses its unit and nothing later runs - exit 2')
+        # G28: a start without the four steps in the same invocation needs their records
+        req = []
+        o_req, o_start, o_exp = flow.require_done, flow.start_stage, flow.expected_from_record
+        flow.require_done = lambda run_, unit, what: req.append(unit)
+        flow.start_stage = lambda *a_, **k_: None
+        flow.expected_from_record = lambda *a_, **k_: ({}, {})
+        try:
+            SC.run(a, Run('serve', ['test'], f'{out}_start', CFG, config_sections=None), plan, ('start',))
+        finally:
+            flow.require_done, flow.start_stage, flow.expected_from_record = o_req, o_start, o_exp
+        assert req == ['snapshot_Run_SNAPSTEP_gate_copy'] + [unit_of[st] for st in steps], req
+        ok('snapshot steps: a start without them in the invocation requires the records of the gate on the copy and of all four '
+           '(G28)')
+    finally:
+        scripts.run, S.SNAPSHOT_SERVE_HOLD, CFG.paths.SNAPSHOT_FLEET_OUT = orig
+    # negative controls on the content tests (the files of the 'ok' case rewritten one fault at a time)
+    neg = []
+    w_sci()
+    CFG.paths.SNAPSHOT_FLEET_OUT = fleet
+    try:
+        w_pctx()
+        r_ = stests.frames_admitted(DST)
+        assert r_[0] and r_[2].startswith('3 member rows in 2 frames (1 noise tables under '), r_
+        for name_, fault in (('a served frame refused (flood)', lambda: w_noise(admitted=('0', '1'))),
+                             ('no row of a served frame', lambda: w_noise(rows=1)),
+                             ('no noise table', lambda: os.remove(noise))):
+            fault()
+            r_ = stests.frames_admitted(DST)
+            neg.append((name_, r_))
+            assert r_[1] == (1 if name_ == 'no row of a served frame' else 3 if name_ == 'no noise table' else 2), (name_, r_)
+            w_noise()
+        w_pctx(n=0)                                       # a frame with n 0 needs no admitted row
+        w_noise(admitted=('0', '1'))
+        r_ = stests.frames_admitted(DST)
+        assert r_[0] and r_[2].startswith('1 member rows in 1 frames'), r_
+        w_noise()
+        w_pctx(view=f'{D}/other')
+        neg.append(('frame counts of another view (frames_admitted)', stests.frames_admitted(DST)))
+        w_pctx()
+    finally:
+        CFG.paths.SNAPSHOT_FLEET_OUT = orig[2]
+    mf = f'{DST}/page_index/manifest.json'
+    for name_, fault, test in (
+            ('frame count', lambda: w_pctx(n=3), lambda: stests.frame_counts_match_members(DST)),
+            ('frame counts of another view', lambda: w_pctx(view=f'{D}/other'), lambda: stests.frame_counts_match_members(DST)),
+            ('sidecar frame', lambda: w_pctx(frame=[cell, band, 'V', '1min', ts]), lambda: stests.snapshot_sidecar_per_panel(DST)),
+            ('scintillation not computed', lambda: w_pctx(ctx_lines=lines[:5] + [stests.SPCTX_NO_SCINT + ' (no csv)'] + lines[6:]),
+             lambda: stests.snapshot_sidecar_per_panel(DST)),
+            ('sidecar missing', lambda: (w_pctx(), os.remove(sidecar)), lambda: stests.snapshot_sidecar_per_panel(DST)),
+            ('orphan sidecar', lambda: (w_pctx(), shutil.copy(sidecar, f'{DST}/{rd}/rank2_gone.page.json')),
+             lambda: stests.snapshot_sidecar_per_panel(DST)),
+            ('bright cadence', lambda: w_bsf(f'{DST}/bright_source_filter_V_10s.npz', 'V', '1min'),
+             lambda: stests.arrays_consistent(f'{DST}/bright_source_filter_V_10s.npz', tier=tier, stokes='V', cadence='10s')),
+            ('shard bytes', lambda: (w_index(), open(f'{DST}/page_index/shard_000.tsv.gz', 'ab').write(b'x')),
+             lambda: stests.manifest_current(mf, run=DST)),
+            ('catalog changed', lambda: (w_index(), os.utime(surv, ns=(1, 1))), lambda: stests.manifest_current(mf, run=DST)),
+            ('DIRTY', lambda: (w_index(), open(f'{DST}/page_index/DIRTY', 'w').write('x writer')),
+             lambda: stests.manifest_current(mf, run=DST)),
+            ('folder not indexed', lambda: (os.remove(f'{DST}/page_index/DIRTY'),
+                                            wcsv(surv, ['source_id', 'review_dir'], [dict(source_id='J0100+0100_23MHz', review_dir=rd),
+                                                                                     dict(source_id='J2', review_dir='candidates/V/J2')]),
+                                            w_index()),
+             lambda: stests.folders_cover_catalogs(mf)),
+            ('detections.csv changed', lambda: (wcsv(surv, ['source_id', 'review_dir'], [dict(source_id='J0100+0100_23MHz',
+                                                                                              review_dir=rd)]),
+                                                w_index(), open(f'{DST}/{rd}/detections.csv', 'a').write('x\n')),
+             lambda: stests.records_current(mf))):
+        if os.path.exists(f'{DST}/{rd}/rank2_gone.page.json') and name_ != 'orphan sidecar':
+            os.remove(f'{DST}/{rd}/rank2_gone.page.json')
+        fault()
+        neg.append((name_, test()))
+    assert all(not r_[0] for _, r_ in neg), [(n_, r_) for n_, r_ in neg if r_[0]]
+    ok(f'snapshot steps content tests fail on {", ".join(n_ for n_, _ in neg)}')
 
 
 def test_serve_hold():
@@ -1885,6 +2482,70 @@ def test_register_matches_production():
        'registered_pages.json, two registrations, the greenlit layer, mode 0664, the time strictly later on each write); a '
        'refused entry writes neither file; the production registry and a production run\'s hold are refused (G23)')
 
+
+def test_registry_lock():
+    """THE REGISTRY LOCK (2026-11-13): register.registry_lock is production's register_page.py lock - the same file name
+    (serve.TWO_PORT_LOCK = register_page.py LOCK, read from the live file); 12 concurrent registrations (separate interpreters,
+    as production's registrations are) in one sandbox all survive in registered_pages.json and registry.json; while this
+    process holds the lock a registration waits, then completes; held past wait_s it is refused and neither file changes; the
+    production directory is refused (G23) before its lock is taken."""
+    import re as _re
+    src = open('/lustre/gh/main/phase3/serve/register_page.py').read()
+    m = _re.search(r"^LOCK = os\.path\.join\(D, '([^']+)'\)", src, _re.M)
+    assert m and m.group(1) == CFG.serve.TWO_PORT_LOCK, (m and m.group(1), CFG.serve.TWO_PORT_LOCK)
+    D = f'{T}/reglock'
+    site = f'{T}/reglock_site'
+    os.makedirs(D); os.makedirs(site)
+    for name, obj in (('registry.json', {'pages': [dict(id='hub', kind='static', root=site, greenlit=False)]}),
+                      ('registered_pages.json', {'pages': []}), ('greenlit_pages.json', {'pages': {}})):
+        with open(f'{D}/{name}', 'w') as f:
+            json.dump(obj, f)
+    child = ('''import sys; sys.path.insert(0, sys.argv[1])
+from exopipe.phase3.core import env; env.legacy()
+from exopipe.phase3.core.record import Refusal
+from exopipe.phase3.lib.serve import register
+D, i, wait = sys.argv[2], int(sys.argv[3]), float(sys.argv[4])
+e = dict(id=f'p{i}', kind='review', code='/x/ops/classify_transients.py', argv=['--run', f'/data99/r/Run_{i}', '--queue',
+         f'/data99/r/Run_{i}/q.txt', '--title', f'T{i}'], env={'P3_X': str(i)}, legacy_port=i, greenlit=False,
+         inspection_legacy_port=None, inspection_title=None, title=f'T{i}')
+try:
+    with register.registry_lock(D, wait_s=wait):
+        register.write(register.prepare([e], D))
+    print('ok')
+except Refusal as x:
+    print('REFUSED', x)
+''')
+
+    def start(i, wait=60):
+        return subprocess.Popen([PY, '-c', child, ROOT, D, str(i), str(wait)], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+    ps = {9100 + k: start(9100 + k) for k in range(12)}
+    got = {i: p_.communicate(timeout=300)[0].strip().splitlines()[-1:] for i, p_ in ps.items()}
+    ids = {f'p{i}' for i in ps}
+    rp = {e['id'] for e in json.load(open(f'{D}/registered_pages.json'))['pages']}
+    rg = {e['id'] for e in json.load(open(f'{D}/registry.json'))['pages']}
+    assert all(v == ['ok'] for v in got.values()) and ids <= rp and ids <= rg, (got, sorted(ids - rp), sorted(ids - rg))
+    with register.registry_lock(D):                 # held here: the registration waits, then completes
+        t0 = time.time(); p_ = start(9200)
+        time.sleep(8)
+        assert p_.poll() is None, ('the registration did not wait for the held lock', p_.communicate())
+    out = p_.communicate(timeout=120)[0].strip().splitlines()[-1:]
+    assert out == ['ok'] and time.time() - t0 >= 8 and 'p9200' in {
+        e['id'] for e in json.load(open(f'{D}/registered_pages.json'))['pages']}, out
+    before = {n: open(f'{D}/{n}', 'rb').read() for n in ('registry.json', 'registered_pages.json')}
+    with register.registry_lock(D):                 # held past the writer's wait_s: refused, nothing written
+        out = start(9300, wait=1).communicate(timeout=120)[0].strip().splitlines()[-1:]
+    assert out and out[0].startswith('REFUSED') and 'held by another writer' in out[0], out
+    assert before == {n: open(f'{D}/{n}', 'rb').read() for n in before}
+    try:
+        with register.registry_lock(CFG.serve.TWO_PORT_DIR):
+            pass
+        raise AssertionError('the production registry lock was not refused')
+    except Refusal as e:
+        assert 'G23' in str(e), e
+    ok('registry lock = production register_page.py\'s (.registry.lock): 12 concurrent registrations (separate interpreters) '
+       'all kept in registered_pages.json and registry.json; a held lock makes a registration wait, then it completes; held '
+       'past wait_s it is refused and neither file changes; the production directory is refused (G23)')
 
 def _rules_entry(d, pid_, title='Page', run=None, extra=()):
     run = run or f'{d}/runs/{pid_}'
@@ -2496,11 +3157,16 @@ def main():
         test_mchain()
         test_exclusion_gate_per_page_stage()
         test_stage_halting()
+        test_page_context_stage()
+        test_sublst_filters()
+        test_snapshot_steps()
+        test_cumulative_reuses()
         test_serve_hold()
         test_card2_rejudge_go()
         test_inplace_gate_agrees()
         test_forced_probe_before_stop()
         test_register_matches_production()
+        test_registry_lock()
         srv = TwoPortServer(f'{T}/tp_rules', 29865, 29895)
         try:
             test_two_port_rules(srv)

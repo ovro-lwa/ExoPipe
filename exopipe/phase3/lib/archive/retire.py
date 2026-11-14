@@ -31,9 +31,10 @@ def _r():
     return K.sec('archive_retire')
 
 
-def exclusions():
+def exclusions(tier=None):
+    """core.exclusions as ``tier`` reads it (the report-only snapshot and sub-LST tiers: the snapshot tiers' per-night read)."""
     from exopipe.phase3.core import exclusions as E
-    return E.load()
+    return E.for_tier(tier)
 
 
 def kind_of(name):
@@ -264,7 +265,7 @@ def run_report(ctx, args, run, unit_fn):
     if not args.cells and not getattr(args, 'epochs', None):
         raise ValueError(f'retire-excluded --tier {ctx.tier} (report only) needs --cells <LST>_<YYYY-MM-DD> night cells')
     items = CC.expand(args.cells or args.epochs, kind='night cell')
-    ex = exclusions()
+    ex = exclusions(ctx.tier)
     for cell in items:
         lst, date, sb = CC.parse_night_cell(cell)
 

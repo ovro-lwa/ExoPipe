@@ -261,6 +261,182 @@ def _recall_catalog(image_path):
 
 
 # =====================================================================
+# THE CASCADE'S FIRST EXTRACTIONS UP FRONT; ITS TWO ARMS SIDE BY SIDE
+# =====================================================================
+# (Gregg 2026-11-12: "Approved".) Each subband's dewarp starts with an extraction of its not-yet-dewarped hour image
+# (dewarp_subband, step 3). Those 15 extractions do not depend on the chain: they are made in a process pool before the
+# anchor and kept here; step 3 takes its catalog from this memo. The key is the file (path, size, modification time) AND
+# every setting extract_sources reads (_catalog_key), so a file or a setting that differs is extracted at step 3 exactly
+# as before, as is an image whose up-front extraction failed or found nothing.
+#   P2_CASCADE_WORKERS   processes of the up-front pool (default 4); 1 = no up-front extraction (the cascade as before)
+# After the anchor, the DOWN arm and the UP arm share nothing but the anchor's catalog: the UP arm runs in one child
+# process while this process runs the DOWN arm. A child process, not a thread: the diagnostics use matplotlib.pyplot.
+# The child returns its per-subband results and the dewarped catalogs it kept for the 10-minute stage.
+#   P2_CASCADE_ARMS_SIDE_BY_SIDE=0   the UP arm after the DOWN arm, in this process (the cascade as before)
+# Neither setting changes a product: every subband's computation is the one it was. Only the order of log lines changes.
+# The helper processes are forked (they inherit this module's state and the hour's logger) and ask the kernel to end
+# them when this process ends (_end_with_parent): a killed controller leaves none of them at work in the hour's directory.
+# When a helper process fails:
+#   - an up-front worker writes nothing but the temporary elevation-cut copy of its image. A pool that stops is absorbed:
+#     the copies its workers left are removed (find_deep_pb_image would take one for the hour image) and the cascade
+#     extracts the remaining images itself at step 3;
+#   - the UP arm's child writes products. Once it has started on the arm, an error in it or its death ends the cascade
+#     with that error, as an error or a kill in the arm did when it ran in this process: the arm is not run a second time
+#     over what the child left (step 8 skips a _dewarped.fits that exists, whole or not). If the DOWN arm stops with an
+#     error, this process waits for the child to end before the error goes on.
+# Each up-front worker is one PyBDSF extraction, and PyBDSF sizes its own pool from the machine unless BDSF_NCORES is set.
+_UPFRONT_CATALOGS = {}
+CASCADE_WORKERS_DEFAULT = 4
+
+
+def _cascade_workers():
+    """P2_CASCADE_WORKERS as a whole number of at least 1 (unset or empty = the default). The controller refuses an
+    unusable value at the run's start; any other caller meets the same refusal here."""
+    raw = os.environ.get('P2_CASCADE_WORKERS')
+    if not raw:
+        return CASCADE_WORKERS_DEFAULT
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise ValueError(f"REFUSING: P2_CASCADE_WORKERS={raw!r} is not a whole number of at least 1")
+    return n
+
+
+def _end_with_parent(parent_pid):
+    """Initializer of the cascade's helper processes (Linux): the kernel ends this process when the process that
+    started it ends, so a killed controller leaves no helper extracting or writing in the hour's directory."""
+    try:
+        import ctypes
+        import signal
+        ctypes.CDLL(None, use_errno=True).prctl(1, int(signal.SIGKILL))     # 1 = PR_SET_PDEATHSIG
+    except Exception:
+        return
+    if os.getppid() != parent_pid:                      # the parent ended before the request was in place
+        os._exit(1)
+
+
+def _helper_pool(n):
+    """A pool of ``n`` forked helper processes that end with this process."""
+    import multiprocessing as _multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    return ProcessPoolExecutor(max_workers=n, mp_context=_multiprocessing.get_context('fork'),
+                               initializer=_end_with_parent, initargs=(os.getpid(),))
+
+
+def _extract_up_front_one(args):
+    """Pool worker: extract_sources of one not-yet-dewarped hour image under the parent's extraction settings. Returns
+    (the image, its catalog, the warning and error lines of the extraction as (level, text)): a warning can say that the
+    extraction was not the usual one ("elevation mask failed - using full image"), so the parent writes the lines of
+    every catalog it keeps into the hour's log."""
+    global ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS
+    image_path, (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS) = args
+    import logging as _logging
+    warnings.filterwarnings('ignore')
+    said = []
+
+    class _Keep(_logging.Handler):
+        def emit(self, record):
+            said.append((record.levelno, record.getMessage()))
+    _logger = _logging.getLogger('cascade_upfront')
+    _logger.setLevel(_logging.WARNING)                  # the information lines stay in the worker
+    _logger.propagate = False
+    _logger.handlers = [_Keep()]
+    return image_path, extract_sources(image_path, _logger), said
+
+
+def _remove_left_cut_copies(images, logger):
+    """Remove the elevation-cut copies (extract_sources' temporary input, <image>.elcut*.fits) that stopped workers left
+    beside ``images``. Called when no helper process is at work on them."""
+    n = 0
+    for img in images:
+        for left in glob.glob(glob.escape(img[:-len('.fits')]) + '.elcut*.fits'):
+            try:
+                os.remove(left)
+                n += 1
+            except OSError as e:
+                logger.warning(f"  [BDSF] {left}: a left elevation-cut copy could not be removed ({e})")
+    if n:
+        logger.warning(f"  [BDSF] Removed {n} elevation-cut copies that stopped up-front workers left")
+
+
+def _writeto_atomic(out_path, data, header):
+    """Write a FITS file through a temporary name in its directory, then rename it into place, so a killed run leaves no
+    cut-off <image>_dewarped.fits that a rerun in the same work directory would skip as done."""
+    tmp = out_path + '.part'
+    fits.writeto(tmp, data, header, overwrite=True)
+    os.replace(tmp, out_path)
+
+
+def _extract_up_front(work_dir, subbands, logger):
+    """Extract the not-yet-dewarped hour image of each of ``subbands`` in a process pool and keep the catalogs for
+    dewarp_subband's step 3. Any failure here leaves the cascade to extract at step 3, as before."""
+    _UPFRONT_CATALOGS.clear()
+    n = _cascade_workers()
+    if n <= 1:
+        return
+    import logging as _logging
+    import time as _time
+    quiet = _logging.getLogger('cascade_upfront_find')
+    quiet.setLevel(_logging.ERROR)
+    images = []
+    for sb in subbands:
+        if os.path.isdir(os.path.join(work_dir, sb)):
+            img = find_deep_pb_image(work_dir, sb, quiet)
+            if img:
+                images.append(img)
+    if len(images) < 2:
+        return
+    n = min(n, len(images))
+    logger.info(f"  [BDSF] Up-front extraction of {len(images)} not-yet-dewarped hour images, {n} at a time "
+                f"(P2_CASCADE_WORKERS)")
+    t0 = _time.time()
+    settings = (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS)
+    try:
+        with _helper_pool(n) as executor:
+            for img, df, said in executor.map(_extract_up_front_one, [(i, settings) for i in images]):
+                if df is not None and not df.empty:
+                    _UPFRONT_CATALOGS[_catalog_key(img)] = df
+                    for level, line in said:            # an image that is not kept is extracted again at step 3,
+                        (logger.error if level >= 40 else logger.warning)(     # which says its lines itself
+                            f"  [BDSF] up-front extraction of {os.path.basename(img)}: {line.strip()}")
+    except Exception as e:                              # the pool is shut down here: none of its workers is at work
+        logger.warning(f"  [BDSF] Up-front extraction stopped ({type(e).__name__}: {e}) - the cascade extracts the "
+                       f"remaining images itself, as before")
+        _remove_left_cut_copies(images, logger)
+    logger.info(f"  [BDSF] Up-front extraction: {len(_UPFRONT_CATALOGS)} of {len(images)} catalogs kept "
+                f"in {_time.time() - t0:.0f} s")
+
+
+def _recall_up_front(image_path, logger):
+    """The up-front extraction of exactly this file under exactly these settings, or None."""
+    try:
+        df = _UPFRONT_CATALOGS.get(_catalog_key(image_path))
+    except OSError:
+        return None
+    if df is None:
+        return None
+    logger.info(f"  [BDSF] {os.path.basename(image_path)}: catalog of the up-front extraction ({len(df)} sources)")
+    return df.copy(deep=True)
+
+
+def _cascade_arm_in_child(args):
+    """Child process: one source-based arm of the cascade. Returns (its {subband: ok}, the dewarped catalogs this arm
+    kept for the 10-minute stage)."""
+    global ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS
+    (work_dir, subband_list, start_catalog, start_subband, diag_dir, logger_name, kwargs,
+     (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS), upfront) = args
+    import logging as _logging
+    _UPFRONT_CATALOGS.update(upfront)
+    had = set(_DEWARPED_CATALOGS)                       # the anchor's, inherited at the fork: the parent holds it already
+    results = {}
+    _run_cascade_arm(work_dir, subband_list, start_catalog, start_subband, diag_dir, results,
+                     _logging.getLogger(logger_name), **kwargs)
+    return results, {k: v for k, v in _DEWARPED_CATALOGS.items() if k not in had}
+
+
+# =====================================================================
 # CROSS-MATCHING
 # =====================================================================
 
@@ -834,11 +1010,13 @@ def save_diagnostics(anchors, screen_x, screen_y, wcs, shape, subband,
 
             disturbance_rms_arcmin = float(np.sqrt(np.mean(resid_mag_arcmin**2)))
 
-            if disturbance_rms_arcmin < 0.10:
+            # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.37, 0.46, 0.55 arcmin;
+            # range 0.28 to 1.20). The earlier limits (0.10, 0.20, 0.40) labeled no hour Excellent or Good.
+            if disturbance_rms_arcmin < 0.37:
                 disturbance_quality = "Excellent (smooth)"
-            elif disturbance_rms_arcmin < 0.20:
+            elif disturbance_rms_arcmin < 0.46:
                 disturbance_quality = "Good"
-            elif disturbance_rms_arcmin < 0.40:
+            elif disturbance_rms_arcmin < 0.55:
                 disturbance_quality = "Moderate (structured)"
             else:
                 disturbance_quality = "Poor (highly structured)"
@@ -927,14 +1105,16 @@ def find_deep_pb_image(work_dir, subband, logger):
     Used for the anchor step (73 MHz vs VLSSr) where VLSSr has true fluxes.
 
     Searches: {work_dir}/{subband}/I/deep/*Taper*pbcorr*.fits
-    Excludes NoTaper, dewarped, and already-processed variants.
+    Excludes NoTaper, dewarped, and already-processed variants, and the elevation-cut copies (<image>.elcut*.fits,
+    extract_sources' temporary input) that a killed run can leave behind; every image finder here excludes them.
     Returns path or None.
     """
     pat = os.path.join(work_dir, subband, "I", "deep", "*Taper*pbcorr*.fits")
     candidates = [f for f in glob.glob(pat)
                   if "NoTaper" not in os.path.basename(f)
                   and "_dewarped" not in os.path.basename(f)
-                  and ".pybdsf" not in os.path.basename(f)]
+                  and ".pybdsf" not in os.path.basename(f)
+                  and ".elcut" not in os.path.basename(f)]
     if not candidates:
         logger.warning(f"  No deep tapered pbcorr image found for {subband}")
         return None
@@ -960,7 +1140,8 @@ def find_deep_raw_image(work_dir, subband, logger):
                   if "NoTaper" not in os.path.basename(f)
                   and "pbcorr" not in os.path.basename(f)
                   and "_dewarped" not in os.path.basename(f)
-                  and ".pybdsf" not in os.path.basename(f)]
+                  and ".pybdsf" not in os.path.basename(f)
+                  and ".elcut" not in os.path.basename(f)]
     if not candidates:
         logger.warning(f"  No deep tapered raw image found for {subband}")
         return None
@@ -997,7 +1178,7 @@ def find_all_images_to_warp(work_dir, subband, categories=None):
                 bn = os.path.basename(f)
                 if "_dewarped" in bn:
                     continue
-                if ".pybdsf" in bn:
+                if ".pybdsf" in bn or ".elcut" in bn:
                     continue
                 if '-image' not in bn:
                     continue
@@ -1076,8 +1257,10 @@ def dewarp_subband(work_dir, subband, ref_catalog, ref_label, is_anchor,
     except ValueError:
         freq_mhz = freq_hz / 1e6 if freq_hz else cfg.ANCHOR_FREQ_MHZ
 
-    # 3. Extract sources
-    df_lwa = extract_sources(calc_img, logger)
+    # 3. Extract sources (the up-front extraction of this very file, when the cascade made one)
+    df_lwa = _recall_up_front(calc_img, logger)
+    if df_lwa is None:
+        df_lwa = extract_sources(calc_img, logger)
     if df_lwa.empty:
         return pd.DataFrame(), False, None
 
@@ -1163,8 +1346,7 @@ def dewarp_subband(work_dir, subband, ref_catalog, ref_label, is_anchor,
                 if data.shape == screen_x.shape:
                     warped = apply_warp(data, screen_x, screen_y)
                     if warped is not None:
-                        fits.writeto(out_path, warped, hf[0].header,
-                                     overwrite=True)
+                        _writeto_atomic(out_path, warped, hf[0].header)
                         n_warped += 1
                 else:
                     logger.warning(f"  Shape mismatch: {os.path.basename(fpath)} "
@@ -1437,7 +1619,8 @@ def find_deep_raw_image_dewarped(work_dir, subband, logger):
                   if "NoTaper" not in os.path.basename(f)
                   and "pbcorr" not in os.path.basename(f)
                   and "_dewarped_dewarped" not in os.path.basename(f)
-                  and ".pybdsf" not in os.path.basename(f)]
+                  and ".pybdsf" not in os.path.basename(f)
+                  and ".elcut" not in os.path.basename(f)]
     if not candidates:
         return None
     robust075 = [f for f in candidates if "Robust-0.75" in os.path.basename(f)]
@@ -1568,6 +1751,12 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
             logger.error("Failed to load VLSSr catalog  aborting dewarping")
             return results
 
+    # The first extraction of every subband a source-based step will dewarp, in a pool up front (see _UPFRONT_CATALOGS)
+    _UPFRONT_CATALOGS.clear()
+    if not anchor_only and cascade_method != 'flow':
+        _extract_up_front(work_dir, [sb for sb in cfg.ALL_SUBBANDS
+                                     if anchor_method != 'flow' or sb != cfg.ANCHOR_SUBBAND], logger)
+
     anchor_sb = None
     anchor_catalog = None
     anchor_ok = False
@@ -1629,29 +1818,78 @@ def run_cascade_dewarping(work_dir, logger, anchor_method=None,
         logger.info(f"Cascade arms re-rooted at {anchor_sb}: "
                     f"DOWN={cascade_down}  UP={cascade_up}")
 
+    # The UP arm in a child process beside the DOWN arm (source-based cascade; see _UPFRONT_CATALOGS above)
+    _arm_kwargs = dict(method=cascade_method, rbf_kernel=rbf_kernel, rbf_smoothing=rbf_smoothing,
+                       rbf_epsilon=rbf_epsilon, snr_weighting=snr_weighting, warp_categories=warp_categories)
+    _up_pool = _up_future = None
+    if (cascade_method != 'flow' and cascade_down and cascade_up
+            and os.environ.get('P2_CASCADE_ARMS_SIDE_BY_SIDE', '1') != '0'):
+        try:
+            _up_pool = _helper_pool(1)
+            _up_future = _up_pool.submit(_cascade_arm_in_child, (
+                work_dir, list(cascade_up), anchor_catalog, anchor_sb, diag_dir, logger.name, _arm_kwargs,
+                (ANCHOR_EL_CUT, ANCHOR_EAST_EL_CUT, ANCHOR_MAXPIX_BEAM_AREAS), dict(_UPFRONT_CATALOGS)))
+            logger.info(f"CASCADE UP ({cascade_method}) {list(cascade_up)} runs beside the DOWN arm, in a child process "
+                        f"(P2_CASCADE_ARMS_SIDE_BY_SIDE)")
+        except Exception as e:
+            logger.warning(f"The UP arm could not be started beside the DOWN arm ({type(e).__name__}: {e}) - it runs "
+                           f"after it, as before")
+            if _up_pool is not None:                    # nothing was handed to a child
+                _up_pool.shutdown(wait=False)
+            _up_pool = _up_future = None
+
     # -- Phase 1b: Cascade Down --
     logger.info(f"\n{'='*40}")
     logger.info(f"CASCADE DOWN ({cascade_method})")
     logger.info(f"{'='*40}")
 
-    if cascade_method == 'flow':
-        _run_cascade_arm_flow(work_dir, cascade_down,
-                              anchor_sb, diag_dir, results, logger,
-                              warp_categories=warp_categories)
-    else:
-        _run_cascade_arm(work_dir, cascade_down, anchor_catalog,
-                         anchor_sb, diag_dir, results, logger,
-                         method=cascade_method, rbf_kernel=rbf_kernel,
-                         rbf_smoothing=rbf_smoothing, rbf_epsilon=rbf_epsilon,
-                         snr_weighting=snr_weighting,
-                         warp_categories=warp_categories)
+    try:
+        if cascade_method == 'flow':
+            _run_cascade_arm_flow(work_dir, cascade_down,
+                                  anchor_sb, diag_dir, results, logger,
+                                  warp_categories=warp_categories)
+        else:
+            _run_cascade_arm(work_dir, cascade_down, anchor_catalog,
+                             anchor_sb, diag_dir, results, logger,
+                             method=cascade_method, rbf_kernel=rbf_kernel,
+                             rbf_smoothing=rbf_smoothing, rbf_epsilon=rbf_epsilon,
+                             snr_weighting=snr_weighting,
+                             warp_categories=warp_categories)
+    except BaseException:
+        if _up_pool is not None:                        # no process of this cascade is left at work behind its error
+            logger.error("  The DOWN arm stopped with an error - waiting for the UP arm's child process to end before "
+                         "the error goes on")
+            _up_pool.shutdown(wait=True)
+        raise
 
     # -- Phase 1c: Cascade Up --
     logger.info(f"\n{'='*40}")
     logger.info(f"CASCADE UP ({cascade_method})")
     logger.info(f"{'='*40}")
 
-    if cascade_method == 'flow':
+    _up_done = False
+    if _up_future is not None:
+        try:
+            _up_results, _up_catalogs = _up_future.result()
+        except BaseException as e:                      # the child had started on the arm: see the note at _UPFRONT_CATALOGS
+            _up_pool.shutdown(wait=True)
+            logger.error(f"  The UP arm's child process failed ({type(e).__name__}: {e}) - the cascade stops with this "
+                         f"error; the arm is not run a second time over what the child left "
+                         f"(P2_CASCADE_ARMS_SIDE_BY_SIDE=0 runs the UP arm in this process)")
+            from concurrent.futures.process import BrokenProcessPool
+            if isinstance(e, BrokenProcessPool):
+                raise RuntimeError("the UP arm's child process was ended from outside (killed, or out of memory) "
+                                   "before it returned its result - the hour's cascade is incomplete") from e
+            raise
+        _up_pool.shutdown(wait=True)
+        results.update(_up_results)
+        _DEWARPED_CATALOGS.update(_up_catalogs)
+        _up_done = True
+        logger.info(f"  UP arm (child process) finished: "
+                    f"{sum(1 for v in _up_results.values() if v)} of {len(_up_results)} subband(s) OK")
+    if _up_done:
+        pass
+    elif cascade_method == 'flow':
         _run_cascade_arm_flow(work_dir, cascade_up,
                               anchor_sb, diag_dir, results, logger,
                               warp_categories=warp_categories)
@@ -1904,11 +2142,13 @@ def _make_ionosphere_movie_from_flow(work_dir, diag_dir, logger):
     mean_var = float(np.mean(variabilities[1:])) if len(variabilities) > 1 else 0.0
     max_var = float(np.max(variabilities[1:])) if len(variabilities) > 1 else 0.0
 
-    if mean_var < 0.10:
+    # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.26, 0.35, 0.47); the earlier
+    # limits were 0.10, 0.25, 0.50.
+    if mean_var < 0.26:
         iono_quality = "Excellent (stable)"
-    elif mean_var < 0.25:
+    elif mean_var < 0.35:
         iono_quality = "Good (slow evolution)"
-    elif mean_var < 0.50:
+    elif mean_var < 0.47:
         iono_quality = "Moderate (active)"
     else:
         iono_quality = "Poor (rapid evolution)"
@@ -2014,6 +2254,7 @@ def _dewarp_10min_flow(work_dir, subband_list, diag_dir, logger):
             f for f in glob.glob(os.path.join(i_10min_dir, "*Taper*image*.fits"))
             if "_dewarped" not in os.path.basename(f)
             and ".pybdsf" not in os.path.basename(f)
+            and ".elcut" not in os.path.basename(f)
             and "pbcorr" not in os.path.basename(f)
             and "NoTaper" not in os.path.basename(f)
         ])
@@ -2208,7 +2449,7 @@ def _dewarp_remaining_snapshots(work_dir, subband_list, diag_dir, logger):
 
                 warped = apply_warp(data, screen_x, screen_y)
                 if warped is not None:
-                    fits.writeto(out_path, warped, snap_hdr, overwrite=True)
+                    _writeto_atomic(out_path, warped, snap_hdr)
                     n_warped += 1
             except Exception as e:
                 logger.warning(f"  {subband}: warp failed for "
@@ -2314,6 +2555,7 @@ def dewarp_10min_intervals(work_dir, subband_list, diag_dir, logger,
             f for f in glob.glob(os.path.join(i_10min_dir, "*Taper*pbcorr*.fits"))
             if "_dewarped" not in os.path.basename(f)
             and ".pybdsf" not in os.path.basename(f)
+            and ".elcut" not in os.path.basename(f)
         ])
 
         for i_img in i_images:
@@ -2326,7 +2568,7 @@ def dewarp_10min_intervals(work_dir, subband_list, diag_dir, logger,
                     continue
                 for f in glob.glob(os.path.join(pol_dir, f"*{timestamp}*.fits")):
                     bn = os.path.basename(f)
-                    if "_dewarped" in bn or ".pybdsf" in bn:
+                    if "_dewarped" in bn or ".pybdsf" in bn or ".elcut" in bn:
                         continue
                     if '-image' not in bn:
                         continue
@@ -2625,8 +2867,7 @@ def _dewarp_one_interval(task):
                     if data.shape == screen_x.shape:
                         warped = apply_warp(data, screen_x, screen_y)
                         if warped is not None:
-                            fits.writeto(out_path, warped, hf[0].header,
-                                         overwrite=True)
+                            _writeto_atomic(out_path, warped, hf[0].header)
                             n_warped += 1
             except Exception:
                 pass
@@ -2647,7 +2888,8 @@ def find_deep_pb_image_dewarped(work_dir, subband, logger):
     candidates = [f for f in glob.glob(pat)
                   if "NoTaper" not in os.path.basename(f)
                   and "_dewarped_dewarped" not in os.path.basename(f)
-                  and ".pybdsf" not in os.path.basename(f)]
+                  and ".pybdsf" not in os.path.basename(f)
+                  and ".elcut" not in os.path.basename(f)]
     if not candidates:
         return None
     robust075 = [f for f in candidates if "Robust-0.75" in os.path.basename(f)]
@@ -2771,11 +3013,13 @@ def _make_ionosphere_movie(work_dir, results_10min, diag_dir, logger):
     }
 
     # Classify ionospheric quality
-    if mean_var < 0.10:
+    # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.26, 0.35, 0.47); the earlier
+    # limits were 0.10, 0.25, 0.50.
+    if mean_var < 0.26:
         iono_quality = "Excellent (stable)"
-    elif mean_var < 0.25:
+    elif mean_var < 0.35:
         iono_quality = "Good (slow evolution)"
-    elif mean_var < 0.50:
+    elif mean_var < 0.47:
         iono_quality = "Moderate (active)"
     else:
         iono_quality = "Poor (rapid evolution)"

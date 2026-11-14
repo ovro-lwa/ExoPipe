@@ -21,7 +21,8 @@ build, copy, carry, register, hub, verify ...). Pages (config serve.PAGES; famil
 Stages (--stages/--from/--until; default all, in order):
   deep      views, test, carry (only with --carry-from), start, hub, verify
   sublst    build, views, test, carry, swap, start (carry+swap+start only together), hub, verify
-  snapshot  gate, copy, localize, gate-copy, carry, test, start, hub, verify
+  snapshot  gate, copy, localize, gate-copy, carry, scintillation, page-context, bright-filter, page-index, test, start, hub,
+            verify (the four filter / page-text / index steps on the copy before any page starts, snapshot_serve.sh:164-198)
   snapshot --family comb  omit, build, filtercat, localize, ready: THE COMBINED SNAPSHOT VIEW, the snapshot tier's cumulative step
             (lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md): the deep-omission kept product of the
             --view-runs applied, the batch identities merged with the chain's merge (in place), one page per tier and Stokes
@@ -43,6 +44,9 @@ Outputs (product classes; content tests run on every write and by `exopipe3 veri
   served_view    source_catalogs_<S>/ (deep, sub-LST), views/source_catalogs_<S>_multi/ (deep), source_catalogs_<S>_multi/
   judgement_journal  judgements*/judgements.jsonl after a carry (+ carry_report.csv, carry_missed.csv)
   sublst_cumulative  the Run_SLSTB build (merged CSVs, localizations, figures, page index)
+  tenmin_page_context  the swapped-in Run_SLSTB after page_context_tenmin.py (sublst_cumulative.sh:295-300): every 10-minute
+                 panel of its four views has its <png>.page.json run-context sidecar (six lines, the panel's own frame) and no
+                 sidecar of the tool stands without its panel; page text, not a gate - its failure never stops the registration
   review_copy    the snapshot review copy;  exclusion_check  the serve-time exclusion gate's pass file;  serve_go  G27's
                  pass file (Gregg's go on a combined view: the go files it names re-read)
   snapshot_view  the combined view (<SNAPSHOT_REVIEW_ROOT>/<view>, parity <out>/snapshot/<view>): V1-V6 read back - queues,
@@ -107,7 +111,8 @@ Failure modes (exit 2 = refused, the gate named in the record; a refused page ke
   the combined view (--family comb): G-V1..G-V6, G-K, T1-T6, F-G1..F-G3 (lib/serve/snapshot_view.py);
   the pages merge absent or stale (deep). Exit 3: nothing to do (no page selected, nothing to carry). Exit 1: error.
   A refused (or errored) run-level stage stops every later stage of the invocation (views/test/carry; build/views/test/
-  swap; gate/copy/localize/gate-copy/carry/test): nothing is copied, swapped in or registered after a refusal.
+  swap; gate/copy/localize/gate-copy/carry/scintillation/page-context/bright-filter/page-index/test): nothing is copied,
+  swapped in or registered after a refusal.
   --resume is not used: a served page is live state - every selected page is re-registered and the verify stage re-tests it.
 Per-hour and intermittent use: serve is in the per-hour chain (runner.CHAINS['epoch'], after pages): a page loads its
   catalogues when it is built (classify_transients.py:2493-2510), so adding an hour's sources = re-serving the tier's pages

@@ -29,7 +29,7 @@ class serve(_Section):
     # keys no --set / --config can change (DESIGN 11.4; honoured by config/__init__.py)
     PROTECTED_KEYS = ('RUN_ROOT_KEY', 'HUB_DIR', 'LISTS_DIR', 'INSPECTION_GREENLIT', 'EXCLUSION_GATE_TIERS',
                       'OTHER_SERVED_PORTS', 'JUPITER_ROOTS', 'HUB_TIERS', 'HUB_LINKS', 'TWO_PORT_DIR', 'TWO_PORT_REGISTRY',
-                      'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT',
+                      'TWO_PORT_REGISTERED', 'TWO_PORT_GREENLIT', 'TWO_PORT_LOCK',
                       'SNAPVIEW_TIERS', 'SNAPVIEW_STOKES', 'SNAPVIEW_PAGE_SUFFIX')   # the combined view's layout: what the page code
                                                                                     # reads (mirrors of snapshot_combined_view.py)
 
@@ -46,6 +46,10 @@ class serve(_Section):
     SUBLST_LST_RUN_GLOB = 'Run_SLST[0-9][0-9]B'   # sublst_publish_lst.sh:42; sublst_catalog_publish.sh:96
     SUBLST_BUILD_SUFFIX = '.build'          # sublst_cumulative.sh:15
     SUBLST_PREV_SUFFIX = '.prev_{utc}'      # utc = %Y%m%dT%H%M%S; sublst_cumulative.sh:102
+    SUBLST_PAGE_CONTEXT_WORKERS = 16        # page_context_tenmin.py --workers after the swap (sublst_cumulative.sh:298; the
+                                            # 10-minute panels' run context as page text, Gregg 2026-10-22)
+    SUBLST_FILTER_TIER = 'tenmin'           # --tier of bright_source_filter_precompute.py and scintillation_index.py on the new build
+                                            # (sublst_cumulative.sh:177-180; R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION)
     SNAPSHOT_SOURCE = '/fast/gh/main/phase3/snapshot_rechain_{label}/{label}'   # on site CHAIN_HOST; snapshot_rechain_batch.sh:51
     SNAPSHOT_COPY_EXCLUDE = ('tmp_panels', 'tmp_panel_queue')      # snapshot_serve.sh:28
     SNAPSHOT_SERVE_HOLD = '/lustre/gh/main/exopipe_ops/snapshot_batch/SERVE_HOLD'   # THE SERVE HOLD: while this file exists (any
@@ -202,6 +206,10 @@ class serve(_Section):
     TWO_PORT_REGISTRY = 'registry.json'             # register_page.py:25 (REG): what the server reads
     TWO_PORT_REGISTERED = 'registered_pages.json'   # register_page.py:25 (REGD): the registered entries (the re-seed keeps them)
     TWO_PORT_GREENLIT = 'greenlit_pages.json'       # greenlit_overlay.py:16: Gregg's list (read only; applied to every write)
+    TWO_PORT_LOCK = '.registry.lock'                # register_page.py LOCK (2026-11-13): the registry lock - an exclusive flock
+                                                    # every writer of the registry holds for its whole read-modify-write
+                                                    # (register_page.py, reseed_loop_v5.sh, register.registry_lock)
+    TWO_PORT_LOCK_WAIT_S = 900.0                    # register_page.py LOCK_WAIT_S: s to wait for another writer; then refused
     TWO_PORT_PARITY_DIR = 'two_port'                # a parity serve's registry directory under --out
     TWO_PORT_ENV_PREFIXES = ('P3_',)                # an entry's env: these variables of the page's server environment
                                                     # (snapshot_register_page.py:50, SNAP_REGISTER_ENV default)
@@ -357,6 +365,18 @@ class serve(_Section):
     # ---- sub-LST cumulative build -----------------------------------------------------------------------------------
     SUBLST_LOC_ENV = {'P3_LOC_COMMON_FRAME': '1', 'P3_LOC_CATS': 'source_catalogs_[IV]_[sw]b'}   # sublst_cumulative.sh:28-29 (ruling item 4,
                                             # 2026-10-08, per sublst_cumulative.sh:27-28; ledger ID not located - not in RULED)
+    SUBLST_LOC_SPEED_ENV = {'P3_LOC_ROW_INDEX': '1', 'P3_LOC_SHARDS': '6'}   # SPEED ONLY, production's own two switches of
+                                            # build_localizations.py (2026-10-17 row index: each catalog file read once, not once
+                                            # per identity; 2026-10-27 shards: N processes, the identities in the same sorted
+                                            # order) - the tables are byte-identical to the serial run's (proven on the served
+                                            # 24-LST run, 19,332 identities); production's 10-minute build sets neither
+                                            # (sublst_cumulative.sh:102-103; 110 min on 2026-11-02). {} = as production. 6: the
+                                            # Lustre rule (each process reads every Master once)
+    SUBLST_PAGE_CONTEXT_CACHE = 'page_context_frames.csv'   # the page context's frame-noise table (path, size, mtime, rms of every
+                                            # searched frame; page_context_tenmin.py:117), CARRIED from the served run into the build
+                                            # before the swap: the tool re-validates every entry by size and mtime and measures
+                                            # only the rest (production starts each build without it and measures every frame:
+                                            # 61,926 frames in 2,451 of the step's 2,554 s on 2026-11-02). None = as production
     SUBLST_FIG_THREADS = 4                  # figures drawn at once; sublst_cumulative.sh:57
     SUBLST_FIG_TIMEOUT_S = 600              # s per figure; sublst_cumulative.sh:54
     SUBLST_INDEX_TIERS = ('V_sb', 'I_sb', 'V_wb', 'I_wb')   # p3t_pages_index.py per tier; sublst_cumulative.sh:62-64 (wb optional)
@@ -394,6 +414,25 @@ class serve(_Section):
                                             # tables). Production sets none (a random seed per run: not reproducible, so no parity
                                             # value exists); '' = unset, as production. The refactor's reproducibility setting, not a
                                             # ruling: the figures' content is the same, only the marker stacking is fixed [step]
+    # the four steps on the review copy after the gate on the copy and the carry, before any page starts (snapshot_serve.sh:164-198,
+    # exopipe_ops 607f7a2; lib/serve/snapshot_copy.py stages scintillation, page-context, bright-filter, page-index)
+    SNAPSHOT_FILTER_TIER = 'snapshot'       # --tier of scintillation_index.py and bright_source_filter_precompute.py (:168, :187;
+                                            # R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION)
+    SNAPSHOT_PAGE_CONTEXT_WORKERS = 16      # page_context_snapshot.py --workers (:176)
+    SNAPSHOT_BRIGHT_CADENCES = ('10s', '1min')   # one bright-source npz per Stokes and cadence (:186; the Stokes are the served pages')
+    SNAPSHOT_BRIGHT_WORKERS = 6             # bright_source_filter_precompute.py --workers (:187; at most 6 Lustre readers)
+    SNAPSHOT_BRIGHT_PEAK_CACHE = '/data07/gh/bright_filter_snapshot_peaks'   # --peak-cache (:187): the batch records' served rows
+                                            # kept between runs, on the review host's local disk
+    SNAPSHOT_STEP_CWD = '/tmp'              # the working directory of the scintillation index, bright-source filter and page index
+                                            # (:168, :187, :196 `cd /tmp`); the page context runs in the exopipe_ops root (:176)
+    SERVE_PARITY_CACHE = '{out}/_cache'     # a parity run's tool caches (the parity guard refuses writes outside --out): the
+                                            # scintillation index's --cache and the bright-source filter's --peak-cache. Production
+                                            # names none of them (the tools' defaults; the peak cache above)
+    SNAPSHOT_PCTX_SAMPLE_DIRS = 5000        # content test snapshot_page_context.sidecar_per_panel: the review folders read (a seeded
+                                            # sample; every panel in each). The full view holds ~950,000 folders and 2.7M panels
+    PAGE_INDEX_FORMAT = 3                   # the page index's format the review server reads (classify_transients.PAGE_INDEX_FORMAT,
+                                            # build_detections_index.py FORMAT); content test detections_index.manifest_current
+    PAGE_INDEX_RECHECK = 200                # content test detections_index.records_current: folders re-read against their record
 
     # ---- the COMBINED SNAPSHOT VIEW: the snapshot tier's cumulative step (`serve --tier snapshot --family comb`,
     # lib/serve/snapshot_view.py; spec docs/specs/snapshot_combined_view.md). Port of exopipe_ops snapshot_combined_view.py
@@ -474,6 +513,7 @@ class serve(_Section):
         'DEEP_VIEW_REVIEW_DIR': 'FIX-REFACTOR-DEFECTS-D2-D6-D7-D9-D10-AND-RULINGS-D1-D5-D8-20261013',
         'HOLD_FP_VERDICTS': 'R-SNAPSHOT-SERVE-HOLD-ONLY-ON-NON-FP-MISSED-JUDGEMENTS',
         'SNAPSHOT_LOCALIZE': 'R-SNAP-EACH-DETECTION-OWN-FIT-AND-PER-TIER-COMBINED-POSITIONS-IMPLEMENTED',
+        'SNAPSHOT_FILTER_TIER': 'R-GREGG-20261112-FILTERS-FINALIZE-BRIGHT-AND-SCINTILLATION',
         # the combined snapshot view: one page per tier and Stokes over every batch (Gregg 2026-10-26 "No! I just mean combine
         # the batches for each tier/polarization into one page."), one tier per page directory (Gregg 2026-10-03)
         'SNAPSHOT_CARD2_REJUDGE_APPROVED': 'R-GREGG-20261104-DEEP-OMISSION-SHORT-TIERS-ANSWERS',   # "the count of removed

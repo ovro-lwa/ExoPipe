@@ -420,7 +420,7 @@ def derive_inputs(ctx):
         n, by = count_excluded_rows(ctx, sdir, man)
         man['excluded_rows'] = {'n': n, 'by_cell': by, 'policy': B.EXCLUDED_ROWS}
         from exopipe.phase3.core import exclusions
-        ex = exclusions.load()
+        ex = exclusions.for_tier(ctx.tier)       # the sub-LST tier reads the snapshot tiers' scope per night (2026-11-13)
         u.add_input(C.paths.DATA_DECISIONS, extra=ex.fingerprint())
         u.note(f'harvest rows on excluded (LST, scope, date): {n} (policy {B.EXCLUDED_ROWS})')
         if n and B.EXCLUDED_ROWS == 'refuse':
@@ -501,7 +501,7 @@ def count_excluded_rows(ctx, sdir, man):
     import csv
     from exopipe.phase3.core import exclusions
     B = ctx.C.calibrate_bright_parent
-    ex = exclusions.load()
+    ex = exclusions.for_tier(ctx.tier)
     env = {'P3S_LABEL': man['harvest_label'], 'P3S3_STATE_DIR': sdir}
     if ctx.tier == 'deep':
         env['P3S3_COLLECT_ROOTS'] = ':'.join(B.COLLECT_ROOTS)

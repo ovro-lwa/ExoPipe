@@ -617,8 +617,25 @@ def freq_label(freq_str):
 _PERBAND_EXCL = set()   # (lst, sub, date) rows marked [PERBAND] — see load_exclusions
 
 
-def load_exclusions():
-    """Load prior exclusions from data_decisions.csv. Returns set of (lst, freq_str, date)."""
+SNAPSHOT_GPU_READMIT_TAG = '[SNAPSHOT-GPU-READMITTED'
+SNAPSHOT_ONLY_EXCLUDE_TAG = '[SNAPSHOT-TIERS-ONLY'
+EXCLUSION_SCOPES = (None, 'snapshot', 'snapshot-gpu')
+
+
+def load_exclusions(scope=None):
+    """Load prior exclusions from data_decisions.csv. Returns set of (lst, freq_str, date).
+
+    scope='snapshot-gpu' (Gregg 2026-11-10, R-GREGG-20261110-PEELING-READMIT-GPU-SNAPSHOT-ONLY-...): rows whose reason carries
+    SNAPSHOT_GPU_READMIT_TAG are skipped - the snapshot-tier searches of the observatory GPU pipeline's frames (and their
+    products) re-admit those cell-bands; the default (None: the co-adds, the deep search, every other reader) is unchanged.
+
+    Rows whose reason carries SNAPSHOT_ONLY_EXCLUDE_TAG (2026-11-13, DECIDED-20261113-SNAPSHOT-OPEN-ITEMS-LOWSKY-CONFORMANCE-17H22H:
+    the 10-s frames of the cell-band lost the sky while its deep night image is healthy) exclude in the snapshot tiers only:
+    scope 'snapshot' (the snapshot and sub-LST tiers, Phase 1 frames) and 'snapshot-gpu' honor them; the default skips them, so
+    the co-adds and the deep search are unchanged.  Any other scope REFUSES.  (Production exopipe a8b56d3, ported verbatim;
+    the tags and scopes equal config exclusions.SNAPSHOT_ONLY_TAG / GPU_READMIT_TAG / SCOPES, which core.exclusions reads.)"""
+    if scope not in EXCLUSION_SCOPES:
+        raise RuntimeError(f"REFUSING: unknown exclusion scope {scope!r} (known: {EXCLUSION_SCOPES})")
     excl = set()
     if not os.path.exists(DECISIONS_CSV):
         # C-09 (Gregg 2026-08-11): missing exclusion list = HARD REFUSAL.
@@ -631,6 +648,10 @@ def load_exclusions():
     _PERBAND_EXCL.clear()
     for _, row in df.iterrows():
         if row.get('verdict') == 'exclude':
+            if scope == 'snapshot-gpu' and SNAPSHOT_GPU_READMIT_TAG in str(row.get('reason', '')):
+                continue
+            if scope is None and SNAPSHOT_ONLY_EXCLUDE_TAG in str(row.get('reason', '')):
+                continue
             lst = row['lst']
             sub = str(row['subband']).replace('MHz', '')
             date = row['date']
@@ -641,6 +662,33 @@ def load_exclusions():
             if '[PERBAND]' in str(row.get('reason', '')):
                 _PERBAND_EXCL.add((lst, sub, date))
     return excl
+
+
+GPU_FRAME_CELLS_FILE = os.environ.get('P3_SNAP_GPU_CELLS', '/lustre/gh/main/exopipe_ops/snapshot_gpu_frame_cells.txt')
+
+
+def gpu_frame_cells():
+    """{(LST, date)} whose 10-s frames are the observatory GPU pipeline's - the list clv15 phase3_snapshot_search.gpu_cells reads
+    (Gregg 2026-11-08/10).  A missing file is an empty set: every night then reads scope 'snapshot', the stricter one.
+    (Production exopipe 36351ca, ported verbatim; v2's vendored copy of that reader is lib/snapshot_engine/phase3_snapshot_search.)"""
+    out = set()
+    if os.path.exists(GPU_FRAME_CELLS_FILE):
+        for ln in open(GPU_FRAME_CELLS_FILE):
+            p = ln.split()
+            if len(p) >= 2 and not ln.startswith('#'):
+                out.add((p[0], p[1]))
+    return out
+
+
+def snapshot_exclusion_test():
+    """is_excluded for the snapshot, 1-min and 10-minute tiers (2026-11-13), read now: f(lst, freq_str, date) -> bool with scope
+    'snapshot-gpu' for a GPU-frame night (gpu_frame_cells) and 'snapshot' for every other night.  'snapshot' is loaded last, so
+    the module's [PERBAND] set is that scope's (the two scopes' [PERBAND] sets are equal while no [PERBAND] row is GPU-readmitted).
+    (Production exopipe 36351ca, ported verbatim.)"""
+    exg = load_exclusions(scope='snapshot-gpu')
+    exs = load_exclusions(scope='snapshot')
+    gpu = gpu_frame_cells()
+    return lambda lst, freq_str, date: bool(is_excluded(lst, freq_str, date, exg if (lst, date) in gpu else exs))
 
 
 # Subbands whose individual exclusion does NOT propagate to their wideband.

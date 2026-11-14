@@ -121,7 +121,7 @@ class frames_sublst(_Section):
     content test (b). The sub-LST root is the run's --out (production paths.SUBLST_ROOT), laid out as production:
     <root>/<LST>/, <root>/<LST>_x2/, <root>/<LST>_masters/, <root>/tenmin_root_x2/."""
     # ---- stages ------------------------------------------------------------------------------------------------------
-    ORDER = ('nonmember-list', 'stack', 'nonmember', 'wideband', 'tree', 'searchframes', 'verify')   # run order of any --stages list
+    ORDER = ('nonmember-list', 'stack', 'nonmember', 'wideband', 'tree', 'tree-nonmember', 'searchframes', 'verify')   # run order of any --stages list
     # default --stages per operating mode (DESIGN 12): 'per-hour' = --epochs <LST>_<date> (one night): the night's window
     # stacks; the x2 refine (`flow --tier sublst`, GPU) follows, then `frames --stages wideband,tree,verify` for the night.
     # 'intermittent' = --lsts <LST> (every night): after `masters --tier sublst --stages loo` and the refine.
@@ -133,12 +133,20 @@ class frames_sublst(_Section):
     # needs it there (a night without a usable qa3_scale in the frozen deep weights), through
     # lib/masters/sublst_nonmember.list_night: locked, once, recorded; writes nothing when not needed or already listed.
     # In neither default, as nonmember.
+    # 'tree-nonmember' (on request, after the night's x2 refine `flow --tier sublst --stages refine-nonmember`): adds ONE
+    # night of co-add weight 0 to the tree of each band, through lib/frames/sublst_tree_nonmember.py (the builder's own
+    # result for that night; no other night's file read). In neither default, as nonmember.
     STAGES = {'per-hour': ('stack',), 'intermittent': ('wideband', 'tree', 'verify')}
     # ---- wideband (S-G8 .. S-G10) --------------------------------------------------------------------------------------
     GROUPS = ('Red', 'Green', 'Blue')       # nocat:256 (WBS); Full not built; Gregg 2026-10-01 'Go, Red/Green/Blue first'
     WIDEBAND_MIN_MEMBERS = 2                # member subbands per (night, window, group); wideband:83 (engine literal)
     WIDEBAND_WEIGHT = 'inv_var_V_inner_std'  # 1 / nanstd(central half of each axis of the member's V window)^2, same for I and V; wideband:37-40, 79-82 (engine literal)
     WIDEBAND_PARALLEL = 12                  # (group, night) processes at once; nocat:258 (xargs -P 12)
+    # members a group is built without (S-G9: every other member is required; wideband:110, engine literal). Gregg
+    # 2026-10-17: "Red can be built without 18 MHz, i.e. using just the 4 other subbands. This is the only allowed case
+    # where wideband data can be built without a full 5-subband set." Per hour, such a member whose unit of the night was
+    # refused as a whole (any gate) is left out instead of refusing the group (tier_sublst.optional_member_left_out)
+    WIDEBAND_OPTIONAL = ('18MHz',)
     # arm A must be complete before wideband (nocat:232-234). 'record' = the done record of `masters --tier sublst --stages
     # loo` (unit loo_<LST>_<sb>) under this run's root (crosscheck decision 6); 'log' = production's own evidence, the final
     # 'SUBLST-LOO <LST> <sb> <S> windows=' line of <root>/<LST>/logs/loo_<LST>_<sb>_<S>.log (for parity runs on production
@@ -158,8 +166,8 @@ class frames_sublst(_Section):
                    'tree': 'py36',                  # PY6 = development, nocat:263
                    'refine_approved': 'py36'}       # PY6, nocat:243
     RULED = {'GROUPS': 'IMPLEMENTED-10MIN-WIDEBAND-RGB-IN-PROGRESS'}
-    PROTECTED_KEYS = ('WIDEBAND_MIN_MEMBERS', 'WIDEBAND_WEIGHT', 'TREE_COLUMNS', 'WINDOWS', 'REFINE_APPROVED_SCRIPT',
-                      'ORDER', 'INTERPRETER')
+    PROTECTED_KEYS = ('WIDEBAND_MIN_MEMBERS', 'WIDEBAND_WEIGHT', 'WIDEBAND_OPTIONAL', 'TREE_COLUMNS', 'WINDOWS',
+                      'REFINE_APPROVED_SCRIPT', 'ORDER', 'INTERPRETER')
 
 
 class frames_snapshot(_Section):

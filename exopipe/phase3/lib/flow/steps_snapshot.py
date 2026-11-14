@@ -316,7 +316,7 @@ def flow_subband(u, args, run, cell, sb, gpu, info, partial_list):
     on_disk = staged_on_disk(sdir, sb)
     if not on_disk:
         raise NoInput(f'no staged frame of {sb} in {sbdir}')
-    E = exclusions.load()
+    E = exclusions.for_tier('snapshot')
     u.add_input(E.path, extra={'role': 'data_decisions'})
     if E.is_excluded(lst, sb, date):
         if c.flow_snapshot.EXCLUDED_SUBBAND == 'refuse':
@@ -509,7 +509,7 @@ def _resumable(run, name, cell=None, sb=None):
         if not ok:
             print(f'flow snapshot {name}: not resumed ({why})')
             return None
-        admitted = [] if exclusions.load().is_excluded(lst, sb, date) else [date]
+        admitted = [] if exclusions.for_tier('snapshot').is_excluded(lst, sb, date) else [date]
     ok, why = run.resume_check(name, inputs=None, admitted=admitted)
     if not ok:
         print(f'flow snapshot {name}: not resumed ({why})')
@@ -592,7 +592,7 @@ def plan(args, run, cells_, stages):
     """--dry-run: the gates, the frame sets and the outputs of each cell; writes nothing."""
     from exopipe.phase3.core import exclusions, inputs
     rc = 0
-    E = exclusions.load()
+    E = exclusions.for_tier('snapshot')
     for cell, sbs, _explicit in cells_:
         lst, date = cell.split('_')
         P = []
