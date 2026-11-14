@@ -243,7 +243,14 @@ def test_stage():
     check('build-stats, admit-prep, admit: the last deep stages, in no default; the module\'s order is the config\'s',
           DS.STAGE_ORDER == tuple(CFG.masters.STAGES['deep']) and DS.STAGE_ORDER[-3:] == ('build-stats', 'admit-prep', 'admit')
           and not {'build-stats', 'admit-prep', 'admit'} & set(CFG.masters.DEFAULT_STAGES['deep']), DS.STAGE_ORDER)
-    cell, lst, sc = '23h_23MHz', '23h', '23MHz'
+    # the first installed cell whose build population holds no night excluded now (a later exclusion refuses the stage on
+    # its population before anything else - 23h_23MHz holds 2025-10-15 since that night's exclusion)
+    cell = next((c for c in ('22h_23MHz', '23h_23MHz', '11h_Full')
+                 if os.path.isdir(os.path.join(ROOT, c)) and not DS.build_stats_population(os.path.join(ROOT, c), c)[1]), None)
+    check('a fixture cell with no night of its build population excluded now', cell is not None)
+    if cell is None:
+        return
+    lst, sc = cell.split('_')
     wt = os.path.join(T, 'wt')
     cd = copy_records(cell, wt)
     out = f'{T}/out'
@@ -322,6 +329,22 @@ def test_stage():
         check('a membership violation refuses', rc == 2 and 'membership.verify' in r6.get('reason', ''), r6.get('reason'))
     else:
         check('a membership violation refuses (no stage-2 outlier in 11h_Red to misplace: skipped)', True)
+    if os.path.isdir(os.path.join(ROOT, '12h_Red')):
+        # 12h Red 2025-01-08 holds its excluded 18 MHz (the carve-out): the search keeps it, so build-stats must too
+        runs = {}
+        for v in ('keep', 'refuse', 'Keep'):
+            w12, o12 = os.path.join(T, f'wt18_{v}'), f'{T}/out18_{v}'
+            c12 = copy_records('12h_Red', w12)
+            rc, _ = cli('--tier', 'deep', '--cells', '12h_Red', '--stages', 'build-stats', '--cores', 'none', '--out', o12,
+                        '--deep-installed-root', w12, *(() if v == 'keep' else ('--set', f'search_detect.MASTER_HELD_18MHZ={v}')))
+            runs[v] = (rc, _rec(o12, '12h_Red').get('reason', ''), os.path.exists(f'{c12}/coadd_final/{BS.FILE}'))
+        check('a Red night held only for its excluded 18 MHz (12h_Red 2025-01-08): under search_detect.MASTER_HELD_18MHZ (the search key) '
+              '\'keep\' (the default) the record is written; \'refuse\' refuses naming the night; an unknown value refuses',
+              runs['keep'][0] == 0 and runs['keep'][2]
+              and runs['refuse'][0] == 2 and '2025-01-08' in runs['refuse'][1] and '18 MHz' in runs['refuse'][1]
+              and not runs['refuse'][2] and runs['Keep'][0] == 2 and not runs['Keep'][2], runs)
+    else:
+        print('SKIP the held 18 MHz build-stats case (no installed 12h_Red)')
     os.makedirs(f'{T}/empty/{cell}')
     rc, _ = cli(*common[:-1], f'{T}/out_empty', '--deep-installed-root', f'{T}/empty')
     r7 = _rec(f'{T}/out_empty', cell)

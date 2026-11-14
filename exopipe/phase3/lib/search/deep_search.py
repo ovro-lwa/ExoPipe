@@ -1950,6 +1950,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # ~1.4x and the dropout class starts >= 1.8x, so 1.5 sits in the gap
     # (950/20,376 epochs = 4.7% affected; exopipe_ops/beam_audit.py).
     # A REFUSAL, logged per epoch. P3_BEAM_GATE_OFF=1 for archaeology.
+    if os.environ.get('P3_BEAM_GATE_OFF') == '1' and cadence == 'deep' and included_dates:   # PER-HOUR: an append with the gate
+        from exopipe.phase3.lib.search import gate_population as _GP       # off joins only a base searched with it off - one
+        _bfz = _GP.read(run_root, lst, scope, 'beam')                     # rule per attempt (gate_population docstring, READ)
+        if _bfz is None or _bfz['outcome'] != 'off':
+            raise RuntimeError(f'{lst} {scope}: BEAM GATE of an append - P3_BEAM_GATE_OFF=1, but the base attempt '
+                               + ('holds no frozen beam-gate population' if _bfz is None else
+                                  f'was searched with the beam gate {_bfz["outcome"]}')
+                               + ': an append with the gate off would mix the rules in one attempt; REFUSING')
     if os.environ.get('P3_BEAM_GATE_OFF') != '1':
         _p2 = '/lustre/pipeline/exopipe/phase2'
         _irob_f = 'Robust-0.75'
@@ -1991,16 +1999,30 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
         if _nobeam:
             raise RuntimeError(f'{lst} {scope}: no readable Phase-2 beam header for '
                                f'{_nobeam} - beam gate cannot run; REFUSING')
-        _bok = _enough(len(_fin), BEAM_GATE_MIN_NIGHTS, f'{lst} {scope}: beam gate, nights with a beam area')   # WAVE2 B-30
+        _bfz = None                                                        # PER-HOUR (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)):
+        if cadence == 'deep' and included_dates:                           # an append is judged by the population its base attempt
+            from exopipe.phase3.lib.search import gate_population as _GP   # recorded (gate_population.csv), never a recomputed one;
+            _bfz = _GP.frozen_beam(run_root, lst, scope, float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')),   # none recorded,
+                                   BEAM_GATE_MIN_NIGHTS, lambda _n: is_excluded(lst, scope, _kd(_n), _excl))   # another rule: refused
+            print(f'  {lst} {scope}: BEAM GATE (append) - the base attempt\'s frozen population: {_bfz["n"]} nights, '
+                  f'{_bfz["outcome"]}' + (f', median {_bfz["median"]:.6g}' if _bfz['median'] is not None else '')
+                  + (f'; recomputed now {len(_fin)} nights' if len(_fin) != _bfz['n'] else ''))
+        if _bfz is None:                                                   # PER-HOUR: a whole-cell search, as before
+            _bok = _enough(len(_fin), BEAM_GATE_MIN_NIGHTS, f'{lst} {scope}: beam gate, nights with a beam area')   # WAVE2 B-30
+        else:                                                              # PER-HOUR: the recorded outcome - below the minimum the
+            _bok = _bfz['outcome'] == 'applied'                            # skip is counted, as the whole-cell search counted it
+            if not _bok:
+                _enough(_bfz['n'], BEAM_GATE_MIN_NIGHTS, f'{lst} {scope}: beam gate of an append, nights in the base attempt\'s '
+                        f'frozen population')
         if not _bok:
             # GREGG 2026-09-11 ("Waive the floor. I want a complete Masters set"): a thin cell is
             # SEARCHED with the beam gate skipped LOUDLY (as the search-tier gate does below 5
             # nights, R-GC10 rider), never refused. Every night keeps its readable-beam requirement.
-            print(f'  {lst} {scope}: BEAM GATE SKIPPED - only {len(_fin)} nights with a beam area '
+            print(f'  {lst} {scope}: BEAM GATE SKIPPED - only {len(_fin) if _bfz is None else _bfz["n"]} nights with a beam area '   # PER-HOUR
                   f'(needs {BEAM_GATE_MIN_NIGHTS} for the cell median); floor waived, Gregg 2026-09-11; all {len(dates)} '
                   f'epochs searched')
         if _bok:
-            _bmed = _fin[len(_fin) // 2]
+            _bmed = _fin[len(_fin) // 2] if _bfz is None else _bfz['median']   # PER-HOUR: the frozen median of an append
             _thr = float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5'))
             _bbad = [d for d in dates
                      if _areas.get(d, 0) > _thr * _bmed]
@@ -2014,6 +2036,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                       f' REFUSED from search (fitted-beam area >{_thr}x '
                       f'cell median): '
                       f'{[(d, round(_areas[d]/_bmed, 2)) for d in _bbad]}')
+    if cadence == 'deep' and not included_dates:                       # PER-HOUR: a whole-cell search records its beam-gate
+        from exopipe.phase3.lib.search import gate_population as _GP       # population for the appends it will judge (an
+        _boff = os.environ.get('P3_BEAM_GATE_OFF') == '1'                  # addition: nothing above reads it)
+        _bpop = [] if _boff else [d for d in _areas if d not in _adm]      # WAVE2 D-ADMIT: the nights of _fin (admitted left out)
+        _append_locked(f'{run_root}/{_GP.FILE}', _GP.COLS, [_GP.row(
+            lst, scope, 'beam', _bpop, None if (_boff or not _bok) else _bmed,
+            float(os.environ.get('P3_BEAM_GATE_RATIO', '1.5')), BEAM_GATE_MIN_NIGHTS,
+            'off' if _boff else ('applied' if _bok else 'below-minimum'), 'search', _attempt)])
     if len(dates) == 0:
         raise RuntimeError(f'{lst} {scope}: ZERO flows — REFUSING')
     if len(dates) < _minE:
