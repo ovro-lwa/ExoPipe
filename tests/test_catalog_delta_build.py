@@ -202,6 +202,46 @@ def test_content():
     check('content test: a delta without a touched identity and a night without a selected detection pass', ok and c['sources'] == 0, detail)
 
 
+def test_recorded_inputs():
+    """grouping_stage.recorded_inputs: what the latest done grouping run was assembled from (the nights a delta build appends)."""
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    G = f'{T}/g'
+    table = f'{G}/grouping_V/{GS.DETECTIONS}'
+    put(table, ['cand_id,identity_id', 'c1,GTI-1'])
+
+    def record(name, finished, status='done', nights=(('05h', '/n/1'), ('06h', '/n/2')), inp=None, sha=None, stokes=('V',)):
+        os.makedirs(f'{G}/_records/catalog', exist_ok=True)
+        meta = dict(stage=GS.STAGE, stokes=list(stokes), input={'05h': '/all/05h'} if inp is None else inp,
+                    tables={'V': dict(path=table, sha1=sha or GS.table_digest(table))})
+        if nights:
+            meta['input_nights'] = [list(x) for x in nights]
+        with open(f'{G}/_records/catalog/{name}.json', 'w') as f:
+            json.dump(dict(status=status, finished=finished, meta=meta), f)
+    record('a', '2030-01-01T00:00:00Z', nights=())
+    runs, nd = GS.recorded_inputs(G, 'V')
+    check('recorded inputs: an all-nights grouping run names its all-nights directories and no night',
+          runs == {'05h': '/all/05h'} and nd == [], (runs, nd))
+    record('b', '2030-01-02T00:00:00Z')
+    runs, nd = GS.recorded_inputs(G, 'V')
+    check('recorded inputs: the LATEST run counts, with the nights it was run with', nd == [('05h', '/n/1'), ('06h', '/n/2')], nd)
+    check('recorded inputs: the table and sha1 are those of the same record', GS.recorded_table(G, 'V') == (table, GS.table_digest(table)))
+    record('c', '2030-01-03T00:00:00Z', inp='/a/direct/input.csv')
+    check('recorded inputs: a run on a direct input names no LST directory', GS.recorded_inputs(G, 'V')[0] == {})
+
+    def refused(fn):
+        try:
+            fn(G, 'V')
+        except GS.StageRefusal as e:
+            return str(e)
+        return ''
+    record('d', '2030-01-04T00:00:00Z', status='refused')
+    check('recorded inputs: a latest run that did not end done refuses', 'REFUSING' in refused(GS.recorded_inputs))
+    record('e', '2030-01-05T00:00:00Z', sha='0' * 40)
+    check('recorded inputs: a table changed since its run refuses', 'changed since' in refused(GS.recorded_inputs))
+    check('recorded inputs: no record of the Stokes refuses',
+          'no record' in (lambda: refused(lambda g, s_: GS.recorded_inputs(g, 'I')))())
+
+
 def main():
     t0 = time.time()
     shutil.rmtree(T, ignore_errors=True)
@@ -209,6 +249,7 @@ def main():
     test_merge()
     test_assemble()
     test_content()
+    test_recorded_inputs()
     print(f'\n{N[1]} of {N[0]} checks passed in {time.time() - t0:.0f} s')
     if N[1] == N[0]:
         shutil.rmtree(T, ignore_errors=True)

@@ -64,9 +64,15 @@ Per-hour vs intermittent: per LST once its search is complete (DESIGN 12.1: the 
          (conform_pulsar_evidence.csv; both through the frozen mode of wraps/conform_noise.py), and refuses without
          either. The two records are read only when the LST-wide directory's own record of its conformance stage (same
          LST, same arm) is done and lists both files as they are now (frozen_records_refusal). Every other stage is the
-         LST chain's, on the night's rows. No earlier night's row is judged again. The builds, the tests and the
-         comparison are not offered for a night (NIGHT_STAGES): the grouping's incremental mode and the builder's
-         frozen statistics are the next step.
+         LST chain's, on the night's rows. No earlier night's row is judged again. A night pass ends at the leak veto
+         unless stages are named. Its builds (`--stages build,buildv`, after the grouping's incremental run with
+         `--group-night-dir <LST>=<the night's directory>`) are DELTA builds (_build_delta; Gregg 2026-11-13, answer 3 of
+         R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS): the builder on the identities the appended nights touch, its
+         population statistics frozen from the all-nights build's record (wraps/builder_grouping.py FROZEN STATISTICS;
+         an all-nights build under design B writes that record), the catalogs written to the night's own directory with
+         a content test each, then their localizations. NOT built for a night: the rejected-source record, ranks and
+         review directories, and delta builds of OTHER LST hours that hold a member of a touched identity. The tests
+         and the comparison are LST-wide and not offered for a night (NIGHT_STAGES).
 """
 import ast
 import contextlib
@@ -88,9 +94,11 @@ STAGES = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos'
 HEAVY = ('merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto', 'build', 'buildv', 'test',
          'compare')
 OPTIONAL = ('build', 'buildv', 'compare', 'reftie')   # may end no-input by configuration (not selected / switched off)
-# PER-HOUR night pass (--sublst-night): the stages offered for one night's rows (the builds need the grouping's incremental
-# mode and frozen builder statistics; the tests and the comparison are LST-wide)
-NIGHT_STAGES = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto')
+# PER-HOUR night pass (--sublst-night): the stages run for one night's rows when none is named (NIGHT_DEFAULT) and the stages
+# offered (NIGHT_STAGES: the builds are the night's delta builds and run after the grouping's incremental run with this
+# night; the tests and the comparison are LST-wide)
+NIGHT_DEFAULT = ('preflight', 'merge', 'tier-rules', 'tie-pulsars', 'conform', 'fitpos', 'select', 'tie', 'veto')
+NIGHT_STAGES = NIGHT_DEFAULT + ('build', 'buildv')
 IN_PLACE = ('master_catalog.csv',)                    # rewritten in place by merge, tier-rules, conform, fitpos
 SPLIT_KEYS = ('V_sb', 'I_sb', 'V_wb', 'I_wb')         # sublst_catalogs.sh:235, :255 (order of the --rows and of the builds)
 # environment variables the in-place sub-LST modules read that core/legacy.run does not clear (it clears P3_* only): a value
@@ -1643,7 +1651,136 @@ def st_veto(ctx, s, plan):
         s.out(f'{U}/leakveto/leakveto_{ctx.lst}_{band}_{st}.csv', 'leak_veto_table', run_dir=U)
 
 
+def _build_delta(ctx, s, plan, tag):
+    """PER-HOUR night pass: the night's DELTA build of one tag ('noveto' / 'veto'). The builder runs through the grouping
+    runner in its mode `delta` on a build directory (<U>/_side/delta_<tag>, lib/catalog/delta_build.assemble) that holds the
+    all-nights rows of --sublst-frozen-from plus the selected rows, window-tie rows and (veto) leak-veto tables of every night
+    the grouping was run with for this LST, and writes <U>/source_catalogs_<tag>_<K> with the identities those nights touch
+    only: a night's delta is CUMULATIVE since the all-nights build, the newest supersedes the earlier ones. Refuses unless: the
+    grouping is design B; the latest done grouping run of the key's Stokes was assembled from --sublst-frozen-from for this LST
+    and names this night's directory; the all-nights build wrote its frozen record for the key; the grouping holds every input
+    row as selected (S-G18). Each catalog directory then passes the content test of delta_build.content_test or the stage
+    refuses. Localizations follow, with the merged window-tie table."""
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    from exopipe.phase3.lib.catalog import grouping_stage as GS
+    U, F = ctx.U, ctx.frozen_from
+    script, loc = ctx.opsc('build_source_catalogs_v3.py'), ctx.opsc('build_localizations.py')
+    cats = shared('catalog_localize', 'CATS', 'sublst').format(build=tag)
+    B = os.path.join(U, '_side', f'delta_{tag}')
+    pt = os.path.join(B, DB.PERTIE)
+    lv = '' if tag == 'noveto' else os.path.join(B, DB.LEAKVETO)
+    py = ctx.py['default']
+    plan.append(f'delta build ({tag}) of night {ctx.night}: build directory {B} = the all-nights rows of {F} plus the selected '
+                f'rows, window-tie rows' + (' and leak-veto tables' if tag == 'veto' else '') + f' of every night the grouping '
+                f'{ctx.grouping_dir} was run with for {ctx.lst} (lib/catalog/delta_build.py); for K in {", ".join(SPLIT_KEYS)} '
+                f'with >= 1 appended selected row: P3_LEAKVETO_DIR={lv!r} P3_TENMIN_PERTIE={pt} EXOPIPE3_FROZEN_MODE=delta '
+                f'(record {F}/source_catalogs_{tag}_K/{DB.FROZEN_RECORD}) {py} {GS.builder_runner()} {script} selected_K.csv '
+                f'{U}/source_catalogs_{tag}_K v_deep_images.csv >> catalogs_{tag}_K.log; then the content test of each catalog')
+    plan.append(f'localizations ({tag}) of the delta: P3_LOC_CATS={cats!r} P3_LOC_OUT={U}/localizations_{tag} '
+                f'P3_TENMIN_PERTIE={pt} {py} {loc} {U}')
+    plan.append('not built for a night: the rejected-source record, ranks and review directories, delta builds of other LST hours')
+    if not ctx.grouping_mode.design_b:
+        refuse('S-G18 delta build: a night\'s build needs the design-B grouping (catalog_grouping.MODE): the builder\'s frozen '
+               'statistics exist only under it')
+    if ctx.dry:
+        return
+    if tag == 'veto' and not os.path.isdir(f'{U}/leakveto'):
+        ctx.log.say('REFUSING buildv: the night has no leak-veto tables')
+        refuse(f'S-G17: build (veto) needs the night\'s leak-veto tables {U}/leakveto (run the veto stage)')
+    same = lambda a, b: os.path.realpath(a) == os.path.realpath(b)   # noqa: E731
+    tables, nights = {}, None
+    for st in sorted({k[0] for k in SPLIT_KEYS}):
+        try:
+            tables[st] = GS.recorded_table(ctx.grouping_dir, st)
+            runs, nd = GS.recorded_inputs(ctx.grouping_dir, st)
+        except GS.StageRefusal as e:
+            refuse(f'S-G18 delta build: {e} (`exopipe3 catalog --tier sublst --stages group --group-mode incremental '
+                   f'--group-night-dir {ctx.lst}={U}`, or --sublst-grouping DIR)')
+        if not (runs.get(ctx.lst) and same(runs[ctx.lst], F)):
+            refuse(f'S-G18 delta build: the Stokes {st} grouping {ctx.grouping_dir} was assembled from {runs.get(ctx.lst)!r} for '
+                   f'{ctx.lst}, not from --sublst-frozen-from {F}: the frozen record and the grouping must stand on the same '
+                   f'all-nights build')
+        mine = sorted(os.path.realpath(D) for L, D in nd if L == ctx.lst)
+        if os.path.realpath(U) not in mine:
+            refuse(f'S-G18 delta build: the latest Stokes {st} grouping run does not hold this night ({U}; its nights of '
+                   f'{ctx.lst}: {mine or "none"}) - group again with --group-mode incremental --group-night-dir {ctx.lst}={U}')
+        if nights is not None and mine != nights:
+            refuse(f'S-G18 delta build: the Stokes I and V groupings were run with different nights of {ctx.lst} ({nights} / '
+                   f'{mine}) - group again')
+        nights = mine
+    s.code(script, loc, ctx.opsc('source_localization.py'))
+    try:
+        asm = DB.assemble(B, F, nights, SPLIT_KEYS, tag)
+    except DB.DeltaRefusal as e:
+        refuse(f'S-G18 delta build ({tag}): {e}')
+    s.inp(f'{F}/v_deep_images.csv')
+    s.u.meta.setdefault('delta', {})[tag] = dict(frozen_from=F, nights=nights, build_dir=B, keys={})
+    built = []
+    for k in SPLIT_KEYS:
+        m = asm['selected'].get(k)
+        if not m or not m['appended']:
+            ctx.log.say(f'{k} ({tag}): no selected row of an appended night: no delta')
+            continue
+        d = f'{U}/source_catalogs_{tag}_{k}'
+        rec = f'{F}/source_catalogs_{tag}_{k}/{DB.FROZEN_RECORD}'
+        if not os.path.exists(rec):
+            refuse(f'S-G18 delta build {k} ({tag}): no {rec}: the all-nights build of {ctx.lst} wrote no frozen record (it '
+                   f'predates the record or made no catalog of this key) - build all nights again')
+        if os.path.isdir(d):
+            if os.listdir(d) and not os.path.exists(f'{d}/{DB.DELTA_RECORD}'):
+                refuse(f'S-G18 delta build {k} ({tag}): {d} holds files but no {DB.DELTA_RECORD}: not a delta build of this '
+                       f'night, not replaced')
+            shutil.rmtree(d)                       # the night's earlier delta of this key: a delta is built whole
+        os.makedirs(d)
+        table, sha = tables[k[0]]
+        s.inp(f'{F}/selected_{k}.csv', rec, table, *[f'{n}/selected_{k}.csv' for n in nights if os.path.exists(f'{n}/selected_{k}.csv')])
+        s.u.meta.setdefault('grouping_tables', {})[k[0]] = dict(path=table, sha1=sha)
+        bad = GS.covers(table, f'{B}/selected_{k}.csv')
+        if bad:
+            refuse(f'S-G18 delta build {k} ({tag}): the grouping {table} does not hold the build\'s input as selected ({len(bad)}+ '
+                   f'rows, e.g. {bad[:3]}) - group again with every appended night of {ctx.lst}')
+        ctx.log.say(f'{k} ({tag}): delta build on {m["base"]} all-nights rows + {len(m["appended"])} rows of {len(nights)} night(s)')
+        res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
+                   env=ctx.env(P3_LEAKVETO_DIR=lv, P3_TENMIN_PERTIE=pt,
+                               **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha, frozen='delta', frozen_record=rec)),
+                   log=f'{U}/catalogs_{tag}_{k}.log', cwd=B)
+        s.u.meta.setdefault('grouping_builder', {})[f'{tag}_{k}'] = GS.builder_line(res.tail)
+        if res.ok and not GS.builder_line(res.tail).startswith('GROUPING-BUILDER done'):
+            refuse(f'S-G18 delta build {k} ({tag}): the grouping runner gave no done line')
+        need_ok(res, f'S-G18 build_source_catalogs_v3.py {k} ({tag}, delta)', r'REFUS|Error',
+                say=lambda: ctx.log.say(f'{k} ({tag}): delta build FAILED (see catalogs_{tag}_{k}.log)'))
+        with open(f'{U}/selected_{k}.csv', newline='') if os.path.exists(f'{U}/selected_{k}.csv') else contextlib.nullcontext() as f:
+            mine_c = [r['cand_id'] for r in csv.DictReader(f)] if f else []
+        ok, detail, counts = DB.content_test(d, mine_c, vetoed=asm['vetoed'])
+        s.u.check(f'delta.content.{tag}_{k}', ok, value=counts.get('sources'), detail=detail, path=d)
+        s.u.meta['delta'][tag]['keys'][k] = counts
+        ctx.log.say(f'{k} ({tag}): delta content test {"PASS" if ok else "FAIL"}: {detail}')
+        if not ok:
+            refuse(f'S-G18 delta build {k} ({tag}): content test failed: {detail}')
+        built.append(d)
+    if not built:
+        raise _record().NoInput(f'night {ctx.night} ({tag}): no selected row of an appended night in any key: no delta to build')
+    ctx.log.say(f'delta source catalogues ({tag}) complete: {len(built)} key(s)')
+    res = call(ctx, s, loc, [U], env=ctx.env(P3_LEAKVETO_DIR=lv, P3_TENMIN_PERTIE=pt, P3_LOC_CATS=cats,
+                                             P3_LOC_OUT=f'{U}/localizations_{tag}'),
+               log=f'{U}/catalogs_{tag}_loc.log', cwd=U)
+    need_ok(res, f'S-G19 build_localizations.py ({tag}, delta)', r'REFUS|Error',
+            say=lambda: ctx.log.say(f'localizations ({tag}) of the delta FAILED (see catalogs_{tag}_loc.log)'))
+    lp = f'{U}/localizations_{tag}/localizations.csv'
+    if glob.glob(f'{U}/{cats}/*_sources_survivors.csv') and not (os.path.exists(lp) and os.path.getsize(lp) > 0):
+        ctx.log.say(f'REFUSING: delta survivors exist but no localizations ({tag})')
+        refuse(f'S-G19: delta survivors exist but no localizations ({tag})')
+    ctx.log.say(f'localizations ({tag}) of the delta: {count_lines(lp) - 1 if os.path.exists(lp) else 0} identities -> '
+                f'{U}/localizations_{tag}')
+    for d in built:
+        s.out(d, 'source_catalog', run_dir=U)
+    if os.path.exists(lp):
+        s.out(lp, 'localization_table', run_dir=U, cats=cats)
+
+
 def _build(ctx, s, plan, tag):
+    if ctx.night:                                  # PER-HOUR night pass: the night's delta build
+        return _build_delta(ctx, s, plan, tag)
     U = ctx.U
     script, loc, rej = (ctx.opsc('build_source_catalogs_v3.py'), ctx.opsc('build_localizations.py'),
                         ctx.opsc('emit_rejected_record.py'))
@@ -1694,7 +1831,9 @@ def _build(ctx, s, plan, tag):
                 refuse(f'S-G18 design B: the grouping {table} does not hold selected_{k}.csv as selected ({len(bad)}+ rows, e.g. '
                        f'{bad[:3]}) - group again with this LST (--group-lst-dir {ctx.lst}={U})')
             res = call(ctx, s, GS.builder_runner(), [script, f'selected_{k}.csv', d, 'v_deep_images.csv'],
-                       env=ctx.env(P3_LEAKVETO_DIR=lv, **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha)),
+                       # frozen='record': the all-nights build writes builder_frozen.json, which a night's delta build stands on
+                       env=ctx.env(P3_LEAKVETO_DIR=lv, **GS.builder_env(table, '10min', ctx.grouping_mode, sha1=sha,
+                                                                         frozen='record')),
                        log=f'{U}/catalogs_{tag}_{k}.log', cwd=U)
             s.u.meta.setdefault('grouping_builder', {})[f'{tag}_{k}'] = GS.builder_line(res.tail)
             if res.ok and not GS.builder_line(res.tail).startswith('GROUPING-BUILDER done'):
@@ -1926,11 +2065,12 @@ def run(args, run):
     sel = select_stages(args, STAGES)
     if ctx.night:
         if not (arg(args, 'stages') or arg(args, 'until_stage', 'stage_until', 'until')):
-            sel = [x for x in sel if x in NIGHT_STAGES]     # a night pass ends at the leak veto by default
+            sel = [x for x in sel if x in NIGHT_DEFAULT]    # a night pass ends at the leak veto by default
         notn = [x for x in sel if x not in NIGHT_STAGES]
         if notn or not sel:
             raise SystemExit(f'error: --sublst-night offers the stages {", ".join(NIGHT_STAGES)}; not {", ".join(notn) or "none"} '
-                             f'(the builds of a night need the grouping\'s incremental mode; the tests are LST-wide)')
+                             f'(a night\'s builds are delta builds, named with --stages after the grouping\'s incremental run; '
+                             f'the tests and the comparison are LST-wide)')
     first = STAGES.index(sel[0])
     where = 'production' if ctx.prod else 'non-production; side files under ' + os.path.join(ctx.U, '_side')
     print(f'catalog --tier sublst {ctx.unit}: U={ctx.U} ({where}); label {ctx.label}; tree {ctx.tree}; code {ctx.ops}, '
