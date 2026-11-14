@@ -283,9 +283,45 @@ def test_wiring():
         i = src.index(f'def {name}(')
         return src[i:src.index('\ndef ', i + 10)]
     from exopipe.phase3.lib.catalog import tier_sublst as TS
-    check('wiring: a night pass offers the chain\'s stages from preflight to the leak veto, in the chain\'s order',
-          TS.NIGHT_STAGES == TS.STAGES[:len(TS.NIGHT_STAGES)] and TS.NIGHT_STAGES[-1] == 'veto'
-          and not set(TS.NIGHT_STAGES) & {'build', 'buildv', 'test', 'compare', 'reftie'}, TS.NIGHT_STAGES)
+    check('wiring: a night pass runs the chain\'s stages from preflight to the leak veto by default, in the chain\'s order',
+          TS.NIGHT_DEFAULT == TS.STAGES[:len(TS.NIGHT_DEFAULT)] and TS.NIGHT_DEFAULT[-1] == 'veto', TS.NIGHT_DEFAULT)
+    check('wiring: it offers the two builds after them (the night\'s delta builds) and neither the tests nor the comparison',
+          TS.NIGHT_STAGES == TS.NIGHT_DEFAULT + ('build', 'buildv') == TS.STAGES[:len(TS.NIGHT_STAGES)]
+          and not set(TS.NIGHT_STAGES) & {'test', 'compare', 'reftie'}, TS.NIGHT_STAGES)
+    bd, bl = body('_build_delta'), body('_build')
+    check('wiring: a build stage of a night pass is the delta build, before anything of the all-nights build',
+          bl.index('if ctx.night:') < bl.index('return _build_delta(ctx, s, plan, tag)') < bl.index('U = ctx.U'), bl[:300])
+    check('wiring: the all-nights build under design B writes the frozen record a delta stands on',
+          "frozen='record'" in bl and "frozen='delta'" not in bl)
+    check('wiring: the delta build refuses without design B before it plans anything to run',
+          bd.index('if not ctx.grouping_mode.design_b:') < bd.index('if ctx.dry:') < bd.index('GS.recorded_inputs('))
+    check('wiring: it takes the appended nights from the grouping\'s own record and refuses another all-nights build or a '
+          'grouping without this night',
+          'GS.recorded_inputs(ctx.grouping_dir, st, with_table=True)' in bd and 'same(runs[ctx.lst], F)' in bd
+          and 'os.path.realpath(U) not in mine' in bd and bd.index('GS.recorded_inputs(') < bd.index('DB.assemble('))
+    check('wiring: the build directory is assembled by delta_build from the frozen directory and those nights; a refusal '
+          'there refuses the stage',
+          'DB.assemble(B, F, nights, SPLIT_KEYS, tag)' in bd and 'except DB.DeltaRefusal as e:' in bd)
+    check('wiring: the builder runs in the build directory in mode delta on the all-nights record, with the merged window-tie '
+          'table and (veto) the merged leak-veto tables',
+          "frozen='delta', frozen_record=rec" in bd and 'cwd=B' in bd and 'P3_TENMIN_PERTIE=pt' in bd
+          and 'P3_LEAKVETO_DIR=lv' in bd and "lv = '' if tag == 'noveto' else os.path.join(B, DB.LEAKVETO)" in bd)
+    check('wiring: a missing frozen record refuses; the grouping must hold every input row (S-G18)',
+          'if not os.path.exists(rec):' in bd and "GS.covers(table, f'{B}/selected_{k}.csv')" in bd
+          and bd.index('if not os.path.exists(rec):') < bd.index('res = call('))
+    od = body('_own_delta')
+    check('wiring: a directory that is not this night\'s own delta (finished, or marked started by a failed pass) is neither '
+          'replaced nor removed; the marker is written on creation and removed after the content test',
+          "os.path.exists(f'{d}/{DB.DELTA_RECORD}')" in od and "os.path.exists(f'{d}/{DELTA_STARTED}')" in od and 'refuse(' in od
+          and bd.count('_own_delta(d, k, tag)') == 2 and bd.index('_own_delta(d, k, tag)') < bd.index('shutil.rmtree(d)')
+          and bd.index('os.makedirs(d)') < bd.index("open(f'{d}/{DELTA_STARTED}', 'w')") < bd.index('res = call(')
+          and bd.index('content test failed') < bd.index("os.remove(f'{d}/{DELTA_STARTED}')") < bd.index('built.append(d)'))
+    check('wiring: every delta catalog is content-tested on the night\'s own selected rows, recorded as a check, and a failed '
+          'test refuses',
+          "DB.content_test(d, mine_c, vetoed=asm['vetoed'])" in bd and "s.u.check(f'delta.content.{tag}_{k}', ok" in bd
+          and bd.index('DB.content_test(') < bd.index("content test failed") < bd.index('built.append(d)'))
+    check('wiring: the delta build writes no rejected-source record and assigns nothing outside the night\'s directory',
+          'emit_rejected_record' not in bd and "f'{U}/source_catalogs_{tag}_{k}'" in bd and "os.path.join(U, '_side'" in bd)
     nv, merge, conf = body('night_view'), body('st_merge'), body('st_conform')
     check('wiring: the view is built in mode night from the jobs, then content-tested; a failed test refuses',
           "NV.build(ctx.jobs_src, ctx.src, ctx.lst, ctx.label, ctx.night, 'night')" in nv and 'NV.verify(ctx.src)' in nv
@@ -319,8 +355,12 @@ def test_wiring():
     check('command line: --sublst-frozen-from without a night is an error', rc != 0 and '--sublst-night' in out, out[-300:])
     rc, out = cli('--sublst-night', '2025-05-08T02', '--sublst-frozen-from', f'{T}/lstwide')
     check('command line: a night that is not YYYY-MM-DD is an error', rc != 0 and 'is not YYYY-MM-DD' in out, out[-300:])
-    rc, out = cli('--sublst-night', NIGHT, '--sublst-frozen-from', f'{T}/lstwide', '--stages', 'veto,build')
-    check('command line: a build stage is not offered for a night', rc != 0 and 'offers the stages' in out, out[-300:])
+    rc, out = cli('--sublst-night', NIGHT, '--sublst-frozen-from', f'{T}/lstwide', '--stages', 'veto,test')
+    check('command line: the tests are not offered for a night', rc != 0 and 'offers the stages' in out, out[-300:])
+    rc, out = cli('--sublst-night', NIGHT, '--sublst-frozen-from', f'{T}/lstwide', '--stages', 'build,buildv')
+    check('command line: the builds of a night are planned as delta builds, without a rejected-source record',
+          rc == 0 and out.count('delta build (') == 2 and 'EXOPIPE3_FROZEN_MODE=delta' in out and 'builder_frozen.json' in out
+          and out.count('not built for a night') == 2 and 'emit_rejected_record' not in out, out[-900:])
     rc, out = cli('--sublst-night', NIGHT, '--sublst-frozen-from', f'{T}/cli_night')
     check('command line: the frozen record cannot come from the night\'s own directory', rc != 0 and 'own --out' in out, out[-300:])
     rc, out = cli('--sublst-night', NIGHT, '--sublst-frozen-from', f'{T}/lstwide')
