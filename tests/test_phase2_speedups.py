@@ -35,6 +35,10 @@ product (REVIEW.md item 8). What full LST hours prove on data is in exopipe_ops/
      waits for the child before it goes on; the helper processes are forked and end with their parent. (Most of these
      tests replace the pools by an in-process stand-in; two run real processes; the products are proven on a full LST
      hour.)
+  7. a rerun in the same work directory after a killed run: an elevation-cut copy a killed extraction left beside an image
+     (<image>.elcut<N>[e<M>].fits) is never taken for an image by any image finder (every finder that excludes PyBDSF
+     products excludes them too), and every <image>_dewarped.fits is written through a temporary name and renamed, so a
+     write that stops leaves nothing under the final name for the rerun to skip as done.
 Data-free. Run: python tests/test_phase2_speedups.py   (or under pytest)
 """
 import ast
@@ -1143,6 +1147,72 @@ def test_step_3_extracts_itself_when_no_up_front_catalog_is_there():
     assert sorted(calls) == ['extract_sources(calc_img, logger)', 'extract_sources(dewarped_pbcorr, logger)'], calls
 
 
+# ------------------------------------------------------------------------------------------------------------------------
+# 7. a rerun after a killed run: left elevation-cut copies and cut-off dewarped files
+# ------------------------------------------------------------------------------------------------------------------------
+FINDERS = ('find_deep_pb_image', 'find_deep_raw_image', 'find_all_images_to_warp', 'find_deep_raw_image_dewarped',
+           'find_deep_pb_image_dewarped')
+
+
+def test_a_left_elevation_cut_copy_is_never_taken_for_an_image():
+    _, tree = _source(CASCADE)
+    ns = _pick(tree, FINDERS, CASCADE, {'os': os, 'glob': glob})
+    log = types.SimpleNamespace(warning=lambda *a, **k: None, info=lambda *a, **k: None)
+    tmp = tempfile.mkdtemp(prefix='p2_elcut_')
+    try:
+        d = os.path.join(tmp, '73MHz', 'I', 'deep')
+        os.makedirs(d)
+        pb = os.path.join(d, '73MHz-I-deep-Taper-Robust-0.75-image-pbcorr.fits')
+        raw = os.path.join(d, '73MHz-I-deep-Taper-Robust-0.75-image.fits')
+        left = [x.replace('.fits', t + '.fits') for x in (pb, raw) for t in ('.elcut20', '.elcut20e30')]
+        left += [x.replace('.fits', '_dewarped.fits') for x in left]           # a left copy that a rerun once dewarped
+        for f in [pb, raw, pb.replace('.fits', '_dewarped.fits'), raw.replace('.fits', '_dewarped.fits')] + left:
+            open(f, 'w').close()
+        assert sorted(left)[0] < pb, 'the test no longer has a left copy that sorts before the image'
+        assert ns['find_deep_pb_image'](tmp, '73MHz', log) == pb
+        assert ns['find_deep_raw_image'](tmp, '73MHz', log) == raw
+        assert ns['find_deep_pb_image_dewarped'](tmp, '73MHz', log) == pb.replace('.fits', '_dewarped.fits')
+        assert ns['find_deep_raw_image_dewarped'](tmp, '73MHz', log) == raw.replace('.fits', '_dewarped.fits')
+        assert sorted(ns['find_all_images_to_warp'](tmp, '73MHz', ['deep'])) == sorted([pb, raw])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    src, _ = _source(CASCADE)
+    assert src.count('".pybdsf" not in os.path.basename(f)') == src.count('".elcut" not in os.path.basename(f)'), \
+        'an image finder excludes PyBDSF products but not the elevation-cut copies'
+    assert src.count('".pybdsf" in bn') == src.count('".elcut" in bn'), \
+        'a file loop skips PyBDSF products but not the elevation-cut copies'
+
+
+def test_a_dewarped_file_is_written_whole_or_not_at_all():
+    src, tree = _source(CASCADE)
+    assert 'fits.writeto(out_path, warped' not in src, 'a _dewarped.fits is written without the temporary name'
+    assert src.count('_writeto_atomic(out_path, warped, ') == 3, 'the three dewarp writers no longer use _writeto_atomic'
+    from astropy.io import fits as real
+
+    def stops(path, data, header, overwrite=False):
+        with open(path, 'wb') as f:
+            f.write(b'SIMPLE  =                    T')           # a cut-off file, then the run is killed
+        raise KeyboardInterrupt('killed')
+    tmp = tempfile.mkdtemp(prefix='p2_atomic_')
+    try:
+        out = os.path.join(tmp, 'x-image_dewarped.fits')
+        ns = _pick(tree, ('_writeto_atomic',), CASCADE, {'os': os, 'fits': types.SimpleNamespace(writeto=stops)})
+        try:
+            ns['_writeto_atomic'](out, np.zeros((4, 4), np.float32), real.Header())
+        except KeyboardInterrupt:
+            pass
+        assert not os.path.exists(out), 'a stopped write left a file under the final name'
+        assert not glob.glob(os.path.join(tmp, '*.fits')), 'a stopped write left a .fits name a finder could take'
+        ns = _pick(tree, ('_writeto_atomic',), CASCADE, {'os': os, 'fits': real})
+        data = np.arange(16, dtype=np.float32).reshape(4, 4)
+        ns['_writeto_atomic'](out, data, real.Header())
+        ns['_writeto_atomic'](out, data + 1, real.Header())                   # over an existing file, as overwrite=True did
+        assert np.array_equal(real.getdata(out), data + 1)
+        assert sorted(os.listdir(tmp)) == ['x-image_dewarped.fits'], sorted(os.listdir(tmp))   # the stopped write's .part too
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 TESTS = [test_vlssr_one_call_parser_equals_the_per_line_parser, test_vlssr_parser_falls_back_to_the_per_line_parser,
          test_kept_catalog_is_reused_only_for_the_same_file_and_settings,
          test_the_catalog_key_holds_every_setting_the_extraction_reads,
@@ -1153,7 +1223,8 @@ TESTS = [test_vlssr_one_call_parser_equals_the_per_line_parser, test_vlssr_parse
          test_a_failed_pool_or_child_leaves_the_cascade_as_before,
          test_the_pool_and_the_child_are_real_processes, test_a_helper_process_ends_with_its_parent,
          test_the_up_front_catalog_is_for_the_same_file_and_settings_only,
-         test_step_3_extracts_itself_when_no_up_front_catalog_is_there]
+         test_step_3_extracts_itself_when_no_up_front_catalog_is_there,
+         test_a_left_elevation_cut_copy_is_never_taken_for_an_image, test_a_dewarped_file_is_written_whole_or_not_at_all]
 
 
 def main():
