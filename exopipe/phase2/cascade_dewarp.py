@@ -1002,11 +1002,13 @@ def save_diagnostics(anchors, screen_x, screen_y, wcs, shape, subband,
 
             disturbance_rms_arcmin = float(np.sqrt(np.mean(resid_mag_arcmin**2)))
 
-            if disturbance_rms_arcmin < 0.10:
+            # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.37, 0.46, 0.55 arcmin;
+            # range 0.28 to 1.20). The earlier limits (0.10, 0.20, 0.40) labeled no hour Excellent or Good.
+            if disturbance_rms_arcmin < 0.37:
                 disturbance_quality = "Excellent (smooth)"
-            elif disturbance_rms_arcmin < 0.20:
+            elif disturbance_rms_arcmin < 0.46:
                 disturbance_quality = "Good"
-            elif disturbance_rms_arcmin < 0.40:
+            elif disturbance_rms_arcmin < 0.55:
                 disturbance_quality = "Moderate (structured)"
             else:
                 disturbance_quality = "Poor (highly structured)"
@@ -2129,11 +2131,13 @@ def _make_ionosphere_movie_from_flow(work_dir, diag_dir, logger):
     mean_var = float(np.mean(variabilities[1:])) if len(variabilities) > 1 else 0.0
     max_var = float(np.max(variabilities[1:])) if len(variabilities) > 1 else 0.0
 
-    if mean_var < 0.10:
+    # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.26, 0.35, 0.47); the earlier
+    # limits were 0.10, 0.25, 0.50.
+    if mean_var < 0.26:
         iono_quality = "Excellent (stable)"
-    elif mean_var < 0.25:
+    elif mean_var < 0.35:
         iono_quality = "Good (slow evolution)"
-    elif mean_var < 0.50:
+    elif mean_var < 0.47:
         iono_quality = "Moderate (active)"
     else:
         iono_quality = "Poor (rapid evolution)"
@@ -2996,11 +3000,13 @@ def _make_ionosphere_movie(work_dir, results_10min, diag_dir, logger):
     }
 
     # Classify ionospheric quality
-    if mean_var < 0.10:
+    # Label limits = the quartiles of the 541 processed hours measured 2026-11-14 (0.26, 0.35, 0.47); the earlier
+    # limits were 0.10, 0.25, 0.50.
+    if mean_var < 0.26:
         iono_quality = "Excellent (stable)"
-    elif mean_var < 0.25:
+    elif mean_var < 0.35:
         iono_quality = "Good (slow evolution)"
-    elif mean_var < 0.50:
+    elif mean_var < 0.47:
         iono_quality = "Moderate (active)"
     else:
         iono_quality = "Poor (rapid evolution)"
