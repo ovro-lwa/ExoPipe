@@ -167,7 +167,8 @@ def judge(fz, areas, dates):
 # backfill: the row of an attempt published before FILE existed
 # ---------------------------------------------------------------------------------------------------------------------
 _PRE = ('datadecisions', 'nightimage', 'epochgate', 'sanity', 'stale_input')   # remove a night before the beam gate
-_KEPT = ('sanity_I', 'searchtier', 'wbmember', 'sanity_V')                      # recorded, the night stays in the gate's set
+_KEPT = ('sanity_I', 'searchtier', 'wbmember', 'sanity_V', 'daytime')           # recorded, the night stays in the gate's set
+_AFTER = ('extraction_I', 'extraction_V')      # refused after the gate, the night in its set; per run (a crash), tag column 5
 _TAG = re.compile(r'^\d{8}T\d{6}$')
 
 
@@ -179,13 +180,16 @@ def _refusal_rows(rd, cell, gate):
         return [r for r in csv.reader(fh) if r and len(r) >= 4 and r[0] + '_' + r[1] == cell]
 
 
-def _by_tag(rows, admitted):
-    """{attempt tag: set of nights} of refusal rows (the tag is the last column), admitted nights left out."""
+def _by_tag(rows, admitted, col=-1):
+    """{attempt tag: set of nights} of refusal rows (the tag in column ``col``: the last, or the extraction files' 'attempt'
+    column 5 before their UTC time), admitted nights left out."""
     out = {}
     for r in rows:
-        out.setdefault(r[-1], set())
+        if len(r) <= (col if col >= 0 else -col - 1):
+            continue
+        out.setdefault(r[col], set())
         if r[2] not in admitted:
-            out[r[-1]].add(r[2])
+            out[r[col]].add(r[2])
     return out
 
 
@@ -196,11 +200,36 @@ def _utc(tag):
 
 
 def backfill_attempt(att, cell, stokes, cell_dir, factor, min_nights, beam_area, admitted, excluded):
+    """(row, report) of _backfill_one under the reading of the admitted nights the attempt was searched with. The engine leaves
+    the cell's admitted nights out of the beam population under masters_admit.ADMITTED_NIGHTS 'admitted' and keeps them under
+    production's 'absent'; the attempt does not record which. With admitted nights now, both readings are reconstructed: one
+    accepted - that one; both accepted with the same row - it; both with different rows - REFUSED (the attempt's population
+    cannot be told from its records; re-search the cell)."""
+    adm = set(admitted)
+    r, rep = _backfill_one(att, cell, stokes, cell_dir, factor, min_nights, beam_area, adm, excluded)
+    if not adm:
+        return r, rep
+    r0, rep0 = _backfill_one(att, cell, stokes, cell_dir, factor, min_nights, beam_area, set(), excluded)
+    if r0 is None or (r is not None and r[3:9] == r0[3:9]):
+        rep['admitted_reading'] = 'left out' if r0 is None else 'either (the same row)'
+        return r, rep
+    if r is None:
+        rep0['admitted_reading'] = f'kept ({len(adm)} admitted nights in the population: an engine without admissions)'
+        return r0, rep0
+    rep['admitted_reading'] = 'ambiguous'
+    rep['refused'] = (f'both readings of the {len(adm)} admitted night(s) reproduce the attempt\'s records with different '
+                      f'populations (left out: n {r[3]}, median {r[4] or "-"}; kept: n {r0[3]}, median {r0[4] or "-"}): the '
+                      f'population it was searched with cannot be told - re-search the cell')
+    return None, rep
+
+
+def _backfill_one(att, cell, stokes, cell_dir, factor, min_nights, beam_area, admitted, excluded):
     """(row, report) for the published attempt ``att`` of (cell, Stokes): its beam-gate population reconstructed from its own
     records and the cell's products, or (None, report) with report['refused'] naming why. ``beam_area(date)`` = the engine's
     reader (wideband_admission.beam_area); ``admitted`` = the cell's admitted nights; ``excluded(date)`` = data_decisions now.
     The population = the nights the attempt searched in its Stokes (v_deep_images.csv) or refused at or after the beam gate
-    while they stayed in its set (beam, the 3x I / V sanity, search tier, wideband member), admitted nights left out. Accepted
+    while they stayed in its set (beam, the 3x I / V sanity, search tier, wideband member, daytime, source extraction - the
+    last per run, not compared between runs), ``admitted`` nights left out. Accepted
     only when (a) every night with an I product in the cell now is placed - in the population, refused before the gate by the
     attempt (data_decisions, night-image, epoch, 10x sanity, input provenance), admitted, or excluded now; (b) every gate file's
     nights agree between the attempt's runs (a base and its appends re-apply the gates to the whole cell); (c) no population
@@ -215,11 +244,11 @@ def backfill_attempt(att, cell, stokes, cell_dir, factor, min_nights, beam_area,
     rd = runs[0]
     adm = set(admitted)
     tags, sets = set(), {}
-    for g in _PRE + ('beam',) + _KEPT:
+    for g in _PRE + ('beam',) + _KEPT + _AFTER:
         rows = _refusal_rows(rd, cell, g)
-        bt = _by_tag(rows, adm)
+        bt = _by_tag(rows, adm, 5 if g in _AFTER else -1)
         tags |= set(bt)
-        if len({frozenset(v) for v in bt.values()}) > 1:
+        if g not in _AFTER and len({frozenset(v) for v in bt.values()}) > 1:
             rep['refused'] = f'{g} refusals differ between the attempt\'s runs {sorted(bt)}'
             return None, rep
         sets[g] = set().union(*bt.values()) if bt else set()
@@ -239,7 +268,7 @@ def backfill_attempt(att, cell, stokes, cell_dir, factor, min_nights, beam_area,
     if os.path.exists(img):
         with open(img, newline='') as fh:
             searched = {r['date'] for r in csv.DictReader(fh) if r.get('stokes') == stokes and r['lst'] + '_' + r['scope'] == cell}
-    pop = (searched | sets['beam'] | set().union(*(sets[g] for g in _KEPT))) - adm
+    pop = (searched | sets['beam'] | set().union(*(sets[g] for g in _KEPT + _AFTER))) - adm
     have = set()
     for c in glob.glob(os.path.join(cell_dir, 'subtracted', f'*_I_sub_{scope}.fits')):
         mm = re.match(r'(\d{4}-\d\d-\d\d)_I_sub_', os.path.basename(c))

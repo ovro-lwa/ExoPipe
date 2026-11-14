@@ -1484,7 +1484,12 @@ def run(args, run):
         raise Refusal('search --tier deep --inject: no production injection-through-search path exists for the deep tier '
                       '(spec Q9; the deep K calibrations inject offline) - refused (gate G4)')
     from exopipe.phase3.lib.search import gate_population as GP
-    backfill = GP.BACKFILL_STAGE in [s.strip() for s in (args.stages or '').split(',')]
+    listed = [s.strip() for s in (args.stages or '').split(',') if s.strip()]
+    backfill = GP.BACKFILL_STAGE in listed
+    if backfill and listed != [GP.BACKFILL_STAGE]:
+        raise Refusal(f'--stages {GP.BACKFILL_STAGE} runs alone; also listed: {[s for s in listed if s != GP.BACKFILL_STAGE]}')
+    if getattr(args, 'gate_backfill_write', False) and not backfill:
+        raise Refusal(f'--gate-backfill-write is a switch of --stages {GP.BACKFILL_STAGE} only; this run lists {listed or "all stages"}')
     stages = [GP.BACKFILL_STAGE] if backfill else resolve_stages(args, c.search.STAGES)
     out = os.path.abspath(run.out_root)
     if not c.paths.PRODUCTION_WRITES:
@@ -1493,11 +1498,14 @@ def run(args, run):
             run.no_records = True              # nothing at all under a production tree (not even the run summary)
             raise Refusal(f'--out {out} is under the production tree {hit} and paths.PRODUCTION_WRITES is False (gate G3); '
                           f'pass --out to your own root')
-    if backfill:                               # on request, alone: the beam-gate population of published attempts
-        return gate_backfill(args, run, out)
     dev = comparison_deviations()
     if dev and production_tree(out):
         raise Refusal(f'COMPARISON key(s) off their production value {dev} refused into the production root {out}')
+    if backfill:                               # on request, alone: the beam-gate population of published attempts
+        if dev and getattr(args, 'gate_backfill_write', False):
+            raise Refusal(f'--gate-backfill-write with COMPARISON key(s) off their production value {dev}: the row would '
+                          f'freeze another rule into a published attempt - REFUSED')
+        return gate_backfill(args, run, out)
     if c.paths.PRODUCTION_WRITES:
         work = c.search_run.PRODUCTION_WORK_ROOT
         attempts, flow_root, tmp = c.search_run.PRODUCTION_ATTEMPT_ROOT, work, os.path.join(work, '_tmp')
@@ -1584,7 +1592,7 @@ def gate_backfill(args, run, out):
     is ('present': the same content; refused: another), and one under a production tree refuses while paths.PRODUCTION_WRITES is
     False (gate G3). Report only: the row is written under --out (gate_backfill/<attempt>/gate_population.csv, content-tested), the
     attempt untouched. One unit per (cell, Stokes): done (accepted; meta = the row and the reconstruction's counts), refused (the
-    reconstruction's reason), no-input (no published attempt). --dry-run: report only."""
+    reconstruction's reason), no-input (no published attempt). --dry-run: the reconstruction only, nothing written."""
     from exopipe.phase3.core import exclusions
     from exopipe.phase3.core.record import NoInput, Refusal
     from exopipe.phase3.lib.search import admitted as ADS, gate_population as GP, wideband_admission as WBA
@@ -1595,6 +1603,11 @@ def gate_backfill(args, run, out):
         raise NoInput('no deep unit selected')
     roots = roots_table()
     factor, mn = float(c.search_detect.BEAM_GATE_RATIO), int(c.search_detect.BEAM_GATE_MIN_NIGHTS)   # the engine's (engine_env)
+    ov = [o[0] for o in getattr(c, 'overrides', []) if o[0].split('[')[0] in ('search_detect.BEAM_GATE_RATIO',
+                                                                              'search_detect.BEAM_GATE_MIN_NIGHTS')]
+    if write and ov:                           # a published attempt's row freezes the ruled factor and minimum only
+        raise Refusal(f'--gate-backfill-write with {ov} overridden in this run: the row would freeze another beam-gate rule '
+                      f'into the published attempt (its factor is tested only on refused nights) - REFUSED')
     excl = exclusions.load()
     counts = {}
     for it in items:
@@ -1625,6 +1638,9 @@ def gate_backfill(args, run, out):
                              f'{have["n"]}) than the reconstruction ({r[7]}, n {r[3]})')
                 u.note(f'{rd}/{GP.FILE}: the row is present (the same content)')
                 u.add_output(os.path.join(rd, GP.FILE), 'gate_population', cell=it.cell)
+                continue
+            if run.dry_run:                    # nothing written
+                u.note(f'dry run: {r[7]} n {r[3]} median {r[4] or "-"} (nothing written)')
                 continue
             if not write:                      # the report: the row under --out (content-tested), the attempt untouched
                 rp = os.path.join(out, 'gate_backfill', os.path.basename(att.rstrip('/')))

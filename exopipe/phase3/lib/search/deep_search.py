@@ -2016,6 +2016,14 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # ~1.4x and the dropout class starts >= 1.8x, so 1.5 sits in the gap
     # (950/20,376 epochs = 4.7% affected; exopipe_ops/beam_audit.py).
     # A REFUSAL, logged per epoch. P3_BEAM_GATE_OFF=1 for archaeology.
+    if os.environ.get('P3_BEAM_GATE_OFF') == '1' and cadence == 'deep' and included_dates:   # PER-HOUR: an append with the gate
+        from exopipe.phase3.lib.search import gate_population as _GP       # off joins only a base searched with it off - one
+        _bfz = _GP.read(run_root, lst, scope, 'beam')                     # rule per attempt (gate_population docstring, READ)
+        if _bfz is None or _bfz['outcome'] != 'off':
+            raise RuntimeError(f'{lst} {scope}: BEAM GATE of an append - P3_BEAM_GATE_OFF=1, but the base attempt '
+                               + ('holds no frozen beam-gate population' if _bfz is None else
+                                  f'was searched with the beam gate {_bfz["outcome"]}')
+                               + ': an append with the gate off would mix the rules in one attempt; REFUSING')
     if os.environ.get('P3_BEAM_GATE_OFF') != '1':
         _p2 = '/lustre/pipeline/exopipe/phase2'
         _irob_f = 'Robust-0.75'
@@ -2314,10 +2322,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
     # the V frames are refused from the V search (I uses the flux-alignment QA rms above)
     skip_V_dates = set()
     _vr, _vmed = {}, None                                              # WAVE2 B-02: read by step 3b below
-    _vfz = None                                                        # PER-HOUR: an append whose base recorded no V median is
-    if _b02 and included_dates and resid_V and _RR.base_vsanmed(run_root) is None:   # WAVE2 B-02: judged by its base's V sanity
-        from exopipe.phase3.lib.search import gate_population as _GP   # row - 'below-minimum' skips, counted; none / 'applied' refuse
-        _vfz = _GP.frozen_v_sanity(run_root, lst, scope, SANITY_I_X, SANITY_MIN_NIGHTS)   # (outside the try: a refusal, never caught)
+    _vfz, _vsrow = None, None                                          # PER-HOUR: an append whose base recorded no V median is
+    _vb0 = _RR.base_vsanmed(run_root) if (_b02 and included_dates) else None   # WAVE2 B-02: judged by its base's V sanity row -
+    if _b02 and included_dates and resid_V and _vb0 is None:           # WAVE2 B-02: 'below-minimum' skips, counted; none / 'applied' refuse. The base's
+        from exopipe.phase3.lib.search import gate_population as _GP   # median is read ONCE, outside the try: an unreadable record
+        _vfz = _GP.frozen_v_sanity(run_root, lst, scope, SANITY_I_X, SANITY_MIN_NIGHTS)   # refuses, never caught
     _vfz10 = None                                                      # PER-HOUR 10-minute: an append's V frames are judged by the
     if _ph10 and resid_V:                                              # population its base recorded (a 10-minute attempt has no
         _vfz10 = _GP.frozen_frames(run_root, lst, scope, 'v_sanity', SANITY_I_X, SANITY_MIN_NIGHTS,   # frame_noise.csv); outside the
@@ -2336,7 +2345,7 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
                 pass
         _vf = sorted(v for _d, v in _vr.items() if np.isfinite(v) and v > 0 and _d not in _adm)   # WAVE2 D-ADMIT: the cell's nights
         if _b02 and included_dates:                                            # WAVE2 B-02 (step 3b): an append is judged with the
-            _vb = _RR.base_vsanmed(run_root)                                   # WAVE2 B-02: V median its base recorded - the cell's
+            _vb = _vb0                                                         # WAVE2 B-02: V median its base recorded - the cell's
             _ok_v = _vb is not None                                            # WAVE2 B-02: (its own nights are not); none
             if not _ok_v and resid_V:                                          # WAVE2 B-02: recorded - its base's recorded outcome
                 _enough(_vfz['n'], SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate of an append, nights in the base '   # PER-HOUR:
@@ -2356,11 +2365,11 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             _ok_v = _enough(len(_vf), SANITY_MIN_NIGHTS, f'{lst} {scope}: Stokes V sanity gate, nights with a V frame rms',   # WAVE2 B-30
                             count=bool(resid_V), perhour=_ph)   # an I-only unit (or no V epoch) has no V search for the gate to guard
         if cadence in ('deep', '10min') and not included_dates and resid_V:    # PER-HOUR: a whole-cell search records the V sanity
-            # gate's population for the appends it will judge (an
+            # gate's population for the appends it will judge (an addition: nothing reads it here)
             _vfn = [_d for _d, v in _vr.items() if np.isfinite(v) and v > 0 and _d not in _adm]   # WAVE2 D-ADMIT: the nights of _vf
-            _append_locked(f'{run_root}/{_GP.FILE}', _GP.COLS, [_GP.row(       # addition: nothing reads it here); thin: the recorded
-                lst, scope, 'v_sanity', _vfn, _vf[len(_vf) // 2] if _ok_v else None, SANITY_I_X, SANITY_MIN_NIGHTS,   # outcome
-                'applied' if _ok_v else 'below-minimum', 'search', _attempt)])   # 'below-minimum' with its n, never an absence
+            _vsrow = _GP.row(lst, scope, 'v_sanity', _vfn, _vf[len(_vf) // 2] if _ok_v else None,   # addition: nothing reads it here);
+                             SANITY_I_X, SANITY_MIN_NIGHTS, 'applied' if _ok_v else 'below-minimum',   # thin: the recorded outcome
+                             'search', _attempt)                       # 'below-minimum' with its n, never an absence; written below
         if _ok_v:                                                              # WAVE2 B-02
             _vmed = _vb if _vb is not None else _vf[len(_vf) // 2]             # WAVE2 B-02
             skip_V_dates = {d for d, v in _vr.items() if v > SANITY_I_X * _vmed and d in dates}   # WAVE2 D-ADMIT: searched nights
@@ -2377,6 +2386,9 @@ def run_deep_cell(lst, scope, label='PROD', included_dates=None, stokes='IV',
             raise
         print(f'  {lst} {scope}: V sanity gate could not run ({_e})')
         fallback.site('fallbacks.SEARCH_SANITY_FALLBACK', f'{lst} {scope}: the V sanity gate could not run ({_e})')
+    else:                                                               # PER-HOUR: the V sanity row only of a gate that ran to the
+        if _vsrow is not None:                                          # end, written outside the try (a write failure refuses the
+            _GP.append(run_root, [_vsrow])                              # cell; it never drops the gate's refusals above)
     skip_V_dates |= {d for d in _skipV_wb if d in resid_V}          # wideband member admission, V side - outside the V sanity try,
                                                                     # so a sanity failure can never drop it (R-GREGG-20261023-WIDEBAND-MEMBER-SEARCH-ADMISSION)
     if _b02:                                                           # WAVE2 B-02: the DAYTIME GATE per frame (step 3a) - the

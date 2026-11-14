@@ -52,6 +52,7 @@ from exopipe.phase3.lib.catalog import grouping as G  # noqa: E402
 from exopipe.phase3.lib.catalog import grouping_stage as GS  # noqa: E402
 from exopipe.phase3.lib.catalog import tests_grouping as TG  # noqa: E402
 from grouping_stub_builder import PATCHABLE_BUILDER  # noqa: E402
+from frozen_stub_builder import FROZEN_BUILDER  # noqa: E402
 
 T = '/tmp/exopipe3_tests_grouping_stage'
 FROZEN = '/lustre/gh/main/phase3/refactor_analysis/refactor_wt_20261102/F_grouping/frozen_inputs'
@@ -409,9 +410,9 @@ def test_runner():
     from exopipe.phase3.config import CFG
     live = _bg().normalized_sha1(LIVE_BUILDER, open(LIVE_BUILDER).read())
     frozen = {_bg().normalized_sha1(f, open(f).read()) for f in glob.glob(FROZEN_BUILDERS) if '.refused' not in f}
-    check('F7: the config pin holds the live builder and every frozen 10-minute tree\'s builder (path-normalized; 6 versions)',
+    check('F7: the config pin holds the live builder and every frozen 10-minute tree\'s builder (path-normalized; 7 versions)',
           live in CFG.catalog_grouping.BUILDER_SHA1 and frozen <= set(CFG.catalog_grouping.BUILDER_SHA1)
-          and len(set(CFG.catalog_grouping.BUILDER_SHA1)) == 6, (live, sorted(frozen - set(CFG.catalog_grouping.BUILDER_SHA1))))
+          and len(set(CFG.catalog_grouping.BUILDER_SHA1)) == 7, (live, sorted(frozen - set(CFG.catalog_grouping.BUILDER_SHA1))))
     rc, txt = _run_runner(d, 'out_pin', 'design-b', table=f'{d}/grouping_I/detections.csv', builder=b,
                           accepted=list(CFG.catalog_grouping.BUILDER_SHA1))
     check('F7: a builder not in the pin REFUSES before anything runs (re-port), even with every patch text in place',
@@ -457,7 +458,8 @@ def test_sublst_build():
     shutil.move(f'{U}/grouping_I/detections.csv', f'{gdir}/grouping_I/detections.csv')
     os.makedirs(ops)
     open(f'{ops}/_stubcat.py', 'w').write(STUBCAT)
-    open(f'{ops}/build_source_catalogs_v3.py', 'w').write(PATCHABLE_BUILDER.lstrip())
+    # the stub with the frozen statistics' patch points: an LST-wide build under design B writes the frozen record
+    open(f'{ops}/build_source_catalogs_v3.py', 'w').write(FROZEN_BUILDER.lstrip())
     open(f'{ops}/build_localizations.py', 'w').write(
         "import os, sys\nout = os.environ['P3_LOC_OUT']; os.makedirs(out, exist_ok=True)\n"
         "open(out + '/localizations.csv', 'w').write('identity_id,ra,dec\\nJ0532+3300a,83.0,33.0\\n')\nprint('localized')\n")
@@ -470,6 +472,7 @@ def test_sublst_build():
         pass
     ctx = Ctx()
     ctx.U, ctx.dry, ctx.builds, ctx.pt, ctx.lst = U, False, ('noveto',), f'{U}/pertie', '05h'
+    ctx.night = None                                # an LST-wide pass (a night pass's build is the delta build, tested apart)
     ctx.py = {'default': PY}
     ctx.opsc = lambda name: os.path.join(ops, name)
     ctx.log = TS.Log(f'{U}/catalogs.log')
@@ -477,8 +480,9 @@ def test_sublst_build():
     ctx.grouping_mode = GS.mode()
     ctx.grouping_dir = gdir
     ctx.grouping_table = lambda S: os.path.join(gdir, f'grouping_{S}', 'detections.csv')
-    keep_pin = CFG.catalog_grouping.BUILDER_SHA1
+    keep_pin, keep_fpin = CFG.catalog_grouping.BUILDER_SHA1, CFG.catalog_grouping.FROZEN_BUILDER_SHA1
     CFG.catalog_grouping.BUILDER_SHA1 = tuple(keep_pin) + (_stub_sha1(f'{ops}/build_source_catalogs_v3.py'),)
+    CFG.catalog_grouping.FROZEN_BUILDER_SHA1 = tuple(keep_fpin) + (_stub_sha1(f'{ops}/build_source_catalogs_v3.py'),)
 
     def record(status='done', sha=None, finished='2030-01-01T00:00:00Z', name='Run_SLSTB.group'):
         t = ctx.grouping_table('I')
@@ -505,6 +509,9 @@ def test_sublst_build():
     check('sub-LST build: the grouping table and its sha1 recorded on the unit; the provenance beside the catalogues',
           s.u.meta.get('grouping_tables', {}).get('I', {}).get('sha1') == GS.table_digest(ctx.grouping_table('I'))
           and os.path.exists(f'{U}/source_catalogs_noveto_I_sb/grouping_table.json'), s.u.meta.get('grouping_tables'))
+    check('sub-LST build under design B writes the frozen record of the per-hour delta build (builder_frozen.json)',
+          os.path.exists(f'{U}/source_catalogs_noveto_I_sb/builder_frozen.json'),
+          sorted(os.listdir(f'{U}/source_catalogs_noveto_I_sb')) if os.path.isdir(f'{U}/source_catalogs_noveto_I_sb') else None)
     # F2: the build reads only a table a DONE group-unit record recorded, with the sha1 it has now
     tab0 = open(ctx.grouping_table('I')).read()
 
@@ -545,7 +552,7 @@ def test_sublst_build():
               and surv and not (surv & {'J0520+3000a'}), (st, surv))
     finally:
         CFG.catalog_grouping.GROUPING, CFG.catalog_grouping.MULTIPLES_RULE = keep
-        CFG.catalog_grouping.BUILDER_SHA1 = keep_pin
+        CFG.catalog_grouping.BUILDER_SHA1, CFG.catalog_grouping.FROZEN_BUILDER_SHA1 = keep_pin, keep_fpin
 
 
 # =====================================================================================================================
