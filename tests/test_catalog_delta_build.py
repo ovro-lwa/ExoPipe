@@ -202,6 +202,28 @@ def test_content():
     check('content test: a delta without a touched identity and a night without a selected detection pass', ok and c['sources'] == 0, detail)
 
 
+def test_own_delta():
+    """tier_sublst._own_delta: a night's delta directory of a key is replaced (or removed) only when empty, finished
+    (builder_delta.json) or left by a failed pass (the started marker); anything else refuses."""
+    from exopipe.phase3.lib.catalog import tier_sublst as TS
+    from exopipe.phase3.core.record import Refusal
+    base = f'{T}/own'
+    def verdict(files):
+        d = f'{base}/{len(files)}_{"_".join(f.strip(".") for f in files)}'
+        os.makedirs(d)
+        for f in files:
+            put(f'{d}/{f}', ['x'])
+        try:
+            TS._own_delta(d, 'I_wb', 'noveto')
+        except Refusal as e:
+            return str(e)
+        return ''
+    check('own delta: an empty directory, a finished delta and a failed pass\'s are this stage\'s own',
+          verdict([]) == '' and verdict([DB.DELTA_RECORD, 'Red_source_members.csv']) == ''
+          and verdict([TS.DELTA_STARTED, 'Red_source_members.csv']) == '')
+    check('own delta: a directory with other files only refuses', 'not replaced' in verdict(['Red_source_members.csv']))
+
+
 def test_recorded_inputs():
     """grouping_stage.recorded_inputs: what the latest done grouping run was assembled from (the nights a delta build appends)."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
@@ -225,6 +247,9 @@ def test_recorded_inputs():
     runs, nd = GS.recorded_inputs(G, 'V')
     check('recorded inputs: the LATEST run counts, with the nights it was run with', nd == [('05h', '/n/1'), ('06h', '/n/2')], nd)
     check('recorded inputs: the table and sha1 are those of the same record', GS.recorded_table(G, 'V') == (table, GS.table_digest(table)))
+    r3 = GS.recorded_inputs(G, 'V', with_table=True)
+    check('recorded inputs: with_table gives the nights and the table of one read of the record',
+          r3 == (runs, nd, (table, GS.table_digest(table))), r3)
     record('c', '2030-01-03T00:00:00Z', inp='/a/direct/input.csv')
     check('recorded inputs: a run on a direct input names no LST directory', GS.recorded_inputs(G, 'V')[0] == {})
 
@@ -249,6 +274,7 @@ def main():
     test_merge()
     test_assemble()
     test_content()
+    test_own_delta()
     test_recorded_inputs()
     print(f'\n{N[1]} of {N[0]} checks passed in {time.time() - t0:.0f} s')
     if N[1] == N[0]:

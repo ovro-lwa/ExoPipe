@@ -294,10 +294,10 @@ def test_wiring():
     check('wiring: the all-nights build under design B writes the frozen record a delta stands on',
           "frozen='record'" in bl and "frozen='delta'" not in bl)
     check('wiring: the delta build refuses without design B before it plans anything to run',
-          bd.index('if not ctx.grouping_mode.design_b:') < bd.index('if ctx.dry:') < bd.index('GS.recorded_table('))
+          bd.index('if not ctx.grouping_mode.design_b:') < bd.index('if ctx.dry:') < bd.index('GS.recorded_inputs('))
     check('wiring: it takes the appended nights from the grouping\'s own record and refuses another all-nights build or a '
           'grouping without this night',
-          'GS.recorded_inputs(ctx.grouping_dir, st)' in bd and 'same(runs[ctx.lst], F)' in bd
+          'GS.recorded_inputs(ctx.grouping_dir, st, with_table=True)' in bd and 'same(runs[ctx.lst], F)' in bd
           and 'os.path.realpath(U) not in mine' in bd and bd.index('GS.recorded_inputs(') < bd.index('DB.assemble('))
     check('wiring: the build directory is assembled by delta_build from the frozen directory and those nights; a refusal '
           'there refuses the stage',
@@ -309,8 +309,13 @@ def test_wiring():
     check('wiring: a missing frozen record refuses; the grouping must hold every input row (S-G18)',
           'if not os.path.exists(rec):' in bd and "GS.covers(table, f'{B}/selected_{k}.csv')" in bd
           and bd.index('if not os.path.exists(rec):') < bd.index('res = call('))
-    check('wiring: a directory that is not this night\'s own delta is not replaced',
-          bd.index('not os.path.exists(f\'{d}/{DB.DELTA_RECORD}\')') < bd.index('shutil.rmtree(d)'))
+    od = body('_own_delta')
+    check('wiring: a directory that is not this night\'s own delta (finished, or marked started by a failed pass) is neither '
+          'replaced nor removed; the marker is written on creation and removed after the content test',
+          "os.path.exists(f'{d}/{DB.DELTA_RECORD}')" in od and "os.path.exists(f'{d}/{DELTA_STARTED}')" in od and 'refuse(' in od
+          and bd.count('_own_delta(d, k, tag)') == 2 and bd.index('_own_delta(d, k, tag)') < bd.index('shutil.rmtree(d)')
+          and bd.index('os.makedirs(d)') < bd.index("open(f'{d}/{DELTA_STARTED}', 'w')") < bd.index('res = call(')
+          and bd.index('content test failed') < bd.index("os.remove(f'{d}/{DELTA_STARTED}')") < bd.index('built.append(d)'))
     check('wiring: every delta catalog is content-tested on the night\'s own selected rows, recorded as a check, and a failed '
           'test refuses',
           "DB.content_test(d, mine_c, vetoed=asm['vetoed'])" in bd and "s.u.check(f'delta.content.{tag}_{k}', ok" in bd
