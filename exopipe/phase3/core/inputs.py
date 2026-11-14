@@ -40,8 +40,9 @@ PHASE-1 CODE VERSION (CUTOVER_READINESS 'Phase-1 provenance'; ledger FINDING-PHA
 ORCA-ACD5038-20261026: Phase 1 runs on Orca code older than acd5038 (2026-07-24) took the antenna flags of the LATEST MNC health
 record, not the observation night's). Every Phase-1 run writes <run>/<subband>/provenance.json; its pipeline_version is the Orca
 commit the run used. ``phase1_code`` reads it, and ``phase1_code_of(path)`` names the Phase-1 run(s) behind an input file: a
-Phase-1 frame comes from its own run; a Phase-2 product comes from the run Phase 2 took each member subband from (the Science
-directory's log). core/record writes it into the input record of every unit (the input's entry and the unit's per-night
+Phase-1 frame comes from its own run; a frame of the GPU pipeline's tree (FRAME ROOT) from its own run there, whose
+provenance.json names the GPU pipeline ('pipeline') and its commit (pipeline_version); a Phase-2 product comes from the run
+Phase 2 took each member subband from (the Science directory's log). core/record writes it into the input record of every unit (the input's entry and the unit's per-night
 'phase1_code'), so the nights an affected Phase-1 version made can be listed (and re-flagged if Gregg rules so).
 
 Frame file names (Phase 1): old era '<sb>-Pilot-Snapshot-<ts>-<I|V>-image.fits[.fs|.fz]' in snapshots/; new era
@@ -209,8 +210,9 @@ _SB_DIR = re.compile(r'^\d+MHz$')
 def phase1_code(run_dir, subband):
     """The Phase-1 code of one run's subband: {'run', 'subband', 'pipeline_version' (the Orca commit the run used),
     'pipeline_branch', 'package_version', 'started_at', 'provenance' (the file)} from <run_dir>/<subband>/provenance.json.
-    An absent or unreadable file gives 'pipeline_version' None and 'missing' (why): recorded as such, never guessed.
-    Cached per file (size, mtime)."""
+    'pipeline' is added when the file names one (the GPU pipeline's runs: 'gpu-subband-imaging', pipeline_version then its
+    commit, not Orca's). An absent or unreadable file gives 'pipeline_version' None and 'missing' (why): recorded as such,
+    never guessed. Cached per file (size, mtime)."""
     p = os.path.join(run_dir, subband, PROVENANCE_NAME)
     base = {'run': os.path.basename(run_dir.rstrip('/')), 'subband': subband, 'provenance': p}
     try:
@@ -225,6 +227,8 @@ def phase1_code(run_dir, subband):
         with open(p) as f:
             prov = json.load(f)
         code = dict(base, **{k: prov.get(k) for k in PHASE1_CODE_KEYS})
+        if prov.get('pipeline'):
+            code['pipeline'] = prov['pipeline']
         if not code['pipeline_version']:
             code['missing'] = f'{PROVENANCE_NAME} names no pipeline_version'
     except (OSError, ValueError, AttributeError) as e:
@@ -275,12 +279,14 @@ def _scope_subbands(scope):
 
 
 def phase1_source(path):
-    """('phase1' | 'phase2', LST, date, run or Science directory name, subband or scope) of a file under paths.PHASE1_ROOT
-    (<LST>/<date>/Run_*/<subband>/...) or paths.PHASE2_ROOT (<LST>/<date>/Science_*/<scope>/...), else None. The path is
-    compared as given (os.path.abspath, no file-system call), so a staged copy never passes for its source."""
+    """('phase1' | 'gpu' | 'phase2', LST, date, run or Science directory name, subband or scope) of a file under
+    paths.PHASE1_ROOT or paths.SNAPSHOT_GPU_FRAME_ROOT (<LST>/<date>/Run_*/<subband>/..., the same layout; FRAME ROOT) or
+    paths.PHASE2_ROOT (<LST>/<date>/Science_*/<scope>/...), else None. The path is compared as given (os.path.abspath, no
+    file-system call), so a staged copy never passes for its source."""
     C = _cfg()
     a = os.path.abspath(str(path))
-    for root, kind in ((C.paths.PHASE1_ROOT, 'phase1'), (C.paths.PHASE2_ROOT, 'phase2')):
+    for root, kind in ((C.paths.PHASE1_ROOT, 'phase1'), (C.paths.SNAPSHOT_GPU_FRAME_ROOT, 'gpu'),
+                       (C.paths.PHASE2_ROOT, 'phase2')):
         r = os.path.abspath(root).rstrip('/') + '/'
         if not a.startswith(r):
             continue
@@ -288,7 +294,7 @@ def phase1_source(path):
         if len(parts) < 5:                      # <LST>/<date>/<run>/<scope>/<file ...>
             return None
         lst, date, run, scope = parts[:4]
-        if kind == 'phase1' and run.startswith('Run_') and _SB_DIR.match(scope):
+        if kind in ('phase1', 'gpu') and run.startswith('Run_') and _SB_DIR.match(scope):
             return kind, lst, date, run, scope
         if kind == 'phase2' and run.startswith('Science_') and _scope_subbands(scope):
             return kind, lst, date, run, scope
@@ -298,7 +304,7 @@ def phase1_source(path):
 
 def phase1_code_of(path):
     """[(night '<LST>_<date>', subband, code)] of the Phase-1 run(s) behind the input file ``path`` (code = phase1_code):
-    - under paths.PHASE1_ROOT, <LST>/<date>/Run_*/<subband>/...: that run's subband;
+    - under paths.PHASE1_ROOT or paths.SNAPSHOT_GPU_FRAME_ROOT, <LST>/<date>/Run_*/<subband>/...: that run's subband;
     - under paths.PHASE2_ROOT, <LST>/<date>/Science_*/<scope>/...: every member subband of the scope (the subband itself, a
       band's subbands, all for Full), each with the Phase-1 run the Science directory's log names for it
       (phase2_phase1_runs); a subband the log does not name: {'run': None, 'pipeline_version': None, 'missing': why};
@@ -309,8 +315,9 @@ def phase1_code_of(path):
     C = _cfg()
     kind, lst, date, run, scope = src
     night = f'{lst}_{date}'
-    if kind == 'phase1':
-        return [(night, scope, phase1_code(os.path.join(C.paths.PHASE1_ROOT, lst, date, run), scope))]
+    if kind in ('phase1', 'gpu'):
+        root = C.paths.PHASE1_ROOT if kind == 'phase1' else C.paths.SNAPSHOT_GPU_FRAME_ROOT
+        return [(night, scope, phase1_code(os.path.join(root, lst, date, run), scope))]
     try:
         runs, why = phase2_phase1_runs(os.path.join(C.paths.PHASE2_ROOT, lst, date, run)), 'names no Phase-1 run for'
     except OSError as e:               # recorded, never a reason to fail the unit that reads the image

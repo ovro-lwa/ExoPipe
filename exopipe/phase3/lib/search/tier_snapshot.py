@@ -113,11 +113,19 @@ def engine_dir():
 # ---------------------------------------------------------------------------------------------------------------------
 
 def _universe():
-    root = cfg().paths.PHASE1_ROOT
-    out = []
-    for d in sorted(glob.glob(os.path.join(root, '[0-2][0-9]h', '????-??-??'))):
-        out.append(f'{os.path.basename(os.path.dirname(d))}_{os.path.basename(d)}')
-    return out
+    """The cells a --cells pattern can match: the <LST>/<date> directories of the Phase-1 archive (paths.PHASE1_ROOT), and
+    those of the GPU pipeline's tree (paths.SNAPSHOT_GPU_FRAME_ROOT) for the cells of paths.SNAPSHOT_GPU_FRAME_CELLS, whose
+    frames come from there (core/inputs.frame_root)."""
+    from exopipe.phase3.core import exclusions
+    P = cfg().paths
+    gpu = exclusions.gpu_frame_cells()
+    out = set()
+    for root, only in ((P.PHASE1_ROOT, None), (P.SNAPSHOT_GPU_FRAME_ROOT, gpu)):
+        for d in glob.glob(os.path.join(root, '[0-2][0-9]h', '????-??-??')):
+            lst, date = os.path.basename(os.path.dirname(d)), os.path.basename(d)
+            if only is None or (lst, date) in only:
+                out.add(f'{lst}_{date}')
+    return sorted(out)
 
 
 def expand_cells(args):
