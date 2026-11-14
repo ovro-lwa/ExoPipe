@@ -2,6 +2,7 @@
 """Tests of exopipe/phase3/lib/catalog/delta_build.py: the file work of a night's delta build of the 10-minute catalog (the
 delta build directory and the stage's content test). Synthetic tables only; the builder itself is tested in
 tests/test_catalog_frozen_builder.py. Run: python3 tests/test_catalog_delta_build.py"""
+import hashlib
 import json
 import os
 import shutil
@@ -243,14 +244,15 @@ def test_recorded_inputs():
 
 
 # ---- the catalog view of an LST hour (design 2.3a, stages 1 and 2) -----------------------------------------------------
-GHEAD = 'cand_id,identity_id,identity_name,multiples_id,multiples_name,lst,date,multiple,multiplicity'
+GHEAD = 'cand_id,identity_id,identity_name,multiples_id,multiples_name,lst,date,multiple,multiplicity,stokes,band'
 SV = 'rank,source_id,identity_id,band,best_cand_id,best_snr,review_dir,note'
 MS = 'source_id,identity_id,band,best_cand_id,best_snr,review_dir,note'
 
 
 def grouping(path, rows):
-    """rows: (cand_id, identity_id, identity_name, multiples_id)"""
-    put(path, [GHEAD] + [f'{c},{i},{n},{m},{m}n,05h,2030-01-01T00,0,1' for c, i, n, m in rows])
+    """rows: (cand_id, identity_id, identity_name, multiples_id[, lst (05h)[, band (46MHz)]]); Stokes V"""
+    put(path, [GHEAD] + [f'{r[0]},{r[1]},{r[2]},{r[3]},{r[3]}n,{r[4] if len(r) > 4 else "05h"},2030-01-01T00,0,1,V,'
+                         f'{r[5] if len(r) > 5 else "46MHz"}' for r in rows])
     return DB.read_grouping(path)
 
 
@@ -285,9 +287,10 @@ def view_world(root):
                                           'J0003,46MHz,c3', 'J0004,46MHz,c4'], term='\r\n')
     put(f'{A}/46MHz_sigma_stack_singleton_removed.csv', ['cand_id,lst', 'c5,05h'], term='\r\n')
     put(f'{A}/E_params.json', ['{"frozen": 1}'])
-    put(f'{A}/grouping_table.json', [json.dumps(dict(table=f'{root}/old/detections.csv', table_sha1=gold[2], tier='10min'))])
     put(f'{A}/builder_frozen.json', [json.dumps(dict(version=2, grouping_table=dict(path=f'{root}/old/detections.csv', sha1=gold[2]),
-                                                     rows=digests(gold)))])
+                                                     rows=digests(gold), vetoed=[]))])
+    put(f'{A}/grouping_table.json', [json.dumps(dict(table=f'{root}/old/detections.csv', table_sha1=gold[2], tier='10min',
+                                                     frozen_record_sha256=hashlib.sha256(raw(f'{A}/builder_frozen.json')).hexdigest()))])
     put(f'{D}/46MHz_sources_survivors.csv', [SV, src('J0002', 'G2', 'c2', '9.50', ''), src('J0033', 'G3', 'n2', '10.00', ''),
                                              src('J0006', 'G6', 'n1', '9.50', '')], term='\r\n')
     put(f'{D}/46MHz_sources_master.csv', [MS, src('J0002', 'G2', 'c2', '9.50', None), src('J0033', 'G3', 'n2', '10.00', None),
@@ -301,7 +304,7 @@ def view_world(root):
                dict(identity_id='G6', identity_name='J0006', replaces=[], sources=[['46MHz', 'J0006', 1]])]
     dl = dict(version=2, grouping_table=dict(path=f'{root}/new/detections.csv', sha1=gnew[2]), touched=touched,
               frozen_record_sha1=DB._sha1(f'{A}/builder_frozen.json'),
-              rows={c: v for c, v in digests(gnew).items() if c not in ('c5',)})
+              rows={c: v for c, v in digests(gnew).items() if c not in ('c5',)}, vetoed=['c5'])
     put(f'{D}/builder_delta.json', [json.dumps(dl)])
     return A, D, gold, gnew, dl
 
@@ -390,6 +393,71 @@ def test_view():
           and json.load(open(f'{V1}/catalog_view.json'))['grouping_table']['sha256'] == gnew[3], rec)
     ok, detail, counts = DB.view_test(V1, A, D, gnew)
     check('view: content test passes', ok and counts['survivors'] == 5 and counts['rows_from_delta'] == 10, detail)
+    # the view's own per-detection record, and the cumulative's test of a directory built under another table (standing)
+    def sha256(p):
+        return hashlib.sha256(raw(p)).hexdigest()
+    v0, v1 = json.load(open(f'{V0}/builder_view.json')), json.load(open(f'{V1}/builder_view.json'))
+    check('view record: a certificate view holds the all-nights record\'s rows and vetoed, a delta view the delta record\'s',
+          v0['rows'] == digests(gold) and v0['vetoed'] == [] and v0['kind'] == 'certificate' and v1['rows'] == dl['rows']
+          and v1['vetoed'] == ['c5'] and v1['kind'] == 'delta' and v1['grouping_table']['sha1'] == gnew[2]
+          and v1['source_record']['sha1'] == DB._sha1(f'{D}/builder_delta.json'), (v0, v1))
+    cv1 = json.load(open(f'{V1}/catalog_view.json'))
+    check('view record: catalog_view.json and the provenance name its sha256; the all-nights binding is not carried',
+          cv1['view_record']['sha256'] == sha256(f'{V1}/builder_view.json') == prov['view']['record_sha256']
+          and cv1['view_record']['detections'] == 7 and cv1['view_record']['vetoed'] == 1
+          and 'frozen_record_sha256' not in json.load(open(f'{V0}/grouping_table.json')), cv1)
+    s1 = DB.standing(V1, gnew, tnew, '05h', 'V_sb')
+    check('standing: a view stands under its own table (record bound by sha256, populations equal)',
+          s1['ok'] is True and s1['record'] == 'builder_view.json' and s1['record_sha256'] == sha256(f'{V1}/builder_view.json')
+          and s1['record_detections'] == 8 == s1['table_detections'] and s1['only_in_table'] == 0 == s1['only_in_record'], s1)
+    s0 = DB.standing(A, gold, told, '05h', 'V_sb')
+    check('standing: an all-nights directory stands by its builder_frozen.json',
+          s0['ok'] is True and s0['record'] == 'builder_frozen.json' and s0['manifest'] == 'grouping_table.json'
+          and s0['record_detections'] == 6 == s0['table_detections'], s0)
+    rows8 = [(c, r['identity_id'], r['identity_name'], r['multiples_id']) for c, r in gnew[0].items()]
+
+    def under(name, rows, cat=None, key='V_sb'):
+        t = f'{R}/{name}/detections.csv'
+        return DB.standing(cat or V1, grouping(t, rows), t, '05h', key)
+    s = under('otherhour', rows8 + [('x1', 'G8', 'J0008', 'M8', '06h'), ('x3', 'G10', 'J0010', 'M10', '05h', 'Red')])
+    check('standing: a later table that gained detections of another hour and of the other band class leaves the view standing',
+          s['ok'] is True and s['table_from']['sha1'] == gnew[2] and s['table_to']['sha1'] != gnew[2]
+          and s['table_detections'] == 8, s)
+    s = under('samehour', rows8 + [('x2', 'G9', 'J0009', 'M9')])
+    check('standing: a table that gained a detection of the hour and key does not (a new night needs its delta)',
+          s['ok'] is False and s['only_in_table'] == 1 and s['only_in_record'] == 0 and s['regrouped'] == 0
+          and 'x2' in s['why'] and 'of the present table\'s 9 detection(s)' in s['why'], s)
+    s = under('lost', [r for r in rows8 if r[0] != 'n1'])
+    check('standing: a table that lost a detection of the record does not',
+          s['ok'] is False and s['only_in_record'] == 1 and s['only_in_table'] == 0 and s['regrouped'] == 1 and 'n1' in s['why'], s)
+    s = under('lostveto', [r for r in rows8 if r[0] != 'c5'])
+    check('standing: a table that lost a VETOED detection of the record does not (the populations must be equal)',
+          s['ok'] is False and s['only_in_record'] == 1 and s['regrouped'] == 0 and 'c5' in s['why'], s)
+    s = under('regrouped', [r if r[0] != 'c1' else ('c1', 'G9', 'J0001', 'M1') for r in rows8])
+    check('standing: a regrouped detection does not', s['ok'] is False and s['regrouped'] == 1 and s['only_in_table'] == 0
+          and 'c1' in s['why'], s)
+    s = DB.standing(V1, gnew, tnew, '05h', 'V_wb')
+    check('standing: the record of a subband directory does not stand as a wideband one',
+          s['ok'] is False and s['table_detections'] == 0 and s['only_in_record'] == 8, s)
+    W = f'{R}/Wforged'
+    shutil.rmtree(W, ignore_errors=True)
+    shutil.copytree(V1, W)
+    t9 = f'{R}/samehour/detections.csv'
+    g9 = DB.read_grouping(t9)
+    put(f'{W}/builder_view.json', [json.dumps(dict(v1, rows=dict(digests(g9)), vetoed=[]))])
+    s = DB.standing(W, g9, t9, '05h', 'V_sb')
+    check('standing: a record put into the directory afterwards (not the one catalog_view.json names) does not pass',
+          s['ok'] is False and 'is not the record' in s['why'], s)
+    os.remove(f'{W}/builder_view.json')
+    s = DB.standing(W, gnew, tnew, '05h', 'V_sb')
+    check('standing: a view without its record does not pass', s['ok'] is False and 'missing or unreadable' in s['why'], s)
+    W = f'{R}/Wunbound'
+    shutil.rmtree(W, ignore_errors=True)
+    shutil.copytree(A, W)
+    put(f'{W}/grouping_table.json', [json.dumps(dict(table=told, table_sha1=gold[2], tier='10min'))])
+    s = DB.standing(W, gold, told, '05h', 'V_sb')
+    check('standing: an all-nights directory whose provenance names no sha256 of its record does not pass',
+          s['ok'] is False and 'names no sha256' in s['why'], s)
     # the content test catches a view that is not the merge
     def tamper(name, fn, what):
         W = f'{R}/W'
@@ -417,6 +485,9 @@ def test_view():
         put(f'{D2}/builder_delta.json', [json.dumps(dl2)])
     why = world2(lambda A2, D2, dl2, R2: redelta(D2, dict(dl2, grouping_table=dict(path='x', sha1='0' * 40))))
     check('view: a delta built with another grouping table refuses', 'build the delta again' in why, why)
+    why = world2(lambda A2, D2, dl2, R2: redelta(D2, {k: v for k, v in dl2.items() if k != 'vetoed'}))
+    check('view: a delta record without its vetoed detections refuses (the view could not carry its own record)',
+          'no vetoed detections' in why and 'REFUSING' in why, why)
     why = world2(lambda A2, D2, dl2, R2: put(f'{A2}/builder_frozen.json', ['{"version": 2, "rows": {}}']))
     check('view: a delta that does not stand on this all-nights build refuses', 'does not stand on' in why, why)
     why = world2(lambda A2, D2, dl2, R2: put(f'{D2}/46MHz_source_members.csv', ['source_id,band,cand_id', 'J0001,46MHz,c1'], term='\r\n'))

@@ -787,8 +787,13 @@ class Frozen:
             q = os.path.join(out_dir, name)
             if os.path.exists(q):
                 os.remove(q)                 # they describe a population this directory does not hold
+        with open(os.path.abspath(ns['gated_csv']), newline='') as f:
+            sel = {r['cand_id'] for r in csv.DictReader(f)}
         p = os.path.join(out_dir, DELTA_RECORD)
         _write_json(p, dict(version=FROZEN_VERSION, frozen_record=self.rec_path, frozen_record_sha1=self.rec_sha1,
+                            # the selected detections the leak veto removed (as builder_frozen.json): with `rows`, every
+                            # detection this build read - the cumulative's gate compares that set with the present table's
+                            vetoed=sorted(sel - {r['cand_id'] for r in ns['rows']}),
                             grouping_table=dict(path=os.path.abspath(g.table_path), sha1=g.table_sha1),
                             touch_all=self.touch_all, input_detections=len(ns['rows']), new_detections=len(self.new),
                             rows={r['cand_id']: [g.T[r['cand_id']]['identity_id'],
@@ -847,8 +852,11 @@ def run(builder, args, mode, table=None, tier=None, rungs='multiples-level', acc
     code = compile(patched, builder, 'exec')
     exec(code, mod.__dict__)
     out_dir = (args[1] if os.path.isabs(args[1]) else os.path.join(os.getcwd(), args[1])) if len(args) >= 2 else None
+    rec_sha256 = ''
     if frozen_mode == 'record':
         p, n_rows, n_src = frozen.write_record(out_dir, sha1, norm)
+        with open(p, 'rb') as f:
+            rec_sha256 = hashlib.sha256(f.read()).hexdigest()
         print(f'FROZEN-BUILDER record: {p}: {n_rows} input detections after the leak veto, {n_src} sources', flush=True)
     elif frozen.active:
         p, n_t, n_new = frozen.close_delta(out_dir)
@@ -858,7 +866,10 @@ def run(builder, args, mode, table=None, tier=None, rungs='multiples-level', acc
         p = os.path.join(out_dir, PROVENANCE)
         with open(p + '.tmp', 'w') as f:
             json.dump(dict(table=os.path.abspath(table), table_sha1=hook.table_sha1, tier=tier, repeat_rungs=rungs,
-                           builder=builder, builder_sha1=sha1, builder_normalized_sha1=norm, rows_checked=len(hook.checked)),
+                           builder=builder, builder_sha1=sha1, builder_normalized_sha1=norm, rows_checked=len(hook.checked),
+                           # binds builder_frozen.json to this directory: the cumulative's gate (lib/serve/sublst_build.
+                           # grouping_mix) certifies a directory only from the record whose sha256 is named here
+                           **({'frozen_record_sha256': rec_sha256} if rec_sha256 else {})),
                       f, indent=1, sort_keys=True)
         os.replace(p + '.tmp', p)
     print(f'GROUPING-BUILDER done: builder sha1 {sha1}; mode {mode}; {len(hook.checked)} input rows checked against the grouping',

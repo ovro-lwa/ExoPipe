@@ -286,6 +286,7 @@ def content_test(cat_dir, night_cands, vetoed=()):
 # =====================================================================================================================
 VIEW_RECORD = 'catalog_view.json'              # in a view's catalog directory: what it was made from
 PROVENANCE = 'grouping_table.json'             # the builder runner's provenance (wraps/builder_grouping.PROVENANCE)
+VIEW_ROWS = 'builder_view.json'                # in a view's catalog directory: its detections' grouping (a record's `rows` form)
 SURVIVORS, MASTER = '_sources_survivors.csv', '_sources_master.csv'
 CARRIED = ('E_params.json', 'README_source_catalogs.txt')    # the all-nights build's, carried: the frozen statistics in force
 
@@ -320,10 +321,15 @@ def certificate(record, grouping, table_path, lst='', key=''):
     function's business: a night's detections reach a catalog only through a delta build.
     Returns the certificate, a dict: ok, the record's path and sha1, both tables' digests, the hour and key, the counts, and up
     to 20 differing detections. A caller treats anything but ok True as 'build the delta or refuse', never as a pass."""
-    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
-    T, mg, sha1, sha256 = grouping
     with open(record, 'rb') as f:
         data = f.read()
+    return _certificate(data, record, grouping, table_path, lst, key)
+
+
+def _certificate(data, record, grouping, table_path, lst='', key=''):
+    """certificate() on the record's bytes ``data`` (read ONCE by the caller: what is certified is what was hashed)"""
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
+    T, mg, sha1, sha256 = grouping
     rec = json.loads(data.decode())
     rows = rec.get('rows')
     out = dict(version=1, ok=False, lst=lst, key=key, record=os.path.abspath(record),
@@ -351,6 +357,71 @@ def certificate(record, grouping, table_path, lst='', key=''):
     out.update(ok=not bad, differing=len(bad), examples=[list(b) for b in bad[:20]])
     if bad:
         out['why'] = f'{len(bad)} of {len(rows)} detection(s) are grouped otherwise now'
+    return out
+
+
+def standing(cat_dir, grouping, table_path, lst, key):
+    """Whether the catalog directory ``cat_dir`` of LST ``lst`` (the table's `lst` value, e.g. 17h) and key ``key``
+    (<Stokes>_<sb|wb>), built under ANOTHER grouping table, stands under the present one (``grouping``: read_grouping's result
+    for ``table_path``). The test of the cumulative's one-table gate (lib/serve/sublst_build.grouping_mix), made here from
+    the directory's own files; nothing stored is trusted but what is bound by a digest:
+      1. the directory's record - builder_view.json of a view (a directory that holds catalog_view.json), builder_frozen.json
+         of an all-nights build - is read ONCE, and its sha256 must be the one the directory's manifest names
+         (catalog_view.json `view_record.sha256`; grouping_table.json `frozen_record_sha256`): a record of another build
+         copied in, or a directory written before the binding existed, does not pass;
+      2. certificate(record, present table) is ok: every detection of the record is in the present table under the recorded
+         identity, in a multiples-level group of the recorded content;
+      3. the populations are EQUAL: the detections the build read (the record's `rows` and `vetoed`) are exactly the present
+         table's detections of this LST, Stokes and band class (a band named in MHz is a subband, any other a wideband). A
+         table that gained a detection of the hour (a new night) or lost one is not the one this directory was built from.
+    Returns a dict: ok, the record's name, sha1 and sha256, both tables' digests, the counts of both directions, up to 3
+    detections of each, and `why` when not ok. A caller treats anything but ok True as a refusal."""
+    T, _mg, sha1, sha256 = grouping
+    stokes, kind = key.split('_')
+    view = os.path.exists(os.path.join(cat_dir, VIEW_RECORD))
+    name, manifest = (VIEW_ROWS, VIEW_RECORD) if view else (FROZEN_RECORD, PROVENANCE)
+    out = dict(version=1, ok=False, lst=lst, key=key, directory=os.path.abspath(cat_dir), record=name, manifest=manifest,
+               table_to=dict(path=os.path.abspath(table_path), sha1=sha1, sha256=sha256))
+    try:
+        with open(os.path.join(cat_dir, manifest), 'rb') as f:
+            m = json.loads(f.read().decode())
+        want = ((m.get('view_record') or {}).get('sha256') if view else m.get('frozen_record_sha256')) or ''
+        with open(os.path.join(cat_dir, name), 'rb') as f:
+            data = f.read()
+        rec = json.loads(data.decode())
+    except (OSError, ValueError, AttributeError) as e:
+        out['why'] = f'{manifest} or {name} is missing or unreadable ({e})'
+        return out
+    got = hashlib.sha256(data).hexdigest()
+    out.update(record_sha1=hashlib.sha1(data).hexdigest(), record_sha256=got)
+    if not want:
+        out['why'] = (f'{manifest} names no sha256 of {name}: the directory was written before the cumulative could certify '
+                      f'it')
+        return out
+    if got != want:
+        out['why'] = f'{name} (sha256 {got[:12]}) is not the record {manifest} names (sha256 {want[:12]})'
+        return out
+    cert = _certificate(data, os.path.join(cat_dir, name), grouping, table_path, lst, key)
+    out.update(table_from=cert['table_from'], regrouped=cert['differing'], regrouped_examples=cert['examples'][:3])
+    rows, vetoed = rec.get('rows'), rec.get('vetoed')
+    if not isinstance(rows, dict) or not isinstance(vetoed, list):
+        out['why'] = f'{name} holds no per-detection grouping (rows) or no list of the vetoed detections'
+        return out
+    known = set(rows) | set(vetoed)
+    here = {c for c, r in T.items() if r['lst'] == lst and r['stokes'] == stokes and ('MHz' in r['band']) == (kind == 'sb')}
+    only_table, only_record = sorted(here - known), sorted(known - here)
+    out.update(record_detections=len(known), table_detections=len(here), only_in_table=len(only_table),
+               only_in_record=len(only_record), only_in_table_examples=only_table[:3], only_in_record_examples=only_record[:3])
+    if only_table or only_record or cert.get('ok') is not True:
+        out['why'] = (f'of the present table\'s {len(here)} detection(s) of {lst} {key}, {len(only_table)} are not in the '
+                      f'record{" (" + ", ".join(only_table[:3]) + ")" if only_table else ""}; of the record\'s {len(known)}, '
+                      f'{len(only_record)} are not among them{" (" + ", ".join(only_record[:3]) + ")" if only_record else ""}; '
+                      f'{cert["differing"]} of the record\'s {cert["detections"]} kept detection(s) are missing or grouped '
+                      f'otherwise now'
+                      + (f' ({"; ".join(f"{c}: {w}" for c, w in cert["examples"][:3])})' if cert['examples'] else '')
+                      + (f'; {cert["why"]}' if cert.get('why') and not cert['examples'] else ''))
+        return out
+    out['ok'] = True
     return out
 
 
@@ -433,12 +504,30 @@ def view_catalog(out, all_cat, delta_cat, grouping, table_path, cert=None):
                                f'one the delta names) - REFUSING')
         touched = {t['identity_id'] for t in dl['touched']}
         replaces = {(b, n) for t in dl['touched'] for b, n in t['replaces']}
+        if not isinstance(dl.get('rows'), dict) or not isinstance(dl.get('vetoed'), list):
+            raise DeltaRefusal(f'{p} names no per-detection grouping (rows) or no vetoed detections (written before the '
+                               f'view carried its own record): build the delta again - REFUSING')
+        # the delta build read EVERY detection of the hour and key: its rows are the view's (under a later table an ok
+        # certificate says each stands as recorded)
+        v_rows, v_vetoed, v_src = dl['rows'], dl['vetoed'], dict(path=os.path.abspath(p), sha1=dl_sha)
     else:
         if not (cert and cert.get('ok') is True and cert['table_to']['sha1'] == sha1
                 and os.path.exists(os.path.join(all_cat, FROZEN_RECORD))
                 and cert['record_sha1'] == _sha1(os.path.join(all_cat, FROZEN_RECORD))):
             raise DeltaRefusal(f'{all_cat}: no delta and no certificate that the grouping {sha1[:12]} leaves this build '
                                f'untouched: build its delta - REFUSING')
+        with open(os.path.join(all_cat, FROZEN_RECORD), 'rb') as f:
+            data = f.read()
+        frz_rec = json.loads(data.decode())
+        if hashlib.sha1(data).hexdigest() != cert['record_sha1'] or not isinstance(frz_rec.get('vetoed'), list):
+            raise DeltaRefusal(f'{all_cat}/{FROZEN_RECORD} changed since its certificate, or names no vetoed detections '
+                               f'- REFUSING')
+        v_rows, v_vetoed, v_src = frz_rec['rows'], frz_rec['vetoed'], dict(path=os.path.abspath(os.path.join(all_cat, FROZEN_RECORD)),
+                                                                           sha1=cert['record_sha1'])
+    for c, (ident, _dg) in v_rows.items():
+        if c not in T or T[c]['identity_id'] != ident:
+            raise DeltaRefusal(f'{out}: detection {c} of the build\'s record is not in the grouping table {sha1[:12]} under '
+                               f'its recorded identity {ident} - REFUSING')
     names = sorted({os.path.basename(p) for d in (all_cat, delta_cat) if d for p in glob.glob(os.path.join(d, '*.csv'))})
     tabs, counts, dropped = {}, dict(rows_kept=0, rows_delta=0, rows_replaced=0), set()
     for name in names:
@@ -516,6 +605,15 @@ def view_catalog(out, all_cat, delta_cat, grouping, table_path, cert=None):
     # the provenance the cumulative's one-table gate reads: the present table, and how this directory stands on it
     prov.update(table=os.path.abspath(table_path), table_sha1=sha1,
                 view=dict(kind=rec['kind'], all_nights=rec['all_nights'], delta_record_sha1=dl_sha, certificate=rec['certificate']))
+    # the view's own per-detection record (the form of a builder record's `rows` and `vetoed`), named by its sha256 in both
+    # manifests: what the cumulative's gate (standing) certifies a view from when the grouping table has moved on
+    vtext = json.dumps(dict(version=1, kind=rec['kind'], grouping_table=dict(rec['grouping_table']), source_record=v_src,
+                            rows=v_rows, vetoed=sorted(v_vetoed)), indent=1, sort_keys=True) + '\n'
+    rec['view_record'] = dict(name=VIEW_ROWS, sha256=hashlib.sha256(vtext.encode()).hexdigest(), detections=len(v_rows),
+                              vetoed=len(v_vetoed))
+    prov['view']['record_sha256'] = rec['view_record']['sha256']
+    prov.pop('frozen_record_sha256', None)         # the all-nights directory's binding is not this directory's
+    _put(os.path.join(out, VIEW_ROWS), vtext)      # the record first: a directory with a manifest holds its record
     for name, obj in ((PROVENANCE, prov), (VIEW_RECORD, rec)):
         _put(os.path.join(out, name), json.dumps(obj, indent=1, sort_keys=True) + '\n')
     return rec

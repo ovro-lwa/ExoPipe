@@ -290,6 +290,16 @@ def test_modes():
           and os.path.exists(f'{d}/out_r/E_params.json') and dl.get('touch_all') is True and dl.get('new_detections') == 0
           and len(dl.get('touched', [])) == 8 and {t['kind'] for t in dl['touched']} == {'regrouped'}
           and 'FROZEN-BUILDER delta' in txt_s, (txt_s[-400:], dl))
+    # the bindings the cumulative's gate certifies a directory from (lib/catalog/delta_build.standing)
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    rc_q, txt_q = run(d, b, sha, sel, 'out_rp', tab, img, frozen='record', extra={'EXOPIPE3_GROUPING_PROVENANCE': '1'})
+    prov = json.load(open(f'{d}/out_rp/grouping_table.json')) if os.path.exists(f'{d}/out_rp/grouping_table.json') else {}
+    st = DB.standing(f'{d}/out_rp', DB.read_grouping(tab), tab, '05h', 'I_sb') if rc_q == 0 else {}
+    check('record: the provenance names the sha256 of builder_frozen.json; the delta record names its vetoed detections; '
+          'the directory stands under its own table (record bound, populations equal)',
+          rc_q == 0 and prov.get('frozen_record_sha256') == hashlib.sha256(open(f'{d}/out_rp/builder_frozen.json', 'rb').read()).hexdigest()
+          and dl.get('vetoed') == [] and st.get('ok') is True and st['record_detections'] == st['table_detections'] == 10,
+          (rc_q, txt_q[-300:], prov, st))
 
 
 def _night_worlds(d):

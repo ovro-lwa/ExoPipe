@@ -828,33 +828,97 @@ def test_carry_between_window():
 
 # =====================================================================================================================
 def test_grouping_mix():
-    """review 2026-11-04 F3 (the minimum gate): serve --tier sublst under design B refuses a cumulative whose LST builds name
-    different grouping tables (or an LST built without the design-B grouping) - lib/serve/sublst_build.grouping_mix"""
+    """review 2026-11-04 F3 and the per-hour form of it: serve --tier sublst under design B refuses a cumulative whose LST
+    builds do not all stand on the PRESENT grouping table - a directory that names it passes; one that names another table
+    passes only when the gate itself certifies it from the directory's own record (lib/catalog/delta_build.standing);
+    an LST built without the design-B grouping is named - lib/serve/sublst_build.grouping_mix"""
+    import hashlib
     from exopipe.phase3.lib.serve import sublst_build as SB
+    from exopipe.phase3.lib.catalog import delta_build as DB
+    from exopipe.phase3.lib.catalog.wraps import builder_grouping as BG
     R = f'{T}/mix'
     shutil.rmtree(R, ignore_errors=True)
+    head = 'cand_id,stokes,band,lst,identity_id,identity_name,multiples_id,multiples_name,multiplicity,multiple,date'
 
-    def lst(L, sha=None, stokes='I'):
-        d = f'{R}/Run_SLST{L[:2]}B/source_catalogs_{stokes}_sb'
-        os.makedirs(d, exist_ok=True)
-        if sha:
-            json.dump(dict(table='/x/grouping_I/detections.csv', table_sha1=sha), open(f'{d}/grouping_table.json', 'w'))
+    def table(name, dets):
+        """dets: (cand_id, lst, identity_id); Stokes I, 46MHz"""
+        p = f'{R}/{name}/grouping_I/detections.csv'
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, 'w', newline='') as f:
+            f.write('\n'.join([head] + [f'{c},I,46MHz,{l},{g},J{g},M{g},J{g},1,0,2030-01-01T00' for c, l, g in dets]) + '\n')
+        return p, DB.read_grouping(p)
+    old = [('a1', '05h', 'G1'), ('a2', '05h', 'G2'), ('b1', '06h', 'G3'), ('c1', '07h', 'G4')]
+    t_old, g_old = table('old', old)
+    t_now, g_now = table('now', old + [('c2', '07h', 'G5')])            # a new night's detection at 07h
+
+    def lst(L, g=None, built=None, bind=True, vetoed=()):
+        """an all-nights catalog directory of LST L built under grouping g, from the detections of ``built`` (its record)"""
+        d = f'{R}/Run_SLST{L[:2]}B/source_catalogs_I_sb'
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+        if g is None:
+            return d
+        if built is not None:
+            Tb, mg = g[0], g[1]
+            json.dump(dict(version=2, grouping_table=dict(path='x', sha1=g[2]), vetoed=sorted(vetoed),
+                           rows={c: [Tb[c]['identity_id'], BG.group_digest_of(mg[Tb[c]['multiples_id']])] for c in built
+                                 if c not in vetoed}), open(f'{d}/builder_frozen.json', 'w'))
+        prov = dict(table='/x/grouping_I/detections.csv', table_sha1=g[2])
+        if built is not None and bind:
+            prov['frozen_record_sha256'] = hashlib.sha256(open(f'{d}/builder_frozen.json', 'rb').read()).hexdigest()
+        json.dump(prov, open(f'{d}/grouping_table.json', 'w'))
+        return d
     orig = SB.lst_run
     SB.lst_run = lambda l: f'{R}/Run_SLST{l[:2]}B'
+    calls = []
+
+    def present(S):
+        calls.append(S)
+        return t_now, g_now
     try:
-        lst('05h', 'a' * 40)
-        lst('06h', 'a' * 40)
-        bad, tables = SB.grouping_mix(['05h', '06h'])
-        check('F3 gate: two LST builds on one grouping table pass', not bad and tables == {'I': {'a' * 40: ['05h', '06h']}},
-              (bad, tables))
-        lst('07h', 'b' * 40)
-        bad, tables = SB.grouping_mix(['05h', '06h', '07h'])
-        check('F3 gate: an LST built on another table is named (the cumulative joins LST runs by identity name)',
-              len(bad) == 1 and 'bbbbbbbbbbbb: 07h' in bad[0][1] and '2 grouping tables' in bad[0][1], bad)
-        lst('08h', None)
-        bad, tables = SB.grouping_mix(['05h', '08h'])
+        lst('05h', g_now)
+        lst('06h', g_now)
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('F3 gate: two LST builds on the present grouping table pass (nothing to certify; the table read once)',
+              not bad and tables == {'I': {g_now[2]: ['05h', '06h']}} and how['certified'] == [] and calls == ['I']
+              and how['present']['I']['sha1'] == g_now[2] and how['present']['I']['sha256'] == g_now[3], (bad, tables, how))
+        lst('06h', g_old, built=['b1'])
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        c = (how['certified'] or [{}])[0]
+        check('gate: an LST built under an earlier table whose hour the present table leaves as it was is certified here',
+              not bad and len(how['certified']) == 1 and c['lst'] == '06h' and c['key'] == 'I_sb' and c['detections'] == 1
+              and c['record'] == 'builder_frozen.json' and c['table_to']['sha1'] == g_now[2] and len(c['record_sha256']) == 64
+              and tables == {'I': {g_now[2]: ['05h'], g_old[2]: ['06h']}}, (bad, how))
+        lst('07h', g_old, built=['c1'])
+        bad, tables, how = SB.grouping_mix(['05h', '06h', '07h'], present)
+        check('gate: an LST whose hour gained a detection in the present table refuses, with both directions counted',
+              len(bad) == 1 and bad[0][0] == '07h' and 'does not stand' in bad[0][1] and '1 are not in the record (c2)' in bad[0][1]
+              and "of the record's 1, 0 are not among them" in bad[0][1] and len(how['certified']) == 1, bad)
+        lst('06h', g_old, built=['b1'], bind=False)
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('gate: a record its directory\'s provenance does not name by sha256 certifies nothing',
+              len(bad) == 1 and bad[0][0] == '06h' and 'names no sha256' in bad[0][1] and not how['certified'], bad)
+        lst('06h', g_old)
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('gate: an LST built under another table without a record refuses (the cumulative joins LST runs by identity name)',
+              len(bad) == 1 and bad[0][0] == '06h' and g_old[2][:12] in bad[0][1] and g_now[2][:12] in bad[0][1]
+              and 'missing or unreadable' in bad[0][1], bad)
+        lst('06h', g_old)
+        lst('05h', g_old)
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], present)
+        check('gate: LSTs that agree with each other on an EARLIER table do not pass by agreeing (the present table decides)',
+              len(bad) == 2 and tables == {'I': {g_old[2]: ['05h', '06h']}}, bad)
+        lst('05h', g_now)
+        lst('08h')
+        bad, tables, how = SB.grouping_mix(['05h', '08h'], present)
         check('F3 gate: an LST built without the design-B grouping (no provenance) is named',
               len(bad) == 1 and bad[0][0] == '08h' and 'no grouping_table.json' in bad[0][1], bad)
+
+        def refused(S):
+            raise GS.StageRefusal('the latest 10-minute grouping run of Stokes I ended refused - REFUSING')
+        bad, tables, how = SB.grouping_mix(['05h', '06h'], refused)
+        check('gate: a present table that cannot be read refuses once per Stokes',
+              len(bad) == 1 and bad[0][0] == '*' and 'cannot be read' in bad[0][1] and how['present'] == {}, bad)
     finally:
         SB.lst_run = orig
 
