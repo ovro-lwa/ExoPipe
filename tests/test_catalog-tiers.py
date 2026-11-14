@@ -213,6 +213,49 @@ def test_ported_sublst_floor_fitted():
         f'{T}/fc/master_catalog_elevation_floor_fitted.csv')[0])
 
 
+def test_ported_sublst_ghost_gate():
+    """exopipe_ops d1616d6: the port of the PYGH heredoc (the 2024-12-28 ghost-track gate at the fitted positions) writes the
+    bytes production's own heredoc (read from the live sublst_catalogs.sh) writes. G1 is at the fitted position of the
+    detection production's 10h catalogue removed (I1_10h_2024-12-28T01_Blue_0000: Hydra A's ghost, 1.51 arcmin from the track,
+    radius 13.35 arcmin); K1 is in the same window far from the track, N1 at G1's position on a night that is not a ghost date.
+    Reads the live window tree (sublst_frame_times) and the snapshot chain's ghost model, as the stage does."""
+    from exopipe.phase3.lib.catalog import tier_sublst as S, tests_sublst as TS
+    src = open(f'{OPS_REAL}/sublst_catalogs.sh').read()
+    a, b = src.find("<<'PYGH'"), src.find('\nPYGH\n')
+    ok('production sublst_catalogs.sh holds the PYGH heredoc (d1616d6) - if not, the port is stale', 0 < a < b)
+    heredoc = src[src.index('\n', a) + 1:b + 1]
+    hdr = ['cand_id', 'lst', 'date', 'band', 'stokes', 'ra', 'dec', 'snr', 'axis_flag', 'pos_kind', 'pos_stat_maj_arcsec',
+           'pos_stat_min_arcsec', 'axis_flag']
+    rows = [['G1', '10h', '2024-12-28T01', 'Blue', 'I', '115.75003', '-11.26791', '7.08', 'a1', 'template', '40.0', '30.0', 'a2'],
+            ['K1', '10h', '2024-12-28T01', 'Blue', 'I', '150.0', '30.0', '-6.5', 'a1', 'gaussian', '40.0', '30.0', 'a2'],
+            ['N1', '10h', '2025-01-06T01', 'Blue', 'I', '115.75003', '-11.26791', '7.08', '', 'peak', '40.0', '30.0', 'x']]
+    for d in ('ga', 'gb'):
+        wcsv(f'{T}/{d}/master_catalog.csv', hdr, rows)
+    p = subprocess.run([PY, '-', f'{T}/ga'], input=heredoc, universal_newlines=True, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT)
+    line = S.ghost_gate_fitted(f'{T}/gb', OPS_REAL)
+    names = ('master_catalog.csv', 'master_catalog_ghost_removed.csv')
+    same = p.returncode == 0 and all(open(f'{T}/ga/{n}', 'rb').read() == open(f'{T}/gb/{n}', 'rb').read() for n in names)
+    with open(f'{T}/gb/master_catalog.csv', newline='') as f:
+        kept = list(csv.reader(f))
+    gone = rcsv(f'{T}/gb/master_catalog_ghost_removed.csv')
+    ok('ghost-track gate: the port writes the bytes of production\'s heredoc; repeated columns kept; G1 removed (Hydra A)',
+       same and line in p.stdout and kept[0] == hdr and [r[0] for r in kept[1:]] == ['K1', 'N1']
+       and [(r['cand_id'], r['parent']) for r in gone] == [('G1', 'HyaA')], (p.returncode, p.stdout[-300:], line))
+    r = TS.tier_rules_recomputed(f'{T}/gb/master_catalog_ghost_removed.csv')
+    ok('tier_rule_removals passes on the ghost-gate removals (ghost night, within the radius, gate again removes none)',
+       r[0] and r[1] == 1, r)
+    wcsv(f'{T}/gc/master_catalog.csv', hdr, kept[1:] + [rows[0]])
+    shutil.copyfile(f'{T}/gb/master_catalog_ghost_removed.csv', f'{T}/gc/master_catalog_ghost_removed.csv')
+    ok('tier_rule_removals fails when the removed detection is still in master_catalog.csv',
+       not TS.tier_rules_recomputed(f'{T}/gc/master_catalog_ghost_removed.csv')[0])
+    gone[0]['offset_arcmin'] = '%.2f' % (float(gone[0]['radius_arcmin']) + 1)
+    wcsv(f'{T}/gd/master_catalog_ghost_removed.csv', S.GHOST_COLS, [[r[c] for c in S.GHOST_COLS] for r in gone])
+    shutil.copyfile(f'{T}/gb/master_catalog.csv', f'{T}/gd/master_catalog.csv')
+    ok('tier_rule_removals fails on a removal beyond its radius', not TS.tier_rules_recomputed(
+        f'{T}/gd/master_catalog_ghost_removed.csv')[0])
+
+
 def test_ported_snapshot():
     from exopipe.phase3.lib.catalog import tier_snapshot as P
     from exopipe.phase3.config import CFG
@@ -1022,6 +1065,7 @@ def main():
         test_binding()
         test_ported_sublst()
         test_ported_sublst_floor_fitted()
+        test_ported_sublst_ghost_gate()
         test_ported_snapshot()
         test_restore_marker()
         test_content_tests()

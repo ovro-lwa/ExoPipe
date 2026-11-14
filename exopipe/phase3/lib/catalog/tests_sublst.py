@@ -104,7 +104,10 @@ def tier_rules_recomputed(path, **ctx):
     """Tier rules 3/4 and the 10-minute elevation floor recomputed with the in-place functions: every removed row satisfies
     its rule (and carries it), no kept row of master_catalog.csv satisfies any (kept rows at their PEAK position when
     fitted positions were added later). The floor at the FITTED positions (exopipe_ops 24d2b39): every row of
-    master_catalog_elevation_floor_fitted.csv lies below the floor at its fitted position, with that elevation written."""
+    master_catalog_elevation_floor_fitted.csv lies below the floor at its fitted position, with that elevation written. The
+    2024-12-28 ghost-track gate (exopipe_ops d1616d6): every row of master_catalog_ghost_removed.csv is of a GHOST_DATES night,
+    within its gate radius and absent from master_catalog.csv beside it, and the gate run again on that master_catalog.csv
+    removes nothing."""
     import numpy as np
     clv, ops = _legacy('clv15'), _legacy('exopipe_ops')
     import phase3_tier_rules as TR
@@ -140,6 +143,19 @@ def tier_rules_recomputed(path, **ctx):
                 bad.append(r[ix['cand_id']])
         return not bad, len(lrows), f'{len(lrows)} removed below {floor} deg at their fitted positions, {len(bad)} not ' \
                                     f'below it / wrong value' + (f' e.g. {bad[:3]}' if bad else '')
+    if base == 'master_catalog_ghost_removed.csv':
+        _legacy('clv15')
+        import phase3_snapshot_chain as CH
+        lhdr, lrows = _list_rows(os.path.join(os.path.dirname(os.path.abspath(path)), 'master_catalog.csv'))
+        kept = [dict(zip(lhdr, r)) for r in lrows]          # last occurrence of a repeated column, as the stage
+        ids = {r['cand_id'] for r in kept}
+        bad = [r['cand_id'] for r in rows if r['ts'].partition('T')[0] not in CH.GHOST_DATES or r['cand_id'] in ids
+               or not float(r['offset_arcmin']) <= float(r['radius_arcmin'])]
+        again = G.ghost_gate_tenmin(kept)[1]
+        return not bad and not again, len(rows), (
+            f'{len(rows)} removed on a 2024-12-28 ghost track, {len(bad)} not on a ghost night, beyond the radius or still in '
+            f'master_catalog.csv' + (f' e.g. {bad[:3]}' if bad else '') + f'; the gate again on master_catalog.csv beside it '
+            f'removes {len(again)}' + (f' e.g. {[r["cand_id"] for r in again[:3]]}' if again else ''))
     if base == 'master_catalog.csv':
         if not _is_sublst(path, ctx):
             return _NA

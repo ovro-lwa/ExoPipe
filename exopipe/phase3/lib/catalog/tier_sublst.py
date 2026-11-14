@@ -22,7 +22,8 @@ Stages (--stages a,b / --from S / --until S; default all, in this order):
   tie-pulsars sublst_pertie.py measure + frames on the rows near ATNF pulsars (S-G11)
   conform     p3s2_conform.py with the sub-LST tables, always (S-G6, S-G13, exopipe_ops 7042670) + TABLE-NOTES content test
   fitpos      sublst_fit_positions.py, template K per Stokes = fitting.K_TEMPLATE[('sublst', S)] (S-G14, exopipe_ops 70003ad),
-              then the 10-minute elevation floor again at the FITTED positions (S-G10; exopipe_ops 24d2b39)
+              then the 10-minute elevation floor again at the FITTED positions (S-G10; exopipe_ops 24d2b39), then the
+              2024-12-28 ghost-track gate there (S-G26; exopipe_ops d1616d6)
   select      select_v3.py (no verdict file, as production: question Q7) + p3s2_ephem_filter.py + split (S-G15)
   tie         sublst_pertie.py measure + frames on every selected row (S-G11: the window tie T1-T13 at the fitted positions)
   veto        leak_veto_sublst.py per (band, Stokes) of master_catalog.csv (S-G16; output unserved, B-24)
@@ -43,7 +44,7 @@ Inputs:  search outputs paths.SUBLST_ROOT/search_<arm>/<LST>_*_[IV]/, the arm's 
          stacks SUBLST_ROOT/<LST>/, the cubes, the search state ops/sublst_search_state_<arm>/{done,claims,failed},
          data_decisions.csv (merge staleness gate, in place), the sub-LST bright-parent tables of the code tree.
 Outputs (product classes): master_catalog.csv (merged_record -> tier_rule_removals -> conformant_catalog -> fitted_catalog),
-         master_catalog_{deepsearch_refused,fluxscale_refused,elevation_floor,elevation_floor_fitted}.csv
+         master_catalog_{deepsearch_refused,fluxscale_refused,elevation_floor,elevation_floor_fitted,ghost_removed}.csv
          (tier_rule_removals), frame_times.csv
          (frame_table), selected_*.csv (selection), pertie/pertie_detections.csv (window_tie), leakveto/*.csv
          (leak_veto_table), source_catalogs_{noveto,veto}_<K>/ (source_catalog), localizations_{noveto,veto}/localizations.csv
@@ -1008,6 +1009,36 @@ def elevation_floor_fitted(U, ops):
             % (len(gone), len(rows), G.TENMIN_ELEV_FLOOR_DEG))
 
 
+GHOST_COLS = ["cand_id", "cell", "subband", "stokes", "tier", "ts", "snr", "ra_deg", "dec_deg", "pos_source", "parent",
+              "ghost_ra_deg", "ghost_dec_deg", "offset_arcmin", "radius_arcmin", "offset_percentile", "step_utc", "track_steps"]
+
+
+def ghost_gate_fitted(U, ops):
+    """sublst_catalogs.sh:258-279 (PYGH; exopipe_ops d1616d6, 2026-11-08; Gregg 2026-11-04, R-GREGG-20261104-EVERYTHING-AS-
+    RECOMMENDED item 3): the 2024-12-28 GHOST-TRACK GATE at the fitted position, after the floor there - gate_inputs.
+    ghost_gate_tenmin, the snapshot chain's ghost_gate along each window's own track (only GHOST_DATES nights are tested).
+    Removals, each with its nearest ghost step, go to master_catalog_ghost_removed.csv, written every run (header only when
+    none). Rows as dicts of the list rows, as the heredoc: a repeated column is read at its LAST occurrence; the kept rows are
+    written back as the list rows."""
+    G = _imp(ops, 'gate_inputs')
+    with open(f"{U}/master_catalog.csv", newline="") as f:
+        rd = csv.reader(f)
+        hdr = next(rd)
+        rows = list(rd)
+    keep, recs = G.ghost_gate_tenmin([dict(zip(hdr, r)) for r in rows])
+    with open(f"{U}/master_catalog.csv.new", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(hdr)
+        w.writerows(r for r, k in zip(rows, keep) if k)
+    with open(f"{U}/master_catalog_ghost_removed.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=GHOST_COLS)
+        w.writeheader()
+        w.writerows(recs)
+    os.replace(f"{U}/master_catalog.csv.new", f"{U}/master_catalog.csv")
+    return ("ghost-track gate (2024-12-28): %d of %d detections removed%s" % (len(recs), len(rows), "".join(
+        " | %s %s %s arcmin (radius %s)" % (r["cand_id"], r["parent"], r["offset_arcmin"], r["radius_arcmin"]) for r in recs)))
+
+
 def table_notes(removed_csv):
     """sublst_catalogs.sh:189-201 (PYT): every bright-parent table removal names its elevation band and the image-pixel
     metric. Returns (line, n, bad)."""
@@ -1533,10 +1564,13 @@ def st_fitpos(ctx, s, plan):
                 f'module)')
     plan.append(f'elevation floor at the fitted positions (in process): gate_inputs.window_elevation >= '
                 f'{ctx.c.ELEV_FLOOR_DEG} deg -> master_catalog_elevation_floor_fitted.csv (S-G10; exopipe_ops 24d2b39)')
+    plan.append('2024-12-28 ghost-track gate at the fitted positions (in process): gate_inputs.ghost_gate_tenmin -> '
+                'master_catalog_ghost_removed.csv, written every run (S-G26; exopipe_ops d1616d6)')
     if ctx.dry:
         return
     env_leaks(INPROC_ENV)
-    s.code(script, ctx.opsc('deep_forced_radio.py'), ctx.opsc('gate_inputs.py'))
+    s.code(script, ctx.opsc('deep_forced_radio.py'), ctx.opsc('gate_inputs.py'), ctx.opsc('sublst_frame_times.py'),
+           os.path.join(ctx.clv, 'phase3_snapshot_chain.py'))
     s.inp(f'{U}/master_catalog.csv')
     ctx.log.say(f'fitted detection positions on the searched frames (template K: {" ".join(k_arg())})')
     res = call(ctx, s, script, a, env=ctx.env(), log=ctx.log.path, cwd=U)
@@ -1558,7 +1592,19 @@ def st_fitpos(ctx, s, plan):
         refuse(f'S-G10 elevation floor (fitted positions) failed: {type(e).__name__}: {e}')
     ctx.log.say(line)
     s.u.note(line)
+    try:
+        with stdout_to(ctx.log.path):
+            gline = ghost_gate_fitted(U, ctx.ops)
+            print(gline, flush=True)
+    except _record().Refusal:
+        raise
+    except Exception as e:
+        ctx.log.say('REFUSING: ghost-track gate failed - see catalogs.log')
+        refuse(f'S-G26 ghost-track gate failed: {type(e).__name__}: {e}')
+    ctx.log.say(gline[:300])
+    s.u.note(gline)
     s.out(f'{U}/master_catalog_elevation_floor_fitted.csv', 'tier_rule_removals')
+    s.out(f'{U}/master_catalog_ghost_removed.csv', 'tier_rule_removals')
     s.out(f'{U}/master_catalog.csv', 'fitted_catalog')
     if os.path.exists(f'{U}/fit_positions_record.csv'):
         s.out(f'{U}/fit_positions_record.csv', 'csv_table')
