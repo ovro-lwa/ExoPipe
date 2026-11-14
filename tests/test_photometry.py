@@ -73,6 +73,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -1302,12 +1303,36 @@ def test_real():
     ok, bad = all_pass('photometry_zone_flags', zf)
     check('real zones_recomputed_20261007.csv (the 2026-10-07 zone-flag product) passes ZF1', ok, bad)
     # the SERVED generation's evaluations (eval_gen5 / eval_wb_gen5 on stage1_gen5 - the S test finds that stage 1 by the
-    # evaluation's tag) and their zone flags: every test passes on 3 cells
+    # evaluation's tag) and their zone flags: every test passes on 3 cells but V1, which names every (cell, band) that
+    # data_decisions.csv excludes now. Those must all be exclusions added AFTER the evaluation was written (2026-10-26; e.g.
+    # the whole 01h 2025-11-01 night on 2026-11-12): under the file's last commit before the evaluation's targets_ge4.csv
+    # (clv15 git) none of its (cell, band) is excluded. The forced pages drop the later-excluded events at build
+    # (snapshot_forced_panels.cell_band_excluded).
+    from exopipe.phase3.core import exclusions as EX
+    dd = CFG.paths.DATA_DECISIONS
     for ev in ('eval_wb_gen5', 'eval_gen5'):
         res = run_tests('photometry_eval', os.path.join(prod, ev), max_cells=3, procs=1)
-        check('real %s (served): G1-G6, V1, V2, Z1 and S (stage 1 = %s) pass on 3 cells' % (ev, S1),
-              all(r['passed'] for r in res.values()) and 'stage-1 files' in str(res['S_stage1']['detail']),
-              {k: (r['passed'], str(r['detail'])[:160]) for k, r in res.items()})
+        tg = os.path.join(prod, ev, 'targets_ge4.csv')
+        built = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(os.path.getmtime(tg)))
+        rev = subprocess.run(['git', '-C', os.path.dirname(dd), 'rev-list', '-1', '--before=' + built, 'HEAD', '--',
+                              os.path.basename(dd)], stdout=subprocess.PIPE, universal_newlines=True,
+                             timeout=600).stdout.strip()
+        then = os.path.join(TMP, 'data_decisions_%s.csv' % rev[:10])
+        with open(then, 'w') as f:
+            f.write(subprocess.run(['git', '-C', os.path.dirname(dd), 'show', '%s:%s' % (rev, os.path.basename(dd))],
+                                   stdout=subprocess.PIPE, universal_newlines=True, timeout=600, check=True).stdout)
+        ex_now, ex_then = T._excl('snapshot'), EX.load(path=then, scope='snapshot')
+        cb = {(r['cell'], r['band']) for r in csv.DictReader(open(tg))}
+        late = sorted(k for k in cb if ex_now.is_excluded(k[0].split('_', 1)[0], k[1], k[0].split('_', 1)[1]))
+        early = sorted(k for k in cb if ex_then.is_excluded(k[0].split('_', 1)[0], k[1], k[0].split('_', 1)[1]))
+        v1 = res['E2_lists_or_V1_kind_exclusions']
+        check('real %s (served): G1-G6, V2, Z1 and S (stage 1 = %s) pass on 3 cells; V1 names only the %d (cell, band) '
+              'excluded after the evaluation was written (%s; data_decisions.csv at %s excluded none of them)'
+              % (ev, S1, len(late), built, rev[:10]),
+              all(r['passed'] for k, r in res.items() if k != 'E2_lists_or_V1_kind_exclusions')
+              and 'stage-1 files' in str(res['S_stage1']['detail'])
+              and rev and not early and (v1['passed'] if not late else v1['value'] == len(late)),
+              {'early': early, 'late': late, 'tests': {k: (r['passed'], str(r['detail'])[:160]) for k, r in res.items()}})
     ok, bad = all_pass('photometry_zone_flags', os.path.join(prod, 'zones_recomputed_gen5.csv'))
     check('real zones_recomputed_gen5.csv (the served zone flags) passes ZF1', ok, bad)
     same = {}

@@ -9,17 +9,23 @@ check can read (fail closed: the production chat changed the code, the mirror mu
 Checked (module: constant -> config key):
   phase3_snapshot_lightcurves  STAMP -> curves.STAMP_PX; NBINS -> curves.NBINS; REF_SNR -> curves.REF_SNR;
                                os.environ.get('P3_LC_WAIT_I_S', ...) is read (curves.WAIT_I_TABLE_S is exported under it)
-  phase3_snapshot_search       PB_LIBRARY -> curves.PB_LIBRARY; PHASE1_ROOT -> paths.PHASE1_ROOT (discover_frames default);
-                               INTEGRATION_S -> curves.INTEGRATION_S (content test light_curve.integrations)
+  phase3_snapshot_search       PB_LIBRARY -> curves.PB_LIBRARY; INTEGRATION_S -> curves.INTEGRATION_S (content test
+                               light_curve.integrations); the frame roots of frame_root (discover_frames' default, clv15
+                               5c83ddc): PHASE1_ROOT = os.environ.get('P3_SNAP_PHASE1_ROOT', paths.PHASE1_ROOT),
+                               GPU_FRAME_ROOT -> paths.SNAPSHOT_GPU_FRAME_ROOT, GPU_CELLS_FILE =
+                               os.environ.get('P3_SNAP_GPU_CELLS', paths.SNAPSHOT_GPU_FRAME_CELLS), with neither variable
+                               naming another path in this environment; RUN_PINS likewise (P3_SNAP_RUN_PINS)
   phase3_snapshot_refastro     LOWRES -> curves.FLOW_LOWRES_PX; FLOWTREE = os.environ.get('P3_SNAP_FLOWTREE', ...) (the step
                                exports paths.SNAPSHOT_FLOW_ROOT under that name)
   phase3_snapshot_chain        SAMPLES -> curves.SAMPLES
 With curves.SEARCH_FRAMES (clv15 55469ba) the extractor's SOURCE TEXT must also hold the option '--search-frames', the
 search's frame-list name curves.SEARCH_FRAME_LIST as its '%s' literal ('noise_%s_%s_median.csv') and the refusal the step
 maps to gate G18 (workers._GATES) - a module without them would fail every pair at its argument parser.
-Not checkable as constants (inline literals in extract(), LC:115-171): the stamp core (|d| <= 2), 1.4826, the in-field
-margin (STAMP // 2 + 2), the 1e-3 deg WCS tolerance, the flow cell size 8.0, the 3-reference minimum, 'master:S'. Their
-mirrors are protected keys; the content tests (lib/curves/tests.py) check the written tables against them.
+Not checkable as constants: frame_root's rule itself (a run-wide override wins, else a listed cell reads the GPU root;
+plan.frame_root mirrors it for the input fingerprint) and the inline literals in extract(), LC:115-171: the stamp core
+(|d| <= 2), 1.4826, the in-field margin (STAMP // 2 + 2), the 1e-3 deg WCS tolerance, the flow cell size 8.0, the
+3-reference minimum, 'master:S'. Their mirrors are protected keys; the content tests (lib/curves/tests.py) check the written
+tables against them.
 """
 import ast
 import os
@@ -87,7 +93,7 @@ def check(clv15_root, C, paths_cfg):
     want('lc', 'NBINS', C.NBINS, 'curves.NBINS')
     want('lc', 'REF_SNR', C.REF_SNR, 'curves.REF_SNR')
     want('ss', 'PB_LIBRARY', C.PB_LIBRARY, 'curves.PB_LIBRARY')
-    want('ss', 'PHASE1_ROOT', paths_cfg.PHASE1_ROOT, 'paths.PHASE1_ROOT')
+    want('ss', 'GPU_FRAME_ROOT', paths_cfg.SNAPSHOT_GPU_FRAME_ROOT, 'paths.SNAPSHOT_GPU_FRAME_ROOT')
     want('ss', 'INTEGRATION_S', C.INTEGRATION_S, 'curves.INTEGRATION_S')
     want('ra', 'LOWRES', C.FLOW_LOWRES_PX, 'curves.FLOW_LOWRES_PX')
     want('ch', 'SAMPLES', tuple(C.SAMPLES), 'curves.SAMPLES')
@@ -95,16 +101,20 @@ def check(clv15_root, C, paths_cfg):
     if not (isinstance(ft, tuple) and len(ft) >= 2 and ft[0] == 'environ' and ft[1] == 'P3_SNAP_FLOWTREE'):
         problems.append(f"{MODULES['ra']} FLOWTREE = {ft!r} is no longer read from P3_SNAP_FLOWTREE (the step exports "
                         f"paths.SNAPSHOT_FLOW_ROOT under that name)")
-    # the Phase-1 run-pin file discover_frames reads (clv15 facb3e8, RUN_PINS from P3_SNAP_RUN_PINS at import) = the protected
-    # paths.PHASE1_RUN_PINS: its default, and no other file named in this environment (archive_frames runs it in process)
-    rp = lit['ss'].get('RUN_PINS')
-    if rp != ('environ', 'P3_SNAP_RUN_PINS', paths_cfg.PHASE1_RUN_PINS):
-        problems.append(f"{MODULES['ss']} RUN_PINS = {rp!r} != os.environ.get('P3_SNAP_RUN_PINS', paths.PHASE1_RUN_PINS "
-                        f"{paths_cfg.PHASE1_RUN_PINS!r})")
-    env_pins = os.environ.get('P3_SNAP_RUN_PINS')
-    if env_pins and os.path.realpath(env_pins) != os.path.realpath(paths_cfg.PHASE1_RUN_PINS):
-        problems.append(f'P3_SNAP_RUN_PINS={env_pins} in this environment: discover_frames would read another Phase-1 run-pin '
-                        f'file than paths.PHASE1_RUN_PINS ({paths_cfg.PHASE1_RUN_PINS}, protected) - unset it')
+    # the paths discover_frames reads that production takes from the environment at import, each = its config key: the
+    # Phase-1 run-pin file (clv15 facb3e8), the frame root (a run-wide override, 2026-11-09) and the GPU-frame cell list
+    # (clv15 5c83ddc) - their defaults, and no other path named in this environment (archive_frames runs it in process)
+    for name, var, key in (('RUN_PINS', 'P3_SNAP_RUN_PINS', 'PHASE1_RUN_PINS'),
+                           ('PHASE1_ROOT', 'P3_SNAP_PHASE1_ROOT', 'PHASE1_ROOT'),
+                           ('GPU_CELLS_FILE', 'P3_SNAP_GPU_CELLS', 'SNAPSHOT_GPU_FRAME_CELLS')):
+        want_v = getattr(paths_cfg, key)
+        got = lit['ss'].get(name)
+        if got != ('environ', var, want_v):
+            problems.append(f"{MODULES['ss']} {name} = {got!r} != os.environ.get('{var}', paths.{key} {want_v!r})")
+        env_v = os.environ.get(var)
+        if env_v and os.path.realpath(env_v) != os.path.realpath(want_v):
+            problems.append(f'{var}={env_v} in this environment: discover_frames would read another path than paths.{key} '
+                            f'({want_v}) - unset it')
     if 'P3_LC_WAIT_I_S' not in lit['lc']['__environ_names__']:
         problems.append(f"{MODULES['lc']} no longer reads P3_LC_WAIT_I_S (curves.WAIT_I_TABLE_S is exported under it)")
     if getattr(C, 'SEARCH_FRAMES', False):

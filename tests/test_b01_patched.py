@@ -186,7 +186,9 @@ def test_real_count():
     pat = [a for a in atts if DP.patched_from(a['dir']) is not None]
     by = {st: sum(1 for a in pat if a['stokes'] == st) for st in ('V', 'I')}
     check(f'real: {len(atts)} published attempts, {by["V"]} V + {by["I"]} I patched (each with its source attempt)',
-          len(atts) > 800 and by['V'] > 0 and by['I'] > 0 and all(DP.patched_from(a['dir']) != 'unknown' for a in pat), by)
+          len(atts) > 800 and all(DP.patched_from(a['dir']) != 'unknown' for a in pat), by)   # 0 since the full re-search of
+    # 2026-11-07..13 (912 published attempts, none with a patch record): B-01 (b) "patched Run_P3S4 results stay in Run_P3S5 until
+    # the next full re-search" - the count is reported, not pinned
 
 
 def test_status_cli():
