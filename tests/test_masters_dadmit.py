@@ -336,9 +336,9 @@ def test_stage():
             w12, o12 = os.path.join(T, f'wt18_{v}'), f'{T}/out18_{v}'
             c12 = copy_records('12h_Red', w12)
             rc, _ = cli('--tier', 'deep', '--cells', '12h_Red', '--stages', 'build-stats', '--cores', 'none', '--out', o12,
-                        '--deep-installed-root', w12, *(() if v == 'keep' else ('--set', f'masters_admit.MASTER_HELD_18MHZ={v}')))
+                        '--deep-installed-root', w12, *(() if v == 'keep' else ('--set', f'search_detect.MASTER_HELD_18MHZ={v}')))
             runs[v] = (rc, _rec(o12, '12h_Red').get('reason', ''), os.path.exists(f'{c12}/coadd_final/{BS.FILE}'))
-        check('a Red night held only for its excluded 18 MHz (12h_Red 2025-01-08): under masters_admit.MASTER_HELD_18MHZ '
+        check('a Red night held only for its excluded 18 MHz (12h_Red 2025-01-08): under search_detect.MASTER_HELD_18MHZ (the search key) '
               '\'keep\' (the default) the record is written; \'refuse\' refuses naming the night; an unknown value refuses',
               runs['keep'][0] == 0 and runs['keep'][2]
               and runs['refuse'][0] == 2 and '2025-01-08' in runs['refuse'][1] and '18 MHz' in runs['refuse'][1]

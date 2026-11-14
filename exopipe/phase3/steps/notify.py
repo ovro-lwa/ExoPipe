@@ -58,7 +58,7 @@ def default_out(args):
 def run(args, run):
     from exopipe.phase3.config import CFG
     from exopipe.phase3.core import cells, inputs, record
-    from exopipe.phase3.lib.notify import block, sources
+    from exopipe.phase3.lib.notify import block, qa, sources
     if not args.epochs:
         raise record.Refusal('notify needs --epochs <LST>_<date>')
     items = cells.expand_epochs(args.epochs)
@@ -84,11 +84,16 @@ def run(args, run):
             limits += lim
             transients, n_pass, per_tier, lim = sources.transients(item, CFG, top_n)
             limits += lim
-            html = block.build(item, chain_text, limits, targets, target_note, transients, n_pass, per_tier, top_n)
+            qa_html, lim = qa.phase3_percentiles(item, CFG)
+            limits += lim
+            iono, lim = qa.ionosphere_rank(rd, item, CFG, run.out_root)
+            limits += lim
+            html = block.build(item, chain_text, limits, targets, target_note, transients, n_pass, per_tier, top_n,
+                               cfg=CFG.notify)
             keep = os.path.join(run.out_root, 'notify', f'{item}_highlights.html')
             os.makedirs(os.path.dirname(keep), exist_ok=True)
             with open(keep, 'w') as f:
-                f.write(html)
+                f.write(qa_html + html)
             u.add_output(keep, 'notify_block', test=False)
             # Phase 2's own mailer, in this process: its two module lists are refilled from the run's files
             from exopipe.phase2 import phase2_science_agg as agg
@@ -97,7 +102,8 @@ def run(args, run):
             copy = (f'{args.write_to}_{item}' if args.write_to
                     else None if CFG.notify.SEND else os.path.join(run.out_root, 'notify', item))
             sent = agg.send_email_report(rd, run_command=saved.get('run_command'), run_duration=saved.get('run_duration'),
-                                         lst=lst, date=date, highlights_html=html, phases='Phases 2-3', write_to=copy)
+                                         lst=lst, date=date, highlights_html=html, phases='Phases 2-3', write_to=copy,
+                                         qa_extra_html=qa_html, ionosphere_rank=iono)
             n_list = sum(len(r) for _s, r, _n in transients)
             u.note(f'{len(targets)} target rows, {n_list} of {n_pass} filter-passing transient candidates listed; '
                    f'limits: {len(limits)}; '

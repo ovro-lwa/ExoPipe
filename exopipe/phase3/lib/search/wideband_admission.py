@@ -75,13 +75,7 @@ def tier_failures(rows, ratio, min_n, extra=None):
     joining the population (D-ADMIT's admitted nights, admissions.csv stage2_<s>_rms_mjy)."""
     out = {'I': {}, 'V': {}}
     for st, col in (('I', 'i_rms_mjy'), ('V', 'v_rms_mjy')):
-        vals = {}
-        for r in rows:
-            if r.get(col) in (None, '', 'nan') or not r.get('date'):
-                continue
-            x = _num(r.get(col))
-            if x is not None:
-                vals[r['date']] = x
+        vals = _values(rows, col)
         pop = sorted(x for x in vals.values() if math.isfinite(x) and x > 0)
         if len(pop) < min_n:
             continue
@@ -98,13 +92,7 @@ def sanity_failures(weights_rows, x_both, x_i, min_n, admitted_qa3=None):
     median = the upper-middle element of the sorted positive finite values of the record (_fin[len // 2]); admitted nights' values
     added after the median; > x_both x median refuses both searches, > x_i x median (and not already) the I search; fewer than min_n
     values: no refusal (the engine skips the gate)."""
-    vals = {}
-    for r in weights_rows:
-        if r.get('qa3_rms_mjy') in (None, '', 'nan') or not r.get('date'):
-            continue
-        x = _num(r.get('qa3_rms_mjy'))
-        if x is not None:
-            vals[r['date']] = x
+    vals = _values(weights_rows, 'qa3_rms_mjy')
     fin = sorted(v for v in vals.values() if math.isfinite(v) and v > 0)
     if len(fin) < min_n:
         return {}, {}
@@ -156,9 +144,10 @@ def member_record(cell_dir, member, lst, p, readers, admitted=({}, {}), perhour=
     perhour (PER-HOUR, a deep append: the set of nights it searches; None = the whole-cell mirror, unchanged): the record also
     holds unmeasured={night: {stokes: [reasons]}} - a present night of them that the member's sanity gate (weights.csv /
     admissions.csv qa3_rms_mjy) or its search-tier gate in a Stokes (residuals_provisional.csv / admissions.csv stage-1 rms)
-    cannot judge for want of its value while that gate runs (its population at the minimum). refusals() refuses the wideband
-    night in that Stokes for it: a frozen value missing refuses, as the member's own search refuses an epoch it cannot measure
-    (fallbacks.SEARCH_SANITY_FALLBACK)."""
+    cannot judge for want of its value while that gate runs (its population at the minimum). The member's own search sends such an
+    epoch through fallbacks.SEARCH_SANITY_FALLBACK: under 'refuse' (the default) it refuses the member's search, so refusals()
+    refuses the wideband night in that Stokes (the member admits nothing for it); under 'fallback' it searches the epoch, counted,
+    so the mirror admits it and counts the same site (unmeasured is then empty)."""
     final = os.path.join(cell_dir, 'coadd_final')
     wp = os.path.join(final, 'weights.csv')
     pp = os.path.join(cell_dir, 'residuals_provisional.csv')
@@ -231,8 +220,19 @@ def member_record(cell_dir, member, lst, p, readers, admitted=({}, {}), perhour=
                 both.setdefault(d, []).append('beam gate (area %.2f x the median)' % (a / bmed))
     out = dict(present=present, both=both, i_only=i_only, v_only=v_only, tier=tier)
     if perhour is not None:                     # PER-HOUR: the searched nights each gate cannot judge (docstring)
-        out['unmeasured'] = unmeasured_nights(wrows, prows, adm, sorted(present & set(perhour)), p)
+        um = unmeasured_nights(wrows, prows, adm, sorted(present & set(perhour)), p)
+        if um:
+            from exopipe.phase3.core import fallback
+            if fallback.policy(UNMEASURED_KEY) == 'fallback':   # as the member's own search: an unmeasured epoch is searched,
+                fallback.site('fallbacks.SEARCH_SANITY_FALLBACK',   # counted; = UNMEASURED_KEY, a literal as every site's key
+                              f'wideband member {member}: night(s) {sorted(um)} unmeasured - admitted, as '
+                              f'the member\'s own search admits them under this policy', n=len(um))
+                um = {}
+        out['unmeasured'] = um
     return out
+
+
+UNMEASURED_KEY = 'fallbacks.SEARCH_SANITY_FALLBACK'   # the member's own search sends an unmeasured epoch through this site
 
 
 def _values(rows, col):

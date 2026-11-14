@@ -164,6 +164,23 @@ class catalog_conform(_Section):
     TABLE_ELEV_BANDS = '25-35,35-50,50-90'                # deg; parent_curve_table.py:117 [env:P3_TABLE_ELEV_BANDS]
     TABLE_PREFIX = {'deep': '', 'sublst': 'sublst'}       # '' = cadence prefix; ops/sublst_catalogs.sh:81 [env:P3_TABLE_PREFIX] (RULINGS-GREGG-20261013-DECISIONS-1-7-AND-TENMIN-TABLES; ops 7042670)
     TABLE_RECORD_ONLY = False                             # ops/sublst_catalogs.sh:186 [env:P3_TABLE_RECORD_ONLY=0]; parent_curve_table.py:49
+    TABLE_NOISE_RECORD = {'deep': False, 'sublst': True, 'fork': False}   # the table's noise (per LST, band, Stokes: the median over
+                                                          # the catalog rows of |peak / global S/N|, ops/p3s2_conform.py `_RMS`) is
+                                                          # RECORDED by the conformance that computes it (conform_table_noise.csv in the
+                                                          # catalog directory, with conform_pulsar_evidence.csv: the detections near
+                                                          # ATNF pulsars its pulsar step grouped; lib/catalog/wraps/conform_noise.py
+                                                          # runs the module in place with five patched lines). A per-hour 10-minute
+                                                          # catalog reads both frozen
+                                                          # (Gregg 2026-11-12: a new night is judged by statistics frozen from earlier
+                                                          # nights). Not a parity line: production writes no such record; every other
+                                                          # file of the stage is byte-identical with the record on or off.
+    NOISE_MODULE_SHA1 = ('48f69a39c7f03185676c660f13933399453784c4',    # exopipe_ops p3s2_conform.py until 2026-11-13 10:43 UTC
+                         '6b3fe52d842b76e1c687126f992cbd8e437c1b39')    # ... since then (exopipe_ops 5546c51: the 10-minute exclusion
+                                                          # test reads the snapshot tiers' scope per night; per row, no new statistic): the
+                                                          # PATH-NORMALIZED sha1s of the module versions the FROZEN mode was checked for
+                                                          # (one population statistic at 10 minutes: design section 2.2a). Another
+                                                          # version REFUSES a frozen run until it is read for a second statistic of the
+                                                          # population of rows; the record mode needs the patch text and its census only.
     TABLE_TARGET_BEAM = True                              # gate distance in the searched frame's beam; ops/p3s2_conform.py:234 [env:P3_GATE_TARGET_BEAM] (Gregg 2026-09-24)
     TABLE_XM_EXEMPT = True                                # parent_curve_table.py:90 [env:P3_TABLE_XM_EXEMPT] (R-TABLE-EXEMPTION-PULSARS-ONLY)
     JUPITER_TRACK_RADIUS_DEG = {'Red': 5.0, 'Full': 5.0, 'Green': 0.5, 'Blue': 0.5}   # deg; ops/p3s2_conform.py:288 [lit] (Gregg 2026-09-18, R-JUPITER-TRACK-VETO-IMPLEMENTED-IN-THE-CONFORMANCE-STAGE-BOTH-TIERS)
@@ -185,7 +202,8 @@ class catalog_conform(_Section):
              'PULSAR_ASSOC_K': 'R-ASSOCIATION-RADIUS-QUADRATURE', 'TABLE_XM_EXEMPT': 'R-TABLE-EXEMPTION-PULSARS-ONLY',
              'DEEP_ELEV_EPOCH': ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32',   # B-02 (a); the convention
                                  'R-REFACTOR-20261016-B02-CONVENTIONS'),                        # under the 2026-10-16 delegation
-             'CONFORM_AXIS_UNDER_RULE': 'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS'}   # (its comment)
+             'CONFORM_AXIS_UNDER_RULE': 'R-REFACTOR-20261104-AXIS-RULE-ALONE-FULLBAND-SIZE-OFF-FROM-PULSARS',   # (its comment)
+             'TABLE_NOISE_RECORD': 'R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS'}   # ruling (2): frozen statistics
 
 
 class catalog_fitpos(_Section):
@@ -753,12 +771,21 @@ class catalog_grouping(_Section):
                     '2a12c39a57ff3df502021e4ddcfdac26c801ef02',   # 03h / 05h 2026-10-13 (3)
                     '6e61376611f124ca4183d416d2ce4de378a3771c',   # 05h / 06h / 14h 2026-10-12..13 (3)
                     'ab052310e2eafb0d5c13af7bd94beafd289a3064',   # 09h..19h 2026-10-12 (14)
-                    '44d2763087cdde27c5286d33dfcb0f25d18427af')   # live exopipe_ops 0d7861e (RA across 0h; 18h / 21h 11-02 trees)
+                    '44d2763087cdde27c5286d33dfcb0f25d18427af',   # exopipe_ops 0d7861e (RA across 0h; 18h / 21h 11-02 trees)
+                    '430f83b317080ab5f4b74d8c0785826433a895ab')   # live exopipe_ops 9e25883 (2026-11-14: sample densities' loop)
                                                           # the builders (build_source_catalogs_v3.py) the grouping runner's patches were
                                                           # written and checked for, as PATH-NORMALIZED sha1s (a frozen tree's own root
                                                           # replaced by /lustre/gh/main, its rewrites undone): any other builder REFUSES
                                                           # until lib/catalog/wraps/builder_grouping.py is re-ported (review 2026-11-04 F7:
                                                           # a new multiplicity-dependent decision elsewhere would run unpatched)
+    FROZEN_BUILDER_SHA1 = ('44d2763087cdde27c5286d33dfcb0f25d18427af',    # exopipe_ops 0d7861e, and the live 9e25883 (the
+                           '430f83b317080ab5f4b74d8c0785826433a895ab')    # same quantities; diff read 2026-11-14): the builders whose
+                                                          # population-wide quantities were listed line by line for the per-hour delta
+                                                          # build of the 10-minute catalog (the runner's FROZEN_PATCHES; Gregg 2026-11-13
+                                                          # "Approved." on its form, R-GREGG-20261113-SPEEDUP-CHECKIN-TEN-ANSWERS answer 3).
+                                                          # A run with frozen statistics (EXOPIPE3_FROZEN_MODE record / delta /
+                                                          # passthrough) of any other builder REFUSES: a quantity added to the builder
+                                                          # since would be computed over a delta's partial population unnoticed
     SUBLST_DIR = '{transients_root}/grouping_sublst'      # the 10-minute tier's grouping (products + the persistent state): written by
                                                           # `catalog --tier sublst --stages group`, read by every LST's build stage and the
                                                           # cumulative build ({transients_root} = paths.TRANSIENTS_ROOT; --out of the stage
@@ -850,7 +877,8 @@ class catalog_grouping(_Section):
                                                                                      # chat, 2026-10-16 delegation)
     RULED['REPEAT_RUNGS'] = 'R-REFACTOR-20261104-REPEAT-RUNGS-MULTIPLES-LEVEL'       # the refactor chat, 2026-10-16 delegation
     PROTECTED_KEYS = ('STATE_SUBDIR',                     # where the stable IDs live: moving it would restart every ID
-                      'BUILDER_SHA1')                     # a pin: changes only by a commit, with the patches re-checked
+                      'BUILDER_SHA1',                     # a pin: changes only by a commit, with the patches re-checked
+                      'FROZEN_BUILDER_SHA1')              # a pin: changes only with the builder's population-wide quantities re-read
 
 
 # =====================================================================================================================
