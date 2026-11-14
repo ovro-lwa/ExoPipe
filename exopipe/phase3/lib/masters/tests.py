@@ -171,13 +171,22 @@ def admitted_header(path, source=None, **ctx):
 
 @content_test('admitted_epoch')
 def admitted_cards(path, **ctx):
-    """D-ADMIT: ADMITTED True and ADMITREF the CONSTDIG of the cell's installed I master (the master admitted into)."""
+    """D-ADMIT: ADMITTED True and ADMITREF the CONSTDIG of the cell's installed I master (the master admitted into); in a
+    master-dewarped cell (item 7) the master's MDW* cards, equal, and ADMWARP 'flow' (aligned by its flow, no screen
+    applied), and none of them where the master carries no MDWARP."""
+    from exopipe.phase3.lib.masters import admit as A
     loc = locate(path, **ctx)
     h = _hdr(path)
     mp = os.path.join(loc['final'], f'I_deep_Taper_R075{loc["token"]}_{loc["scope"]}.fits')
-    want = str(_hdr(mp).get('CONSTDIG') or '')[:32] if os.path.exists(mp) else None
+    mh = _hdr(mp) if os.path.exists(mp) else {}
+    want = str(mh.get('CONSTDIG') or '')[:32] if os.path.exists(mp) else None
     ok = h.get('ADMITTED') is True and want is not None and h.get('ADMITREF') == want
-    return ok, h.get('ADMITREF'), f"ADMITTED {h.get('ADMITTED')!r}, ADMITREF {h.get('ADMITREF')!r} (master CONSTDIG {want!r})"
+    if mh.get('MDWARP'):
+        bad = [k for k in A.SCREEN_CARDS if k in mh and h.get(k) != mh.get(k)] + ([] if h.get('ADMWARP') == 'flow' else ['ADMWARP'])
+    else:
+        bad = [k for k in A.SCREEN_CARDS + ('ADMWARP',) if k in h]
+    return (ok and not bad, h.get('ADMITREF'), f"ADMITTED {h.get('ADMITTED')!r}, ADMITREF {h.get('ADMITREF')!r} (master "
+            f"CONSTDIG {want!r}); master MDWARP {mh.get('MDWARP')!r}" + (f'; dewarp cards not the master\'s: {bad}' if bad else ''))
 
 
 @content_test('admissions')
@@ -201,6 +210,8 @@ def admissions_record(path, **ctx):
     sc = os.path.basename(cell).split('_', 1)[1]
     seen, admitted, drift = set(), set(), []
     ident = A.master_identity(cell) if any(r.get('verdict') == 'admitted' for r in rows) else None
+    _mp = A.master_path(cell)                                  # item 7: an admitted row names its screen iff the master
+    warped = bool(fits.getheader(_mp).get('MDWARP')) if os.path.exists(_mp) else False   # is dewarped
     for r in rows:
         d = r.get('date')
         if d in seen:
@@ -216,6 +227,8 @@ def admissions_record(path, **ctx):
             admitted.add(d)
             if r.get('night_image') == 'FAIL' or r.get('epoch_gate') != 'pass':
                 probs.append(f'{d}: admitted although a refusing check failed')
+            if bool(r.get('screen_md5')) != bool(warped):
+                probs.append(f'{d}: screen_md5 {r.get("screen_md5")!r} in a cell whose master carries MDWARP {warped!r}')
             if (r.get('reference_constdig'), r.get('reference_md5')) != ident:
                 probs.append(f'{d}: admitted into another master (CONSTDIG / data md5 {r.get("reference_constdig")} / '
                              f'{r.get("reference_md5")} are not the installed master\'s)')

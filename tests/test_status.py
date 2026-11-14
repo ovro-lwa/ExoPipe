@@ -960,6 +960,46 @@ def test_exclusion_conformance():
         edit('2099-01-03', '2099-01-01'))
 
 
+def test_fleet_claim_done():
+    """claim_done of the snapshot coverage = production's snapshot_batch_audit.shipped (exopipe_ops e5fc9f1, 2026-11-14): a
+    GPU-frame cell only by the Dec 18-27 GPU fleet's marker, any other cell by the main fleet's or the v11 own-CLEANed
+    fleet's. Compared case by case with production's function itself (read from the live file, its claim roots pointed at
+    the world), and production's three claim roots must be the config's."""
+    import ast
+    from exopipe.phase3.lib.status import steps_coverage as SC
+    S = CFG.status_snapshot
+    ops = CFG.paths.OPS_ROOT
+    gpu_d, main_d, own_d = (os.path.join(ops, os.path.basename(x)) for x in
+                            (S.GPU_FLEET_CLAIMS, S.FLEET_CLAIMS, S.OWN_CLEAN_FLEET_CLAIMS))
+    marks = {'18h_2099-03-01': [gpu_d], '18h_2099-03-02': [main_d], '18h_2099-03-03': [main_d, own_d],
+             '18h_2099-03-04': [own_d], '18h_2099-03-05': [main_d], '18h_2099-03-06': [gpu_d], '18h_2099-03-07': []}
+    gpu = {'18h_2099-03-01', '18h_2099-03-02', '18h_2099-03-03'}
+    for c, ds in marks.items():
+        for d in ds:
+            wtxt(os.path.join(d, c, 'done'), 'synthetic\n')
+    src = open(os.path.join(REAL_OPS, 'snapshot_batch_audit.py')).read()
+    tree = ast.parse(src)
+    fn = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'shipped']
+    consts = {n.targets[0].id: n.value for n in tree.body if isinstance(n, ast.Assign) and len(n.targets) == 1
+              and isinstance(n.targets[0], ast.Name) and n.targets[0].id in ('GPU_FLEET_CLAIMS', 'OTHER_FLEET_CLAIMS')}
+    names = lambda v: sorted(os.path.basename(e.right.s) for e in (v.elts if isinstance(v, ast.Tuple) else [v]))  # noqa: E731
+    check("production's claim roots are the config's (GPU fleet; main + own-CLEANed fleets)",
+          len(fn) == 1 and names(consts['GPU_FLEET_CLAIMS']) == [os.path.basename(S.GPU_FLEET_CLAIMS)] and
+          names(consts['OTHER_FLEET_CLAIMS']) == sorted(os.path.basename(x) for x in (S.FLEET_CLAIMS, S.OWN_CLEAN_FLEET_CLAIMS)),
+          {k: names(v) for k, v in consts.items()})
+    g = dict(os=os, GPU_FLEET_CLAIMS=gpu_d, OTHER_FLEET_CLAIMS=(main_d, own_d))
+    exec(compile(ast.Module(body=fn, type_ignores=[]), 'snapshot_batch_audit.py', 'exec'), g)
+    got = {c: (SC.fleet_claim_done(c, gpu), g['shipped'](c, gpu)) for c in marks}
+    want = {'18h_2099-03-01': True, '18h_2099-03-02': False, '18h_2099-03-03': False, '18h_2099-03-04': True,
+            '18h_2099-03-05': True, '18h_2099-03-06': False, '18h_2099-03-07': False}
+    check('fleet_claim_done = production shipped in 7 of 7 cases (a GPU-frame cell with only a main or own-CLEANed fleet '
+          'marker is not done; a non-GPU cell with only the GPU fleet marker is not done)',
+          all(v == (want[c], want[c]) for c, v in got.items()), got)
+    old = {c: os.path.exists(os.path.join(main_d, c, 'done')) for c in marks}       # the rule before e5fc9f1 (negative control)
+    check('negative control: the old main-fleet-only rule differs from production in 4 of 7 cases',
+          sum(old[c] != want[c] for c in marks) == 4, old)
+
+
 def test_violations_stale():
     out = f'{TMP}/o_st'
     rc, txt = step(['status', '--violations', '--out', out, '--cores', 'none'])
@@ -1338,7 +1378,9 @@ def test_real_dry_runs():
 
 def test_real_coverage_records():
     """Sub-LST and snapshot coverage on the real state (read only; tables under /tmp): completion comes from the search
-    RECORDS, and today they agree with every production done marker (536 sub-LST jobs, 422 snapshot cells, 2026-10-14)."""
+    RECORDS, and today they agree with every production done marker (536 sub-LST jobs, 422 snapshot cells, 2026-10-14; 476
+    snapshot cells 2026-11-14, read by the shipping fleet's marker - 61 Dec 18-27 GPU-frame cells disagreed under the old
+    main-fleet-only reading)."""
     for tier in ('sublst', 'snapshot'):
         out = f'{TMP}/o_real_cov_{tier}'
         rc, txt = step(['status', '--coverage', '--tier', tier, '--out', out, '--cores', 'none'])
@@ -1410,7 +1452,7 @@ def test_every_content_test_has_a_negative():
 def main():
     with world():
         for t in (test_config_and_help, test_summary, test_coverage_gaps, test_rebuild_due, test_exclusion_conformance,
-                  test_violations_stale, test_served_diff_cell_load, test_qa, test_conformance_pages_ledger_register,
+                  test_fleet_claim_done, test_violations_stale, test_served_diff_cell_load, test_qa, test_conformance_pages_ledger_register,
                   test_snapshot, test_gates_and_dry_run_world, test_patched):
             t0 = time.time()
             print(f'--- {t.__name__}')

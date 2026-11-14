@@ -182,7 +182,8 @@ def _copy_checked(pair):
 # Runtime settings read from the environment. They are checked before anything runs (check_runtime_settings, called
 # by main): a value that cannot be used stops the hour at its start, not after the cascade (P2_TENMIN_WORKERS is first
 # read in the 10-minute stage).
-_WHOLE_NUMBER_SETTINGS = ('P2_COPY_WORKERS', 'P2_TENMIN_WORKERS', 'FULLBAND_WORKERS', 'BDSF_NCORES')
+_WHOLE_NUMBER_SETTINGS = ('P2_COPY_WORKERS', 'P2_TENMIN_WORKERS', 'FULLBAND_WORKERS', 'BDSF_NCORES',
+                          'P2_CASCADE_WORKERS')
 MAX_COPY_WORKERS = 6        # the recorders share Lustre: at most 6 Lustre-heavy workers
 
 
