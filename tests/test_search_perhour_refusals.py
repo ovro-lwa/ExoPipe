@@ -129,7 +129,7 @@ def test_v_sanity_record():
           '_vf[len // 2] when applied, the recorded below-minimum otherwise) and writes it AFTER the try, only when the gate ran '
           'to its end (a write failure never drops the gate\'s refusals)', 0 < i_b0 < i_read < i_try < i_vr < i_row < i_exc < i_wr
           and "if _b02 and included_dates and resid_V and _vb0 is None:" in src and "_vb = _vb0" in src
-          and "if cadence == 'deep' and not included_dates and resid_V:" in src
+          and "if cadence in ('deep', '10min') and not included_dates and resid_V:" in src   # the 10-minute cadence records it too
           and src.find('_GP.append(run_root, [_vsrow])', i_wr) == src.find('_GP.append(run_root, [_vsrow])') > i_wr
           and src.count('_RR.base_vsanmed(run_root)') == 1, (i_b0, i_read, i_try, i_vr, i_row, i_exc, i_wr))
 

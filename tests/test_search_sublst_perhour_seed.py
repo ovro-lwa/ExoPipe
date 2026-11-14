@@ -41,6 +41,7 @@ import types
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+from exopipe.phase3.lib.search import gate_population as GP    # noqa: E402
 from exopipe.phase3.lib.search import size_rule as SZ          # noqa: E402
 from exopipe.phase3.lib.search import tests as ST              # noqa: E402
 from exopipe.phase3.lib.search import tier_sublst as TS        # noqa: E402
@@ -48,7 +49,7 @@ from exopipe.phase3.lib.search import tier_sublst as TS        # noqa: E402
 STEP = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'tier_sublst.py')
 ENGINE = os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')
 OLD_SEED = ('master_catalog.csv', 'v_deep_ledger.csv', 'v_deep_images.csv', 'sigstack', 'refusals')
-NEW_SEED = (SZ.RUN_RECORD, 'search_table_record.csv')
+NEW_SEED = (SZ.RUN_RECORD, 'search_table_record.csv', GP.FILE)
 LABEL = 'SLSTB_03h_73MHz_V'
 LABEL_DIR = f'Run_{LABEL}'
 
@@ -67,7 +68,7 @@ def _csv_text(cols, date='2024-12-19'):
     return ','.join(cols) + '\n' + ','.join(['03h', '73MHz', 'V', date] + ['1'] * (len(cols) - 4)) + '\n'
 
 
-def _published(root, table=True, record=True, header=None):
+def _published(root, table=True, record=True, header=None, populations=True):
     """A published run directory of one cell holding night 2024-12-19, searched under the envelope rule (record=True: its
     gate ledger carries the size rule's columns) or under production's. header: another header for the table's record."""
     rd = os.path.join(root, 'pub', 'transients', LABEL_DIR)
@@ -81,6 +82,12 @@ def _published(root, table=True, record=True, header=None):
                        (os.path.join('refusals', '03h_73MHz_V_night_excluded.csv'), 'date,why\n')):
         with open(os.path.join(rd, name), 'w') as f:
             f.write(text)
+    frames = [f'2024-12-19T{w:02d}' for w in range(6)]                  # the populations its whole-cell search recorded
+    os.makedirs(os.path.join(root, 'no_populations'), exist_ok=True)
+    GP.append(rd if populations else os.path.join(root, 'no_populations'), [GP.row('03h', '73MHz', g, frames, 0.25, 2.0 if g != 'beam' else 1.5, 5, 'applied', 'search', '20261101T000000')
+                   for g in (GP.TIER_GATES['I'], GP.TIER_GATES['V'], 'beam')])
+    if populations:
+        os.remove(os.path.join(rd, GP.FILE + '.lock'))
     if record:
         SZ.write_run_record(os.path.join(root, 'rec_src'), _env())      # the engine's own writer, in an empty directory
         shutil.copy2(os.path.join(root, 'rec_src', SZ.RUN_RECORD), os.path.join(rd, SZ.RUN_RECORD))
@@ -140,12 +147,16 @@ def test_seed_copies_every_item_byte_for_byte():
 def test_seed_skips_what_the_published_cell_lacks():
     root = tempfile.mkdtemp(prefix='perhour_seed_')
     try:
-        src = _published(root, table=False, record=False)               # a cell searched under production's rule, before the
+        src = _published(root, table=False, record=False, populations=False)   # a cell searched under production's rule, before the
         dst = os.path.join(root, 'attempt', 'run')                      # table record existed
         done = TS.seed_attempt(src, dst)
         assert done == list(OLD_SEED), done
         assert not os.path.exists(os.path.join(dst, SZ.RUN_RECORD))
         assert not os.path.exists(os.path.join(dst, 'search_table_record.csv'))
+        assert not os.path.exists(os.path.join(dst, GP.FILE))
+        why = TS.gate_population_refusal(src, '03h', '73MHz')            # the plan refuses an append to it, before the work
+        assert why and 'run the full search of the cell first' in why, why
+        assert TS.gate_population_refusal(_published(os.path.join(root, 'with')), '03h', '73MHz') is None
         empty = os.path.join(root, 'none')
         os.makedirs(empty)
         assert TS.seed_attempt(empty, os.path.join(root, 'attempt2')) == []
@@ -349,6 +360,27 @@ def test_detect_seeds_through_seed_attempt_and_the_plan_holds_the_gate():
     gate_calls = [n for n in ast.walk(funcs[holders[0]])
                   if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == 'append_header_refusal']
     assert len(gate_calls) == 1
+    # the frozen gate populations and the admission of a night outside the window Masters are gates of the same plan, in
+    # this order, each read through its one function; what the plan admits reaches the engine through detect() and the child
+    order = ('epoch.published_attempt', 'epoch.not_yet_searched', 'epoch.size_rule_of_the_base',
+             'epoch.frozen_gate_populations', 'epoch.nonmember_tree_entry', 'epoch.nonmember_i_sanity_value',
+             'epoch.appended_headers')
+    at = {}
+    for n in ast.walk(funcs[holders[0]]):
+        if isinstance(n, ast.Constant) and n.value in order:
+            assert n.value not in at, f'{n.value} named twice in the plan'
+            at[n.value] = n.lineno
+    assert [at[g] for g in order] == sorted(at[g] for g in order) and len(at) == len(order), at
+    for fn in ('gate_population_refusal', 'nonmember_admission'):
+        assert len([n for n in ast.walk(funcs[holders[0]])
+                    if isinstance(n, ast.Call) and getattr(n.func, 'id', '') == fn]) == 1, fn
+    src = open(STEP).read()
+    assert "plan['nonmember_nights'] = {date: nm['value']}" in src
+    assert "nonmember_nights=plan.get('nonmember_nights')," in src                 # detect() -> the engine child's arguments
+    assert "if a.get('nonmember_nights'):\n            kw['nonmember_nights'] = a['nonmember_nights']\n" in src   # the child
+    eng = open(ENGINE).read()
+    assert "cadence='deep', nonmember_nights=None):" in eng
+    assert "and _kd(d) not in _nm10):" in eng and "_wr = {**_wr, **_nm10}" in eng
 
 
 def test_seed_state_names_a_record_changed_since_the_seed():

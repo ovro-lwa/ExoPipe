@@ -113,7 +113,7 @@ def run_gate(code, rows, refdir, lst='05h', scope='78MHz', ratio=2.0, adm=None, 
     ns = dict(np=np, os=os, _prov=rows, _kd=lambda d: d, cadence='deep', stokes='IV', lst=lst, scope=scope,
               dates=sorted(dates if dates is not None else {r['date'] for r in rows if r.get('date')}), _refdir=refdir,
               _attempt=attempt, _ADS=_Adm, _adm=adm or {}, _unm_tier=set(), print=lambda *a, **k: said.append(' '.join(map(str, a))),
-              _enough=lambda n, need, what, count=True, perhour=False: n >= need, _ph=False, SEARCH_TIER_RATIO=ratio, SEARCH_TIER_SIGMA=5.0,
+              _enough=lambda n, need, what, count=True, perhour=False: n >= need, _ph=False, _ph10=False, SEARCH_TIER_RATIO=ratio, SEARCH_TIER_SIGMA=5.0,
               SEARCH_TIER_MIN=5)
     exec(code, ns)
     tier = {(d, st): (r, thr) for d, st, r, thr in ns['_tier']}

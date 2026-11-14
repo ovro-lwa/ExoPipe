@@ -86,10 +86,13 @@ def test_record_and_reader():
 
 def test_engine_wiring():
     src = open(os.path.join(REPO, 'exopipe', 'phase3', 'lib', 'search', 'deep_search.py')).read()
-    check('the engine reads the frozen population on the deep append path only (cadence deep and included_dates) and writes '
-          'it on the whole-cell path only; the whole-cell gate is the unchanged expression',
-          "if cadence == 'deep' and included_dates:" in src and '_GP.frozen_beam(run_root, lst, scope' in src
-          and "if cadence == 'deep' and not included_dates:" in src and "_append_locked(f'{run_root}/{_GP.FILE}'" in src
+    check('the engine reads the frozen population on the append path only (included_dates, at the deep and the 10-minute '
+          'cadence) and writes it on the whole-cell path only; the whole-cell gate is the unchanged expression',
+          "_ph = cadence == 'deep' and bool(included_dates)" in src
+          and "_ph10 = cadence == '10min' and bool(included_dates)" in src
+          and "if _ph or _ph10:" in src and '_GP.frozen_beam(run_root, lst, scope' in src
+          and "if cadence in ('deep', '10min') and not included_dates:" in src
+          and "_append_locked(f'{run_root}/{_GP.FILE}'" in src
           and "_bok = _enough(len(_fin), BEAM_GATE_MIN_NIGHTS, f'{lst} {scope}: beam gate, nights with a beam area')" in src
           and "_bmed = _fin[len(_fin) // 2] if _bfz is None else _bfz['median']" in src
           and "if _areas.get(d, 0) > _thr * _bmed]" in src)

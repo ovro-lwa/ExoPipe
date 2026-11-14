@@ -39,7 +39,7 @@ import re
 
 FILE = 'gate_population.csv'
 COLS = ['lst', 'scope', 'gate', 'n', 'median', 'factor', 'min_nights', 'outcome', 'nights', 'basis', 'attempt']
-GATES = ('beam', 'v_sanity')
+GATES = ('beam', 'v_sanity', 'search_tier_I', 'search_tier_V')     # the last two: the 10-minute cadence (end of the file)
 OUTCOMES = ('applied', 'below-minimum', 'off')
 BASES = ('search', 'backfill')
 BACKFILL_STAGE = 'gate-backfill'
@@ -98,15 +98,23 @@ def read(run_dir, lst, scope, gate):
                 basis=r['basis'], attempt=r['attempt'], path=p)
 
 
-def frozen_beam(run_dir, lst, scope, factor, min_nights, excluded):
+def whole_cell_remedy(lst, scope):
+    """What a 10-minute append without a recorded population is told to do: the record is written by a whole-cell search."""
+    return f'search the cell whole again (search --tier sublst --cells {lst}_{scope})'
+
+
+def frozen_beam(run_dir, lst, scope, factor, min_nights, excluded, remedy=None):
     """The base attempt's beam-gate population an append is judged by (module docstring, READ), or RuntimeError naming why it
-    cannot be: missing, another factor / minimum, a base searched with the gate off, a population night ``excluded(date)`` now."""
+    cannot be: missing, another factor / minimum, a base searched with the gate off, a population night ``excluded(date)`` now.
+    ``remedy``: what the refusal for a missing record tells the reader to do; None is the deep tier's (the backfill stage or a
+    re-search), the 10-minute cadence passes whole_cell_remedy (it has no backfill)."""
     fz = read(run_dir, lst, scope, 'beam')
     if fz is None:
         raise RuntimeError(f'{lst} {scope}: BEAM GATE of an append - the base attempt holds no frozen beam-gate population '
                            f'({os.path.join(run_dir, FILE)}): a new night is judged by the population the cell was searched '
-                           f'with (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)), never a recomputed one - backfill the '
-                           f'published attempt (search --tier deep --stages {BACKFILL_STAGE}) or re-search the cell; REFUSING')
+                           f'with (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)), never a recomputed one - '
+                           + (remedy or f'backfill the published attempt (search --tier deep --stages {BACKFILL_STAGE}) or '
+                                        f're-search the cell') + '; REFUSING')
     if fz['outcome'] == 'off':
         raise RuntimeError(f'{lst} {scope}: BEAM GATE of an append - the base attempt was searched with the beam gate off '
                            f'(P3_BEAM_GATE_OFF=1); an append with it on would mix the rules in one attempt; REFUSING')
@@ -304,3 +312,93 @@ def _backfill_one(att, cell, stokes, cell_dir, factor, min_nights, beam_area, ad
         rep['refused'] = f'{n} population nights (below the minimum {min_nights}) but {len(beam_rows)} beam refusal(s) recorded'
         return None, rep
     return row(lst, scope, 'beam', pop, None, factor, min_nights, 'below-minimum', 'backfill', first), rep
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the 10-minute cadence: the unit is the FRAME (a night's window, key <night>T<window>), one attempt per cell and Stokes
+# ---------------------------------------------------------------------------------------------------------------------
+# R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2), Gregg: "Approved." (frozen statistics judge a new night, everywhere) and
+# (1), Gregg: "Agreed." (earlier verdicts stay). At 10 minutes three gates of deep_search.run_deep_cell take their population
+# from the cell's frames at search time, so a whole-cell search records each in its attempt's FILE and a per-hour append
+# (included_dates = one night's windows) reads it frozen:
+#   search_tier_I / search_tier_V   the frames with a positive stage-1 residual rms of that Stokes; numpy median; factor
+#                                   SEARCH_TIER_RATIO; minimum SEARCH_TIER_MIN (R-TENMIN-SEARCH-TIER-PER-FRAME). Every job
+#                                   computes both Stokes, so every attempt holds both rows.
+#   beam                            as at deep, per frame (frozen_beam).
+#   v_sanity                        the frames with a positive finite V residual rms; the engine's _vf[len // 2]; factor
+#                                   SANITY_I_X; minimum SANITY_MIN_NIGHTS. A 10-minute attempt has no frame_noise.csv, so the
+#                                   median is read from the row itself (a job that searches V).
+# An append reads the stage-1 rms of ITS OWN windows only and judges them with the row (frozen_frames, judge). The earlier
+# frames keep the verdicts the attempt recorded: its search-tier refusal rows of the attempt's newest search are written again
+# under the append's tag (carried_refusals), because the readers of the refusal record keep the rows of an attempt's newest
+# tag (exopipe_ops/p3s3_merge.py _cur_refusals; a file whose newest rows held one night only would drop every earlier
+# refusal). No row, another factor or minimum, an inconsistent row, or a population holding a night data_decisions excludes
+# now REFUSES the cell: the record is written by a whole-cell search, so the answer is to search the cell whole again.
+TIER_GATES = {'I': 'search_tier_I', 'V': 'search_tier_V'}
+
+
+def frozen_frames(run_dir, lst, scope, gate, factor, min_frames, excluded, what):
+    """10-minute cadence: the base attempt's population of ``gate`` (a TIER_GATES value or 'v_sanity') an append is judged
+    by, or RuntimeError naming why it cannot be. ``what`` names the gate in the message; ``excluded(key)`` = data_decisions
+    now for the frame's night."""
+    fz = read(run_dir, lst, scope, gate)
+    if fz is None:
+        raise RuntimeError(f'{lst} {scope}: {what} of an append - the base attempt holds no frozen population of it '
+                           f'({os.path.join(run_dir, FILE)}, gate {gate}): a new night is judged by the population the cell '
+                           f'was searched with (R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS (2)), never a recomputed one - '
+                           f'{whole_cell_remedy(lst, scope)}; REFUSING')
+    if fz['outcome'] not in ('applied', 'below-minimum'):
+        raise RuntimeError(f'{fz["path"]}: {lst} {scope} {gate}: outcome {fz["outcome"]!r} (this gate is applied or below its '
+                           f'minimum, never off); REFUSING')
+    if fz['factor'] != float(factor) or fz['min_nights'] != int(min_frames):
+        raise RuntimeError(f'{lst} {scope}: {what} of an append - the base attempt ran it with factor {fz["factor"]:g} / '
+                           f'minimum {fz["min_nights"]}, this run with {float(factor):g} / {int(min_frames)}: an append with '
+                           f'another rule would mix the rules in one attempt; REFUSING')
+    applied = fz['outcome'] == 'applied'
+    if fz['n'] != len(fz['nights']) or applied != (fz['n'] >= fz['min_nights']) \
+            or applied != (fz['median'] is not None and fz['median'] > 0):
+        raise RuntimeError(f'{fz["path"]}: {lst} {scope} {gate} row inconsistent (n {fz["n"]}, {len(fz["nights"])} frames, '
+                           f'outcome {fz["outcome"]}, median {fz["median"]}); REFUSING')
+    ex = sorted(d for d in fz['nights'] if excluded(d))
+    if ex:
+        raise RuntimeError(f'{lst} {scope}: {what} of an append - the frozen population holds frame(s) {ex[:4]} of night(s) '
+                           f'data_decisions.csv excludes now: a population holding them is not one to judge a new night by '
+                           f'(exclusions are absolute; search the cell whole again); REFUSING')
+    return fz
+
+
+def refusal_tag(gate, r):
+    """A refusal row's attempt tag: the last field, except the source-extraction rows (lst, scope, date, Stokes, reason,
+    attempt, UTC time), whose tag is the sixth - the rule of exopipe_ops/p3s3_merge.py (_rtag)."""
+    return r[5] if gate.startswith('extraction') and len(r) >= 7 else r[-1]
+
+
+def newest_search_tag(refdir, cell):
+    """The newest attempt tag over every refusal file of ``cell`` in ``refdir`` (the rows a drop patch appended, tagged
+    '<UTC>stdrop', aside), or None: the tag whose rows are the attempt's current refusals (p3s3_merge.py _cur_refusals)."""
+    tags = []
+    for p in glob.glob(os.path.join(refdir, f'{cell}_*_excluded.csv')):
+        g = os.path.basename(p)[len(cell) + 1:-len('_excluded.csv')]
+        with open(p, newline='') as fh:
+            tags += [refusal_tag(g, r) for r in csv.reader(fh) if r and r[0] + '_' + r[1] == cell]
+    tags = [t for t in tags if not t.endswith('stdrop')]
+    return max(tags) if tags else None
+
+
+def carried_refusals(refdir, cell, gate, keep, tag):
+    """The rows of ``refdir``/<cell>_<gate>_excluded.csv under the attempt's newest search tag whose frame ``keep(key)``
+    accepts, each with ``tag`` as its attempt tag and every other field unchanged: the earlier frames' verdicts an append
+    writes again under its own tag (the block comment above). RuntimeError when the newest tag is not older than ``tag``
+    (the rows of a later search are not this append's to carry). A gate whose tag is not the last field is not carried."""
+    if gate.startswith('extraction'):
+        raise ValueError(f'carried_refusals: the tag of {gate} rows is not their last field')
+    p = os.path.join(refdir, f'{cell}_{gate}_excluded.csv')
+    newest = newest_search_tag(refdir, cell)
+    if newest is None or not os.path.exists(p):
+        return []
+    if not newest < tag:
+        raise RuntimeError(f'{p}: the attempt\'s newest search tag {newest} is not older than this append\'s {tag} - REFUSING '
+                           f'to carry its rows')
+    with open(p, newline='') as fh:
+        rows = [r for r in csv.reader(fh) if r and r[0] + '_' + r[1] == cell]
+    return [r[:-1] + [tag] for r in rows if r[-1] == newest and keep(r[2])]
