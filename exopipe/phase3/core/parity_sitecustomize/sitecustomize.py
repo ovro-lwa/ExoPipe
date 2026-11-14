@@ -9,6 +9,14 @@
 import os
 import sys
 
+# ONCE PER PROCESS. Another sitecustomize that chains "to any other sitecustomize on the path" finds THIS file again and
+# executes it again, and this file chains back to it, without end: the sub-LST frozen-code guard does so (2026-11-14,
+# `pages --tier sublst` under a frozen tree: both hooks were installed dozens of times and every later import ended in a
+# RecursionError). The second execution stops here; the chaining file catches the exception and goes on.
+if getattr(sys, '_exopipe3_sitecustomize_loaded', False):
+    raise ImportError('exopipe3 sitecustomize: already loaded in this process (chained back from another sitecustomize)')
+sys._exopipe3_sitecustomize_loaded = True
+
 _ROOTS = os.environ.get('EXOPIPE3_PARITY_ROOT', '')
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -216,10 +224,16 @@ if _WR:
             return spec
     sys.meta_path.insert(0, _WrapFinder())
 
-# chain to any other sitecustomize on the path (the environment's own, if it has one)
+# chain to any other sitecustomize on the path (the environment's own, if it has one) - never back to the sitecustomize
+# Python imported at start-up when that is another file which chained here (the sub-LST frozen-code guard first on the
+# path): running it again would install its import hook a second time, and two such hooks call each other without end
 try:
     import importlib.machinery as _m
-    _spec2 = _m.PathFinder.find_spec('sitecustomize', [p for p in sys.path if p and os.path.abspath(p) != _HERE])
+    _skip = {_HERE}
+    _top = getattr(sys.modules.get('sitecustomize'), '__file__', None)
+    if _top and os.path.abspath(_top) != os.path.abspath(__file__):
+        _skip.add(os.path.dirname(os.path.abspath(_top)))
+    _spec2 = _m.PathFinder.find_spec('sitecustomize', [p for p in sys.path if p and os.path.abspath(p) not in _skip])
     if _spec2 is not None and _spec2.origin and os.path.abspath(_spec2.origin) != os.path.abspath(__file__):
         with open(_spec2.origin) as _f:
             _code = compile(_f.read(), _spec2.origin, 'exec')
