@@ -277,6 +277,9 @@ def page_entry(plan, page, utc, root=None):
         del a[i:i + 2]
     pre = tuple(S.TWO_PORT_ENV_PREFIXES)
     env = {k: v for k, v in sorted(plan.server_env_extra().items()) if k.startswith(pre)}
+    ct = S.CUTOUTS_TIER.get((page.tier, page.kind)) if page.family == 'review' else None   # the FITS cutouts button (config)
+    if ct:
+        env.update(P3_CUTOUTS_TIER=ct, P3_PAGE_ID=f'p{page.port}')
     title = a[a.index('--title') + 1] if '--title' in a else ''
     return dict(id=f'p{page.port}', kind='review', code=code, argv=a, env=env, legacy_port=page.port, greenlit=False,
                 inspection_legacy_port=page.twin, inspection_title=None, title=title)

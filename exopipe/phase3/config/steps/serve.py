@@ -205,6 +205,13 @@ class serve(_Section):
     TWO_PORT_PARITY_DIR = 'two_port'                # a parity serve's registry directory under --out
     TWO_PORT_ENV_PREFIXES = ('P3_',)                # an entry's env: these variables of the page's server environment
                                                     # (snapshot_register_page.py:50, SNAP_REGISTER_ENV default)
+    # THE FITS CUTOUTS BUTTON (2026-11-12; classify_transients.py:4541 P3_CUTOUTS_TIER, :4584 P3_PAGE_ID): a registered page of
+    # family 'review' carries its tier's cutouts tier, keyed (tier, page kind), and its own registry id; the other families
+    # (strat, deep-forced, forced) carry neither. Live registry 2026-11-14: p8766 p8768 p8772 p8773 deep, p8787-p8790 10min,
+    # p8986 p8987 snap, p8988 p8989 1min; production snapshot_serve.sh sets them since exopipe_ops 607f7a2, the deep and
+    # 10-minute re-registrations keep the current entry's env
+    CUTOUTS_TIER = {('deep', 'single'): 'deep', ('deep', 'multi'): 'deep', ('sublst', 'single'): '10min',
+                    ('sublst', 'multi'): '10min', ('snapshot', '10s'): 'snap', ('snapshot', '1min'): '1min'}
     TWO_PORT_POLL_S = 5.0                           # s between two reads of the server's build state (/_status); the 5 s
                                                     # of snapshot_serve.sh:199's identity check
     TWO_PORT_STALL_S = 3600.0                       # s with no build started or finished on the server: the page's build
