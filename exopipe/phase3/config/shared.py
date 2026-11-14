@@ -234,6 +234,11 @@ class fallbacks(_Section):
                                              # frames step (Gregg 2026-10-14)
     SEARCH_GATE_SKIP_FALLBACK = 'fallback'   # a cell-median gate skipped for want of its minimum count (deep_search._enough); COUNTED, never
                                              # refused (Gregg 2026-10-14, the refactor chat's recommendation)
+    # the same skip on the per-hour path (a deep append, included_dates), whose population is the base's recorded one (the
+    # build's tables; the beam and V sanity rows of gate_population.csv) and recorded 'below-minimum': the skip the whole-cell
+    # search made, COUNTED under its own key (Gregg 2026-09-11 "Waive the floor. I want a complete Masters set."); a population
+    # the base did not record refuses, never this site
+    SEARCH_GATE_SKIP_PERHOUR_FALLBACK = 'fallback'
     # no beam (the I master's empirical-beam fit NaN, a structure-map beam <= 0) -> 7 pixels (deep_search)
     SEARCH_BEAM_FALLBACK = 'refuse'
     # destriping the V master failed -> the raw master structure map gates the search (deep_search._mstruct_maps)
@@ -275,6 +280,7 @@ class fallbacks(_Section):
     STRIATION_WCS_BLOCK_FALLBACK = 'fallback'
     RULED = {k: 'R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32' for k in ('IMAGE_TIME_FALLBACK', 'EPOCH_TIME_SOURCE_FALLBACK', 'MASTER_SPAN_FALLBACK', 'REFERENCE_MASTER_FALLBACK', 'GRID_HEADER_FALLBACK', 'PB_DEEP_MAP_FALLBACK', 'PB_REFERENCE_TIME_FALLBACK', 'PB_WEIGHTS_FALLBACK', 'PB_RESTFRQ_FALLBACK', 'VCLEAN_I_MASTER_FALLBACK', 'SEARCH_ZAP_PIXELS_FALLBACK', 'SEARCH_BEAM_FALLBACK', 'SEARCH_MSTRUCT_DESTRIPE_FALLBACK', 'SEARCH_PRODNAME_FALLBACK', 'SEARCH_PB_SIBLING_FALLBACK', 'SEARCH_EPOCH_FLOW_FALLBACK', 'SEARCH_RESIDUAL_FALLBACK', 'SEARCH_SANITY_FALLBACK', 'SEARCH_WEIGHTS_FALLBACK', 'SEARCH_DURATION_FALLBACK', 'SEARCH_EPHEMERIS_TIME_FALLBACK', 'SEARCH_EPHEMERIS_LABEL_FALLBACK', 'SEARCH_JUPITER_TRACK_FALLBACK', 'VCLEAN_BEAM_FALLBACK', 'STRIATION_WCS_BLOCK_FALLBACK', 'LOC_MASTER_BEAM_FALLBACK', 'LOCALIZATION_FALLBACK', 'INSTALL_AUDIT_EPOCH_GATE_FALLBACK', 'CATALOG_IDENTITY_POS_ERR_FALLBACK', 'CATALOG_IDENTITY_ROW_FALLBACK', 'CATALOG_SSTACK_THRESHOLD_FALLBACK', 'CATALOG_EPHEM_RETRO_FALLBACK', 'CATALOG_EPHEM_TIME_FALLBACK')}
     RULED['SEARCH_GATE_SKIP_FALLBACK'] = ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS')
+    RULED['SEARCH_GATE_SKIP_PERHOUR_FALLBACK'] = ('R-BEAM-GATE-FIVE-NIGHT-FLOOR-WAIVED-THIN-CELLS-SEARCHED', 'R-GREGG-20261112-PER-HOUR-STEPS-SIX-RULINGS')
     RULED['FRAME_MOVIE_SKIP_FALLBACK'] = ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS')
     RULED['FRAME_MOVIE_BACKGROUND_FALLBACK'] = ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS')
     RULED['SNAPSHOT_NOISE_OUTLIER_SKIP_FALLBACK'] = ('R-GREGG-20261013-REFACTOR-SHEET-DADMIT-B01-B02-B03-B05-B30-B32', 'R-GREGG-20261014-REFACTOR-DECISIONS-LIST-RECOMMENDATIONS')
@@ -305,7 +311,8 @@ class runner(_Section):
     #                 'dewarp --tier deep --cells {item}', 'install --tier deep --cells {item}',
     #                 'masters --tier deep --cells {item} --stages sources']
     # Named chains (DESIGN 11.3, 12): `exopipe3 run submit --chain NAME --items ...` runs each item through these step
-    # commands in order on one node; an item stops at its first non-zero exit (2 refused / 3 no-input / other error).
+    # commands in order on one node; a step that ends no-input (exit 3) is recorded and the chain goes on, and an item
+    # stops at its first refused (2) or error exit (core/runner.py).
     # {item} is the item. The per-hour chain is the unit a merged Phase 1-2-3 controller will run (DESIGN 12.3).
     CHILD_ENV_CLEAR_PREFIXES = ('P3_', 'P3S', 'P3T', 'SUBLST_', 'SNAP_', 'FORK_', 'CATPUB_', 'NOCAT_', 'DEEP_FORCED_',
                                 'FT_', 'TENMIN_', 'GEN4_', 'BDSF_')   # production switch families never inherited by a child
@@ -317,15 +324,30 @@ class runner(_Section):
                   'photometry --tier deep --epochs {item}',
                   'catalog --tier deep --incremental --run {deep_run} --epochs {item}',
                   'forced --tier deep --run {deep_run} --epochs {item}',
-                  'frames --tier sublst --epochs {item}',
-                  'flow --tier sublst --epochs {item}',
-                  'search --tier sublst --epochs {item}',
-                  'catalog --tier sublst --incremental --epochs {item}',
+                  # 10-second tier first: its frames, their flow, then the night's 10-second cubes (and movies), which
+                  # the 10-minute stack reads (masters_sublst gate G-S02; PHASE3_ARCHITECTURE R-02). Gregg 2026-11-13.
                   'frames --tier snapshot --epochs {item}',
                   'flow --tier snapshot --epochs {item}',
+                  'frames --tier snapshot --stages cube,movies --epochs {item}',
+                  # 10-minute tier of ONE night against the frozen window Masters (Gregg 2026-11-12: a night that is not
+                  # in a Master is searched as a non-member): the list line and the stack, the night minus the installed
+                  # Masters (arm A), its x2-aligned residual (GPU), the three wideband groups, the entry in each band's tree.
+                  # A subband the admission left out and a group the band rule leaves without a window end no-input
+                  # or have no unit: the chain goes on. A night that IS in the window Masters (per subband; a group when
+                  # any member subband is) ends these steps no-input and the chain goes on: its 10-minute products are
+                  # the batch chain 'sublst-lst''s (Gregg 2026-11-13). `catalog --tier sublst --incremental` has no path
+                  # yet (catalog_incremental.TIERS = ('deep',)): it refuses every night, and the item stops there.
+                  'frames --tier sublst --stages nonmember-list,stack,nonmember --epochs {item}',
+                  'flow --tier sublst --stages refine-nonmember --epochs {item}',
+                  'frames --tier sublst --stages wideband,tree-nonmember --epochs {item}',
+                  'search --tier sublst --epochs {item}',
+                  'catalog --tier sublst --incremental --epochs {item}',
+                  # the rest of the 10-second tier. Its catalog step, like the 10-minute one, refuses every night until the
+                  # tier has an incremental path (plan/PER_HOUR_GAP_DESIGNS_20261111.md 2.2); without --incremental it was a
+                  # usage error (exit 1, a failed item, not a refusal): steps/catalog.py takes --epochs only with it
                   'search --tier snapshot --epochs {item}',
                   'curves --tier snapshot --epochs {item}',
-                  'catalog --tier snapshot --epochs {item}',
+                  'catalog --tier snapshot --incremental --epochs {item}',
                   'forced --tier snapshot --epochs {item}',
                   'pages --run {deep_run} --epochs {item}',
                   'serve --run {deep_run} --epochs {item}',

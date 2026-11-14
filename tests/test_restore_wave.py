@@ -19,14 +19,16 @@ wavediff), the view's G-V11 and the snapshot serve's G27 on such a view.
              for another run or older than its record refuse; with the stage's PASS test the gate passes and returns the totals
   serve      G27 (lib/serve/snapshot_copy.restore_only_go) accepts a view whose restore-only member carries the stage's PASS test
              (with Gregg's go naming the view) and refuses it without the test
-  real       READ ONLY, where the review disk is mounted: the port on Run_SNAPB6L_20261025 -> Run_SNAPB6L3_20261104 = production's
-             own files in the new run, byte for byte (skipped elsewhere)
+  real       READ ONLY, where the review disk is mounted: the port on the first served diff whose replaced run (its json's 'old')
+             still holds its record = production's own files in the new run, byte for byte. Skipped when no such pair is left:
+             the replaced runs of all 36 served diffs (wave of 2026-11-04) are no longer on disk (2026-11-14)
 Scratch: /tmp/exopipe3_tests_restore_wave/ (removed at the end). Production trees are only read.
 Run standalone:  python tests/test_restore_wave.py [test_name ...]
 """
 import collections
 import csv
 import filecmp
+import glob
 import gzip
 import json
 import os
@@ -409,18 +411,24 @@ def test_view_gate():
 
 
 def test_real():
-    """READ ONLY: the port on the first wave run = production's own files in it (B6L3 against B6L), byte for byte"""
+    """READ ONLY: the port on the first served diff whose replaced run still exists = production's own files, byte for byte"""
     RW = _RW()
     R = '/data07/gh/phase3/snapshot_search/review'
-    old, new = os.path.join(R, 'Run_SNAPB6L_20261025'), os.path.join(R, 'Run_SNAPB6L3_20261104')
-    if not os.path.exists(os.path.join(new, RW.JSON_NAME)):
-        raise Skip('no review disk with the wave run on this host (lwacalim07 only)')
+    served = sorted(glob.glob(os.path.join(R, 'Run_SNAP*', RW.JSON_NAME)))
+    if not served:
+        raise Skip('no review disk with a wave run on this host (lwacalim07 only)')
+    pairs = [(json.load(open(p))['old'], os.path.dirname(p)) for p in served]
+    pairs = [(o, n) for o, n in pairs if os.path.exists(os.path.join(o, 'detection_record.csv.gz'))]
+    if not pairs:
+        raise Skip(f'none of the {len(served)} served diffs still has its replaced run on disk')
+    old, new = pairs[0]
     out = os.path.join(SCRATCH, 'real')
     t0 = time.time()
     j = RW.diff(old, new, out=out)
     for fn in (RW.CSV_NAME, RW.JSON_NAME):
         assert filecmp.cmp(os.path.join(new, fn), os.path.join(out, fn), shallow=False), fn
-    print(f'    B6L3 against B6L: {j["status"]}, the csv and json identical to production\'s ({time.time() - t0:.0f} s)')
+    print(f'    {os.path.basename(new)} against {os.path.basename(old)}: {j["status"]}, the csv and json identical to '
+          f'production\'s ({time.time() - t0:.0f} s)')
 
 
 TESTS = [test_production_pin, test_parity, test_content, test_stage, test_view_gate, test_real]
