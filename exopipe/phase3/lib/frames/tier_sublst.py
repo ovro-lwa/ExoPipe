@@ -30,7 +30,10 @@ Stages (always run in the order of frames_sublst.ORDER; defaults per operating m
             Per hour with ONE night, arm A of a member subband is judged by the record of the night's own unit
             nonmember_<LST>_<night>_<sb> (stage nonmember, under this root) where this root holds one: done passes, any
             other status refuses; a subband without such a record (the batch stage wrote its residuals) keeps the
-            LST-wide evidence above (night_arm_a_complete, wideband_arm_a). Per hour, a group where the night IS in the
+            LST-wide evidence above (night_arm_a_complete, wideband_arm_a). The record is read against the night's job
+            plan where this root holds it: a subband with a stack job in the plan needs the record (a missing one
+            refuses, the LST-wide record does not stand in), done for every Stokes the plan owes; and a done record
+            older than the night's newest window stack of the subband refuses. Per hour, a group where the night IS in the
             window Masters of any member subband (sublst_nonmember.band_member) ends no-input before these gates: its
             windows stack that subband's batch residuals, so they are the batch chain's (Gregg 2026-11-13).
             Outputs <root>/<LST>/<LST>_<night>/<G>/<S>/sublst_<LST>_<night>_<G>_<S>_w<k>{,_pb,_nframes,_resid_loo}.fits and
@@ -425,6 +428,27 @@ class _Ctx:
         self.would_refuse = 0
         self.planned = 0
         self.stages = ()              # the stages of this invocation, set by run()
+        self._owed = {}               # night_owed(): one read of a night's job plan per run
+
+    def night_owed(self, lst, night):
+        """What ONE night's job plan under this root (the stack's admit record) says the night owes, read once per run:
+          ('plan', {subband: [Stokes]})  the stack jobs of the night (lib/masters/sublst_nonmember.night_owed);
+          ('none', why)                  this root holds no usable plan of the night (the stack ran elsewhere, or has not
+                                         run): the caller keeps the evidence it had without a plan;
+          ('unreadable', why)            reading it failed in any other way: the caller refuses on it (a plan that cannot
+                                         be read is never taken for 'no plan')."""
+        key = (lst, night)
+        if key not in self._owed:
+            from exopipe.phase3.core.record import Refusal
+            from exopipe.phase3.lib.masters import sublst_nonmember as NM
+            from exopipe.phase3.lib.masters import tier_sublst as MT
+            try:
+                self._owed[key] = ('plan', NM.night_owed(self.run, MT.Opts.from_args(self.args), lst, night))
+            except (Refusal, SystemExit) as e:
+                self._owed[key] = ('none', str(e)[:200])
+            except Exception as e:                                        # noqa: BLE001
+                self._owed[key] = ('unreadable', f'{type(e).__name__}: {str(e)[:200]}')
+        return self._owed[key]
 
     def lst_dir(self, lst, base=None):
         return os.path.join(base or self.root, lst)
@@ -746,16 +770,52 @@ def night_arm_a_complete(ctx, lst, sb, night):
     when this root holds no record of that unit, or its record ended no-input because the night was in the window Masters
     there (meta master_member; Gregg 2026-11-13; a group with such a subband ends no-input before this is read, unless
     the Masters have changed since): the night's arm-A residuals at that subband are then not the per-hour unit's (the
-    batch stage wrote them) and the LST-wide evidence decides."""
+    batch stage wrote them) and the LST-wide evidence decides.
+
+    Where this root holds the night's job plan (ctx.night_owed: the stack's admit record), the plan says what the night
+    owes at the subband, and the record is read against it:
+      - a stack job of the subband in the plan and no record of the unit: not complete (the nonmember stage has not run
+        for it; the LST-wide record must not stand in for a night it never held);
+      - no stack job of the subband in the plan: a record of the unit is of an earlier plan and says nothing (None);
+      - a done record must cover every Stokes the plan owes at the subband, of the Stokes of this run;
+      - a plan that could not be read: not complete.
+    With or without a plan, a done record older than the night's newest window stack of the subband is not complete: its
+    residuals are of an earlier stack (the rule of S-G8, refine_complete)."""
     from exopipe.phase3.core import record
     from exopipe.phase3.lib.masters import sublst_nonmember as NM
     name = NM.unit_name(lst, night, sb)
-    rec = record.load_record(ctx.root, 'frames', name)
-    if not rec or (rec.get('status') == 'no-input' and (rec.get('meta') or {}).get('master_member')):
-        return None
     p = record.record_path(ctx.root, 'frames', name)
+    rec = record.load_record(ctx.root, 'frames', name)
+    kind, owed = ctx.night_owed(lst, night)
+    if kind == 'unreadable':
+        return False, f'the job plan of the night {lst}_{night} could not be read ({owed}): what the night owes at {sb} ' \
+                      f'is not known', p
+    if rec and rec.get('status') == 'no-input' and (rec.get('meta') or {}).get('master_member'):
+        return None
+    planned = kind == 'plan'
+    if not rec:
+        if planned and sb in owed:
+            return False, f'the night\'s job plan holds a stack job of {sb} and this root holds no record of the night\'s ' \
+                          f'own arm-A unit {name} ({p}): missing', p
+        return None
+    if planned and sb not in owed:
+        return None
     st = rec.get('status')
-    return st == 'done', f'record of the night\'s own arm-A unit {name} ({p}): {st}', p
+    why = f'record of the night\'s own arm-A unit {name} ({p}): {st}'
+    if st != 'done':
+        return False, why, p
+    if planned:
+        have = list((rec.get('meta') or {}).get('stokes') or [])
+        lack = [S for S in owed[sb] if S in ctx.stokes and S not in have]
+        if lack:
+            return False, f'{why}, for Stokes {",".join(have) or "none"} only: the night\'s job plan owes Stokes ' \
+                          f'{",".join(lack)} too', p
+    stacks = [q for St in ('I', 'V') for q in glob.glob(os.path.join(
+        ctx.lst_dir(lst), f'{lst}_{night}', sb, St, f'sublst_{lst}_{night}_{sb}_{St}_w[0-9].fits'))]
+    if mtime(p) < newest_mtime(stacks):
+        return False, f'{why}, but the record is older than the night\'s newest {sb} window stack (residuals of an ' \
+                      f'earlier stack)', p
+    return True, why, p
 
 
 def wideband_arm_a(ctx, lst, sb, night=None, base=None):
