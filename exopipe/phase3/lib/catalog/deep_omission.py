@@ -831,10 +831,12 @@ class TenminRecords:
                     self._fr[r['path']] = (r['size'], r['mtime'], r['rms'])
         v = np.nan
         try:
-            st = os.stat(path)
-            self._st[path] = (st.st_size, int(st.st_mtime))      # the status this value belongs to (write_cache)
+            s = self._st.get(path)                               # read on threads before the median (decide_tenmin)
+            if s is None:
+                st = os.stat(path)                               # (a path without a status: raises, as before)
+                s = self._st[path] = (st.st_size, int(st.st_mtime))   # the status this value belongs to (write_cache)
             rec = self._fr.get(path)
-            if rec and rec[0] == str(st.st_size) and rec[1] == str(int(st.st_mtime)):
+            if rec and rec[0] == str(s[0]) and rec[1] == str(s[1]):
                 v = float(rec[2])
                 self.n['page-context'] += 1
             else:
@@ -913,6 +915,7 @@ def decide_tenmin(lst, rdir=None, recs=None, reader=None):
         per_night = collections.defaultdict(list)
         for key, nt, path in W[S]:
             per_night[nt].append((key, path))
+        recs.stats([path for _k, _n, path in W[S] if path not in cache])   # the windows no cache row holds: their status
         med = {nt: np.nanmedian([recs.rms(p, cache) for _, p in v]) for nt, v in per_night.items()}
         rate = {nt: sum(served.get((band, k, S), 0) for k, _ in v) / len(v) for nt, v in per_night.items()}
         thr = mad_thr(list(med.values()))

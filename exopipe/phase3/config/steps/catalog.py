@@ -956,10 +956,10 @@ class catalog_omission(_Section):
                                                           # stage writes its own cache under its output; sublst_cumulative.sh:42-44
     READ_WORKERS = 6                                      # threads reading the served product and listing its page directories
                                                           # (the review host's disk; the Lustre rule: at most 6 readers)
-    TENMIN_STAT_THREADS = 16                              # threads reading the STATUS (size, mtime) of the 10-minute table's cached
+    TENMIN_STAT_THREADS = 6                               # threads reading the STATUS (size, mtime) of the 10-minute table's
                                                           # windows (TenminRecords.stats; no file content is read - a window's value
                                                           # is still measured one at a time): speed only, 1 = one after another as
-                                                          # production; 16 as page_context_tenmin.py's own status pass
+                                                          # production; 6: the Lustre rule (at most 6 workers on Lustre)
     # ---- gates
     ABSENT_WITH_SERVED = 'refuse'                         # a deep-refused (night, band, Stokes, tier) the tier has no record of
                                                           # (verdict ABSENT) while the served product holds detections of it: the

@@ -1441,6 +1441,11 @@ def test_cumulative_reuses():
     os.makedirs(served)
     os.makedirs(B)
     name = S.SUBLST_PAGE_CONTEXT_CACHE
+    saved_root = CFG.paths.SUBLST_ROOT                 # the 10-minute tree whose frames.csv lists the frames to keep
+    CFG.paths.SUBLST_ROOT = f'{d}/sl'
+    tree = CFG.catalog_sublst.TENMIN_TREE.format(root=f'{d}/sl', tree=CFG.catalog_sublst.ARM_TREES['B'])
+    os.makedirs(f'{tree}/17h_sb3')
+    open(f'{tree}/17h_sb3/frames.csv', 'w').write('key,stokes,sub_path\nk1,V,/x/a.fits\nk2,V,/x/b.fits\n')
     r = sublst_build.carry_page_context_cache(served, B)
     assert r['carried'] is False and not os.path.exists(f'{B}/{name}'), r
     open(f'{served}/{name}', 'w').close()
@@ -1452,6 +1457,21 @@ def test_cumulative_reuses():
     r = sublst_build.carry_page_context_cache(served, B)
     assert r['carried'] is True and r['frames'] == 2 and open(f'{B}/{name}').read() == text \
         and int(os.stat(f'{B}/{name}').st_mtime) == 1700000000 and not os.path.exists(f'{B}/{name}.part'), r
+    os.remove(f'{B}/{name}')                           # review of PR 55: rows of frames the tree no longer lists are dropped
+    open(f'{served}/{name}', 'w').write(text + '/x/gone.fits,1,1,0.5\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and r['frames'] == 2 and r['dropped'] == 1 and open(f'{B}/{name}').read() == text, r
+    os.remove(f'{B}/{name}')                           # a carry that fails never blocks the swap: no table, no .part left
+    os.rename(f'{tree}/17h_sb3/frames.csv', f'{tree}/17h_sb3/frames.csv_x')
+    r = sublst_build.carry_page_context_cache(served, B)
+    os.rename(f'{tree}/17h_sb3/frames.csv_x', f'{tree}/17h_sb3/frames.csv')
+    assert r['carried'] is False and 'not carried' in r['why'] and os.listdir(B) == [], (r, os.listdir(B))
+    open(f'{served}/{name}', 'w').write('size,mtime,rms\n1,1,0.5\n')
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is False and 'not carried' in r['why'] and os.listdir(B) == [], (r, os.listdir(B))
+    open(f'{served}/{name}', 'w').write(text)
+    r = sublst_build.carry_page_context_cache(served, B)
+    assert r['carried'] is True and open(f'{B}/{name}').read() == text, r
     assert float(repr(0.38537807207107544)) == 0.38537807207107544
     open(f'{B}/{name}', 'w').write('path,size,mtime,rms\n')
     r = sublst_build.carry_page_context_cache(served, B)
@@ -1464,8 +1484,10 @@ def test_cumulative_reuses():
         assert r['carried'] is False and os.listdir(B) == [], (r, os.listdir(B))
     finally:
         S.SUBLST_PAGE_CONTEXT_CACHE = saved
+        CFG.paths.SUBLST_ROOT = saved_root
     ok('cumulative reuses: the frame-noise table of the served run is copied into the build before the swap (bytes and mtime kept; '
-       'a missing or empty table, a table the build holds, or the key unset: nothing carried, as production)')
+       'a missing or empty table, a table the build holds, or the key unset: nothing carried, as production; rows of frames the '
+       '10-minute tree no longer lists dropped; a carry that fails is noted and never blocks the swap)')
 
 
 def test_page_context_stage():

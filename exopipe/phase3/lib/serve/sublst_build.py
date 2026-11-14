@@ -340,12 +340,44 @@ def carry_page_context_cache(src, B, u=None):
         if u is not None:
             u.note(f'page context: no frame-noise table {a} to carry - every frame is measured (as production)')
         return dict(carried=False, why=f'no {a}')
-    shutil.copy2(a, b + '.part')
-    os.replace(b + '.part', b)
-    n = sum(1 for _ in open(b)) - 1
+    # only the rows of frames the 10-minute tree still lists (its frames.csv sub_path: the frames page_context_tenmin.py
+    # looks up, :111-133): the tool writes back every row it loaded, so a carried table would otherwise keep the rows of
+    # frames the rebuild lanes removed or renamed, growing from build to build
+    cs = _CFG().catalog_sublst
+    tree = cs.TENMIN_TREE.format(root=_CFG().paths.SUBLST_ROOT, tree=cs.ARM_TREES['B'])   # page_context_tenmin.py:48 TROOT
+    try:
+        keep = set()
+        for fl in glob.glob(os.path.join(tree, '*_*', 'frames.csv')):
+            with open(fl, newline='') as f:
+                keep.update(r['sub_path'] for r in csv.DictReader(f))
+        if not keep:
+            raise OSError(f'no frames.csv rows under {tree}')
+        h, n, dropped = hashlib.sha1(), 0, 0
+        with open(a, newline='') as f, open(b + '.part', 'w', newline='') as o:
+            head = f.readline()                          # each kept line copied as written (a table with nothing to drop is
+            ip = next(csv.reader([head])).index('path')  # carried byte for byte); one row per line (paths hold no newline)
+            o.write(head)
+            h.update(head.encode())
+            for ln in f:
+                r = next(csv.reader([ln]), None)
+                if r and r[ip] in keep:
+                    o.write(ln)
+                    h.update(ln.encode())
+                    n += 1
+                else:
+                    dropped += 1
+        shutil.copystat(a, b + '.part')
+        os.replace(b + '.part', b)
+    except (OSError, ValueError, KeyError, StopIteration) as e:   # speed only: never blocks the swap
+        with contextlib.suppress(OSError):
+            os.remove(b + '.part')
+        if u is not None:
+            u.note(f'page context: the frame-noise table {a} was not carried ({e}) - every frame is measured (as production)')
+        return dict(carried=False, why=f'not carried: {e}')
     if u is not None:
-        u.note(f'page context: frame-noise table carried from {a}: {n} frames to re-validate by size and mtime')
-    return dict(carried=True, source=a, frames=n, sha1=common.sha1_file(b))
+        u.note(f'page context: frame-noise table carried from {a}: {n} frames to re-validate by size and mtime ({dropped} '
+               f'rows of frames the 10-minute tree no longer lists dropped)')
+    return dict(carried=True, source=a, frames=n, dropped=dropped, sha1=h.hexdigest()[:12])
 
 
 def carry_swap_stage(run, plan, state):
