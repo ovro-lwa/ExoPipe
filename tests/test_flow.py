@@ -418,7 +418,8 @@ for k in ('--root', '--out', '--work', '--lst', '--subband', '--nights', '--wind
 a = ap.parse_args()
 wts = {r['date']: float(r['weight']) for r in csv.DictReader(open(os.environ['FAKE_WEIGHTS']))}
 skip = os.environ.get('FAKE_SKIP', '')
-n_ref = 0
+only = set(a.nights.split(',')) if a.nights else None
+n_ok = n_ref = 0
 for k in range(6):
     st = {}
     for S in 'IV':
@@ -427,16 +428,21 @@ for k in range(6):
     for S, nd in st.items():
         nw = sum(1 for n in nd if wts.get(n, 0) > 0)
         for n, p in nd.items():
-            if '%s,%d' % (n, k) == skip:
-                if S == 'I': n_ref += 1
+            if only is not None and n not in only:
                 continue
+            if '%s,%d' % (n, k) == skip:
+                if S == 'I':
+                    n_ref += 1; print('REFUSED-NIGHT %s w%d %s: no flow returned' % (a.subband, k, n))
+                continue
+            if S == 'I':
+                n_ok += 1; print('ALIGNED %s %s w%d %s median_flow=0.100 px' % (a.lst, a.subband, k, n))
             h = fits.getheader(p); d = fits.getdata(p)
             for c, v in (('SUBTRACT', 'x'), ('LOONCOAD', nw - (1 if wts[n] > 0 else 0)), ('LOOMSTR', 'sublst_master_%s_%s_%s_w%d.fits' % (a.lst, a.subband, S, k)),
                          ('CODE', 'fake'), ('LSTBIN', k), ('DURATION', 600.0), ('REFINE', 'x'), ('REFREF', 'x'), ('FLOWMEDP', 0.1), ('JUPMASK', -1.0)):
                 h[c] = v
             od = os.path.join(a.out, '%s_%s' % (a.lst, n), a.subband, S); os.makedirs(od, exist_ok=True)
             fits.writeto(os.path.join(od, os.path.basename(p)[:-5] + '_resid_loo.fits'), d - 0.5, h, overwrite=True)
-print('SUBLST-REFINE %s %s aligned=x refused=%d refused_rule=0 refused_night=0' % (a.lst, a.subband, n_ref))
+print('SUBLST-REFINE %s %s aligned=%d refused=%d refused_rule=0 refused_night=0' % (a.lst, a.subband, n_ok, n_ref))
 sys.exit(3 if n_ref else 0)
 '''
 
@@ -535,24 +541,66 @@ def test_sublst_refine_verdict():
             'sublst_x2_residual', p, stack_root=os.path.join(stack_root, lst))}
         r1 = res['sublst_x2_residual.allowed_and_complete']
         assert not r1['passed'] and 'LOONCOAD 7' in r1['detail'], r1
-        # per hour (one night): the refine log holds THIS run only (production truncates it per run, `> $L`), so the frames
-        # S-G8 gate / sublst_refine_approved.py never count an earlier run's REFUSED lines; the earlier log is kept
+        # per hour (one night): the refine log holds THIS run's lines (production truncates it per run, `> $L`), so the
+        # frames S-G8 gate / sublst_refine_approved.py never count an earlier run's lines of that night; the earlier log is
+        # kept, and the OTHER nights' lines come back from it (the judge compares the refusals with every approved row of
+        # the LST and subband: the approved 2031-02-02 w4 refusal stays), the final line counted over the whole log
         log = os.path.join(out, f'{lst}_x2', 'logs', f'{lst}_{sb}.log')
         nprev = len(os.listdir(os.path.join(out, f'{lst}_x2', 'logs', '_previous')))
-        rc = run_cli(['flow', '--tier', 'sublst', '--cells', f'{lst}_2031-02-01_{sb}', '--gpus', '1', '--work', work,
-                      '--out', out, '--sublst-stack-root', stack_root, '--fresh', '--supersede', 't3'])
+        hour = ['flow', '--tier', 'sublst', '--cells', f'{lst}_2031-02-01_{sb}', '--gpus', '1', '--work', work, '--out', out,
+                '--sublst-stack-root', stack_root]
+        rc = run_cli(hour + ['--fresh', '--supersede', 't3'])
         r = record.load_record(out, 'flow', f'refine_{lst}_{sb}_2031-02-01')
         assert rc == 0 and r['status'] == 'done', (rc, r['status'], r['reason'])
         body = open(log).read()
         assert body.count('SUBLST-REFINE ') == 1 and body.count('\n===== ') == 1, body[-400:]
         assert len(os.listdir(os.path.join(out, f'{lst}_x2', 'logs', '_previous'))) == nprev + 1
+        lines = body.splitlines()
+        assert lines[-1] == f'SUBLST-REFINE {lst} {sb} aligned=23 refused=1 refused_rule=0 refused_night=0', lines[-1]
+        assert lines.count(f'REFUSED-NIGHT {sb} w4 2031-02-02: no flow returned') == 1
+        assert sum(1 for ln in lines if ln.startswith(f'ALIGNED {lst} {sb} ') and ' 2031-02-01 ' in ln) == 6
+        assert r['meta']['refine']['child_final'] == f'SUBLST-REFINE {lst} {sb} aligned=6 refused=0 refused_rule=0 refused_night=0'
+        assert r['meta']['refine']['final'] == lines[-1]
+        # G-C13: an earlier log without its final line (a batch refine failed or runs) refuses a run of named nights
+        # before anything is moved aside; the whole subband is the remedy
+        open(log, 'w').write('\n'.join(lines[:-1]) + '\n')
+        have = T.residuals_on_disk(os.path.join(out, f'{lst}_x2'), lst, sb)
+        assert run_cli(hour + ['--fresh', '--supersede', 't4']) == 2
+        r = record.load_record(out, 'flow', f'refine_{lst}_{sb}_2031-02-01')
+        assert r['reason'].startswith('G-C13'), r['reason']
+        assert T.residuals_on_disk(os.path.join(out, f'{lst}_x2'), lst, sb) == have
+        assert not os.path.exists(os.path.join(out, '_superseded', 't4'))
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert run_cli(hour + ['--dry-run', '--fresh', '--supersede', 't5']) == 2
+        assert 'WOULD REFUSE - G-C13' in buf.getvalue(), buf.getvalue()[-600:]
+        # a refine-nonmember marker: of a named night it is replaced; of another night it stands and the log gets no
+        # final line (the frames gate refuses until that night's unit has run again), as R.merge_log
+        import types
+        from exopipe.phase3.lib.flow import sublst_nonmember_refine as R
+        u = types.SimpleNamespace(name='t', note=lambda s: None)
+        x2 = os.path.join(out, f'{lst}_x2')
+        prev = os.path.join(base, 'prev.log')
+        new = [f'ALIGNED {lst} {sb} w0 2031-02-01 median_flow=0.100 px']
+        for night, final in (('2031-02-01', True), ('2031-02-03', False)):
+            open(prev, 'w').write('\n'.join(lines[:-1] + [f'{R.INCOMPLETE} {sb} {night}: earlier residuals moved aside']) + '\n')
+            open(log, 'w').write('\n'.join(new + [f'SUBLST-REFINE {lst} {sb} aligned=1 refused=0 refused_rule=0 refused_night=0'])
+                                 + '\n')
+            got = SL.keep_other_nights(u, x2, log, prev, lst, sb, ['2031-02-01'])
+            out_lines = open(log).read().splitlines()
+            assert (got is not None) == final and (out_lines[-1] == got if final else not any(
+                ln.startswith('SUBLST-REFINE ') for ln in out_lines)), (night, got, out_lines[-3:])
+            assert sum(1 for ln in out_lines if ln.startswith(R.INCOMPLETE + ' ')) == (0 if final else 1)
+            assert sum(1 for ln in out_lines if ' 2031-02-01 ' in ln and ln.startswith('ALIGNED ')) == 1
+        assert got is None and R.final_line(out_lines, lst, sb).endswith('aligned=18 refused=1 refused_rule=0 refused_night=0')
     finally:
         gpus.__exit__(None, None, None)
         CFG.flow_refine.WEIGHTS_CSV, CFG.flow_refine.APPROVED_REFUSALS_CSV, LOO.WEIGHTS_CSV, CFG.site.PYTHON = saved
         SL.REFINE_SCRIPT = ('clv15', 'phase3_sublst_refine.py')
         os.environ.pop('FAKE_WEIGHTS', None)
     print('ok sub-LST refine: verdict R1/R2/cards, G-C5, G-C7 exact approved set, G-C11 lock rule before any move, '
-          'unreachable override refused, check alone')
+          'unreachable override refused, check alone, named nights keep the other nights\' log lines, G-C13')
 
 
 # =====================================================================================================================

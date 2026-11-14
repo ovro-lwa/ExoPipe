@@ -251,12 +251,34 @@ def merge_log(log, lst, sb, night, new_lines, marker=None):
     markers = [ln for ln in lines if ln.startswith(INCOMPLETE + ' ')]
     final = None
     if not markers:
-        def count(pat):
-            return sum(1 for ln in lines if re.match(pat, ln))
-        n_ok, n_ref = count(r'ALIGNED '), count(r'REFUSED-NIGHT \S+ w\d+ \S+: no flow returned')
-        n_rule, n_night = count(r'REFUSED-WINDOW '), count(r'REFUSED-RESIDUAL ')
-        final = f'SUBLST-REFINE {lst} {sb} aligned={n_ok} refused={n_ref} refused_rule={n_rule} refused_night={n_night}'
+        final = final_line(lines, lst, sb)
         lines.append(final)
+    write_log(log, lines)
+    return final, markers
+
+
+def final_line(lines, lst, sb):
+    """The SUBLST-REFINE line counted over ``lines`` with production's counters (refine.py:256): one per ALIGNED line, per
+    'REFUSED-NIGHT ... no flow returned' line, per REFUSED-WINDOW line, per REFUSED-RESIDUAL line."""
+    def count(pat):
+        return sum(1 for ln in lines if re.match(pat, ln))
+    n_ok, n_ref = count(r'ALIGNED '), count(r'REFUSED-NIGHT \S+ w\d+ \S+: no flow returned')
+    n_rule, n_night = count(r'REFUSED-WINDOW '), count(r'REFUSED-RESIDUAL ')
+    return f'SUBLST-REFINE {lst} {sb} aligned={n_ok} refused={n_ref} refused_rule={n_rule} refused_night={n_night}'
+
+
+def line_night(line, sb):
+    """The night a per-night line of the subband's refine log is about - ALIGNED, REFUSED-NIGHT '... no flow returned',
+    ALIGNER-ERROR, REFUSED-RESIDUAL (the per-night rule) or this stage's marker - else None (window lines, the batch
+    stage's 'no co-add night weight' lines, which it prints for every night, progress lines, the final line)."""
+    b = re.escape(sb)
+    q = re.match(rf'(?:ALIGNED \S+ {b} w\d+ (\S+) |REFUSED-NIGHT {b} w\d+ (\S+): no flow returned$|ALIGNER-ERROR {b} w\S+ '
+                 rf'(\S+): |REFUSED-RESIDUAL {b} [IV] w\d+ (\S+): |{INCOMPLETE} {b} (\S+): )', line)
+    return next((g for g in q.groups() if g), None) if q else None
+
+
+def write_log(log, lines):
+    """Write the refine log: a temporary file, renamed."""
     os.makedirs(os.path.dirname(log), exist_ok=True)
     tmp = os.path.join(os.path.dirname(log), f'.{os.path.basename(log)}.tmp.{os.getpid()}')
     try:
@@ -266,7 +288,6 @@ def merge_log(log, lst, sb, night, new_lines, marker=None):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-    return final, markers
 
 
 def x2_lease(x2, lst, sb, unit):
