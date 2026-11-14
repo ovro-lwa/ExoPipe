@@ -489,7 +489,7 @@ def run_incremental(tier, S, det, z, meta):
     # 2026-11-14 (AMEND-20261114-GROUPING-INCREMENTAL-CHANGES-ONLY-WHAT-NEW-DETECTIONS-TOUCH): the incremental mode changes only
     # what a new detection touches, so its partitions are no longer the research frozen run's (which also merged and seeded
     # among frozen components alone); the difference is printed, and the rule is checked instead
-    late = set(det['cand_id'][~em].tolist())
+    late = set(np.asarray(det['cand_id'])[~em].astype(str).tolist())   # group_catalog's cand_ids are str
     for lv, now, gold in (('identity', r2.identity_id, z['incr_ident']), ('multiples', r2.multiples_id, z['incr_fork'])):
         print(f'  {tag}: incremental {lv} partition = the research frozen run: {G.same_partition(now, gold)}', flush=True)
         prev = r1.identity_id if lv == 'identity' else r1.multiples_id

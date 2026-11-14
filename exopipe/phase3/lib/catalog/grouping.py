@@ -46,7 +46,7 @@ WHAT IT DOES (one rule at two levels). A unit j against a component k, in k's ta
   group needs a new member; the earlier multiples groups are restored by forced joins as before. So a run without a new
   detection changes nothing, and a new night changes only the components its own units join or bridge. (The research code's
   incremental run also merged and seeded among frozen components alone: on the 24 published 10-minute runs, an incremental run
-  WITHOUT a new detection over a batch state merged 49 Stokes I identities - speed-up chat, RESULT-20261113-SPEEDUP-TENMIN-
+  WITHOUT a new detection over a batch state merged 49 Stokes I identities - RESULT-20261113-SPEEDUP-TENMIN-
   GROUPING-NO-NEW-DETECTION-RUNS.)
 
 KNOWN LIMITS (review 2026-11-02)
@@ -65,7 +65,7 @@ KNOWN LIMITS (review 2026-11-02)
   - The batch mode's stage B does not always reach a fixed point: on the 24 published 10-minute runs (Stokes I, 37,724
     window-sources) every pass after the third re-assigns ~500 window-sources, merges 34-52 components and changes the component
     of 48-71 window-sources, with no downward trend to pass 30 - re-assignment and merge undo each other (Stokes V closes at pass
-    3; speed-up chat, PREAMBLE-20261114-SPEEDUP-TENMIN-GROUPING-PASS-CAP-30-RUNS). PASSES = 3 (the research value) makes it a
+    3; PREAMBLE-20261114-SPEEDUP-TENMIN-GROUPING-PASS-CAP-30-RUNS). PASSES = 3 (the research value) makes it a
     deterministic point of that cycle; an all-nights batch and an incremental run over the same detections therefore differ
     in those components (recorded by the regroup's events, not refused).
   - cand_ids are not stable across re-searches (production re-numbers them: exopipe_ops p3s3_merge.py:77-81; 10-25 vs 10-31:
@@ -120,7 +120,9 @@ CATS = ('SN', 'SL', 'OL', 'ALL')        # stage-B pair categories: same LST hour
 TIERS = ('10min', 'deep')
 LEVELS = ('identity', 'multiples')
 WIDEBAND = ('Red', 'Green', 'Blue', 'Full')
-RESEARCH_MD5 = 'c0b652978ed7b7427946062858e4e8ad'   # the approved group_B.py (round 4) this module reproduces
+RESEARCH_MD5 = 'c0b652978ed7b7427946062858e4e8ad'   # the approved group_B.py (round 4) whose batch mode this module reproduces
+INCREMENTAL_RULE = 'touched-only-20261114'          # the incremental mode's rule (module docstring): a merge or a seeded group needs
+#                                                     a new unit; recorded in every run summary (absent: a run under the research rule)
 
 
 class GroupingRefused(RuntimeError):
@@ -761,11 +763,11 @@ def _group_seed(M, order, nbrs, prof, rho, p_thr, u_cap, u_link, max_k, movable=
     return formed
 
 
-def _merge_pass(M, prof, p_thr, u_cap, rho, radius_deg, new=None):
+def _merge_pass(M, prof, p_thr, u_cap, rho, radius_deg, movable=None):
     """UNIT-LEVEL merge test: component l joins k when EVERY unit of l, taken alone, would be admitted to k (u <= U_CAP against k's
     mean with its covariance, odds >= P) and the two share no window. (A mean-against-mean test with independent errors is too
     strict: systematics correlated within a night or LST hour leave well-sampled pieces of one source many 'mean sigmas' apart
-    while every member sits within 2 sigma of the other piece's mean - J0034-0721.) new (the incremental mode: the movable
+    while every member sits within 2 sigma of the other piece's mean - J0034-0721.) movable (the incremental mode: the new
     units): only a pair of which one component holds a new unit may merge."""
     live = np.nonzero(M.cnt > 0)[0]
     if len(live) < 2:
@@ -779,10 +781,10 @@ def _merge_pass(M, prof, p_thr, u_cap, rho, radius_deg, new=None):
     wa, wb = M.cnt[live[a]], M.cnt[live[b]]
     big = np.where(wa >= wb, a, b); sm = np.where(wa >= wb, b, a)
     kb, ksm = live[big], live[sm]
-    if new is not None:                                   # the incremental mode: a merge needs a component holding a new unit
+    if movable is not None:                               # the incremental mode: a merge needs a component holding a new unit
         hn = np.zeros(len(M.cnt), bool)
-        for k_ in live:
-            hn[k_] = any(new[j] for j in M.mem[k_])
+        l_ = M.lab[np.nonzero(movable)[0]]
+        hn[l_[l_ >= 0]] = True
         keep = hn[kb] | hn[ksm]
         if not keep.any():
             return 0
@@ -1576,7 +1578,8 @@ def group_catalog(det, tier, stokes, state=None, run_label='', mode=None, P=None
                    moves={lv: cnt[(lv, 'move')] for lv in LEVELS}, retired={lv: cnt[(lv, 'retired')] for lv in LEVELS},
                    name_suffixes=clash, window_sources=int(info['n_windowsources']), groups_seeded=int(info['groups_seeded']),
                    forced_joins=int(info['forced_joins']), frame_generation=gen,
-                   frame_generation_changed=(None if gen is None or gen_prev is None else gen != gen_prev), research_md5=RESEARCH_MD5)
+                   frame_generation_changed=(None if gen is None or gen_prev is None else gen != gen_prev), research_md5=RESEARCH_MD5,
+                   incremental_rule=INCREMENTAL_RULE if mode == 'incremental' else None)
     st.runs.append(summary)
     return GroupingResult(cand_id=cand_id, identity=ident, multiples=fork, identity_id=identity_id, multiples_id=multiples_id,
                           names=names, multiplicity=mult, multiple=is_mult, events=events, summary=summary, state=st, info=info,
