@@ -742,7 +742,7 @@ def view_root(root, lst, frozen_from, night_dirs, states, groupings, tags, keys)
         cats[f'{tag}_{key}'] = dict(kind=rec['kind'], delta=d, record_sha1=st['record_sha1'], digest=st['digest'],
                                     detail=detail, **counts)
     rec = dict(version=1, complete=False, lst=lst, all_nights=frozen_from, nights=nights, tags=list(tags),
-               state_digest=state_digest(states), catalogs=cats, images=img, detections=det,
+               state_digest=state_digest(states), inputs_digest=view_inputs_digest(frozen_from, nights), catalogs=cats, images=img, detections=det,
                selected={k: dict(base=r['base'], appended=len(r['appended'])) for k, r in asm['selected'].items()},
                selected_all=sel_all, window_tie=dict(base=asm['pertie']['base'], appended=len(asm['pertie']['appended'])), localizations={})
     _dump(os.path.join(root, ROOT_RECORD), rec)
@@ -828,6 +828,34 @@ def finish_root(root, localizations):
     rec.update(complete=True, localizations=localizations)
     _dump(p, rec)
     return rec
+
+
+def view_inputs_digest(frozen_from, night_dirs):
+    """One digest of the tables a view root merges besides the keyed ones (whose content the states' digests name): the image
+    table, the detection table and the whole selection of the all-nights directory and of every night directory."""
+    lines = []
+    for d in [os.path.abspath(frozen_from)] + [os.path.abspath(x) for x in night_dirs]:
+        for name in (IMAGES, DETECTIONS, SELECTED_ALL):
+            p = os.path.join(d, name)
+            lines.append(f'{d}|{name}|{_sha1(p) if os.path.exists(p) else "-"}')
+    return hashlib.sha1('\n'.join(lines).encode()).hexdigest()
+
+
+def root_carries(root, digest, inputs_digest, states, groupings):
+    """(True, '') when an earlier pass's view root ``root`` may be carried: root_stands for ``digest``, made from the same
+    image, detection and selection tables (view_inputs_digest), and every catalog of ``states`` ({(tag, key): key_state})
+    passes view_test again from its files under the present ``groupings`` ({Stokes: read_grouping result}); else (False,
+    why). Its completion flag alone never carries it."""
+    if not root_stands(root, digest):
+        return False, 'not a complete root of these states'
+    if _json(os.path.join(root, ROOT_RECORD)).get('inputs_digest') != inputs_digest:
+        return False, 'made from other image, detection or selection tables'
+    for (tag, key), st in sorted(states.items()):
+        ok, detail, _c = view_test(os.path.join(root, CAT.format(tag=tag, key=key)), st['all_nights'],
+                                   st['dir'] if st['kind'] == 'delta' else None, groupings[key[0]])
+        if not ok:
+            return False, f'{tag}_{key}: {detail}'
+    return True, ''
 
 
 def root_stands(root, digest):

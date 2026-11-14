@@ -202,6 +202,28 @@ def test_content():
     check('content test: a delta without a touched identity and a night without a selected detection pass', ok and c['sources'] == 0, detail)
 
 
+def test_own_delta():
+    """tier_sublst._own_delta: a night's delta directory of a key is replaced (or removed) only when empty, finished
+    (builder_delta.json) or left by a failed pass (the started marker); anything else refuses."""
+    from exopipe.phase3.lib.catalog import tier_sublst as TS
+    from exopipe.phase3.core.record import Refusal
+    base = f'{T}/own'
+    def verdict(files):
+        d = f'{base}/{len(files)}_{"_".join(f.strip(".") for f in files)}'
+        os.makedirs(d)
+        for f in files:
+            put(f'{d}/{f}', ['x'])
+        try:
+            TS._own_delta(d, 'I_wb', 'noveto')
+        except Refusal as e:
+            return str(e)
+        return ''
+    check('own delta: an empty directory, a finished delta and a failed pass\'s are this stage\'s own',
+          verdict([]) == '' and verdict([DB.DELTA_RECORD, 'Red_source_members.csv']) == ''
+          and verdict([TS.DELTA_STARTED, 'Red_source_members.csv']) == '')
+    check('own delta: a directory with other files only refuses', 'not replaced' in verdict(['Red_source_members.csv']))
+
+
 def test_recorded_inputs():
     """grouping_stage.recorded_inputs: what the latest done grouping run was assembled from (the nights a delta build appends)."""
     from exopipe.phase3.lib.catalog import grouping_stage as GS
@@ -225,6 +247,9 @@ def test_recorded_inputs():
     runs, nd = GS.recorded_inputs(G, 'V')
     check('recorded inputs: the LATEST run counts, with the nights it was run with', nd == [('05h', '/n/1'), ('06h', '/n/2')], nd)
     check('recorded inputs: the table and sha1 are those of the same record', GS.recorded_table(G, 'V') == (table, GS.table_digest(table)))
+    r3 = GS.recorded_inputs(G, 'V', with_table=True)
+    check('recorded inputs: with_table gives the nights and the table of one read of the record',
+          r3 == (runs, nd, (table, GS.table_digest(table))), r3)
     record('c', '2030-01-03T00:00:00Z', inp='/a/direct/input.csv')
     check('recorded inputs: a run on a direct input names no LST directory', GS.recorded_inputs(G, 'V')[0] == {})
 
@@ -609,6 +634,27 @@ def test_hour():
     check('view root: complete after its localizations, and standing for exactly its states',
           DB.root_stands(root, dg) and not DB.root_stands(root, '0' * 40) and not DB.root_stands(f'{R}/nowhere', dg)
           and json.load(open(f'{root}/hour_view.json'))['localizations']['noveto']['localizations.csv']['new'] == 3)
+    # carrying an earlier root: it must stand, be made from the same image / detection / selection tables, and pass view_test
+    idg, gv = DB.view_inputs_digest(F, [Nd]), {'V': gnew}
+    ok0, why0 = DB.root_carries(root, dg, idg, states, gv)
+    check('carry: a complete root of these states, made from the same tables, whose catalogs pass view_test again, is carried',
+          ok0 and rec['inputs_digest'] == idg, why0)
+    ok1, why1 = DB.root_carries(root, dg, '0' * 40, states, gv)
+    check('carry: a root made from another image, detection or selection table is not carried', not ok1 and 'other image' in why1,
+          why1)
+    img_n = f'{Nd}/v_deep_images.csv'
+    keep_img = raw(img_n)
+    open(img_n, 'wb').write(keep_img + keep_img.split(b'\n')[1] + b'\n')
+    check('carry: a night image table that changed changes the inputs digest', DB.view_inputs_digest(F, [Nd]) != idg)
+    open(img_n, 'wb').write(keep_img)
+    vp = f'{root}/source_catalogs_noveto_V_sb/46MHz_sources_survivors.csv'
+    keep_v = raw(vp)
+    lines = keep_v.split(b'\n')
+    open(vp, 'wb').write(b'\n'.join(lines[:-2] + lines[-1:]))      # one row lost after the root was made complete
+    ok2, why2 = DB.root_carries(root, dg, idg, states, gv)
+    check('carry: a complete root whose catalog lost a row is not carried (its flag alone never carries it)',
+          not ok2 and DB.root_stands(root, dg) and 'noveto_V_sb' in why2, why2)
+    open(vp, 'wb').write(keep_v)
     # the index of a pass
     e = dict(kind='view', root=root, keys={'noveto_V_sb': dict(kind='delta', dir=D)})
     DB._dump(f'{R}/p1/hour_views.json', dict(written='2030-01-05T00:00:00Z', hours={'05h': e}))
@@ -639,6 +685,7 @@ def main():
     test_merge()
     test_assemble()
     test_content()
+    test_own_delta()
     test_recorded_inputs()
     test_view()
     test_hour()
